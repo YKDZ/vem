@@ -1,0 +1,894 @@
+import {
+  adminUserStatuses,
+  categoryStatuses,
+  inventoryMovementReasons,
+  inventoryReservationStatuses,
+  machineSlotStatuses,
+  machineStatuses,
+  notificationDeliveryStatuses,
+  notificationSeverities,
+  notificationStatuses,
+  notificationTargetTypes,
+  notificationTypes,
+  orderSources,
+  orderStatuses,
+  paymentMethods,
+  paymentProviderStatuses,
+  paymentProviderTypes,
+  paymentStatuses,
+  permissionCodes,
+  productStatuses,
+  refundStatuses,
+  roleStatuses,
+  variantStatuses,
+  vendingCommandStatuses,
+} from "@vem/shared";
+import { sql } from "drizzle-orm";
+import * as t from "drizzle-orm/pg-core";
+
+type JsonObject = Record<string, unknown>;
+
+const id = () => t.uuid("id").defaultRandom().primaryKey();
+const createdAt = () =>
+  t.timestamp("created_at", { withTimezone: true }).defaultNow().notNull();
+const updatedAt = () =>
+  t.timestamp("updated_at", { withTimezone: true }).defaultNow().notNull();
+const deletedAt = () => t.timestamp("deleted_at", { withTimezone: true });
+
+const asPgEnumValues = <T extends string>(values: readonly T[]): [T, ...T[]] =>
+  // oxlint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
+  values as [T, ...T[]];
+
+export const adminUserStatus = t.pgEnum(
+  "admin_user_status",
+  asPgEnumValues(adminUserStatuses),
+);
+export const roleStatus = t.pgEnum("role_status", asPgEnumValues(roleStatuses));
+export const permissionCode = t.pgEnum(
+  "permission_code",
+  asPgEnumValues(permissionCodes),
+);
+export const categoryStatus = t.pgEnum(
+  "category_status",
+  asPgEnumValues(categoryStatuses),
+);
+export const productStatus = t.pgEnum(
+  "product_status",
+  asPgEnumValues(productStatuses),
+);
+export const variantStatus = t.pgEnum(
+  "variant_status",
+  asPgEnumValues(variantStatuses),
+);
+export const machineStatus = t.pgEnum(
+  "machine_status",
+  asPgEnumValues(machineStatuses),
+);
+export const machineSlotStatus = t.pgEnum(
+  "machine_slot_status",
+  asPgEnumValues(machineSlotStatuses),
+);
+export const inventoryReservationStatus = t.pgEnum(
+  "inventory_reservation_status",
+  asPgEnumValues(inventoryReservationStatuses),
+);
+export const inventoryMovementReason = t.pgEnum(
+  "inventory_movement_reason",
+  asPgEnumValues(inventoryMovementReasons),
+);
+export const orderStatus = t.pgEnum(
+  "order_status",
+  asPgEnumValues(orderStatuses),
+);
+export const orderSource = t.pgEnum(
+  "order_source",
+  asPgEnumValues(orderSources),
+);
+export const paymentProviderType = t.pgEnum(
+  "payment_provider_type",
+  asPgEnumValues(paymentProviderTypes),
+);
+export const paymentProviderStatus = t.pgEnum(
+  "payment_provider_status",
+  asPgEnumValues(paymentProviderStatuses),
+);
+export const paymentMethod = t.pgEnum(
+  "payment_method",
+  asPgEnumValues(paymentMethods),
+);
+export const paymentStatus = t.pgEnum(
+  "payment_status",
+  asPgEnumValues(paymentStatuses),
+);
+export const refundStatus = t.pgEnum(
+  "refund_status",
+  asPgEnumValues(refundStatuses),
+);
+export const vendingCommandStatus = t.pgEnum(
+  "vending_command_status",
+  asPgEnumValues(vendingCommandStatuses),
+);
+export const notificationTargetType = t.pgEnum(
+  "notification_target_type",
+  asPgEnumValues(notificationTargetTypes),
+);
+export const notificationType = t.pgEnum(
+  "notification_type",
+  asPgEnumValues(notificationTypes),
+);
+export const notificationSeverity = t.pgEnum(
+  "notification_severity",
+  asPgEnumValues(notificationSeverities),
+);
+export const notificationStatus = t.pgEnum(
+  "notification_status",
+  asPgEnumValues(notificationStatuses),
+);
+export const notificationDeliveryStatus = t.pgEnum(
+  "notification_delivery_status",
+  asPgEnumValues(notificationDeliveryStatuses),
+);
+
+export const adminUsers = t.pgTable(
+  "admin_users",
+  {
+    id: id(),
+    username: t.varchar("username", { length: 64 }).notNull(),
+    passwordHash: t.text("password_hash").notNull(),
+    displayName: t.varchar("display_name", { length: 64 }).notNull(),
+    mobile: t.varchar("mobile", { length: 32 }),
+    email: t.varchar("email", { length: 255 }),
+    status: adminUserStatus("status").default("active").notNull(),
+    lastLoginAt: t.timestamp("last_login_at", { withTimezone: true }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+    deletedAt: deletedAt(),
+  },
+  (table) => [
+    t.uniqueIndex("admin_users_username_unique").on(table.username),
+    t.index("admin_users_status_idx").on(table.status),
+  ],
+);
+
+export const roles = t.pgTable(
+  "roles",
+  {
+    id: id(),
+    code: t.varchar("code", { length: 64 }).notNull(),
+    name: t.varchar("name", { length: 64 }).notNull(),
+    description: t.text("description"),
+    isBuiltin: t.boolean("is_builtin").default(false).notNull(),
+    status: roleStatus("status").default("active").notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+    deletedAt: deletedAt(),
+  },
+  (table) => [
+    t.uniqueIndex("roles_code_unique").on(table.code),
+    t.index("roles_status_idx").on(table.status),
+  ],
+);
+
+export const permissions = t.pgTable(
+  "permissions",
+  {
+    id: id(),
+    code: permissionCode("code").notNull(),
+    name: t.varchar("name", { length: 128 }).notNull(),
+    description: t.text("description"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [t.uniqueIndex("permissions_code_unique").on(table.code)],
+);
+
+export const adminUserRoles = t.pgTable(
+  "admin_user_roles",
+  {
+    adminUserId: t
+      .uuid("admin_user_id")
+      .notNull()
+      .references(() => adminUsers.id),
+    roleId: t
+      .uuid("role_id")
+      .notNull()
+      .references(() => roles.id),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    t.primaryKey({ columns: [table.adminUserId, table.roleId] }),
+    t.index("admin_user_roles_role_id_idx").on(table.roleId),
+  ],
+);
+
+export const rolePermissions = t.pgTable(
+  "role_permissions",
+  {
+    roleId: t
+      .uuid("role_id")
+      .notNull()
+      .references(() => roles.id),
+    permissionId: t
+      .uuid("permission_id")
+      .notNull()
+      .references(() => permissions.id),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    t.primaryKey({ columns: [table.roleId, table.permissionId] }),
+    t.index("role_permissions_permission_id_idx").on(table.permissionId),
+  ],
+);
+
+export const refreshTokens = t.pgTable(
+  "refresh_tokens",
+  {
+    id: id(),
+    adminUserId: t
+      .uuid("admin_user_id")
+      .notNull()
+      .references(() => adminUsers.id),
+    tokenHash: t.text("token_hash").notNull(),
+    expiresAt: t.timestamp("expires_at", { withTimezone: true }).notNull(),
+    revokedAt: t.timestamp("revoked_at", { withTimezone: true }),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    t.uniqueIndex("refresh_tokens_token_hash_unique").on(table.tokenHash),
+    t.index("refresh_tokens_admin_user_id_idx").on(table.adminUserId),
+  ],
+);
+
+export const auditLogs = t.pgTable(
+  "audit_logs",
+  {
+    id: id(),
+    adminUserId: t.uuid("admin_user_id").references(() => adminUsers.id),
+    action: t.varchar("action", { length: 128 }).notNull(),
+    resourceType: t.varchar("resource_type", { length: 64 }).notNull(),
+    resourceId: t.uuid("resource_id"),
+    ipAddress: t.varchar("ip_address", { length: 64 }),
+    userAgent: t.text("user_agent"),
+    beforeJson: t.jsonb("before_json").$type<JsonObject>(),
+    afterJson: t.jsonb("after_json").$type<JsonObject>(),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    t.index("audit_logs_admin_user_id_idx").on(table.adminUserId),
+    t.index("audit_logs_resource_idx").on(table.resourceType, table.resourceId),
+    t.index("audit_logs_created_at_idx").on(table.createdAt),
+  ],
+);
+
+export const productCategories = t.pgTable(
+  "product_categories",
+  {
+    id: id(),
+    name: t.varchar("name", { length: 128 }).notNull(),
+    parentId: t
+      .uuid("parent_id")
+      .references((): t.AnyPgColumn => productCategories.id),
+    sortOrder: t.integer("sort_order").default(0).notNull(),
+    status: categoryStatus("status").default("active").notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+    deletedAt: deletedAt(),
+  },
+  (table) => [
+    t.index("product_categories_parent_id_idx").on(table.parentId),
+    t.index("product_categories_status_idx").on(table.status),
+  ],
+);
+
+export const products = t.pgTable(
+  "products",
+  {
+    id: id(),
+    name: t.varchar("name", { length: 128 }).notNull(),
+    categoryId: t.uuid("category_id").references(() => productCategories.id),
+    description: t.text("description"),
+    coverImageUrl: t.text("cover_image_url"),
+    status: productStatus("status").default("draft").notNull(),
+    sortOrder: t.integer("sort_order").default(0).notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+    deletedAt: deletedAt(),
+  },
+  (table) => [
+    t.index("products_category_id_idx").on(table.categoryId),
+    t.index("products_status_idx").on(table.status),
+  ],
+);
+
+export const productVariants = t.pgTable(
+  "product_variants",
+  {
+    id: id(),
+    productId: t
+      .uuid("product_id")
+      .notNull()
+      .references(() => products.id),
+    sku: t.varchar("sku", { length: 64 }).notNull(),
+    size: t.varchar("size", { length: 32 }),
+    color: t.varchar("color", { length: 32 }),
+    barcode: t.varchar("barcode", { length: 128 }),
+    priceCents: t.integer("price_cents").notNull(),
+    costCents: t.integer("cost_cents"),
+    status: variantStatus("status").default("active").notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+    deletedAt: deletedAt(),
+  },
+  (table) => [
+    t.uniqueIndex("product_variants_sku_unique").on(table.sku),
+    t.index("product_variants_product_id_idx").on(table.productId),
+    t.index("product_variants_status_idx").on(table.status),
+    t.check(
+      "product_variants_price_cents_non_negative",
+      sql`${table.priceCents} >= 0`,
+    ),
+    t.check(
+      "product_variants_cost_cents_non_negative",
+      sql`${table.costCents} IS NULL OR ${table.costCents} >= 0`,
+    ),
+  ],
+);
+
+export const machines = t.pgTable(
+  "machines",
+  {
+    id: id(),
+    code: t.varchar("code", { length: 64 }).notNull(),
+    name: t.varchar("name", { length: 128 }).notNull(),
+    locationText: t.text("location_text"),
+    status: machineStatus("status").default("offline").notNull(),
+    lastSeenAt: t.timestamp("last_seen_at", { withTimezone: true }),
+    mqttClientId: t.varchar("mqtt_client_id", { length: 128 }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+    deletedAt: deletedAt(),
+  },
+  (table) => [
+    t.uniqueIndex("machines_code_unique").on(table.code),
+    t.index("machines_status_idx").on(table.status),
+    t.index("machines_last_seen_at_idx").on(table.lastSeenAt),
+  ],
+);
+
+export const machineSlots = t.pgTable(
+  "machine_slots",
+  {
+    id: id(),
+    machineId: t
+      .uuid("machine_id")
+      .notNull()
+      .references(() => machines.id),
+    layerNo: t.integer("layer_no").notNull(),
+    cellNo: t.integer("cell_no").notNull(),
+    slotCode: t.varchar("slot_code", { length: 32 }).notNull(),
+    capacity: t.integer("capacity").notNull(),
+    status: machineSlotStatus("status").default("enabled").notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+    deletedAt: deletedAt(),
+  },
+  (table) => [
+    t
+      .uniqueIndex("machine_slots_position_unique")
+      .on(table.machineId, table.layerNo, table.cellNo),
+    t.index("machine_slots_machine_id_idx").on(table.machineId),
+    t.index("machine_slots_status_idx").on(table.status),
+    t.check("machine_slots_layer_no_positive", sql`${table.layerNo} > 0`),
+    t.check("machine_slots_cell_no_positive", sql`${table.cellNo} > 0`),
+    t.check("machine_slots_capacity_non_negative", sql`${table.capacity} >= 0`),
+  ],
+);
+
+export const inventories = t.pgTable(
+  "inventories",
+  {
+    id: id(),
+    machineId: t
+      .uuid("machine_id")
+      .notNull()
+      .references(() => machines.id),
+    slotId: t
+      .uuid("slot_id")
+      .notNull()
+      .references(() => machineSlots.id),
+    variantId: t
+      .uuid("variant_id")
+      .notNull()
+      .references(() => productVariants.id),
+    onHandQty: t.integer("on_hand_qty").notNull(),
+    reservedQty: t.integer("reserved_qty").default(0).notNull(),
+    lowStockThreshold: t.integer("low_stock_threshold").default(1).notNull(),
+    soldOutNotifiedAt: t.timestamp("sold_out_notified_at", {
+      withTimezone: true,
+    }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    t.uniqueIndex("inventories_slot_id_unique").on(table.slotId),
+    t.index("inventories_machine_id_idx").on(table.machineId),
+    t.index("inventories_variant_id_idx").on(table.variantId),
+    t.check(
+      "inventories_on_hand_qty_non_negative",
+      sql`${table.onHandQty} >= 0`,
+    ),
+    t.check(
+      "inventories_reserved_qty_non_negative",
+      sql`${table.reservedQty} >= 0`,
+    ),
+    t.check(
+      "inventories_low_stock_threshold_non_negative",
+      sql`${table.lowStockThreshold} >= 0`,
+    ),
+  ],
+);
+
+export const orders = t.pgTable(
+  "orders",
+  {
+    id: id(),
+    orderNo: t.varchar("order_no", { length: 64 }).notNull(),
+    machineId: t
+      .uuid("machine_id")
+      .notNull()
+      .references(() => machines.id),
+    status: orderStatus("status").default("pending_payment").notNull(),
+    totalAmountCents: t.integer("total_amount_cents").notNull(),
+    currency: t.char("currency", { length: 3 }).default("CNY").notNull(),
+    paymentId: t
+      .uuid("payment_id")
+      .references((): t.AnyPgColumn => payments.id),
+    profileSnapshot: t.jsonb("profile_snapshot").$type<JsonObject>(),
+    createdFrom: orderSource("created_from").default("machine_ui").notNull(),
+    paidAt: t.timestamp("paid_at", { withTimezone: true }),
+    dispensedAt: t.timestamp("dispensed_at", { withTimezone: true }),
+    canceledAt: t.timestamp("canceled_at", { withTimezone: true }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    t.uniqueIndex("orders_order_no_unique").on(table.orderNo),
+    t.index("orders_machine_id_idx").on(table.machineId),
+    t.index("orders_status_idx").on(table.status),
+    t.index("orders_created_at_idx").on(table.createdAt),
+    t.check(
+      "orders_total_amount_cents_non_negative",
+      sql`${table.totalAmountCents} >= 0`,
+    ),
+  ],
+);
+
+export const orderItems = t.pgTable(
+  "order_items",
+  {
+    id: id(),
+    orderId: t
+      .uuid("order_id")
+      .notNull()
+      .references(() => orders.id),
+    variantId: t
+      .uuid("variant_id")
+      .notNull()
+      .references(() => productVariants.id),
+    inventoryId: t
+      .uuid("inventory_id")
+      .notNull()
+      .references(() => inventories.id),
+    slotId: t
+      .uuid("slot_id")
+      .notNull()
+      .references(() => machineSlots.id),
+    quantity: t.integer("quantity").notNull(),
+    unitPriceCents: t.integer("unit_price_cents").notNull(),
+    productSnapshot: t.jsonb("product_snapshot").$type<JsonObject>().notNull(),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    t.index("order_items_order_id_idx").on(table.orderId),
+    t.index("order_items_variant_id_idx").on(table.variantId),
+    t.check("order_items_quantity_positive", sql`${table.quantity} > 0`),
+    t.check(
+      "order_items_unit_price_cents_non_negative",
+      sql`${table.unitPriceCents} >= 0`,
+    ),
+  ],
+);
+
+export const orderStatusEvents = t.pgTable(
+  "order_status_events",
+  {
+    id: id(),
+    orderId: t
+      .uuid("order_id")
+      .notNull()
+      .references(() => orders.id),
+    fromStatus: orderStatus("from_status"),
+    toStatus: orderStatus("to_status").notNull(),
+    reason: t.varchar("reason", { length: 128 }).notNull(),
+    metadata: t.jsonb("metadata").$type<JsonObject>(),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    t.index("order_status_events_order_id_idx").on(table.orderId),
+    t.index("order_status_events_created_at_idx").on(table.createdAt),
+  ],
+);
+
+export const paymentProviders = t.pgTable(
+  "payment_providers",
+  {
+    id: id(),
+    code: t.varchar("code", { length: 64 }).notNull(),
+    name: t.varchar("name", { length: 128 }).notNull(),
+    type: paymentProviderType("type").notNull(),
+    status: paymentProviderStatus("status").default("enabled").notNull(),
+    capabilities: t.jsonb("capabilities").$type<JsonObject>().notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    t.uniqueIndex("payment_providers_code_unique").on(table.code),
+    t.index("payment_providers_status_idx").on(table.status),
+  ],
+);
+
+export const paymentProviderConfigs = t.pgTable(
+  "payment_provider_configs",
+  {
+    id: id(),
+    providerId: t
+      .uuid("provider_id")
+      .notNull()
+      .references(() => paymentProviders.id),
+    machineId: t.uuid("machine_id").references(() => machines.id),
+    merchantNo: t.varchar("merchant_no", { length: 128 }),
+    appId: t.varchar("app_id", { length: 128 }),
+    configEncryptedJson: t
+      .jsonb("config_encrypted_json")
+      .$type<JsonObject>()
+      .notNull(),
+    publicConfigJson: t
+      .jsonb("public_config_json")
+      .$type<JsonObject>()
+      .notNull(),
+    status: paymentProviderStatus("status").default("enabled").notNull(),
+    updatedByAdminUserId: t
+      .uuid("updated_by_admin_user_id")
+      .references(() => adminUsers.id),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    t.index("payment_provider_configs_provider_id_idx").on(table.providerId),
+    t.index("payment_provider_configs_machine_id_idx").on(table.machineId),
+  ],
+);
+
+export const paymentUserSnapshots = t.pgTable(
+  "payment_user_snapshots",
+  {
+    id: id(),
+    providerCode: t.varchar("provider_code", { length: 64 }).notNull(),
+    providerUserIdHash: t.text("provider_user_id_hash"),
+    maskedAccount: t.varchar("masked_account", { length: 128 }),
+    displayNameMasked: t.varchar("display_name_masked", { length: 128 }),
+    extraMaskedJson: t.jsonb("extra_masked_json").$type<JsonObject>(),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    t.index("payment_user_snapshots_provider_code_idx").on(table.providerCode),
+  ],
+);
+
+export const payments = t.pgTable(
+  "payments",
+  {
+    id: id(),
+    paymentNo: t.varchar("payment_no", { length: 64 }).notNull(),
+    orderId: t
+      .uuid("order_id")
+      .notNull()
+      .references(() => orders.id),
+    providerId: t
+      .uuid("provider_id")
+      .notNull()
+      .references(() => paymentProviders.id),
+    method: paymentMethod("method").notNull(),
+    status: paymentStatus("status").default("created").notNull(),
+    amountCents: t.integer("amount_cents").notNull(),
+    providerTradeNo: t.varchar("provider_trade_no", { length: 128 }),
+    paymentUrl: t.text("payment_url"),
+    expiresAt: t.timestamp("expires_at", { withTimezone: true }),
+    paidAt: t.timestamp("paid_at", { withTimezone: true }),
+    failedReason: t.text("failed_reason"),
+    payerSnapshotId: t
+      .uuid("payer_snapshot_id")
+      .references(() => paymentUserSnapshots.id),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    t.uniqueIndex("payments_payment_no_unique").on(table.paymentNo),
+    t.index("payments_order_id_idx").on(table.orderId),
+    t.index("payments_provider_id_idx").on(table.providerId),
+    t.index("payments_status_idx").on(table.status),
+    t.index("payments_created_at_idx").on(table.createdAt),
+    t.check(
+      "payments_amount_cents_non_negative",
+      sql`${table.amountCents} >= 0`,
+    ),
+  ],
+);
+
+export const paymentEvents = t.pgTable(
+  "payment_events",
+  {
+    id: id(),
+    paymentId: t
+      .uuid("payment_id")
+      .notNull()
+      .references(() => payments.id),
+    providerId: t
+      .uuid("provider_id")
+      .notNull()
+      .references(() => paymentProviders.id),
+    eventType: t.varchar("event_type", { length: 128 }).notNull(),
+    providerEventId: t.varchar("provider_event_id", { length: 128 }).notNull(),
+    rawPayloadJson: t.jsonb("raw_payload_json").$type<JsonObject>().notNull(),
+    signatureValid: t.boolean("signature_valid").default(false).notNull(),
+    handledAt: t.timestamp("handled_at", { withTimezone: true }),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    t
+      .uniqueIndex("payment_events_provider_event_unique")
+      .on(table.providerId, table.providerEventId),
+    t.index("payment_events_payment_id_idx").on(table.paymentId),
+  ],
+);
+
+export const refunds = t.pgTable(
+  "refunds",
+  {
+    id: id(),
+    refundNo: t.varchar("refund_no", { length: 64 }).notNull(),
+    paymentId: t
+      .uuid("payment_id")
+      .notNull()
+      .references(() => payments.id),
+    orderId: t
+      .uuid("order_id")
+      .notNull()
+      .references(() => orders.id),
+    amountCents: t.integer("amount_cents").notNull(),
+    status: refundStatus("status").default("created").notNull(),
+    providerRefundNo: t.varchar("provider_refund_no", { length: 128 }),
+    reason: t.text("reason").notNull(),
+    requestedByAdminUserId: t
+      .uuid("requested_by_admin_user_id")
+      .references(() => adminUsers.id),
+    refundedAt: t.timestamp("refunded_at", { withTimezone: true }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    t.uniqueIndex("refunds_refund_no_unique").on(table.refundNo),
+    t.index("refunds_payment_id_idx").on(table.paymentId),
+    t.index("refunds_order_id_idx").on(table.orderId),
+    t.check(
+      "refunds_amount_cents_non_negative",
+      sql`${table.amountCents} >= 0`,
+    ),
+  ],
+);
+
+export const inventoryReservations = t.pgTable(
+  "inventory_reservations",
+  {
+    id: id(),
+    orderId: t
+      .uuid("order_id")
+      .notNull()
+      .references(() => orders.id),
+    inventoryId: t
+      .uuid("inventory_id")
+      .notNull()
+      .references(() => inventories.id),
+    quantity: t.integer("quantity").notNull(),
+    status: inventoryReservationStatus("status").default("active").notNull(),
+    expiresAt: t.timestamp("expires_at", { withTimezone: true }).notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    t.index("inventory_reservations_order_id_idx").on(table.orderId),
+    t.index("inventory_reservations_inventory_id_idx").on(table.inventoryId),
+    t.index("inventory_reservations_status_idx").on(table.status),
+    t.check(
+      "inventory_reservations_quantity_positive",
+      sql`${table.quantity} > 0`,
+    ),
+  ],
+);
+
+export const inventoryMovements = t.pgTable(
+  "inventory_movements",
+  {
+    id: id(),
+    inventoryId: t
+      .uuid("inventory_id")
+      .notNull()
+      .references(() => inventories.id),
+    deltaQty: t.integer("delta_qty").notNull(),
+    reason: inventoryMovementReason("reason").notNull(),
+    orderId: t.uuid("order_id").references(() => orders.id),
+    operatorAdminUserId: t
+      .uuid("operator_admin_user_id")
+      .references(() => adminUsers.id),
+    note: t.text("note"),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    t.index("inventory_movements_inventory_id_idx").on(table.inventoryId),
+    t.index("inventory_movements_order_id_idx").on(table.orderId),
+    t.index("inventory_movements_reason_idx").on(table.reason),
+    t.index("inventory_movements_created_at_idx").on(table.createdAt),
+  ],
+);
+
+export const vendingCommands = t.pgTable(
+  "vending_commands",
+  {
+    id: id(),
+    commandNo: t.varchar("command_no", { length: 64 }).notNull(),
+    orderId: t
+      .uuid("order_id")
+      .notNull()
+      .references(() => orders.id),
+    machineId: t
+      .uuid("machine_id")
+      .notNull()
+      .references(() => machines.id),
+    slotId: t
+      .uuid("slot_id")
+      .notNull()
+      .references(() => machineSlots.id),
+    payloadJson: t.jsonb("payload_json").$type<JsonObject>().notNull(),
+    status: vendingCommandStatus("status").default("pending").notNull(),
+    sentAt: t.timestamp("sent_at", { withTimezone: true }),
+    ackAt: t.timestamp("ack_at", { withTimezone: true }),
+    resultAt: t.timestamp("result_at", { withTimezone: true }),
+    retryCount: t.integer("retry_count").default(0).notNull(),
+    lastError: t.text("last_error"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    t.uniqueIndex("vending_commands_command_no_unique").on(table.commandNo),
+    t.index("vending_commands_order_id_idx").on(table.orderId),
+    t.index("vending_commands_machine_id_idx").on(table.machineId),
+    t.index("vending_commands_status_idx").on(table.status),
+    t.check(
+      "vending_commands_retry_count_non_negative",
+      sql`${table.retryCount} >= 0`,
+    ),
+  ],
+);
+
+export const machineEvents = t.pgTable(
+  "machine_events",
+  {
+    id: id(),
+    machineId: t
+      .uuid("machine_id")
+      .notNull()
+      .references(() => machines.id),
+    eventType: t.varchar("event_type", { length: 128 }).notNull(),
+    payloadJson: t.jsonb("payload_json").$type<JsonObject>().notNull(),
+    mqttTopic: t.varchar("mqtt_topic", { length: 255 }).notNull(),
+    messageId: t.varchar("message_id", { length: 128 }).notNull(),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    t
+      .uniqueIndex("machine_events_machine_message_unique")
+      .on(table.machineId, table.messageId),
+    t.index("machine_events_machine_id_idx").on(table.machineId),
+    t.index("machine_events_event_type_idx").on(table.eventType),
+  ],
+);
+
+export const machineHeartbeats = t.pgTable(
+  "machine_heartbeats",
+  {
+    id: id(),
+    machineId: t
+      .uuid("machine_id")
+      .notNull()
+      .references(() => machines.id),
+    statusPayloadJson: t
+      .jsonb("status_payload_json")
+      .$type<JsonObject>()
+      .notNull(),
+    reportedAt: t.timestamp("reported_at", { withTimezone: true }).notNull(),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    t.index("machine_heartbeats_machine_id_idx").on(table.machineId),
+    t.index("machine_heartbeats_reported_at_idx").on(table.reportedAt),
+  ],
+);
+
+export const notificationTargets = t.pgTable(
+  "notification_targets",
+  {
+    id: id(),
+    name: t.varchar("name", { length: 128 }).notNull(),
+    type: notificationTargetType("type").notNull(),
+    targetMasked: t.varchar("target_masked", { length: 128 }),
+    configJson: t.jsonb("config_json").$type<JsonObject>().notNull(),
+    status: paymentProviderStatus("status").default("enabled").notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    t.index("notification_targets_type_idx").on(table.type),
+    t.index("notification_targets_status_idx").on(table.status),
+  ],
+);
+
+export const notifications = t.pgTable(
+  "notifications",
+  {
+    id: id(),
+    type: notificationType("type").notNull(),
+    title: t.varchar("title", { length: 128 }).notNull(),
+    content: t.text("content").notNull(),
+    severity: notificationSeverity("severity").default("info").notNull(),
+    resourceType: t.varchar("resource_type", { length: 64 }),
+    resourceId: t.uuid("resource_id"),
+    status: notificationStatus("status").default("unread").notNull(),
+    dedupeKey: t.varchar("dedupe_key", { length: 255 }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    t.uniqueIndex("notifications_dedupe_key_unique").on(table.dedupeKey),
+    t.index("notifications_type_idx").on(table.type),
+    t.index("notifications_status_idx").on(table.status),
+    t.index("notifications_created_at_idx").on(table.createdAt),
+  ],
+);
+
+export const notificationDeliveries = t.pgTable(
+  "notification_deliveries",
+  {
+    id: id(),
+    notificationId: t
+      .uuid("notification_id")
+      .notNull()
+      .references(() => notifications.id),
+    targetId: t
+      .uuid("target_id")
+      .notNull()
+      .references(() => notificationTargets.id),
+    channel: notificationTargetType("channel").notNull(),
+    status: notificationDeliveryStatus("status").default("pending").notNull(),
+    sentAt: t.timestamp("sent_at", { withTimezone: true }),
+    failedReason: t.text("failed_reason"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    t
+      .index("notification_deliveries_notification_id_idx")
+      .on(table.notificationId),
+    t.index("notification_deliveries_target_id_idx").on(table.targetId),
+    t.index("notification_deliveries_status_idx").on(table.status),
+  ],
+);

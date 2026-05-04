@@ -1,0 +1,82 @@
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  ParseUUIDPipe,
+  Patch,
+  Post,
+  Query,
+} from "@nestjs/common";
+import { ApiBearerAuth, ApiTags } from "@nestjs/swagger";
+import {
+  createMachineSchema,
+  createMachineSlotSchema,
+  pageQuerySchema,
+  updateMachineSchema,
+} from "@vem/shared";
+import { z } from "zod";
+
+import { RequirePermissions } from "../access/permissions.decorator";
+import { Public } from "../auth/public.decorator";
+import { ZodValidationPipe } from "../common/zod-validation.pipe";
+import { MachinesService } from "./machines.service";
+
+type CreateMachineInput = z.infer<typeof createMachineSchema>;
+type UpdateMachineInput = z.infer<typeof updateMachineSchema>;
+type CreateMachineSlotInput = z.infer<typeof createMachineSlotSchema>;
+type PageQueryInput = z.infer<typeof pageQuerySchema>;
+
+@ApiTags("machines")
+@ApiBearerAuth()
+@Controller("machines")
+export class MachinesController {
+  constructor(private readonly machinesService: MachinesService) {}
+
+  @RequirePermissions("machines.read")
+  @Get()
+  async listMachines(
+    @Query(new ZodValidationPipe(pageQuerySchema)) query: PageQueryInput,
+  ) {
+    return await this.machinesService.listMachines(query);
+  }
+
+  @RequirePermissions("machines.write")
+  @Post()
+  async createMachine(
+    @Body(new ZodValidationPipe(createMachineSchema)) body: CreateMachineInput,
+  ) {
+    return await this.machinesService.createMachine(body);
+  }
+
+  @RequirePermissions("machines.write")
+  @Patch(":id")
+  async updateMachine(
+    @Param("id", ParseUUIDPipe) id: string,
+    @Body(new ZodValidationPipe(updateMachineSchema)) body: UpdateMachineInput,
+  ) {
+    return await this.machinesService.updateMachine(id, body);
+  }
+
+  @RequirePermissions("machines.read")
+  @Get(":id/slots")
+  async listSlots(@Param("id", ParseUUIDPipe) machineId: string) {
+    return await this.machinesService.listSlots(machineId);
+  }
+
+  @RequirePermissions("machines.write")
+  @Post(":id/slots")
+  async createSlot(
+    @Param("id", ParseUUIDPipe) machineId: string,
+    @Body(new ZodValidationPipe(createMachineSlotSchema))
+    body: CreateMachineSlotInput,
+  ) {
+    return await this.machinesService.createSlot(machineId, body);
+  }
+
+  @Public()
+  @Get(":code/catalog")
+  async getMachineCatalog(@Param("code") code: string) {
+    return await this.machinesService.getCatalogByMachineCode(code);
+  }
+}

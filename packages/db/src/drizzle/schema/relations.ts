@@ -1,0 +1,326 @@
+import { defineRelations } from "drizzle-orm";
+
+import {
+  adminUserRoles,
+  adminUsers,
+  auditLogs,
+  inventories,
+  inventoryMovements,
+  inventoryReservations,
+  machineEvents,
+  machineHeartbeats,
+  machines,
+  machineSlots,
+  notificationDeliveries,
+  notifications,
+  notificationTargets,
+  orderItems,
+  orders,
+  orderStatusEvents,
+  paymentEvents,
+  paymentProviderConfigs,
+  paymentProviders,
+  payments,
+  paymentUserSnapshots,
+  permissions,
+  productCategories,
+  products,
+  productVariants,
+  refreshTokens,
+  refunds,
+  rolePermissions,
+  roles,
+  vendingCommands,
+} from "./schema";
+
+export const relations = defineRelations(
+  {
+    adminUserRoles,
+    adminUsers,
+    auditLogs,
+    inventories,
+    inventoryMovements,
+    inventoryReservations,
+    machineEvents,
+    machineHeartbeats,
+    machines,
+    machineSlots,
+    notificationDeliveries,
+    notifications,
+    notificationTargets,
+    orderItems,
+    orders,
+    orderStatusEvents,
+    paymentEvents,
+    paymentProviderConfigs,
+    paymentProviders,
+    payments,
+    paymentUserSnapshots,
+    permissions,
+    productCategories,
+    products,
+    productVariants,
+    refreshTokens,
+    refunds,
+    rolePermissions,
+    roles,
+    vendingCommands,
+  },
+  (r) => ({
+    adminUsers: {
+      roles: r.many.adminUserRoles(),
+      refreshTokens: r.many.refreshTokens(),
+      auditLogs: r.many.auditLogs(),
+    },
+    refreshTokens: {
+      adminUser: r.one.adminUsers({
+        from: r.refreshTokens.adminUserId,
+        to: r.adminUsers.id,
+      }),
+    },
+    auditLogs: {
+      adminUser: r.one.adminUsers({
+        from: r.auditLogs.adminUserId,
+        to: r.adminUsers.id,
+      }),
+    },
+    adminUserRoles: {
+      adminUser: r.one.adminUsers({
+        from: r.adminUserRoles.adminUserId,
+        to: r.adminUsers.id,
+      }),
+      role: r.one.roles({
+        from: r.adminUserRoles.roleId,
+        to: r.roles.id,
+      }),
+    },
+    roles: {
+      users: r.many.adminUserRoles(),
+      permissions: r.many.rolePermissions(),
+    },
+    rolePermissions: {
+      role: r.one.roles({
+        from: r.rolePermissions.roleId,
+        to: r.roles.id,
+      }),
+      permission: r.one.permissions({
+        from: r.rolePermissions.permissionId,
+        to: r.permissions.id,
+      }),
+    },
+    permissions: {
+      roles: r.many.rolePermissions(),
+    },
+    productCategories: {
+      parent: r.one.productCategories({
+        from: r.productCategories.parentId,
+        to: r.productCategories.id,
+        alias: "parent_category",
+      }),
+      products: r.many.products(),
+    },
+    products: {
+      category: r.one.productCategories({
+        from: r.products.categoryId,
+        to: r.productCategories.id,
+      }),
+      variants: r.many.productVariants(),
+    },
+    productVariants: {
+      product: r.one.products({
+        from: r.productVariants.productId,
+        to: r.products.id,
+      }),
+      inventories: r.many.inventories(),
+      orderItems: r.many.orderItems(),
+    },
+    machines: {
+      slots: r.many.machineSlots(),
+      inventories: r.many.inventories(),
+      orders: r.many.orders(),
+      events: r.many.machineEvents(),
+      heartbeats: r.many.machineHeartbeats(),
+    },
+    machineSlots: {
+      machine: r.one.machines({
+        from: r.machineSlots.machineId,
+        to: r.machines.id,
+      }),
+      inventory: r.one.inventories({
+        from: r.machineSlots.id,
+        to: r.inventories.slotId,
+      }),
+    },
+    inventories: {
+      machine: r.one.machines({
+        from: r.inventories.machineId,
+        to: r.machines.id,
+      }),
+      slot: r.one.machineSlots({
+        from: r.inventories.slotId,
+        to: r.machineSlots.id,
+      }),
+      variant: r.one.productVariants({
+        from: r.inventories.variantId,
+        to: r.productVariants.id,
+      }),
+      reservations: r.many.inventoryReservations(),
+      movements: r.many.inventoryMovements(),
+    },
+    inventoryReservations: {
+      order: r.one.orders({
+        from: r.inventoryReservations.orderId,
+        to: r.orders.id,
+      }),
+      inventory: r.one.inventories({
+        from: r.inventoryReservations.inventoryId,
+        to: r.inventories.id,
+      }),
+    },
+    inventoryMovements: {
+      inventory: r.one.inventories({
+        from: r.inventoryMovements.inventoryId,
+        to: r.inventories.id,
+      }),
+      order: r.one.orders({
+        from: r.inventoryMovements.orderId,
+        to: r.orders.id,
+      }),
+      operator: r.one.adminUsers({
+        from: r.inventoryMovements.operatorAdminUserId,
+        to: r.adminUsers.id,
+      }),
+    },
+    orders: {
+      machine: r.one.machines({
+        from: r.orders.machineId,
+        to: r.machines.id,
+      }),
+      items: r.many.orderItems(),
+      statusEvents: r.many.orderStatusEvents(),
+      payments: r.many.payments(),
+      vendingCommands: r.many.vendingCommands(),
+      inventoryReservations: r.many.inventoryReservations(),
+    },
+    orderStatusEvents: {
+      order: r.one.orders({
+        from: r.orderStatusEvents.orderId,
+        to: r.orders.id,
+      }),
+    },
+    orderItems: {
+      order: r.one.orders({
+        from: r.orderItems.orderId,
+        to: r.orders.id,
+      }),
+      variant: r.one.productVariants({
+        from: r.orderItems.variantId,
+        to: r.productVariants.id,
+      }),
+      inventory: r.one.inventories({
+        from: r.orderItems.inventoryId,
+        to: r.inventories.id,
+      }),
+      slot: r.one.machineSlots({
+        from: r.orderItems.slotId,
+        to: r.machineSlots.id,
+      }),
+    },
+    payments: {
+      order: r.one.orders({
+        from: r.payments.orderId,
+        to: r.orders.id,
+      }),
+      provider: r.one.paymentProviders({
+        from: r.payments.providerId,
+        to: r.paymentProviders.id,
+      }),
+      payerSnapshot: r.one.paymentUserSnapshots({
+        from: r.payments.payerSnapshotId,
+        to: r.paymentUserSnapshots.id,
+      }),
+      events: r.many.paymentEvents(),
+      refunds: r.many.refunds(),
+    },
+    paymentUserSnapshots: {
+      payments: r.many.payments(),
+    },
+    paymentProviders: {
+      configs: r.many.paymentProviderConfigs(),
+      payments: r.many.payments(),
+      events: r.many.paymentEvents(),
+    },
+    paymentProviderConfigs: {
+      provider: r.one.paymentProviders({
+        from: r.paymentProviderConfigs.providerId,
+        to: r.paymentProviders.id,
+      }),
+      machine: r.one.machines({
+        from: r.paymentProviderConfigs.machineId,
+        to: r.machines.id,
+      }),
+    },
+    paymentEvents: {
+      payment: r.one.payments({
+        from: r.paymentEvents.paymentId,
+        to: r.payments.id,
+      }),
+      provider: r.one.paymentProviders({
+        from: r.paymentEvents.providerId,
+        to: r.paymentProviders.id,
+      }),
+    },
+    refunds: {
+      payment: r.one.payments({
+        from: r.refunds.paymentId,
+        to: r.payments.id,
+      }),
+      order: r.one.orders({
+        from: r.refunds.orderId,
+        to: r.orders.id,
+      }),
+    },
+    vendingCommands: {
+      order: r.one.orders({
+        from: r.vendingCommands.orderId,
+        to: r.orders.id,
+      }),
+      machine: r.one.machines({
+        from: r.vendingCommands.machineId,
+        to: r.machines.id,
+      }),
+      slot: r.one.machineSlots({
+        from: r.vendingCommands.slotId,
+        to: r.machineSlots.id,
+      }),
+    },
+    machineEvents: {
+      machine: r.one.machines({
+        from: r.machineEvents.machineId,
+        to: r.machines.id,
+      }),
+    },
+    machineHeartbeats: {
+      machine: r.one.machines({
+        from: r.machineHeartbeats.machineId,
+        to: r.machines.id,
+      }),
+    },
+    notificationTargets: {
+      deliveries: r.many.notificationDeliveries(),
+    },
+    notifications: {
+      deliveries: r.many.notificationDeliveries(),
+    },
+    notificationDeliveries: {
+      notification: r.one.notifications({
+        from: r.notificationDeliveries.notificationId,
+        to: r.notifications.id,
+      }),
+      target: r.one.notificationTargets({
+        from: r.notificationDeliveries.targetId,
+        to: r.notificationTargets.id,
+      }),
+    },
+  }),
+);
