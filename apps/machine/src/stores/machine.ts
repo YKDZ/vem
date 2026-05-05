@@ -1,0 +1,68 @@
+import { defineStore } from "pinia";
+
+import {
+  machineConfigDefaults,
+  type MachineConfig,
+} from "@/config/machine-config";
+import {
+  hardwareSelfCheck,
+  type HardwareSelfCheckResult,
+} from "@/native/hardware";
+import { getMachineConfig, saveMachineConfig } from "@/native/local-config";
+
+export const useMachineStore = defineStore("machine", {
+  state: () => ({
+    config: machineConfigDefaults,
+    configLoaded: false,
+    hardware: null as HardwareSelfCheckResult | null,
+    loading: false,
+    error: null as string | null,
+  }),
+  getters: {
+    machineCode: (state): string | null => state.config.machineCode,
+    hasDeploymentConfig: (state): boolean => Boolean(state.config.machineCode),
+    hardwareReady: (state): boolean => state.hardware?.status === "ok",
+    canSell(): boolean {
+      return this.hasDeploymentConfig && this.hardwareReady;
+    },
+  },
+  actions: {
+    async loadConfig(): Promise<void> {
+      this.loading = true;
+      this.error = null;
+      try {
+        this.config = await getMachineConfig();
+        this.configLoaded = true;
+      } catch (error) {
+        this.error = error instanceof Error ? error.message : String(error);
+      } finally {
+        this.loading = false;
+      }
+    },
+    async saveConfig(config: MachineConfig): Promise<void> {
+      this.loading = true;
+      this.error = null;
+      try {
+        this.config = await saveMachineConfig(config);
+        this.configLoaded = true;
+      } catch (error) {
+        this.error = error instanceof Error ? error.message : String(error);
+        throw error;
+      } finally {
+        this.loading = false;
+      }
+    },
+    async runHardwareSelfCheck(): Promise<void> {
+      this.loading = true;
+      this.error = null;
+      try {
+        this.hardware = await hardwareSelfCheck();
+      } catch (error) {
+        this.error = error instanceof Error ? error.message : String(error);
+        this.hardware = null;
+      } finally {
+        this.loading = false;
+      }
+    },
+  },
+});

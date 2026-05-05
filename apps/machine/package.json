@@ -9,20 +9,29 @@
     "fmt": "oxfmt",
     "lint": "oxlint --type-aware",
     "lint-fix": "oxlint --fix --type-aware",
-    "preview": "vite preview",
+    "preview": "vite preview --host 0.0.0.0",
     "tauri": "tauri",
+    "test": "vitest run",
     "typecheck": "tsc --noEmit && vue-tsc --noEmit"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-opener": "^2",
-    "vue": "catalog:"
+    "@vem/shared": "workspace:*",
+    "axios": "catalog:",
+    "pinia": "catalog:",
+    "vue": "catalog:",
+    "vue-router": "catalog:",
+    "zod": "catalog:"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2",
+    "@tailwindcss/vite": "catalog:",
+    "@types/node": "catalog:",
     "@vitejs/plugin-vue": "catalog:",
+    "tailwindcss": "catalog:",
     "typescript": "catalog:",
     "vite": "catalog:",
+    "vitest": "catalog:",
     "vue-tsc": "catalog:"
   }
 }

@@ -1,0 +1,41 @@
+import {
+  createRouter,
+  createWebHashHistory,
+  type RouteRecordRaw,
+} from "vue-router";
+
+const routes: RouteRecordRaw[] = [
+  {
+    path: "/",
+    redirect: "/boot",
+  },
+  {
+    path: "/boot",
+    name: "boot",
+    component: async () => import("@/views/BootView.vue"),
+  },
+  {
+    path: "/catalog",
+    name: "catalog",
+    component: async () => import("@/views/CatalogView.vue"),
+  },
+  {
+    path: "/offline",
+    name: "offline",
+    component: async () => import("@/views/OfflineView.vue"),
+  },
+  {
+    path: "/maintenance",
+    name: "maintenance",
+    component: async () => import("@/views/MaintenanceView.vue"),
+  },
+  {
+    path: "/:pathMatch(.*)*",
+    redirect: "/boot",
+  },
+];
+
+export const router = createRouter({
+  history: createWebHashHistory(),
+  routes,
+});
