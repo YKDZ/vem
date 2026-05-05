@@ -20,6 +20,7 @@ enum HardwareAdapterKind {
 #[serde(rename_all = "camelCase")]
 struct MachineConfig {
     machine_code: Option<String>,
+    machine_secret: Option<String>,
     api_base_url: String,
     mqtt_url: String,
     hardware_adapter: HardwareAdapterKind,
@@ -45,6 +46,7 @@ struct HardwareSelfCheckResult {
 fn default_config() -> MachineConfig {
     MachineConfig {
         machine_code: None,
+        machine_secret: None,
         api_base_url: "http://localhost:3000/api".to_string(),
         mqtt_url: "mqtt://localhost:1883".to_string(),
         hardware_adapter: HardwareAdapterKind::Mock,
@@ -72,6 +74,15 @@ fn normalize_config(mut config: MachineConfig) -> Result<MachineConfig, String> 
     if let Some(machine_code) = config.machine_code.as_ref() {
         let trimmed = machine_code.trim();
         config.machine_code = if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        };
+    }
+
+    if let Some(machine_secret) = config.machine_secret.as_ref() {
+        let trimmed = machine_secret.trim();
+        config.machine_secret = if trimmed.is_empty() {
             None
         } else {
             Some(trimmed.to_string())

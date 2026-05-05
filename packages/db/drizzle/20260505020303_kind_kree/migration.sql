@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "refunds_order_reason_unique" ON "refunds" ("order_id","reason");

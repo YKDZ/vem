@@ -2,7 +2,9 @@ import {
   ConflictException,
   Inject,
   Injectable,
+  Logger,
   NotFoundException,
+  OnApplicationShutdown,
   OnModuleInit,
 } from "@nestjs/common";
 import {
@@ -28,27 +30,49 @@ import {
   dispenseResultPayloadSchema,
   heartbeatPayloadSchema,
   pageQuerySchema,
+  type HardwareErrorCode,
 } from "@vem/shared";
 import { z } from "zod";
 
 import { createBusinessNo } from "../common/business-no.util";
 import { getOffset, toPageResult } from "../common/pagination.util";
 import { DRIZZLE_CLIENT } from "../database/database.constants";
+import { InventoryService } from "../inventory/inventory.service";
 import { MqttService } from "../mqtt/mqtt.service";
 import { NotificationsService } from "../notifications/notifications.service";
+import { RefundsService } from "../refunds/refunds.service";
 
 type PageQueryInput = z.infer<typeof pageQuerySchema>;
 
 @Injectable()
-export class VendingService implements OnModuleInit {
+export class VendingService implements OnModuleInit, OnApplicationShutdown {
+  private readonly logger = new Logger(VendingService.name);
+  private timeoutInterval?: NodeJS.Timeout;
+
   constructor(
     @Inject(DRIZZLE_CLIENT) private readonly db: DrizzleClient,
     private readonly mqttService: MqttService,
     private readonly notificationsService: NotificationsService,
+    private readonly inventoryService: InventoryService,
+    private readonly refundsService: RefundsService,
   ) {}
 
   onModuleInit(): void {
     this.mqttService.bindVendingService(this);
+    this.timeoutInterval = setInterval(() => {
+      void this.markTimedOutCommands().catch((error: unknown) => {
+        this.logger.warn(
+          `markTimedOutCommands failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      });
+    }, 60_000);
+  }
+
+  onApplicationShutdown(): void {
+    if (this.timeoutInterval) {
+      clearInterval(this.timeoutInterval);
+      this.timeoutInterval = undefined;
+    }
   }
 
   async createAndDispatchCommands(orderId: string) {
@@ -324,6 +348,77 @@ export class VendingService implements OnModuleInit {
     return updated;
   }
 
+  async markTimedOutCommands(now = new Date()): Promise<{ processed: number }> {
+    const candidates = await this.db
+      .select({
+        id: vendingCommands.id,
+        commandNo: vendingCommands.commandNo,
+        orderId: vendingCommands.orderId,
+        payloadJson: vendingCommands.payloadJson,
+        sentAt: vendingCommands.sentAt,
+        ackAt: vendingCommands.ackAt,
+      })
+      .from(vendingCommands)
+      .where(inArray(vendingCommands.status, ["sent", "acknowledged"]));
+
+    let processed = 0;
+    for (const command of candidates) {
+      const payload = dispenseCommandPayloadSchema.parse(command.payloadJson);
+      const baseAt = command.ackAt ?? command.sentAt;
+      if (!baseAt) continue;
+      const deadlineMs =
+        baseAt.getTime() + (payload.timeoutSeconds + 10) * 1_000;
+      if (now.getTime() < deadlineMs) continue;
+
+      const changed = await this.db.transaction(async (tx) => {
+        const [updated] = await tx
+          .update(vendingCommands)
+          .set({
+            status: "timeout",
+            resultAt: now,
+            lastError: "vending command timeout",
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(vendingCommands.id, command.id),
+              inArray(vendingCommands.status, ["sent", "acknowledged"]),
+            ),
+          )
+          .returning({ id: vendingCommands.id });
+        if (!updated) return false;
+
+        const [currentOrder] = await tx
+          .select({ status: orders.status })
+          .from(orders)
+          .where(eq(orders.id, command.orderId));
+        if (currentOrder && currentOrder.status !== "manual_handling") {
+          await tx
+            .update(orders)
+            .set({ status: "manual_handling", updatedAt: new Date() })
+            .where(eq(orders.id, command.orderId));
+          await tx.insert(orderStatusEvents).values({
+            orderId: command.orderId,
+            fromStatus: currentOrder.status,
+            toStatus: "manual_handling",
+            reason: "vending_command_timeout",
+            metadata: { commandNo: command.commandNo },
+          });
+        }
+
+        await this.notificationsService.createDispenseFailedNotification(tx, {
+          orderId: command.orderId,
+          commandId: command.id,
+          message: "vending command timeout",
+        });
+        return true;
+      });
+      if (changed) processed += 1;
+    }
+
+    return { processed };
+  }
+
   private async handleCommandAck(
     machineCode: string,
     commandNo: string,
@@ -388,7 +483,7 @@ export class VendingService implements OnModuleInit {
     );
     const messageId = `result:${payload.commandNo}:${payload.reportedAt}`;
 
-    await this.db.transaction(async (tx) => {
+    const failureContext = await this.db.transaction(async (tx) => {
       const inserted = await tx
         .insert(machineEvents)
         .values({
@@ -401,13 +496,14 @@ export class VendingService implements OnModuleInit {
         .onConflictDoNothing()
         .returning({ id: machineEvents.id });
       if (inserted.length === 0) {
-        return;
+        return null;
       }
 
       const [command] = await tx
         .select({
           id: vendingCommands.id,
           orderId: vendingCommands.orderId,
+          slotId: vendingCommands.slotId,
           status: vendingCommands.status,
         })
         .from(vendingCommands)
@@ -418,10 +514,17 @@ export class VendingService implements OnModuleInit {
           ),
         );
       if (!command) {
-        return;
+        return null;
       }
 
       if (payload.success) {
+        if (
+          command.status === "succeeded" ||
+          command.status === "failed" ||
+          command.status === "timeout"
+        ) {
+          return null;
+        }
         await tx
           .update(vendingCommands)
           .set({
@@ -463,7 +566,15 @@ export class VendingService implements OnModuleInit {
             });
           }
         }
-        return;
+        return null;
+      }
+
+      if (
+        command.status === "succeeded" ||
+        command.status === "failed" ||
+        command.status === "timeout"
+      ) {
+        return null;
       }
 
       await tx
@@ -475,6 +586,14 @@ export class VendingService implements OnModuleInit {
           updatedAt: new Date(),
         })
         .where(eq(vendingCommands.id, command.id));
+
+      const compensation =
+        await this.inventoryService.compensateDispenseFailure(tx, {
+          orderId: command.orderId,
+          slotId: command.slotId,
+          errorCode: payload.errorCode as HardwareErrorCode | null,
+          message: payload.message,
+        });
 
       const [currentOrder] = await tx
         .select({ status: orders.status })
@@ -493,6 +612,8 @@ export class VendingService implements OnModuleInit {
           metadata: {
             commandNo: payload.commandNo,
             errorCode: payload.errorCode,
+            restoredQuantity: compensation.restoredQuantity,
+            slotFaulted: compensation.slotFaulted,
           },
         });
       }
@@ -502,7 +623,24 @@ export class VendingService implements OnModuleInit {
         commandId: command.id,
         message: payload.message,
       });
+
+      return {
+        orderId: command.orderId,
+        commandId: command.id,
+        commandNo: payload.commandNo,
+        errorCode: payload.errorCode,
+        message: payload.message,
+        compensation,
+      };
     });
+
+    if (failureContext) {
+      await this.refundsService.requestFullRefund({
+        orderId: failureContext.orderId,
+        reason: "auto_dispense_failed",
+        metadata: failureContext,
+      });
+    }
   }
 
   private async handleHeartbeat(

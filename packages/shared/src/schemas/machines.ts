@@ -45,3 +45,77 @@ export type MachineHeartbeatStatusPayload = z.infer<
   typeof machineHeartbeatStatusPayloadSchema
 >;
 export type HeartbeatPayload = z.infer<typeof heartbeatPayloadSchema>;
+
+export const machineAuthTokenRequestSchema = z.object({
+  machineCode: z.string().min(1).max(64),
+  machineSecret: z.string().min(32).max(256),
+});
+
+export const machineAuthTokenResponseSchema = z.object({
+  accessToken: z.string().min(1),
+  tokenType: z.literal("Bearer"),
+  expiresInSeconds: z.int().positive(),
+  machine: z.object({
+    id: z.uuid(),
+    code: z.string().min(1).max(64),
+    status: machineStatusSchema,
+  }),
+});
+
+export type MachineAuthTokenRequest = z.infer<
+  typeof machineAuthTokenRequestSchema
+>;
+export type MachineAuthTokenResponse = z.infer<
+  typeof machineAuthTokenResponseSchema
+>;
+
+export const machineCatalogItemSchema = z.object({
+  machineCode: z.string().min(1).max(64),
+  slotId: z.uuid(),
+  slotCode: z.string().min(1).max(32),
+  layerNo: z.int().min(1),
+  cellNo: z.int().min(1),
+  inventoryId: z.uuid(),
+  variantId: z.uuid(),
+  productId: z.uuid(),
+  productName: z.string().min(1).max(128),
+  productDescription: z.string().nullable(),
+  coverImageUrl: z.string().nullable(),
+  categoryId: z.uuid().nullable(),
+  categoryName: z.string().nullable(),
+  sku: z.string().min(1).max(64),
+  size: z.string().nullable(),
+  color: z.string().nullable(),
+  priceCents: z.int().nonnegative(),
+  availableQty: z.int().nonnegative(),
+  productSortOrder: z.int(),
+});
+
+export const machineRecommendationProfileSchema = z
+  .object({
+    ageRange: z.string().max(32).optional(),
+    gender: z.string().max(32).optional(),
+    heightRange: z.string().max(32).optional(),
+    bodyType: z.string().max(32).optional(),
+    weather: z.string().max(32).optional(),
+    temperatureRange: z.string().max(32).optional(),
+  })
+  .passthrough();
+
+export const machineRecommendationRequestSchema = z.object({
+  profileSnapshot: machineRecommendationProfileSchema.default({}),
+  limit: z.int().min(1).max(20).default(8),
+});
+
+export const machineRecommendationItemSchema = machineCatalogItemSchema.extend({
+  recommendationScore: z.number(),
+  recommendationReason: z.string().min(1).max(128),
+});
+
+export type MachineCatalogItem = z.infer<typeof machineCatalogItemSchema>;
+export type MachineRecommendationRequest = z.infer<
+  typeof machineRecommendationRequestSchema
+>;
+export type MachineRecommendationItem = z.infer<
+  typeof machineRecommendationItemSchema
+>;

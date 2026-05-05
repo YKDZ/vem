@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Get,
+  Headers,
   Param,
   ParseUUIDPipe,
   Patch,
@@ -113,5 +114,19 @@ export class PaymentsController {
     query: PaymentEventQuery,
   ) {
     return await this.paymentsService.listPaymentEvents(query);
+  }
+
+  @Public()
+  @Post("webhooks/:providerCode")
+  async handleWebhook(
+    @Param("providerCode") providerCode: string,
+    @Headers() headers: Record<string, string | string[] | undefined>,
+    @Body() body: unknown,
+  ) {
+    return await this.paymentsService.handleProviderWebhook(
+      providerCode,
+      headers,
+      body,
+    );
   }
 }

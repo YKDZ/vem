@@ -25,6 +25,7 @@ import {
   cleanupBusinessTables,
   connectMqtt,
   disconnectMqtt,
+  getMachineAuthHeader,
   loginAndGetToken,
   pollOrderStatus,
   publishMqtt,
@@ -88,17 +89,24 @@ describe.sequential("core-flow.e2e", () => {
     });
 
     const token = await loginAndGetToken(api, appConfig);
+    const machineAuthHeader = await getMachineAuthHeader(
+      api,
+      seeded.machineCode,
+    );
 
     const commandPayloadPromise = waitForMqttMessage(
       mqttClient,
       `vem/machines/${seeded.machineCode}/commands/dispense`,
     );
 
-    const createOrderResponse = await api.post("/api/machine-orders").send({
-      machineCode: seeded.machineCode,
-      items: [{ inventoryId: seeded.inventoryId, quantity: 1 }],
-      paymentMethod: "mock",
-    });
+    const createOrderResponse = await api
+      .post("/api/machine-orders")
+      .set(machineAuthHeader)
+      .send({
+        machineCode: seeded.machineCode,
+        items: [{ inventoryId: seeded.inventoryId, quantity: 1 }],
+        paymentMethod: "mock",
+      });
 
     expect(createOrderResponse.status).toBe(201);
     const createdOrder =
@@ -215,11 +223,18 @@ describe.sequential("core-flow.e2e", () => {
       cellNo: 1,
     });
 
-    const createOrderResponse = await api.post("/api/machine-orders").send({
-      machineCode: seeded.machineCode,
-      items: [{ inventoryId: seeded.inventoryId, quantity: 1 }],
-      paymentMethod: "mock",
-    });
+    const machineAuthHeader = await getMachineAuthHeader(
+      api,
+      seeded.machineCode,
+    );
+    const createOrderResponse = await api
+      .post("/api/machine-orders")
+      .set(machineAuthHeader)
+      .send({
+        machineCode: seeded.machineCode,
+        items: [{ inventoryId: seeded.inventoryId, quantity: 1 }],
+        paymentMethod: "mock",
+      });
     const createdOrder =
       createOrderResponse.body as ApiResponse<CreatedOrderPayload>;
 
@@ -257,9 +272,13 @@ describe.sequential("core-flow.e2e", () => {
       paymentMethod: "mock",
     };
 
+    const machineAuthHeader = await getMachineAuthHeader(
+      api,
+      seeded.machineCode,
+    );
     const [firstResponse, secondResponse] = await Promise.all([
-      api.post("/api/machine-orders").send(requestBody),
-      api.post("/api/machine-orders").send(requestBody),
+      api.post("/api/machine-orders").set(machineAuthHeader).send(requestBody),
+      api.post("/api/machine-orders").set(machineAuthHeader).send(requestBody),
     ]);
 
     const successResponses = [firstResponse, secondResponse].filter(
@@ -308,16 +327,23 @@ describe.sequential("core-flow.e2e", () => {
       cellNo: 1,
     });
     const token = await loginAndGetToken(api, appConfig);
+    const machineAuthHeader = await getMachineAuthHeader(
+      api,
+      seeded.machineCode,
+    );
     const commandPayloadPromise = waitForMqttMessage(
       mqttClient,
       `vem/machines/${seeded.machineCode}/commands/dispense`,
     );
 
-    const createOrderResponse = await api.post("/api/machine-orders").send({
-      machineCode: seeded.machineCode,
-      items: [{ inventoryId: seeded.inventoryId, quantity: 1 }],
-      paymentMethod: "mock",
-    });
+    const createOrderResponse = await api
+      .post("/api/machine-orders")
+      .set(machineAuthHeader)
+      .send({
+        machineCode: seeded.machineCode,
+        items: [{ inventoryId: seeded.inventoryId, quantity: 1 }],
+        paymentMethod: "mock",
+      });
     const createdOrder =
       createOrderResponse.body as ApiResponse<CreatedOrderPayload>;
 
@@ -336,18 +362,6 @@ describe.sequential("core-flow.e2e", () => {
         reportedAt: new Date().toISOString(),
       },
     );
-
-    await pollOrderStatus(
-      api,
-      token,
-      createdOrder.data.orderId,
-      "dispense_failed",
-    );
-
-    const refundResponse = await api
-      .post(`/api/orders/${createdOrder.data.orderId}/refund`)
-      .set("Authorization", `Bearer ${token}`);
-    expect(refundResponse.status).toBe(201);
 
     const refundedOrder = await pollOrderStatus(
       api,
@@ -368,17 +382,25 @@ describe.sequential("core-flow.e2e", () => {
       cellNo: 1,
     });
 
-    const createOrderResponse = await api.post("/api/machine-orders").send({
-      machineCode: seeded.machineCode,
-      items: [{ inventoryId: seeded.inventoryId, quantity: 1 }],
-      paymentMethod: "mock",
-    });
+    const machineAuthHeader = await getMachineAuthHeader(
+      api,
+      seeded.machineCode,
+    );
+    const createOrderResponse = await api
+      .post("/api/machine-orders")
+      .set(machineAuthHeader)
+      .send({
+        machineCode: seeded.machineCode,
+        items: [{ inventoryId: seeded.inventoryId, quantity: 1 }],
+        paymentMethod: "mock",
+      });
     expect(createOrderResponse.status).toBe(201);
     const createdOrder =
       createOrderResponse.body as ApiResponse<CreatedOrderPayload>;
 
     const pendingStatusResponse = await api
       .get(`/api/machine-orders/${createdOrder.data.orderNo}/status`)
+      .set(machineAuthHeader)
       .query({ machineCode: seeded.machineCode });
     expect(pendingStatusResponse.status).toBe(200);
     const pendingStatus = pendingStatusResponse.body as ApiResponse<{
@@ -408,6 +430,7 @@ describe.sequential("core-flow.e2e", () => {
 
     const failedStatusResponse = await api
       .get(`/api/machine-orders/${createdOrder.data.orderNo}/status`)
+      .set(machineAuthHeader)
       .query({ machineCode: seeded.machineCode });
     const failedStatus = failedStatusResponse.body as ApiResponse<{
       orderStatus: string;
@@ -422,6 +445,7 @@ describe.sequential("core-flow.e2e", () => {
 
     const wrongMachineResponse = await api
       .get(`/api/machine-orders/${createdOrder.data.orderNo}/status`)
+      .set(machineAuthHeader)
       .query({ machineCode: "OTHER-MACHINE" });
     expect(wrongMachineResponse.status).toBe(404);
   }, 60_000);

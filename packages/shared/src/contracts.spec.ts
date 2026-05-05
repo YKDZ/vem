@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   adminUserStatuses,
   heartbeatPayloadSchema,
+  machineAuthTokenRequestSchema,
   machineSlotStatuses,
   orderStatuses,
   paymentProviderStatuses,
@@ -38,5 +39,14 @@ describe("shared API contract", () => {
         },
       }).statusPayload.mqttConnected,
     ).toBe(true);
+  });
+
+  it("validates machine auth token request", () => {
+    expect(
+      machineAuthTokenRequestSchema.parse({
+        machineCode: "M001",
+        machineSecret: "local-machine-shared-secret-change-before-production",
+      }).machineCode,
+    ).toBe("M001");
   });
 });

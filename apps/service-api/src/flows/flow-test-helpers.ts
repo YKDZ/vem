@@ -236,3 +236,20 @@ export async function seedSingleSlotInventory(
     inventoryId: inventory.id,
   };
 }
+
+export async function getMachineAuthHeader(
+  api: ReturnType<typeof request>,
+  machineCode: string,
+): Promise<Record<string, string>> {
+  const machineSecret =
+    process.env.MACHINE_SHARED_SECRET ??
+    "local-machine-shared-secret-change-before-production";
+  const tokenResponse = await api.post("/api/machine-auth/token").send({
+    machineCode,
+    machineSecret,
+  });
+  const accessToken = (
+    tokenResponse.body as ApiResponse<{ accessToken: string }>
+  ).data.accessToken;
+  return { Authorization: `Bearer ${accessToken}` };
+}

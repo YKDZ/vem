@@ -15,6 +15,7 @@ import { DashboardModule } from "./dashboard/dashboard.module";
 import { DatabaseModule } from "./database/database.module";
 import { HealthModule } from "./health/health.module";
 import { InventoryModule } from "./inventory/inventory.module";
+import { MachineAuthModule } from "./machine-auth/machine-auth.module";
 import { MachinesModule } from "./machines/machines.module";
 import { MqttModule } from "./mqtt/mqtt.module";
 import { NotificationsModule } from "./notifications/notifications.module";
@@ -32,6 +33,7 @@ import { VendingModule } from "./vending/vending.module";
     HealthModule,
     AccessModule,
     AuthModule,
+    MachineAuthModule,
     BootstrapModule,
     ProductsModule,
     MachinesModule,

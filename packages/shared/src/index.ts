@@ -1,5 +1,6 @@
 export * from "./enums/access";
 export * from "./enums/catalog";
+export * from "./enums/hardware";
 export * from "./enums/inventory";
 export * from "./enums/machine";
 export * from "./enums/notification";

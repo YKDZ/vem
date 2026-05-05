@@ -31,6 +31,14 @@ export class AppConfigService {
     return this.config.get("JWT_REFRESH_TTL_SECONDS", { infer: true });
   }
 
+  get machineSharedSecret(): string {
+    return this.config.get("MACHINE_SHARED_SECRET", { infer: true });
+  }
+
+  get machineAccessTtlSeconds(): number {
+    return this.config.get("MACHINE_ACCESS_TTL_SECONDS", { infer: true });
+  }
+
   get corsOrigins(): string[] {
     return this.config
       .get("CORS_ORIGINS", { infer: true })

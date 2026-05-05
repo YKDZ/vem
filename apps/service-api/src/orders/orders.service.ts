@@ -46,7 +46,8 @@ import { createBusinessNo } from "../common/business-no.util";
 import { getOffset, toPageResult } from "../common/pagination.util";
 import { DRIZZLE_CLIENT } from "../database/database.constants";
 import { InventoryService } from "../inventory/inventory.service";
-import { MockPaymentProvider } from "../payments/mock-payment.provider";
+import { PaymentProviderRegistry } from "../payments/payment-provider.registry";
+import { RefundsService } from "../refunds/refunds.service";
 
 type CreateMachineOrderInput = z.infer<typeof createMachineOrderSchema>;
 type MachineOrderStatusQuery = z.infer<typeof machineOrderStatusQuerySchema>;
@@ -58,7 +59,8 @@ export class OrdersService {
   constructor(
     @Inject(DRIZZLE_CLIENT) private readonly db: DrizzleClient,
     private readonly inventoryService: InventoryService,
-    private readonly mockPaymentProvider: MockPaymentProvider,
+    private readonly paymentProviderRegistry: PaymentProviderRegistry,
+    private readonly refundsService: RefundsService,
   ) {}
 
   async createMachineOrder(input: CreateMachineOrderInput) {
@@ -362,86 +364,10 @@ export class OrdersService {
   }
 
   async requestMockRefund(orderId: string, adminUserId: string) {
-    return await this.db.transaction(async (tx) => {
-      const [order] = await tx
-        .select({
-          id: orders.id,
-          status: orders.status,
-          totalAmountCents: orders.totalAmountCents,
-        })
-        .from(orders)
-        .where(eq(orders.id, orderId));
-      if (!order) {
-        throw new NotFoundException("Order not found");
-      }
-
-      const refundableStatuses = new Set([
-        "dispense_failed",
-        "manual_handling",
-        "refund_pending",
-      ]);
-      if (!refundableStatuses.has(order.status)) {
-        throw new ConflictException(
-          `Order status ${order.status} cannot be refunded`,
-        );
-      }
-
-      const [payment] = await tx
-        .select({ id: payments.id, amountCents: payments.amountCents })
-        .from(payments)
-        .where(eq(payments.orderId, orderId))
-        .orderBy(desc(payments.createdAt));
-      if (!payment) {
-        throw new ConflictException("Payment not found for order");
-      }
-
-      if (order.status !== "refund_pending") {
-        await tx
-          .update(orders)
-          .set({ status: "refund_pending", updatedAt: new Date() })
-          .where(eq(orders.id, orderId));
-        await tx.insert(orderStatusEvents).values({
-          orderId,
-          fromStatus: order.status,
-          toStatus: "refund_pending",
-          reason: "refund_requested",
-          metadata: { adminUserId },
-        });
-      }
-
-      const [refund] = await tx
-        .insert(refunds)
-        .values({
-          refundNo: createBusinessNo("RFD"),
-          paymentId: payment.id,
-          orderId,
-          amountCents: payment.amountCents,
-          status: "succeeded",
-          reason: "mock_refund",
-          requestedByAdminUserId: adminUserId,
-          refundedAt: new Date(),
-        })
-        .returning();
-
-      await tx
-        .update(payments)
-        .set({ status: "refunded", updatedAt: new Date() })
-        .where(eq(payments.id, payment.id));
-
-      await tx
-        .update(orders)
-        .set({ status: "refunded", updatedAt: new Date() })
-        .where(eq(orders.id, orderId));
-
-      await tx.insert(orderStatusEvents).values({
-        orderId,
-        fromStatus: "refund_pending",
-        toStatus: "refunded",
-        reason: "mock_refund_succeeded",
-        metadata: { adminUserId, refundNo: refund.refundNo },
-      });
-
-      return refund;
+    return await this.refundsService.requestFullRefund({
+      orderId,
+      reason: "admin_refund",
+      requestedByAdminUserId: adminUserId,
     });
   }
 
@@ -486,6 +412,19 @@ export class OrdersService {
       .orderBy(desc(vendingCommands.createdAt))
       .limit(1);
 
+    const [refund] = await this.db
+      .select({
+        refundNo: refunds.refundNo,
+        status: refunds.status,
+        amountCents: refunds.amountCents,
+        reason: refunds.reason,
+        refundedAt: refunds.refundedAt,
+      })
+      .from(refunds)
+      .where(eq(refunds.orderId, row.orderId))
+      .orderBy(desc(refunds.createdAt))
+      .limit(1);
+
     const nextAction = resolveMachineOrderNextAction(
       row.orderStatus,
       row.paymentStatus,
@@ -517,6 +456,15 @@ export class OrdersService {
             lastError: command.lastError,
           }
         : null,
+      refund: refund
+        ? {
+            refundNo: refund.refundNo,
+            status: refund.status,
+            amountCents: refund.amountCents,
+            reason: refund.reason,
+            refundedAt: toIsoStringOrNull(refund.refundedAt),
+          }
+        : null,
       nextAction,
       serverTime: new Date().toISOString(),
     };
@@ -531,10 +479,8 @@ export class OrdersService {
       expiresAt: Date;
     },
   ) {
-    if (method === "mock") {
-      return await this.mockPaymentProvider.createPaymentIntent(input);
-    }
-    throw new ConflictException(`Unsupported payment method: ${method}`);
+    const provider = this.paymentProviderRegistry.get(method);
+    return await provider.createPaymentIntent(input);
   }
 }
 

@@ -10,6 +10,8 @@ export const envSchema = z.object({
   JWT_REFRESH_SECRET: z.string().min(32),
   JWT_ACCESS_TTL_SECONDS: z.coerce.number().int().min(60).default(900),
   JWT_REFRESH_TTL_SECONDS: z.coerce.number().int().min(3600).default(604800),
+  MACHINE_SHARED_SECRET: z.string().min(32),
+  MACHINE_ACCESS_TTL_SECONDS: z.coerce.number().int().min(60).default(900),
   CORS_ORIGINS: z.string().default("http://localhost:5173"),
   MQTT_URL: z.url(),
   PAYMENT_MOCK_ENABLED: z

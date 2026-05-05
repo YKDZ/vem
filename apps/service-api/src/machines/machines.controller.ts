@@ -7,19 +7,27 @@ import {
   Patch,
   Post,
   Query,
+  UseGuards,
 } from "@nestjs/common";
 import { ApiBearerAuth, ApiTags } from "@nestjs/swagger";
 import {
   createMachineSchema,
   createMachineSlotSchema,
+  machineRecommendationRequestSchema,
   pageQuerySchema,
   updateMachineSchema,
+  type MachineRecommendationRequest,
 } from "@vem/shared";
 import { z } from "zod";
 
 import { RequirePermissions } from "../access/permissions.decorator";
 import { Public } from "../auth/public.decorator";
 import { ZodValidationPipe } from "../common/zod-validation.pipe";
+import {
+  CurrentMachine,
+  type AuthenticatedMachine,
+} from "../machine-auth/current-machine.decorator";
+import { MachineAuthGuard } from "../machine-auth/machine-auth.guard";
 import { MachinesService } from "./machines.service";
 
 type CreateMachineInput = z.infer<typeof createMachineSchema>;
@@ -75,8 +83,29 @@ export class MachinesController {
   }
 
   @Public()
+  @UseGuards(MachineAuthGuard)
   @Get(":code/catalog")
-  async getMachineCatalog(@Param("code") code: string) {
-    return await this.machinesService.getCatalogByMachineCode(code);
+  async getMachineCatalog(
+    @CurrentMachine() machine: AuthenticatedMachine,
+    @Param("code") code: string,
+  ) {
+    return await this.machinesService.getCatalogByMachineCode(
+      code === machine.code ? machine.code : "__forbidden__",
+    );
+  }
+
+  @Public()
+  @UseGuards(MachineAuthGuard)
+  @Post(":code/recommendations")
+  async getMachineRecommendations(
+    @CurrentMachine() machine: AuthenticatedMachine,
+    @Param("code") code: string,
+    @Body(new ZodValidationPipe(machineRecommendationRequestSchema))
+    body: MachineRecommendationRequest,
+  ) {
+    return await this.machinesService.getRecommendations(
+      code === machine.code ? machine.code : "__forbidden__",
+      body,
+    );
   }
 }

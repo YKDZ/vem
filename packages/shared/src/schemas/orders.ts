@@ -69,6 +69,21 @@ export const machineOrderStatusResponseSchema = z.object({
       lastError: z.string().nullable(),
     })
     .nullable(),
+  refund: z
+    .object({
+      refundNo: z.string().min(1).max(64),
+      status: z.enum([
+        "created",
+        "processing",
+        "succeeded",
+        "failed",
+        "canceled",
+      ]),
+      amountCents: z.int().nonnegative(),
+      reason: z.string(),
+      refundedAt: z.iso.datetime().nullable(),
+    })
+    .nullable(),
   nextAction: machineOrderStatusNextActionSchema,
   serverTime: z.iso.datetime(),
 });

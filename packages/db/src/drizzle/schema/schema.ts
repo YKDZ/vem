@@ -680,6 +680,9 @@ export const refunds = t.pgTable(
     t.uniqueIndex("refunds_refund_no_unique").on(table.refundNo),
     t.index("refunds_payment_id_idx").on(table.paymentId),
     t.index("refunds_order_id_idx").on(table.orderId),
+    t
+      .uniqueIndex("refunds_order_reason_unique")
+      .on(table.orderId, table.reason),
     t.check(
       "refunds_amount_cents_non_negative",
       sql`${table.amountCents} >= 0`,

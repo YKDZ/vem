@@ -24,7 +24,16 @@ onMounted(async () => {
   await machineStore.loadConfig();
 
   if (!machineStore.hasDeploymentConfig) {
-    pushStep("缺少 machineCode，进入部署配置页");
+    pushStep("缺少 machineCode/machineSecret，进入部署配置页");
+    await router.replace("/maintenance");
+    return;
+  }
+
+  pushStep("换取机器访问令牌");
+  try {
+    await machineStore.authenticate();
+  } catch {
+    pushStep("令牌获取失败，进入部署配置页");
     await router.replace("/maintenance");
     return;
   }

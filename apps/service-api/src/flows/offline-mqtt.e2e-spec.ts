@@ -7,6 +7,7 @@ import {
   eq,
   notifications,
   orders,
+  refunds,
   vendingCommands,
   DrizzleDB,
 } from "@vem/db";
@@ -16,8 +17,10 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { AppModule } from "../app.module";
 import { AppConfigService } from "../config/app-config.service";
 import { MqttService } from "../mqtt/mqtt.service";
+import { VendingService } from "../vending/vending.service";
 import {
   cleanupBusinessTables,
+  getMachineAuthHeader,
   seedSingleSlotInventory,
   type ApiResponse,
   type CreatedOrderPayload,
@@ -28,6 +31,7 @@ describe.sequential("offline-mqtt.e2e", () => {
   let appConfig: AppConfigService;
   let db: DrizzleDB;
   let api: ReturnType<typeof request>;
+  let vendingService: VendingService;
 
   beforeAll(async () => {
     const moduleRef = await Test.createTestingModule({
@@ -48,6 +52,7 @@ describe.sequential("offline-mqtt.e2e", () => {
     await app.init();
 
     appConfig = app.get(AppConfigService);
+    vendingService = app.get(VendingService);
     db = new DrizzleDB(appConfig.databaseUrl);
     await db.connect();
     api = request(app.getHttpServer() as Parameters<typeof request>[0]);
@@ -76,11 +81,19 @@ describe.sequential("offline-mqtt.e2e", () => {
       cellNo: 1,
     });
 
-    const createOrderResponse = await api.post("/api/machine-orders").send({
-      machineCode: seeded.machineCode,
-      items: [{ inventoryId: seeded.inventoryId, quantity: 1 }],
-      paymentMethod: "mock",
-    });
+    const machineAuthHeader = await getMachineAuthHeader(
+      api,
+      seeded.machineCode,
+    );
+
+    const createOrderResponse = await api
+      .post("/api/machine-orders")
+      .set(machineAuthHeader)
+      .send({
+        machineCode: seeded.machineCode,
+        items: [{ inventoryId: seeded.inventoryId, quantity: 1 }],
+        paymentMethod: "mock",
+      });
     const createdOrder =
       createOrderResponse.body as ApiResponse<CreatedOrderPayload>;
 
@@ -111,5 +124,73 @@ describe.sequential("offline-mqtt.e2e", () => {
       .from(notifications)
       .where(eq(notifications.resourceId, createdOrder.data.orderId));
     expect(Number(notificationRow.total)).toBe(1);
+  }, 60_000);
+
+  it("marks sent vending command timeout as manual handling without auto refund", async () => {
+    const seeded = await seedSingleSlotInventory(db, {
+      machineCode: "M-E2E-TIMEOUT-001",
+      onHandQty: 1,
+      lowStockThreshold: 1,
+      slotCode: "TO1",
+      layerNo: 1,
+      cellNo: 1,
+    });
+
+    const machineAuthHeader2 = await getMachineAuthHeader(
+      api,
+      seeded.machineCode,
+    );
+
+    const createOrderResponse = await api
+      .post("/api/machine-orders")
+      .set(machineAuthHeader2)
+      .send({
+        machineCode: seeded.machineCode,
+        items: [{ inventoryId: seeded.inventoryId, quantity: 1 }],
+        paymentMethod: "mock",
+      });
+    const createdOrder =
+      createOrderResponse.body as ApiResponse<CreatedOrderPayload>;
+    expect(createOrderResponse.status).toBe(201);
+
+    // trigger payment success to create vending command (will fail due to MQTT offline)
+    await api.post(`/api/payments/mock/${createdOrder.data.paymentNo}/succeed`);
+
+    // manually set the command as sent in the past with a very short timeout
+    await db.client
+      .update(vendingCommands)
+      .set({
+        status: "sent",
+        sentAt: new Date(Date.now() - 180_000),
+        payloadJson: {
+          commandNo: "CMD-TIMEOUT-E2E",
+          orderNo: createdOrder.data.orderNo,
+          slot: { layerNo: 1, cellNo: 1, slotCode: "TO1" },
+          quantity: 1,
+          timeoutSeconds: 1,
+        },
+        updatedAt: new Date(),
+      })
+      .where(eq(vendingCommands.orderId, createdOrder.data.orderId));
+
+    const result = await vendingService.markTimedOutCommands(new Date());
+    expect(result.processed).toBe(1);
+
+    const [orderRow] = await db.client
+      .select({ status: orders.status })
+      .from(orders)
+      .where(eq(orders.id, createdOrder.data.orderId));
+    expect(orderRow.status).toBe("manual_handling");
+
+    // no auto refund for timeout
+    const [refundCount] = await db.client
+      .select({ total: count() })
+      .from(refunds)
+      .where(eq(refunds.orderId, createdOrder.data.orderId));
+    expect(Number(refundCount.total)).toBe(0);
+
+    // second call should not process the same command again
+    const result2 = await vendingService.markTimedOutCommands(new Date());
+    expect(result2.processed).toBe(0);
   }, 60_000);
 });

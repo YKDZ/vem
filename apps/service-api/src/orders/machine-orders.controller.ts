@@ -1,4 +1,12 @@
-import { Body, Controller, Get, Param, Post, Query } from "@nestjs/common";
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  Post,
+  Query,
+  UseGuards,
+} from "@nestjs/common";
 import { ApiTags } from "@nestjs/swagger";
 import {
   createMachineOrderSchema,
@@ -8,6 +16,11 @@ import { z } from "zod";
 
 import { Public } from "../auth/public.decorator";
 import { ZodValidationPipe } from "../common/zod-validation.pipe";
+import {
+  CurrentMachine,
+  type AuthenticatedMachine,
+} from "../machine-auth/current-machine.decorator";
+import { MachineAuthGuard } from "../machine-auth/machine-auth.guard";
 import { OrdersService } from "./orders.service";
 
 type CreateMachineOrderInput = z.infer<typeof createMachineOrderSchema>;
@@ -19,21 +32,33 @@ export class MachineOrdersController {
   constructor(private readonly ordersService: OrdersService) {}
 
   @Public()
+  @UseGuards(MachineAuthGuard)
   @Post()
   async createMachineOrder(
+    @CurrentMachine() machine: AuthenticatedMachine,
     @Body(new ZodValidationPipe(createMachineOrderSchema))
     body: CreateMachineOrderInput,
   ) {
-    return await this.ordersService.createMachineOrder(body);
+    return await this.ordersService.createMachineOrder({
+      ...body,
+      machineCode:
+        body.machineCode === machine.code ? machine.code : "__forbidden__",
+    });
   }
 
   @Public()
+  @UseGuards(MachineAuthGuard)
   @Get(":orderNo/status")
   async getMachineOrderStatus(
+    @CurrentMachine() machine: AuthenticatedMachine,
     @Param("orderNo") orderNo: string,
     @Query(new ZodValidationPipe(machineOrderStatusQuerySchema))
     query: MachineOrderStatusQuery,
   ) {
-    return await this.ordersService.getMachineOrderStatus(orderNo, query);
+    const machineCode =
+      query.machineCode === machine.code ? machine.code : "__forbidden__";
+    return await this.ordersService.getMachineOrderStatus(orderNo, {
+      machineCode,
+    });
   }
 }

@@ -14,6 +14,7 @@ import {
   inventoryReservations,
   machineSlots,
   machines,
+  orderItems,
   productVariants,
   products,
   sql,
@@ -27,6 +28,7 @@ import {
   inventoryQuerySchema,
   pageQuerySchema,
   refillInventorySchema,
+  type HardwareErrorCode,
 } from "@vem/shared";
 import { z } from "zod";
 
@@ -345,6 +347,66 @@ export class InventoryService {
       orderId: input.orderId,
       note: input.reason,
     });
+  }
+
+  async compensateDispenseFailure(
+    tx: DrizzleTransaction,
+    input: {
+      orderId: string;
+      slotId: string;
+      errorCode: HardwareErrorCode | null;
+      message: string;
+    },
+  ): Promise<{ restoredQuantity: number; slotFaulted: boolean }> {
+    const shouldRestoreInventory = input.errorCode === "NO_DROP";
+    const shouldFaultSlot =
+      input.errorCode === "JAMMED" ||
+      input.errorCode === "DOOR_OPEN" ||
+      input.errorCode === "MOTOR_TIMEOUT" ||
+      input.errorCode === "UNKNOWN" ||
+      input.errorCode === null;
+
+    const rows = await tx
+      .select({
+        inventoryId: orderItems.inventoryId,
+        quantity: orderItems.quantity,
+      })
+      .from(orderItems)
+      .where(
+        and(
+          eq(orderItems.orderId, input.orderId),
+          eq(orderItems.slotId, input.slotId),
+        ),
+      );
+
+    let restoredQuantity = 0;
+    if (shouldRestoreInventory) {
+      await rows.reduce<Promise<void>>(async (previous, row) => {
+        await previous;
+        await tx.execute(sql`
+          update inventories
+          set on_hand_qty = on_hand_qty + ${row.quantity}, updated_at = now()
+          where id = ${row.inventoryId}
+        `);
+        await tx.insert(inventoryMovements).values({
+          inventoryId: row.inventoryId,
+          deltaQty: row.quantity,
+          reason: "refund_return",
+          orderId: input.orderId,
+          note: `dispense_failed:${input.errorCode}:${input.message}`,
+        });
+        restoredQuantity += row.quantity;
+      }, Promise.resolve());
+    }
+
+    if (shouldFaultSlot) {
+      await tx
+        .update(machineSlots)
+        .set({ status: "faulted", updatedAt: new Date() })
+        .where(eq(machineSlots.id, input.slotId));
+    }
+
+    return { restoredQuantity, slotFaulted: shouldFaultSlot };
   }
 
   private async checkAndCreateLowStockNotification(

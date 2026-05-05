@@ -1,4 +1,4 @@
-import type { DispenseCommandPayload } from "@vem/shared";
+import type { DispenseCommandPayload, HardwareErrorCode } from "@vem/shared";
 
 import type {
   HardwareAdapter,
@@ -11,7 +11,7 @@ const MOCK_MODE_KEY = "vem.machine.mockDispenseMode";
 const modeToFailure: Record<
   Exclude<MockDispenseMode, "success">,
   {
-    errorCode: string;
+    errorCode: HardwareErrorCode;
     message: string;
   }
 > = {

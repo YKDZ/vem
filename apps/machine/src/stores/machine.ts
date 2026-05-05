@@ -1,5 +1,10 @@
 import { defineStore } from "pinia";
 
+import { requestMachineToken } from "@/api/machine-auth";
+import {
+  setMachineAuthToken,
+  clearMachineAuthToken,
+} from "@/api/machine-auth-session";
 import {
   machineConfigDefaults,
   type MachineConfig,
@@ -14,16 +19,20 @@ export const useMachineStore = defineStore("machine", {
   state: () => ({
     config: machineConfigDefaults,
     configLoaded: false,
+    authTokenReady: false,
     hardware: null as HardwareSelfCheckResult | null,
     loading: false,
     error: null as string | null,
   }),
   getters: {
     machineCode: (state): string | null => state.config.machineCode,
-    hasDeploymentConfig: (state): boolean => Boolean(state.config.machineCode),
+    hasDeploymentConfig: (state): boolean =>
+      Boolean(state.config.machineCode && state.config.machineSecret),
     hardwareReady: (state): boolean => state.hardware?.status === "ok",
     canSell(): boolean {
-      return this.hasDeploymentConfig && this.hardwareReady;
+      return (
+        this.hasDeploymentConfig && this.authTokenReady && this.hardwareReady
+      );
     },
   },
   actions: {
@@ -60,6 +69,22 @@ export const useMachineStore = defineStore("machine", {
       } catch (error) {
         this.error = error instanceof Error ? error.message : String(error);
         this.hardware = null;
+      } finally {
+        this.loading = false;
+      }
+    },
+    async authenticate(): Promise<void> {
+      this.loading = true;
+      this.error = null;
+      try {
+        const token = await requestMachineToken(this.config);
+        setMachineAuthToken(token.accessToken, token.expiresInSeconds);
+        this.authTokenReady = true;
+      } catch (error) {
+        clearMachineAuthToken();
+        this.authTokenReady = false;
+        this.error = error instanceof Error ? error.message : String(error);
+        throw error;
       } finally {
         this.loading = false;
       }

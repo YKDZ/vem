@@ -9,6 +9,7 @@ import {
   isNull,
   machineSlots,
   machines,
+  productCategories,
   productVariants,
   products,
   sql,
@@ -19,6 +20,7 @@ import {
   createMachineSlotSchema,
   pageQuerySchema,
   updateMachineSchema,
+  type MachineRecommendationRequest,
 } from "@vem/shared";
 import { z } from "zod";
 
@@ -122,12 +124,18 @@ export class MachinesService {
         cellNo: machineSlots.cellNo,
         inventoryId: inventories.id,
         variantId: productVariants.id,
+        productId: products.id,
         productName: products.name,
+        productDescription: products.description,
+        coverImageUrl: products.coverImageUrl,
+        categoryId: products.categoryId,
+        categoryName: productCategories.name,
         sku: productVariants.sku,
         size: productVariants.size,
         color: productVariants.color,
         priceCents: productVariants.priceCents,
         availableQty: sql<number>`${inventories.onHandQty} - ${inventories.reservedQty}`,
+        productSortOrder: products.sortOrder,
       })
       .from(machines)
       .innerJoin(
@@ -155,6 +163,10 @@ export class MachinesService {
           eq(products.status, "active"),
         ),
       )
+      .leftJoin(
+        productCategories,
+        eq(productCategories.id, products.categoryId),
+      )
       .where(
         and(
           eq(machines.code, code),
@@ -163,6 +175,35 @@ export class MachinesService {
           sql`${inventories.onHandQty} - ${inventories.reservedQty} > 0`,
         ),
       )
-      .orderBy(machineSlots.layerNo, machineSlots.cellNo);
+      .orderBy(products.sortOrder, machineSlots.layerNo, machineSlots.cellNo);
+  }
+
+  async getRecommendations(code: string, input: MachineRecommendationRequest) {
+    const catalog = await this.getCatalogByMachineCode(code);
+    return catalog
+      .map((item) => {
+        const warmWeatherBoost =
+          input.profileSnapshot.weather === "hot" &&
+          [item.categoryName, item.productName, item.productDescription]
+            .filter(Boolean)
+            .some((value) => value!.includes("饮") || value!.includes("短袖"))
+            ? 20
+            : 0;
+        const stockBoost = Math.min(item.availableQty, 10);
+        const sortBoost = Math.max(0, 100 - item.productSortOrder);
+        const score = sortBoost + stockBoost + warmWeatherBoost;
+        return {
+          ...item,
+          recommendationScore: score,
+          recommendationReason:
+            warmWeatherBoost > 0
+              ? "匹配当前天气和库存"
+              : "按商品排序和可售库存推荐",
+        };
+      })
+      .sort(
+        (left, right) => right.recommendationScore - left.recommendationScore,
+      )
+      .slice(0, input.limit);
   }
 }

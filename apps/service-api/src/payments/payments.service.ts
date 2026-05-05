@@ -40,6 +40,7 @@ import { AppConfigService } from "../config/app-config.service";
 import { DRIZZLE_CLIENT } from "../database/database.constants";
 import { InventoryService } from "../inventory/inventory.service";
 import { VendingService } from "../vending/vending.service";
+import { PaymentProviderRegistry } from "./payment-provider.registry";
 
 type PaymentQuery = z.infer<typeof paymentQuerySchema> &
   z.infer<typeof pageQuerySchema>;
@@ -61,6 +62,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
     private readonly inventoryService: InventoryService,
     private readonly vendingService: VendingService,
     private readonly config: AppConfigService,
+    private readonly paymentProviderRegistry: PaymentProviderRegistry,
   ) {}
 
   private assertMockPaymentEnabled(): void {
@@ -565,5 +567,196 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       )
       .where(whereClause);
     return toPageResult(items, query, Number(totalRow.total));
+  }
+
+  async handleProviderWebhook(
+    providerCode: string,
+    headers: Record<string, string | string[] | undefined>,
+    body: unknown,
+  ) {
+    const provider = this.paymentProviderRegistry.get(providerCode);
+    if (!provider.handleWebhook) {
+      throw new NotFoundException("Payment webhook is not supported");
+    }
+    const webhook = await provider.handleWebhook({ headers, body });
+
+    const [payment] = webhook.paymentNo
+      ? await this.db
+          .select({
+            id: payments.id,
+            providerId: payments.providerId,
+            status: payments.status,
+            orderId: payments.orderId,
+          })
+          .from(payments)
+          .innerJoin(
+            paymentProviders,
+            eq(paymentProviders.id, payments.providerId),
+          )
+          .where(
+            and(
+              eq(payments.paymentNo, webhook.paymentNo),
+              eq(paymentProviders.code, providerCode),
+            ),
+          )
+          .limit(1)
+      : [];
+    if (!payment) {
+      return { handled: false, reason: "payment_not_found" };
+    }
+
+    const inserted = await this.db
+      .insert(paymentEvents)
+      .values({
+        paymentId: payment.id,
+        providerId: payment.providerId,
+        eventType: webhook.eventType,
+        providerEventId: webhook.providerEventId,
+        rawPayloadJson: webhook.rawPayload,
+        signatureValid: webhook.signatureValid,
+        handledAt: new Date(),
+      })
+      .onConflictDoNothing()
+      .returning({ id: paymentEvents.id });
+    if (inserted.length === 0) {
+      return { handled: true, duplicate: true };
+    }
+
+    if (webhook.paymentStatus === "succeeded") {
+      const row = await this.db.transaction(async (tx) => {
+        const [r] = await tx
+          .select({
+            paymentId: payments.id,
+            paymentStatus: payments.status,
+            providerId: payments.providerId,
+            orderId: orders.id,
+            orderStatus: orders.status,
+          })
+          .from(payments)
+          .innerJoin(orders, eq(orders.id, payments.orderId))
+          .where(eq(payments.id, payment.id));
+        if (!r) return null;
+
+        if (r.paymentStatus !== "succeeded") {
+          await tx
+            .update(payments)
+            .set({
+              status: "succeeded",
+              paidAt: new Date(),
+              failedReason: null,
+              updatedAt: new Date(),
+            })
+            .where(eq(payments.id, r.paymentId));
+        }
+
+        if (r.orderStatus !== "paid" && r.orderStatus !== "dispensing") {
+          await tx
+            .update(orders)
+            .set({ status: "paid", paidAt: new Date(), updatedAt: new Date() })
+            .where(eq(orders.id, r.orderId));
+          await tx.insert(orderStatusEvents).values({
+            orderId: r.orderId,
+            fromStatus: r.orderStatus,
+            toStatus: "paid",
+            reason: "webhook_payment_succeeded",
+          });
+        }
+
+        const reservations = await tx
+          .select({
+            inventoryId: inventoryReservations.inventoryId,
+            quantity: inventoryReservations.quantity,
+          })
+          .from(inventoryReservations)
+          .where(
+            and(
+              eq(inventoryReservations.orderId, r.orderId),
+              eq(inventoryReservations.status, "active"),
+            ),
+          );
+
+        await reservations.reduce<Promise<void>>(async (prev, reservation) => {
+          await prev;
+          await this.inventoryService.confirmReservation(tx, {
+            orderId: r.orderId,
+            inventoryId: reservation.inventoryId,
+            quantity: reservation.quantity,
+          });
+        }, Promise.resolve());
+
+        return r;
+      });
+
+      if (row) {
+        await this.vendingService.createAndDispatchCommands(row.orderId);
+      }
+    }
+
+    if (webhook.paymentStatus === "failed") {
+      await this.db.transaction(async (tx) => {
+        const [r] = await tx
+          .select({
+            paymentId: payments.id,
+            paymentStatus: payments.status,
+            orderId: orders.id,
+            orderStatus: orders.status,
+          })
+          .from(payments)
+          .innerJoin(orders, eq(orders.id, payments.orderId))
+          .where(eq(payments.id, payment.id));
+        if (!r) return;
+
+        await tx
+          .update(payments)
+          .set({
+            status: "failed",
+            failedReason: "webhook_failed",
+            updatedAt: new Date(),
+          })
+          .where(eq(payments.id, r.paymentId));
+
+        if (r.orderStatus !== "canceled") {
+          await tx
+            .update(orders)
+            .set({
+              status: "canceled",
+              canceledAt: new Date(),
+              updatedAt: new Date(),
+            })
+            .where(eq(orders.id, r.orderId));
+          await tx.insert(orderStatusEvents).values({
+            orderId: r.orderId,
+            fromStatus: r.orderStatus,
+            toStatus: "canceled",
+            reason: "webhook_payment_failed",
+          });
+        }
+
+        const reservations = await tx
+          .select({
+            inventoryId: inventoryReservations.inventoryId,
+            quantity: inventoryReservations.quantity,
+          })
+          .from(inventoryReservations)
+          .where(
+            and(
+              eq(inventoryReservations.orderId, r.orderId),
+              eq(inventoryReservations.status, "active"),
+            ),
+          );
+
+        await reservations.reduce<Promise<void>>(async (prev, reservation) => {
+          await prev;
+          await this.inventoryService.releaseReservation(tx, {
+            orderId: r.orderId,
+            inventoryId: reservation.inventoryId,
+            quantity: reservation.quantity,
+            reason: "payment_failed",
+          });
+        }, Promise.resolve());
+      });
+    }
+
+    return { handled: true, duplicate: false };
   }
 }

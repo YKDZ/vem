@@ -59,6 +59,18 @@ async function saveAndReboot(): Promise<void> {
         </label>
 
         <label class="grid gap-2 text-left">
+          <span class="text-sm font-semibold text-slate-200"
+            >机器密钥 machineSecret</span
+          >
+          <input
+            v-model="form.machineSecret"
+            class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-sky-300"
+            placeholder="部署时写入的机器密钥"
+            type="password"
+          />
+        </label>
+
+        <label class="grid gap-2 text-left">
           <span class="text-sm font-semibold text-slate-200">API Base URL</span>
           <input
             v-model="form.apiBaseUrl"

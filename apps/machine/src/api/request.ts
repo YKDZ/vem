@@ -5,6 +5,8 @@ import axios, {
   type AxiosResponse,
 } from "axios";
 
+import { getMachineAuthToken } from "./machine-auth-session";
+
 export type ApiResponse<T> = {
   code: number;
   message: string;
@@ -53,6 +55,14 @@ export function createMachineApiClient(baseURL: string): MachineApiClient {
   const request: AxiosInstance = axios.create({
     baseURL: normalizeBaseUrl(baseURL),
     timeout: 15_000,
+  });
+
+  request.interceptors.request.use((config) => {
+    const token = getMachineAuthToken();
+    if (token) {
+      config.headers.Authorization = `Bearer ${token}`;
+    }
+    return config;
   });
 
   request.interceptors.response.use(

@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { hardwareErrorCodeSchema } from "../enums/hardware";
+
 export const commandAckPayloadSchema = z
   .object({
     messageId: z.string().min(1).max(128).optional(),
@@ -21,7 +23,7 @@ export const dispenseCommandPayloadSchema = z.object({
 export const dispenseResultPayloadSchema = z.object({
   commandNo: z.string().min(1).max(64),
   success: z.boolean(),
-  errorCode: z.string().nullable(),
+  errorCode: hardwareErrorCodeSchema.nullable(),
   message: z.string(),
   reportedAt: z.iso.datetime(),
 });

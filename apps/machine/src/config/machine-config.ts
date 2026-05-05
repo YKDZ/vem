@@ -9,6 +9,7 @@ export const hardwareAdapterSchema = z.enum([
 
 export const machineConfigSchema = z.object({
   machineCode: z.string().trim().min(1).max(64).nullable().default(null),
+  machineSecret: z.string().trim().min(32).max(256).nullable().default(null),
   apiBaseUrl: z
     .string()
     .trim()
@@ -41,10 +42,16 @@ export function normalizeMachineConfig(input: unknown): MachineConfig {
     const trimmed = processed.machineCode.trim();
     processed.machineCode = trimmed.length > 0 ? trimmed : null;
   }
+  // Pre-normalize machineSecret: whitespace-only string → null before schema validation
+  if (typeof processed.machineSecret === "string") {
+    const trimmed = processed.machineSecret.trim();
+    processed.machineSecret = trimmed.length > 0 ? trimmed : null;
+  }
   const parsed = machineConfigSchema.parse(processed);
   return {
     ...parsed,
     machineCode: parsed.machineCode?.trim() || null,
+    machineSecret: parsed.machineSecret?.trim() || null,
     apiBaseUrl: parsed.apiBaseUrl.replace(/\/+$/, ""),
     mqttUrl: parsed.mqttUrl.trim(),
   };
