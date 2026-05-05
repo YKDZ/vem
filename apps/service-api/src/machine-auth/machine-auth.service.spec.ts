@@ -1,4 +1,5 @@
 import type { DrizzleClient } from "@vem/db";
+import type { MachineStatus } from "@vem/shared";
 
 import { JwtService } from "@nestjs/jwt";
 import { describe, expect, it } from "vitest";
@@ -12,7 +13,7 @@ const VALID_SECRET = "local-machine-shared-secret-change-before-production";
 const mockMachine = {
   id: "00000000-0000-0000-0000-000000000001",
   code: "M001",
-  status: "online" as const,
+  status: "online" as MachineStatus,
 };
 
 function createService(overrides?: { dbResult?: typeof mockMachine | null }) {
