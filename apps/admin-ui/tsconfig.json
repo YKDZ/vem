@@ -1,0 +1,36 @@
+{
+  "extends": ["../../tsconfig.base.json", "@vue/tsconfig/tsconfig.dom.json"],
+  "compilerOptions": {
+    "resolveJsonModule": true,
+    "tsBuildInfoFile": "dist/tsconfig.app.tsbuildinfo",
+    "paths": {
+      "@/*": ["./src/*"]
+    },
+    "lib": ["ESNext", "DOM", "DOM.Iterable", "WebWorker"],
+    "declaration": false,
+    "noEmit": true,
+    "composite": false,
+    "declarationMap": false,
+    "emitDeclarationOnly": false,
+    "moduleResolution": "bundler",
+    "customConditions": ["import", "types"],
+    "types": ["node"]
+  },
+  "exclude": [
+    "out-tsc",
+    "dist",
+    "src/**/*.spec.ts",
+    "src/**/*.test.ts",
+    "src/**/*.spec.vue",
+    "src/**/*.test.vue",
+    "vite.config.ts",
+    "vitest.config.ts",
+    "src/**/*.test.tsx",
+    "src/**/*.spec.tsx",
+    "src/**/*.test.js",
+    "src/**/*.spec.js",
+    "src/**/*.test.jsx",
+    "src/**/*.spec.jsx"
+  ],
+  "include": ["src/**/*.ts", "src/**/*.vue"]
+}

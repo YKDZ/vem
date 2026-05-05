@@ -1,0 +1,41 @@
+{
+  "name": "admin-ui",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vue-tsc --noEmit -p tsconfig.json && vite build",
+    "dev": "vite --host 0.0.0.0",
+    "fmt": "oxfmt",
+    "lint": "oxlint --type-aware",
+    "lint-fix": "oxlint --fix --type-aware",
+    "preview": "vite preview --host 0.0.0.0",
+    "test": "vitest run --passWithNoTests",
+    "test:e2e": "playwright test",
+    "typecheck": "tsc --noEmit && vue-tsc --noEmit"
+  },
+  "dependencies": {
+    "@vem/shared": "workspace:*",
+    "antdv-next": "catalog:",
+    "axios": "catalog:",
+    "echarts": "catalog:",
+    "pinia": "catalog:",
+    "vue": "catalog:",
+    "vue-router": "catalog:",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@antdv-next/tailwind": "^1.0.2",
+    "@playwright/test": "catalog:",
+    "@tailwindcss/vite": "catalog:",
+    "@types/node": "catalog:",
+    "@vitejs/plugin-vue": "catalog:",
+    "@vue/tsconfig": "^0.9.1",
+    "tailwindcss": "catalog:",
+    "typescript": "catalog:",
+    "vite": "catalog:",
+    "vitest": "catalog:",
+    "vue-tsc": "catalog:"
+  },
+  "packageManager": "pnpm@10.33.2"
+}
