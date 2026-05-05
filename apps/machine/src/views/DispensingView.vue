@@ -5,10 +5,12 @@ import { useRouter } from "vue-router";
 import KioskLayout from "@/layouts/KioskLayout.vue";
 import { resultKindFromNextAction, useCheckoutStore } from "@/stores/checkout";
 import { useMachineStore } from "@/stores/machine";
+import { useMqttStore } from "@/stores/mqtt";
 
 const router = useRouter();
 const checkoutStore = useCheckoutStore();
 const machineStore = useMachineStore();
+const mqttStore = useMqttStore();
 
 let pollTimer: number | undefined;
 
@@ -51,10 +53,10 @@ onUnmounted(() => {
         <p class="text-sm tracking-[0.35em] text-sky-200 uppercase">
           DISPENSING
         </p>
-        <h2 class="mt-4 text-4xl font-black">支付成功，正在确认出货</h2>
+        <h2 class="mt-4 text-4xl font-black">支付成功，正在出货</h2>
         <p class="mt-4 text-lg text-slate-300">
-          请在取货口等待。本阶段通过后端状态查询确认出货结果，机器端 MQTT
-          与硬件模拟将在下一阶段接入。
+          机器端已连接 MQTT 并使用 MockAdapter 执行出货。若网络短暂中断，ACK
+          和出货结果会进入本地 outbox，恢复后自动补发。
         </p>
 
         <div class="mt-8 grid gap-3 text-left text-slate-200">
@@ -75,6 +77,15 @@ onUnmounted(() => {
             class="rounded-2xl bg-rose-500/20 p-4 text-rose-100"
           >
             {{ command.lastError }}
+          </div>
+          <div class="rounded-2xl bg-slate-950/40 p-4">
+            机器 MQTT：{{ mqttStore.status }}
+          </div>
+          <div class="rounded-2xl bg-slate-950/40 p-4">
+            本地 outbox：{{ mqttStore.outboxSize }} 条待补发
+          </div>
+          <div class="rounded-2xl bg-slate-950/40 p-4">
+            最近命令：{{ mqttStore.lastCommandNo ?? "暂无" }}
           </div>
         </div>
       </div>

@@ -25,3 +25,9 @@ export const dispenseResultPayloadSchema = z.object({
   message: z.string(),
   reportedAt: z.iso.datetime(),
 });
+
+export type CommandAckPayload = z.infer<typeof commandAckPayloadSchema>;
+export type DispenseCommandPayload = z.infer<
+  typeof dispenseCommandPayloadSchema
+>;
+export type DispenseResultPayload = z.infer<typeof dispenseResultPayloadSchema>;

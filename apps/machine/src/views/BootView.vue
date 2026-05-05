@@ -6,11 +6,13 @@ import KioskLayout from "@/layouts/KioskLayout.vue";
 import { useCatalogStore } from "@/stores/catalog";
 import { useConnectivityStore } from "@/stores/connectivity";
 import { useMachineStore } from "@/stores/machine";
+import { useMqttStore } from "@/stores/mqtt";
 
 const router = useRouter();
 const machineStore = useMachineStore();
 const connectivityStore = useConnectivityStore();
 const catalogStore = useCatalogStore();
+const mqttStore = useMqttStore();
 const steps = ref<string[]>([]);
 
 function pushStep(message: string): void {
@@ -42,6 +44,10 @@ onMounted(async () => {
 
   pushStep("拉取本机商品目录");
   await catalogStore.refresh(machineStore.config);
+
+  pushStep("连接 MQTT 并补发本地事件");
+  await mqttStore.connect(machineStore.config);
+  await mqttStore.flushOutbox();
 
   if (!connectivityStore.isSaleNetworkReady || !machineStore.canSell) {
     pushStep("网络或硬件未就绪，进入离线页");

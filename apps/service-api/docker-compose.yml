@@ -22,6 +22,10 @@ services:
     ports:
       - "1883:1883"
       - "9001:9001"
+    command:
+      - /bin/sh
+      - -c
+      - "printf 'listener 1883\\nallow_anonymous true\\n\\nlistener 9001\\nprotocol websockets\\n' > /mosquitto/config/mosquitto.conf && mosquitto -c /mosquitto/config/mosquitto.conf"
     healthcheck:
       test: ["CMD-SHELL", "mosquitto_pub -h localhost -t vem/healthcheck -m ok"]
       interval: 5s

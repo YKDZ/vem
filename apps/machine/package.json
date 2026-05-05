@@ -19,6 +19,7 @@
     "@tauri-apps/plugin-opener": "^2",
     "@vem/shared": "workspace:*",
     "axios": "catalog:",
+    "mqtt": "^5.15.1",
     "pinia": "catalog:",
     "qrcode": "catalog:",
     "vue": "catalog:",

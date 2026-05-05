@@ -2,6 +2,7 @@
 import { reactive } from "vue";
 import { useRouter } from "vue-router";
 
+import MockHardwareControls from "@/components/MockHardwareControls.vue";
 import {
   normalizeMachineConfig,
   type HardwareAdapter,
@@ -41,7 +42,8 @@ async function saveAndReboot(): Promise<void> {
       </p>
       <h2 class="mt-3 text-3xl font-bold">部署配置 / 维护入口</h2>
       <p class="mt-3 text-slate-300">
-        未配置机器编号时不会进入商品售卖页。第一阶段只保存本地配置，不做运维登录鉴权。
+        未配置机器编号时不会进入商品售卖页。第三阶段支持 mock
+        出货模式切换，用于验证 MQTT 出货成功、失败与补发链路。
       </p>
 
       <form class="mt-8 grid gap-5" @submit.prevent="saveAndReboot">
@@ -100,6 +102,9 @@ async function saveAndReboot(): Promise<void> {
           {{ machineStore.error }}
         </p>
       </form>
+      <div class="mt-6">
+        <MockHardwareControls />
+      </div>
     </section>
   </KioskLayout>
 </template>

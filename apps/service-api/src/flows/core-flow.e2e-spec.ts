@@ -8,9 +8,11 @@ import {
   eq,
   inventories,
   inventoryMovements,
+  machineHeartbeats,
   notifications,
   orders,
   payments,
+  vendingCommands,
   DrizzleDB,
 } from "@vem/db";
 import request from "supertest";
@@ -121,6 +123,29 @@ describe.sequential("core-flow.e2e", () => {
 
     await publishMqtt(
       mqttClient,
+      `vem/machines/${seeded.machineCode}/commands/${commandPayload.commandNo}/ack`,
+      { messageId: `ack:${commandPayload.commandNo}` },
+    );
+
+    await publishMqtt(
+      mqttClient,
+      `vem/machines/${seeded.machineCode}/events/heartbeat`,
+      {
+        machineCode: seeded.machineCode,
+        reportedAt: new Date().toISOString(),
+        statusPayload: {
+          appVersion: "0.1.0",
+          network: "online",
+          mqttConnected: true,
+          hardwareStatus: "ok",
+          localQueueSize: 0,
+          lastCommandNo: commandPayload.commandNo,
+        },
+      },
+    );
+
+    await publishMqtt(
+      mqttClient,
       `vem/machines/${seeded.machineCode}/events/dispense-result`,
       {
         commandNo: commandPayload.commandNo,
@@ -138,6 +163,19 @@ describe.sequential("core-flow.e2e", () => {
       "fulfilled",
     );
     expect(fulfilledOrder.status).toBe("fulfilled");
+
+    const [ackCommand] = await db.client
+      .select({ ackAt: vendingCommands.ackAt, status: vendingCommands.status })
+      .from(vendingCommands)
+      .where(eq(vendingCommands.orderId, createdOrder.data.orderId));
+    expect(ackCommand.ackAt).toBeTruthy();
+    expect(ackCommand.status).toBe("succeeded");
+
+    const [heartbeatCount] = await db.client
+      .select({ total: count() })
+      .from(machineHeartbeats)
+      .where(eq(machineHeartbeats.machineId, seeded.machineId));
+    expect(Number(heartbeatCount.total)).toBeGreaterThanOrEqual(1);
 
     const duplicateSucceedResponse = await api.post(
       `/api/payments/mock/${createdOrder.data.paymentNo}/succeed`,
