@@ -1,0 +1,61 @@
+<script setup lang="ts">
+import * as QRCode from "qrcode";
+import { ref, watch } from "vue";
+
+const props = defineProps<{
+  value: string | null | undefined;
+  expired?: boolean;
+}>();
+
+const dataUrl = ref("");
+const error = ref<string | null>(null);
+
+watch(
+  () => props.value,
+  async (value) => {
+    error.value = null;
+    if (!value) {
+      dataUrl.value = "";
+      return;
+    }
+    try {
+      dataUrl.value = await QRCode.toDataURL(value, {
+        width: 360,
+        margin: 1,
+        errorCorrectionLevel: "M",
+        color: {
+          dark: "#020617",
+          light: "#ffffff",
+        },
+      });
+    } catch (err) {
+      dataUrl.value = "";
+      error.value = err instanceof Error ? err.message : String(err);
+    }
+  },
+  { immediate: true },
+);
+</script>
+
+<template>
+  <div class="relative rounded-[2rem] bg-white p-5 shadow-2xl">
+    <img
+      v-if="dataUrl"
+      class="mx-auto size-[320px] max-h-[45vh] max-w-full"
+      :src="dataUrl"
+      alt="支付二维码"
+    />
+    <div
+      v-else
+      class="flex size-[320px] max-h-[45vh] max-w-full items-center justify-center rounded-3xl bg-slate-100 text-center text-slate-500"
+    >
+      {{ error ?? "暂无支付二维码" }}
+    </div>
+    <div
+      v-if="expired"
+      class="absolute inset-5 flex items-center justify-center rounded-3xl bg-slate-950/80 text-3xl font-black text-white"
+    >
+      二维码已过期
+    </div>
+  </div>
+</template>

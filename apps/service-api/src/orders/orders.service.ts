@@ -31,8 +31,14 @@ import {
 } from "@vem/db";
 import {
   createMachineOrderSchema,
+  machineOrderStatusNextActionSchema,
+  machineOrderStatusQuerySchema,
   orderQuerySchema,
   pageQuerySchema,
+  type MachineOrderStatusNextAction,
+  type OrderStatus,
+  type PaymentStatus,
+  type VendingCommandStatus,
 } from "@vem/shared";
 import { z } from "zod";
 
@@ -43,6 +49,7 @@ import { InventoryService } from "../inventory/inventory.service";
 import { MockPaymentProvider } from "../payments/mock-payment.provider";
 
 type CreateMachineOrderInput = z.infer<typeof createMachineOrderSchema>;
+type MachineOrderStatusQuery = z.infer<typeof machineOrderStatusQuerySchema>;
 type OrderQuery = z.infer<typeof orderQuerySchema> &
   z.infer<typeof pageQuerySchema>;
 
@@ -438,6 +445,83 @@ export class OrdersService {
     });
   }
 
+  async getMachineOrderStatus(orderNo: string, query: MachineOrderStatusQuery) {
+    const [row] = await this.db
+      .select({
+        orderId: orders.id,
+        orderNo: orders.orderNo,
+        machineCode: machines.code,
+        orderStatus: orders.status,
+        totalAmountCents: orders.totalAmountCents,
+        paymentNo: payments.paymentNo,
+        paymentMethod: payments.method,
+        paymentStatus: payments.status,
+        paymentUrl: payments.paymentUrl,
+        paymentExpiresAt: payments.expiresAt,
+        paidAt: payments.paidAt,
+        failedReason: payments.failedReason,
+      })
+      .from(orders)
+      .innerJoin(machines, eq(machines.id, orders.machineId))
+      .innerJoin(payments, eq(payments.id, orders.paymentId))
+      .where(
+        and(eq(orders.orderNo, orderNo), eq(machines.code, query.machineCode)),
+      );
+
+    if (!row) {
+      throw new NotFoundException("Machine order not found");
+    }
+
+    const [command] = await this.db
+      .select({
+        commandNo: vendingCommands.commandNo,
+        status: vendingCommands.status,
+        sentAt: vendingCommands.sentAt,
+        ackAt: vendingCommands.ackAt,
+        resultAt: vendingCommands.resultAt,
+        lastError: vendingCommands.lastError,
+      })
+      .from(vendingCommands)
+      .where(eq(vendingCommands.orderId, row.orderId))
+      .orderBy(desc(vendingCommands.createdAt))
+      .limit(1);
+
+    const nextAction = resolveMachineOrderNextAction(
+      row.orderStatus,
+      row.paymentStatus,
+      command?.status ?? null,
+    );
+
+    return {
+      orderId: row.orderId,
+      orderNo: row.orderNo,
+      machineCode: row.machineCode,
+      orderStatus: row.orderStatus,
+      totalAmountCents: row.totalAmountCents,
+      payment: {
+        paymentNo: row.paymentNo,
+        method: row.paymentMethod,
+        status: row.paymentStatus,
+        paymentUrl: row.paymentUrl,
+        expiresAt: toIsoStringOrNull(row.paymentExpiresAt),
+        paidAt: toIsoStringOrNull(row.paidAt),
+        failedReason: row.failedReason,
+      },
+      vending: command
+        ? {
+            commandNo: command.commandNo,
+            status: command.status,
+            sentAt: toIsoStringOrNull(command.sentAt),
+            ackAt: toIsoStringOrNull(command.ackAt),
+            resultAt: toIsoStringOrNull(command.resultAt),
+            lastError: command.lastError,
+          }
+        : null,
+      nextAction,
+      serverTime: new Date().toISOString(),
+    };
+  }
+
   private async createPaymentIntent(
     method: CreateMachineOrderInput["paymentMethod"],
     input: {
@@ -452,4 +536,57 @@ export class OrdersService {
     }
     throw new ConflictException(`Unsupported payment method: ${method}`);
   }
+}
+
+function toIsoStringOrNull(value: Date | null): string | null {
+  return value ? value.toISOString() : null;
+}
+
+function resolveMachineOrderNextAction(
+  orderStatus: OrderStatus,
+  paymentStatus: PaymentStatus,
+  commandStatus: VendingCommandStatus | null,
+): MachineOrderStatusNextAction {
+  if (orderStatus === "fulfilled") return "success";
+  if (orderStatus === "dispense_failed") return "dispense_failed";
+  if (orderStatus === "manual_handling") return "manual_handling";
+  if (orderStatus === "refund_pending") return "refund_pending";
+  if (orderStatus === "refunded") return "refunded";
+  if (orderStatus === "closed") return "closed";
+
+  if (paymentStatus === "refund_pending") return "refund_pending";
+  if (paymentStatus === "refunded" || paymentStatus === "partial_refunded") {
+    return "refunded";
+  }
+
+  if (orderStatus === "payment_expired" || paymentStatus === "expired") {
+    return "payment_expired";
+  }
+  if (
+    orderStatus === "canceled" ||
+    paymentStatus === "failed" ||
+    paymentStatus === "canceled"
+  ) {
+    return "payment_failed";
+  }
+
+  if (
+    (orderStatus === "paid" || orderStatus === "dispensing") &&
+    (commandStatus === "failed" || commandStatus === "timeout")
+  ) {
+    return "manual_handling";
+  }
+  if (orderStatus === "paid" || orderStatus === "dispensing") {
+    return "dispensing";
+  }
+
+  if (
+    paymentStatus === "created" ||
+    paymentStatus === "pending" ||
+    paymentStatus === "processing"
+  ) {
+    return "wait_payment";
+  }
+
+  return machineOrderStatusNextActionSchema.parse("wait_payment");
 }

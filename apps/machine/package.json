@@ -20,6 +20,7 @@
     "@vem/shared": "workspace:*",
     "axios": "catalog:",
     "pinia": "catalog:",
+    "qrcode": "catalog:",
     "vue": "catalog:",
     "vue-router": "catalog:",
     "zod": "catalog:"
@@ -27,6 +28,7 @@
   "devDependencies": {
     "@tailwindcss/vite": "catalog:",
     "@types/node": "catalog:",
+    "@types/qrcode": "catalog:",
     "@vitejs/plugin-vue": "catalog:",
     "tailwindcss": "catalog:",
     "typescript": "catalog:",

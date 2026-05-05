@@ -45,6 +45,10 @@ export const useCatalogStore = defineStore("catalog", {
     availableItems: (state): MachineCatalogItem[] =>
       state.items.filter((item) => item.availableQty > 0),
     hasItems: (state): boolean => state.items.length > 0,
+    itemByInventoryId:
+      (state) =>
+      (inventoryId: string): MachineCatalogItem | undefined =>
+        state.items.find((item) => item.inventoryId === inventoryId),
   },
   actions: {
     loadCached(machineCode: string): void {

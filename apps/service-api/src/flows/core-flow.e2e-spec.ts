@@ -319,4 +319,72 @@ describe.sequential("core-flow.e2e", () => {
     );
     expect(refundedOrder.status).toBe("refunded");
   }, 60_000);
+
+  it("exposes public machine order status for kiosk polling", async () => {
+    const seeded = await seedSingleSlotInventory(db, {
+      machineCode: "M-E2E-STATUS-001",
+      onHandQty: 2,
+      lowStockThreshold: 1,
+      slotCode: "S1",
+      layerNo: 1,
+      cellNo: 1,
+    });
+
+    const createOrderResponse = await api.post("/api/machine-orders").send({
+      machineCode: seeded.machineCode,
+      items: [{ inventoryId: seeded.inventoryId, quantity: 1 }],
+      paymentMethod: "mock",
+    });
+    expect(createOrderResponse.status).toBe(201);
+    const createdOrder =
+      createOrderResponse.body as ApiResponse<CreatedOrderPayload>;
+
+    const pendingStatusResponse = await api
+      .get(`/api/machine-orders/${createdOrder.data.orderNo}/status`)
+      .query({ machineCode: seeded.machineCode });
+    expect(pendingStatusResponse.status).toBe(200);
+    const pendingStatus = pendingStatusResponse.body as ApiResponse<{
+      orderNo: string;
+      machineCode: string;
+      orderStatus: string;
+      payment: { paymentNo: string; status: string; paymentUrl: string };
+      vending: null;
+      nextAction: string;
+    }>;
+    expect(pendingStatus.code).toBe(0);
+    expect(pendingStatus.data.orderNo).toBe(createdOrder.data.orderNo);
+    expect(pendingStatus.data.machineCode).toBe(seeded.machineCode);
+    expect(pendingStatus.data.orderStatus).toBe("pending_payment");
+    expect(pendingStatus.data.payment.paymentNo).toBe(
+      createdOrder.data.paymentNo,
+    );
+    expect(pendingStatus.data.payment.status).toBe("pending");
+    expect(pendingStatus.data.payment.paymentUrl).toBeTruthy();
+    expect(pendingStatus.data.vending).toBeNull();
+    expect(pendingStatus.data.nextAction).toBe("wait_payment");
+
+    const failResponse = await api.post(
+      `/api/payments/mock/${createdOrder.data.paymentNo}/fail`,
+    );
+    expect(failResponse.status).toBe(201);
+
+    const failedStatusResponse = await api
+      .get(`/api/machine-orders/${createdOrder.data.orderNo}/status`)
+      .query({ machineCode: seeded.machineCode });
+    const failedStatus = failedStatusResponse.body as ApiResponse<{
+      orderStatus: string;
+      payment: { status: string; failedReason: string };
+      nextAction: string;
+    }>;
+    expect(failedStatus.code).toBe(0);
+    expect(failedStatus.data.orderStatus).toBe("canceled");
+    expect(failedStatus.data.payment.status).toBe("failed");
+    expect(failedStatus.data.payment.failedReason).toBe("mock_failed");
+    expect(failedStatus.data.nextAction).toBe("payment_failed");
+
+    const wrongMachineResponse = await api
+      .get(`/api/machine-orders/${createdOrder.data.orderNo}/status`)
+      .query({ machineCode: "OTHER-MACHINE" });
+    expect(wrongMachineResponse.status).toBe(404);
+  }, 60_000);
 });

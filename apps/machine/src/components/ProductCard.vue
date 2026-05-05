@@ -10,12 +10,21 @@ const props = defineProps<{
   disabled?: boolean;
 }>();
 
+const emit = defineEmits<{
+  select: [item: MachineCatalogItem];
+}>();
+
 const initials = computed(() => props.item.productName.slice(0, 2));
 const specText = computed(
   () =>
     [props.item.size, props.item.color].filter(Boolean).join(" / ") ||
     props.item.sku,
 );
+const buttonText = computed(() => {
+  if (props.item.availableQty <= 0) return "已售罄";
+  if (props.disabled) return "暂不可购买";
+  return "查看详情";
+});
 </script>
 
 <template>
@@ -45,11 +54,12 @@ const specText = computed(
         <p class="text-sm text-slate-300">剩余 {{ item.availableQty }}</p>
       </div>
       <button
-        class="kiosk-touch-target mt-3 w-full rounded-2xl bg-slate-100 px-4 py-3 font-bold text-base disabled:cursor-not-allowed disabled:bg-slate-500 disabled:text-slate-300"
+        class="kiosk-touch-target mt-3 w-full rounded-2xl bg-slate-100 px-4 py-3 font-bold text-base text-slate-950 disabled:cursor-not-allowed disabled:bg-slate-500 disabled:text-slate-300"
         type="button"
-        :disabled="disabled"
+        :disabled="disabled || item.availableQty <= 0"
+        @click="emit('select', item)"
       >
-        第一阶段仅展示
+        {{ buttonText }}
       </button>
     </div>
   </article>

@@ -20,6 +20,31 @@ const routes: RouteRecordRaw[] = [
     component: async () => import("@/views/CatalogView.vue"),
   },
   {
+    path: "/products/:inventoryId",
+    name: "product-detail",
+    component: async () => import("@/views/ProductDetailView.vue"),
+  },
+  {
+    path: "/checkout",
+    name: "checkout",
+    component: async () => import("@/views/CheckoutView.vue"),
+  },
+  {
+    path: "/payment",
+    name: "payment",
+    component: async () => import("@/views/PaymentView.vue"),
+  },
+  {
+    path: "/dispensing",
+    name: "dispensing",
+    component: async () => import("@/views/DispensingView.vue"),
+  },
+  {
+    path: "/result/:kind",
+    name: "result",
+    component: async () => import("@/views/ResultView.vue"),
+  },
+  {
     path: "/offline",
     name: "offline",
     component: async () => import("@/views/OfflineView.vue"),

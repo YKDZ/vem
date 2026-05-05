@@ -2,9 +2,12 @@
 import { computed } from "vue";
 import { useRouter } from "vue-router";
 
+import type { MachineCatalogItem } from "@/types/catalog";
+
 import ProductCard from "@/components/ProductCard.vue";
 import KioskLayout from "@/layouts/KioskLayout.vue";
 import { useCatalogStore } from "@/stores/catalog";
+import { useCheckoutStore } from "@/stores/checkout";
 import { useConnectivityStore } from "@/stores/connectivity";
 import { useMachineStore } from "@/stores/machine";
 import { formatDateTimeFromMs } from "@/utils/format";
@@ -13,6 +16,7 @@ const router = useRouter();
 const machineStore = useMachineStore();
 const connectivityStore = useConnectivityStore();
 const catalogStore = useCatalogStore();
+const checkoutStore = useCheckoutStore();
 
 const canDisplayAsSaleReady = computed(
   () => machineStore.canSell && connectivityStore.isSaleNetworkReady,
@@ -29,6 +33,15 @@ async function refreshCatalog(): Promise<void> {
     return;
   }
   await catalogStore.refresh(machineStore.config);
+}
+
+async function selectProduct(item: MachineCatalogItem): Promise<void> {
+  if (!canDisplayAsSaleReady.value || item.availableQty <= 0) return;
+  checkoutStore.selectItem(item);
+  await router.push({
+    name: "product-detail",
+    params: { inventoryId: item.inventoryId },
+  });
 }
 </script>
 
@@ -71,6 +84,7 @@ async function refreshCatalog(): Promise<void> {
           :key="item.inventoryId"
           :item="item"
           :disabled="!canDisplayAsSaleReady"
+          @select="selectProduct"
         />
       </div>
 
