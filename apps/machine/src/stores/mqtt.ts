@@ -71,7 +71,7 @@ export const useMqttStore = defineStore("mqtt", {
           void handleDispenseCommand({
             machineCode: config.machineCode!,
             payloadText,
-            publish: (topic, payload) => client.publish(topic, payload),
+            publish: async (topic, payload) => client.publish(topic, payload),
             adapter: createMockHardwareAdapter(globalThis.localStorage),
           })
             .then((result) => {
@@ -105,7 +105,7 @@ export const useMqttStore = defineStore("mqtt", {
         this.refreshOutboxSize();
         return;
       }
-      await flushOutboxEvents((topic, payload) =>
+      await flushOutboxEvents(async (topic, payload) =>
         privateState.client!.publish(topic, payload),
       );
       this.refreshOutboxSize();

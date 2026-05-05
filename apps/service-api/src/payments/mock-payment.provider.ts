@@ -1,4 +1,5 @@
 import { Injectable } from "@nestjs/common";
+import { z } from "zod";
 
 import type {
   PaymentIntentInput,
@@ -62,27 +63,23 @@ export class MockPaymentProvider implements PaymentProvider {
   async handleWebhook(
     input: ProviderWebhookInput,
   ): Promise<ProviderWebhookResult> {
-    const body =
-      typeof input.body === "object" && input.body !== null ? input.body : {};
-    const payload = body as Record<string, unknown>;
+    const schema = z.object({
+      providerEventId: z.string().optional(),
+      eventType: z.string().optional(),
+      paymentNo: z.string().optional(),
+      providerTradeNo: z.string().optional(),
+      paymentStatus: z.enum(["succeeded", "failed"]).optional(),
+    });
+    const parsed = schema.safeParse(input.body);
+    const body = parsed.success ? parsed.data : {};
     return {
-      providerEventId: String(
-        payload.providerEventId ?? `mock:webhook:${Date.now()}`,
-      ),
-      eventType: String(payload.eventType ?? "mock.webhook"),
-      paymentNo:
-        typeof payload.paymentNo === "string" ? payload.paymentNo : null,
-      providerTradeNo:
-        typeof payload.providerTradeNo === "string"
-          ? payload.providerTradeNo
-          : null,
-      paymentStatus:
-        payload.paymentStatus === "succeeded" ||
-        payload.paymentStatus === "failed"
-          ? payload.paymentStatus
-          : null,
+      providerEventId: body.providerEventId ?? `mock:webhook:${Date.now()}`,
+      eventType: body.eventType ?? "mock.webhook",
+      paymentNo: body.paymentNo ?? null,
+      providerTradeNo: body.providerTradeNo ?? null,
+      paymentStatus: body.paymentStatus ?? null,
       signatureValid: true,
-      rawPayload: payload,
+      rawPayload: body,
     };
   }
 }

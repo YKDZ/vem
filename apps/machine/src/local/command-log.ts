@@ -23,12 +23,16 @@ export type CommandLogEntry = {
 
 export type StorageLike = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 
+function isCommandLogRecord(v: unknown): v is Record<string, CommandLogEntry> {
+  return typeof v === "object" && v !== null;
+}
+
 function readAll(storage: StorageLike): Record<string, CommandLogEntry> {
   const raw = storage.getItem(COMMAND_LOG_KEY);
   if (!raw) return {};
   try {
-    const parsed = JSON.parse(raw) as Record<string, CommandLogEntry>;
-    return typeof parsed === "object" && parsed !== null ? parsed : {};
+    const data: unknown = JSON.parse(raw);
+    return isCommandLogRecord(data) ? data : {};
   } catch {
     return {};
   }

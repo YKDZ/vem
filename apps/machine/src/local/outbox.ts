@@ -15,12 +15,16 @@ export type OutboxEvent = {
   lastError: string | null;
 };
 
+function isOutboxEvents(v: unknown): v is OutboxEvent[] {
+  return Array.isArray(v);
+}
+
 function readAll(storage: StorageLike): OutboxEvent[] {
   const raw = storage.getItem(OUTBOX_KEY);
   if (!raw) return [];
   try {
-    const parsed = JSON.parse(raw) as OutboxEvent[];
-    return Array.isArray(parsed) ? parsed : [];
+    const data: unknown = JSON.parse(raw);
+    return isOutboxEvents(data) ? data : [];
   } catch {
     return [];
   }
@@ -98,14 +102,19 @@ export async function flushOutboxEvents(
   let failed = 0;
   const nowMs = Date.now();
 
-  for (const event of readAll(storage)) {
-    if (event.nextAttemptAtMs > nowMs) continue;
-    try {
+  const events = readAll(storage).filter((e) => e.nextAttemptAtMs <= nowMs);
+  const settledResults = await Promise.allSettled(
+    events.map(async (event) => {
       await publish(event.topic, event.payload);
-      removeOutboxEvent(event.id, storage);
+      return event.id;
+    }),
+  );
+  for (const [index, result] of settledResults.entries()) {
+    if (result.status === "fulfilled") {
+      removeOutboxEvent(result.value, storage);
       sent += 1;
-    } catch (error) {
-      markOutboxFailed(event.id, error, storage);
+    } else {
+      markOutboxFailed(events[index].id, result.reason, storage);
       failed += 1;
     }
   }

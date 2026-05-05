@@ -30,7 +30,6 @@ import {
   dispenseResultPayloadSchema,
   heartbeatPayloadSchema,
   pageQuerySchema,
-  type HardwareErrorCode,
 } from "@vem/shared";
 import { z } from "zod";
 
@@ -361,61 +360,65 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
       .from(vendingCommands)
       .where(inArray(vendingCommands.status, ["sent", "acknowledged"]));
 
-    let processed = 0;
-    for (const command of candidates) {
+    const toProcess = candidates.filter((command) => {
       const payload = dispenseCommandPayloadSchema.parse(command.payloadJson);
       const baseAt = command.ackAt ?? command.sentAt;
-      if (!baseAt) continue;
+      if (!baseAt) return false;
       const deadlineMs =
         baseAt.getTime() + (payload.timeoutSeconds + 10) * 1_000;
-      if (now.getTime() < deadlineMs) continue;
+      return now.getTime() >= deadlineMs;
+    });
 
-      const changed = await this.db.transaction(async (tx) => {
-        const [updated] = await tx
-          .update(vendingCommands)
-          .set({
-            status: "timeout",
-            resultAt: now,
-            lastError: "vending command timeout",
-            updatedAt: new Date(),
-          })
-          .where(
-            and(
-              eq(vendingCommands.id, command.id),
-              inArray(vendingCommands.status, ["sent", "acknowledged"]),
-            ),
-          )
-          .returning({ id: vendingCommands.id });
-        if (!updated) return false;
+    const results = await Promise.all(
+      toProcess.map(async (command) => {
+        const changed = await this.db.transaction(async (tx) => {
+          const [updated] = await tx
+            .update(vendingCommands)
+            .set({
+              status: "timeout",
+              resultAt: now,
+              lastError: "vending command timeout",
+              updatedAt: new Date(),
+            })
+            .where(
+              and(
+                eq(vendingCommands.id, command.id),
+                inArray(vendingCommands.status, ["sent", "acknowledged"]),
+              ),
+            )
+            .returning({ id: vendingCommands.id });
+          if (!updated) return false;
 
-        const [currentOrder] = await tx
-          .select({ status: orders.status })
-          .from(orders)
-          .where(eq(orders.id, command.orderId));
-        if (currentOrder && currentOrder.status !== "manual_handling") {
-          await tx
-            .update(orders)
-            .set({ status: "manual_handling", updatedAt: new Date() })
+          const [currentOrder] = await tx
+            .select({ status: orders.status })
+            .from(orders)
             .where(eq(orders.id, command.orderId));
-          await tx.insert(orderStatusEvents).values({
+          if (currentOrder && currentOrder.status !== "manual_handling") {
+            await tx
+              .update(orders)
+              .set({ status: "manual_handling", updatedAt: new Date() })
+              .where(eq(orders.id, command.orderId));
+            await tx.insert(orderStatusEvents).values({
+              orderId: command.orderId,
+              fromStatus: currentOrder.status,
+              toStatus: "manual_handling",
+              reason: "vending_command_timeout",
+              metadata: { commandNo: command.commandNo },
+            });
+          }
+
+          await this.notificationsService.createDispenseFailedNotification(tx, {
             orderId: command.orderId,
-            fromStatus: currentOrder.status,
-            toStatus: "manual_handling",
-            reason: "vending_command_timeout",
-            metadata: { commandNo: command.commandNo },
+            commandId: command.id,
+            message: "vending command timeout",
           });
-        }
-
-        await this.notificationsService.createDispenseFailedNotification(tx, {
-          orderId: command.orderId,
-          commandId: command.id,
-          message: "vending command timeout",
+          return true;
         });
-        return true;
-      });
-      if (changed) processed += 1;
-    }
+        return changed;
+      }),
+    );
 
+    const processed = results.filter(Boolean).length;
     return { processed };
   }
 
@@ -591,7 +594,7 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
         await this.inventoryService.compensateDispenseFailure(tx, {
           orderId: command.orderId,
           slotId: command.slotId,
-          errorCode: payload.errorCode as HardwareErrorCode | null,
+          errorCode: payload.errorCode,
           message: payload.message,
         });
 

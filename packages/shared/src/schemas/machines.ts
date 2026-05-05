@@ -100,7 +100,7 @@ export const machineRecommendationProfileSchema = z
     weather: z.string().max(32).optional(),
     temperatureRange: z.string().max(32).optional(),
   })
-  .passthrough();
+  .loose();
 
 export const machineRecommendationRequestSchema = z.object({
   profileSnapshot: machineRecommendationProfileSchema.default({}),
