@@ -24,8 +24,10 @@ import {
 } from "@vem/shared";
 import { z } from "zod";
 
+import { AuditService } from "../audit/audit.service";
 import { getOffset, toPageResult } from "../common/pagination.util";
 import { DRIZZLE_CLIENT } from "../database/database.constants";
+import { MachineCredentialService } from "../machine-auth/machine-credential.service";
 
 type PageQueryInput = z.infer<typeof pageQuerySchema>;
 type CreateMachineInput = z.infer<typeof createMachineSchema>;
@@ -34,7 +36,11 @@ type CreateMachineSlotInput = z.infer<typeof createMachineSlotSchema>;
 
 @Injectable()
 export class MachinesService {
-  constructor(@Inject(DRIZZLE_CLIENT) private readonly db: DrizzleClient) {}
+  constructor(
+    @Inject(DRIZZLE_CLIENT) private readonly db: DrizzleClient,
+    private readonly machineCredentialService: MachineCredentialService,
+    private readonly auditService: AuditService,
+  ) {}
 
   async listMachines(query: PageQueryInput) {
     const items = await this.db
@@ -205,5 +211,51 @@ export class MachinesService {
         (left, right) => right.recommendationScore - left.recommendationScore,
       )
       .slice(0, input.limit);
+  }
+
+  async rotateMachineCredentials(id: string, adminUserId: string) {
+    const [current] = await this.db
+      .select({
+        id: machines.id,
+        code: machines.code,
+        secretVersion: machines.secretVersion,
+      })
+      .from(machines)
+      .where(and(eq(machines.id, id), isNull(machines.deletedAt)));
+    if (!current) {
+      throw new NotFoundException("Machine not found");
+    }
+
+    const bundle = this.machineCredentialService.createBundle();
+    const nextVersion = current.secretVersion + 1;
+    const [updated] = await this.db
+      .update(machines)
+      .set({
+        secretHash: bundle.secretHash,
+        secretVersion: nextVersion,
+        secretRotatedAt: new Date(),
+        credentialRevokedAt: null,
+        mqttSigningSecretEncryptedJson:
+          bundle.mqttSigningSecretEncryptedJson as Record<string, unknown>,
+        updatedAt: new Date(),
+      })
+      .where(eq(machines.id, current.id))
+      .returning({ id: machines.id, code: machines.code });
+
+    await this.auditService.record({
+      adminUserId,
+      action: "machines.credentials.rotate",
+      resourceType: "machine",
+      resourceId: current.id,
+      afterJson: { machineCode: current.code, secretVersion: nextVersion },
+    });
+
+    return {
+      machineId: updated.id,
+      machineCode: updated.code,
+      secretVersion: nextVersion,
+      machineSecret: bundle.machineSecret,
+      mqttSigningSecret: bundle.mqttSigningSecret,
+    };
   }
 }

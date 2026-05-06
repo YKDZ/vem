@@ -13,10 +13,13 @@ import { ApiResponseInterceptor } from "./common/api-response.interceptor";
 import { ConfigModule } from "./config/config.module";
 import { DashboardModule } from "./dashboard/dashboard.module";
 import { DatabaseModule } from "./database/database.module";
+import { HardwareErrorPoliciesModule } from "./hardware-error-policies/hardware-error-policies.module";
 import { HealthModule } from "./health/health.module";
 import { InventoryModule } from "./inventory/inventory.module";
 import { MachineAuthModule } from "./machine-auth/machine-auth.module";
+import { MachineOpsModule } from "./machine-ops/machine-ops.module";
 import { MachinesModule } from "./machines/machines.module";
+import { MaintenanceWorkOrdersModule } from "./maintenance-work-orders/maintenance-work-orders.module";
 import { MqttModule } from "./mqtt/mqtt.module";
 import { NotificationsModule } from "./notifications/notifications.module";
 import { OrdersModule } from "./orders/orders.module";
@@ -46,6 +49,9 @@ import { VendingModule } from "./vending/vending.module";
     AuditModule,
     AdminUsersModule,
     RolesModule,
+    MachineOpsModule,
+    HardwareErrorPoliciesModule,
+    MaintenanceWorkOrdersModule,
   ],
   providers: [
     { provide: APP_FILTER, useClass: AllExceptionsFilter },

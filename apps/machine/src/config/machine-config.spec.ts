@@ -10,6 +10,12 @@ describe("machine config", () => {
     expect(machineConfigDefaults).toEqual({
       machineCode: null,
       machineSecret: null,
+      machineSecretConfigured: false,
+      mqttSigningSecret: null,
+      mqttSigningSecretConfigured: false,
+      mqttUsername: null,
+      mqttPassword: null,
+      mqttPasswordConfigured: false,
       apiBaseUrl: "http://localhost:3000/api",
       mqttUrl: "mqtt://localhost:1883",
       hardwareAdapter: "mock",
@@ -51,5 +57,51 @@ describe("machine config", () => {
           "  local-machine-shared-secret-change-before-production  ",
       }).machineSecret,
     ).toBe("local-machine-shared-secret-change-before-production");
+  });
+
+  it("sets machineSecretConfigured=true when machineSecret is present", () => {
+    const result = normalizeMachineConfig({
+      machineSecret: "local-machine-shared-secret-change-before-production",
+    });
+    expect(result.machineSecretConfigured).toBe(true);
+  });
+
+  it("sets mqttSigningSecretConfigured=true when mqttSigningSecret is present", () => {
+    const result = normalizeMachineConfig({
+      mqttSigningSecret:
+        "local-machine-shared-secret-change-before-production-xx",
+    });
+    expect(result.mqttSigningSecretConfigured).toBe(true);
+  });
+
+  it("sets mqttPasswordConfigured=true when mqttPassword is present", () => {
+    const result = normalizeMachineConfig({
+      mqttPassword: "local-machine-shared-secret-change-before-production",
+    });
+    expect(result.mqttPasswordConfigured).toBe(true);
+  });
+
+  it("inherits configured=true from input even when secret is null", () => {
+    const result = normalizeMachineConfig({
+      machineSecretConfigured: true,
+      machineSecret: null,
+    });
+    expect(result.machineSecretConfigured).toBe(true);
+    expect(result.machineSecret).toBeNull();
+  });
+
+  it("defaults all configured flags to false when secrets are absent", () => {
+    const result = normalizeMachineConfig({});
+    expect(result.machineSecretConfigured).toBe(false);
+    expect(result.mqttSigningSecretConfigured).toBe(false);
+    expect(result.mqttPasswordConfigured).toBe(false);
+  });
+
+  it("empty string secret is null and configured remains false", () => {
+    const result = normalizeMachineConfig({
+      machineSecret: "   ",
+    });
+    expect(result.machineSecret).toBeNull();
+    expect(result.machineSecretConfigured).toBe(false);
   });
 });

@@ -15,6 +15,13 @@ describe("MockPaymentProvider", () => {
       orderNo: "ORD20260504000001AAAA0001",
       amountCents: 199,
       expiresAt: new Date("2026-05-04T00:15:00.000Z"),
+      config: {
+        providerCode: "mock",
+        merchantNo: null,
+        appId: null,
+        publicConfigJson: {},
+        sensitiveConfigJson: {},
+      },
     });
 
     expect(result.providerTradeNo).toBe("MOCK-PAY20260504000001AAAA0001");

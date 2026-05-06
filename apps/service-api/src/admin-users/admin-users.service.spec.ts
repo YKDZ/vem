@@ -52,6 +52,7 @@ describe("AdminUsersService", () => {
           update: vi.fn(),
           delete: vi.fn(),
           select: vi.fn(),
+          transaction: vi.fn(),
         };
         return await cb(tx);
       },

@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const envSchema = z.object({
+const baseEnvSchema = z.object({
   NODE_ENV: z
     .enum(["development", "test", "production"])
     .default("development"),
@@ -10,10 +10,19 @@ export const envSchema = z.object({
   JWT_REFRESH_SECRET: z.string().min(32),
   JWT_ACCESS_TTL_SECONDS: z.coerce.number().int().min(60).default(900),
   JWT_REFRESH_TTL_SECONDS: z.coerce.number().int().min(3600).default(604800),
-  MACHINE_SHARED_SECRET: z.string().min(32),
+  MACHINE_JWT_SECRET: z.string().min(32),
+  MACHINE_CREDENTIAL_ENCRYPTION_KEY: z.string().min(32),
   MACHINE_ACCESS_TTL_SECONDS: z.coerce.number().int().min(60).default(900),
   CORS_ORIGINS: z.string().default("http://localhost:5173"),
   MQTT_URL: z.url(),
+  MQTT_USERNAME: z.string().min(1).optional(),
+  MQTT_PASSWORD: z.string().min(1).optional(),
+  MQTT_SIGNATURE_TOLERANCE_SECONDS: z.coerce
+    .number()
+    .int()
+    .min(30)
+    .max(3600)
+    .default(300),
   PAYMENT_MOCK_ENABLED: z
     .preprocess((value) => {
       if (typeof value === "string") {
@@ -23,10 +32,50 @@ export const envSchema = z.object({
       }
       return value;
     }, z.boolean())
-    .default(true),
+    .default(false),
   PAYMENT_WEBHOOK_BASE_URL: z.url(),
+  PAYMENT_CONFIG_ENCRYPTION_KEY: z
+    .string()
+    .min(32)
+    .default("dev-payment-config-encryption-key-change-me"),
+  PAYMENT_RECONCILE_INTERVAL_SECONDS: z.coerce
+    .number()
+    .int()
+    .min(30)
+    .max(3600)
+    .default(120),
   BOOTSTRAP_ADMIN_USERNAME: z.string().min(3).max(64).default("admin"),
   BOOTSTRAP_ADMIN_PASSWORD: z.string().min(12).max(128),
+});
+
+export const envSchema = baseEnvSchema.superRefine((env, ctx) => {
+  if (env.NODE_ENV === "production" && env.PAYMENT_MOCK_ENABLED) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["PAYMENT_MOCK_ENABLED"],
+      message: "PAYMENT_MOCK_ENABLED must be false in production",
+    });
+  }
+  if (
+    env.NODE_ENV === "production" &&
+    (!env.MQTT_USERNAME || !env.MQTT_PASSWORD)
+  ) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["MQTT_USERNAME"],
+      message: "MQTT_USERNAME and MQTT_PASSWORD are required in production",
+    });
+  }
+  if (
+    env.NODE_ENV === "production" &&
+    env.PAYMENT_CONFIG_ENCRYPTION_KEY.length < 32
+  ) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["PAYMENT_CONFIG_ENCRYPTION_KEY"],
+      message: "PAYMENT_CONFIG_ENCRYPTION_KEY must be at least 32 characters",
+    });
+  }
 });
 
 export type ServiceEnv = z.infer<typeof envSchema>;

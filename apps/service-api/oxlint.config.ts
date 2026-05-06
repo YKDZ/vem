@@ -21,5 +21,12 @@ export default defineConfig({
         "typescript/no-unsafe-type-assertion": "off",
       },
     },
+    {
+      files: ["**/*.cli.ts"],
+      rules: {
+        "eslint/no-console": "off",
+        "eslint/no-await-in-loop": "off",
+      },
+    },
   ],
 });

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { reactive } from "vue";
+import { onMounted, reactive } from "vue";
 import { useRouter } from "vue-router";
 
 import MockHardwareControls from "@/components/MockHardwareControls.vue";
@@ -9,11 +9,36 @@ import {
 } from "@/config/machine-config";
 import KioskLayout from "@/layouts/KioskLayout.vue";
 import { useMachineStore } from "@/stores/machine";
+import { useMqttStore } from "@/stores/mqtt";
 
 const router = useRouter();
 const machineStore = useMachineStore();
+const mqttStore = useMqttStore();
 
-const form = reactive({ ...machineStore.config });
+const form = reactive({
+  machineCode: machineStore.config.machineCode,
+  apiBaseUrl: machineStore.config.apiBaseUrl,
+  mqttUrl: machineStore.config.mqttUrl,
+  mqttUsername: machineStore.config.mqttUsername,
+  hardwareAdapter: machineStore.config.hardwareAdapter,
+  kioskMode: machineStore.config.kioskMode,
+  machineSecretInput: "",
+  mqttSigningSecretInput: "",
+  mqttPasswordInput: "",
+});
+
+onMounted(async () => {
+  if (!machineStore.configLoaded) {
+    await machineStore.loadConfig();
+    form.machineCode = machineStore.config.machineCode;
+    form.apiBaseUrl = machineStore.config.apiBaseUrl;
+    form.mqttUrl = machineStore.config.mqttUrl;
+    form.mqttUsername = machineStore.config.mqttUsername;
+    form.hardwareAdapter = machineStore.config.hardwareAdapter;
+    form.kioskMode = machineStore.config.kioskMode;
+  }
+});
+
 const adapters: HardwareAdapter[] = [
   "mock",
   "serial",
@@ -23,7 +48,12 @@ const adapters: HardwareAdapter[] = [
 
 async function saveAndReboot(): Promise<void> {
   try {
-    const normalized = normalizeMachineConfig(form);
+    const normalized = normalizeMachineConfig({
+      ...form,
+      machineSecret: form.machineSecretInput.trim() || null,
+      mqttSigningSecret: form.mqttSigningSecretInput.trim() || null,
+      mqttPassword: form.mqttPasswordInput.trim() || null,
+    });
     await machineStore.saveConfig(normalized);
     await router.replace("/boot");
   } catch (error) {
@@ -46,6 +76,13 @@ async function saveAndReboot(): Promise<void> {
         出货模式切换，用于验证 MQTT 出货成功、失败与补发链路。
       </p>
 
+      <div
+        v-if="mqttStore.outboxWarning"
+        class="mt-6 rounded-2xl border border-amber-300/30 bg-amber-500/20 p-4 text-amber-100"
+      >
+        {{ mqttStore.outboxWarning }}
+      </div>
+
       <form class="mt-8 grid gap-5" @submit.prevent="saveAndReboot">
         <label class="grid gap-2 text-left">
           <span class="text-sm font-semibold text-slate-200"
@@ -58,17 +95,83 @@ async function saveAndReboot(): Promise<void> {
           />
         </label>
 
-        <label class="grid gap-2 text-left">
+        <div class="grid gap-2 text-left">
           <span class="text-sm font-semibold text-slate-200"
             >机器密钥 machineSecret</span
           >
+          <p class="rounded-2xl bg-slate-950/40 p-3 text-sm text-slate-300">
+            机器密钥状态：
+            <span class="font-semibold text-emerald-200">
+              {{
+                machineStore.config.machineSecretConfigured
+                  ? "已配置"
+                  : "未配置"
+              }}
+            </span>
+          </p>
           <input
-            v-model="form.machineSecret"
+            v-model="form.machineSecretInput"
+            autocomplete="new-password"
             class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-sky-300"
-            placeholder="部署时写入的机器密钥"
+            placeholder="输入新机器密钥；留空保持现有密钥"
             type="password"
           />
+        </div>
+
+        <div class="grid gap-2 text-left">
+          <span class="text-sm font-semibold text-slate-200"
+            >MQTT 签名密钥 mqttSigningSecret</span
+          >
+          <p class="rounded-2xl bg-slate-950/40 p-3 text-sm text-slate-300">
+            MQTT 签名密钥状态：
+            <span class="font-semibold text-emerald-200">
+              {{
+                machineStore.config.mqttSigningSecretConfigured
+                  ? "已配置"
+                  : "未配置"
+              }}
+            </span>
+          </p>
+          <input
+            v-model="form.mqttSigningSecretInput"
+            autocomplete="new-password"
+            class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-sky-300"
+            placeholder="输入新 MQTT 签名密钥；留空保持现有密钥"
+            type="password"
+          />
+        </div>
+
+        <label class="grid gap-2 text-left">
+          <span class="text-sm font-semibold text-slate-200"
+            >MQTT 用户名 mqttUsername</span
+          >
+          <input
+            v-model="form.mqttUsername"
+            class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-sky-300"
+            placeholder="MQTT Broker 用户名"
+          />
         </label>
+
+        <div class="grid gap-2 text-left">
+          <span class="text-sm font-semibold text-slate-200"
+            >MQTT 密码 mqttPassword</span
+          >
+          <p class="rounded-2xl bg-slate-950/40 p-3 text-sm text-slate-300">
+            MQTT 密码状态：
+            <span class="font-semibold text-emerald-200">
+              {{
+                machineStore.config.mqttPasswordConfigured ? "已配置" : "未配置"
+              }}
+            </span>
+          </p>
+          <input
+            v-model="form.mqttPasswordInput"
+            autocomplete="new-password"
+            class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-sky-300"
+            placeholder="输入新 MQTT 密码；留空保持现有密码"
+            type="password"
+          />
+        </div>
 
         <label class="grid gap-2 text-left">
           <span class="text-sm font-semibold text-slate-200">API Base URL</span>
@@ -87,9 +190,7 @@ async function saveAndReboot(): Promise<void> {
         </label>
 
         <label class="grid gap-2 text-left">
-          <span class="text-sm font-semibold text-slate-200"
-            >Hardware Adapter</span
-          >
+          <span class="text-sm font-semibold text-slate-200">硬件适配器</span>
           <select
             v-model="form.hardwareAdapter"
             class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-sky-300"

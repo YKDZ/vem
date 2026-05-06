@@ -52,7 +52,7 @@ async function goCheckout(): Promise<void> {
       </button>
 
       <div
-        class="rounded-[2rem] border border-white/10 bg-white/10 p-6 shadow-2xl"
+        class="rounded-4xl border border-white/10 bg-white/10 p-6 shadow-2xl"
       >
         <div
           class="flex aspect-square max-h-[44vh] items-center justify-center rounded-[2rem] bg-gradient-to-br from-sky-300 to-indigo-500 text-7xl font-black text-slate-950"

@@ -20,8 +20,8 @@ function pushStep(message: string): void {
 }
 
 onMounted(async () => {
-  pushStep("读取本地机器配置");
-  await machineStore.loadConfig();
+  pushStep("读取本地机器运行配置");
+  await machineStore.loadConfig({ includeSecrets: true });
 
   if (!machineStore.hasDeploymentConfig) {
     pushStep("缺少 machineCode/machineSecret，进入部署配置页");
@@ -29,9 +29,9 @@ onMounted(async () => {
     return;
   }
 
-  pushStep("换取机器访问令牌");
+  pushStep("确保机器访问令牌有效");
   try {
-    await machineStore.authenticate();
+    await machineStore.ensureMachineToken();
   } catch {
     pushStep("令牌获取失败，进入部署配置页");
     await router.replace("/maintenance");
@@ -55,8 +55,13 @@ onMounted(async () => {
   await catalogStore.refresh(machineStore.config);
 
   pushStep("连接 MQTT 并补发本地事件");
-  await mqttStore.connect(machineStore.config);
-  await mqttStore.flushOutbox();
+  try {
+    await mqttStore.connect(machineStore.config);
+    await mqttStore.flushOutbox();
+  } catch {
+    pushStep("MQTT 连接失败，继续检查网络状态");
+  }
+  machineStore.clearPlaintextSecrets();
 
   if (!connectivityStore.isSaleNetworkReady || !machineStore.canSell) {
     pushStep("网络或硬件未就绪，进入离线页");

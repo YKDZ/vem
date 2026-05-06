@@ -64,6 +64,7 @@ describe("RolesService", () => {
               where: vi.fn().mockResolvedValue([]),
             }),
           }),
+          transaction: vi.fn(),
         };
         return await cb(tx);
       },

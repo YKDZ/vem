@@ -1,0 +1,69 @@
+import { describe, expect, it } from "vitest";
+
+import { validateEnv } from "./env.schema";
+
+const baseValidEnv = {
+  NODE_ENV: "development",
+  SERVICE_PORT: "3000",
+  DATABASE_URL: "postgres://vem:pass@localhost:5432/vem",
+  JWT_SECRET: "local-access-secret-change-before-production-min32",
+  JWT_REFRESH_SECRET: "local-refresh-secret-change-before-production-min32",
+  MACHINE_JWT_SECRET: "local-machine-jwt-secret-change-before-production-min32",
+  MACHINE_CREDENTIAL_ENCRYPTION_KEY:
+    "local-cred-enc-key-change-before-production!",
+  CORS_ORIGINS: "http://localhost:5173",
+  MQTT_URL: "mqtt://localhost:1883",
+  PAYMENT_MOCK_ENABLED: "true",
+  PAYMENT_WEBHOOK_BASE_URL: "http://localhost:3000/api/payments/webhooks",
+  BOOTSTRAP_ADMIN_USERNAME: "admin",
+  BOOTSTRAP_ADMIN_PASSWORD: "local-admin-password-12",
+};
+
+describe("validateEnv", () => {
+  it("accepts valid development config with mock enabled", () => {
+    const env = validateEnv(baseValidEnv);
+    expect(env.PAYMENT_MOCK_ENABLED).toBe(true);
+    expect(env.NODE_ENV).toBe("development");
+  });
+
+  it("rejects production config with PAYMENT_MOCK_ENABLED=true", () => {
+    expect(() =>
+      validateEnv({
+        ...baseValidEnv,
+        NODE_ENV: "production",
+        PAYMENT_MOCK_ENABLED: "true",
+        MQTT_USERNAME: "vem_service",
+        MQTT_PASSWORD: "strong-password-for-mqtt",
+      }),
+    ).toThrow("PAYMENT_MOCK_ENABLED must be false in production");
+  });
+
+  it("rejects production config missing MQTT credentials", () => {
+    expect(() =>
+      validateEnv({
+        ...baseValidEnv,
+        NODE_ENV: "production",
+        PAYMENT_MOCK_ENABLED: "false",
+        // no MQTT_USERNAME or MQTT_PASSWORD
+      }),
+    ).toThrow("MQTT_USERNAME and MQTT_PASSWORD are required in production");
+  });
+
+  it("accepts production config with mock disabled and MQTT creds", () => {
+    const env = validateEnv({
+      ...baseValidEnv,
+      NODE_ENV: "production",
+      PAYMENT_MOCK_ENABLED: "false",
+      MQTT_USERNAME: "vem_service",
+      MQTT_PASSWORD: "strong-password-for-mqtt",
+    });
+    expect(env.PAYMENT_MOCK_ENABLED).toBe(false);
+    expect(env.MQTT_USERNAME).toBe("vem_service");
+  });
+
+  it("defaults PAYMENT_MOCK_ENABLED to false", () => {
+    const { PAYMENT_MOCK_ENABLED: _, ...withoutMock } = baseValidEnv;
+    const env = validateEnv(withoutMock);
+    expect(env.PAYMENT_MOCK_ENABLED).toBe(false);
+  });
+});

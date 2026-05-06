@@ -1,10 +1,19 @@
 import type { PaymentStatus, RefundStatus } from "@vem/shared";
 
+export type PaymentProviderRuntimeConfig = {
+  providerCode: string;
+  merchantNo: string | null;
+  appId: string | null;
+  publicConfigJson: Record<string, unknown>;
+  sensitiveConfigJson: Record<string, unknown>;
+};
+
 export type PaymentIntentInput = {
   paymentNo: string;
   orderNo: string;
   amountCents: number;
   expiresAt: Date;
+  config: PaymentProviderRuntimeConfig;
 };
 
 export type PaymentIntentResult = {
@@ -15,6 +24,7 @@ export type PaymentIntentResult = {
 export type ProviderPaymentQueryInput = {
   paymentNo: string;
   providerTradeNo: string | null;
+  config: PaymentProviderRuntimeConfig;
 };
 
 export type ProviderPaymentQueryResult = {
@@ -22,6 +32,7 @@ export type ProviderPaymentQueryResult = {
     PaymentStatus,
     "pending" | "processing" | "succeeded" | "failed" | "expired" | "canceled"
   >;
+  providerTradeNo?: string | null;
   paidAt?: Date;
   failedReason?: string | null;
   rawPayload?: Record<string, unknown>;
@@ -30,6 +41,7 @@ export type ProviderPaymentQueryResult = {
 export type ProviderCancelPaymentInput = {
   paymentNo: string;
   providerTradeNo: string | null;
+  config: PaymentProviderRuntimeConfig;
 };
 
 export type ProviderCancelPaymentResult = {
@@ -43,6 +55,7 @@ export type ProviderRefundPaymentInput = {
   providerTradeNo: string | null;
   amountCents: number;
   reason: string;
+  config: PaymentProviderRuntimeConfig;
 };
 
 export type ProviderRefundPaymentResult = {
@@ -55,6 +68,8 @@ export type ProviderRefundPaymentResult = {
 export type ProviderWebhookInput = {
   headers: Record<string, string | string[] | undefined>;
   body: unknown;
+  rawBodyText: string;
+  candidateConfigs: PaymentProviderRuntimeConfig[];
 };
 
 export type ProviderWebhookResult = {

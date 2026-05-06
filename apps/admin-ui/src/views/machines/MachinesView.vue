@@ -1,17 +1,21 @@
 <script setup lang="ts">
 import type { MachineSlotStatus, MachineStatus } from "@vem/shared";
 
+import { Modal } from "antdv-next";
 import { onMounted, ref } from "vue";
 
+import { requestLogExport } from "@/api/machine-ops";
 import {
   createMachine,
   createMachineSlot,
   listMachineSlots,
   listMachines,
+  rotateMachineCredentials,
   updateMachine,
   type Machine,
   type MachineSlot,
   type PageResult,
+  type RotateCredentialsResult,
 } from "@/api/machines";
 import { useAuthStore } from "@/stores/auth";
 import { formatDateTime } from "@/utils/format";
@@ -182,6 +186,46 @@ const slotStatusColor: Record<MachineSlotStatus, string> = {
 onMounted(() => {
   void loadMachines();
 });
+
+// Rotate credentials
+const rotatingId = ref<string | null>(null);
+const rotatedCredentials = ref<RotateCredentialsResult | null>(null);
+const rotateModalOpen = ref(false);
+
+function handleRotateCredentials(m: Machine): void {
+  Modal.confirm({
+    title: "确认轮换凭证",
+    content: `确认要轮换机器 ${m.code} 的凭证吗？旧凭证将立即失效，需重新配置机器。`,
+    okType: "danger",
+    okText: "确认轮换",
+    cancelText: "取消",
+    async onOk() {
+      rotatingId.value = m.id;
+      try {
+        rotatedCredentials.value = await rotateMachineCredentials(m.id);
+        rotateModalOpen.value = true;
+      } finally {
+        rotatingId.value = null;
+      }
+    },
+  });
+}
+
+const exportingLogId = ref<string | null>(null);
+async function handleRequestLogExport(m: Machine): Promise<void> {
+  exportingLogId.value = m.id;
+  try {
+    const op = await requestLogExport(m.id);
+    Modal.success({
+      title: "日志导出请求已创建",
+      content: `运维请求 ID：${op.id}`,
+    });
+  } catch (e) {
+    Modal.error({ title: "请求失败", content: String(e) });
+  } finally {
+    exportingLogId.value = null;
+  }
+}
 </script>
 
 <template>
@@ -222,6 +266,23 @@ onMounted(() => {
                 @click="openEditMachine(record)"
               >
                 编辑
+              </a-button>
+              <a-button
+                v-if="canWrite"
+                size="small"
+                danger
+                :loading="rotatingId === record.id"
+                @click="handleRotateCredentials(record)"
+              >
+                轮换凭证
+              </a-button>
+              <a-button
+                v-if="canWrite"
+                size="small"
+                :loading="exportingLogId === record.id"
+                @click="handleRequestLogExport(record)"
+              >
+                导出日志
               </a-button>
             </a-space>
           </template>
@@ -337,6 +398,41 @@ onMounted(() => {
           </a-select>
         </a-form-item>
       </a-form>
+    </a-modal>
+
+    <!-- Rotate credentials result modal -->
+    <a-modal
+      v-model:open="rotateModalOpen"
+      title="凭证轮换成功"
+      ok-text="已保存，关闭"
+      :cancel-button-props="{ style: { display: 'none' } }"
+      @ok="rotateModalOpen = false"
+    >
+      <a-alert
+        type="warning"
+        message="请立即保存以下凭证，关闭此窗口后将无法再次查看！"
+        class="mb-4"
+      />
+      <template v-if="rotatedCredentials">
+        <a-descriptions bordered :column="1">
+          <a-descriptions-item label="机器编码">{{
+            rotatedCredentials.machineCode
+          }}</a-descriptions-item>
+          <a-descriptions-item label="机器密钥 (machineSecret)">
+            <a-typography-text code copyable>{{
+              rotatedCredentials.machineSecret
+            }}</a-typography-text>
+          </a-descriptions-item>
+          <a-descriptions-item label="MQTT 签名密钥 (mqttSigningSecret)">
+            <a-typography-text code copyable>{{
+              rotatedCredentials.mqttSigningSecret
+            }}</a-typography-text>
+          </a-descriptions-item>
+          <a-descriptions-item label="凭证版本">{{
+            rotatedCredentials.secretVersion
+          }}</a-descriptions-item>
+        </a-descriptions>
+      </template>
     </a-modal>
   </section>
 </template>

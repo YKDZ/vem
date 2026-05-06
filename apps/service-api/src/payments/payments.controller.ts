@@ -8,6 +8,7 @@ import {
   Patch,
   Post,
   Query,
+  Req,
 } from "@nestjs/common";
 import { ApiBearerAuth, ApiTags } from "@nestjs/swagger";
 import {
@@ -17,6 +18,7 @@ import {
   paymentQuerySchema,
   updatePaymentProviderConfigSchema,
   updatePaymentProviderSchema,
+  upsertPaymentProviderConfigSchema,
 } from "@vem/shared";
 import { z } from "zod";
 
@@ -34,6 +36,9 @@ type PaymentProviderQuery = z.infer<typeof paymentProviderQuerySchema>;
 type UpdatePaymentProviderInput = z.infer<typeof updatePaymentProviderSchema>;
 type UpdatePaymentProviderConfigInput = z.infer<
   typeof updatePaymentProviderConfigSchema
+>;
+type UpsertPaymentProviderConfigInput = z.infer<
+  typeof upsertPaymentProviderConfigSchema
 >;
 type PaymentEventQuery = z.infer<typeof paymentEventQuerySchema> &
   z.infer<typeof pageQuerySchema>;
@@ -59,16 +64,26 @@ export class PaymentsController {
     return await this.paymentsService.listPayments(query);
   }
 
-  @Public()
+  @RequirePermissions("payments.configure")
   @Post("mock/:paymentNo/succeed")
-  async markMockSucceeded(@Param("paymentNo") paymentNo: string) {
-    return await this.paymentsService.markMockSucceeded(paymentNo);
+  async markMockSucceeded(
+    @CurrentAdmin() admin: AuthenticatedAdmin,
+    @Param("paymentNo") paymentNo: string,
+  ) {
+    return await this.paymentsService.markMockSucceeded(paymentNo, admin.id);
   }
 
-  @Public()
+  @RequirePermissions("payments.configure")
   @Post("mock/:paymentNo/fail")
-  async markMockFailed(@Param("paymentNo") paymentNo: string) {
-    return await this.paymentsService.markMockFailed(paymentNo, "mock_failed");
+  async markMockFailed(
+    @CurrentAdmin() admin: AuthenticatedAdmin,
+    @Param("paymentNo") paymentNo: string,
+  ) {
+    return await this.paymentsService.markMockFailed(
+      paymentNo,
+      "mock_failed",
+      admin.id,
+    );
   }
 
   @RequirePermissions("payments.configure")
@@ -107,6 +122,16 @@ export class PaymentsController {
     return await this.paymentsService.updateProviderConfig(id, admin.id, body);
   }
 
+  @RequirePermissions("payments.configure")
+  @Post("provider-configs")
+  async upsertProviderConfig(
+    @CurrentAdmin() admin: AuthenticatedAdmin,
+    @Body(new ZodValidationPipe(upsertPaymentProviderConfigSchema))
+    body: UpsertPaymentProviderConfigInput,
+  ) {
+    return await this.paymentsService.upsertProviderConfig(admin.id, body);
+  }
+
   @RequirePermissions("payments.read")
   @Get("events")
   async listPaymentEvents(
@@ -122,11 +147,14 @@ export class PaymentsController {
     @Param("providerCode") providerCode: string,
     @Headers() headers: Record<string, string | string[] | undefined>,
     @Body() body: unknown,
+    @Req() req: { rawBody?: Buffer },
   ) {
+    const rawBodyText = req.rawBody?.toString("utf8") ?? JSON.stringify(body);
     return await this.paymentsService.handleProviderWebhook(
       providerCode,
       headers,
       body,
+      rawBodyText,
     );
   }
 }

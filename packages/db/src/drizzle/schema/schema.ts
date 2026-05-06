@@ -344,6 +344,15 @@ export const machines = t.pgTable(
     status: machineStatus("status").default("offline").notNull(),
     lastSeenAt: t.timestamp("last_seen_at", { withTimezone: true }),
     mqttClientId: t.varchar("mqtt_client_id", { length: 128 }),
+    secretHash: t.text("secret_hash"),
+    secretVersion: t.integer("secret_version").default(1).notNull(),
+    secretRotatedAt: t.timestamp("secret_rotated_at", { withTimezone: true }),
+    credentialRevokedAt: t.timestamp("credential_revoked_at", {
+      withTimezone: true,
+    }),
+    mqttSigningSecretEncryptedJson: t
+      .jsonb("mqtt_signing_secret_encrypted_json")
+      .$type<JsonObject>(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
     deletedAt: deletedAt(),
@@ -352,6 +361,7 @@ export const machines = t.pgTable(
     t.uniqueIndex("machines_code_unique").on(table.code),
     t.index("machines_status_idx").on(table.status),
     t.index("machines_last_seen_at_idx").on(table.lastSeenAt),
+    t.index("machines_credential_revoked_at_idx").on(table.credentialRevokedAt),
   ],
 );
 
@@ -424,6 +434,10 @@ export const inventories = t.pgTable(
     t.check(
       "inventories_low_stock_threshold_non_negative",
       sql`${table.lowStockThreshold} >= 0`,
+    ),
+    t.check(
+      "inventories_reserved_qty_lte_on_hand_qty",
+      sql`${table.reservedQty} <= ${table.onHandQty}`,
     ),
   ],
 );
@@ -566,6 +580,9 @@ export const paymentProviderConfigs = t.pgTable(
   (table) => [
     t.index("payment_provider_configs_provider_id_idx").on(table.providerId),
     t.index("payment_provider_configs_machine_id_idx").on(table.machineId),
+    t
+      .uniqueIndex("payment_provider_configs_provider_machine_unique")
+      .on(table.providerId, table.machineId),
   ],
 );
 
@@ -681,8 +698,9 @@ export const refunds = t.pgTable(
     t.index("refunds_payment_id_idx").on(table.paymentId),
     t.index("refunds_order_id_idx").on(table.orderId),
     t
-      .uniqueIndex("refunds_order_reason_unique")
-      .on(table.orderId, table.reason),
+      .uniqueIndex("refunds_order_reason_active_unique")
+      .on(table.orderId, table.reason)
+      .where(sql`${table.status} IN ('created', 'processing', 'succeeded')`),
     t.check(
       "refunds_amount_cents_non_negative",
       sql`${table.amountCents} >= 0`,
@@ -773,6 +791,9 @@ export const vendingCommands = t.pgTable(
   },
   (table) => [
     t.uniqueIndex("vending_commands_command_no_unique").on(table.commandNo),
+    t
+      .uniqueIndex("vending_commands_order_slot_unique")
+      .on(table.orderId, table.slotId),
     t.index("vending_commands_order_id_idx").on(table.orderId),
     t.index("vending_commands_machine_id_idx").on(table.machineId),
     t.index("vending_commands_status_idx").on(table.status),
@@ -840,6 +861,7 @@ export const notificationTargets = t.pgTable(
     updatedAt: updatedAt(),
   },
   (table) => [
+    t.uniqueIndex("notification_targets_name_unique").on(table.name),
     t.index("notification_targets_type_idx").on(table.type),
     t.index("notification_targets_status_idx").on(table.status),
   ],
@@ -889,9 +911,122 @@ export const notificationDeliveries = t.pgTable(
   },
   (table) => [
     t
+      .uniqueIndex("notification_deliveries_notification_target_unique")
+      .on(table.notificationId, table.targetId),
+    t
       .index("notification_deliveries_notification_id_idx")
       .on(table.notificationId),
     t.index("notification_deliveries_target_id_idx").on(table.targetId),
     t.index("notification_deliveries_status_idx").on(table.status),
+  ],
+);
+
+export const hardwareErrorCodeConfigs = t.pgTable(
+  "hardware_error_code_configs",
+  {
+    id: id(),
+    errorCode: t.varchar("error_code", { length: 64 }).notNull(),
+    restoreInventory: t.boolean("restore_inventory").notNull(),
+    faultSlot: t.boolean("fault_slot").notNull(),
+    requestRefund: t.boolean("request_refund").notNull(),
+    createWorkOrder: t.boolean("create_work_order").notNull(),
+    severity: notificationSeverity("severity").default("critical").notNull(),
+    status: paymentProviderStatus("status").default("enabled").notNull(),
+    updatedByAdminUserId: t
+      .uuid("updated_by_admin_user_id")
+      .references(() => adminUsers.id),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    t
+      .uniqueIndex("hardware_error_code_configs_error_code_unique")
+      .on(table.errorCode),
+    t.index("hardware_error_code_configs_status_idx").on(table.status),
+  ],
+);
+
+export const machineRemoteOps = t.pgTable(
+  "machine_remote_ops",
+  {
+    id: id(),
+    machineId: t
+      .uuid("machine_id")
+      .notNull()
+      .references(() => machines.id),
+    type: t.varchar("type", { length: 64 }).notNull(),
+    status: t.varchar("status", { length: 32 }).default("pending").notNull(),
+    requestedByAdminUserId: t
+      .uuid("requested_by_admin_user_id")
+      .references(() => adminUsers.id),
+    requestedAt: createdAt(),
+    acceptedAt: t.timestamp("accepted_at", { withTimezone: true }),
+    finishedAt: t.timestamp("finished_at", { withTimezone: true }),
+    failedReason: t.text("failed_reason"),
+    resultJson: t.jsonb("result_json").$type<JsonObject>(),
+  },
+  (table) => [
+    t.index("machine_remote_ops_machine_id_idx").on(table.machineId),
+    t.index("machine_remote_ops_status_idx").on(table.status),
+  ],
+);
+
+export const machineLogArtifacts = t.pgTable(
+  "machine_log_artifacts",
+  {
+    id: id(),
+    opId: t
+      .uuid("op_id")
+      .notNull()
+      .references(() => machineRemoteOps.id),
+    machineId: t
+      .uuid("machine_id")
+      .notNull()
+      .references(() => machines.id),
+    fileName: t.varchar("file_name", { length: 255 }).notNull(),
+    contentType: t.varchar("content_type", { length: 128 }).notNull(),
+    sizeBytes: t.integer("size_bytes").notNull(),
+    storagePath: t.text("storage_path").notNull(),
+    dedupeKey: t.varchar("dedupe_key", { length: 255 }).notNull(),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    t.index("machine_log_artifacts_op_id_idx").on(table.opId),
+    t.index("machine_log_artifacts_machine_id_idx").on(table.machineId),
+    t
+      .uniqueIndex("machine_log_artifacts_dedupe_key_unique")
+      .on(table.dedupeKey),
+  ],
+);
+
+export const maintenanceWorkOrders = t.pgTable(
+  "maintenance_work_orders",
+  {
+    id: id(),
+    workOrderNo: t.varchar("work_order_no", { length: 64 }).notNull(),
+    machineId: t.uuid("machine_id").references(() => machines.id),
+    slotId: t.uuid("slot_id").references(() => machineSlots.id),
+    orderId: t.uuid("order_id").references(() => orders.id),
+    commandId: t.uuid("command_id").references(() => vendingCommands.id),
+    title: t.varchar("title", { length: 128 }).notNull(),
+    description: t.text("description").notNull(),
+    priority: t.varchar("priority", { length: 32 }).default("medium").notNull(),
+    status: t.varchar("status", { length: 32 }).default("open").notNull(),
+    assigneeAdminUserId: t
+      .uuid("assignee_admin_user_id")
+      .references(() => adminUsers.id),
+    resolutionNote: t.text("resolution_note"),
+    dedupeKey: t.varchar("dedupe_key", { length: 255 }).notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+    resolvedAt: t.timestamp("resolved_at", { withTimezone: true }),
+  },
+  (table) => [
+    t.uniqueIndex("maintenance_work_orders_no_unique").on(table.workOrderNo),
+    t
+      .uniqueIndex("maintenance_work_orders_dedupe_key_unique")
+      .on(table.dedupeKey),
+    t.index("maintenance_work_orders_status_idx").on(table.status),
+    t.index("maintenance_work_orders_machine_id_idx").on(table.machineId),
   ],
 );

@@ -32,14 +32,19 @@ import {
   paymentQuerySchema,
   updatePaymentProviderConfigSchema,
   updatePaymentProviderSchema,
+  upsertPaymentProviderConfigSchema,
 } from "@vem/shared";
 import { z } from "zod";
 
+import { AuditService } from "../audit/audit.service";
 import { getOffset, toPageResult } from "../common/pagination.util";
 import { AppConfigService } from "../config/app-config.service";
+import { isEncryptedJson } from "../crypto/encrypted-json.util";
 import { DRIZZLE_CLIENT } from "../database/database.constants";
 import { InventoryService } from "../inventory/inventory.service";
 import { VendingService } from "../vending/vending.service";
+import { PaymentConfigSecretService } from "./payment-config-secret.service";
+import { PaymentProviderConfigService } from "./payment-provider-config.service";
 import { PaymentProviderRegistry } from "./payment-provider.registry";
 
 type PaymentQuery = z.infer<typeof paymentQuerySchema> &
@@ -48,6 +53,9 @@ type PaymentProviderQuery = z.infer<typeof paymentProviderQuerySchema>;
 type UpdatePaymentProviderInput = z.infer<typeof updatePaymentProviderSchema>;
 type UpdatePaymentProviderConfigInput = z.infer<
   typeof updatePaymentProviderConfigSchema
+>;
+type UpsertPaymentProviderConfigInput = z.infer<
+  typeof upsertPaymentProviderConfigSchema
 >;
 type PaymentEventQuery = z.infer<typeof paymentEventQuerySchema> &
   z.infer<typeof pageQuerySchema>;
@@ -63,6 +71,9 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
     private readonly vendingService: VendingService,
     private readonly config: AppConfigService,
     private readonly paymentProviderRegistry: PaymentProviderRegistry,
+    private readonly auditService: AuditService,
+    private readonly paymentConfigSecrets: PaymentConfigSecretService,
+    private readonly paymentProviderConfigService: PaymentProviderConfigService,
   ) {}
 
   private assertMockPaymentEnabled(): void {
@@ -145,7 +156,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
     return toPageResult(items, query, Number(totalRow.total));
   }
 
-  async markMockSucceeded(paymentNo: string) {
+  async markMockSucceeded(paymentNo: string, adminUserId: string | null) {
     this.assertMockPaymentEnabled();
     const transition = await this.db.transaction(async (tx) => {
       const [row] = await tx
@@ -188,6 +199,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       if (inserted.length === 0) {
         return {
           paymentNo: row.paymentNo,
+          paymentId: row.paymentId,
           status: row.paymentStatus,
           orderId: row.orderId,
           alreadyHandled: true,
@@ -246,6 +258,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
 
       return {
         paymentNo: row.paymentNo,
+        paymentId: row.paymentId,
         status: "succeeded",
         orderId: row.orderId,
         alreadyHandled: false,
@@ -254,14 +267,29 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
 
     if (!transition.alreadyHandled) {
       await this.vendingService.createAndDispatchCommands(transition.orderId);
+      await this.auditService.record({
+        adminUserId,
+        action: "payments.mock.succeed",
+        resourceType: "payment",
+        resourceId: transition.paymentId,
+        afterJson: {
+          paymentNo: transition.paymentNo,
+          orderId: transition.orderId,
+          alreadyHandled: transition.alreadyHandled,
+        },
+      });
     }
 
     return transition;
   }
 
-  async markMockFailed(paymentNo: string, reason: string) {
+  async markMockFailed(
+    paymentNo: string,
+    reason: string,
+    adminUserId: string | null,
+  ) {
     this.assertMockPaymentEnabled();
-    return await this.db.transaction(async (tx) => {
+    const result = await this.db.transaction(async (tx) => {
       const [row] = await tx
         .select({
           paymentId: payments.id,
@@ -302,6 +330,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       if (inserted.length === 0) {
         return {
           paymentNo: row.paymentNo,
+          paymentId: row.paymentId,
           status: row.paymentStatus,
           orderId: row.orderId,
           alreadyHandled: true,
@@ -358,11 +387,29 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
 
       return {
         paymentNo: row.paymentNo,
+        paymentId: row.paymentId,
         status: "failed",
         orderId: row.orderId,
         alreadyHandled: false,
       };
     });
+
+    if (!result.alreadyHandled) {
+      await this.auditService.record({
+        adminUserId,
+        action: "payments.mock.fail",
+        resourceType: "payment",
+        resourceId: result.paymentId,
+        afterJson: {
+          paymentNo: result.paymentNo,
+          orderId: result.orderId,
+          reason,
+          alreadyHandled: result.alreadyHandled,
+        },
+      });
+    }
+
+    return result;
   }
 
   async expireOverduePayments(
@@ -490,7 +537,42 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
   }
 
   async listProviderConfigs() {
-    return await this.db.select().from(paymentProviderConfigs);
+    const rows = await this.db
+      .select({
+        id: paymentProviderConfigs.id,
+        providerId: paymentProviderConfigs.providerId,
+        machineId: paymentProviderConfigs.machineId,
+        merchantNo: paymentProviderConfigs.merchantNo,
+        appId: paymentProviderConfigs.appId,
+        publicConfigJson: paymentProviderConfigs.publicConfigJson,
+        configEncryptedJson: paymentProviderConfigs.configEncryptedJson,
+        status: paymentProviderConfigs.status,
+        updatedByAdminUserId: paymentProviderConfigs.updatedByAdminUserId,
+        createdAt: paymentProviderConfigs.createdAt,
+        updatedAt: paymentProviderConfigs.updatedAt,
+      })
+      .from(paymentProviderConfigs);
+    return rows.map((row) => {
+      const { configEncryptedJson, ...rest } = row;
+      const encryptedJson = isEncryptedJson(configEncryptedJson)
+        ? configEncryptedJson
+        : null;
+      let decryptedKeys: Record<string, unknown> | null = null;
+      try {
+        decryptedKeys = encryptedJson
+          ? this.paymentConfigSecrets.decrypt(encryptedJson)
+          : null;
+      } catch {
+        decryptedKeys = null;
+      }
+      return {
+        ...rest,
+        secretStatusJson: this.paymentConfigSecrets.summarize(
+          decryptedKeys,
+          row.updatedAt,
+        ),
+      };
+    });
   }
 
   async updateProviderConfig(
@@ -513,6 +595,81 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
     if (!updated)
       throw new NotFoundException("Payment provider config not found");
     return updated;
+  }
+
+  async upsertProviderConfig(
+    adminUserId: string,
+    input: UpsertPaymentProviderConfigInput,
+  ) {
+    const [provider] = await this.db
+      .select({ id: paymentProviders.id })
+      .from(paymentProviders)
+      .where(eq(paymentProviders.code, input.providerCode))
+      .limit(1);
+    if (!provider)
+      throw new NotFoundException(
+        `Payment provider '${input.providerCode}' not found`,
+      );
+
+    const machineId = input.machineId ?? null;
+    const existing = await this.db
+      .select({
+        id: paymentProviderConfigs.id,
+        configEncryptedJson: paymentProviderConfigs.configEncryptedJson,
+      })
+      .from(paymentProviderConfigs)
+      .where(
+        and(
+          eq(paymentProviderConfigs.providerId, provider.id),
+          machineId === null
+            ? sql`${paymentProviderConfigs.machineId} IS NULL`
+            : eq(paymentProviderConfigs.machineId, machineId),
+        ),
+      )
+      .limit(1);
+
+    const sensitiveConfig: Record<string, unknown> =
+      input.sensitiveConfigJson &&
+      Object.keys(input.sensitiveConfigJson).length > 0
+        ? (input.sensitiveConfigJson as Record<string, unknown>)
+        : {};
+    const newEncryptedJson = this.paymentConfigSecrets.encrypt(sensitiveConfig);
+
+    if (existing.length > 0) {
+      const existingRow = existing[0];
+      const setClause: Record<string, unknown> = {
+        merchantNo: input.merchantNo,
+        appId: input.appId,
+        publicConfigJson: input.publicConfigJson,
+        status: input.status,
+        updatedByAdminUserId: adminUserId,
+        updatedAt: new Date(),
+      };
+      if (input.sensitiveConfigJson !== undefined) {
+        setClause.configEncryptedJson = newEncryptedJson;
+      }
+      const [updated] = await this.db
+        .update(paymentProviderConfigs)
+        .set(setClause)
+        .where(eq(paymentProviderConfigs.id, existingRow.id))
+        .returning();
+      return updated;
+    } else {
+      const [inserted] = await this.db
+        .insert(paymentProviderConfigs)
+        .values({
+          providerId: provider.id,
+          machineId,
+          merchantNo: input.merchantNo,
+          appId: input.appId,
+          publicConfigJson: input.publicConfigJson ?? {},
+          configEncryptedJson: newEncryptedJson,
+          status: input.status ?? "enabled",
+          updatedByAdminUserId: adminUserId,
+        })
+        .returning();
+      return inserted;
+    }
   }
 
   async listPaymentEvents(query: PaymentEventQuery) {
@@ -573,12 +730,23 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
     providerCode: string,
     headers: Record<string, string | string[] | undefined>,
     body: unknown,
+    rawBodyText?: string,
   ) {
     const provider = this.paymentProviderRegistry.get(providerCode);
     if (!provider.handleWebhook) {
       throw new NotFoundException("Payment webhook is not supported");
     }
-    const webhook = await provider.handleWebhook({ headers, body });
+    const candidateConfigs = await this.paymentProviderConfigService
+      .listCandidateConfigsForProvider(providerCode)
+      .catch(() => []);
+    const computedRawBodyText =
+      rawBodyText ?? (typeof body === "string" ? body : JSON.stringify(body));
+    const webhook = await provider.handleWebhook({
+      headers,
+      body,
+      rawBodyText: computedRawBodyText,
+      candidateConfigs,
+    });
 
     const [payment] = webhook.paymentNo
       ? await this.db
@@ -623,7 +791,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
     }
 
     if (webhook.paymentStatus === "succeeded") {
-      const row = await this.db.transaction(async (tx) => {
+      const transition = await this.db.transaction(async (tx) => {
         const [r] = await tx
           .select({
             paymentId: payments.id,
@@ -637,17 +805,20 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
           .where(eq(payments.id, payment.id));
         if (!r) return null;
 
-        if (r.paymentStatus !== "succeeded") {
-          await tx
-            .update(payments)
-            .set({
-              status: "succeeded",
-              paidAt: new Date(),
-              failedReason: null,
-              updatedAt: new Date(),
-            })
-            .where(eq(payments.id, r.paymentId));
+        const shouldDispatch = r.paymentStatus !== "succeeded";
+        if (!shouldDispatch) {
+          return { orderId: r.orderId, shouldDispatch: false };
         }
+
+        await tx
+          .update(payments)
+          .set({
+            status: "succeeded",
+            paidAt: new Date(),
+            failedReason: null,
+            updatedAt: new Date(),
+          })
+          .where(eq(payments.id, r.paymentId));
 
         if (r.orderStatus !== "paid" && r.orderStatus !== "dispensing") {
           await tx
@@ -684,11 +855,11 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
           });
         }, Promise.resolve());
 
-        return r;
+        return { orderId: r.orderId, shouldDispatch: true };
       });
 
-      if (row) {
-        await this.vendingService.createAndDispatchCommands(row.orderId);
+      if (transition?.shouldDispatch) {
+        await this.vendingService.createAndDispatchCommands(transition.orderId);
       }
     }
 
@@ -758,5 +929,172 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
     }
 
     return { handled: true, duplicate: false };
+  }
+
+  async reconcilePendingPayments(
+    now = new Date(),
+  ): Promise<{ reconciled: number }> {
+    const cutoff = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+    const pendingPayments = await this.db
+      .select({
+        id: payments.id,
+        paymentNo: payments.paymentNo,
+        providerId: payments.providerId,
+        providerCode: paymentProviders.code,
+        providerTradeNo: payments.providerTradeNo,
+        orderId: payments.orderId,
+        machineId: orders.machineId,
+      })
+      .from(payments)
+      .innerJoin(orders, eq(orders.id, payments.orderId))
+      .innerJoin(paymentProviders, eq(paymentProviders.id, payments.providerId))
+      .where(
+        and(
+          inArray(payments.status, ["pending", "processing"]),
+          sql`${payments.createdAt} >= ${cutoff}`,
+          sql`${payments.expiresAt} IS NULL OR ${payments.expiresAt} > ${now}`,
+        ),
+      )
+      .limit(50);
+
+    let reconciled = 0;
+    await Promise.all(
+      pendingPayments.map(async (payment) => {
+        try {
+          if (!this.paymentProviderRegistry.has(payment.providerCode)) return;
+          const provider = this.paymentProviderRegistry.get(
+            payment.providerCode,
+          );
+          const config = await this.paymentProviderConfigService
+            .resolveForPayment({
+              providerCode: payment.providerCode,
+              machineId: payment.machineId,
+            })
+            .catch(() => ({
+              providerCode: payment.providerCode,
+              merchantNo: null,
+              appId: null,
+              publicConfigJson: {},
+              sensitiveConfigJson: {},
+            }));
+          const result = await provider.queryPayment({
+            paymentNo: payment.paymentNo,
+            providerTradeNo: payment.providerTradeNo,
+            config,
+          });
+          if (result.status === "pending" || result.status === "processing") {
+            return;
+          }
+          const providerEventId = `reconcile:${payment.paymentNo}:${result.status}:${now.getTime()}`;
+          const finalStatus =
+            result.status === "succeeded" || result.status === "failed"
+              ? result.status
+              : "failed";
+          const applied = await this.applyPaymentStatusUpdate(
+            payment.id,
+            payment.orderId,
+            finalStatus,
+            providerEventId,
+            result.providerTradeNo,
+            result.rawPayload,
+            payment.providerId,
+          );
+          if (applied) {
+            reconciled += 1;
+            if (result.status === "succeeded") {
+              await this.vendingService
+                .createAndDispatchCommands(payment.orderId)
+                .catch((_err: unknown) => {
+                  // ignore dispatch errors during reconciliation
+                });
+            }
+          }
+        } catch {
+          // Skip failed reconciliation for individual payments
+        }
+      }),
+    );
+    return { reconciled };
+  }
+
+  private async applyPaymentStatusUpdate(
+    paymentId: string,
+    orderId: string,
+    newStatus: "succeeded" | "failed",
+    providerEventId: string,
+    providerTradeNo?: string | null,
+    rawPayloadJson?: Record<string, unknown>,
+    providerId?: string,
+  ): Promise<boolean> {
+    return await this.db.transaction(async (tx) => {
+      const [existing] = await tx
+        .select({ id: paymentEvents.id })
+        .from(paymentEvents)
+        .where(eq(paymentEvents.providerEventId, providerEventId))
+        .limit(1);
+      if (existing) return false;
+
+      const [r] = await tx
+        .select({
+          paymentId: payments.id,
+          paymentStatus: payments.status,
+          orderId: orders.id,
+          orderStatus: orders.status,
+        })
+        .from(payments)
+        .innerJoin(orders, eq(orders.id, payments.orderId))
+        .where(eq(payments.id, paymentId));
+      if (!r) return false;
+
+      await tx
+        .insert(paymentEvents)
+        .values({
+          paymentId,
+          providerId:
+            providerId ??
+            (await this.db
+              .select({ id: payments.providerId })
+              .from(payments)
+              .where(eq(payments.id, paymentId))
+              .then(([p]) => p?.id ?? "")),
+          eventType: `reconcile.payment.${newStatus}`,
+          providerEventId,
+          rawPayloadJson: rawPayloadJson ?? {},
+          signatureValid: true,
+          handledAt: new Date(),
+        })
+        .onConflictDoNothing();
+
+      if (newStatus === "succeeded") {
+        await tx
+          .update(payments)
+          .set({
+            status: "succeeded",
+            providerTradeNo: providerTradeNo ?? null,
+            updatedAt: new Date(),
+          })
+          .where(eq(payments.id, paymentId));
+
+        if (r.orderStatus === "pending_payment") {
+          await tx
+            .update(orders)
+            .set({ status: "paid", updatedAt: new Date() })
+            .where(eq(orders.id, orderId));
+          await tx.insert(orderStatusEvents).values({
+            orderId,
+            fromStatus: r.orderStatus,
+            toStatus: "paid",
+            reason: "reconcile_succeeded",
+          });
+        }
+      } else {
+        await tx
+          .update(payments)
+          .set({ status: "failed", updatedAt: new Date() })
+          .where(eq(payments.id, paymentId));
+      }
+
+      return true;
+    });
   }
 }

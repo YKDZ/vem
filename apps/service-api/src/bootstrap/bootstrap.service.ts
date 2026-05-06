@@ -28,6 +28,7 @@ export class BootstrapService implements OnModuleInit {
     const superAdminRoleId = await this.seedSuperAdminRole();
     await this.seedBootstrapAdmin(superAdminRoleId);
     await this.seedMockPaymentProvider();
+    await this.seedRealPaymentProviders();
   }
 
   private async seedPermissions(): Promise<void> {
@@ -124,5 +125,55 @@ export class BootstrapService implements OnModuleInit {
           updatedAt: new Date(),
         },
       });
+  }
+
+  private async seedRealPaymentProviders(): Promise<void> {
+    const realProviders = [
+      {
+        code: "wechat_pay",
+        name: "微信支付",
+        type: "wechat_pay" as const,
+        capabilities: {
+          createPaymentIntent: true,
+          webhook: true,
+          refund: true,
+          query: true,
+          cancel: true,
+        },
+      },
+      {
+        code: "alipay",
+        name: "支付宝",
+        type: "alipay" as const,
+        capabilities: {
+          createPaymentIntent: true,
+          webhook: true,
+          refund: true,
+          query: true,
+          cancel: true,
+        },
+      },
+    ];
+    await Promise.all(
+      realProviders.map((provider) =>
+        this.db
+          .insert(paymentProviders)
+          .values({
+            code: provider.code,
+            name: provider.name,
+            type: provider.type,
+            status: "disabled",
+            capabilities: provider.capabilities,
+          })
+          .onConflictDoUpdate({
+            target: paymentProviders.code,
+            set: {
+              name: provider.name,
+              capabilities: provider.capabilities,
+              updatedAt: new Date(),
+            },
+          }),
+      ),
+    );
   }
 }

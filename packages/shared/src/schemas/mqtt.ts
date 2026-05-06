@@ -20,12 +20,34 @@ export const dispenseCommandPayloadSchema = z.object({
   timeoutSeconds: z.int().positive(),
 });
 
-export const dispenseResultPayloadSchema = z.object({
-  commandNo: z.string().min(1).max(64),
-  success: z.boolean(),
-  errorCode: hardwareErrorCodeSchema.nullable(),
-  message: z.string(),
-  reportedAt: z.iso.datetime(),
+export const dispenseResultPayloadSchema = z
+  .object({
+    commandNo: z.string().min(1).max(64),
+    success: z.boolean(),
+    errorCode: hardwareErrorCodeSchema.nullable(),
+    message: z.string(),
+    reportedAt: z.iso.datetime(),
+  })
+  .superRefine((data, ctx) => {
+    if (data.success && data.errorCode !== null) {
+      ctx.addIssue({
+        code: "custom",
+      });
+    }
+    if (!data.success && data.errorCode === null) {
+      ctx.addIssue({
+        code: "custom",
+      });
+    }
+  });
+
+export const mqttSignedEnvelopeSchema = z.object({
+  messageId: z.string().min(1).max(128),
+  machineCode: z.string().min(1).max(64),
+  issuedAt: z.iso.datetime(),
+  nonce: z.string().min(16).max(128),
+  payload: z.unknown(),
+  signature: z.string().min(32).max(256),
 });
 
 export type CommandAckPayload = z.infer<typeof commandAckPayloadSchema>;
@@ -33,3 +55,36 @@ export type DispenseCommandPayload = z.infer<
   typeof dispenseCommandPayloadSchema
 >;
 export type DispenseResultPayload = z.infer<typeof dispenseResultPayloadSchema>;
+export type MqttSignedEnvelope = z.infer<typeof mqttSignedEnvelopeSchema>;
+
+export function canonicalJson(value: unknown): string {
+  if (value === null) return "null";
+  if (typeof value === "string") return JSON.stringify(value);
+  if (typeof value === "number")
+    return Number.isFinite(value) ? String(value) : "null";
+  if (typeof value === "boolean") return value ? "true" : "false";
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (typeof value === "object") {
+    // value is non-null, non-array object (null and Array are handled above)
+    return `{${Object.keys(value)
+      .sort()
+      .map(
+        (key) =>
+          `${JSON.stringify(key)}:${canonicalJson(Reflect.get(value, key))}`,
+      )
+      .join(",")}}`;
+  }
+  return "null";
+}
+
+export function mqttSigningInput(
+  envelope: Omit<MqttSignedEnvelope, "signature">,
+): string {
+  return canonicalJson({
+    issuedAt: envelope.issuedAt,
+    machineCode: envelope.machineCode,
+    messageId: envelope.messageId,
+    nonce: envelope.nonce,
+    payload: envelope.payload,
+  });
+}

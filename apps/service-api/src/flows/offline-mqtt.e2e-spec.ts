@@ -5,6 +5,7 @@ import {
   count,
   desc,
   eq,
+  inventories,
   notifications,
   orders,
   refunds,
@@ -21,6 +22,7 @@ import { VendingService } from "../vending/vending.service";
 import {
   cleanupBusinessTables,
   getMachineAuthHeader,
+  loginAndGetToken,
   seedSingleSlotInventory,
   type ApiResponse,
   type CreatedOrderPayload,
@@ -71,7 +73,7 @@ describe.sequential("offline-mqtt.e2e", () => {
     await cleanupBusinessTables(db);
   });
 
-  it("keeps paid order for manual handling when MQTT publish fails", async () => {
+  it("restores inventory and refunds when MQTT publish fails before delivery", async () => {
     const seeded = await seedSingleSlotInventory(db, {
       machineCode: "M-E2E-OFFLINE-001",
       onHandQty: 1,
@@ -84,6 +86,7 @@ describe.sequential("offline-mqtt.e2e", () => {
     const machineAuthHeader = await getMachineAuthHeader(
       api,
       seeded.machineCode,
+      seeded.machineSecret,
     );
 
     const createOrderResponse = await api
@@ -97,16 +100,16 @@ describe.sequential("offline-mqtt.e2e", () => {
     const createdOrder =
       createOrderResponse.body as ApiResponse<CreatedOrderPayload>;
 
-    const succeedResponse = await api.post(
-      `/api/payments/mock/${createdOrder.data.paymentNo}/succeed`,
-    );
+    const succeedResponse = await api
+      .post(`/api/payments/mock/${createdOrder.data.paymentNo}/succeed`)
+      .set("Authorization", `Bearer ${await loginAndGetToken(api, appConfig)}`);
     expect(succeedResponse.status).toBe(201);
 
     const [orderRow] = await db.client
       .select({ status: orders.status })
       .from(orders)
       .where(eq(orders.id, createdOrder.data.orderId));
-    expect(orderRow.status).toBe("paid");
+    expect(orderRow.status).toBe("refunded");
 
     const [commandRow] = await db.client
       .select({
@@ -118,6 +121,18 @@ describe.sequential("offline-mqtt.e2e", () => {
       .orderBy(desc(vendingCommands.createdAt));
     expect(commandRow.status).toBe("failed");
     expect(commandRow.lastError).toContain("MQTT offline in e2e");
+
+    const [refundRow] = await db.client
+      .select({ total: count() })
+      .from(refunds)
+      .where(eq(refunds.orderId, createdOrder.data.orderId));
+    expect(Number(refundRow.total)).toBe(1);
+
+    const [inventoryRow] = await db.client
+      .select({ onHandQty: inventories.onHandQty })
+      .from(inventories)
+      .where(eq(inventories.id, seeded.inventoryId));
+    expect(inventoryRow.onHandQty).toBe(1); // restored to original
 
     const [notificationRow] = await db.client
       .select({ total: count() })
@@ -139,6 +154,7 @@ describe.sequential("offline-mqtt.e2e", () => {
     const machineAuthHeader2 = await getMachineAuthHeader(
       api,
       seeded.machineCode,
+      seeded.machineSecret,
     );
 
     const createOrderResponse = await api
@@ -154,7 +170,9 @@ describe.sequential("offline-mqtt.e2e", () => {
     expect(createOrderResponse.status).toBe(201);
 
     // trigger payment success to create vending command (will fail due to MQTT offline)
-    await api.post(`/api/payments/mock/${createdOrder.data.paymentNo}/succeed`);
+    await api
+      .post(`/api/payments/mock/${createdOrder.data.paymentNo}/succeed`)
+      .set("Authorization", `Bearer ${await loginAndGetToken(api, appConfig)}`);
 
     // manually set the command as sent in the past with a very short timeout
     await db.client

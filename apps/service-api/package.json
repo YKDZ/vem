@@ -2,6 +2,7 @@
   "name": "service-api",
   "scripts": {
     "build": "nest build",
+    "credentials:rotate-missing": "tsx src/machine-auth/rotate-existing-machine-credentials.cli.ts",
     "fmt": "oxfmt",
     "lint": "oxlint --type-aware",
     "lint-fix": "oxlint --fix --type-aware",
@@ -11,7 +12,7 @@
     "start:prod": "pnpm run start",
     "test": "vitest run",
     "test:e2e": "vitest run --config vitest.e2e.config.ts",
-    "typecheck": "tsc -p tsconfig.build.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
     "@nestjs/common": "^11.0.17",

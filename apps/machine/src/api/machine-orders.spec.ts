@@ -29,6 +29,7 @@ function createMockClient(): MachineApiClient & {
           failedReason: null,
         },
         vending: null,
+        refund: null,
         nextAction: "wait_payment",
         serverTime: "2026-05-04T11:45:00.000Z",
       } as T;

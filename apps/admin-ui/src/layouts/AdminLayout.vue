@@ -1,6 +1,21 @@
 <script setup lang="ts">
 import type { PermissionCode } from "@vem/shared";
+import type { Component } from "vue";
 
+import {
+  AuditOutlined,
+  BellOutlined,
+  DashboardOutlined,
+  LogoutOutlined,
+  MenuFoldOutlined,
+  MenuUnfoldOutlined,
+  OrderedListOutlined,
+  ProductOutlined,
+  SafetyOutlined,
+  ShopOutlined,
+  TransactionOutlined,
+  TeamOutlined,
+} from "@antdv-next/icons";
 import { computed } from "vue";
 import { RouterView, useRoute, useRouter } from "vue-router";
 
@@ -8,10 +23,24 @@ import { routes } from "@/router/routes";
 import { useAppStore } from "@/stores/app";
 import { useAuthStore } from "@/stores/auth";
 
+const ROUTE_ICON_MAP: Record<string, Component> = {
+  dashboard: DashboardOutlined,
+  products: ProductOutlined,
+  machines: ShopOutlined,
+  inventory: OrderedListOutlined,
+  orders: TransactionOutlined,
+  payments: TransactionOutlined,
+  notifications: BellOutlined,
+  "admin-users": TeamOutlined,
+  roles: SafetyOutlined,
+  "audit-logs": AuditOutlined,
+};
+
 type MenuItem = {
   key: string;
   label: string;
   path: string;
+  icon: Component;
   requiredPermissions: PermissionCode[];
 };
 
@@ -34,6 +63,7 @@ const menuItems = computed<MenuItem[]>(() => {
       key: String(item.name),
       label: String(item.meta?.title ?? item.name),
       path: `/${String(item.path)}`,
+      icon: ROUTE_ICON_MAP[String(item.name)] ?? DashboardOutlined,
       requiredPermissions: isPermissionArray(item.meta?.requiredPermissions)
         ? item.meta.requiredPermissions
         : [],
@@ -55,24 +85,43 @@ function logout(): void {
 </script>
 
 <template>
-  <a-layout class="min-h-screen">
+  <a-layout style="min-height: 100vh">
     <a-layout-sider
       :collapsed="appStore.sidebarCollapsed"
       collapsible
       breakpoint="lg"
       :trigger="null"
-      class="bg-slate-950"
+      class="border-r border-slate-100"
     >
-      <div class="flex h-16 items-center px-5 text-lg font-semibold text-white">
-        VEM
+      <div
+        :class="[
+          'flex h-16 items-center border-b border-slate-100',
+          appStore.sidebarCollapsed ? 'justify-center' : 'justify-between px-3',
+        ]"
+      >
+        <span
+          v-show="!appStore.sidebarCollapsed"
+          class="pl-2 font-bold text-base"
+          style="color: #2563eb"
+          >VEM</span
+        >
+        <a-button
+          type="text"
+          class="flex items-center justify-center"
+          @click="appStore.setSidebarCollapsed(!appStore.sidebarCollapsed)"
+        >
+          <MenuFoldOutlined v-if="!appStore.sidebarCollapsed" />
+          <MenuUnfoldOutlined v-else />
+        </a-button>
       </div>
       <a-menu
-        theme="dark"
+        theme="light"
         mode="inline"
         :selected-keys="selectedKeys"
         @click="handleMenuClick"
       >
         <a-menu-item v-for="item in menuItems" :key="item.key">
+          <template #icon><component :is="item.icon" /></template>
           {{ item.label }}
         </a-menu-item>
       </a-menu>
@@ -80,14 +129,8 @@ function logout(): void {
 
     <a-layout>
       <a-layout-header
-        class="flex items-center justify-between bg-white px-4 shadow-sm"
+        class="flex items-center justify-end border-b border-slate-100 bg-white px-4"
       >
-        <a-button
-          type="text"
-          @click="appStore.setSidebarCollapsed(!appStore.sidebarCollapsed)"
-        >
-          {{ appStore.sidebarCollapsed ? "展开" : "收起" }}
-        </a-button>
         <a-space>
           <span class="text-sm text-slate-600">
             {{
@@ -95,10 +138,10 @@ function logout(): void {
               authStore.currentAdmin?.username
             }}
           </span>
-          <a-button type="link" @click="logout">退出</a-button>
+          <a-button type="link" @click="logout"><LogoutOutlined /></a-button>
         </a-space>
       </a-layout-header>
-      <a-layout-content class="bg-slate-50 p-6">
+      <a-layout-content class="p-6">
         <RouterView />
       </a-layout-content>
     </a-layout>

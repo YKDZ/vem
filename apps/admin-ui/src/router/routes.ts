@@ -25,7 +25,7 @@ export const routes: RouteRecordRaw[] = [
         path: "dashboard",
         name: "dashboard",
         component: async () => import("@/views/dashboard/DashboardView.vue"),
-        meta: { title: "首页仪表盘", requiredPermissions: ["dashboard.read"] },
+        meta: { title: "仪表盘", requiredPermissions: ["dashboard.read"] },
       },
       {
         path: "products",

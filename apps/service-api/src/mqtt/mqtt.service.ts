@@ -24,6 +24,8 @@ export class MqttService implements OnModuleInit, OnApplicationShutdown {
   onModuleInit(): void {
     this.client = mqtt.connect(this.config.mqttUrl, {
       clientId: `vem-service-api-${process.pid}`,
+      username: this.config.mqttUsername,
+      password: this.config.mqttPassword,
     });
     this.client.on("connect", () => {
       this.logger.log("MQTT connected");

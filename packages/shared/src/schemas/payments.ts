@@ -51,3 +51,27 @@ export const paymentEventQuerySchema = z.object({
   createdFrom: z.iso.datetime().optional(),
   createdTo: z.iso.datetime().optional(),
 });
+
+export const paymentProviderSensitiveConfigSchema = z.record(
+  z.string(),
+  z.union([z.string(), z.number(), z.boolean(), z.null()]),
+);
+
+export const paymentProviderConfigSecretStatusSchema = z.record(
+  z.string(),
+  z.object({ configured: z.boolean(), updatedAt: z.iso.datetime().nullable() }),
+);
+
+export const upsertPaymentProviderConfigSchema = z.object({
+  providerCode: z.string().min(1).max(64),
+  machineId: z.uuid().nullable().optional(),
+  merchantNo: z.string().max(128).nullable().optional(),
+  appId: z.string().max(128).nullable().optional(),
+  publicConfigJson: z.record(z.string(), z.unknown()).optional(),
+  sensitiveConfigJson: paymentProviderSensitiveConfigSchema.optional(),
+  status: paymentProviderStatusSchema.optional(),
+});
+
+export type UpsertPaymentProviderConfigInput = z.infer<
+  typeof upsertPaymentProviderConfigSchema
+>;

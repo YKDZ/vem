@@ -2,9 +2,12 @@ import { defineStore } from "pinia";
 
 import { requestMachineToken } from "@/api/machine-auth";
 import {
-  setMachineAuthToken,
   clearMachineAuthToken,
+  getMachineAuthSessionState,
+  getMachineAuthToken,
+  setMachineAuthToken,
 } from "@/api/machine-auth-session";
+import { setMachineTokenRefresher } from "@/api/request";
 import {
   machineConfigDefaults,
   type MachineConfig,
@@ -13,7 +16,13 @@ import {
   hardwareSelfCheck,
   type HardwareSelfCheckResult,
 } from "@/native/hardware";
-import { getMachineConfig, saveMachineConfig } from "@/native/local-config";
+import {
+  getMachineConfig,
+  getMachineRuntimeConfig,
+  saveMachineConfig,
+} from "@/native/local-config";
+
+let machineTokenRefreshPromise: Promise<string> | null = null;
 
 export const useMachineStore = defineStore("machine", {
   state: () => ({
@@ -27,7 +36,12 @@ export const useMachineStore = defineStore("machine", {
   getters: {
     machineCode: (state): string | null => state.config.machineCode,
     hasDeploymentConfig: (state): boolean =>
-      Boolean(state.config.machineCode && state.config.machineSecret),
+      Boolean(
+        state.config.machineCode &&
+        (state.config.machineSecret || state.config.machineSecretConfigured) &&
+        (state.config.mqttSigningSecret ||
+          state.config.mqttSigningSecretConfigured),
+      ),
     hardwareReady: (state): boolean => state.hardware?.status === "ok",
     canSell(): boolean {
       return (
@@ -36,17 +50,55 @@ export const useMachineStore = defineStore("machine", {
     },
   },
   actions: {
-    async loadConfig(): Promise<void> {
+    async loadConfig(
+      options: { includeSecrets?: boolean } = {},
+    ): Promise<void> {
       this.loading = true;
       this.error = null;
       try {
-        this.config = await getMachineConfig();
+        this.config = options.includeSecrets
+          ? await getMachineRuntimeConfig()
+          : await getMachineConfig();
         this.configLoaded = true;
+        this.registerTokenRefresher();
       } catch (error) {
         this.error = error instanceof Error ? error.message : String(error);
       } finally {
         this.loading = false;
       }
+    },
+    clearPlaintextSecrets(): void {
+      this.config = {
+        ...this.config,
+        machineSecret: null,
+        mqttSigningSecret: null,
+        mqttPassword: null,
+      };
+    },
+    syncAuthTokenState(): void {
+      this.authTokenReady = getMachineAuthSessionState().usable;
+    },
+    registerTokenRefresher(): void {
+      setMachineTokenRefresher(async () => await this.ensureMachineToken());
+    },
+    async ensureMachineToken(): Promise<string> {
+      const existing = getMachineAuthToken({ allowRefreshWindow: true });
+      if (existing && getMachineAuthToken()) {
+        this.authTokenReady = true;
+        return existing;
+      }
+      if (!machineTokenRefreshPromise) {
+        machineTokenRefreshPromise = this.authenticate()
+          .then(() => {
+            const token = getMachineAuthToken({ allowRefreshWindow: true });
+            if (!token) throw new Error("machine token refresh failed");
+            return token;
+          })
+          .finally(() => {
+            machineTokenRefreshPromise = null;
+          });
+      }
+      return await machineTokenRefreshPromise;
     },
     async saveConfig(config: MachineConfig): Promise<void> {
       this.loading = true;
@@ -77,9 +129,14 @@ export const useMachineStore = defineStore("machine", {
       this.loading = true;
       this.error = null;
       try {
-        const token = await requestMachineToken(this.config);
+        // Use runtime config (which retains secrets in browserRuntimeSecrets even after
+        // clearPlaintextSecrets() nulls out this.config.machineSecret)
+        const runtimeConfig = await getMachineRuntimeConfig();
+        const token = await requestMachineToken(runtimeConfig);
         setMachineAuthToken(token.accessToken, token.expiresInSeconds);
-        this.authTokenReady = true;
+        this.authTokenReady = Boolean(
+          getMachineAuthToken({ allowRefreshWindow: true }),
+        );
       } catch (error) {
         clearMachineAuthToken();
         this.authTokenReady = false;

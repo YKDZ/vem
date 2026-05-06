@@ -46,6 +46,7 @@ import { createBusinessNo } from "../common/business-no.util";
 import { getOffset, toPageResult } from "../common/pagination.util";
 import { DRIZZLE_CLIENT } from "../database/database.constants";
 import { InventoryService } from "../inventory/inventory.service";
+import { PaymentProviderConfigService } from "../payments/payment-provider-config.service";
 import { PaymentProviderRegistry } from "../payments/payment-provider.registry";
 import { RefundsService } from "../refunds/refunds.service";
 
@@ -60,22 +61,22 @@ export class OrdersService {
     @Inject(DRIZZLE_CLIENT) private readonly db: DrizzleClient,
     private readonly inventoryService: InventoryService,
     private readonly paymentProviderRegistry: PaymentProviderRegistry,
+    private readonly paymentProviderConfigService: PaymentProviderConfigService,
     private readonly refundsService: RefundsService,
   ) {}
 
   async createMachineOrder(input: CreateMachineOrderInput) {
     const [machine] = await this.db
-      .select({ id: machines.id, code: machines.code })
+      .select({ id: machines.id, code: machines.code, status: machines.status })
       .from(machines)
       .where(
-        and(
-          eq(machines.code, input.machineCode),
-          isNull(machines.deletedAt),
-          inArray(machines.status, ["online", "offline", "maintenance"]),
-        ),
+        and(eq(machines.code, input.machineCode), isNull(machines.deletedAt)),
       );
     if (!machine) {
-      throw new NotFoundException("Machine not found or disabled");
+      throw new NotFoundException("Machine not found");
+    }
+    if (machine.status !== "online") {
+      throw new ConflictException("Machine is not accepting orders");
     }
 
     const paymentExpiresAt = new Date(Date.now() + 15 * 60 * 1000);
@@ -180,12 +181,13 @@ export class OrdersService {
         });
       }, Promise.resolve());
 
+      const providerCode = input.paymentProviderCode ?? input.paymentMethod;
       const [provider] = await tx
         .select({ id: paymentProviders.id, code: paymentProviders.code })
         .from(paymentProviders)
         .where(
           and(
-            eq(paymentProviders.code, input.paymentMethod),
+            eq(paymentProviders.code, providerCode),
             eq(paymentProviders.status, "enabled"),
           ),
         );
@@ -194,7 +196,7 @@ export class OrdersService {
       }
 
       const paymentNo = createBusinessNo("PAY");
-      const intent = await this.createPaymentIntent(input.paymentMethod, {
+      const intent = await this.createPaymentIntent(providerCode, machine.id, {
         paymentNo,
         orderNo,
         amountCents: totalAmountCents,
@@ -471,7 +473,8 @@ export class OrdersService {
   }
 
   private async createPaymentIntent(
-    method: CreateMachineOrderInput["paymentMethod"],
+    method: string,
+    machineId: string,
     input: {
       paymentNo: string;
       orderNo: string;
@@ -480,7 +483,19 @@ export class OrdersService {
     },
   ) {
     const provider = this.paymentProviderRegistry.get(method);
-    return await provider.createPaymentIntent(input);
+    const config = await this.paymentProviderConfigService
+      .resolveForPayment({
+        providerCode: method,
+        machineId,
+      })
+      .catch(() => ({
+        providerCode: method,
+        merchantNo: null,
+        appId: null,
+        publicConfigJson: {},
+        sensitiveConfigJson: {},
+      }));
+    return await provider.createPaymentIntent({ ...input, config });
   }
 }
 

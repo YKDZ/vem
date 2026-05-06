@@ -138,14 +138,12 @@ export const useCheckoutStore = defineStore("checkout", {
     },
     async markMockSucceeded(config: MachineConfig): Promise<void> {
       if (!this.currentOrder) return;
-      const client = createMachineApiClient(config.apiBaseUrl);
-      await markMockPaymentSucceeded(client, this.currentOrder.paymentNo);
+      await markMockPaymentSucceeded(config, this.currentOrder.orderNo);
       await this.refreshStatus(config);
     },
     async markMockFailed(config: MachineConfig): Promise<void> {
       if (!this.currentOrder) return;
-      const client = createMachineApiClient(config.apiBaseUrl);
-      await markMockPaymentFailed(client, this.currentOrder.paymentNo);
+      await markMockPaymentFailed(config, this.currentOrder.orderNo);
       await this.refreshStatus(config);
     },
   },

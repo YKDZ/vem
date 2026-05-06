@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the main window",
+  "description": "Main kiosk window can call registered core commands only; filesystem, shell and HTTP plugins are intentionally not exposed to WebView.",
   "windows": ["main"],
   "permissions": ["core:default", "opener:default"]
 }

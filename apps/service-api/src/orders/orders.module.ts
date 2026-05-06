@@ -1,5 +1,6 @@
 import { Module } from "@nestjs/common";
 
+import { ConfigModule } from "../config/config.module";
 import { InventoryModule } from "../inventory/inventory.module";
 import { MachineAuthModule } from "../machine-auth/machine-auth.module";
 import { PaymentProvidersModule } from "../payments/payment-providers.module";
@@ -11,6 +12,7 @@ import { OrdersService } from "./orders.service";
 
 @Module({
   imports: [
+    ConfigModule,
     InventoryModule,
     PaymentsModule,
     PaymentProvidersModule,

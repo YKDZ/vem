@@ -34,6 +34,7 @@ import { z } from "zod";
 
 import { getOffset, toPageResult } from "../common/pagination.util";
 import { DRIZZLE_CLIENT } from "../database/database.constants";
+import { HardwareErrorPoliciesService } from "../hardware-error-policies/hardware-error-policies.service";
 import { NotificationsService } from "../notifications/notifications.service";
 
 type InventoryQuery = z.infer<typeof inventoryQuerySchema> &
@@ -48,6 +49,7 @@ export class InventoryService {
   constructor(
     @Inject(DRIZZLE_CLIENT) private readonly db: DrizzleClient,
     private readonly notificationsService: NotificationsService,
+    private readonly hardwareErrorPoliciesService: HardwareErrorPoliciesService,
   ) {}
 
   async listInventories(query: InventoryQuery) {
@@ -100,25 +102,20 @@ export class InventoryService {
 
   async refill(adminUserId: string, input: RefillInventoryInput) {
     return await this.db.transaction(async (tx) => {
-      const [inventory] = await tx
-        .select()
-        .from(inventories)
-        .where(eq(inventories.id, input.inventoryId));
-      if (!inventory) {
-        throw new NotFoundException("Inventory not found");
-      }
-
       const [updated] = await tx
         .update(inventories)
         .set({
-          onHandQty: inventory.onHandQty + input.quantity,
+          onHandQty: sql`${inventories.onHandQty} + ${input.quantity}`,
           updatedAt: new Date(),
         })
-        .where(eq(inventories.id, inventory.id))
+        .where(eq(inventories.id, input.inventoryId))
         .returning();
+      if (!updated) {
+        throw new NotFoundException("Inventory not found");
+      }
 
       await tx.insert(inventoryMovements).values({
-        inventoryId: inventory.id,
+        inventoryId: updated.id,
         deltaQty: input.quantity,
         reason: "refill",
         operatorAdminUserId: adminUserId,
@@ -131,32 +128,34 @@ export class InventoryService {
 
   async adjust(adminUserId: string, input: AdjustInventoryInput) {
     return await this.db.transaction(async (tx) => {
-      const [inventory] = await tx
-        .select()
-        .from(inventories)
-        .where(eq(inventories.id, input.inventoryId));
-      if (!inventory) {
-        throw new NotFoundException("Inventory not found");
-      }
-
-      const nextOnHandQty = inventory.onHandQty + input.deltaQty;
-      if (nextOnHandQty < 0) {
-        throw new ConflictException("Inventory cannot be negative");
-      }
-      if (nextOnHandQty < inventory.reservedQty) {
+      const [updated] = await tx
+        .update(inventories)
+        .set({
+          onHandQty: sql`${inventories.onHandQty} + ${input.deltaQty}`,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(inventories.id, input.inventoryId),
+            sql`${inventories.onHandQty} + ${input.deltaQty} >= 0`,
+            sql`${inventories.onHandQty} + ${input.deltaQty} >= ${inventories.reservedQty}`,
+          ),
+        )
+        .returning();
+      if (!updated) {
+        const [exists] = await tx
+          .select({ id: inventories.id })
+          .from(inventories)
+          .where(eq(inventories.id, input.inventoryId))
+          .limit(1);
+        if (!exists) throw new NotFoundException("Inventory not found");
         throw new ConflictException(
-          "Inventory cannot be below reserved quantity",
+          "Adjustment would make inventory negative or below reserved quantity",
         );
       }
 
-      const [updated] = await tx
-        .update(inventories)
-        .set({ onHandQty: nextOnHandQty, updatedAt: new Date() })
-        .where(eq(inventories.id, inventory.id))
-        .returning();
-
       await tx.insert(inventoryMovements).values({
-        inventoryId: inventory.id,
+        inventoryId: updated.id,
         deltaQty: input.deltaQty,
         reason: "adjust",
         operatorAdminUserId: adminUserId,
@@ -349,6 +348,53 @@ export class InventoryService {
     });
   }
 
+  async restoreConfirmedOrderItemsForDispatchFailure(
+    tx: DrizzleTransaction,
+    input: { orderId: string; note: string },
+  ): Promise<{ restoredQuantity: number }> {
+    const existing = await tx
+      .select({ total: count() })
+      .from(inventoryMovements)
+      .where(
+        and(
+          eq(inventoryMovements.orderId, input.orderId),
+          eq(inventoryMovements.reason, "refund_return"),
+          eq(inventoryMovements.note, input.note),
+        ),
+      );
+    if (Number(existing[0]?.total ?? 0) > 0) {
+      return { restoredQuantity: 0 };
+    }
+
+    const rows = await tx
+      .select({
+        inventoryId: orderItems.inventoryId,
+        quantity: orderItems.quantity,
+      })
+      .from(orderItems)
+      .where(eq(orderItems.orderId, input.orderId));
+
+    let restoredQuantity = 0;
+    await rows.reduce<Promise<void>>(async (previous, row) => {
+      await previous;
+      await tx.execute(sql`
+        update inventories
+        set on_hand_qty = on_hand_qty + ${row.quantity}, updated_at = now()
+        where id = ${row.inventoryId}
+      `);
+      await tx.insert(inventoryMovements).values({
+        inventoryId: row.inventoryId,
+        deltaQty: row.quantity,
+        reason: "refund_return",
+        orderId: input.orderId,
+        note: input.note,
+      });
+      restoredQuantity += row.quantity;
+    }, Promise.resolve());
+
+    return { restoredQuantity };
+  }
+
   async compensateDispenseFailure(
     tx: DrizzleTransaction,
     input: {
@@ -358,13 +404,11 @@ export class InventoryService {
       message: string;
     },
   ): Promise<{ restoredQuantity: number; slotFaulted: boolean }> {
-    const shouldRestoreInventory = input.errorCode === "NO_DROP";
-    const shouldFaultSlot =
-      input.errorCode === "JAMMED" ||
-      input.errorCode === "DOOR_OPEN" ||
-      input.errorCode === "MOTOR_TIMEOUT" ||
-      input.errorCode === "UNKNOWN" ||
-      input.errorCode === null;
+    const policy = await this.hardwareErrorPoliciesService.getPolicy(
+      input.errorCode,
+    );
+    const shouldRestoreInventory = policy.restoreInventory;
+    const shouldFaultSlot = policy.faultSlot;
 
     const rows = await tx
       .select({

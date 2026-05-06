@@ -3,17 +3,18 @@ import type { MachineAuthTokenRequest } from "@vem/shared";
 import { Inject, Injectable, UnauthorizedException } from "@nestjs/common";
 import { JwtService } from "@nestjs/jwt";
 import { and, eq, isNull, machines, type DrizzleClient } from "@vem/db";
-import { createHash, timingSafeEqual } from "node:crypto";
 
 import type { AuthenticatedMachine } from "./current-machine.decorator";
 
 import { AppConfigService } from "../config/app-config.service";
 import { DRIZZLE_CLIENT } from "../database/database.constants";
+import { MachineCredentialService } from "./machine-credential.service";
 
 export type MachineJwtPayload = {
   sub: string;
   code: string;
   typ: "machine";
+  ver: number;
 };
 
 @Injectable()
@@ -22,22 +23,34 @@ export class MachineAuthService {
     @Inject(DRIZZLE_CLIENT) private readonly db: DrizzleClient,
     private readonly jwtService: JwtService,
     private readonly config: AppConfigService,
+    private readonly machineCredentialService: MachineCredentialService,
   ) {}
 
   async issueToken(input: MachineAuthTokenRequest) {
-    if (
-      !this.sameSecret(input.machineSecret, this.config.machineSharedSecret)
-    ) {
-      throw new UnauthorizedException("Invalid machine credentials");
-    }
-
     const [machine] = await this.db
-      .select({ id: machines.id, code: machines.code, status: machines.status })
+      .select({
+        id: machines.id,
+        code: machines.code,
+        status: machines.status,
+        secretHash: machines.secretHash,
+        secretVersion: machines.secretVersion,
+        credentialRevokedAt: machines.credentialRevokedAt,
+      })
       .from(machines)
       .where(
         and(eq(machines.code, input.machineCode), isNull(machines.deletedAt)),
       );
-    if (!machine || machine.status === "disabled") {
+
+    if (
+      !machine ||
+      machine.status === "disabled" ||
+      machine.credentialRevokedAt ||
+      !machine.secretHash ||
+      !this.machineCredentialService.verifyMachineSecret(
+        input.machineSecret,
+        machine.secretHash,
+      )
+    ) {
       throw new UnauthorizedException("Invalid machine credentials");
     }
 
@@ -45,9 +58,10 @@ export class MachineAuthService {
       sub: machine.id,
       code: machine.code,
       typ: "machine",
+      ver: machine.secretVersion,
     };
     const accessToken = await this.jwtService.signAsync(payload, {
-      secret: this.config.machineSharedSecret,
+      secret: this.config.machineJwtSecret,
       expiresIn: this.config.machineAccessTtlSeconds,
     });
 
@@ -55,7 +69,11 @@ export class MachineAuthService {
       accessToken,
       tokenType: "Bearer" as const,
       expiresInSeconds: this.config.machineAccessTtlSeconds,
-      machine,
+      machine: {
+        id: machine.id,
+        code: machine.code,
+        status: machine.status,
+      },
     };
   }
 
@@ -64,7 +82,7 @@ export class MachineAuthService {
       const payload = await this.jwtService.verifyAsync<MachineJwtPayload>(
         token,
         {
-          secret: this.config.machineSharedSecret,
+          secret: this.config.machineJwtSecret,
         },
       );
       if (payload.typ !== "machine") {
@@ -75,6 +93,8 @@ export class MachineAuthService {
           id: machines.id,
           code: machines.code,
           status: machines.status,
+          secretVersion: machines.secretVersion,
+          credentialRevokedAt: machines.credentialRevokedAt,
         })
         .from(machines)
         .where(
@@ -84,18 +104,17 @@ export class MachineAuthService {
             isNull(machines.deletedAt),
           ),
         );
-      if (!machine || machine.status === "disabled") {
+      if (
+        !machine ||
+        machine.status === "disabled" ||
+        machine.credentialRevokedAt ||
+        machine.secretVersion !== payload.ver
+      ) {
         throw new UnauthorizedException("Invalid machine token");
       }
       return machine;
     } catch {
       throw new UnauthorizedException("Invalid machine token");
     }
-  }
-
-  private sameSecret(actual: string, expected: string): boolean {
-    const actualHash = createHash("sha256").update(actual).digest();
-    const expectedHash = createHash("sha256").update(expected).digest();
-    return timingSafeEqual(actualHash, expectedHash);
   }
 }

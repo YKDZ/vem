@@ -7,13 +7,22 @@ import { describe, expect, it } from "vitest";
 import type { AppConfigService } from "../config/app-config.service";
 
 import { MachineAuthService } from "./machine-auth.service";
+import { MachineCredentialService } from "./machine-credential.service";
+import {
+  generateMachineSecret,
+  hashMachineSecret,
+} from "./machine-credentials.util";
 
-const VALID_SECRET = "local-machine-shared-secret-change-before-production";
+const VALID_SECRET = generateMachineSecret();
+const VALID_SECRET_HASH = hashMachineSecret(VALID_SECRET);
 
 const mockMachine = {
   id: "00000000-0000-0000-0000-000000000001",
   code: "M001",
   status: "online" as MachineStatus,
+  secretHash: VALID_SECRET_HASH as string | null,
+  secretVersion: 1,
+  credentialRevokedAt: null as Date | null,
 };
 
 function createService(overrides?: { dbResult?: typeof mockMachine | null }) {
@@ -27,14 +36,24 @@ function createService(overrides?: { dbResult?: typeof mockMachine | null }) {
     }),
   } as unknown as DrizzleClient;
 
+  const MACHINE_JWT_SECRET =
+    "local-machine-jwt-secret-change-before-production-min32";
   const mockConfig = {
-    machineSharedSecret: VALID_SECRET,
+    machineJwtSecret: MACHINE_JWT_SECRET,
+    machineCredentialEncryptionKey:
+      "local-cred-enc-key-change-before-production!",
     machineAccessTtlSeconds: 900,
   } as unknown as AppConfigService;
 
   const jwtService = new JwtService({});
+  const credentialService = new MachineCredentialService(mockConfig);
 
-  return new MachineAuthService(mockDb, jwtService, mockConfig);
+  return new MachineAuthService(
+    mockDb,
+    jwtService,
+    mockConfig,
+    credentialService,
+  );
 }
 
 describe("MachineAuthService", () => {
@@ -55,7 +74,34 @@ describe("MachineAuthService", () => {
     await expect(
       service.issueToken({
         machineCode: "M001",
-        machineSecret: "wrong-secret-that-is-definitely-not-the-correct-one",
+        machineSecret: "vms_wrong-secret-that-is-definitely-not-correct",
+      }),
+    ).rejects.toThrow("Invalid machine credentials");
+  });
+
+  it("throws UnauthorizedException when secretHash is null", async () => {
+    const service = createService({
+      dbResult: { ...mockMachine, secretHash: null },
+    });
+    await expect(
+      service.issueToken({
+        machineCode: "M001",
+        machineSecret: VALID_SECRET,
+      }),
+    ).rejects.toThrow("Invalid machine credentials");
+  });
+
+  it("throws UnauthorizedException when credentialRevokedAt is set", async () => {
+    const service = createService({
+      dbResult: {
+        ...mockMachine,
+        credentialRevokedAt: new Date("2026-01-01"),
+      },
+    });
+    await expect(
+      service.issueToken({
+        machineCode: "M001",
+        machineSecret: VALID_SECRET,
       }),
     ).rejects.toThrow("Invalid machine credentials");
   });
@@ -80,5 +126,41 @@ describe("MachineAuthService", () => {
         machineSecret: VALID_SECRET,
       }),
     ).rejects.toThrow("Invalid machine credentials");
+  });
+
+  describe("verifyToken", () => {
+    it("rejects a token with mismatched secretVersion (old token after rotation)", async () => {
+      const service = createService({
+        dbResult: { ...mockMachine, secretVersion: 2 },
+      });
+      // Issue a token when secretVersion was 1
+      const originalService = createService({
+        dbResult: { ...mockMachine, secretVersion: 1 },
+      });
+      const { accessToken } = await originalService.issueToken({
+        machineCode: "M001",
+        machineSecret: VALID_SECRET,
+      });
+
+      // Now verify with a service that has secretVersion=2 (after rotation)
+      await expect(service.verifyToken(accessToken)).rejects.toThrow(
+        "Invalid machine token",
+      );
+    });
+
+    it("rejects a revoked machine token", async () => {
+      const service = createService({
+        dbResult: { ...mockMachine, credentialRevokedAt: new Date() },
+      });
+      const originalService = createService();
+      const { accessToken } = await originalService.issueToken({
+        machineCode: "M001",
+        machineSecret: VALID_SECRET,
+      });
+
+      await expect(service.verifyToken(accessToken)).rejects.toThrow(
+        "Invalid machine token",
+      );
+    });
   });
 });

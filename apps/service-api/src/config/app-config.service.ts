@@ -31,8 +31,14 @@ export class AppConfigService {
     return this.config.get("JWT_REFRESH_TTL_SECONDS", { infer: true });
   }
 
-  get machineSharedSecret(): string {
-    return this.config.get("MACHINE_SHARED_SECRET", { infer: true });
+  get machineJwtSecret(): string {
+    return this.config.get("MACHINE_JWT_SECRET", { infer: true });
+  }
+
+  get machineCredentialEncryptionKey(): string {
+    return this.config.get("MACHINE_CREDENTIAL_ENCRYPTION_KEY", {
+      infer: true,
+    });
   }
 
   get machineAccessTtlSeconds(): number {
@@ -51,12 +57,38 @@ export class AppConfigService {
     return this.config.get("MQTT_URL", { infer: true });
   }
 
+  get mqttUsername(): string | undefined {
+    return this.config.get("MQTT_USERNAME", { infer: true });
+  }
+
+  get mqttPassword(): string | undefined {
+    return this.config.get("MQTT_PASSWORD", { infer: true });
+  }
+
+  get mqttSignatureToleranceSeconds(): number {
+    return this.config.get("MQTT_SIGNATURE_TOLERANCE_SECONDS", { infer: true });
+  }
+
+  get nodeEnv(): ServiceEnv["NODE_ENV"] {
+    return this.config.get("NODE_ENV", { infer: true });
+  }
+
   get paymentMockEnabled(): boolean {
     return this.config.get("PAYMENT_MOCK_ENABLED", { infer: true });
   }
 
   get paymentWebhookBaseUrl(): string {
     return this.config.get("PAYMENT_WEBHOOK_BASE_URL", { infer: true });
+  }
+
+  get paymentConfigEncryptionKey(): string {
+    return this.config.get("PAYMENT_CONFIG_ENCRYPTION_KEY", { infer: true });
+  }
+
+  get paymentReconcileIntervalSeconds(): number {
+    return this.config.get("PAYMENT_RECONCILE_INTERVAL_SECONDS", {
+      infer: true,
+    });
   }
 
   get bootstrapAdminUsername(): string {

@@ -11,9 +11,6 @@ const permissionCount = computed(() => permissionCodes.length);
       class="mx-auto max-w-3xl rounded-lg border border-slate-200 bg-white p-6 shadow-sm"
     >
       <h1 class="text-2xl font-semibold">VEM 管理后台</h1>
-      <p class="mt-3 text-sm text-slate-600">
-        Vue、Pinia、Router、Antdv Next、Tailwind 和共享契约已接入。
-      </p>
       <p class="mt-6 text-sm text-slate-500">
         已加载权限码数量：{{ permissionCount }}
       </p>

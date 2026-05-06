@@ -20,10 +20,14 @@ export type MachineMqttClient = {
 export function createMachineMqttClient(input: {
   url: string;
   clientId: string;
+  username?: string;
+  password?: string;
   onStatus: (status: MachineMqttStatus, error?: string) => void;
 }): MachineMqttClient {
   const client: MqttClient = mqtt.connect(input.url, {
     clientId: input.clientId,
+    username: input.username,
+    password: input.password,
     clean: true,
     reconnectPeriod: 2_000,
     connectTimeout: 10_000,

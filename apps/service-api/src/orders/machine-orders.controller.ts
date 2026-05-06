@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  ForbiddenException,
   Get,
   Param,
   Post,
@@ -16,11 +17,13 @@ import { z } from "zod";
 
 import { Public } from "../auth/public.decorator";
 import { ZodValidationPipe } from "../common/zod-validation.pipe";
+import { AppConfigService } from "../config/app-config.service";
 import {
   CurrentMachine,
   type AuthenticatedMachine,
 } from "../machine-auth/current-machine.decorator";
 import { MachineAuthGuard } from "../machine-auth/machine-auth.guard";
+import { PaymentsService } from "../payments/payments.service";
 import { OrdersService } from "./orders.service";
 
 type CreateMachineOrderInput = z.infer<typeof createMachineOrderSchema>;
@@ -29,7 +32,11 @@ type MachineOrderStatusQuery = z.infer<typeof machineOrderStatusQuerySchema>;
 @ApiTags("machine-orders")
 @Controller("machine-orders")
 export class MachineOrdersController {
-  constructor(private readonly ordersService: OrdersService) {}
+  constructor(
+    private readonly ordersService: OrdersService,
+    private readonly paymentsService: PaymentsService,
+    private readonly config: AppConfigService,
+  ) {}
 
   @Public()
   @UseGuards(MachineAuthGuard)
@@ -60,5 +67,44 @@ export class MachineOrdersController {
     return await this.ordersService.getMachineOrderStatus(orderNo, {
       machineCode,
     });
+  }
+
+  @Public()
+  @UseGuards(MachineAuthGuard)
+  @Post(":orderNo/mock-payment/succeed")
+  async mockPaymentSucceed(
+    @CurrentMachine() _machine: AuthenticatedMachine,
+    @Param("orderNo") orderNo: string,
+  ) {
+    if (!this.config.paymentMockEnabled) {
+      throw new ForbiddenException("Mock payment is not enabled");
+    }
+    const order = await this.ordersService.getMachineOrderStatus(orderNo, {
+      machineCode: _machine.code,
+    });
+    return await this.paymentsService.markMockSucceeded(
+      order.payment.paymentNo,
+      null,
+    );
+  }
+
+  @Public()
+  @UseGuards(MachineAuthGuard)
+  @Post(":orderNo/mock-payment/fail")
+  async mockPaymentFail(
+    @CurrentMachine() _machine: AuthenticatedMachine,
+    @Param("orderNo") orderNo: string,
+  ) {
+    if (!this.config.paymentMockEnabled) {
+      throw new ForbiddenException("Mock payment is not enabled");
+    }
+    const order = await this.ordersService.getMachineOrderStatus(orderNo, {
+      machineCode: _machine.code,
+    });
+    return await this.paymentsService.markMockFailed(
+      order.payment.paymentNo,
+      "mock_failed",
+      null,
+    );
   }
 }

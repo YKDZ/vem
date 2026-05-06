@@ -6,7 +6,7 @@ import { AppModule } from "./app.module";
 import { AppConfigService } from "./config/app-config.service";
 
 async function bootstrap(): Promise<void> {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create(AppModule, { rawBody: true });
   const config = app.get(AppConfigService);
 
   app.setGlobalPrefix("api");

@@ -54,7 +54,7 @@ export class AuditService {
   }
 
   async record(input: {
-    adminUserId: string;
+    adminUserId: string | null;
     action: string;
     resourceType: string;
     resourceId?: string;

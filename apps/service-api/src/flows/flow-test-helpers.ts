@@ -7,11 +7,19 @@ import {
   products,
   sql,
 } from "@vem/db";
+import { mqttSigningInput } from "@vem/shared";
 import mqtt, { type MqttClient } from "mqtt";
+import { randomUUID } from "node:crypto";
 import request from "supertest";
 import { expect } from "vitest";
 
 import { AppConfigService } from "../config/app-config.service";
+import {
+  encryptCredentialSecret,
+  generateMachineSecret,
+  hashMachineSecret,
+  hmacSha256Base64Url,
+} from "../machine-auth/machine-credentials.util";
 
 export type ApiResponse<T> = {
   code: number;
@@ -28,8 +36,15 @@ export type CreatedOrderPayload = {
   totalAmountCents: number;
 };
 
-export async function connectMqtt(url: string): Promise<MqttClient> {
-  const client = mqtt.connect(url, { clientId: `vem-e2e-${Date.now()}` });
+export async function connectMqtt(
+  url: string,
+  opts?: { username?: string; password?: string },
+): Promise<MqttClient> {
+  const client = mqtt.connect(url, {
+    clientId: `vem-e2e-${Date.now()}`,
+    username: opts?.username,
+    password: opts?.password,
+  });
   await new Promise<void>((resolve, reject) => {
     const timeout = setTimeout(() => {
       reject(new Error("MQTT connect timeout"));
@@ -173,13 +188,29 @@ export async function seedSingleSlotInventory(
     slotCode: string;
     layerNo: number;
     cellNo: number;
+    machineStatus?: "online" | "offline" | "maintenance" | "disabled";
   },
 ): Promise<{
   machineId: string;
   machineCode: string;
   slotId: string;
   inventoryId: string;
+  machineSecret: string;
+  mqttSigningSecret: string;
 }> {
+  const encKey =
+    process.env.MACHINE_CREDENTIAL_ENCRYPTION_KEY ??
+    "local-cred-enc-key-change-before-production!";
+
+  const machineSecret = generateMachineSecret();
+  const mqttSigningSecret = generateMachineSecret();
+  const secretHash = hashMachineSecret(machineSecret);
+  const mqttSigningSecretEncryptedJson = encryptCredentialSecret(
+    mqttSigningSecret,
+    encKey,
+  );
+  const now = new Date();
+
   const [product] = await db.client
     .insert(products)
     .values({
@@ -204,7 +235,11 @@ export async function seedSingleSlotInventory(
     .values({
       code: input.machineCode,
       name: `机器-${input.machineCode}`,
-      status: "online",
+      status: input.machineStatus ?? "online",
+      secretHash,
+      secretVersion: 1,
+      secretRotatedAt: now,
+      mqttSigningSecretEncryptedJson,
     })
     .returning({ id: machines.id, code: machines.code });
   const [slot] = await db.client
@@ -234,22 +269,51 @@ export async function seedSingleSlotInventory(
     machineCode: machine.code,
     slotId: slot.id,
     inventoryId: inventory.id,
+    machineSecret,
+    mqttSigningSecret,
   };
 }
 
 export async function getMachineAuthHeader(
   api: ReturnType<typeof request>,
   machineCode: string,
+  machineSecret?: string,
 ): Promise<Record<string, string>> {
-  const machineSecret =
-    process.env.MACHINE_SHARED_SECRET ??
+  const secret =
+    machineSecret ??
+    process.env.MACHINE_SECRET ??
     "local-machine-shared-secret-change-before-production";
   const tokenResponse = await api.post("/api/machine-auth/token").send({
     machineCode,
-    machineSecret,
+    machineSecret: secret,
   });
   const accessToken = (
     tokenResponse.body as ApiResponse<{ accessToken: string }>
   ).data.accessToken;
   return { Authorization: `Bearer ${accessToken}` };
+}
+
+/**
+ * Build a signed MQTT envelope for e2e tests using HMAC-SHA256.
+ */
+export function signMqttPayload(input: {
+  machineCode: string;
+  mqttSigningSecret: string;
+  payload: Record<string, unknown>;
+  messageId: string;
+}): Record<string, unknown> {
+  const issuedAt = new Date().toISOString();
+  const nonce = randomUUID();
+  const envelopeWithoutSignature = {
+    messageId: input.messageId,
+    machineCode: input.machineCode,
+    issuedAt,
+    nonce,
+    payload: input.payload,
+  };
+  const signature = hmacSha256Base64Url(
+    input.mqttSigningSecret,
+    mqttSigningInput(envelopeWithoutSignature),
+  );
+  return { ...envelopeWithoutSignature, signature };
 }

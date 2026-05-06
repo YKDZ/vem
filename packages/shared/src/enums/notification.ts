@@ -17,6 +17,7 @@ export const notificationTypeSchema = z.enum([
   "machine_offline",
   "payment_failed",
   "dispense_failed",
+  "work_order_created",
 ]);
 export type NotificationType = z.infer<typeof notificationTypeSchema>;
 export const notificationTypes = notificationTypeSchema.options;
@@ -43,3 +44,27 @@ export type NotificationDeliveryStatus = z.infer<
 >;
 export const notificationDeliveryStatuses =
   notificationDeliveryStatusSchema.options;
+
+export const maintenanceWorkOrderStatusSchema = z.enum([
+  "open",
+  "in_progress",
+  "resolved",
+  "canceled",
+]);
+export type MaintenanceWorkOrderStatus = z.infer<
+  typeof maintenanceWorkOrderStatusSchema
+>;
+export const maintenanceWorkOrderStatuses =
+  maintenanceWorkOrderStatusSchema.options;
+
+export const maintenanceWorkOrderPrioritySchema = z.enum([
+  "low",
+  "medium",
+  "high",
+  "critical",
+]);
+export type MaintenanceWorkOrderPriority = z.infer<
+  typeof maintenanceWorkOrderPrioritySchema
+>;
+export const maintenanceWorkOrderPriorities =
+  maintenanceWorkOrderPrioritySchema.options;

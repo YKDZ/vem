@@ -11,6 +11,7 @@
     "lint-fix": "oxlint --fix --type-aware",
     "preview": "vite preview --host 0.0.0.0",
     "tauri": "tauri",
+    "tauri:build:kiosk:windows": "tauri build --config src-tauri/tauri.windows.conf.json",
     "test": "vitest run",
     "typecheck": "tsc --noEmit && vue-tsc --noEmit"
   },

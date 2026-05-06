@@ -24,6 +24,7 @@ export const createMachineOrderSchema = z.object({
   machineCode: z.string().min(1).max(64),
   items: z.array(machineOrderItemSchema).min(1).max(10),
   paymentMethod: paymentMethodSchema,
+  paymentProviderCode: z.string().min(1).max(64).optional(),
   profileSnapshot: z.record(z.string(), z.unknown()).optional(),
 });
 

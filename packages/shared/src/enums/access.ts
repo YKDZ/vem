@@ -23,12 +23,19 @@ export const permissionCodeSchema = z.enum([
   "machines.read",
   "machines.write",
   "machines.command",
+  "machines.manage-credentials",
   "adminUsers.read",
   "adminUsers.write",
   "roles.write",
   "notifications.read",
   "notifications.write",
   "audit.read",
+  "machineOps.read",
+  "machineOps.write",
+  "hardwareErrorPolicies.read",
+  "hardwareErrorPolicies.write",
+  "maintenanceWorkOrders.read",
+  "maintenanceWorkOrders.write",
 ]);
 export type PermissionCode = z.infer<typeof permissionCodeSchema>;
 export const permissionCodes = permissionCodeSchema.options;

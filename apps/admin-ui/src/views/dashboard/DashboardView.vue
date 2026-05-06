@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import * as echarts from "echarts";
-import { onBeforeUnmount, onMounted, ref } from "vue";
+import { nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 
 import {
   getDashboardSummary,
@@ -40,19 +40,25 @@ async function loadData(): Promise<void> {
     ]);
     summary.value = summaryData;
     topProducts.value = topProductData;
-    chart?.setOption({
-      tooltip: { trigger: "axis" },
-      xAxis: { type: "category", data: trendData.map((item) => item.date) },
-      yAxis: { type: "value" },
-      series: [
-        {
-          name: "销售额",
-          type: "line",
-          smooth: true,
-          data: trendData.map((item) => item.salesCents / 100),
-        },
-      ],
-    });
+    loading.value = false;
+    await nextTick();
+    if (chartEl.value) {
+      chart?.dispose();
+      chart = echarts.init(chartEl.value);
+      chart.setOption({
+        tooltip: { trigger: "axis" },
+        xAxis: { type: "category", data: trendData.map((item) => item.date) },
+        yAxis: { type: "value" },
+        series: [
+          {
+            name: "销售额",
+            type: "line",
+            smooth: true,
+            data: trendData.map((item) => item.salesCents / 100),
+          },
+        ],
+      });
+    }
   } finally {
     loading.value = false;
   }

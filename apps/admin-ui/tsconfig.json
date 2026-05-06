@@ -16,21 +16,5 @@
     "customConditions": ["import", "types"],
     "types": ["node"]
   },
-  "exclude": [
-    "out-tsc",
-    "dist",
-    "src/**/*.spec.ts",
-    "src/**/*.test.ts",
-    "src/**/*.spec.vue",
-    "src/**/*.test.vue",
-    "vite.config.ts",
-    "vitest.config.ts",
-    "src/**/*.test.tsx",
-    "src/**/*.spec.tsx",
-    "src/**/*.test.js",
-    "src/**/*.spec.js",
-    "src/**/*.test.jsx",
-    "src/**/*.spec.jsx"
-  ],
   "include": ["src/**/*.ts", "src/**/*.vue"]
 }

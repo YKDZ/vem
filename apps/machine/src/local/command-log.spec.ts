@@ -5,6 +5,8 @@ import {
   isCommandInActiveWindow,
   markCommandResult,
   markCommandStatus,
+  COMMAND_LOG_MAX_ENTRIES,
+  COMMAND_LOG_TTL_MS,
   type StorageLike,
 } from "./command-log";
 
@@ -55,5 +57,65 @@ describe("command log", () => {
     expect(isCommandInActiveWindow(entry, entry.updatedAtMs + 8_000)).toBe(
       false,
     );
+  });
+
+  it("removes entries older than TTL", () => {
+    const storage = memoryStorage();
+    const oldMs = Date.now() - COMMAND_LOG_TTL_MS - 1_000;
+    storage.setItem(
+      "vem.machine.commandLog.v1",
+      JSON.stringify({
+        OLD1: {
+          commandNo: "OLD1",
+          orderNo: "ORD_OLD",
+          status: "succeeded",
+          command,
+          resultPayload: null,
+          updatedAtMs: oldMs,
+        },
+      }),
+    );
+    expect(getCommandLogEntry("OLD1", storage)).toBeNull();
+  });
+
+  it("calls removeItem on corrupted JSON", () => {
+    const data = new Map<string, string>();
+    let removed = false;
+    const storage: StorageLike = {
+      getItem: (key) => data.get(key) ?? null,
+      setItem: (key, value) => data.set(key, value),
+      removeItem: (key) => {
+        data.delete(key);
+        removed = true;
+      },
+    };
+    storage.setItem("vem.machine.commandLog.v1", "NOT_VALID{{");
+    getCommandLogEntry("X", storage);
+    expect(removed).toBe(true);
+  });
+
+  it("retains at most COMMAND_LOG_MAX_ENTRIES newest entries", () => {
+    const storage = memoryStorage();
+    const nowMs = Date.now();
+    const entries: Record<string, unknown> = {};
+    for (let i = 0; i < COMMAND_LOG_MAX_ENTRIES + 10; i += 1) {
+      const key = `CMD${i}`;
+      entries[key] = {
+        commandNo: key,
+        orderNo: "ORD",
+        status: "succeeded",
+        command: { ...command, commandNo: key },
+        resultPayload: null,
+        updatedAtMs: nowMs + i,
+      };
+    }
+    storage.setItem("vem.machine.commandLog.v1", JSON.stringify(entries));
+    // Trigger compaction
+    const anyKey = `CMD${COMMAND_LOG_MAX_ENTRIES + 5}`;
+    getCommandLogEntry(anyKey, storage);
+    const remaining = Object.keys(
+      JSON.parse(storage.getItem("vem.machine.commandLog.v1") ?? "{}"),
+    );
+    expect(remaining.length).toBeLessThanOrEqual(COMMAND_LOG_MAX_ENTRIES);
   });
 });

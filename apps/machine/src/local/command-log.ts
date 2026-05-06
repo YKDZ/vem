@@ -5,6 +5,9 @@ import type {
 
 const COMMAND_LOG_KEY = "vem.machine.commandLog.v1";
 
+export const COMMAND_LOG_TTL_MS = 30 * 24 * 60 * 60 * 1_000;
+export const COMMAND_LOG_MAX_ENTRIES = 2_000;
+
 export type CommandLogStatus =
   | "received"
   | "acknowledged"
@@ -27,17 +30,6 @@ function isCommandLogRecord(v: unknown): v is Record<string, CommandLogEntry> {
   return typeof v === "object" && v !== null;
 }
 
-function readAll(storage: StorageLike): Record<string, CommandLogEntry> {
-  const raw = storage.getItem(COMMAND_LOG_KEY);
-  if (!raw) return {};
-  try {
-    const data: unknown = JSON.parse(raw);
-    return isCommandLogRecord(data) ? data : {};
-  } catch {
-    return {};
-  }
-}
-
 function writeAll(
   storage: StorageLike,
   entries: Record<string, CommandLogEntry>,
@@ -45,18 +37,48 @@ function writeAll(
   storage.setItem(COMMAND_LOG_KEY, JSON.stringify(entries));
 }
 
+function readAndCompact(
+  storage: StorageLike,
+  nowMs = Date.now(),
+): Record<string, CommandLogEntry> {
+  const raw = storage.getItem(COMMAND_LOG_KEY);
+  if (!raw) return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    storage.removeItem(COMMAND_LOG_KEY);
+    return {};
+  }
+  if (!isCommandLogRecord(parsed)) {
+    storage.removeItem(COMMAND_LOG_KEY);
+    return {};
+  }
+  const freshEntries = Object.values(parsed)
+    .filter((entry) => nowMs - entry.updatedAtMs <= COMMAND_LOG_TTL_MS)
+    .sort((a, b) => b.updatedAtMs - a.updatedAtMs)
+    .slice(0, COMMAND_LOG_MAX_ENTRIES);
+  const compacted = Object.fromEntries(
+    freshEntries.map((entry) => [entry.commandNo, entry]),
+  );
+  if (freshEntries.length !== Object.keys(parsed).length) {
+    writeAll(storage, compacted);
+  }
+  return compacted;
+}
+
 export function getCommandLogEntry(
   commandNo: string,
   storage: StorageLike = globalThis.localStorage,
 ): CommandLogEntry | null {
-  return readAll(storage)[commandNo] ?? null;
+  return readAndCompact(storage)[commandNo] ?? null;
 }
 
 export function upsertCommandLogEntry(
   entry: CommandLogEntry,
   storage: StorageLike = globalThis.localStorage,
 ): void {
-  const entries = readAll(storage);
+  const entries = readAndCompact(storage);
   entries[entry.commandNo] = entry;
   writeAll(storage, entries);
 }

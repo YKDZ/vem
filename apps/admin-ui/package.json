@@ -15,6 +15,7 @@
     "typecheck": "tsc --noEmit && vue-tsc --noEmit"
   },
   "dependencies": {
+    "@antdv-next/icons": "^1.0.6",
     "@vem/shared": "workspace:*",
     "antdv-next": "catalog:",
     "axios": "catalog:",

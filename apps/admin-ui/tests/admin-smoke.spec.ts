@@ -4,7 +4,7 @@ const ADMIN_USERNAME = process.env.E2E_ADMIN_USERNAME ?? "admin";
 const ADMIN_PASSWORD = process.env.E2E_ADMIN_PASSWORD ?? "AdminPassword123!";
 
 const PROTECTED_PAGES = [
-  { path: "/dashboard", label: "首页仪表盘" },
+  { path: "/dashboard", label: "仪表盘" },
   { path: "/products", label: "商品管理" },
   { path: "/machines", label: "机器管理" },
   { path: "/inventory", label: "库存管理" },

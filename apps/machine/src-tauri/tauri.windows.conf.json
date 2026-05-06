@@ -1,0 +1,22 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "VEM 售货机端",
+        "width": 720,
+        "height": 1280,
+        "resizable": false,
+        "fullscreen": true,
+        "alwaysOnTop": true,
+        "decorations": false,
+        "closable": false,
+        "maximizable": false,
+        "minimizable": false,
+        "zoomHotkeysEnabled": false,
+        "center": true
+      }
+    ]
+  }
+}

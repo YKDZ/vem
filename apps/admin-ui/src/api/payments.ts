@@ -28,9 +28,14 @@ export type PaymentProvider = {
 export type PaymentProviderConfig = {
   id: string;
   providerId: string;
+  machineId: string | null;
   merchantNo: string | null;
   appId: string | null;
   publicConfigJson: Record<string, unknown>;
+  secretStatusJson: Record<
+    string,
+    { configured: boolean; updatedAt: string | null }
+  >;
   status: string;
 };
 
@@ -100,6 +105,18 @@ export async function updatePaymentProviderConfig(
     `/payments/provider-configs/${id}`,
     body,
   );
+}
+
+export async function upsertPaymentProviderConfig(body: {
+  providerCode: string;
+  machineId?: string | null;
+  merchantNo?: string | null;
+  appId?: string | null;
+  publicConfigJson?: Record<string, unknown>;
+  sensitiveConfigJson?: Record<string, string | number | boolean | null>;
+  status?: string;
+}): Promise<PaymentProviderConfig> {
+  return await post<PaymentProviderConfig>(`/payments/provider-configs`, body);
 }
 
 export async function listPaymentEvents(

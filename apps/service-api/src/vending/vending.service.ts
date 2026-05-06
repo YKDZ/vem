@@ -37,11 +37,22 @@ import { createBusinessNo } from "../common/business-no.util";
 import { getOffset, toPageResult } from "../common/pagination.util";
 import { DRIZZLE_CLIENT } from "../database/database.constants";
 import { InventoryService } from "../inventory/inventory.service";
+import { MaintenanceWorkOrdersService } from "../maintenance-work-orders/maintenance-work-orders.service";
+import { MqttSignatureService } from "../mqtt/mqtt-signature.service";
 import { MqttService } from "../mqtt/mqtt.service";
 import { NotificationsService } from "../notifications/notifications.service";
 import { RefundsService } from "../refunds/refunds.service";
 
 type PageQueryInput = z.infer<typeof pageQuerySchema>;
+
+function isUniqueViolation(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    Reflect.get(error, "code") === "23505"
+  );
+}
 
 @Injectable()
 export class VendingService implements OnModuleInit, OnApplicationShutdown {
@@ -51,9 +62,11 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
   constructor(
     @Inject(DRIZZLE_CLIENT) private readonly db: DrizzleClient,
     private readonly mqttService: MqttService,
+    private readonly mqttSignatureService: MqttSignatureService,
     private readonly notificationsService: NotificationsService,
     private readonly inventoryService: InventoryService,
     private readonly refundsService: RefundsService,
+    private readonly maintenanceWorkOrdersService: MaintenanceWorkOrdersService,
   ) {}
 
   onModuleInit(): void {
@@ -90,6 +103,15 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
       throw new NotFoundException("Order not found");
     }
 
+    const existingCommands = await this.db
+      .select()
+      .from(vendingCommands)
+      .where(eq(vendingCommands.orderId, orderId))
+      .orderBy(vendingCommands.createdAt);
+    if (existingCommands.length > 0) {
+      return existingCommands;
+    }
+
     const items = await this.db
       .select({
         orderItemId: orderItems.id,
@@ -106,121 +128,177 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
       return [];
     }
 
-    const commandResults = await Promise.all(
-      items.map(async (item) => {
-        const commandNo = createBusinessNo("CMD");
-        const payload = dispenseCommandPayloadSchema.parse({
-          commandNo,
-          orderNo: order.orderNo,
-          slot: {
-            layerNo: item.layerNo,
-            cellNo: item.cellNo,
-            slotCode: item.slotCode,
-          },
-          quantity: item.quantity,
-          timeoutSeconds: 120,
+    try {
+      const commandResults = await Promise.all(
+        items.map(async (item) => {
+          const commandNo = createBusinessNo("CMD");
+          const payload = dispenseCommandPayloadSchema.parse({
+            commandNo,
+            orderNo: order.orderNo,
+            slot: {
+              layerNo: item.layerNo,
+              cellNo: item.cellNo,
+              slotCode: item.slotCode,
+            },
+            quantity: item.quantity,
+            timeoutSeconds: 120,
+          });
+
+          const [created] = await this.db
+            .insert(vendingCommands)
+            .values({
+              commandNo,
+              orderId,
+              machineId: order.machineId,
+              slotId: item.slotId,
+              payloadJson: payload,
+              status: "pending",
+            })
+            .returning();
+
+          try {
+            const envelope = await this.mqttSignatureService.signForMachine({
+              machineCode: order.machineCode,
+              payload,
+              messageId: `command:${commandNo}`,
+            });
+            await this.mqttService.publish(
+              `vem/machines/${order.machineCode}/commands/dispense`,
+              envelope,
+            );
+            const [sent] = await this.db
+              .update(vendingCommands)
+              .set({
+                status: "sent",
+                sentAt: new Date(),
+                updatedAt: new Date(),
+              })
+              .where(eq(vendingCommands.id, created.id))
+              .returning();
+            return sent;
+          } catch (error) {
+            const [failed] = await this.db
+              .update(vendingCommands)
+              .set({
+                status: "failed",
+                lastError:
+                  error instanceof Error ? error.message : String(error),
+                updatedAt: new Date(),
+              })
+              .where(eq(vendingCommands.id, created.id))
+              .returning();
+            return failed;
+          }
+        }),
+      );
+
+      const hasFailure = commandResults.some(
+        (command) => command?.status === "failed",
+      );
+      if (hasFailure) {
+        const sentLikeCommands = commandResults.filter(
+          (command) =>
+            command?.status === "sent" ||
+            command?.status === "acknowledged" ||
+            command?.status === "succeeded",
+        );
+        const allCommandsFailedBeforeDelivery = sentLikeCommands.length === 0;
+        const failureMetadata = await this.db.transaction(async (tx) => {
+          const [currentOrder] = await tx
+            .select({ status: orders.status })
+            .from(orders)
+            .where(eq(orders.id, orderId));
+          if (!currentOrder) return null;
+
+          const failedCommand = commandResults.find(
+            (command) => command?.status === "failed",
+          );
+
+          const restoration = allCommandsFailedBeforeDelivery
+            ? await this.inventoryService.restoreConfirmedOrderItemsForDispatchFailure(
+                tx,
+                { orderId, note: "mqtt_dispatch_failed" },
+              )
+            : { restoredQuantity: 0 };
+
+          if (currentOrder.status !== "manual_handling") {
+            await tx
+              .update(orders)
+              .set({ status: "manual_handling", updatedAt: new Date() })
+              .where(eq(orders.id, orderId));
+          }
+          await tx.insert(orderStatusEvents).values({
+            orderId,
+            fromStatus: currentOrder.status,
+            toStatus: "manual_handling",
+            reason: "mqtt_dispatch_failed",
+            metadata: {
+              allCommandsFailedBeforeDelivery,
+              restoredQuantity: restoration.restoredQuantity,
+              failedCommandId: failedCommand?.id,
+              failedCommandNo: failedCommand?.commandNo,
+            },
+          });
+
+          if (failedCommand) {
+            await this.notificationsService.createDispenseFailedNotification(
+              tx,
+              {
+                orderId,
+                commandId: failedCommand.id,
+                message: failedCommand.lastError ?? "MQTT dispatch failed",
+              },
+            );
+          }
+
+          return {
+            allCommandsFailedBeforeDelivery,
+            restoredQuantity: restoration.restoredQuantity,
+            failedCommandNo: failedCommand?.commandNo ?? null,
+          };
         });
 
-        const [created] = await this.db
-          .insert(vendingCommands)
-          .values({
-            commandNo,
+        if (failureMetadata?.allCommandsFailedBeforeDelivery) {
+          await this.refundsService.requestFullRefund({
             orderId,
-            machineId: order.machineId,
-            slotId: item.slotId,
-            payloadJson: payload,
-            status: "pending",
-          })
-          .returning();
-
-        try {
-          await this.mqttService.publish(
-            `vem/machines/${order.machineCode}/commands/dispense`,
-            payload,
-          );
-          const [sent] = await this.db
-            .update(vendingCommands)
-            .set({ status: "sent", sentAt: new Date(), updatedAt: new Date() })
-            .where(eq(vendingCommands.id, created.id))
-            .returning();
-          return sent;
-        } catch (error) {
-          const [failed] = await this.db
-            .update(vendingCommands)
-            .set({
-              status: "failed",
-              lastError: error instanceof Error ? error.message : String(error),
-              updatedAt: new Date(),
-            })
-            .where(eq(vendingCommands.id, created.id))
-            .returning();
-          return failed;
+            reason: "auto_dispense_failed",
+            metadata: failureMetadata,
+          });
         }
-      }),
-    );
+        return commandResults;
+      }
 
-    const hasFailure = commandResults.some(
-      (command) => command?.status === "failed",
-    );
-    if (hasFailure) {
       await this.db.transaction(async (tx) => {
         const [currentOrder] = await tx
           .select({ status: orders.status })
           .from(orders)
           .where(eq(orders.id, orderId));
-        if (!currentOrder) {
+        if (!currentOrder || currentOrder.status === "dispensing") {
           return;
         }
-
-        const failedCommand = commandResults.find(
-          (command) => command?.status === "failed",
-        );
-
+        await tx
+          .update(orders)
+          .set({ status: "dispensing", updatedAt: new Date() })
+          .where(eq(orders.id, orderId));
         await tx.insert(orderStatusEvents).values({
           orderId,
           fromStatus: currentOrder.status,
-          toStatus: currentOrder.status,
-          reason: "mqtt_dispatch_failed",
-          metadata: failedCommand
-            ? {
-                commandId: failedCommand.id,
-                commandNo: failedCommand.commandNo,
-              }
-            : null,
+          toStatus: "dispensing",
+          reason: "vending_command_sent",
         });
-
-        if (failedCommand) {
-          await this.notificationsService.createDispenseFailedNotification(tx, {
-            orderId,
-            commandId: failedCommand.id,
-            message: failedCommand.lastError ?? "MQTT dispatch failed",
-          });
-        }
       });
+
       return commandResults;
-    }
-
-    await this.db.transaction(async (tx) => {
-      const [currentOrder] = await tx
-        .select({ status: orders.status })
-        .from(orders)
-        .where(eq(orders.id, orderId));
-      if (!currentOrder || currentOrder.status === "dispensing") {
-        return;
+    } catch (error) {
+      if (isUniqueViolation(error)) {
+        return await this.db
+          .select()
+          .from(vendingCommands)
+          .where(eq(vendingCommands.orderId, orderId))
+          .orderBy(vendingCommands.createdAt);
       }
-      await tx
-        .update(orders)
-        .set({ status: "dispensing", updatedAt: new Date() })
-        .where(eq(orders.id, orderId));
-      await tx.insert(orderStatusEvents).values({
-        orderId,
-        fromStatus: currentOrder.status,
-        toStatus: "dispensing",
-        reason: "vending_command_sent",
-      });
-    });
-
-    return commandResults;
+      throw error;
+    }
   }
 
   async handleMachineMessage(topic: string, payload: string): Promise<void> {
@@ -304,9 +382,14 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
     }
 
     const payload = dispenseCommandPayloadSchema.parse(command.payloadJson);
+    const envelope = await this.mqttSignatureService.signForMachine({
+      machineCode: command.machineCode,
+      payload,
+      messageId: `command:${command.commandNo}:retry:${command.retryCount + 1}`,
+    });
     await this.mqttService.publish(
       `vem/machines/${command.machineCode}/commands/dispense`,
-      payload,
+      envelope,
     );
 
     const [updated] = await this.db
@@ -428,15 +511,25 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
     topic: string,
     payloadText: string,
   ): Promise<void> {
-    const machine = await this.findMachineByCode(machineCode);
-    if (!machine) {
+    let payload: z.infer<typeof commandAckPayloadSchema>;
+    let messageId: string;
+    try {
+      const verified = await this.mqttSignatureService.verifyFromTopic({
+        topicMachineCode: machineCode,
+        rawPayload: this.parsePayload(payloadText),
+        payloadSchema: commandAckPayloadSchema,
+      });
+      payload = verified.payload;
+      messageId = verified.messageId;
+    } catch {
+      this.logger.warn(
+        `handleCommandAck: invalid signed envelope from ${machineCode}`,
+      );
       return;
     }
 
-    const payload = commandAckPayloadSchema.parse(
-      this.parsePayload(payloadText),
-    );
-    const messageId = payload.messageId ?? `ack:${commandNo}`;
+    const machine = await this.findMachineByCode(machineCode);
+    if (!machine) return;
 
     await this.db.transaction(async (tx) => {
       const inserted = await tx
@@ -476,15 +569,25 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
     topic: string,
     payloadText: string,
   ): Promise<void> {
-    const machine = await this.findMachineByCode(machineCode);
-    if (!machine) {
+    let payload: z.infer<typeof dispenseResultPayloadSchema>;
+    let messageId: string;
+    try {
+      const verified = await this.mqttSignatureService.verifyFromTopic({
+        topicMachineCode: machineCode,
+        rawPayload: this.parsePayload(payloadText),
+        payloadSchema: dispenseResultPayloadSchema,
+      });
+      payload = verified.payload;
+      messageId = verified.messageId;
+    } catch {
+      this.logger.warn(
+        `handleDispenseResult: invalid signed envelope from ${machineCode}`,
+      );
       return;
     }
 
-    const payload = dispenseResultPayloadSchema.parse(
-      this.parsePayload(payloadText),
-    );
-    const messageId = `result:${payload.commandNo}:${payload.reportedAt}`;
+    const machine = await this.findMachineByCode(machineCode);
+    if (!machine) return;
 
     const failureContext = await this.db.transaction(async (tx) => {
       const inserted = await tx
@@ -627,6 +730,19 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
         message: payload.message,
       });
 
+      if (compensation.slotFaulted) {
+        await this.maintenanceWorkOrdersService.createWorkOrder(tx, {
+          machineId: machine.id,
+          slotId: command.slotId,
+          orderId: command.orderId,
+          commandId: command.id,
+          title: `出货失败：${payload.errorCode ?? "未知错误"}`,
+          description: payload.message,
+          priority: "high",
+          dedupeKey: `dispense_failed:${command.id}`,
+        });
+      }
+
       return {
         orderId: command.orderId,
         commandId: command.id,
@@ -651,15 +767,26 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
     topic: string,
     payloadText: string,
   ): Promise<void> {
-    const machine = await this.findMachineByCode(machineCode);
-    if (!machine) {
+    let payload: z.infer<typeof heartbeatPayloadSchema>;
+    let messageId: string;
+    try {
+      const verified = await this.mqttSignatureService.verifyFromTopic({
+        topicMachineCode: machineCode,
+        rawPayload: this.parsePayload(payloadText),
+        payloadSchema: heartbeatPayloadSchema,
+      });
+      payload = verified.payload;
+      messageId = verified.messageId;
+    } catch {
+      this.logger.warn(
+        `handleHeartbeat: invalid signed envelope from ${machineCode}`,
+      );
       return;
     }
 
-    const payload = heartbeatPayloadSchema.parse(
-      this.parsePayload(payloadText),
-    );
-    const messageId = `heartbeat:${payload.reportedAt}`;
+    const machine = await this.findMachineByCode(machineCode);
+    if (!machine) return;
+
     const reportedAt = new Date(payload.reportedAt);
 
     await this.db.transaction(async (tx) => {

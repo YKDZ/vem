@@ -10,6 +10,18 @@ export const hardwareAdapterSchema = z.enum([
 export const machineConfigSchema = z.object({
   machineCode: z.string().trim().min(1).max(64).nullable().default(null),
   machineSecret: z.string().trim().min(32).max(256).nullable().default(null),
+  machineSecretConfigured: z.boolean().default(false),
+  mqttSigningSecret: z
+    .string()
+    .trim()
+    .min(32)
+    .max(256)
+    .nullable()
+    .default(null),
+  mqttSigningSecretConfigured: z.boolean().default(false),
+  mqttUsername: z.string().trim().min(1).max(128).nullable().default(null),
+  mqttPassword: z.string().trim().min(1).max(256).nullable().default(null),
+  mqttPasswordConfigured: z.boolean().default(false),
   apiBaseUrl: z
     .string()
     .trim()
@@ -47,11 +59,41 @@ export function normalizeMachineConfig(input: unknown): MachineConfig {
     const trimmed = processed.machineSecret.trim();
     processed.machineSecret = trimmed.length > 0 ? trimmed : null;
   }
+  // Pre-normalize mqttSigningSecret
+  if (typeof processed.mqttSigningSecret === "string") {
+    const trimmed = processed.mqttSigningSecret.trim();
+    processed.mqttSigningSecret = trimmed.length > 0 ? trimmed : null;
+  }
+  // Pre-normalize mqttUsername
+  if (typeof processed.mqttUsername === "string") {
+    const trimmed = processed.mqttUsername.trim();
+    processed.mqttUsername = trimmed.length > 0 ? trimmed : null;
+  }
+  // Pre-normalize mqttPassword
+  if (typeof processed.mqttPassword === "string") {
+    const trimmed = processed.mqttPassword.trim();
+    processed.mqttPassword = trimmed.length > 0 ? trimmed : null;
+  }
   const parsed = machineConfigSchema.parse(processed);
+  const machineSecret = parsed.machineSecret?.trim() || null;
+  const mqttSigningSecret = parsed.mqttSigningSecret?.trim() || null;
+  const mqttPassword = parsed.mqttPassword?.trim() || null;
   return {
     ...parsed,
     machineCode: parsed.machineCode?.trim() || null,
-    machineSecret: parsed.machineSecret?.trim() || null,
+    machineSecret,
+    machineSecretConfigured: Boolean(
+      machineSecret || parsed.machineSecretConfigured,
+    ),
+    mqttSigningSecret,
+    mqttSigningSecretConfigured: Boolean(
+      mqttSigningSecret || parsed.mqttSigningSecretConfigured,
+    ),
+    mqttUsername: parsed.mqttUsername?.trim() || null,
+    mqttPassword,
+    mqttPasswordConfigured: Boolean(
+      mqttPassword || parsed.mqttPasswordConfigured,
+    ),
     apiBaseUrl: parsed.apiBaseUrl.replace(/\/+$/, ""),
     mqttUrl: parsed.mqttUrl.trim(),
   };

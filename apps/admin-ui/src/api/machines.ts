@@ -78,3 +78,19 @@ export async function createMachineSlot(
 ): Promise<MachineSlot> {
   return await post<MachineSlot>(`/machines/${machineId}/slots`, body);
 }
+
+export type RotateCredentialsResult = {
+  machineCode: string;
+  machineSecret: string;
+  mqttSigningSecret: string;
+  secretVersion: number;
+};
+
+export async function rotateMachineCredentials(
+  machineId: string,
+): Promise<RotateCredentialsResult> {
+  return await post<RotateCredentialsResult>(
+    `/machines/${machineId}/rotate-credentials`,
+    {},
+  );
+}

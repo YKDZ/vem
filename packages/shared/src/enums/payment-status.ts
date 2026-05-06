@@ -2,6 +2,8 @@ import { z } from "zod";
 
 export const paymentProviderTypeSchema = z.enum([
   "mock",
+  "wechat_pay",
+  "alipay",
   "qr_code",
   "face_pay",
   "aggregate",

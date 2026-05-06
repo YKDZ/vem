@@ -20,7 +20,10 @@ import {
 } from "@vem/shared";
 import { z } from "zod";
 
+import type { AuthenticatedAdmin } from "../common/request-user";
+
 import { RequirePermissions } from "../access/permissions.decorator";
+import { CurrentAdmin } from "../auth/current-admin.decorator";
 import { Public } from "../auth/public.decorator";
 import { ZodValidationPipe } from "../common/zod-validation.pipe";
 import {
@@ -80,6 +83,15 @@ export class MachinesController {
     body: CreateMachineSlotInput,
   ) {
     return await this.machinesService.createSlot(machineId, body);
+  }
+
+  @RequirePermissions("machines.manage-credentials")
+  @Post(":id/credentials/rotate")
+  async rotateMachineCredentials(
+    @CurrentAdmin() admin: AuthenticatedAdmin,
+    @Param("id", ParseUUIDPipe) id: string,
+  ) {
+    return await this.machinesService.rotateMachineCredentials(id, admin.id);
   }
 
   @Public()

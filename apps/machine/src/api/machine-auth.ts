@@ -14,7 +14,9 @@ export async function requestMachineToken(
   if (!config.machineCode || !config.machineSecret) {
     throw new Error("machineCode and machineSecret are required");
   }
-  const client = createMachineApiClient(config.apiBaseUrl);
+  const client = createMachineApiClient(config.apiBaseUrl, {
+    skipAuthRetry: true,
+  });
   const response = await client.post<MachineAuthTokenResponse>(
     "/machine-auth/token",
     machineAuthTokenRequestSchema.parse({

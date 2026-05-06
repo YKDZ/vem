@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted } from "vue";
 import { useRouter } from "vue-router";
 
 import PaymentQrCode from "@/components/PaymentQrCode.vue";
+import { shouldShowMockPaymentControls } from "@/config/runtime-flags";
 import KioskLayout from "@/layouts/KioskLayout.vue";
 import { resultKindFromNextAction, useCheckoutStore } from "@/stores/checkout";
 import { useMachineStore } from "@/stores/machine";
@@ -25,6 +26,13 @@ const remainingText = computed(() =>
   formatCountdown(checkoutStore.remainingSeconds),
 );
 const expired = computed(() => checkoutStore.remainingSeconds <= 0);
+const showMockControls = computed(() =>
+  shouldShowMockPaymentControls({
+    dev: import.meta.env.DEV,
+    paymentMethod: status.value?.payment.method,
+    flag: import.meta.env.VITE_ENABLE_MOCK_PAYMENT_CONTROLS,
+  }),
+);
 
 async function routeByStatus(): Promise<void> {
   if (!status.value) return;
@@ -120,7 +128,7 @@ onUnmounted(() => {
         </p>
       </div>
 
-      <div class="mt-auto grid grid-cols-2 gap-4">
+      <div class="mt-auto flex flex-col gap-4">
         <button
           class="kiosk-touch-target rounded-3xl border border-white/20 px-6 py-5 text-xl font-black"
           type="button"
@@ -128,22 +136,24 @@ onUnmounted(() => {
         >
           取消返回
         </button>
-        <button
-          class="kiosk-touch-target rounded-3xl bg-sky-400 px-6 py-5 text-xl font-black text-slate-950 disabled:bg-slate-500 disabled:text-slate-300"
-          type="button"
-          :disabled="checkoutStore.loading || expired"
-          @click="simulateSuccess"
-        >
-          模拟支付成功
-        </button>
-        <button
-          class="kiosk-touch-target col-span-2 rounded-3xl bg-rose-400 px-6 py-5 text-xl font-black text-slate-950 disabled:bg-slate-500 disabled:text-slate-300"
-          type="button"
-          :disabled="checkoutStore.loading"
-          @click="simulateFail"
-        >
-          模拟支付失败
-        </button>
+        <div v-if="showMockControls" class="grid grid-cols-2 gap-4">
+          <button
+            class="kiosk-touch-target rounded-3xl bg-sky-400 px-6 py-5 text-xl font-black text-slate-950 disabled:bg-slate-500 disabled:text-slate-300"
+            type="button"
+            :disabled="checkoutStore.loading || expired"
+            @click="simulateSuccess"
+          >
+            模拟支付成功
+          </button>
+          <button
+            class="kiosk-touch-target col-span-2 rounded-3xl bg-rose-400 px-6 py-5 text-xl font-black text-slate-950 disabled:bg-slate-500 disabled:text-slate-300"
+            type="button"
+            :disabled="checkoutStore.loading"
+            @click="simulateFail"
+          >
+            模拟支付失败
+          </button>
+        </div>
       </div>
     </section>
   </KioskLayout>
