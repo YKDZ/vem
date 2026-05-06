@@ -169,27 +169,30 @@ describe.sequential("offline-mqtt.e2e", () => {
       createOrderResponse.body as ApiResponse<CreatedOrderPayload>;
     expect(createOrderResponse.status).toBe(201);
 
-    // trigger payment success to create vending command (will fail due to MQTT offline)
-    await api
-      .post(`/api/payments/mock/${createdOrder.data.paymentNo}/succeed`)
-      .set("Authorization", `Bearer ${await loginAndGetToken(api, appConfig)}`);
-
-    // manually set the command as sent in the past with a very short timeout
+    // Directly set up "sent" command state without going through payment success flow.
+    // Going through payment success would cause MQTT-offline → auto-refund, which
+    // would corrupt this test scenario (timeout should NOT create a refund).
+    // This simulates: MQTT publish succeeded, command was sent, hardware timed out.
     await db.client
-      .update(vendingCommands)
-      .set({
-        status: "sent",
-        sentAt: new Date(Date.now() - 180_000),
-        payloadJson: {
-          commandNo: "CMD-TIMEOUT-E2E",
-          orderNo: createdOrder.data.orderNo,
-          slot: { layerNo: 1, cellNo: 1, slotCode: "TO1" },
-          quantity: 1,
-          timeoutSeconds: 1,
-        },
-        updatedAt: new Date(),
-      })
-      .where(eq(vendingCommands.orderId, createdOrder.data.orderId));
+      .update(orders)
+      .set({ status: "dispensing", updatedAt: new Date() })
+      .where(eq(orders.id, createdOrder.data.orderId));
+
+    await db.client.insert(vendingCommands).values({
+      commandNo: "CMD-TIMEOUT-E2E",
+      orderId: createdOrder.data.orderId,
+      machineId: seeded.machineId,
+      slotId: seeded.slotId,
+      payloadJson: {
+        commandNo: "CMD-TIMEOUT-E2E",
+        orderNo: createdOrder.data.orderNo,
+        slot: { layerNo: 1, cellNo: 1, slotCode: "TO1" },
+        quantity: 1,
+        timeoutSeconds: 1,
+      },
+      status: "sent",
+      sentAt: new Date(Date.now() - 180_000),
+    });
 
     const result = await vendingService.markTimedOutCommands(new Date());
     expect(result.processed).toBe(1);
