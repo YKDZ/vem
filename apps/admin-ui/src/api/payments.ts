@@ -25,18 +25,41 @@ export type PaymentProvider = {
   capabilities: Record<string, unknown>;
 };
 
+export type PaymentSecretStatus = {
+  configured: boolean;
+  updatedAt: string | null;
+  fingerprintSha256?: string | null;
+  certificateExpiresAt?: string | null;
+  errorCode?: string | null;
+};
+
 export type PaymentProviderConfig = {
   id: string;
   providerId: string;
+  providerCode: "wechat_pay" | "alipay" | "mock";
+  providerName: string;
   machineId: string | null;
   merchantNo: string | null;
   appId: string | null;
   publicConfigJson: Record<string, unknown>;
-  secretStatusJson: Record<
-    string,
-    { configured: boolean; updatedAt: string | null }
-  >;
+  derivedNotifyUrl: string | null;
+  secretStatusJson: Record<string, PaymentSecretStatus>;
   status: string;
+  updatedByAdminUserId: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type PaymentProviderNotifyUrlCheck = {
+  providerCode: "wechat_pay" | "alipay";
+  notifyUrl: string;
+  usesHttps: boolean;
+  isLocalhost: boolean;
+  pathMatchesWebhookRoute: boolean;
+  reachable: boolean;
+  statusCode: number | null;
+  errorCode: string | null;
+  checkedAt: string;
 };
 
 export type PaymentEvent = {
@@ -108,13 +131,13 @@ export async function updatePaymentProviderConfig(
 }
 
 export async function upsertPaymentProviderConfig(body: {
-  providerCode: string;
+  providerCode: "wechat_pay" | "alipay";
   machineId?: string | null;
   merchantNo?: string | null;
   appId?: string | null;
   publicConfigJson?: Record<string, unknown>;
   sensitiveConfigJson?: Record<string, string | number | boolean | null>;
-  status?: string;
+  status?: "enabled" | "disabled";
 }): Promise<PaymentProviderConfig> {
   return await post<PaymentProviderConfig>(`/payments/provider-configs`, body);
 }
@@ -125,4 +148,12 @@ export async function listPaymentEvents(
   return await get<PageResult<PaymentEvent>>("/payments/events", {
     params: query,
   });
+}
+
+export async function listPaymentProviderNotifyUrlChecks(): Promise<
+  PaymentProviderNotifyUrlCheck[]
+> {
+  return await get<PaymentProviderNotifyUrlCheck[]>(
+    "/payments/provider-configs/notify-url-checks",
+  );
 }

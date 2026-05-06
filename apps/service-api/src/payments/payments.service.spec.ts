@@ -107,12 +107,22 @@ function makeService(overrides: {
   } as unknown as InventoryService;
   const appConfig: AppConfigService = {
     paymentMockEnabled: true,
+    buildPaymentNotifyUrl: (code: string) =>
+      `http://localhost:3000/api/payments/webhooks/${code}`,
+    getPaymentNotifyUrlStaticCheck: (code: string) => ({
+      providerCode: code,
+      notifyUrl: `http://localhost:3000/api/payments/webhooks/${code}`,
+      configuredBaseUrl: "http://localhost:3000/api/payments/webhooks",
+      baseUrlValid: true,
+    }),
   } as unknown as AppConfigService;
   const auditService: AuditService = {
-    logAdmin: vi.fn().mockResolvedValue(undefined),
+    record: vi.fn().mockResolvedValue(undefined),
   } as unknown as AuditService;
   const secretService: PaymentConfigSecretService = {
-    encryptSensitiveFields: vi.fn().mockResolvedValue({}),
+    encrypt: vi.fn().mockReturnValue({ encrypted: "xxx" }),
+    decrypt: vi.fn().mockReturnValue({}),
+    summarize: vi.fn().mockReturnValue({ keys: [] }),
   } as unknown as PaymentConfigSecretService;
 
   return new PaymentsService(
@@ -399,6 +409,157 @@ describe("PaymentsService", () => {
       await expect(service.markMockSucceeded("PAY001", "admin")).rejects.toThrow(
         NotFoundException,
       );
+    });
+  });
+
+  describe("listProviderConfigs", () => {
+    it("returns provider configs with providerCode and derivedNotifyUrl (no sensitiveConfigJson)", async () => {
+      const db = makeDb();
+      const providerConfigRow = {
+        id: "cfg-001",
+        providerId: "prov-001",
+        providerCode: "wechat_pay",
+        providerName: "微信支付",
+        machineId: null,
+        merchantNo: "MCH001",
+        appId: "APP001",
+        publicConfigJson: { certificateSerialNo: "ABCDEF" },
+        configEncryptedJson: null,
+        status: "enabled",
+        updatedByAdminUserId: "admin-1",
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+      db.select.mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockResolvedValue([providerConfigRow]),
+          }),
+        }),
+      });
+      const service = makeService({ db });
+      const results = await service.listProviderConfigs();
+      expect(results).toHaveLength(1);
+      expect(results[0]).toMatchObject({
+        providerCode: "wechat_pay",
+        providerName: "微信支付",
+        derivedNotifyUrl: "http://localhost:3000/api/payments/webhooks/wechat_pay",
+      });
+      expect(results[0]).not.toHaveProperty("sensitiveConfigJson");
+      expect(results[0]).not.toHaveProperty("configEncryptedJson");
+    });
+  });
+
+  describe("upsertProviderConfig", () => {
+    it("creates new config and calls auditService.record with create action", async () => {
+      const db = makeDb();
+      const mockRecord = vi.fn().mockResolvedValue(undefined);
+      const mockEncrypt = vi.fn().mockReturnValue({ encrypted: "xxx" });
+      const mockDecrypt = vi.fn().mockReturnValue({});
+      const mockSummarize = vi.fn().mockReturnValue({ keys: [] });
+
+      // 1) find provider
+      db.select.mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: "prov-001" }]),
+          }),
+        }),
+      });
+      // 2) find existing config → none
+      db.select.mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([]),
+          }),
+        }),
+      });
+      // insert returning
+      db.insert.mockReturnValue({
+        values: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: "cfg-new" }]),
+        }),
+      });
+
+      const secretService: PaymentConfigSecretService = {
+        encrypt: mockEncrypt,
+        decrypt: mockDecrypt,
+        summarize: mockSummarize,
+      } as unknown as PaymentConfigSecretService;
+      const auditService: AuditService = {
+        record: mockRecord,
+      } as unknown as AuditService;
+
+      const service = new (await import("./payments.service")).PaymentsService(
+        db as never,
+        { confirmReservation: vi.fn() } as never,
+        { createAndDispatchCommands: vi.fn() } as never,
+        {
+          paymentMockEnabled: false,
+          buildPaymentNotifyUrl: (code: string) =>
+            `http://localhost:3000/api/payments/webhooks/${code}`,
+          getPaymentNotifyUrlStaticCheck: () => ({}) as never,
+        } as never,
+        { get: vi.fn(), has: vi.fn().mockReturnValue(false), register: vi.fn(), list: vi.fn().mockReturnValue([]) } as never,
+        auditService,
+        secretService,
+        { listCandidateConfigsForProvider: vi.fn(), resolveForPayment: vi.fn() } as never,
+      );
+
+      await service.upsertProviderConfig("admin-1", {
+        providerCode: "wechat_pay",
+        machineId: null,
+        merchantNo: "MCH001",
+        appId: "APP001",
+        publicConfigJson: { certificateSerialNo: "SN123" },
+        sensitiveConfigJson: {
+          apiV3Key: "key",
+          privateKeyPem: "pem",
+          platformPublicKeyPem: "pub",
+        },
+        status: "enabled",
+      });
+
+      expect(mockRecord).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: "payments.provider_config.create",
+          resourceType: "payment_provider_config",
+        }),
+      );
+    });
+
+    it("throws ConflictException when enabled wechat_pay config is missing required fields", async () => {
+      const { ConflictException } = await import("@nestjs/common");
+      const db = makeDb();
+      // 1) find provider
+      db.select.mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([{ id: "prov-001" }]),
+          }),
+        }),
+      });
+      // 2) no existing config
+      db.select.mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([]),
+          }),
+        }),
+      });
+
+      const service = makeService({ db });
+      await expect(
+        service.upsertProviderConfig("admin-1", {
+          providerCode: "wechat_pay",
+          machineId: null,
+          merchantNo: "MCH001",
+          appId: "APP001",
+          publicConfigJson: {},
+          sensitiveConfigJson: {},
+          status: "enabled",
+        }),
+      ).rejects.toThrow(ConflictException);
     });
   });
 });

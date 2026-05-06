@@ -91,6 +91,28 @@ export class AppConfigService {
     });
   }
 
+  buildPaymentNotifyUrl(providerCode: string): string {
+    const rawBase = this.paymentWebhookBaseUrl.replace(/\/+$/, "");
+    const encodedProviderCode = encodeURIComponent(providerCode);
+    if (rawBase.endsWith("/api/payments/webhooks")) {
+      return `${rawBase}/${encodedProviderCode}`;
+    }
+    return `${rawBase}/api/payments/webhooks/${encodedProviderCode}`;
+  }
+
+  getPaymentNotifyUrlStaticCheck(providerCode: string) {
+    const notifyUrl = this.buildPaymentNotifyUrl(providerCode);
+    const parsed = new URL(notifyUrl);
+    return {
+      providerCode,
+      notifyUrl,
+      usesHttps: parsed.protocol === "https:",
+      isLocalhost: ["localhost", "127.0.0.1", "::1"].includes(parsed.hostname),
+      pathMatchesWebhookRoute:
+        parsed.pathname === `/api/payments/webhooks/${providerCode}`,
+    };
+  }
+
   get bootstrapAdminUsername(): string {
     return this.config.get("BOOTSTRAP_ADMIN_USERNAME", { infer: true });
   }

@@ -112,6 +112,12 @@ export class PaymentsController {
   }
 
   @RequirePermissions("payments.configure")
+  @Get("provider-configs/notify-url-checks")
+  async listProviderNotifyUrlChecks() {
+    return await this.paymentsService.listProviderNotifyUrlChecks();
+  }
+
+  @RequirePermissions("payments.configure")
   @Patch("provider-configs/:id")
   async updateProviderConfig(
     @CurrentAdmin() admin: AuthenticatedAdmin,

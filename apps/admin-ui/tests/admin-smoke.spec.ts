@@ -71,5 +71,16 @@ test.describe("admin-smoke", () => {
         timeout: 5_000,
       });
     });
+
+    test("payment config tab shows provider-specific fields and hides generic api key", async ({ page }) => {
+      await page.goto("/payments");
+      await page.getByRole("tab", { name: "支付配置" }).click();
+      await expect(page.getByText("支付宝")).toBeVisible();
+      await expect(page.getByText("微信支付")).toBeVisible();
+      await expect(page.getByText("二维码有效期")).toBeVisible();
+      await expect(page.getByText("补偿窗口")).toBeVisible();
+      await expect(page.getByText("应用私钥 PEM")).toBeVisible();
+      await expect(page.getByText("API Key (敏感)")).toHaveCount(0);
+    });
   });
 });

@@ -33,6 +33,8 @@ import {
   updatePaymentProviderConfigSchema,
   updatePaymentProviderSchema,
   upsertPaymentProviderConfigSchema,
+  alipayPublicConfigSchema,
+  wechatPayPublicConfigSchema,
 } from "@vem/shared";
 import { z } from "zod";
 
@@ -541,6 +543,8 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       .select({
         id: paymentProviderConfigs.id,
         providerId: paymentProviderConfigs.providerId,
+        providerCode: paymentProviders.code,
+        providerName: paymentProviders.name,
         machineId: paymentProviderConfigs.machineId,
         merchantNo: paymentProviderConfigs.merchantNo,
         appId: paymentProviderConfigs.appId,
@@ -551,26 +555,39 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         createdAt: paymentProviderConfigs.createdAt,
         updatedAt: paymentProviderConfigs.updatedAt,
       })
-      .from(paymentProviderConfigs);
+      .from(paymentProviderConfigs)
+      .innerJoin(
+        paymentProviders,
+        eq(paymentProviders.id, paymentProviderConfigs.providerId),
+      )
+      .orderBy(paymentProviders.code, paymentProviderConfigs.machineId);
+
     return rows.map((row) => {
-      const { configEncryptedJson, ...rest } = row;
-      const encryptedJson = isEncryptedJson(configEncryptedJson)
-        ? configEncryptedJson
+      const encryptedJson = isEncryptedJson(row.configEncryptedJson)
+        ? row.configEncryptedJson
         : null;
-      let decryptedKeys: Record<string, unknown> | null = null;
-      try {
-        decryptedKeys = encryptedJson
-          ? this.paymentConfigSecrets.decrypt(encryptedJson)
-          : null;
-      } catch {
-        decryptedKeys = null;
-      }
+      const decryptedKeys = encryptedJson
+        ? this.paymentConfigSecrets.decrypt(encryptedJson)
+        : null;
+
       return {
-        ...rest,
+        id: row.id,
+        providerId: row.providerId,
+        providerCode: row.providerCode,
+        providerName: row.providerName,
+        machineId: row.machineId,
+        merchantNo: row.merchantNo,
+        appId: row.appId,
+        publicConfigJson: row.publicConfigJson,
+        derivedNotifyUrl: this.config.buildPaymentNotifyUrl(row.providerCode),
         secretStatusJson: this.paymentConfigSecrets.summarize(
           decryptedKeys,
           row.updatedAt,
         ),
+        status: row.status,
+        updatedByAdminUserId: row.updatedByAdminUserId,
+        createdAt: row.createdAt,
+        updatedAt: row.updatedAt,
       };
     });
   }
@@ -580,12 +597,69 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
     adminUserId: string,
     input: UpdatePaymentProviderConfigInput,
   ) {
+    const [existing] = await this.db
+      .select({
+        id: paymentProviderConfigs.id,
+        providerId: paymentProviderConfigs.providerId,
+        machineId: paymentProviderConfigs.machineId,
+        merchantNo: paymentProviderConfigs.merchantNo,
+        appId: paymentProviderConfigs.appId,
+        publicConfigJson: paymentProviderConfigs.publicConfigJson,
+        configEncryptedJson: paymentProviderConfigs.configEncryptedJson,
+        status: paymentProviderConfigs.status,
+      })
+      .from(paymentProviderConfigs)
+      .where(eq(paymentProviderConfigs.id, id))
+      .limit(1);
+    if (!existing) throw new NotFoundException("Payment provider config not found");
+
+    const providerRow = await this.db
+      .select({ code: paymentProviders.code })
+      .from(paymentProviders)
+      .where(eq(paymentProviders.id, existing.providerId))
+      .limit(1);
+    const providerCode = providerRow[0]?.code ?? "unknown";
+
+    const nextStatus = input.status ?? existing.status;
+    const nextPublicConfig = this.normalizeProviderPublicConfig(providerCode, {
+      ...(existing.publicConfigJson as Record<string, unknown>),
+      ...(input.publicConfigJson ?? {}),
+    });
+
+    const encryptedJson = isEncryptedJson(existing.configEncryptedJson)
+      ? existing.configEncryptedJson
+      : null;
+    const existingSensitive = encryptedJson
+      ? this.paymentConfigSecrets.decrypt(encryptedJson)
+      : {};
+
+    if (nextStatus === "enabled") {
+      this.assertProviderConfigComplete({
+        providerCode,
+        status: nextStatus,
+        merchantNo: input.merchantNo ?? existing.merchantNo,
+        appId: input.appId ?? existing.appId,
+        publicConfigJson: nextPublicConfig,
+        sensitiveConfigJson: existingSensitive,
+      });
+    }
+
+    const beforeAuditJson = this.sanitizeProviderConfigForAudit({
+      providerCode,
+      machineId: existing.machineId,
+      merchantNo: existing.merchantNo,
+      appId: existing.appId,
+      publicConfigJson: existing.publicConfigJson as Record<string, unknown>,
+      status: existing.status,
+      sensitiveConfigJson: existingSensitive,
+    });
+
     const [updated] = await this.db
       .update(paymentProviderConfigs)
       .set({
         merchantNo: input.merchantNo,
         appId: input.appId,
-        publicConfigJson: input.publicConfigJson,
+        publicConfigJson: nextPublicConfig,
         status: input.status,
         updatedByAdminUserId: adminUserId,
         updatedAt: new Date(),
@@ -594,7 +668,117 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       .returning();
     if (!updated)
       throw new NotFoundException("Payment provider config not found");
+
+    const afterAuditJson = this.sanitizeProviderConfigForAudit({
+      providerCode,
+      machineId: existing.machineId,
+      merchantNo: updated.merchantNo,
+      appId: updated.appId,
+      publicConfigJson: nextPublicConfig,
+      status: updated.status,
+      sensitiveConfigJson: existingSensitive,
+    });
+
+    await this.auditService.record({
+      adminUserId,
+      action: "payments.provider_config.update",
+      resourceType: "payment_provider_config",
+      resourceId: updated.id,
+      beforeJson: beforeAuditJson,
+      afterJson: afterAuditJson,
+    });
+
     return updated;
+  }
+
+  private mergeSensitiveConfig(
+    existing: Record<string, unknown>,
+    patch: Record<string, unknown> | undefined,
+  ): Record<string, unknown> {
+    if (!patch) return existing;
+    const next = { ...existing };
+    for (const [key, value] of Object.entries(patch)) {
+      if (value === null || value === "") {
+        delete next[key];
+      } else {
+        next[key] = value;
+      }
+    }
+    return next;
+  }
+
+  private assertProviderConfigComplete(input: {
+    providerCode: string;
+    status: string;
+    merchantNo: string | null | undefined;
+    appId: string | null | undefined;
+    publicConfigJson: Record<string, unknown>;
+    sensitiveConfigJson: Record<string, unknown>;
+  }): void {
+    if (input.status !== "enabled") return;
+
+    const missing: string[] = [];
+    const requireString = (source: Record<string, unknown>, key: string) => {
+      if (typeof source[key] !== "string" || (source[key] as string).trim().length === 0) {
+        missing.push(key);
+      }
+    };
+
+    if (!input.merchantNo) missing.push("merchantNo");
+    if (!input.appId) missing.push("appId");
+
+    if (input.providerCode === "wechat_pay") {
+      requireString(input.publicConfigJson, "certificateSerialNo");
+      requireString(input.sensitiveConfigJson, "apiV3Key");
+      requireString(input.sensitiveConfigJson, "privateKeyPem");
+      requireString(input.sensitiveConfigJson, "platformPublicKeyPem");
+    } else if (input.providerCode === "alipay") {
+      requireString(input.publicConfigJson, "gatewayUrl");
+      requireString(input.publicConfigJson, "keyType");
+      requireString(input.sensitiveConfigJson, "privateKeyPem");
+      requireString(input.sensitiveConfigJson, "appCertPem");
+      requireString(input.sensitiveConfigJson, "alipayPublicCertPem");
+      requireString(input.sensitiveConfigJson, "alipayRootCertPem");
+    }
+
+    if (missing.length > 0) {
+      throw new ConflictException(
+        `Payment provider config is incomplete: ${missing.join(", ")}`,
+      );
+    }
+  }
+
+  private normalizeProviderPublicConfig(
+    providerCode: string,
+    publicConfigJson: Record<string, unknown>,
+  ): Record<string, unknown> {
+    if (providerCode === "wechat_pay") {
+      return wechatPayPublicConfigSchema.parse(publicConfigJson);
+    }
+    if (providerCode === "alipay") {
+      return alipayPublicConfigSchema.parse(publicConfigJson);
+    }
+    return publicConfigJson;
+  }
+
+  private sanitizeProviderConfigForAudit(input: {
+    providerCode: string;
+    machineId: string | null | undefined;
+    merchantNo: string | null | undefined;
+    appId: string | null | undefined;
+    publicConfigJson: Record<string, unknown>;
+    status: string;
+    sensitiveConfigJson: Record<string, unknown>;
+  }) {
+    return {
+      providerCode: input.providerCode,
+      machineId: input.machineId,
+      merchantNo: input.merchantNo,
+      appId: input.appId,
+      publicConfigJson: input.publicConfigJson,
+      status: input.status,
+      secretKeys: Object.keys(input.sensitiveConfigJson).sort(),
+    };
   }
 
   async upsertProviderConfig(
@@ -612,10 +796,14 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       );
 
     const machineId = input.machineId ?? null;
-    const existing = await this.db
+    const existingRows = await this.db
       .select({
         id: paymentProviderConfigs.id,
+        merchantNo: paymentProviderConfigs.merchantNo,
+        appId: paymentProviderConfigs.appId,
+        publicConfigJson: paymentProviderConfigs.publicConfigJson,
         configEncryptedJson: paymentProviderConfigs.configEncryptedJson,
+        status: paymentProviderConfigs.status,
       })
       .from(paymentProviderConfigs)
       .where(
@@ -628,32 +816,73 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       )
       .limit(1);
 
-    const sensitiveConfig: Record<string, unknown> =
-      input.sensitiveConfigJson &&
-      Object.keys(input.sensitiveConfigJson).length > 0
-        ? (input.sensitiveConfigJson as Record<string, unknown>)
-        : {};
-    const newEncryptedJson = this.paymentConfigSecrets.encrypt(sensitiveConfig);
+    const existingRow = existingRows[0];
 
-    if (existing.length > 0) {
-      const existingRow = existing[0];
-      const setClause: Record<string, unknown> = {
-        merchantNo: input.merchantNo,
-        appId: input.appId,
-        publicConfigJson: input.publicConfigJson,
-        status: input.status,
-        updatedByAdminUserId: adminUserId,
-        updatedAt: new Date(),
-      };
-      if (input.sensitiveConfigJson !== undefined) {
-        setClause.configEncryptedJson = newEncryptedJson;
+    const existingSensitive: Record<string, unknown> = existingRow
+      ? isEncryptedJson(existingRow.configEncryptedJson)
+        ? this.paymentConfigSecrets.decrypt(existingRow.configEncryptedJson)
+        : {}
+      : {};
+
+    const mergedSensitive = this.mergeSensitiveConfig(
+      existingSensitive,
+      input.sensitiveConfigJson as Record<string, unknown> | undefined,
+    );
+
+    const nextStatus = input.status ?? existingRow?.status ?? "enabled";
+
+    const basePublicConfig: Record<string, unknown> = {
+      ...(existingRow?.publicConfigJson ?? {}),
+      ...(input.publicConfigJson ?? {}),
+    };
+    const nextPublicConfig = (() => {
+      try {
+        return this.normalizeProviderPublicConfig(input.providerCode, basePublicConfig);
+      } catch {
+        return basePublicConfig;
       }
+    })();
+
+    this.assertProviderConfigComplete({
+      providerCode: input.providerCode,
+      status: nextStatus,
+      merchantNo: input.merchantNo ?? existingRow?.merchantNo,
+      appId: input.appId ?? existingRow?.appId,
+      publicConfigJson: nextPublicConfig,
+      sensitiveConfigJson: mergedSensitive,
+    });
+
+    const newEncryptedJson = this.paymentConfigSecrets.encrypt(mergedSensitive);
+
+    const beforeAuditJson = existingRow
+      ? this.sanitizeProviderConfigForAudit({
+          providerCode: input.providerCode,
+          machineId,
+          merchantNo: existingRow.merchantNo,
+          appId: existingRow.appId,
+          publicConfigJson: existingRow.publicConfigJson as Record<string, unknown>,
+          status: existingRow.status,
+          sensitiveConfigJson: existingSensitive,
+        })
+      : undefined;
+
+    let saved: { id: string } & Record<string, unknown>;
+
+    if (existingRow) {
       const [updated] = await this.db
         .update(paymentProviderConfigs)
-        .set(setClause)
+        .set({
+          merchantNo: input.merchantNo ?? existingRow.merchantNo,
+          appId: input.appId ?? existingRow.appId,
+          publicConfigJson: nextPublicConfig,
+          configEncryptedJson: newEncryptedJson,
+          status: nextStatus,
+          updatedByAdminUserId: adminUserId,
+          updatedAt: new Date(),
+        })
         .where(eq(paymentProviderConfigs.id, existingRow.id))
         .returning();
-      return updated;
+      saved = updated as typeof saved;
     } else {
       const [inserted] = await this.db
         .insert(paymentProviderConfigs)
@@ -662,14 +891,73 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
           machineId,
           merchantNo: input.merchantNo,
           appId: input.appId,
-          publicConfigJson: input.publicConfigJson ?? {},
+          publicConfigJson: nextPublicConfig,
           configEncryptedJson: newEncryptedJson,
-          status: input.status ?? "enabled",
+          status: nextStatus,
           updatedByAdminUserId: adminUserId,
         })
         .returning();
-      return inserted;
+      saved = inserted as typeof saved;
     }
+
+    const afterAuditJson = this.sanitizeProviderConfigForAudit({
+      providerCode: input.providerCode,
+      machineId,
+      merchantNo: input.merchantNo ?? existingRow?.merchantNo,
+      appId: input.appId ?? existingRow?.appId,
+      publicConfigJson: nextPublicConfig,
+      status: nextStatus,
+      sensitiveConfigJson: mergedSensitive,
+    });
+
+    await this.auditService.record({
+      adminUserId,
+      action: existingRow
+        ? "payments.provider_config.update"
+        : "payments.provider_config.create",
+      resourceType: "payment_provider_config",
+      resourceId: saved.id,
+      beforeJson: beforeAuditJson,
+      afterJson: afterAuditJson,
+    });
+
+    return saved;
+  }
+
+  async listProviderNotifyUrlChecks() {
+    return await Promise.all(
+      ["wechat_pay", "alipay"].map(async (providerCode) => {
+        const staticCheck = this.config.getPaymentNotifyUrlStaticCheck(providerCode);
+        const healthUrl = new URL(staticCheck.notifyUrl);
+        healthUrl.pathname = "/api/health";
+        healthUrl.search = "";
+        const checkedAt = new Date().toISOString();
+        try {
+          const response = await fetch(healthUrl.toString(), {
+            method: "GET",
+            signal: AbortSignal.timeout(2_000),
+          });
+          return {
+            ...staticCheck,
+            reachable: response.ok,
+            statusCode: response.status,
+            errorCode: response.ok ? null : "health_check_failed",
+            checkedAt,
+          };
+        } catch (error) {
+          return {
+            ...staticCheck,
+            reachable: false,
+            statusCode: null,
+            errorCode:
+              error instanceof Error && error.name === "TimeoutError"
+                ? "timeout"
+                : "network_error",
+            checkedAt,
+          };
+        }
+      }),
+    );
   }
 
   async listPaymentEvents(query: PaymentEventQuery) {

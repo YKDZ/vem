@@ -583,6 +583,10 @@ export const paymentProviderConfigs = t.pgTable(
     t
       .uniqueIndex("payment_provider_configs_provider_machine_unique")
       .on(table.providerId, table.machineId),
+    t
+      .uniqueIndex("payment_provider_configs_provider_global_unique")
+      .on(table.providerId)
+      .where(sql`${table.machineId} IS NULL`),
   ],
 );
 

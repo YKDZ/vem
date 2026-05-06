@@ -152,8 +152,82 @@ describe("shared API contract", () => {
         upsertPaymentProviderConfigSchema.parse({
           providerCode: "alipay",
           machineId: "550e8400-e29b-41d4-a716-446655440000",
+          status: "disabled",
         }),
       ).not.toThrow();
+    });
+
+    it("accepts wechat_pay direct merchant config with timing windows", () => {
+      const TEST_PRIVATE_KEY_PEM = "dev-test-private-key-not-for-crypto-use";
+      const TEST_PUBLIC_KEY_PEM = "dev-test-public-key-not-for-crypto-use";
+      const result = upsertPaymentProviderConfigSchema.parse({
+        providerCode: "wechat_pay",
+        machineId: null,
+        merchantNo: "1900000109",
+        appId: "wx1234567890abcdef",
+        publicConfigJson: {
+          mode: "direct_merchant",
+          certificateSerialNo: "MERCHANT_CERT_SERIAL",
+          qrExpiresMinutes: 15,
+          timeoutCompensationSeconds: 120,
+        },
+        sensitiveConfigJson: {
+          apiV3Key: "0123456789abcdef0123456789abcdef",
+          privateKeyPem: TEST_PRIVATE_KEY_PEM,
+          platformPublicKeyPem: TEST_PUBLIC_KEY_PEM,
+        },
+      });
+      expect(result.providerCode).toBe("wechat_pay");
+    });
+
+    it("accepts alipay certificate mode sandbox config", () => {
+      const TEST_PRIVATE_KEY_PEM = "dev-test-alipay-private-key-not-for-crypto-use";
+      const TEST_CERTIFICATE_PEM = [
+        "-----BEGIN CERTIFICATE-----",
+        "ZGV2LXRlc3QtY2VydGlmaWNhdGUtbm90LWZvci1jcnlwdG8tdXNl",
+        "-----END CERTIFICATE-----",
+      ].join("\n");
+      const result = upsertPaymentProviderConfigSchema.parse({
+        providerCode: "alipay",
+        merchantNo: "2088721101045878",
+        appId: "9021000163629927",
+        publicConfigJson: {
+          mode: "sandbox",
+          gatewayUrl: "https://openapi-sandbox.dl.alipaydev.com/gateway.do",
+          keyType: "PKCS8",
+          qrExpiresMinutes: 15,
+          timeoutCompensationSeconds: 120,
+        },
+        sensitiveConfigJson: {
+          privateKeyPem: TEST_PRIVATE_KEY_PEM,
+          appCertPem: TEST_CERTIFICATE_PEM,
+          alipayPublicCertPem: TEST_CERTIFICATE_PEM,
+          alipayRootCertPem: TEST_CERTIFICATE_PEM,
+        },
+      });
+      expect(result.providerCode).toBe("alipay");
+    });
+
+    it("accepts machine-level disabled override without secrets", () => {
+      expect(() =>
+        upsertPaymentProviderConfigSchema.parse({
+          providerCode: "wechat_pay",
+          machineId: "550e8400-e29b-41d4-a716-446655440000",
+          status: "disabled",
+        }),
+      ).not.toThrow();
+    });
+
+    it("rejects timing windows outside the agreed phase-1 bounds", () => {
+      expect(() =>
+        upsertPaymentProviderConfigSchema.parse({
+          providerCode: "alipay",
+          publicConfigJson: {
+            qrExpiresMinutes: 0,
+            timeoutCompensationSeconds: 9999,
+          },
+        }),
+      ).toThrow();
     });
   });
 

@@ -3,20 +3,19 @@ import { onMounted, ref } from "vue";
 
 import {
   listPaymentEvents,
-  listPaymentProviderConfigs,
   listPaymentProviders,
   listPayments,
   mockFail,
   mockSucceed,
-  upsertPaymentProviderConfig,
   type PageResult,
   type Payment,
   type PaymentEvent,
   type PaymentProvider,
-  type PaymentProviderConfig,
 } from "@/api/payments";
 import { useAuthStore } from "@/stores/auth";
 import { formatCents, formatDateTime } from "@/utils/format";
+
+import PaymentProviderConfigPanel from "./PaymentProviderConfigPanel.vue";
 
 const authStore = useAuthStore();
 const canConfigure = authStore.hasPermission("payments.configure");
@@ -80,47 +79,6 @@ async function loadEvents(page = 1): Promise<void> {
   }
 }
 
-// Config tab
-const configsLoading = ref(false);
-const providerConfigs = ref<PaymentProviderConfig[]>([]);
-const upsertConfigLoading = ref(false);
-const upsertForm = ref({
-  providerCode: "",
-  machineId: "" as string | null,
-  merchantNo: "" as string | null,
-  appId: "" as string | null,
-  apiKey: "" as string,
-  status: "enabled" as string,
-});
-
-async function loadConfigs(): Promise<void> {
-  configsLoading.value = true;
-  try {
-    providerConfigs.value = await listPaymentProviderConfigs();
-  } finally {
-    configsLoading.value = false;
-  }
-}
-
-async function doUpsertConfig(): Promise<void> {
-  upsertConfigLoading.value = true;
-  try {
-    await upsertPaymentProviderConfig({
-      providerCode: upsertForm.value.providerCode,
-      machineId: upsertForm.value.machineId || null,
-      merchantNo: upsertForm.value.merchantNo || null,
-      appId: upsertForm.value.appId || null,
-      sensitiveConfigJson: upsertForm.value.apiKey
-        ? { apiKey: upsertForm.value.apiKey }
-        : undefined,
-      status: upsertForm.value.status,
-    });
-    await loadConfigs();
-  } finally {
-    upsertConfigLoading.value = false;
-  }
-}
-
 const paymentColumns = [
   { title: "支付单号", dataIndex: "paymentNo", key: "paymentNo" },
   { title: "订单", dataIndex: "orderId", key: "orderId" },
@@ -148,25 +106,10 @@ const eventColumns = [
   { title: "创建时间", dataIndex: "createdAt", key: "createdAt" },
 ];
 
-const configColumns = [
-  {
-    title: "Provider ID",
-    dataIndex: "providerId",
-    key: "providerId",
-    ellipsis: true,
-  },
-  { title: "机器 ID", dataIndex: "machineId", key: "machineId" },
-  { title: "商户号", dataIndex: "merchantNo", key: "merchantNo" },
-  { title: "App ID", dataIndex: "appId", key: "appId" },
-  { title: "状态", dataIndex: "status", key: "status" },
-  { title: "密钥状态", dataIndex: "secretStatusJson", key: "secretStatusJson" },
-];
-
 function onTabChange(key: string): void {
   if (key === "payments") void loadPayments();
   else if (key === "providers") void loadProviders();
   else if (key === "events") void loadEvents();
-  else if (key === "configs") void loadConfigs();
 }
 
 onMounted(() => {
@@ -268,75 +211,7 @@ onMounted(() => {
       </a-tab-pane>
 
       <a-tab-pane key="configs" tab="支付配置">
-        <a-table
-          :columns="configColumns"
-          :data-source="providerConfigs"
-          row-key="id"
-          :loading="configsLoading"
-          :pagination="false"
-        >
-          <template #bodyCell="{ column, record }">
-            <template v-if="column.key === 'status'">
-              <a-tag
-                :color="record.status === 'enabled' ? 'success' : 'default'"
-              >
-                {{ record.status }}
-              </a-tag>
-            </template>
-            <template v-else-if="column.key === 'secretStatusJson'">
-              <a-space direction="vertical" :size="2">
-                <span v-for="(val, key) in record.secretStatusJson" :key="key">
-                  <a-tag :color="val.configured ? 'success' : 'default'">
-                    {{ key }}: {{ val.configured ? "已配置" : "未配置" }}
-                  </a-tag>
-                </span>
-                <span v-if="Object.keys(record.secretStatusJson).length === 0">
-                  无密钥
-                </span>
-              </a-space>
-            </template>
-            <template v-else-if="column.key === 'machineId'">
-              {{ record.machineId ?? "全局" }}
-            </template>
-          </template>
-        </a-table>
-
-        <a-divider />
-        <a-form v-if="canConfigure" layout="inline" @finish="doUpsertConfig">
-          <a-form-item label="Provider Code">
-            <a-input
-              v-model:value="upsertForm.providerCode"
-              placeholder="wechat_pay"
-            />
-          </a-form-item>
-          <a-form-item label="商户号">
-            <a-input v-model:value="upsertForm.merchantNo" placeholder="可选" />
-          </a-form-item>
-          <a-form-item label="App ID">
-            <a-input v-model:value="upsertForm.appId" placeholder="可选" />
-          </a-form-item>
-          <a-form-item label="API Key (敏感)">
-            <a-input-password
-              v-model:value="upsertForm.apiKey"
-              placeholder="可选"
-            />
-          </a-form-item>
-          <a-form-item label="状态">
-            <a-select v-model:value="upsertForm.status" style="width: 100px">
-              <a-select-option value="enabled">启用</a-select-option>
-              <a-select-option value="disabled">禁用</a-select-option>
-            </a-select>
-          </a-form-item>
-          <a-form-item>
-            <a-button
-              type="primary"
-              html-type="submit"
-              :loading="upsertConfigLoading"
-            >
-              保存配置
-            </a-button>
-          </a-form-item>
-        </a-form>
+        <PaymentProviderConfigPanel />
       </a-tab-pane>
     </a-tabs>
   </a-card>

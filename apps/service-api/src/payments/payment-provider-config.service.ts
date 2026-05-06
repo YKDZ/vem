@@ -12,6 +12,7 @@ import {
   type DrizzleClient,
 } from "@vem/db";
 
+import { AppConfigService } from "../config/app-config.service";
 import { isEncryptedJson } from "../crypto/encrypted-json.util";
 
 import { DRIZZLE_CLIENT } from "../database/database.constants";
@@ -33,7 +34,18 @@ export class PaymentProviderConfigService {
   constructor(
     @Inject(DRIZZLE_CLIENT) private readonly db: DrizzleClient,
     private readonly secrets: PaymentConfigSecretService,
+    private readonly appConfig: AppConfigService,
   ) {}
+
+  private withRuntimePublicConfig(
+    providerCode: string,
+    publicConfigJson: Record<string, unknown>,
+  ): Record<string, unknown> {
+    return {
+      ...publicConfigJson,
+      notifyUrl: this.appConfig.buildPaymentNotifyUrl(providerCode),
+    };
+  }
 
   async resolveForPayment(input: {
     providerCode: string;
@@ -88,7 +100,10 @@ export class PaymentProviderConfigService {
       machineId: selected.machineId,
       merchantNo: selected.merchantNo,
       appId: selected.appId,
-      publicConfigJson: selected.publicConfigJson,
+      publicConfigJson: this.withRuntimePublicConfig(
+        selected.providerCode,
+        selected.publicConfigJson,
+      ),
       sensitiveConfigJson,
     };
   }
@@ -133,7 +148,10 @@ export class PaymentProviderConfigService {
         machineId: row.machineId,
         merchantNo: row.merchantNo,
         appId: row.appId,
-        publicConfigJson: row.publicConfigJson,
+        publicConfigJson: this.withRuntimePublicConfig(
+          row.providerCode,
+          row.publicConfigJson,
+        ),
         sensitiveConfigJson,
       };
     });

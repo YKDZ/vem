@@ -66,4 +66,17 @@ describe("validateEnv", () => {
     const env = validateEnv(withoutMock);
     expect(env.PAYMENT_MOCK_ENABLED).toBe(false);
   });
+
+  it("derives provider notify url when PAYMENT_WEBHOOK_BASE_URL is webhook prefix", () => {
+    const env = validateEnv(baseValidEnv);
+    expect(env.PAYMENT_WEBHOOK_BASE_URL).toBe("http://localhost:3000/api/payments/webhooks");
+  });
+
+  it("accepts PAYMENT_WEBHOOK_BASE_URL as service origin for deployments", () => {
+    const env = validateEnv({
+      ...baseValidEnv,
+      PAYMENT_WEBHOOK_BASE_URL: "https://pay.example.com",
+    });
+    expect(env.PAYMENT_WEBHOOK_BASE_URL).toBe("https://pay.example.com");
+  });
 });

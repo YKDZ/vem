@@ -55,4 +55,50 @@ describe("PaymentConfigSecretService", () => {
     const decrypted = service.decrypt(encryptedDirect);
     expect(decrypted).toEqual(input);
   });
+
+  it("summarize includes sha256 fingerprint without plaintext", () => {
+    const service = makeSecretService();
+    const summary = service.summarize(
+      { apiV3Key: "super-secret-value" },
+      "2026-05-06T00:00:00.000Z",
+    );
+    expect(summary["apiV3Key"]?.configured).toBe(true);
+    expect(summary["apiV3Key"]?.fingerprintSha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(JSON.stringify(summary)).not.toContain("super-secret-value");
+  });
+
+  it("summarize extracts certificate expiration for PEM certificates", () => {
+    const service = makeSecretService();
+    const TEST_CERTIFICATE_PEM = [
+      "-----BEGIN CERTIFICATE-----",
+      "MIICGjCCAYOgAwIBAgIUUUroCd7Tcfhw8LiUotQwSuGaQkYwDQYJKoZIhvcNAQEL",
+      "BQAwHzEdMBsGA1UEAwwUVkVNIFRlc3QgQ2VydGlmaWNhdGUwHhcNMjYwNTA2MDUw",
+      "MzIwWhcNMjcwNTA2MDUwMzIwWjAfMR0wGwYDVQQDDBRWRU0gVGVzdCBDZXJ0aWZp",
+      "Y2F0ZTCBnzANBgkqhkiG9w0BAQEFAAOBjQAwgYkCgYEA2GWhrrFq7TCKMHSzlNt4",
+      "8RP76RC0gRiVB5SgdDBJpQFT/ijn274zc5FpAkMBpa1weXeMQnzfu3AmBtpd8Ngu",
+      "T6YrEY7LXkG+d9CukcidcEoTd3qdEig4aQr0CjupDFN7hAPWT4fxLQpikBr/4HeV",
+      "IpYCVJsldn8ft4F18qJQMzMCAwEAAaNTMFEwHQYDVR0OBBYEFLrM+UtsnitLTiFZ",
+      "k8shSRTFOJDaMB8GA1UdIwQYMBaAFLrM+UtsnitLTiFZk8shSRTFOJDaMA8GA1Ud",
+      "EwEB/wQFMAMBAf8wDQYJKoZIhvcNAQELBQADgYEACrb5ti4ca2y0t+CqcbRJ2hkt",
+      "Q6IgvaB8o//IgXh1OiARj77yDlIpjbGNPbizPdHazsoNxgAkrM0ZXF0QBYRTasXD",
+      "MBSg5izad5GrLVcOOJJFkyOdLWRrOkoEiD3EdVqbryxYAkVfCthk0IJde+uGl2kK",
+      "fle74W8/qV53VzGPjlI=",
+      "-----END CERTIFICATE-----",
+    ].join("\n");
+    const summary = service.summarize(
+      { appCertPem: TEST_CERTIFICATE_PEM },
+      new Date("2026-05-06T00:00:00.000Z"),
+    );
+    expect(summary["appCertPem"]?.certificateExpiresAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
+
+  it("summarize marks invalid certificate text with errorCode but still hides value", () => {
+    const service = makeSecretService();
+    const summary = service.summarize(
+      { appCertPem: "-----BEGIN CERTIFICATE-----\ninvalid\n-----END CERTIFICATE-----" },
+      null,
+    );
+    expect(summary["appCertPem"]?.errorCode).toBe("certificate_parse_failed");
+    expect(JSON.stringify(summary)).not.toContain("invalid");
+  });
 });
