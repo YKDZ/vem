@@ -93,7 +93,6 @@ CREATE TABLE "refund_reconciliation_attempts" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
-CREATE UNIQUE INDEX "payment_provider_configs_provider_global_unique" ON "payment_provider_configs" ("provider_id") WHERE "machine_id" IS NULL;--> statement-breakpoint
 CREATE INDEX "payment_reconciliation_attempts_payment_idx" ON "payment_reconciliation_attempts" ("payment_id","created_at");--> statement-breakpoint
 CREATE INDEX "payment_reconciliation_attempts_next_retry_idx" ON "payment_reconciliation_attempts" ("next_retry_at");--> statement-breakpoint
 CREATE INDEX "payment_reconciliation_attempts_status_idx" ON "payment_reconciliation_attempts" ("status");--> statement-breakpoint

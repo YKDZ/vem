@@ -119,6 +119,63 @@ describe("OrdersService", () => {
       ).rejects.toThrow(ConflictException);
     });
 
+    it("rejects mock method with alipay provider before creating local draft", async () => {
+      const db = makeDb();
+      db.select.mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi
+            .fn()
+            .mockResolvedValue([
+              { id: "mach-1", code: "M001", status: "online" },
+            ]),
+        }),
+      });
+
+      const service = makeService({ db });
+      await expect(
+        service.createMachineOrder({
+          machineCode: "M001",
+          items: [
+            {
+              inventoryId: "550e8400-e29b-41d4-a716-446655440000",
+              quantity: 1,
+            },
+          ],
+          paymentMethod: "mock",
+          paymentProviderCode: "alipay",
+        }),
+      ).rejects.toThrow(ConflictException);
+      expect(db.transaction).not.toHaveBeenCalled();
+    });
+
+    it("rejects qr_code without provider before creating local draft", async () => {
+      const db = makeDb();
+      db.select.mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi
+            .fn()
+            .mockResolvedValue([
+              { id: "mach-1", code: "M001", status: "online" },
+            ]),
+        }),
+      });
+
+      const service = makeService({ db });
+      await expect(
+        service.createMachineOrder({
+          machineCode: "M001",
+          items: [
+            {
+              inventoryId: "550e8400-e29b-41d4-a716-446655440000",
+              quantity: 1,
+            },
+          ],
+          paymentMethod: "qr_code",
+        }),
+      ).rejects.toThrow(ConflictException);
+      expect(db.transaction).not.toHaveBeenCalled();
+    });
+
     it("uses paymentProviderCode (wechat_pay) instead of paymentMethod (qr_code) to look up provider", async () => {
       const db = makeDb();
 
@@ -489,16 +546,12 @@ function makeOrdersService(overrides: {
     ...overrides.inventoryService,
   } as unknown as InventoryService;
   const registry: PaymentProviderRegistry = {
-    get: vi
-      .fn()
-      .mockReturnValue({
-        createPaymentIntent: vi
-          .fn()
-          .mockResolvedValue({
-            providerTradeNo: null,
-            paymentUrl: "https://qr.example/test",
-          }),
+    get: vi.fn().mockReturnValue({
+      createPaymentIntent: vi.fn().mockResolvedValue({
+        providerTradeNo: null,
+        paymentUrl: "https://qr.example/test",
       }),
+    }),
     has: vi.fn().mockReturnValue(true),
     register: vi.fn(),
     list: vi.fn().mockReturnValue([]),

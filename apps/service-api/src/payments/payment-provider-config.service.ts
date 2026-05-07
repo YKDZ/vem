@@ -1,3 +1,8 @@
+import type {
+  MachinePaymentOption,
+  MachinePaymentOptionsResponse,
+} from "@vem/shared";
+
 import {
   ConflictException,
   Inject,
@@ -11,14 +16,9 @@ import {
   paymentProviders,
   type DrizzleClient,
 } from "@vem/db";
-import type {
-  MachinePaymentOption,
-  MachinePaymentOptionsResponse,
-} from "@vem/shared";
 
 import { AppConfigService } from "../config/app-config.service";
 import { isEncryptedJson } from "../crypto/encrypted-json.util";
-
 import { DRIZZLE_CLIENT } from "../database/database.constants";
 import { PaymentConfigSecretService } from "./payment-config-secret.service";
 
@@ -48,6 +48,34 @@ export class PaymentProviderConfigService {
     return {
       ...publicConfigJson,
       notifyUrl: this.appConfig.buildPaymentNotifyUrl(providerCode),
+    };
+  }
+
+  private toRuntimeConfig(row: {
+    id: string;
+    providerId: string;
+    providerCode: string;
+    machineId: string | null;
+    merchantNo: string | null;
+    appId: string | null;
+    publicConfigJson: Record<string, unknown>;
+    configEncryptedJson: unknown;
+  }): RuntimePaymentProviderConfig {
+    const sensitiveConfigJson = isEncryptedJson(row.configEncryptedJson)
+      ? this.secrets.decrypt(row.configEncryptedJson)
+      : {};
+    return {
+      id: row.id,
+      providerCode: row.providerCode,
+      providerId: row.providerId,
+      machineId: row.machineId,
+      merchantNo: row.merchantNo,
+      appId: row.appId,
+      publicConfigJson: this.withRuntimePublicConfig(
+        row.providerCode,
+        row.publicConfigJson,
+      ),
+      sensitiveConfigJson,
     };
   }
 
@@ -112,6 +140,45 @@ export class PaymentProviderConfigService {
     };
   }
 
+  async resolveForExistingPayment(input: {
+    providerCode: string;
+    providerConfigId: string | null;
+    machineId: string;
+  }): Promise<RuntimePaymentProviderConfig> {
+    if (!input.providerConfigId) {
+      return await this.resolveForPayment({
+        providerCode: input.providerCode,
+        machineId: input.machineId,
+      });
+    }
+
+    const [row] = await this.db
+      .select({
+        id: paymentProviderConfigs.id,
+        providerId: paymentProviders.id,
+        providerCode: paymentProviders.code,
+        machineId: paymentProviderConfigs.machineId,
+        merchantNo: paymentProviderConfigs.merchantNo,
+        appId: paymentProviderConfigs.appId,
+        publicConfigJson: paymentProviderConfigs.publicConfigJson,
+        configEncryptedJson: paymentProviderConfigs.configEncryptedJson,
+      })
+      .from(paymentProviderConfigs)
+      .innerJoin(
+        paymentProviders,
+        eq(paymentProviders.id, paymentProviderConfigs.providerId),
+      )
+      .where(
+        and(
+          eq(paymentProviderConfigs.id, input.providerConfigId),
+          eq(paymentProviders.code, input.providerCode),
+        ),
+      )
+      .limit(1);
+    if (!row) throw new NotFoundException("Payment provider config not found");
+    return this.toRuntimeConfig(row);
+  }
+
   async listCandidateConfigsForProvider(
     providerCode: string,
   ): Promise<RuntimePaymentProviderConfig[]> {
@@ -140,25 +207,17 @@ export class PaymentProviderConfigService {
         ),
       );
 
-    return rows.map((row) => {
-      const configEncryptedJson = row.configEncryptedJson;
-      const sensitiveConfigJson = isEncryptedJson(configEncryptedJson)
-        ? this.secrets.decrypt(configEncryptedJson)
-        : {};
-      return {
-        id: row.id,
-        providerCode: row.providerCode,
-        providerId: row.providerId,
-        machineId: row.machineId,
-        merchantNo: row.merchantNo,
-        appId: row.appId,
-        publicConfigJson: this.withRuntimePublicConfig(
-          row.providerCode,
-          row.publicConfigJson,
-        ),
-        sensitiveConfigJson,
-      };
-    });
+    return rows.map((row) => this.toRuntimeConfig(row));
+  }
+
+  private async isMockOptionAvailable(): Promise<boolean> {
+    if (!this.appConfig.paymentMockEnabled) return false;
+    const [mockProvider] = await this.db
+      .select({ status: paymentProviders.status })
+      .from(paymentProviders)
+      .where(eq(paymentProviders.code, "mock"))
+      .limit(1);
+    return mockProvider?.status === "enabled";
   }
 
   async listMachinePaymentOptionsForMachine(
@@ -193,6 +252,18 @@ export class PaymentProviderConfigService {
       } catch {
         // provider 未启用、配置缺失、机器级 disabled 都视为不可用。
       }
+    }
+
+    // Add mock option if available (dev/test environments)
+    const mockAvailable = await this.isMockOptionAvailable();
+    if (mockAvailable) {
+      options.push({
+        providerCode: "mock",
+        method: "mock",
+        displayName: "模拟支付",
+        description: "测试环境专用，立即完成支付",
+        icon: "mock",
+      });
     }
 
     return {

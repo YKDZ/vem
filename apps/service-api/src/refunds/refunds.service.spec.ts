@@ -33,6 +33,7 @@ function makeBasePaymentRow(overrides?: Partial<Record<string, unknown>>) {
     providerCode: "wechat_pay",
     amountCents: 500,
     machineId: "mach-001",
+    providerConfigId: null,
     ...overrides,
   };
 }
@@ -65,6 +66,13 @@ function makeService(options: {
 
   const configService = {
     resolveForPayment: vi.fn().mockResolvedValue({
+      providerCode: "wechat_pay",
+      merchantNo: "MCH001",
+      appId: "wx-app-001",
+      publicConfigJson: {},
+      sensitiveConfigJson: {},
+    }),
+    resolveForExistingPayment: vi.fn().mockResolvedValue({
       providerCode: "wechat_pay",
       merchantNo: "MCH001",
       appId: "wx-app-001",

@@ -1,3 +1,10 @@
+import type {
+  PaymentMachinePreflight,
+  PaymentOpsCheck,
+  PaymentOpsMetrics,
+  PaymentOpsReadiness,
+} from "@vem/shared";
+
 import { Inject, Injectable } from "@nestjs/common";
 import {
   and,
@@ -13,12 +20,6 @@ import {
   sql,
   type DrizzleClient,
 } from "@vem/db";
-import type {
-  PaymentMachinePreflight,
-  PaymentOpsCheck,
-  PaymentOpsMetrics,
-  PaymentOpsReadiness,
-} from "@vem/shared";
 
 import { AppConfigService } from "../config/app-config.service";
 import { isEncryptedJson } from "../crypto/encrypted-json.util";
@@ -39,6 +40,7 @@ export class PaymentOpsService {
     const checks: PaymentOpsCheck[] = [
       await this.checkMockProviderDisabled(),
       await this.checkRealProviderConfigsPresent(),
+      await this.checkMachineRealProviderOptionsAvailable(),
       await this.checkNotifyUrls(),
       await this.checkCertificates(),
       await this.checkRecentWebhookFailures(),
@@ -111,13 +113,14 @@ export class PaymentOpsService {
       reconciliationErrorCount: Number(reconcileTotals.total),
       refundFailedCount: Number(refundTotals.failed),
       refundProcessingOverdueCount: Number(refundTotals.overdue),
-      certificateExpiringCount: await this.countExpiringCertificates(
-        measuredAt,
-      ),
+      certificateExpiringCount:
+        await this.countExpiringCertificates(measuredAt),
     };
   }
 
-  async getMachinePreflight(machineId: string): Promise<PaymentMachinePreflight> {
+  async getMachinePreflight(
+    machineId: string,
+  ): Promise<PaymentMachinePreflight> {
     const [machine] = await this.db
       .select({ id: machines.id, code: machines.code, status: machines.status })
       .from(machines)
@@ -144,7 +147,9 @@ export class PaymentOpsService {
     }
 
     const options =
-      await this.providerConfigs.listMachinePaymentOptionsForMachine(machine.id);
+      await this.providerConfigs.listMachinePaymentOptionsForMachine(
+        machine.id,
+      );
 
     const checks: PaymentOpsCheck[] = [
       {
@@ -187,17 +192,13 @@ export class PaymentOpsService {
       .limit(1);
 
     const passed =
-      !this.config.paymentMockEnabled &&
-      mockProvider?.status !== "enabled";
+      !this.config.paymentMockEnabled && mockProvider?.status !== "enabled";
 
     return {
       code: "mock_provider_disabled",
-      severity:
-        this.config.nodeEnv === "production" ? "critical" : "warning",
+      severity: this.config.nodeEnv === "production" ? "critical" : "warning",
       passed,
-      message: passed
-        ? "Mock payment is disabled"
-        : "Mock payment is enabled",
+      message: passed ? "Mock payment is disabled" : "Mock payment is enabled",
       evidence: {
         envPaymentMockEnabled: this.config.paymentMockEnabled,
         mockProviderStatus: mockProvider?.status ?? null,
@@ -209,38 +210,126 @@ export class PaymentOpsService {
     const rows = await this.db
       .select({
         providerCode: paymentProviders.code,
-        status: paymentProviderConfigs.status,
+        providerStatus: paymentProviders.status,
+        configStatus: paymentProviderConfigs.status,
         machineId: paymentProviderConfigs.machineId,
+        merchantNo: paymentProviderConfigs.merchantNo,
+        appId: paymentProviderConfigs.appId,
+        publicConfigJson: paymentProviderConfigs.publicConfigJson,
+        configEncryptedJson: paymentProviderConfigs.configEncryptedJson,
       })
       .from(paymentProviderConfigs)
       .innerJoin(
         paymentProviders,
         eq(paymentProviders.id, paymentProviderConfigs.providerId),
       )
-      .where(
-        sql`${paymentProviders.code} in ('wechat_pay', 'alipay')`,
-      );
+      .where(sql`${paymentProviders.code} in ('wechat_pay', 'alipay')`);
 
-    const enabledRows = rows.filter((row) => row.status === "enabled");
-    const enabledGlobal = enabledRows.filter((row) => row.machineId === null);
-    const enabledMachineScoped = enabledRows.filter(
+    const completeEnabledRows = rows.filter((row) => {
+      if (row.providerStatus !== "enabled") return false;
+      if (row.configStatus !== "enabled") return false;
+      if (!row.merchantNo || !row.appId) return false;
+      if (!isEncryptedJson(row.configEncryptedJson)) return false;
+      const publicConfig =
+        typeof row.publicConfigJson === "object" &&
+        row.publicConfigJson !== null
+          ? (row.publicConfigJson as Record<string, unknown>)
+          : {};
+      if (row.providerCode === "wechat_pay") {
+        return Boolean(
+          publicConfig["platformCertificateSerialNo"] &&
+          (publicConfig["merchantCertificateSerialNo"] ||
+            publicConfig["certificateSerialNo"]),
+        );
+      }
+      if (row.providerCode === "alipay") {
+        return typeof publicConfig["gatewayUrl"] === "string";
+      }
+      return false;
+    });
+
+    const enabledGlobal = completeEnabledRows.filter(
+      (row) => row.machineId === null,
+    );
+    const enabledMachineScoped = completeEnabledRows.filter(
       (row) => row.machineId !== null,
     );
 
     return {
       code: "real_provider_config_present",
       severity: "critical",
-      passed: enabledRows.length > 0,
+      passed: completeEnabledRows.length > 0,
       message:
-        enabledRows.length > 0
+        completeEnabledRows.length > 0
           ? "At least one real provider config is enabled for global or machine-level rollout"
           : "No real provider config is enabled",
       evidence: {
-        enabledGlobalProviders: enabledGlobal.map((row) => row.providerCode),
-        enabledMachineScopedProviders: enabledMachineScoped.map((row) => ({
-          providerCode: row.providerCode,
-          machineId: row.machineId,
-        })),
+        completeEnabledGlobalProviders: enabledGlobal.map(
+          (row) => row.providerCode,
+        ),
+        completeEnabledMachineScopedProviders: enabledMachineScoped.map(
+          (row) => ({
+            providerCode: row.providerCode,
+            machineId: row.machineId,
+          }),
+        ),
+        inspectedRows: rows.length,
+      },
+    };
+  }
+
+  private async checkMachineRealProviderOptionsAvailable(): Promise<PaymentOpsCheck> {
+    const machineRows = await this.db
+      .select({ id: machines.id, code: machines.code })
+      .from(machines)
+      .where(eq(machines.status, "online"));
+
+    const blockedMachines: Array<{
+      machineId: string;
+      machineCode: string;
+      providerCodes: string[];
+      error: string | null;
+    }> = [];
+
+    for (const machine of machineRows) {
+      try {
+        // oxlint-disable-next-line no-await-in-loop
+        const options =
+          await this.providerConfigs.listMachinePaymentOptionsForMachine(
+            machine.id,
+          );
+        const providerCodes = options.options.map(
+          (option) => option.providerCode,
+        );
+        if (!providerCodes.some((code) => code !== "mock")) {
+          blockedMachines.push({
+            machineId: machine.id,
+            machineCode: machine.code,
+            providerCodes,
+            error: null,
+          });
+        }
+      } catch (error) {
+        blockedMachines.push({
+          machineId: machine.id,
+          machineCode: machine.code,
+          providerCodes: [],
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    return {
+      code: "machine_real_provider_options_available",
+      severity: "critical",
+      passed: blockedMachines.length === 0,
+      message:
+        blockedMachines.length === 0
+          ? "Every online machine has at least one real payment option"
+          : "Some online machines have no real payment option",
+      evidence: {
+        onlineMachineCount: machineRows.length,
+        blockedMachines,
       },
     };
   }

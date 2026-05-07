@@ -49,12 +49,54 @@ import { DRIZZLE_CLIENT } from "../database/database.constants";
 import { InventoryService } from "../inventory/inventory.service";
 import { PaymentProviderConfigService } from "../payments/payment-provider-config.service";
 import { PaymentProviderRegistry } from "../payments/payment-provider.registry";
+import { buildStoredEventPayload } from "../payments/payment-redaction.util";
 import { RefundsService } from "../refunds/refunds.service";
 
 type CreateMachineOrderInput = z.infer<typeof createMachineOrderSchema>;
 type MachineOrderStatusQuery = z.infer<typeof machineOrderStatusQuerySchema>;
 type OrderQuery = z.infer<typeof orderQuerySchema> &
   z.infer<typeof pageQuerySchema>;
+
+function readQrExpiresMinutes(
+  publicConfigJson: Record<string, unknown>,
+): number {
+  const value = publicConfigJson["qrExpiresMinutes"];
+  return typeof value === "number" &&
+    Number.isInteger(value) &&
+    value >= 1 &&
+    value <= 60
+    ? value
+    : 15;
+}
+
+function resolvePaymentSelection(input: CreateMachineOrderInput): {
+  providerCode: "mock" | "wechat_pay" | "alipay";
+  method: CreateMachineOrderInput["paymentMethod"];
+} {
+  if (input.paymentMethod === "mock") {
+    if (
+      input.paymentProviderCode !== undefined &&
+      input.paymentProviderCode !== "mock"
+    ) {
+      throw new ConflictException(
+        "mock payment method can only use mock provider",
+      );
+    }
+    return { providerCode: "mock", method: "mock" };
+  }
+
+  if (
+    input.paymentMethod === "qr_code" &&
+    (input.paymentProviderCode === "wechat_pay" ||
+      input.paymentProviderCode === "alipay")
+  ) {
+    return { providerCode: input.paymentProviderCode, method: "qr_code" };
+  }
+
+  throw new ConflictException(
+    "Unsupported payment method/provider combination",
+  );
+}
 
 type LocalPaymentDraft = {
   orderId: string;
@@ -93,23 +135,52 @@ export class OrdersService {
       throw new ConflictException("Machine is not accepting orders");
     }
 
-    const paymentExpiresAt = new Date(Date.now() + 15 * 60 * 1000);
+    const paymentSelection = resolvePaymentSelection(input);
+
+    // Resolve provider config before entering the transaction
+    let resolvedProviderConfig:
+      | import("../payments/payment-provider-config.service").RuntimePaymentProviderConfig
+      | null = null;
+    if (paymentSelection.providerCode !== "mock") {
+      resolvedProviderConfig =
+        await this.paymentProviderConfigService.resolveForPayment({
+          providerCode: paymentSelection.providerCode,
+          machineId: machine.id,
+        });
+    }
+
+    const qrExpiresMinutes = resolvedProviderConfig
+      ? readQrExpiresMinutes(resolvedProviderConfig.publicConfigJson)
+      : 15;
+    const paymentExpiresAt = new Date(
+      Date.now() + qrExpiresMinutes * 60 * 1000,
+    );
     const draft = await this.createLocalMachineOrderDraft(
       input,
       machine.id,
       paymentExpiresAt,
+      paymentSelection,
+      resolvedProviderConfig,
     );
 
     let intent: Awaited<ReturnType<typeof this.createPaymentIntent>>;
     try {
-      intent = await this.createPaymentIntent(draft.providerCode, draft.machineId, {
-        paymentNo: draft.paymentNo,
-        orderNo: draft.orderNo,
-        amountCents: draft.totalAmountCents,
-        expiresAt: draft.expiresAt,
-      });
+      intent = await this.createPaymentIntent(
+        draft.providerCode,
+        draft.machineId,
+        {
+          paymentNo: draft.paymentNo,
+          orderNo: draft.orderNo,
+          amountCents: draft.totalAmountCents,
+          expiresAt: draft.expiresAt,
+        },
+      );
     } catch (error) {
-      await this.cancelLocalCreatedPayment(draft, "provider_create_failed", error);
+      await this.cancelLocalCreatedPayment(
+        draft,
+        "provider_create_failed",
+        error,
+      );
       throw error;
     }
 
@@ -149,6 +220,13 @@ export class OrdersService {
     input: CreateMachineOrderInput,
     machineId: string,
     paymentExpiresAt: Date,
+    paymentSelection: {
+      providerCode: "mock" | "wechat_pay" | "alipay";
+      method: CreateMachineOrderInput["paymentMethod"];
+    },
+    resolvedProviderConfig:
+      | import("../payments/payment-provider-config.service").RuntimePaymentProviderConfig
+      | null,
   ): Promise<LocalPaymentDraft> {
     return await this.db.transaction(async (tx) => {
       const inventoryIds = [
@@ -250,7 +328,7 @@ export class OrdersService {
         });
       }, Promise.resolve());
 
-      const providerCode = input.paymentProviderCode ?? input.paymentMethod;
+      const providerCode = paymentSelection.providerCode;
       const [provider] = await tx
         .select({ id: paymentProviders.id, code: paymentProviders.code })
         .from(paymentProviders)
@@ -271,7 +349,17 @@ export class OrdersService {
           paymentNo,
           orderId: createdOrder.id,
           providerId: provider.id,
-          method: input.paymentMethod,
+          paymentProviderConfigId: resolvedProviderConfig?.id ?? null,
+          providerConfigSnapshotJson: resolvedProviderConfig
+            ? {
+                id: resolvedProviderConfig.id,
+                providerCode: resolvedProviderConfig.providerCode,
+                merchantNo: resolvedProviderConfig.merchantNo,
+                appId: resolvedProviderConfig.appId,
+                publicConfigJson: resolvedProviderConfig.publicConfigJson,
+              }
+            : null,
+          method: paymentSelection.method,
           status: "created",
           amountCents: totalAmountCents,
           providerTradeNo: null,
@@ -355,11 +443,11 @@ export class OrdersService {
           providerId: await this.findProviderIdForCode(tx, draft.providerCode),
           eventType: `payment.${reason}`,
           providerEventId: `${reason}:${draft.paymentNo}`,
-          rawPayloadJson: {
+          rawPayloadJson: buildStoredEventPayload({
             paymentNo: draft.paymentNo,
             reason,
             message: error instanceof Error ? error.message : String(error),
-          },
+          }),
           signatureValid: true,
           handledAt: new Date(),
         })
@@ -410,13 +498,16 @@ export class OrdersService {
         .insert(paymentEvents)
         .values({
           paymentId: draft.paymentId,
-          providerId: await this.findProviderIdForCode(this.db, draft.providerCode),
+          providerId: await this.findProviderIdForCode(
+            this.db,
+            draft.providerCode,
+          ),
           eventType: "payment.provider_cancel_after_db_failure_failed",
           providerEventId: `provider_cancel_after_db_failure_failed:${draft.paymentNo}`,
-          rawPayloadJson: {
+          rawPayloadJson: buildStoredEventPayload({
             paymentNo: draft.paymentNo,
             message: error instanceof Error ? error.message : String(error),
-          },
+          }),
           signatureValid: true,
           handledAt: new Date(),
         })

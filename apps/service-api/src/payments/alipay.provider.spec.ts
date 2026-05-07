@@ -215,6 +215,68 @@ describe("AlipayProvider", () => {
     },
   );
 
+  it("detects refund webhook by refund_fee field and returns eventKind=refund", async () => {
+    const { factory } = makeSdk({
+      checkNotifySignV2: vi.fn().mockReturnValue(true),
+    });
+    const provider = new AlipayProvider(factory);
+    const body = {
+      notify_id: "refund-notify-001",
+      app_id: "2021000123456789",
+      out_trade_no: "PAY202605060007",
+      trade_no: "2026050622000000004",
+      out_biz_no: "RFD202605060001",
+      refund_fee: "1.00",
+      refund_status: "REFUND_SUCCESS",
+    };
+    const rawBodyText = new URLSearchParams(
+      body as Record<string, string>,
+    ).toString();
+
+    const result = await provider.handleWebhook({
+      headers: {},
+      body,
+      rawBodyText,
+      candidateConfigs: [makeRuntimeConfig()],
+    });
+
+    expect(result.eventKind).toBe("refund");
+    const refundResult =
+      result as import("./payment-provider.interface").ProviderRefundWebhookResult;
+    expect(refundResult.refundNo).toBe("RFD202605060001");
+    expect(refundResult.refundStatus).toBe("succeeded");
+    expect(refundResult.paymentNo).toBe("PAY202605060007");
+  });
+
+  it("detects refund webhook by out_biz_no field and maps REFUND_FAIL to failed", async () => {
+    const { factory } = makeSdk({
+      checkNotifySignV2: vi.fn().mockReturnValue(true),
+    });
+    const provider = new AlipayProvider(factory);
+    const body = {
+      notify_id: "refund-notify-002",
+      out_trade_no: "PAY202605060008",
+      trade_no: "2026050622000000005",
+      out_biz_no: "RFD202605060002",
+      refund_status: "REFUND_FAIL",
+    };
+    const rawBodyText = new URLSearchParams(
+      body as Record<string, string>,
+    ).toString();
+
+    const result = await provider.handleWebhook({
+      headers: {},
+      body,
+      rawBodyText,
+      candidateConfigs: [makeRuntimeConfig()],
+    });
+
+    expect(result.eventKind).toBe("refund");
+    const refundResult =
+      result as import("./payment-provider.interface").ProviderRefundWebhookResult;
+    expect(refundResult.refundStatus).toBe("failed");
+  });
+
   it("uses checkNotifySignV2 for async notification verification", async () => {
     const { sdk, factory } = makeSdk({
       checkNotifySignV2: vi.fn().mockReturnValue(true),
@@ -285,4 +347,33 @@ describe("AlipayProvider", () => {
       }),
     ).rejects.toThrow(ConflictException);
   });
+
+  it.each([
+    ["REFUND_SUCCESS", "succeeded"],
+    ["REFUND_PROCESSING", "processing"],
+    ["REFUND_FAIL", "failed"],
+    [undefined, "processing"],
+  ] as const)(
+    "maps query refund_status=%s to %s",
+    async (refundStatus, expected) => {
+      const { sdk, factory } = makeSdk();
+      vi.mocked(sdk.curl).mockResolvedValue({
+        responseHttpStatus: 200,
+        data: {
+          out_request_no: "RFD202605060009",
+          ...(refundStatus !== undefined && { refund_status: refundStatus }),
+        },
+      });
+      const provider = new AlipayProvider(factory);
+      const result = await provider.queryRefund({
+        config: makeRuntimeConfig(),
+        paymentNo: "PAY202605060009",
+        providerTradeNo: "2026050622000000009",
+        providerRefundNo: null,
+        refundNo: "RFD202605060009",
+        amountCents: 100,
+      });
+      expect(result.status).toBe(expected);
+    },
+  );
 });

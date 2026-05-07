@@ -96,6 +96,13 @@ function makeService(overrides: {
       publicConfigJson: {},
       sensitiveConfigJson: {},
     }),
+    resolveForExistingPayment: vi.fn().mockResolvedValue({
+      providerCode: "mock",
+      merchantNo: null,
+      appId: null,
+      publicConfigJson: {},
+      sensitiveConfigJson: {},
+    }),
     ...overrides.configService,
   } as unknown as PaymentProviderConfigService;
   const vendingService: VendingService = {
@@ -138,6 +145,9 @@ function makeService(overrides: {
     {
       start: vi.fn().mockResolvedValue("attempt-1"),
       finish: vi.fn().mockResolvedValue(undefined),
+    } as never,
+    {
+      applyProviderRefundWebhook: vi.fn().mockResolvedValue({ handled: true }),
     } as never,
   );
 }
@@ -486,6 +496,8 @@ describe("PaymentsService", () => {
           out_trade_no: "PAY_ALI002",
           total_amount: "1.00",
           app_id: "WRONG_APP",
+          seller_id: "MERCH001",
+          trade_status: "TRADE_SUCCESS",
         },
         providerTradeNo: "2024002",
       });
@@ -548,6 +560,7 @@ describe("PaymentsService", () => {
           total_amount: "2.00",
           app_id: "APP001",
           seller_id: "WRONG_SELLER",
+          trade_status: "TRADE_SUCCESS",
         },
         providerTradeNo: "2024003",
       });
@@ -1010,10 +1023,16 @@ describe("PaymentsService", () => {
         {
           listCandidateConfigsForProvider: vi.fn(),
           resolveForPayment: vi.fn(),
+          resolveForExistingPayment: vi.fn(),
         } as never,
         {
           start: vi.fn().mockResolvedValue("attempt-1"),
           finish: vi.fn().mockResolvedValue(undefined),
+        } as never,
+        {
+          applyProviderRefundWebhook: vi
+            .fn()
+            .mockResolvedValue({ handled: true }),
         } as never,
       );
 
@@ -1160,6 +1179,13 @@ describe("PaymentsService", () => {
             publicConfigJson: {},
             sensitiveConfigJson: {},
           }),
+          resolveForExistingPayment: vi.fn().mockResolvedValue({
+            providerCode: "alipay",
+            merchantNo: null,
+            appId: null,
+            publicConfigJson: {},
+            sensitiveConfigJson: {},
+          }),
         },
         vendingService: { createAndDispatchCommands },
       });
@@ -1213,6 +1239,13 @@ describe("PaymentsService", () => {
         } as unknown as PaymentProviderRegistry,
         configService: {
           resolveForPayment: vi.fn().mockResolvedValue({
+            providerCode: "alipay",
+            merchantNo: null,
+            appId: null,
+            publicConfigJson: {},
+            sensitiveConfigJson: {},
+          }),
+          resolveForExistingPayment: vi.fn().mockResolvedValue({
             providerCode: "alipay",
             merchantNo: null,
             appId: null,
@@ -1279,6 +1312,13 @@ describe("PaymentsService", () => {
         } as unknown as PaymentProviderRegistry,
         configService: {
           resolveForPayment: vi.fn().mockResolvedValue({
+            providerCode: "alipay",
+            merchantNo: null,
+            appId: null,
+            publicConfigJson: {},
+            sensitiveConfigJson: {},
+          }),
+          resolveForExistingPayment: vi.fn().mockResolvedValue({
             providerCode: "alipay",
             merchantNo: null,
             appId: null,
@@ -1361,6 +1401,13 @@ describe("PaymentsService", () => {
         } as unknown as PaymentProviderRegistry,
         configService: {
           resolveForPayment: vi.fn().mockResolvedValue({
+            providerCode: "alipay",
+            merchantNo: null,
+            appId: null,
+            publicConfigJson: {},
+            sensitiveConfigJson: {},
+          }),
+          resolveForExistingPayment: vi.fn().mockResolvedValue({
             providerCode: "alipay",
             merchantNo: null,
             appId: null,

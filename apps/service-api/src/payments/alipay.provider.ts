@@ -19,6 +19,7 @@ import type {
   ProviderRefundPaymentResult,
   ProviderRefundQueryInput,
   ProviderRefundQueryResult,
+  ProviderRefundWebhookResult,
   ProviderWebhookInput,
   ProviderWebhookResult,
 } from "./payment-provider.interface";
@@ -245,7 +246,36 @@ function selectAlipayConfig(
   return selected;
 }
 
+function mapAlipayRefundWebhook(
+  body: Record<string, string>,
+): ProviderRefundWebhookResult {
+  const refundNo = body["out_biz_no"] || body["out_request_no"] || null;
+  const refundStatus =
+    body["refund_status"] === "REFUND_FAIL"
+      ? "failed"
+      : body["refund_status"] === "REFUND_PROCESSING"
+        ? "processing"
+        : "succeeded";
+  return {
+    eventKind: "refund",
+    providerEventId:
+      body["notify_id"] ||
+      `${refundNo ?? body["trade_no"]}:refund:${refundStatus}`,
+    eventType: "alipay.refund.webhook",
+    refundNo,
+    paymentNo: body["out_trade_no"] || null,
+    providerRefundNo: body["trade_no"] || null,
+    refundStatus,
+    signatureValid: true,
+    rawPayload: body,
+  };
+}
+
 function mapAlipayWebhook(body: Record<string, string>): ProviderWebhookResult {
+  // Detect refund notifications by refund-specific fields
+  if (body["refund_fee"] || body["out_biz_no"] || body["out_request_no"]) {
+    return mapAlipayRefundWebhook(body);
+  }
   const queryResult = mapAlipayTradeStatus({
     trade_status: body["trade_status"],
     trade_no: body["trade_no"],
@@ -374,7 +404,7 @@ export class AlipayProvider implements PaymentProvider {
       "alipay.trade.fastpay.refund.query",
     );
     const refundStatus =
-      typeof data["refund_status"] === "string" ? data["refund_status"] : "";
+      typeof data["refund_status"] === "string" ? data["refund_status"] : null;
     const providerRefundNo =
       typeof data["out_request_no"] === "string"
         ? data["out_request_no"]
@@ -384,7 +414,7 @@ export class AlipayProvider implements PaymentProvider {
       status:
         refundStatus === "REFUND_SUCCESS"
           ? "succeeded"
-          : refundStatus === "REFUND_FAIL" || refundStatus === ""
+          : refundStatus === "REFUND_FAIL"
             ? "failed"
             : "processing",
       refundedAt: refundStatus === "REFUND_SUCCESS" ? new Date() : null,

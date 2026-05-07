@@ -26,6 +26,7 @@ import type {
   ProviderRefundPaymentResult,
   ProviderRefundQueryInput,
   ProviderRefundQueryResult,
+  ProviderRefundWebhookResult,
   ProviderWebhookInput,
   ProviderWebhookResult,
 } from "./payment-provider.interface";
@@ -307,11 +308,84 @@ function decryptWeChatResource(
   return assertRecord(JSON.parse(plaintext) as unknown);
 }
 
+function mapWeChatRefundWebhook(
+  decrypted: Record<string, unknown>,
+  originalBody: Record<string, unknown>,
+  matchedConfigId: string | undefined,
+): ProviderRefundWebhookResult {
+  const refundNo =
+    typeof decrypted["out_refund_no"] === "string"
+      ? decrypted["out_refund_no"]
+      : null;
+  const providerRefundNo =
+    typeof decrypted["refund_id"] === "string" ? decrypted["refund_id"] : null;
+  const paymentNo =
+    typeof decrypted["out_trade_no"] === "string"
+      ? decrypted["out_trade_no"]
+      : null;
+  const rawStatus =
+    typeof decrypted["refund_status"] === "string"
+      ? decrypted["refund_status"]
+      : typeof decrypted["status"] === "string"
+        ? decrypted["status"]
+        : "PROCESSING";
+  const refundStatus =
+    rawStatus === "SUCCESS"
+      ? "succeeded"
+      : rawStatus === "ABNORMAL" || rawStatus === "CLOSED"
+        ? "failed"
+        : "processing";
+
+  return {
+    eventKind: "refund",
+    providerEventId:
+      typeof originalBody["id"] === "string"
+        ? originalBody["id"]
+        : `${refundNo ?? providerRefundNo}:${rawStatus}`,
+    eventType:
+      typeof originalBody["event_type"] === "string"
+        ? originalBody["event_type"]
+        : "wechat_pay.refund",
+    refundNo,
+    paymentNo,
+    providerRefundNo,
+    refundStatus,
+    signatureValid: true,
+    rawPayload: { body: originalBody, decrypted },
+    normalizedPayload: {
+      refundNo,
+      paymentNo,
+      providerRefundNo,
+      refundStatus: rawStatus,
+    },
+    matchedConfigId: matchedConfigId ?? null,
+  };
+}
+
 function mapWeChatWebhook(
   decrypted: Record<string, unknown>,
   originalBody: Record<string, unknown>,
   matchedConfigId: string | undefined,
 ): ProviderWebhookResult {
+  // Detect refund webhooks by event_type or resource.original_type
+  const resource =
+    typeof originalBody["resource"] === "object" &&
+    originalBody["resource"] !== null &&
+    !Array.isArray(originalBody["resource"])
+      ? (originalBody["resource"] as Record<string, unknown>)
+      : {};
+  const originalType =
+    typeof resource["original_type"] === "string"
+      ? resource["original_type"]
+      : "";
+  const eventType =
+    typeof originalBody["event_type"] === "string"
+      ? originalBody["event_type"]
+      : "";
+  if (originalType === "refund" || eventType.startsWith("REFUND.")) {
+    return mapWeChatRefundWebhook(decrypted, originalBody, matchedConfigId);
+  }
+
   const paymentNo = readRequiredString(
     decrypted,
     "out_trade_no",

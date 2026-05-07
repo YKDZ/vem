@@ -26,6 +26,7 @@ import {
   refunds,
   sql,
   type DrizzleClient,
+  type DrizzleTransaction,
   type SQL,
 } from "@vem/db";
 import {
@@ -52,11 +53,16 @@ import { AppConfigService } from "../config/app-config.service";
 import { isEncryptedJson } from "../crypto/encrypted-json.util";
 import { DRIZZLE_CLIENT } from "../database/database.constants";
 import { InventoryService } from "../inventory/inventory.service";
+import { RefundsService } from "../refunds/refunds.service";
 import { VendingService } from "../vending/vending.service";
 import { PaymentConfigSecretService } from "./payment-config-secret.service";
 import { PaymentProviderConfigService } from "./payment-provider-config.service";
 import { PaymentProviderRegistry } from "./payment-provider.registry";
-import { reconcileBackoffMs, sha256Hex } from "./payment-redaction.util";
+import {
+  buildStoredEventPayload,
+  reconcileBackoffMs,
+  sha256Hex,
+} from "./payment-redaction.util";
 import { PaymentWebhookAttemptRecorderService } from "./payment-webhook-attempt-recorder.service";
 
 type PaymentQuery = z.infer<typeof paymentQuerySchema> &
@@ -133,6 +139,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
     private readonly paymentConfigSecrets: PaymentConfigSecretService,
     private readonly paymentProviderConfigService: PaymentProviderConfigService,
     private readonly webhookAttemptRecorder: PaymentWebhookAttemptRecorderService,
+    private readonly refundsService: RefundsService,
   ) {}
 
   private assertMockPaymentEnabled(): void {
@@ -156,6 +163,37 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       clearInterval(this.expireInterval);
       this.expireInterval = undefined;
     }
+  }
+
+  private async releaseActiveReservationsForOrder(
+    tx: DrizzleTransaction,
+    input: {
+      orderId: string;
+      reason: "payment_failed" | "payment_expired" | "canceled";
+    },
+  ): Promise<void> {
+    const reservations = await tx
+      .select({
+        inventoryId: inventoryReservations.inventoryId,
+        quantity: inventoryReservations.quantity,
+      })
+      .from(inventoryReservations)
+      .where(
+        and(
+          eq(inventoryReservations.orderId, input.orderId),
+          eq(inventoryReservations.status, "active"),
+        ),
+      );
+
+    await reservations.reduce<Promise<void>>(async (previous, reservation) => {
+      await previous;
+      await this.inventoryService.releaseReservation(tx, {
+        orderId: input.orderId,
+        inventoryId: reservation.inventoryId,
+        quantity: reservation.quantity,
+        reason: input.reason,
+      });
+    }, Promise.resolve());
   }
 
   async listPayments(query: PaymentQuery) {
@@ -249,7 +287,10 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
           providerId: row.providerId,
           eventType: "mock.payment.succeeded",
           providerEventId: `mock:succeed:${paymentNo}`,
-          rawPayloadJson: { paymentNo, event: "succeed" },
+          rawPayloadJson: buildStoredEventPayload({
+            paymentNo,
+            event: "succeed",
+          }),
           signatureValid: true,
           handledAt: new Date(),
         })
@@ -380,7 +421,11 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
           providerId: row.providerId,
           eventType: "mock.payment.failed",
           providerEventId: `mock:fail:${paymentNo}`,
-          rawPayloadJson: { paymentNo, event: "fail", reason },
+          rawPayloadJson: buildStoredEventPayload({
+            paymentNo,
+            event: "fail",
+            reason,
+          }),
           signatureValid: true,
           handledAt: new Date(),
         })
@@ -418,31 +463,10 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         });
       }
 
-      const reservations = await tx
-        .select({
-          inventoryId: inventoryReservations.inventoryId,
-          quantity: inventoryReservations.quantity,
-        })
-        .from(inventoryReservations)
-        .where(
-          and(
-            eq(inventoryReservations.orderId, row.orderId),
-            eq(inventoryReservations.status, "active"),
-          ),
-        );
-
-      await reservations.reduce<Promise<void>>(
-        async (previous, reservation) => {
-          await previous;
-          await this.inventoryService.releaseReservation(tx, {
-            orderId: row.orderId,
-            inventoryId: reservation.inventoryId,
-            quantity: reservation.quantity,
-            reason: "payment_failed",
-          });
-        },
-        Promise.resolve(),
-      );
+      await this.releaseActiveReservationsForOrder(tx, {
+        orderId: row.orderId,
+        reason: "payment_failed",
+      });
 
       return {
         paymentNo: row.paymentNo,
@@ -485,6 +509,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         orderStatus: orders.status,
         machineId: orders.machineId,
         expiresAt: payments.expiresAt,
+        providerConfigId: payments.paymentProviderConfigId,
         publicConfigJson: paymentProviderConfigs.publicConfigJson,
       })
       .from(payments)
@@ -515,8 +540,9 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
               payment.providerCode,
             );
             const config = await this.paymentProviderConfigService
-              .resolveForPayment({
+              .resolveForExistingPayment({
                 providerCode: payment.providerCode,
+                providerConfigId: payment.providerConfigId,
                 machineId: payment.machineId,
               })
               .catch(() => ({
@@ -542,6 +568,8 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
                 queryResult.providerTradeNo,
                 queryResult.rawPayload,
                 payment.providerId,
+                queryResult.paidAt ?? now,
+                null,
               );
               if (applied) {
                 await this.vendingService
@@ -603,11 +631,11 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
                 providerId: payment.providerId,
                 eventType: "payment.expire_compensation_failed",
                 providerEventId: `expire_compensation_failed:${payment.paymentNo}:${now.getTime()}`,
-                rawPayloadJson: {
+                rawPayloadJson: buildStoredEventPayload({
                   paymentNo: payment.paymentNo,
                   providerCode: payment.providerCode,
                   message,
-                },
+                }),
                 signatureValid: true,
                 handledAt: new Date(),
               })
@@ -625,10 +653,10 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
               providerId: payment.providerId,
               eventType: "payment.expired",
               providerEventId: `expired:${payment.paymentNo}`,
-              rawPayloadJson: {
+              rawPayloadJson: buildStoredEventPayload({
                 paymentNo: payment.paymentNo,
                 event: "expired",
-              },
+              }),
               signatureValid: true,
               handledAt: new Date(),
             })
@@ -656,31 +684,10 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
             });
           }
 
-          const reservations = await tx
-            .select({
-              inventoryId: inventoryReservations.inventoryId,
-              quantity: inventoryReservations.quantity,
-            })
-            .from(inventoryReservations)
-            .where(
-              and(
-                eq(inventoryReservations.orderId, payment.orderId),
-                eq(inventoryReservations.status, "active"),
-              ),
-            );
-
-          await reservations.reduce<Promise<void>>(
-            async (previous, reservation) => {
-              await previous;
-              await this.inventoryService.releaseReservation(tx, {
-                orderId: payment.orderId,
-                inventoryId: reservation.inventoryId,
-                quantity: reservation.quantity,
-                reason: "payment_expired",
-              });
-            },
-            Promise.resolve(),
-          );
+          await this.releaseActiveReservationsForOrder(tx, {
+            orderId: payment.orderId,
+            reason: "payment_expired",
+          });
 
           return true;
         });
@@ -1394,7 +1401,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         providerId: payment.providerId,
         eventType,
         providerEventId: webhook.providerEventId,
-        rawPayloadJson: webhook.rawPayload,
+        rawPayloadJson: buildStoredEventPayload(webhook.rawPayload),
         signatureValid: webhook.signatureValid,
         handledAt: new Date(),
       })
@@ -1558,28 +1565,10 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
           });
         }
 
-        const reservations = await tx
-          .select({
-            inventoryId: inventoryReservations.inventoryId,
-            quantity: inventoryReservations.quantity,
-          })
-          .from(inventoryReservations)
-          .where(
-            and(
-              eq(inventoryReservations.orderId, r.orderId),
-              eq(inventoryReservations.status, "active"),
-            ),
-          );
-
-        await reservations.reduce<Promise<void>>(async (prev, reservation) => {
-          await prev;
-          await this.inventoryService.releaseReservation(tx, {
-            orderId: r.orderId,
-            inventoryId: reservation.inventoryId,
-            quantity: reservation.quantity,
-            reason: "payment_failed",
-          });
-        }, Promise.resolve());
+        await this.releaseActiveReservationsForOrder(tx, {
+          orderId: r.orderId,
+          reason: "payment_failed",
+        });
       });
     }
 
@@ -1607,65 +1596,43 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
     providerCode: string,
     webhook: import("./payment-provider.interface").ProviderRefundWebhookResult,
   ) {
-    // Look up refund by refundNo
-    const [refund] = webhook.refundNo
-      ? await this.db
-          .select({
-            id: refunds.id,
-            providerId: payments.providerId,
-            paymentId: refunds.paymentId,
-            refundNo: refunds.refundNo,
-            status: refunds.status,
-          })
-          .from(refunds)
-          .innerJoin(payments, eq(payments.id, refunds.paymentId))
-          .innerJoin(
-            paymentProviders,
-            eq(paymentProviders.id, payments.providerId),
-          )
-          .where(
-            and(
-              eq(refunds.refundNo, webhook.refundNo),
-              eq(paymentProviders.code, providerCode),
-            ),
-          )
-          .limit(1)
-      : [];
-
-    if (!refund) {
-      await this.webhookAttemptRecorder.finish({
-        attemptId,
-        eventKind: "refund",
-        eventType: webhook.eventType,
-        providerEventId: webhook.providerEventId,
-        refundNo: webhook.refundNo,
-        paymentNo: webhook.paymentNo,
-        signatureValid: webhook.signatureValid,
-        businessValid: false,
-        handled: false,
-        failureReason: "refund_not_found",
-      });
-      return { handled: false, reason: "refund_not_found" };
-    }
+    const result = await this.refundsService.applyProviderRefundWebhook({
+      providerCode,
+      refundNo: webhook.refundNo,
+      providerRefundNo: webhook.providerRefundNo,
+      paymentNo: webhook.paymentNo,
+      providerEventId: webhook.providerEventId,
+      eventType: webhook.eventType,
+      refundStatus:
+        webhook.refundStatus === "processing" ||
+        webhook.refundStatus === "succeeded" ||
+        webhook.refundStatus === "failed" ||
+        webhook.refundStatus === "canceled"
+          ? webhook.refundStatus
+          : null,
+      rawPayload: webhook.rawPayload,
+      signatureValid: webhook.signatureValid,
+    });
 
     await this.webhookAttemptRecorder.finish({
       attemptId,
-      providerId: refund.providerId,
-      refundId: refund.id,
-      paymentId: refund.paymentId,
-      matchedConfigId: webhook.matchedConfigId,
       eventKind: "refund",
       eventType: webhook.eventType,
       providerEventId: webhook.providerEventId,
       refundNo: webhook.refundNo,
       paymentNo: webhook.paymentNo,
       signatureValid: webhook.signatureValid,
-      businessValid: true,
-      handled: true,
-      duplicate: false,
+      businessValid: result.handled,
+      handled: result.handled,
+      duplicate: result.duplicate ?? false,
+      failureReason: result.reason,
+      providerId: result.providerId,
+      refundId: result.refundId,
+      paymentId: result.paymentId,
+      matchedConfigId: webhook.matchedConfigId,
     });
 
-    return { handled: true, duplicate: false };
+    return result;
   }
 
   private validateProviderWebhookBusinessFields(
@@ -1701,6 +1668,20 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         return { ok: false, reason: "wechat_currency_mismatch" };
       }
 
+      const requireSucceeded = claimedStatus === "succeeded";
+      if (requireSucceeded) {
+        if (!outTradeNo)
+          return { ok: false, reason: "wechat_out_trade_no_missing" };
+        if (amountTotal === null)
+          return { ok: false, reason: "wechat_amount_total_missing" };
+        if (!amountCurrency)
+          return { ok: false, reason: "wechat_currency_missing" };
+        if (!mchId) return { ok: false, reason: "wechat_mchid_missing" };
+        if (!appId) return { ok: false, reason: "wechat_appid_missing" };
+        if (!tradeState)
+          return { ok: false, reason: "wechat_trade_state_missing" };
+      }
+
       // Find the matched config by id, or find by merchantNo
       const matchedConfig = matchedConfigId
         ? candidateConfigs.find((c) => c.id === matchedConfigId)
@@ -1730,6 +1711,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       const sellerId = rawString(rawPayload, "seller_id");
       const outTradeNo = rawString(rawPayload, "out_trade_no");
       const totalAmount = rawString(rawPayload, "total_amount");
+      const tradeStatus = rawString(rawPayload, "trade_status");
 
       if (outTradeNo && outTradeNo !== payment.paymentNo) {
         return { ok: false, reason: "alipay_out_trade_no_mismatch" };
@@ -1740,6 +1722,26 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       ) {
         return { ok: false, reason: "alipay_total_amount_mismatch" };
       }
+
+      const requireSucceeded = claimedStatus === "succeeded";
+      if (requireSucceeded) {
+        if (!outTradeNo)
+          return { ok: false, reason: "alipay_out_trade_no_missing" };
+        if (!totalAmount)
+          return { ok: false, reason: "alipay_total_amount_missing" };
+        if (!appIdInPayload)
+          return { ok: false, reason: "alipay_app_id_missing" };
+        if (!sellerId) return { ok: false, reason: "alipay_seller_id_missing" };
+        if (!tradeStatus)
+          return { ok: false, reason: "alipay_trade_status_missing" };
+        if (
+          tradeStatus !== "TRADE_SUCCESS" &&
+          tradeStatus !== "TRADE_FINISHED"
+        ) {
+          return { ok: false, reason: "alipay_trade_status_not_success" };
+        }
+      }
+
       const matchingConfig = candidateConfigs.find(
         (c) => !c.appId || c.appId === appIdInPayload,
       );
@@ -1770,6 +1772,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         providerTradeNo: payments.providerTradeNo,
         orderId: payments.orderId,
         machineId: orders.machineId,
+        providerConfigId: payments.paymentProviderConfigId,
       })
       .from(payments)
       .innerJoin(orders, eq(orders.id, payments.orderId))
@@ -1779,6 +1782,14 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
           inArray(payments.status, ["pending", "processing"]),
           sql`${payments.createdAt} >= ${cutoff}`,
           sql`${payments.expiresAt} IS NULL OR ${payments.expiresAt} > ${now}`,
+          sql`not exists (
+    select 1
+    from payment_reconciliation_attempts pra
+    where pra.payment_id = ${payments.id}
+      and pra.trigger = 'scheduled'
+      and pra.next_retry_at is not null
+      and pra.next_retry_at > ${now}
+  )`,
         ),
       )
       .limit(50);
@@ -1819,8 +1830,9 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
             payment.providerCode,
           );
           const config = await this.paymentProviderConfigService
-            .resolveForPayment({
+            .resolveForExistingPayment({
               providerCode: payment.providerCode,
+              providerConfigId: payment.providerConfigId ?? null,
               machineId: payment.machineId,
             })
             .catch(() => ({
@@ -1900,6 +1912,8 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
             result.providerTradeNo,
             result.rawPayload,
             payment.providerId,
+            result.paidAt ?? now,
+            result.failedReason ?? null,
           );
 
           await this.db
@@ -1959,6 +1973,8 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
     providerTradeNo?: string | null,
     rawPayloadJson?: Record<string, unknown>,
     providerId?: string,
+    occurredAt?: Date | null,
+    failedReason?: string | null,
   ): Promise<boolean> {
     return await this.db.transaction(async (tx) => {
       const [existing] = await tx
@@ -1993,17 +2009,20 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
               .then(([p]) => p?.id ?? "")),
           eventType: `reconcile.payment.${newStatus}`,
           providerEventId,
-          rawPayloadJson: rawPayloadJson ?? {},
+          rawPayloadJson: buildStoredEventPayload(rawPayloadJson ?? {}),
           signatureValid: true,
           handledAt: new Date(),
         })
         .onConflictDoNothing();
 
       if (newStatus === "succeeded") {
+        const handledAt = occurredAt ?? new Date();
         await tx
           .update(payments)
           .set({
             status: "succeeded",
+            paidAt: handledAt,
+            failedReason: null,
             ...(providerTradeNo ? { providerTradeNo } : {}),
             updatedAt: new Date(),
           })
@@ -2012,7 +2031,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         if (r.orderStatus === "pending_payment") {
           await tx
             .update(orders)
-            .set({ status: "paid", updatedAt: new Date() })
+            .set({ status: "paid", paidAt: handledAt, updatedAt: new Date() })
             .where(eq(orders.id, orderId));
           await tx.insert(orderStatusEvents).values({
             orderId,
@@ -2024,8 +2043,34 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       } else {
         await tx
           .update(payments)
-          .set({ status: "failed", updatedAt: new Date() })
+          .set({
+            status: "failed",
+            failedReason: failedReason ?? "provider_reported_failed",
+            updatedAt: new Date(),
+          })
           .where(eq(payments.id, paymentId));
+
+        if (r.orderStatus !== "canceled") {
+          await tx
+            .update(orders)
+            .set({
+              status: "canceled",
+              canceledAt: new Date(),
+              updatedAt: new Date(),
+            })
+            .where(eq(orders.id, orderId));
+          await tx.insert(orderStatusEvents).values({
+            orderId,
+            fromStatus: r.orderStatus,
+            toStatus: "canceled",
+            reason: "reconcile_payment_failed",
+          });
+        }
+
+        await this.releaseActiveReservationsForOrder(tx, {
+          orderId,
+          reason: "payment_failed",
+        });
       }
 
       return true;
@@ -2279,6 +2324,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         providerTradeNo: payments.providerTradeNo,
         orderId: payments.orderId,
         machineId: orders.machineId,
+        providerConfigId: payments.paymentProviderConfigId,
       })
       .from(payments)
       .innerJoin(orders, eq(orders.id, payments.orderId))
@@ -2300,8 +2346,9 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
 
     const provider = this.paymentProviderRegistry.get(payment.providerCode);
     const config = await this.paymentProviderConfigService
-      .resolveForPayment({
+      .resolveForExistingPayment({
         providerCode: payment.providerCode,
+        providerConfigId: payment.providerConfigId ?? null,
         machineId: payment.machineId,
       })
       .catch(() => ({
@@ -2381,6 +2428,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
     }
 
     const providerEventId = `manual_reconcile:${payment.paymentNo}:${providerStatus}:${Date.now()}`;
+    const now = new Date();
     const applied = await this.applyPaymentStatusUpdate(
       payment.id,
       payment.orderId,
@@ -2389,6 +2437,8 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       result.providerTradeNo,
       result.rawPayload,
       payment.providerId,
+      result.paidAt ?? now,
+      result.failedReason ?? null,
     );
 
     await this.db

@@ -120,18 +120,53 @@ export function redactPayload(obj: unknown): unknown {
 /**
  * Get a truncated, redacted excerpt of the raw body text.
  * Max WEBHOOK_EXCERPT_BYTES characters, redacted sensitive fields if JSON.
+ * Also supports URL-encoded form data.
  */
+function tryParseUrlEncoded(input: string): JsonObject | null {
+  if (!input.includes("=")) return null;
+  const params = new URLSearchParams(input);
+  const entries = [...params.entries()];
+  if (entries.length === 0) return null;
+  const result: JsonObject = {};
+  for (const [key, value] of entries) {
+    const existing = result[key];
+    if (existing === undefined) {
+      result[key] = value;
+    } else if (Array.isArray(existing)) {
+      existing.push(value);
+    } else {
+      result[key] = [existing, value];
+    }
+  }
+  return result;
+}
+
 export function buildRawBodyExcerpt(rawBodyText: string): string {
-  // Try to parse as JSON and redact
   try {
     const parsed: unknown = JSON.parse(rawBodyText);
-    const redacted = redactPayload(parsed);
-    const redactedStr = JSON.stringify(redacted);
-    return redactedStr.slice(0, WEBHOOK_EXCERPT_BYTES);
+    return JSON.stringify(redactPayload(parsed)).slice(
+      0,
+      WEBHOOK_EXCERPT_BYTES,
+    );
   } catch {
-    // Not JSON - return plain text excerpt (still truncated)
+    const parsedForm = tryParseUrlEncoded(rawBodyText);
+    if (parsedForm) {
+      return JSON.stringify(redactPayload(parsedForm)).slice(
+        0,
+        WEBHOOK_EXCERPT_BYTES,
+      );
+    }
     return rawBodyText.slice(0, WEBHOOK_EXCERPT_BYTES);
   }
+}
+
+export function buildStoredEventPayload(payload: unknown): JsonObject {
+  const serialized = JSON.stringify(payload ?? {});
+  return {
+    payloadSha256: sha256Hex(serialized),
+    payloadExcerpt: buildRawBodyExcerpt(serialized),
+    redactedPayload: buildRedactedPayload(payload) ?? {},
+  };
 }
 
 /**

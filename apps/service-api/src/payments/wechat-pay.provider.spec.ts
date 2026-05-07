@@ -167,6 +167,106 @@ describe("WeChatPayProvider", () => {
     vi.restoreAllMocks();
   });
 
+  describe("handleWebhook - refund notification", () => {
+    function createRefundWebhook(
+      refundData: Record<string, unknown>,
+      apiV3Key: string,
+    ) {
+      const nonce = randomBytes(12).toString("hex").slice(0, 12);
+      const associatedData = "refund";
+      const keyBuf = Buffer.from(apiV3Key, "utf8");
+      const nonceBuf = Buffer.from(nonce, "utf8");
+      const cipher = createCipheriv("aes-256-gcm", keyBuf, nonceBuf);
+      cipher.setAAD(Buffer.from(associatedData, "utf8"));
+      const encrypted = Buffer.concat([
+        cipher.update(JSON.stringify(refundData), "utf8"),
+        cipher.final(),
+      ]);
+      const authTag = cipher.getAuthTag();
+      const ciphertext = Buffer.concat([encrypted, authTag]).toString("base64");
+
+      const bodyObj = {
+        id: "refund-evt-001",
+        event_type: "REFUND.SUCCESS",
+        resource: {
+          algorithm: "AEAD_AES_256_GCM",
+          ciphertext,
+          nonce,
+          associated_data: associatedData,
+          original_type: "refund",
+        },
+      };
+      const rawBodyText = JSON.stringify(bodyObj);
+      const timestamp = Math.floor(Date.now() / 1000).toString();
+      const webhookNonce = "refundwebhooknonce";
+      const message = `${timestamp}\n${webhookNonce}\n${rawBodyText}\n`;
+      const signature = createSign("RSA-SHA256")
+        .update(message, "utf8")
+        .sign(platformPrivateKey, "base64");
+      return {
+        headers: {
+          "wechatpay-timestamp": timestamp,
+          "wechatpay-nonce": webhookNonce,
+          "wechatpay-signature": signature,
+          "wechatpay-serial": TEST_PLATFORM_CERT_SERIAL,
+        },
+        rawBodyText,
+      };
+    }
+
+    it("returns eventKind=refund and refundStatus=succeeded for REFUND.SUCCESS", async () => {
+      const refundData = {
+        out_refund_no: "RFD001",
+        refund_id: "WECHAT_RF_001",
+        out_trade_no: "PAY2025001",
+        refund_status: "SUCCESS",
+      };
+      const { headers, rawBodyText } = createRefundWebhook(
+        refundData,
+        TEST_API_V3_KEY,
+      );
+
+      const result = await provider.handleWebhook({
+        headers,
+        rawBodyText,
+        body: JSON.parse(rawBodyText) as Record<string, unknown>,
+        candidateConfigs: [makeConfig()],
+      });
+
+      expect(result.eventKind).toBe("refund");
+      const refundResult =
+        result as import("./payment-provider.interface").ProviderRefundWebhookResult;
+      expect(refundResult.refundNo).toBe("RFD001");
+      expect(refundResult.providerRefundNo).toBe("WECHAT_RF_001");
+      expect(refundResult.refundStatus).toBe("succeeded");
+    });
+
+    it("returns eventKind=refund and refundStatus=failed for REFUND.ABNORMAL", async () => {
+      const refundData = {
+        out_refund_no: "RFD002",
+        refund_id: "WECHAT_RF_002",
+        out_trade_no: "PAY2025002",
+        refund_status: "ABNORMAL",
+      };
+      const { headers, rawBodyText } = createRefundWebhook(
+        refundData,
+        TEST_API_V3_KEY,
+      );
+
+      const result = await provider.handleWebhook({
+        headers,
+        rawBodyText,
+        body: JSON.parse(rawBodyText) as Record<string, unknown>,
+        candidateConfigs: [makeConfig()],
+      });
+
+      expect(result.eventKind).toBe("refund");
+      const refundResult =
+        result as import("./payment-provider.interface").ProviderRefundWebhookResult;
+      expect(refundResult.refundStatus).toBe("failed");
+    });
+  });
+
   describe("handleWebhook", () => {
     it("accepts a valid signed webhook and returns payment result", async () => {
       const paymentData = {

@@ -619,6 +619,12 @@ export const payments = t.pgTable(
       .uuid("provider_id")
       .notNull()
       .references(() => paymentProviders.id),
+    paymentProviderConfigId: t
+      .uuid("payment_provider_config_id")
+      .references(() => paymentProviderConfigs.id),
+    providerConfigSnapshotJson: t
+      .jsonb("provider_config_snapshot_json")
+      .$type<JsonObject>(),
     method: paymentMethod("method").notNull(),
     status: paymentStatus("status").default("created").notNull(),
     amountCents: t.integer("amount_cents").notNull(),

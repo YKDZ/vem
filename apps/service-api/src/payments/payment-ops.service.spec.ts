@@ -100,12 +100,7 @@ function makeService(options: {
   const config = options.config ?? makeConfig();
   const secrets = options.secrets ?? makeSecrets();
   const providerConfigs = options.providerConfigs ?? makeProviderConfigs();
-  return new PaymentOpsService(
-    db as never,
-    config,
-    secrets,
-    providerConfigs,
-  );
+  return new PaymentOpsService(db as never, config, secrets, providerConfigs);
 }
 
 /** Helper to set up db.select with specific results for different calls */
@@ -147,6 +142,8 @@ describe("PaymentOpsService.getReadiness", () => {
       [],
       // checkRealProviderConfigsPresent: no real configs
       [],
+      // checkMachineRealProviderOptionsAvailable: no online machines
+      [],
       // checkCertificates: no enabled configs
       [],
       // checkRecentWebhookFailures: 0 failures
@@ -171,7 +168,15 @@ describe("PaymentOpsService.getReadiness", () => {
 
   it("production + localhost/http notify → notify_url_static_check.passed=false", async () => {
     const db = makeDb();
-    buildSelectSequence(db, [[], [], [], [{ total: 0 }], [{ total: 0 }], [{ total: 0 }]]);
+    buildSelectSequence(db, [
+      [],
+      [],
+      [],
+      [],
+      [{ total: 0 }],
+      [{ total: 0 }],
+      [{ total: 0 }],
+    ]);
 
     const service = makeService({
       db,
@@ -201,6 +206,7 @@ describe("PaymentOpsService.getReadiness", () => {
     buildSelectSequence(db, [
       [], // mock provider check
       [], // real provider check
+      [], // machine real provider check (no online machines)
       [], // cert check
       [{ total: 3 }], // webhook failures
       [{ total: 0 }], // reconciliation
@@ -224,17 +230,43 @@ describe("PaymentOpsService.getReadiness", () => {
       return {
         from: vi.fn().mockImplementation(() => {
           if (callIdx === 1) {
-            // checkRealProviderConfigsPresent: has machine-level enabled config
+            // checkRealProviderConfigsPresent: has machine-level enabled config with all required fields
             return {
               innerJoin: vi.fn().mockReturnValue({
                 where: vi.fn().mockResolvedValue([
                   {
                     providerCode: "alipay",
-                    status: "enabled",
+                    providerStatus: "enabled",
+                    configStatus: "enabled",
                     machineId: "mach-001",
+                    merchantNo: "MERCHANT001",
+                    appId: "APP001",
+                    publicConfigJson: {
+                      gatewayUrl: "https://openapi.alipay.com",
+                    },
+                    configEncryptedJson: {
+                      v: 1,
+                      alg: "aes-256-gcm",
+                      iv: "yyy",
+                      tag: "zzz",
+                      ciphertext: "xxx",
+                    },
                   },
                 ]),
               }),
+            };
+          }
+          if (callIdx === 2) {
+            // checkMachineRealProviderOptionsAvailable: no online machines
+            const noMachines = Object.assign(Promise.resolve([]), {
+              limit: vi.fn().mockResolvedValue([]),
+            });
+            return {
+              where: vi.fn().mockReturnValue(noMachines),
+              innerJoin: vi.fn().mockReturnValue({
+                where: vi.fn().mockResolvedValue([]),
+              }),
+              limit: vi.fn().mockResolvedValue([]),
             };
           }
           // All other checks: no rows (empty counts)

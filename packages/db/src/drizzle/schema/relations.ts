@@ -243,6 +243,10 @@ export const relations = defineRelations(
         from: r.payments.providerId,
         to: r.paymentProviders.id,
       }),
+      providerConfig: r.one.paymentProviderConfigs({
+        from: r.payments.paymentProviderConfigId,
+        to: r.paymentProviderConfigs.id,
+      }),
       payerSnapshot: r.one.paymentUserSnapshots({
         from: r.payments.payerSnapshotId,
         to: r.paymentUserSnapshots.id,

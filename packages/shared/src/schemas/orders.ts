@@ -20,13 +20,58 @@ export const machineOrderItemSchema = z.object({
   quantity: z.int().positive(),
 });
 
-export const createMachineOrderSchema = z.object({
-  machineCode: z.string().min(1).max(64),
-  items: z.array(machineOrderItemSchema).min(1).max(10),
-  paymentMethod: paymentMethodSchema,
-  paymentProviderCode: z.string().min(1).max(64).optional(),
-  profileSnapshot: z.record(z.string(), z.unknown()).optional(),
-});
+export const machinePaymentProviderCodeSchema = z.enum([
+  "mock",
+  "wechat_pay",
+  "alipay",
+]);
+
+const realQrProviderCodes = new Set(["wechat_pay", "alipay"]);
+
+export const createMachineOrderSchema = z
+  .object({
+    machineCode: z.string().min(1).max(64),
+    items: z.array(machineOrderItemSchema).min(1).max(10),
+    paymentMethod: paymentMethodSchema,
+    paymentProviderCode: machinePaymentProviderCodeSchema.optional(),
+    profileSnapshot: z.record(z.string(), z.unknown()).optional(),
+  })
+  .superRefine((value, ctx) => {
+    if (value.paymentMethod === "mock") {
+      if (
+        value.paymentProviderCode !== undefined &&
+        value.paymentProviderCode !== "mock"
+      ) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["paymentProviderCode"],
+          message: "mock payment method can only use mock provider",
+        });
+      }
+      return;
+    }
+
+    if (value.paymentMethod === "qr_code") {
+      if (
+        value.paymentProviderCode === undefined ||
+        !realQrProviderCodes.has(value.paymentProviderCode)
+      ) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["paymentProviderCode"],
+          message:
+            "qr_code payment method requires alipay or wechat_pay provider",
+        });
+      }
+      return;
+    }
+
+    ctx.addIssue({
+      code: "custom",
+      path: ["paymentMethod"],
+      message: "face_pay is not supported by machine order creation",
+    });
+  });
 
 export const machineOrderStatusQuerySchema = z.object({
   machineCode: z.string().min(1).max(64),
@@ -43,12 +88,6 @@ export const machineOrderStatusNextActionSchema = z.enum([
   "refunded",
   "manual_handling",
   "closed",
-]);
-
-export const machinePaymentProviderCodeSchema = z.enum([
-  "mock",
-  "wechat_pay",
-  "alipay",
 ]);
 
 export const machinePaymentOptionSchema = z.object({
