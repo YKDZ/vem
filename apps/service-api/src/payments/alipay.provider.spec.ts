@@ -1,242 +1,288 @@
-import { createSign, generateKeyPairSync } from "node:crypto";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { ConflictException, UnauthorizedException } from "@nestjs/common";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { AlipayProvider } from "./alipay.provider";
+import type {
+  AlipaySdkClientFactory,
+  AlipaySdkLike,
+} from "./alipay-sdk.client";
 import type { PaymentProviderRuntimeConfig } from "./payment-provider.interface";
 
-let privateKey: string;
-let publicKey: string;
+import { AlipayProvider } from "./alipay.provider";
 
-beforeAll(() => {
-  const pair = generateKeyPairSync("rsa", {
-    modulusLength: 2048,
-    publicKeyEncoding: { type: "spki", format: "pem" },
-    privateKeyEncoding: { type: "pkcs8", format: "pem" },
-  });
-  privateKey = pair.privateKey;
-  publicKey = pair.publicKey;
-});
-
-function makeConfig(): PaymentProviderRuntimeConfig {
+function makeRuntimeConfig(
+  overrides: Partial<PaymentProviderRuntimeConfig> = {},
+): PaymentProviderRuntimeConfig {
   return {
     providerCode: "alipay",
-    merchantNo: null,
-    appId: "alipay-app-001",
+    merchantNo: "2088123456789012",
+    appId: "2021000123456789",
     publicConfigJson: {
-      alipayPublicKeyPem: publicKey,
-      notifyUrl: "https://example.com/notify",
+      mode: "sandbox",
       gatewayUrl: "https://openapi-sandbox.dl.alipaydev.com/gateway.do",
+      keyType: "PKCS8",
+      qrExpiresMinutes: 15,
+      timeoutCompensationSeconds: 120,
+      notifyUrl: "https://pay.example.com/api/payments/webhooks/alipay",
     },
     sensitiveConfigJson: {
-      privateKeyPem: privateKey,
+      privateKeyPem:
+        "-----BEGIN PRIVATE KEY-----\nMIIB\n-----END PRIVATE KEY-----",
+      appCertPem: "-----BEGIN CERTIFICATE-----\nAPP\n-----END CERTIFICATE-----",
+      alipayPublicCertPem:
+        "-----BEGIN CERTIFICATE-----\nALIPAY\n-----END CERTIFICATE-----",
+      alipayRootCertPem:
+        "-----BEGIN CERTIFICATE-----\nROOT\n-----END CERTIFICATE-----",
     },
-  };
-}
-
-function signParams(
-  params: Record<string, string>,
-  key: string,
-): string {
-  const content = Object.keys(params)
-    .filter((k) => k !== "sign" && k !== "sign_type")
-    .sort()
-    .map((k) => `${k}=${params[k]}`)
-    .join("&");
-  return createSign("RSA-SHA256").update(content, "utf8").sign(key, "base64");
-}
-
-function makeWebhookBody(overrides: Partial<Record<string, string>> = {}): Record<string, string> {
-  const base: Record<string, string> = {
-    app_id: "alipay-app-001",
-    out_trade_no: "PAY2025001",
-    trade_no: "ALIPAY_TXN_001",
-    trade_status: "TRADE_SUCCESS",
-    total_amount: "9.99",
-    notify_id: "notify-001",
-    notify_time: "2025-05-05 12:00:00",
-    gmt_create: "2025-05-05 11:00:00",
     ...overrides,
   };
-  base["sign"] = signParams(base, privateKey);
-  return base;
+}
+
+function makeSdk(overrides: Partial<AlipaySdkLike> = {}) {
+  const sdk: AlipaySdkLike = {
+    curl: vi.fn(),
+    checkNotifySignV2: vi.fn().mockReturnValue(true),
+    ...overrides,
+  };
+  const factory: AlipaySdkClientFactory = {
+    create: vi.fn().mockReturnValue(sdk),
+  } as unknown as AlipaySdkClientFactory;
+  return { sdk, factory };
 }
 
 describe("AlipayProvider", () => {
-  let provider: AlipayProvider;
-
-  beforeAll(() => {
-    provider = new AlipayProvider();
-  });
-
-  afterEach(() => {
+  beforeEach(() => {
     vi.restoreAllMocks();
   });
 
-  describe("handleWebhook", () => {
-    it("accepts a valid signed webhook and returns payment result", async () => {
-      const body = makeWebhookBody();
+  it("initializes SDK in certificate mode with PKCS8 and sandbox endpoint", async () => {
+    const { sdk, factory } = makeSdk();
+    vi.mocked(sdk.curl).mockResolvedValue({
+      responseHttpStatus: 200,
+      traceId: "trace-precreate",
+      data: { qr_code: "https://qr.alipay.com/bax-sandbox" },
+    });
+    const provider = new AlipayProvider(factory);
 
-      const result = await provider.handleWebhook({
-        headers: {},
-        rawBodyText: new URLSearchParams(body).toString(),
-        body,
-        candidateConfigs: [makeConfig()],
-      });
-
-      expect(result.paymentNo).toBe("PAY2025001");
-      expect(result.paymentStatus).toBe("succeeded");
-      expect(result.signatureValid).toBe(true);
+    await provider.createPaymentIntent({
+      config: makeRuntimeConfig(),
+      paymentNo: "PAY202605060001",
+      orderNo: "ORD202605060001",
+      amountCents: 999,
+      expiresAt: new Date("2026-05-06T12:15:00.000Z"),
     });
 
-    it("throws UnauthorizedException when signature is invalid (tampered amount)", async () => {
-      const body = makeWebhookBody({ total_amount: "999.99" });
-      // Tamper with amount AFTER signing
-      body["total_amount"] = "1.00";
+    expect(factory.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        appId: "2021000123456789",
+        privateKey: expect.stringContaining("BEGIN PRIVATE KEY"),
+        keyType: "PKCS8",
+        endpoint: "https://openapi-sandbox.dl.alipaydev.com",
+        camelcase: false,
+        appCertContent: expect.stringContaining("BEGIN CERTIFICATE"),
+        alipayPublicCertContent: expect.stringContaining("BEGIN CERTIFICATE"),
+        alipayRootCertContent: expect.stringContaining("BEGIN CERTIFICATE"),
+      }),
+    );
+  });
 
-      await expect(
-        provider.handleWebhook({
-          headers: {},
-          rawBodyText: new URLSearchParams(body).toString(),
-          body,
-          candidateConfigs: [makeConfig()],
-        }),
-      ).rejects.toThrow(/signature invalid/i);
+  it("precreates an order-code QR and does not invent providerTradeNo", async () => {
+    const { sdk, factory } = makeSdk();
+    vi.mocked(sdk.curl).mockResolvedValue({
+      responseHttpStatus: 200,
+      data: { qr_code: "https://qr.alipay.com/bax-sandbox" },
+    });
+    const provider = new AlipayProvider(factory);
+
+    const result = await provider.createPaymentIntent({
+      config: makeRuntimeConfig(),
+      paymentNo: "PAY202605060002",
+      orderNo: "ORD202605060002",
+      amountCents: 1234,
+      expiresAt: new Date(Date.now() + 15 * 60_000),
     });
 
-    it("throws UnauthorizedException when signature is missing", async () => {
-      const body = makeWebhookBody();
-      const { sign: _sign, ...bodyNoSign } = body;
-
-      await expect(
-        provider.handleWebhook({
-          headers: {},
-          rawBodyText: new URLSearchParams(bodyNoSign).toString(),
-          body: bodyNoSign,
-          candidateConfigs: [makeConfig()],
+    expect(sdk.curl).toHaveBeenCalledWith(
+      "POST",
+      "/v3/alipay/trade/precreate",
+      expect.objectContaining({
+        body: expect.objectContaining({
+          notify_url: "https://pay.example.com/api/payments/webhooks/alipay",
+          out_trade_no: "PAY202605060002",
+          total_amount: "12.34",
+          subject: "VEM order ORD202605060002",
+          product_code: "QR_CODE_OFFLINE",
+          seller_id: "2088123456789012",
         }),
-      ).rejects.toThrow(/signature missing/i);
+      }),
+    );
+    expect(result).toEqual({
+      providerTradeNo: null,
+      paymentUrl: "https://qr.alipay.com/bax-sandbox",
     });
   });
 
-  describe("createPaymentIntent (precreate)", () => {
-    it("calls Alipay gateway with method=alipay.trade.precreate and returns qr_code", async () => {
-      const fetchSpy = vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () =>
-          ({
-            alipay_trade_precreate_response: {
-              code: "10000",
-              msg: "Success",
-              qr_code: "https://qr.alipay.com/bax123",
-            },
-          }),
+  it.each([
+    ["WAIT_BUYER_PAY", "pending"],
+    ["TRADE_SUCCESS", "succeeded"],
+    ["TRADE_FINISHED", "succeeded"],
+    ["TRADE_CLOSED", "canceled"],
+  ] as const)(
+    "maps query trade_status %s to %s",
+    async (tradeStatus, status) => {
+      const { sdk, factory } = makeSdk();
+      vi.mocked(sdk.curl).mockResolvedValue({
+        responseHttpStatus: 200,
+        data: { trade_status: tradeStatus, trade_no: "2026050622000000001" },
       });
-      vi.stubGlobal("fetch", fetchSpy);
-
-      const result = await provider.createPaymentIntent({
-        config: makeConfig(),
-        paymentNo: "PAY001",
-        orderNo: "ORD001",
-        amountCents: 999,
-        expiresAt: new Date(Date.now() + 900_000),
-      });
-
-      const calledBody = fetchSpy.mock.calls[0]?.[1] as { body?: string } | undefined;
-      const formData = new URLSearchParams(calledBody?.body ?? "");
-      expect(formData.get("method")).toBe("alipay.trade.precreate");
-      expect(formData.get("sign_type")).toBe("RSA2");
-      expect(formData.get("sign")).toBeTruthy();
-      expect(result.paymentUrl).toBe("https://qr.alipay.com/bax123");
-      vi.unstubAllGlobals();
-    });
-  });
-
-  describe("queryPayment", () => {
-    it("calls Alipay gateway with method=alipay.trade.query", async () => {
-      const fetchSpy = vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () =>
-          ({
-            alipay_trade_query_response: {
-              code: "10000",
-              trade_status: "TRADE_SUCCESS",
-              trade_no: "TXN001",
-            },
-          }),
-      });
-      vi.stubGlobal("fetch", fetchSpy);
+      const provider = new AlipayProvider(factory);
 
       const result = await provider.queryPayment({
-        config: makeConfig(),
-        paymentNo: "PAY001",
+        config: makeRuntimeConfig(),
+        paymentNo: "PAY202605060003",
         providerTradeNo: null,
       });
 
-      const calledBody = fetchSpy.mock.calls[0]?.[1] as { body?: string } | undefined;
-      const formData = new URLSearchParams(calledBody?.body ?? "");
-      expect(formData.get("method")).toBe("alipay.trade.query");
-      expect(result.status).toBe("succeeded");
-      vi.unstubAllGlobals();
+      expect(sdk.curl).toHaveBeenCalledWith(
+        "POST",
+        "/v3/alipay/trade/query",
+        expect.objectContaining({
+          body: expect.objectContaining({ out_trade_no: "PAY202605060003" }),
+        }),
+      );
+      expect(result.status).toBe(status);
+      expect(result.providerTradeNo).toBe("2026050622000000001");
+    },
+  );
+
+  it("closes unpaid order through alipay.trade.close v3 path", async () => {
+    const { sdk, factory } = makeSdk();
+    vi.mocked(sdk.curl).mockResolvedValue({
+      responseHttpStatus: 200,
+      data: {},
     });
+    const provider = new AlipayProvider(factory);
+
+    const result = await provider.cancelPayment({
+      config: makeRuntimeConfig(),
+      paymentNo: "PAY202605060004",
+      providerTradeNo: null,
+    });
+
+    expect(sdk.curl).toHaveBeenCalledWith(
+      "POST",
+      "/v3/alipay/trade/close",
+      expect.objectContaining({ body: { out_trade_no: "PAY202605060004" } }),
+    );
+    expect(result.status).toBe("canceled");
   });
 
-  describe("cancelPayment", () => {
-    it("calls Alipay gateway with method=alipay.trade.close", async () => {
-      const fetchSpy = vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () =>
-          ({
-            alipay_trade_close_response: {
-              code: "10000",
-              msg: "Success",
-            },
-          }),
+  it.each([
+    ["Y", "succeeded"],
+    ["N", "processing"],
+    [undefined, "processing"],
+  ] as const)(
+    "maps refund fund_change=%s to %s",
+    async (fundChange, status) => {
+      const { sdk, factory } = makeSdk();
+      vi.mocked(sdk.curl).mockResolvedValue({
+        responseHttpStatus: 200,
+        data: { out_request_no: "RFD202605060001", fund_change: fundChange },
       });
-      vi.stubGlobal("fetch", fetchSpy);
-
-      const result = await provider.cancelPayment({
-        config: makeConfig(),
-        paymentNo: "PAY001",
-        providerTradeNo: null,
-      });
-
-      const calledBody = fetchSpy.mock.calls[0]?.[1] as { body?: string } | undefined;
-      const formData = new URLSearchParams(calledBody?.body ?? "");
-      expect(formData.get("method")).toBe("alipay.trade.close");
-      expect(result.status).toBe("canceled");
-      vi.unstubAllGlobals();
-    });
-  });
-
-  describe("refundPayment", () => {
-    it("calls Alipay gateway with method=alipay.trade.refund", async () => {
-      const fetchSpy = vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () =>
-          ({
-            alipay_trade_refund_response: {
-              code: "10000",
-              out_request_no: "REF001",
-              fund_change: "Y",
-            },
-          }),
-      });
-      vi.stubGlobal("fetch", fetchSpy);
+      const provider = new AlipayProvider(factory);
 
       const result = await provider.refundPayment({
-        config: makeConfig(),
-        paymentNo: "PAY001",
-        refundNo: "REF001",
-        amountCents: 500,
-        reason: "customer request",
-        providerTradeNo: null,
+        config: makeRuntimeConfig(),
+        paymentNo: "PAY202605060005",
+        providerTradeNo: "2026050622000000002",
+        refundNo: "RFD202605060001",
+        amountCents: 1234,
+        reason: "admin_refund",
       });
 
-      const calledBody = fetchSpy.mock.calls[0]?.[1] as { body?: string } | undefined;
-      const formData = new URLSearchParams(calledBody?.body ?? "");
-      expect(formData.get("method")).toBe("alipay.trade.refund");
-      expect(result.providerRefundNo).toBe("REF001");
-      vi.unstubAllGlobals();
+      expect(sdk.curl).toHaveBeenCalledWith(
+        "POST",
+        "/v3/alipay/trade/refund",
+        expect.objectContaining({
+          body: expect.objectContaining({
+            out_trade_no: "PAY202605060005",
+            trade_no: "2026050622000000002",
+            out_request_no: "RFD202605060001",
+            refund_amount: "12.34",
+          }),
+        }),
+      );
+      expect(result.status).toBe(status);
+    },
+  );
+
+  it("uses checkNotifySignV2 for async notification verification", async () => {
+    const { sdk, factory } = makeSdk({
+      checkNotifySignV2: vi.fn().mockReturnValue(true),
     });
+    const provider = new AlipayProvider(factory);
+    const body = {
+      notify_id: "notify-001",
+      app_id: "2021000123456789",
+      seller_id: "2088123456789012",
+      out_trade_no: "PAY202605060006",
+      trade_no: "2026050622000000003",
+      total_amount: "9.99",
+      trade_status: "TRADE_SUCCESS",
+      sign_type: "RSA2",
+      sign: "signed-by-alipay",
+    };
+
+    const result = await provider.handleWebhook({
+      headers: {},
+      body,
+      rawBodyText: new URLSearchParams(body).toString(),
+      candidateConfigs: [makeRuntimeConfig()],
+    });
+
+    expect(sdk.checkNotifySignV2).toHaveBeenCalledWith(body);
+    expect(result).toMatchObject({
+      providerEventId: "notify-001",
+      paymentNo: "PAY202605060006",
+      providerTradeNo: "2026050622000000003",
+      paymentStatus: "succeeded",
+      signatureValid: true,
+    });
+  });
+
+  it("rejects async notification when checkNotifySignV2 returns false", async () => {
+    const { factory } = makeSdk({
+      checkNotifySignV2: vi.fn().mockReturnValue(false),
+    });
+    const provider = new AlipayProvider(factory);
+
+    await expect(
+      provider.handleWebhook({
+        headers: {},
+        body: {
+          app_id: "2021000123456789",
+          out_trade_no: "PAY202605060007",
+          sign: "invalid",
+        },
+        rawBodyText: "app_id=2021000123456789&out_trade_no=PAY202605060007",
+        candidateConfigs: [makeRuntimeConfig()],
+      }),
+    ).rejects.toThrow(UnauthorizedException);
+  });
+
+  it("fails fast when enabled runtime config misses certificate content", async () => {
+    const { factory } = makeSdk();
+    const provider = new AlipayProvider(factory);
+
+    await expect(
+      provider.createPaymentIntent({
+        config: makeRuntimeConfig({
+          sensitiveConfigJson: { privateKeyPem: "key" },
+        }),
+        paymentNo: "PAY202605060008",
+        orderNo: "ORD202605060008",
+        amountCents: 100,
+        expiresAt: new Date(Date.now() + 15 * 60_000),
+      }),
+    ).rejects.toThrow(ConflictException);
   });
 });

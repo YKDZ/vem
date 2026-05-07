@@ -1,6 +1,7 @@
 import type { PaymentStatus, RefundStatus } from "@vem/shared";
 
 export type PaymentProviderRuntimeConfig = {
+  id?: string;
   providerCode: string;
   merchantNo: string | null;
   appId: string | null;
@@ -17,7 +18,7 @@ export type PaymentIntentInput = {
 };
 
 export type PaymentIntentResult = {
-  providerTradeNo: string;
+  providerTradeNo: string | null;
   paymentUrl: string;
 };
 
@@ -65,14 +66,12 @@ export type ProviderRefundPaymentResult = {
   rawPayload?: Record<string, unknown>;
 };
 
-export type ProviderWebhookInput = {
-  headers: Record<string, string | string[] | undefined>;
-  body: unknown;
-  rawBodyText: string;
-  candidateConfigs: PaymentProviderRuntimeConfig[];
-};
+export type ProviderWebhookResult =
+  | ProviderPaymentWebhookResult
+  | ProviderRefundWebhookResult;
 
-export type ProviderWebhookResult = {
+export type ProviderPaymentWebhookResult = {
+  eventKind: "payment";
   providerEventId: string;
   eventType: string;
   paymentNo: string | null;
@@ -80,6 +79,50 @@ export type ProviderWebhookResult = {
   paymentStatus: PaymentStatus | null;
   signatureValid: boolean;
   rawPayload: Record<string, unknown>;
+  /** 标准化后的业务字段，供 PaymentsService 业务校验使用 */
+  normalizedPayload?: Record<string, unknown> | null;
+  /** 匹配到的配置 id，用于业务字段校验时找到对应商户信息 */
+  matchedConfigId?: string | null;
+};
+
+export type ProviderRefundWebhookResult = {
+  eventKind: "refund";
+  providerEventId: string;
+  eventType: string;
+  refundNo: string | null;
+  paymentNo: string | null;
+  providerRefundNo: string | null;
+  refundStatus: RefundStatus | null;
+  signatureValid: boolean;
+  rawPayload: Record<string, unknown>;
+  normalizedPayload?: Record<string, unknown> | null;
+  matchedConfigId?: string | null;
+};
+
+export type ProviderRefundQueryInput = {
+  refundNo: string;
+  paymentNo: string;
+  providerRefundNo: string | null;
+  providerTradeNo: string | null;
+  amountCents: number;
+  config: PaymentProviderRuntimeConfig;
+};
+
+export type ProviderRefundQueryResult = {
+  providerRefundNo: string | null;
+  status: Extract<
+    RefundStatus,
+    "processing" | "succeeded" | "failed" | "canceled"
+  >;
+  refundedAt: Date | null;
+  rawPayload?: Record<string, unknown>;
+};
+
+export type ProviderWebhookInput = {
+  headers: Record<string, string | string[] | undefined>;
+  body: unknown;
+  rawBodyText: string;
+  candidateConfigs: PaymentProviderRuntimeConfig[];
 };
 
 export interface PaymentProvider {
@@ -94,5 +137,8 @@ export interface PaymentProvider {
   refundPayment(
     input: ProviderRefundPaymentInput,
   ): Promise<ProviderRefundPaymentResult>;
+  queryRefund?(
+    input: ProviderRefundQueryInput,
+  ): Promise<ProviderRefundQueryResult>;
   handleWebhook?(input: ProviderWebhookInput): Promise<ProviderWebhookResult>;
 }

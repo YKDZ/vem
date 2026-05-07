@@ -1,13 +1,14 @@
 import { NotFoundException } from "@nestjs/common";
 import { describe, expect, it, vi } from "vitest";
 
+import type { AuditService } from "../audit/audit.service";
 import type { AppConfigService } from "../config/app-config.service";
 import type { InventoryService } from "../inventory/inventory.service";
 import type { VendingService } from "../vending/vending.service";
-import type { AuditService } from "../audit/audit.service";
 import type { PaymentConfigSecretService } from "./payment-config-secret.service";
 import type { PaymentProviderConfigService } from "./payment-provider-config.service";
 import type { PaymentProviderRegistry } from "./payment-provider.registry";
+
 import { PaymentsService } from "./payments.service";
 
 // ---- helpers ---------------------------------------------------------------
@@ -134,6 +135,10 @@ function makeService(overrides: {
     auditService,
     secretService,
     configService,
+    {
+      start: vi.fn().mockResolvedValue("attempt-1"),
+      finish: vi.fn().mockResolvedValue(undefined),
+    } as never,
   );
 }
 
@@ -175,7 +180,14 @@ describe("PaymentsService", () => {
         }),
       };
 
-      // Call 2 (in tx): check existing event by providerEventId
+      // Call 2: count previous paymentReconciliationAttempts → 0
+      const countCall = {
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([{ total: 0 }]),
+        }),
+      };
+
+      // Call 3 (in tx): check existing event by providerEventId
       const call2 = {
         from: vi.fn().mockReturnValue({
           where: vi.fn().mockReturnValue({
@@ -184,7 +196,7 @@ describe("PaymentsService", () => {
         }),
       };
 
-      // Call 3 (in tx): load payment+order for applyPaymentStatusUpdate
+      // Call 4 (in tx): load payment+order for applyPaymentStatusUpdate
       // .from().innerJoin().where() — awaited directly (no .limit())
       const call3 = {
         from: vi.fn().mockReturnValue({
@@ -203,6 +215,7 @@ describe("PaymentsService", () => {
 
       db.select
         .mockReturnValueOnce(call1)
+        .mockReturnValueOnce(countCall)
         .mockReturnValueOnce(call2)
         .mockReturnValueOnce(call3);
 
@@ -283,6 +296,23 @@ describe("PaymentsService", () => {
   });
 
   describe("handleProviderWebhook", () => {
+    function makePaymentSelectMock(
+      db: ReturnType<typeof makeDb>,
+      paymentRows: unknown[],
+    ) {
+      db.select.mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue(paymentRows),
+              }),
+            }),
+          }),
+        }),
+      });
+    }
+
     it("returns {handled:true,duplicate:true} when event already processed", async () => {
       const handleWebhook = vi.fn().mockResolvedValue({
         paymentNo: "PAY001",
@@ -295,19 +325,17 @@ describe("PaymentsService", () => {
       const provider = { handleWebhook };
 
       const db = makeDb();
-      // find payment by paymentNo+providerCode → found
-      db.select
-        .mockReturnValueOnce({
-          from: vi.fn().mockReturnValue({
-            innerJoin: vi.fn().mockReturnValue({
-              where: vi.fn().mockReturnValue({
-                limit: vi.fn().mockResolvedValue([
-                  { id: "pay-001", providerId: "prov-001", status: "pending", orderId: "ord-001" },
-                ]),
-              }),
-            }),
-          }),
-        });
+      makePaymentSelectMock(db, [
+        {
+          id: "pay-001",
+          providerId: "prov-001",
+          status: "pending",
+          orderId: "ord-001",
+          paymentNo: "PAY001",
+          amountCents: 100,
+          machineId: "mach-001",
+        },
+      ]);
 
       // insert event → no rows (duplicate)
       db.insert.mockReturnValue({
@@ -349,19 +377,13 @@ describe("PaymentsService", () => {
       const provider = { handleWebhook };
 
       const db = makeDb();
-      db.select.mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({
-          innerJoin: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              limit: vi.fn().mockResolvedValue([]), // not found
-            }),
-          }),
-        }),
-      });
+      makePaymentSelectMock(db, []); // not found
 
       const service = makeService({
         db,
-        registry: { get: vi.fn().mockReturnValue(provider) } as unknown as PaymentProviderRegistry,
+        registry: {
+          get: vi.fn().mockReturnValue(provider),
+        } as unknown as PaymentProviderRegistry,
         configService: {
           listCandidateConfigsForProvider: vi.fn().mockResolvedValue([]),
         },
@@ -373,21 +395,26 @@ describe("PaymentsService", () => {
         {},
         "",
       );
-      expect(result).toMatchObject({ handled: false, reason: "payment_not_found" });
+      expect(result).toMatchObject({
+        handled: false,
+        reason: "payment_not_found",
+      });
     });
 
     it("propagates UnauthorizedException from provider.handleWebhook (invalid signature)", async () => {
       const { UnauthorizedException } = await import("@nestjs/common");
-      const handleWebhook = vi.fn().mockRejectedValue(
-        new UnauthorizedException("signature invalid"),
-      );
+      const handleWebhook = vi
+        .fn()
+        .mockRejectedValue(new UnauthorizedException("signature invalid"));
       const provider = { handleWebhook };
 
       const db = makeDb();
 
       const service = makeService({
         db,
-        registry: { get: vi.fn().mockReturnValue(provider) } as unknown as PaymentProviderRegistry,
+        registry: {
+          get: vi.fn().mockReturnValue(provider),
+        } as unknown as PaymentProviderRegistry,
         configService: {
           listCandidateConfigsForProvider: vi.fn().mockResolvedValue([]),
         },
@@ -397,18 +424,489 @@ describe("PaymentsService", () => {
         service.handleProviderWebhook("wechat_pay", {}, {}, "tampered"),
       ).rejects.toThrow(UnauthorizedException);
     });
+
+    it("alipay: total_amount mismatch → {handled:false, reason:'alipay_total_amount_mismatch'}", async () => {
+      const handleWebhook = vi.fn().mockResolvedValue({
+        paymentNo: "PAY_ALI001",
+        eventType: "alipay.trade.pay",
+        providerEventId: "ALI_EVT001",
+        signatureValid: true,
+        paymentStatus: "succeeded",
+        rawPayload: { out_trade_no: "PAY_ALI001", total_amount: "99.99" },
+        providerTradeNo: "2024001",
+      });
+      const provider = { handleWebhook };
+
+      const db = makeDb();
+      makePaymentSelectMock(db, [
+        {
+          id: "pay-ali-001",
+          providerId: "prov-alipay",
+          status: "pending",
+          orderId: "ord-ali-001",
+          paymentNo: "PAY_ALI001",
+          amountCents: 500,
+          machineId: "mach-001",
+        },
+      ]);
+      // Insert for the business_invalid event
+      db.insert.mockReturnValue({
+        values: vi.fn().mockReturnValue({
+          onConflictDoNothing: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: "evt-invalid" }]),
+          }),
+        }),
+      });
+
+      const service = makeService({
+        db,
+        registry: {
+          get: vi.fn().mockReturnValue(provider),
+        } as unknown as PaymentProviderRegistry,
+        configService: {
+          listCandidateConfigsForProvider: vi.fn().mockResolvedValue([]),
+        },
+      });
+
+      const result = await service.handleProviderWebhook("alipay", {}, {}, "");
+      expect(result).toMatchObject({
+        handled: false,
+        reason: "alipay_total_amount_mismatch",
+      });
+    });
+
+    it("alipay: app_id mismatch → {handled:false, reason:'alipay_app_id_mismatch'}", async () => {
+      const handleWebhook = vi.fn().mockResolvedValue({
+        paymentNo: "PAY_ALI002",
+        eventType: "alipay.trade.pay",
+        providerEventId: "ALI_EVT002",
+        signatureValid: true,
+        paymentStatus: "succeeded",
+        rawPayload: {
+          out_trade_no: "PAY_ALI002",
+          total_amount: "1.00",
+          app_id: "WRONG_APP",
+        },
+        providerTradeNo: "2024002",
+      });
+      const provider = { handleWebhook };
+
+      const db = makeDb();
+      makePaymentSelectMock(db, [
+        {
+          id: "pay-ali-002",
+          providerId: "prov-alipay",
+          status: "pending",
+          orderId: "ord-ali-002",
+          paymentNo: "PAY_ALI002",
+          amountCents: 100,
+          machineId: "mach-001",
+        },
+      ]);
+      db.insert.mockReturnValue({
+        values: vi.fn().mockReturnValue({
+          onConflictDoNothing: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: "evt-invalid" }]),
+          }),
+        }),
+      });
+
+      const service = makeService({
+        db,
+        registry: {
+          get: vi.fn().mockReturnValue(provider),
+        } as unknown as PaymentProviderRegistry,
+        configService: {
+          listCandidateConfigsForProvider: vi.fn().mockResolvedValue([
+            {
+              providerCode: "alipay",
+              appId: "CORRECT_APP",
+              merchantNo: "MERCH001",
+              publicConfigJson: {},
+              sensitiveConfigJson: {},
+            },
+          ]),
+        },
+      });
+
+      const result = await service.handleProviderWebhook("alipay", {}, {}, "");
+      expect(result).toMatchObject({
+        handled: false,
+        reason: "alipay_app_id_mismatch",
+      });
+    });
+
+    it("alipay: seller_id mismatch → {handled:false, reason:'alipay_seller_id_mismatch'}", async () => {
+      const handleWebhook = vi.fn().mockResolvedValue({
+        paymentNo: "PAY_ALI003",
+        eventType: "alipay.trade.pay",
+        providerEventId: "ALI_EVT003",
+        signatureValid: true,
+        paymentStatus: "succeeded",
+        rawPayload: {
+          out_trade_no: "PAY_ALI003",
+          total_amount: "2.00",
+          app_id: "APP001",
+          seller_id: "WRONG_SELLER",
+        },
+        providerTradeNo: "2024003",
+      });
+      const provider = { handleWebhook };
+
+      const db = makeDb();
+      makePaymentSelectMock(db, [
+        {
+          id: "pay-ali-003",
+          providerId: "prov-alipay",
+          status: "pending",
+          orderId: "ord-ali-003",
+          paymentNo: "PAY_ALI003",
+          amountCents: 200,
+          machineId: "mach-001",
+        },
+      ]);
+      db.insert.mockReturnValue({
+        values: vi.fn().mockReturnValue({
+          onConflictDoNothing: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: "evt-invalid" }]),
+          }),
+        }),
+      });
+
+      const service = makeService({
+        db,
+        registry: {
+          get: vi.fn().mockReturnValue(provider),
+        } as unknown as PaymentProviderRegistry,
+        configService: {
+          listCandidateConfigsForProvider: vi.fn().mockResolvedValue([
+            {
+              providerCode: "alipay",
+              appId: "APP001",
+              merchantNo: "CORRECT_SELLER",
+              publicConfigJson: {},
+              sensitiveConfigJson: {},
+            },
+          ]),
+        },
+      });
+
+      const result = await service.handleProviderWebhook("alipay", {}, {}, "");
+      expect(result).toMatchObject({
+        handled: false,
+        reason: "alipay_seller_id_mismatch",
+      });
+    });
+
+    // ---- WeChat Pay business field validation tests ----
+
+    function makeWechatWebhookMock(
+      overrides?: Partial<{
+        outTradeNo: string;
+        mchId: string;
+        appId: string;
+        amountTotal: number;
+        amountCurrency: string;
+        tradeState: string;
+        transactionId: string;
+        paymentStatus: string;
+        matchedConfigId: string | null;
+      }>,
+    ) {
+      const defaults = {
+        outTradeNo: "PAY_WX_001",
+        mchId: "MCH001",
+        appId: "wx-app-001",
+        amountTotal: 500,
+        amountCurrency: "CNY",
+        tradeState: "SUCCESS",
+        transactionId: "TXN_WX_001",
+        paymentStatus: "succeeded",
+        matchedConfigId: "cfg-001",
+      };
+      const vals = { ...defaults, ...overrides };
+      return vi.fn().mockResolvedValue({
+        paymentNo: vals.outTradeNo,
+        eventType: "wechat_pay.webhook",
+        providerEventId: "WX_EVT_001",
+        signatureValid: true,
+        paymentStatus: vals.paymentStatus,
+        providerTradeNo: vals.transactionId,
+        rawPayload: { body: {}, decrypted: {} },
+        normalizedPayload: {
+          outTradeNo: vals.outTradeNo,
+          mchId: vals.mchId,
+          appId: vals.appId,
+          amountTotal: vals.amountTotal,
+          amountCurrency: vals.amountCurrency,
+          tradeState: vals.tradeState,
+          transactionId: vals.transactionId,
+        },
+        matchedConfigId: vals.matchedConfigId,
+      });
+    }
+
+    function makeWechatPaymentRow(paymentNo = "PAY_WX_001", amountCents = 500) {
+      return {
+        id: "pay-wx-001",
+        providerId: "prov-wx",
+        status: "pending",
+        orderId: "ord-wx-001",
+        paymentNo,
+        amountCents,
+        machineId: "mach-001",
+      };
+    }
+
+    const wechatCandidateConfig = {
+      id: "cfg-001",
+      providerCode: "wechat_pay",
+      appId: "wx-app-001",
+      merchantNo: "MCH001",
+      publicConfigJson: {},
+      sensitiveConfigJson: {},
+    };
+
+    it("wechat_pay: out_trade_no mismatch => {handled:false, reason:'wechat_out_trade_no_mismatch'}", async () => {
+      // Simulate: webhook paymentNo = "PAY_WX_001" (DB lookup), but decrypted
+      // outTradeNo = "TAMPERED_TRADE_NO" (differs from DB payment's paymentNo)
+      const handleWebhook = vi.fn().mockResolvedValue({
+        paymentNo: "PAY_WX_001",
+        eventType: "wechat_pay.webhook",
+        providerEventId: "WX_EVT_TAMPER",
+        signatureValid: true,
+        paymentStatus: "succeeded",
+        providerTradeNo: "TXN_WX_001",
+        rawPayload: {},
+        normalizedPayload: {
+          outTradeNo: "TAMPERED_TRADE_NO", // does not match DB paymentNo "PAY_WX_001"
+          mchId: "MCH001",
+          appId: "wx-app-001",
+          amountTotal: 500,
+          amountCurrency: "CNY",
+          tradeState: "SUCCESS",
+          transactionId: "TXN_WX_001",
+        },
+        matchedConfigId: "cfg-001",
+      });
+      const db = makeDb();
+      makePaymentSelectMock(db, [makeWechatPaymentRow("PAY_WX_001", 500)]);
+      db.insert.mockReturnValue({
+        values: vi.fn().mockReturnValue({
+          onConflictDoNothing: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: "evt-invalid" }]),
+          }),
+        }),
+      });
+      const service = makeService({
+        db,
+        registry: {
+          get: vi.fn().mockReturnValue({ handleWebhook }),
+        } as unknown as PaymentProviderRegistry,
+        configService: {
+          listCandidateConfigsForProvider: vi
+            .fn()
+            .mockResolvedValue([wechatCandidateConfig]),
+        },
+      });
+      const result = await service.handleProviderWebhook(
+        "wechat_pay",
+        {},
+        {},
+        "",
+      );
+      expect(result).toMatchObject({
+        handled: false,
+        reason: "wechat_out_trade_no_mismatch",
+      });
+    });
+
+    it("wechat_pay: amount.total mismatch => {handled:false, reason:'wechat_amount_total_mismatch'}", async () => {
+      const handleWebhook = makeWechatWebhookMock({ amountTotal: 999 }); // payment has amountCents 500
+      const db = makeDb();
+      makePaymentSelectMock(db, [makeWechatPaymentRow("PAY_WX_001", 500)]);
+      db.insert.mockReturnValue({
+        values: vi.fn().mockReturnValue({
+          onConflictDoNothing: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: "evt-invalid" }]),
+          }),
+        }),
+      });
+      const service = makeService({
+        db,
+        registry: {
+          get: vi.fn().mockReturnValue({ handleWebhook }),
+        } as unknown as PaymentProviderRegistry,
+        configService: {
+          listCandidateConfigsForProvider: vi
+            .fn()
+            .mockResolvedValue([wechatCandidateConfig]),
+        },
+      });
+      const result = await service.handleProviderWebhook(
+        "wechat_pay",
+        {},
+        {},
+        "",
+      );
+      expect(result).toMatchObject({
+        handled: false,
+        reason: "wechat_amount_total_mismatch",
+      });
+    });
+
+    it("wechat_pay: currency mismatch => {handled:false, reason:'wechat_currency_mismatch'}", async () => {
+      const handleWebhook = makeWechatWebhookMock({ amountCurrency: "USD" });
+      const db = makeDb();
+      makePaymentSelectMock(db, [makeWechatPaymentRow()]);
+      db.insert.mockReturnValue({
+        values: vi.fn().mockReturnValue({
+          onConflictDoNothing: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: "evt-invalid" }]),
+          }),
+        }),
+      });
+      const service = makeService({
+        db,
+        registry: {
+          get: vi.fn().mockReturnValue({ handleWebhook }),
+        } as unknown as PaymentProviderRegistry,
+        configService: {
+          listCandidateConfigsForProvider: vi
+            .fn()
+            .mockResolvedValue([wechatCandidateConfig]),
+        },
+      });
+      const result = await service.handleProviderWebhook(
+        "wechat_pay",
+        {},
+        {},
+        "",
+      );
+      expect(result).toMatchObject({
+        handled: false,
+        reason: "wechat_currency_mismatch",
+      });
+    });
+
+    it("wechat_pay: mchid mismatch => {handled:false, reason:'wechat_mchid_mismatch'}", async () => {
+      const handleWebhook = makeWechatWebhookMock({ mchId: "WRONG_MCH" });
+      const db = makeDb();
+      makePaymentSelectMock(db, [makeWechatPaymentRow()]);
+      db.insert.mockReturnValue({
+        values: vi.fn().mockReturnValue({
+          onConflictDoNothing: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: "evt-invalid" }]),
+          }),
+        }),
+      });
+      const service = makeService({
+        db,
+        registry: {
+          get: vi.fn().mockReturnValue({ handleWebhook }),
+        } as unknown as PaymentProviderRegistry,
+        configService: {
+          listCandidateConfigsForProvider: vi
+            .fn()
+            .mockResolvedValue([wechatCandidateConfig]),
+        },
+      });
+      const result = await service.handleProviderWebhook(
+        "wechat_pay",
+        {},
+        {},
+        "",
+      );
+      expect(result).toMatchObject({
+        handled: false,
+        reason: "wechat_mchid_mismatch",
+      });
+    });
+
+    it("wechat_pay: appid mismatch => {handled:false, reason:'wechat_appid_mismatch'}", async () => {
+      const handleWebhook = makeWechatWebhookMock({ appId: "WRONG_APP" });
+      const db = makeDb();
+      makePaymentSelectMock(db, [makeWechatPaymentRow()]);
+      db.insert.mockReturnValue({
+        values: vi.fn().mockReturnValue({
+          onConflictDoNothing: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: "evt-invalid" }]),
+          }),
+        }),
+      });
+      const service = makeService({
+        db,
+        registry: {
+          get: vi.fn().mockReturnValue({ handleWebhook }),
+        } as unknown as PaymentProviderRegistry,
+        configService: {
+          listCandidateConfigsForProvider: vi
+            .fn()
+            .mockResolvedValue([wechatCandidateConfig]),
+        },
+      });
+      const result = await service.handleProviderWebhook(
+        "wechat_pay",
+        {},
+        {},
+        "",
+      );
+      expect(result).toMatchObject({
+        handled: false,
+        reason: "wechat_appid_mismatch",
+      });
+    });
+
+    it("wechat_pay: trade_state not SUCCESS when claimed succeeded => {handled:false, reason:'wechat_trade_state_not_success'}", async () => {
+      const handleWebhook = makeWechatWebhookMock({
+        tradeState: "USERPAYING",
+        paymentStatus: "succeeded",
+      });
+      const db = makeDb();
+      makePaymentSelectMock(db, [makeWechatPaymentRow()]);
+      db.insert.mockReturnValue({
+        values: vi.fn().mockReturnValue({
+          onConflictDoNothing: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: "evt-invalid" }]),
+          }),
+        }),
+      });
+      const service = makeService({
+        db,
+        registry: {
+          get: vi.fn().mockReturnValue({ handleWebhook }),
+        } as unknown as PaymentProviderRegistry,
+        configService: {
+          listCandidateConfigsForProvider: vi
+            .fn()
+            .mockResolvedValue([wechatCandidateConfig]),
+        },
+      });
+      const result = await service.handleProviderWebhook(
+        "wechat_pay",
+        {},
+        {},
+        "",
+      );
+      expect(result).toMatchObject({
+        handled: false,
+        reason: "wechat_trade_state_not_success",
+      });
+    });
   });
 
   describe("markMockSucceeded (mock payment disabled)", () => {
     it("throws NotFoundException when paymentMockEnabled is false", async () => {
       const service = makeService({});
       // Override config to disable mock
-      (service as unknown as { config: { paymentMockEnabled: boolean } }).config = {
+      (
+        service as unknown as { config: { paymentMockEnabled: boolean } }
+      ).config = {
         paymentMockEnabled: false,
       };
-      await expect(service.markMockSucceeded("PAY001", "admin")).rejects.toThrow(
-        NotFoundException,
-      );
+      await expect(
+        service.markMockSucceeded("PAY001", "admin"),
+      ).rejects.toThrow(NotFoundException);
     });
   });
 
@@ -443,7 +941,8 @@ describe("PaymentsService", () => {
       expect(results[0]).toMatchObject({
         providerCode: "wechat_pay",
         providerName: "微信支付",
-        derivedNotifyUrl: "http://localhost:3000/api/payments/webhooks/wechat_pay",
+        derivedNotifyUrl:
+          "http://localhost:3000/api/payments/webhooks/wechat_pay",
       });
       expect(results[0]).not.toHaveProperty("sensitiveConfigJson");
       expect(results[0]).not.toHaveProperty("configEncryptedJson");
@@ -500,10 +999,22 @@ describe("PaymentsService", () => {
             `http://localhost:3000/api/payments/webhooks/${code}`,
           getPaymentNotifyUrlStaticCheck: () => ({}) as never,
         } as never,
-        { get: vi.fn(), has: vi.fn().mockReturnValue(false), register: vi.fn(), list: vi.fn().mockReturnValue([]) } as never,
+        {
+          get: vi.fn(),
+          has: vi.fn().mockReturnValue(false),
+          register: vi.fn(),
+          list: vi.fn().mockReturnValue([]),
+        } as never,
         auditService,
         secretService,
-        { listCandidateConfigsForProvider: vi.fn(), resolveForPayment: vi.fn() } as never,
+        {
+          listCandidateConfigsForProvider: vi.fn(),
+          resolveForPayment: vi.fn(),
+        } as never,
+        {
+          start: vi.fn().mockResolvedValue("attempt-1"),
+          finish: vi.fn().mockResolvedValue(undefined),
+        } as never,
       );
 
       await service.upsertProviderConfig("admin-1", {
@@ -511,7 +1022,10 @@ describe("PaymentsService", () => {
         machineId: null,
         merchantNo: "MCH001",
         appId: "APP001",
-        publicConfigJson: { certificateSerialNo: "SN123" },
+        publicConfigJson: {
+          certificateSerialNo: "SN123",
+          platformCertificateSerialNo: "PLAT_SN123",
+        },
         sensitiveConfigJson: {
           apiV3Key: "key",
           privateKeyPem: "pem",
@@ -560,6 +1074,315 @@ describe("PaymentsService", () => {
           status: "enabled",
         }),
       ).rejects.toThrow(ConflictException);
+    });
+  });
+
+  describe("expireOverduePayments", () => {
+    function makeOverdueSelectMock(
+      db: ReturnType<typeof makeDb>,
+      overdueRows: unknown[],
+    ) {
+      db.select.mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              leftJoin: vi.fn().mockReturnValue({
+                where: vi.fn().mockResolvedValue(overdueRows),
+              }),
+            }),
+          }),
+        }),
+      });
+    }
+
+    it("query succeeds → calls applyPaymentStatusUpdate + dispatches, no cancel", async () => {
+      const now = new Date();
+      const expiresAt = new Date(now.getTime() - 10_000); // 10s ago
+      const queryPayment = vi.fn().mockResolvedValue({
+        status: "succeeded",
+        providerTradeNo: "TXN_ALIPAY_001",
+        rawPayload: {},
+      });
+      const cancelPayment = vi.fn().mockResolvedValue({});
+      const provider = { queryPayment, cancelPayment };
+
+      const db = makeDb();
+      makeOverdueSelectMock(db, [
+        {
+          paymentId: "pay-exp-001",
+          paymentNo: "PAY_EXP001",
+          providerId: "prov-alipay",
+          providerCode: "alipay",
+          providerTradeNo: null,
+          orderId: "ord-exp-001",
+          orderStatus: "pending_payment",
+          machineId: "mach-001",
+          expiresAt,
+          publicConfigJson: {},
+        },
+      ]);
+
+      // applyPaymentStatusUpdate: check existing event (none) + select payment+order + insert event + update payment
+      db.select.mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([]), // no existing event
+          }),
+        }),
+      });
+      db.select.mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([
+              {
+                paymentId: "pay-exp-001",
+                paymentStatus: "pending",
+                orderId: "ord-exp-001",
+                orderStatus: "pending_payment",
+              },
+            ]),
+          }),
+        }),
+      });
+
+      const createAndDispatchCommands = vi.fn().mockResolvedValue(undefined);
+      const service = makeService({
+        db,
+        registry: {
+          has: vi.fn().mockReturnValue(true),
+          get: vi.fn().mockReturnValue(provider),
+        } as unknown as PaymentProviderRegistry,
+        configService: {
+          resolveForPayment: vi.fn().mockResolvedValue({
+            providerCode: "alipay",
+            merchantNo: null,
+            appId: null,
+            publicConfigJson: {},
+            sensitiveConfigJson: {},
+          }),
+        },
+        vendingService: { createAndDispatchCommands },
+      });
+
+      const result = await service.expireOverduePayments(now);
+      expect(queryPayment).toHaveBeenCalled();
+      expect(cancelPayment).not.toHaveBeenCalled();
+      expect(createAndDispatchCommands).toHaveBeenCalledWith("ord-exp-001");
+      expect(result.processed).toBeGreaterThanOrEqual(1);
+    });
+
+    it("query pending + past compensation window → cancel provider → expire locally", async () => {
+      const now = new Date();
+      const expiresAt = new Date(now.getTime() - 200_000); // 200s ago, beyond 120s window
+      const queryPayment = vi.fn().mockResolvedValue({
+        status: "pending",
+        providerTradeNo: null,
+        rawPayload: {},
+      });
+      const cancelPayment = vi.fn().mockResolvedValue({});
+      const provider = { queryPayment, cancelPayment };
+
+      const db = makeDb();
+      makeOverdueSelectMock(db, [
+        {
+          paymentId: "pay-exp-002",
+          paymentNo: "PAY_EXP002",
+          providerId: "prov-alipay",
+          providerCode: "alipay",
+          providerTradeNo: null,
+          orderId: "ord-exp-002",
+          orderStatus: "pending_payment",
+          machineId: "mach-001",
+          expiresAt,
+          publicConfigJson: {},
+        },
+      ]);
+
+      // reservation query resolves directly at .where() level (no .limit() call)
+      db.select.mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([]),
+        }),
+      });
+
+      const service = makeService({
+        db,
+        registry: {
+          has: vi.fn().mockReturnValue(true),
+          get: vi.fn().mockReturnValue(provider),
+        } as unknown as PaymentProviderRegistry,
+        configService: {
+          resolveForPayment: vi.fn().mockResolvedValue({
+            providerCode: "alipay",
+            merchantNo: null,
+            appId: null,
+            publicConfigJson: {},
+            sensitiveConfigJson: {},
+          }),
+        },
+      });
+
+      await service.expireOverduePayments(now);
+      expect(queryPayment).toHaveBeenCalled();
+      expect(cancelPayment).toHaveBeenCalled();
+    });
+
+    it("queryPayment throws → processed=0, no releaseReservation, reconciliation attempt inserted", async () => {
+      const now = new Date();
+      const expiresAt = new Date(now.getTime() - 10_000);
+
+      const queryPayment = vi.fn().mockRejectedValue(new Error("network down"));
+      const provider = { queryPayment };
+
+      const db = makeDb();
+      makeOverdueSelectMock(db, [
+        {
+          paymentId: "pay-fail-001",
+          paymentNo: "PAY_FAIL001",
+          providerId: "prov-alipay",
+          providerCode: "alipay",
+          providerTradeNo: null,
+          orderId: "ord-fail-001",
+          orderStatus: "pending_payment",
+          machineId: "mach-001",
+          expiresAt,
+          publicConfigJson: {},
+        },
+      ]);
+
+      // nextPaymentReconciliationAttemptNo: count query
+      db.select.mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([{ total: 0 }]),
+        }),
+      });
+
+      const insertedTables: unknown[] = [];
+      const insertedValues: unknown[] = [];
+      db.insert.mockImplementation((table: unknown) => ({
+        values: vi.fn().mockImplementation((vals: unknown) => {
+          insertedTables.push(table);
+          insertedValues.push(vals);
+          return {
+            onConflictDoNothing: vi.fn().mockResolvedValue([]),
+            returning: vi.fn().mockResolvedValue([]),
+          };
+        }),
+      }));
+
+      const releaseReservation = vi.fn();
+      const service = makeService({
+        db,
+        registry: {
+          has: vi.fn().mockReturnValue(true),
+          get: vi.fn().mockReturnValue(provider),
+        } as unknown as PaymentProviderRegistry,
+        configService: {
+          resolveForPayment: vi.fn().mockResolvedValue({
+            providerCode: "alipay",
+            merchantNo: null,
+            appId: null,
+            publicConfigJson: {},
+            sensitiveConfigJson: {},
+          }),
+        },
+        inventoryService: {
+          releaseReservation,
+        } as unknown as InventoryService,
+      });
+
+      const result = await service.expireOverduePayments(now);
+      expect(result.processed).toBe(0);
+      expect(releaseReservation).not.toHaveBeenCalled();
+      // Should have inserted reconciliation attempt
+      const reconIdx = insertedValues.findIndex(
+        (v) =>
+          typeof v === "object" &&
+          v !== null &&
+          (v as Record<string, unknown>)["status"] === "network_error",
+      );
+      expect(reconIdx).toBeGreaterThanOrEqual(0);
+    });
+
+    it("queryPayment returns pending and cancelPayment throws → no local expire", async () => {
+      const now = new Date();
+      const expiresAt = new Date(now.getTime() - 200_000); // beyond compensation window
+
+      const queryPayment = vi.fn().mockResolvedValue({
+        status: "pending",
+        providerTradeNo: null,
+        rawPayload: {},
+      });
+      const cancelPayment = vi
+        .fn()
+        .mockRejectedValue(new Error("cancel timeout"));
+      const provider = { queryPayment, cancelPayment };
+
+      const db = makeDb();
+      makeOverdueSelectMock(db, [
+        {
+          paymentId: "pay-fail-002",
+          paymentNo: "PAY_FAIL002",
+          providerId: "prov-alipay",
+          providerCode: "alipay",
+          providerTradeNo: null,
+          orderId: "ord-fail-002",
+          orderStatus: "pending_payment",
+          machineId: "mach-001",
+          expiresAt,
+          publicConfigJson: {},
+        },
+      ]);
+
+      // nextPaymentReconciliationAttemptNo: count query
+      db.select.mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([{ total: 0 }]),
+        }),
+      });
+
+      const insertedValues: unknown[] = [];
+      db.insert.mockImplementation((_table: unknown) => ({
+        values: vi.fn().mockImplementation((vals: unknown) => {
+          insertedValues.push(vals);
+          return {
+            onConflictDoNothing: vi.fn().mockResolvedValue([]),
+            returning: vi.fn().mockResolvedValue([]),
+          };
+        }),
+      }));
+
+      const releaseReservation = vi.fn();
+      const service = makeService({
+        db,
+        registry: {
+          has: vi.fn().mockReturnValue(true),
+          get: vi.fn().mockReturnValue(provider),
+        } as unknown as PaymentProviderRegistry,
+        configService: {
+          resolveForPayment: vi.fn().mockResolvedValue({
+            providerCode: "alipay",
+            merchantNo: null,
+            appId: null,
+            publicConfigJson: {},
+            sensitiveConfigJson: {},
+          }),
+        },
+        inventoryService: {
+          releaseReservation,
+        } as unknown as InventoryService,
+      });
+
+      const result = await service.expireOverduePayments(now);
+      expect(result.processed).toBe(0);
+      expect(releaseReservation).not.toHaveBeenCalled();
+      const reconIdx = insertedValues.findIndex(
+        (v) =>
+          typeof v === "object" &&
+          v !== null &&
+          (v as Record<string, unknown>)["status"] === "network_error",
+      );
+      expect(reconIdx).toBeGreaterThanOrEqual(0);
     });
   });
 });

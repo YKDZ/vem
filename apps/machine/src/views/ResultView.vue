@@ -43,7 +43,7 @@ const copyMap: Record<CheckoutResultKind, ResultCopy> = {
   },
   dispense_failed: {
     title: "出货失败",
-    subtitle: "系统已记录异常，退款和告警策略会在后续阶段自动化。",
+    subtitle: "系统已记录异常，正在按订单状态发起退款或转人工处理。",
     tone: "danger",
     icon: "!",
   },
@@ -95,7 +95,7 @@ async function backToCatalog(): Promise<void> {
       class="flex h-full flex-col items-center justify-center text-center text-white"
     >
       <div
-        class="w-full rounded-[2rem] border border-white/10 bg-white/10 p-8 shadow-2xl"
+        class="w-full rounded-4xl border border-white/10 bg-white/10 p-8 shadow-2xl"
       >
         <div
           class="mx-auto flex size-28 items-center justify-center rounded-full text-6xl font-black"

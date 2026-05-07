@@ -20,13 +20,17 @@ import {
   paymentEvents,
   paymentProviderConfigs,
   paymentProviders,
+  paymentReconciliationAttempts,
   payments,
   paymentUserSnapshots,
+  paymentWebhookAttempts,
   permissions,
   productCategories,
   products,
   productVariants,
   refreshTokens,
+  refundEvents,
+  refundReconciliationAttempts,
   refunds,
   rolePermissions,
   roles,
@@ -48,6 +52,10 @@ export const relations = defineRelations(
     notificationDeliveries,
     notifications,
     notificationTargets,
+    paymentReconciliationAttempts,
+    paymentWebhookAttempts,
+    refundEvents,
+    refundReconciliationAttempts,
     orderItems,
     orders,
     orderStatusEvents,
@@ -241,6 +249,8 @@ export const relations = defineRelations(
       }),
       events: r.many.paymentEvents(),
       refunds: r.many.refunds(),
+      webhookAttempts: r.many.paymentWebhookAttempts(),
+      reconciliationAttempts: r.many.paymentReconciliationAttempts(),
     },
     paymentUserSnapshots: {
       payments: r.many.payments(),
@@ -249,6 +259,10 @@ export const relations = defineRelations(
       configs: r.many.paymentProviderConfigs(),
       payments: r.many.payments(),
       events: r.many.paymentEvents(),
+      webhookAttempts: r.many.paymentWebhookAttempts(),
+      reconciliationAttempts: r.many.paymentReconciliationAttempts(),
+      refundEvents: r.many.refundEvents(),
+      refundReconciliationAttempts: r.many.refundReconciliationAttempts(),
     },
     paymentProviderConfigs: {
       provider: r.one.paymentProviders({
@@ -278,6 +292,56 @@ export const relations = defineRelations(
       order: r.one.orders({
         from: r.refunds.orderId,
         to: r.orders.id,
+      }),
+      events: r.many.refundEvents(),
+      reconciliationAttempts: r.many.refundReconciliationAttempts(),
+    },
+    paymentWebhookAttempts: {
+      payment: r.one.payments({
+        from: r.paymentWebhookAttempts.paymentId,
+        to: r.payments.id,
+      }),
+      refund: r.one.refunds({
+        from: r.paymentWebhookAttempts.refundId,
+        to: r.refunds.id,
+      }),
+      provider: r.one.paymentProviders({
+        from: r.paymentWebhookAttempts.providerId,
+        to: r.paymentProviders.id,
+      }),
+    },
+    paymentReconciliationAttempts: {
+      payment: r.one.payments({
+        from: r.paymentReconciliationAttempts.paymentId,
+        to: r.payments.id,
+      }),
+      provider: r.one.paymentProviders({
+        from: r.paymentReconciliationAttempts.providerId,
+        to: r.paymentProviders.id,
+      }),
+    },
+    refundEvents: {
+      refund: r.one.refunds({
+        from: r.refundEvents.refundId,
+        to: r.refunds.id,
+      }),
+      payment: r.one.payments({
+        from: r.refundEvents.paymentId,
+        to: r.payments.id,
+      }),
+      provider: r.one.paymentProviders({
+        from: r.refundEvents.providerId,
+        to: r.paymentProviders.id,
+      }),
+    },
+    refundReconciliationAttempts: {
+      refund: r.one.refunds({
+        from: r.refundReconciliationAttempts.refundId,
+        to: r.refunds.id,
+      }),
+      provider: r.one.paymentProviders({
+        from: r.refundReconciliationAttempts.providerId,
+        to: r.paymentProviders.id,
       }),
     },
     vendingCommands: {

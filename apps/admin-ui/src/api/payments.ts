@@ -157,3 +157,156 @@ export async function listPaymentProviderNotifyUrlChecks(): Promise<
     "/payments/provider-configs/notify-url-checks",
   );
 }
+
+export type WebhookAttempt = {
+  id: string;
+  providerCode: string | null;
+  eventKind: string;
+  eventType: string | null;
+  paymentNo: string | null;
+  refundNo: string | null;
+  orderNo: string | null;
+  signatureValid: boolean | null;
+  businessValid: boolean | null;
+  handled: boolean;
+  duplicate: boolean;
+  failureReason: string | null;
+  remoteIp: string | null;
+  httpStatus: number | null;
+  createdAt: string;
+};
+
+export type ReconciliationAttempt = {
+  id: string;
+  paymentId: string;
+  paymentNo: string;
+  providerCode: string;
+  trigger: string;
+  attemptNo: number;
+  status: string;
+  providerPaymentStatus: string | null;
+  errorCode: string | null;
+  errorMessage: string | null;
+  nextRetryAt: string | null;
+  startedAt: string;
+  finishedAt: string | null;
+  createdAt: string;
+};
+
+export type Refund = {
+  id: string;
+  refundNo: string;
+  paymentId: string;
+  paymentNo: string;
+  orderNo: string;
+  providerCode: string;
+  status: string;
+  amountCents: number;
+  reason: string;
+  providerRefundNo: string | null;
+  refundedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export async function listWebhookAttempts(
+  query?: Record<string, unknown>,
+): Promise<PageResult<WebhookAttempt>> {
+  return await get<PageResult<WebhookAttempt>>("/payments/webhook-attempts", {
+    params: query,
+  });
+}
+
+export async function listReconciliationAttempts(
+  query?: Record<string, unknown>,
+): Promise<PageResult<ReconciliationAttempt>> {
+  return await get<PageResult<ReconciliationAttempt>>(
+    "/payments/reconciliation-attempts",
+    { params: query },
+  );
+}
+
+export async function listRefunds(
+  query?: Record<string, unknown>,
+): Promise<PageResult<Refund>> {
+  return await get<PageResult<Refund>>("/payments/refunds", { params: query });
+}
+
+export async function manualReconcile(paymentId: string): Promise<{
+  status: string;
+  reconciled: boolean;
+  reason?: string;
+}> {
+  return await post<{ status: string; reconciled: boolean; reason?: string }>(
+    `/payments/${paymentId}/reconcile`,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Payment Ops
+// ---------------------------------------------------------------------------
+
+export type PaymentOpsCheck = {
+  code: string;
+  severity: "info" | "warning" | "critical";
+  passed: boolean;
+  message: string;
+  evidence: Record<string, unknown>;
+};
+
+export type PaymentOpsReadiness = {
+  status: "ready" | "blocked";
+  checkedAt: string;
+  environment: "development" | "test" | "production";
+  checks: PaymentOpsCheck[];
+};
+
+export type PaymentOpsMetrics = {
+  measuredAt: string;
+  windowMinutes: number;
+  paymentFailureRate: number;
+  paymentFailedCount: number;
+  paymentTotalCount: number;
+  webhookSignatureInvalidCount: number;
+  webhookBusinessInvalidCount: number;
+  reconciliationErrorCount: number;
+  refundFailedCount: number;
+  refundProcessingOverdueCount: number;
+  certificateExpiringCount: number;
+};
+
+export type PaymentMachinePreflight = {
+  machineId: string;
+  machineCode: string;
+  status: "ready" | "blocked";
+  availableProviders: Array<{
+    providerCode: "mock" | "wechat_pay" | "alipay";
+    method: "mock" | "qr_code" | "face_pay";
+    displayName: string;
+    description: string;
+    icon: "mock" | "wechat" | "alipay";
+    recommended: boolean;
+  }>;
+  checks: PaymentOpsCheck[];
+  checkedAt: string;
+};
+
+export async function getPaymentOpsReadiness(): Promise<PaymentOpsReadiness> {
+  return await get<PaymentOpsReadiness>("/payments/ops/readiness");
+}
+
+export async function getPaymentOpsMetrics(
+  windowMinutes = 60,
+): Promise<PaymentOpsMetrics> {
+  return await get<PaymentOpsMetrics>("/payments/ops/metrics", {
+    params: { windowMinutes },
+  });
+}
+
+export async function getPaymentMachinePreflight(
+  machineId: string,
+): Promise<PaymentMachinePreflight> {
+  return await get<PaymentMachinePreflight>(
+    `/payments/ops/machines/${machineId}/preflight`,
+  );
+}

@@ -54,6 +54,8 @@ describe("validateEnv", () => {
       ...baseValidEnv,
       NODE_ENV: "production",
       PAYMENT_MOCK_ENABLED: "false",
+      PAYMENT_PRODUCTION_READINESS_REQUIRED: "true",
+      PAYMENT_WEBHOOK_BASE_URL: "https://pay.example.com",
       MQTT_USERNAME: "vem_service",
       MQTT_PASSWORD: "strong-password-for-mqtt",
     });
@@ -78,5 +80,47 @@ describe("validateEnv", () => {
       PAYMENT_WEBHOOK_BASE_URL: "https://pay.example.com",
     });
     expect(env.PAYMENT_WEBHOOK_BASE_URL).toBe("https://pay.example.com");
+  });
+
+  it("rejects production config without PAYMENT_PRODUCTION_READINESS_REQUIRED=true", () => {
+    expect(() =>
+      validateEnv({
+        ...baseValidEnv,
+        NODE_ENV: "production",
+        PAYMENT_MOCK_ENABLED: "false",
+        PAYMENT_PRODUCTION_READINESS_REQUIRED: "false",
+        PAYMENT_WEBHOOK_BASE_URL: "https://pay.example.com",
+        MQTT_USERNAME: "u",
+        MQTT_PASSWORD: "p",
+      }),
+    ).toThrow("PAYMENT_PRODUCTION_READINESS_REQUIRED must be true in production");
+  });
+
+  it("rejects production config with http webhook base URL", () => {
+    expect(() =>
+      validateEnv({
+        ...baseValidEnv,
+        NODE_ENV: "production",
+        PAYMENT_MOCK_ENABLED: "false",
+        PAYMENT_PRODUCTION_READINESS_REQUIRED: "true",
+        PAYMENT_WEBHOOK_BASE_URL: "http://pay.example.com",
+        MQTT_USERNAME: "u",
+        MQTT_PASSWORD: "p",
+      }),
+    ).toThrow("PAYMENT_WEBHOOK_BASE_URL must use https in production");
+  });
+
+  it("accepts production config with https webhook and readiness required=true", () => {
+    const env = validateEnv({
+      ...baseValidEnv,
+      NODE_ENV: "production",
+      PAYMENT_MOCK_ENABLED: "false",
+      PAYMENT_PRODUCTION_READINESS_REQUIRED: "true",
+      PAYMENT_WEBHOOK_BASE_URL: "https://pay.example.com",
+      MQTT_USERNAME: "u",
+      MQTT_PASSWORD: "p",
+    });
+    expect(env.PAYMENT_PRODUCTION_READINESS_REQUIRED).toBe(true);
+    expect(env.NODE_ENV).toBe("production");
   });
 });

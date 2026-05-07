@@ -11,6 +11,10 @@ import {
   paymentProviders,
   type DrizzleClient,
 } from "@vem/db";
+import type {
+  MachinePaymentOption,
+  MachinePaymentOptionsResponse,
+} from "@vem/shared";
 
 import { AppConfigService } from "../config/app-config.service";
 import { isEncryptedJson } from "../crypto/encrypted-json.util";
@@ -155,5 +159,49 @@ export class PaymentProviderConfigService {
         sensitiveConfigJson,
       };
     });
+  }
+
+  async listMachinePaymentOptionsForMachine(
+    machineId: string,
+  ): Promise<MachinePaymentOptionsResponse> {
+    const candidates: Omit<MachinePaymentOption, "recommended">[] = [
+      {
+        providerCode: "alipay",
+        method: "qr_code",
+        displayName: "支付宝",
+        description: "请使用支付宝扫码支付",
+        icon: "alipay",
+      },
+      {
+        providerCode: "wechat_pay",
+        method: "qr_code",
+        displayName: "微信支付",
+        description: "请使用微信扫码支付",
+        icon: "wechat",
+      },
+    ];
+
+    const options: Omit<MachinePaymentOption, "recommended">[] = [];
+    for (const candidate of candidates) {
+      try {
+        // oxlint-disable-next-line no-await-in-loop
+        await this.resolveForPayment({
+          providerCode: candidate.providerCode,
+          machineId,
+        });
+        options.push(candidate);
+      } catch {
+        // provider 未启用、配置缺失、机器级 disabled 都视为不可用。
+      }
+    }
+
+    return {
+      options: options.map((option, index) => ({
+        ...option,
+        recommended: index === 0,
+      })),
+      defaultProviderCode: options[0]?.providerCode ?? null,
+      serverTime: new Date().toISOString(),
+    };
   }
 }

@@ -23,8 +23,24 @@ const canSubmit = computed(
     !checkoutStore.loading,
 );
 
+const paymentHint = computed(() => {
+  const selected = checkoutStore.selectedPaymentOption;
+  if (!selected) return null;
+  if (selected.providerCode === "mock")
+    return "本地开发模式可在支付页使用模拟按钮。";
+  return "下一步将展示所选渠道二维码，请使用对应 App 扫码支付。";
+});
+
 onMounted(async () => {
-  if (!item.value) await router.replace("/catalog");
+  if (!item.value) {
+    await router.replace("/catalog");
+    return;
+  }
+  try {
+    await checkoutStore.loadPaymentOptions(machineStore.config);
+  } catch {
+    // 错误已写入 checkoutStore.error
+  }
 });
 
 async function submitOrder(): Promise<void> {
@@ -69,12 +85,62 @@ async function submitOrder(): Promise<void> {
           </div>
         </div>
 
+        <div class="mt-6 rounded-3xl bg-slate-950/45 p-5">
+          <div class="flex items-center justify-between">
+            <div>
+              <h3 class="text-2xl font-bold">选择支付方式</h3>
+              <p class="mt-1 text-slate-300">请选择后在下一步扫码支付</p>
+            </div>
+            <span
+              v-if="checkoutStore.paymentOptions.length === 1"
+              class="rounded-full bg-emerald-400/20 px-3 py-1 text-sm text-emerald-100"
+            >
+              已自动选择
+            </span>
+          </div>
+
+          <div
+            v-if="checkoutStore.paymentOptions.length > 0"
+            class="mt-4 grid gap-3"
+          >
+            <button
+              v-for="option in checkoutStore.paymentOptions"
+              :key="option.providerCode"
+              class="kiosk-touch-target rounded-3xl border px-5 py-4 text-left"
+              :class="
+                option.providerCode ===
+                checkoutStore.selectedPaymentProviderCode
+                  ? 'border-sky-300 bg-sky-300/20 text-white'
+                  : 'border-white/15 bg-white/5 text-slate-200'
+              "
+              type="button"
+              @click="checkoutStore.selectPaymentProvider(option.providerCode)"
+            >
+              <div class="flex items-center justify-between gap-4">
+                <div>
+                  <p class="text-xl font-black">{{ option.displayName }}</p>
+                  <p class="mt-1 text-sm text-slate-300">
+                    {{ option.description }}
+                  </p>
+                </div>
+                <span v-if="option.recommended" class="text-sm text-sky-100">
+                  推荐
+                </span>
+              </div>
+            </button>
+          </div>
+
+          <p
+            v-else-if="checkoutStore.paymentOptionsLoaded"
+            class="mt-4 rounded-2xl bg-amber-400/15 p-4 text-amber-100"
+          >
+            当前机器暂无可用支付方式，请联系管理员检查支付配置。
+          </p>
+        </div>
+
         <ul class="mt-6 space-y-3 text-base text-slate-200">
-          <li class="rounded-2xl bg-slate-950/35 p-4">
-            下单后将预占该格口库存，支付超时会自动释放。
-          </li>
-          <li class="rounded-2xl bg-slate-950/35 p-4">
-            当前阶段使用 mock 支付，支付页会提供模拟成功/失败按钮。
+          <li v-if="paymentHint" class="rounded-2xl bg-slate-950/35 p-4">
+            {{ paymentHint }}
           </li>
           <li
             v-if="!connectivityStore.isSaleNetworkReady"

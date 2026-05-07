@@ -16,6 +16,11 @@ export const notificationTypeSchema = z.enum([
   "sold_out",
   "machine_offline",
   "payment_failed",
+  "payment_webhook_invalid",
+  "payment_reconciliation_failed",
+  "payment_refund_failed",
+  "payment_certificate_expiring",
+  "payment_provider_unready",
   "dispense_failed",
   "work_order_created",
 ]);

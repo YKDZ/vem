@@ -40,6 +40,13 @@ export class MachineOrdersController {
 
   @Public()
   @UseGuards(MachineAuthGuard)
+  @Get("payment-options")
+  async listPaymentOptions(@CurrentMachine() machine: AuthenticatedMachine) {
+    return await this.ordersService.listMachinePaymentOptions(machine.id);
+  }
+
+  @Public()
+  @UseGuards(MachineAuthGuard)
   @Post()
   async createMachineOrder(
     @CurrentMachine() machine: AuthenticatedMachine,

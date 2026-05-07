@@ -11,6 +11,8 @@ import type {
   ProviderPaymentQueryResult,
   ProviderRefundPaymentInput,
   ProviderRefundPaymentResult,
+  ProviderRefundQueryInput,
+  ProviderRefundQueryResult,
   ProviderWebhookInput,
   ProviderWebhookResult,
 } from "./payment-provider.interface";
@@ -73,6 +75,7 @@ export class MockPaymentProvider implements PaymentProvider {
     const parsed = schema.safeParse(input.body);
     const body = parsed.success ? parsed.data : {};
     return {
+      eventKind: "payment",
       providerEventId: body.providerEventId ?? `mock:webhook:${Date.now()}`,
       eventType: body.eventType ?? "mock.webhook",
       paymentNo: body.paymentNo ?? null,
@@ -80,6 +83,17 @@ export class MockPaymentProvider implements PaymentProvider {
       paymentStatus: body.paymentStatus ?? null,
       signatureValid: true,
       rawPayload: body,
+    };
+  }
+
+  async queryRefund(
+    input: ProviderRefundQueryInput,
+  ): Promise<ProviderRefundQueryResult> {
+    return {
+      providerRefundNo: input.providerRefundNo ?? `MOCK-${input.refundNo}`,
+      status: "succeeded",
+      refundedAt: new Date(),
+      rawPayload: { provider: "mock" },
     };
   }
 }

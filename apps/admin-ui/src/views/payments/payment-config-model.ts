@@ -9,6 +9,9 @@ export type ProviderConfigForm = {
   qrExpiresMinutes: number;
   timeoutCompensationSeconds: number;
   certificateSerialNo: string;
+  merchantCertificateSerialNo: string;
+  platformCertificateSerialNo: string;
+  platformCertificatePem: string;
   gatewayUrl: string;
   keyType: "PKCS8" | "PKCS1";
   mode: "direct_merchant" | "sandbox" | "production";
@@ -32,6 +35,9 @@ export function createDefaultProviderConfigForm(
     qrExpiresMinutes: 15,
     timeoutCompensationSeconds: 120,
     certificateSerialNo: "",
+    merchantCertificateSerialNo: "",
+    platformCertificateSerialNo: "",
+    platformCertificatePem: "",
     gatewayUrl:
       providerCode === "alipay"
         ? "https://openapi-sandbox.dl.alipaydev.com/gateway.do"
@@ -65,9 +71,17 @@ export function buildProviderConfigPayload(form: ProviderConfigForm) {
 
   if (form.providerCode === "wechat_pay") {
     publicConfigJson["mode"] = "direct_merchant";
-    publicConfigJson["certificateSerialNo"] = form.certificateSerialNo;
+    publicConfigJson["merchantCertificateSerialNo"] =
+      form.merchantCertificateSerialNo || form.certificateSerialNo;
+    publicConfigJson["platformCertificateSerialNo"] =
+      form.platformCertificateSerialNo;
     addIfFilled(sensitiveConfigJson, "apiV3Key", form.apiV3Key);
     addIfFilled(sensitiveConfigJson, "privateKeyPem", form.privateKeyPem);
+    addIfFilled(
+      sensitiveConfigJson,
+      "platformCertificatePem",
+      form.platformCertificatePem,
+    );
     addIfFilled(
       sensitiveConfigJson,
       "platformPublicKeyPem",

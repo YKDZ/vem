@@ -1034,3 +1034,167 @@ export const maintenanceWorkOrders = t.pgTable(
     t.index("maintenance_work_orders_machine_id_idx").on(table.machineId),
   ],
 );
+
+export const paymentWebhookAttempts = t.pgTable(
+  "payment_webhook_attempts",
+  {
+    id: id(),
+    providerId: t.uuid("provider_id").references(() => paymentProviders.id),
+    providerCode: t.varchar("provider_code", { length: 64 }).notNull(),
+    paymentId: t.uuid("payment_id").references(() => payments.id),
+    refundId: t.uuid("refund_id").references(() => refunds.id),
+    matchedConfigId: t
+      .uuid("matched_config_id")
+      .references(() => paymentProviderConfigs.id),
+    eventKind: t
+      .varchar("event_kind", { length: 32 })
+      .default("unknown")
+      .notNull(),
+    eventType: t.varchar("event_type", { length: 128 }),
+    providerEventId: t.varchar("provider_event_id", { length: 128 }),
+    paymentNo: t.varchar("payment_no", { length: 64 }),
+    refundNo: t.varchar("refund_no", { length: 64 }),
+    orderNo: t.varchar("order_no", { length: 64 }),
+    remoteIp: t.varchar("remote_ip", { length: 64 }),
+    userAgent: t.text("user_agent"),
+    headersHash: t.text("headers_hash").notNull(),
+    headersSummaryJson: t
+      .jsonb("headers_summary_json")
+      .$type<JsonObject>()
+      .notNull(),
+    rawBodySha256: t.text("raw_body_sha256").notNull(),
+    rawBodyBytes: t.integer("raw_body_bytes").notNull(),
+    rawBodyExcerpt: t.text("raw_body_excerpt"),
+    redactedPayloadJson: t.jsonb("redacted_payload_json").$type<JsonObject>(),
+    signatureValid: t.boolean("signature_valid"),
+    businessValid: t.boolean("business_valid"),
+    handled: t.boolean("handled").default(false).notNull(),
+    duplicate: t.boolean("duplicate").default(false).notNull(),
+    failureReason: t.varchar("failure_reason", { length: 128 }),
+    errorCode: t.varchar("error_code", { length: 128 }),
+    httpStatus: t.integer("http_status"),
+    retentionUntil: t
+      .timestamp("retention_until", { withTimezone: true })
+      .notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    t
+      .index("payment_webhook_attempts_provider_created_idx")
+      .on(table.providerCode, table.createdAt),
+    t.index("payment_webhook_attempts_payment_id_idx").on(table.paymentId),
+    t.index("payment_webhook_attempts_refund_id_idx").on(table.refundId),
+    t.index("payment_webhook_attempts_signature_idx").on(table.signatureValid),
+    t
+      .index("payment_webhook_attempts_failure_reason_idx")
+      .on(table.failureReason),
+    t.index("payment_webhook_attempts_retention_idx").on(table.retentionUntil),
+  ],
+);
+
+export const paymentReconciliationAttempts = t.pgTable(
+  "payment_reconciliation_attempts",
+  {
+    id: id(),
+    paymentId: t
+      .uuid("payment_id")
+      .notNull()
+      .references(() => payments.id),
+    providerId: t
+      .uuid("provider_id")
+      .notNull()
+      .references(() => paymentProviders.id),
+    trigger: t.varchar("trigger", { length: 32 }).notNull(),
+    attemptNo: t.integer("attempt_no").notNull(),
+    status: t.varchar("status", { length: 32 }).notNull(),
+    providerPaymentStatus: t.varchar("provider_payment_status", { length: 64 }),
+    providerTradeNo: t.varchar("provider_trade_no", { length: 128 }),
+    errorCode: t.varchar("error_code", { length: 128 }),
+    errorMessage: t.text("error_message"),
+    rawPayloadSha256: t.text("raw_payload_sha256"),
+    rawPayloadExcerpt: t.text("raw_payload_excerpt"),
+    nextRetryAt: t.timestamp("next_retry_at", { withTimezone: true }),
+    startedAt: t.timestamp("started_at", { withTimezone: true }).notNull(),
+    finishedAt: t.timestamp("finished_at", { withTimezone: true }),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    t
+      .index("payment_reconciliation_attempts_payment_idx")
+      .on(table.paymentId, table.createdAt),
+    t
+      .index("payment_reconciliation_attempts_next_retry_idx")
+      .on(table.nextRetryAt),
+    t.index("payment_reconciliation_attempts_status_idx").on(table.status),
+  ],
+);
+
+export const refundEvents = t.pgTable(
+  "refund_events",
+  {
+    id: id(),
+    refundId: t
+      .uuid("refund_id")
+      .notNull()
+      .references(() => refunds.id),
+    paymentId: t
+      .uuid("payment_id")
+      .notNull()
+      .references(() => payments.id),
+    providerId: t
+      .uuid("provider_id")
+      .notNull()
+      .references(() => paymentProviders.id),
+    eventType: t.varchar("event_type", { length: 128 }).notNull(),
+    providerEventId: t.varchar("provider_event_id", { length: 128 }).notNull(),
+    providerRefundNo: t.varchar("provider_refund_no", { length: 128 }),
+    status: refundStatus("status").notNull(),
+    rawPayloadJson: t.jsonb("raw_payload_json").$type<JsonObject>().notNull(),
+    signatureValid: t.boolean("signature_valid"),
+    handledAt: t.timestamp("handled_at", { withTimezone: true }),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    t
+      .uniqueIndex("refund_events_provider_event_unique")
+      .on(table.providerId, table.providerEventId),
+    t.index("refund_events_refund_id_idx").on(table.refundId),
+  ],
+);
+
+export const refundReconciliationAttempts = t.pgTable(
+  "refund_reconciliation_attempts",
+  {
+    id: id(),
+    refundId: t
+      .uuid("refund_id")
+      .notNull()
+      .references(() => refunds.id),
+    providerId: t
+      .uuid("provider_id")
+      .notNull()
+      .references(() => paymentProviders.id),
+    trigger: t.varchar("trigger", { length: 32 }).notNull(),
+    attemptNo: t.integer("attempt_no").notNull(),
+    status: t.varchar("status", { length: 32 }).notNull(),
+    providerRefundStatus: t.varchar("provider_refund_status", { length: 64 }),
+    providerRefundNo: t.varchar("provider_refund_no", { length: 128 }),
+    errorCode: t.varchar("error_code", { length: 128 }),
+    errorMessage: t.text("error_message"),
+    rawPayloadSha256: t.text("raw_payload_sha256"),
+    rawPayloadExcerpt: t.text("raw_payload_excerpt"),
+    nextRetryAt: t.timestamp("next_retry_at", { withTimezone: true }),
+    startedAt: t.timestamp("started_at", { withTimezone: true }).notNull(),
+    finishedAt: t.timestamp("finished_at", { withTimezone: true }),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    t
+      .index("refund_reconciliation_attempts_refund_idx")
+      .on(table.refundId, table.createdAt),
+    t
+      .index("refund_reconciliation_attempts_next_retry_idx")
+      .on(table.nextRetryAt),
+  ],
+);

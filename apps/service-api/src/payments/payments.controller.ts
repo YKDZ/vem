@@ -1,3 +1,6 @@
+import type { Response } from "express";
+import type { Request } from "express";
+
 import {
   Body,
   Controller,
@@ -9,6 +12,7 @@ import {
   Post,
   Query,
   Req,
+  Res,
 } from "@nestjs/common";
 import { ApiBearerAuth, ApiTags } from "@nestjs/swagger";
 import {
@@ -16,6 +20,9 @@ import {
   paymentEventQuerySchema,
   paymentProviderQuerySchema,
   paymentQuerySchema,
+  paymentReconciliationAttemptQuerySchema,
+  paymentWebhookAttemptQuerySchema,
+  refundQuerySchema,
   updatePaymentProviderConfigSchema,
   updatePaymentProviderSchema,
   upsertPaymentProviderConfigSchema,
@@ -42,10 +49,24 @@ type UpsertPaymentProviderConfigInput = z.infer<
 >;
 type PaymentEventQuery = z.infer<typeof paymentEventQuerySchema> &
   z.infer<typeof pageQuerySchema>;
+type WebhookAttemptQuery = z.infer<typeof paymentWebhookAttemptQuerySchema> &
+  z.infer<typeof pageQuerySchema>;
+type ReconciliationAttemptQuery = z.infer<
+  typeof paymentReconciliationAttemptQuerySchema
+> &
+  z.infer<typeof pageQuerySchema>;
+type RefundListQuery = z.infer<typeof refundQuerySchema> &
+  z.infer<typeof pageQuerySchema>;
 
 const paymentEventListQuerySchema = paymentEventQuerySchema.extend(
   pageQuerySchema.shape,
 );
+const webhookAttemptListQuerySchema = paymentWebhookAttemptQuerySchema.extend(
+  pageQuerySchema.shape,
+);
+const reconciliationAttemptListQuerySchema =
+  paymentReconciliationAttemptQuerySchema.extend(pageQuerySchema.shape);
+const refundListQuerySchema = refundQuerySchema.extend(pageQuerySchema.shape);
 
 @ApiTags("payments")
 @ApiBearerAuth()
@@ -147,20 +168,75 @@ export class PaymentsController {
     return await this.paymentsService.listPaymentEvents(query);
   }
 
+  @RequirePermissions("payments.read")
+  @Get("webhook-attempts")
+  async listWebhookAttempts(
+    @Query(new ZodValidationPipe(webhookAttemptListQuerySchema))
+    query: WebhookAttemptQuery,
+  ) {
+    return await this.paymentsService.listWebhookAttempts(query);
+  }
+
+  @RequirePermissions("payments.read")
+  @Get("reconciliation-attempts")
+  async listReconciliationAttempts(
+    @Query(new ZodValidationPipe(reconciliationAttemptListQuerySchema))
+    query: ReconciliationAttemptQuery,
+  ) {
+    return await this.paymentsService.listReconciliationAttempts(query);
+  }
+
+  @RequirePermissions("payments.configure")
+  @Post(":id/reconcile")
+  async manualReconcile(
+    @CurrentAdmin() admin: AuthenticatedAdmin,
+    @Param("id", ParseUUIDPipe) id: string,
+  ) {
+    return await this.paymentsService.manualReconcile(id, admin.id);
+  }
+
+  @RequirePermissions("payments.read")
+  @Get("refunds")
+  async listRefunds(
+    @Query(new ZodValidationPipe(refundListQuerySchema))
+    query: RefundListQuery,
+  ) {
+    return await this.paymentsService.listRefunds(query);
+  }
+
   @Public()
   @Post("webhooks/:providerCode")
   async handleWebhook(
     @Param("providerCode") providerCode: string,
     @Headers() headers: Record<string, string | string[] | undefined>,
     @Body() body: unknown,
-    @Req() req: { rawBody?: Buffer },
+    @Req() req: Request & { rawBody?: Buffer },
+    @Res({ passthrough: true }) res: Response,
   ) {
     const rawBodyText = req.rawBody?.toString("utf8") ?? JSON.stringify(body);
-    return await this.paymentsService.handleProviderWebhook(
+    const remoteIp =
+      (typeof req.headers["x-forwarded-for"] === "string"
+        ? req.headers["x-forwarded-for"].split(",")[0]?.trim()
+        : null) ??
+      req.ip ??
+      req.socket?.remoteAddress ??
+      null;
+    const userAgent =
+      typeof req.headers["user-agent"] === "string"
+        ? req.headers["user-agent"]
+        : null;
+    const result = await this.paymentsService.handleProviderWebhook(
       providerCode,
       headers,
       body,
       rawBodyText,
+      remoteIp,
+      userAgent,
     );
+    if (providerCode === "alipay") {
+      res.type("text/plain");
+      return result.handled ? "success" : "fail";
+    }
+    return result;
   }
 }

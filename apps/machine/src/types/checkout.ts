@@ -2,6 +2,9 @@ import {
   createMachineOrderSchema,
   machineOrderStatusResponseSchema,
   type MachineOrderStatusNextAction,
+  type MachinePaymentOption,
+  type MachinePaymentOptionsResponse,
+  type MachinePaymentProviderCode,
 } from "@vem/shared";
 import { z } from "zod";
 
@@ -14,6 +17,10 @@ export const createMachineOrderResponseSchema = z.object({
   paymentUrl: z.string().nullable(),
   expiresAt: z.iso.datetime(),
   totalAmountCents: z.int().nonnegative(),
+  paymentProviderCode: z
+    .enum(["mock", "wechat_pay", "alipay"])
+    .nullable()
+    .optional(),
 });
 
 export type CreateMachineOrderInput = z.infer<typeof createMachineOrderSchema>;
@@ -36,3 +43,9 @@ export type CheckoutResultKind = Extract<
   | "manual_handling"
   | "closed"
 >;
+
+export type {
+  MachinePaymentOption,
+  MachinePaymentOptionsResponse,
+  MachinePaymentProviderCode,
+};

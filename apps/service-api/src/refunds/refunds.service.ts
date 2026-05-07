@@ -2,11 +2,15 @@ import {
   ConflictException,
   Inject,
   Injectable,
+  Logger,
   NotFoundException,
+  OnApplicationShutdown,
+  OnModuleInit,
   UnprocessableEntityException,
 } from "@nestjs/common";
 import {
   and,
+  count,
   desc,
   eq,
   inArray,
@@ -15,6 +19,8 @@ import {
   orderStatusEvents,
   paymentProviders,
   payments,
+  refundEvents,
+  refundReconciliationAttempts,
   refunds,
   type DrizzleClient,
 } from "@vem/db";
@@ -23,6 +29,7 @@ import { createBusinessNo } from "../common/business-no.util";
 import { DRIZZLE_CLIENT } from "../database/database.constants";
 import { PaymentProviderConfigService } from "../payments/payment-provider-config.service";
 import { PaymentProviderRegistry } from "../payments/payment-provider.registry";
+import { reconcileBackoffMs } from "../payments/payment-redaction.util";
 
 export type FullRefundReason = "auto_dispense_failed" | "admin_refund";
 
@@ -38,12 +45,36 @@ function isUniqueViolation(error: unknown): boolean {
 }
 
 @Injectable()
-export class RefundsService {
+export class RefundsService implements OnModuleInit, OnApplicationShutdown {
+  private readonly logger = new Logger(RefundsService.name);
+  private reconcileTimer?: NodeJS.Timeout;
+
   constructor(
     @Inject(DRIZZLE_CLIENT) private readonly db: DrizzleClient,
     private readonly paymentProviderRegistry: PaymentProviderRegistry,
     private readonly paymentProviderConfigService: PaymentProviderConfigService,
   ) {}
+
+  onApplicationShutdown(): void {
+    if (this.reconcileTimer) {
+      clearInterval(this.reconcileTimer);
+      this.reconcileTimer = undefined;
+    }
+  }
+
+  onModuleInit(): void {
+    // Reconcile processing refunds every 5 minutes
+    this.reconcileTimer = setInterval(
+      () => {
+        void this.reconcileProcessingRefunds().catch((err: unknown) => {
+          this.logger.warn(
+            `reconcileProcessingRefunds failed: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        });
+      },
+      5 * 60 * 1000,
+    );
+  }
 
   async requestFullRefund(input: {
     orderId: string;
@@ -60,6 +91,7 @@ export class RefundsService {
           paymentNo: payments.paymentNo,
           providerTradeNo: payments.providerTradeNo,
           providerCode: paymentProviders.code,
+          providerId: payments.providerId,
           amountCents: payments.amountCents,
           machineId: machines.id,
         })
@@ -165,6 +197,22 @@ export class RefundsService {
 
     if (!created.created) return created.refund;
 
+    // Write refund.created event
+    await this.db
+      .insert(refundEvents)
+      .values({
+        refundId: created.refund.id,
+        paymentId: created.row.paymentId,
+        providerId: created.row.providerId,
+        eventType: "refund.created",
+        providerEventId: `created:${created.refund.refundNo}`,
+        status: "created",
+        rawPayloadJson: {},
+        signatureValid: true,
+        handledAt: new Date(),
+      })
+      .onConflictDoNothing();
+
     const provider = this.paymentProviderRegistry.get(created.row.providerCode);
     const providerConfig = await this.paymentProviderConfigService
       .resolveForPayment({
@@ -217,6 +265,26 @@ export class RefundsService {
               providerRefundNo: result.providerRefundNo,
             },
           });
+          await tx
+            .insert(refundEvents)
+            .values({
+              refundId: created.refund.id,
+              paymentId: created.row.paymentId,
+              providerId: created.row.providerId,
+              eventType: "refund.succeeded",
+              providerEventId: `sync_succeeded:${created.refund.refundNo}`,
+              providerRefundNo: result.providerRefundNo,
+              status: "succeeded",
+              rawPayloadJson: {},
+              signatureValid: true,
+              handledAt: new Date(),
+            })
+            .onConflictDoNothing();
+        } else if (result.status === "processing") {
+          // Schedule reconciliation for processing refunds — no extra event needed
+          this.logger.log(
+            `Refund ${created.refund.refundNo} is processing, will be reconciled later`,
+          );
         }
         return [refund];
       });
@@ -241,9 +309,232 @@ export class RefundsService {
             message: error instanceof Error ? error.message : String(error),
           },
         });
+        await tx
+          .insert(refundEvents)
+          .values({
+            refundId: created.refund.id,
+            paymentId: created.row.paymentId,
+            providerId: created.row.providerId,
+            eventType: "refund.failed",
+            providerEventId: `sync_failed:${created.refund.refundNo}:${Date.now()}`,
+            status: "failed",
+            rawPayloadJson: {
+              error: error instanceof Error ? error.message : String(error),
+            },
+            signatureValid: true,
+            handledAt: new Date(),
+          })
+          .onConflictDoNothing();
         return [refund];
       });
       return failed;
+    }
+  }
+
+  private async getProviderId(providerCode: string): Promise<string> {
+    const [row] = await this.db
+      .select({ id: paymentProviders.id })
+      .from(paymentProviders)
+      .where(eq(paymentProviders.code, providerCode))
+      .limit(1);
+    return row?.id ?? "";
+  }
+
+  async reconcileProcessingRefunds(now = new Date()): Promise<void> {
+    const processingRefunds = await this.db
+      .select({
+        id: refunds.id,
+        refundNo: refunds.refundNo,
+        paymentId: refunds.paymentId,
+        orderId: refunds.orderId,
+        amountCents: refunds.amountCents,
+        providerRefundNo: refunds.providerRefundNo,
+        providerCode: paymentProviders.code,
+        providerId: paymentProviders.id,
+        paymentNo: payments.paymentNo,
+        providerTradeNo: payments.providerTradeNo,
+        machineId: orders.machineId,
+      })
+      .from(refunds)
+      .innerJoin(payments, eq(payments.id, refunds.paymentId))
+      .innerJoin(paymentProviders, eq(paymentProviders.id, payments.providerId))
+      .innerJoin(orders, eq(orders.id, refunds.orderId))
+      .where(eq(refunds.status, "processing"))
+      .limit(20);
+
+    for (const refund of processingRefunds) {
+      try {
+        if (!this.paymentProviderRegistry.has(refund.providerCode)) continue;
+        const provider = this.paymentProviderRegistry.get(refund.providerCode);
+        if (!provider.queryRefund) continue;
+
+        const [countRow] = await this.db
+          .select({ total: count() })
+          .from(refundReconciliationAttempts)
+          .where(eq(refundReconciliationAttempts.refundId, refund.id));
+        const attemptNo = Number(countRow.total) + 1;
+
+        if (attemptNo > 12) {
+          await this.db.insert(refundReconciliationAttempts).values({
+            refundId: refund.id,
+            providerId: refund.providerId,
+            trigger: "scheduled",
+            attemptNo,
+            status: "max_attempts_exceeded",
+            startedAt: now,
+            finishedAt: now,
+          });
+          continue;
+        }
+
+        const config = await this.paymentProviderConfigService
+          .resolveForPayment({
+            providerCode: refund.providerCode,
+            machineId: refund.machineId,
+          })
+          .catch(() => ({
+            providerCode: refund.providerCode,
+            merchantNo: null,
+            appId: null,
+            publicConfigJson: {},
+            sensitiveConfigJson: {},
+          }));
+
+        const [attempt] = await this.db
+          .insert(refundReconciliationAttempts)
+          .values({
+            refundId: refund.id,
+            providerId: refund.providerId,
+            trigger: "scheduled",
+            attemptNo,
+            status: "pending",
+            startedAt: now,
+          })
+          .returning({ id: refundReconciliationAttempts.id });
+
+        let result: Awaited<
+          ReturnType<NonNullable<typeof provider.queryRefund>>
+        >;
+        try {
+          result = await provider.queryRefund({
+            refundNo: refund.refundNo,
+            paymentNo: refund.paymentNo,
+            providerRefundNo: refund.providerRefundNo,
+            providerTradeNo: refund.providerTradeNo,
+            amountCents: refund.amountCents,
+            config,
+          });
+        } catch (err) {
+          const errMsg = err instanceof Error ? err.message : String(err);
+          const backoffMs = reconcileBackoffMs(attemptNo);
+          await this.db
+            .update(refundReconciliationAttempts)
+            .set({
+              status: "network_error",
+              errorCode: "query_failed",
+              errorMessage: errMsg.slice(0, 500),
+              nextRetryAt: new Date(now.getTime() + backoffMs),
+              finishedAt: new Date(),
+            })
+            .where(eq(refundReconciliationAttempts.id, attempt.id));
+          continue;
+        }
+
+        const refundStatus = result.status;
+        if (refundStatus === "processing") {
+          const backoffMs = reconcileBackoffMs(attemptNo);
+          await this.db
+            .update(refundReconciliationAttempts)
+            .set({
+              status: "processing",
+              providerRefundStatus: refundStatus,
+              providerRefundNo: result.providerRefundNo ?? null,
+              nextRetryAt: new Date(now.getTime() + backoffMs),
+              finishedAt: new Date(),
+            })
+            .where(eq(refundReconciliationAttempts.id, attempt.id));
+          continue;
+        }
+
+        // Terminal: succeeded or failed
+        await this.db.transaction(async (tx) => {
+          const dbRefundStatus =
+            refundStatus === "succeeded" ? "succeeded" : "failed";
+          await tx
+            .update(refunds)
+            .set({
+              status: dbRefundStatus,
+              providerRefundNo:
+                result.providerRefundNo ?? refund.providerRefundNo,
+              refundedAt: result.refundedAt ?? null,
+              updatedAt: new Date(),
+            })
+            .where(eq(refunds.id, refund.id));
+
+          await tx
+            .insert(refundEvents)
+            .values({
+              refundId: refund.id,
+              paymentId: refund.paymentId,
+              providerId: refund.providerId,
+              eventType: `refund.${dbRefundStatus}`,
+              providerEventId: `reconcile_${dbRefundStatus}:${refund.refundNo}:${now.getTime()}`,
+              providerRefundNo:
+                result.providerRefundNo ?? refund.providerRefundNo,
+              status: dbRefundStatus,
+              rawPayloadJson: {},
+              signatureValid: true,
+              handledAt: new Date(),
+            })
+            .onConflictDoNothing();
+
+          if (dbRefundStatus === "succeeded") {
+            await tx
+              .update(payments)
+              .set({ status: "refunded", updatedAt: new Date() })
+              .where(eq(payments.id, refund.paymentId));
+            await tx
+              .update(orders)
+              .set({ status: "refunded", updatedAt: new Date() })
+              .where(eq(orders.id, refund.orderId));
+            await tx.insert(orderStatusEvents).values({
+              orderId: refund.orderId,
+              fromStatus: "refund_pending",
+              toStatus: "refunded",
+              reason: "reconcile_refund_succeeded",
+              metadata: {
+                refundNo: refund.refundNo,
+                providerRefundNo: result.providerRefundNo,
+              },
+            });
+          } else {
+            await tx
+              .update(orders)
+              .set({ status: "manual_handling", updatedAt: new Date() })
+              .where(eq(orders.id, refund.orderId));
+            await tx.insert(orderStatusEvents).values({
+              orderId: refund.orderId,
+              fromStatus: "refund_pending",
+              toStatus: "manual_handling",
+              reason: "reconcile_refund_failed",
+            });
+          }
+        });
+
+        await this.db
+          .update(refundReconciliationAttempts)
+          .set({
+            status: refundStatus === "succeeded" ? "succeeded" : "failed",
+            providerRefundStatus: refundStatus,
+            providerRefundNo: result.providerRefundNo ?? null,
+            finishedAt: new Date(),
+          })
+          .where(eq(refundReconciliationAttempts.id, attempt.id));
+      } catch (err) {
+        this.logger.warn(
+          `Refund reconciliation failed for ${refund.refundNo}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
     }
   }
 }

@@ -2,6 +2,7 @@ import { Module } from "@nestjs/common";
 
 import { ConfigModule } from "../config/config.module";
 import { DatabaseModule } from "../database/database.module";
+import { AlipaySdkClientFactory } from "./alipay-sdk.client";
 import { AlipayProvider } from "./alipay.provider";
 import { MockPaymentProvider } from "./mock-payment.provider";
 import { PaymentConfigSecretService } from "./payment-config-secret.service";
@@ -15,6 +16,7 @@ import { WeChatPayProvider } from "./wechat-pay.provider";
     MockPaymentProvider,
     WeChatPayProvider,
     AlipayProvider,
+    AlipaySdkClientFactory,
     PaymentProviderRegistry,
     PaymentConfigSecretService,
     PaymentProviderConfigService,
@@ -23,6 +25,7 @@ import { WeChatPayProvider } from "./wechat-pay.provider";
     MockPaymentProvider,
     WeChatPayProvider,
     AlipayProvider,
+    AlipaySdkClientFactory,
     PaymentProviderRegistry,
     PaymentConfigSecretService,
     PaymentProviderConfigService,

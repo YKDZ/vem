@@ -6,6 +6,7 @@ import {
   UnauthorizedException,
 } from "@nestjs/common";
 import {
+  X509Certificate,
   createDecipheriv,
   createSign,
   createVerify,
@@ -23,6 +24,8 @@ import type {
   ProviderPaymentQueryResult,
   ProviderRefundPaymentInput,
   ProviderRefundPaymentResult,
+  ProviderRefundQueryInput,
+  ProviderRefundQueryResult,
   ProviderWebhookInput,
   ProviderWebhookResult,
 } from "./payment-provider.interface";
@@ -32,7 +35,11 @@ type WeChatPayConfig = {
   appId: string;
   apiV3Key: string;
   privateKeyPem: string;
-  certificateSerialNo: string;
+  /** 商户 API 证书序列号，用于 Authorization serial_no 请求签名 */
+  merchantCertificateSerialNo: string;
+  /** 微信支付平台证书/公钥序列号，用于匹配 wechatpay-serial 响应/回调头 */
+  platformCertificateSerialNo: string;
+  /** 微信支付平台公钥 PEM，用于验签（可从 platformCertificatePem 提取） */
   platformPublicKeyPem: string;
   notifyUrl: string;
 };
@@ -49,6 +56,14 @@ function readRequiredString(
   return value;
 }
 
+/**
+ * 从证书 PEM 中提取 SPKI 格式公钥 PEM，供 RSA 验签使用。
+ */
+function extractPublicKeyFromCertificatePem(certPem: string): string {
+  const cert = new X509Certificate(certPem);
+  return cert.publicKey.export({ type: "spki", format: "pem" }) as string;
+}
+
 function parseWeChatPayConfig(
   input: PaymentProviderRuntimeConfig,
 ): WeChatPayConfig {
@@ -60,21 +75,54 @@ function parseWeChatPayConfig(
   if (input.merchantNo) source["mchId"] ??= input.merchantNo;
   if (input.appId) source["appId"] ??= input.appId;
 
-  return {
-    mchId: readRequiredString(source, "mchId", "WeChat Pay"),
-    appId: readRequiredString(source, "appId", "WeChat Pay"),
-    apiV3Key: readRequiredString(source, "apiV3Key", "WeChat Pay"),
-    privateKeyPem: readRequiredString(source, "privateKeyPem", "WeChat Pay"),
-    certificateSerialNo: readRequiredString(
-      source,
-      "certificateSerialNo",
-      "WeChat Pay",
-    ),
-    platformPublicKeyPem: readRequiredString(
+  // merchantCertificateSerialNo: new field, fall back to deprecated certificateSerialNo
+  const merchantCertificateSerialNo =
+    typeof source["merchantCertificateSerialNo"] === "string" &&
+    source["merchantCertificateSerialNo"].length > 0
+      ? source["merchantCertificateSerialNo"]
+      : readRequiredString(source, "certificateSerialNo", "WeChat Pay");
+
+  // platformCertificateSerialNo: must come from new field; no fallback to merchantCertificateSerialNo
+  const platformCertificateSerialNo = readRequiredString(
+    source,
+    "platformCertificateSerialNo",
+    "WeChat Pay",
+  );
+
+  // Prefer extracting public key from platformCertificatePem (has expiry info),
+  // fall back to raw platformPublicKeyPem.
+  let platformPublicKeyPem: string;
+  if (
+    typeof source["platformCertificatePem"] === "string" &&
+    source["platformCertificatePem"].length > 0
+  ) {
+    platformPublicKeyPem = extractPublicKeyFromCertificatePem(
+      source["platformCertificatePem"],
+    );
+  } else {
+    platformPublicKeyPem = readRequiredString(
       source,
       "platformPublicKeyPem",
       "WeChat Pay",
-    ),
+    );
+  }
+
+  // apiV3Key must be exactly 32 bytes (UTF-8)
+  const apiV3Key = readRequiredString(source, "apiV3Key", "WeChat Pay");
+  if (Buffer.from(apiV3Key, "utf8").length !== 32) {
+    throw new ConflictException(
+      "WeChat Pay config is incomplete: apiV3Key must be exactly 32 bytes (UTF-8)",
+    );
+  }
+
+  return {
+    mchId: readRequiredString(source, "mchId", "WeChat Pay"),
+    appId: readRequiredString(source, "appId", "WeChat Pay"),
+    apiV3Key,
+    privateKeyPem: readRequiredString(source, "privateKeyPem", "WeChat Pay"),
+    merchantCertificateSerialNo,
+    platformCertificateSerialNo,
+    platformPublicKeyPem,
     notifyUrl: readRequiredString(source, "notifyUrl", "WeChat Pay"),
   };
 }
@@ -84,7 +132,7 @@ async function requestWechat(
   method: "GET" | "POST",
   path: string,
   body?: unknown,
-): Promise<unknown> {
+): Promise<Record<string, unknown>> {
   const bodyText = body === undefined ? "" : JSON.stringify(body);
   const timestamp = Math.floor(Date.now() / 1000).toString();
   const nonce = randomUUID().replaceAll("-", "");
@@ -92,11 +140,12 @@ async function requestWechat(
   const signature = createSign("RSA-SHA256")
     .update(signText)
     .sign(config.privateKeyPem, "base64");
+  // serial_no in Authorization must be merchantCertificateSerialNo
   const authorization = [
     `mchid="${config.mchId}"`,
     `nonce_str="${nonce}"`,
     `timestamp="${timestamp}"`,
-    `serial_no="${config.certificateSerialNo}"`,
+    `serial_no="${config.merchantCertificateSerialNo}"`,
     `signature="${signature}"`,
   ].join(",");
   const response = await fetch(`https://api.mch.weixin.qq.com${path}`, {
@@ -108,14 +157,42 @@ async function requestWechat(
     },
     body: bodyText.length > 0 ? bodyText : undefined,
   });
+  const rawBodyText = await response.text();
   if (!response.ok) {
-    const errText = await response.text().catch(() => "");
+    // Only expose non-sensitive error snippet; do not leak keys/credentials
     throw new BadGatewayException(
-      `WeChat Pay request failed: ${response.status} ${errText.slice(0, 200)}`,
+      `WeChat Pay request failed: ${response.status} ${rawBodyText.slice(0, 200)}`,
     );
   }
-  // response.json() returns `any`; return as `unknown` for type-safe handling at call sites
-  return response.json();
+
+  // Empty body (e.g. 204 No Content for close endpoint) — no signature to verify
+  if (rawBodyText.trim().length === 0) {
+    return {};
+  }
+
+  // Verify response signature before parsing
+  const respTimestamp = response.headers.get("Wechatpay-Timestamp") ?? "";
+  const respNonce = response.headers.get("Wechatpay-Nonce") ?? "";
+  const respSignature = response.headers.get("Wechatpay-Signature") ?? "";
+  const respSerial = response.headers.get("Wechatpay-Serial") ?? "";
+
+  if (!respTimestamp || !respNonce || !respSignature || !respSerial) {
+    throw new BadGatewayException(
+      "WeChat Pay response missing signature headers",
+    );
+  }
+  if (respSerial !== config.platformCertificateSerialNo) {
+    throw new BadGatewayException("WeChat Pay response serial mismatch");
+  }
+  const respSignMessage = `${respTimestamp}\n${respNonce}\n${rawBodyText}\n`;
+  const respValid = createVerify("RSA-SHA256")
+    .update(respSignMessage, "utf8")
+    .verify(config.platformPublicKeyPem, respSignature, "base64");
+  if (!respValid) {
+    throw new BadGatewayException("WeChat Pay response signature invalid");
+  }
+
+  return assertRecord(JSON.parse(rawBodyText) as unknown);
 }
 
 function mapWeChatTradeState(
@@ -125,19 +202,24 @@ function mapWeChatTradeState(
     typeof data["trade_state"] === "string" ? data["trade_state"] : "NOTPAY";
   const statusByState: Record<string, ProviderPaymentQueryResult["status"]> = {
     SUCCESS: "succeeded",
-    USERPAYING: "pending",
+    USERPAYING: "processing", // user is in process of paying (e.g. face-pay prompt)
     NOTPAY: "pending",
     CLOSED: "canceled",
     REVOKED: "canceled",
     PAYERROR: "failed",
-    REFUND: "succeeded",
+    REFUND: "succeeded", // payment succeeded; refund lifecycle managed by refunds table
   };
+  const paidAt =
+    tradeState === "SUCCESS" && typeof data["success_time"] === "string"
+      ? new Date(data["success_time"])
+      : undefined;
   return {
     status: statusByState[tradeState] ?? "pending",
     providerTradeNo:
       typeof data["transaction_id"] === "string"
         ? data["transaction_id"]
         : null,
+    paidAt,
     rawPayload: data,
   };
 }
@@ -174,7 +256,8 @@ function verifyWeChatHeaders(
   const nonce = headerString(headers, "wechatpay-nonce");
   const signature = headerString(headers, "wechatpay-signature");
   const serial = headerString(headers, "wechatpay-serial");
-  if (serial !== config.certificateSerialNo) {
+  // wechatpay-serial must match platform certificate serial, NOT merchant serial
+  if (serial !== config.platformCertificateSerialNo) {
     throw new UnauthorizedException("WeChat Pay certificate serial mismatch");
   }
   const message = `${timestamp}\n${nonce}\n${rawBodyText}\n`;
@@ -227,6 +310,7 @@ function decryptWeChatResource(
 function mapWeChatWebhook(
   decrypted: Record<string, unknown>,
   originalBody: Record<string, unknown>,
+  matchedConfigId: string | undefined,
 ): ProviderWebhookResult {
   const paymentNo = readRequiredString(
     decrypted,
@@ -238,7 +322,35 @@ function mapWeChatWebhook(
       ? decrypted["transaction_id"]
       : null;
   const queryResult = mapWeChatTradeState(decrypted);
+  const amountRecord =
+    typeof decrypted["amount"] === "object" &&
+    decrypted["amount"] !== null &&
+    !Array.isArray(decrypted["amount"])
+      ? (decrypted["amount"] as Record<string, unknown>)
+      : {};
+  // Normalized payload for service-layer business field validation
+  const normalizedPayload: Record<string, unknown> = {
+    appId: typeof decrypted["appid"] === "string" ? decrypted["appid"] : null,
+    mchId: typeof decrypted["mchid"] === "string" ? decrypted["mchid"] : null,
+    outTradeNo: paymentNo,
+    transactionId: providerTradeNo,
+    tradeState:
+      typeof decrypted["trade_state"] === "string"
+        ? decrypted["trade_state"]
+        : null,
+    amountTotal:
+      typeof amountRecord["total"] === "number" ? amountRecord["total"] : null,
+    amountCurrency:
+      typeof amountRecord["currency"] === "string"
+        ? amountRecord["currency"]
+        : null,
+    successTime:
+      typeof decrypted["success_time"] === "string"
+        ? decrypted["success_time"]
+        : null,
+  };
   return {
+    eventKind: "payment",
     providerEventId:
       typeof originalBody["id"] === "string"
         ? originalBody["id"]
@@ -249,6 +361,8 @@ function mapWeChatWebhook(
     paymentStatus: queryResult.status,
     signatureValid: true,
     rawPayload: { body: originalBody, decrypted },
+    normalizedPayload,
+    matchedConfigId: matchedConfigId ?? null,
   };
 }
 
@@ -293,27 +407,25 @@ export class WeChatPayProvider implements PaymentProvider {
       amount: { total: input.amountCents, currency: "CNY" },
       time_expire: input.expiresAt.toISOString(),
     };
-    const rawResponse = await requestWechat(
+    const response = await requestWechat(
       config,
       "POST",
       "/v3/pay/transactions/native",
       body,
     );
-    const response = assertRecord(rawResponse);
     const codeUrl = readRequiredString(response, "code_url", "WeChat Pay");
-    return { providerTradeNo: input.paymentNo, paymentUrl: codeUrl };
+    // Native pay only returns code_url; transaction_id is received via webhook/query
+    return { providerTradeNo: null, paymentUrl: codeUrl };
   }
 
   async queryPayment(
     input: ProviderPaymentQueryInput,
   ): Promise<ProviderPaymentQueryResult> {
     const config = parseWeChatPayConfig(input.config);
-    const data = assertRecord(
-      await requestWechat(
-        config,
-        "GET",
-        `/v3/pay/transactions/out-trade-no/${input.paymentNo}?mchid=${config.mchId}`,
-      ),
+    const data = await requestWechat(
+      config,
+      "GET",
+      `/v3/pay/transactions/out-trade-no/${input.paymentNo}?mchid=${config.mchId}`,
     );
     return mapWeChatTradeState(data);
   }
@@ -338,30 +450,60 @@ export class WeChatPayProvider implements PaymentProvider {
     input: ProviderRefundPaymentInput,
   ): Promise<ProviderRefundPaymentResult> {
     const config = parseWeChatPayConfig(input.config);
-    const data = assertRecord(
-      await requestWechat(
-        config,
-        "POST",
-        "/v3/refund/domestic/refunds",
-        {
-          out_trade_no: input.paymentNo,
-          out_refund_no: input.refundNo,
-          reason: input.reason,
-          amount: {
-            refund: input.amountCents,
-            total: input.amountCents,
-            currency: "CNY",
-          },
+    const data = await requestWechat(
+      config,
+      "POST",
+      "/v3/refund/domestic/refunds",
+      {
+        out_trade_no: input.paymentNo,
+        out_refund_no: input.refundNo,
+        reason: input.reason,
+        amount: {
+          refund: input.amountCents,
+          total: input.amountCents,
+          currency: "CNY",
         },
-      ),
+      },
     );
     return mapWeChatRefund(data, input.refundNo);
+  }
+
+  async queryRefund(
+    input: ProviderRefundQueryInput,
+  ): Promise<ProviderRefundQueryResult> {
+    const config = parseWeChatPayConfig(input.config);
+    const data = await requestWechat(
+      config,
+      "GET",
+      `/v3/refund/domestic/refunds/${input.refundNo}`,
+    );
+    const status =
+      typeof data["status"] === "string" ? data["status"] : "PROCESSING";
+    const providerRefundNo =
+      typeof data["refund_id"] === "string"
+        ? data["refund_id"]
+        : input.providerRefundNo;
+    return {
+      providerRefundNo,
+      status:
+        status === "SUCCESS"
+          ? "succeeded"
+          : status === "ABNORMAL" || status === "CLOSED"
+            ? "failed"
+            : "processing",
+      refundedAt:
+        status === "SUCCESS"
+          ? typeof data["success_time"] === "string"
+            ? new Date(data["success_time"])
+            : new Date()
+          : null,
+      rawPayload: data,
+    };
   }
 
   async handleWebhook(
     input: ProviderWebhookInput,
   ): Promise<ProviderWebhookResult> {
-    const body = assertRecord(input.body);
     let lastError: unknown;
     const configs =
       input.candidateConfigs.length > 0
@@ -379,8 +521,15 @@ export class WeChatPayProvider implements PaymentProvider {
       try {
         const config = parseWeChatPayConfig(candidateConfig);
         verifyWeChatHeaders(input.headers, input.rawBodyText, config);
-        const decrypted = decryptWeChatResource(body, config.apiV3Key);
-        return mapWeChatWebhook(decrypted, body);
+        const decrypted = decryptWeChatResource(
+          input.body as Record<string, unknown>,
+          config.apiV3Key,
+        );
+        return mapWeChatWebhook(
+          decrypted,
+          input.body as Record<string, unknown>,
+          candidateConfig.id,
+        );
       } catch (error) {
         lastError = error;
       }

@@ -8,11 +8,14 @@ import type {
   CheckoutSelectedItem,
   CreateMachineOrderResponse,
   MachineOrderStatus,
+  MachinePaymentOption,
+  MachinePaymentProviderCode,
 } from "@/types/checkout";
 
 import {
   createMachineOrder,
   getMachineOrderStatus,
+  getMachinePaymentOptions,
 } from "@/api/machine-orders";
 import {
   markMockPaymentFailed,
@@ -52,15 +55,43 @@ export const useCheckoutStore = defineStore("checkout", {
     nowMs: Date.now(),
     loading: false,
     error: null as string | null,
+    paymentOptions: [] as MachinePaymentOption[],
+    selectedPaymentProviderCode: null as MachinePaymentProviderCode | null,
+    paymentOptionsLoaded: false,
   }),
   getters: {
     quantity: (): number => 1,
     remainingSeconds: (state): number =>
       getRemainingSeconds(state.currentOrder?.expiresAt, state.nowMs),
     canCreateOrder: (state): boolean =>
-      Boolean(state.selectedItem && state.selectedItem.availableQty > 0),
+      Boolean(
+        state.selectedItem &&
+        state.selectedItem.availableQty > 0 &&
+        state.selectedPaymentProviderCode,
+      ),
     resultKind: (state): CheckoutResultKind | null =>
       state.status ? resultKindFromNextAction(state.status.nextAction) : null,
+    selectedPaymentOption: (state): MachinePaymentOption | null =>
+      state.paymentOptions.find(
+        (option) => option.providerCode === state.selectedPaymentProviderCode,
+      ) ?? null,
+    activePaymentProviderCode: (state): MachinePaymentProviderCode | null => {
+      const statusCode = state.status?.payment.providerCode;
+      if (
+        statusCode === "mock" ||
+        statusCode === "wechat_pay" ||
+        statusCode === "alipay"
+      )
+        return statusCode;
+      const orderCode = state.currentOrder?.paymentProviderCode;
+      if (
+        orderCode === "mock" ||
+        orderCode === "wechat_pay" ||
+        orderCode === "alipay"
+      )
+        return orderCode;
+      return state.selectedPaymentProviderCode;
+    },
   },
   actions: {
     tick(nowMs = Date.now()): void {
@@ -82,6 +113,42 @@ export const useCheckoutStore = defineStore("checkout", {
       this.error = null;
       this.loading = false;
       this.nowMs = Date.now();
+      // paymentOptions、selectedPaymentProviderCode、paymentOptionsLoaded 保留，减少重复请求。
+    },
+    async loadPaymentOptions(config: MachineConfig): Promise<void> {
+      if (!config.machineCode) throw new Error("machineCode missing");
+      this.loading = true;
+      this.error = null;
+      try {
+        const client = createMachineApiClient(config.apiBaseUrl);
+        const response = await getMachinePaymentOptions(client);
+        this.paymentOptions = response.options;
+        this.paymentOptionsLoaded = true;
+        this.selectedPaymentProviderCode =
+          response.defaultProviderCode ??
+          response.options[0]?.providerCode ??
+          null;
+        if (!this.selectedPaymentProviderCode) {
+          this.error = "当前机器暂无可用支付方式";
+        }
+      } catch (error) {
+        this.error = error instanceof Error ? error.message : String(error);
+        this.paymentOptions = [];
+        this.paymentOptionsLoaded = false;
+        this.selectedPaymentProviderCode = null;
+        throw error;
+      } finally {
+        this.loading = false;
+      }
+    },
+    selectPaymentProvider(providerCode: MachinePaymentProviderCode): void {
+      if (
+        this.paymentOptions.some(
+          (option) => option.providerCode === providerCode,
+        )
+      ) {
+        this.selectedPaymentProviderCode = providerCode;
+      }
     },
     async createOrder(
       config: MachineConfig,
@@ -90,6 +157,17 @@ export const useCheckoutStore = defineStore("checkout", {
       if (!this.selectedItem) throw new Error("No selected item");
       if (this.selectedItem.availableQty <= 0) throw new Error("商品已售罄");
 
+      const selected = this.selectedPaymentOption;
+      if (!selected) throw new Error("请选择支付方式");
+
+      const paymentPayload =
+        selected.providerCode === "mock"
+          ? { paymentMethod: "mock" as const }
+          : {
+              paymentMethod: "qr_code" as const,
+              paymentProviderCode: selected.providerCode,
+            };
+
       this.loading = true;
       this.error = null;
       try {
@@ -97,7 +175,7 @@ export const useCheckoutStore = defineStore("checkout", {
         const order = await createMachineOrder(client, {
           machineCode: config.machineCode,
           items: [{ inventoryId: this.selectedItem.inventoryId, quantity: 1 }],
-          paymentMethod: "mock",
+          ...paymentPayload,
         });
         this.currentOrder = order;
         this.flowStep = "payment";

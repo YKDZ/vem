@@ -4,7 +4,8 @@ import { ref, watch } from "vue";
 
 const props = defineProps<{
   value: string | null | undefined;
-  expired?: boolean;
+  blocked?: boolean;
+  overlayText?: string | null;
 }>();
 
 const dataUrl = ref("");
@@ -52,10 +53,10 @@ watch(
       {{ error ?? "暂无支付二维码" }}
     </div>
     <div
-      v-if="expired"
+      v-if="blocked"
       class="absolute inset-5 flex items-center justify-center rounded-3xl bg-slate-950/80 text-3xl font-black text-white"
     >
-      二维码已过期
+      {{ overlayText ?? "二维码不可用" }}
     </div>
   </div>
 </template>

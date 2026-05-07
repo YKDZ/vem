@@ -1,9 +1,11 @@
 import { z } from "zod";
 
+import { machinePaymentOptionSchema } from "./orders";
 import {
   paymentProviderStatusSchema,
   paymentProviderTypeSchema,
   paymentStatusSchema,
+  refundStatusSchema,
 } from "../enums/payment-status";
 
 export const paymentQuerySchema = z.object({
@@ -62,18 +64,28 @@ export const paymentProviderConfigScopeSchema = z.object({
 
 export const wechatPayPublicConfigSchema = paymentTimingConfigSchema.extend({
   mode: z.literal("direct_merchant").default("direct_merchant"),
-  certificateSerialNo: z.string().min(1).max(128),
+  /** 商户 API 证书序列号，用于 Authorization serial_no 请求签名 */
+  merchantCertificateSerialNo: z.string().min(1).max(128).optional(),
+  /** @deprecated 旧别名，与 merchantCertificateSerialNo 等效；新配置请使用 merchantCertificateSerialNo */
+  certificateSerialNo: z.string().min(1).max(128).optional(),
+  /** 微信支付平台证书/公钥序列号，用于匹配 wechatpay-serial 响应/回调头 */
+  platformCertificateSerialNo: z.string().min(1).max(128).optional(),
 });
 
 export const wechatPaySensitiveConfigSchema = z.object({
   apiV3Key: z.string().min(32).max(128).optional(),
   privateKeyPem: z.string().min(1).optional(),
+  /** 微信支付平台证书 PEM（推荐），可提取公钥并展示过期时间 */
+  platformCertificatePem: z.string().min(1).optional(),
+  /** 微信支付平台公钥 PEM（兼容字段），无法判断证书有效期 */
   platformPublicKeyPem: z.string().min(1).optional(),
 });
 
 export const alipayPublicConfigSchema = paymentTimingConfigSchema.extend({
   mode: z.enum(["sandbox", "production"]).default("sandbox"),
-  gatewayUrl: z.url().default("https://openapi-sandbox.dl.alipaydev.com/gateway.do"),
+  gatewayUrl: z
+    .url()
+    .default("https://openapi-sandbox.dl.alipaydev.com/gateway.do"),
   keyType: z.enum(["PKCS8", "PKCS1"]).default("PKCS8"),
 });
 
@@ -109,45 +121,97 @@ export const paymentProviderNotifyUrlCheckSchema = z.object({
   checkedAt: z.iso.datetime(),
 });
 
-export const upsertPaymentProviderConfigSchema = paymentProviderConfigScopeSchema
-  .extend({
-    merchantNo: z.string().max(128).nullable().optional(),
-    appId: z.string().max(128).nullable().optional(),
-    publicConfigJson: z.record(z.string(), z.unknown()).optional(),
-    sensitiveConfigJson: paymentProviderSensitiveConfigSchema.optional(),
-  })
-  .superRefine((value, ctx) => {
-    if (value.status === "disabled") return;
-    const timing = value.publicConfigJson ?? {};
-    const timingResult = paymentTimingConfigSchema.safeParse(timing);
-    if (!timingResult.success) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["publicConfigJson"],
-        message: "qrExpiresMinutes must be 1-60 and timeoutCompensationSeconds must be 0-600",
-      });
-    }
-    if (value.providerCode === "wechat_pay") {
-      const result = wechatPayPublicConfigSchema.partial().safeParse(value.publicConfigJson ?? {});
-      if (!result.success) {
+export const upsertPaymentProviderConfigSchema =
+  paymentProviderConfigScopeSchema
+    .extend({
+      merchantNo: z.string().max(128).nullable().optional(),
+      appId: z.string().max(128).nullable().optional(),
+      publicConfigJson: z.record(z.string(), z.unknown()).optional(),
+      sensitiveConfigJson: paymentProviderSensitiveConfigSchema.optional(),
+    })
+    .superRefine((value, ctx) => {
+      if (value.status === "disabled") return;
+      const timing = value.publicConfigJson ?? {};
+      const timingResult = paymentTimingConfigSchema.safeParse(timing);
+      if (!timingResult.success) {
         ctx.addIssue({
           code: "custom",
           path: ["publicConfigJson"],
-          message: "wechat_pay public config is invalid",
+          message:
+            "qrExpiresMinutes must be 1-60 and timeoutCompensationSeconds must be 0-600",
         });
       }
-    }
-    if (value.providerCode === "alipay") {
-      const result = alipayPublicConfigSchema.partial().safeParse(value.publicConfigJson ?? {});
-      if (!result.success) {
-        ctx.addIssue({
-          code: "custom",
-          path: ["publicConfigJson"],
-          message: "alipay public config is invalid",
-        });
+      if (value.providerCode === "wechat_pay") {
+        const pub = value.publicConfigJson ?? {};
+        const sensitive = (value.sensitiveConfigJson ?? {}) as Record<
+          string,
+          unknown
+        >;
+
+        // merchantCertificateSerialNo or deprecated certificateSerialNo must be present
+        const hasMerchantSerial =
+          (typeof pub["merchantCertificateSerialNo"] === "string" &&
+            pub["merchantCertificateSerialNo"].length > 0) ||
+          (typeof pub["certificateSerialNo"] === "string" &&
+            pub["certificateSerialNo"].length > 0);
+        if (!hasMerchantSerial) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["publicConfigJson", "merchantCertificateSerialNo"],
+            message:
+              "wechat_pay requires merchantCertificateSerialNo (or deprecated certificateSerialNo)",
+          });
+        }
+
+        // platformCertificateSerialNo is required for enabled configs
+        if (
+          typeof pub["platformCertificateSerialNo"] !== "string" ||
+          pub["platformCertificateSerialNo"].length === 0
+        ) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["publicConfigJson", "platformCertificateSerialNo"],
+            message: "wechat_pay requires platformCertificateSerialNo",
+          });
+        }
+
+        // platformCertificatePem or platformPublicKeyPem must be present
+        const hasPlatformKey =
+          (typeof sensitive["platformCertificatePem"] === "string" &&
+            sensitive["platformCertificatePem"].length > 0) ||
+          (typeof sensitive["platformPublicKeyPem"] === "string" &&
+            sensitive["platformPublicKeyPem"].length > 0);
+        if (!hasPlatformKey) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["sensitiveConfigJson"],
+            message:
+              "wechat_pay requires platformCertificatePem or platformPublicKeyPem",
+          });
+        }
+
+        const result = wechatPayPublicConfigSchema.partial().safeParse(pub);
+        if (!result.success) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["publicConfigJson"],
+            message: "wechat_pay public config is invalid",
+          });
+        }
       }
-    }
-  });
+      if (value.providerCode === "alipay") {
+        const result = alipayPublicConfigSchema
+          .partial()
+          .safeParse(value.publicConfigJson ?? {});
+        if (!result.success) {
+          ctx.addIssue({
+            code: "custom",
+            path: ["publicConfigJson"],
+            message: "alipay public config is invalid",
+          });
+        }
+      }
+    });
 
 export const paymentProviderConfigSchema = z.object({
   id: z.uuid(),
@@ -168,4 +232,91 @@ export const paymentProviderConfigSchema = z.object({
 
 export type UpsertPaymentProviderConfigInput = z.infer<
   typeof upsertPaymentProviderConfigSchema
+>;
+
+export const paymentWebhookAttemptQuerySchema = z.object({
+  orderNo: z.string().max(64).optional(),
+  paymentNo: z.string().max(64).optional(),
+  refundNo: z.string().max(64).optional(),
+  providerCode: z.string().max(64).optional(),
+  eventKind: z.enum(["payment", "refund", "unknown"]).optional(),
+  signatureValid: z.coerce.boolean().optional(),
+  businessValid: z.coerce.boolean().optional(),
+  failureReason: z.string().max(128).optional(),
+  createdFrom: z.iso.datetime().optional(),
+  createdTo: z.iso.datetime().optional(),
+});
+
+export const paymentReconciliationAttemptQuerySchema = z.object({
+  orderNo: z.string().max(64).optional(),
+  paymentNo: z.string().max(64).optional(),
+  providerCode: z.string().max(64).optional(),
+  trigger: z.enum(["scheduled", "expire_compensation", "manual"]).optional(),
+  status: z.string().max(32).optional(),
+  createdFrom: z.iso.datetime().optional(),
+  createdTo: z.iso.datetime().optional(),
+});
+
+export const refundQuerySchema = z.object({
+  orderNo: z.string().max(64).optional(),
+  paymentNo: z.string().max(64).optional(),
+  refundNo: z.string().max(64).optional(),
+  providerCode: z.string().max(64).optional(),
+  status: refundStatusSchema.optional(),
+  reason: z.string().max(128).optional(),
+  createdFrom: z.iso.datetime().optional(),
+  createdTo: z.iso.datetime().optional(),
+});
+
+// ---- Payment Ops / Readiness / Preflight -----------------------------------
+
+export const paymentOpsCheckSeveritySchema = z.enum([
+  "info",
+  "warning",
+  "critical",
+]);
+
+export const paymentOpsCheckSchema = z.object({
+  code: z.string().min(1).max(128),
+  severity: paymentOpsCheckSeveritySchema,
+  passed: z.boolean(),
+  message: z.string().min(1).max(512),
+  evidence: z.record(z.string(), z.unknown()).default({}),
+});
+
+export const paymentOpsReadinessSchema = z.object({
+  status: z.enum(["ready", "blocked"]),
+  checkedAt: z.iso.datetime(),
+  environment: z.enum(["development", "test", "production"]),
+  checks: z.array(paymentOpsCheckSchema),
+});
+
+export const paymentOpsMetricsSchema = z.object({
+  measuredAt: z.iso.datetime(),
+  windowMinutes: z.int().positive(),
+  paymentFailureRate: z.number().min(0),
+  paymentFailedCount: z.int().nonnegative(),
+  paymentTotalCount: z.int().nonnegative(),
+  webhookSignatureInvalidCount: z.int().nonnegative(),
+  webhookBusinessInvalidCount: z.int().nonnegative(),
+  reconciliationErrorCount: z.int().nonnegative(),
+  refundFailedCount: z.int().nonnegative(),
+  refundProcessingOverdueCount: z.int().nonnegative(),
+  certificateExpiringCount: z.int().nonnegative(),
+});
+
+export const paymentMachinePreflightSchema = z.object({
+  machineId: z.uuid(),
+  machineCode: z.string().min(1).max(64),
+  status: z.enum(["ready", "blocked"]),
+  availableProviders: z.array(machinePaymentOptionSchema),
+  checks: z.array(paymentOpsCheckSchema),
+  checkedAt: z.iso.datetime(),
+});
+
+export type PaymentOpsReadiness = z.infer<typeof paymentOpsReadinessSchema>;
+export type PaymentOpsCheck = z.infer<typeof paymentOpsCheckSchema>;
+export type PaymentOpsMetrics = z.infer<typeof paymentOpsMetricsSchema>;
+export type PaymentMachinePreflight = z.infer<
+  typeof paymentMachinePreflightSchema
 >;

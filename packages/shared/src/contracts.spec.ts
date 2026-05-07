@@ -11,7 +11,11 @@ import {
   machineSlotStatuses,
   maintenanceWorkOrderStatuses,
   mqttSignedEnvelopeSchema,
+  notificationTypeSchema,
   orderStatuses,
+  paymentMachinePreflightSchema,
+  paymentOpsMetricsSchema,
+  paymentOpsReadinessSchema,
   paymentProviderStatuses,
   paymentProviderSensitiveConfigSchema,
   roleStatuses,
@@ -143,6 +147,7 @@ describe("shared API contract", () => {
           providerCode: "wechat_pay",
           machineId: null,
           merchantNo: "MCH123",
+          status: "disabled",
         }),
       ).not.toThrow();
     });
@@ -167,7 +172,8 @@ describe("shared API contract", () => {
         appId: "wx1234567890abcdef",
         publicConfigJson: {
           mode: "direct_merchant",
-          certificateSerialNo: "MERCHANT_CERT_SERIAL",
+          merchantCertificateSerialNo: "MERCHANT_CERT_SERIAL",
+          platformCertificateSerialNo: "PLATFORM_CERT_SERIAL",
           qrExpiresMinutes: 15,
           timeoutCompensationSeconds: 120,
         },
@@ -180,8 +186,47 @@ describe("shared API contract", () => {
       expect(result.providerCode).toBe("wechat_pay");
     });
 
+    it("accepts wechat_pay config using deprecated certificateSerialNo alias for merchant serial", () => {
+      const result = upsertPaymentProviderConfigSchema.parse({
+        providerCode: "wechat_pay",
+        merchantNo: "1900000109",
+        appId: "wx1234567890abcdef",
+        publicConfigJson: {
+          certificateSerialNo: "LEGACY_MERCHANT_SERIAL",
+          platformCertificateSerialNo: "PLATFORM_CERT_SERIAL",
+        },
+        sensitiveConfigJson: {
+          apiV3Key: "0123456789abcdef0123456789abcdef",
+          privateKeyPem: "dev-key",
+          platformPublicKeyPem: "dev-pub",
+        },
+      });
+      expect(result.providerCode).toBe("wechat_pay");
+    });
+
+    it("rejects enabled wechat_pay config missing platformCertificateSerialNo", () => {
+      expect(() =>
+        upsertPaymentProviderConfigSchema.parse({
+          providerCode: "wechat_pay",
+          status: "enabled",
+          merchantNo: "1900000109",
+          appId: "wx1234567890abcdef",
+          publicConfigJson: {
+            merchantCertificateSerialNo: "MERCHANT_CERT_SERIAL",
+            // platformCertificateSerialNo intentionally omitted
+          },
+          sensitiveConfigJson: {
+            apiV3Key: "0123456789abcdef0123456789abcdef",
+            privateKeyPem: "dev-key",
+            platformPublicKeyPem: "dev-pub",
+          },
+        }),
+      ).toThrow();
+    });
+
     it("accepts alipay certificate mode sandbox config", () => {
-      const TEST_PRIVATE_KEY_PEM = "dev-test-alipay-private-key-not-for-crypto-use";
+      const TEST_PRIVATE_KEY_PEM =
+        "dev-test-alipay-private-key-not-for-crypto-use";
       const TEST_CERTIFICATE_PEM = [
         "-----BEGIN CERTIFICATE-----",
         "ZGV2LXRlc3QtY2VydGlmaWNhdGUtbm90LWZvci1jcnlwdG8tdXNl",
@@ -235,7 +280,9 @@ describe("shared API contract", () => {
     it("accepts paymentProviderCode alongside paymentMethod", () => {
       const result = createMachineOrderSchema.parse({
         machineCode: "M001",
-        items: [{ inventoryId: "550e8400-e29b-41d4-a716-446655440000", quantity: 1 }],
+        items: [
+          { inventoryId: "550e8400-e29b-41d4-a716-446655440000", quantity: 1 },
+        ],
         paymentMethod: "qr_code",
         paymentProviderCode: "wechat_pay",
       });
@@ -247,7 +294,12 @@ describe("shared API contract", () => {
       expect(() =>
         createMachineOrderSchema.parse({
           machineCode: "M001",
-          items: [{ inventoryId: "550e8400-e29b-41d4-a716-446655440000", quantity: 1 }],
+          items: [
+            {
+              inventoryId: "550e8400-e29b-41d4-a716-446655440000",
+              quantity: 1,
+            },
+          ],
           paymentMethod: "qr_code",
         }),
       ).not.toThrow();
@@ -287,7 +339,10 @@ describe("shared API contract", () => {
         upsertNotificationTargetSchema.parse({
           name: "WeChat Group",
           type: "wechat",
-          configJson: { webhookUrl: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=abc" },
+          configJson: {
+            webhookUrl:
+              "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=abc",
+          },
         }),
       ).not.toThrow();
     });
@@ -300,6 +355,104 @@ describe("shared API contract", () => {
           configJson: { webhookUrl: "not-a-url" },
         }),
       ).toThrow();
+    });
+  });
+
+  describe("notificationTypeSchema", () => {
+    it("includes payment ops notification types", () => {
+      expect(() =>
+        notificationTypeSchema.parse("payment_webhook_invalid"),
+      ).not.toThrow();
+      expect(() =>
+        notificationTypeSchema.parse("payment_reconciliation_failed"),
+      ).not.toThrow();
+      expect(() =>
+        notificationTypeSchema.parse("payment_refund_failed"),
+      ).not.toThrow();
+      expect(() =>
+        notificationTypeSchema.parse("payment_certificate_expiring"),
+      ).not.toThrow();
+      expect(() =>
+        notificationTypeSchema.parse("payment_provider_unready"),
+      ).not.toThrow();
+    });
+  });
+
+  describe("payment ops schemas", () => {
+    it("paymentOpsReadinessSchema parses ready status with all checks", () => {
+      const result = paymentOpsReadinessSchema.parse({
+        status: "ready",
+        checkedAt: "2026-05-06T10:00:00.000Z",
+        environment: "production",
+        checks: [
+          {
+            code: "mock_provider_disabled",
+            severity: "critical",
+            passed: true,
+            message: "Mock payment is disabled",
+            evidence: { envPaymentMockEnabled: false },
+          },
+        ],
+      });
+      expect(result.status).toBe("ready");
+      expect(result.checks).toHaveLength(1);
+    });
+
+    it("paymentOpsReadinessSchema parses blocked status with critical check", () => {
+      const result = paymentOpsReadinessSchema.parse({
+        status: "blocked",
+        checkedAt: "2026-05-06T10:00:00.000Z",
+        environment: "development",
+        checks: [
+          {
+            code: "real_provider_config_present",
+            severity: "critical",
+            passed: false,
+            message: "No real provider config is enabled",
+            evidence: {},
+          },
+        ],
+      });
+      expect(result.status).toBe("blocked");
+    });
+
+    it("paymentOpsMetricsSchema rejects negative failure rate", () => {
+      expect(() =>
+        paymentOpsMetricsSchema.parse({
+          measuredAt: "2026-05-06T10:00:00.000Z",
+          windowMinutes: 60,
+          paymentFailureRate: -0.1,
+          paymentFailedCount: 0,
+          paymentTotalCount: 0,
+          webhookSignatureInvalidCount: 0,
+          webhookBusinessInvalidCount: 0,
+          reconciliationErrorCount: 0,
+          refundFailedCount: 0,
+          refundProcessingOverdueCount: 0,
+          certificateExpiringCount: 0,
+        }),
+      ).toThrow();
+    });
+
+    it("paymentMachinePreflightSchema parses machine preflight result", () => {
+      const result = paymentMachinePreflightSchema.parse({
+        machineId: "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
+        machineCode: "M001",
+        status: "ready",
+        availableProviders: [
+          {
+            providerCode: "alipay",
+            method: "qr_code",
+            displayName: "支付宝",
+            description: "请使用支付宝扫码支付",
+            icon: "alipay",
+          },
+        ],
+        checks: [],
+        checkedAt: "2026-05-06T10:00:00.000Z",
+      });
+      expect(result.status).toBe("ready");
+      expect(result.availableProviders).toHaveLength(1);
     });
   });
 });

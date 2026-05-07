@@ -27,6 +27,7 @@ import {
   sql,
   vendingCommands,
   type DrizzleClient,
+  type DrizzleTransaction,
   type SQL,
 } from "@vem/db";
 import {
@@ -55,6 +56,19 @@ type MachineOrderStatusQuery = z.infer<typeof machineOrderStatusQuerySchema>;
 type OrderQuery = z.infer<typeof orderQuerySchema> &
   z.infer<typeof pageQuerySchema>;
 
+type LocalPaymentDraft = {
+  orderId: string;
+  orderNo: string;
+  paymentId: string;
+  paymentNo: string;
+  providerCode: string;
+  paymentMethod: CreateMachineOrderInput["paymentMethod"];
+  machineId: string;
+  totalAmountCents: number;
+  expiresAt: Date;
+  reservations: Array<{ inventoryId: string; quantity: number }>;
+};
+
 @Injectable()
 export class OrdersService {
   constructor(
@@ -80,7 +94,62 @@ export class OrdersService {
     }
 
     const paymentExpiresAt = new Date(Date.now() + 15 * 60 * 1000);
+    const draft = await this.createLocalMachineOrderDraft(
+      input,
+      machine.id,
+      paymentExpiresAt,
+    );
 
+    let intent: Awaited<ReturnType<typeof this.createPaymentIntent>>;
+    try {
+      intent = await this.createPaymentIntent(draft.providerCode, draft.machineId, {
+        paymentNo: draft.paymentNo,
+        orderNo: draft.orderNo,
+        amountCents: draft.totalAmountCents,
+        expiresAt: draft.expiresAt,
+      });
+    } catch (error) {
+      await this.cancelLocalCreatedPayment(draft, "provider_create_failed", error);
+      throw error;
+    }
+
+    try {
+      await this.db
+        .update(payments)
+        .set({
+          status: "pending",
+          providerTradeNo: intent.providerTradeNo,
+          paymentUrl: intent.paymentUrl,
+          expiresAt: draft.expiresAt,
+          updatedAt: new Date(),
+        })
+        .where(eq(payments.id, draft.paymentId));
+    } catch (error) {
+      await this.cancelProviderIntentAfterDbFailure(draft);
+      await this.cancelLocalCreatedPayment(
+        draft,
+        "provider_created_db_update_failed",
+        error,
+      );
+      throw error;
+    }
+
+    return {
+      orderId: draft.orderId,
+      orderNo: draft.orderNo,
+      paymentNo: draft.paymentNo,
+      paymentUrl: intent.paymentUrl,
+      expiresAt: draft.expiresAt,
+      totalAmountCents: draft.totalAmountCents,
+      paymentProviderCode: draft.providerCode,
+    };
+  }
+
+  private async createLocalMachineOrderDraft(
+    input: CreateMachineOrderInput,
+    machineId: string,
+    paymentExpiresAt: Date,
+  ): Promise<LocalPaymentDraft> {
     return await this.db.transaction(async (tx) => {
       const inventoryIds = [
         ...new Set(input.items.map((item) => item.inventoryId)),
@@ -109,7 +178,7 @@ export class OrdersService {
         .where(
           and(
             inArray(inventories.id, inventoryIds),
-            eq(inventories.machineId, machine.id),
+            eq(inventories.machineId, machineId),
             eq(machineSlots.status, "enabled"),
             eq(productVariants.status, "active"),
             eq(products.status, "active"),
@@ -141,7 +210,7 @@ export class OrdersService {
         .insert(orders)
         .values({
           orderNo,
-          machineId: machine.id,
+          machineId,
           status: "pending_payment",
           totalAmountCents,
           currency: "CNY",
@@ -196,13 +265,6 @@ export class OrdersService {
       }
 
       const paymentNo = createBusinessNo("PAY");
-      const intent = await this.createPaymentIntent(providerCode, machine.id, {
-        paymentNo,
-        orderNo,
-        amountCents: totalAmountCents,
-        expiresAt: paymentExpiresAt,
-      });
-
       const [payment] = await tx
         .insert(payments)
         .values({
@@ -210,17 +272,15 @@ export class OrdersService {
           orderId: createdOrder.id,
           providerId: provider.id,
           method: input.paymentMethod,
-          status: "pending",
+          status: "created",
           amountCents: totalAmountCents,
-          providerTradeNo: intent.providerTradeNo,
-          paymentUrl: intent.paymentUrl,
+          providerTradeNo: null,
+          paymentUrl: null,
           expiresAt: paymentExpiresAt,
         })
         .returning({
           id: payments.id,
           paymentNo: payments.paymentNo,
-          paymentUrl: payments.paymentUrl,
-          expiresAt: payments.expiresAt,
           amountCents: payments.amountCents,
         });
 
@@ -238,12 +298,142 @@ export class OrdersService {
       return {
         orderId: createdOrder.id,
         orderNo: createdOrder.orderNo,
+        paymentId: payment.id,
         paymentNo: payment.paymentNo,
-        paymentUrl: payment.paymentUrl,
-        expiresAt: payment.expiresAt,
+        providerCode: provider.code,
+        paymentMethod: input.paymentMethod,
+        machineId,
         totalAmountCents: payment.amountCents,
+        expiresAt: paymentExpiresAt,
+        reservations: input.items.map((item) => ({
+          inventoryId: item.inventoryId,
+          quantity: item.quantity,
+        })),
       };
     });
+  }
+
+  private async cancelLocalCreatedPayment(
+    draft: LocalPaymentDraft,
+    reason: "provider_create_failed" | "provider_created_db_update_failed",
+    error: unknown,
+  ): Promise<void> {
+    await this.db.transaction(async (tx) => {
+      await tx
+        .update(payments)
+        .set({
+          status: "failed",
+          failedReason: reason,
+          updatedAt: new Date(),
+        })
+        .where(eq(payments.id, draft.paymentId));
+
+      await tx
+        .update(orders)
+        .set({
+          status: "canceled",
+          canceledAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(orders.id, draft.orderId));
+
+      await tx.insert(orderStatusEvents).values({
+        orderId: draft.orderId,
+        fromStatus: "pending_payment",
+        toStatus: "canceled",
+        reason,
+        metadata: {
+          paymentNo: draft.paymentNo,
+          message: error instanceof Error ? error.message : String(error),
+        },
+      });
+
+      await tx
+        .insert(paymentEvents)
+        .values({
+          paymentId: draft.paymentId,
+          providerId: await this.findProviderIdForCode(tx, draft.providerCode),
+          eventType: `payment.${reason}`,
+          providerEventId: `${reason}:${draft.paymentNo}`,
+          rawPayloadJson: {
+            paymentNo: draft.paymentNo,
+            reason,
+            message: error instanceof Error ? error.message : String(error),
+          },
+          signatureValid: true,
+          handledAt: new Date(),
+        })
+        .onConflictDoNothing();
+
+      await draft.reservations.reduce<Promise<void>>(
+        async (previous, reservation) => {
+          await previous;
+          await this.inventoryService.releaseReservation(tx, {
+            orderId: draft.orderId,
+            inventoryId: reservation.inventoryId,
+            quantity: reservation.quantity,
+            reason: "payment_failed",
+          });
+        },
+        Promise.resolve(),
+      );
+    });
+  }
+
+  private async cancelProviderIntentAfterDbFailure(
+    draft: LocalPaymentDraft,
+  ): Promise<void> {
+    try {
+      const provider = this.paymentProviderRegistry.get(draft.providerCode);
+      const config = await this.paymentProviderConfigService
+        .resolveForPayment({
+          providerCode: draft.providerCode,
+          machineId: draft.machineId,
+        })
+        .catch(() => ({
+          id: "",
+          providerCode: draft.providerCode,
+          providerId: "",
+          machineId: null,
+          merchantNo: null,
+          appId: null,
+          publicConfigJson: {} as Record<string, unknown>,
+          sensitiveConfigJson: {} as Record<string, unknown>,
+        }));
+      await provider.cancelPayment({
+        paymentNo: draft.paymentNo,
+        providerTradeNo: null,
+        config,
+      });
+    } catch (error) {
+      await this.db
+        .insert(paymentEvents)
+        .values({
+          paymentId: draft.paymentId,
+          providerId: await this.findProviderIdForCode(this.db, draft.providerCode),
+          eventType: "payment.provider_cancel_after_db_failure_failed",
+          providerEventId: `provider_cancel_after_db_failure_failed:${draft.paymentNo}`,
+          rawPayloadJson: {
+            paymentNo: draft.paymentNo,
+            message: error instanceof Error ? error.message : String(error),
+          },
+          signatureValid: true,
+          handledAt: new Date(),
+        })
+        .onConflictDoNothing();
+    }
+  }
+
+  private async findProviderIdForCode(
+    db: DrizzleClient | DrizzleTransaction,
+    providerCode: string,
+  ): Promise<string> {
+    const [row] = await db
+      .select({ id: paymentProviders.id })
+      .from(paymentProviders)
+      .where(eq(paymentProviders.code, providerCode))
+      .limit(1);
+    return row?.id ?? "unknown";
   }
 
   async listOrders(query: OrderQuery) {
@@ -388,10 +578,12 @@ export class OrdersService {
         paymentExpiresAt: payments.expiresAt,
         paidAt: payments.paidAt,
         failedReason: payments.failedReason,
+        paymentProviderCode: paymentProviders.code,
       })
       .from(orders)
       .innerJoin(machines, eq(machines.id, orders.machineId))
       .innerJoin(payments, eq(payments.id, orders.paymentId))
+      .innerJoin(paymentProviders, eq(paymentProviders.id, payments.providerId))
       .where(
         and(eq(orders.orderNo, orderNo), eq(machines.code, query.machineCode)),
       );
@@ -447,6 +639,7 @@ export class OrdersService {
         expiresAt: toIsoStringOrNull(row.paymentExpiresAt),
         paidAt: toIsoStringOrNull(row.paidAt),
         failedReason: row.failedReason,
+        providerCode: row.paymentProviderCode,
       },
       vending: command
         ? {
@@ -470,6 +663,12 @@ export class OrdersService {
       nextAction,
       serverTime: new Date().toISOString(),
     };
+  }
+
+  async listMachinePaymentOptions(machineId: string) {
+    return await this.paymentProviderConfigService.listMachinePaymentOptionsForMachine(
+      machineId,
+    );
   }
 
   private async createPaymentIntent(

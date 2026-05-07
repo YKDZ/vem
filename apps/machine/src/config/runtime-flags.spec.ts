@@ -43,6 +43,16 @@ describe("shouldShowMockPaymentControls", () => {
     ).toBe(false);
   });
 
+  it("returns false when paymentMethod is qr_code (real payment)", () => {
+    expect(
+      shouldShowMockPaymentControls({
+        dev: true,
+        paymentMethod: "qr_code",
+        flag: true,
+      }),
+    ).toBe(false);
+  });
+
   it("returns false when paymentMethod is null", () => {
     expect(
       shouldShowMockPaymentControls({

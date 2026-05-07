@@ -91,6 +91,22 @@ export class AppConfigService {
     });
   }
 
+  get paymentProductionReadinessRequired(): boolean {
+    return this.config.get("PAYMENT_PRODUCTION_READINESS_REQUIRED", {
+      infer: true,
+    });
+  }
+
+  get paymentAlertWindowMinutes(): number {
+    return this.config.get("PAYMENT_ALERT_WINDOW_MINUTES", { infer: true });
+  }
+
+  get paymentCertificateExpiryWarningDays(): number {
+    return this.config.get("PAYMENT_CERTIFICATE_EXPIRY_WARNING_DAYS", {
+      infer: true,
+    });
+  }
+
   buildPaymentNotifyUrl(providerCode: string): string {
     const rawBase = this.paymentWebhookBaseUrl.replace(/\/+$/, "");
     const encodedProviderCode = encodeURIComponent(providerCode);

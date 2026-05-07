@@ -3,9 +3,14 @@ import { Module } from "@nestjs/common";
 import { AuditModule } from "../audit/audit.module";
 import { ConfigModule } from "../config/config.module";
 import { InventoryModule } from "../inventory/inventory.module";
+import { NotificationsModule } from "../notifications/notifications.module";
 import { VendingModule } from "../vending/vending.module";
+import { PaymentOpsAlertService } from "./payment-ops-alert.service";
+import { PaymentOpsController } from "./payment-ops.controller";
+import { PaymentOpsService } from "./payment-ops.service";
 import { PaymentProvidersModule } from "./payment-providers.module";
 import { PaymentReconciliationService } from "./payment-reconciliation.service";
+import { PaymentWebhookAttemptRecorderService } from "./payment-webhook-attempt-recorder.service";
 import { PaymentsController } from "./payments.controller";
 import { PaymentsService } from "./payments.service";
 
@@ -16,9 +21,23 @@ import { PaymentsService } from "./payments.service";
     InventoryModule,
     VendingModule,
     PaymentProvidersModule,
+    NotificationsModule,
   ],
-  controllers: [PaymentsController],
-  providers: [PaymentsService, PaymentReconciliationService],
-  exports: [PaymentsService, PaymentProvidersModule],
+  controllers: [PaymentsController, PaymentOpsController],
+  providers: [
+    PaymentsService,
+    PaymentReconciliationService,
+    PaymentWebhookAttemptRecorderService,
+    PaymentOpsService,
+    PaymentOpsAlertService,
+  ],
+  exports: [
+    PaymentsService,
+    PaymentProvidersModule,
+    PaymentWebhookAttemptRecorderService,
+    PaymentOpsService,
+  ],
 })
 export class PaymentsModule {}
+
+

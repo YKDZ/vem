@@ -1,6 +1,7 @@
 import {
   createMachineOrderSchema,
   machineOrderStatusResponseSchema,
+  machinePaymentOptionsResponseSchema,
 } from "@vem/shared";
 
 import {
@@ -8,9 +9,17 @@ import {
   type CreateMachineOrderInput,
   type CreateMachineOrderResponse,
   type MachineOrderStatus,
+  type MachinePaymentOptionsResponse,
 } from "@/types/checkout";
 
 import type { MachineApiClient } from "./request";
+
+export async function getMachinePaymentOptions(
+  client: MachineApiClient,
+): Promise<MachinePaymentOptionsResponse> {
+  const response = await client.get<unknown>("/machine-orders/payment-options");
+  return machinePaymentOptionsResponseSchema.parse(response);
+}
 
 export async function createMachineOrder(
   client: MachineApiClient,

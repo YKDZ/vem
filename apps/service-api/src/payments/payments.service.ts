@@ -20,7 +20,10 @@ import {
   paymentEvents,
   paymentProviderConfigs,
   paymentProviders,
+  paymentReconciliationAttempts,
+  paymentWebhookAttempts,
   payments,
+  refunds,
   sql,
   type DrizzleClient,
   type SQL,
@@ -30,6 +33,9 @@ import {
   paymentEventQuerySchema,
   paymentProviderQuerySchema,
   paymentQuerySchema,
+  paymentReconciliationAttemptQuerySchema,
+  paymentWebhookAttemptQuerySchema,
+  refundQuerySchema,
   updatePaymentProviderConfigSchema,
   updatePaymentProviderSchema,
   upsertPaymentProviderConfigSchema,
@@ -37,6 +43,8 @@ import {
   wechatPayPublicConfigSchema,
 } from "@vem/shared";
 import { z } from "zod";
+
+import type { PaymentProviderRuntimeConfig } from "./payment-provider.interface";
 
 import { AuditService } from "../audit/audit.service";
 import { getOffset, toPageResult } from "../common/pagination.util";
@@ -48,6 +56,8 @@ import { VendingService } from "../vending/vending.service";
 import { PaymentConfigSecretService } from "./payment-config-secret.service";
 import { PaymentProviderConfigService } from "./payment-provider-config.service";
 import { PaymentProviderRegistry } from "./payment-provider.registry";
+import { reconcileBackoffMs, sha256Hex } from "./payment-redaction.util";
+import { PaymentWebhookAttemptRecorderService } from "./payment-webhook-attempt-recorder.service";
 
 type PaymentQuery = z.infer<typeof paymentQuerySchema> &
   z.infer<typeof pageQuerySchema>;
@@ -61,6 +71,52 @@ type UpsertPaymentProviderConfigInput = z.infer<
 >;
 type PaymentEventQuery = z.infer<typeof paymentEventQuerySchema> &
   z.infer<typeof pageQuerySchema>;
+type WebhookAttemptQuery = z.infer<typeof paymentWebhookAttemptQuerySchema> &
+  z.infer<typeof pageQuerySchema>;
+type ReconciliationAttemptQuery = z.infer<
+  typeof paymentReconciliationAttemptQuerySchema
+> &
+  z.infer<typeof pageQuerySchema>;
+type RefundListQuery = z.infer<typeof refundQuerySchema> &
+  z.infer<typeof pageQuerySchema>;
+
+type ProviderWebhookBusinessValidation =
+  | { ok: true }
+  | { ok: false; reason: string };
+
+type PaymentForWebhookValidation = {
+  paymentNo: string;
+  amountCents: number;
+  machineId: string;
+};
+
+function rawString(
+  payload: Record<string, unknown>,
+  key: string,
+): string | null {
+  const value = payload[key];
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function alipayAmountFromCents(amountCents: number): string {
+  return (amountCents / 100).toFixed(2);
+}
+
+function readTimeoutCompensationSeconds(publicConfigJson: unknown): number {
+  if (
+    typeof publicConfigJson !== "object" ||
+    publicConfigJson === null ||
+    !("timeoutCompensationSeconds" in publicConfigJson)
+  ) {
+    return 120;
+  }
+  const { timeoutCompensationSeconds: value } = publicConfigJson as {
+    timeoutCompensationSeconds: unknown;
+  };
+  return typeof value === "number" && Number.isInteger(value) && value >= 0
+    ? value
+    : 120;
+}
 
 @Injectable()
 export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
@@ -76,6 +132,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
     private readonly auditService: AuditService,
     private readonly paymentConfigSecrets: PaymentConfigSecretService,
     private readonly paymentProviderConfigService: PaymentProviderConfigService,
+    private readonly webhookAttemptRecorder: PaymentWebhookAttemptRecorderService,
   ) {}
 
   private assertMockPaymentEnabled(): void {
@@ -422,11 +479,24 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         paymentId: payments.id,
         paymentNo: payments.paymentNo,
         providerId: payments.providerId,
+        providerCode: paymentProviders.code,
+        providerTradeNo: payments.providerTradeNo,
         orderId: orders.id,
         orderStatus: orders.status,
+        machineId: orders.machineId,
+        expiresAt: payments.expiresAt,
+        publicConfigJson: paymentProviderConfigs.publicConfigJson,
       })
       .from(payments)
       .innerJoin(orders, eq(orders.id, payments.orderId))
+      .innerJoin(paymentProviders, eq(paymentProviders.id, payments.providerId))
+      .leftJoin(
+        paymentProviderConfigs,
+        and(
+          eq(paymentProviderConfigs.providerId, payments.providerId),
+          eq(paymentProviderConfigs.machineId, orders.machineId),
+        ),
+      )
       .where(
         and(
           inArray(payments.status, ["created", "pending", "processing"]),
@@ -437,15 +507,124 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       );
 
     const results = await Promise.all(
-      overduePayments.map(async (payment) => {
+      overduePayments.map(async (payment): Promise<boolean> => {
+        // Query-before-close: if a real provider, try to query payment status first
+        if (this.paymentProviderRegistry.has(payment.providerCode)) {
+          try {
+            const provider = this.paymentProviderRegistry.get(
+              payment.providerCode,
+            );
+            const config = await this.paymentProviderConfigService
+              .resolveForPayment({
+                providerCode: payment.providerCode,
+                machineId: payment.machineId,
+              })
+              .catch(() => ({
+                providerCode: payment.providerCode,
+                merchantNo: null,
+                appId: null,
+                publicConfigJson: {} as Record<string, unknown>,
+                sensitiveConfigJson: {} as Record<string, unknown>,
+              }));
+            const queryResult = await provider.queryPayment({
+              paymentNo: payment.paymentNo,
+              providerTradeNo: payment.providerTradeNo,
+              config,
+            });
+
+            if (queryResult.status === "succeeded") {
+              const providerEventId = `expire_query:${payment.paymentNo}:succeeded:${now.getTime()}`;
+              const applied = await this.applyPaymentStatusUpdate(
+                payment.paymentId,
+                payment.orderId,
+                "succeeded",
+                providerEventId,
+                queryResult.providerTradeNo,
+                queryResult.rawPayload,
+                payment.providerId,
+              );
+              if (applied) {
+                await this.vendingService
+                  .createAndDispatchCommands(payment.orderId)
+                  .catch((_err: unknown) => {
+                    // ignore dispatch errors
+                  });
+              }
+              return applied;
+            }
+
+            // If still pending/processing, check compensation window
+            const compensationSeconds = readTimeoutCompensationSeconds(
+              payment.publicConfigJson,
+            );
+            const compensationMs = compensationSeconds * 1000;
+            const expiresAtMs = payment.expiresAt
+              ? payment.expiresAt.getTime()
+              : 0;
+            if (now.getTime() < expiresAtMs + compensationMs) {
+              // Within compensation window — skip closing for now
+              return false;
+            }
+
+            // Past compensation window — cancel with provider
+            if (
+              queryResult.status === "pending" ||
+              queryResult.status === "processing"
+            ) {
+              await provider.cancelPayment({
+                paymentNo: payment.paymentNo,
+                providerTradeNo: payment.providerTradeNo,
+                config,
+              });
+            }
+          } catch (error) {
+            const message =
+              error instanceof Error ? error.message : String(error);
+            const attemptNo = await this.nextPaymentReconciliationAttemptNo(
+              payment.paymentId,
+              "expire_compensation",
+            );
+            await this.db.insert(paymentReconciliationAttempts).values({
+              paymentId: payment.paymentId,
+              providerId: payment.providerId,
+              trigger: "expire_compensation",
+              attemptNo,
+              status: "network_error",
+              errorCode: "expire_compensation_failed",
+              errorMessage: message.slice(0, 500),
+              nextRetryAt: new Date(now.getTime() + reconcileBackoffMs(1)),
+              startedAt: now,
+              finishedAt: new Date(),
+            });
+            await this.db
+              .insert(paymentEvents)
+              .values({
+                paymentId: payment.paymentId,
+                providerId: payment.providerId,
+                eventType: "payment.expire_compensation_failed",
+                providerEventId: `expire_compensation_failed:${payment.paymentNo}:${now.getTime()}`,
+                rawPayloadJson: {
+                  paymentNo: payment.paymentNo,
+                  providerCode: payment.providerCode,
+                  message,
+                },
+                signatureValid: true,
+                handledAt: new Date(),
+              })
+              .onConflictDoNothing();
+            return false;
+          }
+        }
+
+        // Expire locally and release inventory
         return await this.db.transaction(async (tx) => {
           const inserted = await tx
             .insert(paymentEvents)
             .values({
               paymentId: payment.paymentId,
               providerId: payment.providerId,
-              eventType: "mock.payment.expired",
-              providerEventId: `mock:expired:${payment.paymentNo}`,
+              eventType: "payment.expired",
+              providerEventId: `expired:${payment.paymentNo}`,
               rawPayloadJson: {
                 paymentNo: payment.paymentNo,
                 event: "expired",
@@ -611,7 +790,8 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       .from(paymentProviderConfigs)
       .where(eq(paymentProviderConfigs.id, id))
       .limit(1);
-    if (!existing) throw new NotFoundException("Payment provider config not found");
+    if (!existing)
+      throw new NotFoundException("Payment provider config not found");
 
     const providerRow = await this.db
       .select({ code: paymentProviders.code })
@@ -719,7 +899,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
 
     const missing: string[] = [];
     const requireString = (source: Record<string, unknown>, key: string) => {
-      if (typeof source[key] !== "string" || (source[key] as string).trim().length === 0) {
+      if (typeof source[key] !== "string" || source[key].trim().length === 0) {
         missing.push(key);
       }
     };
@@ -728,10 +908,27 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
     if (!input.appId) missing.push("appId");
 
     if (input.providerCode === "wechat_pay") {
-      requireString(input.publicConfigJson, "certificateSerialNo");
+      // merchantCertificateSerialNo or deprecated certificateSerialNo
+      const hasMerchantSerial =
+        (typeof input.publicConfigJson["merchantCertificateSerialNo"] ===
+          "string" &&
+          input.publicConfigJson["merchantCertificateSerialNo"].length > 0) ||
+        (typeof input.publicConfigJson["certificateSerialNo"] === "string" &&
+          input.publicConfigJson["certificateSerialNo"].length > 0);
+      if (!hasMerchantSerial) missing.push("merchantCertificateSerialNo");
+      requireString(input.publicConfigJson, "platformCertificateSerialNo");
       requireString(input.sensitiveConfigJson, "apiV3Key");
       requireString(input.sensitiveConfigJson, "privateKeyPem");
-      requireString(input.sensitiveConfigJson, "platformPublicKeyPem");
+      // platformCertificatePem or platformPublicKeyPem must be present
+      const hasPlatformKey =
+        (typeof input.sensitiveConfigJson["platformCertificatePem"] ===
+          "string" &&
+          input.sensitiveConfigJson["platformCertificatePem"].length > 0) ||
+        (typeof input.sensitiveConfigJson["platformPublicKeyPem"] ===
+          "string" &&
+          input.sensitiveConfigJson["platformPublicKeyPem"].length > 0);
+      if (!hasPlatformKey)
+        missing.push("platformCertificatePem or platformPublicKeyPem");
     } else if (input.providerCode === "alipay") {
       requireString(input.publicConfigJson, "gatewayUrl");
       requireString(input.publicConfigJson, "keyType");
@@ -837,7 +1034,10 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
     };
     const nextPublicConfig = (() => {
       try {
-        return this.normalizeProviderPublicConfig(input.providerCode, basePublicConfig);
+        return this.normalizeProviderPublicConfig(
+          input.providerCode,
+          basePublicConfig,
+        );
       } catch {
         return basePublicConfig;
       }
@@ -860,7 +1060,10 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
           machineId,
           merchantNo: existingRow.merchantNo,
           appId: existingRow.appId,
-          publicConfigJson: existingRow.publicConfigJson as Record<string, unknown>,
+          publicConfigJson: existingRow.publicConfigJson as Record<
+            string,
+            unknown
+          >,
           status: existingRow.status,
           sensitiveConfigJson: existingSensitive,
         })
@@ -927,7 +1130,8 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
   async listProviderNotifyUrlChecks() {
     return await Promise.all(
       ["wechat_pay", "alipay"].map(async (providerCode) => {
-        const staticCheck = this.config.getPaymentNotifyUrlStaticCheck(providerCode);
+        const staticCheck =
+          this.config.getPaymentNotifyUrlStaticCheck(providerCode);
         const healthUrl = new URL(staticCheck.notifyUrl);
         healthUrl.pathname = "/api/health";
         healthUrl.search = "";
@@ -1019,23 +1223,111 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
     headers: Record<string, string | string[] | undefined>,
     body: unknown,
     rawBodyText?: string,
+    remoteIp: string | null = null,
+    userAgent: string | null = null,
   ) {
-    const provider = this.paymentProviderRegistry.get(providerCode);
-    if (!provider.handleWebhook) {
-      throw new NotFoundException("Payment webhook is not supported");
-    }
-    const candidateConfigs = await this.paymentProviderConfigService
-      .listCandidateConfigsForProvider(providerCode)
-      .catch(() => []);
     const computedRawBodyText =
       rawBodyText ?? (typeof body === "string" ? body : JSON.stringify(body));
-    const webhook = await provider.handleWebhook({
+
+    // Start attempt record before anything else
+    const attemptId = await this.webhookAttemptRecorder.start({
+      providerCode,
       headers,
       body,
       rawBodyText: computedRawBodyText,
-      candidateConfigs,
+      remoteIp,
+      userAgent,
     });
 
+    let provider;
+    try {
+      provider = this.paymentProviderRegistry.get(providerCode);
+    } catch {
+      await this.webhookAttemptRecorder.finish({
+        attemptId,
+        eventKind: "unknown",
+        handled: false,
+        failureReason: "provider_not_found",
+      });
+      throw new NotFoundException("Payment provider not found");
+    }
+
+    if (!provider.handleWebhook) {
+      await this.webhookAttemptRecorder.finish({
+        attemptId,
+        eventKind: "unknown",
+        handled: false,
+        failureReason: "webhook_not_supported",
+      });
+      throw new NotFoundException("Payment webhook is not supported");
+    }
+
+    const candidateConfigs = await this.paymentProviderConfigService
+      .listCandidateConfigsForProvider(providerCode)
+      .catch(() => []);
+
+    let webhook: Awaited<
+      ReturnType<NonNullable<typeof provider.handleWebhook>>
+    >;
+    try {
+      webhook = await provider.handleWebhook({
+        headers,
+        body,
+        rawBodyText: computedRawBodyText,
+        candidateConfigs,
+      });
+    } catch (err) {
+      const isUnauthorized =
+        err instanceof Error &&
+        (err.constructor.name === "UnauthorizedException" ||
+          err.message.toLowerCase().includes("signature") ||
+          err.message.toLowerCase().includes("unauthorized"));
+      await this.webhookAttemptRecorder.finish({
+        attemptId,
+        eventKind: "unknown",
+        signatureValid: false,
+        handled: false,
+        failureReason: isUnauthorized ? "signature_invalid" : "invalid_body",
+        errorCode: isUnauthorized ? "signature_invalid" : "provider_error",
+      });
+      throw err;
+    }
+
+    // eventKind from provider result
+    const eventKind = webhook.eventKind ?? "payment";
+
+    if (eventKind === "payment") {
+      return this.handlePaymentWebhook(
+        attemptId,
+        providerCode,
+        webhook as import("./payment-provider.interface").ProviderPaymentWebhookResult,
+        candidateConfigs,
+      );
+    }
+
+    if (eventKind === "refund") {
+      return this.handleRefundWebhook(
+        attemptId,
+        providerCode,
+        webhook as import("./payment-provider.interface").ProviderRefundWebhookResult,
+      );
+    }
+
+    await this.webhookAttemptRecorder.finish({
+      attemptId,
+      eventKind: "unknown",
+      handled: false,
+      failureReason: "invalid_body",
+    });
+    return { handled: false, reason: "unknown_event_kind" };
+  }
+
+  private async handlePaymentWebhook(
+    attemptId: string,
+    providerCode: string,
+    webhook: import("./payment-provider.interface").ProviderPaymentWebhookResult,
+    candidateConfigs: PaymentProviderRuntimeConfig[],
+  ) {
     const [payment] = webhook.paymentNo
       ? await this.db
           .select({
@@ -1043,8 +1335,13 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
             providerId: payments.providerId,
             status: payments.status,
             orderId: payments.orderId,
+            orderNo: orders.orderNo,
+            paymentNo: payments.paymentNo,
+            amountCents: payments.amountCents,
+            machineId: orders.machineId,
           })
           .from(payments)
+          .innerJoin(orders, eq(orders.id, payments.orderId))
           .innerJoin(
             paymentProviders,
             eq(paymentProviders.id, payments.providerId),
@@ -1058,15 +1355,44 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
           .limit(1)
       : [];
     if (!payment) {
+      await this.webhookAttemptRecorder.finish({
+        attemptId,
+        eventKind: "payment",
+        eventType: webhook.eventType,
+        providerEventId: webhook.providerEventId,
+        paymentNo: webhook.paymentNo,
+        signatureValid: webhook.signatureValid,
+        businessValid: false,
+        handled: false,
+        failureReason: "payment_not_found",
+      });
       return { handled: false, reason: "payment_not_found" };
     }
+
+    const businessValidation = this.validateProviderWebhookBusinessFields(
+      providerCode,
+      webhook.rawPayload,
+      {
+        paymentNo: payment.paymentNo,
+        amountCents: payment.amountCents,
+        machineId: payment.machineId,
+      },
+      candidateConfigs,
+      webhook.normalizedPayload,
+      webhook.matchedConfigId,
+      webhook.paymentStatus,
+    );
+
+    const eventType = businessValidation.ok
+      ? webhook.eventType
+      : `${webhook.eventType}.business_invalid`;
 
     const inserted = await this.db
       .insert(paymentEvents)
       .values({
         paymentId: payment.id,
         providerId: payment.providerId,
-        eventType: webhook.eventType,
+        eventType,
         providerEventId: webhook.providerEventId,
         rawPayloadJson: webhook.rawPayload,
         signatureValid: webhook.signatureValid,
@@ -1074,8 +1400,46 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       })
       .onConflictDoNothing()
       .returning({ id: paymentEvents.id });
+
     if (inserted.length === 0) {
+      await this.webhookAttemptRecorder.finish({
+        attemptId,
+        providerId: payment.providerId,
+        paymentId: payment.id,
+        matchedConfigId: webhook.matchedConfigId,
+        eventKind: "payment",
+        eventType: webhook.eventType,
+        providerEventId: webhook.providerEventId,
+        paymentNo: payment.paymentNo,
+        orderNo: payment.orderNo,
+        signatureValid: webhook.signatureValid,
+        businessValid: true,
+        handled: true,
+        duplicate: true,
+        failureReason: "duplicate_event",
+      });
       return { handled: true, duplicate: true };
+    }
+
+    if (!businessValidation.ok) {
+      const reason = (businessValidation as { ok: false; reason: string })
+        .reason;
+      await this.webhookAttemptRecorder.finish({
+        attemptId,
+        providerId: payment.providerId,
+        paymentId: payment.id,
+        matchedConfigId: webhook.matchedConfigId,
+        eventKind: "payment",
+        eventType: webhook.eventType,
+        providerEventId: webhook.providerEventId,
+        paymentNo: payment.paymentNo,
+        orderNo: payment.orderNo,
+        signatureValid: webhook.signatureValid,
+        businessValid: false,
+        handled: false,
+        failureReason: reason,
+      });
+      return { handled: false, reason };
     }
 
     if (webhook.paymentStatus === "succeeded") {
@@ -1105,6 +1469,9 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
             paidAt: new Date(),
             failedReason: null,
             updatedAt: new Date(),
+            ...(webhook.providerTradeNo
+              ? { providerTradeNo: webhook.providerTradeNo }
+              : {}),
           })
           .where(eq(payments.id, r.paymentId));
 
@@ -1216,7 +1583,178 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       });
     }
 
+    await this.webhookAttemptRecorder.finish({
+      attemptId,
+      providerId: payment.providerId,
+      paymentId: payment.id,
+      matchedConfigId: webhook.matchedConfigId,
+      eventKind: "payment",
+      eventType: webhook.eventType,
+      providerEventId: webhook.providerEventId,
+      paymentNo: payment.paymentNo,
+      orderNo: payment.orderNo,
+      signatureValid: webhook.signatureValid,
+      businessValid: true,
+      handled: true,
+      duplicate: false,
+    });
+
     return { handled: true, duplicate: false };
+  }
+
+  private async handleRefundWebhook(
+    attemptId: string,
+    providerCode: string,
+    webhook: import("./payment-provider.interface").ProviderRefundWebhookResult,
+  ) {
+    // Look up refund by refundNo
+    const [refund] = webhook.refundNo
+      ? await this.db
+          .select({
+            id: refunds.id,
+            providerId: payments.providerId,
+            paymentId: refunds.paymentId,
+            refundNo: refunds.refundNo,
+            status: refunds.status,
+          })
+          .from(refunds)
+          .innerJoin(payments, eq(payments.id, refunds.paymentId))
+          .innerJoin(
+            paymentProviders,
+            eq(paymentProviders.id, payments.providerId),
+          )
+          .where(
+            and(
+              eq(refunds.refundNo, webhook.refundNo),
+              eq(paymentProviders.code, providerCode),
+            ),
+          )
+          .limit(1)
+      : [];
+
+    if (!refund) {
+      await this.webhookAttemptRecorder.finish({
+        attemptId,
+        eventKind: "refund",
+        eventType: webhook.eventType,
+        providerEventId: webhook.providerEventId,
+        refundNo: webhook.refundNo,
+        paymentNo: webhook.paymentNo,
+        signatureValid: webhook.signatureValid,
+        businessValid: false,
+        handled: false,
+        failureReason: "refund_not_found",
+      });
+      return { handled: false, reason: "refund_not_found" };
+    }
+
+    await this.webhookAttemptRecorder.finish({
+      attemptId,
+      providerId: refund.providerId,
+      refundId: refund.id,
+      paymentId: refund.paymentId,
+      matchedConfigId: webhook.matchedConfigId,
+      eventKind: "refund",
+      eventType: webhook.eventType,
+      providerEventId: webhook.providerEventId,
+      refundNo: webhook.refundNo,
+      paymentNo: webhook.paymentNo,
+      signatureValid: webhook.signatureValid,
+      businessValid: true,
+      handled: true,
+      duplicate: false,
+    });
+
+    return { handled: true, duplicate: false };
+  }
+
+  private validateProviderWebhookBusinessFields(
+    providerCode: string,
+    rawPayload: Record<string, unknown>,
+    payment: PaymentForWebhookValidation,
+    candidateConfigs: PaymentProviderRuntimeConfig[],
+    normalizedPayload?: Record<string, unknown> | null,
+    matchedConfigId?: string | null,
+    claimedStatus?: string | null,
+  ): ProviderWebhookBusinessValidation {
+    if (providerCode === "wechat_pay") {
+      const n = normalizedPayload ?? {};
+
+      const outTradeNo =
+        typeof n["outTradeNo"] === "string" ? n["outTradeNo"] : null;
+      const mchId = typeof n["mchId"] === "string" ? n["mchId"] : null;
+      const appId = typeof n["appId"] === "string" ? n["appId"] : null;
+      const amountTotal =
+        typeof n["amountTotal"] === "number" ? n["amountTotal"] : null;
+      const amountCurrency =
+        typeof n["amountCurrency"] === "string" ? n["amountCurrency"] : null;
+      const tradeState =
+        typeof n["tradeState"] === "string" ? n["tradeState"] : null;
+
+      if (outTradeNo && outTradeNo !== payment.paymentNo) {
+        return { ok: false, reason: "wechat_out_trade_no_mismatch" };
+      }
+      if (amountTotal !== null && amountTotal !== payment.amountCents) {
+        return { ok: false, reason: "wechat_amount_total_mismatch" };
+      }
+      if (amountCurrency && amountCurrency !== "CNY") {
+        return { ok: false, reason: "wechat_currency_mismatch" };
+      }
+
+      // Find the matched config by id, or find by merchantNo
+      const matchedConfig = matchedConfigId
+        ? candidateConfigs.find((c) => c.id === matchedConfigId)
+        : candidateConfigs.find((c) => !c.merchantNo || c.merchantNo === mchId);
+
+      if (
+        mchId &&
+        matchedConfig?.merchantNo &&
+        mchId !== matchedConfig.merchantNo
+      ) {
+        return { ok: false, reason: "wechat_mchid_mismatch" };
+      }
+      if (appId && matchedConfig?.appId && appId !== matchedConfig.appId) {
+        return { ok: false, reason: "wechat_appid_mismatch" };
+      }
+
+      // If claimed payment status is succeeded but trade_state is not SUCCESS, reject
+      if (
+        claimedStatus === "succeeded" &&
+        tradeState &&
+        tradeState !== "SUCCESS"
+      ) {
+        return { ok: false, reason: "wechat_trade_state_not_success" };
+      }
+    } else if (providerCode === "alipay") {
+      const appIdInPayload = rawString(rawPayload, "app_id");
+      const sellerId = rawString(rawPayload, "seller_id");
+      const outTradeNo = rawString(rawPayload, "out_trade_no");
+      const totalAmount = rawString(rawPayload, "total_amount");
+
+      if (outTradeNo && outTradeNo !== payment.paymentNo) {
+        return { ok: false, reason: "alipay_out_trade_no_mismatch" };
+      }
+      if (
+        totalAmount &&
+        totalAmount !== alipayAmountFromCents(payment.amountCents)
+      ) {
+        return { ok: false, reason: "alipay_total_amount_mismatch" };
+      }
+      const matchingConfig = candidateConfigs.find(
+        (c) => !c.appId || c.appId === appIdInPayload,
+      );
+      if (appIdInPayload && !matchingConfig) {
+        return { ok: false, reason: "alipay_app_id_mismatch" };
+      }
+      if (
+        sellerId &&
+        matchingConfig?.merchantNo &&
+        sellerId !== matchingConfig.merchantNo
+      ) {
+        return { ok: false, reason: "alipay_seller_id_mismatch" };
+      }
+    }
+    return { ok: true };
   }
 
   async reconcilePendingPayments(
@@ -1250,6 +1788,33 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       pendingPayments.map(async (payment) => {
         try {
           if (!this.paymentProviderRegistry.has(payment.providerCode)) return;
+
+          // Count previous scheduled attempts for backoff
+          const [countRow] = await this.db
+            .select({ total: count() })
+            .from(paymentReconciliationAttempts)
+            .where(
+              and(
+                eq(paymentReconciliationAttempts.paymentId, payment.id),
+                eq(paymentReconciliationAttempts.trigger, "scheduled"),
+              ),
+            );
+          const attemptNo = Number(countRow.total) + 1;
+
+          if (attemptNo > 8) {
+            // Max attempts reached - record it but don't change payment state
+            await this.db.insert(paymentReconciliationAttempts).values({
+              paymentId: payment.id,
+              providerId: payment.providerId,
+              trigger: "scheduled",
+              attemptNo,
+              status: "max_attempts_exceeded",
+              startedAt: now,
+              finishedAt: now,
+            });
+            return;
+          }
+
           const provider = this.paymentProviderRegistry.get(
             payment.providerCode,
           );
@@ -1259,24 +1824,73 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
               machineId: payment.machineId,
             })
             .catch(() => ({
+              id: "",
               providerCode: payment.providerCode,
               merchantNo: null,
               appId: null,
               publicConfigJson: {},
               sensitiveConfigJson: {},
             }));
-          const result = await provider.queryPayment({
-            paymentNo: payment.paymentNo,
-            providerTradeNo: payment.providerTradeNo,
-            config,
-          });
-          if (result.status === "pending" || result.status === "processing") {
+
+          const startedAt = now;
+          const [attempt] = await this.db
+            .insert(paymentReconciliationAttempts)
+            .values({
+              paymentId: payment.id,
+              providerId: payment.providerId,
+              trigger: "scheduled",
+              attemptNo,
+              status: "pending",
+              startedAt,
+            })
+            .returning({ id: paymentReconciliationAttempts.id });
+
+          let result: Awaited<ReturnType<typeof provider.queryPayment>>;
+          try {
+            result = await provider.queryPayment({
+              paymentNo: payment.paymentNo,
+              providerTradeNo: payment.providerTradeNo,
+              config,
+            });
+          } catch (err) {
+            const errMsg = err instanceof Error ? err.message : String(err);
+            const backoffMs = reconcileBackoffMs(attemptNo);
+            const nextRetryAt = new Date(now.getTime() + backoffMs);
+            await this.db
+              .update(paymentReconciliationAttempts)
+              .set({
+                status: "network_error",
+                errorCode: "query_failed",
+                errorMessage: errMsg.slice(0, 500),
+                nextRetryAt,
+                finishedAt: new Date(),
+              })
+              .where(eq(paymentReconciliationAttempts.id, attempt.id));
             return;
           }
-          const providerEventId = `reconcile:${payment.paymentNo}:${result.status}:${now.getTime()}`;
+
+          const providerStatus = result.status;
+
+          if (providerStatus === "pending" || providerStatus === "processing") {
+            const backoffMs = reconcileBackoffMs(attemptNo);
+            const nextRetryAt = new Date(now.getTime() + backoffMs);
+            await this.db
+              .update(paymentReconciliationAttempts)
+              .set({
+                status: providerStatus as "pending" | "processing",
+                providerPaymentStatus: providerStatus,
+                providerTradeNo: result.providerTradeNo ?? null,
+                nextRetryAt,
+                finishedAt: new Date(),
+              })
+              .where(eq(paymentReconciliationAttempts.id, attempt.id));
+            return;
+          }
+
+          const providerEventId = `reconcile:${payment.paymentNo}:${providerStatus}:${now.getTime()}`;
           const finalStatus =
-            result.status === "succeeded" || result.status === "failed"
-              ? result.status
+            providerStatus === "succeeded" || providerStatus === "failed"
+              ? providerStatus
               : "failed";
           const applied = await this.applyPaymentStatusUpdate(
             payment.id,
@@ -1287,9 +1901,23 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
             result.rawPayload,
             payment.providerId,
           );
+
+          await this.db
+            .update(paymentReconciliationAttempts)
+            .set({
+              status: finalStatus,
+              providerPaymentStatus: providerStatus,
+              providerTradeNo: result.providerTradeNo ?? null,
+              rawPayloadSha256: result.rawPayload
+                ? sha256Hex(JSON.stringify(result.rawPayload))
+                : null,
+              finishedAt: new Date(),
+            })
+            .where(eq(paymentReconciliationAttempts.id, attempt.id));
+
           if (applied) {
             reconciled += 1;
-            if (result.status === "succeeded") {
+            if (providerStatus === "succeeded") {
               await this.vendingService
                 .createAndDispatchCommands(payment.orderId)
                 .catch((_err: unknown) => {
@@ -1297,12 +1925,30 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
                 });
             }
           }
-        } catch {
-          // Skip failed reconciliation for individual payments
+        } catch (err) {
+          this.logger.warn(
+            `Reconciliation failed for payment ${payment.paymentNo}: ${err instanceof Error ? err.message : String(err)}`,
+          );
         }
       }),
     );
     return { reconciled };
+  }
+
+  private async nextPaymentReconciliationAttemptNo(
+    paymentId: string,
+    trigger: "scheduled" | "manual" | "expire_compensation",
+  ): Promise<number> {
+    const [countRow] = await this.db
+      .select({ total: count() })
+      .from(paymentReconciliationAttempts)
+      .where(
+        and(
+          eq(paymentReconciliationAttempts.paymentId, paymentId),
+          eq(paymentReconciliationAttempts.trigger, trigger),
+        ),
+      );
+    return Number(countRow.total) + 1;
   }
 
   private async applyPaymentStatusUpdate(
@@ -1358,7 +2004,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
           .update(payments)
           .set({
             status: "succeeded",
-            providerTradeNo: providerTradeNo ?? null,
+            ...(providerTradeNo ? { providerTradeNo } : {}),
             updatedAt: new Date(),
           })
           .where(eq(payments.id, paymentId));
@@ -1384,5 +2030,394 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
 
       return true;
     });
+  }
+
+  async listWebhookAttempts(query: WebhookAttemptQuery) {
+    const conditions: SQL[] = [];
+    if (query.orderNo) {
+      conditions.push(sql`${orders.orderNo} = ${query.orderNo}`);
+    }
+    if (query.paymentNo) {
+      conditions.push(eq(paymentWebhookAttempts.paymentNo, query.paymentNo));
+    }
+    if (query.refundNo) {
+      conditions.push(eq(paymentWebhookAttempts.refundNo, query.refundNo));
+    }
+    if (query.providerCode) {
+      conditions.push(eq(paymentProviders.code, query.providerCode));
+    }
+    if (query.eventKind) {
+      conditions.push(eq(paymentWebhookAttempts.eventKind, query.eventKind));
+    }
+    if (query.signatureValid !== undefined) {
+      conditions.push(
+        eq(paymentWebhookAttempts.signatureValid, query.signatureValid),
+      );
+    }
+    if (query.businessValid !== undefined) {
+      conditions.push(
+        eq(paymentWebhookAttempts.businessValid, query.businessValid),
+      );
+    }
+    if (query.createdFrom) {
+      conditions.push(
+        sql`${paymentWebhookAttempts.createdAt} >= ${new Date(query.createdFrom)}`,
+      );
+    }
+    if (query.createdTo) {
+      conditions.push(
+        sql`${paymentWebhookAttempts.createdAt} <= ${new Date(query.createdTo)}`,
+      );
+    }
+    const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+
+    const items = await this.db
+      .select({
+        id: paymentWebhookAttempts.id,
+        providerCode: paymentProviders.code,
+        eventKind: paymentWebhookAttempts.eventKind,
+        eventType: paymentWebhookAttempts.eventType,
+        paymentNo: paymentWebhookAttempts.paymentNo,
+        refundNo: paymentWebhookAttempts.refundNo,
+        orderNo: paymentWebhookAttempts.orderNo,
+        signatureValid: paymentWebhookAttempts.signatureValid,
+        businessValid: paymentWebhookAttempts.businessValid,
+        handled: paymentWebhookAttempts.handled,
+        duplicate: paymentWebhookAttempts.duplicate,
+        failureReason: paymentWebhookAttempts.failureReason,
+        remoteIp: paymentWebhookAttempts.remoteIp,
+        httpStatus: paymentWebhookAttempts.httpStatus,
+        createdAt: paymentWebhookAttempts.createdAt,
+      })
+      .from(paymentWebhookAttempts)
+      .leftJoin(
+        paymentProviders,
+        eq(paymentProviders.id, paymentWebhookAttempts.providerId),
+      )
+      .leftJoin(payments, eq(payments.id, paymentWebhookAttempts.paymentId))
+      .leftJoin(orders, eq(orders.id, payments.orderId))
+      .where(whereClause)
+      .orderBy(desc(paymentWebhookAttempts.createdAt))
+      .limit(query.pageSize ?? 20)
+      .offset(getOffset(query));
+
+    const [totalRow] = await this.db
+      .select({ total: count() })
+      .from(paymentWebhookAttempts)
+      .leftJoin(
+        paymentProviders,
+        eq(paymentProviders.id, paymentWebhookAttempts.providerId),
+      )
+      .leftJoin(payments, eq(payments.id, paymentWebhookAttempts.paymentId))
+      .leftJoin(orders, eq(orders.id, payments.orderId))
+      .where(whereClause);
+
+    return toPageResult(items, query, Number(totalRow.total));
+  }
+
+  async listReconciliationAttempts(query: ReconciliationAttemptQuery) {
+    const conditions: SQL[] = [];
+    if (query.providerCode) {
+      conditions.push(eq(paymentProviders.code, query.providerCode));
+    }
+    if (query.trigger) {
+      conditions.push(
+        eq(
+          paymentReconciliationAttempts.trigger,
+          query.trigger as "manual" | "scheduled" | "expire_compensation",
+        ),
+      );
+    }
+    if (query.status) {
+      conditions.push(
+        eq(
+          paymentReconciliationAttempts.status,
+          query.status as
+            | "succeeded"
+            | "failed"
+            | "pending"
+            | "processing"
+            | "network_error"
+            | "config_error"
+            | "max_attempts_exceeded",
+        ),
+      );
+    }
+    if (query.createdFrom) {
+      conditions.push(
+        sql`${paymentReconciliationAttempts.createdAt} >= ${new Date(query.createdFrom)}`,
+      );
+    }
+    if (query.createdTo) {
+      conditions.push(
+        sql`${paymentReconciliationAttempts.createdAt} <= ${new Date(query.createdTo)}`,
+      );
+    }
+    const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+
+    const items = await this.db
+      .select({
+        id: paymentReconciliationAttempts.id,
+        paymentId: paymentReconciliationAttempts.paymentId,
+        paymentNo: payments.paymentNo,
+        providerCode: paymentProviders.code,
+        trigger: paymentReconciliationAttempts.trigger,
+        attemptNo: paymentReconciliationAttempts.attemptNo,
+        status: paymentReconciliationAttempts.status,
+        providerPaymentStatus:
+          paymentReconciliationAttempts.providerPaymentStatus,
+        errorCode: paymentReconciliationAttempts.errorCode,
+        errorMessage: paymentReconciliationAttempts.errorMessage,
+        nextRetryAt: paymentReconciliationAttempts.nextRetryAt,
+        startedAt: paymentReconciliationAttempts.startedAt,
+        finishedAt: paymentReconciliationAttempts.finishedAt,
+        createdAt: paymentReconciliationAttempts.createdAt,
+      })
+      .from(paymentReconciliationAttempts)
+      .innerJoin(
+        payments,
+        eq(payments.id, paymentReconciliationAttempts.paymentId),
+      )
+      .innerJoin(
+        paymentProviders,
+        eq(paymentProviders.id, paymentReconciliationAttempts.providerId),
+      )
+      .where(whereClause)
+      .orderBy(desc(paymentReconciliationAttempts.createdAt))
+      .limit(query.pageSize ?? 20)
+      .offset(getOffset(query));
+
+    const [totalRow] = await this.db
+      .select({ total: count() })
+      .from(paymentReconciliationAttempts)
+      .innerJoin(
+        payments,
+        eq(payments.id, paymentReconciliationAttempts.paymentId),
+      )
+      .innerJoin(
+        paymentProviders,
+        eq(paymentProviders.id, paymentReconciliationAttempts.providerId),
+      )
+      .where(whereClause);
+
+    return toPageResult(items, query, Number(totalRow.total));
+  }
+
+  async listRefunds(query: RefundListQuery) {
+    const conditions: SQL[] = [];
+    if (query.orderNo) {
+      conditions.push(sql`${orders.orderNo} = ${query.orderNo}`);
+    }
+    if (query.paymentNo) {
+      conditions.push(eq(payments.paymentNo, query.paymentNo));
+    }
+    if (query.refundNo) {
+      conditions.push(eq(refunds.refundNo, query.refundNo));
+    }
+    if (query.providerCode) {
+      conditions.push(eq(paymentProviders.code, query.providerCode));
+    }
+    if (query.status) {
+      conditions.push(eq(refunds.status, query.status));
+    }
+    if (query.createdFrom) {
+      conditions.push(
+        sql`${refunds.createdAt} >= ${new Date(query.createdFrom)}`,
+      );
+    }
+    if (query.createdTo) {
+      conditions.push(
+        sql`${refunds.createdAt} <= ${new Date(query.createdTo)}`,
+      );
+    }
+    const whereClause = conditions.length > 0 ? and(...conditions) : undefined;
+
+    const items = await this.db
+      .select({
+        id: refunds.id,
+        refundNo: refunds.refundNo,
+        paymentId: refunds.paymentId,
+        paymentNo: payments.paymentNo,
+        orderNo: orders.orderNo,
+        providerCode: paymentProviders.code,
+        status: refunds.status,
+        amountCents: refunds.amountCents,
+        reason: refunds.reason,
+        providerRefundNo: refunds.providerRefundNo,
+        refundedAt: refunds.refundedAt,
+        createdAt: refunds.createdAt,
+        updatedAt: refunds.updatedAt,
+      })
+      .from(refunds)
+      .innerJoin(payments, eq(payments.id, refunds.paymentId))
+      .innerJoin(orders, eq(orders.id, payments.orderId))
+      .innerJoin(paymentProviders, eq(paymentProviders.id, payments.providerId))
+      .where(whereClause)
+      .orderBy(desc(refunds.createdAt))
+      .limit(query.pageSize ?? 20)
+      .offset(getOffset(query));
+
+    const [totalRow] = await this.db
+      .select({ total: count() })
+      .from(refunds)
+      .innerJoin(payments, eq(payments.id, refunds.paymentId))
+      .innerJoin(orders, eq(orders.id, payments.orderId))
+      .innerJoin(paymentProviders, eq(paymentProviders.id, payments.providerId))
+      .where(whereClause);
+
+    return toPageResult(items, query, Number(totalRow.total));
+  }
+
+  async manualReconcile(paymentId: string, adminUserId: string) {
+    const [payment] = await this.db
+      .select({
+        id: payments.id,
+        paymentNo: payments.paymentNo,
+        status: payments.status,
+        providerId: payments.providerId,
+        providerCode: paymentProviders.code,
+        providerTradeNo: payments.providerTradeNo,
+        orderId: payments.orderId,
+        machineId: orders.machineId,
+      })
+      .from(payments)
+      .innerJoin(orders, eq(orders.id, payments.orderId))
+      .innerJoin(paymentProviders, eq(paymentProviders.id, payments.providerId))
+      .where(eq(payments.id, paymentId))
+      .limit(1);
+
+    if (!payment) {
+      throw new NotFoundException("Payment not found");
+    }
+
+    if (payment.status !== "pending" && payment.status !== "processing") {
+      return {
+        status: payment.status,
+        reconciled: false,
+        reason: "already_terminal",
+      };
+    }
+
+    const provider = this.paymentProviderRegistry.get(payment.providerCode);
+    const config = await this.paymentProviderConfigService
+      .resolveForPayment({
+        providerCode: payment.providerCode,
+        machineId: payment.machineId,
+      })
+      .catch(() => ({
+        id: "",
+        providerCode: payment.providerCode,
+        merchantNo: null,
+        appId: null,
+        publicConfigJson: {},
+        sensitiveConfigJson: {},
+      }));
+
+    // Count previous attempts
+    const [countRow] = await this.db
+      .select({ total: count() })
+      .from(paymentReconciliationAttempts)
+      .where(
+        and(
+          eq(paymentReconciliationAttempts.paymentId, payment.id),
+          eq(paymentReconciliationAttempts.trigger, "manual"),
+        ),
+      );
+    const attemptNo = Number(countRow.total) + 1;
+
+    const startedAt = new Date();
+    const [attempt] = await this.db
+      .insert(paymentReconciliationAttempts)
+      .values({
+        paymentId: payment.id,
+        providerId: payment.providerId,
+        trigger: "manual",
+        attemptNo,
+        status: "pending",
+        startedAt,
+      })
+      .returning({ id: paymentReconciliationAttempts.id });
+
+    let result: Awaited<ReturnType<typeof provider.queryPayment>>;
+    try {
+      result = await provider.queryPayment({
+        paymentNo: payment.paymentNo,
+        providerTradeNo: payment.providerTradeNo,
+        config,
+      });
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      await this.db
+        .update(paymentReconciliationAttempts)
+        .set({
+          status: "network_error",
+          errorCode: "query_failed",
+          errorMessage: errMsg.slice(0, 500),
+          finishedAt: new Date(),
+        })
+        .where(eq(paymentReconciliationAttempts.id, attempt.id));
+      throw err;
+    }
+
+    const providerStatus = result.status;
+    const isTerminal =
+      providerStatus === "succeeded" || providerStatus === "failed";
+
+    if (!isTerminal) {
+      await this.db
+        .update(paymentReconciliationAttempts)
+        .set({
+          status: providerStatus as "pending" | "processing",
+          providerPaymentStatus: providerStatus,
+          providerTradeNo: result.providerTradeNo ?? null,
+          finishedAt: new Date(),
+        })
+        .where(eq(paymentReconciliationAttempts.id, attempt.id));
+      return {
+        status: payment.status,
+        reconciled: false,
+        reason: `provider_${providerStatus}`,
+      };
+    }
+
+    const providerEventId = `manual_reconcile:${payment.paymentNo}:${providerStatus}:${Date.now()}`;
+    const applied = await this.applyPaymentStatusUpdate(
+      payment.id,
+      payment.orderId,
+      providerStatus as "succeeded" | "failed",
+      providerEventId,
+      result.providerTradeNo,
+      result.rawPayload,
+      payment.providerId,
+    );
+
+    await this.db
+      .update(paymentReconciliationAttempts)
+      .set({
+        status: providerStatus as "succeeded" | "failed",
+        providerPaymentStatus: providerStatus,
+        providerTradeNo: result.providerTradeNo ?? null,
+        rawPayloadSha256: result.rawPayload
+          ? sha256Hex(JSON.stringify(result.rawPayload))
+          : null,
+        finishedAt: new Date(),
+      })
+      .where(eq(paymentReconciliationAttempts.id, attempt.id));
+
+    if (applied && providerStatus === "succeeded") {
+      await this.vendingService
+        .createAndDispatchCommands(payment.orderId)
+        .catch(() => {});
+    }
+
+    await this.auditService.record({
+      adminUserId: adminUserId,
+      action: "payments.manual_reconcile",
+      resourceType: "payment",
+      resourceId: payment.id,
+      afterJson: { paymentNo: payment.paymentNo, providerStatus, applied },
+    });
+
+    return { status: providerStatus, reconciled: applied };
   }
 }

@@ -12,6 +12,7 @@ import {
   formatCountdown,
   formatIsoDateTime,
 } from "@/utils/format";
+import { getPaymentProviderCopy } from "@/utils/payment-copy";
 
 const router = useRouter();
 const checkoutStore = useCheckoutStore();
@@ -26,6 +27,28 @@ const remainingText = computed(() =>
   formatCountdown(checkoutStore.remainingSeconds),
 );
 const expired = computed(() => checkoutStore.remainingSeconds <= 0);
+
+const activeProviderCode = computed(
+  () => checkoutStore.activePaymentProviderCode,
+);
+const paymentCopy = computed(() =>
+  getPaymentProviderCopy(activeProviderCode.value),
+);
+
+const confirmingExpiredPayment = computed(
+  () => expired.value && status.value?.nextAction === "wait_payment",
+);
+const qrBlocked = computed(
+  () => expired.value || confirmingExpiredPayment.value,
+);
+const qrOverlayText = computed(() =>
+  confirmingExpiredPayment.value
+    ? "正在确认支付结果"
+    : expired.value
+      ? "二维码已过期"
+      : null,
+);
+
 const showMockControls = computed(() =>
   shouldShowMockPaymentControls({
     dev: import.meta.env.DEV,
@@ -85,13 +108,14 @@ onUnmounted(() => {
   <KioskLayout>
     <section v-if="order" class="flex h-full flex-col gap-5 text-white">
       <div
-        class="rounded-[2rem] border border-white/10 bg-white/10 p-6 shadow-2xl"
+        class="rounded-4xl border border-white/10 bg-white/10 p-6 shadow-2xl"
       >
         <p class="text-sm tracking-[0.35em] text-sky-200 uppercase">PAYMENT</p>
         <div class="mt-2 flex items-start justify-between gap-4">
           <div>
-            <h2 class="text-4xl font-black">扫码支付</h2>
-            <p class="mt-2 text-slate-300">订单 {{ order.orderNo }}</p>
+            <h2 class="text-4xl font-black">{{ paymentCopy.title }}</h2>
+            <p class="mt-2 text-slate-300">{{ paymentCopy.subtitle }}</p>
+            <p class="mt-1 text-sm text-slate-400">订单 {{ order.orderNo }}</p>
           </div>
           <div class="text-right">
             <p class="text-sm text-slate-300">剩余支付时间</p>
@@ -102,7 +126,11 @@ onUnmounted(() => {
         </div>
 
         <div class="mt-6 grid gap-5">
-          <PaymentQrCode :value="order.paymentUrl" :expired="expired" />
+          <PaymentQrCode
+            :value="order.paymentUrl"
+            :blocked="qrBlocked"
+            :overlay-text="qrOverlayText"
+          />
           <div class="rounded-3xl bg-slate-950/45 p-5">
             <div class="flex items-center justify-between">
               <span class="text-slate-300">应付金额</span>
@@ -116,6 +144,12 @@ onUnmounted(() => {
             <p class="mt-2 text-sm text-slate-400">
               当前状态：{{ status?.orderStatus ?? "查询中" }} /
               {{ status?.payment.status ?? "查询中" }}
+            </p>
+            <p
+              v-if="confirmingExpiredPayment"
+              class="mt-3 rounded-2xl bg-amber-400/15 p-4 text-amber-100"
+            >
+              二维码已到期，系统正在向支付平台确认最终结果，请勿重复扫码或关闭页面。
             </p>
           </div>
         </div>

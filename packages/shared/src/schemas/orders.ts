@@ -45,6 +45,35 @@ export const machineOrderStatusNextActionSchema = z.enum([
   "closed",
 ]);
 
+export const machinePaymentProviderCodeSchema = z.enum([
+  "mock",
+  "wechat_pay",
+  "alipay",
+]);
+
+export const machinePaymentOptionSchema = z.object({
+  providerCode: machinePaymentProviderCodeSchema,
+  method: paymentMethodSchema,
+  displayName: z.string().min(1).max(32),
+  description: z.string().min(1).max(128),
+  icon: z.enum(["mock", "wechat", "alipay"]),
+  recommended: z.boolean().default(false),
+});
+
+export const machinePaymentOptionsResponseSchema = z.object({
+  options: z.array(machinePaymentOptionSchema),
+  defaultProviderCode: machinePaymentProviderCodeSchema.nullable(),
+  serverTime: z.iso.datetime(),
+});
+
+export type MachinePaymentProviderCode = z.infer<
+  typeof machinePaymentProviderCodeSchema
+>;
+export type MachinePaymentOption = z.infer<typeof machinePaymentOptionSchema>;
+export type MachinePaymentOptionsResponse = z.infer<
+  typeof machinePaymentOptionsResponseSchema
+>;
+
 export const machineOrderStatusResponseSchema = z.object({
   orderId: z.uuid(),
   orderNo: z.string().min(1).max(64),
@@ -59,6 +88,7 @@ export const machineOrderStatusResponseSchema = z.object({
     expiresAt: z.iso.datetime().nullable(),
     paidAt: z.iso.datetime().nullable(),
     failedReason: z.string().nullable(),
+    providerCode: machinePaymentProviderCodeSchema.nullable(),
   }),
   vending: z
     .object({

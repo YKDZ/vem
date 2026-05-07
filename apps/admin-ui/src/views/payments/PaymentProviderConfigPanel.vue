@@ -88,6 +88,17 @@ function editConfig(config: PaymentProviderConfig): void {
       typeof publicConfig["certificateSerialNo"] === "string"
         ? publicConfig["certificateSerialNo"]
         : "",
+    merchantCertificateSerialNo:
+      typeof publicConfig["merchantCertificateSerialNo"] === "string"
+        ? publicConfig["merchantCertificateSerialNo"]
+        : typeof publicConfig["certificateSerialNo"] === "string"
+          ? publicConfig["certificateSerialNo"]
+          : "",
+    platformCertificateSerialNo:
+      typeof publicConfig["platformCertificateSerialNo"] === "string"
+        ? publicConfig["platformCertificateSerialNo"]
+        : "",
+    platformCertificatePem: "",
     gatewayUrl:
       typeof publicConfig["gatewayUrl"] === "string"
         ? publicConfig["gatewayUrl"]
@@ -322,11 +333,19 @@ onMounted(() => {
       <!-- 微信支付字段 -->
       <template v-if="form.providerCode === 'wechat_pay'">
         <a-row :gutter="16">
-          <a-col :span="12">
-            <a-form-item label="商户证书序列号">
+          <a-col :span="8">
+            <a-form-item label="商户 API 证书序列号">
               <a-input
-                v-model:value="form.certificateSerialNo"
-                placeholder="请输入"
+                v-model:value="form.merchantCertificateSerialNo"
+                placeholder="用于请求签名 serial_no"
+              />
+            </a-form-item>
+          </a-col>
+          <a-col :span="8">
+            <a-form-item label="微信支付平台证书/公钥序列号">
+              <a-input
+                v-model:value="form.platformCertificateSerialNo"
+                placeholder="用于匹配 wechatpay-serial"
               />
             </a-form-item>
           </a-col>
@@ -352,11 +371,22 @@ onMounted(() => {
             </a-form-item>
           </a-col>
           <a-col :span="12">
-            <a-form-item label="微信平台公钥 PEM（敏感）">
+            <a-form-item label="微信支付平台证书 PEM（敏感）">
+              <a-textarea
+                v-model:value="form.platformCertificatePem"
+                :rows="4"
+                placeholder="推荐填写；留空则保留现有配置"
+              />
+            </a-form-item>
+          </a-col>
+        </a-row>
+        <a-row :gutter="16">
+          <a-col :span="12">
+            <a-form-item label="微信支付平台公钥 PEM（兼容）">
               <a-textarea
                 v-model:value="form.platformPublicKeyPem"
                 :rows="4"
-                placeholder="留空则保留现有配置；填入新值会覆盖对应字段"
+                placeholder="仅在没有平台证书 PEM 时填写"
               />
             </a-form-item>
           </a-col>
@@ -371,7 +401,6 @@ onMounted(() => {
               <a-select v-model:value="form.mode">
                 <a-select-option value="sandbox">沙箱</a-select-option>
                 <a-select-option value="production">生产</a-select-option>
-                <a-select-option value="direct_merchant">直联商户</a-select-option>
               </a-select>
             </a-form-item>
           </a-col>

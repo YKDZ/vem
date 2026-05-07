@@ -44,6 +44,28 @@ const baseEnvSchema = z.object({
     .min(30)
     .max(3600)
     .default(120),
+  PAYMENT_PRODUCTION_READINESS_REQUIRED: z
+    .preprocess((value) => {
+      if (typeof value === "string") {
+        const normalized = value.toLowerCase();
+        if (["true", "1", "yes", "on"].includes(normalized)) return true;
+        if (["false", "0", "no", "off"].includes(normalized)) return false;
+      }
+      return value;
+    }, z.boolean())
+    .default(false),
+  PAYMENT_ALERT_WINDOW_MINUTES: z.coerce
+    .number()
+    .int()
+    .min(5)
+    .max(1440)
+    .default(60),
+  PAYMENT_CERTIFICATE_EXPIRY_WARNING_DAYS: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(90)
+    .default(30),
   BOOTSTRAP_ADMIN_USERNAME: z.string().min(3).max(64).default("admin"),
   BOOTSTRAP_ADMIN_PASSWORD: z.string().min(12).max(128),
 });
@@ -75,6 +97,27 @@ export const envSchema = baseEnvSchema.superRefine((env, ctx) => {
       path: ["PAYMENT_CONFIG_ENCRYPTION_KEY"],
       message: "PAYMENT_CONFIG_ENCRYPTION_KEY must be at least 32 characters",
     });
+  }
+  if (
+    env.NODE_ENV === "production" &&
+    env.PAYMENT_PRODUCTION_READINESS_REQUIRED !== true
+  ) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["PAYMENT_PRODUCTION_READINESS_REQUIRED"],
+      message:
+        "PAYMENT_PRODUCTION_READINESS_REQUIRED must be true in production",
+    });
+  }
+  if (env.NODE_ENV === "production") {
+    const webhookBase = new URL(env.PAYMENT_WEBHOOK_BASE_URL);
+    if (webhookBase.protocol !== "https:") {
+      ctx.addIssue({
+        code: "custom",
+        path: ["PAYMENT_WEBHOOK_BASE_URL"],
+        message: "PAYMENT_WEBHOOK_BASE_URL must use https in production",
+      });
+    }
   }
 });
 

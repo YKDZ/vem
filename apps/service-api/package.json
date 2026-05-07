@@ -23,6 +23,7 @@
     "@nestjs/swagger": "^11.2.3",
     "@vem/db": "workspace:*",
     "@vem/shared": "workspace:*",
+    "alipay-sdk": "4.14.0",
     "drizzle-orm": "catalog:",
     "helmet": "^8.1.0",
     "mqtt": "^5.14.1",

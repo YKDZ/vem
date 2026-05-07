@@ -5,7 +5,6 @@ import {
   Injectable,
   UnauthorizedException,
 } from "@nestjs/common";
-import { createSign, createVerify } from "node:crypto";
 
 import type {
   PaymentIntentInput,
@@ -18,16 +17,32 @@ import type {
   ProviderPaymentQueryResult,
   ProviderRefundPaymentInput,
   ProviderRefundPaymentResult,
+  ProviderRefundQueryInput,
+  ProviderRefundQueryResult,
   ProviderWebhookInput,
   ProviderWebhookResult,
 } from "./payment-provider.interface";
 
+import {
+  AlipaySdkClientFactory,
+  type AlipayCurlResult,
+  type AlipaySdkLike,
+} from "./alipay-sdk.client";
+
+type AlipayKeyType = "PKCS8" | "PKCS1";
+
 type AlipayConfig = {
   appId: string;
+  sellerId: string;
   privateKeyPem: string;
-  alipayPublicKeyPem: string;
+  appCertPem: string;
+  alipayPublicCertPem: string;
+  alipayRootCertPem: string;
   notifyUrl: string;
-  gatewayUrl: string;
+  endpoint: string;
+  keyType: AlipayKeyType;
+  qrExpiresMinutes: number;
+  timeoutCompensationSeconds: number;
 };
 
 function readRequiredString(
@@ -42,90 +57,90 @@ function readRequiredString(
   return value;
 }
 
+function readPositiveInteger(
+  source: Record<string, unknown>,
+  key: string,
+  fallback: number,
+): number {
+  const value = source[key];
+  return typeof value === "number" && Number.isInteger(value) && value > 0
+    ? value
+    : fallback;
+}
+
+function normalizeEndpoint(gatewayUrl: string): string {
+  const url = new URL(gatewayUrl);
+  if (url.pathname.endsWith("/gateway.do")) {
+    url.pathname = url.pathname.replace(/\/gateway\.do$/, "");
+  }
+  url.search = "";
+  url.hash = "";
+  return url.toString().replace(/\/$/, "");
+}
+
 function parseAlipayConfig(input: PaymentProviderRuntimeConfig): AlipayConfig {
   const source: Record<string, unknown> = {
     ...input.publicConfigJson,
     ...input.sensitiveConfigJson,
   };
   if (input.appId) source["appId"] ??= input.appId;
+  if (input.merchantNo) source["sellerId"] ??= input.merchantNo;
+
+  const gatewayUrl =
+    typeof source["gatewayUrl"] === "string" && source["gatewayUrl"].length > 0
+      ? source["gatewayUrl"]
+      : "https://openapi.alipay.com/gateway.do";
+  const keyType = source["keyType"] === "PKCS1" ? "PKCS1" : "PKCS8";
 
   return {
     appId: readRequiredString(source, "appId", "Alipay"),
+    sellerId: readRequiredString(source, "sellerId", "Alipay"),
     privateKeyPem: readRequiredString(source, "privateKeyPem", "Alipay"),
-    alipayPublicKeyPem: readRequiredString(
+    appCertPem: readRequiredString(source, "appCertPem", "Alipay"),
+    alipayPublicCertPem: readRequiredString(
       source,
-      "alipayPublicKeyPem",
+      "alipayPublicCertPem",
+      "Alipay",
+    ),
+    alipayRootCertPem: readRequiredString(
+      source,
+      "alipayRootCertPem",
       "Alipay",
     ),
     notifyUrl: readRequiredString(source, "notifyUrl", "Alipay"),
-    gatewayUrl:
-      typeof source["gatewayUrl"] === "string" &&
-      source["gatewayUrl"].length > 0
-        ? source["gatewayUrl"]
-        : "https://openapi.alipay.com/gateway.do",
+    endpoint: normalizeEndpoint(gatewayUrl),
+    keyType,
+    qrExpiresMinutes: readPositiveInteger(source, "qrExpiresMinutes", 15),
+    timeoutCompensationSeconds: readPositiveInteger(
+      source,
+      "timeoutCompensationSeconds",
+      120,
+    ),
   };
 }
 
-function signAlipayParams(
-  params: Record<string, string>,
-  privateKeyPem: string,
-): string {
-  const content = Object.keys(params)
-    .filter((key) => key !== "sign" && key !== "sign_type")
-    .sort()
-    .map((key) => `${key}=${params[key]}`)
-    .join("&");
-  return createSign("RSA-SHA256")
-    .update(content, "utf8")
-    .sign(privateKeyPem, "base64");
-}
-
-async function callAlipay(
+function createAlipaySdk(
+  factory: AlipaySdkClientFactory,
   config: AlipayConfig,
-  method: string,
-  bizContent: Record<string, unknown>,
-): Promise<Record<string, unknown>> {
-  const timestamp = new Date().toISOString().replace("T", " ").slice(0, 19);
-  const params: Record<string, string> = {
-    app_id: config.appId,
-    method,
-    charset: "utf-8",
-    sign_type: "RSA2",
-    timestamp,
-    version: "1.0",
-    notify_url: config.notifyUrl,
-    biz_content: JSON.stringify(bizContent),
-  };
-  params["sign"] = signAlipayParams(params, config.privateKeyPem);
-  const response = await fetch(config.gatewayUrl, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded;charset=utf-8",
-    },
-    body: new URLSearchParams(params),
+): AlipaySdkLike {
+  return factory.create({
+    appId: config.appId,
+    privateKey: config.privateKeyPem,
+    keyType: config.keyType,
+    endpoint: config.endpoint,
+    camelcase: false,
+    appCertContent: config.appCertPem,
+    alipayPublicCertContent: config.alipayPublicCertPem,
+    alipayRootCertContent: config.alipayRootCertPem,
   });
-  if (!response.ok) {
-    throw new BadGatewayException(`Alipay request failed: ${response.status}`);
-  }
-  const rawData: unknown = await response.json();
-  if (typeof rawData !== "object" || rawData === null || Array.isArray(rawData)) {
-    throw new BadGatewayException("Alipay returned non-object response");
-  }
-  const data: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(rawData)) {
-    data[k] = v;
-  }
-  const responseKey = `${method.replaceAll(".", "_")}_response`;
-  const result = data[responseKey];
-  if (typeof result !== "object" || result === null || Array.isArray(result)) {
-    throw new BadGatewayException(`Alipay response missing ${responseKey}`);
-  }
-  const resultRecord: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(result)) {
-    resultRecord[k] = v;
-  }
-  return resultRecord;
 }
+
+type AlipayTradeData = Record<string, unknown> & {
+  qr_code?: string;
+  trade_status?: string;
+  trade_no?: string;
+  out_trade_no?: string;
+};
 
 function readString(data: Record<string, unknown>, key: string): string {
   const value = data[key];
@@ -133,6 +148,28 @@ function readString(data: Record<string, unknown>, key: string): string {
     throw new BadGatewayException(`Alipay response missing ${key}`);
   }
   return value;
+}
+
+function assertSuccessfulCurl<T extends Record<string, unknown>>(
+  result: AlipayCurlResult<T>,
+  apiName: string,
+): T {
+  if (result.responseHttpStatus < 200 || result.responseHttpStatus >= 300) {
+    throw new BadGatewayException(
+      `Alipay ${apiName} failed: HTTP ${result.responseHttpStatus}`,
+    );
+  }
+  return result.data;
+}
+
+function amountCentsToYuan(amountCents: number): string {
+  return (amountCents / 100).toFixed(2);
+}
+
+function timeoutExpress(expiresAt: Date): string {
+  const remainingMs = expiresAt.getTime() - Date.now();
+  const minutes = Math.max(1, Math.ceil(remainingMs / 60_000));
+  return `${minutes}m`;
 }
 
 function mapAlipayTradeStatus(
@@ -159,19 +196,22 @@ function mapAlipayTradeStatus(
   };
 }
 
-function selectAlipayConfig(
-  configs: PaymentProviderRuntimeConfig[],
-  body: Record<string, string>,
-): AlipayConfig {
-  const appId = body["app_id"] ?? null;
-  const parsed = configs.map(parseAlipayConfig);
-  const selected =
-    (appId ? parsed.find((config) => config.appId === appId) : null) ??
-    parsed[0];
-  if (!selected) {
-    throw new UnauthorizedException("Alipay config not found for webhook");
-  }
-  return selected;
+function mapAlipayRefund(
+  data: Record<string, unknown>,
+  fallbackRefundNo: string,
+): ProviderRefundPaymentResult {
+  const fundChange =
+    typeof data["fund_change"] === "string" ? data["fund_change"] : null;
+  const succeeded = fundChange === "Y";
+  return {
+    providerRefundNo:
+      typeof data["out_request_no"] === "string"
+        ? data["out_request_no"]
+        : fallbackRefundNo,
+    status: succeeded ? "succeeded" : "processing",
+    refundedAt: succeeded ? new Date() : null,
+    rawPayload: data,
+  };
 }
 
 function assertAlipayBody(value: unknown): Record<string, string> {
@@ -184,31 +224,25 @@ function assertAlipayBody(value: unknown): Record<string, string> {
       const first = item[0];
       result[key] = typeof first === "string" ? first : String(first ?? "");
     } else {
-      result[key] = typeof item === "string" ? item : "";
+      result[key] = typeof item === "string" ? item : String(item ?? "");
     }
   }
   return result;
 }
 
-function verifyAlipayRsa2(
+function selectAlipayConfig(
+  configs: PaymentProviderRuntimeConfig[],
   body: Record<string, string>,
-  alipayPublicKeyPem: string,
-): void {
-  const signature = body["sign"];
-  if (!signature) {
-    throw new UnauthorizedException("Alipay signature missing");
+): AlipayConfig {
+  const parsed = configs.map(parseAlipayConfig);
+  const appId = body["app_id"] ?? null;
+  const selected =
+    (appId ? parsed.find((config) => config.appId === appId) : null) ??
+    parsed[0];
+  if (!selected) {
+    throw new UnauthorizedException("Alipay config not found for webhook");
   }
-  const content = Object.keys(body)
-    .filter((key) => key !== "sign" && key !== "sign_type")
-    .sort()
-    .map((key) => `${key}=${body[key]}`)
-    .join("&");
-  const valid = createVerify("RSA-SHA256")
-    .update(content, "utf8")
-    .verify(alipayPublicKeyPem, signature, "base64");
-  if (!valid) {
-    throw new UnauthorizedException("Alipay signature invalid");
-  }
+  return selected;
 }
 
 function mapAlipayWebhook(body: Record<string, string>): ProviderWebhookResult {
@@ -217,6 +251,7 @@ function mapAlipayWebhook(body: Record<string, string>): ProviderWebhookResult {
     trade_no: body["trade_no"],
   });
   return {
+    eventKind: "payment",
     providerEventId:
       body["notify_id"] || `${body["out_trade_no"]}:${body["trade_status"]}`,
     eventType: "alipay.webhook",
@@ -228,47 +263,50 @@ function mapAlipayWebhook(body: Record<string, string>): ProviderWebhookResult {
   };
 }
 
-function mapAlipayRefund(
-  data: Record<string, unknown>,
-  fallbackRefundNo: string,
-): ProviderRefundPaymentResult {
-  return {
-    providerRefundNo:
-      typeof data["out_request_no"] === "string"
-        ? data["out_request_no"]
-        : fallbackRefundNo,
-    status: data["fund_change"] === "N" ? "processing" : "succeeded",
-    refundedAt: data["fund_change"] === "N" ? null : new Date(),
-    rawPayload: data,
-  };
-}
-
 @Injectable()
 export class AlipayProvider implements PaymentProvider {
   readonly code = "alipay";
+
+  constructor(private readonly sdkFactory: AlipaySdkClientFactory) {}
 
   async createPaymentIntent(
     input: PaymentIntentInput,
   ): Promise<PaymentIntentResult> {
     const config = parseAlipayConfig(input.config);
-    const bizContent = {
-      out_trade_no: input.paymentNo,
-      total_amount: (input.amountCents / 100).toFixed(2),
-      subject: `VEM order ${input.orderNo}`,
-      timeout_express: "15m",
+    const sdk = createAlipaySdk(this.sdkFactory, config);
+    const data = assertSuccessfulCurl(
+      await sdk.curl<AlipayTradeData>("POST", "/v3/alipay/trade/precreate", {
+        body: {
+          notify_url: config.notifyUrl,
+          out_trade_no: input.paymentNo,
+          total_amount: amountCentsToYuan(input.amountCents),
+          subject: `VEM order ${input.orderNo}`,
+          product_code: "QR_CODE_OFFLINE",
+          seller_id: config.sellerId,
+          timeout_express: timeoutExpress(input.expiresAt),
+        },
+      }),
+      "alipay.trade.precreate",
+    );
+    return {
+      providerTradeNo: null,
+      paymentUrl: readString(data, "qr_code"),
     };
-    const data = await callAlipay(config, "alipay.trade.precreate", bizContent);
-    const qrCode = readString(data, "qr_code");
-    return { providerTradeNo: input.paymentNo, paymentUrl: qrCode };
   }
 
   async queryPayment(
     input: ProviderPaymentQueryInput,
   ): Promise<ProviderPaymentQueryResult> {
     const config = parseAlipayConfig(input.config);
-    const data = await callAlipay(config, "alipay.trade.query", {
-      out_trade_no: input.paymentNo,
-    });
+    const sdk = createAlipaySdk(this.sdkFactory, config);
+    const body: Record<string, unknown> = { out_trade_no: input.paymentNo };
+    if (input.providerTradeNo) body["trade_no"] = input.providerTradeNo;
+    const data = assertSuccessfulCurl(
+      await sdk.curl<AlipayTradeData>("POST", "/v3/alipay/trade/query", {
+        body,
+      }),
+      "alipay.trade.query",
+    );
     return mapAlipayTradeStatus(data);
   }
 
@@ -276,9 +314,19 @@ export class AlipayProvider implements PaymentProvider {
     input: ProviderCancelPaymentInput,
   ): Promise<ProviderCancelPaymentResult> {
     const config = parseAlipayConfig(input.config);
-    const data = await callAlipay(config, "alipay.trade.close", {
-      out_trade_no: input.paymentNo,
-    });
+    const sdk = createAlipaySdk(this.sdkFactory, config);
+    const body: Record<string, unknown> = { out_trade_no: input.paymentNo };
+    if (input.providerTradeNo) body["trade_no"] = input.providerTradeNo;
+    const data = assertSuccessfulCurl(
+      await sdk.curl<Record<string, unknown>>(
+        "POST",
+        "/v3/alipay/trade/close",
+        {
+          body,
+        },
+      ),
+      "alipay.trade.close",
+    );
     return { status: "canceled", rawPayload: data };
   }
 
@@ -286,13 +334,62 @@ export class AlipayProvider implements PaymentProvider {
     input: ProviderRefundPaymentInput,
   ): Promise<ProviderRefundPaymentResult> {
     const config = parseAlipayConfig(input.config);
-    const data = await callAlipay(config, "alipay.trade.refund", {
+    const sdk = createAlipaySdk(this.sdkFactory, config);
+    const body: Record<string, unknown> = {
       out_trade_no: input.paymentNo,
       out_request_no: input.refundNo,
-      refund_amount: (input.amountCents / 100).toFixed(2),
+      refund_amount: amountCentsToYuan(input.amountCents),
       refund_reason: input.reason,
-    });
+    };
+    if (input.providerTradeNo) body["trade_no"] = input.providerTradeNo;
+    const data = assertSuccessfulCurl(
+      await sdk.curl<Record<string, unknown>>(
+        "POST",
+        "/v3/alipay/trade/refund",
+        {
+          body,
+        },
+      ),
+      "alipay.trade.refund",
+    );
     return mapAlipayRefund(data, input.refundNo);
+  }
+
+  async queryRefund(
+    input: ProviderRefundQueryInput,
+  ): Promise<ProviderRefundQueryResult> {
+    const config = parseAlipayConfig(input.config);
+    const sdk = createAlipaySdk(this.sdkFactory, config);
+    const body: Record<string, unknown> = {
+      out_trade_no: input.paymentNo,
+      out_request_no: input.refundNo,
+    };
+    if (input.providerTradeNo) body["trade_no"] = input.providerTradeNo;
+    const data = assertSuccessfulCurl(
+      await sdk.curl<Record<string, unknown>>(
+        "POST",
+        "/v3/alipay/trade/fastpay/refund/query",
+        { body },
+      ),
+      "alipay.trade.fastpay.refund.query",
+    );
+    const refundStatus =
+      typeof data["refund_status"] === "string" ? data["refund_status"] : "";
+    const providerRefundNo =
+      typeof data["out_request_no"] === "string"
+        ? data["out_request_no"]
+        : input.providerRefundNo;
+    return {
+      providerRefundNo,
+      status:
+        refundStatus === "REFUND_SUCCESS"
+          ? "succeeded"
+          : refundStatus === "REFUND_FAIL" || refundStatus === ""
+            ? "failed"
+            : "processing",
+      refundedAt: refundStatus === "REFUND_SUCCESS" ? new Date() : null,
+      rawPayload: data,
+    };
   }
 
   async handleWebhook(
@@ -300,19 +397,12 @@ export class AlipayProvider implements PaymentProvider {
   ): Promise<ProviderWebhookResult> {
     const body = assertAlipayBody(input.body);
     const configs =
-      input.candidateConfigs.length > 0
-        ? input.candidateConfigs
-        : [
-            {
-              providerCode: this.code,
-              merchantNo: null,
-              appId: null,
-              publicConfigJson: {},
-              sensitiveConfigJson: {},
-            },
-          ];
+      input.candidateConfigs.length > 0 ? input.candidateConfigs : [];
     const config = selectAlipayConfig(configs, body);
-    verifyAlipayRsa2(body, config.alipayPublicKeyPem);
+    const sdk = createAlipaySdk(this.sdkFactory, config);
+    if (!sdk.checkNotifySignV2(body)) {
+      throw new UnauthorizedException("Alipay signature invalid");
+    }
     return mapAlipayWebhook(body);
   }
 }

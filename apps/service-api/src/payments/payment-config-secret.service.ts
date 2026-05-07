@@ -1,6 +1,5 @@
-import { createHash, X509Certificate } from "node:crypto";
-
 import { Injectable } from "@nestjs/common";
+import { createHash, X509Certificate } from "node:crypto";
 
 import { AppConfigService } from "../config/app-config.service";
 import {
@@ -51,7 +50,7 @@ export class PaymentConfigSecretService {
     if (!input) return {};
     const updatedAtText =
       updatedAt instanceof Date ? updatedAt.toISOString() : updatedAt;
-    return Object.fromEntries(
+    return Object.fromEntries<PaymentSecretStatus>(
       Object.entries(input).map(([key, value]) => {
         if (typeof value !== "string" || value.length === 0) {
           return [key, { configured: false, updatedAt: updatedAtText }];
@@ -74,7 +73,10 @@ export class PaymentConfigSecretService {
               updatedAt: updatedAtText,
               fingerprintSha256: fingerprint(value),
               certificateExpiresAt: null,
-              errorCode: error instanceof Error ? "certificate_parse_failed" : "unknown_error",
+              errorCode:
+                error instanceof Error
+                  ? "certificate_parse_failed"
+                  : "unknown_error",
             },
           ];
         }

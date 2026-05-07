@@ -55,6 +55,32 @@ export class NotificationsService {
       .onConflictDoNothing({ target: notifications.dedupeKey });
   }
 
+  async createOperationalNotification(
+    tx: DrizzleTransaction,
+    input: {
+      type: typeof notifications.$inferInsert["type"];
+      title: string;
+      content: string;
+      severity: typeof notifications.$inferInsert["severity"];
+      resourceType: string;
+      resourceId?: string | null;
+      dedupeKey: string;
+    },
+  ): Promise<void> {
+    await tx
+      .insert(notifications)
+      .values({
+        type: input.type,
+        title: input.title,
+        content: input.content,
+        severity: input.severity,
+        resourceType: input.resourceType,
+        resourceId: input.resourceId ?? null,
+        dedupeKey: input.dedupeKey,
+      })
+      .onConflictDoNothing({ target: notifications.dedupeKey });
+  }
+
   async list(query: PageQueryInput) {
     const items = await this.db
       .select()
