@@ -291,9 +291,9 @@ export class PaymentOpsService {
       error: string | null;
     }> = [];
 
+    /* eslint-disable no-await-in-loop */
     for (const machine of machineRows) {
       try {
-        // eslint-disable-next-line no-await-in-loop
         const options =
           await this.providerConfigs.listMachinePaymentOptionsForMachine(
             machine.id,
@@ -318,6 +318,7 @@ export class PaymentOpsService {
         });
       }
     }
+    /* eslint-enable no-await-in-loop */
 
     return {
       code: "machine_real_provider_options_available",
