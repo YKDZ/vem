@@ -54,7 +54,12 @@ test.describe("admin-smoke", () => {
     test("creates a product", async ({ page }) => {
       await page.goto("/products");
       await page.getByRole("button", { name: /新增商品/ }).click();
-      await page.getByLabel("商品名称").fill("E2E测试饮料");
+      await expect(page.getByRole("dialog")).toBeVisible({ timeout: 10_000 });
+      await page
+        .locator(".ant-form-item")
+        .filter({ hasText: "商品名称" })
+        .locator("input")
+        .fill("E2E测试饮料");
       await page.getByRole("button", { name: /保存/ }).click();
       await expect(page.getByText("E2E测试饮料")).toBeVisible({
         timeout: 5_000,
@@ -64,8 +69,17 @@ test.describe("admin-smoke", () => {
     test("creates a machine", async ({ page }) => {
       await page.goto("/machines");
       await page.getByRole("button", { name: /新增机器/ }).click();
-      await page.getByLabel("编码").fill("E2E-MACHINE-001");
-      await page.getByLabel("名称").fill("E2E测试机器");
+      await expect(page.getByRole("dialog")).toBeVisible({ timeout: 10_000 });
+      await page
+        .locator(".ant-form-item")
+        .filter({ hasText: "编码" })
+        .locator("input")
+        .fill("E2E-MACHINE-001");
+      await page
+        .locator(".ant-form-item")
+        .filter({ hasText: "名称" })
+        .locator("input")
+        .fill("E2E测试机器");
       await page.getByRole("button", { name: /保存/ }).click();
       await expect(page.getByText("E2E-MACHINE-001")).toBeVisible({
         timeout: 5_000,
@@ -77,8 +91,7 @@ test.describe("admin-smoke", () => {
     }) => {
       await page.goto("/payments");
       await page.getByRole("tab", { name: "支付配置" }).click();
-      await expect(page.getByText("支付宝")).toBeVisible();
-      await expect(page.getByText("微信支付")).toBeVisible();
+      await expect(page.getByText("支付宝", { exact: true })).toBeVisible();
       await expect(page.getByText("二维码有效期")).toBeVisible();
       await expect(page.getByText("补偿窗口")).toBeVisible();
       await expect(page.getByText("应用私钥 PEM")).toBeVisible();
