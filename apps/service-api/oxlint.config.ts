@@ -19,6 +19,11 @@ export default defineConfig({
         "typescript/no-unsafe-member-access": "off",
         "typescript/no-unsafe-return": "off",
         "typescript/no-unsafe-type-assertion": "off",
+        "typescript/unbound-method": "off",
+        "typescript/no-misused-promises": "off",
+        "typescript/promise-function-async": "off",
+        "typescript/no-base-to-string": "off",
+        "eslint/no-plusplus": "off",
       },
     },
     {

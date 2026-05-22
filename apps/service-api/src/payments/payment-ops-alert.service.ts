@@ -1,3 +1,5 @@
+import type { DrizzleClient } from "@vem/db";
+
 import {
   Inject,
   Injectable,
@@ -5,7 +7,6 @@ import {
   OnApplicationShutdown,
   OnModuleInit,
 } from "@nestjs/common";
-import { type DrizzleClient } from "@vem/db";
 
 import { DRIZZLE_CLIENT } from "../database/database.constants";
 import { NotificationsService } from "../notifications/notifications.service";
@@ -52,6 +53,7 @@ export class PaymentOpsAlertService
     await this.db.transaction(async (tx) => {
       for (const check of readiness.checks) {
         if (check.severity !== "critical" || check.passed) continue;
+        // oxlint-disable-next-line no-await-in-loop
         await this.notificationsService.createOperationalNotification(tx, {
           type: "payment_provider_unready",
           title: `支付上线门禁失败：${check.code}`,

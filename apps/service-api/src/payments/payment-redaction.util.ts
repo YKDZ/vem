@@ -101,7 +101,10 @@ export function redactPayload(obj: unknown): unknown {
   }
   if (typeof obj === "object") {
     const result: JsonObject = {};
-    for (const [key, value] of Object.entries(obj as JsonObject)) {
+    for (const [key, value] of Object.entries(
+      // eslint-disable-next-line typescript/no-unsafe-type-assertion
+      obj as JsonObject,
+    )) {
       if (isSensitiveKey(key)) {
         if (typeof value === "string" && value.length > 0) {
           result[key] = `[REDACTED:${value.length}chars]`;
@@ -181,6 +184,7 @@ export function buildRedactedPayload(body: unknown): JsonObject | null {
       redacted !== null &&
       !Array.isArray(redacted)
     ) {
+      // eslint-disable-next-line typescript/no-unsafe-type-assertion
       return redacted as JsonObject;
     }
     return { _value: redacted };

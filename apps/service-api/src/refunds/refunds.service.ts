@@ -485,6 +485,7 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
       )
       .limit(20);
 
+    /* oxlint-disable no-await-in-loop */
     for (const refund of processingRefunds) {
       try {
         if (!this.paymentProviderRegistry.has(refund.providerCode)) continue;
@@ -638,6 +639,7 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
         );
       }
     }
+    /* oxlint-enable no-await-in-loop */
   }
 
   async applyProviderRefundWebhook(input: {

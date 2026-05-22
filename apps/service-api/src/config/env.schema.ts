@@ -100,7 +100,7 @@ export const envSchema = baseEnvSchema.superRefine((env, ctx) => {
   }
   if (
     env.NODE_ENV === "production" &&
-    env.PAYMENT_PRODUCTION_READINESS_REQUIRED !== true
+    !env.PAYMENT_PRODUCTION_READINESS_REQUIRED
   ) {
     ctx.addIssue({
       code: "custom",

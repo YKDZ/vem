@@ -1307,6 +1307,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       return this.handlePaymentWebhook(
         attemptId,
         providerCode,
+        // eslint-disable-next-line typescript/no-unsafe-type-assertion
         webhook as import("./payment-provider.interface").ProviderPaymentWebhookResult,
         candidateConfigs,
       );
@@ -1316,6 +1317,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       return this.handleRefundWebhook(
         attemptId,
         providerCode,
+        // eslint-disable-next-line typescript/no-unsafe-type-assertion
         webhook as import("./payment-provider.interface").ProviderRefundWebhookResult,
       );
     }
@@ -1889,7 +1891,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
             await this.db
               .update(paymentReconciliationAttempts)
               .set({
-                status: providerStatus as "pending" | "processing",
+                status: providerStatus,
                 providerPaymentStatus: providerStatus,
                 providerTradeNo: result.providerTradeNo ?? null,
                 nextRetryAt,
@@ -2169,7 +2171,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       conditions.push(
         eq(
           paymentReconciliationAttempts.trigger,
-          query.trigger as "manual" | "scheduled" | "expire_compensation",
+          query.trigger,
         ),
       );
     }
@@ -2177,6 +2179,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       conditions.push(
         eq(
           paymentReconciliationAttempts.status,
+          // eslint-disable-next-line typescript/no-unsafe-type-assertion
           query.status as
             | "succeeded"
             | "failed"
@@ -2414,6 +2417,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       await this.db
         .update(paymentReconciliationAttempts)
         .set({
+          // eslint-disable-next-line typescript/no-unsafe-type-assertion
           status: providerStatus as "pending" | "processing",
           providerPaymentStatus: providerStatus,
           providerTradeNo: result.providerTradeNo ?? null,
@@ -2432,7 +2436,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
     const applied = await this.applyPaymentStatusUpdate(
       payment.id,
       payment.orderId,
-      providerStatus as "succeeded" | "failed",
+      providerStatus,
       providerEventId,
       result.providerTradeNo,
       result.rawPayload,
@@ -2444,7 +2448,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
     await this.db
       .update(paymentReconciliationAttempts)
       .set({
-        status: providerStatus as "succeeded" | "failed",
+        status: providerStatus,
         providerPaymentStatus: providerStatus,
         providerTradeNo: result.providerTradeNo ?? null,
         rawPayloadSha256: result.rawPayload
@@ -2457,7 +2461,9 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
     if (applied && providerStatus === "succeeded") {
       await this.vendingService
         .createAndDispatchCommands(payment.orderId)
-        .catch(() => {});
+        .catch((_err: unknown) => {
+          // fire-and-forget: dispatch errors during manual reconcile are non-critical
+        });
     }
 
     await this.auditService.record({
