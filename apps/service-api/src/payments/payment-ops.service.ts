@@ -294,9 +294,10 @@ export class PaymentOpsService {
     for (const machine of machineRows) {
       try {
         // eslint-disable-next-line no-await-in-loop
-        const options = await this.providerConfigs.listMachinePaymentOptionsForMachine(
-          machine.id,
-        );
+        const options =
+          await this.providerConfigs.listMachinePaymentOptionsForMachine(
+            machine.id,
+          );
         const providerCodes = options.options.map(
           (option) => option.providerCode,
         );

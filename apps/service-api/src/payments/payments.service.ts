@@ -2168,12 +2168,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       conditions.push(eq(paymentProviders.code, query.providerCode));
     }
     if (query.trigger) {
-      conditions.push(
-        eq(
-          paymentReconciliationAttempts.trigger,
-          query.trigger,
-        ),
-      );
+      conditions.push(eq(paymentReconciliationAttempts.trigger, query.trigger));
     }
     if (query.status) {
       conditions.push(
