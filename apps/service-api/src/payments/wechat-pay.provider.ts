@@ -62,7 +62,7 @@ function readRequiredString(
  */
 function extractPublicKeyFromCertificatePem(certPem: string): string {
   const cert = new X509Certificate(certPem);
-  // eslint-disable-next-line typescript/no-unsafe-type-assertion
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion
   return cert.publicKey.export({ type: "spki", format: "pem" }) as string;
 }
 
@@ -373,7 +373,7 @@ function mapWeChatWebhook(
     typeof originalBody["resource"] === "object" &&
     originalBody["resource"] !== null &&
     !Array.isArray(originalBody["resource"])
-      ? // eslint-disable-next-line typescript/no-unsafe-type-assertion
+      ? // oxlint-disable-next-line typescript/no-unsafe-type-assertion
         (originalBody["resource"] as Record<string, unknown>)
       : {};
   const originalType =
@@ -402,7 +402,7 @@ function mapWeChatWebhook(
     typeof decrypted["amount"] === "object" &&
     decrypted["amount"] !== null &&
     !Array.isArray(decrypted["amount"])
-      ? // eslint-disable-next-line typescript/no-unsafe-type-assertion
+      ? // oxlint-disable-next-line typescript/no-unsafe-type-assertion
         (decrypted["amount"] as Record<string, unknown>)
       : {};
   // Normalized payload for service-layer business field validation
@@ -599,13 +599,13 @@ export class WeChatPayProvider implements PaymentProvider {
         const config = parseWeChatPayConfig(candidateConfig);
         verifyWeChatHeaders(input.headers, input.rawBodyText, config);
         const decrypted = decryptWeChatResource(
-          // eslint-disable-next-line typescript/no-unsafe-type-assertion
+          // oxlint-disable-next-line typescript/no-unsafe-type-assertion
           input.body as Record<string, unknown>,
           config.apiV3Key,
         );
         return mapWeChatWebhook(
           decrypted,
-          // eslint-disable-next-line typescript/no-unsafe-type-assertion
+          // oxlint-disable-next-line typescript/no-unsafe-type-assertion
           input.body as Record<string, unknown>,
           candidateConfig.id,
         );

@@ -1307,7 +1307,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       return this.handlePaymentWebhook(
         attemptId,
         providerCode,
-        // eslint-disable-next-line typescript/no-unsafe-type-assertion
+        // oxlint-disable-next-line typescript/no-unsafe-type-assertion
         webhook as import("./payment-provider.interface").ProviderPaymentWebhookResult,
         candidateConfigs,
       );
@@ -1317,7 +1317,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       return this.handleRefundWebhook(
         attemptId,
         providerCode,
-        // eslint-disable-next-line typescript/no-unsafe-type-assertion
+        // oxlint-disable-next-line typescript/no-unsafe-type-assertion
         webhook as import("./payment-provider.interface").ProviderRefundWebhookResult,
       );
     }
@@ -2174,7 +2174,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       conditions.push(
         eq(
           paymentReconciliationAttempts.status,
-          // eslint-disable-next-line typescript/no-unsafe-type-assertion
+          // oxlint-disable-next-line typescript/no-unsafe-type-assertion
           query.status as
             | "succeeded"
             | "failed"
@@ -2412,7 +2412,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       await this.db
         .update(paymentReconciliationAttempts)
         .set({
-          // eslint-disable-next-line typescript/no-unsafe-type-assertion
+          // oxlint-disable-next-line typescript/no-unsafe-type-assertion
           status: providerStatus as "pending" | "processing",
           providerPaymentStatus: providerStatus,
           providerTradeNo: result.providerTradeNo ?? null,
