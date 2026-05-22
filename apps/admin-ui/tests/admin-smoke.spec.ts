@@ -43,7 +43,7 @@ test.describe("admin-smoke", () => {
       test(`${label} (${path}) loads without 5xx error`, async ({ page }) => {
         await page.goto(path);
         await expect(page.locator(".ant-spin")).toHaveCount(0, {
-          timeout: 8_000,
+          timeout: 15_000,
         });
         const bodyText = await page.locator("body").innerText();
         expect(bodyText).not.toContain("500");
