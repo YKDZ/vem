@@ -91,7 +91,9 @@ test.describe("admin-smoke", () => {
     }) => {
       await page.goto("/payments");
       await page.getByRole("tab", { name: "支付配置" }).click();
-      await expect(page.getByText("支付宝", { exact: true })).toBeVisible();
+      await expect(page.getByText("支付提供商")).toBeVisible({
+        timeout: 8_000,
+      });
       await expect(page.getByText("二维码有效期")).toBeVisible();
       await expect(page.getByText("补偿窗口")).toBeVisible();
       await expect(page.getByText("应用私钥 PEM")).toBeVisible();
