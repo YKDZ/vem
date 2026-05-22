@@ -2,24 +2,16 @@
   "version": "8",
   "dialect": "postgres",
   "id": "c3823c85-bef4-4104-8973-eb9654c609c9",
-  "prevIds": [
-    "f36daecc-49ae-4dad-9428-437e96c736ca"
-  ],
+  "prevIds": ["f36daecc-49ae-4dad-9428-437e96c736ca"],
   "ddl": [
     {
-      "values": [
-        "active",
-        "disabled"
-      ],
+      "values": ["active", "disabled"],
       "name": "admin_user_status",
       "entityType": "enums",
       "schema": "public"
     },
     {
-      "values": [
-        "active",
-        "inactive"
-      ],
+      "values": ["active", "inactive"],
       "name": "category_status",
       "entityType": "enums",
       "schema": "public"
@@ -39,74 +31,43 @@
       "schema": "public"
     },
     {
-      "values": [
-        "active",
-        "confirmed",
-        "released",
-        "expired"
-      ],
+      "values": ["active", "confirmed", "released", "expired"],
       "name": "inventory_reservation_status",
       "entityType": "enums",
       "schema": "public"
     },
     {
-      "values": [
-        "enabled",
-        "disabled",
-        "faulted"
-      ],
+      "values": ["enabled", "disabled", "faulted"],
       "name": "machine_slot_status",
       "entityType": "enums",
       "schema": "public"
     },
     {
-      "values": [
-        "online",
-        "offline",
-        "maintenance",
-        "disabled"
-      ],
+      "values": ["online", "offline", "maintenance", "disabled"],
       "name": "machine_status",
       "entityType": "enums",
       "schema": "public"
     },
     {
-      "values": [
-        "pending",
-        "sent",
-        "failed"
-      ],
+      "values": ["pending", "sent", "failed"],
       "name": "notification_delivery_status",
       "entityType": "enums",
       "schema": "public"
     },
     {
-      "values": [
-        "info",
-        "warning",
-        "critical"
-      ],
+      "values": ["info", "warning", "critical"],
       "name": "notification_severity",
       "entityType": "enums",
       "schema": "public"
     },
     {
-      "values": [
-        "unread",
-        "read",
-        "archived"
-      ],
+      "values": ["unread", "read", "archived"],
       "name": "notification_status",
       "entityType": "enums",
       "schema": "public"
     },
     {
-      "values": [
-        "in_app",
-        "sms",
-        "wechat",
-        "email"
-      ],
+      "values": ["in_app", "sms", "wechat", "email"],
       "name": "notification_target_type",
       "entityType": "enums",
       "schema": "public"
@@ -124,11 +85,7 @@
       "schema": "public"
     },
     {
-      "values": [
-        "machine_ui",
-        "admin",
-        "api"
-      ],
+      "values": ["machine_ui", "admin", "api"],
       "name": "order_source",
       "entityType": "enums",
       "schema": "public"
@@ -152,31 +109,19 @@
       "schema": "public"
     },
     {
-      "values": [
-        "mock",
-        "qr_code",
-        "face_pay"
-      ],
+      "values": ["mock", "qr_code", "face_pay"],
       "name": "payment_method",
       "entityType": "enums",
       "schema": "public"
     },
     {
-      "values": [
-        "enabled",
-        "disabled"
-      ],
+      "values": ["enabled", "disabled"],
       "name": "payment_provider_status",
       "entityType": "enums",
       "schema": "public"
     },
     {
-      "values": [
-        "mock",
-        "qr_code",
-        "face_pay",
-        "aggregate"
-      ],
+      "values": ["mock", "qr_code", "face_pay", "aggregate"],
       "name": "payment_provider_type",
       "entityType": "enums",
       "schema": "public"
@@ -226,41 +171,25 @@
       "schema": "public"
     },
     {
-      "values": [
-        "draft",
-        "active",
-        "inactive"
-      ],
+      "values": ["draft", "active", "inactive"],
       "name": "product_status",
       "entityType": "enums",
       "schema": "public"
     },
     {
-      "values": [
-        "created",
-        "processing",
-        "succeeded",
-        "failed",
-        "canceled"
-      ],
+      "values": ["created", "processing", "succeeded", "failed", "canceled"],
       "name": "refund_status",
       "entityType": "enums",
       "schema": "public"
     },
     {
-      "values": [
-        "active",
-        "disabled"
-      ],
+      "values": ["active", "disabled"],
       "name": "role_status",
       "entityType": "enums",
       "schema": "public"
     },
     {
-      "values": [
-        "active",
-        "inactive"
-      ],
+      "values": ["active", "inactive"],
       "name": "variant_status",
       "entityType": "enums",
       "schema": "public"
@@ -5743,14 +5672,10 @@
     },
     {
       "nameExplicit": false,
-      "columns": [
-        "admin_user_id"
-      ],
+      "columns": ["admin_user_id"],
       "schemaTo": "public",
       "tableTo": "admin_users",
-      "columnsTo": [
-        "id"
-      ],
+      "columnsTo": ["id"],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "admin_user_roles_admin_user_id_admin_users_id_fkey",
@@ -5760,14 +5685,10 @@
     },
     {
       "nameExplicit": false,
-      "columns": [
-        "role_id"
-      ],
+      "columns": ["role_id"],
       "schemaTo": "public",
       "tableTo": "roles",
-      "columnsTo": [
-        "id"
-      ],
+      "columnsTo": ["id"],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "admin_user_roles_role_id_roles_id_fkey",
@@ -5777,14 +5698,10 @@
     },
     {
       "nameExplicit": false,
-      "columns": [
-        "admin_user_id"
-      ],
+      "columns": ["admin_user_id"],
       "schemaTo": "public",
       "tableTo": "admin_users",
-      "columnsTo": [
-        "id"
-      ],
+      "columnsTo": ["id"],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "audit_logs_admin_user_id_admin_users_id_fkey",
@@ -5794,14 +5711,10 @@
     },
     {
       "nameExplicit": false,
-      "columns": [
-        "machine_id"
-      ],
+      "columns": ["machine_id"],
       "schemaTo": "public",
       "tableTo": "machines",
-      "columnsTo": [
-        "id"
-      ],
+      "columnsTo": ["id"],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "inventories_machine_id_machines_id_fkey",
@@ -5811,14 +5724,10 @@
     },
     {
       "nameExplicit": false,
-      "columns": [
-        "slot_id"
-      ],
+      "columns": ["slot_id"],
       "schemaTo": "public",
       "tableTo": "machine_slots",
-      "columnsTo": [
-        "id"
-      ],
+      "columnsTo": ["id"],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "inventories_slot_id_machine_slots_id_fkey",
@@ -5828,14 +5737,10 @@
     },
     {
       "nameExplicit": false,
-      "columns": [
-        "variant_id"
-      ],
+      "columns": ["variant_id"],
       "schemaTo": "public",
       "tableTo": "product_variants",
-      "columnsTo": [
-        "id"
-      ],
+      "columnsTo": ["id"],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "inventories_variant_id_product_variants_id_fkey",
@@ -5845,14 +5750,10 @@
     },
     {
       "nameExplicit": false,
-      "columns": [
-        "inventory_id"
-      ],
+      "columns": ["inventory_id"],
       "schemaTo": "public",
       "tableTo": "inventories",
-      "columnsTo": [
-        "id"
-      ],
+      "columnsTo": ["id"],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "inventory_movements_inventory_id_inventories_id_fkey",
@@ -5862,14 +5763,10 @@
     },
     {
       "nameExplicit": false,
-      "columns": [
-        "order_id"
-      ],
+      "columns": ["order_id"],
       "schemaTo": "public",
       "tableTo": "orders",
-      "columnsTo": [
-        "id"
-      ],
+      "columnsTo": ["id"],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "inventory_movements_order_id_orders_id_fkey",
@@ -5879,14 +5776,10 @@
     },
     {
       "nameExplicit": false,
-      "columns": [
-        "operator_admin_user_id"
-      ],
+      "columns": ["operator_admin_user_id"],
       "schemaTo": "public",
       "tableTo": "admin_users",
-      "columnsTo": [
-        "id"
-      ],
+      "columnsTo": ["id"],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "inventory_movements_operator_admin_user_id_admin_users_id_fkey",
@@ -5896,14 +5789,10 @@
     },
     {
       "nameExplicit": false,
-      "columns": [
-        "order_id"
-      ],
+      "columns": ["order_id"],
       "schemaTo": "public",
       "tableTo": "orders",
-      "columnsTo": [
-        "id"
-      ],
+      "columnsTo": ["id"],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "inventory_reservations_order_id_orders_id_fkey",
@@ -5913,14 +5802,10 @@
     },
     {
       "nameExplicit": false,
-      "columns": [
-        "inventory_id"
-      ],
+      "columns": ["inventory_id"],
       "schemaTo": "public",
       "tableTo": "inventories",
-      "columnsTo": [
-        "id"
-      ],
+      "columnsTo": ["id"],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "inventory_reservations_inventory_id_inventories_id_fkey",
@@ -5930,14 +5815,10 @@
     },
     {
       "nameExplicit": false,
-      "columns": [
-        "machine_id"
-      ],
+      "columns": ["machine_id"],
       "schemaTo": "public",
       "tableTo": "machines",
-      "columnsTo": [
-        "id"
-      ],
+      "columnsTo": ["id"],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "machine_events_machine_id_machines_id_fkey",
@@ -5947,14 +5828,10 @@
     },
     {
       "nameExplicit": false,
-      "columns": [
-        "machine_id"
-      ],
+      "columns": ["machine_id"],
       "schemaTo": "public",
       "tableTo": "machines",
-      "columnsTo": [
-        "id"
-      ],
+      "columnsTo": ["id"],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "machine_heartbeats_machine_id_machines_id_fkey",
@@ -5964,14 +5841,10 @@
     },
     {
       "nameExplicit": false,
-      "columns": [
-        "machine_id"
-      ],
+      "columns": ["machine_id"],
       "schemaTo": "public",
       "tableTo": "machines",
-      "columnsTo": [
-        "id"
-      ],
+      "columnsTo": ["id"],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "machine_slots_machine_id_machines_id_fkey",
@@ -5981,14 +5854,10 @@
     },
     {
       "nameExplicit": false,
-      "columns": [
-        "notification_id"
-      ],
+      "columns": ["notification_id"],
       "schemaTo": "public",
       "tableTo": "notifications",
-      "columnsTo": [
-        "id"
-      ],
+      "columnsTo": ["id"],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "notification_deliveries_notification_id_notifications_id_fkey",
@@ -5998,14 +5867,10 @@
     },
     {
       "nameExplicit": false,
-      "columns": [
-        "target_id"
-      ],
+      "columns": ["target_id"],
       "schemaTo": "public",
       "tableTo": "notification_targets",
-      "columnsTo": [
-        "id"
-      ],
+      "columnsTo": ["id"],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "notification_deliveries_target_id_notification_targets_id_fkey",
@@ -6015,14 +5880,10 @@
     },
     {
       "nameExplicit": false,
-      "columns": [
-        "order_id"
-      ],
+      "columns": ["order_id"],
       "schemaTo": "public",
       "tableTo": "orders",
-      "columnsTo": [
-        "id"
-      ],
+      "columnsTo": ["id"],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "order_items_order_id_orders_id_fkey",
@@ -6032,14 +5893,10 @@
     },
     {
       "nameExplicit": false,
-      "columns": [
-        "variant_id"
-      ],
+      "columns": ["variant_id"],
       "schemaTo": "public",
       "tableTo": "product_variants",
-      "columnsTo": [
-        "id"
-      ],
+      "columnsTo": ["id"],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "order_items_variant_id_product_variants_id_fkey",
@@ -6049,14 +5906,10 @@
     },
     {
       "nameExplicit": false,
-      "columns": [
-        "inventory_id"
-      ],
+      "columns": ["inventory_id"],
       "schemaTo": "public",
       "tableTo": "inventories",
-      "columnsTo": [
-        "id"
-      ],
+      "columnsTo": ["id"],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "order_items_inventory_id_inventories_id_fkey",
@@ -6066,14 +5919,10 @@
     },
     {
       "nameExplicit": false,
-      "columns": [
-        "slot_id"
-      ],
+      "columns": ["slot_id"],
       "schemaTo": "public",
       "tableTo": "machine_slots",
-      "columnsTo": [
-        "id"
-      ],
+      "columnsTo": ["id"],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "order_items_slot_id_machine_slots_id_fkey",
@@ -6083,14 +5932,10 @@
     },
     {
       "nameExplicit": false,
-      "columns": [
-        "order_id"
-      ],
+      "columns": ["order_id"],
       "schemaTo": "public",
       "tableTo": "orders",
-      "columnsTo": [
-        "id"
-      ],
+      "columnsTo": ["id"],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "order_status_events_order_id_orders_id_fkey",
@@ -6100,14 +5945,10 @@
     },
     {
       "nameExplicit": false,
-      "columns": [
-        "machine_id"
-      ],
+      "columns": ["machine_id"],
       "schemaTo": "public",
       "tableTo": "machines",
-      "columnsTo": [
-        "id"
-      ],
+      "columnsTo": ["id"],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "orders_machine_id_machines_id_fkey",
@@ -6117,14 +5958,10 @@
     },
     {
       "nameExplicit": false,
-      "columns": [
-        "payment_id"
-      ],
+      "columns": ["payment_id"],
       "schemaTo": "public",
       "tableTo": "payments",
-      "columnsTo": [
-        "id"
-      ],
+      "columnsTo": ["id"],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "orders_payment_id_payments_id_fkey",
@@ -6134,14 +5971,10 @@
     },
     {
       "nameExplicit": false,
-      "columns": [
-        "payment_id"
-      ],
+      "columns": ["payment_id"],
       "schemaTo": "public",
       "tableTo": "payments",
-      "columnsTo": [
-        "id"
-      ],
+      "columnsTo": ["id"],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "payment_events_payment_id_payments_id_fkey",
@@ -6151,14 +5984,10 @@
     },
     {
       "nameExplicit": false,
-      "columns": [
-        "provider_id"
-      ],
+      "columns": ["provider_id"],
       "schemaTo": "public",
       "tableTo": "payment_providers",
-      "columnsTo": [
-        "id"
-      ],
+      "columnsTo": ["id"],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "payment_events_provider_id_payment_providers_id_fkey",
@@ -6168,14 +5997,10 @@
     },
     {
       "nameExplicit": false,
-      "columns": [
-        "provider_id"
-      ],
+      "columns": ["provider_id"],
       "schemaTo": "public",
       "tableTo": "payment_providers",
-      "columnsTo": [
-        "id"
-      ],
+      "columnsTo": ["id"],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "payment_provider_configs_provider_id_payment_providers_id_fkey",
@@ -6185,14 +6010,10 @@
     },
     {
       "nameExplicit": false,
-      "columns": [
-        "machine_id"
-      ],
+      "columns": ["machine_id"],
       "schemaTo": "public",
       "tableTo": "machines",
-      "columnsTo": [
-        "id"
-      ],
+      "columnsTo": ["id"],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "payment_provider_configs_machine_id_machines_id_fkey",
@@ -6202,14 +6023,10 @@
     },
     {
       "nameExplicit": false,
-      "columns": [
-        "updated_by_admin_user_id"
-      ],
+      "columns": ["updated_by_admin_user_id"],
       "schemaTo": "public",
       "tableTo": "admin_users",
-      "columnsTo": [
-        "id"
-      ],
+      "columnsTo": ["id"],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "payment_provider_configs_0y8VTK2px9sV_fkey",
@@ -6219,14 +6036,10 @@
     },
     {
       "nameExplicit": false,
-      "columns": [
-        "order_id"
-      ],
+      "columns": ["order_id"],
       "schemaTo": "public",
       "tableTo": "orders",
-      "columnsTo": [
-        "id"
-      ],
+      "columnsTo": ["id"],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "payments_order_id_orders_id_fkey",
@@ -6236,14 +6049,10 @@
     },
     {
       "nameExplicit": false,
-      "columns": [
-        "provider_id"
-      ],
+      "columns": ["provider_id"],
       "schemaTo": "public",
       "tableTo": "payment_providers",
-      "columnsTo": [
-        "id"
-      ],
+      "columnsTo": ["id"],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "payments_provider_id_payment_providers_id_fkey",
@@ -6253,14 +6062,10 @@
     },
     {
       "nameExplicit": false,
-      "columns": [
-        "payer_snapshot_id"
-      ],
+      "columns": ["payer_snapshot_id"],
       "schemaTo": "public",
       "tableTo": "payment_user_snapshots",
-      "columnsTo": [
-        "id"
-      ],
+      "columnsTo": ["id"],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "payments_payer_snapshot_id_payment_user_snapshots_id_fkey",
@@ -6270,14 +6075,10 @@
     },
     {
       "nameExplicit": false,
-      "columns": [
-        "parent_id"
-      ],
+      "columns": ["parent_id"],
       "schemaTo": "public",
       "tableTo": "product_categories",
-      "columnsTo": [
-        "id"
-      ],
+      "columnsTo": ["id"],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "product_categories_parent_id_product_categories_id_fkey",
@@ -6287,14 +6088,10 @@
     },
     {
       "nameExplicit": false,
-      "columns": [
-        "product_id"
-      ],
+      "columns": ["product_id"],
       "schemaTo": "public",
       "tableTo": "products",
-      "columnsTo": [
-        "id"
-      ],
+      "columnsTo": ["id"],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "product_variants_product_id_products_id_fkey",
@@ -6304,14 +6101,10 @@
     },
     {
       "nameExplicit": false,
-      "columns": [
-        "category_id"
-      ],
+      "columns": ["category_id"],
       "schemaTo": "public",
       "tableTo": "product_categories",
-      "columnsTo": [
-        "id"
-      ],
+      "columnsTo": ["id"],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "products_category_id_product_categories_id_fkey",
@@ -6321,14 +6114,10 @@
     },
     {
       "nameExplicit": false,
-      "columns": [
-        "admin_user_id"
-      ],
+      "columns": ["admin_user_id"],
       "schemaTo": "public",
       "tableTo": "admin_users",
-      "columnsTo": [
-        "id"
-      ],
+      "columnsTo": ["id"],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "refresh_tokens_admin_user_id_admin_users_id_fkey",
@@ -6338,14 +6127,10 @@
     },
     {
       "nameExplicit": false,
-      "columns": [
-        "payment_id"
-      ],
+      "columns": ["payment_id"],
       "schemaTo": "public",
       "tableTo": "payments",
-      "columnsTo": [
-        "id"
-      ],
+      "columnsTo": ["id"],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "refunds_payment_id_payments_id_fkey",
@@ -6355,14 +6140,10 @@
     },
     {
       "nameExplicit": false,
-      "columns": [
-        "order_id"
-      ],
+      "columns": ["order_id"],
       "schemaTo": "public",
       "tableTo": "orders",
-      "columnsTo": [
-        "id"
-      ],
+      "columnsTo": ["id"],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "refunds_order_id_orders_id_fkey",
@@ -6372,14 +6153,10 @@
     },
     {
       "nameExplicit": false,
-      "columns": [
-        "requested_by_admin_user_id"
-      ],
+      "columns": ["requested_by_admin_user_id"],
       "schemaTo": "public",
       "tableTo": "admin_users",
-      "columnsTo": [
-        "id"
-      ],
+      "columnsTo": ["id"],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "refunds_requested_by_admin_user_id_admin_users_id_fkey",
@@ -6389,14 +6166,10 @@
     },
     {
       "nameExplicit": false,
-      "columns": [
-        "role_id"
-      ],
+      "columns": ["role_id"],
       "schemaTo": "public",
       "tableTo": "roles",
-      "columnsTo": [
-        "id"
-      ],
+      "columnsTo": ["id"],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "role_permissions_role_id_roles_id_fkey",
@@ -6406,14 +6179,10 @@
     },
     {
       "nameExplicit": false,
-      "columns": [
-        "permission_id"
-      ],
+      "columns": ["permission_id"],
       "schemaTo": "public",
       "tableTo": "permissions",
-      "columnsTo": [
-        "id"
-      ],
+      "columnsTo": ["id"],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "role_permissions_permission_id_permissions_id_fkey",
@@ -6423,14 +6192,10 @@
     },
     {
       "nameExplicit": false,
-      "columns": [
-        "order_id"
-      ],
+      "columns": ["order_id"],
       "schemaTo": "public",
       "tableTo": "orders",
-      "columnsTo": [
-        "id"
-      ],
+      "columnsTo": ["id"],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "vending_commands_order_id_orders_id_fkey",
@@ -6440,14 +6205,10 @@
     },
     {
       "nameExplicit": false,
-      "columns": [
-        "machine_id"
-      ],
+      "columns": ["machine_id"],
       "schemaTo": "public",
       "tableTo": "machines",
-      "columnsTo": [
-        "id"
-      ],
+      "columnsTo": ["id"],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "vending_commands_machine_id_machines_id_fkey",
@@ -6457,14 +6218,10 @@
     },
     {
       "nameExplicit": false,
-      "columns": [
-        "slot_id"
-      ],
+      "columns": ["slot_id"],
       "schemaTo": "public",
       "tableTo": "machine_slots",
-      "columnsTo": [
-        "id"
-      ],
+      "columnsTo": ["id"],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "vending_commands_slot_id_machine_slots_id_fkey",
@@ -6473,10 +6230,7 @@
       "table": "vending_commands"
     },
     {
-      "columns": [
-        "admin_user_id",
-        "role_id"
-      ],
+      "columns": ["admin_user_id", "role_id"],
       "nameExplicit": false,
       "name": "admin_user_roles_pkey",
       "entityType": "pks",
@@ -6484,10 +6238,7 @@
       "table": "admin_user_roles"
     },
     {
-      "columns": [
-        "role_id",
-        "permission_id"
-      ],
+      "columns": ["role_id", "permission_id"],
       "nameExplicit": false,
       "name": "role_permissions_pkey",
       "entityType": "pks",
@@ -6495,9 +6246,7 @@
       "table": "role_permissions"
     },
     {
-      "columns": [
-        "id"
-      ],
+      "columns": ["id"],
       "nameExplicit": false,
       "name": "admin_users_pkey",
       "schema": "public",
@@ -6505,9 +6254,7 @@
       "entityType": "pks"
     },
     {
-      "columns": [
-        "id"
-      ],
+      "columns": ["id"],
       "nameExplicit": false,
       "name": "audit_logs_pkey",
       "schema": "public",
@@ -6515,9 +6262,7 @@
       "entityType": "pks"
     },
     {
-      "columns": [
-        "id"
-      ],
+      "columns": ["id"],
       "nameExplicit": false,
       "name": "inventories_pkey",
       "schema": "public",
@@ -6525,9 +6270,7 @@
       "entityType": "pks"
     },
     {
-      "columns": [
-        "id"
-      ],
+      "columns": ["id"],
       "nameExplicit": false,
       "name": "inventory_movements_pkey",
       "schema": "public",
@@ -6535,9 +6278,7 @@
       "entityType": "pks"
     },
     {
-      "columns": [
-        "id"
-      ],
+      "columns": ["id"],
       "nameExplicit": false,
       "name": "inventory_reservations_pkey",
       "schema": "public",
@@ -6545,9 +6286,7 @@
       "entityType": "pks"
     },
     {
-      "columns": [
-        "id"
-      ],
+      "columns": ["id"],
       "nameExplicit": false,
       "name": "machine_events_pkey",
       "schema": "public",
@@ -6555,9 +6294,7 @@
       "entityType": "pks"
     },
     {
-      "columns": [
-        "id"
-      ],
+      "columns": ["id"],
       "nameExplicit": false,
       "name": "machine_heartbeats_pkey",
       "schema": "public",
@@ -6565,9 +6302,7 @@
       "entityType": "pks"
     },
     {
-      "columns": [
-        "id"
-      ],
+      "columns": ["id"],
       "nameExplicit": false,
       "name": "machine_slots_pkey",
       "schema": "public",
@@ -6575,9 +6310,7 @@
       "entityType": "pks"
     },
     {
-      "columns": [
-        "id"
-      ],
+      "columns": ["id"],
       "nameExplicit": false,
       "name": "machines_pkey",
       "schema": "public",
@@ -6585,9 +6318,7 @@
       "entityType": "pks"
     },
     {
-      "columns": [
-        "id"
-      ],
+      "columns": ["id"],
       "nameExplicit": false,
       "name": "notification_deliveries_pkey",
       "schema": "public",
@@ -6595,9 +6326,7 @@
       "entityType": "pks"
     },
     {
-      "columns": [
-        "id"
-      ],
+      "columns": ["id"],
       "nameExplicit": false,
       "name": "notification_targets_pkey",
       "schema": "public",
@@ -6605,9 +6334,7 @@
       "entityType": "pks"
     },
     {
-      "columns": [
-        "id"
-      ],
+      "columns": ["id"],
       "nameExplicit": false,
       "name": "notifications_pkey",
       "schema": "public",
@@ -6615,9 +6342,7 @@
       "entityType": "pks"
     },
     {
-      "columns": [
-        "id"
-      ],
+      "columns": ["id"],
       "nameExplicit": false,
       "name": "order_items_pkey",
       "schema": "public",
@@ -6625,9 +6350,7 @@
       "entityType": "pks"
     },
     {
-      "columns": [
-        "id"
-      ],
+      "columns": ["id"],
       "nameExplicit": false,
       "name": "order_status_events_pkey",
       "schema": "public",
@@ -6635,9 +6358,7 @@
       "entityType": "pks"
     },
     {
-      "columns": [
-        "id"
-      ],
+      "columns": ["id"],
       "nameExplicit": false,
       "name": "orders_pkey",
       "schema": "public",
@@ -6645,9 +6366,7 @@
       "entityType": "pks"
     },
     {
-      "columns": [
-        "id"
-      ],
+      "columns": ["id"],
       "nameExplicit": false,
       "name": "payment_events_pkey",
       "schema": "public",
@@ -6655,9 +6374,7 @@
       "entityType": "pks"
     },
     {
-      "columns": [
-        "id"
-      ],
+      "columns": ["id"],
       "nameExplicit": false,
       "name": "payment_provider_configs_pkey",
       "schema": "public",
@@ -6665,9 +6382,7 @@
       "entityType": "pks"
     },
     {
-      "columns": [
-        "id"
-      ],
+      "columns": ["id"],
       "nameExplicit": false,
       "name": "payment_providers_pkey",
       "schema": "public",
@@ -6675,9 +6390,7 @@
       "entityType": "pks"
     },
     {
-      "columns": [
-        "id"
-      ],
+      "columns": ["id"],
       "nameExplicit": false,
       "name": "payment_user_snapshots_pkey",
       "schema": "public",
@@ -6685,9 +6398,7 @@
       "entityType": "pks"
     },
     {
-      "columns": [
-        "id"
-      ],
+      "columns": ["id"],
       "nameExplicit": false,
       "name": "payments_pkey",
       "schema": "public",
@@ -6695,9 +6406,7 @@
       "entityType": "pks"
     },
     {
-      "columns": [
-        "id"
-      ],
+      "columns": ["id"],
       "nameExplicit": false,
       "name": "permissions_pkey",
       "schema": "public",
@@ -6705,9 +6414,7 @@
       "entityType": "pks"
     },
     {
-      "columns": [
-        "id"
-      ],
+      "columns": ["id"],
       "nameExplicit": false,
       "name": "product_categories_pkey",
       "schema": "public",
@@ -6715,9 +6422,7 @@
       "entityType": "pks"
     },
     {
-      "columns": [
-        "id"
-      ],
+      "columns": ["id"],
       "nameExplicit": false,
       "name": "product_variants_pkey",
       "schema": "public",
@@ -6725,9 +6430,7 @@
       "entityType": "pks"
     },
     {
-      "columns": [
-        "id"
-      ],
+      "columns": ["id"],
       "nameExplicit": false,
       "name": "products_pkey",
       "schema": "public",
@@ -6735,9 +6438,7 @@
       "entityType": "pks"
     },
     {
-      "columns": [
-        "id"
-      ],
+      "columns": ["id"],
       "nameExplicit": false,
       "name": "refresh_tokens_pkey",
       "schema": "public",
@@ -6745,9 +6446,7 @@
       "entityType": "pks"
     },
     {
-      "columns": [
-        "id"
-      ],
+      "columns": ["id"],
       "nameExplicit": false,
       "name": "refunds_pkey",
       "schema": "public",
@@ -6755,9 +6454,7 @@
       "entityType": "pks"
     },
     {
-      "columns": [
-        "id"
-      ],
+      "columns": ["id"],
       "nameExplicit": false,
       "name": "roles_pkey",
       "schema": "public",
@@ -6765,9 +6462,7 @@
       "entityType": "pks"
     },
     {
-      "columns": [
-        "id"
-      ],
+      "columns": ["id"],
       "nameExplicit": false,
       "name": "vending_commands_pkey",
       "schema": "public",

@@ -64,7 +64,10 @@ async function loadAll(): Promise<void> {
 }
 
 function editConfig(config: PaymentProviderConfig): void {
-  if (config.providerCode !== "wechat_pay" && config.providerCode !== "alipay") {
+  if (
+    config.providerCode !== "wechat_pay" &&
+    config.providerCode !== "alipay"
+  ) {
     return;
   }
   const publicConfig = config.publicConfigJson;
@@ -186,7 +189,10 @@ onMounted(() => {
         <template v-else-if="column.key === 'secretStatusJson'">
           <a-space direction="vertical" :size="2">
             <a-tag
-              v-for="(val, key) in (record.secretStatusJson as Record<string, PaymentSecretStatus>)"
+              v-for="(val, key) in record.secretStatusJson as Record<
+                string,
+                PaymentSecretStatus
+              >"
               :key="key"
               :color="val.configured ? 'success' : 'default'"
             >
@@ -256,7 +262,9 @@ onMounted(() => {
                 : `不可达 ${selectedNotifyCheck.errorCode ?? "unknown"}`
             }}
           </a-tag>
-          <span>检查时间：{{ formatDateTime(selectedNotifyCheck.checkedAt) }}</span>
+          <span
+            >检查时间：{{ formatDateTime(selectedNotifyCheck.checkedAt) }}</span
+          >
         </a-space>
       </template>
     </a-alert>
@@ -266,10 +274,7 @@ onMounted(() => {
       <a-row :gutter="16">
         <a-col :span="6">
           <a-form-item label="支付提供商">
-            <a-select
-              v-model:value="form.providerCode"
-              style="width: 180px"
-            >
+            <a-select v-model:value="form.providerCode" style="width: 180px">
               <a-select-option value="alipay">支付宝</a-select-option>
               <a-select-option value="wechat_pay">微信支付</a-select-option>
             </a-select>
@@ -316,7 +321,11 @@ onMounted(() => {
         </a-col>
         <a-col :span="4">
           <a-form-item label="二维码有效期（分钟）">
-            <a-input-number v-model:value="form.qrExpiresMinutes" :min="1" :max="60" />
+            <a-input-number
+              v-model:value="form.qrExpiresMinutes"
+              :min="1"
+              :max="60"
+            />
           </a-form-item>
         </a-col>
         <a-col :span="4">

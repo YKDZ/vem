@@ -21,7 +21,9 @@ export type UpsertHardwareErrorPolicyInput = {
   severity: "info" | "warning" | "critical";
 };
 
-export async function listHardwareErrorPolicies(): Promise<HardwareErrorPolicy[]> {
+export async function listHardwareErrorPolicies(): Promise<
+  HardwareErrorPolicy[]
+> {
   return await get<HardwareErrorPolicy[]>("/hardware-error-policies");
 }
 

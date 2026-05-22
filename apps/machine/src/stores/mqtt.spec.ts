@@ -19,7 +19,9 @@ vi.mock("@/mqtt/client", () => ({
 
 vi.mock("@/local/outbox", () => ({
   flushOutboxEvents: vi.fn().mockResolvedValue(undefined),
-  getOutboxStats: vi.fn().mockReturnValue({ size: 0, usageRatio: 0, max: 1000 }),
+  getOutboxStats: vi
+    .fn()
+    .mockReturnValue({ size: 0, usageRatio: 0, max: 1000 }),
 }));
 
 vi.mock("@/stores/connectivity", () => ({
@@ -34,9 +36,10 @@ vi.mock("@/stores/machine", () => ({
   })),
 }));
 
-import * as nativeTauri from "@/native/tauri";
-import * as mqttRuntime from "@/native/mqtt-runtime";
 import * as mqttClient from "@/mqtt/client";
+import * as mqttRuntime from "@/native/mqtt-runtime";
+import * as nativeTauri from "@/native/tauri";
+
 import { useMqttStore } from "./mqtt";
 
 // Node environment - stub window (needed for setInterval/clearInterval)

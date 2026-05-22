@@ -87,8 +87,7 @@ describe("MachineOpsService", () => {
           where: (clause: unknown) => {
             capturedWhere.push(clause);
             return {
-              orderBy: async () =>
-                [{ ...mockOp, machineId: "machine1" }],
+              orderBy: async () => [{ ...mockOp, machineId: "machine1" }],
             };
           },
         }),

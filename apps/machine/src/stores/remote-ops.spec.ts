@@ -15,12 +15,16 @@ vi.mock("@/native/local-logs", () => ({
 
 import * as remoteOpsApi from "@/api/remote-ops";
 import * as localLogs from "@/native/local-logs";
+
 import { useRemoteOpsStore } from "./remote-ops";
 
 // Node environment doesn't have `window` — stub the timer APIs
 const timerIds = { current: 0 };
 vi.stubGlobal("window", {
-  setInterval: vi.fn(() => { timerIds.current += 1; return timerIds.current; }),
+  setInterval: vi.fn(() => {
+    timerIds.current += 1;
+    return timerIds.current;
+  }),
   clearInterval: vi.fn(),
 });
 

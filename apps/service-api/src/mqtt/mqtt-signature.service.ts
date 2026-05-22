@@ -99,7 +99,9 @@ export class MqttSignatureService {
   private async getMqttSigningSecret(machineCode: string): Promise<string> {
     const machine = await this.findMachine(machineCode);
     if (!isEncryptedCredentialJson(machine.mqttSigningSecretEncryptedJson)) {
-      throw new UnauthorizedException("Machine MQTT credential is missing or invalid");
+      throw new UnauthorizedException(
+        "Machine MQTT credential is missing or invalid",
+      );
     }
     return this.machineCredentialService.decryptMqttSigningSecret(
       machine.mqttSigningSecretEncryptedJson,

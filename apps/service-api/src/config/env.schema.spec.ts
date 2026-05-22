@@ -71,7 +71,9 @@ describe("validateEnv", () => {
 
   it("derives provider notify url when PAYMENT_WEBHOOK_BASE_URL is webhook prefix", () => {
     const env = validateEnv(baseValidEnv);
-    expect(env.PAYMENT_WEBHOOK_BASE_URL).toBe("http://localhost:3000/api/payments/webhooks");
+    expect(env.PAYMENT_WEBHOOK_BASE_URL).toBe(
+      "http://localhost:3000/api/payments/webhooks",
+    );
   });
 
   it("accepts PAYMENT_WEBHOOK_BASE_URL as service origin for deployments", () => {
@@ -93,7 +95,9 @@ describe("validateEnv", () => {
         MQTT_USERNAME: "u",
         MQTT_PASSWORD: "p",
       }),
-    ).toThrow("PAYMENT_PRODUCTION_READINESS_REQUIRED must be true in production");
+    ).toThrow(
+      "PAYMENT_PRODUCTION_READINESS_REQUIRED must be true in production",
+    );
   });
 
   it("rejects production config with http webhook base URL", () => {

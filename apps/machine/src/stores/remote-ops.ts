@@ -93,11 +93,9 @@ export const useRemoteOpsStore = defineStore("remote-ops", {
         this.pendingOps = this.pendingOps.filter((o) => o.id !== op.id);
       } catch (error) {
         const reason = error instanceof Error ? error.message : String(error);
-        await failRemoteOp(apiBaseUrl, op.id, reason).catch(
-          (_err: unknown) => {
-            /* ignore fail-reporting errors */
-          },
-        );
+        await failRemoteOp(apiBaseUrl, op.id, reason).catch((_err: unknown) => {
+          /* ignore fail-reporting errors */
+        });
         this.lastError = reason;
       } finally {
         this.processing = false;

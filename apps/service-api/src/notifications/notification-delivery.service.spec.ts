@@ -35,7 +35,9 @@ const makeDeliveryRow = (
     name: "Test Target",
     type: targetType,
     status: "enabled",
-    configJson: webhookUrl ? ({ webhookUrl } as Record<string, unknown>) : ({} as Record<string, unknown>),
+    configJson: webhookUrl
+      ? ({ webhookUrl } as Record<string, unknown>)
+      : ({} as Record<string, unknown>),
     targetMasked: null,
     createdAt: new Date(),
     updatedAt: new Date(),

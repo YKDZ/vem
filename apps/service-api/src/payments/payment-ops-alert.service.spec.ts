@@ -1,6 +1,6 @@
-import { describe, expect, it, vi } from "vitest";
-
 import type { PaymentOpsMetrics, PaymentOpsReadiness } from "@vem/shared";
+
+import { describe, expect, it, vi } from "vitest";
 
 import type { NotificationsService } from "../notifications/notifications.service";
 import type { PaymentOpsService } from "./payment-ops.service";
@@ -41,9 +41,11 @@ function makeMetrics(
 function makeService() {
   const txFn = vi.fn();
   const db = {
-    transaction: vi.fn().mockImplementation(async (fn: (tx: object) => Promise<void>) => {
-      await fn({});
-    }),
+    transaction: vi
+      .fn()
+      .mockImplementation(async (fn: (tx: object) => Promise<void>) => {
+        await fn({});
+      }),
   };
 
   const ops = {

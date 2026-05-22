@@ -89,13 +89,18 @@ describe("PaymentConfigSecretService", () => {
       { appCertPem: TEST_CERTIFICATE_PEM },
       new Date("2026-05-06T00:00:00.000Z"),
     );
-    expect(summary["appCertPem"]?.certificateExpiresAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(summary["appCertPem"]?.certificateExpiresAt).toMatch(
+      /^\d{4}-\d{2}-\d{2}T/,
+    );
   });
 
   it("summarize marks invalid certificate text with errorCode but still hides value", () => {
     const service = makeSecretService();
     const summary = service.summarize(
-      { appCertPem: "-----BEGIN CERTIFICATE-----\ninvalid\n-----END CERTIFICATE-----" },
+      {
+        appCertPem:
+          "-----BEGIN CERTIFICATE-----\ninvalid\n-----END CERTIFICATE-----",
+      },
       null,
     );
     expect(summary["appCertPem"]?.errorCode).toBe("certificate_parse_failed");

@@ -22,8 +22,8 @@ import {
 import { useAuthStore } from "@/stores/auth";
 import { formatCents, formatDateTime } from "@/utils/format";
 
-import PaymentProviderConfigPanel from "./PaymentProviderConfigPanel.vue";
 import PaymentOpsPanel from "./PaymentOpsPanel.vue";
+import PaymentProviderConfigPanel from "./PaymentProviderConfigPanel.vue";
 
 const authStore = useAuthStore();
 const canConfigure = authStore.hasPermission("payments.configure");

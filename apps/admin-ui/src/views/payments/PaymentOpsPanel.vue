@@ -55,7 +55,9 @@ onMounted(() => {
       v-if="readiness"
       :type="readinessColor"
       show-icon
-      :message="readiness.status === 'ready' ? '支付上线门禁通过' : '支付上线门禁阻塞'"
+      :message="
+        readiness.status === 'ready' ? '支付上线门禁通过' : '支付上线门禁阻塞'
+      "
       :description="`环境：${readiness.environment}，检查时间：${formatDateTime(readiness.checkedAt)}`"
     />
 
@@ -75,12 +77,17 @@ onMounted(() => {
         />
       </a-col>
       <a-col :span="6">
-        <a-statistic title="对账失败" :value="metrics.reconciliationErrorCount" />
+        <a-statistic
+          title="对账失败"
+          :value="metrics.reconciliationErrorCount"
+        />
       </a-col>
       <a-col :span="6">
         <a-statistic
           title="退款异常"
-          :value="metrics.refundFailedCount + metrics.refundProcessingOverdueCount"
+          :value="
+            metrics.refundFailedCount + metrics.refundProcessingOverdueCount
+          "
         />
       </a-col>
     </a-row>
@@ -135,7 +142,9 @@ onMounted(() => {
             {{ machine.code }} - {{ machine.name }}
           </a-select-option>
         </a-select>
-        <a-button type="primary" @click="runMachinePreflight">执行预检</a-button>
+        <a-button type="primary" @click="runMachinePreflight"
+          >执行预检</a-button
+        >
       </a-space>
 
       <a-alert
@@ -143,7 +152,11 @@ onMounted(() => {
         class="mt-4"
         :type="preflight.status === 'ready' ? 'success' : 'error'"
         show-icon
-        :message="preflight.status === 'ready' ? '灰度机器可启用真实支付' : '灰度机器预检阻塞'"
+        :message="
+          preflight.status === 'ready'
+            ? '灰度机器可启用真实支付'
+            : '灰度机器预检阻塞'
+        "
         :description="`机器：${preflight.machineCode}，可用渠道：${preflight.availableProviders.map((item) => item.providerCode).join(', ') || '无'}`"
       />
     </a-card>

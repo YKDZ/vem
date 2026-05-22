@@ -61,7 +61,17 @@ function addIfFilled(
   if (value.trim().length > 0) target[key] = value;
 }
 
-export function buildProviderConfigPayload(form: ProviderConfigForm) {
+export function buildProviderConfigPayload(form: ProviderConfigForm): {
+  providerCode: RealPaymentProviderCode;
+  machineId: string | null;
+  merchantNo: string | null;
+  appId: string | null;
+  publicConfigJson: Record<string, unknown>;
+  sensitiveConfigJson:
+    | Record<string, string | number | boolean | null>
+    | undefined;
+  status: "enabled" | "disabled";
+} {
   const publicConfigJson: Record<string, unknown> = {
     qrExpiresMinutes: form.qrExpiresMinutes,
     timeoutCompensationSeconds: form.timeoutCompensationSeconds,

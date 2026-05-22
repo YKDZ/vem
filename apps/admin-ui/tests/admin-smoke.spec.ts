@@ -72,7 +72,9 @@ test.describe("admin-smoke", () => {
       });
     });
 
-    test("payment config tab shows provider-specific fields and hides generic api key", async ({ page }) => {
+    test("payment config tab shows provider-specific fields and hides generic api key", async ({
+      page,
+    }) => {
       await page.goto("/payments");
       await page.getByRole("tab", { name: "支付配置" }).click();
       await expect(page.getByText("支付宝")).toBeVisible();

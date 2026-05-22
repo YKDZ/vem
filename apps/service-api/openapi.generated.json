@@ -1,1 +1,338 @@
-{"openapi":"3.0.0","paths":{"/api/health":{"get":{"operationId":"HealthController_getHealth","parameters":[],"responses":{"200":{"description":""}},"tags":["health"]}},"/api/auth/login":{"post":{"operationId":"AuthController_login","parameters":[],"responses":{"200":{"description":""}},"tags":["auth"]}},"/api/auth/me":{"get":{"operationId":"AuthController_me","parameters":[],"responses":{"200":{"description":""}},"security":[{"bearer":[]}],"tags":["auth"]}},"/api/auth/refresh":{"post":{"operationId":"AuthController_refresh","parameters":[],"responses":{"200":{"description":""}},"tags":["auth"]}},"/api/products":{"get":{"operationId":"ProductsController_listProducts","parameters":[],"responses":{"200":{"description":""}},"security":[{"bearer":[]}],"tags":["products"]},"post":{"operationId":"ProductsController_createProduct","parameters":[],"responses":{"201":{"description":""}},"security":[{"bearer":[]}],"tags":["products"]}},"/api/products/{id}":{"patch":{"operationId":"ProductsController_updateProduct","parameters":[{"name":"id","required":true,"in":"path","schema":{"type":"string"}}],"responses":{"200":{"description":""}},"security":[{"bearer":[]}],"tags":["products"]}},"/api/product-variants":{"get":{"operationId":"ProductsController_listVariants","parameters":[],"responses":{"200":{"description":""}},"security":[{"bearer":[]}],"tags":["products"]},"post":{"operationId":"ProductsController_createVariant","parameters":[],"responses":{"201":{"description":""}},"security":[{"bearer":[]}],"tags":["products"]}},"/api/machines":{"get":{"operationId":"MachinesController_listMachines","parameters":[],"responses":{"200":{"description":""}},"security":[{"bearer":[]}],"tags":["machines"]},"post":{"operationId":"MachinesController_createMachine","parameters":[],"responses":{"201":{"description":""}},"security":[{"bearer":[]}],"tags":["machines"]}},"/api/machines/{id}/slots":{"get":{"operationId":"MachinesController_listSlots","parameters":[{"name":"id","required":true,"in":"path","schema":{"type":"string"}}],"responses":{"200":{"description":""}},"security":[{"bearer":[]}],"tags":["machines"]},"post":{"operationId":"MachinesController_createSlot","parameters":[{"name":"id","required":true,"in":"path","schema":{"type":"string"}}],"responses":{"201":{"description":""}},"security":[{"bearer":[]}],"tags":["machines"]}},"/api/machines/{code}/catalog":{"get":{"operationId":"MachinesController_getMachineCatalog","parameters":[{"name":"code","required":true,"in":"path","schema":{"type":"string"}}],"responses":{"200":{"description":""}},"security":[{"bearer":[]}],"tags":["machines"]}},"/api/inventories":{"get":{"operationId":"InventoryController_listInventories","parameters":[],"responses":{"200":{"description":""}},"security":[{"bearer":[]}],"tags":["inventory"]}},"/api/inventories/refill":{"post":{"operationId":"InventoryController_refill","parameters":[],"responses":{"201":{"description":""}},"security":[{"bearer":[]}],"tags":["inventory"]}},"/api/inventories/adjust":{"post":{"operationId":"InventoryController_adjust","parameters":[],"responses":{"201":{"description":""}},"security":[{"bearer":[]}],"tags":["inventory"]}},"/api/inventory-movements":{"get":{"operationId":"InventoryController_listMovements","parameters":[],"responses":{"200":{"description":""}},"security":[{"bearer":[]}],"tags":["inventory"]}},"/api/notifications":{"get":{"operationId":"NotificationsController_list","parameters":[],"responses":{"200":{"description":""}},"security":[{"bearer":[]}],"tags":["notifications"]}},"/api/notifications/{id}/read":{"post":{"operationId":"NotificationsController_markRead","parameters":[{"name":"id","required":true,"in":"path","schema":{"type":"string"}}],"responses":{"201":{"description":""}},"security":[{"bearer":[]}],"tags":["notifications"]}},"/api/payments":{"get":{"operationId":"PaymentsController_listPayments","parameters":[],"responses":{"200":{"description":""}},"security":[{"bearer":[]}],"tags":["payments"]}},"/api/payments/mock/{paymentNo}/succeed":{"post":{"operationId":"PaymentsController_markMockSucceeded","parameters":[{"name":"paymentNo","required":true,"in":"path","schema":{"type":"string"}}],"responses":{"201":{"description":""}},"security":[{"bearer":[]}],"tags":["payments"]}},"/api/payments/mock/{paymentNo}/fail":{"post":{"operationId":"PaymentsController_markMockFailed","parameters":[{"name":"paymentNo","required":true,"in":"path","schema":{"type":"string"}}],"responses":{"201":{"description":""}},"security":[{"bearer":[]}],"tags":["payments"]}},"/api/vending-commands":{"get":{"operationId":"VendingController_listCommands","parameters":[],"responses":{"200":{"description":""}},"security":[{"bearer":[]}],"tags":["vending"]}},"/api/vending-commands/{id}/retry":{"post":{"operationId":"VendingController_retry","parameters":[{"name":"id","required":true,"in":"path","schema":{"type":"string"}}],"responses":{"201":{"description":""}},"security":[{"bearer":[]}],"tags":["vending"]}},"/api/orders":{"get":{"operationId":"OrdersController_listOrders","parameters":[],"responses":{"200":{"description":""}},"security":[{"bearer":[]}],"tags":["orders"]}},"/api/orders/{id}":{"get":{"operationId":"OrdersController_getOrderDetail","parameters":[{"name":"id","required":true,"in":"path","schema":{"type":"string"}}],"responses":{"200":{"description":""}},"security":[{"bearer":[]}],"tags":["orders"]}},"/api/orders/{id}/refund":{"post":{"operationId":"OrdersController_requestRefund","parameters":[{"name":"id","required":true,"in":"path","schema":{"type":"string"}}],"responses":{"201":{"description":""}},"security":[{"bearer":[]}],"tags":["orders"]}},"/api/machine-orders":{"post":{"operationId":"MachineOrdersController_createMachineOrder","parameters":[],"responses":{"201":{"description":""}},"tags":["machine-orders"]}}},"info":{"title":"VEM Service API","description":"Vending equipment management backend API","version":"0.2.0","contact":{}},"tags":[],"servers":[],"components":{"securitySchemes":{"bearer":{"scheme":"bearer","bearerFormat":"JWT","type":"http"}},"schemas":{}}}
+{
+  "openapi": "3.0.0",
+  "paths": {
+    "/api/health": {
+      "get": {
+        "operationId": "HealthController_getHealth",
+        "parameters": [],
+        "responses": { "200": { "description": "" } },
+        "tags": ["health"]
+      }
+    },
+    "/api/auth/login": {
+      "post": {
+        "operationId": "AuthController_login",
+        "parameters": [],
+        "responses": { "200": { "description": "" } },
+        "tags": ["auth"]
+      }
+    },
+    "/api/auth/me": {
+      "get": {
+        "operationId": "AuthController_me",
+        "parameters": [],
+        "responses": { "200": { "description": "" } },
+        "security": [{ "bearer": [] }],
+        "tags": ["auth"]
+      }
+    },
+    "/api/auth/refresh": {
+      "post": {
+        "operationId": "AuthController_refresh",
+        "parameters": [],
+        "responses": { "200": { "description": "" } },
+        "tags": ["auth"]
+      }
+    },
+    "/api/products": {
+      "get": {
+        "operationId": "ProductsController_listProducts",
+        "parameters": [],
+        "responses": { "200": { "description": "" } },
+        "security": [{ "bearer": [] }],
+        "tags": ["products"]
+      },
+      "post": {
+        "operationId": "ProductsController_createProduct",
+        "parameters": [],
+        "responses": { "201": { "description": "" } },
+        "security": [{ "bearer": [] }],
+        "tags": ["products"]
+      }
+    },
+    "/api/products/{id}": {
+      "patch": {
+        "operationId": "ProductsController_updateProduct",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": { "200": { "description": "" } },
+        "security": [{ "bearer": [] }],
+        "tags": ["products"]
+      }
+    },
+    "/api/product-variants": {
+      "get": {
+        "operationId": "ProductsController_listVariants",
+        "parameters": [],
+        "responses": { "200": { "description": "" } },
+        "security": [{ "bearer": [] }],
+        "tags": ["products"]
+      },
+      "post": {
+        "operationId": "ProductsController_createVariant",
+        "parameters": [],
+        "responses": { "201": { "description": "" } },
+        "security": [{ "bearer": [] }],
+        "tags": ["products"]
+      }
+    },
+    "/api/machines": {
+      "get": {
+        "operationId": "MachinesController_listMachines",
+        "parameters": [],
+        "responses": { "200": { "description": "" } },
+        "security": [{ "bearer": [] }],
+        "tags": ["machines"]
+      },
+      "post": {
+        "operationId": "MachinesController_createMachine",
+        "parameters": [],
+        "responses": { "201": { "description": "" } },
+        "security": [{ "bearer": [] }],
+        "tags": ["machines"]
+      }
+    },
+    "/api/machines/{id}/slots": {
+      "get": {
+        "operationId": "MachinesController_listSlots",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": { "200": { "description": "" } },
+        "security": [{ "bearer": [] }],
+        "tags": ["machines"]
+      },
+      "post": {
+        "operationId": "MachinesController_createSlot",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": { "201": { "description": "" } },
+        "security": [{ "bearer": [] }],
+        "tags": ["machines"]
+      }
+    },
+    "/api/machines/{code}/catalog": {
+      "get": {
+        "operationId": "MachinesController_getMachineCatalog",
+        "parameters": [
+          {
+            "name": "code",
+            "required": true,
+            "in": "path",
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": { "200": { "description": "" } },
+        "security": [{ "bearer": [] }],
+        "tags": ["machines"]
+      }
+    },
+    "/api/inventories": {
+      "get": {
+        "operationId": "InventoryController_listInventories",
+        "parameters": [],
+        "responses": { "200": { "description": "" } },
+        "security": [{ "bearer": [] }],
+        "tags": ["inventory"]
+      }
+    },
+    "/api/inventories/refill": {
+      "post": {
+        "operationId": "InventoryController_refill",
+        "parameters": [],
+        "responses": { "201": { "description": "" } },
+        "security": [{ "bearer": [] }],
+        "tags": ["inventory"]
+      }
+    },
+    "/api/inventories/adjust": {
+      "post": {
+        "operationId": "InventoryController_adjust",
+        "parameters": [],
+        "responses": { "201": { "description": "" } },
+        "security": [{ "bearer": [] }],
+        "tags": ["inventory"]
+      }
+    },
+    "/api/inventory-movements": {
+      "get": {
+        "operationId": "InventoryController_listMovements",
+        "parameters": [],
+        "responses": { "200": { "description": "" } },
+        "security": [{ "bearer": [] }],
+        "tags": ["inventory"]
+      }
+    },
+    "/api/notifications": {
+      "get": {
+        "operationId": "NotificationsController_list",
+        "parameters": [],
+        "responses": { "200": { "description": "" } },
+        "security": [{ "bearer": [] }],
+        "tags": ["notifications"]
+      }
+    },
+    "/api/notifications/{id}/read": {
+      "post": {
+        "operationId": "NotificationsController_markRead",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": { "201": { "description": "" } },
+        "security": [{ "bearer": [] }],
+        "tags": ["notifications"]
+      }
+    },
+    "/api/payments": {
+      "get": {
+        "operationId": "PaymentsController_listPayments",
+        "parameters": [],
+        "responses": { "200": { "description": "" } },
+        "security": [{ "bearer": [] }],
+        "tags": ["payments"]
+      }
+    },
+    "/api/payments/mock/{paymentNo}/succeed": {
+      "post": {
+        "operationId": "PaymentsController_markMockSucceeded",
+        "parameters": [
+          {
+            "name": "paymentNo",
+            "required": true,
+            "in": "path",
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": { "201": { "description": "" } },
+        "security": [{ "bearer": [] }],
+        "tags": ["payments"]
+      }
+    },
+    "/api/payments/mock/{paymentNo}/fail": {
+      "post": {
+        "operationId": "PaymentsController_markMockFailed",
+        "parameters": [
+          {
+            "name": "paymentNo",
+            "required": true,
+            "in": "path",
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": { "201": { "description": "" } },
+        "security": [{ "bearer": [] }],
+        "tags": ["payments"]
+      }
+    },
+    "/api/vending-commands": {
+      "get": {
+        "operationId": "VendingController_listCommands",
+        "parameters": [],
+        "responses": { "200": { "description": "" } },
+        "security": [{ "bearer": [] }],
+        "tags": ["vending"]
+      }
+    },
+    "/api/vending-commands/{id}/retry": {
+      "post": {
+        "operationId": "VendingController_retry",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": { "201": { "description": "" } },
+        "security": [{ "bearer": [] }],
+        "tags": ["vending"]
+      }
+    },
+    "/api/orders": {
+      "get": {
+        "operationId": "OrdersController_listOrders",
+        "parameters": [],
+        "responses": { "200": { "description": "" } },
+        "security": [{ "bearer": [] }],
+        "tags": ["orders"]
+      }
+    },
+    "/api/orders/{id}": {
+      "get": {
+        "operationId": "OrdersController_getOrderDetail",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": { "200": { "description": "" } },
+        "security": [{ "bearer": [] }],
+        "tags": ["orders"]
+      }
+    },
+    "/api/orders/{id}/refund": {
+      "post": {
+        "operationId": "OrdersController_requestRefund",
+        "parameters": [
+          {
+            "name": "id",
+            "required": true,
+            "in": "path",
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": { "201": { "description": "" } },
+        "security": [{ "bearer": [] }],
+        "tags": ["orders"]
+      }
+    },
+    "/api/machine-orders": {
+      "post": {
+        "operationId": "MachineOrdersController_createMachineOrder",
+        "parameters": [],
+        "responses": { "201": { "description": "" } },
+        "tags": ["machine-orders"]
+      }
+    }
+  },
+  "info": {
+    "title": "VEM Service API",
+    "description": "Vending equipment management backend API",
+    "version": "0.2.0",
+    "contact": {}
+  },
+  "tags": [],
+  "servers": [],
+  "components": {
+    "securitySchemes": {
+      "bearer": { "scheme": "bearer", "bearerFormat": "JWT", "type": "http" }
+    },
+    "schemas": {}
+  }
+}

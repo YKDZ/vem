@@ -63,7 +63,10 @@ describe("MaintenanceWorkOrdersService", () => {
 
     expect(mockTx.insert).toHaveBeenCalled();
     expect(insertValues).toHaveBeenCalledWith(
-      expect.objectContaining({ status: "open", dedupeKey: baseInput.dedupeKey }),
+      expect.objectContaining({
+        status: "open",
+        dedupeKey: baseInput.dedupeKey,
+      }),
     );
   });
 
@@ -96,9 +99,9 @@ describe("MaintenanceWorkOrdersService", () => {
       status: "resolved",
       resolutionNote: "Fixed the jam",
     });
-    expect(
-      (capturedSet[0] as { resolvedAt?: Date }).resolvedAt,
-    ).toBeInstanceOf(Date);
+    expect((capturedSet[0] as { resolvedAt?: Date }).resolvedAt).toBeInstanceOf(
+      Date,
+    );
   });
 
   it("throws NotFoundException when work order not found or already resolved", async () => {

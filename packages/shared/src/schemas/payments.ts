@@ -1,12 +1,12 @@
 import { z } from "zod";
 
-import { machinePaymentOptionSchema } from "./orders";
 import {
   paymentProviderStatusSchema,
   paymentProviderTypeSchema,
   paymentStatusSchema,
   refundStatusSchema,
 } from "../enums/payment-status";
+import { machinePaymentOptionSchema } from "./orders";
 
 export const paymentQuerySchema = z.object({
   orderNo: z.string().max(64).optional(),

@@ -1,9 +1,7 @@
+import { HARDWARE_ERROR_HANDLING } from "@vem/shared";
 import { describe, expect, it } from "vitest";
 
-import { HARDWARE_ERROR_HANDLING } from "@vem/shared";
-
 import { HardwareErrorPoliciesService } from "./hardware-error-policies.service";
-
 
 function makeServiceWithQuery(queryResult: unknown[]) {
   const mockDb = {

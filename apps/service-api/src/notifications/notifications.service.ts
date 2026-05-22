@@ -58,10 +58,10 @@ export class NotificationsService {
   async createOperationalNotification(
     tx: DrizzleTransaction,
     input: {
-      type: typeof notifications.$inferInsert["type"];
+      type: (typeof notifications.$inferInsert)["type"];
       title: string;
       content: string;
-      severity: typeof notifications.$inferInsert["severity"];
+      severity: (typeof notifications.$inferInsert)["severity"];
       resourceType: string;
       resourceId?: string | null;
       dedupeKey: string;

@@ -2,7 +2,6 @@ import { ConflictException, NotFoundException } from "@nestjs/common";
 import { describe, expect, it } from "vitest";
 
 import { encryptJson } from "../crypto/encrypted-json.util";
-
 import { PaymentConfigSecretService } from "./payment-config-secret.service";
 import { PaymentProviderConfigService } from "./payment-provider-config.service";
 
@@ -14,7 +13,9 @@ function makeSecrets(): PaymentConfigSecretService {
   } as never);
 }
 
-function makeAppConfig(baseUrl = "http://localhost:3000/api/payments/webhooks") {
+function makeAppConfig(
+  baseUrl = "http://localhost:3000/api/payments/webhooks",
+) {
   return {
     buildPaymentNotifyUrl: (providerCode: string) => {
       const rawBase = baseUrl.replace(/\/+$/, "");
@@ -54,7 +55,11 @@ function makeService(rows: unknown[]) {
       }),
     }),
   };
-  return new PaymentProviderConfigService(mockDb as never, makeSecrets(), makeAppConfig());
+  return new PaymentProviderConfigService(
+    mockDb as never,
+    makeSecrets(),
+    makeAppConfig(),
+  );
 }
 
 describe("PaymentProviderConfigService", () => {
@@ -166,9 +171,13 @@ describe("PaymentProviderConfigService", () => {
 
   describe("listCandidateConfigsForProvider", () => {
     it("returns all enabled configs for provider", async () => {
-      const rows = [makeRow(), makeRow({ id: "cfg-2", machineId: "machine-2" })];
+      const rows = [
+        makeRow(),
+        makeRow({ id: "cfg-2", machineId: "machine-2" }),
+      ];
       const service = makeService(rows);
-      const results = await service.listCandidateConfigsForProvider("wechat_pay");
+      const results =
+        await service.listCandidateConfigsForProvider("wechat_pay");
       expect(results).toHaveLength(2);
     });
 
@@ -180,7 +189,8 @@ describe("PaymentProviderConfigService", () => {
         }),
       ];
       const service = makeService(rows);
-      const results = await service.listCandidateConfigsForProvider("wechat_pay");
+      const results =
+        await service.listCandidateConfigsForProvider("wechat_pay");
       expect(results[0]?.sensitiveConfigJson).toEqual(sensitive);
     });
 
@@ -278,9 +288,13 @@ describe("PaymentProviderConfigService", () => {
 
   describe("listCandidateConfigsForProvider", () => {
     it("returns all enabled configs for provider", async () => {
-      const rows = [makeRow(), makeRow({ id: "cfg-2", machineId: "machine-2" })];
+      const rows = [
+        makeRow(),
+        makeRow({ id: "cfg-2", machineId: "machine-2" }),
+      ];
       const service = makeService(rows);
-      const results = await service.listCandidateConfigsForProvider("wechat_pay");
+      const results =
+        await service.listCandidateConfigsForProvider("wechat_pay");
       expect(results).toHaveLength(2);
     });
 
@@ -292,7 +306,8 @@ describe("PaymentProviderConfigService", () => {
         }),
       ];
       const service = makeService(rows);
-      const results = await service.listCandidateConfigsForProvider("wechat_pay");
+      const results =
+        await service.listCandidateConfigsForProvider("wechat_pay");
       expect(results[0]?.sensitiveConfigJson).toEqual(sensitive);
     });
   });

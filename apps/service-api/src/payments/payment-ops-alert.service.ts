@@ -84,7 +84,10 @@ export class PaymentOpsAlertService
         });
       }
 
-      if (metrics.refundFailedCount + metrics.refundProcessingOverdueCount > 0) {
+      if (
+        metrics.refundFailedCount + metrics.refundProcessingOverdueCount >
+        0
+      ) {
         await this.notificationsService.createOperationalNotification(tx, {
           type: "payment_refund_failed",
           title: "退款异常",

@@ -11,7 +11,8 @@ describe("payment-config-model", () => {
       const form = createDefaultProviderConfigForm("wechat_pay");
       form.merchantCertificateSerialNo = "CERT_SERIAL_001";
       form.platformCertificateSerialNo = "PLAT_SERIAL_002";
-      form.platformCertificatePem = "-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----";
+      form.platformCertificatePem =
+        "-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----";
 
       const payload = buildProviderConfigPayload(form);
 
@@ -21,7 +22,9 @@ describe("payment-config-model", () => {
       expect(payload.publicConfigJson["platformCertificateSerialNo"]).toBe(
         "PLAT_SERIAL_002",
       );
-      expect(payload.publicConfigJson).not.toHaveProperty("certificateSerialNo");
+      expect(payload.publicConfigJson).not.toHaveProperty(
+        "certificateSerialNo",
+      );
     });
 
     it("writes platformCertificatePem to sensitiveConfigJson (not publicConfigJson)", () => {
@@ -31,8 +34,12 @@ describe("payment-config-model", () => {
 
       const payload = buildProviderConfigPayload(form);
 
-      expect(payload.sensitiveConfigJson).toHaveProperty("platformCertificatePem");
-      expect(payload.publicConfigJson).not.toHaveProperty("platformCertificatePem");
+      expect(payload.sensitiveConfigJson).toHaveProperty(
+        "platformCertificatePem",
+      );
+      expect(payload.publicConfigJson).not.toHaveProperty(
+        "platformCertificatePem",
+      );
     });
 
     it("falls back to certificateSerialNo when merchantCertificateSerialNo is empty", () => {

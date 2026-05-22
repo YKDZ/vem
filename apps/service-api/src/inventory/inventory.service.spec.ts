@@ -9,7 +9,9 @@ import { InventoryService } from "./inventory.service";
 const mockNotificationsService = { createForMachine: vi.fn() };
 const mockHardwarePoliciesService = { getPolicy: vi.fn() };
 
-function makeMockTx(orderItemRows: { inventoryId: string; quantity: number }[]) {
+function makeMockTx(
+  orderItemRows: { inventoryId: string; quantity: number }[],
+) {
   const executeResult = vi.fn().mockResolvedValue(undefined);
   const insertValues = vi.fn().mockReturnValue({
     returning: vi.fn().mockResolvedValue([]),

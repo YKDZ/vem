@@ -1,4 +1,8 @@
-import axios, { AxiosError, type AxiosRequestConfig, type AxiosResponse } from "axios";
+import axios, {
+  AxiosError,
+  type AxiosRequestConfig,
+  type AxiosResponse,
+} from "axios";
 
 export type ApiResponse<T> = {
   code: number;
@@ -108,7 +112,10 @@ request.interceptors.response.use(
     } else if (error.response?.status === 403) {
       window.dispatchEvent(
         new CustomEvent("vem:message", {
-          detail: { type: "warning", content: "\u6ca1\u6709\u6743\u9650\u8bbf\u95ee\u8be5\u8d44\u6e90" },
+          detail: {
+            type: "warning",
+            content: "\u6ca1\u6709\u6743\u9650\u8bbf\u95ee\u8be5\u8d44\u6e90",
+          },
         }),
       );
     } else {
