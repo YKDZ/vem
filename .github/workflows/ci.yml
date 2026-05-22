@@ -1,0 +1,201 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  static:
+    name: Static Checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install Dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Format Check
+        run: pnpm exec oxfmt --check .
+
+      - name: Typecheck
+        run: pnpm turbo typecheck
+
+      - name: Lint
+        run: pnpm turbo lint
+
+  unit-tests:
+    name: Unit Tests
+    needs: static
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install Dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run Unit Tests
+        run: pnpm turbo test
+
+  e2e-tests:
+    name: E2E Tests
+    needs: static
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: vem
+          POSTGRES_USER: vem
+          POSTGRES_PASSWORD: vem_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U vem -d vem"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install Dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Start MQTT Broker
+        run: |
+          mkdir -p /tmp/mosquitto-ci
+          printf 'listener 1883 0.0.0.0\nallow_anonymous true\n' > /tmp/mosquitto-ci/mosquitto.conf
+          docker run -d --name mosquitto \
+            -p 1883:1883 \
+            -v /tmp/mosquitto-ci/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro \
+            eclipse-mosquitto:2
+
+      - name: Build Service API
+        run: pnpm turbo build --filter service-api
+
+      - name: Run Database Migrations
+        run: pnpm --filter @vem/db migrate
+        env:
+          DATABASE_URL: postgresql://vem:vem_password@localhost:5432/vem
+
+      - name: Start Service API
+        working-directory: apps/service-api
+        run: node dist/main.js > ../../service-api.log 2>&1 &
+        env:
+          DATABASE_URL: postgresql://vem:vem_password@localhost:5432/vem
+          JWT_SECRET: ci-jwt-secret-at-least-32-characters-long!
+          JWT_REFRESH_SECRET: ci-jwt-refresh-secret-minimum-32-chars!!
+          MACHINE_JWT_SECRET: ci-machine-jwt-secret-min-32-chars-long!
+          MACHINE_CREDENTIAL_ENCRYPTION_KEY: ci-machine-cred-enc-key-32-chars!!
+          MQTT_URL: mqtt://localhost:1883
+          PAYMENT_MOCK_ENABLED: "true"
+          PAYMENT_WEBHOOK_BASE_URL: http://localhost:3000
+          BOOTSTRAP_ADMIN_PASSWORD: AdminPassword123!
+
+      - name: Wait for Service API
+        timeout-minutes: 2
+        run: |
+          echo "Waiting for Service API..."
+          RETRIES=60
+          until curl -s -f http://localhost:3000/api/health > /dev/null 2>&1; do
+            printf '.'
+            sleep 2
+            RETRIES=$((RETRIES-1))
+            if [ $RETRIES -le 0 ]; then
+              echo " Timeout!"
+              cat service-api.log
+              exit 1
+            fi
+          done
+          echo " Ready!"
+
+      - name: Start Admin UI Dev Server
+        working-directory: apps/admin-ui
+        run: pnpm dev > ../../admin-ui.log 2>&1 &
+
+      - name: Wait for Admin UI
+        timeout-minutes: 2
+        run: |
+          echo "Waiting for Admin UI..."
+          RETRIES=60
+          until curl -s -f http://localhost:5173 > /dev/null 2>&1; do
+            printf '.'
+            sleep 2
+            RETRIES=$((RETRIES-1))
+            if [ $RETRIES -le 0 ]; then
+              echo " Timeout!"
+              cat admin-ui.log
+              exit 1
+            fi
+          done
+          echo " Ready!"
+
+      - name: Install Playwright Browsers
+        run: |
+          for attempt in 1 2 3; do
+            pnpm exec playwright install --with-deps chromium && exit 0
+            if [ "$attempt" -eq 3 ]; then exit 1; fi
+            echo "Attempt $attempt failed, retrying..."
+            sudo rm -rf /var/lib/apt/lists/*
+          done
+
+      - name: Run E2E Tests
+        working-directory: apps/admin-ui
+        run: pnpm test:e2e
+
+      - name: Upload Playwright Report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: apps/admin-ui/playwright-report/
+          retention-days: 7
+
+      - name: Upload Logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-logs
+          path: |
+            service-api.log
+            admin-ui.log
+          retention-days: 3
