@@ -1,4 +1,4 @@
-ALTER TYPE "notification_type" ADD VALUE 'work_order_created';--> statement-breakpoint
+ALTER TYPE "notification_type" ADD VALUE IF NOT EXISTS 'work_order_created';--> statement-breakpoint
 ALTER TYPE "payment_provider_type" ADD VALUE 'wechat_pay' BEFORE 'qr_code';--> statement-breakpoint
 ALTER TYPE "payment_provider_type" ADD VALUE 'alipay' BEFORE 'qr_code';--> statement-breakpoint
 ALTER TYPE "permission_code" ADD VALUE 'machineOps.read';--> statement-breakpoint

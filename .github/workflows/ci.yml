@@ -60,6 +60,9 @@ jobs:
       - name: Install Dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Build Workspace Packages
+        run: pnpm turbo build --filter @vem/shared --filter @vem/db
+
       - name: Run Unit Tests
         run: pnpm turbo test
 
