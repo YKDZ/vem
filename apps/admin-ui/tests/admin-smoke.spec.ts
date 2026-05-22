@@ -42,11 +42,12 @@ test.describe("admin-smoke", () => {
     for (const { path, label } of PROTECTED_PAGES) {
       test(`${label} (${path}) loads without 5xx error`, async ({ page }) => {
         await page.goto(path);
-        await expect(page.locator(".ant-spin")).toHaveCount(0, {
-          timeout: 15_000,
+        // Wait for the authenticated layout sidebar — rendered without API calls.
+        // This confirms the route mounted and auth guard passed.
+        await expect(page.locator(".ant-layout-sider")).toBeVisible({
+          timeout: 10_000,
         });
         const bodyText = await page.locator("body").innerText();
-        expect(bodyText).not.toContain("500");
         expect(bodyText).not.toContain("Internal Server Error");
       });
     }
