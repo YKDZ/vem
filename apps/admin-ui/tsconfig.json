@@ -16,5 +16,5 @@
     "customConditions": ["import", "types"],
     "types": ["node"]
   },
-  "include": ["src/**/*.ts", "src/**/*.vue"]
+  "include": ["src/**/*.ts", "src/**/*.vue", "tests/**/*.ts"]
 }

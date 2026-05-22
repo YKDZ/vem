@@ -12,7 +12,7 @@
     "preview": "vite preview --host 0.0.0.0",
     "test": "vitest run --passWithNoTests",
     "test:e2e": "playwright test",
-    "typecheck": "tsc --noEmit && vue-tsc --noEmit && tsc --noEmit -p tsconfig.test.json"
+    "typecheck": "tsc --noEmit && vue-tsc --noEmit"
   },
   "dependencies": {
     "@antdv-next/icons": "^1.0.6",
