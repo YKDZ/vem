@@ -1,12 +1,12 @@
 ALTER TYPE "notification_type" ADD VALUE IF NOT EXISTS 'work_order_created';--> statement-breakpoint
-ALTER TYPE "payment_provider_type" ADD VALUE 'wechat_pay' BEFORE 'qr_code';--> statement-breakpoint
-ALTER TYPE "payment_provider_type" ADD VALUE 'alipay' BEFORE 'qr_code';--> statement-breakpoint
-ALTER TYPE "permission_code" ADD VALUE 'machineOps.read';--> statement-breakpoint
-ALTER TYPE "permission_code" ADD VALUE 'machineOps.write';--> statement-breakpoint
-ALTER TYPE "permission_code" ADD VALUE 'hardwareErrorPolicies.read';--> statement-breakpoint
-ALTER TYPE "permission_code" ADD VALUE 'hardwareErrorPolicies.write';--> statement-breakpoint
-ALTER TYPE "permission_code" ADD VALUE 'maintenanceWorkOrders.read';--> statement-breakpoint
-ALTER TYPE "permission_code" ADD VALUE 'maintenanceWorkOrders.write';--> statement-breakpoint
+ALTER TYPE "payment_provider_type" ADD VALUE IF NOT EXISTS 'wechat_pay' BEFORE 'qr_code';--> statement-breakpoint
+ALTER TYPE "payment_provider_type" ADD VALUE IF NOT EXISTS 'alipay' BEFORE 'qr_code';--> statement-breakpoint
+ALTER TYPE "permission_code" ADD VALUE IF NOT EXISTS 'machineOps.read';--> statement-breakpoint
+ALTER TYPE "permission_code" ADD VALUE IF NOT EXISTS 'machineOps.write';--> statement-breakpoint
+ALTER TYPE "permission_code" ADD VALUE IF NOT EXISTS 'hardwareErrorPolicies.read';--> statement-breakpoint
+ALTER TYPE "permission_code" ADD VALUE IF NOT EXISTS 'hardwareErrorPolicies.write';--> statement-breakpoint
+ALTER TYPE "permission_code" ADD VALUE IF NOT EXISTS 'maintenanceWorkOrders.read';--> statement-breakpoint
+ALTER TYPE "permission_code" ADD VALUE IF NOT EXISTS 'maintenanceWorkOrders.write';--> statement-breakpoint
 CREATE TABLE "payment_reconciliation_attempts" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
 	"payment_id" uuid NOT NULL,
