@@ -175,89 +175,67 @@ git push origin feat/refund-standalone-page
 
 适用于改动横跨多个包的情况，例如"扫码枪支付"功能需要同时修改 `packages/shared`、`apps/service-api`、`apps/machine`。
 
-### 提前对齐接口契约，减少沟通成本
-
-跨模块开发最大的风险是**接口不一致**：后端改了字段名，前端不知道；前端以为有某个接口，后端还没实现。解决方法不是频繁开会，而是**动工前先在 GitHub Issue 中写清楚接口契约，然后先合并 `packages/shared` 的类型定义，让所有人都能基于同一份契约独立并行开发**。
-
-#### 第一步：开 Issue，写清楚接口契约
-
-在 GitHub 上创建一个 Issue，标题格式例如 `[设计] 扫码枪支付接口设计`。Issue 正文包含：
-
-- **功能目标**：一两句话说清楚要做什么
-- **接口变更**：新增/修改的 API 端点（路径、请求体、响应体结构）
-- **Schema/类型变更**：`packages/shared` 中需要新增或修改的 Zod schema 或 TypeScript 类型
-- **DB 变更**：需要新增/修改的表或字段（如有）
-- **分工**：谁负责哪个模块
-
-Issue 不需要写得面面俱到，能让每个人独立开始工作就够了。如果开发中发现设计有误，在 Issue 中留评论记录变更原因即可。
-
-> Issue 的角色是**轻量设计文档**，不是正式规格说明书。写够用就行，不用追求完整。
-
-#### 第二步：先合并 `packages/shared` 的类型定义
-
-在所有人开始动工之前，**先把 `packages/shared` 中的接口类型定义提交并合并进主分支**（`main` 或集成分支）。这样：
-
-- 后端可以直接 `import` 类型写实现
-- 前端可以直接 `import` 类型写调用层
-- 类型不匹配时 TypeScript 会在编译期报错，无需人工比对
-
-```bash
-# 先提交 shared 类型，推送让其他人可以拉取
-git add packages/shared/
-git commit -m "feat(shared): 新增扫码支付相关接口类型定义"
-git push origin feat/barcode-scanner-payment
-```
-
-其他协作者 `git pull` 后即可基于这份类型定义独立开始各自模块的实现，无需等对方完成。
-
-#### 第三步：PR 正文作为实现记录
-
-PR 合并后，代码和 PR 正文一起永久留存在仓库历史中。好的 PR 正文应该：
-
-- 关联对应的设计 Issue（`closes #123`）
-- 说明**为什么**这样做，而不只是"做了什么"
-- 记录与原始 Issue 设计的偏差（如有）
-
-这样即使几个月后有人翻历史，也能快速理解来龙去脉，不需要找人口头解释。
-
----
-
 ### 情形 A：一个人负责所有模块
 
 **关键原则：同一功能的所有模块变更放在同一个分支和同一个 PR 中。** 不要拆成多个 PR 再合并，因为这会导致 `main` 中出现残缺的半成品状态。
 
+如果改动较复杂，可以先开一个 Issue 简单描述计划，方便 @YKDZ 了解背景、提前给意见，避免方向走偏后大返工。
+
 ### 情形 B：多人分工，各负责不同模块
 
-使用**集成分支模式**，不要多人直接在同一分支上互相推送（冲突频繁、难追责）：
+跨模块开发最大的风险是**接口不一致**：后端改了字段名，前端不知道；前端以为有某个接口，后端还没实现。靠频繁沟通解决这个问题效率极低，正确做法是**通过集成分支 + 接口契约先行让所有人独立并行开发**，全程不需要 @YKDZ 介入，只在最终 PR 合并进 `main` 时才需要他审核。
 
 ```
 main
- └─ feat/vision-recommend          ← 集成分支，完成后 PR → main
-      ├─ feat/vision-recommend-api    ← 协作者 A 负责 service-api
-      └─ feat/vision-recommend-ui     ← 协作者 B 负责 machine UI
+ └─ feat/vision-recommend            ← 集成分支，完成后 PR → main（需 @YKDZ）
+      ├─ feat/vision-recommend-api      ← 协作者 A 负责 service-api
+      └─ feat/vision-recommend-ui       ← 协作者 B 负责 machine UI
 ```
 
-**① 由发起人从 main 创建集成分支并推送**
+**① 发起人创建集成分支，并开 Issue 写清接口契约**
 
 ```bash
 git switch -c feat/vision-recommend main
 git push -u origin feat/vision-recommend
 ```
 
-**② 各协作者从集成分支拉出自己的子分支**
+同时在 GitHub 上创建一个 Issue（标题例如 `[设计] 视觉推荐接口设计`），正文写清楚：
+
+- **功能目标**：一两句话说清楚要做什么
+- **接口变更**：新增/修改的 API 端点（路径、请求体、响应体结构）
+- **Schema/类型变更**：`packages/shared` 中需要新增或修改的类型
+- **DB 变更**：需要新增/修改的表或字段（如有）
+- **分工**：谁负责哪个模块
+
+> Issue 是**轻量设计文档**，不是正式规格说明书。写够让每人独立开始工作就行，开发中发现设计有误在 Issue 里留评论即可。
+
+**② 发起人先将 `packages/shared` 类型定义提交到集成分支**
+
+在所有人开始动工之前，先把接口类型定义推到集成分支，这样每个协作者拉取后就能立即基于稳定的类型契约开始各自的实现，无需等待对方，TypeScript 也会在编译期捕获任何不一致：
+
+```bash
+git add packages/shared/
+git commit -m "feat(shared): 新增视觉推荐相关接口类型定义"
+git push origin feat/vision-recommend
+```
+
+**③ 各协作者从集成分支拉出自己的子分支**
 
 ```bash
 git fetch origin
 git switch -c feat/vision-recommend-api origin/feat/vision-recommend
+# 此时 packages/shared 类型已可用，可直接 import
 ```
 
-**③ 各自完成后，发 PR 目标选集成分支（不是 main）**
+**④ 各自完成后，发 PR 目标选集成分支（不是 main）**
 
-Ruleset 只保护 `main`，集成分支之间的 PR 不受限，可以自己合并，无需 @YKDZ 审核。
+Ruleset 只保护 `main`，集成分支之间的 PR 不受限，**可以自己合并，无需 @YKDZ 审核**。
 
-**④ 所有子模块合并进集成分支后，联调验证通过，发最终 PR → main 由 @YKDZ 审核**
+**⑤ 所有子模块合并进集成分支后，联调验证通过，发最终 PR → main 由 @YKDZ 审核**
 
-**⑤ 在开发期间，定期把 main 的最新变更同步到集成分支**
+PR 正文关联设计 Issue（`closes #123`），并说明与原始设计的偏差（如有）。PR 合并后 Issue 自动关闭，代码、PR 正文、设计 Issue 一起永久留存在仓库历史中，几个月后翻历史也能看懂来龙去脉。
+
+**⑥ 在开发期间，定期把 main 的最新变更同步到集成分支**
 
 ```bash
 # 在集成分支上执行
