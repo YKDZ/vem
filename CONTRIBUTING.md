@@ -157,15 +157,22 @@ git commit -m "feat(admin-ui): 新增独立退款管理页面"
 
 > **提示**：小步提交，每个 commit 对应一个有意义的变更点，便于 CR 和回溯。
 
-### 第三步：推送到远程
+### 第三步：推送并立即创建 Draft PR
 
 ```bash
 git push origin feat/refund-standalone-page
 ```
 
-首次推送后，命令行会输出创建 PR 的链接，直接点击即可。
+首次推送后，命令行会输出创建 PR 的链接，直接点击，然后选择 **Create draft pull request**（点击「Create pull request」按钮旁边的下拉箭头）。
 
-### 第四步：在 GitHub 创建 PR
+**不要等到功能全部完成再开 PR。** Draft PR 有两个关键作用：
+
+- **CI 立刻开始运行**，尽早发现格式/类型/测试问题，而不是最后才集中爆出
+- **对所有协作者可见**，避免重复工作，@YKDZ 也能提前了解进度和方向
+
+功能完成、本地验证通过后，点击 PR 页面的 **「Ready for review」** 按钮即可转为正式 PR。
+
+### 第四步：在 GitHub 完成 PR
 
 见 [PR 流程](#9-pr-流程)。
 
@@ -450,7 +457,9 @@ pnpm exec oxfmt . && pnpm turbo typecheck && pnpm turbo lint && pnpm turbo test
 
 ### 创建 PR
 
-推送分支后在 GitHub 上创建 PR，目标分支选 `main`。
+推送分支后在 GitHub 上创建 **Draft PR**，目标分支选 `main`。开发过程中保持 Draft 状态；完成后点击「Ready for review」转为正式 PR，并在群里 @ 一下 @YKDZ 提醒审核。
+
+> **为什么要用 Draft PR？** Ruleset 只阻止「直接 push main」，不阻止开 Draft PR。Draft PR 让 CI 持续运行，让协作者看到进度，也避免误触「Merge」按钮把未完成的代码合进去。
 
 **PR 标题格式** 与 commit 一致：
 
