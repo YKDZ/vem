@@ -27,8 +27,8 @@
 
 仓库根目录已包含 `.devcontainer` 配置，内置 Node.js、Rust、pnpm、Docker 等全部依赖，**无需手动安装任何环境**。
 
-1. 安装 [VS Code](https://code.visualstudio.com/) 及 [Dev Containers 扩展](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers)
-2. 打开仓库后，VS Code 会弹出提示 "Reopen in Container / 在容器中重新打开"，点击即可
+1. 安装 [VS Code](https://code.visualstudio.com/) 及 [Dev Containers 扩展](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers)（或任何支持 devcontainer 标准的 IDE）
+2. 打开仓库后，VS Code 会弹出提示 "在容器中重新打开"，点击即可
 3. 等待镜像构建完成，环境即刻就绪
 
 > 镜像构建过程需要访问外网下载镜像，若没有梯子配置经验那么只能使用下方说的方式手动配置开发环境。
@@ -94,7 +94,7 @@ main ──────●──────────────●───
 
 ## 4. 提交信息规范
 
-遵循 [Conventional Commits](https://www.conventionalcommits.org/zh-hans/) 格式：
+尽量遵循 [Conventional Commits](https://www.conventionalcommits.org/zh-hans/) 格式：
 
 ```
 <类型>(<范围>): <简短描述>
@@ -122,7 +122,7 @@ git commit -m "fix(machine): handle barcode_scanned event when checkout locked"
 git commit -m "chore: upgrade pnpm to 10.34"
 ```
 
-一个 commit 尽量只做一件事。跨模块开发时不要把所有改动堆在同一个 commit 里。不过不做强制要求，尽力即可。
+一个 commit 尽量只做一件事。跨模块开发时不要把所有改动堆在同一个 commit 里。不过不做强制要求，尽力即可，可以让 ai 顺便帮你写提交消息。
 
 ---
 
