@@ -293,8 +293,8 @@ export class PaymentOpsService {
 
     for (const machine of machineRows) {
       try {
-        // oxlint-disable-next-line no-await-in-loop
         const options =
+          // oxlint-disable-next-line no-await-in-loop
           await this.providerConfigs.listMachinePaymentOptionsForMachine(
             machine.id,
           );

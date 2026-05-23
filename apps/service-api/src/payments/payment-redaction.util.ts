@@ -101,6 +101,7 @@ export function redactPayload(obj: unknown): unknown {
   }
   if (typeof obj === "object") {
     const result: JsonObject = {};
+    // oxlint-disable-next-line no-unsafe-type-assertion -- narrowed by typeof obj === 'object' check
     for (const [key, value] of Object.entries(obj as JsonObject)) {
       if (isSensitiveKey(key)) {
         if (typeof value === "string" && value.length > 0) {
@@ -181,6 +182,7 @@ export function buildRedactedPayload(body: unknown): JsonObject | null {
       redacted !== null &&
       !Array.isArray(redacted)
     ) {
+      // oxlint-disable-next-line no-unsafe-type-assertion -- narrowed by typeof+null+isArray checks
       return redacted as JsonObject;
     }
     return { _value: redacted };

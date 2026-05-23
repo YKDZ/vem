@@ -28,7 +28,7 @@
 仓库根目录已包含 `.devcontainer` 配置，内置 Node.js、Rust、pnpm、Docker 等全部依赖，**无需手动安装任何环境**。
 
 1. 安装 [VS Code](https://code.visualstudio.com/) 及 [Dev Containers 扩展](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers)
-2. 打开仓库后，VS Code 会弹出提示 "Reopen in Container"，点击即可
+2. 打开仓库后，VS Code 会弹出提示 "Reopen in Container / 在容器中重新打开"，点击即可
 3. 等待镜像构建完成，环境即刻就绪
 
 > 镜像构建过程需要访问外网下载镜像，若没有梯子配置经验那么只能使用下方说的方式手动配置开发环境。
@@ -300,7 +300,7 @@ git push origin feat/barcode-scanner-payment
 
 ## 7. 模块重构与 turbo.json 维护
 
-若某个模块需要整体重构（例如将机器 UI 从 Vue 切换到 React，或视觉识别模块从 Python 迁移到其他语言），**必须同时维护该包与 `turbo.json` 的兼容性**，确保 monorepo 的统一构建与 CI 仍然可用。
+若某个模块需要整体重构（例如将机器 UI 从 Vue 切换到 React，或机器控制层迁移到 Kotlin），**必须同时维护该包与 `turbo.json` 的兼容性**，确保 monorepo 的统一构建与 CI 仍然可用。
 
 ### 约束：每个包必须暴露的标准脚本
 
