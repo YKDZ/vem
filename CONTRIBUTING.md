@@ -116,10 +116,10 @@ main ──────●──────────────●───
 
 ```bash
 # 示例
-git commit -m "feat(shared): add scan_pay to paymentMethodSchema"
-git commit -m "feat(service-api): add POST /machine-orders/scan endpoint"
-git commit -m "fix(machine): handle barcode_scanned event when checkout locked"
-git commit -m "chore: upgrade pnpm to 10.34"
+git commit -m "feat(shared): 新增扫码支付方法到 paymentMethodSchema"
+git commit -m "feat(service-api): 新增 POST /machine-orders/scan 扫码下单接口"
+git commit -m "fix(machine): 锁定结账时正确处理 barcode_scanned 事件"
+git commit -m "chore: 升级 pnpm 到 10.34"
 ```
 
 一个 commit 尽量只做一件事。跨模块开发时不要把所有改动堆在同一个 commit 里。不过不做强制要求，尽力即可，可以让 ai 顺便帮你写提交消息。
@@ -152,22 +152,29 @@ git status
 
 # 暂存并提交（可多次提交）
 git add apps/admin-ui/src/views/refunds/
-git commit -m "feat(admin-ui): add standalone refund management page"
+git commit -m "feat(admin-ui): 新增独立退款管理页面"
 ```
 
 > **提示**：小步提交，每个 commit 对应一个有意义的变更点，便于 CR 和回溯。
 
-### 第三步：推送到远程
+### 第三步：推送并立即创建 Draft PR
 
 ```bash
 git push origin feat/refund-standalone-page
 ```
 
-首次推送后，命令行会输出创建 PR 的链接，直接点击即可。
+首次推送后，命令行会输出创建 PR 的链接，直接点击，然后选择 **Create draft pull request**（点击「Create pull request」按钮旁边的下拉箭头）。
 
-### 第四步：在 GitHub 创建 PR
+**不要等到功能全部完成再开 PR。** Draft PR 有两个关键作用：
 
-见 [PR 流程](#8-pr-流程)。
+- **CI 立刻开始运行**，尽早发现格式/类型/测试问题，而不是最后才集中爆出
+- **对所有协作者可见**，避免重复工作，@YKDZ 也能提前了解进度和方向
+
+功能完成、本地验证通过后，点击 PR 页面的 **「Ready for review」** 按钮即可转为正式 PR。
+
+### 第四步：在 GitHub 完成 PR
+
+见 [PR 流程](#9-pr-流程)。
 
 ---
 
@@ -177,40 +184,70 @@ git push origin feat/refund-standalone-page
 
 ### 情形 A：一个人负责所有模块
 
-**关键原则：同一功能的所有模块变更放在同一个分支和同一个 PR 中。** 不要拆成多个 PR 再合并，因为这会导致 `main` 中出现残缺的半成品状态。
+**关键原则：所有模块的变更放在同一个分支和同一个 PR 中。** 不要拆成多个 PR 分批合并，否则 `main` 中会出现残缺的半成品状态。
+
+操作流程与[单模块开发流程](#5-单模块开发流程)完全相同，只需额外注意两点：
+
+1. **按依赖顺序提交**（见下方「按依赖顺序开发」）：先改 `packages/db` / `packages/shared`，再改 `apps/service-api`，最后改前端
+2. **推送前做全量验证**（见下方「本地全量验证」），而不只是验证你改的那个包
+
+如果改动较复杂，可以先开一个 Issue 简单描述计划，方便 @YKDZ 了解背景、提前给意见，避免大返工。
 
 ### 情形 B：多人分工，各负责不同模块
 
-使用**集成分支模式**，不要多人直接在同一分支上互相推送（冲突频繁、难追责）：
+跨模块开发最大的风险是**接口不一致**：后端改了字段名，前端不知道；前端以为有某个接口，后端还没实现。靠频繁沟通解决这个问题效率极低，正确做法是**通过集成分支 + 接口契约先行让所有人独立并行开发**，全程不需要 @YKDZ 介入，只在最终 PR 合并进 `main` 时才需要他审核。
 
 ```
 main
- └─ feat/vision-recommend          ← 集成分支，完成后 PR → main
-      ├─ feat/vision-recommend-api    ← 协作者 A 负责 service-api
-      └─ feat/vision-recommend-ui     ← 协作者 B 负责 machine UI
+ └─ feat/vision-recommend            ← 集成分支，完成后 PR → main（需 @YKDZ）
+      ├─ feat/vision-recommend-api      ← 协作者 A 负责 service-api
+      └─ feat/vision-recommend-ui       ← 协作者 B 负责 machine UI
 ```
 
-**① 由发起人从 main 创建集成分支并推送**
+**① 发起人创建集成分支，并开 Issue 写清接口契约**
 
 ```bash
 git switch -c feat/vision-recommend main
 git push -u origin feat/vision-recommend
 ```
 
-**② 各协作者从集成分支拉出自己的子分支**
+同时在 GitHub 上创建一个 Issue（标题例如 `[设计] 视觉推荐接口设计`），正文写清楚：
+
+- **功能目标**：一两句话说清楚要做什么
+- **接口变更**：新增/修改的 API 端点（路径、请求体、响应体结构）
+- **Schema/类型变更**：`packages/shared` 中需要新增或修改的类型
+- **DB 变更**：需要新增/修改的表或字段（如有）
+- **分工**：谁负责哪个模块
+
+> Issue 是**轻量设计文档**，不是正式规格说明书。写够让每人独立开始工作就行，开发中发现设计有误在 Issue 里留评论即可。
+
+**② 发起人先将 `packages/shared` 类型定义提交到集成分支**
+
+在所有人开始动工之前，先把接口类型定义推到集成分支，这样每个协作者拉取后就能立即基于稳定的类型契约开始各自的实现，无需等待对方，TypeScript 也会在编译期捕获任何不一致：
+
+```bash
+git add packages/shared/
+git commit -m "feat(shared): 新增视觉推荐相关接口类型定义"
+git push origin feat/vision-recommend
+```
+
+**③ 各协作者从集成分支拉出自己的子分支**
 
 ```bash
 git fetch origin
 git switch -c feat/vision-recommend-api origin/feat/vision-recommend
+# 此时 packages/shared 类型已可用，可直接 import
 ```
 
-**③ 各自完成后，发 PR 目标选集成分支（不是 main）**
+**④ 各自完成后，发 PR 目标选集成分支（不是 main）**
 
-Ruleset 只保护 `main`，集成分支之间的 PR 不受限，可以自己合并，无需 @YKDZ 审核。
+Ruleset 只保护 `main`，集成分支之间的 PR 不受限，**可以自己合并，无需 @YKDZ 审核**。
 
-**④ 所有子模块合并进集成分支后，联调验证通过，发最终 PR → main 由 @YKDZ 审核**
+**⑤ 所有子模块合并进集成分支后，联调验证通过，发最终 PR → main 由 @YKDZ 审核**
 
-**⑤ 在开发期间，定期把 main 的最新变更同步到集成分支**
+PR 正文关联设计 Issue（`closes #123`），并说明与原始设计的偏差（如有）。PR 合并后 Issue 自动关闭，代码、PR 正文、设计 Issue 一起永久留存在仓库历史中，几个月后翻历史也能看懂来龙去脉。
+
+**⑥ 在开发期间，定期把 main 的最新变更同步到集成分支**
 
 ```bash
 # 在集成分支上执行
@@ -223,61 +260,65 @@ git push --force-with-lease origin feat/vision-recommend
 
 ---
 
-```bash
-git checkout main
-git pull origin main
-git checkout -b feat/barcode-scanner-payment
-```
-
 ### 按依赖顺序开发（情形 A/B 均适用）
 
-Monorepo 中包之间存在依赖关系（`packages/shared` → `apps/*`），开发顺序应从底层向上：
+Monorepo 中包之间存在依赖关系，开发顺序应从底层向上。**不涉及的层直接跳过。**
 
 ```
-packages/shared（类型/Schema 定义）
+packages/db（DB schema + migration，有表结构变更时）
        ↓
-apps/service-api（后端接口）
+packages/shared（TypeScript 类型 / Zod Schema 定义）
        ↓
-apps/machine（前端 + 原生层）
+apps/service-api（后端接口实现）
+       ↓
+apps/machine / apps/admin-ui（前端）
 ```
 
-**① 先改 `packages/shared`（类型契约层）**
+**① 如需改 DB schema，先在 `packages/db` 生成 migration**
 
 ```bash
-# 修改 packages/shared/src/enums/payment-status.ts
-# 添加 scan_pay 枚举值
+# 修改 packages/db/src/drizzle/schema/ 下的表定义，然后生成增量迁移文件：
+pnpm --filter @vem/db generate
 
-git add packages/shared/
-git commit -m "feat(shared): add scan_pay to paymentMethodSchema"
+git add packages/db/
+git commit -m "feat(db): 新增扫码支付订单表"
 ```
 
-**② 再改 `apps/service-api`**
+> 不要手动编辑 `packages/db/drizzle/` 下的迁移文件，它们由 drizzle-kit 自动生成。
+
+**② 改 `packages/shared`（类型契约层）**
+
+```bash
+# 修改 packages/shared/src/ 下的类型或 Schema
+
+git add packages/shared/
+git commit -m "feat(shared): 新增扫码支付方法到 paymentMethodSchema"
+```
+
+**③ 改 `apps/service-api`**
 
 ```bash
 # 实现 POST /machine-orders/scan 接口
 
 git add apps/service-api/
-git commit -m "feat(service-api): add barcode scan order creation endpoint"
+git commit -m "feat(service-api): 新增扫码下单接口"
 ```
 
-**③ 最后改 `apps/machine`**
+**④ 改 `apps/machine` 或 `apps/admin-ui`**
 
 ```bash
 # Rust 层：HID 读取 + Tauri 事件
 # Vue 层：监听事件，调接口
 
 git add apps/machine/
-git commit -m "feat(machine): integrate barcode scanner HID read and checkout flow"
+git commit -m "feat(machine): 集成条码扫描 HID 读取与结账流程"
 ```
 
 ### 本地全量验证（推送前必做）
 
-跨模块变更需要验证所有受影响包都能正确构建：
+跨模块变更需要验证所有受影响的包都能正确构建：
 
 ```bash
-# 构建所有受影响的包（turbo 自动处理依赖顺序）
-pnpm turbo build --filter @vem/shared --filter service-api
-
 # 全量类型检查（会检测到跨包类型不匹配）
 pnpm turbo typecheck
 
@@ -287,14 +328,6 @@ pnpm turbo lint
 # 全量单元测试
 pnpm turbo test
 ```
-
-### 推送与 PR（情形 A）
-
-```bash
-git push origin feat/barcode-scanner-payment
-```
-
-在 PR 描述中需要说明各个包的改动目的（见 [PR 流程](#9-pr-流程)）。
 
 ---
 
@@ -424,12 +457,14 @@ pnpm exec oxfmt . && pnpm turbo typecheck && pnpm turbo lint && pnpm turbo test
 
 ### 创建 PR
 
-推送分支后在 GitHub 上创建 PR，目标分支选 `main`。
+推送分支后在 GitHub 上创建 **Draft PR**，目标分支选 `main`。开发过程中保持 Draft 状态；完成后点击「Ready for review」转为正式 PR，并在群里 @ 一下 @YKDZ 提醒审核。
+
+> **为什么要用 Draft PR？** Ruleset 只阻止「直接 push main」，不阻止开 Draft PR。Draft PR 让 CI 持续运行，让协作者看到进度，也避免误触「Merge」按钮把未完成的代码合进去。
 
 **PR 标题格式** 与 commit 一致：
 
 ```
-feat(admin-ui): add standalone refund management page
+feat(admin-ui): 新增独立退款管理页面
 ```
 
 **PR 描述模板**（复制填写）：
@@ -438,6 +473,10 @@ feat(admin-ui): add standalone refund management page
 ## 做了什么
 
 简短说明本次变更的目的。
+
+## 关联 Issue
+
+closes #<Issue 编号>（如有对应设计 Issue）
 
 ## 改动范围
 
