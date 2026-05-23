@@ -167,7 +167,7 @@ git push origin feat/refund-standalone-page
 
 ### 第四步：在 GitHub 创建 PR
 
-见 [PR 流程](#8-pr-流程)。
+见 [PR 流程](#9-pr-流程)。
 
 ---
 
@@ -177,9 +177,14 @@ git push origin feat/refund-standalone-page
 
 ### 情形 A：一个人负责所有模块
 
-**关键原则：同一功能的所有模块变更放在同一个分支和同一个 PR 中。** 不要拆成多个 PR 再合并，因为这会导致 `main` 中出现残缺的半成品状态。
+**关键原则：所有模块的变更放在同一个分支和同一个 PR 中。** 不要拆成多个 PR 分批合并，否则 `main` 中会出现残缺的半成品状态。
 
-如果改动较复杂，可以先开一个 Issue 简单描述计划，方便 @YKDZ 了解背景、提前给意见，避免方向走偏后大返工。
+操作流程与[单模块开发流程](#5-单模块开发流程)完全相同，只需额外注意两点：
+
+1. **按依赖顺序提交**（见下方「按依赖顺序开发」）：先改 `packages/db` / `packages/shared`，再改 `apps/service-api`，最后改前端
+2. **推送前做全量验证**（见下方「本地全量验证」），而不只是验证你改的那个包
+
+如果改动较复杂，可以先开一个 Issue 简单描述计划，方便 @YKDZ 了解背景、提前给意见，避免大返工。
 
 ### 情形 B：多人分工，各负责不同模块
 
@@ -248,35 +253,42 @@ git push --force-with-lease origin feat/vision-recommend
 
 ---
 
-```bash
-git checkout main
-git pull origin main
-git checkout -b feat/barcode-scanner-payment
-```
-
 ### 按依赖顺序开发（情形 A/B 均适用）
 
-Monorepo 中包之间存在依赖关系（`packages/shared` → `apps/*`），开发顺序应从底层向上：
+Monorepo 中包之间存在依赖关系，开发顺序应从底层向上。**不涉及的层直接跳过。**
 
 ```
-packages/shared（类型/Schema 定义）
+packages/db（DB schema + migration，有表结构变更时）
        ↓
-apps/service-api（后端接口）
+packages/shared（TypeScript 类型 / Zod Schema 定义）
        ↓
-apps/machine（前端 + 原生层）
+apps/service-api（后端接口实现）
+       ↓
+apps/machine / apps/admin-ui（前端）
 ```
 
-**① 先改 `packages/shared`（类型契约层）**
+**① 如需改 DB schema，先在 `packages/db` 生成 migration**
 
 ```bash
-# 修改 packages/shared/src/enums/payment-status.ts
-# 添加 scan_pay 枚举值
+# 修改 packages/db/src/drizzle/schema/ 下的表定义，然后生成增量迁移文件：
+pnpm --filter @vem/db generate
+
+git add packages/db/
+git commit -m "feat(db): 新增扫码支付订单表"
+```
+
+> 不要手动编辑 `packages/db/drizzle/` 下的迁移文件，它们由 drizzle-kit 自动生成。
+
+**② 改 `packages/shared`（类型契约层）**
+
+```bash
+# 修改 packages/shared/src/ 下的类型或 Schema
 
 git add packages/shared/
 git commit -m "feat(shared): 新增扫码支付方法到 paymentMethodSchema"
 ```
 
-**② 再改 `apps/service-api`**
+**③ 改 `apps/service-api`**
 
 ```bash
 # 实现 POST /machine-orders/scan 接口
@@ -285,7 +297,7 @@ git add apps/service-api/
 git commit -m "feat(service-api): 新增扫码下单接口"
 ```
 
-**③ 最后改 `apps/machine`**
+**④ 改 `apps/machine` 或 `apps/admin-ui`**
 
 ```bash
 # Rust 层：HID 读取 + Tauri 事件
@@ -297,12 +309,9 @@ git commit -m "feat(machine): 集成条码扫描 HID 读取与结账流程"
 
 ### 本地全量验证（推送前必做）
 
-跨模块变更需要验证所有受影响包都能正确构建：
+跨模块变更需要验证所有受影响的包都能正确构建：
 
 ```bash
-# 构建所有受影响的包（turbo 自动处理依赖顺序）
-pnpm turbo build --filter @vem/shared --filter service-api
-
 # 全量类型检查（会检测到跨包类型不匹配）
 pnpm turbo typecheck
 
@@ -312,14 +321,6 @@ pnpm turbo lint
 # 全量单元测试
 pnpm turbo test
 ```
-
-### 推送与 PR（情形 A）
-
-```bash
-git push origin feat/barcode-scanner-payment
-```
-
-在 PR 描述中需要说明各个包的改动目的（见 [PR 流程](#9-pr-流程)）。
 
 ---
 
