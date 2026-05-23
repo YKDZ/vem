@@ -73,15 +73,15 @@ graph TB
     ADMIN   -. "import types" .-> SHARED
 ```
 
-| 模块 | 位置 | 技术栈 | 对外接口 |
-|------|------|--------|----------|
-| A · 机器 UI | `apps/machine` | Vue 3 + Tauri WebView | Tauri IPC、REST API |
-| B · 机器原生层 | `apps/machine/src-tauri` | Rust + Tauri | Tauri IPC 命令、MQTT |
-| C · 视觉识别 | *(待实现)* | 任意语言 | `POST localhost:7892/infer` → `VisionProfile` JSON |
-| D · 后端 API | `apps/service-api` | NestJS 11 + PostgreSQL 16 | REST API、MQTT |
-| E · 管理后台 UI | `apps/admin-ui` | Vue 3 + Ant Design Vue | REST API |
-| shared | `packages/shared` | TypeScript + Zod | npm 包，被 A/D/E 引用 |
-| db | `packages/db` | Drizzle ORM | npm 包，被 D 引用 |
+| 模块            | 位置                     | 技术栈                    | 对外接口                                           |
+| --------------- | ------------------------ | ------------------------- | -------------------------------------------------- |
+| A · 机器 UI     | `apps/machine`           | Vue 3 + Tauri WebView     | Tauri IPC、REST API                                |
+| B · 机器原生层  | `apps/machine/src-tauri` | Rust + Tauri              | Tauri IPC 命令、MQTT                               |
+| C · 视觉识别    | _(待实现)_               | 任意语言                  | `POST localhost:7892/infer` → `VisionProfile` JSON |
+| D · 后端 API    | `apps/service-api`       | NestJS 11 + PostgreSQL 16 | REST API、MQTT                                     |
+| E · 管理后台 UI | `apps/admin-ui`          | Vue 3 + Ant Design Vue    | REST API                                           |
+| shared          | `packages/shared`        | TypeScript + Zod          | npm 包，被 A/D/E 引用                              |
+| db              | `packages/db`            | Drizzle ORM               | npm 包，被 D 引用                                  |
 
 ---
 
@@ -158,36 +158,22 @@ pnpm exec oxfmt . && pnpm turbo typecheck && pnpm turbo lint && pnpm turbo test
 
 ---
 
-## 当前完成度
-
-| 模块 | 完成度 | 说明 |
-|------|--------|------|
-| A · 机器 UI | ~90% | 九个页面均已实现，主要缺边界情况处理与真机联调 |
-| B · 机器原生层 | ~60% | MQTT / Mock 驱动可用，**真实串口出货驱动待实现** |
-| C · 视觉识别 | 0% | **完全空白**，需从零开发 |
-| D · 后端 API | ~95% | 22 个业务模块全部落地，可投入使用 |
-| E · 管理后台 UI | ~85% | 13 个视图已实现，退款独立页面与用户画像图表待完善 |
-
-剩余主要任务见 [Issues](https://github.com/YKDZ/vem/issues)。
-
----
-
 ## 技术栈一览
 
-| 类型 | 工具 |
-|------|------|
-| 包管理 | [pnpm](https://pnpm.io/) 10 |
-| Monorepo 编排 | [Turborepo](https://turborepo.dev/) 2 |
-| 主要语言 | TypeScript（A/D/E/shared/db）、Rust（B 原生层） |
-| 后端框架 | [NestJS](https://nestjs.com/) 11 |
-| 数据库 | PostgreSQL 16 + [Drizzle ORM](https://orm.drizzle.team/) |
-| 消息队列 | Eclipse Mosquitto 2（MQTT over TLS） |
-| 前端框架 | [Vue 3](https://vuejs.org/) + [Vite](https://vitejs.dev/) |
-| 桌面容器 | [Tauri](https://v2.tauri.app/) 2 |
-| 管理后台 UI 库 | [Ant Design Vue](https://www.antdv-next.com/) |
-| Schema 验证 | [Zod](https://zod.dev/) |
-| 测试框架 | [Vitest](https://vitest.dev/) + [Playwright](https://playwright.dev/) |
-| 格式化 / Lint | [oxfmt](https://github.com/nicolo-ribaudo/oxfmt)、[oxlint](https://oxc.rs/docs/guide/usage/linter) |
+| 类型           | 工具                                                                                               |
+| -------------- | -------------------------------------------------------------------------------------------------- |
+| 包管理         | [pnpm](https://pnpm.io/) 10                                                                        |
+| Monorepo 编排  | [Turborepo](https://turborepo.dev/) 2                                                              |
+| 主要语言       | TypeScript（A/D/E/shared/db）、Rust（B 原生层）                                                    |
+| 后端框架       | [NestJS](https://nestjs.com/) 11                                                                   |
+| 数据库         | PostgreSQL 16 + [Drizzle ORM](https://orm.drizzle.team/)                                           |
+| 消息队列       | Eclipse Mosquitto 2（MQTT over TLS）                                                               |
+| 前端框架       | [Vue 3](https://vuejs.org/) + [Vite](https://vitejs.dev/)                                          |
+| 桌面容器       | [Tauri](https://v2.tauri.app/) 2                                                                   |
+| 管理后台 UI 库 | [Ant Design Vue](https://www.antdv-next.com/)                                                      |
+| Schema 验证    | [Zod](https://zod.dev/)                                                                            |
+| 测试框架       | [Vitest](https://vitest.dev/) + [Playwright](https://playwright.dev/)                              |
+| 格式化 / Lint  | [oxfmt](https://github.com/nicolo-ribaudo/oxfmt)、[oxlint](https://oxc.rs/docs/guide/usage/linter) |
 
 ---
 
