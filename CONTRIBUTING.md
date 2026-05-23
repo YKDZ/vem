@@ -116,10 +116,10 @@ main ──────●──────────────●───
 
 ```bash
 # 示例
-git commit -m "feat(shared): add scan_pay to paymentMethodSchema"
-git commit -m "feat(service-api): add POST /machine-orders/scan endpoint"
-git commit -m "fix(machine): handle barcode_scanned event when checkout locked"
-git commit -m "chore: upgrade pnpm to 10.34"
+git commit -m "feat(shared): 新增扫码支付方法到 paymentMethodSchema"
+git commit -m "feat(service-api): 新增 POST /machine-orders/scan 扫码下单接口"
+git commit -m "fix(machine): 锁定结账时正确处理 barcode_scanned 事件"
+git commit -m "chore: 升级 pnpm 到 10.34"
 ```
 
 一个 commit 尽量只做一件事。跨模块开发时不要把所有改动堆在同一个 commit 里。不过不做强制要求，尽力即可，可以让 ai 顺便帮你写提交消息。
@@ -152,7 +152,7 @@ git status
 
 # 暂存并提交（可多次提交）
 git add apps/admin-ui/src/views/refunds/
-git commit -m "feat(admin-ui): add standalone refund management page"
+git commit -m "feat(admin-ui): 新增独立退款管理页面"
 ```
 
 > **提示**：小步提交，每个 commit 对应一个有意义的变更点，便于 CR 和回溯。
@@ -174,6 +174,53 @@ git push origin feat/refund-standalone-page
 ## 6. 跨模块开发流程
 
 适用于改动横跨多个包的情况，例如"扫码枪支付"功能需要同时修改 `packages/shared`、`apps/service-api`、`apps/machine`。
+
+### 提前对齐接口契约，减少沟通成本
+
+跨模块开发最大的风险是**接口不一致**：后端改了字段名，前端不知道；前端以为有某个接口，后端还没实现。解决方法不是频繁开会，而是**动工前先在 GitHub Issue 中写清楚接口契约，然后先合并 `packages/shared` 的类型定义，让所有人都能基于同一份契约独立并行开发**。
+
+#### 第一步：开 Issue，写清楚接口契约
+
+在 GitHub 上创建一个 Issue，标题格式例如 `[设计] 扫码枪支付接口设计`。Issue 正文包含：
+
+- **功能目标**：一两句话说清楚要做什么
+- **接口变更**：新增/修改的 API 端点（路径、请求体、响应体结构）
+- **Schema/类型变更**：`packages/shared` 中需要新增或修改的 Zod schema 或 TypeScript 类型
+- **DB 变更**：需要新增/修改的表或字段（如有）
+- **分工**：谁负责哪个模块
+
+Issue 不需要写得面面俱到，能让每个人独立开始工作就够了。如果开发中发现设计有误，在 Issue 中留评论记录变更原因即可。
+
+> Issue 的角色是**轻量设计文档**，不是正式规格说明书。写够用就行，不用追求完整。
+
+#### 第二步：先合并 `packages/shared` 的类型定义
+
+在所有人开始动工之前，**先把 `packages/shared` 中的接口类型定义提交并合并进主分支**（`main` 或集成分支）。这样：
+
+- 后端可以直接 `import` 类型写实现
+- 前端可以直接 `import` 类型写调用层
+- 类型不匹配时 TypeScript 会在编译期报错，无需人工比对
+
+```bash
+# 先提交 shared 类型，推送让其他人可以拉取
+git add packages/shared/
+git commit -m "feat(shared): 新增扫码支付相关接口类型定义"
+git push origin feat/barcode-scanner-payment
+```
+
+其他协作者 `git pull` 后即可基于这份类型定义独立开始各自模块的实现，无需等对方完成。
+
+#### 第三步：PR 正文作为实现记录
+
+PR 合并后，代码和 PR 正文一起永久留存在仓库历史中。好的 PR 正文应该：
+
+- 关联对应的设计 Issue（`closes #123`）
+- 说明**为什么**这样做，而不只是"做了什么"
+- 记录与原始 Issue 设计的偏差（如有）
+
+这样即使几个月后有人翻历史，也能快速理解来龙去脉，不需要找人口头解释。
+
+---
 
 ### 情形 A：一个人负责所有模块
 
@@ -248,7 +295,7 @@ apps/machine（前端 + 原生层）
 # 添加 scan_pay 枚举值
 
 git add packages/shared/
-git commit -m "feat(shared): add scan_pay to paymentMethodSchema"
+git commit -m "feat(shared): 新增扫码支付方法到 paymentMethodSchema"
 ```
 
 **② 再改 `apps/service-api`**
@@ -257,7 +304,7 @@ git commit -m "feat(shared): add scan_pay to paymentMethodSchema"
 # 实现 POST /machine-orders/scan 接口
 
 git add apps/service-api/
-git commit -m "feat(service-api): add barcode scan order creation endpoint"
+git commit -m "feat(service-api): 新增扫码下单接口"
 ```
 
 **③ 最后改 `apps/machine`**
@@ -267,7 +314,7 @@ git commit -m "feat(service-api): add barcode scan order creation endpoint"
 # Vue 层：监听事件，调接口
 
 git add apps/machine/
-git commit -m "feat(machine): integrate barcode scanner HID read and checkout flow"
+git commit -m "feat(machine): 集成条码扫描 HID 读取与结账流程"
 ```
 
 ### 本地全量验证（推送前必做）
@@ -429,7 +476,7 @@ pnpm exec oxfmt . && pnpm turbo typecheck && pnpm turbo lint && pnpm turbo test
 **PR 标题格式** 与 commit 一致：
 
 ```
-feat(admin-ui): add standalone refund management page
+feat(admin-ui): 新增独立退款管理页面
 ```
 
 **PR 描述模板**（复制填写）：
@@ -438,6 +485,10 @@ feat(admin-ui): add standalone refund management page
 ## 做了什么
 
 简短说明本次变更的目的。
+
+## 关联 Issue
+
+closes #<Issue 编号>（如有对应设计 Issue）
 
 ## 改动范围
 
