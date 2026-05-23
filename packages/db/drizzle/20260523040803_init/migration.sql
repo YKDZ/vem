@@ -8,14 +8,14 @@ CREATE TYPE "notification_delivery_status" AS ENUM('pending', 'sent', 'failed');
 CREATE TYPE "notification_severity" AS ENUM('info', 'warning', 'critical');--> statement-breakpoint
 CREATE TYPE "notification_status" AS ENUM('unread', 'read', 'archived');--> statement-breakpoint
 CREATE TYPE "notification_target_type" AS ENUM('in_app', 'sms', 'wechat', 'email');--> statement-breakpoint
-CREATE TYPE "notification_type" AS ENUM('low_stock', 'sold_out', 'machine_offline', 'payment_failed', 'dispense_failed');--> statement-breakpoint
+CREATE TYPE "notification_type" AS ENUM('low_stock', 'sold_out', 'machine_offline', 'payment_failed', 'payment_webhook_invalid', 'payment_reconciliation_failed', 'payment_refund_failed', 'payment_certificate_expiring', 'payment_provider_unready', 'dispense_failed', 'work_order_created');--> statement-breakpoint
 CREATE TYPE "order_source" AS ENUM('machine_ui', 'admin', 'api');--> statement-breakpoint
 CREATE TYPE "order_status" AS ENUM('pending_payment', 'payment_expired', 'canceled', 'paid', 'dispensing', 'fulfilled', 'dispense_failed', 'manual_handling', 'refund_pending', 'refunded', 'closed');--> statement-breakpoint
 CREATE TYPE "payment_method" AS ENUM('mock', 'qr_code', 'face_pay');--> statement-breakpoint
 CREATE TYPE "payment_provider_status" AS ENUM('enabled', 'disabled');--> statement-breakpoint
-CREATE TYPE "payment_provider_type" AS ENUM('mock', 'qr_code', 'face_pay', 'aggregate');--> statement-breakpoint
+CREATE TYPE "payment_provider_type" AS ENUM('mock', 'wechat_pay', 'alipay', 'qr_code', 'face_pay', 'aggregate');--> statement-breakpoint
 CREATE TYPE "payment_status" AS ENUM('created', 'pending', 'processing', 'succeeded', 'failed', 'expired', 'canceled', 'refund_pending', 'refunded', 'partial_refunded');--> statement-breakpoint
-CREATE TYPE "permission_code" AS ENUM('dashboard.read', 'products.read', 'products.write', 'inventory.read', 'inventory.adjust', 'inventory.refill', 'orders.read', 'orders.refund', 'payments.read', 'payments.configure', 'payments.refund', 'machines.read', 'machines.write', 'machines.command', 'adminUsers.read', 'adminUsers.write', 'roles.write', 'notifications.read', 'notifications.write', 'audit.read');--> statement-breakpoint
+CREATE TYPE "permission_code" AS ENUM('dashboard.read', 'products.read', 'products.write', 'inventory.read', 'inventory.adjust', 'inventory.refill', 'orders.read', 'orders.refund', 'payments.read', 'payments.configure', 'payments.refund', 'machines.read', 'machines.write', 'machines.command', 'machines.manage-credentials', 'adminUsers.read', 'adminUsers.write', 'roles.write', 'notifications.read', 'notifications.write', 'audit.read', 'machineOps.read', 'machineOps.write', 'hardwareErrorPolicies.read', 'hardwareErrorPolicies.write', 'maintenanceWorkOrders.read', 'maintenanceWorkOrders.write');--> statement-breakpoint
 CREATE TYPE "product_status" AS ENUM('draft', 'active', 'inactive');--> statement-breakpoint
 CREATE TYPE "refund_status" AS ENUM('created', 'processing', 'succeeded', 'failed', 'canceled');--> statement-breakpoint
 CREATE TYPE "role_status" AS ENUM('active', 'disabled');--> statement-breakpoint
@@ -55,6 +55,20 @@ CREATE TABLE "audit_logs" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
+CREATE TABLE "hardware_error_code_configs" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+	"error_code" varchar(64) NOT NULL,
+	"restore_inventory" boolean NOT NULL,
+	"fault_slot" boolean NOT NULL,
+	"request_refund" boolean NOT NULL,
+	"create_work_order" boolean NOT NULL,
+	"severity" "notification_severity" DEFAULT 'critical'::"notification_severity" NOT NULL,
+	"status" "payment_provider_status" DEFAULT 'enabled'::"payment_provider_status" NOT NULL,
+	"updated_by_admin_user_id" uuid,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
+);
+--> statement-breakpoint
 CREATE TABLE "inventories" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
 	"machine_id" uuid NOT NULL,
@@ -68,7 +82,8 @@ CREATE TABLE "inventories" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
 	CONSTRAINT "inventories_on_hand_qty_non_negative" CHECK ("on_hand_qty" >= 0),
 	CONSTRAINT "inventories_reserved_qty_non_negative" CHECK ("reserved_qty" >= 0),
-	CONSTRAINT "inventories_low_stock_threshold_non_negative" CHECK ("low_stock_threshold" >= 0)
+	CONSTRAINT "inventories_low_stock_threshold_non_negative" CHECK ("low_stock_threshold" >= 0),
+	CONSTRAINT "inventories_reserved_qty_lte_on_hand_qty" CHECK ("reserved_qty" <= "on_hand_qty")
 );
 --> statement-breakpoint
 CREATE TABLE "inventory_movements" (
@@ -112,6 +127,31 @@ CREATE TABLE "machine_heartbeats" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
+CREATE TABLE "machine_log_artifacts" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+	"op_id" uuid NOT NULL,
+	"machine_id" uuid NOT NULL,
+	"file_name" varchar(255) NOT NULL,
+	"content_type" varchar(128) NOT NULL,
+	"size_bytes" integer NOT NULL,
+	"storage_path" text NOT NULL,
+	"dedupe_key" varchar(255) NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE "machine_remote_ops" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+	"machine_id" uuid NOT NULL,
+	"type" varchar(64) NOT NULL,
+	"status" varchar(32) DEFAULT 'pending' NOT NULL,
+	"requested_by_admin_user_id" uuid,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"accepted_at" timestamp with time zone,
+	"finished_at" timestamp with time zone,
+	"failed_reason" text,
+	"result_json" jsonb
+);
+--> statement-breakpoint
 CREATE TABLE "machine_slots" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
 	"machine_id" uuid NOT NULL,
@@ -136,9 +176,33 @@ CREATE TABLE "machines" (
 	"status" "machine_status" DEFAULT 'offline'::"machine_status" NOT NULL,
 	"last_seen_at" timestamp with time zone,
 	"mqtt_client_id" varchar(128),
+	"secret_hash" text,
+	"secret_version" integer DEFAULT 1 NOT NULL,
+	"secret_rotated_at" timestamp with time zone,
+	"credential_revoked_at" timestamp with time zone,
+	"mqtt_signing_secret_encrypted_json" jsonb,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"deleted_at" timestamp with time zone
+);
+--> statement-breakpoint
+CREATE TABLE "maintenance_work_orders" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+	"work_order_no" varchar(64) NOT NULL,
+	"machine_id" uuid,
+	"slot_id" uuid,
+	"order_id" uuid,
+	"command_id" uuid,
+	"title" varchar(128) NOT NULL,
+	"description" text NOT NULL,
+	"priority" varchar(32) DEFAULT 'medium' NOT NULL,
+	"status" varchar(32) DEFAULT 'open' NOT NULL,
+	"assignee_admin_user_id" uuid,
+	"resolution_note" text,
+	"dedupe_key" varchar(255) NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"resolved_at" timestamp with time zone
 );
 --> statement-breakpoint
 CREATE TABLE "notification_deliveries" (
@@ -257,6 +321,25 @@ CREATE TABLE "payment_providers" (
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
+CREATE TABLE "payment_reconciliation_attempts" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+	"payment_id" uuid NOT NULL,
+	"provider_id" uuid NOT NULL,
+	"trigger" varchar(32) NOT NULL,
+	"attempt_no" integer NOT NULL,
+	"status" varchar(32) NOT NULL,
+	"provider_payment_status" varchar(64),
+	"provider_trade_no" varchar(128),
+	"error_code" varchar(128),
+	"error_message" text,
+	"raw_payload_sha256" text,
+	"raw_payload_excerpt" text,
+	"next_retry_at" timestamp with time zone,
+	"started_at" timestamp with time zone NOT NULL,
+	"finished_at" timestamp with time zone,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL
+);
+--> statement-breakpoint
 CREATE TABLE "payment_user_snapshots" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
 	"provider_code" varchar(64) NOT NULL,
@@ -267,11 +350,46 @@ CREATE TABLE "payment_user_snapshots" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
+CREATE TABLE "payment_webhook_attempts" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+	"provider_id" uuid,
+	"provider_code" varchar(64) NOT NULL,
+	"payment_id" uuid,
+	"refund_id" uuid,
+	"matched_config_id" uuid,
+	"event_kind" varchar(32) DEFAULT 'unknown' NOT NULL,
+	"event_type" varchar(128),
+	"provider_event_id" varchar(128),
+	"payment_no" varchar(64),
+	"refund_no" varchar(64),
+	"order_no" varchar(64),
+	"remote_ip" varchar(64),
+	"user_agent" text,
+	"headers_hash" text NOT NULL,
+	"headers_summary_json" jsonb NOT NULL,
+	"raw_body_sha256" text NOT NULL,
+	"raw_body_bytes" integer NOT NULL,
+	"raw_body_excerpt" text,
+	"redacted_payload_json" jsonb,
+	"signature_valid" boolean,
+	"business_valid" boolean,
+	"handled" boolean DEFAULT false NOT NULL,
+	"duplicate" boolean DEFAULT false NOT NULL,
+	"failure_reason" varchar(128),
+	"error_code" varchar(128),
+	"http_status" integer,
+	"retention_until" timestamp with time zone NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
+);
+--> statement-breakpoint
 CREATE TABLE "payments" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
 	"payment_no" varchar(64) NOT NULL,
 	"order_id" uuid NOT NULL,
 	"provider_id" uuid NOT NULL,
+	"payment_provider_config_id" uuid,
+	"provider_config_snapshot_json" jsonb,
 	"method" "payment_method" NOT NULL,
 	"status" "payment_status" DEFAULT 'created'::"payment_status" NOT NULL,
 	"amount_cents" integer NOT NULL,
@@ -345,6 +463,40 @@ CREATE TABLE "refresh_tokens" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
+CREATE TABLE "refund_events" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+	"refund_id" uuid NOT NULL,
+	"payment_id" uuid NOT NULL,
+	"provider_id" uuid NOT NULL,
+	"event_type" varchar(128) NOT NULL,
+	"provider_event_id" varchar(128) NOT NULL,
+	"provider_refund_no" varchar(128),
+	"status" "refund_status" NOT NULL,
+	"raw_payload_json" jsonb NOT NULL,
+	"signature_valid" boolean,
+	"handled_at" timestamp with time zone,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE "refund_reconciliation_attempts" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+	"refund_id" uuid NOT NULL,
+	"provider_id" uuid NOT NULL,
+	"trigger" varchar(32) NOT NULL,
+	"attempt_no" integer NOT NULL,
+	"status" varchar(32) NOT NULL,
+	"provider_refund_status" varchar(64),
+	"provider_refund_no" varchar(128),
+	"error_code" varchar(128),
+	"error_message" text,
+	"raw_payload_sha256" text,
+	"raw_payload_excerpt" text,
+	"next_retry_at" timestamp with time zone,
+	"started_at" timestamp with time zone NOT NULL,
+	"finished_at" timestamp with time zone,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL
+);
+--> statement-breakpoint
 CREATE TABLE "refunds" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid(),
 	"refund_no" varchar(64) NOT NULL,
@@ -404,6 +556,8 @@ CREATE INDEX "admin_users_status_idx" ON "admin_users" ("status");--> statement-
 CREATE INDEX "audit_logs_admin_user_id_idx" ON "audit_logs" ("admin_user_id");--> statement-breakpoint
 CREATE INDEX "audit_logs_resource_idx" ON "audit_logs" ("resource_type","resource_id");--> statement-breakpoint
 CREATE INDEX "audit_logs_created_at_idx" ON "audit_logs" ("created_at");--> statement-breakpoint
+CREATE UNIQUE INDEX "hardware_error_code_configs_error_code_unique" ON "hardware_error_code_configs" ("error_code");--> statement-breakpoint
+CREATE INDEX "hardware_error_code_configs_status_idx" ON "hardware_error_code_configs" ("status");--> statement-breakpoint
 CREATE UNIQUE INDEX "inventories_slot_id_unique" ON "inventories" ("slot_id");--> statement-breakpoint
 CREATE INDEX "inventories_machine_id_idx" ON "inventories" ("machine_id");--> statement-breakpoint
 CREATE INDEX "inventories_variant_id_idx" ON "inventories" ("variant_id");--> statement-breakpoint
@@ -419,15 +573,27 @@ CREATE INDEX "machine_events_machine_id_idx" ON "machine_events" ("machine_id");
 CREATE INDEX "machine_events_event_type_idx" ON "machine_events" ("event_type");--> statement-breakpoint
 CREATE INDEX "machine_heartbeats_machine_id_idx" ON "machine_heartbeats" ("machine_id");--> statement-breakpoint
 CREATE INDEX "machine_heartbeats_reported_at_idx" ON "machine_heartbeats" ("reported_at");--> statement-breakpoint
+CREATE INDEX "machine_log_artifacts_op_id_idx" ON "machine_log_artifacts" ("op_id");--> statement-breakpoint
+CREATE INDEX "machine_log_artifacts_machine_id_idx" ON "machine_log_artifacts" ("machine_id");--> statement-breakpoint
+CREATE UNIQUE INDEX "machine_log_artifacts_dedupe_key_unique" ON "machine_log_artifacts" ("dedupe_key");--> statement-breakpoint
+CREATE INDEX "machine_remote_ops_machine_id_idx" ON "machine_remote_ops" ("machine_id");--> statement-breakpoint
+CREATE INDEX "machine_remote_ops_status_idx" ON "machine_remote_ops" ("status");--> statement-breakpoint
 CREATE UNIQUE INDEX "machine_slots_position_unique" ON "machine_slots" ("machine_id","layer_no","cell_no");--> statement-breakpoint
 CREATE INDEX "machine_slots_machine_id_idx" ON "machine_slots" ("machine_id");--> statement-breakpoint
 CREATE INDEX "machine_slots_status_idx" ON "machine_slots" ("status");--> statement-breakpoint
 CREATE UNIQUE INDEX "machines_code_unique" ON "machines" ("code");--> statement-breakpoint
 CREATE INDEX "machines_status_idx" ON "machines" ("status");--> statement-breakpoint
 CREATE INDEX "machines_last_seen_at_idx" ON "machines" ("last_seen_at");--> statement-breakpoint
+CREATE INDEX "machines_credential_revoked_at_idx" ON "machines" ("credential_revoked_at");--> statement-breakpoint
+CREATE UNIQUE INDEX "maintenance_work_orders_no_unique" ON "maintenance_work_orders" ("work_order_no");--> statement-breakpoint
+CREATE UNIQUE INDEX "maintenance_work_orders_dedupe_key_unique" ON "maintenance_work_orders" ("dedupe_key");--> statement-breakpoint
+CREATE INDEX "maintenance_work_orders_status_idx" ON "maintenance_work_orders" ("status");--> statement-breakpoint
+CREATE INDEX "maintenance_work_orders_machine_id_idx" ON "maintenance_work_orders" ("machine_id");--> statement-breakpoint
+CREATE UNIQUE INDEX "notification_deliveries_notification_target_unique" ON "notification_deliveries" ("notification_id","target_id");--> statement-breakpoint
 CREATE INDEX "notification_deliveries_notification_id_idx" ON "notification_deliveries" ("notification_id");--> statement-breakpoint
 CREATE INDEX "notification_deliveries_target_id_idx" ON "notification_deliveries" ("target_id");--> statement-breakpoint
 CREATE INDEX "notification_deliveries_status_idx" ON "notification_deliveries" ("status");--> statement-breakpoint
+CREATE UNIQUE INDEX "notification_targets_name_unique" ON "notification_targets" ("name");--> statement-breakpoint
 CREATE INDEX "notification_targets_type_idx" ON "notification_targets" ("type");--> statement-breakpoint
 CREATE INDEX "notification_targets_status_idx" ON "notification_targets" ("status");--> statement-breakpoint
 CREATE UNIQUE INDEX "notifications_dedupe_key_unique" ON "notifications" ("dedupe_key");--> statement-breakpoint
@@ -446,9 +612,20 @@ CREATE UNIQUE INDEX "payment_events_provider_event_unique" ON "payment_events" (
 CREATE INDEX "payment_events_payment_id_idx" ON "payment_events" ("payment_id");--> statement-breakpoint
 CREATE INDEX "payment_provider_configs_provider_id_idx" ON "payment_provider_configs" ("provider_id");--> statement-breakpoint
 CREATE INDEX "payment_provider_configs_machine_id_idx" ON "payment_provider_configs" ("machine_id");--> statement-breakpoint
+CREATE UNIQUE INDEX "payment_provider_configs_provider_machine_unique" ON "payment_provider_configs" ("provider_id","machine_id");--> statement-breakpoint
+CREATE UNIQUE INDEX "payment_provider_configs_provider_global_unique" ON "payment_provider_configs" ("provider_id") WHERE "machine_id" IS NULL;--> statement-breakpoint
 CREATE UNIQUE INDEX "payment_providers_code_unique" ON "payment_providers" ("code");--> statement-breakpoint
 CREATE INDEX "payment_providers_status_idx" ON "payment_providers" ("status");--> statement-breakpoint
+CREATE INDEX "payment_reconciliation_attempts_payment_idx" ON "payment_reconciliation_attempts" ("payment_id","created_at");--> statement-breakpoint
+CREATE INDEX "payment_reconciliation_attempts_next_retry_idx" ON "payment_reconciliation_attempts" ("next_retry_at");--> statement-breakpoint
+CREATE INDEX "payment_reconciliation_attempts_status_idx" ON "payment_reconciliation_attempts" ("status");--> statement-breakpoint
 CREATE INDEX "payment_user_snapshots_provider_code_idx" ON "payment_user_snapshots" ("provider_code");--> statement-breakpoint
+CREATE INDEX "payment_webhook_attempts_provider_created_idx" ON "payment_webhook_attempts" ("provider_code","created_at");--> statement-breakpoint
+CREATE INDEX "payment_webhook_attempts_payment_id_idx" ON "payment_webhook_attempts" ("payment_id");--> statement-breakpoint
+CREATE INDEX "payment_webhook_attempts_refund_id_idx" ON "payment_webhook_attempts" ("refund_id");--> statement-breakpoint
+CREATE INDEX "payment_webhook_attempts_signature_idx" ON "payment_webhook_attempts" ("signature_valid");--> statement-breakpoint
+CREATE INDEX "payment_webhook_attempts_failure_reason_idx" ON "payment_webhook_attempts" ("failure_reason");--> statement-breakpoint
+CREATE INDEX "payment_webhook_attempts_retention_idx" ON "payment_webhook_attempts" ("retention_until");--> statement-breakpoint
 CREATE UNIQUE INDEX "payments_payment_no_unique" ON "payments" ("payment_no");--> statement-breakpoint
 CREATE INDEX "payments_order_id_idx" ON "payments" ("order_id");--> statement-breakpoint
 CREATE INDEX "payments_provider_id_idx" ON "payments" ("provider_id");--> statement-breakpoint
@@ -464,19 +641,26 @@ CREATE INDEX "products_category_id_idx" ON "products" ("category_id");--> statem
 CREATE INDEX "products_status_idx" ON "products" ("status");--> statement-breakpoint
 CREATE UNIQUE INDEX "refresh_tokens_token_hash_unique" ON "refresh_tokens" ("token_hash");--> statement-breakpoint
 CREATE INDEX "refresh_tokens_admin_user_id_idx" ON "refresh_tokens" ("admin_user_id");--> statement-breakpoint
+CREATE UNIQUE INDEX "refund_events_provider_event_unique" ON "refund_events" ("provider_id","provider_event_id");--> statement-breakpoint
+CREATE INDEX "refund_events_refund_id_idx" ON "refund_events" ("refund_id");--> statement-breakpoint
+CREATE INDEX "refund_reconciliation_attempts_refund_idx" ON "refund_reconciliation_attempts" ("refund_id","created_at");--> statement-breakpoint
+CREATE INDEX "refund_reconciliation_attempts_next_retry_idx" ON "refund_reconciliation_attempts" ("next_retry_at");--> statement-breakpoint
 CREATE UNIQUE INDEX "refunds_refund_no_unique" ON "refunds" ("refund_no");--> statement-breakpoint
 CREATE INDEX "refunds_payment_id_idx" ON "refunds" ("payment_id");--> statement-breakpoint
 CREATE INDEX "refunds_order_id_idx" ON "refunds" ("order_id");--> statement-breakpoint
+CREATE UNIQUE INDEX "refunds_order_reason_active_unique" ON "refunds" ("order_id","reason") WHERE "status" IN ('created', 'processing', 'succeeded');--> statement-breakpoint
 CREATE INDEX "role_permissions_permission_id_idx" ON "role_permissions" ("permission_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "roles_code_unique" ON "roles" ("code");--> statement-breakpoint
 CREATE INDEX "roles_status_idx" ON "roles" ("status");--> statement-breakpoint
 CREATE UNIQUE INDEX "vending_commands_command_no_unique" ON "vending_commands" ("command_no");--> statement-breakpoint
+CREATE UNIQUE INDEX "vending_commands_order_slot_unique" ON "vending_commands" ("order_id","slot_id");--> statement-breakpoint
 CREATE INDEX "vending_commands_order_id_idx" ON "vending_commands" ("order_id");--> statement-breakpoint
 CREATE INDEX "vending_commands_machine_id_idx" ON "vending_commands" ("machine_id");--> statement-breakpoint
 CREATE INDEX "vending_commands_status_idx" ON "vending_commands" ("status");--> statement-breakpoint
 ALTER TABLE "admin_user_roles" ADD CONSTRAINT "admin_user_roles_admin_user_id_admin_users_id_fkey" FOREIGN KEY ("admin_user_id") REFERENCES "admin_users"("id");--> statement-breakpoint
 ALTER TABLE "admin_user_roles" ADD CONSTRAINT "admin_user_roles_role_id_roles_id_fkey" FOREIGN KEY ("role_id") REFERENCES "roles"("id");--> statement-breakpoint
 ALTER TABLE "audit_logs" ADD CONSTRAINT "audit_logs_admin_user_id_admin_users_id_fkey" FOREIGN KEY ("admin_user_id") REFERENCES "admin_users"("id");--> statement-breakpoint
+ALTER TABLE "hardware_error_code_configs" ADD CONSTRAINT "hardware_error_code_configs_xsAsRAQAlFHc_fkey" FOREIGN KEY ("updated_by_admin_user_id") REFERENCES "admin_users"("id");--> statement-breakpoint
 ALTER TABLE "inventories" ADD CONSTRAINT "inventories_machine_id_machines_id_fkey" FOREIGN KEY ("machine_id") REFERENCES "machines"("id");--> statement-breakpoint
 ALTER TABLE "inventories" ADD CONSTRAINT "inventories_slot_id_machine_slots_id_fkey" FOREIGN KEY ("slot_id") REFERENCES "machine_slots"("id");--> statement-breakpoint
 ALTER TABLE "inventories" ADD CONSTRAINT "inventories_variant_id_product_variants_id_fkey" FOREIGN KEY ("variant_id") REFERENCES "product_variants"("id");--> statement-breakpoint
@@ -487,7 +671,16 @@ ALTER TABLE "inventory_reservations" ADD CONSTRAINT "inventory_reservations_orde
 ALTER TABLE "inventory_reservations" ADD CONSTRAINT "inventory_reservations_inventory_id_inventories_id_fkey" FOREIGN KEY ("inventory_id") REFERENCES "inventories"("id");--> statement-breakpoint
 ALTER TABLE "machine_events" ADD CONSTRAINT "machine_events_machine_id_machines_id_fkey" FOREIGN KEY ("machine_id") REFERENCES "machines"("id");--> statement-breakpoint
 ALTER TABLE "machine_heartbeats" ADD CONSTRAINT "machine_heartbeats_machine_id_machines_id_fkey" FOREIGN KEY ("machine_id") REFERENCES "machines"("id");--> statement-breakpoint
+ALTER TABLE "machine_log_artifacts" ADD CONSTRAINT "machine_log_artifacts_op_id_machine_remote_ops_id_fkey" FOREIGN KEY ("op_id") REFERENCES "machine_remote_ops"("id");--> statement-breakpoint
+ALTER TABLE "machine_log_artifacts" ADD CONSTRAINT "machine_log_artifacts_machine_id_machines_id_fkey" FOREIGN KEY ("machine_id") REFERENCES "machines"("id");--> statement-breakpoint
+ALTER TABLE "machine_remote_ops" ADD CONSTRAINT "machine_remote_ops_machine_id_machines_id_fkey" FOREIGN KEY ("machine_id") REFERENCES "machines"("id");--> statement-breakpoint
+ALTER TABLE "machine_remote_ops" ADD CONSTRAINT "machine_remote_ops_epQpHOZ6UBkl_fkey" FOREIGN KEY ("requested_by_admin_user_id") REFERENCES "admin_users"("id");--> statement-breakpoint
 ALTER TABLE "machine_slots" ADD CONSTRAINT "machine_slots_machine_id_machines_id_fkey" FOREIGN KEY ("machine_id") REFERENCES "machines"("id");--> statement-breakpoint
+ALTER TABLE "maintenance_work_orders" ADD CONSTRAINT "maintenance_work_orders_machine_id_machines_id_fkey" FOREIGN KEY ("machine_id") REFERENCES "machines"("id");--> statement-breakpoint
+ALTER TABLE "maintenance_work_orders" ADD CONSTRAINT "maintenance_work_orders_slot_id_machine_slots_id_fkey" FOREIGN KEY ("slot_id") REFERENCES "machine_slots"("id");--> statement-breakpoint
+ALTER TABLE "maintenance_work_orders" ADD CONSTRAINT "maintenance_work_orders_order_id_orders_id_fkey" FOREIGN KEY ("order_id") REFERENCES "orders"("id");--> statement-breakpoint
+ALTER TABLE "maintenance_work_orders" ADD CONSTRAINT "maintenance_work_orders_command_id_vending_commands_id_fkey" FOREIGN KEY ("command_id") REFERENCES "vending_commands"("id");--> statement-breakpoint
+ALTER TABLE "maintenance_work_orders" ADD CONSTRAINT "maintenance_work_orders_KJ4qnxCcZ6my_fkey" FOREIGN KEY ("assignee_admin_user_id") REFERENCES "admin_users"("id");--> statement-breakpoint
 ALTER TABLE "notification_deliveries" ADD CONSTRAINT "notification_deliveries_notification_id_notifications_id_fkey" FOREIGN KEY ("notification_id") REFERENCES "notifications"("id");--> statement-breakpoint
 ALTER TABLE "notification_deliveries" ADD CONSTRAINT "notification_deliveries_target_id_notification_targets_id_fkey" FOREIGN KEY ("target_id") REFERENCES "notification_targets"("id");--> statement-breakpoint
 ALTER TABLE "order_items" ADD CONSTRAINT "order_items_order_id_orders_id_fkey" FOREIGN KEY ("order_id") REFERENCES "orders"("id");--> statement-breakpoint
@@ -502,13 +695,25 @@ ALTER TABLE "payment_events" ADD CONSTRAINT "payment_events_provider_id_payment_
 ALTER TABLE "payment_provider_configs" ADD CONSTRAINT "payment_provider_configs_provider_id_payment_providers_id_fkey" FOREIGN KEY ("provider_id") REFERENCES "payment_providers"("id");--> statement-breakpoint
 ALTER TABLE "payment_provider_configs" ADD CONSTRAINT "payment_provider_configs_machine_id_machines_id_fkey" FOREIGN KEY ("machine_id") REFERENCES "machines"("id");--> statement-breakpoint
 ALTER TABLE "payment_provider_configs" ADD CONSTRAINT "payment_provider_configs_0y8VTK2px9sV_fkey" FOREIGN KEY ("updated_by_admin_user_id") REFERENCES "admin_users"("id");--> statement-breakpoint
+ALTER TABLE "payment_reconciliation_attempts" ADD CONSTRAINT "payment_reconciliation_attempts_payment_id_payments_id_fkey" FOREIGN KEY ("payment_id") REFERENCES "payments"("id");--> statement-breakpoint
+ALTER TABLE "payment_reconciliation_attempts" ADD CONSTRAINT "payment_reconciliation_attempts_PERZM16ytwQr_fkey" FOREIGN KEY ("provider_id") REFERENCES "payment_providers"("id");--> statement-breakpoint
+ALTER TABLE "payment_webhook_attempts" ADD CONSTRAINT "payment_webhook_attempts_provider_id_payment_providers_id_fkey" FOREIGN KEY ("provider_id") REFERENCES "payment_providers"("id");--> statement-breakpoint
+ALTER TABLE "payment_webhook_attempts" ADD CONSTRAINT "payment_webhook_attempts_payment_id_payments_id_fkey" FOREIGN KEY ("payment_id") REFERENCES "payments"("id");--> statement-breakpoint
+ALTER TABLE "payment_webhook_attempts" ADD CONSTRAINT "payment_webhook_attempts_refund_id_refunds_id_fkey" FOREIGN KEY ("refund_id") REFERENCES "refunds"("id");--> statement-breakpoint
+ALTER TABLE "payment_webhook_attempts" ADD CONSTRAINT "payment_webhook_attempts_jah3fGPpgheQ_fkey" FOREIGN KEY ("matched_config_id") REFERENCES "payment_provider_configs"("id");--> statement-breakpoint
 ALTER TABLE "payments" ADD CONSTRAINT "payments_order_id_orders_id_fkey" FOREIGN KEY ("order_id") REFERENCES "orders"("id");--> statement-breakpoint
 ALTER TABLE "payments" ADD CONSTRAINT "payments_provider_id_payment_providers_id_fkey" FOREIGN KEY ("provider_id") REFERENCES "payment_providers"("id");--> statement-breakpoint
+ALTER TABLE "payments" ADD CONSTRAINT "payments_xQAgY1Jf53P8_fkey" FOREIGN KEY ("payment_provider_config_id") REFERENCES "payment_provider_configs"("id");--> statement-breakpoint
 ALTER TABLE "payments" ADD CONSTRAINT "payments_payer_snapshot_id_payment_user_snapshots_id_fkey" FOREIGN KEY ("payer_snapshot_id") REFERENCES "payment_user_snapshots"("id");--> statement-breakpoint
 ALTER TABLE "product_categories" ADD CONSTRAINT "product_categories_parent_id_product_categories_id_fkey" FOREIGN KEY ("parent_id") REFERENCES "product_categories"("id");--> statement-breakpoint
 ALTER TABLE "product_variants" ADD CONSTRAINT "product_variants_product_id_products_id_fkey" FOREIGN KEY ("product_id") REFERENCES "products"("id");--> statement-breakpoint
 ALTER TABLE "products" ADD CONSTRAINT "products_category_id_product_categories_id_fkey" FOREIGN KEY ("category_id") REFERENCES "product_categories"("id");--> statement-breakpoint
 ALTER TABLE "refresh_tokens" ADD CONSTRAINT "refresh_tokens_admin_user_id_admin_users_id_fkey" FOREIGN KEY ("admin_user_id") REFERENCES "admin_users"("id");--> statement-breakpoint
+ALTER TABLE "refund_events" ADD CONSTRAINT "refund_events_refund_id_refunds_id_fkey" FOREIGN KEY ("refund_id") REFERENCES "refunds"("id");--> statement-breakpoint
+ALTER TABLE "refund_events" ADD CONSTRAINT "refund_events_payment_id_payments_id_fkey" FOREIGN KEY ("payment_id") REFERENCES "payments"("id");--> statement-breakpoint
+ALTER TABLE "refund_events" ADD CONSTRAINT "refund_events_provider_id_payment_providers_id_fkey" FOREIGN KEY ("provider_id") REFERENCES "payment_providers"("id");--> statement-breakpoint
+ALTER TABLE "refund_reconciliation_attempts" ADD CONSTRAINT "refund_reconciliation_attempts_refund_id_refunds_id_fkey" FOREIGN KEY ("refund_id") REFERENCES "refunds"("id");--> statement-breakpoint
+ALTER TABLE "refund_reconciliation_attempts" ADD CONSTRAINT "refund_reconciliation_attempts_wyH8bqO8T67X_fkey" FOREIGN KEY ("provider_id") REFERENCES "payment_providers"("id");--> statement-breakpoint
 ALTER TABLE "refunds" ADD CONSTRAINT "refunds_payment_id_payments_id_fkey" FOREIGN KEY ("payment_id") REFERENCES "payments"("id");--> statement-breakpoint
 ALTER TABLE "refunds" ADD CONSTRAINT "refunds_order_id_orders_id_fkey" FOREIGN KEY ("order_id") REFERENCES "orders"("id");--> statement-breakpoint
 ALTER TABLE "refunds" ADD CONSTRAINT "refunds_requested_by_admin_user_id_admin_users_id_fkey" FOREIGN KEY ("requested_by_admin_user_id") REFERENCES "admin_users"("id");--> statement-breakpoint

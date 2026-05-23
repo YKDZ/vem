@@ -1,17 +1,25 @@
 {
   "version": "8",
   "dialect": "postgres",
-  "id": "4c374916-af3a-4f08-8671-377e76705318",
-  "prevIds": ["7201bbbf-e62b-4656-86e0-27e265c293c3"],
+  "id": "370342ad-edb5-4639-8f9b-b5293a7d8acc",
+  "prevIds": [
+    "00000000-0000-0000-0000-000000000000"
+  ],
   "ddl": [
     {
-      "values": ["active", "disabled"],
+      "values": [
+        "active",
+        "disabled"
+      ],
       "name": "admin_user_status",
       "entityType": "enums",
       "schema": "public"
     },
     {
-      "values": ["active", "inactive"],
+      "values": [
+        "active",
+        "inactive"
+      ],
       "name": "category_status",
       "entityType": "enums",
       "schema": "public"
@@ -31,43 +39,74 @@
       "schema": "public"
     },
     {
-      "values": ["active", "confirmed", "released", "expired"],
+      "values": [
+        "active",
+        "confirmed",
+        "released",
+        "expired"
+      ],
       "name": "inventory_reservation_status",
       "entityType": "enums",
       "schema": "public"
     },
     {
-      "values": ["enabled", "disabled", "faulted"],
+      "values": [
+        "enabled",
+        "disabled",
+        "faulted"
+      ],
       "name": "machine_slot_status",
       "entityType": "enums",
       "schema": "public"
     },
     {
-      "values": ["online", "offline", "maintenance", "disabled"],
+      "values": [
+        "online",
+        "offline",
+        "maintenance",
+        "disabled"
+      ],
       "name": "machine_status",
       "entityType": "enums",
       "schema": "public"
     },
     {
-      "values": ["pending", "sent", "failed"],
+      "values": [
+        "pending",
+        "sent",
+        "failed"
+      ],
       "name": "notification_delivery_status",
       "entityType": "enums",
       "schema": "public"
     },
     {
-      "values": ["info", "warning", "critical"],
+      "values": [
+        "info",
+        "warning",
+        "critical"
+      ],
       "name": "notification_severity",
       "entityType": "enums",
       "schema": "public"
     },
     {
-      "values": ["unread", "read", "archived"],
+      "values": [
+        "unread",
+        "read",
+        "archived"
+      ],
       "name": "notification_status",
       "entityType": "enums",
       "schema": "public"
     },
     {
-      "values": ["in_app", "sms", "wechat", "email"],
+      "values": [
+        "in_app",
+        "sms",
+        "wechat",
+        "email"
+      ],
       "name": "notification_target_type",
       "entityType": "enums",
       "schema": "public"
@@ -78,14 +117,24 @@
         "sold_out",
         "machine_offline",
         "payment_failed",
-        "dispense_failed"
+        "payment_webhook_invalid",
+        "payment_reconciliation_failed",
+        "payment_refund_failed",
+        "payment_certificate_expiring",
+        "payment_provider_unready",
+        "dispense_failed",
+        "work_order_created"
       ],
       "name": "notification_type",
       "entityType": "enums",
       "schema": "public"
     },
     {
-      "values": ["machine_ui", "admin", "api"],
+      "values": [
+        "machine_ui",
+        "admin",
+        "api"
+      ],
       "name": "order_source",
       "entityType": "enums",
       "schema": "public"
@@ -109,19 +158,33 @@
       "schema": "public"
     },
     {
-      "values": ["mock", "qr_code", "face_pay"],
+      "values": [
+        "mock",
+        "qr_code",
+        "face_pay"
+      ],
       "name": "payment_method",
       "entityType": "enums",
       "schema": "public"
     },
     {
-      "values": ["enabled", "disabled"],
+      "values": [
+        "enabled",
+        "disabled"
+      ],
       "name": "payment_provider_status",
       "entityType": "enums",
       "schema": "public"
     },
     {
-      "values": ["mock", "qr_code", "face_pay", "aggregate"],
+      "values": [
+        "mock",
+        "wechat_pay",
+        "alipay",
+        "qr_code",
+        "face_pay",
+        "aggregate"
+      ],
       "name": "payment_provider_type",
       "entityType": "enums",
       "schema": "public"
@@ -165,32 +228,54 @@
         "roles.write",
         "notifications.read",
         "notifications.write",
-        "audit.read"
+        "audit.read",
+        "machineOps.read",
+        "machineOps.write",
+        "hardwareErrorPolicies.read",
+        "hardwareErrorPolicies.write",
+        "maintenanceWorkOrders.read",
+        "maintenanceWorkOrders.write"
       ],
       "name": "permission_code",
       "entityType": "enums",
       "schema": "public"
     },
     {
-      "values": ["draft", "active", "inactive"],
+      "values": [
+        "draft",
+        "active",
+        "inactive"
+      ],
       "name": "product_status",
       "entityType": "enums",
       "schema": "public"
     },
     {
-      "values": ["created", "processing", "succeeded", "failed", "canceled"],
+      "values": [
+        "created",
+        "processing",
+        "succeeded",
+        "failed",
+        "canceled"
+      ],
       "name": "refund_status",
       "entityType": "enums",
       "schema": "public"
     },
     {
-      "values": ["active", "disabled"],
+      "values": [
+        "active",
+        "disabled"
+      ],
       "name": "role_status",
       "entityType": "enums",
       "schema": "public"
     },
     {
-      "values": ["active", "inactive"],
+      "values": [
+        "active",
+        "inactive"
+      ],
       "name": "variant_status",
       "entityType": "enums",
       "schema": "public"
@@ -348,7 +433,19 @@
     },
     {
       "isRlsEnabled": false,
+      "name": "payment_reconciliation_attempts",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
       "name": "payment_user_snapshots",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "payment_webhook_attempts",
       "entityType": "tables",
       "schema": "public"
     },
@@ -385,6 +482,18 @@
     {
       "isRlsEnabled": false,
       "name": "refresh_tokens",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "refund_events",
+      "entityType": "tables",
+      "schema": "public"
+    },
+    {
+      "isRlsEnabled": false,
+      "name": "refund_reconciliation_attempts",
       "entityType": "tables",
       "schema": "public"
     },
@@ -3270,6 +3379,214 @@
       "name": "id",
       "entityType": "columns",
       "schema": "public",
+      "table": "payment_reconciliation_attempts"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "payment_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "payment_reconciliation_attempts"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "provider_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "payment_reconciliation_attempts"
+    },
+    {
+      "type": "varchar(32)",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "trigger",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "payment_reconciliation_attempts"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "attempt_no",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "payment_reconciliation_attempts"
+    },
+    {
+      "type": "varchar(32)",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "status",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "payment_reconciliation_attempts"
+    },
+    {
+      "type": "varchar(64)",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "provider_payment_status",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "payment_reconciliation_attempts"
+    },
+    {
+      "type": "varchar(128)",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "provider_trade_no",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "payment_reconciliation_attempts"
+    },
+    {
+      "type": "varchar(128)",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "error_code",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "payment_reconciliation_attempts"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "error_message",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "payment_reconciliation_attempts"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "raw_payload_sha256",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "payment_reconciliation_attempts"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "raw_payload_excerpt",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "payment_reconciliation_attempts"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "next_retry_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "payment_reconciliation_attempts"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "started_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "payment_reconciliation_attempts"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "finished_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "payment_reconciliation_attempts"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "created_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "payment_reconciliation_attempts"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "gen_random_uuid()",
+      "generated": null,
+      "identity": null,
+      "name": "id",
+      "entityType": "columns",
+      "schema": "public",
       "table": "payment_user_snapshots"
     },
     {
@@ -3361,6 +3678,396 @@
       "name": "id",
       "entityType": "columns",
       "schema": "public",
+      "table": "payment_webhook_attempts"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "provider_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "payment_webhook_attempts"
+    },
+    {
+      "type": "varchar(64)",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "provider_code",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "payment_webhook_attempts"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "payment_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "payment_webhook_attempts"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "refund_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "payment_webhook_attempts"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "matched_config_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "payment_webhook_attempts"
+    },
+    {
+      "type": "varchar(32)",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "'unknown'",
+      "generated": null,
+      "identity": null,
+      "name": "event_kind",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "payment_webhook_attempts"
+    },
+    {
+      "type": "varchar(128)",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "event_type",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "payment_webhook_attempts"
+    },
+    {
+      "type": "varchar(128)",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "provider_event_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "payment_webhook_attempts"
+    },
+    {
+      "type": "varchar(64)",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "payment_no",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "payment_webhook_attempts"
+    },
+    {
+      "type": "varchar(64)",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "refund_no",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "payment_webhook_attempts"
+    },
+    {
+      "type": "varchar(64)",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "order_no",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "payment_webhook_attempts"
+    },
+    {
+      "type": "varchar(64)",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "remote_ip",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "payment_webhook_attempts"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "user_agent",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "payment_webhook_attempts"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "headers_hash",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "payment_webhook_attempts"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "headers_summary_json",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "payment_webhook_attempts"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "raw_body_sha256",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "payment_webhook_attempts"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "raw_body_bytes",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "payment_webhook_attempts"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "raw_body_excerpt",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "payment_webhook_attempts"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "redacted_payload_json",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "payment_webhook_attempts"
+    },
+    {
+      "type": "boolean",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "signature_valid",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "payment_webhook_attempts"
+    },
+    {
+      "type": "boolean",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "business_valid",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "payment_webhook_attempts"
+    },
+    {
+      "type": "boolean",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "false",
+      "generated": null,
+      "identity": null,
+      "name": "handled",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "payment_webhook_attempts"
+    },
+    {
+      "type": "boolean",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "false",
+      "generated": null,
+      "identity": null,
+      "name": "duplicate",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "payment_webhook_attempts"
+    },
+    {
+      "type": "varchar(128)",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "failure_reason",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "payment_webhook_attempts"
+    },
+    {
+      "type": "varchar(128)",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "error_code",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "payment_webhook_attempts"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "http_status",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "payment_webhook_attempts"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "retention_until",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "payment_webhook_attempts"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "created_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "payment_webhook_attempts"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "updated_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "payment_webhook_attempts"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "gen_random_uuid()",
+      "generated": null,
+      "identity": null,
+      "name": "id",
+      "entityType": "columns",
+      "schema": "public",
       "table": "payments"
     },
     {
@@ -3398,6 +4105,32 @@
       "generated": null,
       "identity": null,
       "name": "provider_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "payments"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "payment_provider_config_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "payments"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "provider_config_snapshot_json",
       "entityType": "columns",
       "schema": "public",
       "table": "payments"
@@ -4090,6 +4823,370 @@
       "entityType": "columns",
       "schema": "public",
       "table": "refresh_tokens"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "gen_random_uuid()",
+      "generated": null,
+      "identity": null,
+      "name": "id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "refund_events"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "refund_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "refund_events"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "payment_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "refund_events"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "provider_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "refund_events"
+    },
+    {
+      "type": "varchar(128)",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "event_type",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "refund_events"
+    },
+    {
+      "type": "varchar(128)",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "provider_event_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "refund_events"
+    },
+    {
+      "type": "varchar(128)",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "provider_refund_no",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "refund_events"
+    },
+    {
+      "type": "refund_status",
+      "typeSchema": "public",
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "status",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "refund_events"
+    },
+    {
+      "type": "jsonb",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "raw_payload_json",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "refund_events"
+    },
+    {
+      "type": "boolean",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "signature_valid",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "refund_events"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "handled_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "refund_events"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "created_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "refund_events"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "gen_random_uuid()",
+      "generated": null,
+      "identity": null,
+      "name": "id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "refund_reconciliation_attempts"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "refund_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "refund_reconciliation_attempts"
+    },
+    {
+      "type": "uuid",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "provider_id",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "refund_reconciliation_attempts"
+    },
+    {
+      "type": "varchar(32)",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "trigger",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "refund_reconciliation_attempts"
+    },
+    {
+      "type": "integer",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "attempt_no",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "refund_reconciliation_attempts"
+    },
+    {
+      "type": "varchar(32)",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "status",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "refund_reconciliation_attempts"
+    },
+    {
+      "type": "varchar(64)",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "provider_refund_status",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "refund_reconciliation_attempts"
+    },
+    {
+      "type": "varchar(128)",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "provider_refund_no",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "refund_reconciliation_attempts"
+    },
+    {
+      "type": "varchar(128)",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "error_code",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "refund_reconciliation_attempts"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "error_message",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "refund_reconciliation_attempts"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "raw_payload_sha256",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "refund_reconciliation_attempts"
+    },
+    {
+      "type": "text",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "raw_payload_excerpt",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "refund_reconciliation_attempts"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "next_retry_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "refund_reconciliation_attempts"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "started_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "refund_reconciliation_attempts"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": false,
+      "dimensions": 0,
+      "default": null,
+      "generated": null,
+      "identity": null,
+      "name": "finished_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "refund_reconciliation_attempts"
+    },
+    {
+      "type": "timestamp with time zone",
+      "typeSchema": null,
+      "notNull": true,
+      "dimensions": 0,
+      "default": "now()",
+      "generated": null,
+      "identity": null,
+      "name": "created_at",
+      "entityType": "columns",
+      "schema": "public",
+      "table": "refund_reconciliation_attempts"
     },
     {
       "type": "uuid",
@@ -5961,6 +7058,27 @@
       "nameExplicit": true,
       "columns": [
         {
+          "value": "provider_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": true,
+      "where": "\"machine_id\" IS NULL",
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "payment_provider_configs_provider_global_unique",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "payment_provider_configs"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
           "value": "code",
           "isExpression": false,
           "asc": true,
@@ -6003,6 +7121,76 @@
       "nameExplicit": true,
       "columns": [
         {
+          "value": "payment_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "created_at",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "payment_reconciliation_attempts_payment_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "payment_reconciliation_attempts"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "next_retry_at",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "payment_reconciliation_attempts_next_retry_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "payment_reconciliation_attempts"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "status",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "payment_reconciliation_attempts_status_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "payment_reconciliation_attempts"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
           "value": "provider_code",
           "isExpression": false,
           "asc": true,
@@ -6019,6 +7207,139 @@
       "entityType": "indexes",
       "schema": "public",
       "table": "payment_user_snapshots"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "provider_code",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "created_at",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "payment_webhook_attempts_provider_created_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "payment_webhook_attempts"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "payment_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "payment_webhook_attempts_payment_id_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "payment_webhook_attempts"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "refund_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "payment_webhook_attempts_refund_id_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "payment_webhook_attempts"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "signature_valid",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "payment_webhook_attempts_signature_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "payment_webhook_attempts"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "failure_reason",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "payment_webhook_attempts_failure_reason_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "payment_webhook_attempts"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "retention_until",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "payment_webhook_attempts_retention_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "payment_webhook_attempts"
     },
     {
       "nameExplicit": true,
@@ -6339,6 +7660,104 @@
       "nameExplicit": true,
       "columns": [
         {
+          "value": "provider_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "provider_event_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": true,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "refund_events_provider_event_unique",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "refund_events"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "refund_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "refund_events_refund_id_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "refund_events"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "refund_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        },
+        {
+          "value": "created_at",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "refund_reconciliation_attempts_refund_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "refund_reconciliation_attempts"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "next_retry_at",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "refund_reconciliation_attempts_next_retry_idx",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "refund_reconciliation_attempts"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
           "value": "refund_no",
           "isExpression": false,
           "asc": true,
@@ -6603,10 +8022,14 @@
     },
     {
       "nameExplicit": false,
-      "columns": ["admin_user_id"],
+      "columns": [
+        "admin_user_id"
+      ],
       "schemaTo": "public",
       "tableTo": "admin_users",
-      "columnsTo": ["id"],
+      "columnsTo": [
+        "id"
+      ],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "admin_user_roles_admin_user_id_admin_users_id_fkey",
@@ -6616,10 +8039,14 @@
     },
     {
       "nameExplicit": false,
-      "columns": ["role_id"],
+      "columns": [
+        "role_id"
+      ],
       "schemaTo": "public",
       "tableTo": "roles",
-      "columnsTo": ["id"],
+      "columnsTo": [
+        "id"
+      ],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "admin_user_roles_role_id_roles_id_fkey",
@@ -6629,10 +8056,14 @@
     },
     {
       "nameExplicit": false,
-      "columns": ["admin_user_id"],
+      "columns": [
+        "admin_user_id"
+      ],
       "schemaTo": "public",
       "tableTo": "admin_users",
-      "columnsTo": ["id"],
+      "columnsTo": [
+        "id"
+      ],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "audit_logs_admin_user_id_admin_users_id_fkey",
@@ -6642,10 +8073,14 @@
     },
     {
       "nameExplicit": false,
-      "columns": ["updated_by_admin_user_id"],
+      "columns": [
+        "updated_by_admin_user_id"
+      ],
       "schemaTo": "public",
       "tableTo": "admin_users",
-      "columnsTo": ["id"],
+      "columnsTo": [
+        "id"
+      ],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "hardware_error_code_configs_xsAsRAQAlFHc_fkey",
@@ -6655,10 +8090,14 @@
     },
     {
       "nameExplicit": false,
-      "columns": ["machine_id"],
+      "columns": [
+        "machine_id"
+      ],
       "schemaTo": "public",
       "tableTo": "machines",
-      "columnsTo": ["id"],
+      "columnsTo": [
+        "id"
+      ],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "inventories_machine_id_machines_id_fkey",
@@ -6668,10 +8107,14 @@
     },
     {
       "nameExplicit": false,
-      "columns": ["slot_id"],
+      "columns": [
+        "slot_id"
+      ],
       "schemaTo": "public",
       "tableTo": "machine_slots",
-      "columnsTo": ["id"],
+      "columnsTo": [
+        "id"
+      ],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "inventories_slot_id_machine_slots_id_fkey",
@@ -6681,10 +8124,14 @@
     },
     {
       "nameExplicit": false,
-      "columns": ["variant_id"],
+      "columns": [
+        "variant_id"
+      ],
       "schemaTo": "public",
       "tableTo": "product_variants",
-      "columnsTo": ["id"],
+      "columnsTo": [
+        "id"
+      ],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "inventories_variant_id_product_variants_id_fkey",
@@ -6694,10 +8141,14 @@
     },
     {
       "nameExplicit": false,
-      "columns": ["inventory_id"],
+      "columns": [
+        "inventory_id"
+      ],
       "schemaTo": "public",
       "tableTo": "inventories",
-      "columnsTo": ["id"],
+      "columnsTo": [
+        "id"
+      ],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "inventory_movements_inventory_id_inventories_id_fkey",
@@ -6707,10 +8158,14 @@
     },
     {
       "nameExplicit": false,
-      "columns": ["order_id"],
+      "columns": [
+        "order_id"
+      ],
       "schemaTo": "public",
       "tableTo": "orders",
-      "columnsTo": ["id"],
+      "columnsTo": [
+        "id"
+      ],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "inventory_movements_order_id_orders_id_fkey",
@@ -6720,10 +8175,14 @@
     },
     {
       "nameExplicit": false,
-      "columns": ["operator_admin_user_id"],
+      "columns": [
+        "operator_admin_user_id"
+      ],
       "schemaTo": "public",
       "tableTo": "admin_users",
-      "columnsTo": ["id"],
+      "columnsTo": [
+        "id"
+      ],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "inventory_movements_operator_admin_user_id_admin_users_id_fkey",
@@ -6733,10 +8192,14 @@
     },
     {
       "nameExplicit": false,
-      "columns": ["order_id"],
+      "columns": [
+        "order_id"
+      ],
       "schemaTo": "public",
       "tableTo": "orders",
-      "columnsTo": ["id"],
+      "columnsTo": [
+        "id"
+      ],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "inventory_reservations_order_id_orders_id_fkey",
@@ -6746,10 +8209,14 @@
     },
     {
       "nameExplicit": false,
-      "columns": ["inventory_id"],
+      "columns": [
+        "inventory_id"
+      ],
       "schemaTo": "public",
       "tableTo": "inventories",
-      "columnsTo": ["id"],
+      "columnsTo": [
+        "id"
+      ],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "inventory_reservations_inventory_id_inventories_id_fkey",
@@ -6759,10 +8226,14 @@
     },
     {
       "nameExplicit": false,
-      "columns": ["machine_id"],
+      "columns": [
+        "machine_id"
+      ],
       "schemaTo": "public",
       "tableTo": "machines",
-      "columnsTo": ["id"],
+      "columnsTo": [
+        "id"
+      ],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "machine_events_machine_id_machines_id_fkey",
@@ -6772,10 +8243,14 @@
     },
     {
       "nameExplicit": false,
-      "columns": ["machine_id"],
+      "columns": [
+        "machine_id"
+      ],
       "schemaTo": "public",
       "tableTo": "machines",
-      "columnsTo": ["id"],
+      "columnsTo": [
+        "id"
+      ],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "machine_heartbeats_machine_id_machines_id_fkey",
@@ -6785,10 +8260,14 @@
     },
     {
       "nameExplicit": false,
-      "columns": ["op_id"],
+      "columns": [
+        "op_id"
+      ],
       "schemaTo": "public",
       "tableTo": "machine_remote_ops",
-      "columnsTo": ["id"],
+      "columnsTo": [
+        "id"
+      ],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "machine_log_artifacts_op_id_machine_remote_ops_id_fkey",
@@ -6798,10 +8277,14 @@
     },
     {
       "nameExplicit": false,
-      "columns": ["machine_id"],
+      "columns": [
+        "machine_id"
+      ],
       "schemaTo": "public",
       "tableTo": "machines",
-      "columnsTo": ["id"],
+      "columnsTo": [
+        "id"
+      ],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "machine_log_artifacts_machine_id_machines_id_fkey",
@@ -6811,10 +8294,14 @@
     },
     {
       "nameExplicit": false,
-      "columns": ["machine_id"],
+      "columns": [
+        "machine_id"
+      ],
       "schemaTo": "public",
       "tableTo": "machines",
-      "columnsTo": ["id"],
+      "columnsTo": [
+        "id"
+      ],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "machine_remote_ops_machine_id_machines_id_fkey",
@@ -6824,10 +8311,14 @@
     },
     {
       "nameExplicit": false,
-      "columns": ["requested_by_admin_user_id"],
+      "columns": [
+        "requested_by_admin_user_id"
+      ],
       "schemaTo": "public",
       "tableTo": "admin_users",
-      "columnsTo": ["id"],
+      "columnsTo": [
+        "id"
+      ],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "machine_remote_ops_epQpHOZ6UBkl_fkey",
@@ -6837,10 +8328,14 @@
     },
     {
       "nameExplicit": false,
-      "columns": ["machine_id"],
+      "columns": [
+        "machine_id"
+      ],
       "schemaTo": "public",
       "tableTo": "machines",
-      "columnsTo": ["id"],
+      "columnsTo": [
+        "id"
+      ],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "machine_slots_machine_id_machines_id_fkey",
@@ -6850,10 +8345,14 @@
     },
     {
       "nameExplicit": false,
-      "columns": ["machine_id"],
+      "columns": [
+        "machine_id"
+      ],
       "schemaTo": "public",
       "tableTo": "machines",
-      "columnsTo": ["id"],
+      "columnsTo": [
+        "id"
+      ],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "maintenance_work_orders_machine_id_machines_id_fkey",
@@ -6863,10 +8362,14 @@
     },
     {
       "nameExplicit": false,
-      "columns": ["slot_id"],
+      "columns": [
+        "slot_id"
+      ],
       "schemaTo": "public",
       "tableTo": "machine_slots",
-      "columnsTo": ["id"],
+      "columnsTo": [
+        "id"
+      ],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "maintenance_work_orders_slot_id_machine_slots_id_fkey",
@@ -6876,10 +8379,14 @@
     },
     {
       "nameExplicit": false,
-      "columns": ["order_id"],
+      "columns": [
+        "order_id"
+      ],
       "schemaTo": "public",
       "tableTo": "orders",
-      "columnsTo": ["id"],
+      "columnsTo": [
+        "id"
+      ],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "maintenance_work_orders_order_id_orders_id_fkey",
@@ -6889,10 +8396,14 @@
     },
     {
       "nameExplicit": false,
-      "columns": ["command_id"],
+      "columns": [
+        "command_id"
+      ],
       "schemaTo": "public",
       "tableTo": "vending_commands",
-      "columnsTo": ["id"],
+      "columnsTo": [
+        "id"
+      ],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "maintenance_work_orders_command_id_vending_commands_id_fkey",
@@ -6902,10 +8413,14 @@
     },
     {
       "nameExplicit": false,
-      "columns": ["assignee_admin_user_id"],
+      "columns": [
+        "assignee_admin_user_id"
+      ],
       "schemaTo": "public",
       "tableTo": "admin_users",
-      "columnsTo": ["id"],
+      "columnsTo": [
+        "id"
+      ],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "maintenance_work_orders_KJ4qnxCcZ6my_fkey",
@@ -6915,10 +8430,14 @@
     },
     {
       "nameExplicit": false,
-      "columns": ["notification_id"],
+      "columns": [
+        "notification_id"
+      ],
       "schemaTo": "public",
       "tableTo": "notifications",
-      "columnsTo": ["id"],
+      "columnsTo": [
+        "id"
+      ],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "notification_deliveries_notification_id_notifications_id_fkey",
@@ -6928,10 +8447,14 @@
     },
     {
       "nameExplicit": false,
-      "columns": ["target_id"],
+      "columns": [
+        "target_id"
+      ],
       "schemaTo": "public",
       "tableTo": "notification_targets",
-      "columnsTo": ["id"],
+      "columnsTo": [
+        "id"
+      ],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "notification_deliveries_target_id_notification_targets_id_fkey",
@@ -6941,10 +8464,14 @@
     },
     {
       "nameExplicit": false,
-      "columns": ["order_id"],
+      "columns": [
+        "order_id"
+      ],
       "schemaTo": "public",
       "tableTo": "orders",
-      "columnsTo": ["id"],
+      "columnsTo": [
+        "id"
+      ],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "order_items_order_id_orders_id_fkey",
@@ -6954,10 +8481,14 @@
     },
     {
       "nameExplicit": false,
-      "columns": ["variant_id"],
+      "columns": [
+        "variant_id"
+      ],
       "schemaTo": "public",
       "tableTo": "product_variants",
-      "columnsTo": ["id"],
+      "columnsTo": [
+        "id"
+      ],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "order_items_variant_id_product_variants_id_fkey",
@@ -6967,10 +8498,14 @@
     },
     {
       "nameExplicit": false,
-      "columns": ["inventory_id"],
+      "columns": [
+        "inventory_id"
+      ],
       "schemaTo": "public",
       "tableTo": "inventories",
-      "columnsTo": ["id"],
+      "columnsTo": [
+        "id"
+      ],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "order_items_inventory_id_inventories_id_fkey",
@@ -6980,10 +8515,14 @@
     },
     {
       "nameExplicit": false,
-      "columns": ["slot_id"],
+      "columns": [
+        "slot_id"
+      ],
       "schemaTo": "public",
       "tableTo": "machine_slots",
-      "columnsTo": ["id"],
+      "columnsTo": [
+        "id"
+      ],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "order_items_slot_id_machine_slots_id_fkey",
@@ -6993,10 +8532,14 @@
     },
     {
       "nameExplicit": false,
-      "columns": ["order_id"],
+      "columns": [
+        "order_id"
+      ],
       "schemaTo": "public",
       "tableTo": "orders",
-      "columnsTo": ["id"],
+      "columnsTo": [
+        "id"
+      ],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "order_status_events_order_id_orders_id_fkey",
@@ -7006,10 +8549,14 @@
     },
     {
       "nameExplicit": false,
-      "columns": ["machine_id"],
+      "columns": [
+        "machine_id"
+      ],
       "schemaTo": "public",
       "tableTo": "machines",
-      "columnsTo": ["id"],
+      "columnsTo": [
+        "id"
+      ],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "orders_machine_id_machines_id_fkey",
@@ -7019,10 +8566,14 @@
     },
     {
       "nameExplicit": false,
-      "columns": ["payment_id"],
+      "columns": [
+        "payment_id"
+      ],
       "schemaTo": "public",
       "tableTo": "payments",
-      "columnsTo": ["id"],
+      "columnsTo": [
+        "id"
+      ],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "orders_payment_id_payments_id_fkey",
@@ -7032,10 +8583,14 @@
     },
     {
       "nameExplicit": false,
-      "columns": ["payment_id"],
+      "columns": [
+        "payment_id"
+      ],
       "schemaTo": "public",
       "tableTo": "payments",
-      "columnsTo": ["id"],
+      "columnsTo": [
+        "id"
+      ],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "payment_events_payment_id_payments_id_fkey",
@@ -7045,10 +8600,14 @@
     },
     {
       "nameExplicit": false,
-      "columns": ["provider_id"],
+      "columns": [
+        "provider_id"
+      ],
       "schemaTo": "public",
       "tableTo": "payment_providers",
-      "columnsTo": ["id"],
+      "columnsTo": [
+        "id"
+      ],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "payment_events_provider_id_payment_providers_id_fkey",
@@ -7058,10 +8617,14 @@
     },
     {
       "nameExplicit": false,
-      "columns": ["provider_id"],
+      "columns": [
+        "provider_id"
+      ],
       "schemaTo": "public",
       "tableTo": "payment_providers",
-      "columnsTo": ["id"],
+      "columnsTo": [
+        "id"
+      ],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "payment_provider_configs_provider_id_payment_providers_id_fkey",
@@ -7071,10 +8634,14 @@
     },
     {
       "nameExplicit": false,
-      "columns": ["machine_id"],
+      "columns": [
+        "machine_id"
+      ],
       "schemaTo": "public",
       "tableTo": "machines",
-      "columnsTo": ["id"],
+      "columnsTo": [
+        "id"
+      ],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "payment_provider_configs_machine_id_machines_id_fkey",
@@ -7084,10 +8651,14 @@
     },
     {
       "nameExplicit": false,
-      "columns": ["updated_by_admin_user_id"],
+      "columns": [
+        "updated_by_admin_user_id"
+      ],
       "schemaTo": "public",
       "tableTo": "admin_users",
-      "columnsTo": ["id"],
+      "columnsTo": [
+        "id"
+      ],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "payment_provider_configs_0y8VTK2px9sV_fkey",
@@ -7097,10 +8668,116 @@
     },
     {
       "nameExplicit": false,
-      "columns": ["order_id"],
+      "columns": [
+        "payment_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "payments",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "NO ACTION",
+      "name": "payment_reconciliation_attempts_payment_id_payments_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "payment_reconciliation_attempts"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "provider_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "payment_providers",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "NO ACTION",
+      "name": "payment_reconciliation_attempts_PERZM16ytwQr_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "payment_reconciliation_attempts"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "provider_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "payment_providers",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "NO ACTION",
+      "name": "payment_webhook_attempts_provider_id_payment_providers_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "payment_webhook_attempts"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "payment_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "payments",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "NO ACTION",
+      "name": "payment_webhook_attempts_payment_id_payments_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "payment_webhook_attempts"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "refund_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "refunds",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "NO ACTION",
+      "name": "payment_webhook_attempts_refund_id_refunds_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "payment_webhook_attempts"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "matched_config_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "payment_provider_configs",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "NO ACTION",
+      "name": "payment_webhook_attempts_jah3fGPpgheQ_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "payment_webhook_attempts"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "order_id"
+      ],
       "schemaTo": "public",
       "tableTo": "orders",
-      "columnsTo": ["id"],
+      "columnsTo": [
+        "id"
+      ],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "payments_order_id_orders_id_fkey",
@@ -7110,10 +8787,14 @@
     },
     {
       "nameExplicit": false,
-      "columns": ["provider_id"],
+      "columns": [
+        "provider_id"
+      ],
       "schemaTo": "public",
       "tableTo": "payment_providers",
-      "columnsTo": ["id"],
+      "columnsTo": [
+        "id"
+      ],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "payments_provider_id_payment_providers_id_fkey",
@@ -7123,10 +8804,31 @@
     },
     {
       "nameExplicit": false,
-      "columns": ["payer_snapshot_id"],
+      "columns": [
+        "payment_provider_config_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "payment_provider_configs",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "NO ACTION",
+      "name": "payments_xQAgY1Jf53P8_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "payments"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "payer_snapshot_id"
+      ],
       "schemaTo": "public",
       "tableTo": "payment_user_snapshots",
-      "columnsTo": ["id"],
+      "columnsTo": [
+        "id"
+      ],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "payments_payer_snapshot_id_payment_user_snapshots_id_fkey",
@@ -7136,10 +8838,14 @@
     },
     {
       "nameExplicit": false,
-      "columns": ["parent_id"],
+      "columns": [
+        "parent_id"
+      ],
       "schemaTo": "public",
       "tableTo": "product_categories",
-      "columnsTo": ["id"],
+      "columnsTo": [
+        "id"
+      ],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "product_categories_parent_id_product_categories_id_fkey",
@@ -7149,10 +8855,14 @@
     },
     {
       "nameExplicit": false,
-      "columns": ["product_id"],
+      "columns": [
+        "product_id"
+      ],
       "schemaTo": "public",
       "tableTo": "products",
-      "columnsTo": ["id"],
+      "columnsTo": [
+        "id"
+      ],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "product_variants_product_id_products_id_fkey",
@@ -7162,10 +8872,14 @@
     },
     {
       "nameExplicit": false,
-      "columns": ["category_id"],
+      "columns": [
+        "category_id"
+      ],
       "schemaTo": "public",
       "tableTo": "product_categories",
-      "columnsTo": ["id"],
+      "columnsTo": [
+        "id"
+      ],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "products_category_id_product_categories_id_fkey",
@@ -7175,10 +8889,14 @@
     },
     {
       "nameExplicit": false,
-      "columns": ["admin_user_id"],
+      "columns": [
+        "admin_user_id"
+      ],
       "schemaTo": "public",
       "tableTo": "admin_users",
-      "columnsTo": ["id"],
+      "columnsTo": [
+        "id"
+      ],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "refresh_tokens_admin_user_id_admin_users_id_fkey",
@@ -7188,10 +8906,99 @@
     },
     {
       "nameExplicit": false,
-      "columns": ["payment_id"],
+      "columns": [
+        "refund_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "refunds",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "NO ACTION",
+      "name": "refund_events_refund_id_refunds_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "refund_events"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "payment_id"
+      ],
       "schemaTo": "public",
       "tableTo": "payments",
-      "columnsTo": ["id"],
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "NO ACTION",
+      "name": "refund_events_payment_id_payments_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "refund_events"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "provider_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "payment_providers",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "NO ACTION",
+      "name": "refund_events_provider_id_payment_providers_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "refund_events"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "refund_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "refunds",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "NO ACTION",
+      "name": "refund_reconciliation_attempts_refund_id_refunds_id_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "refund_reconciliation_attempts"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "provider_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "payment_providers",
+      "columnsTo": [
+        "id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "NO ACTION",
+      "name": "refund_reconciliation_attempts_wyH8bqO8T67X_fkey",
+      "entityType": "fks",
+      "schema": "public",
+      "table": "refund_reconciliation_attempts"
+    },
+    {
+      "nameExplicit": false,
+      "columns": [
+        "payment_id"
+      ],
+      "schemaTo": "public",
+      "tableTo": "payments",
+      "columnsTo": [
+        "id"
+      ],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "refunds_payment_id_payments_id_fkey",
@@ -7201,10 +9008,14 @@
     },
     {
       "nameExplicit": false,
-      "columns": ["order_id"],
+      "columns": [
+        "order_id"
+      ],
       "schemaTo": "public",
       "tableTo": "orders",
-      "columnsTo": ["id"],
+      "columnsTo": [
+        "id"
+      ],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "refunds_order_id_orders_id_fkey",
@@ -7214,10 +9025,14 @@
     },
     {
       "nameExplicit": false,
-      "columns": ["requested_by_admin_user_id"],
+      "columns": [
+        "requested_by_admin_user_id"
+      ],
       "schemaTo": "public",
       "tableTo": "admin_users",
-      "columnsTo": ["id"],
+      "columnsTo": [
+        "id"
+      ],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "refunds_requested_by_admin_user_id_admin_users_id_fkey",
@@ -7227,10 +9042,14 @@
     },
     {
       "nameExplicit": false,
-      "columns": ["role_id"],
+      "columns": [
+        "role_id"
+      ],
       "schemaTo": "public",
       "tableTo": "roles",
-      "columnsTo": ["id"],
+      "columnsTo": [
+        "id"
+      ],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "role_permissions_role_id_roles_id_fkey",
@@ -7240,10 +9059,14 @@
     },
     {
       "nameExplicit": false,
-      "columns": ["permission_id"],
+      "columns": [
+        "permission_id"
+      ],
       "schemaTo": "public",
       "tableTo": "permissions",
-      "columnsTo": ["id"],
+      "columnsTo": [
+        "id"
+      ],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "role_permissions_permission_id_permissions_id_fkey",
@@ -7253,10 +9076,14 @@
     },
     {
       "nameExplicit": false,
-      "columns": ["order_id"],
+      "columns": [
+        "order_id"
+      ],
       "schemaTo": "public",
       "tableTo": "orders",
-      "columnsTo": ["id"],
+      "columnsTo": [
+        "id"
+      ],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "vending_commands_order_id_orders_id_fkey",
@@ -7266,10 +9093,14 @@
     },
     {
       "nameExplicit": false,
-      "columns": ["machine_id"],
+      "columns": [
+        "machine_id"
+      ],
       "schemaTo": "public",
       "tableTo": "machines",
-      "columnsTo": ["id"],
+      "columnsTo": [
+        "id"
+      ],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "vending_commands_machine_id_machines_id_fkey",
@@ -7279,10 +9110,14 @@
     },
     {
       "nameExplicit": false,
-      "columns": ["slot_id"],
+      "columns": [
+        "slot_id"
+      ],
       "schemaTo": "public",
       "tableTo": "machine_slots",
-      "columnsTo": ["id"],
+      "columnsTo": [
+        "id"
+      ],
       "onUpdate": "NO ACTION",
       "onDelete": "NO ACTION",
       "name": "vending_commands_slot_id_machine_slots_id_fkey",
@@ -7291,7 +9126,10 @@
       "table": "vending_commands"
     },
     {
-      "columns": ["admin_user_id", "role_id"],
+      "columns": [
+        "admin_user_id",
+        "role_id"
+      ],
       "nameExplicit": false,
       "name": "admin_user_roles_pkey",
       "entityType": "pks",
@@ -7299,7 +9137,10 @@
       "table": "admin_user_roles"
     },
     {
-      "columns": ["role_id", "permission_id"],
+      "columns": [
+        "role_id",
+        "permission_id"
+      ],
       "nameExplicit": false,
       "name": "role_permissions_pkey",
       "entityType": "pks",
@@ -7307,7 +9148,9 @@
       "table": "role_permissions"
     },
     {
-      "columns": ["id"],
+      "columns": [
+        "id"
+      ],
       "nameExplicit": false,
       "name": "admin_users_pkey",
       "schema": "public",
@@ -7315,7 +9158,9 @@
       "entityType": "pks"
     },
     {
-      "columns": ["id"],
+      "columns": [
+        "id"
+      ],
       "nameExplicit": false,
       "name": "audit_logs_pkey",
       "schema": "public",
@@ -7323,7 +9168,9 @@
       "entityType": "pks"
     },
     {
-      "columns": ["id"],
+      "columns": [
+        "id"
+      ],
       "nameExplicit": false,
       "name": "hardware_error_code_configs_pkey",
       "schema": "public",
@@ -7331,7 +9178,9 @@
       "entityType": "pks"
     },
     {
-      "columns": ["id"],
+      "columns": [
+        "id"
+      ],
       "nameExplicit": false,
       "name": "inventories_pkey",
       "schema": "public",
@@ -7339,7 +9188,9 @@
       "entityType": "pks"
     },
     {
-      "columns": ["id"],
+      "columns": [
+        "id"
+      ],
       "nameExplicit": false,
       "name": "inventory_movements_pkey",
       "schema": "public",
@@ -7347,7 +9198,9 @@
       "entityType": "pks"
     },
     {
-      "columns": ["id"],
+      "columns": [
+        "id"
+      ],
       "nameExplicit": false,
       "name": "inventory_reservations_pkey",
       "schema": "public",
@@ -7355,7 +9208,9 @@
       "entityType": "pks"
     },
     {
-      "columns": ["id"],
+      "columns": [
+        "id"
+      ],
       "nameExplicit": false,
       "name": "machine_events_pkey",
       "schema": "public",
@@ -7363,7 +9218,9 @@
       "entityType": "pks"
     },
     {
-      "columns": ["id"],
+      "columns": [
+        "id"
+      ],
       "nameExplicit": false,
       "name": "machine_heartbeats_pkey",
       "schema": "public",
@@ -7371,7 +9228,9 @@
       "entityType": "pks"
     },
     {
-      "columns": ["id"],
+      "columns": [
+        "id"
+      ],
       "nameExplicit": false,
       "name": "machine_log_artifacts_pkey",
       "schema": "public",
@@ -7379,7 +9238,9 @@
       "entityType": "pks"
     },
     {
-      "columns": ["id"],
+      "columns": [
+        "id"
+      ],
       "nameExplicit": false,
       "name": "machine_remote_ops_pkey",
       "schema": "public",
@@ -7387,7 +9248,9 @@
       "entityType": "pks"
     },
     {
-      "columns": ["id"],
+      "columns": [
+        "id"
+      ],
       "nameExplicit": false,
       "name": "machine_slots_pkey",
       "schema": "public",
@@ -7395,7 +9258,9 @@
       "entityType": "pks"
     },
     {
-      "columns": ["id"],
+      "columns": [
+        "id"
+      ],
       "nameExplicit": false,
       "name": "machines_pkey",
       "schema": "public",
@@ -7403,7 +9268,9 @@
       "entityType": "pks"
     },
     {
-      "columns": ["id"],
+      "columns": [
+        "id"
+      ],
       "nameExplicit": false,
       "name": "maintenance_work_orders_pkey",
       "schema": "public",
@@ -7411,7 +9278,9 @@
       "entityType": "pks"
     },
     {
-      "columns": ["id"],
+      "columns": [
+        "id"
+      ],
       "nameExplicit": false,
       "name": "notification_deliveries_pkey",
       "schema": "public",
@@ -7419,7 +9288,9 @@
       "entityType": "pks"
     },
     {
-      "columns": ["id"],
+      "columns": [
+        "id"
+      ],
       "nameExplicit": false,
       "name": "notification_targets_pkey",
       "schema": "public",
@@ -7427,7 +9298,9 @@
       "entityType": "pks"
     },
     {
-      "columns": ["id"],
+      "columns": [
+        "id"
+      ],
       "nameExplicit": false,
       "name": "notifications_pkey",
       "schema": "public",
@@ -7435,7 +9308,9 @@
       "entityType": "pks"
     },
     {
-      "columns": ["id"],
+      "columns": [
+        "id"
+      ],
       "nameExplicit": false,
       "name": "order_items_pkey",
       "schema": "public",
@@ -7443,7 +9318,9 @@
       "entityType": "pks"
     },
     {
-      "columns": ["id"],
+      "columns": [
+        "id"
+      ],
       "nameExplicit": false,
       "name": "order_status_events_pkey",
       "schema": "public",
@@ -7451,7 +9328,9 @@
       "entityType": "pks"
     },
     {
-      "columns": ["id"],
+      "columns": [
+        "id"
+      ],
       "nameExplicit": false,
       "name": "orders_pkey",
       "schema": "public",
@@ -7459,7 +9338,9 @@
       "entityType": "pks"
     },
     {
-      "columns": ["id"],
+      "columns": [
+        "id"
+      ],
       "nameExplicit": false,
       "name": "payment_events_pkey",
       "schema": "public",
@@ -7467,7 +9348,9 @@
       "entityType": "pks"
     },
     {
-      "columns": ["id"],
+      "columns": [
+        "id"
+      ],
       "nameExplicit": false,
       "name": "payment_provider_configs_pkey",
       "schema": "public",
@@ -7475,7 +9358,9 @@
       "entityType": "pks"
     },
     {
-      "columns": ["id"],
+      "columns": [
+        "id"
+      ],
       "nameExplicit": false,
       "name": "payment_providers_pkey",
       "schema": "public",
@@ -7483,7 +9368,19 @@
       "entityType": "pks"
     },
     {
-      "columns": ["id"],
+      "columns": [
+        "id"
+      ],
+      "nameExplicit": false,
+      "name": "payment_reconciliation_attempts_pkey",
+      "schema": "public",
+      "table": "payment_reconciliation_attempts",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "id"
+      ],
       "nameExplicit": false,
       "name": "payment_user_snapshots_pkey",
       "schema": "public",
@@ -7491,7 +9388,19 @@
       "entityType": "pks"
     },
     {
-      "columns": ["id"],
+      "columns": [
+        "id"
+      ],
+      "nameExplicit": false,
+      "name": "payment_webhook_attempts_pkey",
+      "schema": "public",
+      "table": "payment_webhook_attempts",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "id"
+      ],
       "nameExplicit": false,
       "name": "payments_pkey",
       "schema": "public",
@@ -7499,7 +9408,9 @@
       "entityType": "pks"
     },
     {
-      "columns": ["id"],
+      "columns": [
+        "id"
+      ],
       "nameExplicit": false,
       "name": "permissions_pkey",
       "schema": "public",
@@ -7507,7 +9418,9 @@
       "entityType": "pks"
     },
     {
-      "columns": ["id"],
+      "columns": [
+        "id"
+      ],
       "nameExplicit": false,
       "name": "product_categories_pkey",
       "schema": "public",
@@ -7515,7 +9428,9 @@
       "entityType": "pks"
     },
     {
-      "columns": ["id"],
+      "columns": [
+        "id"
+      ],
       "nameExplicit": false,
       "name": "product_variants_pkey",
       "schema": "public",
@@ -7523,7 +9438,9 @@
       "entityType": "pks"
     },
     {
-      "columns": ["id"],
+      "columns": [
+        "id"
+      ],
       "nameExplicit": false,
       "name": "products_pkey",
       "schema": "public",
@@ -7531,7 +9448,9 @@
       "entityType": "pks"
     },
     {
-      "columns": ["id"],
+      "columns": [
+        "id"
+      ],
       "nameExplicit": false,
       "name": "refresh_tokens_pkey",
       "schema": "public",
@@ -7539,7 +9458,29 @@
       "entityType": "pks"
     },
     {
-      "columns": ["id"],
+      "columns": [
+        "id"
+      ],
+      "nameExplicit": false,
+      "name": "refund_events_pkey",
+      "schema": "public",
+      "table": "refund_events",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "id"
+      ],
+      "nameExplicit": false,
+      "name": "refund_reconciliation_attempts_pkey",
+      "schema": "public",
+      "table": "refund_reconciliation_attempts",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "id"
+      ],
       "nameExplicit": false,
       "name": "refunds_pkey",
       "schema": "public",
@@ -7547,7 +9488,9 @@
       "entityType": "pks"
     },
     {
-      "columns": ["id"],
+      "columns": [
+        "id"
+      ],
       "nameExplicit": false,
       "name": "roles_pkey",
       "schema": "public",
@@ -7555,7 +9498,9 @@
       "entityType": "pks"
     },
     {
-      "columns": ["id"],
+      "columns": [
+        "id"
+      ],
       "nameExplicit": false,
       "name": "vending_commands_pkey",
       "schema": "public",
