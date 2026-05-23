@@ -8,7 +8,7 @@ export default defineConfig({
   env: {
     builtin: true,
   },
-  ignorePatterns: ["dist/", "**/*/*.js"],
+  ignorePatterns: ["dist/", "**/*/*.js", "**/*/*.mjs"],
   rules: {
     "eslint/no-new": "error",
     "typescript/no-import-type-side-effects": "error",

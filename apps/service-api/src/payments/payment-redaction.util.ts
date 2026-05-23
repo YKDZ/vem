@@ -101,10 +101,7 @@ export function redactPayload(obj: unknown): unknown {
   }
   if (typeof obj === "object") {
     const result: JsonObject = {};
-    for (const [key, value] of Object.entries(
-      // oxlint-disable-next-line typescript/no-unsafe-type-assertion
-      obj as JsonObject,
-    )) {
+    for (const [key, value] of Object.entries(obj as JsonObject)) {
       if (isSensitiveKey(key)) {
         if (typeof value === "string" && value.length > 0) {
           result[key] = `[REDACTED:${value.length}chars]`;
@@ -147,10 +144,7 @@ function tryParseUrlEncoded(input: string): JsonObject | null {
 export function buildRawBodyExcerpt(rawBodyText: string): string {
   try {
     const parsed: unknown = JSON.parse(rawBodyText);
-    return JSON.stringify(redactPayload(parsed)).slice(
-      0,
-      WEBHOOK_EXCERPT_BYTES,
-    );
+    return JSON.stringify(redactPayload(parsed)).slice(0, WEBHOOK_EXCERPT_BYTES);
   } catch {
     const parsedForm = tryParseUrlEncoded(rawBodyText);
     if (parsedForm) {
@@ -184,7 +178,6 @@ export function buildRedactedPayload(body: unknown): JsonObject | null {
       redacted !== null &&
       !Array.isArray(redacted)
     ) {
-      // oxlint-disable-next-line typescript/no-unsafe-type-assertion
       return redacted as JsonObject;
     }
     return { _value: redacted };

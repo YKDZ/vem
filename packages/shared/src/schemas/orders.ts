@@ -59,8 +59,7 @@ export const createMachineOrderSchema = z
         ctx.addIssue({
           code: "custom",
           path: ["paymentProviderCode"],
-          message:
-            "qr_code payment method requires alipay or wechat_pay provider",
+          message: "qr_code payment method requires alipay or wechat_pay provider",
         });
       }
       return;

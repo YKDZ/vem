@@ -293,9 +293,7 @@ describe("shared API contract", () => {
     it("accepts mock without paymentProviderCode", () => {
       const result = createMachineOrderSchema.parse({
         machineCode: "M001",
-        items: [
-          { inventoryId: "550e8400-e29b-41d4-a716-446655440000", quantity: 1 },
-        ],
+        items: [{ inventoryId: "550e8400-e29b-41d4-a716-446655440000", quantity: 1 }],
         paymentMethod: "mock",
       });
       expect(result.paymentMethod).toBe("mock");
@@ -306,12 +304,7 @@ describe("shared API contract", () => {
       expect(() =>
         createMachineOrderSchema.parse({
           machineCode: "M001",
-          items: [
-            {
-              inventoryId: "550e8400-e29b-41d4-a716-446655440000",
-              quantity: 1,
-            },
-          ],
+          items: [{ inventoryId: "550e8400-e29b-41d4-a716-446655440000", quantity: 1 }],
           paymentMethod: "mock",
           paymentProviderCode: "alipay",
         }),
@@ -322,17 +315,10 @@ describe("shared API contract", () => {
       expect(() =>
         createMachineOrderSchema.parse({
           machineCode: "M001",
-          items: [
-            {
-              inventoryId: "550e8400-e29b-41d4-a716-446655440000",
-              quantity: 1,
-            },
-          ],
+          items: [{ inventoryId: "550e8400-e29b-41d4-a716-446655440000", quantity: 1 }],
           paymentMethod: "qr_code",
         }),
-      ).toThrow(
-        "qr_code payment method requires alipay or wechat_pay provider",
-      );
+      ).toThrow("qr_code payment method requires alipay or wechat_pay provider");
     });
   });
 

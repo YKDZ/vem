@@ -100,7 +100,12 @@ function makeService(options: {
   const config = options.config ?? makeConfig();
   const secrets = options.secrets ?? makeSecrets();
   const providerConfigs = options.providerConfigs ?? makeProviderConfigs();
-  return new PaymentOpsService(db as never, config, secrets, providerConfigs);
+  return new PaymentOpsService(
+    db as never,
+    config,
+    secrets,
+    providerConfigs,
+  );
 }
 
 /** Helper to set up db.select with specific results for different calls */
@@ -168,15 +173,7 @@ describe("PaymentOpsService.getReadiness", () => {
 
   it("production + localhost/http notify → notify_url_static_check.passed=false", async () => {
     const db = makeDb();
-    buildSelectSequence(db, [
-      [],
-      [],
-      [],
-      [],
-      [{ total: 0 }],
-      [{ total: 0 }],
-      [{ total: 0 }],
-    ]);
+    buildSelectSequence(db, [[], [], [], [], [{ total: 0 }], [{ total: 0 }], [{ total: 0 }]]);
 
     const service = makeService({
       db,
@@ -241,16 +238,8 @@ describe("PaymentOpsService.getReadiness", () => {
                     machineId: "mach-001",
                     merchantNo: "MERCHANT001",
                     appId: "APP001",
-                    publicConfigJson: {
-                      gatewayUrl: "https://openapi.alipay.com",
-                    },
-                    configEncryptedJson: {
-                      v: 1,
-                      alg: "aes-256-gcm",
-                      iv: "yyy",
-                      tag: "zzz",
-                      ciphertext: "xxx",
-                    },
+                    publicConfigJson: { gatewayUrl: "https://openapi.alipay.com" },
+                    configEncryptedJson: { v: 1, alg: "aes-256-gcm", iv: "yyy", tag: "zzz", ciphertext: "xxx" },
                   },
                 ]),
               }),

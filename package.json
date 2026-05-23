@@ -4,9 +4,13 @@
   "devDependencies": {
     "@tsconfig/node24": "^24.0.4",
     "@types/node": "catalog:",
+    "jsdom": "^29.1.1",
+    "marked": "^18.0.4",
+    "mermaid": "^11.15.0",
     "oxfmt": "^0.47.0",
     "oxlint": "^1.62.0",
     "oxlint-tsgolint": "^0.22.1",
+    "playwright": "catalog:",
     "tsx": "catalog:",
     "turbo": "^2.9.8",
     "typescript": "catalog:",

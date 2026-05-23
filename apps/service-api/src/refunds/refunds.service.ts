@@ -27,11 +27,12 @@ import {
   type DrizzleTransaction,
 } from "@vem/db";
 
+import { buildStoredEventPayload } from "../payments/payment-redaction.util";
+
 import { createBusinessNo } from "../common/business-no.util";
 import { DRIZZLE_CLIENT } from "../database/database.constants";
 import { PaymentProviderConfigService } from "../payments/payment-provider-config.service";
 import { PaymentProviderRegistry } from "../payments/payment-provider.registry";
-import { buildStoredEventPayload } from "../payments/payment-redaction.util";
 import { reconcileBackoffMs } from "../payments/payment-redaction.util";
 
 export type FullRefundReason = "auto_dispense_failed" | "admin_refund";
@@ -427,8 +428,7 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
             error: error instanceof Error ? error.message : String(error),
           },
           orderEventReason: `${input.reason}_failed`,
-          failureMessage:
-            error instanceof Error ? error.message : String(error),
+          failureMessage: error instanceof Error ? error.message : String(error),
           refundedAt: null,
         });
         return {
@@ -485,7 +485,6 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
       )
       .limit(20);
 
-    /* oxlint-disable no-await-in-loop */
     for (const refund of processingRefunds) {
       try {
         if (!this.paymentProviderRegistry.has(refund.providerCode)) continue;
@@ -500,15 +499,17 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
 
         if (attemptNo > 12) {
           await this.db.transaction(async (tx) => {
-            await tx.insert(refundReconciliationAttempts).values({
-              refundId: refund.id,
-              providerId: refund.providerId,
-              trigger: "scheduled",
-              attemptNo,
-              status: "max_attempts_exceeded",
-              startedAt: now,
-              finishedAt: now,
-            });
+            await tx
+              .insert(refundReconciliationAttempts)
+              .values({
+                refundId: refund.id,
+                providerId: refund.providerId,
+                trigger: "scheduled",
+                attemptNo,
+                status: "max_attempts_exceeded",
+                startedAt: now,
+                finishedAt: now,
+              });
             await this.applyRefundTerminalState(tx, {
               refundId: refund.id,
               paymentId: refund.paymentId,
@@ -608,8 +609,7 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
             providerId: refund.providerId,
             orderId: refund.orderId,
             refundNo: refund.refundNo,
-            providerRefundNo:
-              result.providerRefundNo ?? refund.providerRefundNo,
+            providerRefundNo: result.providerRefundNo ?? refund.providerRefundNo,
             status: dbRefundStatus,
             eventType: `refund.${dbRefundStatus}`,
             providerEventId: `reconcile_${dbRefundStatus}:${refund.refundNo}:${now.getTime()}`,
@@ -639,7 +639,6 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
         );
       }
     }
-    /* oxlint-enable no-await-in-loop */
   }
 
   async applyProviderRefundWebhook(input: {

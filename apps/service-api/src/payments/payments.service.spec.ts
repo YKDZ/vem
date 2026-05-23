@@ -1030,9 +1030,7 @@ describe("PaymentsService", () => {
           finish: vi.fn().mockResolvedValue(undefined),
         } as never,
         {
-          applyProviderRefundWebhook: vi
-            .fn()
-            .mockResolvedValue({ handled: true }),
+          applyProviderRefundWebhook: vi.fn().mockResolvedValue({ handled: true }),
         } as never,
       );
 
