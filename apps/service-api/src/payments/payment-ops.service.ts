@@ -1,3 +1,10 @@
+import type {
+  PaymentMachinePreflight,
+  PaymentOpsCheck,
+  PaymentOpsMetrics,
+  PaymentOpsReadiness,
+} from "@vem/shared";
+
 import { Inject, Injectable } from "@nestjs/common";
 import {
   and,
@@ -13,12 +20,6 @@ import {
   sql,
   type DrizzleClient,
 } from "@vem/db";
-import type {
-  PaymentMachinePreflight,
-  PaymentOpsCheck,
-  PaymentOpsMetrics,
-  PaymentOpsReadiness,
-} from "@vem/shared";
 
 import { AppConfigService } from "../config/app-config.service";
 import { isEncryptedJson } from "../crypto/encrypted-json.util";
@@ -112,13 +113,14 @@ export class PaymentOpsService {
       reconciliationErrorCount: Number(reconcileTotals.total),
       refundFailedCount: Number(refundTotals.failed),
       refundProcessingOverdueCount: Number(refundTotals.overdue),
-      certificateExpiringCount: await this.countExpiringCertificates(
-        measuredAt,
-      ),
+      certificateExpiringCount:
+        await this.countExpiringCertificates(measuredAt),
     };
   }
 
-  async getMachinePreflight(machineId: string): Promise<PaymentMachinePreflight> {
+  async getMachinePreflight(
+    machineId: string,
+  ): Promise<PaymentMachinePreflight> {
     const [machine] = await this.db
       .select({ id: machines.id, code: machines.code, status: machines.status })
       .from(machines)
@@ -145,7 +147,9 @@ export class PaymentOpsService {
     }
 
     const options =
-      await this.providerConfigs.listMachinePaymentOptionsForMachine(machine.id);
+      await this.providerConfigs.listMachinePaymentOptionsForMachine(
+        machine.id,
+      );
 
     const checks: PaymentOpsCheck[] = [
       {
@@ -188,17 +192,13 @@ export class PaymentOpsService {
       .limit(1);
 
     const passed =
-      !this.config.paymentMockEnabled &&
-      mockProvider?.status !== "enabled";
+      !this.config.paymentMockEnabled && mockProvider?.status !== "enabled";
 
     return {
       code: "mock_provider_disabled",
-      severity:
-        this.config.nodeEnv === "production" ? "critical" : "warning",
+      severity: this.config.nodeEnv === "production" ? "critical" : "warning",
       passed,
-      message: passed
-        ? "Mock payment is disabled"
-        : "Mock payment is enabled",
+      message: passed ? "Mock payment is disabled" : "Mock payment is enabled",
       evidence: {
         envPaymentMockEnabled: this.config.paymentMockEnabled,
         mockProviderStatus: mockProvider?.status ?? null,
@@ -223,9 +223,7 @@ export class PaymentOpsService {
         paymentProviders,
         eq(paymentProviders.id, paymentProviderConfigs.providerId),
       )
-      .where(
-        sql`${paymentProviders.code} in ('wechat_pay', 'alipay')`,
-      );
+      .where(sql`${paymentProviders.code} in ('wechat_pay', 'alipay')`);
 
     const completeEnabledRows = rows.filter((row) => {
       if (row.providerStatus !== "enabled") return false;
@@ -233,14 +231,15 @@ export class PaymentOpsService {
       if (!row.merchantNo || !row.appId) return false;
       if (!isEncryptedJson(row.configEncryptedJson)) return false;
       const publicConfig =
-        typeof row.publicConfigJson === "object" && row.publicConfigJson !== null
+        typeof row.publicConfigJson === "object" &&
+        row.publicConfigJson !== null
           ? (row.publicConfigJson as Record<string, unknown>)
           : {};
       if (row.providerCode === "wechat_pay") {
         return Boolean(
           publicConfig["platformCertificateSerialNo"] &&
-            (publicConfig["merchantCertificateSerialNo"] ||
-              publicConfig["certificateSerialNo"]),
+          (publicConfig["merchantCertificateSerialNo"] ||
+            publicConfig["certificateSerialNo"]),
         );
       }
       if (row.providerCode === "alipay") {
@@ -269,7 +268,10 @@ export class PaymentOpsService {
           (row) => row.providerCode,
         ),
         completeEnabledMachineScopedProviders: enabledMachineScoped.map(
-          (row) => ({ providerCode: row.providerCode, machineId: row.machineId }),
+          (row) => ({
+            providerCode: row.providerCode,
+            machineId: row.machineId,
+          }),
         ),
         inspectedRows: rows.length,
       },
@@ -296,7 +298,9 @@ export class PaymentOpsService {
           await this.providerConfigs.listMachinePaymentOptionsForMachine(
             machine.id,
           );
-        const providerCodes = options.options.map((option) => option.providerCode);
+        const providerCodes = options.options.map(
+          (option) => option.providerCode,
+        );
         if (!providerCodes.some((code) => code !== "mock")) {
           blockedMachines.push({
             machineId: machine.id,

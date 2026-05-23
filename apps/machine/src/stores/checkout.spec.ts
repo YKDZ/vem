@@ -15,6 +15,7 @@ vi.mock("@/api/request", () => ({
 
 import * as machineOrdersApi from "@/api/machine-orders";
 import { machineConfigDefaults } from "@/config/machine-config";
+
 import { resultKindFromNextAction, useCheckoutStore } from "./checkout";
 
 beforeEach(() => {
@@ -192,7 +193,9 @@ describe("checkout Pinia store", () => {
       expect.anything(),
       expect.objectContaining({
         machineCode: "M001",
-        items: [{ inventoryId: "550e8400-e29b-41d4-a716-446655440002", quantity: 1 }],
+        items: [
+          { inventoryId: "550e8400-e29b-41d4-a716-446655440002", quantity: 1 },
+        ],
         paymentMethod: "mock",
       }),
     );
@@ -201,5 +204,3 @@ describe("checkout Pinia store", () => {
     ).not.toHaveProperty("paymentProviderCode");
   });
 });
-
-

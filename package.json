@@ -1,6 +1,16 @@
 {
   "private": true,
   "type": "module",
+  "scripts": {
+    "fmt": "oxfmt .",
+    "fmt:check": "oxfmt . --check",
+    "typecheck": "turbo typecheck",
+    "lint": "turbo lint",
+    "lint:fix": "turbo lint -- --fix",
+    "test": "turbo test",
+    "check": "oxfmt . --check && turbo typecheck lint test",
+    "check:fix": "oxfmt . && turbo lint -- --fix && turbo typecheck test"
+  },
   "devDependencies": {
     "@tsconfig/node24": "^24.0.4",
     "@types/node": "catalog:",

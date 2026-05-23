@@ -175,9 +175,53 @@ git push origin feat/refund-standalone-page
 
 适用于改动横跨多个包的情况，例如"扫码枪支付"功能需要同时修改 `packages/shared`、`apps/service-api`、`apps/machine`。
 
+### 情形 A：一个人负责所有模块
+
 **关键原则：同一功能的所有模块变更放在同一个分支和同一个 PR 中。** 不要拆成多个 PR 再合并，因为这会导致 `main` 中出现残缺的半成品状态。
 
-### 第一步：从最新 main 签出
+### 情形 B：多人分工，各负责不同模块
+
+使用**集成分支模式**，不要多人直接在同一分支上互相推送（冲突频繁、难追责）：
+
+```
+main
+ └─ feat/vision-recommend          ← 集成分支，完成后 PR → main
+      ├─ feat/vision-recommend-api    ← 协作者 A 负责 service-api
+      └─ feat/vision-recommend-ui     ← 协作者 B 负责 machine UI
+```
+
+**① 由发起人从 main 创建集成分支并推送**
+
+```bash
+git switch -c feat/vision-recommend main
+git push -u origin feat/vision-recommend
+```
+
+**② 各协作者从集成分支拉出自己的子分支**
+
+```bash
+git fetch origin
+git switch -c feat/vision-recommend-api origin/feat/vision-recommend
+```
+
+**③ 各自完成后，发 PR 目标选集成分支（不是 main）**
+
+Ruleset 只保护 `main`，集成分支之间的 PR 不受限，可以自己合并，无需 @YKDZ 审核。
+
+**④ 所有子模块合并进集成分支后，联调验证通过，发最终 PR → main 由 @YKDZ 审核**
+
+**⑤ 在开发期间，定期把 main 的最新变更同步到集成分支**
+
+```bash
+# 在集成分支上执行
+git fetch origin
+git rebase origin/main
+git push --force-with-lease origin feat/vision-recommend
+```
+
+> 子分支也需要定期 rebase 到集成分支，方式相同。
+
+---
 
 ```bash
 git checkout main
@@ -185,7 +229,7 @@ git pull origin main
 git checkout -b feat/barcode-scanner-payment
 ```
 
-### 第二步：按依赖顺序开发
+### 按依赖顺序开发（情形 A/B 均适用）
 
 Monorepo 中包之间存在依赖关系（`packages/shared` → `apps/*`），开发顺序应从底层向上：
 
@@ -226,7 +270,7 @@ git add apps/machine/
 git commit -m "feat(machine): integrate barcode scanner HID read and checkout flow"
 ```
 
-### 第三步：本地全量验证（尤其重要）
+### 本地全量验证（推送前必做）
 
 跨模块变更需要验证所有受影响包都能正确构建：
 
@@ -244,7 +288,7 @@ pnpm turbo lint
 pnpm turbo test
 ```
 
-### 第四步：推送与 PR
+### 推送与 PR（情形 A）
 
 ```bash
 git push origin feat/barcode-scanner-payment

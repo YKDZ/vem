@@ -57,7 +57,9 @@ type MachineOrderStatusQuery = z.infer<typeof machineOrderStatusQuerySchema>;
 type OrderQuery = z.infer<typeof orderQuerySchema> &
   z.infer<typeof pageQuerySchema>;
 
-function readQrExpiresMinutes(publicConfigJson: Record<string, unknown>): number {
+function readQrExpiresMinutes(
+  publicConfigJson: Record<string, unknown>,
+): number {
   const value = publicConfigJson["qrExpiresMinutes"];
   return typeof value === "number" &&
     Number.isInteger(value) &&
@@ -136,8 +138,9 @@ export class OrdersService {
     const paymentSelection = resolvePaymentSelection(input);
 
     // Resolve provider config before entering the transaction
-    let resolvedProviderConfig: import("../payments/payment-provider-config.service").RuntimePaymentProviderConfig | null =
-      null;
+    let resolvedProviderConfig:
+      | import("../payments/payment-provider-config.service").RuntimePaymentProviderConfig
+      | null = null;
     if (paymentSelection.providerCode !== "mock") {
       resolvedProviderConfig =
         await this.paymentProviderConfigService.resolveForPayment({
@@ -149,7 +152,9 @@ export class OrdersService {
     const qrExpiresMinutes = resolvedProviderConfig
       ? readQrExpiresMinutes(resolvedProviderConfig.publicConfigJson)
       : 15;
-    const paymentExpiresAt = new Date(Date.now() + qrExpiresMinutes * 60 * 1000);
+    const paymentExpiresAt = new Date(
+      Date.now() + qrExpiresMinutes * 60 * 1000,
+    );
     const draft = await this.createLocalMachineOrderDraft(
       input,
       machine.id,
@@ -160,14 +165,22 @@ export class OrdersService {
 
     let intent: Awaited<ReturnType<typeof this.createPaymentIntent>>;
     try {
-      intent = await this.createPaymentIntent(draft.providerCode, draft.machineId, {
-        paymentNo: draft.paymentNo,
-        orderNo: draft.orderNo,
-        amountCents: draft.totalAmountCents,
-        expiresAt: draft.expiresAt,
-      });
+      intent = await this.createPaymentIntent(
+        draft.providerCode,
+        draft.machineId,
+        {
+          paymentNo: draft.paymentNo,
+          orderNo: draft.orderNo,
+          amountCents: draft.totalAmountCents,
+          expiresAt: draft.expiresAt,
+        },
+      );
     } catch (error) {
-      await this.cancelLocalCreatedPayment(draft, "provider_create_failed", error);
+      await this.cancelLocalCreatedPayment(
+        draft,
+        "provider_create_failed",
+        error,
+      );
       throw error;
     }
 
@@ -207,8 +220,13 @@ export class OrdersService {
     input: CreateMachineOrderInput,
     machineId: string,
     paymentExpiresAt: Date,
-    paymentSelection: { providerCode: "mock" | "wechat_pay" | "alipay"; method: CreateMachineOrderInput["paymentMethod"] },
-    resolvedProviderConfig: import("../payments/payment-provider-config.service").RuntimePaymentProviderConfig | null,
+    paymentSelection: {
+      providerCode: "mock" | "wechat_pay" | "alipay";
+      method: CreateMachineOrderInput["paymentMethod"];
+    },
+    resolvedProviderConfig:
+      | import("../payments/payment-provider-config.service").RuntimePaymentProviderConfig
+      | null,
   ): Promise<LocalPaymentDraft> {
     return await this.db.transaction(async (tx) => {
       const inventoryIds = [
@@ -480,7 +498,10 @@ export class OrdersService {
         .insert(paymentEvents)
         .values({
           paymentId: draft.paymentId,
-          providerId: await this.findProviderIdForCode(this.db, draft.providerCode),
+          providerId: await this.findProviderIdForCode(
+            this.db,
+            draft.providerCode,
+          ),
           eventType: "payment.provider_cancel_after_db_failure_failed",
           providerEventId: `provider_cancel_after_db_failure_failed:${draft.paymentNo}`,
           rawPayloadJson: buildStoredEventPayload({

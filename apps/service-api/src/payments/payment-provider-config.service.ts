@@ -1,3 +1,8 @@
+import type {
+  MachinePaymentOption,
+  MachinePaymentOptionsResponse,
+} from "@vem/shared";
+
 import {
   ConflictException,
   Inject,
@@ -11,14 +16,9 @@ import {
   paymentProviders,
   type DrizzleClient,
 } from "@vem/db";
-import type {
-  MachinePaymentOption,
-  MachinePaymentOptionsResponse,
-} from "@vem/shared";
 
 import { AppConfigService } from "../config/app-config.service";
 import { isEncryptedJson } from "../crypto/encrypted-json.util";
-
 import { DRIZZLE_CLIENT } from "../database/database.constants";
 import { PaymentConfigSecretService } from "./payment-config-secret.service";
 

@@ -123,7 +123,11 @@ describe("OrdersService", () => {
       const db = makeDb();
       db.select.mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
-          where: vi.fn().mockResolvedValue([{ id: "mach-1", code: "M001", status: "online" }]),
+          where: vi
+            .fn()
+            .mockResolvedValue([
+              { id: "mach-1", code: "M001", status: "online" },
+            ]),
         }),
       });
 
@@ -131,7 +135,12 @@ describe("OrdersService", () => {
       await expect(
         service.createMachineOrder({
           machineCode: "M001",
-          items: [{ inventoryId: "550e8400-e29b-41d4-a716-446655440000", quantity: 1 }],
+          items: [
+            {
+              inventoryId: "550e8400-e29b-41d4-a716-446655440000",
+              quantity: 1,
+            },
+          ],
           paymentMethod: "mock",
           paymentProviderCode: "alipay",
         }),
@@ -143,7 +152,11 @@ describe("OrdersService", () => {
       const db = makeDb();
       db.select.mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
-          where: vi.fn().mockResolvedValue([{ id: "mach-1", code: "M001", status: "online" }]),
+          where: vi
+            .fn()
+            .mockResolvedValue([
+              { id: "mach-1", code: "M001", status: "online" },
+            ]),
         }),
       });
 
@@ -151,7 +164,12 @@ describe("OrdersService", () => {
       await expect(
         service.createMachineOrder({
           machineCode: "M001",
-          items: [{ inventoryId: "550e8400-e29b-41d4-a716-446655440000", quantity: 1 }],
+          items: [
+            {
+              inventoryId: "550e8400-e29b-41d4-a716-446655440000",
+              quantity: 1,
+            },
+          ],
           paymentMethod: "qr_code",
         }),
       ).rejects.toThrow(ConflictException);
@@ -528,16 +546,12 @@ function makeOrdersService(overrides: {
     ...overrides.inventoryService,
   } as unknown as InventoryService;
   const registry: PaymentProviderRegistry = {
-    get: vi
-      .fn()
-      .mockReturnValue({
-        createPaymentIntent: vi
-          .fn()
-          .mockResolvedValue({
-            providerTradeNo: null,
-            paymentUrl: "https://qr.example/test",
-          }),
+    get: vi.fn().mockReturnValue({
+      createPaymentIntent: vi.fn().mockResolvedValue({
+        providerTradeNo: null,
+        paymentUrl: "https://qr.example/test",
       }),
+    }),
     has: vi.fn().mockReturnValue(true),
     register: vi.fn(),
     list: vi.fn().mockReturnValue([]),

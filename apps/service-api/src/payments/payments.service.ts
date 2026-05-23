@@ -53,6 +53,7 @@ import { AppConfigService } from "../config/app-config.service";
 import { isEncryptedJson } from "../crypto/encrypted-json.util";
 import { DRIZZLE_CLIENT } from "../database/database.constants";
 import { InventoryService } from "../inventory/inventory.service";
+import { RefundsService } from "../refunds/refunds.service";
 import { VendingService } from "../vending/vending.service";
 import { PaymentConfigSecretService } from "./payment-config-secret.service";
 import { PaymentProviderConfigService } from "./payment-provider-config.service";
@@ -63,7 +64,6 @@ import {
   sha256Hex,
 } from "./payment-redaction.util";
 import { PaymentWebhookAttemptRecorderService } from "./payment-webhook-attempt-recorder.service";
-import { RefundsService } from "../refunds/refunds.service";
 
 type PaymentQuery = z.infer<typeof paymentQuerySchema> &
   z.infer<typeof pageQuerySchema>;
@@ -287,7 +287,10 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
           providerId: row.providerId,
           eventType: "mock.payment.succeeded",
           providerEventId: `mock:succeed:${paymentNo}`,
-          rawPayloadJson: buildStoredEventPayload({ paymentNo, event: "succeed" }),
+          rawPayloadJson: buildStoredEventPayload({
+            paymentNo,
+            event: "succeed",
+          }),
           signatureValid: true,
           handledAt: new Date(),
         })
@@ -418,7 +421,11 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
           providerId: row.providerId,
           eventType: "mock.payment.failed",
           providerEventId: `mock:fail:${paymentNo}`,
-          rawPayloadJson: buildStoredEventPayload({ paymentNo, event: "fail", reason }),
+          rawPayloadJson: buildStoredEventPayload({
+            paymentNo,
+            event: "fail",
+            reason,
+          }),
           signatureValid: true,
           handledAt: new Date(),
         })
@@ -1663,14 +1670,16 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
 
       const requireSucceeded = claimedStatus === "succeeded";
       if (requireSucceeded) {
-        if (!outTradeNo) return { ok: false, reason: "wechat_out_trade_no_missing" };
+        if (!outTradeNo)
+          return { ok: false, reason: "wechat_out_trade_no_missing" };
         if (amountTotal === null)
           return { ok: false, reason: "wechat_amount_total_missing" };
         if (!amountCurrency)
           return { ok: false, reason: "wechat_currency_missing" };
         if (!mchId) return { ok: false, reason: "wechat_mchid_missing" };
         if (!appId) return { ok: false, reason: "wechat_appid_missing" };
-        if (!tradeState) return { ok: false, reason: "wechat_trade_state_missing" };
+        if (!tradeState)
+          return { ok: false, reason: "wechat_trade_state_missing" };
       }
 
       // Find the matched config by id, or find by merchantNo
@@ -1716,12 +1725,19 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
 
       const requireSucceeded = claimedStatus === "succeeded";
       if (requireSucceeded) {
-        if (!outTradeNo) return { ok: false, reason: "alipay_out_trade_no_missing" };
-        if (!totalAmount) return { ok: false, reason: "alipay_total_amount_missing" };
-        if (!appIdInPayload) return { ok: false, reason: "alipay_app_id_missing" };
+        if (!outTradeNo)
+          return { ok: false, reason: "alipay_out_trade_no_missing" };
+        if (!totalAmount)
+          return { ok: false, reason: "alipay_total_amount_missing" };
+        if (!appIdInPayload)
+          return { ok: false, reason: "alipay_app_id_missing" };
         if (!sellerId) return { ok: false, reason: "alipay_seller_id_missing" };
-        if (!tradeStatus) return { ok: false, reason: "alipay_trade_status_missing" };
-        if (tradeStatus !== "TRADE_SUCCESS" && tradeStatus !== "TRADE_FINISHED") {
+        if (!tradeStatus)
+          return { ok: false, reason: "alipay_trade_status_missing" };
+        if (
+          tradeStatus !== "TRADE_SUCCESS" &&
+          tradeStatus !== "TRADE_FINISHED"
+        ) {
           return { ok: false, reason: "alipay_trade_status_not_success" };
         }
       }

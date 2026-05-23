@@ -144,7 +144,10 @@ function tryParseUrlEncoded(input: string): JsonObject | null {
 export function buildRawBodyExcerpt(rawBodyText: string): string {
   try {
     const parsed: unknown = JSON.parse(rawBodyText);
-    return JSON.stringify(redactPayload(parsed)).slice(0, WEBHOOK_EXCERPT_BYTES);
+    return JSON.stringify(redactPayload(parsed)).slice(
+      0,
+      WEBHOOK_EXCERPT_BYTES,
+    );
   } catch {
     const parsedForm = tryParseUrlEncoded(rawBodyText);
     if (parsedForm) {
