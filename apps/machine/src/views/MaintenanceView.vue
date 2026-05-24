@@ -21,6 +21,7 @@ const form = reactive({
   mqttUrl: machineStore.config.mqttUrl,
   mqttUsername: machineStore.config.mqttUsername,
   hardwareAdapter: machineStore.config.hardwareAdapter,
+  serialPortPath: machineStore.config.serialPortPath,
   kioskMode: machineStore.config.kioskMode,
   machineSecretInput: "",
   mqttSigningSecretInput: "",
@@ -35,6 +36,7 @@ onMounted(async () => {
     form.mqttUrl = machineStore.config.mqttUrl;
     form.mqttUsername = machineStore.config.mqttUsername;
     form.hardwareAdapter = machineStore.config.hardwareAdapter;
+    form.serialPortPath = machineStore.config.serialPortPath;
     form.kioskMode = machineStore.config.kioskMode;
   }
 });
@@ -72,8 +74,8 @@ async function saveAndReboot(): Promise<void> {
       </p>
       <h2 class="mt-3 text-3xl font-bold">部署配置 / 维护入口</h2>
       <p class="mt-3 text-slate-300">
-        未配置机器编号时不会进入商品售卖页。第三阶段支持 mock
-        出货模式切换，用于验证 MQTT 出货成功、失败与补发链路。
+        未配置机器编号时不会进入商品售卖页。真实设备请选择 serial 适配器并填写
+        USB-TTL 串口路径；mock 适配器仅用于本地联调。
       </p>
 
       <div
@@ -201,6 +203,23 @@ async function saveAndReboot(): Promise<void> {
           </select>
         </label>
 
+        <label
+          v-if="form.hardwareAdapter === 'serial'"
+          class="grid gap-2 text-left"
+        >
+          <span class="text-sm font-semibold text-slate-200"
+            >串口路径 serialPortPath</span
+          >
+          <input
+            v-model="form.serialPortPath"
+            class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-sky-300"
+            placeholder="Linux 如 /dev/ttyUSB0；Windows 如 COM3"
+          />
+          <p class="text-sm text-slate-400">
+            当前协议固定 115200 / 8N1 / None 校验 / 1 停止位。
+          </p>
+        </label>
+
         <button
           class="kiosk-touch-target rounded-2xl bg-sky-400 px-6 py-4 text-lg font-bold text-slate-950 shadow-lg shadow-sky-950/40"
           type="submit"
@@ -215,7 +234,7 @@ async function saveAndReboot(): Promise<void> {
           {{ machineStore.error }}
         </p>
       </form>
-      <div class="mt-6">
+      <div v-if="form.hardwareAdapter === 'mock'" class="mt-6">
         <MockHardwareControls />
       </div>
     </section>

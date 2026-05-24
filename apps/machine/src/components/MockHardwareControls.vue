@@ -25,8 +25,8 @@ function save(): void {
   <section class="rounded-3xl border border-white/10 bg-slate-950/40 p-5">
     <h3 class="text-xl font-bold text-white">Mock 出货模拟</h3>
     <p class="mt-2 text-sm text-slate-300">
-      第三阶段使用 TypeScript MockAdapter 模拟硬件返回；真实串口/蓝牙 adapter
-      在第五阶段替换。
+      仅在 hardwareAdapter=mock 时生效，用于本地验证 MQTT
+      出货成功、失败与补发链路。
     </p>
     <div class="mt-4 grid gap-3">
       <label

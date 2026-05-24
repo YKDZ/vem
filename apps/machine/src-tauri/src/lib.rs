@@ -1,6 +1,7 @@
 mod hardware;
 mod local_logs;
 mod native_mqtt;
+mod serial_protocol;
 
 use std::{
     fs,
@@ -9,10 +10,11 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use hardware::MockHardwareAdapter;
+use hardware::{HardwareAdapter, MockHardwareAdapter};
 use native_mqtt::{NativeMqttRuntime, NativeMqttStatus};
 use rumqttc::MqttOptions;
 use serde::{Deserialize, Serialize};
+use serial_protocol::SerialHardwareAdapter;
 use tauri::Manager;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -33,6 +35,7 @@ struct MachinePublicConfigFile {
     mqtt_url: String,
     mqtt_username: Option<String>,
     hardware_adapter: HardwareAdapterKind,
+    serial_port_path: Option<String>,
     kiosk_mode: bool,
 }
 
@@ -51,6 +54,7 @@ struct MachineConfig {
     api_base_url: String,
     mqtt_url: String,
     hardware_adapter: HardwareAdapterKind,
+    serial_port_path: Option<String>,
     kiosk_mode: bool,
 }
 
@@ -123,6 +127,7 @@ fn default_public_config() -> MachinePublicConfigFile {
         mqtt_url: "mqtt://localhost:1883".to_string(),
         mqtt_username: None,
         hardware_adapter: HardwareAdapterKind::Mock,
+        serial_port_path: None,
         kiosk_mode: false,
     }
 }
@@ -182,6 +187,7 @@ fn attach_secret_state(
         api_base_url: public.api_base_url,
         mqtt_url: public.mqtt_url,
         hardware_adapter: public.hardware_adapter,
+        serial_port_path: public.serial_port_path,
         kiosk_mode: public.kiosk_mode,
     })
 }
@@ -222,6 +228,13 @@ fn normalize_config(config: MachineConfig) -> Result<MachineConfig, String> {
         .filter(|s| !s.is_empty())
         .map(str::to_string);
 
+    let serial_port_path = config
+        .serial_port_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+
     let api_base_url = config.api_base_url.trim().trim_end_matches('/').to_string();
     let mqtt_url = config.mqtt_url.trim().to_string();
 
@@ -230,6 +243,10 @@ fn normalize_config(config: MachineConfig) -> Result<MachineConfig, String> {
     }
     if mqtt_url.is_empty() {
         return Err("mqttUrl is required".to_string());
+    }
+    if matches!(&config.hardware_adapter, HardwareAdapterKind::Serial) && serial_port_path.is_none()
+    {
+        return Err("serialPortPath is required when hardwareAdapter=serial".to_string());
     }
 
     Ok(MachineConfig {
@@ -245,6 +262,7 @@ fn normalize_config(config: MachineConfig) -> Result<MachineConfig, String> {
         api_base_url,
         mqtt_url,
         hardware_adapter: config.hardware_adapter,
+        serial_port_path,
         kiosk_mode: config.kiosk_mode,
     })
 }
@@ -280,6 +298,7 @@ fn save_machine_config(
         mqtt_url: normalized.mqtt_url.clone(),
         mqtt_username: normalized.mqtt_username.clone(),
         hardware_adapter: normalized.hardware_adapter.clone(),
+        serial_port_path: normalized.serial_port_path.clone(),
         kiosk_mode: normalized.kiosk_mode,
     };
     let content = serde_json::to_string_pretty(&public)
@@ -289,22 +308,75 @@ fn save_machine_config(
     get_machine_config(app)
 }
 
+fn serial_port_path(config: &MachineConfig) -> Result<String, String> {
+    config
+        .serial_port_path
+        .clone()
+        .filter(|path| !path.trim().is_empty())
+        .ok_or_else(|| "serialPortPath is required when hardwareAdapter=serial".to_string())
+}
+
+fn build_hardware_adapter(config: &MachineConfig) -> Result<Arc<dyn HardwareAdapter>, String> {
+    match &config.hardware_adapter {
+        HardwareAdapterKind::Mock => Ok(Arc::new(MockHardwareAdapter)),
+        HardwareAdapterKind::Serial => Ok(Arc::new(SerialHardwareAdapter::new(serial_port_path(
+            config,
+        )?))),
+        HardwareAdapterKind::Bluetooth => {
+            Err("bluetooth hardware adapter is not implemented".to_string())
+        }
+        HardwareAdapterKind::VendorSdk => {
+            Err("vendor_sdk hardware adapter is not implemented".to_string())
+        }
+    }
+}
+
 #[tauri::command]
-fn hardware_self_check(app: tauri::AppHandle) -> Result<HardwareSelfCheckResult, String> {
+async fn hardware_self_check(app: tauri::AppHandle) -> Result<HardwareSelfCheckResult, String> {
     let config = get_machine_config(app)?;
     let checked_at_ms = now_ms()?;
 
-    match config.hardware_adapter {
-        HardwareAdapterKind::Mock => Ok(HardwareSelfCheckResult {
-            adapter: HardwareAdapterKind::Mock,
-            status: HardwareHealthStatus::Ok,
-            message: "mock adapter ready".to_string(),
-            checked_at_ms,
-        }),
+    match config.hardware_adapter.clone() {
+        HardwareAdapterKind::Mock => {
+            let adapter = MockHardwareAdapter;
+            let status = adapter.self_check().await;
+            Ok(HardwareSelfCheckResult {
+                adapter: HardwareAdapterKind::Mock,
+                status: if status.online {
+                    HardwareHealthStatus::Ok
+                } else {
+                    HardwareHealthStatus::Degraded
+                },
+                message: status.message,
+                checked_at_ms,
+            })
+        }
+        HardwareAdapterKind::Serial => match serial_port_path(&config) {
+            Ok(path) => {
+                let adapter = SerialHardwareAdapter::new(path);
+                let status = adapter.self_check().await;
+                Ok(HardwareSelfCheckResult {
+                    adapter: HardwareAdapterKind::Serial,
+                    status: if status.online {
+                        HardwareHealthStatus::Ok
+                    } else {
+                        HardwareHealthStatus::Degraded
+                    },
+                    message: status.message,
+                    checked_at_ms,
+                })
+            }
+            Err(error) => Ok(HardwareSelfCheckResult {
+                adapter: HardwareAdapterKind::Serial,
+                status: HardwareHealthStatus::Degraded,
+                message: error,
+                checked_at_ms,
+            }),
+        },
         adapter => Ok(HardwareSelfCheckResult {
             adapter,
             status: HardwareHealthStatus::Degraded,
-            message: "第一阶段仅启用 mock adapter；真实硬件 adapter 在后续阶段接入".to_string(),
+            message: "该硬件 adapter 尚未实现；请选择 mock 或 serial".to_string(),
             checked_at_ms,
         }),
     }
@@ -330,10 +402,14 @@ async fn start_native_mqtt_runtime(
     }
 
     let config = get_machine_config(app)?;
-    let machine_code = config.machine_code.ok_or("machine_code not configured")?;
+    let hardware = build_hardware_adapter(&config)?;
+    let machine_code = config
+        .machine_code
+        .clone()
+        .ok_or("machine_code not configured")?;
     let signing_secret =
         read_secret(MQTT_SIGNING_SECRET_ACCOUNT)?.ok_or("mqtt_signing_secret not configured")?;
-    let mqtt_url = config.mqtt_url;
+    let mqtt_url = config.mqtt_url.clone();
 
     // Parse mqtt://host:port or mqtts://host:port
     let (scheme, rest) = mqtt_url
@@ -347,7 +423,7 @@ async fn start_native_mqtt_runtime(
     let client_id = format!("machine-{machine_code}");
     let mut mqtt_options = MqttOptions::new(client_id, host, port);
     mqtt_options.set_keep_alive(std::time::Duration::from_secs(30));
-    if let Some(username) = config.mqtt_username.filter(|u| !u.is_empty()) {
+    if let Some(username) = config.mqtt_username.as_deref().filter(|u| !u.is_empty()) {
         let password = read_secret(MQTT_PASSWORD_ACCOUNT)?.unwrap_or_default();
         mqtt_options.set_credentials(username, password);
     }
@@ -356,7 +432,6 @@ async fn start_native_mqtt_runtime(
     }
     let _ = scheme;
 
-    let hardware: Arc<dyn hardware::HardwareAdapter> = Arc::new(MockHardwareAdapter);
     let (runtime, event_loop) =
         NativeMqttRuntime::new(machine_code, signing_secret, hardware, mqtt_options);
     let runtime = Arc::new(runtime);

@@ -38,7 +38,7 @@ onMounted(async () => {
     return;
   }
 
-  pushStep("执行 mock 硬件自检");
+  pushStep("执行硬件自检");
   await machineStore.runHardwareSelfCheck();
 
   pushStep("检查后端健康状态");

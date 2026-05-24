@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::Sha256;
 use tokio::sync::RwLock;
+use tokio::time::{sleep, Duration};
 use uuid::Uuid;
 
 use crate::hardware::{DispenseCommandPayload, DispenseResultPayload, HardwareAdapter};
@@ -30,7 +31,7 @@ pub struct NativeMqttStatus {
     pub running: bool,
     pub connected: bool,
     pub last_error: Option<String>,
-    pub last_command_id: Option<String>,
+    pub last_command_no: Option<String>,
     pub last_heartbeat_at: Option<String>,
 }
 
@@ -137,7 +138,7 @@ impl NativeMqttRuntime {
                 running: true,
                 connected: false,
                 last_error: None,
-                last_command_id: None,
+                last_command_no: None,
                 last_heartbeat_at: None,
             })),
             client,
@@ -181,6 +182,24 @@ impl NativeMqttRuntime {
             }
         });
 
+        let heartbeat_runtime = self.clone();
+        tokio::spawn(async move {
+            loop {
+                sleep(Duration::from_secs(30)).await;
+                let status = heartbeat_runtime.status.read().await.clone();
+                if !status.running {
+                    break;
+                }
+                if !status.connected {
+                    continue;
+                }
+                if let Err(err) = heartbeat_runtime.publish_heartbeat().await {
+                    let mut s = heartbeat_runtime.status.write().await;
+                    s.last_error = Some(err);
+                }
+            }
+        });
+
         Ok(())
     }
 
@@ -194,10 +213,10 @@ impl NativeMqttRuntime {
 
         {
             let mut s = self.status.write().await;
-            s.last_command_id = Some(command.command_id.clone());
+            s.last_command_no = Some(command.command_no.clone());
         }
 
-        self.publish_ack(&command.command_id).await?;
+        self.publish_ack(&command.command_no).await?;
         let result = self.hardware.dispense(command).await;
         self.publish_result(result).await?;
         Ok(())
@@ -222,24 +241,25 @@ impl NativeMqttRuntime {
             .map_err(|e| e.to_string())
     }
 
-    async fn publish_ack(&self, command_id: &str) -> Result<(), String> {
+    async fn publish_ack(&self, command_no: &str) -> Result<(), String> {
         self.publish_signed(
-            format!("vem/machines/{}/acks/dispense", self.machine_code),
-            format!("ack:{command_id}"),
+            format!(
+                "vem/machines/{}/commands/{}/ack",
+                self.machine_code, command_no
+            ),
+            format!("ack:{command_no}"),
             json!({
-                "commandId": command_id,
-                "accepted": true,
-                "acceptedAt": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                "messageId": format!("ack:{command_no}"),
             }),
         )
         .await
     }
 
     async fn publish_result(&self, result: DispenseResultPayload) -> Result<(), String> {
-        let command_id = result.command_id.clone();
+        let command_no = result.command_no.clone();
         self.publish_signed(
-            format!("vem/machines/{}/results/dispense", self.machine_code),
-            format!("result:{command_id}"),
+            format!("vem/machines/{}/events/dispense-result", self.machine_code),
+            format!("result:{command_no}"),
             serde_json::to_value(result).map_err(|e| e.to_string())?,
         )
         .await
@@ -247,10 +267,21 @@ impl NativeMqttRuntime {
 
     pub async fn publish_heartbeat(&self) -> Result<(), String> {
         let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        let last_command_no = self.status.read().await.last_command_no.clone();
         self.publish_signed(
-            format!("vem/machines/{}/heartbeat", self.machine_code),
+            format!("vem/machines/{}/events/heartbeat", self.machine_code),
             format!("heartbeat:{}", Uuid::new_v4()),
-            json!({ "at": now }),
+            json!({
+                "machineCode": &self.machine_code,
+                "reportedAt": now,
+                "statusPayload": {
+                    "network": "online",
+                    "mqttConnected": true,
+                    "hardwareAdapter": self.hardware.adapter_name(),
+                    "hardwareStatus": "ok",
+                    "lastCommandNo": last_command_no,
+                }
+            }),
         )
         .await?;
         let mut s = self.status.write().await;
@@ -269,7 +300,7 @@ mod tests {
     fn sign_and_verify_envelope_roundtrip() {
         let machine_code = "M001";
         let secret = "test-signing-secret";
-        let payload = json!({ "commandId": "cmd-001", "success": true });
+        let payload = json!({ "commandNo": "CMD-001", "success": true });
         let envelope = sign_envelope(machine_code, secret, "msg-001", payload.clone());
         assert_eq!(envelope.machine_code, machine_code);
         assert!(!envelope.signature.is_empty());
@@ -280,10 +311,10 @@ mod tests {
     fn verify_envelope_fails_on_tampered_payload() {
         let machine_code = "M001";
         let secret = "test-signing-secret";
-        let payload = json!({ "commandId": "cmd-001" });
+        let payload = json!({ "commandNo": "CMD-001" });
         let mut envelope = sign_envelope(machine_code, secret, "msg-001", payload);
         // Tamper with payload
-        envelope.payload = json!({ "commandId": "cmd-999" });
+        envelope.payload = json!({ "commandNo": "CMD-999" });
         let result = verify_envelope(&envelope, machine_code, secret);
         assert!(result.is_err(), "should fail with tampered payload");
     }

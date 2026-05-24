@@ -61,6 +61,7 @@ const mockConfig = {
   mqttSigningSecretConfigured: false,
   apiBaseUrl: "http://localhost:3000",
   hardwareAdapter: "mock" as const,
+  serialPortPath: null,
   kioskMode: false,
 };
 
@@ -78,7 +79,7 @@ describe("useMqttStore", () => {
         running: true,
         connected: true,
         lastError: null,
-        lastCommandId: null,
+        lastCommandNo: null,
         lastHeartbeatAt: null,
       });
 
@@ -96,7 +97,7 @@ describe("useMqttStore", () => {
         running: false,
         connected: false,
         lastError: "broker unreachable",
-        lastCommandId: null,
+        lastCommandNo: null,
         lastHeartbeatAt: null,
       });
 
@@ -137,7 +138,7 @@ describe("useMqttStore", () => {
         running: true,
         connected: true,
         lastError: null,
-        lastCommandId: null,
+        lastCommandNo: null,
         lastHeartbeatAt: null,
       });
 

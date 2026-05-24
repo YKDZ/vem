@@ -165,7 +165,7 @@ export const useMqttStore = defineStore("mqtt", {
           privateState.nativeMode = true;
           this.status = nativeStatus.connected ? "connected" : "connecting";
           this.lastError = nativeStatus.lastError;
-          this.lastCommandNo = nativeStatus.lastCommandId;
+          this.lastCommandNo = nativeStatus.lastCommandNo;
           // Poll native status every 5 seconds
           if (!privateState.nativeStatusTimer) {
             privateState.nativeStatusTimer = window.setInterval(() => {
@@ -173,7 +173,7 @@ export const useMqttStore = defineStore("mqtt", {
                 if (!s) return;
                 this.status = s.connected ? "connected" : "disconnected";
                 this.lastError = s.lastError;
-                this.lastCommandNo = s.lastCommandId;
+                this.lastCommandNo = s.lastCommandNo;
                 this.lastHeartbeatAt = s.lastHeartbeatAt;
                 useConnectivityStore().setMachineMqttConnected(s.connected);
               });

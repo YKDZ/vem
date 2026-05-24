@@ -19,6 +19,7 @@ describe("machine config", () => {
       apiBaseUrl: "http://localhost:3000/api",
       mqttUrl: "mqtt://localhost:1883",
       hardwareAdapter: "mock",
+      serialPortPath: null,
       kioskMode: false,
     });
   });
@@ -30,11 +31,13 @@ describe("machine config", () => {
         apiBaseUrl: "http://localhost:3000/api///",
         mqttUrl: " mqtt://localhost:1883 ",
         hardwareAdapter: "mock",
+        serialPortPath: " /dev/ttyUSB0 ",
       }),
     ).toMatchObject({
       machineCode: "M001",
       apiBaseUrl: "http://localhost:3000/api",
       mqttUrl: "mqtt://localhost:1883",
+      serialPortPath: "/dev/ttyUSB0",
     });
   });
 
@@ -48,6 +51,18 @@ describe("machine config", () => {
     expect(
       normalizeMachineConfig({ machineSecret: "   " }).machineSecret,
     ).toBeNull();
+  });
+
+  it("turns empty serialPortPath into null", () => {
+    expect(
+      normalizeMachineConfig({ serialPortPath: "   " }).serialPortPath,
+    ).toBeNull();
+  });
+
+  it("requires serialPortPath for serial adapter", () => {
+    expect(() => normalizeMachineConfig({ hardwareAdapter: "serial" })).toThrow(
+      /serialPortPath/,
+    );
   });
 
   it("trims machineSecret whitespace", () => {
