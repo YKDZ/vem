@@ -20,6 +20,9 @@ const SENSITIVE_KEY_PATTERNS = [
   /pem/i,
   /password/i,
   /passwd/i,
+  /^auth_?code$/i,
+  /^payment_?code$/i,
+  /^code_value$/i,
 ];
 
 // Headers that are safe to keep (whitelist)
@@ -41,6 +44,16 @@ const HASH_HEADER_KEYS = new Set(["wechatpay-signature"]);
  */
 export function sha256Hex(input: string): string {
   return createHash("sha256").update(input, "utf8").digest("hex");
+}
+
+export function hashPaymentCode(authCode: string): string {
+  return sha256Hex(authCode.trim());
+}
+
+export function maskPaymentCode(authCode: string): string {
+  const normalized = authCode.trim();
+  if (normalized.length <= 8) return `${normalized.slice(0, 2)}****`;
+  return `${normalized.slice(0, 4)}****${normalized.slice(-4)}`;
 }
 
 /**

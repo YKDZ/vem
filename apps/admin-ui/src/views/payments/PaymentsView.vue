@@ -3,6 +3,7 @@ import { onMounted, ref } from "vue";
 
 import {
   listPaymentEvents,
+  listPaymentCodeAttempts,
   listPaymentProviders,
   listPayments,
   listWebhookAttempts,
@@ -11,8 +12,11 @@ import {
   manualReconcile,
   mockFail,
   mockSucceed,
+  queryPaymentCodeAttempt,
+  reversePaymentCodeAttempt,
   type PageResult,
   type Payment,
+  type PaymentCodeAttempt,
   type PaymentEvent,
   type PaymentProvider,
   type WebhookAttempt,
@@ -192,6 +196,14 @@ const refundsList = ref<PageResult<Refund>>({
   pageSize: 20,
 });
 
+const paymentCodeAttemptsLoading = ref(false);
+const paymentCodeAttemptsList = ref<PageResult<PaymentCodeAttempt>>({
+  items: [],
+  total: 0,
+  page: 1,
+  pageSize: 20,
+});
+
 async function loadRefunds(page = 1): Promise<void> {
   refundsLoading.value = true;
   try {
@@ -199,6 +211,31 @@ async function loadRefunds(page = 1): Promise<void> {
   } finally {
     refundsLoading.value = false;
   }
+}
+
+async function loadPaymentCodeAttempts(page = 1): Promise<void> {
+  paymentCodeAttemptsLoading.value = true;
+  try {
+    paymentCodeAttemptsList.value = await listPaymentCodeAttempts({
+      page,
+      pageSize: 20,
+    });
+  } finally {
+    paymentCodeAttemptsLoading.value = false;
+  }
+}
+
+async function doQueryPaymentCodeAttempt(id: string): Promise<void> {
+  await queryPaymentCodeAttempt(id);
+  await loadPaymentCodeAttempts(paymentCodeAttemptsList.value.page);
+}
+
+async function doReversePaymentCodeAttempt(id: string): Promise<void> {
+  await reversePaymentCodeAttempt(
+    id,
+    "admin_manual_reverse_from_payments_view",
+  );
+  await loadPaymentCodeAttempts(paymentCodeAttemptsList.value.page);
 }
 
 async function doManualReconcile(paymentId: string): Promise<void> {
@@ -218,6 +255,17 @@ const refundColumns = [
   { title: "创建时间", dataIndex: "createdAt", key: "createdAt" },
 ];
 
+const paymentCodeAttemptColumns = [
+  { title: "订单号", dataIndex: "orderNo", key: "orderNo" },
+  { title: "支付单号", dataIndex: "paymentNo", key: "paymentNo" },
+  { title: "渠道", dataIndex: "providerCode", key: "providerCode" },
+  { title: "尝试", dataIndex: "attemptNo", key: "attemptNo" },
+  { title: "付款码", dataIndex: "authCodeMasked", key: "authCodeMasked" },
+  { title: "状态", dataIndex: "status", key: "status" },
+  { title: "失败原因", dataIndex: "failureMessage", key: "failureMessage" },
+  { title: "操作", key: "actions" },
+];
+
 function onTabChange(key: string): void {
   if (key === "payments") void loadPayments();
   else if (key === "providers") void loadProviders();
@@ -225,6 +273,7 @@ function onTabChange(key: string): void {
   else if (key === "webhook-attempts") void loadWebhookAttempts();
   else if (key === "reconciliation") void loadReconciliationAttempts();
   else if (key === "refunds") void loadRefunds();
+  else if (key === "payment-code-attempts") void loadPaymentCodeAttempts();
 }
 
 onMounted(() => {
@@ -432,6 +481,53 @@ onMounted(() => {
           </template>
         </a-table>
       </a-tab-pane>
+
+      <a-tab-pane key="payment-code-attempts" tab="付款码尝试">
+        <a-table
+          :columns="paymentCodeAttemptColumns"
+          :data-source="paymentCodeAttemptsList.items"
+          row-key="id"
+          :loading="paymentCodeAttemptsLoading"
+          :pagination="{
+            current: paymentCodeAttemptsList.page,
+            pageSize: paymentCodeAttemptsList.pageSize,
+            total: paymentCodeAttemptsList.total,
+            onChange: loadPaymentCodeAttempts,
+          }"
+        >
+          <template #bodyCell="{ column, record }">
+            <template v-if="column.key === 'actions'">
+              <a-space v-if="canConfigure">
+                <a-button
+                  size="small"
+                  @click="doQueryPaymentCodeAttempt(record.id)"
+                >
+                  查询
+                </a-button>
+                <a-button
+                  size="small"
+                  danger
+                  :disabled="
+                    ![
+                      'querying',
+                      'unknown',
+                      'manual_handling',
+                      'reversing',
+                    ].includes(record.status)
+                  "
+                  @click="doReversePaymentCodeAttempt(record.id)"
+                >
+                  撤销
+                </a-button>
+              </a-space>
+            </template>
+            <template v-else-if="column.key === 'createdAt'">
+              {{ formatDateTime(record.createdAt) }}
+            </template>
+          </template>
+        </a-table>
+      </a-tab-pane>
+
       <a-tab-pane key="ops" tab="上线门禁">
         <PaymentOpsPanel />
       </a-tab-pane>

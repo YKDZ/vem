@@ -29,7 +29,7 @@ export default defineConfig({
         target: "ws://172.31.0.2:9001",
         changeOrigin: true,
         ws: true,
-        rewrite: (path) => path.replace(/^\/mqtt-ws/, ""),
+        rewrite: (path) => path.replace(/^\/mqtt-ws/, "") || "/",
       },
     },
     hmr: host

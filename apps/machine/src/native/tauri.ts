@@ -15,3 +15,14 @@ export async function callTauriCommand<T>(
     throw new Error(`${command} failed: ${message}`);
   }
 }
+
+export async function invokeOptional<T>(
+  command: string,
+  args?: Record<string, unknown>,
+): Promise<T | null> {
+  try {
+    return await invoke<T>(command, args);
+  } catch {
+    return null;
+  }
+}

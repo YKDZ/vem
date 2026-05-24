@@ -34,6 +34,15 @@ const routes: RouteRecordRaw[] = [
     name: "payment",
     component: async () => import("@/views/PaymentView.vue"),
   },
+  ...(import.meta.env.DEV
+    ? [
+        {
+          path: "/dev/payment-code-scan",
+          name: "payment-code-dev-scan",
+          component: async () => import("@/views/PaymentCodeDevScanView.vue"),
+        } satisfies RouteRecordRaw,
+      ]
+    : []),
   {
     path: "/dispensing",
     name: "dispensing",

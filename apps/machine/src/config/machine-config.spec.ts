@@ -20,6 +20,10 @@ describe("machine config", () => {
       mqttUrl: "mqtt://localhost:1883",
       hardwareAdapter: "mock",
       serialPortPath: null,
+      scannerAdapter: "disabled",
+      scannerSerialPortPath: null,
+      scannerBaudRate: 9600,
+      scannerFrameSuffix: "crlf",
       kioskMode: false,
     });
   });
@@ -59,10 +63,23 @@ describe("machine config", () => {
     ).toBeNull();
   });
 
+  it("turns empty scannerSerialPortPath into null", () => {
+    expect(
+      normalizeMachineConfig({ scannerSerialPortPath: "   " })
+        .scannerSerialPortPath,
+    ).toBeNull();
+  });
+
   it("requires serialPortPath for serial adapter", () => {
     expect(() => normalizeMachineConfig({ hardwareAdapter: "serial" })).toThrow(
       /serialPortPath/,
     );
+  });
+
+  it("requires scannerSerialPortPath for serial_text scanner adapter", () => {
+    expect(() =>
+      normalizeMachineConfig({ scannerAdapter: "serial_text" }),
+    ).toThrow(/scannerSerialPortPath/);
   });
 
   it("trims machineSecret whitespace", () => {

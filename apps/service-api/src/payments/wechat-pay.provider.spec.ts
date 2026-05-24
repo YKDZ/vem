@@ -4,10 +4,36 @@ import {
   generateKeyPairSync,
   randomBytes,
 } from "node:crypto";
+import { EventEmitter } from "node:events";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import type { PaymentProviderRuntimeConfig } from "./payment-provider.interface";
 
+const httpsMocks = vi.hoisted(() => {
+  const createdAgents: Record<string, unknown>[] = [];
+  class MockAgent {
+    constructor(options: Record<string, unknown>) {
+      createdAgents.push(options);
+      Object.assign(this, options);
+    }
+  }
+  return {
+    request: vi.fn(),
+    Agent: MockAgent,
+    createdAgents,
+  };
+});
+
+vi.mock("node:https", () => ({
+  Agent: httpsMocks.Agent,
+  request: httpsMocks.request,
+}));
+
+import {
+  parseWechatXml,
+  signWechatV2,
+  toWechatXml,
+} from "./wechat-pay-v2.util";
 import { WeChatPayProvider } from "./wechat-pay.provider";
 
 // Generate test RSA key pairs once for all tests
@@ -20,6 +46,7 @@ const TEST_MERCHANT_CERT_SERIAL = "MERCHANT_SERIAL_0001";
 /** Platform certificate serial number (goes in wechatpay-serial response header) */
 const TEST_PLATFORM_CERT_SERIAL = "PLATFORM_SERIAL_0001";
 const TEST_API_V3_KEY = "12345678901234567890123456789012"; // exactly 32 bytes
+const TEST_API_V2_KEY = "abcdef0123456789abcdef0123456789";
 
 beforeAll(() => {
   const merchantPair = generateKeyPairSync("rsa", {
@@ -58,6 +85,30 @@ function makeConfig(
     },
     ...overrides,
   };
+}
+
+function makePaymentCodeConfig(
+  overrides: Partial<PaymentProviderRuntimeConfig> = {},
+): PaymentProviderRuntimeConfig {
+  return makeConfig({
+    ...overrides,
+    publicConfigJson: {
+      ...makeConfig().publicConfigJson,
+      paymentCodeEnabled: true,
+      paymentCodeSignType: "HMAC-SHA256",
+      paymentCodeDeviceInfo: "POS-001",
+      ...(overrides.publicConfigJson ?? {}),
+    },
+    sensitiveConfigJson: {
+      ...makeConfig().sensitiveConfigJson,
+      apiV2Key: TEST_API_V2_KEY,
+      merchantApiCertPem:
+        "-----BEGIN CERTIFICATE-----\nMERCHANT\n-----END CERTIFICATE-----",
+      merchantApiKeyPem:
+        "-----BEGIN PRIVATE KEY-----\nMERCHANT\n-----END PRIVATE KEY-----",
+      ...(overrides.sensitiveConfigJson ?? {}),
+    },
+  });
 }
 
 function encryptWeChatBody(
@@ -156,6 +207,44 @@ function createSignedApiResponse(
   } as unknown as Response;
 }
 
+function createWechatV2XmlResponse(
+  payload: Record<string, string>,
+  signType: "MD5" | "HMAC-SHA256" = "HMAC-SHA256",
+): string {
+  const signedPayload = { ...payload, sign_type: signType };
+  return toWechatXml({
+    ...signedPayload,
+    sign: signWechatV2(signedPayload, TEST_API_V2_KEY, signType),
+  });
+}
+
+function queueWechatV2XmlResponse(xml: string, statusCode = 200): string[] {
+  const writes: string[] = [];
+  httpsMocks.request.mockImplementationOnce(
+    (
+      _url: URL,
+      _options: Record<string, unknown>,
+      callback: (res: EventEmitter & { statusCode?: number }) => void,
+    ) => {
+      const request = Object.assign(new EventEmitter(), {
+        write: vi.fn((chunk: string | Buffer) => {
+          writes.push(Buffer.isBuffer(chunk) ? chunk.toString("utf8") : chunk);
+        }),
+        end: vi.fn(() => {
+          const response = Object.assign(new EventEmitter(), {
+            statusCode,
+          });
+          callback(response);
+          response.emit("data", Buffer.from(xml));
+          response.emit("end");
+        }),
+      });
+      return request;
+    },
+  );
+  return writes;
+}
+
 describe("WeChatPayProvider", () => {
   let provider: WeChatPayProvider;
 
@@ -165,6 +254,9 @@ describe("WeChatPayProvider", () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    httpsMocks.request.mockReset();
+    httpsMocks.createdAgents.length = 0;
   });
 
   describe("handleWebhook - refund notification", () => {
@@ -485,6 +577,150 @@ describe("WeChatPayProvider", () => {
       expect(sentBody["out_trade_no"]).toBe("PAY_NO_001");
       expect(sentBody["out_trade_no"]).not.toBe("ORD_NO_001");
       vi.unstubAllGlobals();
+    });
+  });
+
+  describe("payment_code via WeChat Pay V2", () => {
+    it("posts micropay xml with auth_code, out_trade_no and total_fee", async () => {
+      const writes = queueWechatV2XmlResponse(
+        createWechatV2XmlResponse({
+          return_code: "SUCCESS",
+          result_code: "SUCCESS",
+          trade_type: "MICROPAY",
+          transaction_id: "WX_TXN_001",
+          time_end: "20260524101530",
+        }),
+      );
+
+      const result = await provider.chargePaymentCode({
+        config: makePaymentCodeConfig(),
+        paymentNo: "PCA_WX_001",
+        orderNo: "ORD_WX_001",
+        amountCents: 999,
+        authCode: "134567890123456789",
+        terminalId: "TERM-001",
+        storeId: null,
+        clientIp: "10.0.0.1",
+      });
+
+      const [url] = httpsMocks.request.mock.calls[0] as [URL];
+      const [, options] = httpsMocks.request.mock.calls[0] as [
+        URL,
+        Record<string, unknown>,
+      ];
+      const sent = parseWechatXml(writes[0] ?? "");
+      expect(url.toString()).toBe("https://api.mch.weixin.qq.com/pay/micropay");
+      expect(options.agent).toBeUndefined();
+      expect(sent.auth_code).toBe("134567890123456789");
+      expect(sent.out_trade_no).toBe("PCA_WX_001");
+      expect(sent.total_fee).toBe("999");
+      expect(result.status).toBe("succeeded");
+      expect(result.providerTradeNo).toBe("WX_TXN_001");
+    });
+
+    it("maps USERPAYING to user_confirming", async () => {
+      queueWechatV2XmlResponse(
+        createWechatV2XmlResponse({
+          return_code: "SUCCESS",
+          result_code: "FAIL",
+          err_code: "USERPAYING",
+          err_code_des: "用户支付中",
+        }),
+      );
+
+      const result = await provider.chargePaymentCode({
+        config: makePaymentCodeConfig(),
+        paymentNo: "PCA_WX_002",
+        orderNo: "ORD_WX_002",
+        amountCents: 500,
+        authCode: "134567890123456789",
+        terminalId: "TERM-001",
+        storeId: null,
+        clientIp: "10.0.0.2",
+      });
+
+      expect(result.status).toBe("user_confirming");
+      expect(result.failureCode).toBe("USERPAYING");
+    });
+
+    it("maps SYSTEMERROR to unknown", async () => {
+      queueWechatV2XmlResponse(
+        createWechatV2XmlResponse({
+          return_code: "SUCCESS",
+          result_code: "FAIL",
+          err_code: "SYSTEMERROR",
+          err_code_des: "系统错误",
+        }),
+      );
+
+      const result = await provider.chargePaymentCode({
+        config: makePaymentCodeConfig(),
+        paymentNo: "PCA_WX_003",
+        orderNo: "ORD_WX_003",
+        amountCents: 500,
+        authCode: "134567890123456789",
+        terminalId: "TERM-001",
+        storeId: null,
+        clientIp: "10.0.0.3",
+      });
+
+      expect(result.status).toBe("unknown");
+      expect(result.failureCode).toBe("SYSTEMERROR");
+    });
+
+    it("uses certificate agent for reverse and maps recall=Y to processing", async () => {
+      const writes = queueWechatV2XmlResponse(
+        createWechatV2XmlResponse({
+          return_code: "SUCCESS",
+          result_code: "SUCCESS",
+          recall: "Y",
+        }),
+      );
+
+      const result = await provider.reversePaymentCode({
+        config: makePaymentCodeConfig(),
+        paymentNo: "PCA_WX_004",
+        providerTradeNo: "WX_TXN_004",
+      });
+
+      const [, options] = httpsMocks.request.mock.calls[0] as [
+        URL,
+        Record<string, unknown>,
+      ];
+      const sent = parseWechatXml(writes[0] ?? "");
+      expect(options.agent).toEqual({
+        cert: "-----BEGIN CERTIFICATE-----\nMERCHANT\n-----END CERTIFICATE-----",
+        key: "-----BEGIN PRIVATE KEY-----\nMERCHANT\n-----END PRIVATE KEY-----",
+      });
+      expect(sent.out_trade_no).toBe("PCA_WX_004");
+      expect(sent.transaction_id).toBe("WX_TXN_004");
+      expect(result.status).toBe("processing");
+      expect(result.recall).toBe(true);
+    });
+
+    it("queries payment_code through /pay/orderquery instead of V3 transactions", async () => {
+      queueWechatV2XmlResponse(
+        createWechatV2XmlResponse({
+          return_code: "SUCCESS",
+          result_code: "SUCCESS",
+          trade_state: "SUCCESS",
+          transaction_id: "WX_TXN_QUERY_001",
+          time_end: "20260524103030",
+        }),
+      );
+
+      const result = await provider.queryPaymentCode({
+        config: makePaymentCodeConfig(),
+        paymentNo: "PCA_WX_QUERY_001",
+        providerTradeNo: "WX_TXN_QUERY_001",
+      });
+
+      const [url] = httpsMocks.request.mock.calls[0] as [URL];
+      expect(url.toString()).toBe(
+        "https://api.mch.weixin.qq.com/pay/orderquery",
+      );
+      expect(result.status).toBe("succeeded");
+      expect(result.providerTradeNo).toBe("WX_TXN_QUERY_001");
     });
   });
 

@@ -6,6 +6,9 @@ import { InventoryModule } from "../inventory/inventory.module";
 import { NotificationsModule } from "../notifications/notifications.module";
 import { RefundsModule } from "../refunds/refunds.module";
 import { VendingModule } from "../vending/vending.module";
+import { PaymentCodeAttemptsService } from "./payment-code-attempts.service";
+import { PaymentCodeOrchestratorService } from "./payment-code-orchestrator.service";
+import { PaymentCodeController } from "./payment-code.controller";
 import { PaymentOpsAlertService } from "./payment-ops-alert.service";
 import { PaymentOpsController } from "./payment-ops.controller";
 import { PaymentOpsService } from "./payment-ops.service";
@@ -26,7 +29,11 @@ import { PaymentsService } from "./payments.service";
     NotificationsModule,
     RefundsModule,
   ],
-  controllers: [PaymentsController, PaymentOpsController],
+  controllers: [
+    PaymentsController,
+    PaymentOpsController,
+    PaymentCodeController,
+  ],
   providers: [
     PaymentsService,
     PaymentReconciliationService,
@@ -34,12 +41,16 @@ import { PaymentsService } from "./payments.service";
     PaymentOpsService,
     PaymentOpsAlertService,
     PaymentReadinessStartupGateService,
+    PaymentCodeAttemptsService,
+    PaymentCodeOrchestratorService,
   ],
   exports: [
     PaymentsService,
     PaymentProvidersModule,
     PaymentWebhookAttemptRecorderService,
     PaymentOpsService,
+    PaymentCodeAttemptsService,
+    PaymentCodeOrchestratorService,
   ],
 })
 export class PaymentsModule {}

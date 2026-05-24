@@ -1,8 +1,11 @@
 import {
   createMachineOrderSchema,
   machineOrderStatusResponseSchema,
+  paymentCodeSubmitResponseSchema,
+  paymentCodeSubmitSchema,
   type MachineOrderStatusNextAction,
   type MachinePaymentOption,
+  type MachinePaymentOptionKey,
   type MachinePaymentOptionsResponse,
   type MachinePaymentProviderCode,
 } from "@vem/shared";
@@ -30,6 +33,10 @@ export type CreateMachineOrderResponse = z.infer<
 export type MachineOrderStatus = z.infer<
   typeof machineOrderStatusResponseSchema
 >;
+export type PaymentCodeSubmitInput = z.infer<typeof paymentCodeSubmitSchema>;
+export type PaymentCodeSubmitResponse = z.infer<
+  typeof paymentCodeSubmitResponseSchema
+>;
 export type CheckoutSelectedItem = MachineCatalogItem;
 
 export type CheckoutResultKind = Extract<
@@ -46,6 +53,7 @@ export type CheckoutResultKind = Extract<
 
 export type {
   MachinePaymentOption,
+  MachinePaymentOptionKey,
   MachinePaymentOptionsResponse,
   MachinePaymentProviderCode,
 };

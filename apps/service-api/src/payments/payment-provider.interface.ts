@@ -50,6 +50,58 @@ export type ProviderCancelPaymentResult = {
   rawPayload?: Record<string, unknown>;
 };
 
+export type ProviderPaymentCodeStatus =
+  | "succeeded"
+  | "user_confirming"
+  | "processing"
+  | "failed"
+  | "reversed"
+  | "unknown";
+
+export type ProviderPaymentCodeChargeInput = {
+  paymentNo: string;
+  orderNo: string;
+  amountCents: number;
+  authCode: string;
+  terminalId: string | null;
+  storeId: string | null;
+  clientIp: string | null;
+  config: PaymentProviderRuntimeConfig;
+};
+
+export type ProviderPaymentCodeChargeResult = {
+  status: ProviderPaymentCodeStatus;
+  providerTradeNo: string | null;
+  paidAt?: Date | null;
+  providerStatus?: string | null;
+  failureCode?: string | null;
+  failureMessage?: string | null;
+  rawPayload?: Record<string, unknown>;
+};
+
+export type ProviderPaymentCodeQueryInput = {
+  paymentNo: string;
+  providerTradeNo: string | null;
+  config: PaymentProviderRuntimeConfig;
+};
+
+export type ProviderPaymentCodeQueryResult = ProviderPaymentCodeChargeResult;
+
+export type ProviderPaymentCodeReverseInput = {
+  paymentNo: string;
+  providerTradeNo: string | null;
+  config: PaymentProviderRuntimeConfig;
+};
+
+export type ProviderPaymentCodeReverseResult = {
+  status: "reversed" | "processing" | "failed" | "unknown";
+  recall?: boolean;
+  providerStatus?: string | null;
+  failureCode?: string | null;
+  failureMessage?: string | null;
+  rawPayload?: Record<string, unknown>;
+};
+
 export type ProviderRefundPaymentInput = {
   refundNo: string;
   paymentNo: string;
@@ -141,4 +193,20 @@ export interface PaymentProvider {
     input: ProviderRefundQueryInput,
   ): Promise<ProviderRefundQueryResult>;
   handleWebhook?(input: ProviderWebhookInput): Promise<ProviderWebhookResult>;
+}
+
+export interface PaymentCodeCapableProvider extends PaymentProvider {
+  chargePaymentCode(
+    input: ProviderPaymentCodeChargeInput,
+  ): Promise<ProviderPaymentCodeChargeResult>;
+  queryPaymentCode(
+    input: ProviderPaymentCodeQueryInput,
+  ): Promise<ProviderPaymentCodeQueryResult>;
+  /**
+   * 仅用于付款码等待/未知结果的撤销；已明确支付成功的订单继续走现有
+   * refundPayment() 全额退款路径，不能用 reversePaymentCode() 替代正常退款。
+   */
+  reversePaymentCode(
+    input: ProviderPaymentCodeReverseInput,
+  ): Promise<ProviderPaymentCodeReverseResult>;
 }

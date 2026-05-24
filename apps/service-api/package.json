@@ -25,6 +25,7 @@
     "@vem/shared": "workspace:*",
     "alipay-sdk": "4.14.0",
     "drizzle-orm": "catalog:",
+    "fast-xml-parser": "^5.8.0",
     "helmet": "^8.1.0",
     "mqtt": "^5.14.1",
     "reflect-metadata": "^0.2.2",

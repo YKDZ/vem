@@ -318,6 +318,7 @@ describe("PaymentOpsService.getMachinePreflight", () => {
       providerConfigs.listMachinePaymentOptionsForMachine,
     ).mockResolvedValue({
       options: [],
+      defaultOptionKey: null,
       defaultProviderCode: null,
       serverTime: new Date().toISOString(),
     });
@@ -329,5 +330,67 @@ describe("PaymentOpsService.getMachinePreflight", () => {
       (c) => c.code === "machine_real_provider_available",
     );
     expect(providerCheck?.passed).toBe(false);
+  });
+
+  it("adds scanner health warning for payment_code without blocking ready machine", async () => {
+    const db = makeDb();
+    buildSelectSequence(db, [
+      [{ id: "mach-002", code: "M002", status: "online" }],
+    ]);
+
+    const providerConfigs = makeProviderConfigs();
+    vi.mocked(
+      providerConfigs.listMachinePaymentOptionsForMachine,
+    ).mockResolvedValue({
+      options: [
+        {
+          optionKey: "payment_code:alipay",
+          providerCode: "alipay",
+          method: "payment_code",
+          displayName: "支付宝付款码",
+          description: "请出示支付宝付款码",
+          icon: "alipay",
+          disabled: false,
+          disabledReason: null,
+          recommended: true,
+        },
+      ],
+      defaultOptionKey: "payment_code:alipay",
+      defaultProviderCode: "alipay",
+      serverTime: new Date().toISOString(),
+    });
+
+    const service = makeService({ db, providerConfigs });
+    const result = await service.getMachinePreflight("mach-002");
+
+    expect(result.status).toBe("ready");
+    expect(
+      result.checks.find(
+        (check) => check.code === "payment_code.scanner_health_not_reported",
+      ),
+    ).toMatchObject({ severity: "warning", passed: false });
+  });
+});
+
+describe("PaymentOpsService.getMetrics", () => {
+  it("returns payment_code counters from attempts and events", async () => {
+    const db = makeDb();
+    buildSelectSequence(db, [
+      [{ total: 10, failed: 2 }],
+      [{ signatureInvalid: 1, businessInvalid: 2 }],
+      [{ total: 3 }],
+      [{ failed: 4, overdue: 5 }],
+      [{ unknown: 6, reverseFailed: 7 }],
+      [{ total: 8 }],
+      [],
+    ]);
+
+    const service = makeService({ db });
+    const result = await service.getMetrics(60);
+
+    expect(result.paymentCodeUnknownCount).toBe(6);
+    expect(result.paymentCodeReverseFailedCount).toBe(7);
+    expect(result.paymentCodeDuplicateRejectedCount).toBe(8);
+    expect(result.scannerOfflineMachineCount).toBe(0);
   });
 });

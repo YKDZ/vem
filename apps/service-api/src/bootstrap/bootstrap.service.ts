@@ -135,10 +135,12 @@ export class BootstrapService implements OnModuleInit {
         type: "wechat_pay" as const,
         capabilities: {
           createPaymentIntent: true,
+          paymentCode: true,
           webhook: true,
           refund: true,
           query: true,
           cancel: true,
+          reverse: true,
         },
       },
       {
@@ -147,10 +149,12 @@ export class BootstrapService implements OnModuleInit {
         type: "alipay" as const,
         capabilities: {
           createPaymentIntent: true,
+          paymentCode: true,
           webhook: true,
           refund: true,
           query: true,
           cancel: true,
+          reverse: true,
         },
       },
     ];

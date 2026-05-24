@@ -3,6 +3,7 @@ import {
   Inject,
   Injectable,
   NotFoundException,
+  Optional,
 } from "@nestjs/common";
 import {
   and,
@@ -18,6 +19,7 @@ import {
   orderItems,
   orders,
   orderStatusEvents,
+  paymentCodeAttempts,
   paymentEvents,
   paymentProviders,
   payments,
@@ -35,9 +37,11 @@ import {
   machineOrderStatusNextActionSchema,
   machineOrderStatusQuerySchema,
   orderQuerySchema,
+  paymentCodeSourceSchema,
   pageQuerySchema,
   type MachineOrderStatusNextAction,
   type OrderStatus,
+  type PaymentCodeSource,
   type PaymentStatus,
   type VendingCommandStatus,
 } from "@vem/shared";
@@ -50,6 +54,7 @@ import { InventoryService } from "../inventory/inventory.service";
 import { PaymentProviderConfigService } from "../payments/payment-provider-config.service";
 import { PaymentProviderRegistry } from "../payments/payment-provider.registry";
 import { buildStoredEventPayload } from "../payments/payment-redaction.util";
+import { PaymentsService } from "../payments/payments.service";
 import { RefundsService } from "../refunds/refunds.service";
 
 type CreateMachineOrderInput = z.infer<typeof createMachineOrderSchema>;
@@ -93,6 +98,14 @@ function resolvePaymentSelection(input: CreateMachineOrderInput): {
     return { providerCode: input.paymentProviderCode, method: "qr_code" };
   }
 
+  if (
+    input.paymentMethod === "payment_code" &&
+    (input.paymentProviderCode === "wechat_pay" ||
+      input.paymentProviderCode === "alipay")
+  ) {
+    return { providerCode: input.paymentProviderCode, method: "payment_code" };
+  }
+
   throw new ConflictException(
     "Unsupported payment method/provider combination",
   );
@@ -111,6 +124,23 @@ type LocalPaymentDraft = {
   reservations: Array<{ inventoryId: string; quantity: number }>;
 };
 
+type MachineOrderStatusRow = {
+  orderId: string;
+  orderNo: string;
+  machineCode: string;
+  orderStatus: OrderStatus;
+  totalAmountCents: number;
+  paymentId: string;
+  paymentNo: string;
+  paymentMethod: "mock" | "qr_code" | "payment_code" | "face_pay";
+  paymentStatus: PaymentStatus;
+  paymentUrl: string | null;
+  paymentExpiresAt: Date | null;
+  paidAt: Date | null;
+  failedReason: string | null;
+  paymentProviderCode: string;
+};
+
 @Injectable()
 export class OrdersService {
   constructor(
@@ -119,7 +149,38 @@ export class OrdersService {
     private readonly paymentProviderRegistry: PaymentProviderRegistry,
     private readonly paymentProviderConfigService: PaymentProviderConfigService,
     private readonly refundsService: RefundsService,
+    @Optional() private readonly paymentsService?: PaymentsService,
   ) {}
+
+  private async findMachineOrderStatusRow(
+    orderNo: string,
+    machineCode: string,
+  ): Promise<MachineOrderStatusRow | null> {
+    const [row] = await this.db
+      .select({
+        orderId: orders.id,
+        orderNo: orders.orderNo,
+        machineCode: machines.code,
+        orderStatus: orders.status,
+        totalAmountCents: orders.totalAmountCents,
+        paymentId: payments.id,
+        paymentNo: payments.paymentNo,
+        paymentMethod: payments.method,
+        paymentStatus: payments.status,
+        paymentUrl: payments.paymentUrl,
+        paymentExpiresAt: payments.expiresAt,
+        paidAt: payments.paidAt,
+        failedReason: payments.failedReason,
+        paymentProviderCode: paymentProviders.code,
+      })
+      .from(orders)
+      .innerJoin(machines, eq(machines.id, orders.machineId))
+      .innerJoin(payments, eq(payments.id, orders.paymentId))
+      .innerJoin(paymentProviders, eq(paymentProviders.id, payments.providerId))
+      .where(and(eq(orders.orderNo, orderNo), eq(machines.code, machineCode)));
+
+    return row ?? null;
+  }
 
   async createMachineOrder(input: CreateMachineOrderInput) {
     const [machine] = await this.db
@@ -162,6 +223,26 @@ export class OrdersService {
       paymentSelection,
       resolvedProviderConfig,
     );
+
+    if (paymentSelection.method === "payment_code") {
+      await this.db
+        .update(payments)
+        .set({
+          status: "pending",
+          expiresAt: draft.expiresAt,
+          updatedAt: new Date(),
+        })
+        .where(eq(payments.id, draft.paymentId));
+      return {
+        orderId: draft.orderId,
+        orderNo: draft.orderNo,
+        paymentNo: draft.paymentNo,
+        paymentUrl: null,
+        expiresAt: draft.expiresAt,
+        totalAmountCents: draft.totalAmountCents,
+        paymentProviderCode: draft.providerCode,
+      };
+    }
 
     let intent: Awaited<ReturnType<typeof this.createPaymentIntent>>;
     try {
@@ -655,32 +736,28 @@ export class OrdersService {
   }
 
   async getMachineOrderStatus(orderNo: string, query: MachineOrderStatusQuery) {
-    const [row] = await this.db
-      .select({
-        orderId: orders.id,
-        orderNo: orders.orderNo,
-        machineCode: machines.code,
-        orderStatus: orders.status,
-        totalAmountCents: orders.totalAmountCents,
-        paymentNo: payments.paymentNo,
-        paymentMethod: payments.method,
-        paymentStatus: payments.status,
-        paymentUrl: payments.paymentUrl,
-        paymentExpiresAt: payments.expiresAt,
-        paidAt: payments.paidAt,
-        failedReason: payments.failedReason,
-        paymentProviderCode: paymentProviders.code,
-      })
-      .from(orders)
-      .innerJoin(machines, eq(machines.id, orders.machineId))
-      .innerJoin(payments, eq(payments.id, orders.paymentId))
-      .innerJoin(paymentProviders, eq(paymentProviders.id, payments.providerId))
-      .where(
-        and(eq(orders.orderNo, orderNo), eq(machines.code, query.machineCode)),
-      );
+    let row = await this.findMachineOrderStatusRow(orderNo, query.machineCode);
 
     if (!row) {
       throw new NotFoundException("Machine order not found");
+    }
+
+    if (
+      row.paymentMethod === "qr_code" &&
+      (row.paymentStatus === "pending" || row.paymentStatus === "processing")
+    ) {
+      await this.paymentsService
+        ?.reconcilePendingPaymentOnRead(row.paymentId)
+        // oxlint-disable-next-line no-empty-function -- query status should keep best-effort
+        .catch(() => {});
+
+      const refreshed = await this.findMachineOrderStatusRow(
+        orderNo,
+        query.machineCode,
+      );
+      if (refreshed) {
+        row = refreshed;
+      }
     }
 
     const [command] = await this.db
@@ -710,6 +787,23 @@ export class OrdersService {
       .orderBy(desc(refunds.createdAt))
       .limit(1);
 
+    const [paymentCodeAttempt] = await this.db
+      .select({
+        attemptNo: paymentCodeAttempts.attemptNo,
+        status: paymentCodeAttempts.status,
+        maskedAuthCode: paymentCodeAttempts.authCodeMasked,
+        source: paymentCodeAttempts.source,
+        idempotencyKey: paymentCodeAttempts.idempotencyKey,
+        submittedAt: paymentCodeAttempts.submittedAt,
+        lastCheckedAt: paymentCodeAttempts.lastCheckedAt,
+        failureMessage: paymentCodeAttempts.failureMessage,
+        isActive: paymentCodeAttempts.isActive,
+      })
+      .from(paymentCodeAttempts)
+      .where(eq(paymentCodeAttempts.paymentId, row.paymentId))
+      .orderBy(desc(paymentCodeAttempts.createdAt))
+      .limit(1);
+
     const nextAction = resolveMachineOrderNextAction(
       row.orderStatus,
       row.paymentStatus,
@@ -732,6 +826,23 @@ export class OrdersService {
         failedReason: row.failedReason,
         providerCode: row.paymentProviderCode,
       },
+      paymentCodeAttempt: paymentCodeAttempt
+        ? {
+            attemptNo: paymentCodeAttempt.attemptNo,
+            status: paymentCodeAttempt.status,
+            maskedAuthCode: paymentCodeAttempt.maskedAuthCode,
+            source: toPaymentCodeSourceOrNull(paymentCodeAttempt.source),
+            idempotencyKey: paymentCodeAttempt.idempotencyKey,
+            submittedAt: toIsoStringOrNull(paymentCodeAttempt.submittedAt),
+            lastCheckedAt: toIsoStringOrNull(paymentCodeAttempt.lastCheckedAt),
+            canRetry:
+              !paymentCodeAttempt.isActive &&
+              ["failed", "reversed", "canceled"].includes(
+                paymentCodeAttempt.status,
+              ),
+            message: paymentCodeAttempt.failureMessage,
+          }
+        : null,
       vending: command
         ? {
             commandNo: command.commandNo,
@@ -840,4 +951,11 @@ function resolveMachineOrderNextAction(
   }
 
   return machineOrderStatusNextActionSchema.parse("wait_payment");
+}
+
+function toPaymentCodeSourceOrNull(
+  value: string | null,
+): PaymentCodeSource | null {
+  const result = paymentCodeSourceSchema.nullable().safeParse(value);
+  return result.success ? result.data : null;
 }

@@ -2,6 +2,8 @@ import {
   createMachineOrderSchema,
   machineOrderStatusResponseSchema,
   machinePaymentOptionsResponseSchema,
+  paymentCodeSubmitResponseSchema,
+  paymentCodeSubmitSchema,
 } from "@vem/shared";
 
 import {
@@ -10,6 +12,8 @@ import {
   type CreateMachineOrderResponse,
   type MachineOrderStatus,
   type MachinePaymentOptionsResponse,
+  type PaymentCodeSubmitInput,
+  type PaymentCodeSubmitResponse,
 } from "@/types/checkout";
 
 import type { MachineApiClient } from "./request";
@@ -42,4 +46,17 @@ export async function getMachineOrderStatus(
     { params: { machineCode: input.machineCode } },
   );
   return machineOrderStatusResponseSchema.parse(response);
+}
+
+export async function submitPaymentCode(
+  client: MachineApiClient,
+  orderNo: string,
+  input: PaymentCodeSubmitInput,
+): Promise<PaymentCodeSubmitResponse> {
+  const body = paymentCodeSubmitSchema.parse(input);
+  const response = await client.post<unknown, PaymentCodeSubmitInput>(
+    `/machine-orders/${encodeURIComponent(orderNo)}/payment-code/submit`,
+    body,
+  );
+  return paymentCodeSubmitResponseSchema.parse(response);
 }

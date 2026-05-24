@@ -12,16 +12,23 @@ import {
   createVerify,
   randomUUID,
 } from "node:crypto";
+import { Agent, request as httpsRequest } from "node:https";
 
 import type {
+  PaymentCodeCapableProvider,
   PaymentIntentInput,
   PaymentIntentResult,
-  PaymentProvider,
   PaymentProviderRuntimeConfig,
   ProviderCancelPaymentInput,
   ProviderCancelPaymentResult,
+  ProviderPaymentCodeChargeInput,
+  ProviderPaymentCodeChargeResult,
+  ProviderPaymentCodeQueryInput,
+  ProviderPaymentCodeQueryResult,
   ProviderPaymentQueryInput,
   ProviderPaymentQueryResult,
+  ProviderPaymentCodeReverseInput,
+  ProviderPaymentCodeReverseResult,
   ProviderRefundPaymentInput,
   ProviderRefundPaymentResult,
   ProviderRefundQueryInput,
@@ -31,10 +38,21 @@ import type {
   ProviderWebhookResult,
 } from "./payment-provider.interface";
 
+import {
+  buildWechatV2ClientAgent,
+  createNonceStr,
+  parseWechatXml,
+  signWechatV2,
+  toWechatXml,
+  verifyWechatV2Sign,
+  type WeChatV2Payload,
+} from "./wechat-pay-v2.util";
+
 type WeChatPayConfig = {
   mchId: string;
   appId: string;
   apiV3Key: string;
+  apiV2Key: string | null;
   privateKeyPem: string;
   /** 商户 API 证书序列号，用于 Authorization serial_no 请求签名 */
   merchantCertificateSerialNo: string;
@@ -42,6 +60,10 @@ type WeChatPayConfig = {
   platformCertificateSerialNo: string;
   /** 微信支付平台公钥 PEM，用于验签（可从 platformCertificatePem 提取） */
   platformPublicKeyPem: string;
+  merchantApiCertPem: string | null;
+  merchantApiKeyPem: string | null;
+  paymentCodeSignType: "MD5" | "HMAC-SHA256";
+  paymentCodeDeviceInfo: string | null;
   notifyUrl: string;
 };
 
@@ -121,12 +143,40 @@ function parseWeChatPayConfig(
     mchId: readRequiredString(source, "mchId", "WeChat Pay"),
     appId: readRequiredString(source, "appId", "WeChat Pay"),
     apiV3Key,
+    apiV2Key:
+      typeof source["apiV2Key"] === "string" &&
+      source["apiV2Key"].trim().length > 0
+        ? source["apiV2Key"].trim()
+        : null,
     privateKeyPem: readRequiredString(source, "privateKeyPem", "WeChat Pay"),
     merchantCertificateSerialNo,
     platformCertificateSerialNo,
     platformPublicKeyPem,
+    merchantApiCertPem:
+      typeof source["merchantApiCertPem"] === "string" &&
+      source["merchantApiCertPem"].trim().length > 0
+        ? source["merchantApiCertPem"].trim()
+        : null,
+    merchantApiKeyPem:
+      typeof source["merchantApiKeyPem"] === "string" &&
+      source["merchantApiKeyPem"].trim().length > 0
+        ? source["merchantApiKeyPem"].trim()
+        : null,
+    paymentCodeSignType:
+      source["paymentCodeSignType"] === "MD5" ? "MD5" : "HMAC-SHA256",
+    paymentCodeDeviceInfo:
+      typeof source["paymentCodeDeviceInfo"] === "string" &&
+      source["paymentCodeDeviceInfo"].trim().length > 0
+        ? source["paymentCodeDeviceInfo"].trim()
+        : null,
     notifyUrl: readRequiredString(source, "notifyUrl", "WeChat Pay"),
   };
+}
+
+function parseWechatPayTime(value: string): Date | null {
+  if (!/^\d{14}$/.test(value)) return null;
+  const iso = `${value.slice(0, 4)}-${value.slice(4, 6)}-${value.slice(6, 8)}T${value.slice(8, 10)}:${value.slice(10, 12)}:${value.slice(12, 14)}+08:00`;
+  return new Date(iso);
 }
 
 async function requestWechat(
@@ -195,6 +245,90 @@ async function requestWechat(
   }
 
   return assertRecord(JSON.parse(rawBodyText) as unknown);
+}
+
+async function postWechatV2Xml(
+  url: string,
+  body: string,
+  agent: Agent | undefined,
+): Promise<{ statusCode: number; text: string }> {
+  return await new Promise((resolve, reject) => {
+    const target = new URL(url);
+    const req = httpsRequest(
+      target,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "text/xml; charset=utf-8",
+          "content-length": Buffer.byteLength(body),
+        },
+        agent,
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (chunk: Buffer | string) =>
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)),
+        );
+        res.on("end", () => {
+          resolve({
+            statusCode: res.statusCode ?? 0,
+            text: Buffer.concat(chunks).toString("utf8"),
+          });
+        });
+      },
+    );
+    req.on("error", reject);
+    req.write(body);
+    req.end();
+  });
+}
+
+async function requestWechatV2(
+  url: string,
+  payload: WeChatV2Payload,
+  config: WeChatPayConfig,
+  options: { certificate: boolean },
+): Promise<Record<string, string>> {
+  if (!config.apiV2Key) {
+    throw new ConflictException(
+      "wechat_pay apiV2Key is required for payment_code",
+    );
+  }
+  const signedPayload = {
+    ...payload,
+    nonce_str: payload.nonce_str ?? createNonceStr(),
+    sign_type: config.paymentCodeSignType,
+  };
+  const sign = signWechatV2(
+    signedPayload,
+    config.apiV2Key,
+    config.paymentCodeSignType,
+  );
+  const body = toWechatXml({ ...signedPayload, sign });
+  const agent = options.certificate
+    ? buildWechatV2ClientAgent(
+        config.merchantApiCertPem ?? "",
+        config.merchantApiKeyPem ?? "",
+      )
+    : undefined;
+  const response = await postWechatV2Xml(url, body, agent);
+  if (response.statusCode < 200 || response.statusCode >= 300) {
+    throw new BadGatewayException(
+      `WeChat Pay V2 request failed: ${response.statusCode}`,
+    );
+  }
+  const data = parseWechatXml(response.text);
+  const hasSign = typeof data.sign === "string" && data.sign.length > 0;
+  if (
+    hasSign &&
+    !verifyWechatV2Sign(data, config.apiV2Key, config.paymentCodeSignType)
+  ) {
+    throw new BadGatewayException("WeChat Pay V2 response signature invalid");
+  }
+  if (!hasSign && data.return_code === "SUCCESS") {
+    throw new BadGatewayException("WeChat Pay V2 response signature missing");
+  }
+  return data;
 }
 
 function mapWeChatTradeState(
@@ -468,7 +602,7 @@ function mapWeChatRefund(
 }
 
 @Injectable()
-export class WeChatPayProvider implements PaymentProvider {
+export class WeChatPayProvider implements PaymentCodeCapableProvider {
   readonly code = "wechat_pay";
 
   async createPaymentIntent(
@@ -507,6 +641,141 @@ export class WeChatPayProvider implements PaymentProvider {
     return mapWeChatTradeState(data);
   }
 
+  async chargePaymentCode(
+    input: ProviderPaymentCodeChargeInput,
+  ): Promise<ProviderPaymentCodeChargeResult> {
+    const config = parseWeChatPayConfig(input.config);
+    const data = await requestWechatV2(
+      "https://api.mch.weixin.qq.com/pay/micropay",
+      {
+        appid: input.config.appId,
+        mch_id: input.config.merchantNo,
+        device_info:
+          config.paymentCodeDeviceInfo ?? input.terminalId ?? undefined,
+        body: `VEM order ${input.orderNo}`,
+        out_trade_no: input.paymentNo,
+        total_fee: input.amountCents,
+        fee_type: "CNY",
+        spbill_create_ip: input.clientIp ?? "127.0.0.1",
+        auth_code: input.authCode,
+      },
+      config,
+      { certificate: false },
+    );
+    if (
+      data.return_code === "SUCCESS" &&
+      data.result_code === "SUCCESS" &&
+      data.trade_type === "MICROPAY"
+    ) {
+      return {
+        status: "succeeded",
+        providerTradeNo: data.transaction_id ?? null,
+        paidAt: data.time_end ? parseWechatPayTime(data.time_end) : null,
+        providerStatus: "SUCCESS",
+        rawPayload: data,
+      };
+    }
+    const errCode =
+      data.err_code ??
+      data.return_code ??
+      data.result_code ??
+      "WECHAT_MICROPAY_FAILED";
+    if (["USERPAYING"].includes(errCode)) {
+      return {
+        status: "user_confirming",
+        providerTradeNo: data.transaction_id ?? null,
+        providerStatus: errCode,
+        failureCode: errCode,
+        failureMessage: data.err_code_des ?? "用户支付中",
+        rawPayload: data,
+      };
+    }
+    if (["SYSTEMERROR", "BANKERROR"].includes(errCode)) {
+      return {
+        status: "unknown",
+        providerTradeNo: data.transaction_id ?? null,
+        providerStatus: errCode,
+        failureCode: errCode,
+        failureMessage: data.err_code_des ?? "微信支付结果未知",
+        rawPayload: data,
+      };
+    }
+    return {
+      status: "failed",
+      providerTradeNo: data.transaction_id ?? null,
+      providerStatus: errCode,
+      failureCode: errCode,
+      failureMessage: data.err_code_des ?? "微信付款码支付失败",
+      rawPayload: data,
+    };
+  }
+
+  async queryPaymentCode(
+    input: ProviderPaymentCodeQueryInput,
+  ): Promise<ProviderPaymentCodeQueryResult> {
+    const config = parseWeChatPayConfig(input.config);
+    const data = await requestWechatV2(
+      "https://api.mch.weixin.qq.com/pay/orderquery",
+      {
+        appid: input.config.appId,
+        mch_id: input.config.merchantNo,
+        transaction_id: input.providerTradeNo ?? undefined,
+        out_trade_no: input.paymentNo,
+      },
+      config,
+      { certificate: false },
+    );
+    if (data.return_code !== "SUCCESS" || data.result_code !== "SUCCESS") {
+      const errCode =
+        data.err_code ??
+        data.return_code ??
+        data.result_code ??
+        "WECHAT_ORDERQUERY_FAILED";
+      return {
+        status: errCode === "SYSTEMERROR" ? "unknown" : "failed",
+        providerTradeNo: data.transaction_id ?? input.providerTradeNo,
+        providerStatus: errCode,
+        failureCode: errCode,
+        failureMessage: data.err_code_des ?? null,
+        rawPayload: data,
+      };
+    }
+    const tradeState = data.trade_state ?? "NOTPAY";
+    if (tradeState === "SUCCESS") {
+      return {
+        status: "succeeded",
+        providerTradeNo: data.transaction_id ?? input.providerTradeNo,
+        paidAt: data.time_end ? parseWechatPayTime(data.time_end) : null,
+        providerStatus: tradeState,
+        rawPayload: data,
+      };
+    }
+    if (tradeState === "USERPAYING") {
+      return {
+        status: "user_confirming",
+        providerTradeNo: data.transaction_id ?? input.providerTradeNo,
+        providerStatus: tradeState,
+        rawPayload: data,
+      };
+    }
+    if (tradeState === "REVOKED" || tradeState === "CLOSED") {
+      return {
+        status: "reversed",
+        providerTradeNo: data.transaction_id ?? input.providerTradeNo,
+        providerStatus: tradeState,
+        rawPayload: data,
+      };
+    }
+    return {
+      status: tradeState === "PAYERROR" ? "failed" : "processing",
+      providerTradeNo: data.transaction_id ?? input.providerTradeNo,
+      providerStatus: tradeState,
+      failureCode: tradeState === "PAYERROR" ? tradeState : null,
+      failureMessage: data.trade_state_desc ?? null,
+      rawPayload: data,
+    };
+  }
+
   async cancelPayment(
     input: ProviderCancelPaymentInput,
   ): Promise<ProviderCancelPaymentResult> {
@@ -520,6 +789,59 @@ export class WeChatPayProvider implements PaymentProvider {
     return {
       status: "canceled",
       rawPayload: { provider: this.code, paymentNo: input.paymentNo },
+    };
+  }
+
+  async reversePaymentCode(
+    input: ProviderPaymentCodeReverseInput,
+  ): Promise<ProviderPaymentCodeReverseResult> {
+    const config = parseWeChatPayConfig(input.config);
+    if (!config.merchantApiCertPem || !config.merchantApiKeyPem) {
+      throw new ConflictException(
+        "wechat_pay merchant API certificate is required for reverse",
+      );
+    }
+    const data = await requestWechatV2(
+      "https://api.mch.weixin.qq.com/secapi/pay/reverse",
+      {
+        appid: input.config.appId,
+        mch_id: input.config.merchantNo,
+        transaction_id: input.providerTradeNo ?? undefined,
+        out_trade_no: input.paymentNo,
+      },
+      config,
+      { certificate: true },
+    );
+    if (data.return_code === "SUCCESS" && data.result_code === "SUCCESS") {
+      return {
+        status: data.recall === "Y" ? "processing" : "reversed",
+        recall: data.recall === "Y",
+        providerStatus: "SUCCESS",
+        rawPayload: data,
+      };
+    }
+    const errCode =
+      data.err_code ??
+      data.return_code ??
+      data.result_code ??
+      "WECHAT_REVERSE_FAILED";
+    if (errCode === "USERPAYING" || errCode === "SYSTEMERROR") {
+      return {
+        status: "unknown",
+        recall: true,
+        providerStatus: errCode,
+        failureCode: errCode,
+        failureMessage: data.err_code_des ?? null,
+        rawPayload: data,
+      };
+    }
+    return {
+      status: "failed",
+      recall: false,
+      providerStatus: errCode,
+      failureCode: errCode,
+      failureMessage: data.err_code_des ?? null,
+      rawPayload: data,
     };
   }
 

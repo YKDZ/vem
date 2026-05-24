@@ -12,6 +12,7 @@ import {
   notificationTypes,
   orderSources,
   orderStatuses,
+  paymentCodeAttemptStatuses,
   paymentMethods,
   paymentProviderStatuses,
   paymentProviderTypes,
@@ -99,6 +100,10 @@ export const paymentMethod = t.pgEnum(
 export const paymentStatus = t.pgEnum(
   "payment_status",
   asPgEnumValues(paymentStatuses),
+);
+export const paymentCodeAttemptStatus = t.pgEnum(
+  "payment_code_attempt_status",
+  asPgEnumValues(paymentCodeAttemptStatuses),
 );
 export const refundStatus = t.pgEnum(
   "refund_status",
@@ -648,6 +653,75 @@ export const payments = t.pgTable(
     t.check(
       "payments_amount_cents_non_negative",
       sql`${table.amountCents} >= 0`,
+    ),
+  ],
+);
+
+export const paymentCodeAttempts = t.pgTable(
+  "payment_code_attempts",
+  {
+    id: id(),
+    paymentId: t
+      .uuid("payment_id")
+      .notNull()
+      .references(() => payments.id),
+    orderId: t
+      .uuid("order_id")
+      .notNull()
+      .references(() => orders.id),
+    providerId: t
+      .uuid("provider_id")
+      .notNull()
+      .references(() => paymentProviders.id),
+    paymentProviderConfigId: t
+      .uuid("payment_provider_config_id")
+      .references(() => paymentProviderConfigs.id),
+    attemptNo: t.integer("attempt_no").notNull(),
+    providerPaymentNo: t
+      .varchar("provider_payment_no", { length: 64 })
+      .notNull(),
+    idempotencyKey: t.varchar("idempotency_key", { length: 128 }).notNull(),
+    status: paymentCodeAttemptStatus("status").default("created").notNull(),
+    isActive: t.boolean("is_active").default(true).notNull(),
+    amountCents: t.integer("amount_cents").notNull(),
+    currency: t.varchar("currency", { length: 3 }).default("CNY").notNull(),
+    authCodeHash: t.varchar("auth_code_hash", { length: 64 }).notNull(),
+    authCodeMasked: t.varchar("auth_code_masked", { length: 32 }).notNull(),
+    source: t.varchar("source", { length: 32 }).notNull(),
+    scannerHealthJson: t.jsonb("scanner_health_json").$type<JsonObject>(),
+    providerTradeNo: t.varchar("provider_trade_no", { length: 128 }),
+    providerStatus: t.varchar("provider_status", { length: 64 }),
+    failureCode: t.varchar("failure_code", { length: 128 }),
+    failureMessage: t.text("failure_message"),
+    rawPayloadJson: t.jsonb("raw_payload_json").$type<JsonObject>(),
+    submittedAt: t.timestamp("submitted_at", { withTimezone: true }),
+    lastCheckedAt: t.timestamp("last_checked_at", { withTimezone: true }),
+    reversedAt: t.timestamp("reversed_at", { withTimezone: true }),
+    finishedAt: t.timestamp("finished_at", { withTimezone: true }),
+    manualReason: t.text("manual_reason"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    t
+      .uniqueIndex("payment_code_attempts_provider_payment_no_unique")
+      .on(table.providerPaymentNo),
+    t
+      .uniqueIndex("payment_code_attempts_idempotency_unique")
+      .on(table.paymentId, table.idempotencyKey),
+    t
+      .uniqueIndex("payment_code_attempts_order_attempt_unique")
+      .on(table.orderId, table.attemptNo),
+    t
+      .uniqueIndex("payment_code_attempts_order_active_unique")
+      .on(table.orderId)
+      .where(sql`${table.isActive} = true`),
+    t.index("payment_code_attempts_payment_id_idx").on(table.paymentId),
+    t.index("payment_code_attempts_status_idx").on(table.status),
+    t.index("payment_code_attempts_auth_hash_idx").on(table.authCodeHash),
+    t.check(
+      "payment_code_attempts_amount_cents_positive",
+      sql`${table.amountCents} > 0`,
     ),
   ],
 );

@@ -155,6 +155,93 @@ function makeService(overrides: {
 // ---- tests ------------------------------------------------------------------
 
 describe("PaymentsService", () => {
+  describe("applyProviderPaymentResult", () => {
+    it("dispatches only once for duplicate providerEventId", async () => {
+      const createAndDispatchCommands = vi.fn().mockResolvedValue(undefined);
+      const db = makeDb();
+      db.select
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([
+                {
+                  paymentId: "pay-001",
+                  orderId: "ord-001",
+                  providerId: "prov-001",
+                },
+              ]),
+            }),
+          }),
+        })
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([]),
+            }),
+          }),
+        })
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue([
+                {
+                  paymentId: "pay-001",
+                  paymentStatus: "pending",
+                  orderId: "ord-001",
+                  orderStatus: "pending_payment",
+                },
+              ]),
+            }),
+          }),
+        })
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([
+                {
+                  paymentId: "pay-001",
+                  orderId: "ord-001",
+                  providerId: "prov-001",
+                },
+              ]),
+            }),
+          }),
+        })
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([{ id: "evt-1" }]),
+            }),
+          }),
+        });
+
+      const service = makeService({
+        db,
+        vendingService: { createAndDispatchCommands },
+      });
+
+      await service.applyProviderPaymentResult({
+        paymentId: "pay-001",
+        providerTradeNo: "TXN-001",
+        status: "succeeded",
+        eventType: "payment_code.succeeded",
+        providerEventId: "payment_code:PCA001:succeeded",
+        rawPayload: {},
+      });
+      await service.applyProviderPaymentResult({
+        paymentId: "pay-001",
+        providerTradeNo: "TXN-001",
+        status: "succeeded",
+        eventType: "payment_code.succeeded",
+        providerEventId: "payment_code:PCA001:succeeded",
+        rawPayload: {},
+      });
+
+      expect(createAndDispatchCommands).toHaveBeenCalledTimes(1);
+      expect(createAndDispatchCommands).toHaveBeenCalledWith("ord-001");
+    });
+  });
+
   describe("reconcilePendingPayments", () => {
     it("applies succeeded status and calls createAndDispatchCommands once", async () => {
       const createAndDispatchCommands = vi.fn().mockResolvedValue(undefined);
