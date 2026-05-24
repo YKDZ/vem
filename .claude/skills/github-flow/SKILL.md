@@ -2,7 +2,6 @@
 name: github-flow
 description: >-
   VEM 标准 GitHub Flow 提交与 PR 流程指南。用于 agent 在准备修改、提交、推送、创建 PR、处理 rebase/冲突、跨模块开发、避免直接覆盖 main 或 force push main 时遵循仓库协作规范。
-  当用户提到"提交"、"commit"、"push"、"PR"、"创建分支"、"合并"、"rebase"、"冲突"、"直接改 main"、"github flow"、"协作开发"时使用此 Skill。
 ---
 
 # VEM 标准 GitHub Flow
@@ -182,17 +181,19 @@ git push --force-with-lease origin <branch-name>
 
 禁止对 `main` 使用上述强制更新方式。
 
-### 7. 创建 Draft PR
+### 7. 创建 Draft PR（推送后立刻执行）
 
-推送后应优先创建 Draft PR，让 CI 尽早运行、让协作者看见进度。目标分支通常是 `main`。
+**分支推送后立即创建 Draft PR，不要等到功能完成再开。** 这是让 CI 尽早发现问题的关键步骤，也让协作者持续了解进度、避免方向冲突。目标分支通常是 `main`。
 
-PR 标题格式与 commit 一致，例如：
+**PR 标题和正文必须使用中文。** 标题格式与 commit 一致：类型前缀保留英文，描述部分用中文：
 
 ```text
 feat(admin-ui): 新增独立退款管理页面
+fix(service-api): 修复 MQTT 重连后订单状态丢失
+chore: 升级 pnpm 到 10.34
 ```
 
-PR 描述模板：
+PR 描述模板（所有内容用中文填写）：
 
 ```markdown
 ## 做了什么
@@ -210,7 +211,7 @@ closes #<Issue 编号>（如有）
 - [ ] apps/service-api
 - [ ] apps/machine
 - [ ] apps/admin-ui
-- [ ] docs / repo config
+- [ ] docs / 仓库配置
 
 ## 测试验证
 
@@ -219,7 +220,7 @@ closes #<Issue 编号>（如有）
 ## 截图（如有 UI 变动）
 ```
 
-如果功能尚未完成，PR 保持 Draft；本地验证通过并准备评审后再转为 Ready for review。
+如果功能尚未完成，PR 保持 Draft；本地验证通过并准备评审后再转为 Ready for review，并在群里 @ 一下 @YKDZ 提醒审核。
 
 ## 同步 main 与处理冲突
 
@@ -243,6 +244,24 @@ rebase 完成后，只能对自己的功能分支使用：
 ```bash
 git push --force-with-lease origin <branch-name>
 ```
+
+## PR 合并后的分支清理
+
+PR 被 Squash and merge 合并到 `main` 后，功能分支已完成使命，立即清理：
+
+```bash
+# 1. 切回 main 并同步最新代码
+git switch main
+git pull --ff-only origin main
+
+# 2. 删除本地分支
+git branch -d <branch-name>
+
+# 3. 如果 GitHub 未自动删除远程分支，手动删除
+git push origin --delete <branch-name>
+```
+
+> GitHub 合并后通常会显示「Delete branch」按钮，点击即可删除远程分支；若仓库已启用自动删除，则远程分支无需手动操作。本地分支必须手动删除。
 
 ## Agent 完成任务前的汇报清单
 
