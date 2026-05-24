@@ -4,25 +4,32 @@ use serde::{Deserialize, Serialize};
 /// Input payload sent from the cloud to trigger a dispense.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct DispenseCommandPayload {
-    pub command_id: String,
-    pub order_id: String,
-    pub order_no: String,
+pub struct SlotPayload {
     pub layer_no: u32,
     pub cell_no: u32,
-    pub motor_timeout_ms: u64,
-    pub issued_at: String,
+    pub slot_code: String,
+}
+
+/// Input payload sent from the cloud to trigger a dispense.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DispenseCommandPayload {
+    pub command_no: String,
+    pub order_no: String,
+    pub slot: SlotPayload,
+    pub quantity: u32,
+    pub timeout_seconds: u64,
 }
 
 /// Result reported back to the cloud after a dispense attempt.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DispenseResultPayload {
-    pub command_id: String,
-    pub order_id: String,
+    pub command_no: String,
     pub success: bool,
     pub error_code: Option<String>,
-    pub completed_at: String,
+    pub message: String,
+    pub reported_at: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -59,14 +66,14 @@ impl HardwareAdapter for MockHardwareAdapter {
     }
 
     async fn dispense(&self, cmd: DispenseCommandPayload) -> DispenseResultPayload {
-        let completed_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        let reported_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         // Mock always succeeds
         DispenseResultPayload {
-            command_id: cmd.command_id,
-            order_id: cmd.order_id,
+            command_no: cmd.command_no,
             success: true,
             error_code: None,
-            completed_at,
+            message: "mock: dispense succeeded".to_string(),
+            reported_at,
         }
     }
 }

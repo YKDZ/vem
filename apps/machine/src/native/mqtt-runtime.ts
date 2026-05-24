@@ -6,7 +6,7 @@ export const nativeMqttStatusSchema = z.object({
   running: z.boolean(),
   connected: z.boolean(),
   lastError: z.string().nullable(),
-  lastCommandId: z.string().nullable(),
+  lastCommandNo: z.string().nullable(),
   lastHeartbeatAt: z.string().nullable(),
 });
 

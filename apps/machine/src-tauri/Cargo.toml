@@ -25,6 +25,7 @@ serde_json = "1"
 keyring = "3"
 zeroize = "1"
 tokio = { version = "1", features = ["full"] }
+tokio-serial = "5"
 rumqttc = "0.24"
 hmac = "0.12"
 sha2 = "0.10"

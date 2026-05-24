@@ -55,7 +55,7 @@ onUnmounted(() => {
         </p>
         <h2 class="mt-4 text-4xl font-black">支付成功，正在出货</h2>
         <p class="mt-4 text-lg text-slate-300">
-          机器端已连接 MQTT 并使用 MockAdapter 执行出货。若网络短暂中断，ACK
+          机器端已连接 MQTT 并调用当前硬件适配器执行出货。若网络短暂中断，ACK
           和出货结果会进入本地 outbox，恢复后自动补发。
         </p>
 

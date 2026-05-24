@@ -7,30 +7,41 @@ export const hardwareAdapterSchema = z.enum([
   "vendor_sdk",
 ]);
 
-export const machineConfigSchema = z.object({
-  machineCode: z.string().trim().min(1).max(64).nullable().default(null),
-  machineSecret: z.string().trim().min(32).max(256).nullable().default(null),
-  machineSecretConfigured: z.boolean().default(false),
-  mqttSigningSecret: z
-    .string()
-    .trim()
-    .min(32)
-    .max(256)
-    .nullable()
-    .default(null),
-  mqttSigningSecretConfigured: z.boolean().default(false),
-  mqttUsername: z.string().trim().min(1).max(128).nullable().default(null),
-  mqttPassword: z.string().trim().min(1).max(256).nullable().default(null),
-  mqttPasswordConfigured: z.boolean().default(false),
-  apiBaseUrl: z
-    .string()
-    .trim()
-    .pipe(z.url())
-    .default("http://localhost:3000/api"),
-  mqttUrl: z.string().trim().min(1).default("mqtt://localhost:1883"),
-  hardwareAdapter: hardwareAdapterSchema.default("mock"),
-  kioskMode: z.boolean().default(false),
-});
+export const machineConfigSchema = z
+  .object({
+    machineCode: z.string().trim().min(1).max(64).nullable().default(null),
+    machineSecret: z.string().trim().min(32).max(256).nullable().default(null),
+    machineSecretConfigured: z.boolean().default(false),
+    mqttSigningSecret: z
+      .string()
+      .trim()
+      .min(32)
+      .max(256)
+      .nullable()
+      .default(null),
+    mqttSigningSecretConfigured: z.boolean().default(false),
+    mqttUsername: z.string().trim().min(1).max(128).nullable().default(null),
+    mqttPassword: z.string().trim().min(1).max(256).nullable().default(null),
+    mqttPasswordConfigured: z.boolean().default(false),
+    apiBaseUrl: z
+      .string()
+      .trim()
+      .pipe(z.url())
+      .default("http://localhost:3000/api"),
+    mqttUrl: z.string().trim().min(1).default("mqtt://localhost:1883"),
+    hardwareAdapter: hardwareAdapterSchema.default("mock"),
+    serialPortPath: z.string().trim().min(1).max(256).nullable().default(null),
+    kioskMode: z.boolean().default(false),
+  })
+  .superRefine((data, ctx) => {
+    if (data.hardwareAdapter === "serial" && !data.serialPortPath) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["serialPortPath"],
+        message: "serialPortPath is required when hardwareAdapter=serial",
+      });
+    }
+  });
 
 export type HardwareAdapter = z.infer<typeof hardwareAdapterSchema>;
 export type MachineConfig = z.infer<typeof machineConfigSchema>;
@@ -74,6 +85,11 @@ export function normalizeMachineConfig(input: unknown): MachineConfig {
     const trimmed = processed.mqttPassword.trim();
     processed.mqttPassword = trimmed.length > 0 ? trimmed : null;
   }
+  // Pre-normalize serialPortPath
+  if (typeof processed.serialPortPath === "string") {
+    const trimmed = processed.serialPortPath.trim();
+    processed.serialPortPath = trimmed.length > 0 ? trimmed : null;
+  }
   const parsed = machineConfigSchema.parse(processed);
   const machineSecret = parsed.machineSecret?.trim() || null;
   const mqttSigningSecret = parsed.mqttSigningSecret?.trim() || null;
@@ -96,5 +112,6 @@ export function normalizeMachineConfig(input: unknown): MachineConfig {
     ),
     apiBaseUrl: parsed.apiBaseUrl.replace(/\/+$/, ""),
     mqttUrl: parsed.mqttUrl.trim(),
+    serialPortPath: parsed.serialPortPath?.trim() || null,
   };
 }
