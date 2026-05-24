@@ -6,6 +6,7 @@ import MockHardwareControls from "@/components/MockHardwareControls.vue";
 import {
   normalizeMachineConfig,
   type HardwareAdapter,
+  type ScannerAdapter,
 } from "@/config/machine-config";
 import KioskLayout from "@/layouts/KioskLayout.vue";
 import { useMachineStore } from "@/stores/machine";
@@ -22,6 +23,10 @@ const form = reactive({
   mqttUsername: machineStore.config.mqttUsername,
   hardwareAdapter: machineStore.config.hardwareAdapter,
   serialPortPath: machineStore.config.serialPortPath,
+  scannerAdapter: machineStore.config.scannerAdapter,
+  scannerSerialPortPath: machineStore.config.scannerSerialPortPath,
+  scannerBaudRate: machineStore.config.scannerBaudRate,
+  scannerFrameSuffix: machineStore.config.scannerFrameSuffix,
   kioskMode: machineStore.config.kioskMode,
   machineSecretInput: "",
   mqttSigningSecretInput: "",
@@ -37,6 +42,10 @@ onMounted(async () => {
     form.mqttUsername = machineStore.config.mqttUsername;
     form.hardwareAdapter = machineStore.config.hardwareAdapter;
     form.serialPortPath = machineStore.config.serialPortPath;
+    form.scannerAdapter = machineStore.config.scannerAdapter;
+    form.scannerSerialPortPath = machineStore.config.scannerSerialPortPath;
+    form.scannerBaudRate = machineStore.config.scannerBaudRate;
+    form.scannerFrameSuffix = machineStore.config.scannerFrameSuffix;
     form.kioskMode = machineStore.config.kioskMode;
   }
 });
@@ -47,6 +56,15 @@ const adapters: HardwareAdapter[] = [
   "bluetooth",
   "vendor_sdk",
 ];
+
+const scannerAdapters: ScannerAdapter[] = [
+  "disabled",
+  "serial_text",
+  "keyboard_hid",
+  "web_serial_dev",
+];
+
+const scannerFrameSuffixes = ["crlf", "lf", "cr", "none"] as const;
 
 async function saveAndReboot(): Promise<void> {
   try {
@@ -75,7 +93,8 @@ async function saveAndReboot(): Promise<void> {
       <h2 class="mt-3 text-3xl font-bold">部署配置 / 维护入口</h2>
       <p class="mt-3 text-slate-300">
         未配置机器编号时不会进入商品售卖页。真实设备请选择 serial 适配器并填写
-        USB-TTL 串口路径；mock 适配器仅用于本地联调。
+        USB-TTL 串口路径；付款码被扫请在下方配置独立扫码器。mock
+        适配器仅用于本地联调。
       </p>
 
       <div
@@ -219,6 +238,82 @@ async function saveAndReboot(): Promise<void> {
             当前协议固定 115200 / 8N1 / None 校验 / 1 停止位。
           </p>
         </label>
+
+        <div class="rounded-3xl border border-white/10 bg-slate-950/30 p-5">
+          <p
+            class="text-sm font-semibold tracking-[0.28em] text-emerald-200 uppercase"
+          >
+            Scanner Adapter
+          </p>
+          <p class="mt-2 text-sm text-slate-300">
+            用于读取支付宝/微信付款码；推荐将硬件控制板和扫码器分成独立串口。
+          </p>
+
+          <div class="mt-4 grid gap-4">
+            <label class="grid gap-2 text-left">
+              <span class="text-sm font-semibold text-slate-200"
+                >扫码器适配器</span
+              >
+              <select
+                v-model="form.scannerAdapter"
+                class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-sky-300"
+              >
+                <option
+                  v-for="scannerAdapter in scannerAdapters"
+                  :key="scannerAdapter"
+                  :value="scannerAdapter"
+                >
+                  {{ scannerAdapter }}
+                </option>
+              </select>
+            </label>
+
+            <label
+              v-if="form.scannerAdapter === 'serial_text'"
+              class="grid gap-2 text-left"
+            >
+              <span class="text-sm font-semibold text-slate-200"
+                >扫码串口路径 scannerSerialPortPath</span
+              >
+              <input
+                v-model="form.scannerSerialPortPath"
+                class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-sky-300"
+                placeholder="Linux 如 /dev/ttyUSB1；Windows 如 COM4"
+              />
+            </label>
+
+            <label class="grid gap-2 text-left">
+              <span class="text-sm font-semibold text-slate-200"
+                >扫码波特率 scannerBaudRate</span
+              >
+              <input
+                v-model.number="form.scannerBaudRate"
+                class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-sky-300"
+                min="1200"
+                step="1"
+                type="number"
+              />
+            </label>
+
+            <label class="grid gap-2 text-left">
+              <span class="text-sm font-semibold text-slate-200"
+                >扫码结尾符 scannerFrameSuffix</span
+              >
+              <select
+                v-model="form.scannerFrameSuffix"
+                class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-sky-300"
+              >
+                <option
+                  v-for="frameSuffix in scannerFrameSuffixes"
+                  :key="frameSuffix"
+                  :value="frameSuffix"
+                >
+                  {{ frameSuffix }}
+                </option>
+              </select>
+            </label>
+          </div>
+        </div>
 
         <button
           class="kiosk-touch-target rounded-2xl bg-sky-400 px-6 py-4 text-lg font-bold text-slate-950 shadow-lg shadow-sky-950/40"

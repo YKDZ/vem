@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import { orderStatusSchema } from "../enums/order-status";
 import {
+  paymentCodeAttemptStatusSchema,
   paymentMethodSchema,
   paymentStatusSchema,
 } from "../enums/payment-status";
@@ -26,7 +27,7 @@ export const machinePaymentProviderCodeSchema = z.enum([
   "alipay",
 ]);
 
-const realQrProviderCodes = new Set(["wechat_pay", "alipay"]);
+const realPaymentProviderCodes = new Set(["wechat_pay", "alipay"]);
 
 export const createMachineOrderSchema = z
   .object({
@@ -51,16 +52,18 @@ export const createMachineOrderSchema = z
       return;
     }
 
-    if (value.paymentMethod === "qr_code") {
+    if (
+      value.paymentMethod === "qr_code" ||
+      value.paymentMethod === "payment_code"
+    ) {
       if (
         value.paymentProviderCode === undefined ||
-        !realQrProviderCodes.has(value.paymentProviderCode)
+        !realPaymentProviderCodes.has(value.paymentProviderCode)
       ) {
         ctx.addIssue({
           code: "custom",
           path: ["paymentProviderCode"],
-          message:
-            "qr_code payment method requires alipay or wechat_pay provider",
+          message: `${value.paymentMethod} payment method requires alipay or wechat_pay provider`,
         });
       }
       return;
@@ -69,7 +72,7 @@ export const createMachineOrderSchema = z
     ctx.addIssue({
       code: "custom",
       path: ["paymentMethod"],
-      message: "face_pay is not supported by machine order creation",
+      message: `${value.paymentMethod} is not supported by machine order creation`,
     });
   });
 
@@ -90,23 +93,70 @@ export const machineOrderStatusNextActionSchema = z.enum([
   "closed",
 ]);
 
+export const machinePaymentOptionKeySchema = z
+  .string()
+  .regex(
+    /^(mock:mock|qr_code:(wechat_pay|alipay)|payment_code:(wechat_pay|alipay))$/,
+  );
+
+export const paymentCodeSourceSchema = z.enum([
+  "tauri_scanner",
+  "browser_test",
+  "keyboard_hid",
+  "web_serial",
+  "manual_dev",
+]);
+
+export const paymentCodeSubmitSchema = z.object({
+  machineCode: z.string().min(1).max(64),
+  authCode: z.string().trim().min(6).max(128),
+  idempotencyKey: z.string().trim().min(8).max(128),
+  source: paymentCodeSourceSchema,
+  scannerHealth: z
+    .object({
+      online: z.boolean(),
+      adapter: z.string().min(1).max(64),
+      port: z.string().max(256).nullable().optional(),
+      message: z.string().max(256).nullable().optional(),
+    })
+    .optional(),
+});
+
+export const paymentCodeSubmitResponseSchema = z.object({
+  orderNo: z.string().min(1).max(64),
+  paymentNo: z.string().min(1).max(64),
+  attemptNo: z.int().positive(),
+  status: paymentCodeAttemptStatusSchema,
+  nextAction: machineOrderStatusNextActionSchema,
+  message: z.string().min(1).max(256),
+  canRetry: z.boolean(),
+  serverTime: z.iso.datetime(),
+});
+
 export const machinePaymentOptionSchema = z.object({
+  optionKey: machinePaymentOptionKeySchema,
   providerCode: machinePaymentProviderCodeSchema,
   method: paymentMethodSchema,
   displayName: z.string().min(1).max(32),
   description: z.string().min(1).max(128),
   icon: z.enum(["mock", "wechat", "alipay"]),
   recommended: z.boolean().default(false),
+  disabled: z.boolean().default(false),
+  disabledReason: z.string().max(128).nullable().default(null),
 });
 
 export const machinePaymentOptionsResponseSchema = z.object({
   options: z.array(machinePaymentOptionSchema),
+  defaultOptionKey: machinePaymentOptionKeySchema.nullable(),
   defaultProviderCode: machinePaymentProviderCodeSchema.nullable(),
   serverTime: z.iso.datetime(),
 });
 
 export type MachinePaymentProviderCode = z.infer<
   typeof machinePaymentProviderCodeSchema
+>;
+export type MachinePaymentOptionKey = z.infer<
+  typeof machinePaymentOptionKeySchema
 >;
 export type MachinePaymentOption = z.infer<typeof machinePaymentOptionSchema>;
 export type MachinePaymentOptionsResponse = z.infer<
@@ -129,6 +179,19 @@ export const machineOrderStatusResponseSchema = z.object({
     failedReason: z.string().nullable(),
     providerCode: machinePaymentProviderCodeSchema.nullable(),
   }),
+  paymentCodeAttempt: z
+    .object({
+      attemptNo: z.int().positive(),
+      status: paymentCodeAttemptStatusSchema,
+      maskedAuthCode: z.string().max(32).nullable(),
+      source: paymentCodeSourceSchema.nullable(),
+      idempotencyKey: z.string().max(128).nullable(),
+      submittedAt: z.iso.datetime().nullable(),
+      lastCheckedAt: z.iso.datetime().nullable(),
+      canRetry: z.boolean(),
+      message: z.string().max(256).nullable(),
+    })
+    .nullable(),
   vending: z
     .object({
       commandNo: z.string().min(1).max(64),
@@ -164,3 +227,8 @@ export type MachineOrderStatusResponse = z.infer<
 export type MachineOrderStatusNextAction = z.infer<
   typeof machineOrderStatusNextActionSchema
 >;
+export type PaymentCodeSubmitInput = z.infer<typeof paymentCodeSubmitSchema>;
+export type PaymentCodeSubmitResponse = z.infer<
+  typeof paymentCodeSubmitResponseSchema
+>;
+export type PaymentCodeSource = z.infer<typeof paymentCodeSourceSchema>;

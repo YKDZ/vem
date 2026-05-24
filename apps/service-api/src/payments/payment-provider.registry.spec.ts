@@ -1,7 +1,10 @@
-import { NotFoundException } from "@nestjs/common";
+import { ConflictException, NotFoundException } from "@nestjs/common";
 import { describe, expect, it } from "vitest";
 
-import type { PaymentProvider } from "./payment-provider.interface";
+import type {
+  PaymentCodeCapableProvider,
+  PaymentProvider,
+} from "./payment-provider.interface";
 
 import { PaymentProviderRegistry } from "./payment-provider.registry";
 
@@ -18,6 +21,23 @@ function makeProvider(code: string): PaymentProvider {
       providerRefundNo: "",
       status: "processing",
       refundedAt: null,
+    }),
+  };
+}
+
+function makePaymentCodeProvider(code: string): PaymentCodeCapableProvider {
+  return {
+    ...makeProvider(code),
+    chargePaymentCode: async () => ({
+      status: "user_confirming",
+      providerTradeNo: null,
+    }),
+    queryPaymentCode: async () => ({
+      status: "processing",
+      providerTradeNo: null,
+    }),
+    reversePaymentCode: async () => ({
+      status: "processing",
     }),
   };
 }
@@ -67,5 +87,37 @@ describe("PaymentProviderRegistry", () => {
     expect(registry.get("mock")).toBe(mock);
     expect(registry.get("wechat_pay")).toBe(wechat);
     expect(registry.get("alipay")).toBe(alipay);
+  });
+
+  it("returns payment_code capable provider when supported", () => {
+    const mock = makeProvider("mock");
+    const wechat = makePaymentCodeProvider("wechat_pay");
+    const alipay = makePaymentCodeProvider("alipay");
+    const registry = new PaymentProviderRegistry(
+      mock as never,
+      wechat as never,
+      alipay as never,
+    );
+
+    expect(registry.getPaymentCodeProvider("wechat_pay")).toBe(wechat);
+    expect(registry.getPaymentCodeProvider("alipay")).toBe(alipay);
+  });
+
+  it("throws ConflictException when provider does not support payment_code", () => {
+    const mock = makeProvider("mock");
+    const wechat = makeProvider("wechat_pay");
+    const alipay = makeProvider("alipay");
+    const registry = new PaymentProviderRegistry(
+      mock as never,
+      wechat as never,
+      alipay as never,
+    );
+
+    expect(() => registry.getPaymentCodeProvider("wechat_pay")).toThrow(
+      ConflictException,
+    );
+    expect(() => registry.getPaymentCodeProvider("wechat_pay")).toThrow(
+      "Payment provider wechat_pay does not support payment_code",
+    );
   });
 });

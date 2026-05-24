@@ -14,6 +14,9 @@ import {
   notificationTypeSchema,
   orderStatuses,
   paymentMachinePreflightSchema,
+  paymentCodeAttemptQuerySchema,
+  paymentCodeSubmitResponseSchema,
+  paymentCodeSubmitSchema,
   paymentOpsMetricsSchema,
   paymentOpsReadinessSchema,
   paymentProviderStatuses,
@@ -186,6 +189,31 @@ describe("shared API contract", () => {
       expect(result.providerCode).toBe("wechat_pay");
     });
 
+    it("accepts wechat_pay payment_code config with V2 credentials", () => {
+      const result = upsertPaymentProviderConfigSchema.parse({
+        providerCode: "wechat_pay",
+        merchantNo: "1900000109",
+        appId: "wx1234567890abcdef",
+        publicConfigJson: {
+          merchantCertificateSerialNo: "MERCHANT_CERT_SERIAL",
+          platformCertificateSerialNo: "PLATFORM_CERT_SERIAL",
+          paymentCodeEnabled: true,
+          paymentCodePollIntervalSeconds: 3,
+          paymentCodeMaxConfirmSeconds: 30,
+          paymentCodeReverseDelaySeconds: 0,
+        },
+        sensitiveConfigJson: {
+          apiV3Key: "0123456789abcdef0123456789abcdef",
+          privateKeyPem: "dev-key",
+          platformPublicKeyPem: "dev-pub",
+          apiV2Key: "0123456789abcdef0123456789abcdef",
+          merchantApiCertPem: "dev-cert",
+          merchantApiKeyPem: "dev-cert-key",
+        },
+      });
+      expect(result.providerCode).toBe("wechat_pay");
+    });
+
     it("accepts wechat_pay config using deprecated certificateSerialNo alias for merchant serial", () => {
       const result = upsertPaymentProviderConfigSchema.parse({
         providerCode: "wechat_pay",
@@ -222,6 +250,26 @@ describe("shared API contract", () => {
           },
         }),
       ).toThrow();
+    });
+
+    it("rejects enabled wechat_pay payment_code config missing V2 credentials", () => {
+      expect(() =>
+        upsertPaymentProviderConfigSchema.parse({
+          providerCode: "wechat_pay",
+          merchantNo: "1900000109",
+          appId: "wx1234567890abcdef",
+          publicConfigJson: {
+            merchantCertificateSerialNo: "MERCHANT_CERT_SERIAL",
+            platformCertificateSerialNo: "PLATFORM_CERT_SERIAL",
+            paymentCodeEnabled: true,
+          },
+          sensitiveConfigJson: {
+            apiV3Key: "0123456789abcdef0123456789abcdef",
+            privateKeyPem: "dev-key",
+            platformPublicKeyPem: "dev-pub",
+          },
+        }),
+      ).toThrow("wechat_pay payment_code requires apiV2Key");
     });
 
     it("accepts alipay certificate mode sandbox config", () => {
@@ -333,6 +381,60 @@ describe("shared API contract", () => {
       ).toThrow(
         "qr_code payment method requires alipay or wechat_pay provider",
       );
+    });
+
+    it("accepts payment_code with alipay provider", () => {
+      const result = createMachineOrderSchema.parse({
+        machineCode: "M001",
+        items: [
+          { inventoryId: "550e8400-e29b-41d4-a716-446655440000", quantity: 1 },
+        ],
+        paymentMethod: "payment_code",
+        paymentProviderCode: "alipay",
+      });
+      expect(result.paymentMethod).toBe("payment_code");
+      expect(result.paymentProviderCode).toBe("alipay");
+    });
+
+    it("rejects payment_code with mock provider", () => {
+      expect(() =>
+        createMachineOrderSchema.parse({
+          machineCode: "M001",
+          items: [
+            {
+              inventoryId: "550e8400-e29b-41d4-a716-446655440000",
+              quantity: 1,
+            },
+          ],
+          paymentMethod: "payment_code",
+          paymentProviderCode: "mock",
+        }),
+      ).toThrow(
+        /payment_code payment method requires alipay or wechat_pay provider/,
+      );
+    });
+
+    it("parses payment_code submit and response schemas without leaking auth code", () => {
+      const submit = paymentCodeSubmitSchema.parse({
+        machineCode: "M001",
+        authCode: "28763443825664394",
+        idempotencyKey: "scan-20260524-0001",
+        source: "tauri_scanner",
+        scannerHealth: { online: true, adapter: "serial_text" },
+      });
+      expect(submit.source).toBe("tauri_scanner");
+
+      const response = paymentCodeSubmitResponseSchema.parse({
+        orderNo: "ORD202605240001",
+        paymentNo: "PAY202605240001",
+        attemptNo: 1,
+        status: "user_confirming",
+        nextAction: "wait_payment",
+        message: "请在手机上确认支付",
+        canRetry: false,
+        serverTime: "2026-05-24T10:00:00.000Z",
+      });
+      expect(JSON.stringify(response)).not.toContain("28763443825664394");
     });
   });
 
@@ -460,6 +562,10 @@ describe("shared API contract", () => {
           refundFailedCount: 0,
           refundProcessingOverdueCount: 0,
           certificateExpiringCount: 0,
+          paymentCodeUnknownCount: 0,
+          paymentCodeReverseFailedCount: 0,
+          paymentCodeDuplicateRejectedCount: 0,
+          scannerOfflineMachineCount: 0,
         }),
       ).toThrow();
     });
@@ -471,6 +577,7 @@ describe("shared API contract", () => {
         status: "ready",
         availableProviders: [
           {
+            optionKey: "qr_code:alipay",
             providerCode: "alipay",
             method: "qr_code",
             displayName: "支付宝",
@@ -483,6 +590,37 @@ describe("shared API contract", () => {
       });
       expect(result.status).toBe("ready");
       expect(result.availableProviders).toHaveLength(1);
+    });
+
+    it("paymentMachinePreflightSchema accepts payment_code options", () => {
+      const result = paymentMachinePreflightSchema.parse({
+        machineId: "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
+        machineCode: "M001",
+        status: "ready",
+        availableProviders: [
+          {
+            optionKey: "payment_code:wechat_pay",
+            providerCode: "wechat_pay",
+            method: "payment_code",
+            displayName: "微信付款码",
+            description: "请出示微信付款码并靠近扫码窗口",
+            icon: "wechat",
+          },
+        ],
+        checks: [],
+        checkedAt: "2026-05-06T10:00:00.000Z",
+      });
+      expect(result.availableProviders[0]?.method).toBe("payment_code");
+    });
+
+    it("parses payment_code attempt query schema", () => {
+      const result = paymentCodeAttemptQuerySchema.parse({
+        orderNo: "ORD202605240001",
+        providerCode: "alipay",
+        status: "manual_handling",
+        manualOnly: true,
+      });
+      expect(result.manualOnly).toBe(true);
     });
   });
 });

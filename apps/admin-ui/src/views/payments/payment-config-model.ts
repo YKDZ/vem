@@ -8,6 +8,10 @@ export type ProviderConfigForm = {
   appId: string;
   qrExpiresMinutes: number;
   timeoutCompensationSeconds: number;
+  paymentCodeEnabled: boolean;
+  paymentCodePollIntervalSeconds: number;
+  paymentCodeMaxConfirmSeconds: number;
+  paymentCodeReverseDelaySeconds: number;
   certificateSerialNo: string;
   merchantCertificateSerialNo: string;
   platformCertificateSerialNo: string;
@@ -15,9 +19,14 @@ export type ProviderConfigForm = {
   gatewayUrl: string;
   keyType: "PKCS8" | "PKCS1";
   mode: "direct_merchant" | "sandbox" | "production";
+  storeId: string;
+  terminalId: string;
   apiV3Key: string;
+  apiV2Key: string;
   privateKeyPem: string;
   platformPublicKeyPem: string;
+  merchantApiCertPem: string;
+  merchantApiKeyPem: string;
   appCertPem: string;
   alipayPublicCertPem: string;
   alipayRootCertPem: string;
@@ -34,6 +43,10 @@ export function createDefaultProviderConfigForm(
     appId: "",
     qrExpiresMinutes: 15,
     timeoutCompensationSeconds: 120,
+    paymentCodeEnabled: false,
+    paymentCodePollIntervalSeconds: 3,
+    paymentCodeMaxConfirmSeconds: 30,
+    paymentCodeReverseDelaySeconds: 0,
     certificateSerialNo: "",
     merchantCertificateSerialNo: "",
     platformCertificateSerialNo: "",
@@ -44,9 +57,14 @@ export function createDefaultProviderConfigForm(
         : "",
     keyType: "PKCS8",
     mode: providerCode === "wechat_pay" ? "direct_merchant" : "sandbox",
+    storeId: "",
+    terminalId: "",
     apiV3Key: "",
+    apiV2Key: "",
     privateKeyPem: "",
     platformPublicKeyPem: "",
+    merchantApiCertPem: "",
+    merchantApiKeyPem: "",
     appCertPem: "",
     alipayPublicCertPem: "",
     alipayRootCertPem: "",
@@ -75,6 +93,10 @@ export function buildProviderConfigPayload(form: ProviderConfigForm): {
   const publicConfigJson: Record<string, unknown> = {
     qrExpiresMinutes: form.qrExpiresMinutes,
     timeoutCompensationSeconds: form.timeoutCompensationSeconds,
+    paymentCodeEnabled: form.paymentCodeEnabled,
+    paymentCodePollIntervalSeconds: form.paymentCodePollIntervalSeconds,
+    paymentCodeMaxConfirmSeconds: form.paymentCodeMaxConfirmSeconds,
+    paymentCodeReverseDelaySeconds: form.paymentCodeReverseDelaySeconds,
   };
   const sensitiveConfigJson: Record<string, string | number | boolean | null> =
     {};
@@ -86,6 +108,7 @@ export function buildProviderConfigPayload(form: ProviderConfigForm): {
     publicConfigJson["platformCertificateSerialNo"] =
       form.platformCertificateSerialNo;
     addIfFilled(sensitiveConfigJson, "apiV3Key", form.apiV3Key);
+    addIfFilled(sensitiveConfigJson, "apiV2Key", form.apiV2Key);
     addIfFilled(sensitiveConfigJson, "privateKeyPem", form.privateKeyPem);
     addIfFilled(
       sensitiveConfigJson,
@@ -97,10 +120,22 @@ export function buildProviderConfigPayload(form: ProviderConfigForm): {
       "platformPublicKeyPem",
       form.platformPublicKeyPem,
     );
+    addIfFilled(
+      sensitiveConfigJson,
+      "merchantApiCertPem",
+      form.merchantApiCertPem,
+    );
+    addIfFilled(
+      sensitiveConfigJson,
+      "merchantApiKeyPem",
+      form.merchantApiKeyPem,
+    );
   } else {
     publicConfigJson["mode"] = form.mode;
     publicConfigJson["gatewayUrl"] = form.gatewayUrl;
     publicConfigJson["keyType"] = form.keyType;
+    publicConfigJson["storeId"] = form.storeId || undefined;
+    publicConfigJson["terminalId"] = form.terminalId || undefined;
     addIfFilled(sensitiveConfigJson, "privateKeyPem", form.privateKeyPem);
     addIfFilled(sensitiveConfigJson, "appCertPem", form.appCertPem);
     addIfFilled(

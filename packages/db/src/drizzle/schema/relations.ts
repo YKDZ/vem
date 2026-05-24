@@ -17,6 +17,7 @@ import {
   orderItems,
   orders,
   orderStatusEvents,
+  paymentCodeAttempts,
   paymentEvents,
   paymentProviderConfigs,
   paymentProviders,
@@ -54,6 +55,7 @@ export const relations = defineRelations(
     notificationTargets,
     paymentReconciliationAttempts,
     paymentWebhookAttempts,
+    paymentCodeAttempts,
     refundEvents,
     refundReconciliationAttempts,
     orderItems,
@@ -207,6 +209,7 @@ export const relations = defineRelations(
       items: r.many.orderItems(),
       statusEvents: r.many.orderStatusEvents(),
       payments: r.many.payments(),
+      paymentCodeAttempts: r.many.paymentCodeAttempts(),
       vendingCommands: r.many.vendingCommands(),
       inventoryReservations: r.many.inventoryReservations(),
     },
@@ -251,6 +254,7 @@ export const relations = defineRelations(
         from: r.payments.payerSnapshotId,
         to: r.paymentUserSnapshots.id,
       }),
+      paymentCodeAttempts: r.many.paymentCodeAttempts(),
       events: r.many.paymentEvents(),
       refunds: r.many.refunds(),
       webhookAttempts: r.many.paymentWebhookAttempts(),
@@ -262,6 +266,7 @@ export const relations = defineRelations(
     paymentProviders: {
       configs: r.many.paymentProviderConfigs(),
       payments: r.many.payments(),
+      paymentCodeAttempts: r.many.paymentCodeAttempts(),
       events: r.many.paymentEvents(),
       webhookAttempts: r.many.paymentWebhookAttempts(),
       reconciliationAttempts: r.many.paymentReconciliationAttempts(),
@@ -276,6 +281,25 @@ export const relations = defineRelations(
       machine: r.one.machines({
         from: r.paymentProviderConfigs.machineId,
         to: r.machines.id,
+      }),
+      paymentCodeAttempts: r.many.paymentCodeAttempts(),
+    },
+    paymentCodeAttempts: {
+      payment: r.one.payments({
+        from: r.paymentCodeAttempts.paymentId,
+        to: r.payments.id,
+      }),
+      order: r.one.orders({
+        from: r.paymentCodeAttempts.orderId,
+        to: r.orders.id,
+      }),
+      provider: r.one.paymentProviders({
+        from: r.paymentCodeAttempts.providerId,
+        to: r.paymentProviders.id,
+      }),
+      providerConfig: r.one.paymentProviderConfigs({
+        from: r.paymentCodeAttempts.paymentProviderConfigId,
+        to: r.paymentProviderConfigs.id,
       }),
     },
     paymentEvents: {

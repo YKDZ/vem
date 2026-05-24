@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import {
+  paymentCodeAttemptStatusSchema,
   paymentProviderStatusSchema,
   paymentProviderTypeSchema,
   paymentStatusSchema,
@@ -56,21 +57,32 @@ const paymentTimingConfigSchema = z.object({
   timeoutCompensationSeconds: z.int().min(0).max(600).default(120),
 });
 
+const paymentCodeTimingConfigSchema = z.object({
+  paymentCodeEnabled: z.boolean().default(false),
+  paymentCodePollIntervalSeconds: z.int().min(1).max(10).default(3),
+  paymentCodeMaxConfirmSeconds: z.int().min(10).max(120).default(30),
+  paymentCodeReverseDelaySeconds: z.int().min(0).max(30).default(0),
+});
+
 export const paymentProviderConfigScopeSchema = z.object({
   providerCode: z.enum(["wechat_pay", "alipay"]),
   machineId: z.uuid().nullable().optional(),
   status: paymentProviderStatusSchema.default("enabled"),
 });
 
-export const wechatPayPublicConfigSchema = paymentTimingConfigSchema.extend({
-  mode: z.literal("direct_merchant").default("direct_merchant"),
-  /** 商户 API 证书序列号，用于 Authorization serial_no 请求签名 */
-  merchantCertificateSerialNo: z.string().min(1).max(128).optional(),
-  /** @deprecated 旧别名，与 merchantCertificateSerialNo 等效；新配置请使用 merchantCertificateSerialNo */
-  certificateSerialNo: z.string().min(1).max(128).optional(),
-  /** 微信支付平台证书/公钥序列号，用于匹配 wechatpay-serial 响应/回调头 */
-  platformCertificateSerialNo: z.string().min(1).max(128).optional(),
-});
+export const wechatPayPublicConfigSchema = paymentTimingConfigSchema
+  .extend(paymentCodeTimingConfigSchema.shape)
+  .extend({
+    mode: z.literal("direct_merchant").default("direct_merchant"),
+    /** 商户 API 证书序列号，用于 Authorization serial_no 请求签名 */
+    merchantCertificateSerialNo: z.string().min(1).max(128).optional(),
+    /** @deprecated 旧别名，与 merchantCertificateSerialNo 等效；新配置请使用 merchantCertificateSerialNo */
+    certificateSerialNo: z.string().min(1).max(128).optional(),
+    /** 微信支付平台证书/公钥序列号，用于匹配 wechatpay-serial 响应/回调头 */
+    platformCertificateSerialNo: z.string().min(1).max(128).optional(),
+    paymentCodeSignType: z.enum(["MD5", "HMAC-SHA256"]).default("HMAC-SHA256"),
+    paymentCodeDeviceInfo: z.string().min(1).max(32).optional(),
+  });
 
 export const wechatPaySensitiveConfigSchema = z.object({
   apiV3Key: z.string().min(32).max(128).optional(),
@@ -79,15 +91,22 @@ export const wechatPaySensitiveConfigSchema = z.object({
   platformCertificatePem: z.string().min(1).optional(),
   /** 微信支付平台公钥 PEM（兼容字段），无法判断证书有效期 */
   platformPublicKeyPem: z.string().min(1).optional(),
+  apiV2Key: z.string().min(32).max(128).optional(),
+  merchantApiCertPem: z.string().min(1).optional(),
+  merchantApiKeyPem: z.string().min(1).optional(),
 });
 
-export const alipayPublicConfigSchema = paymentTimingConfigSchema.extend({
-  mode: z.enum(["sandbox", "production"]).default("sandbox"),
-  gatewayUrl: z
-    .url()
-    .default("https://openapi-sandbox.dl.alipaydev.com/gateway.do"),
-  keyType: z.enum(["PKCS8", "PKCS1"]).default("PKCS8"),
-});
+export const alipayPublicConfigSchema = paymentTimingConfigSchema
+  .extend(paymentCodeTimingConfigSchema.shape)
+  .extend({
+    mode: z.enum(["sandbox", "production"]).default("sandbox"),
+    gatewayUrl: z
+      .url()
+      .default("https://openapi-sandbox.dl.alipaydev.com/gateway.do"),
+    keyType: z.enum(["PKCS8", "PKCS1"]).default("PKCS8"),
+    storeId: z.string().min(1).max(32).optional(),
+    terminalId: z.string().min(1).max(32).optional(),
+  });
 
 export const alipaySensitiveConfigSchema = z.object({
   privateKeyPem: z.string().min(1).optional(),
@@ -198,6 +217,33 @@ export const upsertPaymentProviderConfigSchema =
             message: "wechat_pay public config is invalid",
           });
         }
+
+        const paymentCodeEnabled = pub["paymentCodeEnabled"] === true;
+        if (paymentCodeEnabled) {
+          if (
+            typeof sensitive["apiV2Key"] !== "string" ||
+            sensitive["apiV2Key"].length < 32
+          ) {
+            ctx.addIssue({
+              code: "custom",
+              path: ["sensitiveConfigJson", "apiV2Key"],
+              message: "wechat_pay payment_code requires apiV2Key",
+            });
+          }
+          if (
+            typeof sensitive["merchantApiCertPem"] !== "string" ||
+            sensitive["merchantApiCertPem"].length === 0 ||
+            typeof sensitive["merchantApiKeyPem"] !== "string" ||
+            sensitive["merchantApiKeyPem"].length === 0
+          ) {
+            ctx.addIssue({
+              code: "custom",
+              path: ["sensitiveConfigJson"],
+              message:
+                "wechat_pay payment_code requires merchantApiCertPem and merchantApiKeyPem for reverse/refund",
+            });
+          }
+        }
       }
       if (value.providerCode === "alipay") {
         const result = alipayPublicConfigSchema
@@ -268,6 +314,20 @@ export const refundQuerySchema = z.object({
   createdTo: z.iso.datetime().optional(),
 });
 
+export const paymentCodeAttemptQuerySchema = z.object({
+  orderNo: z.string().max(64).optional(),
+  paymentNo: z.string().max(64).optional(),
+  providerCode: z.enum(["wechat_pay", "alipay"]).optional(),
+  status: paymentCodeAttemptStatusSchema.optional(),
+  manualOnly: z.coerce.boolean().optional(),
+  createdFrom: z.iso.datetime().optional(),
+  createdTo: z.iso.datetime().optional(),
+});
+
+export const paymentCodeAttemptAdminActionSchema = z.object({
+  reason: z.string().min(1).max(256),
+});
+
 // ---- Payment Ops / Readiness / Preflight -----------------------------------
 
 export const paymentOpsCheckSeveritySchema = z.enum([
@@ -303,6 +363,10 @@ export const paymentOpsMetricsSchema = z.object({
   refundFailedCount: z.int().nonnegative(),
   refundProcessingOverdueCount: z.int().nonnegative(),
   certificateExpiringCount: z.int().nonnegative(),
+  paymentCodeUnknownCount: z.int().nonnegative(),
+  paymentCodeReverseFailedCount: z.int().nonnegative(),
+  paymentCodeDuplicateRejectedCount: z.int().nonnegative(),
+  scannerOfflineMachineCount: z.int().nonnegative(),
 });
 
 export const paymentMachinePreflightSchema = z.object({

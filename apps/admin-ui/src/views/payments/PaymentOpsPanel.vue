@@ -90,6 +90,30 @@ onMounted(() => {
           "
         />
       </a-col>
+      <a-col :span="6">
+        <a-statistic
+          title="付款码未知结果"
+          :value="metrics.paymentCodeUnknownCount"
+        />
+      </a-col>
+      <a-col :span="6">
+        <a-statistic
+          title="付款码撤销失败"
+          :value="metrics.paymentCodeReverseFailedCount"
+        />
+      </a-col>
+      <a-col :span="6">
+        <a-statistic
+          title="重复扫码拒绝"
+          :value="metrics.paymentCodeDuplicateRejectedCount"
+        />
+      </a-col>
+      <a-col :span="6">
+        <a-statistic
+          title="扫码模块离线机器"
+          :value="metrics.scannerOfflineMachineCount"
+        />
+      </a-col>
     </a-row>
 
     <a-table
@@ -157,7 +181,7 @@ onMounted(() => {
             ? '灰度机器可启用真实支付'
             : '灰度机器预检阻塞'
         "
-        :description="`机器：${preflight.machineCode}，可用渠道：${preflight.availableProviders.map((item) => item.providerCode).join(', ') || '无'}`"
+        :description="`机器：${preflight.machineCode}，可用渠道：${preflight.availableProviders.map((item) => `${item.method}/${item.providerCode}`).join(', ') || '无'}`"
       />
     </a-card>
   </a-space>

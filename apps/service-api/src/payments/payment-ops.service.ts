@@ -11,6 +11,8 @@ import {
   count,
   eq,
   machines,
+  paymentCodeAttempts,
+  paymentEvents,
   paymentProviderConfigs,
   paymentProviders,
   paymentReconciliationAttempts,
@@ -98,6 +100,24 @@ export class PaymentOpsService {
       .from(refunds)
       .where(sql`${refunds.createdAt} >= ${from}`);
 
+    const [paymentCodeTotals] = await this.db
+      .select({
+        unknown: sql<number>`count(*) filter (where ${paymentCodeAttempts.status} in ('unknown', 'manual_handling'))`,
+        reverseFailed: sql<number>`count(*) filter (where ${paymentCodeAttempts.status} = 'manual_handling' or ${paymentCodeAttempts.failureCode} like '%REVERSE%')`,
+      })
+      .from(paymentCodeAttempts)
+      .where(sql`${paymentCodeAttempts.createdAt} >= ${from}`);
+
+    const [paymentCodeDuplicateRejected] = await this.db
+      .select({ total: count() })
+      .from(paymentEvents)
+      .where(
+        and(
+          sql`${paymentEvents.createdAt} >= ${from}`,
+          eq(paymentEvents.eventType, "payment_code.duplicate_rejected"),
+        ),
+      );
+
     const paymentTotalCount = Number(paymentTotals.total);
     const paymentFailedCount = Number(paymentTotals.failed);
 
@@ -115,6 +135,12 @@ export class PaymentOpsService {
       refundProcessingOverdueCount: Number(refundTotals.overdue),
       certificateExpiringCount:
         await this.countExpiringCertificates(measuredAt),
+      paymentCodeUnknownCount: Number(paymentCodeTotals.unknown),
+      paymentCodeReverseFailedCount: Number(paymentCodeTotals.reverseFailed),
+      paymentCodeDuplicateRejectedCount: Number(
+        paymentCodeDuplicateRejected.total,
+      ),
+      scannerOfflineMachineCount: 0,
     };
   }
 
@@ -174,10 +200,25 @@ export class PaymentOpsService {
       },
     ];
 
+    if (options.options.some((item) => item.method === "payment_code")) {
+      checks.push({
+        code: "payment_code.scanner_health_not_reported",
+        severity: "warning",
+        passed: false,
+        message:
+          "付款码支付已启用，但服务端尚未收到扫码模块健康证据；二维码支付不受影响",
+        evidence: { method: "payment_code", machineId },
+      });
+    }
+
+    const criticalFailed = checks.some(
+      (check) => check.severity === "critical" && !check.passed,
+    );
+
     return {
       machineId: machine.id,
       machineCode: machine.code,
-      status: checks.every((check) => check.passed) ? "ready" : "blocked",
+      status: criticalFailed ? "blocked" : "ready",
       availableProviders: options.options,
       checks,
       checkedAt: new Date().toISOString(),

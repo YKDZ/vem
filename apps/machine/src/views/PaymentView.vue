@@ -1,10 +1,17 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted } from "vue";
+import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useRouter } from "vue-router";
 
 import PaymentQrCode from "@/components/PaymentQrCode.vue";
 import { shouldShowMockPaymentControls } from "@/config/runtime-flags";
 import KioskLayout from "@/layouts/KioskLayout.vue";
+import {
+  listenPaymentCodeScanned,
+  scannerSelfCheck,
+  startScanner,
+  type PaymentCodeScannedEvent,
+  type ScannerSelfCheckResult,
+} from "@/native/scanner";
 import { resultKindFromNextAction, useCheckoutStore } from "@/stores/checkout";
 import { useMachineStore } from "@/stores/machine";
 import {
@@ -20,6 +27,7 @@ const machineStore = useMachineStore();
 
 let pollTimer: number | undefined;
 let clockTimer: number | undefined;
+let unlistenScanner: (() => void) | undefined;
 
 const order = computed(() => checkoutStore.currentOrder);
 const status = computed(() => checkoutStore.status);
@@ -27,6 +35,11 @@ const remainingText = computed(() =>
   formatCountdown(checkoutStore.remainingSeconds),
 );
 const expired = computed(() => checkoutStore.remainingSeconds <= 0);
+const isPaymentCode = computed(
+  () => status.value?.payment.method === "payment_code",
+);
+const canUseDevScan = import.meta.env.DEV;
+const scannerHealth = ref<ScannerSelfCheckResult | null>(null);
 
 const activeProviderCode = computed(
   () => checkoutStore.activePaymentProviderCode,
@@ -74,6 +87,26 @@ async function refreshStatus(): Promise<void> {
   await routeByStatus();
 }
 
+async function handleScannedCode(
+  payload: PaymentCodeScannedEvent,
+): Promise<void> {
+  checkoutStore.paymentCodeLastMasked = payload.maskedCode;
+  await checkoutStore.submitScannedPaymentCode(
+    machineStore.config,
+    payload.authCode,
+    "tauri_scanner",
+    scannerHealth.value
+      ? {
+          online: scannerHealth.value.online,
+          adapter: scannerHealth.value.adapter,
+          port: scannerHealth.value.port ?? null,
+          message: scannerHealth.value.message,
+        }
+      : undefined,
+  );
+  await routeByStatus();
+}
+
 async function simulateSuccess(): Promise<void> {
   await checkoutStore.markMockSucceeded(machineStore.config);
   await routeByStatus();
@@ -90,6 +123,13 @@ onMounted(async () => {
     return;
   }
   await refreshStatus();
+  if (isPaymentCode.value) {
+    scannerHealth.value = await scannerSelfCheck();
+    await startScanner();
+    unlistenScanner = await listenPaymentCodeScanned((payload) => {
+      void handleScannedCode(payload);
+    });
+  }
   pollTimer = window.setInterval(() => {
     void refreshStatus();
   }, 2_000);
@@ -101,6 +141,7 @@ onMounted(async () => {
 onUnmounted(() => {
   if (pollTimer) window.clearInterval(pollTimer);
   if (clockTimer) window.clearInterval(clockTimer);
+  unlistenScanner?.();
 });
 </script>
 
@@ -127,10 +168,50 @@ onUnmounted(() => {
 
         <div class="mt-6 grid gap-5">
           <PaymentQrCode
+            v-if="!isPaymentCode"
             :value="order.paymentUrl"
             :blocked="qrBlocked"
             :overlay-text="qrOverlayText"
           />
+          <div
+            v-else
+            class="rounded-4xl border border-emerald-300/30 bg-emerald-400/10 p-8 text-center"
+          >
+            <p class="text-sm tracking-[0.3em] text-emerald-100 uppercase">
+              PAYMENT CODE
+            </p>
+            <h3 class="mt-3 text-3xl font-black">请打开付款码并靠近扫码窗口</h3>
+            <p class="mt-3 text-slate-200">
+              系统只会短暂读取付款码用于本次 HTTPS 扣款，不会保存明文。
+            </p>
+            <div class="mt-6 rounded-3xl bg-slate-950/45 p-5">
+              <p class="text-slate-300">扫码模块</p>
+              <p
+                class="mt-2 text-xl font-black"
+                :class="
+                  scannerHealth?.online ? 'text-emerald-200' : 'text-amber-200'
+                "
+              >
+                {{ scannerHealth?.message ?? "正在检测扫码模块" }}
+              </p>
+              <p
+                v-if="checkoutStore.paymentCodeLastMasked"
+                class="mt-3 text-slate-300"
+              >
+                已读取：{{ checkoutStore.paymentCodeLastMasked }}
+              </p>
+              <p class="mt-3 text-sky-200">
+                {{ checkoutStore.paymentCodeMessage ?? "等待扫码" }}
+              </p>
+              <RouterLink
+                v-if="canUseDevScan"
+                class="mt-4 inline-flex rounded-2xl border border-white/15 px-4 py-2 text-sm text-white"
+                to="/dev/payment-code-scan"
+              >
+                开发环境：手动模拟扫码
+              </RouterLink>
+            </div>
+          </div>
           <div class="rounded-3xl bg-slate-950/45 p-5">
             <div class="flex items-center justify-between">
               <span class="text-slate-300">应付金额</span>

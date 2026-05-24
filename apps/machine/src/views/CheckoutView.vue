@@ -28,6 +28,9 @@ const paymentHint = computed(() => {
   if (!selected) return null;
   if (selected.providerCode === "mock")
     return "本地开发模式可在支付页使用模拟按钮。";
+  if (selected.method === "payment_code") {
+    return "下一步请出示付款码并靠近扫码窗口完成支付。";
+  }
   return "下一步将展示所选渠道二维码，请使用对应 App 扫码支付。";
 });
 
@@ -66,7 +69,7 @@ async function submitOrder(): Promise<void> {
       </button>
 
       <div
-        class="mt-5 rounded-[2rem] border border-white/10 bg-white/10 p-6 shadow-2xl"
+        class="mt-5 rounded-4xl border border-white/10 bg-white/10 p-6 shadow-2xl"
       >
         <p class="text-sm tracking-[0.35em] text-sky-200 uppercase">CHECKOUT</p>
         <h2 class="mt-2 text-4xl font-black">确认购买</h2>
@@ -105,22 +108,26 @@ async function submitOrder(): Promise<void> {
           >
             <button
               v-for="option in checkoutStore.paymentOptions"
-              :key="option.providerCode"
+              :key="option.optionKey"
               class="kiosk-touch-target rounded-3xl border px-5 py-4 text-left"
               :class="
-                option.providerCode ===
-                checkoutStore.selectedPaymentProviderCode
+                option.optionKey === checkoutStore.selectedPaymentOptionKey
                   ? 'border-sky-300 bg-sky-300/20 text-white'
                   : 'border-white/15 bg-white/5 text-slate-200'
               "
               type="button"
-              @click="checkoutStore.selectPaymentProvider(option.providerCode)"
+              :disabled="option.disabled"
+              @click="checkoutStore.selectPaymentOption(option.optionKey)"
             >
               <div class="flex items-center justify-between gap-4">
                 <div>
                   <p class="text-xl font-black">{{ option.displayName }}</p>
                   <p class="mt-1 text-sm text-slate-300">
-                    {{ option.description }}
+                    {{
+                      option.disabled
+                        ? option.disabledReason
+                        : option.description
+                    }}
                   </p>
                 </div>
                 <span v-if="option.recommended" class="text-sm text-sky-100">
@@ -170,7 +177,13 @@ async function submitOrder(): Promise<void> {
         :disabled="!canSubmit"
         @click="submitOrder"
       >
-        {{ checkoutStore.loading ? "正在创建订单..." : "确认并生成支付二维码" }}
+        {{
+          checkoutStore.loading
+            ? "正在创建订单..."
+            : checkoutStore.selectedPaymentOption?.method === "payment_code"
+              ? "确认并进入付款码支付"
+              : "确认并生成支付二维码"
+        }}
       </button>
     </section>
   </KioskLayout>

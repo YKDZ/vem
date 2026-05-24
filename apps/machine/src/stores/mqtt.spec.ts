@@ -36,6 +36,7 @@ vi.mock("@/stores/machine", () => ({
   })),
 }));
 
+import { machineConfigDefaults } from "@/config/machine-config";
 import * as mqttClient from "@/mqtt/client";
 import * as mqttRuntime from "@/native/mqtt-runtime";
 import * as nativeTauri from "@/native/tauri";
@@ -50,6 +51,7 @@ vi.stubGlobal("window", {
 });
 
 const mockConfig = {
+  ...machineConfigDefaults,
   machineCode: "M001",
   machineSecret: null,
   machineSecretConfigured: false,

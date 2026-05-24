@@ -34,6 +34,10 @@ function makeMetrics(
     refundFailedCount: 0,
     refundProcessingOverdueCount: 0,
     certificateExpiringCount: 0,
+    paymentCodeUnknownCount: 0,
+    paymentCodeReverseFailedCount: 0,
+    paymentCodeDuplicateRejectedCount: 0,
+    scannerOfflineMachineCount: 0,
     ...overrides,
   };
 }

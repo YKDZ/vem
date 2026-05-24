@@ -7,6 +7,13 @@ export const hardwareAdapterSchema = z.enum([
   "vendor_sdk",
 ]);
 
+export const scannerAdapterSchema = z.enum([
+  "disabled",
+  "serial_text",
+  "keyboard_hid",
+  "web_serial_dev",
+]);
+
 export const machineConfigSchema = z
   .object({
     machineCode: z.string().trim().min(1).max(64).nullable().default(null),
@@ -31,6 +38,16 @@ export const machineConfigSchema = z
     mqttUrl: z.string().trim().min(1).default("mqtt://localhost:1883"),
     hardwareAdapter: hardwareAdapterSchema.default("mock"),
     serialPortPath: z.string().trim().min(1).max(256).nullable().default(null),
+    scannerAdapter: scannerAdapterSchema.default("disabled"),
+    scannerSerialPortPath: z
+      .string()
+      .trim()
+      .min(1)
+      .max(256)
+      .nullable()
+      .default(null),
+    scannerBaudRate: z.int().min(1200).max(921600).default(9600),
+    scannerFrameSuffix: z.enum(["crlf", "lf", "cr", "none"]).default("crlf"),
     kioskMode: z.boolean().default(false),
   })
   .superRefine((data, ctx) => {
@@ -41,9 +58,18 @@ export const machineConfigSchema = z
         message: "serialPortPath is required when hardwareAdapter=serial",
       });
     }
+    if (data.scannerAdapter === "serial_text" && !data.scannerSerialPortPath) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["scannerSerialPortPath"],
+        message:
+          "scannerSerialPortPath is required when scannerAdapter=serial_text",
+      });
+    }
   });
 
 export type HardwareAdapter = z.infer<typeof hardwareAdapterSchema>;
+export type ScannerAdapter = z.infer<typeof scannerAdapterSchema>;
 export type MachineConfig = z.infer<typeof machineConfigSchema>;
 
 export const machineConfigDefaults: MachineConfig = machineConfigSchema.parse(
@@ -90,6 +116,10 @@ export function normalizeMachineConfig(input: unknown): MachineConfig {
     const trimmed = processed.serialPortPath.trim();
     processed.serialPortPath = trimmed.length > 0 ? trimmed : null;
   }
+  if (typeof processed.scannerSerialPortPath === "string") {
+    const trimmed = processed.scannerSerialPortPath.trim();
+    processed.scannerSerialPortPath = trimmed.length > 0 ? trimmed : null;
+  }
   const parsed = machineConfigSchema.parse(processed);
   const machineSecret = parsed.machineSecret?.trim() || null;
   const mqttSigningSecret = parsed.mqttSigningSecret?.trim() || null;
@@ -113,5 +143,6 @@ export function normalizeMachineConfig(input: unknown): MachineConfig {
     apiBaseUrl: parsed.apiBaseUrl.replace(/\/+$/, ""),
     mqttUrl: parsed.mqttUrl.trim(),
     serialPortPath: parsed.serialPortPath?.trim() || null,
+    scannerSerialPortPath: parsed.scannerSerialPortPath?.trim() || null,
   };
 }

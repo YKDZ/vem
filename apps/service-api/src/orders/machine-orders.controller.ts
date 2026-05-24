@@ -1,3 +1,5 @@
+import type { Request } from "express";
+
 import {
   Body,
   Controller,
@@ -6,12 +8,14 @@ import {
   Param,
   Post,
   Query,
+  Req,
   UseGuards,
 } from "@nestjs/common";
 import { ApiTags } from "@nestjs/swagger";
 import {
   createMachineOrderSchema,
   machineOrderStatusQuerySchema,
+  paymentCodeSubmitSchema,
 } from "@vem/shared";
 import { z } from "zod";
 
@@ -23,6 +27,7 @@ import {
   type AuthenticatedMachine,
 } from "../machine-auth/current-machine.decorator";
 import { MachineAuthGuard } from "../machine-auth/machine-auth.guard";
+import { PaymentCodeOrchestratorService } from "../payments/payment-code-orchestrator.service";
 import { PaymentsService } from "../payments/payments.service";
 import { OrdersService } from "./orders.service";
 
@@ -35,6 +40,7 @@ export class MachineOrdersController {
   constructor(
     private readonly ordersService: OrdersService,
     private readonly paymentsService: PaymentsService,
+    private readonly paymentCodeOrchestrator: PaymentCodeOrchestratorService,
     private readonly config: AppConfigService,
   ) {}
 
@@ -73,6 +79,33 @@ export class MachineOrdersController {
       query.machineCode === machine.code ? machine.code : "__forbidden__";
     return await this.ordersService.getMachineOrderStatus(orderNo, {
       machineCode,
+    });
+  }
+
+  @Public()
+  @UseGuards(MachineAuthGuard)
+  @Post(":orderNo/payment-code/submit")
+  async submitPaymentCode(
+    @CurrentMachine() machine: AuthenticatedMachine,
+    @Param("orderNo") orderNo: string,
+    @Body(new ZodValidationPipe(paymentCodeSubmitSchema))
+    body: z.infer<typeof paymentCodeSubmitSchema>,
+    @Req() req: Request,
+  ) {
+    const machineCode =
+      body.machineCode === machine.code ? machine.code : "__forbidden__";
+    const remoteIp =
+      (typeof req.headers["x-forwarded-for"] === "string"
+        ? req.headers["x-forwarded-for"].split(",")[0]?.trim()
+        : null) ??
+      req.ip ??
+      req.socket?.remoteAddress ??
+      null;
+    return await this.paymentCodeOrchestrator.submit({
+      ...body,
+      machineCode,
+      orderNo,
+      clientIp: remoteIp,
     });
   }
 

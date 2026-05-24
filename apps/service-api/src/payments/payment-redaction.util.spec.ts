@@ -4,6 +4,8 @@ import { describe, expect, it } from "vitest";
 import {
   buildRawBodyExcerpt,
   buildStoredEventPayload,
+  hashPaymentCode,
+  maskPaymentCode,
 } from "./payment-redaction.util";
 
 describe("payment redaction utils", () => {
@@ -25,6 +27,18 @@ describe("payment redaction utils", () => {
     expect(stored["payloadSha256"]).toMatch(/^[a-f0-9]{64}$/);
     expect(JSON.stringify(stored)).toContain("PAY001");
     expect(JSON.stringify(stored)).not.toContain("provider-signature");
+  });
+
+  it("masks and hashes payment auth codes without storing plaintext", () => {
+    const code = "28763443825664394";
+    expect(maskPaymentCode(code)).toBe("2876****4394");
+    expect(hashPaymentCode(code)).toMatch(/^[a-f0-9]{64}$/);
+    const stored = buildStoredEventPayload({
+      auth_code: code,
+      payment_code: code,
+    });
+    expect(JSON.stringify(stored)).not.toContain(code);
+    expect(JSON.stringify(stored)).toContain("[REDACTED");
   });
 
   it("scheduled reconciliation queries honor next_retry_at gates", () => {

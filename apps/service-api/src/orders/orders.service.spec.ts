@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { InventoryService } from "../inventory/inventory.service";
 import type { PaymentProviderConfigService } from "../payments/payment-provider-config.service";
 import type { PaymentProviderRegistry } from "../payments/payment-provider.registry";
+import type { PaymentsService } from "../payments/payments.service";
 import type { RefundsService } from "../refunds/refunds.service";
 
 import { OrdersService } from "./orders.service";
@@ -34,6 +35,7 @@ function makeService(overrides: {
   db?: ReturnType<typeof makeDb>;
   registry?: Partial<PaymentProviderRegistry>;
   configService?: Partial<PaymentProviderConfigService>;
+  paymentsService?: Partial<PaymentsService>;
 }) {
   const db = overrides.db ?? makeDb();
   const registry: PaymentProviderRegistry = {
@@ -64,6 +66,16 @@ function makeService(overrides: {
   const refundsService: RefundsService = {
     requestRefund: vi.fn().mockResolvedValue(undefined),
   } as unknown as RefundsService;
+  const paymentsServiceBase = {
+    reconcilePendingPaymentOnRead: vi
+      .fn()
+      .mockResolvedValue({ status: "pending", reconciled: false }),
+  };
+  const paymentsService = Object.assign(
+    {},
+    paymentsServiceBase,
+    overrides.paymentsService ?? {},
+  ) as unknown as PaymentsService;
 
   return new OrdersService(
     db as never,
@@ -71,6 +83,7 @@ function makeService(overrides: {
     registry,
     configService,
     refundsService,
+    paymentsService,
   );
 }
 
@@ -421,6 +434,57 @@ describe("OrdersService", () => {
 
       expect(insertedPaymentMethod).toBe("qr_code");
     });
+
+    it("creates payment_code order without calling provider.createPaymentIntent", async () => {
+      const db = makeOrdersDbForSuccessfulLocalDraft();
+      const createPaymentIntent = vi.fn();
+      const service = makeOrdersService({
+        db,
+        paymentProviderRegistry: {
+          get: vi.fn().mockReturnValue({ createPaymentIntent }),
+          has: vi.fn().mockReturnValue(true),
+        },
+      });
+
+      const result = await service.createMachineOrder({
+        machineCode: "M-001",
+        items: [{ inventoryId: "inv-001", quantity: 1 }],
+        paymentMethod: "payment_code",
+        paymentProviderCode: "alipay",
+      });
+
+      expect(createPaymentIntent).not.toHaveBeenCalled();
+      expect(result.paymentUrl).toBeNull();
+      expect(db.updatedPaymentStatus).toBe("pending");
+    });
+
+    it("rejects payment_code without a real provider before creating local draft", async () => {
+      const db = makeDb();
+      db.select.mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi
+            .fn()
+            .mockResolvedValue([
+              { id: "mach-1", code: "M001", status: "online" },
+            ]),
+        }),
+      });
+
+      const service = makeService({ db });
+      await expect(
+        service.createMachineOrder({
+          machineCode: "M001",
+          items: [
+            {
+              inventoryId: "550e8400-e29b-41d4-a716-446655440000",
+              quantity: 1,
+            },
+          ],
+          paymentMethod: "payment_code",
+        }),
+      ).rejects.toThrow(ConflictException);
+      expect(db.transaction).not.toHaveBeenCalled();
+    });
   });
 
   describe("listMachinePaymentOptions", () => {
@@ -537,6 +601,7 @@ function makeOrdersService(overrides: {
   inventoryService?: Partial<InventoryService>;
   paymentProviderRegistry?: Partial<PaymentProviderRegistry>;
   configService?: Partial<PaymentProviderConfigService>;
+  paymentsService?: Partial<PaymentsService>;
 }) {
   const db = overrides.db ?? makeOrdersDbForSuccessfulLocalDraft();
   const inventoryService: InventoryService = {
@@ -577,6 +642,16 @@ function makeOrdersService(overrides: {
   const refundsService: RefundsService = {
     requestRefund: vi.fn().mockResolvedValue(undefined),
   } as unknown as RefundsService;
+  const paymentsServiceBase = {
+    reconcilePendingPaymentOnRead: vi
+      .fn()
+      .mockResolvedValue({ status: "pending", reconciled: false }),
+  };
+  const paymentsService = Object.assign(
+    {},
+    paymentsServiceBase,
+    overrides.paymentsService ?? {},
+  ) as unknown as PaymentsService;
 
   return new OrdersService(
     db as never,
@@ -584,6 +659,7 @@ function makeOrdersService(overrides: {
     registry,
     configService,
     refundsService,
+    paymentsService,
   );
 }
 
@@ -910,6 +986,196 @@ describe("OrdersService (transaction boundary)", () => {
           providerTradeNo: null,
         }),
       );
+    });
+  });
+
+  describe("getMachineOrderStatus", () => {
+    it("tries immediate reconcile for pending qr_code and returns refreshed status", async () => {
+      const db = makeDb();
+      const reconcilePendingPaymentOnRead = vi
+        .fn()
+        .mockResolvedValue({ status: "succeeded", reconciled: true });
+      db.select
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              innerJoin: vi.fn().mockReturnValue({
+                innerJoin: vi.fn().mockReturnValue({
+                  where: vi.fn().mockResolvedValue([
+                    {
+                      orderId: "ord-1",
+                      orderNo: "ORD001",
+                      machineCode: "M001",
+                      orderStatus: "pending_payment",
+                      totalAmountCents: 300,
+                      paymentId: "pay-1",
+                      paymentNo: "PAY001",
+                      paymentMethod: "qr_code",
+                      paymentStatus: "pending",
+                      paymentUrl: "https://example.com/qr",
+                      paymentExpiresAt: null,
+                      paidAt: null,
+                      failedReason: null,
+                      paymentProviderCode: "alipay",
+                    },
+                  ]),
+                }),
+              }),
+            }),
+          }),
+        })
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              innerJoin: vi.fn().mockReturnValue({
+                innerJoin: vi.fn().mockReturnValue({
+                  where: vi.fn().mockResolvedValue([
+                    {
+                      orderId: "ord-1",
+                      orderNo: "ORD001",
+                      machineCode: "M001",
+                      orderStatus: "paid",
+                      totalAmountCents: 300,
+                      paymentId: "pay-1",
+                      paymentNo: "PAY001",
+                      paymentMethod: "qr_code",
+                      paymentStatus: "succeeded",
+                      paymentUrl: "https://example.com/qr",
+                      paymentExpiresAt: null,
+                      paidAt: new Date("2026-05-24T13:00:00.000Z"),
+                      failedReason: null,
+                      paymentProviderCode: "alipay",
+                    },
+                  ]),
+                }),
+              }),
+            }),
+          }),
+        })
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([]),
+              }),
+            }),
+          }),
+        })
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([]),
+              }),
+            }),
+          }),
+        })
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([]),
+              }),
+            }),
+          }),
+        });
+
+      const service = makeService({
+        db,
+        paymentsService: { reconcilePendingPaymentOnRead },
+      });
+      const result = await service.getMachineOrderStatus("ORD001", {
+        machineCode: "M001",
+      });
+
+      expect(reconcilePendingPaymentOnRead).toHaveBeenCalledWith("pay-1");
+      expect(result.payment.status).toBe("succeeded");
+      expect(result.nextAction).toBe("dispensing");
+    });
+
+    it("includes paymentCodeAttempt summary without plaintext auth code", async () => {
+      const db = makeDb();
+      db.select
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              innerJoin: vi.fn().mockReturnValue({
+                innerJoin: vi.fn().mockReturnValue({
+                  where: vi.fn().mockResolvedValue([
+                    {
+                      orderId: "ord-1",
+                      orderNo: "ORD001",
+                      machineCode: "M001",
+                      orderStatus: "pending_payment",
+                      totalAmountCents: 300,
+                      paymentId: "pay-1",
+                      paymentNo: "PAY001",
+                      paymentMethod: "payment_code",
+                      paymentStatus: "pending",
+                      paymentUrl: null,
+                      paymentExpiresAt: null,
+                      paidAt: null,
+                      failedReason: null,
+                      paymentProviderCode: "alipay",
+                    },
+                  ]),
+                }),
+              }),
+            }),
+          }),
+        })
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([]),
+              }),
+            }),
+          }),
+        })
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([]),
+              }),
+            }),
+          }),
+        })
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([
+                  {
+                    attemptNo: 1,
+                    status: "user_confirming",
+                    maskedAuthCode: "2876****4394",
+                    source: "tauri_scanner",
+                    idempotencyKey: "idem-1",
+                    submittedAt: new Date("2026-05-24T10:00:00.000Z"),
+                    lastCheckedAt: new Date("2026-05-24T10:00:02.000Z"),
+                    failureMessage: null,
+                    isActive: true,
+                  },
+                ]),
+              }),
+            }),
+          }),
+        });
+
+      const service = makeService({ db });
+      const result = await service.getMachineOrderStatus("ORD001", {
+        machineCode: "M001",
+      });
+
+      expect(result.paymentCodeAttempt).toMatchObject({
+        attemptNo: 1,
+        status: "user_confirming",
+        maskedAuthCode: "2876****4394",
+        canRetry: false,
+      });
+      expect(JSON.stringify(result)).not.toContain("28763443825664394");
     });
   });
 });

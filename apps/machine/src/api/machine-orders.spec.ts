@@ -6,6 +6,7 @@ import {
   createMachineOrder,
   getMachineOrderStatus,
   getMachinePaymentOptions,
+  submitPaymentCode,
 } from "./machine-orders";
 
 function createMockClient(overrides?: {
@@ -42,6 +43,7 @@ function createMockClient(overrides?: {
           failedReason: null,
           providerCode: "mock",
         },
+        paymentCodeAttempt: null,
         vending: null,
         refund: null,
         nextAction: "wait_payment",
@@ -135,14 +137,18 @@ describe("machine order api", () => {
       getResponse: {
         options: [
           {
+            optionKey: "qr_code:alipay",
             providerCode: "alipay",
             method: "qr_code",
             displayName: "支付宝",
             description: "请使用支付宝扫码支付",
             icon: "alipay",
+            disabled: false,
+            disabledReason: null,
             recommended: true,
           },
         ],
+        defaultOptionKey: "qr_code:alipay",
         defaultProviderCode: "alipay",
         serverTime: "2026-05-06T12:00:00.000Z",
       },
@@ -150,6 +156,7 @@ describe("machine order api", () => {
     const result = await getMachinePaymentOptions(client);
     expect(result.options).toHaveLength(1);
     expect(result.options[0]?.providerCode).toBe("alipay");
+    expect(result.defaultOptionKey).toBe("qr_code:alipay");
     expect(result.defaultProviderCode).toBe("alipay");
   });
 
@@ -158,22 +165,29 @@ describe("machine order api", () => {
       getResponse: {
         options: [
           {
+            optionKey: "qr_code:alipay",
             providerCode: "alipay",
             method: "qr_code",
             displayName: "支付宝",
             description: "请使用支付宝扫码支付",
             icon: "alipay",
+            disabled: false,
+            disabledReason: null,
             recommended: true,
           },
           {
+            optionKey: "qr_code:wechat_pay",
             providerCode: "wechat_pay",
             method: "qr_code",
             displayName: "微信支付",
             description: "请使用微信扫码支付",
             icon: "wechat",
+            disabled: false,
+            disabledReason: null,
             recommended: false,
           },
         ],
+        defaultOptionKey: "qr_code:alipay",
         defaultProviderCode: "alipay",
         serverTime: "2026-05-06T12:00:00.000Z",
       },
@@ -190,12 +204,59 @@ describe("machine order api", () => {
     const client = createMockClient({
       getResponse: {
         options: [],
+        defaultOptionKey: null,
         defaultProviderCode: null,
         serverTime: "2026-05-06T12:00:00.000Z",
       },
     });
     const result = await getMachinePaymentOptions(client);
     expect(result.options).toHaveLength(0);
+    expect(result.defaultOptionKey).toBeNull();
     expect(result.defaultProviderCode).toBeNull();
+  });
+
+  it("submits scanned payment code to the payment-code endpoint", async () => {
+    const client = createMockClient({
+      postResponse: {
+        orderNo: "ORD-3",
+        paymentNo: "PAY-3",
+        attemptNo: 1,
+        status: "user_confirming",
+        nextAction: "wait_payment",
+        message: "请在手机上确认支付",
+        canRetry: false,
+        serverTime: "2026-05-24T10:00:00.000Z",
+      },
+    });
+
+    const result = await submitPaymentCode(client, "ORD-3", {
+      machineCode: "M001",
+      authCode: "28763443825664394",
+      idempotencyKey: "idem-ord-3",
+      source: "tauri_scanner",
+    });
+
+    expect(result.status).toBe("user_confirming");
+    expect(client.lastPostBody).toEqual({
+      machineCode: "M001",
+      authCode: "28763443825664394",
+      idempotencyKey: "idem-ord-3",
+      source: "tauri_scanner",
+    });
+  });
+
+  it("does not leak authCode in response parse errors", async () => {
+    const client = createMockClient({
+      postResponse: {},
+    });
+
+    await expect(
+      submitPaymentCode(client, "ORD-4", {
+        machineCode: "M001",
+        authCode: "28763443825664394",
+        idempotencyKey: "idem-ord-4",
+        source: "browser_test",
+      }),
+    ).rejects.not.toThrow(/28763443825664394/);
   });
 });

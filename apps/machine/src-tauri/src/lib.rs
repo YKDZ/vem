@@ -1,12 +1,16 @@
 mod hardware;
 mod local_logs;
 mod native_mqtt;
+mod scanner;
 mod serial_protocol;
 
 use std::{
     fs,
     path::PathBuf,
-    sync::Arc,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -26,6 +30,24 @@ enum HardwareAdapterKind {
     VendorSdk,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ScannerAdapterKind {
+    Disabled,
+    SerialText,
+    KeyboardHid,
+    WebSerialDev,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ScannerFrameSuffix {
+    Crlf,
+    Lf,
+    Cr,
+    None,
+}
+
 /// Persisted to disk – no secrets.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -36,6 +58,10 @@ struct MachinePublicConfigFile {
     mqtt_username: Option<String>,
     hardware_adapter: HardwareAdapterKind,
     serial_port_path: Option<String>,
+    scanner_adapter: ScannerAdapterKind,
+    scanner_serial_port_path: Option<String>,
+    scanner_baud_rate: u32,
+    scanner_frame_suffix: ScannerFrameSuffix,
     kiosk_mode: bool,
 }
 
@@ -55,6 +81,10 @@ struct MachineConfig {
     mqtt_url: String,
     hardware_adapter: HardwareAdapterKind,
     serial_port_path: Option<String>,
+    scanner_adapter: ScannerAdapterKind,
+    scanner_serial_port_path: Option<String>,
+    scanner_baud_rate: u32,
+    scanner_frame_suffix: ScannerFrameSuffix,
     kiosk_mode: bool,
 }
 
@@ -128,6 +158,10 @@ fn default_public_config() -> MachinePublicConfigFile {
         mqtt_username: None,
         hardware_adapter: HardwareAdapterKind::Mock,
         serial_port_path: None,
+        scanner_adapter: ScannerAdapterKind::Disabled,
+        scanner_serial_port_path: None,
+        scanner_baud_rate: 9600,
+        scanner_frame_suffix: ScannerFrameSuffix::Crlf,
         kiosk_mode: false,
     }
 }
@@ -188,6 +222,10 @@ fn attach_secret_state(
         mqtt_url: public.mqtt_url,
         hardware_adapter: public.hardware_adapter,
         serial_port_path: public.serial_port_path,
+        scanner_adapter: public.scanner_adapter,
+        scanner_serial_port_path: public.scanner_serial_port_path,
+        scanner_baud_rate: public.scanner_baud_rate,
+        scanner_frame_suffix: public.scanner_frame_suffix,
         kiosk_mode: public.kiosk_mode,
     })
 }
@@ -235,6 +273,13 @@ fn normalize_config(config: MachineConfig) -> Result<MachineConfig, String> {
         .filter(|s| !s.is_empty())
         .map(str::to_string);
 
+    let scanner_serial_port_path = config
+        .scanner_serial_port_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+
     let api_base_url = config.api_base_url.trim().trim_end_matches('/').to_string();
     let mqtt_url = config.mqtt_url.trim().to_string();
 
@@ -247,6 +292,13 @@ fn normalize_config(config: MachineConfig) -> Result<MachineConfig, String> {
     if matches!(&config.hardware_adapter, HardwareAdapterKind::Serial) && serial_port_path.is_none()
     {
         return Err("serialPortPath is required when hardwareAdapter=serial".to_string());
+    }
+    if matches!(&config.scanner_adapter, ScannerAdapterKind::SerialText)
+        && scanner_serial_port_path.is_none()
+    {
+        return Err(
+            "scannerSerialPortPath is required when scannerAdapter=serial_text".to_string(),
+        );
     }
 
     Ok(MachineConfig {
@@ -263,6 +315,10 @@ fn normalize_config(config: MachineConfig) -> Result<MachineConfig, String> {
         mqtt_url,
         hardware_adapter: config.hardware_adapter,
         serial_port_path,
+        scanner_adapter: config.scanner_adapter,
+        scanner_serial_port_path,
+        scanner_baud_rate: config.scanner_baud_rate,
+        scanner_frame_suffix: config.scanner_frame_suffix,
         kiosk_mode: config.kiosk_mode,
     })
 }
@@ -299,6 +355,10 @@ fn save_machine_config(
         mqtt_username: normalized.mqtt_username.clone(),
         hardware_adapter: normalized.hardware_adapter.clone(),
         serial_port_path: normalized.serial_port_path.clone(),
+        scanner_adapter: normalized.scanner_adapter.clone(),
+        scanner_serial_port_path: normalized.scanner_serial_port_path.clone(),
+        scanner_baud_rate: normalized.scanner_baud_rate,
+        scanner_frame_suffix: normalized.scanner_frame_suffix.clone(),
         kiosk_mode: normalized.kiosk_mode,
     };
     let content = serde_json::to_string_pretty(&public)
@@ -386,6 +446,66 @@ async fn hardware_self_check(app: tauri::AppHandle) -> Result<HardwareSelfCheckR
 
 struct MqttRuntimeState {
     runtime: Option<Arc<NativeMqttRuntime>>,
+}
+
+#[derive(Default)]
+struct ScannerRuntimeState {
+    running: AtomicBool,
+}
+
+#[tauri::command]
+async fn scanner_self_check(
+    app: tauri::AppHandle,
+) -> Result<scanner::ScannerSelfCheckResult, String> {
+    let config = get_machine_config(app)?;
+    Ok(match config.scanner_adapter {
+        ScannerAdapterKind::SerialText => {
+            scanner::self_check_serial(config.scanner_serial_port_path, config.scanner_baud_rate)
+                .await
+        }
+        ScannerAdapterKind::Disabled => scanner::ScannerSelfCheckResult {
+            online: false,
+            adapter: "disabled".to_string(),
+            port: None,
+            message: "扫码模块未启用".to_string(),
+            checked_at_ms: now_ms()?,
+        },
+        ScannerAdapterKind::KeyboardHid => scanner::ScannerSelfCheckResult {
+            online: false,
+            adapter: "keyboard_hid".to_string(),
+            port: None,
+            message: "键盘 HID 扫码由浏览器 / 前端环境处理".to_string(),
+            checked_at_ms: now_ms()?,
+        },
+        ScannerAdapterKind::WebSerialDev => scanner::ScannerSelfCheckResult {
+            online: false,
+            adapter: "web_serial_dev".to_string(),
+            port: None,
+            message: "Web Serial 调试模式仅在浏览器开发页可用".to_string(),
+            checked_at_ms: now_ms()?,
+        },
+    })
+}
+
+#[tauri::command]
+async fn start_scanner(app: tauri::AppHandle) -> Result<(), String> {
+    let state = app.state::<ScannerRuntimeState>();
+    if state.running.swap(true, Ordering::SeqCst) {
+        return Ok(());
+    }
+    let config = get_machine_config(app.clone())?;
+    let Some(path) = config.scanner_serial_port_path else {
+        state.running.store(false, Ordering::SeqCst);
+        return Err("scannerSerialPortPath is required".to_string());
+    };
+    let baud_rate = config.scanner_baud_rate;
+    tokio::spawn(async move {
+        let _ = scanner::read_loop(app.clone(), path, baud_rate).await;
+        app.state::<ScannerRuntimeState>()
+            .running
+            .store(false, Ordering::SeqCst);
+    });
+    Ok(())
 }
 
 #[tauri::command]
@@ -503,11 +623,14 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(tokio::sync::Mutex::new(MqttRuntimeState { runtime: None }))
+        .manage(ScannerRuntimeState::default())
         .invoke_handler(tauri::generate_handler![
             get_machine_config,
             get_machine_runtime_config,
             save_machine_config,
             hardware_self_check,
+            scanner_self_check,
+            start_scanner,
             start_native_mqtt_runtime,
             stop_native_mqtt_runtime,
             native_mqtt_status,

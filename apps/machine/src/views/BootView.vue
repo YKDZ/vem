@@ -3,6 +3,7 @@ import { onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
 
 import KioskLayout from "@/layouts/KioskLayout.vue";
+import { scannerSelfCheck } from "@/native/scanner";
 import { useCatalogStore } from "@/stores/catalog";
 import { useConnectivityStore } from "@/stores/connectivity";
 import { useMachineStore } from "@/stores/machine";
@@ -40,6 +41,14 @@ onMounted(async () => {
 
   pushStep("执行硬件自检");
   await machineStore.runHardwareSelfCheck();
+
+  pushStep("执行扫码模块自检");
+  const scanner = await scannerSelfCheck();
+  pushStep(
+    scanner.online
+      ? `扫码模块就绪：${scanner.message}`
+      : `扫码模块告警：${scanner.message}`,
+  );
 
   pushStep("检查后端健康状态");
   await connectivityStore.checkBackend(machineStore.config);

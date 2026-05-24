@@ -209,6 +209,26 @@ export type Refund = {
   updatedAt: string;
 };
 
+export type PaymentCodeAttempt = {
+  id: string;
+  orderNo: string;
+  paymentNo: string;
+  providerCode: "wechat_pay" | "alipay";
+  attemptNo: number;
+  providerPaymentNo: string;
+  status: string;
+  authCodeMasked: string;
+  source: string;
+  failureCode: string | null;
+  failureMessage: string | null;
+  manualReason: string | null;
+  submittedAt: string | null;
+  lastCheckedAt: string | null;
+  reversedAt: string | null;
+  finishedAt: string | null;
+  createdAt: string;
+};
+
 export async function listWebhookAttempts(
   query?: Record<string, unknown>,
 ): Promise<PageResult<WebhookAttempt>> {
@@ -230,6 +250,28 @@ export async function listRefunds(
   query?: Record<string, unknown>,
 ): Promise<PageResult<Refund>> {
   return await get<PageResult<Refund>>("/payments/refunds", { params: query });
+}
+
+export async function listPaymentCodeAttempts(
+  query?: Record<string, unknown>,
+): Promise<PageResult<PaymentCodeAttempt>> {
+  return await get<PageResult<PaymentCodeAttempt>>(
+    "/payments/payment-code-attempts",
+    { params: query },
+  );
+}
+
+export async function queryPaymentCodeAttempt(id: string): Promise<void> {
+  await post<void>(`/payments/payment-code-attempts/${id}/query`);
+}
+
+export async function reversePaymentCodeAttempt(
+  id: string,
+  reason: string,
+): Promise<void> {
+  await post<void>(`/payments/payment-code-attempts/${id}/reverse`, {
+    reason,
+  });
 }
 
 export async function manualReconcile(paymentId: string): Promise<{
@@ -273,6 +315,10 @@ export type PaymentOpsMetrics = {
   refundFailedCount: number;
   refundProcessingOverdueCount: number;
   certificateExpiringCount: number;
+  paymentCodeUnknownCount: number;
+  paymentCodeReverseFailedCount: number;
+  paymentCodeDuplicateRejectedCount: number;
+  scannerOfflineMachineCount: number;
 };
 
 export type PaymentMachinePreflight = {
@@ -281,7 +327,7 @@ export type PaymentMachinePreflight = {
   status: "ready" | "blocked";
   availableProviders: Array<{
     providerCode: "mock" | "wechat_pay" | "alipay";
-    method: "mock" | "qr_code" | "face_pay";
+    method: "mock" | "qr_code" | "payment_code" | "face_pay";
     displayName: string;
     description: string;
     icon: "mock" | "wechat" | "alipay";

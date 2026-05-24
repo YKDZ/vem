@@ -1,5 +1,5 @@
 import { ConflictException, NotFoundException } from "@nestjs/common";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { encryptJson } from "../crypto/encrypted-json.util";
 import { PaymentConfigSecretService } from "./payment-config-secret.service";
@@ -17,6 +17,7 @@ function makeAppConfig(
   baseUrl = "http://localhost:3000/api/payments/webhooks",
 ) {
   return {
+    paymentMockEnabled: false,
     buildPaymentNotifyUrl: (providerCode: string) => {
       const rawBase = baseUrl.replace(/\/+$/, "");
       if (rawBase.endsWith("/api/payments/webhooks")) {
@@ -24,7 +25,7 @@ function makeAppConfig(
       }
       return `${rawBase}/api/payments/webhooks/${encodeURIComponent(providerCode)}`;
     },
-  } as never;
+  };
 }
 
 function makeRow(overrides: Record<string, unknown> = {}) {
@@ -58,8 +59,30 @@ function makeService(rows: unknown[]) {
   return new PaymentProviderConfigService(
     mockDb as never,
     makeSecrets(),
-    makeAppConfig(),
+    makeAppConfig() as never,
   );
+}
+
+function makeListOptionsService(rowsQueue: unknown[]) {
+  const queue = [...rowsQueue];
+  const mockDb = {
+    select: vi.fn(() => ({
+      from: () => ({
+        innerJoin: () => ({
+          where: async () => queue.shift() ?? [],
+        }),
+        where: () => ({
+          limit: async () => queue.shift() ?? [],
+        }),
+      }),
+    })),
+  };
+
+  const appConfig = makeAppConfig();
+  return new PaymentProviderConfigService(mockDb as never, makeSecrets(), {
+    paymentMockEnabled: false,
+    buildPaymentNotifyUrl: appConfig.buildPaymentNotifyUrl,
+  } as never);
 }
 
 describe("PaymentProviderConfigService", () => {
@@ -167,6 +190,26 @@ describe("PaymentProviderConfigService", () => {
         }),
       ).rejects.toThrow("Payment provider is disabled for this machine");
     });
+
+    it("requires WeChat V2 key and merchant API certs when paymentCodeEnabled is true", async () => {
+      const rows = [
+        makeRow({
+          publicConfigJson: { paymentCodeEnabled: true },
+          configEncryptedJson: encryptJson(
+            { apiV3Key: "my-secret-api-key" },
+            ENCRYPTION_KEY,
+          ),
+        }),
+      ];
+      const service = makeService(rows);
+
+      await expect(
+        service.resolveForPayment({
+          providerCode: "wechat_pay",
+          machineId: "machine-1",
+        }),
+      ).rejects.toThrow(/wechat_pay payment_code requires apiV2Key/);
+    });
   });
 
   describe("listCandidateConfigsForProvider", () => {
@@ -201,6 +244,48 @@ describe("PaymentProviderConfigService", () => {
       expect(results[0]?.publicConfigJson["notifyUrl"]).toBe(
         "http://localhost:3000/api/payments/webhooks/alipay",
       );
+    });
+  });
+
+  describe("listMachinePaymentOptionsForMachine", () => {
+    it("returns both qr_code and payment_code options when paymentCodeEnabled is true", async () => {
+      const service = makeListOptionsService([
+        [
+          makeRow({
+            providerCode: "alipay",
+            publicConfigJson: { paymentCodeEnabled: true },
+          }),
+        ],
+        [],
+      ]);
+
+      const result =
+        await service.listMachinePaymentOptionsForMachine("machine-1");
+
+      expect(result.options.map((option) => option.optionKey)).toEqual([
+        "qr_code:alipay",
+        "payment_code:alipay",
+      ]);
+      expect(result.defaultOptionKey).toBe("qr_code:alipay");
+    });
+
+    it("returns only qr_code option when paymentCodeEnabled is false", async () => {
+      const service = makeListOptionsService([
+        [
+          makeRow({
+            providerCode: "alipay",
+            publicConfigJson: { paymentCodeEnabled: false },
+          }),
+        ],
+        [],
+      ]);
+
+      const result =
+        await service.listMachinePaymentOptionsForMachine("machine-1");
+
+      expect(result.options.map((option) => option.optionKey)).toEqual([
+        "qr_code:alipay",
+      ]);
     });
   });
 });

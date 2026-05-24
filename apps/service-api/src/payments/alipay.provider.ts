@@ -3,18 +3,25 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
+  Logger,
   UnauthorizedException,
 } from "@nestjs/common";
 
 import type {
+  PaymentCodeCapableProvider,
   PaymentIntentInput,
   PaymentIntentResult,
-  PaymentProvider,
   PaymentProviderRuntimeConfig,
   ProviderCancelPaymentInput,
   ProviderCancelPaymentResult,
+  ProviderPaymentCodeChargeInput,
+  ProviderPaymentCodeChargeResult,
+  ProviderPaymentCodeQueryInput,
+  ProviderPaymentCodeQueryResult,
   ProviderPaymentQueryInput,
   ProviderPaymentQueryResult,
+  ProviderPaymentCodeReverseInput,
+  ProviderPaymentCodeReverseResult,
   ProviderRefundPaymentInput,
   ProviderRefundPaymentResult,
   ProviderRefundQueryInput,
@@ -197,6 +204,77 @@ function mapAlipayTradeStatus(
   };
 }
 
+function mapAlipayPaymentCodeResponse(
+  data: Record<string, unknown>,
+): ProviderPaymentCodeChargeResult {
+  const code = typeof data["code"] === "string" ? data["code"] : null;
+  const subCode =
+    typeof data["sub_code"] === "string" ? data["sub_code"] : null;
+  const tradeNo =
+    typeof data["trade_no"] === "string" ? data["trade_no"] : null;
+  const gmtPayment =
+    typeof data["gmt_payment"] === "string"
+      ? new Date(data["gmt_payment"].replace(" ", "T"))
+      : null;
+  // v3 API: success response has no "code" field but contains trade_no + gmt_payment
+  if (!code && tradeNo && gmtPayment) {
+    return {
+      status: "succeeded",
+      providerTradeNo: tradeNo,
+      paidAt: gmtPayment,
+      providerStatus: "TRADE_SUCCESS",
+      rawPayload: data,
+    };
+  }
+  // v2 API compat
+  if (code === "10000") {
+    return {
+      status: "succeeded",
+      providerTradeNo: tradeNo,
+      paidAt: gmtPayment,
+      providerStatus: "TRADE_SUCCESS",
+      rawPayload: data,
+    };
+  }
+  if (code === "10003") {
+    return {
+      status: "user_confirming",
+      providerTradeNo: tradeNo,
+      providerStatus: "WAIT_BUYER_PAY",
+      failureCode: subCode,
+      failureMessage:
+        typeof data["sub_msg"] === "string"
+          ? data["sub_msg"]
+          : "等待用户确认支付",
+      rawPayload: data,
+    };
+  }
+  if (code === "20000" || subCode === "ACQ.SYSTEM_ERROR") {
+    return {
+      status: "unknown",
+      providerTradeNo: tradeNo,
+      providerStatus: code ?? subCode,
+      failureCode: subCode ?? code ?? "ALIPAY_UNKNOWN",
+      failureMessage:
+        typeof data["sub_msg"] === "string"
+          ? data["sub_msg"]
+          : "支付宝返回未知结果",
+      rawPayload: data,
+    };
+  }
+  return {
+    status: "failed",
+    providerTradeNo: tradeNo,
+    providerStatus: code ?? subCode,
+    failureCode: subCode ?? code ?? "ALIPAY_PAYMENT_CODE_FAILED",
+    failureMessage:
+      typeof data["sub_msg"] === "string"
+        ? data["sub_msg"]
+        : "支付宝付款码支付失败",
+    rawPayload: data,
+  };
+}
+
 function mapAlipayRefund(
   data: Record<string, unknown>,
   fallbackRefundNo: string,
@@ -294,8 +372,9 @@ function mapAlipayWebhook(body: Record<string, string>): ProviderWebhookResult {
 }
 
 @Injectable()
-export class AlipayProvider implements PaymentProvider {
+export class AlipayProvider implements PaymentCodeCapableProvider {
   readonly code = "alipay";
+  private readonly logger = new Logger(AlipayProvider.name);
 
   constructor(private readonly sdkFactory: AlipaySdkClientFactory) {}
 
@@ -340,6 +419,109 @@ export class AlipayProvider implements PaymentProvider {
     return mapAlipayTradeStatus(data);
   }
 
+  async chargePaymentCode(
+    input: ProviderPaymentCodeChargeInput,
+  ): Promise<ProviderPaymentCodeChargeResult> {
+    const config = parseAlipayConfig(input.config);
+    const sdk = createAlipaySdk(this.sdkFactory, config);
+    const body: Record<string, unknown> = {
+      notify_url: config.notifyUrl,
+      out_trade_no: input.paymentNo,
+      total_amount: amountCentsToYuan(input.amountCents),
+      subject: `VEM order ${input.orderNo}`,
+      auth_code: input.authCode,
+      scene: "bar_code",
+      product_code: "FACE_TO_FACE_PAYMENT",
+      seller_id: config.sellerId,
+      store_id: input.storeId ?? undefined,
+      terminal_id: input.terminalId ?? undefined,
+      query_options: ["fund_bill_list"],
+    };
+    try {
+      const data = assertSuccessfulCurl(
+        await sdk.curl<Record<string, unknown>>(
+          "POST",
+          "/v3/alipay/trade/pay",
+          {
+            body,
+          },
+        ),
+        "alipay.trade.pay",
+      );
+      return mapAlipayPaymentCodeResponse(data);
+    } catch (err) {
+      const errCode =
+        err && typeof err === "object" && "code" in err
+          ? String((err as Record<string, unknown>).code)
+          : null;
+      const errStatus =
+        err && typeof err === "object" && "responseHttpStatus" in err
+          ? String((err as Record<string, unknown>).responseHttpStatus)
+          : "?";
+      const errMessage =
+        err instanceof Error
+          ? err.message
+          : err && typeof err === "object"
+            ? JSON.stringify(err)
+            : typeof err === "string"
+              ? err
+              : typeof err === "number" || typeof err === "boolean"
+                ? `${err}`
+                : "unknown_error";
+      this.logger.error(
+        `chargePaymentCode Alipay error code=${errCode} responseHttpStatus=${errStatus} message=${errMessage}`,
+      );
+      // ACQ.USER_PAYING: user is authenticating in Alipay app — treat as user_confirming (poll)
+      if (errCode === "ACQ.USER_PAYING") {
+        return {
+          status: "user_confirming",
+          providerTradeNo: null,
+          providerStatus: "ACQ.USER_PAYING",
+          rawPayload: {},
+        };
+      }
+      throw err;
+    }
+  }
+
+  async queryPaymentCode(
+    input: ProviderPaymentCodeQueryInput,
+  ): Promise<ProviderPaymentCodeQueryResult> {
+    const result = await this.queryPayment(input);
+    if (result.status === "succeeded") {
+      return {
+        status: "succeeded",
+        providerTradeNo: result.providerTradeNo ?? null,
+        paidAt: result.paidAt ?? null,
+        providerStatus: "TRADE_SUCCESS",
+        rawPayload: result.rawPayload,
+      };
+    }
+    if (result.status === "pending" || result.status === "processing") {
+      return {
+        status: "processing",
+        providerTradeNo: result.providerTradeNo ?? null,
+        providerStatus: result.status,
+        rawPayload: result.rawPayload,
+      };
+    }
+    if (result.status === "canceled") {
+      return {
+        status: "reversed",
+        providerTradeNo: result.providerTradeNo ?? null,
+        providerStatus: "TRADE_CLOSED",
+        rawPayload: result.rawPayload,
+      };
+    }
+    return {
+      status: "failed",
+      providerTradeNo: result.providerTradeNo ?? null,
+      providerStatus: result.status,
+      failureMessage: result.failedReason ?? "支付宝付款码支付失败",
+      rawPayload: result.rawPayload,
+    };
+  }
+
   async cancelPayment(
     input: ProviderCancelPaymentInput,
   ): Promise<ProviderCancelPaymentResult> {
@@ -358,6 +540,48 @@ export class AlipayProvider implements PaymentProvider {
       "alipay.trade.close",
     );
     return { status: "canceled", rawPayload: data };
+  }
+
+  async reversePaymentCode(
+    input: ProviderPaymentCodeReverseInput,
+  ): Promise<ProviderPaymentCodeReverseResult> {
+    const config = parseAlipayConfig(input.config);
+    const sdk = createAlipaySdk(this.sdkFactory, config);
+    const data = assertSuccessfulCurl(
+      await sdk.curl<Record<string, unknown>>(
+        "POST",
+        "/v3/alipay/trade/cancel",
+        {
+          body: {
+            out_trade_no: input.paymentNo,
+            ...(input.providerTradeNo
+              ? { trade_no: input.providerTradeNo }
+              : {}),
+          },
+        },
+      ),
+      "alipay.trade.cancel",
+    );
+    const retryFlag = data["retry_flag"];
+    const code = data["code"];
+    if (code === "10000") {
+      return {
+        status: retryFlag === "Y" ? "processing" : "reversed",
+        providerStatus:
+          typeof data["action"] === "string" ? data["action"] : "cancel",
+        recall: retryFlag === "Y",
+        rawPayload: data,
+      };
+    }
+    return {
+      status: code === "20000" ? "unknown" : "failed",
+      providerStatus: typeof code === "string" ? code : null,
+      failureCode:
+        typeof data["sub_code"] === "string" ? data["sub_code"] : null,
+      failureMessage:
+        typeof data["sub_msg"] === "string" ? data["sub_msg"] : null,
+      rawPayload: data,
+    };
   }
 
   async refundPayment(

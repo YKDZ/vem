@@ -154,6 +154,25 @@ describe("AlipayProvider", () => {
     },
   );
 
+  it("maps TRADE_CLOSED queryPaymentCode result to reversed", async () => {
+    const { sdk, factory } = makeSdk();
+    vi.mocked(sdk.curl).mockResolvedValue({
+      responseHttpStatus: 200,
+      data: { trade_status: "TRADE_CLOSED", trade_no: "2026050622000000099" },
+    });
+    const provider = new AlipayProvider(factory);
+
+    const result = await provider.queryPaymentCode({
+      config: makeRuntimeConfig(),
+      paymentNo: "PCA202605240099",
+      providerTradeNo: null,
+    });
+
+    expect(result.status).toBe("reversed");
+    expect(result.providerTradeNo).toBe("2026050622000000099");
+    expect(result.providerStatus).toBe("TRADE_CLOSED");
+  });
+
   it("closes unpaid order through alipay.trade.close v3 path", async () => {
     const { sdk, factory } = makeSdk();
     vi.mocked(sdk.curl).mockResolvedValue({
@@ -174,6 +193,131 @@ describe("AlipayProvider", () => {
       expect.objectContaining({ body: { out_trade_no: "PAY202605060004" } }),
     );
     expect(result.status).toBe("canceled");
+  });
+
+  it("charges payment_code through alipay.trade.pay with bar_code scene", async () => {
+    const { sdk, factory } = makeSdk();
+    vi.mocked(sdk.curl).mockResolvedValue({
+      responseHttpStatus: 200,
+      data: {
+        code: "10000",
+        trade_no: "2026050622000000010",
+        gmt_payment: "2026-05-24 10:00:00",
+      },
+    });
+    const provider = new AlipayProvider(factory);
+
+    const result = await provider.chargePaymentCode({
+      config: makeRuntimeConfig(),
+      paymentNo: "PCA202605240001",
+      orderNo: "ORD202605240001",
+      amountCents: 1234,
+      authCode: "28763443825664394",
+      terminalId: "TERM-001",
+      storeId: "STORE-001",
+      clientIp: "127.0.0.1",
+    });
+
+    expect(sdk.curl).toHaveBeenCalledWith(
+      "POST",
+      "/v3/alipay/trade/pay",
+      expect.objectContaining({
+        body: expect.objectContaining({
+          out_trade_no: "PCA202605240001",
+          auth_code: "28763443825664394",
+          scene: "bar_code",
+          product_code: "FACE_TO_FACE_PAYMENT",
+          store_id: "STORE-001",
+          terminal_id: "TERM-001",
+        }),
+      }),
+    );
+    expect(result.status).toBe("succeeded");
+    expect(result.providerTradeNo).toBe("2026050622000000010");
+  });
+
+  it("maps code=10003 to user_confirming for payment_code", async () => {
+    const { sdk, factory } = makeSdk();
+    vi.mocked(sdk.curl).mockResolvedValue({
+      responseHttpStatus: 200,
+      data: {
+        code: "10003",
+        sub_code: "ACQ.CONTINUE_TRANS",
+        sub_msg: "等待用户付款",
+      },
+    });
+    const provider = new AlipayProvider(factory);
+
+    const result = await provider.chargePaymentCode({
+      config: makeRuntimeConfig(),
+      paymentNo: "PCA202605240002",
+      orderNo: "ORD202605240002",
+      amountCents: 500,
+      authCode: "28763443825664394",
+      terminalId: null,
+      storeId: null,
+      clientIp: "127.0.0.1",
+    });
+
+    expect(result.status).toBe("user_confirming");
+    expect(result.failureMessage).toBe("等待用户付款");
+  });
+
+  it("maps code=20000 to unknown for payment_code", async () => {
+    const { sdk, factory } = makeSdk();
+    vi.mocked(sdk.curl).mockResolvedValue({
+      responseHttpStatus: 200,
+      data: {
+        code: "20000",
+        sub_msg: "服务暂不可用",
+      },
+    });
+    const provider = new AlipayProvider(factory);
+
+    const result = await provider.chargePaymentCode({
+      config: makeRuntimeConfig(),
+      paymentNo: "PCA202605240003",
+      orderNo: "ORD202605240003",
+      amountCents: 500,
+      authCode: "28763443825664394",
+      terminalId: null,
+      storeId: null,
+      clientIp: "127.0.0.1",
+    });
+
+    expect(result.status).toBe("unknown");
+  });
+
+  it("reverses payment_code through alipay.trade.cancel and maps retry_flag=Y to processing", async () => {
+    const { sdk, factory } = makeSdk();
+    vi.mocked(sdk.curl).mockResolvedValue({
+      responseHttpStatus: 200,
+      data: {
+        code: "10000",
+        retry_flag: "Y",
+        action: "cancel",
+      },
+    });
+    const provider = new AlipayProvider(factory);
+
+    const result = await provider.reversePaymentCode({
+      config: makeRuntimeConfig(),
+      paymentNo: "PCA202605240004",
+      providerTradeNo: "2026050622000000011",
+    });
+
+    expect(sdk.curl).toHaveBeenCalledWith(
+      "POST",
+      "/v3/alipay/trade/cancel",
+      expect.objectContaining({
+        body: expect.objectContaining({
+          out_trade_no: "PCA202605240004",
+          trade_no: "2026050622000000011",
+        }),
+      }),
+    );
+    expect(result.status).toBe("processing");
+    expect(result.recall).toBe(true);
   });
 
   it.each([

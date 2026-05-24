@@ -87,6 +87,19 @@ function editConfig(config: PaymentProviderConfig): void {
       typeof publicConfig["timeoutCompensationSeconds"] === "number"
         ? publicConfig["timeoutCompensationSeconds"]
         : 120,
+    paymentCodeEnabled: publicConfig["paymentCodeEnabled"] === true,
+    paymentCodePollIntervalSeconds:
+      typeof publicConfig["paymentCodePollIntervalSeconds"] === "number"
+        ? publicConfig["paymentCodePollIntervalSeconds"]
+        : 3,
+    paymentCodeMaxConfirmSeconds:
+      typeof publicConfig["paymentCodeMaxConfirmSeconds"] === "number"
+        ? publicConfig["paymentCodeMaxConfirmSeconds"]
+        : 30,
+    paymentCodeReverseDelaySeconds:
+      typeof publicConfig["paymentCodeReverseDelaySeconds"] === "number"
+        ? publicConfig["paymentCodeReverseDelaySeconds"]
+        : 0,
     certificateSerialNo:
       typeof publicConfig["certificateSerialNo"] === "string"
         ? publicConfig["certificateSerialNo"]
@@ -113,9 +126,20 @@ function editConfig(config: PaymentProviderConfig): void {
         : publicConfig["mode"] === "direct_merchant"
           ? "direct_merchant"
           : "sandbox",
+    storeId:
+      typeof publicConfig["storeId"] === "string"
+        ? publicConfig["storeId"]
+        : "",
+    terminalId:
+      typeof publicConfig["terminalId"] === "string"
+        ? publicConfig["terminalId"]
+        : "",
     apiV3Key: "",
+    apiV2Key: "",
     privateKeyPem: "",
     platformPublicKeyPem: "",
+    merchantApiCertPem: "",
+    merchantApiKeyPem: "",
     appCertPem: "",
     alipayPublicCertPem: "",
     alipayRootCertPem: "",
@@ -339,6 +363,41 @@ onMounted(() => {
         </a-col>
       </a-row>
 
+      <a-row :gutter="16">
+        <a-col :span="6">
+          <a-form-item label="启用付款码">
+            <a-switch v-model:checked="form.paymentCodeEnabled" />
+          </a-form-item>
+        </a-col>
+        <a-col :span="6">
+          <a-form-item label="付款码轮询间隔（秒）">
+            <a-input-number
+              v-model:value="form.paymentCodePollIntervalSeconds"
+              :min="1"
+              :max="10"
+            />
+          </a-form-item>
+        </a-col>
+        <a-col :span="6">
+          <a-form-item label="付款码最大确认时长（秒）">
+            <a-input-number
+              v-model:value="form.paymentCodeMaxConfirmSeconds"
+              :min="10"
+              :max="120"
+            />
+          </a-form-item>
+        </a-col>
+        <a-col :span="6">
+          <a-form-item label="付款码撤销延迟（秒）">
+            <a-input-number
+              v-model:value="form.paymentCodeReverseDelaySeconds"
+              :min="0"
+              :max="30"
+            />
+          </a-form-item>
+        </a-col>
+      </a-row>
+
       <!-- 微信支付字段 -->
       <template v-if="form.providerCode === 'wechat_pay'">
         <a-row :gutter="16">
@@ -365,6 +424,14 @@ onMounted(() => {
               <a-input-password
                 v-model:value="form.apiV3Key"
                 placeholder="留空则保留现有配置；填入新值会覆盖对应字段"
+              />
+            </a-form-item>
+          </a-col>
+          <a-col :span="8">
+            <a-form-item label="APIv2Key（敏感）">
+              <a-input-password
+                v-model:value="form.apiV2Key"
+                placeholder="付款码 micropay/orderquery/reverse 使用"
               />
             </a-form-item>
           </a-col>
@@ -399,6 +466,26 @@ onMounted(() => {
               />
             </a-form-item>
           </a-col>
+          <a-col :span="12">
+            <a-form-item label="商户 API 证书 PEM（敏感）">
+              <a-textarea
+                v-model:value="form.merchantApiCertPem"
+                :rows="4"
+                placeholder="付款码撤销/退款需要双向证书"
+              />
+            </a-form-item>
+          </a-col>
+        </a-row>
+        <a-row :gutter="16">
+          <a-col :span="12">
+            <a-form-item label="商户 API 私钥 PEM（敏感）">
+              <a-textarea
+                v-model:value="form.merchantApiKeyPem"
+                :rows="4"
+                placeholder="付款码撤销/退款需要双向证书私钥"
+              />
+            </a-form-item>
+          </a-col>
         </a-row>
       </template>
 
@@ -424,6 +511,24 @@ onMounted(() => {
                 <a-select-option value="PKCS8">PKCS8</a-select-option>
                 <a-select-option value="PKCS1">PKCS1</a-select-option>
               </a-select>
+            </a-form-item>
+          </a-col>
+        </a-row>
+        <a-row :gutter="16">
+          <a-col :span="8">
+            <a-form-item label="门店号 storeId">
+              <a-input
+                v-model:value="form.storeId"
+                placeholder="付款码支付可选门店号"
+              />
+            </a-form-item>
+          </a-col>
+          <a-col :span="8">
+            <a-form-item label="终端号 terminalId">
+              <a-input
+                v-model:value="form.terminalId"
+                placeholder="付款码支付可选终端号"
+              />
             </a-form-item>
           </a-col>
         </a-row>

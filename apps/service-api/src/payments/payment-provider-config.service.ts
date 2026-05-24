@@ -51,6 +51,26 @@ export class PaymentProviderConfigService {
     };
   }
 
+  private assertRuntimeConfigComplete(
+    providerCode: string,
+    publicConfigJson: Record<string, unknown>,
+    sensitiveConfigJson: Record<string, unknown>,
+  ): void {
+    if (
+      providerCode !== "wechat_pay" ||
+      publicConfigJson["paymentCodeEnabled"] !== true
+    ) {
+      return;
+    }
+
+    for (const key of ["apiV2Key", "merchantApiCertPem", "merchantApiKeyPem"]) {
+      const value = sensitiveConfigJson[key];
+      if (typeof value !== "string" || value.trim().length === 0) {
+        throw new ConflictException(`wechat_pay payment_code requires ${key}`);
+      }
+    }
+  }
+
   private toRuntimeConfig(row: {
     id: string;
     providerId: string;
@@ -124,6 +144,15 @@ export class PaymentProviderConfigService {
     const sensitiveConfigJson = isEncryptedJson(configEncryptedJson)
       ? this.secrets.decrypt(configEncryptedJson)
       : {};
+    const publicConfigJson = this.withRuntimePublicConfig(
+      selected.providerCode,
+      selected.publicConfigJson,
+    );
+    this.assertRuntimeConfigComplete(
+      selected.providerCode,
+      publicConfigJson,
+      sensitiveConfigJson,
+    );
 
     return {
       id: selected.id,
@@ -132,10 +161,7 @@ export class PaymentProviderConfigService {
       machineId: selected.machineId,
       merchantNo: selected.merchantNo,
       appId: selected.appId,
-      publicConfigJson: this.withRuntimePublicConfig(
-        selected.providerCode,
-        selected.publicConfigJson,
-      ),
+      publicConfigJson,
       sensitiveConfigJson,
     };
   }
@@ -223,32 +249,63 @@ export class PaymentProviderConfigService {
   async listMachinePaymentOptionsForMachine(
     machineId: string,
   ): Promise<MachinePaymentOptionsResponse> {
-    const candidates: Omit<MachinePaymentOption, "recommended">[] = [
+    const options: Omit<MachinePaymentOption, "recommended">[] = [];
+    const realProviders: Array<{
+      providerCode: "alipay" | "wechat_pay";
+      icon: "alipay" | "wechat";
+      qrDisplayName: string;
+      codeDisplayName: string;
+    }> = [
       {
         providerCode: "alipay",
-        method: "qr_code",
-        displayName: "支付宝",
-        description: "请使用支付宝扫码支付",
         icon: "alipay",
+        qrDisplayName: "支付宝扫码",
+        codeDisplayName: "支付宝付款码",
       },
       {
         providerCode: "wechat_pay",
-        method: "qr_code",
-        displayName: "微信支付",
-        description: "请使用微信扫码支付",
         icon: "wechat",
+        qrDisplayName: "微信扫码",
+        codeDisplayName: "微信付款码",
       },
     ];
 
-    const options: Omit<MachinePaymentOption, "recommended">[] = [];
-    for (const candidate of candidates) {
+    for (const provider of realProviders) {
       try {
         // oxlint-disable-next-line no-await-in-loop
-        await this.resolveForPayment({
-          providerCode: candidate.providerCode,
+        const config = await this.resolveForPayment({
+          providerCode: provider.providerCode,
           machineId,
         });
-        options.push(candidate);
+        options.push({
+          optionKey: `qr_code:${provider.providerCode}`,
+          providerCode: provider.providerCode,
+          method: "qr_code",
+          displayName: provider.qrDisplayName,
+          description:
+            provider.providerCode === "alipay"
+              ? "请使用支付宝扫描屏幕二维码"
+              : "请使用微信扫描屏幕二维码",
+          icon: provider.icon,
+          disabled: false,
+          disabledReason: null,
+        });
+
+        if (config.publicConfigJson["paymentCodeEnabled"] === true) {
+          options.push({
+            optionKey: `payment_code:${provider.providerCode}`,
+            providerCode: provider.providerCode,
+            method: "payment_code",
+            displayName: provider.codeDisplayName,
+            description:
+              provider.providerCode === "alipay"
+                ? "请出示支付宝付款码并靠近扫码窗口"
+                : "请出示微信付款码并靠近扫码窗口",
+            icon: provider.icon,
+            disabled: false,
+            disabledReason: null,
+          });
+        }
       } catch {
         // provider 未启用、配置缺失、机器级 disabled 都视为不可用。
       }
@@ -258,11 +315,14 @@ export class PaymentProviderConfigService {
     const mockAvailable = await this.isMockOptionAvailable();
     if (mockAvailable) {
       options.push({
+        optionKey: "mock:mock",
         providerCode: "mock",
         method: "mock",
         displayName: "模拟支付",
         description: "测试环境专用，立即完成支付",
         icon: "mock",
+        disabled: false,
+        disabledReason: null,
       });
     }
 
@@ -271,6 +331,7 @@ export class PaymentProviderConfigService {
         ...option,
         recommended: index === 0,
       })),
+      defaultOptionKey: options[0]?.optionKey ?? null,
       defaultProviderCode: options[0]?.providerCode ?? null,
       serverTime: new Date().toISOString(),
     };
