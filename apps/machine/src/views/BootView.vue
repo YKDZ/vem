@@ -4,6 +4,7 @@ import { useRouter } from "vue-router";
 
 import KioskLayout from "@/layouts/KioskLayout.vue";
 import { scannerSelfCheck } from "@/native/scanner";
+import { startVisionRuntime, visionSelfCheck } from "@/native/vision";
 import { useCatalogStore } from "@/stores/catalog";
 import { useConnectivityStore } from "@/stores/connectivity";
 import { useMachineStore } from "@/stores/machine";
@@ -49,6 +50,32 @@ onMounted(async () => {
       ? `扫码模块就绪：${scanner.message}`
       : `扫码模块告警：${scanner.message}`,
   );
+
+  if (machineStore.config.visionEnabled) {
+    if (machineStore.config.visionAutoStart) {
+      pushStep("启动机器视觉进程");
+      try {
+        const status = await startVisionRuntime();
+        pushStep(`视觉进程状态：${status.message}`);
+      } catch (error) {
+        pushStep(
+          `视觉进程启动失败：${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
+
+    pushStep("检查机器视觉模块");
+    const vision = await visionSelfCheck(machineStore.config);
+    pushStep(
+      vision.online
+        ? `视觉模块就绪：${vision.message}`
+        : `视觉模块告警：${vision.message}`,
+    );
+  } else {
+    pushStep("机器视觉推荐未启用，跳过视觉自检");
+  }
 
   pushStep("检查后端健康状态");
   await connectivityStore.checkBackend(machineStore.config);

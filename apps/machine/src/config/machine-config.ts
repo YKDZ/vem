@@ -1,3 +1,4 @@
+import { DEFAULT_VISION_WS_URL } from "@vem/shared";
 import { z } from "zod";
 
 export const hardwareAdapterSchema = z.enum([
@@ -48,6 +49,24 @@ export const machineConfigSchema = z
       .default(null),
     scannerBaudRate: z.int().min(1200).max(921600).default(9600),
     scannerFrameSuffix: z.enum(["crlf", "lf", "cr", "none"]).default("crlf"),
+    visionEnabled: z.boolean().default(true),
+    visionWsUrl: z.string().trim().pipe(z.url()).default(DEFAULT_VISION_WS_URL),
+    visionAutoStart: z.boolean().default(false),
+    visionProcessCommand: z
+      .string()
+      .trim()
+      .min(1)
+      .max(512)
+      .nullable()
+      .default(null),
+    visionProcessArgs: z
+      .string()
+      .trim()
+      .min(1)
+      .max(1000)
+      .nullable()
+      .default(null),
+    visionRequestTimeoutMs: z.int().min(1000).max(30_000).default(8000),
     kioskMode: z.boolean().default(false),
   })
   .superRefine((data, ctx) => {
@@ -64,6 +83,17 @@ export const machineConfigSchema = z
         path: ["scannerSerialPortPath"],
         message:
           "scannerSerialPortPath is required when scannerAdapter=serial_text",
+      });
+    }
+    if (
+      data.visionEnabled &&
+      data.visionAutoStart &&
+      !data.visionProcessCommand
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["visionProcessCommand"],
+        message: "visionProcessCommand is required when visionAutoStart=true",
       });
     }
   });
@@ -120,6 +150,17 @@ export function normalizeMachineConfig(input: unknown): MachineConfig {
     const trimmed = processed.scannerSerialPortPath.trim();
     processed.scannerSerialPortPath = trimmed.length > 0 ? trimmed : null;
   }
+  if (typeof processed.visionWsUrl === "string") {
+    processed.visionWsUrl = processed.visionWsUrl.trim();
+  }
+  if (typeof processed.visionProcessCommand === "string") {
+    const trimmed = processed.visionProcessCommand.trim();
+    processed.visionProcessCommand = trimmed.length > 0 ? trimmed : null;
+  }
+  if (typeof processed.visionProcessArgs === "string") {
+    const trimmed = processed.visionProcessArgs.trim();
+    processed.visionProcessArgs = trimmed.length > 0 ? trimmed : null;
+  }
   const parsed = machineConfigSchema.parse(processed);
   const machineSecret = parsed.machineSecret?.trim() || null;
   const mqttSigningSecret = parsed.mqttSigningSecret?.trim() || null;
@@ -144,5 +185,8 @@ export function normalizeMachineConfig(input: unknown): MachineConfig {
     mqttUrl: parsed.mqttUrl.trim(),
     serialPortPath: parsed.serialPortPath?.trim() || null,
     scannerSerialPortPath: parsed.scannerSerialPortPath?.trim() || null,
+    visionWsUrl: parsed.visionWsUrl.trim(),
+    visionProcessCommand: parsed.visionProcessCommand?.trim() || null,
+    visionProcessArgs: parsed.visionProcessArgs?.trim() || null,
   };
 }

@@ -3,10 +3,12 @@ mod local_logs;
 mod native_mqtt;
 mod scanner;
 mod serial_protocol;
+mod vision;
 
 use std::{
     fs,
     path::PathBuf,
+    process::Stdio,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -62,6 +64,18 @@ struct MachinePublicConfigFile {
     scanner_serial_port_path: Option<String>,
     scanner_baud_rate: u32,
     scanner_frame_suffix: ScannerFrameSuffix,
+    #[serde(default = "default_vision_enabled")]
+    vision_enabled: bool,
+    #[serde(default = "default_vision_ws_url")]
+    vision_ws_url: String,
+    #[serde(default)]
+    vision_auto_start: bool,
+    #[serde(default)]
+    vision_process_command: Option<String>,
+    #[serde(default)]
+    vision_process_args: Option<String>,
+    #[serde(default = "default_vision_request_timeout_ms")]
+    vision_request_timeout_ms: u64,
     kiosk_mode: bool,
 }
 
@@ -85,6 +99,18 @@ struct MachineConfig {
     scanner_serial_port_path: Option<String>,
     scanner_baud_rate: u32,
     scanner_frame_suffix: ScannerFrameSuffix,
+    #[serde(default = "default_vision_enabled")]
+    vision_enabled: bool,
+    #[serde(default = "default_vision_ws_url")]
+    vision_ws_url: String,
+    #[serde(default)]
+    vision_auto_start: bool,
+    #[serde(default)]
+    vision_process_command: Option<String>,
+    #[serde(default)]
+    vision_process_args: Option<String>,
+    #[serde(default = "default_vision_request_timeout_ms")]
+    vision_request_timeout_ms: u64,
     kiosk_mode: bool,
 }
 
@@ -108,6 +134,18 @@ const KEYRING_SERVICE: &str = "com.vem.machine";
 const MACHINE_SECRET_ACCOUNT: &str = "machine_secret";
 const MQTT_SIGNING_SECRET_ACCOUNT: &str = "mqtt_signing_secret";
 const MQTT_PASSWORD_ACCOUNT: &str = "mqtt_password";
+
+fn default_vision_enabled() -> bool {
+    true
+}
+
+fn default_vision_ws_url() -> String {
+    vision::DEFAULT_VISION_WS_URL.to_string()
+}
+
+fn default_vision_request_timeout_ms() -> u64 {
+    8_000
+}
 
 fn now_ms() -> Result<u128, String> {
     SystemTime::now()
@@ -162,6 +200,12 @@ fn default_public_config() -> MachinePublicConfigFile {
         scanner_serial_port_path: None,
         scanner_baud_rate: 9600,
         scanner_frame_suffix: ScannerFrameSuffix::Crlf,
+        vision_enabled: default_vision_enabled(),
+        vision_ws_url: default_vision_ws_url(),
+        vision_auto_start: false,
+        vision_process_command: None,
+        vision_process_args: None,
+        vision_request_timeout_ms: default_vision_request_timeout_ms(),
         kiosk_mode: false,
     }
 }
@@ -226,6 +270,12 @@ fn attach_secret_state(
         scanner_serial_port_path: public.scanner_serial_port_path,
         scanner_baud_rate: public.scanner_baud_rate,
         scanner_frame_suffix: public.scanner_frame_suffix,
+        vision_enabled: public.vision_enabled,
+        vision_ws_url: public.vision_ws_url,
+        vision_auto_start: public.vision_auto_start,
+        vision_process_command: public.vision_process_command,
+        vision_process_args: public.vision_process_args,
+        vision_request_timeout_ms: public.vision_request_timeout_ms,
         kiosk_mode: public.kiosk_mode,
     })
 }
@@ -280,6 +330,22 @@ fn normalize_config(config: MachineConfig) -> Result<MachineConfig, String> {
         .filter(|s| !s.is_empty())
         .map(str::to_string);
 
+    let vision_ws_url = config.vision_ws_url.trim().to_string();
+
+    let vision_process_command = config
+        .vision_process_command
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+
+    let vision_process_args = config
+        .vision_process_args
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+
     let api_base_url = config.api_base_url.trim().trim_end_matches('/').to_string();
     let mqtt_url = config.mqtt_url.trim().to_string();
 
@@ -300,6 +366,15 @@ fn normalize_config(config: MachineConfig) -> Result<MachineConfig, String> {
             "scannerSerialPortPath is required when scannerAdapter=serial_text".to_string(),
         );
     }
+    if vision_ws_url.is_empty() {
+        return Err("visionWsUrl is required".to_string());
+    }
+    if config.vision_enabled && config.vision_auto_start && vision_process_command.is_none() {
+        return Err("visionProcessCommand is required when visionAutoStart=true".to_string());
+    }
+    if !(1_000..=30_000).contains(&config.vision_request_timeout_ms) {
+        return Err("visionRequestTimeoutMs must be between 1000 and 30000".to_string());
+    }
 
     Ok(MachineConfig {
         machine_code,
@@ -319,6 +394,12 @@ fn normalize_config(config: MachineConfig) -> Result<MachineConfig, String> {
         scanner_serial_port_path,
         scanner_baud_rate: config.scanner_baud_rate,
         scanner_frame_suffix: config.scanner_frame_suffix,
+        vision_enabled: config.vision_enabled,
+        vision_ws_url,
+        vision_auto_start: config.vision_auto_start,
+        vision_process_command,
+        vision_process_args,
+        vision_request_timeout_ms: config.vision_request_timeout_ms,
         kiosk_mode: config.kiosk_mode,
     })
 }
@@ -359,6 +440,12 @@ fn save_machine_config(
         scanner_serial_port_path: normalized.scanner_serial_port_path.clone(),
         scanner_baud_rate: normalized.scanner_baud_rate,
         scanner_frame_suffix: normalized.scanner_frame_suffix.clone(),
+        vision_enabled: normalized.vision_enabled,
+        vision_ws_url: normalized.vision_ws_url.clone(),
+        vision_auto_start: normalized.vision_auto_start,
+        vision_process_command: normalized.vision_process_command.clone(),
+        vision_process_args: normalized.vision_process_args.clone(),
+        vision_request_timeout_ms: normalized.vision_request_timeout_ms,
         kiosk_mode: normalized.kiosk_mode,
     };
     let content = serde_json::to_string_pretty(&public)
@@ -453,6 +540,22 @@ struct ScannerRuntimeState {
     running: AtomicBool,
 }
 
+#[derive(Default)]
+struct VisionRuntimeState {
+    child: Option<tokio::process::Child>,
+}
+
+fn split_vision_process_args(args: Option<&String>) -> Vec<String> {
+    args.map(|value| {
+        value
+            .split_whitespace()
+            .filter(|part| !part.is_empty())
+            .map(str::to_string)
+            .collect()
+    })
+    .unwrap_or_default()
+}
+
 #[tauri::command]
 async fn scanner_self_check(
     app: tauri::AppHandle,
@@ -506,6 +609,176 @@ async fn start_scanner(app: tauri::AppHandle) -> Result<(), String> {
             .store(false, Ordering::SeqCst);
     });
     Ok(())
+}
+
+#[tauri::command]
+async fn start_vision_runtime(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, tokio::sync::Mutex<VisionRuntimeState>>,
+) -> Result<vision::VisionRuntimeStatus, String> {
+    let config = get_machine_config(app)?;
+    if !config.vision_enabled {
+        return Ok(vision::VisionRuntimeStatus {
+            running: false,
+            pid: None,
+            message: "视觉模块未启用".to_string(),
+        });
+    }
+
+    let mut guard = state.lock().await;
+    if let Some(child) = guard.child.as_mut() {
+        match child
+            .try_wait()
+            .map_err(|error| format!("check vision process failed: {error}"))?
+        {
+            Some(_status) => {
+                guard.child.take();
+            }
+            None => {
+                return Ok(vision::VisionRuntimeStatus {
+                    running: true,
+                    pid: child.id(),
+                    message: "视觉进程已在运行".to_string(),
+                });
+            }
+        }
+    }
+
+    let command_path = config
+        .vision_process_command
+        .clone()
+        .ok_or_else(|| "visionProcessCommand is required".to_string())?;
+    let args = split_vision_process_args(config.vision_process_args.as_ref());
+    let mut command = tokio::process::Command::new(command_path);
+    command
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let child = command
+        .spawn()
+        .map_err(|error| format!("start vision process failed: {error}"))?;
+    let pid = child.id();
+    guard.child = Some(child);
+    Ok(vision::VisionRuntimeStatus {
+        running: true,
+        pid,
+        message: "视觉进程已启动".to_string(),
+    })
+}
+
+#[tauri::command]
+async fn stop_vision_runtime(
+    state: tauri::State<'_, tokio::sync::Mutex<VisionRuntimeState>>,
+) -> Result<vision::VisionRuntimeStatus, String> {
+    let mut guard = state.lock().await;
+    if let Some(mut child) = guard.child.take() {
+        let pid = child.id();
+        child
+            .kill()
+            .await
+            .map_err(|error| format!("stop vision process failed: {error}"))?;
+        return Ok(vision::VisionRuntimeStatus {
+            running: false,
+            pid,
+            message: "视觉进程已停止".to_string(),
+        });
+    }
+    Ok(vision::VisionRuntimeStatus {
+        running: false,
+        pid: None,
+        message: "没有由上位机托管的视觉进程".to_string(),
+    })
+}
+
+#[tauri::command]
+async fn vision_runtime_status(
+    state: tauri::State<'_, tokio::sync::Mutex<VisionRuntimeState>>,
+) -> Result<vision::VisionRuntimeStatus, String> {
+    let mut guard = state.lock().await;
+    if let Some(child) = guard.child.as_mut() {
+        match child
+            .try_wait()
+            .map_err(|error| format!("check vision process failed: {error}"))?
+        {
+            Some(status) => {
+                guard.child.take();
+                return Ok(vision::VisionRuntimeStatus {
+                    running: false,
+                    pid: None,
+                    message: format!("视觉进程已退出：{status}"),
+                });
+            }
+            None => {
+                return Ok(vision::VisionRuntimeStatus {
+                    running: true,
+                    pid: child.id(),
+                    message: "视觉进程运行中".to_string(),
+                });
+            }
+        }
+    }
+    Ok(vision::VisionRuntimeStatus {
+        running: false,
+        pid: None,
+        message: "没有由上位机托管的视觉进程".to_string(),
+    })
+}
+
+#[tauri::command]
+async fn vision_self_check(app: tauri::AppHandle) -> Result<vision::VisionSelfCheckResult, String> {
+    let config = get_machine_config(app)?;
+    let checked_at_ms = now_ms()?;
+    if !config.vision_enabled {
+        return Ok(vision::VisionSelfCheckResult {
+            enabled: false,
+            online: false,
+            message: "视觉模块未启用".to_string(),
+            checked_at_ms,
+            ready: None,
+        });
+    }
+
+    match vision::check_ready(
+        &config.vision_ws_url,
+        config.machine_code.clone(),
+        config.vision_request_timeout_ms,
+    )
+    .await
+    {
+        Ok(ready) => Ok(vision::VisionSelfCheckResult {
+            enabled: true,
+            online: ready.camera_ready && ready.model_ready && !ready.busy,
+            message: format!("{} {}", ready.server_name, ready.server_version),
+            checked_at_ms,
+            ready: Some(ready),
+        }),
+        Err(error) => Ok(vision::VisionSelfCheckResult {
+            enabled: true,
+            online: false,
+            message: error,
+            checked_at_ms,
+            ready: None,
+        }),
+    }
+}
+
+#[tauri::command]
+async fn request_vision_profile(
+    app: tauri::AppHandle,
+    input: vision::VisionProfileRequestInput,
+) -> Result<vision::VisionProfileResultPayload, String> {
+    let config = get_machine_config(app)?;
+    if !config.vision_enabled {
+        return Err("视觉模块未启用".to_string());
+    }
+    vision::request_profile(
+        &config.vision_ws_url,
+        config.machine_code.clone(),
+        input,
+        config.vision_request_timeout_ms,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -624,6 +897,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(tokio::sync::Mutex::new(MqttRuntimeState { runtime: None }))
         .manage(ScannerRuntimeState::default())
+        .manage(tokio::sync::Mutex::new(VisionRuntimeState::default()))
         .invoke_handler(tauri::generate_handler![
             get_machine_config,
             get_machine_runtime_config,
@@ -631,6 +905,11 @@ pub fn run() {
             hardware_self_check,
             scanner_self_check,
             start_scanner,
+            start_vision_runtime,
+            stop_vision_runtime,
+            vision_runtime_status,
+            vision_self_check,
+            request_vision_profile,
             start_native_mqtt_runtime,
             stop_native_mqtt_runtime,
             native_mqtt_status,
