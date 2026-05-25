@@ -11,6 +11,10 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": resolve(import.meta.dirname, "src"),
+      "@vem/shared": resolve(
+        import.meta.dirname,
+        "../../packages/shared/src/index.ts",
+      ),
     },
   },
 
@@ -26,7 +30,7 @@ export default defineConfig({
         changeOrigin: true,
       },
       "/mqtt-ws": {
-        target: "ws://172.31.0.2:9001",
+        target: "ws://172.31.0.4:9001",
         changeOrigin: true,
         ws: true,
         rewrite: (path) => path.replace(/^\/mqtt-ws/, "") || "/",
