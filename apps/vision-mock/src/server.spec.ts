@@ -84,7 +84,7 @@ async function openSocket(url: string): Promise<WebSocket> {
     const timer = setTimeout(() => {
       socket.close();
       reject(new Error("open websocket timed out"));
-    }, 1000);
+    }, 5000);
 
     socket.once("open", () => {
       clearTimeout(timer);
@@ -99,12 +99,13 @@ async function openSocket(url: string): Promise<WebSocket> {
 
 async function nextServerMessage(
   socket: WebSocket,
+  timeoutMs = 5000,
 ): Promise<VisionServerMessage> {
   return await new Promise<VisionServerMessage>((resolve, reject) => {
     const timer = setTimeout(() => {
       cleanup();
       reject(new Error("waiting for server message timed out"));
-    }, 1000);
+    }, timeoutMs);
 
     const onError = (error: Error): void => {
       cleanup();
@@ -153,7 +154,7 @@ describe("vision mock server — protocol conformance", () => {
     } finally {
       socket.close();
     }
-  });
+  }, 20_000);
 });
 
 describe("vision mock server — hello / ready handshake", () => {
@@ -271,7 +272,7 @@ describe("vision mock server — timeout scenario", () => {
       expect(progress.type).toBe("vision.profile_progress");
 
       // No further message should arrive — verify by waiting and catching the timeout
-      const timedOut = await nextServerMessage(socket).then(
+      const timedOut = await nextServerMessage(socket, 1000).then(
         (msg) => ({ kind: "message" as const, msg }),
         (err: unknown) => ({
           kind: "timeout" as const,

@@ -16,5 +16,10 @@
     "customConditions": ["import", "types"],
     "types": ["node"]
   },
-  "include": ["src/**/*.ts", "src/**/*.vue", "tests/**/*.ts"]
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.vue",
+    "tests/**/*.ts",
+    "playwright.config.ts"
+  ]
 }
