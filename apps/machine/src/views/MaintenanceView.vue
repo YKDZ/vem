@@ -9,6 +9,12 @@ import {
   type ScannerAdapter,
 } from "@/config/machine-config";
 import KioskLayout from "@/layouts/KioskLayout.vue";
+import {
+  getVisionRuntimeStatus,
+  startVisionRuntime,
+  stopVisionRuntime,
+  visionSelfCheck,
+} from "@/native/vision";
 import { useMachineStore } from "@/stores/machine";
 import { useMqttStore } from "@/stores/mqtt";
 
@@ -27,6 +33,12 @@ const form = reactive({
   scannerSerialPortPath: machineStore.config.scannerSerialPortPath,
   scannerBaudRate: machineStore.config.scannerBaudRate,
   scannerFrameSuffix: machineStore.config.scannerFrameSuffix,
+  visionEnabled: machineStore.config.visionEnabled,
+  visionWsUrl: machineStore.config.visionWsUrl,
+  visionAutoStart: machineStore.config.visionAutoStart,
+  visionProcessCommand: machineStore.config.visionProcessCommand,
+  visionProcessArgs: machineStore.config.visionProcessArgs,
+  visionRequestTimeoutMs: machineStore.config.visionRequestTimeoutMs,
   kioskMode: machineStore.config.kioskMode,
   machineSecretInput: "",
   mqttSigningSecretInput: "",
@@ -46,8 +58,19 @@ onMounted(async () => {
     form.scannerSerialPortPath = machineStore.config.scannerSerialPortPath;
     form.scannerBaudRate = machineStore.config.scannerBaudRate;
     form.scannerFrameSuffix = machineStore.config.scannerFrameSuffix;
+    form.visionEnabled = machineStore.config.visionEnabled;
+    form.visionWsUrl = machineStore.config.visionWsUrl;
+    form.visionAutoStart = machineStore.config.visionAutoStart;
+    form.visionProcessCommand = machineStore.config.visionProcessCommand;
+    form.visionProcessArgs = machineStore.config.visionProcessArgs;
+    form.visionRequestTimeoutMs = machineStore.config.visionRequestTimeoutMs;
     form.kioskMode = machineStore.config.kioskMode;
   }
+});
+
+const visionMaintenance = reactive({
+  loading: false,
+  message: null as string | null,
 });
 
 const adapters: HardwareAdapter[] = [
@@ -79,6 +102,52 @@ async function saveAndReboot(): Promise<void> {
   } catch (error) {
     machineStore.error = error instanceof Error ? error.message : String(error);
   }
+}
+
+async function runVisionAction(
+  action: () => Promise<{ message: string }>,
+): Promise<void> {
+  visionMaintenance.loading = true;
+  visionMaintenance.message = null;
+  try {
+    const result = await action();
+    visionMaintenance.message = result.message;
+  } catch (error) {
+    visionMaintenance.message =
+      error instanceof Error ? error.message : String(error);
+  } finally {
+    visionMaintenance.loading = false;
+  }
+}
+
+async function checkVisionModule(): Promise<void> {
+  const config = normalizeMachineConfig({
+    ...machineStore.config,
+    ...form,
+    machineSecret: null,
+    mqttSigningSecret: null,
+    mqttPassword: null,
+  });
+  await runVisionAction(async () => {
+    const result = await visionSelfCheck(config);
+    return {
+      message: result.online
+        ? `视觉模块就绪：${result.message}`
+        : `视觉模块不可用：${result.message}`,
+    };
+  });
+}
+
+async function startVisionModule(): Promise<void> {
+  await runVisionAction(startVisionRuntime);
+}
+
+async function stopVisionModule(): Promise<void> {
+  await runVisionAction(stopVisionRuntime);
+}
+
+async function refreshVisionStatus(): Promise<void> {
+  await runVisionAction(getVisionRuntimeStatus);
 }
 </script>
 
@@ -312,6 +381,134 @@ async function saveAndReboot(): Promise<void> {
                 </option>
               </select>
             </label>
+          </div>
+        </div>
+
+        <div class="rounded-3xl border border-white/10 bg-slate-950/30 p-5">
+          <p
+            class="text-sm font-semibold tracking-[0.28em] text-fuchsia-200 uppercase"
+          >
+            Vision Module
+          </p>
+          <p class="mt-2 text-sm text-slate-300">
+            用于通过本地 WebSocket 接入机器视觉层；本地联调可启动
+            apps/vision-mock。
+          </p>
+
+          <div class="mt-4 grid gap-4">
+            <label class="flex items-center gap-3 text-left">
+              <input
+                v-model="form.visionEnabled"
+                class="size-5 accent-fuchsia-300"
+                type="checkbox"
+              />
+              <span class="text-sm font-semibold text-slate-200"
+                >启用视觉推荐 visionEnabled</span
+              >
+            </label>
+
+            <label class="grid gap-2 text-left">
+              <span class="text-sm font-semibold text-slate-200"
+                >视觉 WebSocket 地址 visionWsUrl</span
+              >
+              <input
+                v-model="form.visionWsUrl"
+                class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-fuchsia-300"
+                placeholder="ws://127.0.0.1:7892/ws"
+              />
+            </label>
+
+            <label class="grid gap-2 text-left">
+              <span class="text-sm font-semibold text-slate-200"
+                >单次推理超时 visionRequestTimeoutMs</span
+              >
+              <input
+                v-model.number="form.visionRequestTimeoutMs"
+                class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-fuchsia-300"
+                max="30000"
+                min="1000"
+                step="500"
+                type="number"
+              />
+            </label>
+
+            <label class="flex items-center gap-3 text-left">
+              <input
+                v-model="form.visionAutoStart"
+                class="size-5 accent-fuchsia-300"
+                type="checkbox"
+              />
+              <span class="text-sm font-semibold text-slate-200"
+                >启动时托管视觉进程 visionAutoStart</span
+              >
+            </label>
+
+            <label class="grid gap-2 text-left">
+              <span class="text-sm font-semibold text-slate-200"
+                >视觉进程命令 visionProcessCommand</span
+              >
+              <input
+                v-model="form.visionProcessCommand"
+                class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-fuchsia-300"
+                placeholder="例如 pnpm"
+              />
+            </label>
+
+            <label class="grid gap-2 text-left">
+              <span class="text-sm font-semibold text-slate-200"
+                >视觉进程参数 visionProcessArgs</span
+              >
+              <input
+                v-model="form.visionProcessArgs"
+                class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-fuchsia-300"
+                placeholder="例如 -F vision-mock dev"
+              />
+              <p class="text-sm text-slate-400">
+                如视觉程序由 systemd/Docker 单独维护，请关闭 autoStart。
+              </p>
+            </label>
+
+            <div class="grid gap-3 md:grid-cols-4">
+              <button
+                class="kiosk-touch-target rounded-2xl border border-fuchsia-200/30 px-4 py-3 font-bold text-fuchsia-100 disabled:opacity-50"
+                type="button"
+                :disabled="visionMaintenance.loading"
+                @click="checkVisionModule"
+              >
+                自检
+              </button>
+              <button
+                class="kiosk-touch-target rounded-2xl border border-fuchsia-200/30 px-4 py-3 font-bold text-fuchsia-100 disabled:opacity-50"
+                type="button"
+                :disabled="visionMaintenance.loading"
+                @click="startVisionModule"
+              >
+                启动进程
+              </button>
+              <button
+                class="kiosk-touch-target rounded-2xl border border-fuchsia-200/30 px-4 py-3 font-bold text-fuchsia-100 disabled:opacity-50"
+                type="button"
+                :disabled="visionMaintenance.loading"
+                @click="stopVisionModule"
+              >
+                停止进程
+              </button>
+              <button
+                class="kiosk-touch-target rounded-2xl border border-fuchsia-200/30 px-4 py-3 font-bold text-fuchsia-100 disabled:opacity-50"
+                type="button"
+                :disabled="visionMaintenance.loading"
+                @click="refreshVisionStatus"
+              >
+                状态
+              </button>
+            </div>
+
+            <p
+              v-if="visionMaintenance.message"
+              class="rounded-2xl bg-fuchsia-500/15 p-4 text-fuchsia-100"
+            >
+              {{ visionMaintenance.message }}
+            </p>
           </div>
         </div>
 

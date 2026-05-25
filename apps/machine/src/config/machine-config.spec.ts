@@ -24,6 +24,12 @@ describe("machine config", () => {
       scannerSerialPortPath: null,
       scannerBaudRate: 9600,
       scannerFrameSuffix: "crlf",
+      visionEnabled: true,
+      visionWsUrl: "ws://127.0.0.1:7892/ws",
+      visionAutoStart: false,
+      visionProcessCommand: null,
+      visionProcessArgs: null,
+      visionRequestTimeoutMs: 8000,
       kioskMode: false,
     });
   });
@@ -68,6 +74,23 @@ describe("machine config", () => {
       normalizeMachineConfig({ scannerSerialPortPath: "   " })
         .scannerSerialPortPath,
     ).toBeNull();
+  });
+
+  it("normalizes optional vision process fields", () => {
+    const result = normalizeMachineConfig({
+      visionWsUrl: " ws://127.0.0.1:7892/ws ",
+      visionProcessCommand: " pnpm ",
+      visionProcessArgs: " -F vision-mock dev ",
+    });
+    expect(result.visionWsUrl).toBe("ws://127.0.0.1:7892/ws");
+    expect(result.visionProcessCommand).toBe("pnpm");
+    expect(result.visionProcessArgs).toBe("-F vision-mock dev");
+  });
+
+  it("requires a vision process command when auto-start is enabled", () => {
+    expect(() => normalizeMachineConfig({ visionAutoStart: true })).toThrow(
+      /visionProcessCommand/,
+    );
   });
 
   it("requires serialPortPath for serial adapter", () => {
