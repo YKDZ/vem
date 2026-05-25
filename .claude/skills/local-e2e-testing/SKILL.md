@@ -147,7 +147,7 @@ cd apps/admin-ui
 pnpm dev
 ```
 
-默认监听 5175 端口（`vite.config.ts` 中 `port: 5175, strictPort: true`）。访问 `http://localhost:5175`，用 `admin / AdminPassword123!` 登录。
+默认监听 5173 端口（Vite 默认，`vite.config.ts` 中未指定端口）。访问 `http://localhost:5173`，用 `admin / AdminPassword123!` 登录。
 
 ### 5.3 machine（售货机 UI）
 
