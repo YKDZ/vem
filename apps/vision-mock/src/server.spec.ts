@@ -84,7 +84,7 @@ async function openSocket(url: string): Promise<WebSocket> {
     const timer = setTimeout(() => {
       socket.close();
       reject(new Error("open websocket timed out"));
-    }, 1000);
+    }, 5000);
 
     socket.once("open", () => {
       clearTimeout(timer);
@@ -104,7 +104,7 @@ async function nextServerMessage(
     const timer = setTimeout(() => {
       cleanup();
       reject(new Error("waiting for server message timed out"));
-    }, 1000);
+    }, 5000);
 
     const onError = (error: Error): void => {
       cleanup();
