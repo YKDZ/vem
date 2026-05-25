@@ -18,7 +18,9 @@ services:
       - vem-postgres-data:/var/lib/postgresql/data
 
   mqtt:
-    image: eclipse-mosquitto:2
+    build:
+      context: ./mosquitto
+      dockerfile: Dockerfile
     ports:
       - "1883:1883"
       - "9001:9001"
@@ -26,8 +28,6 @@ services:
       MQTT_USERNAME: ${MQTT_USERNAME:-vem_mqtt}
       MQTT_PASSWORD: ${MQTT_PASSWORD:-vem_mqtt_password}
     volumes:
-      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
-      - ./mosquitto/docker-entrypoint.sh:/docker-entrypoint.sh:ro
       - vem-mqtt-data:/mosquitto/data
     entrypoint: ["/bin/sh", "/docker-entrypoint.sh"]
     healthcheck:

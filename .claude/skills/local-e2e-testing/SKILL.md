@@ -16,9 +16,11 @@ service-api   NestJS 11    端口 3000   后端 API + MQTT 客户端
 admin-ui      Vue 3 + Vite 端口 5175   管理后台
 machine       Vue 3 + Vite 端口 1420   售货机 Kiosk UI（含 Tauri，本地开发以浏览器模式运行）
 
-PostgreSQL    cat_postgresql  172.23.0.5:5432   数据库
-MQTT          vem-service-api-mqtt-1  172.31.0.2:1883 (TCP) / 9001 (WS)
+PostgreSQL    vem-service-api-postgres-1  172.31.0.2:5432   数据库
+MQTT          vem-service-api-mqtt-1      172.31.0.4:1883 (TCP) / 9001 (WS)
 ```
+
+> **注意**：容器 IP 由 devcontainer 所在网络动态分配。devcontainer 占用 `172.31.0.3`，故 postgres 固定分到 `.2`，mqtt 固定分到 `.4`。若 IP 有变，用 `docker inspect <容器名> | grep IPAddress` 查询并更新下方 `.env` 及 `vite.config.ts`。
 
 ---
 
@@ -27,19 +29,21 @@ MQTT          vem-service-api-mqtt-1  172.31.0.2:1883 (TCP) / 9001 (WS)
 ### 2.1 检查 Docker 容器
 
 ```bash
-docker ps --format "{{.Names}}\t{{.Status}}" | grep -E "cat_postgresql|vem-service-api-mqtt"
+docker ps --format "{{.Names}}\t{{.Status}}" | grep -E "postgres|mqtt"
 ```
 
 必须看到两个容器均处于 `Up` 状态：
 
-- `cat_postgresql` — PostgreSQL 数据库
+- `vem-service-api-postgres-1` — PostgreSQL 数据库
 - `vem-service-api-mqtt-1` — Mosquitto MQTT Broker
 
 如果未启动，进入 `apps/service-api` 执行：
 
 ```bash
-docker compose up -d
+docker compose up -d --build
 ```
+
+> **第一次运行**：MQTT 服务使用 Dockerfile 构建（`mosquitto/Dockerfile`），`--build` 会触发构建，后续无改动时可省略 `--build`。
 
 ### 2.2 检查 .env 文件
 
@@ -48,11 +52,11 @@ docker compose up -d
 ```dotenv
 NODE_ENV=development
 SERVICE_PORT=3000
-DATABASE_URL=postgresql://user:pass@172.23.0.5:5432/vem
+DATABASE_URL=postgresql://vem:vem_password@172.31.0.2:5432/vem
 JWT_SECRET=vem-admin-jwt-secret-key-for-development-use-only-32chars
 JWT_REFRESH_SECRET=vem-admin-refresh-secret-key-for-development-32chars
 CORS_ORIGINS=http://localhost:5173,http://localhost:5174,http://localhost:5175,http://localhost:1420
-MQTT_URL=mqtt://172.31.0.2:1883
+MQTT_URL=mqtt://172.31.0.4:1883
 MQTT_USERNAME=vem_mqtt
 MQTT_PASSWORD=vem_mqtt_password
 PAYMENT_MOCK_ENABLED=true
@@ -93,10 +97,18 @@ pnpm --filter @vem/db build
 
 ```bash
 cd packages/db
-pnpm drizzle-kit migrate
+DATABASE_URL=postgresql://vem:vem_password@172.31.0.2:5432/vem pnpm drizzle-kit migrate
 ```
 
 如果是全新环境，迁移会创建所有表；已有数据的情况下该命令是幂等的。
+
+> **注意**：`packages/db` 目录下没有 `.env`，必须通过环境变量传入 `DATABASE_URL`。如果报 "type already exists" 错误，说明数据库有旧版迁移记录，需要先重置数据库：
+>
+> ```bash
+> docker exec vem-service-api-postgres-1 psql -U vem -d postgres -c "DROP DATABASE IF EXISTS vem;"
+> docker exec vem-service-api-postgres-1 psql -U vem -d postgres -c "CREATE DATABASE vem;"
+> DATABASE_URL=postgresql://vem:vem_password@172.31.0.2:5432/vem pnpm drizzle-kit migrate
+> ```
 
 ---
 
@@ -106,7 +118,7 @@ pnpm drizzle-kit migrate
 
 ```bash
 cd apps/service-api
-nest build
+pnpm exec nest build
 node dist/main.js > /tmp/service-api.log 2>&1 &
 ```
 
@@ -135,7 +147,7 @@ cd apps/admin-ui
 pnpm dev
 ```
 
-默认监听 5175 端口（`vite.config.ts` 中 strictPort）。访问 `http://localhost:5175`，用 `admin / AdminPassword123!` 登录。
+默认监听 5173 端口（Vite 默认，`vite.config.ts` 中未指定端口）。访问 `http://localhost:5173`，用 `admin / AdminPassword123!` 登录。
 
 ### 5.3 machine（售货机 UI）
 
@@ -149,7 +161,9 @@ pnpm dev
 > **重要**：machine 的 `vite.config.ts` 必须包含两个代理：
 >
 > - `/api` → `http://localhost:3000`（API 转发）
-> - `/mqtt-ws` → `ws://172.31.0.2:9001`（WebSocket 代理，浏览器不能直连 MQTT 容器）
+> - `/mqtt-ws` → `ws://172.31.0.4:9001`（WebSocket 代理，浏览器不能直连 MQTT 容器）
+>
+> 如果 MQTT 容器 IP 变化，在 `vite.config.ts` 中更新 `/mqtt-ws` 代理的 `target`。
 
 ---
 
@@ -264,7 +278,7 @@ docker inspect vem-service-api-mqtt-1 | grep '"IPAddress"'
 
 # 检查 Vite proxy 配置（apps/machine/vite.config.ts）
 # 应包含:
-# '/mqtt-ws': { target: 'ws://172.31.0.x:9001', ws: true, changeOrigin: true }
+# '/mqtt-ws': { target: 'ws://172.31.0.4:9001', ws: true, changeOrigin: true }
 ```
 
 > `BootView.vue` 中 MQTT 连接失败已用 try/catch 包裹，不会导致 Boot 崩溃，但机器将在无 MQTT 的情况下继续运行（状态指示器显示连接状态）。
