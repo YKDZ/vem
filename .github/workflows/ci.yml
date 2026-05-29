@@ -203,15 +203,8 @@ jobs:
           done
           echo " Ready!"
 
-      - name: Install Playwright Browsers
-        working-directory: apps/admin-ui
-        run: |
-          for attempt in 1 2 3; do
-            pnpm exec playwright install --with-deps chromium && exit 0
-            if [ "$attempt" -eq 3 ]; then exit 1; fi
-            echo "Attempt $attempt failed, retrying..."
-            sudo rm -rf /var/lib/apt/lists/*
-          done
+      - name: Verify Chrome Browser
+        run: google-chrome --version
 
       - name: Run E2E Tests
         working-directory: apps/admin-ui
