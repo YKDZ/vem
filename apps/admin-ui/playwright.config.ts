@@ -1,5 +1,10 @@
 import { defineConfig, devices } from "@playwright/test";
 
+const chromiumUse = {
+  ...devices["Desktop Chrome"],
+  ...(process.env.CI ? { channel: "chrome" as const } : {}),
+};
+
 export default defineConfig({
   testDir: "./tests",
   fullyParallel: false,
@@ -15,7 +20,7 @@ export default defineConfig({
   projects: [
     {
       name: "chromium",
-      use: { ...devices["Desktop Chrome"] },
+      use: chromiumUse,
     },
   ],
 });
