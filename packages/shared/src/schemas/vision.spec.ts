@@ -5,7 +5,7 @@ import {
   visionErrorMessageSchema,
   visionProfileResultMessageSchema,
   visionServerMessageSchema,
-  visionStartProfileMessageSchema,
+  visionClientMessageSchema,
 } from "./vision";
 
 const BASE_ENVELOPE = {
@@ -15,27 +15,29 @@ const BASE_ENVELOPE = {
 };
 
 describe("vision protocol schemas", () => {
-  it("parses a start profile request with defaults", () => {
-    const message = visionStartProfileMessageSchema.parse({
+  it("parses a machine hello message", () => {
+    const message = visionClientMessageSchema.parse({
       ...BASE_ENVELOPE,
-      type: "vision.start_profile",
+      type: "vision.hello",
       payload: {
-        sessionId: "vision-session-001",
-        trigger: "human_presence",
+        clientRole: "machine",
+        machineCode: "M001",
+        protocolVersion: 1,
+        capabilities: ["profile_push"],
       },
     });
 
-    expect(message.type).toBe("vision.start_profile");
-    expect(message.payload.timeoutMs).toBe(8000);
-    expect(message.payload.requested).toContain("heightCm");
+    expect(message.type).toBe("vision.hello");
+    expect(message.payload.capabilities).toContain("profile_push");
   });
 
-  it("parses a successful profile result", () => {
+  it("parses a pushed profile result", () => {
     const message = visionProfileResultMessageSchema.parse({
       ...BASE_ENVELOPE,
       type: "vision.profile_result",
       payload: {
-        sessionId: "vision-session-001",
+        eventId: "vision-event-001",
+        detectedAt: "2026-05-29T12:00:00.000Z",
         profile: {
           personPresent: true,
           heightCm: 172,
@@ -46,12 +48,11 @@ describe("vision protocol schemas", () => {
           overall: "good",
           warnings: [],
         },
-        startedAt: "2026-05-25T12:00:00.000Z",
-        completedAt: "2026-05-25T12:00:03.000Z",
       },
     });
 
     expect(message.type).toBe("vision.profile_result");
+    expect(message.payload.eventId).toBe("vision-event-001");
     expect(message.payload.profile.heightCm).toBe(172);
   });
 
@@ -61,7 +62,8 @@ describe("vision protocol schemas", () => {
         ...BASE_ENVELOPE,
         type: "vision.profile_result",
         payload: {
-          sessionId: "vision-session-001",
+          eventId: "vision-event-001",
+          detectedAt: "2026-05-29T12:00:00.000Z",
           profile: {
             personPresent: true,
             heightCm: 300,
@@ -70,8 +72,6 @@ describe("vision protocol schemas", () => {
             overall: "good",
             warnings: [],
           },
-          startedAt: "2026-05-25T12:00:00.000Z",
-          completedAt: "2026-05-25T12:00:03.000Z",
         },
       }),
     ).toThrow();
@@ -82,7 +82,7 @@ describe("vision protocol schemas", () => {
       ...BASE_ENVELOPE,
       type: "vision.error",
       payload: {
-        sessionId: "vision-session-001",
+        eventId: "vision-event-001",
         code: "camera_unavailable",
         message: "camera open failed",
         retryable: true,

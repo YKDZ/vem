@@ -7,7 +7,11 @@ import {
   type MockVisionScenario,
   type MockVisionServer,
 } from "../../../vision-mock/src/server";
-import { requestVisionProfile, visionSelfCheck } from "./vision";
+import {
+  subscribeVisionProfiles,
+  type VisionProfileResultPayload,
+  visionSelfCheck,
+} from "./vision";
 
 const servers: MockVisionServer[] = [];
 
@@ -28,13 +32,32 @@ async function startVisionMock(
   const server = startMockVisionServer({
     port: 0,
     scenario,
-    responseDelayMs: 1,
+    pushIntervalMs: 1,
   });
   servers.push(server);
   return await server.ready;
 }
 
-describe("vision native browser fallback — self-check", () => {
+async function waitForPushedProfile(
+  url: string,
+): Promise<VisionProfileResultPayload> {
+  const config = normalizeMachineConfig({ visionWsUrl: url });
+  return await new Promise((resolve, reject) => {
+    let subscription: ReturnType<typeof subscribeVisionProfiles>;
+    subscription = subscribeVisionProfiles(config, {
+      onProfile: (payload) => {
+        subscription.close();
+        resolve(payload);
+      },
+      onError: (error) => {
+        subscription.close();
+        reject(error);
+      },
+    });
+  });
+}
+
+describe("vision native browser fallback - self-check", () => {
   it("performs self-check against the mock websocket server", async () => {
     const url = await startVisionMock();
     const config = normalizeMachineConfig({ visionWsUrl: url });
@@ -67,77 +90,72 @@ describe("vision native browser fallback — self-check", () => {
   });
 });
 
-describe("vision native browser fallback — requestVisionProfile success", () => {
-  it("requests a profile from the mock websocket server", async () => {
+describe("vision native browser fallback - pushed profiles", () => {
+  it("receives a pushed profile from the mock websocket server", async () => {
     const url = await startVisionMock("success");
-    const config = normalizeMachineConfig({ visionWsUrl: url });
 
-    const result = await requestVisionProfile(config, {
-      sessionId: "machine-browser-test",
-      trigger: "test",
-      timeoutMs: 5000,
-    });
+    const result = await waitForPushedProfile(url);
 
-    expect(result.sessionId).toBe("machine-browser-test");
+    expect(typeof result.eventId).toBe("string");
     expect(result.profile.personPresent).toBe(true);
     expect(result.profile.heightCm).toBe(172);
     expect(result.quality.overall).toBe("good");
-    expect(typeof result.startedAt).toBe("string");
-    expect(typeof result.completedAt).toBe("string");
+    expect(typeof result.detectedAt).toBe("string");
   });
 
-  it("uses default requested fields when not specified", async () => {
-    const url = await startVisionMock("success");
-    const config = normalizeMachineConfig({ visionWsUrl: url });
-
-    const result = await requestVisionProfile(config, {
-      sessionId: "default-fields-test",
-      timeoutMs: 5000,
-    });
-
-    expect(result.profile.personPresent).toBe(true);
-  });
-});
-
-describe("vision native browser fallback — no_person scenario", () => {
-  it("throws an error when no person is detected", async () => {
+  it("keeps waiting silently when no person is detected", async () => {
     const url = await startVisionMock("no_person");
     const config = normalizeMachineConfig({ visionWsUrl: url });
+    let pushed = false;
+    let failed = false;
 
-    await expect(
-      requestVisionProfile(config, {
-        sessionId: "no-person-test",
-        trigger: "test",
-        timeoutMs: 5000,
-      }),
-    ).rejects.toThrow("vision no_person:");
+    const subscription = subscribeVisionProfiles(config, {
+      onProfile: () => {
+        pushed = true;
+      },
+      onError: () => {
+        failed = true;
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    subscription.close();
+
+    expect(pushed).toBe(false);
+    expect(failed).toBe(false);
   });
-});
 
-describe("vision native browser fallback — camera_unavailable scenario", () => {
-  it("throws an error when camera is unavailable", async () => {
+  it("reports pushed camera_unavailable errors", async () => {
     const url = await startVisionMock("camera_unavailable");
     const config = normalizeMachineConfig({ visionWsUrl: url });
 
     await expect(
-      requestVisionProfile(config, {
-        sessionId: "camera-unavailable-test",
-        trigger: "test",
-        timeoutMs: 5000,
+      new Promise((resolve, reject) => {
+        let subscription: ReturnType<typeof subscribeVisionProfiles>;
+        subscription = subscribeVisionProfiles(config, {
+          onProfile: resolve,
+          onError: (error) => {
+            subscription.close();
+            reject(error);
+          },
+        });
       }),
     ).rejects.toThrow("vision camera_unavailable:");
   });
 });
 
-describe("vision native browser fallback — vision disabled", () => {
-  it("throws when vision is disabled", async () => {
+describe("vision native browser fallback - vision disabled", () => {
+  it("does not open a subscription when vision is disabled", () => {
     const config = normalizeMachineConfig({ visionEnabled: false });
+    let status: string | null = null;
 
-    await expect(
-      requestVisionProfile(config, {
-        sessionId: "disabled-test",
-        timeoutMs: 5000,
-      }),
-    ).rejects.toThrow("vision module is disabled");
+    const subscription = subscribeVisionProfiles(config, {
+      onProfile: () => undefined,
+      onStatus: (message) => {
+        status = message;
+      },
+    });
+
+    subscription.close();
+    expect(status).toBe("视觉模块未启用");
   });
 });

@@ -1,4 +1,4 @@
-import { describe, expect, it, afterEach } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { WebSocket, type RawData } from "ws";
 
 import {
@@ -40,23 +40,7 @@ function createHelloMessage(): VisionClientMessage {
       clientRole: "machine",
       machineCode: "M001",
       protocolVersion: 1,
-      capabilities: ["single_profile_inference"],
-    },
-  } satisfies VisionClientMessage;
-  return message;
-}
-
-function createStartMessage(sessionId: string): VisionClientMessage {
-  const message = {
-    protocol: VISION_PROTOCOL,
-    type: "vision.start_profile",
-    messageId: "start-001",
-    timestamp: nowIso(),
-    payload: {
-      sessionId,
-      trigger: "test",
-      timeoutMs: 1000,
-      requested: ["heightCm", "bodyType", "ageRange", "gender"],
+      capabilities: ["profile_push"],
     },
   } satisfies VisionClientMessage;
   return message;
@@ -72,7 +56,7 @@ async function createServer(scenario: MockVisionScenario): Promise<string> {
   const server = startMockVisionServer({
     port: 0,
     scenario,
-    responseDelayMs: 1,
+    pushIntervalMs: 1,
   });
   servers.push(server);
   return await server.ready;
@@ -133,8 +117,8 @@ async function nextServerMessage(
   });
 }
 
-describe("vision mock server — protocol conformance", () => {
-  it("every server message has the correct protocol field", async () => {
+describe("vision mock server - protocol conformance", () => {
+  it("sends ready then a pushed profile result after hello", async () => {
     const url = await createServer("success");
     const socket = await openSocket(url);
 
@@ -142,77 +126,32 @@ describe("vision mock server — protocol conformance", () => {
       socket.send(JSON.stringify(createHelloMessage()));
       const ready = await nextServerMessage(socket);
       expect(ready.protocol).toBe(VISION_PROTOCOL);
-      expect(typeof ready.messageId).toBe("string");
-      expect(typeof ready.timestamp).toBe("string");
-
-      socket.send(JSON.stringify(createStartMessage("session-proto")));
-      const progress = await nextServerMessage(socket);
-      expect(progress.protocol).toBe(VISION_PROTOCOL);
+      expect(ready.type).toBe("vision.ready");
+      if (ready.type !== "vision.ready") return;
+      expect(ready.payload.serverName).toBe("vem-vision-mock");
+      expect(ready.payload.cameraReady).toBe(true);
+      expect(ready.payload.modelReady).toBe(true);
+      expect(ready.payload.capabilities).toContain("profile_push");
 
       const result = await nextServerMessage(socket);
+      if (result.type !== "vision.profile_result") {
+        throw new Error(`expected profile result, got ${result.type}`);
+      }
       expect(result.protocol).toBe(VISION_PROTOCOL);
+      expect(typeof result.payload.eventId).toBe("string");
+      expect(typeof result.payload.detectedAt).toBe("string");
+      expect(result.payload.profile.personPresent).toBe(true);
+      expect(result.payload.profile.heightCm).toBe(172);
+      expect(result.payload.profile.gender).toBe("unknown");
+      expect(result.payload.quality.overall).toBe("good");
     } finally {
       socket.close();
     }
   }, 20_000);
 });
 
-describe("vision mock server — hello / ready handshake", () => {
-  it("responds with ready after hello", async () => {
-    const url = await createServer("success");
-    const socket = await openSocket(url);
-
-    try {
-      socket.send(JSON.stringify(createHelloMessage()));
-      const ready = await nextServerMessage(socket);
-      expect(ready.type).toBe("vision.ready");
-      if (ready.type !== "vision.ready") return;
-      expect(ready.payload.serverName).toBe("vem-vision-mock");
-      expect(ready.payload.cameraReady).toBe(true);
-      expect(ready.payload.modelReady).toBe(true);
-      expect(ready.payload.busy).toBe(false);
-    } finally {
-      socket.close();
-    }
-  });
-});
-
-describe("vision mock server — success scenario", () => {
-  it("returns progress then profile result", async () => {
-    const url = await createServer("success");
-    const socket = await openSocket(url);
-
-    try {
-      socket.send(JSON.stringify(createHelloMessage()));
-      const ready = await nextServerMessage(socket);
-      expect(ready.type).toBe("vision.ready");
-
-      socket.send(JSON.stringify(createStartMessage("session-success")));
-      const progress = await nextServerMessage(socket);
-      expect(progress.type).toBe("vision.profile_progress");
-      if (progress.type !== "vision.profile_progress") return;
-      expect(progress.payload.sessionId).toBe("session-success");
-      expect(typeof progress.payload.progress).toBe("number");
-
-      const result = await nextServerMessage(socket);
-      if (result.type !== "vision.profile_result") {
-        throw new Error(`expected profile result, got ${result.type}`);
-      }
-      expect(result.payload.sessionId).toBe("session-success");
-      expect(result.payload.profile.personPresent).toBe(true);
-      expect(result.payload.profile.heightCm).toBe(172);
-      expect(result.payload.profile.gender).toBe("unknown");
-      expect(result.payload.quality.overall).toBe("good");
-      expect(typeof result.payload.startedAt).toBe("string");
-      expect(typeof result.payload.completedAt).toBe("string");
-    } finally {
-      socket.close();
-    }
-  });
-});
-
-describe("vision mock server — no_person scenario", () => {
-  it("returns progress then no_person error", async () => {
+describe("vision mock server - no_person scenario", () => {
+  it("stays silent after ready when no person is detected", async () => {
     const url = await createServer("no_person");
     const socket = await openSocket(url);
 
@@ -221,30 +160,27 @@ describe("vision mock server — no_person scenario", () => {
       const ready = await nextServerMessage(socket);
       expect(ready.type).toBe("vision.ready");
 
-      socket.send(JSON.stringify(createStartMessage("session-no-person")));
-      const progress = await nextServerMessage(socket);
-      expect(progress.type).toBe("vision.profile_progress");
-
-      const error = await nextServerMessage(socket);
-      if (error.type !== "vision.error") {
-        throw new Error(`expected vision.error, got ${error.type}`);
-      }
-      expect(error.payload.code).toBe("no_person");
-      expect(error.payload.retryable).toBe(true);
-      expect(error.payload.sessionId).toBe("session-no-person");
+      const timedOut = await nextServerMessage(socket, 100).then(
+        () => false,
+        () => true,
+      );
+      expect(timedOut).toBe(true);
     } finally {
       socket.close();
     }
   });
 });
 
-describe("vision mock server — camera_unavailable scenario", () => {
-  it("returns camera_unavailable error immediately (no progress)", async () => {
+describe("vision mock server - camera_unavailable scenario", () => {
+  it("pushes camera_unavailable after hello", async () => {
     const url = await createServer("camera_unavailable");
     const socket = await openSocket(url);
 
     try {
-      socket.send(JSON.stringify(createStartMessage("session-camera-error")));
+      socket.send(JSON.stringify(createHelloMessage()));
+      const ready = await nextServerMessage(socket);
+      expect(ready.type).toBe("vision.ready");
+
       const error = await nextServerMessage(socket);
       if (error.type !== "vision.error") {
         throw new Error(`expected vision error, got ${error.type}`);
@@ -257,36 +193,7 @@ describe("vision mock server — camera_unavailable scenario", () => {
   });
 });
 
-describe("vision mock server — timeout scenario", () => {
-  it("sends progress but never completes (client receives exactly one progress message)", async () => {
-    const url = await createServer("timeout");
-    const socket = await openSocket(url);
-
-    try {
-      socket.send(JSON.stringify(createHelloMessage()));
-      const ready = await nextServerMessage(socket);
-      expect(ready.type).toBe("vision.ready");
-
-      socket.send(JSON.stringify(createStartMessage("session-timeout")));
-      const progress = await nextServerMessage(socket);
-      expect(progress.type).toBe("vision.profile_progress");
-
-      // No further message should arrive — verify by waiting and catching the timeout
-      const timedOut = await nextServerMessage(socket, 1000).then(
-        (msg) => ({ kind: "message" as const, msg }),
-        (err: unknown) => ({
-          kind: "timeout" as const,
-          msg: String(err),
-        }),
-      );
-      expect(timedOut.kind).toBe("timeout");
-    } finally {
-      socket.close();
-    }
-  });
-});
-
-describe("vision mock server — ping / pong", () => {
+describe("vision mock server - ping / pong", () => {
   it("responds to ping with pong", async () => {
     const url = await createServer("success");
     const socket = await openSocket(url);
@@ -308,37 +215,7 @@ describe("vision mock server — ping / pong", () => {
   });
 });
 
-describe("vision mock server — cancel message", () => {
-  it("responds to cancel with a cancelled error", async () => {
-    const url = await createServer("success");
-    const socket = await openSocket(url);
-
-    try {
-      const cancelMsg = {
-        protocol: VISION_PROTOCOL,
-        type: "vision.cancel",
-        messageId: "cancel-001",
-        timestamp: new Date().toISOString(),
-        payload: {
-          sessionId: "session-cancel",
-          reason: "user_request",
-        },
-      } as const;
-      socket.send(JSON.stringify(cancelMsg));
-      const response = await nextServerMessage(socket);
-      if (response.type !== "vision.error") {
-        throw new Error(`expected vision.error, got ${response.type}`);
-      }
-      expect(response.payload.code).toBe("cancelled");
-      expect(response.payload.retryable).toBe(true);
-      expect(response.payload.sessionId).toBe("session-cancel");
-    } finally {
-      socket.close();
-    }
-  });
-});
-
-describe("vision mock server — invalid message handling", () => {
+describe("vision mock server - invalid message handling", () => {
   it("returns invalid_message error for malformed JSON body", async () => {
     const url = await createServer("success");
     const socket = await openSocket(url);
