@@ -1,12 +1,15 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 
 import type { MachineCatalogItem } from "@/types/catalog";
 
 import ProductCard from "@/components/ProductCard.vue";
 import KioskLayout from "@/layouts/KioskLayout.vue";
-import { requestVisionProfile } from "@/native/vision";
+import {
+  subscribeVisionProfiles,
+  type VisionProfileSubscription,
+} from "@/native/vision";
 import { useCatalogStore } from "@/stores/catalog";
 import { useCheckoutStore } from "@/stores/checkout";
 import { useConnectivityStore } from "@/stores/connectivity";
@@ -19,6 +22,7 @@ const connectivityStore = useConnectivityStore();
 const catalogStore = useCatalogStore();
 const checkoutStore = useCheckoutStore();
 const recommendationMessage = ref<string | null>(null);
+let visionSubscription: VisionProfileSubscription | null = null;
 
 const canDisplayAsSaleReady = computed(
   () => machineStore.canSell && connectivityStore.isSaleNetworkReady,
@@ -42,32 +46,32 @@ async function refreshCatalog(): Promise<void> {
   await catalogStore.refresh(machineStore.config);
 }
 
-async function startVisionRecommendation(): Promise<void> {
+function startVisionRecommendationSubscription(): void {
   if (!canDisplayAsSaleReady.value) return;
   if (!machineStore.config.visionEnabled) {
-    recommendationMessage.value = "视觉推荐未启用，请在维护页开启。";
+    recommendationMessage.value = "视觉推荐未启用，当前展示默认商品。";
     return;
   }
+  if (visionSubscription) return;
 
-  recommendationMessage.value = "正在请求机器视觉模块识别用户画像…";
-  try {
-    const result = await requestVisionProfile(machineStore.config, {
-      sessionId: `catalog-${Date.now()}`,
-      trigger: "human_presence",
-      timeoutMs: machineStore.config.visionRequestTimeoutMs,
-    });
-    await catalogStore.refreshRecommendations(
-      machineStore.config,
-      result.profile,
-    );
-    recommendationMessage.value = `已根据身高 ${
-      result.profile.heightCm ?? "未知"
-    }cm / 体型 ${result.profile.bodyType ?? "未知"} 生成推荐。`;
-  } catch (error) {
-    recommendationMessage.value = `视觉推荐失败，已保留默认目录：${
-      error instanceof Error ? error.message : String(error)
-    }`;
-  }
+  recommendationMessage.value = "等待机器视觉模块推送识别结果。";
+  visionSubscription = subscribeVisionProfiles(machineStore.config, {
+    onStatus: (message) => {
+      recommendationMessage.value = message;
+    },
+    onProfile: async (result) => {
+      await catalogStore.refreshRecommendations(
+        machineStore.config,
+        result.profile,
+      );
+      recommendationMessage.value = `已根据身高 ${
+        result.profile.heightCm ?? "未知"
+      }cm / 体型 ${result.profile.bodyType ?? "未知"} 生成推荐。`;
+    },
+    onError: (error) => {
+      recommendationMessage.value = `视觉推荐暂不可用，当前展示默认商品：${error.message}`;
+    },
+  });
 }
 
 function clearVisionRecommendation(): void {
@@ -83,6 +87,19 @@ async function selectProduct(item: MachineCatalogItem): Promise<void> {
     params: { inventoryId: item.inventoryId },
   });
 }
+
+onMounted(() => {
+  startVisionRecommendationSubscription();
+});
+
+watch(canDisplayAsSaleReady, (ready) => {
+  if (ready) startVisionRecommendationSubscription();
+});
+
+onUnmounted(() => {
+  visionSubscription?.close();
+  visionSubscription = null;
+});
 </script>
 
 <template>
@@ -100,16 +117,6 @@ async function selectProduct(item: MachineCatalogItem): Promise<void> {
           </p>
         </div>
         <div class="flex gap-3">
-          <button
-            class="kiosk-touch-target rounded-2xl border border-fuchsia-200/40 px-5 py-3 font-bold text-fuchsia-100 disabled:opacity-50"
-            type="button"
-            :disabled="
-              !canDisplayAsSaleReady || catalogStore.recommendationLoading
-            "
-            @click="startVisionRecommendation"
-          >
-            智能推荐
-          </button>
           <button
             v-if="catalogStore.hasRecommendations"
             class="kiosk-touch-target rounded-2xl border border-white/20 px-5 py-3 font-bold text-white"

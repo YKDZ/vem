@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref } from "vue";
 
 import KioskLayout from "@/layouts/KioskLayout.vue";
 import {
-  requestVisionProfile,
+  subscribeVisionProfiles,
+  type VisionProfileSubscription,
   visionSelfCheck,
   type VisionProfileResultPayload,
   type VisionSelfCheckResult,
@@ -15,6 +16,8 @@ const loading = ref(false);
 const selfCheck = ref<VisionSelfCheckResult | null>(null);
 const result = ref<VisionProfileResultPayload | null>(null);
 const error = ref<string | null>(null);
+const subscriptionStatus = ref<string | null>(null);
+let subscription: VisionProfileSubscription | null = null;
 
 const prettyResult = computed(() =>
   result.value ? JSON.stringify(result.value, null, 2) : "",
@@ -39,22 +42,27 @@ async function runSelfCheck(): Promise<void> {
   }
 }
 
-async function runProfileRequest(): Promise<void> {
-  loading.value = true;
+function startProfileSubscription(): void {
   error.value = null;
   result.value = null;
-  try {
-    result.value = await requestVisionProfile(machineStore.config, {
-      sessionId: `dev-${Date.now()}`,
-      trigger: "test",
-      timeoutMs: machineStore.config.visionRequestTimeoutMs,
-    });
-  } catch (caught) {
-    error.value = caught instanceof Error ? caught.message : String(caught);
-  } finally {
-    loading.value = false;
-  }
+  subscription?.close();
+  subscription = subscribeVisionProfiles(machineStore.config, {
+    onStatus: (message) => {
+      subscriptionStatus.value = message;
+    },
+    onProfile: (payload) => {
+      result.value = payload;
+    },
+    onError: (caught) => {
+      error.value = caught.message;
+    },
+  });
 }
+
+onUnmounted(() => {
+  subscription?.close();
+  subscription = null;
+});
 </script>
 
 <template>
@@ -89,11 +97,18 @@ async function runProfileRequest(): Promise<void> {
           class="kiosk-touch-target rounded-2xl bg-sky-300 px-5 py-4 font-black text-slate-950 disabled:opacity-50"
           type="button"
           :disabled="loading"
-          @click="runProfileRequest"
+          @click="startProfileSubscription"
         >
-          请求模拟画像
+          订阅画像推送
         </button>
       </div>
+
+      <p
+        v-if="subscriptionStatus"
+        class="rounded-2xl bg-sky-500/20 p-4 text-sky-100"
+      >
+        {{ subscriptionStatus }}
+      </p>
 
       <p v-if="error" class="rounded-2xl bg-rose-500/20 p-4 text-rose-100">
         {{ error }}

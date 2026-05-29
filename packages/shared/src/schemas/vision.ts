@@ -5,34 +5,14 @@ export const DEFAULT_VISION_WS_URL = "ws://127.0.0.1:7892/ws" as const;
 
 export const visionClientMessageTypeSchema = z.enum([
   "vision.hello",
-  "vision.start_profile",
-  "vision.cancel",
   "vision.ping",
 ]);
 
 export const visionServerMessageTypeSchema = z.enum([
   "vision.ready",
-  "vision.profile_progress",
   "vision.profile_result",
   "vision.error",
   "vision.pong",
-]);
-
-export const visionTriggerSchema = z.enum(["human_presence", "manual", "test"]);
-export const visionRequestedFieldSchema = z.enum([
-  "heightCm",
-  "bodyType",
-  "ageRange",
-  "gender",
-  "shoulderWidthCm",
-  "upperColor",
-]);
-
-export const visionProgressStageSchema = z.enum([
-  "warming_up",
-  "capture",
-  "infer",
-  "postprocess",
 ]);
 
 export const visionQualityOverallSchema = z.enum([
@@ -46,10 +26,6 @@ export const visionErrorCodeSchema = z.enum([
   "unsupported_version",
   "camera_unavailable",
   "model_not_ready",
-  "busy",
-  "no_person",
-  "timeout",
-  "cancelled",
   "internal_error",
 ]);
 
@@ -66,29 +42,6 @@ export const visionHelloPayloadSchema = z.object({
   capabilities: z.array(z.string().min(1).max(64)).default([]),
 });
 
-export const visionSensorSnapshotSchema = z
-  .object({
-    source: z.string().min(1).max(64).optional(),
-    humanPresent: z.boolean().optional(),
-    distanceCm: z.number().positive().max(1000).optional(),
-  })
-  .loose();
-
-export const visionStartProfilePayloadSchema = z.object({
-  sessionId: z.string().min(1).max(128),
-  trigger: visionTriggerSchema,
-  timeoutMs: z.int().min(1000).max(30_000).default(8000),
-  requested: z
-    .array(visionRequestedFieldSchema)
-    .default(["heightCm", "bodyType", "ageRange", "gender"]),
-  sensorSnapshot: visionSensorSnapshotSchema.optional(),
-});
-
-export const visionCancelPayloadSchema = z.object({
-  sessionId: z.string().min(1).max(128),
-  reason: z.string().min(1).max(128),
-});
-
 const emptyPayloadSchema = z.object({}).loose();
 
 export const visionReadyPayloadSchema = z.object({
@@ -96,15 +49,7 @@ export const visionReadyPayloadSchema = z.object({
   serverVersion: z.string().min(1).max(64),
   cameraReady: z.boolean(),
   modelReady: z.boolean(),
-  busy: z.boolean(),
   capabilities: z.array(z.string().min(1).max(64)).default([]),
-});
-
-export const visionProfileProgressPayloadSchema = z.object({
-  sessionId: z.string().min(1).max(128),
-  stage: visionProgressStageSchema,
-  progress: z.number().min(0).max(1),
-  message: z.string().min(1).max(256),
 });
 
 export const visionProfileSchema = z
@@ -121,19 +66,18 @@ export const visionProfileSchema = z
   .loose();
 
 export const visionProfileResultPayloadSchema = z.object({
-  sessionId: z.string().min(1).max(128),
+  eventId: z.string().min(1).max(128),
+  detectedAt: z.iso.datetime(),
   profile: visionProfileSchema,
   quality: z.object({
     overall: visionQualityOverallSchema,
     warnings: z.array(z.string().min(1).max(256)).default([]),
   }),
-  startedAt: z.iso.datetime(),
-  completedAt: z.iso.datetime(),
 });
 
 export const visionErrorPayloadSchema = z
   .object({
-    sessionId: z.string().min(1).max(128).optional(),
+    eventId: z.string().min(1).max(128).optional(),
     code: visionErrorCodeSchema,
     message: z.string().min(1).max(512),
     retryable: z.boolean(),
@@ -146,16 +90,6 @@ export const visionHelloMessageSchema = visionEnvelopeBaseSchema.extend({
   payload: visionHelloPayloadSchema,
 });
 
-export const visionStartProfileMessageSchema = visionEnvelopeBaseSchema.extend({
-  type: z.literal("vision.start_profile"),
-  payload: visionStartProfilePayloadSchema,
-});
-
-export const visionCancelMessageSchema = visionEnvelopeBaseSchema.extend({
-  type: z.literal("vision.cancel"),
-  payload: visionCancelPayloadSchema,
-});
-
 export const visionPingMessageSchema = visionEnvelopeBaseSchema.extend({
   type: z.literal("vision.ping"),
   payload: emptyPayloadSchema,
@@ -165,12 +99,6 @@ export const visionReadyMessageSchema = visionEnvelopeBaseSchema.extend({
   type: z.literal("vision.ready"),
   payload: visionReadyPayloadSchema,
 });
-
-export const visionProfileProgressMessageSchema =
-  visionEnvelopeBaseSchema.extend({
-    type: z.literal("vision.profile_progress"),
-    payload: visionProfileProgressPayloadSchema,
-  });
 
 export const visionProfileResultMessageSchema = visionEnvelopeBaseSchema.extend(
   {
@@ -191,14 +119,11 @@ export const visionPongMessageSchema = visionEnvelopeBaseSchema.extend({
 
 export const visionClientMessageSchema = z.discriminatedUnion("type", [
   visionHelloMessageSchema,
-  visionStartProfileMessageSchema,
-  visionCancelMessageSchema,
   visionPingMessageSchema,
 ]);
 
 export const visionServerMessageSchema = z.discriminatedUnion("type", [
   visionReadyMessageSchema,
-  visionProfileProgressMessageSchema,
   visionProfileResultMessageSchema,
   visionErrorMessageSchema,
   visionPongMessageSchema,
@@ -210,9 +135,6 @@ export type VisionClientMessageType = z.infer<
 export type VisionServerMessageType = z.infer<
   typeof visionServerMessageTypeSchema
 >;
-export type VisionTrigger = z.infer<typeof visionTriggerSchema>;
-export type VisionRequestedField = z.infer<typeof visionRequestedFieldSchema>;
-export type VisionProgressStage = z.infer<typeof visionProgressStageSchema>;
 export type VisionErrorCode = z.infer<typeof visionErrorCodeSchema>;
 export type VisionProfile = z.infer<typeof visionProfileSchema>;
 export type VisionClientMessage = z.infer<typeof visionClientMessageSchema>;

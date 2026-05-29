@@ -748,7 +748,7 @@ async fn vision_self_check(app: tauri::AppHandle) -> Result<vision::VisionSelfCh
     {
         Ok(ready) => Ok(vision::VisionSelfCheckResult {
             enabled: true,
-            online: ready.camera_ready && ready.model_ready && !ready.busy,
+            online: ready.camera_ready && ready.model_ready,
             message: format!("{} {}", ready.server_name, ready.server_version),
             checked_at_ms,
             ready: Some(ready),
@@ -761,24 +761,6 @@ async fn vision_self_check(app: tauri::AppHandle) -> Result<vision::VisionSelfCh
             ready: None,
         }),
     }
-}
-
-#[tauri::command]
-async fn request_vision_profile(
-    app: tauri::AppHandle,
-    input: vision::VisionProfileRequestInput,
-) -> Result<vision::VisionProfileResultPayload, String> {
-    let config = get_machine_config(app)?;
-    if !config.vision_enabled {
-        return Err("视觉模块未启用".to_string());
-    }
-    vision::request_profile(
-        &config.vision_ws_url,
-        config.machine_code.clone(),
-        input,
-        config.vision_request_timeout_ms,
-    )
-    .await
 }
 
 #[tauri::command]
@@ -909,7 +891,6 @@ pub fn run() {
             stop_vision_runtime,
             vision_runtime_status,
             vision_self_check,
-            request_vision_profile,
             start_native_mqtt_runtime,
             stop_native_mqtt_runtime,
             native_mqtt_status,

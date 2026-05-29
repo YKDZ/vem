@@ -420,7 +420,7 @@ async function refreshVisionStatus(): Promise<void> {
 
             <label class="grid gap-2 text-left">
               <span class="text-sm font-semibold text-slate-200"
-                >单次推理超时 visionRequestTimeoutMs</span
+                >视觉连接自检超时 visionRequestTimeoutMs</span
               >
               <input
                 v-model.number="form.visionRequestTimeoutMs"

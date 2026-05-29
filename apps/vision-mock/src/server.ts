@@ -17,7 +17,6 @@ export const MOCK_VISION_SCENARIOS = [
   "success",
   "no_person",
   "camera_unavailable",
-  "timeout",
 ] as const;
 
 export type MockVisionScenario = (typeof MOCK_VISION_SCENARIOS)[number];
@@ -27,7 +26,7 @@ export interface MockVisionServerOptions {
   port?: number;
   path?: string;
   scenario?: MockVisionScenario;
-  responseDelayMs?: number;
+  pushIntervalMs?: number;
 }
 
 export interface MockVisionServer {
@@ -38,7 +37,7 @@ export interface MockVisionServer {
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 7892;
 const DEFAULT_PATH = "/ws";
-const DEFAULT_RESPONSE_DELAY_MS = 250;
+const DEFAULT_PUSH_INTERVAL_MS = 1000;
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -64,11 +63,10 @@ function createReadyMessage(): VisionServerMessage {
     type: "vision.ready",
     payload: {
       serverName: "vem-vision-mock",
-      serverVersion: "0.1.0",
+      serverVersion: "0.2.0",
       cameraReady: true,
       modelReady: true,
-      busy: false,
-      capabilities: ["single_profile_inference", "cancel"],
+      capabilities: ["profile_push"],
     },
   } satisfies VisionServerMessage;
   return message;
@@ -83,27 +81,14 @@ function createPongMessage(): VisionServerMessage {
   return message;
 }
 
-function createProgressMessage(sessionId: string): VisionServerMessage {
-  const message = {
-    ...baseEnvelope("progress"),
-    type: "vision.profile_progress",
-    payload: {
-      sessionId,
-      stage: "infer",
-      progress: 0.65,
-      message: "模拟视觉模块正在估算身高与体型",
-    },
-  } satisfies VisionServerMessage;
-  return message;
-}
-
-function createResultMessage(sessionId: string): VisionServerMessage {
-  const startedAt = nowIso();
+function createResultMessage(): VisionServerMessage {
+  const detectedAt = nowIso();
   const message = {
     ...baseEnvelope("result"),
     type: "vision.profile_result",
     payload: {
-      sessionId,
+      eventId: messageId("event"),
+      detectedAt,
       profile: {
         personPresent: true,
         heightCm: 172,
@@ -118,15 +103,13 @@ function createResultMessage(sessionId: string): VisionServerMessage {
         overall: "good",
         warnings: [],
       },
-      startedAt,
-      completedAt: nowIso(),
     },
   } satisfies VisionServerMessage;
   return message;
 }
 
 function createErrorMessage(input: {
-  sessionId?: string;
+  eventId?: string;
   code: VisionErrorCode;
   message: string;
   retryable: boolean;
@@ -135,7 +118,7 @@ function createErrorMessage(input: {
     ...baseEnvelope("error"),
     type: "vision.error",
     payload: {
-      sessionId: input.sessionId,
+      eventId: input.eventId,
       code: input.code,
       message: input.message,
       retryable: input.retryable,
@@ -148,6 +131,7 @@ function sendServerMessage(
   socket: WebSocket,
   message: VisionServerMessage,
 ): void {
+  if (socket.readyState !== socket.OPEN) return;
   socket.send(JSON.stringify(visionServerMessageSchema.parse(message)));
 }
 
@@ -168,21 +152,19 @@ function parseClientMessage(data: RawData): VisionClientMessage | null {
   return parsed.success ? parsed.data : null;
 }
 
-async function handleStartProfile(
+async function pushScenarioEvents(
   socket: WebSocket,
-  message: Extract<VisionClientMessage, { type: "vision.start_profile" }>,
   options: Required<
-    Pick<MockVisionServerOptions, "scenario" | "responseDelayMs">
+    Pick<MockVisionServerOptions, "scenario" | "pushIntervalMs">
   >,
 ): Promise<void> {
-  const sessionId = message.payload.sessionId;
-  const scenario = options.scenario;
+  await delay(options.pushIntervalMs);
+  if (socket.readyState !== socket.OPEN) return;
 
-  if (scenario === "camera_unavailable") {
+  if (options.scenario === "camera_unavailable") {
     sendServerMessage(
       socket,
       createErrorMessage({
-        sessionId,
         code: "camera_unavailable",
         message: "模拟摄像头不可用",
         retryable: true,
@@ -191,35 +173,20 @@ async function handleStartProfile(
     return;
   }
 
-  sendServerMessage(socket, createProgressMessage(sessionId));
-
-  if (scenario === "timeout") return;
-
-  await delay(options.responseDelayMs);
-
-  if (scenario === "no_person") {
-    sendServerMessage(
-      socket,
-      createErrorMessage({
-        sessionId,
-        code: "no_person",
-        message: "模拟场景未检测到人",
-        retryable: true,
-      }),
-    );
+  if (options.scenario === "no_person") {
     return;
   }
 
-  sendServerMessage(socket, createResultMessage(sessionId));
+  sendServerMessage(socket, createResultMessage());
 }
 
-async function handleClientRawMessage(
+function handleClientRawMessage(
   socket: WebSocket,
   data: RawData,
   options: Required<
-    Pick<MockVisionServerOptions, "scenario" | "responseDelayMs">
+    Pick<MockVisionServerOptions, "scenario" | "pushIntervalMs">
   >,
-): Promise<void> {
+): void {
   const message = parseClientMessage(data);
   if (!message) {
     sendServerMessage(
@@ -236,23 +203,10 @@ async function handleClientRawMessage(
   switch (message.type) {
     case "vision.hello":
       sendServerMessage(socket, createReadyMessage());
+      void pushScenarioEvents(socket, options);
       return;
     case "vision.ping":
       sendServerMessage(socket, createPongMessage());
-      return;
-    case "vision.cancel":
-      sendServerMessage(
-        socket,
-        createErrorMessage({
-          sessionId: message.payload.sessionId,
-          code: "cancelled",
-          message: `模拟视觉任务已取消：${message.payload.reason}`,
-          retryable: true,
-        }),
-      );
-      return;
-    case "vision.start_profile":
-      await handleStartProfile(socket, message, options);
       return;
   }
 }
@@ -280,12 +234,12 @@ export function startMockVisionServer(
   const port = options.port ?? DEFAULT_PORT;
   const wsPath = options.path ?? DEFAULT_PATH;
   const scenario = options.scenario ?? "success";
-  const responseDelayMs = options.responseDelayMs ?? DEFAULT_RESPONSE_DELAY_MS;
+  const pushIntervalMs = options.pushIntervalMs ?? DEFAULT_PUSH_INTERVAL_MS;
   const server = new WebSocketServer({ host, port, path: wsPath });
 
   server.on("connection", (socket) => {
     socket.on("message", (data) => {
-      void handleClientRawMessage(socket, data, { scenario, responseDelayMs });
+      handleClientRawMessage(socket, data, { scenario, pushIntervalMs });
     });
   });
 
@@ -331,9 +285,9 @@ function parsePort(value: string | undefined): number {
   return parsed;
 }
 
-function parseDelay(value: string | undefined): number {
-  const parsed = Number(value ?? DEFAULT_RESPONSE_DELAY_MS);
-  if (!Number.isFinite(parsed) || parsed < 0) return DEFAULT_RESPONSE_DELAY_MS;
+function parsePushInterval(value: string | undefined): number {
+  const parsed = Number(value ?? DEFAULT_PUSH_INTERVAL_MS);
+  if (!Number.isFinite(parsed) || parsed < 0) return DEFAULT_PUSH_INTERVAL_MS;
   return parsed;
 }
 
@@ -357,7 +311,7 @@ if (isCliEntrypoint()) {
     port: parsePort(process.env.VISION_MOCK_PORT),
     path: process.env.VISION_MOCK_PATH ?? DEFAULT_PATH,
     scenario: parseScenario(process.env.VISION_MOCK_SCENARIO),
-    responseDelayMs: parseDelay(process.env.VISION_MOCK_RESPONSE_DELAY_MS),
+    pushIntervalMs: parsePushInterval(process.env.VISION_MOCK_PUSH_INTERVAL_MS),
   });
 
   void server.ready

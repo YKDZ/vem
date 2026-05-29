@@ -3,10 +3,7 @@ import {
   VISION_PROTOCOL,
   visionProfileResultPayloadSchema,
   visionReadyPayloadSchema,
-  visionRequestedFieldSchema,
-  visionSensorSnapshotSchema,
   visionServerMessageSchema,
-  visionTriggerSchema,
   type VisionClientMessage,
   type VisionErrorMessage,
   type VisionProfile,
@@ -32,28 +29,23 @@ export const visionSelfCheckResultSchema = z.object({
   ready: visionReadyPayloadSchema.nullable().optional(),
 });
 
-export const visionProfileRequestInputSchema = z.object({
-  sessionId: z.string().min(1).max(128),
-  trigger: visionTriggerSchema.default("human_presence"),
-  timeoutMs: z.int().min(1000).max(30_000).default(8000),
-  requested: z
-    .array(visionRequestedFieldSchema)
-    .default(["heightCm", "bodyType", "ageRange", "gender"]),
-  sensorSnapshot: visionSensorSnapshotSchema.optional(),
-});
-
 export type VisionRuntimeStatus = z.infer<typeof visionRuntimeStatusSchema>;
 export type VisionSelfCheckResult = z.infer<typeof visionSelfCheckResultSchema>;
-export type VisionProfileRequestInput = z.input<
-  typeof visionProfileRequestInputSchema
->;
-type ParsedVisionProfileRequestInput = z.output<
-  typeof visionProfileRequestInputSchema
->;
 export type VisionProfileResultPayload = z.infer<
   typeof visionProfileResultPayloadSchema
 >;
 export type { VisionProfile };
+
+export interface VisionProfileSubscriptionHandlers {
+  onReady?: (ready: z.infer<typeof visionReadyPayloadSchema>) => void;
+  onProfile: (payload: VisionProfileResultPayload) => void | Promise<void>;
+  onError?: (error: Error) => void;
+  onStatus?: (message: string) => void;
+}
+
+export interface VisionProfileSubscription {
+  close: () => void;
+}
 
 const CONNECT_TIMEOUT_MS = 3000;
 
@@ -78,21 +70,8 @@ function createHelloMessage(machineCode: string | null): VisionClientMessage {
       clientRole: "machine",
       machineCode,
       protocolVersion: 1,
-      capabilities: ["single_profile_inference"],
+      capabilities: ["profile_push"],
     },
-  } satisfies VisionClientMessage;
-  return message;
-}
-
-function createStartProfileMessage(
-  input: ParsedVisionProfileRequestInput,
-): VisionClientMessage {
-  const message = {
-    protocol: VISION_PROTOCOL,
-    type: "vision.start_profile",
-    messageId: createMessageId("start"),
-    timestamp: nowIso(),
-    payload: input,
   } satisfies VisionClientMessage;
   return message;
 }
@@ -103,12 +82,6 @@ function serializeClientMessage(message: VisionClientMessage): string {
 
 function socketUrl(config: MachineConfig): string {
   return config.visionWsUrl || DEFAULT_VISION_WS_URL;
-}
-
-function remainingMs(deadlineMs: number): number {
-  const remaining = deadlineMs - Date.now();
-  if (remaining <= 0) throw new Error("vision request timed out");
-  return remaining;
 }
 
 async function openVisionSocket(
@@ -194,32 +167,6 @@ function errorFromVisionMessage(message: VisionErrorMessage): Error {
   );
 }
 
-async function waitForReadyUntil(
-  socket: WebSocket,
-  deadlineMs: number,
-): Promise<void> {
-  const message = await nextServerMessage(socket, remainingMs(deadlineMs));
-  if (message.type === "vision.error") throw errorFromVisionMessage(message);
-  if (message.type === "vision.ready") {
-    if (!message.payload.cameraReady || !message.payload.modelReady) {
-      throw new Error("vision module is not ready");
-    }
-    if (message.payload.busy) throw new Error("vision module is busy");
-    return;
-  }
-  await waitForReadyUntil(socket, deadlineMs);
-}
-
-async function waitForProfileResultUntil(
-  socket: WebSocket,
-  deadlineMs: number,
-): Promise<VisionProfileResultPayload> {
-  const message = await nextServerMessage(socket, remainingMs(deadlineMs));
-  if (message.type === "vision.error") throw errorFromVisionMessage(message);
-  if (message.type === "vision.profile_result") return message.payload;
-  return await waitForProfileResultUntil(socket, deadlineMs);
-}
-
 function closeSocket(socket: WebSocket): void {
   if (
     socket.readyState === WebSocket.CONNECTING ||
@@ -257,30 +204,6 @@ async function visionSelfCheckBrowser(
       checkedAtMs: Date.now(),
       ready: message.payload,
     };
-  } finally {
-    closeSocket(socket);
-  }
-}
-
-async function requestVisionProfileBrowser(
-  config: MachineConfig,
-  input: VisionProfileRequestInput,
-): Promise<VisionProfileResultPayload> {
-  if (!config.visionEnabled) throw new Error("vision module is disabled");
-
-  const parsed = visionProfileRequestInputSchema.parse(input);
-  const socket = await openVisionSocket(
-    socketUrl(config),
-    Math.min(CONNECT_TIMEOUT_MS, parsed.timeoutMs),
-  );
-  try {
-    socket.send(serializeClientMessage(createHelloMessage(config.machineCode)));
-    await waitForReadyUntil(socket, Date.now() + CONNECT_TIMEOUT_MS);
-    socket.send(serializeClientMessage(createStartProfileMessage(parsed)));
-    return await waitForProfileResultUntil(
-      socket,
-      Date.now() + parsed.timeoutMs,
-    );
   } finally {
     closeSocket(socket);
   }
@@ -330,14 +253,84 @@ export async function visionSelfCheck(
   return visionSelfCheckResultSchema.parse(result);
 }
 
-export async function requestVisionProfile(
+export function subscribeVisionProfiles(
   config: MachineConfig,
-  input: VisionProfileRequestInput,
-): Promise<VisionProfileResultPayload> {
-  if (!isTauriRuntime())
-    return await requestVisionProfileBrowser(config, input);
-  const result = await callTauriCommand<unknown>("request_vision_profile", {
-    input: visionProfileRequestInputSchema.parse(input),
-  });
-  return visionProfileResultPayloadSchema.parse(result);
+  handlers: VisionProfileSubscriptionHandlers,
+): VisionProfileSubscription {
+  if (!config.visionEnabled) {
+    handlers.onStatus?.("视觉模块未启用");
+    return { close: () => undefined };
+  }
+
+  let closed = false;
+  let socket: WebSocket | null = null;
+
+  const handleServerMessage = (message: VisionServerMessage): void => {
+    if (message.type === "vision.ready") {
+      handlers.onReady?.(message.payload);
+      handlers.onStatus?.(
+        `视觉模块就绪：${message.payload.serverName} ${message.payload.serverVersion}`,
+      );
+      return;
+    }
+    if (message.type === "vision.profile_result") {
+      void Promise.resolve(handlers.onProfile(message.payload)).catch(
+        (error: unknown) => {
+          handlers.onError?.(
+            error instanceof Error ? error : new Error(String(error)),
+          );
+        },
+      );
+      return;
+    }
+    if (message.type === "vision.error") {
+      handlers.onError?.(errorFromVisionMessage(message));
+    }
+  };
+
+  const connect = async (): Promise<void> => {
+    try {
+      socket = await openVisionSocket(socketUrl(config));
+      if (closed) {
+        closeSocket(socket);
+        return;
+      }
+      socket.addEventListener("message", (event) => {
+        if (typeof event.data !== "string") {
+          handlers.onError?.(
+            new Error("vision websocket returned a non-text frame"),
+          );
+          return;
+        }
+        try {
+          const decoded: unknown = JSON.parse(event.data);
+          handleServerMessage(visionServerMessageSchema.parse(decoded));
+        } catch (error) {
+          handlers.onError?.(
+            error instanceof Error ? error : new Error(String(error)),
+          );
+        }
+      });
+      socket.addEventListener("error", () => {
+        handlers.onError?.(new Error("vision websocket error"));
+      });
+      socket.send(
+        serializeClientMessage(createHelloMessage(config.machineCode)),
+      );
+      handlers.onStatus?.("已连接机器视觉模块，等待识别结果推送");
+    } catch (error) {
+      handlers.onError?.(
+        error instanceof Error ? error : new Error(String(error)),
+      );
+    }
+  };
+
+  void connect();
+
+  return {
+    close: () => {
+      closed = true;
+      if (socket) closeSocket(socket);
+    },
+  };
 }
