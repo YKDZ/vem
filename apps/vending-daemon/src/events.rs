@@ -15,10 +15,16 @@ pub enum DaemonEvent {
         updated_at: String,
         snapshot: vending_core::health::ReadySnapshot,
     },
+    ScannerHealthChanged {
+        event_id: String,
+        updated_at: String,
+        snapshot: vending_core::scanner::ScannerHealthSnapshot,
+    },
     ScannerCode {
         event_id: String,
         updated_at: String,
         masked_code: String,
+        source: String,
         scanned_at_ms: u128,
     },
     TransactionChanged {
@@ -58,11 +64,13 @@ mod tests {
             event_id: "evt-1".to_string(),
             updated_at: "2025-01-01T00:00:00.000Z".to_string(),
             masked_code: "6212****3456".to_string(),
+            source: "serial_text".to_string(),
             scanned_at_ms: 123,
         };
         let value = serde_json::to_string(&event).expect("serialize");
         assert!(!value.contains("authCode"));
         assert!(value.contains("maskedCode"));
+        assert!(value.contains("serial_text"));
         assert!(value.contains("scannedAtMs"));
     }
 }

@@ -73,7 +73,7 @@ describe("PaymentCodeAttemptsService", () => {
       machineCode: "M001",
       authCode: "28763443825664394",
       idempotencyKey: "idem-1",
-      source: "tauri_scanner",
+      source: "serial_text",
     });
 
     expect(result.replayed).toBe(true);
@@ -128,7 +128,7 @@ describe("PaymentCodeAttemptsService", () => {
         machineCode: "M001",
         authCode: "28763443825664394",
         idempotencyKey: "idem-2",
-        source: "tauri_scanner",
+        source: "serial_text",
       }),
     ).rejects.toThrow(
       new ConflictException("payment_code_attempt_in_progress"),
@@ -193,12 +193,25 @@ describe("PaymentCodeAttemptsService", () => {
       machineCode: "M001",
       authCode: "28763443825664394",
       idempotencyKey: "idem-3",
-      source: "tauri_scanner",
+      source: "serial_text",
+      scannerHealthJson: {
+        online: true,
+        adapter: "serial_text",
+        port: "/dev/ttyUSB1",
+        message: "scanner ready",
+      },
     });
 
     expect(insertedValues).toBeDefined();
     expect(insertedValues?.["authCodeHash"]).toMatch(/^[a-f0-9]{64}$/);
     expect(insertedValues?.["authCodeMasked"]).toBe("2876****4394");
+    expect(insertedValues?.["source"]).toBe("serial_text");
+    expect(insertedValues?.["scannerHealthJson"]).toEqual({
+      online: true,
+      adapter: "serial_text",
+      port: "/dev/ttyUSB1",
+      message: "scanner ready",
+    });
     expect(insertedValues).not.toHaveProperty("authCode");
     expect(JSON.stringify(insertedValues)).not.toContain("28763443825664394");
   });

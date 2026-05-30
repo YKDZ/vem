@@ -23,8 +23,6 @@ pub enum HardwareAdapterKind {
 pub enum ScannerAdapterKind {
     Disabled,
     SerialText,
-    KeyboardHid,
-    WebSerialDev,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

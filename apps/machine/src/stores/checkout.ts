@@ -235,6 +235,7 @@ export const useCheckoutStore = defineStore("checkout", {
       };
 
       const nextAction = normalizeNextAction(snapshot.nextAction);
+      const attempt = snapshot.paymentCodeAttempt;
       this.status = {
         orderId: snapshot.orderId ?? snapshot.orderNo,
         orderNo: snapshot.orderNo,
@@ -252,17 +253,29 @@ export const useCheckoutStore = defineStore("checkout", {
           failedReason: snapshot.errorMessage,
           providerCode,
         },
-        paymentCodeAttempt: snapshot.maskedAuthCode
+        paymentCodeAttempt: attempt
           ? {
-              attemptNo: 1,
-              status: "querying",
-              maskedAuthCode: snapshot.maskedAuthCode,
-              source: null,
-              idempotencyKey: null,
-              submittedAt: null,
-              lastCheckedAt: null,
-              canRetry: false,
-              message: snapshot.operatorHint,
+              attemptNo: attempt.attemptNo ?? 1,
+              status:
+                attempt.status === "failed" ||
+                attempt.status === "succeeded" ||
+                attempt.status === "user_confirming" ||
+                attempt.status === "querying"
+                  ? attempt.status
+                  : "querying",
+              maskedAuthCode: attempt.maskedAuthCode,
+              source:
+                attempt.source === "serial_text" ||
+                attempt.source === "tauri_scanner" ||
+                attempt.source === "browser_test" ||
+                attempt.source === "manual_dev"
+                  ? attempt.source
+                  : null,
+              idempotencyKey: attempt.idempotencyKey,
+              submittedAt: attempt.submittedAt,
+              lastCheckedAt: attempt.lastCheckedAt,
+              canRetry: attempt.canRetry,
+              message: attempt.message ?? snapshot.operatorHint,
             }
           : null,
         vending: snapshot.vending
@@ -281,9 +294,11 @@ export const useCheckoutStore = defineStore("checkout", {
       };
 
       this.paymentCodeMessage =
-        snapshot.operatorHint ?? this.paymentCodeMessage;
+        attempt?.message ?? snapshot.operatorHint ?? this.paymentCodeMessage;
       this.paymentCodeLastMasked =
-        snapshot.maskedAuthCode ?? this.paymentCodeLastMasked;
+        attempt?.maskedAuthCode ??
+        snapshot.maskedAuthCode ??
+        this.paymentCodeLastMasked;
       this.nowMs = Date.now();
 
       if (nextAction === "dispensing") {

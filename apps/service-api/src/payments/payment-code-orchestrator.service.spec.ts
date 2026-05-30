@@ -153,7 +153,7 @@ describe("PaymentCodeOrchestratorService", () => {
       machineCode: "M001",
       authCode: "28763443825664394",
       idempotencyKey: "idem-1",
-      source: "tauri_scanner",
+      source: "serial_text",
       clientIp: "127.0.0.1",
     });
 
@@ -238,7 +238,7 @@ describe("PaymentCodeOrchestratorService", () => {
       machineCode: "M001",
       authCode: "28763443825664394",
       idempotencyKey: "idem-replay",
-      source: "tauri_scanner",
+      source: "serial_text",
       clientIp: "127.0.0.1",
     });
 

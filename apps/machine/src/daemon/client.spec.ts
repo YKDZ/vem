@@ -158,9 +158,27 @@ describe("DaemonApiClient", () => {
     const socket = MockWebSocket.instances[0];
     socket.onmessage?.({
       data: JSON.stringify({
+        type: "scanner_health_changed",
+        eventId: "h1",
+        updatedAt: "2026-01-01T00:00:00Z",
+        snapshot: {
+          online: true,
+          adapter: "serial_text",
+          port: "COM4",
+          level: "ok",
+          code: "SCANNER_READY",
+          message: "scanner ready",
+          updatedAt: "2026-01-01T00:00:00Z",
+        },
+      }),
+    });
+    socket.onmessage?.({
+      data: JSON.stringify({
         type: "scanner_code",
         eventId: "e1",
+        updatedAt: "2026-01-01T00:00:01Z",
         maskedCode: "6212****9012",
+        source: "serial_text",
         scannedAtMs: 1,
       }),
     });
@@ -168,12 +186,14 @@ describe("DaemonApiClient", () => {
       data: JSON.stringify({
         type: "scanner_code",
         eventId: "e1",
+        updatedAt: "2026-01-01T00:00:01Z",
         maskedCode: "6212****9012",
+        source: "serial_text",
         scannedAtMs: 1,
       }),
     });
 
-    expect(events).toEqual(["scanner_code"]);
+    expect(events).toEqual(["scanner_health_changed", "scanner_code"]);
     expect(onError).not.toHaveBeenCalled();
     subscription.close();
     socket.onmessage?.({
@@ -185,7 +205,7 @@ describe("DaemonApiClient", () => {
         lastError: null,
       }),
     });
-    expect(events).toEqual(["scanner_code"]);
+    expect(events).toEqual(["scanner_health_changed", "scanner_code"]);
   });
 
   it("does not reconnect after close", async () => {

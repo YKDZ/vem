@@ -141,15 +141,16 @@ pub async fn run_console_with_token(
     );
     let scanner = tokio::spawn(scanner_runtime.run());
     let stop_token = runtime.shutdown_token();
-    let payment_watcher = tokio::spawn(run_payment_code_watcher(
+    let payment_watcher = tokio::spawn(run_payment_code_watcher(PaymentCodeWatcherInput {
         rx_raw,
-        state.clone(),
-        events_tx.clone(),
-        runtime_config.public.machine_code.clone(),
-        runtime_config.public.api_base_url.clone(),
-        runtime_secrets.machine_secret.clone(),
-        stop_token.clone(),
-    ));
+        state: state.clone(),
+        events: events_tx.clone(),
+        scanner_status: ipc_ctx.ui.status_cache.scanner.clone(),
+        machine_code: runtime_config.public.machine_code.clone(),
+        api_base_url: runtime_config.public.api_base_url.clone(),
+        machine_secret: runtime_secrets.machine_secret.clone(),
+        shutdown: stop_token.clone(),
+    }));
 
     let vision = VisionSupervisor::new(runtime_config.public.clone());
     let vision_events = events_tx.clone();
@@ -234,15 +235,28 @@ fn maybe_spawn_mqtt_task(
     Ok(Some(tokio::spawn(Arc::new(mqtt).run(event_loop))))
 }
 
-async fn run_payment_code_watcher(
-    mut raw_codes: mpsc::Receiver<vending_core::scanner::RawPaymentCode>,
+struct PaymentCodeWatcherInput {
+    rx_raw: mpsc::Receiver<vending_core::scanner::RawPaymentCode>,
     state: LocalStateStore,
     events: broadcast::Sender<DaemonEvent>,
+    scanner_status: Arc<tokio::sync::RwLock<vending_core::scanner::ScannerHealthSnapshot>>,
     machine_code: Option<String>,
     api_base_url: String,
     machine_secret: Option<String>,
     shutdown: CancellationToken,
-) -> Result<(), String> {
+}
+
+async fn run_payment_code_watcher(input: PaymentCodeWatcherInput) -> Result<(), String> {
+    let PaymentCodeWatcherInput {
+        mut rx_raw,
+        state,
+        events,
+        scanner_status,
+        machine_code,
+        api_base_url,
+        machine_secret,
+        shutdown,
+    } = input;
     let Some(machine_code) = machine_code else {
         return Ok(());
     };
@@ -261,7 +275,7 @@ async fn run_payment_code_watcher(
     loop {
         tokio::select! {
             _ = shutdown.cancelled() => return Ok(()),
-            code = raw_codes.recv() => {
+            code = rx_raw.recv() => {
                 let code = match code {
                     Some(code) => code,
                     None => return Ok(()),
@@ -270,10 +284,23 @@ async fn run_payment_code_watcher(
                     Ok(Some(snapshot)) => snapshot,
                     _ => continue,
                 };
-                let Some(order_no) = snapshot.order_no else {
+                let Some(_order_no) = snapshot.order_no else {
                     continue;
                 };
-                let _ = machine_state.submit_payment_code(&order_no, code, "scanner").await;
+                let scanner_health = scanner_status.read().await.clone();
+                if !scanner_health.online
+                    || scanner_health.adapter
+                        != vending_core::scanner::PAYMENT_CODE_SOURCE_SERIAL_TEXT
+                {
+                    continue;
+                }
+                let _ = machine_state
+                    .submit_payment_code(
+                        code,
+                        vending_core::scanner::PAYMENT_CODE_SOURCE_SERIAL_TEXT,
+                        Some(scanner_health),
+                    )
+                    .await;
             }
         }
     }
@@ -327,9 +354,12 @@ async fn cache_daemon_events(
                 cache.message = message;
                 cache.updated_at = updated_at;
             }
+            DaemonEvent::ScannerHealthChanged { snapshot, .. } => {
+                let mut cache = status_cache.scanner.write().await;
+                *cache = snapshot;
+            }
             DaemonEvent::ScannerCode { masked_code, .. } => {
                 let mut cache = status_cache.scanner.write().await;
-                cache.online = true;
                 cache.message = format!("last code {masked_code}");
                 cache.updated_at = updated_at;
             }

@@ -12,7 +12,6 @@ use axum::{
     Router,
 };
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use chrono::Utc;
 use tokio::sync::{broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
 
@@ -24,15 +23,6 @@ use crate::{
     state::LocalStateStore,
     transaction::TransactionStateMachine,
 };
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ScannerStatusSnapshot {
-    pub online: bool,
-    pub adapter: String,
-    pub message: String,
-    pub updated_at: String,
-}
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -56,7 +46,7 @@ pub struct CatalogSnapshot {
 #[derive(Clone)]
 pub struct RuntimeStatusCache {
     pub sync: Arc<tokio::sync::RwLock<vending_core::domain::SyncStatusSnapshot>>,
-    pub scanner: Arc<tokio::sync::RwLock<ScannerStatusSnapshot>>,
+    pub scanner: Arc<tokio::sync::RwLock<vending_core::scanner::ScannerHealthSnapshot>>,
     pub vision: Arc<tokio::sync::RwLock<VisionStatusSnapshot>>,
     pub catalog: Arc<tokio::sync::RwLock<CatalogSnapshot>>,
 }
@@ -85,15 +75,20 @@ impl RuntimeStatusCache {
                     tls_auth_status: None,
                 },
             )),
-            scanner: Arc::new(tokio::sync::RwLock::new(ScannerStatusSnapshot {
-                online: false,
-                adapter: serde_json::to_value(&public.scanner_adapter)
-                    .ok()
-                    .and_then(|value| value.as_str().map(ToString::to_string))
-                    .unwrap_or_else(|| "unknown".to_string()),
-                message: "unknown".to_string(),
-                updated_at: crate::state::store::now_iso(),
-            })),
+            scanner: Arc::new(tokio::sync::RwLock::new(
+                vending_core::scanner::ScannerHealthSnapshot {
+                    online: false,
+                    adapter: serde_json::to_value(&public.scanner_adapter)
+                        .ok()
+                        .and_then(|value| value.as_str().map(ToString::to_string))
+                        .unwrap_or_else(|| "unknown".to_string()),
+                    port: public.scanner_serial_port_path.clone(),
+                    level: vending_core::health::HealthLevel::Offline,
+                    code: "SCANNER_INITIALIZING".to_string(),
+                    message: "scanner runtime initializing".to_string(),
+                    updated_at: crate::state::store::now_iso(),
+                },
+            )),
             vision: Arc::new(tokio::sync::RwLock::new(VisionStatusSnapshot {
                 enabled: public.vision_enabled,
                 online: false,
@@ -143,10 +138,6 @@ pub fn build_router(ctx: IpcContext) -> Router {
         .route("/v1/catalog", get(catalog_snapshot).post(refresh_catalog))
         .route("/v1/payment-options", get(payment_options))
         .route("/v1/intents/create-order", post(create_order_intent))
-        .route(
-            "/v1/intents/submit-payment-code",
-            post(submit_payment_code_intent),
-        )
         .route(
             "/v1/intents/dev-submit-payment-code",
             post(dev_submit_payment_code_intent),
@@ -299,11 +290,25 @@ struct EventQuery {
     token: Option<String>,
 }
 
-async fn healthz() -> impl IntoResponse {
-    Json(serde_json::json!({
-        "status": "ok",
-        "now": Utc::now().to_rfc3339(),
-    }))
+async fn healthz(State(ctx): State<IpcContext>) -> impl IntoResponse {
+    let agg = crate::health::HealthAggregator::new(ctx.state.clone());
+    let mut snapshot = agg.health_snapshot().await;
+    let scanner = ctx.ui.status_cache.scanner.read().await.clone();
+    snapshot.scanner_online = scanner.online;
+    snapshot
+        .components
+        .push(vending_core::health::ComponentHealth {
+            component: "scanner".to_string(),
+            level: scanner.level.clone(),
+            code: scanner.code.clone(),
+            message: scanner.message.clone(),
+            updated_at: scanner.updated_at.clone(),
+        });
+    if !scanner.online {
+        snapshot.status = vending_core::health::DaemonUiStatus::Degraded;
+        snapshot.operator_reason = scanner.code.clone();
+    }
+    Json(snapshot)
 }
 
 async fn readyz(State(ctx): State<IpcContext>) -> impl IntoResponse {
@@ -413,16 +418,51 @@ async fn dev_submit_payment_code_intent(
             .into_response();
     }
 
+    let current = match ctx.ui.transaction.restore_current().await {
+        Ok(Some(snapshot)) => snapshot,
+        Ok(None) => {
+            return (
+                StatusCode::CONFLICT,
+                Json(ErrorMessage {
+                    code: "transaction_missing",
+                    message: "no active transaction".to_string(),
+                }),
+            )
+                .into_response();
+        }
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorMessage {
+                    code: "transaction_read_failed",
+                    message: error,
+                }),
+            )
+                .into_response();
+        }
+    };
+    if current.order_no.as_deref() != Some(input.order_no.as_str()) {
+        return (
+            StatusCode::CONFLICT,
+            Json(ErrorMessage {
+                code: "transaction_mismatch",
+                message: "input order does not match current transaction".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
     let auth_code = input.auth_code;
     let code = vending_core::scanner::RawPaymentCode {
         auth_code: auth_code.clone(),
         masked_code: vending_core::scanner::mask_code(&auth_code),
+        scanned_at_ms: crate::state::store::now_millis(),
     };
 
     if let Err(error) = ctx
         .ui
         .transaction
-        .submit_payment_code(&input.order_no, code, &input.source)
+        .submit_payment_code(code, &input.source, None)
         .await
     {
         return (
@@ -437,74 +477,11 @@ async fn dev_submit_payment_code_intent(
 
     match ctx.ui.transaction.restore_current().await {
         Ok(Some(snapshot)) => (StatusCode::OK, Json(snapshot)).into_response(),
-        Ok(None) => (
-            StatusCode::OK,
-            Json(vending_core::domain::TransactionSnapshot {
-                order_no: None,
-                status: None,
-                next_action: None,
-                updated_at: crate::state::store::now_iso(),
-            }),
-        )
-            .into_response(),
+        Ok(None) => (StatusCode::OK, Json(empty_current_transaction_snapshot())).into_response(),
         Err(error) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorMessage {
                 code: "transaction_read_failed",
-                message: error,
-            }),
-        )
-            .into_response(),
-    }
-}
-
-async fn submit_payment_code_intent(
-    State(ctx): State<IpcContext>,
-    headers: HeaderMap,
-    Json(input): Json<SubmitPayment>,
-) -> impl IntoResponse {
-    if let Err((status, error)) = require_token(&headers, &ctx.token).await {
-        return (status, error).into_response();
-    }
-
-    let auth_code = input.auth_code;
-    let masked_code = vending_core::scanner::mask_code(&auth_code);
-    let code = vending_core::scanner::RawPaymentCode {
-        auth_code,
-        masked_code,
-    };
-
-    match ctx
-        .ui
-        .transaction
-        .submit_payment_code(&input.order_no, code, &input.source)
-        .await
-    {
-        Ok(()) => match ctx.ui.transaction.restore_current().await {
-            Ok(Some(snapshot)) => (StatusCode::OK, Json(snapshot)).into_response(),
-            Ok(None) => (
-                StatusCode::OK,
-                Json(vending_core::domain::TransactionSnapshot {
-                    order_no: None,
-                    status: None,
-                    next_action: None,
-                    updated_at: crate::state::store::now_iso(),
-                }),
-            )
-                .into_response(),
-            Err(error) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorMessage {
-                    code: "transaction_read_failed",
-                    message: error,
-                }),
-            )
-                .into_response(),
-        },
-        Err(error) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorMessage {
-                code: "submit_payment_code_failed",
                 message: error,
             }),
         )
@@ -519,15 +496,9 @@ async fn current_transaction(
     if let Err((status, error)) = require_token(&headers, &ctx.token).await {
         return (status, error).into_response();
     }
-    match ctx.state.current_order_session_snapshot().await {
+    match ctx.state.current_transaction_snapshot().await {
         Ok(Some(snapshot)) => Json(snapshot).into_response(),
-        Ok(None) => Json(vending_core::domain::TransactionSnapshot {
-            order_no: None,
-            status: None,
-            next_action: None,
-            updated_at: crate::state::store::now_iso(),
-        })
-        .into_response(),
+        Ok(None) => Json(empty_current_transaction_snapshot()).into_response(),
         Err(error) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorMessage {
@@ -632,7 +603,54 @@ async fn payment_options(State(ctx): State<IpcContext>, headers: HeaderMap) -> i
     }
 
     match ctx.ui.backend.get_payment_options().await {
-        Ok(payload) => (StatusCode::OK, Json(payload)).into_response(),
+        Ok(mut payload) => {
+            let scanner = ctx.ui.status_cache.scanner.read().await.clone();
+            let mut default_option_key = serde_json::Value::Null;
+            let mut default_provider_code = serde_json::Value::Null;
+            if let Some(options) = payload
+                .get_mut("options")
+                .and_then(|value| value.as_array_mut())
+            {
+                for option in options.iter_mut() {
+                    let is_payment_code = option.get("method").and_then(|value| value.as_str())
+                        == Some("payment_code");
+                    if is_payment_code
+                        && (!scanner.online
+                            || scanner.adapter
+                                != vending_core::scanner::PAYMENT_CODE_SOURCE_SERIAL_TEXT
+                            || scanner.code != "SCANNER_READY")
+                    {
+                        if let Some(map) = option.as_object_mut() {
+                            map.insert("disabled".to_string(), serde_json::Value::Bool(true));
+                            map.insert(
+                                "disabledReason".to_string(),
+                                serde_json::Value::String(format!(
+                                    "扫码器不可用：{}",
+                                    scanner.message
+                                )),
+                            );
+                        }
+                    }
+                }
+                let first_enabled = options.iter().find(|option| {
+                    !option
+                        .get("disabled")
+                        .and_then(|value| value.as_bool())
+                        .unwrap_or(false)
+                });
+                default_option_key = first_enabled
+                    .and_then(|option| option.get("optionKey"))
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null);
+                default_provider_code = first_enabled
+                    .and_then(|option| option.get("providerCode"))
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null);
+            }
+            payload["defaultOptionKey"] = default_option_key;
+            payload["defaultProviderCode"] = default_provider_code;
+            (StatusCode::OK, Json(payload)).into_response()
+        }
         Err(error) => (
             StatusCode::BAD_REQUEST,
             Json(ErrorMessage {
@@ -667,6 +685,30 @@ async fn scanner_status(State(ctx): State<IpcContext>, headers: HeaderMap) -> im
 
     let snapshot = ctx.ui.status_cache.scanner.read().await.clone();
     (StatusCode::OK, Json(snapshot)).into_response()
+}
+
+fn empty_current_transaction_snapshot() -> vending_core::domain::CurrentTransactionSnapshot {
+    vending_core::domain::CurrentTransactionSnapshot {
+        order_id: None,
+        order_no: None,
+        product_summary: None,
+        payment_no: None,
+        payment_method: None,
+        payment_provider: None,
+        payment_url: None,
+        payment_status: None,
+        order_status: None,
+        total_amount_cents: None,
+        vending: None,
+        next_action: None,
+        masked_auth_code: None,
+        payment_code_attempt: None,
+        expires_at: None,
+        error_code: None,
+        error_message: None,
+        operator_hint: None,
+        updated_at: crate::state::store::now_iso(),
+    }
 }
 
 async fn hardware_self_check(

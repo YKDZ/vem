@@ -8,12 +8,7 @@ export const hardwareAdapterSchema = z.enum([
   "vendor_sdk",
 ]);
 
-export const scannerAdapterSchema = z.enum([
-  "disabled",
-  "serial_text",
-  "keyboard_hid",
-  "web_serial_dev",
-]);
+export const scannerAdapterSchema = z.enum(["disabled", "serial_text"]);
 
 export const machineConfigSchema = z
   .object({

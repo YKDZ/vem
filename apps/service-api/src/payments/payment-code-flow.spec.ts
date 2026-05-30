@@ -457,7 +457,7 @@ function makeFlowHarness(overrides?: {
         currency: "CNY",
         authCodeHash: "hash:18",
         authCodeMasked: "2876****4394",
-        source: "tauri_scanner",
+        source: "serial_text",
         scannerHealthJson: null,
         providerTradeNo: "ALI-TXN-SEEDED",
         providerStatus: null,
@@ -520,7 +520,13 @@ describe("payment code flow", () => {
       machineCode: "M-001",
       authCode: FLOW_AUTH_CODE,
       idempotencyKey: "idem-success",
-      source: "tauri_scanner",
+      source: "serial_text",
+      scannerHealth: {
+        online: true,
+        adapter: "serial_text",
+        port: "/dev/ttyUSB1",
+        message: "scanner ready",
+      },
       clientIp: "127.0.0.1",
     });
     const replay = await service.submit({
@@ -528,7 +534,13 @@ describe("payment code flow", () => {
       machineCode: "M-001",
       authCode: FLOW_AUTH_CODE,
       idempotencyKey: "idem-success",
-      source: "tauri_scanner",
+      source: "serial_text",
+      scannerHealth: {
+        online: true,
+        adapter: "serial_text",
+        port: "/dev/ttyUSB1",
+        message: "scanner ready",
+      },
       clientIp: "127.0.0.1",
     });
 
@@ -560,7 +572,13 @@ describe("payment code flow", () => {
       machineCode: "M-001",
       authCode: FLOW_AUTH_CODE,
       idempotencyKey: "idem-failed",
-      source: "tauri_scanner",
+      source: "serial_text",
+      scannerHealth: {
+        online: true,
+        adapter: "serial_text",
+        port: "/dev/ttyUSB1",
+        message: "scanner ready",
+      },
       clientIp: "127.0.0.1",
     });
 
@@ -586,7 +604,13 @@ describe("payment code flow", () => {
         machineCode: "M-001",
         authCode: FLOW_AUTH_CODE,
         idempotencyKey: "idem-active-new",
-        source: "tauri_scanner",
+        source: "serial_text",
+        scannerHealth: {
+          online: true,
+          adapter: "serial_text",
+          port: "/dev/ttyUSB1",
+          message: "scanner ready",
+        },
         clientIp: "127.0.0.1",
       }),
     ).rejects.toThrow(ConflictException);
@@ -658,7 +682,13 @@ describe("payment code flow", () => {
       machineCode: "M-001",
       authCode: FLOW_AUTH_CODE,
       idempotencyKey: "idem-manual",
-      source: "tauri_scanner",
+      source: "serial_text",
+      scannerHealth: {
+        online: true,
+        adapter: "serial_text",
+        port: "/dev/ttyUSB1",
+        message: "scanner ready",
+      },
       clientIp: "127.0.0.1",
     });
 

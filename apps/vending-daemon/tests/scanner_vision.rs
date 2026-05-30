@@ -1,12 +1,20 @@
 mod support;
 
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc,
+};
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use portpicker::pick_unused_port;
+use reqwest::Client;
+use serde_json::json;
 use support::{process::DaemonHarness, pty::PtyHarness, sensitive, sqlite};
 use tokio::{net::TcpListener, task::JoinHandle};
 use tokio_tungstenite::{accept_async, tungstenite::Message};
+use wiremock::matchers::{header, method, path};
+use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
 fn scanner_config(scanner_path: String) -> serde_json::Value {
     serde_json::json!({
@@ -44,7 +52,11 @@ async fn scanner_code_is_masked_in_events_and_not_persisted_plaintext() {
 
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     let scanner = daemon.get_json("/v1/scanner/status").await;
+    assert_eq!(scanner["adapter"], "serial_text");
+    assert_eq!(scanner["online"], true);
+    assert_eq!(scanner["code"], "SCANNER_READY");
     assert!(scanner.to_string().contains("6212****3456"));
+    assert!(!scanner.to_string().contains("621234567890123456"));
 
     daemon.terminate().await;
     let pool = sqlite::open_readonly(&daemon.state_db_path()).await;
@@ -61,6 +73,307 @@ async fn scanner_code_is_masked_in_events_and_not_persisted_plaintext() {
     );
     let logs = sensitive::read_text_files_under(&daemon.data_dir).await;
     sensitive::assert_absent("logs", &logs, &[sensitive::TEST_AUTH_CODE]);
+}
+
+#[tokio::test]
+async fn scanner_open_failure_reports_offline() {
+    let mut daemon = DaemonHarness::start(
+        scanner_config("/dev/vem-missing-scanner".to_string()),
+        &[("VEM_MACHINE_SECRET", sensitive::TEST_MACHINE_SECRET)],
+    )
+    .await
+    .expect("start daemon");
+
+    for _ in 0..40 {
+        let scanner = daemon.get_json("/v1/scanner/status").await;
+        if scanner["code"] == "SCANNER_OPEN_FAILED" {
+            assert_eq!(scanner["online"], false);
+            assert_eq!(scanner["adapter"], "serial_text");
+            assert_eq!(scanner["level"], "offline");
+            assert!(!scanner["message"].as_str().unwrap_or_default().is_empty());
+            daemon.terminate().await;
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+
+    let scanner = daemon.get_json("/v1/scanner/status").await;
+    daemon.terminate().await;
+    panic!("scanner did not report open failure: {scanner}");
+}
+
+#[tokio::test]
+async fn serial_text_scanner_submits_payment_code_and_refreshes_transaction() {
+    let server = MockServer::start().await;
+    let status_calls = Arc::new(AtomicUsize::new(0));
+
+    Mock::given(method("POST"))
+        .and(path("/machine-auth/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "accessToken": "token-123"
+        })))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/machine-orders"))
+        .and(header("authorization", "Bearer token-123"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "orderNo": "ORD-SCAN"
+        })))
+        .mount(&server)
+        .await;
+
+    let status_calls_clone = status_calls.clone();
+    Mock::given(method("GET"))
+        .and(path("/machine-orders/ORD-SCAN/status"))
+        .and(header("authorization", "Bearer token-123"))
+        .respond_with(move |_request: &Request| {
+            let attempt = status_calls_clone.fetch_add(1, Ordering::SeqCst);
+            if attempt == 0 {
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "orderId": "order-scan-id",
+                    "orderNo": "ORD-SCAN",
+                    "machineCode": "MACHINE-SCAN",
+                    "orderStatus": "waiting_payment",
+                    "totalAmountCents": 300,
+                    "nextAction": "wait_payment",
+                    "payment": {
+                        "paymentNo": "PAY-SCAN",
+                        "method": "payment_code",
+                        "providerCode": "alipay",
+                        "paymentUrl": null,
+                        "status": "pending",
+                        "expiresAt": "2026-05-30T00:05:00.000Z"
+                    }
+                }))
+            } else {
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "orderId": "order-scan-id",
+                    "orderNo": "ORD-SCAN",
+                    "machineCode": "MACHINE-SCAN",
+                    "orderStatus": "paid",
+                    "totalAmountCents": 300,
+                    "nextAction": "dispensing",
+                    "payment": {
+                        "paymentNo": "PAY-SCAN",
+                        "method": "payment_code",
+                        "providerCode": "alipay",
+                        "paymentUrl": null,
+                        "status": "succeeded",
+                        "expiresAt": "2026-05-30T00:05:00.000Z"
+                    },
+                    "vending": {
+                        "commandNo": "CMD-SCAN",
+                        "status": "created",
+                        "lastError": null
+                    }
+                }))
+            }
+        })
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/machine-orders/ORD-SCAN/payment-code/submit"))
+        .and(header("authorization", "Bearer token-123"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "orderNo": "ORD-SCAN",
+            "paymentNo": "PAY-SCAN",
+            "attemptNo": 1,
+            "status": "succeeded",
+            "nextAction": "dispensing",
+            "message": "支付成功，正在出货",
+            "canRetry": false,
+            "serverTime": "2026-05-30T00:00:00.000Z"
+        })))
+        .mount(&server)
+        .await;
+
+    let mut pty = PtyHarness::open();
+    let scanner_path = pty.slave_path.to_string_lossy().to_string();
+    let mut config = scanner_config(scanner_path);
+    config["apiBaseUrl"] = json!(server.uri());
+    let mut daemon = DaemonHarness::start(
+        config,
+        &[("VEM_MACHINE_SECRET", sensitive::TEST_MACHINE_SECRET)],
+    )
+    .await
+    .expect("start daemon");
+
+    create_payment_code_order(&daemon).await;
+    wait_for_scanner_code(&daemon, "SCANNER_READY").await;
+    pty.write(b"621234567890123456\r\n").await;
+
+    let tx = wait_for_transaction(&daemon, |tx| tx["nextAction"] == "dispensing").await;
+    assert_eq!(tx["paymentMethod"], "payment_code");
+    assert_eq!(tx["nextAction"], "dispensing");
+    assert_eq!(tx["paymentCodeAttempt"]["source"], "serial_text");
+    assert_eq!(tx["paymentCodeAttempt"]["maskedAuthCode"], "6212****3456");
+    assert!(!tx.to_string().contains("621234567890123456"));
+
+    daemon.terminate().await;
+}
+
+#[tokio::test]
+async fn serial_text_scanner_retry_scan_uses_new_idempotency_key() {
+    let server = MockServer::start().await;
+    let status_calls = Arc::new(AtomicUsize::new(0));
+    let submit_calls = Arc::new(AtomicUsize::new(0));
+
+    Mock::given(method("POST"))
+        .and(path("/machine-auth/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "accessToken": "token-123"
+        })))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/machine-orders"))
+        .and(header("authorization", "Bearer token-123"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "orderNo": "ORD-SCAN"
+        })))
+        .mount(&server)
+        .await;
+
+    let status_calls_clone = status_calls.clone();
+    Mock::given(method("GET"))
+        .and(path("/machine-orders/ORD-SCAN/status"))
+        .and(header("authorization", "Bearer token-123"))
+        .respond_with(move |_request: &Request| {
+            let attempt = status_calls_clone.fetch_add(1, Ordering::SeqCst);
+            if attempt <= 1 {
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "orderId": "order-scan-id",
+                    "orderNo": "ORD-SCAN",
+                    "machineCode": "MACHINE-SCAN",
+                    "orderStatus": "waiting_payment",
+                    "totalAmountCents": 300,
+                    "nextAction": "wait_payment",
+                    "payment": {
+                        "paymentNo": "PAY-SCAN",
+                        "method": "payment_code",
+                        "providerCode": "alipay",
+                        "paymentUrl": null,
+                        "status": "pending",
+                        "expiresAt": "2026-05-30T00:05:00.000Z"
+                    }
+                }))
+            } else {
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "orderId": "order-scan-id",
+                    "orderNo": "ORD-SCAN",
+                    "machineCode": "MACHINE-SCAN",
+                    "orderStatus": "paid",
+                    "totalAmountCents": 300,
+                    "nextAction": "dispensing",
+                    "payment": {
+                        "paymentNo": "PAY-SCAN",
+                        "method": "payment_code",
+                        "providerCode": "alipay",
+                        "paymentUrl": null,
+                        "status": "succeeded",
+                        "expiresAt": "2026-05-30T00:05:00.000Z"
+                    },
+                    "vending": {
+                        "commandNo": "CMD-SCAN",
+                        "status": "created",
+                        "lastError": null
+                    }
+                }))
+            }
+        })
+        .mount(&server)
+        .await;
+
+    let submit_calls_clone = submit_calls.clone();
+    Mock::given(method("POST"))
+        .and(path("/machine-orders/ORD-SCAN/payment-code/submit"))
+        .and(header("authorization", "Bearer token-123"))
+        .respond_with(move |_request: &Request| {
+            let attempt = submit_calls_clone.fetch_add(1, Ordering::SeqCst);
+            if attempt == 0 {
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "orderNo": "ORD-SCAN",
+                    "paymentNo": "PAY-SCAN",
+                    "attemptNo": 1,
+                    "status": "failed",
+                    "nextAction": "wait_payment",
+                    "message": "付款码无效或支付失败，请刷新付款码后重试",
+                    "canRetry": true,
+                    "serverTime": "2026-05-30T00:00:00.000Z"
+                }))
+            } else {
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "orderNo": "ORD-SCAN",
+                    "paymentNo": "PAY-SCAN",
+                    "attemptNo": 2,
+                    "status": "succeeded",
+                    "nextAction": "dispensing",
+                    "message": "支付成功，正在出货",
+                    "canRetry": false,
+                    "serverTime": "2026-05-30T00:00:01.000Z"
+                }))
+            }
+        })
+        .mount(&server)
+        .await;
+
+    let first_raw_code = "621234567890123456";
+    let second_raw_code = "621234567890129999";
+    let mut pty = PtyHarness::open();
+    let scanner_path = pty.slave_path.to_string_lossy().to_string();
+    let mut config = scanner_config(scanner_path);
+    config["apiBaseUrl"] = json!(server.uri());
+    let mut daemon = DaemonHarness::start(
+        config,
+        &[("VEM_MACHINE_SECRET", sensitive::TEST_MACHINE_SECRET)],
+    )
+    .await
+    .expect("start daemon");
+
+    create_payment_code_order(&daemon).await;
+    wait_for_scanner_code(&daemon, "SCANNER_READY").await;
+    pty.write(b"621234567890123456\r\n").await;
+    let failed = wait_for_transaction(&daemon, |tx| {
+        tx["paymentCodeAttempt"]["status"] == "failed"
+            && tx["paymentCodeAttempt"]["canRetry"] == true
+    })
+    .await;
+    assert_eq!(failed["paymentCodeAttempt"]["source"], "serial_text");
+
+    pty.write(b"621234567890129999\r\n").await;
+    let succeeded = wait_for_transaction(&daemon, |tx| tx["nextAction"] == "dispensing").await;
+    assert_eq!(
+        succeeded["paymentCodeAttempt"]["maskedAuthCode"],
+        "6212****9999"
+    );
+
+    daemon.terminate().await;
+
+    let requests = server
+        .received_requests()
+        .await
+        .expect("recorded requests")
+        .into_iter()
+        .filter(|request| request.url.path() == "/machine-orders/ORD-SCAN/payment-code/submit")
+        .collect::<Vec<_>>();
+    assert_eq!(requests.len(), 2);
+    let first_body: serde_json::Value = requests[0].body_json().expect("first body");
+    let second_body: serde_json::Value = requests[1].body_json().expect("second body");
+    assert_ne!(first_body["idempotencyKey"], second_body["idempotencyKey"]);
+    assert_eq!(first_body["source"], "serial_text");
+    assert_eq!(second_body["source"], "serial_text");
+    assert_eq!(first_body["scannerHealth"]["online"], true);
+    assert_eq!(second_body["scannerHealth"]["online"], true);
+
+    let pool = sqlite::open_readonly(&daemon.state_db_path()).await;
+    let db_dump = sqlite::table_text_dump(&pool).await;
+    sensitive::assert_absent("sqlite", &db_dump, &[first_raw_code, second_raw_code]);
+    assert!(db_dump.contains("6212****3456"));
+    assert!(db_dump.contains("6212****9999"));
 }
 
 #[tokio::test]
@@ -150,4 +463,49 @@ async fn wait_for_vision_ready(daemon: &DaemonHarness) -> serde_json::Value {
         tokio::time::sleep(std::time::Duration::from_millis(250)).await;
     }
     daemon.get_json("/v1/vision/status").await
+}
+
+async fn create_payment_code_order(daemon: &DaemonHarness) -> serde_json::Value {
+    let base = daemon.ready.healthz_url.trim_end_matches("/healthz");
+    Client::new()
+        .post(format!("{base}/v1/intents/create-order"))
+        .header("Authorization", daemon.bearer())
+        .json(&json!({
+            "inventoryId": "550e8400-e29b-41d4-a716-446655440002",
+            "quantity": 1,
+            "paymentMethod": "payment_code",
+            "paymentProviderCode": "alipay",
+            "profileSnapshot": null
+        }))
+        .send()
+        .await
+        .expect("create order request")
+        .json()
+        .await
+        .expect("create order json")
+}
+
+async fn wait_for_transaction(
+    daemon: &DaemonHarness,
+    predicate: impl Fn(&serde_json::Value) -> bool,
+) -> serde_json::Value {
+    for _ in 0..40 {
+        let tx = daemon.get_json("/v1/transactions/current").await;
+        if predicate(&tx) {
+            return tx;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    daemon.get_json("/v1/transactions/current").await
+}
+
+async fn wait_for_scanner_code(daemon: &DaemonHarness, code: &str) -> serde_json::Value {
+    for _ in 0..40 {
+        let scanner = daemon.get_json("/v1/scanner/status").await;
+        if scanner["code"] == code {
+            return scanner;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    daemon.get_json("/v1/scanner/status").await
 }

@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+pub const PAYMENT_CODE_SOURCE_SERIAL_TEXT: &str = "serial_text";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ScannerFrameSuffix {
@@ -13,6 +15,19 @@ pub enum ScannerFrameSuffix {
 pub struct RawPaymentCode {
     pub auth_code: String,
     pub masked_code: String,
+    pub scanned_at_ms: u128,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScannerHealthSnapshot {
+    pub online: bool,
+    pub adapter: String,
+    pub port: Option<String>,
+    pub level: crate::health::HealthLevel,
+    pub code: String,
+    pub message: String,
+    pub updated_at: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -83,6 +98,7 @@ impl ScannerFramer {
         out.push(RawPaymentCode {
             masked_code: mask_code(&code),
             auth_code: code,
+            scanned_at_ms: now_ms,
         });
     }
 }
@@ -125,10 +141,26 @@ mod tests {
     fn public_event_does_not_serialize_auth_code() {
         let event = PublicScannerEvent {
             masked_code: "6212****3456".to_string(),
-            source: "serial".to_string(),
+            source: PAYMENT_CODE_SOURCE_SERIAL_TEXT.to_string(),
             scanned_at_ms: 12345,
         };
         let value = serde_json::to_value(&event).expect("serialize");
         assert!(!value.as_object().unwrap().contains_key("authCode"));
+    }
+
+    #[test]
+    fn scanner_health_snapshot_serializes_without_auth_code() {
+        let health = ScannerHealthSnapshot {
+            online: true,
+            adapter: PAYMENT_CODE_SOURCE_SERIAL_TEXT.to_string(),
+            port: Some("/dev/ttyUSB1".to_string()),
+            level: crate::health::HealthLevel::Ok,
+            code: "SCANNER_READY".to_string(),
+            message: "scanner ready".to_string(),
+            updated_at: "2026-05-30T00:00:00.000Z".to_string(),
+        };
+        let value = serde_json::to_value(&health).expect("serialize health");
+        assert_eq!(value["adapter"], "serial_text");
+        assert!(!value.to_string().contains("authCode"));
     }
 }

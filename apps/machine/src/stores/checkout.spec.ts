@@ -80,6 +80,17 @@ function makeTransactionSnapshot(overrides: Record<string, unknown> = {}) {
     },
     nextAction: "wait_payment",
     maskedAuthCode: "6212****9012",
+    paymentCodeAttempt: {
+      attemptNo: 2,
+      status: "failed",
+      maskedAuthCode: "6212****9012",
+      source: "serial_text",
+      idempotencyKey: "ORD-001:attempt-2",
+      submittedAt: null,
+      lastCheckedAt: null,
+      canRetry: true,
+      message: "请刷新付款码后重试",
+    },
     expiresAt: "2026-01-01T00:05:00Z",
     errorCode: null,
     errorMessage: null,
@@ -160,6 +171,8 @@ describe("checkout store", () => {
     expect(store.currentOrder?.paymentUrl).toBe("https://pay.example/1");
     expect(store.status?.payment.method).toBe("payment_code");
     expect(store.status?.vending?.commandNo).toBe("CMD-001");
+    expect(store.status?.paymentCodeAttempt?.source).toBe("serial_text");
+    expect(store.paymentCodeMessage).toBe("请刷新付款码后重试");
   });
 
   it("refreshes current transaction from daemon", async () => {

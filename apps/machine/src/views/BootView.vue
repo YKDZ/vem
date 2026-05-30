@@ -45,6 +45,11 @@ function dispatchDaemonEvent(event: DaemonEvent): void {
     return;
   }
 
+  if (event.type === "scanner_health_changed") {
+    scannerStore.applyStatus(event.snapshot);
+    return;
+  }
+
   if (event.type === "scanner_code") {
     scannerStore.applyScan(event.maskedCode, event.scannedAtMs);
     return;

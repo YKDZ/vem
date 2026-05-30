@@ -67,6 +67,20 @@ pub struct VendingCommandSummary {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct PaymentCodeAttemptSummary {
+    pub attempt_no: Option<i64>,
+    pub status: Option<String>,
+    pub masked_auth_code: Option<String>,
+    pub source: Option<String>,
+    pub idempotency_key: Option<String>,
+    pub submitted_at: Option<String>,
+    pub last_checked_at: Option<String>,
+    pub can_retry: bool,
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CurrentTransactionSnapshot {
     pub order_id: Option<String>,
     pub order_no: Option<String>,
@@ -81,6 +95,7 @@ pub struct CurrentTransactionSnapshot {
     pub vending: Option<VendingCommandSummary>,
     pub next_action: Option<String>,
     pub masked_auth_code: Option<String>,
+    pub payment_code_attempt: Option<PaymentCodeAttemptSummary>,
     pub expires_at: Option<String>,
     pub error_code: Option<String>,
     pub error_message: Option<String>,
@@ -149,6 +164,17 @@ mod tests {
             }),
             next_action: Some("submit_payment".to_string()),
             masked_auth_code: Some("6212****3456".to_string()),
+            payment_code_attempt: Some(PaymentCodeAttemptSummary {
+                attempt_no: Some(1),
+                status: Some("failed".to_string()),
+                masked_auth_code: Some("6212****3456".to_string()),
+                source: Some("serial_text".to_string()),
+                idempotency_key: Some("ORDER-001:attempt-1".to_string()),
+                submitted_at: None,
+                last_checked_at: None,
+                can_retry: true,
+                message: Some("请刷新付款码后重试".to_string()),
+            }),
             expires_at: Some("2025-01-01T00:00:00.000Z".to_string()),
             error_code: None,
             error_message: None,
@@ -158,6 +184,9 @@ mod tests {
         let value = serde_json::to_string(&snapshot).expect("serialize snapshot");
         assert!(value.contains("\"paymentUrl\""));
         assert!(value.contains("\"paymentStatus\""));
+        assert!(value.contains("\"paymentCodeAttempt\""));
+        assert!(value.contains("\"maskedAuthCode\":\"6212****3456\""));
+        assert!(!value.contains("\"authCode\""));
         assert!(!value.contains("machineSecret"));
         assert!(!value.contains("mqttSigningSecret"));
         assert!(!value.contains("mqttPassword"));
