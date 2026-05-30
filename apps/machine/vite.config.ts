@@ -37,7 +37,7 @@ export default defineConfig({
   },
 
   test: {
-    include: ["src/**/*.{spec,test}.ts", "tests/machine-daemon-client.spec.ts"],
+    include: ["src/**/*.{spec,test}.ts"],
     environment: "node",
   },
 });

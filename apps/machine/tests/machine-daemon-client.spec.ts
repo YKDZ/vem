@@ -1,26 +1,41 @@
+import { test, expect } from "@playwright/test";
 import {
   createServer,
   type IncomingMessage,
   type ServerResponse,
 } from "node:http";
-import {
-  afterAll,
-  beforeAll,
-  beforeEach,
-  describe,
-  expect,
-  it,
-  vi,
-} from "vitest";
 
-import { daemonClient } from "@/daemon/client";
-import { getDaemonConnectionInfo } from "@/native/daemon-connection";
+type ScenarioName =
+  | "catalog"
+  | "maintenance"
+  | "offline"
+  | "payment"
+  | "dispensing"
+  | "result"
+  | "staleEventStream"
+  | "syncBacklog";
 
-type ScenarioName = "catalog" | "payment" | "scannerOffline";
-
-vi.mock("@/native/daemon-connection", () => ({
-  getDaemonConnectionInfo: vi.fn(),
-}));
+const catalogItem = {
+  machineCode: "M001",
+  slotId: "550e8400-e29b-41d4-a716-446655440001",
+  slotCode: "A1",
+  layerNo: 1,
+  cellNo: 1,
+  inventoryId: "550e8400-e29b-41d4-a716-446655440002",
+  variantId: "550e8400-e29b-41d4-a716-446655440003",
+  productId: "550e8400-e29b-41d4-a716-446655440004",
+  productName: "矿泉水",
+  productDescription: null,
+  coverImageUrl: null,
+  categoryId: null,
+  categoryName: null,
+  sku: "WATER-001",
+  size: null,
+  color: null,
+  priceCents: 100,
+  availableQty: 5,
+  productSortOrder: 1,
+};
 
 const publicConfig = {
   machineCode: "M001",
@@ -106,46 +121,43 @@ function readySnapshot(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function paymentTransaction() {
+function transactionSnapshot(
+  nextAction: string | null,
+  overrides: Record<string, unknown> = {},
+) {
+  if (!nextAction) {
+    return emptyTransaction;
+  }
+
   return {
     orderId: "550e8400-e29b-41d4-a716-446655440010",
     orderNo: "ORD-001",
     productSummary: { productName: "矿泉水" },
     paymentNo: "PAY-001",
-    paymentMethod: "payment_code",
+    paymentMethod: nextAction === "wait_payment" ? "qr_code" : "mock",
     paymentProvider: "alipay",
-    paymentUrl: null,
-    paymentStatus: "pending",
-    orderStatus: "waiting_payment",
+    paymentUrl: "https://pay.example/qr",
+    paymentStatus: nextAction === "success" ? "paid" : "pending",
+    orderStatus: nextAction === "success" ? "completed" : "pending_payment",
     totalAmountCents: 100,
-    vending: null,
-    nextAction: "wait_payment",
-    maskedAuthCode: "6212****3456",
-    paymentCodeAttempt: {
-      attemptNo: 1,
-      status: "querying",
-      maskedAuthCode: "6212****3456",
-      source: "serial_text",
-      idempotencyKey: "ORD-001:attempt-1",
-      submittedAt: null,
-      lastCheckedAt: null,
-      canRetry: false,
-      message: null,
-    },
+    vending:
+      nextAction === "dispensing" || nextAction === "success"
+        ? {
+            commandNo: "CMD-001",
+            status: nextAction === "success" ? "succeeded" : "created",
+            lastError: null,
+          }
+        : null,
+    nextAction,
+    maskedAuthCode: null,
+    paymentCodeAttempt: null,
     expiresAt: "2026-01-01T00:05:00Z",
     errorCode: null,
     errorMessage: null,
     operatorHint: null,
     updatedAt: "2026-01-01T00:00:00Z",
+    ...overrides,
   };
-}
-
-function expectNoSecretFields(payload: unknown): void {
-  const text = JSON.stringify(payload);
-  expect(text).not.toContain('"machineSecret":');
-  expect(text).not.toContain('"mqttSigningSecret":');
-  expect(text).not.toContain('"mqttPassword":');
-  expect(text).not.toContain("621234567890123456");
 }
 
 let scenario: ScenarioName = "catalog";
@@ -167,108 +179,102 @@ function respondJson(
   res.end(JSON.stringify(payload));
 }
 
-function currentFixtures() {
+function expectNoSecretFields(payload: unknown): void {
+  const text = JSON.stringify(payload);
+  expect(text).not.toContain('"machineSecret":');
+  expect(text).not.toContain('"mqttSigningSecret":');
+  expect(text).not.toContain('"mqttPassword":');
+  expect(text).not.toContain("621234567890123456");
+}
+
+function currentFixtures(): Record<string, unknown> {
+  if (scenario === "maintenance") {
+    return {
+      health: healthSnapshot({
+        configConfigured: false,
+        status: "maintenance",
+      }),
+      ready: readySnapshot({
+        ready: false,
+        canSell: false,
+        suggestedRoute: "maintenance",
+        blockingCodes: ["config_missing"],
+        blockingReasons: [
+          {
+            code: "config_missing",
+            component: "config",
+            message: "缺少部署配置",
+          },
+        ],
+      }),
+      transaction: emptyTransaction,
+    };
+  }
+
+  if (scenario === "offline") {
+    return {
+      health: healthSnapshot({
+        backendOnline: false,
+        mqttConnected: false,
+        status: "offline",
+      }),
+      ready: readySnapshot({
+        ready: false,
+        canSell: false,
+        suggestedRoute: "offline",
+        blockingCodes: ["network_unavailable"],
+        blockingReasons: [
+          {
+            code: "network_unavailable",
+            component: "backend",
+            message: "网络未就绪",
+          },
+        ],
+      }),
+      transaction: emptyTransaction,
+    };
+  }
+
   if (scenario === "payment") {
     return {
       health: healthSnapshot(),
       ready: readySnapshot({ suggestedRoute: "payment" }),
-      transaction: paymentTransaction(),
-      scanner: {
-        online: true,
-        adapter: "serial_text",
-        port: "COM4",
-        level: "ok",
-        code: "SCANNER_READY",
-        message: "scanner ready",
-        updatedAt: "2026-01-01T00:00:00Z",
-      },
-      paymentOptions: {
-        options: [
-          {
-            optionKey: "mock:mock",
-            providerCode: "mock",
-            method: "mock",
-            displayName: "模拟支付",
-            description: "本地开发模式",
-            icon: "mock",
-            recommended: true,
-            disabled: false,
-            disabledReason: null,
-          },
-          {
-            optionKey: "qr_code:alipay",
-            providerCode: "alipay",
-            method: "qr_code",
-            displayName: "支付宝",
-            description: "扫码支付",
-            icon: "alipay",
-            recommended: false,
-            disabled: false,
-            disabledReason: null,
-          },
-          {
-            optionKey: "payment_code:alipay",
-            providerCode: "alipay",
-            method: "payment_code",
-            displayName: "支付宝付款码",
-            description: "出示付款码",
-            icon: "alipay",
-            recommended: false,
-            disabled: false,
-            disabledReason: null,
-          },
-        ],
-        defaultOptionKey: "payment_code:alipay",
-        defaultProviderCode: "alipay",
-        serverTime: "2026-01-01T00:00:00Z",
-      },
+      transaction: transactionSnapshot("wait_payment"),
     };
   }
 
-  if (scenario === "scannerOffline") {
+  if (scenario === "dispensing") {
     return {
-      health: healthSnapshot({ scannerOnline: false, status: "degraded" }),
-      ready: readySnapshot({ suggestedRoute: "catalog" }),
-      transaction: emptyTransaction,
-      scanner: {
-        online: false,
-        adapter: "serial_text",
-        port: "COM4",
-        level: "offline",
-        code: "SCANNER_OPEN_FAILED",
-        message: "open scanner serial failed: Access denied",
-        updatedAt: "2026-01-01T00:00:00Z",
-      },
-      paymentOptions: {
-        options: [
+      health: healthSnapshot(),
+      ready: readySnapshot({ suggestedRoute: "dispensing" }),
+      transaction: transactionSnapshot("dispensing"),
+    };
+  }
+
+  if (scenario === "result") {
+    return {
+      health: healthSnapshot(),
+      ready: readySnapshot({ suggestedRoute: "result" }),
+      transaction: transactionSnapshot("success"),
+    };
+  }
+
+  if (scenario === "syncBacklog") {
+    return {
+      health: healthSnapshot({ outboxSize: 25 }),
+      ready: readySnapshot({
+        ready: true,
+        canSell: true,
+        suggestedRoute: "catalog",
+        degradedReasons: [
           {
-            optionKey: "qr_code:alipay",
-            providerCode: "alipay",
-            method: "qr_code",
-            displayName: "支付宝",
-            description: "扫码支付",
-            icon: "alipay",
-            recommended: true,
-            disabled: false,
-            disabledReason: null,
-          },
-          {
-            optionKey: "payment_code:alipay",
-            providerCode: "alipay",
-            method: "payment_code",
-            displayName: "支付宝付款码",
-            description: "出示付款码",
-            icon: "alipay",
-            recommended: false,
-            disabled: true,
-            disabledReason:
-              "扫码器不可用：open scanner serial failed: Access denied",
+            code: "mqtt_backlog",
+            component: "mqtt",
+            message: "MQTT backlog pending",
           },
         ],
-        defaultOptionKey: "qr_code:alipay",
-        defaultProviderCode: "alipay",
-        serverTime: "2026-01-01T00:00:00Z",
-      },
+      }),
+      transaction: emptyTransaction,
     };
   }
 
@@ -276,26 +282,12 @@ function currentFixtures() {
     health: healthSnapshot(),
     ready: readySnapshot(),
     transaction: emptyTransaction,
-    scanner: {
-      online: true,
-      adapter: "serial_text",
-      port: "COM4",
-      level: "ok",
-      code: "SCANNER_READY",
-      message: "scanner ready",
-      updatedAt: "2026-01-01T00:00:00Z",
-    },
-    paymentOptions: {
-      options: [],
-      defaultOptionKey: null,
-      defaultProviderCode: null,
-      serverTime: "2026-01-01T00:00:00Z",
-    },
   };
 }
 
 function handleRequest(req: IncomingMessage, res: ServerResponse): void {
   const url = new URL(req.url ?? "/", "http://127.0.0.1:7891");
+
   if (req.method === "OPTIONS") {
     res.writeHead(204, {
       "access-control-allow-origin": "*",
@@ -305,6 +297,16 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
     res.end();
     return;
   }
+
+  if (url.pathname === "/v1/events") {
+    res.writeHead(426, {
+      "access-control-allow-origin": "*",
+      "content-type": "text/plain",
+    });
+    res.end("websocket required");
+    return;
+  }
+
   if (
     url.pathname.startsWith("/v1/") &&
     req.headers.authorization !== "Bearer dev-token"
@@ -319,10 +321,12 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
     respondJson(res, fixtures.health);
     return;
   }
+
   if (url.pathname === "/readyz") {
     respondJson(res, fixtures.ready);
     return;
   }
+
   if (url.pathname === "/v1/config") {
     const payload = {
       public: publicConfig,
@@ -334,35 +338,100 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
     respondJson(res, payload);
     return;
   }
+
+  if (url.pathname === "/v1/catalog") {
+    respondJson(res, {
+      items: [catalogItem],
+      cached: true,
+      lastUpdatedAt: "2026-01-01T00:00:00Z",
+      source: "mock-daemon",
+      lastError: null,
+    });
+    return;
+  }
+
+  if (url.pathname === "/v1/payment-options") {
+    respondJson(res, {
+      options: [
+        {
+          optionKey: "mock:mock",
+          providerCode: "mock",
+          method: "mock",
+          displayName: "模拟支付",
+          description: "本地开发模式",
+          icon: "mock",
+          recommended: true,
+          disabled: false,
+          disabledReason: null,
+        },
+        {
+          optionKey: "qr_code:alipay",
+          providerCode: "alipay",
+          method: "qr_code",
+          displayName: "支付宝",
+          description: "扫码支付",
+          icon: "alipay",
+          recommended: false,
+          disabled: false,
+          disabledReason: null,
+        },
+        {
+          optionKey: "payment_code:alipay",
+          providerCode: "alipay",
+          method: "payment_code",
+          displayName: "支付宝付款码",
+          description: "出示付款码",
+          icon: "alipay",
+          recommended: false,
+          disabled: false,
+          disabledReason: null,
+        },
+      ],
+      defaultOptionKey: "mock:mock",
+      defaultProviderCode: "mock",
+      serverTime: "2026-01-01T00:00:00Z",
+    });
+    return;
+  }
+
   if (url.pathname === "/v1/transactions/current") {
     expectNoSecretFields(fixtures.transaction);
     respondJson(res, fixtures.transaction);
     return;
   }
-  if (url.pathname === "/v1/scanner/status") {
-    respondJson(res, fixtures.scanner);
-    return;
-  }
-  if (url.pathname === "/v1/payment-options") {
-    respondJson(res, fixtures.paymentOptions);
-    return;
-  }
+
   if (url.pathname === "/v1/sync/status") {
-    respondJson(res, {
+    const payload = {
       mqttRunning: true,
-      mqttConnected: true,
+      mqttConnected: scenario !== "offline",
       brokerUrlMasked: "mqtt://127.0.0.1:1883",
       lastHeartbeatAt: "2026-01-01T00:00:00Z",
       lastCommandNo: null,
-      outboxSize: 0,
+      outboxSize: scenario === "syncBacklog" ? 25 : 0,
       outboxMax: 1000,
-      outboxUsage: 0,
+      outboxUsage: scenario === "syncBacklog" ? 0.025 : 0,
       nextRetryAt: null,
-      lastError: null,
+      lastError: scenario === "offline" ? "network down" : null,
       tlsAuthStatus: "ok",
+    };
+    expectNoSecretFields(payload);
+    respondJson(res, payload);
+    return;
+  }
+
+  if (url.pathname === "/v1/scanner/status") {
+    respondJson(res, {
+      online: true,
+      adapter: "serial_text",
+      port: "COM4",
+      level: "ok",
+      code: "SCANNER_READY",
+      message: "scanner ready",
+      updatedAt: "2026-01-01T00:00:00Z",
     });
     return;
   }
+
   if (url.pathname === "/v1/vision/status") {
     respondJson(res, {
       enabled: true,
@@ -372,6 +441,7 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
     });
     return;
   }
+
   if (url.pathname === "/v1/remote-ops/status") {
     respondJson(res, {
       lastPolledAt: "2026-01-01T00:00:00Z",
@@ -381,6 +451,16 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
     });
     return;
   }
+
+  if (url.pathname === "/v1/hardware/self-check") {
+    respondJson(res, {
+      adapter: "mock",
+      online: true,
+      message: "hardware ready",
+    });
+    return;
+  }
+
   respondJson(res, { code: "not_found", message: url.pathname }, 404);
 }
 
@@ -392,76 +472,109 @@ async function startMockDaemon() {
   return daemon;
 }
 
-describe("machine daemon client integration", () => {
-  beforeAll(async () => {
-    server = await startMockDaemon();
-  });
+test.beforeAll(async () => {
+  server = await startMockDaemon();
+});
 
-  afterAll(async () => {
-    await new Promise<void>((resolve, reject) => {
-      server?.close((error) => {
-        if (error) {
-          reject(error instanceof Error ? error : new Error(String(error)));
-          return;
-        }
-        resolve();
-      });
+test.afterAll(async () => {
+  await new Promise<void>((resolve, reject) => {
+    server?.close((error) => {
+      if (error) {
+        reject(error instanceof Error ? error : new Error(String(error)));
+        return;
+      }
+      resolve();
     });
   });
+});
 
-  beforeEach(() => {
-    scenario = "catalog";
-    vi.clearAllMocks();
-    vi.mocked(getDaemonConnectionInfo).mockResolvedValue({
-      baseUrl: "http://127.0.0.1:7891",
-      token: "dev-token",
-      source: "browser_env",
-      mock: true,
+test("routes ready daemon to catalog", async ({ page }) => {
+  scenario = "catalog";
+  await page.goto("/");
+  await expect(page.getByRole("heading", { name: "请选择商品" })).toBeVisible();
+});
+
+test("routes missing config to maintenance", async ({ page }) => {
+  scenario = "maintenance";
+  await page.goto("/");
+  await expect(
+    page.getByRole("heading", { name: "部署配置 / 维护入口" }),
+  ).toBeVisible();
+});
+
+test("routes not-ready daemon to offline", async ({ page }) => {
+  scenario = "offline";
+  await page.goto("/");
+  await expect(
+    page.getByRole("heading", { name: "暂时无法购买" }),
+  ).toBeVisible();
+});
+
+test("restores active payment transaction", async ({ page }) => {
+  scenario = "payment";
+  await page.goto("/");
+  await expect(
+    page.getByRole("heading", { name: "支付宝扫码支付" }),
+  ).toBeVisible();
+  await expect(page.getByText("订单 ORD-001")).toBeVisible();
+});
+
+test("routes active dispensing transaction", async ({ page }) => {
+  scenario = "dispensing";
+  await page.goto("/");
+  await expect(
+    page.getByRole("heading", { name: "支付成功，正在出货" }),
+  ).toBeVisible();
+});
+
+test("routes finished transaction to result", async ({ page }) => {
+  scenario = "result";
+  await page.goto("/");
+  await expect(page.getByRole("heading", { name: "出货成功" })).toBeVisible();
+});
+
+test("page reload keeps current transaction route", async ({ page }) => {
+  scenario = "payment";
+  await page.goto("/");
+  await expect(page.getByText("订单 ORD-001")).toBeVisible();
+  await page.goto("/#/boot");
+  await expect(page).toHaveURL(/#\/payment$/);
+  await expect(
+    page.getByRole("heading", { name: "支付宝扫码支付" }),
+  ).toBeVisible();
+});
+
+test("daemon snapshots never expose secret fields to browser storage", async ({
+  page,
+}) => {
+  scenario = "catalog";
+  await page.goto("/");
+  await expect(page.getByRole("heading", { name: "请选择商品" })).toBeVisible();
+  const storage = await page.evaluate(() => {
+    const snapshotStorage = (storage: Storage) =>
+      Object.fromEntries(
+        Array.from({ length: storage.length }, (_, index) => {
+          const key = storage.key(index) ?? "";
+          return [key, storage.getItem(key)];
+        }),
+      );
+    return JSON.stringify({
+      localStorage: snapshotStorage(localStorage),
+      sessionStorage: snapshotStorage(sessionStorage),
     });
-    daemonClient["connection"] = null;
   });
+  expect(storage).not.toContain('"machineSecret":');
+  expect(storage).not.toContain('"mqttSigningSecret":');
+  expect(storage).not.toContain('"mqttPassword":');
+  expect(storage).not.toContain("621234567890123456");
+});
 
-  it("parses serial_text scanner status and payment transaction fixtures", async () => {
-    scenario = "payment";
-
-    const [health, ready, tx, scanner, options] = await Promise.all([
-      daemonClient.getHealth(),
-      daemonClient.getReady(),
-      daemonClient.getCurrentTransaction(),
-      daemonClient.getScannerStatus(),
-      daemonClient.getPaymentOptions(),
-    ]);
-
-    expect(health.scannerOnline).toBe(true);
-    expect(ready.suggestedRoute).toBe("payment");
-    expect(tx.paymentMethod).toBe("payment_code");
-    expect(tx.paymentCodeAttempt?.source).toBe("serial_text");
-    expect(tx.paymentCodeAttempt?.maskedAuthCode).toBe("6212****3456");
-    expect(scanner.adapter).toBe("serial_text");
-    expect(scanner.code).toBe("SCANNER_READY");
-    expect(options.defaultOptionKey).toBe("payment_code:alipay");
-    expectNoSecretFields({ health, ready, tx, scanner, options });
-  });
-
-  it("keeps qr option enabled when scanner is offline", async () => {
-    scenario = "scannerOffline";
-
-    const [scanner, options] = await Promise.all([
-      daemonClient.getScannerStatus(),
-      daemonClient.getPaymentOptions(),
-    ]);
-
-    expect(scanner.online).toBe(false);
-    expect(scanner.code).toBe("SCANNER_OPEN_FAILED");
-    const paymentCode = options.options.find(
-      (option) => option.method === "payment_code",
-    );
-    const qrCode = options.options.find(
-      (option) => option.method === "qr_code",
-    );
-    expect(paymentCode?.disabled).toBe(true);
-    expect(paymentCode?.disabledReason).toContain("扫码器不可用");
-    expect(qrCode?.disabled).toBe(false);
-    expect(options.defaultOptionKey).toBe("qr_code:alipay");
-  });
+test("sync backlog routes to catalog but displays degraded sync status", async ({
+  page,
+}) => {
+  scenario = "syncBacklog";
+  await page.goto("/");
+  await expect(page.getByRole("heading", { name: "请选择商品" })).toBeVisible();
+  const body = await page.textContent("body");
+  expect(body ?? "").toContain("MQTT");
 });
