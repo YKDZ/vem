@@ -6,11 +6,13 @@ import KioskLayout from "@/layouts/KioskLayout.vue";
 import { useCatalogStore } from "@/stores/catalog";
 import { useConnectivityStore } from "@/stores/connectivity";
 import { useMachineStore } from "@/stores/machine";
+import { useMqttStore } from "@/stores/mqtt";
 
 const router = useRouter();
-const machineStore = useMachineStore();
 const connectivityStore = useConnectivityStore();
 const catalogStore = useCatalogStore();
+const machineStore = useMachineStore();
+const mqttStore = useMqttStore();
 
 const cachedText = computed(() =>
   catalogStore.hasItems
@@ -34,6 +36,23 @@ async function retryBoot(): Promise<void> {
         网络或服务未就绪，为避免支付和库存风险，当前禁止下单。
       </p>
       <p class="mt-4 text-slate-300">{{ cachedText }}</p>
+      <div class="mt-4 grid gap-3 text-left text-sm text-slate-200">
+        <div class="rounded-2xl bg-slate-950/40 p-4">
+          阻塞原因：{{
+            connectivityStore.blockingReasons.join(" / ") ||
+            "daemon 未返回阻塞原因"
+          }}
+        </div>
+        <div class="rounded-2xl bg-slate-950/40 p-4">
+          缓存商品数：{{ catalogStore.items.length }}
+        </div>
+        <div class="rounded-2xl bg-slate-950/40 p-4">
+          daemon outbox：{{ mqttStore.outboxSize }} 条待补发
+        </div>
+        <div class="rounded-2xl bg-slate-950/40 p-4">
+          MQTT 错误：{{ mqttStore.lastError ?? "无" }}
+        </div>
+      </div>
       <p
         v-if="connectivityStore.error"
         class="mt-4 rounded-2xl bg-slate-950/40 p-4 text-left text-sm text-slate-200"

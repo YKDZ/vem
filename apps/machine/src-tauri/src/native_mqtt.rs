@@ -1,29 +1,14 @@
-use std::{collections::BTreeMap, sync::Arc};
+use std::sync::Arc;
 
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use hmac::{Hmac, Mac};
 use rumqttc::{AsyncClient, Event, Incoming, MqttOptions, QoS};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use sha2::Sha256;
 use tokio::sync::RwLock;
 use tokio::time::{sleep, Duration};
 use uuid::Uuid;
 
 use crate::hardware::{DispenseCommandPayload, DispenseResultPayload, HardwareAdapter};
-
-type HmacSha256 = Hmac<Sha256>;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MqttEnvelope {
-    pub message_id: String,
-    pub machine_code: String,
-    pub issued_at: String,
-    pub nonce: String,
-    pub payload: Value,
-    pub signature: String,
-}
+pub use vending_core::mqtt::{canonical_json, sign_envelope, verify_envelope, MqttEnvelope};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -33,88 +18,6 @@ pub struct NativeMqttStatus {
     pub last_error: Option<String>,
     pub last_command_no: Option<String>,
     pub last_heartbeat_at: Option<String>,
-}
-
-/// Produce a canonical JSON string with sorted keys (matching TypeScript canonicalJson).
-pub fn canonical_json(value: &Value) -> String {
-    match value {
-        Value::Object(map) => {
-            let sorted: BTreeMap<_, _> = map.iter().collect();
-            let pairs: Vec<String> = sorted
-                .iter()
-                .map(|(k, v)| format!("\"{}\":{}", k, canonical_json(v)))
-                .collect();
-            format!("{{{}}}", pairs.join(","))
-        }
-        Value::Array(arr) => {
-            let items: Vec<String> = arr.iter().map(canonical_json).collect();
-            format!("[{}]", items.join(","))
-        }
-        Value::String(s) => format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\"")),
-        other => other.to_string(),
-    }
-}
-
-/// Sign a payload and return the full envelope.
-pub fn sign_envelope(
-    machine_code: &str,
-    signing_secret: &str,
-    message_id: &str,
-    payload: Value,
-) -> MqttEnvelope {
-    let issued_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-    let nonce = Uuid::new_v4().to_string();
-    // Canonical object for signing must have sorted keys
-    let unsigned_obj = json!({
-        "issuedAt": issued_at,
-        "machineCode": machine_code,
-        "messageId": message_id,
-        "nonce": nonce,
-        "payload": payload,
-    });
-    let input = canonical_json(&unsigned_obj);
-    let mut mac =
-        HmacSha256::new_from_slice(signing_secret.as_bytes()).expect("HMAC accepts any key");
-    mac.update(input.as_bytes());
-    let signature = URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes());
-    MqttEnvelope {
-        message_id: message_id.to_string(),
-        machine_code: machine_code.to_string(),
-        issued_at,
-        nonce,
-        payload,
-        signature,
-    }
-}
-
-/// Verify an inbound envelope against the expected machine_code and signing_secret.
-pub fn verify_envelope(
-    envelope: &MqttEnvelope,
-    expected_machine_code: &str,
-    signing_secret: &str,
-) -> Result<(), String> {
-    if envelope.machine_code != expected_machine_code {
-        return Err(format!(
-            "envelope machine_code mismatch: expected {expected_machine_code}, got {}",
-            envelope.machine_code
-        ));
-    }
-    let unsigned_obj = json!({
-        "issuedAt": envelope.issued_at,
-        "machineCode": envelope.machine_code,
-        "messageId": envelope.message_id,
-        "nonce": envelope.nonce,
-        "payload": envelope.payload,
-    });
-    let input = canonical_json(&unsigned_obj);
-    let mut mac =
-        HmacSha256::new_from_slice(signing_secret.as_bytes()).expect("HMAC accepts any key");
-    mac.update(input.as_bytes());
-    let expected = URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes());
-    if expected != envelope.signature {
-        return Err("MQTT envelope signature invalid".to_string());
-    }
-    Ok(())
 }
 
 pub struct NativeMqttRuntime {
@@ -206,7 +109,7 @@ impl NativeMqttRuntime {
     async fn handle_command(&self, payload_text: String) -> Result<(), String> {
         let envelope: MqttEnvelope =
             serde_json::from_str(&payload_text).map_err(|e| e.to_string())?;
-        verify_envelope(&envelope, &self.machine_code, &self.signing_secret)?;
+        verify_envelope(&envelope, &self.machine_code, &self.signing_secret, 300)?;
 
         let command: DispenseCommandPayload =
             serde_json::from_value(envelope.payload.clone()).map_err(|e| e.to_string())?;
@@ -304,7 +207,7 @@ mod tests {
         let envelope = sign_envelope(machine_code, secret, "msg-001", payload.clone());
         assert_eq!(envelope.machine_code, machine_code);
         assert!(!envelope.signature.is_empty());
-        verify_envelope(&envelope, machine_code, secret).expect("should verify ok");
+        verify_envelope(&envelope, machine_code, secret, 300).expect("should verify ok");
     }
 
     #[test]
@@ -313,9 +216,8 @@ mod tests {
         let secret = "test-signing-secret";
         let payload = json!({ "commandNo": "CMD-001" });
         let mut envelope = sign_envelope(machine_code, secret, "msg-001", payload);
-        // Tamper with payload
         envelope.payload = json!({ "commandNo": "CMD-999" });
-        let result = verify_envelope(&envelope, machine_code, secret);
+        let result = verify_envelope(&envelope, machine_code, secret, 300);
         assert!(result.is_err(), "should fail with tampered payload");
     }
 
@@ -324,7 +226,7 @@ mod tests {
         let secret = "test-signing-secret";
         let payload = json!({});
         let envelope = sign_envelope("M001", secret, "msg-001", payload);
-        let result = verify_envelope(&envelope, "M002", secret);
+        let result = verify_envelope(&envelope, "M002", secret, 300);
         assert!(result.is_err(), "should fail with wrong machine code");
     }
 
@@ -332,7 +234,6 @@ mod tests {
     fn canonical_json_sorts_keys() {
         let value = json!({ "z": 1, "a": 2, "m": 3 });
         let result = canonical_json(&value);
-        // keys should be a,m,z order
         let a_pos = result.find("\"a\"").unwrap();
         let m_pos = result.find("\"m\"").unwrap();
         let z_pos = result.find("\"z\"").unwrap();

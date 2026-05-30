@@ -81,50 +81,96 @@ async function openSocket(url: string): Promise<WebSocket> {
   });
 }
 
-async function nextServerMessage(
-  socket: WebSocket,
-  timeoutMs = 5000,
-): Promise<VisionServerMessage> {
-  return await new Promise<VisionServerMessage>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      cleanup();
-      reject(new Error("waiting for server message timed out"));
-    }, timeoutMs);
+type QueuedServerMessage =
+  | { ok: true; value: VisionServerMessage }
+  | { ok: false; error: Error };
 
-    const onError = (error: Error): void => {
-      cleanup();
-      reject(error);
-    };
+type PendingServerMessage = {
+  resolve: (message: VisionServerMessage) => void;
+  reject: (error: Error) => void;
+  timer: ReturnType<typeof setTimeout>;
+};
 
-    const onMessage = (data: RawData): void => {
-      cleanup();
-      try {
-        const decoded: unknown = JSON.parse(rawDataToText(data));
-        resolve(visionServerMessageSchema.parse(decoded));
-      } catch (error) {
-        reject(error instanceof Error ? error : new Error(String(error)));
-      }
-    };
+function createServerMessageReader(socket: WebSocket): {
+  next: (timeoutMs?: number) => Promise<VisionServerMessage>;
+  dispose: () => void;
+} {
+  const queue: QueuedServerMessage[] = [];
+  const pending: PendingServerMessage[] = [];
 
-    function cleanup(): void {
-      clearTimeout(timer);
-      socket.off("error", onError);
-      socket.off("message", onMessage);
+  function settle(item: QueuedServerMessage): void {
+    const next = pending.shift();
+    if (!next) {
+      queue.push(item);
+      return;
     }
 
-    socket.once("error", onError);
-    socket.once("message", onMessage);
-  });
+    clearTimeout(next.timer);
+    if (item.ok) {
+      next.resolve(item.value);
+      return;
+    }
+    next.reject(item.error);
+  }
+
+  const onError = (error: Error): void => {
+    settle({ ok: false, error });
+  };
+
+  const onMessage = (data: RawData): void => {
+    try {
+      const decoded: unknown = JSON.parse(rawDataToText(data));
+      settle({ ok: true, value: visionServerMessageSchema.parse(decoded) });
+    } catch (error) {
+      settle({
+        ok: false,
+        error: error instanceof Error ? error : new Error(String(error)),
+      });
+    }
+  };
+
+  socket.on("error", onError);
+  socket.on("message", onMessage);
+
+  return {
+    next: async (timeoutMs = 5000) => {
+      const item = queue.shift();
+      if (item) {
+        if (item.ok) return item.value;
+        throw item.error;
+      }
+
+      return await new Promise<VisionServerMessage>((resolve, reject) => {
+        let pendingRead: PendingServerMessage;
+        const timer = setTimeout(() => {
+          const index = pending.indexOf(pendingRead);
+          if (index >= 0) pending.splice(index, 1);
+          reject(new Error("waiting for server message timed out"));
+        }, timeoutMs);
+        pendingRead = { resolve, reject, timer };
+        pending.push(pendingRead);
+      });
+    },
+    dispose: () => {
+      socket.off("error", onError);
+      socket.off("message", onMessage);
+      for (const pendingRead of pending.splice(0)) {
+        clearTimeout(pendingRead.timer);
+        pendingRead.reject(new Error("server message reader disposed"));
+      }
+    },
+  };
 }
 
 describe("vision mock server - protocol conformance", () => {
   it("sends ready then a pushed profile result after hello", async () => {
     const url = await createServer("success");
     const socket = await openSocket(url);
+    const messages = createServerMessageReader(socket);
 
     try {
       socket.send(JSON.stringify(createHelloMessage()));
-      const ready = await nextServerMessage(socket);
+      const ready = await messages.next();
       expect(ready.protocol).toBe(VISION_PROTOCOL);
       expect(ready.type).toBe("vision.ready");
       if (ready.type !== "vision.ready") return;
@@ -133,7 +179,7 @@ describe("vision mock server - protocol conformance", () => {
       expect(ready.payload.modelReady).toBe(true);
       expect(ready.payload.capabilities).toContain("profile_push");
 
-      const result = await nextServerMessage(socket);
+      const result = await messages.next();
       if (result.type !== "vision.profile_result") {
         throw new Error(`expected profile result, got ${result.type}`);
       }
@@ -145,6 +191,7 @@ describe("vision mock server - protocol conformance", () => {
       expect(result.payload.profile.gender).toBe("unknown");
       expect(result.payload.quality.overall).toBe("good");
     } finally {
+      messages.dispose();
       socket.close();
     }
   }, 20_000);
@@ -154,18 +201,20 @@ describe("vision mock server - no_person scenario", () => {
   it("stays silent after ready when no person is detected", async () => {
     const url = await createServer("no_person");
     const socket = await openSocket(url);
+    const messages = createServerMessageReader(socket);
 
     try {
       socket.send(JSON.stringify(createHelloMessage()));
-      const ready = await nextServerMessage(socket);
+      const ready = await messages.next();
       expect(ready.type).toBe("vision.ready");
 
-      const timedOut = await nextServerMessage(socket, 100).then(
+      const timedOut = await messages.next(100).then(
         () => false,
         () => true,
       );
       expect(timedOut).toBe(true);
     } finally {
+      messages.dispose();
       socket.close();
     }
   });
@@ -175,19 +224,21 @@ describe("vision mock server - camera_unavailable scenario", () => {
   it("pushes camera_unavailable after hello", async () => {
     const url = await createServer("camera_unavailable");
     const socket = await openSocket(url);
+    const messages = createServerMessageReader(socket);
 
     try {
       socket.send(JSON.stringify(createHelloMessage()));
-      const ready = await nextServerMessage(socket);
+      const ready = await messages.next();
       expect(ready.type).toBe("vision.ready");
 
-      const error = await nextServerMessage(socket);
+      const error = await messages.next();
       if (error.type !== "vision.error") {
         throw new Error(`expected vision error, got ${error.type}`);
       }
       expect(error.payload.code).toBe("camera_unavailable");
       expect(error.payload.retryable).toBe(true);
     } finally {
+      messages.dispose();
       socket.close();
     }
   });
@@ -197,6 +248,7 @@ describe("vision mock server - ping / pong", () => {
   it("responds to ping with pong", async () => {
     const url = await createServer("success");
     const socket = await openSocket(url);
+    const messages = createServerMessageReader(socket);
 
     try {
       const pingMsg = {
@@ -207,9 +259,10 @@ describe("vision mock server - ping / pong", () => {
         payload: {},
       } as const;
       socket.send(JSON.stringify(pingMsg));
-      const pong = await nextServerMessage(socket);
+      const pong = await messages.next();
       expect(pong.type).toBe("vision.pong");
     } finally {
+      messages.dispose();
       socket.close();
     }
   });
@@ -219,16 +272,18 @@ describe("vision mock server - invalid message handling", () => {
   it("returns invalid_message error for malformed JSON body", async () => {
     const url = await createServer("success");
     const socket = await openSocket(url);
+    const messages = createServerMessageReader(socket);
 
     try {
       socket.send("{not valid json}");
-      const response = await nextServerMessage(socket);
+      const response = await messages.next();
       if (response.type !== "vision.error") {
         throw new Error(`expected vision.error, got ${response.type}`);
       }
       expect(response.payload.code).toBe("invalid_message");
       expect(response.payload.retryable).toBe(false);
     } finally {
+      messages.dispose();
       socket.close();
     }
   });
@@ -236,15 +291,17 @@ describe("vision mock server - invalid message handling", () => {
   it("returns invalid_message error for valid JSON with wrong schema", async () => {
     const url = await createServer("success");
     const socket = await openSocket(url);
+    const messages = createServerMessageReader(socket);
 
     try {
       socket.send(JSON.stringify({ type: "unknown.type", data: 42 }));
-      const response = await nextServerMessage(socket);
+      const response = await messages.next();
       if (response.type !== "vision.error") {
         throw new Error(`expected vision.error, got ${response.type}`);
       }
       expect(response.payload.code).toBe("invalid_message");
     } finally {
+      messages.dispose();
       socket.close();
     }
   });

@@ -7,13 +7,11 @@ import type { CheckoutResultKind } from "@/types/checkout";
 import KioskLayout from "@/layouts/KioskLayout.vue";
 import { useCatalogStore } from "@/stores/catalog";
 import { useCheckoutStore } from "@/stores/checkout";
-import { useMachineStore } from "@/stores/machine";
 
 const route = useRoute();
 const router = useRouter();
 const checkoutStore = useCheckoutStore();
 const catalogStore = useCatalogStore();
-const machineStore = useMachineStore();
 
 type ResultCopy = {
   title: string;
@@ -82,9 +80,8 @@ const toneClass = computed(() => {
 });
 
 async function backToCatalog(): Promise<void> {
-  const machineCode = machineStore.config.machineCode;
   checkoutStore.reset();
-  if (machineCode) await catalogStore.refresh(machineStore.config);
+  await catalogStore.refresh();
   await router.replace("/catalog");
 }
 </script>

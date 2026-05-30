@@ -13,7 +13,7 @@ const machineCodeLabel = computed(
   () => machineStore.machineCode ?? "未配置机器编号",
 );
 const hardwareMessage = computed(
-  () => machineStore.hardware?.message ?? "硬件未自检",
+  () => machineStore.health?.operatorReason ?? "硬件状态由 daemon 管理",
 );
 </script>
 

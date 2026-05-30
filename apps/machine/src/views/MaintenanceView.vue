@@ -8,19 +8,16 @@ import {
   type HardwareAdapter,
   type ScannerAdapter,
 } from "@/config/machine-config";
+import { daemonClient } from "@/daemon/client";
 import KioskLayout from "@/layouts/KioskLayout.vue";
-import {
-  getVisionRuntimeStatus,
-  startVisionRuntime,
-  stopVisionRuntime,
-  visionSelfCheck,
-} from "@/native/vision";
 import { useMachineStore } from "@/stores/machine";
 import { useMqttStore } from "@/stores/mqtt";
+import { useVisionStore } from "@/stores/vision";
 
 const router = useRouter();
 const machineStore = useMachineStore();
 const mqttStore = useMqttStore();
+const visionStore = useVisionStore();
 
 const form = reactive({
   machineCode: machineStore.config.machineCode,
@@ -45,27 +42,40 @@ const form = reactive({
   mqttPasswordInput: "",
 });
 
+function syncFormFromStore(): void {
+  form.machineCode = machineStore.config.machineCode;
+  form.apiBaseUrl = machineStore.config.apiBaseUrl;
+  form.mqttUrl = machineStore.config.mqttUrl;
+  form.mqttUsername = machineStore.config.mqttUsername;
+  form.hardwareAdapter = machineStore.config.hardwareAdapter;
+  form.serialPortPath = machineStore.config.serialPortPath;
+  form.scannerAdapter = machineStore.config.scannerAdapter;
+  form.scannerSerialPortPath = machineStore.config.scannerSerialPortPath;
+  form.scannerBaudRate = machineStore.config.scannerBaudRate;
+  form.scannerFrameSuffix = machineStore.config.scannerFrameSuffix;
+  form.visionEnabled = machineStore.config.visionEnabled;
+  form.visionWsUrl = machineStore.config.visionWsUrl;
+  form.visionAutoStart = machineStore.config.visionAutoStart;
+  form.visionProcessCommand = machineStore.config.visionProcessCommand;
+  form.visionProcessArgs = machineStore.config.visionProcessArgs;
+  form.visionRequestTimeoutMs = machineStore.config.visionRequestTimeoutMs;
+  form.kioskMode = machineStore.config.kioskMode;
+}
+
 onMounted(async () => {
-  if (!machineStore.configLoaded) {
-    await machineStore.loadConfig();
-    form.machineCode = machineStore.config.machineCode;
-    form.apiBaseUrl = machineStore.config.apiBaseUrl;
-    form.mqttUrl = machineStore.config.mqttUrl;
-    form.mqttUsername = machineStore.config.mqttUsername;
-    form.hardwareAdapter = machineStore.config.hardwareAdapter;
-    form.serialPortPath = machineStore.config.serialPortPath;
-    form.scannerAdapter = machineStore.config.scannerAdapter;
-    form.scannerSerialPortPath = machineStore.config.scannerSerialPortPath;
-    form.scannerBaudRate = machineStore.config.scannerBaudRate;
-    form.scannerFrameSuffix = machineStore.config.scannerFrameSuffix;
-    form.visionEnabled = machineStore.config.visionEnabled;
-    form.visionWsUrl = machineStore.config.visionWsUrl;
-    form.visionAutoStart = machineStore.config.visionAutoStart;
-    form.visionProcessCommand = machineStore.config.visionProcessCommand;
-    form.visionProcessArgs = machineStore.config.visionProcessArgs;
-    form.visionRequestTimeoutMs = machineStore.config.visionRequestTimeoutMs;
-    form.kioskMode = machineStore.config.kioskMode;
+  try {
+    if (!machineStore.configLoaded) {
+      await machineStore.loadConfig();
+    }
+  } catch {
+    // Keep maintenance usable with local defaults when daemon is temporarily unavailable.
   }
+  syncFormFromStore();
+});
+
+const hardwareMaintenance = reactive({
+  loading: false,
+  message: null as string | null,
 });
 
 const visionMaintenance = reactive({
@@ -98,56 +108,47 @@ async function saveAndReboot(): Promise<void> {
       mqttPassword: form.mqttPasswordInput.trim() || null,
     });
     await machineStore.saveConfig(normalized);
+    syncFormFromStore();
     await router.replace("/boot");
   } catch (error) {
     machineStore.error = error instanceof Error ? error.message : String(error);
+  } finally {
+    form.machineSecretInput = "";
+    form.mqttSigningSecretInput = "";
+    form.mqttPasswordInput = "";
   }
 }
 
-async function runVisionAction(
-  action: () => Promise<{ message: string }>,
-): Promise<void> {
+async function runHardwareCheck(): Promise<void> {
+  hardwareMaintenance.loading = true;
+  hardwareMaintenance.message = null;
+  try {
+    const result = await daemonClient.runHardwareSelfCheck();
+    hardwareMaintenance.message = result.online
+      ? `硬件就绪：${result.message}`
+      : `硬件告警：${result.message}`;
+  } catch (error) {
+    hardwareMaintenance.message =
+      error instanceof Error ? error.message : String(error);
+  } finally {
+    hardwareMaintenance.loading = false;
+  }
+}
+
+async function refreshVisionStatus(): Promise<void> {
   visionMaintenance.loading = true;
   visionMaintenance.message = null;
   try {
-    const result = await action();
-    visionMaintenance.message = result.message;
+    await visionStore.refresh();
+    visionMaintenance.message = visionStore.online
+      ? `视觉模块在线：${visionStore.message}`
+      : `视觉模块不可用：${visionStore.message}`;
   } catch (error) {
     visionMaintenance.message =
       error instanceof Error ? error.message : String(error);
   } finally {
     visionMaintenance.loading = false;
   }
-}
-
-async function checkVisionModule(): Promise<void> {
-  const config = normalizeMachineConfig({
-    ...machineStore.config,
-    ...form,
-    machineSecret: null,
-    mqttSigningSecret: null,
-    mqttPassword: null,
-  });
-  await runVisionAction(async () => {
-    const result = await visionSelfCheck(config);
-    return {
-      message: result.online
-        ? `视觉模块就绪：${result.message}`
-        : `视觉模块不可用：${result.message}`,
-    };
-  });
-}
-
-async function startVisionModule(): Promise<void> {
-  await runVisionAction(startVisionRuntime);
-}
-
-async function stopVisionModule(): Promise<void> {
-  await runVisionAction(stopVisionRuntime);
-}
-
-async function refreshVisionStatus(): Promise<void> {
-  await runVisionAction(getVisionRuntimeStatus);
 }
 </script>
 
@@ -161,9 +162,8 @@ async function refreshVisionStatus(): Promise<void> {
       </p>
       <h2 class="mt-3 text-3xl font-bold">部署配置 / 维护入口</h2>
       <p class="mt-3 text-slate-300">
-        未配置机器编号时不会进入商品售卖页。真实设备请选择 serial 适配器并填写
-        USB-TTL 串口路径；付款码被扫请在下方配置独立扫码器。mock
-        适配器仅用于本地联调。
+        UI 现在只修改 daemon
+        配置并读取其状态。密钥不会回显，留空表示保持现有值。
       </p>
 
       <div
@@ -303,9 +303,6 @@ async function refreshVisionStatus(): Promise<void> {
             class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-sky-300"
             placeholder="Linux 如 /dev/ttyUSB0；Windows 如 COM3"
           />
-          <p class="text-sm text-slate-400">
-            当前协议固定 115200 / 8N1 / None 校验 / 1 停止位。
-          </p>
         </label>
 
         <div class="rounded-3xl border border-white/10 bg-slate-950/30 p-5">
@@ -314,10 +311,6 @@ async function refreshVisionStatus(): Promise<void> {
           >
             Scanner Adapter
           </p>
-          <p class="mt-2 text-sm text-slate-300">
-            用于读取支付宝/微信付款码；推荐将硬件控制板和扫码器分成独立串口。
-          </p>
-
           <div class="mt-4 grid gap-4">
             <label class="grid gap-2 text-left">
               <span class="text-sm font-semibold text-slate-200"
@@ -390,10 +383,6 @@ async function refreshVisionStatus(): Promise<void> {
           >
             Vision Module
           </p>
-          <p class="mt-2 text-sm text-slate-300">
-            用于通过本地 WebSocket 接入机器视觉层；本地联调可启动
-            apps/vision-mock。
-          </p>
 
           <div class="mt-4 grid gap-4">
             <label class="flex items-center gap-3 text-left">
@@ -463,35 +452,16 @@ async function refreshVisionStatus(): Promise<void> {
                 class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-fuchsia-300"
                 placeholder="例如 -F vision-mock dev"
               />
-              <p class="text-sm text-slate-400">
-                如视觉程序由 systemd/Docker 单独维护，请关闭 autoStart。
-              </p>
             </label>
 
-            <div class="grid gap-3 md:grid-cols-4">
+            <div class="grid gap-3 md:grid-cols-2">
               <button
                 class="kiosk-touch-target rounded-2xl border border-fuchsia-200/30 px-4 py-3 font-bold text-fuchsia-100 disabled:opacity-50"
                 type="button"
-                :disabled="visionMaintenance.loading"
-                @click="checkVisionModule"
+                :disabled="hardwareMaintenance.loading"
+                @click="runHardwareCheck"
               >
-                自检
-              </button>
-              <button
-                class="kiosk-touch-target rounded-2xl border border-fuchsia-200/30 px-4 py-3 font-bold text-fuchsia-100 disabled:opacity-50"
-                type="button"
-                :disabled="visionMaintenance.loading"
-                @click="startVisionModule"
-              >
-                启动进程
-              </button>
-              <button
-                class="kiosk-touch-target rounded-2xl border border-fuchsia-200/30 px-4 py-3 font-bold text-fuchsia-100 disabled:opacity-50"
-                type="button"
-                :disabled="visionMaintenance.loading"
-                @click="stopVisionModule"
-              >
-                停止进程
+                硬件自检
               </button>
               <button
                 class="kiosk-touch-target rounded-2xl border border-fuchsia-200/30 px-4 py-3 font-bold text-fuchsia-100 disabled:opacity-50"
@@ -499,10 +469,16 @@ async function refreshVisionStatus(): Promise<void> {
                 :disabled="visionMaintenance.loading"
                 @click="refreshVisionStatus"
               >
-                状态
+                视觉状态
               </button>
             </div>
 
+            <p
+              v-if="hardwareMaintenance.message"
+              class="rounded-2xl bg-sky-500/15 p-4 text-sky-100"
+            >
+              {{ hardwareMaintenance.message }}
+            </p>
             <p
               v-if="visionMaintenance.message"
               class="rounded-2xl bg-fuchsia-500/15 p-4 text-fuchsia-100"

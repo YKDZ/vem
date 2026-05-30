@@ -1,0 +1,30 @@
+[workspace]
+members = [
+  "crates/vending-core",
+  "apps/vending-daemon",
+  "apps/machine/src-tauri",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+authors = ["VEM Team"]
+license = "UNLICENSED"
+
+[workspace.dependencies]
+async-trait = "0.1"
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+futures-util = "0.3"
+hmac = "0.12"
+keyring = "3"
+getrandom = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tokio = { version = "1", features = ["full"] }
+tokio-serial = "5"
+tokio-tungstenite = "0.24"
+tokio-util = "0.7"
+uuid = { version = "1", features = ["v4", "serde"] }
+zip = "2"

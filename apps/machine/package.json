@@ -13,6 +13,7 @@
     "tauri": "tauri",
     "tauri:build:kiosk:windows": "tauri build --config src-tauri/tauri.windows.conf.json",
     "test": "vitest run",
+    "test:e2e": "playwright test",
     "typecheck": "tsc --noEmit && vue-tsc --noEmit"
   },
   "dependencies": {
@@ -28,6 +29,7 @@
     "zod": "catalog:"
   },
   "devDependencies": {
+    "@playwright/test": "catalog:",
     "@tailwindcss/vite": "catalog:",
     "@types/node": "catalog:",
     "@types/qrcode": "catalog:",

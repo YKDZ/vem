@@ -1,0 +1,12 @@
+{
+  "name": "vending-daemon",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "cargo build -p vending-daemon",
+    "fmt": "cargo fmt -p vending-daemon",
+    "lint": "cargo clippy -p vending-daemon --all-targets",
+    "test": "cargo test -p vending-daemon --all-targets",
+    "typecheck": "cargo check -p vending-daemon --all-targets"
+  }
+}

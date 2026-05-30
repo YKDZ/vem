@@ -1,19 +1,13 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, onMounted, onUnmounted } from "vue";
 import { useRouter } from "vue-router";
 
 import PaymentQrCode from "@/components/PaymentQrCode.vue";
 import { shouldShowMockPaymentControls } from "@/config/runtime-flags";
+import { daemonClient } from "@/daemon/client";
 import KioskLayout from "@/layouts/KioskLayout.vue";
-import {
-  listenPaymentCodeScanned,
-  scannerSelfCheck,
-  startScanner,
-  type PaymentCodeScannedEvent,
-  type ScannerSelfCheckResult,
-} from "@/native/scanner";
 import { resultKindFromNextAction, useCheckoutStore } from "@/stores/checkout";
-import { useMachineStore } from "@/stores/machine";
+import { useScannerStore } from "@/stores/scanner";
 import {
   formatCents,
   formatCountdown,
@@ -23,11 +17,10 @@ import { getPaymentProviderCopy } from "@/utils/payment-copy";
 
 const router = useRouter();
 const checkoutStore = useCheckoutStore();
-const machineStore = useMachineStore();
+const scannerStore = useScannerStore();
 
 let pollTimer: number | undefined;
 let clockTimer: number | undefined;
-let unlistenScanner: (() => void) | undefined;
 
 const order = computed(() => checkoutStore.currentOrder);
 const status = computed(() => checkoutStore.status);
@@ -38,8 +31,9 @@ const expired = computed(() => checkoutStore.remainingSeconds <= 0);
 const isPaymentCode = computed(
   () => status.value?.payment.method === "payment_code",
 );
-const canUseDevScan = import.meta.env.DEV;
-const scannerHealth = ref<ScannerSelfCheckResult | null>(null);
+const canUseDevScan = computed(
+  () => import.meta.env.DEV && daemonClient.currentConnection?.mock === true,
+);
 
 const activeProviderCode = computed(
   () => checkoutStore.activePaymentProviderCode,
@@ -62,12 +56,13 @@ const qrOverlayText = computed(() =>
       : null,
 );
 
-const showMockControls = computed(() =>
-  shouldShowMockPaymentControls({
-    dev: import.meta.env.DEV,
-    paymentMethod: status.value?.payment.method,
-    flag: import.meta.env.VITE_ENABLE_MOCK_PAYMENT_CONTROLS,
-  }),
+const showMockControls = computed(
+  () =>
+    shouldShowMockPaymentControls({
+      dev: import.meta.env.DEV,
+      paymentMethod: status.value?.payment.method,
+      flag: import.meta.env.VITE_ENABLE_MOCK_PAYMENT_CONTROLS,
+    }) && daemonClient.currentConnection?.mock === true,
 );
 
 async function routeByStatus(): Promise<void> {
@@ -83,37 +78,17 @@ async function routeByStatus(): Promise<void> {
 }
 
 async function refreshStatus(): Promise<void> {
-  await checkoutStore.refreshStatus(machineStore.config);
-  await routeByStatus();
-}
-
-async function handleScannedCode(
-  payload: PaymentCodeScannedEvent,
-): Promise<void> {
-  checkoutStore.paymentCodeLastMasked = payload.maskedCode;
-  await checkoutStore.submitScannedPaymentCode(
-    machineStore.config,
-    payload.authCode,
-    "tauri_scanner",
-    scannerHealth.value
-      ? {
-          online: scannerHealth.value.online,
-          adapter: scannerHealth.value.adapter,
-          port: scannerHealth.value.port ?? null,
-          message: scannerHealth.value.message,
-        }
-      : undefined,
-  );
+  await checkoutStore.refreshCurrentTransaction();
   await routeByStatus();
 }
 
 async function simulateSuccess(): Promise<void> {
-  await checkoutStore.markMockSucceeded(machineStore.config);
+  await checkoutStore.markMockSucceeded();
   await routeByStatus();
 }
 
 async function simulateFail(): Promise<void> {
-  await checkoutStore.markMockFailed(machineStore.config);
+  await checkoutStore.markMockFailed();
   await routeByStatus();
 }
 
@@ -124,11 +99,7 @@ onMounted(async () => {
   }
   await refreshStatus();
   if (isPaymentCode.value) {
-    scannerHealth.value = await scannerSelfCheck();
-    await startScanner();
-    unlistenScanner = await listenPaymentCodeScanned((payload) => {
-      void handleScannedCode(payload);
-    });
+    await scannerStore.refresh();
   }
   pollTimer = window.setInterval(() => {
     void refreshStatus();
@@ -141,7 +112,6 @@ onMounted(async () => {
 onUnmounted(() => {
   if (pollTimer) window.clearInterval(pollTimer);
   if (clockTimer) window.clearInterval(clockTimer);
-  unlistenScanner?.();
 });
 </script>
 
@@ -182,23 +152,20 @@ onUnmounted(() => {
             </p>
             <h3 class="mt-3 text-3xl font-black">请打开付款码并靠近扫码窗口</h3>
             <p class="mt-3 text-slate-200">
-              系统只会短暂读取付款码用于本次 HTTPS 扣款，不会保存明文。
+              daemon 负责扫码器和付款码提交，UI 仅展示脱敏结果和当前交易状态。
             </p>
             <div class="mt-6 rounded-3xl bg-slate-950/45 p-5">
               <p class="text-slate-300">扫码模块</p>
               <p
                 class="mt-2 text-xl font-black"
                 :class="
-                  scannerHealth?.online ? 'text-emerald-200' : 'text-amber-200'
+                  scannerStore.online ? 'text-emerald-200' : 'text-amber-200'
                 "
               >
-                {{ scannerHealth?.message ?? "正在检测扫码模块" }}
+                {{ scannerStore.message }}
               </p>
-              <p
-                v-if="checkoutStore.paymentCodeLastMasked"
-                class="mt-3 text-slate-300"
-              >
-                已读取：{{ checkoutStore.paymentCodeLastMasked }}
+              <p v-if="scannerStore.lastMaskedCode" class="mt-3 text-slate-300">
+                已读取：{{ scannerStore.lastMaskedCode }}
               </p>
               <p class="mt-3 text-sky-200">
                 {{ checkoutStore.paymentCodeMessage ?? "等待扫码" }}

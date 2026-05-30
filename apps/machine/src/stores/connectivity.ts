@@ -1,54 +1,85 @@
 import { defineStore } from "pinia";
 
-import type { MachineConfig } from "@/config/machine-config";
+import type { HealthSnapshot, ReadySnapshot } from "@/daemon/schemas";
 
-import { getHealth, type HealthStatus } from "@/api/health";
-import { createMachineApiClient } from "@/api/request";
+import { daemonClient } from "@/daemon/client";
+
+type ConnectivityState = {
+  health: HealthSnapshot | null;
+  ready: ReadySnapshot | null;
+  loading: boolean;
+  stale: boolean;
+  error: string | null;
+  lastCheckedAt: string | null;
+};
 
 export const useConnectivityStore = defineStore("connectivity", {
-  state: () => ({
-    backendOnline: false,
-    backendMqttStatus: "disconnected" as HealthStatus["mqtt"],
-    machineMqttConnected: false,
-    lastCheckedAt: null as number | null,
+  state: (): ConnectivityState => ({
+    health: null,
+    ready: null,
     loading: false,
-    error: null as string | null,
+    stale: false,
+    error: null,
+    lastCheckedAt: null,
   }),
   getters: {
     networkLabel: (state): string => {
       if (state.loading) return "检测中";
-      if (!state.backendOnline) return "后端离线";
-      if (state.backendMqttStatus !== "connected") return "后端 MQTT 未连接";
-      if (!state.machineMqttConnected) return "机器 MQTT 未连接";
+      if (!state.health) return "未连接";
+      if (!state.health.backendOnline) return "后端离线";
+      if (!state.health.mqttConnected) return "MQTT 未就绪";
       return "在线";
     },
+    blockingReasons: (state): string[] =>
+      state.ready?.blockingReasons.map((reason) => reason.message) ?? [],
+    degradedReasons: (state): string[] =>
+      state.ready?.degradedReasons.map((reason) => reason.message) ?? [],
     isSaleNetworkReady: (state): boolean =>
-      state.backendOnline &&
-      state.backendMqttStatus === "connected" &&
-      state.machineMqttConnected,
+      Boolean(
+        state.ready?.canSell &&
+        state.health?.configConfigured &&
+        state.health?.backendOnline &&
+        state.health?.mqttConnected,
+      ),
   },
   actions: {
-    setMachineMqttConnected(connected: boolean): void {
-      this.machineMqttConnected = connected;
+    applyHealth(snapshot: HealthSnapshot): void {
+      this.health = snapshot;
+      this.lastCheckedAt = snapshot.updatedAt;
+      this.error = null;
+      this.stale = false;
     },
-    async checkBackend(config: MachineConfig): Promise<void> {
+    applyReady(snapshot: ReadySnapshot): void {
+      this.ready = snapshot;
+      this.error = null;
+      this.stale = false;
+    },
+    async refresh(): Promise<void> {
       this.loading = true;
       this.error = null;
       try {
-        const client = createMachineApiClient(config.apiBaseUrl);
-        const health = await getHealth(client);
-        this.backendOnline = health.database === "ok";
-        this.backendMqttStatus = health.mqtt;
-        this.lastCheckedAt = Date.now();
+        const [health, ready] = await Promise.all([
+          daemonClient.getHealth(),
+          daemonClient.getReady(),
+        ]);
+        this.applyHealth(health);
+        this.applyReady(ready);
       } catch (error) {
-        this.backendOnline = false;
-        this.backendMqttStatus = "disconnected";
-        this.machineMqttConnected = false;
-        this.lastCheckedAt = Date.now();
+        this.stale = true;
         this.error = error instanceof Error ? error.message : String(error);
+        throw error;
       } finally {
         this.loading = false;
       }
+    },
+    markStale(error?: unknown): void {
+      this.stale = true;
+      this.error =
+        error instanceof Error
+          ? error.message
+          : typeof error === "string"
+            ? error
+            : "daemon events disconnected";
     },
   },
 });
