@@ -4,6 +4,8 @@ use tauri::{AppHandle, Emitter};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_serial::SerialPortBuilderExt;
 
+use vending_core::scanner::{mask_code, ScannerFramer};
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScannerSelfCheckResult {
@@ -17,7 +19,6 @@ pub struct ScannerSelfCheckResult {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PaymentCodeScannedEvent {
-    pub auth_code: String,
     pub masked_code: String,
     pub source: String,
     pub scanned_at_ms: u128,
@@ -28,17 +29,6 @@ fn now_ms() -> u128 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or(Duration::from_secs(0))
         .as_millis()
-}
-
-fn mask_code(input: &str) -> String {
-    let trimmed = input.trim();
-    if trimmed.is_empty() {
-        return "****".to_string();
-    }
-    if trimmed.len() <= 8 {
-        return format!("{}****", &trimmed[..trimmed.len().min(2)]);
-    }
-    format!("{}****{}", &trimmed[..4], &trimmed[trimmed.len() - 4..])
 }
 
 pub async fn self_check_serial(
@@ -81,38 +71,22 @@ pub async fn read_loop(app: AppHandle, port_path: String, baud_rate: u32) -> Res
         .open_native_async()
         .map_err(|error| format!("open scanner serial failed: {error}"))?;
     let mut buf = [0_u8; 256];
-    let mut frame = Vec::<u8>::new();
-    let mut last_code = String::new();
-    let mut last_at = 0_u128;
+    let mut framer = ScannerFramer::default();
     loop {
         let read = port
             .read(&mut buf)
             .await
             .map_err(|error| format!("read scanner serial failed: {error}"))?;
-        for byte in &buf[..read] {
-            if *byte == b'\r' || *byte == b'\n' {
-                if frame.is_empty() {
-                    continue;
-                }
-                let code = String::from_utf8_lossy(&frame).trim().to_string();
-                frame.clear();
-                let now = now_ms();
-                if code == last_code && now.saturating_sub(last_at) < 1500 {
-                    continue;
-                }
-                last_code = code.clone();
-                last_at = now;
-                let event = PaymentCodeScannedEvent {
-                    auth_code: code.clone(),
-                    masked_code: mask_code(&code),
-                    source: "tauri_scanner".to_string(),
-                    scanned_at_ms: now,
-                };
-                app.emit("payment-code-scanned", event)
-                    .map_err(|error| format!("emit scanner event failed: {error}"))?;
-            } else if !byte.is_ascii_control() {
-                frame.push(*byte);
-            }
+        let now = now_ms();
+        for raw in framer.push_bytes(&buf[..read], now) {
+            let _ = mask_code(&raw.auth_code);
+            let event = PaymentCodeScannedEvent {
+                masked_code: raw.masked_code,
+                source: "tauri_scanner".to_string(),
+                scanned_at_ms: now,
+            };
+            app.emit("payment-code-scanned", event)
+                .map_err(|error| format!("emit scanner event failed: {error}"))?;
         }
     }
 }

@@ -5,12 +5,10 @@ import { useRouter } from "vue-router";
 import KioskLayout from "@/layouts/KioskLayout.vue";
 import { useCheckoutStore } from "@/stores/checkout";
 import { useConnectivityStore } from "@/stores/connectivity";
-import { useMachineStore } from "@/stores/machine";
 import { formatCents } from "@/utils/format";
 
 const router = useRouter();
 const checkoutStore = useCheckoutStore();
-const machineStore = useMachineStore();
 const connectivityStore = useConnectivityStore();
 
 const item = computed(() => checkoutStore.selectedItem);
@@ -18,7 +16,6 @@ const canSubmit = computed(
   () =>
     Boolean(item.value) &&
     checkoutStore.canCreateOrder &&
-    machineStore.canSell &&
     connectivityStore.isSaleNetworkReady &&
     !checkoutStore.loading,
 );
@@ -40,7 +37,7 @@ onMounted(async () => {
     return;
   }
   try {
-    await checkoutStore.loadPaymentOptions(machineStore.config);
+    await checkoutStore.loadPaymentOptions();
   } catch {
     // 错误已写入 checkoutStore.error
   }
@@ -49,7 +46,7 @@ onMounted(async () => {
 async function submitOrder(): Promise<void> {
   if (!canSubmit.value) return;
   try {
-    await checkoutStore.createOrder(machineStore.config);
+    await checkoutStore.createOrder();
     await router.replace("/payment");
   } catch {
     // 错误已写入 checkoutStore.error，模板负责展示。
@@ -156,10 +153,10 @@ async function submitOrder(): Promise<void> {
             网络或 MQTT 未就绪，当前不能创建订单。
           </li>
           <li
-            v-if="!machineStore.canSell"
+            v-if="!connectivityStore.ready?.canSell"
             class="rounded-2xl bg-amber-400/15 p-4 text-amber-100"
           >
-            机器配置或硬件自检未就绪，当前不能创建订单。
+            daemon 当前不允许售卖，请先排查配置或硬件状态。
           </li>
         </ul>
 

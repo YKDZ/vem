@@ -1,110 +1,77 @@
 import { defineStore } from "pinia";
 
-import { requestMachineToken } from "@/api/machine-auth";
-import {
-  clearMachineAuthToken,
-  getMachineAuthSessionState,
-  getMachineAuthToken,
-  setMachineAuthToken,
-} from "@/api/machine-auth-session";
-import { setMachineTokenRefresher } from "@/api/request";
+import type { HealthSnapshot, ConfigSummary } from "@/daemon/schemas";
+
 import {
   machineConfigDefaults,
   type MachineConfig,
 } from "@/config/machine-config";
-import {
-  hardwareSelfCheck,
-  type HardwareSelfCheckResult,
-} from "@/native/hardware";
-import {
-  getMachineConfig,
-  getMachineRuntimeConfig,
-  saveMachineConfig,
-} from "@/native/local-config";
+import { daemonClient } from "@/daemon/client";
 
-let machineTokenRefreshPromise: Promise<string> | null = null;
+type MachineState = {
+  configSummary: ConfigSummary | null;
+  configLoaded: boolean;
+  health: HealthSnapshot | null;
+  loading: boolean;
+  error: string | null;
+};
 
 export const useMachineStore = defineStore("machine", {
-  state: () => ({
-    config: machineConfigDefaults,
+  state: (): MachineState => ({
+    configSummary: null,
     configLoaded: false,
-    authTokenReady: false,
-    hardware: null as HardwareSelfCheckResult | null,
+    health: null,
     loading: false,
-    error: null as string | null,
+    error: null,
   }),
   getters: {
-    machineCode: (state): string | null => state.config.machineCode,
-    hasDeploymentConfig: (state): boolean =>
-      Boolean(
-        state.config.machineCode &&
-        (state.config.machineSecret || state.config.machineSecretConfigured) &&
-        (state.config.mqttSigningSecret ||
-          state.config.mqttSigningSecretConfigured),
-      ),
-    hardwareReady: (state): boolean => state.hardware?.status === "ok",
-    canSell(): boolean {
-      return (
-        this.hasDeploymentConfig && this.authTokenReady && this.hardwareReady
-      );
-    },
-  },
-  actions: {
-    async loadConfig(
-      options: { includeSecrets?: boolean } = {},
-    ): Promise<void> {
-      this.loading = true;
-      this.error = null;
-      try {
-        this.config = options.includeSecrets
-          ? await getMachineRuntimeConfig()
-          : await getMachineConfig();
-        this.configLoaded = true;
-        this.registerTokenRefresher();
-      } catch (error) {
-        this.error = error instanceof Error ? error.message : String(error);
-      } finally {
-        this.loading = false;
+    config: (state): MachineConfig => {
+      const publicConfig = state.configSummary?.public;
+      const configSummary = state.configSummary;
+      if (!publicConfig) {
+        return {
+          ...machineConfigDefaults,
+          machineSecret: null,
+          machineSecretConfigured: false,
+          mqttSigningSecret: null,
+          mqttSigningSecretConfigured: false,
+          mqttPassword: null,
+          mqttPasswordConfigured: false,
+        };
       }
-    },
-    clearPlaintextSecrets(): void {
-      this.config = {
-        ...this.config,
+      return {
+        ...machineConfigDefaults,
+        ...publicConfig,
         machineSecret: null,
+        machineSecretConfigured:
+          configSummary?.machineSecretConfigured ?? false,
         mqttSigningSecret: null,
+        mqttSigningSecretConfigured:
+          configSummary?.mqttSigningSecretConfigured ?? false,
         mqttPassword: null,
+        mqttPasswordConfigured: configSummary?.mqttPasswordConfigured ?? false,
       };
     },
-    syncAuthTokenState(): void {
-      this.authTokenReady = getMachineAuthSessionState().usable;
+    machineCode: (state): string | null =>
+      state.configSummary?.public.machineCode ?? null,
+    hardwareReady: (state): boolean => state.health?.hardwareOnline ?? false,
+    canSell: (state): boolean =>
+      state.health?.status === "healthy" || state.health?.status === "degraded",
+    hasDeploymentConfig: (state): boolean =>
+      Boolean(
+        state.health?.configConfigured &&
+        state.configSummary?.public.machineCode,
+      ),
+  },
+  actions: {
+    applyHealth(snapshot: HealthSnapshot): void {
+      this.health = snapshot;
     },
-    registerTokenRefresher(): void {
-      setMachineTokenRefresher(async () => await this.ensureMachineToken());
-    },
-    async ensureMachineToken(): Promise<string> {
-      const existing = getMachineAuthToken({ allowRefreshWindow: true });
-      if (existing && getMachineAuthToken()) {
-        this.authTokenReady = true;
-        return existing;
-      }
-      if (!machineTokenRefreshPromise) {
-        machineTokenRefreshPromise = this.authenticate()
-          .then(() => {
-            const token = getMachineAuthToken({ allowRefreshWindow: true });
-            if (!token) throw new Error("machine token refresh failed");
-            return token;
-          })
-          .finally(() => {
-            machineTokenRefreshPromise = null;
-          });
-      }
-      return await machineTokenRefreshPromise;
-    },
-    async saveConfig(config: MachineConfig): Promise<void> {
+    async loadConfig(): Promise<void> {
       this.loading = true;
       this.error = null;
       try {
-        this.config = await saveMachineConfig(config);
+        this.configSummary = await daemonClient.getConfig();
         this.configLoaded = true;
       } catch (error) {
         this.error = error instanceof Error ? error.message : String(error);
@@ -113,33 +80,38 @@ export const useMachineStore = defineStore("machine", {
         this.loading = false;
       }
     },
-    async runHardwareSelfCheck(): Promise<void> {
+    async saveConfig(config: MachineConfig): Promise<void> {
       this.loading = true;
       this.error = null;
       try {
-        this.hardware = await hardwareSelfCheck();
+        this.configSummary = await daemonClient.saveConfig({
+          public: {
+            machineCode: config.machineCode,
+            apiBaseUrl: config.apiBaseUrl,
+            mqttUrl: config.mqttUrl,
+            mqttUsername: config.mqttUsername,
+            hardwareAdapter: config.hardwareAdapter,
+            serialPortPath: config.serialPortPath,
+            scannerAdapter: config.scannerAdapter,
+            scannerSerialPortPath: config.scannerSerialPortPath,
+            scannerBaudRate: config.scannerBaudRate,
+            scannerFrameSuffix: config.scannerFrameSuffix,
+            visionEnabled: config.visionEnabled,
+            visionWsUrl: config.visionWsUrl,
+            visionAutoStart: config.visionAutoStart,
+            visionProcessCommand: config.visionProcessCommand,
+            visionProcessArgs: config.visionProcessArgs,
+            visionRequestTimeoutMs: config.visionRequestTimeoutMs,
+            kioskMode: config.kioskMode,
+          },
+          secrets: {
+            machineSecret: config.machineSecret,
+            mqttSigningSecret: config.mqttSigningSecret,
+            mqttPassword: config.mqttPassword,
+          },
+        });
+        this.configLoaded = true;
       } catch (error) {
-        this.error = error instanceof Error ? error.message : String(error);
-        this.hardware = null;
-      } finally {
-        this.loading = false;
-      }
-    },
-    async authenticate(): Promise<void> {
-      this.loading = true;
-      this.error = null;
-      try {
-        // Use runtime config (which retains secrets in browserRuntimeSecrets even after
-        // clearPlaintextSecrets() nulls out this.config.machineSecret)
-        const runtimeConfig = await getMachineRuntimeConfig();
-        const token = await requestMachineToken(runtimeConfig);
-        setMachineAuthToken(token.accessToken, token.expiresInSeconds);
-        this.authTokenReady = Boolean(
-          getMachineAuthToken({ allowRefreshWindow: true }),
-        );
-      } catch (error) {
-        clearMachineAuthToken();
-        this.authTokenReady = false;
         this.error = error instanceof Error ? error.message : String(error);
         throw error;
       } finally {

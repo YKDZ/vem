@@ -24,18 +24,6 @@ export default defineConfig({
     port: 1420,
     strictPort: true,
     host: host || false,
-    proxy: {
-      "/api": {
-        target: "http://localhost:3000",
-        changeOrigin: true,
-      },
-      "/mqtt-ws": {
-        target: "ws://172.31.0.4:9001",
-        changeOrigin: true,
-        ws: true,
-        rewrite: (path) => path.replace(/^\/mqtt-ws/, "") || "/",
-      },
-    },
     hmr: host
       ? {
           protocol: "ws",

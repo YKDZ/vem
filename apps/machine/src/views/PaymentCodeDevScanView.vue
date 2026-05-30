@@ -2,18 +2,20 @@
 import { computed, ref } from "vue";
 import { useRouter } from "vue-router";
 
+import { daemonClient } from "@/daemon/client";
 import KioskLayout from "@/layouts/KioskLayout.vue";
 import { useCheckoutStore } from "@/stores/checkout";
-import { useMachineStore } from "@/stores/machine";
 
 const router = useRouter();
 const checkoutStore = useCheckoutStore();
-const machineStore = useMachineStore();
 
 const authCode = ref("");
 const submitting = ref(false);
 
 const orderNo = computed(() => checkoutStore.currentOrder?.orderNo ?? null);
+const mockDaemon = computed(
+  () => daemonClient.currentConnection?.mock === true,
+);
 
 function maskAuthCode(value: string): string {
   if (value.length <= 8) return value;
@@ -21,18 +23,14 @@ function maskAuthCode(value: string): string {
 }
 
 async function submit(): Promise<void> {
-  if (!authCode.value.trim()) return;
+  if (!authCode.value.trim() || !mockDaemon.value) return;
   if (!orderNo.value) {
     await router.replace("/catalog");
     return;
   }
   submitting.value = true;
   checkoutStore.paymentCodeLastMasked = maskAuthCode(authCode.value.trim());
-  await checkoutStore.submitScannedPaymentCode(
-    machineStore.config,
-    authCode.value.trim(),
-    "browser_test",
-  );
+  await checkoutStore.submitDevPaymentCode(authCode.value.trim());
   submitting.value = false;
   await router.replace("/payment");
 }
@@ -46,7 +44,8 @@ async function submit(): Promise<void> {
       <p class="text-sm tracking-[0.35em] text-emerald-200 uppercase">DEV</p>
       <h2 class="mt-3 text-3xl font-black">付款码模拟扫码</h2>
       <p class="mt-3 text-slate-300">
-        仅开发环境可见。这里不会保存付款码，只会把输入内容直接提交到当前订单的付款码接口。
+        仅开发环境可见。这里不会保存付款码，只会把输入内容提交给 mock daemon
+        的开发接口。
       </p>
 
       <div class="mt-6 rounded-3xl bg-slate-950/40 p-5">
@@ -68,9 +67,16 @@ async function submit(): Promise<void> {
         />
       </label>
 
+      <p
+        v-if="!mockDaemon"
+        class="mt-4 rounded-2xl bg-amber-400/15 p-4 text-amber-100"
+      >
+        当前不是 mock daemon，禁止手动提交付款码。
+      </p>
+
       <button
         class="kiosk-touch-target mt-6 rounded-2xl bg-emerald-400 px-6 py-4 text-lg font-black text-slate-950 shadow-lg shadow-emerald-950/40 disabled:bg-slate-500 disabled:text-slate-300"
-        :disabled="submitting || !orderNo"
+        :disabled="submitting || !orderNo || !mockDaemon"
         type="button"
         @click="submit"
       >

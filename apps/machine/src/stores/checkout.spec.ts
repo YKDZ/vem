@@ -1,42 +1,41 @@
-import type { MachineOrderStatusNextAction } from "@vem/shared";
-
 import { createPinia, setActivePinia } from "pinia";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("@/api/machine-orders", () => ({
-  createMachineOrder: vi.fn(),
-  getMachineOrderStatus: vi.fn(),
-  getMachinePaymentOptions: vi.fn(),
-  submitPaymentCode: vi.fn(),
+const {
+  getPaymentOptionsMock,
+  createOrderMock,
+  getCurrentTransactionMock,
+  submitDevPaymentCodeMock,
+  markMockPaymentMock,
+} = vi.hoisted(() => ({
+  getPaymentOptionsMock: vi.fn(),
+  createOrderMock: vi.fn(),
+  getCurrentTransactionMock: vi.fn(),
+  submitDevPaymentCodeMock: vi.fn(),
+  markMockPaymentMock: vi.fn(),
 }));
 
-vi.mock("@/api/request", () => ({
-  createMachineApiClient: vi.fn(() => ({})),
+vi.mock("@/daemon/client", () => ({
+  daemonClient: {
+    currentConnection: { mock: true },
+    getPaymentOptions: getPaymentOptionsMock,
+    createOrder: createOrderMock,
+    getCurrentTransaction: getCurrentTransactionMock,
+    submitDevPaymentCode: submitDevPaymentCodeMock,
+    markMockPayment: markMockPaymentMock,
+  },
 }));
 
-import * as machineOrdersApi from "@/api/machine-orders";
-import { machineConfigDefaults } from "@/config/machine-config";
-
-import { resultKindFromNextAction, useCheckoutStore } from "./checkout";
+import {
+  normalizeNextAction,
+  resultKindFromNextAction,
+  useCheckoutStore,
+} from "./checkout";
 
 beforeEach(() => {
   setActivePinia(createPinia());
   vi.clearAllMocks();
 });
-
-function makeMockOption() {
-  return {
-    optionKey: "mock:mock" as const,
-    providerCode: "mock" as const,
-    method: "mock" as const,
-    displayName: "模拟支付",
-    description: "本地开发模式，可使用模拟成功或失败按钮。",
-    icon: "mock" as const,
-    disabled: false,
-    disabledReason: null,
-    recommended: true,
-  };
-}
 
 function makeCatalogItem() {
   return {
@@ -62,315 +61,148 @@ function makeCatalogItem() {
   };
 }
 
-describe("checkout state helpers", () => {
-  it.each<[MachineOrderStatusNextAction, string | null]>([
-    ["wait_payment", null],
-    ["dispensing", null],
-    ["success", "success"],
-    ["payment_failed", "payment_failed"],
-    ["payment_expired", "payment_expired"],
-    ["dispense_failed", "dispense_failed"],
-    ["refund_pending", "refund_pending"],
-    ["refunded", "refunded"],
-    ["manual_handling", "manual_handling"],
-    ["closed", "closed"],
-  ])("maps %s to result kind %s", (nextAction, expected) => {
-    expect(resultKindFromNextAction(nextAction)).toBe(expected);
+function makeTransactionSnapshot(overrides: Record<string, unknown> = {}) {
+  return {
+    orderId: "550e8400-e29b-41d4-a716-446655440010",
+    orderNo: "ORD-001",
+    productSummary: null,
+    paymentNo: "PAY-001",
+    paymentMethod: "payment_code",
+    paymentProvider: "alipay",
+    paymentUrl: "https://pay.example/1",
+    paymentStatus: "pending",
+    orderStatus: "pending_payment",
+    totalAmountCents: 100,
+    vending: {
+      commandNo: "CMD-001",
+      status: "created",
+      lastError: null,
+    },
+    nextAction: "wait_payment",
+    maskedAuthCode: "6212****9012",
+    expiresAt: "2026-01-01T00:05:00Z",
+    errorCode: null,
+    errorMessage: null,
+    operatorHint: "等待用户出示付款码",
+    updatedAt: "2026-01-01T00:00:00Z",
+    ...overrides,
+  };
+}
+
+describe("checkout helpers", () => {
+  it("normalizes unknown next action to wait_payment", () => {
+    expect(normalizeNextAction("weird")).toBe("wait_payment");
+  });
+
+  it("maps result next actions", () => {
+    expect(resultKindFromNextAction("success")).toBe("success");
+    expect(resultKindFromNextAction("wait_payment")).toBeNull();
   });
 });
 
-describe("checkout store payment option logic", () => {
-  function makeAlipayOption() {
-    return {
-      optionKey: "qr_code:alipay" as const,
-      providerCode: "alipay" as const,
-      method: "qr_code" as const,
-      displayName: "支付宝",
-      description: "请使用支付宝扫码支付",
-      icon: "alipay" as const,
-      disabled: false,
-      disabledReason: null,
-      recommended: true,
-    };
-  }
-
-  function makeAlipayPaymentCodeOption() {
-    return {
-      optionKey: "payment_code:alipay" as const,
-      providerCode: "alipay" as const,
-      method: "payment_code" as const,
-      displayName: "支付宝付款码",
-      description: "请出示支付宝付款码",
-      icon: "alipay" as const,
-      disabled: false,
-      disabledReason: null,
-      recommended: false,
-    };
-  }
-
-  function makeWechatOption() {
-    return {
-      optionKey: "qr_code:wechat_pay" as const,
-      providerCode: "wechat_pay" as const,
-      method: "qr_code" as const,
-      displayName: "微信支付",
-      description: "请使用微信扫码支付",
-      icon: "wechat" as const,
-      disabled: false,
-      disabledReason: null,
-      recommended: false,
-    };
-  }
-
-  it("selects alipay by default when only alipay is available", () => {
-    const options = [makeAlipayOption()];
-    const defaultOptionKey = options[0]?.optionKey ?? null;
-    expect(defaultOptionKey).toBe("qr_code:alipay");
-  });
-
-  it("allows switching between qr_code and payment_code for the same provider", () => {
-    const options = [makeAlipayOption(), makeAlipayPaymentCodeOption()];
-    let selected = options[0]?.optionKey ?? null;
-    if (options.some((o) => o.optionKey === "payment_code:alipay")) {
-      selected = "payment_code:alipay";
-    }
-    expect(selected).toBe("payment_code:alipay");
-  });
-
-  it("builds mock payload when mock option is selected", () => {
-    const selected: {
-      providerCode: "mock" | "alipay" | "wechat_pay";
-      method: "mock" | "qr_code" | "payment_code";
-    } = makeMockOption();
-    const payload =
-      selected.method === "mock"
-        ? {
-            paymentMethod: "mock" as const,
-            paymentProviderCode: "mock" as const,
-          }
-        : {
-            paymentMethod: selected.method,
-            paymentProviderCode: selected.providerCode,
-          };
-    expect(payload).toEqual({
-      paymentMethod: "mock",
-      paymentProviderCode: "mock",
+describe("checkout store", () => {
+  it("loads payment options from daemon client", async () => {
+    getPaymentOptionsMock.mockResolvedValue({
+      options: [
+        {
+          optionKey: "payment_code:alipay",
+          providerCode: "alipay",
+          method: "payment_code",
+          displayName: "支付宝付款码",
+          description: "请出示付款码",
+          icon: "alipay",
+          disabled: false,
+          disabledReason: null,
+          recommended: true,
+        },
+      ],
+      defaultOptionKey: "payment_code:alipay",
+      defaultProviderCode: "alipay",
+      serverTime: "2026-01-01T00:00:00Z",
     });
+
+    const store = useCheckoutStore();
+    await store.loadPaymentOptions();
+
+    expect(store.selectedPaymentOptionKey).toBe("payment_code:alipay");
+    expect(getPaymentOptionsMock).toHaveBeenCalledOnce();
   });
 
-  it("builds qr_code + alipay payload when qr option is selected", () => {
-    const selected: {
-      providerCode: "mock" | "alipay" | "wechat_pay";
-      method: "mock" | "qr_code" | "payment_code";
-    } = makeAlipayOption();
-    const payload =
-      selected.method === "mock"
-        ? {
-            paymentMethod: "mock" as const,
-            paymentProviderCode: "mock" as const,
-          }
-        : {
-            paymentMethod: selected.method,
-            paymentProviderCode: selected.providerCode,
-          };
-    expect(payload).toEqual({
-      paymentMethod: "qr_code",
-      paymentProviderCode: "alipay",
-    });
-  });
+  it("creates order without machineCode payload and applies transaction", async () => {
+    createOrderMock.mockResolvedValue(makeTransactionSnapshot());
 
-  it("builds payment_code + alipay payload when payment_code option is selected", () => {
-    const selected: {
-      providerCode: "mock" | "alipay" | "wechat_pay";
-      method: "mock" | "qr_code" | "payment_code";
-    } = makeAlipayPaymentCodeOption();
-    const payload =
-      selected.method === "mock"
-        ? {
-            paymentMethod: "mock" as const,
-            paymentProviderCode: "mock" as const,
-          }
-        : {
-            paymentMethod: selected.method,
-            paymentProviderCode: selected.providerCode,
-          };
-    expect(payload).toEqual({
+    const store = useCheckoutStore();
+    store.paymentOptions = [
+      {
+        optionKey: "payment_code:alipay",
+        providerCode: "alipay",
+        method: "payment_code",
+        displayName: "支付宝付款码",
+        description: "请出示付款码",
+        icon: "alipay",
+        disabled: false,
+        disabledReason: null,
+        recommended: true,
+      },
+    ];
+    store.selectedPaymentOptionKey = "payment_code:alipay";
+    store.selectItem(makeCatalogItem());
+
+    await store.createOrder();
+
+    expect(createOrderMock).toHaveBeenCalledWith({
+      inventoryId: "550e8400-e29b-41d4-a716-446655440002",
+      quantity: 1,
       paymentMethod: "payment_code",
       paymentProviderCode: "alipay",
+      profileSnapshot: null,
     });
+    expect(store.currentOrder?.paymentUrl).toBe("https://pay.example/1");
+    expect(store.status?.payment.method).toBe("payment_code");
+    expect(store.status?.vending?.commandNo).toBe("CMD-001");
   });
 
-  it("builds qr_code + wechat_pay payload when wechat option is selected", () => {
-    const selected = makeWechatOption();
-    expect({
-      paymentMethod: selected.method,
-      paymentProviderCode: selected.providerCode,
-    }).toEqual({
-      paymentMethod: "qr_code",
-      paymentProviderCode: "wechat_pay",
-    });
-  });
-});
-
-describe("checkout Pinia store", () => {
-  it("loads mock option as default and creates a mock order payload", async () => {
-    vi.mocked(machineOrdersApi.getMachinePaymentOptions).mockResolvedValue({
-      options: [makeMockOption()],
-      defaultOptionKey: "mock:mock",
-      defaultProviderCode: "mock",
-      serverTime: new Date().toISOString(),
-    });
-    vi.mocked(machineOrdersApi.createMachineOrder).mockResolvedValue({
-      orderId: "550e8400-e29b-41d4-a716-446655440010",
-      orderNo: "ORD_MOCK_001",
-      paymentNo: "PAY_MOCK_001",
-      paymentUrl: null,
-      expiresAt: new Date("2026-05-07T00:15:00Z").toISOString(),
-      totalAmountCents: 100,
-      paymentProviderCode: "mock",
-    });
+  it("refreshes current transaction from daemon", async () => {
+    getCurrentTransactionMock.mockResolvedValue(
+      makeTransactionSnapshot({ nextAction: "dispensing" }),
+    );
 
     const store = useCheckoutStore();
-    const config = {
-      ...machineConfigDefaults,
-      machineCode: "M001",
-      apiBaseUrl: "http://localhost:3000",
-    };
-    store.selectItem(makeCatalogItem());
-    await store.loadPaymentOptions(config);
-    await store.createOrder(config);
+    await store.refreshCurrentTransaction();
 
-    expect(store.selectedPaymentOptionKey).toBe("mock:mock");
-    expect(machineOrdersApi.createMachineOrder).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({
-        machineCode: "M001",
-        items: [
-          { inventoryId: "550e8400-e29b-41d4-a716-446655440002", quantity: 1 },
-        ],
-        paymentMethod: "mock",
-        paymentProviderCode: "mock",
-      }),
-    );
+    expect(store.flowStep).toBe("dispensing");
   });
 
-  it("creates a payment_code order when payment_code option is selected", async () => {
-    const qrOption = {
-      optionKey: "qr_code:alipay" as const,
-      providerCode: "alipay" as const,
-      method: "qr_code" as const,
-      displayName: "支付宝",
-      description: "请使用支付宝扫码支付",
-      icon: "alipay" as const,
-      disabled: false,
-      disabledReason: null,
-      recommended: true,
-    };
-    const paymentCodeOption = {
-      optionKey: "payment_code:alipay" as const,
-      providerCode: "alipay" as const,
-      method: "payment_code" as const,
-      displayName: "支付宝付款码",
-      description: "请出示支付宝付款码",
-      icon: "alipay" as const,
-      disabled: false,
-      disabledReason: null,
-      recommended: false,
-    };
-    vi.mocked(machineOrdersApi.getMachinePaymentOptions).mockResolvedValue({
-      options: [qrOption, paymentCodeOption],
-      defaultOptionKey: qrOption.optionKey,
-      defaultProviderCode: qrOption.providerCode,
-      serverTime: new Date().toISOString(),
-    });
-    vi.mocked(machineOrdersApi.createMachineOrder).mockResolvedValue({
-      orderId: "550e8400-e29b-41d4-a716-446655440011",
-      orderNo: "ORD_PAYCODE_001",
-      paymentNo: "PAY_PAYCODE_001",
-      paymentUrl: null,
-      expiresAt: new Date("2026-05-24T10:15:00Z").toISOString(),
-      totalAmountCents: 100,
-      paymentProviderCode: "alipay",
-    });
-
-    const store = useCheckoutStore();
-    const config = {
-      ...machineConfigDefaults,
-      machineCode: "M001",
-      apiBaseUrl: "http://localhost:3000",
-    };
-    store.selectItem(makeCatalogItem());
-    await store.loadPaymentOptions(config);
-    store.selectPaymentOption("payment_code:alipay");
-    await store.createOrder(config);
-
-    expect(machineOrdersApi.createMachineOrder).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({
-        paymentMethod: "payment_code",
-        paymentProviderCode: "alipay",
-      }),
-    );
-  });
-
-  it("drops concurrent scanned payment code submissions while one is in flight", async () => {
-    let resolveSubmit!: (value: {
-      orderNo: string;
-      paymentNo: string;
-      attemptNo: number;
-      status: "querying";
-      nextAction: "wait_payment";
-      message: string;
-      canRetry: false;
-      serverTime: string;
-    }) => void;
-    vi.mocked(machineOrdersApi.submitPaymentCode).mockImplementation(
-      () =>
-        new Promise((resolve) => {
+  it("drops concurrent dev payment submissions", async () => {
+    let resolveSubmit!: (
+      value: ReturnType<typeof makeTransactionSnapshot>,
+    ) => void;
+    submitDevPaymentCodeMock.mockImplementation(async () => {
+      return await new Promise<ReturnType<typeof makeTransactionSnapshot>>(
+        (resolve) => {
           resolveSubmit = resolve;
-        }) as never,
-    );
+        },
+      );
+    });
 
     const store = useCheckoutStore();
     store.currentOrder = {
-      orderId: "550e8400-e29b-41d4-a716-446655440012",
-      orderNo: "ORD_PAYCODE_002",
-      paymentNo: "PAY_PAYCODE_002",
+      orderId: "550e8400-e29b-41d4-a716-446655440010",
+      orderNo: "ORD-001",
+      paymentNo: "PAY-001",
       paymentUrl: null,
-      expiresAt: new Date("2026-05-24T10:15:00Z").toISOString(),
+      expiresAt: "2026-01-01T00:05:00Z",
       totalAmountCents: 100,
       paymentProviderCode: "alipay",
     };
-    const config = {
-      ...machineConfigDefaults,
-      machineCode: "M001",
-      apiBaseUrl: "http://localhost:3000",
-    };
 
-    const first = store.submitScannedPaymentCode(
-      config,
-      "28763443825664394",
-      "tauri_scanner",
-    );
-    const second = await store.submitScannedPaymentCode(
-      config,
-      "28763443825664395",
-      "tauri_scanner",
-    );
+    const first = store.submitDevPaymentCode("28763443825664394");
+    const second = await store.submitDevPaymentCode("28763443825664395");
 
-    resolveSubmit({
-      orderNo: "ORD_PAYCODE_002",
-      paymentNo: "PAY_PAYCODE_002",
-      attemptNo: 1,
-      status: "querying",
-      nextAction: "wait_payment",
-      message: "正在确认支付结果",
-      canRetry: false,
-      serverTime: new Date().toISOString(),
-    });
+    resolveSubmit(makeTransactionSnapshot());
     await first;
 
     expect(second).toBeNull();
-    expect(machineOrdersApi.submitPaymentCode).toHaveBeenCalledTimes(1);
+    expect(submitDevPaymentCodeMock).toHaveBeenCalledTimes(1);
   });
 });

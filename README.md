@@ -150,6 +150,14 @@ pnpm --filter machine dev
 # Tauri 开发窗口将自动打开
 ```
 
+### 启动售货机 daemon
+
+```bash
+cargo run -p vending-daemon -- --console --data-dir ./.local/vending-daemon --bind 127.0.0.1:7891
+```
+
+daemon console 模式会在数据目录创建 `machine-config.json`、`state.db`、`ipc-token` 与 `logs/machine-events.jsonl`。本机 UI 或调试工具访问 `/v1/*` 时需要读取 `ipc-token` 并携带 `Authorization: Bearer <token>`。
+
 ### 全量本地检查
 
 ```bash

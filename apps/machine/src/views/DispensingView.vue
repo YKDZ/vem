@@ -4,12 +4,10 @@ import { useRouter } from "vue-router";
 
 import KioskLayout from "@/layouts/KioskLayout.vue";
 import { resultKindFromNextAction, useCheckoutStore } from "@/stores/checkout";
-import { useMachineStore } from "@/stores/machine";
 import { useMqttStore } from "@/stores/mqtt";
 
 const router = useRouter();
 const checkoutStore = useCheckoutStore();
-const machineStore = useMachineStore();
 const mqttStore = useMqttStore();
 
 let pollTimer: number | undefined;
@@ -18,9 +16,9 @@ const status = computed(() => checkoutStore.status);
 const command = computed(() => status.value?.vending ?? null);
 
 async function refreshStatus(): Promise<void> {
-  const nextStatus = await checkoutStore.refreshStatus(machineStore.config);
-  if (!nextStatus) return;
-  const resultKind = resultKindFromNextAction(nextStatus.nextAction);
+  await checkoutStore.refreshCurrentTransaction();
+  if (!checkoutStore.status) return;
+  const resultKind = resultKindFromNextAction(checkoutStore.status.nextAction);
   if (resultKind) {
     await router.replace({ name: "result", params: { kind: resultKind } });
   }
@@ -55,8 +53,7 @@ onUnmounted(() => {
         </p>
         <h2 class="mt-4 text-4xl font-black">支付成功，正在出货</h2>
         <p class="mt-4 text-lg text-slate-300">
-          机器端已连接 MQTT 并调用当前硬件适配器执行出货。若网络短暂中断，ACK
-          和出货结果会进入本地 outbox，恢复后自动补发。
+          daemon 已接管 MQTT、硬件出货和 outbox 补发，UI 仅展示当前进度。
         </p>
 
         <div class="mt-8 grid gap-3 text-left text-slate-200">

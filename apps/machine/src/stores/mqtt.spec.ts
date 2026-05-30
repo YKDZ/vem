@@ -1,155 +1,64 @@
 import { createPinia, setActivePinia } from "pinia";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-// Mock native modules
-vi.mock("@/native/tauri", () => ({
-  isTauriRuntime: vi.fn(),
-  callTauriCommand: vi.fn(),
+const { getSyncStatusMock } = vi.hoisted(() => ({
+  getSyncStatusMock: vi.fn(),
 }));
 
-vi.mock("@/native/mqtt-runtime", () => ({
-  startNativeMqttRuntime: vi.fn(),
-  stopNativeMqttRuntime: vi.fn(),
-  getNativeMqttStatus: vi.fn(),
+vi.mock("@/daemon/client", () => ({
+  daemonClient: {
+    getSyncStatus: getSyncStatusMock,
+  },
 }));
-
-vi.mock("@/mqtt/client", () => ({
-  createMachineMqttClient: vi.fn(),
-}));
-
-vi.mock("@/local/outbox", () => ({
-  flushOutboxEvents: vi.fn().mockResolvedValue(undefined),
-  getOutboxStats: vi
-    .fn()
-    .mockReturnValue({ size: 0, usageRatio: 0, max: 1000 }),
-}));
-
-vi.mock("@/stores/connectivity", () => ({
-  useConnectivityStore: vi.fn(() => ({
-    setMachineMqttConnected: vi.fn(),
-  })),
-}));
-
-vi.mock("@/stores/machine", () => ({
-  useMachineStore: vi.fn(() => ({
-    hardwareReady: true,
-  })),
-}));
-
-import { machineConfigDefaults } from "@/config/machine-config";
-import * as mqttClient from "@/mqtt/client";
-import * as mqttRuntime from "@/native/mqtt-runtime";
-import * as nativeTauri from "@/native/tauri";
 
 import { useMqttStore } from "./mqtt";
 
-// Node environment - stub window (needed for setInterval/clearInterval)
-vi.stubGlobal("window", {
-  setInterval: vi.fn().mockReturnValue(42),
-  clearInterval: vi.fn(),
-  __TAURI_INTERNALS__: undefined,
+beforeEach(() => {
+  setActivePinia(createPinia());
+  vi.clearAllMocks();
 });
 
-const mockConfig = {
-  ...machineConfigDefaults,
-  machineCode: "M001",
-  machineSecret: null,
-  machineSecretConfigured: false,
-  mqttUrl: "ws://localhost:1883",
-  mqttUsername: "user",
-  mqttPassword: "pass",
-  mqttPasswordConfigured: false,
-  mqttSigningSecret: "secret",
-  mqttSigningSecretConfigured: false,
-  apiBaseUrl: "http://localhost:3000",
-  hardwareAdapter: "mock" as const,
-  serialPortPath: null,
-  kioskMode: false,
-};
-
 describe("useMqttStore", () => {
-  beforeEach(() => {
-    setActivePinia(createPinia());
-    vi.clearAllMocks();
-    vi.mocked(mqttRuntime.stopNativeMqttRuntime).mockResolvedValue(undefined);
+  it("loads sync snapshot from daemon", async () => {
+    getSyncStatusMock.mockResolvedValue({
+      mqttRunning: true,
+      mqttConnected: true,
+      brokerUrlMasked: "mqtt://127.0.0.1:1883",
+      lastHeartbeatAt: "2026-01-01T00:00:00Z",
+      lastCommandNo: "CMD-001",
+      outboxSize: 10,
+      outboxMax: 1000,
+      outboxUsage: 0.01,
+      nextRetryAt: null,
+      lastError: null,
+      tlsAuthStatus: "ok",
+    });
+
+    const store = useMqttStore();
+    await store.refresh();
+
+    expect(store.connected).toBe(true);
+    expect(store.status).toBe("connected");
+    expect(store.lastCommandNo).toBe("CMD-001");
   });
 
-  describe("connect — Tauri native path", () => {
-    it("calls startNativeMqttRuntime and skips createMachineMqttClient when isTauriRuntime=true", async () => {
-      vi.mocked(nativeTauri.isTauriRuntime).mockReturnValue(true);
-      vi.mocked(mqttRuntime.startNativeMqttRuntime).mockResolvedValue({
-        running: true,
-        connected: true,
-        lastError: null,
-        lastCommandNo: null,
-        lastHeartbeatAt: null,
-      });
-
-      const store = useMqttStore();
-      await store.connect(mockConfig);
-
-      expect(mqttRuntime.startNativeMqttRuntime).toHaveBeenCalledOnce();
-      expect(mqttClient.createMachineMqttClient).not.toHaveBeenCalled();
-      expect(store.status).toBe("connected");
+  it("derives outbox warning from usage ratio", () => {
+    const store = useMqttStore();
+    store.applySync({
+      mqttRunning: true,
+      mqttConnected: false,
+      brokerUrlMasked: null,
+      lastHeartbeatAt: null,
+      lastCommandNo: null,
+      outboxSize: 950,
+      outboxMax: 1000,
+      outboxUsage: 0.95,
+      nextRetryAt: null,
+      lastError: "offline",
+      tlsAuthStatus: null,
     });
 
-    it("sets status to connecting when native runtime returns connected=false", async () => {
-      vi.mocked(nativeTauri.isTauriRuntime).mockReturnValue(true);
-      vi.mocked(mqttRuntime.startNativeMqttRuntime).mockResolvedValue({
-        running: false,
-        connected: false,
-        lastError: "broker unreachable",
-        lastCommandNo: null,
-        lastHeartbeatAt: null,
-      });
-
-      const store = useMqttStore();
-      await store.connect(mockConfig);
-
-      expect(store.status).toBe("connecting");
-    });
-  });
-
-  describe("connect — browser/WebView fallback path", () => {
-    it("calls createMachineMqttClient and skips startNativeMqttRuntime when isTauriRuntime=false", async () => {
-      vi.mocked(nativeTauri.isTauriRuntime).mockReturnValue(false);
-
-      const mockSubscribe = vi.fn().mockResolvedValue(undefined);
-      const mockClient = {
-        isConnected: vi.fn().mockReturnValue(false),
-        end: vi.fn(),
-        subscribe: mockSubscribe,
-        publish: vi.fn().mockResolvedValue(undefined),
-      };
-      vi.mocked(mqttClient.createMachineMqttClient).mockReturnValue(
-        mockClient as never,
-      );
-
-      const store = useMqttStore();
-      await store.connect(mockConfig);
-
-      expect(mqttClient.createMachineMqttClient).toHaveBeenCalledOnce();
-      expect(mqttRuntime.startNativeMqttRuntime).not.toHaveBeenCalled();
-    });
-  });
-
-  describe("disconnect", () => {
-    it("sets status to disconnected and stops native runtime if in native mode", async () => {
-      vi.mocked(nativeTauri.isTauriRuntime).mockReturnValue(true);
-      vi.mocked(mqttRuntime.startNativeMqttRuntime).mockResolvedValue({
-        running: true,
-        connected: true,
-        lastError: null,
-        lastCommandNo: null,
-        lastHeartbeatAt: null,
-      });
-
-      const store = useMqttStore();
-      await store.connect(mockConfig);
-      store.disconnect();
-
-      expect(store.status).toBe("disconnected");
-      expect(mqttRuntime.stopNativeMqttRuntime).toHaveBeenCalledOnce();
-    });
+    expect(store.outboxWarning).toContain("950/1000");
+    expect(store.lastError).toBe("offline");
   });
 });

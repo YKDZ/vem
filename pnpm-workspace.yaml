@@ -1,10 +1,13 @@
 packages:
   - apps/*
+  - crates/*
   - packages/*
   - tools/*
 
 allowBuilds:
   "@nestjs/core": true
+  "@parcel/watcher": true
+  "@scarf/scarf": true
   "@swc/core": true
   esbuild: true
 

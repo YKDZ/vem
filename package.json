@@ -2,13 +2,14 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "check": "oxfmt . --check && turbo typecheck lint test",
-    "check:fix": "oxfmt . && turbo lint -- --fix && turbo typecheck test",
-    "fmt": "oxfmt .",
-    "fmt:check": "oxfmt . --check",
+    "check": "oxfmt . --check && cargo fmt --all -- --check && turbo typecheck lint test",
+    "check:fix": "oxfmt . && cargo fmt --all && turbo lint -- --fix && turbo typecheck test",
+    "fmt": "oxfmt . && cargo fmt --all",
+    "fmt:check": "oxfmt . --check && cargo fmt --all -- --check",
     "lint": "turbo lint",
     "lint:fix": "turbo lint -- --fix",
     "test": "turbo test",
+    "test:e2e": "turbo test:e2e",
     "typecheck": "turbo typecheck"
   },
   "devDependencies": {
@@ -28,5 +29,5 @@
     "vite": "catalog:",
     "vitest": "catalog:"
   },
-  "packageManager": "pnpm@10.33.2"
+  "packageManager": "pnpm@11.5.0+sha512.dbfcc4f81cf48597afd4bc391ffdf12c11f1a9fb83a395bfa6b0a2d9cc2fd8ffebafdb1ccbd529632153f793904c2615b7f09fe1a345473fd1c35845172a8eb1"
 }
