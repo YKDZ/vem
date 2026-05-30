@@ -1,10 +1,12 @@
 mod support;
 
-use std::process::Stdio;
+use std::time::Duration;
 
+use futures_util::{SinkExt, StreamExt};
 use portpicker::pick_unused_port;
 use support::{process::DaemonHarness, pty::PtyHarness, sensitive, sqlite};
-use tokio::process::{Child, Command};
+use tokio::{net::TcpListener, task::JoinHandle};
+use tokio_tungstenite::{accept_async, tungstenite::Message};
 
 fn scanner_config(scanner_path: String) -> serde_json::Value {
     serde_json::json!({
@@ -69,7 +71,7 @@ async fn vision_disabled_reports_disabled_status() {
     config["scannerSerialPortPath"] = serde_json::Value::Null;
     config["visionEnabled"] = serde_json::json!(false);
     let mut daemon = DaemonHarness::start(config, &[]).await.expect("start");
-    let vision = daemon.get_json("/v1/vision/status").await;
+    let vision = wait_for_vision_message(&daemon, "disabled").await;
     assert_eq!(vision["enabled"], false);
     assert_eq!(vision["online"], false);
     assert_eq!(vision["message"], "disabled");
@@ -79,7 +81,7 @@ async fn vision_disabled_reports_disabled_status() {
 #[tokio::test]
 async fn vision_mock_process_updates_ready_status() {
     let port = pick_unused_port().expect("vision mock port");
-    let mut vision = spawn_vision_mock(port).await;
+    let vision = spawn_vision_ready_server(port).await;
     let pty = PtyHarness::open();
     let mut config = scanner_config(pty.slave_path.to_string_lossy().to_string());
     config["scannerAdapter"] = serde_json::json!("disabled");
@@ -95,22 +97,48 @@ async fn vision_mock_process_updates_ready_status() {
     assert_eq!(vision_status["online"], true);
 
     daemon.terminate().await;
-    let _ = vision.start_kill();
-    let _ = tokio::time::timeout(std::time::Duration::from_secs(3), vision.wait()).await;
+    vision.abort();
+    let _ = vision.await;
 }
 
-async fn spawn_vision_mock(port: u16) -> Child {
-    let mut command = Command::new("pnpm");
-    command
-        .arg("-F")
-        .arg("vision-mock")
-        .arg("dev")
-        .env("VISION_MOCK_PORT", port.to_string())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    let child = command.spawn().expect("spawn vision-mock");
-    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-    child
+async fn spawn_vision_ready_server(port: u16) -> JoinHandle<()> {
+    let listener = TcpListener::bind(("127.0.0.1", port))
+        .await
+        .expect("bind vision test server");
+    tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.expect("accept vision client");
+        let mut socket = accept_async(stream).await.expect("accept vision websocket");
+        let _ = socket.next().await;
+        let ready = serde_json::json!({
+            "protocol": "vem.vision.v1",
+            "type": "vision.ready",
+            "messageId": "ready-test",
+            "timestamp": chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            "payload": {
+                "serverName": "test-vision",
+                "serverVersion": "test",
+                "cameraReady": true,
+                "modelReady": true,
+                "capabilities": ["profile_push"]
+            }
+        });
+        socket
+            .send(Message::Text(ready.to_string()))
+            .await
+            .expect("send vision ready");
+        tokio::time::sleep(Duration::from_secs(5)).await;
+    })
+}
+
+async fn wait_for_vision_message(daemon: &DaemonHarness, expected: &str) -> serde_json::Value {
+    for _ in 0..40 {
+        let status = daemon.get_json("/v1/vision/status").await;
+        if status["message"] == expected {
+            return status;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    daemon.get_json("/v1/vision/status").await
 }
 
 async fn wait_for_vision_ready(daemon: &DaemonHarness) -> serde_json::Value {
