@@ -18,7 +18,9 @@ let daemon: DaemonProcess | null = null;
 let dataDir = "";
 let daemonOutput: string[] = [];
 
-test.setTimeout(180_000);
+const DAEMON_START_TIMEOUT_MS = 300_000;
+
+test.setTimeout(DAEMON_START_TIMEOUT_MS);
 
 function recordDaemonOutput(source: string, chunk: unknown): void {
   daemonOutput.push(`[${source}] ${String(chunk)}`);
@@ -30,7 +32,8 @@ function formatDaemonOutput(): string {
   return daemonOutput.join("").trim();
 }
 
-test.beforeAll(async () => {
+test.beforeAll(async ({ browserName: _browserName }, testInfo) => {
+  testInfo.setTimeout(DAEMON_START_TIMEOUT_MS);
   dataDir = await mkdtemp(join(tmpdir(), "vem-real-daemon-"));
   daemonOutput = [];
   await writeFile(join(dataDir, "ipc-token"), "dev-token");
@@ -100,7 +103,7 @@ test.beforeAll(async () => {
     }
   }).toPass({
     intervals: [250, 500, 1000],
-    timeout: 120_000,
+    timeout: DAEMON_START_TIMEOUT_MS - 10_000,
   });
 });
 

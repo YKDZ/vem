@@ -46,10 +46,11 @@ fn run_service_inner() -> Result<(), String> {
     runtime.block_on(async {
         let data_dir = crate::config::resolve_data_dir(None)
             .map_err(|error| format!("resolve data dir failed: {error}"))?;
+        let ready_file = crate::shutdown::default_ready_file_path(&data_dir);
         let config = crate::shutdown::ConsoleRunConfig {
             data_dir: Some(data_dir),
             bind: SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 7891),
-            print_ready_file: Some(crate::shutdown::default_ready_file_path(&data_dir)),
+            print_ready_file: Some(ready_file),
         };
         crate::shutdown::run_console_with_token(config, stop_token.clone())
             .await
