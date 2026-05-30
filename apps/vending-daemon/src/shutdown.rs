@@ -129,6 +129,10 @@ pub async fn run_console_with_token(
 
     write_ready_file(&print_ready_file, ipc_handle.addr, &ipc_token).await?;
 
+    let cache_updates = tokio::spawn(cache_daemon_events(
+        events_tx.subscribe(),
+        ipc_ctx.ui.status_cache.clone(),
+    ));
     let scanner_runtime = ScannerRuntime::from_config(
         &runtime_config.public,
         tx_raw.clone(),
@@ -163,11 +167,7 @@ pub async fn run_console_with_token(
         });
     });
 
-    let cache_updates = tokio::spawn(cache_daemon_events(
-        events_tx.subscribe(),
-        ipc_ctx.ui.status_cache.clone(),
-    ));
-    let mut tasks = vec![scanner, payment_watcher, cache_updates, ipc_task];
+    let mut tasks = vec![cache_updates, scanner, payment_watcher, ipc_task];
     if let Some(runtime_mqtt) = maybe_spawn_mqtt_task(
         &runtime_config.public,
         &runtime_secrets,
