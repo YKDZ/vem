@@ -6,13 +6,33 @@ import { join } from "node:path";
 
 type DaemonProcess = {
   kill(signal?: string): boolean;
+  on(
+    event: "exit",
+    listener: (code: number | null, signal: string | null) => void,
+  ): void;
+  stderr: { on(event: "data", listener: (chunk: unknown) => void): void };
+  stdout: { on(event: "data", listener: (chunk: unknown) => void): void };
 };
 
 let daemon: DaemonProcess | null = null;
 let dataDir = "";
+let daemonOutput: string[] = [];
+
+test.setTimeout(180_000);
+
+function recordDaemonOutput(source: string, chunk: unknown): void {
+  daemonOutput.push(`[${source}] ${String(chunk)}`);
+  daemonOutput = daemonOutput.slice(-120);
+}
+
+function formatDaemonOutput(): string {
+  if (daemonOutput.length === 0) return "daemon output is empty";
+  return daemonOutput.join("").trim();
+}
 
 test.beforeAll(async () => {
   dataDir = await mkdtemp(join(tmpdir(), "vem-real-daemon-"));
+  daemonOutput = [];
   await writeFile(join(dataDir, "ipc-token"), "dev-token");
   await writeFile(
     join(dataDir, "machine-config.json"),
@@ -36,25 +56,51 @@ test.beforeAll(async () => {
       kioskMode: false,
     }),
   );
-  daemon = spawn("cargo", [
-    "run",
-    "-p",
-    "vending-daemon",
-    "--",
-    "--console",
-    "--data-dir",
-    dataDir,
-    "--bind",
-    "127.0.0.1:7891",
-  ]);
+  daemon = spawn(
+    "cargo",
+    [
+      "run",
+      "-p",
+      "vending-daemon",
+      "--",
+      "--console",
+      "--data-dir",
+      dataDir,
+      "--bind",
+      "127.0.0.1:7891",
+    ],
+    {
+      env: {
+        ...process.env,
+        CARGO_TERM_COLOR: "never",
+      },
+    },
+  );
+  daemon.stdout.on("data", (chunk) => {
+    recordDaemonOutput("stdout", chunk);
+  });
+  daemon.stderr.on("data", (chunk) => {
+    recordDaemonOutput("stderr", chunk);
+  });
+  daemon.on("exit", (code, signal) => {
+    recordDaemonOutput("process", `exited code=${code} signal=${signal}\n`);
+  });
   await expect(async () => {
-    const ready = JSON.parse(
-      await readFile(join(dataDir, "daemon-ready.json"), "utf8"),
-    ) as { ipcToken?: unknown };
-    expect(ready.ipcToken).toBeTruthy();
+    const readyPath = join(dataDir, "daemon-ready.json");
+    try {
+      const ready = JSON.parse(await readFile(readyPath, "utf8")) as {
+        ipcToken?: unknown;
+      };
+      expect(ready.ipcToken).toBeTruthy();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        `daemon did not write ${readyPath}: ${message}\n${formatDaemonOutput()}`,
+      );
+    }
   }).toPass({
-    intervals: [100],
-    timeout: 10_000,
+    intervals: [250, 500, 1000],
+    timeout: 120_000,
   });
 });
 
