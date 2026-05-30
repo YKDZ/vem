@@ -255,12 +255,11 @@ impl MqttSyncRuntime {
         let bytes = serde_json::to_vec(payload)
             .map_err(|error| format!("serialize outbox payload failed: {error}"))?;
         let client = client.read().await;
-        let result = client
+        client
             .publish(topic, QoS::AtLeastOnce, false, bytes)
             .await
-            .map_err(|error| map_mqtt_error(error))?;
+            .map_err(map_mqtt_error)?;
         drop(client);
-        let _ = result;
         Ok(())
     }
 

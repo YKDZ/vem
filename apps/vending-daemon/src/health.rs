@@ -159,7 +159,7 @@ mod tests {
     #[tokio::test]
     async fn health_ready_false_when_blocking_error_component() {
         let state =
-            crate::state::LocalStateStore::open(&std::path::Path::new("/tmp/vem_health_test.db"))
+            crate::state::LocalStateStore::open(std::path::Path::new("/tmp/vem_health_test.db"))
                 .await
                 .expect("state");
         let health = HealthAggregator::new(state);

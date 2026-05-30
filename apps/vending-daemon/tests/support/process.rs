@@ -19,7 +19,6 @@ pub struct ReadyFile {
 
 pub struct DaemonHarness {
     pub data_dir: PathBuf,
-    pub ready_file: PathBuf,
     pub ready: ReadyFile,
     _temp_dir: Option<TempDir>,
     child: Child,
@@ -79,7 +78,6 @@ impl DaemonHarness {
 
         Ok(Self {
             data_dir,
-            ready_file,
             ready,
             _temp_dir: None,
             child,

@@ -561,8 +561,9 @@ impl ConfigStore {
 mod tests {
     use super::*;
     use crate::secret::InMemorySecretStore;
-    use std::sync::{Mutex, OnceLock};
+    use std::sync::OnceLock;
     use tempfile::TempDir;
+    use tokio::sync::Mutex;
 
     static LEGACY_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
@@ -592,11 +593,8 @@ mod tests {
         LegacyEnvGuard { name, previous }
     }
 
-    fn with_legacy_env_lock() -> std::sync::MutexGuard<'static, ()> {
-        LEGACY_ENV_LOCK
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .expect("env lock")
+    async fn with_legacy_env_lock() -> tokio::sync::MutexGuard<'static, ()> {
+        LEGACY_ENV_LOCK.get_or_init(|| Mutex::new(())).lock().await
     }
 
     #[tokio::test]
@@ -638,7 +636,7 @@ mod tests {
 
     #[tokio::test]
     async fn config_migrates_legacy_tauri_file_once() {
-        let _env_guard = with_legacy_env_lock();
+        let _env_guard = with_legacy_env_lock().await;
         let temp = TempDir::new().expect("temp");
         let data_dir = temp.path().join("daemon");
         let legacy_dir = temp.path().join("legacy");
@@ -731,7 +729,7 @@ mod tests {
 
     #[tokio::test]
     async fn config_migration_records_once_only_when_daemon_config_absent() {
-        let _env_guard = with_legacy_env_lock();
+        let _env_guard = with_legacy_env_lock().await;
         let temp = TempDir::new().expect("temp");
         let data_dir = temp.path().join("daemon");
         let legacy_dir = temp.path().join("legacy");

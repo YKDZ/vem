@@ -756,7 +756,7 @@ async fn export_logs(State(ctx): State<IpcContext>, headers: HeaderMap) -> impl 
         }
     };
 
-    ((
+    (
         [
             (CONTENT_TYPE, "application/zip"),
             (
@@ -765,7 +765,7 @@ async fn export_logs(State(ctx): State<IpcContext>, headers: HeaderMap) -> impl 
             ),
         ],
         bytes,
-    ))
+    )
         .into_response()
 }
 
@@ -815,7 +815,7 @@ async fn events_ws_inner(mut socket: WebSocket, events: broadcast::Sender<Daemon
             msg = receiver.recv() => match msg {
                 Ok(event) => {
                     if let Ok(json) = serde_json::to_string(&event) {
-                        if socket.send(Message::Text(json.into())).await.is_err() {
+                        if socket.send(Message::Text(json)).await.is_err() {
                             break;
                         }
                     }

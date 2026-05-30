@@ -16,6 +16,38 @@ const COMMAND_LOG_MAX_ENTRIES: i64 = 2000;
 const OUTBOX_TTL_DAYS: i64 = 7;
 const OUTBOX_MAX_EVENTS: i64 = 500;
 
+type CommandRecordRow = (
+    String,
+    String,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    String,
+    String,
+);
+
+type OutboxRecordRow = (
+    String,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    String,
+    i64,
+    String,
+    String,
+    i64,
+    Option<String>,
+    String,
+);
+
+type CurrentOrderSessionRow = (Option<String>, Option<String>, Option<String>, String);
+
 #[derive(Debug, Error)]
 pub enum StoreError {
     #[error("sqlite error: {0}")]
@@ -81,6 +113,19 @@ pub struct OrderSessionRecord {
     pub last_error: Option<String>,
     pub recovery_strategy: String,
     pub updated_at: String,
+}
+
+pub struct OrderSessionUpsert<'a> {
+    pub order_no: &'a str,
+    pub payment_method: &'a str,
+    pub payment_provider: Option<&'a str>,
+    pub items_json: serde_json::Value,
+    pub status: &'a str,
+    pub next_action: &'a str,
+    pub payment_attempt_json: Option<serde_json::Value>,
+    pub recovery_strategy: &'a str,
+    pub last_backend_status_json: Option<serde_json::Value>,
+    pub last_error: Option<&'a str>,
 }
 
 #[derive(Debug, Clone)]
@@ -311,21 +356,7 @@ impl LocalStateStore {
         &self,
         command_no: &str,
     ) -> Result<Option<CommandLogRecord>, StoreError> {
-        let row: Option<
-            (
-                String,
-                String,
-                String,
-                String,
-                Option<String>,
-                Option<String>,
-                Option<String>,
-                Option<String>,
-                Option<String>,
-                String,
-                String,
-            ),
-        > = sqlx::query_as(
+        let row: Option<CommandRecordRow> = sqlx::query_as(
             "SELECT command_no, order_no, command_payload_json, status, ack_at, dispensing_started_at, result_payload_json, error_code, error_message, updated_at, expires_at
              FROM command_log WHERE command_no = ?1",
         )
@@ -333,7 +364,7 @@ impl LocalStateStore {
         .fetch_optional(&self.pool)
         .await?;
 
-        Ok(row.map(to_command_record).transpose()?)
+        row.map(to_command_record).transpose()
     }
 
     pub async fn prune_command_log(&self) -> Result<(u64, u64), StoreError> {
@@ -405,10 +436,9 @@ impl LocalStateStore {
             if matches!(
                 existing.status,
                 CommandLogStatus::Succeeded | CommandLogStatus::Failed
-            ) {
-                if let Some(_) = &existing.result_payload {
-                    return Ok(());
-                }
+            ) && existing.result_payload.is_some()
+            {
+                return Ok(());
             }
         }
 
@@ -473,21 +503,7 @@ impl LocalStateStore {
         &self,
         at: chrono::DateTime<Utc>,
     ) -> Result<Vec<OutboxRecord>, StoreError> {
-        let rows: Vec<(
-            String,
-            String,
-            String,
-            Option<String>,
-            Option<String>,
-            Option<String>,
-            String,
-            i64,
-            String,
-            String,
-            i64,
-            Option<String>,
-            String,
-        )> = sqlx::query_as(
+        let rows: Vec<OutboxRecordRow> = sqlx::query_as(
             "SELECT id, kind, transport, topic, target_url, method, payload_json,
                     priority, created_at, next_attempt_at, attempt_count, last_error, expires_at
              FROM outbox_events WHERE next_attempt_at <= ?1 ORDER BY priority ASC, created_at ASC",
@@ -585,21 +601,7 @@ impl LocalStateStore {
     }
 
     pub async fn outbox_record(&self, id: &str) -> Result<Option<OutboxRecord>, StoreError> {
-        let row: Option<(
-            String,
-            String,
-            String,
-            Option<String>,
-            Option<String>,
-            Option<String>,
-            String,
-            i64,
-            String,
-            String,
-            i64,
-            Option<String>,
-            String,
-        )> = sqlx::query_as(
+        let row: Option<OutboxRecordRow> = sqlx::query_as(
             "SELECT id, kind, transport, topic, target_url, method, payload_json,
                     priority, created_at, next_attempt_at, attempt_count, last_error, expires_at
              FROM outbox_events WHERE id = ?1",
@@ -613,16 +615,7 @@ impl LocalStateStore {
 
     pub async fn upsert_order_session(
         &self,
-        order_no: &str,
-        payment_method: &str,
-        payment_provider: Option<&str>,
-        items_json: serde_json::Value,
-        status: &str,
-        next_action: &str,
-        payment_attempt_json: Option<serde_json::Value>,
-        recovery_strategy: &str,
-        last_backend_status_json: Option<serde_json::Value>,
-        last_error: Option<&str>,
+        input: OrderSessionUpsert<'_>,
     ) -> Result<(), StoreError> {
         sqlx::query(
             "INSERT INTO order_sessions(order_no,payment_method,payment_provider,payment_attempt_json,items_json,status,next_action,expires_at,last_backend_status_json,last_error,recovery_strategy,updated_at)
@@ -640,17 +633,22 @@ impl LocalStateStore {
                recovery_strategy = excluded.recovery_strategy,
                updated_at = excluded.updated_at",
         )
-        .bind(order_no)
-        .bind(payment_method)
-        .bind(payment_provider)
-        .bind(payment_attempt_json.as_ref().map(|value| value.to_string()))
-        .bind(items_json.to_string())
-        .bind(status)
-        .bind(next_action)
+        .bind(input.order_no)
+        .bind(input.payment_method)
+        .bind(input.payment_provider)
+        .bind(input.payment_attempt_json.as_ref().map(|value| value.to_string()))
+        .bind(input.items_json.to_string())
+        .bind(input.status)
+        .bind(input.next_action)
         .bind(now_iso_days(COMMAND_LOG_TTL_DAYS))
-        .bind(last_backend_status_json.as_ref().map(|value| value.to_string()))
-        .bind(last_error)
-        .bind(recovery_strategy)
+        .bind(
+            input
+                .last_backend_status_json
+                .as_ref()
+                .map(|value| value.to_string()),
+        )
+        .bind(input.last_error)
+        .bind(input.recovery_strategy)
         .bind(now_iso())
         .execute(&self.pool)
         .await?;
@@ -660,7 +658,7 @@ impl LocalStateStore {
     pub async fn current_order_session_snapshot(
         &self,
     ) -> Result<Option<vending_core::domain::TransactionSnapshot>, StoreError> {
-        let row: Option<(Option<String>, Option<String>, Option<String>, String)> = sqlx::query_as(
+        let row: Option<CurrentOrderSessionRow> = sqlx::query_as(
             "SELECT order_no, status, next_action, updated_at
                  FROM order_sessions
                  WHERE status != 'closed'
@@ -705,7 +703,7 @@ impl LocalStateStore {
             let mut value = self
                 .load_attempt_json(order_no)
                 .await?
-                .unwrap_or_else(|| serde_json::Map::new());
+                .unwrap_or_else(serde_json::Map::new);
             if let Some(key) = value.get("idempotencyKey").and_then(|v| v.as_str()) {
                 return Ok(key.to_string());
             }
@@ -978,21 +976,7 @@ async fn backoff_delay(id: &str, pool: &SqlitePool) -> Result<String, StoreError
     Ok(base.to_rfc3339_opts(SecondsFormat::Millis, true))
 }
 
-fn to_command_record(
-    row: (
-        String,
-        String,
-        String,
-        String,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        String,
-        String,
-    ),
-) -> Result<CommandLogRecord, StoreError> {
+fn to_command_record(row: CommandRecordRow) -> Result<CommandLogRecord, StoreError> {
     Ok(CommandLogRecord {
         command_no: row.0,
         order_no: row.1,
@@ -1018,23 +1002,7 @@ fn parse_command_status(value: &str) -> CommandLogStatus {
     }
 }
 
-fn to_outbox_record(
-    row: (
-        String,
-        String,
-        String,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        String,
-        i64,
-        String,
-        String,
-        i64,
-        Option<String>,
-        String,
-    ),
-) -> Result<OutboxRecord, StoreError> {
+fn to_outbox_record(row: OutboxRecordRow) -> Result<OutboxRecord, StoreError> {
     let payload: serde_json::Value = serde_json::from_str(&row.6)?;
     Ok(OutboxRecord {
         id: row.0,

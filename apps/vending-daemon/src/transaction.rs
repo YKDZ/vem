@@ -5,7 +5,7 @@ use tokio::sync::broadcast;
 
 use crate::backend::BackendClient;
 use crate::events::DaemonEvent;
-use crate::state::LocalStateStore;
+use crate::state::{LocalStateStore, OrderSessionUpsert};
 
 #[derive(Debug, Clone)]
 pub struct TransactionStateMachine {
@@ -69,18 +69,18 @@ impl TransactionStateMachine {
         let order_no = order_no.to_string();
 
         self.state
-            .upsert_order_session(
-                &order_no,
+            .upsert_order_session(OrderSessionUpsert {
+                order_no: &order_no,
                 payment_method,
-                payment_provider_code.as_deref(),
-                items,
-                "waiting_payment",
-                "submit_payment",
-                None,
-                "local",
-                None,
-                None,
-            )
+                payment_provider: payment_provider_code.as_deref(),
+                items_json: items,
+                status: "waiting_payment",
+                next_action: "submit_payment",
+                payment_attempt_json: None,
+                recovery_strategy: "local",
+                last_backend_status_json: None,
+                last_error: None,
+            })
             .await
             .map_err(|error| error.to_string())?;
 
@@ -143,18 +143,18 @@ mod tests {
             .await
             .expect("state");
         state
-            .upsert_order_session(
-                "ORDER-1",
-                "payment_code",
-                Some("wechat_pay"),
-                serde_json::json!([]),
-                "waiting_payment",
-                "submit_payment",
-                None,
-                "local",
-                None,
-                None,
-            )
+            .upsert_order_session(OrderSessionUpsert {
+                order_no: "ORDER-1",
+                payment_method: "payment_code",
+                payment_provider: Some("wechat_pay"),
+                items_json: serde_json::json!([]),
+                status: "waiting_payment",
+                next_action: "submit_payment",
+                payment_attempt_json: None,
+                recovery_strategy: "local",
+                last_backend_status_json: None,
+                last_error: None,
+            })
             .await
             .expect("seed");
 
@@ -167,7 +167,7 @@ mod tests {
             events_tx,
         );
 
-        let _ = machine
+        machine
             .state
             .record_payment_attempt_summary("ORDER-1", "6212****3456", "serial", "key1")
             .await

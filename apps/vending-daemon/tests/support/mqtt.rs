@@ -82,15 +82,13 @@ pub async fn collect_publishes(
 ) -> Vec<(String, Vec<u8>)> {
     let mut out = Vec::new();
     while out.len() < expected {
-        match tokio::time::timeout(Duration::from_secs(10), event_loop.poll())
-            .await
-            .expect("mqtt collect timeout")
-            .expect("mqtt event")
+        if let Event::Incoming(Packet::Publish(publish)) =
+            tokio::time::timeout(Duration::from_secs(10), event_loop.poll())
+                .await
+                .expect("mqtt collect timeout")
+                .expect("mqtt event")
         {
-            Event::Incoming(Packet::Publish(publish)) => {
-                out.push((publish.topic, publish.payload.to_vec()));
-            }
-            _ => {}
+            out.push((publish.topic, publish.payload.to_vec()));
         }
     }
     out

@@ -302,46 +302,41 @@ async fn cache_daemon_events(
     mut events: broadcast::Receiver<DaemonEvent>,
     status_cache: ipc::RuntimeStatusCache,
 ) -> Result<(), String> {
-    loop {
-        match events.recv().await {
-            Ok(event) => {
-                let updated_at = crate::state::store::now_iso();
-                match event {
-                    DaemonEvent::MqttChanged {
-                        connected,
-                        last_error,
-                        ..
-                    } => {
-                        let mut cache = status_cache.sync.write().await;
-                        cache.mqtt_connected = connected;
-                        cache.last_error = last_error;
-                        cache.last_heartbeat_at = Some(updated_at);
-                    }
-                    DaemonEvent::VisionChanged {
-                        enabled,
-                        online,
-                        message,
-                        ..
-                    } => {
-                        let mut cache = status_cache.vision.write().await;
-                        cache.enabled = enabled;
-                        cache.online = online;
-                        cache.message = message;
-                        cache.updated_at = updated_at;
-                    }
-                    DaemonEvent::ScannerCode { masked_code, .. } => {
-                        let mut cache = status_cache.scanner.write().await;
-                        cache.online = true;
-                        cache.message = format!("last code {masked_code}");
-                        cache.updated_at = updated_at;
-                    }
-                    DaemonEvent::TransactionChanged { .. } => {}
-                    DaemonEvent::ReadyChanged { .. }
-                    | DaemonEvent::HealthChanged { .. }
-                    | DaemonEvent::RemoteOpResult { .. } => {}
-                }
+    while let Ok(event) = events.recv().await {
+        let updated_at = crate::state::store::now_iso();
+        match event {
+            DaemonEvent::MqttChanged {
+                connected,
+                last_error,
+                ..
+            } => {
+                let mut cache = status_cache.sync.write().await;
+                cache.mqtt_connected = connected;
+                cache.last_error = last_error;
+                cache.last_heartbeat_at = Some(updated_at);
             }
-            Err(_) => break,
+            DaemonEvent::VisionChanged {
+                enabled,
+                online,
+                message,
+                ..
+            } => {
+                let mut cache = status_cache.vision.write().await;
+                cache.enabled = enabled;
+                cache.online = online;
+                cache.message = message;
+                cache.updated_at = updated_at;
+            }
+            DaemonEvent::ScannerCode { masked_code, .. } => {
+                let mut cache = status_cache.scanner.write().await;
+                cache.online = true;
+                cache.message = format!("last code {masked_code}");
+                cache.updated_at = updated_at;
+            }
+            DaemonEvent::TransactionChanged { .. } => {}
+            DaemonEvent::ReadyChanged { .. }
+            | DaemonEvent::HealthChanged { .. }
+            | DaemonEvent::RemoteOpResult { .. } => {}
         }
     }
     Ok(())

@@ -81,7 +81,7 @@ impl BackendClient {
         if !status.is_success() {
             return Err(match status.as_u16() {
                 401 | 403 => "BACKEND_AUTH_FAILED".to_string(),
-                502 | 503 | 504 => "BACKEND_OFFLINE".to_string(),
+                502..=504 => "BACKEND_OFFLINE".to_string(),
                 _ => format!("BACKEND_HTTP_ERROR: {status} {payload}"),
             });
         }

@@ -1,10 +1,6 @@
 use std::{
     os::fd::{FromRawFd, IntoRawFd},
     path::{Path, PathBuf},
-    sync::{
-        atomic::{AtomicUsize, Ordering},
-        Arc,
-    },
 };
 
 use nix::{
@@ -12,7 +8,7 @@ use nix::{
     pty::{grantpt, posix_openpt, ptsname_r, unlockpt},
     sys::termios::{cfmakeraw, tcgetattr, tcsetattr, SetArg},
 };
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 
 pub struct PtyHarness {
     pub slave_path: PathBuf,
@@ -33,24 +29,6 @@ impl PtyHarness {
             slave_path,
             master: tokio::fs::File::from_std(file),
         }
-    }
-
-    pub fn spawn_successful_lower_controller(mut self) -> Arc<AtomicUsize> {
-        let count = Arc::new(AtomicUsize::new(0));
-        let count_for_task = count.clone();
-        tokio::spawn(async move {
-            loop {
-                let mut frame = [0_u8; 4];
-                if self.master.read_exact(&mut frame).await.is_err() {
-                    break;
-                }
-                count_for_task.fetch_add(1, Ordering::SeqCst);
-                let _ = self.master.write_all(&[0x55, 0x00]).await;
-                let _ = self.master.write_all(&[0x55, 0xF1]).await;
-                let _ = self.master.flush().await;
-            }
-        });
-        count
     }
 
     pub fn spawn_scanner_writer(mut self, bytes: &'static [u8]) {

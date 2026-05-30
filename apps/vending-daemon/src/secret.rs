@@ -80,7 +80,7 @@ impl SecretStore for KeyringSecretStore {
                 .map_err(|error| format!("create keyring entry failed: {error}"))?;
             match entry.get_password() {
                 Ok(secret) => Ok(Some(secret)),
-                Err(error) if matches!(error, keyring::Error::NoEntry) => Ok(None),
+                Err(keyring::Error::NoEntry) => Ok(None),
                 Err(error) => Err(format!("read keyring secret failed: {error}")),
             }
         })
