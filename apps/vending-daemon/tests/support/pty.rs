@@ -1,6 +1,6 @@
 use std::{
     os::fd::{FromRawFd, IntoRawFd},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         atomic::{AtomicUsize, Ordering},
         Arc,
@@ -10,6 +10,7 @@ use std::{
 use nix::{
     fcntl::OFlag,
     pty::{grantpt, posix_openpt, ptsname_r, unlockpt},
+    sys::termios::{cfmakeraw, tcgetattr, tcsetattr, SetArg},
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -24,6 +25,7 @@ impl PtyHarness {
         grantpt(&master).expect("grantpt");
         unlockpt(&master).expect("unlockpt");
         let slave_path = PathBuf::from(ptsname_r(&master).expect("ptsname"));
+        configure_slave_raw(&slave_path);
         let fd = master.into_raw_fd();
         // SAFETY: fd is freshly taken from `master` and transferred exactly once.
         let file = unsafe { std::fs::File::from_raw_fd(fd) };
@@ -58,4 +60,15 @@ impl PtyHarness {
             let _ = self.master.flush().await;
         });
     }
+}
+
+fn configure_slave_raw(slave_path: &Path) {
+    let slave = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(slave_path)
+        .expect("open pty slave");
+    let mut termios = tcgetattr(&slave).expect("tcgetattr pty slave");
+    cfmakeraw(&mut termios);
+    tcsetattr(&slave, SetArg::TCSANOW, &termios).expect("tcsetattr pty slave raw");
 }

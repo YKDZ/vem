@@ -1,11 +1,12 @@
 use std::{
     os::fd::{FromRawFd, IntoRawFd},
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
 use nix::{
     fcntl::OFlag,
     pty::{grantpt, posix_openpt, ptsname_r, unlockpt},
+    sys::termios::{cfmakeraw, tcgetattr, tcsetattr, SetArg},
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -19,6 +20,7 @@ pub fn open_pty() -> PtyPair {
     grantpt(&master).expect("grantpt");
     unlockpt(&master).expect("unlockpt");
     let slave_path = PathBuf::from(ptsname_r(&master).expect("ptsname"));
+    configure_slave_raw(&slave_path);
     let fd = master.into_raw_fd();
     // SAFETY: fd is freshly taken from `master` and handed to `File` exactly once.
     let file = unsafe { std::fs::File::from_raw_fd(fd) };
@@ -26,6 +28,17 @@ pub fn open_pty() -> PtyPair {
         slave_path,
         master: tokio::fs::File::from_std(file),
     }
+}
+
+fn configure_slave_raw(slave_path: &Path) {
+    let slave = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(slave_path)
+        .expect("open pty slave");
+    let mut termios = tcgetattr(&slave).expect("tcgetattr pty slave");
+    cfmakeraw(&mut termios);
+    tcsetattr(&slave, SetArg::TCSANOW, &termios).expect("tcsetattr pty slave raw");
 }
 
 pub async fn read_single_dispense_frame(master: &mut tokio::fs::File) -> [u8; 4] {

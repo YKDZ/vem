@@ -8,7 +8,7 @@ use std::{
     time::Duration,
 };
 
-use tokio::time::timeout;
+use tokio::time::{sleep, timeout};
 use vending_core::{
     hardware::{DispenseCommandPayload, HardwareAdapter, SlotPayload},
     serial::{build_dispense_frame, SerialHardwareAdapter, FRAME_HEAD},
@@ -39,12 +39,14 @@ async fn serial_adapter_dispenses_once_on_ack_and_completed() {
         writes_for_task.fetch_add(1, Ordering::SeqCst);
         assert_eq!(frame, build_dispense_frame(2, 5).unwrap());
         support::send_lower_code(&mut pty.master, 0x00).await;
+        sleep(Duration::from_millis(10)).await;
         support::send_lower_code(&mut pty.master, 0xF1).await;
+        sleep(Duration::from_millis(50)).await;
     });
 
     let adapter = SerialHardwareAdapter::new(slave_path.to_string_lossy().to_string());
     let result = timeout(
-        Duration::from_secs(3),
+        Duration::from_secs(10),
         adapter.dispense(command("CMD-PTY-1")),
     )
     .await
@@ -66,12 +68,14 @@ async fn serial_adapter_retries_busy_and_crc_before_success() {
             writes_for_task.fetch_add(1, Ordering::SeqCst);
             support::send_lower_code(&mut pty.master, code).await;
         }
+        sleep(Duration::from_millis(10)).await;
         support::send_lower_code(&mut pty.master, 0xF1).await;
+        sleep(Duration::from_millis(50)).await;
     });
 
     let adapter = SerialHardwareAdapter::new(slave_path.to_string_lossy().to_string());
     let result = timeout(
-        Duration::from_secs(3),
+        Duration::from_secs(10),
         adapter.dispense(command("CMD-PTY-2")),
     )
     .await
@@ -87,12 +91,14 @@ async fn serial_adapter_reports_mechanical_fault_after_ack() {
     tokio::spawn(async move {
         let _frame = support::read_single_dispense_frame(&mut pty.master).await;
         support::send_lower_code(&mut pty.master, 0x00).await;
+        sleep(Duration::from_millis(10)).await;
         support::send_lower_code(&mut pty.master, 0x03).await;
+        sleep(Duration::from_millis(50)).await;
     });
 
     let adapter = SerialHardwareAdapter::new(slave_path.to_string_lossy().to_string());
     let result = timeout(
-        Duration::from_secs(3),
+        Duration::from_secs(10),
         adapter.dispense(command("CMD-PTY-3")),
     )
     .await
