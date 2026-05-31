@@ -26,6 +26,7 @@ pub struct PaymentCodeSubmitBody {
     pub auth_code: String,
     pub idempotency_key: String,
     pub source: String,
+    pub scanner_health: Option<vending_core::scanner::ScannerHealthSnapshot>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -185,6 +186,7 @@ impl BackendClient {
         auth_code: &str,
         idempotency_key: &str,
         source: &str,
+        scanner_health: Option<&vending_core::scanner::ScannerHealthSnapshot>,
     ) -> Result<serde_json::Value, String> {
         let url = format!("/machine-orders/{order_no}/payment-code/submit");
         let body = serde_json::json!({
@@ -192,6 +194,7 @@ impl BackendClient {
             "authCode": auth_code,
             "idempotencyKey": idempotency_key,
             "source": source,
+            "scannerHealth": scanner_health,
         });
         self.request_json(reqwest::Method::POST, &url, Some(body), true)
             .await
@@ -276,7 +279,7 @@ impl BackendClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wiremock::matchers::{header, method, path};
+    use wiremock::matchers::{body_partial_json, header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[tokio::test]
@@ -415,5 +418,58 @@ mod tests {
             .await
             .expect("mark mock");
         assert_eq!(response["ok"], true);
+    }
+
+    #[tokio::test]
+    async fn backend_submit_payment_code_sends_serial_text_health() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/machine-auth/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "accessToken": "token-123",
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/machine-orders/ORDER-1/payment-code/submit"))
+            .and(header("authorization", "Bearer token-123"))
+            .and(body_partial_json(serde_json::json!({
+                "machineCode": "M-1",
+                "source": "serial_text",
+                "scannerHealth": {
+                    "online": true,
+                    "adapter": "serial_text",
+                }
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "status": "succeeded",
+                "canRetry": false,
+            })))
+            .mount(&server)
+            .await;
+
+        let client = BackendClient::new(server.uri());
+        client.authenticate("M-1", "S-1").await.expect("auth");
+        let health = vending_core::scanner::ScannerHealthSnapshot {
+            online: true,
+            adapter: "serial_text".to_string(),
+            port: Some("/dev/ttyUSB1".to_string()),
+            level: vending_core::health::HealthLevel::Ok,
+            code: "SCANNER_READY".to_string(),
+            message: "scanner ready".to_string(),
+            updated_at: "2026-05-30T00:00:00.000Z".to_string(),
+        };
+        let response = client
+            .submit_payment_code(
+                "M-1",
+                "ORDER-1",
+                "621234567890123456",
+                "ORDER-1:attempt-1",
+                "serial_text",
+                Some(&health),
+            )
+            .await
+            .expect("submit payment code");
+        assert_eq!(response["status"], "succeeded");
     }
 }

@@ -100,10 +100,9 @@ export const machinePaymentOptionKeySchema = z
   );
 
 export const paymentCodeSourceSchema = z.enum([
+  "serial_text",
   "tauri_scanner",
   "browser_test",
-  "keyboard_hid",
-  "web_serial",
   "manual_dev",
 ]);
 

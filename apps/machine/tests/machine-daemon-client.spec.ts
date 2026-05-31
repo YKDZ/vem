@@ -71,6 +71,7 @@ const emptyTransaction = {
   vending: null,
   nextAction: null,
   maskedAuthCode: null,
+  paymentCodeAttempt: null,
   expiresAt: null,
   errorCode: null,
   errorMessage: null,
@@ -149,6 +150,7 @@ function transactionSnapshot(
         : null,
     nextAction,
     maskedAuthCode: null,
+    paymentCodeAttempt: null,
     expiresAt: "2026-01-01T00:05:00Z",
     errorCode: null,
     errorMessage: null,
@@ -420,7 +422,10 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
   if (url.pathname === "/v1/scanner/status") {
     respondJson(res, {
       online: true,
-      adapter: "mock",
+      adapter: "serial_text",
+      port: "COM4",
+      level: "ok",
+      code: "SCANNER_READY",
       message: "scanner ready",
       updatedAt: "2026-01-01T00:00:00Z",
     });

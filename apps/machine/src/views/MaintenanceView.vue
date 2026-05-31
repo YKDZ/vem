@@ -90,12 +90,7 @@ const adapters: HardwareAdapter[] = [
   "vendor_sdk",
 ];
 
-const scannerAdapters: ScannerAdapter[] = [
-  "disabled",
-  "serial_text",
-  "keyboard_hid",
-  "web_serial_dev",
-];
+const scannerAdapters: ScannerAdapter[] = ["disabled", "serial_text"];
 
 const scannerFrameSuffixes = ["crlf", "lf", "cr", "none"] as const;
 

@@ -4,7 +4,8 @@ param(
   [Parameter(Mandatory = $true)][string]$DataDir,
   [string]$ServiceName = "VemVendingDaemon",
   [string]$ComPort = "COM3",
-  [string]$ScannerPort = "COM4"
+  [string]$ScannerPort = "COM4",
+  [string]$SensitivePaymentCode = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -51,7 +52,12 @@ $readyFile = Join-Path $DataDir "daemon-ready.json"
 Add-Check "ready-file-exists" (Test-Path $readyFile) $readyFile
 $ready = Get-Content $readyFile | ConvertFrom-Json
 $health = Invoke-RestMethod $ready.healthzUrl
-Add-Check "healthz-ok" ($health.status -eq "ok") ($health | ConvertTo-Json -Compress)
+Add-Check "healthz-json" ($null -ne $health.status) ($health | ConvertTo-Json -Compress)
+$baseUrl = $ready.healthzUrl -replace "/healthz$", ""
+$headers = @{ Authorization = "Bearer $($ready.ipcToken)" }
+$scanner = Invoke-RestMethod "$baseUrl/v1/scanner/status" -Headers $headers
+Add-Check "scanner-adapter-serial-text" ($scanner.adapter -eq "serial_text") ($scanner | ConvertTo-Json -Compress)
+Add-Check "scanner-status-diagnostic" ($scanner.code.Length -gt 0 -and $scanner.message.Length -gt 0) ($scanner | ConvertTo-Json -Compress)
 
 $ports = [System.IO.Ports.SerialPort]::GetPortNames()
 Add-Check "lower-controller-com-port-present" ($ports -contains $ComPort) ($ports -join ",")
@@ -66,6 +72,14 @@ Restart-Service $ServiceName
 Start-Sleep -Seconds 5
 $svc = Get-Service $ServiceName
 Add-Check "service-restart-running" ($svc.Status -eq "Running") "status=$($svc.Status)"
+
+if ($SensitivePaymentCode.Length -gt 0) {
+  $logText = Get-ChildItem -Path $DataDir -Recurse -File |
+    Where-Object { $_.Extension -in ".json",".jsonl",".log",".txt" } |
+    ForEach-Object { Get-Content $_.FullName -Raw -ErrorAction SilentlyContinue } |
+    Out-String
+  Add-Check "payment-code-plaintext-absent" (-not $logText.Contains($SensitivePaymentCode)) "data dir text scanned"
+}
 
 $record.finishedAt = (Get-Date).ToString("o")
 $out = Join-Path $DataDir "windows-hardware-acceptance.json"

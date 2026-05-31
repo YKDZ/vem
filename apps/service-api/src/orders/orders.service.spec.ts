@@ -1151,7 +1151,7 @@ describe("OrdersService (transaction boundary)", () => {
                     attemptNo: 1,
                     status: "user_confirming",
                     maskedAuthCode: "2876****4394",
-                    source: "tauri_scanner",
+                    source: "serial_text",
                     idempotencyKey: "idem-1",
                     submittedAt: new Date("2026-05-24T10:00:00.000Z"),
                     lastCheckedAt: new Date("2026-05-24T10:00:02.000Z"),
@@ -1173,6 +1173,7 @@ describe("OrdersService (transaction boundary)", () => {
         attemptNo: 1,
         status: "user_confirming",
         maskedAuthCode: "2876****4394",
+        source: "serial_text",
         canRetry: false,
       });
       expect(JSON.stringify(result)).not.toContain("28763443825664394");

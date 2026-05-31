@@ -38,6 +38,11 @@ impl PtyHarness {
             let _ = self.master.flush().await;
         });
     }
+
+    pub async fn write(&mut self, bytes: &[u8]) {
+        self.master.write_all(bytes).await.expect("write pty bytes");
+        self.master.flush().await.expect("flush pty bytes");
+    }
 }
 
 fn configure_slave_raw(slave_path: &Path) {

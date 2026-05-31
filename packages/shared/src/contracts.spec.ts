@@ -419,10 +419,17 @@ describe("shared API contract", () => {
         machineCode: "M001",
         authCode: "28763443825664394",
         idempotencyKey: "scan-20260524-0001",
-        source: "tauri_scanner",
-        scannerHealth: { online: true, adapter: "serial_text" },
+        source: "serial_text",
+        scannerHealth: {
+          online: true,
+          adapter: "serial_text",
+          port: "/dev/ttyUSB1",
+          message: "scanner ready",
+        },
       });
-      expect(submit.source).toBe("tauri_scanner");
+      expect(submit.source).toBe("serial_text");
+      expect(JSON.stringify(submit)).toContain("scannerHealth");
+      expect(JSON.stringify(submit)).toContain("serial_text");
 
       const response = paymentCodeSubmitResponseSchema.parse({
         orderNo: "ORD202605240001",

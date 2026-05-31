@@ -47,6 +47,20 @@ type OutboxRecordRow = (
 );
 
 type CurrentOrderSessionRow = (Option<String>, Option<String>, Option<String>, String);
+type OrderSessionRecordRow = (
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    String,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    String,
+    String,
+);
 
 #[derive(Debug, Error)]
 pub enum StoreError {
@@ -62,6 +76,8 @@ pub enum StoreError {
     RuntimeLockHeld,
     #[error("outbox event capacity limit reached")]
     OutboxCapacity,
+    #[error("payment code attempt is already active")]
+    ActivePaymentCodeAttempt,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -681,6 +697,151 @@ impl LocalStateStore {
         }))
     }
 
+    pub async fn current_order_session_record(
+        &self,
+    ) -> Result<Option<OrderSessionRecord>, StoreError> {
+        let row: Option<OrderSessionRecordRow> = sqlx::query_as(
+            "SELECT order_no,payment_method,payment_provider,payment_attempt_json,items_json,status,next_action,expires_at,last_backend_status_json,last_error,recovery_strategy,updated_at
+             FROM order_sessions
+             WHERE status != 'closed'
+             ORDER BY updated_at DESC
+             LIMIT 1",
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(to_order_session_record))
+    }
+
+    pub async fn current_transaction_snapshot(
+        &self,
+    ) -> Result<Option<vending_core::domain::CurrentTransactionSnapshot>, StoreError> {
+        let Some(row) = self.current_order_session_record().await? else {
+            return Ok(None);
+        };
+        Ok(Some(to_current_transaction_snapshot(row)?))
+    }
+
+    pub async fn begin_payment_code_attempt(
+        &self,
+        order_no: &str,
+        masked_auth_code: &str,
+        source: &str,
+        scanned_at_ms: u128,
+        scanner_health: Option<&vending_core::scanner::ScannerHealthSnapshot>,
+    ) -> Result<String, StoreError> {
+        let mut history = Vec::new();
+        if let Some(existing) = self.load_attempt_json(order_no).await? {
+            let status = existing.get("status").and_then(|value| value.as_str());
+            let can_retry = existing
+                .get("canRetry")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false);
+            if matches!(
+                status,
+                Some("submitting" | "user_confirming" | "querying" | "processing")
+            ) {
+                return Err(StoreError::ActivePaymentCodeAttempt);
+            }
+            if matches!(status, Some("failed" | "manual_handling" | "unknown")) && !can_retry {
+                return Err(StoreError::ActivePaymentCodeAttempt);
+            }
+
+            if let Some(existing_history) =
+                existing.get("history").and_then(|value| value.as_array())
+            {
+                history.extend(existing_history.iter().cloned());
+            }
+            if existing.get("maskedAuthCode").is_some() {
+                history.push(serde_json::Value::Object(existing));
+            }
+        }
+
+        let idempotency_key = format!("{}:{}", order_no, Uuid::new_v4().simple());
+        let mut payload = serde_json::Map::new();
+        payload.insert("attemptNo".to_string(), serde_json::Value::Null);
+        payload.insert(
+            "idempotencyKey".to_string(),
+            serde_json::Value::String(idempotency_key),
+        );
+        payload.insert(
+            "maskedAuthCode".to_string(),
+            serde_json::Value::String(masked_auth_code.to_string()),
+        );
+        payload.insert(
+            "source".to_string(),
+            serde_json::Value::String(source.to_string()),
+        );
+        payload.insert(
+            "status".to_string(),
+            serde_json::Value::String("submitting".to_string()),
+        );
+        payload.insert("canRetry".to_string(), serde_json::Value::Bool(false));
+        payload.insert("message".to_string(), serde_json::Value::Null);
+        payload.insert(
+            "scannedAtMs".to_string(),
+            serde_json::Value::from(scanned_at_ms as u64),
+        );
+        payload.insert(
+            "submittedAt".to_string(),
+            serde_json::Value::String(now_iso()),
+        );
+        payload.insert("lastCheckedAt".to_string(), serde_json::Value::Null);
+        payload.insert(
+            "scannerHealth".to_string(),
+            serde_json::to_value(scanner_health)?,
+        );
+        if !history.is_empty() {
+            payload.insert("history".to_string(), serde_json::Value::Array(history));
+        }
+        sqlx::query(
+            "UPDATE order_sessions
+             SET payment_attempt_json = ?2, updated_at = ?3
+             WHERE order_no = ?1",
+        )
+        .bind(order_no)
+        .bind(serde_json::Value::Object(payload.clone()).to_string())
+        .bind(now_iso())
+        .execute(&self.pool)
+        .await?;
+        Ok(payload
+            .get("idempotencyKey")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .to_string())
+    }
+
+    pub async fn finish_payment_code_attempt(
+        &self,
+        order_no: &str,
+        status: &str,
+        can_retry: bool,
+        message: Option<&str>,
+    ) -> Result<(), StoreError> {
+        let mut data = self.load_attempt_json(order_no).await?.unwrap_or_default();
+        data.insert(
+            "status".to_string(),
+            serde_json::Value::String(status.to_string()),
+        );
+        data.insert("canRetry".to_string(), serde_json::Value::Bool(can_retry));
+        data.insert(
+            "message".to_string(),
+            message.map_or(serde_json::Value::Null, |value| {
+                serde_json::Value::String(value.to_string())
+            }),
+        );
+        data.insert(
+            "lastCheckedAt".to_string(),
+            serde_json::Value::String(now_iso()),
+        );
+        sqlx::query("UPDATE order_sessions SET payment_attempt_json = ?2, updated_at = ?3 WHERE order_no = ?1")
+            .bind(order_no)
+            .bind(serde_json::Value::Object(data).to_string())
+            .bind(now_iso())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     pub async fn get_or_create_payment_attempt_key(
         &self,
         order_no: &str,
@@ -750,6 +911,11 @@ impl LocalStateStore {
         idempotency_key: &str,
     ) -> Result<(), StoreError> {
         let mut data = self.load_attempt_json(order_no).await?.unwrap_or_default();
+        data.insert("attemptNo".to_string(), serde_json::Value::Null);
+        data.insert(
+            "status".to_string(),
+            serde_json::Value::String("submitting".to_string()),
+        );
         data.insert(
             "maskedAuthCode".to_string(),
             serde_json::Value::String(masked_auth_code.to_string()),
@@ -762,6 +928,13 @@ impl LocalStateStore {
             "idempotencyKey".to_string(),
             serde_json::Value::String(idempotency_key.to_string()),
         );
+        data.insert("canRetry".to_string(), serde_json::Value::Bool(false));
+        data.insert("message".to_string(), serde_json::Value::Null);
+        data.insert(
+            "submittedAt".to_string(),
+            serde_json::Value::String(now_iso()),
+        );
+        data.insert("lastCheckedAt".to_string(), serde_json::Value::Null);
 
         sqlx::query("UPDATE order_sessions SET payment_attempt_json = ?2, updated_at = ?3 WHERE order_no = ?1")
             .bind(order_no)
@@ -950,6 +1123,190 @@ fn to_health_level_string(level: vending_core::health::HealthLevel) -> &'static 
         vending_core::health::HealthLevel::Offline => "offline",
         vending_core::health::HealthLevel::Error => "error",
     }
+}
+
+fn to_order_session_record(row: OrderSessionRecordRow) -> OrderSessionRecord {
+    let (
+        order_no,
+        payment_method,
+        payment_provider,
+        payment_attempt_json,
+        items_json,
+        status,
+        next_action,
+        expires_at,
+        last_backend_status_json,
+        last_error,
+        recovery_strategy,
+        updated_at,
+    ) = row;
+    OrderSessionRecord {
+        order_no,
+        payment_method,
+        payment_provider,
+        payment_attempt_json,
+        items_json,
+        status,
+        next_action,
+        expires_at,
+        last_backend_status_json,
+        last_error,
+        recovery_strategy,
+        updated_at,
+    }
+}
+
+fn to_current_transaction_snapshot(
+    row: OrderSessionRecord,
+) -> Result<vending_core::domain::CurrentTransactionSnapshot, StoreError> {
+    let backend = row
+        .last_backend_status_json
+        .as_deref()
+        .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok());
+    let attempt = row
+        .payment_attempt_json
+        .as_deref()
+        .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok());
+
+    Ok(vending_core::domain::CurrentTransactionSnapshot {
+        order_id: backend
+            .as_ref()
+            .and_then(|v| v.get("orderId"))
+            .and_then(|v| v.as_str())
+            .map(ToString::to_string),
+        order_no: Some(row.order_no),
+        product_summary: serde_json::from_str::<serde_json::Value>(&row.items_json).ok(),
+        payment_no: backend
+            .as_ref()
+            .and_then(|v| v.pointer("/payment/paymentNo"))
+            .and_then(|v| v.as_str())
+            .map(ToString::to_string),
+        payment_method: backend
+            .as_ref()
+            .and_then(|v| v.pointer("/payment/method"))
+            .and_then(|v| v.as_str())
+            .map(ToString::to_string)
+            .or(Some(row.payment_method)),
+        payment_provider: backend
+            .as_ref()
+            .and_then(|v| v.pointer("/payment/providerCode"))
+            .and_then(|v| v.as_str())
+            .map(ToString::to_string)
+            .or(row.payment_provider),
+        payment_url: backend
+            .as_ref()
+            .and_then(|v| v.pointer("/payment/paymentUrl"))
+            .and_then(|v| v.as_str())
+            .map(ToString::to_string),
+        payment_status: backend
+            .as_ref()
+            .and_then(|v| v.pointer("/payment/status"))
+            .and_then(|v| v.as_str())
+            .map(ToString::to_string),
+        order_status: backend
+            .as_ref()
+            .and_then(|v| v.get("orderStatus"))
+            .and_then(|v| v.as_str())
+            .map(ToString::to_string)
+            .or(Some(row.status)),
+        total_amount_cents: backend
+            .as_ref()
+            .and_then(|v| v.get("totalAmountCents"))
+            .and_then(|v| v.as_i64()),
+        vending: backend.as_ref().and_then(map_vending_summary),
+        next_action: backend
+            .as_ref()
+            .and_then(|v| v.get("nextAction"))
+            .and_then(|v| v.as_str())
+            .map(ToString::to_string)
+            .or(Some(row.next_action)),
+        masked_auth_code: attempt
+            .as_ref()
+            .and_then(|v| v.get("maskedAuthCode"))
+            .and_then(|v| v.as_str())
+            .map(ToString::to_string),
+        payment_code_attempt: attempt
+            .as_ref()
+            .map(map_payment_code_attempt_summary)
+            .transpose()?,
+        expires_at: backend
+            .as_ref()
+            .and_then(|v| v.pointer("/payment/expiresAt"))
+            .and_then(|v| v.as_str())
+            .map(ToString::to_string)
+            .or(row.expires_at),
+        error_code: row
+            .last_error
+            .as_ref()
+            .map(|_| "TRANSACTION_ERROR".to_string()),
+        error_message: row.last_error,
+        operator_hint: attempt
+            .as_ref()
+            .and_then(|v| v.get("message"))
+            .and_then(|v| v.as_str())
+            .map(ToString::to_string),
+        updated_at: row.updated_at,
+    })
+}
+
+fn map_vending_summary(
+    value: &serde_json::Value,
+) -> Option<vending_core::domain::VendingCommandSummary> {
+    let vending = value.get("vending")?;
+    Some(vending_core::domain::VendingCommandSummary {
+        command_no: vending
+            .get("commandNo")
+            .and_then(|v| v.as_str())
+            .map(ToString::to_string),
+        status: vending
+            .get("status")
+            .and_then(|v| v.as_str())
+            .map(ToString::to_string),
+        last_error: vending
+            .get("lastError")
+            .and_then(|v| v.as_str())
+            .map(ToString::to_string),
+    })
+}
+
+fn map_payment_code_attempt_summary(
+    value: &serde_json::Value,
+) -> Result<vending_core::domain::PaymentCodeAttemptSummary, StoreError> {
+    Ok(vending_core::domain::PaymentCodeAttemptSummary {
+        attempt_no: value.get("attemptNo").and_then(|v| v.as_i64()),
+        status: value
+            .get("status")
+            .and_then(|v| v.as_str())
+            .map(ToString::to_string),
+        masked_auth_code: value
+            .get("maskedAuthCode")
+            .and_then(|v| v.as_str())
+            .map(ToString::to_string),
+        source: value
+            .get("source")
+            .and_then(|v| v.as_str())
+            .map(ToString::to_string),
+        idempotency_key: value
+            .get("idempotencyKey")
+            .and_then(|v| v.as_str())
+            .map(ToString::to_string),
+        submitted_at: value
+            .get("submittedAt")
+            .and_then(|v| v.as_str())
+            .map(ToString::to_string),
+        last_checked_at: value
+            .get("lastCheckedAt")
+            .and_then(|v| v.as_str())
+            .map(ToString::to_string),
+        can_retry: value
+            .get("canRetry")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+        message: value
+            .get("message")
+            .and_then(|v| v.as_str())
+            .map(ToString::to_string),
+    })
 }
 
 fn parse_order_status(status: &str) -> Option<vending_core::domain::OrderSessionStatus> {
@@ -1281,14 +1638,27 @@ mod tests {
             .await
             .expect("open");
 
+        store
+            .upsert_order_session(OrderSessionUpsert {
+                order_no: "ORDER-SECRET",
+                payment_method: "payment_code",
+                payment_provider: Some("alipay"),
+                items_json: json!([]),
+                status: "waiting_payment",
+                next_action: "wait_payment",
+                payment_attempt_json: None,
+                recovery_strategy: "local",
+                last_backend_status_json: None,
+                last_error: None,
+            })
+            .await
+            .expect("seed");
+
         let key = store
-            .get_or_create_payment_attempt_key("ORDER-SECRET")
+            .begin_payment_code_attempt("ORDER-SECRET", "6212****3456", "serial_text", 1_000, None)
             .await
             .expect("id");
-        store
-            .record_payment_attempt_summary("ORDER-SECRET", "6212****3456", "tauri_scanner", &key)
-            .await
-            .expect("summary");
+        assert!(key.starts_with("ORDER-SECRET:"));
 
         let row: Option<(Option<String>,)> =
             sqlx::query_as("SELECT payment_attempt_json FROM order_sessions WHERE order_no = ?1")
@@ -1299,6 +1669,147 @@ mod tests {
         let json = row.expect("exists").0.expect("json");
         assert!(!json.contains("621234567890123456"));
         assert!(json.contains("6212****3456"));
+    }
+
+    #[tokio::test]
+    async fn payment_code_retry_scan_creates_new_idempotency_key() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        store
+            .upsert_order_session(OrderSessionUpsert {
+                order_no: "ORDER-RETRY",
+                payment_method: "payment_code",
+                payment_provider: Some("alipay"),
+                items_json: json!([]),
+                status: "waiting_payment",
+                next_action: "wait_payment",
+                payment_attempt_json: None,
+                recovery_strategy: "local",
+                last_backend_status_json: None,
+                last_error: None,
+            })
+            .await
+            .expect("seed");
+
+        let first = store
+            .begin_payment_code_attempt("ORDER-RETRY", "6212****3456", "serial_text", 1_000, None)
+            .await
+            .expect("first");
+        store
+            .finish_payment_code_attempt(
+                "ORDER-RETRY",
+                "failed",
+                true,
+                Some("付款码无效或支付失败，请刷新付款码后重试"),
+            )
+            .await
+            .expect("finish");
+        let second = store
+            .begin_payment_code_attempt("ORDER-RETRY", "6212****9999", "serial_text", 2_000, None)
+            .await
+            .expect("second");
+
+        assert_ne!(first, second);
+        let data = store
+            .load_attempt_json("ORDER-RETRY")
+            .await
+            .expect("json")
+            .expect("attempt");
+        assert_eq!(data["maskedAuthCode"], "6212****9999");
+        assert_eq!(data["source"], "serial_text");
+    }
+
+    #[tokio::test]
+    async fn payment_code_active_attempt_blocks_new_scan() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        store
+            .upsert_order_session(OrderSessionUpsert {
+                order_no: "ORDER-ACTIVE",
+                payment_method: "payment_code",
+                payment_provider: Some("alipay"),
+                items_json: json!([]),
+                status: "waiting_payment",
+                next_action: "wait_payment",
+                payment_attempt_json: Some(json!({
+                    "idempotencyKey": "ORDER-ACTIVE:one",
+                    "status": "submitting",
+                    "canRetry": false,
+                })),
+                recovery_strategy: "local",
+                last_backend_status_json: None,
+                last_error: None,
+            })
+            .await
+            .expect("seed");
+
+        let error = store
+            .begin_payment_code_attempt("ORDER-ACTIVE", "6212****9999", "serial_text", 2_000, None)
+            .await
+            .expect_err("active attempt should block");
+        assert!(matches!(error, StoreError::ActivePaymentCodeAttempt));
+    }
+
+    #[tokio::test]
+    async fn current_transaction_snapshot_maps_backend_status_and_attempt_without_plaintext() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        store
+            .upsert_order_session(OrderSessionUpsert {
+                order_no: "ORDER-SNAPSHOT",
+                payment_method: "payment_code",
+                payment_provider: Some("alipay"),
+                items_json: json!([{ "name": "cola" }]),
+                status: "waiting_payment",
+                next_action: "wait_payment",
+                payment_attempt_json: Some(json!({
+                    "attemptNo": 1,
+                    "status": "failed",
+                    "maskedAuthCode": "6212****3456",
+                    "source": "serial_text",
+                    "idempotencyKey": "ORDER-SNAPSHOT:one",
+                    "submittedAt": null,
+                    "lastCheckedAt": null,
+                    "canRetry": true,
+                    "message": "请刷新付款码后重试",
+                })),
+                recovery_strategy: "local",
+                last_backend_status_json: Some(json!({
+                    "orderId": "order-id",
+                    "orderNo": "ORDER-SNAPSHOT",
+                    "orderStatus": "waiting_payment",
+                    "totalAmountCents": 500,
+                    "nextAction": "wait_payment",
+                    "payment": {
+                        "paymentNo": "PAY-1",
+                        "method": "payment_code",
+                        "providerCode": "alipay",
+                        "paymentUrl": null,
+                        "status": "pending",
+                        "expiresAt": "2026-05-30T00:00:00.000Z"
+                    }
+                })),
+                last_error: None,
+            })
+            .await
+            .expect("seed");
+
+        let snapshot = store
+            .current_transaction_snapshot()
+            .await
+            .expect("snapshot")
+            .expect("current");
+        let value = serde_json::to_string(&snapshot).expect("serialize");
+        assert!(value.contains("\"paymentMethod\":\"payment_code\""));
+        assert!(value.contains("\"source\":\"serial_text\""));
+        assert!(value.contains("\"maskedAuthCode\":\"6212****3456\""));
+        assert!(!value.contains("621234567890123456"));
     }
 
     #[tokio::test]

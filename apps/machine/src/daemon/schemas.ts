@@ -70,12 +70,7 @@ export const configSummarySchema = z.object({
     mqttUsername: z.string().nullable(),
     hardwareAdapter: z.enum(["mock", "serial", "bluetooth", "vendor_sdk"]),
     serialPortPath: z.string().nullable(),
-    scannerAdapter: z.enum([
-      "disabled",
-      "serial_text",
-      "keyboard_hid",
-      "web_serial_dev",
-    ]),
+    scannerAdapter: z.enum(["disabled", "serial_text"]),
     scannerSerialPortPath: z.string().nullable(),
     scannerBaudRate: z.number().int(),
     scannerFrameSuffix: z.enum(["crlf", "lf", "cr", "none"]),
@@ -112,6 +107,19 @@ export const transactionSnapshotSchema = z.object({
     .nullable(),
   nextAction: z.string().nullable(),
   maskedAuthCode: z.string().nullable(),
+  paymentCodeAttempt: z
+    .object({
+      attemptNo: z.number().int().positive().nullable(),
+      status: z.string().nullable(),
+      maskedAuthCode: z.string().nullable(),
+      source: z.string().nullable(),
+      idempotencyKey: z.string().nullable(),
+      submittedAt: z.string().nullable(),
+      lastCheckedAt: z.string().nullable(),
+      canRetry: z.boolean(),
+      message: z.string().nullable(),
+    })
+    .nullable(),
   expiresAt: z.string().nullable(),
   errorCode: z.string().nullable(),
   errorMessage: z.string().nullable(),
@@ -136,6 +144,9 @@ export const syncStatusSchema = z.object({
 export const scannerStatusSchema = z.object({
   online: z.boolean(),
   adapter: z.string(),
+  port: z.string().nullable(),
+  level: z.string(),
+  code: z.string(),
   message: z.string(),
   updatedAt: z.string(),
 });
@@ -182,9 +193,17 @@ export const daemonEventSchema = z.discriminatedUnion("type", [
     snapshot: readySnapshotSchema,
   }),
   z.object({
+    type: z.literal("scanner_health_changed"),
+    eventId: z.string(),
+    updatedAt: z.string(),
+    snapshot: scannerStatusSchema,
+  }),
+  z.object({
     type: z.literal("scanner_code"),
     eventId: z.string(),
+    updatedAt: z.string(),
     maskedCode: z.string(),
+    source: z.string(),
     scannedAtMs: z.number(),
   }),
   z.object({

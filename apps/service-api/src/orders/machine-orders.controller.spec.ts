@@ -30,7 +30,13 @@ describe("MachineOrdersController", () => {
         machineCode: "M001",
         authCode: "28763443825664394",
         idempotencyKey: "idem-1",
-        source: "tauri_scanner",
+        source: "serial_text",
+        scannerHealth: {
+          online: true,
+          adapter: "serial_text",
+          port: "/dev/ttyUSB1",
+          message: "scanner ready",
+        },
       },
       {
         headers: { "x-forwarded-for": "10.0.0.8, 10.0.0.9" },
@@ -44,6 +50,9 @@ describe("MachineOrdersController", () => {
         orderNo: "ORD001",
         machineCode: "M001",
         clientIp: "10.0.0.8",
+        scannerHealth: expect.objectContaining({
+          adapter: "serial_text",
+        }),
       }),
     );
   });

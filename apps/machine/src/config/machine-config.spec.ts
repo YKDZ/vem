@@ -105,6 +105,12 @@ describe("machine config", () => {
     ).toThrow(/scannerSerialPortPath/);
   });
 
+  it("rejects unsupported scanner adapter values", () => {
+    expect(() =>
+      normalizeMachineConfig({ scannerAdapter: "web_serial_dev" }),
+    ).toThrow();
+  });
+
   it("trims machineSecret whitespace", () => {
     expect(
       normalizeMachineConfig({

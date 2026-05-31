@@ -17,6 +17,7 @@ fn scanner_framer_supports_documented_suffixes() {
         let frames = framer.push_bytes(bytes, 1_000);
         assert_eq!(frames.len(), 1, "suffix {suffix:?}");
         assert_eq!(frames[0].masked_code, "6212****3456");
+        assert_eq!(frames[0].scanned_at_ms, 1_000);
     }
 }
 

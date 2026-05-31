@@ -64,6 +64,27 @@ async fn ipc_contract_requires_token_and_returns_stable_snapshots() {
         assert!(!text.contains("\"mqttPassword\":"));
     }
 
+    let health = daemon.get_json("/healthz").await;
+    assert!(health.get("scannerOnline").is_some());
+    assert!(health
+        .get("components")
+        .and_then(|value| value.as_array())
+        .is_some());
+
+    let scanner = daemon.get_json("/v1/scanner/status").await;
+    assert!(scanner.get("port").is_some());
+    assert!(scanner.get("level").is_some());
+    assert!(scanner.get("code").is_some());
+
+    let missing_submit = client
+        .post(format!("{base}/v1/intents/submit-payment-code"))
+        .header("Authorization", daemon.bearer())
+        .json(&serde_json::json!({}))
+        .send()
+        .await
+        .expect("missing submit route");
+    assert_eq!(missing_submit.status(), StatusCode::NOT_FOUND);
+
     let bad_ws = connect_async(format!(
         "{}/v1/events?token=bad",
         base.replace("http", "ws")

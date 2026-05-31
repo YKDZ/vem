@@ -150,10 +150,7 @@ onUnmounted(() => {
             <p class="text-sm tracking-[0.3em] text-emerald-100 uppercase">
               PAYMENT CODE
             </p>
-            <h3 class="mt-3 text-3xl font-black">请打开付款码并靠近扫码窗口</h3>
-            <p class="mt-3 text-slate-200">
-              daemon 负责扫码器和付款码提交，UI 仅展示脱敏结果和当前交易状态。
-            </p>
+            <h3 class="mt-3 text-3xl font-black">请出示付款码</h3>
             <div class="mt-6 rounded-3xl bg-slate-950/45 p-5">
               <p class="text-slate-300">扫码模块</p>
               <p
@@ -164,11 +161,17 @@ onUnmounted(() => {
               >
                 {{ scannerStore.message }}
               </p>
+              <p v-if="scannerStore.port" class="mt-2 text-sm text-slate-400">
+                端口：{{ scannerStore.port }}
+              </p>
               <p v-if="scannerStore.lastMaskedCode" class="mt-3 text-slate-300">
                 已读取：{{ scannerStore.lastMaskedCode }}
               </p>
-              <p class="mt-3 text-sky-200">
-                {{ checkoutStore.paymentCodeMessage ?? "等待扫码" }}
+              <p
+                v-if="checkoutStore.paymentCodeMessage"
+                class="mt-3 rounded-2xl bg-sky-400/10 p-3 text-sky-100"
+              >
+                {{ checkoutStore.paymentCodeMessage }}
               </p>
               <RouterLink
                 v-if="canUseDevScan"
