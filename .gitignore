@@ -13,3 +13,7 @@ playwright-report
 .env
 
 /target
+
+/keys
+ 
+/target

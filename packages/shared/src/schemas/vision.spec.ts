@@ -77,6 +77,34 @@ describe("vision protocol schemas", () => {
     ).toThrow();
   });
 
+  it("accepts null for heightCm and shoulderWidthCm when out of range", () => {
+    const message = visionProfileResultMessageSchema.parse({
+      ...BASE_ENVELOPE,
+      type: "vision.profile_result",
+      payload: {
+        eventId: "vision-event-002",
+        detectedAt: "2026-06-03T12:00:00.000Z",
+        profile: {
+          personPresent: true,
+          heightCm: null,
+          shoulderWidthCm: null,
+          ageRange: "unknown",
+          gender: "unknown",
+          bodyType: "unknown",
+        },
+        quality: {
+          overall: "low_confidence",
+          warnings: ["image_too_dark"],
+        },
+      },
+    });
+
+    expect(message.payload.profile.heightCm).toBeNull();
+    expect(message.payload.profile.shoulderWidthCm).toBeNull();
+    expect(message.payload.profile.ageRange).toBe("unknown");
+    expect(message.payload.profile.gender).toBe("unknown");
+  });
+
   it("parses standard errors", () => {
     const message = visionErrorMessageSchema.parse({
       ...BASE_ENVELOPE,
