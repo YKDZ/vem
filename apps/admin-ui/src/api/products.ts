@@ -22,6 +22,7 @@ export type ProductVariant = {
   priceCents: number;
   costCents: number | null;
   status: VariantStatus;
+  targetGender?: "male" | "female" | null;
   createdAt: string;
   updatedAt: string;
 };

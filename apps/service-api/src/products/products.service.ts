@@ -111,6 +111,7 @@ export class ProductsService {
         priceCents: input.priceCents,
         costCents: input.costCents ?? null,
         status: input.status,
+        targetGender: input.targetGender ?? null,
       })
       .returning();
     return created;
@@ -128,6 +129,7 @@ export class ProductsService {
         priceCents: input.priceCents,
         costCents: input.costCents,
         status: input.status,
+        targetGender: input.targetGender,
         updatedAt: new Date(),
       })
       .where(and(eq(productVariants.id, id), isNull(productVariants.deletedAt)))

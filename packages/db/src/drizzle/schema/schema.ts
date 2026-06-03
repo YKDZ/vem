@@ -322,6 +322,7 @@ export const productVariants = t.pgTable(
     size: t.varchar("size", { length: 32 }),
     color: t.varchar("color", { length: 32 }),
     barcode: t.varchar("barcode", { length: 128 }),
+    targetGender: t.varchar("target_gender", { length: 8 }),
     priceCents: t.integer("price_cents").notNull(),
     costCents: t.integer("cost_cents"),
     status: variantStatus("status").default("active").notNull(),
@@ -340,6 +341,10 @@ export const productVariants = t.pgTable(
     t.check(
       "product_variants_cost_cents_non_negative",
       sql`${table.costCents} IS NULL OR ${table.costCents} >= 0`,
+    ),
+    t.check(
+      "product_variants_target_gender_enum",
+      sql`${table.targetGender} IS NULL OR ${table.targetGender} IN ('male', 'female')`,
     ),
   ],
 );

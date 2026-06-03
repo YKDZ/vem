@@ -22,6 +22,7 @@ export const createProductVariantSchema = z.object({
   priceCents: z.int().min(0),
   costCents: z.int().min(0).nullable().optional(),
   status: variantStatusSchema.default("active"),
+  targetGender: z.enum(["male", "female"]).nullable().optional(),
 });
 
 export const updateProductVariantSchema = createProductVariantSchema.partial();
