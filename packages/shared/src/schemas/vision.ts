@@ -55,8 +55,8 @@ export const visionReadyPayloadSchema = z.object({
 export const visionProfileSchema = z
   .object({
     personPresent: z.boolean(),
-    heightCm: z.number().min(80).max(240).optional(),
-    shoulderWidthCm: z.number().min(20).max(80).optional(),
+    heightCm: z.number().min(80).max(240).nullable().optional(),
+    shoulderWidthCm: z.number().min(20).max(80).nullable().optional(),
     ageRange: z.string().min(1).max(32).optional(),
     gender: z.string().min(1).max(32).optional(),
     bodyType: z.string().min(1).max(32).optional(),
