@@ -33,37 +33,71 @@ export class MachineStockMovementsService {
     machine: AuthenticatedMachine,
     input: RawMachineStockMovement,
   ): Promise<MachineStockMovementIngestionResponse> {
-    const normalized = normalizeRawMovement(input);
+    const trustedInput: RawMachineStockMovement = {
+      ...input,
+      machineCode: machine.code,
+    };
+    const normalized = normalizeRawMovement(trustedInput);
     const payloadHash = hashNormalizedMovement(normalized);
     const existing = await this.repository.findByMachineMovement(
       machine.id,
-      input.movementId,
+      trustedInput.movementId,
     );
 
     if (existing) {
-      if (existing.payloadHash === payloadHash) {
-        return acceptedResponse(input.movementId, existing, "already_accepted");
-      }
-      return {
-        movementId: input.movementId,
-        status: "reconciliation",
-        acceptedAt: null,
-        rejection: {
-          reason: "movement_id_payload_conflict",
-          existingPayloadHash: existing.payloadHash,
-          receivedPayloadHash: payloadHash,
-        },
-      };
+      return responseForExisting(
+        trustedInput.movementId,
+        existing,
+        payloadHash,
+      );
     }
 
-    const stored = await this.repository.insertAccepted({
-      machineId: machine.id,
-      input,
-      normalized,
-      payloadHash,
-    });
-    return acceptedResponse(input.movementId, stored, "accepted");
+    try {
+      const stored = await this.repository.insertAccepted({
+        machineId: machine.id,
+        input: trustedInput,
+        normalized,
+        payloadHash,
+      });
+      return acceptedResponse(trustedInput.movementId, stored, "accepted");
+    } catch (error) {
+      if (!isUniqueConstraintViolation(error)) {
+        throw error;
+      }
+      const concurrent = await this.repository.findByMachineMovement(
+        machine.id,
+        trustedInput.movementId,
+      );
+      if (!concurrent) {
+        throw error;
+      }
+      return responseForExisting(
+        trustedInput.movementId,
+        concurrent,
+        payloadHash,
+      );
+    }
   }
+}
+
+function responseForExisting(
+  movementId: string,
+  existing: StoredRawMachineStockMovement,
+  payloadHash: string,
+): MachineStockMovementIngestionResponse {
+  if (existing.payloadHash === payloadHash) {
+    return acceptedResponse(movementId, existing, "already_accepted");
+  }
+  return {
+    movementId,
+    status: "reconciliation",
+    acceptedAt: null,
+    rejection: {
+      reason: "movement_id_payload_conflict",
+      existingPayloadHash: existing.payloadHash,
+      receivedPayloadHash: payloadHash,
+    },
+  };
 }
 
 function acceptedResponse(
@@ -86,6 +120,7 @@ export function normalizeRawMovement(
   input: RawMachineStockMovement,
 ): Record<string, unknown> {
   return {
+    machineCode: input.machineCode ?? null,
     movementId: input.movementId,
     planogramVersion: input.planogramVersion,
     slotId: input.slotId,
@@ -99,4 +134,17 @@ export function normalizeRawMovement(
 
 function hashNormalizedMovement(input: Record<string, unknown>): string {
   return createHash("sha256").update(JSON.stringify(input)).digest("hex");
+}
+
+function isUniqueConstraintViolation(error: unknown): boolean {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+  const maybeError = error as { code?: unknown; constraint?: unknown };
+  return (
+    maybeError.code === "23505" &&
+    (maybeError.constraint === undefined ||
+      maybeError.constraint ===
+        "machine_raw_stock_movements_machine_movement_unique")
+  );
 }

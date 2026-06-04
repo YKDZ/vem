@@ -799,19 +799,9 @@ impl LocalStateStore {
     }
 
     pub async fn mark_outbox_failed(&self, id: &str, error: &str) -> Result<(), StoreError> {
-        let next_delay = backoff_delay(id, &self.pool).await?;
-        sqlx::query(
-            "UPDATE outbox_events
-             SET attempt_count = attempt_count + 1,
-                 last_error = ?2,
-                 next_attempt_at = ?3
-             WHERE id = ?1",
-        )
-        .bind(id)
-        .bind(error)
-        .bind(next_delay)
-        .execute(&self.pool)
-        .await?;
+        let mut tx = self.pool.begin().await?;
+        mark_outbox_failed_in_tx(&mut tx, id, error).await?;
+        tx.commit().await?;
         Ok(())
     }
 
@@ -821,22 +811,23 @@ impl LocalStateStore {
         movement_id: &str,
         error: &str,
     ) -> Result<(), StoreError> {
-        self.mark_outbox_failed(event_id, error).await?;
-        let outbox = self
-            .outbox_record(event_id)
-            .await?
-            .ok_or_else(|| StoreError::Sqlx(sqlx::Error::RowNotFound))?;
-        sqlx::query(
+        let mut tx = self.pool.begin().await?;
+        let attempt_count = mark_outbox_failed_in_tx(&mut tx, event_id, error).await?;
+        let sync_result = sqlx::query(
             "UPDATE stock_movement_sync
              SET status = 'failed', attempt_count = ?2, last_error = ?3, updated_at = ?4
              WHERE movement_id = ?1",
         )
         .bind(movement_id)
-        .bind(outbox.attempt_count)
+        .bind(attempt_count)
         .bind(error)
         .bind(now_iso())
-        .execute(&self.pool)
+        .execute(tx.as_mut())
         .await?;
+        if sync_result.rows_affected() != 1 {
+            return Err(StoreError::Sqlx(sqlx::Error::RowNotFound));
+        }
+        tx.commit().await?;
         Ok(())
     }
 
@@ -1579,7 +1570,7 @@ impl LocalStateStore {
         };
 
         let mut tx = self.pool.begin().await?;
-        sqlx::query(
+        let sync_result = sqlx::query(
             "UPDATE stock_movement_sync
              SET status = ?2,
                  attempt_count = ?3,
@@ -1599,6 +1590,9 @@ impl LocalStateStore {
         .bind(now_iso())
         .execute(tx.as_mut())
         .await?;
+        if sync_result.rows_affected() != 1 {
+            return Err(StoreError::Sqlx(sqlx::Error::RowNotFound));
+        }
         sqlx::query("DELETE FROM outbox_events WHERE id = ?1")
             .bind(&event.id)
             .execute(tx.as_mut())
@@ -2266,11 +2260,42 @@ fn parse_order_status(status: &str) -> Option<vending_core::domain::OrderSession
     }
 }
 
-async fn backoff_delay(id: &str, pool: &SqlitePool) -> Result<String, StoreError> {
+async fn mark_outbox_failed_in_tx(
+    tx: &mut Transaction<'_, sqlx::Sqlite>,
+    id: &str,
+    error: &str,
+) -> Result<i64, StoreError> {
+    let next_delay = backoff_delay_tx(id, tx).await?;
+    let result = sqlx::query(
+        "UPDATE outbox_events
+         SET attempt_count = attempt_count + 1,
+             last_error = ?2,
+             next_attempt_at = ?3
+         WHERE id = ?1",
+    )
+    .bind(id)
+    .bind(error)
+    .bind(next_delay)
+    .execute(tx.as_mut())
+    .await?;
+    if result.rows_affected() != 1 {
+        return Err(StoreError::Sqlx(sqlx::Error::RowNotFound));
+    }
+    let attempt: (i64,) = sqlx::query_as("SELECT attempt_count FROM outbox_events WHERE id = ?1")
+        .bind(id)
+        .fetch_one(tx.as_mut())
+        .await?;
+    Ok(attempt.0)
+}
+
+async fn backoff_delay_tx(
+    id: &str,
+    tx: &mut Transaction<'_, sqlx::Sqlite>,
+) -> Result<String, StoreError> {
     let attempt: (i64,) =
         sqlx::query_as("SELECT attempt_count + 1 FROM outbox_events WHERE id = ?1")
             .bind(id)
-            .fetch_one(pool)
+            .fetch_one(tx.as_mut())
             .await?;
     let exp = 2_f64.powi(attempt.0 as i32 - 1).max(1.0) * 5.0;
     let base = Utc::now() + chrono::Duration::seconds(exp as i64);
@@ -2670,6 +2695,76 @@ mod tests {
         assert_eq!(sync.last_error.as_deref(), Some("backend offline"));
         assert!(store
             .outbox_record("stock-movement:MOVE-RETRY")
+            .await
+            .expect("outbox")
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn stock_movement_upload_failure_rolls_back_outbox_when_sync_update_fails() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_stock_movement_upload(&store, "MOVE-TX-FAIL").await;
+        sqlx::query(
+            "CREATE TRIGGER fail_stock_movement_sync_update BEFORE UPDATE ON stock_movement_sync
+             BEGIN SELECT RAISE(ABORT, 'forced sync update failure'); END;",
+        )
+        .execute(store.pool())
+        .await
+        .expect("trigger");
+
+        let result = store
+            .mark_stock_movement_upload_failed(
+                "stock-movement:MOVE-TX-FAIL",
+                "MOVE-TX-FAIL",
+                "backend offline",
+            )
+            .await;
+
+        assert!(result.is_err());
+        let outbox = store
+            .outbox_record("stock-movement:MOVE-TX-FAIL")
+            .await
+            .expect("outbox")
+            .expect("outbox exists");
+        assert_eq!(outbox.attempt_count, 0);
+        assert_eq!(outbox.last_error, None);
+    }
+
+    #[tokio::test]
+    async fn stock_movement_upload_response_keeps_outbox_when_sync_row_is_missing() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_stock_movement_upload(&store, "MOVE-MISSING-SYNC").await;
+        let event = store
+            .outbox_record("stock-movement:MOVE-MISSING-SYNC")
+            .await
+            .expect("outbox")
+            .expect("event");
+        sqlx::query("DELETE FROM stock_movement_sync WHERE movement_id = ?1")
+            .bind("MOVE-MISSING-SYNC")
+            .execute(store.pool())
+            .await
+            .expect("delete sync");
+        let response = crate::backend::StockMovementUploadResponse {
+            movement_id: "MOVE-MISSING-SYNC".to_string(),
+            status: "accepted".to_string(),
+            accepted_at: Some("2026-06-04T00:00:00.000Z".to_string()),
+            receipt: Some(json!({"rawMovementId":"raw-1"})),
+            rejection: None,
+        };
+
+        let result = store
+            .record_stock_movement_upload_response(&event, &response)
+            .await;
+
+        assert!(result.is_err());
+        assert!(store
+            .outbox_record("stock-movement:MOVE-MISSING-SYNC")
             .await
             .expect("outbox")
             .is_some());

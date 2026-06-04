@@ -11,7 +11,7 @@ import type {
 import { MachineStockMovementsService } from "./machine-stock-movements.service";
 
 class InMemoryMovementRepository {
-  private readonly rows = new Map<string, StoredRawMachineStockMovement>();
+  protected readonly rows = new Map<string, StoredRawMachineStockMovement>();
 
   async findByMachineMovement(
     machineId: string,
@@ -37,6 +37,38 @@ class InMemoryMovementRepository {
 
   get size(): number {
     return this.rows.size;
+  }
+}
+class InsertRaceMovementRepository extends InMemoryMovementRepository {
+  constructor(private readonly existing: StoredRawMachineStockMovement) {
+    super();
+  }
+
+  override async findByMachineMovement(
+    machineId: string,
+    movementId: string,
+  ): Promise<StoredRawMachineStockMovement | null> {
+    const existing = await super.findByMachineMovement(machineId, movementId);
+    if (existing) {
+      return existing;
+    }
+    if (
+      machineId === this.existing.machineId &&
+      movementId === this.existing.movementId
+    ) {
+      this.rows.set(`${machineId}:${movementId}`, this.existing);
+      return null;
+    }
+    return null;
+  }
+
+  override async insertAccepted(): Promise<StoredRawMachineStockMovement> {
+    const error = new Error("duplicate key value violates unique constraint");
+    Object.assign(error, {
+      code: "23505",
+      constraint: "machine_raw_stock_movements_machine_movement_unique",
+    });
+    throw error;
   }
 }
 
@@ -87,5 +119,63 @@ describe("MachineStockMovementsService", () => {
     expect(conflict.status).toBe("reconciliation");
     expect(conflict.rejection?.reason).toBe("movement_id_payload_conflict");
     expect(repo.size).toBe(1);
+  });
+
+  it("treats a concurrent unique insert race with the same payload as already accepted", async () => {
+    const seedRepo = new InMemoryMovementRepository();
+    const seedService = new MachineStockMovementsService(seedRepo as never);
+    const accepted = await seedService.receiveRawMovement(machine, movement);
+    const repo = new InsertRaceMovementRepository({
+      id: accepted.receipt?.rawMovementId ?? "raw-1",
+      machineId: machine.id,
+      movementId: movement.movementId,
+      payloadHash: accepted.receipt?.payloadHash ?? "",
+      status: "accepted",
+      receivedAt: new Date(accepted.acceptedAt ?? "2026-06-04T00:00:00.000Z"),
+    });
+    const service = new MachineStockMovementsService(repo as never);
+
+    const duplicate = await service.receiveRawMovement(machine, movement);
+
+    expect(duplicate.status).toBe("already_accepted");
+    expect(duplicate.receipt?.rawMovementId).toBe("raw-1");
+  });
+
+  it("sends a concurrent unique insert race with a different payload to reconciliation", async () => {
+    const seedRepo = new InMemoryMovementRepository();
+    const seedService = new MachineStockMovementsService(seedRepo as never);
+    const accepted = await seedService.receiveRawMovement(machine, movement);
+    const repo = new InsertRaceMovementRepository({
+      id: accepted.receipt?.rawMovementId ?? "raw-1",
+      machineId: machine.id,
+      movementId: movement.movementId,
+      payloadHash: accepted.receipt?.payloadHash ?? "",
+      status: "accepted",
+      receivedAt: new Date(accepted.acceptedAt ?? "2026-06-04T00:00:00.000Z"),
+    });
+    const service = new MachineStockMovementsService(repo as never);
+
+    const conflict = await service.receiveRawMovement(machine, {
+      ...movement,
+      quantity: 4,
+    });
+
+    expect(conflict.status).toBe("reconciliation");
+    expect(conflict.rejection?.reason).toBe("movement_id_payload_conflict");
+  });
+
+  it("persists and hashes the authenticated machine code when body omits machineCode", async () => {
+    const repo = new InMemoryMovementRepository();
+    const service = new MachineStockMovementsService(repo as never);
+    const { machineCode: _machineCode, ...movementWithoutMachineCode } =
+      movement;
+
+    await service.receiveRawMovement(machine, movementWithoutMachineCode);
+    const duplicateWithBodyMachineCode = await service.receiveRawMovement(
+      machine,
+      movement,
+    );
+
+    expect(duplicateWithBodyMachineCode.status).toBe("already_accepted");
   });
 });

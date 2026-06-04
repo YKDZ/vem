@@ -60,6 +60,18 @@ impl StockMovementUploadRuntime {
                 .await
             {
                 Ok(response) => {
+                    if response.movement_id != movement_id {
+                        let error = format!(
+                            "stock movement upload response movementId mismatch: expected {movement_id}, received {}",
+                            response.movement_id
+                        );
+                        self.state
+                            .mark_stock_movement_upload_failed(&event.id, &movement_id, &error)
+                            .await
+                            .map_err(|error| error.to_string())?;
+                        result.failed += 1;
+                        continue;
+                    }
                     self.state
                         .record_stock_movement_upload_response(&event, &response)
                         .await
@@ -89,5 +101,118 @@ impl StockMovementUploadRuntime {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use tempfile::TempDir;
+    use tokio_util::sync::CancellationToken;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    use crate::backend::BackendClient;
+    use crate::state::store::{
+        MachinePlanogramInput, MachinePlanogramSlotInput, StockMovementInput,
+    };
+    use crate::state::LocalStateStore;
+
+    use super::*;
+
+    async fn seed_stock_movement_upload(store: &LocalStateStore, movement_id: &str) {
+        store
+            .apply_planogram(MachinePlanogramInput {
+                planogram_version: "PLAN-1".to_string(),
+                source: "test".to_string(),
+                applied_by: None,
+                slots: vec![MachinePlanogramSlotInput {
+                    slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                    slot_code: "A1".to_string(),
+                    layer_no: 1,
+                    cell_no: 1,
+                    capacity: 8,
+                    par_level: 6,
+                    inventory_id: "550e8400-e29b-41d4-a716-446655440002".to_string(),
+                    variant_id: "550e8400-e29b-41d4-a716-446655440003".to_string(),
+                    product_id: "550e8400-e29b-41d4-a716-446655440004".to_string(),
+                    product_name: "water".to_string(),
+                    product_description: None,
+                    cover_image_url: None,
+                    category_id: None,
+                    category_name: None,
+                    sku: "WATER-001".to_string(),
+                    size: None,
+                    color: None,
+                    price_cents: 200,
+                    product_sort_order: 1,
+                    target_gender: None,
+                }],
+            })
+            .await
+            .expect("planogram");
+        store
+            .record_stock_movement_with_upload(
+                StockMovementInput {
+                    movement_id: movement_id.to_string(),
+                    planogram_version: "PLAN-1".to_string(),
+                    slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                    movement_type: "planned_refill".to_string(),
+                    quantity: 3,
+                    source: "field_service".to_string(),
+                    attributed_to: None,
+                },
+                Some("MACHINE-1"),
+                Some("https://platform.example/api"),
+            )
+            .await
+            .expect("movement");
+    }
+
+    #[tokio::test]
+    async fn stock_movement_upload_mismatched_response_movement_id_keeps_outbox() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_stock_movement_upload(&store, "MOVE-EXPECTED").await;
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/machine-stock-movements"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "movementId": "MOVE-OTHER",
+                "status": "accepted",
+                "acceptedAt": "2026-06-04T00:00:00.000Z",
+                "receipt": {"rawMovementId":"raw-1"}
+            })))
+            .mount(&server)
+            .await;
+        let runtime = StockMovementUploadRuntime::new(
+            store.clone(),
+            Arc::new(BackendClient::new(server.uri())),
+            CancellationToken::new(),
+        );
+
+        let result = runtime.flush_due_once().await.expect("flush");
+
+        assert_eq!(result.accepted, 0);
+        assert_eq!(result.failed, 1);
+        let sync = store
+            .stock_movement_sync_record("MOVE-EXPECTED")
+            .await
+            .expect("sync")
+            .expect("sync exists");
+        assert_eq!(sync.status, "failed");
+        assert!(sync
+            .last_error
+            .as_deref()
+            .expect("last error")
+            .contains("movementId mismatch"));
+        assert!(store
+            .outbox_record("stock-movement:MOVE-EXPECTED")
+            .await
+            .expect("outbox")
+            .is_some());
     }
 }

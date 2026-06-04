@@ -1,4 +1,10 @@
-import { Body, Controller, Post, UseGuards } from "@nestjs/common";
+import {
+  BadRequestException,
+  Body,
+  Controller,
+  Post,
+  UseGuards,
+} from "@nestjs/common";
 import { ApiTags } from "@nestjs/swagger";
 import {
   rawMachineStockMovementSchema,
@@ -27,6 +33,14 @@ export class MachineStockMovementsController {
     @Body(new ZodValidationPipe(rawMachineStockMovementSchema))
     body: RawMachineStockMovement,
   ) {
-    return await this.service.receiveRawMovement(machine, body);
+    if (body.machineCode !== undefined && body.machineCode !== machine.code) {
+      throw new BadRequestException(
+        "machineCode must match authenticated machine",
+      );
+    }
+    return await this.service.receiveRawMovement(machine, {
+      ...body,
+      machineCode: machine.code,
+    });
   }
 }
