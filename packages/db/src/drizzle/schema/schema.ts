@@ -976,6 +976,12 @@ export const machineRawStockMovements = t.pgTable(
     payloadJson: t.jsonb("payload_json").$type<JsonObject>().notNull(),
     normalizedJson: t.jsonb("normalized_json").$type<JsonObject>().notNull(),
     status: t.varchar("status", { length: 32 }).default("accepted").notNull(),
+    reconciliationReason: t.varchar("reconciliation_reason", { length: 128 }),
+    platformReviewStatus: t.varchar("platform_review_status", { length: 32 }),
+    saleSafetyBlockerState: t.varchar("sale_safety_blocker_state", {
+      length: 64,
+    }),
+    saleSafetyBlockerSlotId: t.uuid("sale_safety_blocker_slot_id"),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -985,6 +991,9 @@ export const machineRawStockMovements = t.pgTable(
       .on(table.machineId, table.movementId),
     t.index("machine_raw_stock_movements_machine_idx").on(table.machineId),
     t.index("machine_raw_stock_movements_status_idx").on(table.status),
+    t
+      .index("machine_raw_stock_movements_sale_safety_blocker_idx")
+      .on(table.machineId, table.saleSafetyBlockerSlotId),
     t.check(
       "machine_raw_stock_movements_quantity_non_negative",
       sql`${table.quantity} >= 0`,
@@ -996,6 +1005,14 @@ export const machineRawStockMovements = t.pgTable(
     t.check(
       "machine_raw_stock_movements_status_enum",
       sql`${table.status} IN ('accepted', 'rejected', 'reconciliation')`,
+    ),
+    t.check(
+      "machine_raw_stock_movements_platform_review_status_enum",
+      sql`${table.platformReviewStatus} IS NULL OR ${table.platformReviewStatus} IN ('open', 'resolved')`,
+    ),
+    t.check(
+      "machine_raw_stock_movements_sale_safety_blocker_enum",
+      sql`${table.saleSafetyBlockerState} IS NULL OR ${table.saleSafetyBlockerState} IN ('needs_count', 'blocked_for_planogram_change', 'movement_rejected', 'needs_platform_review')`,
     ),
   ],
 );

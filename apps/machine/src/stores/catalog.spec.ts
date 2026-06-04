@@ -82,4 +82,25 @@ describe("catalog store sale view", () => {
     ).toBe("sold_out");
     expect("availableQty" in store.items[0]).toBe(false);
   });
+
+  it("excludes reconciliation-blocked slots from saleable catalog items", async () => {
+    getSaleViewMock.mockResolvedValue({
+      items: [
+        saleViewItem({
+          slotSalesState: "needs_platform_review",
+          physicalStock: 2,
+          saleableStock: 2,
+        }),
+      ],
+      source: "local_stock",
+      planogramVersion: "PLAN-1",
+      lastUpdatedAt: "2026-06-04T00:00:00Z",
+    });
+
+    const store = useCatalogStore();
+    await store.load();
+
+    expect(store.items[0].slotSalesState).toBe("needs_platform_review");
+    expect(store.availableItems).toHaveLength(0);
+  });
 });

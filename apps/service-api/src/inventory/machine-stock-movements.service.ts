@@ -7,8 +7,22 @@ import type { AuthenticatedMachine } from "../machine-auth/current-machine.decor
 
 import {
   MachineStockMovementsRepository,
+  type InsertReconciliationRawMachineStockMovement,
   type StoredRawMachineStockMovement,
 } from "./machine-stock-movements.repository";
+
+export type SaleSafetyBlockerState =
+  | "needs_count"
+  | "blocked_for_planogram_change"
+  | "movement_rejected"
+  | "needs_platform_review";
+
+export type MachineStockReconciliationReason =
+  | "unknown_slot"
+  | "unknown_planogram_version"
+  | "inactive_planogram_version"
+  | "mapping_mismatch"
+  | "movement_id_payload_conflict";
 
 export type MachineStockMovementIngestionResponse = {
   movementId: string;
@@ -22,6 +36,18 @@ export type MachineStockMovementIngestionResponse = {
     reason: string;
     existingPayloadHash?: string;
     receivedPayloadHash: string;
+  };
+  reconciliation?: {
+    reason: MachineStockReconciliationReason;
+    platformReview: {
+      required: true;
+      status: "open";
+    };
+    saleSafetyBlocker: {
+      slotId: string;
+      slotSalesState: SaleSafetyBlockerState;
+      reason: MachineStockReconciliationReason;
+    } | null;
   };
 };
 
@@ -45,10 +71,32 @@ export class MachineStockMovementsService {
     );
 
     if (existing) {
-      return responseForExisting(
-        trustedInput.movementId,
+      return await responseForExisting(
+        this.repository,
+        machine.id,
+        trustedInput,
         existing,
         payloadHash,
+      );
+    }
+
+    const reconciliation = await reconciliationForMovement(
+      this.repository,
+      machine.id,
+      trustedInput,
+    );
+    if (reconciliation) {
+      const stored = await this.repository.insertReconciliation({
+        machineId: machine.id,
+        input: trustedInput,
+        normalized,
+        payloadHash,
+        ...reconciliation,
+      });
+      return reconciliationResponse(
+        trustedInput.movementId,
+        stored,
+        reconciliation,
       );
     }
 
@@ -71,8 +119,10 @@ export class MachineStockMovementsService {
       if (!concurrent) {
         throw error;
       }
-      return responseForExisting(
-        trustedInput.movementId,
+      return await responseForExisting(
+        this.repository,
+        machine.id,
+        trustedInput,
         concurrent,
         payloadHash,
       );
@@ -80,16 +130,36 @@ export class MachineStockMovementsService {
   }
 }
 
-function responseForExisting(
-  movementId: string,
+async function responseForExisting(
+  repository: MachineStockMovementsRepository,
+  machineId: string,
+  input: RawMachineStockMovement,
   existing: StoredRawMachineStockMovement,
   payloadHash: string,
-): MachineStockMovementIngestionResponse {
+): Promise<MachineStockMovementIngestionResponse> {
   if (existing.payloadHash === payloadHash) {
-    return acceptedResponse(movementId, existing, "already_accepted");
+    if (existing.status === "reconciliation") {
+      return reconciliationResponse(input.movementId, existing, {
+        reconciliationReason:
+          (existing.reconciliationReason as MachineStockReconciliationReason | null) ??
+          "unknown_slot",
+        platformReviewStatus: "open",
+        saleSafetyBlockerState:
+          existing.saleSafetyBlockerState as SaleSafetyBlockerState | null,
+        saleSafetyBlockerSlotId: existing.saleSafetyBlockerSlotId,
+      });
+    }
+    return acceptedResponse(input.movementId, existing, "already_accepted");
   }
+
+  const reconciliation = movementConflictReconciliation(input.slotId);
+  await repository.markReconciliation(
+    machineId,
+    input.movementId,
+    reconciliation,
+  );
   return {
-    movementId,
+    movementId: input.movementId,
     status: "reconciliation",
     acceptedAt: null,
     rejection: {
@@ -97,6 +167,117 @@ function responseForExisting(
       existingPayloadHash: existing.payloadHash,
       receivedPayloadHash: payloadHash,
     },
+    reconciliation: reconciliationPayload(reconciliation),
+  };
+}
+
+async function reconciliationForMovement(
+  repository: MachineStockMovementsRepository,
+  machineId: string,
+  input: RawMachineStockMovement,
+): Promise<Omit<
+  InsertReconciliationRawMachineStockMovement,
+  "machineId" | "input" | "normalized" | "payloadHash"
+> | null> {
+  const context = await repository.getMovementApplicationContext(
+    machineId,
+    input.planogramVersion,
+    input.slotId,
+  );
+
+  if (!context.machineSlotKnown) {
+    return {
+      reconciliationReason: "unknown_slot",
+      platformReviewStatus: "open",
+      saleSafetyBlockerState: "needs_platform_review",
+      saleSafetyBlockerSlotId: input.slotId,
+    };
+  }
+  if (!context.planogramKnown) {
+    return {
+      reconciliationReason: "unknown_planogram_version",
+      platformReviewStatus: "open",
+      saleSafetyBlockerState: "blocked_for_planogram_change",
+      saleSafetyBlockerSlotId: input.slotId,
+    };
+  }
+  if (!context.planogramActive) {
+    return {
+      reconciliationReason: "inactive_planogram_version",
+      platformReviewStatus: "open",
+      saleSafetyBlockerState: "blocked_for_planogram_change",
+      saleSafetyBlockerSlotId: input.slotId,
+    };
+  }
+  if (!context.slotInPlanogram) {
+    return {
+      reconciliationReason: "mapping_mismatch",
+      platformReviewStatus: "open",
+      saleSafetyBlockerState: "blocked_for_planogram_change",
+      saleSafetyBlockerSlotId: input.slotId,
+    };
+  }
+  return null;
+}
+
+function movementConflictReconciliation(
+  slotId: string,
+): Omit<
+  InsertReconciliationRawMachineStockMovement,
+  "machineId" | "input" | "normalized" | "payloadHash"
+> {
+  return {
+    reconciliationReason: "movement_id_payload_conflict",
+    platformReviewStatus: "open",
+    saleSafetyBlockerState: "movement_rejected",
+    saleSafetyBlockerSlotId: slotId,
+  };
+}
+
+function reconciliationResponse(
+  movementId: string,
+  row: StoredRawMachineStockMovement,
+  reconciliation: Omit<
+    InsertReconciliationRawMachineStockMovement,
+    "machineId" | "input" | "normalized" | "payloadHash"
+  >,
+): MachineStockMovementIngestionResponse {
+  return {
+    movementId,
+    status: "reconciliation",
+    acceptedAt: null,
+    receipt: {
+      rawMovementId: row.id,
+      payloadHash: row.payloadHash,
+    },
+    reconciliation: reconciliationPayload(reconciliation),
+  };
+}
+
+function reconciliationPayload(
+  reconciliation: Omit<
+    InsertReconciliationRawMachineStockMovement,
+    "machineId" | "input" | "normalized" | "payloadHash"
+  >,
+): NonNullable<MachineStockMovementIngestionResponse["reconciliation"]> {
+  const reason =
+    reconciliation.reconciliationReason as MachineStockReconciliationReason;
+  return {
+    reason,
+    platformReview: {
+      required: true,
+      status: "open",
+    },
+    saleSafetyBlocker:
+      reconciliation.saleSafetyBlockerState &&
+      reconciliation.saleSafetyBlockerSlotId
+        ? {
+            slotId: reconciliation.saleSafetyBlockerSlotId,
+            slotSalesState:
+              reconciliation.saleSafetyBlockerState as SaleSafetyBlockerState,
+            reason,
+          }
+        : null,
   };
 }
 

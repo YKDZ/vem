@@ -12,6 +12,13 @@ import { MachineStockMovementsService } from "./machine-stock-movements.service"
 
 class InMemoryMovementRepository {
   protected readonly rows = new Map<string, StoredRawMachineStockMovement>();
+  readonly reconciliationInputs: unknown[] = [];
+  movementContext = {
+    machineSlotKnown: true,
+    planogramKnown: true,
+    planogramActive: true,
+    slotInPlanogram: true,
+  };
 
   async findByMachineMovement(
     machineId: string,
@@ -30,9 +37,62 @@ class InMemoryMovementRepository {
       payloadHash: input.payloadHash,
       status: "accepted",
       receivedAt: new Date("2026-06-04T00:00:00.000Z"),
+      reconciliationReason: null,
+      platformReviewStatus: null,
+      saleSafetyBlockerState: null,
+      saleSafetyBlockerSlotId: null,
     };
     this.rows.set(`${input.machineId}:${input.input.movementId}`, row);
     return row;
+  }
+
+  async insertReconciliation(
+    input: InsertRawMachineStockMovement & {
+      reconciliationReason: string;
+      platformReviewStatus: string;
+      saleSafetyBlockerState: string | null;
+      saleSafetyBlockerSlotId: string | null;
+    },
+  ): Promise<StoredRawMachineStockMovement> {
+    this.reconciliationInputs.push(input);
+    const row: StoredRawMachineStockMovement = {
+      id: `raw-${this.rows.size + 1}`,
+      machineId: input.machineId,
+      movementId: input.input.movementId,
+      payloadHash: input.payloadHash,
+      status: "reconciliation",
+      receivedAt: new Date("2026-06-04T00:00:00.000Z"),
+      reconciliationReason: null,
+      platformReviewStatus: null,
+      saleSafetyBlockerState: null,
+      saleSafetyBlockerSlotId: null,
+    };
+    this.rows.set(`${input.machineId}:${input.input.movementId}`, row);
+    return row;
+  }
+
+  async markReconciliation(
+    machineId: string,
+    movementId: string,
+    input: {
+      reconciliationReason: string;
+      platformReviewStatus: string;
+      saleSafetyBlockerState: string | null;
+      saleSafetyBlockerSlotId: string | null;
+    },
+  ): Promise<void> {
+    this.reconciliationInputs.push({ machineId, movementId, ...input });
+    const row = this.rows.get(`${machineId}:${movementId}`);
+    if (row) {
+      this.rows.set(`${machineId}:${movementId}`, {
+        ...row,
+        status: "reconciliation",
+      });
+    }
+  }
+
+  async getMovementApplicationContext() {
+    return this.movementContext;
   }
 
   get size(): number {
@@ -118,7 +178,84 @@ describe("MachineStockMovementsService", () => {
 
     expect(conflict.status).toBe("reconciliation");
     expect(conflict.rejection?.reason).toBe("movement_id_payload_conflict");
+    expect(conflict.reconciliation?.platformReview.status).toBe("open");
+    expect(conflict.reconciliation?.saleSafetyBlocker?.slotSalesState).toBe(
+      "movement_rejected",
+    );
     expect(repo.size).toBe(1);
+  });
+
+  it("records reconciliation state when the movement references an unknown machine slot", async () => {
+    const repo = new InMemoryMovementRepository();
+    repo.movementContext = {
+      machineSlotKnown: false,
+      planogramKnown: true,
+      planogramActive: true,
+      slotInPlanogram: false,
+    };
+    const service = new MachineStockMovementsService(repo as never);
+
+    const result = await service.receiveRawMovement(machine, {
+      ...movement,
+      movementId: "MOVE-UNKNOWN-SLOT",
+    });
+
+    expect(result.status).toBe("reconciliation");
+    expect(result.reconciliation?.reason).toBe("unknown_slot");
+    expect(result.reconciliation?.saleSafetyBlocker).toEqual({
+      slotId: movement.slotId,
+      slotSalesState: "needs_platform_review",
+      reason: "unknown_slot",
+    });
+  });
+
+  it("records reconciliation state when the movement references an unknown planogram version", async () => {
+    const repo = new InMemoryMovementRepository();
+    repo.movementContext = {
+      machineSlotKnown: true,
+      planogramKnown: false,
+      planogramActive: false,
+      slotInPlanogram: false,
+    };
+    const service = new MachineStockMovementsService(repo as never);
+
+    const result = await service.receiveRawMovement(machine, {
+      ...movement,
+      movementId: "MOVE-UNKNOWN-PLAN",
+      planogramVersion: "PLAN-MISSING",
+    });
+
+    expect(result.status).toBe("reconciliation");
+    expect(result.reconciliation?.reason).toBe("unknown_planogram_version");
+    expect(result.reconciliation?.platformReview.status).toBe("open");
+    expect(result.reconciliation?.saleSafetyBlocker).toEqual({
+      slotId: movement.slotId,
+      slotSalesState: "blocked_for_planogram_change",
+      reason: "unknown_planogram_version",
+    });
+    expect(repo.reconciliationInputs).toHaveLength(1);
+  });
+
+  it("records reconciliation state when the slot is not mapped in the movement planogram", async () => {
+    const repo = new InMemoryMovementRepository();
+    repo.movementContext = {
+      machineSlotKnown: true,
+      planogramKnown: true,
+      planogramActive: true,
+      slotInPlanogram: false,
+    };
+    const service = new MachineStockMovementsService(repo as never);
+
+    const result = await service.receiveRawMovement(machine, {
+      ...movement,
+      movementId: "MOVE-MAPPING-MISMATCH",
+    });
+
+    expect(result.status).toBe("reconciliation");
+    expect(result.reconciliation?.reason).toBe("mapping_mismatch");
+    expect(result.reconciliation?.saleSafetyBlocker?.slotSalesState).toBe(
+      "blocked_for_planogram_change",
+    );
   });
 
   it("treats a concurrent unique insert race with the same payload as already accepted", async () => {
@@ -132,6 +269,10 @@ describe("MachineStockMovementsService", () => {
       payloadHash: accepted.receipt?.payloadHash ?? "",
       status: "accepted",
       receivedAt: new Date(accepted.acceptedAt ?? "2026-06-04T00:00:00.000Z"),
+      reconciliationReason: null,
+      platformReviewStatus: null,
+      saleSafetyBlockerState: null,
+      saleSafetyBlockerSlotId: null,
     });
     const service = new MachineStockMovementsService(repo as never);
 
@@ -152,6 +293,10 @@ describe("MachineStockMovementsService", () => {
       payloadHash: accepted.receipt?.payloadHash ?? "",
       status: "accepted",
       receivedAt: new Date(accepted.acceptedAt ?? "2026-06-04T00:00:00.000Z"),
+      reconciliationReason: null,
+      platformReviewStatus: null,
+      saleSafetyBlockerState: null,
+      saleSafetyBlockerSlotId: null,
     });
     const service = new MachineStockMovementsService(repo as never);
 

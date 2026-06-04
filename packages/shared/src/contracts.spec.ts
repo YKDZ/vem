@@ -252,6 +252,8 @@ describe("shared API contract", () => {
       "frozen",
       "needs_count",
       "blocked_for_planogram_change",
+      "movement_rejected",
+      "needs_platform_review",
     ]) {
       expect(
         machineSaleViewItemSchema.parse({ ...base, slotSalesState })

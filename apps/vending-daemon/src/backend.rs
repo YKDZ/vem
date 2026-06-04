@@ -45,6 +45,23 @@ pub struct StockMovementUploadResponse {
     pub accepted_at: Option<String>,
     pub receipt: Option<serde_json::Value>,
     pub rejection: Option<serde_json::Value>,
+    pub reconciliation: Option<StockMovementReconciliation>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StockMovementReconciliation {
+    pub reason: String,
+    pub platform_review: Option<serde_json::Value>,
+    pub sale_safety_blocker: Option<StockMovementSaleSafetyBlocker>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StockMovementSaleSafetyBlocker {
+    pub slot_id: String,
+    pub slot_sales_state: String,
+    pub reason: String,
 }
 
 impl BackendClient {

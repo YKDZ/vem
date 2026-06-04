@@ -753,6 +753,23 @@ async fn machine_sale_readiness_snapshot(
 
     let sale_view = ctx.state.sale_view(machine_code).await?;
     let active_planogram_ready = sale_view.planogram_version.is_some();
+    let saleable_slot_available = sale_view
+        .items
+        .iter()
+        .any(|item| item.slot_sales_state == "sale_ready" && item.saleable_stock > 0);
+    let reconciliation_blocked_slots: Vec<serde_json::Value> = sale_view
+        .items
+        .iter()
+        .filter(|item| is_reconciliation_slot_blocker(&item.slot_sales_state))
+        .map(|item| {
+            serde_json::json!({
+                "slotId": item.slot_id,
+                "slotCode": item.slot_code,
+                "slotSalesState": item.slot_sales_state,
+            })
+        })
+        .collect();
+    let slot_sale_safety_ready = !active_planogram_ready || saleable_slot_available;
 
     let outbox_size = ctx.state.outbox_size().await.unwrap_or_default() as usize;
     let sync = ctx.ui.status_cache.sync.read().await.clone();
@@ -822,7 +839,6 @@ async fn machine_sale_readiness_snapshot(
     if !whole_machine_ready {
         blocking_codes.push("LOWER_CONTROLLER_UNAVAILABLE");
     }
-
     let can_start_network_authorized_sale = platform_ready
         && machine_auth_ready
         && active_planogram_ready
@@ -879,8 +895,30 @@ async fn machine_sale_readiness_snapshot(
                 if whole_machine_ready { "WHOLE_MACHINE_READY" } else { "LOWER_CONTROLLER_UNAVAILABLE" },
                 hardware.message,
             ),
+            "slotSaleSafety": serde_json::json!({
+                "ready": slot_sale_safety_ready,
+                "code": if slot_sale_safety_ready { "SLOT_SALE_SAFETY_READY" } else { "NO_SALEABLE_SLOTS" },
+                "message": if slot_sale_safety_ready {
+                    "slot sale safety ready".to_string()
+                } else if reconciliation_blocked_slots.is_empty() {
+                    "no saleable slots".to_string()
+                } else {
+                    format!("{} slot(s) blocked by reconciliation", reconciliation_blocked_slots.len())
+                },
+                "blockedSlots": reconciliation_blocked_slots,
+            }),
         },
     }))
+}
+
+fn is_reconciliation_slot_blocker(slot_sales_state: &str) -> bool {
+    matches!(
+        slot_sales_state,
+        "needs_count"
+            | "blocked_for_planogram_change"
+            | "movement_rejected"
+            | "needs_platform_review"
+    )
 }
 
 fn readiness_component(ready: bool, code: &str, message: impl Into<String>) -> serde_json::Value {
@@ -3064,6 +3102,91 @@ mod tests {
         assert_eq!(payload["items"][0]["slotSalesState"], "frozen");
         assert_eq!(payload["items"][0]["physicalStock"], 4);
         assert_eq!(payload["items"][0]["saleableStock"], 4);
+    }
+
+    #[tokio::test]
+    async fn sale_readiness_reports_reconciliation_slot_blockers() {
+        let temp_dir = tempdir().expect("tmp");
+        let app = build_router(
+            test_ipc_context(
+                temp_dir.path(),
+                "token-1",
+                Some("MACHINE-1".to_string()),
+                "http://127.0.0.1:0",
+            )
+            .await,
+        );
+        let slot_id = "550e8400-e29b-41d4-a716-446655440091";
+        let inventory_id = "550e8400-e29b-41d4-a716-446655440092";
+
+        assert_eq!(
+            post_json(
+                &app,
+                "/v1/stock/planogram",
+                "token-1",
+                one_slot_planogram("PLAN-RECONCILE-READY", slot_id, inventory_id),
+            )
+            .await
+            .status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            post_json(
+                &app,
+                "/v1/stock/movements",
+                "token-1",
+                json!({
+                    "movementId": "MOVE-RECONCILE-READY",
+                    "planogramVersion": "PLAN-RECONCILE-READY",
+                    "slotId": slot_id,
+                    "movementType": "planned_refill",
+                    "quantity": 2,
+                    "source": "field_service",
+                    "attributedTo": "operator-1"
+                }),
+            )
+            .await
+            .status(),
+            StatusCode::CREATED
+        );
+        assert_eq!(
+            post_json(
+                &app,
+                "/v1/stock/slot-sales-state",
+                "token-1",
+                json!({
+                    "planogramVersion": "PLAN-RECONCILE-READY",
+                    "slotId": slot_id,
+                    "slotSalesState": "needs_platform_review",
+                    "source": "platform_reconciliation"
+                }),
+            )
+            .await
+            .status(),
+            StatusCode::OK
+        );
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/sale-readiness")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let readiness: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(readiness["components"]["slotSaleSafety"]["ready"], false);
+        assert_eq!(
+            readiness["components"]["slotSaleSafety"]["blockedSlots"][0]["slotSalesState"],
+            "needs_platform_review"
+        );
     }
 
     #[tokio::test]

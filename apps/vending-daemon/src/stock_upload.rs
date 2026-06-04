@@ -215,4 +215,54 @@ mod tests {
             .expect("outbox")
             .is_some());
     }
+
+    #[tokio::test]
+    async fn reconciliation_upload_response_applies_local_sale_safety_blocker() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_stock_movement_upload(&store, "MOVE-BLOCKED").await;
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/machine-stock-movements"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "movementId": "MOVE-BLOCKED",
+                "status": "reconciliation",
+                "acceptedAt": null,
+                "reconciliation": {
+                    "reason": "unknown_slot",
+                    "platformReview": {"required": true, "status": "open"},
+                    "saleSafetyBlocker": {
+                        "slotId": "550e8400-e29b-41d4-a716-446655440001",
+                        "slotSalesState": "needs_platform_review",
+                        "reason": "unknown_slot"
+                    }
+                }
+            })))
+            .mount(&server)
+            .await;
+        let runtime = StockMovementUploadRuntime::new(
+            store.clone(),
+            Arc::new(BackendClient::new(server.uri())),
+            CancellationToken::new(),
+        );
+
+        let result = runtime.flush_due_once().await.expect("flush");
+
+        assert_eq!(result.accepted, 1);
+        let sale_view = store
+            .sale_view(Some("MACHINE-1".to_string()))
+            .await
+            .expect("sale view");
+        assert_eq!(sale_view.items[0].slot_sales_state, "needs_platform_review");
+        assert_eq!(sale_view.items[0].physical_stock, 3);
+        assert_eq!(sale_view.items[0].saleable_stock, 3);
+        let sync = store
+            .stock_movement_sync_record("MOVE-BLOCKED")
+            .await
+            .expect("sync")
+            .expect("sync exists");
+        assert_eq!(sync.status, "reconciliation");
+    }
 }

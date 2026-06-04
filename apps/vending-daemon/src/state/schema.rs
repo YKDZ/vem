@@ -1,4 +1,4 @@
-pub const SCHEMA_VERSION: i64 = 4;
+pub const SCHEMA_VERSION: i64 = 5;
 
 pub const MIGRATION_V1: &str = r#"
 PRAGMA journal_mode = WAL;
@@ -279,6 +279,49 @@ CREATE TABLE IF NOT EXISTS stock_movement_sync (
 
 CREATE INDEX IF NOT EXISTS idx_stock_movement_sync_status
   ON stock_movement_sync(status, updated_at);
+
+PRAGMA foreign_keys = ON;
+"#;
+
+pub const MIGRATION_V5: &str = r#"
+PRAGMA foreign_keys = OFF;
+
+CREATE TABLE IF NOT EXISTS current_stock_projection_v5 (
+  planogram_version TEXT NOT NULL,
+  slot_id TEXT PRIMARY KEY,
+  physical_stock INTEGER NOT NULL CHECK (physical_stock >= 0),
+  saleable_stock INTEGER NOT NULL CHECK (saleable_stock >= 0),
+  slot_sales_state TEXT NOT NULL CHECK (slot_sales_state IN ('sale_ready','sold_out','suspect','frozen','needs_count','blocked_for_planogram_change','movement_rejected','needs_platform_review')),
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (planogram_version, slot_id) REFERENCES machine_planogram_slots(planogram_version, slot_id)
+);
+
+INSERT OR REPLACE INTO current_stock_projection_v5(
+  planogram_version,slot_id,physical_stock,saleable_stock,slot_sales_state,updated_at
+)
+SELECT planogram_version,slot_id,physical_stock,saleable_stock,slot_sales_state,updated_at
+FROM current_stock_projection;
+
+DROP TABLE current_stock_projection;
+ALTER TABLE current_stock_projection_v5 RENAME TO current_stock_projection;
+
+CREATE TABLE IF NOT EXISTS sale_view_projection_v5 (
+  planogram_version TEXT NOT NULL,
+  slot_id TEXT PRIMARY KEY,
+  item_json TEXT NOT NULL,
+  slot_sales_state TEXT NOT NULL CHECK (slot_sales_state IN ('sale_ready','sold_out','suspect','frozen','needs_count','blocked_for_planogram_change','movement_rejected','needs_platform_review')),
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (planogram_version, slot_id) REFERENCES machine_planogram_slots(planogram_version, slot_id)
+);
+
+INSERT OR REPLACE INTO sale_view_projection_v5(
+  planogram_version,slot_id,item_json,slot_sales_state,updated_at
+)
+SELECT planogram_version,slot_id,item_json,slot_sales_state,updated_at
+FROM sale_view_projection;
+
+DROP TABLE sale_view_projection;
+ALTER TABLE sale_view_projection_v5 RENAME TO sale_view_projection;
 
 PRAGMA foreign_keys = ON;
 "#;

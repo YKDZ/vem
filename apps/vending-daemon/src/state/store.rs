@@ -8,7 +8,9 @@ use uuid::Uuid;
 
 use vending_core::domain::{CommandLogStatus, OutboxKind, OutboxTransport};
 
-use super::schema::{MIGRATION_V1, MIGRATION_V2, MIGRATION_V3, MIGRATION_V4, SCHEMA_VERSION};
+use super::schema::{
+    MIGRATION_V1, MIGRATION_V2, MIGRATION_V3, MIGRATION_V4, MIGRATION_V5, SCHEMA_VERSION,
+};
 use vending_core::hardware::{
     DispenseCommandPayload, DispenseResultPayload, EnvironmentControlResultPayload,
 };
@@ -461,6 +463,12 @@ impl LocalStateStore {
         }
         if current_version < 4 {
             sqlx::query(MIGRATION_V4)
+                .execute(&store.pool)
+                .await
+                .map_err(StoreError::Sqlx)?;
+        }
+        if current_version < 5 {
+            sqlx::query(MIGRATION_V5)
                 .execute(&store.pool)
                 .await
                 .map_err(StoreError::Sqlx)?;
@@ -1593,6 +1601,13 @@ impl LocalStateStore {
         if sync_result.rows_affected() != 1 {
             return Err(StoreError::Sqlx(sqlx::Error::RowNotFound));
         }
+        if let Some(blocker) = response
+            .reconciliation
+            .as_ref()
+            .and_then(|reconciliation| reconciliation.sale_safety_blocker.as_ref())
+        {
+            apply_sale_safety_blocker_in_tx(&mut tx, blocker).await?;
+        }
         sqlx::query("DELETE FROM outbox_events WHERE id = ?1")
             .bind(&event.id)
             .execute(tx.as_mut())
@@ -1766,6 +1781,8 @@ fn is_supported_slot_sales_state(value: &str) -> bool {
             | "frozen"
             | "needs_count"
             | "blocked_for_planogram_change"
+            | "movement_rejected"
+            | "needs_platform_review"
     )
 }
 
@@ -1880,6 +1897,46 @@ async fn upsert_stock_projection_with_state_in_tx(
     .execute(tx.as_mut())
     .await?;
     Ok(())
+}
+
+async fn apply_sale_safety_blocker_in_tx(
+    tx: &mut Transaction<'_, sqlx::Sqlite>,
+    blocker: &crate::backend::StockMovementSaleSafetyBlocker,
+) -> Result<(), StoreError> {
+    if !is_supported_slot_sales_state(&blocker.slot_sales_state) {
+        return Err(StoreError::InvalidStockInput(format!(
+            "unsupported slot sales state {}",
+            blocker.slot_sales_state
+        )));
+    }
+
+    let active_projection: Option<(String,)> = sqlx::query_as(
+        "SELECT c.planogram_version
+         FROM current_stock_projection c
+         JOIN machine_planogram_versions v
+           ON v.planogram_version = c.planogram_version AND v.active = 1
+         WHERE c.slot_id = ?1",
+    )
+    .bind(&blocker.slot_id)
+    .fetch_optional(tx.as_mut())
+    .await?;
+
+    let Some((planogram_version,)) = active_projection else {
+        return Ok(());
+    };
+
+    sqlx::query(
+        "UPDATE current_stock_projection
+         SET slot_sales_state = ?3, updated_at = ?4
+         WHERE planogram_version = ?1 AND slot_id = ?2",
+    )
+    .bind(&planogram_version)
+    .bind(&blocker.slot_id)
+    .bind(&blocker.slot_sales_state)
+    .bind(now_iso())
+    .execute(tx.as_mut())
+    .await?;
+    upsert_sale_view_projection_in_tx(tx, &planogram_version, &blocker.slot_id).await
 }
 
 async fn upsert_sale_view_projection_in_tx(
@@ -2756,6 +2813,7 @@ mod tests {
             accepted_at: Some("2026-06-04T00:00:00.000Z".to_string()),
             receipt: Some(json!({"rawMovementId":"raw-1"})),
             rejection: None,
+            reconciliation: None,
         };
 
         let result = store
@@ -2789,6 +2847,7 @@ mod tests {
             accepted_at: Some("2026-06-04T00:00:00.000Z".to_string()),
             receipt: Some(json!({"rawMovementId":"raw-1"})),
             rejection: None,
+            reconciliation: None,
         };
         store
             .record_stock_movement_upload_response(&event, &response)
@@ -2836,6 +2895,7 @@ mod tests {
             accepted_at: None,
             receipt: None,
             rejection: Some(json!({"reason":"movement_id_payload_conflict"})),
+            reconciliation: None,
         };
         store
             .record_stock_movement_upload_response(&event, &response)

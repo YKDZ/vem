@@ -217,6 +217,19 @@ export const machineSaleReadinessSchema = z.object({
     scannerCapability: saleReadinessComponentSchema,
     syncHealth: saleReadinessComponentSchema,
     wholeMachineBlockers: saleReadinessComponentSchema,
+    slotSaleSafety: saleReadinessComponentSchema
+      .extend({
+        blockedSlots: z
+          .array(
+            z.object({
+              slotId: z.string(),
+              slotCode: z.string(),
+              slotSalesState: z.string(),
+            }),
+          )
+          .default([]),
+      })
+      .optional(),
   }),
 });
 

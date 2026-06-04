@@ -195,6 +195,8 @@ export const machineSaleViewItemSchema = machineCatalogItemSchema
       "frozen",
       "needs_count",
       "blocked_for_planogram_change",
+      "movement_rejected",
+      "needs_platform_review",
     ]),
   });
 
