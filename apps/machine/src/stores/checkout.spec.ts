@@ -28,6 +28,7 @@ vi.mock("@/daemon/client", () => ({
 
 import type { MachineCatalogItem } from "@/types/catalog";
 
+import { useCatalogStore } from "./catalog";
 import {
   normalizeNextAction,
   resultKindFromNextAction,
@@ -183,6 +184,43 @@ describe("checkout store", () => {
     expect(store.status?.vending?.commandNo).toBe("CMD-001");
     expect(store.status?.paymentCodeAttempt?.source).toBe("serial_text");
     expect(store.paymentCodeMessage).toBe("请刷新付款码后重试");
+  });
+
+  it("blocks stale selected item when latest sale view is sold out", async () => {
+    const store = useCheckoutStore();
+    const catalogStore = useCatalogStore();
+    store.paymentOptions = [
+      {
+        optionKey: "payment_code:alipay",
+        providerCode: "alipay",
+        method: "payment_code",
+        displayName: "支付宝付款码",
+        description: "请出示付款码",
+        icon: "alipay",
+        disabled: false,
+        disabledReason: null,
+        recommended: true,
+      },
+    ];
+    store.selectedPaymentOptionKey = "payment_code:alipay";
+    store.selectItem(
+      makeCatalogItem({ saleableStock: 1, slotSalesState: "saleable" }),
+    );
+    catalogStore.applySnapshot({
+      items: [
+        makeCatalogItem({
+          physicalStock: 0,
+          saleableStock: 0,
+          slotSalesState: "sold_out",
+        }),
+      ],
+      source: "local_stock",
+      lastUpdatedAt: "2026-06-04T00:00:00Z",
+    });
+
+    expect(store.canCreateOrder).toBe(false);
+    await expect(store.createOrder()).rejects.toThrow("商品已售罄");
+    expect(createOrderMock).not.toHaveBeenCalled();
   });
 
   it("blocks order creation for sold-out sale-view item", async () => {

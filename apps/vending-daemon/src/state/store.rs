@@ -157,7 +157,7 @@ pub struct MachinePlanogramInput {
     pub slots: Vec<MachinePlanogramSlotInput>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MachinePlanogramSlotInput {
     pub slot_id: String,
@@ -1073,20 +1073,61 @@ impl LocalStateStore {
                 "planogram version and at least one slot are required".to_string(),
             ));
         }
+        for slot in &input.slots {
+            if slot.capacity < 0 || slot.par_level < 0 || slot.price_cents < 0 {
+                return Err(StoreError::InvalidStockInput(
+                    "capacity, par level, and price must be nonnegative".to_string(),
+                ));
+            }
+        }
 
         let mut tx = self.pool.begin().await?;
         let applied_at = now_iso();
+        let existing: Option<(i64,)> = sqlx::query_as(
+            "SELECT active FROM machine_planogram_versions WHERE planogram_version = ?1",
+        )
+        .bind(&input.planogram_version)
+        .fetch_optional(tx.as_mut())
+        .await?;
+
+        if let Some((active,)) = existing {
+            if !planogram_slots_match_in_tx(&mut tx, &input.planogram_version, &input.slots).await?
+            {
+                return Err(StoreError::InvalidStockInput(
+                    "planogram version already exists with different slot payload".to_string(),
+                ));
+            }
+            if active != 1 {
+                return Err(StoreError::InvalidStockInput(
+                    "planogram version already exists but is not active".to_string(),
+                ));
+            }
+
+            sqlx::query(
+                "UPDATE machine_planogram_versions
+                 SET source = ?2, applied_by = ?3, applied_at = ?4
+                 WHERE planogram_version = ?1",
+            )
+            .bind(&input.planogram_version)
+            .bind(&input.source)
+            .bind(&input.applied_by)
+            .bind(&applied_at)
+            .execute(tx.as_mut())
+            .await?;
+            for slot in &input.slots {
+                upsert_sale_view_projection_in_tx(&mut tx, &input.planogram_version, &slot.slot_id)
+                    .await?;
+            }
+            tx.commit().await?;
+            return self.sale_view(None).await;
+        }
+
         sqlx::query("UPDATE machine_planogram_versions SET active = 0 WHERE active = 1")
             .execute(tx.as_mut())
             .await?;
         sqlx::query(
             "INSERT INTO machine_planogram_versions(planogram_version,active,source,applied_by,applied_at)
-             VALUES (?1,1,?2,?3,?4)
-             ON CONFLICT(planogram_version) DO UPDATE SET
-               active=1,
-               source=excluded.source,
-               applied_by=excluded.applied_by,
-               applied_at=excluded.applied_at",
+             VALUES (?1,1,?2,?3,?4)",
         )
         .bind(&input.planogram_version)
         .bind(&input.source)
@@ -1096,37 +1137,12 @@ impl LocalStateStore {
         .await?;
 
         for slot in &input.slots {
-            if slot.capacity < 0 || slot.par_level < 0 || slot.price_cents < 0 {
-                return Err(StoreError::InvalidStockInput(
-                    "capacity, par level, and price must be nonnegative".to_string(),
-                ));
-            }
             sqlx::query(
                 "INSERT INTO machine_planogram_slots(
                    planogram_version,slot_id,slot_code,layer_no,cell_no,capacity,par_level,
                    inventory_id,variant_id,product_id,product_name,product_description,cover_image_url,
                    category_id,category_name,sku,size,color,price_cents,product_sort_order,target_gender
-                 ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)
-                 ON CONFLICT(planogram_version,slot_id) DO UPDATE SET
-                   slot_code=excluded.slot_code,
-                   layer_no=excluded.layer_no,
-                   cell_no=excluded.cell_no,
-                   capacity=excluded.capacity,
-                   par_level=excluded.par_level,
-                   inventory_id=excluded.inventory_id,
-                   variant_id=excluded.variant_id,
-                   product_id=excluded.product_id,
-                   product_name=excluded.product_name,
-                   product_description=excluded.product_description,
-                   cover_image_url=excluded.cover_image_url,
-                   category_id=excluded.category_id,
-                   category_name=excluded.category_name,
-                   sku=excluded.sku,
-                   size=excluded.size,
-                   color=excluded.color,
-                   price_cents=excluded.price_cents,
-                   product_sort_order=excluded.product_sort_order,
-                   target_gender=excluded.target_gender",
+                 ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)",
             )
             .bind(&input.planogram_version)
             .bind(&slot.slot_id)
@@ -1187,7 +1203,11 @@ impl LocalStateStore {
 
         let mut tx = self.pool.begin().await?;
         let slot: Option<(i64,)> = sqlx::query_as(
-            "SELECT capacity FROM machine_planogram_slots WHERE planogram_version = ?1 AND slot_id = ?2",
+            "SELECT s.capacity
+             FROM machine_planogram_slots s
+             JOIN machine_planogram_versions v
+               ON v.planogram_version = s.planogram_version AND v.active = 1
+             WHERE s.planogram_version = ?1 AND s.slot_id = ?2",
         )
         .bind(&input.planogram_version)
         .bind(&input.slot_id)
@@ -1195,7 +1215,7 @@ impl LocalStateStore {
         .await?;
         let Some((capacity,)) = slot else {
             return Err(StoreError::InvalidStockInput(
-                "movement slot is not in the supplied planogram version".to_string(),
+                "movement slot is not in the active planogram version".to_string(),
             ));
         };
 
@@ -1377,6 +1397,61 @@ fn is_unique_constraint_violation(error: &sqlx::Error) -> bool {
         }
         _ => false,
     }
+}
+
+fn normalize_planogram_slots(
+    slots: &[MachinePlanogramSlotInput],
+) -> Vec<MachinePlanogramSlotInput> {
+    let mut slots = slots.to_vec();
+    slots.sort_by(|left, right| left.slot_id.cmp(&right.slot_id));
+    slots
+}
+
+async fn planogram_slots_match_in_tx(
+    tx: &mut Transaction<'_, sqlx::Sqlite>,
+    planogram_version: &str,
+    input_slots: &[MachinePlanogramSlotInput],
+) -> Result<bool, StoreError> {
+    let rows = sqlx::query(
+        "SELECT
+           slot_id,slot_code,layer_no,cell_no,capacity,par_level,
+           inventory_id,variant_id,product_id,product_name,product_description,cover_image_url,
+           category_id,category_name,sku,size,color,price_cents,product_sort_order,target_gender
+         FROM machine_planogram_slots
+         WHERE planogram_version = ?1
+         ORDER BY slot_id ASC",
+    )
+    .bind(planogram_version)
+    .fetch_all(tx.as_mut())
+    .await?;
+
+    let mut existing = Vec::with_capacity(rows.len());
+    for row in rows {
+        existing.push(MachinePlanogramSlotInput {
+            slot_id: row.try_get("slot_id")?,
+            slot_code: row.try_get("slot_code")?,
+            layer_no: row.try_get("layer_no")?,
+            cell_no: row.try_get("cell_no")?,
+            capacity: row.try_get("capacity")?,
+            par_level: row.try_get("par_level")?,
+            inventory_id: row.try_get("inventory_id")?,
+            variant_id: row.try_get("variant_id")?,
+            product_id: row.try_get("product_id")?,
+            product_name: row.try_get("product_name")?,
+            product_description: row.try_get("product_description")?,
+            cover_image_url: row.try_get("cover_image_url")?,
+            category_id: row.try_get("category_id")?,
+            category_name: row.try_get("category_name")?,
+            sku: row.try_get("sku")?,
+            size: row.try_get("size")?,
+            color: row.try_get("color")?,
+            price_cents: row.try_get("price_cents")?,
+            product_sort_order: row.try_get("product_sort_order")?,
+            target_gender: row.try_get("target_gender")?,
+        });
+    }
+
+    Ok(existing == normalize_planogram_slots(input_slots))
 }
 
 async fn upsert_stock_projection_in_tx(

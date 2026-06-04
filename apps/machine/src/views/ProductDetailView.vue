@@ -13,12 +13,14 @@ const catalogStore = useCatalogStore();
 const checkoutStore = useCheckoutStore();
 
 const inventoryId = computed(() => String(route.params.inventoryId ?? ""));
-const item = computed(
-  () =>
-    checkoutStore.selectedItem ??
-    catalogStore.itemByInventoryId(inventoryId.value) ??
-    null,
-);
+const item = computed(() => {
+  const saleViewItem = catalogStore.itemByInventoryId(inventoryId.value);
+  if (saleViewItem) return saleViewItem;
+  if (checkoutStore.selectedItem?.inventoryId === inventoryId.value) {
+    return checkoutStore.selectedItem;
+  }
+  return null;
+});
 const specText = computed(() => {
   if (!item.value) return "-";
   return (

@@ -14,6 +14,7 @@ import type {
 } from "@/types/checkout";
 
 import { daemonClient } from "@/daemon/client";
+import { useCatalogStore } from "@/stores/catalog";
 import { getRemainingSeconds } from "@/utils/format";
 
 export type CheckoutFlowStep =
@@ -121,6 +122,24 @@ function paymentStatusFromSnapshot(
   }
 }
 
+function latestSaleViewItem(
+  selectedItem: CheckoutSelectedItem | null,
+): CheckoutSelectedItem | null {
+  if (!selectedItem) return null;
+  return (
+    useCatalogStore().itemByInventoryId(selectedItem.inventoryId) ??
+    selectedItem
+  );
+}
+
+function isSaleableItem(
+  item: CheckoutSelectedItem | null,
+): item is CheckoutSelectedItem {
+  return Boolean(
+    item && item.slotSalesState === "saleable" && item.saleableStock > 0,
+  );
+}
+
 function vendingStatusFromSnapshot(
   snapshot: NonNullable<TransactionSnapshot["vending"]>,
 ): NonNullable<MachineOrderStatus["vending"]>["status"] {
@@ -160,16 +179,16 @@ export const useCheckoutStore = defineStore("checkout", {
     quantity: (): number => 1,
     remainingSeconds: (state): number =>
       getRemainingSeconds(state.currentOrder?.expiresAt, state.nowMs),
-    canCreateOrder: (state): boolean =>
-      Boolean(
-        state.selectedItem &&
-        state.selectedItem.slotSalesState === "saleable" &&
-        state.selectedItem.saleableStock > 0 &&
+    canCreateOrder: (state): boolean => {
+      const selectedItem = latestSaleViewItem(state.selectedItem);
+      return Boolean(
+        isSaleableItem(selectedItem) &&
         state.selectedPaymentOptionKey &&
         state.paymentOptions.find(
           (option) => option.optionKey === state.selectedPaymentOptionKey,
         )?.disabled !== true,
-      ),
+      );
+    },
     resultKind: (state): CheckoutResultKind | null =>
       state.status ? resultKindFromNextAction(state.status.nextAction) : null,
     selectedPaymentOption: (state): MachinePaymentOption | null =>
@@ -346,12 +365,11 @@ export const useCheckoutStore = defineStore("checkout", {
     },
     async createOrder(): Promise<CreateMachineOrderResponse | null> {
       if (!this.selectedItem) throw new Error("No selected item");
-      if (
-        this.selectedItem.slotSalesState !== "saleable" ||
-        this.selectedItem.saleableStock <= 0
-      ) {
+      const selectedItem = latestSaleViewItem(this.selectedItem);
+      if (!isSaleableItem(selectedItem)) {
         throw new Error("商品已售罄");
       }
+      this.selectedItem = selectedItem;
 
       const selected = this.selectedPaymentOption;
       if (!selected || selected.disabled) throw new Error("请选择支付方式");
@@ -360,7 +378,7 @@ export const useCheckoutStore = defineStore("checkout", {
       this.error = null;
       try {
         const snapshot = await daemonClient.createOrder({
-          inventoryId: this.selectedItem.inventoryId,
+          inventoryId: selectedItem.inventoryId,
           quantity: 1,
           paymentMethod: selected.method,
           paymentProviderCode: selected.providerCode,

@@ -1457,7 +1457,393 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stock_count_correction_appends_fact_and_projects_sold_out() {
+    async fn sale_view_preserves_stock_when_identical_planogram_version_is_replayed() {
+        let temp_dir = tempdir().expect("tmp");
+        let app = build_router(
+            test_ipc_context(
+                temp_dir.path(),
+                "token-1",
+                Some("MACHINE-1".to_string()),
+                "http://127.0.0.1:0",
+            )
+            .await,
+        );
+
+        let planogram = json!({
+            "planogramVersion": "PLAN-IDEMPOTENT",
+            "source": "local_seed",
+            "appliedBy": "operator-1",
+            "slots": [{
+                "slotId": "550e8400-e29b-41d4-a716-446655440021",
+                "slotCode": "C1",
+                "layerNo": 1,
+                "cellNo": 3,
+                "capacity": 8,
+                "parLevel": 6,
+                "inventoryId": "550e8400-e29b-41d4-a716-446655440022",
+                "variantId": "550e8400-e29b-41d4-a716-446655440023",
+                "productId": "550e8400-e29b-41d4-a716-446655440024",
+                "productName": "无糖茶",
+                "productDescription": null,
+                "coverImageUrl": null,
+                "categoryId": null,
+                "categoryName": null,
+                "sku": "TEA-001",
+                "size": null,
+                "color": null,
+                "priceCents": 500,
+                "productSortOrder": 1,
+                "targetGender": null
+            }]
+        });
+
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/stock/planogram")
+            .header(AUTHORIZATION, "Bearer token-1")
+            .header(CONTENT_TYPE, "application/json")
+            .body(axum::body::Body::from(planogram.to_string()))
+            .unwrap();
+        assert_eq!(
+            app.clone().oneshot(request).await.unwrap().status(),
+            StatusCode::OK
+        );
+
+        let refill = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/stock/movements")
+            .header(AUTHORIZATION, "Bearer token-1")
+            .header(CONTENT_TYPE, "application/json")
+            .body(axum::body::Body::from(
+                json!({
+                    "movementId": "MOVE-IDEMPOTENT-REFILL",
+                    "planogramVersion": "PLAN-IDEMPOTENT",
+                    "slotId": "550e8400-e29b-41d4-a716-446655440021",
+                    "movementType": "planned_refill",
+                    "quantity": 4,
+                    "source": "field_service",
+                    "attributedTo": "operator-1"
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        assert_eq!(
+            app.clone().oneshot(refill).await.unwrap().status(),
+            StatusCode::CREATED
+        );
+
+        let replay = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/stock/planogram")
+            .header(AUTHORIZATION, "Bearer token-1")
+            .header(CONTENT_TYPE, "application/json")
+            .body(axum::body::Body::from(planogram.to_string()))
+            .unwrap();
+        assert_eq!(
+            app.clone().oneshot(replay).await.unwrap().status(),
+            StatusCode::OK
+        );
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/sale-view")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["items"][0]["physicalStock"], 4);
+        assert_eq!(payload["items"][0]["saleableStock"], 4);
+        assert_eq!(payload["items"][0]["slotSalesState"], "saleable");
+    }
+
+    #[tokio::test]
+    async fn conflicting_planogram_replay_rejects_and_keeps_sale_view_unchanged() {
+        let temp_dir = tempdir().expect("tmp");
+        let app = build_router(
+            test_ipc_context(
+                temp_dir.path(),
+                "token-1",
+                Some("MACHINE-1".to_string()),
+                "http://127.0.0.1:0",
+            )
+            .await,
+        );
+
+        let base_planogram = json!({
+            "planogramVersion": "PLAN-IMMUTABLE",
+            "source": "local_seed",
+            "appliedBy": "operator-1",
+            "slots": [
+                {
+                    "slotId": "550e8400-e29b-41d4-a716-446655440031",
+                    "slotCode": "D1",
+                    "layerNo": 1,
+                    "cellNo": 1,
+                    "capacity": 8,
+                    "parLevel": 6,
+                    "inventoryId": "550e8400-e29b-41d4-a716-446655440032",
+                    "variantId": "550e8400-e29b-41d4-a716-446655440033",
+                    "productId": "550e8400-e29b-41d4-a716-446655440034",
+                    "productName": "橙汁",
+                    "productDescription": null,
+                    "coverImageUrl": null,
+                    "categoryId": null,
+                    "categoryName": null,
+                    "sku": "JUICE-001",
+                    "size": null,
+                    "color": null,
+                    "priceCents": 600,
+                    "productSortOrder": 1,
+                    "targetGender": null
+                },
+                {
+                    "slotId": "550e8400-e29b-41d4-a716-446655440041",
+                    "slotCode": "D2",
+                    "layerNo": 1,
+                    "cellNo": 2,
+                    "capacity": 5,
+                    "parLevel": 4,
+                    "inventoryId": "550e8400-e29b-41d4-a716-446655440042",
+                    "variantId": "550e8400-e29b-41d4-a716-446655440043",
+                    "productId": "550e8400-e29b-41d4-a716-446655440044",
+                    "productName": "咖啡",
+                    "productDescription": null,
+                    "coverImageUrl": null,
+                    "categoryId": null,
+                    "categoryName": null,
+                    "sku": "COFFEE-001",
+                    "size": null,
+                    "color": null,
+                    "priceCents": 700,
+                    "productSortOrder": 2,
+                    "targetGender": null
+                }
+            ]
+        });
+
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/stock/planogram")
+            .header(AUTHORIZATION, "Bearer token-1")
+            .header(CONTENT_TYPE, "application/json")
+            .body(axum::body::Body::from(base_planogram.to_string()))
+            .unwrap();
+        assert_eq!(
+            app.clone().oneshot(request).await.unwrap().status(),
+            StatusCode::OK
+        );
+
+        let refill = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/stock/movements")
+            .header(AUTHORIZATION, "Bearer token-1")
+            .header(CONTENT_TYPE, "application/json")
+            .body(axum::body::Body::from(
+                json!({
+                    "movementId": "MOVE-IMMUTABLE-REFILL",
+                    "planogramVersion": "PLAN-IMMUTABLE",
+                    "slotId": "550e8400-e29b-41d4-a716-446655440041",
+                    "movementType": "planned_refill",
+                    "quantity": 3,
+                    "source": "field_service",
+                    "attributedTo": "operator-1"
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        assert_eq!(
+            app.clone().oneshot(refill).await.unwrap().status(),
+            StatusCode::CREATED
+        );
+
+        let mut smaller_slot_set = base_planogram.clone();
+        smaller_slot_set["slots"].as_array_mut().unwrap().pop();
+        let mut capacity_changed = base_planogram.clone();
+        capacity_changed["slots"][0]["capacity"] = json!(9);
+        let mut par_changed = base_planogram.clone();
+        par_changed["slots"][0]["parLevel"] = json!(7);
+        let mut mapping_changed = base_planogram.clone();
+        mapping_changed["slots"][1]["inventoryId"] = json!("550e8400-e29b-41d4-a716-446655440099");
+
+        for conflict in [
+            smaller_slot_set,
+            capacity_changed,
+            par_changed,
+            mapping_changed,
+        ] {
+            let request = Request::builder()
+                .method(Method::POST)
+                .uri("/v1/stock/planogram")
+                .header(AUTHORIZATION, "Bearer token-1")
+                .header(CONTENT_TYPE, "application/json")
+                .body(axum::body::Body::from(conflict.to_string()))
+                .unwrap();
+            assert_eq!(
+                app.clone().oneshot(request).await.unwrap().status(),
+                StatusCode::BAD_REQUEST
+            );
+        }
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/sale-view")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["items"].as_array().unwrap().len(), 2);
+        assert_eq!(payload["items"][0]["productName"], "橙汁");
+        assert_eq!(payload["items"][1]["productName"], "咖啡");
+        assert_eq!(payload["items"][1]["physicalStock"], 3);
+        assert_eq!(payload["items"][1]["saleableStock"], 3);
+    }
+
+    #[tokio::test]
+    async fn stock_movement_rejects_inactive_planogram_version() {
+        let temp_dir = tempdir().expect("tmp");
+        let app = build_router(
+            test_ipc_context(
+                temp_dir.path(),
+                "token-1",
+                Some("MACHINE-1".to_string()),
+                "http://127.0.0.1:0",
+            )
+            .await,
+        );
+
+        for planogram in [
+            json!({
+                "planogramVersion": "PLAN-INACTIVE-OLD",
+                "source": "local_seed",
+                "appliedBy": "operator-1",
+                "slots": [{
+                    "slotId": "550e8400-e29b-41d4-a716-446655440051",
+                    "slotCode": "E1",
+                    "layerNo": 1,
+                    "cellNo": 1,
+                    "capacity": 8,
+                    "parLevel": 6,
+                    "inventoryId": "550e8400-e29b-41d4-a716-446655440052",
+                    "variantId": "550e8400-e29b-41d4-a716-446655440053",
+                    "productId": "550e8400-e29b-41d4-a716-446655440054",
+                    "productName": "旧版本水",
+                    "productDescription": null,
+                    "coverImageUrl": null,
+                    "categoryId": null,
+                    "categoryName": null,
+                    "sku": "OLD-001",
+                    "size": null,
+                    "color": null,
+                    "priceCents": 200,
+                    "productSortOrder": 1,
+                    "targetGender": null
+                }]
+            }),
+            json!({
+                "planogramVersion": "PLAN-INACTIVE-NEW",
+                "source": "local_seed",
+                "appliedBy": "operator-1",
+                "slots": [{
+                    "slotId": "550e8400-e29b-41d4-a716-446655440061",
+                    "slotCode": "E2",
+                    "layerNo": 1,
+                    "cellNo": 2,
+                    "capacity": 5,
+                    "parLevel": 4,
+                    "inventoryId": "550e8400-e29b-41d4-a716-446655440062",
+                    "variantId": "550e8400-e29b-41d4-a716-446655440063",
+                    "productId": "550e8400-e29b-41d4-a716-446655440064",
+                    "productName": "新版本茶",
+                    "productDescription": null,
+                    "coverImageUrl": null,
+                    "categoryId": null,
+                    "categoryName": null,
+                    "sku": "NEW-001",
+                    "size": null,
+                    "color": null,
+                    "priceCents": 300,
+                    "productSortOrder": 1,
+                    "targetGender": null
+                }]
+            }),
+        ] {
+            let request = Request::builder()
+                .method(Method::POST)
+                .uri("/v1/stock/planogram")
+                .header(AUTHORIZATION, "Bearer token-1")
+                .header(CONTENT_TYPE, "application/json")
+                .body(axum::body::Body::from(planogram.to_string()))
+                .unwrap();
+            assert_eq!(
+                app.clone().oneshot(request).await.unwrap().status(),
+                StatusCode::OK
+            );
+        }
+
+        let inactive_refill = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/stock/movements")
+            .header(AUTHORIZATION, "Bearer token-1")
+            .header(CONTENT_TYPE, "application/json")
+            .body(axum::body::Body::from(
+                json!({
+                    "movementId": "MOVE-INACTIVE-REFILL",
+                    "planogramVersion": "PLAN-INACTIVE-OLD",
+                    "slotId": "550e8400-e29b-41d4-a716-446655440051",
+                    "movementType": "planned_refill",
+                    "quantity": 3,
+                    "source": "field_service",
+                    "attributedTo": "operator-1"
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        assert_eq!(
+            app.clone().oneshot(inactive_refill).await.unwrap().status(),
+            StatusCode::BAD_REQUEST
+        );
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/sale-view")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["planogramVersion"], "PLAN-INACTIVE-NEW");
+        assert_eq!(payload["items"].as_array().unwrap().len(), 1);
+        assert_eq!(payload["items"][0]["productName"], "新版本茶");
+        assert_eq!(payload["items"][0]["physicalStock"], 0);
+    }
+
+    #[tokio::test]
+    async fn stock_count_correction_appends_fact_and_later_refill_projects_from_correction() {
         let temp_dir = tempdir().expect("tmp");
         let ctx = test_ipc_context(
             temp_dir.path(),
@@ -1542,6 +1928,7 @@ mod tests {
         }
 
         let response = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .method(Method::GET)
@@ -1561,12 +1948,55 @@ mod tests {
         assert_eq!(item["saleableStock"], 0);
         assert_eq!(item["slotSalesState"], "sold_out");
 
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/stock/movements")
+            .header(AUTHORIZATION, "Bearer token-1")
+            .header(CONTENT_TYPE, "application/json")
+            .body(axum::body::Body::from(
+                json!({
+                    "movementId": "MOVE-REFILL-AFTER-CORRECTION",
+                    "planogramVersion": "PLAN-CORRECTION",
+                    "slotId": "550e8400-e29b-41d4-a716-446655440011",
+                    "movementType": "planned_refill",
+                    "quantity": 2,
+                    "source": "field_service",
+                    "attributedTo": "operator-3"
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        assert_eq!(
+            app.clone().oneshot(request).await.unwrap().status(),
+            StatusCode::CREATED
+        );
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/sale-view")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let item = &payload["items"][0];
+        assert_eq!(item["physicalStock"], 2);
+        assert_eq!(item["saleableStock"], 2);
+        assert_eq!(item["slotSalesState"], "saleable");
+
         let movement_count: (i64,) =
             sqlx::query_as("SELECT COUNT(1) FROM stock_movements WHERE slot_id = ?1")
                 .bind("550e8400-e29b-41d4-a716-446655440011")
                 .fetch_one(state.pool())
                 .await
                 .expect("movement count");
-        assert_eq!(movement_count.0, 2);
+        assert_eq!(movement_count.0, 3);
     }
 }
