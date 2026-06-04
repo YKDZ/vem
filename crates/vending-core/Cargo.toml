@@ -12,6 +12,7 @@ chrono.workspace = true
 hmac.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+serialport.workspace = true
 sha2.workspace = true
 tokio.workspace = true
 tokio-serial.workspace = true

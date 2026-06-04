@@ -19,6 +19,17 @@ const machineStore = useMachineStore();
 const mqttStore = useMqttStore();
 const visionStore = useVisionStore();
 
+function cloneLowerControllerUsbIdentity() {
+  const identity = machineStore.config.lowerControllerUsbIdentity;
+  return identity
+    ? {
+        vendorId: identity.vendorId,
+        productId: identity.productId,
+        serialNumber: identity.serialNumber ?? null,
+      }
+    : null;
+}
+
 const form = reactive({
   machineCode: machineStore.config.machineCode,
   apiBaseUrl: machineStore.config.apiBaseUrl,
@@ -26,6 +37,7 @@ const form = reactive({
   mqttUsername: machineStore.config.mqttUsername,
   hardwareAdapter: machineStore.config.hardwareAdapter,
   serialPortPath: machineStore.config.serialPortPath,
+  lowerControllerUsbIdentity: cloneLowerControllerUsbIdentity(),
   scannerAdapter: machineStore.config.scannerAdapter,
   scannerSerialPortPath: machineStore.config.scannerSerialPortPath,
   scannerBaudRate: machineStore.config.scannerBaudRate,
@@ -49,6 +61,7 @@ function syncFormFromStore(): void {
   form.mqttUsername = machineStore.config.mqttUsername;
   form.hardwareAdapter = machineStore.config.hardwareAdapter;
   form.serialPortPath = machineStore.config.serialPortPath;
+  form.lowerControllerUsbIdentity = cloneLowerControllerUsbIdentity();
   form.scannerAdapter = machineStore.config.scannerAdapter;
   form.scannerSerialPortPath = machineStore.config.scannerSerialPortPath;
   form.scannerBaudRate = machineStore.config.scannerBaudRate;
@@ -119,9 +132,28 @@ async function runHardwareCheck(): Promise<void> {
   hardwareMaintenance.message = null;
   try {
     const result = await daemonClient.runHardwareSelfCheck();
-    hardwareMaintenance.message = result.online
-      ? `硬件就绪：${result.message}`
-      : `硬件告警：${result.message}`;
+    if (result.configUpdated) {
+      await machineStore.loadConfig();
+      syncFormFromStore();
+    }
+    const details = [
+      result.portPath ? `端口 ${result.portPath}` : null,
+      result.resolutionSource ? `来源 ${result.resolutionSource}` : null,
+      result.boundUsbIdentity
+        ? `USB ${result.boundUsbIdentity.vendorId}:${result.boundUsbIdentity.productId}${
+            result.boundUsbIdentity.serialNumber
+              ? ` / ${result.boundUsbIdentity.serialNumber}`
+              : ""
+          }`
+        : null,
+      result.configUpdated ? "配置已绑定" : null,
+      result.candidates.length > 1
+        ? `候选 ${result.candidates.map((candidate) => candidate.portPath).join("、")}`
+        : null,
+    ].filter((item): item is string => Boolean(item));
+    hardwareMaintenance.message = `${
+      result.online ? "硬件就绪" : "硬件告警"
+    }：${result.message}${details.length > 0 ? `（${details.join("；")}）` : ""}`;
   } catch (error) {
     hardwareMaintenance.message =
       error instanceof Error ? error.message : String(error);
@@ -286,19 +318,50 @@ async function refreshVisionStatus(): Promise<void> {
           </select>
         </label>
 
-        <label
-          v-if="form.hardwareAdapter === 'serial'"
-          class="grid gap-2 text-left"
-        >
-          <span class="text-sm font-semibold text-slate-200"
-            >串口路径 serialPortPath</span
+        <div v-if="form.hardwareAdapter === 'serial'" class="grid gap-4">
+          <label class="grid gap-2 text-left">
+            <span class="text-sm font-semibold text-slate-200"
+              >手动串口兜底 serialPortPath</span
+            >
+            <input
+              v-model="form.serialPortPath"
+              class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-sky-300"
+              placeholder="Linux 如 /dev/ttyUSB0；Windows 如 COM3"
+            />
+          </label>
+
+          <div
+            v-if="form.lowerControllerUsbIdentity"
+            class="grid gap-4 md:grid-cols-3"
           >
-          <input
-            v-model="form.serialPortPath"
-            class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-sky-300"
-            placeholder="Linux 如 /dev/ttyUSB0；Windows 如 COM3"
-          />
-        </label>
+            <label class="grid gap-2 text-left">
+              <span class="text-sm font-semibold text-slate-200">USB VID</span>
+              <input
+                v-model="form.lowerControllerUsbIdentity.vendorId"
+                class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-sky-300"
+                maxlength="4"
+              />
+            </label>
+            <label class="grid gap-2 text-left">
+              <span class="text-sm font-semibold text-slate-200">USB PID</span>
+              <input
+                v-model="form.lowerControllerUsbIdentity.productId"
+                class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-sky-300"
+                maxlength="4"
+              />
+            </label>
+            <label class="grid gap-2 text-left">
+              <span class="text-sm font-semibold text-slate-200"
+                >绑定序列号</span
+              >
+              <input
+                v-model="form.lowerControllerUsbIdentity.serialNumber"
+                class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-sky-300"
+                placeholder="自检后自动绑定"
+              />
+            </label>
+          </div>
+        </div>
 
         <div class="rounded-3xl border border-white/10 bg-slate-950/30 p-5">
           <p

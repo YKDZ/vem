@@ -4,6 +4,18 @@ import {
 } from "@vem/shared";
 import { z } from "zod";
 
+const usbIdentitySchema = z.object({
+  vendorId: z.string(),
+  productId: z.string(),
+  serialNumber: z.string().nullable().default(null),
+});
+
+const lowerControllerCandidateSchema = z.object({
+  portPath: z.string(),
+  usbIdentity: usbIdentitySchema.nullable().optional(),
+  handshake: z.string().nullable().optional(),
+});
+
 const componentHealthSchema = z.object({
   component: z.string(),
   level: z.string(),
@@ -70,6 +82,7 @@ export const configSummarySchema = z.object({
     mqttUsername: z.string().nullable(),
     hardwareAdapter: z.enum(["mock", "serial", "bluetooth", "vendor_sdk"]),
     serialPortPath: z.string().nullable(),
+    lowerControllerUsbIdentity: usbIdentitySchema.nullable().optional(),
     scannerAdapter: z.enum(["disabled", "serial_text"]),
     scannerSerialPortPath: z.string().nullable(),
     scannerBaudRate: z.number().int(),
@@ -169,6 +182,11 @@ export const hardwareSelfCheckSchema = z.object({
   adapter: z.string(),
   online: z.boolean(),
   message: z.string(),
+  portPath: z.string().nullable().optional(),
+  resolutionSource: z.string().nullable().optional(),
+  boundUsbIdentity: usbIdentitySchema.nullable().optional(),
+  candidates: z.array(lowerControllerCandidateSchema).default([]),
+  configUpdated: z.boolean().default(false),
 });
 
 export const catalogSnapshotSchema = z.object({

@@ -6,6 +6,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use tokio::fs;
+use vending_core::serial::SerialPortUsbIdentity;
 
 use crate::{secret::SecretStore, state::LocalStateStore};
 
@@ -34,6 +35,7 @@ pub struct MachinePublicConfig {
     pub mqtt_username: Option<String>,
     pub hardware_adapter: HardwareAdapterKind,
     pub serial_port_path: Option<String>,
+    pub lower_controller_usb_identity: Option<SerialPortUsbIdentity>,
     pub scanner_adapter: ScannerAdapterKind,
     pub scanner_serial_port_path: Option<String>,
     pub scanner_baud_rate: u32,
@@ -109,6 +111,11 @@ pub fn default_public_config() -> MachinePublicConfig {
         mqtt_username: None,
         hardware_adapter: HardwareAdapterKind::Mock,
         serial_port_path: None,
+        lower_controller_usb_identity: Some(SerialPortUsbIdentity {
+            vendor_id: "1A86".to_string(),
+            product_id: "55D3".to_string(),
+            serial_number: None,
+        }),
         scanner_adapter: ScannerAdapterKind::Disabled,
         scanner_serial_port_path: None,
         scanner_baud_rate: 9600,
@@ -121,6 +128,35 @@ pub fn default_public_config() -> MachinePublicConfig {
         vision_request_timeout_ms: 8_000,
         kiosk_mode: false,
     }
+}
+
+fn normalize_hex_usb_id(value: String, field: &str) -> Result<String, String> {
+    let normalized = value.trim().to_ascii_uppercase();
+    if normalized.len() != 4 || !normalized.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        return Err(format!("{field} must be a 4-character hexadecimal USB id"));
+    }
+    Ok(normalized)
+}
+
+fn normalize_lower_controller_usb_identity(
+    identity: Option<SerialPortUsbIdentity>,
+) -> Result<Option<SerialPortUsbIdentity>, String> {
+    let Some(mut identity) = identity else {
+        return Ok(None);
+    };
+    identity.vendor_id =
+        normalize_hex_usb_id(identity.vendor_id, "lowerControllerUsbIdentity.vendorId")?;
+    identity.product_id =
+        normalize_hex_usb_id(identity.product_id, "lowerControllerUsbIdentity.productId")?;
+    identity.serial_number = identity.serial_number.take().and_then(|value| {
+        let value = value.trim().to_string();
+        if value.is_empty() {
+            None
+        } else {
+            Some(value)
+        }
+    });
+    Ok(Some(identity))
 }
 
 pub fn normalize_public_config(
@@ -155,6 +191,9 @@ pub fn normalize_public_config(
         }
     });
     config.serial_port_path = serial_port_path;
+
+    config.lower_controller_usb_identity =
+        normalize_lower_controller_usb_identity(config.lower_controller_usb_identity.take())?;
 
     let scanner_serial_port_path = config.scanner_serial_port_path.take().and_then(|value| {
         let value = value.trim().to_string();
@@ -199,8 +238,12 @@ pub fn normalize_public_config(
     }
     if matches!(&config.hardware_adapter, HardwareAdapterKind::Serial)
         && config.serial_port_path.is_none()
+        && config.lower_controller_usb_identity.is_none()
     {
-        return Err("serialPortPath is required when hardwareAdapter=serial".to_string());
+        return Err(
+            "lowerControllerUsbIdentity or serialPortPath is required when hardwareAdapter=serial"
+                .to_string(),
+        );
     }
     if matches!(&config.scanner_adapter, ScannerAdapterKind::SerialText)
         && config.scanner_serial_port_path.is_none()
@@ -599,13 +642,14 @@ mod tests {
     async fn normalize_public_config_validates_required_fields() {
         let serial_missing = MachinePublicConfig {
             serial_port_path: None,
+            lower_controller_usb_identity: None,
             hardware_adapter: HardwareAdapterKind::Serial,
             ..default_public_config()
         };
         let err = normalize_public_config(serial_missing).unwrap_err();
         assert_eq!(
             err,
-            "serialPortPath is required when hardwareAdapter=serial"
+            "lowerControllerUsbIdentity or serialPortPath is required when hardwareAdapter=serial"
         );
 
         let scanner_missing = MachinePublicConfig {

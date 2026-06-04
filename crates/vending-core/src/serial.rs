@@ -1,6 +1,8 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
+use serialport::{SerialPortInfo, SerialPortType};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
     sync::Mutex,
@@ -25,33 +27,229 @@ const HEARTBEAT_PROBE_INTERVAL: TokioDuration = TokioDuration::from_secs(1);
 const BUSY_RETRY_DELAY: TokioDuration = TokioDuration::from_millis(100);
 const COMMAND_ATTEMPTS: usize = 3;
 
-pub struct SerialHardwareAdapter {
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SerialPortUsbIdentity {
+    pub vendor_id: String,
+    pub product_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub serial_number: Option<String>,
+}
+
+impl SerialPortUsbIdentity {
+    fn from_usb_port(info: &serialport::UsbPortInfo) -> Self {
+        Self {
+            vendor_id: format!("{:04X}", info.vid),
+            product_id: format!("{:04X}", info.pid),
+            serial_number: info.serial_number.clone().and_then(|value| {
+                let value = value.trim().to_string();
+                if value.is_empty() {
+                    None
+                } else {
+                    Some(value)
+                }
+            }),
+        }
+    }
+
+    fn matches_config(&self, config: &SerialPortUsbIdentity) -> bool {
+        if !self.vendor_id.eq_ignore_ascii_case(&config.vendor_id)
+            || !self.product_id.eq_ignore_ascii_case(&config.product_id)
+        {
+            return false;
+        }
+        match config.serial_number.as_deref() {
+            Some(expected) => self.serial_number.as_deref() == Some(expected),
+            None => true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LowerControllerDiscoveryCandidate {
+    pub port_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usb_identity: Option<SerialPortUsbIdentity>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub handshake: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SerialResolutionSource {
+    UsbIdentity,
+    ManualPort,
+    ManualPortFallback,
+}
+
+impl SerialResolutionSource {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::UsbIdentity => "usb_identity",
+            Self::ManualPort => "manual_port",
+            Self::ManualPortFallback => "manual_port_fallback",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ResolvedSerialPort {
     port_path: String,
+    source: SerialResolutionSource,
+    frame: LowerFrame,
+    usb_identity: Option<SerialPortUsbIdentity>,
+    candidates: Vec<LowerControllerDiscoveryCandidate>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SerialResolutionError {
+    message: String,
+    candidates: Vec<LowerControllerDiscoveryCandidate>,
+}
+
+impl SerialResolutionError {
+    fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            candidates: vec![],
+        }
+    }
+
+    fn with_candidates(
+        message: impl Into<String>,
+        candidates: Vec<LowerControllerDiscoveryCandidate>,
+    ) -> Self {
+        Self {
+            message: message.into(),
+            candidates,
+        }
+    }
+}
+
+pub fn lower_controller_candidates_from_ports(
+    identity: &SerialPortUsbIdentity,
+    ports: &[SerialPortInfo],
+) -> Vec<LowerControllerDiscoveryCandidate> {
+    ports
+        .iter()
+        .filter_map(|port| {
+            let usb_identity = match &port.port_type {
+                SerialPortType::UsbPort(info) => SerialPortUsbIdentity::from_usb_port(info),
+                _ => return None,
+            };
+            if !usb_identity.matches_config(identity) {
+                return None;
+            }
+            Some(LowerControllerDiscoveryCandidate {
+                port_path: port.port_name.clone(),
+                usb_identity: Some(usb_identity),
+                handshake: None,
+            })
+        })
+        .collect()
+}
+
+fn available_lower_controller_candidates(
+    identity: &SerialPortUsbIdentity,
+) -> Result<Vec<LowerControllerDiscoveryCandidate>, SerialResolutionError> {
+    let ports = serialport::available_ports().map_err(|error| {
+        SerialResolutionError::new(format!("list serial ports failed: {error}"))
+    })?;
+    Ok(lower_controller_candidates_from_ports(identity, &ports))
+}
+
+fn usb_identity_for_port_path(port_path: &str) -> Option<SerialPortUsbIdentity> {
+    let ports = serialport::available_ports().ok()?;
+    ports.into_iter().find_map(|port| {
+        if port.port_name != port_path {
+            return None;
+        }
+        match port.port_type {
+            SerialPortType::UsbPort(info) => Some(SerialPortUsbIdentity::from_usb_port(&info)),
+            _ => None,
+        }
+    })
+}
+
+fn open_serial_port_path(port_path: &str) -> Result<SerialStream, String> {
+    tokio_serial::new(port_path, SERIAL_BAUD_RATE)
+        .data_bits(DataBits::Eight)
+        .parity(Parity::None)
+        .stop_bits(StopBits::One)
+        .flow_control(FlowControl::None)
+        .open_native_async()
+        .map_err(|error| format!("open serial port {port_path} failed: {error}"))
+}
+
+pub struct SerialHardwareAdapter {
+    port_path: Option<String>,
+    usb_identity: Option<SerialPortUsbIdentity>,
     op_lock: Mutex<()>,
 }
 
 impl SerialHardwareAdapter {
     pub fn new(port_path: String) -> Self {
+        Self::new_resolving(Some(port_path), None)
+    }
+
+    pub fn new_resolving(
+        port_path: Option<String>,
+        usb_identity: Option<SerialPortUsbIdentity>,
+    ) -> Self {
         Self {
             port_path,
+            usb_identity,
             op_lock: Mutex::new(()),
         }
     }
 
-    fn open_port(&self) -> Result<SerialStream, String> {
-        tokio_serial::new(&self.port_path, SERIAL_BAUD_RATE)
-            .data_bits(DataBits::Eight)
-            .parity(Parity::None)
-            .stop_bits(StopBits::One)
-            .flow_control(FlowControl::None)
-            .open_native_async()
-            .map_err(|error| format!("open serial port {} failed: {error}", self.port_path))
+    async fn resolve_serial_port_locked(
+        &self,
+    ) -> Result<ResolvedSerialPort, SerialResolutionError> {
+        if let Some(identity) = &self.usb_identity {
+            match discover_lower_controller_port(identity).await {
+                Ok(resolved) => return Ok(resolved),
+                Err(auto_error) => {
+                    if let Some(port_path) = self.port_path.as_deref() {
+                        return probe_manual_port(
+                            port_path,
+                            SerialResolutionSource::ManualPortFallback,
+                            Some(auto_error.candidates),
+                        )
+                        .await;
+                    }
+                    return Err(auto_error);
+                }
+            }
+        }
+
+        if let Some(port_path) = self.port_path.as_deref() {
+            return probe_manual_port(port_path, SerialResolutionSource::ManualPort, None).await;
+        }
+
+        Err(SerialResolutionError::new(
+            "serial hardware requires lowerControllerUsbIdentity or serialPortPath",
+        ))
+    }
+
+    async fn open_operational_port_locked(&self) -> Result<SerialStream, String> {
+        let resolved = self
+            .resolve_serial_port_locked()
+            .await
+            .map_err(|error| error.message)?;
+        if !resolved.frame.is_heartbeat() {
+            return Err(format!(
+                "lower controller is not available for commands: {}",
+                resolved.frame.describe()
+            ));
+        }
+        open_serial_port_path(&resolved.port_path)
     }
 
     pub async fn query_environment_sample(&self) -> Result<Option<EnvironmentSample>, String> {
         let frame = build_environment_sample_query_frame();
         let _guard = self.op_lock.lock().await;
-        let mut port = self.open_port()?;
+        let mut port = self.open_operational_port_locked().await?;
         port.write_all(&frame)
             .await
             .map_err(|error| format!("serial environment query write failed: {error}"))?;
@@ -76,7 +274,7 @@ impl SerialHardwareAdapter {
     pub async fn set_target_temperature(&self, temperature_celsius: i8) -> Result<(), String> {
         let frame = build_target_temperature_frame(temperature_celsius)?;
         let _guard = self.op_lock.lock().await;
-        let mut port = self.open_port()?;
+        let mut port = self.open_operational_port_locked().await?;
         port.write_all(&frame)
             .await
             .map_err(|error| format!("serial target temperature write failed: {error}"))?;
@@ -102,7 +300,7 @@ impl SerialHardwareAdapter {
     pub async fn set_air_conditioner_enabled(&self, enabled: bool) -> Result<(), String> {
         let frame = build_air_conditioner_switch_frame(enabled);
         let _guard = self.op_lock.lock().await;
-        let mut port = self.open_port()?;
+        let mut port = self.open_operational_port_locked().await?;
         port.write_all(&frame)
             .await
             .map_err(|error| format!("serial air conditioner switch write failed: {error}"))?;
@@ -123,25 +321,9 @@ impl SerialHardwareAdapter {
         }
     }
 
-    async fn handshake(&self) -> Result<LowerFrame, String> {
+    async fn handshake(&self) -> Result<ResolvedSerialPort, SerialResolutionError> {
         let _guard = self.op_lock.lock().await;
-        let mut port = self.open_port()?;
-        port.write_all(&HANDSHAKE)
-            .await
-            .map_err(|error| format!("serial handshake write failed: {error}"))?;
-        port.flush()
-            .await
-            .map_err(|error| format!("serial handshake flush failed: {error}"))?;
-
-        loop {
-            let frame = read_lower_frame(&mut port, HANDSHAKE_TIMEOUT).await?;
-            if frame.is_heartbeat() {
-                return Ok(frame);
-            }
-            if frame.is_fault() {
-                return Err(frame.describe().to_string());
-            }
-        }
+        self.resolve_serial_port_locked().await
     }
 
     async fn dispense_inner(
@@ -165,7 +347,10 @@ impl SerialHardwareAdapter {
             Instant::now() + TokioDuration::from_secs(command.timeout_seconds.max(1));
 
         let _guard = self.op_lock.lock().await;
-        let mut port = self.open_port().map_err(DispenseFailure::timeout)?;
+        let mut port = self
+            .open_operational_port_locked()
+            .await
+            .map_err(DispenseFailure::timeout)?;
         let mut acknowledged = false;
 
         for _attempt in 0..COMMAND_ATTEMPTS {
@@ -224,19 +409,51 @@ impl HardwareAdapter for SerialHardwareAdapter {
 
     async fn self_check(&self) -> HardwareStatus {
         match self.handshake().await {
-            Ok(frame) => HardwareStatus {
-                adapter: "serial".to_string(),
-                online: true,
-                message: format!(
-                    "serial adapter ready on {} ({})",
-                    self.port_path,
-                    frame.describe()
-                ),
-            },
+            Ok(resolved) => {
+                let online = resolved.frame.is_heartbeat();
+                let bound_usb_identity =
+                    if matches!(resolved.source, SerialResolutionSource::UsbIdentity)
+                        && self
+                            .usb_identity
+                            .as_ref()
+                            .is_some_and(|identity| identity.serial_number.is_none())
+                        && resolved
+                            .usb_identity
+                            .as_ref()
+                            .and_then(|identity| identity.serial_number.as_ref())
+                            .is_some()
+                    {
+                        resolved.usb_identity.clone()
+                    } else {
+                        None
+                    };
+                HardwareStatus {
+                    adapter: "serial".to_string(),
+                    online,
+                    message: format!(
+                        "lower controller {} on {} ({})",
+                        if online {
+                            "ready"
+                        } else {
+                            "responded with fault"
+                        },
+                        resolved.port_path,
+                        resolved.frame.describe()
+                    ),
+                    port_path: Some(resolved.port_path),
+                    resolution_source: Some(resolved.source.as_str().to_string()),
+                    bound_usb_identity,
+                    candidates: resolved.candidates,
+                }
+            }
             Err(error) => HardwareStatus {
                 adapter: "serial".to_string(),
                 online: false,
-                message: format!("serial adapter unavailable on {}: {error}", self.port_path),
+                message: error.message,
+                port_path: None,
+                resolution_source: Some("unresolved".to_string()),
+                bound_usb_identity: None,
+                candidates: error.candidates,
             },
         }
     }
@@ -369,6 +586,10 @@ impl LowerFrame {
                 | Self::PickupTimeout
                 | Self::PickupPlatformBlocked
         )
+    }
+
+    pub fn is_lower_controller_status(self) -> bool {
+        self.is_heartbeat() || matches!(self, Self::MechanicalError | Self::PickupPlatformBlocked)
     }
 
     pub fn describe(self) -> &'static str {
@@ -527,6 +748,101 @@ pub fn build_multi_dispense_frame(slots: &[(u32, u32)]) -> Result<Vec<u8>, Strin
     frame.push((crc >> 8) as u8);
     frame.push(crc as u8);
     Ok(frame)
+}
+
+async fn probe_lower_controller_stream(port: &mut SerialStream) -> Result<LowerFrame, String> {
+    port.write_all(&HANDSHAKE)
+        .await
+        .map_err(|error| format!("serial handshake write failed: {error}"))?;
+    port.flush()
+        .await
+        .map_err(|error| format!("serial handshake flush failed: {error}"))?;
+
+    loop {
+        let frame = read_lower_frame(port, HANDSHAKE_TIMEOUT).await?;
+        if frame.is_lower_controller_status() {
+            return Ok(frame);
+        }
+    }
+}
+
+pub async fn probe_lower_controller_port(port_path: &str) -> Result<LowerFrame, String> {
+    let mut port = open_serial_port_path(port_path)?;
+    probe_lower_controller_stream(&mut port).await
+}
+
+async fn probe_manual_port(
+    port_path: &str,
+    source: SerialResolutionSource,
+    previous_candidates: Option<Vec<LowerControllerDiscoveryCandidate>>,
+) -> Result<ResolvedSerialPort, SerialResolutionError> {
+    let usb_identity = usb_identity_for_port_path(port_path);
+    match probe_lower_controller_port(port_path).await {
+        Ok(frame) => Ok(ResolvedSerialPort {
+            port_path: port_path.to_string(),
+            source,
+            frame,
+            usb_identity,
+            candidates: previous_candidates.unwrap_or_default(),
+        }),
+        Err(error) => Err(SerialResolutionError::with_candidates(
+            format!("manual serial port {port_path} handshake failed: {error}"),
+            previous_candidates.unwrap_or_default(),
+        )),
+    }
+}
+
+async fn discover_lower_controller_port(
+    identity: &SerialPortUsbIdentity,
+) -> Result<ResolvedSerialPort, SerialResolutionError> {
+    let candidates = available_lower_controller_candidates(identity)?;
+    if candidates.is_empty() {
+        return Err(SerialResolutionError::new(format!(
+            "no serial ports match lower controller USB identity {}:{}",
+            identity.vendor_id, identity.product_id
+        )));
+    }
+
+    let mut successes: Vec<(LowerControllerDiscoveryCandidate, LowerFrame)> = vec![];
+    for candidate in candidates {
+        if let Ok(frame) = probe_lower_controller_port(&candidate.port_path).await {
+            let mut candidate = candidate;
+            candidate.handshake = Some(frame.describe().to_string());
+            successes.push((candidate, frame));
+        }
+    }
+
+    match successes.len() {
+        1 => {
+            let (candidate, frame) = successes.remove(0);
+            Ok(ResolvedSerialPort {
+                port_path: candidate.port_path.clone(),
+                source: SerialResolutionSource::UsbIdentity,
+                frame,
+                usb_identity: candidate.usb_identity.clone(),
+                candidates: vec![candidate],
+            })
+        }
+        0 => Err(SerialResolutionError::with_candidates(
+            "no matching lower controller candidate responded to handshake",
+            vec![],
+        )),
+        _ => {
+            let candidates = successes
+                .into_iter()
+                .map(|(candidate, _)| candidate)
+                .collect::<Vec<_>>();
+            let ports = candidates
+                .iter()
+                .map(|candidate| candidate.port_path.clone())
+                .collect::<Vec<_>>()
+                .join(", ");
+            Err(SerialResolutionError::with_candidates(
+                format!("multiple lower controller candidates responded: {ports}"),
+                candidates,
+            ))
+        }
+    }
 }
 
 async fn wait_for_ack(port: &mut SerialStream) -> Result<(), AckWaitError> {
@@ -722,6 +1038,37 @@ mod tests {
             build_dispense_frame(2, 5).unwrap(),
             [0x55, 0x02, 0x05, 0x31]
         );
+    }
+
+    #[test]
+    fn filters_lower_controller_candidates_by_usb_identity() {
+        fn usb_port(name: &str, vid: u16, pid: u16, serial: Option<&str>) -> SerialPortInfo {
+            SerialPortInfo {
+                port_name: name.to_string(),
+                port_type: SerialPortType::UsbPort(serialport::UsbPortInfo {
+                    vid,
+                    pid,
+                    serial_number: serial.map(str::to_string),
+                    manufacturer: None,
+                    product: None,
+                }),
+            }
+        }
+
+        let ports = vec![
+            usb_port("COM3", 0x1A86, 0x55D3, Some("5ABA102811")),
+            usb_port("COM4", 0x1A86, 0x55D3, Some("OTHER")),
+            usb_port("COM5", 0x1234, 0x55D3, Some("5ABA102811")),
+        ];
+        let identity = SerialPortUsbIdentity {
+            vendor_id: "1a86".to_string(),
+            product_id: "55d3".to_string(),
+            serial_number: Some("5ABA102811".to_string()),
+        };
+
+        let candidates = lower_controller_candidates_from_ports(&identity, &ports);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].port_path, "COM3");
     }
 
     #[test]

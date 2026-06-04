@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-use crate::serial::EnvironmentSample;
+use crate::serial::{EnvironmentSample, LowerControllerDiscoveryCandidate, SerialPortUsbIdentity};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -58,6 +58,14 @@ pub struct HardwareStatus {
     pub adapter: String,
     pub online: bool,
     pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub port_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolution_source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bound_usb_identity: Option<SerialPortUsbIdentity>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub candidates: Vec<LowerControllerDiscoveryCandidate>,
 }
 
 #[async_trait]
@@ -90,6 +98,10 @@ impl HardwareAdapter for MockHardwareAdapter {
             adapter: "mock".to_string(),
             online: true,
             message: "mock adapter ready".to_string(),
+            port_path: None,
+            resolution_source: Some("mock".to_string()),
+            bound_usb_identity: None,
+            candidates: vec![],
         }
     }
 

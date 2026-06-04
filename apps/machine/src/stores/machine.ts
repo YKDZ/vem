@@ -56,7 +56,8 @@ export const useMachineStore = defineStore("machine", {
       state.configSummary?.public.machineCode ?? null,
     hardwareReady: (state): boolean => state.health?.hardwareOnline ?? false,
     canSell: (state): boolean =>
-      state.health?.status === "healthy" || state.health?.status === "degraded",
+      state.health?.hardwareOnline === true &&
+      (state.health.status === "healthy" || state.health.status === "degraded"),
     hasDeploymentConfig: (state): boolean =>
       Boolean(
         state.health?.configConfigured &&
@@ -92,6 +93,7 @@ export const useMachineStore = defineStore("machine", {
             mqttUsername: config.mqttUsername,
             hardwareAdapter: config.hardwareAdapter,
             serialPortPath: config.serialPortPath,
+            lowerControllerUsbIdentity: config.lowerControllerUsbIdentity,
             scannerAdapter: config.scannerAdapter,
             scannerSerialPortPath: config.scannerSerialPortPath,
             scannerBaudRate: config.scannerBaudRate,

@@ -20,10 +20,10 @@ impl HardwareSupervisor {
         let adapter: Arc<dyn HardwareAdapter> = match config.hardware_adapter {
             HardwareAdapterKind::Mock => Arc::new(vending_core::hardware::MockHardwareAdapter),
             HardwareAdapterKind::Serial => {
-                let path = config.serial_port_path.clone().ok_or_else(|| {
-                    "serialPortPath is required when hardwareAdapter=serial".to_string()
-                })?;
-                Arc::new(vending_core::serial::SerialHardwareAdapter::new(path))
+                Arc::new(vending_core::serial::SerialHardwareAdapter::new_resolving(
+                    config.serial_port_path.clone(),
+                    config.lower_controller_usb_identity.clone(),
+                ))
             }
             HardwareAdapterKind::Bluetooth => {
                 return Err("bluetooth hardware adapter is not implemented".to_string());
