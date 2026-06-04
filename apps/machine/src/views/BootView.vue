@@ -86,14 +86,16 @@ onMounted(async () => {
     await daemonClient.initialize();
 
     pushStep("读取 daemon 健康与交易快照");
-    const [health, ready, transaction] = await Promise.all([
+    const [health, ready, saleReadiness, transaction] = await Promise.all([
       daemonClient.getHealth(),
       daemonClient.getReady(),
+      daemonClient.getSaleReadiness(),
       daemonClient.getCurrentTransaction(),
     ]);
     machineStore.applyHealth(health);
     connectivityStore.applyHealth(health);
     connectivityStore.applyReady(ready);
+    connectivityStore.applySaleReadiness(saleReadiness);
     checkoutStore.applyTransaction(transaction);
 
     pushStep("同步配置、目录和展示状态");

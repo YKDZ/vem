@@ -312,6 +312,32 @@ struct SubmitPayment {
 }
 
 #[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BackendPaymentOptionsResponse {
+    options: Vec<BackendPaymentOption>,
+    default_option_key: Option<String>,
+    default_provider_code: Option<String>,
+    server_time: String,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BackendPaymentOption {
+    option_key: String,
+    provider_code: String,
+    method: String,
+    display_name: String,
+    description: String,
+    icon: String,
+    #[serde(default)]
+    recommended: bool,
+    #[serde(default)]
+    disabled: bool,
+    #[serde(default)]
+    disabled_reason: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
 struct EventQuery {
     token: Option<String>,
 }
@@ -438,6 +464,17 @@ async fn create_order_intent(
 ) -> impl IntoResponse {
     if let Err((status, error)) = require_token(&headers, &ctx.token).await {
         return (status, error).into_response();
+    }
+
+    if let Err(error) = validate_create_order_intent(&ctx, &input).await {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorMessage {
+                code: "create_order_blocked",
+                message: error,
+            }),
+        )
+            .into_response();
     }
 
     let items = serde_json::json!({
@@ -730,32 +767,28 @@ async fn machine_sale_readiness_snapshot(
     let payment_probe = ctx.ui.backend.get_payment_options().await;
     let platform_ready = payment_probe.is_ok();
     let mut payment_methods = Vec::new();
+    let mut payment_options_error = None;
     if let Ok(payload) = payment_probe.as_ref() {
-        if let Some(options) = payload.get("options").and_then(|value| value.as_array()) {
-            for option in options {
-                let method = option
-                    .get("method")
-                    .and_then(|value| value.as_str())
-                    .unwrap_or("unknown");
-                let mut ready = !option
-                    .get("disabled")
-                    .and_then(|value| value.as_bool())
-                    .unwrap_or(false);
-                let mut disabled_reason = option
-                    .get("disabledReason")
-                    .and_then(|value| value.as_str())
-                    .map(ToString::to_string);
-                if method == "payment_code" && !scanner_ready {
-                    ready = false;
-                    disabled_reason = Some(format!("扫码器不可用：{}", scanner.message));
+        match strict_payment_options(payload) {
+            Ok(options) => {
+                for option in options {
+                    let mut ready = !option.disabled;
+                    let mut disabled_reason = option.disabled_reason;
+                    if option.method == "payment_code" && !scanner_ready {
+                        ready = false;
+                        disabled_reason = Some(format!("扫码器不可用：{}", scanner.message));
+                    }
+                    payment_methods.push(serde_json::json!({
+                        "method": option.method,
+                        "optionKey": option.option_key,
+                        "providerCode": option.provider_code,
+                        "ready": ready,
+                        "disabledReason": disabled_reason,
+                    }));
                 }
-                payment_methods.push(serde_json::json!({
-                    "method": method,
-                    "optionKey": option.get("optionKey").cloned().unwrap_or(serde_json::Value::Null),
-                    "providerCode": option.get("providerCode").cloned().unwrap_or(serde_json::Value::Null),
-                    "ready": ready,
-                    "disabledReason": disabled_reason,
-                }));
+            }
+            Err(error) => {
+                payment_options_error = Some(error);
             }
         }
     }
@@ -818,7 +851,7 @@ async fn machine_sale_readiness_snapshot(
             "paymentOptions": serde_json::json!({
                 "ready": payment_options_ready,
                 "code": if payment_options_ready { "PAYMENT_OPTIONS_READY" } else { "NO_PAYMENT_OPTIONS" },
-                "message": if payment_options_ready { "payment option available" } else { "no ready payment option" },
+                "message": if payment_options_ready { "payment option available".to_string() } else { payment_options_error.unwrap_or_else(|| "no ready payment option".to_string()) },
                 "methods": payment_methods,
             }),
             "scannerCapability": readiness_component(
@@ -852,6 +885,120 @@ fn readiness_component(ready: bool, code: &str, message: impl Into<String>) -> s
         "code": code,
         "message": message.into(),
     })
+}
+
+fn is_supported_payment_method(value: &str) -> bool {
+    matches!(value, "mock" | "qr_code" | "payment_code")
+}
+
+fn is_supported_payment_provider(value: &str) -> bool {
+    matches!(value, "mock" | "wechat_pay" | "alipay")
+}
+
+fn strict_payment_options(
+    payload: &serde_json::Value,
+) -> Result<Vec<BackendPaymentOption>, String> {
+    let response: BackendPaymentOptionsResponse = serde_json::from_value(payload.clone())
+        .map_err(|error| format!("payment options schema invalid: {error}"))?;
+    if response.server_time.trim().is_empty() {
+        return Err("payment options serverTime is required".to_string());
+    }
+    if let Some(default_option_key) = response.default_option_key.as_deref() {
+        if default_option_key.trim().is_empty() {
+            return Err("payment options defaultOptionKey must be non-empty or null".to_string());
+        }
+    }
+    if let Some(default_provider_code) = response.default_provider_code.as_deref() {
+        if !is_supported_payment_provider(default_provider_code) {
+            return Err("payment options defaultProviderCode is unsupported".to_string());
+        }
+    }
+    for option in &response.options {
+        if option.option_key.trim().is_empty()
+            || option.provider_code.trim().is_empty()
+            || option.method.trim().is_empty()
+            || option.display_name.trim().is_empty()
+            || option.description.trim().is_empty()
+        {
+            return Err("payment option required fields must be non-empty".to_string());
+        }
+        if !is_supported_payment_method(&option.method) {
+            return Err(format!("unsupported payment method {}", option.method));
+        }
+        if !is_supported_payment_provider(&option.provider_code) {
+            return Err(format!(
+                "unsupported payment provider {}",
+                option.provider_code
+            ));
+        }
+        if !matches!(option.icon.as_str(), "mock" | "wechat" | "alipay") {
+            return Err(format!("unsupported payment icon {}", option.icon));
+        }
+        if option.recommended && option.disabled {
+            // Recommended but disabled is legal in shared schema; keep the read so this field stays
+            // part of strict parsing without changing readiness semantics.
+        }
+    }
+    Ok(response.options)
+}
+
+async fn validate_create_order_intent(ctx: &IpcContext, input: &CreateOrder) -> Result<(), String> {
+    if input.quantity == 0 {
+        return Err("quantity must be positive".to_string());
+    }
+
+    let readiness = machine_sale_readiness_snapshot(ctx)
+        .await
+        .map_err(|error| error.to_string())?;
+    let can_start = readiness
+        .get("canStartNetworkAuthorizedSale")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
+    if !can_start {
+        let codes = readiness
+            .get("blockingCodes")
+            .and_then(|value| value.as_array())
+            .map(|codes| {
+                codes
+                    .iter()
+                    .filter_map(|code| code.as_str())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            })
+            .filter(|codes| !codes.is_empty())
+            .unwrap_or_else(|| "UNKNOWN_READINESS_BLOCKER".to_string());
+        return Err(format!("machine is not ready for network sale: {codes}"));
+    }
+
+    let machine_code = ctx
+        .config_store
+        .load_public_config()
+        .await
+        .ok()
+        .and_then(|config| config.machine_code);
+    let sale_view = ctx
+        .state
+        .sale_view(machine_code)
+        .await
+        .map_err(|error| error.to_string())?;
+    let item = sale_view
+        .items
+        .iter()
+        .find(|item| item.inventory_id == input.inventory_id)
+        .ok_or_else(|| "selected inventory is not in the active sale view".to_string())?;
+    if item.slot_sales_state != "sale_ready" {
+        return Err(format!(
+            "selected slot {} is {}",
+            item.slot_code, item.slot_sales_state
+        ));
+    }
+    if item.saleable_stock < i64::from(input.quantity) {
+        return Err(format!(
+            "selected slot {} has insufficient saleable stock",
+            item.slot_code
+        ));
+    }
+    Ok(())
 }
 
 async fn apply_planogram(
@@ -1326,6 +1473,83 @@ mod tests {
             .status()
     }
 
+    async fn mark_runtime_sale_ready(ctx: &IpcContext) {
+        {
+            let mut sync = ctx.ui.status_cache.sync.write().await;
+            sync.mqtt_running = true;
+            sync.mqtt_connected = true;
+            sync.outbox_size = 0;
+            sync.outbox_usage = 0.0;
+            sync.last_error = None;
+        }
+        {
+            let mut hardware = ctx.ui.status_cache.hardware.write().await;
+            hardware.online = true;
+            hardware.message = "hardware ready".to_string();
+        }
+        {
+            let mut scanner = ctx.ui.status_cache.scanner.write().await;
+            scanner.online = true;
+            scanner.adapter = vending_core::scanner::PAYMENT_CODE_SOURCE_SERIAL_TEXT.to_string();
+            scanner.code = "SCANNER_READY".to_string();
+            scanner.message = "scanner ready".to_string();
+        }
+    }
+
+    fn one_slot_planogram(
+        planogram_version: &str,
+        slot_id: &str,
+        inventory_id: &str,
+    ) -> serde_json::Value {
+        json!({
+            "planogramVersion": planogram_version,
+            "source": "local_seed",
+            "appliedBy": "operator-1",
+            "slots": [{
+                "slotId": slot_id,
+                "slotCode": "A1",
+                "layerNo": 1,
+                "cellNo": 1,
+                "capacity": 8,
+                "parLevel": 6,
+                "inventoryId": inventory_id,
+                "variantId": "550e8400-e29b-41d4-a716-446655440003",
+                "productId": "550e8400-e29b-41d4-a716-446655440004",
+                "productName": "矿泉水",
+                "productDescription": null,
+                "coverImageUrl": null,
+                "categoryId": null,
+                "categoryName": null,
+                "sku": "WATER-001",
+                "size": "550ml",
+                "color": null,
+                "priceCents": 200,
+                "productSortOrder": 1,
+                "targetGender": null
+            }]
+        })
+    }
+
+    async fn post_json(
+        app: &Router,
+        uri: &str,
+        token: &str,
+        payload: serde_json::Value,
+    ) -> axum::response::Response {
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri(uri)
+                    .header(AUTHORIZATION, format!("Bearer {token}"))
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(axum::body::Body::from(payload.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
     #[tokio::test]
     async fn events_without_query_token_is_unauthorized() {
         let temp_dir = tempdir().expect("tmp");
@@ -1538,6 +1762,279 @@ mod tests {
         let payload: CatalogSnapshot = serde_json::from_slice(&body).unwrap();
         assert_eq!(payload.source, "backend");
         assert_eq!(payload.items.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn sale_readiness_rejects_malformed_payment_options() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(wiremock::matchers::path("/machine-orders/payment-options"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "options": [{
+                    "displayName": "损坏支付配置",
+                    "description": "missing required fields",
+                    "icon": "mock",
+                    "recommended": true,
+                    "disabled": false,
+                    "disabledReason": null
+                }],
+                "defaultOptionKey": null,
+                "defaultProviderCode": null,
+                "serverTime": "2026-06-04T00:00:00Z"
+            })))
+            .mount(&server)
+            .await;
+
+        let temp_dir = tempdir().expect("tmp");
+        let ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            &server.uri(),
+        )
+        .await;
+        mark_runtime_sale_ready(&ctx).await;
+        let app = build_router(ctx);
+        assert_eq!(
+            post_json(
+                &app,
+                "/v1/stock/planogram",
+                "token-1",
+                one_slot_planogram(
+                    "PLAN-MALFORMED-PAYMENT",
+                    "550e8400-e29b-41d4-a716-446655440101",
+                    "550e8400-e29b-41d4-a716-446655440102",
+                ),
+            )
+            .await
+            .status(),
+            StatusCode::OK
+        );
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/sale-readiness")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let readiness: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(readiness["canStartNetworkAuthorizedSale"], false);
+        assert_eq!(readiness["components"]["paymentOptions"]["ready"], false);
+        assert!(readiness["blockingCodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|code| code == "NO_PAYMENT_OPTIONS"));
+    }
+
+    #[tokio::test]
+    async fn create_order_intent_rechecks_readiness_before_backend_call() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(wiremock::matchers::path("/machine-orders/payment-options"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "options": [{
+                    "optionKey": "mock:mock",
+                    "providerCode": "mock",
+                    "method": "mock",
+                    "displayName": "模拟支付",
+                    "description": "本地模拟",
+                    "icon": "mock",
+                    "recommended": true,
+                    "disabled": false,
+                    "disabledReason": null
+                }],
+                "defaultOptionKey": "mock:mock",
+                "defaultProviderCode": "mock",
+                "serverTime": "2026-06-04T00:00:00Z"
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(wiremock::matchers::path("/machine-orders"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "orderNo": "ORD-BYPASS-1",
+                "nextAction": "wait_payment",
+                "orderStatus": "pending_payment"
+            })))
+            .mount(&server)
+            .await;
+
+        let temp_dir = tempdir().expect("tmp");
+        let ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            &server.uri(),
+        )
+        .await;
+        mark_runtime_sale_ready(&ctx).await;
+        let app = build_router(ctx);
+
+        let response = post_json(
+            &app,
+            "/v1/intents/create-order",
+            "token-1",
+            json!({
+                "inventoryId": "550e8400-e29b-41d4-a716-446655440202",
+                "quantity": 1,
+                "paymentMethod": "mock",
+                "paymentProviderCode": "mock",
+                "profileSnapshot": null
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["code"], "create_order_blocked");
+        assert!(payload["message"]
+            .as_str()
+            .unwrap()
+            .contains("ACTIVE_PLANOGRAM_MISSING"));
+
+        let backend_create_order_requests = server
+            .received_requests()
+            .await
+            .expect("recorded requests")
+            .into_iter()
+            .filter(|request| request.url.path() == "/machine-orders")
+            .count();
+        assert_eq!(backend_create_order_requests, 0);
+    }
+
+    #[tokio::test]
+    async fn create_order_intent_rechecks_local_slot_saleability() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(wiremock::matchers::path("/machine-orders/payment-options"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "options": [{
+                    "optionKey": "mock:mock",
+                    "providerCode": "mock",
+                    "method": "mock",
+                    "displayName": "模拟支付",
+                    "description": "本地模拟",
+                    "icon": "mock",
+                    "recommended": true,
+                    "disabled": false,
+                    "disabledReason": null
+                }],
+                "defaultOptionKey": "mock:mock",
+                "defaultProviderCode": "mock",
+                "serverTime": "2026-06-04T00:00:00Z"
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(wiremock::matchers::path("/machine-orders"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "orderNo": "ORD-BYPASS-2",
+                "nextAction": "wait_payment",
+                "orderStatus": "pending_payment"
+            })))
+            .mount(&server)
+            .await;
+
+        let temp_dir = tempdir().expect("tmp");
+        let ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            &server.uri(),
+        )
+        .await;
+        mark_runtime_sale_ready(&ctx).await;
+        let app = build_router(ctx);
+        let slot_id = "550e8400-e29b-41d4-a716-446655440201";
+        let inventory_id = "550e8400-e29b-41d4-a716-446655440202";
+        assert_eq!(
+            post_json(
+                &app,
+                "/v1/stock/planogram",
+                "token-1",
+                one_slot_planogram("PLAN-FROZEN-CREATE", slot_id, inventory_id),
+            )
+            .await
+            .status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            post_json(
+                &app,
+                "/v1/stock/movements",
+                "token-1",
+                json!({
+                    "movementId": "MOVE-CREATE-FROZEN-1",
+                    "planogramVersion": "PLAN-FROZEN-CREATE",
+                    "slotId": slot_id,
+                    "movementType": "planned_refill",
+                    "quantity": 2,
+                    "source": "field_service",
+                    "attributedTo": "operator-1"
+                }),
+            )
+            .await
+            .status(),
+            StatusCode::CREATED
+        );
+        assert_eq!(
+            post_json(
+                &app,
+                "/v1/stock/slot-sales-state",
+                "token-1",
+                json!({
+                    "planogramVersion": "PLAN-FROZEN-CREATE",
+                    "slotId": slot_id,
+                    "slotSalesState": "frozen",
+                    "source": "operator_hold"
+                }),
+            )
+            .await
+            .status(),
+            StatusCode::OK
+        );
+
+        let response = post_json(
+            &app,
+            "/v1/intents/create-order",
+            "token-1",
+            json!({
+                "inventoryId": inventory_id,
+                "quantity": 1,
+                "paymentMethod": "mock",
+                "paymentProviderCode": "mock",
+                "profileSnapshot": null
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["code"], "create_order_blocked");
+        assert!(payload["message"].as_str().unwrap().contains("frozen"));
+
+        let backend_create_order_requests = server
+            .received_requests()
+            .await
+            .expect("recorded requests")
+            .into_iter()
+            .filter(|request| request.url.path() == "/machine-orders")
+            .count();
+        assert_eq!(backend_create_order_requests, 0);
     }
 
     #[tokio::test]
@@ -1845,6 +2342,34 @@ mod tests {
         assert_eq!(payload["items"][0]["saleableStock"], 2);
         assert_eq!(payload["items"][1]["slotSalesState"], "sale_ready");
         assert_eq!(payload["items"][1]["saleableStock"], 2);
+
+        let recount = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/stock/movements")
+            .header(AUTHORIZATION, "Bearer token-1")
+            .header(CONTENT_TYPE, "application/json")
+            .body(axum::body::Body::from(
+                json!({
+                    "movementId": "MOVE-FROZEN-RECOUNT",
+                    "planogramVersion": "PLAN-SLOT-STATE",
+                    "slotId": "550e8400-e29b-41d4-a716-446655440051",
+                    "movementType": "stock_count_correction",
+                    "quantity": 4,
+                    "source": "field_service",
+                    "attributedTo": "operator-1"
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        let response = app.clone().oneshot(recount).await.unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["items"][0]["slotSalesState"], "frozen");
+        assert_eq!(payload["items"][0]["physicalStock"], 4);
+        assert_eq!(payload["items"][0]["saleableStock"], 4);
     }
 
     #[tokio::test]

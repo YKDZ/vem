@@ -187,6 +187,82 @@ describe("checkout store", () => {
       },
     ];
     store.selectedPaymentOptionKey = "payment_code:alipay";
+    useConnectivityStore().applyHealth({
+      status: "healthy",
+      process: {
+        component: "daemon",
+        level: "ok",
+        code: "PROCESS_READY",
+        message: "ready",
+        updatedAt: "2026-06-04T00:00:00Z",
+      },
+      components: [],
+      configConfigured: true,
+      databaseOnline: true,
+      backendOnline: true,
+      mqttConnected: true,
+      outboxSize: 0,
+      outboxMax: 1000,
+      hardwareOnline: true,
+      scannerOnline: true,
+      visionOnline: true,
+      remoteOpsActive: false,
+      currentTransaction: null,
+      operatorReason: "",
+      updatedAt: "2026-06-04T00:00:00Z",
+    });
+    useConnectivityStore().applyReady({
+      ready: true,
+      canSell: true,
+      mode: "catalog",
+      blockingCodes: [],
+      blockingReasons: [],
+      degradedReasons: [],
+      suggestedRoute: "catalog",
+      updatedAt: "2026-06-04T00:00:00Z",
+    });
+    useConnectivityStore().applySaleReadiness({
+      canStartNetworkAuthorizedSale: true,
+      blockingCodes: [],
+      components: {
+        platformReachability: {
+          ready: true,
+          code: "PLATFORM_REACHABLE",
+          message: "platform reachable",
+        },
+        machineAuthentication: {
+          ready: true,
+          code: "MACHINE_AUTH_READY",
+          message: "machine code configured",
+        },
+        activePlanogram: {
+          ready: true,
+          code: "ACTIVE_PLANOGRAM_READY",
+          message: "PLAN-1",
+        },
+        paymentOptions: {
+          ready: true,
+          code: "PAYMENT_OPTIONS_READY",
+          message: "payment option available",
+          methods: [],
+        },
+        scannerCapability: {
+          ready: true,
+          code: "SCANNER_READY",
+          message: "scanner ready",
+        },
+        syncHealth: {
+          ready: true,
+          code: "SYNC_READY",
+          message: "sync connected",
+        },
+        wholeMachineBlockers: {
+          ready: true,
+          code: "WHOLE_MACHINE_READY",
+          message: "hardware ready",
+        },
+      },
+    });
     store.selectItem(makeCatalogItem());
 
     await store.createOrder();
@@ -302,6 +378,133 @@ describe("checkout store", () => {
     ];
     store.selectedPaymentOptionKey = "mock:mock";
     store.selectItem(makeCatalogItem());
+
+    expect(store.canCreateOrder).toBe(false);
+    await expect(store.createOrder()).rejects.toThrow("当前机器暂不可创建订单");
+    expect(createOrderMock).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when machine sale readiness is unknown", async () => {
+    const store = useCheckoutStore();
+    store.paymentOptions = [
+      {
+        optionKey: "mock:mock",
+        providerCode: "mock",
+        method: "mock",
+        displayName: "模拟支付",
+        description: "本地模拟",
+        icon: "mock",
+        disabled: false,
+        disabledReason: null,
+        recommended: true,
+      },
+    ];
+    store.selectedPaymentOptionKey = "mock:mock";
+    store.selectItem(makeCatalogItem());
+
+    expect(store.canCreateOrder).toBe(false);
+    await expect(store.createOrder()).rejects.toThrow("当前机器暂不可创建订单");
+    expect(createOrderMock).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when a previously ready machine becomes stale", async () => {
+    const store = useCheckoutStore();
+    const connectivityStore = useConnectivityStore();
+    connectivityStore.applyHealth({
+      status: "healthy",
+      process: {
+        component: "daemon",
+        level: "ok",
+        code: "PROCESS_READY",
+        message: "ready",
+        updatedAt: "2026-06-04T00:00:00Z",
+      },
+      components: [],
+      configConfigured: true,
+      databaseOnline: true,
+      backendOnline: true,
+      mqttConnected: true,
+      outboxSize: 0,
+      outboxMax: 1000,
+      hardwareOnline: true,
+      scannerOnline: true,
+      visionOnline: true,
+      remoteOpsActive: false,
+      currentTransaction: null,
+      operatorReason: "",
+      updatedAt: "2026-06-04T00:00:00Z",
+    });
+    connectivityStore.applyReady({
+      ready: true,
+      canSell: true,
+      mode: "catalog",
+      blockingCodes: [],
+      blockingReasons: [],
+      degradedReasons: [],
+      suggestedRoute: "catalog",
+      updatedAt: "2026-06-04T00:00:00Z",
+    });
+    connectivityStore.applySaleReadiness({
+      canStartNetworkAuthorizedSale: true,
+      blockingCodes: [],
+      components: {
+        platformReachability: {
+          ready: true,
+          code: "PLATFORM_REACHABLE",
+          message: "platform reachable",
+        },
+        machineAuthentication: {
+          ready: true,
+          code: "MACHINE_AUTH_READY",
+          message: "machine code configured",
+        },
+        activePlanogram: {
+          ready: true,
+          code: "ACTIVE_PLANOGRAM_READY",
+          message: "PLAN-1",
+        },
+        paymentOptions: {
+          ready: true,
+          code: "PAYMENT_OPTIONS_READY",
+          message: "payment option available",
+          methods: [],
+        },
+        scannerCapability: {
+          ready: true,
+          code: "SCANNER_READY",
+          message: "scanner ready",
+        },
+        syncHealth: {
+          ready: true,
+          code: "SYNC_READY",
+          message: "sync connected",
+        },
+        wholeMachineBlockers: {
+          ready: true,
+          code: "WHOLE_MACHINE_READY",
+          message: "hardware ready",
+        },
+      },
+    });
+    store.paymentOptions = [
+      {
+        optionKey: "mock:mock",
+        providerCode: "mock",
+        method: "mock",
+        displayName: "模拟支付",
+        description: "本地模拟",
+        icon: "mock",
+        disabled: false,
+        disabledReason: null,
+        recommended: true,
+      },
+    ];
+    store.selectedPaymentOptionKey = "mock:mock";
+    store.selectItem(makeCatalogItem());
+
+    expect(store.canCreateOrder).toBe(true);
+
+    connectivityStore.markStale("event stream disconnected");
 
     expect(store.canCreateOrder).toBe(false);
     await expect(store.createOrder()).rejects.toThrow("当前机器暂不可创建订单");

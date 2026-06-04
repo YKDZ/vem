@@ -142,8 +142,7 @@ function isSaleableItem(
 }
 
 function isMachineSaleReady(): boolean {
-  const readiness = useConnectivityStore().saleReadiness;
-  return readiness ? readiness.canStartNetworkAuthorizedSale : true;
+  return useConnectivityStore().isSaleNetworkReady;
 }
 
 function vendingStatusFromSnapshot(

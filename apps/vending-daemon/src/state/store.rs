@@ -1557,7 +1557,10 @@ async fn upsert_stock_projection_in_tx(
            planogram_version=excluded.planogram_version,
            physical_stock=excluded.physical_stock,
            saleable_stock=excluded.saleable_stock,
-           slot_sales_state=excluded.slot_sales_state,
+           slot_sales_state=CASE
+             WHEN current_stock_projection.slot_sales_state IN ('sale_ready','sold_out') THEN excluded.slot_sales_state
+             ELSE current_stock_projection.slot_sales_state
+           END,
            updated_at=excluded.updated_at",
     )
     .bind(planogram_version)

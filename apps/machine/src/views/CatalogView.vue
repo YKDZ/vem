@@ -42,12 +42,7 @@ async function refreshCatalog(): Promise<void> {
 }
 
 async function selectProduct(item: MachineCatalogItem): Promise<void> {
-  if (
-    !canDisplayAsSaleReady.value ||
-    item.slotSalesState !== "sale_ready" ||
-    item.saleableStock <= 0
-  )
-    return;
+  if (item.slotSalesState !== "sale_ready" || item.saleableStock <= 0) return;
   checkoutStore.selectItem(item);
   await router.push({
     name: "product-detail",
@@ -139,7 +134,7 @@ onMounted(async () => {
           v-for="item in displayItems"
           :key="item.inventoryId"
           :item="item"
-          :disabled="!canDisplayAsSaleReady"
+          :disabled="false"
           @select="selectProduct"
         />
       </div>

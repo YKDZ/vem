@@ -57,6 +57,7 @@ export const useConnectivityStore = defineStore("connectivity", {
     },
     isSaleNetworkReady: (state): boolean =>
       Boolean(
+        !state.stale &&
         state.saleReadiness?.canStartNetworkAuthorizedSale &&
         state.ready?.canSell &&
         state.health?.configConfigured,
