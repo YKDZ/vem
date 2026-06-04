@@ -1,6 +1,8 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
+use crate::serial::EnvironmentSample;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct SlotPayload {
@@ -31,6 +33,27 @@ pub struct DispenseResultPayload {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct EnvironmentControlCommandPayload {
+    pub command_no: String,
+    pub air_conditioner_on: Option<bool>,
+    pub target_temperature_celsius: Option<i8>,
+    pub timeout_seconds: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct EnvironmentControlResultPayload {
+    pub command_no: String,
+    pub success: bool,
+    pub error_code: Option<String>,
+    pub message: Option<String>,
+    pub air_conditioner_on: Option<bool>,
+    pub target_temperature_celsius: Option<i8>,
+    pub reported_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct HardwareStatus {
     pub adapter: String,
     pub online: bool,
@@ -41,6 +64,15 @@ pub struct HardwareStatus {
 pub trait HardwareAdapter: Send + Sync {
     fn adapter_name(&self) -> &str;
     async fn self_check(&self) -> HardwareStatus;
+    async fn query_environment_sample(&self) -> Result<Option<EnvironmentSample>, String> {
+        Ok(None)
+    }
+    async fn set_target_temperature(&self, _temperature_celsius: i8) -> Result<(), String> {
+        Err("target temperature control is not supported by this hardware adapter".to_string())
+    }
+    async fn set_air_conditioner_enabled(&self, _enabled: bool) -> Result<(), String> {
+        Err("air conditioner control is not supported by this hardware adapter".to_string())
+    }
     async fn dispense(&self, cmd: DispenseCommandPayload) -> DispenseResultPayload;
 }
 
@@ -59,6 +91,14 @@ impl HardwareAdapter for MockHardwareAdapter {
             online: true,
             message: "mock adapter ready".to_string(),
         }
+    }
+
+    async fn set_target_temperature(&self, _temperature_celsius: i8) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn set_air_conditioner_enabled(&self, _enabled: bool) -> Result<(), String> {
+        Ok(())
     }
 
     async fn dispense(&self, cmd: DispenseCommandPayload) -> DispenseResultPayload {

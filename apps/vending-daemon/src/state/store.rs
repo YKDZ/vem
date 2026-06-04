@@ -9,7 +9,9 @@ use uuid::Uuid;
 use vending_core::domain::{CommandLogStatus, OutboxKind, OutboxTransport};
 
 use super::schema::{MIGRATION_V1, SCHEMA_VERSION};
-use vending_core::hardware::{DispenseCommandPayload, DispenseResultPayload};
+use vending_core::hardware::{
+    DispenseCommandPayload, DispenseResultPayload, EnvironmentControlResultPayload,
+};
 
 const COMMAND_LOG_TTL_DAYS: i64 = 30;
 const COMMAND_LOG_MAX_ENTRIES: i64 = 2000;
@@ -183,6 +185,27 @@ impl OutboxInput {
             target_url: None,
             method: None,
             payload_json: serde_json::to_value(result).expect("serialize result"),
+            priority: 150,
+        }
+    }
+
+    pub fn environment_control_result(
+        machine_code: &str,
+        result: &EnvironmentControlResultPayload,
+    ) -> Self {
+        Self {
+            id: format!(
+                "{machine_code}:environment-control-result:{}",
+                result.command_no
+            ),
+            kind: OutboxKind::DispenseResult,
+            transport: OutboxTransport::Mqtt,
+            topic: Some(format!(
+                "vem/machines/{machine_code}/events/environment-control-result"
+            )),
+            target_url: None,
+            method: None,
+            payload_json: serde_json::to_value(result).expect("serialize environment result"),
             priority: 150,
         }
     }

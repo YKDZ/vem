@@ -16,3 +16,14 @@ export const machineSlotStatusSchema = z.enum([
 ]);
 export type MachineSlotStatus = z.infer<typeof machineSlotStatusSchema>;
 export const machineSlotStatuses = machineSlotStatusSchema.options;
+
+export const machineCommandStatusSchema = z.enum([
+  "pending",
+  "sent",
+  "acknowledged",
+  "succeeded",
+  "failed",
+  "timeout",
+]);
+export type MachineCommandStatus = z.infer<typeof machineCommandStatusSchema>;
+export const machineCommandStatuses = machineCommandStatusSchema.options;

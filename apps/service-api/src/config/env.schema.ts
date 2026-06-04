@@ -23,6 +23,12 @@ const baseEnvSchema = z.object({
     .min(30)
     .max(3600)
     .default(300),
+  MACHINE_COMMAND_TIMEOUT_SECONDS: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(300)
+    .default(5),
   PAYMENT_MOCK_ENABLED: z
     .preprocess((value) => {
       if (typeof value === "string") {

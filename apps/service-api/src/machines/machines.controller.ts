@@ -13,6 +13,7 @@ import { ApiBearerAuth, ApiTags } from "@nestjs/swagger";
 import {
   createMachineSchema,
   createMachineSlotSchema,
+  machineEnvironmentControlRequestSchema,
   machineRecommendationRequestSchema,
   pageQuerySchema,
   updateMachineSchema,
@@ -36,6 +37,9 @@ import { MachinesService } from "./machines.service";
 type CreateMachineInput = z.infer<typeof createMachineSchema>;
 type UpdateMachineInput = z.infer<typeof updateMachineSchema>;
 type CreateMachineSlotInput = z.infer<typeof createMachineSlotSchema>;
+type MachineEnvironmentControlInput = z.infer<
+  typeof machineEnvironmentControlRequestSchema
+>;
 type PageQueryInput = z.infer<typeof pageQuerySchema>;
 
 @ApiTags("machines")
@@ -67,6 +71,23 @@ export class MachinesController {
     @Body(new ZodValidationPipe(updateMachineSchema)) body: UpdateMachineInput,
   ) {
     return await this.machinesService.updateMachine(id, body);
+  }
+
+  @RequirePermissions("machines.read")
+  @Get(":id")
+  async getMachine(@Param("id", ParseUUIDPipe) id: string) {
+    return await this.machinesService.getMachine(id);
+  }
+
+  @RequirePermissions("machines.command")
+  @Post(":id/commands/environment-control")
+  async commandEnvironment(
+    @CurrentAdmin() admin: AuthenticatedAdmin,
+    @Param("id", ParseUUIDPipe) id: string,
+    @Body(new ZodValidationPipe(machineEnvironmentControlRequestSchema))
+    body: MachineEnvironmentControlInput,
+  ) {
+    return await this.machinesService.commandEnvironment(id, body, admin.id);
   }
 
   @RequirePermissions("machines.read")

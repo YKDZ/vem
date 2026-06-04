@@ -14,9 +14,10 @@ use crate::hardware::{
 
 pub const FRAME_HEAD: u8 = 0x55;
 pub const FRAME_MULTI_TAIL: u8 = 0x56;
-const HANDSHAKE: [u8; 2] = [FRAME_HEAD, 0x10];
+const HANDSHAKE: [u8; 2] = build_status_query_frame();
 const SERIAL_BAUD_RATE: u32 = 115_200;
 const COMMAND_ACK_TIMEOUT: TokioDuration = TokioDuration::from_millis(100);
+const ENVIRONMENT_COMMAND_TIMEOUT: TokioDuration = TokioDuration::from_millis(200);
 const HANDSHAKE_TIMEOUT: TokioDuration = TokioDuration::from_millis(1_000);
 /// 连续多长时间未收到心跳后，主动发送握手探测帧（来自补充协议文档第5点）
 const HEARTBEAT_PROBE_INTERVAL: TokioDuration = TokioDuration::from_secs(1);
@@ -45,6 +46,81 @@ impl SerialHardwareAdapter {
             .flow_control(FlowControl::None)
             .open_native_async()
             .map_err(|error| format!("open serial port {} failed: {error}", self.port_path))
+    }
+
+    pub async fn query_environment_sample(&self) -> Result<Option<EnvironmentSample>, String> {
+        let frame = build_environment_sample_query_frame();
+        let _guard = self.op_lock.lock().await;
+        let mut port = self.open_port()?;
+        port.write_all(&frame)
+            .await
+            .map_err(|error| format!("serial environment query write failed: {error}"))?;
+        port.flush()
+            .await
+            .map_err(|error| format!("serial environment query flush failed: {error}"))?;
+
+        match read_lower_frame(&mut port, ENVIRONMENT_COMMAND_TIMEOUT).await? {
+            LowerFrame::EnvironmentSample(sample) => Ok(Some(sample)),
+            LowerFrame::NoValidEnvironmentSample => Ok(None),
+            frame if frame.is_fault() => Err(format!(
+                "lower controller rejected environment query command: {}",
+                frame.describe()
+            )),
+            frame => Err(format!(
+                "unexpected frame while waiting for environment sample: {}",
+                frame.describe()
+            )),
+        }
+    }
+
+    pub async fn set_target_temperature(&self, temperature_celsius: i8) -> Result<(), String> {
+        let frame = build_target_temperature_frame(temperature_celsius)?;
+        let _guard = self.op_lock.lock().await;
+        let mut port = self.open_port()?;
+        port.write_all(&frame)
+            .await
+            .map_err(|error| format!("serial target temperature write failed: {error}"))?;
+        port.flush()
+            .await
+            .map_err(|error| format!("serial target temperature flush failed: {error}"))?;
+
+        match read_lower_frame(&mut port, ENVIRONMENT_COMMAND_TIMEOUT).await? {
+            LowerFrame::TargetTemperatureEcho {
+                temperature_celsius: echoed,
+            } if echoed == temperature_celsius => Ok(()),
+            frame if frame.is_fault() => Err(format!(
+                "lower controller rejected target temperature command: {}",
+                frame.describe()
+            )),
+            frame => Err(format!(
+                "unexpected frame while waiting for target temperature echo: {}",
+                frame.describe()
+            )),
+        }
+    }
+
+    pub async fn set_air_conditioner_enabled(&self, enabled: bool) -> Result<(), String> {
+        let frame = build_air_conditioner_switch_frame(enabled);
+        let _guard = self.op_lock.lock().await;
+        let mut port = self.open_port()?;
+        port.write_all(&frame)
+            .await
+            .map_err(|error| format!("serial air conditioner switch write failed: {error}"))?;
+        port.flush()
+            .await
+            .map_err(|error| format!("serial air conditioner switch flush failed: {error}"))?;
+
+        match read_lower_frame(&mut port, ENVIRONMENT_COMMAND_TIMEOUT).await? {
+            LowerFrame::AirConditionerSwitchEcho { enabled: echoed } if echoed == enabled => Ok(()),
+            frame if frame.is_fault() => Err(format!(
+                "lower controller rejected air conditioner switch command: {}",
+                frame.describe()
+            )),
+            frame => Err(format!(
+                "unexpected frame while waiting for air conditioner switch echo: {}",
+                frame.describe()
+            )),
+        }
     }
 
     async fn handshake(&self) -> Result<LowerFrame, String> {
@@ -134,6 +210,18 @@ impl HardwareAdapter for SerialHardwareAdapter {
         "serial"
     }
 
+    async fn query_environment_sample(&self) -> Result<Option<EnvironmentSample>, String> {
+        SerialHardwareAdapter::query_environment_sample(self).await
+    }
+
+    async fn set_target_temperature(&self, temperature_celsius: i8) -> Result<(), String> {
+        SerialHardwareAdapter::set_target_temperature(self, temperature_celsius).await
+    }
+
+    async fn set_air_conditioner_enabled(&self, enabled: bool) -> Result<(), String> {
+        SerialHardwareAdapter::set_air_conditioner_enabled(self, enabled).await
+    }
+
     async fn self_check(&self) -> HardwareStatus {
         match self.handshake().await {
             Ok(frame) => HardwareStatus {
@@ -214,18 +302,30 @@ enum AckWaitError {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EnvironmentSample {
+    pub temperature_celsius: i8,
+    pub relative_humidity_percent: u8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LowerFrame {
     Ack,
     BoundaryError,
     CrcError,
     MechanicalError,
     Busy,
+    PickupTimeout,
+    PickupPlatformBlocked,
     AboutToDrop,
     Completed,
     IdleHeartbeat,
     DispensingHeartbeat,
-    /// 下位机复位中（出货状态回到零点），对应 0xAC
+    PickupHeartbeat,
     ResetHeartbeat,
+    EnvironmentSample(EnvironmentSample),
+    NoValidEnvironmentSample,
+    TargetTemperatureEcho { temperature_celsius: i8 },
+    AirConditionerSwitchEcho { enabled: bool },
     Unknown(u8),
 }
 
@@ -233,15 +333,18 @@ impl LowerFrame {
     pub fn from_code(code: u8) -> Self {
         match code {
             0x00 => Self::Ack,
-            0x01 => Self::BoundaryError,
-            0x02 => Self::CrcError,
-            0x03 => Self::MechanicalError,
-            0x04 => Self::Busy,
+            0xE1 => Self::BoundaryError,
+            0xE2 => Self::CrcError,
+            0xE3 => Self::MechanicalError,
+            0xE4 => Self::Busy,
+            0xE5 => Self::PickupTimeout,
+            0xE6 => Self::PickupPlatformBlocked,
             0xF0 => Self::AboutToDrop,
             0xF1 => Self::Completed,
             0xAA => Self::IdleHeartbeat,
             0xAB => Self::DispensingHeartbeat,
-            0xAC => Self::ResetHeartbeat,
+            0xAC => Self::PickupHeartbeat,
+            0xAF => Self::ResetHeartbeat,
             other => Self::Unknown(other),
         }
     }
@@ -249,29 +352,44 @@ impl LowerFrame {
     pub fn is_heartbeat(self) -> bool {
         matches!(
             self,
-            Self::IdleHeartbeat | Self::DispensingHeartbeat | Self::ResetHeartbeat
+            Self::IdleHeartbeat
+                | Self::DispensingHeartbeat
+                | Self::PickupHeartbeat
+                | Self::ResetHeartbeat
         )
     }
 
     pub fn is_fault(self) -> bool {
         matches!(
             self,
-            Self::BoundaryError | Self::CrcError | Self::MechanicalError | Self::Busy
+            Self::BoundaryError
+                | Self::CrcError
+                | Self::MechanicalError
+                | Self::Busy
+                | Self::PickupTimeout
+                | Self::PickupPlatformBlocked
         )
     }
 
     pub fn describe(self) -> &'static str {
         match self {
             Self::Ack => "acknowledged",
-            Self::BoundaryError => "slot boundary check failed",
+            Self::BoundaryError => "command boundary check failed",
             Self::CrcError => "crc check failed",
             Self::MechanicalError => "mechanical fault",
             Self::Busy => "controller busy",
+            Self::PickupTimeout => "pickup timed out",
+            Self::PickupPlatformBlocked => "pickup platform blocked",
             Self::AboutToDrop => "goods arrived at outlet",
             Self::Completed => "dispense completed and reset to origin",
             Self::IdleHeartbeat => "idle heartbeat",
             Self::DispensingHeartbeat => "dispensing heartbeat",
+            Self::PickupHeartbeat => "pickup heartbeat",
             Self::ResetHeartbeat => "resetting to origin",
+            Self::EnvironmentSample(_) => "environment sample",
+            Self::NoValidEnvironmentSample => "no valid environment sample",
+            Self::TargetTemperatureEcho { .. } => "target temperature accepted",
+            Self::AirConditionerSwitchEcho { .. } => "air conditioner switch accepted",
             Self::Unknown(_) => "unknown frame",
         }
     }
@@ -279,7 +397,7 @@ impl LowerFrame {
     pub fn to_failure(self) -> Option<DispenseFailure> {
         match self {
             Self::BoundaryError => Some(DispenseFailure::unknown(
-                "lower controller rejected command: slot boundary check failed",
+                "lower controller rejected command: boundary check failed",
             )),
             Self::CrcError => Some(DispenseFailure::unknown(
                 "lower controller rejected command: crc check failed",
@@ -289,6 +407,12 @@ impl LowerFrame {
             )),
             Self::Busy => Some(DispenseFailure::unknown(
                 "lower controller rejected command: controller busy",
+            )),
+            Self::PickupTimeout => Some(DispenseFailure::timeout(
+                "lower controller reported pickup timed out during dispense",
+            )),
+            Self::PickupPlatformBlocked => Some(DispenseFailure::jammed(
+                "lower controller reported pickup platform blocked",
             )),
             Self::Unknown(code) => Some(DispenseFailure::unknown(format!(
                 "lower controller returned unknown frame code 0x{code:02X}"
@@ -345,6 +469,27 @@ fn validate_slot_bounds(layer_no: u32, cell_no: u32) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+pub const fn build_status_query_frame() -> [u8; 2] {
+    [FRAME_HEAD, 0xA0]
+}
+
+pub const fn build_environment_sample_query_frame() -> [u8; 2] {
+    [FRAME_HEAD, 0xB0]
+}
+
+pub fn build_target_temperature_frame(temperature_celsius: i8) -> Result<[u8; 3], String> {
+    if !(-10..=100).contains(&temperature_celsius) {
+        return Err(format!(
+            "target temperature {temperature_celsius} is out of protocol range -10..100 C"
+        ));
+    }
+    Ok([FRAME_HEAD, 0xB1, temperature_celsius as u8])
+}
+
+pub const fn build_air_conditioner_switch_frame(enabled: bool) -> [u8; 3] {
+    [FRAME_HEAD, 0xB2, if enabled { 0xFF } else { 0x00 }]
 }
 
 pub fn build_dispense_frame(layer_no: u32, cell_no: u32) -> Result<[u8; 4], String> {
@@ -479,6 +624,7 @@ async fn wait_for_completion(
             | LowerFrame::AboutToDrop
             | LowerFrame::IdleHeartbeat
             | LowerFrame::DispensingHeartbeat
+            | LowerFrame::PickupHeartbeat
             | LowerFrame::ResetHeartbeat => continue,
             frame => {
                 return Err(frame.to_failure().unwrap_or_else(|| {
@@ -506,6 +652,38 @@ where
             continue;
         }
         let code = read_byte_before(reader, deadline).await?;
+        if code == 0xB0 {
+            let temperature_byte = read_byte_before(reader, deadline).await?;
+            let humidity = read_byte_before(reader, deadline).await?;
+            if temperature_byte == 0x00 && humidity == 0x00 {
+                return Ok(LowerFrame::NoValidEnvironmentSample);
+            }
+            return Ok(LowerFrame::EnvironmentSample(EnvironmentSample {
+                temperature_celsius: temperature_byte as i8,
+                relative_humidity_percent: humidity,
+            }));
+        }
+        if code == 0xB1 {
+            let temperature_celsius = read_byte_before(reader, deadline).await? as i8;
+            if !(-10..=100).contains(&temperature_celsius) {
+                return Err(format!(
+                    "target temperature echo {temperature_celsius} out of protocol range -10..100 C"
+                ));
+            }
+            return Ok(LowerFrame::TargetTemperatureEcho {
+                temperature_celsius,
+            });
+        }
+        if code == 0xB2 {
+            let state = read_byte_before(reader, deadline).await?;
+            return match state {
+                0x00 => Ok(LowerFrame::AirConditionerSwitchEcho { enabled: false }),
+                0xFF => Ok(LowerFrame::AirConditionerSwitchEcho { enabled: true }),
+                other => Err(format!(
+                    "air conditioner switch echo state 0x{other:02X} out of protocol range 0x00/0xFF"
+                )),
+            };
+        }
         return Ok(LowerFrame::from_code(code));
     }
 }
@@ -547,6 +725,27 @@ mod tests {
     }
 
     #[test]
+    fn build_v1_environment_command_frames() {
+        assert_eq!(build_status_query_frame(), [0x55, 0xA0]);
+        assert_eq!(build_environment_sample_query_frame(), [0x55, 0xB0]);
+        assert_eq!(
+            build_target_temperature_frame(-10).unwrap(),
+            [0x55, 0xB1, 0xF6]
+        );
+        assert_eq!(
+            build_target_temperature_frame(100).unwrap(),
+            [0x55, 0xB1, 100]
+        );
+        assert!(build_target_temperature_frame(-11).is_err());
+        assert!(build_target_temperature_frame(101).is_err());
+        assert_eq!(
+            build_air_conditioner_switch_frame(false),
+            [0x55, 0xB2, 0x00]
+        );
+        assert_eq!(build_air_conditioner_switch_frame(true), [0x55, 0xB2, 0xFF]);
+    }
+
+    #[test]
     fn build_dispense_frame_rejects_zero_or_out_of_range_values() {
         assert!(build_dispense_frame(0, 1).is_err());
         assert!(build_dispense_frame(1, 0).is_err());
@@ -555,24 +754,31 @@ mod tests {
     }
 
     #[test]
-    fn lower_frame_maps_documented_codes() {
+    fn lower_frame_maps_documented_v1_codes() {
         assert_eq!(LowerFrame::from_code(0x00), LowerFrame::Ack);
-        assert_eq!(LowerFrame::from_code(0x01), LowerFrame::BoundaryError);
-        assert_eq!(LowerFrame::from_code(0x02), LowerFrame::CrcError);
-        assert_eq!(LowerFrame::from_code(0x03), LowerFrame::MechanicalError);
-        assert_eq!(LowerFrame::from_code(0x04), LowerFrame::Busy);
         assert_eq!(LowerFrame::from_code(0xF0), LowerFrame::AboutToDrop);
         assert_eq!(LowerFrame::from_code(0xF1), LowerFrame::Completed);
         assert_eq!(LowerFrame::from_code(0xAA), LowerFrame::IdleHeartbeat);
         assert_eq!(LowerFrame::from_code(0xAB), LowerFrame::DispensingHeartbeat);
-        assert_eq!(LowerFrame::from_code(0xAC), LowerFrame::ResetHeartbeat);
+        assert_eq!(LowerFrame::from_code(0xAC), LowerFrame::PickupHeartbeat);
+        assert_eq!(LowerFrame::from_code(0xAF), LowerFrame::ResetHeartbeat);
+        assert_eq!(LowerFrame::from_code(0xE1), LowerFrame::BoundaryError);
+        assert_eq!(LowerFrame::from_code(0xE2), LowerFrame::CrcError);
+        assert_eq!(LowerFrame::from_code(0xE3), LowerFrame::MechanicalError);
+        assert_eq!(LowerFrame::from_code(0xE4), LowerFrame::Busy);
+        assert_eq!(LowerFrame::from_code(0xE5), LowerFrame::PickupTimeout);
+        assert_eq!(
+            LowerFrame::from_code(0xE6),
+            LowerFrame::PickupPlatformBlocked
+        );
     }
 
     #[test]
     fn reset_heartbeat_is_a_heartbeat() {
-        assert!(LowerFrame::ResetHeartbeat.is_heartbeat());
         assert!(LowerFrame::IdleHeartbeat.is_heartbeat());
         assert!(LowerFrame::DispensingHeartbeat.is_heartbeat());
+        assert!(LowerFrame::PickupHeartbeat.is_heartbeat());
+        assert!(LowerFrame::ResetHeartbeat.is_heartbeat());
         assert!(!LowerFrame::MechanicalError.is_heartbeat());
     }
 
@@ -644,5 +850,75 @@ mod tests {
             .await
             .expect("read frame");
         assert_eq!(frame, LowerFrame::Ack);
+    }
+
+    #[tokio::test]
+    async fn read_lower_frame_parses_v1_environment_sample() {
+        let (mut tx, mut rx) = duplex(8);
+        tokio::spawn(async move {
+            tx.write_all(&[FRAME_HEAD, 0xB0, 0xFE, 45])
+                .await
+                .expect("seed bytes");
+        });
+        let frame = read_lower_frame(&mut rx, Duration::from_millis(100))
+            .await
+            .expect("read frame");
+        assert_eq!(
+            frame,
+            LowerFrame::EnvironmentSample(EnvironmentSample {
+                temperature_celsius: -2,
+                relative_humidity_percent: 45,
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn read_lower_frame_represents_v1_environment_sentinel() {
+        let (mut tx, mut rx) = duplex(8);
+        tokio::spawn(async move {
+            tx.write_all(&[FRAME_HEAD, 0xB0, 0x00, 0x00])
+                .await
+                .expect("seed bytes");
+        });
+        let frame = read_lower_frame(&mut rx, Duration::from_millis(100))
+            .await
+            .expect("read frame");
+        assert_eq!(frame, LowerFrame::NoValidEnvironmentSample);
+    }
+
+    #[tokio::test]
+    async fn read_lower_frame_parses_v1_target_temperature_echo() {
+        let (mut tx, mut rx) = duplex(8);
+        tokio::spawn(async move {
+            tx.write_all(&[FRAME_HEAD, 0xB1, 0xF6])
+                .await
+                .expect("seed bytes");
+        });
+        let frame = read_lower_frame(&mut rx, Duration::from_millis(100))
+            .await
+            .expect("read frame");
+        assert_eq!(
+            frame,
+            LowerFrame::TargetTemperatureEcho {
+                temperature_celsius: -10
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn read_lower_frame_parses_v1_air_conditioner_switch_echo() {
+        let (mut tx, mut rx) = duplex(8);
+        tokio::spawn(async move {
+            tx.write_all(&[FRAME_HEAD, 0xB2, 0xFF])
+                .await
+                .expect("seed bytes");
+        });
+        let frame = read_lower_frame(&mut rx, Duration::from_millis(100))
+            .await
+            .expect("read frame");
+        assert_eq!(
+            frame,
+            LowerFrame::AirConditionerSwitchEcho { enabled: true }
+        );
     }
 }

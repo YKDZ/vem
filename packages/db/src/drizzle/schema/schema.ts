@@ -3,6 +3,7 @@ import {
   categoryStatuses,
   inventoryMovementReasons,
   inventoryReservationStatuses,
+  machineCommandStatuses,
   machineSlotStatuses,
   machineStatuses,
   notificationDeliveryStatuses,
@@ -68,6 +69,10 @@ export const machineStatus = t.pgEnum(
 export const machineSlotStatus = t.pgEnum(
   "machine_slot_status",
   asPgEnumValues(machineSlotStatuses),
+);
+export const machineCommandStatus = t.pgEnum(
+  "machine_command_status",
+  asPgEnumValues(machineCommandStatuses),
 );
 export const inventoryReservationStatus = t.pgEnum(
   "inventory_reservation_status",
@@ -885,6 +890,42 @@ export const vendingCommands = t.pgTable(
       "vending_commands_retry_count_non_negative",
       sql`${table.retryCount} >= 0`,
     ),
+  ],
+);
+
+export const machineCommands = t.pgTable(
+  "machine_commands",
+  {
+    id: id(),
+    commandNo: t.varchar("command_no", { length: 64 }).notNull(),
+    machineId: t
+      .uuid("machine_id")
+      .notNull()
+      .references(() => machines.id),
+    type: t.varchar("type", { length: 64 }).notNull(),
+    status: machineCommandStatus("status").default("pending").notNull(),
+    payloadJson: t.jsonb("payload_json").$type<JsonObject>().notNull(),
+    resultJson: t.jsonb("result_json").$type<JsonObject>(),
+    sentAt: t.timestamp("sent_at", { withTimezone: true }),
+    ackAt: t.timestamp("ack_at", { withTimezone: true }),
+    resultAt: t.timestamp("result_at", { withTimezone: true }),
+    timeoutAt: t.timestamp("timeout_at", { withTimezone: true }),
+    requestedByAdminUserId: t
+      .uuid("requested_by_admin_user_id")
+      .references(() => adminUsers.id),
+    lastError: t.text("last_error"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    t.uniqueIndex("machine_commands_command_no_unique").on(table.commandNo),
+    t.index("machine_commands_machine_id_idx").on(table.machineId),
+    t.index("machine_commands_type_idx").on(table.type),
+    t.index("machine_commands_status_idx").on(table.status),
+    t.index("machine_commands_timeout_at_idx").on(table.timeoutAt),
+    t
+      .index("machine_commands_requested_by_admin_user_id_idx")
+      .on(table.requestedByAdminUserId),
   ],
 );
 

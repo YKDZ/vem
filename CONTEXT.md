@@ -16,6 +16,14 @@ _Avoid_: Weather, sensor command
 A machine command that changes the vending machine environment, such as switching air conditioning or setting its target temperature.
 _Avoid_: Remote operation, sensor reading
 
+**Machine Availability Status**:
+A vending machine's high-level availability for operations such as accepting orders and dispensing goods.
+_Avoid_: Sensor status, environment status
+
+**Environment Capability Fault**:
+A fault in a machine's environment sensing or control capability that does not by itself mean the machine is unavailable for sales.
+_Avoid_: Offline machine, maintenance status
+
 **Remote Operation**:
 A maintenance request that a vending machine may pick up and complete asynchronously outside the customer purchase flow.
 _Avoid_: Machine command

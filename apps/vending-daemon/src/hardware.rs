@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
-use vending_core::{hardware::DispenseCommandPayload, hardware::HardwareAdapter};
+use vending_core::{
+    hardware::DispenseCommandPayload, hardware::HardwareAdapter, serial::EnvironmentSample,
+};
 
 use crate::config::{HardwareAdapterKind, MachinePublicConfig};
 
@@ -10,6 +12,10 @@ pub struct HardwareSupervisor {
 }
 
 impl HardwareSupervisor {
+    pub fn from_adapter(adapter: Arc<dyn HardwareAdapter>) -> Self {
+        Self { adapter }
+    }
+
     pub fn from_config(config: &MachinePublicConfig) -> Result<Self, String> {
         let adapter: Arc<dyn HardwareAdapter> = match config.hardware_adapter {
             HardwareAdapterKind::Mock => Arc::new(vending_core::hardware::MockHardwareAdapter),
@@ -39,6 +45,20 @@ impl HardwareSupervisor {
         command: DispenseCommandPayload,
     ) -> vending_core::hardware::DispenseResultPayload {
         self.adapter.dispense(command).await
+    }
+
+    pub async fn query_environment_sample(&self) -> Result<Option<EnvironmentSample>, String> {
+        self.adapter.query_environment_sample().await
+    }
+
+    pub async fn set_target_temperature(&self, temperature_celsius: i8) -> Result<(), String> {
+        self.adapter
+            .set_target_temperature(temperature_celsius)
+            .await
+    }
+
+    pub async fn set_air_conditioner_enabled(&self, enabled: bool) -> Result<(), String> {
+        self.adapter.set_air_conditioner_enabled(enabled).await
     }
 
     pub fn adapter_name(&self) -> &str {
