@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 use vending_core::domain::{CommandLogStatus, OutboxKind, OutboxTransport};
 
-use super::schema::{MIGRATION_V1, MIGRATION_V2, MIGRATION_V3, SCHEMA_VERSION};
+use super::schema::{MIGRATION_V1, MIGRATION_V2, MIGRATION_V3, MIGRATION_V4, SCHEMA_VERSION};
 use vending_core::hardware::{
     DispenseCommandPayload, DispenseResultPayload, EnvironmentControlResultPayload,
 };
@@ -49,6 +49,18 @@ type OutboxRecordRow = (
 );
 
 type CurrentOrderSessionRow = (Option<String>, Option<String>, Option<String>, String);
+type StockMovementSyncRecordRow = (
+    String,
+    String,
+    String,
+    i64,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    String,
+    String,
+);
 type PreviousSlotProjectionRow = (String, i64, String, String, String, String);
 type OrderSessionRecordRow = (
     String,
@@ -117,6 +129,21 @@ pub struct OutboxRecord {
     pub attempt_count: i64,
     pub last_error: Option<String>,
     pub expires_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StockMovementSyncRecord {
+    pub movement_id: String,
+    pub status: String,
+    pub outbox_event_id: String,
+    pub attempt_count: i64,
+    pub last_error: Option<String>,
+    pub accepted_at: Option<String>,
+    pub platform_receipt_json: Option<serde_json::Value>,
+    pub rejection_json: Option<serde_json::Value>,
+    pub created_at: String,
+    pub updated_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -344,6 +371,23 @@ impl OutboxInput {
             priority: 700,
         }
     }
+
+    pub fn stock_movement_upload(
+        movement_id: &str,
+        target_url: String,
+        payload: serde_json::Value,
+    ) -> Self {
+        Self {
+            id: format!("stock-movement:{movement_id}"),
+            kind: OutboxKind::StockMovementUpload,
+            transport: OutboxTransport::Http,
+            topic: None,
+            target_url: Some(target_url),
+            method: Some("POST".to_string()),
+            payload_json: payload,
+            priority: 250,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -411,6 +455,12 @@ impl LocalStateStore {
         }
         if current_version < 3 {
             sqlx::query(MIGRATION_V3)
+                .execute(&store.pool)
+                .await
+                .map_err(StoreError::Sqlx)?;
+        }
+        if current_version < 4 {
+            sqlx::query(MIGRATION_V4)
                 .execute(&store.pool)
                 .await
                 .map_err(StoreError::Sqlx)?;
@@ -663,11 +713,25 @@ impl LocalStateStore {
         .fetch_all(&self.pool)
         .await?;
 
-        let mut out = Vec::with_capacity(rows.len());
-        for row in rows {
-            out.push(to_outbox_record(row)?);
-        }
-        Ok(out)
+        rows.into_iter().map(to_outbox_record).collect()
+    }
+
+    pub async fn list_due_stock_movement_uploads(
+        &self,
+        at: chrono::DateTime<Utc>,
+    ) -> Result<Vec<OutboxRecord>, StoreError> {
+        let rows: Vec<OutboxRecordRow> = sqlx::query_as(
+            "SELECT id, kind, transport, topic, target_url, method, payload_json,
+                    priority, created_at, next_attempt_at, attempt_count, last_error, expires_at
+             FROM outbox_events
+             WHERE kind = 'stock_movement_upload' AND next_attempt_at <= ?1
+             ORDER BY priority ASC, created_at ASC",
+        )
+        .bind(at.to_rfc3339_opts(SecondsFormat::Millis, true))
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.into_iter().map(to_outbox_record).collect()
     }
 
     pub async fn enqueue_outbox(&self, input: &OutboxInput) -> Result<(), StoreError> {
@@ -746,6 +810,31 @@ impl LocalStateStore {
         .bind(id)
         .bind(error)
         .bind(next_delay)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn mark_stock_movement_upload_failed(
+        &self,
+        event_id: &str,
+        movement_id: &str,
+        error: &str,
+    ) -> Result<(), StoreError> {
+        self.mark_outbox_failed(event_id, error).await?;
+        let outbox = self
+            .outbox_record(event_id)
+            .await?
+            .ok_or_else(|| StoreError::Sqlx(sqlx::Error::RowNotFound))?;
+        sqlx::query(
+            "UPDATE stock_movement_sync
+             SET status = 'failed', attempt_count = ?2, last_error = ?3, updated_at = ?4
+             WHERE movement_id = ?1",
+        )
+        .bind(movement_id)
+        .bind(outbox.attempt_count)
+        .bind(error)
+        .bind(now_iso())
         .execute(&self.pool)
         .await?;
         Ok(())
@@ -1242,6 +1331,16 @@ impl LocalStateStore {
         &self,
         input: StockMovementInput,
     ) -> Result<SaleViewSnapshot, StoreError> {
+        self.record_stock_movement_with_upload(input, None, None)
+            .await
+    }
+
+    pub async fn record_stock_movement_with_upload(
+        &self,
+        input: StockMovementInput,
+        machine_code: Option<&str>,
+        api_base_url: Option<&str>,
+    ) -> Result<SaleViewSnapshot, StoreError> {
         if input.quantity < 0 {
             return Err(StoreError::InvalidStockInput(
                 "movement quantity must be nonnegative".to_string(),
@@ -1274,6 +1373,7 @@ impl LocalStateStore {
             ));
         };
 
+        let occurred_at = now_iso();
         sqlx::query(
             "INSERT INTO stock_movements(
                movement_id,planogram_version,slot_id,movement_type,quantity,source,attributed_to,occurred_at
@@ -1286,9 +1386,41 @@ impl LocalStateStore {
         .bind(input.quantity)
         .bind(&input.source)
         .bind(&input.attributed_to)
-        .bind(now_iso())
+        .bind(&occurred_at)
         .execute(tx.as_mut())
         .await?;
+
+        if let (Some(machine_code), Some(api_base_url)) = (machine_code, api_base_url) {
+            let payload = serde_json::json!({
+                "machineCode": machine_code,
+                "movementId": input.movement_id,
+                "planogramVersion": input.planogram_version,
+                "slotId": input.slot_id,
+                "movementType": input.movement_type,
+                "quantity": input.quantity,
+                "source": input.source,
+                "attributedTo": input.attributed_to,
+                "occurredAt": occurred_at,
+            });
+            let target_url = format!(
+                "{}/machine-stock-movements",
+                api_base_url.trim_end_matches('/')
+            );
+            let event = OutboxInput::stock_movement_upload(&input.movement_id, target_url, payload);
+            let now = now_iso();
+            sqlx::query(
+                "INSERT INTO stock_movement_sync(
+                   movement_id,status,outbox_event_id,attempt_count,created_at,updated_at
+                 ) VALUES (?1,'pending',?2,0,?3,?3)
+                 ON CONFLICT(movement_id) DO NOTHING",
+            )
+            .bind(&input.movement_id)
+            .bind(&event.id)
+            .bind(&now)
+            .execute(tx.as_mut())
+            .await?;
+            insert_outbox_in_tx(&mut tx, &event).await?;
+        }
 
         let movements: Vec<(String, i64)> = sqlx::query_as(
             "SELECT movement_type, quantity
@@ -1419,6 +1551,75 @@ impl LocalStateStore {
             planogram_version: Some(planogram_version),
             last_updated_at,
         })
+    }
+
+    pub async fn record_stock_movement_upload_response(
+        &self,
+        event: &OutboxRecord,
+        response: &crate::backend::StockMovementUploadResponse,
+    ) -> Result<(), StoreError> {
+        let movement_id = response.movement_id.as_str();
+        let attempts = event.attempt_count + 1;
+        let status = match response.status.as_str() {
+            "accepted" | "already_accepted" => "accepted",
+            "rejected" => "rejected",
+            "reconciliation" => "reconciliation",
+            _ => "reconciliation",
+        };
+        let accepted_at = if status == "accepted" {
+            response.accepted_at.clone().or_else(|| Some(now_iso()))
+        } else {
+            None
+        };
+        let receipt_json = serde_json::to_string(response)?;
+        let rejection_json = if status == "accepted" {
+            None
+        } else {
+            Some(receipt_json.clone())
+        };
+
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            "UPDATE stock_movement_sync
+             SET status = ?2,
+                 attempt_count = ?3,
+                 last_error = NULL,
+                 accepted_at = ?4,
+                 platform_receipt_json = ?5,
+                 rejection_json = ?6,
+                 updated_at = ?7
+             WHERE movement_id = ?1",
+        )
+        .bind(movement_id)
+        .bind(status)
+        .bind(attempts)
+        .bind(accepted_at)
+        .bind(&receipt_json)
+        .bind(rejection_json)
+        .bind(now_iso())
+        .execute(tx.as_mut())
+        .await?;
+        sqlx::query("DELETE FROM outbox_events WHERE id = ?1")
+            .bind(&event.id)
+            .execute(tx.as_mut())
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    pub async fn stock_movement_sync_record(
+        &self,
+        movement_id: &str,
+    ) -> Result<Option<StockMovementSyncRecord>, StoreError> {
+        let row: Option<StockMovementSyncRecordRow> = sqlx::query_as(
+            "SELECT movement_id,status,outbox_event_id,attempt_count,last_error,accepted_at,platform_receipt_json,rejection_json,created_at,updated_at
+             FROM stock_movement_sync WHERE movement_id = ?1",
+        )
+        .bind(movement_id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        row.map(to_stock_movement_sync_record).transpose()
     }
 
     pub async fn append_health_event(
@@ -1848,6 +2049,7 @@ fn to_kind_string(kind: OutboxKind) -> &'static str {
         OutboxKind::Heartbeat => "heartbeat",
         OutboxKind::RemoteOpResult => "remote_op_result",
         OutboxKind::LogExport => "log_export",
+        OutboxKind::StockMovementUpload => "stock_movement_upload",
     }
 }
 
@@ -2091,6 +2293,29 @@ fn to_command_record(row: CommandRecordRow) -> Result<CommandLogRecord, StoreErr
     })
 }
 
+fn to_stock_movement_sync_record(
+    row: StockMovementSyncRecordRow,
+) -> Result<StockMovementSyncRecord, StoreError> {
+    Ok(StockMovementSyncRecord {
+        movement_id: row.0,
+        status: row.1,
+        outbox_event_id: row.2,
+        attempt_count: row.3,
+        last_error: row.4,
+        accepted_at: row.5,
+        platform_receipt_json: row
+            .6
+            .map(|value| serde_json::from_str(&value))
+            .transpose()?,
+        rejection_json: row
+            .7
+            .map(|value| serde_json::from_str(&value))
+            .transpose()?,
+        created_at: row.8,
+        updated_at: row.9,
+    })
+}
+
 fn parse_command_status(value: &str) -> CommandLogStatus {
     match value {
         "acknowledged" => CommandLogStatus::Acknowledged,
@@ -2126,6 +2351,7 @@ fn parse_outbox_kind(value: &str) -> OutboxKind {
         "heartbeat" => OutboxKind::Heartbeat,
         "remote_op_result" => OutboxKind::RemoteOpResult,
         "log_export" => OutboxKind::LogExport,
+        "stock_movement_upload" => OutboxKind::StockMovementUpload,
         _ => OutboxKind::CommandAck,
     }
 }
@@ -2182,6 +2408,7 @@ mod tests {
         assert!(names.contains(&"machine_planogram_versions"));
         assert!(names.contains(&"machine_planogram_slots"));
         assert!(names.contains(&"stock_movements"));
+        assert!(names.contains(&"stock_movement_sync"));
         assert!(names.contains(&"current_stock_projection"));
         assert!(names.contains(&"sale_view_projection"));
 
@@ -2279,6 +2506,259 @@ mod tests {
             .expect("command")
             .expect("command record");
         assert_eq!(command_record.status, CommandLogStatus::Succeeded);
+    }
+
+    #[tokio::test]
+    async fn stock_movement_upload_metadata_is_durable_with_local_movement() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+
+        store
+            .apply_planogram(MachinePlanogramInput {
+                planogram_version: "PLAN-1".to_string(),
+                source: "test".to_string(),
+                applied_by: Some("operator-1".to_string()),
+                slots: vec![MachinePlanogramSlotInput {
+                    slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                    slot_code: "A1".to_string(),
+                    layer_no: 1,
+                    cell_no: 1,
+                    capacity: 8,
+                    par_level: 6,
+                    inventory_id: "550e8400-e29b-41d4-a716-446655440002".to_string(),
+                    variant_id: "550e8400-e29b-41d4-a716-446655440003".to_string(),
+                    product_id: "550e8400-e29b-41d4-a716-446655440004".to_string(),
+                    product_name: "water".to_string(),
+                    product_description: None,
+                    cover_image_url: None,
+                    category_id: None,
+                    category_name: None,
+                    sku: "WATER-001".to_string(),
+                    size: Some("550ml".to_string()),
+                    color: None,
+                    price_cents: 200,
+                    product_sort_order: 1,
+                    target_gender: None,
+                }],
+            })
+            .await
+            .expect("planogram");
+
+        store
+            .record_stock_movement_with_upload(
+                StockMovementInput {
+                    movement_id: "MOVE-1".to_string(),
+                    planogram_version: "PLAN-1".to_string(),
+                    slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                    movement_type: "planned_refill".to_string(),
+                    quantity: 3,
+                    source: "field_service".to_string(),
+                    attributed_to: Some("operator-1".to_string()),
+                },
+                Some("MACHINE-1"),
+                Some("https://platform.example/api"),
+            )
+            .await
+            .expect("movement");
+
+        let movement_count: (i64,) =
+            sqlx::query_as("SELECT COUNT(1) FROM stock_movements WHERE movement_id = 'MOVE-1'")
+                .fetch_one(store.pool())
+                .await
+                .expect("movement count");
+        assert_eq!(movement_count.0, 1);
+
+        let sync = store
+            .stock_movement_sync_record("MOVE-1")
+            .await
+            .expect("sync")
+            .expect("sync exists");
+        assert_eq!(sync.status, "pending");
+        assert_eq!(sync.attempt_count, 0);
+        assert_eq!(sync.outbox_event_id, "stock-movement:MOVE-1");
+
+        let outbox = store
+            .outbox_record("stock-movement:MOVE-1")
+            .await
+            .expect("outbox")
+            .expect("outbox exists");
+        assert_eq!(outbox.kind, OutboxKind::StockMovementUpload);
+        assert_eq!(outbox.transport, OutboxTransport::Http);
+        assert_eq!(
+            outbox.target_url.as_deref(),
+            Some("https://platform.example/api/machine-stock-movements")
+        );
+        assert_eq!(outbox.payload_json["movementId"], "MOVE-1");
+        assert_eq!(outbox.payload_json["machineCode"], "MACHINE-1");
+    }
+
+    async fn seed_stock_movement_upload(store: &LocalStateStore, movement_id: &str) {
+        store
+            .apply_planogram(MachinePlanogramInput {
+                planogram_version: "PLAN-1".to_string(),
+                source: "test".to_string(),
+                applied_by: None,
+                slots: vec![MachinePlanogramSlotInput {
+                    slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                    slot_code: "A1".to_string(),
+                    layer_no: 1,
+                    cell_no: 1,
+                    capacity: 8,
+                    par_level: 6,
+                    inventory_id: "550e8400-e29b-41d4-a716-446655440002".to_string(),
+                    variant_id: "550e8400-e29b-41d4-a716-446655440003".to_string(),
+                    product_id: "550e8400-e29b-41d4-a716-446655440004".to_string(),
+                    product_name: "water".to_string(),
+                    product_description: None,
+                    cover_image_url: None,
+                    category_id: None,
+                    category_name: None,
+                    sku: "WATER-001".to_string(),
+                    size: None,
+                    color: None,
+                    price_cents: 200,
+                    product_sort_order: 1,
+                    target_gender: None,
+                }],
+            })
+            .await
+            .expect("planogram");
+        store
+            .record_stock_movement_with_upload(
+                StockMovementInput {
+                    movement_id: movement_id.to_string(),
+                    planogram_version: "PLAN-1".to_string(),
+                    slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                    movement_type: "planned_refill".to_string(),
+                    quantity: 3,
+                    source: "field_service".to_string(),
+                    attributed_to: None,
+                },
+                Some("MACHINE-1"),
+                Some("https://platform.example/api"),
+            )
+            .await
+            .expect("movement");
+    }
+
+    #[tokio::test]
+    async fn stock_movement_upload_failure_keeps_outbox_and_records_retry_state() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_stock_movement_upload(&store, "MOVE-RETRY").await;
+
+        store
+            .mark_stock_movement_upload_failed(
+                "stock-movement:MOVE-RETRY",
+                "MOVE-RETRY",
+                "backend offline",
+            )
+            .await
+            .expect("failed");
+
+        let sync = store
+            .stock_movement_sync_record("MOVE-RETRY")
+            .await
+            .expect("sync")
+            .expect("sync exists");
+        assert_eq!(sync.status, "failed");
+        assert_eq!(sync.attempt_count, 1);
+        assert_eq!(sync.last_error.as_deref(), Some("backend offline"));
+        assert!(store
+            .outbox_record("stock-movement:MOVE-RETRY")
+            .await
+            .expect("outbox")
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn stock_movement_upload_response_stores_receipt_and_removes_outbox() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_stock_movement_upload(&store, "MOVE-ACCEPT").await;
+        let event = store
+            .outbox_record("stock-movement:MOVE-ACCEPT")
+            .await
+            .expect("outbox")
+            .expect("event");
+
+        let response = crate::backend::StockMovementUploadResponse {
+            movement_id: "MOVE-ACCEPT".to_string(),
+            status: "accepted".to_string(),
+            accepted_at: Some("2026-06-04T00:00:00.000Z".to_string()),
+            receipt: Some(json!({"rawMovementId":"raw-1"})),
+            rejection: None,
+        };
+        store
+            .record_stock_movement_upload_response(&event, &response)
+            .await
+            .expect("receipt");
+
+        let sync = store
+            .stock_movement_sync_record("MOVE-ACCEPT")
+            .await
+            .expect("sync")
+            .expect("sync exists");
+        assert_eq!(sync.status, "accepted");
+        assert_eq!(sync.attempt_count, 1);
+        assert_eq!(
+            sync.accepted_at.as_deref(),
+            Some("2026-06-04T00:00:00.000Z")
+        );
+        assert_eq!(
+            sync.platform_receipt_json.expect("receipt")["status"],
+            "accepted"
+        );
+        assert!(store
+            .outbox_record("stock-movement:MOVE-ACCEPT")
+            .await
+            .expect("outbox")
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn stock_movement_rejection_is_terminal_receipt() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_stock_movement_upload(&store, "MOVE-REJECT").await;
+        let event = store
+            .outbox_record("stock-movement:MOVE-REJECT")
+            .await
+            .expect("outbox")
+            .expect("event");
+
+        let response = crate::backend::StockMovementUploadResponse {
+            movement_id: "MOVE-REJECT".to_string(),
+            status: "reconciliation".to_string(),
+            accepted_at: None,
+            receipt: None,
+            rejection: Some(json!({"reason":"movement_id_payload_conflict"})),
+        };
+        store
+            .record_stock_movement_upload_response(&event, &response)
+            .await
+            .expect("rejection");
+
+        let sync = store
+            .stock_movement_sync_record("MOVE-REJECT")
+            .await
+            .expect("sync")
+            .expect("sync exists");
+        assert_eq!(sync.status, "reconciliation");
+        assert!(sync.rejection_json.is_some());
+        assert!(store
+            .outbox_record("stock-movement:MOVE-REJECT")
+            .await
+            .expect("outbox")
+            .is_none());
     }
 
     #[tokio::test]

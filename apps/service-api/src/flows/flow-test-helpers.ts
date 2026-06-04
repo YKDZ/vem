@@ -170,6 +170,7 @@ export async function cleanupBusinessTables(db: DrizzleDB): Promise<void> {
       order_status_events,
       inventory_reservations,
       inventory_movements,
+      machine_raw_stock_movements,
       orders,
       inventories,
       machine_slots,

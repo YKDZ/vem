@@ -77,6 +77,22 @@ export type MachineEnvironmentControlRequest = z.infer<
   typeof machineEnvironmentControlRequestSchema
 >;
 
+export const rawMachineStockMovementSchema = z.object({
+  machineCode: z.string().min(1).max(64).optional(),
+  movementId: z.string().min(1).max(128),
+  planogramVersion: z.string().min(1).max(128),
+  slotId: z.uuid(),
+  movementType: z.enum(["planned_refill", "stock_count_correction"]),
+  quantity: z.int().nonnegative(),
+  source: z.string().min(1).max(128),
+  attributedTo: z.string().max(128).nullable().optional(),
+  occurredAt: z.iso.datetime(),
+});
+
+export type RawMachineStockMovement = z.infer<
+  typeof rawMachineStockMovementSchema
+>;
+
 export const machineAuthTokenRequestSchema = z.object({
   machineCode: z.string().min(1).max(64),
   machineSecret: z.string().min(32).max(256),

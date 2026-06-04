@@ -348,6 +348,9 @@ impl MqttSyncRuntime {
         let mut failed = 0_u64;
 
         for event in due {
+            if event.kind == vending_core::domain::OutboxKind::StockMovementUpload {
+                continue;
+            }
             let result = match event.transport {
                 vending_core::domain::OutboxTransport::Mqtt => {
                     self.publish_json(event.topic.as_deref(), &event.payload_json)

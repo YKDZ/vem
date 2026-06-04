@@ -1231,7 +1231,35 @@ async fn record_stock_movement(
         return (status, error).into_response();
     }
 
-    match ctx.state.record_stock_movement(input).await {
+    let config = match ctx.config_store.load_public_config().await {
+        Ok(config) => config,
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorMessage {
+                    code: "config_load_failed",
+                    message: error,
+                }),
+            )
+                .into_response();
+        }
+    };
+    let Some(machine_code) = config.machine_code.as_deref() else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorMessage {
+                code: "machine_code_missing",
+                message: "machine code required for stock movement upload".to_string(),
+            }),
+        )
+            .into_response();
+    };
+
+    match ctx
+        .state
+        .record_stock_movement_with_upload(input, Some(machine_code), Some(&config.api_base_url))
+        .await
+    {
         Ok(snapshot) => (StatusCode::CREATED, Json(snapshot)).into_response(),
         Err(error) => store_error_response("stock_movement_record_failed", error),
     }

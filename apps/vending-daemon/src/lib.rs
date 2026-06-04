@@ -11,6 +11,7 @@ pub mod scanner;
 pub mod secret;
 pub mod shutdown;
 pub mod state;
+pub mod stock_upload;
 pub mod transaction;
 pub mod vision;
 

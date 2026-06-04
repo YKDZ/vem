@@ -37,6 +37,16 @@ pub struct LogExportResultPayload {
     pub size_bytes: i64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StockMovementUploadResponse {
+    pub movement_id: String,
+    pub status: String,
+    pub accepted_at: Option<String>,
+    pub receipt: Option<serde_json::Value>,
+    pub rejection: Option<serde_json::Value>,
+}
+
 impl BackendClient {
     pub fn new(base_url: impl Into<String>) -> Self {
         let base_url = base_url.into().trim_end_matches('/').to_string();
@@ -268,6 +278,19 @@ impl BackendClient {
             reqwest::Method::GET,
             "/machine-orders/payment-options",
             None,
+            true,
+        )
+        .await
+    }
+
+    pub async fn submit_stock_movement_upload(
+        &self,
+        payload: &serde_json::Value,
+    ) -> Result<StockMovementUploadResponse, String> {
+        self.request_json_typed(
+            reqwest::Method::POST,
+            "/machine-stock-movements",
+            Some(payload.clone()),
             true,
         )
         .await

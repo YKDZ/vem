@@ -1,4 +1,4 @@
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 4;
 
 pub const MIGRATION_V1: &str = r#"
 PRAGMA journal_mode = WAL;
@@ -42,7 +42,7 @@ CREATE TABLE IF NOT EXISTS command_log (
 
 CREATE TABLE IF NOT EXISTS outbox_events (
   id TEXT PRIMARY KEY,
-  kind TEXT NOT NULL CHECK (kind IN ('command_ack','dispense_result','heartbeat','remote_op_result','log_export')),
+  kind TEXT NOT NULL CHECK (kind IN ('command_ack','dispense_result','heartbeat','remote_op_result','log_export','stock_movement_upload')),
   transport TEXT NOT NULL CHECK (transport IN ('mqtt','http')),
   topic TEXT,
   target_url TEXT,
@@ -229,6 +229,56 @@ FROM sale_view_projection;
 
 DROP TABLE sale_view_projection;
 ALTER TABLE sale_view_projection_v3 RENAME TO sale_view_projection;
+
+PRAGMA foreign_keys = ON;
+"#;
+
+pub const MIGRATION_V4: &str = r#"
+PRAGMA foreign_keys = OFF;
+
+ALTER TABLE outbox_events RENAME TO outbox_events_v3;
+
+CREATE TABLE IF NOT EXISTS outbox_events (
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL CHECK (kind IN ('command_ack','dispense_result','heartbeat','remote_op_result','log_export','stock_movement_upload')),
+  transport TEXT NOT NULL CHECK (transport IN ('mqtt','http')),
+  topic TEXT,
+  target_url TEXT,
+  method TEXT,
+  payload_json TEXT NOT NULL,
+  priority INTEGER NOT NULL DEFAULT 100,
+  created_at TEXT NOT NULL,
+  next_attempt_at TEXT NOT NULL,
+  attempt_count INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT,
+  expires_at TEXT NOT NULL
+);
+
+INSERT INTO outbox_events(
+  id,kind,transport,topic,target_url,method,payload_json,priority,created_at,next_attempt_at,attempt_count,last_error,expires_at
+)
+SELECT id,kind,transport,topic,target_url,method,payload_json,priority,created_at,next_attempt_at,attempt_count,last_error,expires_at
+FROM outbox_events_v3;
+
+DROP TABLE outbox_events_v3;
+CREATE INDEX IF NOT EXISTS idx_outbox_due ON outbox_events(next_attempt_at, priority);
+
+CREATE TABLE IF NOT EXISTS stock_movement_sync (
+  movement_id TEXT PRIMARY KEY,
+  status TEXT NOT NULL CHECK (status IN ('pending','failed','accepted','rejected','reconciliation')),
+  outbox_event_id TEXT NOT NULL,
+  attempt_count INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT,
+  accepted_at TEXT,
+  platform_receipt_json TEXT,
+  rejection_json TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (movement_id) REFERENCES stock_movements(movement_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_stock_movement_sync_status
+  ON stock_movement_sync(status, updated_at);
 
 PRAGMA foreign_keys = ON;
 "#;

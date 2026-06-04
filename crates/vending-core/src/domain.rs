@@ -18,6 +18,7 @@ pub enum OutboxKind {
     Heartbeat,
     RemoteOpResult,
     LogExport,
+    StockMovementUpload,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

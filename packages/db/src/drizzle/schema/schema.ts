@@ -952,6 +952,54 @@ export const inventoryMovements = t.pgTable(
   ],
 );
 
+export const machineRawStockMovements = t.pgTable(
+  "machine_raw_stock_movements",
+  {
+    id: id(),
+    machineId: t
+      .uuid("machine_id")
+      .notNull()
+      .references(() => machines.id),
+    movementId: t.varchar("movement_id", { length: 128 }).notNull(),
+    planogramVersion: t.varchar("planogram_version", { length: 128 }).notNull(),
+    slotId: t.uuid("slot_id").notNull(),
+    movementType: t.varchar("movement_type", { length: 64 }).notNull(),
+    quantity: t.integer("quantity").notNull(),
+    source: t.varchar("source", { length: 128 }).notNull(),
+    attributedTo: t.varchar("attributed_to", { length: 128 }),
+    occurredAt: t.timestamp("occurred_at", { withTimezone: true }).notNull(),
+    receivedAt: t
+      .timestamp("received_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    payloadHash: t.varchar("payload_hash", { length: 64 }).notNull(),
+    payloadJson: t.jsonb("payload_json").$type<JsonObject>().notNull(),
+    normalizedJson: t.jsonb("normalized_json").$type<JsonObject>().notNull(),
+    status: t.varchar("status", { length: 32 }).default("accepted").notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    t
+      .uniqueIndex("machine_raw_stock_movements_machine_movement_unique")
+      .on(table.machineId, table.movementId),
+    t.index("machine_raw_stock_movements_machine_idx").on(table.machineId),
+    t.index("machine_raw_stock_movements_status_idx").on(table.status),
+    t.check(
+      "machine_raw_stock_movements_quantity_non_negative",
+      sql`${table.quantity} >= 0`,
+    ),
+    t.check(
+      "machine_raw_stock_movements_type_enum",
+      sql`${table.movementType} IN ('planned_refill', 'stock_count_correction')`,
+    ),
+    t.check(
+      "machine_raw_stock_movements_status_enum",
+      sql`${table.status} IN ('accepted', 'rejected', 'reconciliation')`,
+    ),
+  ],
+);
+
 export const vendingCommands = t.pgTable(
   "vending_commands",
   {
