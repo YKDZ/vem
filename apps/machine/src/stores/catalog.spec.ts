@@ -38,7 +38,7 @@ function saleViewItem(overrides: Record<string, unknown> = {}) {
     parLevel: 6,
     physicalStock: 2,
     saleableStock: 2,
-    slotSalesState: "saleable",
+    slotSalesState: "sale_ready",
     ...overrides,
   };
 }

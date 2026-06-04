@@ -40,7 +40,7 @@ const saleViewItem = {
   parLevel: 6,
   physicalStock: 5,
   saleableStock: 5,
-  slotSalesState: "saleable",
+  slotSalesState: "sale_ready",
 };
 
 const publicConfig = {

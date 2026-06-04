@@ -16,7 +16,8 @@ export const useCatalogStore = defineStore("catalog", {
   getters: {
     availableItems: (state): MachineCatalogItem[] =>
       state.items.filter(
-        (item) => item.slotSalesState === "saleable" && item.saleableStock > 0,
+        (item) =>
+          item.slotSalesState === "sale_ready" && item.saleableStock > 0,
       ),
     hasItems: (state): boolean => state.items.length > 0,
     itemByInventoryId:

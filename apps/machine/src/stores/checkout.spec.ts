@@ -34,6 +34,7 @@ import {
   resultKindFromNextAction,
   useCheckoutStore,
 } from "./checkout";
+import { useConnectivityStore } from "./connectivity";
 
 beforeEach(() => {
   setActivePinia(createPinia());
@@ -65,7 +66,7 @@ function makeCatalogItem(
     parLevel: 6,
     physicalStock: 1,
     saleableStock: 1,
-    slotSalesState: "saleable",
+    slotSalesState: "sale_ready",
     productSortOrder: 1,
     targetGender: null,
     ...overrides,
@@ -150,6 +151,24 @@ describe("checkout store", () => {
     expect(getPaymentOptionsMock).toHaveBeenCalledOnce();
   });
 
+  it("reports no payment options without creating an order", async () => {
+    getPaymentOptionsMock.mockResolvedValue({
+      options: [],
+      defaultOptionKey: null,
+      defaultProviderCode: null,
+      serverTime: "2026-01-01T00:00:00Z",
+    });
+
+    const store = useCheckoutStore();
+    await store.loadPaymentOptions();
+
+    expect(store.paymentOptionsLoaded).toBe(true);
+    expect(store.selectedPaymentOptionKey).toBeNull();
+    expect(store.canCreateOrder).toBe(false);
+    expect(store.error).toBe("当前机器暂无可用支付方式");
+    expect(createOrderMock).not.toHaveBeenCalled();
+  });
+
   it("creates order without machineCode payload and applies transaction", async () => {
     createOrderMock.mockResolvedValue(makeTransactionSnapshot());
 
@@ -204,7 +223,7 @@ describe("checkout store", () => {
     ];
     store.selectedPaymentOptionKey = "payment_code:alipay";
     store.selectItem(
-      makeCatalogItem({ saleableStock: 1, slotSalesState: "saleable" }),
+      makeCatalogItem({ saleableStock: 1, slotSalesState: "sale_ready" }),
     );
     catalogStore.applySnapshot({
       items: [
@@ -220,6 +239,72 @@ describe("checkout store", () => {
 
     expect(store.canCreateOrder).toBe(false);
     await expect(store.createOrder()).rejects.toThrow("商品已售罄");
+    expect(createOrderMock).not.toHaveBeenCalled();
+  });
+
+  it("blocks order creation when machine sale readiness is not ready", async () => {
+    const store = useCheckoutStore();
+    const connectivityStore = useConnectivityStore();
+    connectivityStore.applySaleReadiness({
+      canStartNetworkAuthorizedSale: false,
+      blockingCodes: ["PLATFORM_UNREACHABLE"],
+      components: {
+        platformReachability: {
+          ready: false,
+          code: "PLATFORM_UNREACHABLE",
+          message: "platform offline",
+        },
+        machineAuthentication: {
+          ready: true,
+          code: "MACHINE_AUTH_READY",
+          message: "machine code configured",
+        },
+        activePlanogram: {
+          ready: true,
+          code: "ACTIVE_PLANOGRAM_READY",
+          message: "PLAN-1",
+        },
+        paymentOptions: {
+          ready: true,
+          code: "PAYMENT_OPTIONS_READY",
+          message: "payment option available",
+          methods: [],
+        },
+        scannerCapability: {
+          ready: true,
+          code: "SCANNER_READY",
+          message: "scanner ready",
+        },
+        syncHealth: {
+          ready: true,
+          code: "SYNC_READY",
+          message: "sync connected",
+        },
+        wholeMachineBlockers: {
+          ready: true,
+          code: "WHOLE_MACHINE_READY",
+          message: "hardware ready",
+        },
+      },
+    });
+    store.paymentOptions = [
+      {
+        optionKey: "mock:mock",
+        providerCode: "mock",
+        method: "mock",
+        displayName: "模拟支付",
+        description: "本地模拟",
+        icon: "mock",
+        disabled: false,
+        disabledReason: null,
+        recommended: true,
+      },
+    ];
+    store.selectedPaymentOptionKey = "mock:mock";
+    store.selectItem(makeCatalogItem());
+
+    expect(store.canCreateOrder).toBe(false);
+    await expect(store.createOrder()).rejects.toThrow("当前机器暂不可创建订单");
     expect(createOrderMock).not.toHaveBeenCalled();
   });
 

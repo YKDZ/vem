@@ -190,6 +190,36 @@ export const hardwareSelfCheckSchema = z.object({
   configUpdated: z.boolean().default(false),
 });
 
+const saleReadinessComponentSchema = z.object({
+  ready: z.boolean(),
+  code: z.string(),
+  message: z.string(),
+});
+
+export const machineSaleReadinessSchema = z.object({
+  canStartNetworkAuthorizedSale: z.boolean(),
+  blockingCodes: z.array(z.string()),
+  components: z.object({
+    platformReachability: saleReadinessComponentSchema,
+    machineAuthentication: saleReadinessComponentSchema,
+    activePlanogram: saleReadinessComponentSchema,
+    paymentOptions: saleReadinessComponentSchema.extend({
+      methods: z.array(
+        z.object({
+          method: z.string(),
+          optionKey: z.string().nullable(),
+          providerCode: z.string().nullable(),
+          ready: z.boolean(),
+          disabledReason: z.string().nullable().optional(),
+        }),
+      ),
+    }),
+    scannerCapability: saleReadinessComponentSchema,
+    syncHealth: saleReadinessComponentSchema,
+    wholeMachineBlockers: saleReadinessComponentSchema,
+  }),
+});
+
 export const catalogSnapshotSchema = z.object({
   items: z.array(machineCatalogItemSchema),
   cached: z.boolean(),
@@ -265,6 +295,7 @@ export type ScannerStatus = z.infer<typeof scannerStatusSchema>;
 export type VisionStatus = z.infer<typeof visionStatusSchema>;
 export type RemoteOpsStatus = z.infer<typeof remoteOpsStatusSchema>;
 export type HardwareSelfCheck = z.infer<typeof hardwareSelfCheckSchema>;
+export type MachineSaleReadiness = z.infer<typeof machineSaleReadinessSchema>;
 export type CatalogSnapshot = z.infer<typeof catalogSnapshotSchema>;
 export type SaleViewSnapshot = z.infer<typeof machineSaleViewSnapshotSchema>;
 export type DaemonEvent = z.infer<typeof daemonEventSchema>;

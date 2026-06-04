@@ -15,6 +15,7 @@ import type {
 
 import { daemonClient } from "@/daemon/client";
 import { useCatalogStore } from "@/stores/catalog";
+import { useConnectivityStore } from "@/stores/connectivity";
 import { getRemainingSeconds } from "@/utils/format";
 
 export type CheckoutFlowStep =
@@ -136,8 +137,13 @@ function isSaleableItem(
   item: CheckoutSelectedItem | null,
 ): item is CheckoutSelectedItem {
   return Boolean(
-    item && item.slotSalesState === "saleable" && item.saleableStock > 0,
+    item && item.slotSalesState === "sale_ready" && item.saleableStock > 0,
   );
+}
+
+function isMachineSaleReady(): boolean {
+  const readiness = useConnectivityStore().saleReadiness;
+  return readiness ? readiness.canStartNetworkAuthorizedSale : true;
 }
 
 function vendingStatusFromSnapshot(
@@ -183,6 +189,7 @@ export const useCheckoutStore = defineStore("checkout", {
       const selectedItem = latestSaleViewItem(state.selectedItem);
       return Boolean(
         isSaleableItem(selectedItem) &&
+        isMachineSaleReady() &&
         state.selectedPaymentOptionKey &&
         state.paymentOptions.find(
           (option) => option.optionKey === state.selectedPaymentOptionKey,
@@ -373,6 +380,7 @@ export const useCheckoutStore = defineStore("checkout", {
 
       const selected = this.selectedPaymentOption;
       if (!selected || selected.disabled) throw new Error("请选择支付方式");
+      if (!isMachineSaleReady()) throw new Error("当前机器暂不可创建订单");
 
       this.loading = true;
       this.error = null;

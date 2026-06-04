@@ -132,7 +132,14 @@ export const machineSaleViewItemSchema = machineCatalogItemSchema
     parLevel: z.int().nonnegative(),
     physicalStock: z.int().nonnegative(),
     saleableStock: z.int().nonnegative(),
-    slotSalesState: z.enum(["saleable", "sold_out", "unavailable"]),
+    slotSalesState: z.enum([
+      "sale_ready",
+      "sold_out",
+      "suspect",
+      "frozen",
+      "needs_count",
+      "blocked_for_planogram_change",
+    ]),
   });
 
 export const machineSaleViewSnapshotSchema = z.object({

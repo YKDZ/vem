@@ -10,6 +10,7 @@ import {
   hardwareSelfCheckSchema,
   healthSnapshotSchema,
   machinePaymentOptionsResponseSchema,
+  machineSaleReadinessSchema,
   readySnapshotSchema,
   remoteOpsStatusSchema,
   machineSaleViewSnapshotSchema,
@@ -22,6 +23,7 @@ import {
   type DaemonEvent,
   type HealthSnapshot,
   type HardwareSelfCheck,
+  type MachineSaleReadiness,
   type ReadySnapshot,
   type RemoteOpsStatus,
   type SaleViewSnapshot,
@@ -133,6 +135,12 @@ export class DaemonApiClient {
   async getSaleView(): Promise<SaleViewSnapshot> {
     return machineSaleViewSnapshotSchema.parse(
       await this.request("/v1/sale-view"),
+    );
+  }
+
+  async getSaleReadiness(): Promise<MachineSaleReadiness> {
+    return machineSaleReadinessSchema.parse(
+      await this.request("/v1/sale-readiness"),
     );
   }
 

@@ -21,7 +21,10 @@ const specText = computed(
     props.item.sku,
 );
 const buttonText = computed(() => {
-  if (props.item.slotSalesState !== "saleable" || props.item.saleableStock <= 0)
+  if (
+    props.item.slotSalesState !== "sale_ready" ||
+    props.item.saleableStock <= 0
+  )
     return "已售罄";
   if (props.disabled) return "暂不可购买";
   return "查看详情";
@@ -59,7 +62,7 @@ const buttonText = computed(() => {
         type="button"
         :disabled="
           disabled ||
-          item.slotSalesState !== 'saleable' ||
+          item.slotSalesState !== 'sale_ready' ||
           item.saleableStock <= 0
         "
         @click="emit('select', item)"

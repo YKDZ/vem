@@ -21,7 +21,7 @@ use crate::{
     events::DaemonEvent,
     logs,
     state::{
-        store::{MachinePlanogramInput, StockMovementInput},
+        store::{MachinePlanogramInput, SlotSalesStateInput, StockMovementInput},
         LocalStateStore, StoreError,
     },
     transaction::TransactionStateMachine,
@@ -158,8 +158,10 @@ pub fn build_router(ctx: IpcContext) -> Router {
         .route("/v1/config", get(get_config).put(put_config))
         .route("/v1/catalog", get(catalog_snapshot).post(refresh_catalog))
         .route("/v1/sale-view", get(sale_view))
+        .route("/v1/sale-readiness", get(sale_readiness))
         .route("/v1/stock/planogram", post(apply_planogram))
         .route("/v1/stock/movements", post(record_stock_movement))
+        .route("/v1/stock/slot-sales-state", post(update_slot_sales_state))
         .route("/v1/payment-options", get(payment_options))
         .route("/v1/intents/create-order", post(create_order_intent))
         .route(
@@ -687,6 +689,171 @@ async fn sale_view(State(ctx): State<IpcContext>, headers: HeaderMap) -> impl In
     }
 }
 
+async fn sale_readiness(State(ctx): State<IpcContext>, headers: HeaderMap) -> impl IntoResponse {
+    if let Err((status, error)) = require_token(&headers, &ctx.token).await {
+        return (status, error).into_response();
+    }
+
+    match machine_sale_readiness_snapshot(&ctx).await {
+        Ok(snapshot) => (StatusCode::OK, Json(snapshot)).into_response(),
+        Err(error) => store_error_response("sale_readiness_read_failed", error),
+    }
+}
+
+async fn machine_sale_readiness_snapshot(
+    ctx: &IpcContext,
+) -> Result<serde_json::Value, StoreError> {
+    let public = ctx.config_store.load_public_config().await.ok();
+    let machine_code = public
+        .as_ref()
+        .and_then(|config| config.machine_code.clone())
+        .filter(|code| !code.trim().is_empty());
+    let machine_auth_ready = machine_code.is_some();
+
+    let sale_view = ctx.state.sale_view(machine_code).await?;
+    let active_planogram_ready = sale_view.planogram_version.is_some();
+
+    let outbox_size = ctx.state.outbox_size().await.unwrap_or_default() as usize;
+    let sync = ctx.ui.status_cache.sync.read().await.clone();
+    let outbox_max = sync.outbox_max.max(1);
+    let outbox_usage = outbox_size as f64 / outbox_max as f64;
+    let sync_ready = sync.mqtt_running && sync.mqtt_connected && outbox_usage < 0.9;
+
+    let hardware = ctx.ui.status_cache.hardware.read().await.clone();
+    let whole_machine_ready = hardware.online;
+
+    let scanner = ctx.ui.status_cache.scanner.read().await.clone();
+    let scanner_ready = scanner.online
+        && scanner.adapter == vending_core::scanner::PAYMENT_CODE_SOURCE_SERIAL_TEXT
+        && scanner.code == "SCANNER_READY";
+
+    let payment_probe = ctx.ui.backend.get_payment_options().await;
+    let platform_ready = payment_probe.is_ok();
+    let mut payment_methods = Vec::new();
+    if let Ok(payload) = payment_probe.as_ref() {
+        if let Some(options) = payload.get("options").and_then(|value| value.as_array()) {
+            for option in options {
+                let method = option
+                    .get("method")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("unknown");
+                let mut ready = !option
+                    .get("disabled")
+                    .and_then(|value| value.as_bool())
+                    .unwrap_or(false);
+                let mut disabled_reason = option
+                    .get("disabledReason")
+                    .and_then(|value| value.as_str())
+                    .map(ToString::to_string);
+                if method == "payment_code" && !scanner_ready {
+                    ready = false;
+                    disabled_reason = Some(format!("扫码器不可用：{}", scanner.message));
+                }
+                payment_methods.push(serde_json::json!({
+                    "method": method,
+                    "optionKey": option.get("optionKey").cloned().unwrap_or(serde_json::Value::Null),
+                    "providerCode": option.get("providerCode").cloned().unwrap_or(serde_json::Value::Null),
+                    "ready": ready,
+                    "disabledReason": disabled_reason,
+                }));
+            }
+        }
+    }
+    let payment_options_ready = payment_methods.iter().any(|method| {
+        method
+            .get("ready")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false)
+    });
+
+    let mut blocking_codes = Vec::new();
+    if !platform_ready {
+        blocking_codes.push("PLATFORM_UNREACHABLE");
+    }
+    if !machine_auth_ready {
+        blocking_codes.push("MACHINE_AUTH_MISSING");
+    }
+    if !active_planogram_ready {
+        blocking_codes.push("ACTIVE_PLANOGRAM_MISSING");
+    }
+    if !payment_options_ready {
+        blocking_codes.push("NO_PAYMENT_OPTIONS");
+    }
+    if !sync_ready {
+        blocking_codes.push("SYNC_UNHEALTHY");
+    }
+    if !whole_machine_ready {
+        blocking_codes.push("LOWER_CONTROLLER_UNAVAILABLE");
+    }
+
+    let can_start_network_authorized_sale = platform_ready
+        && machine_auth_ready
+        && active_planogram_ready
+        && payment_options_ready
+        && sync_ready
+        && whole_machine_ready;
+
+    Ok(serde_json::json!({
+        "canStartNetworkAuthorizedSale": can_start_network_authorized_sale,
+        "blockingCodes": blocking_codes,
+        "components": {
+            "platformReachability": readiness_component(
+                platform_ready,
+                if platform_ready { "PLATFORM_REACHABLE" } else { "PLATFORM_UNREACHABLE" },
+                payment_probe.err().unwrap_or_else(|| "platform reachable".to_string()),
+            ),
+            "machineAuthentication": readiness_component(
+                machine_auth_ready,
+                if machine_auth_ready { "MACHINE_AUTH_READY" } else { "MACHINE_AUTH_MISSING" },
+                if machine_auth_ready { "machine code configured" } else { "machine code missing" },
+            ),
+            "activePlanogram": readiness_component(
+                active_planogram_ready,
+                if active_planogram_ready { "ACTIVE_PLANOGRAM_READY" } else { "ACTIVE_PLANOGRAM_MISSING" },
+                sale_view
+                    .planogram_version
+                    .clone()
+                    .unwrap_or_else(|| "active planogram missing".to_string()),
+            ),
+            "paymentOptions": serde_json::json!({
+                "ready": payment_options_ready,
+                "code": if payment_options_ready { "PAYMENT_OPTIONS_READY" } else { "NO_PAYMENT_OPTIONS" },
+                "message": if payment_options_ready { "payment option available" } else { "no ready payment option" },
+                "methods": payment_methods,
+            }),
+            "scannerCapability": readiness_component(
+                scanner_ready,
+                if scanner_ready { "SCANNER_READY" } else { "SCANNER_UNAVAILABLE" },
+                scanner.message,
+            ),
+            "syncHealth": readiness_component(
+                sync_ready,
+                if sync_ready { "SYNC_READY" } else { "SYNC_UNHEALTHY" },
+                sync.last_error.unwrap_or_else(|| {
+                    if sync.mqtt_connected {
+                        "sync connected".to_string()
+                    } else {
+                        "sync transport is not connected".to_string()
+                    }
+                }),
+            ),
+            "wholeMachineBlockers": readiness_component(
+                whole_machine_ready,
+                if whole_machine_ready { "WHOLE_MACHINE_READY" } else { "LOWER_CONTROLLER_UNAVAILABLE" },
+                hardware.message,
+            ),
+        },
+    }))
+}
+
+fn readiness_component(ready: bool, code: &str, message: impl Into<String>) -> serde_json::Value {
+    serde_json::json!({
+        "ready": ready,
+        "code": code,
+        "message": message.into(),
+    })
+}
+
 async fn apply_planogram(
     State(ctx): State<IpcContext>,
     headers: HeaderMap,
@@ -714,6 +881,21 @@ async fn record_stock_movement(
     match ctx.state.record_stock_movement(input).await {
         Ok(snapshot) => (StatusCode::CREATED, Json(snapshot)).into_response(),
         Err(error) => store_error_response("stock_movement_record_failed", error),
+    }
+}
+
+async fn update_slot_sales_state(
+    State(ctx): State<IpcContext>,
+    headers: HeaderMap,
+    Json(input): Json<SlotSalesStateInput>,
+) -> impl IntoResponse {
+    if let Err((status, error)) = require_token(&headers, &ctx.token).await {
+        return (status, error).into_response();
+    }
+
+    match ctx.state.update_slot_sales_state(input).await {
+        Ok(snapshot) => (StatusCode::OK, Json(snapshot)).into_response(),
+        Err(error) => store_error_response("slot_sales_state_update_failed", error),
     }
 }
 
@@ -1452,8 +1634,217 @@ mod tests {
         assert_eq!(item["slotCode"], "A1");
         assert_eq!(item["physicalStock"], 3);
         assert_eq!(item["saleableStock"], 3);
-        assert_eq!(item["slotSalesState"], "saleable");
+        assert_eq!(item["slotSalesState"], "sale_ready");
         assert!(item.get("availableQty").is_none());
+    }
+
+    #[tokio::test]
+    async fn sale_readiness_is_exposed_separately_from_sale_view_stock() {
+        let temp_dir = tempdir().expect("tmp");
+        let app = build_router(
+            test_ipc_context(
+                temp_dir.path(),
+                "token-1",
+                Some("MACHINE-1".to_string()),
+                "http://127.0.0.1:0",
+            )
+            .await,
+        );
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/sale-readiness")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let readiness: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(readiness["canStartNetworkAuthorizedSale"], false);
+        assert_eq!(
+            readiness["components"]["platformReachability"]["ready"],
+            false
+        );
+        assert_eq!(
+            readiness["components"]["machineAuthentication"]["ready"],
+            true
+        );
+        assert_eq!(readiness["components"]["activePlanogram"]["ready"], false);
+        assert_eq!(readiness["components"]["paymentOptions"]["ready"], false);
+        assert_eq!(readiness["components"]["scannerCapability"]["ready"], false);
+        assert_eq!(readiness["components"]["syncHealth"]["ready"], false);
+        assert!(readiness["blockingCodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|code| code == "ACTIVE_PLANOGRAM_MISSING"));
+
+        let sale_view_response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/sale-view")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(sale_view_response.status(), StatusCode::OK);
+        let body = body::to_bytes(sale_view_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let sale_view: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(sale_view["source"], "local_stock");
+        assert!(sale_view.get("canStartNetworkAuthorizedSale").is_none());
+    }
+
+    #[tokio::test]
+    async fn slot_sales_state_update_freezes_only_the_target_slot() {
+        let temp_dir = tempdir().expect("tmp");
+        let app = build_router(
+            test_ipc_context(
+                temp_dir.path(),
+                "token-1",
+                Some("MACHINE-1".to_string()),
+                "http://127.0.0.1:0",
+            )
+            .await,
+        );
+
+        let planogram = json!({
+            "planogramVersion": "PLAN-SLOT-STATE",
+            "source": "local_seed",
+            "appliedBy": "operator-1",
+            "slots": [
+                {
+                    "slotId": "550e8400-e29b-41d4-a716-446655440051",
+                    "slotCode": "E1",
+                    "layerNo": 1,
+                    "cellNo": 1,
+                    "capacity": 8,
+                    "parLevel": 6,
+                    "inventoryId": "550e8400-e29b-41d4-a716-446655440052",
+                    "variantId": "550e8400-e29b-41d4-a716-446655440053",
+                    "productId": "550e8400-e29b-41d4-a716-446655440054",
+                    "productName": "可乐",
+                    "productDescription": null,
+                    "coverImageUrl": null,
+                    "categoryId": null,
+                    "categoryName": null,
+                    "sku": "COKE-001",
+                    "size": null,
+                    "color": null,
+                    "priceCents": 500,
+                    "productSortOrder": 1,
+                    "targetGender": null
+                },
+                {
+                    "slotId": "550e8400-e29b-41d4-a716-446655440061",
+                    "slotCode": "E2",
+                    "layerNo": 1,
+                    "cellNo": 2,
+                    "capacity": 8,
+                    "parLevel": 6,
+                    "inventoryId": "550e8400-e29b-41d4-a716-446655440062",
+                    "variantId": "550e8400-e29b-41d4-a716-446655440063",
+                    "productId": "550e8400-e29b-41d4-a716-446655440064",
+                    "productName": "雪碧",
+                    "productDescription": null,
+                    "coverImageUrl": null,
+                    "categoryId": null,
+                    "categoryName": null,
+                    "sku": "SPRITE-001",
+                    "size": null,
+                    "color": null,
+                    "priceCents": 500,
+                    "productSortOrder": 2,
+                    "targetGender": null
+                }
+            ]
+        });
+        assert_eq!(
+            app.clone()
+                .oneshot(
+                    Request::builder()
+                        .method(Method::POST)
+                        .uri("/v1/stock/planogram")
+                        .header(AUTHORIZATION, "Bearer token-1")
+                        .header(CONTENT_TYPE, "application/json")
+                        .body(axum::body::Body::from(planogram.to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::OK
+        );
+        for (movement_id, slot_id) in [
+            ("MOVE-FROZEN-1", "550e8400-e29b-41d4-a716-446655440051"),
+            ("MOVE-FROZEN-2", "550e8400-e29b-41d4-a716-446655440061"),
+        ] {
+            assert_eq!(
+                app.clone()
+                    .oneshot(
+                        Request::builder()
+                            .method(Method::POST)
+                            .uri("/v1/stock/movements")
+                            .header(AUTHORIZATION, "Bearer token-1")
+                            .header(CONTENT_TYPE, "application/json")
+                            .body(axum::body::Body::from(
+                                json!({
+                                    "movementId": movement_id,
+                                    "planogramVersion": "PLAN-SLOT-STATE",
+                                    "slotId": slot_id,
+                                    "movementType": "planned_refill",
+                                    "quantity": 2,
+                                    "source": "field_service",
+                                    "attributedTo": "operator-1"
+                                })
+                                .to_string(),
+                            ))
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap()
+                    .status(),
+                StatusCode::CREATED
+            );
+        }
+
+        let freeze = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/stock/slot-sales-state")
+            .header(AUTHORIZATION, "Bearer token-1")
+            .header(CONTENT_TYPE, "application/json")
+            .body(axum::body::Body::from(
+                json!({
+                    "planogramVersion": "PLAN-SLOT-STATE",
+                    "slotId": "550e8400-e29b-41d4-a716-446655440051",
+                    "slotSalesState": "frozen",
+                    "source": "operator_hold"
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        let response = app.clone().oneshot(freeze).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["items"][0]["slotSalesState"], "frozen");
+        assert_eq!(payload["items"][0]["saleableStock"], 2);
+        assert_eq!(payload["items"][1]["slotSalesState"], "sale_ready");
+        assert_eq!(payload["items"][1]["saleableStock"], 2);
     }
 
     #[tokio::test]
@@ -1562,7 +1953,7 @@ mod tests {
         let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(payload["items"][0]["physicalStock"], 4);
         assert_eq!(payload["items"][0]["saleableStock"], 4);
-        assert_eq!(payload["items"][0]["slotSalesState"], "saleable");
+        assert_eq!(payload["items"][0]["slotSalesState"], "sale_ready");
     }
 
     #[tokio::test]
@@ -1989,7 +2380,7 @@ mod tests {
         let item = &payload["items"][0];
         assert_eq!(item["physicalStock"], 2);
         assert_eq!(item["saleableStock"], 2);
-        assert_eq!(item["slotSalesState"], "saleable");
+        assert_eq!(item["slotSalesState"], "sale_ready");
 
         let movement_count: (i64,) =
             sqlx::query_as("SELECT COUNT(1) FROM stock_movements WHERE slot_id = ?1")

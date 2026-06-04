@@ -38,7 +38,7 @@ onMounted(async () => {
 async function goCheckout(): Promise<void> {
   if (
     !item.value ||
-    item.value.slotSalesState !== "saleable" ||
+    item.value.slotSalesState !== "sale_ready" ||
     item.value.saleableStock <= 0
   )
     return;
@@ -107,7 +107,7 @@ async function goCheckout(): Promise<void> {
         class="kiosk-touch-target mt-auto rounded-3xl bg-sky-400 px-6 py-5 text-2xl font-black text-slate-950 shadow-xl shadow-sky-950/40 disabled:bg-slate-500 disabled:text-slate-300"
         type="button"
         :disabled="
-          item.slotSalesState !== 'saleable' || item.saleableStock <= 0
+          item.slotSalesState !== 'sale_ready' || item.saleableStock <= 0
         "
         @click="goCheckout"
       >

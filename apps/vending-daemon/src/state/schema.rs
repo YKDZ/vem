@@ -1,4 +1,4 @@
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 
 pub const MIGRATION_V1: &str = r#"
 PRAGMA journal_mode = WAL;
@@ -148,7 +148,7 @@ CREATE TABLE IF NOT EXISTS current_stock_projection (
   slot_id TEXT PRIMARY KEY,
   physical_stock INTEGER NOT NULL CHECK (physical_stock >= 0),
   saleable_stock INTEGER NOT NULL CHECK (saleable_stock >= 0),
-  slot_sales_state TEXT NOT NULL CHECK (slot_sales_state IN ('saleable','sold_out','unavailable')),
+  slot_sales_state TEXT NOT NULL CHECK (slot_sales_state IN ('sale_ready','sold_out','suspect','frozen','needs_count','blocked_for_planogram_change')),
   updated_at TEXT NOT NULL,
   FOREIGN KEY (planogram_version, slot_id) REFERENCES machine_planogram_slots(planogram_version, slot_id)
 );
@@ -157,8 +157,78 @@ CREATE TABLE IF NOT EXISTS sale_view_projection (
   planogram_version TEXT NOT NULL,
   slot_id TEXT PRIMARY KEY,
   item_json TEXT NOT NULL,
-  slot_sales_state TEXT NOT NULL CHECK (slot_sales_state IN ('saleable','sold_out','unavailable')),
+  slot_sales_state TEXT NOT NULL CHECK (slot_sales_state IN ('sale_ready','sold_out','suspect','frozen','needs_count','blocked_for_planogram_change')),
   updated_at TEXT NOT NULL,
   FOREIGN KEY (planogram_version, slot_id) REFERENCES machine_planogram_slots(planogram_version, slot_id)
 );
+"#;
+
+pub const MIGRATION_V3: &str = r#"
+PRAGMA foreign_keys = OFF;
+
+CREATE TABLE IF NOT EXISTS current_stock_projection_v3 (
+  planogram_version TEXT NOT NULL,
+  slot_id TEXT PRIMARY KEY,
+  physical_stock INTEGER NOT NULL CHECK (physical_stock >= 0),
+  saleable_stock INTEGER NOT NULL CHECK (saleable_stock >= 0),
+  slot_sales_state TEXT NOT NULL CHECK (slot_sales_state IN ('sale_ready','sold_out','suspect','frozen','needs_count','blocked_for_planogram_change')),
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (planogram_version, slot_id) REFERENCES machine_planogram_slots(planogram_version, slot_id)
+);
+
+INSERT OR REPLACE INTO current_stock_projection_v3(
+  planogram_version,slot_id,physical_stock,saleable_stock,slot_sales_state,updated_at
+)
+SELECT
+  planogram_version,
+  slot_id,
+  physical_stock,
+  saleable_stock,
+  CASE slot_sales_state
+    WHEN 'saleable' THEN 'sale_ready'
+    WHEN 'unavailable' THEN 'frozen'
+    ELSE slot_sales_state
+  END,
+  updated_at
+FROM current_stock_projection;
+
+DROP TABLE current_stock_projection;
+ALTER TABLE current_stock_projection_v3 RENAME TO current_stock_projection;
+
+CREATE TABLE IF NOT EXISTS sale_view_projection_v3 (
+  planogram_version TEXT NOT NULL,
+  slot_id TEXT PRIMARY KEY,
+  item_json TEXT NOT NULL,
+  slot_sales_state TEXT NOT NULL CHECK (slot_sales_state IN ('sale_ready','sold_out','suspect','frozen','needs_count','blocked_for_planogram_change')),
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (planogram_version, slot_id) REFERENCES machine_planogram_slots(planogram_version, slot_id)
+);
+
+INSERT OR REPLACE INTO sale_view_projection_v3(
+  planogram_version,slot_id,item_json,slot_sales_state,updated_at
+)
+SELECT
+  planogram_version,
+  slot_id,
+  json_set(
+    item_json,
+    '$.slotSalesState',
+    CASE slot_sales_state
+      WHEN 'saleable' THEN 'sale_ready'
+      WHEN 'unavailable' THEN 'frozen'
+      ELSE slot_sales_state
+    END
+  ),
+  CASE slot_sales_state
+    WHEN 'saleable' THEN 'sale_ready'
+    WHEN 'unavailable' THEN 'frozen'
+    ELSE slot_sales_state
+  END,
+  updated_at
+FROM sale_view_projection;
+
+DROP TABLE sale_view_projection;
+ALTER TABLE sale_view_projection_v3 RENAME TO sale_view_projection;
+
+PRAGMA foreign_keys = ON;
 "#;

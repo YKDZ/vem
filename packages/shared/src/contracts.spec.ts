@@ -11,6 +11,7 @@ import {
   heartbeatPayloadSchema,
   machineEnvironmentControlRequestSchema,
   machineAuthTokenRequestSchema,
+  machineSaleViewItemSchema,
   machineSlotStatuses,
   maintenanceWorkOrderStatuses,
   mqttSignedEnvelopeSchema,
@@ -169,6 +170,51 @@ describe("shared API contract", () => {
         machineSecret: "local-machine-shared-secret-change-before-production",
       }).machineCode,
     ).toBe("M001");
+  });
+
+  it("accepts machine sale view slot sales states", () => {
+    const base = {
+      machineCode: "M001",
+      slotId: "550e8400-e29b-41d4-a716-446655440001",
+      slotCode: "A1",
+      layerNo: 1,
+      cellNo: 1,
+      inventoryId: "550e8400-e29b-41d4-a716-446655440002",
+      variantId: "550e8400-e29b-41d4-a716-446655440003",
+      productId: "550e8400-e29b-41d4-a716-446655440004",
+      productName: "矿泉水",
+      productDescription: null,
+      coverImageUrl: null,
+      categoryId: null,
+      categoryName: null,
+      sku: "WATER-001",
+      size: null,
+      color: null,
+      priceCents: 200,
+      productSortOrder: 1,
+      targetGender: null,
+      capacity: 8,
+      parLevel: 6,
+      physicalStock: 1,
+      saleableStock: 1,
+    };
+
+    for (const slotSalesState of [
+      "sale_ready",
+      "sold_out",
+      "suspect",
+      "frozen",
+      "needs_count",
+      "blocked_for_planogram_change",
+    ]) {
+      expect(
+        machineSaleViewItemSchema.parse({ ...base, slotSalesState })
+          .slotSalesState,
+      ).toBe(slotSalesState);
+    }
+    expect(() =>
+      machineSaleViewItemSchema.parse({ ...base, slotSalesState: "saleable" }),
+    ).toThrow();
   });
 
   describe("canonicalJson", () => {

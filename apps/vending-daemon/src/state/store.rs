@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 use vending_core::domain::{CommandLogStatus, OutboxKind, OutboxTransport};
 
-use super::schema::{MIGRATION_V1, MIGRATION_V2, SCHEMA_VERSION};
+use super::schema::{MIGRATION_V1, MIGRATION_V2, MIGRATION_V3, SCHEMA_VERSION};
 use vending_core::hardware::{
     DispenseCommandPayload, DispenseResultPayload, EnvironmentControlResultPayload,
 };
@@ -192,6 +192,15 @@ pub struct StockMovementInput {
     pub quantity: i64,
     pub source: String,
     pub attributed_to: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SlotSalesStateInput {
+    pub planogram_version: String,
+    pub slot_id: String,
+    pub slot_sales_state: String,
+    pub source: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -395,6 +404,12 @@ impl LocalStateStore {
             .unwrap_or_default();
         if current_version < 2 {
             sqlx::query(MIGRATION_V2)
+                .execute(&store.pool)
+                .await
+                .map_err(StoreError::Sqlx)?;
+        }
+        if current_version < 3 {
+            sqlx::query(MIGRATION_V3)
                 .execute(&store.pool)
                 .await
                 .map_err(StoreError::Sqlx)?;
@@ -1267,6 +1282,59 @@ impl LocalStateStore {
         self.sale_view(None).await
     }
 
+    pub async fn update_slot_sales_state(
+        &self,
+        input: SlotSalesStateInput,
+    ) -> Result<SaleViewSnapshot, StoreError> {
+        if !is_supported_slot_sales_state(&input.slot_sales_state) {
+            return Err(StoreError::InvalidStockInput(format!(
+                "unsupported slot sales state {}",
+                input.slot_sales_state
+            )));
+        }
+
+        let mut tx = self.pool.begin().await?;
+        let slot_exists: Option<(i64,)> = sqlx::query_as(
+            "SELECT 1
+             FROM machine_planogram_slots s
+             JOIN machine_planogram_versions v
+               ON v.planogram_version = s.planogram_version AND v.active = 1
+             WHERE s.planogram_version = ?1 AND s.slot_id = ?2",
+        )
+        .bind(&input.planogram_version)
+        .bind(&input.slot_id)
+        .fetch_optional(tx.as_mut())
+        .await?;
+        if slot_exists.is_none() {
+            return Err(StoreError::InvalidStockInput(
+                "slot is not in the active planogram version".to_string(),
+            ));
+        }
+
+        let updated = sqlx::query(
+            "UPDATE current_stock_projection
+             SET slot_sales_state = ?3, updated_at = ?4
+             WHERE planogram_version = ?1 AND slot_id = ?2",
+        )
+        .bind(&input.planogram_version)
+        .bind(&input.slot_id)
+        .bind(&input.slot_sales_state)
+        .bind(now_iso())
+        .execute(tx.as_mut())
+        .await?
+        .rows_affected();
+        if updated == 0 {
+            return Err(StoreError::InvalidStockInput(
+                "slot stock projection is missing".to_string(),
+            ));
+        }
+
+        upsert_sale_view_projection_in_tx(&mut tx, &input.planogram_version, &input.slot_id)
+            .await?;
+        tx.commit().await?;
+        self.sale_view(None).await
+    }
+
     pub async fn sale_view(
         &self,
         machine_code: Option<String>,
@@ -1454,6 +1522,18 @@ async fn planogram_slots_match_in_tx(
     Ok(existing == normalize_planogram_slots(input_slots))
 }
 
+fn is_supported_slot_sales_state(value: &str) -> bool {
+    matches!(
+        value,
+        "sale_ready"
+            | "sold_out"
+            | "suspect"
+            | "frozen"
+            | "needs_count"
+            | "blocked_for_planogram_change"
+    )
+}
+
 async fn upsert_stock_projection_in_tx(
     tx: &mut Transaction<'_, sqlx::Sqlite>,
     planogram_version: &str,
@@ -1464,7 +1544,7 @@ async fn upsert_stock_projection_in_tx(
     let physical_stock = physical_stock.max(0);
     let saleable_stock = physical_stock.min(capacity).max(0);
     let slot_sales_state = if saleable_stock > 0 {
-        "saleable"
+        "sale_ready"
     } else {
         "sold_out"
     };
