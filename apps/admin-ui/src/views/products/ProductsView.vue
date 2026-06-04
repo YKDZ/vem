@@ -137,6 +137,7 @@ const variantForm = ref<VariantForm>({
   size: "",
   color: "",
   barcode: "",
+  targetGender: null,
 });
 const variantSaving = ref(false);
 
@@ -179,6 +180,7 @@ function openEditVariant(v: ProductVariant): void {
     size: v.size ?? "",
     color: v.color ?? "",
     barcode: v.barcode ?? "",
+    targetGender: v.targetGender ?? null,
   };
   variantFormOpen.value = true;
 }
