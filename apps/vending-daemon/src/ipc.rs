@@ -942,6 +942,88 @@ fn strict_payment_options(
     Ok(response.options)
 }
 
+fn validate_selected_payment_option(
+    readiness: &serde_json::Value,
+    input: &CreateOrder,
+) -> Result<(), String> {
+    let selected_provider = input
+        .payment_provider_code
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+
+    if matches!(input.payment_method.as_str(), "qr_code" | "payment_code")
+        && selected_provider.is_none()
+    {
+        return Err(format!(
+            "selected payment provider is required for {}",
+            input.payment_method
+        ));
+    }
+
+    let methods = readiness
+        .get("components")
+        .and_then(|value| value.get("paymentOptions"))
+        .and_then(|value| value.get("methods"))
+        .and_then(|value| value.as_array())
+        .ok_or_else(|| "payment options are unavailable".to_string())?;
+
+    let mut method_seen = false;
+    let mut provider_seen = false;
+    let mut not_ready_reason = None;
+
+    for method in methods {
+        if method.get("method").and_then(|value| value.as_str())
+            != Some(input.payment_method.as_str())
+        {
+            continue;
+        }
+        method_seen = true;
+
+        if let Some(provider) = selected_provider {
+            if method.get("providerCode").and_then(|value| value.as_str()) != Some(provider) {
+                continue;
+            }
+            provider_seen = true;
+        }
+
+        if method
+            .get("ready")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false)
+        {
+            return Ok(());
+        }
+
+        if not_ready_reason.is_none() {
+            not_ready_reason = method
+                .get("disabledReason")
+                .and_then(|value| value.as_str())
+                .filter(|value| !value.trim().is_empty())
+                .map(ToString::to_string);
+        }
+    }
+
+    if !method_seen {
+        return Err(format!(
+            "selected payment method {} is unavailable",
+            input.payment_method
+        ));
+    }
+    if let Some(provider) = selected_provider {
+        if !provider_seen {
+            return Err(format!(
+                "selected payment provider {provider} is unavailable for {}",
+                input.payment_method
+            ));
+        }
+    }
+
+    Err(not_ready_reason
+        .map(|reason| format!("selected payment option is not ready: {reason}"))
+        .unwrap_or_else(|| "selected payment option is not ready".to_string()))
+}
+
 async fn validate_create_order_intent(ctx: &IpcContext, input: &CreateOrder) -> Result<(), String> {
     if input.quantity == 0 {
         return Err("quantity must be positive".to_string());
@@ -969,6 +1051,7 @@ async fn validate_create_order_intent(ctx: &IpcContext, input: &CreateOrder) -> 
             .unwrap_or_else(|| "UNKNOWN_READINESS_BLOCKER".to_string());
         return Err(format!("machine is not ready for network sale: {codes}"));
     }
+    validate_selected_payment_option(&readiness, input)?;
 
     let machine_code = ctx
         .config_store
@@ -2035,6 +2118,388 @@ mod tests {
             .filter(|request| request.url.path() == "/machine-orders")
             .count();
         assert_eq!(backend_create_order_requests, 0);
+    }
+
+    #[tokio::test]
+    async fn create_order_intent_rejects_unready_selected_payment_code_when_scanner_unavailable() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(wiremock::matchers::path("/machine-orders/payment-options"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "options": [
+                    {
+                        "optionKey": "payment_code:alipay",
+                        "providerCode": "alipay",
+                        "method": "payment_code",
+                        "displayName": "支付宝付款码",
+                        "description": "请出示付款码",
+                        "icon": "alipay",
+                        "recommended": true,
+                        "disabled": false,
+                        "disabledReason": null
+                    },
+                    {
+                        "optionKey": "mock:mock",
+                        "providerCode": "mock",
+                        "method": "mock",
+                        "displayName": "模拟支付",
+                        "description": "本地模拟",
+                        "icon": "mock",
+                        "recommended": false,
+                        "disabled": false,
+                        "disabledReason": null
+                    }
+                ],
+                "defaultOptionKey": "mock:mock",
+                "defaultProviderCode": "mock",
+                "serverTime": "2026-06-04T00:00:00Z"
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(wiremock::matchers::path("/machine-orders"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "orderNo": "ORD-SCANNER-BYPASS",
+                "nextAction": "wait_payment",
+                "orderStatus": "pending_payment"
+            })))
+            .mount(&server)
+            .await;
+
+        let temp_dir = tempdir().expect("tmp");
+        let ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            &server.uri(),
+        )
+        .await;
+        mark_runtime_sale_ready(&ctx).await;
+        {
+            let mut scanner = ctx.ui.status_cache.scanner.write().await;
+            scanner.online = false;
+            scanner.code = "SCANNER_OPEN_FAILED".to_string();
+            scanner.message = "scanner open failed".to_string();
+        }
+        let app = build_router(ctx);
+        let slot_id = "550e8400-e29b-41d4-a716-446655440301";
+        let inventory_id = "550e8400-e29b-41d4-a716-446655440302";
+        assert_eq!(
+            post_json(
+                &app,
+                "/v1/stock/planogram",
+                "token-1",
+                one_slot_planogram("PLAN-SCANNER-PAYMENT-CODE", slot_id, inventory_id),
+            )
+            .await
+            .status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            post_json(
+                &app,
+                "/v1/stock/movements",
+                "token-1",
+                json!({
+                    "movementId": "MOVE-SCANNER-PAYMENT-CODE-1",
+                    "planogramVersion": "PLAN-SCANNER-PAYMENT-CODE",
+                    "slotId": slot_id,
+                    "movementType": "planned_refill",
+                    "quantity": 2,
+                    "source": "field_service",
+                    "attributedTo": "operator-1"
+                }),
+            )
+            .await
+            .status(),
+            StatusCode::CREATED
+        );
+
+        let readiness_response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/sale-readiness")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(readiness_response.status(), StatusCode::OK);
+        let readiness_body = body::to_bytes(readiness_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let readiness: serde_json::Value = serde_json::from_slice(&readiness_body).unwrap();
+        assert_eq!(readiness["canStartNetworkAuthorizedSale"], true);
+        assert_eq!(readiness["components"]["paymentOptions"]["ready"], true);
+        let payment_code_method = readiness["components"]["paymentOptions"]["methods"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|method| method["optionKey"] == "payment_code:alipay")
+            .expect("payment_code option");
+        assert_eq!(payment_code_method["ready"], false);
+
+        let response = post_json(
+            &app,
+            "/v1/intents/create-order",
+            "token-1",
+            json!({
+                "inventoryId": inventory_id,
+                "quantity": 1,
+                "paymentMethod": "payment_code",
+                "paymentProviderCode": "alipay",
+                "profileSnapshot": null
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["code"], "create_order_blocked");
+        assert!(payload["message"]
+            .as_str()
+            .unwrap()
+            .contains("payment option is not ready"));
+
+        let backend_create_order_requests = server
+            .received_requests()
+            .await
+            .expect("recorded requests")
+            .into_iter()
+            .filter(|request| request.url.path() == "/machine-orders")
+            .count();
+        assert_eq!(backend_create_order_requests, 0);
+    }
+
+    #[tokio::test]
+    async fn create_order_intent_allows_ready_qr_code_when_scanner_unavailable() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(wiremock::matchers::path("/machine-orders/payment-options"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "options": [
+                    {
+                        "optionKey": "payment_code:alipay",
+                        "providerCode": "alipay",
+                        "method": "payment_code",
+                        "displayName": "支付宝付款码",
+                        "description": "请出示付款码",
+                        "icon": "alipay",
+                        "recommended": true,
+                        "disabled": false,
+                        "disabledReason": null
+                    },
+                    {
+                        "optionKey": "qr_code:alipay",
+                        "providerCode": "alipay",
+                        "method": "qr_code",
+                        "displayName": "支付宝扫码支付",
+                        "description": "请扫码支付",
+                        "icon": "alipay",
+                        "recommended": false,
+                        "disabled": false,
+                        "disabledReason": null
+                    }
+                ],
+                "defaultOptionKey": "qr_code:alipay",
+                "defaultProviderCode": "alipay",
+                "serverTime": "2026-06-04T00:00:00Z"
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(wiremock::matchers::path("/machine-orders"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "orderNo": "ORD-QR-SCANNER-OFFLINE",
+                "nextAction": "wait_payment",
+                "orderStatus": "pending_payment"
+            })))
+            .mount(&server)
+            .await;
+
+        let temp_dir = tempdir().expect("tmp");
+        let ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            &server.uri(),
+        )
+        .await;
+        mark_runtime_sale_ready(&ctx).await;
+        {
+            let mut scanner = ctx.ui.status_cache.scanner.write().await;
+            scanner.online = false;
+            scanner.code = "SCANNER_OPEN_FAILED".to_string();
+            scanner.message = "scanner open failed".to_string();
+        }
+        let app = build_router(ctx);
+        let slot_id = "550e8400-e29b-41d4-a716-446655440401";
+        let inventory_id = "550e8400-e29b-41d4-a716-446655440402";
+        assert_eq!(
+            post_json(
+                &app,
+                "/v1/stock/planogram",
+                "token-1",
+                one_slot_planogram("PLAN-SCANNER-QR", slot_id, inventory_id),
+            )
+            .await
+            .status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            post_json(
+                &app,
+                "/v1/stock/movements",
+                "token-1",
+                json!({
+                    "movementId": "MOVE-SCANNER-QR-1",
+                    "planogramVersion": "PLAN-SCANNER-QR",
+                    "slotId": slot_id,
+                    "movementType": "planned_refill",
+                    "quantity": 2,
+                    "source": "field_service",
+                    "attributedTo": "operator-1"
+                }),
+            )
+            .await
+            .status(),
+            StatusCode::CREATED
+        );
+
+        let response = post_json(
+            &app,
+            "/v1/intents/create-order",
+            "token-1",
+            json!({
+                "inventoryId": inventory_id,
+                "quantity": 1,
+                "paymentMethod": "qr_code",
+                "paymentProviderCode": "alipay",
+                "profileSnapshot": null
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let backend_create_order_requests = server
+            .received_requests()
+            .await
+            .expect("recorded requests")
+            .into_iter()
+            .filter(|request| request.url.path() == "/machine-orders")
+            .count();
+        assert_eq!(backend_create_order_requests, 1);
+    }
+
+    #[tokio::test]
+    async fn create_order_intent_allows_ready_mock_when_scanner_unavailable() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(wiremock::matchers::path("/machine-orders/payment-options"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "options": [{
+                    "optionKey": "mock:mock",
+                    "providerCode": "mock",
+                    "method": "mock",
+                    "displayName": "模拟支付",
+                    "description": "本地模拟",
+                    "icon": "mock",
+                    "recommended": true,
+                    "disabled": false,
+                    "disabledReason": null
+                }],
+                "defaultOptionKey": "mock:mock",
+                "defaultProviderCode": "mock",
+                "serverTime": "2026-06-04T00:00:00Z"
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(wiremock::matchers::path("/machine-orders"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "orderNo": "ORD-MOCK-SCANNER-OFFLINE",
+                "nextAction": "wait_payment",
+                "orderStatus": "pending_payment"
+            })))
+            .mount(&server)
+            .await;
+
+        let temp_dir = tempdir().expect("tmp");
+        let ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            &server.uri(),
+        )
+        .await;
+        mark_runtime_sale_ready(&ctx).await;
+        {
+            let mut scanner = ctx.ui.status_cache.scanner.write().await;
+            scanner.online = false;
+            scanner.code = "SCANNER_OPEN_FAILED".to_string();
+            scanner.message = "scanner open failed".to_string();
+        }
+        let app = build_router(ctx);
+        let slot_id = "550e8400-e29b-41d4-a716-446655440501";
+        let inventory_id = "550e8400-e29b-41d4-a716-446655440502";
+        assert_eq!(
+            post_json(
+                &app,
+                "/v1/stock/planogram",
+                "token-1",
+                one_slot_planogram("PLAN-SCANNER-MOCK", slot_id, inventory_id),
+            )
+            .await
+            .status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            post_json(
+                &app,
+                "/v1/stock/movements",
+                "token-1",
+                json!({
+                    "movementId": "MOVE-SCANNER-MOCK-1",
+                    "planogramVersion": "PLAN-SCANNER-MOCK",
+                    "slotId": slot_id,
+                    "movementType": "planned_refill",
+                    "quantity": 2,
+                    "source": "field_service",
+                    "attributedTo": "operator-1"
+                }),
+            )
+            .await
+            .status(),
+            StatusCode::CREATED
+        );
+
+        let response = post_json(
+            &app,
+            "/v1/intents/create-order",
+            "token-1",
+            json!({
+                "inventoryId": inventory_id,
+                "quantity": 1,
+                "paymentMethod": "mock",
+                "profileSnapshot": null
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let backend_create_order_requests = server
+            .received_requests()
+            .await
+            .expect("recorded requests")
+            .into_iter()
+            .filter(|request| request.url.path() == "/machine-orders")
+            .count();
+        assert_eq!(backend_create_order_requests, 1);
     }
 
     #[tokio::test]
