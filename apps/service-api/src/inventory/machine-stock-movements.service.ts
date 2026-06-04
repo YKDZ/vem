@@ -75,6 +75,7 @@ export class MachineStockMovementsService {
         this.repository,
         machine.id,
         trustedInput,
+        normalized,
         existing,
         payloadHash,
       );
@@ -123,6 +124,7 @@ export class MachineStockMovementsService {
         this.repository,
         machine.id,
         trustedInput,
+        normalized,
         concurrent,
         payloadHash,
       );
@@ -134,18 +136,21 @@ async function responseForExisting(
   repository: MachineStockMovementsRepository,
   machineId: string,
   input: RawMachineStockMovement,
+  normalized: Record<string, unknown>,
   existing: StoredRawMachineStockMovement,
   payloadHash: string,
 ): Promise<MachineStockMovementIngestionResponse> {
   if (existing.payloadHash === payloadHash) {
     if (existing.status === "reconciliation") {
       return reconciliationResponse(input.movementId, existing, {
-        reconciliationReason:
-          (existing.reconciliationReason as MachineStockReconciliationReason | null) ??
+        reconciliationReason: parseReconciliationReason(
+          existing.reconciliationReason,
           "unknown_slot",
+        ),
         platformReviewStatus: "open",
-        saleSafetyBlockerState:
-          existing.saleSafetyBlockerState as SaleSafetyBlockerState | null,
+        saleSafetyBlockerState: parseSaleSafetyBlockerState(
+          existing.saleSafetyBlockerState,
+        ),
         saleSafetyBlockerSlotId: existing.saleSafetyBlockerSlotId,
       });
     }
@@ -153,21 +158,21 @@ async function responseForExisting(
   }
 
   const reconciliation = movementConflictReconciliation(input.slotId);
-  await repository.markReconciliation(
+  const conflict = await repository.insertConflictReconciliation({
     machineId,
-    input.movementId,
-    reconciliation,
-  );
+    rawMovementId: existing.id,
+    input,
+    normalized,
+    payloadHash,
+    ...reconciliation,
+  });
   return {
-    movementId: input.movementId,
-    status: "reconciliation",
-    acceptedAt: null,
+    ...reconciliationResponse(input.movementId, conflict, reconciliation),
     rejection: {
       reason: "movement_id_payload_conflict",
       existingPayloadHash: existing.payloadHash,
       receivedPayloadHash: payloadHash,
     },
-    reconciliation: reconciliationPayload(reconciliation),
   };
 }
 
@@ -260,8 +265,13 @@ function reconciliationPayload(
     "machineId" | "input" | "normalized" | "payloadHash"
   >,
 ): NonNullable<MachineStockMovementIngestionResponse["reconciliation"]> {
-  const reason =
-    reconciliation.reconciliationReason as MachineStockReconciliationReason;
+  const reason = parseReconciliationReason(
+    reconciliation.reconciliationReason,
+    "unknown_slot",
+  );
+  const slotSalesState = parseSaleSafetyBlockerState(
+    reconciliation.saleSafetyBlockerState,
+  );
   return {
     reason,
     platformReview: {
@@ -269,16 +279,48 @@ function reconciliationPayload(
       status: "open",
     },
     saleSafetyBlocker:
-      reconciliation.saleSafetyBlockerState &&
-      reconciliation.saleSafetyBlockerSlotId
+      slotSalesState && reconciliation.saleSafetyBlockerSlotId
         ? {
             slotId: reconciliation.saleSafetyBlockerSlotId,
-            slotSalesState:
-              reconciliation.saleSafetyBlockerState as SaleSafetyBlockerState,
+            slotSalesState,
             reason,
           }
         : null,
   };
+}
+
+function parseReconciliationReason(
+  value: string | null,
+  fallback: MachineStockReconciliationReason,
+): MachineStockReconciliationReason {
+  switch (value) {
+    case null:
+      return fallback;
+    case "unknown_slot":
+    case "unknown_planogram_version":
+    case "inactive_planogram_version":
+    case "mapping_mismatch":
+    case "movement_id_payload_conflict":
+      return value;
+    default:
+      return fallback;
+  }
+}
+
+function parseSaleSafetyBlockerState(
+  value: string | null,
+): SaleSafetyBlockerState | null {
+  switch (value) {
+    case null:
+      return null;
+    case "needs_count":
+    case "blocked_for_planogram_change":
+    case "movement_rejected":
+    case "needs_platform_review":
+      return value;
+    default:
+      return null;
+  }
 }
 
 function acceptedResponse(

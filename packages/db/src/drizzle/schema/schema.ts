@@ -1017,6 +1017,64 @@ export const machineRawStockMovements = t.pgTable(
   ],
 );
 
+export const machineRawStockMovementConflicts = t.pgTable(
+  "machine_raw_stock_movement_conflicts",
+  {
+    id: id(),
+    rawMovementId: t
+      .uuid("raw_movement_id")
+      .notNull()
+      .references(() => machineRawStockMovements.id),
+    machineId: t
+      .uuid("machine_id")
+      .notNull()
+      .references(() => machines.id),
+    movementId: t.varchar("movement_id", { length: 128 }).notNull(),
+    payloadHash: t.varchar("payload_hash", { length: 64 }).notNull(),
+    payloadJson: t.jsonb("payload_json").$type<JsonObject>().notNull(),
+    normalizedJson: t.jsonb("normalized_json").$type<JsonObject>().notNull(),
+    status: t
+      .varchar("status", { length: 32 })
+      .default("reconciliation")
+      .notNull(),
+    reconciliationReason: t
+      .varchar("reconciliation_reason", { length: 128 })
+      .notNull(),
+    platformReviewStatus: t
+      .varchar("platform_review_status", { length: 32 })
+      .notNull(),
+    saleSafetyBlockerState: t.varchar("sale_safety_blocker_state", {
+      length: 64,
+    }),
+    saleSafetyBlockerSlotId: t.uuid("sale_safety_blocker_slot_id"),
+    receivedAt: t
+      .timestamp("received_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    t
+      .index("machine_raw_stock_movement_conflicts_raw_idx")
+      .on(table.rawMovementId),
+    t
+      .index("machine_raw_stock_movement_conflicts_machine_movement_idx")
+      .on(table.machineId, table.movementId),
+    t.check(
+      "machine_raw_stock_movement_conflicts_status_enum",
+      sql`${table.status} IN ('reconciliation')`,
+    ),
+    t.check(
+      "machine_raw_stock_movement_conflicts_platform_review_status_enum",
+      sql`${table.platformReviewStatus} IN ('open', 'resolved')`,
+    ),
+    t.check(
+      "machine_raw_stock_movement_conflicts_sale_safety_blocker_enum",
+      sql`${table.saleSafetyBlockerState} IS NULL OR ${table.saleSafetyBlockerState} IN ('needs_count', 'blocked_for_planogram_change', 'movement_rejected', 'needs_platform_review')`,
+    ),
+  ],
+);
+
 export const vendingCommands = t.pgTable(
   "vending_commands",
   {

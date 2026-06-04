@@ -1,4 +1,4 @@
-pub const SCHEMA_VERSION: i64 = 5;
+pub const SCHEMA_VERSION: i64 = 6;
 
 pub const MIGRATION_V1: &str = r#"
 PRAGMA journal_mode = WAL;
@@ -324,4 +324,35 @@ DROP TABLE sale_view_projection;
 ALTER TABLE sale_view_projection_v5 RENAME TO sale_view_projection;
 
 PRAGMA foreign_keys = ON;
+"#;
+
+pub const MIGRATION_V6: &str = r#"
+PRAGMA foreign_keys = ON;
+
+CREATE TABLE IF NOT EXISTS sale_safety_blockers (
+  planogram_version TEXT NOT NULL,
+  slot_id TEXT NOT NULL,
+  slot_sales_state TEXT NOT NULL CHECK (slot_sales_state IN ('needs_count','blocked_for_planogram_change','movement_rejected','needs_platform_review')),
+  reason TEXT,
+  source TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (planogram_version, slot_id),
+  FOREIGN KEY (planogram_version, slot_id) REFERENCES machine_planogram_slots(planogram_version, slot_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_sale_safety_blockers_slot
+  ON sale_safety_blockers(slot_id, updated_at);
+
+INSERT OR IGNORE INTO sale_safety_blockers(
+  planogram_version,slot_id,slot_sales_state,reason,source,updated_at
+)
+SELECT
+  planogram_version,
+  slot_id,
+  slot_sales_state,
+  'migrated_reconciliation_blocker',
+  'migration',
+  updated_at
+FROM current_stock_projection
+WHERE slot_sales_state IN ('needs_count','blocked_for_planogram_change','movement_rejected','needs_platform_review');
 "#;

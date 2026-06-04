@@ -7,6 +7,7 @@ import {
   isNull,
   machinePlanogramSlots,
   machinePlanogramVersions,
+  machineRawStockMovementConflicts,
   machineRawStockMovements,
   machineSlots,
   type DrizzleClient,
@@ -40,6 +41,11 @@ export type InsertReconciliationRawMachineStockMovement =
     platformReviewStatus: string;
     saleSafetyBlockerState: string | null;
     saleSafetyBlockerSlotId: string | null;
+  };
+
+export type InsertConflictRawMachineStockMovement =
+  InsertReconciliationRawMachineStockMovement & {
+    rawMovementId: string;
   };
 
 export type MovementApplicationContext = {
@@ -104,6 +110,43 @@ export class MachineStockMovementsRepository {
       saleSafetyBlockerState: input.saleSafetyBlockerState,
       saleSafetyBlockerSlotId: input.saleSafetyBlockerSlotId,
     });
+  }
+
+  async insertConflictReconciliation(
+    input: InsertConflictRawMachineStockMovement,
+  ): Promise<StoredRawMachineStockMovement> {
+    const [row] = await this.db
+      .insert(machineRawStockMovementConflicts)
+      .values({
+        rawMovementId: input.rawMovementId,
+        machineId: input.machineId,
+        movementId: input.input.movementId,
+        payloadHash: input.payloadHash,
+        payloadJson: input.input,
+        normalizedJson: input.normalized,
+        status: "reconciliation",
+        reconciliationReason: input.reconciliationReason,
+        platformReviewStatus: input.platformReviewStatus,
+        saleSafetyBlockerState: input.saleSafetyBlockerState,
+        saleSafetyBlockerSlotId: input.saleSafetyBlockerSlotId,
+      })
+      .returning({
+        id: machineRawStockMovementConflicts.id,
+        machineId: machineRawStockMovementConflicts.machineId,
+        movementId: machineRawStockMovementConflicts.movementId,
+        payloadHash: machineRawStockMovementConflicts.payloadHash,
+        status: machineRawStockMovementConflicts.status,
+        receivedAt: machineRawStockMovementConflicts.receivedAt,
+        reconciliationReason:
+          machineRawStockMovementConflicts.reconciliationReason,
+        platformReviewStatus:
+          machineRawStockMovementConflicts.platformReviewStatus,
+        saleSafetyBlockerState:
+          machineRawStockMovementConflicts.saleSafetyBlockerState,
+        saleSafetyBlockerSlotId:
+          machineRawStockMovementConflicts.saleSafetyBlockerSlotId,
+      });
+    return row;
   }
 
   async markReconciliation(

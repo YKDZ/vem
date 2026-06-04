@@ -13,6 +13,15 @@ import { MachineStockMovementsService } from "./machine-stock-movements.service"
 class InMemoryMovementRepository {
   protected readonly rows = new Map<string, StoredRawMachineStockMovement>();
   readonly reconciliationInputs: unknown[] = [];
+  readonly conflictInputs: Array<
+    InsertRawMachineStockMovement & {
+      rawMovementId: string;
+      reconciliationReason: string;
+      platformReviewStatus: string;
+      saleSafetyBlockerState: string | null;
+      saleSafetyBlockerSlotId: string | null;
+    }
+  > = [];
   movementContext = {
     machineSlotKnown: true,
     planogramKnown: true,
@@ -71,6 +80,30 @@ class InMemoryMovementRepository {
     return row;
   }
 
+  async insertConflictReconciliation(
+    input: InsertRawMachineStockMovement & {
+      rawMovementId: string;
+      reconciliationReason: string;
+      platformReviewStatus: string;
+      saleSafetyBlockerState: string | null;
+      saleSafetyBlockerSlotId: string | null;
+    },
+  ): Promise<StoredRawMachineStockMovement> {
+    this.conflictInputs.push(input);
+    return {
+      id: `raw-conflict-${this.conflictInputs.length}`,
+      machineId: input.machineId,
+      movementId: input.input.movementId,
+      payloadHash: input.payloadHash,
+      status: "reconciliation",
+      receivedAt: new Date("2026-06-04T00:00:01.000Z"),
+      reconciliationReason: input.reconciliationReason,
+      platformReviewStatus: input.platformReviewStatus,
+      saleSafetyBlockerState: input.saleSafetyBlockerState,
+      saleSafetyBlockerSlotId: input.saleSafetyBlockerSlotId,
+    };
+  }
+
   async markReconciliation(
     machineId: string,
     movementId: string,
@@ -97,6 +130,13 @@ class InMemoryMovementRepository {
 
   get size(): number {
     return this.rows.size;
+  }
+
+  rowFor(
+    machineId: string,
+    movementId: string,
+  ): StoredRawMachineStockMovement | null {
+    return this.rows.get(`${machineId}:${movementId}`) ?? null;
   }
 }
 class InsertRaceMovementRepository extends InMemoryMovementRepository {
@@ -166,21 +206,38 @@ describe("MachineStockMovementsService", () => {
     expect(repo.size).toBe(1);
   });
 
-  it("sends a duplicate movement id with conflicting payload to reconciliation", async () => {
+  it("sends a duplicate movement id with conflicting payload to separate reconciliation audit", async () => {
     const repo = new InMemoryMovementRepository();
     const service = new MachineStockMovementsService(repo as never);
 
-    await service.receiveRawMovement(machine, movement);
+    const accepted = await service.receiveRawMovement(machine, movement);
     const conflict = await service.receiveRawMovement(machine, {
       ...movement,
       quantity: 4,
     });
 
     expect(conflict.status).toBe("reconciliation");
+    expect(conflict.receipt?.rawMovementId).toBe("raw-conflict-1");
     expect(conflict.rejection?.reason).toBe("movement_id_payload_conflict");
     expect(conflict.reconciliation?.platformReview.status).toBe("open");
     expect(conflict.reconciliation?.saleSafetyBlocker?.slotSalesState).toBe(
       "movement_rejected",
+    );
+    expect(repo.rowFor(machine.id, movement.movementId)).toEqual(
+      expect.objectContaining({
+        id: accepted.receipt?.rawMovementId,
+        status: "accepted",
+        payloadHash: accepted.receipt?.payloadHash,
+      }),
+    );
+    expect(repo.conflictInputs).toHaveLength(1);
+    expect(repo.conflictInputs[0]).toEqual(
+      expect.objectContaining({
+        rawMovementId: accepted.receipt?.rawMovementId,
+        reconciliationReason: "movement_id_payload_conflict",
+        saleSafetyBlockerState: "movement_rejected",
+        input: expect.objectContaining({ quantity: 4 }),
+      }),
     );
     expect(repo.size).toBe(1);
   });

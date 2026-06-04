@@ -9,7 +9,8 @@ use uuid::Uuid;
 use vending_core::domain::{CommandLogStatus, OutboxKind, OutboxTransport};
 
 use super::schema::{
-    MIGRATION_V1, MIGRATION_V2, MIGRATION_V3, MIGRATION_V4, MIGRATION_V5, SCHEMA_VERSION,
+    MIGRATION_V1, MIGRATION_V2, MIGRATION_V3, MIGRATION_V4, MIGRATION_V5, MIGRATION_V6,
+    SCHEMA_VERSION,
 };
 use vending_core::hardware::{
     DispenseCommandPayload, DispenseResultPayload, EnvironmentControlResultPayload,
@@ -63,7 +64,7 @@ type StockMovementSyncRecordRow = (
     String,
     String,
 );
-type PreviousSlotProjectionRow = (String, i64, String, String, String, String);
+type PreviousSlotProjectionRow = (String, i64, String, String, String, String, Option<String>);
 type OrderSessionRecordRow = (
     String,
     String,
@@ -469,6 +470,12 @@ impl LocalStateStore {
         }
         if current_version < 5 {
             sqlx::query(MIGRATION_V5)
+                .execute(&store.pool)
+                .await
+                .map_err(StoreError::Sqlx)?;
+        }
+        if current_version < 6 {
+            sqlx::query(MIGRATION_V6)
                 .execute(&store.pool)
                 .await
                 .map_err(StoreError::Sqlx)?;
@@ -1277,7 +1284,29 @@ impl LocalStateStore {
                 .iter()
                 .find(|previous| previous.slot_id == slot.slot_id)
             {
-                if previous.physical_stock > 0 && !previous.has_same_mapping(slot) {
+                let saleable_stock = previous.physical_stock.min(slot.capacity).max(0);
+                if previous.has_sale_safety_blocker()
+                    && is_reconciliation_sale_safety_blocker(&previous.slot_sales_state)
+                {
+                    upsert_stock_projection_with_state_in_tx(
+                        &mut tx,
+                        &input.planogram_version,
+                        &slot.slot_id,
+                        previous.physical_stock,
+                        saleable_stock,
+                        &previous.slot_sales_state,
+                    )
+                    .await?;
+                    upsert_sale_safety_blocker_marker_in_tx(
+                        &mut tx,
+                        &input.planogram_version,
+                        &slot.slot_id,
+                        &previous.slot_sales_state,
+                        "planogram_activation_replay",
+                        &input.source,
+                    )
+                    .await?;
+                } else if previous.physical_stock > 0 && !previous.has_same_mapping(slot) {
                     upsert_stock_projection_with_state_in_tx(
                         &mut tx,
                         &input.planogram_version,
@@ -1288,17 +1317,14 @@ impl LocalStateStore {
                     )
                     .await?;
                 } else {
-                    let saleable_stock = previous.physical_stock.min(slot.capacity).max(0);
-                    let slot_sales_state = if matches!(
-                        previous.slot_sales_state.as_str(),
-                        "frozen" | "suspect" | "needs_count" | "blocked_for_planogram_change"
-                    ) {
-                        previous.slot_sales_state.as_str()
-                    } else if saleable_stock > 0 {
-                        "sale_ready"
-                    } else {
-                        "sold_out"
-                    };
+                    let slot_sales_state =
+                        if matches!(previous.slot_sales_state.as_str(), "frozen" | "suspect") {
+                            previous.slot_sales_state.as_str()
+                        } else if saleable_stock > 0 {
+                            "sale_ready"
+                        } else {
+                            "sold_out"
+                        };
                     upsert_stock_projection_with_state_in_tx(
                         &mut tx,
                         &input.planogram_version,
@@ -1480,6 +1506,25 @@ impl LocalStateStore {
             return Err(StoreError::InvalidStockInput(
                 "slot is not in the active planogram version".to_string(),
             ));
+        }
+
+        if is_reconciliation_sale_safety_blocker(&input.slot_sales_state) {
+            upsert_sale_safety_blocker_marker_in_tx(
+                &mut tx,
+                &input.planogram_version,
+                &input.slot_id,
+                &input.slot_sales_state,
+                "field_action",
+                &input.source,
+            )
+            .await?;
+        } else {
+            clear_sale_safety_blocker_marker_in_tx(
+                &mut tx,
+                &input.planogram_version,
+                &input.slot_id,
+            )
+            .await?;
         }
 
         let updated = sqlx::query(
@@ -1793,6 +1838,7 @@ struct PreviousSlotProjection {
     inventory_id: String,
     variant_id: String,
     product_id: String,
+    sale_safety_blocker_state: Option<String>,
 }
 
 impl PreviousSlotProjection {
@@ -1800,6 +1846,10 @@ impl PreviousSlotProjection {
         self.inventory_id == slot.inventory_id
             && self.variant_id == slot.variant_id
             && self.product_id == slot.product_id
+    }
+
+    fn has_sale_safety_blocker(&self) -> bool {
+        self.sale_safety_blocker_state.is_some()
     }
 }
 
@@ -1813,12 +1863,15 @@ async fn current_slot_projections_in_tx(
            c.slot_sales_state,
            s.inventory_id,
            s.variant_id,
-           s.product_id
+           s.product_id,
+           b.slot_sales_state AS sale_safety_blocker_state
          FROM current_stock_projection c
          JOIN machine_planogram_slots s
            ON s.planogram_version = c.planogram_version AND s.slot_id = c.slot_id
          JOIN machine_planogram_versions v
-           ON v.planogram_version = c.planogram_version AND v.active = 1",
+           ON v.planogram_version = c.planogram_version AND v.active = 1
+         LEFT JOIN sale_safety_blockers b
+           ON b.planogram_version = c.planogram_version AND b.slot_id = c.slot_id",
     )
     .fetch_all(tx.as_mut())
     .await?;
@@ -1826,7 +1879,15 @@ async fn current_slot_projections_in_tx(
     Ok(rows
         .into_iter()
         .map(
-            |(slot_id, physical_stock, slot_sales_state, inventory_id, variant_id, product_id)| {
+            |(
+                slot_id,
+                physical_stock,
+                slot_sales_state,
+                inventory_id,
+                variant_id,
+                product_id,
+                sale_safety_blocker_state,
+            )| {
                 PreviousSlotProjection {
                     slot_id,
                     physical_stock,
@@ -1834,10 +1895,63 @@ async fn current_slot_projections_in_tx(
                     inventory_id,
                     variant_id,
                     product_id,
+                    sale_safety_blocker_state,
                 }
             },
         )
         .collect())
+}
+
+fn is_reconciliation_sale_safety_blocker(value: &str) -> bool {
+    matches!(
+        value,
+        "needs_count"
+            | "blocked_for_planogram_change"
+            | "movement_rejected"
+            | "needs_platform_review"
+    )
+}
+
+async fn upsert_sale_safety_blocker_marker_in_tx(
+    tx: &mut Transaction<'_, sqlx::Sqlite>,
+    planogram_version: &str,
+    slot_id: &str,
+    slot_sales_state: &str,
+    reason: &str,
+    source: &str,
+) -> Result<(), StoreError> {
+    sqlx::query(
+        "INSERT INTO sale_safety_blockers(
+           planogram_version,slot_id,slot_sales_state,reason,source,updated_at
+         ) VALUES (?1,?2,?3,?4,?5,?6)
+         ON CONFLICT(planogram_version, slot_id) DO UPDATE SET
+           slot_sales_state=excluded.slot_sales_state,
+           reason=excluded.reason,
+           source=excluded.source,
+           updated_at=excluded.updated_at",
+    )
+    .bind(planogram_version)
+    .bind(slot_id)
+    .bind(slot_sales_state)
+    .bind(reason)
+    .bind(source)
+    .bind(now_iso())
+    .execute(tx.as_mut())
+    .await?;
+    Ok(())
+}
+
+async fn clear_sale_safety_blocker_marker_in_tx(
+    tx: &mut Transaction<'_, sqlx::Sqlite>,
+    planogram_version: &str,
+    slot_id: &str,
+) -> Result<(), StoreError> {
+    sqlx::query("DELETE FROM sale_safety_blockers WHERE planogram_version = ?1 AND slot_id = ?2")
+        .bind(planogram_version)
+        .bind(slot_id)
+        .execute(tx.as_mut())
+        .await?;
+    Ok(())
 }
 
 async fn upsert_stock_projection_in_tx(
@@ -1883,6 +1997,11 @@ async fn upsert_stock_projection_with_state_in_tx(
            physical_stock=excluded.physical_stock,
            saleable_stock=excluded.saleable_stock,
            slot_sales_state=CASE
+             WHEN EXISTS (
+               SELECT 1 FROM sale_safety_blockers b
+               WHERE b.planogram_version = current_stock_projection.planogram_version
+                 AND b.slot_id = current_stock_projection.slot_id
+             ) THEN current_stock_projection.slot_sales_state
              WHEN current_stock_projection.slot_sales_state IN ('frozen','suspect') THEN current_stock_projection.slot_sales_state
              ELSE excluded.slot_sales_state
            END,
@@ -1924,6 +2043,16 @@ async fn apply_sale_safety_blocker_in_tx(
     let Some((planogram_version,)) = active_projection else {
         return Ok(());
     };
+
+    upsert_sale_safety_blocker_marker_in_tx(
+        tx,
+        &planogram_version,
+        &blocker.slot_id,
+        &blocker.slot_sales_state,
+        &blocker.reason,
+        "platform_reconciliation",
+    )
+    .await?;
 
     sqlx::query(
         "UPDATE current_stock_projection

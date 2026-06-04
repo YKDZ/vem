@@ -3190,6 +3190,217 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn reconciliation_sale_safety_blocker_survives_later_stock_movements() {
+        let temp_dir = tempdir().expect("tmp");
+        let ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            "http://127.0.0.1:0",
+        )
+        .await;
+        let state = ctx.state.clone();
+        let app = build_router(ctx);
+        let slot_id = "550e8400-e29b-41d4-a716-4466554400b1";
+        let inventory_id = "550e8400-e29b-41d4-a716-4466554400b2";
+
+        assert_eq!(
+            post_json(
+                &app,
+                "/v1/stock/planogram",
+                "token-1",
+                one_slot_planogram("PLAN-RECONCILE-BLOCK", slot_id, inventory_id),
+            )
+            .await
+            .status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            post_json(
+                &app,
+                "/v1/stock/movements",
+                "token-1",
+                json!({
+                    "movementId": "MOVE-RECONCILE-BLOCK-INITIAL",
+                    "planogramVersion": "PLAN-RECONCILE-BLOCK",
+                    "slotId": slot_id,
+                    "movementType": "planned_refill",
+                    "quantity": 2,
+                    "source": "field_service",
+                    "attributedTo": "operator-1"
+                }),
+            )
+            .await
+            .status(),
+            StatusCode::CREATED
+        );
+
+        let events = state
+            .list_due_stock_movement_uploads(chrono::Utc::now())
+            .await
+            .expect("stock movement upload events");
+        state
+            .record_stock_movement_upload_response(
+                &events[0],
+                &crate::backend::StockMovementUploadResponse {
+                    movement_id: "MOVE-RECONCILE-BLOCK-INITIAL".to_string(),
+                    status: "reconciliation".to_string(),
+                    accepted_at: None,
+                    receipt: None,
+                    rejection: Some(json!({
+                        "reason": "movement_id_payload_conflict"
+                    })),
+                    reconciliation: Some(crate::backend::StockMovementReconciliation {
+                        reason: "movement_id_payload_conflict".to_string(),
+                        platform_review: Some(json!({ "status": "open" })),
+                        sale_safety_blocker: Some(crate::backend::StockMovementSaleSafetyBlocker {
+                            slot_id: slot_id.to_string(),
+                            slot_sales_state: "movement_rejected".to_string(),
+                            reason: "movement_id_payload_conflict".to_string(),
+                        }),
+                    }),
+                },
+            )
+            .await
+            .expect("record reconciliation response");
+
+        for movement in [
+            json!({
+                "movementId": "MOVE-RECONCILE-BLOCK-COUNT",
+                "planogramVersion": "PLAN-RECONCILE-BLOCK",
+                "slotId": slot_id,
+                "movementType": "stock_count_correction",
+                "quantity": 4,
+                "source": "field_count",
+                "attributedTo": "operator-2"
+            }),
+            json!({
+                "movementId": "MOVE-RECONCILE-BLOCK-REFILL",
+                "planogramVersion": "PLAN-RECONCILE-BLOCK",
+                "slotId": slot_id,
+                "movementType": "planned_refill",
+                "quantity": 1,
+                "source": "field_service",
+                "attributedTo": "operator-3"
+            }),
+        ] {
+            assert_eq!(
+                post_json(&app, "/v1/stock/movements", "token-1", movement)
+                    .await
+                    .status(),
+                StatusCode::CREATED
+            );
+        }
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/sale-view")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["items"][0]["physicalStock"], 5);
+        assert_eq!(payload["items"][0]["saleableStock"], 5);
+        assert_eq!(payload["items"][0]["slotSalesState"], "movement_rejected");
+    }
+
+    #[tokio::test]
+    async fn planogram_activation_preserves_reconciliation_blocker_states() {
+        let temp_dir = tempdir().expect("tmp");
+        let app = build_router(
+            test_ipc_context(
+                temp_dir.path(),
+                "token-1",
+                Some("MACHINE-1".to_string()),
+                "http://127.0.0.1:0",
+            )
+            .await,
+        );
+        let movement_rejected_slot = "550e8400-e29b-41d4-a716-4466554400c1";
+        let platform_review_slot = "550e8400-e29b-41d4-a716-4466554400d1";
+        let mut planogram = one_slot_planogram(
+            "PLAN-BLOCKER-OLD",
+            movement_rejected_slot,
+            "550e8400-e29b-41d4-a716-4466554400c2",
+        );
+        let mut second_slot = planogram["slots"][0].clone();
+        second_slot["slotId"] = json!(platform_review_slot);
+        second_slot["slotCode"] = json!("A2");
+        second_slot["cellNo"] = json!(2);
+        second_slot["inventoryId"] = json!("550e8400-e29b-41d4-a716-4466554400d2");
+        second_slot["productSortOrder"] = json!(2);
+        planogram["slots"].as_array_mut().unwrap().push(second_slot);
+
+        assert_eq!(
+            post_json(&app, "/v1/stock/planogram", "token-1", planogram.clone())
+                .await
+                .status(),
+            StatusCode::OK
+        );
+        for (slot_id, state) in [
+            (movement_rejected_slot, "movement_rejected"),
+            (platform_review_slot, "needs_platform_review"),
+        ] {
+            assert_eq!(
+                post_json(
+                    &app,
+                    "/v1/stock/slot-sales-state",
+                    "token-1",
+                    json!({
+                        "planogramVersion": "PLAN-BLOCKER-OLD",
+                        "slotId": slot_id,
+                        "slotSalesState": state,
+                        "source": "platform_reconciliation"
+                    }),
+                )
+                .await
+                .status(),
+                StatusCode::OK
+            );
+        }
+
+        planogram["planogramVersion"] = json!("PLAN-BLOCKER-NEW");
+        assert_eq!(
+            post_json(&app, "/v1/stock/planogram", "token-1", planogram)
+                .await
+                .status(),
+            StatusCode::OK
+        );
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/sale-view")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["planogramVersion"], "PLAN-BLOCKER-NEW");
+        assert_eq!(payload["items"][0]["slotSalesState"], "movement_rejected");
+        assert_eq!(
+            payload["items"][1]["slotSalesState"],
+            "needs_platform_review"
+        );
+    }
+
+    #[tokio::test]
     async fn sale_view_preserves_stock_when_identical_planogram_version_is_replayed() {
         let temp_dir = tempdir().expect("tmp");
         let app = build_router(
