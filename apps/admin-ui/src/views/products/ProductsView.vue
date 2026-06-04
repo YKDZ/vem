@@ -33,6 +33,7 @@ type VariantForm = {
   size: string;
   color: string;
   barcode: string;
+  targetGender: "male" | "female" | null;
 };
 
 const authStore = useAuthStore();
@@ -136,6 +137,7 @@ const variantForm = ref<VariantForm>({
   size: "",
   color: "",
   barcode: "",
+  targetGender: null,
 });
 const variantSaving = ref(false);
 
@@ -162,6 +164,7 @@ function openCreateVariant(): void {
     size: "",
     color: "",
     barcode: "",
+    targetGender: null,
   };
   variantFormOpen.value = true;
 }
@@ -177,6 +180,7 @@ function openEditVariant(v: ProductVariant): void {
     size: v.size ?? "",
     color: v.color ?? "",
     barcode: v.barcode ?? "",
+    targetGender: v.targetGender ?? null,
   };
   variantFormOpen.value = true;
 }
@@ -193,6 +197,7 @@ async function saveVariant(): Promise<void> {
       size: variantForm.value.size || null,
       color: variantForm.value.color || null,
       barcode: variantForm.value.barcode || null,
+      targetGender: variantForm.value.targetGender || null,
     };
     if (editingVariant.value) {
       await updateProductVariant(editingVariant.value.id, body);
@@ -227,6 +232,7 @@ const variantColumns = [
   { title: "SKU", dataIndex: "sku", key: "sku" },
   { title: "尺码", dataIndex: "size", key: "size" },
   { title: "颜色", dataIndex: "color", key: "color" },
+  { title: "目标性别", dataIndex: "targetGender", key: "targetGender" },
   { title: "价格(分)", dataIndex: "priceCents", key: "priceCents" },
   { title: "状态", dataIndex: "status", key: "status" },
   ...(canWrite ? [{ title: "操作", key: "actions" }] : []),
@@ -403,6 +409,16 @@ onMounted(() => {
             :min="0"
             class="w-full"
           />
+        </a-form-item>
+        <a-form-item label="目标性别">
+          <a-select
+            v-model:value="variantForm.targetGender"
+            allow-clear
+            placeholder="不限（留空）"
+          >
+            <a-select-option value="male">男款</a-select-option>
+            <a-select-option value="female">女款</a-select-option>
+          </a-select>
         </a-form-item>
         <a-form-item label="状态">
           <a-select v-model:value="variantForm.status">

@@ -244,16 +244,6 @@ impl BackendClient {
             .await
     }
 
-    pub async fn get_recommendations(
-        &self,
-        machine_code: &str,
-        payload: serde_json::Value,
-    ) -> Result<serde_json::Value, String> {
-        let url = format!("/machines/{machine_code}/recommendations");
-        self.request_json(reqwest::Method::POST, &url, Some(payload), true)
-            .await
-    }
-
     pub async fn get_payment_options(&self) -> Result<serde_json::Value, String> {
         self.request_json(
             reqwest::Method::GET,
@@ -334,37 +324,6 @@ mod tests {
         client.authenticate("M-1", "S-1").await.expect("auth");
         let response = client.get_catalog("M-1").await.expect("catalog");
         assert_eq!(response["source"], "backend");
-    }
-
-    #[tokio::test]
-    async fn backend_get_recommendations_uses_bearer_auth() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/machine-auth/token"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "accessToken": "token-123",
-            })))
-            .mount(&server)
-            .await;
-        Mock::given(method("POST"))
-            .and(path("/machines/M-1/recommendations"))
-            .and(header("authorization", "Bearer token-123"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "recommendations": [],
-            })))
-            .mount(&server)
-            .await;
-
-        let client = BackendClient::new(server.uri());
-        client.authenticate("M-1", "S-1").await.expect("auth");
-        let response = client
-            .get_recommendations("M-1", serde_json::json!({}))
-            .await
-            .expect("recommendations");
-        assert_eq!(
-            response["recommendations"].as_array().expect("array").len(),
-            0
-        );
     }
 
     #[tokio::test]

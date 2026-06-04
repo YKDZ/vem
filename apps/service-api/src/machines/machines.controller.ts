@@ -14,10 +14,8 @@ import {
   createMachineSchema,
   createMachineSlotSchema,
   machineEnvironmentControlRequestSchema,
-  machineRecommendationRequestSchema,
   pageQuerySchema,
   updateMachineSchema,
-  type MachineRecommendationRequest,
 } from "@vem/shared";
 import { z } from "zod";
 
@@ -124,21 +122,6 @@ export class MachinesController {
   ) {
     return await this.machinesService.getCatalogByMachineCode(
       code === machine.code ? machine.code : "__forbidden__",
-    );
-  }
-
-  @Public()
-  @UseGuards(MachineAuthGuard)
-  @Post(":code/recommendations")
-  async getMachineRecommendations(
-    @CurrentMachine() machine: AuthenticatedMachine,
-    @Param("code") code: string,
-    @Body(new ZodValidationPipe(machineRecommendationRequestSchema))
-    body: MachineRecommendationRequest,
-  ) {
-    return await this.machinesService.getRecommendations(
-      code === machine.code ? machine.code : "__forbidden__",
-      body,
     );
   }
 }
