@@ -1,4 +1,5 @@
 import type { VisionProfile } from "@vem/shared";
+
 import type { MachineCatalogItem, ScoredItem } from "@/types/catalog";
 
 /** Standard size order array, used for adjacent size calculation. */
@@ -123,7 +124,7 @@ export function scoreItem(
     return null;
   }
 
-  const userSize = inferSize(profile.heightCm, profile.bodyType);
+  const userSize = inferSize(profile.heightCm ?? undefined, profile.bodyType);
   const sizeScore = computeSizeScore(userSize, item.size ?? null);
   const stockScore = computeStockScore(item.availableQty);
   const sortScore = computeSortScore(item.productSortOrder);

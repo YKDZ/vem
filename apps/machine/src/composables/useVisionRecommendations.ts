@@ -1,23 +1,26 @@
-import { readonly, ref, onUnmounted } from "vue";
-import type { Ref } from "vue";
 import type { VisionProfile } from "@vem/shared";
-import { subscribeVisionProfiles } from "@/native/vision";
-import { useMachineStore } from "@/stores/machine";
-import { useCatalogStore } from "@/stores/catalog";
-import { computeRecommendations } from "@/recommendation/engine";
+import type { Ref } from "vue";
+
+import { readonly, ref, onUnmounted } from "vue";
+
 import type { ScoredItem } from "@/types/catalog";
+
+import { subscribeVisionProfiles } from "@/native/vision";
+import { computeRecommendations } from "@/recommendation/engine";
+import { useCatalogStore } from "@/stores/catalog";
+import { useMachineStore } from "@/stores/machine";
 
 const PROFILE_EXPIRE_MS = 60_000;
 
 export function useVisionRecommendations(): {
-  recommendedItems: Readonly<Ref<ScoredItem[]>>;
+  recommendedItems: Readonly<Ref<readonly ScoredItem[]>>;
   currentProfile: Readonly<Ref<VisionProfile | null>>;
 } {
   const machineStore = useMachineStore();
   const catalogStore = useCatalogStore();
 
   const currentProfile = ref<VisionProfile | null>(null);
-  const recommendedItems = ref<ScoredItem[]>([]);
+  const recommendedItems = ref<readonly ScoredItem[]>([]);
   let expireTimer: ReturnType<typeof setTimeout> | null = null;
 
   function clearState(): void {

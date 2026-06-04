@@ -1,7 +1,10 @@
-import { describe, it, expect } from "vitest";
-import { inferSize, scoreItem, computeRecommendations } from "./engine";
 import type { VisionProfile } from "@vem/shared";
+
+import { describe, it, expect } from "vitest";
+
 import type { MachineCatalogItem } from "@/types/catalog";
+
+import { inferSize, scoreItem, computeRecommendations } from "./engine";
 
 /** Create a minimal MachineCatalogItem for testing */
 function makeCatalogItem(
@@ -78,14 +81,22 @@ describe("scoreItem — size matching", () => {
   };
 
   it("exact match, score includes 50 points", () => {
-    const item = makeCatalogItem({ size: "L", availableQty: 0, productSortOrder: 10 });
+    const item = makeCatalogItem({
+      size: "L",
+      availableQty: 0,
+      productSortOrder: 10,
+    });
     const result = scoreItem(baseProfile, item);
     expect(result).not.toBeNull();
     expect(result!.score).toBeGreaterThanOrEqual(50);
   });
 
   it("adjacent size (M vs L), score includes 25 points", () => {
-    const item = makeCatalogItem({ size: "M", availableQty: 0, productSortOrder: 10 });
+    const item = makeCatalogItem({
+      size: "M",
+      availableQty: 0,
+      productSortOrder: 10,
+    });
     const result = scoreItem(baseProfile, item);
     expect(result).not.toBeNull();
     expect(result!.score).toBeGreaterThanOrEqual(25);
@@ -93,14 +104,22 @@ describe("scoreItem — size matching", () => {
   });
 
   it("non-matching size, score is only stockScore + sortScore", () => {
-    const item = makeCatalogItem({ size: "XS", availableQty: 0, productSortOrder: 10 });
+    const item = makeCatalogItem({
+      size: "XS",
+      availableQty: 0,
+      productSortOrder: 10,
+    });
     const result = scoreItem(baseProfile, item);
     expect(result).not.toBeNull();
     expect(result!.score).toBeLessThan(25);
   });
 
   it("item.size=null, size dimension is 0", () => {
-    const item = makeCatalogItem({ size: null, availableQty: 0, productSortOrder: 10 });
+    const item = makeCatalogItem({
+      size: null,
+      availableQty: 0,
+      productSortOrder: 10,
+    });
     const result = scoreItem(baseProfile, item);
     expect(result).not.toBeNull();
     expect(result!.score).toBeLessThan(25);
@@ -152,31 +171,59 @@ describe("scoreItem — gender filtering", () => {
 describe("scoreItem — stock and sort weight", () => {
   it("availableQty=5 → stockScore=5", () => {
     const profile: VisionProfile = { personPresent: true };
-    const item = makeCatalogItem({ availableQty: 5, productSortOrder: 10, size: null });
+    const item = makeCatalogItem({
+      availableQty: 5,
+      productSortOrder: 10,
+      size: null,
+    });
     const result = scoreItem(profile, item);
     expect(result).not.toBeNull();
     expect(result!.score).toBe(5);
   });
 
   it("availableQty=15 → stockScore=10 (capped)", () => {
-    const profile: VisionProfile = { personPresent: true, heightCm: null, bodyType: null };
-    const item = makeCatalogItem({ availableQty: 15, productSortOrder: 10, size: null });
+    const profile: VisionProfile = {
+      personPresent: true,
+      heightCm: null,
+      bodyType: undefined,
+    };
+    const item = makeCatalogItem({
+      availableQty: 15,
+      productSortOrder: 10,
+      size: null,
+    });
     const result = scoreItem(profile, item);
     expect(result).not.toBeNull();
     expect(result!.score).toBe(10);
   });
 
   it("productSortOrder=3 → sortScore=7", () => {
-    const profile: VisionProfile = { personPresent: true, heightCm: null, bodyType: null };
-    const item = makeCatalogItem({ availableQty: 0, productSortOrder: 3, size: null });
+    const profile: VisionProfile = {
+      personPresent: true,
+      heightCm: null,
+      bodyType: undefined,
+    };
+    const item = makeCatalogItem({
+      availableQty: 0,
+      productSortOrder: 3,
+      size: null,
+    });
     const result = scoreItem(profile, item);
     expect(result).not.toBeNull();
     expect(result!.score).toBe(7);
   });
 
   it("productSortOrder=12 → sortScore=0 (floor)", () => {
-    const profile: VisionProfile = { personPresent: true, heightCm: null, bodyType: null };
-    const item = makeCatalogItem({ availableQty: 0, productSortOrder: 12, size: null });
+    const profile: VisionProfile = {
+      personPresent: true,
+      heightCm: null,
+      bodyType: undefined,
+    };
+    const item = makeCatalogItem({
+      availableQty: 0,
+      productSortOrder: 12,
+      size: null,
+    });
     const result = scoreItem(profile, item);
     expect(result).not.toBeNull();
     expect(result!.score).toBe(0);
@@ -193,7 +240,12 @@ describe("computeRecommendations", () => {
     };
     const items = [
       makeCatalogItem({ sku: "low", availableQty: 1, productSortOrder: 10 }),
-      makeCatalogItem({ sku: "high", availableQty: 10, productSortOrder: 0, size: "M" }),
+      makeCatalogItem({
+        sku: "high",
+        availableQty: 10,
+        productSortOrder: 0,
+        size: "M",
+      }),
     ];
     const result = computeRecommendations(profile, items);
     expect(result.length).toBe(2);

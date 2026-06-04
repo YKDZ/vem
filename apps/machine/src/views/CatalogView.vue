@@ -5,12 +5,12 @@ import { useRouter } from "vue-router";
 import type { MachineCatalogItem } from "@/types/catalog";
 
 import ProductCard from "@/components/ProductCard.vue";
+import { useVisionRecommendations } from "@/composables/useVisionRecommendations";
 import KioskLayout from "@/layouts/KioskLayout.vue";
 import { useCatalogStore } from "@/stores/catalog";
 import { useCheckoutStore } from "@/stores/checkout";
 import { useConnectivityStore } from "@/stores/connectivity";
 import { useMqttStore } from "@/stores/mqtt";
-import { useVisionRecommendations } from "@/composables/useVisionRecommendations";
 import { useVisionStore } from "@/stores/vision";
 
 const router = useRouter();
@@ -91,22 +91,19 @@ onMounted(async () => {
         视觉状态：{{ visionStore.message }}
       </p>
 
-      <div
-        v-if="recommendedItems.length > 0"
-        class="mt-5"
-      >
+      <div v-if="recommendedItems.length > 0" class="mt-5">
         <p class="text-sm tracking-[0.35em] text-amber-200 uppercase">
           FOR YOU
         </p>
         <h3 class="text-2xl font-bold text-white">为你推荐</h3>
-        <div class="flex gap-4 overflow-x-auto pb-4 mt-3">
+        <div class="mt-3 flex gap-4 overflow-x-auto pb-4">
           <div
             v-for="item in recommendedItems"
             :key="item.inventoryId"
-            class="w-40 flex-shrink-0 rounded-[1.75rem] border border-white/10 bg-white/10 p-4 cursor-pointer"
+            class="w-40 flex-shrink-0 cursor-pointer rounded-[1.75rem] border border-white/10 bg-white/10 p-4"
             @click="selectProduct(item)"
           >
-            <p class="text-sm font-bold text-white truncate">
+            <p class="truncate text-sm font-bold text-white">
               {{ item.productName }}
             </p>
             <p class="mt-1 text-xs text-amber-200">
