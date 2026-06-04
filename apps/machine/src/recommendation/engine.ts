@@ -38,7 +38,7 @@ export function inferSize(
  * Returns the index of a size in SIZE_ORDER, -1 if not found.
  */
 function sizeRank(size: string): number {
-  return SIZE_ORDER.indexOf(size as (typeof SIZE_ORDER)[number]);
+  return SIZE_ORDER.indexOf(size as unknown as (typeof SIZE_ORDER)[number]);
 }
 
 /**

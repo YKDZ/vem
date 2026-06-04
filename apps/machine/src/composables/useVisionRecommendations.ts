@@ -36,7 +36,7 @@ export function useVisionRecommendations(): {
     const profile = payload.profile;
 
     // personPresent=false → treat as no profile
-    if (profile.personPresent === false) {
+    if (!profile.personPresent) {
       clearState();
       return;
     }
