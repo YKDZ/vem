@@ -338,6 +338,7 @@ describe("sale readiness UI flow", () => {
     useCatalogStore().applySnapshot({
       items: [item],
       source: "local_stock",
+      planogramVersion: "PLAN-1",
       lastUpdatedAt: "2026-06-04T00:00:00Z",
     });
 
@@ -378,6 +379,7 @@ describe("sale readiness UI flow", () => {
     useCatalogStore().applySnapshot({
       items: [item],
       source: "local_stock",
+      planogramVersion: "PLAN-1",
       lastUpdatedAt: "2026-06-04T00:00:00Z",
     });
     applyBlockedSaleReadiness();
@@ -407,6 +409,7 @@ describe("sale readiness UI flow", () => {
     useCatalogStore().applySnapshot({
       items: [item],
       source: "local_stock",
+      planogramVersion: "PLAN-1",
       lastUpdatedAt: "2026-06-04T00:00:00Z",
     });
     useCheckoutStore().selectItem(item);

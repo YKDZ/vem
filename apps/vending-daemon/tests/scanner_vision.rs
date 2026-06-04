@@ -587,6 +587,9 @@ async fn create_payment_code_order(daemon: &DaemonHarness) -> serde_json::Value 
         .json(&json!({
             "inventoryId": "550e8400-e29b-41d4-a716-446655440002",
             "quantity": 1,
+            "planogramVersion": "PLAN-SCAN",
+            "slotId": "550e8400-e29b-41d4-a716-446655440001",
+            "slotCode": "A1",
             "paymentMethod": "payment_code",
             "paymentProviderCode": "alipay",
             "profileSnapshot": null

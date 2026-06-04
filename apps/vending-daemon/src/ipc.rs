@@ -302,9 +302,20 @@ async fn require_token(
 struct CreateOrder {
     inventory_id: String,
     quantity: u32,
+    planogram_version: String,
+    slot_id: String,
+    slot_code: String,
     payment_method: String,
     payment_provider_code: Option<String>,
     profile_snapshot: Option<serde_json::Value>,
+}
+
+struct VerifiedCreateOrderLine {
+    inventory_id: String,
+    quantity: u32,
+    planogram_version: String,
+    slot_id: String,
+    slot_code: String,
 }
 
 #[derive(serde::Deserialize)]
@@ -470,21 +481,26 @@ async fn create_order_intent(
         return (status, error).into_response();
     }
 
-    if let Err(error) = validate_create_order_intent(&ctx, &input).await {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorMessage {
-                code: "create_order_blocked",
-                message: error,
-            }),
-        )
-            .into_response();
-    }
+    let verified_line = match validate_create_order_intent(&ctx, &input).await {
+        Ok(line) => line,
+        Err(error) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorMessage {
+                    code: "create_order_blocked",
+                    message: error,
+                }),
+            )
+                .into_response();
+        }
+    };
 
     let items = serde_json::json!({
-        "inventoryId": input.inventory_id,
-        "quantity": input.quantity,
-        "profileSnapshot": input.profile_snapshot,
+        "inventoryId": verified_line.inventory_id,
+        "quantity": verified_line.quantity,
+        "planogramVersion": verified_line.planogram_version,
+        "slotId": verified_line.slot_id,
+        "slotCode": verified_line.slot_code,
     });
 
     let payment_provider_code = input
@@ -1066,7 +1082,10 @@ fn validate_selected_payment_option(
         .unwrap_or_else(|| "selected payment option is not ready".to_string()))
 }
 
-async fn validate_create_order_intent(ctx: &IpcContext, input: &CreateOrder) -> Result<(), String> {
+async fn validate_create_order_intent(
+    ctx: &IpcContext,
+    input: &CreateOrder,
+) -> Result<VerifiedCreateOrderLine, String> {
     if input.quantity == 0 {
         return Err("quantity must be positive".to_string());
     }
@@ -1106,11 +1125,26 @@ async fn validate_create_order_intent(ctx: &IpcContext, input: &CreateOrder) -> 
         .sale_view(machine_code)
         .await
         .map_err(|error| error.to_string())?;
+    let active_planogram = sale_view
+        .planogram_version
+        .as_deref()
+        .ok_or_else(|| "active planogram is required".to_string())?;
+    if active_planogram != input.planogram_version {
+        return Err(format!(
+            "selected planogram {} does not match active planogram {}",
+            input.planogram_version, active_planogram
+        ));
+    }
+
     let item = sale_view
         .items
         .iter()
-        .find(|item| item.inventory_id == input.inventory_id)
-        .ok_or_else(|| "selected inventory is not in the active sale view".to_string())?;
+        .find(|item| {
+            item.inventory_id == input.inventory_id
+                && item.slot_id == input.slot_id
+                && item.slot_code == input.slot_code
+        })
+        .ok_or_else(|| "selected order line is not in the active sale view".to_string())?;
     if item.slot_sales_state != "sale_ready" {
         return Err(format!(
             "selected slot {} is {}",
@@ -1123,7 +1157,14 @@ async fn validate_create_order_intent(ctx: &IpcContext, input: &CreateOrder) -> 
             item.slot_code
         ));
     }
-    Ok(())
+
+    Ok(VerifiedCreateOrderLine {
+        inventory_id: item.inventory_id.clone(),
+        quantity: input.quantity,
+        planogram_version: active_planogram.to_string(),
+        slot_id: item.slot_id.clone(),
+        slot_code: item.slot_code.clone(),
+    })
 }
 
 async fn sync_planogram(State(ctx): State<IpcContext>, headers: HeaderMap) -> impl IntoResponse {
@@ -1653,7 +1694,10 @@ mod tests {
     use std::sync::Arc;
     use tempfile::tempdir;
     use tower::util::ServiceExt;
-    use wiremock::{matchers::method, Mock, MockServer, ResponseTemplate};
+    use wiremock::{
+        matchers::{body_partial_json, method, path},
+        Mock, MockServer, ResponseTemplate,
+    };
 
     #[tokio::test]
     async fn ipc_token_is_reused_and_base64_decode_is_32_bytes() {
@@ -2237,6 +2281,9 @@ mod tests {
             json!({
                 "inventoryId": "550e8400-e29b-41d4-a716-446655440202",
                 "quantity": 1,
+                "planogramVersion": "PLAN-MISSING",
+                "slotId": "550e8400-e29b-41d4-a716-446655440201",
+                "slotCode": "A1",
                 "paymentMethod": "mock",
                 "paymentProviderCode": "mock",
                 "profileSnapshot": null
@@ -2363,6 +2410,9 @@ mod tests {
             json!({
                 "inventoryId": inventory_id,
                 "quantity": 1,
+                "planogramVersion": "PLAN-FROZEN-CREATE",
+                "slotId": slot_id,
+                "slotCode": "A1",
                 "paymentMethod": "mock",
                 "paymentProviderCode": "mock",
                 "profileSnapshot": null
@@ -2516,6 +2566,9 @@ mod tests {
             json!({
                 "inventoryId": inventory_id,
                 "quantity": 1,
+                "planogramVersion": "PLAN-SCANNER-PAYMENT-CODE",
+                "slotId": slot_id,
+                "slotCode": "A1",
                 "paymentMethod": "payment_code",
                 "paymentProviderCode": "alipay",
                 "profileSnapshot": null
@@ -2645,6 +2698,9 @@ mod tests {
             json!({
                 "inventoryId": inventory_id,
                 "quantity": 1,
+                "planogramVersion": "PLAN-SCANNER-QR",
+                "slotId": slot_id,
+                "slotCode": "A1",
                 "paymentMethod": "qr_code",
                 "paymentProviderCode": "alipay",
                 "profileSnapshot": null
@@ -2752,6 +2808,9 @@ mod tests {
             json!({
                 "inventoryId": inventory_id,
                 "quantity": 1,
+                "planogramVersion": "PLAN-SCANNER-MOCK",
+                "slotId": slot_id,
+                "slotCode": "A1",
                 "paymentMethod": "mock",
                 "profileSnapshot": null
             }),
@@ -2767,6 +2826,236 @@ mod tests {
             .filter(|request| request.url.path() == "/machine-orders")
             .count();
         assert_eq!(backend_create_order_requests, 1);
+    }
+
+    #[tokio::test]
+    async fn create_order_intent_sends_verified_planogram_slot_context_to_platform() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/machine-orders/payment-options"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "options": [{
+                    "optionKey": "mock:mock",
+                    "providerCode": "mock",
+                    "method": "mock",
+                    "displayName": "模拟支付",
+                    "description": "本地模拟",
+                    "icon": "mock",
+                    "recommended": true,
+                    "disabled": false,
+                    "disabledReason": null
+                }],
+                "defaultOptionKey": "mock:mock",
+                "defaultProviderCode": "mock",
+                "serverTime": "2026-06-04T00:00:00Z"
+            })))
+            .mount(&server)
+            .await;
+
+        let slot_id = "550e8400-e29b-41d4-a716-446655440601";
+        let inventory_id = "550e8400-e29b-41d4-a716-446655440602";
+        Mock::given(method("POST"))
+            .and(path("/machine-orders"))
+            .and(body_partial_json(json!({
+                "machineCode": "MACHINE-1",
+                "items": [{
+                    "inventoryId": inventory_id,
+                    "quantity": 1,
+                    "planogramVersion": "PLAN-NETWORK-AUTH",
+                    "slotId": slot_id,
+                    "slotCode": "A1"
+                }]
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "orderNo": "ORD-NETWORK-AUTH",
+                "nextAction": "wait_payment",
+                "orderStatus": "pending_payment"
+            })))
+            .mount(&server)
+            .await;
+
+        let temp_dir = tempdir().expect("tmp");
+        let ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            &server.uri(),
+        )
+        .await;
+        mark_runtime_sale_ready(&ctx).await;
+        let app = build_router(ctx);
+        assert_eq!(
+            post_json(
+                &app,
+                "/v1/stock/planogram",
+                "token-1",
+                one_slot_planogram("PLAN-NETWORK-AUTH", slot_id, inventory_id),
+            )
+            .await
+            .status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            post_json(
+                &app,
+                "/v1/stock/movements",
+                "token-1",
+                json!({
+                    "movementId": "MOVE-NETWORK-AUTH-1",
+                    "planogramVersion": "PLAN-NETWORK-AUTH",
+                    "slotId": slot_id,
+                    "movementType": "planned_refill",
+                    "quantity": 2,
+                    "source": "field_service",
+                    "attributedTo": "operator-1"
+                }),
+            )
+            .await
+            .status(),
+            StatusCode::CREATED
+        );
+
+        let response = post_json(
+            &app,
+            "/v1/intents/create-order",
+            "token-1",
+            json!({
+                "inventoryId": inventory_id,
+                "quantity": 1,
+                "planogramVersion": "PLAN-NETWORK-AUTH",
+                "slotId": slot_id,
+                "slotCode": "A1",
+                "paymentMethod": "mock",
+                "paymentProviderCode": "mock",
+                "profileSnapshot": null
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn create_order_intent_surfaces_platform_refusal_without_mutating_local_stock() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/machine-orders/payment-options"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "options": [{
+                    "optionKey": "mock:mock",
+                    "providerCode": "mock",
+                    "method": "mock",
+                    "displayName": "模拟支付",
+                    "description": "本地模拟",
+                    "icon": "mock",
+                    "recommended": true,
+                    "disabled": false,
+                    "disabledReason": null
+                }],
+                "defaultOptionKey": "mock:mock",
+                "defaultProviderCode": "mock",
+                "serverTime": "2026-06-04T00:00:00Z"
+            })))
+            .mount(&server)
+            .await;
+
+        Mock::given(method("POST"))
+            .and(path("/machine-orders"))
+            .respond_with(ResponseTemplate::new(409).set_body_json(json!({
+                "message": "Inventory is not available"
+            })))
+            .mount(&server)
+            .await;
+
+        let slot_id = "550e8400-e29b-41d4-a716-446655440701";
+        let inventory_id = "550e8400-e29b-41d4-a716-446655440702";
+        let temp_dir = tempdir().expect("tmp");
+        let ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            &server.uri(),
+        )
+        .await;
+        mark_runtime_sale_ready(&ctx).await;
+        let app = build_router(ctx);
+        assert_eq!(
+            post_json(
+                &app,
+                "/v1/stock/planogram",
+                "token-1",
+                one_slot_planogram("PLAN-PLATFORM-REFUSAL", slot_id, inventory_id),
+            )
+            .await
+            .status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            post_json(
+                &app,
+                "/v1/stock/movements",
+                "token-1",
+                json!({
+                    "movementId": "MOVE-PLATFORM-REFUSAL-1",
+                    "planogramVersion": "PLAN-PLATFORM-REFUSAL",
+                    "slotId": slot_id,
+                    "movementType": "planned_refill",
+                    "quantity": 2,
+                    "source": "field_service",
+                    "attributedTo": "operator-1"
+                }),
+            )
+            .await
+            .status(),
+            StatusCode::CREATED
+        );
+
+        let response = post_json(
+            &app,
+            "/v1/intents/create-order",
+            "token-1",
+            json!({
+                "inventoryId": inventory_id,
+                "quantity": 1,
+                "planogramVersion": "PLAN-PLATFORM-REFUSAL",
+                "slotId": slot_id,
+                "slotCode": "A1",
+                "paymentMethod": "mock",
+                "paymentProviderCode": "mock",
+                "profileSnapshot": null
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["code"], "create_order_failed");
+        assert!(payload["message"]
+            .as_str()
+            .unwrap()
+            .contains("Inventory is not available"));
+
+        let sale_view = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/sale-view")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(sale_view.status(), StatusCode::OK);
+        let body = body::to_bytes(sale_view.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let item = &payload["items"][0];
+        assert_eq!(item["physicalStock"], 2);
+        assert_eq!(item["saleableStock"], 2);
+        assert_eq!(item["slotSalesState"], "sale_ready");
     }
 
     #[tokio::test]

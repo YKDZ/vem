@@ -141,6 +141,10 @@ function isSaleableItem(
   );
 }
 
+function activePlanogramVersion(): string | null {
+  return useCatalogStore().planogramVersion;
+}
+
 function isMachineSaleReady(): boolean {
   return useConnectivityStore().isSaleNetworkReady;
 }
@@ -188,6 +192,7 @@ export const useCheckoutStore = defineStore("checkout", {
       const selectedItem = latestSaleViewItem(state.selectedItem);
       return Boolean(
         isSaleableItem(selectedItem) &&
+        activePlanogramVersion() &&
         isMachineSaleReady() &&
         state.selectedPaymentOptionKey &&
         state.paymentOptions.find(
@@ -380,6 +385,8 @@ export const useCheckoutStore = defineStore("checkout", {
       const selected = this.selectedPaymentOption;
       if (!selected || selected.disabled) throw new Error("请选择支付方式");
       if (!isMachineSaleReady()) throw new Error("当前机器暂不可创建订单");
+      const planogramVersion = activePlanogramVersion();
+      if (!planogramVersion) throw new Error("当前货道图暂不可创建订单");
 
       this.loading = true;
       this.error = null;
@@ -387,6 +394,9 @@ export const useCheckoutStore = defineStore("checkout", {
         const snapshot = await daemonClient.createOrder({
           inventoryId: selectedItem.inventoryId,
           quantity: 1,
+          planogramVersion,
+          slotId: selectedItem.slotId,
+          slotCode: selectedItem.slotCode,
           paymentMethod: selected.method,
           paymentProviderCode: selected.providerCode,
           profileSnapshot: null,

@@ -73,6 +73,7 @@ describe("catalog store sale view", () => {
 
     expect(getSaleViewMock).toHaveBeenCalledOnce();
     expect(store.items).toHaveLength(2);
+    expect(store.planogramVersion).toBe("PLAN-1");
     expect(store.availableItems.map((item) => item.productName)).toEqual([
       "矿泉水",
     ]);

@@ -14,6 +14,8 @@ import {
   inventories,
   inventoryMovements,
   isNull,
+  machinePlanogramSlots,
+  machinePlanogramVersions,
   machineSlots,
   machines,
   orderItems,
@@ -72,6 +74,27 @@ function readQrExpiresMinutes(
     value <= 60
     ? value
     : 15;
+}
+
+function hasAnyMachineOrderLineContext(
+  item: CreateMachineOrderInput["items"][number],
+): boolean {
+  return Boolean(item.planogramVersion || item.slotId || item.slotCode);
+}
+
+function assertMachineOrderLineContextMatchesInventory(
+  item: CreateMachineOrderInput["items"][number],
+  row: { slotId: string; slotCode: string },
+): void {
+  if (!hasAnyMachineOrderLineContext(item)) return;
+  if (!item.planogramVersion || !item.slotId || !item.slotCode) {
+    throw new ConflictException("Machine order line context is required");
+  }
+  if (item.slotId !== row.slotId || item.slotCode !== row.slotCode) {
+    throw new ConflictException(
+      "Machine order line does not match active slot inventory mapping",
+    );
+  }
 }
 
 function resolvePaymentSelection(input: CreateMachineOrderInput): {
@@ -297,6 +320,45 @@ export class OrdersService {
     };
   }
 
+  private async assertMachineOrderLinePlanogramContext(
+    tx: DrizzleTransaction,
+    machineId: string,
+    item: CreateMachineOrderInput["items"][number],
+  ): Promise<void> {
+    if (!hasAnyMachineOrderLineContext(item)) return;
+    if (!item.planogramVersion || !item.slotId || !item.slotCode) {
+      throw new ConflictException("Machine order line context is required");
+    }
+
+    const [row] = await tx
+      .select({ id: machinePlanogramSlots.id })
+      .from(machinePlanogramVersions)
+      .innerJoin(
+        machinePlanogramSlots,
+        eq(
+          machinePlanogramSlots.machinePlanogramVersionId,
+          machinePlanogramVersions.id,
+        ),
+      )
+      .where(
+        and(
+          eq(machinePlanogramVersions.machineId, machineId),
+          eq(machinePlanogramVersions.planogramVersion, item.planogramVersion),
+          eq(machinePlanogramVersions.status, "active"),
+          sql`${machinePlanogramVersions.acknowledgedAt} IS NOT NULL`,
+          eq(machinePlanogramSlots.slotId, item.slotId),
+          eq(machinePlanogramSlots.slotCode, item.slotCode),
+          eq(machinePlanogramSlots.inventoryId, item.inventoryId),
+        ),
+      );
+
+    if (!row) {
+      throw new ConflictException(
+        "Machine order line planogram context is not active and acknowledged",
+      );
+    }
+  }
+
   private async createLocalMachineOrderDraft(
     input: CreateMachineOrderInput,
     machineId: string,
@@ -353,11 +415,18 @@ export class OrdersService {
             `Inventory ${item.inventoryId} not found`,
           );
         }
+        assertMachineOrderLineContextMatchesInventory(item, row);
         return {
           ...row,
           quantity: item.quantity,
+          planogramVersion: item.planogramVersion ?? null,
         };
       });
+      await Promise.all(
+        input.items.map(async (item) =>
+          this.assertMachineOrderLinePlanogramContext(tx, machineId, item),
+        ),
+      );
 
       const totalAmountCents = itemDetails.reduce(
         (sum, item) => sum + item.unitPriceCents * item.quantity,

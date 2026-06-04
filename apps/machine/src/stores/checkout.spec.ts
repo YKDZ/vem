@@ -187,6 +187,12 @@ describe("checkout store", () => {
       },
     ];
     store.selectedPaymentOptionKey = "payment_code:alipay";
+    useCatalogStore().applySnapshot({
+      items: [makeCatalogItem()],
+      source: "local_stock",
+      planogramVersion: "PLAN-1",
+      lastUpdatedAt: "2026-06-04T00:00:00Z",
+    });
     useConnectivityStore().applyHealth({
       status: "healthy",
       process: {
@@ -270,6 +276,9 @@ describe("checkout store", () => {
     expect(createOrderMock).toHaveBeenCalledWith({
       inventoryId: "550e8400-e29b-41d4-a716-446655440002",
       quantity: 1,
+      planogramVersion: "PLAN-1",
+      slotId: "550e8400-e29b-41d4-a716-446655440001",
+      slotCode: "A1",
       paymentMethod: "payment_code",
       paymentProviderCode: "alipay",
       profileSnapshot: null,
@@ -500,6 +509,12 @@ describe("checkout store", () => {
       },
     ];
     store.selectedPaymentOptionKey = "mock:mock";
+    useCatalogStore().applySnapshot({
+      items: [makeCatalogItem()],
+      source: "local_stock",
+      planogramVersion: "PLAN-1",
+      lastUpdatedAt: "2026-06-04T00:00:00Z",
+    });
     store.selectItem(makeCatalogItem());
 
     expect(store.canCreateOrder).toBe(true);

@@ -9,6 +9,7 @@ export const useCatalogStore = defineStore("catalog", {
     items: [] as MachineCatalogItem[],
     cachedOnly: false,
     source: "uninitialized",
+    planogramVersion: null as string | null,
     lastUpdatedAt: null as string | null,
     loading: false,
     error: null as string | null,
@@ -30,12 +31,14 @@ export const useCatalogStore = defineStore("catalog", {
       items: MachineCatalogItem[];
       cached?: boolean;
       source: string;
+      planogramVersion?: string | null;
       lastUpdatedAt: string | null;
       lastError?: string | null;
     }): void {
       this.items = snapshot.items;
       this.cachedOnly = snapshot.cached ?? false;
       this.source = snapshot.source;
+      this.planogramVersion = snapshot.planogramVersion ?? null;
       this.lastUpdatedAt = snapshot.lastUpdatedAt;
       this.error = snapshot.lastError ?? null;
     },

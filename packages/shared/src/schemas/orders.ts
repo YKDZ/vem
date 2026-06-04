@@ -19,6 +19,9 @@ export const orderQuerySchema = z.object({
 export const machineOrderItemSchema = z.object({
   inventoryId: z.uuid(),
   quantity: z.int().positive(),
+  planogramVersion: z.string().min(1).max(128).optional(),
+  slotId: z.uuid().optional(),
+  slotCode: z.string().min(1).max(32).optional(),
 });
 
 export const machinePaymentProviderCodeSchema = z.enum([
