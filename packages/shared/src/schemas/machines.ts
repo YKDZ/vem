@@ -124,3 +124,25 @@ export const machineCatalogItemSchema = z.object({
 });
 
 export type MachineCatalogItem = z.infer<typeof machineCatalogItemSchema>;
+
+export const machineSaleViewItemSchema = machineCatalogItemSchema
+  .omit({ availableQty: true })
+  .extend({
+    capacity: z.int().nonnegative(),
+    parLevel: z.int().nonnegative(),
+    physicalStock: z.int().nonnegative(),
+    saleableStock: z.int().nonnegative(),
+    slotSalesState: z.enum(["saleable", "sold_out", "unavailable"]),
+  });
+
+export const machineSaleViewSnapshotSchema = z.object({
+  items: z.array(machineSaleViewItemSchema),
+  source: z.string(),
+  planogramVersion: z.string().nullable(),
+  lastUpdatedAt: z.string().nullable(),
+});
+
+export type MachineSaleViewItem = z.infer<typeof machineSaleViewItemSchema>;
+export type MachineSaleViewSnapshot = z.infer<
+  typeof machineSaleViewSnapshotSchema
+>;

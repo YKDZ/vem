@@ -7,6 +7,7 @@ import {
 
 type ScenarioName =
   | "catalog"
+  | "soldOut"
   | "maintenance"
   | "offline"
   | "payment"
@@ -15,7 +16,7 @@ type ScenarioName =
   | "staleEventStream"
   | "syncBacklog";
 
-const catalogItem = {
+const saleViewItem = {
   machineCode: "M001",
   slotId: "550e8400-e29b-41d4-a716-446655440001",
   slotCode: "A1",
@@ -33,8 +34,13 @@ const catalogItem = {
   size: null,
   color: null,
   priceCents: 100,
-  availableQty: 5,
   productSortOrder: 1,
+  targetGender: null,
+  capacity: 8,
+  parLevel: 6,
+  physicalStock: 5,
+  saleableStock: 5,
+  slotSalesState: "saleable",
 };
 
 const publicConfig = {
@@ -339,12 +345,31 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
     return;
   }
 
+  if (url.pathname === "/v1/sale-view") {
+    respondJson(res, {
+      items: [
+        scenario === "soldOut"
+          ? {
+              ...saleViewItem,
+              physicalStock: 0,
+              saleableStock: 0,
+              slotSalesState: "sold_out",
+            }
+          : saleViewItem,
+      ],
+      source: "local_stock",
+      planogramVersion: "PLAN-1",
+      lastUpdatedAt: "2026-01-01T00:00:00Z",
+    });
+    return;
+  }
+
   if (url.pathname === "/v1/catalog") {
     respondJson(res, {
-      items: [catalogItem],
+      items: [],
       cached: true,
       lastUpdatedAt: "2026-01-01T00:00:00Z",
-      source: "mock-daemon",
+      source: "legacy-unused",
       lastError: null,
     });
     return;
@@ -492,6 +517,16 @@ test("routes ready daemon to catalog", async ({ page }) => {
   scenario = "catalog";
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "请选择商品" })).toBeVisible();
+});
+
+test("catalog hides sold-out sale-view items", async ({ page }) => {
+  scenario = "soldOut";
+  await page.goto("/");
+  await expect(page.getByRole("heading", { name: "请选择商品" })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "暂无可售商品" }),
+  ).toBeVisible();
+  await expect(page.getByRole("button", { name: "查看详情" })).toHaveCount(0);
 });
 
 test("routes missing config to maintenance", async ({ page }) => {

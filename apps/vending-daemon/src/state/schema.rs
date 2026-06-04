@@ -1,4 +1,4 @@
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 2;
 
 pub const MIGRATION_V1: &str = r#"
 PRAGMA journal_mode = WAL;
@@ -85,4 +85,80 @@ CREATE TABLE IF NOT EXISTS health_events (
 CREATE INDEX IF NOT EXISTS idx_outbox_due ON outbox_events(next_attempt_at, priority);
 CREATE INDEX IF NOT EXISTS idx_command_log_expires ON command_log(expires_at);
 CREATE INDEX IF NOT EXISTS idx_health_events_component_time ON health_events(component, occurred_at);
+"#;
+
+pub const MIGRATION_V2: &str = r#"
+PRAGMA foreign_keys = ON;
+
+CREATE TABLE IF NOT EXISTS machine_planogram_versions (
+  planogram_version TEXT PRIMARY KEY,
+  active INTEGER NOT NULL CHECK (active IN (0,1)),
+  source TEXT NOT NULL,
+  applied_by TEXT,
+  applied_at TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_machine_planogram_versions_active
+  ON machine_planogram_versions(active)
+  WHERE active = 1;
+
+CREATE TABLE IF NOT EXISTS machine_planogram_slots (
+  planogram_version TEXT NOT NULL,
+  slot_id TEXT NOT NULL,
+  slot_code TEXT NOT NULL,
+  layer_no INTEGER NOT NULL,
+  cell_no INTEGER NOT NULL,
+  capacity INTEGER NOT NULL CHECK (capacity >= 0),
+  par_level INTEGER NOT NULL CHECK (par_level >= 0),
+  inventory_id TEXT NOT NULL,
+  variant_id TEXT NOT NULL,
+  product_id TEXT NOT NULL,
+  product_name TEXT NOT NULL,
+  product_description TEXT,
+  cover_image_url TEXT,
+  category_id TEXT,
+  category_name TEXT,
+  sku TEXT NOT NULL,
+  size TEXT,
+  color TEXT,
+  price_cents INTEGER NOT NULL CHECK (price_cents >= 0),
+  product_sort_order INTEGER NOT NULL,
+  target_gender TEXT,
+  PRIMARY KEY (planogram_version, slot_id),
+  FOREIGN KEY (planogram_version) REFERENCES machine_planogram_versions(planogram_version)
+);
+
+CREATE TABLE IF NOT EXISTS stock_movements (
+  movement_id TEXT PRIMARY KEY,
+  planogram_version TEXT NOT NULL,
+  slot_id TEXT NOT NULL,
+  movement_type TEXT NOT NULL CHECK (movement_type IN ('planned_refill','stock_count_correction')),
+  quantity INTEGER NOT NULL CHECK (quantity >= 0),
+  source TEXT NOT NULL,
+  attributed_to TEXT,
+  occurred_at TEXT NOT NULL,
+  FOREIGN KEY (planogram_version, slot_id) REFERENCES machine_planogram_slots(planogram_version, slot_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_stock_movements_slot_time
+  ON stock_movements(planogram_version, slot_id, occurred_at, movement_id);
+
+CREATE TABLE IF NOT EXISTS current_stock_projection (
+  planogram_version TEXT NOT NULL,
+  slot_id TEXT PRIMARY KEY,
+  physical_stock INTEGER NOT NULL CHECK (physical_stock >= 0),
+  saleable_stock INTEGER NOT NULL CHECK (saleable_stock >= 0),
+  slot_sales_state TEXT NOT NULL CHECK (slot_sales_state IN ('saleable','sold_out','unavailable')),
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (planogram_version, slot_id) REFERENCES machine_planogram_slots(planogram_version, slot_id)
+);
+
+CREATE TABLE IF NOT EXISTS sale_view_projection (
+  planogram_version TEXT NOT NULL,
+  slot_id TEXT PRIMARY KEY,
+  item_json TEXT NOT NULL,
+  slot_sales_state TEXT NOT NULL CHECK (slot_sales_state IN ('saleable','sold_out','unavailable')),
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY (planogram_version, slot_id) REFERENCES machine_planogram_slots(planogram_version, slot_id)
+);
 "#;

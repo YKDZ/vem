@@ -42,7 +42,12 @@ async function refreshCatalog(): Promise<void> {
 }
 
 async function selectProduct(item: MachineCatalogItem): Promise<void> {
-  if (!canDisplayAsSaleReady.value || item.availableQty <= 0) return;
+  if (
+    !canDisplayAsSaleReady.value ||
+    item.slotSalesState !== "saleable" ||
+    item.saleableStock <= 0
+  )
+    return;
   checkoutStore.selectItem(item);
   await router.push({
     name: "product-detail",

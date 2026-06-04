@@ -28,7 +28,11 @@ function makeCatalogItem(
     size: "M",
     color: null,
     priceCents: 1000,
-    availableQty: 0,
+    capacity: 10,
+    parLevel: 8,
+    physicalStock: 0,
+    saleableStock: 0,
+    slotSalesState: "sold_out",
     productSortOrder: 10,
     targetGender: null,
     ...override,
@@ -83,7 +87,11 @@ describe("scoreItem — size matching", () => {
   it("exact match, score includes 50 points", () => {
     const item = makeCatalogItem({
       size: "L",
-      availableQty: 0,
+      capacity: 10,
+      parLevel: 8,
+      physicalStock: 0,
+      saleableStock: 0,
+      slotSalesState: "sold_out",
       productSortOrder: 10,
     });
     const result = scoreItem(baseProfile, item);
@@ -94,7 +102,11 @@ describe("scoreItem — size matching", () => {
   it("adjacent size (M vs L), score includes 25 points", () => {
     const item = makeCatalogItem({
       size: "M",
-      availableQty: 0,
+      capacity: 10,
+      parLevel: 8,
+      physicalStock: 0,
+      saleableStock: 0,
+      slotSalesState: "sold_out",
       productSortOrder: 10,
     });
     const result = scoreItem(baseProfile, item);
@@ -106,7 +118,11 @@ describe("scoreItem — size matching", () => {
   it("non-matching size, score is only stockScore + sortScore", () => {
     const item = makeCatalogItem({
       size: "XS",
-      availableQty: 0,
+      capacity: 10,
+      parLevel: 8,
+      physicalStock: 0,
+      saleableStock: 0,
+      slotSalesState: "sold_out",
       productSortOrder: 10,
     });
     const result = scoreItem(baseProfile, item);
@@ -117,7 +133,11 @@ describe("scoreItem — size matching", () => {
   it("item.size=null, size dimension is 0", () => {
     const item = makeCatalogItem({
       size: null,
-      availableQty: 0,
+      capacity: 10,
+      parLevel: 8,
+      physicalStock: 0,
+      saleableStock: 0,
+      slotSalesState: "sold_out",
       productSortOrder: 10,
     });
     const result = scoreItem(baseProfile, item);
@@ -169,10 +189,10 @@ describe("scoreItem — gender filtering", () => {
 });
 
 describe("scoreItem — stock and sort weight", () => {
-  it("availableQty=5 → stockScore=5", () => {
+  it("saleableStock=5 → stockScore=5", () => {
     const profile: VisionProfile = { personPresent: true };
     const item = makeCatalogItem({
-      availableQty: 5,
+      saleableStock: 5,
       productSortOrder: 10,
       size: null,
     });
@@ -181,14 +201,14 @@ describe("scoreItem — stock and sort weight", () => {
     expect(result!.score).toBe(5);
   });
 
-  it("availableQty=15 → stockScore=10 (capped)", () => {
+  it("saleableStock=15 → stockScore=10 (capped)", () => {
     const profile: VisionProfile = {
       personPresent: true,
       heightCm: null,
       bodyType: undefined,
     };
     const item = makeCatalogItem({
-      availableQty: 15,
+      saleableStock: 15,
       productSortOrder: 10,
       size: null,
     });
@@ -204,7 +224,11 @@ describe("scoreItem — stock and sort weight", () => {
       bodyType: undefined,
     };
     const item = makeCatalogItem({
-      availableQty: 0,
+      capacity: 10,
+      parLevel: 8,
+      physicalStock: 0,
+      saleableStock: 0,
+      slotSalesState: "sold_out",
       productSortOrder: 3,
       size: null,
     });
@@ -220,7 +244,11 @@ describe("scoreItem — stock and sort weight", () => {
       bodyType: undefined,
     };
     const item = makeCatalogItem({
-      availableQty: 0,
+      capacity: 10,
+      parLevel: 8,
+      physicalStock: 0,
+      saleableStock: 0,
+      slotSalesState: "sold_out",
       productSortOrder: 12,
       size: null,
     });
@@ -239,10 +267,10 @@ describe("computeRecommendations", () => {
       gender: "unknown",
     };
     const items = [
-      makeCatalogItem({ sku: "low", availableQty: 1, productSortOrder: 10 }),
+      makeCatalogItem({ sku: "low", saleableStock: 1, productSortOrder: 10 }),
       makeCatalogItem({
         sku: "high",
-        availableQty: 10,
+        saleableStock: 10,
         productSortOrder: 0,
         size: "M",
       }),
@@ -256,7 +284,7 @@ describe("computeRecommendations", () => {
   it("returns at most 6 items", () => {
     const profile: VisionProfile = { personPresent: true };
     const items = Array.from({ length: 10 }, (_, i) =>
-      makeCatalogItem({ sku: `item-${i}`, availableQty: i }),
+      makeCatalogItem({ sku: `item-${i}`, saleableStock: i }),
     );
     const result = computeRecommendations(profile, items);
     expect(result.length).toBe(6);

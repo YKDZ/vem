@@ -1,6 +1,7 @@
 import {
   machineCatalogItemSchema,
   machinePaymentOptionsResponseSchema,
+  machineSaleViewSnapshotSchema,
 } from "@vem/shared";
 import { z } from "zod";
 
@@ -265,6 +266,7 @@ export type VisionStatus = z.infer<typeof visionStatusSchema>;
 export type RemoteOpsStatus = z.infer<typeof remoteOpsStatusSchema>;
 export type HardwareSelfCheck = z.infer<typeof hardwareSelfCheckSchema>;
 export type CatalogSnapshot = z.infer<typeof catalogSnapshotSchema>;
+export type SaleViewSnapshot = z.infer<typeof machineSaleViewSnapshotSchema>;
 export type DaemonEvent = z.infer<typeof daemonEventSchema>;
 
-export { machinePaymentOptionsResponseSchema };
+export { machinePaymentOptionsResponseSchema, machineSaleViewSnapshotSchema };

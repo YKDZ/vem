@@ -34,7 +34,12 @@ onMounted(async () => {
 });
 
 async function goCheckout(): Promise<void> {
-  if (!item.value || item.value.availableQty <= 0) return;
+  if (
+    !item.value ||
+    item.value.slotSalesState !== "saleable" ||
+    item.value.saleableStock <= 0
+  )
+    return;
   checkoutStore.selectItem(item.value);
   await router.push("/checkout");
 }
@@ -81,7 +86,7 @@ async function goCheckout(): Promise<void> {
             </div>
             <div class="rounded-2xl bg-slate-950/40 p-4">
               <dt class="text-sm text-slate-400">库存</dt>
-              <dd class="mt-1 font-bold">剩余 {{ item.availableQty }}</dd>
+              <dd class="mt-1 font-bold">可售 {{ item.saleableStock }}</dd>
             </div>
           </dl>
 
@@ -99,7 +104,9 @@ async function goCheckout(): Promise<void> {
       <button
         class="kiosk-touch-target mt-auto rounded-3xl bg-sky-400 px-6 py-5 text-2xl font-black text-slate-950 shadow-xl shadow-sky-950/40 disabled:bg-slate-500 disabled:text-slate-300"
         type="button"
-        :disabled="item.availableQty <= 0"
+        :disabled="
+          item.slotSalesState !== 'saleable' || item.saleableStock <= 0
+        "
         @click="goCheckout"
       >
         立即购买

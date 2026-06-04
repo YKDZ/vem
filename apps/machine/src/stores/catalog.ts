@@ -15,7 +15,9 @@ export const useCatalogStore = defineStore("catalog", {
   }),
   getters: {
     availableItems: (state): MachineCatalogItem[] =>
-      state.items.filter((item) => item.availableQty > 0),
+      state.items.filter(
+        (item) => item.slotSalesState === "saleable" && item.saleableStock > 0,
+      ),
     hasItems: (state): boolean => state.items.length > 0,
     itemByInventoryId:
       (state) =>
@@ -25,21 +27,21 @@ export const useCatalogStore = defineStore("catalog", {
   actions: {
     applySnapshot(snapshot: {
       items: MachineCatalogItem[];
-      cached: boolean;
+      cached?: boolean;
       source: string;
       lastUpdatedAt: string | null;
-      lastError: string | null;
+      lastError?: string | null;
     }): void {
       this.items = snapshot.items;
-      this.cachedOnly = snapshot.cached;
+      this.cachedOnly = snapshot.cached ?? false;
       this.source = snapshot.source;
       this.lastUpdatedAt = snapshot.lastUpdatedAt;
-      this.error = snapshot.lastError;
+      this.error = snapshot.lastError ?? null;
     },
     async load(): Promise<void> {
       this.loading = true;
       try {
-        this.applySnapshot(await daemonClient.getCatalog());
+        this.applySnapshot(await daemonClient.getSaleView());
       } finally {
         this.loading = false;
       }
@@ -47,7 +49,7 @@ export const useCatalogStore = defineStore("catalog", {
     async refresh(): Promise<void> {
       this.loading = true;
       try {
-        this.applySnapshot(await daemonClient.refreshCatalog());
+        this.applySnapshot(await daemonClient.getSaleView());
       } finally {
         this.loading = false;
       }

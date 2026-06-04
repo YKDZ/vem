@@ -12,6 +12,7 @@ import {
   machinePaymentOptionsResponseSchema,
   readySnapshotSchema,
   remoteOpsStatusSchema,
+  machineSaleViewSnapshotSchema,
   scannerStatusSchema,
   syncStatusSchema,
   transactionSnapshotSchema,
@@ -23,6 +24,7 @@ import {
   type HardwareSelfCheck,
   type ReadySnapshot,
   type RemoteOpsStatus,
+  type SaleViewSnapshot,
   type ScannerStatus,
   type SyncStatus,
   type TransactionSnapshot,
@@ -125,6 +127,12 @@ export class DaemonApiClient {
   async refreshCatalog(): Promise<CatalogSnapshot> {
     return catalogSnapshotSchema.parse(
       await this.request("/v1/catalog", { method: "POST" }),
+    );
+  }
+
+  async getSaleView(): Promise<SaleViewSnapshot> {
+    return machineSaleViewSnapshotSchema.parse(
+      await this.request("/v1/sale-view"),
     );
   }
 

@@ -163,7 +163,8 @@ export const useCheckoutStore = defineStore("checkout", {
     canCreateOrder: (state): boolean =>
       Boolean(
         state.selectedItem &&
-        state.selectedItem.availableQty > 0 &&
+        state.selectedItem.slotSalesState === "saleable" &&
+        state.selectedItem.saleableStock > 0 &&
         state.selectedPaymentOptionKey &&
         state.paymentOptions.find(
           (option) => option.optionKey === state.selectedPaymentOptionKey,
@@ -345,7 +346,12 @@ export const useCheckoutStore = defineStore("checkout", {
     },
     async createOrder(): Promise<CreateMachineOrderResponse | null> {
       if (!this.selectedItem) throw new Error("No selected item");
-      if (this.selectedItem.availableQty <= 0) throw new Error("商品已售罄");
+      if (
+        this.selectedItem.slotSalesState !== "saleable" ||
+        this.selectedItem.saleableStock <= 0
+      ) {
+        throw new Error("商品已售罄");
+      }
 
       const selected = this.selectedPaymentOption;
       if (!selected || selected.disabled) throw new Error("请选择支付方式");

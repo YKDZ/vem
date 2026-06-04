@@ -26,6 +26,8 @@ vi.mock("@/daemon/client", () => ({
   },
 }));
 
+import type { MachineCatalogItem } from "@/types/catalog";
+
 import {
   normalizeNextAction,
   resultKindFromNextAction,
@@ -37,7 +39,9 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
-function makeCatalogItem() {
+function makeCatalogItem(
+  overrides: Partial<MachineCatalogItem> = {},
+): MachineCatalogItem {
   return {
     machineCode: "M001",
     slotId: "550e8400-e29b-41d4-a716-446655440001",
@@ -56,8 +60,14 @@ function makeCatalogItem() {
     size: null,
     color: null,
     priceCents: 100,
-    availableQty: 1,
+    capacity: 8,
+    parLevel: 6,
+    physicalStock: 1,
+    saleableStock: 1,
+    slotSalesState: "saleable",
     productSortOrder: 1,
+    targetGender: null,
+    ...overrides,
   };
 }
 
@@ -173,6 +183,35 @@ describe("checkout store", () => {
     expect(store.status?.vending?.commandNo).toBe("CMD-001");
     expect(store.status?.paymentCodeAttempt?.source).toBe("serial_text");
     expect(store.paymentCodeMessage).toBe("请刷新付款码后重试");
+  });
+
+  it("blocks order creation for sold-out sale-view item", async () => {
+    const store = useCheckoutStore();
+    store.paymentOptions = [
+      {
+        optionKey: "payment_code:alipay",
+        providerCode: "alipay",
+        method: "payment_code",
+        displayName: "支付宝付款码",
+        description: "请出示付款码",
+        icon: "alipay",
+        disabled: false,
+        disabledReason: null,
+        recommended: true,
+      },
+    ];
+    store.selectedPaymentOptionKey = "payment_code:alipay";
+    store.selectItem(
+      makeCatalogItem({
+        physicalStock: 0,
+        saleableStock: 0,
+        slotSalesState: "sold_out",
+      }),
+    );
+
+    expect(store.canCreateOrder).toBe(false);
+    await expect(store.createOrder()).rejects.toThrow("商品已售罄");
+    expect(createOrderMock).not.toHaveBeenCalled();
   });
 
   it("refreshes current transaction from daemon", async () => {

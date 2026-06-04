@@ -20,7 +20,10 @@ use crate::{
     config::{ConfigStore, MachineConfigUpdateRequest, MachinePublicConfig},
     events::DaemonEvent,
     logs,
-    state::LocalStateStore,
+    state::{
+        store::{MachinePlanogramInput, StockMovementInput},
+        LocalStateStore, StoreError,
+    },
     transaction::TransactionStateMachine,
 };
 
@@ -154,6 +157,9 @@ pub fn build_router(ctx: IpcContext) -> Router {
         .route("/readyz", get(readyz))
         .route("/v1/config", get(get_config).put(put_config))
         .route("/v1/catalog", get(catalog_snapshot).post(refresh_catalog))
+        .route("/v1/sale-view", get(sale_view))
+        .route("/v1/stock/planogram", post(apply_planogram))
+        .route("/v1/stock/movements", post(record_stock_movement))
         .route("/v1/payment-options", get(payment_options))
         .route("/v1/intents/create-order", post(create_order_intent))
         .route(
@@ -662,6 +668,69 @@ async fn refresh_catalog(State(ctx): State<IpcContext>, headers: HeaderMap) -> i
     };
 
     response
+}
+
+async fn sale_view(State(ctx): State<IpcContext>, headers: HeaderMap) -> impl IntoResponse {
+    if let Err((status, error)) = require_token(&headers, &ctx.token).await {
+        return (status, error).into_response();
+    }
+
+    let machine_code = ctx
+        .config_store
+        .load_public_config()
+        .await
+        .ok()
+        .and_then(|config| config.machine_code);
+    match ctx.state.sale_view(machine_code).await {
+        Ok(snapshot) => (StatusCode::OK, Json(snapshot)).into_response(),
+        Err(error) => store_error_response("sale_view_read_failed", error),
+    }
+}
+
+async fn apply_planogram(
+    State(ctx): State<IpcContext>,
+    headers: HeaderMap,
+    Json(input): Json<MachinePlanogramInput>,
+) -> impl IntoResponse {
+    if let Err((status, error)) = require_token(&headers, &ctx.token).await {
+        return (status, error).into_response();
+    }
+
+    match ctx.state.apply_planogram(input).await {
+        Ok(snapshot) => (StatusCode::OK, Json(snapshot)).into_response(),
+        Err(error) => store_error_response("planogram_apply_failed", error),
+    }
+}
+
+async fn record_stock_movement(
+    State(ctx): State<IpcContext>,
+    headers: HeaderMap,
+    Json(input): Json<StockMovementInput>,
+) -> impl IntoResponse {
+    if let Err((status, error)) = require_token(&headers, &ctx.token).await {
+        return (status, error).into_response();
+    }
+
+    match ctx.state.record_stock_movement(input).await {
+        Ok(snapshot) => (StatusCode::CREATED, Json(snapshot)).into_response(),
+        Err(error) => store_error_response("stock_movement_record_failed", error),
+    }
+}
+
+fn store_error_response(code: &'static str, error: StoreError) -> axum::response::Response {
+    let status = if matches!(error, StoreError::InvalidStockInput(_)) {
+        StatusCode::BAD_REQUEST
+    } else {
+        StatusCode::INTERNAL_SERVER_ERROR
+    };
+    (
+        status,
+        Json(ErrorMessage {
+            code,
+            message: error.to_string(),
+        }),
+    )
+        .into_response()
 }
 
 async fn payment_options(State(ctx): State<IpcContext>, headers: HeaderMap) -> impl IntoResponse {
@@ -1287,5 +1356,217 @@ mod tests {
         let payload: CatalogSnapshot = serde_json::from_slice(&body).unwrap();
         assert_eq!(payload.source, "backend");
         assert_eq!(payload.items.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn sale_view_projects_local_planogram_and_refill_without_available_qty() {
+        let temp_dir = tempdir().expect("tmp");
+        let app = build_router(
+            test_ipc_context(
+                temp_dir.path(),
+                "token-1",
+                Some("MACHINE-1".to_string()),
+                "http://127.0.0.1:0",
+            )
+            .await,
+        );
+
+        let apply_planogram = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/stock/planogram")
+            .header(AUTHORIZATION, "Bearer token-1")
+            .header(CONTENT_TYPE, "application/json")
+            .body(axum::body::Body::from(
+                json!({
+                    "planogramVersion": "PLAN-2026-06-04",
+                    "source": "local_seed",
+                    "appliedBy": "operator-1",
+                    "slots": [{
+                        "slotId": "550e8400-e29b-41d4-a716-446655440001",
+                        "slotCode": "A1",
+                        "layerNo": 1,
+                        "cellNo": 1,
+                        "capacity": 8,
+                        "parLevel": 6,
+                        "inventoryId": "550e8400-e29b-41d4-a716-446655440002",
+                        "variantId": "550e8400-e29b-41d4-a716-446655440003",
+                        "productId": "550e8400-e29b-41d4-a716-446655440004",
+                        "productName": "矿泉水",
+                        "productDescription": null,
+                        "coverImageUrl": null,
+                        "categoryId": null,
+                        "categoryName": null,
+                        "sku": "WATER-001",
+                        "size": "550ml",
+                        "color": null,
+                        "priceCents": 200,
+                        "productSortOrder": 1,
+                        "targetGender": null
+                    }]
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        assert_eq!(
+            app.clone().oneshot(apply_planogram).await.unwrap().status(),
+            StatusCode::OK
+        );
+
+        let refill = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/stock/movements")
+            .header(AUTHORIZATION, "Bearer token-1")
+            .header(CONTENT_TYPE, "application/json")
+            .body(axum::body::Body::from(
+                json!({
+                    "movementId": "MOVE-1",
+                    "planogramVersion": "PLAN-2026-06-04",
+                    "slotId": "550e8400-e29b-41d4-a716-446655440001",
+                    "movementType": "planned_refill",
+                    "quantity": 3,
+                    "source": "field_service",
+                    "attributedTo": "operator-1"
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        assert_eq!(
+            app.clone().oneshot(refill).await.unwrap().status(),
+            StatusCode::CREATED
+        );
+
+        let sale_view = Request::builder()
+            .method(Method::GET)
+            .uri("/v1/sale-view")
+            .header(AUTHORIZATION, "Bearer token-1")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response = app.oneshot(sale_view).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let item = &payload["items"][0];
+        assert_eq!(item["productName"], "矿泉水");
+        assert_eq!(item["slotCode"], "A1");
+        assert_eq!(item["physicalStock"], 3);
+        assert_eq!(item["saleableStock"], 3);
+        assert_eq!(item["slotSalesState"], "saleable");
+        assert!(item.get("availableQty").is_none());
+    }
+
+    #[tokio::test]
+    async fn stock_count_correction_appends_fact_and_projects_sold_out() {
+        let temp_dir = tempdir().expect("tmp");
+        let ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            "http://127.0.0.1:0",
+        )
+        .await;
+        let state = ctx.state.clone();
+        let app = build_router(ctx);
+
+        let planogram = json!({
+            "planogramVersion": "PLAN-CORRECTION",
+            "source": "local_seed",
+            "appliedBy": "operator-1",
+            "slots": [{
+                "slotId": "550e8400-e29b-41d4-a716-446655440011",
+                "slotCode": "B1",
+                "layerNo": 1,
+                "cellNo": 2,
+                "capacity": 5,
+                "parLevel": 5,
+                "inventoryId": "550e8400-e29b-41d4-a716-446655440012",
+                "variantId": "550e8400-e29b-41d4-a716-446655440013",
+                "productId": "550e8400-e29b-41d4-a716-446655440014",
+                "productName": "苏打水",
+                "productDescription": null,
+                "coverImageUrl": null,
+                "categoryId": null,
+                "categoryName": null,
+                "sku": "SODA-001",
+                "size": null,
+                "color": null,
+                "priceCents": 300,
+                "productSortOrder": 1,
+                "targetGender": null
+            }]
+        });
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/stock/planogram")
+            .header(AUTHORIZATION, "Bearer token-1")
+            .header(CONTENT_TYPE, "application/json")
+            .body(axum::body::Body::from(planogram.to_string()))
+            .unwrap();
+        assert_eq!(
+            app.clone().oneshot(request).await.unwrap().status(),
+            StatusCode::OK
+        );
+
+        for movement in [
+            json!({
+                "movementId": "MOVE-REFILL",
+                "planogramVersion": "PLAN-CORRECTION",
+                "slotId": "550e8400-e29b-41d4-a716-446655440011",
+                "movementType": "planned_refill",
+                "quantity": 4,
+                "source": "field_service",
+                "attributedTo": "operator-1"
+            }),
+            json!({
+                "movementId": "MOVE-CORRECTION",
+                "planogramVersion": "PLAN-CORRECTION",
+                "slotId": "550e8400-e29b-41d4-a716-446655440011",
+                "movementType": "stock_count_correction",
+                "quantity": 0,
+                "source": "field_count",
+                "attributedTo": "operator-2"
+            }),
+        ] {
+            let request = Request::builder()
+                .method(Method::POST)
+                .uri("/v1/stock/movements")
+                .header(AUTHORIZATION, "Bearer token-1")
+                .header(CONTENT_TYPE, "application/json")
+                .body(axum::body::Body::from(movement.to_string()))
+                .unwrap();
+            assert_eq!(
+                app.clone().oneshot(request).await.unwrap().status(),
+                StatusCode::CREATED
+            );
+        }
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/sale-view")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let item = &payload["items"][0];
+        assert_eq!(item["physicalStock"], 0);
+        assert_eq!(item["saleableStock"], 0);
+        assert_eq!(item["slotSalesState"], "sold_out");
+
+        let movement_count: (i64,) =
+            sqlx::query_as("SELECT COUNT(1) FROM stock_movements WHERE slot_id = ?1")
+                .bind("550e8400-e29b-41d4-a716-446655440011")
+                .fetch_one(state.pool())
+                .await
+                .expect("movement count");
+        assert_eq!(movement_count.0, 2);
     }
 }
