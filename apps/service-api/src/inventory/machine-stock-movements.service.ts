@@ -8,6 +8,7 @@ import type { AuthenticatedMachine } from "../machine-auth/current-machine.decor
 import {
   MachineStockMovementsRepository,
   type InsertReconciliationRawMachineStockMovement,
+  type OrderBoundDispenseConfirmationContext,
   type StoredRawMachineStockMovement,
 } from "./machine-stock-movements.repository";
 
@@ -22,7 +23,13 @@ export type MachineStockReconciliationReason =
   | "unknown_planogram_version"
   | "inactive_planogram_version"
   | "mapping_mismatch"
-  | "movement_id_payload_conflict";
+  | "movement_id_payload_conflict"
+  | "order_context_missing"
+  | "order_context_mismatch";
+
+type OrderBoundDispenseMovement = RawMachineStockMovement & {
+  movementType: "dispense_succeeded";
+};
 
 export type MachineStockMovementIngestionResponse = {
   movementId: string;
@@ -101,6 +108,27 @@ export class MachineStockMovementsService {
       );
     }
 
+    const orderBoundDispenseContext =
+      await orderBoundDispenseContextForMovement(
+        this.repository,
+        machine.id,
+        trustedInput,
+      );
+    if (orderBoundDispenseContext.reconciliation) {
+      const stored = await this.repository.insertReconciliation({
+        machineId: machine.id,
+        input: trustedInput,
+        normalized,
+        payloadHash,
+        ...orderBoundDispenseContext.reconciliation,
+      });
+      return reconciliationResponse(
+        trustedInput.movementId,
+        stored,
+        orderBoundDispenseContext.reconciliation,
+      );
+    }
+
     try {
       const stored = await this.repository.insertAccepted({
         machineId: machine.id,
@@ -108,6 +136,13 @@ export class MachineStockMovementsService {
         normalized,
         payloadHash,
       });
+      await applyAcceptedMovementSideEffects(
+        this.repository,
+        machine.id,
+        trustedInput,
+        stored,
+        orderBoundDispenseContext.context,
+      );
       return acceptedResponse(trustedInput.movementId, stored, "accepted");
     } catch (error) {
       if (!isUniqueConstraintViolation(error)) {
@@ -130,6 +165,93 @@ export class MachineStockMovementsService {
       );
     }
   }
+}
+
+type OrderBoundDispenseContextResult =
+  | {
+      context: OrderBoundDispenseConfirmationContext | null;
+      reconciliation: null;
+    }
+  | {
+      context: null;
+      reconciliation: Omit<
+        InsertReconciliationRawMachineStockMovement,
+        "machineId" | "input" | "normalized" | "payloadHash"
+      >;
+    };
+
+async function orderBoundDispenseContextForMovement(
+  repository: MachineStockMovementsRepository,
+  machineId: string,
+  input: RawMachineStockMovement,
+): Promise<OrderBoundDispenseContextResult> {
+  if (!isOrderBoundDispenseMovement(input)) {
+    return { context: null, reconciliation: null };
+  }
+  if (!input.orderContext) {
+    return {
+      context: null,
+      reconciliation: orderBoundDispenseReconciliation(
+        input.slotId,
+        "order_context_missing",
+      ),
+    };
+  }
+
+  const context = await repository.getOrderBoundDispenseConfirmationContext(
+    machineId,
+    input,
+  );
+  if (!context) {
+    return {
+      context: null,
+      reconciliation: orderBoundDispenseReconciliation(
+        input.slotId,
+        "order_context_mismatch",
+      ),
+    };
+  }
+
+  return { context, reconciliation: null };
+}
+
+async function applyAcceptedMovementSideEffects(
+  repository: MachineStockMovementsRepository,
+  machineId: string,
+  input: RawMachineStockMovement,
+  stored: StoredRawMachineStockMovement,
+  context: OrderBoundDispenseConfirmationContext | null,
+): Promise<void> {
+  if (!isOrderBoundDispenseMovement(input) || !context) {
+    return;
+  }
+  await repository.confirmOrderBoundDispenseSucceeded({
+    machineId,
+    rawMovementId: stored.id,
+    input,
+    context,
+  });
+}
+
+function isOrderBoundDispenseMovement(
+  input: RawMachineStockMovement,
+): input is OrderBoundDispenseMovement {
+  return input.movementType === "dispense_succeeded";
+}
+
+function orderBoundDispenseReconciliation(
+  slotId: string,
+  reason: "order_context_missing" | "order_context_mismatch",
+): Omit<
+  InsertReconciliationRawMachineStockMovement,
+  "machineId" | "input" | "normalized" | "payloadHash"
+> {
+  return {
+    reconciliationReason: reason,
+    platformReviewStatus: "open",
+    saleSafetyBlockerState: "needs_platform_review",
+    saleSafetyBlockerSlotId: slotId,
+  };
 }
 
 async function responseForExisting(
@@ -301,6 +423,8 @@ function parseReconciliationReason(
     case "inactive_planogram_version":
     case "mapping_mismatch":
     case "movement_id_payload_conflict":
+    case "order_context_missing":
+    case "order_context_mismatch":
       return value;
     default:
       return fallback;
@@ -351,6 +475,7 @@ export function normalizeRawMovement(
     quantity: input.quantity,
     source: input.source,
     attributedTo: input.attributedTo ?? null,
+    orderContext: input.orderContext ?? null,
     occurredAt: new Date(input.occurredAt).toISOString(),
   };
 }

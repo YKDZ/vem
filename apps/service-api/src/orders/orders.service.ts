@@ -42,6 +42,8 @@ import {
   paymentCodeSourceSchema,
   pageQuerySchema,
   type MachineOrderStatusNextAction,
+  type OrderFulfillmentState,
+  type OrderPaymentState,
   type OrderStatus,
   type PaymentCodeSource,
   type PaymentStatus,
@@ -58,6 +60,7 @@ import { PaymentProviderRegistry } from "../payments/payment-provider.registry";
 import { buildStoredEventPayload } from "../payments/payment-redaction.util";
 import { PaymentsService } from "../payments/payments.service";
 import { RefundsService } from "../refunds/refunds.service";
+import { projectOrderStatus } from "./order-state-projection";
 
 type CreateMachineOrderInput = z.infer<typeof createMachineOrderSchema>;
 type MachineOrderStatusQuery = z.infer<typeof machineOrderStatusQuerySchema>;
@@ -145,6 +148,8 @@ type MachineOrderStatusRow = {
   orderNo: string;
   machineCode: string;
   orderStatus: OrderStatus;
+  paymentState: OrderPaymentState;
+  fulfillmentState: OrderFulfillmentState;
   totalAmountCents: number;
   paymentId: string;
   paymentNo: string;
@@ -178,6 +183,8 @@ export class OrdersService {
         orderNo: orders.orderNo,
         machineCode: machines.code,
         orderStatus: orders.status,
+        paymentState: orders.paymentState,
+        fulfillmentState: orders.fulfillmentState,
         totalAmountCents: orders.totalAmountCents,
         paymentId: payments.id,
         paymentNo: payments.paymentNo,
@@ -432,6 +439,8 @@ export class OrdersService {
           orderNo,
           machineId,
           status: "pending_payment",
+          paymentState: "awaiting_payment",
+          fulfillmentState: "awaiting_fulfillment",
           totalAmountCents,
           currency: "CNY",
           profileSnapshot: input.profileSnapshot ?? null,
@@ -562,6 +571,8 @@ export class OrdersService {
         .update(orders)
         .set({
           status: "canceled",
+          paymentState: "payment_failed",
+          fulfillmentState: "canceled",
           canceledAt: new Date(),
           updatedAt: new Date(),
         })
@@ -695,6 +706,8 @@ export class OrdersService {
         machineId: orders.machineId,
         machineCode: machines.code,
         status: orders.status,
+        paymentState: orders.paymentState,
+        fulfillmentState: orders.fulfillmentState,
         totalAmountCents: orders.totalAmountCents,
         paidAt: orders.paidAt,
         dispensedAt: orders.dispensedAt,
@@ -723,6 +736,8 @@ export class OrdersService {
         machineId: orders.machineId,
         machineCode: machines.code,
         status: orders.status,
+        paymentState: orders.paymentState,
+        fulfillmentState: orders.fulfillmentState,
         totalAmountCents: orders.totalAmountCents,
         currency: orders.currency,
         paidAt: orders.paidAt,
@@ -866,7 +881,8 @@ export class OrdersService {
       .limit(1);
 
     const nextAction = resolveMachineOrderNextAction(
-      row.orderStatus,
+      row.paymentState,
+      row.fulfillmentState,
       row.paymentStatus,
       command?.status ?? null,
     );
@@ -876,6 +892,8 @@ export class OrdersService {
       orderNo: row.orderNo,
       machineCode: row.machineCode,
       orderStatus: row.orderStatus,
+      paymentState: row.paymentState,
+      fulfillmentState: row.fulfillmentState,
       totalAmountCents: row.totalAmountCents,
       payment: {
         paymentNo: row.paymentNo,
@@ -966,27 +984,27 @@ function toIsoStringOrNull(value: Date | null): string | null {
 }
 
 function resolveMachineOrderNextAction(
-  orderStatus: OrderStatus,
+  paymentState: OrderPaymentState,
+  fulfillmentState: OrderFulfillmentState,
   paymentStatus: PaymentStatus,
   commandStatus: VendingCommandStatus | null,
 ): MachineOrderStatusNextAction {
+  const orderStatus = projectOrderStatus({ paymentState, fulfillmentState });
   if (orderStatus === "fulfilled") return "success";
-  if (orderStatus === "dispense_failed") return "dispense_failed";
-  if (orderStatus === "manual_handling") return "manual_handling";
-  if (orderStatus === "refund_pending") return "refund_pending";
-  if (orderStatus === "refunded") return "refunded";
-  if (orderStatus === "closed") return "closed";
-
-  if (paymentStatus === "refund_pending") return "refund_pending";
-  if (paymentStatus === "refunded" || paymentStatus === "partial_refunded") {
+  if (fulfillmentState === "dispense_failed") return "dispense_failed";
+  if (fulfillmentState === "manual_handling") return "manual_handling";
+  if (paymentState === "refund_pending") return "refund_pending";
+  if (paymentState === "refunded" || paymentState === "partial_refunded") {
     return "refunded";
   }
+  if (orderStatus === "closed") return "closed";
 
-  if (orderStatus === "payment_expired" || paymentStatus === "expired") {
+  if (paymentState === "payment_expired" || paymentStatus === "expired") {
     return "payment_expired";
   }
   if (
-    orderStatus === "canceled" ||
+    paymentState === "payment_failed" ||
+    paymentState === "canceled" ||
     paymentStatus === "failed" ||
     paymentStatus === "canceled"
   ) {
@@ -994,12 +1012,12 @@ function resolveMachineOrderNextAction(
   }
 
   if (
-    (orderStatus === "paid" || orderStatus === "dispensing") &&
+    paymentState === "paid" &&
     (commandStatus === "failed" || commandStatus === "timeout")
   ) {
     return "manual_handling";
   }
-  if (orderStatus === "paid" || orderStatus === "dispensing") {
+  if (paymentState === "paid") {
     return "dispensing";
   }
 

@@ -123,6 +123,68 @@ function paymentStatusFromSnapshot(
   }
 }
 
+function paymentStateFromSnapshot(
+  snapshot: TransactionSnapshot,
+): MachineOrderStatus["paymentState"] {
+  switch (snapshot.paymentStatus) {
+    case "succeeded":
+      return "paid";
+    case "failed":
+      return "payment_failed";
+    case "expired":
+      return "payment_expired";
+    case "canceled":
+      return "canceled";
+    case "refund_pending":
+    case "refunded":
+    case "partial_refunded":
+      return snapshot.paymentStatus;
+  }
+
+  switch (orderStatusFromSnapshot(snapshot)) {
+    case "payment_expired":
+      return "payment_expired";
+    case "canceled":
+    case "closed":
+      return "canceled";
+    case "paid":
+    case "dispensing":
+    case "fulfilled":
+    case "dispense_failed":
+    case "manual_handling":
+      return "paid";
+    case "refund_pending":
+      return "refund_pending";
+    case "refunded":
+      return "refunded";
+    default:
+      return "awaiting_payment";
+  }
+}
+
+function fulfillmentStateFromSnapshot(
+  snapshot: TransactionSnapshot,
+): MachineOrderStatus["fulfillmentState"] {
+  switch (orderStatusFromSnapshot(snapshot)) {
+    case "dispensing":
+      return "dispensing";
+    case "fulfilled":
+      return "dispensed";
+    case "dispense_failed":
+      return "dispense_failed";
+    case "manual_handling":
+    case "refund_pending":
+    case "refunded":
+      return "manual_handling";
+    case "payment_expired":
+    case "canceled":
+    case "closed":
+      return "canceled";
+    default:
+      return "awaiting_fulfillment";
+  }
+}
+
 function latestSaleViewItem(
   selectedItem: CheckoutSelectedItem | null,
 ): CheckoutSelectedItem | null {
@@ -269,6 +331,8 @@ export const useCheckoutStore = defineStore("checkout", {
         orderNo: snapshot.orderNo,
         machineCode: "daemon",
         orderStatus: orderStatusFromSnapshot(snapshot),
+        paymentState: paymentStateFromSnapshot(snapshot),
+        fulfillmentState: fulfillmentStateFromSnapshot(snapshot),
         totalAmountCents:
           snapshot.totalAmountCents ?? this.currentOrder.totalAmountCents,
         payment: {

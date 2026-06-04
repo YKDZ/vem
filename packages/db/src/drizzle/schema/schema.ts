@@ -11,6 +11,8 @@ import {
   notificationStatuses,
   notificationTargetTypes,
   notificationTypes,
+  orderFulfillmentStates,
+  orderPaymentStates,
   orderSources,
   orderStatuses,
   paymentCodeAttemptStatuses,
@@ -85,6 +87,14 @@ export const inventoryMovementReason = t.pgEnum(
 export const orderStatus = t.pgEnum(
   "order_status",
   asPgEnumValues(orderStatuses),
+);
+export const orderPaymentState = t.pgEnum(
+  "order_payment_state",
+  asPgEnumValues(orderPaymentStates),
+);
+export const orderFulfillmentState = t.pgEnum(
+  "order_fulfillment_state",
+  asPgEnumValues(orderFulfillmentStates),
 );
 export const orderSource = t.pgEnum(
   "order_source",
@@ -563,6 +573,12 @@ export const orders = t.pgTable(
       .notNull()
       .references(() => machines.id),
     status: orderStatus("status").default("pending_payment").notNull(),
+    paymentState: orderPaymentState("payment_state")
+      .default("awaiting_payment")
+      .notNull(),
+    fulfillmentState: orderFulfillmentState("fulfillment_state")
+      .default("awaiting_fulfillment")
+      .notNull(),
     totalAmountCents: t.integer("total_amount_cents").notNull(),
     currency: t.char("currency", { length: 3 }).default("CNY").notNull(),
     paymentId: t
@@ -580,6 +596,8 @@ export const orders = t.pgTable(
     t.uniqueIndex("orders_order_no_unique").on(table.orderNo),
     t.index("orders_machine_id_idx").on(table.machineId),
     t.index("orders_status_idx").on(table.status),
+    t.index("orders_payment_state_idx").on(table.paymentState),
+    t.index("orders_fulfillment_state_idx").on(table.fulfillmentState),
     t.index("orders_created_at_idx").on(table.createdAt),
     t.check(
       "orders_total_amount_cents_non_negative",
@@ -1000,7 +1018,7 @@ export const machineRawStockMovements = t.pgTable(
     ),
     t.check(
       "machine_raw_stock_movements_type_enum",
-      sql`${table.movementType} IN ('planned_refill', 'stock_count_correction')`,
+      sql`${table.movementType} IN ('planned_refill', 'stock_count_correction', 'dispense_succeeded')`,
     ),
     t.check(
       "machine_raw_stock_movements_status_enum",

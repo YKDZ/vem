@@ -41,6 +41,7 @@ import { MaintenanceWorkOrdersService } from "../maintenance-work-orders/mainten
 import { MqttSignatureService } from "../mqtt/mqtt-signature.service";
 import { MqttService } from "../mqtt/mqtt.service";
 import { NotificationsService } from "../notifications/notifications.service";
+import { projectOrderStatus } from "../orders/order-state-projection";
 import { RefundsService } from "../refunds/refunds.service";
 
 type PageQueryInput = z.infer<typeof pageQuerySchema>;
@@ -205,7 +206,10 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
         const allCommandsFailedBeforeDelivery = sentLikeCommands.length === 0;
         const failureMetadata = await this.db.transaction(async (tx) => {
           const [currentOrder] = await tx
-            .select({ status: orders.status })
+            .select({
+              status: orders.status,
+              paymentState: orders.paymentState,
+            })
             .from(orders)
             .where(eq(orders.id, orderId));
           if (!currentOrder) return null;
@@ -221,16 +225,24 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
               )
             : { restoredQuantity: 0 };
 
+          const projectedStatus = projectOrderStatus({
+            paymentState: currentOrder.paymentState,
+            fulfillmentState: "manual_handling",
+          });
           if (currentOrder.status !== "manual_handling") {
             await tx
               .update(orders)
-              .set({ status: "manual_handling", updatedAt: new Date() })
+              .set({
+                status: projectedStatus,
+                fulfillmentState: "manual_handling",
+                updatedAt: new Date(),
+              })
               .where(eq(orders.id, orderId));
           }
           await tx.insert(orderStatusEvents).values({
             orderId,
             fromStatus: currentOrder.status,
-            toStatus: "manual_handling",
+            toStatus: projectedStatus,
             reason: "mqtt_dispatch_failed",
             metadata: {
               allCommandsFailedBeforeDelivery,
@@ -270,20 +282,28 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
 
       await this.db.transaction(async (tx) => {
         const [currentOrder] = await tx
-          .select({ status: orders.status })
+          .select({ status: orders.status, paymentState: orders.paymentState })
           .from(orders)
           .where(eq(orders.id, orderId));
         if (!currentOrder || currentOrder.status === "dispensing") {
           return;
         }
+        const projectedStatus = projectOrderStatus({
+          paymentState: currentOrder.paymentState,
+          fulfillmentState: "dispensing",
+        });
         await tx
           .update(orders)
-          .set({ status: "dispensing", updatedAt: new Date() })
+          .set({
+            status: projectedStatus,
+            fulfillmentState: "dispensing",
+            updatedAt: new Date(),
+          })
           .where(eq(orders.id, orderId));
         await tx.insert(orderStatusEvents).values({
           orderId,
           fromStatus: currentOrder.status,
-          toStatus: "dispensing",
+          toStatus: projectedStatus,
           reason: "vending_command_sent",
         });
       });
@@ -406,21 +426,29 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
 
     await this.db.transaction(async (tx) => {
       const [currentOrder] = await tx
-        .select({ status: orders.status })
+        .select({ status: orders.status, paymentState: orders.paymentState })
         .from(orders)
         .where(eq(orders.id, command.orderId));
       if (!currentOrder) {
         return;
       }
       if (currentOrder.status !== "dispensing") {
+        const projectedStatus = projectOrderStatus({
+          paymentState: currentOrder.paymentState,
+          fulfillmentState: "dispensing",
+        });
         await tx
           .update(orders)
-          .set({ status: "dispensing", updatedAt: new Date() })
+          .set({
+            status: projectedStatus,
+            fulfillmentState: "dispensing",
+            updatedAt: new Date(),
+          })
           .where(eq(orders.id, command.orderId));
         await tx.insert(orderStatusEvents).values({
           orderId: command.orderId,
           fromStatus: currentOrder.status,
-          toStatus: "dispensing",
+          toStatus: projectedStatus,
           reason: "vending_retry",
           metadata: { commandId: command.id },
         });
@@ -473,18 +501,29 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
           if (!updated) return false;
 
           const [currentOrder] = await tx
-            .select({ status: orders.status })
+            .select({
+              status: orders.status,
+              paymentState: orders.paymentState,
+            })
             .from(orders)
             .where(eq(orders.id, command.orderId));
           if (currentOrder && currentOrder.status !== "manual_handling") {
+            const projectedStatus = projectOrderStatus({
+              paymentState: currentOrder.paymentState,
+              fulfillmentState: "manual_handling",
+            });
             await tx
               .update(orders)
-              .set({ status: "manual_handling", updatedAt: new Date() })
+              .set({
+                status: projectedStatus,
+                fulfillmentState: "manual_handling",
+                updatedAt: new Date(),
+              })
               .where(eq(orders.id, command.orderId));
             await tx.insert(orderStatusEvents).values({
               orderId: command.orderId,
               fromStatus: currentOrder.status,
-              toStatus: "manual_handling",
+              toStatus: projectedStatus,
               reason: "vending_command_timeout",
               metadata: { commandNo: command.commandNo },
             });
@@ -652,14 +691,22 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
           );
         if (Number(remainingRow.total) === 0) {
           const [currentOrder] = await tx
-            .select({ status: orders.status })
+            .select({
+              status: orders.status,
+              paymentState: orders.paymentState,
+            })
             .from(orders)
             .where(eq(orders.id, command.orderId));
           if (currentOrder) {
+            const projectedStatus = projectOrderStatus({
+              paymentState: currentOrder.paymentState,
+              fulfillmentState: "dispensed",
+            });
             await tx
               .update(orders)
               .set({
-                status: "fulfilled",
+                status: projectedStatus,
+                fulfillmentState: "dispensed",
                 dispensedAt: new Date(),
                 updatedAt: new Date(),
               })
@@ -667,7 +714,7 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
             await tx.insert(orderStatusEvents).values({
               orderId: command.orderId,
               fromStatus: currentOrder.status,
-              toStatus: "fulfilled",
+              toStatus: projectedStatus,
               reason: "dispense_succeeded",
             });
           }
@@ -702,18 +749,26 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
         });
 
       const [currentOrder] = await tx
-        .select({ status: orders.status })
+        .select({ status: orders.status, paymentState: orders.paymentState })
         .from(orders)
         .where(eq(orders.id, command.orderId));
       if (currentOrder) {
+        const projectedStatus = projectOrderStatus({
+          paymentState: currentOrder.paymentState,
+          fulfillmentState: "dispense_failed",
+        });
         await tx
           .update(orders)
-          .set({ status: "dispense_failed", updatedAt: new Date() })
+          .set({
+            status: projectedStatus,
+            fulfillmentState: "dispense_failed",
+            updatedAt: new Date(),
+          })
           .where(eq(orders.id, command.orderId));
         await tx.insert(orderStatusEvents).values({
           orderId: command.orderId,
           fromStatus: currentOrder.status,
-          toStatus: "dispense_failed",
+          toStatus: projectedStatus,
           reason: "dispense_failed",
           metadata: {
             commandNo: payload.commandNo,

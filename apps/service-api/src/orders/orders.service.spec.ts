@@ -1257,6 +1257,8 @@ describe("OrdersService (transaction boundary)", () => {
                       orderNo: "ORD001",
                       machineCode: "M001",
                       orderStatus: "pending_payment",
+                      paymentState: "awaiting_payment",
+                      fulfillmentState: "awaiting_fulfillment",
                       totalAmountCents: 300,
                       paymentId: "pay-1",
                       paymentNo: "PAY001",
@@ -1285,6 +1287,8 @@ describe("OrdersService (transaction boundary)", () => {
                       orderNo: "ORD001",
                       machineCode: "M001",
                       orderStatus: "paid",
+                      paymentState: "paid",
+                      fulfillmentState: "awaiting_fulfillment",
                       totalAmountCents: 300,
                       paymentId: "pay-1",
                       paymentNo: "PAY001",
@@ -1339,6 +1343,9 @@ describe("OrdersService (transaction boundary)", () => {
       });
 
       expect(reconcilePendingPaymentOnRead).toHaveBeenCalledWith("pay-1");
+      expect(result.orderStatus).toBe("paid");
+      expect(result.paymentState).toBe("paid");
+      expect(result.fulfillmentState).toBe("awaiting_fulfillment");
       expect(result.payment.status).toBe("succeeded");
       expect(result.nextAction).toBe("dispensing");
     });
@@ -1357,6 +1364,8 @@ describe("OrdersService (transaction boundary)", () => {
                       orderNo: "ORD001",
                       machineCode: "M001",
                       orderStatus: "pending_payment",
+                      paymentState: "awaiting_payment",
+                      fulfillmentState: "awaiting_fulfillment",
                       totalAmountCents: 300,
                       paymentId: "pay-1",
                       paymentNo: "PAY001",

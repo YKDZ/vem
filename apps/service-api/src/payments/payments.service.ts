@@ -54,6 +54,7 @@ import { AppConfigService } from "../config/app-config.service";
 import { isEncryptedJson } from "../crypto/encrypted-json.util";
 import { DRIZZLE_CLIENT } from "../database/database.constants";
 import { InventoryService } from "../inventory/inventory.service";
+import { projectOrderStatus } from "../orders/order-state-projection";
 import { RefundsService } from "../refunds/refunds.service";
 import { VendingService } from "../vending/vending.service";
 import { PaymentConfigSecretService } from "./payment-config-secret.service";
@@ -268,6 +269,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
           providerCode: paymentProviders.code,
           orderId: orders.id,
           orderStatus: orders.status,
+          fulfillmentState: orders.fulfillmentState,
         })
         .from(payments)
         .innerJoin(
@@ -321,43 +323,30 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
           .where(eq(payments.id, row.paymentId));
       }
 
-      if (row.orderStatus !== "paid" && row.orderStatus !== "dispensing") {
+      if (row.paymentStatus !== "succeeded") {
+        const paidAt = new Date();
+        const projectedStatus = projectOrderStatus({
+          paymentState: "paid",
+          fulfillmentState: row.fulfillmentState,
+        });
         await tx
           .update(orders)
-          .set({ status: "paid", paidAt: new Date(), updatedAt: new Date() })
+          .set({
+            status: projectedStatus,
+            paymentState: "paid",
+            paidAt,
+            updatedAt: new Date(),
+          })
           .where(eq(orders.id, row.orderId));
-        await tx.insert(orderStatusEvents).values({
-          orderId: row.orderId,
-          fromStatus: row.orderStatus,
-          toStatus: "paid",
-          reason: "payment_succeeded",
-        });
-      }
-
-      const reservations = await tx
-        .select({
-          inventoryId: inventoryReservations.inventoryId,
-          quantity: inventoryReservations.quantity,
-        })
-        .from(inventoryReservations)
-        .where(
-          and(
-            eq(inventoryReservations.orderId, row.orderId),
-            eq(inventoryReservations.status, "active"),
-          ),
-        );
-
-      await reservations.reduce<Promise<void>>(
-        async (previous, reservation) => {
-          await previous;
-          await this.inventoryService.confirmReservation(tx, {
+        if (row.orderStatus !== projectedStatus) {
+          await tx.insert(orderStatusEvents).values({
             orderId: row.orderId,
-            inventoryId: reservation.inventoryId,
-            quantity: reservation.quantity,
+            fromStatus: row.orderStatus,
+            toStatus: projectedStatus,
+            reason: "payment_succeeded",
           });
-        },
-        Promise.resolve(),
-      );
+        }
+      }
 
       return {
         paymentNo: row.paymentNo,
@@ -454,6 +443,8 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
           .update(orders)
           .set({
             status: "canceled",
+            paymentState: "payment_failed",
+            fulfillmentState: "canceled",
             canceledAt: new Date(),
             updatedAt: new Date(),
           })
@@ -677,7 +668,12 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
           if (payment.orderStatus !== "payment_expired") {
             await tx
               .update(orders)
-              .set({ status: "payment_expired", updatedAt: new Date() })
+              .set({
+                status: "payment_expired",
+                paymentState: "payment_expired",
+                fulfillmentState: "canceled",
+                updatedAt: new Date(),
+              })
               .where(eq(orders.id, payment.orderId));
             await tx.insert(orderStatusEvents).values({
               orderId: payment.orderId,
@@ -1463,6 +1459,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
             providerId: payments.providerId,
             orderId: orders.id,
             orderStatus: orders.status,
+            fulfillmentState: orders.fulfillmentState,
           })
           .from(payments)
           .innerJoin(orders, eq(orders.id, payments.orderId))
@@ -1487,40 +1484,28 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
           })
           .where(eq(payments.id, r.paymentId));
 
-        if (r.orderStatus !== "paid" && r.orderStatus !== "dispensing") {
-          await tx
-            .update(orders)
-            .set({ status: "paid", paidAt: new Date(), updatedAt: new Date() })
-            .where(eq(orders.id, r.orderId));
+        const paidAt = new Date();
+        const projectedStatus = projectOrderStatus({
+          paymentState: "paid",
+          fulfillmentState: r.fulfillmentState,
+        });
+        await tx
+          .update(orders)
+          .set({
+            status: projectedStatus,
+            paymentState: "paid",
+            paidAt,
+            updatedAt: new Date(),
+          })
+          .where(eq(orders.id, r.orderId));
+        if (r.orderStatus !== projectedStatus) {
           await tx.insert(orderStatusEvents).values({
             orderId: r.orderId,
             fromStatus: r.orderStatus,
-            toStatus: "paid",
+            toStatus: projectedStatus,
             reason: "webhook_payment_succeeded",
           });
         }
-
-        const reservations = await tx
-          .select({
-            inventoryId: inventoryReservations.inventoryId,
-            quantity: inventoryReservations.quantity,
-          })
-          .from(inventoryReservations)
-          .where(
-            and(
-              eq(inventoryReservations.orderId, r.orderId),
-              eq(inventoryReservations.status, "active"),
-            ),
-          );
-
-        await reservations.reduce<Promise<void>>(async (prev, reservation) => {
-          await prev;
-          await this.inventoryService.confirmReservation(tx, {
-            orderId: r.orderId,
-            inventoryId: reservation.inventoryId,
-            quantity: reservation.quantity,
-          });
-        }, Promise.resolve());
 
         return { orderId: r.orderId, shouldDispatch: true };
       });
@@ -1558,6 +1543,8 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
             .update(orders)
             .set({
               status: "canceled",
+              paymentState: "payment_failed",
+              fulfillmentState: "canceled",
               canceledAt: new Date(),
               updatedAt: new Date(),
             })
@@ -2237,6 +2224,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
           paymentStatus: payments.status,
           orderId: orders.id,
           orderStatus: orders.status,
+          fulfillmentState: orders.fulfillmentState,
         })
         .from(payments)
         .innerJoin(orders, eq(orders.id, payments.orderId))
@@ -2275,15 +2263,24 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
           })
           .where(eq(payments.id, paymentId));
 
-        if (r.orderStatus === "pending_payment") {
-          await tx
-            .update(orders)
-            .set({ status: "paid", paidAt: handledAt, updatedAt: new Date() })
-            .where(eq(orders.id, orderId));
+        const projectedStatus = projectOrderStatus({
+          paymentState: "paid",
+          fulfillmentState: r.fulfillmentState,
+        });
+        await tx
+          .update(orders)
+          .set({
+            status: projectedStatus,
+            paymentState: "paid",
+            paidAt: handledAt,
+            updatedAt: new Date(),
+          })
+          .where(eq(orders.id, orderId));
+        if (r.orderStatus !== projectedStatus) {
           await tx.insert(orderStatusEvents).values({
             orderId,
             fromStatus: r.orderStatus,
-            toStatus: "paid",
+            toStatus: projectedStatus,
             reason: "reconcile_succeeded",
           });
         }
@@ -2302,6 +2299,8 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
             .update(orders)
             .set({
               status: "canceled",
+              paymentState: "payment_failed",
+              fulfillmentState: "canceled",
               canceledAt: new Date(),
               updatedAt: new Date(),
             })

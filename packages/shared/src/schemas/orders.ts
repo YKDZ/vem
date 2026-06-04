@@ -1,6 +1,10 @@
 import { z } from "zod";
 
-import { orderStatusSchema } from "../enums/order-status";
+import {
+  orderFulfillmentStateSchema,
+  orderPaymentStateSchema,
+  orderStatusSchema,
+} from "../enums/order-status";
 import {
   paymentCodeAttemptStatusSchema,
   paymentMethodSchema,
@@ -170,6 +174,8 @@ export const machineOrderStatusResponseSchema = z.object({
   orderNo: z.string().min(1).max(64),
   machineCode: z.string().min(1).max(64),
   orderStatus: orderStatusSchema,
+  paymentState: orderPaymentStateSchema,
+  fulfillmentState: orderFulfillmentStateSchema,
   totalAmountCents: z.int().nonnegative(),
   payment: z.object({
     paymentNo: z.string().min(1).max(64),

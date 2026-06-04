@@ -29,6 +29,7 @@ import {
 
 import { createBusinessNo } from "../common/business-no.util";
 import { DRIZZLE_CLIENT } from "../database/database.constants";
+import { projectOrderStatus } from "../orders/order-state-projection";
 import { PaymentProviderConfigService } from "../payments/payment-provider-config.service";
 import { PaymentProviderRegistry } from "../payments/payment-provider.registry";
 import { buildStoredEventPayload } from "../payments/payment-redaction.util";
@@ -127,18 +128,26 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
       .onConflictDoNothing();
 
     if (input.status === "succeeded") {
+      const refundedStatus = projectOrderStatus({
+        paymentState: "refunded",
+        fulfillmentState: "manual_handling",
+      });
       await tx
         .update(payments)
         .set({ status: "refunded", updatedAt: new Date() })
         .where(eq(payments.id, input.paymentId));
       await tx
         .update(orders)
-        .set({ status: "refunded", updatedAt: new Date() })
+        .set({
+          status: refundedStatus,
+          paymentState: "refunded",
+          updatedAt: new Date(),
+        })
         .where(eq(orders.id, input.orderId));
       await tx.insert(orderStatusEvents).values({
         orderId: input.orderId,
         fromStatus: "refund_pending",
-        toStatus: "refunded",
+        toStatus: refundedStatus,
         reason: input.orderEventReason,
         metadata: {
           refundNo: input.refundNo,
@@ -149,18 +158,27 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
     }
 
     // failed path: restore payment to succeeded, move order to manual_handling
+    const failedRefundStatus = projectOrderStatus({
+      paymentState: "paid",
+      fulfillmentState: "manual_handling",
+    });
     await tx
       .update(payments)
       .set({ status: "succeeded", updatedAt: new Date() })
       .where(eq(payments.id, input.paymentId));
     await tx
       .update(orders)
-      .set({ status: "manual_handling", updatedAt: new Date() })
+      .set({
+        status: failedRefundStatus,
+        paymentState: "paid",
+        fulfillmentState: "manual_handling",
+        updatedAt: new Date(),
+      })
       .where(eq(orders.id, input.orderId));
     await tx.insert(orderStatusEvents).values({
       orderId: input.orderId,
       fromStatus: "refund_pending",
-      toStatus: "manual_handling",
+      toStatus: failedRefundStatus,
       reason: input.orderEventReason,
       metadata: {
         refundNo: input.refundNo,
@@ -243,7 +261,11 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
 
       await tx
         .update(orders)
-        .set({ status: "refund_pending", updatedAt: new Date() })
+        .set({
+          status: "refund_pending",
+          paymentState: "refund_pending",
+          updatedAt: new Date(),
+        })
         .where(eq(orders.id, input.orderId));
       await tx
         .update(payments)

@@ -9,6 +9,7 @@ import {
   inventories,
   inventoryMovements,
   machineHeartbeats,
+  orderItems,
   notifications,
   orders,
   payments,
@@ -216,6 +217,47 @@ describe.sequential("core-flow.e2e", () => {
       "fulfilled",
     );
     expect(fulfilledOrder.status).toBe("fulfilled");
+
+    const [orderItem] = await db.client
+      .select({ id: orderItems.id })
+      .from(orderItems)
+      .where(eq(orderItems.orderId, createdOrder.data.orderId));
+    expect(orderItem.id).toBeTruthy();
+
+    const stockMovementPayload = {
+      movementId: `dispense:${commandNo}`,
+      planogramVersion: seeded.planogramVersion,
+      slotId: seeded.slotId,
+      movementType: "dispense_succeeded",
+      quantity: 1,
+      source: "vending_command",
+      attributedTo: commandNo,
+      orderContext: {
+        orderNo: createdOrder.data.orderNo,
+        orderItemId: orderItem.id,
+        vendingCommandNo: commandNo,
+        inventoryId: seeded.inventoryId,
+      },
+      occurredAt: new Date().toISOString(),
+    };
+    const movementResponse = await api
+      .post("/api/machine-stock-movements")
+      .set(machineAuthHeader)
+      .send(stockMovementPayload);
+    expect(movementResponse.status).toBe(201);
+    expect(
+      (movementResponse.body as ApiResponse<{ status: string }>).data.status,
+    ).toBe("accepted");
+
+    const duplicateMovementResponse = await api
+      .post("/api/machine-stock-movements")
+      .set(machineAuthHeader)
+      .send(stockMovementPayload);
+    expect(duplicateMovementResponse.status).toBe(201);
+    expect(
+      (duplicateMovementResponse.body as ApiResponse<{ status: string }>).data
+        .status,
+    ).toBe("already_accepted");
 
     const [ackCommand] = await db.client
       .select({ ackAt: vendingCommands.ackAt, status: vendingCommands.status })

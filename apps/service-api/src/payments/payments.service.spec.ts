@@ -1008,6 +1008,60 @@ describe("PaymentsService", () => {
         service.markMockSucceeded("PAY001", "admin"),
       ).rejects.toThrow(NotFoundException);
     });
+
+    it("keeps reservations active and does not confirm inventory on payment success", async () => {
+      const db = makeDb();
+      const confirmReservation = vi.fn().mockResolvedValue(undefined);
+      const createAndDispatchCommands = vi.fn().mockResolvedValue(undefined);
+
+      db.select
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              innerJoin: vi.fn().mockReturnValue({
+                where: vi.fn().mockResolvedValue([
+                  {
+                    paymentId: "pay-001",
+                    paymentNo: "PAY001",
+                    paymentStatus: "pending",
+                    providerId: "prov-mock",
+                    providerCode: "mock",
+                    orderId: "ord-001",
+                    orderStatus: "pending_payment",
+                  },
+                ]),
+              }),
+            }),
+          }),
+        })
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([
+              {
+                inventoryId: "inv-001",
+                quantity: 1,
+              },
+            ]),
+          }),
+        });
+
+      const service = makeService({
+        db,
+        inventoryService: { confirmReservation } as unknown as InventoryService,
+        vendingService: { createAndDispatchCommands },
+      });
+
+      const result = await service.markMockSucceeded("PAY001", "admin-1");
+
+      expect(result).toMatchObject({
+        paymentNo: "PAY001",
+        status: "succeeded",
+        orderId: "ord-001",
+        alreadyHandled: false,
+      });
+      expect(confirmReservation).not.toHaveBeenCalled();
+      expect(createAndDispatchCommands).toHaveBeenCalledWith("ord-001");
+    });
   });
 
   describe("listProviderConfigs", () => {

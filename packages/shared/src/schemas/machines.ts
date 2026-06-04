@@ -82,10 +82,22 @@ export const rawMachineStockMovementSchema = z.object({
   movementId: z.string().min(1).max(128),
   planogramVersion: z.string().min(1).max(128),
   slotId: z.uuid(),
-  movementType: z.enum(["planned_refill", "stock_count_correction"]),
+  movementType: z.enum([
+    "planned_refill",
+    "stock_count_correction",
+    "dispense_succeeded",
+  ]),
   quantity: z.int().nonnegative(),
   source: z.string().min(1).max(128),
   attributedTo: z.string().max(128).nullable().optional(),
+  orderContext: z
+    .object({
+      orderNo: z.string().min(1).max(64),
+      orderItemId: z.uuid(),
+      vendingCommandNo: z.string().min(1).max(64),
+      inventoryId: z.uuid(),
+    })
+    .optional(),
   occurredAt: z.iso.datetime(),
 });
 
