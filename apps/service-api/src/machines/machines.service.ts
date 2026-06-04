@@ -14,6 +14,8 @@ import {
   inArray,
   inventories,
   isNull,
+  machinePlanogramSlots,
+  machinePlanogramVersions,
   machineSlots,
   machineCommands,
   machineEvents,
@@ -32,10 +34,13 @@ import {
   createMachineSlotSchema,
   pageQuerySchema,
   machineEnvironmentControlRequestSchema,
+  publishMachinePlanogramVersionSchema,
   updateMachineSchema,
   type CommandAckPayload,
   type EnvironmentControlResultPayload,
   type MachineEnvironmentControlRequest,
+  type MachinePlanogramSlot,
+  type PublishMachinePlanogramVersion,
 } from "@vem/shared";
 import { z } from "zod";
 
@@ -52,6 +57,95 @@ type PageQueryInput = z.infer<typeof pageQuerySchema>;
 type CreateMachineInput = z.infer<typeof createMachineSchema>;
 type UpdateMachineInput = z.infer<typeof updateMachineSchema>;
 type CreateMachineSlotInput = z.infer<typeof createMachineSlotSchema>;
+
+type PlanogramVersionRecord = typeof machinePlanogramVersions.$inferSelect;
+
+type MachineIdentity = {
+  id: string;
+  code: string;
+};
+
+function toIso(value: Date | string): string {
+  return value instanceof Date ? value.toISOString() : value;
+}
+
+function planogramSlotValues(
+  machinePlanogramVersionId: string,
+  slot: MachinePlanogramSlot,
+) {
+  return {
+    machinePlanogramVersionId,
+    slotId: slot.slotId,
+    slotCode: slot.slotCode,
+    layerNo: slot.layerNo,
+    cellNo: slot.cellNo,
+    capacity: slot.capacity,
+    parLevel: slot.parLevel,
+    inventoryId: slot.inventoryId,
+    variantId: slot.variantId,
+    productId: slot.productId,
+    productName: slot.productName,
+    productDescription: slot.productDescription,
+    coverImageUrl: slot.coverImageUrl,
+    categoryId: slot.categoryId,
+    categoryName: slot.categoryName,
+    sku: slot.sku,
+    size: slot.size,
+    color: slot.color,
+    priceCents: slot.priceCents,
+    productSortOrder: slot.productSortOrder,
+    targetGender: slot.targetGender ?? null,
+  };
+}
+
+function planogramSlotSnapshot(
+  row: typeof machinePlanogramSlots.$inferSelect,
+): MachinePlanogramSlot {
+  return {
+    slotId: row.slotId,
+    slotCode: row.slotCode,
+    layerNo: row.layerNo,
+    cellNo: row.cellNo,
+    capacity: row.capacity,
+    parLevel: row.parLevel,
+    inventoryId: row.inventoryId,
+    variantId: row.variantId,
+    productId: row.productId,
+    productName: row.productName,
+    productDescription: row.productDescription,
+    coverImageUrl: row.coverImageUrl,
+    categoryId: row.categoryId,
+    categoryName: row.categoryName,
+    sku: row.sku,
+    size: row.size,
+    color: row.color,
+    priceCents: row.priceCents,
+    productSortOrder: row.productSortOrder,
+    targetGender:
+      row.targetGender === "male" || row.targetGender === "female"
+        ? row.targetGender
+        : null,
+  };
+}
+
+function planogramVersionSnapshot(
+  machine: MachineIdentity,
+  version: PlanogramVersionRecord,
+  slots: MachinePlanogramSlot[],
+) {
+  return {
+    machineId: machine.id,
+    machineCode: machine.code,
+    planogramVersion: version.planogramVersion,
+    status: version.status,
+    publishedAt: toIso(version.publishedAt),
+    acknowledgedAt: version.acknowledgedAt
+      ? toIso(version.acknowledgedAt)
+      : null,
+    activeAt: version.activeAt ? toIso(version.activeAt) : null,
+    slots,
+  };
+}
 
 function parseLatestEnvironment(statusPayload: unknown) {
   if (
@@ -306,6 +400,180 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
         .returning();
       return failed;
     }
+  }
+
+  async publishMachinePlanogramVersion(
+    machineId: string,
+    input: PublishMachinePlanogramVersion,
+    adminUserId: string,
+  ) {
+    const planogram = publishMachinePlanogramVersionSchema.parse(input);
+    const [machine] = await this.db
+      .select({ id: machines.id, code: machines.code })
+      .from(machines)
+      .where(and(eq(machines.id, machineId), isNull(machines.deletedAt)))
+      .limit(1);
+
+    if (!machine) {
+      throw new NotFoundException("Machine not found");
+    }
+
+    const created = await this.db.transaction(async (tx) => {
+      const [version] = await tx
+        .insert(machinePlanogramVersions)
+        .values({
+          machineId: machine.id,
+          planogramVersion: planogram.planogramVersion,
+          status: "published",
+        })
+        .returning();
+
+      await tx
+        .insert(machinePlanogramSlots)
+        .values(
+          planogram.slots.map((slot) => planogramSlotValues(version.id, slot)),
+        )
+        .returning({ id: machinePlanogramSlots.id });
+
+      return version;
+    });
+
+    await this.auditService.record({
+      adminUserId,
+      action: "machines.planogram.publish",
+      resourceType: "machine",
+      resourceId: machine.id,
+      afterJson: {
+        planogramVersion: created.planogramVersion,
+        slotCount: planogram.slots.length,
+      },
+    });
+
+    return planogramVersionSnapshot(machine, created, planogram.slots);
+  }
+
+  async getMachinePlanogramVersions(machineId: string) {
+    const [machine] = await this.db
+      .select({ id: machines.id, code: machines.code })
+      .from(machines)
+      .where(and(eq(machines.id, machineId), isNull(machines.deletedAt)))
+      .limit(1);
+
+    if (!machine) {
+      throw new NotFoundException("Machine not found");
+    }
+
+    const versions = await this.db
+      .select()
+      .from(machinePlanogramVersions)
+      .where(eq(machinePlanogramVersions.machineId, machine.id))
+      .orderBy(desc(machinePlanogramVersions.publishedAt));
+
+    return {
+      activePlanogramVersion:
+        versions.find((version) => version.status === "active")
+          ?.planogramVersion ?? null,
+      items: versions.map((version) =>
+        planogramVersionSnapshot(machine, version, []),
+      ),
+    };
+  }
+
+  async getPublishedPlanogramByMachineCode(code: string) {
+    const [machine] = await this.db
+      .select({ id: machines.id, code: machines.code })
+      .from(machines)
+      .where(and(eq(machines.code, code), isNull(machines.deletedAt)))
+      .limit(1);
+
+    if (!machine) {
+      throw new NotFoundException("Machine not found");
+    }
+
+    const [version] = await this.db
+      .select()
+      .from(machinePlanogramVersions)
+      .where(
+        and(
+          eq(machinePlanogramVersions.machineId, machine.id),
+          eq(machinePlanogramVersions.status, "published"),
+        ),
+      )
+      .orderBy(desc(machinePlanogramVersions.publishedAt))
+      .limit(1);
+
+    if (!version) {
+      return null;
+    }
+
+    const slots = await this.db
+      .select()
+      .from(machinePlanogramSlots)
+      .where(eq(machinePlanogramSlots.machinePlanogramVersionId, version.id))
+      .orderBy(
+        machinePlanogramSlots.productSortOrder,
+        machinePlanogramSlots.layerNo,
+        machinePlanogramSlots.cellNo,
+      );
+
+    return planogramVersionSnapshot(
+      machine,
+      version,
+      slots.map(planogramSlotSnapshot),
+    );
+  }
+
+  async acknowledgeMachinePlanogramVersion(
+    machineCode: string,
+    planogramVersion: string,
+  ) {
+    const [machine] = await this.db
+      .select({ id: machines.id, code: machines.code })
+      .from(machines)
+      .where(and(eq(machines.code, machineCode), isNull(machines.deletedAt)))
+      .limit(1);
+
+    if (!machine) {
+      throw new NotFoundException("Machine not found");
+    }
+
+    const now = new Date();
+    const activated = await this.db.transaction(async (tx) => {
+      await tx
+        .update(machinePlanogramVersions)
+        .set({ status: "retired", updatedAt: now })
+        .where(
+          and(
+            eq(machinePlanogramVersions.machineId, machine.id),
+            eq(machinePlanogramVersions.status, "active"),
+          ),
+        );
+
+      const [version] = await tx
+        .update(machinePlanogramVersions)
+        .set({
+          status: "active",
+          acknowledgedAt: now,
+          activeAt: now,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(machinePlanogramVersions.machineId, machine.id),
+            eq(machinePlanogramVersions.planogramVersion, planogramVersion),
+            eq(machinePlanogramVersions.status, "published"),
+          ),
+        )
+        .returning();
+
+      if (!version) {
+        throw new NotFoundException("Machine planogram version not found");
+      }
+
+      return version;
+    });
+
+    return planogramVersionSnapshot(machine, activated, []);
   }
 
   async handleMachineMessage(topic: string, payload: string): Promise<void> {

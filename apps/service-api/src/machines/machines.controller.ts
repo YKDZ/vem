@@ -15,6 +15,7 @@ import {
   createMachineSlotSchema,
   machineEnvironmentControlRequestSchema,
   pageQuerySchema,
+  publishMachinePlanogramVersionSchema,
   updateMachineSchema,
 } from "@vem/shared";
 import { z } from "zod";
@@ -35,6 +36,9 @@ import { MachinesService } from "./machines.service";
 type CreateMachineInput = z.infer<typeof createMachineSchema>;
 type UpdateMachineInput = z.infer<typeof updateMachineSchema>;
 type CreateMachineSlotInput = z.infer<typeof createMachineSlotSchema>;
+type PublishMachinePlanogramVersionInput = z.infer<
+  typeof publishMachinePlanogramVersionSchema
+>;
 type MachineEnvironmentControlInput = z.infer<
   typeof machineEnvironmentControlRequestSchema
 >;
@@ -77,6 +81,27 @@ export class MachinesController {
     return await this.machinesService.getMachine(id);
   }
 
+  @RequirePermissions("machines.write")
+  @Post(":id/planogram-versions")
+  async publishPlanogramVersion(
+    @CurrentAdmin() admin: AuthenticatedAdmin,
+    @Param("id", ParseUUIDPipe) id: string,
+    @Body(new ZodValidationPipe(publishMachinePlanogramVersionSchema))
+    body: PublishMachinePlanogramVersionInput,
+  ) {
+    return await this.machinesService.publishMachinePlanogramVersion(
+      id,
+      body,
+      admin.id,
+    );
+  }
+
+  @RequirePermissions("machines.read")
+  @Get(":id/planogram-versions")
+  async listPlanogramVersions(@Param("id", ParseUUIDPipe) id: string) {
+    return await this.machinesService.getMachinePlanogramVersions(id);
+  }
+
   @RequirePermissions("machines.command")
   @Post(":id/commands/environment-control")
   async commandEnvironment(
@@ -111,6 +136,32 @@ export class MachinesController {
     @Param("id", ParseUUIDPipe) id: string,
   ) {
     return await this.machinesService.rotateMachineCredentials(id, admin.id);
+  }
+
+  @Public()
+  @UseGuards(MachineAuthGuard)
+  @Get(":code/planogram-versions/published")
+  async getPublishedPlanogramVersion(
+    @CurrentMachine() machine: AuthenticatedMachine,
+    @Param("code") code: string,
+  ) {
+    return await this.machinesService.getPublishedPlanogramByMachineCode(
+      code === machine.code ? machine.code : "__forbidden__",
+    );
+  }
+
+  @Public()
+  @UseGuards(MachineAuthGuard)
+  @Post(":code/planogram-versions/:planogramVersion/ack")
+  async acknowledgePlanogramVersion(
+    @CurrentMachine() machine: AuthenticatedMachine,
+    @Param("code") code: string,
+    @Param("planogramVersion") planogramVersion: string,
+  ) {
+    return await this.machinesService.acknowledgeMachinePlanogramVersion(
+      code === machine.code ? machine.code : "__forbidden__",
+      planogramVersion,
+    );
   }
 
   @Public()

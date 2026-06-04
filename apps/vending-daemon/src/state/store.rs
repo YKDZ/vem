@@ -49,6 +49,7 @@ type OutboxRecordRow = (
 );
 
 type CurrentOrderSessionRow = (Option<String>, Option<String>, Option<String>, String);
+type PreviousSlotProjectionRow = (String, i64, String, String, String, String);
 type OrderSessionRecordRow = (
     String,
     String,
@@ -1098,6 +1099,7 @@ impl LocalStateStore {
 
         let mut tx = self.pool.begin().await?;
         let applied_at = now_iso();
+        let previous_slots = current_slot_projections_in_tx(&mut tx).await?;
         let existing: Option<(i64,)> = sqlx::query_as(
             "SELECT active FROM machine_planogram_versions WHERE planogram_version = ?1",
         )
@@ -1183,14 +1185,52 @@ impl LocalStateStore {
             .execute(tx.as_mut())
             .await?;
 
-            upsert_stock_projection_in_tx(
-                &mut tx,
-                &input.planogram_version,
-                &slot.slot_id,
-                0,
-                slot.capacity,
-            )
-            .await?;
+            if let Some(previous) = previous_slots
+                .iter()
+                .find(|previous| previous.slot_id == slot.slot_id)
+            {
+                if previous.physical_stock > 0 && !previous.has_same_mapping(slot) {
+                    upsert_stock_projection_with_state_in_tx(
+                        &mut tx,
+                        &input.planogram_version,
+                        &slot.slot_id,
+                        previous.physical_stock,
+                        0,
+                        "blocked_for_planogram_change",
+                    )
+                    .await?;
+                } else {
+                    let saleable_stock = previous.physical_stock.min(slot.capacity).max(0);
+                    let slot_sales_state = if matches!(
+                        previous.slot_sales_state.as_str(),
+                        "frozen" | "suspect" | "needs_count" | "blocked_for_planogram_change"
+                    ) {
+                        previous.slot_sales_state.as_str()
+                    } else if saleable_stock > 0 {
+                        "sale_ready"
+                    } else {
+                        "sold_out"
+                    };
+                    upsert_stock_projection_with_state_in_tx(
+                        &mut tx,
+                        &input.planogram_version,
+                        &slot.slot_id,
+                        previous.physical_stock,
+                        saleable_stock,
+                        slot_sales_state,
+                    )
+                    .await?;
+                }
+            } else {
+                upsert_stock_projection_in_tx(
+                    &mut tx,
+                    &input.planogram_version,
+                    &slot.slot_id,
+                    0,
+                    slot.capacity,
+                )
+                .await?;
+            }
             upsert_sale_view_projection_in_tx(&mut tx, &input.planogram_version, &slot.slot_id)
                 .await?;
         }
@@ -1534,6 +1574,60 @@ fn is_supported_slot_sales_state(value: &str) -> bool {
     )
 }
 
+struct PreviousSlotProjection {
+    slot_id: String,
+    physical_stock: i64,
+    slot_sales_state: String,
+    inventory_id: String,
+    variant_id: String,
+    product_id: String,
+}
+
+impl PreviousSlotProjection {
+    fn has_same_mapping(&self, slot: &MachinePlanogramSlotInput) -> bool {
+        self.inventory_id == slot.inventory_id
+            && self.variant_id == slot.variant_id
+            && self.product_id == slot.product_id
+    }
+}
+
+async fn current_slot_projections_in_tx(
+    tx: &mut Transaction<'_, sqlx::Sqlite>,
+) -> Result<Vec<PreviousSlotProjection>, StoreError> {
+    let rows: Vec<PreviousSlotProjectionRow> = sqlx::query_as(
+        "SELECT
+           c.slot_id,
+           c.physical_stock,
+           c.slot_sales_state,
+           s.inventory_id,
+           s.variant_id,
+           s.product_id
+         FROM current_stock_projection c
+         JOIN machine_planogram_slots s
+           ON s.planogram_version = c.planogram_version AND s.slot_id = c.slot_id
+         JOIN machine_planogram_versions v
+           ON v.planogram_version = c.planogram_version AND v.active = 1",
+    )
+    .fetch_all(tx.as_mut())
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(
+            |(slot_id, physical_stock, slot_sales_state, inventory_id, variant_id, product_id)| {
+                PreviousSlotProjection {
+                    slot_id,
+                    physical_stock,
+                    slot_sales_state,
+                    inventory_id,
+                    variant_id,
+                    product_id,
+                }
+            },
+        )
+        .collect())
+}
+
 async fn upsert_stock_projection_in_tx(
     tx: &mut Transaction<'_, sqlx::Sqlite>,
     planogram_version: &str,
@@ -1548,6 +1642,25 @@ async fn upsert_stock_projection_in_tx(
     } else {
         "sold_out"
     };
+    upsert_stock_projection_with_state_in_tx(
+        tx,
+        planogram_version,
+        slot_id,
+        physical_stock,
+        saleable_stock,
+        slot_sales_state,
+    )
+    .await
+}
+
+async fn upsert_stock_projection_with_state_in_tx(
+    tx: &mut Transaction<'_, sqlx::Sqlite>,
+    planogram_version: &str,
+    slot_id: &str,
+    physical_stock: i64,
+    saleable_stock: i64,
+    slot_sales_state: &str,
+) -> Result<(), StoreError> {
     let updated_at = now_iso();
     sqlx::query(
         "INSERT INTO current_stock_projection(
@@ -1558,15 +1671,15 @@ async fn upsert_stock_projection_in_tx(
            physical_stock=excluded.physical_stock,
            saleable_stock=excluded.saleable_stock,
            slot_sales_state=CASE
-             WHEN current_stock_projection.slot_sales_state IN ('sale_ready','sold_out') THEN excluded.slot_sales_state
-             ELSE current_stock_projection.slot_sales_state
+             WHEN current_stock_projection.slot_sales_state IN ('frozen','suspect') THEN current_stock_projection.slot_sales_state
+             ELSE excluded.slot_sales_state
            END,
            updated_at=excluded.updated_at",
     )
     .bind(planogram_version)
     .bind(slot_id)
-    .bind(physical_stock)
-    .bind(saleable_stock)
+    .bind(physical_stock.max(0))
+    .bind(saleable_stock.max(0))
     .bind(slot_sales_state)
     .bind(updated_at)
     .execute(tx.as_mut())

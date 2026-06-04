@@ -11,6 +11,7 @@ import {
   heartbeatPayloadSchema,
   machineEnvironmentControlRequestSchema,
   machineAuthTokenRequestSchema,
+  machinePlanogramVersionSnapshotSchema,
   machineSaleViewItemSchema,
   machineSlotStatuses,
   maintenanceWorkOrderStatuses,
@@ -170,6 +171,51 @@ describe("shared API contract", () => {
         machineSecret: "local-machine-shared-secret-change-before-production",
       }).machineCode,
     ).toBe("M001");
+  });
+
+  it("accepts machine planogram version lifecycle snapshots", () => {
+    const snapshot = machinePlanogramVersionSnapshotSchema.parse({
+      machineId: "550e8400-e29b-41d4-a716-446655440000",
+      machineCode: "M001",
+      planogramVersion: "PLAN-2026-06-04",
+      status: "published",
+      publishedAt: "2026-06-04T12:00:00.000Z",
+      acknowledgedAt: null,
+      activeAt: null,
+      slots: [
+        {
+          slotId: "550e8400-e29b-41d4-a716-446655440001",
+          slotCode: "A1",
+          layerNo: 1,
+          cellNo: 1,
+          inventoryId: "550e8400-e29b-41d4-a716-446655440002",
+          variantId: "550e8400-e29b-41d4-a716-446655440003",
+          productId: "550e8400-e29b-41d4-a716-446655440004",
+          productName: "矿泉水",
+          productDescription: null,
+          coverImageUrl: null,
+          categoryId: null,
+          categoryName: null,
+          sku: "WATER-001",
+          size: "550ml",
+          color: null,
+          priceCents: 200,
+          productSortOrder: 1,
+          targetGender: null,
+          capacity: 8,
+          parLevel: 6,
+        },
+      ],
+    });
+
+    expect(snapshot.status).toBe("published");
+    expect(snapshot.activeAt).toBeNull();
+    expect(() =>
+      machinePlanogramVersionSnapshotSchema.parse({
+        ...snapshot,
+        status: "pending_ack",
+      }),
+    ).toThrow();
   });
 
   it("accepts machine sale view slot sales states", () => {

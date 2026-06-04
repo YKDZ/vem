@@ -21,7 +21,10 @@ use crate::{
     events::DaemonEvent,
     logs,
     state::{
-        store::{MachinePlanogramInput, SlotSalesStateInput, StockMovementInput},
+        store::{
+            MachinePlanogramInput, MachinePlanogramSlotInput, SlotSalesStateInput,
+            StockMovementInput,
+        },
         LocalStateStore, StoreError,
     },
     transaction::TransactionStateMachine,
@@ -160,6 +163,7 @@ pub fn build_router(ctx: IpcContext) -> Router {
         .route("/v1/sale-view", get(sale_view))
         .route("/v1/sale-readiness", get(sale_readiness))
         .route("/v1/stock/planogram", post(apply_planogram))
+        .route("/v1/stock/planogram/sync", post(sync_planogram))
         .route("/v1/stock/movements", post(record_stock_movement))
         .route("/v1/stock/slot-sales-state", post(update_slot_sales_state))
         .route("/v1/payment-options", get(payment_options))
@@ -1084,6 +1088,125 @@ async fn validate_create_order_intent(ctx: &IpcContext, input: &CreateOrder) -> 
     Ok(())
 }
 
+async fn sync_planogram(State(ctx): State<IpcContext>, headers: HeaderMap) -> impl IntoResponse {
+    if let Err((status, error)) = require_token(&headers, &ctx.token).await {
+        return (status, error).into_response();
+    }
+
+    let config = match ctx.config_store.load_public_config().await {
+        Ok(config) => config,
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorMessage {
+                    code: "config_load_failed",
+                    message: error,
+                }),
+            )
+                .into_response();
+        }
+    };
+    let Some(machine_code) = config.machine_code else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorMessage {
+                code: "machine_code_missing",
+                message: "machine code required for planogram sync".to_string(),
+            }),
+        )
+            .into_response();
+    };
+
+    let published = match ctx.ui.backend.get_published_planogram(&machine_code).await {
+        Ok(value) => value,
+        Err(error) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(ErrorMessage {
+                    code: "planogram_fetch_failed",
+                    message: error,
+                }),
+            )
+                .into_response();
+        }
+    };
+    if published.is_null() {
+        return match ctx.state.sale_view(Some(machine_code)).await {
+            Ok(snapshot) => (StatusCode::OK, Json(snapshot)).into_response(),
+            Err(error) => store_error_response("sale_view_read_failed", error),
+        };
+    }
+
+    let Some(planogram_version) = published
+        .get("planogramVersion")
+        .and_then(|value| value.as_str())
+        .map(str::to_string)
+    else {
+        return (
+            StatusCode::BAD_GATEWAY,
+            Json(ErrorMessage {
+                code: "planogram_payload_invalid",
+                message: "published planogram response missing planogramVersion".to_string(),
+            }),
+        )
+            .into_response();
+    };
+    let slots = match published.get("slots").cloned() {
+        Some(value) => match serde_json::from_value::<Vec<MachinePlanogramSlotInput>>(value) {
+            Ok(slots) => slots,
+            Err(error) => {
+                return (
+                    StatusCode::BAD_GATEWAY,
+                    Json(ErrorMessage {
+                        code: "planogram_payload_invalid",
+                        message: error.to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+        },
+        None => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(ErrorMessage {
+                    code: "planogram_payload_invalid",
+                    message: "published planogram response missing slots".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    };
+
+    let input = MachinePlanogramInput {
+        planogram_version: planogram_version.clone(),
+        source: "platform".to_string(),
+        applied_by: None,
+        slots,
+    };
+    let snapshot = match ctx.state.apply_planogram(input).await {
+        Ok(snapshot) => snapshot,
+        Err(error) => return store_error_response("planogram_apply_failed", error),
+    };
+
+    if let Err(error) = ctx
+        .ui
+        .backend
+        .acknowledge_planogram(&machine_code, &planogram_version)
+        .await
+    {
+        return (
+            StatusCode::BAD_GATEWAY,
+            Json(ErrorMessage {
+                code: "planogram_ack_failed",
+                message: error,
+            }),
+        )
+            .into_response();
+    }
+
+    (StatusCode::OK, Json(snapshot)).into_response()
+}
+
 async fn apply_planogram(
     State(ctx): State<IpcContext>,
     headers: HeaderMap,
@@ -1845,6 +1968,84 @@ mod tests {
         let payload: CatalogSnapshot = serde_json::from_slice(&body).unwrap();
         assert_eq!(payload.source, "backend");
         assert_eq!(payload.items.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn sync_planogram_applies_published_version_and_acknowledges_platform() {
+        let server = MockServer::start().await;
+        let slot_id = "550e8400-e29b-41d4-a716-446655440091";
+        let inventory_id = "550e8400-e29b-41d4-a716-446655440092";
+        let planogram = one_slot_planogram("PLAN-SYNC-ACK", slot_id, inventory_id);
+        Mock::given(method("GET"))
+            .and(wiremock::matchers::path(
+                "/machines/MACHINE-1/planogram-versions/published",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "machineId": "550e8400-e29b-41d4-a716-446655440090",
+                "machineCode": "MACHINE-1",
+                "planogramVersion": "PLAN-SYNC-ACK",
+                "status": "published",
+                "publishedAt": "2026-06-04T12:00:00.000Z",
+                "acknowledgedAt": null,
+                "activeAt": null,
+                "slots": planogram["slots"].clone(),
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(wiremock::matchers::path(
+                "/machines/MACHINE-1/planogram-versions/PLAN-SYNC-ACK/ack",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "planogramVersion": "PLAN-SYNC-ACK",
+                "status": "active",
+            })))
+            .mount(&server)
+            .await;
+
+        let temp_dir = tempdir().expect("tmp");
+        let app = build_router(
+            test_ipc_context(
+                temp_dir.path(),
+                "token-1",
+                Some("MACHINE-1".to_string()),
+                &server.uri(),
+            )
+            .await,
+        );
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::POST)
+                    .uri("/v1/stock/planogram/sync")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["planogramVersion"], "PLAN-SYNC-ACK");
+        assert_eq!(payload["items"][0]["inventoryId"], inventory_id);
+
+        let requests = server.received_requests().await.expect("requests");
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|request| {
+                    request.method.as_str() == "POST"
+                        && request.url.path()
+                            == "/machines/MACHINE-1/planogram-versions/PLAN-SYNC-ACK/ack"
+                })
+                .count(),
+            1
+        );
     }
 
     #[tokio::test]
@@ -3379,5 +3580,129 @@ mod tests {
                 .await
                 .expect("movement count");
         assert_eq!(movement_count.0, 3);
+    }
+
+    #[tokio::test]
+    async fn planogram_remap_with_remaining_stock_blocks_slot_until_target_count() {
+        let temp_dir = tempdir().expect("tmp");
+        let app = build_router(
+            test_ipc_context(
+                temp_dir.path(),
+                "token-1",
+                Some("MACHINE-1".to_string()),
+                "http://127.0.0.1:0",
+            )
+            .await,
+        );
+
+        let slot_id = "550e8400-e29b-41d4-a716-446655440071";
+        let old_inventory_id = "550e8400-e29b-41d4-a716-446655440072";
+        let new_inventory_id = "550e8400-e29b-41d4-a716-446655440082";
+        assert_eq!(
+            post_json(
+                &app,
+                "/v1/stock/planogram",
+                "token-1",
+                one_slot_planogram("PLAN-REMAP-OLD", slot_id, old_inventory_id),
+            )
+            .await
+            .status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            post_json(
+                &app,
+                "/v1/stock/movements",
+                "token-1",
+                json!({
+                    "movementId": "MOVE-REMAP-OLD-REFILL",
+                    "planogramVersion": "PLAN-REMAP-OLD",
+                    "slotId": slot_id,
+                    "movementType": "planned_refill",
+                    "quantity": 3,
+                    "source": "field_service",
+                    "attributedTo": "operator-1"
+                }),
+            )
+            .await
+            .status(),
+            StatusCode::CREATED
+        );
+
+        let mut remapped = one_slot_planogram("PLAN-REMAP-NEW", slot_id, new_inventory_id);
+        remapped["slots"][0]["variantId"] = json!("550e8400-e29b-41d4-a716-446655440083");
+        remapped["slots"][0]["productId"] = json!("550e8400-e29b-41d4-a716-446655440084");
+        remapped["slots"][0]["productName"] = json!("苏打水");
+        remapped["slots"][0]["sku"] = json!("SODA-REMAP");
+        assert_eq!(
+            post_json(&app, "/v1/stock/planogram", "token-1", remapped)
+                .await
+                .status(),
+            StatusCode::OK
+        );
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/sale-view")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["planogramVersion"], "PLAN-REMAP-NEW");
+        assert_eq!(payload["items"][0]["inventoryId"], new_inventory_id);
+        assert_eq!(payload["items"][0]["physicalStock"], 3);
+        assert_eq!(payload["items"][0]["saleableStock"], 0);
+        assert_eq!(
+            payload["items"][0]["slotSalesState"],
+            "blocked_for_planogram_change"
+        );
+
+        assert_eq!(
+            post_json(
+                &app,
+                "/v1/stock/movements",
+                "token-1",
+                json!({
+                    "movementId": "MOVE-REMAP-COUNT",
+                    "planogramVersion": "PLAN-REMAP-NEW",
+                    "slotId": slot_id,
+                    "movementType": "stock_count_correction",
+                    "quantity": 4,
+                    "source": "field_count",
+                    "attributedTo": "operator-2"
+                }),
+            )
+            .await
+            .status(),
+            StatusCode::CREATED
+        );
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/sale-view")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["items"][0]["physicalStock"], 4);
+        assert_eq!(payload["items"][0]["saleableStock"], 4);
+        assert_eq!(payload["items"][0]["slotSalesState"], "sale_ready");
     }
 }

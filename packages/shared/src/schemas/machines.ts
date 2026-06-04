@@ -125,6 +125,46 @@ export const machineCatalogItemSchema = z.object({
 
 export type MachineCatalogItem = z.infer<typeof machineCatalogItemSchema>;
 
+export const machinePlanogramVersionStatusSchema = z.enum([
+  "published",
+  "active",
+  "retired",
+]);
+
+export const machinePlanogramSlotSchema = machineCatalogItemSchema
+  .omit({ machineCode: true, availableQty: true })
+  .extend({
+    capacity: z.int().nonnegative(),
+    parLevel: z.int().nonnegative(),
+  });
+
+export const publishMachinePlanogramVersionSchema = z.object({
+  planogramVersion: z.string().min(1).max(128),
+  slots: z.array(machinePlanogramSlotSchema).min(1),
+});
+
+export const machinePlanogramVersionSnapshotSchema = z.object({
+  machineId: z.uuid(),
+  machineCode: z.string().min(1).max(64),
+  planogramVersion: z.string().min(1).max(128),
+  status: machinePlanogramVersionStatusSchema,
+  publishedAt: z.iso.datetime(),
+  acknowledgedAt: z.iso.datetime().nullable(),
+  activeAt: z.iso.datetime().nullable(),
+  slots: z.array(machinePlanogramSlotSchema),
+});
+
+export type MachinePlanogramVersionStatus = z.infer<
+  typeof machinePlanogramVersionStatusSchema
+>;
+export type MachinePlanogramSlot = z.infer<typeof machinePlanogramSlotSchema>;
+export type PublishMachinePlanogramVersion = z.infer<
+  typeof publishMachinePlanogramVersionSchema
+>;
+export type MachinePlanogramVersionSnapshot = z.infer<
+  typeof machinePlanogramVersionSnapshotSchema
+>;
+
 export const machineSaleViewItemSchema = machineCatalogItemSchema
   .omit({ availableQty: true })
   .extend({

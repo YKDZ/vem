@@ -465,3 +465,236 @@ describe("MachinesService", () => {
     );
   });
 });
+
+describe("MachinesService planogram lifecycle", () => {
+  let service: MachinesService;
+
+  const mockDb = {
+    select: vi.fn(),
+    insert: vi.fn(),
+    update: vi.fn(),
+    transaction: vi.fn(),
+  };
+  const auditRecord = vi.fn();
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    const module = await Test.createTestingModule({
+      providers: [
+        MachinesService,
+        { provide: DRIZZLE_CLIENT, useValue: mockDb },
+        { provide: MachineCredentialService, useValue: {} },
+        { provide: AuditService, useValue: { record: auditRecord } },
+        { provide: MqttService, useValue: { publish: vi.fn() } },
+        {
+          provide: MqttSignatureService,
+          useValue: { signForMachine: vi.fn(), verifyFromTopic: vi.fn() },
+        },
+        {
+          provide: AppConfigService,
+          useValue: { machineCommandTimeoutSeconds: 5 },
+        },
+      ],
+    }).compile();
+    service = module.get(MachinesService);
+  });
+
+  const slot = {
+    slotId: "550e8400-e29b-41d4-a716-446655440001",
+    slotCode: "A1",
+    layerNo: 1,
+    cellNo: 1,
+    inventoryId: "550e8400-e29b-41d4-a716-446655440002",
+    variantId: "550e8400-e29b-41d4-a716-446655440003",
+    productId: "550e8400-e29b-41d4-a716-446655440004",
+    productName: "矿泉水",
+    productDescription: null,
+    coverImageUrl: null,
+    categoryId: null,
+    categoryName: null,
+    sku: "WATER-001",
+    size: "550ml",
+    color: null,
+    priceCents: 200,
+    productSortOrder: 1,
+    targetGender: null,
+    capacity: 8,
+    parLevel: 6,
+  };
+
+  it("publishes a machine planogram version without making it active", async () => {
+    const machine = {
+      id: "550e8400-e29b-41d4-a716-446655440000",
+      code: "M001",
+    };
+    const publishedAt = new Date("2026-06-04T12:00:00.000Z");
+    const version = {
+      id: "550e8400-e29b-41d4-a716-446655440010",
+      machineId: machine.id,
+      planogramVersion: "PLAN-1",
+      status: "published",
+      publishedAt,
+      acknowledgedAt: null,
+      activeAt: null,
+      createdAt: publishedAt,
+      updatedAt: publishedAt,
+    };
+    const insertVersionValues = vi
+      .fn()
+      .mockReturnValue({ returning: async () => [version] });
+    const insertSlotsValues = vi.fn().mockReturnValue({
+      returning: async () => [{ id: "550e8400-e29b-41d4-a716-446655440011" }],
+    });
+    const tx = {
+      insert: vi
+        .fn()
+        .mockReturnValueOnce({ values: insertVersionValues })
+        .mockReturnValueOnce({ values: insertSlotsValues }),
+    };
+    mockDb.select.mockReturnValueOnce({
+      from: () => ({ where: () => ({ limit: async () => [machine] }) }),
+    });
+    mockDb.transaction.mockImplementationOnce(
+      async (cb: (txArg: typeof tx) => Promise<unknown>) => await cb(tx),
+    );
+
+    const result = await service.publishMachinePlanogramVersion(
+      machine.id,
+      { planogramVersion: "PLAN-1", slots: [slot] },
+      "admin-1",
+    );
+
+    expect(result).toMatchObject({
+      machineId: machine.id,
+      machineCode: "M001",
+      planogramVersion: "PLAN-1",
+      status: "published",
+      acknowledgedAt: null,
+      activeAt: null,
+    });
+    expect(insertVersionValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        machineId: machine.id,
+        planogramVersion: "PLAN-1",
+        status: "published",
+      }),
+    );
+    expect(auditRecord).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "machines.planogram.publish",
+        resourceId: machine.id,
+      }),
+    );
+  });
+
+  it("reports no active planogram until an acknowledged version is active", async () => {
+    const machine = {
+      id: "550e8400-e29b-41d4-a716-446655440000",
+      code: "M001",
+    };
+    mockDb.select
+      .mockReturnValueOnce({
+        from: () => ({ where: () => ({ limit: async () => [machine] }) }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            orderBy: async () => [
+              {
+                id: "550e8400-e29b-41d4-a716-446655440010",
+                machineId: machine.id,
+                planogramVersion: "PLAN-1",
+                status: "published",
+                publishedAt: new Date("2026-06-04T12:00:00.000Z"),
+                acknowledgedAt: null,
+                activeAt: null,
+              },
+            ],
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({ where: () => ({ limit: async () => [machine] }) }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            orderBy: async () => [
+              {
+                id: "550e8400-e29b-41d4-a716-446655440010",
+                machineId: machine.id,
+                planogramVersion: "PLAN-1",
+                status: "active",
+                publishedAt: new Date("2026-06-04T12:00:00.000Z"),
+                acknowledgedAt: new Date("2026-06-04T12:05:00.000Z"),
+                activeAt: new Date("2026-06-04T12:05:00.000Z"),
+              },
+            ],
+          }),
+        }),
+      });
+
+    await expect(
+      service.getMachinePlanogramVersions(machine.id),
+    ).resolves.toEqual(
+      expect.objectContaining({ activePlanogramVersion: null }),
+    );
+    await expect(
+      service.getMachinePlanogramVersions(machine.id),
+    ).resolves.toEqual(
+      expect.objectContaining({ activePlanogramVersion: "PLAN-1" }),
+    );
+  });
+
+  it("acknowledges a published planogram version as active", async () => {
+    const machine = {
+      id: "550e8400-e29b-41d4-a716-446655440000",
+      code: "M001",
+    };
+    const activated = {
+      id: "550e8400-e29b-41d4-a716-446655440010",
+      machineId: machine.id,
+      planogramVersion: "PLAN-1",
+      status: "active",
+      publishedAt: new Date("2026-06-04T12:00:00.000Z"),
+      acknowledgedAt: new Date("2026-06-04T12:05:00.000Z"),
+      activeAt: new Date("2026-06-04T12:05:00.000Z"),
+      createdAt: new Date("2026-06-04T12:00:00.000Z"),
+      updatedAt: new Date("2026-06-04T12:05:00.000Z"),
+    };
+    const retireSet = vi.fn().mockReturnValue({ where: async () => undefined });
+    const activateSet = vi.fn().mockReturnValue({
+      where: () => ({ returning: async () => [activated] }),
+    });
+    const tx = {
+      update: vi
+        .fn()
+        .mockReturnValueOnce({ set: retireSet })
+        .mockReturnValueOnce({ set: activateSet }),
+    };
+    mockDb.select.mockReturnValueOnce({
+      from: () => ({ where: () => ({ limit: async () => [machine] }) }),
+    });
+    mockDb.transaction.mockImplementationOnce(
+      async (cb: (txArg: typeof tx) => Promise<unknown>) => await cb(tx),
+    );
+
+    const result = await service.acknowledgeMachinePlanogramVersion(
+      "M001",
+      "PLAN-1",
+    );
+
+    expect(retireSet).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "retired" }),
+    );
+    expect(activateSet).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "active" }),
+    );
+    expect(result).toMatchObject({
+      machineCode: "M001",
+      planogramVersion: "PLAN-1",
+      status: "active",
+      activeAt: expect.any(String),
+    });
+  });
+});

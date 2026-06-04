@@ -409,6 +409,98 @@ export const machineSlots = t.pgTable(
   ],
 );
 
+export const machinePlanogramVersions = t.pgTable(
+  "machine_planogram_versions",
+  {
+    id: id(),
+    machineId: t
+      .uuid("machine_id")
+      .notNull()
+      .references(() => machines.id),
+    planogramVersion: t.varchar("planogram_version", { length: 128 }).notNull(),
+    status: t.varchar("status", { length: 32 }).default("published").notNull(),
+    publishedAt: t
+      .timestamp("published_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    acknowledgedAt: t.timestamp("acknowledged_at", { withTimezone: true }),
+    activeAt: t.timestamp("active_at", { withTimezone: true }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    t
+      .uniqueIndex("machine_planogram_versions_machine_version_unique")
+      .on(table.machineId, table.planogramVersion),
+    t
+      .index("machine_planogram_versions_machine_status_idx")
+      .on(table.machineId, table.status),
+    t.check(
+      "machine_planogram_versions_status_enum",
+      sql`${table.status} IN ('published', 'active', 'retired')`,
+    ),
+  ],
+);
+
+export const machinePlanogramSlots = t.pgTable(
+  "machine_planogram_slots",
+  {
+    id: id(),
+    machinePlanogramVersionId: t
+      .uuid("machine_planogram_version_id")
+      .notNull()
+      .references(() => machinePlanogramVersions.id),
+    slotId: t
+      .uuid("slot_id")
+      .notNull()
+      .references(() => machineSlots.id),
+    slotCode: t.varchar("slot_code", { length: 32 }).notNull(),
+    layerNo: t.integer("layer_no").notNull(),
+    cellNo: t.integer("cell_no").notNull(),
+    capacity: t.integer("capacity").notNull(),
+    parLevel: t.integer("par_level").notNull(),
+    inventoryId: t.uuid("inventory_id").notNull(),
+    variantId: t.uuid("variant_id").notNull(),
+    productId: t.uuid("product_id").notNull(),
+    productName: t.varchar("product_name", { length: 128 }).notNull(),
+    productDescription: t.text("product_description"),
+    coverImageUrl: t.text("cover_image_url"),
+    categoryId: t.uuid("category_id"),
+    categoryName: t.varchar("category_name", { length: 128 }),
+    sku: t.varchar("sku", { length: 64 }).notNull(),
+    size: t.varchar("size", { length: 64 }),
+    color: t.varchar("color", { length: 64 }),
+    priceCents: t.integer("price_cents").notNull(),
+    productSortOrder: t.integer("product_sort_order").notNull(),
+    targetGender: t.varchar("target_gender", { length: 16 }),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    t
+      .uniqueIndex("machine_planogram_slots_version_slot_unique")
+      .on(table.machinePlanogramVersionId, table.slotId),
+    t
+      .index("machine_planogram_slots_version_idx")
+      .on(table.machinePlanogramVersionId),
+    t.check(
+      "machine_planogram_slots_capacity_non_negative",
+      sql`${table.capacity} >= 0`,
+    ),
+    t.check(
+      "machine_planogram_slots_par_level_non_negative",
+      sql`${table.parLevel} >= 0`,
+    ),
+    t.check(
+      "machine_planogram_slots_price_cents_non_negative",
+      sql`${table.priceCents} >= 0`,
+    ),
+    t.check(
+      "machine_planogram_slots_target_gender_enum",
+      sql`${table.targetGender} IS NULL OR ${table.targetGender} IN ('male', 'female')`,
+    ),
+  ],
+);
+
 export const inventories = t.pgTable(
   "inventories",
   {

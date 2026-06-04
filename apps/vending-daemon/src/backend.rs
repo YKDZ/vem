@@ -244,6 +244,25 @@ impl BackendClient {
             .await
     }
 
+    pub async fn get_published_planogram(
+        &self,
+        machine_code: &str,
+    ) -> Result<serde_json::Value, String> {
+        let url = format!("/machines/{machine_code}/planogram-versions/published");
+        self.request_json(reqwest::Method::GET, &url, None, true)
+            .await
+    }
+
+    pub async fn acknowledge_planogram(
+        &self,
+        machine_code: &str,
+        planogram_version: &str,
+    ) -> Result<serde_json::Value, String> {
+        let url = format!("/machines/{machine_code}/planogram-versions/{planogram_version}/ack");
+        self.request_json(reqwest::Method::POST, &url, None, true)
+            .await
+    }
+
     pub async fn get_payment_options(&self) -> Result<serde_json::Value, String> {
         self.request_json(
             reqwest::Method::GET,
