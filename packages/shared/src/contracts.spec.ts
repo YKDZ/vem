@@ -524,11 +524,32 @@ describe("shared API contract", () => {
   });
 
   describe("createMachineOrderSchema", () => {
+    it("rejects machine order items without planogram slot context", () => {
+      expect(() =>
+        createMachineOrderSchema.parse({
+          machineCode: "M001",
+          items: [
+            {
+              inventoryId: "550e8400-e29b-41d4-a716-446655440000",
+              quantity: 1,
+            },
+          ],
+          paymentMethod: "mock",
+        }),
+      ).toThrow();
+    });
+
     it("accepts paymentProviderCode alongside paymentMethod", () => {
       const result = createMachineOrderSchema.parse({
         machineCode: "M001",
         items: [
-          { inventoryId: "550e8400-e29b-41d4-a716-446655440000", quantity: 1 },
+          {
+            inventoryId: "550e8400-e29b-41d4-a716-446655440000",
+            quantity: 1,
+            planogramVersion: "PLAN-1",
+            slotId: "550e8400-e29b-41d4-a716-446655440001",
+            slotCode: "A1",
+          },
         ],
         paymentMethod: "qr_code",
         paymentProviderCode: "wechat_pay",
@@ -541,7 +562,13 @@ describe("shared API contract", () => {
       const result = createMachineOrderSchema.parse({
         machineCode: "M001",
         items: [
-          { inventoryId: "550e8400-e29b-41d4-a716-446655440000", quantity: 1 },
+          {
+            inventoryId: "550e8400-e29b-41d4-a716-446655440000",
+            quantity: 1,
+            planogramVersion: "PLAN-1",
+            slotId: "550e8400-e29b-41d4-a716-446655440001",
+            slotCode: "A1",
+          },
         ],
         paymentMethod: "mock",
       });
@@ -557,6 +584,9 @@ describe("shared API contract", () => {
             {
               inventoryId: "550e8400-e29b-41d4-a716-446655440000",
               quantity: 1,
+              planogramVersion: "PLAN-1",
+              slotId: "550e8400-e29b-41d4-a716-446655440001",
+              slotCode: "A1",
             },
           ],
           paymentMethod: "mock",
@@ -573,6 +603,9 @@ describe("shared API contract", () => {
             {
               inventoryId: "550e8400-e29b-41d4-a716-446655440000",
               quantity: 1,
+              planogramVersion: "PLAN-1",
+              slotId: "550e8400-e29b-41d4-a716-446655440001",
+              slotCode: "A1",
             },
           ],
           paymentMethod: "qr_code",
@@ -586,7 +619,13 @@ describe("shared API contract", () => {
       const result = createMachineOrderSchema.parse({
         machineCode: "M001",
         items: [
-          { inventoryId: "550e8400-e29b-41d4-a716-446655440000", quantity: 1 },
+          {
+            inventoryId: "550e8400-e29b-41d4-a716-446655440000",
+            quantity: 1,
+            planogramVersion: "PLAN-1",
+            slotId: "550e8400-e29b-41d4-a716-446655440001",
+            slotCode: "A1",
+          },
         ],
         paymentMethod: "payment_code",
         paymentProviderCode: "alipay",
@@ -603,6 +642,9 @@ describe("shared API contract", () => {
             {
               inventoryId: "550e8400-e29b-41d4-a716-446655440000",
               quantity: 1,
+              planogramVersion: "PLAN-1",
+              slotId: "550e8400-e29b-41d4-a716-446655440001",
+              slotCode: "A1",
             },
           ],
           paymentMethod: "payment_code",

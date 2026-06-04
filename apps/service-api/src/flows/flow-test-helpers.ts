@@ -1,6 +1,8 @@
 import {
   DrizzleDB,
   inventories,
+  machinePlanogramSlots,
+  machinePlanogramVersions,
   machineSlots,
   machines,
   productVariants,
@@ -35,6 +37,39 @@ export type CreatedOrderPayload = {
   expiresAt: string;
   totalAmountCents: number;
 };
+
+export type SeededSingleSlotInventory = Awaited<
+  ReturnType<typeof seedSingleSlotInventory>
+>;
+
+export function machineOrderBody(
+  seeded: SeededSingleSlotInventory,
+  paymentMethod: "mock" | "qr_code" | "payment_code" = "mock",
+): {
+  machineCode: string;
+  items: Array<{
+    inventoryId: string;
+    quantity: number;
+    planogramVersion: string;
+    slotId: string;
+    slotCode: string;
+  }>;
+  paymentMethod: "mock" | "qr_code" | "payment_code";
+} {
+  return {
+    machineCode: seeded.machineCode,
+    items: [
+      {
+        inventoryId: seeded.inventoryId,
+        quantity: 1,
+        planogramVersion: seeded.planogramVersion,
+        slotId: seeded.slotId,
+        slotCode: seeded.slotCode,
+      },
+    ],
+    paymentMethod,
+  };
+}
 
 export async function connectMqtt(
   url: string,
@@ -173,6 +208,8 @@ export async function cleanupBusinessTables(db: DrizzleDB): Promise<void> {
       machine_raw_stock_movements,
       orders,
       inventories,
+      machine_planogram_slots,
+      machine_planogram_versions,
       machine_slots,
       machines,
       product_variants,
@@ -196,7 +233,9 @@ export async function seedSingleSlotInventory(
   machineId: string;
   machineCode: string;
   slotId: string;
+  slotCode: string;
   inventoryId: string;
+  planogramVersion: string;
   machineSecret: string;
   mqttSigningSecret: string;
 }> {
@@ -266,11 +305,47 @@ export async function seedSingleSlotInventory(
       lowStockThreshold: input.lowStockThreshold,
     })
     .returning({ id: inventories.id });
+  const planogramVersion = `PLAN-${input.machineCode}`;
+  const [version] = await db.client
+    .insert(machinePlanogramVersions)
+    .values({
+      machineId: machine.id,
+      planogramVersion,
+      status: "active",
+      acknowledgedAt: now,
+      activeAt: now,
+    })
+    .returning({ id: machinePlanogramVersions.id });
+  await db.client.insert(machinePlanogramSlots).values({
+    machinePlanogramVersionId: version.id,
+    slotId: slot.id,
+    slotCode: input.slotCode,
+    layerNo: input.layerNo,
+    cellNo: input.cellNo,
+    capacity: 20,
+    parLevel: input.lowStockThreshold,
+    inventoryId: inventory.id,
+    variantId: variant.id,
+    productId: product.id,
+    productName: `可乐-${input.machineCode}`,
+    productDescription: null,
+    coverImageUrl: null,
+    categoryId: null,
+    categoryName: null,
+    sku: `SKU-${input.machineCode}`,
+    size: "500ml",
+    color: "black",
+    priceCents: 599,
+    productSortOrder: 0,
+    targetGender: null,
+  });
   return {
     machineId: machine.id,
     machineCode: machine.code,
     slotId: slot.id,
+    slotCode: input.slotCode,
     inventoryId: inventory.id,
+    planogramVersion,
     machineSecret,
     mqttSigningSecret,
   };

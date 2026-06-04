@@ -74,7 +74,13 @@ describe("machine order api", () => {
     const result = await createMachineOrder(client, {
       machineCode: "M001",
       items: [
-        { inventoryId: "00000000-0000-4000-8000-000000000010", quantity: 1 },
+        {
+          inventoryId: "00000000-0000-4000-8000-000000000010",
+          quantity: 1,
+          planogramVersion: "PLAN-1",
+          slotId: "00000000-0000-4000-8000-000000000020",
+          slotCode: "A1",
+        },
       ],
       paymentMethod: "mock",
     });
@@ -83,7 +89,13 @@ describe("machine order api", () => {
     expect(client.lastPostBody).toEqual({
       machineCode: "M001",
       items: [
-        { inventoryId: "00000000-0000-4000-8000-000000000010", quantity: 1 },
+        {
+          inventoryId: "00000000-0000-4000-8000-000000000010",
+          quantity: 1,
+          planogramVersion: "PLAN-1",
+          slotId: "00000000-0000-4000-8000-000000000020",
+          slotCode: "A1",
+        },
       ],
       paymentMethod: "mock",
     });
@@ -104,7 +116,13 @@ describe("machine order api", () => {
     const result = await createMachineOrder(client, {
       machineCode: "M001",
       items: [
-        { inventoryId: "00000000-0000-4000-8000-000000000011", quantity: 1 },
+        {
+          inventoryId: "00000000-0000-4000-8000-000000000011",
+          quantity: 1,
+          planogramVersion: "PLAN-1",
+          slotId: "00000000-0000-4000-8000-000000000021",
+          slotCode: "A2",
+        },
       ],
       paymentMethod: "qr_code",
       paymentProviderCode: "alipay",
@@ -114,7 +132,13 @@ describe("machine order api", () => {
     expect(client.lastPostBody).toEqual({
       machineCode: "M001",
       items: [
-        { inventoryId: "00000000-0000-4000-8000-000000000011", quantity: 1 },
+        {
+          inventoryId: "00000000-0000-4000-8000-000000000011",
+          quantity: 1,
+          planogramVersion: "PLAN-1",
+          slotId: "00000000-0000-4000-8000-000000000021",
+          slotCode: "A2",
+        },
       ],
       paymentMethod: "qr_code",
       paymentProviderCode: "alipay",

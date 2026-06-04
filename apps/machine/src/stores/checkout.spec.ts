@@ -112,6 +112,86 @@ function makeTransactionSnapshot(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function applyNetworkSaleReady(): void {
+  const connectivityStore = useConnectivityStore();
+  connectivityStore.applyHealth({
+    status: "healthy",
+    process: {
+      component: "daemon",
+      level: "ok",
+      code: "PROCESS_READY",
+      message: "ready",
+      updatedAt: "2026-06-04T00:00:00Z",
+    },
+    components: [],
+    configConfigured: true,
+    databaseOnline: true,
+    backendOnline: true,
+    mqttConnected: true,
+    outboxSize: 0,
+    outboxMax: 1000,
+    hardwareOnline: true,
+    scannerOnline: true,
+    visionOnline: true,
+    remoteOpsActive: false,
+    currentTransaction: null,
+    operatorReason: "",
+    updatedAt: "2026-06-04T00:00:00Z",
+  });
+  connectivityStore.applyReady({
+    ready: true,
+    canSell: true,
+    mode: "catalog",
+    blockingCodes: [],
+    blockingReasons: [],
+    degradedReasons: [],
+    suggestedRoute: "catalog",
+    updatedAt: "2026-06-04T00:00:00Z",
+  });
+  connectivityStore.applySaleReadiness({
+    canStartNetworkAuthorizedSale: true,
+    blockingCodes: [],
+    components: {
+      platformReachability: {
+        ready: true,
+        code: "PLATFORM_REACHABLE",
+        message: "platform reachable",
+      },
+      machineAuthentication: {
+        ready: true,
+        code: "MACHINE_AUTH_READY",
+        message: "machine code configured",
+      },
+      activePlanogram: {
+        ready: true,
+        code: "ACTIVE_PLANOGRAM_READY",
+        message: "PLAN-1",
+      },
+      paymentOptions: {
+        ready: true,
+        code: "PAYMENT_OPTIONS_READY",
+        message: "payment option available",
+        methods: [],
+      },
+      scannerCapability: {
+        ready: true,
+        code: "SCANNER_READY",
+        message: "scanner ready",
+      },
+      syncHealth: {
+        ready: true,
+        code: "SYNC_READY",
+        message: "sync connected",
+      },
+      wholeMachineBlockers: {
+        ready: true,
+        code: "WHOLE_MACHINE_READY",
+        message: "hardware ready",
+      },
+    },
+  });
+}
+
 describe("checkout helpers", () => {
   it("normalizes unknown next action to wait_payment", () => {
     expect(normalizeNextAction("weird")).toBe("wait_payment");
@@ -290,6 +370,45 @@ describe("checkout store", () => {
     expect(store.paymentCodeMessage).toBe("请刷新付款码后重试");
   });
 
+  it("fails closed when selected item is missing from the latest sale view", async () => {
+    createOrderMock.mockResolvedValue(makeTransactionSnapshot());
+
+    const store = useCheckoutStore();
+    const catalogStore = useCatalogStore();
+    store.paymentOptions = [
+      {
+        optionKey: "payment_code:alipay",
+        providerCode: "alipay",
+        method: "payment_code",
+        displayName: "支付宝付款码",
+        description: "请出示付款码",
+        icon: "alipay",
+        disabled: false,
+        disabledReason: null,
+        recommended: true,
+      },
+    ];
+    store.selectedPaymentOptionKey = "payment_code:alipay";
+    applyNetworkSaleReady();
+    store.selectItem(makeCatalogItem());
+    catalogStore.applySnapshot({
+      items: [
+        makeCatalogItem({
+          slotId: "550e8400-e29b-41d4-a716-446655440011",
+          slotCode: "B1",
+          inventoryId: "550e8400-e29b-41d4-a716-446655440012",
+        }),
+      ],
+      source: "local_stock",
+      planogramVersion: "PLAN-2",
+      lastUpdatedAt: "2026-06-04T00:00:00Z",
+    });
+
+    expect(store.canCreateOrder).toBe(false);
+    await expect(store.createOrder()).rejects.toThrow("商品已更新，请重新选择");
+    expect(createOrderMock).not.toHaveBeenCalled();
+  });
+
   it("blocks stale selected item when latest sale view is sold out", async () => {
     const store = useCheckoutStore();
     const catalogStore = useCatalogStore();
@@ -386,7 +505,14 @@ describe("checkout store", () => {
       },
     ];
     store.selectedPaymentOptionKey = "mock:mock";
-    store.selectItem(makeCatalogItem());
+    const item = makeCatalogItem();
+    useCatalogStore().applySnapshot({
+      items: [item],
+      source: "local_stock",
+      planogramVersion: "PLAN-1",
+      lastUpdatedAt: "2026-06-04T00:00:00Z",
+    });
+    store.selectItem(item);
 
     expect(store.canCreateOrder).toBe(false);
     await expect(store.createOrder()).rejects.toThrow("当前机器暂不可创建订单");
@@ -409,7 +535,14 @@ describe("checkout store", () => {
       },
     ];
     store.selectedPaymentOptionKey = "mock:mock";
-    store.selectItem(makeCatalogItem());
+    const item = makeCatalogItem();
+    useCatalogStore().applySnapshot({
+      items: [item],
+      source: "local_stock",
+      planogramVersion: "PLAN-1",
+      lastUpdatedAt: "2026-06-04T00:00:00Z",
+    });
+    store.selectItem(item);
 
     expect(store.canCreateOrder).toBe(false);
     await expect(store.createOrder()).rejects.toThrow("当前机器暂不可创建订单");
@@ -542,13 +675,18 @@ describe("checkout store", () => {
       },
     ];
     store.selectedPaymentOptionKey = "payment_code:alipay";
-    store.selectItem(
-      makeCatalogItem({
-        physicalStock: 0,
-        saleableStock: 0,
-        slotSalesState: "sold_out",
-      }),
-    );
+    const item = makeCatalogItem({
+      physicalStock: 0,
+      saleableStock: 0,
+      slotSalesState: "sold_out",
+    });
+    useCatalogStore().applySnapshot({
+      items: [item],
+      source: "local_stock",
+      planogramVersion: "PLAN-1",
+      lastUpdatedAt: "2026-06-04T00:00:00Z",
+    });
+    store.selectItem(item);
 
     expect(store.canCreateOrder).toBe(false);
     await expect(store.createOrder()).rejects.toThrow("商品已售罄");

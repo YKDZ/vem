@@ -27,6 +27,7 @@ import {
   disconnectMqtt,
   getMachineAuthHeader,
   loginAndGetToken,
+  machineOrderBody,
   pollOrderStatus,
   publishMqtt,
   seedSingleSlotInventory,
@@ -82,6 +83,33 @@ describe.sequential("core-flow.e2e", () => {
     await cleanupBusinessTables(db);
   });
 
+  it("rejects public machine order creation without planogram slot context", async () => {
+    const seeded = await seedSingleSlotInventory(db, {
+      machineCode: "M-E2E-CONTEXT-001",
+      onHandQty: 1,
+      lowStockThreshold: 1,
+      slotCode: "CTX1",
+      layerNo: 1,
+      cellNo: 1,
+    });
+    const machineAuthHeader = await getMachineAuthHeader(
+      api,
+      seeded.machineCode,
+      seeded.machineSecret,
+    );
+
+    const response = await api
+      .post("/api/machine-orders")
+      .set(machineAuthHeader)
+      .send({
+        machineCode: seeded.machineCode,
+        items: [{ inventoryId: seeded.inventoryId, quantity: 1 }],
+        paymentMethod: "mock",
+      });
+
+    expect(response.status).toBe(400);
+  }, 60_000);
+
   it("handles succeed callback idempotently and reaches fulfilled", async () => {
     const seeded = await seedSingleSlotInventory(db, {
       machineCode: "M-E2E-001",
@@ -107,11 +135,7 @@ describe.sequential("core-flow.e2e", () => {
     const createOrderResponse = await api
       .post("/api/machine-orders")
       .set(machineAuthHeader)
-      .send({
-        machineCode: seeded.machineCode,
-        items: [{ inventoryId: seeded.inventoryId, quantity: 1 }],
-        paymentMethod: "mock",
-      });
+      .send(machineOrderBody(seeded));
 
     expect(createOrderResponse.status).toBe(201);
     const createdOrder =
@@ -253,11 +277,7 @@ describe.sequential("core-flow.e2e", () => {
     const createOrderResponse = await api
       .post("/api/machine-orders")
       .set(machineAuthHeader)
-      .send({
-        machineCode: seeded.machineCode,
-        items: [{ inventoryId: seeded.inventoryId, quantity: 1 }],
-        paymentMethod: "mock",
-      });
+      .send(machineOrderBody(seeded));
     const createdOrder =
       createOrderResponse.body as ApiResponse<CreatedOrderPayload>;
 
@@ -289,11 +309,7 @@ describe.sequential("core-flow.e2e", () => {
       cellNo: 1,
     });
 
-    const requestBody = {
-      machineCode: seeded.machineCode,
-      items: [{ inventoryId: seeded.inventoryId, quantity: 1 }],
-      paymentMethod: "mock",
-    };
+    const requestBody = machineOrderBody(seeded);
 
     const machineAuthHeader = await getMachineAuthHeader(
       api,
@@ -364,11 +380,7 @@ describe.sequential("core-flow.e2e", () => {
     const createOrderResponse = await api
       .post("/api/machine-orders")
       .set(machineAuthHeader)
-      .send({
-        machineCode: seeded.machineCode,
-        items: [{ inventoryId: seeded.inventoryId, quantity: 1 }],
-        paymentMethod: "mock",
-      });
+      .send(machineOrderBody(seeded));
     const createdOrder =
       createOrderResponse.body as ApiResponse<CreatedOrderPayload>;
 
@@ -424,11 +436,7 @@ describe.sequential("core-flow.e2e", () => {
     const createOrderResponse = await api
       .post("/api/machine-orders")
       .set(machineAuthHeader)
-      .send({
-        machineCode: seeded.machineCode,
-        items: [{ inventoryId: seeded.inventoryId, quantity: 1 }],
-        paymentMethod: "mock",
-      });
+      .send(machineOrderBody(seeded));
     expect(createOrderResponse.status).toBe(201);
     const createdOrder =
       createOrderResponse.body as ApiResponse<CreatedOrderPayload>;

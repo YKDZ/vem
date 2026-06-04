@@ -76,17 +76,10 @@ function readQrExpiresMinutes(
     : 15;
 }
 
-function hasAnyMachineOrderLineContext(
-  item: CreateMachineOrderInput["items"][number],
-): boolean {
-  return Boolean(item.planogramVersion || item.slotId || item.slotCode);
-}
-
 function assertMachineOrderLineContextMatchesInventory(
   item: CreateMachineOrderInput["items"][number],
   row: { slotId: string; slotCode: string },
 ): void {
-  if (!hasAnyMachineOrderLineContext(item)) return;
   if (!item.planogramVersion || !item.slotId || !item.slotCode) {
     throw new ConflictException("Machine order line context is required");
   }
@@ -325,7 +318,6 @@ export class OrdersService {
     machineId: string,
     item: CreateMachineOrderInput["items"][number],
   ): Promise<void> {
-    if (!hasAnyMachineOrderLineContext(item)) return;
     if (!item.planogramVersion || !item.slotId || !item.slotCode) {
       throw new ConflictException("Machine order line context is required");
     }
@@ -419,7 +411,7 @@ export class OrdersService {
         return {
           ...row,
           quantity: item.quantity,
-          planogramVersion: item.planogramVersion ?? null,
+          planogramVersion: item.planogramVersion,
         };
       });
       await Promise.all(

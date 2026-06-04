@@ -22,6 +22,7 @@ import { VendingService } from "../vending/vending.service";
 import {
   cleanupBusinessTables,
   getMachineAuthHeader,
+  machineOrderBody,
   loginAndGetToken,
   seedSingleSlotInventory,
   type ApiResponse,
@@ -93,11 +94,7 @@ describe.sequential("offline-mqtt.e2e", () => {
     const createOrderResponse = await api
       .post("/api/machine-orders")
       .set(machineAuthHeader)
-      .send({
-        machineCode: seeded.machineCode,
-        items: [{ inventoryId: seeded.inventoryId, quantity: 1 }],
-        paymentMethod: "mock",
-      });
+      .send(machineOrderBody(seeded));
     const createdOrder =
       createOrderResponse.body as ApiResponse<CreatedOrderPayload>;
 
@@ -161,11 +158,7 @@ describe.sequential("offline-mqtt.e2e", () => {
     const createOrderResponse = await api
       .post("/api/machine-orders")
       .set(machineAuthHeader2)
-      .send({
-        machineCode: seeded.machineCode,
-        items: [{ inventoryId: seeded.inventoryId, quantity: 1 }],
-        paymentMethod: "mock",
-      });
+      .send(machineOrderBody(seeded));
     const createdOrder =
       createOrderResponse.body as ApiResponse<CreatedOrderPayload>;
     expect(createOrderResponse.status).toBe(201);

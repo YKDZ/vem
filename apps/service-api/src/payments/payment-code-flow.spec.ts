@@ -134,6 +134,14 @@ function makeOrdersDbForSuccessfulLocalDraft() {
       }),
     });
 
+    tx.select.mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        innerJoin: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([{ id: "pg-slot-001" }]),
+        }),
+      }),
+    });
+
     tx.select.mockReturnValue({
       from: vi.fn().mockReturnValue({
         where: vi
@@ -493,7 +501,15 @@ describe("payment code flow", () => {
 
     const result = await service.createMachineOrder({
       machineCode: "M-001",
-      items: [{ inventoryId: "inv-001", quantity: 1 }],
+      items: [
+        {
+          inventoryId: "inv-001",
+          quantity: 1,
+          planogramVersion: "PLAN-ACTIVE",
+          slotId: "slot-001",
+          slotCode: "A1",
+        },
+      ],
       paymentMethod: "payment_code",
       paymentProviderCode: "alipay",
     });

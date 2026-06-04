@@ -127,10 +127,7 @@ function latestSaleViewItem(
   selectedItem: CheckoutSelectedItem | null,
 ): CheckoutSelectedItem | null {
   if (!selectedItem) return null;
-  return (
-    useCatalogStore().itemByInventoryId(selectedItem.inventoryId) ??
-    selectedItem
-  );
+  return useCatalogStore().itemByInventoryId(selectedItem.inventoryId) ?? null;
 }
 
 function isSaleableItem(
@@ -377,6 +374,9 @@ export const useCheckoutStore = defineStore("checkout", {
     async createOrder(): Promise<CreateMachineOrderResponse | null> {
       if (!this.selectedItem) throw new Error("No selected item");
       const selectedItem = latestSaleViewItem(this.selectedItem);
+      if (!selectedItem) {
+        throw new Error("商品已更新，请重新选择");
+      }
       if (!isSaleableItem(selectedItem)) {
         throw new Error("商品已售罄");
       }

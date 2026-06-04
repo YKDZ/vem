@@ -102,7 +102,15 @@ describe("OrdersService", () => {
       await expect(
         service.createMachineOrder({
           machineCode: "M001",
-          items: [{ inventoryId: "inv-1", quantity: 1 }],
+          items: [
+            {
+              inventoryId: "inv-1",
+              quantity: 1,
+              planogramVersion: "PLAN-ACTIVE",
+              slotId: "slot-1",
+              slotCode: "A1",
+            },
+          ],
           paymentMethod: "qr_code",
           paymentProviderCode: "wechat_pay",
         }),
@@ -125,7 +133,15 @@ describe("OrdersService", () => {
       await expect(
         service.createMachineOrder({
           machineCode: "M001",
-          items: [{ inventoryId: "inv-1", quantity: 1 }],
+          items: [
+            {
+              inventoryId: "inv-1",
+              quantity: 1,
+              planogramVersion: "PLAN-ACTIVE",
+              slotId: "slot-1",
+              slotCode: "A1",
+            },
+          ],
           paymentMethod: "qr_code",
           paymentProviderCode: "wechat_pay",
         }),
@@ -152,6 +168,9 @@ describe("OrdersService", () => {
             {
               inventoryId: "550e8400-e29b-41d4-a716-446655440000",
               quantity: 1,
+              planogramVersion: "PLAN-ACTIVE",
+              slotId: "550e8400-e29b-41d4-a716-446655440001",
+              slotCode: "A1",
             },
           ],
           paymentMethod: "mock",
@@ -181,6 +200,9 @@ describe("OrdersService", () => {
             {
               inventoryId: "550e8400-e29b-41d4-a716-446655440000",
               quantity: 1,
+              planogramVersion: "PLAN-ACTIVE",
+              slotId: "550e8400-e29b-41d4-a716-446655440001",
+              slotCode: "A1",
             },
           ],
           paymentMethod: "qr_code",
@@ -245,7 +267,16 @@ describe("OrdersService", () => {
             }),
           });
 
-          // tx select 2: provider lookup by providerCode
+          // tx select 2: active acknowledged planogram context
+          tx.select.mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              innerJoin: vi.fn().mockReturnValue({
+                where: vi.fn().mockResolvedValue([{ id: "pg-slot-1" }]),
+              }),
+            }),
+          });
+
+          // tx select 3: provider lookup by providerCode
           tx.select.mockReturnValueOnce({
             from: vi.fn().mockReturnValue({
               where: vi
@@ -308,7 +339,15 @@ describe("OrdersService", () => {
 
       await service.createMachineOrder({
         machineCode: "M001",
-        items: [{ inventoryId: "inv-1", quantity: 1 }],
+        items: [
+          {
+            inventoryId: "inv-1",
+            quantity: 1,
+            planogramVersion: "PLAN-ACTIVE",
+            slotId: "slot-1",
+            slotCode: "A1",
+          },
+        ],
         paymentMethod: "qr_code",
         paymentProviderCode: "wechat_pay",
       });
@@ -375,6 +414,13 @@ describe("OrdersService", () => {
           });
           tx.select.mockReturnValueOnce({
             from: vi.fn().mockReturnValue({
+              innerJoin: vi.fn().mockReturnValue({
+                where: vi.fn().mockResolvedValue([{ id: "pg-slot-2" }]),
+              }),
+            }),
+          });
+          tx.select.mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
               where: vi
                 .fn()
                 .mockResolvedValue([{ id: "prov-1", code: "wechat_pay" }]),
@@ -427,7 +473,15 @@ describe("OrdersService", () => {
 
       await service.createMachineOrder({
         machineCode: "M001",
-        items: [{ inventoryId: "inv-2", quantity: 1 }],
+        items: [
+          {
+            inventoryId: "inv-2",
+            quantity: 1,
+            planogramVersion: "PLAN-ACTIVE",
+            slotId: "slot-2",
+            slotCode: "B1",
+          },
+        ],
         paymentMethod: "qr_code",
         paymentProviderCode: "wechat_pay",
       });
@@ -448,7 +502,15 @@ describe("OrdersService", () => {
 
       const result = await service.createMachineOrder({
         machineCode: "M-001",
-        items: [{ inventoryId: "inv-001", quantity: 1 }],
+        items: [
+          {
+            inventoryId: "inv-001",
+            quantity: 1,
+            planogramVersion: "PLAN-ACTIVE",
+            slotId: "slot-001",
+            slotCode: "A1",
+          },
+        ],
         paymentMethod: "payment_code",
         paymentProviderCode: "alipay",
       });
@@ -478,6 +540,9 @@ describe("OrdersService", () => {
             {
               inventoryId: "550e8400-e29b-41d4-a716-446655440000",
               quantity: 1,
+              planogramVersion: "PLAN-ACTIVE",
+              slotId: "550e8400-e29b-41d4-a716-446655440001",
+              slotCode: "A1",
             },
           ],
           paymentMethod: "payment_code",
@@ -844,7 +909,14 @@ function makeOrdersDbForSuccessfulLocalDraft(options?: {
     update: vi.fn(),
     transaction: vi.fn(),
     orderStatusEvents: [],
-    planogramContextRows: options?.planogramContextRows,
+    planogramContextRows: options?.planogramContextRows ?? [
+      {
+        planogramVersion: "PLAN-ACTIVE",
+        slotId: "slot-001",
+        slotCode: "A1",
+        inventoryId: "inv-001",
+      },
+    ],
   };
 
   // Machine lookup: returns online machine
@@ -907,6 +979,26 @@ function makeOrdersDbForPaymentUpdateFailure(): OrdersDbHarness {
 
 describe("OrdersService (transaction boundary)", () => {
   describe("createMachineOrder", () => {
+    it("rejects machine order line without planogram slot context before reserving inventory", async () => {
+      const reserveForOrder = vi.fn().mockResolvedValue(undefined);
+      const db = makeOrdersDbForSuccessfulLocalDraft();
+      const service = makeOrdersService({
+        db,
+        inventoryService: { reserveForOrder },
+      });
+
+      await expect(
+        service.createMachineOrder({
+          machineCode: "M-001",
+          items: [{ inventoryId: "inv-001", quantity: 1 } as never],
+          paymentMethod: "payment_code",
+          paymentProviderCode: "alipay",
+        }),
+      ).rejects.toThrow(ConflictException);
+
+      expect(reserveForOrder).not.toHaveBeenCalled();
+    });
+
     it("rejects mismatched machine order line context before reserving inventory", async () => {
       const reserveForOrder = vi.fn().mockResolvedValue(undefined);
       const db = makeOrdersDbForSuccessfulLocalDraft();
@@ -1032,7 +1124,15 @@ describe("OrdersService (transaction boundary)", () => {
 
       await service.createMachineOrder({
         machineCode: "M-001",
-        items: [{ inventoryId: "inv-001", quantity: 1 }],
+        items: [
+          {
+            inventoryId: "inv-001",
+            quantity: 1,
+            planogramVersion: "PLAN-ACTIVE",
+            slotId: "slot-001",
+            slotCode: "A1",
+          },
+        ],
         paymentMethod: "qr_code",
         paymentProviderCode: "alipay",
       });
@@ -1065,7 +1165,15 @@ describe("OrdersService (transaction boundary)", () => {
       await expect(
         service.createMachineOrder({
           machineCode: "M-001",
-          items: [{ inventoryId: "inv-001", quantity: 1 }],
+          items: [
+            {
+              inventoryId: "inv-001",
+              quantity: 1,
+              planogramVersion: "PLAN-ACTIVE",
+              slotId: "slot-001",
+              slotCode: "A1",
+            },
+          ],
           paymentMethod: "qr_code",
           paymentProviderCode: "alipay",
         }),
@@ -1108,7 +1216,15 @@ describe("OrdersService (transaction boundary)", () => {
       await expect(
         service.createMachineOrder({
           machineCode: "M-001",
-          items: [{ inventoryId: "inv-001", quantity: 1 }],
+          items: [
+            {
+              inventoryId: "inv-001",
+              quantity: 1,
+              planogramVersion: "PLAN-ACTIVE",
+              slotId: "slot-001",
+              slotCode: "A1",
+            },
+          ],
           paymentMethod: "qr_code",
           paymentProviderCode: "alipay",
         }),
