@@ -42,6 +42,7 @@ describe.sequential("offline-mqtt.e2e", () => {
       .overrideProvider(MqttService)
       .useValue({
         bindVendingService: () => undefined,
+        registerMachineMessageHandler: () => undefined,
         isConnected: () => false,
         publish: async () => {
           throw new Error("MQTT offline in e2e");

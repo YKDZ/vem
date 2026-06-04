@@ -69,6 +69,10 @@ export class AppConfigService {
     return this.config.get("MQTT_SIGNATURE_TOLERANCE_SECONDS", { infer: true });
   }
 
+  get machineCommandTimeoutSeconds(): number {
+    return this.config.get("MACHINE_COMMAND_TIMEOUT_SECONDS", { infer: true });
+  }
+
   get nodeEnv(): ServiceEnv["NODE_ENV"] {
     return this.config.get("NODE_ENV", { infer: true });
   }

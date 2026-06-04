@@ -161,6 +161,7 @@ export async function cleanupBusinessTables(db: DrizzleDB): Promise<void> {
       notifications,
       machine_heartbeats,
       machine_events,
+      machine_commands,
       vending_commands,
       refunds,
       payment_events,

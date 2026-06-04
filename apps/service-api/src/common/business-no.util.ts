@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-export type BusinessNoPrefix = "ORD" | "PAY" | "PCA" | "CMD" | "RFD";
+export type BusinessNoPrefix = "ORD" | "PAY" | "PCA" | "CMD" | "MCMD" | "RFD";
 
 export function createBusinessNo(prefix: BusinessNoPrefix): string {
   const timestamp = new Date()

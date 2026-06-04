@@ -6,7 +6,10 @@ use support::{
     process::DaemonHarness,
     sensitive, sqlite,
 };
-use vending_core::{hardware::DispenseCommandPayload, mqtt::sign_envelope};
+use vending_core::{
+    hardware::{DispenseCommandPayload, EnvironmentControlCommandPayload},
+    mqtt::sign_envelope,
+};
 
 fn mqtt_config(mqtt_url: String, serial_path: Option<String>) -> serde_json::Value {
     serde_json::json!({
@@ -30,6 +33,15 @@ fn mqtt_config(mqtt_url: String, serial_path: Option<String>) -> serde_json::Val
     })
 }
 
+fn environment_control_command(command_no: &str) -> EnvironmentControlCommandPayload {
+    EnvironmentControlCommandPayload {
+        command_no: command_no.to_string(),
+        air_conditioner_on: Some(true),
+        target_temperature_celsius: Some(24),
+        timeout_seconds: 5,
+    }
+}
+
 fn dispense_command(command_no: &str) -> DispenseCommandPayload {
     DispenseCommandPayload {
         command_no: command_no.to_string(),
@@ -42,6 +54,81 @@ fn dispense_command(command_no: &str) -> DispenseCommandPayload {
         quantity: 1,
         timeout_seconds: 2,
     }
+}
+
+#[tokio::test]
+async fn mqtt_environment_control_command_flow_publishes_ack_and_result() {
+    let broker = MqttBrokerHarness::start().await;
+    let mut daemon = DaemonHarness::start(
+        mqtt_config(broker.url(), None),
+        &[(
+            "VEM_MQTT_SIGNING_SECRET",
+            sensitive::TEST_MQTT_SIGNING_SECRET,
+        )],
+    )
+    .await
+    .expect("start daemon");
+    wait_for_mqtt_connected(&daemon).await;
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+    let (collector, mut collector_loop) = broker.client("env-collector");
+    let ack_topic = "vem/machines/MACHINE-MQTT/commands/ENV-MQTT-1/ack";
+    let result_topic = "vem/machines/MACHINE-MQTT/events/environment-control-result";
+    collector
+        .subscribe(ack_topic, QoS::AtLeastOnce)
+        .await
+        .unwrap();
+    collector
+        .subscribe(result_topic, QoS::AtLeastOnce)
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    let (publisher, publisher_loop) = broker.client("env-publisher");
+    let _publisher_task = spawn_event_loop(publisher_loop);
+    let payload = serde_json::to_value(environment_control_command("ENV-MQTT-1")).unwrap();
+    let envelope = sign_envelope(
+        "MACHINE-MQTT",
+        sensitive::TEST_MQTT_SIGNING_SECRET,
+        "MSG-ENV-MQTT-1",
+        payload,
+    );
+    let bytes = serde_json::to_vec(&envelope).unwrap();
+    publisher
+        .publish(
+            "vem/machines/MACHINE-MQTT/commands/environment-control",
+            QoS::AtLeastOnce,
+            false,
+            bytes,
+        )
+        .await
+        .unwrap();
+
+    let publishes = collect_publishes(&mut collector_loop, 2).await;
+    assert!(
+        publishes.iter().any(|(topic, _)| topic == ack_topic),
+        "missing ACK publish: {publishes:?}"
+    );
+    let ack = publishes
+        .iter()
+        .find(|(topic, _)| topic == ack_topic)
+        .map(|(_, payload)| serde_json::from_slice::<serde_json::Value>(payload).unwrap())
+        .expect("environment control ACK publish");
+    assert_eq!(ack["payload"]["messageId"], "ENV-MQTT-1:ack");
+    assert!(ack["signature"].as_str().unwrap_or_default().len() >= 32);
+
+    let result = publishes
+        .iter()
+        .find(|(topic, _)| topic == result_topic)
+        .map(|(_, payload)| serde_json::from_slice::<serde_json::Value>(payload).unwrap())
+        .expect("environment control result publish");
+    assert_eq!(result["payload"]["commandNo"], "ENV-MQTT-1");
+    assert_eq!(result["payload"]["success"], true);
+    assert_eq!(result["payload"]["airConditionerOn"], true);
+    assert_eq!(result["payload"]["targetTemperatureCelsius"], 24);
+    assert!(result["signature"].as_str().unwrap_or_default().len() >= 32);
+
+    daemon.terminate().await;
 }
 
 #[tokio::test]

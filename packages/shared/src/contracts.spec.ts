@@ -6,7 +6,10 @@ import {
   canonicalJson,
   createMachineOrderSchema,
   hardwareErrorCodes,
+  environmentControlCommandPayloadSchema,
+  environmentControlResultPayloadSchema,
   heartbeatPayloadSchema,
+  machineEnvironmentControlRequestSchema,
   machineAuthTokenRequestSchema,
   machineSlotStatuses,
   maintenanceWorkOrderStatuses,
@@ -55,6 +58,108 @@ describe("shared API contract", () => {
         },
       }).statusPayload.mqttConnected,
     ).toBe(true);
+  });
+
+  it("accepts nested machine environment readings in heartbeat payload", () => {
+    const parsed = heartbeatPayloadSchema.parse({
+      machineCode: "M001",
+      reportedAt: "2026-05-05T12:00:00.000Z",
+      statusPayload: {
+        environment: {
+          temperatureCelsius: 24,
+          humidityRh: 53,
+          sampledAt: "2026-05-05T12:00:00.000Z",
+          sensorStatus: "ok",
+          airConditionerOn: false,
+          targetTemperatureCelsius: null,
+        },
+      },
+    });
+
+    expect(parsed.statusPayload.environment?.sensorStatus).toBe("ok");
+  });
+
+  it("rejects invalid machine environment sensor status", () => {
+    expect(() =>
+      heartbeatPayloadSchema.parse({
+        machineCode: "M001",
+        reportedAt: "2026-05-05T12:00:00.000Z",
+        statusPayload: {
+          environment: {
+            sensorStatus: "stale",
+          },
+        },
+      }),
+    ).toThrow();
+  });
+
+  it("validates machine environment control command requests", () => {
+    expect(
+      machineEnvironmentControlRequestSchema.parse({ airConditionerOn: true })
+        .airConditionerOn,
+    ).toBe(true);
+    expect(
+      machineEnvironmentControlRequestSchema.parse({
+        targetTemperatureCelsius: 24,
+      }).targetTemperatureCelsius,
+    ).toBe(24);
+    expect(() => machineEnvironmentControlRequestSchema.parse({})).toThrow();
+    expect(() =>
+      machineEnvironmentControlRequestSchema.parse({
+        targetTemperatureCelsius: 17,
+      }),
+    ).toThrow();
+    expect(() =>
+      machineEnvironmentControlRequestSchema.parse({
+        targetTemperatureCelsius: 31,
+      }),
+    ).toThrow();
+  });
+
+  it("validates environment control command payloads", () => {
+    expect(
+      environmentControlCommandPayloadSchema.parse({
+        commandNo: "MCMD-1",
+        airConditionerOn: true,
+        targetTemperatureCelsius: 24,
+        timeoutSeconds: 5,
+      }).targetTemperatureCelsius,
+    ).toBe(24);
+    expect(() =>
+      environmentControlCommandPayloadSchema.parse({
+        commandNo: "MCMD-1",
+        timeoutSeconds: 5,
+      }),
+    ).toThrow();
+    expect(() =>
+      environmentControlCommandPayloadSchema.parse({
+        commandNo: "MCMD-1",
+        targetTemperatureCelsius: 31,
+        timeoutSeconds: 5,
+      }),
+    ).toThrow();
+  });
+
+  it("validates environment control result payloads", () => {
+    expect(
+      environmentControlResultPayloadSchema.parse({
+        commandNo: "MCMD1",
+        success: true,
+        reportedAt: "2026-05-05T12:00:00.000Z",
+        airConditionerOn: true,
+        targetTemperatureCelsius: 24,
+      }).success,
+    ).toBe(true);
+
+    expect(
+      environmentControlResultPayloadSchema.parse({
+        commandNo: "MCMD2",
+        success: false,
+        reportedAt: "2026-05-05T12:00:00.000Z",
+        errorCode: "E1",
+        message: "hardware rejected command",
+      }).message,
+    ).toBe("hardware rejected command");
   });
 
   it("validates machine auth token request", () => {

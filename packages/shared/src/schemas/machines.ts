@@ -21,6 +21,15 @@ export const createMachineSlotSchema = z.object({
 export const updateMachineSchema = createMachineSchema.partial();
 export const updateMachineSlotSchema = createMachineSlotSchema.partial();
 
+export const machineEnvironmentHeartbeatPayloadSchema = z.object({
+  temperatureCelsius: z.number().optional(),
+  humidityRh: z.number().min(0).max(100).optional(),
+  sampledAt: z.iso.datetime().optional(),
+  sensorStatus: z.enum(["ok", "faulted", "unknown"]),
+  airConditionerOn: z.boolean().optional(),
+  targetTemperatureCelsius: z.number().nullable().optional(),
+});
+
 export const machineHeartbeatStatusPayloadSchema = z
   .object({
     appVersion: z.string().optional(),
@@ -32,6 +41,7 @@ export const machineHeartbeatStatusPayloadSchema = z
     doorOpen: z.boolean().optional(),
     localQueueSize: z.int().nonnegative().optional(),
     lastCommandNo: z.string().max(64).nullable().optional(),
+    environment: machineEnvironmentHeartbeatPayloadSchema.optional(),
   })
   .loose();
 
@@ -41,10 +51,31 @@ export const heartbeatPayloadSchema = z.object({
   statusPayload: machineHeartbeatStatusPayloadSchema.default({}),
 });
 
+export const machineEnvironmentControlRequestSchema = z
+  .object({
+    airConditionerOn: z.boolean().optional(),
+    targetTemperatureCelsius: z.number().min(18).max(30).optional(),
+  })
+  .superRefine((data, ctx) => {
+    if (
+      data.airConditionerOn === undefined &&
+      data.targetTemperatureCelsius === undefined
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        message:
+          "At least one of airConditionerOn or targetTemperatureCelsius is required",
+      });
+    }
+  });
+
 export type MachineHeartbeatStatusPayload = z.infer<
   typeof machineHeartbeatStatusPayloadSchema
 >;
 export type HeartbeatPayload = z.infer<typeof heartbeatPayloadSchema>;
+export type MachineEnvironmentControlRequest = z.infer<
+  typeof machineEnvironmentControlRequestSchema
+>;
 
 export const machineAuthTokenRequestSchema = z.object({
   machineCode: z.string().min(1).max(64),

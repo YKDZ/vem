@@ -11,7 +11,14 @@ use crate::{
     hardware::HardwareSupervisor,
     state::{LocalStateStore, StoreError},
 };
-use vending_core::hardware::DispenseCommandPayload;
+use vending_core::{
+    environment::EnvironmentHeartbeatCache,
+    hardware::{
+        DispenseCommandPayload, EnvironmentControlCommandPayload, EnvironmentControlResultPayload,
+    },
+    mqtt::sign_envelope,
+    serial::EnvironmentSample,
+};
 
 #[derive(Debug, Clone)]
 pub struct OutboxFlushResult {
@@ -32,6 +39,7 @@ pub struct MqttSyncRuntime {
     signing_secret: String,
     state: LocalStateStore,
     hardware: HardwareSupervisor,
+    environment: Arc<RwLock<EnvironmentHeartbeatCache>>,
     events: broadcast::Sender<DaemonEvent>,
     shutdown: CancellationToken,
     mqtt_client: Option<Arc<RwLock<AsyncClient>>>,
@@ -51,6 +59,7 @@ impl MqttSyncRuntime {
             signing_secret,
             state,
             hardware,
+            environment: Arc::new(RwLock::new(EnvironmentHeartbeatCache::default())),
             events,
             shutdown,
             mqtt_client: None,
@@ -90,6 +99,13 @@ impl MqttSyncRuntime {
 
     fn command_topic(&self) -> String {
         format!("vem/machines/{}/commands/dispense", self.machine_code)
+    }
+
+    fn environment_control_command_topic(&self) -> String {
+        format!(
+            "vem/machines/{}/commands/environment-control",
+            self.machine_code
+        )
     }
 
     async fn set_connected(&self, connected: bool, last_error: Option<String>) {
@@ -179,12 +195,139 @@ impl MqttSyncRuntime {
         })
     }
 
+    fn sign_outbox_payload(
+        &self,
+        message_id: String,
+        payload: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        serde_json::to_value(sign_envelope(
+            &self.machine_code,
+            &self.signing_secret,
+            &message_id,
+            payload,
+        ))
+        .map_err(|error| format!("serialize signed MQTT envelope failed: {error}"))
+    }
+
+    pub async fn handle_environment_control_command(
+        &self,
+        payload_text: &str,
+    ) -> Result<CommandHandlingResult, String> {
+        let envelope = self.parse_and_verify_envelope(payload_text)?;
+        let command: EnvironmentControlCommandPayload = serde_json::from_value(envelope.payload)
+            .map_err(|error| format!("parse environment control command failed: {error}"))?;
+        validate_environment_control_command(&command)?;
+
+        let mut ack_event =
+            crate::state::store::OutboxInput::command_ack(&self.machine_code, &command.command_no);
+        ack_event.payload_json = self.sign_outbox_payload(
+            format!("ack:{}", command.command_no),
+            ack_event.payload_json,
+        )?;
+        self.state
+            .enqueue_outbox(&ack_event)
+            .await
+            .map_err(|error| error.to_string())?;
+
+        let mut confirmed_target = None;
+        let mut confirmed_switch = None;
+        let mut failure = None;
+
+        if let Some(target) = command.target_temperature_celsius {
+            match self.hardware.set_target_temperature(target).await {
+                Ok(()) => confirmed_target = Some(target),
+                Err(error) => failure = Some(("target_temperature_failed".to_string(), error)),
+            }
+        }
+
+        if failure.is_none() {
+            if let Some(enabled) = command.air_conditioner_on {
+                match self.hardware.set_air_conditioner_enabled(enabled).await {
+                    Ok(()) => confirmed_switch = Some(enabled),
+                    Err(error) => {
+                        failure = Some(("air_conditioner_switch_failed".to_string(), error))
+                    }
+                }
+            }
+        }
+
+        if failure.is_none() {
+            self.environment
+                .write()
+                .await
+                .record_control_success(confirmed_switch, confirmed_target);
+        }
+
+        let result = match failure {
+            Some((error_code, message)) => EnvironmentControlResultPayload {
+                command_no: command.command_no.clone(),
+                success: false,
+                error_code: Some(error_code),
+                message: Some(message),
+                air_conditioner_on: confirmed_switch,
+                target_temperature_celsius: confirmed_target,
+                reported_at: crate::state::store::now_iso(),
+            },
+            None => EnvironmentControlResultPayload {
+                command_no: command.command_no.clone(),
+                success: true,
+                error_code: None,
+                message: Some("environment control completed".to_string()),
+                air_conditioner_on: confirmed_switch,
+                target_temperature_celsius: confirmed_target,
+                reported_at: crate::state::store::now_iso(),
+            },
+        };
+        let mut result_event = crate::state::store::OutboxInput::environment_control_result(
+            &self.machine_code,
+            &result,
+        );
+        result_event.payload_json = self.sign_outbox_payload(
+            format!("environment-control-result:{}", result.command_no),
+            result_event.payload_json,
+        )?;
+        self.state
+            .enqueue_outbox(&result_event)
+            .await
+            .map_err(|error| error.to_string())?;
+
+        Ok(CommandHandlingResult::Processed {
+            command_no: command.command_no,
+        })
+    }
+
+    pub async fn record_environment_query_result(
+        &self,
+        sample: Option<EnvironmentSample>,
+        sampled_at: String,
+    ) {
+        self.environment
+            .write()
+            .await
+            .record_query_result(sample, sampled_at);
+    }
+
+    pub async fn sample_environment_once(&self) -> Result<(), String> {
+        let sample = self.hardware.query_environment_sample().await?;
+        self.record_environment_query_result(sample, crate::state::store::now_iso())
+            .await;
+        Ok(())
+    }
+
     pub async fn enqueue_heartbeat(&self) -> Result<(), String> {
+        let reported_at = crate::state::store::now_iso();
+        let environment = self.environment.read().await.heartbeat_payload();
         let payload = json!({
             "machineCode": self.machine_code,
-            "status": "ok",
-            "ts": crate::state::store::now_iso(),
-            "level": "ok",
+            "reportedAt": reported_at,
+            "statusPayload": {
+                "network": "online",
+                "mqttConnected": true,
+                "hardwareAdapter": self.hardware.adapter_name(),
+                "hardwareStatus": "ok",
+                "environment": serde_json::to_value(environment)
+                    .map_err(|error| format!("serialize environment heartbeat failed: {error}"))?,
+            },
         });
         let heartbeat = crate::state::store::OutboxInput::heartbeat(&self.machine_code, payload);
         self.state
@@ -278,7 +421,8 @@ impl MqttSyncRuntime {
     }
 
     pub async fn run(self: Arc<Self>, mut event_loop: EventLoop) -> Result<(), String> {
-        let topic = self.command_topic();
+        let dispense_topic = self.command_topic();
+        let environment_control_topic = self.environment_control_command_topic();
         {
             let _ = self.events.send(DaemonEvent::MqttChanged {
                 event_id: Uuid::new_v4().simple().to_string(),
@@ -289,10 +433,12 @@ impl MqttSyncRuntime {
         }
 
         if let Some(client) = &self.mqtt_client {
+            let client = client.read().await;
             let _ = client
-                .read()
-                .await
-                .subscribe(topic.clone(), QoS::AtLeastOnce)
+                .subscribe(dispense_topic.clone(), QoS::AtLeastOnce)
+                .await;
+            let _ = client
+                .subscribe(environment_control_topic.clone(), QoS::AtLeastOnce)
                 .await;
         }
 
@@ -305,6 +451,19 @@ impl MqttSyncRuntime {
                     _ = interval.tick() => {
                         let _ = heartbeat.enqueue_heartbeat().await;
                         let _ = heartbeat.flush_due_outbox().await;
+                    }
+                }
+            }
+        });
+
+        let sampler = self.clone();
+        let sampler_task = tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+            loop {
+                tokio::select! {
+                    _ = sampler.shutdown.cancelled() => break,
+                    _ = interval.tick() => {
+                        let _ = sampler.sample_environment_once().await;
                     }
                 }
             }
@@ -323,7 +482,17 @@ impl MqttSyncRuntime {
                         }
                         Ok(Event::Incoming(Packet::Publish(publish))) => {
                             let text = String::from_utf8_lossy(&publish.payload).to_string();
-                            match self.handle_dispense_command(&text).await {
+                            let handling_result = if publish.topic == dispense_topic {
+                                self.handle_dispense_command(&text).await
+                            } else if publish.topic == environment_control_topic {
+                                self.handle_environment_control_command(&text).await
+                            } else {
+                                Ok(CommandHandlingResult::Processed {
+                                    command_no: String::new(),
+                                })
+                            };
+
+                            match handling_result {
                                 Ok(_) => {
                                     if let Err(error) = self.flush_due_outbox().await {
                                         let _ = self
@@ -354,6 +523,7 @@ impl MqttSyncRuntime {
         };
 
         heartbeat_task.abort();
+        sampler_task.abort();
         result
     }
 }
@@ -362,6 +532,26 @@ impl From<StoreError> for String {
     fn from(error: StoreError) -> Self {
         error.to_string()
     }
+}
+
+fn validate_environment_control_command(
+    command: &EnvironmentControlCommandPayload,
+) -> Result<(), String> {
+    if command.air_conditioner_on.is_none() && command.target_temperature_celsius.is_none() {
+        return Err("environment control command must request at least one action".to_string());
+    }
+    if command.timeout_seconds == 0 {
+        return Err("environment control command timeoutSeconds must be positive".to_string());
+    }
+    if let Some(target) = command.target_temperature_celsius {
+        if !(18..=30).contains(&target) {
+            return Err(
+                "environment control targetTemperatureCelsius must be between 18 and 30"
+                    .to_string(),
+            );
+        }
+    }
+    Ok(())
 }
 
 fn map_mqtt_error(error: ClientError) -> String {
@@ -375,6 +565,87 @@ fn map_mqtt_error(error: ClientError) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
+    use tokio::sync::Mutex;
+    use vending_core::{
+        hardware::{
+            DispenseCommandPayload, DispenseResultPayload, EnvironmentControlCommandPayload,
+            HardwareAdapter, HardwareStatus,
+        },
+        mqtt::sign_envelope,
+    };
+
+    #[derive(Debug, Default)]
+    struct RecordingEnvironmentAdapter {
+        operations: Mutex<Vec<String>>,
+        fail_on: Mutex<Option<String>>,
+    }
+
+    #[async_trait]
+    impl HardwareAdapter for RecordingEnvironmentAdapter {
+        fn adapter_name(&self) -> &str {
+            "recording"
+        }
+
+        async fn self_check(&self) -> HardwareStatus {
+            HardwareStatus {
+                adapter: "recording".to_string(),
+                online: true,
+                message: "recording adapter ready".to_string(),
+            }
+        }
+
+        async fn set_target_temperature(&self, temperature_celsius: i8) -> Result<(), String> {
+            self.operations
+                .lock()
+                .await
+                .push(format!("B1:{temperature_celsius}"));
+            if self.fail_on.lock().await.as_deref() == Some("B1") {
+                Err("target temperature echo mismatch".to_string())
+            } else {
+                Ok(())
+            }
+        }
+
+        async fn set_air_conditioner_enabled(&self, enabled: bool) -> Result<(), String> {
+            self.operations.lock().await.push(format!("B2:{enabled}"));
+            if self.fail_on.lock().await.as_deref() == Some("B2") {
+                Err("air conditioner switch echo mismatch".to_string())
+            } else {
+                Ok(())
+            }
+        }
+
+        async fn dispense(&self, cmd: DispenseCommandPayload) -> DispenseResultPayload {
+            DispenseResultPayload {
+                command_no: cmd.command_no,
+                success: true,
+                error_code: None,
+                message: "recording dispense succeeded".to_string(),
+                reported_at: crate::state::store::now_iso(),
+            }
+        }
+    }
+
+    fn signed_environment_command(
+        command_no: &str,
+        air_conditioner_on: Option<bool>,
+        target_temperature_celsius: Option<i8>,
+    ) -> String {
+        let command = EnvironmentControlCommandPayload {
+            command_no: command_no.to_string(),
+            air_conditioner_on,
+            target_temperature_celsius,
+            timeout_seconds: 5,
+        };
+        let envelope = sign_envelope(
+            "M1",
+            "secret",
+            &format!("MSG-{command_no}"),
+            serde_json::to_value(&command).expect("payload"),
+        );
+        serde_json::to_string(&envelope).expect("envelope")
+    }
 
     #[test]
     fn mqtt_options_accepts_mqtt_and_mqtts() {
@@ -413,5 +684,422 @@ mod tests {
             .await
             .unwrap_err();
         assert!(error.contains("parse MQTT envelope failed"));
+    }
+
+    #[tokio::test]
+    async fn enqueue_heartbeat_reports_cached_environment_state() {
+        let temp = tempfile::tempdir().expect("temp");
+        let state = crate::state::LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("state");
+
+        let config = crate::config::default_public_config();
+        let hardware = crate::hardware::HardwareSupervisor::from_config(&config).expect("hw");
+        let (event_tx, _rx) = tokio::sync::broadcast::channel(4);
+        let runtime = MqttSyncRuntime::new(
+            "M1".to_string(),
+            "secret".to_string(),
+            state.clone(),
+            hardware,
+            event_tx,
+            CancellationToken::new(),
+        );
+
+        runtime
+            .record_environment_query_result(
+                Some(vending_core::serial::EnvironmentSample {
+                    temperature_celsius: 24,
+                    relative_humidity_percent: 53,
+                }),
+                "2026-05-05T12:00:00.000Z".to_string(),
+            )
+            .await;
+        runtime.enqueue_heartbeat().await.expect("heartbeat");
+
+        let due = state
+            .list_due_outbox(chrono::Utc::now() + chrono::Duration::seconds(1))
+            .await
+            .expect("outbox");
+        assert_eq!(due.len(), 1);
+        let environment = &due[0].payload_json["statusPayload"]["environment"];
+        assert_eq!(due[0].payload_json["machineCode"], "M1");
+        assert_eq!(due[0].payload_json["statusPayload"]["hardwareStatus"], "ok");
+        assert_eq!(environment["temperatureCelsius"], 24);
+        assert_eq!(environment["humidityRh"], 53);
+        assert_eq!(environment["sampledAt"], "2026-05-05T12:00:00.000Z");
+        assert_eq!(environment["sensorStatus"], "ok");
+        assert_eq!(environment["airConditionerOn"], false);
+        assert!(environment["targetTemperatureCelsius"].is_null());
+    }
+
+    #[tokio::test]
+    async fn environment_control_command_accepts_signed_payload_and_enqueues_ack() {
+        let temp = tempfile::tempdir().expect("temp");
+        let state = crate::state::LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("state");
+
+        let config = crate::config::default_public_config();
+        let hardware = crate::hardware::HardwareSupervisor::from_config(&config).expect("hw");
+        let (event_tx, _rx) = tokio::sync::broadcast::channel(4);
+        let runtime = MqttSyncRuntime::new(
+            "M1".to_string(),
+            "secret".to_string(),
+            state.clone(),
+            hardware,
+            event_tx,
+            CancellationToken::new(),
+        );
+
+        let command = EnvironmentControlCommandPayload {
+            command_no: "ENV-1".to_string(),
+            air_conditioner_on: Some(true),
+            target_temperature_celsius: None,
+            timeout_seconds: 5,
+        };
+        let envelope = sign_envelope(
+            "M1",
+            "secret",
+            "MSG-ENV-1",
+            serde_json::to_value(&command).expect("payload"),
+        );
+
+        runtime
+            .handle_environment_control_command(
+                &serde_json::to_string(&envelope).expect("envelope"),
+            )
+            .await
+            .expect("handle command");
+
+        let due = state
+            .list_due_outbox(chrono::Utc::now() + chrono::Duration::seconds(1))
+            .await
+            .expect("outbox");
+        assert!(
+            due.iter().any(|event| {
+                event.topic.as_deref() == Some("vem/machines/M1/commands/ENV-1/ack")
+                    && event.payload_json["payload"]["messageId"] == "ENV-1:ack"
+            }),
+            "expected command ACK in outbox: {due:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn environment_control_runs_target_before_switch_and_publishes_success_result() {
+        let temp = tempfile::tempdir().expect("temp");
+        let state = crate::state::LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("state");
+
+        let adapter = Arc::new(RecordingEnvironmentAdapter::default());
+        let hardware = crate::hardware::HardwareSupervisor::from_adapter(adapter.clone());
+        let (event_tx, _rx) = tokio::sync::broadcast::channel(4);
+        let runtime = MqttSyncRuntime::new(
+            "M1".to_string(),
+            "secret".to_string(),
+            state.clone(),
+            hardware,
+            event_tx,
+            CancellationToken::new(),
+        );
+
+        runtime
+            .handle_environment_control_command(&signed_environment_command(
+                "ENV-ORDER",
+                Some(true),
+                Some(24),
+            ))
+            .await
+            .expect("handle command");
+
+        assert_eq!(
+            adapter.operations.lock().await.as_slice(),
+            ["B1:24", "B2:true"]
+        );
+        let due = state
+            .list_due_outbox(chrono::Utc::now() + chrono::Duration::seconds(1))
+            .await
+            .expect("outbox");
+        let result = due
+            .iter()
+            .find(|event| {
+                event.topic.as_deref() == Some("vem/machines/M1/events/environment-control-result")
+            })
+            .expect("environment result");
+        assert_eq!(result.payload_json["payload"]["commandNo"], "ENV-ORDER");
+        assert_eq!(result.payload_json["payload"]["success"], true);
+        assert_eq!(
+            result.payload_json["payload"]["targetTemperatureCelsius"],
+            24
+        );
+        assert_eq!(result.payload_json["payload"]["airConditionerOn"], true);
+    }
+
+    #[tokio::test]
+    async fn environment_control_failure_publishes_failed_result_without_updating_local_state() {
+        let temp = tempfile::tempdir().expect("temp");
+        let state = crate::state::LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("state");
+
+        let adapter = Arc::new(RecordingEnvironmentAdapter::default());
+        *adapter.fail_on.lock().await = Some("B2".to_string());
+        let hardware = crate::hardware::HardwareSupervisor::from_adapter(adapter.clone());
+        let (event_tx, _rx) = tokio::sync::broadcast::channel(4);
+        let runtime = MqttSyncRuntime::new(
+            "M1".to_string(),
+            "secret".to_string(),
+            state.clone(),
+            hardware,
+            event_tx,
+            CancellationToken::new(),
+        );
+
+        runtime
+            .handle_environment_control_command(&signed_environment_command(
+                "ENV-FAIL",
+                Some(true),
+                Some(24),
+            ))
+            .await
+            .expect("handle command");
+        runtime.enqueue_heartbeat().await.expect("heartbeat");
+
+        assert_eq!(
+            adapter.operations.lock().await.as_slice(),
+            ["B1:24", "B2:true"]
+        );
+        let due = state
+            .list_due_outbox(chrono::Utc::now() + chrono::Duration::seconds(1))
+            .await
+            .expect("outbox");
+        let result = due
+            .iter()
+            .find(|event| {
+                event.topic.as_deref() == Some("vem/machines/M1/events/environment-control-result")
+            })
+            .expect("environment result");
+        assert_eq!(result.payload_json["payload"]["success"], false);
+        assert_eq!(
+            result.payload_json["payload"]["errorCode"],
+            "air_conditioner_switch_failed"
+        );
+        assert!(result.payload_json["payload"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("echo mismatch"));
+
+        let heartbeat = due
+            .iter()
+            .find(|event| event.topic.as_deref() == Some("vem/machines/M1/events/heartbeat"))
+            .expect("heartbeat");
+        let environment = &heartbeat.payload_json["statusPayload"]["environment"];
+        assert_eq!(environment["airConditionerOn"], false);
+        assert!(environment["targetTemperatureCelsius"].is_null());
+    }
+
+    #[tokio::test]
+    async fn environment_control_success_updates_local_state_but_restart_uses_defaults() {
+        let temp = tempfile::tempdir().expect("temp");
+        let state = crate::state::LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("state");
+
+        let adapter = Arc::new(RecordingEnvironmentAdapter::default());
+        let hardware = crate::hardware::HardwareSupervisor::from_adapter(adapter);
+        let (event_tx, _rx) = tokio::sync::broadcast::channel(4);
+        let runtime = MqttSyncRuntime::new(
+            "M1".to_string(),
+            "secret".to_string(),
+            state.clone(),
+            hardware,
+            event_tx.clone(),
+            CancellationToken::new(),
+        );
+
+        runtime
+            .handle_environment_control_command(&signed_environment_command(
+                "ENV-STATE",
+                Some(true),
+                Some(24),
+            ))
+            .await
+            .expect("handle command");
+        runtime.enqueue_heartbeat().await.expect("heartbeat");
+        let due = state
+            .list_due_outbox(chrono::Utc::now() + chrono::Duration::seconds(1))
+            .await
+            .expect("outbox");
+        let heartbeat = due
+            .iter()
+            .find(|event| event.topic.as_deref() == Some("vem/machines/M1/events/heartbeat"))
+            .expect("heartbeat");
+        let environment = &heartbeat.payload_json["statusPayload"]["environment"];
+        assert_eq!(environment["airConditionerOn"], true);
+        assert_eq!(environment["targetTemperatureCelsius"], 24);
+
+        let restarted = MqttSyncRuntime::new(
+            "M1".to_string(),
+            "secret".to_string(),
+            state.clone(),
+            crate::hardware::HardwareSupervisor::from_adapter(Arc::new(
+                RecordingEnvironmentAdapter::default(),
+            )),
+            event_tx,
+            CancellationToken::new(),
+        );
+        restarted
+            .enqueue_heartbeat()
+            .await
+            .expect("restart heartbeat");
+        let due = state
+            .list_due_outbox(chrono::Utc::now() + chrono::Duration::seconds(1))
+            .await
+            .expect("outbox");
+        let latest_heartbeat = due
+            .iter()
+            .rev()
+            .find(|event| event.topic.as_deref() == Some("vem/machines/M1/events/heartbeat"))
+            .expect("latest heartbeat");
+        let restarted_environment = &latest_heartbeat.payload_json["statusPayload"]["environment"];
+        assert_eq!(restarted_environment["airConditionerOn"], false);
+        assert!(restarted_environment["targetTemperatureCelsius"].is_null());
+    }
+
+    #[tokio::test]
+    async fn environment_control_rejects_bad_signature_and_invalid_schema_without_ack() {
+        let temp = tempfile::tempdir().expect("temp");
+        let state = crate::state::LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("state");
+        let hardware = crate::hardware::HardwareSupervisor::from_adapter(Arc::new(
+            RecordingEnvironmentAdapter::default(),
+        ));
+        let (event_tx, _rx) = tokio::sync::broadcast::channel(4);
+        let runtime = MqttSyncRuntime::new(
+            "M1".to_string(),
+            "secret".to_string(),
+            state.clone(),
+            hardware,
+            event_tx,
+            CancellationToken::new(),
+        );
+
+        let bad_signature = sign_envelope(
+            "M1",
+            "wrong-secret",
+            "MSG-BAD-SIG",
+            serde_json::to_value(EnvironmentControlCommandPayload {
+                command_no: "ENV-BAD-SIG".to_string(),
+                air_conditioner_on: Some(true),
+                target_temperature_celsius: None,
+                timeout_seconds: 5,
+            })
+            .expect("payload"),
+        );
+        let error = runtime
+            .handle_environment_control_command(
+                &serde_json::to_string(&bad_signature).expect("envelope"),
+            )
+            .await
+            .expect_err("bad signature should be rejected");
+        assert!(error.contains("signature invalid"), "{error}");
+
+        let invalid_schema = sign_envelope(
+            "M1",
+            "secret",
+            "MSG-BAD-SCHEMA",
+            serde_json::json!({
+                "commandNo": "ENV-BAD-SCHEMA",
+                "timeoutSeconds": 5
+            }),
+        );
+        let error = runtime
+            .handle_environment_control_command(
+                &serde_json::to_string(&invalid_schema).expect("envelope"),
+            )
+            .await
+            .expect_err("schema-invalid command should be rejected");
+        assert!(error.contains("at least one action"), "{error}");
+
+        let due = state
+            .list_due_outbox(chrono::Utc::now() + chrono::Duration::seconds(1))
+            .await
+            .expect("outbox");
+        assert!(due.is_empty(), "rejected commands must not ACK: {due:?}");
+    }
+
+    #[tokio::test]
+    async fn environment_control_is_allowed_during_faulted_sensor_and_active_business_state() {
+        let temp = tempfile::tempdir().expect("temp");
+        let state = crate::state::LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("state");
+        state
+            .upsert_order_session(crate::state::store::OrderSessionUpsert {
+                order_no: "ORD-ACTIVE",
+                payment_method: "mock",
+                payment_provider: None,
+                items_json: serde_json::json!([]),
+                status: "dispensing",
+                next_action: "collect_goods",
+                payment_attempt_json: None,
+                recovery_strategy: "local",
+                last_backend_status_json: None,
+                last_error: None,
+            })
+            .await
+            .expect("active order session");
+
+        let hardware = crate::hardware::HardwareSupervisor::from_adapter(Arc::new(
+            RecordingEnvironmentAdapter::default(),
+        ));
+        let (event_tx, _rx) = tokio::sync::broadcast::channel(4);
+        let runtime = MqttSyncRuntime::new(
+            "M1".to_string(),
+            "secret".to_string(),
+            state.clone(),
+            hardware,
+            event_tx,
+            CancellationToken::new(),
+        );
+        runtime
+            .record_environment_query_result(None, "2026-05-05T12:00:00.000Z".to_string())
+            .await;
+        runtime
+            .record_environment_query_result(None, "2026-05-05T12:00:30.000Z".to_string())
+            .await;
+        runtime
+            .record_environment_query_result(None, "2026-05-05T12:01:00.000Z".to_string())
+            .await;
+
+        runtime
+            .handle_environment_control_command(&signed_environment_command(
+                "ENV-ACTIVE",
+                Some(true),
+                None,
+            ))
+            .await
+            .expect("handle command while business state exists");
+        runtime.enqueue_heartbeat().await.expect("heartbeat");
+
+        let due = state
+            .list_due_outbox(chrono::Utc::now() + chrono::Duration::seconds(1))
+            .await
+            .expect("outbox");
+        let result = due
+            .iter()
+            .find(|event| {
+                event.topic.as_deref() == Some("vem/machines/M1/events/environment-control-result")
+            })
+            .expect("environment result");
+        assert_eq!(result.payload_json["payload"]["success"], true);
+        let heartbeat = due
+            .iter()
+            .find(|event| event.topic.as_deref() == Some("vem/machines/M1/events/heartbeat"))
+            .expect("heartbeat");
+        let environment = &heartbeat.payload_json["statusPayload"]["environment"];
+        assert_eq!(environment["sensorStatus"], "faulted");
+        assert_eq!(environment["airConditionerOn"], true);
     }
 }

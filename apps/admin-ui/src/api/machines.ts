@@ -1,4 +1,10 @@
-import type { MachineSlotStatus, MachineStatus } from "@vem/shared";
+import type {
+  MachineCommandStatus,
+  MachineEnvironmentControlRequest,
+  MachineHeartbeatStatusPayload,
+  MachineSlotStatus,
+  MachineStatus,
+} from "@vem/shared";
 
 import { get, patch, post } from "./request";
 
@@ -12,6 +18,21 @@ export type Machine = {
   lastSeenAt: string | null;
   createdAt: string;
   updatedAt: string;
+  latestEnvironment?: MachineHeartbeatStatusPayload["environment"] | null;
+  latestEnvironmentCommand?: MachineCommand | null;
+};
+
+export type MachineCommand = {
+  id: string;
+  machineId: string;
+  commandNo: string;
+  type: string;
+  status: MachineCommandStatus;
+  payloadJson?: Record<string, unknown> | null;
+  resultJson?: Record<string, unknown> | null;
+  lastError?: string | null;
+  createdAt?: string;
+  updatedAt?: string;
 };
 
 export type MachineSlot = {
@@ -53,6 +74,10 @@ export async function listMachines(
   return await get<PageResult<Machine>>("/machines", { params: query });
 }
 
+export async function getMachine(id: string): Promise<Machine> {
+  return await get<Machine>(`/machines/${id}`);
+}
+
 export async function createMachine(
   body: CreateMachineInput,
 ): Promise<Machine> {
@@ -64,6 +89,16 @@ export async function updateMachine(
   body: Partial<CreateMachineInput>,
 ): Promise<Machine> {
   return await patch<Machine>(`/machines/${id}`, body);
+}
+
+export async function commandEnvironment(
+  id: string,
+  body: MachineEnvironmentControlRequest,
+): Promise<MachineCommand> {
+  return await post<MachineCommand>(
+    `/machines/${id}/commands/environment-control`,
+    body,
+  );
 }
 
 export async function listMachineSlots(

@@ -1,13 +1,20 @@
 <script setup lang="ts">
-import type { MachineSlotStatus, MachineStatus } from "@vem/shared";
+import type {
+  MachineCommandStatus,
+  MachineEnvironmentControlRequest,
+  MachineSlotStatus,
+  MachineStatus,
+} from "@vem/shared";
 
 import { Modal } from "antdv-next";
-import { onMounted, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 
 import { requestLogExport } from "@/api/machine-ops";
 import {
+  commandEnvironment,
   createMachine,
   createMachineSlot,
+  getMachine,
   listMachineSlots,
   listMachines,
   rotateMachineCredentials,
@@ -22,6 +29,7 @@ import { formatDateTime } from "@/utils/format";
 
 const authStore = useAuthStore();
 const canWrite = authStore.hasPermission("machines.write");
+const canCommand = authStore.hasPermission("machines.command");
 
 const loading = ref(false);
 const machines = ref<PageResult<Machine>>({
@@ -98,6 +106,86 @@ async function saveMachine(): Promise<void> {
   }
 }
 
+// Environment drawer
+const environmentDrawerOpen = ref(false);
+const environmentMachine = ref<Machine | null>(null);
+const environmentLoading = ref(false);
+const environmentCommandStatus = ref<MachineCommandStatus | null>(null);
+const environmentControlForm = ref({
+  includeAirConditioner: false,
+  airConditionerOn: false,
+  includeTargetTemperature: false,
+  targetTemperatureCelsius: 24,
+});
+const environmentSubmitting = ref(false);
+const targetTemperatureInvalid = computed(() => {
+  if (!environmentControlForm.value.includeTargetTemperature) return false;
+  const value = environmentControlForm.value.targetTemperatureCelsius;
+  return value < 18 || value > 30;
+});
+const environmentCommandDisabled = computed(
+  () =>
+    !canCommand ||
+    environmentSubmitting.value ||
+    targetTemperatureInvalid.value ||
+    (!environmentControlForm.value.includeAirConditioner &&
+      !environmentControlForm.value.includeTargetTemperature),
+);
+const environmentDrawerTitle = computed(() =>
+  environmentMachine.value ? `环境 - ${environmentMachine.value.code}` : "环境",
+);
+
+async function openEnvironment(m: Machine): Promise<void> {
+  environmentMachine.value = m;
+  environmentCommandStatus.value = null;
+  environmentDrawerOpen.value = true;
+  environmentLoading.value = true;
+  try {
+    environmentMachine.value = await getMachine(m.id);
+    environmentCommandStatus.value =
+      environmentMachine.value.latestEnvironmentCommand?.status ?? null;
+    const latest = environmentMachine.value.latestEnvironment;
+    environmentControlForm.value = {
+      includeAirConditioner: false,
+      airConditionerOn: latest?.airConditionerOn ?? false,
+      includeTargetTemperature: false,
+      targetTemperatureCelsius: latest?.targetTemperatureCelsius ?? 24,
+    };
+  } finally {
+    environmentLoading.value = false;
+  }
+}
+
+function commandStatusLabel(status: MachineCommandStatus | null): string {
+  if (status === "pending") return "命令待发送";
+  if (status === "sent") return "命令已发送";
+  if (status === "acknowledged") return "命令已确认";
+  if (status === "succeeded") return "命令成功";
+  if (status === "failed") return "命令失败";
+  if (status === "timeout") return "命令超时";
+  return "命令状态未知";
+}
+
+async function submitEnvironmentCommand(): Promise<void> {
+  if (!environmentMachine.value || environmentCommandDisabled.value) return;
+  const body: MachineEnvironmentControlRequest = {};
+  if (environmentControlForm.value.includeAirConditioner) {
+    body.airConditionerOn = environmentControlForm.value.airConditionerOn;
+  }
+  if (environmentControlForm.value.includeTargetTemperature) {
+    body.targetTemperatureCelsius =
+      environmentControlForm.value.targetTemperatureCelsius;
+  }
+
+  environmentSubmitting.value = true;
+  try {
+    const command = await commandEnvironment(environmentMachine.value.id, body);
+    environmentCommandStatus.value = command.status;
+  } finally {
+    environmentSubmitting.value = false;
+  }
+}
+
 // Slots
 const slotDrawerOpen = ref(false);
 const currentMachineId = ref<string | null>(null);
@@ -153,6 +241,34 @@ async function saveSlot(): Promise<void> {
   }
 }
 
+function formatEnvironmentNumber(
+  value: number | undefined,
+  suffix: string,
+): string {
+  if (typeof value !== "number") return `-- ${suffix}`;
+  const formatted = Number.isInteger(value) ? String(value) : value.toFixed(1);
+  return suffix.startsWith("%")
+    ? `${formatted}${suffix}`
+    : `${formatted} ${suffix}`;
+}
+
+function sensorStatusLabel(status: string | undefined): string {
+  if (status === "ok") return "传感器正常";
+  if (status === "faulted") return "传感器故障";
+  return "传感器未知";
+}
+
+function airConditionerLabel(on: boolean | undefined): string {
+  if (on === true) return "空调开";
+  if (on === false) return "空调关";
+  return "空调未知";
+}
+
+function targetTemperatureLabel(value: number | null | undefined): string {
+  if (typeof value !== "number") return "目标未知";
+  return `目标 ${formatEnvironmentNumber(value, "C")}`;
+}
+
 const statusColor: Record<string, string> = {
   online: "success",
   offline: "default",
@@ -166,6 +282,7 @@ const machineColumns = [
   { title: "位置", dataIndex: "locationText", key: "locationText" },
   { title: "状态", dataIndex: "status", key: "status" },
   { title: "最近心跳", dataIndex: "lastSeenAt", key: "lastSeenAt" },
+  { title: "环境", key: "environment" },
   { title: "操作", key: "actions" },
 ];
 
@@ -257,8 +374,44 @@ async function handleRequestLogExport(m: Machine): Promise<void> {
           <template v-else-if="column.key === 'lastSeenAt'">
             {{ formatDateTime(record.lastSeenAt) }}
           </template>
+          <template v-else-if="column.key === 'environment'">
+            <div v-if="record.latestEnvironment" class="text-xs leading-5">
+              <div>
+                {{
+                  formatEnvironmentNumber(
+                    record.latestEnvironment.temperatureCelsius,
+                    "C",
+                  )
+                }}
+                ·
+                {{
+                  formatEnvironmentNumber(
+                    record.latestEnvironment.humidityRh,
+                    "% RH",
+                  )
+                }}
+              </div>
+              <div class="text-gray-500">
+                {{ sensorStatusLabel(record.latestEnvironment.sensorStatus) }}
+                ·
+                {{
+                  airConditionerLabel(record.latestEnvironment.airConditionerOn)
+                }}
+                ·
+                {{
+                  targetTemperatureLabel(
+                    record.latestEnvironment.targetTemperatureCelsius,
+                  )
+                }}
+              </div>
+            </div>
+            <span v-else class="text-xs text-gray-400">环境未知</span>
+          </template>
           <template v-else-if="column.key === 'actions'">
             <a-space>
+              <a-button size="small" @click="openEnvironment(record)"
+                >环境</a-button
+              >
               <a-button size="small" @click="openSlots(record)">格口</a-button>
               <a-button
                 v-if="canWrite"
@@ -321,6 +474,119 @@ async function handleRequestLogExport(m: Machine): Promise<void> {
           保存
         </a-button>
       </a-form>
+    </a-drawer>
+
+    <!-- Environment drawer -->
+    <a-drawer
+      v-model:open="environmentDrawerOpen"
+      :title="environmentDrawerTitle"
+      width="520"
+      :destroy-on-hidden="true"
+    >
+      <div v-if="environmentLoading" class="text-sm text-gray-500">加载中</div>
+      <template v-else-if="environmentMachine">
+        <a-descriptions bordered :column="1" size="small">
+          <template v-if="environmentMachine.latestEnvironment">
+            <a-descriptions-item label="温度">{{
+              formatEnvironmentNumber(
+                environmentMachine.latestEnvironment.temperatureCelsius,
+                "C",
+              )
+            }}</a-descriptions-item>
+            <a-descriptions-item label="湿度">{{
+              formatEnvironmentNumber(
+                environmentMachine.latestEnvironment.humidityRh,
+                "% RH",
+              )
+            }}</a-descriptions-item>
+            <a-descriptions-item label="采样时间">{{
+              formatDateTime(environmentMachine.latestEnvironment.sampledAt)
+            }}</a-descriptions-item>
+            <a-descriptions-item label="传感器状态">{{
+              sensorStatusLabel(
+                environmentMachine.latestEnvironment.sensorStatus,
+              )
+            }}</a-descriptions-item>
+            <a-descriptions-item label="空调状态">{{
+              airConditionerLabel(
+                environmentMachine.latestEnvironment.airConditionerOn,
+              )
+            }}</a-descriptions-item>
+            <a-descriptions-item label="目标温度">{{
+              targetTemperatureLabel(
+                environmentMachine.latestEnvironment.targetTemperatureCelsius,
+              )
+            }}</a-descriptions-item>
+          </template>
+          <template v-else>
+            <a-descriptions-item label="最新读数">环境未知</a-descriptions-item>
+          </template>
+          <a-descriptions-item label="最新命令">{{
+            commandStatusLabel(environmentCommandStatus)
+          }}</a-descriptions-item>
+        </a-descriptions>
+        <a-form layout="vertical" class="mt-4">
+          <a-form-item label="控制动作">
+            <div class="space-y-2">
+              <div class="flex items-center gap-3">
+                <a-checkbox
+                  v-model:checked="environmentControlForm.includeAirConditioner"
+                  :disabled="!canCommand || environmentSubmitting"
+                  >设置空调开关</a-checkbox
+                >
+                <a-switch
+                  v-model:checked="environmentControlForm.airConditionerOn"
+                  :disabled="
+                    !canCommand ||
+                    environmentSubmitting ||
+                    !environmentControlForm.includeAirConditioner
+                  "
+                  >{{
+                    environmentControlForm.airConditionerOn ? "开" : "关"
+                  }}</a-switch
+                >
+              </div>
+              <div class="flex items-center gap-3">
+                <a-checkbox
+                  v-model:checked="
+                    environmentControlForm.includeTargetTemperature
+                  "
+                  :disabled="!canCommand || environmentSubmitting"
+                  >设置目标温度</a-checkbox
+                >
+                <a-input-number
+                  v-model:value="
+                    environmentControlForm.targetTemperatureCelsius
+                  "
+                  :min="18"
+                  :max="30"
+                  :disabled="
+                    !canCommand ||
+                    environmentSubmitting ||
+                    !environmentControlForm.includeTargetTemperature
+                  "
+                  class="w-28"
+                />
+                <span>C</span>
+              </div>
+              <div v-if="targetTemperatureInvalid" class="text-xs text-red-600">
+                目标温度必须在 18-30 C
+              </div>
+              <div v-if="!canCommand" class="text-xs text-gray-500">
+                无机器控制权限
+              </div>
+            </div>
+          </a-form-item>
+          <a-button
+            v-if="canCommand"
+            type="primary"
+            :loading="environmentSubmitting"
+            :disabled="environmentCommandDisabled"
+            @click="submitEnvironmentCommand"
+            >提交环境控制</a-button
+          >
+        </a-form>
+      </template>
     </a-drawer>
 
     <!-- Slots drawer -->

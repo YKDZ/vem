@@ -8,6 +8,7 @@ import {
   inventoryMovements,
   inventoryReservations,
   machineEvents,
+  machineCommands,
   machineHeartbeats,
   machines,
   machineSlots,
@@ -47,6 +48,7 @@ export const relations = defineRelations(
     inventoryMovements,
     inventoryReservations,
     machineEvents,
+    machineCommands,
     machineHeartbeats,
     machines,
     machineSlots,
@@ -148,6 +150,7 @@ export const relations = defineRelations(
       slots: r.many.machineSlots(),
       inventories: r.many.inventories(),
       orders: r.many.orders(),
+      commands: r.many.machineCommands(),
       events: r.many.machineEvents(),
       heartbeats: r.many.machineHeartbeats(),
     },
@@ -384,6 +387,16 @@ export const relations = defineRelations(
       slot: r.one.machineSlots({
         from: r.vendingCommands.slotId,
         to: r.machineSlots.id,
+      }),
+    },
+    machineCommands: {
+      machine: r.one.machines({
+        from: r.machineCommands.machineId,
+        to: r.machines.id,
+      }),
+      requestedByAdminUser: r.one.adminUsers({
+        from: r.machineCommands.requestedByAdminUserId,
+        to: r.adminUsers.id,
       }),
     },
     machineEvents: {

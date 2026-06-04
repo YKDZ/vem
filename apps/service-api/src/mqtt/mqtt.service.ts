@@ -17,7 +17,7 @@ type VendingServiceBinding = {
 export class MqttService implements OnModuleInit, OnApplicationShutdown {
   private readonly logger = new Logger(MqttService.name);
   private client?: MqttClient;
-  private machineMessageHandler?: MachineMessageHandler;
+  private readonly machineMessageHandlers: MachineMessageHandler[] = [];
 
   constructor(private readonly config: AppConfigService) {}
 
@@ -33,17 +33,22 @@ export class MqttService implements OnModuleInit, OnApplicationShutdown {
       this.client?.subscribe("vem/machines/+/events/dispense-result", {
         qos: 1,
       });
+      this.client?.subscribe(
+        "vem/machines/+/events/environment-control-result",
+        { qos: 1 },
+      );
       this.client?.subscribe("vem/machines/+/events/heartbeat", { qos: 1 });
     });
     this.client.on("message", (topic, payload) => {
-      void this.machineMessageHandler?.(topic, payload.toString("utf8")).catch(
-        (error: unknown) => {
+      const payloadText = payload.toString("utf8");
+      for (const handler of this.machineMessageHandlers) {
+        void handler(topic, payloadText).catch((error: unknown) => {
           this.logger.error(
             `Failed to handle MQTT message ${topic}`,
             error instanceof Error ? error.stack : String(error),
           );
-        },
-      );
+        });
+      }
     });
     this.client.on("error", (error) => {
       this.logger.warn(`MQTT error: ${error.message}`);
@@ -70,9 +75,14 @@ export class MqttService implements OnModuleInit, OnApplicationShutdown {
     });
   }
 
+  registerMachineMessageHandler(handler: MachineMessageHandler): void {
+    this.machineMessageHandlers.push(handler);
+  }
+
   bindVendingService(vendingService: VendingServiceBinding): void {
-    this.machineMessageHandler = async (topic, payload) =>
-      vendingService.handleMachineMessage(topic, payload);
+    this.registerMachineMessageHandler(async (topic, payload) => {
+      await vendingService.handleMachineMessage(topic, payload);
+    });
   }
 
   isConnected(): boolean {

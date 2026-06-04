@@ -20,6 +20,26 @@ export const dispenseCommandPayloadSchema = z.object({
   timeoutSeconds: z.int().positive(),
 });
 
+export const environmentControlCommandPayloadSchema = z
+  .object({
+    commandNo: z.string().min(1).max(64),
+    airConditionerOn: z.boolean().optional(),
+    targetTemperatureCelsius: z.number().min(18).max(30).optional(),
+    timeoutSeconds: z.int().positive(),
+  })
+  .superRefine((data, ctx) => {
+    if (
+      data.airConditionerOn === undefined &&
+      data.targetTemperatureCelsius === undefined
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        message:
+          "At least one of airConditionerOn or targetTemperatureCelsius is required",
+      });
+    }
+  });
+
 export const dispenseResultPayloadSchema = z
   .object({
     commandNo: z.string().min(1).max(64),
@@ -41,6 +61,18 @@ export const dispenseResultPayloadSchema = z
     }
   });
 
+export const environmentControlResultPayloadSchema = z
+  .object({
+    commandNo: z.string().min(1).max(64),
+    success: z.boolean(),
+    errorCode: z.string().min(1).max(64).nullable().optional(),
+    message: z.string().max(500).optional(),
+    airConditionerOn: z.boolean().optional(),
+    targetTemperatureCelsius: z.number().min(18).max(30).nullable().optional(),
+    reportedAt: z.iso.datetime(),
+  })
+  .loose();
+
 export const mqttSignedEnvelopeSchema = z.object({
   messageId: z.string().min(1).max(128),
   machineCode: z.string().min(1).max(64),
@@ -55,6 +87,12 @@ export type DispenseCommandPayload = z.infer<
   typeof dispenseCommandPayloadSchema
 >;
 export type DispenseResultPayload = z.infer<typeof dispenseResultPayloadSchema>;
+export type EnvironmentControlCommandPayload = z.infer<
+  typeof environmentControlCommandPayloadSchema
+>;
+export type EnvironmentControlResultPayload = z.infer<
+  typeof environmentControlResultPayloadSchema
+>;
 export type MqttSignedEnvelope = z.infer<typeof mqttSignedEnvelopeSchema>;
 
 export function canonicalJson(value: unknown): string {
