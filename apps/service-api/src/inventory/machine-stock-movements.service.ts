@@ -88,26 +88,6 @@ export class MachineStockMovementsService {
       );
     }
 
-    const reconciliation = await reconciliationForMovement(
-      this.repository,
-      machine.id,
-      trustedInput,
-    );
-    if (reconciliation) {
-      const stored = await this.repository.insertReconciliation({
-        machineId: machine.id,
-        input: trustedInput,
-        normalized,
-        payloadHash,
-        ...reconciliation,
-      });
-      return reconciliationResponse(
-        trustedInput.movementId,
-        stored,
-        reconciliation,
-      );
-    }
-
     const orderBoundDispenseContext =
       await orderBoundDispenseContextForMovement(
         this.repository,
@@ -129,20 +109,53 @@ export class MachineStockMovementsService {
       );
     }
 
+    if (!orderBoundDispenseContext.context) {
+      const reconciliation = await reconciliationForMovement(
+        this.repository,
+        machine.id,
+        trustedInput,
+      );
+      if (reconciliation) {
+        const stored = await this.repository.insertReconciliation({
+          machineId: machine.id,
+          input: trustedInput,
+          normalized,
+          payloadHash,
+          ...reconciliation,
+        });
+        return reconciliationResponse(
+          trustedInput.movementId,
+          stored,
+          reconciliation,
+        );
+      }
+    }
+
     try {
-      const stored = await this.repository.insertAccepted({
+      const acceptedInput = {
         machineId: machine.id,
         input: trustedInput,
         normalized,
         payloadHash,
-      });
-      await applyAcceptedMovementSideEffects(
-        this.repository,
-        machine.id,
-        trustedInput,
-        stored,
-        orderBoundDispenseContext.context,
-      );
+      };
+      const stored =
+        orderBoundDispenseContext.context &&
+        isOrderBoundDispenseMovement(trustedInput)
+          ? await this.repository.insertAcceptedWithOrderBoundDispenseConfirmation(
+              {
+                ...acceptedInput,
+                input: trustedInput,
+                context: orderBoundDispenseContext.context,
+              },
+            )
+          : await this.repository.insertAccepted(acceptedInput);
+      if (!stored) {
+        return rejectedResponse(
+          trustedInput.movementId,
+          payloadHash,
+          "order_confirmation_failed",
+        );
+      }
       return acceptedResponse(trustedInput.movementId, stored, "accepted");
     } catch (error) {
       if (!isUniqueConstraintViolation(error)) {
@@ -213,24 +226,6 @@ async function orderBoundDispenseContextForMovement(
   }
 
   return { context, reconciliation: null };
-}
-
-async function applyAcceptedMovementSideEffects(
-  repository: MachineStockMovementsRepository,
-  machineId: string,
-  input: RawMachineStockMovement,
-  stored: StoredRawMachineStockMovement,
-  context: OrderBoundDispenseConfirmationContext | null,
-): Promise<void> {
-  if (!isOrderBoundDispenseMovement(input) || !context) {
-    return;
-  }
-  await repository.confirmOrderBoundDispenseSucceeded({
-    machineId,
-    rawMovementId: stored.id,
-    input,
-    context,
-  });
 }
 
 function isOrderBoundDispenseMovement(
@@ -358,6 +353,22 @@ function movementConflictReconciliation(
     platformReviewStatus: "open",
     saleSafetyBlockerState: "movement_rejected",
     saleSafetyBlockerSlotId: slotId,
+  };
+}
+
+function rejectedResponse(
+  movementId: string,
+  payloadHash: string,
+  reason: string,
+): MachineStockMovementIngestionResponse {
+  return {
+    movementId,
+    status: "rejected",
+    acceptedAt: null,
+    rejection: {
+      reason,
+      receivedPayloadHash: payloadHash,
+    },
   };
 }
 

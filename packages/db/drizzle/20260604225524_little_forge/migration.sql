@@ -3,6 +3,10 @@ CREATE TYPE "order_payment_state" AS ENUM('awaiting_payment', 'paid', 'payment_f
 ALTER TABLE "orders" ADD COLUMN "payment_state" "order_payment_state" DEFAULT 'awaiting_payment'::"order_payment_state" NOT NULL;--> statement-breakpoint
 ALTER TABLE "orders" ADD COLUMN "fulfillment_state" "order_fulfillment_state" DEFAULT 'awaiting_fulfillment'::"order_fulfillment_state" NOT NULL;--> statement-breakpoint
 UPDATE "orders" SET
+  "status" = (CASE "status"
+    WHEN 'closed' THEN 'canceled'
+    ELSE "status"
+  END)::"order_status",
   "payment_state" = (CASE "status"
     WHEN 'pending_payment' THEN 'awaiting_payment'
     WHEN 'payment_expired' THEN 'payment_expired'

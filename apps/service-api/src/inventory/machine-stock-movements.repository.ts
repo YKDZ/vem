@@ -18,6 +18,7 @@ import {
   sql,
   vendingCommands,
   type DrizzleClient,
+  type DrizzleTransaction,
 } from "@vem/db";
 
 import { DRIZZLE_CLIENT } from "../database/database.constants";
@@ -55,6 +56,8 @@ export type InsertConflictRawMachineStockMovement =
   InsertReconciliationRawMachineStockMovement & {
     rawMovementId: string;
   };
+
+class OrderBoundDispenseConfirmationFailedError extends Error {}
 
 export type MovementApplicationContext = {
   machineSlotKnown: boolean;
@@ -278,17 +281,6 @@ export class MachineStockMovementsRepository {
         ),
       )
       .innerJoin(vendingCommands, eq(vendingCommands.orderId, orders.id))
-      .innerJoin(
-        machinePlanogramVersions,
-        eq(machinePlanogramVersions.machineId, orders.machineId),
-      )
-      .innerJoin(
-        machinePlanogramSlots,
-        eq(
-          machinePlanogramSlots.machinePlanogramVersionId,
-          machinePlanogramVersions.id,
-        ),
-      )
       .where(
         and(
           eq(orders.machineId, machineId),
@@ -302,11 +294,13 @@ export class MachineStockMovementsRepository {
           eq(vendingCommands.commandNo, orderContext.vendingCommandNo),
           eq(vendingCommands.slotId, input.slotId),
           sql`(${vendingCommands.payloadJson}->>'quantity')::int = ${input.quantity}`,
-          eq(machinePlanogramVersions.planogramVersion, input.planogramVersion),
-          eq(machinePlanogramVersions.status, "active"),
-          sql`${machinePlanogramVersions.acknowledgedAt} IS NOT NULL`,
-          eq(machinePlanogramSlots.slotId, input.slotId),
-          eq(machinePlanogramSlots.inventoryId, orderContext.inventoryId),
+          sql`${orderItems.productSnapshot}->>'planogramVersion' = ${input.planogramVersion}`,
+          sql`${orderItems.productSnapshot}->>'slotId' = ${input.slotId}`,
+          sql`${orderItems.productSnapshot}->>'inventoryId' = ${orderContext.inventoryId}`,
+          sql`${orderItems.productSnapshot}->>'variantId' = ${orderItems.variantId}::text`,
+          sql`${orderItems.productSnapshot}->>'productId' IS NOT NULL`,
+          sql`${orderItems.productSnapshot}->>'slotCode' = ${vendingCommands.payloadJson}->'slot'->>'slotCode'`,
+          sql`(${orderItems.productSnapshot}->>'vendingCommandQuantity')::int = ${input.quantity}`,
         ),
       )
       .limit(1);
@@ -314,86 +308,130 @@ export class MachineStockMovementsRepository {
     return row ?? null;
   }
 
+  async insertAcceptedWithOrderBoundDispenseConfirmation(
+    input: Omit<InsertRawMachineStockMovement, "input"> & {
+      input: RawMachineStockMovement & { movementType: "dispense_succeeded" };
+      context: OrderBoundDispenseConfirmationContext;
+    },
+  ): Promise<StoredRawMachineStockMovement | null> {
+    try {
+      return await this.db.transaction(async (tx) => {
+        const stored = await this.insertRawInto(tx, input, {
+          status: "accepted",
+          reconciliationReason: null,
+          platformReviewStatus: null,
+          saleSafetyBlockerState: null,
+          saleSafetyBlockerSlotId: null,
+        });
+        const confirmed =
+          await this.confirmOrderBoundDispenseSucceededInTransaction(tx, {
+            machineId: input.machineId,
+            rawMovementId: stored.id,
+            input: input.input,
+            context: input.context,
+          });
+        if (!confirmed) {
+          throw new OrderBoundDispenseConfirmationFailedError(
+            "Order-bound dispense confirmation failed",
+          );
+        }
+        return stored;
+      });
+    } catch (error) {
+      if (error instanceof OrderBoundDispenseConfirmationFailedError) {
+        return null;
+      }
+      throw error;
+    }
+  }
+
   async confirmOrderBoundDispenseSucceeded(
     input: ConfirmOrderBoundDispenseInput,
   ): Promise<boolean> {
-    return await this.db.transaction(async (tx) => {
-      const result = await tx.execute(sql`
-        update inventories
-        set
-          on_hand_qty = on_hand_qty - ${input.context.quantity},
-          reserved_qty = reserved_qty - ${input.context.quantity},
-          updated_at = now()
-        where id = ${input.context.inventoryId}
-          and on_hand_qty >= ${input.context.quantity}
-          and reserved_qty >= ${input.context.quantity}
-          and exists (
-            select 1
-            from inventory_reservations
-            where order_id = ${input.context.orderId}
-              and inventory_id = ${input.context.inventoryId}
-              and status = 'active'
-              and quantity >= ${input.context.quantity}
-          )
-        returning id
-      `);
-      if ((result.rowCount ?? 0) !== 1) {
-        return false;
-      }
+    return await this.db.transaction(async (tx) =>
+      this.confirmOrderBoundDispenseSucceededInTransaction(tx, input),
+    );
+  }
 
-      await tx
-        .update(inventoryReservations)
-        .set({ status: "confirmed", updatedAt: new Date() })
-        .where(
-          and(
-            eq(inventoryReservations.orderId, input.context.orderId),
-            eq(inventoryReservations.inventoryId, input.context.inventoryId),
-            eq(inventoryReservations.status, "active"),
-          ),
-        );
+  private async confirmOrderBoundDispenseSucceededInTransaction(
+    tx: DrizzleTransaction,
+    input: ConfirmOrderBoundDispenseInput,
+  ): Promise<boolean> {
+    const result = await tx.execute(sql`
+      update inventories
+      set
+        on_hand_qty = on_hand_qty - ${input.context.quantity},
+        reserved_qty = reserved_qty - ${input.context.quantity},
+        updated_at = now()
+      where id = ${input.context.inventoryId}
+        and on_hand_qty >= ${input.context.quantity}
+        and reserved_qty >= ${input.context.quantity}
+        and exists (
+          select 1
+          from inventory_reservations
+          where order_id = ${input.context.orderId}
+            and inventory_id = ${input.context.inventoryId}
+            and status = 'active'
+            and quantity >= ${input.context.quantity}
+        )
+      returning id
+    `);
+    if ((result.rowCount ?? 0) !== 1) {
+      return false;
+    }
 
-      await tx.insert(inventoryMovements).values({
-        inventoryId: input.context.inventoryId,
-        deltaQty: -input.context.quantity,
-        reason: "purchase_confirmed",
-        orderId: input.context.orderId,
-        note: `machine_stock_movement:${input.rawMovementId}`,
-      });
+    await tx
+      .update(inventoryReservations)
+      .set({ status: "confirmed", updatedAt: new Date() })
+      .where(
+        and(
+          eq(inventoryReservations.orderId, input.context.orderId),
+          eq(inventoryReservations.inventoryId, input.context.inventoryId),
+          eq(inventoryReservations.status, "active"),
+        ),
+      );
 
-      const [currentOrder] = await tx
-        .select({
-          status: orders.status,
-          paymentState: orders.paymentState,
-        })
-        .from(orders)
-        .where(eq(orders.id, input.context.orderId));
-      if (currentOrder) {
-        const projectedStatus = projectOrderStatus({
-          paymentState: currentOrder.paymentState,
-          fulfillmentState: "dispensed",
-        });
-        await tx
-          .update(orders)
-          .set({
-            status: projectedStatus,
-            fulfillmentState: "dispensed",
-            dispensedAt: new Date(input.input.occurredAt),
-            updatedAt: new Date(),
-          })
-          .where(eq(orders.id, input.context.orderId));
-        if (currentOrder.status !== projectedStatus) {
-          await tx.insert(orderStatusEvents).values({
-            orderId: input.context.orderId,
-            fromStatus: currentOrder.status,
-            toStatus: projectedStatus,
-            reason: "machine_stock_dispense_succeeded",
-            metadata: { rawMovementId: input.rawMovementId },
-          });
-        }
-      }
-
-      return true;
+    await tx.insert(inventoryMovements).values({
+      inventoryId: input.context.inventoryId,
+      deltaQty: -input.context.quantity,
+      reason: "purchase_confirmed",
+      orderId: input.context.orderId,
+      note: `machine_stock_movement:${input.rawMovementId}`,
     });
+
+    const [currentOrder] = await tx
+      .select({
+        status: orders.status,
+        paymentState: orders.paymentState,
+      })
+      .from(orders)
+      .where(eq(orders.id, input.context.orderId));
+    if (currentOrder) {
+      const projectedStatus = projectOrderStatus({
+        paymentState: currentOrder.paymentState,
+        fulfillmentState: "dispensed",
+      });
+      await tx
+        .update(orders)
+        .set({
+          status: projectedStatus,
+          fulfillmentState: "dispensed",
+          dispensedAt: new Date(input.input.occurredAt),
+          updatedAt: new Date(),
+        })
+        .where(eq(orders.id, input.context.orderId));
+      if (currentOrder.status !== projectedStatus) {
+        await tx.insert(orderStatusEvents).values({
+          orderId: input.context.orderId,
+          fromStatus: currentOrder.status,
+          toStatus: projectedStatus,
+          reason: "machine_stock_dispense_succeeded",
+          metadata: { rawMovementId: input.rawMovementId },
+        });
+      }
+    }
+
+    return true;
   }
 
   private async insertRaw(
@@ -406,7 +444,21 @@ export class MachineStockMovementsRepository {
       saleSafetyBlockerSlotId: string | null;
     },
   ): Promise<StoredRawMachineStockMovement> {
-    const [row] = await this.db
+    return await this.insertRawInto(this.db, input, status);
+  }
+
+  private async insertRawInto(
+    db: DrizzleClient | DrizzleTransaction,
+    input: InsertRawMachineStockMovement,
+    status: {
+      status: "accepted" | "reconciliation";
+      reconciliationReason: string | null;
+      platformReviewStatus: string | null;
+      saleSafetyBlockerState: string | null;
+      saleSafetyBlockerSlotId: string | null;
+    },
+  ): Promise<StoredRawMachineStockMovement> {
+    const [row] = await db
       .insert(machineRawStockMovements)
       .values({
         machineId: input.machineId,

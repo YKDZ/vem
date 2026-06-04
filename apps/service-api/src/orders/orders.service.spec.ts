@@ -659,6 +659,7 @@ type OrdersDbHarness = {
     toStatus: string;
     reason: string;
   }>;
+  insertedOrderItems: Array<Record<string, unknown>>;
   planogramContextRows?: Array<{
     planogramVersion: string;
     slotId: string;
@@ -763,6 +764,7 @@ function makeGenericTx(db: OrdersDbHarness) {
               {
                 inventoryId: "inv-001",
                 variantId: "var-001",
+                productId: "prod-001",
                 productName: "Cola",
                 sku: "COLA-355",
                 size: null,
@@ -834,6 +836,9 @@ function makeGenericTx(db: OrdersDbHarness) {
           reason: String(vals.reason),
         });
       }
+      if (vals?.productSnapshot && typeof vals.productSnapshot === "object") {
+        db.insertedOrderItems.push(vals);
+      }
       return {
         onConflictDoNothing: vi.fn().mockReturnValue({
           returning: vi.fn().mockResolvedValue([{ id: "evt-001" }]),
@@ -879,6 +884,9 @@ function makeGenericTxForCancellation(db: OrdersDbHarness) {
           reason: String(vals.reason),
         });
       }
+      if (vals?.productSnapshot && typeof vals.productSnapshot === "object") {
+        db.insertedOrderItems.push(vals);
+      }
       return {
         onConflictDoNothing: vi.fn().mockResolvedValue([]),
       };
@@ -909,6 +917,7 @@ function makeOrdersDbForSuccessfulLocalDraft(options?: {
     update: vi.fn(),
     transaction: vi.fn(),
     orderStatusEvents: [],
+    insertedOrderItems: [],
     planogramContextRows: options?.planogramContextRows ?? [
       {
         planogramVersion: "PLAN-ACTIVE",
@@ -1096,6 +1105,47 @@ describe("OrdersService (transaction boundary)", () => {
           orderId: "ord-001",
           inventoryId: "inv-001",
           quantity: 1,
+        }),
+      );
+    });
+
+    it("persists machine order line planogram and mapping snapshot for later dispense confirmation", async () => {
+      const db = makeOrdersDbForSuccessfulLocalDraft({
+        planogramContextRows: [
+          {
+            planogramVersion: "PLAN-ACTIVE",
+            slotId: "slot-001",
+            slotCode: "A1",
+            inventoryId: "inv-001",
+          },
+        ],
+      });
+      const service = makeOrdersService({ db });
+
+      await service.createMachineOrder({
+        machineCode: "M-001",
+        items: [
+          {
+            inventoryId: "inv-001",
+            quantity: 1,
+            planogramVersion: "PLAN-ACTIVE",
+            slotId: "slot-001",
+            slotCode: "A1",
+          },
+        ],
+        paymentMethod: "payment_code",
+        paymentProviderCode: "alipay",
+      });
+
+      expect(db.insertedOrderItems[0]?.productSnapshot).toEqual(
+        expect.objectContaining({
+          productId: "prod-001",
+          variantId: "var-001",
+          inventoryId: "inv-001",
+          planogramVersion: "PLAN-ACTIVE",
+          slotId: "slot-001",
+          slotCode: "A1",
+          vendingCommandQuantity: 1,
         }),
       );
     });

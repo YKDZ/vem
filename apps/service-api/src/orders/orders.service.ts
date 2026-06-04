@@ -378,6 +378,7 @@ export class OrdersService {
         .select({
           inventoryId: inventories.id,
           variantId: productVariants.id,
+          productId: products.id,
           productName: products.name,
           sku: productVariants.sku,
           size: productVariants.size,
@@ -469,12 +470,18 @@ export class OrdersService {
           unitPriceCents: item.unitPriceCents,
           productSnapshot: {
             productName: item.productName,
-            sku: item.sku,
-            size: item.size,
-            color: item.color,
+            productId: item.productId,
+            variantId: item.variantId,
+            inventoryId: item.inventoryId,
+            planogramVersion: item.planogramVersion,
+            slotId: item.slotId,
             slotCode: item.slotCode,
             layerNo: item.layerNo,
             cellNo: item.cellNo,
+            vendingCommandQuantity: item.quantity,
+            sku: item.sku,
+            size: item.size,
+            color: item.color,
           },
         });
       }, Promise.resolve());
@@ -997,8 +1004,6 @@ function resolveMachineOrderNextAction(
   if (paymentState === "refunded" || paymentState === "partial_refunded") {
     return "refunded";
   }
-  if (orderStatus === "closed") return "closed";
-
   if (paymentState === "payment_expired" || paymentStatus === "expired") {
     return "payment_expired";
   }

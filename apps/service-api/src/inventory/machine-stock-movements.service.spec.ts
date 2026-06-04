@@ -37,7 +37,9 @@ class InMemoryMovementRepository {
     quantity: 1,
     vendingCommandId: "vcmd-001",
   };
+  orderBoundDispenseContextPlanogramVersion: string | null = null;
   readonly confirmationInputs: ConfirmOrderBoundDispenseInput[] = [];
+  confirmOrderBoundDispenseResult = true;
 
   async findByMachineMovement(
     machineId: string,
@@ -61,6 +63,37 @@ class InMemoryMovementRepository {
       saleSafetyBlockerState: null,
       saleSafetyBlockerSlotId: null,
     };
+    this.rows.set(`${input.machineId}:${input.input.movementId}`, row);
+    return row;
+  }
+
+  async insertAcceptedWithOrderBoundDispenseConfirmation(
+    input: Omit<InsertRawMachineStockMovement, "input"> & {
+      input: RawMachineStockMovement & { movementType: "dispense_succeeded" };
+      context: OrderBoundDispenseConfirmationContext;
+    },
+  ): Promise<StoredRawMachineStockMovement | null> {
+    const row: StoredRawMachineStockMovement = {
+      id: `raw-${this.rows.size + 1}`,
+      machineId: input.machineId,
+      movementId: input.input.movementId,
+      payloadHash: input.payloadHash,
+      status: "accepted",
+      receivedAt: new Date("2026-06-04T00:00:00.000Z"),
+      reconciliationReason: null,
+      platformReviewStatus: null,
+      saleSafetyBlockerState: null,
+      saleSafetyBlockerSlotId: null,
+    };
+    const confirmed = await this.confirmOrderBoundDispenseSucceeded({
+      machineId: input.machineId,
+      rawMovementId: row.id,
+      input: input.input,
+      context: input.context,
+    });
+    if (!confirmed) {
+      return null;
+    }
     this.rows.set(`${input.machineId}:${input.input.movementId}`, row);
     return row;
   }
@@ -138,7 +171,16 @@ class InMemoryMovementRepository {
     return this.movementContext;
   }
 
-  async getOrderBoundDispenseConfirmationContext() {
+  async getOrderBoundDispenseConfirmationContext(
+    _machineId: string,
+    input: RawMachineStockMovement & { movementType: "dispense_succeeded" },
+  ) {
+    if (
+      this.orderBoundDispenseContextPlanogramVersion &&
+      input.planogramVersion !== this.orderBoundDispenseContextPlanogramVersion
+    ) {
+      return null;
+    }
     return this.orderBoundDispenseContext;
   }
 
@@ -146,7 +188,7 @@ class InMemoryMovementRepository {
     input: ConfirmOrderBoundDispenseInput,
   ): Promise<boolean> {
     this.confirmationInputs.push(input);
-    return true;
+    return this.confirmOrderBoundDispenseResult;
   }
 
   get size(): number {
@@ -421,6 +463,39 @@ describe("MachineStockMovementsService", () => {
     );
   });
 
+  it("rejects an order-bound dispense_succeeded movement when inventory confirmation cannot commit", async () => {
+    const repo = new InMemoryMovementRepository();
+    repo.confirmOrderBoundDispenseResult = false;
+    const service = new MachineStockMovementsService(repo as never);
+    const dispenseMovement: RawMachineStockMovement = {
+      ...movement,
+      movementId: "MOVE-DISPENSE-CONFIRM-FAILED",
+      movementType: "dispense_succeeded",
+      quantity: 1,
+      source: "vending_command",
+      attributedTo: null,
+      orderContext: {
+        orderNo: "ORD001",
+        orderItemId: "550e8400-e29b-41d4-a716-446655440101",
+        vendingCommandNo: "VCMD001",
+        inventoryId: "550e8400-e29b-41d4-a716-446655440201",
+      },
+    };
+
+    const rejected = await service.receiveRawMovement(
+      machine,
+      dispenseMovement,
+    );
+    const retry = await service.receiveRawMovement(machine, dispenseMovement);
+
+    expect(rejected.status).toBe("rejected");
+    expect(rejected.acceptedAt).toBeNull();
+    expect(rejected.rejection?.reason).toBe("order_confirmation_failed");
+    expect(repo.rowFor(machine.id, dispenseMovement.movementId)).toBeNull();
+    expect(retry.status).toBe("rejected");
+    expect(repo.confirmationInputs).toHaveLength(2);
+  });
+
   it("does not confirm a duplicate dispense_succeeded movement twice", async () => {
     const repo = new InMemoryMovementRepository();
     const service = new MachineStockMovementsService(repo as never);
@@ -447,6 +522,48 @@ describe("MachineStockMovementsService", () => {
 
     expect(duplicate.status).toBe("already_accepted");
     expect(repo.confirmationInputs).toHaveLength(1);
+  });
+
+  it("matches order-bound dispense_succeeded against the order planogram snapshot instead of the current active planogram", async () => {
+    const repo = new InMemoryMovementRepository();
+    repo.movementContext = {
+      machineSlotKnown: true,
+      planogramKnown: true,
+      planogramActive: false,
+      slotInPlanogram: true,
+    };
+    repo.orderBoundDispenseContextPlanogramVersion = "PLAN-1";
+    const service = new MachineStockMovementsService(repo as never);
+    const baseDispenseMovement: RawMachineStockMovement = {
+      ...movement,
+      movementType: "dispense_succeeded",
+      quantity: 1,
+      source: "vending_command",
+      attributedTo: null,
+      orderContext: {
+        orderNo: "ORD001",
+        orderItemId: "550e8400-e29b-41d4-a716-446655440101",
+        vendingCommandNo: "VCMD001",
+        inventoryId: "550e8400-e29b-41d4-a716-446655440201",
+      },
+    };
+
+    const v2Movement = await service.receiveRawMovement(machine, {
+      ...baseDispenseMovement,
+      movementId: "MOVE-DISPENSE-PLAN-V2",
+      planogramVersion: "PLAN-2",
+    });
+    const v1Movement = await service.receiveRawMovement(machine, {
+      ...baseDispenseMovement,
+      movementId: "MOVE-DISPENSE-PLAN-V1",
+      planogramVersion: "PLAN-1",
+    });
+
+    expect(v2Movement.status).toBe("reconciliation");
+    expect(v2Movement.reconciliation?.reason).toBe("order_context_mismatch");
+    expect(v1Movement.status).toBe("accepted");
+    expect(repo.confirmationInputs).toHaveLength(1);
+    expect(repo.confirmationInputs[0]?.input.planogramVersion).toBe("PLAN-1");
   });
 
   it("sends dispense_succeeded with mismatched order context to reconciliation", async () => {
