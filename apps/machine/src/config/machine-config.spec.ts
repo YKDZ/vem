@@ -20,6 +20,11 @@ describe("machine config", () => {
       mqttUrl: "mqtt://localhost:1883",
       hardwareAdapter: "mock",
       serialPortPath: null,
+      lowerControllerUsbIdentity: {
+        vendorId: "1A86",
+        productId: "55D3",
+        serialNumber: null,
+      },
       scannerAdapter: "disabled",
       scannerSerialPortPath: null,
       scannerBaudRate: 9600,
@@ -93,10 +98,39 @@ describe("machine config", () => {
     );
   });
 
-  it("requires serialPortPath for serial adapter", () => {
-    expect(() => normalizeMachineConfig({ hardwareAdapter: "serial" })).toThrow(
-      /serialPortPath/,
+  it("allows serial adapter with default lower controller USB identity", () => {
+    expect(normalizeMachineConfig({ hardwareAdapter: "serial" })).toMatchObject(
+      {
+        hardwareAdapter: "serial",
+        serialPortPath: null,
+        lowerControllerUsbIdentity: {
+          vendorId: "1A86",
+          productId: "55D3",
+          serialNumber: null,
+        },
+      },
     );
+  });
+
+  it("requires a lower controller USB identity or manual port for serial adapter", () => {
+    expect(() =>
+      normalizeMachineConfig({
+        hardwareAdapter: "serial",
+        lowerControllerUsbIdentity: null,
+      }),
+    ).toThrow(/lowerControllerUsbIdentity/);
+  });
+
+  it("normalizes lower controller USB identity", () => {
+    expect(
+      normalizeMachineConfig({
+        lowerControllerUsbIdentity: {
+          vendorId: "1a86",
+          productId: "55d3",
+          serialNumber: "   ",
+        },
+      }).lowerControllerUsbIdentity,
+    ).toEqual({ vendorId: "1A86", productId: "55D3", serialNumber: null });
   });
 
   it("requires scannerSerialPortPath for serial_text scanner adapter", () => {

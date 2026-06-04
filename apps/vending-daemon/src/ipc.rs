@@ -46,6 +46,7 @@ pub struct CatalogSnapshot {
 #[derive(Clone)]
 pub struct RuntimeStatusCache {
     pub sync: Arc<tokio::sync::RwLock<vending_core::domain::SyncStatusSnapshot>>,
+    pub hardware: Arc<tokio::sync::RwLock<vending_core::hardware::HardwareStatus>>,
     pub scanner: Arc<tokio::sync::RwLock<vending_core::scanner::ScannerHealthSnapshot>>,
     pub vision: Arc<tokio::sync::RwLock<VisionStatusSnapshot>>,
     pub catalog: Arc<tokio::sync::RwLock<CatalogSnapshot>>,
@@ -73,6 +74,23 @@ impl RuntimeStatusCache {
                     next_retry_at: None,
                     last_error: None,
                     tls_auth_status: None,
+                },
+            )),
+            hardware: Arc::new(tokio::sync::RwLock::new(
+                vending_core::hardware::HardwareStatus {
+                    adapter: serde_json::to_value(&public.hardware_adapter)
+                        .ok()
+                        .and_then(|value| value.as_str().map(ToString::to_string))
+                        .unwrap_or_else(|| "unknown".to_string()),
+                    online: matches!(
+                        public.hardware_adapter,
+                        crate::config::HardwareAdapterKind::Mock
+                    ),
+                    message: "hardware runtime initializing".to_string(),
+                    port_path: None,
+                    resolution_source: None,
+                    bound_usb_identity: None,
+                    candidates: vec![],
                 },
             )),
             scanner: Arc::new(tokio::sync::RwLock::new(
@@ -293,6 +311,31 @@ struct EventQuery {
 async fn healthz(State(ctx): State<IpcContext>) -> impl IntoResponse {
     let agg = crate::health::HealthAggregator::new(ctx.state.clone());
     let mut snapshot = agg.health_snapshot().await;
+    let hardware = ctx.ui.status_cache.hardware.read().await.clone();
+    snapshot.hardware_online = hardware.online;
+    let hardware_code = if hardware.online {
+        "HARDWARE_READY"
+    } else {
+        "LOWER_CONTROLLER_UNAVAILABLE"
+    };
+    snapshot
+        .components
+        .push(vending_core::health::ComponentHealth {
+            component: "hardware".to_string(),
+            level: if hardware.online {
+                vending_core::health::HealthLevel::Ok
+            } else {
+                vending_core::health::HealthLevel::Offline
+            },
+            code: hardware_code.to_string(),
+            message: hardware.message.clone(),
+            updated_at: crate::state::store::now_iso(),
+        });
+    if !hardware.online {
+        snapshot.status = vending_core::health::DaemonUiStatus::Degraded;
+        snapshot.operator_reason = hardware_code.to_string();
+    }
+
     let scanner = ctx.ui.status_cache.scanner.read().await.clone();
     snapshot.scanner_online = scanner.online;
     snapshot
@@ -304,7 +347,7 @@ async fn healthz(State(ctx): State<IpcContext>) -> impl IntoResponse {
             message: scanner.message.clone(),
             updated_at: scanner.updated_at.clone(),
         });
-    if !scanner.online {
+    if !scanner.online && snapshot.operator_reason.is_empty() {
         snapshot.status = vending_core::health::DaemonUiStatus::Degraded;
         snapshot.operator_reason = scanner.code.clone();
     }
@@ -313,7 +356,31 @@ async fn healthz(State(ctx): State<IpcContext>) -> impl IntoResponse {
 
 async fn readyz(State(ctx): State<IpcContext>) -> impl IntoResponse {
     let agg = crate::health::HealthAggregator::new(ctx.state.clone());
-    Json(agg.ready_snapshot().await)
+    let mut ready = agg.ready_snapshot().await;
+    let hardware = ctx.ui.status_cache.hardware.read().await.clone();
+    if !hardware.online {
+        ready.ready = false;
+        ready.can_sell = false;
+        ready.mode = "maintenance".to_string();
+        if !ready
+            .blocking_codes
+            .iter()
+            .any(|code| code == "LOWER_CONTROLLER_UNAVAILABLE")
+        {
+            ready
+                .blocking_codes
+                .push("LOWER_CONTROLLER_UNAVAILABLE".to_string());
+        }
+        ready
+            .blocking_reasons
+            .push(vending_core::health::ReadyReason {
+                code: "LOWER_CONTROLLER_UNAVAILABLE".to_string(),
+                component: "hardware".to_string(),
+                message: hardware.message,
+            });
+        ready.suggested_route = vending_core::health::SuggestedRoute::Maintenance;
+    }
+    Json(ready)
 }
 
 async fn get_config(State(ctx): State<IpcContext>, headers: HeaderMap) -> impl IntoResponse {
@@ -732,17 +799,47 @@ async fn hardware_self_check(
         }
     };
 
-    let (online, message) = match crate::hardware::HardwareSupervisor::from_config(&public) {
-        Ok(supervisor) => {
-            let status = supervisor.self_check().await;
-            (status.online, status.message)
-        }
-        Err(error) => (false, error),
+    let mut config_updated = false;
+    let status = match crate::hardware::HardwareSupervisor::from_config(&public) {
+        Ok(supervisor) => supervisor.self_check().await,
+        Err(error) => vending_core::hardware::HardwareStatus {
+            adapter: serde_json::to_value(&public.hardware_adapter)
+                .ok()
+                .and_then(|value| value.as_str().map(ToString::to_string))
+                .unwrap_or_else(|| "unknown".to_string()),
+            online: false,
+            message: error,
+            port_path: None,
+            resolution_source: Some("unresolved".to_string()),
+            bound_usb_identity: None,
+            candidates: vec![],
+        },
     };
+
+    if let Some(bound_identity) = status.bound_usb_identity.clone() {
+        let should_update = public
+            .lower_controller_usb_identity
+            .as_ref()
+            .is_some_and(|identity| identity.serial_number.is_none());
+        if should_update {
+            let mut updated = public.clone();
+            updated.lower_controller_usb_identity = Some(bound_identity);
+            if ctx.config_store.save_public_config(updated).await.is_ok() {
+                config_updated = true;
+            }
+        }
+    }
+
+    *ctx.ui.status_cache.hardware.write().await = status.clone();
     Json(serde_json::json!({
-        "adapter": public.hardware_adapter,
-        "online": online,
-        "message": message,
+        "adapter": status.adapter,
+        "online": status.online,
+        "message": status.message,
+        "portPath": status.port_path,
+        "resolutionSource": status.resolution_source,
+        "boundUsbIdentity": status.bound_usb_identity,
+        "candidates": status.candidates,
+        "configUpdated": config_updated,
     }))
     .into_response()
 }

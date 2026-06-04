@@ -10,6 +10,20 @@ export const hardwareAdapterSchema = z.enum([
 
 export const scannerAdapterSchema = z.enum(["disabled", "serial_text"]);
 
+const usbHexIdSchema = z
+  .string()
+  .trim()
+  .regex(/^[0-9a-fA-F]{4}$/, "must be a 4-character hexadecimal USB id")
+  .transform((value) => value.toUpperCase());
+
+export const lowerControllerUsbIdentitySchema = z
+  .object({
+    vendorId: usbHexIdSchema,
+    productId: usbHexIdSchema,
+    serialNumber: z.string().trim().min(1).max(128).nullable().default(null),
+  })
+  .nullable();
+
 export const machineConfigSchema = z
   .object({
     machineCode: z.string().trim().min(1).max(64).nullable().default(null),
@@ -34,6 +48,11 @@ export const machineConfigSchema = z
     mqttUrl: z.string().trim().min(1).default("mqtt://localhost:1883"),
     hardwareAdapter: hardwareAdapterSchema.default("mock"),
     serialPortPath: z.string().trim().min(1).max(256).nullable().default(null),
+    lowerControllerUsbIdentity: lowerControllerUsbIdentitySchema.default({
+      vendorId: "1A86",
+      productId: "55D3",
+      serialNumber: null,
+    }),
     scannerAdapter: scannerAdapterSchema.default("disabled"),
     scannerSerialPortPath: z
       .string()
@@ -65,11 +84,16 @@ export const machineConfigSchema = z
     kioskMode: z.boolean().default(false),
   })
   .superRefine((data, ctx) => {
-    if (data.hardwareAdapter === "serial" && !data.serialPortPath) {
+    if (
+      data.hardwareAdapter === "serial" &&
+      !data.serialPortPath &&
+      !data.lowerControllerUsbIdentity
+    ) {
       ctx.addIssue({
         code: "custom",
-        path: ["serialPortPath"],
-        message: "serialPortPath is required when hardwareAdapter=serial",
+        path: ["lowerControllerUsbIdentity"],
+        message:
+          "lowerControllerUsbIdentity or serialPortPath is required when hardwareAdapter=serial",
       });
     }
     if (data.scannerAdapter === "serial_text" && !data.scannerSerialPortPath) {
@@ -141,6 +165,20 @@ export function normalizeMachineConfig(input: unknown): MachineConfig {
     const trimmed = processed.serialPortPath.trim();
     processed.serialPortPath = trimmed.length > 0 ? trimmed : null;
   }
+  if (
+    typeof processed.lowerControllerUsbIdentity === "object" &&
+    processed.lowerControllerUsbIdentity !== null &&
+    !Array.isArray(processed.lowerControllerUsbIdentity)
+  ) {
+    const identity = processed.lowerControllerUsbIdentity as Record<
+      string,
+      unknown
+    >;
+    if (typeof identity.serialNumber === "string") {
+      const trimmed = identity.serialNumber.trim();
+      identity.serialNumber = trimmed.length > 0 ? trimmed : null;
+    }
+  }
   if (typeof processed.scannerSerialPortPath === "string") {
     const trimmed = processed.scannerSerialPortPath.trim();
     processed.scannerSerialPortPath = trimmed.length > 0 ? trimmed : null;
@@ -179,6 +217,7 @@ export function normalizeMachineConfig(input: unknown): MachineConfig {
     apiBaseUrl: parsed.apiBaseUrl.replace(/\/+$/, ""),
     mqttUrl: parsed.mqttUrl.trim(),
     serialPortPath: parsed.serialPortPath?.trim() || null,
+    lowerControllerUsbIdentity: parsed.lowerControllerUsbIdentity,
     scannerSerialPortPath: parsed.scannerSerialPortPath?.trim() || null,
     visionWsUrl: parsed.visionWsUrl.trim(),
     visionProcessCommand: parsed.visionProcessCommand?.trim() || null,

@@ -57,3 +57,19 @@ pub async fn send_lower_code(master: &mut tokio::fs::File, code: u8) {
         .expect("write lower code");
     master.flush().await.expect("flush");
 }
+
+pub async fn respond_to_handshake(master: &mut tokio::fs::File) {
+    let mut frame = [0_u8; 2];
+    master
+        .read_exact(&mut frame)
+        .await
+        .expect("read handshake frame");
+    assert_eq!(
+        frame,
+        [
+            vending_core::serial::FRAME_HEAD,
+            vending_core::serial::build_status_query_frame()[1],
+        ]
+    );
+    send_lower_code(master, 0xAA).await;
+}

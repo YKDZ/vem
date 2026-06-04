@@ -3,7 +3,10 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use tokio::sync::{broadcast, mpsc};
+use tokio::{
+    sync::{broadcast, mpsc},
+    time,
+};
 use tokio_util::sync::CancellationToken;
 
 use crate::{
@@ -151,6 +154,11 @@ pub async fn run_console_with_token(
         machine_secret: runtime_secrets.machine_secret.clone(),
         shutdown: stop_token.clone(),
     }));
+    let hardware_health = tokio::spawn(run_hardware_health_watcher(
+        hardware.clone(),
+        ipc_ctx.ui.status_cache.clone(),
+        stop_token.clone(),
+    ));
 
     let vision = VisionSupervisor::new(runtime_config.public.clone());
     let vision_events = events_tx.clone();
@@ -168,7 +176,13 @@ pub async fn run_console_with_token(
         });
     });
 
-    let mut tasks = vec![cache_updates, scanner, payment_watcher, ipc_task];
+    let mut tasks = vec![
+        cache_updates,
+        scanner,
+        payment_watcher,
+        hardware_health,
+        ipc_task,
+    ];
     if let Some(runtime_mqtt) = maybe_spawn_mqtt_task(
         &runtime_config.public,
         &runtime_secrets,
@@ -323,6 +337,22 @@ async fn write_ready_file(path: &Path, bind: SocketAddr, token: &str) -> Result<
     )
     .await
     .map_err(|error| format!("write ready file failed: {error}"))
+}
+
+async fn run_hardware_health_watcher(
+    hardware: HardwareSupervisor,
+    status_cache: ipc::RuntimeStatusCache,
+    shutdown: CancellationToken,
+) -> Result<(), String> {
+    loop {
+        let status = hardware.self_check().await;
+        *status_cache.hardware.write().await = status;
+        tokio::select! {
+            _ = time::sleep(std::time::Duration::from_secs(10)) => {}
+            _ = shutdown.cancelled() => break,
+        }
+    }
+    Ok(())
 }
 
 async fn cache_daemon_events(

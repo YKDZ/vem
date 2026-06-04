@@ -592,6 +592,10 @@ mod tests {
                 adapter: "recording".to_string(),
                 online: true,
                 message: "recording adapter ready".to_string(),
+                port_path: None,
+                resolution_source: None,
+                bound_usb_identity: None,
+                candidates: vec![],
             }
         }
 

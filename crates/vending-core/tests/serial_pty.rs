@@ -46,6 +46,7 @@ async fn serial_adapter_dispenses_once_on_ack_and_completed() {
     let writes = Arc::new(AtomicUsize::new(0));
     let writes_for_task = writes.clone();
     tokio::spawn(async move {
+        support::respond_to_handshake(&mut pty.master).await;
         let frame = support::read_single_dispense_frame(&mut pty.master).await;
         writes_for_task.fetch_add(1, Ordering::SeqCst);
         assert_eq!(frame, build_dispense_frame(2, 5).unwrap());
@@ -74,6 +75,7 @@ async fn serial_adapter_retries_busy_and_crc_before_success() {
     let writes = Arc::new(AtomicUsize::new(0));
     let writes_for_task = writes.clone();
     tokio::spawn(async move {
+        support::respond_to_handshake(&mut pty.master).await;
         for code in [0xE4, 0xE2, 0x00] {
             let frame = support::read_single_dispense_frame(&mut pty.master).await;
             assert_eq!(frame[0], FRAME_HEAD);
@@ -102,6 +104,7 @@ async fn serial_adapter_reports_mechanical_fault_after_ack() {
     let mut pty = support::open_pty();
     let slave_path = pty.slave_path.clone();
     tokio::spawn(async move {
+        support::respond_to_handshake(&mut pty.master).await;
         let _frame = support::read_single_dispense_frame(&mut pty.master).await;
         support::send_lower_code(&mut pty.master, 0x00).await;
         sleep(Duration::from_millis(10)).await;
@@ -126,6 +129,7 @@ async fn serial_adapter_serializes_environment_control_behind_active_dispense() 
     let mut pty = support::open_pty();
     let slave_path = pty.slave_path.clone();
     tokio::spawn(async move {
+        support::respond_to_handshake(&mut pty.master).await;
         let frame = support::read_single_dispense_frame(&mut pty.master).await;
         assert_eq!(frame, build_dispense_frame(2, 5).unwrap());
         support::send_lower_code(&mut pty.master, 0x00).await;
@@ -148,6 +152,7 @@ async fn serial_adapter_serializes_environment_control_behind_active_dispense() 
         fcntl(fd, FcntlArg::F_SETFL(original_flags)).expect("restore pty flags");
 
         support::send_lower_code(&mut pty.master, 0xF1).await;
+        support::respond_to_handshake(&mut pty.master).await;
         let mut switch_frame = [0_u8; 3];
         tokio::io::AsyncReadExt::read_exact(&mut pty.master, &mut switch_frame)
             .await
@@ -190,6 +195,7 @@ async fn serial_adapter_sets_target_temperature_on_v1_echo() {
     let mut pty = support::open_pty();
     let slave_path = pty.slave_path.clone();
     tokio::spawn(async move {
+        support::respond_to_handshake(&mut pty.master).await;
         let mut frame = [0_u8; 3];
         tokio::io::AsyncReadExt::read_exact(&mut pty.master, &mut frame)
             .await
@@ -216,6 +222,7 @@ async fn serial_adapter_switches_air_conditioner_on_v1_echo() {
     let mut pty = support::open_pty();
     let slave_path = pty.slave_path.clone();
     tokio::spawn(async move {
+        support::respond_to_handshake(&mut pty.master).await;
         let mut frame = [0_u8; 3];
         tokio::io::AsyncReadExt::read_exact(&mut pty.master, &mut frame)
             .await
@@ -245,6 +252,7 @@ async fn serial_adapter_reports_target_temperature_e1_rejection() {
     let mut pty = support::open_pty();
     let slave_path = pty.slave_path.clone();
     tokio::spawn(async move {
+        support::respond_to_handshake(&mut pty.master).await;
         let mut frame = [0_u8; 3];
         tokio::io::AsyncReadExt::read_exact(&mut pty.master, &mut frame)
             .await
@@ -269,6 +277,7 @@ async fn serial_adapter_reports_air_conditioner_e1_rejection() {
     let mut pty = support::open_pty();
     let slave_path = pty.slave_path.clone();
     tokio::spawn(async move {
+        support::respond_to_handshake(&mut pty.master).await;
         let mut frame = [0_u8; 3];
         tokio::io::AsyncReadExt::read_exact(&mut pty.master, &mut frame)
             .await
@@ -296,6 +305,7 @@ async fn serial_adapter_queries_v1_environment_sample() {
     let mut pty = support::open_pty();
     let slave_path = pty.slave_path.clone();
     tokio::spawn(async move {
+        support::respond_to_handshake(&mut pty.master).await;
         let mut frame = [0_u8; 2];
         tokio::io::AsyncReadExt::read_exact(&mut pty.master, &mut frame)
             .await

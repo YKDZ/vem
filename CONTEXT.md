@@ -20,6 +20,10 @@ _Avoid_: Remote operation, sensor reading
 A vending machine's high-level availability for operations such as accepting orders and dispensing goods.
 _Avoid_: Sensor status, environment status
 
+**Lower Controller**:
+The embedded controller in a vending machine that executes physical dispensing and environment-control actions requested by the application.
+_Avoid_: Serial device, USB device, hardware adapter
+
 **Environment Capability Fault**:
 A fault in a machine's environment sensing or control capability that does not by itself mean the machine is unavailable for sales.
 _Avoid_: Offline machine, maintenance status
