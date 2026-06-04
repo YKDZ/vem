@@ -433,6 +433,10 @@ export const machinePlanogramVersions = t.pgTable(
       .uniqueIndex("machine_planogram_versions_machine_version_unique")
       .on(table.machineId, table.planogramVersion),
     t
+      .uniqueIndex("machine_planogram_versions_machine_active_unique")
+      .on(table.machineId)
+      .where(sql`${table.status} = 'active'`),
+    t
       .index("machine_planogram_versions_machine_status_idx")
       .on(table.machineId, table.status),
     t.check(

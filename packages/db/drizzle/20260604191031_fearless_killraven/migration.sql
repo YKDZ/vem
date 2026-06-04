@@ -41,12 +41,11 @@ CREATE TABLE "machine_planogram_versions" (
 	CONSTRAINT "machine_planogram_versions_status_enum" CHECK ("status" IN ('published', 'active', 'retired'))
 );
 --> statement-breakpoint
-ALTER TABLE "product_variants" ADD COLUMN "target_gender" varchar(8);--> statement-breakpoint
 CREATE UNIQUE INDEX "machine_planogram_slots_version_slot_unique" ON "machine_planogram_slots" ("machine_planogram_version_id","slot_id");--> statement-breakpoint
 CREATE INDEX "machine_planogram_slots_version_idx" ON "machine_planogram_slots" ("machine_planogram_version_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "machine_planogram_versions_machine_version_unique" ON "machine_planogram_versions" ("machine_id","planogram_version");--> statement-breakpoint
+CREATE UNIQUE INDEX "machine_planogram_versions_machine_active_unique" ON "machine_planogram_versions" ("machine_id") WHERE "status" = 'active';--> statement-breakpoint
 CREATE INDEX "machine_planogram_versions_machine_status_idx" ON "machine_planogram_versions" ("machine_id","status");--> statement-breakpoint
 ALTER TABLE "machine_planogram_slots" ADD CONSTRAINT "machine_planogram_slots_0Y5Uv57BAkq4_fkey" FOREIGN KEY ("machine_planogram_version_id") REFERENCES "machine_planogram_versions"("id");--> statement-breakpoint
 ALTER TABLE "machine_planogram_slots" ADD CONSTRAINT "machine_planogram_slots_slot_id_machine_slots_id_fkey" FOREIGN KEY ("slot_id") REFERENCES "machine_slots"("id");--> statement-breakpoint
 ALTER TABLE "machine_planogram_versions" ADD CONSTRAINT "machine_planogram_versions_machine_id_machines_id_fkey" FOREIGN KEY ("machine_id") REFERENCES "machines"("id");--> statement-breakpoint
-ALTER TABLE "product_variants" ADD CONSTRAINT "product_variants_target_gender_enum" CHECK ("target_gender" IS NULL OR "target_gender" IN ('male', 'female'));

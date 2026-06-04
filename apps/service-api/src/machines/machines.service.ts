@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Inject,
   Injectable,
   Logger,
@@ -418,6 +419,23 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
       throw new NotFoundException("Machine not found");
     }
 
+    const slotIds = [...new Set(planogram.slots.map((slot) => slot.slotId))];
+    const ownedSlots = await this.db
+      .select({ id: machineSlots.id })
+      .from(machineSlots)
+      .where(
+        and(
+          eq(machineSlots.machineId, machine.id),
+          inArray(machineSlots.id, slotIds),
+          isNull(machineSlots.deletedAt),
+        ),
+      );
+    if (ownedSlots.length !== slotIds.length) {
+      throw new BadRequestException(
+        "Planogram slots must belong to the target machine",
+      );
+    }
+
     const created = await this.db.transaction(async (tx) => {
       const [version] = await tx
         .insert(machinePlanogramVersions)
@@ -539,6 +557,31 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
 
     const now = new Date();
     const activated = await this.db.transaction(async (tx) => {
+      const findTargetVersion = async () => {
+        const [version] = await tx
+          .select()
+          .from(machinePlanogramVersions)
+          .where(
+            and(
+              eq(machinePlanogramVersions.machineId, machine.id),
+              eq(machinePlanogramVersions.planogramVersion, planogramVersion),
+            ),
+          )
+          .limit(1);
+        return version;
+      };
+
+      const targetVersion = await findTargetVersion();
+      if (!targetVersion) {
+        throw new NotFoundException("Machine planogram version not found");
+      }
+      if (targetVersion.status === "active") {
+        return targetVersion;
+      }
+      if (targetVersion.status !== "published") {
+        throw new NotFoundException("Machine planogram version not found");
+      }
+
       await tx
         .update(machinePlanogramVersions)
         .set({ status: "retired", updatedAt: now })
@@ -560,17 +603,22 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
         .where(
           and(
             eq(machinePlanogramVersions.machineId, machine.id),
-            eq(machinePlanogramVersions.planogramVersion, planogramVersion),
+            eq(machinePlanogramVersions.id, targetVersion.id),
             eq(machinePlanogramVersions.status, "published"),
           ),
         )
         .returning();
 
-      if (!version) {
-        throw new NotFoundException("Machine planogram version not found");
+      if (version) {
+        return version;
       }
 
-      return version;
+      const repeatedAck = await findTargetVersion();
+      if (repeatedAck?.status === "active") {
+        return repeatedAck;
+      }
+
+      throw new NotFoundException("Machine planogram version not found");
     });
 
     return planogramVersionSnapshot(machine, activated, []);

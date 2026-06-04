@@ -7498,6 +7498,27 @@
           "asc": true,
           "nullsFirst": false,
           "opclass": null
+        }
+      ],
+      "isUnique": true,
+      "where": "\"status\" = 'active'",
+      "with": "",
+      "method": "btree",
+      "concurrently": false,
+      "name": "machine_planogram_versions_machine_active_unique",
+      "entityType": "indexes",
+      "schema": "public",
+      "table": "machine_planogram_versions"
+    },
+    {
+      "nameExplicit": true,
+      "columns": [
+        {
+          "value": "machine_id",
+          "isExpression": false,
+          "asc": true,
+          "nullsFirst": false,
+          "opclass": null
         },
         {
           "value": "status",

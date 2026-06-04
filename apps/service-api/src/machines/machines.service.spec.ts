@@ -1,4 +1,4 @@
-import { NotFoundException } from "@nestjs/common";
+import { BadRequestException, NotFoundException } from "@nestjs/common";
 import { Test } from "@nestjs/testing";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -551,9 +551,13 @@ describe("MachinesService planogram lifecycle", () => {
         .mockReturnValueOnce({ values: insertVersionValues })
         .mockReturnValueOnce({ values: insertSlotsValues }),
     };
-    mockDb.select.mockReturnValueOnce({
-      from: () => ({ where: () => ({ limit: async () => [machine] }) }),
-    });
+    mockDb.select
+      .mockReturnValueOnce({
+        from: () => ({ where: () => ({ limit: async () => [machine] }) }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({ where: async () => [{ id: slot.slotId }] }),
+      });
     mockDb.transaction.mockImplementationOnce(
       async (cb: (txArg: typeof tx) => Promise<unknown>) => await cb(tx),
     );
@@ -585,6 +589,28 @@ describe("MachinesService planogram lifecycle", () => {
         resourceId: machine.id,
       }),
     );
+  });
+
+  it("rejects a planogram slot that does not belong to the target machine", async () => {
+    const machine = {
+      id: "550e8400-e29b-41d4-a716-446655440000",
+      code: "M001",
+    };
+    mockDb.select
+      .mockReturnValueOnce({
+        from: () => ({ where: () => ({ limit: async () => [machine] }) }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({ where: async () => [] }),
+      });
+    await expect(
+      service.publishMachinePlanogramVersion(
+        machine.id,
+        { planogramVersion: "PLAN-1", slots: [slot] },
+        "admin-1",
+      ),
+    ).rejects.toThrow(BadRequestException);
+    expect(mockDb.transaction).not.toHaveBeenCalled();
   });
 
   it("reports no active planogram until an acknowledged version is active", async () => {
@@ -651,15 +677,22 @@ describe("MachinesService planogram lifecycle", () => {
       id: "550e8400-e29b-41d4-a716-446655440000",
       code: "M001",
     };
-    const activated = {
+    const published = {
       id: "550e8400-e29b-41d4-a716-446655440010",
       machineId: machine.id,
       planogramVersion: "PLAN-1",
-      status: "active",
+      status: "published",
       publishedAt: new Date("2026-06-04T12:00:00.000Z"),
+      acknowledgedAt: null,
+      activeAt: null,
+      createdAt: new Date("2026-06-04T12:00:00.000Z"),
+      updatedAt: new Date("2026-06-04T12:00:00.000Z"),
+    };
+    const activated = {
+      ...published,
+      status: "active",
       acknowledgedAt: new Date("2026-06-04T12:05:00.000Z"),
       activeAt: new Date("2026-06-04T12:05:00.000Z"),
-      createdAt: new Date("2026-06-04T12:00:00.000Z"),
       updatedAt: new Date("2026-06-04T12:05:00.000Z"),
     };
     const retireSet = vi.fn().mockReturnValue({ where: async () => undefined });
@@ -667,6 +700,9 @@ describe("MachinesService planogram lifecycle", () => {
       where: () => ({ returning: async () => [activated] }),
     });
     const tx = {
+      select: vi.fn().mockReturnValue({
+        from: () => ({ where: () => ({ limit: async () => [published] }) }),
+      }),
       update: vi
         .fn()
         .mockReturnValueOnce({ set: retireSet })
@@ -696,5 +732,68 @@ describe("MachinesService planogram lifecycle", () => {
       status: "active",
       activeAt: expect.any(String),
     });
+  });
+
+  it("treats repeated ack for the active planogram version as idempotent", async () => {
+    const machine = {
+      id: "550e8400-e29b-41d4-a716-446655440000",
+      code: "M001",
+    };
+    const active = {
+      id: "550e8400-e29b-41d4-a716-446655440010",
+      machineId: machine.id,
+      planogramVersion: "PLAN-1",
+      status: "active",
+      publishedAt: new Date("2026-06-04T12:00:00.000Z"),
+      acknowledgedAt: new Date("2026-06-04T12:05:00.000Z"),
+      activeAt: new Date("2026-06-04T12:05:00.000Z"),
+      createdAt: new Date("2026-06-04T12:00:00.000Z"),
+      updatedAt: new Date("2026-06-04T12:05:00.000Z"),
+    };
+    const tx = {
+      select: vi.fn().mockReturnValue({
+        from: () => ({ where: () => ({ limit: async () => [active] }) }),
+      }),
+      update: vi.fn(),
+    };
+    mockDb.select.mockReturnValueOnce({
+      from: () => ({ where: () => ({ limit: async () => [machine] }) }),
+    });
+    mockDb.transaction.mockImplementationOnce(
+      async (cb: (txArg: typeof tx) => Promise<unknown>) => await cb(tx),
+    );
+
+    await expect(
+      service.acknowledgeMachinePlanogramVersion("M001", "PLAN-1"),
+    ).resolves.toMatchObject({
+      machineCode: "M001",
+      planogramVersion: "PLAN-1",
+      status: "active",
+    });
+    expect(tx.update).not.toHaveBeenCalled();
+  });
+
+  it("rejects ack for a machine planogram version that is not published or active", async () => {
+    const machine = {
+      id: "550e8400-e29b-41d4-a716-446655440000",
+      code: "M001",
+    };
+    const tx = {
+      select: vi.fn().mockReturnValue({
+        from: () => ({ where: () => ({ limit: async () => [] }) }),
+      }),
+      update: vi.fn(),
+    };
+    mockDb.select.mockReturnValueOnce({
+      from: () => ({ where: () => ({ limit: async () => [machine] }) }),
+    });
+    mockDb.transaction.mockImplementationOnce(
+      async (cb: (txArg: typeof tx) => Promise<unknown>) => await cb(tx),
+    );
+
+    await expect(
+      service.acknowledgeMachinePlanogramVersion("M001", "PLAN-MISSING"),
+    ).rejects.toThrow(NotFoundException);
+    expect(tx.update).not.toHaveBeenCalled();
   });
 });

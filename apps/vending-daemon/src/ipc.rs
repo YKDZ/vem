@@ -3583,6 +3583,127 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn planned_refill_unblocks_remapped_planogram_slot_through_public_api() {
+        let temp_dir = tempdir().expect("tmp");
+        let app = build_router(
+            test_ipc_context(
+                temp_dir.path(),
+                "token-1",
+                Some("MACHINE-1".to_string()),
+                "http://127.0.0.1:0",
+            )
+            .await,
+        );
+
+        let slot_id = "550e8400-e29b-41d4-a716-446655440091";
+        let old_inventory_id = "550e8400-e29b-41d4-a716-446655440092";
+        let new_inventory_id = "550e8400-e29b-41d4-a716-4466554400a2";
+        assert_eq!(
+            post_json(
+                &app,
+                "/v1/stock/planogram",
+                "token-1",
+                one_slot_planogram("PLAN-REFILL-OLD", slot_id, old_inventory_id),
+            )
+            .await
+            .status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            post_json(
+                &app,
+                "/v1/stock/movements",
+                "token-1",
+                json!({
+                    "movementId": "MOVE-REFILL-OLD-STOCK",
+                    "planogramVersion": "PLAN-REFILL-OLD",
+                    "slotId": slot_id,
+                    "movementType": "planned_refill",
+                    "quantity": 3,
+                    "source": "field_service",
+                    "attributedTo": "operator-1"
+                }),
+            )
+            .await
+            .status(),
+            StatusCode::CREATED
+        );
+
+        let mut remapped = one_slot_planogram("PLAN-REFILL-NEW", slot_id, new_inventory_id);
+        remapped["slots"][0]["variantId"] = json!("550e8400-e29b-41d4-a716-4466554400a3");
+        remapped["slots"][0]["productId"] = json!("550e8400-e29b-41d4-a716-4466554400a4");
+        remapped["slots"][0]["productName"] = json!("苏打水");
+        remapped["slots"][0]["sku"] = json!("SODA-REFILL");
+        assert_eq!(
+            post_json(&app, "/v1/stock/planogram", "token-1", remapped)
+                .await
+                .status(),
+            StatusCode::OK
+        );
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/sale-view")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            payload["items"][0]["slotSalesState"],
+            "blocked_for_planogram_change"
+        );
+        assert_eq!(payload["items"][0]["saleableStock"], 0);
+
+        assert_eq!(
+            post_json(
+                &app,
+                "/v1/stock/movements",
+                "token-1",
+                json!({
+                    "movementId": "MOVE-REFILL-NEW-TARGET",
+                    "planogramVersion": "PLAN-REFILL-NEW",
+                    "slotId": slot_id,
+                    "movementType": "planned_refill",
+                    "quantity": 4,
+                    "source": "field_service",
+                    "attributedTo": "operator-2"
+                }),
+            )
+            .await
+            .status(),
+            StatusCode::CREATED
+        );
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/sale-view")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["items"][0]["physicalStock"], 4);
+        assert_eq!(payload["items"][0]["saleableStock"], 4);
+        assert_eq!(payload["items"][0]["slotSalesState"], "sale_ready");
+    }
+
+    #[tokio::test]
     async fn planogram_remap_with_remaining_stock_blocks_slot_until_target_count() {
         let temp_dir = tempdir().expect("tmp");
         let app = build_router(
