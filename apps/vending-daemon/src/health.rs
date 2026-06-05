@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use tokio::sync::RwLock;
 
-use crate::state::LocalStateStore;
+use crate::state::{store::OUTBOX_MAX_EVENTS, LocalStateStore};
 
 pub struct HealthAggregator {
     state: LocalStateStore,
@@ -82,7 +82,7 @@ impl HealthAggregator {
             backend_online: true,
             mqtt_connected: true,
             outbox_size: outbox_size.unwrap_or(0) as usize,
-            outbox_max: 1000,
+            outbox_max: OUTBOX_MAX_EVENTS as usize,
             hardware_online: true,
             scanner_online,
             vision_online,

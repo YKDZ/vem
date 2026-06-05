@@ -19,7 +19,7 @@ use vending_core::hardware::{
 const COMMAND_LOG_TTL_DAYS: i64 = 30;
 const COMMAND_LOG_MAX_ENTRIES: i64 = 2000;
 const OUTBOX_TTL_DAYS: i64 = 7;
-const OUTBOX_MAX_EVENTS: i64 = 500;
+pub const OUTBOX_MAX_EVENTS: i64 = 500;
 const STOCK_LEDGER_REBUILT_AFTER_QUARANTINE_KEY: &str = "stock_ledger_rebuilt_after_quarantine";
 const STOCK_MOVEMENT_RETENTION_DAYS: i64 = 30;
 

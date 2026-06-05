@@ -23,7 +23,7 @@ use crate::{
     state::{
         store::{
             MachinePlanogramInput, MachinePlanogramSlotInput, SlotSalesStateInput,
-            StockMovementInput,
+            StockMovementInput, OUTBOX_MAX_EVENTS,
         },
         LocalStateStore, StoreError,
     },
@@ -71,11 +71,11 @@ impl RuntimeStatusCache {
                     last_heartbeat_at: None,
                     last_command_no: None,
                     outbox_size,
-                    outbox_max: 1000,
+                    outbox_max: OUTBOX_MAX_EVENTS as usize,
                     outbox_usage: if outbox_size == 0 {
                         0.0
                     } else {
-                        outbox_size as f64 / 1000_f64
+                        outbox_size as f64 / OUTBOX_MAX_EVENTS as f64
                     },
                     next_retry_at: None,
                     last_error: None,
@@ -400,6 +400,25 @@ async fn healthz(State(ctx): State<IpcContext>) -> impl IntoResponse {
         snapshot.status = vending_core::health::DaemonUiStatus::Degraded;
         snapshot.operator_reason = scanner.code.clone();
     }
+    let outbox_max = snapshot.outbox_max.max(1);
+    if snapshot.outbox_size as f64 / outbox_max as f64 >= 0.9 {
+        snapshot.status = vending_core::health::DaemonUiStatus::Degraded;
+        if snapshot.operator_reason.is_empty() {
+            snapshot.operator_reason = "SYNC_OUTBOX_CAPACITY".to_string();
+        }
+        snapshot
+            .components
+            .push(vending_core::health::ComponentHealth {
+                component: "sync_outbox".to_string(),
+                level: vending_core::health::HealthLevel::Degraded,
+                code: "SYNC_OUTBOX_CAPACITY".to_string(),
+                message: format!(
+                    "sync outbox capacity pressure: {}/{} pending events",
+                    snapshot.outbox_size, outbox_max
+                ),
+                updated_at: crate::state::store::now_iso(),
+            });
+    }
     Json(snapshot)
 }
 
@@ -426,6 +445,32 @@ async fn readyz(State(ctx): State<IpcContext>) -> impl IntoResponse {
                 code: "LOWER_CONTROLLER_UNAVAILABLE".to_string(),
                 component: "hardware".to_string(),
                 message: hardware.message,
+            });
+        ready.suggested_route = vending_core::health::SuggestedRoute::Maintenance;
+    }
+    let outbox_size = ctx.state.outbox_size().await.unwrap_or_default() as usize;
+    let outbox_max = OUTBOX_MAX_EVENTS.max(1) as usize;
+    if outbox_size as f64 / outbox_max as f64 >= 0.9 {
+        ready.ready = false;
+        ready.can_sell = false;
+        ready.mode = "maintenance".to_string();
+        if !ready
+            .blocking_codes
+            .iter()
+            .any(|code| code == "SYNC_OUTBOX_CAPACITY")
+        {
+            ready
+                .blocking_codes
+                .push("SYNC_OUTBOX_CAPACITY".to_string());
+        }
+        ready
+            .blocking_reasons
+            .push(vending_core::health::ReadyReason {
+                code: "SYNC_OUTBOX_CAPACITY".to_string(),
+                component: "sync_outbox".to_string(),
+                message: format!(
+                    "sync outbox capacity pressure: {outbox_size}/{outbox_max} pending events"
+                ),
             });
         ready.suggested_route = vending_core::health::SuggestedRoute::Maintenance;
     }
@@ -899,7 +944,11 @@ async fn machine_sale_readiness_snapshot(
                 sync_ready,
                 if sync_ready { "SYNC_READY" } else { "SYNC_UNHEALTHY" },
                 sync.last_error.unwrap_or_else(|| {
-                    if sync.mqtt_connected {
+                    if outbox_usage >= 0.9 {
+                        format!(
+                            "sync outbox capacity pressure: {outbox_size}/{outbox_max} pending events"
+                        )
+                    } else if sync.mqtt_connected {
                         "sync connected".to_string()
                     } else {
                         "sync transport is not connected".to_string()
@@ -1683,7 +1732,7 @@ async fn events_ws_inner(mut socket: WebSocket, events: broadcast::Sender<Daemon
 mod tests {
     use super::*;
     use crate::{
-        config::default_public_config, secret::InMemorySecretStore,
+        config::default_public_config, secret::InMemorySecretStore, state::store::OutboxInput,
         transaction::TransactionStateMachine,
     };
     use axum::{
@@ -3487,6 +3536,290 @@ mod tests {
             readiness["components"]["slotSaleSafety"]["blockedSlots"][0]["slotSalesState"],
             "needs_count"
         );
+    }
+
+    #[tokio::test]
+    async fn planned_refill_recovers_local_stock_facts_after_ledger_loss() {
+        let temp_dir = tempdir().expect("tmp");
+        let ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            "http://127.0.0.1:0",
+        )
+        .await;
+        let state = ctx.state.clone();
+        state
+            .put_metadata("stock_ledger_rebuilt_after_quarantine", &true)
+            .await
+            .expect("ledger loss marker");
+        let app = build_router(ctx);
+
+        let slot_id = "550e8400-e29b-41d4-a716-4466554400e1";
+        let inventory_id = "550e8400-e29b-41d4-a716-4466554400e2";
+        assert_eq!(
+            post_json(
+                &app,
+                "/v1/stock/planogram",
+                "token-1",
+                one_slot_planogram("PLAN-LEDGER-REFILL", slot_id, inventory_id),
+            )
+            .await
+            .status(),
+            StatusCode::OK
+        );
+
+        assert_eq!(
+            post_json(
+                &app,
+                "/v1/stock/movements",
+                "token-1",
+                json!({
+                    "movementId": "MOVE-LEDGER-REFILL",
+                    "planogramVersion": "PLAN-LEDGER-REFILL",
+                    "slotId": slot_id,
+                    "movementType": "planned_refill",
+                    "quantity": 5,
+                    "source": "field_service",
+                    "attributedTo": "operator-1"
+                }),
+            )
+            .await
+            .status(),
+            StatusCode::CREATED
+        );
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/sale-view")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["items"][0]["physicalStock"], 5);
+        assert_eq!(payload["items"][0]["saleableStock"], 5);
+        assert_eq!(payload["items"][0]["slotSalesState"], "sale_ready");
+
+        let movement_count: (i64,) =
+            sqlx::query_as("SELECT COUNT(1) FROM stock_movements WHERE movement_id = ?1")
+                .bind("MOVE-LEDGER-REFILL")
+                .fetch_one(state.pool())
+                .await
+                .expect("movement count");
+        assert_eq!(movement_count.0, 1);
+        let sync = state
+            .stock_movement_sync_record("MOVE-LEDGER-REFILL")
+            .await
+            .expect("sync")
+            .expect("sync exists");
+        assert_eq!(sync.status, "pending");
+        assert!(state
+            .outbox_record("stock-movement:MOVE-LEDGER-REFILL")
+            .await
+            .expect("outbox")
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn readyz_and_healthz_report_outbox_capacity_pressure() {
+        let temp_dir = tempdir().expect("tmp");
+        let ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            "http://127.0.0.1:0",
+        )
+        .await;
+        mark_runtime_sale_ready(&ctx).await;
+        for index in 0..500 {
+            let event = OutboxInput::stock_movement_upload(
+                &format!("MOVE-READYZ-CAPACITY-{index}"),
+                "https://platform.example/api/machine-stock-movements".to_string(),
+                json!({"movementId": format!("MOVE-READYZ-CAPACITY-{index}")}),
+            );
+            ctx.state
+                .enqueue_outbox(&event)
+                .await
+                .expect("seed stock movement upload");
+        }
+        let app = build_router(ctx);
+
+        let ready = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/readyz")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(ready.status(), StatusCode::OK);
+        let body = body::to_bytes(ready.into_body(), usize::MAX).await.unwrap();
+        let ready: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(ready["ready"], false);
+        assert_eq!(ready["canSell"], false);
+        assert_eq!(ready["mode"], "maintenance");
+        assert!(ready["blockingCodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|code| code == "SYNC_OUTBOX_CAPACITY"));
+
+        let health = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/healthz")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(health.status(), StatusCode::OK);
+        let body = body::to_bytes(health.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let health: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(health["status"], "degraded");
+        assert_eq!(health["outboxSize"], 500);
+        assert_eq!(health["outboxMax"], 500);
+        assert!(health["components"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|component| component["code"] == "SYNC_OUTBOX_CAPACITY"));
+    }
+
+    #[tokio::test]
+    async fn sale_readiness_reports_outbox_capacity_pressure_without_losing_stock_facts() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(wiremock::matchers::path("/machine-orders/payment-options"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "options": [{
+                    "optionKey": "mock:mock",
+                    "providerCode": "mock",
+                    "method": "mock",
+                    "displayName": "模拟支付",
+                    "description": "本地模拟",
+                    "icon": "mock",
+                    "recommended": true,
+                    "disabled": false,
+                    "disabledReason": null
+                }],
+                "defaultOptionKey": "mock:mock",
+                "defaultProviderCode": "mock",
+                "serverTime": "2026-06-04T00:00:00Z"
+            })))
+            .mount(&server)
+            .await;
+
+        let temp_dir = tempdir().expect("tmp");
+        let ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            &server.uri(),
+        )
+        .await;
+        mark_runtime_sale_ready(&ctx).await;
+        let app = build_router(ctx.clone());
+        let slot_id = "550e8400-e29b-41d4-a716-4466554400d1";
+        let inventory_id = "550e8400-e29b-41d4-a716-4466554400d2";
+
+        assert_eq!(
+            post_json(
+                &app,
+                "/v1/stock/planogram",
+                "token-1",
+                one_slot_planogram("PLAN-OUTBOX-CAPACITY", slot_id, inventory_id),
+            )
+            .await
+            .status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            post_json(
+                &app,
+                "/v1/stock/movements",
+                "token-1",
+                json!({
+                    "movementId": "MOVE-CAPACITY-FACT",
+                    "planogramVersion": "PLAN-OUTBOX-CAPACITY",
+                    "slotId": slot_id,
+                    "movementType": "planned_refill",
+                    "quantity": 2,
+                    "source": "field_service",
+                    "attributedTo": "operator-1"
+                }),
+            )
+            .await
+            .status(),
+            StatusCode::CREATED
+        );
+
+        for index in 1..500 {
+            let event = OutboxInput::stock_movement_upload(
+                &format!("MOVE-CAPACITY-PRESSURE-{index}"),
+                format!("{}/machine-stock-movements", server.uri()),
+                json!({"movementId": format!("MOVE-CAPACITY-PRESSURE-{index}")}),
+            );
+            ctx.state
+                .enqueue_outbox(&event)
+                .await
+                .expect("seed stock movement upload");
+        }
+
+        let readiness = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/sale-readiness")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(readiness.status(), StatusCode::OK);
+        let body = body::to_bytes(readiness.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let readiness: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(readiness["components"]["syncHealth"]["ready"], false);
+        assert!(readiness["blockingCodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|code| code == "SYNC_UNHEALTHY"));
+        assert_eq!(readiness["canStartNetworkAuthorizedSale"], false);
+
+        assert_eq!(ctx.state.outbox_size().await.expect("size"), 500);
+        assert!(ctx
+            .state
+            .outbox_record("stock-movement:MOVE-CAPACITY-FACT")
+            .await
+            .expect("outbox")
+            .is_some());
+        let sync = ctx
+            .state
+            .stock_movement_sync_record("MOVE-CAPACITY-FACT")
+            .await
+            .expect("sync")
+            .expect("sync exists");
+        assert_eq!(sync.status, "pending");
     }
 
     #[tokio::test]
