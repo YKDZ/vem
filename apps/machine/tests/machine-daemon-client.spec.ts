@@ -127,6 +127,82 @@ function readySnapshot(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function saleReadinessSnapshot(canStartNetworkAuthorizedSale = true) {
+  const maybeUnavailable = !canStartNetworkAuthorizedSale;
+  return {
+    canStartNetworkAuthorizedSale,
+    blockingCodes: maybeUnavailable
+      ? ["PLATFORM_UNREACHABLE", "NO_PAYMENT_OPTIONS"]
+      : [],
+    components: {
+      platformReachability: {
+        ready: !maybeUnavailable,
+        code: maybeUnavailable ? "PLATFORM_UNREACHABLE" : "PLATFORM_REACHABLE",
+        message: maybeUnavailable ? "platform offline" : "platform reachable",
+      },
+      machineAuthentication: {
+        ready: true,
+        code: "MACHINE_AUTH_READY",
+        message: "machine code configured",
+      },
+      activePlanogram: {
+        ready: true,
+        code: "ACTIVE_PLANOGRAM_READY",
+        message: "PLAN-1",
+      },
+      paymentOptions: {
+        ready: !maybeUnavailable,
+        code: maybeUnavailable ? "NO_PAYMENT_OPTIONS" : "PAYMENT_OPTIONS_READY",
+        message: maybeUnavailable
+          ? "no ready payment option"
+          : "payment option available",
+        methods: [
+          {
+            method: "mock",
+            optionKey: "mock:mock",
+            providerCode: "mock",
+            ready: !maybeUnavailable,
+            disabledReason: maybeUnavailable ? "platform offline" : null,
+          },
+        ],
+      },
+      scannerCapability: {
+        ready: true,
+        code: "SCANNER_READY",
+        message: "scanner ready",
+      },
+      syncHealth: {
+        ready: true,
+        code: scenario === "syncBacklog" ? "SYNC_DEGRADED" : "SYNC_READY",
+        message:
+          scenario === "syncBacklog"
+            ? "MQTT backlog pending"
+            : "sync connected",
+      },
+      wholeMachineBlockers: {
+        ready: true,
+        code: "WHOLE_MACHINE_READY",
+        message: "hardware ready",
+      },
+      slotSaleSafety: {
+        ready: scenario !== "soldOut",
+        code: scenario === "soldOut" ? "SLOT_SOLD_OUT" : "SLOT_SALE_READY",
+        message: scenario === "soldOut" ? "all slots sold out" : "slots ready",
+        blockedSlots:
+          scenario === "soldOut"
+            ? [
+                {
+                  slotId: saleViewItem.slotId,
+                  slotCode: saleViewItem.slotCode,
+                  slotSalesState: "sold_out",
+                },
+              ]
+            : [],
+      },
+    },
+  };
+}
+
 function transactionSnapshot(
   nextAction: string | null,
   overrides: Record<string, unknown> = {},
@@ -372,6 +448,16 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
       source: "legacy-unused",
       lastError: null,
     });
+    return;
+  }
+
+  if (url.pathname === "/v1/sale-readiness") {
+    respondJson(
+      res,
+      saleReadinessSnapshot(
+        scenario !== "offline" && scenario !== "maintenance",
+      ),
+    );
     return;
   }
 
