@@ -49,6 +49,10 @@ impl DaemonRuntime {
             .prune_outbox()
             .await
             .map_err(|error| error.to_string())?;
+        self.state
+            .prune_stock_movement_history()
+            .await
+            .map_err(|error| error.to_string())?;
         Ok(())
     }
 

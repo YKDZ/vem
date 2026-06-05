@@ -3394,6 +3394,102 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn sale_view_and_readiness_report_stock_ledger_loss_blocker() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(wiremock::matchers::path("/machine-orders/payment-options"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "options": [{
+                    "optionKey": "mock:mock",
+                    "providerCode": "mock",
+                    "method": "mock",
+                    "displayName": "模拟支付",
+                    "description": "本地模拟",
+                    "icon": "mock",
+                    "recommended": true,
+                    "disabled": false,
+                    "disabledReason": null
+                }],
+                "defaultOptionKey": "mock:mock",
+                "defaultProviderCode": "mock",
+                "serverTime": "2026-06-04T00:00:00Z"
+            })))
+            .mount(&server)
+            .await;
+
+        let temp_dir = tempdir().expect("tmp");
+        let ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            &server.uri(),
+        )
+        .await;
+        mark_runtime_sale_ready(&ctx).await;
+        ctx.state
+            .put_metadata("stock_ledger_rebuilt_after_quarantine", &true)
+            .await
+            .expect("ledger loss marker");
+        let app = build_router(ctx);
+        let slot_id = "550e8400-e29b-41d4-a716-4466554400c1";
+        let inventory_id = "550e8400-e29b-41d4-a716-4466554400c2";
+
+        assert_eq!(
+            post_json(
+                &app,
+                "/v1/stock/planogram",
+                "token-1",
+                one_slot_planogram("PLAN-LEDGER-LOSS", slot_id, inventory_id),
+            )
+            .await
+            .status(),
+            StatusCode::OK
+        );
+
+        let sale_view = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/sale-view")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(sale_view.status(), StatusCode::OK);
+        let body = body::to_bytes(sale_view.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let sale_view: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(sale_view["items"][0]["slotSalesState"], "needs_count");
+        assert_eq!(sale_view["items"][0]["saleableStock"], 0);
+
+        let readiness = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/sale-readiness")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(readiness.status(), StatusCode::OK);
+        let body = body::to_bytes(readiness.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let readiness: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(readiness["components"]["slotSaleSafety"]["ready"], false);
+        assert_eq!(
+            readiness["components"]["slotSaleSafety"]["blockedSlots"][0]["slotSalesState"],
+            "needs_count"
+        );
+    }
+
+    #[tokio::test]
     async fn sale_readiness_reports_reconciliation_slot_blockers() {
         let temp_dir = tempdir().expect("tmp");
         let app = build_router(

@@ -20,6 +20,8 @@ const COMMAND_LOG_TTL_DAYS: i64 = 30;
 const COMMAND_LOG_MAX_ENTRIES: i64 = 2000;
 const OUTBOX_TTL_DAYS: i64 = 7;
 const OUTBOX_MAX_EVENTS: i64 = 500;
+const STOCK_LEDGER_REBUILT_AFTER_QUARANTINE_KEY: &str = "stock_ledger_rebuilt_after_quarantine";
+const STOCK_MOVEMENT_RETENTION_DAYS: i64 = 30;
 
 type CommandRecordRow = (
     String,
@@ -406,91 +408,110 @@ impl LocalStateStore {
                 .map_err(sqlx::Error::Io)?;
         }
 
-        let url = format!("sqlite://{}?mode=rwc", path.display());
-        let pool = SqlitePoolOptions::new()
-            .max_connections(5)
-            .connect(&url)
-            .await
-            .map_err(|error| {
-                if path.exists() {
-                    let quarantine = path.with_extension(format!(
-                        "corrupt-{}.db",
-                        Utc::now().format("%Y%m%d%H%M%S")
-                    ));
-                    let _ = std::fs::rename(path, &quarantine);
-                    return StoreError::CorruptDatabase {
-                        path: quarantine.to_string_lossy().to_string(),
-                    };
-                }
-                StoreError::Sqlx(error)
-            })?;
+        let (pool, quarantine) = match open_sqlite_pool(path).await {
+            Ok(pool) => (pool, None),
+            Err(error) if path.exists() => {
+                let reason = error.to_string();
+                let quarantine = quarantine_sqlite_file(path).await?;
+                let pool = open_sqlite_pool(path).await.map_err(StoreError::Sqlx)?;
+                (pool, Some((quarantine, Some(reason))))
+            }
+            Err(error) => return Err(StoreError::Sqlx(error)),
+        };
 
         match run_integrity_check(&pool).await {
             Ok(()) => {}
             Err(error) => {
-                let quarantine = path
-                    .with_extension(format!("corrupt-{}.db", Utc::now().format("%Y%m%d%H%M%S")));
-                if path.exists() {
-                    let _ = tokio::fs::rename(path, &quarantine).await;
-                }
-                return Err(StoreError::IntegrityCheckFailed(format!(
-                    "{error}; quarantined to {}",
-                    quarantine.display()
-                )));
+                pool.close().await;
+                let quarantine = quarantine_sqlite_file(path).await?;
+                let pool = open_sqlite_pool(path).await.map_err(StoreError::Sqlx)?;
+                let store = Self { pool };
+                store.run_migrations().await?;
+                store
+                    .record_stock_ledger_quarantine(quarantine, Some(error))
+                    .await?;
+                store.put_metadata("last_started_at", &now_iso()).await?;
+                return Ok(store);
             }
         }
 
+        let store = Self { pool };
+        store.run_migrations().await?;
+        if let Some((quarantine, reason)) = quarantine {
+            store
+                .record_stock_ledger_quarantine(quarantine, reason)
+                .await?;
+        }
+        store.put_metadata("last_started_at", &now_iso()).await?;
+        Ok(store)
+    }
+
+    async fn run_migrations(&self) -> Result<(), StoreError> {
         sqlx::query(MIGRATION_V1)
-            .execute(&pool)
+            .execute(&self.pool)
             .await
             .map_err(StoreError::Sqlx)?;
 
-        let store = Self { pool };
-        let current_version = store
+        let current_version = self
             .get_metadata::<i64>("schema_version")
             .await?
             .unwrap_or_default();
         if current_version < 2 {
             sqlx::query(MIGRATION_V2)
-                .execute(&store.pool)
+                .execute(&self.pool)
                 .await
                 .map_err(StoreError::Sqlx)?;
         }
         if current_version < 3 {
             sqlx::query(MIGRATION_V3)
-                .execute(&store.pool)
+                .execute(&self.pool)
                 .await
                 .map_err(StoreError::Sqlx)?;
         }
         if current_version < 4 {
             sqlx::query(MIGRATION_V4)
-                .execute(&store.pool)
+                .execute(&self.pool)
                 .await
                 .map_err(StoreError::Sqlx)?;
         }
         if current_version < 5 {
             sqlx::query(MIGRATION_V5)
-                .execute(&store.pool)
+                .execute(&self.pool)
                 .await
                 .map_err(StoreError::Sqlx)?;
         }
         if current_version < 6 {
             sqlx::query(MIGRATION_V6)
-                .execute(&store.pool)
+                .execute(&self.pool)
                 .await
                 .map_err(StoreError::Sqlx)?;
         }
         if current_version < 7 {
             sqlx::query(MIGRATION_V7)
-                .execute(&store.pool)
+                .execute(&self.pool)
                 .await
                 .map_err(StoreError::Sqlx)?;
         }
-        store
-            .put_metadata("schema_version", &SCHEMA_VERSION)
+        self.put_metadata("schema_version", &SCHEMA_VERSION).await?;
+        Ok(())
+    }
+
+    async fn record_stock_ledger_quarantine(
+        &self,
+        quarantine: std::path::PathBuf,
+        reason: Option<String>,
+    ) -> Result<(), StoreError> {
+        self.put_metadata(STOCK_LEDGER_REBUILT_AFTER_QUARANTINE_KEY, &true)
             .await?;
-        store.put_metadata("last_started_at", &now_iso()).await?;
-        Ok(store)
+        self.put_metadata(
+            "stock_ledger_quarantine",
+            &serde_json::json!({
+                "path": quarantine.to_string_lossy(),
+                "reason": reason,
+                "quarantinedAt": now_iso(),
+            }),
+        )
+        .await
     }
 
     pub fn pool(&self) -> &SqlitePool {
@@ -769,10 +790,13 @@ impl LocalStateStore {
 
         let total = self.outbox_size_tx(&mut tx).await?;
         if total >= OUTBOX_MAX_EVENTS as u64 {
-            let worst: Option<(String, i64)> =
-                sqlx::query_as("SELECT id, priority FROM outbox_events ORDER BY priority DESC, created_at ASC LIMIT 1")
-                    .fetch_optional(tx.as_mut())
-                    .await?;
+            let worst: Option<(String, i64)> = sqlx::query_as(
+                "SELECT id, priority FROM outbox_events
+                     WHERE kind != 'stock_movement_upload'
+                     ORDER BY priority DESC, created_at ASC LIMIT 1",
+            )
+            .fetch_optional(tx.as_mut())
+            .await?;
             if let Some((worst_id, worst_priority)) = worst {
                 if input.priority < worst_priority {
                     sqlx::query("DELETE FROM outbox_events WHERE id = ?1")
@@ -1198,6 +1222,11 @@ impl LocalStateStore {
             }
         }
 
+        let rebuilt_after_quarantine = self
+            .get_metadata::<bool>(STOCK_LEDGER_REBUILT_AFTER_QUARANTINE_KEY)
+            .await?
+            .unwrap_or(false);
+
         let mut tx = self.pool.begin().await?;
         let applied_at = now_iso();
         let previous_slots = current_slot_projections_in_tx(&mut tx).await?;
@@ -1341,6 +1370,25 @@ impl LocalStateStore {
                     )
                     .await?;
                 }
+            } else if rebuilt_after_quarantine {
+                upsert_stock_projection_with_state_in_tx(
+                    &mut tx,
+                    &input.planogram_version,
+                    &slot.slot_id,
+                    0,
+                    0,
+                    "needs_count",
+                )
+                .await?;
+                upsert_sale_safety_blocker_marker_in_tx(
+                    &mut tx,
+                    &input.planogram_version,
+                    &slot.slot_id,
+                    "needs_count",
+                    "stock_ledger_loss",
+                    &input.source,
+                )
+                .await?;
             } else {
                 upsert_stock_projection_in_tx(
                     &mut tx,
@@ -1403,8 +1451,8 @@ impl LocalStateStore {
                 "movement slot is not in the active planogram version".to_string(),
             ));
         };
-        let current_stock: Option<(i64,)> = sqlx::query_as(
-            "SELECT physical_stock
+        let current_stock: Option<(i64, String)> = sqlx::query_as(
+            "SELECT physical_stock, slot_sales_state
              FROM current_stock_projection
              WHERE planogram_version = ?1 AND slot_id = ?2",
         )
@@ -1412,8 +1460,18 @@ impl LocalStateStore {
         .bind(&input.slot_id)
         .fetch_optional(tx.as_mut())
         .await?;
-        let before_quantity = current_stock.map_or(0, |(physical_stock,)| physical_stock);
-        let after_quantity = if input.movement_type == "stock_count_correction" {
+        let before_quantity = current_stock
+            .as_ref()
+            .map_or(0, |(physical_stock, _)| *physical_stock);
+        let current_slot_sales_state = current_stock
+            .as_ref()
+            .map(|(_, slot_sales_state)| slot_sales_state.as_str());
+        let replaces_local_fact = input.movement_type == "stock_count_correction"
+            || matches!(
+                current_slot_sales_state,
+                Some("blocked_for_planogram_change")
+            );
+        let after_quantity = if replaces_local_fact {
             input.quantity
         } else {
             before_quantity + input.quantity
@@ -1483,29 +1541,13 @@ impl LocalStateStore {
             insert_outbox_in_tx(&mut tx, &event).await?;
         }
 
-        let movements: Vec<(String, i64)> = sqlx::query_as(
-            "SELECT movement_type, quantity
-             FROM stock_movements
-             WHERE planogram_version = ?1 AND slot_id = ?2
-             ORDER BY occurred_at ASC, movement_id ASC",
-        )
-        .bind(&input.planogram_version)
-        .bind(&input.slot_id)
-        .fetch_all(tx.as_mut())
-        .await?;
-        let mut physical_stock = 0_i64;
-        for (movement_type, quantity) in movements {
-            if movement_type == "stock_count_correction" {
-                physical_stock = quantity;
-            } else {
-                physical_stock += quantity;
-            }
-        }
+        clear_stock_ledger_loss_blocker_in_tx(&mut tx, &input.planogram_version, &input.slot_id)
+            .await?;
         upsert_stock_projection_in_tx(
             &mut tx,
             &input.planogram_version,
             &input.slot_id,
-            physical_stock,
+            after_quantity,
             capacity,
         )
         .await?;
@@ -1768,6 +1810,45 @@ impl LocalStateStore {
         row.map(to_stock_movement_sync_record).transpose()
     }
 
+    pub async fn prune_stock_movement_history(&self) -> Result<u64, StoreError> {
+        self.prune_accepted_stock_movement_history(STOCK_MOVEMENT_RETENTION_DAYS)
+            .await
+    }
+
+    pub async fn prune_accepted_stock_movement_history(
+        &self,
+        retention_days: i64,
+    ) -> Result<u64, StoreError> {
+        let retention_days = retention_days.max(1);
+        let cutoff = (Utc::now() - chrono::Duration::days(retention_days))
+            .to_rfc3339_opts(SecondsFormat::Millis, true);
+        let mut tx = self.pool.begin().await?;
+        let movement_ids: Vec<(String,)> = sqlx::query_as(
+            "SELECT movement_id
+             FROM stock_movement_sync
+             WHERE status = 'accepted' AND COALESCE(accepted_at, updated_at) < ?1",
+        )
+        .bind(&cutoff)
+        .fetch_all(tx.as_mut())
+        .await?;
+
+        let mut pruned = 0_u64;
+        for (movement_id,) in movement_ids {
+            sqlx::query("DELETE FROM stock_movement_sync WHERE movement_id = ?1")
+                .bind(&movement_id)
+                .execute(tx.as_mut())
+                .await?;
+            let deleted = sqlx::query("DELETE FROM stock_movements WHERE movement_id = ?1")
+                .bind(&movement_id)
+                .execute(tx.as_mut())
+                .await?
+                .rows_affected();
+            pruned += deleted;
+        }
+        tx.commit().await?;
+        Ok(pruned)
+    }
+
     pub async fn append_health_event(
         &self,
         event: &vending_core::health::ComponentHealth,
@@ -1789,16 +1870,19 @@ impl LocalStateStore {
     }
 
     pub async fn prune_outbox(&self) -> Result<(u64, u64), StoreError> {
-        let deleted_expired = sqlx::query("DELETE FROM outbox_events WHERE expires_at < ?1")
-            .bind(now_iso())
-            .execute(&self.pool)
-            .await?
-            .rows_affected();
+        let deleted_expired = sqlx::query(
+            "DELETE FROM outbox_events WHERE expires_at < ?1 AND kind != 'stock_movement_upload'",
+        )
+        .bind(now_iso())
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
 
         let deleted_oversize = sqlx::query(
             "DELETE FROM outbox_events
              WHERE id IN (
                SELECT id FROM outbox_events
+               WHERE kind != 'stock_movement_upload'
                ORDER BY priority ASC, created_at DESC
                LIMIT -1 OFFSET ?1
              )",
@@ -1830,6 +1914,33 @@ impl LocalStateStore {
         let value = serde_json::from_str::<serde_json::Value>(&json)?;
         Ok(value.as_object().cloned())
     }
+}
+
+async fn open_sqlite_pool(path: &Path) -> Result<SqlitePool, sqlx::Error> {
+    let url = format!("sqlite://{}?mode=rwc", path.display());
+    SqlitePoolOptions::new()
+        .max_connections(5)
+        .connect(&url)
+        .await
+}
+
+async fn quarantine_sqlite_file(path: &Path) -> Result<std::path::PathBuf, StoreError> {
+    let quarantine = path.with_extension(format!("corrupt-{}.db", Utc::now().timestamp_millis()));
+    tokio::fs::rename(path, &quarantine)
+        .await
+        .map_err(sqlx::Error::Io)?;
+
+    for suffix in ["-wal", "-shm"] {
+        let sidecar = std::path::PathBuf::from(format!("{}{}", path.display(), suffix));
+        if sidecar.try_exists().map_err(sqlx::Error::Io)? {
+            let quarantine_sidecar =
+                std::path::PathBuf::from(format!("{}{}", quarantine.display(), suffix));
+            tokio::fs::rename(sidecar, quarantine_sidecar)
+                .await
+                .map_err(sqlx::Error::Io)?;
+        }
+    }
+    Ok(quarantine)
 }
 
 async fn run_integrity_check(pool: &SqlitePool) -> Result<(), String> {
@@ -2043,6 +2154,22 @@ async fn clear_sale_safety_blocker_marker_in_tx(
         .bind(slot_id)
         .execute(tx.as_mut())
         .await?;
+    Ok(())
+}
+
+async fn clear_stock_ledger_loss_blocker_in_tx(
+    tx: &mut Transaction<'_, sqlx::Sqlite>,
+    planogram_version: &str,
+    slot_id: &str,
+) -> Result<(), StoreError> {
+    sqlx::query(
+        "DELETE FROM sale_safety_blockers
+         WHERE planogram_version = ?1 AND slot_id = ?2 AND reason = 'stock_ledger_loss'",
+    )
+    .bind(planogram_version)
+    .bind(slot_id)
+    .execute(tx.as_mut())
+    .await?;
     Ok(())
 }
 
@@ -2771,23 +2898,98 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn corrupt_database_is_quarantined() {
+    async fn corrupt_database_is_quarantined_and_rebuilt_empty() {
         let temp = TempDir::new().expect("temp");
         let path = temp.path().join("state.db");
         std::fs::write(&path, b"not-a-sqlite-db").expect("write");
 
-        let result = LocalStateStore::open(&path).await;
-        assert!(result.is_err());
+        let store = LocalStateStore::open(&path).await.expect("rebuild store");
+        let sale_view = store.sale_view(None).await.expect("sale view");
+        assert!(sale_view.items.is_empty());
+        assert_eq!(sale_view.planogram_version, None);
+
+        let rebuilt: Option<bool> = store
+            .get_metadata(STOCK_LEDGER_REBUILT_AFTER_QUARANTINE_KEY)
+            .await
+            .expect("rebuilt marker");
+        assert_eq!(rebuilt, Some(true));
+
         let mut quarantined = false;
         for item in std::fs::read_dir(temp.path()).expect("dir") {
             let item = item.expect("item");
             let name = item.file_name().to_string_lossy().to_string();
             if name.starts_with("state.corrupt-") {
                 quarantined = true;
+                let contents = std::fs::read(item.path()).expect("quarantine contents");
+                assert_eq!(contents, b"not-a-sqlite-db");
                 break;
             }
         }
         assert!(quarantined);
+    }
+
+    #[tokio::test]
+    async fn rebuilt_ledger_planogram_requires_count_until_field_movement() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        store
+            .put_metadata(STOCK_LEDGER_REBUILT_AFTER_QUARANTINE_KEY, &true)
+            .await
+            .expect("ledger loss marker");
+
+        let rebuilt = store
+            .apply_planogram(MachinePlanogramInput {
+                planogram_version: "PLAN-REBUILT".to_string(),
+                source: "platform_sync_after_rebuild".to_string(),
+                applied_by: None,
+                slots: vec![MachinePlanogramSlotInput {
+                    slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                    slot_code: "A1".to_string(),
+                    layer_no: 1,
+                    cell_no: 1,
+                    capacity: 8,
+                    par_level: 6,
+                    inventory_id: "550e8400-e29b-41d4-a716-446655440002".to_string(),
+                    variant_id: "550e8400-e29b-41d4-a716-446655440003".to_string(),
+                    product_id: "550e8400-e29b-41d4-a716-446655440004".to_string(),
+                    product_name: "water".to_string(),
+                    product_description: None,
+                    cover_image_url: None,
+                    category_id: None,
+                    category_name: None,
+                    sku: "WATER-001".to_string(),
+                    size: Some("550ml".to_string()),
+                    color: None,
+                    price_cents: 200,
+                    product_sort_order: 1,
+                    target_gender: None,
+                }],
+            })
+            .await
+            .expect("planogram");
+
+        assert_eq!(rebuilt.items[0].physical_stock, 0);
+        assert_eq!(rebuilt.items[0].saleable_stock, 0);
+        assert_eq!(rebuilt.items[0].slot_sales_state, "needs_count");
+
+        let counted = store
+            .record_stock_movement(StockMovementInput {
+                movement_id: "MOVE-COUNT-AFTER-REBUILD".to_string(),
+                planogram_version: "PLAN-REBUILT".to_string(),
+                slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                movement_type: "stock_count_correction".to_string(),
+                quantity: 3,
+                source: "field_count".to_string(),
+                attributed_to: Some("operator-1".to_string()),
+            })
+            .await
+            .expect("count correction");
+
+        assert_eq!(counted.items[0].physical_stock, 3);
+        assert_eq!(counted.items[0].saleable_stock, 3);
+        assert_eq!(counted.items[0].slot_sales_state, "sale_ready");
     }
 
     #[tokio::test]
@@ -3267,6 +3469,206 @@ mod tests {
             .await
             .expect("outbox")
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn accepted_stock_movement_history_prunes_after_retention_without_losing_projection() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_stock_movement_upload(&store, "MOVE-OLD-ACCEPTED").await;
+        let event = store
+            .outbox_record("stock-movement:MOVE-OLD-ACCEPTED")
+            .await
+            .expect("outbox")
+            .expect("event");
+        let response = crate::backend::StockMovementUploadResponse {
+            movement_id: "MOVE-OLD-ACCEPTED".to_string(),
+            status: "accepted".to_string(),
+            accepted_at: Some("2026-05-01T00:00:00.000Z".to_string()),
+            receipt: Some(json!({"rawMovementId":"raw-old"})),
+            rejection: None,
+            reconciliation: None,
+        };
+        store
+            .record_stock_movement_upload_response(&event, &response)
+            .await
+            .expect("accepted");
+        sqlx::query(
+            "UPDATE stock_movements SET occurred_at = '2026-05-01T00:00:00.000Z' WHERE movement_id = ?1",
+        )
+        .bind("MOVE-OLD-ACCEPTED")
+        .execute(store.pool())
+        .await
+        .expect("age movement");
+        sqlx::query(
+            "UPDATE stock_movement_sync SET accepted_at = '2026-05-01T00:00:00.000Z', updated_at = '2026-05-01T00:00:00.000Z' WHERE movement_id = ?1",
+        )
+        .bind("MOVE-OLD-ACCEPTED")
+        .execute(store.pool())
+        .await
+        .expect("age sync");
+
+        let pruned = store
+            .prune_accepted_stock_movement_history(1)
+            .await
+            .expect("prune");
+        assert_eq!(pruned, 1);
+
+        let movement_count: (i64,) =
+            sqlx::query_as("SELECT COUNT(1) FROM stock_movements WHERE movement_id = ?1")
+                .bind("MOVE-OLD-ACCEPTED")
+                .fetch_one(store.pool())
+                .await
+                .expect("movement count");
+        assert_eq!(movement_count.0, 0);
+        assert!(store
+            .stock_movement_sync_record("MOVE-OLD-ACCEPTED")
+            .await
+            .expect("sync")
+            .is_none());
+
+        let sale_view = store.sale_view(None).await.expect("sale view");
+        assert_eq!(sale_view.items[0].physical_stock, 3);
+        assert_eq!(sale_view.items[0].saleable_stock, 3);
+        assert_eq!(sale_view.items[0].slot_sales_state, "sale_ready");
+
+        let refilled = store
+            .record_stock_movement(StockMovementInput {
+                movement_id: "MOVE-REFILL-AFTER-PRUNE".to_string(),
+                planogram_version: "PLAN-1".to_string(),
+                slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                movement_type: "planned_refill".to_string(),
+                quantity: 2,
+                source: "field_service".to_string(),
+                attributed_to: Some("operator-2".to_string()),
+            })
+            .await
+            .expect("refill after prune");
+        assert_eq!(refilled.items[0].physical_stock, 5);
+        assert_eq!(refilled.items[0].saleable_stock, 5);
+    }
+
+    #[tokio::test]
+    async fn pending_and_rejected_stock_movements_are_not_pruned() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_stock_movement_upload(&store, "MOVE-OLD-PENDING").await;
+        seed_stock_movement_upload(&store, "MOVE-OLD-REJECTED").await;
+        let rejected_event = store
+            .outbox_record("stock-movement:MOVE-OLD-REJECTED")
+            .await
+            .expect("outbox")
+            .expect("event");
+        let response = crate::backend::StockMovementUploadResponse {
+            movement_id: "MOVE-OLD-REJECTED".to_string(),
+            status: "rejected".to_string(),
+            accepted_at: None,
+            receipt: None,
+            rejection: Some(json!({"reason":"invalid_quantity"})),
+            reconciliation: None,
+        };
+        store
+            .record_stock_movement_upload_response(&rejected_event, &response)
+            .await
+            .expect("rejected");
+        sqlx::query(
+            "UPDATE stock_movements SET occurred_at = '2026-05-01T00:00:00.000Z' WHERE movement_id IN (?1, ?2)",
+        )
+        .bind("MOVE-OLD-PENDING")
+        .bind("MOVE-OLD-REJECTED")
+        .execute(store.pool())
+        .await
+        .expect("age movements");
+        sqlx::query(
+            "UPDATE stock_movement_sync SET updated_at = '2026-05-01T00:00:00.000Z' WHERE movement_id IN (?1, ?2)",
+        )
+        .bind("MOVE-OLD-PENDING")
+        .bind("MOVE-OLD-REJECTED")
+        .execute(store.pool())
+        .await
+        .expect("age sync");
+
+        let pruned = store
+            .prune_accepted_stock_movement_history(1)
+            .await
+            .expect("prune");
+        assert_eq!(pruned, 0);
+
+        for movement_id in ["MOVE-OLD-PENDING", "MOVE-OLD-REJECTED"] {
+            let movement_count: (i64,) =
+                sqlx::query_as("SELECT COUNT(1) FROM stock_movements WHERE movement_id = ?1")
+                    .bind(movement_id)
+                    .fetch_one(store.pool())
+                    .await
+                    .expect("movement count");
+            assert_eq!(movement_count.0, 1, "{movement_id} movement retained");
+            assert!(store
+                .stock_movement_sync_record(movement_id)
+                .await
+                .expect("sync")
+                .is_some());
+        }
+    }
+
+    #[tokio::test]
+    async fn outbox_cleanup_does_not_delete_pending_stock_movement_uploads() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_stock_movement_upload(&store, "MOVE-EXPIRED-PENDING").await;
+        sqlx::query(
+            "UPDATE outbox_events SET expires_at = '2026-05-01T00:00:00.000Z' WHERE id = ?1",
+        )
+        .bind("stock-movement:MOVE-EXPIRED-PENDING")
+        .execute(store.pool())
+        .await
+        .expect("expire outbox");
+
+        let (deleted_expired, _) = store.prune_outbox().await.expect("prune outbox");
+        assert_eq!(deleted_expired, 0);
+        assert!(store
+            .outbox_record("stock-movement:MOVE-EXPIRED-PENDING")
+            .await
+            .expect("outbox")
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn outbox_capacity_does_not_evict_stock_movement_uploads() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        for index in 0..OUTBOX_MAX_EVENTS {
+            let event = OutboxInput::stock_movement_upload(
+                &format!("MOVE-CAPACITY-{index}"),
+                "https://platform.example/api/machine-stock-movements".to_string(),
+                json!({"movementId": format!("MOVE-CAPACITY-{index}")}),
+            );
+            store.enqueue_outbox(&event).await.expect("seed upload");
+        }
+
+        let heartbeat = OutboxInput::heartbeat("MACHINE-1", json!({"status":"ok"}));
+        assert!(matches!(
+            store.enqueue_outbox(&heartbeat).await,
+            Err(StoreError::OutboxCapacity)
+        ));
+        assert_eq!(
+            store.outbox_size().await.expect("size"),
+            OUTBOX_MAX_EVENTS as u64
+        );
+        let upload_count: (i64,) = sqlx::query_as(
+            "SELECT COUNT(1) FROM outbox_events WHERE kind = 'stock_movement_upload'",
+        )
+        .fetch_one(store.pool())
+        .await
+        .expect("upload count");
+        assert_eq!(upload_count.0, OUTBOX_MAX_EVENTS);
     }
 
     #[tokio::test]
