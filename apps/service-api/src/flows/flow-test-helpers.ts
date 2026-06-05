@@ -41,6 +41,9 @@ export type CreatedOrderPayload = {
 export type SeededSingleSlotInventory = Awaited<
   ReturnType<typeof seedSingleSlotInventory>
 >;
+export type SeededMultiSlotInventory = Awaited<
+  ReturnType<typeof seedMultiSlotInventory>
+>;
 
 export function machineOrderBody(
   seeded: SeededSingleSlotInventory,
@@ -131,6 +134,41 @@ export async function waitForMqttMessage(
       clearTimeout(timeout);
       client.removeListener("message", onMessage);
       resolve(payload.toString("utf8"));
+    };
+    client.subscribe(topic, { qos: 1 }, (error) => {
+      if (error) {
+        clearTimeout(timeout);
+        reject(error);
+        return;
+      }
+      client.on("message", onMessage);
+    });
+  });
+}
+
+export async function waitForMqttMessages(
+  client: MqttClient,
+  topic: string,
+  count: number,
+): Promise<string[]> {
+  return await new Promise<string[]>((resolve, reject) => {
+    const messages: string[] = [];
+    const timeout = setTimeout(() => {
+      client.removeListener("message", onMessage);
+      reject(
+        new Error(
+          `MQTT messages timeout: ${topic} (${messages.length}/${count})`,
+        ),
+      );
+    }, 15_000);
+    const onMessage = (messageTopic: string, payload: Buffer) => {
+      if (messageTopic !== topic) return;
+      messages.push(payload.toString("utf8"));
+      if (messages.length >= count) {
+        clearTimeout(timeout);
+        client.removeListener("message", onMessage);
+        resolve(messages);
+      }
     };
     client.subscribe(topic, { qos: 1 }, (error) => {
       if (error) {
@@ -348,6 +386,171 @@ export async function seedSingleSlotInventory(
     planogramVersion,
     machineSecret,
     mqttSigningSecret,
+  };
+}
+
+export async function seedMultiSlotInventory(
+  db: DrizzleDB,
+  input: {
+    machineCode: string;
+    slots: Array<{
+      onHandQty: number;
+      lowStockThreshold: number;
+      slotCode: string;
+      layerNo: number;
+      cellNo: number;
+      priceCents?: number;
+    }>;
+    machineStatus?: "online" | "offline" | "maintenance" | "disabled";
+  },
+): Promise<{
+  machineId: string;
+  machineCode: string;
+  planogramVersion: string;
+  machineSecret: string;
+  mqttSigningSecret: string;
+  items: Array<{
+    slotId: string;
+    slotCode: string;
+    inventoryId: string;
+    variantId: string;
+    productId: string;
+    priceCents: number;
+  }>;
+}> {
+  const encKey =
+    process.env.MACHINE_CREDENTIAL_ENCRYPTION_KEY ??
+    "local-cred-enc-key-change-before-production!";
+
+  const machineSecret = generateMachineSecret();
+  const mqttSigningSecret = generateMachineSecret();
+  const secretHash = hashMachineSecret(machineSecret);
+  const mqttSigningSecretEncryptedJson = encryptCredentialSecret(
+    mqttSigningSecret,
+    encKey,
+  );
+  const now = new Date();
+
+  const [machine] = await db.client
+    .insert(machines)
+    .values({
+      code: input.machineCode,
+      name: `机器-${input.machineCode}`,
+      status: input.machineStatus ?? "online",
+      secretHash,
+      secretVersion: 1,
+      secretRotatedAt: now,
+      mqttSigningSecretEncryptedJson,
+    })
+    .returning({ id: machines.id, code: machines.code });
+  const planogramVersion = `PLAN-${input.machineCode}`;
+  const [version] = await db.client
+    .insert(machinePlanogramVersions)
+    .values({
+      machineId: machine.id,
+      planogramVersion,
+      status: "active",
+      acknowledgedAt: now,
+      activeAt: now,
+    })
+    .returning({ id: machinePlanogramVersions.id });
+
+  const items: Array<{
+    slotId: string;
+    slotCode: string;
+    inventoryId: string;
+    variantId: string;
+    productId: string;
+    priceCents: number;
+  }> = [];
+
+  await input.slots.reduce<Promise<void>>(
+    async (previous, slotInput, index) => {
+      await previous;
+      const priceCents = slotInput.priceCents ?? 599;
+      const [product] = await db.client
+        .insert(products)
+        .values({
+          name: `商品-${input.machineCode}-${slotInput.slotCode}`,
+          status: "active",
+          sortOrder: index,
+        })
+        .returning({ id: products.id });
+      const [variant] = await db.client
+        .insert(productVariants)
+        .values({
+          productId: product.id,
+          sku: `SKU-${input.machineCode}-${slotInput.slotCode}`,
+          size: "500ml",
+          color: "black",
+          priceCents,
+          status: "active",
+        })
+        .returning({ id: productVariants.id });
+      const [slot] = await db.client
+        .insert(machineSlots)
+        .values({
+          machineId: machine.id,
+          layerNo: slotInput.layerNo,
+          cellNo: slotInput.cellNo,
+          slotCode: slotInput.slotCode,
+          capacity: 20,
+          status: "enabled",
+        })
+        .returning({ id: machineSlots.id });
+      const [inventory] = await db.client
+        .insert(inventories)
+        .values({
+          machineId: machine.id,
+          slotId: slot.id,
+          variantId: variant.id,
+          onHandQty: slotInput.onHandQty,
+          reservedQty: 0,
+          lowStockThreshold: slotInput.lowStockThreshold,
+        })
+        .returning({ id: inventories.id });
+      await db.client.insert(machinePlanogramSlots).values({
+        machinePlanogramVersionId: version.id,
+        slotId: slot.id,
+        slotCode: slotInput.slotCode,
+        layerNo: slotInput.layerNo,
+        cellNo: slotInput.cellNo,
+        capacity: 20,
+        parLevel: slotInput.lowStockThreshold,
+        inventoryId: inventory.id,
+        variantId: variant.id,
+        productId: product.id,
+        productName: `商品-${input.machineCode}-${slotInput.slotCode}`,
+        productDescription: null,
+        coverImageUrl: null,
+        categoryId: null,
+        categoryName: null,
+        sku: `SKU-${input.machineCode}-${slotInput.slotCode}`,
+        size: "500ml",
+        color: "black",
+        priceCents,
+        productSortOrder: index,
+        targetGender: null,
+      });
+      items.push({
+        slotId: slot.id,
+        slotCode: slotInput.slotCode,
+        inventoryId: inventory.id,
+        variantId: variant.id,
+        productId: product.id,
+        priceCents,
+      });
+    },
+    Promise.resolve(),
+  );
+
+  return {
+    machineId: machine.id,
+    machineCode: machine.code,
+    planogramVersion,
+    machineSecret,
+    mqttSigningSecret,
+    items,
   };
 }
 

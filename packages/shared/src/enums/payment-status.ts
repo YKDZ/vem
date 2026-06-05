@@ -33,6 +33,8 @@ export const paymentStatusSchema = z.enum([
   "expired",
   "canceled",
   "refund_pending",
+  "partial_refund_pending",
+  "manual_handling",
   "refunded",
   "partial_refunded",
 ]);

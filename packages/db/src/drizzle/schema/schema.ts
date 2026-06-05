@@ -12,6 +12,8 @@ import {
   notificationTargetTypes,
   notificationTypes,
   orderFulfillmentStates,
+  orderLineFulfillmentStatuses,
+  orderLineRefundStatuses,
   orderPaymentStates,
   orderSources,
   orderStatuses,
@@ -95,6 +97,14 @@ export const orderPaymentState = t.pgEnum(
 export const orderFulfillmentState = t.pgEnum(
   "order_fulfillment_state",
   asPgEnumValues(orderFulfillmentStates),
+);
+export const orderLineFulfillmentStatus = t.pgEnum(
+  "order_line_fulfillment_status",
+  asPgEnumValues(orderLineFulfillmentStatuses),
+);
+export const orderLineRefundStatus = t.pgEnum(
+  "order_line_refund_status",
+  asPgEnumValues(orderLineRefundStatuses),
 );
 export const orderSource = t.pgEnum(
   "order_source",
@@ -628,12 +638,28 @@ export const orderItems = t.pgTable(
       .references(() => machineSlots.id),
     quantity: t.integer("quantity").notNull(),
     unitPriceCents: t.integer("unit_price_cents").notNull(),
+    planogramVersion: t
+      .varchar("planogram_version", { length: 128 })
+      .default("legacy")
+      .notNull(),
     productSnapshot: t.jsonb("product_snapshot").$type<JsonObject>().notNull(),
+    fulfillmentStatus: orderLineFulfillmentStatus("fulfillment_status")
+      .default("pending")
+      .notNull(),
+    refundStatus: orderLineRefundStatus("refund_status")
+      .default("not_required")
+      .notNull(),
+    refundId: t.uuid("refund_id").references((): t.AnyPgColumn => refunds.id),
+    fulfilledAt: t.timestamp("fulfilled_at", { withTimezone: true }),
+    failedAt: t.timestamp("failed_at", { withTimezone: true }),
+    refundUpdatedAt: t.timestamp("refund_updated_at", { withTimezone: true }),
     createdAt: createdAt(),
   },
   (table) => [
     t.index("order_items_order_id_idx").on(table.orderId),
     t.index("order_items_variant_id_idx").on(table.variantId),
+    t.index("order_items_fulfillment_status_idx").on(table.fulfillmentStatus),
+    t.index("order_items_refund_status_idx").on(table.refundStatus),
     t.check("order_items_quantity_positive", sql`${table.quantity} > 0`),
     t.check(
       "order_items_unit_price_cents_non_negative",
@@ -928,6 +954,7 @@ export const inventoryReservations = t.pgTable(
       .uuid("inventory_id")
       .notNull()
       .references(() => inventories.id),
+    orderItemId: t.uuid("order_item_id").references(() => orderItems.id),
     quantity: t.integer("quantity").notNull(),
     status: inventoryReservationStatus("status").default("active").notNull(),
     expiresAt: t.timestamp("expires_at", { withTimezone: true }).notNull(),
@@ -937,6 +964,7 @@ export const inventoryReservations = t.pgTable(
   (table) => [
     t.index("inventory_reservations_order_id_idx").on(table.orderId),
     t.index("inventory_reservations_inventory_id_idx").on(table.inventoryId),
+    t.index("inventory_reservations_order_item_id_idx").on(table.orderItemId),
     t.index("inventory_reservations_status_idx").on(table.status),
     t.check(
       "inventory_reservations_quantity_positive",
@@ -1110,6 +1138,7 @@ export const vendingCommands = t.pgTable(
       .uuid("slot_id")
       .notNull()
       .references(() => machineSlots.id),
+    orderItemId: t.uuid("order_item_id").references(() => orderItems.id),
     payloadJson: t.jsonb("payload_json").$type<JsonObject>().notNull(),
     status: vendingCommandStatus("status").default("pending").notNull(),
     sentAt: t.timestamp("sent_at", { withTimezone: true }),
@@ -1126,6 +1155,7 @@ export const vendingCommands = t.pgTable(
       .uniqueIndex("vending_commands_order_slot_unique")
       .on(table.orderId, table.slotId),
     t.index("vending_commands_order_id_idx").on(table.orderId),
+    t.index("vending_commands_order_item_id_idx").on(table.orderItemId),
     t.index("vending_commands_machine_id_idx").on(table.machineId),
     t.index("vending_commands_status_idx").on(table.status),
     t.check(

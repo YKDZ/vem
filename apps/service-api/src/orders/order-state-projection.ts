@@ -15,7 +15,13 @@ export function projectOrderStatus(input: {
   ) {
     return "canceled";
   }
-  if (input.paymentState === "refund_pending") return "refund_pending";
+  if (
+    input.paymentState === "refund_pending" ||
+    input.paymentState === "partial_refund_pending"
+  ) {
+    return "refund_pending";
+  }
+  if (input.paymentState === "manual_handling") return "manual_handling";
   if (
     input.paymentState === "refunded" ||
     input.paymentState === "partial_refunded"
@@ -26,7 +32,10 @@ export function projectOrderStatus(input: {
   if (input.fulfillmentState === "manual_handling") {
     return "manual_handling";
   }
-  if (input.fulfillmentState === "dispense_failed") {
+  if (
+    input.fulfillmentState === "dispense_failed" ||
+    input.fulfillmentState === "partial_dispensed"
+  ) {
     return "dispense_failed";
   }
   if (input.fulfillmentState === "dispensed") return "fulfilled";

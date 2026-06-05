@@ -859,7 +859,7 @@ export class WeChatPayProvider implements PaymentCodeCapableProvider {
         reason: input.reason,
         amount: {
           refund: input.amountCents,
-          total: input.amountCents,
+          total: input.totalAmountCents ?? input.amountCents,
           currency: "CNY",
         },
       },

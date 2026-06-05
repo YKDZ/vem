@@ -11,4 +11,13 @@ describe("projectOrderStatus", () => {
       }),
     ).toBe("canceled");
   });
+
+  it("keeps a paid partially dispensed order on the failure path until refund state takes over", () => {
+    expect(
+      projectOrderStatus({
+        paymentState: "paid",
+        fulfillmentState: "partial_dispensed",
+      }),
+    ).toBe("dispense_failed");
+  });
 });

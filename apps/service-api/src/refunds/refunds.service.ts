@@ -16,6 +16,7 @@ import {
   inArray,
   machines,
   orders,
+  orderItems,
   orderStatusEvents,
   paymentProviders,
   payments,
@@ -350,6 +351,7 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
         paymentNo: created.row.paymentNo,
         providerTradeNo: created.row.providerTradeNo,
         amountCents: created.row.amountCents,
+        totalAmountCents: created.row.amountCents,
         reason: input.reason,
         config: providerConfig,
       });
@@ -433,7 +435,9 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
         }
       });
       return updated;
-    } catch (error) {
+    } catch (error: unknown) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
       const failed = await this.db.transaction(async (tx) => {
         await this.applyRefundTerminalState(tx, {
           refundId: created.refund.id,
@@ -446,11 +450,10 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
           eventType: "refund.failed",
           providerEventId: `sync_failed:${created.refund.refundNo}:${Date.now()}`,
           rawPayloadJson: {
-            error: error instanceof Error ? error.message : String(error),
+            error: errorMessage,
           },
           orderEventReason: `${input.reason}_failed`,
-          failureMessage:
-            error instanceof Error ? error.message : String(error),
+          failureMessage: errorMessage,
           refundedAt: null,
         });
         return {
@@ -461,6 +464,353 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
         };
       });
       return failed;
+    }
+  }
+
+  async requestPartialRefund(input: {
+    orderId: string;
+    orderItemIds: string[];
+    amountCents: number;
+    reason: "auto_partial_dispense_failed";
+    metadata?: Record<string, unknown>;
+  }) {
+    if (input.amountCents <= 0 || input.orderItemIds.length === 0) {
+      throw new ConflictException("Partial refund requires failed order lines");
+    }
+
+    const created = await this.db.transaction(async (tx) => {
+      const [row] = await tx
+        .select({
+          orderId: orders.id,
+          orderStatus: orders.status,
+          fulfillmentState: orders.fulfillmentState,
+          paymentId: payments.id,
+          paymentNo: payments.paymentNo,
+          providerTradeNo: payments.providerTradeNo,
+          providerCode: paymentProviders.code,
+          providerId: payments.providerId,
+          paymentAmountCents: payments.amountCents,
+          machineId: machines.id,
+          providerConfigId: payments.paymentProviderConfigId,
+        })
+        .from(orders)
+        .innerJoin(payments, eq(payments.id, orders.paymentId))
+        .innerJoin(
+          paymentProviders,
+          eq(paymentProviders.id, payments.providerId),
+        )
+        .innerJoin(machines, eq(machines.id, orders.machineId))
+        .where(eq(orders.id, input.orderId))
+        .orderBy(desc(payments.createdAt));
+      if (!row) throw new NotFoundException("Order payment not found");
+      if (input.amountCents >= row.paymentAmountCents) {
+        throw new ConflictException(
+          "Partial refund amount must be less than payment amount",
+        );
+      }
+
+      const provider = this.paymentProviderRegistry.get(row.providerCode);
+      if (!provider.supportsPartialRefund) {
+        await tx
+          .update(orderItems)
+          .set({
+            refundStatus: "manual_handling",
+            refundUpdatedAt: new Date(),
+          })
+          .where(inArray(orderItems.id, input.orderItemIds));
+        await tx
+          .update(payments)
+          .set({ status: "manual_handling", updatedAt: new Date() })
+          .where(eq(payments.id, row.paymentId));
+        await tx
+          .update(orders)
+          .set({
+            status: "manual_handling",
+            paymentState: "manual_handling",
+            fulfillmentState: row.fulfillmentState,
+            updatedAt: new Date(),
+          })
+          .where(eq(orders.id, input.orderId));
+        await tx.insert(orderStatusEvents).values({
+          orderId: input.orderId,
+          fromStatus: row.orderStatus,
+          toStatus: "manual_handling",
+          reason: "partial_refund_unsupported",
+          metadata: input.metadata ?? null,
+        });
+        return {
+          refund: null,
+          row,
+          created: false,
+          unsupported: true as const,
+        };
+      }
+
+      const [existing] = await tx
+        .select()
+        .from(refunds)
+        .where(
+          and(
+            eq(refunds.orderId, input.orderId),
+            eq(refunds.reason, input.reason),
+            inArray(refunds.status, [...ACTIVE_REFUND_STATUSES]),
+          ),
+        )
+        .limit(1);
+      if (existing)
+        return {
+          refund: existing,
+          row,
+          created: false,
+          unsupported: false as const,
+        };
+
+      await tx
+        .update(orderItems)
+        .set({ refundStatus: "pending", refundUpdatedAt: new Date() })
+        .where(inArray(orderItems.id, input.orderItemIds));
+      await tx
+        .update(orders)
+        .set({
+          status: "refund_pending",
+          paymentState: "partial_refund_pending",
+          updatedAt: new Date(),
+        })
+        .where(eq(orders.id, input.orderId));
+      await tx
+        .update(payments)
+        .set({ status: "partial_refund_pending", updatedAt: new Date() })
+        .where(eq(payments.id, row.paymentId));
+      await tx.insert(orderStatusEvents).values({
+        orderId: input.orderId,
+        fromStatus: row.orderStatus,
+        toStatus: "refund_pending",
+        reason: input.reason,
+        metadata: input.metadata ?? null,
+      });
+
+      const [refund] = await tx
+        .insert(refunds)
+        .values({
+          refundNo: createBusinessNo("RFD"),
+          paymentId: row.paymentId,
+          orderId: input.orderId,
+          amountCents: input.amountCents,
+          status: "processing",
+          reason: input.reason,
+          requestedByAdminUserId: null,
+        })
+        .returning();
+      return { refund, row, created: true, unsupported: false as const };
+    });
+
+    if (created.unsupported) return { status: "manual_handling" as const };
+    if (!created.created) return created.refund;
+
+    await this.db
+      .insert(refundEvents)
+      .values({
+        refundId: created.refund.id,
+        paymentId: created.row.paymentId,
+        providerId: created.row.providerId,
+        eventType: "refund.created",
+        providerEventId: `created:${created.refund.refundNo}`,
+        status: "created",
+        rawPayloadJson: {},
+        signatureValid: true,
+        handledAt: new Date(),
+      })
+      .onConflictDoNothing();
+
+    const provider = this.paymentProviderRegistry.get(created.row.providerCode);
+    const providerConfig = await this.paymentProviderConfigService
+      .resolveForExistingPayment({
+        providerCode: created.row.providerCode,
+        providerConfigId: created.row.providerConfigId ?? null,
+        machineId: created.row.machineId,
+      })
+      .catch(() => ({
+        providerCode: created.row.providerCode,
+        merchantNo: null,
+        appId: null,
+        publicConfigJson: {},
+        sensitiveConfigJson: {},
+      }));
+
+    try {
+      const result = await provider.refundPayment({
+        refundNo: created.refund.refundNo,
+        paymentNo: created.row.paymentNo,
+        providerTradeNo: created.row.providerTradeNo,
+        amountCents: input.amountCents,
+        totalAmountCents: created.row.paymentAmountCents,
+        reason: input.reason,
+        config: providerConfig,
+      });
+
+      return await this.db.transaction(async (tx) => {
+        if (result.status === "succeeded") {
+          await tx
+            .update(refunds)
+            .set({
+              status: "succeeded",
+              providerRefundNo: result.providerRefundNo,
+              refundedAt: result.refundedAt ?? new Date(),
+              updatedAt: new Date(),
+            })
+            .where(eq(refunds.id, created.refund.id));
+          await tx
+            .update(orderItems)
+            .set({
+              refundStatus: "refunded",
+              refundId: created.refund.id,
+              refundUpdatedAt: new Date(),
+            })
+            .where(inArray(orderItems.id, input.orderItemIds));
+          await tx
+            .update(payments)
+            .set({ status: "partial_refunded", updatedAt: new Date() })
+            .where(eq(payments.id, created.row.paymentId));
+          await tx
+            .update(orders)
+            .set({
+              status: "refunded",
+              paymentState: "partial_refunded",
+              fulfillmentState: created.row.fulfillmentState,
+              updatedAt: new Date(),
+            })
+            .where(eq(orders.id, input.orderId));
+          await tx
+            .insert(refundEvents)
+            .values({
+              refundId: created.refund.id,
+              paymentId: created.row.paymentId,
+              providerId: created.row.providerId,
+              eventType: "refund.succeeded",
+              providerEventId: `sync_succeeded:${created.refund.refundNo}`,
+              providerRefundNo: result.providerRefundNo,
+              status: "succeeded",
+              rawPayloadJson: buildStoredEventPayload(result.rawPayload ?? {}),
+              signatureValid: true,
+              handledAt: new Date(),
+            })
+            .onConflictDoNothing();
+          return {
+            ...created.refund,
+            status: "succeeded" as const,
+            providerRefundNo: result.providerRefundNo,
+            refundedAt: result.refundedAt ?? null,
+          };
+        }
+
+        if (result.status === "failed") {
+          await tx
+            .update(refunds)
+            .set({
+              status: "failed",
+              providerRefundNo: result.providerRefundNo,
+              updatedAt: new Date(),
+            })
+            .where(eq(refunds.id, created.refund.id));
+          await tx
+            .update(orderItems)
+            .set({ refundStatus: "failed", refundUpdatedAt: new Date() })
+            .where(inArray(orderItems.id, input.orderItemIds));
+          await tx
+            .update(payments)
+            .set({ status: "succeeded", updatedAt: new Date() })
+            .where(eq(payments.id, created.row.paymentId));
+          await tx
+            .update(orders)
+            .set({
+              status: "manual_handling",
+              paymentState: "paid",
+              fulfillmentState: created.row.fulfillmentState,
+              updatedAt: new Date(),
+            })
+            .where(eq(orders.id, input.orderId));
+          await tx
+            .insert(refundEvents)
+            .values({
+              refundId: created.refund.id,
+              paymentId: created.row.paymentId,
+              providerId: created.row.providerId,
+              eventType: "refund.failed",
+              providerEventId: `sync_failed:${created.refund.refundNo}`,
+              providerRefundNo: result.providerRefundNo,
+              status: "failed",
+              rawPayloadJson: buildStoredEventPayload(result.rawPayload ?? {}),
+              signatureValid: true,
+              handledAt: new Date(),
+            })
+            .onConflictDoNothing();
+          return {
+            ...created.refund,
+            status: "failed" as const,
+            providerRefundNo: result.providerRefundNo,
+            refundedAt: null,
+          };
+        }
+
+        await tx
+          .update(refunds)
+          .set({
+            status: "processing",
+            providerRefundNo: result.providerRefundNo,
+            updatedAt: new Date(),
+          })
+          .where(eq(refunds.id, created.refund.id));
+        await tx
+          .insert(refundEvents)
+          .values({
+            refundId: created.refund.id,
+            paymentId: created.row.paymentId,
+            providerId: created.row.providerId,
+            eventType: "refund.processing",
+            providerEventId: `sync_processing:${created.refund.refundNo}`,
+            providerRefundNo: result.providerRefundNo,
+            status: "processing",
+            rawPayloadJson: buildStoredEventPayload(result.rawPayload ?? {}),
+            signatureValid: true,
+            handledAt: new Date(),
+          })
+          .onConflictDoNothing();
+        return {
+          ...created.refund,
+          status: "processing" as const,
+          providerRefundNo: result.providerRefundNo,
+        };
+      });
+    } catch {
+      await this.db.transaction(async (tx) => {
+        await tx
+          .update(refunds)
+          .set({ status: "failed", updatedAt: new Date() })
+          .where(eq(refunds.id, created.refund.id));
+        await tx
+          .update(orderItems)
+          .set({ refundStatus: "failed", refundUpdatedAt: new Date() })
+          .where(inArray(orderItems.id, input.orderItemIds));
+        await tx
+          .update(orders)
+          .set({
+            status: "manual_handling",
+            paymentState: "paid",
+            fulfillmentState: created.row.fulfillmentState,
+            updatedAt: new Date(),
+          })
+          .where(eq(orders.id, input.orderId));
+        await tx
+          .update(payments)
+          .set({ status: "succeeded", updatedAt: new Date() })
+          .where(eq(payments.id, created.row.paymentId));
+      });
+      return {
+        ...created.refund,
+        status: "failed" as const,
+        providerRefundNo: null,
+        refundedAt: null,
+      };
     }
   }
 

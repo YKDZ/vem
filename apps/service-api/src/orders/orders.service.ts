@@ -455,34 +455,39 @@ export class OrdersService {
 
       await itemDetails.reduce<Promise<void>>(async (previous, item) => {
         await previous;
+        const [orderItem] = await tx
+          .insert(orderItems)
+          .values({
+            orderId: createdOrder.id,
+            variantId: item.variantId,
+            inventoryId: item.inventoryId,
+            slotId: item.slotId,
+            quantity: item.quantity,
+            unitPriceCents: item.unitPriceCents,
+            planogramVersion: item.planogramVersion,
+            productSnapshot: {
+              productName: item.productName,
+              productId: item.productId,
+              variantId: item.variantId,
+              inventoryId: item.inventoryId,
+              planogramVersion: item.planogramVersion,
+              slotId: item.slotId,
+              slotCode: item.slotCode,
+              layerNo: item.layerNo,
+              cellNo: item.cellNo,
+              vendingCommandQuantity: item.quantity,
+              sku: item.sku,
+              size: item.size,
+              color: item.color,
+            },
+          })
+          .returning({ id: orderItems.id });
         await this.inventoryService.reserveForOrder(tx, {
           orderId: createdOrder.id,
+          orderItemId: orderItem.id,
           inventoryId: item.inventoryId,
           quantity: item.quantity,
           expiresAt: paymentExpiresAt,
-        });
-        await tx.insert(orderItems).values({
-          orderId: createdOrder.id,
-          variantId: item.variantId,
-          inventoryId: item.inventoryId,
-          slotId: item.slotId,
-          quantity: item.quantity,
-          unitPriceCents: item.unitPriceCents,
-          productSnapshot: {
-            productName: item.productName,
-            productId: item.productId,
-            variantId: item.variantId,
-            inventoryId: item.inventoryId,
-            planogramVersion: item.planogramVersion,
-            slotId: item.slotId,
-            slotCode: item.slotCode,
-            layerNo: item.layerNo,
-            cellNo: item.cellNo,
-            vendingCommandQuantity: item.quantity,
-            sku: item.sku,
-            size: item.size,
-            color: item.color,
-          },
         });
       }, Promise.resolve());
 
@@ -998,9 +1003,19 @@ function resolveMachineOrderNextAction(
 ): MachineOrderStatusNextAction {
   const orderStatus = projectOrderStatus({ paymentState, fulfillmentState });
   if (orderStatus === "fulfilled") return "success";
-  if (fulfillmentState === "dispense_failed") return "dispense_failed";
+  if (
+    fulfillmentState === "dispense_failed" ||
+    fulfillmentState === "partial_dispensed"
+  ) {
+    return "dispense_failed";
+  }
   if (fulfillmentState === "manual_handling") return "manual_handling";
-  if (paymentState === "refund_pending") return "refund_pending";
+  if (
+    paymentState === "refund_pending" ||
+    paymentState === "partial_refund_pending"
+  ) {
+    return "refund_pending";
+  }
   if (paymentState === "refunded" || paymentState === "partial_refunded") {
     return "refunded";
   }

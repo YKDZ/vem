@@ -319,9 +319,16 @@ export class MachineStockMovementsRepository {
         and(
           eq(inventoryReservations.orderId, orders.id),
           eq(inventoryReservations.inventoryId, orderItems.inventoryId),
+          eq(inventoryReservations.orderItemId, orderItems.id),
         ),
       )
-      .innerJoin(vendingCommands, eq(vendingCommands.orderId, orders.id))
+      .innerJoin(
+        vendingCommands,
+        and(
+          eq(vendingCommands.orderId, orders.id),
+          eq(vendingCommands.orderItemId, orderItems.id),
+        ),
+      )
       .where(
         and(
           eq(orders.machineId, machineId),
@@ -412,6 +419,7 @@ export class MachineStockMovementsRepository {
           from inventory_reservations
           where order_id = ${input.context.orderId}
             and inventory_id = ${input.context.inventoryId}
+            and order_item_id = ${input.context.orderItemId}
             and status = 'active'
             and quantity >= ${input.context.quantity}
         )
@@ -428,6 +436,7 @@ export class MachineStockMovementsRepository {
         and(
           eq(inventoryReservations.orderId, input.context.orderId),
           eq(inventoryReservations.inventoryId, input.context.inventoryId),
+          eq(inventoryReservations.orderItemId, input.context.orderItemId),
           eq(inventoryReservations.status, "active"),
         ),
       );
@@ -461,39 +470,96 @@ export class MachineStockMovementsRepository {
         ),
       );
 
+    await tx
+      .update(orderItems)
+      .set({
+        fulfillmentStatus: "dispensed",
+        refundStatus: "not_required",
+        fulfilledAt: new Date(input.input.occurredAt),
+      })
+      .where(eq(orderItems.id, input.context.orderItemId));
+
+    await this.syncOrderFulfillmentStateFromLines(tx, {
+      orderId: input.context.orderId,
+      reason: "machine_stock_dispense_succeeded",
+      metadata: { rawMovementId: input.rawMovementId },
+      dispensedAt: new Date(input.input.occurredAt),
+    });
+
+    return true;
+  }
+
+  private async syncOrderFulfillmentStateFromLines(
+    tx: DrizzleTransaction,
+    input: {
+      orderId: string;
+      reason: string;
+      metadata?: Record<string, unknown>;
+      dispensedAt?: Date;
+    },
+  ): Promise<void> {
+    const lines = await tx
+      .select({ fulfillmentStatus: orderItems.fulfillmentStatus })
+      .from(orderItems)
+      .where(eq(orderItems.orderId, input.orderId));
+    if (lines.length === 0) return;
+
+    const dispensed = lines.filter(
+      (line) => line.fulfillmentStatus === "dispensed",
+    ).length;
+    const failed = lines.filter(
+      (line) => line.fulfillmentStatus === "dispense_failed",
+    ).length;
+    const manual = lines.some(
+      (line) => line.fulfillmentStatus === "manual_handling",
+    );
+    const fulfillmentState = manual
+      ? "manual_handling"
+      : dispensed === lines.length
+        ? "dispensed"
+        : failed === lines.length
+          ? "dispense_failed"
+          : dispensed > 0 && failed > 0
+            ? "partial_dispensed"
+            : failed > 0
+              ? "dispense_failed"
+              : "dispensing";
+
     const [currentOrder] = await tx
       .select({
         status: orders.status,
         paymentState: orders.paymentState,
+        fulfillmentState: orders.fulfillmentState,
       })
       .from(orders)
-      .where(eq(orders.id, input.context.orderId));
-    if (currentOrder) {
-      const projectedStatus = projectOrderStatus({
-        paymentState: currentOrder.paymentState,
-        fulfillmentState: "dispensed",
-      });
-      await tx
-        .update(orders)
-        .set({
-          status: projectedStatus,
-          fulfillmentState: "dispensed",
-          dispensedAt: new Date(input.input.occurredAt),
-          updatedAt: new Date(),
-        })
-        .where(eq(orders.id, input.context.orderId));
-      if (currentOrder.status !== projectedStatus) {
-        await tx.insert(orderStatusEvents).values({
-          orderId: input.context.orderId,
-          fromStatus: currentOrder.status,
-          toStatus: projectedStatus,
-          reason: "machine_stock_dispense_succeeded",
-          metadata: { rawMovementId: input.rawMovementId },
-        });
-      }
+      .where(eq(orders.id, input.orderId));
+    if (!currentOrder || currentOrder.fulfillmentState === fulfillmentState) {
+      return;
     }
 
-    return true;
+    const projectedStatus = projectOrderStatus({
+      paymentState: currentOrder.paymentState,
+      fulfillmentState,
+    });
+    await tx
+      .update(orders)
+      .set({
+        status: projectedStatus,
+        fulfillmentState,
+        dispensedAt:
+          fulfillmentState === "dispensed"
+            ? (input.dispensedAt ?? new Date())
+            : null,
+        updatedAt: new Date(),
+      })
+      .where(eq(orders.id, input.orderId));
+    await tx.insert(orderStatusEvents).values({
+      orderId: input.orderId,
+      fromStatus: currentOrder.status,
+      toStatus: projectedStatus,
+      reason: input.reason,
+      metadata: input.metadata ?? null,
+    });
   }
 
   async applyTrustedFieldStockMovement(input: {

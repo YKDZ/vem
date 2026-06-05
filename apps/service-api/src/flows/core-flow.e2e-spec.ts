@@ -8,6 +8,7 @@ import {
   eq,
   inventories,
   inventoryMovements,
+  inventoryReservations,
   machineHeartbeats,
   orderItems,
   notifications,
@@ -31,9 +32,11 @@ import {
   machineOrderBody,
   pollOrderStatus,
   publishMqtt,
+  seedMultiSlotInventory,
   seedSingleSlotInventory,
   signMqttPayload,
   waitForMqttMessage,
+  waitForMqttMessages,
   type ApiResponse,
   type CreatedOrderPayload,
 } from "./flow-test-helpers";
@@ -109,6 +112,172 @@ describe.sequential("core-flow.e2e", () => {
       });
 
     expect(response.status).toBe(400);
+  }, 60_000);
+
+  it("creates reservations and vending command snapshots per line for a two-line order", async () => {
+    const seeded = await seedMultiSlotInventory(db, {
+      machineCode: "M-E2E-LINES-001",
+      slots: [
+        {
+          onHandQty: 2,
+          lowStockThreshold: 1,
+          slotCode: "L1",
+          layerNo: 1,
+          cellNo: 1,
+          priceCents: 599,
+        },
+        {
+          onHandQty: 2,
+          lowStockThreshold: 1,
+          slotCode: "L2",
+          layerNo: 1,
+          cellNo: 2,
+          priceCents: 799,
+        },
+      ],
+    });
+
+    const token = await loginAndGetToken(api, appConfig);
+    const machineAuthHeader = await getMachineAuthHeader(
+      api,
+      seeded.machineCode,
+      seeded.machineSecret,
+    );
+    const commandPayloadsPromise = waitForMqttMessages(
+      mqttClient,
+      `vem/machines/${seeded.machineCode}/commands/dispense`,
+      2,
+    );
+
+    const createOrderResponse = await api
+      .post("/api/machine-orders")
+      .set(machineAuthHeader)
+      .send({
+        machineCode: seeded.machineCode,
+        items: seeded.items.map((item) => ({
+          inventoryId: item.inventoryId,
+          quantity: 1,
+          planogramVersion: seeded.planogramVersion,
+          slotId: item.slotId,
+          slotCode: item.slotCode,
+        })),
+        paymentMethod: "mock",
+      });
+    expect(createOrderResponse.status).toBe(201);
+    const createdOrder =
+      createOrderResponse.body as ApiResponse<CreatedOrderPayload>;
+    expect(createdOrder.data.totalAmountCents).toBe(1398);
+
+    const succeedResponse = await api
+      .post(`/api/payments/mock/${createdOrder.data.paymentNo}/succeed`)
+      .set("Authorization", `Bearer ${token}`);
+    expect(succeedResponse.status).toBe(201);
+
+    const commandEnvelopes = commandPayloadsPromise.then((payloads) =>
+      payloads.map(
+        (payloadText) =>
+          JSON.parse(payloadText) as {
+            payload: {
+              commandNo: string;
+              quantity: number;
+              slot: { slotCode: string };
+            };
+          },
+      ),
+    );
+    await expect(commandEnvelopes).resolves.toHaveLength(2);
+    const commandPayloads = await commandEnvelopes;
+    expect(
+      commandPayloads.map((message) => message.payload.slot.slotCode).sort(),
+    ).toEqual(["L1", "L2"]);
+
+    const orderItemRows = await db.client
+      .select({
+        id: orderItems.id,
+        slotId: orderItems.slotId,
+        inventoryId: orderItems.inventoryId,
+        variantId: orderItems.variantId,
+        quantity: orderItems.quantity,
+        unitPriceCents: orderItems.unitPriceCents,
+        productSnapshot: orderItems.productSnapshot,
+        planogramVersion: orderItems.planogramVersion,
+        fulfillmentStatus: orderItems.fulfillmentStatus,
+      })
+      .from(orderItems)
+      .where(eq(orderItems.orderId, createdOrder.data.orderId))
+      .orderBy(orderItems.createdAt);
+    expect(orderItemRows).toHaveLength(2);
+    expect(orderItemRows.map((item) => item.planogramVersion)).toEqual([
+      seeded.planogramVersion,
+      seeded.planogramVersion,
+    ]);
+    expect(orderItemRows.map((item) => item.fulfillmentStatus)).toEqual([
+      "dispensing",
+      "dispensing",
+    ]);
+    expect(
+      orderItemRows.map((item) => ({
+        inventoryId: item.inventoryId,
+        slotId: item.slotId,
+        quantity: item.quantity,
+        unitPriceCents: item.unitPriceCents,
+      })),
+    ).toEqual(
+      seeded.items.map((item) => ({
+        inventoryId: item.inventoryId,
+        slotId: item.slotId,
+        quantity: 1,
+        unitPriceCents: item.priceCents,
+      })),
+    );
+
+    const reservationRows = await db.client
+      .select({
+        orderItemId: inventoryReservations.orderItemId,
+        inventoryId: inventoryReservations.inventoryId,
+        quantity: inventoryReservations.quantity,
+        status: inventoryReservations.status,
+      })
+      .from(inventoryReservations)
+      .where(eq(inventoryReservations.orderId, createdOrder.data.orderId));
+    expect(reservationRows).toHaveLength(2);
+    expect(
+      reservationRows
+        .map((row) => row.orderItemId)
+        .sort((a, b) => String(a).localeCompare(String(b))),
+    ).toEqual(
+      orderItemRows.map((row) => row.id).sort((a, b) => a.localeCompare(b)),
+    );
+    expect(reservationRows.map((row) => row.status)).toEqual([
+      "active",
+      "active",
+    ]);
+
+    const commandRows = await db.client
+      .select({
+        orderItemId: vendingCommands.orderItemId,
+        slotId: vendingCommands.slotId,
+        payloadJson: vendingCommands.payloadJson,
+      })
+      .from(vendingCommands)
+      .where(eq(vendingCommands.orderId, createdOrder.data.orderId));
+    expect(commandRows).toHaveLength(2);
+    expect(
+      commandRows
+        .map((row) => row.orderItemId)
+        .sort((a, b) => String(a).localeCompare(String(b))),
+    ).toEqual(
+      orderItemRows.map((row) => row.id).sort((a, b) => a.localeCompare(b)),
+    );
+    expect(
+      commandRows
+        .map((row) => row.slotId)
+        .sort((a, b) => String(a).localeCompare(String(b))),
+    ).toEqual(
+      seeded.items
+        .map((item) => item.slotId)
+        .sort((a, b) => a.localeCompare(b)),
+    );
   }, 60_000);
 
   it("handles succeed callback idempotently and reaches fulfilled", async () => {

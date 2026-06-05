@@ -27,6 +27,8 @@ export const orderPaymentStateSchema = z.enum([
   "payment_expired",
   "canceled",
   "refund_pending",
+  "partial_refund_pending",
+  "manual_handling",
   "refunded",
   "partial_refunded",
 ]);
@@ -37,9 +39,33 @@ export const orderFulfillmentStateSchema = z.enum([
   "awaiting_fulfillment",
   "dispensing",
   "dispensed",
+  "partial_dispensed",
   "dispense_failed",
   "manual_handling",
   "canceled",
 ]);
 export type OrderFulfillmentState = z.infer<typeof orderFulfillmentStateSchema>;
 export const orderFulfillmentStates = orderFulfillmentStateSchema.options;
+
+export const orderLineFulfillmentStatusSchema = z.enum([
+  "pending",
+  "dispensing",
+  "dispensed",
+  "dispense_failed",
+  "manual_handling",
+]);
+export type OrderLineFulfillmentStatus = z.infer<
+  typeof orderLineFulfillmentStatusSchema
+>;
+export const orderLineFulfillmentStatuses =
+  orderLineFulfillmentStatusSchema.options;
+
+export const orderLineRefundStatusSchema = z.enum([
+  "not_required",
+  "pending",
+  "refunded",
+  "failed",
+  "manual_handling",
+]);
+export type OrderLineRefundStatus = z.infer<typeof orderLineRefundStatusSchema>;
+export const orderLineRefundStatuses = orderLineRefundStatusSchema.options;
