@@ -1479,6 +1479,44 @@ impl LocalStateStore {
         self.sale_view(None).await
     }
 
+    pub async fn block_slot_for_dispense_failure(
+        &self,
+        command: &DispenseCommandPayload,
+        error_code: Option<&str>,
+    ) -> Result<Option<SaleViewSnapshot>, StoreError> {
+        let slot_sales_state = match error_code {
+            Some("NO_DROP") => "suspect",
+            _ => "frozen",
+        };
+        let row: Option<(String, String)> = sqlx::query_as(
+            "SELECT v.planogram_version, s.slot_id
+             FROM machine_planogram_slots s
+             JOIN machine_planogram_versions v
+               ON v.planogram_version = s.planogram_version AND v.active = 1
+             WHERE s.slot_code = ?1 AND s.layer_no = ?2 AND s.cell_no = ?3
+             LIMIT 1",
+        )
+        .bind(&command.slot.slot_code)
+        .bind(command.slot.layer_no)
+        .bind(command.slot.cell_no)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        let Some((planogram_version, slot_id)) = row else {
+            return Ok(None);
+        };
+
+        let snapshot = self
+            .update_slot_sales_state(SlotSalesStateInput {
+                planogram_version,
+                slot_id,
+                slot_sales_state: slot_sales_state.to_string(),
+                source: "dispense_failure".to_string(),
+            })
+            .await?;
+        Ok(Some(snapshot))
+    }
+
     pub async fn update_slot_sales_state(
         &self,
         input: SlotSalesStateInput,
@@ -2597,6 +2635,53 @@ mod tests {
 
     use super::*;
 
+    async fn seed_single_slot_planogram(store: &LocalStateStore) {
+        store
+            .apply_planogram(MachinePlanogramInput {
+                planogram_version: "PLAN-FAILURE".to_string(),
+                source: "test".to_string(),
+                applied_by: None,
+                slots: vec![MachinePlanogramSlotInput {
+                    slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                    slot_code: "A1".to_string(),
+                    layer_no: 1,
+                    cell_no: 1,
+                    capacity: 8,
+                    par_level: 6,
+                    inventory_id: "550e8400-e29b-41d4-a716-446655440002".to_string(),
+                    variant_id: "550e8400-e29b-41d4-a716-446655440003".to_string(),
+                    product_id: "550e8400-e29b-41d4-a716-446655440004".to_string(),
+                    product_name: "water".to_string(),
+                    product_description: None,
+                    cover_image_url: None,
+                    category_id: None,
+                    category_name: None,
+                    sku: "WATER-001".to_string(),
+                    size: Some("550ml".to_string()),
+                    color: None,
+                    price_cents: 200,
+                    product_sort_order: 1,
+                    target_gender: None,
+                }],
+            })
+            .await
+            .expect("planogram");
+    }
+
+    fn dispense_command_for_slot(command_no: &str) -> DispenseCommandPayload {
+        DispenseCommandPayload {
+            command_no: command_no.to_string(),
+            order_no: "ORD-FAILURE".to_string(),
+            slot: vending_core::hardware::SlotPayload {
+                layer_no: 1,
+                cell_no: 1,
+                slot_code: "A1".to_string(),
+            },
+            quantity: 1,
+            timeout_seconds: 10,
+        }
+    }
+
     #[tokio::test]
     async fn open_runs_migration_and_writes_schema_version() {
         let temp = TempDir::new().expect("temp");
@@ -2662,6 +2747,46 @@ mod tests {
             store2.acquire_runtime_lock(2).await,
             Err(StoreError::RuntimeLockHeld)
         ));
+    }
+
+    #[tokio::test]
+    async fn no_drop_dispense_failure_marks_local_slot_suspect() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_single_slot_planogram(&store).await;
+
+        let snapshot = store
+            .block_slot_for_dispense_failure(
+                &dispense_command_for_slot("CMD-NO-DROP"),
+                Some("NO_DROP"),
+            )
+            .await
+            .expect("block")
+            .expect("slot found");
+
+        assert_eq!(snapshot.items[0].slot_sales_state, "suspect");
+    }
+
+    #[tokio::test]
+    async fn jammed_dispense_failure_freezes_local_slot() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_single_slot_planogram(&store).await;
+
+        let snapshot = store
+            .block_slot_for_dispense_failure(
+                &dispense_command_for_slot("CMD-JAMMED"),
+                Some("JAMMED"),
+            )
+            .await
+            .expect("block")
+            .expect("slot found");
+
+        assert_eq!(snapshot.items[0].slot_sales_state, "frozen");
     }
 
     #[tokio::test]

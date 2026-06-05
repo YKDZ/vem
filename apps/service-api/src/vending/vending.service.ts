@@ -30,6 +30,7 @@ import {
   dispenseResultPayloadSchema,
   heartbeatPayloadSchema,
   pageQuerySchema,
+  type RawMachineStockMovement,
 } from "@vem/shared";
 import { z } from "zod";
 
@@ -37,6 +38,7 @@ import { createBusinessNo } from "../common/business-no.util";
 import { getOffset, toPageResult } from "../common/pagination.util";
 import { DRIZZLE_CLIENT } from "../database/database.constants";
 import { InventoryService } from "../inventory/inventory.service";
+import { MachineStockMovementsService } from "../inventory/machine-stock-movements.service";
 import { MaintenanceWorkOrdersService } from "../maintenance-work-orders/maintenance-work-orders.service";
 import { MqttSignatureService } from "../mqtt/mqtt-signature.service";
 import { MqttService } from "../mqtt/mqtt.service";
@@ -66,6 +68,7 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
     private readonly mqttSignatureService: MqttSignatureService,
     private readonly notificationsService: NotificationsService,
     private readonly inventoryService: InventoryService,
+    private readonly machineStockMovementsService: MachineStockMovementsService,
     private readonly refundsService: RefundsService,
     private readonly maintenanceWorkOrdersService: MaintenanceWorkOrdersService,
   ) {}
@@ -458,6 +461,224 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
     return updated;
   }
 
+  async resolveCommand(
+    id: string,
+    input: { result: "dispensed" | "not_dispensed"; note?: string },
+  ) {
+    const [command] = await this.db
+      .select({
+        id: vendingCommands.id,
+        commandNo: vendingCommands.commandNo,
+        orderId: vendingCommands.orderId,
+        machineId: vendingCommands.machineId,
+        machineCode: machines.code,
+        slotId: vendingCommands.slotId,
+        status: vendingCommands.status,
+        payloadJson: vendingCommands.payloadJson,
+        orderNo: orders.orderNo,
+      })
+      .from(vendingCommands)
+      .innerJoin(machines, eq(machines.id, vendingCommands.machineId))
+      .innerJoin(orders, eq(orders.id, vendingCommands.orderId))
+      .where(eq(vendingCommands.id, id));
+    if (!command) {
+      throw new NotFoundException("Vending command not found");
+    }
+
+    if (input.result === "dispensed") {
+      return await this.resolveCommandAsDispensed(command, input.note);
+    }
+
+    const failureContext = await this.db.transaction(async (tx) => {
+      const [updated] = await tx
+        .update(vendingCommands)
+        .set({
+          status: "failed",
+          resultAt: new Date(),
+          lastError: input.note ?? "manual confirmation: not dispensed",
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(vendingCommands.id, command.id),
+            inArray(vendingCommands.status, [
+              "sent",
+              "acknowledged",
+              "result_unknown",
+              "timeout",
+            ]),
+          ),
+        )
+        .returning({ id: vendingCommands.id });
+      if (!updated && command.status === "failed") {
+        return null;
+      }
+      if (!updated) {
+        throw new ConflictException(
+          `Command status ${command.status} cannot be resolved as not dispensed`,
+        );
+      }
+
+      const compensation =
+        await this.inventoryService.releaseAffectedReservationForDispenseFailure(
+          tx,
+          {
+            orderId: command.orderId,
+            slotId: command.slotId,
+            errorCode: "NO_DROP",
+            message: input.note ?? "manual confirmation: not dispensed",
+          },
+        );
+
+      const [currentOrder] = await tx
+        .select({ status: orders.status, paymentState: orders.paymentState })
+        .from(orders)
+        .where(eq(orders.id, command.orderId));
+      if (currentOrder) {
+        const projectedStatus = projectOrderStatus({
+          paymentState: currentOrder.paymentState,
+          fulfillmentState: "dispense_failed",
+        });
+        await tx
+          .update(orders)
+          .set({
+            status: projectedStatus,
+            fulfillmentState: "dispense_failed",
+            updatedAt: new Date(),
+          })
+          .where(eq(orders.id, command.orderId));
+        await tx.insert(orderStatusEvents).values({
+          orderId: command.orderId,
+          fromStatus: currentOrder.status,
+          toStatus: projectedStatus,
+          reason: "manual_dispense_not_dispensed",
+          metadata: {
+            commandNo: command.commandNo,
+            releasedQuantity: compensation.releasedQuantity,
+            slotSalesState: compensation.slotSalesState,
+          },
+        });
+      }
+
+      await this.notificationsService.createDispenseFailedNotification(tx, {
+        orderId: command.orderId,
+        commandId: command.id,
+        message: input.note ?? "manual confirmation: not dispensed",
+      });
+
+      return {
+        orderId: command.orderId,
+        commandId: command.id,
+        commandNo: command.commandNo,
+        errorCode: "NO_DROP" as const,
+        message: input.note ?? "manual confirmation: not dispensed",
+        compensation,
+      };
+    });
+
+    if (failureContext) {
+      await this.refundsService.requestFullRefund({
+        orderId: failureContext.orderId,
+        reason: "auto_dispense_failed",
+        metadata: failureContext,
+      });
+    }
+
+    return { commandId: command.id, status: "failed" as const };
+  }
+
+  private async resolveCommandAsDispensed(
+    command: {
+      id: string;
+      commandNo: string;
+      orderId: string;
+      machineId: string;
+      machineCode: string;
+      slotId: string;
+      status: string;
+      payloadJson: Record<string, unknown>;
+      orderNo: string;
+    },
+    note?: string,
+  ) {
+    if (command.status === "succeeded") {
+      return { commandId: command.id, status: "succeeded" as const };
+    }
+    if (command.status === "failed") {
+      throw new ConflictException(
+        "Failed command cannot be resolved as dispensed",
+      );
+    }
+
+    const [item] = await this.db
+      .select({
+        id: orderItems.id,
+        inventoryId: orderItems.inventoryId,
+        quantity: orderItems.quantity,
+        productSnapshot: orderItems.productSnapshot,
+      })
+      .from(orderItems)
+      .where(
+        and(
+          eq(orderItems.orderId, command.orderId),
+          eq(orderItems.slotId, command.slotId),
+        ),
+      )
+      .limit(1);
+    if (!item) {
+      throw new NotFoundException("Order item not found for vending command");
+    }
+
+    const snapshot = item.productSnapshot as Record<string, unknown>;
+    const planogramVersion = snapshot.planogramVersion;
+    if (typeof planogramVersion !== "string") {
+      throw new ConflictException("Order item planogram snapshot is missing");
+    }
+
+    const movement: RawMachineStockMovement = {
+      movementId: `manual-dispense:${command.commandNo}`,
+      planogramVersion,
+      slotId: command.slotId,
+      movementType: "dispense_succeeded",
+      quantity: item.quantity,
+      source: "manual_confirmation",
+      attributedTo: command.commandNo,
+      orderContext: {
+        orderNo: command.orderNo,
+        orderItemId: item.id,
+        vendingCommandNo: command.commandNo,
+        inventoryId: item.inventoryId,
+      },
+      occurredAt: new Date().toISOString(),
+    };
+
+    const result = await this.machineStockMovementsService.receiveRawMovement(
+      { id: command.machineId, code: command.machineCode, status: "online" },
+      movement,
+    );
+    if (result.status !== "accepted" && result.status !== "already_accepted") {
+      throw new ConflictException(
+        `Manual dispense confirmation could not be accepted: ${result.status}`,
+      );
+    }
+
+    await this.db
+      .update(vendingCommands)
+      .set({
+        status: "succeeded",
+        resultAt: new Date(),
+        lastError: note ?? null,
+        updatedAt: new Date(),
+      })
+      .where(eq(vendingCommands.id, command.id));
+
+    return {
+      commandId: command.id,
+      status: "succeeded" as const,
+      stockMovementStatus: result.status,
+    };
+  }
+
   async markTimedOutCommands(now = new Date()): Promise<{ processed: number }> {
     const candidates = await this.db
       .select({
@@ -486,9 +707,9 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
           const [updated] = await tx
             .update(vendingCommands)
             .set({
-              status: "timeout",
+              status: "result_unknown",
               resultAt: now,
-              lastError: "vending command timeout",
+              lastError: "dispense result unknown after command timeout",
               updatedAt: new Date(),
             })
             .where(
@@ -524,15 +745,18 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
               orderId: command.orderId,
               fromStatus: currentOrder.status,
               toStatus: projectedStatus,
-              reason: "vending_command_timeout",
-              metadata: { commandNo: command.commandNo },
+              reason: "dispense_result_unknown",
+              metadata: {
+                commandNo: command.commandNo,
+                slotSalesState: "frozen",
+              },
             });
           }
 
           await this.notificationsService.createDispenseFailedNotification(tx, {
             orderId: command.orderId,
             commandId: command.id,
-            message: "vending command timeout",
+            message: "dispense result unknown after command timeout",
           });
           return true;
         });
@@ -663,13 +887,10 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
       }
 
       if (payload.success) {
-        if (
-          command.status === "succeeded" ||
-          command.status === "failed" ||
-          command.status === "timeout"
-        ) {
+        if (command.status === "succeeded" || command.status === "failed") {
           return null;
         }
+        const wasResultUnknown = command.status === "result_unknown";
         await tx
           .update(vendingCommands)
           .set({
@@ -689,7 +910,7 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
               sql`${vendingCommands.status} <> 'succeeded'`,
             ),
           );
-        if (Number(remainingRow.total) === 0) {
+        if (!wasResultUnknown && Number(remainingRow.total) === 0) {
           const [currentOrder] = await tx
             .select({
               status: orders.status,
@@ -722,11 +943,7 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
         return null;
       }
 
-      if (
-        command.status === "succeeded" ||
-        command.status === "failed" ||
-        command.status === "timeout"
-      ) {
+      if (command.status === "succeeded" || command.status === "failed") {
         return null;
       }
 
@@ -741,12 +958,15 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
         .where(eq(vendingCommands.id, command.id));
 
       const compensation =
-        await this.inventoryService.compensateDispenseFailure(tx, {
-          orderId: command.orderId,
-          slotId: command.slotId,
-          errorCode: payload.errorCode,
-          message: payload.message,
-        });
+        await this.inventoryService.releaseAffectedReservationForDispenseFailure(
+          tx,
+          {
+            orderId: command.orderId,
+            slotId: command.slotId,
+            errorCode: payload.errorCode,
+            message: payload.message,
+          },
+        );
 
       const [currentOrder] = await tx
         .select({ status: orders.status, paymentState: orders.paymentState })
@@ -773,8 +993,9 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
           metadata: {
             commandNo: payload.commandNo,
             errorCode: payload.errorCode,
-            restoredQuantity: compensation.restoredQuantity,
+            releasedQuantity: compensation.releasedQuantity,
             slotFaulted: compensation.slotFaulted,
+            slotSalesState: compensation.slotSalesState,
           },
         });
       }

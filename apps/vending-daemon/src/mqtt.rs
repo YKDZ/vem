@@ -189,6 +189,12 @@ impl MqttSyncRuntime {
             .record_command_result_and_enqueue_tx(&command, &result, &result_event)
             .await
             .map_err(|error| error.to_string())?;
+        if !result.success {
+            self.state
+                .block_slot_for_dispense_failure(&command, result.error_code.as_deref())
+                .await
+                .map_err(|error| error.to_string())?;
+        }
 
         Ok(CommandHandlingResult::Processed {
             command_no: command.command_no,

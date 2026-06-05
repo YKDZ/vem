@@ -87,6 +87,15 @@ export type DispenseCommandPayload = z.infer<
   typeof dispenseCommandPayloadSchema
 >;
 export type DispenseResultPayload = z.infer<typeof dispenseResultPayloadSchema>;
+
+export const manualDispenseResolutionSchema = z.object({
+  result: z.enum(["dispensed", "not_dispensed"]),
+  note: z.string().max(500).optional(),
+});
+
+export type ManualDispenseResolution = z.infer<
+  typeof manualDispenseResolutionSchema
+>;
 export type EnvironmentControlCommandPayload = z.infer<
   typeof environmentControlCommandPayloadSchema
 >;

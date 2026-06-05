@@ -21,6 +21,6 @@ import { MachineStockMovementsService } from "./machine-stock-movements.service"
     MachineStockMovementsService,
     MachineStockMovementsRepository,
   ],
-  exports: [InventoryService],
+  exports: [InventoryService, MachineStockMovementsService],
 })
 export class InventoryModule {}

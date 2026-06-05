@@ -6,6 +6,7 @@ export const vendingCommandStatusSchema = z.enum([
   "acknowledged",
   "succeeded",
   "failed",
+  "result_unknown",
   "timeout",
 ]);
 export type VendingCommandStatus = z.infer<typeof vendingCommandStatusSchema>;

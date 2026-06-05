@@ -6,6 +6,7 @@ import {
   eq,
   inventoryMovements,
   inventoryReservations,
+  inArray,
   isNull,
   machinePlanogramSlots,
   machinePlanogramVersions,
@@ -398,6 +399,27 @@ export class MachineStockMovementsRepository {
       orderId: input.context.orderId,
       note: `machine_stock_movement:${input.rawMovementId}`,
     });
+
+    await tx
+      .update(vendingCommands)
+      .set({
+        status: "succeeded",
+        resultAt: new Date(input.input.occurredAt),
+        lastError: null,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(vendingCommands.id, input.context.vendingCommandId),
+          inArray(vendingCommands.status, [
+            "sent",
+            "acknowledged",
+            "result_unknown",
+            "timeout",
+            "succeeded",
+          ]),
+        ),
+      );
 
     const [currentOrder] = await tx
       .select({

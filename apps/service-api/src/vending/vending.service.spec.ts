@@ -67,6 +67,7 @@ describe("VendingService heartbeat ingestion", () => {
       {} as never,
       {} as never,
       {} as never,
+      {} as never,
     );
 
     await service.handleMachineMessage(
@@ -103,6 +104,7 @@ describe("VendingService environment control isolation", () => {
       { verifyFromTopic } as never,
       notificationsService as never,
       inventoryService as never,
+      {} as never,
       refundsService as never,
       maintenanceWorkOrdersService as never,
     );
