@@ -67,6 +67,13 @@ export type MovementApplicationContext = {
   slotInPlanogram: boolean;
 };
 
+export type ActiveAcknowledgedPlanogramSlot = {
+  slotCode: string;
+  capacity: number;
+  inventoryId: string;
+  variantId: string;
+};
+
 export type OrderBoundDispenseConfirmationContext = {
   orderId: string;
   orderItemId: string;
@@ -253,6 +260,39 @@ export class MachineStockMovementsRepository {
       planogramActive: version?.status === "active",
       slotInPlanogram: Boolean(versionSlot),
     };
+  }
+
+  async getActiveAcknowledgedPlanogramSlot(
+    machineId: string,
+    planogramVersion: string,
+    slotId: string,
+  ): Promise<ActiveAcknowledgedPlanogramSlot | null> {
+    const [row] = await this.db
+      .select({
+        slotCode: machinePlanogramSlots.slotCode,
+        capacity: machinePlanogramSlots.capacity,
+        inventoryId: machinePlanogramSlots.inventoryId,
+        variantId: machinePlanogramSlots.variantId,
+      })
+      .from(machinePlanogramVersions)
+      .innerJoin(
+        machinePlanogramSlots,
+        eq(
+          machinePlanogramSlots.machinePlanogramVersionId,
+          machinePlanogramVersions.id,
+        ),
+      )
+      .where(
+        and(
+          eq(machinePlanogramVersions.machineId, machineId),
+          eq(machinePlanogramVersions.planogramVersion, planogramVersion),
+          eq(machinePlanogramVersions.status, "active"),
+          sql`${machinePlanogramVersions.acknowledgedAt} IS NOT NULL`,
+          eq(machinePlanogramSlots.slotId, slotId),
+        ),
+      )
+      .limit(1);
+    return row ?? null;
   }
 
   async getOrderBoundDispenseConfirmationContext(

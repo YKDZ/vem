@@ -7,6 +7,7 @@ import type { AuthenticatedMachine } from "../machine-auth/current-machine.decor
 
 import {
   MachineStockMovementsRepository,
+  type ActiveAcknowledgedPlanogramSlot,
   type InsertReconciliationRawMachineStockMovement,
   type OrderBoundDispenseConfirmationContext,
   type StoredRawMachineStockMovement,
@@ -134,8 +135,11 @@ export class MachineStockMovementsService {
       }
     }
 
-    const fieldStockReconciliation =
-      reconciliationForFieldStockMovement(trustedInput);
+    const fieldStockReconciliation = await reconciliationForFieldStockMovement(
+      this.repository,
+      machine.id,
+      trustedInput,
+    );
     if (fieldStockReconciliation) {
       const stored = await this.repository.insertReconciliation({
         machineId: machine.id,
@@ -411,12 +415,14 @@ function isFieldStockMovement(
   );
 }
 
-function reconciliationForFieldStockMovement(
+async function reconciliationForFieldStockMovement(
+  repository: MachineStockMovementsRepository,
+  machineId: string,
   input: RawMachineStockMovement,
-): Omit<
+): Promise<Omit<
   InsertReconciliationRawMachineStockMovement,
   "machineId" | "input" | "normalized" | "payloadHash"
-> | null {
+> | null> {
   if (!isFieldStockMovement(input)) {
     return null;
   }
@@ -460,7 +466,33 @@ function reconciliationForFieldStockMovement(
   ) {
     return fieldStockReconciliation(input.slotId, "weak_attribution");
   }
+  const platformSlot = await repository.getActiveAcknowledgedPlanogramSlot(
+    machineId,
+    input.planogramVersion,
+    input.slotId,
+  );
+  if (
+    !platformSlot ||
+    !slotMappingSnapshotMatchesPlatformSlot(
+      input.slotMappingSnapshot,
+      platformSlot,
+    )
+  ) {
+    return fieldStockReconciliation(input.slotId, "mapping_mismatch");
+  }
   return null;
+}
+
+function slotMappingSnapshotMatchesPlatformSlot(
+  snapshot: NonNullable<RawMachineStockMovement["slotMappingSnapshot"]>,
+  platformSlot: ActiveAcknowledgedPlanogramSlot,
+): boolean {
+  return (
+    snapshot.slotCode === platformSlot.slotCode &&
+    snapshot.capacity === platformSlot.capacity &&
+    snapshot.inventoryId === platformSlot.inventoryId &&
+    snapshot.variantId === platformSlot.variantId
+  );
 }
 
 function isAutoAppliedFieldStockMovement(

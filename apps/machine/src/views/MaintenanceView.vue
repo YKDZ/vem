@@ -115,11 +115,8 @@ const stockForm = reactive({
   planogramVersion: "",
   slotId: "",
   quantity: 1,
-  source: "local_maintenance",
   attributedTo: "front-panel",
 });
-
-const stockSources = ["local_maintenance", "field_service", "approved_count"];
 
 const adapters: HardwareAdapter[] = [
   "mock",
@@ -243,8 +240,8 @@ async function submitStockMovement(): Promise<void> {
       slotId: stockForm.slotId,
       movementType: stockForm.movementType,
       quantity: Number(stockForm.quantity),
-      source: stockForm.source.trim() || "local_maintenance",
-      attributedTo: stockForm.attributedTo.trim() || null,
+      source: "local_maintenance",
+      attributedTo: stockForm.attributedTo.trim() || "front-panel",
     });
     stockMaintenance.message = "库存动作已记录";
     await refreshStockMaintenanceView();
@@ -328,32 +325,15 @@ async function submitStockMovement(): Promise<void> {
             </select>
           </label>
 
-          <div class="grid gap-4 md:grid-cols-2">
-            <label class="grid gap-2 text-left">
-              <span class="text-sm font-semibold text-slate-200">Source</span>
-              <select
-                v-model="stockForm.source"
-                class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-emerald-300"
-              >
-                <option
-                  v-for="source in stockSources"
-                  :key="source"
-                  :value="source"
-                >
-                  {{ source }}
-                </option>
-              </select>
-            </label>
-            <label class="grid gap-2 text-left">
-              <span class="text-sm font-semibold text-slate-200"
-                >Attribution</span
-              >
-              <input
-                v-model="stockForm.attributedTo"
-                class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-emerald-300"
-              />
-            </label>
-          </div>
+          <label class="grid gap-2 text-left">
+            <span class="text-sm font-semibold text-slate-200"
+              >Attribution</span
+            >
+            <input
+              v-model="stockForm.attributedTo"
+              class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-emerald-300"
+            />
+          </label>
 
           <div class="grid gap-3 md:grid-cols-2">
             <button

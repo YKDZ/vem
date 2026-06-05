@@ -30,6 +30,22 @@ class InMemoryMovementRepository {
     planogramActive: true,
     slotInPlanogram: true,
   };
+  activeAcknowledgedPlanogramSlot = {
+    slotCode: "A1",
+    capacity: 8,
+    inventoryId: "550e8400-e29b-41d4-a716-446655440201",
+    variantId: "550e8400-e29b-41d4-a716-446655440301",
+  } as {
+    slotCode: string;
+    capacity: number;
+    inventoryId: string;
+    variantId: string;
+  } | null;
+  readonly activePlanogramSlotInputs: Array<{
+    machineId: string;
+    planogramVersion: string;
+    slotId: string;
+  }> = [];
   orderBoundDispenseContext: OrderBoundDispenseConfirmationContext | null = {
     orderId: "ord-001",
     orderItemId: "550e8400-e29b-41d4-a716-446655440101",
@@ -177,6 +193,19 @@ class InMemoryMovementRepository {
     return this.movementContext;
   }
 
+  async getActiveAcknowledgedPlanogramSlot(
+    machineId: string,
+    planogramVersion: string,
+    slotId: string,
+  ) {
+    this.activePlanogramSlotInputs.push({
+      machineId,
+      planogramVersion,
+      slotId,
+    });
+    return this.activeAcknowledgedPlanogramSlot;
+  }
+
   async getOrderBoundDispenseConfirmationContext(
     _machineId: string,
     input: RawMachineStockMovement & { movementType: "dispense_succeeded" },
@@ -310,6 +339,13 @@ describe("MachineStockMovementsService", () => {
     const result = await service.receiveRawMovement(machine, trustedRefill);
 
     expect(result.status).toBe("accepted");
+    expect(repo.activePlanogramSlotInputs).toEqual([
+      {
+        machineId: machine.id,
+        planogramVersion: trustedRefill.planogramVersion,
+        slotId: trustedRefill.slotId,
+      },
+    ]);
     expect(repo.fieldStockApplicationInputs).toEqual([
       {
         machineId: machine.id,
@@ -317,6 +353,78 @@ describe("MachineStockMovementsService", () => {
         input: trustedRefill,
       },
     ]);
+  });
+
+  it.each([
+    [
+      "slotCode",
+      {
+        ...movement.slotMappingSnapshot,
+        slotCode: "B9",
+      },
+    ],
+    [
+      "capacity",
+      {
+        ...movement.slotMappingSnapshot,
+        capacity: 99,
+      },
+    ],
+    [
+      "inventoryId",
+      {
+        ...movement.slotMappingSnapshot,
+        inventoryId: "550e8400-e29b-41d4-a716-446655440999",
+      },
+    ],
+    [
+      "variantId",
+      {
+        ...movement.slotMappingSnapshot,
+        variantId: "550e8400-e29b-41d4-a716-446655440998",
+      },
+    ],
+  ] as const)(
+    "routes trusted refill with mismatched %s snapshot to reconciliation",
+    async (_field, spoofedSnapshot) => {
+      const repo = new InMemoryMovementRepository();
+      const service = new MachineStockMovementsService(repo as never);
+
+      const result = await service.receiveRawMovement(machine, {
+        ...movement,
+        movementId: `MOVE-MISMATCH-${String(_field).toUpperCase()}`,
+        slotMappingSnapshot: spoofedSnapshot as NonNullable<
+          RawMachineStockMovement["slotMappingSnapshot"]
+        >,
+      });
+
+      expect(result.status).toBe("reconciliation");
+      expect(result.reconciliation?.reason).toBe("mapping_mismatch");
+      expect(repo.activePlanogramSlotInputs).toHaveLength(1);
+      expect(repo.fieldStockApplicationInputs).toHaveLength(0);
+    },
+  );
+
+  it("routes stale planogram field stock movement to reconciliation before inventory apply", async () => {
+    const repo = new InMemoryMovementRepository();
+    repo.movementContext = {
+      machineSlotKnown: true,
+      planogramKnown: true,
+      planogramActive: false,
+      slotInPlanogram: true,
+    };
+    const service = new MachineStockMovementsService(repo as never);
+
+    const result = await service.receiveRawMovement(machine, {
+      ...movement,
+      movementId: "MOVE-STALE-PLANOGRAM",
+      planogramVersion: "PLAN-STALE",
+    });
+
+    expect(result.status).toBe("reconciliation");
+    expect(result.reconciliation?.reason).toBe("inactive_planogram_version");
+    expect(repo.activePlanogramSlotInputs).toHaveLength(0);
+    expect(repo.fieldStockApplicationInputs).toHaveLength(0);
   });
 
   it("applies approved stock count correction to platform inventory", async () => {
