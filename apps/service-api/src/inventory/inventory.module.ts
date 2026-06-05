@@ -3,6 +3,7 @@ import { Module } from "@nestjs/common";
 import { HardwareErrorPoliciesModule } from "../hardware-error-policies/hardware-error-policies.module";
 import { MachineAuthModule } from "../machine-auth/machine-auth.module";
 import { NotificationsModule } from "../notifications/notifications.module";
+import { RefundsModule } from "../refunds/refunds.module";
 import { InventoryController } from "./inventory.controller";
 import { InventoryService } from "./inventory.service";
 import { MachineStockMovementsController } from "./machine-stock-movements.controller";
@@ -14,6 +15,7 @@ import { MachineStockMovementsService } from "./machine-stock-movements.service"
     NotificationsModule,
     HardwareErrorPoliciesModule,
     MachineAuthModule,
+    RefundsModule,
   ],
   controllers: [InventoryController, MachineStockMovementsController],
   providers: [

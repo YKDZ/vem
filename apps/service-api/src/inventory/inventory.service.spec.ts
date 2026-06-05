@@ -1,3 +1,5 @@
+import type { RawMachineStockMovement } from "@vem/shared";
+
 import { Test } from "@nestjs/testing";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -5,6 +7,7 @@ import { DRIZZLE_CLIENT } from "../database/database.constants";
 import { HardwareErrorPoliciesService } from "../hardware-error-policies/hardware-error-policies.service";
 import { NotificationsService } from "../notifications/notifications.service";
 import { InventoryService } from "./inventory.service";
+import { MachineStockMovementsService } from "./machine-stock-movements.service";
 
 const mockNotificationsService = { createForMachine: vi.fn() };
 const mockHardwarePoliciesService = { getPolicy: vi.fn() };
@@ -212,5 +215,122 @@ describe("InventoryService.releaseReservation", () => {
     expect(objectGraphContainsColumnName(whereArgs[0], "order_item_id")).toBe(
       true,
     );
+  });
+});
+
+describe("MachineStockMovementsService pending failed line refunds", () => {
+  it("creates a partial refund for an earlier failed line when the final open line is confirmed dispensed", async () => {
+    const machine = {
+      id: "machine-1",
+      code: "M001",
+      status: "online",
+    };
+    const lineBMovement: RawMachineStockMovement = {
+      machineCode: "M001",
+      movementId: "MOVE-LINE-B",
+      planogramVersion: "PLAN-1",
+      slotId: "slot-b",
+      movementType: "dispense_succeeded",
+      quantity: 1,
+      source: "vending_command",
+      attributedTo: "CMD-B",
+      occurredAt: "2026-06-05T12:00:00.000Z",
+      orderContext: {
+        orderNo: "ORD-1",
+        orderItemId: "line-b",
+        inventoryId: "inv-b",
+        vendingCommandNo: "CMD-B",
+      },
+    };
+    const confirmedDispenses: unknown[] = [];
+    const fieldStockApplications: unknown[] = [];
+    const repository = {
+      findByMachineMovement: vi.fn().mockResolvedValue(null),
+      getOrderBoundDispenseConfirmationContext: vi.fn().mockResolvedValue({
+        orderId: "order-1",
+        orderItemId: "line-b",
+        inventoryId: "inv-b",
+        quantity: 1,
+        vendingCommandId: "cmd-b",
+      }),
+      insertAcceptedWithOrderBoundDispenseConfirmation: vi
+        .fn()
+        .mockImplementation(
+          async (input: { input: RawMachineStockMovement }) => {
+            confirmedDispenses.push(input);
+            return {
+              id: "raw-line-b",
+              machineId: machine.id,
+              movementId: input.input.movementId,
+              payloadHash: "hash-line-b",
+              status: "accepted",
+              receivedAt: new Date("2026-06-05T12:00:00.000Z"),
+              reconciliationReason: null,
+              platformReviewStatus: null,
+              saleSafetyBlockerState: null,
+              saleSafetyBlockerSlotId: null,
+            };
+          },
+        ),
+      insertAccepted: vi.fn(),
+      insertReconciliation: vi.fn(),
+      applyTrustedFieldStockMovement: vi
+        .fn()
+        .mockImplementation(async (input: unknown) => {
+          fieldStockApplications.push(input);
+          return true;
+        }),
+      buildPendingFailedLinePartialRefundDecision: vi.fn().mockResolvedValue({
+        orderId: "order-1",
+        orderItemIds: ["line-a"],
+        amountCents: 300,
+        metadata: {
+          rawMovementId: "raw-line-b",
+          movementId: "MOVE-LINE-B",
+        },
+      }),
+    };
+    const requestPartialRefund = vi.fn().mockResolvedValue({
+      status: "partial_refund_pending",
+    });
+    const service = new MachineStockMovementsService(
+      repository as never,
+      { requestPartialRefund } as never,
+    );
+
+    const result = await service.receiveRawMovement(
+      machine as never,
+      lineBMovement,
+    );
+
+    expect(result.status).toBe("accepted");
+    expect(confirmedDispenses).toEqual([
+      expect.objectContaining({
+        context: expect.objectContaining({
+          orderItemId: "line-b",
+          inventoryId: "inv-b",
+        }),
+      }),
+    ]);
+    expect(fieldStockApplications).toHaveLength(0);
+    expect(
+      repository.buildPendingFailedLinePartialRefundDecision,
+    ).toHaveBeenCalledWith(
+      "order-1",
+      expect.objectContaining({
+        rawMovementId: "raw-line-b",
+        movementId: "MOVE-LINE-B",
+      }),
+    );
+    expect(requestPartialRefund).toHaveBeenCalledWith({
+      orderId: "order-1",
+      orderItemIds: ["line-a"],
+      amountCents: 300,
+      reason: "auto_partial_dispense_failed",
+      metadata: {
+        rawMovementId: "raw-line-b",
+        movementId: "MOVE-LINE-B",
+      },
+    });
   });
 });

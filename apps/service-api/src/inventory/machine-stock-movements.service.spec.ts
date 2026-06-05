@@ -235,6 +235,10 @@ class InMemoryMovementRepository {
     return this.applyTrustedFieldStockMovementResult;
   }
 
+  async buildPendingFailedLinePartialRefundDecision() {
+    return null;
+  }
+
   get size(): number {
     return this.rows.size;
   }

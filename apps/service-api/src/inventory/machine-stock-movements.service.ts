@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 
 import type { AuthenticatedMachine } from "../machine-auth/current-machine.decorator";
 
+import { RefundsService } from "../refunds/refunds.service";
 import {
   MachineStockMovementsRepository,
   type ActiveAcknowledgedPlanogramSlot,
@@ -64,7 +65,10 @@ export type MachineStockMovementIngestionResponse = {
 
 @Injectable()
 export class MachineStockMovementsService {
-  constructor(private readonly repository: MachineStockMovementsRepository) {}
+  constructor(
+    private readonly repository: MachineStockMovementsRepository,
+    private readonly refundsService?: RefundsService,
+  ) {}
 
   async receiveRawMovement(
     machine: AuthenticatedMachine,
@@ -180,6 +184,18 @@ export class MachineStockMovementsService {
           "order_confirmation_failed",
         );
       }
+      if (
+        orderBoundDispenseContext.context &&
+        isOrderBoundDispenseMovement(trustedInput)
+      ) {
+        await this.requestPartialRefundForPendingFailedLines(
+          orderBoundDispenseContext.context.orderId,
+          {
+            rawMovementId: stored.id,
+            movementId: trustedInput.movementId,
+          },
+        );
+      }
       if (isAutoAppliedFieldStockMovement(trustedInput)) {
         const applied = await this.repository.applyTrustedFieldStockMovement({
           machineId: machine.id,
@@ -223,6 +239,25 @@ export class MachineStockMovementsService {
         payloadHash,
       );
     }
+  }
+
+  private async requestPartialRefundForPendingFailedLines(
+    orderId: string,
+    metadata: Record<string, unknown>,
+  ): Promise<void> {
+    if (!this.refundsService) return;
+
+    const decision =
+      await this.repository.buildPendingFailedLinePartialRefundDecision(
+        orderId,
+        metadata,
+      );
+    if (!decision) return;
+
+    await this.refundsService.requestPartialRefund({
+      ...decision,
+      reason: "auto_partial_dispense_failed",
+    });
   }
 }
 

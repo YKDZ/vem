@@ -89,6 +89,13 @@ export type ConfirmOrderBoundDispenseInput = {
   context: OrderBoundDispenseConfirmationContext;
 };
 
+export type PendingFailedLinePartialRefundDecision = {
+  orderId: string;
+  orderItemIds: string[];
+  amountCents: number;
+  metadata: Record<string, unknown>;
+};
+
 @Injectable()
 export class MachineStockMovementsRepository {
   constructor(@Inject(DRIZZLE_CLIENT) private readonly db: DrizzleClient) {}
@@ -208,6 +215,50 @@ export class MachineStockMovementsRepository {
           eq(machineRawStockMovements.movementId, movementId),
         ),
       );
+  }
+
+  async buildPendingFailedLinePartialRefundDecision(
+    orderId: string,
+    metadata: Record<string, unknown>,
+  ): Promise<PendingFailedLinePartialRefundDecision | null> {
+    const lines = await this.db
+      .select({
+        id: orderItems.id,
+        fulfillmentStatus: orderItems.fulfillmentStatus,
+        refundStatus: orderItems.refundStatus,
+        quantity: orderItems.quantity,
+        unitPriceCents: orderItems.unitPriceCents,
+      })
+      .from(orderItems)
+      .where(eq(orderItems.orderId, orderId));
+    if (lines.length === 0) return null;
+
+    const hasOpenLine = lines.some(
+      (line) =>
+        line.fulfillmentStatus === "pending" ||
+        line.fulfillmentStatus === "dispensing",
+    );
+    if (hasOpenLine) return null;
+
+    const pendingFailedLines = lines.filter(
+      (line) =>
+        line.fulfillmentStatus === "dispense_failed" &&
+        line.refundStatus === "pending",
+    );
+    const hasDispensedLine = lines.some(
+      (line) => line.fulfillmentStatus === "dispensed",
+    );
+    if (!hasDispensedLine || pendingFailedLines.length === 0) return null;
+
+    return {
+      orderId,
+      orderItemIds: pendingFailedLines.map((line) => line.id),
+      amountCents: pendingFailedLines.reduce(
+        (sum, line) => sum + line.unitPriceCents * line.quantity,
+        0,
+      ),
+      metadata,
+    };
   }
 
   async getMovementApplicationContext(
