@@ -321,8 +321,54 @@ describe.sequential("fulfillment recovery e2e", () => {
     expect(await movementCount(ctx.orderId, "purchase_confirmed")).toBe(0);
   }, 60_000);
 
-  it("delayed dispense success after unknown confirms through the normal stock movement path", async () => {
+  it("delayed MQTT dispense success after unknown confirms through the normal stock movement path", async () => {
     const ctx = await createPaidCommand("M-E2E-REC-DELAYED");
+    await markUnknown(ctx);
+
+    await publishDispenseResult(ctx, {
+      success: true,
+      errorCode: null,
+      message: "delayed success after platform timeout",
+    });
+
+    await eventually(async () => {
+      const [reservation] = await db.client
+        .select({ status: inventoryReservations.status })
+        .from(inventoryReservations)
+        .where(eq(inventoryReservations.orderId, ctx.orderId));
+      expect(reservation.status).toBe("confirmed");
+    });
+
+    const [inventory] = await db.client
+      .select({
+        onHandQty: inventories.onHandQty,
+        reservedQty: inventories.reservedQty,
+      })
+      .from(inventories)
+      .where(eq(inventories.id, ctx.seeded.inventoryId));
+    const [command] = await db.client
+      .select({ status: vendingCommands.status })
+      .from(vendingCommands)
+      .where(eq(vendingCommands.id, ctx.commandId));
+    const [order] = await db.client
+      .select({
+        status: orders.status,
+        fulfillmentState: orders.fulfillmentState,
+      })
+      .from(orders)
+      .where(eq(orders.id, ctx.orderId));
+
+    expect(inventory).toEqual({ onHandQty: 1, reservedQty: 0 });
+    expect(command.status).toBe("succeeded");
+    expect(order).toEqual({
+      status: "fulfilled",
+      fulfillmentState: "dispensed",
+    });
+    expect(await movementCount(ctx.orderId, "purchase_confirmed")).toBe(1);
+  }, 60_000);
+
+  it("stock movement replay after unknown is idempotent", async () => {
+    const ctx = await createPaidCommand("M-E2E-REC-DELAYED-REPLAY");
     await markUnknown(ctx);
 
     const payload = {

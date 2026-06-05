@@ -600,6 +600,11 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
       orderNo: string;
     },
     note?: string,
+    options: {
+      movementId?: string;
+      source?: string;
+      occurredAt?: string;
+    } = {},
   ) {
     if (command.status === "succeeded") {
       return { commandId: command.id, status: "succeeded" as const };
@@ -636,12 +641,12 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
     }
 
     const movement: RawMachineStockMovement = {
-      movementId: `manual-dispense:${command.commandNo}`,
+      movementId: options.movementId ?? `manual-dispense:${command.commandNo}`,
       planogramVersion,
       slotId: command.slotId,
       movementType: "dispense_succeeded",
       quantity: item.quantity,
-      source: "manual_confirmation",
+      source: options.source ?? "manual_confirmation",
       attributedTo: command.commandNo,
       orderContext: {
         orderNo: command.orderNo,
@@ -649,7 +654,7 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
         vendingCommandNo: command.commandNo,
         inventoryId: item.inventoryId,
       },
-      occurredAt: new Date().toISOString(),
+      occurredAt: options.occurredAt ?? new Date().toISOString(),
     };
 
     const result = await this.machineStockMovementsService.receiveRawMovement(
@@ -852,7 +857,7 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
     const machine = await this.findMachineByCode(machineCode);
     if (!machine) return;
 
-    const failureContext = await this.db.transaction(async (tx) => {
+    const resultContext = await this.db.transaction(async (tx) => {
       const inserted = await tx
         .insert(machineEvents)
         .values({
@@ -871,11 +876,16 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
       const [command] = await tx
         .select({
           id: vendingCommands.id,
+          commandNo: vendingCommands.commandNo,
           orderId: vendingCommands.orderId,
+          machineId: vendingCommands.machineId,
           slotId: vendingCommands.slotId,
           status: vendingCommands.status,
+          payloadJson: vendingCommands.payloadJson,
+          orderNo: orders.orderNo,
         })
         .from(vendingCommands)
+        .innerJoin(orders, eq(orders.id, vendingCommands.orderId))
         .where(
           and(
             eq(vendingCommands.commandNo, payload.commandNo),
@@ -890,7 +900,20 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
         if (command.status === "succeeded" || command.status === "failed") {
           return null;
         }
-        const wasResultUnknown = command.status === "result_unknown";
+        if (
+          command.status === "result_unknown" ||
+          command.status === "timeout"
+        ) {
+          return {
+            kind: "success" as const,
+            command: {
+              ...command,
+              machineCode: machine.code,
+              payloadJson: command.payloadJson as Record<string, unknown>,
+            },
+          };
+        }
+
         await tx
           .update(vendingCommands)
           .set({
@@ -910,7 +933,7 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
               sql`${vendingCommands.status} <> 'succeeded'`,
             ),
           );
-        if (!wasResultUnknown && Number(remainingRow.total) === 0) {
+        if (Number(remainingRow.total) === 0) {
           const [currentOrder] = await tx
             .select({
               status: orders.status,
@@ -1020,6 +1043,7 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
       }
 
       return {
+        kind: "failure" as const,
         orderId: command.orderId,
         commandId: command.id,
         commandNo: payload.commandNo,
@@ -1029,11 +1053,24 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
       };
     });
 
-    if (failureContext) {
+    if (resultContext?.kind === "success") {
+      await this.resolveCommandAsDispensed(
+        resultContext.command,
+        payload.message,
+        {
+          movementId: `mqtt-dispense:${payload.commandNo}`,
+          source: "vending_command",
+          occurredAt: payload.reportedAt,
+        },
+      );
+      return;
+    }
+
+    if (resultContext?.kind === "failure") {
       await this.refundsService.requestFullRefund({
-        orderId: failureContext.orderId,
+        orderId: resultContext.orderId,
         reason: "auto_dispense_failed",
-        metadata: failureContext,
+        metadata: resultContext,
       });
     }
   }

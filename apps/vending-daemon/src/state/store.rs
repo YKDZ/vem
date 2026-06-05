@@ -1488,6 +1488,24 @@ impl LocalStateStore {
             Some("NO_DROP") => "suspect",
             _ => "frozen",
         };
+        self.block_command_slot(command, slot_sales_state, "dispense_failure")
+            .await
+    }
+
+    pub async fn block_slot_for_dispense_result_unknown(
+        &self,
+        command: &DispenseCommandPayload,
+    ) -> Result<Option<SaleViewSnapshot>, StoreError> {
+        self.block_command_slot(command, "frozen", "dispense_result_unknown")
+            .await
+    }
+
+    async fn block_command_slot(
+        &self,
+        command: &DispenseCommandPayload,
+        slot_sales_state: &str,
+        source: &str,
+    ) -> Result<Option<SaleViewSnapshot>, StoreError> {
         let row: Option<(String, String)> = sqlx::query_as(
             "SELECT v.planogram_version, s.slot_id
              FROM machine_planogram_slots s
@@ -1511,7 +1529,7 @@ impl LocalStateStore {
                 planogram_version,
                 slot_id,
                 slot_sales_state: slot_sales_state.to_string(),
-                source: "dispense_failure".to_string(),
+                source: source.to_string(),
             })
             .await?;
         Ok(Some(snapshot))
@@ -2787,6 +2805,36 @@ mod tests {
             .expect("slot found");
 
         assert_eq!(snapshot.items[0].slot_sales_state, "frozen");
+    }
+
+    #[tokio::test]
+    async fn unknown_dispense_result_freezes_local_slot_until_manual_clear() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_single_slot_planogram(&store).await;
+
+        let snapshot = store
+            .block_slot_for_dispense_result_unknown(&dispense_command_for_slot("CMD-UNKNOWN"))
+            .await
+            .expect("block")
+            .expect("slot found");
+        assert_eq!(snapshot.items[0].slot_sales_state, "frozen");
+
+        let persisted = store.sale_view(None).await.expect("sale view");
+        assert_eq!(persisted.items[0].slot_sales_state, "frozen");
+
+        let cleared = store
+            .update_slot_sales_state(SlotSalesStateInput {
+                planogram_version: "PLAN-FAILURE".to_string(),
+                slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                slot_sales_state: "sale_ready".to_string(),
+                source: "manual_resolution".to_string(),
+            })
+            .await
+            .expect("clear");
+        assert_eq!(cleared.items[0].slot_sales_state, "sale_ready");
     }
 
     #[tokio::test]
