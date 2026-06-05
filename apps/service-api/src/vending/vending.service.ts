@@ -201,6 +201,10 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
         (command) => command?.status === "failed",
       );
       if (hasFailure) {
+        const failedCommands = commandResults.filter(
+          (command): command is NonNullable<typeof command> =>
+            command?.status === "failed",
+        );
         const sentLikeCommands = commandResults.filter(
           (command) =>
             command?.status === "sent" ||
@@ -208,55 +212,62 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
             command?.status === "succeeded",
         );
         const allCommandsFailedBeforeDelivery = sentLikeCommands.length === 0;
-        const failureMetadata = await this.db.transaction(async (tx) => {
-          const [currentOrder] = await tx
-            .select({
-              status: orders.status,
-              paymentState: orders.paymentState,
-            })
-            .from(orders)
-            .where(eq(orders.id, orderId));
-          if (!currentOrder) return null;
-
-          const failedCommand = commandResults.find(
-            (command) => command?.status === "failed",
-          );
-
-          const restoration = allCommandsFailedBeforeDelivery
-            ? await this.inventoryService.restoreConfirmedOrderItemsForDispatchFailure(
-                tx,
-                { orderId, note: "mqtt_dispatch_failed" },
-              )
-            : { restoredQuantity: 0 };
-
-          const projectedStatus = projectOrderStatus({
-            paymentState: currentOrder.paymentState,
-            fulfillmentState: "manual_handling",
-          });
-          if (currentOrder.status !== "manual_handling") {
+        const refundDecision = await this.db.transaction(async (tx) => {
+          const sentLineIds = sentLikeCommands
+            .map((command) => command?.orderItemId)
+            .filter((id): id is string => typeof id === "string");
+          if (sentLineIds.length > 0) {
             await tx
-              .update(orders)
-              .set({
-                status: projectedStatus,
-                fulfillmentState: "manual_handling",
-                updatedAt: new Date(),
-              })
-              .where(eq(orders.id, orderId));
+              .update(orderItems)
+              .set({ fulfillmentStatus: "dispensing" })
+              .where(inArray(orderItems.id, sentLineIds));
           }
-          await tx.insert(orderStatusEvents).values({
-            orderId,
-            fromStatus: currentOrder.status,
-            toStatus: projectedStatus,
-            reason: "mqtt_dispatch_failed",
-            metadata: {
-              allCommandsFailedBeforeDelivery,
-              restoredQuantity: restoration.restoredQuantity,
-              failedCommandId: failedCommand?.id,
-              failedCommandNo: failedCommand?.commandNo,
-            },
-          });
 
-          if (failedCommand) {
+          let decision:
+            | { kind: "none" }
+            | {
+                kind: "full";
+                orderId: string;
+                metadata: Record<string, unknown>;
+              }
+            | {
+                kind: "partial";
+                orderId: string;
+                orderItemIds: string[];
+                amountCents: number;
+                metadata: Record<string, unknown>;
+              } = { kind: "none" };
+
+          // oxlint-disable no-await-in-loop -- each failed line mutates order-line state before the next refund decision is calculated
+          for (const failedCommand of failedCommands) {
+            await this.inventoryService.releaseAffectedReservationForDispenseFailure(
+              tx,
+              {
+                orderId,
+                orderItemId: failedCommand.orderItemId ?? null,
+                slotId: failedCommand.slotId,
+                errorCode: null,
+                message: failedCommand.lastError ?? "MQTT dispatch failed",
+              },
+            );
+
+            const metadata = {
+              allCommandsFailedBeforeDelivery,
+              failedCommandId: failedCommand.id,
+              failedCommandNo: failedCommand.commandNo,
+              releaseReason: "mqtt_dispatch_failed",
+            };
+            decision = await this.markOrderLinesFailedAndBuildRefundDecision(
+              tx,
+              {
+                orderId,
+                orderItemId: failedCommand.orderItemId ?? null,
+                slotId: failedCommand.slotId,
+                reason: "mqtt_dispatch_failed",
+                metadata,
+              },
+            );
+
             await this.notificationsService.createDispenseFailedNotification(
               tx,
               {
@@ -266,21 +277,12 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
               },
             );
           }
+          // oxlint-enable no-await-in-loop
 
-          return {
-            allCommandsFailedBeforeDelivery,
-            restoredQuantity: restoration.restoredQuantity,
-            failedCommandNo: failedCommand?.commandNo ?? null,
-          };
+          return decision;
         });
 
-        if (failureMetadata?.allCommandsFailedBeforeDelivery) {
-          await this.refundsService.requestFullRefund({
-            orderId,
-            reason: "auto_dispense_failed",
-            metadata: failureMetadata,
-          });
-        }
+        await this.requestRefundForFailedLines(refundDecision);
         return commandResults;
       }
 

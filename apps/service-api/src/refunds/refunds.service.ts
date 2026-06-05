@@ -1,3 +1,5 @@
+import type { OrderFulfillmentState } from "@vem/shared";
+
 import {
   ConflictException,
   Inject,
@@ -79,6 +81,127 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
       },
       5 * 60 * 1000,
     );
+  }
+
+  private async applyPartialRefundTerminalState(
+    tx: DrizzleTransaction,
+    input: {
+      refundId: string;
+      paymentId: string;
+      providerId: string;
+      orderId: string;
+      refundNo: string;
+      providerRefundNo: string | null;
+      fulfillmentState: OrderFulfillmentState;
+      status: "succeeded" | "failed";
+      eventType: string;
+      providerEventId: string;
+      rawPayloadJson: Record<string, unknown>;
+      orderEventReason: string;
+      failureMessage?: string | null;
+      refundedAt?: Date | null;
+    },
+  ): Promise<void> {
+    await tx
+      .update(refunds)
+      .set({
+        status: input.status,
+        providerRefundNo: input.providerRefundNo,
+        refundedAt:
+          input.status === "succeeded"
+            ? (input.refundedAt ?? new Date())
+            : null,
+        updatedAt: new Date(),
+      })
+      .where(eq(refunds.id, input.refundId));
+
+    await tx
+      .insert(refundEvents)
+      .values({
+        refundId: input.refundId,
+        paymentId: input.paymentId,
+        providerId: input.providerId,
+        eventType: input.eventType,
+        providerEventId: input.providerEventId,
+        providerRefundNo: input.providerRefundNo,
+        status: input.status,
+        rawPayloadJson: buildStoredEventPayload(input.rawPayloadJson),
+        signatureValid: true,
+        handledAt: new Date(),
+      })
+      .onConflictDoNothing();
+
+    if (input.status === "succeeded") {
+      const refundedStatus = projectOrderStatus({
+        paymentState: "partial_refunded",
+        fulfillmentState: input.fulfillmentState,
+      });
+      await tx
+        .update(orderItems)
+        .set({
+          refundStatus: "refunded",
+          refundId: input.refundId,
+          refundUpdatedAt: new Date(),
+        })
+        .where(eq(orderItems.refundId, input.refundId));
+      await tx
+        .update(payments)
+        .set({ status: "partial_refunded", updatedAt: new Date() })
+        .where(eq(payments.id, input.paymentId));
+      await tx
+        .update(orders)
+        .set({
+          status: refundedStatus,
+          paymentState: "partial_refunded",
+          fulfillmentState: input.fulfillmentState,
+          updatedAt: new Date(),
+        })
+        .where(eq(orders.id, input.orderId));
+      await tx.insert(orderStatusEvents).values({
+        orderId: input.orderId,
+        fromStatus: "refund_pending",
+        toStatus: refundedStatus,
+        reason: input.orderEventReason,
+        metadata: {
+          refundNo: input.refundNo,
+          providerRefundNo: input.providerRefundNo,
+        },
+      });
+      return;
+    }
+
+    await tx
+      .update(orderItems)
+      .set({
+        refundStatus: "failed",
+        refundId: input.refundId,
+        refundUpdatedAt: new Date(),
+      })
+      .where(eq(orderItems.refundId, input.refundId));
+    await tx
+      .update(payments)
+      .set({ status: "manual_handling", updatedAt: new Date() })
+      .where(eq(payments.id, input.paymentId));
+    await tx
+      .update(orders)
+      .set({
+        status: "manual_handling",
+        paymentState: "manual_handling",
+        fulfillmentState: input.fulfillmentState,
+        updatedAt: new Date(),
+      })
+      .where(eq(orders.id, input.orderId));
+    await tx.insert(orderStatusEvents).values({
+      orderId: input.orderId,
+      fromStatus: "refund_pending",
+      toStatus: "manual_handling",
+      reason: input.orderEventReason,
+      metadata: {
+        refundNo: input.refundNo,
+        providerRefundNo: input.providerRefundNo,
+        message: input.failureMessage ?? null,
+      },
+    });
   }
 
   private async applyRefundTerminalState(
@@ -601,6 +724,10 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
           requestedByAdminUserId: null,
         })
         .returning();
+      await tx
+        .update(orderItems)
+        .set({ refundId: refund.id, refundUpdatedAt: new Date() })
+        .where(inArray(orderItems.id, input.orderItemIds));
       return { refund, row, created: true, unsupported: false as const };
     });
 
@@ -838,6 +965,8 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
         providerTradeNo: payments.providerTradeNo,
         machineId: orders.machineId,
         providerConfigId: payments.paymentProviderConfigId,
+        reason: refunds.reason,
+        fulfillmentState: orders.fulfillmentState,
       })
       .from(refunds)
       .innerJoin(payments, eq(payments.id, refunds.paymentId))
@@ -881,7 +1010,7 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
               startedAt: now,
               finishedAt: now,
             });
-            await this.applyRefundTerminalState(tx, {
+            const terminalInput = {
               refundId: refund.id,
               paymentId: refund.paymentId,
               providerId: refund.providerId,
@@ -895,7 +1024,15 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
               orderEventReason: "refund_reconcile_max_attempts_exceeded",
               failureMessage: "refund query max attempts exceeded",
               refundedAt: null,
-            });
+            } as const;
+            if (refund.reason === "auto_partial_dispense_failed") {
+              await this.applyPartialRefundTerminalState(tx, {
+                ...terminalInput,
+                fulfillmentState: refund.fulfillmentState,
+              });
+              return;
+            }
+            await this.applyRefundTerminalState(tx, terminalInput);
           });
           continue;
         }
@@ -974,7 +1111,7 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
         await this.db.transaction(async (tx) => {
           const dbRefundStatus =
             refundStatus === "succeeded" ? "succeeded" : "failed";
-          await this.applyRefundTerminalState(tx, {
+          const terminalInput = {
             refundId: refund.id,
             paymentId: refund.paymentId,
             providerId: refund.providerId,
@@ -993,7 +1130,15 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
             failureMessage:
               dbRefundStatus === "failed" ? "provider_returned_failed" : null,
             refundedAt: result.refundedAt ?? null,
-          });
+          } as const;
+          if (refund.reason === "auto_partial_dispense_failed") {
+            await this.applyPartialRefundTerminalState(tx, {
+              ...terminalInput,
+              fulfillmentState: refund.fulfillmentState,
+            });
+            return;
+          }
+          await this.applyRefundTerminalState(tx, terminalInput);
         });
 
         await this.db
@@ -1054,10 +1199,13 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
         orderId: refunds.orderId,
         providerId: paymentProviders.id,
         providerRefundNo: refunds.providerRefundNo,
+        reason: refunds.reason,
+        fulfillmentState: orders.fulfillmentState,
       })
       .from(refunds)
       .innerJoin(payments, eq(payments.id, refunds.paymentId))
       .innerJoin(paymentProviders, eq(paymentProviders.id, payments.providerId))
+      .innerJoin(orders, eq(orders.id, refunds.orderId))
       .where(and(...conditions))
       .limit(1);
 
@@ -1115,7 +1263,7 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
     }
 
     await this.db.transaction(async (tx) => {
-      await this.applyRefundTerminalState(tx, {
+      const terminalInput = {
         refundId: row.refundId,
         paymentId: row.paymentId,
         providerId: row.providerId,
@@ -1134,7 +1282,15 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
           input.refundStatus === "succeeded"
             ? null
             : "provider_refund_webhook_failed",
-      });
+      } as const;
+      if (row.reason === "auto_partial_dispense_failed") {
+        await this.applyPartialRefundTerminalState(tx, {
+          ...terminalInput,
+          fulfillmentState: row.fulfillmentState,
+        });
+        return;
+      }
+      await this.applyRefundTerminalState(tx, terminalInput);
     });
 
     return {

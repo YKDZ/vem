@@ -128,15 +128,20 @@ describe("VendingService environment control isolation", () => {
 describe("VendingService line-level fulfillment", () => {
   function makeService(options: {
     db: Record<string, unknown>;
+    mqttService?: Record<string, unknown>;
+    mqttSignatureService?: Record<string, unknown>;
+    notificationsService?: Record<string, unknown>;
     inventoryService?: Record<string, unknown>;
     refundsService?: Record<string, unknown>;
     machineStockMovementsService?: Record<string, unknown>;
   }) {
     return new VendingService(
       options.db as never,
-      { bindVendingService: vi.fn() } as never,
-      {} as never,
-      { createDispenseFailedNotification: vi.fn() } as never,
+      (options.mqttService ?? { bindVendingService: vi.fn() }) as never,
+      (options.mqttSignatureService ?? {}) as never,
+      (options.notificationsService ?? {
+        createDispenseFailedNotification: vi.fn(),
+      }) as never,
       (options.inventoryService ?? {}) as never,
       (options.machineStockMovementsService ?? {}) as never,
       (options.refundsService ?? {}) as never,
@@ -254,6 +259,490 @@ describe("VendingService line-level fulfillment", () => {
         }),
       }),
     ]);
+  });
+
+  it("releases active reservations without restoring on-hand stock when MQTT dispatch fully fails", async () => {
+    const order = {
+      id: "order1",
+      orderNo: "ORD-1",
+      status: "paid",
+      machineId: "machine1",
+      machineCode: "M001",
+    };
+    const items = [
+      {
+        orderItemId: "line-1",
+        slotId: "slot1",
+        quantity: 1,
+        layerNo: 1,
+        cellNo: 1,
+        slotCode: "A1",
+      },
+      {
+        orderItemId: "line-2",
+        slotId: "slot2",
+        quantity: 1,
+        layerNo: 1,
+        cellNo: 2,
+        slotCode: "A2",
+      },
+    ];
+    const selectResponses = [
+      {
+        from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([order]),
+          }),
+        }),
+      },
+      {
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockResolvedValue([]),
+          }),
+        }),
+      },
+      {
+        from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue(items),
+          }),
+        }),
+      },
+    ];
+    const db = {
+      select: vi.fn().mockImplementation(() => selectResponses.shift()),
+      insert: vi
+        .fn()
+        .mockReturnValueOnce({
+          values: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([
+              {
+                id: "cmd-1",
+                commandNo: "CMD-1",
+                orderId: "order1",
+                machineId: "machine1",
+                slotId: "slot1",
+                orderItemId: "line-1",
+                status: "pending",
+              },
+            ]),
+          }),
+        })
+        .mockReturnValueOnce({
+          values: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([
+              {
+                id: "cmd-2",
+                commandNo: "CMD-2",
+                orderId: "order1",
+                machineId: "machine1",
+                slotId: "slot2",
+                orderItemId: "line-2",
+                status: "pending",
+              },
+            ]),
+          }),
+        }),
+      update: vi.fn().mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi
+              .fn()
+              .mockResolvedValueOnce([
+                {
+                  id: "cmd-1",
+                  commandNo: "CMD-1",
+                  orderId: "order1",
+                  slotId: "slot1",
+                  orderItemId: "line-1",
+                  status: "failed",
+                  lastError: "MQTT offline",
+                },
+              ])
+              .mockResolvedValueOnce([
+                {
+                  id: "cmd-2",
+                  commandNo: "CMD-2",
+                  orderId: "order1",
+                  slotId: "slot2",
+                  orderItemId: "line-2",
+                  status: "failed",
+                  lastError: "MQTT offline",
+                },
+              ]),
+          }),
+        }),
+      }),
+      transaction: vi
+        .fn()
+        .mockImplementation(async (fn: (tx: unknown) => unknown) => {
+          const tx = {
+            update: vi.fn().mockReturnValue({
+              set: vi.fn().mockReturnValue({
+                where: vi.fn().mockResolvedValue(undefined),
+              }),
+            }),
+            insert: vi.fn().mockReturnValue({
+              values: vi.fn().mockResolvedValue(undefined),
+            }),
+            select: vi
+              .fn()
+              .mockReturnValueOnce({
+                from: vi.fn().mockReturnValue({
+                  where: vi.fn().mockResolvedValue([{ id: "line-1" }]),
+                }),
+              })
+              .mockReturnValueOnce({
+                from: vi.fn().mockReturnValue({
+                  where: vi
+                    .fn()
+                    .mockResolvedValue([
+                      { fulfillmentStatus: "dispense_failed" },
+                      { fulfillmentStatus: "pending" },
+                    ]),
+                }),
+              })
+              .mockReturnValueOnce({
+                from: vi.fn().mockReturnValue({
+                  where: vi.fn().mockResolvedValue([
+                    {
+                      status: "paid",
+                      paymentState: "paid",
+                      fulfillmentState: "awaiting_fulfillment",
+                    },
+                  ]),
+                }),
+              })
+              .mockReturnValueOnce({
+                from: vi.fn().mockReturnValue({
+                  where: vi.fn().mockResolvedValue([
+                    {
+                      id: "line-1",
+                      fulfillmentStatus: "dispense_failed",
+                      quantity: 1,
+                      unitPriceCents: 500,
+                    },
+                    {
+                      id: "line-2",
+                      fulfillmentStatus: "pending",
+                      quantity: 1,
+                      unitPriceCents: 300,
+                    },
+                  ]),
+                }),
+              })
+              .mockReturnValueOnce({
+                from: vi.fn().mockReturnValue({
+                  where: vi.fn().mockResolvedValue([{ id: "line-2" }]),
+                }),
+              })
+              .mockReturnValueOnce({
+                from: vi.fn().mockReturnValue({
+                  where: vi
+                    .fn()
+                    .mockResolvedValue([
+                      { fulfillmentStatus: "dispense_failed" },
+                      { fulfillmentStatus: "dispense_failed" },
+                    ]),
+                }),
+              })
+              .mockReturnValueOnce({
+                from: vi.fn().mockReturnValue({
+                  where: vi.fn().mockResolvedValue([
+                    {
+                      status: "dispensing",
+                      paymentState: "paid",
+                      fulfillmentState: "dispensing",
+                    },
+                  ]),
+                }),
+              })
+              .mockReturnValueOnce({
+                from: vi.fn().mockReturnValue({
+                  where: vi.fn().mockResolvedValue([
+                    {
+                      id: "line-1",
+                      fulfillmentStatus: "dispense_failed",
+                      quantity: 1,
+                      unitPriceCents: 500,
+                    },
+                    {
+                      id: "line-2",
+                      fulfillmentStatus: "dispense_failed",
+                      quantity: 1,
+                      unitPriceCents: 300,
+                    },
+                  ]),
+                }),
+              }),
+          };
+          return await fn(tx);
+        }),
+    };
+    const releaseAffectedReservationForDispenseFailure = vi
+      .fn()
+      .mockResolvedValue({
+        releasedQuantity: 1,
+        slotFaulted: false,
+        slotSalesState: "suspect",
+      });
+    const restoreConfirmedOrderItemsForDispatchFailure = vi
+      .fn()
+      .mockResolvedValue({ restoredQuantity: 2 });
+    const requestFullRefund = vi.fn().mockResolvedValue(undefined);
+    const service = makeService({
+      db,
+      mqttService: {
+        bindVendingService: vi.fn(),
+        publish: vi.fn().mockRejectedValue(new Error("MQTT offline")),
+      },
+      mqttSignatureService: {
+        signForMachine: vi.fn().mockResolvedValue({ payload: {} }),
+      },
+      inventoryService: {
+        releaseAffectedReservationForDispenseFailure,
+        restoreConfirmedOrderItemsForDispatchFailure,
+      },
+      refundsService: { requestFullRefund, requestPartialRefund: vi.fn() },
+    });
+
+    await service.createAndDispatchCommands("order1");
+
+    expect(restoreConfirmedOrderItemsForDispatchFailure).not.toHaveBeenCalled();
+    expect(releaseAffectedReservationForDispenseFailure).toHaveBeenCalledTimes(
+      2,
+    );
+    expect(releaseAffectedReservationForDispenseFailure).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ orderItemId: "line-1", slotId: "slot1" }),
+    );
+    expect(releaseAffectedReservationForDispenseFailure).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ orderItemId: "line-2", slotId: "slot2" }),
+    );
+    expect(requestFullRefund).toHaveBeenCalledWith(
+      expect.objectContaining({
+        orderId: "order1",
+        reason: "auto_dispense_failed",
+      }),
+    );
+  });
+
+  it("releases only the failed line reservation when MQTT dispatch partially fails", async () => {
+    const order = {
+      id: "order1",
+      orderNo: "ORD-1",
+      status: "paid",
+      machineId: "machine1",
+      machineCode: "M001",
+    };
+    const items = [
+      {
+        orderItemId: "line-1",
+        slotId: "slot1",
+        quantity: 1,
+        layerNo: 1,
+        cellNo: 1,
+        slotCode: "A1",
+      },
+      {
+        orderItemId: "line-2",
+        slotId: "slot2",
+        quantity: 1,
+        layerNo: 1,
+        cellNo: 2,
+        slotCode: "A2",
+      },
+    ];
+    const selectResponses = [
+      {
+        from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([order]),
+          }),
+        }),
+      },
+      {
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            orderBy: vi.fn().mockResolvedValue([]),
+          }),
+        }),
+      },
+      {
+        from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue(items),
+          }),
+        }),
+      },
+    ];
+    const db = {
+      select: vi.fn().mockImplementation(() => selectResponses.shift()),
+      insert: vi
+        .fn()
+        .mockReturnValueOnce({
+          values: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([
+              {
+                id: "cmd-1",
+                commandNo: "CMD-1",
+                orderId: "order1",
+                machineId: "machine1",
+                slotId: "slot1",
+                orderItemId: "line-1",
+                status: "pending",
+              },
+            ]),
+          }),
+        })
+        .mockReturnValueOnce({
+          values: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([
+              {
+                id: "cmd-2",
+                commandNo: "CMD-2",
+                orderId: "order1",
+                machineId: "machine1",
+                slotId: "slot2",
+                orderItemId: "line-2",
+                status: "pending",
+              },
+            ]),
+          }),
+        }),
+      update: vi.fn().mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi
+              .fn()
+              .mockResolvedValueOnce([
+                {
+                  id: "cmd-1",
+                  commandNo: "CMD-1",
+                  orderId: "order1",
+                  slotId: "slot1",
+                  orderItemId: "line-1",
+                  status: "sent",
+                  lastError: null,
+                },
+              ])
+              .mockResolvedValueOnce([
+                {
+                  id: "cmd-2",
+                  commandNo: "CMD-2",
+                  orderId: "order1",
+                  slotId: "slot2",
+                  orderItemId: "line-2",
+                  status: "failed",
+                  lastError: "MQTT offline",
+                },
+              ]),
+          }),
+        }),
+      }),
+      transaction: vi
+        .fn()
+        .mockImplementation(async (fn: (tx: unknown) => unknown) => {
+          const tx = {
+            update: vi.fn().mockReturnValue({
+              set: vi.fn().mockReturnValue({
+                where: vi.fn().mockResolvedValue(undefined),
+              }),
+            }),
+            insert: vi.fn().mockReturnValue({
+              values: vi.fn().mockResolvedValue(undefined),
+            }),
+            select: vi
+              .fn()
+              .mockReturnValueOnce({
+                from: vi.fn().mockReturnValue({
+                  where: vi.fn().mockResolvedValue([{ id: "line-2" }]),
+                }),
+              })
+              .mockReturnValueOnce({
+                from: vi.fn().mockReturnValue({
+                  where: vi
+                    .fn()
+                    .mockResolvedValue([
+                      { fulfillmentStatus: "dispensing" },
+                      { fulfillmentStatus: "dispense_failed" },
+                    ]),
+                }),
+              })
+              .mockReturnValueOnce({
+                from: vi.fn().mockReturnValue({
+                  where: vi.fn().mockResolvedValue([
+                    {
+                      status: "paid",
+                      paymentState: "paid",
+                      fulfillmentState: "awaiting_fulfillment",
+                    },
+                  ]),
+                }),
+              })
+              .mockReturnValueOnce({
+                from: vi.fn().mockReturnValue({
+                  where: vi.fn().mockResolvedValue([
+                    {
+                      id: "line-1",
+                      fulfillmentStatus: "dispensing",
+                      quantity: 1,
+                      unitPriceCents: 500,
+                    },
+                    {
+                      id: "line-2",
+                      fulfillmentStatus: "dispense_failed",
+                      quantity: 1,
+                      unitPriceCents: 300,
+                    },
+                  ]),
+                }),
+              }),
+          };
+          return await fn(tx);
+        }),
+    };
+    const publish = vi
+      .fn()
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error("MQTT offline"));
+    const releaseAffectedReservationForDispenseFailure = vi
+      .fn()
+      .mockResolvedValue({
+        releasedQuantity: 1,
+        slotFaulted: false,
+        slotSalesState: "suspect",
+      });
+    const restoreConfirmedOrderItemsForDispatchFailure = vi
+      .fn()
+      .mockResolvedValue({ restoredQuantity: 1 });
+    const requestFullRefund = vi.fn().mockResolvedValue(undefined);
+    const requestPartialRefund = vi.fn().mockResolvedValue(undefined);
+    const service = makeService({
+      db,
+      mqttService: { bindVendingService: vi.fn(), publish },
+      mqttSignatureService: {
+        signForMachine: vi.fn().mockResolvedValue({ payload: {} }),
+      },
+      inventoryService: {
+        releaseAffectedReservationForDispenseFailure,
+        restoreConfirmedOrderItemsForDispatchFailure,
+      },
+      refundsService: { requestFullRefund, requestPartialRefund },
+    });
+
+    await service.createAndDispatchCommands("order1");
+
+    expect(restoreConfirmedOrderItemsForDispatchFailure).not.toHaveBeenCalled();
+    expect(releaseAffectedReservationForDispenseFailure).toHaveBeenCalledOnce();
+    expect(releaseAffectedReservationForDispenseFailure).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ orderItemId: "line-2", slotId: "slot2" }),
+    );
+    expect(requestFullRefund).not.toHaveBeenCalled();
+    expect(requestPartialRefund).not.toHaveBeenCalled();
   });
 
   it("partial failure refunds only the failed line after delivered line remains dispensed", async () => {
