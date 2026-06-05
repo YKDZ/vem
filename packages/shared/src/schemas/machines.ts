@@ -88,6 +88,16 @@ export const rawMachineStockMovementSchema = z.object({
     "dispense_succeeded",
   ]),
   quantity: z.int().nonnegative(),
+  beforeQuantity: z.int().nonnegative().optional(),
+  afterQuantity: z.int().nonnegative().optional(),
+  slotMappingSnapshot: z
+    .object({
+      slotCode: z.string().min(1).max(32),
+      capacity: z.int().nonnegative(),
+      inventoryId: z.uuid().optional(),
+      variantId: z.uuid().optional(),
+    })
+    .optional(),
   source: z.string().min(1).max(128),
   attributedTo: z.string().max(128).nullable().optional(),
   orderContext: z

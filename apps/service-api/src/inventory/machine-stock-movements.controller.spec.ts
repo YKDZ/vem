@@ -23,6 +23,8 @@ class ControllerMovementRepository {
     }
   >();
   readonly conflictInputs: unknown[] = [];
+  readonly applicationInputs: unknown[] = [];
+  readonly markReconciliationInputs: unknown[] = [];
 
   async findByMachineMovement(machineId: string, movementId: string) {
     return this.rows.get(`${machineId}:${movementId}`) ?? null;
@@ -74,6 +76,35 @@ class ControllerMovementRepository {
     };
   }
 
+  async insertReconciliation(input: {
+    machineId: string;
+    input: RawMachineStockMovement;
+    payloadHash: string;
+    reconciliationReason: string;
+    platformReviewStatus: string;
+    saleSafetyBlockerState: string | null;
+    saleSafetyBlockerSlotId: string | null;
+  }) {
+    const row = {
+      id: `raw-${this.rows.size + 1}`,
+      machineId: input.machineId,
+      movementId: input.input.movementId,
+      payloadHash: input.payloadHash,
+      status: "reconciliation",
+      receivedAt: new Date("2026-06-04T00:00:00.000Z"),
+      reconciliationReason: input.reconciliationReason,
+      platformReviewStatus: input.platformReviewStatus,
+      saleSafetyBlockerState: input.saleSafetyBlockerState,
+      saleSafetyBlockerSlotId: input.saleSafetyBlockerSlotId,
+    };
+    this.rows.set(`${input.machineId}:${input.input.movementId}`, row);
+    return row;
+  }
+
+  async markReconciliation(...input: unknown[]) {
+    this.markReconciliationInputs.push(input);
+  }
+
   async getMovementApplicationContext() {
     return {
       machineSlotKnown: true,
@@ -81,6 +112,15 @@ class ControllerMovementRepository {
       planogramActive: true,
       slotInPlanogram: true,
     };
+  }
+
+  async getOrderBoundDispenseConfirmationContext() {
+    return null;
+  }
+
+  async applyTrustedFieldStockMovement(input: unknown) {
+    this.applicationInputs.push(input);
+    return true;
   }
 
   acceptedRow(machineId: string, movementId: string) {
@@ -101,6 +141,14 @@ describe("MachineStockMovementsController", () => {
     slotId: "550e8400-e29b-41d4-a716-446655440001",
     movementType: "planned_refill",
     quantity: 3,
+    beforeQuantity: 2,
+    afterQuantity: 5,
+    slotMappingSnapshot: {
+      slotCode: "A1",
+      capacity: 8,
+      inventoryId: "550e8400-e29b-41d4-a716-446655440201",
+      variantId: "550e8400-e29b-41d4-a716-446655440301",
+    },
     source: "field_service",
     attributedTo: "operator-1",
     occurredAt: "2026-06-04T00:00:00.000Z",
@@ -148,6 +196,7 @@ describe("MachineStockMovementsController", () => {
     const conflict = await controller.receiveRawMovement(machine as never, {
       ...movement,
       quantity: 4,
+      afterQuantity: 6,
     });
 
     expect(conflict).toMatchObject({

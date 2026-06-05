@@ -40,6 +40,12 @@ class InMemoryMovementRepository {
   orderBoundDispenseContextPlanogramVersion: string | null = null;
   readonly confirmationInputs: ConfirmOrderBoundDispenseInput[] = [];
   confirmOrderBoundDispenseResult = true;
+  readonly fieldStockApplicationInputs: Array<{
+    machineId: string;
+    rawMovementId: string;
+    input: RawMachineStockMovement;
+  }> = [];
+  applyTrustedFieldStockMovementResult = true;
 
   async findByMachineMovement(
     machineId: string,
@@ -191,6 +197,15 @@ class InMemoryMovementRepository {
     return this.confirmOrderBoundDispenseResult;
   }
 
+  async applyTrustedFieldStockMovement(input: {
+    machineId: string;
+    rawMovementId: string;
+    input: RawMachineStockMovement;
+  }): Promise<boolean> {
+    this.fieldStockApplicationInputs.push(input);
+    return this.applyTrustedFieldStockMovementResult;
+  }
+
   get size(): number {
     return this.rows.size;
   }
@@ -248,6 +263,14 @@ describe("MachineStockMovementsService", () => {
     slotId: "550e8400-e29b-41d4-a716-446655440001",
     movementType: "planned_refill",
     quantity: 3,
+    beforeQuantity: 2,
+    afterQuantity: 5,
+    slotMappingSnapshot: {
+      slotCode: "A1",
+      capacity: 8,
+      inventoryId: "550e8400-e29b-41d4-a716-446655440201",
+      variantId: "550e8400-e29b-41d4-a716-446655440301",
+    },
     source: "field_service",
     attributedTo: "operator-1",
     occurredAt: "2026-06-04T00:00:00.000Z",
@@ -269,6 +292,111 @@ describe("MachineStockMovementsService", () => {
     expect(repo.size).toBe(1);
   });
 
+  it("applies trusted planned refill to platform inventory after raw movement is stored", async () => {
+    const repo = new InMemoryMovementRepository();
+    const service = new MachineStockMovementsService(repo as never);
+    const trustedRefill: RawMachineStockMovement = {
+      ...movement,
+      beforeQuantity: 2,
+      afterQuantity: 5,
+      slotMappingSnapshot: {
+        slotCode: "A1",
+        capacity: 8,
+        inventoryId: "550e8400-e29b-41d4-a716-446655440201",
+        variantId: "550e8400-e29b-41d4-a716-446655440301",
+      },
+    };
+
+    const result = await service.receiveRawMovement(machine, trustedRefill);
+
+    expect(result.status).toBe("accepted");
+    expect(repo.fieldStockApplicationInputs).toEqual([
+      {
+        machineId: machine.id,
+        rawMovementId: result.receipt?.rawMovementId,
+        input: trustedRefill,
+      },
+    ]);
+  });
+
+  it("applies approved stock count correction to platform inventory", async () => {
+    const repo = new InMemoryMovementRepository();
+    const service = new MachineStockMovementsService(repo as never);
+    const approvedCount: RawMachineStockMovement = {
+      ...movement,
+      movementId: "MOVE-COUNT-APPROVED",
+      movementType: "stock_count_correction",
+      quantity: 4,
+      beforeQuantity: 6,
+      afterQuantity: 4,
+      source: "approved_count",
+      attributedTo: "supervisor-1",
+    };
+
+    const result = await service.receiveRawMovement(machine, approvedCount);
+
+    expect(result.status).toBe("accepted");
+    expect(repo.fieldStockApplicationInputs).toEqual([
+      {
+        machineId: machine.id,
+        rawMovementId: result.receipt?.rawMovementId,
+        input: approvedCount,
+      },
+    ]);
+  });
+
+  it("routes local maintenance stock count correction to reconciliation", async () => {
+    const repo = new InMemoryMovementRepository();
+    const service = new MachineStockMovementsService(repo as never);
+
+    const result = await service.receiveRawMovement(machine, {
+      ...movement,
+      movementId: "MOVE-LOCAL-COUNT",
+      movementType: "stock_count_correction",
+      quantity: 4,
+      beforeQuantity: 6,
+      afterQuantity: 4,
+      source: "local_maintenance",
+      attributedTo: null,
+    });
+
+    expect(result.status).toBe("reconciliation");
+    expect(result.reconciliation?.reason).toBe("local_maintenance");
+    expect(repo.fieldStockApplicationInputs).toHaveLength(0);
+  });
+
+  it("routes missing attribution to reconciliation without applying platform inventory", async () => {
+    const repo = new InMemoryMovementRepository();
+    const service = new MachineStockMovementsService(repo as never);
+
+    const result = await service.receiveRawMovement(machine, {
+      ...movement,
+      movementId: "MOVE-MISSING-ATTRIBUTION",
+      attributedTo: null,
+    });
+
+    expect(result.status).toBe("reconciliation");
+    expect(result.reconciliation?.reason).toBe("weak_attribution");
+    expect(repo.fieldStockApplicationInputs).toHaveLength(0);
+  });
+
+  it("routes abnormal planned refill variance to reconciliation", async () => {
+    const repo = new InMemoryMovementRepository();
+    const service = new MachineStockMovementsService(repo as never);
+
+    const result = await service.receiveRawMovement(machine, {
+      ...movement,
+      movementId: "MOVE-ABNORMAL-REFILL",
+      quantity: 3,
+      beforeQuantity: 2,
+      afterQuantity: 8,
+    });
+
+    expect(result.status).toBe("reconciliation");
+    expect(result.reconciliation?.reason).toBe("abnormal_variance");
+    expect(repo.fieldStockApplicationInputs).toHaveLength(0);
+  });
+
   it("sends a duplicate movement id with conflicting payload to separate reconciliation audit", async () => {
     const repo = new InMemoryMovementRepository();
     const service = new MachineStockMovementsService(repo as never);
@@ -277,6 +405,7 @@ describe("MachineStockMovementsService", () => {
     const conflict = await service.receiveRawMovement(machine, {
       ...movement,
       quantity: 4,
+      afterQuantity: 6,
     });
 
     expect(conflict.status).toBe("reconciliation");
@@ -423,6 +552,7 @@ describe("MachineStockMovementsService", () => {
     const conflict = await service.receiveRawMovement(machine, {
       ...movement,
       quantity: 4,
+      afterQuantity: 6,
     });
 
     expect(conflict.status).toBe("reconciliation");

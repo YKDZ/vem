@@ -10,7 +10,7 @@ use vending_core::domain::{CommandLogStatus, OutboxKind, OutboxTransport};
 
 use super::schema::{
     MIGRATION_V1, MIGRATION_V2, MIGRATION_V3, MIGRATION_V4, MIGRATION_V5, MIGRATION_V6,
-    SCHEMA_VERSION,
+    MIGRATION_V7, SCHEMA_VERSION,
 };
 use vending_core::hardware::{
     DispenseCommandPayload, DispenseResultPayload, EnvironmentControlResultPayload,
@@ -476,6 +476,12 @@ impl LocalStateStore {
         }
         if current_version < 6 {
             sqlx::query(MIGRATION_V6)
+                .execute(&store.pool)
+                .await
+                .map_err(StoreError::Sqlx)?;
+        }
+        if current_version < 7 {
+            sqlx::query(MIGRATION_V7)
                 .execute(&store.pool)
                 .await
                 .map_err(StoreError::Sqlx)?;
@@ -1381,8 +1387,8 @@ impl LocalStateStore {
         }
 
         let mut tx = self.pool.begin().await?;
-        let slot: Option<(i64,)> = sqlx::query_as(
-            "SELECT s.capacity
+        let slot: Option<(i64, String, String, String)> = sqlx::query_as(
+            "SELECT s.capacity, s.slot_code, s.inventory_id, s.variant_id
              FROM machine_planogram_slots s
              JOIN machine_planogram_versions v
                ON v.planogram_version = s.planogram_version AND v.active = 1
@@ -1392,23 +1398,50 @@ impl LocalStateStore {
         .bind(&input.slot_id)
         .fetch_optional(tx.as_mut())
         .await?;
-        let Some((capacity,)) = slot else {
+        let Some((capacity, slot_code, inventory_id, variant_id)) = slot else {
             return Err(StoreError::InvalidStockInput(
                 "movement slot is not in the active planogram version".to_string(),
             ));
         };
+        let current_stock: Option<(i64,)> = sqlx::query_as(
+            "SELECT physical_stock
+             FROM current_stock_projection
+             WHERE planogram_version = ?1 AND slot_id = ?2",
+        )
+        .bind(&input.planogram_version)
+        .bind(&input.slot_id)
+        .fetch_optional(tx.as_mut())
+        .await?;
+        let before_quantity = current_stock.map_or(0, |(physical_stock,)| physical_stock);
+        let after_quantity = if input.movement_type == "stock_count_correction" {
+            input.quantity
+        } else {
+            before_quantity + input.quantity
+        };
+        let slot_mapping_snapshot = serde_json::json!({
+            "slotCode": slot_code,
+            "capacity": capacity,
+            "inventoryId": inventory_id,
+            "variantId": variant_id,
+        });
+        let slot_mapping_snapshot_json = slot_mapping_snapshot.to_string();
 
         let occurred_at = now_iso();
         sqlx::query(
             "INSERT INTO stock_movements(
-               movement_id,planogram_version,slot_id,movement_type,quantity,source,attributed_to,occurred_at
-             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+               movement_id,planogram_version,slot_id,movement_type,quantity,
+               before_quantity,after_quantity,slot_mapping_snapshot_json,
+               source,attributed_to,occurred_at
+             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
         )
         .bind(&input.movement_id)
         .bind(&input.planogram_version)
         .bind(&input.slot_id)
         .bind(&input.movement_type)
         .bind(input.quantity)
+        .bind(before_quantity)
+        .bind(after_quantity)
+        .bind(&slot_mapping_snapshot_json)
         .bind(&input.source)
         .bind(&input.attributed_to)
         .bind(&occurred_at)
@@ -1423,6 +1456,9 @@ impl LocalStateStore {
                 "slotId": input.slot_id,
                 "movementType": input.movement_type,
                 "quantity": input.quantity,
+                "beforeQuantity": before_quantity,
+                "afterQuantity": after_quantity,
+                "slotMappingSnapshot": slot_mapping_snapshot,
                 "source": input.source,
                 "attributedTo": input.attributed_to,
                 "occurredAt": occurred_at,
@@ -2947,12 +2983,23 @@ mod tests {
             .await
             .expect("movement");
 
-        let movement_count: (i64,) =
-            sqlx::query_as("SELECT COUNT(1) FROM stock_movements WHERE movement_id = 'MOVE-1'")
-                .fetch_one(store.pool())
-                .await
-                .expect("movement count");
-        assert_eq!(movement_count.0, 1);
+        let movement_record: (i64, i64, String) = sqlx::query_as(
+            "SELECT before_quantity, after_quantity, slot_mapping_snapshot_json
+             FROM stock_movements WHERE movement_id = 'MOVE-1'",
+        )
+        .fetch_one(store.pool())
+        .await
+        .expect("movement record");
+        assert_eq!(movement_record.0, 0);
+        assert_eq!(movement_record.1, 3);
+        let slot_mapping_snapshot: serde_json::Value =
+            serde_json::from_str(&movement_record.2).expect("slot mapping snapshot");
+        assert_eq!(slot_mapping_snapshot["slotCode"], "A1");
+        assert_eq!(slot_mapping_snapshot["capacity"], 8);
+        assert_eq!(
+            slot_mapping_snapshot["inventoryId"],
+            "550e8400-e29b-41d4-a716-446655440002"
+        );
 
         let sync = store
             .stock_movement_sync_record("MOVE-1")
@@ -2976,6 +3023,10 @@ mod tests {
         );
         assert_eq!(outbox.payload_json["movementId"], "MOVE-1");
         assert_eq!(outbox.payload_json["machineCode"], "MACHINE-1");
+        assert_eq!(outbox.payload_json["beforeQuantity"], 0);
+        assert_eq!(outbox.payload_json["afterQuantity"], 3);
+        assert_eq!(outbox.payload_json["slotMappingSnapshot"]["slotCode"], "A1");
+        assert_eq!(outbox.payload_json["slotMappingSnapshot"]["capacity"], 8);
     }
 
     async fn seed_stock_movement_upload(store: &LocalStateStore, movement_id: &str) {

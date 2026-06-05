@@ -23,6 +23,9 @@ export type MachineStockReconciliationReason =
   | "unknown_planogram_version"
   | "inactive_planogram_version"
   | "mapping_mismatch"
+  | "local_maintenance"
+  | "weak_attribution"
+  | "abnormal_variance"
   | "movement_id_payload_conflict"
   | "order_context_missing"
   | "order_context_mismatch";
@@ -131,6 +134,23 @@ export class MachineStockMovementsService {
       }
     }
 
+    const fieldStockReconciliation =
+      reconciliationForFieldStockMovement(trustedInput);
+    if (fieldStockReconciliation) {
+      const stored = await this.repository.insertReconciliation({
+        machineId: machine.id,
+        input: trustedInput,
+        normalized,
+        payloadHash,
+        ...fieldStockReconciliation,
+      });
+      return reconciliationResponse(
+        trustedInput.movementId,
+        stored,
+        fieldStockReconciliation,
+      );
+    }
+
     try {
       const acceptedInput = {
         machineId: machine.id,
@@ -155,6 +175,28 @@ export class MachineStockMovementsService {
           payloadHash,
           "order_confirmation_failed",
         );
+      }
+      if (isAutoAppliedFieldStockMovement(trustedInput)) {
+        const applied = await this.repository.applyTrustedFieldStockMovement({
+          machineId: machine.id,
+          rawMovementId: stored.id,
+          input: trustedInput,
+        });
+        if (!applied) {
+          const reconciliation = fieldStockApplicationFailedReconciliation(
+            trustedInput.slotId,
+          );
+          await this.repository.markReconciliation(
+            machine.id,
+            trustedInput.movementId,
+            reconciliation,
+          );
+          return reconciliationResponse(
+            trustedInput.movementId,
+            stored,
+            reconciliation,
+          );
+        }
       }
       return acceptedResponse(trustedInput.movementId, stored, "accepted");
     } catch (error) {
@@ -356,6 +398,105 @@ function movementConflictReconciliation(
   };
 }
 
+type FieldStockMovement = RawMachineStockMovement & {
+  movementType: "planned_refill" | "stock_count_correction";
+};
+
+function isFieldStockMovement(
+  input: RawMachineStockMovement,
+): input is FieldStockMovement {
+  return (
+    input.movementType === "planned_refill" ||
+    input.movementType === "stock_count_correction"
+  );
+}
+
+function reconciliationForFieldStockMovement(
+  input: RawMachineStockMovement,
+): Omit<
+  InsertReconciliationRawMachineStockMovement,
+  "machineId" | "input" | "normalized" | "payloadHash"
+> | null {
+  if (!isFieldStockMovement(input)) {
+    return null;
+  }
+  if (input.source === "local_maintenance") {
+    return fieldStockReconciliation(input.slotId, "local_maintenance");
+  }
+  if (!input.attributedTo?.trim()) {
+    return fieldStockReconciliation(input.slotId, "weak_attribution");
+  }
+  if (
+    input.beforeQuantity === undefined ||
+    input.afterQuantity === undefined ||
+    !input.slotMappingSnapshot ||
+    !input.slotMappingSnapshot.inventoryId ||
+    !input.slotMappingSnapshot.variantId
+  ) {
+    return fieldStockReconciliation(input.slotId, "mapping_mismatch");
+  }
+  const capacity = input.slotMappingSnapshot.capacity;
+  if (
+    input.beforeQuantity > capacity ||
+    input.afterQuantity > capacity ||
+    (input.movementType === "planned_refill" &&
+      input.afterQuantity - input.beforeQuantity !== input.quantity) ||
+    (input.movementType === "stock_count_correction" &&
+      input.afterQuantity !== input.quantity)
+  ) {
+    return fieldStockReconciliation(input.slotId, "abnormal_variance");
+  }
+  if (
+    input.movementType === "stock_count_correction" &&
+    input.source !== "approved_count" &&
+    input.source !== "platform_approved_count"
+  ) {
+    return fieldStockReconciliation(input.slotId, "weak_attribution");
+  }
+  if (
+    input.movementType === "planned_refill" &&
+    input.source !== "field_service" &&
+    input.source !== "platform_planned_refill"
+  ) {
+    return fieldStockReconciliation(input.slotId, "weak_attribution");
+  }
+  return null;
+}
+
+function isAutoAppliedFieldStockMovement(
+  input: RawMachineStockMovement,
+): input is FieldStockMovement {
+  return isFieldStockMovement(input);
+}
+
+function fieldStockApplicationFailedReconciliation(
+  slotId: string,
+): Omit<
+  InsertReconciliationRawMachineStockMovement,
+  "machineId" | "input" | "normalized" | "payloadHash"
+> {
+  return fieldStockReconciliation(slotId, "mapping_mismatch");
+}
+
+function fieldStockReconciliation(
+  slotId: string,
+  reason:
+    | "local_maintenance"
+    | "weak_attribution"
+    | "abnormal_variance"
+    | "mapping_mismatch",
+): Omit<
+  InsertReconciliationRawMachineStockMovement,
+  "machineId" | "input" | "normalized" | "payloadHash"
+> {
+  return {
+    reconciliationReason: reason,
+    platformReviewStatus: "open",
+    saleSafetyBlockerState: "needs_platform_review",
+    saleSafetyBlockerSlotId: slotId,
+  };
+}
+
 function rejectedResponse(
   movementId: string,
   payloadHash: string,
@@ -433,6 +574,9 @@ function parseReconciliationReason(
     case "unknown_planogram_version":
     case "inactive_planogram_version":
     case "mapping_mismatch":
+    case "local_maintenance":
+    case "weak_attribution":
+    case "abnormal_variance":
     case "movement_id_payload_conflict":
     case "order_context_missing":
     case "order_context_mismatch":
@@ -484,6 +628,9 @@ export function normalizeRawMovement(
     slotId: input.slotId,
     movementType: input.movementType,
     quantity: input.quantity,
+    beforeQuantity: input.beforeQuantity ?? null,
+    afterQuantity: input.afterQuantity ?? null,
+    slotMappingSnapshot: input.slotMappingSnapshot ?? null,
     source: input.source,
     attributedTo: input.attributedTo ?? null,
     orderContext: input.orderContext ?? null,

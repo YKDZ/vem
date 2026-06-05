@@ -456,6 +456,53 @@ export class MachineStockMovementsRepository {
     return true;
   }
 
+  async applyTrustedFieldStockMovement(input: {
+    machineId: string;
+    rawMovementId: string;
+    input: RawMachineStockMovement;
+  }): Promise<boolean> {
+    const snapshot = input.input.slotMappingSnapshot;
+    if (
+      !snapshot?.inventoryId ||
+      !snapshot.variantId ||
+      input.input.beforeQuantity === undefined ||
+      input.input.afterQuantity === undefined
+    ) {
+      return false;
+    }
+    const inventoryId = snapshot.inventoryId;
+    const variantId = snapshot.variantId;
+    const beforeQuantity = input.input.beforeQuantity;
+    const afterQuantity = input.input.afterQuantity;
+    const deltaQty = afterQuantity - beforeQuantity;
+
+    return await this.db.transaction(async (tx) => {
+      const result = await tx.execute(sql`
+        update inventories
+        set
+          on_hand_qty = ${afterQuantity},
+          updated_at = now()
+        where id = ${inventoryId}
+          and machine_id = ${input.machineId}
+          and slot_id = ${input.input.slotId}
+          and variant_id = ${variantId}
+          and on_hand_qty = ${beforeQuantity}
+        returning id
+      `);
+      if ((result.rowCount ?? 0) !== 1) {
+        return false;
+      }
+
+      await tx.insert(inventoryMovements).values({
+        inventoryId,
+        deltaQty,
+        reason: "hardware_sync",
+        note: `machine_stock_movement:${input.rawMovementId}`,
+      });
+      return true;
+    });
+  }
+
   private async insertRaw(
     input: InsertRawMachineStockMovement,
     status: {

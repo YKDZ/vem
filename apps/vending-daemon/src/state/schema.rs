@@ -1,4 +1,4 @@
-pub const SCHEMA_VERSION: i64 = 6;
+pub const SCHEMA_VERSION: i64 = 7;
 
 pub const MIGRATION_V1: &str = r#"
 PRAGMA journal_mode = WAL;
@@ -355,4 +355,12 @@ SELECT
   updated_at
 FROM current_stock_projection
 WHERE slot_sales_state IN ('needs_count','blocked_for_planogram_change','movement_rejected','needs_platform_review');
+"#;
+
+pub const MIGRATION_V7: &str = r#"
+PRAGMA foreign_keys = ON;
+
+ALTER TABLE stock_movements ADD COLUMN before_quantity INTEGER NOT NULL DEFAULT 0 CHECK (before_quantity >= 0);
+ALTER TABLE stock_movements ADD COLUMN after_quantity INTEGER NOT NULL DEFAULT 0 CHECK (after_quantity >= 0);
+ALTER TABLE stock_movements ADD COLUMN slot_mapping_snapshot_json TEXT;
 "#;
