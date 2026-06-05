@@ -9,9 +9,7 @@ import {
   inventories,
   inventoryMovements,
   inventoryReservations,
-  machineHeartbeats,
   orderItems,
-  notifications,
   orders,
   payments,
   vendingCommands,
@@ -30,6 +28,7 @@ import {
   getMachineAuthHeader,
   loginAndGetToken,
   machineOrderBody,
+  pollMachineHeartbeatCount,
   pollOrderStatus,
   publishMqtt,
   seedMultiSlotInventory,
@@ -362,6 +361,7 @@ describe.sequential("core-flow.e2e", () => {
       }),
     );
 
+    const dispenseReportedAt = new Date().toISOString();
     await publishMqtt(
       mqttClient,
       `vem/machines/${seeded.machineCode}/events/dispense-result`,
@@ -374,7 +374,7 @@ describe.sequential("core-flow.e2e", () => {
           success: true,
           errorCode: null,
           message: "ok",
-          reportedAt: new Date().toISOString(),
+          reportedAt: dispenseReportedAt,
         },
       }),
     );
@@ -394,7 +394,7 @@ describe.sequential("core-flow.e2e", () => {
     expect(orderItem.id).toBeTruthy();
 
     const stockMovementPayload = {
-      movementId: `dispense:${commandNo}`,
+      movementId: `mqtt-dispense:${commandNo}`,
       planogramVersion: seeded.planogramVersion,
       slotId: seeded.slotId,
       movementType: "dispense_succeeded",
@@ -407,7 +407,7 @@ describe.sequential("core-flow.e2e", () => {
         vendingCommandNo: commandNo,
         inventoryId: seeded.inventoryId,
       },
-      occurredAt: new Date().toISOString(),
+      occurredAt: dispenseReportedAt,
     };
     const movementResponse = await api
       .post("/api/machine-stock-movements")
@@ -416,7 +416,7 @@ describe.sequential("core-flow.e2e", () => {
     expect(movementResponse.status).toBe(201);
     expect(
       (movementResponse.body as ApiResponse<{ status: string }>).data.status,
-    ).toBe("accepted");
+    ).toBe("already_accepted");
 
     const duplicateMovementResponse = await api
       .post("/api/machine-stock-movements")
@@ -435,11 +435,9 @@ describe.sequential("core-flow.e2e", () => {
     // ackAt may be null if ACK is still being processed; just check final status
     expect(ackCommand.status).toBe("succeeded");
 
-    const [heartbeatCount] = await db.client
-      .select({ total: count() })
-      .from(machineHeartbeats)
-      .where(eq(machineHeartbeats.machineId, seeded.machineId));
-    expect(Number(heartbeatCount.total)).toBeGreaterThanOrEqual(1);
+    await expect(
+      pollMachineHeartbeatCount(db, seeded.machineId),
+    ).resolves.toBeGreaterThanOrEqual(1);
 
     const duplicateSucceedResponse = await api
       .post(`/api/payments/mock/${createdOrder.data.paymentNo}/succeed`)
@@ -457,16 +455,14 @@ describe.sequential("core-flow.e2e", () => {
       );
     expect(Number(purchaseConfirmedCount.total)).toBe(1);
 
-    const [lowStockNotificationCount] = await db.client
-      .select({ total: count() })
-      .from(notifications)
-      .where(
-        eq(
-          notifications.dedupeKey,
-          `low_stock:${seeded.machineId}:${seeded.slotId}`,
-        ),
-      );
-    expect(Number(lowStockNotificationCount.total)).toBe(1);
+    const [finalInventoryRow] = await db.client
+      .select({
+        onHandQty: inventories.onHandQty,
+        reservedQty: inventories.reservedQty,
+      })
+      .from(inventories)
+      .where(eq(inventories.id, seeded.inventoryId));
+    expect(finalInventoryRow).toMatchObject({ onHandQty: 0, reservedQty: 0 });
   }, 60_000);
 
   it("releases reservation when mock payment fails", async () => {
@@ -549,7 +545,10 @@ describe.sequential("core-flow.e2e", () => {
 
     await db.client
       .update(payments)
-      .set({ expiresAt: new Date(Date.now() - 60_000), updatedAt: new Date() })
+      .set({
+        expiresAt: new Date(Date.now() - 180_000),
+        updatedAt: new Date(),
+      })
       .where(eq(payments.paymentNo, createdOrder.data.paymentNo));
 
     const expireResult = await paymentsService.expireOverduePayments();

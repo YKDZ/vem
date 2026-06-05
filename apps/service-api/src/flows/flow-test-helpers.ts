@@ -1,6 +1,9 @@
 import {
+  count,
   DrizzleDB,
+  eq,
   inventories,
+  machineHeartbeats,
   machinePlanogramSlots,
   machinePlanogramVersions,
   machineSlots,
@@ -221,6 +224,34 @@ export async function pollOrderStatus(
       );
     }
     await new Promise((resolve) => setTimeout(resolve, 500));
+    return await poll(index + 1);
+  };
+
+  return await poll(0);
+}
+
+export async function pollMachineHeartbeatCount(
+  db: DrizzleDB,
+  machineId: string,
+  expectedCount = 1,
+): Promise<number> {
+  const attempts = 30;
+
+  const poll = async (index: number): Promise<number> => {
+    const [heartbeatCount] = await db.client
+      .select({ total: count() })
+      .from(machineHeartbeats)
+      .where(eq(machineHeartbeats.machineId, machineId));
+    const total = Number(heartbeatCount.total);
+    if (total >= expectedCount) {
+      return total;
+    }
+    if (index >= attempts - 1) {
+      throw new Error(
+        `Machine ${machineId} heartbeat count did not reach ${expectedCount} (current: ${total})`,
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
     return await poll(index + 1);
   };
 
