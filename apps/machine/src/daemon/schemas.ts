@@ -1,6 +1,7 @@
 import {
   machineCatalogItemSchema,
   machinePaymentOptionsResponseSchema,
+  machineSaleViewSnapshotSchema,
 } from "@vem/shared";
 import { z } from "zod";
 
@@ -94,6 +95,7 @@ export const configSummarySchema = z.object({
     visionProcessArgs: z.string().nullable(),
     visionRequestTimeoutMs: z.number().int(),
     kioskMode: z.boolean(),
+    stockMovementRetentionDays: z.number().int().min(1).max(366).default(30),
   }),
   machineSecretConfigured: z.boolean(),
   mqttSigningSecretConfigured: z.boolean(),
@@ -189,6 +191,49 @@ export const hardwareSelfCheckSchema = z.object({
   configUpdated: z.boolean().default(false),
 });
 
+const saleReadinessComponentSchema = z.object({
+  ready: z.boolean(),
+  code: z.string(),
+  message: z.string(),
+});
+
+export const machineSaleReadinessSchema = z.object({
+  canStartNetworkAuthorizedSale: z.boolean(),
+  blockingCodes: z.array(z.string()),
+  components: z.object({
+    platformReachability: saleReadinessComponentSchema,
+    machineAuthentication: saleReadinessComponentSchema,
+    activePlanogram: saleReadinessComponentSchema,
+    paymentOptions: saleReadinessComponentSchema.extend({
+      methods: z.array(
+        z.object({
+          method: z.string(),
+          optionKey: z.string().nullable(),
+          providerCode: z.string().nullable(),
+          ready: z.boolean(),
+          disabledReason: z.string().nullable().optional(),
+        }),
+      ),
+    }),
+    scannerCapability: saleReadinessComponentSchema,
+    syncHealth: saleReadinessComponentSchema,
+    wholeMachineBlockers: saleReadinessComponentSchema,
+    slotSaleSafety: saleReadinessComponentSchema
+      .extend({
+        blockedSlots: z
+          .array(
+            z.object({
+              slotId: z.string(),
+              slotCode: z.string(),
+              slotSalesState: z.string(),
+            }),
+          )
+          .default([]),
+      })
+      .optional(),
+  }),
+});
+
 export const catalogSnapshotSchema = z.object({
   items: z.array(machineCatalogItemSchema),
   cached: z.boolean(),
@@ -264,7 +309,9 @@ export type ScannerStatus = z.infer<typeof scannerStatusSchema>;
 export type VisionStatus = z.infer<typeof visionStatusSchema>;
 export type RemoteOpsStatus = z.infer<typeof remoteOpsStatusSchema>;
 export type HardwareSelfCheck = z.infer<typeof hardwareSelfCheckSchema>;
+export type MachineSaleReadiness = z.infer<typeof machineSaleReadinessSchema>;
 export type CatalogSnapshot = z.infer<typeof catalogSnapshotSchema>;
+export type SaleViewSnapshot = z.infer<typeof machineSaleViewSnapshotSchema>;
 export type DaemonEvent = z.infer<typeof daemonEventSchema>;
 
-export { machinePaymentOptionsResponseSchema };
+export { machinePaymentOptionsResponseSchema, machineSaleViewSnapshotSchema };

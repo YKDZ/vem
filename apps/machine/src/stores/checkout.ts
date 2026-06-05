@@ -14,6 +14,8 @@ import type {
 } from "@/types/checkout";
 
 import { daemonClient } from "@/daemon/client";
+import { useCatalogStore } from "@/stores/catalog";
+import { useConnectivityStore } from "@/stores/connectivity";
 import { getRemainingSeconds } from "@/utils/format";
 
 export type CheckoutFlowStep =
@@ -121,6 +123,91 @@ function paymentStatusFromSnapshot(
   }
 }
 
+function paymentStateFromSnapshot(
+  snapshot: TransactionSnapshot,
+): MachineOrderStatus["paymentState"] {
+  switch (snapshot.paymentStatus) {
+    case "succeeded":
+      return "paid";
+    case "failed":
+      return "payment_failed";
+    case "expired":
+      return "payment_expired";
+    case "canceled":
+      return "canceled";
+    case "refund_pending":
+    case "refunded":
+    case "partial_refunded":
+      return snapshot.paymentStatus;
+  }
+
+  switch (orderStatusFromSnapshot(snapshot)) {
+    case "payment_expired":
+      return "payment_expired";
+    case "canceled":
+    case "closed":
+      return "canceled";
+    case "paid":
+    case "dispensing":
+    case "fulfilled":
+    case "dispense_failed":
+    case "manual_handling":
+      return "paid";
+    case "refund_pending":
+      return "refund_pending";
+    case "refunded":
+      return "refunded";
+    default:
+      return "awaiting_payment";
+  }
+}
+
+function fulfillmentStateFromSnapshot(
+  snapshot: TransactionSnapshot,
+): MachineOrderStatus["fulfillmentState"] {
+  switch (orderStatusFromSnapshot(snapshot)) {
+    case "dispensing":
+      return "dispensing";
+    case "fulfilled":
+      return "dispensed";
+    case "dispense_failed":
+      return "dispense_failed";
+    case "manual_handling":
+    case "refund_pending":
+    case "refunded":
+      return "manual_handling";
+    case "payment_expired":
+    case "canceled":
+    case "closed":
+      return "canceled";
+    default:
+      return "awaiting_fulfillment";
+  }
+}
+
+function latestSaleViewItem(
+  selectedItem: CheckoutSelectedItem | null,
+): CheckoutSelectedItem | null {
+  if (!selectedItem) return null;
+  return useCatalogStore().itemByInventoryId(selectedItem.inventoryId) ?? null;
+}
+
+function isSaleableItem(
+  item: CheckoutSelectedItem | null,
+): item is CheckoutSelectedItem {
+  return Boolean(
+    item && item.slotSalesState === "sale_ready" && item.saleableStock > 0,
+  );
+}
+
+function activePlanogramVersion(): string | null {
+  return useCatalogStore().planogramVersion;
+}
+
+function isMachineSaleReady(): boolean {
+  return useConnectivityStore().isSaleNetworkReady;
+}
+
 function vendingStatusFromSnapshot(
   snapshot: NonNullable<TransactionSnapshot["vending"]>,
 ): NonNullable<MachineOrderStatus["vending"]>["status"] {
@@ -160,15 +247,18 @@ export const useCheckoutStore = defineStore("checkout", {
     quantity: (): number => 1,
     remainingSeconds: (state): number =>
       getRemainingSeconds(state.currentOrder?.expiresAt, state.nowMs),
-    canCreateOrder: (state): boolean =>
-      Boolean(
-        state.selectedItem &&
-        state.selectedItem.availableQty > 0 &&
+    canCreateOrder: (state): boolean => {
+      const selectedItem = latestSaleViewItem(state.selectedItem);
+      return Boolean(
+        isSaleableItem(selectedItem) &&
+        activePlanogramVersion() &&
+        isMachineSaleReady() &&
         state.selectedPaymentOptionKey &&
         state.paymentOptions.find(
           (option) => option.optionKey === state.selectedPaymentOptionKey,
         )?.disabled !== true,
-      ),
+      );
+    },
     resultKind: (state): CheckoutResultKind | null =>
       state.status ? resultKindFromNextAction(state.status.nextAction) : null,
     selectedPaymentOption: (state): MachinePaymentOption | null =>
@@ -241,6 +331,8 @@ export const useCheckoutStore = defineStore("checkout", {
         orderNo: snapshot.orderNo,
         machineCode: "daemon",
         orderStatus: orderStatusFromSnapshot(snapshot),
+        paymentState: paymentStateFromSnapshot(snapshot),
+        fulfillmentState: fulfillmentStateFromSnapshot(snapshot),
         totalAmountCents:
           snapshot.totalAmountCents ?? this.currentOrder.totalAmountCents,
         payment: {
@@ -345,17 +437,30 @@ export const useCheckoutStore = defineStore("checkout", {
     },
     async createOrder(): Promise<CreateMachineOrderResponse | null> {
       if (!this.selectedItem) throw new Error("No selected item");
-      if (this.selectedItem.availableQty <= 0) throw new Error("商品已售罄");
+      const selectedItem = latestSaleViewItem(this.selectedItem);
+      if (!selectedItem) {
+        throw new Error("商品已更新，请重新选择");
+      }
+      if (!isSaleableItem(selectedItem)) {
+        throw new Error("商品已售罄");
+      }
+      this.selectedItem = selectedItem;
 
       const selected = this.selectedPaymentOption;
       if (!selected || selected.disabled) throw new Error("请选择支付方式");
+      if (!isMachineSaleReady()) throw new Error("当前机器暂不可创建订单");
+      const planogramVersion = activePlanogramVersion();
+      if (!planogramVersion) throw new Error("当前货道图暂不可创建订单");
 
       this.loading = true;
       this.error = null;
       try {
         const snapshot = await daemonClient.createOrder({
-          inventoryId: this.selectedItem.inventoryId,
+          inventoryId: selectedItem.inventoryId,
           quantity: 1,
+          planogramVersion,
+          slotId: selectedItem.slotId,
+          slotCode: selectedItem.slotCode,
           paymentMethod: selected.method,
           paymentProviderCode: selected.providerCode,
           profileSnapshot: null,

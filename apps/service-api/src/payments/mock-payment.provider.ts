@@ -22,6 +22,7 @@ import { AppConfigService } from "../config/app-config.service";
 @Injectable()
 export class MockPaymentProvider implements PaymentProvider {
   readonly code = "mock";
+  readonly supportsPartialRefund = true;
 
   constructor(private readonly config: AppConfigService) {}
 

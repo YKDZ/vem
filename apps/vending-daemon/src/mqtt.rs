@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use rumqttc::{AsyncClient, ClientError, Event, EventLoop, MqttOptions, Packet, QoS};
 use serde_json::json;
@@ -182,13 +182,36 @@ impl MqttSyncRuntime {
             .await
             .map_err(|error| error.to_string())?;
 
-        let result = self.hardware.dispense(command.clone()).await;
+        let local_timeout = Duration::from_secs(command.timeout_seconds.max(1));
+        let result = match tokio::time::timeout(
+            local_timeout,
+            self.hardware.dispense(command.clone()),
+        )
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => {
+                self.state
+                    .block_slot_for_dispense_result_unknown(&command)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                return Ok(CommandHandlingResult::Processed {
+                    command_no: command.command_no,
+                });
+            }
+        };
         let result_event =
             crate::state::store::OutboxInput::dispense_result(&self.machine_code, &result);
         self.state
             .record_command_result_and_enqueue_tx(&command, &result, &result_event)
             .await
             .map_err(|error| error.to_string())?;
+        if !result.success {
+            self.state
+                .block_slot_for_dispense_failure(&command, result.error_code.as_deref())
+                .await
+                .map_err(|error| error.to_string())?;
+        }
 
         Ok(CommandHandlingResult::Processed {
             command_no: command.command_no,
@@ -348,6 +371,9 @@ impl MqttSyncRuntime {
         let mut failed = 0_u64;
 
         for event in due {
+            if event.kind == vending_core::domain::OutboxKind::StockMovementUpload {
+                continue;
+            }
             let result = match event.transport {
                 vending_core::domain::OutboxTransport::Mqtt => {
                     self.publish_json(event.topic.as_deref(), &event.payload_json)
@@ -579,6 +605,7 @@ mod tests {
     struct RecordingEnvironmentAdapter {
         operations: Mutex<Vec<String>>,
         fail_on: Mutex<Option<String>>,
+        hang_dispense: bool,
     }
 
     #[async_trait]
@@ -621,6 +648,9 @@ mod tests {
         }
 
         async fn dispense(&self, cmd: DispenseCommandPayload) -> DispenseResultPayload {
+            if self.hang_dispense {
+                tokio::time::sleep(Duration::from_secs(60)).await;
+            }
             DispenseResultPayload {
                 command_no: cmd.command_no,
                 success: true,
@@ -629,6 +659,60 @@ mod tests {
                 reported_at: crate::state::store::now_iso(),
             }
         }
+    }
+
+    async fn seed_single_slot_planogram(state: &crate::state::LocalStateStore) {
+        state
+            .apply_planogram(crate::state::store::MachinePlanogramInput {
+                planogram_version: "PLAN-MQTT".to_string(),
+                source: "test".to_string(),
+                applied_by: None,
+                slots: vec![crate::state::store::MachinePlanogramSlotInput {
+                    slot_id: "550e8400-e29b-41d4-a716-446655441001".to_string(),
+                    slot_code: "A1".to_string(),
+                    layer_no: 1,
+                    cell_no: 1,
+                    capacity: 8,
+                    par_level: 6,
+                    inventory_id: "550e8400-e29b-41d4-a716-446655441002".to_string(),
+                    variant_id: "550e8400-e29b-41d4-a716-446655441003".to_string(),
+                    product_id: "550e8400-e29b-41d4-a716-446655441004".to_string(),
+                    product_name: "water".to_string(),
+                    product_description: None,
+                    cover_image_url: None,
+                    category_id: None,
+                    category_name: None,
+                    sku: "WATER-001".to_string(),
+                    size: Some("550ml".to_string()),
+                    color: None,
+                    price_cents: 200,
+                    product_sort_order: 1,
+                    target_gender: None,
+                }],
+            })
+            .await
+            .expect("planogram");
+    }
+
+    fn signed_dispense_command(command_no: &str, timeout_seconds: u64) -> String {
+        let command = DispenseCommandPayload {
+            command_no: command_no.to_string(),
+            order_no: "ORD-MQTT".to_string(),
+            slot: vending_core::hardware::SlotPayload {
+                layer_no: 1,
+                cell_no: 1,
+                slot_code: "A1".to_string(),
+            },
+            quantity: 1,
+            timeout_seconds,
+        };
+        let envelope = sign_envelope(
+            "M1",
+            "secret",
+            &format!("MSG-{command_no}"),
+            serde_json::to_value(&command).expect("payload"),
+        );
+        serde_json::to_string(&envelope).expect("envelope")
     }
 
     fn signed_environment_command(
@@ -968,6 +1052,64 @@ mod tests {
         let restarted_environment = &latest_heartbeat.payload_json["statusPayload"]["environment"];
         assert_eq!(restarted_environment["airConditionerOn"], false);
         assert!(restarted_environment["targetTemperatureCelsius"].is_null());
+    }
+
+    #[tokio::test]
+    async fn hung_dispense_command_freezes_local_sale_view_without_final_result() {
+        let temp = tempfile::tempdir().expect("temp");
+        let state = crate::state::LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("state");
+        seed_single_slot_planogram(&state).await;
+
+        let hardware = crate::hardware::HardwareSupervisor::from_adapter(Arc::new(
+            RecordingEnvironmentAdapter {
+                hang_dispense: true,
+                ..RecordingEnvironmentAdapter::default()
+            },
+        ));
+        let (event_tx, _rx) = tokio::sync::broadcast::channel(4);
+        let runtime = MqttSyncRuntime::new(
+            "M1".to_string(),
+            "secret".to_string(),
+            state.clone(),
+            hardware,
+            event_tx,
+            CancellationToken::new(),
+        );
+
+        runtime
+            .handle_dispense_command(&signed_dispense_command("CMD-HUNG", 1))
+            .await
+            .expect("handle hung command");
+
+        let sale_view = state
+            .sale_view(Some("M1".to_string()))
+            .await
+            .expect("sale view");
+        assert_eq!(sale_view.items[0].slot_sales_state, "frozen");
+
+        let command = state
+            .get_command("CMD-HUNG")
+            .await
+            .expect("read command")
+            .expect("command");
+        assert_eq!(
+            command.status,
+            vending_core::domain::CommandLogStatus::Dispensing
+        );
+        assert!(command.result_payload.is_none());
+
+        let due = state
+            .list_due_outbox(chrono::Utc::now() + chrono::Duration::seconds(1))
+            .await
+            .expect("outbox");
+        assert!(due.iter().any(|event| {
+            event.topic.as_deref() == Some("vem/machines/M1/commands/CMD-HUNG/ack")
+        }));
+        assert!(!due.iter().any(|event| {
+            event.topic.as_deref() == Some("vem/machines/M1/events/dispense-result")
+        }));
     }
 
     #[tokio::test]

@@ -210,6 +210,7 @@ export class InventoryService {
     tx: DrizzleTransaction,
     input: {
       orderId: string;
+      orderItemId?: string;
       inventoryId: string;
       quantity: number;
       expiresAt: Date;
@@ -229,6 +230,7 @@ export class InventoryService {
     await tx.insert(inventoryReservations).values({
       orderId: input.orderId,
       inventoryId: input.inventoryId,
+      orderItemId: input.orderItemId ?? null,
       quantity: input.quantity,
       status: "active",
       expiresAt: input.expiresAt,
@@ -244,7 +246,12 @@ export class InventoryService {
 
   async confirmReservation(
     tx: DrizzleTransaction,
-    input: { orderId: string; inventoryId: string; quantity: number },
+    input: {
+      orderId: string;
+      orderItemId?: string | null;
+      inventoryId: string;
+      quantity: number;
+    },
   ): Promise<void> {
     const [reservation] = await tx
       .select({
@@ -256,6 +263,9 @@ export class InventoryService {
         and(
           eq(inventoryReservations.orderId, input.orderId),
           eq(inventoryReservations.inventoryId, input.inventoryId),
+          input.orderItemId
+            ? eq(inventoryReservations.orderItemId, input.orderItemId)
+            : undefined,
           eq(inventoryReservations.status, "active"),
         ),
       )
@@ -299,9 +309,14 @@ export class InventoryService {
     tx: DrizzleTransaction,
     input: {
       orderId: string;
+      orderItemId?: string | null;
       inventoryId: string;
       quantity: number;
-      reason: "payment_failed" | "payment_expired" | "canceled";
+      reason:
+        | "payment_failed"
+        | "payment_expired"
+        | "canceled"
+        | "dispense_failed";
     },
   ): Promise<void> {
     const [reservation] = await tx
@@ -314,6 +329,9 @@ export class InventoryService {
         and(
           eq(inventoryReservations.orderId, input.orderId),
           eq(inventoryReservations.inventoryId, input.inventoryId),
+          input.orderItemId
+            ? eq(inventoryReservations.orderItemId, input.orderItemId)
+            : undefined,
           eq(inventoryReservations.status, "active"),
         ),
       )
@@ -395,10 +413,70 @@ export class InventoryService {
     return { restoredQuantity };
   }
 
+  async releaseAffectedReservationForDispenseFailure(
+    tx: DrizzleTransaction,
+    input: {
+      orderId: string;
+      orderItemId?: string | null;
+      slotId: string;
+      errorCode: HardwareErrorCode | null;
+      message: string;
+    },
+  ): Promise<{
+    releasedQuantity: number;
+    slotFaulted: boolean;
+    slotSalesState: "suspect" | "frozen";
+  }> {
+    const policy = await this.hardwareErrorPoliciesService.getPolicy(
+      input.errorCode,
+    );
+    const rows = await tx
+      .select({
+        inventoryId: orderItems.inventoryId,
+        quantity: orderItems.quantity,
+      })
+      .from(orderItems)
+      .where(
+        and(
+          eq(orderItems.orderId, input.orderId),
+          input.orderItemId
+            ? eq(orderItems.id, input.orderItemId)
+            : eq(orderItems.slotId, input.slotId),
+        ),
+      );
+
+    let releasedQuantity = 0;
+    await rows.reduce<Promise<void>>(async (previous, row) => {
+      await previous;
+      await this.releaseReservation(tx, {
+        orderId: input.orderId,
+        orderItemId: input.orderItemId ?? null,
+        inventoryId: row.inventoryId,
+        quantity: row.quantity,
+        reason: "dispense_failed",
+      });
+      releasedQuantity += row.quantity;
+    }, Promise.resolve());
+
+    if (policy.faultSlot) {
+      await tx
+        .update(machineSlots)
+        .set({ status: "faulted", updatedAt: new Date() })
+        .where(eq(machineSlots.id, input.slotId));
+    }
+
+    return {
+      releasedQuantity,
+      slotFaulted: policy.faultSlot,
+      slotSalesState: policy.faultSlot ? "frozen" : "suspect",
+    };
+  }
+
   async compensateDispenseFailure(
     tx: DrizzleTransaction,
     input: {
       orderId: string;
+      orderItemId?: string | null;
       slotId: string;
       errorCode: HardwareErrorCode | null;
       message: string;
@@ -419,7 +497,9 @@ export class InventoryService {
       .where(
         and(
           eq(orderItems.orderId, input.orderId),
-          eq(orderItems.slotId, input.slotId),
+          input.orderItemId
+            ? eq(orderItems.id, input.orderItemId)
+            : eq(orderItems.slotId, input.slotId),
         ),
       );
 

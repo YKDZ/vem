@@ -10,6 +10,8 @@ import {
   machineEvents,
   machineCommands,
   machineHeartbeats,
+  machinePlanogramSlots,
+  machinePlanogramVersions,
   machines,
   machineSlots,
   notificationDeliveries,
@@ -50,6 +52,8 @@ export const relations = defineRelations(
     machineEvents,
     machineCommands,
     machineHeartbeats,
+    machinePlanogramSlots,
+    machinePlanogramVersions,
     machines,
     machineSlots,
     notificationDeliveries,
@@ -153,6 +157,24 @@ export const relations = defineRelations(
       commands: r.many.machineCommands(),
       events: r.many.machineEvents(),
       heartbeats: r.many.machineHeartbeats(),
+      planogramVersions: r.many.machinePlanogramVersions(),
+    },
+    machinePlanogramVersions: {
+      machine: r.one.machines({
+        from: r.machinePlanogramVersions.machineId,
+        to: r.machines.id,
+      }),
+      slots: r.many.machinePlanogramSlots(),
+    },
+    machinePlanogramSlots: {
+      version: r.one.machinePlanogramVersions({
+        from: r.machinePlanogramSlots.machinePlanogramVersionId,
+        to: r.machinePlanogramVersions.id,
+      }),
+      slot: r.one.machineSlots({
+        from: r.machinePlanogramSlots.slotId,
+        to: r.machineSlots.id,
+      }),
     },
     machineSlots: {
       machine: r.one.machines({

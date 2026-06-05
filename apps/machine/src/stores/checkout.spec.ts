@@ -26,18 +26,24 @@ vi.mock("@/daemon/client", () => ({
   },
 }));
 
+import type { MachineCatalogItem } from "@/types/catalog";
+
+import { useCatalogStore } from "./catalog";
 import {
   normalizeNextAction,
   resultKindFromNextAction,
   useCheckoutStore,
 } from "./checkout";
+import { useConnectivityStore } from "./connectivity";
 
 beforeEach(() => {
   setActivePinia(createPinia());
   vi.clearAllMocks();
 });
 
-function makeCatalogItem() {
+function makeCatalogItem(
+  overrides: Partial<MachineCatalogItem> = {},
+): MachineCatalogItem {
   return {
     machineCode: "M001",
     slotId: "550e8400-e29b-41d4-a716-446655440001",
@@ -56,8 +62,14 @@ function makeCatalogItem() {
     size: null,
     color: null,
     priceCents: 100,
-    availableQty: 1,
+    capacity: 8,
+    parLevel: 6,
+    physicalStock: 1,
+    saleableStock: 1,
+    slotSalesState: "sale_ready",
     productSortOrder: 1,
+    targetGender: null,
+    ...overrides,
   };
 }
 
@@ -100,6 +112,86 @@ function makeTransactionSnapshot(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function applyNetworkSaleReady(): void {
+  const connectivityStore = useConnectivityStore();
+  connectivityStore.applyHealth({
+    status: "healthy",
+    process: {
+      component: "daemon",
+      level: "ok",
+      code: "PROCESS_READY",
+      message: "ready",
+      updatedAt: "2026-06-04T00:00:00Z",
+    },
+    components: [],
+    configConfigured: true,
+    databaseOnline: true,
+    backendOnline: true,
+    mqttConnected: true,
+    outboxSize: 0,
+    outboxMax: 1000,
+    hardwareOnline: true,
+    scannerOnline: true,
+    visionOnline: true,
+    remoteOpsActive: false,
+    currentTransaction: null,
+    operatorReason: "",
+    updatedAt: "2026-06-04T00:00:00Z",
+  });
+  connectivityStore.applyReady({
+    ready: true,
+    canSell: true,
+    mode: "catalog",
+    blockingCodes: [],
+    blockingReasons: [],
+    degradedReasons: [],
+    suggestedRoute: "catalog",
+    updatedAt: "2026-06-04T00:00:00Z",
+  });
+  connectivityStore.applySaleReadiness({
+    canStartNetworkAuthorizedSale: true,
+    blockingCodes: [],
+    components: {
+      platformReachability: {
+        ready: true,
+        code: "PLATFORM_REACHABLE",
+        message: "platform reachable",
+      },
+      machineAuthentication: {
+        ready: true,
+        code: "MACHINE_AUTH_READY",
+        message: "machine code configured",
+      },
+      activePlanogram: {
+        ready: true,
+        code: "ACTIVE_PLANOGRAM_READY",
+        message: "PLAN-1",
+      },
+      paymentOptions: {
+        ready: true,
+        code: "PAYMENT_OPTIONS_READY",
+        message: "payment option available",
+        methods: [],
+      },
+      scannerCapability: {
+        ready: true,
+        code: "SCANNER_READY",
+        message: "scanner ready",
+      },
+      syncHealth: {
+        ready: true,
+        code: "SYNC_READY",
+        message: "sync connected",
+      },
+      wholeMachineBlockers: {
+        ready: true,
+        code: "WHOLE_MACHINE_READY",
+        message: "hardware ready",
+      },
+    },
+  });
+}
+
 describe("checkout helpers", () => {
   it("normalizes unknown next action to wait_payment", () => {
     expect(normalizeNextAction("weird")).toBe("wait_payment");
@@ -139,6 +231,24 @@ describe("checkout store", () => {
     expect(getPaymentOptionsMock).toHaveBeenCalledOnce();
   });
 
+  it("reports no payment options without creating an order", async () => {
+    getPaymentOptionsMock.mockResolvedValue({
+      options: [],
+      defaultOptionKey: null,
+      defaultProviderCode: null,
+      serverTime: "2026-01-01T00:00:00Z",
+    });
+
+    const store = useCheckoutStore();
+    await store.loadPaymentOptions();
+
+    expect(store.paymentOptionsLoaded).toBe(true);
+    expect(store.selectedPaymentOptionKey).toBeNull();
+    expect(store.canCreateOrder).toBe(false);
+    expect(store.error).toBe("当前机器暂无可用支付方式");
+    expect(createOrderMock).not.toHaveBeenCalled();
+  });
+
   it("creates order without machineCode payload and applies transaction", async () => {
     createOrderMock.mockResolvedValue(makeTransactionSnapshot());
 
@@ -157,6 +267,88 @@ describe("checkout store", () => {
       },
     ];
     store.selectedPaymentOptionKey = "payment_code:alipay";
+    useCatalogStore().applySnapshot({
+      items: [makeCatalogItem()],
+      source: "local_stock",
+      planogramVersion: "PLAN-1",
+      lastUpdatedAt: "2026-06-04T00:00:00Z",
+    });
+    useConnectivityStore().applyHealth({
+      status: "healthy",
+      process: {
+        component: "daemon",
+        level: "ok",
+        code: "PROCESS_READY",
+        message: "ready",
+        updatedAt: "2026-06-04T00:00:00Z",
+      },
+      components: [],
+      configConfigured: true,
+      databaseOnline: true,
+      backendOnline: true,
+      mqttConnected: true,
+      outboxSize: 0,
+      outboxMax: 1000,
+      hardwareOnline: true,
+      scannerOnline: true,
+      visionOnline: true,
+      remoteOpsActive: false,
+      currentTransaction: null,
+      operatorReason: "",
+      updatedAt: "2026-06-04T00:00:00Z",
+    });
+    useConnectivityStore().applyReady({
+      ready: true,
+      canSell: true,
+      mode: "catalog",
+      blockingCodes: [],
+      blockingReasons: [],
+      degradedReasons: [],
+      suggestedRoute: "catalog",
+      updatedAt: "2026-06-04T00:00:00Z",
+    });
+    useConnectivityStore().applySaleReadiness({
+      canStartNetworkAuthorizedSale: true,
+      blockingCodes: [],
+      components: {
+        platformReachability: {
+          ready: true,
+          code: "PLATFORM_REACHABLE",
+          message: "platform reachable",
+        },
+        machineAuthentication: {
+          ready: true,
+          code: "MACHINE_AUTH_READY",
+          message: "machine code configured",
+        },
+        activePlanogram: {
+          ready: true,
+          code: "ACTIVE_PLANOGRAM_READY",
+          message: "PLAN-1",
+        },
+        paymentOptions: {
+          ready: true,
+          code: "PAYMENT_OPTIONS_READY",
+          message: "payment option available",
+          methods: [],
+        },
+        scannerCapability: {
+          ready: true,
+          code: "SCANNER_READY",
+          message: "scanner ready",
+        },
+        syncHealth: {
+          ready: true,
+          code: "SYNC_READY",
+          message: "sync connected",
+        },
+        wholeMachineBlockers: {
+          ready: true,
+          code: "WHOLE_MACHINE_READY",
+          message: "hardware ready",
+        },
+      },
+    });
     store.selectItem(makeCatalogItem());
 
     await store.createOrder();
@@ -164,6 +356,9 @@ describe("checkout store", () => {
     expect(createOrderMock).toHaveBeenCalledWith({
       inventoryId: "550e8400-e29b-41d4-a716-446655440002",
       quantity: 1,
+      planogramVersion: "PLAN-1",
+      slotId: "550e8400-e29b-41d4-a716-446655440001",
+      slotCode: "A1",
       paymentMethod: "payment_code",
       paymentProviderCode: "alipay",
       profileSnapshot: null,
@@ -173,6 +368,329 @@ describe("checkout store", () => {
     expect(store.status?.vending?.commandNo).toBe("CMD-001");
     expect(store.status?.paymentCodeAttempt?.source).toBe("serial_text");
     expect(store.paymentCodeMessage).toBe("请刷新付款码后重试");
+  });
+
+  it("fails closed when selected item is missing from the latest sale view", async () => {
+    createOrderMock.mockResolvedValue(makeTransactionSnapshot());
+
+    const store = useCheckoutStore();
+    const catalogStore = useCatalogStore();
+    store.paymentOptions = [
+      {
+        optionKey: "payment_code:alipay",
+        providerCode: "alipay",
+        method: "payment_code",
+        displayName: "支付宝付款码",
+        description: "请出示付款码",
+        icon: "alipay",
+        disabled: false,
+        disabledReason: null,
+        recommended: true,
+      },
+    ];
+    store.selectedPaymentOptionKey = "payment_code:alipay";
+    applyNetworkSaleReady();
+    store.selectItem(makeCatalogItem());
+    catalogStore.applySnapshot({
+      items: [
+        makeCatalogItem({
+          slotId: "550e8400-e29b-41d4-a716-446655440011",
+          slotCode: "B1",
+          inventoryId: "550e8400-e29b-41d4-a716-446655440012",
+        }),
+      ],
+      source: "local_stock",
+      planogramVersion: "PLAN-2",
+      lastUpdatedAt: "2026-06-04T00:00:00Z",
+    });
+
+    expect(store.canCreateOrder).toBe(false);
+    await expect(store.createOrder()).rejects.toThrow("商品已更新，请重新选择");
+    expect(createOrderMock).not.toHaveBeenCalled();
+  });
+
+  it("blocks stale selected item when latest sale view is sold out", async () => {
+    const store = useCheckoutStore();
+    const catalogStore = useCatalogStore();
+    store.paymentOptions = [
+      {
+        optionKey: "payment_code:alipay",
+        providerCode: "alipay",
+        method: "payment_code",
+        displayName: "支付宝付款码",
+        description: "请出示付款码",
+        icon: "alipay",
+        disabled: false,
+        disabledReason: null,
+        recommended: true,
+      },
+    ];
+    store.selectedPaymentOptionKey = "payment_code:alipay";
+    store.selectItem(
+      makeCatalogItem({ saleableStock: 1, slotSalesState: "sale_ready" }),
+    );
+    catalogStore.applySnapshot({
+      items: [
+        makeCatalogItem({
+          physicalStock: 0,
+          saleableStock: 0,
+          slotSalesState: "sold_out",
+        }),
+      ],
+      source: "local_stock",
+      lastUpdatedAt: "2026-06-04T00:00:00Z",
+    });
+
+    expect(store.canCreateOrder).toBe(false);
+    await expect(store.createOrder()).rejects.toThrow("商品已售罄");
+    expect(createOrderMock).not.toHaveBeenCalled();
+  });
+
+  it("blocks order creation when machine sale readiness is not ready", async () => {
+    const store = useCheckoutStore();
+    const connectivityStore = useConnectivityStore();
+    connectivityStore.applySaleReadiness({
+      canStartNetworkAuthorizedSale: false,
+      blockingCodes: ["PLATFORM_UNREACHABLE"],
+      components: {
+        platformReachability: {
+          ready: false,
+          code: "PLATFORM_UNREACHABLE",
+          message: "platform offline",
+        },
+        machineAuthentication: {
+          ready: true,
+          code: "MACHINE_AUTH_READY",
+          message: "machine code configured",
+        },
+        activePlanogram: {
+          ready: true,
+          code: "ACTIVE_PLANOGRAM_READY",
+          message: "PLAN-1",
+        },
+        paymentOptions: {
+          ready: true,
+          code: "PAYMENT_OPTIONS_READY",
+          message: "payment option available",
+          methods: [],
+        },
+        scannerCapability: {
+          ready: true,
+          code: "SCANNER_READY",
+          message: "scanner ready",
+        },
+        syncHealth: {
+          ready: true,
+          code: "SYNC_READY",
+          message: "sync connected",
+        },
+        wholeMachineBlockers: {
+          ready: true,
+          code: "WHOLE_MACHINE_READY",
+          message: "hardware ready",
+        },
+      },
+    });
+    store.paymentOptions = [
+      {
+        optionKey: "mock:mock",
+        providerCode: "mock",
+        method: "mock",
+        displayName: "模拟支付",
+        description: "本地模拟",
+        icon: "mock",
+        disabled: false,
+        disabledReason: null,
+        recommended: true,
+      },
+    ];
+    store.selectedPaymentOptionKey = "mock:mock";
+    const item = makeCatalogItem();
+    useCatalogStore().applySnapshot({
+      items: [item],
+      source: "local_stock",
+      planogramVersion: "PLAN-1",
+      lastUpdatedAt: "2026-06-04T00:00:00Z",
+    });
+    store.selectItem(item);
+
+    expect(store.canCreateOrder).toBe(false);
+    await expect(store.createOrder()).rejects.toThrow("当前机器暂不可创建订单");
+    expect(createOrderMock).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when machine sale readiness is unknown", async () => {
+    const store = useCheckoutStore();
+    store.paymentOptions = [
+      {
+        optionKey: "mock:mock",
+        providerCode: "mock",
+        method: "mock",
+        displayName: "模拟支付",
+        description: "本地模拟",
+        icon: "mock",
+        disabled: false,
+        disabledReason: null,
+        recommended: true,
+      },
+    ];
+    store.selectedPaymentOptionKey = "mock:mock";
+    const item = makeCatalogItem();
+    useCatalogStore().applySnapshot({
+      items: [item],
+      source: "local_stock",
+      planogramVersion: "PLAN-1",
+      lastUpdatedAt: "2026-06-04T00:00:00Z",
+    });
+    store.selectItem(item);
+
+    expect(store.canCreateOrder).toBe(false);
+    await expect(store.createOrder()).rejects.toThrow("当前机器暂不可创建订单");
+    expect(createOrderMock).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when a previously ready machine becomes stale", async () => {
+    const store = useCheckoutStore();
+    const connectivityStore = useConnectivityStore();
+    connectivityStore.applyHealth({
+      status: "healthy",
+      process: {
+        component: "daemon",
+        level: "ok",
+        code: "PROCESS_READY",
+        message: "ready",
+        updatedAt: "2026-06-04T00:00:00Z",
+      },
+      components: [],
+      configConfigured: true,
+      databaseOnline: true,
+      backendOnline: true,
+      mqttConnected: true,
+      outboxSize: 0,
+      outboxMax: 1000,
+      hardwareOnline: true,
+      scannerOnline: true,
+      visionOnline: true,
+      remoteOpsActive: false,
+      currentTransaction: null,
+      operatorReason: "",
+      updatedAt: "2026-06-04T00:00:00Z",
+    });
+    connectivityStore.applyReady({
+      ready: true,
+      canSell: true,
+      mode: "catalog",
+      blockingCodes: [],
+      blockingReasons: [],
+      degradedReasons: [],
+      suggestedRoute: "catalog",
+      updatedAt: "2026-06-04T00:00:00Z",
+    });
+    connectivityStore.applySaleReadiness({
+      canStartNetworkAuthorizedSale: true,
+      blockingCodes: [],
+      components: {
+        platformReachability: {
+          ready: true,
+          code: "PLATFORM_REACHABLE",
+          message: "platform reachable",
+        },
+        machineAuthentication: {
+          ready: true,
+          code: "MACHINE_AUTH_READY",
+          message: "machine code configured",
+        },
+        activePlanogram: {
+          ready: true,
+          code: "ACTIVE_PLANOGRAM_READY",
+          message: "PLAN-1",
+        },
+        paymentOptions: {
+          ready: true,
+          code: "PAYMENT_OPTIONS_READY",
+          message: "payment option available",
+          methods: [],
+        },
+        scannerCapability: {
+          ready: true,
+          code: "SCANNER_READY",
+          message: "scanner ready",
+        },
+        syncHealth: {
+          ready: true,
+          code: "SYNC_READY",
+          message: "sync connected",
+        },
+        wholeMachineBlockers: {
+          ready: true,
+          code: "WHOLE_MACHINE_READY",
+          message: "hardware ready",
+        },
+      },
+    });
+    store.paymentOptions = [
+      {
+        optionKey: "mock:mock",
+        providerCode: "mock",
+        method: "mock",
+        displayName: "模拟支付",
+        description: "本地模拟",
+        icon: "mock",
+        disabled: false,
+        disabledReason: null,
+        recommended: true,
+      },
+    ];
+    store.selectedPaymentOptionKey = "mock:mock";
+    useCatalogStore().applySnapshot({
+      items: [makeCatalogItem()],
+      source: "local_stock",
+      planogramVersion: "PLAN-1",
+      lastUpdatedAt: "2026-06-04T00:00:00Z",
+    });
+    store.selectItem(makeCatalogItem());
+
+    expect(store.canCreateOrder).toBe(true);
+
+    connectivityStore.markStale("event stream disconnected");
+
+    expect(store.canCreateOrder).toBe(false);
+    await expect(store.createOrder()).rejects.toThrow("当前机器暂不可创建订单");
+    expect(createOrderMock).not.toHaveBeenCalled();
+  });
+
+  it("blocks order creation for sold-out sale-view item", async () => {
+    const store = useCheckoutStore();
+    store.paymentOptions = [
+      {
+        optionKey: "payment_code:alipay",
+        providerCode: "alipay",
+        method: "payment_code",
+        displayName: "支付宝付款码",
+        description: "请出示付款码",
+        icon: "alipay",
+        disabled: false,
+        disabledReason: null,
+        recommended: true,
+      },
+    ];
+    store.selectedPaymentOptionKey = "payment_code:alipay";
+    const item = makeCatalogItem({
+      physicalStock: 0,
+      saleableStock: 0,
+      slotSalesState: "sold_out",
+    });
+    useCatalogStore().applySnapshot({
+      items: [item],
+      source: "local_stock",
+      planogramVersion: "PLAN-1",
+      lastUpdatedAt: "2026-06-04T00:00:00Z",
+    });
+    store.selectItem(item);
+
+    expect(store.canCreateOrder).toBe(false);
+    await expect(store.createOrder()).rejects.toThrow("商品已售罄");
+    expect(createOrderMock).not.toHaveBeenCalled();
   });
 
   it("refreshes current transaction from daemon", async () => {

@@ -8,7 +8,6 @@ import {
   inventoryMovements,
   machineCommands,
   machineEvents,
-  machineHeartbeats,
   orders,
   vendingCommands,
   DrizzleDB,
@@ -25,6 +24,7 @@ import {
   connectMqtt,
   disconnectMqtt,
   loginAndGetToken,
+  pollMachineHeartbeatCount,
   publishMqtt,
   seedSingleSlotInventory,
   signMqttPayload,
@@ -262,11 +262,9 @@ describe.sequential("environment-control.e2e", () => {
         },
       }),
     );
-    const [heartbeatCount] = await db.client
-      .select({ total: count() })
-      .from(machineHeartbeats)
-      .where(eq(machineHeartbeats.machineId, seeded.machineId));
-    expect(Number(heartbeatCount.total)).toBeGreaterThanOrEqual(1);
+    await expect(
+      pollMachineHeartbeatCount(db, seeded.machineId),
+    ).resolves.toBeGreaterThanOrEqual(1);
 
     const machineResponse = await api
       .get(`/api/machines/${seeded.machineId}`)

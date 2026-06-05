@@ -10,8 +10,10 @@ import {
   hardwareSelfCheckSchema,
   healthSnapshotSchema,
   machinePaymentOptionsResponseSchema,
+  machineSaleReadinessSchema,
   readySnapshotSchema,
   remoteOpsStatusSchema,
+  machineSaleViewSnapshotSchema,
   scannerStatusSchema,
   syncStatusSchema,
   transactionSnapshotSchema,
@@ -21,8 +23,10 @@ import {
   type DaemonEvent,
   type HealthSnapshot,
   type HardwareSelfCheck,
+  type MachineSaleReadiness,
   type ReadySnapshot,
   type RemoteOpsStatus,
+  type SaleViewSnapshot,
   type ScannerStatus,
   type SyncStatus,
   type TransactionSnapshot,
@@ -125,6 +129,27 @@ export class DaemonApiClient {
   async refreshCatalog(): Promise<CatalogSnapshot> {
     return catalogSnapshotSchema.parse(
       await this.request("/v1/catalog", { method: "POST" }),
+    );
+  }
+
+  async getSaleView(): Promise<SaleViewSnapshot> {
+    return machineSaleViewSnapshotSchema.parse(
+      await this.request("/v1/sale-view"),
+    );
+  }
+
+  async recordStockMovement(body: unknown): Promise<SaleViewSnapshot> {
+    return machineSaleViewSnapshotSchema.parse(
+      await this.request("/v1/stock/movements", {
+        method: "POST",
+        body,
+      }),
+    );
+  }
+
+  async getSaleReadiness(): Promise<MachineSaleReadiness> {
+    return machineSaleReadinessSchema.parse(
+      await this.request("/v1/sale-readiness"),
     );
   }
 

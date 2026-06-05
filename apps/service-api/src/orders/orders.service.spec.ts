@@ -102,7 +102,15 @@ describe("OrdersService", () => {
       await expect(
         service.createMachineOrder({
           machineCode: "M001",
-          items: [{ inventoryId: "inv-1", quantity: 1 }],
+          items: [
+            {
+              inventoryId: "inv-1",
+              quantity: 1,
+              planogramVersion: "PLAN-ACTIVE",
+              slotId: "slot-1",
+              slotCode: "A1",
+            },
+          ],
           paymentMethod: "qr_code",
           paymentProviderCode: "wechat_pay",
         }),
@@ -125,7 +133,15 @@ describe("OrdersService", () => {
       await expect(
         service.createMachineOrder({
           machineCode: "M001",
-          items: [{ inventoryId: "inv-1", quantity: 1 }],
+          items: [
+            {
+              inventoryId: "inv-1",
+              quantity: 1,
+              planogramVersion: "PLAN-ACTIVE",
+              slotId: "slot-1",
+              slotCode: "A1",
+            },
+          ],
           paymentMethod: "qr_code",
           paymentProviderCode: "wechat_pay",
         }),
@@ -152,6 +168,9 @@ describe("OrdersService", () => {
             {
               inventoryId: "550e8400-e29b-41d4-a716-446655440000",
               quantity: 1,
+              planogramVersion: "PLAN-ACTIVE",
+              slotId: "550e8400-e29b-41d4-a716-446655440001",
+              slotCode: "A1",
             },
           ],
           paymentMethod: "mock",
@@ -181,6 +200,9 @@ describe("OrdersService", () => {
             {
               inventoryId: "550e8400-e29b-41d4-a716-446655440000",
               quantity: 1,
+              planogramVersion: "PLAN-ACTIVE",
+              slotId: "550e8400-e29b-41d4-a716-446655440001",
+              slotCode: "A1",
             },
           ],
           paymentMethod: "qr_code",
@@ -245,7 +267,16 @@ describe("OrdersService", () => {
             }),
           });
 
-          // tx select 2: provider lookup by providerCode
+          // tx select 2: active acknowledged planogram context
+          tx.select.mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              innerJoin: vi.fn().mockReturnValue({
+                where: vi.fn().mockResolvedValue([{ id: "pg-slot-1" }]),
+              }),
+            }),
+          });
+
+          // tx select 3: provider lookup by providerCode
           tx.select.mockReturnValueOnce({
             from: vi.fn().mockReturnValue({
               where: vi
@@ -308,7 +339,15 @@ describe("OrdersService", () => {
 
       await service.createMachineOrder({
         machineCode: "M001",
-        items: [{ inventoryId: "inv-1", quantity: 1 }],
+        items: [
+          {
+            inventoryId: "inv-1",
+            quantity: 1,
+            planogramVersion: "PLAN-ACTIVE",
+            slotId: "slot-1",
+            slotCode: "A1",
+          },
+        ],
         paymentMethod: "qr_code",
         paymentProviderCode: "wechat_pay",
       });
@@ -375,6 +414,13 @@ describe("OrdersService", () => {
           });
           tx.select.mockReturnValueOnce({
             from: vi.fn().mockReturnValue({
+              innerJoin: vi.fn().mockReturnValue({
+                where: vi.fn().mockResolvedValue([{ id: "pg-slot-2" }]),
+              }),
+            }),
+          });
+          tx.select.mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
               where: vi
                 .fn()
                 .mockResolvedValue([{ id: "prov-1", code: "wechat_pay" }]),
@@ -427,7 +473,15 @@ describe("OrdersService", () => {
 
       await service.createMachineOrder({
         machineCode: "M001",
-        items: [{ inventoryId: "inv-2", quantity: 1 }],
+        items: [
+          {
+            inventoryId: "inv-2",
+            quantity: 1,
+            planogramVersion: "PLAN-ACTIVE",
+            slotId: "slot-2",
+            slotCode: "B1",
+          },
+        ],
         paymentMethod: "qr_code",
         paymentProviderCode: "wechat_pay",
       });
@@ -448,7 +502,15 @@ describe("OrdersService", () => {
 
       const result = await service.createMachineOrder({
         machineCode: "M-001",
-        items: [{ inventoryId: "inv-001", quantity: 1 }],
+        items: [
+          {
+            inventoryId: "inv-001",
+            quantity: 1,
+            planogramVersion: "PLAN-ACTIVE",
+            slotId: "slot-001",
+            slotCode: "A1",
+          },
+        ],
         paymentMethod: "payment_code",
         paymentProviderCode: "alipay",
       });
@@ -478,6 +540,9 @@ describe("OrdersService", () => {
             {
               inventoryId: "550e8400-e29b-41d4-a716-446655440000",
               quantity: 1,
+              planogramVersion: "PLAN-ACTIVE",
+              slotId: "550e8400-e29b-41d4-a716-446655440001",
+              slotCode: "A1",
             },
           ],
           paymentMethod: "payment_code",
@@ -594,6 +659,13 @@ type OrdersDbHarness = {
     toStatus: string;
     reason: string;
   }>;
+  insertedOrderItems: Array<Record<string, unknown>>;
+  planogramContextRows?: Array<{
+    planogramVersion: string;
+    slotId: string;
+    slotCode: string;
+    inventoryId: string;
+  }>;
 };
 
 function makeOrdersService(overrides: {
@@ -683,8 +755,7 @@ function makeGenericTx(db: OrdersDbHarness) {
     update: vi.fn(),
   };
 
-  // First select: inventory (with innerJoin chain)
-  tx.select.mockReturnValueOnce({
+  const inventorySelectResult = {
     from: vi.fn().mockReturnValue({
       innerJoin: vi.fn().mockReturnValue({
         innerJoin: vi.fn().mockReturnValue({
@@ -693,6 +764,7 @@ function makeGenericTx(db: OrdersDbHarness) {
               {
                 inventoryId: "inv-001",
                 variantId: "var-001",
+                productId: "prod-001",
                 productName: "Cola",
                 sku: "COLA-355",
                 size: null,
@@ -708,10 +780,31 @@ function makeGenericTx(db: OrdersDbHarness) {
         }),
       }),
     }),
+  };
+  const planogramSelectResult = {
+    from: vi.fn().mockReturnValue({
+      innerJoin: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue(db.planogramContextRows ?? []),
+      }),
+    }),
+  };
+  let selectCallCount = 0;
+  let planogramContextSelectConsumed = false;
+  tx.select.mockImplementation((selection?: Record<string, unknown>) => {
+    selectCallCount += 1;
+    if (selectCallCount === 1) return inventorySelectResult;
+    if (
+      db.planogramContextRows !== undefined &&
+      !planogramContextSelectConsumed &&
+      selection &&
+      Object.keys(selection).length === 1 &&
+      Object.hasOwn(selection, "id")
+    ) {
+      planogramContextSelectConsumed = true;
+      return planogramSelectResult;
+    }
+    return makeProviderSelectResult();
   });
-
-  // Subsequent selects: provider lookup and findProviderIdForCode
-  tx.select.mockReturnValue(makeProviderSelectResult());
 
   // First insert: orders
   tx.insert.mockReturnValueOnce({
@@ -742,6 +835,9 @@ function makeGenericTx(db: OrdersDbHarness) {
           toStatus: String(vals.toStatus),
           reason: String(vals.reason),
         });
+      }
+      if (vals?.productSnapshot && typeof vals.productSnapshot === "object") {
+        db.insertedOrderItems.push(vals);
       }
       return {
         onConflictDoNothing: vi.fn().mockReturnValue({
@@ -788,6 +884,9 @@ function makeGenericTxForCancellation(db: OrdersDbHarness) {
           reason: String(vals.reason),
         });
       }
+      if (vals?.productSnapshot && typeof vals.productSnapshot === "object") {
+        db.insertedOrderItems.push(vals);
+      }
       return {
         onConflictDoNothing: vi.fn().mockResolvedValue([]),
       };
@@ -805,6 +904,12 @@ function makeGenericTxForCancellation(db: OrdersDbHarness) {
 
 function makeOrdersDbForSuccessfulLocalDraft(options?: {
   transactionFinished?: () => void;
+  planogramContextRows?: Array<{
+    planogramVersion: string;
+    slotId: string;
+    slotCode: string;
+    inventoryId: string;
+  }>;
 }): OrdersDbHarness {
   const harness: OrdersDbHarness = {
     select: vi.fn(),
@@ -812,6 +917,15 @@ function makeOrdersDbForSuccessfulLocalDraft(options?: {
     update: vi.fn(),
     transaction: vi.fn(),
     orderStatusEvents: [],
+    insertedOrderItems: [],
+    planogramContextRows: options?.planogramContextRows ?? [
+      {
+        planogramVersion: "PLAN-ACTIVE",
+        slotId: "slot-001",
+        slotCode: "A1",
+        inventoryId: "inv-001",
+      },
+    ],
   };
 
   // Machine lookup: returns online machine
@@ -874,6 +988,168 @@ function makeOrdersDbForPaymentUpdateFailure(): OrdersDbHarness {
 
 describe("OrdersService (transaction boundary)", () => {
   describe("createMachineOrder", () => {
+    it("rejects machine order line without planogram slot context before reserving inventory", async () => {
+      const reserveForOrder = vi.fn().mockResolvedValue(undefined);
+      const db = makeOrdersDbForSuccessfulLocalDraft();
+      const service = makeOrdersService({
+        db,
+        inventoryService: { reserveForOrder },
+      });
+
+      await expect(
+        service.createMachineOrder({
+          machineCode: "M-001",
+          items: [{ inventoryId: "inv-001", quantity: 1 } as never],
+          paymentMethod: "payment_code",
+          paymentProviderCode: "alipay",
+        }),
+      ).rejects.toThrow(ConflictException);
+
+      expect(reserveForOrder).not.toHaveBeenCalled();
+    });
+
+    it("rejects mismatched machine order line context before reserving inventory", async () => {
+      const reserveForOrder = vi.fn().mockResolvedValue(undefined);
+      const db = makeOrdersDbForSuccessfulLocalDraft();
+      const service = makeOrdersService({
+        db,
+        inventoryService: { reserveForOrder },
+      });
+
+      await expect(
+        service.createMachineOrder({
+          machineCode: "M-001",
+          items: [
+            {
+              inventoryId: "inv-001",
+              quantity: 1,
+              planogramVersion: "PLAN-ACTIVE",
+              slotId: "slot-other",
+              slotCode: "A1",
+            },
+          ],
+          paymentMethod: "payment_code",
+          paymentProviderCode: "alipay",
+        }),
+      ).rejects.toThrow(ConflictException);
+
+      expect(reserveForOrder).not.toHaveBeenCalled();
+    });
+
+    it("rejects machine order line when planogram context is not active and acknowledged", async () => {
+      const reserveForOrder = vi.fn().mockResolvedValue(undefined);
+      const db = makeOrdersDbForSuccessfulLocalDraft({
+        planogramContextRows: [],
+      });
+      const service = makeOrdersService({
+        db,
+        inventoryService: { reserveForOrder },
+      });
+
+      await expect(
+        service.createMachineOrder({
+          machineCode: "M-001",
+          items: [
+            {
+              inventoryId: "inv-001",
+              quantity: 1,
+              planogramVersion: "PLAN-UNACKED",
+              slotId: "slot-001",
+              slotCode: "A1",
+            },
+          ],
+          paymentMethod: "payment_code",
+          paymentProviderCode: "alipay",
+        }),
+      ).rejects.toThrow(ConflictException);
+
+      expect(reserveForOrder).not.toHaveBeenCalled();
+    });
+
+    it("reserves inventory when machine order line context matches active acknowledged planogram", async () => {
+      const reserveForOrder = vi.fn().mockResolvedValue(undefined);
+      const db = makeOrdersDbForSuccessfulLocalDraft({
+        planogramContextRows: [
+          {
+            planogramVersion: "PLAN-ACTIVE",
+            slotId: "slot-001",
+            slotCode: "A1",
+            inventoryId: "inv-001",
+          },
+        ],
+      });
+      const service = makeOrdersService({
+        db,
+        inventoryService: { reserveForOrder },
+      });
+
+      const result = await service.createMachineOrder({
+        machineCode: "M-001",
+        items: [
+          {
+            inventoryId: "inv-001",
+            quantity: 1,
+            planogramVersion: "PLAN-ACTIVE",
+            slotId: "slot-001",
+            slotCode: "A1",
+          },
+        ],
+        paymentMethod: "payment_code",
+        paymentProviderCode: "alipay",
+      });
+
+      expect(result.orderNo).toBe("ORD001");
+      expect(reserveForOrder).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          orderId: "ord-001",
+          inventoryId: "inv-001",
+          quantity: 1,
+        }),
+      );
+    });
+
+    it("persists machine order line planogram and mapping snapshot for later dispense confirmation", async () => {
+      const db = makeOrdersDbForSuccessfulLocalDraft({
+        planogramContextRows: [
+          {
+            planogramVersion: "PLAN-ACTIVE",
+            slotId: "slot-001",
+            slotCode: "A1",
+            inventoryId: "inv-001",
+          },
+        ],
+      });
+      const service = makeOrdersService({ db });
+
+      await service.createMachineOrder({
+        machineCode: "M-001",
+        items: [
+          {
+            inventoryId: "inv-001",
+            quantity: 1,
+            planogramVersion: "PLAN-ACTIVE",
+            slotId: "slot-001",
+            slotCode: "A1",
+          },
+        ],
+        paymentMethod: "payment_code",
+        paymentProviderCode: "alipay",
+      });
+
+      expect(db.insertedOrderItems[0]?.productSnapshot).toEqual(
+        expect.objectContaining({
+          productId: "prod-001",
+          variantId: "var-001",
+          inventoryId: "inv-001",
+          planogramVersion: "PLAN-ACTIVE",
+          slotId: "slot-001",
+          slotCode: "A1",
+          vendingCommandQuantity: 1,
+        }),
+      );
+    });
+
     it("calls provider outside transaction (transaction finishes before provider is called)", async () => {
       const callOrder: string[] = [];
 
@@ -898,7 +1174,15 @@ describe("OrdersService (transaction boundary)", () => {
 
       await service.createMachineOrder({
         machineCode: "M-001",
-        items: [{ inventoryId: "inv-001", quantity: 1 }],
+        items: [
+          {
+            inventoryId: "inv-001",
+            quantity: 1,
+            planogramVersion: "PLAN-ACTIVE",
+            slotId: "slot-001",
+            slotCode: "A1",
+          },
+        ],
         paymentMethod: "qr_code",
         paymentProviderCode: "alipay",
       });
@@ -931,7 +1215,15 @@ describe("OrdersService (transaction boundary)", () => {
       await expect(
         service.createMachineOrder({
           machineCode: "M-001",
-          items: [{ inventoryId: "inv-001", quantity: 1 }],
+          items: [
+            {
+              inventoryId: "inv-001",
+              quantity: 1,
+              planogramVersion: "PLAN-ACTIVE",
+              slotId: "slot-001",
+              slotCode: "A1",
+            },
+          ],
           paymentMethod: "qr_code",
           paymentProviderCode: "alipay",
         }),
@@ -974,7 +1266,15 @@ describe("OrdersService (transaction boundary)", () => {
       await expect(
         service.createMachineOrder({
           machineCode: "M-001",
-          items: [{ inventoryId: "inv-001", quantity: 1 }],
+          items: [
+            {
+              inventoryId: "inv-001",
+              quantity: 1,
+              planogramVersion: "PLAN-ACTIVE",
+              slotId: "slot-001",
+              slotCode: "A1",
+            },
+          ],
           paymentMethod: "qr_code",
           paymentProviderCode: "alipay",
         }),
@@ -1007,6 +1307,8 @@ describe("OrdersService (transaction boundary)", () => {
                       orderNo: "ORD001",
                       machineCode: "M001",
                       orderStatus: "pending_payment",
+                      paymentState: "awaiting_payment",
+                      fulfillmentState: "awaiting_fulfillment",
                       totalAmountCents: 300,
                       paymentId: "pay-1",
                       paymentNo: "PAY001",
@@ -1035,6 +1337,8 @@ describe("OrdersService (transaction boundary)", () => {
                       orderNo: "ORD001",
                       machineCode: "M001",
                       orderStatus: "paid",
+                      paymentState: "paid",
+                      fulfillmentState: "awaiting_fulfillment",
                       totalAmountCents: 300,
                       paymentId: "pay-1",
                       paymentNo: "PAY001",
@@ -1089,6 +1393,9 @@ describe("OrdersService (transaction boundary)", () => {
       });
 
       expect(reconcilePendingPaymentOnRead).toHaveBeenCalledWith("pay-1");
+      expect(result.orderStatus).toBe("paid");
+      expect(result.paymentState).toBe("paid");
+      expect(result.fulfillmentState).toBe("awaiting_fulfillment");
       expect(result.payment.status).toBe("succeeded");
       expect(result.nextAction).toBe("dispensing");
     });
@@ -1107,6 +1414,8 @@ describe("OrdersService (transaction boundary)", () => {
                       orderNo: "ORD001",
                       machineCode: "M001",
                       orderStatus: "pending_payment",
+                      paymentState: "awaiting_payment",
+                      fulfillmentState: "awaiting_fulfillment",
                       totalAmountCents: 300,
                       paymentId: "pay-1",
                       paymentNo: "PAY001",

@@ -47,6 +47,8 @@ pub struct MachinePublicConfig {
     pub vision_process_args: Option<String>,
     pub vision_request_timeout_ms: u64,
     pub kiosk_mode: bool,
+    #[serde(default = "default_stock_movement_retention_days")]
+    pub stock_movement_retention_days: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -103,6 +105,13 @@ pub struct MachinePublicRuntimeConfig {
     pub mqtt_password_configured: bool,
 }
 
+pub const STOCK_MOVEMENT_RETENTION_MIN_DAYS: i64 = 1;
+pub const STOCK_MOVEMENT_RETENTION_MAX_DAYS: i64 = 366;
+
+pub fn default_stock_movement_retention_days() -> i64 {
+    30
+}
+
 pub fn default_public_config() -> MachinePublicConfig {
     MachinePublicConfig {
         machine_code: None,
@@ -127,6 +136,7 @@ pub fn default_public_config() -> MachinePublicConfig {
         vision_process_args: None,
         vision_request_timeout_ms: 8_000,
         kiosk_mode: false,
+        stock_movement_retention_days: default_stock_movement_retention_days(),
     }
 }
 
@@ -263,6 +273,10 @@ pub fn normalize_public_config(
         return Err("visionWsUrl is required".to_string());
     }
     config.vision_ws_url = vision_ws_url;
+    config.stock_movement_retention_days = config.stock_movement_retention_days.clamp(
+        STOCK_MOVEMENT_RETENTION_MIN_DAYS,
+        STOCK_MOVEMENT_RETENTION_MAX_DAYS,
+    );
 
     Ok(config)
 }
@@ -674,6 +688,36 @@ mod tests {
             err,
             "visionProcessCommand is required when visionAutoStart=true"
         );
+    }
+
+    #[tokio::test]
+    async fn normalize_public_config_clamps_stock_movement_retention_to_at_least_one_day() {
+        let config = MachinePublicConfig {
+            stock_movement_retention_days: 0,
+            ..default_public_config()
+        };
+        let normalized = normalize_public_config(config).expect("normalize");
+        assert_eq!(normalized.stock_movement_retention_days, 1);
+    }
+
+    #[tokio::test]
+    async fn normalize_public_config_clamps_stock_movement_retention_to_safe_upper_bound() {
+        let config = MachinePublicConfig {
+            stock_movement_retention_days: i64::MAX,
+            ..default_public_config()
+        };
+        let normalized = normalize_public_config(config).expect("normalize");
+        assert_eq!(normalized.stock_movement_retention_days, 366);
+    }
+
+    #[tokio::test]
+    async fn normalize_public_config_preserves_custom_stock_movement_retention_days() {
+        let config = MachinePublicConfig {
+            stock_movement_retention_days: 90,
+            ..default_public_config()
+        };
+        let normalized = normalize_public_config(config).expect("normalize");
+        assert_eq!(normalized.stock_movement_retention_days, 90);
     }
 
     #[tokio::test]

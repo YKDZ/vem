@@ -8,8 +8,8 @@ import {
   eq,
   inventories,
   inventoryMovements,
-  machineHeartbeats,
-  notifications,
+  inventoryReservations,
+  orderItems,
   orders,
   payments,
   vendingCommands,
@@ -27,11 +27,15 @@ import {
   disconnectMqtt,
   getMachineAuthHeader,
   loginAndGetToken,
+  machineOrderBody,
+  pollMachineHeartbeatCount,
   pollOrderStatus,
   publishMqtt,
+  seedMultiSlotInventory,
   seedSingleSlotInventory,
   signMqttPayload,
   waitForMqttMessage,
+  waitForMqttMessages,
   type ApiResponse,
   type CreatedOrderPayload,
 } from "./flow-test-helpers";
@@ -82,6 +86,199 @@ describe.sequential("core-flow.e2e", () => {
     await cleanupBusinessTables(db);
   });
 
+  it("rejects public machine order creation without planogram slot context", async () => {
+    const seeded = await seedSingleSlotInventory(db, {
+      machineCode: "M-E2E-CONTEXT-001",
+      onHandQty: 1,
+      lowStockThreshold: 1,
+      slotCode: "CTX1",
+      layerNo: 1,
+      cellNo: 1,
+    });
+    const machineAuthHeader = await getMachineAuthHeader(
+      api,
+      seeded.machineCode,
+      seeded.machineSecret,
+    );
+
+    const response = await api
+      .post("/api/machine-orders")
+      .set(machineAuthHeader)
+      .send({
+        machineCode: seeded.machineCode,
+        items: [{ inventoryId: seeded.inventoryId, quantity: 1 }],
+        paymentMethod: "mock",
+      });
+
+    expect(response.status).toBe(400);
+  }, 60_000);
+
+  it("creates reservations and vending command snapshots per line for a two-line order", async () => {
+    const seeded = await seedMultiSlotInventory(db, {
+      machineCode: "M-E2E-LINES-001",
+      slots: [
+        {
+          onHandQty: 2,
+          lowStockThreshold: 1,
+          slotCode: "L1",
+          layerNo: 1,
+          cellNo: 1,
+          priceCents: 599,
+        },
+        {
+          onHandQty: 2,
+          lowStockThreshold: 1,
+          slotCode: "L2",
+          layerNo: 1,
+          cellNo: 2,
+          priceCents: 799,
+        },
+      ],
+    });
+
+    const token = await loginAndGetToken(api, appConfig);
+    const machineAuthHeader = await getMachineAuthHeader(
+      api,
+      seeded.machineCode,
+      seeded.machineSecret,
+    );
+    const commandPayloadsPromise = waitForMqttMessages(
+      mqttClient,
+      `vem/machines/${seeded.machineCode}/commands/dispense`,
+      2,
+    );
+
+    const createOrderResponse = await api
+      .post("/api/machine-orders")
+      .set(machineAuthHeader)
+      .send({
+        machineCode: seeded.machineCode,
+        items: seeded.items.map((item) => ({
+          inventoryId: item.inventoryId,
+          quantity: 1,
+          planogramVersion: seeded.planogramVersion,
+          slotId: item.slotId,
+          slotCode: item.slotCode,
+        })),
+        paymentMethod: "mock",
+      });
+    expect(createOrderResponse.status).toBe(201);
+    const createdOrder =
+      createOrderResponse.body as ApiResponse<CreatedOrderPayload>;
+    expect(createdOrder.data.totalAmountCents).toBe(1398);
+
+    const succeedResponse = await api
+      .post(`/api/payments/mock/${createdOrder.data.paymentNo}/succeed`)
+      .set("Authorization", `Bearer ${token}`);
+    expect(succeedResponse.status).toBe(201);
+
+    const commandEnvelopes = commandPayloadsPromise.then((payloads) =>
+      payloads.map(
+        (payloadText) =>
+          JSON.parse(payloadText) as {
+            payload: {
+              commandNo: string;
+              quantity: number;
+              slot: { slotCode: string };
+            };
+          },
+      ),
+    );
+    await expect(commandEnvelopes).resolves.toHaveLength(2);
+    const commandPayloads = await commandEnvelopes;
+    expect(
+      commandPayloads.map((message) => message.payload.slot.slotCode).sort(),
+    ).toEqual(["L1", "L2"]);
+
+    const orderItemRows = await db.client
+      .select({
+        id: orderItems.id,
+        slotId: orderItems.slotId,
+        inventoryId: orderItems.inventoryId,
+        variantId: orderItems.variantId,
+        quantity: orderItems.quantity,
+        unitPriceCents: orderItems.unitPriceCents,
+        productSnapshot: orderItems.productSnapshot,
+        planogramVersion: orderItems.planogramVersion,
+        fulfillmentStatus: orderItems.fulfillmentStatus,
+      })
+      .from(orderItems)
+      .where(eq(orderItems.orderId, createdOrder.data.orderId))
+      .orderBy(orderItems.createdAt);
+    expect(orderItemRows).toHaveLength(2);
+    expect(orderItemRows.map((item) => item.planogramVersion)).toEqual([
+      seeded.planogramVersion,
+      seeded.planogramVersion,
+    ]);
+    expect(orderItemRows.map((item) => item.fulfillmentStatus)).toEqual([
+      "dispensing",
+      "dispensing",
+    ]);
+    expect(
+      orderItemRows.map((item) => ({
+        inventoryId: item.inventoryId,
+        slotId: item.slotId,
+        quantity: item.quantity,
+        unitPriceCents: item.unitPriceCents,
+      })),
+    ).toEqual(
+      seeded.items.map((item) => ({
+        inventoryId: item.inventoryId,
+        slotId: item.slotId,
+        quantity: 1,
+        unitPriceCents: item.priceCents,
+      })),
+    );
+
+    const reservationRows = await db.client
+      .select({
+        orderItemId: inventoryReservations.orderItemId,
+        inventoryId: inventoryReservations.inventoryId,
+        quantity: inventoryReservations.quantity,
+        status: inventoryReservations.status,
+      })
+      .from(inventoryReservations)
+      .where(eq(inventoryReservations.orderId, createdOrder.data.orderId));
+    expect(reservationRows).toHaveLength(2);
+    expect(
+      reservationRows
+        .map((row) => row.orderItemId)
+        .sort((a, b) => String(a).localeCompare(String(b))),
+    ).toEqual(
+      orderItemRows.map((row) => row.id).sort((a, b) => a.localeCompare(b)),
+    );
+    expect(reservationRows.map((row) => row.status)).toEqual([
+      "active",
+      "active",
+    ]);
+
+    const commandRows = await db.client
+      .select({
+        orderItemId: vendingCommands.orderItemId,
+        slotId: vendingCommands.slotId,
+        payloadJson: vendingCommands.payloadJson,
+      })
+      .from(vendingCommands)
+      .where(eq(vendingCommands.orderId, createdOrder.data.orderId));
+    expect(commandRows).toHaveLength(2);
+    expect(
+      commandRows
+        .map((row) => row.orderItemId)
+        .sort((a, b) => String(a).localeCompare(String(b))),
+    ).toEqual(
+      orderItemRows.map((row) => row.id).sort((a, b) => a.localeCompare(b)),
+    );
+    expect(
+      commandRows
+        .map((row) => row.slotId)
+        .sort((a, b) => String(a).localeCompare(String(b))),
+    ).toEqual(
+      seeded.items
+        .map((item) => item.slotId)
+        .sort((a, b) => a.localeCompare(b)),
+    );
+  }, 60_000);
+
   it("handles succeed callback idempotently and reaches fulfilled", async () => {
     const seeded = await seedSingleSlotInventory(db, {
       machineCode: "M-E2E-001",
@@ -107,11 +304,7 @@ describe.sequential("core-flow.e2e", () => {
     const createOrderResponse = await api
       .post("/api/machine-orders")
       .set(machineAuthHeader)
-      .send({
-        machineCode: seeded.machineCode,
-        items: [{ inventoryId: seeded.inventoryId, quantity: 1 }],
-        paymentMethod: "mock",
-      });
+      .send(machineOrderBody(seeded));
 
     expect(createOrderResponse.status).toBe(201);
     const createdOrder =
@@ -168,6 +361,7 @@ describe.sequential("core-flow.e2e", () => {
       }),
     );
 
+    const dispenseReportedAt = new Date().toISOString();
     await publishMqtt(
       mqttClient,
       `vem/machines/${seeded.machineCode}/events/dispense-result`,
@@ -180,7 +374,7 @@ describe.sequential("core-flow.e2e", () => {
           success: true,
           errorCode: null,
           message: "ok",
-          reportedAt: new Date().toISOString(),
+          reportedAt: dispenseReportedAt,
         },
       }),
     );
@@ -193,6 +387,47 @@ describe.sequential("core-flow.e2e", () => {
     );
     expect(fulfilledOrder.status).toBe("fulfilled");
 
+    const [orderItem] = await db.client
+      .select({ id: orderItems.id })
+      .from(orderItems)
+      .where(eq(orderItems.orderId, createdOrder.data.orderId));
+    expect(orderItem.id).toBeTruthy();
+
+    const stockMovementPayload = {
+      movementId: `mqtt-dispense:${commandNo}`,
+      planogramVersion: seeded.planogramVersion,
+      slotId: seeded.slotId,
+      movementType: "dispense_succeeded",
+      quantity: 1,
+      source: "vending_command",
+      attributedTo: commandNo,
+      orderContext: {
+        orderNo: createdOrder.data.orderNo,
+        orderItemId: orderItem.id,
+        vendingCommandNo: commandNo,
+        inventoryId: seeded.inventoryId,
+      },
+      occurredAt: dispenseReportedAt,
+    };
+    const movementResponse = await api
+      .post("/api/machine-stock-movements")
+      .set(machineAuthHeader)
+      .send(stockMovementPayload);
+    expect(movementResponse.status).toBe(201);
+    expect(
+      (movementResponse.body as ApiResponse<{ status: string }>).data.status,
+    ).toBe("already_accepted");
+
+    const duplicateMovementResponse = await api
+      .post("/api/machine-stock-movements")
+      .set(machineAuthHeader)
+      .send(stockMovementPayload);
+    expect(duplicateMovementResponse.status).toBe(201);
+    expect(
+      (duplicateMovementResponse.body as ApiResponse<{ status: string }>).data
+        .status,
+    ).toBe("already_accepted");
+
     const [ackCommand] = await db.client
       .select({ ackAt: vendingCommands.ackAt, status: vendingCommands.status })
       .from(vendingCommands)
@@ -200,11 +435,9 @@ describe.sequential("core-flow.e2e", () => {
     // ackAt may be null if ACK is still being processed; just check final status
     expect(ackCommand.status).toBe("succeeded");
 
-    const [heartbeatCount] = await db.client
-      .select({ total: count() })
-      .from(machineHeartbeats)
-      .where(eq(machineHeartbeats.machineId, seeded.machineId));
-    expect(Number(heartbeatCount.total)).toBeGreaterThanOrEqual(1);
+    await expect(
+      pollMachineHeartbeatCount(db, seeded.machineId),
+    ).resolves.toBeGreaterThanOrEqual(1);
 
     const duplicateSucceedResponse = await api
       .post(`/api/payments/mock/${createdOrder.data.paymentNo}/succeed`)
@@ -222,16 +455,14 @@ describe.sequential("core-flow.e2e", () => {
       );
     expect(Number(purchaseConfirmedCount.total)).toBe(1);
 
-    const [lowStockNotificationCount] = await db.client
-      .select({ total: count() })
-      .from(notifications)
-      .where(
-        eq(
-          notifications.dedupeKey,
-          `low_stock:${seeded.machineId}:${seeded.slotId}`,
-        ),
-      );
-    expect(Number(lowStockNotificationCount.total)).toBe(1);
+    const [finalInventoryRow] = await db.client
+      .select({
+        onHandQty: inventories.onHandQty,
+        reservedQty: inventories.reservedQty,
+      })
+      .from(inventories)
+      .where(eq(inventories.id, seeded.inventoryId));
+    expect(finalInventoryRow).toMatchObject({ onHandQty: 0, reservedQty: 0 });
   }, 60_000);
 
   it("releases reservation when mock payment fails", async () => {
@@ -253,11 +484,7 @@ describe.sequential("core-flow.e2e", () => {
     const createOrderResponse = await api
       .post("/api/machine-orders")
       .set(machineAuthHeader)
-      .send({
-        machineCode: seeded.machineCode,
-        items: [{ inventoryId: seeded.inventoryId, quantity: 1 }],
-        paymentMethod: "mock",
-      });
+      .send(machineOrderBody(seeded));
     const createdOrder =
       createOrderResponse.body as ApiResponse<CreatedOrderPayload>;
 
@@ -289,11 +516,7 @@ describe.sequential("core-flow.e2e", () => {
       cellNo: 1,
     });
 
-    const requestBody = {
-      machineCode: seeded.machineCode,
-      items: [{ inventoryId: seeded.inventoryId, quantity: 1 }],
-      paymentMethod: "mock",
-    };
+    const requestBody = machineOrderBody(seeded);
 
     const machineAuthHeader = await getMachineAuthHeader(
       api,
@@ -322,7 +545,10 @@ describe.sequential("core-flow.e2e", () => {
 
     await db.client
       .update(payments)
-      .set({ expiresAt: new Date(Date.now() - 60_000), updatedAt: new Date() })
+      .set({
+        expiresAt: new Date(Date.now() - 180_000),
+        updatedAt: new Date(),
+      })
       .where(eq(payments.paymentNo, createdOrder.data.paymentNo));
 
     const expireResult = await paymentsService.expireOverduePayments();
@@ -364,11 +590,7 @@ describe.sequential("core-flow.e2e", () => {
     const createOrderResponse = await api
       .post("/api/machine-orders")
       .set(machineAuthHeader)
-      .send({
-        machineCode: seeded.machineCode,
-        items: [{ inventoryId: seeded.inventoryId, quantity: 1 }],
-        paymentMethod: "mock",
-      });
+      .send(machineOrderBody(seeded));
     const createdOrder =
       createOrderResponse.body as ApiResponse<CreatedOrderPayload>;
 
@@ -424,11 +646,7 @@ describe.sequential("core-flow.e2e", () => {
     const createOrderResponse = await api
       .post("/api/machine-orders")
       .set(machineAuthHeader)
-      .send({
-        machineCode: seeded.machineCode,
-        items: [{ inventoryId: seeded.inventoryId, quantity: 1 }],
-        paymentMethod: "mock",
-      });
+      .send(machineOrderBody(seeded));
     expect(createOrderResponse.status).toBe(201);
     const createdOrder =
       createOrderResponse.body as ApiResponse<CreatedOrderPayload>;

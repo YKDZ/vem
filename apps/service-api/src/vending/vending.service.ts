@@ -20,9 +20,9 @@ import {
   orderItems,
   orders,
   orderStatusEvents,
-  sql,
   vendingCommands,
   type DrizzleClient,
+  type DrizzleTransaction,
 } from "@vem/db";
 import {
   commandAckPayloadSchema,
@@ -30,6 +30,7 @@ import {
   dispenseResultPayloadSchema,
   heartbeatPayloadSchema,
   pageQuerySchema,
+  type RawMachineStockMovement,
 } from "@vem/shared";
 import { z } from "zod";
 
@@ -37,10 +38,12 @@ import { createBusinessNo } from "../common/business-no.util";
 import { getOffset, toPageResult } from "../common/pagination.util";
 import { DRIZZLE_CLIENT } from "../database/database.constants";
 import { InventoryService } from "../inventory/inventory.service";
+import { MachineStockMovementsService } from "../inventory/machine-stock-movements.service";
 import { MaintenanceWorkOrdersService } from "../maintenance-work-orders/maintenance-work-orders.service";
 import { MqttSignatureService } from "../mqtt/mqtt-signature.service";
 import { MqttService } from "../mqtt/mqtt.service";
 import { NotificationsService } from "../notifications/notifications.service";
+import { projectOrderStatus } from "../orders/order-state-projection";
 import { RefundsService } from "../refunds/refunds.service";
 
 type PageQueryInput = z.infer<typeof pageQuerySchema>;
@@ -65,6 +68,7 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
     private readonly mqttSignatureService: MqttSignatureService,
     private readonly notificationsService: NotificationsService,
     private readonly inventoryService: InventoryService,
+    private readonly machineStockMovementsService: MachineStockMovementsService,
     private readonly refundsService: RefundsService,
     private readonly maintenanceWorkOrdersService: MaintenanceWorkOrdersService,
   ) {}
@@ -151,6 +155,7 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
               orderId,
               machineId: order.machineId,
               slotId: item.slotId,
+              orderItemId: item.orderItemId,
               payloadJson: payload,
               status: "pending",
             })
@@ -196,6 +201,10 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
         (command) => command?.status === "failed",
       );
       if (hasFailure) {
+        const failedCommands = commandResults.filter(
+          (command): command is NonNullable<typeof command> =>
+            command?.status === "failed",
+        );
         const sentLikeCommands = commandResults.filter(
           (command) =>
             command?.status === "sent" ||
@@ -203,44 +212,62 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
             command?.status === "succeeded",
         );
         const allCommandsFailedBeforeDelivery = sentLikeCommands.length === 0;
-        const failureMetadata = await this.db.transaction(async (tx) => {
-          const [currentOrder] = await tx
-            .select({ status: orders.status })
-            .from(orders)
-            .where(eq(orders.id, orderId));
-          if (!currentOrder) return null;
-
-          const failedCommand = commandResults.find(
-            (command) => command?.status === "failed",
-          );
-
-          const restoration = allCommandsFailedBeforeDelivery
-            ? await this.inventoryService.restoreConfirmedOrderItemsForDispatchFailure(
-                tx,
-                { orderId, note: "mqtt_dispatch_failed" },
-              )
-            : { restoredQuantity: 0 };
-
-          if (currentOrder.status !== "manual_handling") {
+        const refundDecision = await this.db.transaction(async (tx) => {
+          const sentLineIds = sentLikeCommands
+            .map((command) => command?.orderItemId)
+            .filter((id): id is string => typeof id === "string");
+          if (sentLineIds.length > 0) {
             await tx
-              .update(orders)
-              .set({ status: "manual_handling", updatedAt: new Date() })
-              .where(eq(orders.id, orderId));
+              .update(orderItems)
+              .set({ fulfillmentStatus: "dispensing" })
+              .where(inArray(orderItems.id, sentLineIds));
           }
-          await tx.insert(orderStatusEvents).values({
-            orderId,
-            fromStatus: currentOrder.status,
-            toStatus: "manual_handling",
-            reason: "mqtt_dispatch_failed",
-            metadata: {
-              allCommandsFailedBeforeDelivery,
-              restoredQuantity: restoration.restoredQuantity,
-              failedCommandId: failedCommand?.id,
-              failedCommandNo: failedCommand?.commandNo,
-            },
-          });
 
-          if (failedCommand) {
+          let decision:
+            | { kind: "none" }
+            | {
+                kind: "full";
+                orderId: string;
+                metadata: Record<string, unknown>;
+              }
+            | {
+                kind: "partial";
+                orderId: string;
+                orderItemIds: string[];
+                amountCents: number;
+                metadata: Record<string, unknown>;
+              } = { kind: "none" };
+
+          // oxlint-disable no-await-in-loop -- each failed line mutates order-line state before the next refund decision is calculated
+          for (const failedCommand of failedCommands) {
+            await this.inventoryService.releaseAffectedReservationForDispenseFailure(
+              tx,
+              {
+                orderId,
+                orderItemId: failedCommand.orderItemId ?? null,
+                slotId: failedCommand.slotId,
+                errorCode: null,
+                message: failedCommand.lastError ?? "MQTT dispatch failed",
+              },
+            );
+
+            const metadata = {
+              allCommandsFailedBeforeDelivery,
+              failedCommandId: failedCommand.id,
+              failedCommandNo: failedCommand.commandNo,
+              releaseReason: "mqtt_dispatch_failed",
+            };
+            decision = await this.markOrderLinesFailedAndBuildRefundDecision(
+              tx,
+              {
+                orderId,
+                orderItemId: failedCommand.orderItemId ?? null,
+                slotId: failedCommand.slotId,
+                reason: "mqtt_dispatch_failed",
+                metadata,
+              },
+            );
+
             await this.notificationsService.createDispenseFailedNotification(
               tx,
               {
@@ -250,40 +277,49 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
               },
             );
           }
+          // oxlint-enable no-await-in-loop
 
-          return {
-            allCommandsFailedBeforeDelivery,
-            restoredQuantity: restoration.restoredQuantity,
-            failedCommandNo: failedCommand?.commandNo ?? null,
-          };
+          return decision;
         });
 
-        if (failureMetadata?.allCommandsFailedBeforeDelivery) {
-          await this.refundsService.requestFullRefund({
-            orderId,
-            reason: "auto_dispense_failed",
-            metadata: failureMetadata,
-          });
-        }
+        await this.requestRefundForFailedLines(refundDecision);
         return commandResults;
       }
 
       await this.db.transaction(async (tx) => {
+        const commandLineIds = commandResults
+          .map((command) => command?.orderItemId)
+          .filter((id): id is string => typeof id === "string");
+        if (commandLineIds.length > 0) {
+          await tx
+            .update(orderItems)
+            .set({ fulfillmentStatus: "dispensing" })
+            .where(inArray(orderItems.id, commandLineIds));
+        }
+
         const [currentOrder] = await tx
-          .select({ status: orders.status })
+          .select({ status: orders.status, paymentState: orders.paymentState })
           .from(orders)
           .where(eq(orders.id, orderId));
         if (!currentOrder || currentOrder.status === "dispensing") {
           return;
         }
+        const projectedStatus = projectOrderStatus({
+          paymentState: currentOrder.paymentState,
+          fulfillmentState: "dispensing",
+        });
         await tx
           .update(orders)
-          .set({ status: "dispensing", updatedAt: new Date() })
+          .set({
+            status: projectedStatus,
+            fulfillmentState: "dispensing",
+            updatedAt: new Date(),
+          })
           .where(eq(orders.id, orderId));
         await tx.insert(orderStatusEvents).values({
           orderId,
           fromStatus: currentOrder.status,
-          toStatus: "dispensing",
+          toStatus: projectedStatus,
           reason: "vending_command_sent",
         });
       });
@@ -334,6 +370,7 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
         machineId: vendingCommands.machineId,
         machineCode: machines.code,
         slotId: vendingCommands.slotId,
+        orderItemId: vendingCommands.orderItemId,
         status: vendingCommands.status,
         retryCount: vendingCommands.retryCount,
         sentAt: vendingCommands.sentAt,
@@ -406,21 +443,29 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
 
     await this.db.transaction(async (tx) => {
       const [currentOrder] = await tx
-        .select({ status: orders.status })
+        .select({ status: orders.status, paymentState: orders.paymentState })
         .from(orders)
         .where(eq(orders.id, command.orderId));
       if (!currentOrder) {
         return;
       }
       if (currentOrder.status !== "dispensing") {
+        const projectedStatus = projectOrderStatus({
+          paymentState: currentOrder.paymentState,
+          fulfillmentState: "dispensing",
+        });
         await tx
           .update(orders)
-          .set({ status: "dispensing", updatedAt: new Date() })
+          .set({
+            status: projectedStatus,
+            fulfillmentState: "dispensing",
+            updatedAt: new Date(),
+          })
           .where(eq(orders.id, command.orderId));
         await tx.insert(orderStatusEvents).values({
           orderId: command.orderId,
           fromStatus: currentOrder.status,
-          toStatus: "dispensing",
+          toStatus: projectedStatus,
           reason: "vending_retry",
           metadata: { commandId: command.id },
         });
@@ -428,6 +473,214 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
     });
 
     return updated;
+  }
+
+  async resolveCommand(
+    id: string,
+    input: { result: "dispensed" | "not_dispensed"; note?: string },
+  ) {
+    const [command] = await this.db
+      .select({
+        id: vendingCommands.id,
+        commandNo: vendingCommands.commandNo,
+        orderId: vendingCommands.orderId,
+        machineId: vendingCommands.machineId,
+        machineCode: machines.code,
+        slotId: vendingCommands.slotId,
+        orderItemId: vendingCommands.orderItemId,
+        status: vendingCommands.status,
+        payloadJson: vendingCommands.payloadJson,
+        orderNo: orders.orderNo,
+      })
+      .from(vendingCommands)
+      .innerJoin(machines, eq(machines.id, vendingCommands.machineId))
+      .innerJoin(orders, eq(orders.id, vendingCommands.orderId))
+      .where(eq(vendingCommands.id, id));
+    if (!command) {
+      throw new NotFoundException("Vending command not found");
+    }
+
+    if (input.result === "dispensed") {
+      return await this.resolveCommandAsDispensed(command, input.note);
+    }
+
+    const failureContext = await this.db.transaction(async (tx) => {
+      const [updated] = await tx
+        .update(vendingCommands)
+        .set({
+          status: "failed",
+          resultAt: new Date(),
+          lastError: input.note ?? "manual confirmation: not dispensed",
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(vendingCommands.id, command.id),
+            inArray(vendingCommands.status, [
+              "sent",
+              "acknowledged",
+              "result_unknown",
+              "timeout",
+            ]),
+          ),
+        )
+        .returning({ id: vendingCommands.id });
+      if (!updated && command.status === "failed") {
+        return null;
+      }
+      if (!updated) {
+        throw new ConflictException(
+          `Command status ${command.status} cannot be resolved as not dispensed`,
+        );
+      }
+
+      const compensation =
+        await this.inventoryService.releaseAffectedReservationForDispenseFailure(
+          tx,
+          {
+            orderId: command.orderId,
+            orderItemId: command.orderItemId,
+            slotId: command.slotId,
+            errorCode: "NO_DROP",
+            message: input.note ?? "manual confirmation: not dispensed",
+          },
+        );
+
+      const refundDecision =
+        await this.markOrderLinesFailedAndBuildRefundDecision(tx, {
+          orderId: command.orderId,
+          orderItemId: command.orderItemId,
+          slotId: command.slotId,
+          reason: "manual_dispense_not_dispensed",
+          metadata: {
+            commandNo: command.commandNo,
+            releasedQuantity: compensation.releasedQuantity,
+            slotSalesState: compensation.slotSalesState,
+          },
+        });
+
+      await this.notificationsService.createDispenseFailedNotification(tx, {
+        orderId: command.orderId,
+        commandId: command.id,
+        message: input.note ?? "manual confirmation: not dispensed",
+      });
+
+      return {
+        orderId: command.orderId,
+        commandId: command.id,
+        commandNo: command.commandNo,
+        errorCode: "NO_DROP" as const,
+        message: input.note ?? "manual confirmation: not dispensed",
+        compensation,
+        refundDecision,
+      };
+    });
+
+    if (failureContext) {
+      await this.requestRefundForFailedLines(failureContext.refundDecision);
+    }
+
+    return { commandId: command.id, status: "failed" as const };
+  }
+
+  private async resolveCommandAsDispensed(
+    command: {
+      id: string;
+      commandNo: string;
+      orderId: string;
+      machineId: string;
+      machineCode: string;
+      slotId: string;
+      orderItemId: string | null;
+      status: string;
+      payloadJson: Record<string, unknown>;
+      orderNo: string;
+    },
+    note?: string,
+    options: {
+      movementId?: string;
+      source?: string;
+      occurredAt?: string;
+    } = {},
+  ) {
+    if (command.status === "succeeded") {
+      return { commandId: command.id, status: "succeeded" as const };
+    }
+    if (command.status === "failed") {
+      throw new ConflictException(
+        "Failed command cannot be resolved as dispensed",
+      );
+    }
+
+    const [item] = await this.db
+      .select({
+        id: orderItems.id,
+        inventoryId: orderItems.inventoryId,
+        quantity: orderItems.quantity,
+        productSnapshot: orderItems.productSnapshot,
+      })
+      .from(orderItems)
+      .where(
+        and(
+          eq(orderItems.orderId, command.orderId),
+          command.orderItemId
+            ? eq(orderItems.id, command.orderItemId)
+            : eq(orderItems.slotId, command.slotId),
+        ),
+      )
+      .limit(1);
+    if (!item) {
+      throw new NotFoundException("Order item not found for vending command");
+    }
+
+    const snapshot = item.productSnapshot as Record<string, unknown>;
+    const planogramVersion = snapshot.planogramVersion;
+    if (typeof planogramVersion !== "string") {
+      throw new ConflictException("Order item planogram snapshot is missing");
+    }
+
+    const movement: RawMachineStockMovement = {
+      movementId: options.movementId ?? `manual-dispense:${command.commandNo}`,
+      planogramVersion,
+      slotId: command.slotId,
+      movementType: "dispense_succeeded",
+      quantity: item.quantity,
+      source: options.source ?? "manual_confirmation",
+      attributedTo: command.commandNo,
+      orderContext: {
+        orderNo: command.orderNo,
+        orderItemId: item.id,
+        vendingCommandNo: command.commandNo,
+        inventoryId: item.inventoryId,
+      },
+      occurredAt: options.occurredAt ?? new Date().toISOString(),
+    };
+
+    const result = await this.machineStockMovementsService.receiveRawMovement(
+      { id: command.machineId, code: command.machineCode, status: "online" },
+      movement,
+    );
+    if (result.status !== "accepted" && result.status !== "already_accepted") {
+      throw new ConflictException(
+        `Manual dispense confirmation could not be accepted: ${result.status}`,
+      );
+    }
+
+    await this.db
+      .update(vendingCommands)
+      .set({
+        status: "succeeded",
+        resultAt: new Date(),
+        lastError: note ?? null,
+        updatedAt: new Date(),
+      })
+      .where(eq(vendingCommands.id, command.id));
+
+    return {
+      commandId: command.id,
+      status: "succeeded" as const,
+      stockMovementStatus: result.status,
+    };
   }
 
   async markTimedOutCommands(now = new Date()): Promise<{ processed: number }> {
@@ -458,9 +711,9 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
           const [updated] = await tx
             .update(vendingCommands)
             .set({
-              status: "timeout",
+              status: "result_unknown",
               resultAt: now,
-              lastError: "vending command timeout",
+              lastError: "dispense result unknown after command timeout",
               updatedAt: new Date(),
             })
             .where(
@@ -473,27 +726,41 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
           if (!updated) return false;
 
           const [currentOrder] = await tx
-            .select({ status: orders.status })
+            .select({
+              status: orders.status,
+              paymentState: orders.paymentState,
+            })
             .from(orders)
             .where(eq(orders.id, command.orderId));
           if (currentOrder && currentOrder.status !== "manual_handling") {
+            const projectedStatus = projectOrderStatus({
+              paymentState: currentOrder.paymentState,
+              fulfillmentState: "manual_handling",
+            });
             await tx
               .update(orders)
-              .set({ status: "manual_handling", updatedAt: new Date() })
+              .set({
+                status: projectedStatus,
+                fulfillmentState: "manual_handling",
+                updatedAt: new Date(),
+              })
               .where(eq(orders.id, command.orderId));
             await tx.insert(orderStatusEvents).values({
               orderId: command.orderId,
               fromStatus: currentOrder.status,
-              toStatus: "manual_handling",
-              reason: "vending_command_timeout",
-              metadata: { commandNo: command.commandNo },
+              toStatus: projectedStatus,
+              reason: "dispense_result_unknown",
+              metadata: {
+                commandNo: command.commandNo,
+                slotSalesState: "frozen",
+              },
             });
           }
 
           await this.notificationsService.createDispenseFailedNotification(tx, {
             orderId: command.orderId,
             commandId: command.id,
-            message: "vending command timeout",
+            message: "dispense result unknown after command timeout",
           });
           return true;
         });
@@ -589,7 +856,7 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
     const machine = await this.findMachineByCode(machineCode);
     if (!machine) return;
 
-    const failureContext = await this.db.transaction(async (tx) => {
+    const resultContext = await this.db.transaction(async (tx) => {
       const inserted = await tx
         .insert(machineEvents)
         .values({
@@ -608,11 +875,17 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
       const [command] = await tx
         .select({
           id: vendingCommands.id,
+          commandNo: vendingCommands.commandNo,
           orderId: vendingCommands.orderId,
+          machineId: vendingCommands.machineId,
           slotId: vendingCommands.slotId,
+          orderItemId: vendingCommands.orderItemId,
           status: vendingCommands.status,
+          payloadJson: vendingCommands.payloadJson,
+          orderNo: orders.orderNo,
         })
         .from(vendingCommands)
+        .innerJoin(orders, eq(orders.id, vendingCommands.orderId))
         .where(
           and(
             eq(vendingCommands.commandNo, payload.commandNo),
@@ -624,62 +897,20 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
       }
 
       if (payload.success) {
-        if (
-          command.status === "succeeded" ||
-          command.status === "failed" ||
-          command.status === "timeout"
-        ) {
+        if (command.status === "succeeded" || command.status === "failed") {
           return null;
         }
-        await tx
-          .update(vendingCommands)
-          .set({
-            status: "succeeded",
-            resultAt: new Date(),
-            lastError: null,
-            updatedAt: new Date(),
-          })
-          .where(eq(vendingCommands.id, command.id));
-
-        const [remainingRow] = await tx
-          .select({ total: count() })
-          .from(vendingCommands)
-          .where(
-            and(
-              eq(vendingCommands.orderId, command.orderId),
-              sql`${vendingCommands.status} <> 'succeeded'`,
-            ),
-          );
-        if (Number(remainingRow.total) === 0) {
-          const [currentOrder] = await tx
-            .select({ status: orders.status })
-            .from(orders)
-            .where(eq(orders.id, command.orderId));
-          if (currentOrder) {
-            await tx
-              .update(orders)
-              .set({
-                status: "fulfilled",
-                dispensedAt: new Date(),
-                updatedAt: new Date(),
-              })
-              .where(eq(orders.id, command.orderId));
-            await tx.insert(orderStatusEvents).values({
-              orderId: command.orderId,
-              fromStatus: currentOrder.status,
-              toStatus: "fulfilled",
-              reason: "dispense_succeeded",
-            });
-          }
-        }
-        return null;
+        return {
+          kind: "success" as const,
+          command: {
+            ...command,
+            machineCode: machine.code,
+            payloadJson: command.payloadJson as Record<string, unknown>,
+          },
+        };
       }
 
-      if (
-        command.status === "succeeded" ||
-        command.status === "failed" ||
-        command.status === "timeout"
-      ) {
+      if (command.status === "succeeded" || command.status === "failed") {
         return null;
       }
 
@@ -694,35 +925,31 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
         .where(eq(vendingCommands.id, command.id));
 
       const compensation =
-        await this.inventoryService.compensateDispenseFailure(tx, {
-          orderId: command.orderId,
-          slotId: command.slotId,
-          errorCode: payload.errorCode,
-          message: payload.message,
-        });
+        await this.inventoryService.releaseAffectedReservationForDispenseFailure(
+          tx,
+          {
+            orderId: command.orderId,
+            orderItemId: command.orderItemId,
+            slotId: command.slotId,
+            errorCode: payload.errorCode,
+            message: payload.message,
+          },
+        );
 
-      const [currentOrder] = await tx
-        .select({ status: orders.status })
-        .from(orders)
-        .where(eq(orders.id, command.orderId));
-      if (currentOrder) {
-        await tx
-          .update(orders)
-          .set({ status: "dispense_failed", updatedAt: new Date() })
-          .where(eq(orders.id, command.orderId));
-        await tx.insert(orderStatusEvents).values({
+      const refundDecision =
+        await this.markOrderLinesFailedAndBuildRefundDecision(tx, {
           orderId: command.orderId,
-          fromStatus: currentOrder.status,
-          toStatus: "dispense_failed",
+          orderItemId: command.orderItemId,
+          slotId: command.slotId,
           reason: "dispense_failed",
           metadata: {
             commandNo: payload.commandNo,
             errorCode: payload.errorCode,
-            restoredQuantity: compensation.restoredQuantity,
+            releasedQuantity: compensation.releasedQuantity,
             slotFaulted: compensation.slotFaulted,
+            slotSalesState: compensation.slotSalesState,
           },
         });
-      }
 
       await this.notificationsService.createDispenseFailedNotification(tx, {
         orderId: command.orderId,
@@ -744,20 +971,218 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
       }
 
       return {
+        kind: "failure" as const,
         orderId: command.orderId,
         commandId: command.id,
         commandNo: payload.commandNo,
         errorCode: payload.errorCode,
         message: payload.message,
         compensation,
+        refundDecision,
       };
     });
 
-    if (failureContext) {
+    if (resultContext?.kind === "success") {
+      await this.resolveCommandAsDispensed(
+        resultContext.command,
+        payload.message,
+        {
+          movementId: `mqtt-dispense:${payload.commandNo}`,
+          source: "vending_command",
+          occurredAt: payload.reportedAt,
+        },
+      );
+      return;
+    }
+
+    if (resultContext?.kind === "failure") {
+      await this.requestRefundForFailedLines(resultContext.refundDecision);
+    }
+  }
+
+  private async markOrderLinesFailedAndBuildRefundDecision(
+    tx: DrizzleTransaction,
+    input: {
+      orderId: string;
+      orderItemId: string | null;
+      slotId: string;
+      reason: string;
+      metadata: Record<string, unknown>;
+    },
+  ): Promise<
+    | { kind: "none" }
+    | { kind: "full"; orderId: string; metadata: Record<string, unknown> }
+    | {
+        kind: "partial";
+        orderId: string;
+        orderItemIds: string[];
+        amountCents: number;
+        metadata: Record<string, unknown>;
+      }
+  > {
+    const failedLines = await tx
+      .select({ id: orderItems.id })
+      .from(orderItems)
+      .where(
+        and(
+          eq(orderItems.orderId, input.orderId),
+          input.orderItemId
+            ? eq(orderItems.id, input.orderItemId)
+            : eq(orderItems.slotId, input.slotId),
+        ),
+      );
+    const failedLineIds = failedLines.map((line) => line.id);
+    if (failedLineIds.length === 0) return { kind: "none" };
+
+    await tx
+      .update(orderItems)
+      .set({
+        fulfillmentStatus: "dispense_failed",
+        refundStatus: "pending",
+        failedAt: new Date(),
+        refundUpdatedAt: new Date(),
+      })
+      .where(inArray(orderItems.id, failedLineIds));
+
+    await this.syncOrderFulfillmentStateFromLines(tx, {
+      orderId: input.orderId,
+      reason: input.reason,
+      metadata: input.metadata,
+    });
+
+    const lines = await tx
+      .select({
+        id: orderItems.id,
+        fulfillmentStatus: orderItems.fulfillmentStatus,
+        quantity: orderItems.quantity,
+        unitPriceCents: orderItems.unitPriceCents,
+      })
+      .from(orderItems)
+      .where(eq(orderItems.orderId, input.orderId));
+    const hasOpenLine = lines.some(
+      (line) =>
+        line.fulfillmentStatus === "pending" ||
+        line.fulfillmentStatus === "dispensing",
+    );
+    if (hasOpenLine) return { kind: "none" };
+
+    const failed = lines.filter(
+      (line) => line.fulfillmentStatus === "dispense_failed",
+    );
+    const dispensed = lines.filter(
+      (line) => line.fulfillmentStatus === "dispensed",
+    );
+    if (failed.length === lines.length) {
+      return { kind: "full", orderId: input.orderId, metadata: input.metadata };
+    }
+    if (failed.length > 0 && dispensed.length > 0) {
+      return {
+        kind: "partial",
+        orderId: input.orderId,
+        orderItemIds: failed.map((line) => line.id),
+        amountCents: failed.reduce(
+          (sum, line) => sum + line.unitPriceCents * line.quantity,
+          0,
+        ),
+        metadata: input.metadata,
+      };
+    }
+    return { kind: "none" };
+  }
+
+  private async syncOrderFulfillmentStateFromLines(
+    tx: DrizzleTransaction,
+    input: {
+      orderId: string;
+      reason: string;
+      metadata: Record<string, unknown>;
+    },
+  ): Promise<void> {
+    const lines = await tx
+      .select({ fulfillmentStatus: orderItems.fulfillmentStatus })
+      .from(orderItems)
+      .where(eq(orderItems.orderId, input.orderId));
+    if (lines.length === 0) return;
+
+    const dispensed = lines.filter(
+      (line) => line.fulfillmentStatus === "dispensed",
+    ).length;
+    const failed = lines.filter(
+      (line) => line.fulfillmentStatus === "dispense_failed",
+    ).length;
+    const manual = lines.some(
+      (line) => line.fulfillmentStatus === "manual_handling",
+    );
+    const fulfillmentState = manual
+      ? "manual_handling"
+      : dispensed === lines.length
+        ? "dispensed"
+        : failed === lines.length
+          ? "dispense_failed"
+          : dispensed > 0 && failed > 0
+            ? "partial_dispensed"
+            : "dispensing";
+
+    const [currentOrder] = await tx
+      .select({
+        status: orders.status,
+        paymentState: orders.paymentState,
+        fulfillmentState: orders.fulfillmentState,
+      })
+      .from(orders)
+      .where(eq(orders.id, input.orderId));
+    if (!currentOrder || currentOrder.fulfillmentState === fulfillmentState) {
+      return;
+    }
+
+    const projectedStatus = projectOrderStatus({
+      paymentState: currentOrder.paymentState,
+      fulfillmentState,
+    });
+    await tx
+      .update(orders)
+      .set({
+        status: projectedStatus,
+        fulfillmentState,
+        updatedAt: new Date(),
+      })
+      .where(eq(orders.id, input.orderId));
+    await tx.insert(orderStatusEvents).values({
+      orderId: input.orderId,
+      fromStatus: currentOrder.status,
+      toStatus: projectedStatus,
+      reason: input.reason,
+      metadata: input.metadata,
+    });
+  }
+
+  private async requestRefundForFailedLines(
+    decision:
+      | { kind: "none" }
+      | { kind: "full"; orderId: string; metadata: Record<string, unknown> }
+      | {
+          kind: "partial";
+          orderId: string;
+          orderItemIds: string[];
+          amountCents: number;
+          metadata: Record<string, unknown>;
+        },
+  ): Promise<void> {
+    if (decision.kind === "full") {
       await this.refundsService.requestFullRefund({
-        orderId: failureContext.orderId,
+        orderId: decision.orderId,
         reason: "auto_dispense_failed",
-        metadata: failureContext,
+        metadata: decision.metadata,
+      });
+      return;
+    }
+    if (decision.kind === "partial") {
+      await this.refundsService.requestPartialRefund({
+        orderId: decision.orderId,
+        orderItemIds: decision.orderItemIds,
+        amountCents: decision.amountCents,
+        reason: "auto_partial_dispense_failed",
+        metadata: decision.metadata,
       });
     }
   }

@@ -11,6 +11,10 @@ import {
   notificationStatuses,
   notificationTargetTypes,
   notificationTypes,
+  orderFulfillmentStates,
+  orderLineFulfillmentStatuses,
+  orderLineRefundStatuses,
+  orderPaymentStates,
   orderSources,
   orderStatuses,
   paymentCodeAttemptStatuses,
@@ -85,6 +89,22 @@ export const inventoryMovementReason = t.pgEnum(
 export const orderStatus = t.pgEnum(
   "order_status",
   asPgEnumValues(orderStatuses),
+);
+export const orderPaymentState = t.pgEnum(
+  "order_payment_state",
+  asPgEnumValues(orderPaymentStates),
+);
+export const orderFulfillmentState = t.pgEnum(
+  "order_fulfillment_state",
+  asPgEnumValues(orderFulfillmentStates),
+);
+export const orderLineFulfillmentStatus = t.pgEnum(
+  "order_line_fulfillment_status",
+  asPgEnumValues(orderLineFulfillmentStatuses),
+);
+export const orderLineRefundStatus = t.pgEnum(
+  "order_line_refund_status",
+  asPgEnumValues(orderLineRefundStatuses),
 );
 export const orderSource = t.pgEnum(
   "order_source",
@@ -409,6 +429,102 @@ export const machineSlots = t.pgTable(
   ],
 );
 
+export const machinePlanogramVersions = t.pgTable(
+  "machine_planogram_versions",
+  {
+    id: id(),
+    machineId: t
+      .uuid("machine_id")
+      .notNull()
+      .references(() => machines.id),
+    planogramVersion: t.varchar("planogram_version", { length: 128 }).notNull(),
+    status: t.varchar("status", { length: 32 }).default("published").notNull(),
+    publishedAt: t
+      .timestamp("published_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    acknowledgedAt: t.timestamp("acknowledged_at", { withTimezone: true }),
+    activeAt: t.timestamp("active_at", { withTimezone: true }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    t
+      .uniqueIndex("machine_planogram_versions_machine_version_unique")
+      .on(table.machineId, table.planogramVersion),
+    t
+      .uniqueIndex("machine_planogram_versions_machine_active_unique")
+      .on(table.machineId)
+      .where(sql`${table.status} = 'active'`),
+    t
+      .index("machine_planogram_versions_machine_status_idx")
+      .on(table.machineId, table.status),
+    t.check(
+      "machine_planogram_versions_status_enum",
+      sql`${table.status} IN ('published', 'active', 'retired')`,
+    ),
+  ],
+);
+
+export const machinePlanogramSlots = t.pgTable(
+  "machine_planogram_slots",
+  {
+    id: id(),
+    machinePlanogramVersionId: t
+      .uuid("machine_planogram_version_id")
+      .notNull()
+      .references(() => machinePlanogramVersions.id),
+    slotId: t
+      .uuid("slot_id")
+      .notNull()
+      .references(() => machineSlots.id),
+    slotCode: t.varchar("slot_code", { length: 32 }).notNull(),
+    layerNo: t.integer("layer_no").notNull(),
+    cellNo: t.integer("cell_no").notNull(),
+    capacity: t.integer("capacity").notNull(),
+    parLevel: t.integer("par_level").notNull(),
+    inventoryId: t.uuid("inventory_id").notNull(),
+    variantId: t.uuid("variant_id").notNull(),
+    productId: t.uuid("product_id").notNull(),
+    productName: t.varchar("product_name", { length: 128 }).notNull(),
+    productDescription: t.text("product_description"),
+    coverImageUrl: t.text("cover_image_url"),
+    categoryId: t.uuid("category_id"),
+    categoryName: t.varchar("category_name", { length: 128 }),
+    sku: t.varchar("sku", { length: 64 }).notNull(),
+    size: t.varchar("size", { length: 64 }),
+    color: t.varchar("color", { length: 64 }),
+    priceCents: t.integer("price_cents").notNull(),
+    productSortOrder: t.integer("product_sort_order").notNull(),
+    targetGender: t.varchar("target_gender", { length: 16 }),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    t
+      .uniqueIndex("machine_planogram_slots_version_slot_unique")
+      .on(table.machinePlanogramVersionId, table.slotId),
+    t
+      .index("machine_planogram_slots_version_idx")
+      .on(table.machinePlanogramVersionId),
+    t.check(
+      "machine_planogram_slots_capacity_non_negative",
+      sql`${table.capacity} >= 0`,
+    ),
+    t.check(
+      "machine_planogram_slots_par_level_non_negative",
+      sql`${table.parLevel} >= 0`,
+    ),
+    t.check(
+      "machine_planogram_slots_price_cents_non_negative",
+      sql`${table.priceCents} >= 0`,
+    ),
+    t.check(
+      "machine_planogram_slots_target_gender_enum",
+      sql`${table.targetGender} IS NULL OR ${table.targetGender} IN ('male', 'female')`,
+    ),
+  ],
+);
+
 export const inventories = t.pgTable(
   "inventories",
   {
@@ -467,6 +583,12 @@ export const orders = t.pgTable(
       .notNull()
       .references(() => machines.id),
     status: orderStatus("status").default("pending_payment").notNull(),
+    paymentState: orderPaymentState("payment_state")
+      .default("awaiting_payment")
+      .notNull(),
+    fulfillmentState: orderFulfillmentState("fulfillment_state")
+      .default("awaiting_fulfillment")
+      .notNull(),
     totalAmountCents: t.integer("total_amount_cents").notNull(),
     currency: t.char("currency", { length: 3 }).default("CNY").notNull(),
     paymentId: t
@@ -484,6 +606,8 @@ export const orders = t.pgTable(
     t.uniqueIndex("orders_order_no_unique").on(table.orderNo),
     t.index("orders_machine_id_idx").on(table.machineId),
     t.index("orders_status_idx").on(table.status),
+    t.index("orders_payment_state_idx").on(table.paymentState),
+    t.index("orders_fulfillment_state_idx").on(table.fulfillmentState),
     t.index("orders_created_at_idx").on(table.createdAt),
     t.check(
       "orders_total_amount_cents_non_negative",
@@ -514,12 +638,28 @@ export const orderItems = t.pgTable(
       .references(() => machineSlots.id),
     quantity: t.integer("quantity").notNull(),
     unitPriceCents: t.integer("unit_price_cents").notNull(),
+    planogramVersion: t
+      .varchar("planogram_version", { length: 128 })
+      .default("legacy")
+      .notNull(),
     productSnapshot: t.jsonb("product_snapshot").$type<JsonObject>().notNull(),
+    fulfillmentStatus: orderLineFulfillmentStatus("fulfillment_status")
+      .default("pending")
+      .notNull(),
+    refundStatus: orderLineRefundStatus("refund_status")
+      .default("not_required")
+      .notNull(),
+    refundId: t.uuid("refund_id").references((): t.AnyPgColumn => refunds.id),
+    fulfilledAt: t.timestamp("fulfilled_at", { withTimezone: true }),
+    failedAt: t.timestamp("failed_at", { withTimezone: true }),
+    refundUpdatedAt: t.timestamp("refund_updated_at", { withTimezone: true }),
     createdAt: createdAt(),
   },
   (table) => [
     t.index("order_items_order_id_idx").on(table.orderId),
     t.index("order_items_variant_id_idx").on(table.variantId),
+    t.index("order_items_fulfillment_status_idx").on(table.fulfillmentStatus),
+    t.index("order_items_refund_status_idx").on(table.refundStatus),
     t.check("order_items_quantity_positive", sql`${table.quantity} > 0`),
     t.check(
       "order_items_unit_price_cents_non_negative",
@@ -814,6 +954,7 @@ export const inventoryReservations = t.pgTable(
       .uuid("inventory_id")
       .notNull()
       .references(() => inventories.id),
+    orderItemId: t.uuid("order_item_id").references(() => orderItems.id),
     quantity: t.integer("quantity").notNull(),
     status: inventoryReservationStatus("status").default("active").notNull(),
     expiresAt: t.timestamp("expires_at", { withTimezone: true }).notNull(),
@@ -823,6 +964,7 @@ export const inventoryReservations = t.pgTable(
   (table) => [
     t.index("inventory_reservations_order_id_idx").on(table.orderId),
     t.index("inventory_reservations_inventory_id_idx").on(table.inventoryId),
+    t.index("inventory_reservations_order_item_id_idx").on(table.orderItemId),
     t.index("inventory_reservations_status_idx").on(table.status),
     t.check(
       "inventory_reservations_quantity_positive",
@@ -856,6 +998,129 @@ export const inventoryMovements = t.pgTable(
   ],
 );
 
+export const machineRawStockMovements = t.pgTable(
+  "machine_raw_stock_movements",
+  {
+    id: id(),
+    machineId: t
+      .uuid("machine_id")
+      .notNull()
+      .references(() => machines.id),
+    movementId: t.varchar("movement_id", { length: 128 }).notNull(),
+    planogramVersion: t.varchar("planogram_version", { length: 128 }).notNull(),
+    slotId: t.uuid("slot_id").notNull(),
+    movementType: t.varchar("movement_type", { length: 64 }).notNull(),
+    quantity: t.integer("quantity").notNull(),
+    source: t.varchar("source", { length: 128 }).notNull(),
+    attributedTo: t.varchar("attributed_to", { length: 128 }),
+    occurredAt: t.timestamp("occurred_at", { withTimezone: true }).notNull(),
+    receivedAt: t
+      .timestamp("received_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    payloadHash: t.varchar("payload_hash", { length: 64 }).notNull(),
+    payloadJson: t.jsonb("payload_json").$type<JsonObject>().notNull(),
+    normalizedJson: t.jsonb("normalized_json").$type<JsonObject>().notNull(),
+    status: t.varchar("status", { length: 32 }).default("accepted").notNull(),
+    reconciliationReason: t.varchar("reconciliation_reason", { length: 128 }),
+    platformReviewStatus: t.varchar("platform_review_status", { length: 32 }),
+    saleSafetyBlockerState: t.varchar("sale_safety_blocker_state", {
+      length: 64,
+    }),
+    saleSafetyBlockerSlotId: t.uuid("sale_safety_blocker_slot_id"),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    t
+      .uniqueIndex("machine_raw_stock_movements_machine_movement_unique")
+      .on(table.machineId, table.movementId),
+    t.index("machine_raw_stock_movements_machine_idx").on(table.machineId),
+    t.index("machine_raw_stock_movements_status_idx").on(table.status),
+    t
+      .index("machine_raw_stock_movements_sale_safety_blocker_idx")
+      .on(table.machineId, table.saleSafetyBlockerSlotId),
+    t.check(
+      "machine_raw_stock_movements_quantity_non_negative",
+      sql`${table.quantity} >= 0`,
+    ),
+    t.check(
+      "machine_raw_stock_movements_type_enum",
+      sql`${table.movementType} IN ('planned_refill', 'stock_count_correction', 'dispense_succeeded')`,
+    ),
+    t.check(
+      "machine_raw_stock_movements_status_enum",
+      sql`${table.status} IN ('accepted', 'rejected', 'reconciliation')`,
+    ),
+    t.check(
+      "machine_raw_stock_movements_platform_review_status_enum",
+      sql`${table.platformReviewStatus} IS NULL OR ${table.platformReviewStatus} IN ('open', 'resolved')`,
+    ),
+    t.check(
+      "machine_raw_stock_movements_sale_safety_blocker_enum",
+      sql`${table.saleSafetyBlockerState} IS NULL OR ${table.saleSafetyBlockerState} IN ('needs_count', 'blocked_for_planogram_change', 'movement_rejected', 'needs_platform_review')`,
+    ),
+  ],
+);
+
+export const machineRawStockMovementConflicts = t.pgTable(
+  "machine_raw_stock_movement_conflicts",
+  {
+    id: id(),
+    rawMovementId: t
+      .uuid("raw_movement_id")
+      .notNull()
+      .references(() => machineRawStockMovements.id),
+    machineId: t
+      .uuid("machine_id")
+      .notNull()
+      .references(() => machines.id),
+    movementId: t.varchar("movement_id", { length: 128 }).notNull(),
+    payloadHash: t.varchar("payload_hash", { length: 64 }).notNull(),
+    payloadJson: t.jsonb("payload_json").$type<JsonObject>().notNull(),
+    normalizedJson: t.jsonb("normalized_json").$type<JsonObject>().notNull(),
+    status: t
+      .varchar("status", { length: 32 })
+      .default("reconciliation")
+      .notNull(),
+    reconciliationReason: t
+      .varchar("reconciliation_reason", { length: 128 })
+      .notNull(),
+    platformReviewStatus: t
+      .varchar("platform_review_status", { length: 32 })
+      .notNull(),
+    saleSafetyBlockerState: t.varchar("sale_safety_blocker_state", {
+      length: 64,
+    }),
+    saleSafetyBlockerSlotId: t.uuid("sale_safety_blocker_slot_id"),
+    receivedAt: t
+      .timestamp("received_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    t
+      .index("machine_raw_stock_movement_conflicts_raw_idx")
+      .on(table.rawMovementId),
+    t
+      .index("machine_raw_stock_movement_conflicts_machine_movement_idx")
+      .on(table.machineId, table.movementId),
+    t.check(
+      "machine_raw_stock_movement_conflicts_status_enum",
+      sql`${table.status} IN ('reconciliation')`,
+    ),
+    t.check(
+      "machine_raw_stock_movement_conflicts_platform_review_status_enum",
+      sql`${table.platformReviewStatus} IN ('open', 'resolved')`,
+    ),
+    t.check(
+      "machine_raw_stock_movement_conflicts_sale_safety_blocker_enum",
+      sql`${table.saleSafetyBlockerState} IS NULL OR ${table.saleSafetyBlockerState} IN ('needs_count', 'blocked_for_planogram_change', 'movement_rejected', 'needs_platform_review')`,
+    ),
+  ],
+);
+
 export const vendingCommands = t.pgTable(
   "vending_commands",
   {
@@ -873,6 +1138,7 @@ export const vendingCommands = t.pgTable(
       .uuid("slot_id")
       .notNull()
       .references(() => machineSlots.id),
+    orderItemId: t.uuid("order_item_id").references(() => orderItems.id),
     payloadJson: t.jsonb("payload_json").$type<JsonObject>().notNull(),
     status: vendingCommandStatus("status").default("pending").notNull(),
     sentAt: t.timestamp("sent_at", { withTimezone: true }),
@@ -889,6 +1155,7 @@ export const vendingCommands = t.pgTable(
       .uniqueIndex("vending_commands_order_slot_unique")
       .on(table.orderId, table.slotId),
     t.index("vending_commands_order_id_idx").on(table.orderId),
+    t.index("vending_commands_order_item_id_idx").on(table.orderItemId),
     t.index("vending_commands_machine_id_idx").on(table.machineId),
     t.index("vending_commands_status_idx").on(table.status),
     t.check(

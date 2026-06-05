@@ -36,7 +36,15 @@ describe("machine config", () => {
       visionProcessArgs: null,
       visionRequestTimeoutMs: 8000,
       kioskMode: false,
+      stockMovementRetentionDays: 30,
     });
+  });
+
+  it("preserves custom stock movement retention days", () => {
+    expect(
+      normalizeMachineConfig({ stockMovementRetentionDays: 90 })
+        .stockMovementRetentionDays,
+    ).toBe(90);
   });
 
   it("normalizes whitespace and trailing slashes", () => {

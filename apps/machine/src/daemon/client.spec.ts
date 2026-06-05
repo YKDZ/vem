@@ -109,6 +109,56 @@ describe("DaemonApiClient", () => {
     );
   });
 
+  it("records maintenance stock movement with daemon token and attribution", async () => {
+    vi.mocked(getDaemonConnectionInfo).mockResolvedValue({
+      baseUrl: "http://127.0.0.1:7891",
+      token: "token-1",
+      source: "browser_env",
+      mock: true,
+    });
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          items: [],
+          source: "local",
+          planogramVersion: "PLAN-1",
+          lastUpdatedAt: "2026-06-05T00:00:00.000Z",
+        }),
+        { status: 201 },
+      ),
+    );
+
+    await daemonClient.recordStockMovement({
+      movementId: "MOVE-1",
+      planogramVersion: "PLAN-1",
+      slotId: "550e8400-e29b-41d4-a716-446655440001",
+      movementType: "stock_count_correction",
+      quantity: 4,
+      source: "local_maintenance",
+      attributedTo: "front-panel",
+    });
+
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "http://127.0.0.1:7891/v1/stock/movements",
+      expect.objectContaining({
+        method: "POST",
+        headers: {
+          Authorization: "Bearer token-1",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          movementId: "MOVE-1",
+          planogramVersion: "PLAN-1",
+          slotId: "550e8400-e29b-41d4-a716-446655440001",
+          movementType: "stock_count_correction",
+          quantity: 4,
+          source: "local_maintenance",
+          attributedTo: "front-panel",
+        }),
+      }),
+    );
+  });
+
   it("retries after 401 once", async () => {
     vi.mocked(getDaemonConnectionInfo).mockResolvedValue({
       baseUrl: "http://127.0.0.1:7891",

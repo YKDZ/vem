@@ -57,11 +57,21 @@ function makeRefundRow(overrides?: Partial<Record<string, unknown>>) {
 function makeService(options: {
   db?: ReturnType<typeof makeDb>;
   refundPayment?: ReturnType<typeof vi.fn>;
+  queryRefund?: ReturnType<typeof vi.fn>;
+  supportsPartialRefund?: boolean;
 }) {
-  const { db = makeDb(), refundPayment = vi.fn() } = options;
+  const {
+    db = makeDb(),
+    refundPayment = vi.fn(),
+    queryRefund = vi.fn(),
+    supportsPartialRefund,
+  } = options;
 
   const registry = {
-    get: vi.fn().mockReturnValue({ refundPayment }),
+    has: vi.fn().mockReturnValue(true),
+    get: vi
+      .fn()
+      .mockReturnValue({ refundPayment, queryRefund, supportsPartialRefund }),
   } as unknown as PaymentProviderRegistry;
 
   const configService = {
@@ -326,6 +336,330 @@ describe("RefundsService.requestFullRefund", () => {
     // Returns existing refund without calling provider
     expect(refundPayment).not.toHaveBeenCalled();
     expect(result.status).toBe("processing");
+  });
+});
+
+describe("RefundsService.requestPartialRefund", () => {
+  it("succeeds through a provider that explicitly supports partial refunds", async () => {
+    const db = makeDb();
+    const updateSets: Record<string, unknown>[] = [];
+    const refundRow = makeRefundRow({
+      amountCents: 300,
+      reason: "auto_partial_dispense_failed",
+    });
+    const paymentRow = makeBasePaymentRow({
+      orderStatus: "dispense_failed",
+      fulfillmentState: "partial_dispensed",
+      providerCode: "mock",
+      paymentAmountCents: 800,
+      amountCents: 800,
+    });
+
+    db.select.mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        innerJoin: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                orderBy: vi.fn().mockResolvedValue([paymentRow]),
+              }),
+            }),
+          }),
+        }),
+      }),
+    });
+    db.select.mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([]),
+        }),
+      }),
+    });
+    db.update.mockReturnValue({
+      set: vi.fn().mockImplementation((values: Record<string, unknown>) => {
+        updateSets.push(values);
+        return { where: vi.fn().mockResolvedValue(undefined) };
+      }),
+    });
+    db.insert.mockReturnValue({
+      values: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([refundRow]),
+        onConflictDoNothing: vi.fn().mockResolvedValue([]),
+      }),
+    });
+
+    const refundPayment = vi.fn().mockResolvedValue({
+      status: "succeeded",
+      providerRefundNo: "MOCK-RFD001",
+      refundedAt: new Date("2026-06-05T00:00:00.000Z"),
+    });
+    const service = makeService({
+      db,
+      refundPayment,
+      supportsPartialRefund: true,
+    });
+
+    const result = await service.requestPartialRefund({
+      orderId: "ord-001",
+      orderItemIds: ["line-failed"],
+      amountCents: 300,
+      reason: "auto_partial_dispense_failed",
+    });
+
+    expect(refundPayment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        amountCents: 300,
+        totalAmountCents: 800,
+        reason: "auto_partial_dispense_failed",
+      }),
+    );
+    expect(result.status).toBe("succeeded");
+    expect(updateSets).toContainEqual(
+      expect.objectContaining({
+        status: "refunded",
+        paymentState: "partial_refunded",
+        fulfillmentState: "partial_dispensed",
+      }),
+    );
+    expect(updateSets).toContainEqual(
+      expect.objectContaining({
+        refundStatus: "refunded",
+        refundId: refundRow.id,
+      }),
+    );
+  });
+
+  it("routes unsupported partial refunds to manual payment handling without overwriting partial fulfillment", async () => {
+    const db = makeDb();
+    const updateSets: Record<string, unknown>[] = [];
+    const refundPayment = vi.fn();
+    const paymentRow = makeBasePaymentRow({
+      orderStatus: "dispense_failed",
+      fulfillmentState: "partial_dispensed",
+      providerCode: "wechat_pay",
+      paymentAmountCents: 800,
+      amountCents: 800,
+    });
+
+    db.select.mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        innerJoin: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                orderBy: vi.fn().mockResolvedValue([paymentRow]),
+              }),
+            }),
+          }),
+        }),
+      }),
+    });
+    db.update.mockReturnValue({
+      set: vi.fn().mockImplementation((values: Record<string, unknown>) => {
+        updateSets.push(values);
+        return { where: vi.fn().mockResolvedValue(undefined) };
+      }),
+    });
+    db.insert.mockReturnValue({
+      values: vi.fn().mockResolvedValue(undefined),
+    });
+
+    const service = makeService({
+      db,
+      refundPayment,
+      supportsPartialRefund: false,
+    });
+
+    const result = await service.requestPartialRefund({
+      orderId: "ord-001",
+      orderItemIds: ["line-failed"],
+      amountCents: 300,
+      reason: "auto_partial_dispense_failed",
+    });
+
+    expect(result.status).toBe("manual_handling");
+    expect(refundPayment).not.toHaveBeenCalled();
+    expect(updateSets).toContainEqual(
+      expect.objectContaining({ refundStatus: "manual_handling" }),
+    );
+    expect(updateSets).toContainEqual(
+      expect.objectContaining({
+        status: "manual_handling",
+        paymentState: "manual_handling",
+        fulfillmentState: "partial_dispensed",
+      }),
+    );
+  });
+});
+
+describe("RefundsService partial refund terminal states", () => {
+  it("reconciles a processing partial refund to partial_refunded without full-refunding the order", async () => {
+    const db = makeDb();
+    const updateSets: Record<string, unknown>[] = [];
+    const refundRow = makeRefundRow({
+      amountCents: 300,
+      reason: "auto_partial_dispense_failed",
+      providerRefundNo: "MOCK-RFD001",
+    });
+
+    db.select
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              innerJoin: vi.fn().mockReturnValue({
+                where: vi.fn().mockReturnValue({
+                  limit: vi.fn().mockResolvedValue([
+                    {
+                      ...refundRow,
+                      providerCode: "mock",
+                      providerId: "provider-001",
+                      paymentNo: "PAY_WX_001",
+                      providerTradeNo: "TXN_WX_001",
+                      machineId: "mach-001",
+                      providerConfigId: null,
+                      fulfillmentState: "partial_dispensed",
+                    },
+                  ]),
+                }),
+              }),
+            }),
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([{ total: 0 }]),
+        }),
+      });
+    db.insert.mockReturnValue({
+      values: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: "attempt-1" }]),
+        onConflictDoNothing: vi.fn().mockResolvedValue([]),
+      }),
+    });
+    db.update.mockReturnValue({
+      set: vi.fn().mockImplementation((values: Record<string, unknown>) => {
+        updateSets.push(values);
+        return { where: vi.fn().mockResolvedValue(undefined) };
+      }),
+    });
+
+    const queryRefund = vi.fn().mockResolvedValue({
+      status: "succeeded",
+      providerRefundNo: "MOCK-RFD001",
+      refundedAt: new Date("2026-06-05T00:00:00.000Z"),
+    });
+    const service = makeService({
+      db,
+      queryRefund,
+      supportsPartialRefund: true,
+    });
+
+    await service.reconcileProcessingRefunds(
+      new Date("2026-06-05T00:01:00.000Z"),
+    );
+
+    expect(updateSets).toContainEqual(
+      expect.objectContaining({
+        refundStatus: "refunded",
+        refundId: refundRow.id,
+      }),
+    );
+    expect(updateSets).toContainEqual(
+      expect.objectContaining({ status: "partial_refunded" }),
+    );
+    expect(updateSets).toContainEqual(
+      expect.objectContaining({
+        paymentState: "partial_refunded",
+        fulfillmentState: "partial_dispensed",
+      }),
+    );
+    expect(updateSets).not.toContainEqual(
+      expect.objectContaining({ paymentState: "refunded" }),
+    );
+  });
+
+  it("moves a processing partial refund webhook failure to manual handling and marks only refund lines failed", async () => {
+    const db = makeDb();
+    const updateSets: Record<string, unknown>[] = [];
+    const refundRow = makeRefundRow({
+      amountCents: 300,
+      reason: "auto_partial_dispense_failed",
+      providerRefundNo: "MOCK-RFD001",
+    });
+
+    db.select.mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        innerJoin: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([
+                  {
+                    refundId: refundRow.id,
+                    refundNo: refundRow.refundNo,
+                    status: "processing",
+                    paymentId: refundRow.paymentId,
+                    orderId: refundRow.orderId,
+                    providerId: "provider-001",
+                    providerRefundNo: refundRow.providerRefundNo,
+                    reason: "auto_partial_dispense_failed",
+                    fulfillmentState: "partial_dispensed",
+                  },
+                ]),
+              }),
+            }),
+          }),
+        }),
+      }),
+    });
+    db.insert.mockReturnValue({
+      values: vi.fn().mockReturnValue({
+        onConflictDoNothing: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: "event-1" }]),
+        }),
+      }),
+    });
+    db.update.mockReturnValue({
+      set: vi.fn().mockImplementation((values: Record<string, unknown>) => {
+        updateSets.push(values);
+        return { where: vi.fn().mockResolvedValue(undefined) };
+      }),
+    });
+    const service = makeService({ db, supportsPartialRefund: true });
+
+    const result = await service.applyProviderRefundWebhook({
+      providerCode: "mock",
+      refundNo: refundRow.refundNo,
+      providerRefundNo: "MOCK-RFD001",
+      paymentNo: null,
+      providerEventId: "provider-event-1",
+      eventType: "mock.refund.webhook",
+      refundStatus: "failed",
+      rawPayload: { refundNo: refundRow.refundNo },
+      signatureValid: true,
+    });
+
+    expect(result.handled).toBe(true);
+    expect(updateSets).toContainEqual(
+      expect.objectContaining({
+        refundStatus: "failed",
+        refundId: refundRow.id,
+      }),
+    );
+    expect(updateSets).toContainEqual(
+      expect.objectContaining({ status: "manual_handling" }),
+    );
+    expect(updateSets).toContainEqual(
+      expect.objectContaining({
+        paymentState: "manual_handling",
+        fulfillmentState: "partial_dispensed",
+      }),
+    );
+    expect(updateSets).not.toContainEqual(
+      expect.objectContaining({ paymentState: "refunded" }),
+    );
   });
 });
 

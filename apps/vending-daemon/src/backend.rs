@@ -37,6 +37,33 @@ pub struct LogExportResultPayload {
     pub size_bytes: i64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StockMovementUploadResponse {
+    pub movement_id: String,
+    pub status: String,
+    pub accepted_at: Option<String>,
+    pub receipt: Option<serde_json::Value>,
+    pub rejection: Option<serde_json::Value>,
+    pub reconciliation: Option<StockMovementReconciliation>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StockMovementReconciliation {
+    pub reason: String,
+    pub platform_review: Option<serde_json::Value>,
+    pub sale_safety_blocker: Option<StockMovementSaleSafetyBlocker>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StockMovementSaleSafetyBlocker {
+    pub slot_id: String,
+    pub slot_sales_state: String,
+    pub reason: String,
+}
+
 impl BackendClient {
     pub fn new(base_url: impl Into<String>) -> Self {
         let base_url = base_url.into().trim_end_matches('/').to_string();
@@ -244,11 +271,43 @@ impl BackendClient {
             .await
     }
 
+    pub async fn get_published_planogram(
+        &self,
+        machine_code: &str,
+    ) -> Result<serde_json::Value, String> {
+        let url = format!("/machines/{machine_code}/planogram-versions/published");
+        self.request_json(reqwest::Method::GET, &url, None, true)
+            .await
+    }
+
+    pub async fn acknowledge_planogram(
+        &self,
+        machine_code: &str,
+        planogram_version: &str,
+    ) -> Result<serde_json::Value, String> {
+        let url = format!("/machines/{machine_code}/planogram-versions/{planogram_version}/ack");
+        self.request_json(reqwest::Method::POST, &url, None, true)
+            .await
+    }
+
     pub async fn get_payment_options(&self) -> Result<serde_json::Value, String> {
         self.request_json(
             reqwest::Method::GET,
             "/machine-orders/payment-options",
             None,
+            true,
+        )
+        .await
+    }
+
+    pub async fn submit_stock_movement_upload(
+        &self,
+        payload: &serde_json::Value,
+    ) -> Result<StockMovementUploadResponse, String> {
+        self.request_json_typed(
+            reqwest::Method::POST,
+            "/machine-stock-movements",
+            Some(payload.clone()),
             true,
         )
         .await

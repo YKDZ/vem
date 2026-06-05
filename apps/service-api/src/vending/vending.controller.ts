@@ -1,4 +1,5 @@
 import {
+  Body,
   Controller,
   Get,
   Param,
@@ -7,7 +8,7 @@ import {
   Query,
 } from "@nestjs/common";
 import { ApiBearerAuth, ApiTags } from "@nestjs/swagger";
-import { pageQuerySchema } from "@vem/shared";
+import { manualDispenseResolutionSchema, pageQuerySchema } from "@vem/shared";
 import { z } from "zod";
 
 import { RequirePermissions } from "../access/permissions.decorator";
@@ -34,5 +35,15 @@ export class VendingController {
   @Post(":id/retry")
   async retry(@Param("id", ParseUUIDPipe) id: string) {
     return await this.vendingService.retryCommand(id);
+  }
+
+  @RequirePermissions("machines.command")
+  @Post(":id/resolve")
+  async resolve(
+    @Param("id", ParseUUIDPipe) id: string,
+    @Body(new ZodValidationPipe(manualDispenseResolutionSchema))
+    body: z.infer<typeof manualDispenseResolutionSchema>,
+  ) {
+    return await this.vendingService.resolveCommand(id, body);
   }
 }

@@ -14,6 +14,8 @@ import {
   inventories,
   inventoryMovements,
   isNull,
+  machinePlanogramSlots,
+  machinePlanogramVersions,
   machineSlots,
   machines,
   orderItems,
@@ -40,6 +42,8 @@ import {
   paymentCodeSourceSchema,
   pageQuerySchema,
   type MachineOrderStatusNextAction,
+  type OrderFulfillmentState,
+  type OrderPaymentState,
   type OrderStatus,
   type PaymentCodeSource,
   type PaymentStatus,
@@ -56,6 +60,7 @@ import { PaymentProviderRegistry } from "../payments/payment-provider.registry";
 import { buildStoredEventPayload } from "../payments/payment-redaction.util";
 import { PaymentsService } from "../payments/payments.service";
 import { RefundsService } from "../refunds/refunds.service";
+import { projectOrderStatus } from "./order-state-projection";
 
 type CreateMachineOrderInput = z.infer<typeof createMachineOrderSchema>;
 type MachineOrderStatusQuery = z.infer<typeof machineOrderStatusQuerySchema>;
@@ -72,6 +77,20 @@ function readQrExpiresMinutes(
     value <= 60
     ? value
     : 15;
+}
+
+function assertMachineOrderLineContextMatchesInventory(
+  item: CreateMachineOrderInput["items"][number],
+  row: { slotId: string; slotCode: string },
+): void {
+  if (!item.planogramVersion || !item.slotId || !item.slotCode) {
+    throw new ConflictException("Machine order line context is required");
+  }
+  if (item.slotId !== row.slotId || item.slotCode !== row.slotCode) {
+    throw new ConflictException(
+      "Machine order line does not match active slot inventory mapping",
+    );
+  }
 }
 
 function resolvePaymentSelection(input: CreateMachineOrderInput): {
@@ -129,6 +148,8 @@ type MachineOrderStatusRow = {
   orderNo: string;
   machineCode: string;
   orderStatus: OrderStatus;
+  paymentState: OrderPaymentState;
+  fulfillmentState: OrderFulfillmentState;
   totalAmountCents: number;
   paymentId: string;
   paymentNo: string;
@@ -162,6 +183,8 @@ export class OrdersService {
         orderNo: orders.orderNo,
         machineCode: machines.code,
         orderStatus: orders.status,
+        paymentState: orders.paymentState,
+        fulfillmentState: orders.fulfillmentState,
         totalAmountCents: orders.totalAmountCents,
         paymentId: payments.id,
         paymentNo: payments.paymentNo,
@@ -297,6 +320,44 @@ export class OrdersService {
     };
   }
 
+  private async assertMachineOrderLinePlanogramContext(
+    tx: DrizzleTransaction,
+    machineId: string,
+    item: CreateMachineOrderInput["items"][number],
+  ): Promise<void> {
+    if (!item.planogramVersion || !item.slotId || !item.slotCode) {
+      throw new ConflictException("Machine order line context is required");
+    }
+
+    const [row] = await tx
+      .select({ id: machinePlanogramSlots.id })
+      .from(machinePlanogramVersions)
+      .innerJoin(
+        machinePlanogramSlots,
+        eq(
+          machinePlanogramSlots.machinePlanogramVersionId,
+          machinePlanogramVersions.id,
+        ),
+      )
+      .where(
+        and(
+          eq(machinePlanogramVersions.machineId, machineId),
+          eq(machinePlanogramVersions.planogramVersion, item.planogramVersion),
+          eq(machinePlanogramVersions.status, "active"),
+          sql`${machinePlanogramVersions.acknowledgedAt} IS NOT NULL`,
+          eq(machinePlanogramSlots.slotId, item.slotId),
+          eq(machinePlanogramSlots.slotCode, item.slotCode),
+          eq(machinePlanogramSlots.inventoryId, item.inventoryId),
+        ),
+      );
+
+    if (!row) {
+      throw new ConflictException(
+        "Machine order line planogram context is not active and acknowledged",
+      );
+    }
+  }
+
   private async createLocalMachineOrderDraft(
     input: CreateMachineOrderInput,
     machineId: string,
@@ -317,6 +378,7 @@ export class OrdersService {
         .select({
           inventoryId: inventories.id,
           variantId: productVariants.id,
+          productId: products.id,
           productName: products.name,
           sku: productVariants.sku,
           size: productVariants.size,
@@ -353,11 +415,18 @@ export class OrdersService {
             `Inventory ${item.inventoryId} not found`,
           );
         }
+        assertMachineOrderLineContextMatchesInventory(item, row);
         return {
           ...row,
           quantity: item.quantity,
+          planogramVersion: item.planogramVersion,
         };
       });
+      await Promise.all(
+        input.items.map(async (item) =>
+          this.assertMachineOrderLinePlanogramContext(tx, machineId, item),
+        ),
+      );
 
       const totalAmountCents = itemDetails.reduce(
         (sum, item) => sum + item.unitPriceCents * item.quantity,
@@ -371,6 +440,8 @@ export class OrdersService {
           orderNo,
           machineId,
           status: "pending_payment",
+          paymentState: "awaiting_payment",
+          fulfillmentState: "awaiting_fulfillment",
           totalAmountCents,
           currency: "CNY",
           profileSnapshot: input.profileSnapshot ?? null,
@@ -384,28 +455,39 @@ export class OrdersService {
 
       await itemDetails.reduce<Promise<void>>(async (previous, item) => {
         await previous;
+        const [orderItem] = await tx
+          .insert(orderItems)
+          .values({
+            orderId: createdOrder.id,
+            variantId: item.variantId,
+            inventoryId: item.inventoryId,
+            slotId: item.slotId,
+            quantity: item.quantity,
+            unitPriceCents: item.unitPriceCents,
+            planogramVersion: item.planogramVersion,
+            productSnapshot: {
+              productName: item.productName,
+              productId: item.productId,
+              variantId: item.variantId,
+              inventoryId: item.inventoryId,
+              planogramVersion: item.planogramVersion,
+              slotId: item.slotId,
+              slotCode: item.slotCode,
+              layerNo: item.layerNo,
+              cellNo: item.cellNo,
+              vendingCommandQuantity: item.quantity,
+              sku: item.sku,
+              size: item.size,
+              color: item.color,
+            },
+          })
+          .returning({ id: orderItems.id });
         await this.inventoryService.reserveForOrder(tx, {
           orderId: createdOrder.id,
+          orderItemId: orderItem.id,
           inventoryId: item.inventoryId,
           quantity: item.quantity,
           expiresAt: paymentExpiresAt,
-        });
-        await tx.insert(orderItems).values({
-          orderId: createdOrder.id,
-          variantId: item.variantId,
-          inventoryId: item.inventoryId,
-          slotId: item.slotId,
-          quantity: item.quantity,
-          unitPriceCents: item.unitPriceCents,
-          productSnapshot: {
-            productName: item.productName,
-            sku: item.sku,
-            size: item.size,
-            color: item.color,
-            slotCode: item.slotCode,
-            layerNo: item.layerNo,
-            cellNo: item.cellNo,
-          },
         });
       }, Promise.resolve());
 
@@ -501,6 +583,8 @@ export class OrdersService {
         .update(orders)
         .set({
           status: "canceled",
+          paymentState: "payment_failed",
+          fulfillmentState: "canceled",
           canceledAt: new Date(),
           updatedAt: new Date(),
         })
@@ -634,6 +718,8 @@ export class OrdersService {
         machineId: orders.machineId,
         machineCode: machines.code,
         status: orders.status,
+        paymentState: orders.paymentState,
+        fulfillmentState: orders.fulfillmentState,
         totalAmountCents: orders.totalAmountCents,
         paidAt: orders.paidAt,
         dispensedAt: orders.dispensedAt,
@@ -662,6 +748,8 @@ export class OrdersService {
         machineId: orders.machineId,
         machineCode: machines.code,
         status: orders.status,
+        paymentState: orders.paymentState,
+        fulfillmentState: orders.fulfillmentState,
         totalAmountCents: orders.totalAmountCents,
         currency: orders.currency,
         paidAt: orders.paidAt,
@@ -805,7 +893,8 @@ export class OrdersService {
       .limit(1);
 
     const nextAction = resolveMachineOrderNextAction(
-      row.orderStatus,
+      row.paymentState,
+      row.fulfillmentState,
       row.paymentStatus,
       command?.status ?? null,
     );
@@ -815,6 +904,8 @@ export class OrdersService {
       orderNo: row.orderNo,
       machineCode: row.machineCode,
       orderStatus: row.orderStatus,
+      paymentState: row.paymentState,
+      fulfillmentState: row.fulfillmentState,
       totalAmountCents: row.totalAmountCents,
       payment: {
         paymentNo: row.paymentNo,
@@ -905,27 +996,35 @@ function toIsoStringOrNull(value: Date | null): string | null {
 }
 
 function resolveMachineOrderNextAction(
-  orderStatus: OrderStatus,
+  paymentState: OrderPaymentState,
+  fulfillmentState: OrderFulfillmentState,
   paymentStatus: PaymentStatus,
   commandStatus: VendingCommandStatus | null,
 ): MachineOrderStatusNextAction {
+  const orderStatus = projectOrderStatus({ paymentState, fulfillmentState });
   if (orderStatus === "fulfilled") return "success";
-  if (orderStatus === "dispense_failed") return "dispense_failed";
-  if (orderStatus === "manual_handling") return "manual_handling";
-  if (orderStatus === "refund_pending") return "refund_pending";
-  if (orderStatus === "refunded") return "refunded";
-  if (orderStatus === "closed") return "closed";
-
-  if (paymentStatus === "refund_pending") return "refund_pending";
-  if (paymentStatus === "refunded" || paymentStatus === "partial_refunded") {
+  if (
+    fulfillmentState === "dispense_failed" ||
+    fulfillmentState === "partial_dispensed"
+  ) {
+    return "dispense_failed";
+  }
+  if (fulfillmentState === "manual_handling") return "manual_handling";
+  if (
+    paymentState === "refund_pending" ||
+    paymentState === "partial_refund_pending"
+  ) {
+    return "refund_pending";
+  }
+  if (paymentState === "refunded" || paymentState === "partial_refunded") {
     return "refunded";
   }
-
-  if (orderStatus === "payment_expired" || paymentStatus === "expired") {
+  if (paymentState === "payment_expired" || paymentStatus === "expired") {
     return "payment_expired";
   }
   if (
-    orderStatus === "canceled" ||
+    paymentState === "payment_failed" ||
+    paymentState === "canceled" ||
     paymentStatus === "failed" ||
     paymentStatus === "canceled"
   ) {
@@ -933,12 +1032,12 @@ function resolveMachineOrderNextAction(
   }
 
   if (
-    (orderStatus === "paid" || orderStatus === "dispensing") &&
+    paymentState === "paid" &&
     (commandStatus === "failed" || commandStatus === "timeout")
   ) {
     return "manual_handling";
   }
-  if (orderStatus === "paid" || orderStatus === "dispensing") {
+  if (paymentState === "paid") {
     return "dispensing";
   }
 

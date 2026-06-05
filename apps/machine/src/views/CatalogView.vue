@@ -33,16 +33,16 @@ const degradedSyncMessage = computed(() => {
 });
 
 async function refreshCatalog(): Promise<void> {
-  await connectivityStore.refresh();
-  if (!connectivityStore.isSaleNetworkReady) {
-    await router.replace("/offline");
-    return;
+  try {
+    await connectivityStore.refresh();
+  } catch {
+    // 仍然尝试展示 daemon 本地 sale-view。
   }
   await catalogStore.refresh();
 }
 
 async function selectProduct(item: MachineCatalogItem): Promise<void> {
-  if (!canDisplayAsSaleReady.value || item.availableQty <= 0) return;
+  if (item.slotSalesState !== "sale_ready" || item.saleableStock <= 0) return;
   checkoutStore.selectItem(item);
   await router.push({
     name: "product-detail",
@@ -84,7 +84,10 @@ onMounted(async () => {
         v-if="!canDisplayAsSaleReady"
         class="mt-5 rounded-2xl bg-amber-400/15 p-4 text-amber-100"
       >
-        daemon 当前判定为不可售卖，仅展示目录缓存，购买入口已禁用。
+        {{
+          connectivityStore.saleReadinessBlockingMessages[0] ??
+          "daemon 当前判定为不可售卖"
+        }}，仅展示本地目录，购买入口已禁用。
       </p>
 
       <p class="mt-5 rounded-2xl bg-fuchsia-400/15 p-4 text-fuchsia-100">
@@ -131,7 +134,7 @@ onMounted(async () => {
           v-for="item in displayItems"
           :key="item.inventoryId"
           :item="item"
-          :disabled="!canDisplayAsSaleReady"
+          :disabled="false"
           @select="selectProduct"
         />
       </div>

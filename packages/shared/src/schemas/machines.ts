@@ -77,6 +77,44 @@ export type MachineEnvironmentControlRequest = z.infer<
   typeof machineEnvironmentControlRequestSchema
 >;
 
+export const rawMachineStockMovementSchema = z.object({
+  machineCode: z.string().min(1).max(64).optional(),
+  movementId: z.string().min(1).max(128),
+  planogramVersion: z.string().min(1).max(128),
+  slotId: z.uuid(),
+  movementType: z.enum([
+    "planned_refill",
+    "stock_count_correction",
+    "dispense_succeeded",
+  ]),
+  quantity: z.int().nonnegative(),
+  beforeQuantity: z.int().nonnegative().optional(),
+  afterQuantity: z.int().nonnegative().optional(),
+  slotMappingSnapshot: z
+    .object({
+      slotCode: z.string().min(1).max(32),
+      capacity: z.int().nonnegative(),
+      inventoryId: z.uuid().optional(),
+      variantId: z.uuid().optional(),
+    })
+    .optional(),
+  source: z.string().min(1).max(128),
+  attributedTo: z.string().max(128).nullable().optional(),
+  orderContext: z
+    .object({
+      orderNo: z.string().min(1).max(64),
+      orderItemId: z.uuid(),
+      vendingCommandNo: z.string().min(1).max(64),
+      inventoryId: z.uuid(),
+    })
+    .optional(),
+  occurredAt: z.iso.datetime(),
+});
+
+export type RawMachineStockMovement = z.infer<
+  typeof rawMachineStockMovementSchema
+>;
+
 export const machineAuthTokenRequestSchema = z.object({
   machineCode: z.string().min(1).max(64),
   machineSecret: z.string().min(32).max(256),
@@ -124,3 +162,74 @@ export const machineCatalogItemSchema = z.object({
 });
 
 export type MachineCatalogItem = z.infer<typeof machineCatalogItemSchema>;
+
+export const machinePlanogramVersionStatusSchema = z.enum([
+  "published",
+  "active",
+  "retired",
+]);
+
+export const machinePlanogramSlotSchema = machineCatalogItemSchema
+  .omit({ machineCode: true, availableQty: true })
+  .extend({
+    capacity: z.int().nonnegative(),
+    parLevel: z.int().nonnegative(),
+  });
+
+export const publishMachinePlanogramVersionSchema = z.object({
+  planogramVersion: z.string().min(1).max(128),
+  slots: z.array(machinePlanogramSlotSchema).min(1),
+});
+
+export const machinePlanogramVersionSnapshotSchema = z.object({
+  machineId: z.uuid(),
+  machineCode: z.string().min(1).max(64),
+  planogramVersion: z.string().min(1).max(128),
+  status: machinePlanogramVersionStatusSchema,
+  publishedAt: z.iso.datetime(),
+  acknowledgedAt: z.iso.datetime().nullable(),
+  activeAt: z.iso.datetime().nullable(),
+  slots: z.array(machinePlanogramSlotSchema),
+});
+
+export type MachinePlanogramVersionStatus = z.infer<
+  typeof machinePlanogramVersionStatusSchema
+>;
+export type MachinePlanogramSlot = z.infer<typeof machinePlanogramSlotSchema>;
+export type PublishMachinePlanogramVersion = z.infer<
+  typeof publishMachinePlanogramVersionSchema
+>;
+export type MachinePlanogramVersionSnapshot = z.infer<
+  typeof machinePlanogramVersionSnapshotSchema
+>;
+
+export const machineSaleViewItemSchema = machineCatalogItemSchema
+  .omit({ availableQty: true })
+  .extend({
+    capacity: z.int().nonnegative(),
+    parLevel: z.int().nonnegative(),
+    physicalStock: z.int().nonnegative(),
+    saleableStock: z.int().nonnegative(),
+    slotSalesState: z.enum([
+      "sale_ready",
+      "sold_out",
+      "suspect",
+      "frozen",
+      "needs_count",
+      "blocked_for_planogram_change",
+      "movement_rejected",
+      "needs_platform_review",
+    ]),
+  });
+
+export const machineSaleViewSnapshotSchema = z.object({
+  items: z.array(machineSaleViewItemSchema),
+  source: z.string(),
+  planogramVersion: z.string().nullable(),
+  lastUpdatedAt: z.string().nullable(),
+});
+
+export type MachineSaleViewItem = z.infer<typeof machineSaleViewItemSchema>;
+export type MachineSaleViewSnapshot = z.infer<
+  typeof machineSaleViewSnapshotSchema
+>;

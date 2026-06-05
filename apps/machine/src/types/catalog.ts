@@ -1,6 +1,7 @@
-import type { MachineCatalogItem } from "@vem/shared";
+import type { MachineSaleViewItem } from "@vem/shared";
 
-export type { MachineCatalogItem };
+export type MachineCatalogItem = MachineSaleViewItem;
+export type { MachineSaleViewItem };
 
 /** Recommendation engine output: item + score + reason */
 export type ScoredItem = MachineCatalogItem & {

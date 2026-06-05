@@ -69,10 +69,10 @@ function computeSizeScore(
 }
 
 /**
- * Stock weight: min(availableQty, 10)
+ * Stock weight: min(saleableStock, 10)
  */
-function computeStockScore(availableQty: number): number {
-  return Math.min(availableQty, 10);
+function computeStockScore(saleableStock: number): number {
+  return Math.min(saleableStock, 10);
 }
 
 /**
@@ -126,7 +126,7 @@ export function scoreItem(
 
   const userSize = inferSize(profile.heightCm ?? undefined, profile.bodyType);
   const sizeScore = computeSizeScore(userSize, item.size ?? null);
-  const stockScore = computeStockScore(item.availableQty);
+  const stockScore = computeStockScore(item.saleableStock);
   const sortScore = computeSortScore(item.productSortOrder);
 
   const totalScore = sizeScore + stockScore + sortScore;

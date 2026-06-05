@@ -105,6 +105,7 @@ export const useMachineStore = defineStore("machine", {
             visionProcessArgs: config.visionProcessArgs,
             visionRequestTimeoutMs: config.visionRequestTimeoutMs,
             kioskMode: config.kioskMode,
+            stockMovementRetentionDays: config.stockMovementRetentionDays,
           },
           secrets: {
             machineSecret: config.machineSecret,

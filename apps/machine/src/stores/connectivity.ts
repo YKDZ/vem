@@ -1,12 +1,17 @@
 import { defineStore } from "pinia";
 
-import type { HealthSnapshot, ReadySnapshot } from "@/daemon/schemas";
+import type {
+  HealthSnapshot,
+  MachineSaleReadiness,
+  ReadySnapshot,
+} from "@/daemon/schemas";
 
 import { daemonClient } from "@/daemon/client";
 
 type ConnectivityState = {
   health: HealthSnapshot | null;
   ready: ReadySnapshot | null;
+  saleReadiness: MachineSaleReadiness | null;
   loading: boolean;
   stale: boolean;
   error: string | null;
@@ -17,6 +22,7 @@ export const useConnectivityStore = defineStore("connectivity", {
   state: (): ConnectivityState => ({
     health: null,
     ready: null,
+    saleReadiness: null,
     loading: false,
     stale: false,
     error: null,
@@ -34,12 +40,27 @@ export const useConnectivityStore = defineStore("connectivity", {
       state.ready?.blockingReasons.map((reason) => reason.message) ?? [],
     degradedReasons: (state): string[] =>
       state.ready?.degradedReasons.map((reason) => reason.message) ?? [],
+    saleReadinessBlockingMessages: (state): string[] => {
+      const components = state.saleReadiness?.components;
+      if (!components) return [];
+      return [
+        components.platformReachability,
+        components.machineAuthentication,
+        components.activePlanogram,
+        components.paymentOptions,
+        components.scannerCapability,
+        components.syncHealth,
+        components.wholeMachineBlockers,
+      ]
+        .filter((component) => !component.ready)
+        .map((component) => component.message);
+    },
     isSaleNetworkReady: (state): boolean =>
       Boolean(
+        !state.stale &&
+        state.saleReadiness?.canStartNetworkAuthorizedSale &&
         state.ready?.canSell &&
-        state.health?.configConfigured &&
-        state.health?.backendOnline &&
-        state.health?.mqttConnected,
+        state.health?.configConfigured,
       ),
   },
   actions: {
@@ -54,16 +75,23 @@ export const useConnectivityStore = defineStore("connectivity", {
       this.error = null;
       this.stale = false;
     },
+    applySaleReadiness(snapshot: MachineSaleReadiness): void {
+      this.saleReadiness = snapshot;
+      this.error = null;
+      this.stale = false;
+    },
     async refresh(): Promise<void> {
       this.loading = true;
       this.error = null;
       try {
-        const [health, ready] = await Promise.all([
+        const [health, ready, saleReadiness] = await Promise.all([
           daemonClient.getHealth(),
           daemonClient.getReady(),
+          daemonClient.getSaleReadiness(),
         ]);
         this.applyHealth(health);
         this.applyReady(ready);
+        this.applySaleReadiness(saleReadiness);
       } catch (error) {
         this.stale = true;
         this.error = error instanceof Error ? error.message : String(error);

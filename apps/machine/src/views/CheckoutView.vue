@@ -3,15 +3,23 @@ import { computed, onMounted } from "vue";
 import { useRouter } from "vue-router";
 
 import KioskLayout from "@/layouts/KioskLayout.vue";
+import { useCatalogStore } from "@/stores/catalog";
 import { useCheckoutStore } from "@/stores/checkout";
 import { useConnectivityStore } from "@/stores/connectivity";
 import { formatCents } from "@/utils/format";
 
 const router = useRouter();
 const checkoutStore = useCheckoutStore();
+const catalogStore = useCatalogStore();
 const connectivityStore = useConnectivityStore();
 
-const item = computed(() => checkoutStore.selectedItem);
+const item = computed(() => {
+  const selectedItem = checkoutStore.selectedItem;
+  if (!selectedItem) return null;
+  return (
+    catalogStore.itemByInventoryId(selectedItem.inventoryId) ?? selectedItem
+  );
+});
 const canSubmit = computed(
   () =>
     Boolean(item.value) &&

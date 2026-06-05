@@ -84,6 +84,7 @@ onMounted(async () => {
     // Keep maintenance usable with local defaults when daemon is temporarily unavailable.
   }
   syncFormFromStore();
+  await refreshStockMaintenanceView();
 });
 
 const hardwareMaintenance = reactive({
@@ -94,6 +95,27 @@ const hardwareMaintenance = reactive({
 const visionMaintenance = reactive({
   loading: false,
   message: null as string | null,
+});
+
+const stockMaintenance = reactive({
+  loading: false,
+  message: null as string | null,
+  planogramVersion: null as string | null,
+  slots: [] as Array<{
+    slotId: string;
+    slotCode: string;
+    productName: string;
+    physicalStock: number;
+    capacity: number;
+  }>,
+});
+
+const stockForm = reactive({
+  movementType: "planned_refill" as "planned_refill" | "stock_count_correction",
+  planogramVersion: "",
+  slotId: "",
+  quantity: 1,
+  attributedTo: "front-panel",
 });
 
 const adapters: HardwareAdapter[] = [
@@ -177,6 +199,59 @@ async function refreshVisionStatus(): Promise<void> {
     visionMaintenance.loading = false;
   }
 }
+
+async function refreshStockMaintenanceView(): Promise<void> {
+  stockMaintenance.loading = true;
+  try {
+    const snapshot = await daemonClient.getSaleView();
+    stockMaintenance.planogramVersion = snapshot.planogramVersion;
+    stockMaintenance.slots = snapshot.items.map((item) => ({
+      slotId: item.slotId,
+      slotCode: item.slotCode,
+      productName: item.productName,
+      physicalStock: item.physicalStock,
+      capacity: item.capacity,
+    }));
+    stockForm.planogramVersion =
+      snapshot.planogramVersion ?? stockForm.planogramVersion;
+    if (!stockForm.slotId && stockMaintenance.slots[0]) {
+      stockForm.slotId = stockMaintenance.slots[0].slotId;
+    }
+  } catch (error) {
+    stockMaintenance.message =
+      error instanceof Error ? error.message : String(error);
+  } finally {
+    stockMaintenance.loading = false;
+  }
+}
+
+function nextMovementId(): string {
+  const randomId = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}`;
+  return `LOCAL-${randomId}`;
+}
+
+async function submitStockMovement(): Promise<void> {
+  stockMaintenance.loading = true;
+  stockMaintenance.message = null;
+  try {
+    await daemonClient.recordStockMovement({
+      movementId: nextMovementId(),
+      planogramVersion: stockForm.planogramVersion.trim(),
+      slotId: stockForm.slotId,
+      movementType: stockForm.movementType,
+      quantity: Number(stockForm.quantity),
+      source: "local_maintenance",
+      attributedTo: stockForm.attributedTo.trim() || "front-panel",
+    });
+    stockMaintenance.message = "库存动作已记录";
+    await refreshStockMaintenanceView();
+  } catch (error) {
+    stockMaintenance.message =
+      error instanceof Error ? error.message : String(error);
+  } finally {
+    stockMaintenance.loading = false;
+  }
+}
 </script>
 
 <template>
@@ -192,6 +267,104 @@ async function refreshVisionStatus(): Promise<void> {
         UI 现在只修改 daemon
         配置并读取其状态。密钥不会回显，留空表示保持现有值。
       </p>
+
+      <div class="mt-6 rounded-3xl border border-white/10 bg-slate-950/30 p-5">
+        <p
+          class="text-sm font-semibold tracking-[0.28em] text-emerald-200 uppercase"
+        >
+          Stock Maintenance
+        </p>
+        <form class="mt-4 grid gap-4" @submit.prevent="submitStockMovement">
+          <div class="grid gap-4 md:grid-cols-2">
+            <label class="grid gap-2 text-left">
+              <span class="text-sm font-semibold text-slate-200">动作类型</span>
+              <select
+                v-model="stockForm.movementType"
+                class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-emerald-300"
+              >
+                <option value="planned_refill">计划补货</option>
+                <option value="stock_count_correction">盘点修正</option>
+              </select>
+            </label>
+            <label class="grid gap-2 text-left">
+              <span class="text-sm font-semibold text-slate-200">数量</span>
+              <input
+                v-model.number="stockForm.quantity"
+                class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-emerald-300"
+                min="0"
+                step="1"
+                type="number"
+              />
+            </label>
+          </div>
+
+          <label class="grid gap-2 text-left">
+            <span class="text-sm font-semibold text-slate-200"
+              >Planogram Version</span
+            >
+            <input
+              v-model="stockForm.planogramVersion"
+              class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-emerald-300"
+            />
+          </label>
+
+          <label class="grid gap-2 text-left">
+            <span class="text-sm font-semibold text-slate-200">货道</span>
+            <select
+              v-model="stockForm.slotId"
+              class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-emerald-300"
+            >
+              <option
+                v-for="slot in stockMaintenance.slots"
+                :key="slot.slotId"
+                :value="slot.slotId"
+              >
+                {{ slot.slotCode }} · {{ slot.productName }} ·
+                {{ slot.physicalStock }}/{{ slot.capacity }}
+              </option>
+            </select>
+          </label>
+
+          <label class="grid gap-2 text-left">
+            <span class="text-sm font-semibold text-slate-200"
+              >Attribution</span
+            >
+            <input
+              v-model="stockForm.attributedTo"
+              class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-emerald-300"
+            />
+          </label>
+
+          <div class="grid gap-3 md:grid-cols-2">
+            <button
+              class="kiosk-touch-target rounded-2xl border border-emerald-200/30 px-4 py-3 font-bold text-emerald-100 disabled:opacity-50"
+              type="button"
+              :disabled="stockMaintenance.loading"
+              @click="refreshStockMaintenanceView"
+            >
+              刷新库存
+            </button>
+            <button
+              class="kiosk-touch-target rounded-2xl bg-emerald-300 px-4 py-3 font-bold text-slate-950 disabled:opacity-50"
+              type="submit"
+              :disabled="
+                stockMaintenance.loading ||
+                !stockForm.planogramVersion ||
+                !stockForm.slotId
+              "
+            >
+              记录库存动作
+            </button>
+          </div>
+
+          <p
+            v-if="stockMaintenance.message"
+            class="rounded-2xl bg-emerald-500/15 p-4 text-emerald-100"
+          >
+            {{ stockMaintenance.message }}
+          </p>
+        </form>
+      </div>
 
       <div
         v-if="mqttStore.outboxWarning"

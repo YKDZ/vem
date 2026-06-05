@@ -21,7 +21,11 @@ const specText = computed(
     props.item.sku,
 );
 const buttonText = computed(() => {
-  if (props.item.availableQty <= 0) return "已售罄";
+  if (
+    props.item.slotSalesState !== "sale_ready" ||
+    props.item.saleableStock <= 0
+  )
+    return "已售罄";
   if (props.disabled) return "暂不可购买";
   return "查看详情";
 });
@@ -51,12 +55,16 @@ const buttonText = computed(() => {
         <p class="text-2xl font-black text-sky-200">
           {{ formatCents(item.priceCents) }}
         </p>
-        <p class="text-sm text-slate-300">剩余 {{ item.availableQty }}</p>
+        <p class="text-sm text-slate-300">可售 {{ item.saleableStock }}</p>
       </div>
       <button
         class="kiosk-touch-target mt-3 w-full rounded-2xl bg-slate-100 px-4 py-3 font-bold text-base text-slate-950 disabled:cursor-not-allowed disabled:bg-slate-500 disabled:text-slate-300"
         type="button"
-        :disabled="disabled || item.availableQty <= 0"
+        :disabled="
+          disabled ||
+          item.slotSalesState !== 'sale_ready' ||
+          item.saleableStock <= 0
+        "
         @click="emit('select', item)"
       >
         {{ buttonText }}

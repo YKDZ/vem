@@ -20,6 +20,7 @@ use crate::{
     scanner::ScannerRuntime,
     secret,
     state::LocalStateStore,
+    stock_upload::StockMovementUploadRuntime,
     transaction::TransactionStateMachine,
     vision::VisionSupervisor,
 };
@@ -103,7 +104,7 @@ pub async fn run_console_with_token(
         events_tx.clone(),
     );
     let ui = ipc::UiRuntimeServices {
-        backend,
+        backend: backend.clone(),
         transaction,
         status_cache: ui_status_cache,
     };
@@ -124,6 +125,7 @@ pub async fn run_console_with_token(
         state: state.clone(),
         events: events_tx.clone(),
         runtime_tx: tx_raw.clone(),
+        disk_pressure_probe: Arc::new(crate::health::DataDirDiskPressureProbe::default()),
         ui,
     };
     let (ipc_handle, ipc_task) = ipc::run_server(config.bind, ipc_ctx.clone())
@@ -159,6 +161,9 @@ pub async fn run_console_with_token(
         ipc_ctx.ui.status_cache.clone(),
         stop_token.clone(),
     ));
+    let stock_upload = tokio::spawn(
+        StockMovementUploadRuntime::new(state.clone(), backend.clone(), stop_token.clone()).run(),
+    );
 
     let vision = VisionSupervisor::new(runtime_config.public.clone());
     let vision_events = events_tx.clone();
@@ -181,6 +186,7 @@ pub async fn run_console_with_token(
         scanner,
         payment_watcher,
         hardware_health,
+        stock_upload,
         ipc_task,
     ];
     if let Some(runtime_mqtt) = maybe_spawn_mqtt_task(

@@ -107,6 +107,7 @@ export type ProviderRefundPaymentInput = {
   paymentNo: string;
   providerTradeNo: string | null;
   amountCents: number;
+  totalAmountCents?: number;
   reason: string;
   config: PaymentProviderRuntimeConfig;
 };
@@ -179,6 +180,7 @@ export type ProviderWebhookInput = {
 
 export interface PaymentProvider {
   readonly code: string;
+  readonly supportsPartialRefund?: boolean;
   createPaymentIntent(input: PaymentIntentInput): Promise<PaymentIntentResult>;
   queryPayment(
     input: ProviderPaymentQueryInput,

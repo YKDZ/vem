@@ -2,13 +2,16 @@ use std::path::Path;
 
 use chrono::{SecondsFormat, Utc};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use sqlx::{sqlite::SqlitePoolOptions, SqlitePool, Transaction};
+use sqlx::{sqlite::SqlitePoolOptions, Row, SqlitePool, Transaction};
 use thiserror::Error;
 use uuid::Uuid;
 
 use vending_core::domain::{CommandLogStatus, OutboxKind, OutboxTransport};
 
-use super::schema::{MIGRATION_V1, SCHEMA_VERSION};
+use super::schema::{
+    MIGRATION_V1, MIGRATION_V2, MIGRATION_V3, MIGRATION_V4, MIGRATION_V5, MIGRATION_V6,
+    MIGRATION_V7, SCHEMA_VERSION,
+};
 use vending_core::hardware::{
     DispenseCommandPayload, DispenseResultPayload, EnvironmentControlResultPayload,
 };
@@ -16,7 +19,9 @@ use vending_core::hardware::{
 const COMMAND_LOG_TTL_DAYS: i64 = 30;
 const COMMAND_LOG_MAX_ENTRIES: i64 = 2000;
 const OUTBOX_TTL_DAYS: i64 = 7;
-const OUTBOX_MAX_EVENTS: i64 = 500;
+pub const OUTBOX_MAX_EVENTS: i64 = 500;
+const STOCK_LEDGER_REBUILT_AFTER_QUARANTINE_KEY: &str = "stock_ledger_rebuilt_after_quarantine";
+const STOCK_MOVEMENT_RETENTION_DAYS: i64 = 30;
 
 type CommandRecordRow = (
     String,
@@ -49,6 +54,19 @@ type OutboxRecordRow = (
 );
 
 type CurrentOrderSessionRow = (Option<String>, Option<String>, Option<String>, String);
+type StockMovementSyncRecordRow = (
+    String,
+    String,
+    String,
+    i64,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    String,
+    String,
+);
+type PreviousSlotProjectionRow = (String, i64, String, String, String, String, Option<String>);
 type OrderSessionRecordRow = (
     String,
     String,
@@ -80,6 +98,8 @@ pub enum StoreError {
     OutboxCapacity,
     #[error("payment code attempt is already active")]
     ActivePaymentCodeAttempt,
+    #[error("invalid stock input: {0}")]
+    InvalidStockInput(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -118,6 +138,21 @@ pub struct OutboxRecord {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct StockMovementSyncRecord {
+    pub movement_id: String,
+    pub status: String,
+    pub outbox_event_id: String,
+    pub attempt_count: i64,
+    pub last_error: Option<String>,
+    pub accepted_at: Option<String>,
+    pub platform_receipt_json: Option<serde_json::Value>,
+    pub rejection_json: Option<serde_json::Value>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct OrderSessionRecord {
     pub order_no: String,
     pub payment_method: String,
@@ -144,6 +179,99 @@ pub struct OrderSessionUpsert<'a> {
     pub recovery_strategy: &'a str,
     pub last_backend_status_json: Option<serde_json::Value>,
     pub last_error: Option<&'a str>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MachinePlanogramInput {
+    pub planogram_version: String,
+    pub source: String,
+    pub applied_by: Option<String>,
+    pub slots: Vec<MachinePlanogramSlotInput>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MachinePlanogramSlotInput {
+    pub slot_id: String,
+    pub slot_code: String,
+    pub layer_no: i64,
+    pub cell_no: i64,
+    pub capacity: i64,
+    pub par_level: i64,
+    pub inventory_id: String,
+    pub variant_id: String,
+    pub product_id: String,
+    pub product_name: String,
+    pub product_description: Option<String>,
+    pub cover_image_url: Option<String>,
+    pub category_id: Option<String>,
+    pub category_name: Option<String>,
+    pub sku: String,
+    pub size: Option<String>,
+    pub color: Option<String>,
+    pub price_cents: i64,
+    pub product_sort_order: i64,
+    pub target_gender: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StockMovementInput {
+    pub movement_id: String,
+    pub planogram_version: String,
+    pub slot_id: String,
+    pub movement_type: String,
+    pub quantity: i64,
+    pub source: String,
+    pub attributed_to: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SlotSalesStateInput {
+    pub planogram_version: String,
+    pub slot_id: String,
+    pub slot_sales_state: String,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaleViewSnapshot {
+    pub items: Vec<SaleViewItem>,
+    pub source: String,
+    pub planogram_version: Option<String>,
+    pub last_updated_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaleViewItem {
+    pub machine_code: Option<String>,
+    pub slot_id: String,
+    pub slot_code: String,
+    pub layer_no: i64,
+    pub cell_no: i64,
+    pub inventory_id: String,
+    pub variant_id: String,
+    pub product_id: String,
+    pub product_name: String,
+    pub product_description: Option<String>,
+    pub cover_image_url: Option<String>,
+    pub category_id: Option<String>,
+    pub category_name: Option<String>,
+    pub sku: String,
+    pub size: Option<String>,
+    pub color: Option<String>,
+    pub price_cents: i64,
+    pub product_sort_order: i64,
+    pub target_gender: Option<String>,
+    pub capacity: i64,
+    pub par_level: i64,
+    pub physical_stock: i64,
+    pub saleable_stock: i64,
+    pub slot_sales_state: String,
 }
 
 #[derive(Debug, Clone)]
@@ -248,6 +376,23 @@ impl OutboxInput {
             priority: 700,
         }
     }
+
+    pub fn stock_movement_upload(
+        movement_id: &str,
+        target_url: String,
+        payload: serde_json::Value,
+    ) -> Self {
+        Self {
+            id: format!("stock-movement:{movement_id}"),
+            kind: OutboxKind::StockMovementUpload,
+            transport: OutboxTransport::Http,
+            topic: None,
+            target_url: Some(target_url),
+            method: Some("POST".to_string()),
+            payload_json: payload,
+            priority: 250,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -263,51 +408,110 @@ impl LocalStateStore {
                 .map_err(sqlx::Error::Io)?;
         }
 
-        let url = format!("sqlite://{}?mode=rwc", path.display());
-        let pool = SqlitePoolOptions::new()
-            .max_connections(5)
-            .connect(&url)
-            .await
-            .map_err(|error| {
-                if path.exists() {
-                    let quarantine = path.with_extension(format!(
-                        "corrupt-{}.db",
-                        Utc::now().format("%Y%m%d%H%M%S")
-                    ));
-                    let _ = std::fs::rename(path, &quarantine);
-                    return StoreError::CorruptDatabase {
-                        path: quarantine.to_string_lossy().to_string(),
-                    };
-                }
-                StoreError::Sqlx(error)
-            })?;
+        let (pool, quarantine) = match open_sqlite_pool(path).await {
+            Ok(pool) => (pool, None),
+            Err(error) if path.exists() => {
+                let reason = error.to_string();
+                let quarantine = quarantine_sqlite_file(path).await?;
+                let pool = open_sqlite_pool(path).await.map_err(StoreError::Sqlx)?;
+                (pool, Some((quarantine, Some(reason))))
+            }
+            Err(error) => return Err(StoreError::Sqlx(error)),
+        };
 
         match run_integrity_check(&pool).await {
             Ok(()) => {}
             Err(error) => {
-                let quarantine = path
-                    .with_extension(format!("corrupt-{}.db", Utc::now().format("%Y%m%d%H%M%S")));
-                if path.exists() {
-                    let _ = tokio::fs::rename(path, &quarantine).await;
-                }
-                return Err(StoreError::IntegrityCheckFailed(format!(
-                    "{error}; quarantined to {}",
-                    quarantine.display()
-                )));
+                pool.close().await;
+                let quarantine = quarantine_sqlite_file(path).await?;
+                let pool = open_sqlite_pool(path).await.map_err(StoreError::Sqlx)?;
+                let store = Self { pool };
+                store.run_migrations().await?;
+                store
+                    .record_stock_ledger_quarantine(quarantine, Some(error))
+                    .await?;
+                store.put_metadata("last_started_at", &now_iso()).await?;
+                return Ok(store);
             }
         }
 
+        let store = Self { pool };
+        store.run_migrations().await?;
+        if let Some((quarantine, reason)) = quarantine {
+            store
+                .record_stock_ledger_quarantine(quarantine, reason)
+                .await?;
+        }
+        store.put_metadata("last_started_at", &now_iso()).await?;
+        Ok(store)
+    }
+
+    async fn run_migrations(&self) -> Result<(), StoreError> {
         sqlx::query(MIGRATION_V1)
-            .execute(&pool)
+            .execute(&self.pool)
             .await
             .map_err(StoreError::Sqlx)?;
 
-        let store = Self { pool };
-        store
-            .put_metadata("schema_version", &SCHEMA_VERSION)
+        let current_version = self
+            .get_metadata::<i64>("schema_version")
+            .await?
+            .unwrap_or_default();
+        if current_version < 2 {
+            sqlx::query(MIGRATION_V2)
+                .execute(&self.pool)
+                .await
+                .map_err(StoreError::Sqlx)?;
+        }
+        if current_version < 3 {
+            sqlx::query(MIGRATION_V3)
+                .execute(&self.pool)
+                .await
+                .map_err(StoreError::Sqlx)?;
+        }
+        if current_version < 4 {
+            sqlx::query(MIGRATION_V4)
+                .execute(&self.pool)
+                .await
+                .map_err(StoreError::Sqlx)?;
+        }
+        if current_version < 5 {
+            sqlx::query(MIGRATION_V5)
+                .execute(&self.pool)
+                .await
+                .map_err(StoreError::Sqlx)?;
+        }
+        if current_version < 6 {
+            sqlx::query(MIGRATION_V6)
+                .execute(&self.pool)
+                .await
+                .map_err(StoreError::Sqlx)?;
+        }
+        if current_version < 7 {
+            sqlx::query(MIGRATION_V7)
+                .execute(&self.pool)
+                .await
+                .map_err(StoreError::Sqlx)?;
+        }
+        self.put_metadata("schema_version", &SCHEMA_VERSION).await?;
+        Ok(())
+    }
+
+    async fn record_stock_ledger_quarantine(
+        &self,
+        quarantine: std::path::PathBuf,
+        reason: Option<String>,
+    ) -> Result<(), StoreError> {
+        self.put_metadata(STOCK_LEDGER_REBUILT_AFTER_QUARANTINE_KEY, &true)
             .await?;
-        store.put_metadata("last_started_at", &now_iso()).await?;
-        Ok(store)
+        self.put_metadata(
+            "stock_ledger_quarantine",
+            &serde_json::json!({
+                "path": quarantine.to_string_lossy(),
+                "reason": reason,
+                "quarantinedAt": now_iso(),
+            }),
+        )
+        .await
     }
 
     pub fn pool(&self) -> &SqlitePool {
@@ -551,11 +755,25 @@ impl LocalStateStore {
         .fetch_all(&self.pool)
         .await?;
 
-        let mut out = Vec::with_capacity(rows.len());
-        for row in rows {
-            out.push(to_outbox_record(row)?);
-        }
-        Ok(out)
+        rows.into_iter().map(to_outbox_record).collect()
+    }
+
+    pub async fn list_due_stock_movement_uploads(
+        &self,
+        at: chrono::DateTime<Utc>,
+    ) -> Result<Vec<OutboxRecord>, StoreError> {
+        let rows: Vec<OutboxRecordRow> = sqlx::query_as(
+            "SELECT id, kind, transport, topic, target_url, method, payload_json,
+                    priority, created_at, next_attempt_at, attempt_count, last_error, expires_at
+             FROM outbox_events
+             WHERE kind = 'stock_movement_upload' AND next_attempt_at <= ?1
+             ORDER BY priority ASC, created_at ASC",
+        )
+        .bind(at.to_rfc3339_opts(SecondsFormat::Millis, true))
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.into_iter().map(to_outbox_record).collect()
     }
 
     pub async fn enqueue_outbox(&self, input: &OutboxInput) -> Result<(), StoreError> {
@@ -572,10 +790,13 @@ impl LocalStateStore {
 
         let total = self.outbox_size_tx(&mut tx).await?;
         if total >= OUTBOX_MAX_EVENTS as u64 {
-            let worst: Option<(String, i64)> =
-                sqlx::query_as("SELECT id, priority FROM outbox_events ORDER BY priority DESC, created_at ASC LIMIT 1")
-                    .fetch_optional(tx.as_mut())
-                    .await?;
+            let worst: Option<(String, i64)> = sqlx::query_as(
+                "SELECT id, priority FROM outbox_events
+                     WHERE kind != 'stock_movement_upload'
+                     ORDER BY priority DESC, created_at ASC LIMIT 1",
+            )
+            .fetch_optional(tx.as_mut())
+            .await?;
             if let Some((worst_id, worst_priority)) = worst {
                 if input.priority < worst_priority {
                     sqlx::query("DELETE FROM outbox_events WHERE id = ?1")
@@ -623,19 +844,35 @@ impl LocalStateStore {
     }
 
     pub async fn mark_outbox_failed(&self, id: &str, error: &str) -> Result<(), StoreError> {
-        let next_delay = backoff_delay(id, &self.pool).await?;
-        sqlx::query(
-            "UPDATE outbox_events
-             SET attempt_count = attempt_count + 1,
-                 last_error = ?2,
-                 next_attempt_at = ?3
-             WHERE id = ?1",
+        let mut tx = self.pool.begin().await?;
+        mark_outbox_failed_in_tx(&mut tx, id, error).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    pub async fn mark_stock_movement_upload_failed(
+        &self,
+        event_id: &str,
+        movement_id: &str,
+        error: &str,
+    ) -> Result<(), StoreError> {
+        let mut tx = self.pool.begin().await?;
+        let attempt_count = mark_outbox_failed_in_tx(&mut tx, event_id, error).await?;
+        let sync_result = sqlx::query(
+            "UPDATE stock_movement_sync
+             SET status = 'failed', attempt_count = ?2, last_error = ?3, updated_at = ?4
+             WHERE movement_id = ?1",
         )
-        .bind(id)
+        .bind(movement_id)
+        .bind(attempt_count)
         .bind(error)
-        .bind(next_delay)
-        .execute(&self.pool)
+        .bind(now_iso())
+        .execute(tx.as_mut())
         .await?;
+        if sync_result.rows_affected() != 1 {
+            return Err(StoreError::Sqlx(sqlx::Error::RowNotFound));
+        }
+        tx.commit().await?;
         Ok(())
     }
 
@@ -968,6 +1205,653 @@ impl LocalStateStore {
         Ok(())
     }
 
+    pub async fn apply_planogram(
+        &self,
+        input: MachinePlanogramInput,
+    ) -> Result<SaleViewSnapshot, StoreError> {
+        if input.planogram_version.trim().is_empty() || input.slots.is_empty() {
+            return Err(StoreError::InvalidStockInput(
+                "planogram version and at least one slot are required".to_string(),
+            ));
+        }
+        for slot in &input.slots {
+            if slot.capacity < 0 || slot.par_level < 0 || slot.price_cents < 0 {
+                return Err(StoreError::InvalidStockInput(
+                    "capacity, par level, and price must be nonnegative".to_string(),
+                ));
+            }
+        }
+
+        let rebuilt_after_quarantine = self
+            .get_metadata::<bool>(STOCK_LEDGER_REBUILT_AFTER_QUARANTINE_KEY)
+            .await?
+            .unwrap_or(false);
+
+        let mut tx = self.pool.begin().await?;
+        let applied_at = now_iso();
+        let previous_slots = current_slot_projections_in_tx(&mut tx).await?;
+        let existing: Option<(i64,)> = sqlx::query_as(
+            "SELECT active FROM machine_planogram_versions WHERE planogram_version = ?1",
+        )
+        .bind(&input.planogram_version)
+        .fetch_optional(tx.as_mut())
+        .await?;
+
+        if let Some((active,)) = existing {
+            if !planogram_slots_match_in_tx(&mut tx, &input.planogram_version, &input.slots).await?
+            {
+                return Err(StoreError::InvalidStockInput(
+                    "planogram version already exists with different slot payload".to_string(),
+                ));
+            }
+            if active != 1 {
+                return Err(StoreError::InvalidStockInput(
+                    "planogram version already exists but is not active".to_string(),
+                ));
+            }
+
+            sqlx::query(
+                "UPDATE machine_planogram_versions
+                 SET source = ?2, applied_by = ?3, applied_at = ?4
+                 WHERE planogram_version = ?1",
+            )
+            .bind(&input.planogram_version)
+            .bind(&input.source)
+            .bind(&input.applied_by)
+            .bind(&applied_at)
+            .execute(tx.as_mut())
+            .await?;
+            for slot in &input.slots {
+                upsert_sale_view_projection_in_tx(&mut tx, &input.planogram_version, &slot.slot_id)
+                    .await?;
+            }
+            tx.commit().await?;
+            return self.sale_view(None).await;
+        }
+
+        sqlx::query("UPDATE machine_planogram_versions SET active = 0 WHERE active = 1")
+            .execute(tx.as_mut())
+            .await?;
+        sqlx::query(
+            "INSERT INTO machine_planogram_versions(planogram_version,active,source,applied_by,applied_at)
+             VALUES (?1,1,?2,?3,?4)",
+        )
+        .bind(&input.planogram_version)
+        .bind(&input.source)
+        .bind(&input.applied_by)
+        .bind(&applied_at)
+        .execute(tx.as_mut())
+        .await?;
+
+        for slot in &input.slots {
+            sqlx::query(
+                "INSERT INTO machine_planogram_slots(
+                   planogram_version,slot_id,slot_code,layer_no,cell_no,capacity,par_level,
+                   inventory_id,variant_id,product_id,product_name,product_description,cover_image_url,
+                   category_id,category_name,sku,size,color,price_cents,product_sort_order,target_gender
+                 ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)",
+            )
+            .bind(&input.planogram_version)
+            .bind(&slot.slot_id)
+            .bind(&slot.slot_code)
+            .bind(slot.layer_no)
+            .bind(slot.cell_no)
+            .bind(slot.capacity)
+            .bind(slot.par_level)
+            .bind(&slot.inventory_id)
+            .bind(&slot.variant_id)
+            .bind(&slot.product_id)
+            .bind(&slot.product_name)
+            .bind(&slot.product_description)
+            .bind(&slot.cover_image_url)
+            .bind(&slot.category_id)
+            .bind(&slot.category_name)
+            .bind(&slot.sku)
+            .bind(&slot.size)
+            .bind(&slot.color)
+            .bind(slot.price_cents)
+            .bind(slot.product_sort_order)
+            .bind(&slot.target_gender)
+            .execute(tx.as_mut())
+            .await?;
+
+            if let Some(previous) = previous_slots
+                .iter()
+                .find(|previous| previous.slot_id == slot.slot_id)
+            {
+                let saleable_stock = previous.physical_stock.min(slot.capacity).max(0);
+                if previous.has_sale_safety_blocker()
+                    && is_reconciliation_sale_safety_blocker(&previous.slot_sales_state)
+                {
+                    upsert_stock_projection_with_state_in_tx(
+                        &mut tx,
+                        &input.planogram_version,
+                        &slot.slot_id,
+                        previous.physical_stock,
+                        saleable_stock,
+                        &previous.slot_sales_state,
+                    )
+                    .await?;
+                    upsert_sale_safety_blocker_marker_in_tx(
+                        &mut tx,
+                        &input.planogram_version,
+                        &slot.slot_id,
+                        &previous.slot_sales_state,
+                        "planogram_activation_replay",
+                        &input.source,
+                    )
+                    .await?;
+                } else if previous.physical_stock > 0 && !previous.has_same_mapping(slot) {
+                    upsert_stock_projection_with_state_in_tx(
+                        &mut tx,
+                        &input.planogram_version,
+                        &slot.slot_id,
+                        previous.physical_stock,
+                        0,
+                        "blocked_for_planogram_change",
+                    )
+                    .await?;
+                } else {
+                    let slot_sales_state =
+                        if matches!(previous.slot_sales_state.as_str(), "frozen" | "suspect") {
+                            previous.slot_sales_state.as_str()
+                        } else if saleable_stock > 0 {
+                            "sale_ready"
+                        } else {
+                            "sold_out"
+                        };
+                    upsert_stock_projection_with_state_in_tx(
+                        &mut tx,
+                        &input.planogram_version,
+                        &slot.slot_id,
+                        previous.physical_stock,
+                        saleable_stock,
+                        slot_sales_state,
+                    )
+                    .await?;
+                }
+            } else if rebuilt_after_quarantine {
+                upsert_stock_projection_with_state_in_tx(
+                    &mut tx,
+                    &input.planogram_version,
+                    &slot.slot_id,
+                    0,
+                    0,
+                    "needs_count",
+                )
+                .await?;
+                upsert_sale_safety_blocker_marker_in_tx(
+                    &mut tx,
+                    &input.planogram_version,
+                    &slot.slot_id,
+                    "needs_count",
+                    "stock_ledger_loss",
+                    &input.source,
+                )
+                .await?;
+            } else {
+                upsert_stock_projection_in_tx(
+                    &mut tx,
+                    &input.planogram_version,
+                    &slot.slot_id,
+                    0,
+                    slot.capacity,
+                )
+                .await?;
+            }
+            upsert_sale_view_projection_in_tx(&mut tx, &input.planogram_version, &slot.slot_id)
+                .await?;
+        }
+        tx.commit().await?;
+        self.sale_view(None).await
+    }
+
+    pub async fn record_stock_movement(
+        &self,
+        input: StockMovementInput,
+    ) -> Result<SaleViewSnapshot, StoreError> {
+        self.record_stock_movement_with_upload(input, None, None)
+            .await
+    }
+
+    pub async fn record_stock_movement_with_upload(
+        &self,
+        input: StockMovementInput,
+        machine_code: Option<&str>,
+        api_base_url: Option<&str>,
+    ) -> Result<SaleViewSnapshot, StoreError> {
+        if input.quantity < 0 {
+            return Err(StoreError::InvalidStockInput(
+                "movement quantity must be nonnegative".to_string(),
+            ));
+        }
+        if input.movement_type != "planned_refill"
+            && input.movement_type != "stock_count_correction"
+        {
+            return Err(StoreError::InvalidStockInput(format!(
+                "unsupported movement type {}",
+                input.movement_type
+            )));
+        }
+
+        let mut tx = self.pool.begin().await?;
+        let slot: Option<(i64, String, String, String)> = sqlx::query_as(
+            "SELECT s.capacity, s.slot_code, s.inventory_id, s.variant_id
+             FROM machine_planogram_slots s
+             JOIN machine_planogram_versions v
+               ON v.planogram_version = s.planogram_version AND v.active = 1
+             WHERE s.planogram_version = ?1 AND s.slot_id = ?2",
+        )
+        .bind(&input.planogram_version)
+        .bind(&input.slot_id)
+        .fetch_optional(tx.as_mut())
+        .await?;
+        let Some((capacity, slot_code, inventory_id, variant_id)) = slot else {
+            return Err(StoreError::InvalidStockInput(
+                "movement slot is not in the active planogram version".to_string(),
+            ));
+        };
+        let current_stock: Option<(i64, String)> = sqlx::query_as(
+            "SELECT physical_stock, slot_sales_state
+             FROM current_stock_projection
+             WHERE planogram_version = ?1 AND slot_id = ?2",
+        )
+        .bind(&input.planogram_version)
+        .bind(&input.slot_id)
+        .fetch_optional(tx.as_mut())
+        .await?;
+        let before_quantity = current_stock
+            .as_ref()
+            .map_or(0, |(physical_stock, _)| *physical_stock);
+        let current_slot_sales_state = current_stock
+            .as_ref()
+            .map(|(_, slot_sales_state)| slot_sales_state.as_str());
+        let replaces_local_fact = input.movement_type == "stock_count_correction"
+            || matches!(
+                current_slot_sales_state,
+                Some("blocked_for_planogram_change")
+            );
+        let after_quantity = if replaces_local_fact {
+            input.quantity
+        } else {
+            before_quantity + input.quantity
+        };
+        let slot_mapping_snapshot = serde_json::json!({
+            "slotCode": slot_code,
+            "capacity": capacity,
+            "inventoryId": inventory_id,
+            "variantId": variant_id,
+        });
+        let slot_mapping_snapshot_json = slot_mapping_snapshot.to_string();
+
+        let occurred_at = now_iso();
+        sqlx::query(
+            "INSERT INTO stock_movements(
+               movement_id,planogram_version,slot_id,movement_type,quantity,
+               before_quantity,after_quantity,slot_mapping_snapshot_json,
+               source,attributed_to,occurred_at
+             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+        )
+        .bind(&input.movement_id)
+        .bind(&input.planogram_version)
+        .bind(&input.slot_id)
+        .bind(&input.movement_type)
+        .bind(input.quantity)
+        .bind(before_quantity)
+        .bind(after_quantity)
+        .bind(&slot_mapping_snapshot_json)
+        .bind(&input.source)
+        .bind(&input.attributed_to)
+        .bind(&occurred_at)
+        .execute(tx.as_mut())
+        .await?;
+
+        if let (Some(machine_code), Some(api_base_url)) = (machine_code, api_base_url) {
+            let payload = serde_json::json!({
+                "machineCode": machine_code,
+                "movementId": input.movement_id,
+                "planogramVersion": input.planogram_version,
+                "slotId": input.slot_id,
+                "movementType": input.movement_type,
+                "quantity": input.quantity,
+                "beforeQuantity": before_quantity,
+                "afterQuantity": after_quantity,
+                "slotMappingSnapshot": slot_mapping_snapshot,
+                "source": input.source,
+                "attributedTo": input.attributed_to,
+                "occurredAt": occurred_at,
+            });
+            let target_url = format!(
+                "{}/machine-stock-movements",
+                api_base_url.trim_end_matches('/')
+            );
+            let event = OutboxInput::stock_movement_upload(&input.movement_id, target_url, payload);
+            let now = now_iso();
+            sqlx::query(
+                "INSERT INTO stock_movement_sync(
+                   movement_id,status,outbox_event_id,attempt_count,created_at,updated_at
+                 ) VALUES (?1,'pending',?2,0,?3,?3)
+                 ON CONFLICT(movement_id) DO NOTHING",
+            )
+            .bind(&input.movement_id)
+            .bind(&event.id)
+            .bind(&now)
+            .execute(tx.as_mut())
+            .await?;
+            insert_outbox_in_tx(&mut tx, &event).await?;
+        }
+
+        clear_stock_ledger_loss_blocker_in_tx(&mut tx, &input.planogram_version, &input.slot_id)
+            .await?;
+        upsert_stock_projection_in_tx(
+            &mut tx,
+            &input.planogram_version,
+            &input.slot_id,
+            after_quantity,
+            capacity,
+        )
+        .await?;
+        upsert_sale_view_projection_in_tx(&mut tx, &input.planogram_version, &input.slot_id)
+            .await?;
+        tx.commit().await?;
+        self.sale_view(None).await
+    }
+
+    pub async fn block_slot_for_dispense_failure(
+        &self,
+        command: &DispenseCommandPayload,
+        error_code: Option<&str>,
+    ) -> Result<Option<SaleViewSnapshot>, StoreError> {
+        let slot_sales_state = match error_code {
+            Some("NO_DROP") => "suspect",
+            _ => "frozen",
+        };
+        self.block_command_slot(command, slot_sales_state, "dispense_failure")
+            .await
+    }
+
+    pub async fn block_slot_for_dispense_result_unknown(
+        &self,
+        command: &DispenseCommandPayload,
+    ) -> Result<Option<SaleViewSnapshot>, StoreError> {
+        self.block_command_slot(command, "frozen", "dispense_result_unknown")
+            .await
+    }
+
+    async fn block_command_slot(
+        &self,
+        command: &DispenseCommandPayload,
+        slot_sales_state: &str,
+        source: &str,
+    ) -> Result<Option<SaleViewSnapshot>, StoreError> {
+        let row: Option<(String, String)> = sqlx::query_as(
+            "SELECT v.planogram_version, s.slot_id
+             FROM machine_planogram_slots s
+             JOIN machine_planogram_versions v
+               ON v.planogram_version = s.planogram_version AND v.active = 1
+             WHERE s.slot_code = ?1 AND s.layer_no = ?2 AND s.cell_no = ?3
+             LIMIT 1",
+        )
+        .bind(&command.slot.slot_code)
+        .bind(command.slot.layer_no)
+        .bind(command.slot.cell_no)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        let Some((planogram_version, slot_id)) = row else {
+            return Ok(None);
+        };
+
+        let snapshot = self
+            .update_slot_sales_state(SlotSalesStateInput {
+                planogram_version,
+                slot_id,
+                slot_sales_state: slot_sales_state.to_string(),
+                source: source.to_string(),
+            })
+            .await?;
+        Ok(Some(snapshot))
+    }
+
+    pub async fn update_slot_sales_state(
+        &self,
+        input: SlotSalesStateInput,
+    ) -> Result<SaleViewSnapshot, StoreError> {
+        if !is_supported_slot_sales_state(&input.slot_sales_state) {
+            return Err(StoreError::InvalidStockInput(format!(
+                "unsupported slot sales state {}",
+                input.slot_sales_state
+            )));
+        }
+
+        let mut tx = self.pool.begin().await?;
+        let slot_exists: Option<(i64,)> = sqlx::query_as(
+            "SELECT 1
+             FROM machine_planogram_slots s
+             JOIN machine_planogram_versions v
+               ON v.planogram_version = s.planogram_version AND v.active = 1
+             WHERE s.planogram_version = ?1 AND s.slot_id = ?2",
+        )
+        .bind(&input.planogram_version)
+        .bind(&input.slot_id)
+        .fetch_optional(tx.as_mut())
+        .await?;
+        if slot_exists.is_none() {
+            return Err(StoreError::InvalidStockInput(
+                "slot is not in the active planogram version".to_string(),
+            ));
+        }
+
+        if is_reconciliation_sale_safety_blocker(&input.slot_sales_state) {
+            upsert_sale_safety_blocker_marker_in_tx(
+                &mut tx,
+                &input.planogram_version,
+                &input.slot_id,
+                &input.slot_sales_state,
+                "field_action",
+                &input.source,
+            )
+            .await?;
+        } else {
+            clear_sale_safety_blocker_marker_in_tx(
+                &mut tx,
+                &input.planogram_version,
+                &input.slot_id,
+            )
+            .await?;
+        }
+
+        let updated = sqlx::query(
+            "UPDATE current_stock_projection
+             SET slot_sales_state = ?3, updated_at = ?4
+             WHERE planogram_version = ?1 AND slot_id = ?2",
+        )
+        .bind(&input.planogram_version)
+        .bind(&input.slot_id)
+        .bind(&input.slot_sales_state)
+        .bind(now_iso())
+        .execute(tx.as_mut())
+        .await?
+        .rows_affected();
+        if updated == 0 {
+            return Err(StoreError::InvalidStockInput(
+                "slot stock projection is missing".to_string(),
+            ));
+        }
+
+        upsert_sale_view_projection_in_tx(&mut tx, &input.planogram_version, &input.slot_id)
+            .await?;
+        tx.commit().await?;
+        self.sale_view(None).await
+    }
+
+    pub async fn sale_view(
+        &self,
+        machine_code: Option<String>,
+    ) -> Result<SaleViewSnapshot, StoreError> {
+        let active: Option<(String,)> = sqlx::query_as(
+            "SELECT planogram_version FROM machine_planogram_versions WHERE active = 1 LIMIT 1",
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some((planogram_version,)) = active else {
+            return Ok(SaleViewSnapshot {
+                items: vec![],
+                source: "local_stock".to_string(),
+                planogram_version: None,
+                last_updated_at: None,
+            });
+        };
+
+        let rows: Vec<(String, String)> = sqlx::query_as(
+            "SELECT item_json, updated_at
+             FROM sale_view_projection
+             WHERE planogram_version = ?1
+             ORDER BY json_extract(item_json, '$.productSortOrder') ASC,
+                      json_extract(item_json, '$.slotCode') ASC",
+        )
+        .bind(&planogram_version)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut items = Vec::with_capacity(rows.len());
+        let mut last_updated_at = None;
+        for (json, updated_at) in rows {
+            let mut item: SaleViewItem = serde_json::from_str(&json)?;
+            item.machine_code = machine_code.clone();
+            last_updated_at = Some(updated_at);
+            items.push(item);
+        }
+
+        Ok(SaleViewSnapshot {
+            items,
+            source: "local_stock".to_string(),
+            planogram_version: Some(planogram_version),
+            last_updated_at,
+        })
+    }
+
+    pub async fn record_stock_movement_upload_response(
+        &self,
+        event: &OutboxRecord,
+        response: &crate::backend::StockMovementUploadResponse,
+    ) -> Result<(), StoreError> {
+        let movement_id = response.movement_id.as_str();
+        let attempts = event.attempt_count + 1;
+        let status = match response.status.as_str() {
+            "accepted" | "already_accepted" => "accepted",
+            "rejected" => "rejected",
+            "reconciliation" => "reconciliation",
+            _ => "reconciliation",
+        };
+        let accepted_at = if status == "accepted" {
+            response.accepted_at.clone().or_else(|| Some(now_iso()))
+        } else {
+            None
+        };
+        let receipt_json = serde_json::to_string(response)?;
+        let rejection_json = if status == "accepted" {
+            None
+        } else {
+            Some(receipt_json.clone())
+        };
+
+        let mut tx = self.pool.begin().await?;
+        let sync_result = sqlx::query(
+            "UPDATE stock_movement_sync
+             SET status = ?2,
+                 attempt_count = ?3,
+                 last_error = NULL,
+                 accepted_at = ?4,
+                 platform_receipt_json = ?5,
+                 rejection_json = ?6,
+                 updated_at = ?7
+             WHERE movement_id = ?1",
+        )
+        .bind(movement_id)
+        .bind(status)
+        .bind(attempts)
+        .bind(accepted_at)
+        .bind(&receipt_json)
+        .bind(rejection_json)
+        .bind(now_iso())
+        .execute(tx.as_mut())
+        .await?;
+        if sync_result.rows_affected() != 1 {
+            return Err(StoreError::Sqlx(sqlx::Error::RowNotFound));
+        }
+        if let Some(blocker) = response
+            .reconciliation
+            .as_ref()
+            .and_then(|reconciliation| reconciliation.sale_safety_blocker.as_ref())
+        {
+            apply_sale_safety_blocker_in_tx(&mut tx, blocker).await?;
+        }
+        sqlx::query("DELETE FROM outbox_events WHERE id = ?1")
+            .bind(&event.id)
+            .execute(tx.as_mut())
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    pub async fn stock_movement_sync_record(
+        &self,
+        movement_id: &str,
+    ) -> Result<Option<StockMovementSyncRecord>, StoreError> {
+        let row: Option<StockMovementSyncRecordRow> = sqlx::query_as(
+            "SELECT movement_id,status,outbox_event_id,attempt_count,last_error,accepted_at,platform_receipt_json,rejection_json,created_at,updated_at
+             FROM stock_movement_sync WHERE movement_id = ?1",
+        )
+        .bind(movement_id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        row.map(to_stock_movement_sync_record).transpose()
+    }
+
+    pub async fn prune_stock_movement_history(&self) -> Result<u64, StoreError> {
+        self.prune_accepted_stock_movement_history(STOCK_MOVEMENT_RETENTION_DAYS)
+            .await
+    }
+
+    pub async fn prune_accepted_stock_movement_history(
+        &self,
+        retention_days: i64,
+    ) -> Result<u64, StoreError> {
+        let retention_days = retention_days.clamp(
+            crate::config::STOCK_MOVEMENT_RETENTION_MIN_DAYS,
+            crate::config::STOCK_MOVEMENT_RETENTION_MAX_DAYS,
+        );
+        let cutoff = (Utc::now() - chrono::Duration::days(retention_days))
+            .to_rfc3339_opts(SecondsFormat::Millis, true);
+        let mut tx = self.pool.begin().await?;
+        let movement_ids: Vec<(String,)> = sqlx::query_as(
+            "SELECT movement_id
+             FROM stock_movement_sync
+             WHERE status = 'accepted' AND COALESCE(accepted_at, updated_at) < ?1",
+        )
+        .bind(&cutoff)
+        .fetch_all(tx.as_mut())
+        .await?;
+
+        let mut pruned = 0_u64;
+        for (movement_id,) in movement_ids {
+            sqlx::query("DELETE FROM stock_movement_sync WHERE movement_id = ?1")
+                .bind(&movement_id)
+                .execute(tx.as_mut())
+                .await?;
+            let deleted = sqlx::query("DELETE FROM stock_movements WHERE movement_id = ?1")
+                .bind(&movement_id)
+                .execute(tx.as_mut())
+                .await?
+                .rows_affected();
+            pruned += deleted;
+        }
+        tx.commit().await?;
+        Ok(pruned)
+    }
+
     pub async fn append_health_event(
         &self,
         event: &vending_core::health::ComponentHealth,
@@ -989,16 +1873,19 @@ impl LocalStateStore {
     }
 
     pub async fn prune_outbox(&self) -> Result<(u64, u64), StoreError> {
-        let deleted_expired = sqlx::query("DELETE FROM outbox_events WHERE expires_at < ?1")
-            .bind(now_iso())
-            .execute(&self.pool)
-            .await?
-            .rows_affected();
+        let deleted_expired = sqlx::query(
+            "DELETE FROM outbox_events WHERE expires_at < ?1 AND kind != 'stock_movement_upload'",
+        )
+        .bind(now_iso())
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
 
         let deleted_oversize = sqlx::query(
             "DELETE FROM outbox_events
              WHERE id IN (
                SELECT id FROM outbox_events
+               WHERE kind != 'stock_movement_upload'
                ORDER BY priority ASC, created_at DESC
                LIMIT -1 OFFSET ?1
              )",
@@ -1032,6 +1919,33 @@ impl LocalStateStore {
     }
 }
 
+async fn open_sqlite_pool(path: &Path) -> Result<SqlitePool, sqlx::Error> {
+    let url = format!("sqlite://{}?mode=rwc", path.display());
+    SqlitePoolOptions::new()
+        .max_connections(5)
+        .connect(&url)
+        .await
+}
+
+async fn quarantine_sqlite_file(path: &Path) -> Result<std::path::PathBuf, StoreError> {
+    let quarantine = path.with_extension(format!("corrupt-{}.db", Utc::now().timestamp_millis()));
+    tokio::fs::rename(path, &quarantine)
+        .await
+        .map_err(sqlx::Error::Io)?;
+
+    for suffix in ["-wal", "-shm"] {
+        let sidecar = std::path::PathBuf::from(format!("{}{}", path.display(), suffix));
+        if sidecar.try_exists().map_err(sqlx::Error::Io)? {
+            let quarantine_sidecar =
+                std::path::PathBuf::from(format!("{}{}", quarantine.display(), suffix));
+            tokio::fs::rename(sidecar, quarantine_sidecar)
+                .await
+                .map_err(sqlx::Error::Io)?;
+        }
+    }
+    Ok(quarantine)
+}
+
 async fn run_integrity_check(pool: &SqlitePool) -> Result<(), String> {
     let row: (String,) = sqlx::query_as("PRAGMA integrity_check")
         .fetch_one(pool)
@@ -1052,6 +1966,414 @@ fn is_unique_constraint_violation(error: &sqlx::Error) -> bool {
         }
         _ => false,
     }
+}
+
+fn normalize_planogram_slots(
+    slots: &[MachinePlanogramSlotInput],
+) -> Vec<MachinePlanogramSlotInput> {
+    let mut slots = slots.to_vec();
+    slots.sort_by(|left, right| left.slot_id.cmp(&right.slot_id));
+    slots
+}
+
+async fn planogram_slots_match_in_tx(
+    tx: &mut Transaction<'_, sqlx::Sqlite>,
+    planogram_version: &str,
+    input_slots: &[MachinePlanogramSlotInput],
+) -> Result<bool, StoreError> {
+    let rows = sqlx::query(
+        "SELECT
+           slot_id,slot_code,layer_no,cell_no,capacity,par_level,
+           inventory_id,variant_id,product_id,product_name,product_description,cover_image_url,
+           category_id,category_name,sku,size,color,price_cents,product_sort_order,target_gender
+         FROM machine_planogram_slots
+         WHERE planogram_version = ?1
+         ORDER BY slot_id ASC",
+    )
+    .bind(planogram_version)
+    .fetch_all(tx.as_mut())
+    .await?;
+
+    let mut existing = Vec::with_capacity(rows.len());
+    for row in rows {
+        existing.push(MachinePlanogramSlotInput {
+            slot_id: row.try_get("slot_id")?,
+            slot_code: row.try_get("slot_code")?,
+            layer_no: row.try_get("layer_no")?,
+            cell_no: row.try_get("cell_no")?,
+            capacity: row.try_get("capacity")?,
+            par_level: row.try_get("par_level")?,
+            inventory_id: row.try_get("inventory_id")?,
+            variant_id: row.try_get("variant_id")?,
+            product_id: row.try_get("product_id")?,
+            product_name: row.try_get("product_name")?,
+            product_description: row.try_get("product_description")?,
+            cover_image_url: row.try_get("cover_image_url")?,
+            category_id: row.try_get("category_id")?,
+            category_name: row.try_get("category_name")?,
+            sku: row.try_get("sku")?,
+            size: row.try_get("size")?,
+            color: row.try_get("color")?,
+            price_cents: row.try_get("price_cents")?,
+            product_sort_order: row.try_get("product_sort_order")?,
+            target_gender: row.try_get("target_gender")?,
+        });
+    }
+
+    Ok(existing == normalize_planogram_slots(input_slots))
+}
+
+fn is_supported_slot_sales_state(value: &str) -> bool {
+    matches!(
+        value,
+        "sale_ready"
+            | "sold_out"
+            | "suspect"
+            | "frozen"
+            | "needs_count"
+            | "blocked_for_planogram_change"
+            | "movement_rejected"
+            | "needs_platform_review"
+    )
+}
+
+struct PreviousSlotProjection {
+    slot_id: String,
+    physical_stock: i64,
+    slot_sales_state: String,
+    inventory_id: String,
+    variant_id: String,
+    product_id: String,
+    sale_safety_blocker_state: Option<String>,
+}
+
+impl PreviousSlotProjection {
+    fn has_same_mapping(&self, slot: &MachinePlanogramSlotInput) -> bool {
+        self.inventory_id == slot.inventory_id
+            && self.variant_id == slot.variant_id
+            && self.product_id == slot.product_id
+    }
+
+    fn has_sale_safety_blocker(&self) -> bool {
+        self.sale_safety_blocker_state.is_some()
+    }
+}
+
+async fn current_slot_projections_in_tx(
+    tx: &mut Transaction<'_, sqlx::Sqlite>,
+) -> Result<Vec<PreviousSlotProjection>, StoreError> {
+    let rows: Vec<PreviousSlotProjectionRow> = sqlx::query_as(
+        "SELECT
+           c.slot_id,
+           c.physical_stock,
+           c.slot_sales_state,
+           s.inventory_id,
+           s.variant_id,
+           s.product_id,
+           b.slot_sales_state AS sale_safety_blocker_state
+         FROM current_stock_projection c
+         JOIN machine_planogram_slots s
+           ON s.planogram_version = c.planogram_version AND s.slot_id = c.slot_id
+         JOIN machine_planogram_versions v
+           ON v.planogram_version = c.planogram_version AND v.active = 1
+         LEFT JOIN sale_safety_blockers b
+           ON b.planogram_version = c.planogram_version AND b.slot_id = c.slot_id",
+    )
+    .fetch_all(tx.as_mut())
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(
+            |(
+                slot_id,
+                physical_stock,
+                slot_sales_state,
+                inventory_id,
+                variant_id,
+                product_id,
+                sale_safety_blocker_state,
+            )| {
+                PreviousSlotProjection {
+                    slot_id,
+                    physical_stock,
+                    slot_sales_state,
+                    inventory_id,
+                    variant_id,
+                    product_id,
+                    sale_safety_blocker_state,
+                }
+            },
+        )
+        .collect())
+}
+
+fn is_reconciliation_sale_safety_blocker(value: &str) -> bool {
+    matches!(
+        value,
+        "needs_count"
+            | "blocked_for_planogram_change"
+            | "movement_rejected"
+            | "needs_platform_review"
+    )
+}
+
+async fn upsert_sale_safety_blocker_marker_in_tx(
+    tx: &mut Transaction<'_, sqlx::Sqlite>,
+    planogram_version: &str,
+    slot_id: &str,
+    slot_sales_state: &str,
+    reason: &str,
+    source: &str,
+) -> Result<(), StoreError> {
+    sqlx::query(
+        "INSERT INTO sale_safety_blockers(
+           planogram_version,slot_id,slot_sales_state,reason,source,updated_at
+         ) VALUES (?1,?2,?3,?4,?5,?6)
+         ON CONFLICT(planogram_version, slot_id) DO UPDATE SET
+           slot_sales_state=excluded.slot_sales_state,
+           reason=excluded.reason,
+           source=excluded.source,
+           updated_at=excluded.updated_at",
+    )
+    .bind(planogram_version)
+    .bind(slot_id)
+    .bind(slot_sales_state)
+    .bind(reason)
+    .bind(source)
+    .bind(now_iso())
+    .execute(tx.as_mut())
+    .await?;
+    Ok(())
+}
+
+async fn clear_sale_safety_blocker_marker_in_tx(
+    tx: &mut Transaction<'_, sqlx::Sqlite>,
+    planogram_version: &str,
+    slot_id: &str,
+) -> Result<(), StoreError> {
+    sqlx::query("DELETE FROM sale_safety_blockers WHERE planogram_version = ?1 AND slot_id = ?2")
+        .bind(planogram_version)
+        .bind(slot_id)
+        .execute(tx.as_mut())
+        .await?;
+    Ok(())
+}
+
+async fn clear_stock_ledger_loss_blocker_in_tx(
+    tx: &mut Transaction<'_, sqlx::Sqlite>,
+    planogram_version: &str,
+    slot_id: &str,
+) -> Result<(), StoreError> {
+    sqlx::query(
+        "DELETE FROM sale_safety_blockers
+         WHERE planogram_version = ?1 AND slot_id = ?2 AND reason = 'stock_ledger_loss'",
+    )
+    .bind(planogram_version)
+    .bind(slot_id)
+    .execute(tx.as_mut())
+    .await?;
+    Ok(())
+}
+
+async fn upsert_stock_projection_in_tx(
+    tx: &mut Transaction<'_, sqlx::Sqlite>,
+    planogram_version: &str,
+    slot_id: &str,
+    physical_stock: i64,
+    capacity: i64,
+) -> Result<(), StoreError> {
+    let physical_stock = physical_stock.max(0);
+    let saleable_stock = physical_stock.min(capacity).max(0);
+    let slot_sales_state = if saleable_stock > 0 {
+        "sale_ready"
+    } else {
+        "sold_out"
+    };
+    upsert_stock_projection_with_state_in_tx(
+        tx,
+        planogram_version,
+        slot_id,
+        physical_stock,
+        saleable_stock,
+        slot_sales_state,
+    )
+    .await
+}
+
+async fn upsert_stock_projection_with_state_in_tx(
+    tx: &mut Transaction<'_, sqlx::Sqlite>,
+    planogram_version: &str,
+    slot_id: &str,
+    physical_stock: i64,
+    saleable_stock: i64,
+    slot_sales_state: &str,
+) -> Result<(), StoreError> {
+    let updated_at = now_iso();
+    sqlx::query(
+        "INSERT INTO current_stock_projection(
+           planogram_version,slot_id,physical_stock,saleable_stock,slot_sales_state,updated_at
+         ) VALUES (?1,?2,?3,?4,?5,?6)
+         ON CONFLICT(slot_id) DO UPDATE SET
+           planogram_version=excluded.planogram_version,
+           physical_stock=excluded.physical_stock,
+           saleable_stock=excluded.saleable_stock,
+           slot_sales_state=CASE
+             WHEN EXISTS (
+               SELECT 1 FROM sale_safety_blockers b
+               WHERE b.planogram_version = current_stock_projection.planogram_version
+                 AND b.slot_id = current_stock_projection.slot_id
+             ) THEN current_stock_projection.slot_sales_state
+             WHEN current_stock_projection.slot_sales_state IN ('frozen','suspect') THEN current_stock_projection.slot_sales_state
+             ELSE excluded.slot_sales_state
+           END,
+           updated_at=excluded.updated_at",
+    )
+    .bind(planogram_version)
+    .bind(slot_id)
+    .bind(physical_stock.max(0))
+    .bind(saleable_stock.max(0))
+    .bind(slot_sales_state)
+    .bind(updated_at)
+    .execute(tx.as_mut())
+    .await?;
+    Ok(())
+}
+
+async fn apply_sale_safety_blocker_in_tx(
+    tx: &mut Transaction<'_, sqlx::Sqlite>,
+    blocker: &crate::backend::StockMovementSaleSafetyBlocker,
+) -> Result<(), StoreError> {
+    if !is_supported_slot_sales_state(&blocker.slot_sales_state) {
+        return Err(StoreError::InvalidStockInput(format!(
+            "unsupported slot sales state {}",
+            blocker.slot_sales_state
+        )));
+    }
+
+    let active_projection: Option<(String,)> = sqlx::query_as(
+        "SELECT c.planogram_version
+         FROM current_stock_projection c
+         JOIN machine_planogram_versions v
+           ON v.planogram_version = c.planogram_version AND v.active = 1
+         WHERE c.slot_id = ?1",
+    )
+    .bind(&blocker.slot_id)
+    .fetch_optional(tx.as_mut())
+    .await?;
+
+    let Some((planogram_version,)) = active_projection else {
+        return Ok(());
+    };
+
+    upsert_sale_safety_blocker_marker_in_tx(
+        tx,
+        &planogram_version,
+        &blocker.slot_id,
+        &blocker.slot_sales_state,
+        &blocker.reason,
+        "platform_reconciliation",
+    )
+    .await?;
+
+    sqlx::query(
+        "UPDATE current_stock_projection
+         SET slot_sales_state = ?3, updated_at = ?4
+         WHERE planogram_version = ?1 AND slot_id = ?2",
+    )
+    .bind(&planogram_version)
+    .bind(&blocker.slot_id)
+    .bind(&blocker.slot_sales_state)
+    .bind(now_iso())
+    .execute(tx.as_mut())
+    .await?;
+    upsert_sale_view_projection_in_tx(tx, &planogram_version, &blocker.slot_id).await
+}
+
+async fn upsert_sale_view_projection_in_tx(
+    tx: &mut Transaction<'_, sqlx::Sqlite>,
+    planogram_version: &str,
+    slot_id: &str,
+) -> Result<(), StoreError> {
+    let row = sqlx::query(
+        "SELECT
+           s.slot_id,
+           s.slot_code,
+           s.layer_no,
+           s.cell_no,
+           s.inventory_id,
+           s.variant_id,
+           s.product_id,
+           s.product_name,
+           s.product_description,
+           s.cover_image_url,
+           s.category_id,
+           s.category_name,
+           s.sku,
+           s.size,
+           s.color,
+           s.price_cents,
+           s.product_sort_order,
+           s.target_gender,
+           s.capacity,
+           s.par_level,
+           c.physical_stock,
+           c.saleable_stock,
+           c.slot_sales_state
+         FROM machine_planogram_slots s
+         JOIN current_stock_projection c
+           ON c.planogram_version = s.planogram_version AND c.slot_id = s.slot_id
+         WHERE s.planogram_version = ?1 AND s.slot_id = ?2",
+    )
+    .bind(planogram_version)
+    .bind(slot_id)
+    .fetch_one(tx.as_mut())
+    .await?;
+
+    let item = SaleViewItem {
+        machine_code: None,
+        slot_id: row.try_get("slot_id")?,
+        slot_code: row.try_get("slot_code")?,
+        layer_no: row.try_get("layer_no")?,
+        cell_no: row.try_get("cell_no")?,
+        inventory_id: row.try_get("inventory_id")?,
+        variant_id: row.try_get("variant_id")?,
+        product_id: row.try_get("product_id")?,
+        product_name: row.try_get("product_name")?,
+        product_description: row.try_get("product_description")?,
+        cover_image_url: row.try_get("cover_image_url")?,
+        category_id: row.try_get("category_id")?,
+        category_name: row.try_get("category_name")?,
+        sku: row.try_get("sku")?,
+        size: row.try_get("size")?,
+        color: row.try_get("color")?,
+        price_cents: row.try_get("price_cents")?,
+        product_sort_order: row.try_get("product_sort_order")?,
+        target_gender: row.try_get("target_gender")?,
+        capacity: row.try_get("capacity")?,
+        par_level: row.try_get("par_level")?,
+        physical_stock: row.try_get("physical_stock")?,
+        saleable_stock: row.try_get("saleable_stock")?,
+        slot_sales_state: row.try_get("slot_sales_state")?,
+    };
+    let updated_at = now_iso();
+    sqlx::query(
+        "INSERT INTO sale_view_projection(planogram_version,slot_id,item_json,slot_sales_state,updated_at)
+         VALUES (?1,?2,?3,?4,?5)
+         ON CONFLICT(slot_id) DO UPDATE SET
+           planogram_version=excluded.planogram_version,
+           item_json=excluded.item_json,
+           slot_sales_state=excluded.slot_sales_state,
+           updated_at=excluded.updated_at",
+    )
+    .bind(planogram_version)
+    .bind(slot_id)
+    .bind(serde_json::to_string(&item)?)
+    .bind(&item.slot_sales_state)
+    .bind(updated_at)
+    .execute(tx.as_mut())
+    .await?;
+    Ok(())
 }
 
 async fn insert_outbox_in_tx(
@@ -1129,6 +2451,7 @@ fn to_kind_string(kind: OutboxKind) -> &'static str {
         OutboxKind::Heartbeat => "heartbeat",
         OutboxKind::RemoteOpResult => "remote_op_result",
         OutboxKind::LogExport => "log_export",
+        OutboxKind::StockMovementUpload => "stock_movement_upload",
     }
 }
 
@@ -1345,11 +2668,42 @@ fn parse_order_status(status: &str) -> Option<vending_core::domain::OrderSession
     }
 }
 
-async fn backoff_delay(id: &str, pool: &SqlitePool) -> Result<String, StoreError> {
+async fn mark_outbox_failed_in_tx(
+    tx: &mut Transaction<'_, sqlx::Sqlite>,
+    id: &str,
+    error: &str,
+) -> Result<i64, StoreError> {
+    let next_delay = backoff_delay_tx(id, tx).await?;
+    let result = sqlx::query(
+        "UPDATE outbox_events
+         SET attempt_count = attempt_count + 1,
+             last_error = ?2,
+             next_attempt_at = ?3
+         WHERE id = ?1",
+    )
+    .bind(id)
+    .bind(error)
+    .bind(next_delay)
+    .execute(tx.as_mut())
+    .await?;
+    if result.rows_affected() != 1 {
+        return Err(StoreError::Sqlx(sqlx::Error::RowNotFound));
+    }
+    let attempt: (i64,) = sqlx::query_as("SELECT attempt_count FROM outbox_events WHERE id = ?1")
+        .bind(id)
+        .fetch_one(tx.as_mut())
+        .await?;
+    Ok(attempt.0)
+}
+
+async fn backoff_delay_tx(
+    id: &str,
+    tx: &mut Transaction<'_, sqlx::Sqlite>,
+) -> Result<String, StoreError> {
     let attempt: (i64,) =
         sqlx::query_as("SELECT attempt_count + 1 FROM outbox_events WHERE id = ?1")
             .bind(id)
-            .fetch_one(pool)
+            .fetch_one(tx.as_mut())
             .await?;
     let exp = 2_f64.powi(attempt.0 as i32 - 1).max(1.0) * 5.0;
     let base = Utc::now() + chrono::Duration::seconds(exp as i64);
@@ -1369,6 +2723,29 @@ fn to_command_record(row: CommandRecordRow) -> Result<CommandLogRecord, StoreErr
         error_message: row.8,
         updated_at: row.9,
         expires_at: row.10,
+    })
+}
+
+fn to_stock_movement_sync_record(
+    row: StockMovementSyncRecordRow,
+) -> Result<StockMovementSyncRecord, StoreError> {
+    Ok(StockMovementSyncRecord {
+        movement_id: row.0,
+        status: row.1,
+        outbox_event_id: row.2,
+        attempt_count: row.3,
+        last_error: row.4,
+        accepted_at: row.5,
+        platform_receipt_json: row
+            .6
+            .map(|value| serde_json::from_str(&value))
+            .transpose()?,
+        rejection_json: row
+            .7
+            .map(|value| serde_json::from_str(&value))
+            .transpose()?,
+        created_at: row.8,
+        updated_at: row.9,
     })
 }
 
@@ -1407,6 +2784,7 @@ fn parse_outbox_kind(value: &str) -> OutboxKind {
         "heartbeat" => OutboxKind::Heartbeat,
         "remote_op_result" => OutboxKind::RemoteOpResult,
         "log_export" => OutboxKind::LogExport,
+        "stock_movement_upload" => OutboxKind::StockMovementUpload,
         _ => OutboxKind::CommandAck,
     }
 }
@@ -1441,6 +2819,53 @@ mod tests {
 
     use super::*;
 
+    async fn seed_single_slot_planogram(store: &LocalStateStore) {
+        store
+            .apply_planogram(MachinePlanogramInput {
+                planogram_version: "PLAN-FAILURE".to_string(),
+                source: "test".to_string(),
+                applied_by: None,
+                slots: vec![MachinePlanogramSlotInput {
+                    slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                    slot_code: "A1".to_string(),
+                    layer_no: 1,
+                    cell_no: 1,
+                    capacity: 8,
+                    par_level: 6,
+                    inventory_id: "550e8400-e29b-41d4-a716-446655440002".to_string(),
+                    variant_id: "550e8400-e29b-41d4-a716-446655440003".to_string(),
+                    product_id: "550e8400-e29b-41d4-a716-446655440004".to_string(),
+                    product_name: "water".to_string(),
+                    product_description: None,
+                    cover_image_url: None,
+                    category_id: None,
+                    category_name: None,
+                    sku: "WATER-001".to_string(),
+                    size: Some("550ml".to_string()),
+                    color: None,
+                    price_cents: 200,
+                    product_sort_order: 1,
+                    target_gender: None,
+                }],
+            })
+            .await
+            .expect("planogram");
+    }
+
+    fn dispense_command_for_slot(command_no: &str) -> DispenseCommandPayload {
+        DispenseCommandPayload {
+            command_no: command_no.to_string(),
+            order_no: "ORD-FAILURE".to_string(),
+            slot: vending_core::hardware::SlotPayload {
+                layer_no: 1,
+                cell_no: 1,
+                slot_code: "A1".to_string(),
+            },
+            quantity: 1,
+            timeout_seconds: 10,
+        }
+    }
+
     #[tokio::test]
     async fn open_runs_migration_and_writes_schema_version() {
         let temp = TempDir::new().expect("temp");
@@ -1460,6 +2885,12 @@ mod tests {
         assert!(names.contains(&"outbox_events"));
         assert!(names.contains(&"order_sessions"));
         assert!(names.contains(&"health_events"));
+        assert!(names.contains(&"machine_planogram_versions"));
+        assert!(names.contains(&"machine_planogram_slots"));
+        assert!(names.contains(&"stock_movements"));
+        assert!(names.contains(&"stock_movement_sync"));
+        assert!(names.contains(&"current_stock_projection"));
+        assert!(names.contains(&"sale_view_projection"));
 
         let schema_version: Option<i64> = store
             .get_metadata("schema_version")
@@ -1470,23 +2901,98 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn corrupt_database_is_quarantined() {
+    async fn corrupt_database_is_quarantined_and_rebuilt_empty() {
         let temp = TempDir::new().expect("temp");
         let path = temp.path().join("state.db");
         std::fs::write(&path, b"not-a-sqlite-db").expect("write");
 
-        let result = LocalStateStore::open(&path).await;
-        assert!(result.is_err());
+        let store = LocalStateStore::open(&path).await.expect("rebuild store");
+        let sale_view = store.sale_view(None).await.expect("sale view");
+        assert!(sale_view.items.is_empty());
+        assert_eq!(sale_view.planogram_version, None);
+
+        let rebuilt: Option<bool> = store
+            .get_metadata(STOCK_LEDGER_REBUILT_AFTER_QUARANTINE_KEY)
+            .await
+            .expect("rebuilt marker");
+        assert_eq!(rebuilt, Some(true));
+
         let mut quarantined = false;
         for item in std::fs::read_dir(temp.path()).expect("dir") {
             let item = item.expect("item");
             let name = item.file_name().to_string_lossy().to_string();
             if name.starts_with("state.corrupt-") {
                 quarantined = true;
+                let contents = std::fs::read(item.path()).expect("quarantine contents");
+                assert_eq!(contents, b"not-a-sqlite-db");
                 break;
             }
         }
         assert!(quarantined);
+    }
+
+    #[tokio::test]
+    async fn rebuilt_ledger_planogram_requires_count_until_field_movement() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        store
+            .put_metadata(STOCK_LEDGER_REBUILT_AFTER_QUARANTINE_KEY, &true)
+            .await
+            .expect("ledger loss marker");
+
+        let rebuilt = store
+            .apply_planogram(MachinePlanogramInput {
+                planogram_version: "PLAN-REBUILT".to_string(),
+                source: "platform_sync_after_rebuild".to_string(),
+                applied_by: None,
+                slots: vec![MachinePlanogramSlotInput {
+                    slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                    slot_code: "A1".to_string(),
+                    layer_no: 1,
+                    cell_no: 1,
+                    capacity: 8,
+                    par_level: 6,
+                    inventory_id: "550e8400-e29b-41d4-a716-446655440002".to_string(),
+                    variant_id: "550e8400-e29b-41d4-a716-446655440003".to_string(),
+                    product_id: "550e8400-e29b-41d4-a716-446655440004".to_string(),
+                    product_name: "water".to_string(),
+                    product_description: None,
+                    cover_image_url: None,
+                    category_id: None,
+                    category_name: None,
+                    sku: "WATER-001".to_string(),
+                    size: Some("550ml".to_string()),
+                    color: None,
+                    price_cents: 200,
+                    product_sort_order: 1,
+                    target_gender: None,
+                }],
+            })
+            .await
+            .expect("planogram");
+
+        assert_eq!(rebuilt.items[0].physical_stock, 0);
+        assert_eq!(rebuilt.items[0].saleable_stock, 0);
+        assert_eq!(rebuilt.items[0].slot_sales_state, "needs_count");
+
+        let counted = store
+            .record_stock_movement(StockMovementInput {
+                movement_id: "MOVE-COUNT-AFTER-REBUILD".to_string(),
+                planogram_version: "PLAN-REBUILT".to_string(),
+                slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                movement_type: "stock_count_correction".to_string(),
+                quantity: 3,
+                source: "field_count".to_string(),
+                attributed_to: Some("operator-1".to_string()),
+            })
+            .await
+            .expect("count correction");
+
+        assert_eq!(counted.items[0].physical_stock, 3);
+        assert_eq!(counted.items[0].saleable_stock, 3);
+        assert_eq!(counted.items[0].slot_sales_state, "sale_ready");
     }
 
     #[tokio::test]
@@ -1500,6 +3006,76 @@ mod tests {
             store2.acquire_runtime_lock(2).await,
             Err(StoreError::RuntimeLockHeld)
         ));
+    }
+
+    #[tokio::test]
+    async fn no_drop_dispense_failure_marks_local_slot_suspect() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_single_slot_planogram(&store).await;
+
+        let snapshot = store
+            .block_slot_for_dispense_failure(
+                &dispense_command_for_slot("CMD-NO-DROP"),
+                Some("NO_DROP"),
+            )
+            .await
+            .expect("block")
+            .expect("slot found");
+
+        assert_eq!(snapshot.items[0].slot_sales_state, "suspect");
+    }
+
+    #[tokio::test]
+    async fn jammed_dispense_failure_freezes_local_slot() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_single_slot_planogram(&store).await;
+
+        let snapshot = store
+            .block_slot_for_dispense_failure(
+                &dispense_command_for_slot("CMD-JAMMED"),
+                Some("JAMMED"),
+            )
+            .await
+            .expect("block")
+            .expect("slot found");
+
+        assert_eq!(snapshot.items[0].slot_sales_state, "frozen");
+    }
+
+    #[tokio::test]
+    async fn unknown_dispense_result_freezes_local_slot_until_manual_clear() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_single_slot_planogram(&store).await;
+
+        let snapshot = store
+            .block_slot_for_dispense_result_unknown(&dispense_command_for_slot("CMD-UNKNOWN"))
+            .await
+            .expect("block")
+            .expect("slot found");
+        assert_eq!(snapshot.items[0].slot_sales_state, "frozen");
+
+        let persisted = store.sale_view(None).await.expect("sale view");
+        assert_eq!(persisted.items[0].slot_sales_state, "frozen");
+
+        let cleared = store
+            .update_slot_sales_state(SlotSalesStateInput {
+                planogram_version: "PLAN-FAILURE".to_string(),
+                slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                slot_sales_state: "sale_ready".to_string(),
+                source: "manual_resolution".to_string(),
+            })
+            .await
+            .expect("clear");
+        assert_eq!(cleared.items[0].slot_sales_state, "sale_ready");
     }
 
     #[tokio::test]
@@ -1555,6 +3131,547 @@ mod tests {
             .expect("command")
             .expect("command record");
         assert_eq!(command_record.status, CommandLogStatus::Succeeded);
+    }
+
+    #[tokio::test]
+    async fn stock_movement_upload_metadata_is_durable_with_local_movement() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+
+        store
+            .apply_planogram(MachinePlanogramInput {
+                planogram_version: "PLAN-1".to_string(),
+                source: "test".to_string(),
+                applied_by: Some("operator-1".to_string()),
+                slots: vec![MachinePlanogramSlotInput {
+                    slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                    slot_code: "A1".to_string(),
+                    layer_no: 1,
+                    cell_no: 1,
+                    capacity: 8,
+                    par_level: 6,
+                    inventory_id: "550e8400-e29b-41d4-a716-446655440002".to_string(),
+                    variant_id: "550e8400-e29b-41d4-a716-446655440003".to_string(),
+                    product_id: "550e8400-e29b-41d4-a716-446655440004".to_string(),
+                    product_name: "water".to_string(),
+                    product_description: None,
+                    cover_image_url: None,
+                    category_id: None,
+                    category_name: None,
+                    sku: "WATER-001".to_string(),
+                    size: Some("550ml".to_string()),
+                    color: None,
+                    price_cents: 200,
+                    product_sort_order: 1,
+                    target_gender: None,
+                }],
+            })
+            .await
+            .expect("planogram");
+
+        store
+            .record_stock_movement_with_upload(
+                StockMovementInput {
+                    movement_id: "MOVE-1".to_string(),
+                    planogram_version: "PLAN-1".to_string(),
+                    slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                    movement_type: "planned_refill".to_string(),
+                    quantity: 3,
+                    source: "field_service".to_string(),
+                    attributed_to: Some("operator-1".to_string()),
+                },
+                Some("MACHINE-1"),
+                Some("https://platform.example/api"),
+            )
+            .await
+            .expect("movement");
+
+        let movement_record: (i64, i64, String) = sqlx::query_as(
+            "SELECT before_quantity, after_quantity, slot_mapping_snapshot_json
+             FROM stock_movements WHERE movement_id = 'MOVE-1'",
+        )
+        .fetch_one(store.pool())
+        .await
+        .expect("movement record");
+        assert_eq!(movement_record.0, 0);
+        assert_eq!(movement_record.1, 3);
+        let slot_mapping_snapshot: serde_json::Value =
+            serde_json::from_str(&movement_record.2).expect("slot mapping snapshot");
+        assert_eq!(slot_mapping_snapshot["slotCode"], "A1");
+        assert_eq!(slot_mapping_snapshot["capacity"], 8);
+        assert_eq!(
+            slot_mapping_snapshot["inventoryId"],
+            "550e8400-e29b-41d4-a716-446655440002"
+        );
+
+        let sync = store
+            .stock_movement_sync_record("MOVE-1")
+            .await
+            .expect("sync")
+            .expect("sync exists");
+        assert_eq!(sync.status, "pending");
+        assert_eq!(sync.attempt_count, 0);
+        assert_eq!(sync.outbox_event_id, "stock-movement:MOVE-1");
+
+        let outbox = store
+            .outbox_record("stock-movement:MOVE-1")
+            .await
+            .expect("outbox")
+            .expect("outbox exists");
+        assert_eq!(outbox.kind, OutboxKind::StockMovementUpload);
+        assert_eq!(outbox.transport, OutboxTransport::Http);
+        assert_eq!(
+            outbox.target_url.as_deref(),
+            Some("https://platform.example/api/machine-stock-movements")
+        );
+        assert_eq!(outbox.payload_json["movementId"], "MOVE-1");
+        assert_eq!(outbox.payload_json["machineCode"], "MACHINE-1");
+        assert_eq!(outbox.payload_json["beforeQuantity"], 0);
+        assert_eq!(outbox.payload_json["afterQuantity"], 3);
+        assert_eq!(outbox.payload_json["slotMappingSnapshot"]["slotCode"], "A1");
+        assert_eq!(outbox.payload_json["slotMappingSnapshot"]["capacity"], 8);
+    }
+
+    async fn seed_stock_movement_upload(store: &LocalStateStore, movement_id: &str) {
+        store
+            .apply_planogram(MachinePlanogramInput {
+                planogram_version: "PLAN-1".to_string(),
+                source: "test".to_string(),
+                applied_by: None,
+                slots: vec![MachinePlanogramSlotInput {
+                    slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                    slot_code: "A1".to_string(),
+                    layer_no: 1,
+                    cell_no: 1,
+                    capacity: 8,
+                    par_level: 6,
+                    inventory_id: "550e8400-e29b-41d4-a716-446655440002".to_string(),
+                    variant_id: "550e8400-e29b-41d4-a716-446655440003".to_string(),
+                    product_id: "550e8400-e29b-41d4-a716-446655440004".to_string(),
+                    product_name: "water".to_string(),
+                    product_description: None,
+                    cover_image_url: None,
+                    category_id: None,
+                    category_name: None,
+                    sku: "WATER-001".to_string(),
+                    size: None,
+                    color: None,
+                    price_cents: 200,
+                    product_sort_order: 1,
+                    target_gender: None,
+                }],
+            })
+            .await
+            .expect("planogram");
+        store
+            .record_stock_movement_with_upload(
+                StockMovementInput {
+                    movement_id: movement_id.to_string(),
+                    planogram_version: "PLAN-1".to_string(),
+                    slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                    movement_type: "planned_refill".to_string(),
+                    quantity: 3,
+                    source: "field_service".to_string(),
+                    attributed_to: None,
+                },
+                Some("MACHINE-1"),
+                Some("https://platform.example/api"),
+            )
+            .await
+            .expect("movement");
+    }
+
+    #[tokio::test]
+    async fn stock_movement_upload_failure_keeps_outbox_and_records_retry_state() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_stock_movement_upload(&store, "MOVE-RETRY").await;
+
+        store
+            .mark_stock_movement_upload_failed(
+                "stock-movement:MOVE-RETRY",
+                "MOVE-RETRY",
+                "backend offline",
+            )
+            .await
+            .expect("failed");
+
+        let sync = store
+            .stock_movement_sync_record("MOVE-RETRY")
+            .await
+            .expect("sync")
+            .expect("sync exists");
+        assert_eq!(sync.status, "failed");
+        assert_eq!(sync.attempt_count, 1);
+        assert_eq!(sync.last_error.as_deref(), Some("backend offline"));
+        assert!(store
+            .outbox_record("stock-movement:MOVE-RETRY")
+            .await
+            .expect("outbox")
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn stock_movement_upload_failure_rolls_back_outbox_when_sync_update_fails() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_stock_movement_upload(&store, "MOVE-TX-FAIL").await;
+        sqlx::query(
+            "CREATE TRIGGER fail_stock_movement_sync_update BEFORE UPDATE ON stock_movement_sync
+             BEGIN SELECT RAISE(ABORT, 'forced sync update failure'); END;",
+        )
+        .execute(store.pool())
+        .await
+        .expect("trigger");
+
+        let result = store
+            .mark_stock_movement_upload_failed(
+                "stock-movement:MOVE-TX-FAIL",
+                "MOVE-TX-FAIL",
+                "backend offline",
+            )
+            .await;
+
+        assert!(result.is_err());
+        let outbox = store
+            .outbox_record("stock-movement:MOVE-TX-FAIL")
+            .await
+            .expect("outbox")
+            .expect("outbox exists");
+        assert_eq!(outbox.attempt_count, 0);
+        assert_eq!(outbox.last_error, None);
+    }
+
+    #[tokio::test]
+    async fn stock_movement_upload_response_keeps_outbox_when_sync_row_is_missing() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_stock_movement_upload(&store, "MOVE-MISSING-SYNC").await;
+        let event = store
+            .outbox_record("stock-movement:MOVE-MISSING-SYNC")
+            .await
+            .expect("outbox")
+            .expect("event");
+        sqlx::query("DELETE FROM stock_movement_sync WHERE movement_id = ?1")
+            .bind("MOVE-MISSING-SYNC")
+            .execute(store.pool())
+            .await
+            .expect("delete sync");
+        let response = crate::backend::StockMovementUploadResponse {
+            movement_id: "MOVE-MISSING-SYNC".to_string(),
+            status: "accepted".to_string(),
+            accepted_at: Some("2026-06-04T00:00:00.000Z".to_string()),
+            receipt: Some(json!({"rawMovementId":"raw-1"})),
+            rejection: None,
+            reconciliation: None,
+        };
+
+        let result = store
+            .record_stock_movement_upload_response(&event, &response)
+            .await;
+
+        assert!(result.is_err());
+        assert!(store
+            .outbox_record("stock-movement:MOVE-MISSING-SYNC")
+            .await
+            .expect("outbox")
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn stock_movement_upload_response_stores_receipt_and_removes_outbox() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_stock_movement_upload(&store, "MOVE-ACCEPT").await;
+        let event = store
+            .outbox_record("stock-movement:MOVE-ACCEPT")
+            .await
+            .expect("outbox")
+            .expect("event");
+
+        let response = crate::backend::StockMovementUploadResponse {
+            movement_id: "MOVE-ACCEPT".to_string(),
+            status: "accepted".to_string(),
+            accepted_at: Some("2026-06-04T00:00:00.000Z".to_string()),
+            receipt: Some(json!({"rawMovementId":"raw-1"})),
+            rejection: None,
+            reconciliation: None,
+        };
+        store
+            .record_stock_movement_upload_response(&event, &response)
+            .await
+            .expect("receipt");
+
+        let sync = store
+            .stock_movement_sync_record("MOVE-ACCEPT")
+            .await
+            .expect("sync")
+            .expect("sync exists");
+        assert_eq!(sync.status, "accepted");
+        assert_eq!(sync.attempt_count, 1);
+        assert_eq!(
+            sync.accepted_at.as_deref(),
+            Some("2026-06-04T00:00:00.000Z")
+        );
+        assert_eq!(
+            sync.platform_receipt_json.expect("receipt")["status"],
+            "accepted"
+        );
+        assert!(store
+            .outbox_record("stock-movement:MOVE-ACCEPT")
+            .await
+            .expect("outbox")
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn stock_movement_rejection_is_terminal_receipt() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_stock_movement_upload(&store, "MOVE-REJECT").await;
+        let event = store
+            .outbox_record("stock-movement:MOVE-REJECT")
+            .await
+            .expect("outbox")
+            .expect("event");
+
+        let response = crate::backend::StockMovementUploadResponse {
+            movement_id: "MOVE-REJECT".to_string(),
+            status: "reconciliation".to_string(),
+            accepted_at: None,
+            receipt: None,
+            rejection: Some(json!({"reason":"movement_id_payload_conflict"})),
+            reconciliation: None,
+        };
+        store
+            .record_stock_movement_upload_response(&event, &response)
+            .await
+            .expect("rejection");
+
+        let sync = store
+            .stock_movement_sync_record("MOVE-REJECT")
+            .await
+            .expect("sync")
+            .expect("sync exists");
+        assert_eq!(sync.status, "reconciliation");
+        assert!(sync.rejection_json.is_some());
+        assert!(store
+            .outbox_record("stock-movement:MOVE-REJECT")
+            .await
+            .expect("outbox")
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn accepted_stock_movement_history_prunes_after_retention_without_losing_projection() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_stock_movement_upload(&store, "MOVE-OLD-ACCEPTED").await;
+        let event = store
+            .outbox_record("stock-movement:MOVE-OLD-ACCEPTED")
+            .await
+            .expect("outbox")
+            .expect("event");
+        let response = crate::backend::StockMovementUploadResponse {
+            movement_id: "MOVE-OLD-ACCEPTED".to_string(),
+            status: "accepted".to_string(),
+            accepted_at: Some("2026-05-01T00:00:00.000Z".to_string()),
+            receipt: Some(json!({"rawMovementId":"raw-old"})),
+            rejection: None,
+            reconciliation: None,
+        };
+        store
+            .record_stock_movement_upload_response(&event, &response)
+            .await
+            .expect("accepted");
+        sqlx::query(
+            "UPDATE stock_movements SET occurred_at = '2026-05-01T00:00:00.000Z' WHERE movement_id = ?1",
+        )
+        .bind("MOVE-OLD-ACCEPTED")
+        .execute(store.pool())
+        .await
+        .expect("age movement");
+        sqlx::query(
+            "UPDATE stock_movement_sync SET accepted_at = '2026-05-01T00:00:00.000Z', updated_at = '2026-05-01T00:00:00.000Z' WHERE movement_id = ?1",
+        )
+        .bind("MOVE-OLD-ACCEPTED")
+        .execute(store.pool())
+        .await
+        .expect("age sync");
+
+        let pruned = store
+            .prune_accepted_stock_movement_history(1)
+            .await
+            .expect("prune");
+        assert_eq!(pruned, 1);
+
+        let movement_count: (i64,) =
+            sqlx::query_as("SELECT COUNT(1) FROM stock_movements WHERE movement_id = ?1")
+                .bind("MOVE-OLD-ACCEPTED")
+                .fetch_one(store.pool())
+                .await
+                .expect("movement count");
+        assert_eq!(movement_count.0, 0);
+        assert!(store
+            .stock_movement_sync_record("MOVE-OLD-ACCEPTED")
+            .await
+            .expect("sync")
+            .is_none());
+
+        let sale_view = store.sale_view(None).await.expect("sale view");
+        assert_eq!(sale_view.items[0].physical_stock, 3);
+        assert_eq!(sale_view.items[0].saleable_stock, 3);
+        assert_eq!(sale_view.items[0].slot_sales_state, "sale_ready");
+
+        let refilled = store
+            .record_stock_movement(StockMovementInput {
+                movement_id: "MOVE-REFILL-AFTER-PRUNE".to_string(),
+                planogram_version: "PLAN-1".to_string(),
+                slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                movement_type: "planned_refill".to_string(),
+                quantity: 2,
+                source: "field_service".to_string(),
+                attributed_to: Some("operator-2".to_string()),
+            })
+            .await
+            .expect("refill after prune");
+        assert_eq!(refilled.items[0].physical_stock, 5);
+        assert_eq!(refilled.items[0].saleable_stock, 5);
+    }
+
+    #[tokio::test]
+    async fn pending_and_rejected_stock_movements_are_not_pruned() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_stock_movement_upload(&store, "MOVE-OLD-PENDING").await;
+        seed_stock_movement_upload(&store, "MOVE-OLD-REJECTED").await;
+        let rejected_event = store
+            .outbox_record("stock-movement:MOVE-OLD-REJECTED")
+            .await
+            .expect("outbox")
+            .expect("event");
+        let response = crate::backend::StockMovementUploadResponse {
+            movement_id: "MOVE-OLD-REJECTED".to_string(),
+            status: "rejected".to_string(),
+            accepted_at: None,
+            receipt: None,
+            rejection: Some(json!({"reason":"invalid_quantity"})),
+            reconciliation: None,
+        };
+        store
+            .record_stock_movement_upload_response(&rejected_event, &response)
+            .await
+            .expect("rejected");
+        sqlx::query(
+            "UPDATE stock_movements SET occurred_at = '2026-05-01T00:00:00.000Z' WHERE movement_id IN (?1, ?2)",
+        )
+        .bind("MOVE-OLD-PENDING")
+        .bind("MOVE-OLD-REJECTED")
+        .execute(store.pool())
+        .await
+        .expect("age movements");
+        sqlx::query(
+            "UPDATE stock_movement_sync SET updated_at = '2026-05-01T00:00:00.000Z' WHERE movement_id IN (?1, ?2)",
+        )
+        .bind("MOVE-OLD-PENDING")
+        .bind("MOVE-OLD-REJECTED")
+        .execute(store.pool())
+        .await
+        .expect("age sync");
+
+        let pruned = store
+            .prune_accepted_stock_movement_history(1)
+            .await
+            .expect("prune");
+        assert_eq!(pruned, 0);
+
+        for movement_id in ["MOVE-OLD-PENDING", "MOVE-OLD-REJECTED"] {
+            let movement_count: (i64,) =
+                sqlx::query_as("SELECT COUNT(1) FROM stock_movements WHERE movement_id = ?1")
+                    .bind(movement_id)
+                    .fetch_one(store.pool())
+                    .await
+                    .expect("movement count");
+            assert_eq!(movement_count.0, 1, "{movement_id} movement retained");
+            assert!(store
+                .stock_movement_sync_record(movement_id)
+                .await
+                .expect("sync")
+                .is_some());
+        }
+    }
+
+    #[tokio::test]
+    async fn outbox_cleanup_does_not_delete_pending_stock_movement_uploads() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_stock_movement_upload(&store, "MOVE-EXPIRED-PENDING").await;
+        sqlx::query(
+            "UPDATE outbox_events SET expires_at = '2026-05-01T00:00:00.000Z' WHERE id = ?1",
+        )
+        .bind("stock-movement:MOVE-EXPIRED-PENDING")
+        .execute(store.pool())
+        .await
+        .expect("expire outbox");
+
+        let (deleted_expired, _) = store.prune_outbox().await.expect("prune outbox");
+        assert_eq!(deleted_expired, 0);
+        assert!(store
+            .outbox_record("stock-movement:MOVE-EXPIRED-PENDING")
+            .await
+            .expect("outbox")
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn outbox_capacity_does_not_evict_stock_movement_uploads() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        for index in 0..OUTBOX_MAX_EVENTS {
+            let event = OutboxInput::stock_movement_upload(
+                &format!("MOVE-CAPACITY-{index}"),
+                "https://platform.example/api/machine-stock-movements".to_string(),
+                json!({"movementId": format!("MOVE-CAPACITY-{index}")}),
+            );
+            store.enqueue_outbox(&event).await.expect("seed upload");
+        }
+
+        let heartbeat = OutboxInput::heartbeat("MACHINE-1", json!({"status":"ok"}));
+        assert!(matches!(
+            store.enqueue_outbox(&heartbeat).await,
+            Err(StoreError::OutboxCapacity)
+        ));
+        assert_eq!(
+            store.outbox_size().await.expect("size"),
+            OUTBOX_MAX_EVENTS as u64
+        );
+        let upload_count: (i64,) = sqlx::query_as(
+            "SELECT COUNT(1) FROM outbox_events WHERE kind = 'stock_movement_upload'",
+        )
+        .fetch_one(store.pool())
+        .await
+        .expect("upload count");
+        assert_eq!(upload_count.0, OUTBOX_MAX_EVENTS);
     }
 
     #[tokio::test]

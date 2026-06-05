@@ -7,6 +7,7 @@ import {
 
 type ScenarioName =
   | "catalog"
+  | "soldOut"
   | "maintenance"
   | "offline"
   | "payment"
@@ -15,7 +16,7 @@ type ScenarioName =
   | "staleEventStream"
   | "syncBacklog";
 
-const catalogItem = {
+const saleViewItem = {
   machineCode: "M001",
   slotId: "550e8400-e29b-41d4-a716-446655440001",
   slotCode: "A1",
@@ -33,8 +34,13 @@ const catalogItem = {
   size: null,
   color: null,
   priceCents: 100,
-  availableQty: 5,
   productSortOrder: 1,
+  targetGender: null,
+  capacity: 8,
+  parLevel: 6,
+  physicalStock: 5,
+  saleableStock: 5,
+  slotSalesState: "sale_ready",
 };
 
 const publicConfig = {
@@ -118,6 +124,82 @@ function readySnapshot(overrides: Record<string, unknown> = {}) {
     suggestedRoute: "catalog",
     updatedAt: "2026-01-01T00:00:00Z",
     ...overrides,
+  };
+}
+
+function saleReadinessSnapshot(canStartNetworkAuthorizedSale = true) {
+  const maybeUnavailable = !canStartNetworkAuthorizedSale;
+  return {
+    canStartNetworkAuthorizedSale,
+    blockingCodes: maybeUnavailable
+      ? ["PLATFORM_UNREACHABLE", "NO_PAYMENT_OPTIONS"]
+      : [],
+    components: {
+      platformReachability: {
+        ready: !maybeUnavailable,
+        code: maybeUnavailable ? "PLATFORM_UNREACHABLE" : "PLATFORM_REACHABLE",
+        message: maybeUnavailable ? "platform offline" : "platform reachable",
+      },
+      machineAuthentication: {
+        ready: true,
+        code: "MACHINE_AUTH_READY",
+        message: "machine code configured",
+      },
+      activePlanogram: {
+        ready: true,
+        code: "ACTIVE_PLANOGRAM_READY",
+        message: "PLAN-1",
+      },
+      paymentOptions: {
+        ready: !maybeUnavailable,
+        code: maybeUnavailable ? "NO_PAYMENT_OPTIONS" : "PAYMENT_OPTIONS_READY",
+        message: maybeUnavailable
+          ? "no ready payment option"
+          : "payment option available",
+        methods: [
+          {
+            method: "mock",
+            optionKey: "mock:mock",
+            providerCode: "mock",
+            ready: !maybeUnavailable,
+            disabledReason: maybeUnavailable ? "platform offline" : null,
+          },
+        ],
+      },
+      scannerCapability: {
+        ready: true,
+        code: "SCANNER_READY",
+        message: "scanner ready",
+      },
+      syncHealth: {
+        ready: true,
+        code: scenario === "syncBacklog" ? "SYNC_DEGRADED" : "SYNC_READY",
+        message:
+          scenario === "syncBacklog"
+            ? "MQTT backlog pending"
+            : "sync connected",
+      },
+      wholeMachineBlockers: {
+        ready: true,
+        code: "WHOLE_MACHINE_READY",
+        message: "hardware ready",
+      },
+      slotSaleSafety: {
+        ready: scenario !== "soldOut",
+        code: scenario === "soldOut" ? "SLOT_SOLD_OUT" : "SLOT_SALE_READY",
+        message: scenario === "soldOut" ? "all slots sold out" : "slots ready",
+        blockedSlots:
+          scenario === "soldOut"
+            ? [
+                {
+                  slotId: saleViewItem.slotId,
+                  slotCode: saleViewItem.slotCode,
+                  slotSalesState: "sold_out",
+                },
+              ]
+            : [],
+      },
+    },
   };
 }
 
@@ -339,14 +421,43 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
     return;
   }
 
+  if (url.pathname === "/v1/sale-view") {
+    respondJson(res, {
+      items: [
+        scenario === "soldOut"
+          ? {
+              ...saleViewItem,
+              physicalStock: 0,
+              saleableStock: 0,
+              slotSalesState: "sold_out",
+            }
+          : saleViewItem,
+      ],
+      source: "local_stock",
+      planogramVersion: "PLAN-1",
+      lastUpdatedAt: "2026-01-01T00:00:00Z",
+    });
+    return;
+  }
+
   if (url.pathname === "/v1/catalog") {
     respondJson(res, {
-      items: [catalogItem],
+      items: [],
       cached: true,
       lastUpdatedAt: "2026-01-01T00:00:00Z",
-      source: "mock-daemon",
+      source: "legacy-unused",
       lastError: null,
     });
+    return;
+  }
+
+  if (url.pathname === "/v1/sale-readiness") {
+    respondJson(
+      res,
+      saleReadinessSnapshot(
+        scenario !== "offline" && scenario !== "maintenance",
+      ),
+    );
     return;
   }
 
@@ -492,6 +603,16 @@ test("routes ready daemon to catalog", async ({ page }) => {
   scenario = "catalog";
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "请选择商品" })).toBeVisible();
+});
+
+test("catalog hides sold-out sale-view items", async ({ page }) => {
+  scenario = "soldOut";
+  await page.goto("/");
+  await expect(page.getByRole("heading", { name: "请选择商品" })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "暂无可售商品" }),
+  ).toBeVisible();
+  await expect(page.getByRole("button", { name: "查看详情" })).toHaveCount(0);
 });
 
 test("routes missing config to maintenance", async ({ page }) => {

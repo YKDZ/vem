@@ -1,8 +1,85 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, path::Path};
 
 use tokio::sync::RwLock;
 
-use crate::state::LocalStateStore;
+use crate::state::{store::OUTBOX_MAX_EVENTS, LocalStateStore};
+
+pub const DISK_PRESSURE_MIN_AVAILABLE_BYTES: u64 = 128 * 1024 * 1024;
+pub const DISK_PRESSURE_CODE: &str = "DISK_CAPACITY_PRESSURE";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiskPressureSnapshot {
+    pub pressured: bool,
+    pub available_bytes: Option<u64>,
+    pub threshold_bytes: u64,
+    pub message: String,
+}
+
+pub trait DiskPressureProbe: Send + Sync {
+    fn snapshot(&self, data_dir: &Path) -> DiskPressureSnapshot;
+}
+
+#[derive(Debug, Clone)]
+pub struct DataDirDiskPressureProbe {
+    threshold_bytes: u64,
+}
+
+impl Default for DataDirDiskPressureProbe {
+    fn default() -> Self {
+        Self {
+            threshold_bytes: DISK_PRESSURE_MIN_AVAILABLE_BYTES,
+        }
+    }
+}
+
+impl DataDirDiskPressureProbe {
+    pub fn new(threshold_bytes: u64) -> Self {
+        Self { threshold_bytes }
+    }
+}
+
+impl DiskPressureProbe for DataDirDiskPressureProbe {
+    fn snapshot(&self, data_dir: &Path) -> DiskPressureSnapshot {
+        match available_bytes(data_dir) {
+            Some(available_bytes) => {
+                let pressured = available_bytes < self.threshold_bytes;
+                DiskPressureSnapshot {
+                    pressured,
+                    available_bytes: Some(available_bytes),
+                    threshold_bytes: self.threshold_bytes,
+                    message: if pressured {
+                        format!(
+                            "disk capacity pressure: {available_bytes} bytes available below {} byte threshold",
+                            self.threshold_bytes
+                        )
+                    } else {
+                        format!(
+                            "disk capacity ok: {available_bytes} bytes available above {} byte threshold",
+                            self.threshold_bytes
+                        )
+                    },
+                }
+            }
+            None => DiskPressureSnapshot {
+                pressured: false,
+                available_bytes: None,
+                threshold_bytes: self.threshold_bytes,
+                message: "disk capacity unavailable".to_string(),
+            },
+        }
+    }
+}
+
+#[cfg(unix)]
+fn available_bytes(path: &Path) -> Option<u64> {
+    let stats = nix::sys::statvfs::statvfs(path).ok()?;
+    stats.blocks_available().checked_mul(stats.fragment_size())
+}
+
+#[cfg(not(unix))]
+fn available_bytes(_path: &Path) -> Option<u64> {
+    None
+}
 
 pub struct HealthAggregator {
     state: LocalStateStore,
@@ -82,7 +159,7 @@ impl HealthAggregator {
             backend_online: true,
             mqtt_connected: true,
             outbox_size: outbox_size.unwrap_or(0) as usize,
-            outbox_max: 1000,
+            outbox_max: OUTBOX_MAX_EVENTS as usize,
             hardware_online: true,
             scanner_online,
             vision_online,

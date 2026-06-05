@@ -10,7 +10,9 @@ use futures_util::{SinkExt, StreamExt};
 use portpicker::pick_unused_port;
 use reqwest::Client;
 use serde_json::json;
-use support::{process::DaemonHarness, pty::PtyHarness, sensitive, sqlite};
+use support::{
+    mqtt::MqttBrokerHarness, process::DaemonHarness, pty::PtyHarness, sensitive, sqlite,
+};
 use tokio::{net::TcpListener, task::JoinHandle};
 use tokio_tungstenite::{accept_async, tungstenite::Message};
 use wiremock::matchers::{header, method, path};
@@ -190,13 +192,22 @@ async fn serial_text_scanner_submits_payment_code_and_refreshes_transaction() {
         .mount(&server)
         .await;
 
+    mock_payment_code_options(&server).await;
+    let mqtt = MqttBrokerHarness::start().await;
     let mut pty = PtyHarness::open();
     let scanner_path = pty.slave_path.to_string_lossy().to_string();
     let mut config = scanner_config(scanner_path);
     config["apiBaseUrl"] = json!(server.uri());
+    config["mqttUrl"] = json!(mqtt.url());
     let mut daemon = DaemonHarness::start(
         config,
-        &[("VEM_MACHINE_SECRET", sensitive::TEST_MACHINE_SECRET)],
+        &[
+            ("VEM_MACHINE_SECRET", sensitive::TEST_MACHINE_SECRET),
+            (
+                "VEM_MQTT_SIGNING_SECRET",
+                sensitive::TEST_MQTT_SIGNING_SECRET,
+            ),
+        ],
     )
     .await
     .expect("start daemon");
@@ -323,13 +334,22 @@ async fn serial_text_scanner_retry_scan_uses_new_idempotency_key() {
 
     let first_raw_code = "621234567890123456";
     let second_raw_code = "621234567890129999";
+    mock_payment_code_options(&server).await;
+    let mqtt = MqttBrokerHarness::start().await;
     let mut pty = PtyHarness::open();
     let scanner_path = pty.slave_path.to_string_lossy().to_string();
     let mut config = scanner_config(scanner_path);
     config["apiBaseUrl"] = json!(server.uri());
+    config["mqttUrl"] = json!(mqtt.url());
     let mut daemon = DaemonHarness::start(
         config,
-        &[("VEM_MACHINE_SECRET", sensitive::TEST_MACHINE_SECRET)],
+        &[
+            ("VEM_MACHINE_SECRET", sensitive::TEST_MACHINE_SECRET),
+            (
+                "VEM_MQTT_SIGNING_SECRET",
+                sensitive::TEST_MQTT_SIGNING_SECRET,
+            ),
+        ],
     )
     .await
     .expect("start daemon");
@@ -465,24 +485,120 @@ async fn wait_for_vision_ready(daemon: &DaemonHarness) -> serde_json::Value {
     daemon.get_json("/v1/vision/status").await
 }
 
-async fn create_payment_code_order(daemon: &DaemonHarness) -> serde_json::Value {
+async fn mock_payment_code_options(server: &MockServer) {
+    Mock::given(method("GET"))
+        .and(path("/machine-orders/payment-options"))
+        .and(header("authorization", "Bearer token-123"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "options": [{
+                "optionKey": "payment_code:alipay",
+                "providerCode": "alipay",
+                "method": "payment_code",
+                "displayName": "支付宝付款码",
+                "description": "请出示付款码",
+                "icon": "alipay",
+                "recommended": true,
+                "disabled": false,
+                "disabledReason": null
+            }],
+            "defaultOptionKey": "payment_code:alipay",
+            "defaultProviderCode": "alipay",
+            "serverTime": "2026-05-30T00:00:00.000Z"
+        })))
+        .mount(server)
+        .await;
+}
+
+async fn prepare_local_sale_view(daemon: &DaemonHarness) {
     let base = daemon.ready.healthz_url.trim_end_matches("/healthz");
-    Client::new()
+    let client = Client::new();
+    let planogram = client
+        .post(format!("{base}/v1/stock/planogram"))
+        .header("Authorization", daemon.bearer())
+        .json(&json!({
+            "planogramVersion": "PLAN-SCAN",
+            "source": "local_seed",
+            "appliedBy": "test",
+            "slots": [{
+                "slotId": "550e8400-e29b-41d4-a716-446655440001",
+                "slotCode": "A1",
+                "layerNo": 1,
+                "cellNo": 1,
+                "capacity": 8,
+                "parLevel": 6,
+                "inventoryId": "550e8400-e29b-41d4-a716-446655440002",
+                "variantId": "550e8400-e29b-41d4-a716-446655440003",
+                "productId": "550e8400-e29b-41d4-a716-446655440004",
+                "productName": "矿泉水",
+                "productDescription": null,
+                "coverImageUrl": null,
+                "categoryId": null,
+                "categoryName": null,
+                "sku": "WATER-001",
+                "size": "550ml",
+                "color": null,
+                "priceCents": 200,
+                "productSortOrder": 1,
+                "targetGender": null
+            }]
+        }))
+        .send()
+        .await
+        .expect("planogram request");
+    assert_eq!(planogram.status(), reqwest::StatusCode::OK);
+
+    let movement = client
+        .post(format!("{base}/v1/stock/movements"))
+        .header("Authorization", daemon.bearer())
+        .json(&json!({
+            "movementId": "MOVE-SCAN-REFILL",
+            "planogramVersion": "PLAN-SCAN",
+            "slotId": "550e8400-e29b-41d4-a716-446655440001",
+            "movementType": "planned_refill",
+            "quantity": 3,
+            "source": "field_service",
+            "attributedTo": "test"
+        }))
+        .send()
+        .await
+        .expect("movement request");
+    assert_eq!(movement.status(), reqwest::StatusCode::CREATED);
+}
+
+async fn wait_for_sync_connected(daemon: &DaemonHarness) -> serde_json::Value {
+    for _ in 0..40 {
+        let sync = daemon.get_json("/v1/sync/status").await;
+        if sync["mqttConnected"] == true {
+            return sync;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    daemon.get_json("/v1/sync/status").await
+}
+
+async fn create_payment_code_order(daemon: &DaemonHarness) -> serde_json::Value {
+    prepare_local_sale_view(daemon).await;
+    let sync = wait_for_sync_connected(daemon).await;
+    assert_eq!(sync["mqttConnected"], true);
+    let base = daemon.ready.healthz_url.trim_end_matches("/healthz");
+    let response = Client::new()
         .post(format!("{base}/v1/intents/create-order"))
         .header("Authorization", daemon.bearer())
         .json(&json!({
             "inventoryId": "550e8400-e29b-41d4-a716-446655440002",
             "quantity": 1,
+            "planogramVersion": "PLAN-SCAN",
+            "slotId": "550e8400-e29b-41d4-a716-446655440001",
+            "slotCode": "A1",
             "paymentMethod": "payment_code",
             "paymentProviderCode": "alipay",
             "profileSnapshot": null
         }))
         .send()
         .await
-        .expect("create order request")
-        .json()
-        .await
-        .expect("create order json")
+        .expect("create order request");
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    response.json().await.expect("create order json")
 }
 
 async fn wait_for_transaction(
