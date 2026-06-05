@@ -14,6 +14,7 @@ vi.mock("@/daemon/client", () => ({
 }));
 
 import { normalizeMachineConfig } from "@/config/machine-config";
+
 import { useMachineStore } from "./machine";
 
 beforeEach(() => {
