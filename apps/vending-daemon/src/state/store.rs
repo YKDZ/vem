@@ -1819,7 +1819,10 @@ impl LocalStateStore {
         &self,
         retention_days: i64,
     ) -> Result<u64, StoreError> {
-        let retention_days = retention_days.max(1);
+        let retention_days = retention_days.clamp(
+            crate::config::STOCK_MOVEMENT_RETENTION_MIN_DAYS,
+            crate::config::STOCK_MOVEMENT_RETENTION_MAX_DAYS,
+        );
         let cutoff = (Utc::now() - chrono::Duration::days(retention_days))
             .to_rfc3339_opts(SecondsFormat::Millis, true);
         let mut tx = self.pool.begin().await?;

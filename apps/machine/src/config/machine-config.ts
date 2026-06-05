@@ -82,6 +82,7 @@ export const machineConfigSchema = z
       .default(null),
     visionRequestTimeoutMs: z.int().min(1000).max(30_000).default(8000),
     kioskMode: z.boolean().default(false),
+    stockMovementRetentionDays: z.int().min(1).max(366).default(30),
   })
   .superRefine((data, ctx) => {
     if (

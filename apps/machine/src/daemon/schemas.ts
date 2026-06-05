@@ -95,6 +95,7 @@ export const configSummarySchema = z.object({
     visionProcessArgs: z.string().nullable(),
     visionRequestTimeoutMs: z.number().int(),
     kioskMode: z.boolean(),
+    stockMovementRetentionDays: z.number().int().min(1).max(366).default(30),
   }),
   machineSecretConfigured: z.boolean(),
   mqttSigningSecretConfigured: z.boolean(),

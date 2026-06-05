@@ -125,6 +125,7 @@ pub async fn run_console_with_token(
         state: state.clone(),
         events: events_tx.clone(),
         runtime_tx: tx_raw.clone(),
+        disk_pressure_probe: Arc::new(crate::health::DataDirDiskPressureProbe::default()),
         ui,
     };
     let (ipc_handle, ipc_task) = ipc::run_server(config.bind, ipc_ctx.clone())

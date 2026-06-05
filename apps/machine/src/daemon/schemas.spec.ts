@@ -50,6 +50,37 @@ describe("daemon schemas", () => {
     expect(event.type).toBe("scanner_health_changed");
   });
 
+  it("parses daemon config summary with stock movement retention days", () => {
+    const parsed = configSummarySchema.parse({
+      public: {
+        machineCode: "MACHINE-1",
+        apiBaseUrl: "http://localhost:3000/api",
+        mqttUrl: "mqtt://localhost:1883",
+        mqttUsername: null,
+        hardwareAdapter: "mock",
+        serialPortPath: null,
+        lowerControllerUsbIdentity: null,
+        scannerAdapter: "disabled",
+        scannerSerialPortPath: null,
+        scannerBaudRate: 9600,
+        scannerFrameSuffix: "crlf",
+        visionEnabled: true,
+        visionWsUrl: "ws://127.0.0.1:7892/ws",
+        visionAutoStart: false,
+        visionProcessCommand: null,
+        visionProcessArgs: null,
+        visionRequestTimeoutMs: 8000,
+        kioskMode: false,
+        stockMovementRetentionDays: 90,
+      },
+      machineSecretConfigured: false,
+      mqttSigningSecretConfigured: false,
+      mqttPasswordConfigured: false,
+    });
+
+    expect(parsed.public.stockMovementRetentionDays).toBe(90);
+  });
+
   it("parses transaction attempt summary and restricted scanner adapter config", () => {
     const tx = transactionSnapshotSchema.parse({
       orderId: "550e8400-e29b-41d4-a716-446655440010",

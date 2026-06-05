@@ -105,6 +105,9 @@ pub struct MachinePublicRuntimeConfig {
     pub mqtt_password_configured: bool,
 }
 
+pub const STOCK_MOVEMENT_RETENTION_MIN_DAYS: i64 = 1;
+pub const STOCK_MOVEMENT_RETENTION_MAX_DAYS: i64 = 366;
+
 pub fn default_stock_movement_retention_days() -> i64 {
     30
 }
@@ -270,7 +273,10 @@ pub fn normalize_public_config(
         return Err("visionWsUrl is required".to_string());
     }
     config.vision_ws_url = vision_ws_url;
-    config.stock_movement_retention_days = config.stock_movement_retention_days.max(1);
+    config.stock_movement_retention_days = config.stock_movement_retention_days.clamp(
+        STOCK_MOVEMENT_RETENTION_MIN_DAYS,
+        STOCK_MOVEMENT_RETENTION_MAX_DAYS,
+    );
 
     Ok(config)
 }
@@ -692,6 +698,26 @@ mod tests {
         };
         let normalized = normalize_public_config(config).expect("normalize");
         assert_eq!(normalized.stock_movement_retention_days, 1);
+    }
+
+    #[tokio::test]
+    async fn normalize_public_config_clamps_stock_movement_retention_to_safe_upper_bound() {
+        let config = MachinePublicConfig {
+            stock_movement_retention_days: i64::MAX,
+            ..default_public_config()
+        };
+        let normalized = normalize_public_config(config).expect("normalize");
+        assert_eq!(normalized.stock_movement_retention_days, 366);
+    }
+
+    #[tokio::test]
+    async fn normalize_public_config_preserves_custom_stock_movement_retention_days() {
+        let config = MachinePublicConfig {
+            stock_movement_retention_days: 90,
+            ..default_public_config()
+        };
+        let normalized = normalize_public_config(config).expect("normalize");
+        assert_eq!(normalized.stock_movement_retention_days, 90);
     }
 
     #[tokio::test]

@@ -145,6 +145,7 @@ pub struct IpcContext {
     pub state: LocalStateStore,
     pub events: broadcast::Sender<DaemonEvent>,
     pub runtime_tx: mpsc::Sender<vending_core::scanner::RawPaymentCode>,
+    pub disk_pressure_probe: Arc<dyn crate::health::DiskPressureProbe>,
     pub ui: UiRuntimeServices,
 }
 
@@ -357,6 +358,30 @@ struct EventQuery {
     token: Option<String>,
 }
 
+fn disk_pressure_snapshot(ctx: &IpcContext) -> crate::health::DiskPressureSnapshot {
+    ctx.disk_pressure_probe.snapshot(&ctx.data_dir)
+}
+
+fn disk_pressure_component(
+    snapshot: &crate::health::DiskPressureSnapshot,
+) -> vending_core::health::ComponentHealth {
+    vending_core::health::ComponentHealth {
+        component: "disk".to_string(),
+        level: if snapshot.pressured {
+            vending_core::health::HealthLevel::Error
+        } else {
+            vending_core::health::HealthLevel::Ok
+        },
+        code: if snapshot.pressured {
+            crate::health::DISK_PRESSURE_CODE.to_string()
+        } else {
+            "DISK_CAPACITY_OK".to_string()
+        },
+        message: snapshot.message.clone(),
+        updated_at: crate::state::store::now_iso(),
+    }
+}
+
 async fn healthz(State(ctx): State<IpcContext>) -> impl IntoResponse {
     let agg = crate::health::HealthAggregator::new(ctx.state.clone());
     let mut snapshot = agg.health_snapshot().await;
@@ -419,6 +444,16 @@ async fn healthz(State(ctx): State<IpcContext>) -> impl IntoResponse {
                 updated_at: crate::state::store::now_iso(),
             });
     }
+    let disk_pressure = disk_pressure_snapshot(&ctx);
+    if disk_pressure.pressured {
+        snapshot.status = vending_core::health::DaemonUiStatus::Degraded;
+        if snapshot.operator_reason.is_empty() {
+            snapshot.operator_reason = crate::health::DISK_PRESSURE_CODE.to_string();
+        }
+        snapshot
+            .components
+            .push(disk_pressure_component(&disk_pressure));
+    }
     Json(snapshot)
 }
 
@@ -471,6 +506,29 @@ async fn readyz(State(ctx): State<IpcContext>) -> impl IntoResponse {
                 message: format!(
                     "sync outbox capacity pressure: {outbox_size}/{outbox_max} pending events"
                 ),
+            });
+        ready.suggested_route = vending_core::health::SuggestedRoute::Maintenance;
+    }
+    let disk_pressure = disk_pressure_snapshot(&ctx);
+    if disk_pressure.pressured {
+        ready.ready = false;
+        ready.can_sell = false;
+        ready.mode = "maintenance".to_string();
+        if !ready
+            .blocking_codes
+            .iter()
+            .any(|code| code == crate::health::DISK_PRESSURE_CODE)
+        {
+            ready
+                .blocking_codes
+                .push(crate::health::DISK_PRESSURE_CODE.to_string());
+        }
+        ready
+            .blocking_reasons
+            .push(vending_core::health::ReadyReason {
+                code: crate::health::DISK_PRESSURE_CODE.to_string(),
+                component: "disk".to_string(),
+                message: disk_pressure.message,
             });
         ready.suggested_route = vending_core::health::SuggestedRoute::Maintenance;
     }
@@ -836,7 +894,9 @@ async fn machine_sale_readiness_snapshot(
     let sync = ctx.ui.status_cache.sync.read().await.clone();
     let outbox_max = sync.outbox_max.max(1);
     let outbox_usage = outbox_size as f64 / outbox_max as f64;
-    let sync_ready = sync.mqtt_running && sync.mqtt_connected && outbox_usage < 0.9;
+    let disk_pressure = disk_pressure_snapshot(ctx);
+    let sync_ready =
+        sync.mqtt_running && sync.mqtt_connected && outbox_usage < 0.9 && !disk_pressure.pressured;
 
     let hardware = ctx.ui.status_cache.hardware.read().await.clone();
     let whole_machine_ready = hardware.online;
@@ -948,6 +1008,8 @@ async fn machine_sale_readiness_snapshot(
                         format!(
                             "sync outbox capacity pressure: {outbox_size}/{outbox_max} pending events"
                         )
+                    } else if disk_pressure.pressured {
+                        disk_pressure.message
                     } else if sync.mqtt_connected {
                         "sync connected".to_string()
                     } else {
@@ -1812,6 +1874,7 @@ mod tests {
             state,
             events: events_tx,
             runtime_tx,
+            disk_pressure_probe: Arc::new(crate::health::DataDirDiskPressureProbe::default()),
             ui: UiRuntimeServices {
                 backend,
                 transaction,
@@ -1836,6 +1899,25 @@ mod tests {
             .await
             .expect("response")
             .status()
+    }
+
+    struct FixedDiskPressureProbe {
+        available_bytes: u64,
+        threshold_bytes: u64,
+    }
+
+    impl crate::health::DiskPressureProbe for FixedDiskPressureProbe {
+        fn snapshot(&self, _data_dir: &std::path::Path) -> crate::health::DiskPressureSnapshot {
+            crate::health::DiskPressureSnapshot {
+                pressured: self.available_bytes < self.threshold_bytes,
+                available_bytes: Some(self.available_bytes),
+                threshold_bytes: self.threshold_bytes,
+                message: format!(
+                    "disk capacity pressure: {} bytes available below {} byte threshold",
+                    self.available_bytes, self.threshold_bytes
+                ),
+            }
+        }
     }
 
     async fn mark_runtime_sale_ready(ctx: &IpcContext) {
@@ -3816,6 +3898,166 @@ mod tests {
         let sync = ctx
             .state
             .stock_movement_sync_record("MOVE-CAPACITY-FACT")
+            .await
+            .expect("sync")
+            .expect("sync exists");
+        assert_eq!(sync.status, "pending");
+    }
+
+    #[tokio::test]
+    async fn disk_pressure_blocks_readiness_without_losing_stock_facts() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(wiremock::matchers::path("/machine-orders/payment-options"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "options": [{
+                    "optionKey": "mock:mock",
+                    "providerCode": "mock",
+                    "method": "mock",
+                    "displayName": "模拟支付",
+                    "description": "本地模拟",
+                    "icon": "mock",
+                    "recommended": true,
+                    "disabled": false,
+                    "disabledReason": null
+                }],
+                "defaultOptionKey": "mock:mock",
+                "defaultProviderCode": "mock",
+                "serverTime": "2026-06-04T00:00:00Z"
+            })))
+            .mount(&server)
+            .await;
+
+        let temp_dir = tempdir().expect("tmp");
+        let mut ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            &server.uri(),
+        )
+        .await;
+        mark_runtime_sale_ready(&ctx).await;
+        ctx.disk_pressure_probe = Arc::new(FixedDiskPressureProbe {
+            available_bytes: 1024,
+            threshold_bytes: 128 * 1024 * 1024,
+        });
+        let app = build_router(ctx.clone());
+        let slot_id = "550e8400-e29b-41d4-a716-4466554400f1";
+        let inventory_id = "550e8400-e29b-41d4-a716-4466554400f2";
+
+        assert_eq!(
+            post_json(
+                &app,
+                "/v1/stock/planogram",
+                "token-1",
+                one_slot_planogram("PLAN-DISK-PRESSURE", slot_id, inventory_id),
+            )
+            .await
+            .status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            post_json(
+                &app,
+                "/v1/stock/movements",
+                "token-1",
+                json!({
+                    "movementId": "MOVE-DISK-PRESSURE-FACT",
+                    "planogramVersion": "PLAN-DISK-PRESSURE",
+                    "slotId": slot_id,
+                    "movementType": "planned_refill",
+                    "quantity": 2,
+                    "source": "field_service",
+                    "attributedTo": "operator-1"
+                }),
+            )
+            .await
+            .status(),
+            StatusCode::CREATED
+        );
+
+        let ready = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/readyz")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(ready.status(), StatusCode::OK);
+        let body = body::to_bytes(ready.into_body(), usize::MAX).await.unwrap();
+        let ready: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(ready["ready"], false);
+        assert_eq!(ready["mode"], "maintenance");
+        assert!(ready["blockingCodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|code| code == "DISK_CAPACITY_PRESSURE"));
+
+        let health = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/healthz")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(health.status(), StatusCode::OK);
+        let body = body::to_bytes(health.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let health: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(health["status"], "degraded");
+        assert!(health["components"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|component| component["code"] == "DISK_CAPACITY_PRESSURE"));
+
+        let readiness = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/sale-readiness")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(readiness.status(), StatusCode::OK);
+        let body = body::to_bytes(readiness.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let readiness: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(readiness["components"]["syncHealth"]["ready"], false);
+        assert!(readiness["components"]["syncHealth"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("disk capacity pressure"));
+        assert!(readiness["blockingCodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|code| code == "SYNC_UNHEALTHY"));
+
+        assert!(ctx
+            .state
+            .outbox_record("stock-movement:MOVE-DISK-PRESSURE-FACT")
+            .await
+            .expect("outbox")
+            .is_some());
+        let sync = ctx
+            .state
+            .stock_movement_sync_record("MOVE-DISK-PRESSURE-FACT")
             .await
             .expect("sync")
             .expect("sync exists");

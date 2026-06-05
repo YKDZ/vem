@@ -89,6 +89,40 @@ mod tests {
     };
 
     #[tokio::test]
+    async fn runtime_starts_when_stock_movement_retention_is_huge() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let state = crate::state::LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("state");
+        let config_store = Arc::new(crate::config::ConfigStore::new(
+            temp.path().to_path_buf(),
+            state.clone(),
+            Arc::new(InMemorySecretStore::default()),
+        ));
+        let public = crate::config::MachinePublicConfig {
+            stock_movement_retention_days: i64::MAX,
+            ..default_public_config()
+        };
+        config_store
+            .save_public_config(public)
+            .await
+            .expect("save config");
+
+        let runtime = DaemonRuntime::start(RuntimeStartInput {
+            state,
+            config_store,
+            data_dir: temp.path().to_path_buf(),
+        })
+        .await
+        .expect("runtime start");
+
+        assert_eq!(
+            runtime.config.public.stock_movement_retention_days,
+            crate::config::STOCK_MOVEMENT_RETENTION_MAX_DAYS
+        );
+    }
+
+    #[tokio::test]
     async fn runtime_uses_configured_stock_movement_retention_window() {
         let temp = tempfile::tempdir().expect("tempdir");
         let state = crate::state::LocalStateStore::open(&temp.path().join("state.db"))
