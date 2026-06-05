@@ -32,6 +32,8 @@ function createMockClient(overrides?: {
         orderNo: "ORD-1",
         machineCode: "M001",
         orderStatus: "pending_payment",
+        paymentState: "awaiting_payment",
+        fulfillmentState: "awaiting_fulfillment",
         totalAmountCents: 599,
         payment: {
           paymentNo: "PAY-1",
