@@ -118,12 +118,7 @@ const stockForm = reactive({
   attributedTo: "front-panel",
 });
 
-const adapters: HardwareAdapter[] = [
-  "mock",
-  "serial",
-  "bluetooth",
-  "vendor_sdk",
-];
+const adapters: HardwareAdapter[] = ["mock", "serial"];
 
 const scannerAdapters: ScannerAdapter[] = ["disabled", "serial_text"];
 

@@ -81,7 +81,7 @@ export const configSummarySchema = z.object({
     apiBaseUrl: z.string(),
     mqttUrl: z.string(),
     mqttUsername: z.string().nullable(),
-    hardwareAdapter: z.enum(["mock", "serial", "bluetooth", "vendor_sdk"]),
+    hardwareAdapter: z.enum(["mock", "serial"]),
     serialPortPath: z.string().nullable(),
     lowerControllerUsbIdentity: usbIdentitySchema.nullable().optional(),
     scannerAdapter: z.enum(["disabled", "serial_text"]),

@@ -129,6 +129,16 @@ function submitButton(host: HTMLElement): HTMLButtonElement {
   return button;
 }
 
+function hardwareAdapterSelect(host: HTMLElement): HTMLSelectElement {
+  const select = Array.from(host.querySelectorAll("select")).find((item) =>
+    Array.from(item.options).some((option) => option.value === "serial"),
+  );
+  if (!(select instanceof HTMLSelectElement)) {
+    throw new Error("hardware adapter select not found");
+  }
+  return select;
+}
+
 function movementTypeSelect(host: HTMLElement): HTMLSelectElement {
   const select = Array.from(host.querySelectorAll("select")).find((item) =>
     Array.from(item.options).some(
@@ -140,6 +150,20 @@ function movementTypeSelect(host: HTMLElement): HTMLSelectElement {
   }
   return select;
 }
+
+describe("MaintenanceView hardware config", () => {
+  it("only exposes planned hardware adapters", async () => {
+    const host = await mountView();
+    const select = hardwareAdapterSelect(host);
+
+    expect(Array.from(select.options).map((option) => option.value)).toEqual([
+      "mock",
+      "serial",
+    ]);
+    expect(host.textContent).not.toContain("bluetooth");
+    expect(host.textContent).not.toContain("vendor_sdk");
+  });
+});
 
 describe("MaintenanceView stock maintenance", () => {
   it("does not expose trusted stock movement sources", async () => {

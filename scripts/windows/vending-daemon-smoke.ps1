@@ -2,6 +2,7 @@ param(
   [Parameter(Mandatory = $true)][string]$DaemonExe,
   [Parameter(Mandatory = $true)][string]$MachineUiExe,
   [Parameter(Mandatory = $true)][string]$DataDir,
+  [string]$MachineConfig = "",
   [string]$ServiceName = "VemVendingDaemon",
   [string]$ComPort = "COM3",
   [string]$ScannerPort = "COM4",
@@ -15,6 +16,7 @@ $record = [ordered]@{
   webView2 = $null
   serviceName = $ServiceName
   dataDir = $DataDir
+  machineConfig = $MachineConfig
   comPort = $ComPort
   scannerPort = $ScannerPort
   checks = @()
@@ -26,6 +28,12 @@ function Add-Check([string]$Name, [bool]$Passed, [string]$Detail) {
 }
 
 New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
+if ($MachineConfig.Length -gt 0) {
+  Add-Check "machine-config-source-exists" (Test-Path $MachineConfig) $MachineConfig
+  $targetConfig = Join-Path $DataDir "machine-config.json"
+  Copy-Item -Force -Path $MachineConfig -Destination $targetConfig
+  Add-Check "machine-config-seeded" (Test-Path $targetConfig) $targetConfig
+}
 $acl = Get-Acl $DataDir
 Add-Check "data-dir-acl-readable" ($acl.Access.Count -gt 0) "ACL entries: $($acl.Access.Count)"
 
@@ -37,18 +45,19 @@ $webView = Get-ChildItem $webViewKey -ErrorAction SilentlyContinue |
 $record.webView2 = $webView.pv
 Add-Check "webview2-installed" ($null -ne $webView) "version=$($webView.pv)"
 
+$readyFile = Join-Path $DataDir "daemon-ready.json"
+
 if (Get-Service $ServiceName -ErrorAction SilentlyContinue) {
   sc.exe delete $ServiceName | Out-Null
   Start-Sleep -Seconds 2
 }
-sc.exe create $ServiceName binPath= "`"$DaemonExe`" --data-dir `"$DataDir`"" start= auto | Out-Null
+sc.exe create $ServiceName binPath= "`"$DaemonExe`" --data-dir `"$DataDir`" --print-ready-file `"$readyFile`"" start= auto | Out-Null
 sc.exe failure $ServiceName reset= 60 actions= restart/5000/restart/5000/""/5000 | Out-Null
 Start-Service $ServiceName
 Start-Sleep -Seconds 5
 $svc = Get-Service $ServiceName
 Add-Check "service-running" ($svc.Status -eq "Running") "status=$($svc.Status)"
 
-$readyFile = Join-Path $DataDir "daemon-ready.json"
 Add-Check "ready-file-exists" (Test-Path $readyFile) $readyFile
 $ready = Get-Content $readyFile | ConvertFrom-Json
 $health = Invoke-RestMethod $ready.healthzUrl
@@ -63,7 +72,16 @@ $ports = [System.IO.Ports.SerialPort]::GetPortNames()
 Add-Check "lower-controller-com-port-present" ($ports -contains $ComPort) ($ports -join ",")
 Add-Check "scanner-com-port-present" ($ports -contains $ScannerPort) ($ports -join ",")
 
-$ui = Start-Process -FilePath $MachineUiExe -PassThru
+$previousReadyFile = [Environment]::GetEnvironmentVariable("VEM_DAEMON_READY_FILE", "Process")
+$previousDataDir = [Environment]::GetEnvironmentVariable("VEM_DAEMON_DATA_DIR", "Process")
+[Environment]::SetEnvironmentVariable("VEM_DAEMON_READY_FILE", $readyFile, "Process")
+[Environment]::SetEnvironmentVariable("VEM_DAEMON_DATA_DIR", $DataDir, "Process")
+try {
+  $ui = Start-Process -FilePath $MachineUiExe -PassThru
+} finally {
+  [Environment]::SetEnvironmentVariable("VEM_DAEMON_READY_FILE", $previousReadyFile, "Process")
+  [Environment]::SetEnvironmentVariable("VEM_DAEMON_DATA_DIR", $previousDataDir, "Process")
+}
 Start-Sleep -Seconds 5
 Add-Check "kiosk-started" (-not $ui.HasExited) "pid=$($ui.Id)"
 $ui.Kill()

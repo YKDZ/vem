@@ -1,12 +1,7 @@
 import { DEFAULT_VISION_WS_URL } from "@vem/shared";
 import { z } from "zod";
 
-export const hardwareAdapterSchema = z.enum([
-  "mock",
-  "serial",
-  "bluetooth",
-  "vendor_sdk",
-]);
+export const hardwareAdapterSchema = z.enum(["mock", "serial"]);
 
 export const scannerAdapterSchema = z.enum(["disabled", "serial_text"]);
 
