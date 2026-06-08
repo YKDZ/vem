@@ -51,7 +51,7 @@ function unprovisionedConfig() {
   return {
     public: {
       machineCode: null,
-      apiBaseUrl: "http://localhost:3000/api",
+      apiBaseUrl: "https://staging-api.example.com/api",
       mqttUrl: "mqtt://localhost:1883",
       mqttUsername: null,
       hardwareAdapter: "mock",

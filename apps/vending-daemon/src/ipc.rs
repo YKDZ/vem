@@ -2830,6 +2830,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn failed_claim_without_default_api_base_url_reports_backend_unavailable() {
+        let temp_dir = tempdir().expect("tmp");
+        let app = build_router(test_ipc_context(temp_dir.path(), "token-1", None, "").await);
+
+        let response = post_json(
+            &app,
+            "/v1/provisioning/claim",
+            "token-1",
+            json!({ "claimCode": "ABCD-2345" }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["code"], "machine_claim_backend_unavailable");
+        let text = serde_json::to_string(&payload).unwrap();
+        assert!(!text.contains("ABCD-2345"));
+        assert!(!text.contains("apiBaseUrl"));
+    }
+
+    #[tokio::test]
     async fn successful_claim_requests_runtime_reconfiguration() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))

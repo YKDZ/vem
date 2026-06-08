@@ -346,7 +346,7 @@ pub fn default_public_config() -> MachinePublicConfig {
         machine_name: None,
         machine_status: None,
         machine_location_text: None,
-        api_base_url: "http://localhost:3000/api".to_string(),
+        api_base_url: env_var("VEM_DEFAULT_API_BASE_URL").unwrap_or_default(),
         mqtt_url: "mqtt://localhost:1883".to_string(),
         mqtt_username: None,
         mqtt_client_id: None,
@@ -526,9 +526,6 @@ pub fn normalize_public_config(
     config.api_base_url = config.api_base_url.trim().trim_end_matches('/').to_string();
     config.mqtt_url = config.mqtt_url.trim().to_string();
 
-    if config.api_base_url.is_empty() {
-        return Err("apiBaseUrl is required".to_string());
-    }
     if config.mqtt_url.is_empty() {
         return Err("mqttUrl is required".to_string());
     }
@@ -1184,6 +1181,18 @@ mod tests {
         LegacyEnvGuard { name, previous }
     }
 
+    fn set_env_var(name: &'static str, value: &str) -> LegacyEnvGuard {
+        let previous = env::var(name).ok();
+        env::set_var(name, value);
+        LegacyEnvGuard { name, previous }
+    }
+
+    fn remove_env_var(name: &'static str) -> LegacyEnvGuard {
+        let previous = env::var(name).ok();
+        env::remove_var(name);
+        LegacyEnvGuard { name, previous }
+    }
+
     async fn with_legacy_env_lock() -> tokio::sync::MutexGuard<'static, ()> {
         LEGACY_ENV_LOCK.get_or_init(|| Mutex::new(())).lock().await
     }
@@ -1380,6 +1389,94 @@ mod tests {
         let first = store.load_public_config().await.expect("first load");
         let second = store.load_public_config().await.expect("second load");
         assert_eq!(first, second);
+    }
+
+    #[tokio::test]
+    async fn first_boot_config_requires_installer_api_base_url_before_claiming() {
+        let _env_lock = with_legacy_env_lock().await;
+        let _default_api = remove_env_var("VEM_DEFAULT_API_BASE_URL");
+        let temp = TempDir::new().expect("temp");
+        let data_dir = temp.path().join("daemon");
+        let state = crate::state::LocalStateStore::open(&data_dir.join("state.db"))
+            .await
+            .expect("state");
+        let store = ConfigStore::new(
+            data_dir.clone(),
+            state,
+            std::sync::Arc::new(InMemorySecretStore::default()),
+        );
+
+        let runtime = store.load_runtime_config().await.expect("load config");
+
+        assert!(runtime.public.api_base_url.is_empty());
+        assert!(runtime
+            .to_public()
+            .provisioning_issues
+            .contains(&"api_base_url_missing".to_string()));
+    }
+
+    #[tokio::test]
+    async fn installer_default_api_base_url_seeds_first_boot_config() {
+        let _env_lock = with_legacy_env_lock().await;
+        let _default_api = set_env_var(
+            "VEM_DEFAULT_API_BASE_URL",
+            " https://staging-api.example.com/api/ ",
+        );
+        let temp = TempDir::new().expect("temp");
+        let data_dir = temp.path().join("daemon");
+        let state = crate::state::LocalStateStore::open(&data_dir.join("state.db"))
+            .await
+            .expect("state");
+        let store = ConfigStore::new(
+            data_dir.clone(),
+            state,
+            std::sync::Arc::new(InMemorySecretStore::default()),
+        );
+
+        let runtime = store.load_runtime_config().await.expect("load config");
+
+        assert_eq!(
+            runtime.public.api_base_url,
+            "https://staging-api.example.com/api"
+        );
+        assert!(!runtime
+            .to_public()
+            .provisioning_issues
+            .contains(&"api_base_url_missing".to_string()));
+    }
+
+    #[tokio::test]
+    async fn saved_config_api_base_url_overrides_installer_default() {
+        let _env_lock = with_legacy_env_lock().await;
+        let _default_api = set_env_var(
+            "VEM_DEFAULT_API_BASE_URL",
+            "https://staging-api.example.com/api",
+        );
+        let temp = TempDir::new().expect("temp");
+        let data_dir = temp.path().join("daemon");
+        let state = crate::state::LocalStateStore::open(&data_dir.join("state.db"))
+            .await
+            .expect("state");
+        let store = ConfigStore::new(
+            data_dir.clone(),
+            state,
+            std::sync::Arc::new(InMemorySecretStore::default()),
+        );
+        let saved = MachinePublicConfig {
+            api_base_url: " https://production-api.example.com/api/ ".to_string(),
+            ..default_public_config()
+        };
+
+        store
+            .save_public_config(saved)
+            .await
+            .expect("save override");
+        let runtime = store.load_runtime_config().await.expect("load config");
+
+        assert_eq!(
+            runtime.public.api_base_url,
+            "https://production-api.example.com/api"
+        );
     }
 
     #[tokio::test]

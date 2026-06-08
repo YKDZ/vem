@@ -3,6 +3,7 @@ param(
   [Parameter(Mandatory = $true)][string]$MachineUiExe,
   [Parameter(Mandatory = $true)][string]$DataDir,
   [string]$MachineConfig = "",
+  [string]$DefaultApiBaseUrl = "",
   [string]$ServiceName = "VemVendingDaemon",
   [string]$ComPort = "COM3",
   [string]$ScannerPort = "COM4",
@@ -17,6 +18,7 @@ $record = [ordered]@{
   serviceName = $ServiceName
   dataDir = $DataDir
   machineConfig = $MachineConfig
+  defaultApiBaseUrl = $DefaultApiBaseUrl
   comPort = $ComPort
   scannerPort = $ScannerPort
   checks = @()
@@ -28,9 +30,9 @@ function Add-Check([string]$Name, [bool]$Passed, [string]$Detail) {
 }
 
 New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
+$targetConfig = Join-Path $DataDir "machine-config.json"
 if ($MachineConfig.Length -gt 0) {
   Add-Check "machine-config-source-exists" (Test-Path $MachineConfig) $MachineConfig
-  $targetConfig = Join-Path $DataDir "machine-config.json"
   Copy-Item -Force -Path $MachineConfig -Destination $targetConfig
   Add-Check "machine-config-seeded" (Test-Path $targetConfig) $targetConfig
 }
@@ -53,6 +55,17 @@ if (Get-Service $ServiceName -ErrorAction SilentlyContinue) {
 }
 sc.exe create $ServiceName binPath= "`"$DaemonExe`" --data-dir `"$DataDir`" --print-ready-file `"$readyFile`"" start= auto | Out-Null
 sc.exe failure $ServiceName reset= 60 actions= restart/5000/restart/5000/""/5000 | Out-Null
+if ($DefaultApiBaseUrl.Length -gt 0) {
+  $serviceKey = "HKLM:\SYSTEM\CurrentControlSet\Services\$ServiceName"
+  $currentEnvironment = (Get-ItemProperty -Path $serviceKey -Name Environment -ErrorAction SilentlyContinue).Environment
+  $environment = @()
+  if ($null -ne $currentEnvironment) {
+    $environment = @($currentEnvironment | Where-Object { $_ -notlike "VEM_DEFAULT_API_BASE_URL=*" })
+  }
+  $environment += "VEM_DEFAULT_API_BASE_URL=$DefaultApiBaseUrl"
+  New-ItemProperty -Path $serviceKey -Name Environment -PropertyType MultiString -Value $environment -Force | Out-Null
+  Add-Check "service-env-default-api-base-url" $true "VEM_DEFAULT_API_BASE_URL=$DefaultApiBaseUrl"
+}
 Start-Service $ServiceName
 Start-Sleep -Seconds 5
 $svc = Get-Service $ServiceName
@@ -60,10 +73,22 @@ Add-Check "service-running" ($svc.Status -eq "Running") "status=$($svc.Status)"
 
 Add-Check "ready-file-exists" (Test-Path $readyFile) $readyFile
 $ready = Get-Content $readyFile | ConvertFrom-Json
+Add-Check "advanced-debug-default-disabled" (-not $ready.runtimeFlags.advancedMaintenanceConfig) ($ready.runtimeFlags | ConvertTo-Json -Compress)
 $health = Invoke-RestMethod $ready.healthzUrl
 Add-Check "healthz-json" ($null -ne $health.status) ($health | ConvertTo-Json -Compress)
 $baseUrl = $ready.healthzUrl -replace "/healthz$", ""
 $headers = @{ Authorization = "Bearer $($ready.ipcToken)" }
+$config = Invoke-RestMethod "$baseUrl/v1/config" -Headers $headers
+if ($DefaultApiBaseUrl.Length -gt 0) {
+  $expectedApiBaseUrl = $DefaultApiBaseUrl.Trim().TrimEnd("/")
+  if (Test-Path $targetConfig) {
+    $seededConfig = Get-Content $targetConfig -Raw | ConvertFrom-Json
+    if ($null -ne $seededConfig.apiBaseUrl -and $seededConfig.apiBaseUrl.Length -gt 0) {
+      $expectedApiBaseUrl = $seededConfig.apiBaseUrl.Trim().TrimEnd("/")
+    }
+  }
+  Add-Check "default-api-base-url-configured" ($config.public.apiBaseUrl -eq $expectedApiBaseUrl) ($config.public | ConvertTo-Json -Compress)
+}
 $scanner = Invoke-RestMethod "$baseUrl/v1/scanner/status" -Headers $headers
 Add-Check "scanner-adapter-serial-text" ($scanner.adapter -eq "serial_text") ($scanner | ConvertTo-Json -Compress)
 Add-Check "scanner-status-diagnostic" ($scanner.code.Length -gt 0 -and $scanner.message.Length -gt 0) ($scanner | ConvertTo-Json -Compress)
