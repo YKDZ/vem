@@ -234,8 +234,11 @@ fn maybe_spawn_mqtt_task(
         None => return Ok(None),
     };
 
-    let mut options =
-        MqttSyncRuntime::mqtt_options_from_config(&machine_code, &runtime_config.mqtt_url)?;
+    let mut options = MqttSyncRuntime::mqtt_options_from_config(
+        &machine_code,
+        &runtime_config.mqtt_url,
+        runtime_config.mqtt_client_id.as_deref(),
+    )?;
     if let Some(username) = &runtime_config.mqtt_username {
         options.set_credentials(
             username,
@@ -402,6 +405,7 @@ async fn cache_daemon_events(
             DaemonEvent::TransactionChanged { .. } => {}
             DaemonEvent::ReadyChanged { .. }
             | DaemonEvent::HealthChanged { .. }
+            | DaemonEvent::RuntimeReconfigureRequested { .. }
             | DaemonEvent::RemoteOpResult { .. } => {}
         }
     }

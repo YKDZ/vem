@@ -46,6 +46,12 @@ pub enum DaemonEvent {
         online: bool,
         message: String,
     },
+    RuntimeReconfigureRequested {
+        event_id: String,
+        updated_at: String,
+        reason: String,
+        machine_code: Option<String>,
+    },
     RemoteOpResult {
         event_id: String,
         updated_at: String,

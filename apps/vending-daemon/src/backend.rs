@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use crate::config::MachineProvisioningProfile;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
@@ -199,6 +200,19 @@ impl BackendClient {
 
         *self.token.write().await = Some(token);
         Ok(())
+    }
+
+    pub async fn claim_machine(
+        &self,
+        claim_code: &str,
+    ) -> Result<MachineProvisioningProfile, String> {
+        self.request_json_typed(
+            reqwest::Method::POST,
+            "/machines/claim",
+            Some(serde_json::json!({ "claimCode": claim_code })),
+            false,
+        )
+        .await
     }
 
     pub async fn create_order(

@@ -74,6 +74,7 @@ impl MqttSyncRuntime {
     pub fn mqtt_options_from_config(
         machine_code: &str,
         mqtt_url: &str,
+        client_id: Option<&str>,
     ) -> Result<MqttOptions, String> {
         let (scheme, rest) = mqtt_url
             .split_once("://")
@@ -85,7 +86,12 @@ impl MqttSyncRuntime {
             .parse::<u16>()
             .map_err(|_| "mqttUrl port is not a number".to_string())?;
 
-        let mut options = MqttOptions::new(format!("machine-{machine_code}"), host, port);
+        let client_id = client_id
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string)
+            .unwrap_or_else(|| format!("machine-{machine_code}"));
+        let mut options = MqttOptions::new(client_id, host, port);
         options.set_keep_alive(std::time::Duration::from_secs(30));
         match scheme {
             "mqtt" => {}
@@ -737,15 +743,26 @@ mod tests {
 
     #[test]
     fn mqtt_options_accepts_mqtt_and_mqtts() {
-        let opts =
-            MqttSyncRuntime::mqtt_options_from_config("M1", "mqtt://127.0.0.1:1883").expect("mqtt");
+        let opts = MqttSyncRuntime::mqtt_options_from_config("M1", "mqtt://127.0.0.1:1883", None)
+            .expect("mqtt");
         assert_eq!(opts.client_id(), "machine-M1");
 
-        let secure = MqttSyncRuntime::mqtt_options_from_config("M1", "mqtts://127.0.0.1:8883")
-            .expect("mqtts");
+        let secure =
+            MqttSyncRuntime::mqtt_options_from_config("M1", "mqtts://127.0.0.1:8883", None)
+                .expect("mqtts");
         assert_eq!(secure.client_id(), "machine-M1");
 
-        assert!(MqttSyncRuntime::mqtt_options_from_config("M1", "ws://127.0.0.1:1883").is_err());
+        let provisioned = MqttSyncRuntime::mqtt_options_from_config(
+            "M1",
+            "mqtt://127.0.0.1:1883",
+            Some("vem-machine-M1"),
+        )
+        .expect("mqtt");
+        assert_eq!(provisioned.client_id(), "vem-machine-M1");
+
+        assert!(
+            MqttSyncRuntime::mqtt_options_from_config("M1", "ws://127.0.0.1:1883", None).is_err()
+        );
     }
 
     #[tokio::test]
