@@ -130,6 +130,7 @@ onMounted(async () => {
       routeForStartup({
         daemonAvailable: true,
         health,
+        config: machineStore.configSummary,
         ready,
         transaction,
       }),
@@ -141,6 +142,7 @@ onMounted(async () => {
       routeForStartup({
         daemonAvailable: false,
         health: null,
+        config: null,
         ready: null,
         transaction: null,
       }),

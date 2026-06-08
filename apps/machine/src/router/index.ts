@@ -69,6 +69,11 @@ const routes: RouteRecordRaw[] = [
     component: async () => import("@/views/MaintenanceView.vue"),
   },
   {
+    path: "/provisioning",
+    name: "provisioning",
+    component: async () => import("@/views/MachineProvisioningView.vue"),
+  },
+  {
     path: "/:pathMatch(.*)*",
     redirect: "/boot",
   },
