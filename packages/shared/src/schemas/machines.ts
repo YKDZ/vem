@@ -1,6 +1,10 @@
 import { z } from "zod";
 
-import { machineSlotStatusSchema, machineStatusSchema } from "../enums/machine";
+import {
+  machineClaimCodeStateSchema,
+  machineSlotStatusSchema,
+  machineStatusSchema,
+} from "../enums/machine";
 
 export const createMachineSchema = z.object({
   code: z.string().min(1).max(64),
@@ -232,4 +236,30 @@ export const machineSaleViewSnapshotSchema = z.object({
 export type MachineSaleViewItem = z.infer<typeof machineSaleViewItemSchema>;
 export type MachineSaleViewSnapshot = z.infer<
   typeof machineSaleViewSnapshotSchema
+>;
+
+export const machineClaimCodeSnapshotSchema = z.strictObject({
+  id: z.uuid(),
+  machineId: z.uuid(),
+  machineCode: z.string().min(1).max(64),
+  state: machineClaimCodeStateSchema,
+  expiresAt: z.iso.datetime(),
+  failedAttemptCount: z.int().nonnegative(),
+  maxFailedAttempts: z.int().positive(),
+  createdAt: z.iso.datetime(),
+  consumedAt: z.iso.datetime().nullable().optional(),
+  revokedAt: z.iso.datetime().nullable().optional(),
+  lockedAt: z.iso.datetime().nullable().optional(),
+});
+
+export const generateMachineClaimCodeResponseSchema =
+  machineClaimCodeSnapshotSchema.extend({
+    claimCode: z.string().regex(/^[A-Z0-9]{4}-[A-Z0-9]{4}$/),
+  });
+
+export type MachineClaimCodeSnapshot = z.infer<
+  typeof machineClaimCodeSnapshotSchema
+>;
+export type GenerateMachineClaimCodeResponse = z.infer<
+  typeof generateMachineClaimCodeResponseSchema
 >;

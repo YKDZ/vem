@@ -27,3 +27,13 @@ export const machineCommandStatusSchema = z.enum([
 ]);
 export type MachineCommandStatus = z.infer<typeof machineCommandStatusSchema>;
 export const machineCommandStatuses = machineCommandStatusSchema.options;
+
+export const machineClaimCodeStateSchema = z.enum([
+  "pending",
+  "consumed",
+  "expired",
+  "revoked",
+  "locked",
+]);
+export type MachineClaimCodeState = z.infer<typeof machineClaimCodeStateSchema>;
+export const machineClaimCodeStates = machineClaimCodeStateSchema.options;

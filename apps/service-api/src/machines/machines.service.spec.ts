@@ -1,4 +1,8 @@
-import { BadRequestException, NotFoundException } from "@nestjs/common";
+import {
+  BadRequestException,
+  ConflictException,
+  NotFoundException,
+} from "@nestjs/common";
 import { Test } from "@nestjs/testing";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -795,5 +799,428 @@ describe("MachinesService planogram lifecycle", () => {
       service.acknowledgeMachinePlanogramVersion("M001", "PLAN-MISSING"),
     ).rejects.toThrow(NotFoundException);
     expect(tx.update).not.toHaveBeenCalled();
+  });
+});
+
+describe("MachinesService claim code lifecycle", () => {
+  let service: MachinesService;
+
+  const mockDb = {
+    select: vi.fn(),
+    insert: vi.fn(),
+    update: vi.fn(),
+    transaction: vi.fn(),
+  };
+  const auditRecord = vi.fn();
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    const module = await Test.createTestingModule({
+      providers: [
+        MachinesService,
+        { provide: DRIZZLE_CLIENT, useValue: mockDb },
+        { provide: MachineCredentialService, useValue: {} },
+        { provide: AuditService, useValue: { record: auditRecord } },
+        { provide: MqttService, useValue: { publish: vi.fn() } },
+        {
+          provide: MqttSignatureService,
+          useValue: { signForMachine: vi.fn(), verifyFromTopic: vi.fn() },
+        },
+        {
+          provide: AppConfigService,
+          useValue: {
+            machineCommandTimeoutSeconds: 5,
+            machineClaimCodeTtlSeconds: 600,
+          },
+        },
+      ],
+    }).compile();
+    service = module.get(MachinesService);
+  });
+
+  it("generates a short-lived claim code and stores only a verifier hash", async () => {
+    const machine = {
+      id: "550e8400-e29b-41d4-a716-446655440000",
+      code: "M001",
+    };
+    const createdAt = new Date("2026-06-08T16:30:00.000Z");
+    const inserted = {
+      id: "550e8400-e29b-41d4-a716-446655440111",
+      machineId: machine.id,
+      verifierHash: "scrypt:test-salt:test-digest",
+      state: "pending",
+      failedAttemptCount: 0,
+      maxFailedAttempts: 5,
+      expiresAt: new Date("2026-06-08T16:40:00.000Z"),
+      consumedAt: null,
+      revokedAt: null,
+      lockedAt: null,
+      createdByAdminUserId: "admin-1",
+      revokedByAdminUserId: null,
+      createdAt,
+      updatedAt: createdAt,
+    };
+    const insertValues = vi.fn().mockReturnValue({
+      returning: async () => [inserted],
+    });
+
+    mockDb.select
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            limit: async () => [machine],
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: async () => [],
+        }),
+      });
+    mockDb.insert.mockReturnValueOnce({ values: insertValues });
+
+    const result = await service.generateMachineClaimCode(
+      machine.id,
+      "admin-1",
+    );
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        id: inserted.id,
+        machineId: machine.id,
+        machineCode: "M001",
+        claimCode: expect.stringMatching(/^[A-Z0-9]{4}-[A-Z0-9]{4}$/),
+        state: "pending",
+        expiresAt: "2026-06-08T16:40:00.000Z",
+        failedAttemptCount: 0,
+        maxFailedAttempts: 5,
+        createdAt: "2026-06-08T16:30:00.000Z",
+      }),
+    );
+    const stored = insertValues.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(stored.machineId).toBe(machine.id);
+    expect(stored.verifierHash).toEqual(expect.stringMatching(/^scrypt:/));
+    expect(stored.verifierHash).not.toBe(result.claimCode);
+    expect(stored).not.toHaveProperty("claimCode");
+    expect(stored.failedAttemptCount).toBe(0);
+    expect(stored.maxFailedAttempts).toBe(5);
+    expect(stored.expiresAt).toBeInstanceOf(Date);
+    expect(auditRecord).toHaveBeenCalledWith({
+      adminUserId: "admin-1",
+      action: "machines.claimCode.generate",
+      resourceType: "machine",
+      resourceId: machine.id,
+      afterJson: {
+        claimCodeId: inserted.id,
+        machineCode: "M001",
+        state: "pending",
+        expiresAt: "2026-06-08T16:40:00.000Z",
+      },
+    });
+  });
+
+  it("does not generate a second active claim code for the same machine", async () => {
+    const machine = {
+      id: "550e8400-e29b-41d4-a716-446655440000",
+      code: "M001",
+    };
+    mockDb.select
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            limit: async () => [machine],
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: async () => [
+            {
+              id: "550e8400-e29b-41d4-a716-446655440111",
+              state: "pending",
+              expiresAt: new Date("2026-06-08T16:40:00.000Z"),
+            },
+          ],
+        }),
+      });
+
+    await expect(
+      service.generateMachineClaimCode(machine.id, "admin-1"),
+    ).rejects.toThrow(ConflictException);
+    expect(mockDb.insert).not.toHaveBeenCalled();
+  });
+
+  it("marks expired pending claim codes before generating a replacement", async () => {
+    const machine = {
+      id: "550e8400-e29b-41d4-a716-446655440000",
+      code: "M001",
+    };
+    const createdAt = new Date("2026-06-08T16:30:00.000Z");
+    const expiredPending = {
+      id: "550e8400-e29b-41d4-a716-446655440110",
+      state: "pending",
+      expiresAt: new Date("2026-06-08T16:00:00.000Z"),
+    };
+    const inserted = {
+      id: "550e8400-e29b-41d4-a716-446655440111",
+      machineId: machine.id,
+      verifierHash: "scrypt:test-salt:test-digest",
+      state: "pending",
+      failedAttemptCount: 0,
+      maxFailedAttempts: 5,
+      expiresAt: new Date("2026-06-08T16:40:00.000Z"),
+      consumedAt: null,
+      revokedAt: null,
+      lockedAt: null,
+      createdByAdminUserId: "admin-1",
+      revokedByAdminUserId: null,
+      createdAt,
+      updatedAt: createdAt,
+    };
+    const expireSet = vi.fn().mockReturnValue({ where: async () => undefined });
+    const insertValues = vi.fn().mockReturnValue({
+      returning: async () => [inserted],
+    });
+
+    mockDb.select
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            limit: async () => [machine],
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: async () => [expiredPending],
+        }),
+      });
+    mockDb.update.mockReturnValueOnce({ set: expireSet });
+    mockDb.insert.mockReturnValueOnce({ values: insertValues });
+
+    await expect(
+      service.generateMachineClaimCode(machine.id, "admin-1"),
+    ).resolves.toEqual(expect.objectContaining({ state: "pending" }));
+
+    expect(expireSet).toHaveBeenCalledWith(
+      expect.objectContaining({ state: "expired" }),
+    );
+    expect(insertValues).toHaveBeenCalled();
+  });
+
+  it("lists claim code lifecycle state without reusable claim secrets", async () => {
+    const machine = {
+      id: "550e8400-e29b-41d4-a716-446655440000",
+      code: "M001",
+    };
+    const createdAt = new Date("2026-06-08T16:00:00.000Z");
+    const expiredPending = {
+      id: "550e8400-e29b-41d4-a716-446655440111",
+      machineId: machine.id,
+      verifierHash: "scrypt:test-salt:test-digest",
+      state: "pending",
+      failedAttemptCount: 2,
+      maxFailedAttempts: 5,
+      expiresAt: new Date("2026-06-08T16:01:00.000Z"),
+      consumedAt: null,
+      revokedAt: null,
+      lockedAt: null,
+      createdByAdminUserId: "admin-1",
+      revokedByAdminUserId: null,
+      createdAt,
+      updatedAt: createdAt,
+    };
+    const revoked = {
+      ...expiredPending,
+      id: "550e8400-e29b-41d4-a716-446655440112",
+      state: "revoked",
+      failedAttemptCount: 0,
+      expiresAt: new Date("2026-06-08T16:40:00.000Z"),
+      revokedAt: new Date("2026-06-08T16:10:00.000Z"),
+    };
+
+    mockDb.select
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            limit: async () => [machine],
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            orderBy: async () => [revoked, expiredPending],
+          }),
+        }),
+      });
+
+    const result = await service.listMachineClaimCodes(
+      machine.id,
+      new Date("2026-06-08T16:30:00.000Z"),
+    );
+
+    expect(result.items).toEqual([
+      expect.objectContaining({
+        id: revoked.id,
+        machineCode: "M001",
+        state: "revoked",
+        revokedAt: "2026-06-08T16:10:00.000Z",
+      }),
+      expect.objectContaining({
+        id: expiredPending.id,
+        state: "expired",
+        failedAttemptCount: 2,
+        expiresAt: "2026-06-08T16:01:00.000Z",
+      }),
+    ]);
+    expect(JSON.stringify(result)).not.toContain("scrypt:test-salt");
+    expect(JSON.stringify(result)).not.toContain("claimCode");
+  });
+
+  it("returns a claim code detail without the raw code or verifier hash", async () => {
+    const machine = {
+      id: "550e8400-e29b-41d4-a716-446655440000",
+      code: "M001",
+    };
+    const createdAt = new Date("2026-06-08T16:00:00.000Z");
+    const locked = {
+      id: "550e8400-e29b-41d4-a716-446655440111",
+      machineId: machine.id,
+      verifierHash: "scrypt:test-salt:test-digest",
+      state: "locked",
+      failedAttemptCount: 5,
+      maxFailedAttempts: 5,
+      expiresAt: new Date("2026-06-08T16:40:00.000Z"),
+      consumedAt: null,
+      revokedAt: null,
+      lockedAt: new Date("2026-06-08T16:20:00.000Z"),
+      createdByAdminUserId: "admin-1",
+      revokedByAdminUserId: null,
+      createdAt,
+      updatedAt: createdAt,
+    };
+
+    mockDb.select
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            limit: async () => [machine],
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            limit: async () => [locked],
+          }),
+        }),
+      });
+
+    const result = await service.getMachineClaimCode(machine.id, locked.id);
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        id: locked.id,
+        machineId: machine.id,
+        machineCode: "M001",
+        state: "locked",
+        failedAttemptCount: 5,
+        maxFailedAttempts: 5,
+        lockedAt: "2026-06-08T16:20:00.000Z",
+      }),
+    );
+    expect(JSON.stringify(result)).not.toContain("scrypt:test-salt");
+    expect(JSON.stringify(result)).not.toContain("claimCode");
+  });
+
+  it("revokes a pending claim code and records a redacted audit entry", async () => {
+    const machine = {
+      id: "550e8400-e29b-41d4-a716-446655440000",
+      code: "M001",
+    };
+    const createdAt = new Date("2026-06-08T16:00:00.000Z");
+    const pending = {
+      id: "550e8400-e29b-41d4-a716-446655440111",
+      machineId: machine.id,
+      verifierHash: "scrypt:test-salt:test-digest",
+      state: "pending",
+      failedAttemptCount: 1,
+      maxFailedAttempts: 5,
+      expiresAt: new Date("2026-06-08T16:40:00.000Z"),
+      consumedAt: null,
+      revokedAt: null,
+      lockedAt: null,
+      createdByAdminUserId: "admin-1",
+      revokedByAdminUserId: null,
+      createdAt,
+      updatedAt: createdAt,
+    };
+    const revoked = {
+      ...pending,
+      state: "revoked",
+      revokedAt: new Date("2026-06-08T16:20:00.000Z"),
+      revokedByAdminUserId: "admin-2",
+    };
+    const updateSet = vi.fn().mockReturnValue({
+      where: () => ({ returning: async () => [revoked] }),
+    });
+
+    mockDb.select
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            limit: async () => [machine],
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            limit: async () => [pending],
+          }),
+        }),
+      });
+    mockDb.update.mockReturnValueOnce({ set: updateSet });
+
+    const result = await service.revokeMachineClaimCode(
+      machine.id,
+      pending.id,
+      "admin-2",
+      new Date("2026-06-08T16:20:00.000Z"),
+    );
+
+    expect(updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        state: "revoked",
+        revokedByAdminUserId: "admin-2",
+      }),
+    );
+    expect(result).toEqual(
+      expect.objectContaining({
+        id: pending.id,
+        state: "revoked",
+        revokedAt: "2026-06-08T16:20:00.000Z",
+      }),
+    );
+    expect(auditRecord).toHaveBeenCalledWith({
+      adminUserId: "admin-2",
+      action: "machines.claimCode.revoke",
+      resourceType: "machine",
+      resourceId: machine.id,
+      beforeJson: {
+        claimCodeId: pending.id,
+        machineCode: "M001",
+        state: "pending",
+      },
+      afterJson: {
+        claimCodeId: pending.id,
+        machineCode: "M001",
+        state: "revoked",
+      },
+    });
+    expect(JSON.stringify(auditRecord.mock.calls)).not.toContain(
+      "scrypt:test-salt",
+    );
   });
 });

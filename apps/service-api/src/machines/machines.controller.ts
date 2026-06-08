@@ -138,6 +138,44 @@ export class MachinesController {
     return await this.machinesService.rotateMachineCredentials(id, admin.id);
   }
 
+  @RequirePermissions("machines.manage-credentials")
+  @Post(":id/claim-codes")
+  async generateClaimCode(
+    @CurrentAdmin() admin: AuthenticatedAdmin,
+    @Param("id", ParseUUIDPipe) id: string,
+  ) {
+    return await this.machinesService.generateMachineClaimCode(id, admin.id);
+  }
+
+  @RequirePermissions("machines.manage-credentials")
+  @Get(":id/claim-codes")
+  async listClaimCodes(@Param("id", ParseUUIDPipe) id: string) {
+    return await this.machinesService.listMachineClaimCodes(id);
+  }
+
+  @RequirePermissions("machines.manage-credentials")
+  @Get(":id/claim-codes/:claimCodeId")
+  async getClaimCode(
+    @Param("id", ParseUUIDPipe) id: string,
+    @Param("claimCodeId", ParseUUIDPipe) claimCodeId: string,
+  ) {
+    return await this.machinesService.getMachineClaimCode(id, claimCodeId);
+  }
+
+  @RequirePermissions("machines.manage-credentials")
+  @Post(":id/claim-codes/:claimCodeId/revoke")
+  async revokeClaimCode(
+    @CurrentAdmin() admin: AuthenticatedAdmin,
+    @Param("id", ParseUUIDPipe) id: string,
+    @Param("claimCodeId", ParseUUIDPipe) claimCodeId: string,
+  ) {
+    return await this.machinesService.revokeMachineClaimCode(
+      id,
+      claimCodeId,
+      admin.id,
+    );
+  }
+
   @Public()
   @UseGuards(MachineAuthGuard)
   @Get(":code/planogram-versions/published")

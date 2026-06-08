@@ -11,6 +11,9 @@ import {
   heartbeatPayloadSchema,
   machineEnvironmentControlRequestSchema,
   machineAuthTokenRequestSchema,
+  generateMachineClaimCodeResponseSchema,
+  machineClaimCodeSnapshotSchema,
+  machineClaimCodeStates,
   machinePlanogramVersionSnapshotSchema,
   machineSaleViewItemSchema,
   machineSlotStatuses,
@@ -171,6 +174,44 @@ describe("shared API contract", () => {
         machineSecret: "local-machine-shared-secret-change-before-production",
       }).machineCode,
     ).toBe("M001");
+  });
+
+  it("keeps machine claim code secrets out of normal snapshots", () => {
+    expect(machineClaimCodeStates).toEqual([
+      "pending",
+      "consumed",
+      "expired",
+      "revoked",
+      "locked",
+    ]);
+
+    const snapshot = {
+      id: "550e8400-e29b-41d4-a716-446655440111",
+      machineId: "550e8400-e29b-41d4-a716-446655440000",
+      machineCode: "M001",
+      state: "pending",
+      expiresAt: "2026-06-08T16:40:00.000Z",
+      failedAttemptCount: 0,
+      maxFailedAttempts: 5,
+      createdAt: "2026-06-08T16:30:00.000Z",
+      consumedAt: null,
+      revokedAt: null,
+      lockedAt: null,
+    };
+
+    expect(machineClaimCodeSnapshotSchema.parse(snapshot)).toEqual(snapshot);
+    expect(() =>
+      machineClaimCodeSnapshotSchema.parse({
+        ...snapshot,
+        claimCode: "ABCD-2345",
+      }),
+    ).toThrow();
+    expect(
+      generateMachineClaimCodeResponseSchema.parse({
+        ...snapshot,
+        claimCode: "ABCD-2345",
+      }).claimCode,
+    ).toBe("ABCD-2345");
   });
 
   it("accepts machine planogram version lifecycle snapshots", () => {

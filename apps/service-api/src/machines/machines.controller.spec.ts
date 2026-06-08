@@ -29,6 +29,124 @@ describe("MachinesController environment commands", () => {
   });
 });
 
+describe("MachinesController claim code lifecycle", () => {
+  it("requires machine credential permission and forwards the requester when generating a claim code", async () => {
+    const generateMachineClaimCode = vi.fn().mockResolvedValue({
+      id: "claim-code-1",
+      claimCode: "ABCD-2345",
+      state: "pending",
+    });
+    const controller = new MachinesController({
+      generateMachineClaimCode,
+    } as never);
+
+    const permissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      MachinesController.prototype.generateClaimCode,
+    );
+
+    expect(permissions).toEqual(["machines.manage-credentials"]);
+    await expect(
+      controller.generateClaimCode(
+        { id: "admin-1" } as never,
+        "550e8400-e29b-41d4-a716-446655440000",
+      ),
+    ).resolves.toEqual({
+      id: "claim-code-1",
+      claimCode: "ABCD-2345",
+      state: "pending",
+    });
+    expect(generateMachineClaimCode).toHaveBeenCalledWith(
+      "550e8400-e29b-41d4-a716-446655440000",
+      "admin-1",
+    );
+  });
+
+  it("requires machine credential permission when listing claim code states", async () => {
+    const listMachineClaimCodes = vi.fn().mockResolvedValue({
+      items: [{ id: "claim-code-1", state: "pending" }],
+    });
+    const controller = new MachinesController({
+      listMachineClaimCodes,
+    } as never);
+
+    const permissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      MachinesController.prototype.listClaimCodes,
+    );
+
+    expect(permissions).toEqual(["machines.manage-credentials"]);
+    await expect(
+      controller.listClaimCodes("550e8400-e29b-41d4-a716-446655440000"),
+    ).resolves.toEqual({ items: [{ id: "claim-code-1", state: "pending" }] });
+    expect(listMachineClaimCodes).toHaveBeenCalledWith(
+      "550e8400-e29b-41d4-a716-446655440000",
+    );
+  });
+
+  it("requires machine credential permission when reading a claim code detail", async () => {
+    const getMachineClaimCode = vi.fn().mockResolvedValue({
+      id: "550e8400-e29b-41d4-a716-446655440111",
+      state: "locked",
+    });
+    const controller = new MachinesController({
+      getMachineClaimCode,
+    } as never);
+
+    const permissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      MachinesController.prototype.getClaimCode,
+    );
+
+    expect(permissions).toEqual(["machines.manage-credentials"]);
+    await expect(
+      controller.getClaimCode(
+        "550e8400-e29b-41d4-a716-446655440000",
+        "550e8400-e29b-41d4-a716-446655440111",
+      ),
+    ).resolves.toEqual({
+      id: "550e8400-e29b-41d4-a716-446655440111",
+      state: "locked",
+    });
+    expect(getMachineClaimCode).toHaveBeenCalledWith(
+      "550e8400-e29b-41d4-a716-446655440000",
+      "550e8400-e29b-41d4-a716-446655440111",
+    );
+  });
+
+  it("requires machine credential permission and forwards the requester when revoking a claim code", async () => {
+    const revokeMachineClaimCode = vi.fn().mockResolvedValue({
+      id: "550e8400-e29b-41d4-a716-446655440111",
+      state: "revoked",
+    });
+    const controller = new MachinesController({
+      revokeMachineClaimCode,
+    } as never);
+
+    const permissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      MachinesController.prototype.revokeClaimCode,
+    );
+
+    expect(permissions).toEqual(["machines.manage-credentials"]);
+    await expect(
+      controller.revokeClaimCode(
+        { id: "admin-1" } as never,
+        "550e8400-e29b-41d4-a716-446655440000",
+        "550e8400-e29b-41d4-a716-446655440111",
+      ),
+    ).resolves.toEqual({
+      id: "550e8400-e29b-41d4-a716-446655440111",
+      state: "revoked",
+    });
+    expect(revokeMachineClaimCode).toHaveBeenCalledWith(
+      "550e8400-e29b-41d4-a716-446655440000",
+      "550e8400-e29b-41d4-a716-446655440111",
+      "admin-1",
+    );
+  });
+});
+
 describe("MachinesController planogram lifecycle", () => {
   it("requires machines.write when publishing a planogram version", async () => {
     const publishMachinePlanogramVersion = vi

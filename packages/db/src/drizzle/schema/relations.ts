@@ -8,6 +8,7 @@ import {
   inventoryMovements,
   inventoryReservations,
   machineEvents,
+  machineClaimCodes,
   machineCommands,
   machineHeartbeats,
   machinePlanogramSlots,
@@ -50,6 +51,7 @@ export const relations = defineRelations(
     inventoryMovements,
     inventoryReservations,
     machineEvents,
+    machineClaimCodes,
     machineCommands,
     machineHeartbeats,
     machinePlanogramSlots,
@@ -156,8 +158,23 @@ export const relations = defineRelations(
       orders: r.many.orders(),
       commands: r.many.machineCommands(),
       events: r.many.machineEvents(),
+      claimCodes: r.many.machineClaimCodes(),
       heartbeats: r.many.machineHeartbeats(),
       planogramVersions: r.many.machinePlanogramVersions(),
+    },
+    machineClaimCodes: {
+      machine: r.one.machines({
+        from: r.machineClaimCodes.machineId,
+        to: r.machines.id,
+      }),
+      createdByAdminUser: r.one.adminUsers({
+        from: r.machineClaimCodes.createdByAdminUserId,
+        to: r.adminUsers.id,
+      }),
+      revokedByAdminUser: r.one.adminUsers({
+        from: r.machineClaimCodes.revokedByAdminUserId,
+        to: r.adminUsers.id,
+      }),
     },
     machinePlanogramVersions: {
       machine: r.one.machines({

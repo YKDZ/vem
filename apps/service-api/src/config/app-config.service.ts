@@ -73,6 +73,10 @@ export class AppConfigService {
     return this.config.get("MACHINE_COMMAND_TIMEOUT_SECONDS", { infer: true });
   }
 
+  get machineClaimCodeTtlSeconds(): number {
+    return this.config.get("MACHINE_CLAIM_CODE_TTL_SECONDS", { infer: true });
+  }
+
   get nodeEnv(): ServiceEnv["NODE_ENV"] {
     return this.config.get("NODE_ENV", { infer: true });
   }

@@ -1,5 +1,6 @@
 import type {
   MachineCommandStatus,
+  MachineClaimCodeState,
   MachineEnvironmentControlRequest,
   MachineHeartbeatStatusPayload,
   MachineSlotStatus,
@@ -43,6 +44,28 @@ export type MachineSlot = {
   slotCode: string;
   capacity: number;
   status: MachineSlotStatus;
+};
+
+export type MachineClaimCodeSnapshot = {
+  id: string;
+  machineId: string;
+  machineCode: string;
+  state: MachineClaimCodeState;
+  expiresAt: string;
+  failedAttemptCount: number;
+  maxFailedAttempts: number;
+  createdAt: string;
+  consumedAt?: string | null;
+  revokedAt?: string | null;
+  lockedAt?: string | null;
+};
+
+export type MachineClaimCodeListResult = {
+  items: MachineClaimCodeSnapshot[];
+};
+
+export type GenerateMachineClaimCodeResult = MachineClaimCodeSnapshot & {
+  claimCode: string;
 };
 
 export type CreateMachineInput = {
@@ -112,6 +135,33 @@ export async function createMachineSlot(
   body: CreateMachineSlotInput,
 ): Promise<MachineSlot> {
   return await post<MachineSlot>(`/machines/${machineId}/slots`, body);
+}
+
+export async function listMachineClaimCodes(
+  machineId: string,
+): Promise<MachineClaimCodeListResult> {
+  return await get<MachineClaimCodeListResult>(
+    `/machines/${machineId}/claim-codes`,
+  );
+}
+
+export async function generateMachineClaimCode(
+  machineId: string,
+): Promise<GenerateMachineClaimCodeResult> {
+  return await post<GenerateMachineClaimCodeResult>(
+    `/machines/${machineId}/claim-codes`,
+    {},
+  );
+}
+
+export async function revokeMachineClaimCode(
+  machineId: string,
+  claimCodeId: string,
+): Promise<MachineClaimCodeSnapshot> {
+  return await post<MachineClaimCodeSnapshot>(
+    `/machines/${machineId}/claim-codes/${claimCodeId}/revoke`,
+    {},
+  );
 }
 
 export type RotateCredentialsResult = {
