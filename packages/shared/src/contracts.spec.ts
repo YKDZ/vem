@@ -259,21 +259,8 @@ describe("shared API contract", () => {
       },
       paymentCapability: {
         profile: "production",
-        options: [
-          {
-            optionKey: "qr_code:alipay",
-            providerCode: "alipay",
-            method: "qr_code",
-            displayName: "支付宝扫码",
-            description: "请使用支付宝扫描屏幕二维码",
-            icon: "alipay",
-            recommended: true,
-            disabled: false,
-            disabledReason: null,
-          },
-        ],
-        defaultOptionKey: "qr_code:alipay",
-        defaultProviderCode: "alipay",
+        qrCodeEnabled: true,
+        paymentCodeEnabled: true,
         serverTime: "2026-06-08T16:30:00.000Z",
       },
       metadata: {
@@ -316,21 +303,49 @@ describe("shared API contract", () => {
         ...profile,
         paymentCapability: {
           ...profile.paymentCapability,
+          mockEnabled: true,
+        },
+      }),
+    ).toThrow();
+    expect(() =>
+      machineProvisioningProfileSchema.parse({
+        ...profile,
+        paymentCapability: {
+          ...profile.paymentCapability,
+          facePayEnabled: true,
+        },
+      }),
+    ).toThrow();
+    expect(() =>
+      machineProvisioningProfileSchema.parse({
+        ...profile,
+        paymentCapability: {
+          profile: "production",
           options: [
             {
-              optionKey: "mock:mock",
-              providerCode: "mock",
-              method: "mock",
-              displayName: "模拟支付",
-              description: "测试环境专用，立即完成支付",
-              icon: "mock",
+              optionKey: "qr_code:alipay",
+              providerCode: "alipay",
+              method: "face_pay",
+              displayName: "刷脸支付",
+              description: "首次生产默认不启用刷脸支付",
+              icon: "alipay",
               recommended: true,
               disabled: false,
               disabledReason: null,
             },
           ],
-          defaultOptionKey: "mock:mock",
-          defaultProviderCode: "mock",
+          defaultOptionKey: "qr_code:alipay",
+          defaultProviderCode: "alipay",
+          serverTime: "2026-06-08T16:30:00.000Z",
+        },
+      }),
+    ).toThrow();
+    expect(() =>
+      machineProvisioningProfileSchema.parse({
+        ...profile,
+        paymentCapability: {
+          ...profile.paymentCapability,
+          merchantPrivateKey: "should-not-be-in-profile",
         },
       }),
     ).toThrow();

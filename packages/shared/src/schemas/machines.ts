@@ -290,21 +290,51 @@ export const productionMachineHardwareProfileSchema = z.strictObject({
   }),
 });
 
-const productionMachinePaymentOptionSchema = machinePaymentOptionSchema.refine(
-  (option) => option.providerCode !== "mock" && option.method !== "mock",
-  { message: "Production machine payment capability cannot include mock" },
-);
+const legacyProductionMachinePaymentOptionSchema =
+  machinePaymentOptionSchema.refine(
+    (option) =>
+      (option.providerCode === "wechat_pay" ||
+        option.providerCode === "alipay") &&
+      (option.method === "qr_code" || option.method === "payment_code"),
+    {
+      message:
+        "Production machine payment capability can only include qr_code or payment_code real-provider methods",
+    },
+  );
 
-export const productionMachinePaymentCapabilitySchema = z.strictObject({
+const productionMachinePaymentCapabilityV1Schema = z.strictObject({
   profile: z.literal("production"),
-  options: z.array(productionMachinePaymentOptionSchema),
-  defaultOptionKey: z
-    .string()
-    .regex(/^(qr_code|payment_code):(wechat_pay|alipay)$/)
-    .nullable(),
-  defaultProviderCode: z.enum(["wechat_pay", "alipay"]).nullable(),
+  qrCodeEnabled: z.boolean().default(true),
+  paymentCodeEnabled: z.boolean().default(true),
   serverTime: z.iso.datetime(),
 });
+
+const legacyProductionMachinePaymentCapabilitySchema = z
+  .strictObject({
+    profile: z.literal("production"),
+    options: z.array(legacyProductionMachinePaymentOptionSchema),
+    defaultOptionKey: z
+      .string()
+      .regex(/^(qr_code|payment_code):(wechat_pay|alipay)$/)
+      .nullable(),
+    defaultProviderCode: z.enum(["wechat_pay", "alipay"]).nullable(),
+    serverTime: z.iso.datetime(),
+  })
+  .transform((capability) => ({
+    profile: capability.profile,
+    qrCodeEnabled: capability.options.some(
+      (option) => option.method === "qr_code",
+    ),
+    paymentCodeEnabled: capability.options.some(
+      (option) => option.method === "payment_code",
+    ),
+    serverTime: capability.serverTime,
+  }));
+
+export const productionMachinePaymentCapabilitySchema = z.union([
+  productionMachinePaymentCapabilityV1Schema,
+  legacyProductionMachinePaymentCapabilitySchema,
+]);
 
 export const machineProvisioningProfileSchema = z.strictObject({
   machine: z.strictObject({

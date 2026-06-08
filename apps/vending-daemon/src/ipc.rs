@@ -18,7 +18,10 @@ use tower_http::cors::{Any, CorsLayer};
 
 use crate::{
     backend::BackendClient,
-    config::{ConfigStore, MachineConfigUpdateRequest, MachinePublicConfig},
+    config::{
+        ConfigStore, MachineConfigUpdateRequest, MachinePublicConfig,
+        ProductionMachinePaymentCapability,
+    },
     events::DaemonEvent,
     logs,
     state::{
@@ -1094,6 +1097,7 @@ async fn machine_sale_readiness_snapshot(
         && scanner.adapter == vending_core::scanner::PAYMENT_CODE_SOURCE_SERIAL_TEXT
         && scanner.code == "SCANNER_READY";
 
+    let payment_capability = load_machine_payment_capability(ctx).await;
     let payment_probe = ctx.ui.backend.get_payment_options().await;
     let platform_ready = payment_probe.is_ok();
     let mut payment_methods = Vec::new();
@@ -1102,6 +1106,9 @@ async fn machine_sale_readiness_snapshot(
         match strict_payment_options(payload) {
             Ok(options) => {
                 for option in options {
+                    if !payment_method_allowed_by_capability(&option.method, &payment_capability) {
+                        continue;
+                    }
                     let mut ready = !option.disabled;
                     let mut disabled_reason = option.disabled_reason;
                     if option.method == "payment_code" && !scanner_ready {
@@ -1254,6 +1261,40 @@ fn is_supported_payment_method(value: &str) -> bool {
 
 fn is_supported_payment_provider(value: &str) -> bool {
     matches!(value, "mock" | "wechat_pay" | "alipay")
+}
+
+fn default_production_payment_capability() -> ProductionMachinePaymentCapability {
+    ProductionMachinePaymentCapability {
+        profile: "production".to_string(),
+        qr_code_enabled: true,
+        payment_code_enabled: true,
+        server_time: crate::state::store::now_iso(),
+        options: vec![],
+        default_option_key: None,
+        default_provider_code: None,
+    }
+}
+
+async fn load_machine_payment_capability(ctx: &IpcContext) -> ProductionMachinePaymentCapability {
+    ctx.config_store
+        .load_public_config()
+        .await
+        .ok()
+        .and_then(|config| config.payment_capability)
+        .unwrap_or_else(default_production_payment_capability)
+}
+
+fn payment_method_allowed_by_capability(
+    method: &str,
+    capability: &ProductionMachinePaymentCapability,
+) -> bool {
+    match method {
+        "qr_code" => capability.qr_code_enabled,
+        "payment_code" => capability.payment_code_enabled,
+        // Mock remains backend/test-environment governed; production capability never enables it.
+        "mock" => true,
+        _ => false,
+    }
 }
 
 fn strict_payment_options(
@@ -1691,6 +1732,7 @@ async fn payment_options(State(ctx): State<IpcContext>, headers: HeaderMap) -> i
 
     match ctx.ui.backend.get_payment_options().await {
         Ok(mut payload) => {
+            let payment_capability = load_machine_payment_capability(&ctx).await;
             let scanner = ctx.ui.status_cache.scanner.read().await.clone();
             let mut default_option_key = serde_json::Value::Null;
             let mut default_provider_code = serde_json::Value::Null;
@@ -1698,6 +1740,14 @@ async fn payment_options(State(ctx): State<IpcContext>, headers: HeaderMap) -> i
                 .get_mut("options")
                 .and_then(|value| value.as_array_mut())
             {
+                options.retain(|option| {
+                    option
+                        .get("method")
+                        .and_then(|value| value.as_str())
+                        .is_some_and(|method| {
+                            payment_method_allowed_by_capability(method, &payment_capability)
+                        })
+                });
                 for option in options.iter_mut() {
                     let is_payment_code = option.get("method").and_then(|value| value.as_str())
                         == Some("payment_code");
@@ -2210,19 +2260,8 @@ mod tests {
             },
             "paymentCapability": {
                 "profile": "production",
-                "options": [{
-                    "optionKey": "qr_code:alipay",
-                    "providerCode": "alipay",
-                    "method": "qr_code",
-                    "displayName": "支付宝扫码",
-                    "description": "请使用支付宝扫描屏幕二维码",
-                    "icon": "alipay",
-                    "recommended": true,
-                    "disabled": false,
-                    "disabledReason": null
-                }],
-                "defaultOptionKey": "qr_code:alipay",
-                "defaultProviderCode": "alipay",
+                "qrCodeEnabled": true,
+                "paymentCodeEnabled": true,
                 "serverTime": "2026-06-08T16:30:00.000Z"
             },
             "metadata": {
@@ -2891,8 +2930,8 @@ mod tests {
             "/api/machines/M001"
         );
         assert_eq!(
-            config["public"]["paymentCapability"]["defaultProviderCode"],
-            "alipay"
+            config["public"]["paymentCapability"]["paymentCodeEnabled"],
+            true
         );
         assert_eq!(
             config["public"]["hardwareProfile"]["paymentScanner"]["supportsPaymentCode"],
@@ -2956,17 +2995,7 @@ mod tests {
     async fn provisioning_profile_with_mock_payment_capability_is_rejected() {
         let server = MockServer::start().await;
         let mut profile = valid_provisioning_profile();
-        profile["paymentCapability"]["options"] = json!([{
-            "optionKey": "mock:mock",
-            "providerCode": "mock",
-            "method": "mock",
-            "displayName": "模拟支付",
-            "description": "测试环境专用",
-            "icon": "mock",
-            "recommended": true,
-            "disabled": false,
-            "disabledReason": null
-        }]);
+        profile["paymentCapability"]["mockEnabled"] = json!(true);
         Mock::given(method("POST"))
             .and(path("/machines/claim"))
             .respond_with(ResponseTemplate::new(200).set_body_json(profile))
@@ -2989,13 +3018,22 @@ mod tests {
             .await
             .unwrap();
         let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(payload["message"], "payment capability invalid");
+        assert_eq!(payload["code"], "machine_profile_invalid");
     }
 
     #[tokio::test]
-    async fn provisioning_profile_rejects_secret_shaped_payment_option_fields() {
+    async fn provisioning_profile_rejects_face_payment_capability() {
         let mut profile = valid_provisioning_profile();
-        profile["paymentCapability"]["options"][0]["merchantPrivateKey"] =
+        profile["paymentCapability"]["facePayEnabled"] = json!(true);
+        let (status, payload) = claim_with_profile(profile).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(payload["code"], "machine_profile_invalid");
+    }
+
+    #[tokio::test]
+    async fn provisioning_profile_rejects_secret_shaped_payment_capability_fields() {
+        let mut profile = valid_provisioning_profile();
+        profile["paymentCapability"]["merchantPrivateKey"] =
             json!("should-not-be-in-machine-profile");
         let (status, payload) = claim_with_profile(profile).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -3525,6 +3563,195 @@ mod tests {
             .unwrap()
             .iter()
             .any(|code| code == "NO_PAYMENT_OPTIONS"));
+    }
+
+    #[tokio::test]
+    async fn payment_options_are_filtered_by_persisted_machine_payment_capability() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(wiremock::matchers::path("/machine-orders/payment-options"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "options": [
+                    {
+                        "optionKey": "qr_code:alipay",
+                        "providerCode": "alipay",
+                        "method": "qr_code",
+                        "displayName": "支付宝扫码",
+                        "description": "请使用支付宝扫描屏幕二维码",
+                        "icon": "alipay",
+                        "recommended": true,
+                        "disabled": false,
+                        "disabledReason": null
+                    },
+                    {
+                        "optionKey": "payment_code:alipay",
+                        "providerCode": "alipay",
+                        "method": "payment_code",
+                        "displayName": "支付宝付款码",
+                        "description": "请出示支付宝付款码并靠近扫码窗口",
+                        "icon": "alipay",
+                        "recommended": false,
+                        "disabled": false,
+                        "disabledReason": null
+                    },
+                    {
+                        "optionKey": "mock:mock",
+                        "providerCode": "mock",
+                        "method": "mock",
+                        "displayName": "模拟支付",
+                        "description": "测试环境专用",
+                        "icon": "mock",
+                        "recommended": false,
+                        "disabled": false,
+                        "disabledReason": null
+                    }
+                ],
+                "defaultOptionKey": "payment_code:alipay",
+                "defaultProviderCode": "alipay",
+                "serverTime": "2026-06-04T00:00:00Z"
+            })))
+            .mount(&server)
+            .await;
+
+        let temp_dir = tempdir().expect("tmp");
+        let ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            &server.uri(),
+        )
+        .await;
+        let mut public = ctx.config_store.load_public_config().await.expect("config");
+        public.payment_capability = Some(crate::config::ProductionMachinePaymentCapability {
+            profile: "production".to_string(),
+            qr_code_enabled: true,
+            payment_code_enabled: false,
+            server_time: "2026-06-08T16:30:00.000Z".to_string(),
+            options: vec![],
+            default_option_key: None,
+            default_provider_code: None,
+        });
+        ctx.config_store
+            .save_public_config(public)
+            .await
+            .expect("save capability");
+        let app = build_router(ctx);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/payment-options")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let options: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let option_keys: Vec<&str> = options["options"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|option| option["optionKey"].as_str())
+            .collect();
+        assert_eq!(option_keys, vec!["qr_code:alipay", "mock:mock"]);
+        assert_eq!(options["defaultOptionKey"], "qr_code:alipay");
+        assert_eq!(options["defaultProviderCode"], "alipay");
+    }
+
+    #[tokio::test]
+    async fn sale_readiness_uses_machine_payment_capability_before_scanner_readiness() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(wiremock::matchers::path("/machine-orders/payment-options"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "options": [
+                    {
+                        "optionKey": "payment_code:alipay",
+                        "providerCode": "alipay",
+                        "method": "payment_code",
+                        "displayName": "支付宝付款码",
+                        "description": "请出示支付宝付款码并靠近扫码窗口",
+                        "icon": "alipay",
+                        "recommended": true,
+                        "disabled": false,
+                        "disabledReason": null
+                    },
+                    {
+                        "optionKey": "qr_code:alipay",
+                        "providerCode": "alipay",
+                        "method": "qr_code",
+                        "displayName": "支付宝扫码",
+                        "description": "请使用支付宝扫描屏幕二维码",
+                        "icon": "alipay",
+                        "recommended": false,
+                        "disabled": false,
+                        "disabledReason": null
+                    }
+                ],
+                "defaultOptionKey": "payment_code:alipay",
+                "defaultProviderCode": "alipay",
+                "serverTime": "2026-06-04T00:00:00Z"
+            })))
+            .mount(&server)
+            .await;
+
+        let temp_dir = tempdir().expect("tmp");
+        let ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            &server.uri(),
+        )
+        .await;
+        mark_runtime_sale_ready(&ctx).await;
+        {
+            let mut public = ctx.config_store.load_public_config().await.expect("config");
+            public.payment_capability = Some(crate::config::ProductionMachinePaymentCapability {
+                profile: "production".to_string(),
+                qr_code_enabled: true,
+                payment_code_enabled: false,
+                server_time: "2026-06-08T16:30:00.000Z".to_string(),
+                options: vec![],
+                default_option_key: None,
+                default_provider_code: None,
+            });
+            ctx.config_store
+                .save_public_config(public)
+                .await
+                .expect("save capability");
+        }
+        let app = build_router(ctx);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/sale-readiness")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let readiness: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let methods: Vec<&str> = readiness["components"]["paymentOptions"]["methods"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|method| method["optionKey"].as_str())
+            .collect();
+        assert_eq!(methods, vec!["qr_code:alipay"]);
+        assert_eq!(readiness["components"]["paymentOptions"]["ready"], true);
     }
 
     #[tokio::test]

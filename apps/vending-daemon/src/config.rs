@@ -186,10 +186,17 @@ pub struct ProductionVisionProfile {
 #[serde(rename_all = "camelCase")]
 pub struct ProductionMachinePaymentCapability {
     pub profile: String,
-    pub options: Vec<ProductionMachinePaymentOption>,
-    pub default_option_key: Option<String>,
-    pub default_provider_code: Option<String>,
+    #[serde(default = "default_payment_capability_enabled")]
+    pub qr_code_enabled: bool,
+    #[serde(default = "default_payment_capability_enabled")]
+    pub payment_code_enabled: bool,
     pub server_time: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<ProductionMachinePaymentOption>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_option_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_provider_code: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -208,6 +215,10 @@ pub struct ProductionMachinePaymentOption {
     pub disabled: bool,
     #[serde(default)]
     pub disabled_reason: Option<String>,
+}
+
+fn default_payment_capability_enabled() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

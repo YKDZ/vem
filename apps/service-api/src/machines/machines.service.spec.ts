@@ -961,36 +961,6 @@ describe("MachinesService claim code lifecycle", () => {
       secretHash: "scrypt:rotated-machine-secret-hash",
       mqttSigningSecretEncryptedJson: { v: 1, alg: "aes-256-gcm" },
     });
-    listMachinePaymentOptionsForMachine.mockResolvedValueOnce({
-      options: [
-        {
-          optionKey: "mock:mock",
-          providerCode: "mock",
-          method: "mock",
-          displayName: "模拟支付",
-          description: "测试环境专用，立即完成支付",
-          icon: "mock",
-          recommended: true,
-          disabled: false,
-          disabledReason: null,
-        },
-        {
-          optionKey: "qr_code:alipay",
-          providerCode: "alipay",
-          method: "qr_code",
-          displayName: "支付宝扫码",
-          description: "请使用支付宝扫描屏幕二维码",
-          icon: "alipay",
-          recommended: false,
-          disabled: false,
-          disabledReason: null,
-        },
-      ],
-      defaultOptionKey: "mock:mock",
-      defaultProviderCode: "mock",
-      serverTime: "2026-06-08T16:30:00.000Z",
-    });
-
     const consumeSet = vi.fn().mockReturnValue({
       where: () => ({ returning: async () => [consumed] }),
     });
@@ -1045,8 +1015,9 @@ describe("MachinesService claim code lifecycle", () => {
         hardwareProfile: expect.objectContaining({ profile: "production" }),
         paymentCapability: expect.objectContaining({
           profile: "production",
-          defaultProviderCode: "alipay",
-          defaultOptionKey: "qr_code:alipay",
+          qrCodeEnabled: true,
+          paymentCodeEnabled: true,
+          serverTime: "2026-06-08T16:30:00.000Z",
         }),
         metadata: expect.objectContaining({
           profileVersion: 1,
@@ -1092,6 +1063,10 @@ describe("MachinesService claim code lifecycle", () => {
     expect(serializedProfile).not.toContain("inventory");
     expect(serializedProfile).not.toContain("merchant");
     expect(serializedProfile).not.toContain("mock:mock");
+    expect(serializedProfile).not.toContain("face_pay");
+    expect(serializedProfile).not.toContain("defaultProviderCode");
+    expect(serializedProfile).not.toContain("optionKey");
+    expect(listMachinePaymentOptionsForMachine).not.toHaveBeenCalled();
   });
 
   it("consumes a reclaim code with credential rotation and distinct audit", async () => {
@@ -1231,11 +1206,12 @@ describe("MachinesService claim code lifecycle", () => {
       config,
       credentialService,
     );
-    const { accessToken: oldAccessToken } =
-      await machineAuthService.issueToken({
+    const { accessToken: oldAccessToken } = await machineAuthService.issueToken(
+      {
         machineCode: "M001",
         machineSecret: oldMachineSecret,
-      });
+      },
+    );
     const pending = {
       ...claimCandidate({ id: "550e8400-e29b-41d4-a716-446655440333" }),
       purpose: "reclaim",
@@ -1373,9 +1349,13 @@ describe("MachinesService claim code lifecycle", () => {
         }),
       }),
     });
-    listMachinePaymentOptionsForMachine.mockRejectedValueOnce(
-      new Error("stop after lookup"),
-    );
+    createBundle.mockReturnValueOnce({
+      machineSecret: "vms_rotated-machine-secret-change-before-production",
+      mqttSigningSecret: "vms_rotated-mqtt-secret-change-before-production",
+      secretHash: "scrypt:rotated-machine-secret-hash",
+      mqttSigningSecretEncryptedJson: { v: 1, alg: "aes-256-gcm" },
+    });
+    mockDb.transaction.mockRejectedValueOnce(new Error("stop after lookup"));
 
     await expect(
       service.claimMachine({ claimCode: "ABCD-2345" }),
@@ -1383,6 +1363,7 @@ describe("MachinesService claim code lifecycle", () => {
 
     expect(where).toHaveBeenCalledTimes(1);
     expect(limit).toHaveBeenCalledWith(1);
+    expect(listMachinePaymentOptionsForMachine).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -1496,30 +1477,6 @@ describe("MachinesService claim code lifecycle", () => {
     expect(auditRecord).not.toHaveBeenCalled();
   });
 
-  it("validates payment profile dependencies before consuming the claim or rotating credentials", async () => {
-    const pending = claimCandidate();
-    mockDb.select.mockReturnValueOnce({
-      from: () => ({
-        innerJoin: () => ({
-          where: () => ({
-            limit: async () => [pending],
-          }),
-        }),
-      }),
-    });
-    listMachinePaymentOptionsForMachine.mockRejectedValueOnce(
-      new Error("payment config unavailable"),
-    );
-
-    await expect(
-      service.claimMachine({ claimCode: "ABCD-2345" }),
-    ).rejects.toThrow("payment config unavailable");
-
-    expect(createBundle).not.toHaveBeenCalled();
-    expect(mockDb.transaction).not.toHaveBeenCalled();
-    expect(auditRecord).not.toHaveBeenCalled();
-  });
-
   it("does not return a profile when the claim code was consumed by a concurrent request", async () => {
     const pending = claimCandidate();
     const consumeSet = vi.fn().mockReturnValue({
@@ -1537,12 +1494,6 @@ describe("MachinesService claim code lifecycle", () => {
         }),
       }),
     });
-    listMachinePaymentOptionsForMachine.mockResolvedValueOnce({
-      options: [],
-      defaultOptionKey: null,
-      defaultProviderCode: null,
-      serverTime: "2026-06-08T16:30:00.000Z",
-    });
     createBundle.mockReturnValueOnce({
       machineSecret: "vms_rotated-machine-secret-change-before-production",
       mqttSigningSecret: "vms_rotated-mqtt-secret-change-before-production",
@@ -1558,9 +1509,7 @@ describe("MachinesService claim code lifecycle", () => {
     ).rejects.toMatchObject({
       message: "Invalid or expired machine claim code",
     });
-    expect(listMachinePaymentOptionsForMachine).toHaveBeenCalledWith(
-      pending.machineId,
-    );
+    expect(listMachinePaymentOptionsForMachine).not.toHaveBeenCalled();
     expect(auditRecord).not.toHaveBeenCalled();
   });
 

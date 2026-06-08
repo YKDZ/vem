@@ -46,7 +46,6 @@ import {
   type MachineEnvironmentControlRequest,
   type MachineClaimRequest,
   type GenerateMachineClaimCodeRequest,
-  type MachinePaymentOption,
   type MachineProvisioningProfile,
   type MachinePlanogramSlot,
   type GenerateMachineClaimCodeResponse,
@@ -102,10 +101,6 @@ type MachineClaimCandidate = {
   machineMqttClientId: string | null;
   machineSecretVersion: number;
 };
-type ProductionPaymentOption = MachinePaymentOption & {
-  providerCode: "wechat_pay" | "alipay";
-  method: "qr_code" | "payment_code";
-};
 
 const MACHINE_CLAIM_CODE_MAX_FAILED_ATTEMPTS = 5;
 const MACHINE_CLAIM_CODES_MACHINE_OPEN_UNIQUE =
@@ -158,12 +153,6 @@ function isMachineClaimCodeOpenUniqueViolation(error: unknown): boolean {
     maybeError.code === "23505" &&
     maybeError.constraint === MACHINE_CLAIM_CODES_MACHINE_OPEN_UNIQUE
   );
-}
-
-function isProductionPaymentOption(
-  option: MachinePaymentOption,
-): option is ProductionPaymentOption {
-  return option.providerCode !== "mock" && option.method !== "mock";
 }
 
 function planogramSlotValues(
@@ -1191,8 +1180,6 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
       throw this.invalidMachineClaimCode();
     }
 
-    const paymentCapability =
-      await this.buildMachineProvisioningPaymentCapability(claimCode.machineId);
     const bundle = this.machineCredentialService.createBundle();
     const mqttClientId =
       claimCode.machineMqttClientId ?? `vem-machine-${claimCode.machineCode}`;
@@ -1308,10 +1295,9 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
       },
       paymentCapability: {
         profile: "production",
-        options: paymentCapability.options,
-        defaultOptionKey: paymentCapability.defaultOptionKey,
-        defaultProviderCode: paymentCapability.defaultProviderCode,
-        serverTime: paymentCapability.serverTime,
+        qrCodeEnabled: true,
+        paymentCodeEnabled: true,
+        serverTime: toIso(now),
       },
       metadata: {
         profileVersion: 1,
@@ -1319,26 +1305,6 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
         claimedAt: toIso(now),
         serverTime: toIso(now),
       },
-    };
-  }
-
-  private async buildMachineProvisioningPaymentCapability(machineId: string) {
-    const paymentOptions =
-      await this.paymentProviderConfigService.listMachinePaymentOptionsForMachine(
-        machineId,
-      );
-    const productionPaymentOptions = paymentOptions.options.filter(
-      isProductionPaymentOption,
-    );
-    const defaultProductionPaymentOption =
-      productionPaymentOptions.find(
-        (option) => option.optionKey === paymentOptions.defaultOptionKey,
-      ) ?? productionPaymentOptions[0];
-    return {
-      options: productionPaymentOptions,
-      defaultOptionKey: defaultProductionPaymentOption?.optionKey ?? null,
-      defaultProviderCode: defaultProductionPaymentOption?.providerCode ?? null,
-      serverTime: paymentOptions.serverTime,
     };
   }
 

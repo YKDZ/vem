@@ -231,6 +231,43 @@ describe("checkout store", () => {
     expect(getPaymentOptionsMock).toHaveBeenCalledOnce();
   });
 
+  it("selects the first enabled payment option when daemon default is disabled", async () => {
+    getPaymentOptionsMock.mockResolvedValue({
+      options: [
+        {
+          optionKey: "payment_code:alipay",
+          providerCode: "alipay",
+          method: "payment_code",
+          displayName: "支付宝付款码",
+          description: "请出示付款码",
+          icon: "alipay",
+          disabled: true,
+          disabledReason: "扫码器不可用：scanner open failed",
+          recommended: true,
+        },
+        {
+          optionKey: "qr_code:alipay",
+          providerCode: "alipay",
+          method: "qr_code",
+          displayName: "支付宝扫码",
+          description: "请使用支付宝扫描屏幕二维码",
+          icon: "alipay",
+          disabled: false,
+          disabledReason: null,
+          recommended: false,
+        },
+      ],
+      defaultOptionKey: "payment_code:alipay",
+      defaultProviderCode: "alipay",
+      serverTime: "2026-01-01T00:00:00Z",
+    });
+
+    const store = useCheckoutStore();
+    await store.loadPaymentOptions();
+
+    expect(store.selectedPaymentOptionKey).toBe("qr_code:alipay");
+  });
+
   it("reports no payment options without creating an order", async () => {
     getPaymentOptionsMock.mockResolvedValue({
       options: [],

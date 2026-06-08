@@ -408,8 +408,12 @@ export const useCheckoutStore = defineStore("checkout", {
         const response = await daemonClient.getPaymentOptions();
         this.paymentOptions = response.options;
         this.paymentOptionsLoaded = true;
+        const enabledDefault = response.options.find(
+          (option) =>
+            option.optionKey === response.defaultOptionKey && !option.disabled,
+        );
         this.selectedPaymentOptionKey =
-          response.defaultOptionKey ??
+          enabledDefault?.optionKey ??
           response.options.find((option) => !option.disabled)?.optionKey ??
           response.options[0]?.optionKey ??
           null;

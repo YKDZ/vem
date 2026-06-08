@@ -63,7 +63,10 @@ function makeService(rows: unknown[]) {
   );
 }
 
-function makeListOptionsService(rowsQueue: unknown[]) {
+function makeListOptionsService(
+  rowsQueue: unknown[],
+  overrides: { paymentMockEnabled?: boolean } = {},
+) {
   const queue = [...rowsQueue];
   const mockDb = {
     select: vi.fn(() => ({
@@ -80,7 +83,7 @@ function makeListOptionsService(rowsQueue: unknown[]) {
 
   const appConfig = makeAppConfig();
   return new PaymentProviderConfigService(mockDb as never, makeSecrets(), {
-    paymentMockEnabled: false,
+    paymentMockEnabled: overrides.paymentMockEnabled ?? false,
     buildPaymentNotifyUrl: appConfig.buildPaymentNotifyUrl,
   } as never);
 }
@@ -286,6 +289,21 @@ describe("PaymentProviderConfigService", () => {
       expect(result.options.map((option) => option.optionKey)).toEqual([
         "qr_code:alipay",
       ]);
+    });
+
+    it("keeps mock option governed by test environment configuration", async () => {
+      const service = makeListOptionsService(
+        [[], [], [{ status: "enabled" }]],
+        { paymentMockEnabled: true },
+      );
+
+      const result =
+        await service.listMachinePaymentOptionsForMachine("machine-1");
+
+      expect(result.options.map((option) => option.optionKey)).toEqual([
+        "mock:mock",
+      ]);
+      expect(result.defaultProviderCode).toBe("mock");
     });
   });
 });
