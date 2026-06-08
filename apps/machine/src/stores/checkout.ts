@@ -415,7 +415,6 @@ export const useCheckoutStore = defineStore("checkout", {
         this.selectedPaymentOptionKey =
           enabledDefault?.optionKey ??
           response.options.find((option) => !option.disabled)?.optionKey ??
-          response.options[0]?.optionKey ??
           null;
         if (!this.selectedPaymentOptionKey) {
           this.error = "当前机器暂无可用支付方式";
