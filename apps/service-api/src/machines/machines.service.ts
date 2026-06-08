@@ -76,6 +76,8 @@ type MachineIdentity = {
 type MachineClaimCodeRecord = typeof machineClaimCodes.$inferSelect;
 
 const MACHINE_CLAIM_CODE_MAX_FAILED_ATTEMPTS = 5;
+const MACHINE_CLAIM_CODES_MACHINE_OPEN_UNIQUE =
+  "machine_claim_codes_machine_open_unique";
 
 function toIso(value: Date | string): string {
   return value instanceof Date ? value.toISOString() : value;
@@ -112,6 +114,17 @@ function machineClaimCodeSnapshot(
     revokedAt: claimCode.revokedAt ? toIso(claimCode.revokedAt) : null,
     lockedAt: claimCode.lockedAt ? toIso(claimCode.lockedAt) : null,
   };
+}
+
+function isMachineClaimCodeOpenUniqueViolation(error: unknown): boolean {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+  const maybeError = error as { code?: unknown; constraint?: unknown };
+  return (
+    maybeError.code === "23505" &&
+    maybeError.constraint === MACHINE_CLAIM_CODES_MACHINE_OPEN_UNIQUE
+  );
 }
 
 function planogramSlotValues(
@@ -1010,18 +1023,26 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
     const expiresAt = new Date(
       now.getTime() + this.config.machineClaimCodeTtlSeconds * 1_000,
     );
-    const [created] = await this.db
-      .insert(machineClaimCodes)
-      .values({
-        machineId: machine.id,
-        verifierHash: hashMachineClaimCodeVerifier(claimCode),
-        state: "pending",
-        failedAttemptCount: 0,
-        maxFailedAttempts: MACHINE_CLAIM_CODE_MAX_FAILED_ATTEMPTS,
-        expiresAt,
-        createdByAdminUserId: adminUserId,
-      })
-      .returning();
+    let created: MachineClaimCodeRecord;
+    try {
+      [created] = await this.db
+        .insert(machineClaimCodes)
+        .values({
+          machineId: machine.id,
+          verifierHash: hashMachineClaimCodeVerifier(claimCode),
+          state: "pending",
+          failedAttemptCount: 0,
+          maxFailedAttempts: MACHINE_CLAIM_CODE_MAX_FAILED_ATTEMPTS,
+          expiresAt,
+          createdByAdminUserId: adminUserId,
+        })
+        .returning();
+    } catch (error) {
+      if (isMachineClaimCodeOpenUniqueViolation(error)) {
+        throw new ConflictException("Machine already has an active claim code");
+      }
+      throw error;
+    }
 
     const snapshot = machineClaimCodeSnapshot(machine, created, now);
     await this.auditService.record({

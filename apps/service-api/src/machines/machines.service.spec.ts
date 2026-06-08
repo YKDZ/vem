@@ -4,7 +4,7 @@ import {
   NotFoundException,
 } from "@nestjs/common";
 import { Test } from "@nestjs/testing";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AuditService } from "../audit/audit.service";
 import { AppConfigService } from "../config/app-config.service";
@@ -804,6 +804,7 @@ describe("MachinesService planogram lifecycle", () => {
 
 describe("MachinesService claim code lifecycle", () => {
   let service: MachinesService;
+  const claimCodeNow = new Date("2026-06-08T16:30:00.000Z");
 
   const mockDb = {
     select: vi.fn(),
@@ -815,6 +816,8 @@ describe("MachinesService claim code lifecycle", () => {
 
   beforeEach(async () => {
     vi.clearAllMocks();
+    vi.useFakeTimers();
+    vi.setSystemTime(claimCodeNow);
     const module = await Test.createTestingModule({
       providers: [
         MachinesService,
@@ -836,6 +839,10 @@ describe("MachinesService claim code lifecycle", () => {
       ],
     }).compile();
     service = module.get(MachinesService);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it("generates a short-lived claim code and stores only a verifier hash", async () => {
@@ -948,6 +955,47 @@ describe("MachinesService claim code lifecycle", () => {
       service.generateMachineClaimCode(machine.id, "admin-1"),
     ).rejects.toThrow(ConflictException);
     expect(mockDb.insert).not.toHaveBeenCalled();
+  });
+
+  it("returns conflict when a concurrent active claim code insert wins the race", async () => {
+    const machine = {
+      id: "550e8400-e29b-41d4-a716-446655440000",
+      code: "M001",
+    };
+    const uniqueViolation = Object.assign(
+      new Error("duplicate key value violates unique constraint"),
+      {
+        code: "23505",
+        constraint: "machine_claim_codes_machine_open_unique",
+      },
+    );
+    const insertValues = vi.fn().mockReturnValue({
+      returning: async () => {
+        throw uniqueViolation;
+      },
+    });
+
+    mockDb.select
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            limit: async () => [machine],
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: async () => [],
+        }),
+      });
+    mockDb.insert.mockReturnValueOnce({ values: insertValues });
+
+    await expect(
+      service.generateMachineClaimCode(machine.id, "admin-1"),
+    ).rejects.toThrow(ConflictException);
+
+    expect(insertValues).toHaveBeenCalled();
+    expect(auditRecord).not.toHaveBeenCalled();
   });
 
   it("marks expired pending claim codes before generating a replacement", async () => {
