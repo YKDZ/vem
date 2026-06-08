@@ -120,6 +120,15 @@ describe("machine config", () => {
     );
   });
 
+  it("rejects unsupported hardware adapter values", () => {
+    expect(() =>
+      normalizeMachineConfig({ hardwareAdapter: "bluetooth" }),
+    ).toThrow();
+    expect(() =>
+      normalizeMachineConfig({ hardwareAdapter: "vendor_sdk" }),
+    ).toThrow();
+  });
+
   it("requires a lower controller USB identity or manual port for serial adapter", () => {
     expect(() =>
       normalizeMachineConfig({

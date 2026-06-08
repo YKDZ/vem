@@ -1,0 +1,142 @@
+name: Windows Bring-up Bundle
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/windows-bringup-bundle.yml
+
+concurrency:
+  group: windows-bringup-bundle-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build Bring-up Bundle
+    runs-on: windows-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 9.15.9
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build Shared Package
+        run: pnpm turbo build --filter @vem/shared
+
+      - name: Build Vending Daemon
+        run: cargo build -p vending-daemon --release --target x86_64-pc-windows-msvc
+
+      - name: Build Machine UI Kiosk
+        working-directory: apps/machine
+        run: pnpm dlx @tauri-apps/cli@^2.0.0 build --config src-tauri/tauri.windows.conf.json --no-bundle
+
+      - name: Stage Bring-up Bundle
+        run: |
+          $ErrorActionPreference = "Stop"
+          $bundleRoot = Join-Path $env:RUNNER_TEMP "vem-bringup-bundle"
+          $scriptDir = Join-Path $bundleRoot "scripts\windows"
+          New-Item -ItemType Directory -Force -Path $scriptDir | Out-Null
+
+          $daemonExact = Join-Path $env:GITHUB_WORKSPACE "target\x86_64-pc-windows-msvc\release\vending-daemon.exe"
+          if (Test-Path $daemonExact) {
+            $daemonExe = Get-Item $daemonExact
+          } else {
+            $daemonExe = Get-ChildItem -Path $env:GITHUB_WORKSPACE -Recurse -Filter "vending-daemon.exe" |
+              Where-Object { $_.FullName -match "\\release\\" -and $_.FullName -notmatch "\\debug\\" } |
+              Sort-Object FullName |
+              Select-Object -First 1
+          }
+          if (-not $daemonExe) { throw "vending-daemon.exe release artifact not found" }
+          Copy-Item -Force -Path $daemonExe.FullName -Destination (Join-Path $bundleRoot "vending-daemon.exe")
+
+          $machineExe = Get-ChildItem -Path $env:GITHUB_WORKSPACE -Recurse -Filter "machine.exe" |
+            Where-Object { $_.FullName -match "\\release\\" -and $_.FullName -notmatch "\\debug\\" -and $_.FullName -notmatch "\\node_modules\\" } |
+            Sort-Object FullName |
+            Select-Object -First 1
+          if (-not $machineExe) { throw "machine.exe release artifact not found" }
+          Copy-Item -Force -Path $machineExe.FullName -Destination (Join-Path $bundleRoot "machine.exe")
+
+          Copy-Item -Force -Path (Join-Path $env:GITHUB_WORKSPACE "scripts\windows\vending-daemon-smoke.ps1") -Destination $scriptDir
+          Copy-Item -Force -Path (Join-Path $env:GITHUB_WORKSPACE "scripts\windows\machine-config.bringup.example.json") -Destination (Join-Path $bundleRoot "machine-config.bringup.example.json")
+
+          $readme = @(
+            'VEM Windows bring-up bundle',
+            '',
+            'Contents:',
+            '- vending-daemon.exe',
+            '- machine.exe',
+            '- machine-config.bringup.example.json',
+            '- scripts/windows/vending-daemon-smoke.ps1',
+            '- VERSION.txt',
+            '',
+            'Before running smoke:',
+            '1. Copy machine-config.bringup.example.json to machine-config.json.',
+            '2. Fill machineCode, API/MQTT URLs, COM ports and scanner settings for the target machine.',
+            '3. Provision machineSecret, mqttSigningSecret and mqttPassword through the controlled field secret path. Do not store real secrets in this bundle.',
+            '',
+            'Example:',
+            '  powershell -ExecutionPolicy Bypass -File C:\VEM\bringup\scripts\windows\vending-daemon-smoke.ps1 `',
+            '    -DaemonExe C:\VEM\bringup\vending-daemon.exe `',
+            '    -MachineUiExe C:\VEM\bringup\machine.exe `',
+            '    -DataDir C:\ProgramData\VEM\vending-daemon `',
+            '    -MachineConfig C:\VEM\bringup\machine-config.json `',
+            '    -ComPort COM3 `',
+            '    -ScannerPort COM4'
+          )
+          $readme | Set-Content -Encoding UTF8 (Join-Path $bundleRoot "README.txt")
+
+          $hashLines = Get-ChildItem -Path $bundleRoot -File -Recurse |
+            Where-Object { $_.Name -ne "VERSION.txt" } |
+            Sort-Object FullName |
+            ForEach-Object {
+              $relative = [System.IO.Path]::GetRelativePath($bundleRoot, $_.FullName)
+              $hash = Get-FileHash -Algorithm SHA256 -Path $_.FullName
+              "sha256:$relative=$($hash.Hash)"
+            }
+          $metadata = @(
+            "commit=${{ github.sha }}",
+            "ref=${{ github.ref_name }}",
+            "run_id=${{ github.run_id }}",
+            "run_number=${{ github.run_number }}",
+            "built_at_utc=$((Get-Date).ToUniversalTime().ToString('o'))",
+            "runner=$env:RUNNER_NAME",
+            "daemon_source=$($daemonExe.FullName)",
+            "machine_ui_source=$($machineExe.FullName)",
+            "",
+            "hashes:",
+            $hashLines
+          )
+          $metadata | Set-Content -Encoding UTF8 (Join-Path $bundleRoot "VERSION.txt")
+
+          Get-ChildItem -Path $bundleRoot -Recurse | Format-Table FullName, Length
+
+      - name: Upload Bring-up Bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: vem-bringup-bundle-${{ github.run_number }}-${{ github.sha }}
+          path: ${{ runner.temp }}/vem-bringup-bundle/
+          if-no-files-found: error
+          retention-days: 14

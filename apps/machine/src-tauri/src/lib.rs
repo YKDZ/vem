@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -18,13 +19,44 @@ struct DaemonConnectionInfo {
     mock: bool,
 }
 
+fn daemon_ready_file_path() -> String {
+    if let Ok(path) = std::env::var("VEM_DAEMON_READY_FILE") {
+        return path;
+    }
+    if let Ok(data_dir) = std::env::var("VEM_DAEMON_DATA_DIR") {
+        return Path::new(&data_dir)
+            .join("daemon-ready.json")
+            .to_string_lossy()
+            .into_owned();
+    }
+
+    default_daemon_ready_file_path()
+}
+
+fn default_daemon_ready_file_path() -> String {
+    #[cfg(windows)]
+    {
+        return std::env::var("ProgramData")
+            .map(|dir| {
+                Path::new(&dir)
+                    .join("VEM")
+                    .join("vending-daemon")
+                    .join("daemon-ready.json")
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .unwrap_or_else(|_| "daemon-ready.json".to_string());
+    }
+
+    #[cfg(not(windows))]
+    {
+        "daemon-ready.json".to_string()
+    }
+}
+
 #[tauri::command]
 fn get_daemon_connection() -> Result<DaemonConnectionInfo, String> {
-    let path = std::env::var("VEM_DAEMON_READY_FILE").unwrap_or_else(|_| {
-        std::env::var("VEM_DAEMON_DATA_DIR")
-            .map(|dir| format!("{dir}/daemon-ready.json"))
-            .unwrap_or_else(|_| "daemon-ready.json".to_string())
-    });
+    let path = daemon_ready_file_path();
     let content = std::fs::read_to_string(&path)
         .map_err(|error| format!("read daemon ready file failed: {error}"))?;
     let ready: DaemonReadyFile = serde_json::from_str(&content)

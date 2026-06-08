@@ -20,15 +20,18 @@ pnpm install
 ### 2. 环境变量配置
 
 ```bash
-cp .env.example .env
-# 根据实际环境修改 .env 中的配置
+cp apps/service-api/.env.example .env
+# 根据调试服务器实际 IP、端口、支付和 MQTT 配置修改仓库根目录 .env
 ```
+
+`service-api` 启动时读取仓库根目录 `.env` 或进程环境变量；不要把唯一配置文件放在 `apps/service-api/.env`。
 
 ### 3. 启动基础设施
 
 ```bash
 # 从项目根目录运行
-pnpm compose:up
+MQTT_USERNAME=vem_mqtt MQTT_PASSWORD=vem_mqtt_password \
+  docker compose -f apps/service-api/docker-compose.yml up -d
 ```
 
 等待 PostgreSQL 和 MQTT 健康检查通过。
@@ -36,13 +39,13 @@ pnpm compose:up
 ### 4. 数据库迁移
 
 ```bash
-pnpm db:migrate
+pnpm --filter @vem/db migrate
 ```
 
 ### 5. 启动开发服务器
 
 ```bash
-pnpm dev:service
+pnpm --filter service-api start:dev
 # 服务运行于 http://localhost:3000
 ```
 

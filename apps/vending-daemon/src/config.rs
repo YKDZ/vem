@@ -246,6 +246,15 @@ pub fn normalize_public_config(
     if config.mqtt_url.is_empty() {
         return Err("mqttUrl is required".to_string());
     }
+    if matches!(
+        &config.hardware_adapter,
+        HardwareAdapterKind::Bluetooth | HardwareAdapterKind::VendorSdk
+    ) {
+        return Err(
+            "hardwareAdapter must be mock or serial; bluetooth/vendor_sdk are not planned or implemented"
+                .to_string(),
+        );
+    }
     if matches!(&config.hardware_adapter, HardwareAdapterKind::Serial)
         && config.serial_port_path.is_none()
         && config.lower_controller_usb_identity.is_none()
@@ -664,6 +673,16 @@ mod tests {
         assert_eq!(
             err,
             "lowerControllerUsbIdentity or serialPortPath is required when hardwareAdapter=serial"
+        );
+
+        let unsupported_hardware = MachinePublicConfig {
+            hardware_adapter: HardwareAdapterKind::Bluetooth,
+            ..default_public_config()
+        };
+        let err = normalize_public_config(unsupported_hardware).unwrap_err();
+        assert_eq!(
+            err,
+            "hardwareAdapter must be mock or serial; bluetooth/vendor_sdk are not planned or implemented"
         );
 
         let scanner_missing = MachinePublicConfig {

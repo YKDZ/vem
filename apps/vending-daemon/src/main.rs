@@ -40,6 +40,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     #[cfg(windows)]
     {
+        if let Some(data_dir) = cli.data_dir.as_ref() {
+            std::env::set_var("VEM_DAEMON_DATA_DIR", data_dir.as_os_str());
+        }
+        if let Some(ready_file) = cli.print_ready_file.as_ref() {
+            std::env::set_var("VEM_DAEMON_READY_FILE", ready_file.as_os_str());
+        }
         vending_daemon::service_windows::run_service()?;
     }
     #[allow(unreachable_code)]
