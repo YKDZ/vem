@@ -1148,12 +1148,16 @@ async fn machine_sale_readiness_snapshot(
     if !whole_machine_ready {
         blocking_codes.push("LOWER_CONTROLLER_UNAVAILABLE");
     }
+    if !slot_sale_safety_ready {
+        blocking_codes.push("NO_SALEABLE_SLOTS");
+    }
     let can_start_network_authorized_sale = platform_ready
         && machine_auth_ready
         && active_planogram_ready
         && payment_options_ready
         && sync_ready
-        && whole_machine_ready;
+        && whole_machine_ready
+        && slot_sale_safety_ready;
 
     Ok(serde_json::json!({
         "canStartNetworkAuthorizedSale": can_start_network_authorized_sale,
@@ -1397,7 +1401,7 @@ async fn validate_create_order_intent(
         .and_then(|value| value.as_bool())
         .unwrap_or(false);
     if !can_start {
-        let codes = readiness
+        let blocking_codes = readiness
             .get("blockingCodes")
             .and_then(|value| value.as_array())
             .map(|codes| {
@@ -1405,11 +1409,17 @@ async fn validate_create_order_intent(
                     .iter()
                     .filter_map(|code| code.as_str())
                     .collect::<Vec<_>>()
-                    .join(",")
             })
-            .filter(|codes| !codes.is_empty())
-            .unwrap_or_else(|| "UNKNOWN_READINESS_BLOCKER".to_string());
-        return Err(format!("machine is not ready for network sale: {codes}"));
+            .unwrap_or_default();
+        let only_slot_saleability_blocked = blocking_codes == vec!["NO_SALEABLE_SLOTS"];
+        if !only_slot_saleability_blocked {
+            let codes = if blocking_codes.is_empty() {
+                "UNKNOWN_READINESS_BLOCKER".to_string()
+            } else {
+                blocking_codes.join(",")
+            };
+            return Err(format!("machine is not ready for network sale: {codes}"));
+        }
     }
     validate_selected_payment_option(&readiness, input)?;
 
@@ -2366,6 +2376,282 @@ mod tests {
         assert!(!config_text.contains("vms_local-machine"));
         assert!(!config_text.contains("vms_local-mqtt"));
         assert!(!config_text.contains("mqtt-password"));
+    }
+
+    #[tokio::test]
+    async fn provisioning_claim_does_not_apply_planogram_and_keeps_readiness_blocked() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/machines/claim"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(valid_provisioning_profile()))
+            .mount(&server)
+            .await;
+
+        let temp_dir = tempdir().expect("tmp");
+        let ctx = test_ipc_context(temp_dir.path(), "token-1", None, &server.uri()).await;
+        mark_runtime_sale_ready(&ctx).await;
+        let app = build_router(ctx);
+
+        let response = post_json(
+            &app,
+            "/v1/provisioning/claim",
+            "token-1",
+            json!({ "claimCode": "ABCD-2345" }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let claim: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(claim["status"], "provisioned");
+        assert!(!serde_json::to_string(&claim).unwrap().contains("planogram"));
+
+        let sale_view = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/sale-view")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(sale_view.status(), StatusCode::OK);
+        let body = body::to_bytes(sale_view.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let sale_view: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(sale_view["planogramVersion"], serde_json::Value::Null);
+        assert_eq!(sale_view["items"].as_array().unwrap().len(), 0);
+
+        let readiness = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/sale-readiness")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(readiness.status(), StatusCode::OK);
+        let body = body::to_bytes(readiness.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let readiness: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(readiness["canStartNetworkAuthorizedSale"], false);
+        assert_eq!(readiness["components"]["activePlanogram"]["ready"], false);
+        assert!(readiness["blockingCodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|code| code == "ACTIVE_PLANOGRAM_MISSING"));
+
+        let requests = server.received_requests().await.expect("requests");
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|request| request.url.path() == "/machines/claim")
+                .count(),
+            1
+        );
+        assert!(requests
+            .iter()
+            .all(|request| !request.url.path().contains("planogram-versions")));
+    }
+
+    #[tokio::test]
+    async fn same_device_reclaim_keeps_intact_local_stock_ledger_trusted() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/machines/claim"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(valid_provisioning_profile()))
+            .mount(&server)
+            .await;
+
+        let temp_dir = tempdir().expect("tmp");
+        let app = build_router(
+            test_ipc_context(
+                temp_dir.path(),
+                "token-1",
+                Some("MACHINE-1".to_string()),
+                &server.uri(),
+            )
+            .await,
+        );
+        let slot_id = "550e8400-e29b-41d4-a716-4466554400d1";
+        let inventory_id = "550e8400-e29b-41d4-a716-4466554400d2";
+        assert_eq!(
+            post_json(
+                &app,
+                "/v1/stock/planogram",
+                "token-1",
+                one_slot_planogram("PLAN-RECLAIM-INTACT", slot_id, inventory_id),
+            )
+            .await
+            .status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            post_json(
+                &app,
+                "/v1/stock/movements",
+                "token-1",
+                json!({
+                    "movementId": "MOVE-RECLAIM-INTACT",
+                    "planogramVersion": "PLAN-RECLAIM-INTACT",
+                    "slotId": slot_id,
+                    "movementType": "planned_refill",
+                    "quantity": 4,
+                    "source": "field_service",
+                    "attributedTo": "operator-1"
+                }),
+            )
+            .await
+            .status(),
+            StatusCode::CREATED
+        );
+
+        assert_eq!(
+            post_json(
+                &app,
+                "/v1/provisioning/claim",
+                "token-1",
+                json!({ "claimCode": "ABCD-2345" }),
+            )
+            .await
+            .status(),
+            StatusCode::OK
+        );
+
+        let sale_view = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/sale-view")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(sale_view.status(), StatusCode::OK);
+        let body = body::to_bytes(sale_view.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let sale_view: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(sale_view["planogramVersion"], "PLAN-RECLAIM-INTACT");
+        assert_eq!(sale_view["items"][0]["physicalStock"], 4);
+        assert_eq!(sale_view["items"][0]["saleableStock"], 4);
+        assert_eq!(sale_view["items"][0]["slotSalesState"], "sale_ready");
+    }
+
+    #[tokio::test]
+    async fn ledger_missing_reclaim_keeps_newly_applied_slots_blocked_until_counted() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/machines/claim"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(valid_provisioning_profile()))
+            .mount(&server)
+            .await;
+
+        let temp_dir = tempdir().expect("tmp");
+        let ctx = test_ipc_context(temp_dir.path(), "token-1", None, &server.uri()).await;
+        ctx.state
+            .put_metadata("stock_ledger_rebuilt_after_quarantine", &true)
+            .await
+            .expect("ledger loss marker");
+        let app = build_router(ctx);
+
+        assert_eq!(
+            post_json(
+                &app,
+                "/v1/provisioning/claim",
+                "token-1",
+                json!({ "claimCode": "ABCD-2345" }),
+            )
+            .await
+            .status(),
+            StatusCode::OK
+        );
+
+        let slot_id = "550e8400-e29b-41d4-a716-4466554400f1";
+        let inventory_id = "550e8400-e29b-41d4-a716-4466554400f2";
+        assert_eq!(
+            post_json(
+                &app,
+                "/v1/stock/planogram",
+                "token-1",
+                one_slot_planogram("PLAN-RECLAIM-MISSING-LEDGER", slot_id, inventory_id),
+            )
+            .await
+            .status(),
+            StatusCode::OK
+        );
+
+        let sale_view = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/sale-view")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(sale_view.status(), StatusCode::OK);
+        let body = body::to_bytes(sale_view.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let sale_view: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(sale_view["items"][0]["physicalStock"], 0);
+        assert_eq!(sale_view["items"][0]["saleableStock"], 0);
+        assert_eq!(sale_view["items"][0]["slotSalesState"], "needs_count");
+
+        assert_eq!(
+            post_json(
+                &app,
+                "/v1/stock/movements",
+                "token-1",
+                json!({
+                    "movementId": "MOVE-RECLAIM-MISSING-LEDGER-COUNT",
+                    "planogramVersion": "PLAN-RECLAIM-MISSING-LEDGER",
+                    "slotId": slot_id,
+                    "movementType": "stock_count_correction",
+                    "quantity": 3,
+                    "source": "field_service",
+                    "attributedTo": "operator-1"
+                }),
+            )
+            .await
+            .status(),
+            StatusCode::CREATED
+        );
+
+        let sale_view = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/sale-view")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = body::to_bytes(sale_view.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let sale_view: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(sale_view["items"][0]["physicalStock"], 3);
+        assert_eq!(sale_view["items"][0]["saleableStock"], 3);
+        assert_eq!(sale_view["items"][0]["slotSalesState"], "sale_ready");
     }
 
     #[tokio::test]
@@ -4165,6 +4451,105 @@ mod tests {
         assert_eq!(item["saleableStock"], 3);
         assert_eq!(item["slotSalesState"], "sale_ready");
         assert!(item.get("availableQty").is_none());
+    }
+
+    #[tokio::test]
+    async fn first_planogram_application_requires_stock_count_before_slot_is_sale_ready() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(wiremock::matchers::path("/machine-orders/payment-options"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "options": [{
+                    "optionKey": "mock:mock",
+                    "providerCode": "mock",
+                    "method": "mock",
+                    "displayName": "模拟支付",
+                    "description": "本地模拟",
+                    "icon": "mock",
+                    "recommended": true,
+                    "disabled": false,
+                    "disabledReason": null
+                }],
+                "defaultOptionKey": "mock:mock",
+                "defaultProviderCode": "mock",
+                "serverTime": "2026-06-04T00:00:00Z"
+            })))
+            .mount(&server)
+            .await;
+
+        let temp_dir = tempdir().expect("tmp");
+        let ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            &server.uri(),
+        )
+        .await;
+        mark_runtime_sale_ready(&ctx).await;
+        let app = build_router(ctx);
+        let slot_id = "550e8400-e29b-41d4-a716-4466554400b1";
+        let inventory_id = "550e8400-e29b-41d4-a716-4466554400b2";
+
+        assert_eq!(
+            post_json(
+                &app,
+                "/v1/stock/planogram",
+                "token-1",
+                one_slot_planogram("PLAN-FIRST-COUNT", slot_id, inventory_id),
+            )
+            .await
+            .status(),
+            StatusCode::OK
+        );
+
+        let sale_view = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/sale-view")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(sale_view.status(), StatusCode::OK);
+        let body = body::to_bytes(sale_view.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let sale_view: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(sale_view["items"][0]["physicalStock"], 0);
+        assert_eq!(sale_view["items"][0]["saleableStock"], 0);
+        assert_eq!(sale_view["items"][0]["slotSalesState"], "needs_count");
+
+        let readiness = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/sale-readiness")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(readiness.status(), StatusCode::OK);
+        let body = body::to_bytes(readiness.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let readiness: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(readiness["canStartNetworkAuthorizedSale"], false);
+        assert!(readiness["blockingCodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|code| code == "NO_SALEABLE_SLOTS"));
+        assert_eq!(readiness["components"]["slotSaleSafety"]["ready"], false);
+        assert_eq!(
+            readiness["components"]["slotSaleSafety"]["blockedSlots"][0]["slotSalesState"],
+            "needs_count"
+        );
     }
 
     #[tokio::test]

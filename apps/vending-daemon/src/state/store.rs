@@ -1390,12 +1390,13 @@ impl LocalStateStore {
                 )
                 .await?;
             } else {
-                upsert_stock_projection_in_tx(
+                upsert_stock_projection_with_state_in_tx(
                     &mut tx,
                     &input.planogram_version,
                     &slot.slot_id,
                     0,
-                    slot.capacity,
+                    0,
+                    "needs_count",
                 )
                 .await?;
             }

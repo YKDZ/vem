@@ -300,6 +300,20 @@ describe("shared API contract", () => {
     expect(() =>
       machineProvisioningProfileSchema.parse({
         ...profile,
+        catalog: {
+          items: [
+            {
+              slotCode: "A1",
+              productName: "矿泉水",
+              quantity: 3,
+            },
+          ],
+        },
+      }),
+    ).toThrow();
+    expect(() =>
+      machineProvisioningProfileSchema.parse({
+        ...profile,
         paymentCapability: {
           ...profile.paymentCapability,
           options: [

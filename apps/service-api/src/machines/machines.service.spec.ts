@@ -1071,6 +1071,7 @@ describe("MachinesService claim code lifecycle", () => {
     expect(rotateSet.mock.calls[0]?.[0].secretVersion).not.toBe(
       pending.machineSecretVersion + 1,
     );
+    expect(mockDb.insert).not.toHaveBeenCalled();
     expect(auditRecord).toHaveBeenCalledWith({
       adminUserId: null,
       action: "machines.claimCode.consume",
@@ -1084,10 +1085,13 @@ describe("MachinesService claim code lifecycle", () => {
         claimedAt: "2026-06-08T16:30:00.000Z",
       },
     });
-    expect(JSON.stringify(result)).not.toContain("planogram");
-    expect(JSON.stringify(result)).not.toContain("stockQuantities");
-    expect(JSON.stringify(result)).not.toContain("merchant");
-    expect(JSON.stringify(result)).not.toContain("mock:mock");
+    const serializedProfile = JSON.stringify(result);
+    expect(serializedProfile).not.toContain("planogram");
+    expect(serializedProfile).not.toContain("catalog");
+    expect(serializedProfile).not.toContain("stock");
+    expect(serializedProfile).not.toContain("inventory");
+    expect(serializedProfile).not.toContain("merchant");
+    expect(serializedProfile).not.toContain("mock:mock");
   });
 
   it("consumes a reclaim code with credential rotation and distinct audit", async () => {
