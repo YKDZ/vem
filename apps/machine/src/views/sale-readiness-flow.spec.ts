@@ -412,6 +412,20 @@ describe("sale readiness UI flow", () => {
     });
   });
 
+  it("does not route to catalog when startup config loading fails", async () => {
+    getHealthMock.mockResolvedValue(healthSnapshot());
+    getReadyMock.mockResolvedValue(readySnapshot());
+    getSaleReadinessMock.mockResolvedValue(saleReadiness(true));
+    getConfigMock.mockRejectedValue(new Error("config unavailable"));
+
+    await mountView(BootView);
+
+    await vi.waitFor(() => {
+      expect(routerReplaceMock).toHaveBeenCalledWith("/provisioning");
+    });
+    expect(routerReplaceMock).not.toHaveBeenCalledWith("/catalog");
+  });
+
   it("loads sale readiness during boot so a ready catalog can enter purchase", async () => {
     const item = makeCatalogItem();
     getHealthMock.mockResolvedValue(healthSnapshot());

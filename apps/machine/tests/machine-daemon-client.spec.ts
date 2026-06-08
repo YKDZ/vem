@@ -421,6 +421,18 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
     return;
   }
 
+  if (url.pathname === "/v1/provisioning/claim") {
+    respondJson(
+      res,
+      {
+        code: "machine_claim_locked",
+        message: "machine claim code cannot be used",
+      },
+      400,
+    );
+    return;
+  }
+
   if (url.pathname === "/v1/sale-view") {
     respondJson(res, {
       items: [
@@ -688,6 +700,18 @@ test("daemon snapshots never expose secret fields to browser storage", async ({
   expect(storage).not.toContain('"mqttSigningSecret":');
   expect(storage).not.toContain('"mqttPassword":');
   expect(storage).not.toContain("621234567890123456");
+});
+
+test("provisioning UI maps real daemon claim error contract without echoing code", async ({
+  page,
+}) => {
+  scenario = "catalog";
+  await page.goto("/#/provisioning");
+  await page.getByLabel("Machine Claim Code").fill("ABCD-2345");
+  await page.getByRole("button", { name: "提交领取码" }).click();
+
+  await expect(page.getByText("领取码已锁定")).toBeVisible();
+  await expect(page.getByText("ABCD-2345")).toHaveCount(0);
 });
 
 test("sync backlog routes to catalog but displays degraded sync status", async ({

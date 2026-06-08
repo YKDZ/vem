@@ -3,13 +3,27 @@ import { createPinia, setActivePinia } from "pinia";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createApp, nextTick, type App } from "vue";
 
-const { getConfigMock, claimMachineMock, routerReplaceMock } = vi.hoisted(
-  () => ({
-    getConfigMock: vi.fn(),
-    claimMachineMock: vi.fn(),
-    routerReplaceMock: vi.fn(),
-  }),
-);
+const {
+  DaemonUnavailableErrorMock,
+  initializeMock,
+  getConfigMock,
+  claimMachineMock,
+  routerReplaceMock,
+} = vi.hoisted(() => ({
+  DaemonUnavailableErrorMock: class DaemonUnavailableError extends Error {
+    public readonly responseCode?: string;
+
+    constructor(message = "daemon unavailable", responseCode?: string) {
+      super(message);
+      this.name = "DaemonUnavailableError";
+      this.responseCode = responseCode;
+    }
+  },
+  initializeMock: vi.fn(),
+  getConfigMock: vi.fn(),
+  claimMachineMock: vi.fn(),
+  routerReplaceMock: vi.fn(),
+}));
 
 vi.mock("vue-router", () => ({
   useRouter: () => ({ replace: routerReplaceMock }),
@@ -20,7 +34,9 @@ vi.mock("@/layouts/KioskLayout.vue", () => ({
 }));
 
 vi.mock("@/daemon/client", () => ({
+  DaemonUnavailableError: DaemonUnavailableErrorMock,
   daemonClient: {
+    initialize: initializeMock,
     getConfig: getConfigMock,
     claimMachine: claimMachineMock,
   },
@@ -70,6 +86,12 @@ beforeEach(() => {
   pinia = createPinia();
   setActivePinia(pinia);
   vi.clearAllMocks();
+  initializeMock.mockResolvedValue({
+    baseUrl: "http://127.0.0.1:7891",
+    token: "token-1",
+    source: "browser_env",
+    mock: true,
+  });
   getConfigMock.mockResolvedValue(unprovisionedConfig());
 });
 
@@ -156,6 +178,52 @@ describe("MachineProvisioningView standard flow", () => {
     expect(routerReplaceMock).toHaveBeenCalledWith("/boot");
   });
 
+  it("waits for daemon config to return provisioned after restart-window IPC failures", async () => {
+    const provisioned = {
+      ...unprovisionedConfig(),
+      public: {
+        ...unprovisionedConfig().public,
+        machineCode: "M001",
+      },
+      machineSecretConfigured: true,
+      mqttSigningSecretConfigured: true,
+      provisioned: true,
+      provisioningIssues: [],
+    };
+    const restartWindowError = new DaemonUnavailableErrorMock(
+      "daemon request failed",
+    );
+    claimMachineMock.mockResolvedValue({
+      status: "provisioned",
+      machineCode: "M001",
+      restartRequested: true,
+      config: provisioned,
+    });
+    getConfigMock
+      .mockResolvedValueOnce(unprovisionedConfig())
+      .mockRejectedValueOnce(restartWindowError)
+      .mockResolvedValueOnce(provisioned);
+    const host = await mountView();
+    const input = host.querySelector("input");
+    if (!(input instanceof HTMLInputElement)) {
+      throw new Error("claim code input not found");
+    }
+    input.value = "abcd-2345";
+    input.dispatchEvent(new Event("input"));
+    await nextTick();
+
+    host.querySelector("form")?.dispatchEvent(new Event("submit"));
+
+    await vi.waitFor(() => {
+      expect(host.textContent).toContain("正在等待 daemon 应用新配置");
+    });
+    expect(routerReplaceMock).not.toHaveBeenCalled();
+    await vi.waitFor(() => {
+      expect(initializeMock).toHaveBeenCalledWith(true);
+      expect(routerReplaceMock).toHaveBeenCalledWith("/boot");
+    });
+  });
+
   it("shows a safe invalid-code state without echoing the submitted claim code", async () => {
     claimMachineMock.mockRejectedValue(
       Object.assign(new Error("invalid claim"), {
@@ -229,10 +297,33 @@ describe("MachineProvisioningView standard flow", () => {
     expect(button.disabled).toBe(true);
   });
 
-  it("shows network unavailable when daemon IPC cannot be reached", async () => {
-    const error = new Error("daemon request failed");
-    error.name = "DaemonUnavailableError";
-    claimMachineMock.mockRejectedValue(error);
+  it("shows local daemon unavailable when daemon IPC cannot be reached", async () => {
+    claimMachineMock.mockRejectedValue(
+      new DaemonUnavailableErrorMock("daemon request failed"),
+    );
+    const host = await mountView();
+    const input = host.querySelector("input");
+    if (!(input instanceof HTMLInputElement)) {
+      throw new Error("claim code input not found");
+    }
+    input.value = "ABCD-2345";
+    input.dispatchEvent(new Event("input"));
+    await nextTick();
+
+    host.querySelector("form")?.dispatchEvent(new Event("submit"));
+
+    await vi.waitFor(() => {
+      expect(host.textContent).toContain("本机 daemon 暂不可用");
+    });
+  });
+
+  it("shows network unavailable when the daemon reports backend claim outage", async () => {
+    claimMachineMock.mockRejectedValue(
+      new DaemonUnavailableErrorMock(
+        "claim backend unavailable",
+        "machine_claim_backend_unavailable",
+      ),
+    );
     const host = await mountView();
     const input = host.querySelector("input");
     if (!(input instanceof HTMLInputElement)) {

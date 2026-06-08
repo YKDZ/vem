@@ -2,7 +2,7 @@
 import { computed, onMounted, reactive, ref } from "vue";
 import { useRouter } from "vue-router";
 
-import { daemonClient } from "@/daemon/client";
+import { DaemonUnavailableError, daemonClient } from "@/daemon/client";
 import KioskLayout from "@/layouts/KioskLayout.vue";
 import { useMachineStore } from "@/stores/machine";
 
@@ -16,6 +16,9 @@ const loadingConfig = ref(false);
 const submitting = ref(false);
 const statusMessage = ref<string | null>(null);
 const statusKind = ref<"idle" | "pending" | "success" | "failure">("idle");
+
+const PROVISIONING_CONFIG_RETRY_DELAY_MS = 500;
+const PROVISIONING_CONFIG_MAX_ATTEMPTS = 20;
 
 const diagnostics = computed(() => [
   {
@@ -40,6 +43,9 @@ function provisioningFailureMessage(error: unknown): string {
   const message = error instanceof Error ? error.message.toLowerCase() : "";
   const code = `${responseCode} ${message}`.toLowerCase();
 
+  if (code.includes("invalid_or_expired")) {
+    return "领取码无效或已过期，请联系管理员确认后重试";
+  }
   if (code.includes("invalid")) return "领取码无效，请核对后重试";
   if (code.includes("expired")) return "领取码已过期，请联系管理员重新生成";
   if (code.includes("used") || code.includes("consumed")) {
@@ -47,14 +53,49 @@ function provisioningFailureMessage(error: unknown): string {
   }
   if (code.includes("revoked")) return "领取码已撤销，请联系管理员重新生成";
   if (code.includes("locked")) return "领取码已锁定，请联系管理员处理";
+  if (error instanceof DaemonUnavailableError && !error.responseCode) {
+    return "本机 daemon 暂不可用，请稍后重试";
+  }
   if (
-    (error instanceof Error && error.name === "DaemonUnavailableError") ||
+    responseCode === "machine_claim_backend_unavailable" ||
     code.includes("network") ||
     code.includes("unavailable")
   ) {
     return "网络不可用，请检查连接后重试";
   }
   return "领取失败，请联系维护人员重试";
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, ms);
+  });
+}
+
+async function waitForProvisionedConfig(): Promise<void> {
+  for (
+    let attempt = 0;
+    attempt < PROVISIONING_CONFIG_MAX_ATTEMPTS;
+    attempt += 1
+  ) {
+    try {
+      await machineStore.loadConfig();
+      if (machineStore.configSummary?.provisioned === true) {
+        return;
+      }
+    } catch (error) {
+      if (error instanceof DaemonUnavailableError) {
+        await daemonClient.initialize(true).catch(() => undefined);
+      } else {
+        throw error;
+      }
+    }
+    await delay(PROVISIONING_CONFIG_RETRY_DELAY_MS);
+  }
+
+  throw new DaemonUnavailableError(
+    "daemon provisioning config did not become ready",
+  );
 }
 
 onMounted(async () => {
@@ -79,10 +120,12 @@ async function submitClaim(): Promise<void> {
     const result = await daemonClient.claimMachine(claimCode);
     machineStore.configSummary = result.config;
     machineStore.configLoaded = true;
+    statusKind.value = "pending";
+    statusMessage.value = "领取成功，正在等待 daemon 应用新配置";
+    form.claimCode = "";
+    await waitForProvisionedConfig();
     statusKind.value = "success";
     statusMessage.value = "领取成功，正在进入启动流程";
-    form.claimCode = "";
-    await machineStore.loadConfig().catch(() => undefined);
     await router.replace("/boot");
   } catch (error) {
     statusKind.value = "failure";

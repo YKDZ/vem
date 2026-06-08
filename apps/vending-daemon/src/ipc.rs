@@ -353,6 +353,99 @@ struct ClaimMachineResponse {
     config: crate::config::MachinePublicRuntimeConfig,
 }
 
+fn backend_error_json(error: &str) -> Option<serde_json::Value> {
+    let start = error.find('{')?;
+    serde_json::from_str(&error[start..]).ok()
+}
+
+fn backend_http_status(error: &str) -> Option<u16> {
+    let rest = error.strip_prefix("BACKEND_HTTP_ERROR: ")?;
+    rest.split_whitespace().next()?.parse().ok()
+}
+
+fn safe_machine_claim_code(code: &str) -> Option<&'static str> {
+    match code {
+        "machine_claim_invalid" => Some("machine_claim_invalid"),
+        "machine_claim_invalid_or_expired" => Some("machine_claim_invalid_or_expired"),
+        "machine_claim_expired" => Some("machine_claim_expired"),
+        "machine_claim_used" | "machine_claim_consumed" => Some("machine_claim_used"),
+        "machine_claim_revoked" => Some("machine_claim_revoked"),
+        "machine_claim_locked" => Some("machine_claim_locked"),
+        "machine_claim_backend_unavailable" => Some("machine_claim_backend_unavailable"),
+        _ => None,
+    }
+}
+
+fn machine_claim_message(code: &str) -> &'static str {
+    match code {
+        "machine_claim_backend_unavailable" => {
+            "machine claim backend unavailable; check network connectivity"
+        }
+        "machine_claim_locked" => "machine claim code cannot be used; contact an administrator",
+        "machine_claim_revoked" => "machine claim code cannot be used; contact an administrator",
+        "machine_claim_used" => "machine claim code cannot be used; contact an administrator",
+        "machine_claim_expired" => "machine claim code expired; contact an administrator",
+        "machine_claim_invalid" | "machine_claim_invalid_or_expired" => {
+            "machine claim code invalid or expired; verify the code with an administrator"
+        }
+        _ => "machine claim code invalid or expired; verify the code with an administrator",
+    }
+}
+
+fn machine_claim_error_response(error: &str) -> (StatusCode, Json<ErrorMessage>) {
+    if error.starts_with("backend response parse failed:") {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorMessage {
+                code: "machine_profile_invalid",
+                message: "provisioning profile invalid".to_string(),
+            }),
+        );
+    }
+
+    if error.starts_with("backend request failed:")
+        || error.starts_with("backend read response failed:")
+        || error == "BACKEND_OFFLINE"
+        || error == "BACKEND_AUTH_FAILED"
+    {
+        return (
+            StatusCode::BAD_GATEWAY,
+            Json(ErrorMessage {
+                code: "machine_claim_backend_unavailable",
+                message: machine_claim_message("machine_claim_backend_unavailable").to_string(),
+            }),
+        );
+    }
+
+    let code = backend_error_json(error)
+        .and_then(|value| {
+            value
+                .get("code")
+                .and_then(|value| value.as_str())
+                .and_then(safe_machine_claim_code)
+        })
+        .unwrap_or_else(|| {
+            if backend_http_status(error).is_some_and(|status| status >= 500) {
+                "machine_claim_backend_unavailable"
+            } else {
+                "machine_claim_invalid_or_expired"
+            }
+        });
+    let status = if code == "machine_claim_backend_unavailable" {
+        StatusCode::BAD_GATEWAY
+    } else {
+        StatusCode::BAD_REQUEST
+    };
+
+    (
+        status,
+        Json(ErrorMessage {
+            code,
+            message: machine_claim_message(code).to_string(),
+        }),
+    )
+}
+
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct BackendPaymentOptionsResponse {
@@ -627,26 +720,8 @@ async fn claim_machine(
     let client = BackendClient::new(public.api_base_url);
     let profile = match client.claim_machine(&claim_code).await {
         Ok(profile) => profile,
-        Err(error) if error.starts_with("backend response parse failed:") => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorMessage {
-                    code: "machine_profile_invalid",
-                    message: "provisioning profile invalid".to_string(),
-                }),
-            )
-                .into_response();
-        }
-        Err(_error) => {
-            return (
-                StatusCode::BAD_GATEWAY,
-                Json(ErrorMessage {
-                    code: "machine_claim_failed",
-                    message: "machine claim failed; verify the code and service connectivity"
-                        .to_string(),
-                }),
-            )
-                .into_response();
+        Err(error) => {
+            return machine_claim_error_response(&error).into_response();
         }
     };
     let machine_code = profile.machine.code.clone();
@@ -2352,19 +2427,81 @@ mod tests {
             json!({ "claimCode": "ABCD-2345" }),
         )
         .await;
-        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         let body = body::to_bytes(response.into_body(), usize::MAX)
             .await
             .unwrap();
         let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(payload["code"], "machine_claim_failed");
+        assert_eq!(payload["code"], "machine_claim_invalid_or_expired");
         let text = serde_json::to_string(&payload).unwrap();
         assert!(!text.contains("ABCD-2345"));
         assert!(!text.contains("vms_local-machine"));
         assert!(payload["message"]
             .as_str()
             .unwrap()
-            .contains("claim failed"));
+            .contains("invalid or expired"));
+    }
+
+    #[tokio::test]
+    async fn failed_claim_preserves_safe_backend_claim_code_without_echoing_payload() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/machines/claim"))
+            .respond_with(ResponseTemplate::new(409).set_body_json(json!({
+                "code": "machine_claim_locked",
+                "message": "claim ABCD-2345 locked with vms_local-machine-shared-secret-change-before-prod"
+            })))
+            .mount(&server)
+            .await;
+
+        let temp_dir = tempdir().expect("tmp");
+        let app =
+            build_router(test_ipc_context(temp_dir.path(), "token-1", None, &server.uri()).await);
+
+        let response = post_json(
+            &app,
+            "/v1/provisioning/claim",
+            "token-1",
+            json!({ "claimCode": "ABCD-2345" }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["code"], "machine_claim_locked");
+        let text = serde_json::to_string(&payload).unwrap();
+        assert!(!text.contains("ABCD-2345"));
+        assert!(!text.contains("vms_local-machine"));
+        assert!(payload["message"]
+            .as_str()
+            .unwrap()
+            .contains("claim code cannot be used"));
+    }
+
+    #[tokio::test]
+    async fn failed_claim_reports_backend_unavailable_separately_from_rejected_code() {
+        let temp_dir = tempdir().expect("tmp");
+        let app = build_router(
+            test_ipc_context(temp_dir.path(), "token-1", None, "http://127.0.0.1:9").await,
+        );
+
+        let response = post_json(
+            &app,
+            "/v1/provisioning/claim",
+            "token-1",
+            json!({ "claimCode": "ABCD-2345" }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["code"], "machine_claim_backend_unavailable");
+        let text = serde_json::to_string(&payload).unwrap();
+        assert!(!text.contains("ABCD-2345"));
     }
 
     #[tokio::test]

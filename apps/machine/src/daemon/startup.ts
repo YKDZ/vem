@@ -22,6 +22,7 @@ export function routeForStartup(input: {
   transaction: TransactionSnapshot | null;
 }): StartupRoute {
   if (!input.daemonAvailable) return "/maintenance";
+  if (!input.config) return "/provisioning";
   if (input.config?.provisioned === false) return "/provisioning";
   if (!input.health?.configConfigured) return "/maintenance";
 
