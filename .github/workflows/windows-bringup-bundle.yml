@@ -46,15 +46,12 @@ jobs:
       - name: Build Shared Package
         run: pnpm turbo build --filter @vem/shared
 
-      - name: Install Tauri CLI
-        run: cargo install tauri-cli --version "^2.0.0" --locked
-
       - name: Build Vending Daemon
         run: cargo build -p vending-daemon --release --target x86_64-pc-windows-msvc
 
       - name: Build Machine UI Kiosk
         working-directory: apps/machine
-        run: cargo tauri build --config src-tauri/tauri.windows.conf.json --no-bundle
+        run: pnpm dlx @tauri-apps/cli@^2.0.0 build --config src-tauri/tauri.windows.conf.json --no-bundle
 
       - name: Stage Bring-up Bundle
         run: |
