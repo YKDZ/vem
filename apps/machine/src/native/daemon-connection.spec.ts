@@ -72,4 +72,23 @@ describe("daemon connection", () => {
 
     expect(info.runtimeFlags?.advancedMaintenanceConfig).toBe(false);
   });
+
+  it("does not let Vite env override a disabled tauri runtime flag", async () => {
+    vi.stubEnv("VITE_ENABLE_ADVANCED_MAINTENANCE_CONFIG", "true");
+    const tauriModule = await import("@/native/tauri");
+    vi.spyOn(tauriModule, "callTauriCommand").mockResolvedValue({
+      baseUrl: "http://127.0.0.1:7891/",
+      token: "abc",
+      source: "tauri_ready_file",
+      mock: false,
+      runtimeFlags: {
+        advancedMaintenanceConfig: false,
+      },
+    } as never);
+
+    mockWindow(true);
+    const info = await getDaemonConnectionInfo();
+
+    expect(info.runtimeFlags?.advancedMaintenanceConfig).toBe(false);
+  });
 });

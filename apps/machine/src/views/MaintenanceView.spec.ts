@@ -17,6 +17,7 @@ const {
   getSaleViewMock,
   recordStockMovementMock,
   runHardwareSelfCheckMock,
+  getConfigMock,
   saveConfigMock,
   downloadLogExportMock,
 } = vi.hoisted(() => ({
@@ -31,6 +32,7 @@ const {
   getSaleViewMock: vi.fn(),
   recordStockMovementMock: vi.fn(),
   runHardwareSelfCheckMock: vi.fn(),
+  getConfigMock: vi.fn(),
   saveConfigMock: vi.fn(),
   downloadLogExportMock: vi.fn(),
 }));
@@ -59,6 +61,7 @@ vi.mock("@/daemon/client", () => ({
     getSaleView: getSaleViewMock,
     recordStockMovement: recordStockMovementMock,
     runHardwareSelfCheck: runHardwareSelfCheckMock,
+    getConfig: getConfigMock,
     saveConfig: saveConfigMock,
     downloadLogExport: downloadLogExportMock,
   },
@@ -250,6 +253,7 @@ beforeEach(() => {
     resolutionSource: null,
     boundUsbIdentity: null,
   });
+  getConfigMock.mockResolvedValue(provisionedConfigSummary());
   saveConfigMock.mockResolvedValue({});
   downloadLogExportMock.mockResolvedValue(new Response("logs"));
   useMachineStore().$patch({ configLoaded: true });
@@ -379,6 +383,26 @@ describe("MaintenanceView hardware config", () => {
     expect(host.textContent).not.toContain("vendor_sdk");
   });
 
+  it("keeps advanced debug configuration hidden when daemon disables it even if Vite env enables it", async () => {
+    vi.stubEnv("VITE_ENABLE_ADVANCED_MAINTENANCE_CONFIG", "true");
+    initializeMock.mockResolvedValueOnce({
+      baseUrl: "http://127.0.0.1:7891",
+      token: "token-1",
+      source: "tauri_ready_file",
+      mock: false,
+      runtimeFlags: {
+        advancedMaintenanceConfig: false,
+      },
+    });
+
+    const host = await mountView();
+
+    expect(host.textContent).not.toContain("machineCode");
+    expect(host.textContent).not.toContain("API Base URL");
+    expect(host.textContent).not.toContain("MQTT URL");
+    expect(host.textContent).not.toContain("MockHardwareControls");
+  });
+
   it("does not leak deployment values into production maintenance UI", async () => {
     useMachineStore().$patch({
       configSummary: provisionedConfigSummary(),
@@ -396,6 +420,21 @@ describe("MaintenanceView hardware config", () => {
     expect(host.textContent).not.toContain("ws://secret-vision.example/ws");
     expect(host.textContent).not.toContain("secret-vision-command");
     expect(host.textContent).not.toContain("--secret-vision-args");
+  });
+
+  it("does not load deployment config into production maintenance state when advanced debug is disabled", async () => {
+    useMachineStore().$patch({
+      configSummary: null,
+      configLoaded: false,
+    });
+
+    const host = await mountView();
+
+    expect(getConfigMock).not.toHaveBeenCalled();
+    expect(host.textContent).toContain("计划补货");
+    expect(host.textContent).toContain("后端");
+    expect(host.textContent).not.toContain("SECRET-MACHINE-CODE");
+    expect(host.textContent).not.toContain("https://api.secret.example/v1");
   });
 
   it("runs production diagnostics and log export from standard maintenance", async () => {

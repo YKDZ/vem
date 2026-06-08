@@ -15,6 +15,14 @@ pub struct ReadyFile {
     pub healthz_url: String,
     pub readyz_url: String,
     pub ipc_token: String,
+    #[serde(default)]
+    pub runtime_flags: RuntimeFlags,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeFlags {
+    pub advanced_maintenance_config: bool,
 }
 
 pub struct DaemonHarness {

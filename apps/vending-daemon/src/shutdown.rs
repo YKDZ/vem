@@ -336,10 +336,16 @@ async fn write_ready_file(path: &Path, bind: SocketAddr, token: &str) -> Result<
     tokio::fs::create_dir_all(parent)
         .await
         .map_err(|error| format!("create ready file parent failed: {error}"))?;
+    let advanced_maintenance_config = std::env::var("VEM_ENABLE_ADVANCED_MAINTENANCE_CONFIG")
+        .map(|value| value == "true")
+        .unwrap_or(false);
     let payload = serde_json::json!({
         "healthzUrl": format!("http://{}/healthz", bind),
         "readyzUrl": format!("http://{}/readyz", bind),
         "ipcToken": token,
+        "runtimeFlags": {
+            "advancedMaintenanceConfig": advanced_maintenance_config,
+        },
     });
     tokio::fs::write(
         path,

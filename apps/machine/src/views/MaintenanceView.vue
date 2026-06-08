@@ -4,8 +4,10 @@ import { useRouter } from "vue-router";
 
 import MockHardwareControls from "@/components/MockHardwareControls.vue";
 import {
+  machineConfigDefaults,
   normalizeMachineConfig,
   type HardwareAdapter,
+  type MachineConfig,
   type ScannerAdapter,
 } from "@/config/machine-config";
 import { shouldShowAdvancedMaintenanceConfig } from "@/config/runtime-flags";
@@ -26,16 +28,15 @@ const remoteOpsStore = useRemoteOpsStore();
 const scannerStore = useScannerStore();
 const visionStore = useVisionStore();
 const runtimeFlags = reactive({
-  advancedMaintenanceConfig: shouldShowAdvancedMaintenanceConfig({
-    flag: import.meta.env.VITE_ENABLE_ADVANCED_MAINTENANCE_CONFIG,
-  }),
+  advancedMaintenanceConfig: false,
 });
 const showAdvancedDebugConfig = computed(
   () => runtimeFlags.advancedMaintenanceConfig,
 );
 
-function cloneLowerControllerUsbIdentity() {
-  const identity = machineStore.config.lowerControllerUsbIdentity;
+function cloneLowerControllerUsbIdentity(
+  identity: MachineConfig["lowerControllerUsbIdentity"],
+) {
   return identity
     ? {
         vendorId: identity.vendorId,
@@ -46,24 +47,26 @@ function cloneLowerControllerUsbIdentity() {
 }
 
 const form = reactive({
-  machineCode: machineStore.config.machineCode,
-  apiBaseUrl: machineStore.config.apiBaseUrl,
-  mqttUrl: machineStore.config.mqttUrl,
-  mqttUsername: machineStore.config.mqttUsername,
-  hardwareAdapter: machineStore.config.hardwareAdapter,
-  serialPortPath: machineStore.config.serialPortPath,
-  lowerControllerUsbIdentity: cloneLowerControllerUsbIdentity(),
-  scannerAdapter: machineStore.config.scannerAdapter,
-  scannerSerialPortPath: machineStore.config.scannerSerialPortPath,
-  scannerBaudRate: machineStore.config.scannerBaudRate,
-  scannerFrameSuffix: machineStore.config.scannerFrameSuffix,
-  visionEnabled: machineStore.config.visionEnabled,
-  visionWsUrl: machineStore.config.visionWsUrl,
-  visionAutoStart: machineStore.config.visionAutoStart,
-  visionProcessCommand: machineStore.config.visionProcessCommand,
-  visionProcessArgs: machineStore.config.visionProcessArgs,
-  visionRequestTimeoutMs: machineStore.config.visionRequestTimeoutMs,
-  kioskMode: machineStore.config.kioskMode,
+  machineCode: machineConfigDefaults.machineCode,
+  apiBaseUrl: machineConfigDefaults.apiBaseUrl,
+  mqttUrl: machineConfigDefaults.mqttUrl,
+  mqttUsername: machineConfigDefaults.mqttUsername,
+  hardwareAdapter: machineConfigDefaults.hardwareAdapter,
+  serialPortPath: machineConfigDefaults.serialPortPath,
+  lowerControllerUsbIdentity: cloneLowerControllerUsbIdentity(
+    machineConfigDefaults.lowerControllerUsbIdentity,
+  ),
+  scannerAdapter: machineConfigDefaults.scannerAdapter,
+  scannerSerialPortPath: machineConfigDefaults.scannerSerialPortPath,
+  scannerBaudRate: machineConfigDefaults.scannerBaudRate,
+  scannerFrameSuffix: machineConfigDefaults.scannerFrameSuffix,
+  visionEnabled: machineConfigDefaults.visionEnabled,
+  visionWsUrl: machineConfigDefaults.visionWsUrl,
+  visionAutoStart: machineConfigDefaults.visionAutoStart,
+  visionProcessCommand: machineConfigDefaults.visionProcessCommand,
+  visionProcessArgs: machineConfigDefaults.visionProcessArgs,
+  visionRequestTimeoutMs: machineConfigDefaults.visionRequestTimeoutMs,
+  kioskMode: machineConfigDefaults.kioskMode,
   machineSecretInput: "",
   mqttSigningSecretInput: "",
   mqttPasswordInput: "",
@@ -76,7 +79,9 @@ function syncFormFromStore(): void {
   form.mqttUsername = machineStore.config.mqttUsername;
   form.hardwareAdapter = machineStore.config.hardwareAdapter;
   form.serialPortPath = machineStore.config.serialPortPath;
-  form.lowerControllerUsbIdentity = cloneLowerControllerUsbIdentity();
+  form.lowerControllerUsbIdentity = cloneLowerControllerUsbIdentity(
+    machineStore.config.lowerControllerUsbIdentity,
+  );
   form.scannerAdapter = machineStore.config.scannerAdapter;
   form.scannerSerialPortPath = machineStore.config.scannerSerialPortPath;
   form.scannerBaudRate = machineStore.config.scannerBaudRate;
@@ -95,9 +100,7 @@ onMounted(async () => {
     const connection = await daemonClient.initialize();
     runtimeFlags.advancedMaintenanceConfig =
       shouldShowAdvancedMaintenanceConfig({
-        flag:
-          connection.runtimeFlags?.advancedMaintenanceConfig ||
-          import.meta.env.VITE_ENABLE_ADVANCED_MAINTENANCE_CONFIG,
+        flag: connection.runtimeFlags?.advancedMaintenanceConfig,
       });
   } catch {
     runtimeFlags.advancedMaintenanceConfig =
@@ -106,14 +109,16 @@ onMounted(async () => {
       });
   }
 
-  try {
-    if (!machineStore.configLoaded) {
-      await machineStore.loadConfig();
+  if (runtimeFlags.advancedMaintenanceConfig) {
+    try {
+      if (!machineStore.configLoaded) {
+        await machineStore.loadConfig();
+      }
+      syncFormFromStore();
+    } catch {
+      // Keep maintenance usable with local defaults when daemon is temporarily unavailable.
     }
-  } catch {
-    // Keep maintenance usable with local defaults when daemon is temporarily unavailable.
   }
-  syncFormFromStore();
   await Promise.allSettled([
     refreshStockMaintenanceView(),
     refreshDiagnostics(),
@@ -165,6 +170,9 @@ const scannerAdapters: ScannerAdapter[] = ["disabled", "serial_text"];
 const scannerFrameSuffixes = ["crlf", "lf", "cr", "none"] as const;
 
 async function saveAndReboot(): Promise<void> {
+  if (!runtimeFlags.advancedMaintenanceConfig) {
+    return;
+  }
   try {
     const normalized = normalizeMachineConfig({
       ...form,
@@ -191,7 +199,9 @@ async function runHardwareCheck(): Promise<void> {
     const result = await daemonClient.runHardwareSelfCheck();
     if (result.configUpdated) {
       await machineStore.loadConfig();
-      syncFormFromStore();
+      if (runtimeFlags.advancedMaintenanceConfig) {
+        syncFormFromStore();
+      }
     }
     const details = [
       result.portPath ? `端口 ${result.portPath}` : null,
