@@ -2,6 +2,9 @@ name: Windows Bring-up Bundle
 
 on:
   workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/windows-bringup-bundle.yml
 
 concurrency:
   group: windows-bringup-bundle-${{ github.ref }}
