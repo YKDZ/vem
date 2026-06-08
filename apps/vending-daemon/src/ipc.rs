@@ -5,7 +5,7 @@ use axum::{
     extract::{Path as AxumPath, State, WebSocketUpgrade},
     http::{
         header::{AUTHORIZATION, CONTENT_DISPOSITION, CONTENT_TYPE},
-        HeaderMap, StatusCode,
+        HeaderMap, Method, StatusCode,
     },
     response::{IntoResponse, Json},
     routing::{get, post},
@@ -14,6 +14,7 @@ use axum::{
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use tokio::sync::{broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
+use tower_http::cors::{Any, CorsLayer};
 
 use crate::{
     backend::BackendClient,
@@ -182,7 +183,16 @@ pub fn build_router(ctx: IpcContext) -> Router {
         .route("/v1/remote-ops/status", get(remote_ops_status))
         .route("/v1/logs/export", get(export_logs))
         .route("/v1/events", get(events_ws))
+        .layer(ipc_cors_layer())
         .with_state(ctx)
+}
+
+fn ipc_cors_layer() -> CorsLayer {
+    CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods([Method::GET, Method::POST, Method::PUT, Method::OPTIONS])
+        .allow_headers([AUTHORIZATION, CONTENT_TYPE])
+        .allow_private_network(true)
 }
 
 pub fn assert_loopback(addr: SocketAddr) -> Result<(), String> {
@@ -2101,6 +2111,90 @@ mod tests {
         assert_eq!(
             call_status_request(Method::GET, "/v1/sync/status", Some("token-1"), &app).await,
             StatusCode::OK,
+        );
+    }
+
+    #[tokio::test]
+    async fn ipc_cors_allows_tauri_preflight_and_private_network() {
+        let temp_dir = tempdir().expect("tmp");
+        let app = build_router(
+            test_ipc_context(
+                temp_dir.path(),
+                "token-1",
+                Some("MACHINE-1".to_string()),
+                "http://127.0.0.1:0",
+            )
+            .await,
+        );
+
+        let preflight = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::OPTIONS)
+                    .uri("/v1/sale-readiness")
+                    .header("Origin", "http://tauri.localhost")
+                    .header("Access-Control-Request-Method", "GET")
+                    .header(
+                        "Access-Control-Request-Headers",
+                        "authorization,content-type",
+                    )
+                    .header("Access-Control-Request-Private-Network", "true")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            preflight.status().is_success(),
+            "preflight failed with {}",
+            preflight.status()
+        );
+        let headers = preflight.headers();
+        assert_eq!(
+            headers
+                .get("access-control-allow-origin")
+                .and_then(|value| value.to_str().ok()),
+            Some("*")
+        );
+        assert_eq!(
+            headers
+                .get("access-control-allow-private-network")
+                .and_then(|value| value.to_str().ok()),
+            Some("true")
+        );
+        let allow_methods = headers
+            .get("access-control-allow-methods")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default();
+        assert!(allow_methods.contains("GET"));
+        let allow_headers = headers
+            .get("access-control-allow-headers")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        assert!(allow_headers.contains("authorization"));
+        assert!(allow_headers.contains("content-type"));
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/healthz")
+                    .header("Origin", "http://tauri.localhost")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get("access-control-allow-origin")
+                .and_then(|value| value.to_str().ok()),
+            Some("*")
         );
     }
 
