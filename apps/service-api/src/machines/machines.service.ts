@@ -14,6 +14,7 @@ import {
   count,
   desc,
   eq,
+  gt,
   inArray,
   inventories,
   isNull,
@@ -62,6 +63,7 @@ import { MqttSignatureService } from "../mqtt/mqtt-signature.service";
 import { MqttService } from "../mqtt/mqtt.service";
 import { PaymentProviderConfigService } from "../payments/payment-provider-config.service";
 import {
+  digestMachineClaimCodeLookup,
   generateHumanMachineClaimCode,
   hashMachineClaimCodeVerifier,
   verifyMachineClaimCode,
@@ -1064,6 +1066,10 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
         .insert(machineClaimCodes)
         .values({
           machineId: machine.id,
+          lookupDigest: digestMachineClaimCodeLookup(
+            claimCode,
+            this.config.machineClaimLookupHmacKey,
+          ),
           verifierHash: hashMachineClaimCodeVerifier(claimCode),
           state: "pending",
           failedAttemptCount: 0,
@@ -1103,7 +1109,11 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
     input: MachineClaimRequest,
     now = new Date(),
   ): Promise<MachineProvisioningProfile> {
-    const candidates = await this.db
+    const lookupDigest = digestMachineClaimCodeLookup(
+      input.claimCode,
+      this.config.machineClaimLookupHmacKey,
+    );
+    const [claimCode] = await this.db
       .select({
         id: machineClaimCodes.id,
         machineId: machineClaimCodes.machineId,
@@ -1124,12 +1134,21 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
       })
       .from(machineClaimCodes)
       .innerJoin(machines, eq(machines.id, machineClaimCodes.machineId))
-      .where(isNull(machines.deletedAt));
-    const claimCode = candidates.find((candidate) =>
-      verifyMachineClaimCode(input.claimCode, candidate.verifierHash),
-    ) as MachineClaimCandidate | undefined;
+      .where(
+        and(
+          eq(machineClaimCodes.lookupDigest, lookupDigest),
+          isNull(machines.deletedAt),
+        ),
+      )
+      .limit(1);
 
     if (!claimCode) {
+      // Truly unmatched guesses have no claim-code row to update. Return the
+      // same public error without leaking whether any claim exists.
+      throw this.invalidMachineClaimCode();
+    }
+    if (!verifyMachineClaimCode(input.claimCode, claimCode.verifierHash)) {
+      await this.recordFailedMachineClaim(claimCode, now);
       throw this.invalidMachineClaimCode();
     }
     if (
@@ -1140,12 +1159,13 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
       throw this.invalidMachineClaimCode();
     }
 
+    const paymentCapability =
+      await this.buildMachineProvisioningPaymentCapability(claimCode.machineId);
     const bundle = this.machineCredentialService.createBundle();
-    const nextSecretVersion = claimCode.machineSecretVersion + 1;
     const mqttClientId =
       claimCode.machineMqttClientId ?? `vem-machine-${claimCode.machineCode}`;
 
-    const consumed = await this.db.transaction(async (tx) => {
+    const { consumed, rotated } = await this.db.transaction(async (tx) => {
       const [consumedClaimCode] = await tx
         .update(machineClaimCodes)
         .set({
@@ -1157,18 +1177,19 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
           and(
             eq(machineClaimCodes.id, claimCode.id),
             eq(machineClaimCodes.state, "pending"),
+            gt(machineClaimCodes.expiresAt, now),
           ),
         )
-        .returning();
+        .returning({ id: machineClaimCodes.id });
       if (!consumedClaimCode) {
         throw this.invalidMachineClaimCode();
       }
 
-      await tx
+      const [rotatedMachine] = await tx
         .update(machines)
         .set({
           secretHash: bundle.secretHash,
-          secretVersion: nextSecretVersion,
+          secretVersion: sql`${machines.secretVersion} + 1`,
           secretRotatedAt: now,
           credentialRevokedAt: null,
           mqttClientId,
@@ -1176,22 +1197,18 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
             bundle.mqttSigningSecretEncryptedJson as Record<string, unknown>,
           updatedAt: now,
         })
-        .where(eq(machines.id, claimCode.machineId))
-        .returning({ id: machines.id });
-      return consumedClaimCode;
+        .where(
+          and(eq(machines.id, claimCode.machineId), isNull(machines.deletedAt)),
+        )
+        .returning({
+          id: machines.id,
+          secretVersion: machines.secretVersion,
+        });
+      if (!rotatedMachine) {
+        throw this.invalidMachineClaimCode();
+      }
+      return { consumed: consumedClaimCode, rotated: rotatedMachine };
     });
-
-    const paymentOptions =
-      await this.paymentProviderConfigService.listMachinePaymentOptionsForMachine(
-        claimCode.machineId,
-      );
-    const productionPaymentOptions = paymentOptions.options.filter(
-      isProductionPaymentOption,
-    );
-    const defaultProductionPaymentOption =
-      productionPaymentOptions.find(
-        (option) => option.optionKey === paymentOptions.defaultOptionKey,
-      ) ?? productionPaymentOptions[0];
 
     await this.auditService.record({
       adminUserId: null,
@@ -1202,7 +1219,7 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
         claimCodeId: consumed.id,
         machineCode: claimCode.machineCode,
         state: "consumed",
-        secretVersion: nextSecretVersion,
+        secretVersion: rotated.secretVersion,
         claimedAt: toIso(now),
       },
     });
@@ -1217,7 +1234,7 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
       },
       credentials: {
         machineSecret: bundle.machineSecret,
-        machineSecretVersion: nextSecretVersion,
+        machineSecretVersion: rotated.secretVersion,
         mqttSigningSecret: bundle.mqttSigningSecret,
         mqttConnection: {
           url: this.config.mqttUrl,
@@ -1253,11 +1270,10 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
       },
       paymentCapability: {
         profile: "production",
-        options: productionPaymentOptions,
-        defaultOptionKey: defaultProductionPaymentOption?.optionKey ?? null,
-        defaultProviderCode:
-          defaultProductionPaymentOption?.providerCode ?? null,
-        serverTime: paymentOptions.serverTime,
+        options: paymentCapability.options,
+        defaultOptionKey: paymentCapability.defaultOptionKey,
+        defaultProviderCode: paymentCapability.defaultProviderCode,
+        serverTime: paymentCapability.serverTime,
       },
       metadata: {
         profileVersion: 1,
@@ -1268,28 +1284,48 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
     };
   }
 
+  private async buildMachineProvisioningPaymentCapability(machineId: string) {
+    const paymentOptions =
+      await this.paymentProviderConfigService.listMachinePaymentOptionsForMachine(
+        machineId,
+      );
+    const productionPaymentOptions = paymentOptions.options.filter(
+      isProductionPaymentOption,
+    );
+    const defaultProductionPaymentOption =
+      productionPaymentOptions.find(
+        (option) => option.optionKey === paymentOptions.defaultOptionKey,
+      ) ?? productionPaymentOptions[0];
+    return {
+      options: productionPaymentOptions,
+      defaultOptionKey: defaultProductionPaymentOption?.optionKey ?? null,
+      defaultProviderCode: defaultProductionPaymentOption?.providerCode ?? null,
+      serverTime: paymentOptions.serverTime,
+    };
+  }
+
   private async recordFailedMachineClaim(
     claimCode: MachineClaimCandidate,
     now: Date,
   ): Promise<void> {
-    const failedAttemptCount = claimCode.failedAttemptCount + 1;
     const expired = claimCode.expiresAt.getTime() <= now.getTime();
-    const shouldLock =
-      claimCode.state === "pending" &&
-      !expired &&
-      failedAttemptCount >= claimCode.maxFailedAttempts;
+    const state =
+      expired && claimCode.state === "pending"
+        ? "expired"
+        : claimCode.state === "pending"
+          ? sql`case when ${machineClaimCodes.failedAttemptCount} + 1 >= ${machineClaimCodes.maxFailedAttempts} then 'locked'::machine_claim_code_state else ${machineClaimCodes.state} end`
+          : claimCode.state;
+    const lockedAt =
+      claimCode.state === "pending" && !expired
+        ? sql`case when ${machineClaimCodes.failedAttemptCount} + 1 >= ${machineClaimCodes.maxFailedAttempts} and ${machineClaimCodes.lockedAt} is null then ${now} else ${machineClaimCodes.lockedAt} end`
+        : claimCode.lockedAt;
 
     await this.db
       .update(machineClaimCodes)
       .set({
-        failedAttemptCount,
-        state:
-          expired && claimCode.state === "pending"
-            ? "expired"
-            : shouldLock
-              ? "locked"
-              : claimCode.state,
-        lockedAt: shouldLock ? now : claimCode.lockedAt,
+        failedAttemptCount: sql`${machineClaimCodes.failedAttemptCount} + 1`,
+        state,
+        lockedAt,
         updatedAt: now,
       })
       .where(eq(machineClaimCodes.id, claimCode.id));
@@ -1439,7 +1475,6 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
       .select({
         id: machines.id,
         code: machines.code,
-        secretVersion: machines.secretVersion,
       })
       .from(machines)
       .where(and(eq(machines.id, id), isNull(machines.deletedAt)));
@@ -1448,12 +1483,11 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
     }
 
     const bundle = this.machineCredentialService.createBundle();
-    const nextVersion = current.secretVersion + 1;
     const [updated] = await this.db
       .update(machines)
       .set({
         secretHash: bundle.secretHash,
-        secretVersion: nextVersion,
+        secretVersion: sql`${machines.secretVersion} + 1`,
         secretRotatedAt: new Date(),
         credentialRevokedAt: null,
         mqttSigningSecretEncryptedJson:
@@ -1461,20 +1495,27 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
         updatedAt: new Date(),
       })
       .where(eq(machines.id, current.id))
-      .returning({ id: machines.id, code: machines.code });
+      .returning({
+        id: machines.id,
+        code: machines.code,
+        secretVersion: machines.secretVersion,
+      });
 
     await this.auditService.record({
       adminUserId,
       action: "machines.credentials.rotate",
       resourceType: "machine",
       resourceId: current.id,
-      afterJson: { machineCode: current.code, secretVersion: nextVersion },
+      afterJson: {
+        machineCode: current.code,
+        secretVersion: updated.secretVersion,
+      },
     });
 
     return {
       machineId: updated.id,
       machineCode: updated.code,
-      secretVersion: nextVersion,
+      secretVersion: updated.secretVersion,
       machineSecret: bundle.machineSecret,
       mqttSigningSecret: bundle.mqttSigningSecret,
     };

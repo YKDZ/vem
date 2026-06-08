@@ -12,6 +12,10 @@ const baseEnvSchema = z.object({
   JWT_REFRESH_TTL_SECONDS: z.coerce.number().int().min(3600).default(604800),
   MACHINE_JWT_SECRET: z.string().min(32),
   MACHINE_CREDENTIAL_ENCRYPTION_KEY: z.string().min(32),
+  MACHINE_CLAIM_LOOKUP_HMAC_KEY: z
+    .string()
+    .min(32)
+    .default("dev-machine-claim-lookup-hmac-key-change-me"),
   MACHINE_ACCESS_TTL_SECONDS: z.coerce.number().int().min(60).default(900),
   CORS_ORIGINS: z.string().default("http://localhost:5173"),
   MQTT_URL: z.url(),
@@ -88,6 +92,18 @@ export const envSchema = baseEnvSchema.superRefine((env, ctx) => {
       code: "custom",
       path: ["PAYMENT_MOCK_ENABLED"],
       message: "PAYMENT_MOCK_ENABLED must be false in production",
+    });
+  }
+  if (
+    env.NODE_ENV === "production" &&
+    env.MACHINE_CLAIM_LOOKUP_HMAC_KEY ===
+      "dev-machine-claim-lookup-hmac-key-change-me"
+  ) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["MACHINE_CLAIM_LOOKUP_HMAC_KEY"],
+      message:
+        "MACHINE_CLAIM_LOOKUP_HMAC_KEY must be set explicitly in production",
     });
   }
   if (

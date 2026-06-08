@@ -854,6 +854,8 @@ describe("MachinesService claim code lifecycle", () => {
           useValue: {
             machineCommandTimeoutSeconds: 5,
             machineClaimCodeTtlSeconds: 600,
+            machineClaimLookupHmacKey:
+              "test-machine-claim-lookup-hmac-key-change-me",
             mqttUrl: "mqtt://localhost:1883",
             mqttUsername: "machine-client",
             mqttPassword: "mqtt-password",
@@ -935,6 +937,7 @@ describe("MachinesService claim code lifecycle", () => {
       machineMqttClientId: machine.mqttClientId,
       machineSecretVersion: machine.secretVersion,
     };
+    const rotatedSecretVersion = 2;
     const consumed = {
       ...pending,
       state: "consumed",
@@ -981,7 +984,11 @@ describe("MachinesService claim code lifecycle", () => {
       where: () => ({ returning: async () => [consumed] }),
     });
     const rotateSet = vi.fn().mockReturnValue({
-      where: () => ({ returning: async () => [{ id: machine.id }] }),
+      where: () => ({
+        returning: async () => [
+          { id: machine.id, secretVersion: rotatedSecretVersion },
+        ],
+      }),
     });
     const tx = {
       update: vi
@@ -992,7 +999,9 @@ describe("MachinesService claim code lifecycle", () => {
     mockDb.select.mockReturnValueOnce({
       from: () => ({
         innerJoin: () => ({
-          where: async () => [pending],
+          where: () => ({
+            limit: async () => [pending],
+          }),
         }),
       }),
     });
@@ -1011,7 +1020,7 @@ describe("MachinesService claim code lifecycle", () => {
         }),
         credentials: expect.objectContaining({
           machineSecret: "vms_rotated-machine-secret-change-before-production",
-          machineSecretVersion: 2,
+          machineSecretVersion: rotatedSecretVersion,
           mqttSigningSecret: "vms_rotated-mqtt-secret-change-before-production",
           mqttConnection: expect.objectContaining({
             url: "mqtt://localhost:1883",
@@ -1044,9 +1053,12 @@ describe("MachinesService claim code lifecycle", () => {
     expect(rotateSet).toHaveBeenCalledWith(
       expect.objectContaining({
         secretHash: "scrypt:rotated-machine-secret-hash",
-        secretVersion: 2,
+        secretVersion: expect.anything(),
         credentialRevokedAt: null,
       }),
+    );
+    expect(rotateSet.mock.calls[0]?.[0].secretVersion).not.toBe(
+      pending.machineSecretVersion + 1,
     );
     expect(auditRecord).toHaveBeenCalledWith({
       adminUserId: null,
@@ -1057,7 +1069,7 @@ describe("MachinesService claim code lifecycle", () => {
         claimCodeId: pending.id,
         machineCode: "M001",
         state: "consumed",
-        secretVersion: 2,
+        secretVersion: rotatedSecretVersion,
         claimedAt: "2026-06-08T16:30:00.000Z",
       },
     });
@@ -1071,7 +1083,9 @@ describe("MachinesService claim code lifecycle", () => {
     mockDb.select.mockReturnValueOnce({
       from: () => ({
         innerJoin: () => ({
-          where: async () => [],
+          where: () => ({
+            limit: async () => [],
+          }),
         }),
       }),
     });
@@ -1089,6 +1103,29 @@ describe("MachinesService claim code lifecycle", () => {
     });
     expect(mockDb.update).not.toHaveBeenCalled();
     expect(auditRecord).not.toHaveBeenCalled();
+  });
+
+  it("looks up only one claim-code candidate before verifying the salted hash", async () => {
+    const pending = claimCandidate();
+    const limit = vi.fn().mockResolvedValue([pending]);
+    const where = vi.fn().mockReturnValue({ limit });
+    mockDb.select.mockReturnValueOnce({
+      from: () => ({
+        innerJoin: () => ({
+          where,
+        }),
+      }),
+    });
+    listMachinePaymentOptionsForMachine.mockRejectedValueOnce(
+      new Error("stop after lookup"),
+    );
+
+    await expect(
+      service.claimMachine({ claimCode: "ABCD-2345" }),
+    ).rejects.toThrow("stop after lookup");
+
+    expect(where).toHaveBeenCalledTimes(1);
+    expect(limit).toHaveBeenCalledWith(1);
   });
 
   it.each([
@@ -1128,7 +1165,9 @@ describe("MachinesService claim code lifecycle", () => {
       mockDb.select.mockReturnValueOnce({
         from: () => ({
           innerJoin: () => ({
-            where: async () => [failed],
+            where: () => ({
+              limit: async () => [failed],
+            }),
           }),
         }),
       });
@@ -1142,15 +1181,87 @@ describe("MachinesService claim code lifecycle", () => {
 
       expect(updateSet).toHaveBeenCalledWith(
         expect.objectContaining({
-          failedAttemptCount: 3,
+          failedAttemptCount: expect.anything(),
           state: expectedState,
           updatedAt: claimCodeNow,
         }),
       );
-      expect(JSON.stringify(updateSet.mock.calls)).not.toContain("M001");
+      expect(updateSet.mock.calls[0]?.[0].failedAttemptCount).not.toBe(3);
+      expect(updateSet.mock.calls[0]?.[0]).not.toHaveProperty("machineCode");
       expect(auditRecord).not.toHaveBeenCalled();
     },
   );
+
+  it("atomically increments and locks a digest-matched claim when verifier validation fails at the threshold", async () => {
+    const failed = claimCandidate({
+      verifierHash: hashMachineClaimCodeVerifier("ZZZZ-9999"),
+      failedAttemptCount: 4,
+      maxFailedAttempts: 5,
+    });
+    const updateSet = vi.fn().mockReturnValue({ where: async () => [] });
+    mockDb.select.mockReturnValueOnce({
+      from: () => ({
+        innerJoin: () => ({
+          where: () => ({
+            limit: async () => [failed],
+          }),
+        }),
+      }),
+    });
+    mockDb.update.mockReturnValueOnce({ set: updateSet });
+
+    await expect(
+      service.claimMachine({ claimCode: "ABCD-2345" }),
+    ).rejects.toMatchObject({
+      message: "Invalid or expired machine claim code",
+    });
+
+    const updatePayload = updateSet.mock.calls[0]?.[0] as Record<
+      string,
+      unknown
+    >;
+    expect(updatePayload).toEqual(
+      expect.objectContaining({
+        failedAttemptCount: expect.anything(),
+        state: expect.anything(),
+        lockedAt: expect.anything(),
+        updatedAt: claimCodeNow,
+      }),
+    );
+    expect(updatePayload.failedAttemptCount).not.toBe(5);
+    expect(updatePayload.state).not.toBe("locked");
+    const stateSqlChunks =
+      (updatePayload.state as { queryChunks?: Array<{ value?: string[] }> })
+        .queryChunks ?? [];
+    expect(
+      stateSqlChunks.some((chunk) => chunk.value?.join("").includes("locked")),
+    ).toBe(true);
+    expect(auditRecord).not.toHaveBeenCalled();
+  });
+
+  it("validates payment profile dependencies before consuming the claim or rotating credentials", async () => {
+    const pending = claimCandidate();
+    mockDb.select.mockReturnValueOnce({
+      from: () => ({
+        innerJoin: () => ({
+          where: () => ({
+            limit: async () => [pending],
+          }),
+        }),
+      }),
+    });
+    listMachinePaymentOptionsForMachine.mockRejectedValueOnce(
+      new Error("payment config unavailable"),
+    );
+
+    await expect(
+      service.claimMachine({ claimCode: "ABCD-2345" }),
+    ).rejects.toThrow("payment config unavailable");
+
+    expect(createBundle).not.toHaveBeenCalled();
+    expect(mockDb.transaction).not.toHaveBeenCalled();
+    expect(auditRecord).not.toHaveBeenCalled();
+  });
 
   it("does not return a profile when the claim code was consumed by a concurrent request", async () => {
     const pending = claimCandidate();
@@ -1163,9 +1274,17 @@ describe("MachinesService claim code lifecycle", () => {
     mockDb.select.mockReturnValueOnce({
       from: () => ({
         innerJoin: () => ({
-          where: async () => [pending],
+          where: () => ({
+            limit: async () => [pending],
+          }),
         }),
       }),
+    });
+    listMachinePaymentOptionsForMachine.mockResolvedValueOnce({
+      options: [],
+      defaultOptionKey: null,
+      defaultProviderCode: null,
+      serverTime: "2026-06-08T16:30:00.000Z",
     });
     createBundle.mockReturnValueOnce({
       machineSecret: "vms_rotated-machine-secret-change-before-production",
@@ -1182,8 +1301,64 @@ describe("MachinesService claim code lifecycle", () => {
     ).rejects.toMatchObject({
       message: "Invalid or expired machine claim code",
     });
-    expect(listMachinePaymentOptionsForMachine).not.toHaveBeenCalled();
+    expect(listMachinePaymentOptionsForMachine).toHaveBeenCalledWith(
+      pending.machineId,
+    );
     expect(auditRecord).not.toHaveBeenCalled();
+  });
+
+  it("uses the database-returned secret version when rotating machine credentials", async () => {
+    const machine = {
+      id: "550e8400-e29b-41d4-a716-446655440000",
+      code: "M001",
+      secretVersion: 1,
+    };
+    const updateSet = vi.fn().mockReturnValue({
+      where: () => ({
+        returning: async () => [
+          { id: machine.id, code: machine.code, secretVersion: 7 },
+        ],
+      }),
+    });
+    mockDb.select.mockReturnValueOnce({
+      from: () => ({
+        where: async () => [machine],
+      }),
+    });
+    mockDb.update.mockReturnValueOnce({ set: updateSet });
+    createBundle.mockReturnValueOnce({
+      machineSecret: "vms_rotated-machine-secret-change-before-production",
+      mqttSigningSecret: "vms_rotated-mqtt-secret-change-before-production",
+      secretHash: "scrypt:rotated-machine-secret-hash",
+      mqttSigningSecretEncryptedJson: { v: 1, alg: "aes-256-gcm" },
+    });
+
+    const result = await service.rotateMachineCredentials(
+      machine.id,
+      "admin-1",
+    );
+
+    expect(updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        secretHash: "scrypt:rotated-machine-secret-hash",
+        secretVersion: expect.anything(),
+      }),
+    );
+    expect(updateSet.mock.calls[0]?.[0].secretVersion).not.toBe(2);
+    expect(result).toEqual(
+      expect.objectContaining({
+        machineId: machine.id,
+        machineCode: "M001",
+        secretVersion: 7,
+      }),
+    );
+    expect(auditRecord).toHaveBeenCalledWith({
+      adminUserId: "admin-1",
+      action: "machines.credentials.rotate",
+      resourceType: "machine",
+      resourceId: machine.id,
+      afterJson: { machineCode: "M001", secretVersion: 7 },
+    });
   });
 
   it("generates a short-lived claim code and stores only a verifier hash", async () => {
@@ -1247,6 +1422,10 @@ describe("MachinesService claim code lifecycle", () => {
     );
     const stored = insertValues.mock.calls[0]?.[0] as Record<string, unknown>;
     expect(stored.machineId).toBe(machine.id);
+    expect(stored.lookupDigest).toEqual(
+      expect.stringMatching(/^[a-f0-9]{64}$/),
+    );
+    expect(stored.lookupDigest).not.toBe(result.claimCode);
     expect(stored.verifierHash).toEqual(expect.stringMatching(/^scrypt:/));
     expect(stored.verifierHash).not.toBe(result.claimCode);
     expect(stored).not.toHaveProperty("claimCode");

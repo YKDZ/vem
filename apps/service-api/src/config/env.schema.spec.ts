@@ -11,6 +11,8 @@ const baseValidEnv = {
   MACHINE_JWT_SECRET: "local-machine-jwt-secret-change-before-production-min32",
   MACHINE_CREDENTIAL_ENCRYPTION_KEY:
     "local-cred-enc-key-change-before-production!",
+  MACHINE_CLAIM_LOOKUP_HMAC_KEY:
+    "local-claim-lookup-hmac-key-change-before-production",
   CORS_ORIGINS: "http://localhost:5173",
   MQTT_URL: "mqtt://localhost:1883",
   PAYMENT_MOCK_ENABLED: "true",
@@ -67,6 +69,32 @@ describe("validateEnv", () => {
     const { PAYMENT_MOCK_ENABLED: _, ...withoutMock } = baseValidEnv;
     const env = validateEnv(withoutMock);
     expect(env.PAYMENT_MOCK_ENABLED).toBe(false);
+  });
+
+  it("defaults the machine claim lookup HMAC key outside production", () => {
+    const { MACHINE_CLAIM_LOOKUP_HMAC_KEY: _, ...withoutKey } = baseValidEnv;
+    const env = validateEnv(withoutKey);
+    expect(env.MACHINE_CLAIM_LOOKUP_HMAC_KEY).toBe(
+      "dev-machine-claim-lookup-hmac-key-change-me",
+    );
+  });
+
+  it("rejects production config with the default machine claim lookup HMAC key", () => {
+    expect(() =>
+      validateEnv({
+        ...baseValidEnv,
+        NODE_ENV: "production",
+        PAYMENT_MOCK_ENABLED: "false",
+        PAYMENT_PRODUCTION_READINESS_REQUIRED: "true",
+        PAYMENT_WEBHOOK_BASE_URL: "https://pay.example.com",
+        MQTT_USERNAME: "u",
+        MQTT_PASSWORD: "p",
+        MACHINE_CLAIM_LOOKUP_HMAC_KEY:
+          "dev-machine-claim-lookup-hmac-key-change-me",
+      }),
+    ).toThrow(
+      "MACHINE_CLAIM_LOOKUP_HMAC_KEY must be set explicitly in production",
+    );
   });
 
   it("derives provider notify url when PAYMENT_WEBHOOK_BASE_URL is webhook prefix", () => {

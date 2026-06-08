@@ -479,6 +479,7 @@ export const machineClaimCodes = t.pgTable(
       .uuid("machine_id")
       .notNull()
       .references(() => machines.id),
+    lookupDigest: t.text("lookup_digest"),
     verifierHash: t.text("verifier_hash").notNull(),
     state: machineClaimCodeState("state").default("pending").notNull(),
     failedAttemptCount: t.integer("failed_attempt_count").default(0).notNull(),
@@ -497,6 +498,10 @@ export const machineClaimCodes = t.pgTable(
     updatedAt: updatedAt(),
   },
   (table) => [
+    t
+      .uniqueIndex("machine_claim_codes_lookup_digest_unique")
+      .on(table.lookupDigest)
+      .where(sql`${table.lookupDigest} IS NOT NULL`),
     t.index("machine_claim_codes_machine_id_idx").on(table.machineId),
     t.index("machine_claim_codes_state_idx").on(table.state),
     t.index("machine_claim_codes_expires_at_idx").on(table.expiresAt),

@@ -41,6 +41,10 @@ export class AppConfigService {
     });
   }
 
+  get machineClaimLookupHmacKey(): string {
+    return this.config.get("MACHINE_CLAIM_LOOKUP_HMAC_KEY", { infer: true });
+  }
+
   get machineAccessTtlSeconds(): number {
     return this.config.get("MACHINE_ACCESS_TTL_SECONDS", { infer: true });
   }

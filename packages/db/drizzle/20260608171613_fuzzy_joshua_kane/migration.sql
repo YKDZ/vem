@@ -1,0 +1,2 @@
+ALTER TABLE "machine_claim_codes" ADD COLUMN "lookup_digest" text;--> statement-breakpoint
+CREATE UNIQUE INDEX "machine_claim_codes_lookup_digest_unique" ON "machine_claim_codes" ("lookup_digest") WHERE "lookup_digest" IS NOT NULL;

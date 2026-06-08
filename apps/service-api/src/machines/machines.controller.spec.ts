@@ -1,10 +1,23 @@
-import { GUARDS_METADATA } from "@nestjs/common/constants";
-import { describe, expect, it, vi } from "vitest";
+import type { INestApplication } from "@nestjs/common";
 
+import { GUARDS_METADATA } from "@nestjs/common/constants";
+import { APP_GUARD } from "@nestjs/core";
+import { JwtService } from "@nestjs/jwt";
+import { Test } from "@nestjs/testing";
+import request from "supertest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import { AccessService } from "../access/access.service";
 import { REQUIRED_PERMISSIONS_KEY } from "../access/permissions.decorator";
+import { PermissionsGuard } from "../access/permissions.guard";
+import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { IS_PUBLIC_KEY } from "../auth/public.decorator";
+import { ZodValidationPipe } from "../common/zod-validation.pipe";
+import { AppConfigService } from "../config/app-config.service";
 import { MachineAuthGuard } from "../machine-auth/machine-auth.guard";
+import { MachineAuthService } from "../machine-auth/machine-auth.service";
 import { MachinesController } from "./machines.controller";
+import { MachinesService } from "./machines.service";
 
 describe("MachinesController environment commands", () => {
   it("requires machines.command and forwards the requester", async () => {
@@ -33,6 +46,13 @@ describe("MachinesController environment commands", () => {
 });
 
 describe("MachinesController claim code lifecycle", () => {
+  let app: INestApplication | undefined;
+
+  afterEach(async () => {
+    await app?.close();
+    app = undefined;
+  });
+
   it("exposes public machine claim without machine or admin auth guards", async () => {
     const claimMachine = vi.fn().mockResolvedValue({
       machine: { id: "machine-1", code: "M001" },
@@ -62,6 +82,51 @@ describe("MachinesController claim code lifecycle", () => {
       machine: { id: "machine-1", code: "M001" },
     });
     expect(claimMachine).toHaveBeenCalledWith({ claimCode: "ABCD-2345" });
+  });
+
+  it("accepts unauthenticated HTTP claim requests while global admin auth guards are active", async () => {
+    const transform = vi
+      .spyOn(ZodValidationPipe.prototype, "transform")
+      .mockImplementation((value) => value);
+    const claimMachine = vi.fn().mockResolvedValue({
+      machine: { id: "machine-1", code: "M001" },
+      credentials: { machineSecret: "response-only-secret" },
+    });
+    const module = await Test.createTestingModule({
+      controllers: [MachinesController],
+      providers: [
+        { provide: MachinesService, useValue: { claimMachine } },
+        { provide: APP_GUARD, useClass: JwtAuthGuard },
+        { provide: APP_GUARD, useClass: PermissionsGuard },
+        {
+          provide: JwtService,
+          useValue: { verifyAsync: vi.fn() },
+        },
+        {
+          provide: AppConfigService,
+          useValue: { jwtSecret: "test-jwt-secret-change-before-production" },
+        },
+        {
+          provide: AccessService,
+          useValue: { getAuthenticatedAdmin: vi.fn() },
+        },
+        {
+          provide: MachineAuthService,
+          useValue: { verifyToken: vi.fn() },
+        },
+      ],
+    }).compile();
+    app = module.createNestApplication();
+    await app.init();
+
+    await request(app.getHttpServer()).post("/machines").send({}).expect(401);
+    await request(app.getHttpServer())
+      .post("/machines/claim")
+      .send({ claimCode: "ABCD-2345" })
+      .expect(201);
+
+    expect(claimMachine).toHaveBeenCalledWith({ claimCode: "ABCD-2345" });
+    transform.mockRestore();
   });
 
   it("requires machine credential permission and forwards the requester when generating a claim code", async () => {

@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHmac, randomBytes } from "node:crypto";
 
 import {
   hashMachineSecret,
@@ -14,6 +14,15 @@ export function generateHumanMachineClaimCode(): string {
     CLAIM_CODE_ALPHABET.charAt(byte % CLAIM_CODE_ALPHABET.length),
   );
   return `${chars.slice(0, 4).join("")}-${chars.slice(4).join("")}`;
+}
+
+export function digestMachineClaimCodeLookup(
+  claimCode: string,
+  hmacKey: string,
+): string {
+  return createHmac("sha256", hmacKey)
+    .update(claimCode.trim().toUpperCase())
+    .digest("hex");
 }
 
 export function hashMachineClaimCodeVerifier(claimCode: string): string {
