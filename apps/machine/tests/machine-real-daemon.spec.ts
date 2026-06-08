@@ -40,10 +40,15 @@ test.beforeAll(async ({ browserName: _browserName }, testInfo) => {
   await writeFile(
     join(dataDir, "machine-config.json"),
     JSON.stringify({
+      machineId: "550e8400-e29b-41d4-a716-446655440099",
       machineCode: "MACHINE-UI",
+      machineName: "Machine UI E2E",
+      machineStatus: "online",
+      machineLocationText: "E2E lab",
       apiBaseUrl: "http://127.0.0.1:9/api",
       mqttUrl: "mqtt://127.0.0.1:1883",
       mqttUsername: null,
+      mqttClientId: "vem-machine-MACHINE-UI",
       hardwareAdapter: "mock",
       serialPortPath: null,
       scannerAdapter: "disabled",
@@ -57,6 +62,12 @@ test.beforeAll(async ({ browserName: _browserName }, testInfo) => {
       visionProcessArgs: null,
       visionRequestTimeoutMs: 8000,
       kioskMode: false,
+      runtimeEndpoints: {
+        apiBasePath: "/api",
+        machineAuthTokenPath: "/api/machine-auth/token",
+        machineApiBasePath: "/api/machines/MACHINE-UI",
+        mqttTopicPrefix: "vem/machines/MACHINE-UI",
+      },
     }),
   );
   daemon = spawn(
@@ -76,6 +87,10 @@ test.beforeAll(async ({ browserName: _browserName }, testInfo) => {
       env: {
         ...process.env,
         CARGO_TERM_COLOR: "never",
+        VEM_DAEMON_SECRET_STORE: "env",
+        VEM_MACHINE_SECRET: "machine-secret-for-machine-ui-e2e",
+        VEM_MQTT_SIGNING_SECRET: "mqtt-signing-secret-for-machine-ui-e2e",
+        VEM_MQTT_PASSWORD: "mqtt-password-for-machine-ui-e2e",
       },
     },
   );

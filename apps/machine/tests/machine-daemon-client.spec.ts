@@ -415,6 +415,8 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
       machineSecretConfigured: true,
       mqttSigningSecretConfigured: true,
       mqttPasswordConfigured: true,
+      provisioned: true,
+      provisioningIssues: [],
     };
     expectNoSecretFields(payload);
     respondJson(res, payload);
@@ -631,7 +633,7 @@ test("routes missing config to maintenance", async ({ page }) => {
   scenario = "maintenance";
   await page.goto("/");
   await expect(
-    page.getByRole("heading", { name: "部署配置 / 维护入口" }),
+    page.getByRole("heading", { name: "生产维护" }),
   ).toBeVisible();
 });
 
