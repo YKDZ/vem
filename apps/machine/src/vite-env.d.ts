@@ -2,6 +2,7 @@
 
 interface ImportMetaEnv {
   readonly VITE_ENABLE_MOCK_PAYMENT_CONTROLS?: string;
+  readonly VITE_ENABLE_ADVANCED_MAINTENANCE_CONFIG?: string;
 }
 
 interface ImportMeta {
