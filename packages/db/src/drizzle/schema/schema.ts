@@ -5,6 +5,7 @@ import {
   inventoryReservationStatuses,
   machineCommandStatuses,
   machineClaimCodeStates,
+  machineClaimCodePurposes,
   machineSlotStatuses,
   machineStatuses,
   notificationDeliveryStatuses,
@@ -82,6 +83,10 @@ export const machineCommandStatus = t.pgEnum(
 export const machineClaimCodeState = t.pgEnum(
   "machine_claim_code_state",
   asPgEnumValues(machineClaimCodeStates),
+);
+export const machineClaimCodePurpose = t.pgEnum(
+  "machine_claim_code_purpose",
+  asPgEnumValues(machineClaimCodePurposes),
 );
 export const inventoryReservationStatus = t.pgEnum(
   "inventory_reservation_status",
@@ -481,6 +486,9 @@ export const machineClaimCodes = t.pgTable(
       .references(() => machines.id),
     lookupDigest: t.text("lookup_digest"),
     verifierHash: t.text("verifier_hash").notNull(),
+    purpose: machineClaimCodePurpose("purpose")
+      .default("first_claim")
+      .notNull(),
     state: machineClaimCodeState("state").default("pending").notNull(),
     failedAttemptCount: t.integer("failed_attempt_count").default(0).notNull(),
     maxFailedAttempts: t.integer("max_failed_attempts").default(5).notNull(),

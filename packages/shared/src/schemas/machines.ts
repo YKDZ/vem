@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import {
+  machineClaimCodePurposeSchema,
   machineClaimCodeStateSchema,
   machineSlotStatusSchema,
   machineStatusSchema,
@@ -243,6 +244,7 @@ export const machineClaimCodeSnapshotSchema = z.strictObject({
   id: z.uuid(),
   machineId: z.uuid(),
   machineCode: z.string().min(1).max(64),
+  purpose: machineClaimCodePurposeSchema,
   state: machineClaimCodeStateSchema,
   expiresAt: z.iso.datetime(),
   failedAttemptCount: z.int().nonnegative(),
@@ -257,6 +259,12 @@ export const generateMachineClaimCodeResponseSchema =
   machineClaimCodeSnapshotSchema.extend({
     claimCode: z.string().regex(/^[A-Z0-9]{4}-[A-Z0-9]{4}$/),
   });
+
+export const generateMachineClaimCodeRequestSchema = z
+  .strictObject({
+    purpose: machineClaimCodePurposeSchema.default("first_claim"),
+  })
+  .default({ purpose: "first_claim" });
 
 export const machineClaimRequestSchema = z.strictObject({
   claimCode: z
@@ -338,6 +346,9 @@ export type MachineClaimCodeSnapshot = z.infer<
 >;
 export type GenerateMachineClaimCodeResponse = z.infer<
   typeof generateMachineClaimCodeResponseSchema
+>;
+export type GenerateMachineClaimCodeRequest = z.infer<
+  typeof generateMachineClaimCodeRequestSchema
 >;
 export type MachineClaimRequest = z.infer<typeof machineClaimRequestSchema>;
 export type ProductionMachineHardwareProfile = z.infer<

@@ -13,6 +13,7 @@ import { ApiBearerAuth, ApiTags } from "@nestjs/swagger";
 import {
   createMachineSchema,
   createMachineSlotSchema,
+  generateMachineClaimCodeRequestSchema,
   machineClaimRequestSchema,
   machineEnvironmentControlRequestSchema,
   pageQuerySchema,
@@ -44,6 +45,9 @@ type MachineEnvironmentControlInput = z.infer<
   typeof machineEnvironmentControlRequestSchema
 >;
 type MachineClaimRequestInput = z.infer<typeof machineClaimRequestSchema>;
+type GenerateMachineClaimCodeRequestInput = z.infer<
+  typeof generateMachineClaimCodeRequestSchema
+>;
 type PageQueryInput = z.infer<typeof pageQuerySchema>;
 
 @ApiTags("machines")
@@ -154,8 +158,14 @@ export class MachinesController {
   async generateClaimCode(
     @CurrentAdmin() admin: AuthenticatedAdmin,
     @Param("id", ParseUUIDPipe) id: string,
+    @Body(new ZodValidationPipe(generateMachineClaimCodeRequestSchema))
+    body: GenerateMachineClaimCodeRequestInput = { purpose: "first_claim" },
   ) {
-    return await this.machinesService.generateMachineClaimCode(id, admin.id);
+    return await this.machinesService.generateMachineClaimCode(
+      id,
+      admin.id,
+      body,
+    );
   }
 
   @RequirePermissions("machines.manage-credentials")

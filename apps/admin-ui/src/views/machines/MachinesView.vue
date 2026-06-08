@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type {
+  MachineClaimCodePurpose,
   MachineClaimCodeState,
   MachineCommandStatus,
   MachineEnvironmentControlRequest,
@@ -326,6 +327,7 @@ const claimCodeDrawerTitle = computed(() =>
 );
 
 const claimCodeColumns = [
+  { title: "用途", dataIndex: "purpose", key: "purpose" },
   { title: "状态", dataIndex: "state", key: "state" },
   { title: "失败次数", key: "failedAttempts" },
   { title: "过期时间", dataIndex: "expiresAt", key: "expiresAt" },
@@ -349,6 +351,12 @@ function claimCodeStateLabel(state: MachineClaimCodeState): string {
   return "已锁定";
 }
 
+function claimCodePurposeLabel(
+  purpose: MachineClaimCodePurpose | undefined,
+): string {
+  return purpose === "reclaim" ? "重新领取" : "首次领取";
+}
+
 async function loadClaimCodes(machineId: string): Promise<void> {
   claimCodesLoading.value = true;
   try {
@@ -365,13 +373,16 @@ async function openClaimCodes(m: Machine): Promise<void> {
   await loadClaimCodes(m.id);
 }
 
-async function handleGenerateClaimCode(): Promise<void> {
+async function handleGenerateClaimCode(
+  purpose: MachineClaimCodePurpose = "first_claim",
+): Promise<void> {
   if (!claimCodeMachine.value) return;
   generatingClaimCode.value = true;
   try {
-    generatedClaimCode.value = await generateMachineClaimCode(
-      claimCodeMachine.value.id,
-    );
+    generatedClaimCode.value =
+      purpose === "reclaim"
+        ? await generateMachineClaimCode(claimCodeMachine.value.id, { purpose })
+        : await generateMachineClaimCode(claimCodeMachine.value.id);
     await loadClaimCodes(claimCodeMachine.value.id);
   } finally {
     generatingClaimCode.value = false;
@@ -772,9 +783,16 @@ async function handleRequestLogExport(m: Machine): Promise<void> {
           <a-button
             type="primary"
             :loading="generatingClaimCode"
-            @click="handleGenerateClaimCode"
+            @click="handleGenerateClaimCode('first_claim')"
           >
             生成领取码
+          </a-button>
+          <a-button
+            danger
+            :loading="generatingClaimCode"
+            @click="handleGenerateClaimCode('reclaim')"
+          >
+            生成重新领取码
           </a-button>
         </div>
         <a-alert
@@ -791,6 +809,9 @@ async function handleRequestLogExport(m: Machine): Promise<void> {
         >
           <a-descriptions-item label="机器编码">{{
             generatedClaimCode.machineCode
+          }}</a-descriptions-item>
+          <a-descriptions-item label="用途">{{
+            claimCodePurposeLabel(generatedClaimCode.purpose)
           }}</a-descriptions-item>
           <a-descriptions-item label="领取码">
             <a-typography-text code copyable>{{
@@ -809,7 +830,14 @@ async function handleRequestLogExport(m: Machine): Promise<void> {
           :pagination="false"
         >
           <template #bodyCell="{ column, record }">
-            <template v-if="column.key === 'state'">
+            <template v-if="column.key === 'purpose'">
+              {{
+                claimCodePurposeLabel(
+                  record.purpose as MachineClaimCodePurpose | undefined,
+                )
+              }}
+            </template>
+            <template v-else-if="column.key === 'state'">
               <a-tag
                 :color="
                   claimCodeStateColor[record.state as MachineClaimCodeState] ??

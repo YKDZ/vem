@@ -14,6 +14,7 @@ import {
   machineClaimRequestSchema,
   generateMachineClaimCodeResponseSchema,
   machineClaimCodeSnapshotSchema,
+  machineClaimCodePurposes,
   machineClaimCodeStates,
   machineProvisioningProfileSchema,
   machinePlanogramVersionSnapshotSchema,
@@ -186,11 +187,13 @@ describe("shared API contract", () => {
       "revoked",
       "locked",
     ]);
+    expect(machineClaimCodePurposes).toEqual(["first_claim", "reclaim"]);
 
     const snapshot = {
       id: "550e8400-e29b-41d4-a716-446655440111",
       machineId: "550e8400-e29b-41d4-a716-446655440000",
       machineCode: "M001",
+      purpose: "first_claim",
       state: "pending",
       expiresAt: "2026-06-08T16:40:00.000Z",
       failedAttemptCount: 0,

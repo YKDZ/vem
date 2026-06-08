@@ -45,6 +45,7 @@ import {
   type EnvironmentControlResultPayload,
   type MachineEnvironmentControlRequest,
   type MachineClaimRequest,
+  type GenerateMachineClaimCodeRequest,
   type MachinePaymentOption,
   type MachineProvisioningProfile,
   type MachinePlanogramSlot,
@@ -86,6 +87,7 @@ type MachineClaimCandidate = {
   id: string;
   machineId: string;
   verifierHash: string;
+  purpose: MachineClaimCodeRecord["purpose"];
   state: MachineClaimCodeRecord["state"];
   failedAttemptCount: number;
   maxFailedAttempts: number;
@@ -135,6 +137,7 @@ function machineClaimCodeSnapshot(
     id: claimCode.id,
     machineId: machine.id,
     machineCode: machine.code,
+    purpose: claimCode.purpose,
     state: resolveMachineClaimCodeState(claimCode, now),
     expiresAt: toIso(claimCode.expiresAt),
     failedAttemptCount: claimCode.failedAttemptCount,
@@ -1009,15 +1012,29 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
   async generateMachineClaimCode(
     machineId: string,
     adminUserId: string,
+    input: GenerateMachineClaimCodeRequest = { purpose: "first_claim" },
   ): Promise<GenerateMachineClaimCodeResponse> {
     const [machine] = await this.db
-      .select({ id: machines.id, code: machines.code })
+      .select({
+        id: machines.id,
+        code: machines.code,
+        secretHash: machines.secretHash,
+        secretVersion: machines.secretVersion,
+      })
       .from(machines)
       .where(and(eq(machines.id, machineId), isNull(machines.deletedAt)))
       .limit(1);
 
     if (!machine) {
       throw new NotFoundException("Machine not found");
+    }
+    if (
+      input.purpose === "first_claim" &&
+      (machine.secretHash || machine.secretVersion > 1)
+    ) {
+      throw new ConflictException(
+        "Machine is already claimed; generate a reclaim code explicitly",
+      );
     }
 
     const now = new Date();
@@ -1071,6 +1088,7 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
             this.config.machineClaimLookupHmacKey,
           ),
           verifierHash: hashMachineClaimCodeVerifier(claimCode),
+          purpose: input.purpose,
           state: "pending",
           failedAttemptCount: 0,
           maxFailedAttempts: MACHINE_CLAIM_CODE_MAX_FAILED_ATTEMPTS,
@@ -1088,12 +1106,16 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
     const snapshot = machineClaimCodeSnapshot(machine, created, now);
     await this.auditService.record({
       adminUserId,
-      action: "machines.claimCode.generate",
+      action:
+        input.purpose === "reclaim"
+          ? "machines.claimCode.reclaim.generate"
+          : "machines.claimCode.generate",
       resourceType: "machine",
       resourceId: machine.id,
       afterJson: {
         claimCodeId: created.id,
         machineCode: machine.code,
+        purpose: snapshot.purpose,
         state: snapshot.state,
         expiresAt: snapshot.expiresAt,
       },
@@ -1118,6 +1140,7 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
         id: machineClaimCodes.id,
         machineId: machineClaimCodes.machineId,
         verifierHash: machineClaimCodes.verifierHash,
+        purpose: machineClaimCodes.purpose,
         state: machineClaimCodes.state,
         failedAttemptCount: machineClaimCodes.failedAttemptCount,
         maxFailedAttempts: machineClaimCodes.maxFailedAttempts,
@@ -1212,12 +1235,18 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
 
     await this.auditService.record({
       adminUserId: null,
-      action: "machines.claimCode.consume",
+      action:
+        claimCode.purpose === "reclaim"
+          ? "machines.claimCode.reclaim.consume"
+          : "machines.claimCode.consume",
       resourceType: "machine",
       resourceId: claimCode.machineId,
       afterJson: {
         claimCodeId: consumed.id,
         machineCode: claimCode.machineCode,
+        ...(claimCode.purpose === "reclaim"
+          ? { purpose: claimCode.purpose }
+          : {}),
         state: "consumed",
         secretVersion: rotated.secretVersion,
         claimedAt: toIso(now),
@@ -1452,17 +1481,22 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
     const snapshot = machineClaimCodeSnapshot(machine, revoked, now);
     await this.auditService.record({
       adminUserId,
-      action: "machines.claimCode.revoke",
+      action:
+        current.purpose === "reclaim"
+          ? "machines.claimCode.reclaim.revoke"
+          : "machines.claimCode.revoke",
       resourceType: "machine",
       resourceId: machine.id,
       beforeJson: {
         claimCodeId: current.id,
         machineCode: machine.code,
+        ...(current.purpose === "reclaim" ? { purpose: current.purpose } : {}),
         state: machineClaimCodeSnapshot(machine, current, now).state,
       },
       afterJson: {
         claimCodeId: revoked.id,
         machineCode: machine.code,
+        ...(revoked.purpose === "reclaim" ? { purpose: revoked.purpose } : {}),
         state: snapshot.state,
       },
     });

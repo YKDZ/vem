@@ -1079,6 +1079,95 @@ describe("MachinesService claim code lifecycle", () => {
     expect(JSON.stringify(result)).not.toContain("mock:mock");
   });
 
+  it("consumes a reclaim code with credential rotation and distinct audit", async () => {
+    const pending = {
+      ...claimCandidate({ id: "550e8400-e29b-41d4-a716-446655440222" }),
+      purpose: "reclaim",
+    };
+    const rotatedSecretVersion = 8;
+    const consumed = {
+      ...pending,
+      state: "consumed",
+      consumedAt: claimCodeNow,
+      updatedAt: claimCodeNow,
+    };
+    createBundle.mockReturnValueOnce({
+      machineSecret: "vms_reclaim-machine-secret-change-before-production",
+      mqttSigningSecret: "vms_reclaim-mqtt-secret-change-before-production",
+      secretHash: "scrypt:reclaim-machine-secret-hash",
+      mqttSigningSecretEncryptedJson: { v: 1, alg: "aes-256-gcm" },
+    });
+    listMachinePaymentOptionsForMachine.mockResolvedValueOnce({
+      options: [],
+      defaultOptionKey: null,
+      defaultProviderCode: null,
+      serverTime: "2026-06-08T16:30:00.000Z",
+    });
+
+    const consumeSet = vi.fn().mockReturnValue({
+      where: () => ({ returning: async () => [consumed] }),
+    });
+    const rotateSet = vi.fn().mockReturnValue({
+      where: () => ({
+        returning: async () => [
+          { id: pending.machineId, secretVersion: rotatedSecretVersion },
+        ],
+      }),
+    });
+    const tx = {
+      update: vi
+        .fn()
+        .mockReturnValueOnce({ set: consumeSet })
+        .mockReturnValueOnce({ set: rotateSet }),
+    };
+    mockDb.select.mockReturnValueOnce({
+      from: () => ({
+        innerJoin: () => ({
+          where: () => ({
+            limit: async () => [pending],
+          }),
+        }),
+      }),
+    });
+    mockDb.transaction.mockImplementationOnce(
+      async (cb: (txArg: typeof tx) => Promise<unknown>) => await cb(tx),
+    );
+
+    const result = await service.claimMachine({ claimCode: "ABCD-2345" });
+
+    expect(result.credentials).toEqual(
+      expect.objectContaining({
+        machineSecret: "vms_reclaim-machine-secret-change-before-production",
+        machineSecretVersion: rotatedSecretVersion,
+      }),
+    );
+    expect(rotateSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        secretHash: "scrypt:reclaim-machine-secret-hash",
+        secretVersion: expect.anything(),
+        credentialRevokedAt: null,
+      }),
+    );
+    expect(auditRecord).toHaveBeenCalledWith({
+      adminUserId: null,
+      action: "machines.claimCode.reclaim.consume",
+      resourceType: "machine",
+      resourceId: pending.machineId,
+      afterJson: {
+        claimCodeId: pending.id,
+        machineCode: "M001",
+        purpose: "reclaim",
+        state: "consumed",
+        secretVersion: rotatedSecretVersion,
+        claimedAt: "2026-06-08T16:30:00.000Z",
+      },
+    });
+    const serializedProfile = JSON.stringify(result);
+    expect(serializedProfile).not.toContain("stock");
+    expect(serializedProfile).not.toContain("inventory");
+    expect(serializedProfile).not.toContain("planogram");
+  });
+
   it("returns a safe non-enumerating error for an unknown claim code", async () => {
     mockDb.select.mockReturnValueOnce({
       from: () => ({
@@ -1446,6 +1535,110 @@ describe("MachinesService claim code lifecycle", () => {
     });
   });
 
+  it("rejects default first-claim generation for an already claimed machine", async () => {
+    const machine = {
+      id: "550e8400-e29b-41d4-a716-446655440000",
+      code: "M001",
+      secretHash: null,
+      secretVersion: 3,
+      credentialRevokedAt: null,
+    };
+
+    mockDb.select.mockReturnValueOnce({
+      from: () => ({
+        where: () => ({
+          limit: async () => [machine],
+        }),
+      }),
+    });
+
+    await expect(
+      service.generateMachineClaimCode(machine.id, "admin-1"),
+    ).rejects.toThrow(ConflictException);
+
+    expect(mockDb.insert).not.toHaveBeenCalled();
+    expect(auditRecord).not.toHaveBeenCalled();
+  });
+
+  it("generates a reclaim code for an already claimed machine with distinct audit intent", async () => {
+    const machine = {
+      id: "550e8400-e29b-41d4-a716-446655440000",
+      code: "M001",
+      secretHash: "scrypt:existing-machine-secret-hash",
+    };
+    const inserted = {
+      id: "550e8400-e29b-41d4-a716-446655440111",
+      machineId: machine.id,
+      verifierHash: "scrypt:test-salt:test-digest",
+      purpose: "reclaim",
+      state: "pending",
+      failedAttemptCount: 0,
+      maxFailedAttempts: 5,
+      expiresAt: new Date("2026-06-08T16:40:00.000Z"),
+      consumedAt: null,
+      revokedAt: null,
+      lockedAt: null,
+      createdByAdminUserId: "admin-1",
+      revokedByAdminUserId: null,
+      createdAt: claimCodeNow,
+      updatedAt: claimCodeNow,
+    };
+    const insertValues = vi.fn().mockReturnValue({
+      returning: async () => [inserted],
+    });
+
+    mockDb.select
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            limit: async () => [machine],
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: async () => [],
+        }),
+      });
+    mockDb.insert.mockReturnValueOnce({ values: insertValues });
+
+    const result = await service.generateMachineClaimCode(
+      machine.id,
+      "admin-1",
+      { purpose: "reclaim" },
+    );
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        id: inserted.id,
+        machineId: machine.id,
+        machineCode: "M001",
+        purpose: "reclaim",
+        state: "pending",
+        claimCode: expect.stringMatching(/^[A-Z0-9]{4}-[A-Z0-9]{4}$/),
+      }),
+    );
+    expect(insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({ machineId: machine.id, purpose: "reclaim" }),
+    );
+    expect(auditRecord).toHaveBeenCalledWith({
+      adminUserId: "admin-1",
+      action: "machines.claimCode.reclaim.generate",
+      resourceType: "machine",
+      resourceId: machine.id,
+      afterJson: {
+        claimCodeId: inserted.id,
+        machineCode: "M001",
+        purpose: "reclaim",
+        state: "pending",
+        expiresAt: "2026-06-08T16:40:00.000Z",
+      },
+    });
+    expect(JSON.stringify(auditRecord.mock.calls)).not.toContain(
+      result.claimCode,
+    );
+  });
+
   it("does not generate a second active claim code for the same machine", async () => {
     const machine = {
       id: "550e8400-e29b-41d4-a716-446655440000",
@@ -1789,6 +1982,94 @@ describe("MachinesService claim code lifecycle", () => {
     });
     expect(JSON.stringify(auditRecord.mock.calls)).not.toContain(
       "scrypt:test-salt",
+    );
+  });
+
+  it("revokes a pending reclaim code and records reclaim intent without raw code exposure", async () => {
+    const machine = {
+      id: "550e8400-e29b-41d4-a716-446655440000",
+      code: "M001",
+    };
+    const pending = {
+      id: "550e8400-e29b-41d4-a716-446655440333",
+      machineId: machine.id,
+      verifierHash: "scrypt:reclaim-salt:test-digest",
+      purpose: "reclaim",
+      state: "pending",
+      failedAttemptCount: 0,
+      maxFailedAttempts: 5,
+      expiresAt: new Date("2026-06-08T16:40:00.000Z"),
+      consumedAt: null,
+      revokedAt: null,
+      lockedAt: null,
+      createdByAdminUserId: "admin-1",
+      revokedByAdminUserId: null,
+      createdAt: new Date("2026-06-08T16:00:00.000Z"),
+      updatedAt: new Date("2026-06-08T16:00:00.000Z"),
+    };
+    const revoked = {
+      ...pending,
+      state: "revoked",
+      revokedAt: new Date("2026-06-08T16:20:00.000Z"),
+      revokedByAdminUserId: "admin-2",
+    };
+    const updateSet = vi.fn().mockReturnValue({
+      where: () => ({ returning: async () => [revoked] }),
+    });
+
+    mockDb.select
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            limit: async () => [machine],
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            limit: async () => [pending],
+          }),
+        }),
+      });
+    mockDb.update.mockReturnValueOnce({ set: updateSet });
+
+    const result = await service.revokeMachineClaimCode(
+      machine.id,
+      pending.id,
+      "admin-2",
+      new Date("2026-06-08T16:20:00.000Z"),
+    );
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        id: pending.id,
+        purpose: "reclaim",
+        state: "revoked",
+        revokedAt: "2026-06-08T16:20:00.000Z",
+      }),
+    );
+    expect(auditRecord).toHaveBeenCalledWith({
+      adminUserId: "admin-2",
+      action: "machines.claimCode.reclaim.revoke",
+      resourceType: "machine",
+      resourceId: machine.id,
+      beforeJson: {
+        claimCodeId: pending.id,
+        machineCode: "M001",
+        purpose: "reclaim",
+        state: "pending",
+      },
+      afterJson: {
+        claimCodeId: pending.id,
+        machineCode: "M001",
+        purpose: "reclaim",
+        state: "revoked",
+      },
+    });
+    expect(JSON.stringify(result)).not.toContain("scrypt:reclaim-salt");
+    expect(JSON.stringify(auditRecord.mock.calls)).not.toContain(
+      "scrypt:reclaim-salt",
     );
   });
 });

@@ -869,6 +869,65 @@ describe("MachinesView claim code lifecycle", () => {
     );
   });
 
+  it("shows reclaim intent safely and sends an explicit reclaim generation request", async () => {
+    listMachineClaimCodes.mockResolvedValueOnce({
+      items: [
+        {
+          id: "550e8400-e29b-41d4-a716-446655440114",
+          machineId: "11111111-1111-4111-8111-111111111111",
+          machineCode: "M001",
+          purpose: "reclaim",
+          state: "pending",
+          expiresAt: "2026-06-08T16:40:00.000Z",
+          failedAttemptCount: 0,
+          maxFailedAttempts: 5,
+          createdAt: "2026-06-08T16:00:00.000Z",
+          revokedAt: null,
+          consumedAt: null,
+          lockedAt: null,
+        },
+      ],
+    });
+    generateMachineClaimCode.mockResolvedValueOnce({
+      id: "550e8400-e29b-41d4-a716-446655440115",
+      machineId: "11111111-1111-4111-8111-111111111111",
+      machineCode: "M001",
+      purpose: "reclaim",
+      claimCode: "RCLM-2345",
+      state: "pending",
+      expiresAt: "2026-06-08T16:50:00.000Z",
+      failedAttemptCount: 0,
+      maxFailedAttempts: 5,
+      createdAt: "2026-06-08T16:40:00.000Z",
+    });
+
+    const { root } = await mountMachinesView([
+      "machines.read",
+      "machines.manage-credentials",
+    ]);
+    await openClaimCodesDrawer(root);
+    const dialog = requireElement(
+      root.querySelector<HTMLElement>('[role="dialog"]'),
+      "claim code dialog",
+    );
+
+    expect(dialog.textContent).toContain("重新领取");
+    expect(dialog.textContent).not.toContain("RCLM-2345");
+
+    Array.from(dialog.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("生成重新领取码"))
+      ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await flushPromises();
+    await nextTick();
+
+    expect(generateMachineClaimCode).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      { purpose: "reclaim" },
+    );
+    expect(dialog.textContent).toContain("RCLM-2345");
+    expect(dialog.textContent).toContain("重新领取");
+  });
+
   it("hides claim code management without credential permission", async () => {
     const { root } = await mountMachinesView(["machines.read"]);
 

@@ -37,3 +37,9 @@ export const machineClaimCodeStateSchema = z.enum([
 ]);
 export type MachineClaimCodeState = z.infer<typeof machineClaimCodeStateSchema>;
 export const machineClaimCodeStates = machineClaimCodeStateSchema.options;
+
+export const machineClaimCodePurposeSchema = z.enum(["first_claim", "reclaim"]);
+export type MachineClaimCodePurpose = z.infer<
+  typeof machineClaimCodePurposeSchema
+>;
+export const machineClaimCodePurposes = machineClaimCodePurposeSchema.options;

@@ -158,6 +158,37 @@ describe("MachinesController claim code lifecycle", () => {
     expect(generateMachineClaimCode).toHaveBeenCalledWith(
       "550e8400-e29b-41d4-a716-446655440000",
       "admin-1",
+      { purpose: "first_claim" },
+    );
+  });
+
+  it("forwards explicit reclaim intent when generating a claim code", async () => {
+    const generateMachineClaimCode = vi.fn().mockResolvedValue({
+      id: "claim-code-1",
+      claimCode: "ABCD-2345",
+      purpose: "reclaim",
+      state: "pending",
+    });
+    const controller = new MachinesController({
+      generateMachineClaimCode,
+    } as never);
+
+    await expect(
+      controller.generateClaimCode(
+        { id: "admin-1" } as never,
+        "550e8400-e29b-41d4-a716-446655440000",
+        { purpose: "reclaim" },
+      ),
+    ).resolves.toEqual({
+      id: "claim-code-1",
+      claimCode: "ABCD-2345",
+      purpose: "reclaim",
+      state: "pending",
+    });
+    expect(generateMachineClaimCode).toHaveBeenCalledWith(
+      "550e8400-e29b-41d4-a716-446655440000",
+      "admin-1",
+      { purpose: "reclaim" },
     );
   });
 

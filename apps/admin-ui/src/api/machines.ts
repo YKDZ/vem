@@ -1,5 +1,6 @@
 import type {
   MachineCommandStatus,
+  MachineClaimCodePurpose,
   MachineClaimCodeState,
   MachineEnvironmentControlRequest,
   MachineHeartbeatStatusPayload,
@@ -50,6 +51,7 @@ export type MachineClaimCodeSnapshot = {
   id: string;
   machineId: string;
   machineCode: string;
+  purpose?: MachineClaimCodePurpose;
   state: MachineClaimCodeState;
   expiresAt: string;
   failedAttemptCount: number;
@@ -147,10 +149,11 @@ export async function listMachineClaimCodes(
 
 export async function generateMachineClaimCode(
   machineId: string,
+  body?: { purpose: MachineClaimCodePurpose },
 ): Promise<GenerateMachineClaimCodeResult> {
   return await post<GenerateMachineClaimCodeResult>(
     `/machines/${machineId}/claim-codes`,
-    {},
+    body ?? {},
   );
 }
 
