@@ -36,6 +36,29 @@ addCheck(
   `${smokePath} should verify daemon config exposes the default API Base URL`,
 );
 addCheck(
+  "smoke-script-exercises-provisioning-claim-endpoint",
+  smoke.includes("/v1/provisioning/claim") &&
+    smoke.includes("claimCode") &&
+    smoke.includes("WXYZ-2345"),
+  `${smokePath} should POST a deliberately invalid test claim code through daemon IPC`,
+);
+addCheck(
+  "smoke-script-distinguishes-invalid-claim-from-backend-unavailable",
+  smoke.includes("claim-endpoint-reachable-invalid-claim") &&
+    smoke.includes("claim-endpoint-backend-unavailable-fails-smoke") &&
+    smoke.includes("machine_claim_invalid_or_expired") &&
+    smoke.includes("machine_claim_backend_unavailable"),
+  `${smokePath} should pass only after a service API invalid-claim response, not backend unavailable`,
+);
+addCheck(
+  "smoke-script-verifies-first-boot-claim-code-page",
+  smoke.includes("first-boot-machine-claim-code-page") &&
+    smoke.includes("first-boot-backend-url-input-absent") &&
+    smoke.includes("Machine Claim Code") &&
+    smoke.includes("backend URL"),
+  `${smokePath} should verify or record a first-boot Machine Claim Code page check without backend URL input`,
+);
+addCheck(
   "smoke-script-keeps-debug-disabled-by-default",
   !smoke.includes("VEM_ENABLE_ADVANCED_MAINTENANCE_CONFIG"),
   `${smokePath} should not enable advanced debug unless a caller adds it explicitly`,
@@ -64,6 +87,13 @@ addCheck(
   runbook.includes("/machines/claim") &&
     runbook.includes("Machine Claim Code"),
   `${runbookPath} should explain how to verify the claim endpoint and first-boot page`,
+);
+addCheck(
+  "runbook-documents-first-boot-smoke-confirmation",
+  runbook.includes("-FirstBootMachineClaimCodePageObserved") &&
+    runbook.includes("-FirstBootBackendUrlInputAbsent") &&
+    runbook.includes("backend URL"),
+  `${runbookPath} should show the first-boot smoke confirmation switches`,
 );
 addCheck(
   "runbook-documents-override-behavior",

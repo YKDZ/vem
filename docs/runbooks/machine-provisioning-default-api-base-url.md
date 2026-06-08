@@ -30,6 +30,13 @@ value before starting the daemon. On first boot, the daemon seeds
 `machine-config.json` with that API Base URL and the machine UI shows the
 standard Machine Claim Code page.
 
+When the script launches the machine UI, answer the first-boot prompts only
+after confirming the visible page is Machine Claim Code and the UI does not show
+or require a backend URL input. For a non-interactive run where an operator has
+already made the same visual checks, pass
+`-FirstBootMachineClaimCodePageObserved` and
+`-FirstBootBackendUrlInputAbsent`.
+
 Production uses the same command with `https://api.example.com/api`.
 
 If a deployment already writes `machine-config.json`, set `apiBaseUrl` there.
@@ -46,10 +53,11 @@ service override in the data dir is not replaced by the service environment.
 4. Open the machine UI on an unclaimed machine. The first boot screen should
    show Machine Claim Code only; it should not ask the operator for a backend
    URL.
-5. With a test claim code, submit through the machine UI or call daemon IPC
-   `POST /v1/provisioning/claim`. The daemon forwards to the service API
-   `/machines/claim` endpoint under the configured API Base URL.
+5. The smoke script calls daemon IPC `POST /v1/provisioning/claim` with the
+   deliberately invalid test claim code `WXYZ-2345`. The daemon must forward to
+   the service API `/machines/claim` endpoint under the configured API Base URL.
 
-For a non-consuming connectivity check, use a deliberately invalid claim code in
-staging and expect a safe invalid-code response from the service API path. A
-network or DNS failure should surface as `machine_claim_backend_unavailable`.
+For this non-consuming connectivity check, expect a safe invalid-code response
+such as `machine_claim_invalid_or_expired` from the service API path. A network
+or DNS failure should surface as `machine_claim_backend_unavailable` and fails
+the smoke.

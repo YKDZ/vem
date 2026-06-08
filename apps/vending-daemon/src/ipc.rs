@@ -420,7 +420,9 @@ fn machine_claim_error_response(error: &str) -> (StatusCode, Json<ErrorMessage>)
         );
     }
 
-    let code = backend_error_json(error)
+    let backend_payload = backend_error_json(error);
+    let code = backend_payload
+        .as_ref()
         .and_then(|value| {
             value
                 .get("code")
@@ -428,7 +430,17 @@ fn machine_claim_error_response(error: &str) -> (StatusCode, Json<ErrorMessage>)
                 .and_then(safe_machine_claim_code)
         })
         .unwrap_or_else(|| {
-            if backend_http_status(error).is_some_and(|status| status >= 500) {
+            let backend_message = backend_payload
+                .as_ref()
+                .and_then(|value| value.get("message"))
+                .and_then(|value| value.as_str())
+                .unwrap_or_default();
+            if backend_message.contains("Invalid or expired machine claim code") {
+                return "machine_claim_invalid_or_expired";
+            }
+            if backend_http_status(error).is_some_and(|status| {
+                status == 401 || status == 403 || status == 404 || status >= 500
+            }) {
                 "machine_claim_backend_unavailable"
             } else {
                 "machine_claim_invalid_or_expired"
@@ -2765,6 +2777,72 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("invalid or expired"));
+    }
+
+    #[tokio::test]
+    async fn failed_claim_treats_service_unauthorized_as_invalid_claim() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/machines/claim"))
+            .respond_with(ResponseTemplate::new(401).set_body_json(json!({
+                "code": 401,
+                "message": "Invalid or expired machine claim code",
+                "data": null
+            })))
+            .mount(&server)
+            .await;
+
+        let temp_dir = tempdir().expect("tmp");
+        let app =
+            build_router(test_ipc_context(temp_dir.path(), "token-1", None, &server.uri()).await);
+
+        let response = post_json(
+            &app,
+            "/v1/provisioning/claim",
+            "token-1",
+            json!({ "claimCode": "WXYZ-2345" }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["code"], "machine_claim_invalid_or_expired");
+        assert!(payload["message"]
+            .as_str()
+            .unwrap()
+            .contains("invalid or expired"));
+    }
+
+    #[tokio::test]
+    async fn failed_claim_treats_missing_claim_endpoint_as_backend_unavailable() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/machines/claim"))
+            .respond_with(ResponseTemplate::new(404).set_body_json(json!({
+                "message": "not found"
+            })))
+            .mount(&server)
+            .await;
+
+        let temp_dir = tempdir().expect("tmp");
+        let app =
+            build_router(test_ipc_context(temp_dir.path(), "token-1", None, &server.uri()).await);
+
+        let response = post_json(
+            &app,
+            "/v1/provisioning/claim",
+            "token-1",
+            json!({ "claimCode": "WXYZ-2345" }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["code"], "machine_claim_backend_unavailable");
     }
 
     #[tokio::test]

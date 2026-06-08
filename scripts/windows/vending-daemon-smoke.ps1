@@ -7,7 +7,9 @@ param(
   [string]$ServiceName = "VemVendingDaemon",
   [string]$ComPort = "COM3",
   [string]$ScannerPort = "COM4",
-  [string]$SensitivePaymentCode = ""
+  [string]$SensitivePaymentCode = "",
+  [switch]$FirstBootMachineClaimCodePageObserved,
+  [switch]$FirstBootBackendUrlInputAbsent
 )
 
 $ErrorActionPreference = "Stop"
@@ -27,6 +29,69 @@ $record = [ordered]@{
 function Add-Check([string]$Name, [bool]$Passed, [string]$Detail) {
   $record.checks += [ordered]@{ name = $Name; passed = $Passed; detail = $Detail }
   if (-not $Passed) { throw "$Name failed: $Detail" }
+}
+
+function Confirm-ManualCheck([string]$Name, $Confirmed, [string]$Prompt, [string]$Detail) {
+  if ($Confirmed.IsPresent) {
+    Add-Check $Name $true $Detail
+    return
+  }
+
+  $answer = ""
+  try {
+    $answer = Read-Host "$Prompt [y/N]"
+  } catch {
+    $answer = ""
+  }
+  Add-Check $Name ($answer -match "^(y|yes)$") $Detail
+}
+
+function Get-HttpErrorInfo($ErrorRecord) {
+  $statusCode = $null
+  $bodyText = ""
+  $response = $ErrorRecord.Exception.Response
+
+  if ($null -ne $response) {
+    if ($null -ne $response.StatusCode) {
+      $statusCode = [int]$response.StatusCode
+    }
+    if ($null -ne $response.Content) {
+      try {
+        $bodyText = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+      } catch {
+        $bodyText = ""
+      }
+    } elseif ($response.PSObject.Methods.Name -contains "GetResponseStream") {
+      try {
+        $stream = $response.GetResponseStream()
+        if ($null -ne $stream) {
+          $reader = New-Object System.IO.StreamReader($stream)
+          $bodyText = $reader.ReadToEnd()
+        }
+      } catch {
+        $bodyText = ""
+      }
+    }
+  }
+
+  if ($bodyText.Length -eq 0 -and $null -ne $ErrorRecord.ErrorDetails -and $null -ne $ErrorRecord.ErrorDetails.Message) {
+    $bodyText = $ErrorRecord.ErrorDetails.Message
+  }
+
+  $body = $null
+  if ($bodyText.Length -gt 0) {
+    try {
+      $body = $bodyText | ConvertFrom-Json -ErrorAction Stop
+    } catch {
+      $body = $null
+    }
+  }
+
+  [pscustomobject]@{
+    StatusCode = $statusCode
+    BodyText = $bodyText
+    Body = $body
+  }
 }
 
 New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
@@ -88,6 +153,29 @@ if ($DefaultApiBaseUrl.Length -gt 0) {
     }
   }
   Add-Check "default-api-base-url-configured" ($config.public.apiBaseUrl -eq $expectedApiBaseUrl) ($config.public | ConvertTo-Json -Compress)
+
+  $claimPayload = @{ claimCode = "WXYZ-2345" } | ConvertTo-Json -Compress
+  try {
+    $claimResponse = Invoke-RestMethod "$baseUrl/v1/provisioning/claim" -Method Post -Headers $headers -ContentType "application/json" -Body $claimPayload
+    Add-Check "claim-endpoint-reachable-invalid-claim" $false "unexpectedly provisioned with invalid smoke claim: $($claimResponse | ConvertTo-Json -Compress)"
+  } catch {
+    $claimError = Get-HttpErrorInfo $_
+    $claimCode = ""
+    if ($null -ne $claimError.Body -and $null -ne $claimError.Body.code) {
+      $claimCode = [string]$claimError.Body.code
+    }
+    $businessClaimErrors = @(
+      "machine_claim_invalid",
+      "machine_claim_invalid_or_expired",
+      "machine_claim_expired",
+      "machine_claim_used",
+      "machine_claim_revoked",
+      "machine_claim_locked"
+    )
+    $claimDetail = "status=$($claimError.StatusCode) code=$claimCode body=$($claimError.BodyText)"
+    Add-Check "claim-endpoint-backend-unavailable-fails-smoke" ($claimCode -ne "machine_claim_backend_unavailable") $claimDetail
+    Add-Check "claim-endpoint-reachable-invalid-claim" (($claimError.StatusCode -ge 400 -and $claimError.StatusCode -lt 500) -and ($businessClaimErrors -contains $claimCode)) $claimDetail
+  }
 }
 $scanner = Invoke-RestMethod "$baseUrl/v1/scanner/status" -Headers $headers
 Add-Check "scanner-adapter-serial-text" ($scanner.adapter -eq "serial_text") ($scanner | ConvertTo-Json -Compress)
@@ -108,8 +196,16 @@ try {
   [Environment]::SetEnvironmentVariable("VEM_DAEMON_DATA_DIR", $previousDataDir, "Process")
 }
 Start-Sleep -Seconds 5
-Add-Check "kiosk-started" (-not $ui.HasExited) "pid=$($ui.Id)"
-$ui.Kill()
+try {
+  Add-Check "kiosk-started" (-not $ui.HasExited) "pid=$($ui.Id)"
+  Write-Output "first boot UI verification: confirm the visible page is Machine Claim Code and no backend URL input is shown or required."
+  Confirm-ManualCheck "first-boot-machine-claim-code-page" $FirstBootMachineClaimCodePageObserved "Is the visible first boot page the Machine Claim Code page?" "operator confirmed visible Machine Claim Code page"
+  Confirm-ManualCheck "first-boot-backend-url-input-absent" $FirstBootBackendUrlInputAbsent "Is the backend URL input absent from first boot?" "operator confirmed backend URL input is absent"
+} finally {
+  if ($null -ne $ui -and -not $ui.HasExited) {
+    $ui.Kill()
+  }
+}
 
 Restart-Service $ServiceName
 Start-Sleep -Seconds 5
