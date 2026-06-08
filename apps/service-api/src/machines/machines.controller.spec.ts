@@ -1,9 +1,11 @@
 import type { INestApplication } from "@nestjs/common";
 
+import { ConflictException } from "@nestjs/common";
 import { GUARDS_METADATA } from "@nestjs/common/constants";
 import { APP_GUARD } from "@nestjs/core";
 import { JwtService } from "@nestjs/jwt";
 import { Test } from "@nestjs/testing";
+import type { NextFunction, Request, Response } from "express";
 import request from "supertest";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -185,6 +187,41 @@ describe("MachinesController claim code lifecycle", () => {
       purpose: "reclaim",
       state: "pending",
     });
+    expect(generateMachineClaimCode).toHaveBeenCalledWith(
+      "550e8400-e29b-41d4-a716-446655440000",
+      "admin-1",
+      { purpose: "reclaim" },
+    );
+  });
+
+  it("returns conflict when reclaim generation is rejected for an unclaimed machine", async () => {
+    const generateMachineClaimCode = vi
+      .fn()
+      .mockRejectedValue(
+        new ConflictException("Machine has not been claimed yet"),
+      );
+    const module = await Test.createTestingModule({
+      controllers: [MachinesController],
+      providers: [
+        { provide: MachinesService, useValue: { generateMachineClaimCode } },
+        {
+          provide: MachineAuthService,
+          useValue: { verifyToken: vi.fn() },
+        },
+      ],
+    }).compile();
+    app = module.createNestApplication();
+    app.use((req: Request, _res: Response, next: NextFunction) => {
+      (req as Request & { user: { id: string } }).user = { id: "admin-1" };
+      next();
+    });
+    await app.init();
+
+    await request(app.getHttpServer())
+      .post("/machines/550e8400-e29b-41d4-a716-446655440000/claim-codes")
+      .send({ purpose: "reclaim" })
+      .expect(409);
+
     expect(generateMachineClaimCode).toHaveBeenCalledWith(
       "550e8400-e29b-41d4-a716-446655440000",
       "admin-1",

@@ -1036,6 +1036,15 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
         "Machine is already claimed; generate a reclaim code explicitly",
       );
     }
+    if (
+      input.purpose === "reclaim" &&
+      !machine.secretHash &&
+      machine.secretVersion <= 1
+    ) {
+      throw new ConflictException(
+        "Machine has not been claimed; generate a first-claim code",
+      );
+    }
 
     const now = new Date();
     const openClaimCodes = await this.db

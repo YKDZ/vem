@@ -4,13 +4,24 @@ import {
   NotFoundException,
   UnauthorizedException,
 } from "@nestjs/common";
+import { JwtService } from "@nestjs/jwt";
 import { Test } from "@nestjs/testing";
+import { mqttSigningInput } from "@vem/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 
 import { AuditService } from "../audit/audit.service";
 import { AppConfigService } from "../config/app-config.service";
 import { DRIZZLE_CLIENT } from "../database/database.constants";
+import { MachineAuthService } from "../machine-auth/machine-auth.service";
 import { MachineCredentialService } from "../machine-auth/machine-credential.service";
+import {
+  encryptCredentialSecret,
+  generateMachineSecret,
+  hashMachineSecret,
+  hmacSha256Base64Url,
+  type EncryptedCredentialJson,
+} from "../machine-auth/machine-credentials.util";
 import { MqttSignatureService } from "../mqtt/mqtt-signature.service";
 import { MqttService } from "../mqtt/mqtt.service";
 import { PaymentProviderConfigService } from "../payments/payment-provider-config.service";
@@ -1168,6 +1179,159 @@ describe("MachinesService claim code lifecycle", () => {
     expect(serializedProfile).not.toContain("planogram");
   });
 
+  it("makes pre-reclaim credentials unusable through machine auth and MQTT verification", async () => {
+    const encryptionKey = "local-cred-enc-key-change-before-production!";
+    const oldMachineSecret = generateMachineSecret();
+    const newMachineSecret = generateMachineSecret();
+    const oldMqttSigningSecret = generateMachineSecret();
+    const newMqttSigningSecret = generateMachineSecret();
+    const machineState = {
+      id: "550e8400-e29b-41d4-a716-446655440000",
+      code: "M001",
+      status: "online" as const,
+      secretHash: hashMachineSecret(oldMachineSecret) as string | null,
+      secretVersion: 1,
+      credentialRevokedAt: null as Date | null,
+      mqttSigningSecretEncryptedJson: encryptCredentialSecret(
+        oldMqttSigningSecret,
+        encryptionKey,
+      ) as EncryptedCredentialJson | null,
+    };
+    const config = {
+      machineJwtSecret: "local-machine-jwt-secret-change-before-production",
+      machineCredentialEncryptionKey: encryptionKey,
+      machineAccessTtlSeconds: 900,
+      mqttSignatureToleranceSeconds: 300,
+    } as AppConfigService;
+    const authAndMqttDb = {
+      select: () => ({
+        from: () => ({
+          where: () => {
+            const rows = [machineState];
+            return Object.assign(Promise.resolve(rows), {
+              limit: async () => rows,
+            });
+          },
+        }),
+      }),
+    };
+    const credentialService = new MachineCredentialService(config);
+    const machineAuthService = new MachineAuthService(
+      authAndMqttDb as never,
+      new JwtService({}),
+      config,
+      credentialService,
+    );
+    const mqttSignatureService = new MqttSignatureService(
+      authAndMqttDb as never,
+      config,
+      credentialService,
+    );
+    const { accessToken: oldAccessToken } =
+      await machineAuthService.issueToken({
+        machineCode: "M001",
+        machineSecret: oldMachineSecret,
+      });
+    const pending = {
+      ...claimCandidate({ id: "550e8400-e29b-41d4-a716-446655440333" }),
+      purpose: "reclaim",
+      machineStatus: "online" as const,
+      machineSecretVersion: machineState.secretVersion,
+    };
+    const newBundle = {
+      machineSecret: newMachineSecret,
+      mqttSigningSecret: newMqttSigningSecret,
+      secretHash: hashMachineSecret(newMachineSecret),
+      mqttSigningSecretEncryptedJson: encryptCredentialSecret(
+        newMqttSigningSecret,
+        encryptionKey,
+      ),
+    };
+    createBundle.mockReturnValueOnce(newBundle);
+    listMachinePaymentOptionsForMachine.mockResolvedValueOnce({
+      options: [],
+      defaultOptionKey: null,
+      defaultProviderCode: null,
+      serverTime: "2026-06-08T16:30:00.000Z",
+    });
+
+    const consumeSet = vi.fn().mockReturnValue({
+      where: () => ({ returning: async () => [{ id: pending.id }] }),
+    });
+    const rotateSet = vi.fn().mockReturnValue({
+      where: () => ({
+        returning: async () => {
+          machineState.secretHash = newBundle.secretHash;
+          machineState.secretVersion = 2;
+          machineState.credentialRevokedAt = null;
+          machineState.mqttSigningSecretEncryptedJson =
+            newBundle.mqttSigningSecretEncryptedJson;
+          return [{ id: pending.machineId, secretVersion: 2 }];
+        },
+      }),
+    });
+    const tx = {
+      update: vi
+        .fn()
+        .mockReturnValueOnce({ set: consumeSet })
+        .mockReturnValueOnce({ set: rotateSet }),
+    };
+    mockDb.select.mockReturnValueOnce({
+      from: () => ({
+        innerJoin: () => ({
+          where: () => ({
+            limit: async () => [pending],
+          }),
+        }),
+      }),
+    });
+    mockDb.transaction.mockImplementationOnce(
+      async (cb: (txArg: typeof tx) => Promise<unknown>) => await cb(tx),
+    );
+
+    const profile = await service.claimMachine({ claimCode: "ABCD-2345" });
+
+    expect(profile.credentials.machineSecret).toBe(newMachineSecret);
+    expect(profile.credentials.mqttSigningSecret).toBe(newMqttSigningSecret);
+    await expect(
+      machineAuthService.verifyToken(oldAccessToken),
+    ).rejects.toThrow("Invalid machine token");
+    await expect(
+      machineAuthService.issueToken({
+        machineCode: "M001",
+        machineSecret: oldMachineSecret,
+      }),
+    ).rejects.toThrow("Invalid machine credentials");
+    await expect(
+      machineAuthService.issueToken({
+        machineCode: "M001",
+        machineSecret: newMachineSecret,
+      }),
+    ).resolves.toEqual(expect.objectContaining({ tokenType: "Bearer" }));
+
+    const oldEnvelopeBase = {
+      messageId: "msg-old-reclaim-credential",
+      machineCode: "M001",
+      issuedAt: claimCodeNow.toISOString(),
+      nonce: "nonce-old-reclaim-credential",
+      payload: { commandNo: "CMD1" },
+    };
+    const oldEnvelope = {
+      ...oldEnvelopeBase,
+      signature: hmacSha256Base64Url(
+        oldMqttSigningSecret,
+        mqttSigningInput(oldEnvelopeBase),
+      ),
+    };
+    await expect(
+      mqttSignatureService.verifyFromTopic({
+        topicMachineCode: "M001",
+        rawPayload: oldEnvelope,
+        payloadSchema: z.object({ commandNo: z.string() }),
+      }),
+    ).rejects.toThrow("Invalid MQTT signature");
+  });
+
   it("returns a safe non-enumerating error for an unknown claim code", async () => {
     mockDb.select.mockReturnValueOnce({
       from: () => ({
@@ -1554,6 +1718,33 @@ describe("MachinesService claim code lifecycle", () => {
 
     await expect(
       service.generateMachineClaimCode(machine.id, "admin-1"),
+    ).rejects.toThrow(ConflictException);
+
+    expect(mockDb.insert).not.toHaveBeenCalled();
+    expect(auditRecord).not.toHaveBeenCalled();
+  });
+
+  it("rejects reclaim generation for a machine that has never been claimed", async () => {
+    const machine = {
+      id: "550e8400-e29b-41d4-a716-446655440000",
+      code: "M001",
+      secretHash: null,
+      secretVersion: 1,
+      credentialRevokedAt: null,
+    };
+
+    mockDb.select.mockReturnValueOnce({
+      from: () => ({
+        where: () => ({
+          limit: async () => [machine],
+        }),
+      }),
+    });
+
+    await expect(
+      service.generateMachineClaimCode(machine.id, "admin-1", {
+        purpose: "reclaim",
+      }),
     ).rejects.toThrow(ConflictException);
 
     expect(mockDb.insert).not.toHaveBeenCalled();
