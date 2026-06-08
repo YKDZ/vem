@@ -141,7 +141,9 @@ async function submitClaim(): Promise<void> {
     <section
       class="mx-auto flex h-full max-w-3xl flex-col justify-center text-white"
     >
-      <div class="rounded-4xl border border-white/10 bg-white/10 p-7 shadow-2xl">
+      <div
+        class="rounded-4xl border border-white/10 bg-white/10 p-7 shadow-2xl"
+      >
         <p class="text-sm tracking-[0.35em] text-emerald-200 uppercase">
           PROVISIONING
         </p>
@@ -194,9 +196,7 @@ async function submitClaim(): Promise<void> {
             >
               <dt class="text-slate-300">{{ item.label }}</dt>
               <dd
-                :class="
-                  item.configured ? 'text-emerald-200' : 'text-amber-200'
-                "
+                :class="item.configured ? 'text-emerald-200' : 'text-amber-200'"
                 class="font-semibold"
               >
                 {{ item.configured ? "已配置" : "未配置" }}

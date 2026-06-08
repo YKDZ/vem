@@ -1,11 +1,11 @@
 import type { INestApplication } from "@nestjs/common";
+import type { NextFunction, Request, Response } from "express";
 
 import { ConflictException } from "@nestjs/common";
 import { GUARDS_METADATA } from "@nestjs/common/constants";
 import { APP_GUARD } from "@nestjs/core";
 import { JwtService } from "@nestjs/jwt";
 import { Test } from "@nestjs/testing";
-import type { NextFunction, Request, Response } from "express";
 import request from "supertest";
 import { afterEach, describe, expect, it, vi } from "vitest";
 

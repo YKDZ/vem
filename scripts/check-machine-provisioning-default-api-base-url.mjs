@@ -84,8 +84,7 @@ addCheck(
 );
 addCheck(
   "runbook-documents-claim-endpoint-smoke",
-  runbook.includes("/machines/claim") &&
-    runbook.includes("Machine Claim Code"),
+  runbook.includes("/machines/claim") && runbook.includes("Machine Claim Code"),
   `${runbookPath} should explain how to verify the claim endpoint and first-boot page`,
 );
 addCheck(
