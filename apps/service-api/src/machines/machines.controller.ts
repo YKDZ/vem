@@ -13,6 +13,7 @@ import { ApiBearerAuth, ApiTags } from "@nestjs/swagger";
 import {
   createMachineSchema,
   createMachineSlotSchema,
+  machineClaimRequestSchema,
   machineEnvironmentControlRequestSchema,
   pageQuerySchema,
   publishMachinePlanogramVersionSchema,
@@ -42,6 +43,7 @@ type PublishMachinePlanogramVersionInput = z.infer<
 type MachineEnvironmentControlInput = z.infer<
   typeof machineEnvironmentControlRequestSchema
 >;
+type MachineClaimRequestInput = z.infer<typeof machineClaimRequestSchema>;
 type PageQueryInput = z.infer<typeof pageQuerySchema>;
 
 @ApiTags("machines")
@@ -64,6 +66,15 @@ export class MachinesController {
     @Body(new ZodValidationPipe(createMachineSchema)) body: CreateMachineInput,
   ) {
     return await this.machinesService.createMachine(body);
+  }
+
+  @Public()
+  @Post("claim")
+  async claimMachine(
+    @Body(new ZodValidationPipe(machineClaimRequestSchema))
+    body: MachineClaimRequestInput,
+  ) {
+    return await this.machinesService.claimMachine(body);
   }
 
   @RequirePermissions("machines.write")

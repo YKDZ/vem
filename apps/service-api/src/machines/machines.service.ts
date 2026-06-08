@@ -7,6 +7,7 @@ import {
   NotFoundException,
   OnApplicationShutdown,
   OnModuleInit,
+  UnauthorizedException,
 } from "@nestjs/common";
 import {
   and,
@@ -42,6 +43,9 @@ import {
   type CommandAckPayload,
   type EnvironmentControlResultPayload,
   type MachineEnvironmentControlRequest,
+  type MachineClaimRequest,
+  type MachinePaymentOption,
+  type MachineProvisioningProfile,
   type MachinePlanogramSlot,
   type GenerateMachineClaimCodeResponse,
   type PublishMachinePlanogramVersion,
@@ -56,9 +60,11 @@ import { DRIZZLE_CLIENT } from "../database/database.constants";
 import { MachineCredentialService } from "../machine-auth/machine-credential.service";
 import { MqttSignatureService } from "../mqtt/mqtt-signature.service";
 import { MqttService } from "../mqtt/mqtt.service";
+import { PaymentProviderConfigService } from "../payments/payment-provider-config.service";
 import {
   generateHumanMachineClaimCode,
   hashMachineClaimCodeVerifier,
+  verifyMachineClaimCode,
 } from "./machine-claim-code.util";
 
 type PageQueryInput = z.infer<typeof pageQuerySchema>;
@@ -74,6 +80,28 @@ type MachineIdentity = {
 };
 
 type MachineClaimCodeRecord = typeof machineClaimCodes.$inferSelect;
+type MachineClaimCandidate = {
+  id: string;
+  machineId: string;
+  verifierHash: string;
+  state: MachineClaimCodeRecord["state"];
+  failedAttemptCount: number;
+  maxFailedAttempts: number;
+  expiresAt: Date;
+  consumedAt: Date | null;
+  revokedAt: Date | null;
+  lockedAt: Date | null;
+  machineCode: string;
+  machineName: string;
+  machineLocationText: string | null;
+  machineStatus: MachineProvisioningProfile["machine"]["status"];
+  machineMqttClientId: string | null;
+  machineSecretVersion: number;
+};
+type ProductionPaymentOption = MachinePaymentOption & {
+  providerCode: "wechat_pay" | "alipay";
+  method: "qr_code" | "payment_code";
+};
 
 const MACHINE_CLAIM_CODE_MAX_FAILED_ATTEMPTS = 5;
 const MACHINE_CLAIM_CODES_MACHINE_OPEN_UNIQUE =
@@ -125,6 +153,12 @@ function isMachineClaimCodeOpenUniqueViolation(error: unknown): boolean {
     maybeError.code === "23505" &&
     maybeError.constraint === MACHINE_CLAIM_CODES_MACHINE_OPEN_UNIQUE
   );
+}
+
+function isProductionPaymentOption(
+  option: MachinePaymentOption,
+): option is ProductionPaymentOption {
+  return option.providerCode !== "mock" && option.method !== "mock";
 }
 
 function planogramSlotValues(
@@ -235,6 +269,7 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
   constructor(
     @Inject(DRIZZLE_CLIENT) private readonly db: DrizzleClient,
     private readonly machineCredentialService: MachineCredentialService,
+    private readonly paymentProviderConfigService: PaymentProviderConfigService,
     private readonly auditService: AuditService,
     private readonly mqttService: MqttService,
     private readonly mqttSignatureService: MqttSignatureService,
@@ -1062,6 +1097,206 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
       ...snapshot,
       claimCode,
     };
+  }
+
+  async claimMachine(
+    input: MachineClaimRequest,
+    now = new Date(),
+  ): Promise<MachineProvisioningProfile> {
+    const candidates = await this.db
+      .select({
+        id: machineClaimCodes.id,
+        machineId: machineClaimCodes.machineId,
+        verifierHash: machineClaimCodes.verifierHash,
+        state: machineClaimCodes.state,
+        failedAttemptCount: machineClaimCodes.failedAttemptCount,
+        maxFailedAttempts: machineClaimCodes.maxFailedAttempts,
+        expiresAt: machineClaimCodes.expiresAt,
+        consumedAt: machineClaimCodes.consumedAt,
+        revokedAt: machineClaimCodes.revokedAt,
+        lockedAt: machineClaimCodes.lockedAt,
+        machineCode: machines.code,
+        machineName: machines.name,
+        machineLocationText: machines.locationText,
+        machineStatus: machines.status,
+        machineMqttClientId: machines.mqttClientId,
+        machineSecretVersion: machines.secretVersion,
+      })
+      .from(machineClaimCodes)
+      .innerJoin(machines, eq(machines.id, machineClaimCodes.machineId))
+      .where(isNull(machines.deletedAt));
+    const claimCode = candidates.find((candidate) =>
+      verifyMachineClaimCode(input.claimCode, candidate.verifierHash),
+    ) as MachineClaimCandidate | undefined;
+
+    if (!claimCode) {
+      throw this.invalidMachineClaimCode();
+    }
+    if (
+      claimCode.state !== "pending" ||
+      claimCode.expiresAt.getTime() <= now.getTime()
+    ) {
+      await this.recordFailedMachineClaim(claimCode, now);
+      throw this.invalidMachineClaimCode();
+    }
+
+    const bundle = this.machineCredentialService.createBundle();
+    const nextSecretVersion = claimCode.machineSecretVersion + 1;
+    const mqttClientId =
+      claimCode.machineMqttClientId ?? `vem-machine-${claimCode.machineCode}`;
+
+    const consumed = await this.db.transaction(async (tx) => {
+      const [consumedClaimCode] = await tx
+        .update(machineClaimCodes)
+        .set({
+          state: "consumed",
+          consumedAt: now,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(machineClaimCodes.id, claimCode.id),
+            eq(machineClaimCodes.state, "pending"),
+          ),
+        )
+        .returning();
+      if (!consumedClaimCode) {
+        throw this.invalidMachineClaimCode();
+      }
+
+      await tx
+        .update(machines)
+        .set({
+          secretHash: bundle.secretHash,
+          secretVersion: nextSecretVersion,
+          secretRotatedAt: now,
+          credentialRevokedAt: null,
+          mqttClientId,
+          mqttSigningSecretEncryptedJson:
+            bundle.mqttSigningSecretEncryptedJson as Record<string, unknown>,
+          updatedAt: now,
+        })
+        .where(eq(machines.id, claimCode.machineId))
+        .returning({ id: machines.id });
+      return consumedClaimCode;
+    });
+
+    const paymentOptions =
+      await this.paymentProviderConfigService.listMachinePaymentOptionsForMachine(
+        claimCode.machineId,
+      );
+    const productionPaymentOptions = paymentOptions.options.filter(
+      isProductionPaymentOption,
+    );
+    const defaultProductionPaymentOption =
+      productionPaymentOptions.find(
+        (option) => option.optionKey === paymentOptions.defaultOptionKey,
+      ) ?? productionPaymentOptions[0];
+
+    await this.auditService.record({
+      adminUserId: null,
+      action: "machines.claimCode.consume",
+      resourceType: "machine",
+      resourceId: claimCode.machineId,
+      afterJson: {
+        claimCodeId: consumed.id,
+        machineCode: claimCode.machineCode,
+        state: "consumed",
+        secretVersion: nextSecretVersion,
+        claimedAt: toIso(now),
+      },
+    });
+
+    return {
+      machine: {
+        id: claimCode.machineId,
+        code: claimCode.machineCode,
+        name: claimCode.machineName,
+        status: claimCode.machineStatus,
+        locationText: claimCode.machineLocationText,
+      },
+      credentials: {
+        machineSecret: bundle.machineSecret,
+        machineSecretVersion: nextSecretVersion,
+        mqttSigningSecret: bundle.mqttSigningSecret,
+        mqttConnection: {
+          url: this.config.mqttUrl,
+          clientId: mqttClientId,
+          ...(this.config.mqttUsername
+            ? { username: this.config.mqttUsername }
+            : {}),
+          ...(this.config.mqttPassword
+            ? { password: this.config.mqttPassword }
+            : {}),
+        },
+      },
+      runtimeEndpoints: {
+        apiBasePath: "/api",
+        machineAuthTokenPath: "/api/machine-auth/token",
+        machineApiBasePath: `/api/machines/${claimCode.machineCode}`,
+        mqttTopicPrefix: `vem/machines/${claimCode.machineCode}`,
+      },
+      hardwareProfile: {
+        profile: "production",
+        controller: {
+          required: true,
+          protocol: "vem-vending-controller",
+        },
+        paymentScanner: {
+          required: true,
+          supportsPaymentCode: true,
+        },
+        vision: {
+          required: false,
+          supportsRecommendations: true,
+        },
+      },
+      paymentCapability: {
+        profile: "production",
+        options: productionPaymentOptions,
+        defaultOptionKey: defaultProductionPaymentOption?.optionKey ?? null,
+        defaultProviderCode:
+          defaultProductionPaymentOption?.providerCode ?? null,
+        serverTime: paymentOptions.serverTime,
+      },
+      metadata: {
+        profileVersion: 1,
+        claimCodeId: consumed.id,
+        claimedAt: toIso(now),
+        serverTime: toIso(now),
+      },
+    };
+  }
+
+  private async recordFailedMachineClaim(
+    claimCode: MachineClaimCandidate,
+    now: Date,
+  ): Promise<void> {
+    const failedAttemptCount = claimCode.failedAttemptCount + 1;
+    const expired = claimCode.expiresAt.getTime() <= now.getTime();
+    const shouldLock =
+      claimCode.state === "pending" &&
+      !expired &&
+      failedAttemptCount >= claimCode.maxFailedAttempts;
+
+    await this.db
+      .update(machineClaimCodes)
+      .set({
+        failedAttemptCount,
+        state:
+          expired && claimCode.state === "pending"
+            ? "expired"
+            : shouldLock
+              ? "locked"
+              : claimCode.state,
+        lockedAt: shouldLock ? now : claimCode.lockedAt,
+        updatedAt: now,
+      })
+      .where(eq(machineClaimCodes.id, claimCode.id));
+  }
+
+  private invalidMachineClaimCode(): UnauthorizedException {
+    return new UnauthorizedException("Invalid or expired machine claim code");
   }
 
   async listMachineClaimCodes(machineId: string, now = new Date()) {

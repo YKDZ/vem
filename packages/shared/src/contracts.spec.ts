@@ -11,9 +11,11 @@ import {
   heartbeatPayloadSchema,
   machineEnvironmentControlRequestSchema,
   machineAuthTokenRequestSchema,
+  machineClaimRequestSchema,
   generateMachineClaimCodeResponseSchema,
   machineClaimCodeSnapshotSchema,
   machineClaimCodeStates,
+  machineProvisioningProfileSchema,
   machinePlanogramVersionSnapshotSchema,
   machineSaleViewItemSchema,
   machineSlotStatuses,
@@ -212,6 +214,112 @@ describe("shared API contract", () => {
         claimCode: "ABCD-2345",
       }).claimCode,
     ).toBe("ABCD-2345");
+  });
+
+  it("accepts only approved machine provisioning profile categories", () => {
+    expect(
+      machineClaimRequestSchema.parse({ claimCode: "ABCD-2345" }).claimCode,
+    ).toBe("ABCD-2345");
+
+    const profile = {
+      machine: {
+        id: "550e8400-e29b-41d4-a716-446655440000",
+        code: "M001",
+        name: "Lobby",
+        status: "offline",
+        locationText: "1F",
+      },
+      credentials: {
+        machineSecret:
+          "vms_local-machine-shared-secret-change-before-production",
+        machineSecretVersion: 2,
+        mqttSigningSecret:
+          "vms_local-mqtt-shared-secret-change-before-production",
+        mqttConnection: {
+          url: "mqtt://localhost:1883",
+          clientId: "vem-machine-M001",
+          username: "machine-client",
+          password: "mqtt-password",
+        },
+      },
+      runtimeEndpoints: {
+        apiBasePath: "/api",
+        machineAuthTokenPath: "/api/machine-auth/token",
+        machineApiBasePath: "/api/machines/M001",
+        mqttTopicPrefix: "vem/machines/M001",
+      },
+      hardwareProfile: {
+        profile: "production",
+        controller: { required: true, protocol: "vem-vending-controller" },
+        paymentScanner: { required: true, supportsPaymentCode: true },
+        vision: { required: false, supportsRecommendations: true },
+      },
+      paymentCapability: {
+        profile: "production",
+        options: [
+          {
+            optionKey: "qr_code:alipay",
+            providerCode: "alipay",
+            method: "qr_code",
+            displayName: "支付宝扫码",
+            description: "请使用支付宝扫描屏幕二维码",
+            icon: "alipay",
+            recommended: true,
+            disabled: false,
+            disabledReason: null,
+          },
+        ],
+        defaultOptionKey: "qr_code:alipay",
+        defaultProviderCode: "alipay",
+        serverTime: "2026-06-08T16:30:00.000Z",
+      },
+      metadata: {
+        profileVersion: 1,
+        claimCodeId: "550e8400-e29b-41d4-a716-446655440111",
+        claimedAt: "2026-06-08T16:30:00.000Z",
+        serverTime: "2026-06-08T16:30:00.000Z",
+      },
+    };
+
+    expect(machineProvisioningProfileSchema.parse(profile)).toEqual(profile);
+    expect(() =>
+      machineProvisioningProfileSchema.parse({
+        ...profile,
+        planogram: { slots: [] },
+      }),
+    ).toThrow();
+    expect(() =>
+      machineProvisioningProfileSchema.parse({
+        ...profile,
+        stockQuantities: [{ slotCode: "A1", quantity: 3 }],
+      }),
+    ).toThrow();
+    expect(() =>
+      machineProvisioningProfileSchema.parse({
+        ...profile,
+        paymentCapability: {
+          ...profile.paymentCapability,
+          options: [
+            {
+              optionKey: "mock:mock",
+              providerCode: "mock",
+              method: "mock",
+              displayName: "模拟支付",
+              description: "测试环境专用，立即完成支付",
+              icon: "mock",
+              recommended: true,
+              disabled: false,
+              disabledReason: null,
+            },
+          ],
+          defaultOptionKey: "mock:mock",
+          defaultProviderCode: "mock",
+        },
+      }),
+    ).toThrow();
+    expect(JSON.stringify(profile)).not.toContain("merchant");
+    expect(JSON.stringify(profile)).not.toContain("COM");
+    expect(JSON.stringify(profile)).not.toContain("cameraDevice");
   });
 
   it("accepts machine planogram version lifecycle snapshots", () => {

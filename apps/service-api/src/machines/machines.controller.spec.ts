@@ -1,6 +1,9 @@
+import { GUARDS_METADATA } from "@nestjs/common/constants";
 import { describe, expect, it, vi } from "vitest";
 
 import { REQUIRED_PERMISSIONS_KEY } from "../access/permissions.decorator";
+import { IS_PUBLIC_KEY } from "../auth/public.decorator";
+import { MachineAuthGuard } from "../machine-auth/machine-auth.guard";
 import { MachinesController } from "./machines.controller";
 
 describe("MachinesController environment commands", () => {
@@ -30,6 +33,37 @@ describe("MachinesController environment commands", () => {
 });
 
 describe("MachinesController claim code lifecycle", () => {
+  it("exposes public machine claim without machine or admin auth guards", async () => {
+    const claimMachine = vi.fn().mockResolvedValue({
+      machine: { id: "machine-1", code: "M001" },
+    });
+    const controller = new MachinesController({ claimMachine } as never);
+
+    const permissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      MachinesController.prototype.claimMachine,
+    );
+    const isPublic = Reflect.getMetadata(
+      IS_PUBLIC_KEY,
+      MachinesController.prototype.claimMachine,
+    );
+    const guards =
+      Reflect.getMetadata(
+        GUARDS_METADATA,
+        MachinesController.prototype.claimMachine,
+      ) ?? [];
+
+    expect(permissions).toBeUndefined();
+    expect(isPublic).toBe(true);
+    expect(guards).not.toContain(MachineAuthGuard);
+    await expect(
+      controller.claimMachine({ claimCode: "ABCD-2345" }),
+    ).resolves.toEqual({
+      machine: { id: "machine-1", code: "M001" },
+    });
+    expect(claimMachine).toHaveBeenCalledWith({ claimCode: "ABCD-2345" });
+  });
+
   it("requires machine credential permission and forwards the requester when generating a claim code", async () => {
     const generateMachineClaimCode = vi.fn().mockResolvedValue({
       id: "claim-code-1",

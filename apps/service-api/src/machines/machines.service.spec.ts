@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ConflictException,
   NotFoundException,
+  UnauthorizedException,
 } from "@nestjs/common";
 import { Test } from "@nestjs/testing";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -12,6 +13,8 @@ import { DRIZZLE_CLIENT } from "../database/database.constants";
 import { MachineCredentialService } from "../machine-auth/machine-credential.service";
 import { MqttSignatureService } from "../mqtt/mqtt-signature.service";
 import { MqttService } from "../mqtt/mqtt.service";
+import { PaymentProviderConfigService } from "../payments/payment-provider-config.service";
+import { hashMachineClaimCodeVerifier } from "./machine-claim-code.util";
 import { MachinesService } from "./machines.service";
 
 describe("MachinesService", () => {
@@ -27,6 +30,7 @@ describe("MachinesService", () => {
   const publish = vi.fn();
   const signForMachine = vi.fn();
   const verifyFromTopic = vi.fn();
+  const listMachinePaymentOptionsForMachine = vi.fn();
 
   beforeEach(async () => {
     vi.clearAllMocks();
@@ -35,6 +39,10 @@ describe("MachinesService", () => {
         MachinesService,
         { provide: DRIZZLE_CLIENT, useValue: mockDb },
         { provide: MachineCredentialService, useValue: {} },
+        {
+          provide: PaymentProviderConfigService,
+          useValue: { listMachinePaymentOptionsForMachine },
+        },
         { provide: AuditService, useValue: { record: auditRecord } },
         { provide: MqttService, useValue: { publish } },
         {
@@ -480,6 +488,8 @@ describe("MachinesService planogram lifecycle", () => {
     transaction: vi.fn(),
   };
   const auditRecord = vi.fn();
+  const createBundle = vi.fn();
+  const listMachinePaymentOptionsForMachine = vi.fn();
 
   beforeEach(async () => {
     vi.clearAllMocks();
@@ -487,7 +497,11 @@ describe("MachinesService planogram lifecycle", () => {
       providers: [
         MachinesService,
         { provide: DRIZZLE_CLIENT, useValue: mockDb },
-        { provide: MachineCredentialService, useValue: {} },
+        { provide: MachineCredentialService, useValue: { createBundle } },
+        {
+          provide: PaymentProviderConfigService,
+          useValue: { listMachinePaymentOptionsForMachine },
+        },
         { provide: AuditService, useValue: { record: auditRecord } },
         { provide: MqttService, useValue: { publish: vi.fn() } },
         {
@@ -813,6 +827,8 @@ describe("MachinesService claim code lifecycle", () => {
     transaction: vi.fn(),
   };
   const auditRecord = vi.fn();
+  const createBundle = vi.fn();
+  const listMachinePaymentOptionsForMachine = vi.fn();
 
   beforeEach(async () => {
     vi.clearAllMocks();
@@ -822,7 +838,11 @@ describe("MachinesService claim code lifecycle", () => {
       providers: [
         MachinesService,
         { provide: DRIZZLE_CLIENT, useValue: mockDb },
-        { provide: MachineCredentialService, useValue: {} },
+        { provide: MachineCredentialService, useValue: { createBundle } },
+        {
+          provide: PaymentProviderConfigService,
+          useValue: { listMachinePaymentOptionsForMachine },
+        },
         { provide: AuditService, useValue: { record: auditRecord } },
         { provide: MqttService, useValue: { publish: vi.fn() } },
         {
@@ -834,6 +854,9 @@ describe("MachinesService claim code lifecycle", () => {
           useValue: {
             machineCommandTimeoutSeconds: 5,
             machineClaimCodeTtlSeconds: 600,
+            mqttUrl: "mqtt://localhost:1883",
+            mqttUsername: "machine-client",
+            mqttPassword: "mqtt-password",
           },
         },
       ],
@@ -843,6 +866,324 @@ describe("MachinesService claim code lifecycle", () => {
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  function claimCandidate(
+    overrides: Partial<{
+      id: string;
+      verifierHash: string;
+      state: "pending" | "consumed" | "expired" | "revoked" | "locked";
+      failedAttemptCount: number;
+      maxFailedAttempts: number;
+      expiresAt: Date;
+      consumedAt: Date | null;
+      revokedAt: Date | null;
+      lockedAt: Date | null;
+    }> = {},
+  ) {
+    return {
+      id: "550e8400-e29b-41d4-a716-446655440111",
+      machineId: "550e8400-e29b-41d4-a716-446655440000",
+      verifierHash: hashMachineClaimCodeVerifier("ABCD-2345"),
+      state: "pending" as const,
+      failedAttemptCount: 0,
+      maxFailedAttempts: 5,
+      expiresAt: new Date("2026-06-08T16:40:00.000Z"),
+      consumedAt: null,
+      revokedAt: null,
+      lockedAt: null,
+      machineCode: "M001",
+      machineName: "Lobby",
+      machineLocationText: "1F",
+      machineStatus: "offline" as const,
+      machineMqttClientId: null,
+      machineSecretVersion: 1,
+      ...overrides,
+    };
+  }
+
+  it("consumes a valid pending claim code once and returns a provisioning profile with rotated credentials", async () => {
+    const machine = {
+      id: "550e8400-e29b-41d4-a716-446655440000",
+      code: "M001",
+      name: "Lobby",
+      locationText: "1F",
+      status: "offline",
+      mqttClientId: null,
+      secretVersion: 1,
+      deletedAt: null,
+    };
+    const pending = {
+      id: "550e8400-e29b-41d4-a716-446655440111",
+      machineId: machine.id,
+      verifierHash: hashMachineClaimCodeVerifier("ABCD-2345"),
+      state: "pending",
+      failedAttemptCount: 0,
+      maxFailedAttempts: 5,
+      expiresAt: new Date("2026-06-08T16:40:00.000Z"),
+      consumedAt: null,
+      revokedAt: null,
+      lockedAt: null,
+      createdByAdminUserId: "admin-1",
+      revokedByAdminUserId: null,
+      createdAt: new Date("2026-06-08T16:00:00.000Z"),
+      updatedAt: new Date("2026-06-08T16:00:00.000Z"),
+      machineCode: machine.code,
+      machineName: machine.name,
+      machineLocationText: machine.locationText,
+      machineStatus: machine.status,
+      machineMqttClientId: machine.mqttClientId,
+      machineSecretVersion: machine.secretVersion,
+    };
+    const consumed = {
+      ...pending,
+      state: "consumed",
+      consumedAt: claimCodeNow,
+      updatedAt: claimCodeNow,
+    };
+    createBundle.mockReturnValueOnce({
+      machineSecret: "vms_rotated-machine-secret-change-before-production",
+      mqttSigningSecret: "vms_rotated-mqtt-secret-change-before-production",
+      secretHash: "scrypt:rotated-machine-secret-hash",
+      mqttSigningSecretEncryptedJson: { v: 1, alg: "aes-256-gcm" },
+    });
+    listMachinePaymentOptionsForMachine.mockResolvedValueOnce({
+      options: [
+        {
+          optionKey: "mock:mock",
+          providerCode: "mock",
+          method: "mock",
+          displayName: "模拟支付",
+          description: "测试环境专用，立即完成支付",
+          icon: "mock",
+          recommended: true,
+          disabled: false,
+          disabledReason: null,
+        },
+        {
+          optionKey: "qr_code:alipay",
+          providerCode: "alipay",
+          method: "qr_code",
+          displayName: "支付宝扫码",
+          description: "请使用支付宝扫描屏幕二维码",
+          icon: "alipay",
+          recommended: false,
+          disabled: false,
+          disabledReason: null,
+        },
+      ],
+      defaultOptionKey: "mock:mock",
+      defaultProviderCode: "mock",
+      serverTime: "2026-06-08T16:30:00.000Z",
+    });
+
+    const consumeSet = vi.fn().mockReturnValue({
+      where: () => ({ returning: async () => [consumed] }),
+    });
+    const rotateSet = vi.fn().mockReturnValue({
+      where: () => ({ returning: async () => [{ id: machine.id }] }),
+    });
+    const tx = {
+      update: vi
+        .fn()
+        .mockReturnValueOnce({ set: consumeSet })
+        .mockReturnValueOnce({ set: rotateSet }),
+    };
+    mockDb.select.mockReturnValueOnce({
+      from: () => ({
+        innerJoin: () => ({
+          where: async () => [pending],
+        }),
+      }),
+    });
+    mockDb.transaction.mockImplementationOnce(
+      async (cb: (txArg: typeof tx) => Promise<unknown>) => await cb(tx),
+    );
+
+    const result = await service.claimMachine({ claimCode: "ABCD-2345" });
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        machine: expect.objectContaining({
+          id: machine.id,
+          code: "M001",
+          name: "Lobby",
+        }),
+        credentials: expect.objectContaining({
+          machineSecret: "vms_rotated-machine-secret-change-before-production",
+          machineSecretVersion: 2,
+          mqttSigningSecret: "vms_rotated-mqtt-secret-change-before-production",
+          mqttConnection: expect.objectContaining({
+            url: "mqtt://localhost:1883",
+            clientId: "vem-machine-M001",
+          }),
+        }),
+        runtimeEndpoints: expect.objectContaining({
+          machineAuthTokenPath: "/api/machine-auth/token",
+          mqttTopicPrefix: "vem/machines/M001",
+        }),
+        hardwareProfile: expect.objectContaining({ profile: "production" }),
+        paymentCapability: expect.objectContaining({
+          profile: "production",
+          defaultProviderCode: "alipay",
+          defaultOptionKey: "qr_code:alipay",
+        }),
+        metadata: expect.objectContaining({
+          profileVersion: 1,
+          claimCodeId: pending.id,
+          claimedAt: "2026-06-08T16:30:00.000Z",
+        }),
+      }),
+    );
+    expect(consumeSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        state: "consumed",
+        consumedAt: claimCodeNow,
+      }),
+    );
+    expect(rotateSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        secretHash: "scrypt:rotated-machine-secret-hash",
+        secretVersion: 2,
+        credentialRevokedAt: null,
+      }),
+    );
+    expect(auditRecord).toHaveBeenCalledWith({
+      adminUserId: null,
+      action: "machines.claimCode.consume",
+      resourceType: "machine",
+      resourceId: machine.id,
+      afterJson: {
+        claimCodeId: pending.id,
+        machineCode: "M001",
+        state: "consumed",
+        secretVersion: 2,
+        claimedAt: "2026-06-08T16:30:00.000Z",
+      },
+    });
+    expect(JSON.stringify(result)).not.toContain("planogram");
+    expect(JSON.stringify(result)).not.toContain("stockQuantities");
+    expect(JSON.stringify(result)).not.toContain("merchant");
+    expect(JSON.stringify(result)).not.toContain("mock:mock");
+  });
+
+  it("returns a safe non-enumerating error for an unknown claim code", async () => {
+    mockDb.select.mockReturnValueOnce({
+      from: () => ({
+        innerJoin: () => ({
+          where: async () => [],
+        }),
+      }),
+    });
+
+    let error: unknown;
+    try {
+      await service.claimMachine({ claimCode: "WXYZ-2345" });
+    } catch (caught) {
+      error = caught;
+    }
+
+    expect(error).toBeInstanceOf(UnauthorizedException);
+    expect(error).toMatchObject({
+      message: "Invalid or expired machine claim code",
+    });
+    expect(mockDb.update).not.toHaveBeenCalled();
+    expect(auditRecord).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      state: "consumed" as const,
+      expectedState: "consumed",
+      dateField: "consumedAt",
+    },
+    {
+      state: "revoked" as const,
+      expectedState: "revoked",
+      dateField: "revokedAt",
+    },
+    {
+      state: "locked" as const,
+      expectedState: "locked",
+      dateField: "lockedAt",
+    },
+    {
+      state: "pending" as const,
+      expectedState: "expired",
+      expiresAt: new Date("2026-06-08T16:00:00.000Z"),
+    },
+  ])(
+    "returns the same safe error and updates failed-attempt state for $expectedState claim codes",
+    async ({ state, expectedState, dateField, expiresAt }) => {
+      const existingDate = new Date("2026-06-08T16:10:00.000Z");
+      const failed = claimCandidate({
+        state,
+        failedAttemptCount: 2,
+        expiresAt: expiresAt ?? new Date("2026-06-08T16:40:00.000Z"),
+        consumedAt: dateField === "consumedAt" ? existingDate : null,
+        revokedAt: dateField === "revokedAt" ? existingDate : null,
+        lockedAt: dateField === "lockedAt" ? existingDate : null,
+      });
+      const updateSet = vi.fn().mockReturnValue({ where: async () => [] });
+      mockDb.select.mockReturnValueOnce({
+        from: () => ({
+          innerJoin: () => ({
+            where: async () => [failed],
+          }),
+        }),
+      });
+      mockDb.update.mockReturnValueOnce({ set: updateSet });
+
+      await expect(
+        service.claimMachine({ claimCode: "ABCD-2345" }),
+      ).rejects.toMatchObject({
+        message: "Invalid or expired machine claim code",
+      });
+
+      expect(updateSet).toHaveBeenCalledWith(
+        expect.objectContaining({
+          failedAttemptCount: 3,
+          state: expectedState,
+          updatedAt: claimCodeNow,
+        }),
+      );
+      expect(JSON.stringify(updateSet.mock.calls)).not.toContain("M001");
+      expect(auditRecord).not.toHaveBeenCalled();
+    },
+  );
+
+  it("does not return a profile when the claim code was consumed by a concurrent request", async () => {
+    const pending = claimCandidate();
+    const consumeSet = vi.fn().mockReturnValue({
+      where: () => ({ returning: async () => [] }),
+    });
+    const tx = {
+      update: vi.fn().mockReturnValueOnce({ set: consumeSet }),
+    };
+    mockDb.select.mockReturnValueOnce({
+      from: () => ({
+        innerJoin: () => ({
+          where: async () => [pending],
+        }),
+      }),
+    });
+    createBundle.mockReturnValueOnce({
+      machineSecret: "vms_rotated-machine-secret-change-before-production",
+      mqttSigningSecret: "vms_rotated-mqtt-secret-change-before-production",
+      secretHash: "scrypt:rotated-machine-secret-hash",
+      mqttSigningSecretEncryptedJson: { v: 1, alg: "aes-256-gcm" },
+    });
+    mockDb.transaction.mockImplementationOnce(
+      async (cb: (txArg: typeof tx) => Promise<unknown>) => await cb(tx),
+    );
+
+    await expect(
+      service.claimMachine({ claimCode: "ABCD-2345" }),
+    ).rejects.toMatchObject({
+      message: "Invalid or expired machine claim code",
+    });
+    expect(listMachinePaymentOptionsForMachine).not.toHaveBeenCalled();
+    expect(auditRecord).not.toHaveBeenCalled();
   });
 
   it("generates a short-lived claim code and stores only a verifier hash", async () => {
