@@ -79,6 +79,39 @@ impl BackendClient {
         format!("{}/{}", self.base_url, trimmed)
     }
 
+    fn unwrap_api_response(value: serde_json::Value) -> Result<serde_json::Value, String> {
+        let Some(object) = value.as_object() else {
+            return Ok(value);
+        };
+        if !(object.contains_key("code")
+            && object.contains_key("message")
+            && object.contains_key("data"))
+        {
+            return Ok(value);
+        }
+
+        let code = object
+            .get("code")
+            .and_then(|value| {
+                value
+                    .as_i64()
+                    .or_else(|| value.as_u64().and_then(|value| i64::try_from(value).ok()))
+            })
+            .ok_or_else(|| "backend response envelope code invalid".to_string())?;
+        if code == 0 {
+            return Ok(object
+                .get("data")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null));
+        }
+
+        let message = object
+            .get("message")
+            .and_then(|value| value.as_str())
+            .unwrap_or("backend returned non-zero code");
+        Err(format!("BACKEND_API_ERROR: {code} {message}"))
+    }
+
     async fn request_json(
         &self,
         method: reqwest::Method,
@@ -116,8 +149,9 @@ impl BackendClient {
         if payload.is_empty() {
             return Ok(serde_json::Value::Null);
         }
-        serde_json::from_str(&payload)
-            .map_err(|error| format!("backend json parse failed: {error}"))
+        let value = serde_json::from_str(&payload)
+            .map_err(|error| format!("backend json parse failed: {error}"))?;
+        Self::unwrap_api_response(value)
     }
 
     pub async fn request_json_typed<T>(
@@ -383,6 +417,42 @@ mod tests {
         client.authenticate("M-1", "S-1").await.expect("auth");
         let response = client.get_catalog("M-1").await.expect("catalog");
         assert_eq!(response["source"], "backend");
+    }
+
+    #[tokio::test]
+    async fn backend_unwraps_service_api_envelope() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/machine-auth/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "code": 0,
+                "message": "ok",
+                "data": {
+                    "accessToken": "token-123"
+                }
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/machines/M-1/catalog"))
+            .and(header("authorization", "Bearer token-123"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "code": 0,
+                "message": "ok",
+                "data": [
+                    {
+                        "slotCode": "A1",
+                        "productName": "Test Product"
+                    }
+                ]
+            })))
+            .mount(&server)
+            .await;
+
+        let client = BackendClient::new(server.uri());
+        client.authenticate("M-1", "S-1").await.expect("auth");
+        let response = client.get_catalog("M-1").await.expect("catalog");
+        assert_eq!(response[0]["slotCode"], "A1");
     }
 
     #[tokio::test]
