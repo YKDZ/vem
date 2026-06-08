@@ -632,9 +632,7 @@ test("catalog hides sold-out sale-view items", async ({ page }) => {
 test("routes missing config to maintenance", async ({ page }) => {
   scenario = "maintenance";
   await page.goto("/");
-  await expect(
-    page.getByRole("heading", { name: "生产维护" }),
-  ).toBeVisible();
+  await expect(page.getByRole("heading", { name: "生产维护" })).toBeVisible();
 });
 
 test("routes not-ready daemon to offline", async ({ page }) => {
