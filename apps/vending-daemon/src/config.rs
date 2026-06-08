@@ -62,9 +62,9 @@ pub struct MachinePublicConfig {
     #[serde(default)]
     pub runtime_endpoints: Option<ProvisioningRuntimeEndpoints>,
     #[serde(default)]
-    pub hardware_profile: Option<serde_json::Value>,
+    pub hardware_profile: Option<ProductionMachineHardwareProfile>,
     #[serde(default)]
-    pub payment_capability: Option<serde_json::Value>,
+    pub payment_capability: Option<ProductionMachinePaymentCapability>,
     #[serde(default)]
     pub provisioning_metadata: Option<ProvisioningMetadata>,
 }
@@ -85,17 +85,19 @@ pub struct MachineConfigUpdateRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 #[serde(rename_all = "camelCase")]
 pub struct MachineProvisioningProfile {
     pub machine: ProvisioningMachine,
     pub credentials: ProvisioningCredentials,
     pub runtime_endpoints: ProvisioningRuntimeEndpoints,
-    pub hardware_profile: serde_json::Value,
-    pub payment_capability: serde_json::Value,
+    pub hardware_profile: ProductionMachineHardwareProfile,
+    pub payment_capability: ProductionMachinePaymentCapability,
     pub metadata: ProvisioningMetadata,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 #[serde(rename_all = "camelCase")]
 pub struct ProvisioningMachine {
     pub id: String,
@@ -106,6 +108,7 @@ pub struct ProvisioningMachine {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 #[serde(rename_all = "camelCase")]
 pub struct ProvisioningCredentials {
     pub machine_secret: String,
@@ -115,6 +118,7 @@ pub struct ProvisioningCredentials {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 #[serde(rename_all = "camelCase")]
 pub struct ProvisioningMqttConnection {
     pub url: String,
@@ -124,6 +128,7 @@ pub struct ProvisioningMqttConnection {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 #[serde(rename_all = "camelCase")]
 pub struct ProvisioningRuntimeEndpoints {
     pub api_base_path: String,
@@ -133,12 +138,76 @@ pub struct ProvisioningRuntimeEndpoints {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 #[serde(rename_all = "camelCase")]
 pub struct ProvisioningMetadata {
     pub profile_version: i64,
     pub claim_code_id: String,
     pub claimed_at: String,
     pub server_time: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
+pub struct ProductionMachineHardwareProfile {
+    pub profile: String,
+    pub controller: ProductionControllerProfile,
+    pub payment_scanner: ProductionPaymentScannerProfile,
+    pub vision: ProductionVisionProfile,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
+pub struct ProductionControllerProfile {
+    pub required: bool,
+    pub protocol: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
+pub struct ProductionPaymentScannerProfile {
+    pub required: bool,
+    pub supports_payment_code: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
+pub struct ProductionVisionProfile {
+    pub required: bool,
+    pub supports_recommendations: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
+pub struct ProductionMachinePaymentCapability {
+    pub profile: String,
+    pub options: Vec<ProductionMachinePaymentOption>,
+    pub default_option_key: Option<String>,
+    pub default_provider_code: Option<String>,
+    pub server_time: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
+pub struct ProductionMachinePaymentOption {
+    pub option_key: String,
+    pub provider_code: String,
+    pub method: String,
+    pub display_name: String,
+    pub description: String,
+    pub icon: String,
+    #[serde(default)]
+    pub recommended: bool,
+    #[serde(default)]
+    pub disabled: bool,
+    #[serde(default)]
+    pub disabled_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -594,6 +663,33 @@ pub struct ConfigStore {
 }
 
 impl ConfigStore {
+    fn provisioning_persistence_error(error: String) -> String {
+        format!("provisioning persistence failed: {error}")
+    }
+
+    fn validate_len(value: &str, min: usize, max: usize, message: &str) -> Result<(), String> {
+        let len = value.trim().len();
+        if len < min || len > max {
+            return Err(message.to_string());
+        }
+        Ok(())
+    }
+
+    fn validate_iso_datetime(value: &str, message: &str) -> Result<(), String> {
+        chrono::DateTime::parse_from_rfc3339(value).map_err(|_| message.to_string())?;
+        Ok(())
+    }
+
+    fn validate_payment_option_key(value: &str) -> bool {
+        matches!(
+            value,
+            "qr_code:wechat_pay"
+                | "qr_code:alipay"
+                | "payment_code:wechat_pay"
+                | "payment_code:alipay"
+        )
+    }
+
     fn validate_provisioning_profile(profile: &MachineProvisioningProfile) -> Result<(), String> {
         if profile.metadata.profile_version != 1 {
             return Err("unsupported provisioning profile version".to_string());
@@ -602,20 +698,41 @@ impl ConfigStore {
             .map_err(|_| "machine identity invalid".to_string())?;
         uuid::Uuid::parse_str(&profile.metadata.claim_code_id)
             .map_err(|_| "claim metadata invalid".to_string())?;
-        chrono::DateTime::parse_from_rfc3339(&profile.metadata.claimed_at)
-            .map_err(|_| "claim metadata invalid".to_string())?;
-        if profile.machine.code.trim().is_empty() {
-            return Err("machine code missing from provisioning profile".to_string());
+        Self::validate_iso_datetime(&profile.metadata.claimed_at, "claim metadata invalid")?;
+        Self::validate_iso_datetime(&profile.metadata.server_time, "claim metadata invalid")?;
+        Self::validate_len(
+            &profile.machine.code,
+            1,
+            64,
+            "machine code missing from provisioning profile",
+        )?;
+        Self::validate_len(&profile.machine.name, 1, 128, "machine identity invalid")?;
+        if !matches!(
+            profile.machine.status.as_str(),
+            "online" | "offline" | "maintenance" | "disabled"
+        ) {
+            return Err("machine identity invalid".to_string());
         }
         if profile.credentials.machine_secret.trim().len() < 32 {
+            return Err("machine credential missing from provisioning profile".to_string());
+        }
+        if profile.credentials.machine_secret.trim().len() > 256 {
+            return Err("machine credential missing from provisioning profile".to_string());
+        }
+        if profile.credentials.machine_secret_version < 1 {
             return Err("machine credential missing from provisioning profile".to_string());
         }
         if profile.credentials.mqtt_signing_secret.trim().len() < 32 {
             return Err("mqtt signing credential missing from provisioning profile".to_string());
         }
+        if profile.credentials.mqtt_signing_secret.trim().len() > 256 {
+            return Err("mqtt signing credential missing from provisioning profile".to_string());
+        }
         if profile.credentials.mqtt_connection.url.trim().is_empty() {
             return Err("mqtt connection url missing from provisioning profile".to_string());
         }
+        reqwest::Url::parse(&profile.credentials.mqtt_connection.url)
+            .map_err(|_| "mqtt connection url missing from provisioning profile".to_string())?;
         if profile
             .credentials
             .mqtt_connection
@@ -624,6 +741,24 @@ impl ConfigStore {
             .is_empty()
         {
             return Err("mqtt client id missing from provisioning profile".to_string());
+        }
+        if profile.credentials.mqtt_connection.client_id.trim().len() > 128 {
+            return Err("mqtt client id missing from provisioning profile".to_string());
+        }
+        if profile
+            .credentials
+            .mqtt_connection
+            .username
+            .as_deref()
+            .is_some_and(|value| value.trim().is_empty())
+            || profile
+                .credentials
+                .mqtt_connection
+                .password
+                .as_deref()
+                .is_some_and(|value| value.trim().is_empty())
+        {
+            return Err("mqtt connection invalid".to_string());
         }
         if profile.runtime_endpoints.api_base_path != "/api"
             || profile.runtime_endpoints.machine_auth_token_path != "/api/machine-auth/token"
@@ -637,31 +772,52 @@ impl ConfigStore {
         {
             return Err("runtime endpoints do not match machine identity".to_string());
         }
-        if profile
-            .hardware_profile
-            .get("profile")
-            .and_then(|value| value.as_str())
-            != Some("production")
+        if profile.hardware_profile.profile != "production"
+            || !profile.hardware_profile.controller.required
+            || profile.hardware_profile.controller.protocol != "vem-vending-controller"
+            || !profile.hardware_profile.payment_scanner.required
         {
             return Err("hardware profile invalid".to_string());
         }
+        if profile.payment_capability.profile != "production" {
+            return Err("payment capability invalid".to_string());
+        }
+        Self::validate_iso_datetime(
+            &profile.payment_capability.server_time,
+            "payment capability invalid",
+        )?;
+        if profile.payment_capability.options.iter().any(|option| {
+            !Self::validate_payment_option_key(&option.option_key)
+                || !matches!(option.provider_code.as_str(), "wechat_pay" | "alipay")
+                || !matches!(option.method.as_str(), "qr_code" | "payment_code")
+                || !matches!(option.icon.as_str(), "wechat" | "alipay")
+                || option.provider_code == "mock"
+                || option.method == "mock"
+                || option.display_name.trim().is_empty()
+                || option.display_name.trim().len() > 32
+                || option.description.trim().is_empty()
+                || option.description.trim().len() > 128
+                || option
+                    .disabled_reason
+                    .as_deref()
+                    .is_some_and(|reason| reason.len() > 128)
+        }) {
+            return Err("payment capability invalid".to_string());
+        }
         if profile
             .payment_capability
-            .get("profile")
-            .and_then(|value| value.as_str())
-            != Some("production")
+            .default_option_key
+            .as_deref()
+            .is_some_and(|key| !Self::validate_payment_option_key(key))
         {
             return Err("payment capability invalid".to_string());
         }
-        let options = profile
+        if profile
             .payment_capability
-            .get("options")
-            .and_then(|value| value.as_array())
-            .ok_or_else(|| "payment capability invalid".to_string())?;
-        if options.iter().any(|option| {
-            option.get("providerCode").and_then(|value| value.as_str()) == Some("mock")
-                || option.get("method").and_then(|value| value.as_str()) == Some("mock")
-        }) {
+            .default_provider_code
+            .as_deref()
+            .is_some_and(|provider| !matches!(provider, "wechat_pay" | "alipay"))
+        {
             return Err("payment capability invalid".to_string());
         }
         Ok(())
@@ -901,16 +1057,9 @@ impl ConfigStore {
         public.payment_capability = Some(profile.payment_capability.clone());
         public.provisioning_metadata = Some(profile.metadata.clone());
 
-        let config = self
-            .save_config_update(MachineConfigUpdateRequest {
-                public,
-                secrets: Some(MachineConfigSecretsUpdate {
-                    machine_secret: Some(profile.credentials.machine_secret),
-                    mqtt_signing_secret: Some(profile.credentials.mqtt_signing_secret),
-                    mqtt_password: profile.credentials.mqtt_connection.password,
-                }),
-            })
-            .await?;
+        self.save_public_config(public.clone())
+            .await
+            .map_err(Self::provisioning_persistence_error)?;
 
         self.state
             .put_metadata(
@@ -918,22 +1067,46 @@ impl ConfigStore {
                 &profile.metadata.claim_code_id,
             )
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| Self::provisioning_persistence_error(error.to_string()))?;
         self.state
             .put_metadata(
                 "machine_provisioning_profile_version",
                 &profile.metadata.profile_version.to_string(),
             )
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| Self::provisioning_persistence_error(error.to_string()))?;
         self.state
             .put_metadata(
                 "machine_provisioning_claimed_at",
                 &profile.metadata.claimed_at,
             )
             .await
-            .map_err(|error| error.to_string())?;
-        Ok(config)
+            .map_err(|error| Self::provisioning_persistence_error(error.to_string()))?;
+
+        self.secrets
+            .write_secret(
+                crate::secret::MACHINE_SECRET_ACCOUNT,
+                &profile.credentials.machine_secret,
+            )
+            .await
+            .map_err(Self::provisioning_persistence_error)?;
+        self.secrets
+            .write_secret(
+                crate::secret::MQTT_SIGNING_SECRET_ACCOUNT,
+                &profile.credentials.mqtt_signing_secret,
+            )
+            .await
+            .map_err(Self::provisioning_persistence_error)?;
+        if let Some(password) = profile.credentials.mqtt_connection.password.as_deref() {
+            self.secrets
+                .write_secret(crate::secret::MQTT_PASSWORD_ACCOUNT, password)
+                .await
+                .map_err(Self::provisioning_persistence_error)?;
+        }
+
+        self.public_runtime_config(public)
+            .await
+            .map_err(Self::provisioning_persistence_error)
     }
 
     pub async fn load_runtime_config(&self) -> Result<MachineRuntimeConfig, String> {

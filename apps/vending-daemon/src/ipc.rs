@@ -627,6 +627,16 @@ async fn claim_machine(
     let client = BackendClient::new(public.api_base_url);
     let profile = match client.claim_machine(&claim_code).await {
         Ok(profile) => profile,
+        Err(error) if error.starts_with("backend response parse failed:") => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorMessage {
+                    code: "machine_profile_invalid",
+                    message: "provisioning profile invalid".to_string(),
+                }),
+            )
+                .into_response();
+        }
         Err(_error) => {
             return (
                 StatusCode::BAD_GATEWAY,
@@ -659,6 +669,14 @@ async fn claim_machine(
             )
                 .into_response()
         }
+        Err(error) if error.starts_with("provisioning persistence failed:") => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorMessage {
+                code: "machine_profile_persistence_failed",
+                message: "machine profile persistence failed; retry provisioning".to_string(),
+            }),
+        )
+            .into_response(),
         Err(error) => (
             StatusCode::BAD_REQUEST,
             Json(ErrorMessage {
@@ -2151,6 +2169,32 @@ mod tests {
             .unwrap()
     }
 
+    async fn claim_with_profile(profile: serde_json::Value) -> (StatusCode, serde_json::Value) {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/machines/claim"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(profile))
+            .mount(&server)
+            .await;
+
+        let temp_dir = tempdir().expect("tmp");
+        let app =
+            build_router(test_ipc_context(temp_dir.path(), "token-1", None, &server.uri()).await);
+
+        let response = post_json(
+            &app,
+            "/v1/provisioning/claim",
+            "token-1",
+            json!({ "claimCode": "ABCD-2345" }),
+        )
+        .await;
+        let status = response.status();
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, serde_json::from_slice(&body).unwrap())
+    }
+
     #[tokio::test]
     async fn events_without_query_token_is_unauthorized() {
         let temp_dir = tempdir().expect("tmp");
@@ -2523,6 +2567,129 @@ mod tests {
             .unwrap();
         let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(payload["message"], "payment capability invalid");
+    }
+
+    #[tokio::test]
+    async fn provisioning_profile_rejects_secret_shaped_payment_option_fields() {
+        let mut profile = valid_provisioning_profile();
+        profile["paymentCapability"]["options"][0]["merchantPrivateKey"] =
+            json!("should-not-be-in-machine-profile");
+        let (status, payload) = claim_with_profile(profile).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(payload["code"], "machine_profile_invalid");
+        assert!(!serde_json::to_string(&payload)
+            .unwrap()
+            .contains("merchantPrivateKey"));
+    }
+
+    #[tokio::test]
+    async fn provisioning_profile_rejects_unknown_profile_fields() {
+        let mut profile = valid_provisioning_profile();
+        profile["hardwareProfile"]["controller"]["diagnostics"] = json!({"enabled": true});
+
+        let (status, payload) = claim_with_profile(profile).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(payload["code"], "machine_profile_invalid");
+    }
+
+    #[tokio::test]
+    async fn provisioning_profile_rejects_local_discovery_fields() {
+        let mut profile = valid_provisioning_profile();
+        profile["hardwareProfile"]["controller"]["serialPortPath"] = json!("/dev/ttyUSB0");
+        profile["hardwareProfile"]["controller"]["usbVendorId"] = json!("1A86");
+
+        let (status, payload) = claim_with_profile(profile).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(payload["code"], "machine_profile_invalid");
+    }
+
+    #[tokio::test]
+    async fn provisioning_profile_rejects_stock_and_catalog_fields() {
+        let mut profile = valid_provisioning_profile();
+        profile["hardwareProfile"]["stock"] = json!({"slots": []});
+        profile["paymentCapability"]["catalogSnapshot"] = json!({"items": []});
+
+        let (status, payload) = claim_with_profile(profile).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(payload["code"], "machine_profile_invalid");
+    }
+
+    #[tokio::test]
+    async fn provisioning_profile_rejects_payment_secret_fields() {
+        let mut profile = valid_provisioning_profile();
+        profile["paymentCapability"]["wechatPayMchPrivateKey"] =
+            json!("-----BEGIN PRIVATE KEY-----");
+        profile["paymentCapability"]["alipayAppPrivateKey"] = json!("secret");
+
+        let (status, payload) = claim_with_profile(profile).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(payload["code"], "machine_profile_invalid");
+        let text = serde_json::to_string(&payload).unwrap();
+        assert!(!text.contains("PRIVATE KEY"));
+        assert!(!text.contains("alipayAppPrivateKey"));
+    }
+
+    #[tokio::test]
+    async fn provisioning_persistence_failure_is_not_reported_as_invalid_profile_or_partial_secrets(
+    ) {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/machines/claim"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(valid_provisioning_profile()))
+            .mount(&server)
+            .await;
+
+        let temp_dir = tempdir().expect("tmp");
+        let app =
+            build_router(test_ipc_context(temp_dir.path(), "token-1", None, &server.uri()).await);
+        tokio::fs::remove_dir_all(temp_dir.path().join("logs"))
+            .await
+            .expect("remove logs dir");
+        tokio::fs::write(temp_dir.path().join("logs"), b"not-a-directory")
+            .await
+            .expect("replace logs dir with file");
+
+        let response = post_json(
+            &app,
+            "/v1/provisioning/claim",
+            "token-1",
+            json!({ "claimCode": "ABCD-2345" }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["code"], "machine_profile_persistence_failed");
+        let text = serde_json::to_string(&payload).unwrap();
+        assert!(!text.contains("vms_local-machine"));
+        assert!(!text.contains("vms_local-mqtt"));
+        assert!(!text.contains("mqtt-password"));
+
+        let config_response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/config")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(config_response.status(), StatusCode::OK);
+        let body = body::to_bytes(config_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let config: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(config["machineSecretConfigured"], false);
+        assert_eq!(config["mqttSigningSecretConfigured"], false);
+        assert_eq!(config["mqttPasswordConfigured"], false);
+        let config_text = serde_json::to_string(&config).unwrap();
+        assert!(!config_text.contains("vms_local-machine"));
+        assert!(!config_text.contains("vms_local-mqtt"));
+        assert!(!config_text.contains("mqtt-password"));
     }
 
     #[tokio::test]
