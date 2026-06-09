@@ -1,20 +1,24 @@
 import {
   BadRequestException,
+  ConflictException,
   Inject,
   Injectable,
   Logger,
   NotFoundException,
   OnApplicationShutdown,
   OnModuleInit,
+  UnauthorizedException,
 } from "@nestjs/common";
 import {
   and,
   count,
   desc,
   eq,
+  gt,
   inArray,
   inventories,
   isNull,
+  machineClaimCodes,
   machinePlanogramSlots,
   machinePlanogramVersions,
   machineSlots,
@@ -40,7 +44,11 @@ import {
   type CommandAckPayload,
   type EnvironmentControlResultPayload,
   type MachineEnvironmentControlRequest,
+  type MachineClaimRequest,
+  type GenerateMachineClaimCodeRequest,
+  type MachineProvisioningProfile,
   type MachinePlanogramSlot,
+  type GenerateMachineClaimCodeResponse,
   type PublishMachinePlanogramVersion,
 } from "@vem/shared";
 import { z } from "zod";
@@ -53,6 +61,13 @@ import { DRIZZLE_CLIENT } from "../database/database.constants";
 import { MachineCredentialService } from "../machine-auth/machine-credential.service";
 import { MqttSignatureService } from "../mqtt/mqtt-signature.service";
 import { MqttService } from "../mqtt/mqtt.service";
+import { PaymentProviderConfigService } from "../payments/payment-provider-config.service";
+import {
+  digestMachineClaimCodeLookup,
+  generateHumanMachineClaimCode,
+  hashMachineClaimCodeVerifier,
+  verifyMachineClaimCode,
+} from "./machine-claim-code.util";
 
 type PageQueryInput = z.infer<typeof pageQuerySchema>;
 type CreateMachineInput = z.infer<typeof createMachineSchema>;
@@ -66,8 +81,78 @@ type MachineIdentity = {
   code: string;
 };
 
+type MachineClaimCodeRecord = typeof machineClaimCodes.$inferSelect;
+type MachineClaimCandidate = {
+  id: string;
+  machineId: string;
+  verifierHash: string;
+  purpose: MachineClaimCodeRecord["purpose"];
+  state: MachineClaimCodeRecord["state"];
+  failedAttemptCount: number;
+  maxFailedAttempts: number;
+  expiresAt: Date;
+  consumedAt: Date | null;
+  revokedAt: Date | null;
+  lockedAt: Date | null;
+  machineCode: string;
+  machineName: string;
+  machineLocationText: string | null;
+  machineStatus: MachineProvisioningProfile["machine"]["status"];
+  machineMqttClientId: string | null;
+  machineSecretVersion: number;
+};
+
+const MACHINE_CLAIM_CODE_MAX_FAILED_ATTEMPTS = 5;
+const MACHINE_CLAIM_CODES_MACHINE_OPEN_UNIQUE =
+  "machine_claim_codes_machine_open_unique";
+
 function toIso(value: Date | string): string {
   return value instanceof Date ? value.toISOString() : value;
+}
+
+function resolveMachineClaimCodeState(
+  claimCode: MachineClaimCodeRecord,
+  now: Date,
+): GenerateMachineClaimCodeResponse["state"] {
+  if (
+    claimCode.state === "pending" &&
+    claimCode.expiresAt.getTime() <= now.getTime()
+  ) {
+    return "expired";
+  }
+  return claimCode.state;
+}
+
+function machineClaimCodeSnapshot(
+  machine: MachineIdentity,
+  claimCode: MachineClaimCodeRecord,
+  now: Date,
+) {
+  return {
+    id: claimCode.id,
+    machineId: machine.id,
+    machineCode: machine.code,
+    purpose: claimCode.purpose,
+    state: resolveMachineClaimCodeState(claimCode, now),
+    expiresAt: toIso(claimCode.expiresAt),
+    failedAttemptCount: claimCode.failedAttemptCount,
+    maxFailedAttempts: claimCode.maxFailedAttempts,
+    createdAt: toIso(claimCode.createdAt),
+    consumedAt: claimCode.consumedAt ? toIso(claimCode.consumedAt) : null,
+    revokedAt: claimCode.revokedAt ? toIso(claimCode.revokedAt) : null,
+    lockedAt: claimCode.lockedAt ? toIso(claimCode.lockedAt) : null,
+  };
+}
+
+function isMachineClaimCodeOpenUniqueViolation(error: unknown): boolean {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+  const maybeError = error as { code?: unknown; constraint?: unknown };
+  return (
+    maybeError.code === "23505" &&
+    maybeError.constraint === MACHINE_CLAIM_CODES_MACHINE_OPEN_UNIQUE
+  );
 }
 
 function planogramSlotValues(
@@ -178,6 +263,7 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
   constructor(
     @Inject(DRIZZLE_CLIENT) private readonly db: DrizzleClient,
     private readonly machineCredentialService: MachineCredentialService,
+    private readonly paymentProviderConfigService: PaymentProviderConfigService,
     private readonly auditService: AuditService,
     private readonly mqttService: MqttService,
     private readonly mqttSignatureService: MqttSignatureService,
@@ -912,12 +998,492 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
     }
   }
 
+  async generateMachineClaimCode(
+    machineId: string,
+    adminUserId: string,
+    input: GenerateMachineClaimCodeRequest = { purpose: "first_claim" },
+  ): Promise<GenerateMachineClaimCodeResponse> {
+    const [machine] = await this.db
+      .select({
+        id: machines.id,
+        code: machines.code,
+        secretHash: machines.secretHash,
+        secretVersion: machines.secretVersion,
+      })
+      .from(machines)
+      .where(and(eq(machines.id, machineId), isNull(machines.deletedAt)))
+      .limit(1);
+
+    if (!machine) {
+      throw new NotFoundException("Machine not found");
+    }
+    if (
+      input.purpose === "first_claim" &&
+      (machine.secretHash || machine.secretVersion > 1)
+    ) {
+      throw new ConflictException(
+        "Machine is already claimed; generate a reclaim code explicitly",
+      );
+    }
+    if (
+      input.purpose === "reclaim" &&
+      !machine.secretHash &&
+      machine.secretVersion <= 1
+    ) {
+      throw new ConflictException(
+        "Machine has not been claimed; generate a first-claim code",
+      );
+    }
+
+    const now = new Date();
+    const openClaimCodes = await this.db
+      .select({
+        id: machineClaimCodes.id,
+        state: machineClaimCodes.state,
+        expiresAt: machineClaimCodes.expiresAt,
+      })
+      .from(machineClaimCodes)
+      .where(
+        and(
+          eq(machineClaimCodes.machineId, machine.id),
+          inArray(machineClaimCodes.state, ["pending", "locked"]),
+        ),
+      );
+    const activeClaimCode = openClaimCodes.find(
+      (claimCode) =>
+        claimCode.state === "locked" ||
+        claimCode.expiresAt.getTime() > now.getTime(),
+    );
+    if (activeClaimCode) {
+      throw new ConflictException("Machine already has an active claim code");
+    }
+    const expiredPendingClaimCodeIds = openClaimCodes
+      .filter(
+        (claimCode) =>
+          claimCode.state === "pending" &&
+          claimCode.expiresAt.getTime() <= now.getTime(),
+      )
+      .map((claimCode) => claimCode.id);
+    if (expiredPendingClaimCodeIds.length > 0) {
+      await this.db
+        .update(machineClaimCodes)
+        .set({ state: "expired", updatedAt: now })
+        .where(inArray(machineClaimCodes.id, expiredPendingClaimCodeIds));
+    }
+
+    const claimCode = generateHumanMachineClaimCode();
+    const expiresAt = new Date(
+      now.getTime() + this.config.machineClaimCodeTtlSeconds * 1_000,
+    );
+    let created: MachineClaimCodeRecord;
+    try {
+      [created] = await this.db
+        .insert(machineClaimCodes)
+        .values({
+          machineId: machine.id,
+          lookupDigest: digestMachineClaimCodeLookup(
+            claimCode,
+            this.config.machineClaimLookupHmacKey,
+          ),
+          verifierHash: hashMachineClaimCodeVerifier(claimCode),
+          purpose: input.purpose,
+          state: "pending",
+          failedAttemptCount: 0,
+          maxFailedAttempts: MACHINE_CLAIM_CODE_MAX_FAILED_ATTEMPTS,
+          expiresAt,
+          createdByAdminUserId: adminUserId,
+        })
+        .returning();
+    } catch (error) {
+      if (isMachineClaimCodeOpenUniqueViolation(error)) {
+        throw new ConflictException("Machine already has an active claim code");
+      }
+      throw error;
+    }
+
+    const snapshot = machineClaimCodeSnapshot(machine, created, now);
+    await this.auditService.record({
+      adminUserId,
+      action:
+        input.purpose === "reclaim"
+          ? "machines.claimCode.reclaim.generate"
+          : "machines.claimCode.generate",
+      resourceType: "machine",
+      resourceId: machine.id,
+      afterJson: {
+        claimCodeId: created.id,
+        machineCode: machine.code,
+        purpose: snapshot.purpose,
+        state: snapshot.state,
+        expiresAt: snapshot.expiresAt,
+      },
+    });
+
+    return {
+      ...snapshot,
+      claimCode,
+    };
+  }
+
+  async claimMachine(
+    input: MachineClaimRequest,
+    now = new Date(),
+  ): Promise<MachineProvisioningProfile> {
+    const lookupDigest = digestMachineClaimCodeLookup(
+      input.claimCode,
+      this.config.machineClaimLookupHmacKey,
+    );
+    const [claimCode] = await this.db
+      .select({
+        id: machineClaimCodes.id,
+        machineId: machineClaimCodes.machineId,
+        verifierHash: machineClaimCodes.verifierHash,
+        purpose: machineClaimCodes.purpose,
+        state: machineClaimCodes.state,
+        failedAttemptCount: machineClaimCodes.failedAttemptCount,
+        maxFailedAttempts: machineClaimCodes.maxFailedAttempts,
+        expiresAt: machineClaimCodes.expiresAt,
+        consumedAt: machineClaimCodes.consumedAt,
+        revokedAt: machineClaimCodes.revokedAt,
+        lockedAt: machineClaimCodes.lockedAt,
+        machineCode: machines.code,
+        machineName: machines.name,
+        machineLocationText: machines.locationText,
+        machineStatus: machines.status,
+        machineMqttClientId: machines.mqttClientId,
+        machineSecretVersion: machines.secretVersion,
+      })
+      .from(machineClaimCodes)
+      .innerJoin(machines, eq(machines.id, machineClaimCodes.machineId))
+      .where(
+        and(
+          eq(machineClaimCodes.lookupDigest, lookupDigest),
+          isNull(machines.deletedAt),
+        ),
+      )
+      .limit(1);
+
+    if (!claimCode) {
+      // Truly unmatched guesses have no claim-code row to update. Return the
+      // same public error without leaking whether any claim exists.
+      throw this.invalidMachineClaimCode();
+    }
+    if (!verifyMachineClaimCode(input.claimCode, claimCode.verifierHash)) {
+      await this.recordFailedMachineClaim(claimCode, now);
+      throw this.invalidMachineClaimCode();
+    }
+    if (
+      claimCode.state !== "pending" ||
+      claimCode.expiresAt.getTime() <= now.getTime()
+    ) {
+      await this.recordFailedMachineClaim(claimCode, now);
+      throw this.invalidMachineClaimCode();
+    }
+
+    const bundle = this.machineCredentialService.createBundle();
+    const mqttClientId =
+      claimCode.machineMqttClientId ?? `vem-machine-${claimCode.machineCode}`;
+
+    const { consumed, rotated } = await this.db.transaction(async (tx) => {
+      const [consumedClaimCode] = await tx
+        .update(machineClaimCodes)
+        .set({
+          state: "consumed",
+          consumedAt: now,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(machineClaimCodes.id, claimCode.id),
+            eq(machineClaimCodes.state, "pending"),
+            gt(machineClaimCodes.expiresAt, now),
+          ),
+        )
+        .returning({ id: machineClaimCodes.id });
+      if (!consumedClaimCode) {
+        throw this.invalidMachineClaimCode();
+      }
+
+      const [rotatedMachine] = await tx
+        .update(machines)
+        .set({
+          secretHash: bundle.secretHash,
+          secretVersion: sql`${machines.secretVersion} + 1`,
+          secretRotatedAt: now,
+          credentialRevokedAt: null,
+          mqttClientId,
+          mqttSigningSecretEncryptedJson:
+            bundle.mqttSigningSecretEncryptedJson as Record<string, unknown>,
+          updatedAt: now,
+        })
+        .where(
+          and(eq(machines.id, claimCode.machineId), isNull(machines.deletedAt)),
+        )
+        .returning({
+          id: machines.id,
+          secretVersion: machines.secretVersion,
+        });
+      if (!rotatedMachine) {
+        throw this.invalidMachineClaimCode();
+      }
+      return { consumed: consumedClaimCode, rotated: rotatedMachine };
+    });
+
+    await this.auditService.record({
+      adminUserId: null,
+      action:
+        claimCode.purpose === "reclaim"
+          ? "machines.claimCode.reclaim.consume"
+          : "machines.claimCode.consume",
+      resourceType: "machine",
+      resourceId: claimCode.machineId,
+      afterJson: {
+        claimCodeId: consumed.id,
+        machineCode: claimCode.machineCode,
+        ...(claimCode.purpose === "reclaim"
+          ? { purpose: claimCode.purpose }
+          : {}),
+        state: "consumed",
+        secretVersion: rotated.secretVersion,
+        claimedAt: toIso(now),
+      },
+    });
+
+    return {
+      machine: {
+        id: claimCode.machineId,
+        code: claimCode.machineCode,
+        name: claimCode.machineName,
+        status: claimCode.machineStatus,
+        locationText: claimCode.machineLocationText,
+      },
+      credentials: {
+        machineSecret: bundle.machineSecret,
+        machineSecretVersion: rotated.secretVersion,
+        mqttSigningSecret: bundle.mqttSigningSecret,
+        mqttConnection: {
+          url: this.config.mqttUrl,
+          clientId: mqttClientId,
+          ...(this.config.mqttUsername
+            ? { username: this.config.mqttUsername }
+            : {}),
+          ...(this.config.mqttPassword
+            ? { password: this.config.mqttPassword }
+            : {}),
+        },
+      },
+      runtimeEndpoints: {
+        apiBasePath: "/api",
+        machineAuthTokenPath: "/api/machine-auth/token",
+        machineApiBasePath: `/api/machines/${claimCode.machineCode}`,
+        mqttTopicPrefix: `vem/machines/${claimCode.machineCode}`,
+      },
+      hardwareProfile: {
+        profile: "production",
+        controller: {
+          required: true,
+          protocol: "vem-vending-controller",
+        },
+        paymentScanner: {
+          required: true,
+          supportsPaymentCode: true,
+        },
+        vision: {
+          required: false,
+          supportsRecommendations: true,
+        },
+      },
+      paymentCapability: {
+        profile: "production",
+        qrCodeEnabled: true,
+        paymentCodeEnabled: true,
+        serverTime: toIso(now),
+      },
+      metadata: {
+        profileVersion: 1,
+        claimCodeId: consumed.id,
+        claimedAt: toIso(now),
+        serverTime: toIso(now),
+      },
+    };
+  }
+
+  private async recordFailedMachineClaim(
+    claimCode: MachineClaimCandidate,
+    now: Date,
+  ): Promise<void> {
+    const expired = claimCode.expiresAt.getTime() <= now.getTime();
+    const state =
+      expired && claimCode.state === "pending"
+        ? "expired"
+        : claimCode.state === "pending"
+          ? sql`case when ${machineClaimCodes.failedAttemptCount} + 1 >= ${machineClaimCodes.maxFailedAttempts} then 'locked'::machine_claim_code_state else ${machineClaimCodes.state} end`
+          : claimCode.state;
+    const lockedAt =
+      claimCode.state === "pending" && !expired
+        ? sql`case when ${machineClaimCodes.failedAttemptCount} + 1 >= ${machineClaimCodes.maxFailedAttempts} and ${machineClaimCodes.lockedAt} is null then ${now} else ${machineClaimCodes.lockedAt} end`
+        : claimCode.lockedAt;
+
+    await this.db
+      .update(machineClaimCodes)
+      .set({
+        failedAttemptCount: sql`${machineClaimCodes.failedAttemptCount} + 1`,
+        state,
+        lockedAt,
+        updatedAt: now,
+      })
+      .where(eq(machineClaimCodes.id, claimCode.id));
+  }
+
+  private invalidMachineClaimCode(): UnauthorizedException {
+    return new UnauthorizedException("Invalid or expired machine claim code");
+  }
+
+  async listMachineClaimCodes(machineId: string, now = new Date()) {
+    const [machine] = await this.db
+      .select({ id: machines.id, code: machines.code })
+      .from(machines)
+      .where(and(eq(machines.id, machineId), isNull(machines.deletedAt)))
+      .limit(1);
+
+    if (!machine) {
+      throw new NotFoundException("Machine not found");
+    }
+
+    const claimCodes = await this.db
+      .select()
+      .from(machineClaimCodes)
+      .where(eq(machineClaimCodes.machineId, machine.id))
+      .orderBy(desc(machineClaimCodes.createdAt));
+
+    return {
+      items: claimCodes.map((claimCode) =>
+        machineClaimCodeSnapshot(machine, claimCode, now),
+      ),
+    };
+  }
+
+  async getMachineClaimCode(
+    machineId: string,
+    claimCodeId: string,
+    now = new Date(),
+  ) {
+    const [machine] = await this.db
+      .select({ id: machines.id, code: machines.code })
+      .from(machines)
+      .where(and(eq(machines.id, machineId), isNull(machines.deletedAt)))
+      .limit(1);
+
+    if (!machine) {
+      throw new NotFoundException("Machine not found");
+    }
+
+    const [claimCode] = await this.db
+      .select()
+      .from(machineClaimCodes)
+      .where(
+        and(
+          eq(machineClaimCodes.id, claimCodeId),
+          eq(machineClaimCodes.machineId, machine.id),
+        ),
+      )
+      .limit(1);
+
+    if (!claimCode) {
+      throw new NotFoundException("Machine claim code not found");
+    }
+
+    return machineClaimCodeSnapshot(machine, claimCode, now);
+  }
+
+  async revokeMachineClaimCode(
+    machineId: string,
+    claimCodeId: string,
+    adminUserId: string,
+    now = new Date(),
+  ) {
+    const [machine] = await this.db
+      .select({ id: machines.id, code: machines.code })
+      .from(machines)
+      .where(and(eq(machines.id, machineId), isNull(machines.deletedAt)))
+      .limit(1);
+
+    if (!machine) {
+      throw new NotFoundException("Machine not found");
+    }
+
+    const [current] = await this.db
+      .select()
+      .from(machineClaimCodes)
+      .where(
+        and(
+          eq(machineClaimCodes.id, claimCodeId),
+          eq(machineClaimCodes.machineId, machine.id),
+        ),
+      )
+      .limit(1);
+
+    if (!current) {
+      throw new NotFoundException("Machine claim code not found");
+    }
+    if (
+      current.state !== "pending" ||
+      current.expiresAt.getTime() <= now.getTime()
+    ) {
+      throw new ConflictException("Only pending claim codes can be revoked");
+    }
+
+    const [revoked] = await this.db
+      .update(machineClaimCodes)
+      .set({
+        state: "revoked",
+        revokedAt: now,
+        revokedByAdminUserId: adminUserId,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(machineClaimCodes.id, current.id),
+          eq(machineClaimCodes.state, "pending"),
+        ),
+      )
+      .returning();
+
+    if (!revoked) {
+      throw new ConflictException("Only pending claim codes can be revoked");
+    }
+
+    const snapshot = machineClaimCodeSnapshot(machine, revoked, now);
+    await this.auditService.record({
+      adminUserId,
+      action:
+        current.purpose === "reclaim"
+          ? "machines.claimCode.reclaim.revoke"
+          : "machines.claimCode.revoke",
+      resourceType: "machine",
+      resourceId: machine.id,
+      beforeJson: {
+        claimCodeId: current.id,
+        machineCode: machine.code,
+        ...(current.purpose === "reclaim" ? { purpose: current.purpose } : {}),
+        state: machineClaimCodeSnapshot(machine, current, now).state,
+      },
+      afterJson: {
+        claimCodeId: revoked.id,
+        machineCode: machine.code,
+        ...(revoked.purpose === "reclaim" ? { purpose: revoked.purpose } : {}),
+        state: snapshot.state,
+      },
+    });
+
+    return snapshot;
+  }
+
   async rotateMachineCredentials(id: string, adminUserId: string) {
     const [current] = await this.db
       .select({
         id: machines.id,
         code: machines.code,
-        secretVersion: machines.secretVersion,
       })
       .from(machines)
       .where(and(eq(machines.id, id), isNull(machines.deletedAt)));
@@ -926,12 +1492,11 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
     }
 
     const bundle = this.machineCredentialService.createBundle();
-    const nextVersion = current.secretVersion + 1;
     const [updated] = await this.db
       .update(machines)
       .set({
         secretHash: bundle.secretHash,
-        secretVersion: nextVersion,
+        secretVersion: sql`${machines.secretVersion} + 1`,
         secretRotatedAt: new Date(),
         credentialRevokedAt: null,
         mqttSigningSecretEncryptedJson:
@@ -939,20 +1504,27 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
         updatedAt: new Date(),
       })
       .where(eq(machines.id, current.id))
-      .returning({ id: machines.id, code: machines.code });
+      .returning({
+        id: machines.id,
+        code: machines.code,
+        secretVersion: machines.secretVersion,
+      });
 
     await this.auditService.record({
       adminUserId,
       action: "machines.credentials.rotate",
       resourceType: "machine",
       resourceId: current.id,
-      afterJson: { machineCode: current.code, secretVersion: nextVersion },
+      afterJson: {
+        machineCode: current.code,
+        secretVersion: updated.secretVersion,
+      },
     });
 
     return {
       machineId: updated.id,
       machineCode: updated.code,
-      secretVersion: nextVersion,
+      secretVersion: updated.secretVersion,
       machineSecret: bundle.machineSecret,
       mqttSigningSecret: bundle.mqttSigningSecret,
     };

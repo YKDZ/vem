@@ -134,18 +134,19 @@ pub async fn run_console_with_token(
 
     write_ready_file(&print_ready_file, ipc_handle.addr, &ipc_token).await?;
 
+    let stop_token = runtime.shutdown_token();
     let cache_updates = tokio::spawn(cache_daemon_events(
         events_tx.subscribe(),
         ipc_ctx.ui.status_cache.clone(),
+        Some(stop_token.clone()),
     ));
     let scanner_runtime = ScannerRuntime::from_config(
         &runtime_config.public,
         tx_raw.clone(),
         events_tx.clone(),
-        runtime.shutdown_token(),
+        stop_token.clone(),
     );
     let scanner = tokio::spawn(scanner_runtime.run());
-    let stop_token = runtime.shutdown_token();
     let payment_watcher = tokio::spawn(run_payment_code_watcher(PaymentCodeWatcherInput {
         rx_raw,
         state: state.clone(),
@@ -203,6 +204,7 @@ pub async fn run_console_with_token(
     tokio::select! {
         signal = wait_for_local_signal() => signal?,
         _ = external_shutdown.cancelled() => {}
+        _ = stop_token.cancelled() => {}
     };
 
     runtime
@@ -234,8 +236,11 @@ fn maybe_spawn_mqtt_task(
         None => return Ok(None),
     };
 
-    let mut options =
-        MqttSyncRuntime::mqtt_options_from_config(&machine_code, &runtime_config.mqtt_url)?;
+    let mut options = MqttSyncRuntime::mqtt_options_from_config(
+        &machine_code,
+        &runtime_config.mqtt_url,
+        runtime_config.mqtt_client_id.as_deref(),
+    )?;
     if let Some(username) = &runtime_config.mqtt_username {
         options.set_credentials(
             username,
@@ -331,10 +336,16 @@ async fn write_ready_file(path: &Path, bind: SocketAddr, token: &str) -> Result<
     tokio::fs::create_dir_all(parent)
         .await
         .map_err(|error| format!("create ready file parent failed: {error}"))?;
+    let advanced_maintenance_config = std::env::var("VEM_ENABLE_ADVANCED_MAINTENANCE_CONFIG")
+        .map(|value| value == "true")
+        .unwrap_or(false);
     let payload = serde_json::json!({
         "healthzUrl": format!("http://{}/healthz", bind),
         "readyzUrl": format!("http://{}/readyz", bind),
         "ipcToken": token,
+        "runtimeFlags": {
+            "advancedMaintenanceConfig": advanced_maintenance_config,
+        },
     });
     tokio::fs::write(
         path,
@@ -364,6 +375,7 @@ async fn run_hardware_health_watcher(
 async fn cache_daemon_events(
     mut events: broadcast::Receiver<DaemonEvent>,
     status_cache: ipc::RuntimeStatusCache,
+    runtime_shutdown: Option<CancellationToken>,
 ) -> Result<(), String> {
     while let Ok(event) = events.recv().await {
         let updated_at = crate::state::store::now_iso();
@@ -400,6 +412,11 @@ async fn cache_daemon_events(
                 cache.updated_at = updated_at;
             }
             DaemonEvent::TransactionChanged { .. } => {}
+            DaemonEvent::RuntimeReconfigureRequested { .. } => {
+                if let Some(shutdown) = &runtime_shutdown {
+                    shutdown.cancel();
+                }
+            }
             DaemonEvent::ReadyChanged { .. }
             | DaemonEvent::HealthChanged { .. }
             | DaemonEvent::RemoteOpResult { .. } => {}
@@ -430,6 +447,7 @@ async fn wait_for_local_signal() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::default_public_config;
     use std::net::{IpAddr, Ipv4Addr};
 
     #[test]
@@ -445,5 +463,40 @@ mod tests {
         let data_dir = std::path::Path::new("/tmp/vem-daemon-data");
         let path = default_ready_file_path(data_dir);
         assert_eq!(path, data_dir.join("daemon-ready.json"));
+    }
+
+    #[tokio::test]
+    async fn runtime_reconfigure_event_cancels_runtime_shutdown_token() {
+        let temp = tempfile::tempdir().expect("temp");
+        let state = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("state");
+        let status_cache = ipc::RuntimeStatusCache::new(&default_public_config(), state).await;
+        let (events_tx, _) = broadcast::channel(8);
+        let runtime_shutdown = CancellationToken::new();
+        let task = tokio::spawn(cache_daemon_events(
+            events_tx.subscribe(),
+            status_cache,
+            Some(runtime_shutdown.clone()),
+        ));
+
+        events_tx
+            .send(DaemonEvent::RuntimeReconfigureRequested {
+                event_id: "evt-reconfigure".to_string(),
+                updated_at: crate::state::store::now_iso(),
+                reason: "machine_provisioned".to_string(),
+                machine_code: Some("M001".to_string()),
+            })
+            .expect("send event");
+
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            runtime_shutdown.cancelled(),
+        )
+        .await
+        .expect("runtime shutdown requested");
+
+        task.abort();
+        let _ = task.await;
     }
 }

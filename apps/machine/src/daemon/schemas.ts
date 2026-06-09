@@ -100,6 +100,15 @@ export const configSummarySchema = z.object({
   machineSecretConfigured: z.boolean(),
   mqttSigningSecretConfigured: z.boolean(),
   mqttPasswordConfigured: z.boolean(),
+  provisioned: z.boolean().default(false),
+  provisioningIssues: z.array(z.string()).default([]),
+});
+
+export const provisioningClaimResponseSchema = z.object({
+  status: z.literal("provisioned"),
+  machineCode: z.string(),
+  restartRequested: z.boolean(),
+  config: configSummarySchema,
 });
 
 export const transactionSnapshotSchema = z.object({
@@ -303,6 +312,9 @@ export const daemonEventSchema = z.discriminatedUnion("type", [
 export type HealthSnapshot = z.infer<typeof healthSnapshotSchema>;
 export type ReadySnapshot = z.infer<typeof readySnapshotSchema>;
 export type ConfigSummary = z.infer<typeof configSummarySchema>;
+export type ProvisioningClaimResponse = z.infer<
+  typeof provisioningClaimResponseSchema
+>;
 export type TransactionSnapshot = z.infer<typeof transactionSnapshotSchema>;
 export type SyncStatus = z.infer<typeof syncStatusSchema>;
 export type ScannerStatus = z.infer<typeof scannerStatusSchema>;

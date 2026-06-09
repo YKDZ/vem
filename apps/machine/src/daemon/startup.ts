@@ -1,4 +1,5 @@
 import type {
+  ConfigSummary,
   HealthSnapshot,
   ReadySnapshot,
   TransactionSnapshot,
@@ -6,6 +7,7 @@ import type {
 
 export type StartupRoute =
   | "/maintenance"
+  | "/provisioning"
   | "/offline"
   | "/catalog"
   | "/payment"
@@ -15,10 +17,13 @@ export type StartupRoute =
 export function routeForStartup(input: {
   daemonAvailable: boolean;
   health: HealthSnapshot | null;
+  config?: ConfigSummary | null;
   ready: ReadySnapshot | null;
   transaction: TransactionSnapshot | null;
 }): StartupRoute {
   if (!input.daemonAvailable) return "/maintenance";
+  if (!input.config) return "/provisioning";
+  if (input.config?.provisioned === false) return "/provisioning";
   if (!input.health?.configConfigured) return "/maintenance";
 
   const next = input.transaction?.nextAction;

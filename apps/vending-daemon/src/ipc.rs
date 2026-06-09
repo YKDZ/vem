@@ -18,7 +18,10 @@ use tower_http::cors::{Any, CorsLayer};
 
 use crate::{
     backend::BackendClient,
-    config::{ConfigStore, MachineConfigUpdateRequest, MachinePublicConfig},
+    config::{
+        ConfigStore, MachineConfigUpdateRequest, MachinePublicConfig,
+        ProductionMachinePaymentCapability,
+    },
     events::DaemonEvent,
     logs,
     state::{
@@ -161,6 +164,7 @@ pub fn build_router(ctx: IpcContext) -> Router {
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
         .route("/v1/config", get(get_config).put(put_config))
+        .route("/v1/provisioning/claim", post(claim_machine))
         .route("/v1/catalog", get(catalog_snapshot).post(refresh_catalog))
         .route("/v1/sale-view", get(sale_view))
         .route("/v1/sale-readiness", get(sale_readiness))
@@ -335,6 +339,126 @@ struct SubmitPayment {
     order_no: String,
     auth_code: String,
     source: String,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ClaimMachineRequest {
+    claim_code: String,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ClaimMachineResponse {
+    status: &'static str,
+    machine_code: String,
+    restart_requested: bool,
+    config: crate::config::MachinePublicRuntimeConfig,
+}
+
+fn backend_error_json(error: &str) -> Option<serde_json::Value> {
+    let start = error.find('{')?;
+    serde_json::from_str(&error[start..]).ok()
+}
+
+fn backend_http_status(error: &str) -> Option<u16> {
+    let rest = error.strip_prefix("BACKEND_HTTP_ERROR: ")?;
+    rest.split_whitespace().next()?.parse().ok()
+}
+
+fn safe_machine_claim_code(code: &str) -> Option<&'static str> {
+    match code {
+        "machine_claim_invalid" => Some("machine_claim_invalid"),
+        "machine_claim_invalid_or_expired" => Some("machine_claim_invalid_or_expired"),
+        "machine_claim_expired" => Some("machine_claim_expired"),
+        "machine_claim_used" | "machine_claim_consumed" => Some("machine_claim_used"),
+        "machine_claim_revoked" => Some("machine_claim_revoked"),
+        "machine_claim_locked" => Some("machine_claim_locked"),
+        "machine_claim_backend_unavailable" => Some("machine_claim_backend_unavailable"),
+        _ => None,
+    }
+}
+
+fn machine_claim_message(code: &str) -> &'static str {
+    match code {
+        "machine_claim_backend_unavailable" => {
+            "machine claim backend unavailable; check network connectivity"
+        }
+        "machine_claim_locked" => "machine claim code cannot be used; contact an administrator",
+        "machine_claim_revoked" => "machine claim code cannot be used; contact an administrator",
+        "machine_claim_used" => "machine claim code cannot be used; contact an administrator",
+        "machine_claim_expired" => "machine claim code expired; contact an administrator",
+        "machine_claim_invalid" | "machine_claim_invalid_or_expired" => {
+            "machine claim code invalid or expired; verify the code with an administrator"
+        }
+        _ => "machine claim code invalid or expired; verify the code with an administrator",
+    }
+}
+
+fn machine_claim_error_response(error: &str) -> (StatusCode, Json<ErrorMessage>) {
+    if error.starts_with("backend response parse failed:") {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorMessage {
+                code: "machine_profile_invalid",
+                message: "provisioning profile invalid".to_string(),
+            }),
+        );
+    }
+
+    if error.starts_with("backend request failed:")
+        || error.starts_with("backend read response failed:")
+        || error == "BACKEND_OFFLINE"
+        || error == "BACKEND_AUTH_FAILED"
+    {
+        return (
+            StatusCode::BAD_GATEWAY,
+            Json(ErrorMessage {
+                code: "machine_claim_backend_unavailable",
+                message: machine_claim_message("machine_claim_backend_unavailable").to_string(),
+            }),
+        );
+    }
+
+    let backend_payload = backend_error_json(error);
+    let code = backend_payload
+        .as_ref()
+        .and_then(|value| {
+            value
+                .get("code")
+                .and_then(|value| value.as_str())
+                .and_then(safe_machine_claim_code)
+        })
+        .unwrap_or_else(|| {
+            let backend_message = backend_payload
+                .as_ref()
+                .and_then(|value| value.get("message"))
+                .and_then(|value| value.as_str())
+                .unwrap_or_default();
+            if backend_message.contains("Invalid or expired machine claim code") {
+                return "machine_claim_invalid_or_expired";
+            }
+            if backend_http_status(error).is_some_and(|status| {
+                status == 401 || status == 403 || status == 404 || status >= 500
+            }) {
+                "machine_claim_backend_unavailable"
+            } else {
+                "machine_claim_invalid_or_expired"
+            }
+        });
+    let status = if code == "machine_claim_backend_unavailable" {
+        StatusCode::BAD_GATEWAY
+    } else {
+        StatusCode::BAD_REQUEST
+    };
+
+    (
+        status,
+        Json(ErrorMessage {
+            code,
+            message: machine_claim_message(code).to_string(),
+        }),
+    )
 }
 
 #[derive(serde::Deserialize)]
@@ -578,6 +702,75 @@ async fn put_config(
             StatusCode::BAD_REQUEST,
             Json(ErrorMessage {
                 code: "config_invalid",
+                message: error,
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn claim_machine(
+    State(ctx): State<IpcContext>,
+    headers: HeaderMap,
+    Json(payload): Json<ClaimMachineRequest>,
+) -> impl IntoResponse {
+    if let Err((status, error)) = require_token(&headers, &ctx.token).await {
+        return (status, error).into_response();
+    }
+
+    let claim_code = payload.claim_code.trim().to_ascii_uppercase();
+    let public = match ctx.config_store.load_public_config().await {
+        Ok(public) => public,
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorMessage {
+                    code: "config_load_failed",
+                    message: error,
+                }),
+            )
+                .into_response();
+        }
+    };
+    let client = BackendClient::new(public.api_base_url);
+    let profile = match client.claim_machine(&claim_code).await {
+        Ok(profile) => profile,
+        Err(error) => {
+            return machine_claim_error_response(&error).into_response();
+        }
+    };
+    let machine_code = profile.machine.code.clone();
+    match ctx.config_store.apply_provisioning_profile(profile).await {
+        Ok(config) => {
+            let _ = ctx.events.send(DaemonEvent::RuntimeReconfigureRequested {
+                event_id: uuid::Uuid::new_v4().simple().to_string(),
+                updated_at: crate::state::store::now_iso(),
+                reason: "machine_provisioned".to_string(),
+                machine_code: Some(machine_code.clone()),
+            });
+            (
+                StatusCode::OK,
+                Json(ClaimMachineResponse {
+                    status: "provisioned",
+                    machine_code,
+                    restart_requested: true,
+                    config,
+                }),
+            )
+                .into_response()
+        }
+        Err(error) if error.starts_with("provisioning persistence failed:") => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorMessage {
+                code: "machine_profile_persistence_failed",
+                message: "machine profile persistence failed; retry provisioning".to_string(),
+            }),
+        )
+            .into_response(),
+        Err(error) => (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorMessage {
+                code: "machine_profile_invalid",
                 message: error,
             }),
         )
@@ -916,6 +1109,7 @@ async fn machine_sale_readiness_snapshot(
         && scanner.adapter == vending_core::scanner::PAYMENT_CODE_SOURCE_SERIAL_TEXT
         && scanner.code == "SCANNER_READY";
 
+    let payment_capability = load_machine_payment_capability(ctx).await;
     let payment_probe = ctx.ui.backend.get_payment_options().await;
     let platform_ready = payment_probe.is_ok();
     let mut payment_methods = Vec::new();
@@ -924,6 +1118,9 @@ async fn machine_sale_readiness_snapshot(
         match strict_payment_options(payload) {
             Ok(options) => {
                 for option in options {
+                    if !payment_method_allowed_by_capability(&option.method, &payment_capability) {
+                        continue;
+                    }
                     let mut ready = !option.disabled;
                     let mut disabled_reason = option.disabled_reason;
                     if option.method == "payment_code" && !scanner_ready {
@@ -970,12 +1167,16 @@ async fn machine_sale_readiness_snapshot(
     if !whole_machine_ready {
         blocking_codes.push("LOWER_CONTROLLER_UNAVAILABLE");
     }
+    if !slot_sale_safety_ready {
+        blocking_codes.push("NO_SALEABLE_SLOTS");
+    }
     let can_start_network_authorized_sale = platform_ready
         && machine_auth_ready
         && active_planogram_ready
         && payment_options_ready
         && sync_ready
-        && whole_machine_ready;
+        && whole_machine_ready
+        && slot_sale_safety_ready;
 
     Ok(serde_json::json!({
         "canStartNetworkAuthorizedSale": can_start_network_authorized_sale,
@@ -1072,6 +1273,40 @@ fn is_supported_payment_method(value: &str) -> bool {
 
 fn is_supported_payment_provider(value: &str) -> bool {
     matches!(value, "mock" | "wechat_pay" | "alipay")
+}
+
+fn default_production_payment_capability() -> ProductionMachinePaymentCapability {
+    ProductionMachinePaymentCapability {
+        profile: "production".to_string(),
+        qr_code_enabled: true,
+        payment_code_enabled: true,
+        server_time: crate::state::store::now_iso(),
+        options: vec![],
+        default_option_key: None,
+        default_provider_code: None,
+    }
+}
+
+async fn load_machine_payment_capability(ctx: &IpcContext) -> ProductionMachinePaymentCapability {
+    ctx.config_store
+        .load_public_config()
+        .await
+        .ok()
+        .and_then(|config| config.payment_capability)
+        .unwrap_or_else(default_production_payment_capability)
+}
+
+fn payment_method_allowed_by_capability(
+    method: &str,
+    capability: &ProductionMachinePaymentCapability,
+) -> bool {
+    match method {
+        "qr_code" => capability.qr_code_enabled,
+        "payment_code" => capability.payment_code_enabled,
+        // Mock remains backend/test-environment governed; production capability never enables it.
+        "mock" => true,
+        _ => false,
+    }
 }
 
 fn strict_payment_options(
@@ -1219,7 +1454,7 @@ async fn validate_create_order_intent(
         .and_then(|value| value.as_bool())
         .unwrap_or(false);
     if !can_start {
-        let codes = readiness
+        let blocking_codes = readiness
             .get("blockingCodes")
             .and_then(|value| value.as_array())
             .map(|codes| {
@@ -1227,11 +1462,17 @@ async fn validate_create_order_intent(
                     .iter()
                     .filter_map(|code| code.as_str())
                     .collect::<Vec<_>>()
-                    .join(",")
             })
-            .filter(|codes| !codes.is_empty())
-            .unwrap_or_else(|| "UNKNOWN_READINESS_BLOCKER".to_string());
-        return Err(format!("machine is not ready for network sale: {codes}"));
+            .unwrap_or_default();
+        let only_slot_saleability_blocked = blocking_codes == vec!["NO_SALEABLE_SLOTS"];
+        if !only_slot_saleability_blocked {
+            let codes = if blocking_codes.is_empty() {
+                "UNKNOWN_READINESS_BLOCKER".to_string()
+            } else {
+                blocking_codes.join(",")
+            };
+            return Err(format!("machine is not ready for network sale: {codes}"));
+        }
     }
     validate_selected_payment_option(&readiness, input)?;
 
@@ -1503,6 +1744,7 @@ async fn payment_options(State(ctx): State<IpcContext>, headers: HeaderMap) -> i
 
     match ctx.ui.backend.get_payment_options().await {
         Ok(mut payload) => {
+            let payment_capability = load_machine_payment_capability(&ctx).await;
             let scanner = ctx.ui.status_cache.scanner.read().await.clone();
             let mut default_option_key = serde_json::Value::Null;
             let mut default_provider_code = serde_json::Value::Null;
@@ -1510,6 +1752,14 @@ async fn payment_options(State(ctx): State<IpcContext>, headers: HeaderMap) -> i
                 .get_mut("options")
                 .and_then(|value| value.as_array_mut())
             {
+                options.retain(|option| {
+                    option
+                        .get("method")
+                        .and_then(|value| value.as_str())
+                        .is_some_and(|method| {
+                            payment_method_allowed_by_capability(method, &payment_capability)
+                        })
+                });
                 for option in options.iter_mut() {
                     let is_payment_code = option.get("method").and_then(|value| value.as_str())
                         == Some("payment_code");
@@ -1857,6 +2107,7 @@ mod tests {
 
         let mut public = default_public_config();
         public.machine_code = machine_code;
+        public.api_base_url = backend_base_url.to_string();
         config_store
             .save_public_config(public.clone())
             .await
@@ -1987,6 +2238,53 @@ mod tests {
         })
     }
 
+    fn valid_provisioning_profile() -> serde_json::Value {
+        json!({
+            "machine": {
+                "id": "550e8400-e29b-41d4-a716-446655440000",
+                "code": "M001",
+                "name": "Lobby",
+                "status": "offline",
+                "locationText": "1F"
+            },
+            "credentials": {
+                "machineSecret": "vms_local-machine-shared-secret-change-before-prod",
+                "machineSecretVersion": 2,
+                "mqttSigningSecret": "vms_local-mqtt-shared-secret-change-before-prod",
+                "mqttConnection": {
+                    "url": "mqtt://broker.example:1883",
+                    "clientId": "vem-machine-M001",
+                    "username": "machine-client",
+                    "password": "mqtt-password"
+                }
+            },
+            "runtimeEndpoints": {
+                "apiBasePath": "/api",
+                "machineAuthTokenPath": "/api/machine-auth/token",
+                "machineApiBasePath": "/api/machines/M001",
+                "mqttTopicPrefix": "vem/machines/M001"
+            },
+            "hardwareProfile": {
+                "profile": "production",
+                "controller": { "required": true, "protocol": "vem-vending-controller" },
+                "paymentScanner": { "required": true, "supportsPaymentCode": true },
+                "vision": { "required": false, "supportsRecommendations": true }
+            },
+            "paymentCapability": {
+                "profile": "production",
+                "qrCodeEnabled": true,
+                "paymentCodeEnabled": true,
+                "serverTime": "2026-06-08T16:30:00.000Z"
+            },
+            "metadata": {
+                "profileVersion": 1,
+                "claimCodeId": "550e8400-e29b-41d4-a716-446655440111",
+                "claimedAt": "2026-06-08T16:30:00.000Z",
+                "serverTime": "2026-06-08T16:30:00.000Z"
+            }
+        })
+    }
+
     async fn post_json(
         app: &Router,
         uri: &str,
@@ -2005,6 +2303,32 @@ mod tests {
             )
             .await
             .unwrap()
+    }
+
+    async fn claim_with_profile(profile: serde_json::Value) -> (StatusCode, serde_json::Value) {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/machines/claim"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(profile))
+            .mount(&server)
+            .await;
+
+        let temp_dir = tempdir().expect("tmp");
+        let app =
+            build_router(test_ipc_context(temp_dir.path(), "token-1", None, &server.uri()).await);
+
+        let response = post_json(
+            &app,
+            "/v1/provisioning/claim",
+            "token-1",
+            json!({ "claimCode": "ABCD-2345" }),
+        )
+        .await;
+        let status = response.status();
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, serde_json::from_slice(&body).unwrap())
     }
 
     #[tokio::test]
@@ -2041,6 +2365,893 @@ mod tests {
             .await
             .expect("response");
         assert_ne!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn provisioning_claim_applies_profile_to_public_config_without_returning_secrets() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/machines/claim"))
+            .and(body_partial_json(json!({
+                "claimCode": "ABCD-2345"
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(valid_provisioning_profile()))
+            .mount(&server)
+            .await;
+
+        let temp_dir = tempdir().expect("tmp");
+        let app =
+            build_router(test_ipc_context(temp_dir.path(), "token-1", None, &server.uri()).await);
+
+        let response = post_json(
+            &app,
+            "/v1/provisioning/claim",
+            "token-1",
+            json!({ "claimCode": "ABCD-2345" }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["status"], "provisioned");
+        let serialized = serde_json::to_string(&payload).unwrap();
+        assert!(!serialized.contains("vms_local-machine"));
+        assert!(!serialized.contains("vms_local-mqtt"));
+        assert!(!serialized.contains("mqtt-password"));
+
+        let config_response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/config")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(config_response.status(), StatusCode::OK);
+        let body = body::to_bytes(config_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let config: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(config["public"]["machineCode"], "M001");
+        assert_eq!(config["public"]["mqttUrl"], "mqtt://broker.example:1883");
+        assert_eq!(config["public"]["mqttUsername"], "machine-client");
+        assert_eq!(config["machineSecretConfigured"], true);
+        assert_eq!(config["mqttSigningSecretConfigured"], true);
+        assert_eq!(config["mqttPasswordConfigured"], true);
+        let config_text = serde_json::to_string(&config).unwrap();
+        assert!(!config_text.contains("vms_local-machine"));
+        assert!(!config_text.contains("vms_local-mqtt"));
+        assert!(!config_text.contains("mqtt-password"));
+    }
+
+    #[tokio::test]
+    async fn provisioning_claim_does_not_apply_planogram_and_keeps_readiness_blocked() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/machines/claim"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(valid_provisioning_profile()))
+            .mount(&server)
+            .await;
+
+        let temp_dir = tempdir().expect("tmp");
+        let ctx = test_ipc_context(temp_dir.path(), "token-1", None, &server.uri()).await;
+        mark_runtime_sale_ready(&ctx).await;
+        let app = build_router(ctx);
+
+        let response = post_json(
+            &app,
+            "/v1/provisioning/claim",
+            "token-1",
+            json!({ "claimCode": "ABCD-2345" }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let claim: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(claim["status"], "provisioned");
+        assert!(!serde_json::to_string(&claim).unwrap().contains("planogram"));
+
+        let sale_view = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/sale-view")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(sale_view.status(), StatusCode::OK);
+        let body = body::to_bytes(sale_view.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let sale_view: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(sale_view["planogramVersion"], serde_json::Value::Null);
+        assert_eq!(sale_view["items"].as_array().unwrap().len(), 0);
+
+        let readiness = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/sale-readiness")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(readiness.status(), StatusCode::OK);
+        let body = body::to_bytes(readiness.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let readiness: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(readiness["canStartNetworkAuthorizedSale"], false);
+        assert_eq!(readiness["components"]["activePlanogram"]["ready"], false);
+        assert!(readiness["blockingCodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|code| code == "ACTIVE_PLANOGRAM_MISSING"));
+
+        let requests = server.received_requests().await.expect("requests");
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|request| request.url.path() == "/machines/claim")
+                .count(),
+            1
+        );
+        assert!(requests
+            .iter()
+            .all(|request| !request.url.path().contains("planogram-versions")));
+    }
+
+    #[tokio::test]
+    async fn same_device_reclaim_keeps_intact_local_stock_ledger_trusted() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/machines/claim"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(valid_provisioning_profile()))
+            .mount(&server)
+            .await;
+
+        let temp_dir = tempdir().expect("tmp");
+        let app = build_router(
+            test_ipc_context(
+                temp_dir.path(),
+                "token-1",
+                Some("MACHINE-1".to_string()),
+                &server.uri(),
+            )
+            .await,
+        );
+        let slot_id = "550e8400-e29b-41d4-a716-4466554400d1";
+        let inventory_id = "550e8400-e29b-41d4-a716-4466554400d2";
+        assert_eq!(
+            post_json(
+                &app,
+                "/v1/stock/planogram",
+                "token-1",
+                one_slot_planogram("PLAN-RECLAIM-INTACT", slot_id, inventory_id),
+            )
+            .await
+            .status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            post_json(
+                &app,
+                "/v1/stock/movements",
+                "token-1",
+                json!({
+                    "movementId": "MOVE-RECLAIM-INTACT",
+                    "planogramVersion": "PLAN-RECLAIM-INTACT",
+                    "slotId": slot_id,
+                    "movementType": "planned_refill",
+                    "quantity": 4,
+                    "source": "field_service",
+                    "attributedTo": "operator-1"
+                }),
+            )
+            .await
+            .status(),
+            StatusCode::CREATED
+        );
+
+        assert_eq!(
+            post_json(
+                &app,
+                "/v1/provisioning/claim",
+                "token-1",
+                json!({ "claimCode": "ABCD-2345" }),
+            )
+            .await
+            .status(),
+            StatusCode::OK
+        );
+
+        let sale_view = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/sale-view")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(sale_view.status(), StatusCode::OK);
+        let body = body::to_bytes(sale_view.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let sale_view: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(sale_view["planogramVersion"], "PLAN-RECLAIM-INTACT");
+        assert_eq!(sale_view["items"][0]["physicalStock"], 4);
+        assert_eq!(sale_view["items"][0]["saleableStock"], 4);
+        assert_eq!(sale_view["items"][0]["slotSalesState"], "sale_ready");
+    }
+
+    #[tokio::test]
+    async fn ledger_missing_reclaim_keeps_newly_applied_slots_blocked_until_counted() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/machines/claim"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(valid_provisioning_profile()))
+            .mount(&server)
+            .await;
+
+        let temp_dir = tempdir().expect("tmp");
+        let ctx = test_ipc_context(temp_dir.path(), "token-1", None, &server.uri()).await;
+        ctx.state
+            .put_metadata("stock_ledger_rebuilt_after_quarantine", &true)
+            .await
+            .expect("ledger loss marker");
+        let app = build_router(ctx);
+
+        assert_eq!(
+            post_json(
+                &app,
+                "/v1/provisioning/claim",
+                "token-1",
+                json!({ "claimCode": "ABCD-2345" }),
+            )
+            .await
+            .status(),
+            StatusCode::OK
+        );
+
+        let slot_id = "550e8400-e29b-41d4-a716-4466554400f1";
+        let inventory_id = "550e8400-e29b-41d4-a716-4466554400f2";
+        assert_eq!(
+            post_json(
+                &app,
+                "/v1/stock/planogram",
+                "token-1",
+                one_slot_planogram("PLAN-RECLAIM-MISSING-LEDGER", slot_id, inventory_id),
+            )
+            .await
+            .status(),
+            StatusCode::OK
+        );
+
+        let sale_view = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/sale-view")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(sale_view.status(), StatusCode::OK);
+        let body = body::to_bytes(sale_view.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let sale_view: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(sale_view["items"][0]["physicalStock"], 0);
+        assert_eq!(sale_view["items"][0]["saleableStock"], 0);
+        assert_eq!(sale_view["items"][0]["slotSalesState"], "needs_count");
+
+        assert_eq!(
+            post_json(
+                &app,
+                "/v1/stock/movements",
+                "token-1",
+                json!({
+                    "movementId": "MOVE-RECLAIM-MISSING-LEDGER-COUNT",
+                    "planogramVersion": "PLAN-RECLAIM-MISSING-LEDGER",
+                    "slotId": slot_id,
+                    "movementType": "stock_count_correction",
+                    "quantity": 3,
+                    "source": "field_service",
+                    "attributedTo": "operator-1"
+                }),
+            )
+            .await
+            .status(),
+            StatusCode::CREATED
+        );
+
+        let sale_view = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/sale-view")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = body::to_bytes(sale_view.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let sale_view: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(sale_view["items"][0]["physicalStock"], 3);
+        assert_eq!(sale_view["items"][0]["saleableStock"], 3);
+        assert_eq!(sale_view["items"][0]["slotSalesState"], "sale_ready");
+    }
+
+    #[tokio::test]
+    async fn config_does_not_treat_machine_code_alone_as_provisioned() {
+        let temp_dir = tempdir().expect("tmp");
+        let app = build_router(
+            test_ipc_context(
+                temp_dir.path(),
+                "token-1",
+                Some("MACHINE-CODE-ONLY".to_string()),
+                "http://127.0.0.1:0",
+            )
+            .await,
+        );
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/config")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let config: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(config["provisioned"], false);
+        assert!(config["provisioningIssues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|issue| issue == "machine_secret_missing"));
+    }
+
+    #[tokio::test]
+    async fn failed_claim_returns_safe_diagnostic_without_echoing_sensitive_inputs() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/machines/claim"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(json!({
+                "message": "claim ABCD-2345 rejected with vms_local-machine-shared-secret-change-before-prod"
+            })))
+            .mount(&server)
+            .await;
+
+        let temp_dir = tempdir().expect("tmp");
+        let app =
+            build_router(test_ipc_context(temp_dir.path(), "token-1", None, &server.uri()).await);
+
+        let response = post_json(
+            &app,
+            "/v1/provisioning/claim",
+            "token-1",
+            json!({ "claimCode": "ABCD-2345" }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["code"], "machine_claim_invalid_or_expired");
+        let text = serde_json::to_string(&payload).unwrap();
+        assert!(!text.contains("ABCD-2345"));
+        assert!(!text.contains("vms_local-machine"));
+        assert!(payload["message"]
+            .as_str()
+            .unwrap()
+            .contains("invalid or expired"));
+    }
+
+    #[tokio::test]
+    async fn failed_claim_treats_service_unauthorized_as_invalid_claim() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/machines/claim"))
+            .respond_with(ResponseTemplate::new(401).set_body_json(json!({
+                "code": 401,
+                "message": "Invalid or expired machine claim code",
+                "data": null
+            })))
+            .mount(&server)
+            .await;
+
+        let temp_dir = tempdir().expect("tmp");
+        let app =
+            build_router(test_ipc_context(temp_dir.path(), "token-1", None, &server.uri()).await);
+
+        let response = post_json(
+            &app,
+            "/v1/provisioning/claim",
+            "token-1",
+            json!({ "claimCode": "WXYZ-2345" }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["code"], "machine_claim_invalid_or_expired");
+        assert!(payload["message"]
+            .as_str()
+            .unwrap()
+            .contains("invalid or expired"));
+    }
+
+    #[tokio::test]
+    async fn failed_claim_treats_missing_claim_endpoint_as_backend_unavailable() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/machines/claim"))
+            .respond_with(ResponseTemplate::new(404).set_body_json(json!({
+                "message": "not found"
+            })))
+            .mount(&server)
+            .await;
+
+        let temp_dir = tempdir().expect("tmp");
+        let app =
+            build_router(test_ipc_context(temp_dir.path(), "token-1", None, &server.uri()).await);
+
+        let response = post_json(
+            &app,
+            "/v1/provisioning/claim",
+            "token-1",
+            json!({ "claimCode": "WXYZ-2345" }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["code"], "machine_claim_backend_unavailable");
+    }
+
+    #[tokio::test]
+    async fn failed_claim_preserves_safe_backend_claim_code_without_echoing_payload() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/machines/claim"))
+            .respond_with(ResponseTemplate::new(409).set_body_json(json!({
+                "code": "machine_claim_locked",
+                "message": "claim ABCD-2345 locked with vms_local-machine-shared-secret-change-before-prod"
+            })))
+            .mount(&server)
+            .await;
+
+        let temp_dir = tempdir().expect("tmp");
+        let app =
+            build_router(test_ipc_context(temp_dir.path(), "token-1", None, &server.uri()).await);
+
+        let response = post_json(
+            &app,
+            "/v1/provisioning/claim",
+            "token-1",
+            json!({ "claimCode": "ABCD-2345" }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["code"], "machine_claim_locked");
+        let text = serde_json::to_string(&payload).unwrap();
+        assert!(!text.contains("ABCD-2345"));
+        assert!(!text.contains("vms_local-machine"));
+        assert!(payload["message"]
+            .as_str()
+            .unwrap()
+            .contains("claim code cannot be used"));
+    }
+
+    #[tokio::test]
+    async fn failed_claim_reports_backend_unavailable_separately_from_rejected_code() {
+        let temp_dir = tempdir().expect("tmp");
+        let app = build_router(
+            test_ipc_context(temp_dir.path(), "token-1", None, "http://127.0.0.1:9").await,
+        );
+
+        let response = post_json(
+            &app,
+            "/v1/provisioning/claim",
+            "token-1",
+            json!({ "claimCode": "ABCD-2345" }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["code"], "machine_claim_backend_unavailable");
+        let text = serde_json::to_string(&payload).unwrap();
+        assert!(!text.contains("ABCD-2345"));
+    }
+
+    #[tokio::test]
+    async fn failed_claim_without_default_api_base_url_reports_backend_unavailable() {
+        let temp_dir = tempdir().expect("tmp");
+        let app = build_router(test_ipc_context(temp_dir.path(), "token-1", None, "").await);
+
+        let response = post_json(
+            &app,
+            "/v1/provisioning/claim",
+            "token-1",
+            json!({ "claimCode": "ABCD-2345" }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["code"], "machine_claim_backend_unavailable");
+        let text = serde_json::to_string(&payload).unwrap();
+        assert!(!text.contains("ABCD-2345"));
+        assert!(!text.contains("apiBaseUrl"));
+    }
+
+    #[tokio::test]
+    async fn successful_claim_requests_runtime_reconfiguration() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/machines/claim"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(valid_provisioning_profile()))
+            .mount(&server)
+            .await;
+
+        let temp_dir = tempdir().expect("tmp");
+        let ctx = test_ipc_context(temp_dir.path(), "token-1", None, &server.uri()).await;
+        let mut events = ctx.events.subscribe();
+        let app = build_router(ctx);
+
+        let response = post_json(
+            &app,
+            "/v1/provisioning/claim",
+            "token-1",
+            json!({ "claimCode": "ABCD-2345" }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["restartRequested"], true);
+
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), events.recv())
+            .await
+            .expect("runtime reconfigure event")
+            .expect("event");
+        let event = serde_json::to_value(event).unwrap();
+        assert_eq!(event["type"], "runtime_reconfigure_requested");
+        assert_eq!(event["reason"], "machine_provisioned");
+        assert_eq!(event["machineCode"], "M001");
+    }
+
+    #[tokio::test]
+    async fn provisioning_claim_records_metadata_and_public_profile_diagnostics() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/machines/claim"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(valid_provisioning_profile()))
+            .mount(&server)
+            .await;
+
+        let temp_dir = tempdir().expect("tmp");
+        let app =
+            build_router(test_ipc_context(temp_dir.path(), "token-1", None, &server.uri()).await);
+
+        assert_eq!(
+            post_json(
+                &app,
+                "/v1/provisioning/claim",
+                "token-1",
+                json!({ "claimCode": "ABCD-2345" }),
+            )
+            .await
+            .status(),
+            StatusCode::OK
+        );
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/config")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let config: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(config["provisioned"], true);
+        assert_eq!(
+            config["public"]["machineId"],
+            "550e8400-e29b-41d4-a716-446655440000"
+        );
+        assert_eq!(
+            config["public"]["provisioningMetadata"]["claimCodeId"],
+            "550e8400-e29b-41d4-a716-446655440111"
+        );
+        assert_eq!(
+            config["public"]["provisioningMetadata"]["profileVersion"],
+            1
+        );
+        assert_eq!(
+            config["public"]["provisioningMetadata"]["claimedAt"],
+            "2026-06-08T16:30:00.000Z"
+        );
+        assert_eq!(
+            config["public"]["runtimeEndpoints"]["machineApiBasePath"],
+            "/api/machines/M001"
+        );
+        assert_eq!(
+            config["public"]["paymentCapability"]["paymentCodeEnabled"],
+            true
+        );
+        assert_eq!(
+            config["public"]["hardwareProfile"]["paymentScanner"]["supportsPaymentCode"],
+            true
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_provisioning_profile_is_rejected_before_persistence() {
+        let server = MockServer::start().await;
+        let mut profile = valid_provisioning_profile();
+        profile["metadata"]["profileVersion"] = json!(2);
+        Mock::given(method("POST"))
+            .and(path("/machines/claim"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(profile))
+            .mount(&server)
+            .await;
+
+        let temp_dir = tempdir().expect("tmp");
+        let app =
+            build_router(test_ipc_context(temp_dir.path(), "token-1", None, &server.uri()).await);
+
+        let response = post_json(
+            &app,
+            "/v1/provisioning/claim",
+            "token-1",
+            json!({ "claimCode": "ABCD-2345" }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["code"], "machine_profile_invalid");
+        assert_eq!(
+            payload["message"],
+            "unsupported provisioning profile version"
+        );
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/config")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let config: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(config["public"]["machineCode"], serde_json::Value::Null);
+        assert_eq!(config["provisioned"], false);
+    }
+
+    #[tokio::test]
+    async fn provisioning_profile_with_mock_payment_capability_is_rejected() {
+        let server = MockServer::start().await;
+        let mut profile = valid_provisioning_profile();
+        profile["paymentCapability"]["mockEnabled"] = json!(true);
+        Mock::given(method("POST"))
+            .and(path("/machines/claim"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(profile))
+            .mount(&server)
+            .await;
+
+        let temp_dir = tempdir().expect("tmp");
+        let app =
+            build_router(test_ipc_context(temp_dir.path(), "token-1", None, &server.uri()).await);
+
+        let response = post_json(
+            &app,
+            "/v1/provisioning/claim",
+            "token-1",
+            json!({ "claimCode": "ABCD-2345" }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["code"], "machine_profile_invalid");
+    }
+
+    #[tokio::test]
+    async fn provisioning_profile_rejects_face_payment_capability() {
+        let mut profile = valid_provisioning_profile();
+        profile["paymentCapability"]["facePayEnabled"] = json!(true);
+        let (status, payload) = claim_with_profile(profile).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(payload["code"], "machine_profile_invalid");
+    }
+
+    #[tokio::test]
+    async fn provisioning_profile_rejects_secret_shaped_payment_capability_fields() {
+        let mut profile = valid_provisioning_profile();
+        profile["paymentCapability"]["merchantPrivateKey"] =
+            json!("should-not-be-in-machine-profile");
+        let (status, payload) = claim_with_profile(profile).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(payload["code"], "machine_profile_invalid");
+        assert!(!serde_json::to_string(&payload)
+            .unwrap()
+            .contains("merchantPrivateKey"));
+    }
+
+    #[tokio::test]
+    async fn provisioning_profile_rejects_unknown_profile_fields() {
+        let mut profile = valid_provisioning_profile();
+        profile["hardwareProfile"]["controller"]["diagnostics"] = json!({"enabled": true});
+
+        let (status, payload) = claim_with_profile(profile).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(payload["code"], "machine_profile_invalid");
+    }
+
+    #[tokio::test]
+    async fn provisioning_profile_rejects_local_discovery_fields() {
+        let mut profile = valid_provisioning_profile();
+        profile["hardwareProfile"]["controller"]["serialPortPath"] = json!("/dev/ttyUSB0");
+        profile["hardwareProfile"]["controller"]["usbVendorId"] = json!("1A86");
+
+        let (status, payload) = claim_with_profile(profile).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(payload["code"], "machine_profile_invalid");
+    }
+
+    #[tokio::test]
+    async fn provisioning_profile_rejects_stock_and_catalog_fields() {
+        let mut profile = valid_provisioning_profile();
+        profile["hardwareProfile"]["stock"] = json!({"slots": []});
+        profile["paymentCapability"]["catalogSnapshot"] = json!({"items": []});
+
+        let (status, payload) = claim_with_profile(profile).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(payload["code"], "machine_profile_invalid");
+    }
+
+    #[tokio::test]
+    async fn provisioning_profile_rejects_payment_secret_fields() {
+        let mut profile = valid_provisioning_profile();
+        profile["paymentCapability"]["wechatPayMchPrivateKey"] =
+            json!("-----BEGIN PRIVATE KEY-----");
+        profile["paymentCapability"]["alipayAppPrivateKey"] = json!("secret");
+
+        let (status, payload) = claim_with_profile(profile).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(payload["code"], "machine_profile_invalid");
+        let text = serde_json::to_string(&payload).unwrap();
+        assert!(!text.contains("PRIVATE KEY"));
+        assert!(!text.contains("alipayAppPrivateKey"));
+    }
+
+    #[tokio::test]
+    async fn provisioning_persistence_failure_is_not_reported_as_invalid_profile_or_partial_secrets(
+    ) {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/machines/claim"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(valid_provisioning_profile()))
+            .mount(&server)
+            .await;
+
+        let temp_dir = tempdir().expect("tmp");
+        let app =
+            build_router(test_ipc_context(temp_dir.path(), "token-1", None, &server.uri()).await);
+        tokio::fs::remove_dir_all(temp_dir.path().join("logs"))
+            .await
+            .expect("remove logs dir");
+        tokio::fs::write(temp_dir.path().join("logs"), b"not-a-directory")
+            .await
+            .expect("replace logs dir with file");
+
+        let response = post_json(
+            &app,
+            "/v1/provisioning/claim",
+            "token-1",
+            json!({ "claimCode": "ABCD-2345" }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["code"], "machine_profile_persistence_failed");
+        let text = serde_json::to_string(&payload).unwrap();
+        assert!(!text.contains("vms_local-machine"));
+        assert!(!text.contains("vms_local-mqtt"));
+        assert!(!text.contains("mqtt-password"));
+
+        let config_response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/config")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(config_response.status(), StatusCode::OK);
+        let body = body::to_bytes(config_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let config: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(config["machineSecretConfigured"], false);
+        assert_eq!(config["mqttSigningSecretConfigured"], false);
+        assert_eq!(config["mqttPasswordConfigured"], false);
+        let config_text = serde_json::to_string(&config).unwrap();
+        assert!(!config_text.contains("vms_local-machine"));
+        assert!(!config_text.contains("vms_local-mqtt"));
+        assert!(!config_text.contains("mqtt-password"));
     }
 
     #[tokio::test]
@@ -2453,6 +3664,195 @@ mod tests {
             .unwrap()
             .iter()
             .any(|code| code == "NO_PAYMENT_OPTIONS"));
+    }
+
+    #[tokio::test]
+    async fn payment_options_are_filtered_by_persisted_machine_payment_capability() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(wiremock::matchers::path("/machine-orders/payment-options"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "options": [
+                    {
+                        "optionKey": "qr_code:alipay",
+                        "providerCode": "alipay",
+                        "method": "qr_code",
+                        "displayName": "支付宝扫码",
+                        "description": "请使用支付宝扫描屏幕二维码",
+                        "icon": "alipay",
+                        "recommended": true,
+                        "disabled": false,
+                        "disabledReason": null
+                    },
+                    {
+                        "optionKey": "payment_code:alipay",
+                        "providerCode": "alipay",
+                        "method": "payment_code",
+                        "displayName": "支付宝付款码",
+                        "description": "请出示支付宝付款码并靠近扫码窗口",
+                        "icon": "alipay",
+                        "recommended": false,
+                        "disabled": false,
+                        "disabledReason": null
+                    },
+                    {
+                        "optionKey": "mock:mock",
+                        "providerCode": "mock",
+                        "method": "mock",
+                        "displayName": "模拟支付",
+                        "description": "测试环境专用",
+                        "icon": "mock",
+                        "recommended": false,
+                        "disabled": false,
+                        "disabledReason": null
+                    }
+                ],
+                "defaultOptionKey": "payment_code:alipay",
+                "defaultProviderCode": "alipay",
+                "serverTime": "2026-06-04T00:00:00Z"
+            })))
+            .mount(&server)
+            .await;
+
+        let temp_dir = tempdir().expect("tmp");
+        let ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            &server.uri(),
+        )
+        .await;
+        let mut public = ctx.config_store.load_public_config().await.expect("config");
+        public.payment_capability = Some(crate::config::ProductionMachinePaymentCapability {
+            profile: "production".to_string(),
+            qr_code_enabled: true,
+            payment_code_enabled: false,
+            server_time: "2026-06-08T16:30:00.000Z".to_string(),
+            options: vec![],
+            default_option_key: None,
+            default_provider_code: None,
+        });
+        ctx.config_store
+            .save_public_config(public)
+            .await
+            .expect("save capability");
+        let app = build_router(ctx);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/payment-options")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let options: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let option_keys: Vec<&str> = options["options"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|option| option["optionKey"].as_str())
+            .collect();
+        assert_eq!(option_keys, vec!["qr_code:alipay", "mock:mock"]);
+        assert_eq!(options["defaultOptionKey"], "qr_code:alipay");
+        assert_eq!(options["defaultProviderCode"], "alipay");
+    }
+
+    #[tokio::test]
+    async fn sale_readiness_uses_machine_payment_capability_before_scanner_readiness() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(wiremock::matchers::path("/machine-orders/payment-options"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "options": [
+                    {
+                        "optionKey": "payment_code:alipay",
+                        "providerCode": "alipay",
+                        "method": "payment_code",
+                        "displayName": "支付宝付款码",
+                        "description": "请出示支付宝付款码并靠近扫码窗口",
+                        "icon": "alipay",
+                        "recommended": true,
+                        "disabled": false,
+                        "disabledReason": null
+                    },
+                    {
+                        "optionKey": "qr_code:alipay",
+                        "providerCode": "alipay",
+                        "method": "qr_code",
+                        "displayName": "支付宝扫码",
+                        "description": "请使用支付宝扫描屏幕二维码",
+                        "icon": "alipay",
+                        "recommended": false,
+                        "disabled": false,
+                        "disabledReason": null
+                    }
+                ],
+                "defaultOptionKey": "payment_code:alipay",
+                "defaultProviderCode": "alipay",
+                "serverTime": "2026-06-04T00:00:00Z"
+            })))
+            .mount(&server)
+            .await;
+
+        let temp_dir = tempdir().expect("tmp");
+        let ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            &server.uri(),
+        )
+        .await;
+        mark_runtime_sale_ready(&ctx).await;
+        {
+            let mut public = ctx.config_store.load_public_config().await.expect("config");
+            public.payment_capability = Some(crate::config::ProductionMachinePaymentCapability {
+                profile: "production".to_string(),
+                qr_code_enabled: true,
+                payment_code_enabled: false,
+                server_time: "2026-06-08T16:30:00.000Z".to_string(),
+                options: vec![],
+                default_option_key: None,
+                default_provider_code: None,
+            });
+            ctx.config_store
+                .save_public_config(public)
+                .await
+                .expect("save capability");
+        }
+        let app = build_router(ctx);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/sale-readiness")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let readiness: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let methods: Vec<&str> = readiness["components"]["paymentOptions"]["methods"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|method| method["optionKey"].as_str())
+            .collect();
+        assert_eq!(methods, vec!["qr_code:alipay"]);
+        assert_eq!(readiness["components"]["paymentOptions"]["ready"], true);
     }
 
     #[tokio::test]
@@ -3379,6 +4779,105 @@ mod tests {
         assert_eq!(item["saleableStock"], 3);
         assert_eq!(item["slotSalesState"], "sale_ready");
         assert!(item.get("availableQty").is_none());
+    }
+
+    #[tokio::test]
+    async fn first_planogram_application_requires_stock_count_before_slot_is_sale_ready() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(wiremock::matchers::path("/machine-orders/payment-options"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "options": [{
+                    "optionKey": "mock:mock",
+                    "providerCode": "mock",
+                    "method": "mock",
+                    "displayName": "模拟支付",
+                    "description": "本地模拟",
+                    "icon": "mock",
+                    "recommended": true,
+                    "disabled": false,
+                    "disabledReason": null
+                }],
+                "defaultOptionKey": "mock:mock",
+                "defaultProviderCode": "mock",
+                "serverTime": "2026-06-04T00:00:00Z"
+            })))
+            .mount(&server)
+            .await;
+
+        let temp_dir = tempdir().expect("tmp");
+        let ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            &server.uri(),
+        )
+        .await;
+        mark_runtime_sale_ready(&ctx).await;
+        let app = build_router(ctx);
+        let slot_id = "550e8400-e29b-41d4-a716-4466554400b1";
+        let inventory_id = "550e8400-e29b-41d4-a716-4466554400b2";
+
+        assert_eq!(
+            post_json(
+                &app,
+                "/v1/stock/planogram",
+                "token-1",
+                one_slot_planogram("PLAN-FIRST-COUNT", slot_id, inventory_id),
+            )
+            .await
+            .status(),
+            StatusCode::OK
+        );
+
+        let sale_view = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/sale-view")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(sale_view.status(), StatusCode::OK);
+        let body = body::to_bytes(sale_view.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let sale_view: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(sale_view["items"][0]["physicalStock"], 0);
+        assert_eq!(sale_view["items"][0]["saleableStock"], 0);
+        assert_eq!(sale_view["items"][0]["slotSalesState"], "needs_count");
+
+        let readiness = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/sale-readiness")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(readiness.status(), StatusCode::OK);
+        let body = body::to_bytes(readiness.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let readiness: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(readiness["canStartNetworkAuthorizedSale"], false);
+        assert!(readiness["blockingCodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|code| code == "NO_SALEABLE_SLOTS"));
+        assert_eq!(readiness["components"]["slotSaleSafety"]["ready"], false);
+        assert_eq!(
+            readiness["components"]["slotSaleSafety"]["blockedSlots"][0]["slotSalesState"],
+            "needs_count"
+        );
     }
 
     #[tokio::test]

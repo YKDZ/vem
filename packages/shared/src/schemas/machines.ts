@@ -1,6 +1,12 @@
 import { z } from "zod";
 
-import { machineSlotStatusSchema, machineStatusSchema } from "../enums/machine";
+import {
+  machineClaimCodePurposeSchema,
+  machineClaimCodeStateSchema,
+  machineSlotStatusSchema,
+  machineStatusSchema,
+} from "../enums/machine";
+import { machinePaymentOptionSchema } from "./orders";
 
 export const createMachineSchema = z.object({
   code: z.string().min(1).max(64),
@@ -232,4 +238,155 @@ export const machineSaleViewSnapshotSchema = z.object({
 export type MachineSaleViewItem = z.infer<typeof machineSaleViewItemSchema>;
 export type MachineSaleViewSnapshot = z.infer<
   typeof machineSaleViewSnapshotSchema
+>;
+
+export const machineClaimCodeSnapshotSchema = z.strictObject({
+  id: z.uuid(),
+  machineId: z.uuid(),
+  machineCode: z.string().min(1).max(64),
+  purpose: machineClaimCodePurposeSchema,
+  state: machineClaimCodeStateSchema,
+  expiresAt: z.iso.datetime(),
+  failedAttemptCount: z.int().nonnegative(),
+  maxFailedAttempts: z.int().positive(),
+  createdAt: z.iso.datetime(),
+  consumedAt: z.iso.datetime().nullable().optional(),
+  revokedAt: z.iso.datetime().nullable().optional(),
+  lockedAt: z.iso.datetime().nullable().optional(),
+});
+
+export const generateMachineClaimCodeResponseSchema =
+  machineClaimCodeSnapshotSchema.extend({
+    claimCode: z.string().regex(/^[A-Z0-9]{4}-[A-Z0-9]{4}$/),
+  });
+
+export const generateMachineClaimCodeRequestSchema = z
+  .strictObject({
+    purpose: machineClaimCodePurposeSchema.default("first_claim"),
+  })
+  .default({ purpose: "first_claim" });
+
+export const machineClaimRequestSchema = z.strictObject({
+  claimCode: z
+    .string()
+    .trim()
+    .transform((value) => value.toUpperCase())
+    .pipe(z.string().regex(/^[A-Z0-9]{4}-[A-Z0-9]{4}$/)),
+});
+
+export const productionMachineHardwareProfileSchema = z.strictObject({
+  profile: z.literal("production"),
+  controller: z.strictObject({
+    required: z.literal(true),
+    protocol: z.literal("vem-vending-controller"),
+  }),
+  paymentScanner: z.strictObject({
+    required: z.literal(true),
+    supportsPaymentCode: z.boolean(),
+  }),
+  vision: z.strictObject({
+    required: z.boolean(),
+    supportsRecommendations: z.boolean(),
+  }),
+});
+
+const legacyProductionMachinePaymentOptionSchema =
+  machinePaymentOptionSchema.refine(
+    (option) =>
+      (option.providerCode === "wechat_pay" ||
+        option.providerCode === "alipay") &&
+      (option.method === "qr_code" || option.method === "payment_code"),
+    {
+      message:
+        "Production machine payment capability can only include qr_code or payment_code real-provider methods",
+    },
+  );
+
+const productionMachinePaymentCapabilityV1Schema = z.strictObject({
+  profile: z.literal("production"),
+  qrCodeEnabled: z.boolean().default(true),
+  paymentCodeEnabled: z.boolean().default(true),
+  serverTime: z.iso.datetime(),
+});
+
+const legacyProductionMachinePaymentCapabilitySchema = z
+  .strictObject({
+    profile: z.literal("production"),
+    options: z.array(legacyProductionMachinePaymentOptionSchema),
+    defaultOptionKey: z
+      .string()
+      .regex(/^(qr_code|payment_code):(wechat_pay|alipay)$/)
+      .nullable(),
+    defaultProviderCode: z.enum(["wechat_pay", "alipay"]).nullable(),
+    serverTime: z.iso.datetime(),
+  })
+  .transform((capability) => ({
+    profile: capability.profile,
+    qrCodeEnabled: capability.options.some(
+      (option) => option.method === "qr_code",
+    ),
+    paymentCodeEnabled: capability.options.some(
+      (option) => option.method === "payment_code",
+    ),
+    serverTime: capability.serverTime,
+  }));
+
+export const productionMachinePaymentCapabilitySchema = z.union([
+  productionMachinePaymentCapabilityV1Schema,
+  legacyProductionMachinePaymentCapabilitySchema,
+]);
+
+export const machineProvisioningProfileSchema = z.strictObject({
+  machine: z.strictObject({
+    id: z.uuid(),
+    code: z.string().min(1).max(64),
+    name: z.string().min(1).max(128),
+    status: machineStatusSchema,
+    locationText: z.string().nullable(),
+  }),
+  credentials: z.strictObject({
+    machineSecret: z.string().min(32).max(256),
+    machineSecretVersion: z.int().positive(),
+    mqttSigningSecret: z.string().min(32).max(256),
+    mqttConnection: z.strictObject({
+      url: z.url(),
+      clientId: z.string().min(1).max(128),
+      username: z.string().min(1).optional(),
+      password: z.string().min(1).optional(),
+    }),
+  }),
+  runtimeEndpoints: z.strictObject({
+    apiBasePath: z.literal("/api"),
+    machineAuthTokenPath: z.literal("/api/machine-auth/token"),
+    machineApiBasePath: z.string().regex(/^\/api\/machines\/[^/]+$/),
+    mqttTopicPrefix: z.string().regex(/^vem\/machines\/[^/]+$/),
+  }),
+  hardwareProfile: productionMachineHardwareProfileSchema,
+  paymentCapability: productionMachinePaymentCapabilitySchema,
+  metadata: z.strictObject({
+    profileVersion: z.literal(1),
+    claimCodeId: z.uuid(),
+    claimedAt: z.iso.datetime(),
+    serverTime: z.iso.datetime(),
+  }),
+});
+
+export type MachineClaimCodeSnapshot = z.infer<
+  typeof machineClaimCodeSnapshotSchema
+>;
+export type GenerateMachineClaimCodeResponse = z.infer<
+  typeof generateMachineClaimCodeResponseSchema
+>;
+export type GenerateMachineClaimCodeRequest = z.infer<
+  typeof generateMachineClaimCodeRequestSchema
+>;
+export type MachineClaimRequest = z.infer<typeof machineClaimRequestSchema>;
+export type ProductionMachineHardwareProfile = z.infer<
+  typeof productionMachineHardwareProfileSchema
+>;
+export type ProductionMachinePaymentCapability = z.infer<
+  typeof productionMachinePaymentCapabilitySchema
+>;
+export type MachineProvisioningProfile = z.infer<
+  typeof machineProvisioningProfileSchema
 >;

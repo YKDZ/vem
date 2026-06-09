@@ -13,6 +13,8 @@ import { ApiBearerAuth, ApiTags } from "@nestjs/swagger";
 import {
   createMachineSchema,
   createMachineSlotSchema,
+  generateMachineClaimCodeRequestSchema,
+  machineClaimRequestSchema,
   machineEnvironmentControlRequestSchema,
   pageQuerySchema,
   publishMachinePlanogramVersionSchema,
@@ -42,6 +44,10 @@ type PublishMachinePlanogramVersionInput = z.infer<
 type MachineEnvironmentControlInput = z.infer<
   typeof machineEnvironmentControlRequestSchema
 >;
+type MachineClaimRequestInput = z.infer<typeof machineClaimRequestSchema>;
+type GenerateMachineClaimCodeRequestInput = z.infer<
+  typeof generateMachineClaimCodeRequestSchema
+>;
 type PageQueryInput = z.infer<typeof pageQuerySchema>;
 
 @ApiTags("machines")
@@ -64,6 +70,15 @@ export class MachinesController {
     @Body(new ZodValidationPipe(createMachineSchema)) body: CreateMachineInput,
   ) {
     return await this.machinesService.createMachine(body);
+  }
+
+  @Public()
+  @Post("claim")
+  async claimMachine(
+    @Body(new ZodValidationPipe(machineClaimRequestSchema))
+    body: MachineClaimRequestInput,
+  ) {
+    return await this.machinesService.claimMachine(body);
   }
 
   @RequirePermissions("machines.write")
@@ -136,6 +151,50 @@ export class MachinesController {
     @Param("id", ParseUUIDPipe) id: string,
   ) {
     return await this.machinesService.rotateMachineCredentials(id, admin.id);
+  }
+
+  @RequirePermissions("machines.manage-credentials")
+  @Post(":id/claim-codes")
+  async generateClaimCode(
+    @CurrentAdmin() admin: AuthenticatedAdmin,
+    @Param("id", ParseUUIDPipe) id: string,
+    @Body(new ZodValidationPipe(generateMachineClaimCodeRequestSchema))
+    body: GenerateMachineClaimCodeRequestInput = { purpose: "first_claim" },
+  ) {
+    return await this.machinesService.generateMachineClaimCode(
+      id,
+      admin.id,
+      body,
+    );
+  }
+
+  @RequirePermissions("machines.manage-credentials")
+  @Get(":id/claim-codes")
+  async listClaimCodes(@Param("id", ParseUUIDPipe) id: string) {
+    return await this.machinesService.listMachineClaimCodes(id);
+  }
+
+  @RequirePermissions("machines.manage-credentials")
+  @Get(":id/claim-codes/:claimCodeId")
+  async getClaimCode(
+    @Param("id", ParseUUIDPipe) id: string,
+    @Param("claimCodeId", ParseUUIDPipe) claimCodeId: string,
+  ) {
+    return await this.machinesService.getMachineClaimCode(id, claimCodeId);
+  }
+
+  @RequirePermissions("machines.manage-credentials")
+  @Post(":id/claim-codes/:claimCodeId/revoke")
+  async revokeClaimCode(
+    @CurrentAdmin() admin: AuthenticatedAdmin,
+    @Param("id", ParseUUIDPipe) id: string,
+    @Param("claimCodeId", ParseUUIDPipe) claimCodeId: string,
+  ) {
+    return await this.machinesService.revokeMachineClaimCode(
+      id,
+      claimCodeId,
+      admin.id,
+    );
   }
 
   @Public()

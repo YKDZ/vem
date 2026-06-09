@@ -1,26 +1,42 @@
 <script setup lang="ts">
-import { onMounted, reactive } from "vue";
+import { computed, onMounted, reactive } from "vue";
 import { useRouter } from "vue-router";
 
 import MockHardwareControls from "@/components/MockHardwareControls.vue";
 import {
+  machineConfigDefaults,
   normalizeMachineConfig,
   type HardwareAdapter,
+  type MachineConfig,
   type ScannerAdapter,
 } from "@/config/machine-config";
+import { shouldShowAdvancedMaintenanceConfig } from "@/config/runtime-flags";
 import { daemonClient } from "@/daemon/client";
 import KioskLayout from "@/layouts/KioskLayout.vue";
+import { useConnectivityStore } from "@/stores/connectivity";
 import { useMachineStore } from "@/stores/machine";
 import { useMqttStore } from "@/stores/mqtt";
+import { useRemoteOpsStore } from "@/stores/remote-ops";
+import { useScannerStore } from "@/stores/scanner";
 import { useVisionStore } from "@/stores/vision";
 
 const router = useRouter();
+const connectivityStore = useConnectivityStore();
 const machineStore = useMachineStore();
 const mqttStore = useMqttStore();
+const remoteOpsStore = useRemoteOpsStore();
+const scannerStore = useScannerStore();
 const visionStore = useVisionStore();
+const runtimeFlags = reactive({
+  advancedMaintenanceConfig: false,
+});
+const showAdvancedDebugConfig = computed(
+  () => runtimeFlags.advancedMaintenanceConfig,
+);
 
-function cloneLowerControllerUsbIdentity() {
-  const identity = machineStore.config.lowerControllerUsbIdentity;
+function cloneLowerControllerUsbIdentity(
+  identity: MachineConfig["lowerControllerUsbIdentity"],
+) {
   return identity
     ? {
         vendorId: identity.vendorId,
@@ -31,24 +47,26 @@ function cloneLowerControllerUsbIdentity() {
 }
 
 const form = reactive({
-  machineCode: machineStore.config.machineCode,
-  apiBaseUrl: machineStore.config.apiBaseUrl,
-  mqttUrl: machineStore.config.mqttUrl,
-  mqttUsername: machineStore.config.mqttUsername,
-  hardwareAdapter: machineStore.config.hardwareAdapter,
-  serialPortPath: machineStore.config.serialPortPath,
-  lowerControllerUsbIdentity: cloneLowerControllerUsbIdentity(),
-  scannerAdapter: machineStore.config.scannerAdapter,
-  scannerSerialPortPath: machineStore.config.scannerSerialPortPath,
-  scannerBaudRate: machineStore.config.scannerBaudRate,
-  scannerFrameSuffix: machineStore.config.scannerFrameSuffix,
-  visionEnabled: machineStore.config.visionEnabled,
-  visionWsUrl: machineStore.config.visionWsUrl,
-  visionAutoStart: machineStore.config.visionAutoStart,
-  visionProcessCommand: machineStore.config.visionProcessCommand,
-  visionProcessArgs: machineStore.config.visionProcessArgs,
-  visionRequestTimeoutMs: machineStore.config.visionRequestTimeoutMs,
-  kioskMode: machineStore.config.kioskMode,
+  machineCode: machineConfigDefaults.machineCode,
+  apiBaseUrl: machineConfigDefaults.apiBaseUrl,
+  mqttUrl: machineConfigDefaults.mqttUrl,
+  mqttUsername: machineConfigDefaults.mqttUsername,
+  hardwareAdapter: machineConfigDefaults.hardwareAdapter,
+  serialPortPath: machineConfigDefaults.serialPortPath,
+  lowerControllerUsbIdentity: cloneLowerControllerUsbIdentity(
+    machineConfigDefaults.lowerControllerUsbIdentity,
+  ),
+  scannerAdapter: machineConfigDefaults.scannerAdapter,
+  scannerSerialPortPath: machineConfigDefaults.scannerSerialPortPath,
+  scannerBaudRate: machineConfigDefaults.scannerBaudRate,
+  scannerFrameSuffix: machineConfigDefaults.scannerFrameSuffix,
+  visionEnabled: machineConfigDefaults.visionEnabled,
+  visionWsUrl: machineConfigDefaults.visionWsUrl,
+  visionAutoStart: machineConfigDefaults.visionAutoStart,
+  visionProcessCommand: machineConfigDefaults.visionProcessCommand,
+  visionProcessArgs: machineConfigDefaults.visionProcessArgs,
+  visionRequestTimeoutMs: machineConfigDefaults.visionRequestTimeoutMs,
+  kioskMode: machineConfigDefaults.kioskMode,
   machineSecretInput: "",
   mqttSigningSecretInput: "",
   mqttPasswordInput: "",
@@ -61,7 +79,9 @@ function syncFormFromStore(): void {
   form.mqttUsername = machineStore.config.mqttUsername;
   form.hardwareAdapter = machineStore.config.hardwareAdapter;
   form.serialPortPath = machineStore.config.serialPortPath;
-  form.lowerControllerUsbIdentity = cloneLowerControllerUsbIdentity();
+  form.lowerControllerUsbIdentity = cloneLowerControllerUsbIdentity(
+    machineStore.config.lowerControllerUsbIdentity,
+  );
   form.scannerAdapter = machineStore.config.scannerAdapter;
   form.scannerSerialPortPath = machineStore.config.scannerSerialPortPath;
   form.scannerBaudRate = machineStore.config.scannerBaudRate;
@@ -77,14 +97,38 @@ function syncFormFromStore(): void {
 
 onMounted(async () => {
   try {
-    if (!machineStore.configLoaded) {
-      await machineStore.loadConfig();
-    }
+    const connection = await daemonClient.initialize();
+    runtimeFlags.advancedMaintenanceConfig =
+      shouldShowAdvancedMaintenanceConfig({
+        flag: connection.runtimeFlags?.advancedMaintenanceConfig,
+      });
   } catch {
-    // Keep maintenance usable with local defaults when daemon is temporarily unavailable.
+    runtimeFlags.advancedMaintenanceConfig =
+      shouldShowAdvancedMaintenanceConfig({
+        flag: import.meta.env.VITE_ENABLE_ADVANCED_MAINTENANCE_CONFIG,
+      });
   }
-  syncFormFromStore();
-  await refreshStockMaintenanceView();
+
+  if (runtimeFlags.advancedMaintenanceConfig) {
+    try {
+      if (!machineStore.configLoaded) {
+        await machineStore.loadConfig();
+      }
+      syncFormFromStore();
+    } catch {
+      // Keep maintenance usable with local defaults when daemon is temporarily unavailable.
+    }
+  }
+  await Promise.allSettled([
+    refreshStockMaintenanceView(),
+    refreshDiagnostics(),
+  ]);
+});
+
+const diagnostics = reactive({
+  loading: false,
+  message: null as string | null,
+  logsMessage: null as string | null,
 });
 
 const hardwareMaintenance = reactive({
@@ -101,6 +145,7 @@ const stockMaintenance = reactive({
   loading: false,
   message: null as string | null,
   planogramVersion: null as string | null,
+  source: null as string | null,
   slots: [] as Array<{
     slotId: string;
     slotCode: string;
@@ -125,6 +170,9 @@ const scannerAdapters: ScannerAdapter[] = ["disabled", "serial_text"];
 const scannerFrameSuffixes = ["crlf", "lf", "cr", "none"] as const;
 
 async function saveAndReboot(): Promise<void> {
+  if (!runtimeFlags.advancedMaintenanceConfig) {
+    return;
+  }
   try {
     const normalized = normalizeMachineConfig({
       ...form,
@@ -151,7 +199,9 @@ async function runHardwareCheck(): Promise<void> {
     const result = await daemonClient.runHardwareSelfCheck();
     if (result.configUpdated) {
       await machineStore.loadConfig();
-      syncFormFromStore();
+      if (runtimeFlags.advancedMaintenanceConfig) {
+        syncFormFromStore();
+      }
     }
     const details = [
       result.portPath ? `端口 ${result.portPath}` : null,
@@ -195,11 +245,48 @@ async function refreshVisionStatus(): Promise<void> {
   }
 }
 
+async function refreshDiagnostics(): Promise<void> {
+  diagnostics.loading = true;
+  diagnostics.message = null;
+  try {
+    const [health, ready] = await Promise.all([
+      daemonClient.getHealth(),
+      daemonClient.getReady(),
+    ]);
+    machineStore.applyHealth(health);
+    connectivityStore.applyHealth(health);
+    connectivityStore.applyReady(ready);
+    await Promise.allSettled([
+      mqttStore.refresh(),
+      scannerStore.refresh(),
+      visionStore.refresh(),
+      remoteOpsStore.refresh(),
+    ]);
+  } catch (error) {
+    diagnostics.message =
+      error instanceof Error ? error.message : String(error);
+  } finally {
+    diagnostics.loading = false;
+  }
+}
+
+async function exportLogs(): Promise<void> {
+  diagnostics.logsMessage = null;
+  try {
+    await remoteOpsStore.downloadExport();
+    diagnostics.logsMessage = "日志已导出";
+  } catch (error) {
+    diagnostics.logsMessage =
+      error instanceof Error ? error.message : String(error);
+  }
+}
+
 async function refreshStockMaintenanceView(): Promise<void> {
   stockMaintenance.loading = true;
   try {
     const snapshot = await daemonClient.getSaleView();
     stockMaintenance.planogramVersion = snapshot.planogramVersion;
+    stockMaintenance.source = snapshot.source;
     stockMaintenance.slots = snapshot.items.map((item) => ({
       slotId: item.slotId,
       slotCode: item.slotCode,
@@ -257,11 +344,7 @@ async function submitStockMovement(): Promise<void> {
       <p class="text-sm tracking-[0.35em] text-amber-200 uppercase">
         MAINTENANCE
       </p>
-      <h2 class="mt-3 text-3xl font-bold">部署配置 / 维护入口</h2>
-      <p class="mt-3 text-slate-300">
-        UI 现在只修改 daemon
-        配置并读取其状态。密钥不会回显，留空表示保持现有值。
-      </p>
+      <h2 class="mt-3 text-3xl font-bold">生产维护</h2>
 
       <div class="mt-6 rounded-3xl border border-white/10 bg-slate-950/30 p-5">
         <p
@@ -361,6 +444,131 @@ async function submitStockMovement(): Promise<void> {
         </form>
       </div>
 
+      <div class="mt-6 rounded-3xl border border-white/10 bg-slate-950/30 p-5">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <p
+            class="text-sm font-semibold tracking-[0.28em] text-sky-200 uppercase"
+          >
+            Diagnostics
+          </p>
+          <div class="flex flex-wrap gap-3">
+            <button
+              class="kiosk-touch-target rounded-2xl border border-sky-200/30 px-4 py-3 font-bold text-sky-100 disabled:opacity-50"
+              type="button"
+              :disabled="diagnostics.loading"
+              @click="refreshDiagnostics"
+            >
+              刷新诊断
+            </button>
+            <button
+              class="kiosk-touch-target rounded-2xl border border-sky-200/30 px-4 py-3 font-bold text-sky-100"
+              type="button"
+              @click="exportLogs"
+            >
+              导出日志
+            </button>
+            <button
+              class="kiosk-touch-target rounded-2xl border border-sky-200/30 px-4 py-3 font-bold text-sky-100 disabled:opacity-50"
+              type="button"
+              :disabled="hardwareMaintenance.loading"
+              @click="runHardwareCheck"
+            >
+              硬件自检
+            </button>
+            <button
+              class="kiosk-touch-target rounded-2xl border border-sky-200/30 px-4 py-3 font-bold text-sky-100 disabled:opacity-50"
+              type="button"
+              :disabled="visionMaintenance.loading"
+              @click="refreshVisionStatus"
+            >
+              视觉状态
+            </button>
+          </div>
+        </div>
+
+        <dl class="mt-4 grid gap-3 md:grid-cols-2">
+          <div class="rounded-2xl bg-slate-950/45 p-4">
+            <dt class="text-sm text-slate-400">后端</dt>
+            <dd class="mt-1 font-bold text-white">
+              {{ machineStore.health?.backendOnline ? "在线" : "不可用" }}
+              · {{ machineStore.health?.status ?? "unknown" }}
+            </dd>
+          </div>
+          <div class="rounded-2xl bg-slate-950/45 p-4">
+            <dt class="text-sm text-slate-400">Readiness</dt>
+            <dd class="mt-1 font-bold text-white">
+              {{ connectivityStore.ready?.ready ? "就绪" : "未就绪" }}
+              · {{ connectivityStore.ready?.mode ?? "unknown" }}
+            </dd>
+          </div>
+          <div class="rounded-2xl bg-slate-950/45 p-4">
+            <dt class="text-sm text-slate-400">MQTT</dt>
+            <dd class="mt-1 font-bold text-white">
+              {{ mqttStore.status }} · outbox {{ mqttStore.outboxSize }}
+            </dd>
+          </div>
+          <div class="rounded-2xl bg-slate-950/45 p-4">
+            <dt class="text-sm text-slate-400">下位机</dt>
+            <dd class="mt-1 font-bold text-white">
+              {{ machineStore.health?.hardwareOnline ? "在线" : "不可用" }}
+            </dd>
+          </div>
+          <div class="rounded-2xl bg-slate-950/45 p-4">
+            <dt class="text-sm text-slate-400">扫码器</dt>
+            <dd class="mt-1 font-bold text-white">
+              {{ scannerStore.online ? "在线" : "不可用" }} ·
+              {{ scannerStore.message }}
+            </dd>
+          </div>
+          <div class="rounded-2xl bg-slate-950/45 p-4">
+            <dt class="text-sm text-slate-400">视觉</dt>
+            <dd class="mt-1 font-bold text-white">
+              {{ visionStore.online ? "在线" : "不可用" }} ·
+              {{ visionStore.message }}
+            </dd>
+          </div>
+          <div class="rounded-2xl bg-slate-950/45 p-4">
+            <dt class="text-sm text-slate-400">本地状态</dt>
+            <dd class="mt-1 font-bold text-white">
+              {{ stockMaintenance.source ?? "unknown" }} ·
+              {{ stockMaintenance.planogramVersion ?? "no planogram" }}
+            </dd>
+          </div>
+          <div class="rounded-2xl bg-slate-950/45 p-4">
+            <dt class="text-sm text-slate-400">Remote Ops</dt>
+            <dd class="mt-1 font-bold text-white">
+              pending {{ remoteOpsStore.pending }} ·
+              {{ remoteOpsStore.lastError ?? "ok" }}
+            </dd>
+          </div>
+        </dl>
+
+        <p
+          v-if="diagnostics.message"
+          class="mt-4 rounded-2xl bg-rose-500/20 p-4 text-rose-100"
+        >
+          {{ diagnostics.message }}
+        </p>
+        <p
+          v-if="diagnostics.logsMessage"
+          class="mt-4 rounded-2xl bg-sky-500/15 p-4 text-sky-100"
+        >
+          {{ diagnostics.logsMessage }}
+        </p>
+        <p
+          v-if="hardwareMaintenance.message"
+          class="mt-4 rounded-2xl bg-sky-500/15 p-4 text-sky-100"
+        >
+          {{ hardwareMaintenance.message }}
+        </p>
+        <p
+          v-if="visionMaintenance.message"
+          class="mt-4 rounded-2xl bg-fuchsia-500/15 p-4 text-fuchsia-100"
+        >
+          {{ visionMaintenance.message }}
+        </p>
+      </div>
+
       <div
         v-if="mqttStore.outboxWarning"
         class="mt-6 rounded-2xl border border-amber-300/30 bg-amber-500/20 p-4 text-amber-100"
@@ -368,7 +576,11 @@ async function submitStockMovement(): Promise<void> {
         {{ mqttStore.outboxWarning }}
       </div>
 
-      <form class="mt-8 grid gap-5" @submit.prevent="saveAndReboot">
+      <form
+        v-if="showAdvancedDebugConfig"
+        class="mt-8 grid gap-5"
+        @submit.prevent="saveAndReboot"
+      >
         <label class="grid gap-2 text-left">
           <span class="text-sm font-semibold text-slate-200"
             >机器编号 machineCode</span
@@ -728,7 +940,10 @@ async function submitStockMovement(): Promise<void> {
           {{ machineStore.error }}
         </p>
       </form>
-      <div v-if="form.hardwareAdapter === 'mock'" class="mt-6">
+      <div
+        v-if="showAdvancedDebugConfig && form.hardwareAdapter === 'mock'"
+        class="mt-6"
+      >
         <MockHardwareControls />
       </div>
     </section>

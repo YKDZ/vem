@@ -11,6 +11,12 @@ import {
   heartbeatPayloadSchema,
   machineEnvironmentControlRequestSchema,
   machineAuthTokenRequestSchema,
+  machineClaimRequestSchema,
+  generateMachineClaimCodeResponseSchema,
+  machineClaimCodeSnapshotSchema,
+  machineClaimCodePurposes,
+  machineClaimCodeStates,
+  machineProvisioningProfileSchema,
   machinePlanogramVersionSnapshotSchema,
   machineSaleViewItemSchema,
   machineSlotStatuses,
@@ -171,6 +177,181 @@ describe("shared API contract", () => {
         machineSecret: "local-machine-shared-secret-change-before-production",
       }).machineCode,
     ).toBe("M001");
+  });
+
+  it("keeps machine claim code secrets out of normal snapshots", () => {
+    expect(machineClaimCodeStates).toEqual([
+      "pending",
+      "consumed",
+      "expired",
+      "revoked",
+      "locked",
+    ]);
+    expect(machineClaimCodePurposes).toEqual(["first_claim", "reclaim"]);
+
+    const snapshot = {
+      id: "550e8400-e29b-41d4-a716-446655440111",
+      machineId: "550e8400-e29b-41d4-a716-446655440000",
+      machineCode: "M001",
+      purpose: "first_claim",
+      state: "pending",
+      expiresAt: "2026-06-08T16:40:00.000Z",
+      failedAttemptCount: 0,
+      maxFailedAttempts: 5,
+      createdAt: "2026-06-08T16:30:00.000Z",
+      consumedAt: null,
+      revokedAt: null,
+      lockedAt: null,
+    };
+
+    expect(machineClaimCodeSnapshotSchema.parse(snapshot)).toEqual(snapshot);
+    expect(() =>
+      machineClaimCodeSnapshotSchema.parse({
+        ...snapshot,
+        claimCode: "ABCD-2345",
+      }),
+    ).toThrow();
+    expect(
+      generateMachineClaimCodeResponseSchema.parse({
+        ...snapshot,
+        claimCode: "ABCD-2345",
+      }).claimCode,
+    ).toBe("ABCD-2345");
+  });
+
+  it("accepts only approved machine provisioning profile categories", () => {
+    expect(
+      machineClaimRequestSchema.parse({ claimCode: "ABCD-2345" }).claimCode,
+    ).toBe("ABCD-2345");
+
+    const profile = {
+      machine: {
+        id: "550e8400-e29b-41d4-a716-446655440000",
+        code: "M001",
+        name: "Lobby",
+        status: "offline",
+        locationText: "1F",
+      },
+      credentials: {
+        machineSecret:
+          "vms_local-machine-shared-secret-change-before-production",
+        machineSecretVersion: 2,
+        mqttSigningSecret:
+          "vms_local-mqtt-shared-secret-change-before-production",
+        mqttConnection: {
+          url: "mqtt://localhost:1883",
+          clientId: "vem-machine-M001",
+          username: "machine-client",
+          password: "mqtt-password",
+        },
+      },
+      runtimeEndpoints: {
+        apiBasePath: "/api",
+        machineAuthTokenPath: "/api/machine-auth/token",
+        machineApiBasePath: "/api/machines/M001",
+        mqttTopicPrefix: "vem/machines/M001",
+      },
+      hardwareProfile: {
+        profile: "production",
+        controller: { required: true, protocol: "vem-vending-controller" },
+        paymentScanner: { required: true, supportsPaymentCode: true },
+        vision: { required: false, supportsRecommendations: true },
+      },
+      paymentCapability: {
+        profile: "production",
+        qrCodeEnabled: true,
+        paymentCodeEnabled: true,
+        serverTime: "2026-06-08T16:30:00.000Z",
+      },
+      metadata: {
+        profileVersion: 1,
+        claimCodeId: "550e8400-e29b-41d4-a716-446655440111",
+        claimedAt: "2026-06-08T16:30:00.000Z",
+        serverTime: "2026-06-08T16:30:00.000Z",
+      },
+    };
+
+    expect(machineProvisioningProfileSchema.parse(profile)).toEqual(profile);
+    expect(() =>
+      machineProvisioningProfileSchema.parse({
+        ...profile,
+        planogram: { slots: [] },
+      }),
+    ).toThrow();
+    expect(() =>
+      machineProvisioningProfileSchema.parse({
+        ...profile,
+        stockQuantities: [{ slotCode: "A1", quantity: 3 }],
+      }),
+    ).toThrow();
+    expect(() =>
+      machineProvisioningProfileSchema.parse({
+        ...profile,
+        catalog: {
+          items: [
+            {
+              slotCode: "A1",
+              productName: "矿泉水",
+              quantity: 3,
+            },
+          ],
+        },
+      }),
+    ).toThrow();
+    expect(() =>
+      machineProvisioningProfileSchema.parse({
+        ...profile,
+        paymentCapability: {
+          ...profile.paymentCapability,
+          mockEnabled: true,
+        },
+      }),
+    ).toThrow();
+    expect(() =>
+      machineProvisioningProfileSchema.parse({
+        ...profile,
+        paymentCapability: {
+          ...profile.paymentCapability,
+          facePayEnabled: true,
+        },
+      }),
+    ).toThrow();
+    expect(() =>
+      machineProvisioningProfileSchema.parse({
+        ...profile,
+        paymentCapability: {
+          profile: "production",
+          options: [
+            {
+              optionKey: "qr_code:alipay",
+              providerCode: "alipay",
+              method: "face_pay",
+              displayName: "刷脸支付",
+              description: "首次生产默认不启用刷脸支付",
+              icon: "alipay",
+              recommended: true,
+              disabled: false,
+              disabledReason: null,
+            },
+          ],
+          defaultOptionKey: "qr_code:alipay",
+          defaultProviderCode: "alipay",
+          serverTime: "2026-06-08T16:30:00.000Z",
+        },
+      }),
+    ).toThrow();
+    expect(() =>
+      machineProvisioningProfileSchema.parse({
+        ...profile,
+        paymentCapability: {
+          ...profile.paymentCapability,
+          merchantPrivateKey: "should-not-be-in-profile",
+        },
+      }),
+    ).toThrow();
+    expect(JSON.stringify(profile)).not.toContain("merchant");
+    expect(JSON.stringify(profile)).not.toContain("COM");
+    expect(JSON.stringify(profile)).not.toContain("cameraDevice");
   });
 
   it("accepts machine planogram version lifecycle snapshots", () => {

@@ -1,6 +1,6 @@
 {
-  "machineCode": "MACHINE-BRINGUP-001",
-  "apiBaseUrl": "http://192.168.1.10:3000/api",
+  "machineCode": null,
+  "apiBaseUrl": "https://staging-api.example.com/api",
   "mqttUrl": "mqtt://192.168.1.10:1883",
   "mqttUsername": "vem-machine",
   "hardwareAdapter": "serial",

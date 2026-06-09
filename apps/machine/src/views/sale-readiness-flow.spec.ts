@@ -11,6 +11,7 @@ const {
   subscribeEventsMock,
   getHealthMock,
   getReadyMock,
+  getConfigMock,
   getSaleReadinessMock,
   getCurrentTransactionMock,
   getPaymentOptionsMock,
@@ -22,6 +23,7 @@ const {
   subscribeEventsMock: vi.fn(),
   getHealthMock: vi.fn(),
   getReadyMock: vi.fn(),
+  getConfigMock: vi.fn(),
   getSaleReadinessMock: vi.fn(),
   getCurrentTransactionMock: vi.fn(),
   getPaymentOptionsMock: vi.fn(),
@@ -42,6 +44,7 @@ vi.mock("@/daemon/client", () => ({
     subscribeEvents: subscribeEventsMock,
     getHealth: getHealthMock,
     getReady: getReadyMock,
+    getConfig: getConfigMock,
     getSaleReadiness: getSaleReadinessMock,
     getCurrentTransaction: getCurrentTransactionMock,
     getSaleView: vi.fn(),
@@ -88,6 +91,34 @@ beforeEach(() => {
     errorMessage: null,
     operatorHint: null,
     updatedAt: "2026-06-04T00:00:00Z",
+  });
+  getConfigMock.mockResolvedValue({
+    public: {
+      machineCode: "M001",
+      apiBaseUrl: "http://localhost:3000/api",
+      mqttUrl: "mqtt://localhost:1883",
+      mqttUsername: null,
+      hardwareAdapter: "mock",
+      serialPortPath: null,
+      lowerControllerUsbIdentity: null,
+      scannerAdapter: "disabled",
+      scannerSerialPortPath: null,
+      scannerBaudRate: 9600,
+      scannerFrameSuffix: "crlf",
+      visionEnabled: true,
+      visionWsUrl: "ws://127.0.0.1:7892/ws",
+      visionAutoStart: false,
+      visionProcessCommand: null,
+      visionProcessArgs: null,
+      visionRequestTimeoutMs: 8000,
+      kioskMode: false,
+      stockMovementRetentionDays: 30,
+    },
+    machineSecretConfigured: true,
+    mqttSigningSecretConfigured: true,
+    mqttPasswordConfigured: false,
+    provisioned: true,
+    provisioningIssues: [],
   });
   getPaymentOptionsMock.mockResolvedValue({
     options: [
@@ -330,6 +361,71 @@ async function mountView(component: object): Promise<HTMLElement> {
 }
 
 describe("sale readiness UI flow", () => {
+  it("routes first boot machines without provisioning to the claim-code page", async () => {
+    getHealthMock.mockResolvedValue({
+      ...healthSnapshot(),
+      configConfigured: false,
+    });
+    getReadyMock.mockResolvedValue({
+      ...readySnapshot(),
+      canSell: false,
+      suggestedRoute: "maintenance",
+    });
+    getSaleReadinessMock.mockResolvedValue(saleReadiness(false));
+    getConfigMock.mockResolvedValue({
+      public: {
+        machineCode: null,
+        apiBaseUrl: "http://localhost:3000/api",
+        mqttUrl: "mqtt://localhost:1883",
+        mqttUsername: null,
+        hardwareAdapter: "mock",
+        serialPortPath: null,
+        lowerControllerUsbIdentity: null,
+        scannerAdapter: "disabled",
+        scannerSerialPortPath: null,
+        scannerBaudRate: 9600,
+        scannerFrameSuffix: "crlf",
+        visionEnabled: true,
+        visionWsUrl: "ws://127.0.0.1:7892/ws",
+        visionAutoStart: false,
+        visionProcessCommand: null,
+        visionProcessArgs: null,
+        visionRequestTimeoutMs: 8000,
+        kioskMode: false,
+        stockMovementRetentionDays: 30,
+      },
+      machineSecretConfigured: false,
+      mqttSigningSecretConfigured: false,
+      mqttPasswordConfigured: false,
+      provisioned: false,
+      provisioningIssues: [
+        "machine_code_missing",
+        "machine_secret_missing",
+        "mqtt_signing_secret_missing",
+      ],
+    });
+
+    await mountView(BootView);
+
+    await vi.waitFor(() => {
+      expect(routerReplaceMock).toHaveBeenCalledWith("/provisioning");
+    });
+  });
+
+  it("does not route to catalog when startup config loading fails", async () => {
+    getHealthMock.mockResolvedValue(healthSnapshot());
+    getReadyMock.mockResolvedValue(readySnapshot());
+    getSaleReadinessMock.mockResolvedValue(saleReadiness(true));
+    getConfigMock.mockRejectedValue(new Error("config unavailable"));
+
+    await mountView(BootView);
+
+    await vi.waitFor(() => {
+      expect(routerReplaceMock).toHaveBeenCalledWith("/provisioning");
+    });
+    expect(routerReplaceMock).not.toHaveBeenCalledWith("/catalog");
+  });
+
   it("loads sale readiness during boot so a ready catalog can enter purchase", async () => {
     const item = makeCatalogItem();
     getHealthMock.mockResolvedValue(healthSnapshot());

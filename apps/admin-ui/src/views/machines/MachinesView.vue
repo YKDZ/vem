@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import type {
+  MachineClaimCodePurpose,
+  MachineClaimCodeState,
   MachineCommandStatus,
   MachineEnvironmentControlRequest,
   MachineSlotStatus,
@@ -14,12 +16,17 @@ import {
   commandEnvironment,
   createMachine,
   createMachineSlot,
+  generateMachineClaimCode,
   getMachine,
+  listMachineClaimCodes,
   listMachineSlots,
   listMachines,
+  revokeMachineClaimCode,
   rotateMachineCredentials,
   updateMachine,
+  type GenerateMachineClaimCodeResult,
   type Machine,
+  type MachineClaimCodeSnapshot,
   type MachineSlot,
   type PageResult,
   type RotateCredentialsResult,
@@ -30,6 +37,9 @@ import { formatDateTime } from "@/utils/format";
 const authStore = useAuthStore();
 const canWrite = authStore.hasPermission("machines.write");
 const canCommand = authStore.hasPermission("machines.command");
+const canManageCredentials = authStore.hasPermission(
+  "machines.manage-credentials",
+);
 
 const loading = ref(false);
 const machines = ref<PageResult<Machine>>({
@@ -304,6 +314,94 @@ onMounted(() => {
   void loadMachines();
 });
 
+// Machine Claim Codes
+const claimCodeDrawerOpen = ref(false);
+const claimCodeMachine = ref<Machine | null>(null);
+const claimCodes = ref<MachineClaimCodeSnapshot[]>([]);
+const claimCodesLoading = ref(false);
+const generatedClaimCode = ref<GenerateMachineClaimCodeResult | null>(null);
+const generatingClaimCode = ref(false);
+const revokingClaimCodeId = ref<string | null>(null);
+const claimCodeDrawerTitle = computed(() =>
+  claimCodeMachine.value ? `领取码 - ${claimCodeMachine.value.code}` : "领取码",
+);
+
+const claimCodeColumns = [
+  { title: "用途", dataIndex: "purpose", key: "purpose" },
+  { title: "状态", dataIndex: "state", key: "state" },
+  { title: "失败次数", key: "failedAttempts" },
+  { title: "过期时间", dataIndex: "expiresAt", key: "expiresAt" },
+  { title: "创建时间", dataIndex: "createdAt", key: "createdAt" },
+  { title: "操作", key: "actions" },
+];
+
+const claimCodeStateColor: Record<MachineClaimCodeState, string> = {
+  pending: "processing",
+  consumed: "success",
+  expired: "default",
+  revoked: "warning",
+  locked: "error",
+};
+
+function claimCodeStateLabel(state: MachineClaimCodeState): string {
+  if (state === "pending") return "待领取";
+  if (state === "consumed") return "已领取";
+  if (state === "expired") return "已过期";
+  if (state === "revoked") return "已撤销";
+  return "已锁定";
+}
+
+function claimCodePurposeLabel(
+  purpose: MachineClaimCodePurpose | undefined,
+): string {
+  return purpose === "reclaim" ? "重新领取" : "首次领取";
+}
+
+async function loadClaimCodes(machineId: string): Promise<void> {
+  claimCodesLoading.value = true;
+  try {
+    claimCodes.value = (await listMachineClaimCodes(machineId)).items;
+  } finally {
+    claimCodesLoading.value = false;
+  }
+}
+
+async function openClaimCodes(m: Machine): Promise<void> {
+  claimCodeMachine.value = m;
+  generatedClaimCode.value = null;
+  claimCodeDrawerOpen.value = true;
+  await loadClaimCodes(m.id);
+}
+
+async function handleGenerateClaimCode(
+  purpose: MachineClaimCodePurpose = "first_claim",
+): Promise<void> {
+  if (!claimCodeMachine.value) return;
+  generatingClaimCode.value = true;
+  try {
+    generatedClaimCode.value =
+      purpose === "reclaim"
+        ? await generateMachineClaimCode(claimCodeMachine.value.id, { purpose })
+        : await generateMachineClaimCode(claimCodeMachine.value.id);
+    await loadClaimCodes(claimCodeMachine.value.id);
+  } finally {
+    generatingClaimCode.value = false;
+  }
+}
+
+async function handleRevokeClaimCode(
+  claimCode: MachineClaimCodeSnapshot,
+): Promise<void> {
+  if (!claimCodeMachine.value || claimCode.state !== "pending") return;
+  revokingClaimCodeId.value = claimCode.id;
+  try {
+    await revokeMachineClaimCode(claimCodeMachine.value.id, claimCode.id);
+    await loadClaimCodes(claimCodeMachine.value.id);
+  } finally {
+    revokingClaimCodeId.value = null;
+  }
+}
+
 // Rotate credentials
 const rotatingId = ref<string | null>(null);
 const rotatedCredentials = ref<RotateCredentialsResult | null>(null);
@@ -413,6 +511,13 @@ async function handleRequestLogExport(m: Machine): Promise<void> {
                 >环境</a-button
               >
               <a-button size="small" @click="openSlots(record)">格口</a-button>
+              <a-button
+                v-if="canManageCredentials"
+                size="small"
+                @click="openClaimCodes(record)"
+              >
+                领取码
+              </a-button>
               <a-button
                 v-if="canWrite"
                 size="small"
@@ -665,6 +770,109 @@ async function handleRequestLogExport(m: Machine): Promise<void> {
         </a-form-item>
       </a-form>
     </a-modal>
+
+    <!-- Machine Claim Codes drawer -->
+    <a-drawer
+      v-model:open="claimCodeDrawerOpen"
+      :title="claimCodeDrawerTitle"
+      width="720"
+      :destroy-on-hidden="true"
+    >
+      <template v-if="claimCodeMachine">
+        <div class="mb-4 flex items-center gap-3">
+          <a-button
+            type="primary"
+            :loading="generatingClaimCode"
+            @click="handleGenerateClaimCode('first_claim')"
+          >
+            生成领取码
+          </a-button>
+          <a-button
+            danger
+            :loading="generatingClaimCode"
+            @click="handleGenerateClaimCode('reclaim')"
+          >
+            生成重新领取码
+          </a-button>
+        </div>
+        <a-alert
+          v-if="generatedClaimCode"
+          type="warning"
+          message="请立即保存领取码，关闭或重新生成后将无法再次查看。"
+          class="mb-4"
+        />
+        <a-descriptions
+          v-if="generatedClaimCode"
+          bordered
+          :column="1"
+          class="mb-4"
+        >
+          <a-descriptions-item label="机器编码">{{
+            generatedClaimCode.machineCode
+          }}</a-descriptions-item>
+          <a-descriptions-item label="用途">{{
+            claimCodePurposeLabel(generatedClaimCode.purpose)
+          }}</a-descriptions-item>
+          <a-descriptions-item label="领取码">
+            <a-typography-text code copyable>{{
+              generatedClaimCode.claimCode
+            }}</a-typography-text>
+          </a-descriptions-item>
+          <a-descriptions-item label="过期时间">{{
+            formatDateTime(generatedClaimCode.expiresAt)
+          }}</a-descriptions-item>
+        </a-descriptions>
+        <a-table
+          :columns="claimCodeColumns"
+          :data-source="claimCodes"
+          row-key="id"
+          :loading="claimCodesLoading"
+          :pagination="false"
+        >
+          <template #bodyCell="{ column, record }">
+            <template v-if="column.key === 'purpose'">
+              {{
+                claimCodePurposeLabel(
+                  record.purpose as MachineClaimCodePurpose | undefined,
+                )
+              }}
+            </template>
+            <template v-else-if="column.key === 'state'">
+              <a-tag
+                :color="
+                  claimCodeStateColor[record.state as MachineClaimCodeState] ??
+                  'default'
+                "
+              >
+                {{ claimCodeStateLabel(record.state as MachineClaimCodeState) }}
+              </a-tag>
+            </template>
+            <template v-else-if="column.key === 'failedAttempts'">
+              {{ record.failedAttemptCount }}/{{ record.maxFailedAttempts }}
+            </template>
+            <template v-else-if="column.key === 'expiresAt'">
+              {{ formatDateTime(record.expiresAt) }}
+            </template>
+            <template v-else-if="column.key === 'createdAt'">
+              {{ formatDateTime(record.createdAt) }}
+            </template>
+            <template v-else-if="column.key === 'actions'">
+              <a-button
+                v-if="record.state === 'pending'"
+                size="small"
+                danger
+                :loading="revokingClaimCodeId === record.id"
+                @click="
+                  handleRevokeClaimCode(record as MachineClaimCodeSnapshot)
+                "
+              >
+                撤销
+              </a-button>
+            </template>
+          </template>
+        </a-table>
+      </template>
+    </a-drawer>
 
     <!-- Rotate credentials result modal -->
     <a-modal

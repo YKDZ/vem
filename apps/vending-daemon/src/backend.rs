@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use crate::config::MachineProvisioningProfile;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
@@ -199,6 +200,39 @@ impl BackendClient {
 
         *self.token.write().await = Some(token);
         Ok(())
+    }
+
+    pub async fn claim_machine(
+        &self,
+        claim_code: &str,
+    ) -> Result<MachineProvisioningProfile, String> {
+        let response = self
+            .client
+            .post(self.endpoint("/machines/claim"))
+            .json(&serde_json::json!({ "claimCode": claim_code }))
+            .send()
+            .await
+            .map_err(|error| format!("backend request failed: {error}"))?;
+        let status = response.status();
+        let payload = response
+            .text()
+            .await
+            .map_err(|error| format!("backend read response failed: {error}"))?;
+
+        if !status.is_success() {
+            return Err(match status.as_u16() {
+                502..=504 => "BACKEND_OFFLINE".to_string(),
+                _ => format!("BACKEND_HTTP_ERROR: {status} {payload}"),
+            });
+        }
+        if payload.is_empty() {
+            return Err("backend response parse failed: empty claim profile".to_string());
+        }
+        let value = serde_json::from_str(&payload)
+            .map_err(|error| format!("backend json parse failed: {error}"))?;
+        let value = Self::unwrap_api_response(value)?;
+        serde_json::from_value(value)
+            .map_err(|error| format!("backend response parse failed: {error}"))
     }
 
     pub async fn create_order(

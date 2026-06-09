@@ -98,9 +98,16 @@ onMounted(async () => {
     connectivityStore.applySaleReadiness(saleReadiness);
     checkoutStore.applyTransaction(transaction);
 
-    pushStep("同步配置、目录和展示状态");
+    pushStep("同步配置");
+    try {
+      await machineStore.loadConfig();
+    } catch (error) {
+      connectivityStore.markStale(error);
+      pushStep("daemon 配置读取失败，进入领取页确认配置");
+    }
+
+    pushStep("同步目录和展示状态");
     await Promise.allSettled([
-      machineStore.loadConfig(),
       mqttStore.refresh(),
       catalogStore.load(),
       scannerStore.refresh(),
@@ -130,6 +137,7 @@ onMounted(async () => {
       routeForStartup({
         daemonAvailable: true,
         health,
+        config: machineStore.configSummary,
         ready,
         transaction,
       }),
@@ -141,6 +149,7 @@ onMounted(async () => {
       routeForStartup({
         daemonAvailable: false,
         health: null,
+        config: null,
         ready: null,
         transaction: null,
       }),

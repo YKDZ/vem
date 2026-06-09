@@ -30,9 +30,19 @@ pub enum ScannerAdapterKind {
 #[serde(rename_all = "camelCase")]
 pub struct MachinePublicConfig {
     pub machine_code: Option<String>,
+    #[serde(default)]
+    pub machine_id: Option<String>,
+    #[serde(default)]
+    pub machine_name: Option<String>,
+    #[serde(default)]
+    pub machine_status: Option<String>,
+    #[serde(default)]
+    pub machine_location_text: Option<String>,
     pub api_base_url: String,
     pub mqtt_url: String,
     pub mqtt_username: Option<String>,
+    #[serde(default)]
+    pub mqtt_client_id: Option<String>,
     pub hardware_adapter: HardwareAdapterKind,
     pub serial_port_path: Option<String>,
     pub lower_controller_usb_identity: Option<SerialPortUsbIdentity>,
@@ -49,6 +59,14 @@ pub struct MachinePublicConfig {
     pub kiosk_mode: bool,
     #[serde(default = "default_stock_movement_retention_days")]
     pub stock_movement_retention_days: i64,
+    #[serde(default)]
+    pub runtime_endpoints: Option<ProvisioningRuntimeEndpoints>,
+    #[serde(default)]
+    pub hardware_profile: Option<ProductionMachineHardwareProfile>,
+    #[serde(default)]
+    pub payment_capability: Option<ProductionMachinePaymentCapability>,
+    #[serde(default)]
+    pub provisioning_metadata: Option<ProvisioningMetadata>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -64,6 +82,143 @@ pub struct MachineConfigSecretsUpdate {
 pub struct MachineConfigUpdateRequest {
     pub public: MachinePublicConfig,
     pub secrets: Option<MachineConfigSecretsUpdate>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
+pub struct MachineProvisioningProfile {
+    pub machine: ProvisioningMachine,
+    pub credentials: ProvisioningCredentials,
+    pub runtime_endpoints: ProvisioningRuntimeEndpoints,
+    pub hardware_profile: ProductionMachineHardwareProfile,
+    pub payment_capability: ProductionMachinePaymentCapability,
+    pub metadata: ProvisioningMetadata,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
+pub struct ProvisioningMachine {
+    pub id: String,
+    pub code: String,
+    pub name: String,
+    pub status: String,
+    pub location_text: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
+pub struct ProvisioningCredentials {
+    pub machine_secret: String,
+    pub machine_secret_version: i64,
+    pub mqtt_signing_secret: String,
+    pub mqtt_connection: ProvisioningMqttConnection,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
+pub struct ProvisioningMqttConnection {
+    pub url: String,
+    pub client_id: String,
+    pub username: Option<String>,
+    pub password: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
+pub struct ProvisioningRuntimeEndpoints {
+    pub api_base_path: String,
+    pub machine_auth_token_path: String,
+    pub machine_api_base_path: String,
+    pub mqtt_topic_prefix: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
+pub struct ProvisioningMetadata {
+    pub profile_version: i64,
+    pub claim_code_id: String,
+    pub claimed_at: String,
+    pub server_time: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
+pub struct ProductionMachineHardwareProfile {
+    pub profile: String,
+    pub controller: ProductionControllerProfile,
+    pub payment_scanner: ProductionPaymentScannerProfile,
+    pub vision: ProductionVisionProfile,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
+pub struct ProductionControllerProfile {
+    pub required: bool,
+    pub protocol: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
+pub struct ProductionPaymentScannerProfile {
+    pub required: bool,
+    pub supports_payment_code: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
+pub struct ProductionVisionProfile {
+    pub required: bool,
+    pub supports_recommendations: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
+pub struct ProductionMachinePaymentCapability {
+    pub profile: String,
+    #[serde(default = "default_payment_capability_enabled")]
+    pub qr_code_enabled: bool,
+    #[serde(default = "default_payment_capability_enabled")]
+    pub payment_code_enabled: bool,
+    pub server_time: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<ProductionMachinePaymentOption>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_option_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_provider_code: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
+pub struct ProductionMachinePaymentOption {
+    pub option_key: String,
+    pub provider_code: String,
+    pub method: String,
+    pub display_name: String,
+    pub description: String,
+    pub icon: String,
+    #[serde(default)]
+    pub recommended: bool,
+    #[serde(default)]
+    pub disabled: bool,
+    #[serde(default)]
+    pub disabled_reason: Option<String>,
+}
+
+fn default_payment_capability_enabled() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -87,11 +242,19 @@ pub struct MachineRuntimeSecrets {
 
 impl MachineRuntimeConfig {
     pub fn to_public(&self) -> MachinePublicRuntimeConfig {
+        let provisioning_issues = provisioning_issues(
+            &self.public,
+            self.machine_secret_configured,
+            self.mqtt_signing_secret_configured,
+            self.mqtt_password_configured,
+        );
         MachinePublicRuntimeConfig {
             public: self.public.clone(),
             machine_secret_configured: self.machine_secret_configured,
             mqtt_signing_secret_configured: self.mqtt_signing_secret_configured,
             mqtt_password_configured: self.mqtt_password_configured,
+            provisioned: provisioning_issues.is_empty(),
+            provisioning_issues,
         }
     }
 }
@@ -103,6 +266,21 @@ pub struct MachinePublicRuntimeConfig {
     pub machine_secret_configured: bool,
     pub mqtt_signing_secret_configured: bool,
     pub mqtt_password_configured: bool,
+    pub provisioned: bool,
+    pub provisioning_issues: Vec<String>,
+}
+
+impl MachinePublicRuntimeConfig {
+    fn with_provisioning_state(mut self) -> Self {
+        self.provisioning_issues = provisioning_issues(
+            &self.public,
+            self.machine_secret_configured,
+            self.mqtt_signing_secret_configured,
+            self.mqtt_password_configured,
+        );
+        self.provisioned = self.provisioning_issues.is_empty();
+        self
+    }
 }
 
 pub const STOCK_MOVEMENT_RETENTION_MIN_DAYS: i64 = 1;
@@ -112,12 +290,66 @@ pub fn default_stock_movement_retention_days() -> i64 {
     30
 }
 
+fn provisioning_issues(
+    public: &MachinePublicConfig,
+    machine_secret_configured: bool,
+    mqtt_signing_secret_configured: bool,
+    mqtt_password_configured: bool,
+) -> Vec<String> {
+    let mut issues = Vec::new();
+    if public
+        .machine_code
+        .as_deref()
+        .unwrap_or("")
+        .trim()
+        .is_empty()
+    {
+        issues.push("machine_code_missing".to_string());
+    }
+    if public.machine_id.as_deref().unwrap_or("").trim().is_empty() {
+        issues.push("machine_id_missing".to_string());
+    }
+    if public.api_base_url.trim().is_empty() {
+        issues.push("api_base_url_missing".to_string());
+    }
+    if public.mqtt_url.trim().is_empty() {
+        issues.push("mqtt_url_missing".to_string());
+    }
+    if public
+        .mqtt_client_id
+        .as_deref()
+        .unwrap_or("")
+        .trim()
+        .is_empty()
+    {
+        issues.push("mqtt_client_id_missing".to_string());
+    }
+    if public.runtime_endpoints.is_none() {
+        issues.push("runtime_endpoints_missing".to_string());
+    }
+    if !machine_secret_configured {
+        issues.push("machine_secret_missing".to_string());
+    }
+    if !mqtt_signing_secret_configured {
+        issues.push("mqtt_signing_secret_missing".to_string());
+    }
+    if public.mqtt_username.is_some() && !mqtt_password_configured {
+        issues.push("mqtt_password_missing".to_string());
+    }
+    issues
+}
+
 pub fn default_public_config() -> MachinePublicConfig {
     MachinePublicConfig {
         machine_code: None,
-        api_base_url: "http://localhost:3000/api".to_string(),
+        machine_id: None,
+        machine_name: None,
+        machine_status: None,
+        machine_location_text: None,
+        api_base_url: env_var("VEM_DEFAULT_API_BASE_URL").unwrap_or_default(),
         mqtt_url: "mqtt://localhost:1883".to_string(),
         mqtt_username: None,
+        mqtt_client_id: None,
         hardware_adapter: HardwareAdapterKind::Mock,
         serial_port_path: None,
         lower_controller_usb_identity: Some(SerialPortUsbIdentity {
@@ -137,6 +369,10 @@ pub fn default_public_config() -> MachinePublicConfig {
         vision_request_timeout_ms: 8_000,
         kiosk_mode: false,
         stock_movement_retention_days: default_stock_movement_retention_days(),
+        runtime_endpoints: None,
+        hardware_profile: None,
+        payment_capability: None,
+        provisioning_metadata: None,
     }
 }
 
@@ -182,6 +418,46 @@ pub fn normalize_public_config(
     });
     config.machine_code = machine_code;
 
+    let machine_id = config.machine_id.take().and_then(|value| {
+        let value = value.trim().to_string();
+        if value.is_empty() {
+            None
+        } else {
+            Some(value)
+        }
+    });
+    config.machine_id = machine_id;
+
+    let machine_name = config.machine_name.take().and_then(|value| {
+        let value = value.trim().to_string();
+        if value.is_empty() {
+            None
+        } else {
+            Some(value)
+        }
+    });
+    config.machine_name = machine_name;
+
+    let machine_status = config.machine_status.take().and_then(|value| {
+        let value = value.trim().to_string();
+        if value.is_empty() {
+            None
+        } else {
+            Some(value)
+        }
+    });
+    config.machine_status = machine_status;
+
+    let machine_location_text = config.machine_location_text.take().and_then(|value| {
+        let value = value.trim().to_string();
+        if value.is_empty() {
+            None
+        } else {
+            Some(value)
+        }
+    });
+    config.machine_location_text = machine_location_text;
+
     let mqtt_username = config.mqtt_username.take().and_then(|value| {
         let value = value.trim().to_string();
         if value.is_empty() {
@@ -191,6 +467,16 @@ pub fn normalize_public_config(
         }
     });
     config.mqtt_username = mqtt_username;
+
+    let mqtt_client_id = config.mqtt_client_id.take().and_then(|value| {
+        let value = value.trim().to_string();
+        if value.is_empty() {
+            None
+        } else {
+            Some(value)
+        }
+    });
+    config.mqtt_client_id = mqtt_client_id;
 
     let serial_port_path = config.serial_port_path.take().and_then(|value| {
         let value = value.trim().to_string();
@@ -240,9 +526,6 @@ pub fn normalize_public_config(
     config.api_base_url = config.api_base_url.trim().trim_end_matches('/').to_string();
     config.mqtt_url = config.mqtt_url.trim().to_string();
 
-    if config.api_base_url.is_empty() {
-        return Err("apiBaseUrl is required".to_string());
-    }
     if config.mqtt_url.is_empty() {
         return Err("mqttUrl is required".to_string());
     }
@@ -388,6 +671,166 @@ pub struct ConfigStore {
 }
 
 impl ConfigStore {
+    fn provisioning_persistence_error(error: String) -> String {
+        format!("provisioning persistence failed: {error}")
+    }
+
+    fn validate_len(value: &str, min: usize, max: usize, message: &str) -> Result<(), String> {
+        let len = value.trim().len();
+        if len < min || len > max {
+            return Err(message.to_string());
+        }
+        Ok(())
+    }
+
+    fn validate_iso_datetime(value: &str, message: &str) -> Result<(), String> {
+        chrono::DateTime::parse_from_rfc3339(value).map_err(|_| message.to_string())?;
+        Ok(())
+    }
+
+    fn validate_payment_option_key(value: &str) -> bool {
+        matches!(
+            value,
+            "qr_code:wechat_pay"
+                | "qr_code:alipay"
+                | "payment_code:wechat_pay"
+                | "payment_code:alipay"
+        )
+    }
+
+    fn validate_provisioning_profile(profile: &MachineProvisioningProfile) -> Result<(), String> {
+        if profile.metadata.profile_version != 1 {
+            return Err("unsupported provisioning profile version".to_string());
+        }
+        uuid::Uuid::parse_str(&profile.machine.id)
+            .map_err(|_| "machine identity invalid".to_string())?;
+        uuid::Uuid::parse_str(&profile.metadata.claim_code_id)
+            .map_err(|_| "claim metadata invalid".to_string())?;
+        Self::validate_iso_datetime(&profile.metadata.claimed_at, "claim metadata invalid")?;
+        Self::validate_iso_datetime(&profile.metadata.server_time, "claim metadata invalid")?;
+        Self::validate_len(
+            &profile.machine.code,
+            1,
+            64,
+            "machine code missing from provisioning profile",
+        )?;
+        Self::validate_len(&profile.machine.name, 1, 128, "machine identity invalid")?;
+        if !matches!(
+            profile.machine.status.as_str(),
+            "online" | "offline" | "maintenance" | "disabled"
+        ) {
+            return Err("machine identity invalid".to_string());
+        }
+        if profile.credentials.machine_secret.trim().len() < 32 {
+            return Err("machine credential missing from provisioning profile".to_string());
+        }
+        if profile.credentials.machine_secret.trim().len() > 256 {
+            return Err("machine credential missing from provisioning profile".to_string());
+        }
+        if profile.credentials.machine_secret_version < 1 {
+            return Err("machine credential missing from provisioning profile".to_string());
+        }
+        if profile.credentials.mqtt_signing_secret.trim().len() < 32 {
+            return Err("mqtt signing credential missing from provisioning profile".to_string());
+        }
+        if profile.credentials.mqtt_signing_secret.trim().len() > 256 {
+            return Err("mqtt signing credential missing from provisioning profile".to_string());
+        }
+        if profile.credentials.mqtt_connection.url.trim().is_empty() {
+            return Err("mqtt connection url missing from provisioning profile".to_string());
+        }
+        reqwest::Url::parse(&profile.credentials.mqtt_connection.url)
+            .map_err(|_| "mqtt connection url missing from provisioning profile".to_string())?;
+        if profile
+            .credentials
+            .mqtt_connection
+            .client_id
+            .trim()
+            .is_empty()
+        {
+            return Err("mqtt client id missing from provisioning profile".to_string());
+        }
+        if profile.credentials.mqtt_connection.client_id.trim().len() > 128 {
+            return Err("mqtt client id missing from provisioning profile".to_string());
+        }
+        if profile
+            .credentials
+            .mqtt_connection
+            .username
+            .as_deref()
+            .is_some_and(|value| value.trim().is_empty())
+            || profile
+                .credentials
+                .mqtt_connection
+                .password
+                .as_deref()
+                .is_some_and(|value| value.trim().is_empty())
+        {
+            return Err("mqtt connection invalid".to_string());
+        }
+        if profile.runtime_endpoints.api_base_path != "/api"
+            || profile.runtime_endpoints.machine_auth_token_path != "/api/machine-auth/token"
+        {
+            return Err("runtime endpoints invalid".to_string());
+        }
+        let expected_machine_path = format!("/api/machines/{}", profile.machine.code);
+        let expected_topic_prefix = format!("vem/machines/{}", profile.machine.code);
+        if profile.runtime_endpoints.machine_api_base_path != expected_machine_path
+            || profile.runtime_endpoints.mqtt_topic_prefix != expected_topic_prefix
+        {
+            return Err("runtime endpoints do not match machine identity".to_string());
+        }
+        if profile.hardware_profile.profile != "production"
+            || !profile.hardware_profile.controller.required
+            || profile.hardware_profile.controller.protocol != "vem-vending-controller"
+            || !profile.hardware_profile.payment_scanner.required
+        {
+            return Err("hardware profile invalid".to_string());
+        }
+        if profile.payment_capability.profile != "production" {
+            return Err("payment capability invalid".to_string());
+        }
+        Self::validate_iso_datetime(
+            &profile.payment_capability.server_time,
+            "payment capability invalid",
+        )?;
+        if profile.payment_capability.options.iter().any(|option| {
+            !Self::validate_payment_option_key(&option.option_key)
+                || !matches!(option.provider_code.as_str(), "wechat_pay" | "alipay")
+                || !matches!(option.method.as_str(), "qr_code" | "payment_code")
+                || !matches!(option.icon.as_str(), "wechat" | "alipay")
+                || option.provider_code == "mock"
+                || option.method == "mock"
+                || option.display_name.trim().is_empty()
+                || option.display_name.trim().len() > 32
+                || option.description.trim().is_empty()
+                || option.description.trim().len() > 128
+                || option
+                    .disabled_reason
+                    .as_deref()
+                    .is_some_and(|reason| reason.len() > 128)
+        }) {
+            return Err("payment capability invalid".to_string());
+        }
+        if profile
+            .payment_capability
+            .default_option_key
+            .as_deref()
+            .is_some_and(|key| !Self::validate_payment_option_key(key))
+        {
+            return Err("payment capability invalid".to_string());
+        }
+        if profile
+            .payment_capability
+            .default_provider_code
+            .as_deref()
+            .is_some_and(|provider| !matches!(provider, "wechat_pay" | "alipay"))
+        {
+            return Err("payment capability invalid".to_string());
+        }
+        Ok(())
+    }
+
     pub fn new(data_dir: PathBuf, state: LocalStateStore, secrets: Arc<dyn SecretStore>) -> Self {
         Self {
             data_dir,
@@ -533,8 +976,15 @@ impl ConfigStore {
             .await
             .map_err(|error| format!("write daemon config failed: {error}"))?;
         self.persist_snapshot(&normalized).await?;
+        self.public_runtime_config(normalized).await
+    }
+
+    async fn public_runtime_config(
+        &self,
+        public: MachinePublicConfig,
+    ) -> Result<MachinePublicRuntimeConfig, String> {
         Ok(MachinePublicRuntimeConfig {
-            public: normalized,
+            public,
             machine_secret_configured: self
                 .secrets
                 .read_secret(crate::secret::MACHINE_SECRET_ACCOUNT)
@@ -550,7 +1000,10 @@ impl ConfigStore {
                 .read_secret(crate::secret::MQTT_PASSWORD_ACCOUNT)
                 .await?
                 .is_some(),
-        })
+            provisioned: false,
+            provisioning_issues: Vec::new(),
+        }
+        .with_provisioning_state())
     }
 
     pub async fn save_config_update(
@@ -591,6 +1044,77 @@ impl ConfigStore {
         }
 
         self.save_public_config(request.public).await
+    }
+
+    pub async fn apply_provisioning_profile(
+        &self,
+        profile: MachineProvisioningProfile,
+    ) -> Result<MachinePublicRuntimeConfig, String> {
+        Self::validate_provisioning_profile(&profile)?;
+        let mut public = self.load_public_config().await?;
+        public.machine_id = Some(profile.machine.id.clone());
+        public.machine_code = Some(profile.machine.code.clone());
+        public.machine_name = Some(profile.machine.name.clone());
+        public.machine_status = Some(profile.machine.status.clone());
+        public.machine_location_text = profile.machine.location_text.clone();
+        public.mqtt_url = profile.credentials.mqtt_connection.url.clone();
+        public.mqtt_username = profile.credentials.mqtt_connection.username.clone();
+        public.mqtt_client_id = Some(profile.credentials.mqtt_connection.client_id.clone());
+        public.runtime_endpoints = Some(profile.runtime_endpoints.clone());
+        public.hardware_profile = Some(profile.hardware_profile.clone());
+        public.payment_capability = Some(profile.payment_capability.clone());
+        public.provisioning_metadata = Some(profile.metadata.clone());
+
+        self.save_public_config(public.clone())
+            .await
+            .map_err(Self::provisioning_persistence_error)?;
+
+        self.state
+            .put_metadata(
+                "machine_provisioning_claim_code_id",
+                &profile.metadata.claim_code_id,
+            )
+            .await
+            .map_err(|error| Self::provisioning_persistence_error(error.to_string()))?;
+        self.state
+            .put_metadata(
+                "machine_provisioning_profile_version",
+                &profile.metadata.profile_version.to_string(),
+            )
+            .await
+            .map_err(|error| Self::provisioning_persistence_error(error.to_string()))?;
+        self.state
+            .put_metadata(
+                "machine_provisioning_claimed_at",
+                &profile.metadata.claimed_at,
+            )
+            .await
+            .map_err(|error| Self::provisioning_persistence_error(error.to_string()))?;
+
+        self.secrets
+            .write_secret(
+                crate::secret::MACHINE_SECRET_ACCOUNT,
+                &profile.credentials.machine_secret,
+            )
+            .await
+            .map_err(Self::provisioning_persistence_error)?;
+        self.secrets
+            .write_secret(
+                crate::secret::MQTT_SIGNING_SECRET_ACCOUNT,
+                &profile.credentials.mqtt_signing_secret,
+            )
+            .await
+            .map_err(Self::provisioning_persistence_error)?;
+        if let Some(password) = profile.credentials.mqtt_connection.password.as_deref() {
+            self.secrets
+                .write_secret(crate::secret::MQTT_PASSWORD_ACCOUNT, password)
+                .await
+                .map_err(Self::provisioning_persistence_error)?;
+        }
+
+        self.public_runtime_config(public)
+            .await
+            .map_err(Self::provisioning_persistence_error)
     }
 
     pub async fn load_runtime_config(&self) -> Result<MachineRuntimeConfig, String> {
@@ -654,6 +1178,18 @@ mod tests {
         let previous = env::var(name).ok();
         env::set_var(name, base);
 
+        LegacyEnvGuard { name, previous }
+    }
+
+    fn set_env_var(name: &'static str, value: &str) -> LegacyEnvGuard {
+        let previous = env::var(name).ok();
+        env::set_var(name, value);
+        LegacyEnvGuard { name, previous }
+    }
+
+    fn remove_env_var(name: &'static str) -> LegacyEnvGuard {
+        let previous = env::var(name).ok();
+        env::remove_var(name);
         LegacyEnvGuard { name, previous }
     }
 
@@ -853,6 +1389,94 @@ mod tests {
         let first = store.load_public_config().await.expect("first load");
         let second = store.load_public_config().await.expect("second load");
         assert_eq!(first, second);
+    }
+
+    #[tokio::test]
+    async fn first_boot_config_requires_installer_api_base_url_before_claiming() {
+        let _env_lock = with_legacy_env_lock().await;
+        let _default_api = remove_env_var("VEM_DEFAULT_API_BASE_URL");
+        let temp = TempDir::new().expect("temp");
+        let data_dir = temp.path().join("daemon");
+        let state = crate::state::LocalStateStore::open(&data_dir.join("state.db"))
+            .await
+            .expect("state");
+        let store = ConfigStore::new(
+            data_dir.clone(),
+            state,
+            std::sync::Arc::new(InMemorySecretStore::default()),
+        );
+
+        let runtime = store.load_runtime_config().await.expect("load config");
+
+        assert!(runtime.public.api_base_url.is_empty());
+        assert!(runtime
+            .to_public()
+            .provisioning_issues
+            .contains(&"api_base_url_missing".to_string()));
+    }
+
+    #[tokio::test]
+    async fn installer_default_api_base_url_seeds_first_boot_config() {
+        let _env_lock = with_legacy_env_lock().await;
+        let _default_api = set_env_var(
+            "VEM_DEFAULT_API_BASE_URL",
+            " https://staging-api.example.com/api/ ",
+        );
+        let temp = TempDir::new().expect("temp");
+        let data_dir = temp.path().join("daemon");
+        let state = crate::state::LocalStateStore::open(&data_dir.join("state.db"))
+            .await
+            .expect("state");
+        let store = ConfigStore::new(
+            data_dir.clone(),
+            state,
+            std::sync::Arc::new(InMemorySecretStore::default()),
+        );
+
+        let runtime = store.load_runtime_config().await.expect("load config");
+
+        assert_eq!(
+            runtime.public.api_base_url,
+            "https://staging-api.example.com/api"
+        );
+        assert!(!runtime
+            .to_public()
+            .provisioning_issues
+            .contains(&"api_base_url_missing".to_string()));
+    }
+
+    #[tokio::test]
+    async fn saved_config_api_base_url_overrides_installer_default() {
+        let _env_lock = with_legacy_env_lock().await;
+        let _default_api = set_env_var(
+            "VEM_DEFAULT_API_BASE_URL",
+            "https://staging-api.example.com/api",
+        );
+        let temp = TempDir::new().expect("temp");
+        let data_dir = temp.path().join("daemon");
+        let state = crate::state::LocalStateStore::open(&data_dir.join("state.db"))
+            .await
+            .expect("state");
+        let store = ConfigStore::new(
+            data_dir.clone(),
+            state,
+            std::sync::Arc::new(InMemorySecretStore::default()),
+        );
+        let saved = MachinePublicConfig {
+            api_base_url: " https://production-api.example.com/api/ ".to_string(),
+            ..default_public_config()
+        };
+
+        store
+            .save_public_config(saved)
+            .await
+            .expect("save override");
+        let runtime = store.load_runtime_config().await.expect("load config");
+
+        assert_eq!(
+            runtime.public.api_base_url,
+            "https://production-api.example.com/api"
+        );
     }
 
     #[tokio::test]

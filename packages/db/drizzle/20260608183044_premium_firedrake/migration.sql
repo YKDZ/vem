@@ -1,0 +1,2 @@
+CREATE TYPE "machine_claim_code_purpose" AS ENUM('first_claim', 'reclaim');--> statement-breakpoint
+ALTER TABLE "machine_claim_codes" ADD COLUMN "purpose" "machine_claim_code_purpose" DEFAULT 'first_claim'::"machine_claim_code_purpose" NOT NULL;

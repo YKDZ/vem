@@ -14,6 +14,7 @@ import {
   readySnapshotSchema,
   remoteOpsStatusSchema,
   machineSaleViewSnapshotSchema,
+  provisioningClaimResponseSchema,
   scannerStatusSchema,
   syncStatusSchema,
   transactionSnapshotSchema,
@@ -24,6 +25,7 @@ import {
   type HealthSnapshot,
   type HardwareSelfCheck,
   type MachineSaleReadiness,
+  type ProvisioningClaimResponse,
   type ReadySnapshot,
   type RemoteOpsStatus,
   type SaleViewSnapshot,
@@ -35,11 +37,19 @@ import {
 
 export class DaemonUnavailableError extends Error {
   public readonly cause?: unknown;
+  public readonly statusCode?: number;
+  public readonly responseCode?: string;
 
-  constructor(message = "daemon unavailable", cause?: unknown) {
+  constructor(
+    message = "daemon unavailable",
+    cause?: unknown,
+    metadata: { statusCode?: number; responseCode?: string } = {},
+  ) {
     super(message);
     this.name = "DaemonUnavailableError";
     this.cause = cause;
+    this.statusCode = metadata.statusCode;
+    this.responseCode = metadata.responseCode;
   }
 }
 
@@ -80,8 +90,25 @@ export class DaemonApiClient {
     }
 
     if (!response.ok) {
+      const text = await response.text().catch(() => "");
+      let responseCode: string | undefined;
+      try {
+        const parsed = text ? (JSON.parse(text) as unknown) : null;
+        if (
+          typeof parsed === "object" &&
+          parsed !== null &&
+          "code" in parsed &&
+          typeof parsed.code === "string"
+        ) {
+          responseCode = parsed.code;
+        }
+      } catch {
+        responseCode = undefined;
+      }
       throw new DaemonUnavailableError(
         `${path} returned HTTP ${response.status}`,
+        undefined,
+        { statusCode: response.status, responseCode },
       );
     }
 
@@ -118,6 +145,15 @@ export class DaemonApiClient {
       await this.request("/v1/config", {
         method: "PUT",
         body,
+      }),
+    );
+  }
+
+  async claimMachine(claimCode: string): Promise<ProvisioningClaimResponse> {
+    return provisioningClaimResponseSchema.parse(
+      await this.request("/v1/provisioning/claim", {
+        method: "POST",
+        body: { claimCode },
       }),
     );
   }

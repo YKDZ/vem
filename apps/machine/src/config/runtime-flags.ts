@@ -9,3 +9,9 @@ export function shouldShowMockPaymentControls(input: {
     (input.flag === true || input.flag === "true")
   );
 }
+
+export function shouldShowAdvancedMaintenanceConfig(input: {
+  flag: string | boolean | undefined;
+}): boolean {
+  return input.flag === true || input.flag === "true";
+}

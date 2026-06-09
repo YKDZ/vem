@@ -41,6 +41,10 @@ export class AppConfigService {
     });
   }
 
+  get machineClaimLookupHmacKey(): string {
+    return this.config.get("MACHINE_CLAIM_LOOKUP_HMAC_KEY", { infer: true });
+  }
+
   get machineAccessTtlSeconds(): number {
     return this.config.get("MACHINE_ACCESS_TTL_SECONDS", { infer: true });
   }
@@ -71,6 +75,10 @@ export class AppConfigService {
 
   get machineCommandTimeoutSeconds(): number {
     return this.config.get("MACHINE_COMMAND_TIMEOUT_SECONDS", { infer: true });
+  }
+
+  get machineClaimCodeTtlSeconds(): number {
+    return this.config.get("MACHINE_CLAIM_CODE_TTL_SECONDS", { infer: true });
   }
 
   get nodeEnv(): ServiceEnv["NODE_ENV"] {

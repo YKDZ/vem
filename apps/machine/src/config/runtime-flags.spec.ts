@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { shouldShowMockPaymentControls } from "./runtime-flags";
+import {
+  shouldShowAdvancedMaintenanceConfig,
+  shouldShowMockPaymentControls,
+} from "./runtime-flags";
 
 describe("shouldShowMockPaymentControls", () => {
   it("returns true only when dev=true, paymentMethod=mock, flag=true", () => {
@@ -81,5 +84,20 @@ describe("shouldShowMockPaymentControls", () => {
         flag: "false",
       }),
     ).toBe(false);
+  });
+});
+
+describe("shouldShowAdvancedMaintenanceConfig", () => {
+  it("is disabled by default", () => {
+    expect(shouldShowAdvancedMaintenanceConfig({ flag: undefined })).toBe(
+      false,
+    );
+  });
+
+  it("is enabled only by an explicit true flag", () => {
+    expect(shouldShowAdvancedMaintenanceConfig({ flag: true })).toBe(true);
+    expect(shouldShowAdvancedMaintenanceConfig({ flag: "true" })).toBe(true);
+    expect(shouldShowAdvancedMaintenanceConfig({ flag: false })).toBe(false);
+    expect(shouldShowAdvancedMaintenanceConfig({ flag: "false" })).toBe(false);
   });
 });

@@ -415,9 +415,23 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
       machineSecretConfigured: true,
       mqttSigningSecretConfigured: true,
       mqttPasswordConfigured: true,
+      provisioned: true,
+      provisioningIssues: [],
     };
     expectNoSecretFields(payload);
     respondJson(res, payload);
+    return;
+  }
+
+  if (url.pathname === "/v1/provisioning/claim") {
+    respondJson(
+      res,
+      {
+        code: "machine_claim_locked",
+        message: "machine claim code cannot be used",
+      },
+      400,
+    );
     return;
   }
 
@@ -618,9 +632,7 @@ test("catalog hides sold-out sale-view items", async ({ page }) => {
 test("routes missing config to maintenance", async ({ page }) => {
   scenario = "maintenance";
   await page.goto("/");
-  await expect(
-    page.getByRole("heading", { name: "部署配置 / 维护入口" }),
-  ).toBeVisible();
+  await expect(page.getByRole("heading", { name: "生产维护" })).toBeVisible();
 });
 
 test("routes not-ready daemon to offline", async ({ page }) => {
@@ -688,6 +700,18 @@ test("daemon snapshots never expose secret fields to browser storage", async ({
   expect(storage).not.toContain('"mqttSigningSecret":');
   expect(storage).not.toContain('"mqttPassword":');
   expect(storage).not.toContain("621234567890123456");
+});
+
+test("provisioning UI maps real daemon claim error contract without echoing code", async ({
+  page,
+}) => {
+  scenario = "catalog";
+  await page.goto("/#/provisioning");
+  await page.getByLabel("Machine Claim Code").fill("ABCD-2345");
+  await page.getByRole("button", { name: "提交领取码" }).click();
+
+  await expect(page.getByText("领取码已锁定")).toBeVisible();
+  await expect(page.getByText("ABCD-2345")).toHaveCount(0);
 });
 
 test("sync backlog routes to catalog but displays degraded sync status", async ({

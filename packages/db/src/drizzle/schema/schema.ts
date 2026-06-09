@@ -4,6 +4,8 @@ import {
   inventoryMovementReasons,
   inventoryReservationStatuses,
   machineCommandStatuses,
+  machineClaimCodeStates,
+  machineClaimCodePurposes,
   machineSlotStatuses,
   machineStatuses,
   notificationDeliveryStatuses,
@@ -77,6 +79,14 @@ export const machineSlotStatus = t.pgEnum(
 export const machineCommandStatus = t.pgEnum(
   "machine_command_status",
   asPgEnumValues(machineCommandStatuses),
+);
+export const machineClaimCodeState = t.pgEnum(
+  "machine_claim_code_state",
+  asPgEnumValues(machineClaimCodeStates),
+);
+export const machineClaimCodePurpose = t.pgEnum(
+  "machine_claim_code_purpose",
+  asPgEnumValues(machineClaimCodePurposes),
 );
 export const inventoryReservationStatus = t.pgEnum(
   "inventory_reservation_status",
@@ -462,6 +472,64 @@ export const machinePlanogramVersions = t.pgTable(
     t.check(
       "machine_planogram_versions_status_enum",
       sql`${table.status} IN ('published', 'active', 'retired')`,
+    ),
+  ],
+);
+
+export const machineClaimCodes = t.pgTable(
+  "machine_claim_codes",
+  {
+    id: id(),
+    machineId: t
+      .uuid("machine_id")
+      .notNull()
+      .references(() => machines.id),
+    lookupDigest: t.text("lookup_digest"),
+    verifierHash: t.text("verifier_hash").notNull(),
+    purpose: machineClaimCodePurpose("purpose")
+      .default("first_claim")
+      .notNull(),
+    state: machineClaimCodeState("state").default("pending").notNull(),
+    failedAttemptCount: t.integer("failed_attempt_count").default(0).notNull(),
+    maxFailedAttempts: t.integer("max_failed_attempts").default(5).notNull(),
+    expiresAt: t.timestamp("expires_at", { withTimezone: true }).notNull(),
+    consumedAt: t.timestamp("consumed_at", { withTimezone: true }),
+    revokedAt: t.timestamp("revoked_at", { withTimezone: true }),
+    lockedAt: t.timestamp("locked_at", { withTimezone: true }),
+    createdByAdminUserId: t
+      .uuid("created_by_admin_user_id")
+      .references(() => adminUsers.id),
+    revokedByAdminUserId: t
+      .uuid("revoked_by_admin_user_id")
+      .references(() => adminUsers.id),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    t
+      .uniqueIndex("machine_claim_codes_lookup_digest_unique")
+      .on(table.lookupDigest)
+      .where(sql`${table.lookupDigest} IS NOT NULL`),
+    t.index("machine_claim_codes_machine_id_idx").on(table.machineId),
+    t.index("machine_claim_codes_state_idx").on(table.state),
+    t.index("machine_claim_codes_expires_at_idx").on(table.expiresAt),
+    t
+      .index("machine_claim_codes_created_by_admin_user_id_idx")
+      .on(table.createdByAdminUserId),
+    t
+      .index("machine_claim_codes_revoked_by_admin_user_id_idx")
+      .on(table.revokedByAdminUserId),
+    t
+      .uniqueIndex("machine_claim_codes_machine_open_unique")
+      .on(table.machineId)
+      .where(sql`${table.state} IN ('pending', 'locked')`),
+    t.check(
+      "machine_claim_codes_failed_attempt_count_non_negative",
+      sql`${table.failedAttemptCount} >= 0`,
+    ),
+    t.check(
+      "machine_claim_codes_max_failed_attempts_positive",
+      sql`${table.maxFailedAttempts} > 0`,
     ),
   ],
 );

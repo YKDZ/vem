@@ -14,9 +14,19 @@ const apiMocks = vi.hoisted(() => ({
   listMachines: vi.fn(),
   getMachine: vi.fn(),
   commandEnvironment: vi.fn(),
+  listMachineClaimCodes: vi.fn(),
+  generateMachineClaimCode: vi.fn(),
+  revokeMachineClaimCode: vi.fn(),
 }));
 
-const { listMachines, getMachine, commandEnvironment } = apiMocks;
+const {
+  listMachines,
+  getMachine,
+  commandEnvironment,
+  listMachineClaimCodes,
+  generateMachineClaimCode,
+  revokeMachineClaimCode,
+} = apiMocks;
 
 vi.mock("@/api/machines", async () => {
   const actual =
@@ -26,6 +36,9 @@ vi.mock("@/api/machines", async () => {
     listMachines: apiMocks.listMachines,
     getMachine: apiMocks.getMachine,
     commandEnvironment: apiMocks.commandEnvironment,
+    listMachineClaimCodes: apiMocks.listMachineClaimCodes,
+    generateMachineClaimCode: apiMocks.generateMachineClaimCode,
+    revokeMachineClaimCode: apiMocks.revokeMachineClaimCode,
     createMachine: vi.fn(),
     createMachineSlot: vi.fn(),
     listMachineSlots: vi.fn(),
@@ -284,6 +297,14 @@ async function mountMachinesView(
 async function openEnvironmentDrawer(root: HTMLElement): Promise<void> {
   Array.from(root.querySelectorAll("button"))
     .find((button) => button.textContent?.includes("环境"))
+    ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  await flushPromises();
+  await nextTick();
+}
+
+async function openClaimCodesDrawer(root: HTMLElement): Promise<void> {
+  Array.from(root.querySelectorAll("button"))
+    .find((button) => button.textContent?.includes("领取码"))
     ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
   await flushPromises();
   await nextTick();
@@ -736,5 +757,180 @@ describe("MachinesView environment controls", () => {
         (input) => input.disabled,
       ),
     ).toBe(true);
+  });
+});
+
+describe("MachinesView claim code lifecycle", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    listMachines.mockResolvedValue({
+      items: [createMachineFixture()],
+      total: 1,
+      page: 1,
+      pageSize: 20,
+    });
+    listMachineClaimCodes.mockResolvedValue({
+      items: [
+        {
+          id: "550e8400-e29b-41d4-a716-446655440111",
+          machineId: "11111111-1111-4111-8111-111111111111",
+          machineCode: "M001",
+          state: "pending",
+          expiresAt: "2026-06-08T16:40:00.000Z",
+          failedAttemptCount: 1,
+          maxFailedAttempts: 5,
+          createdAt: "2026-06-08T16:00:00.000Z",
+          revokedAt: null,
+          consumedAt: null,
+          lockedAt: null,
+        },
+        {
+          id: "550e8400-e29b-41d4-a716-446655440112",
+          machineId: "11111111-1111-4111-8111-111111111111",
+          machineCode: "M001",
+          state: "expired",
+          expiresAt: "2026-06-08T15:40:00.000Z",
+          failedAttemptCount: 0,
+          maxFailedAttempts: 5,
+          createdAt: "2026-06-08T15:00:00.000Z",
+          revokedAt: null,
+          consumedAt: null,
+          lockedAt: null,
+        },
+      ],
+    });
+    generateMachineClaimCode.mockResolvedValue({
+      id: "550e8400-e29b-41d4-a716-446655440113",
+      machineId: "11111111-1111-4111-8111-111111111111",
+      machineCode: "M001",
+      claimCode: "ABCD-2345",
+      state: "pending",
+      expiresAt: "2026-06-08T16:50:00.000Z",
+      failedAttemptCount: 0,
+      maxFailedAttempts: 5,
+      createdAt: "2026-06-08T16:40:00.000Z",
+    });
+    revokeMachineClaimCode.mockResolvedValue({
+      id: "550e8400-e29b-41d4-a716-446655440111",
+      machineId: "11111111-1111-4111-8111-111111111111",
+      machineCode: "M001",
+      state: "revoked",
+      expiresAt: "2026-06-08T16:40:00.000Z",
+      failedAttemptCount: 1,
+      maxFailedAttempts: 5,
+      createdAt: "2026-06-08T16:00:00.000Z",
+      revokedAt: "2026-06-08T16:20:00.000Z",
+    });
+  });
+
+  afterEach(() => {
+    document.body.innerHTML = "";
+  });
+
+  it("manages claim code state without showing raw codes from list responses", async () => {
+    const { root } = await mountMachinesView([
+      "machines.read",
+      "machines.manage-credentials",
+    ]);
+    await openClaimCodesDrawer(root);
+
+    const dialog = requireElement(
+      root.querySelector<HTMLElement>('[role="dialog"]'),
+      "claim code dialog",
+    );
+    expect(listMachineClaimCodes).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+    );
+    expect(dialog.textContent).toContain("领取码 - M001");
+    expect(dialog.textContent).toContain("待领取");
+    expect(dialog.textContent).toContain("已过期");
+    expect(dialog.textContent).toContain("1/5");
+    expect(dialog.textContent).not.toContain("ABCD-2345");
+
+    Array.from(dialog.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("生成领取码"))
+      ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await flushPromises();
+    await nextTick();
+
+    expect(generateMachineClaimCode).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+    );
+    expect(dialog.textContent).toContain("ABCD-2345");
+
+    Array.from(dialog.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("撤销"))
+      ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await flushPromises();
+
+    expect(revokeMachineClaimCode).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      "550e8400-e29b-41d4-a716-446655440111",
+    );
+  });
+
+  it("shows reclaim intent safely and sends an explicit reclaim generation request", async () => {
+    listMachineClaimCodes.mockResolvedValueOnce({
+      items: [
+        {
+          id: "550e8400-e29b-41d4-a716-446655440114",
+          machineId: "11111111-1111-4111-8111-111111111111",
+          machineCode: "M001",
+          purpose: "reclaim",
+          state: "pending",
+          expiresAt: "2026-06-08T16:40:00.000Z",
+          failedAttemptCount: 0,
+          maxFailedAttempts: 5,
+          createdAt: "2026-06-08T16:00:00.000Z",
+          revokedAt: null,
+          consumedAt: null,
+          lockedAt: null,
+        },
+      ],
+    });
+    generateMachineClaimCode.mockResolvedValueOnce({
+      id: "550e8400-e29b-41d4-a716-446655440115",
+      machineId: "11111111-1111-4111-8111-111111111111",
+      machineCode: "M001",
+      purpose: "reclaim",
+      claimCode: "RCLM-2345",
+      state: "pending",
+      expiresAt: "2026-06-08T16:50:00.000Z",
+      failedAttemptCount: 0,
+      maxFailedAttempts: 5,
+      createdAt: "2026-06-08T16:40:00.000Z",
+    });
+
+    const { root } = await mountMachinesView([
+      "machines.read",
+      "machines.manage-credentials",
+    ]);
+    await openClaimCodesDrawer(root);
+    const dialog = requireElement(
+      root.querySelector<HTMLElement>('[role="dialog"]'),
+      "claim code dialog",
+    );
+
+    expect(dialog.textContent).toContain("重新领取");
+    expect(dialog.textContent).not.toContain("RCLM-2345");
+
+    Array.from(dialog.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("生成重新领取码"))
+      ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await flushPromises();
+    await nextTick();
+
+    expect(generateMachineClaimCode).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      { purpose: "reclaim" },
+    );
+    expect(dialog.textContent).toContain("RCLM-2345");
+    expect(dialog.textContent).toContain("重新领取");
+  });
+
+  it("hides claim code management without credential permission", async () => {
+    const { root } = await mountMachinesView(["machines.read"]);
+
+    expect(root.textContent).not.toContain("领取码");
   });
 });

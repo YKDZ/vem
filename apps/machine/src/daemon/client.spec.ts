@@ -159,6 +159,90 @@ describe("DaemonApiClient", () => {
     );
   });
 
+  it("submits machine claim code through daemon IPC without extra deployment fields", async () => {
+    vi.mocked(getDaemonConnectionInfo).mockResolvedValue({
+      baseUrl: "http://127.0.0.1:7891",
+      token: "token-1",
+      source: "browser_env",
+      mock: true,
+    });
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          status: "provisioned",
+          machineCode: "M001",
+          restartRequested: true,
+          config: {
+            public: {
+              machineCode: "M001",
+              apiBaseUrl: "http://localhost:3000/api",
+              mqttUrl: "mqtt://localhost:1883",
+              mqttUsername: null,
+              hardwareAdapter: "mock",
+              serialPortPath: null,
+              lowerControllerUsbIdentity: null,
+              scannerAdapter: "disabled",
+              scannerSerialPortPath: null,
+              scannerBaudRate: 9600,
+              scannerFrameSuffix: "crlf",
+              visionEnabled: true,
+              visionWsUrl: "ws://127.0.0.1:7892/ws",
+              visionAutoStart: false,
+              visionProcessCommand: null,
+              visionProcessArgs: null,
+              visionRequestTimeoutMs: 8000,
+              kioskMode: false,
+              stockMovementRetentionDays: 30,
+            },
+            machineSecretConfigured: true,
+            mqttSigningSecretConfigured: true,
+            mqttPasswordConfigured: false,
+            provisioned: true,
+            provisioningIssues: [],
+          },
+        }),
+        { status: 200 },
+      ),
+    );
+
+    const result = await daemonClient.claimMachine("ABCD-2345");
+
+    expect(result.status).toBe("provisioned");
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "http://127.0.0.1:7891/v1/provisioning/claim",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ claimCode: "ABCD-2345" }),
+      }),
+    );
+    const requestBody = vi.mocked(globalThis.fetch).mock.calls[0]?.[1]?.body;
+    expect(typeof requestBody).toBe("string");
+    expect(requestBody).not.toContain("machineSecret");
+  });
+
+  it("preserves safe daemon claim error codes for operator-state mapping", async () => {
+    vi.mocked(getDaemonConnectionInfo).mockResolvedValue({
+      baseUrl: "http://127.0.0.1:7891",
+      token: "token-1",
+      source: "browser_env",
+      mock: true,
+    });
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          code: "machine_claim_expired",
+          message: "claim ABCD-2345 expired with secret-value",
+        }),
+        { status: 400 },
+      ),
+    );
+
+    await expect(daemonClient.claimMachine("ABCD-2345")).rejects.toMatchObject({
+      statusCode: 400,
+      responseCode: "machine_claim_expired",
+    });
+  });
+
   it("retries after 401 once", async () => {
     vi.mocked(getDaemonConnectionInfo).mockResolvedValue({
       baseUrl: "http://127.0.0.1:7891",
