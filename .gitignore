@@ -19,3 +19,7 @@ playwright-report
 /target
 
 /tmp
+
+.agents/
+
+CONTEXT.md
