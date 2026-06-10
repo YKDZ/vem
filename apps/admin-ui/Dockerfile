@@ -26,5 +26,5 @@ RUN pnpm --filter @vem/shared build \
 
 FROM nginx:alpine AS runner
 COPY --from=builder /app/apps/admin-ui/dist /usr/share/nginx/html
-COPY apps/admin-ui/nginx.conf /etc/nginx/conf.d/default.conf
-EXPOSE 26850
+COPY apps/admin-ui/nginx.conf.template /etc/nginx/templates/default.conf.template
+EXPOSE 80
