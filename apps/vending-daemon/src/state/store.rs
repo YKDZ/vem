@@ -1185,16 +1185,28 @@ impl LocalStateStore {
         if !history.is_empty() {
             payload.insert("history".to_string(), serde_json::Value::Array(history));
         }
-        sqlx::query(
+        let updated = sqlx::query(
             "UPDATE order_sessions
              SET payment_attempt_json = ?2, updated_at = ?3
-             WHERE order_no = ?1",
+             WHERE order_no = ?1
+               AND (
+                 payment_attempt_json IS NULL
+                 OR COALESCE(json_extract(payment_attempt_json, '$.status'), '') NOT IN ('submitting', 'user_confirming', 'querying', 'processing')
+               )
+               AND NOT (
+                 COALESCE(json_extract(payment_attempt_json, '$.status'), '') IN ('failed', 'manual_handling', 'unknown')
+                 AND COALESCE(json_extract(payment_attempt_json, '$.canRetry'), 0) = 0
+               )",
         )
         .bind(order_no)
         .bind(serde_json::Value::Object(payload.clone()).to_string())
         .bind(now_iso())
         .execute(&self.pool)
-        .await?;
+        .await?
+        .rows_affected();
+        if updated != 1 {
+            return Err(StoreError::ActivePaymentCodeAttempt);
+        }
         Ok(payload
             .get("idempotencyKey")
             .and_then(|value| value.as_str())

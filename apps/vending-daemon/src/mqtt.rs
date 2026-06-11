@@ -204,15 +204,16 @@ impl MqttSyncRuntime {
         .await
         {
             Ok(result) => result,
-            Err(_) => {
-                self.state
-                    .block_slot_for_dispense_result_unknown(&command)
-                    .await
-                    .map_err(|error| error.to_string())?;
-                return Ok(CommandHandlingResult::Processed {
-                    command_no: command.command_no,
-                });
-            }
+            Err(_) => vending_core::hardware::DispenseResultPayload {
+                command_no: command.command_no.clone(),
+                success: false,
+                error_code: Some("MOTOR_TIMEOUT".to_string()),
+                message: format!(
+                    "dispense command timed out after {} seconds",
+                    local_timeout.as_secs()
+                ),
+                reported_at: crate::state::store::now_iso(),
+            },
         };
         let mut result_event =
             crate::state::store::OutboxInput::dispense_result(&self.machine_code, &result);
@@ -1214,7 +1215,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn hung_dispense_command_freezes_local_sale_view_without_final_result() {
+    async fn hung_dispense_command_records_timeout_result_and_locks_machine() {
         let temp = tempfile::tempdir().expect("temp");
         let state = crate::state::LocalStateStore::open(&temp.path().join("state.db"))
             .await
@@ -1227,7 +1228,7 @@ mod tests {
                 ..RecordingEnvironmentAdapter::default()
             },
         ));
-        let (event_tx, _rx) = tokio::sync::broadcast::channel(4);
+        let (event_tx, mut rx) = tokio::sync::broadcast::channel(4);
         let runtime = MqttSyncRuntime::new(
             "M1".to_string(),
             "secret".to_string(),
@@ -1255,9 +1256,11 @@ mod tests {
             .expect("command");
         assert_eq!(
             command.status,
-            vending_core::domain::CommandLogStatus::Dispensing
+            vending_core::domain::CommandLogStatus::Failed
         );
-        assert!(command.result_payload.is_none());
+        let result = command.result_payload.expect("timeout result");
+        assert!(!result.success);
+        assert_eq!(result.error_code.as_deref(), Some("MOTOR_TIMEOUT"));
 
         let due = state
             .list_due_outbox(chrono::Utc::now() + chrono::Duration::seconds(1))
@@ -1266,9 +1269,28 @@ mod tests {
         assert!(due.iter().any(|event| {
             event.topic.as_deref() == Some("vem/machines/M1/commands/CMD-HUNG/ack")
         }));
-        assert!(!due.iter().any(|event| {
+        assert!(due.iter().any(|event| {
             event.topic.as_deref() == Some("vem/machines/M1/events/dispense-result")
         }));
+
+        let lock = state
+            .whole_machine_maintenance_lock()
+            .await
+            .expect("lock lookup")
+            .expect("whole machine lock");
+        assert_eq!(lock.code, "WHOLE_MACHINE_HARDWARE_FAULT");
+        assert_eq!(lock.command_no, "CMD-HUNG");
+
+        let event = rx.recv().await.expect("transaction event");
+        match event {
+            DaemonEvent::TransactionChanged {
+                order_no, status, ..
+            } => {
+                assert_eq!(order_no, "ORD-MQTT");
+                assert_eq!(status, "dispense_failed");
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
     }
 
     #[tokio::test]

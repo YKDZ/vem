@@ -25,6 +25,8 @@ param(
 
   [string]$BringupDir = "C:\VEM\bringup",
   [string]$DaemonExe = "C:\VEM\bringup\vending-daemon.exe",
+  [string]$DaemonDataDir = "C:\ProgramData\VEM\vending-daemon",
+  [string]$DaemonReadyFile = "C:\ProgramData\VEM\vending-daemon\daemon-ready.json",
   [string]$MachineUiExe = "C:\VEM\bringup\machine.exe",
   [string]$MachineUiLauncher = "C:\VEM\bringup\launch-machine-ui.vbs",
   [string]$MachineUiShortcutName = "VEM Machine UI.lnk",
@@ -77,23 +79,45 @@ function Ensure-MachineUiLauncher {
   Set-Content -LiteralPath $LauncherPath -Value $content -Encoding ASCII
 }
 
+function Ensure-DaemonDataDirectory {
+  param(
+    [string]$BringupDirectory,
+    [string]$DataDirectory
+  )
+
+  Ensure-Directory -Path $DataDirectory
+  $sourceConfig = Join-Path $BringupDirectory "machine-config.json"
+  $targetConfig = Join-Path $DataDirectory "machine-config.json"
+  if ((Test-Path -LiteralPath $sourceConfig) -and -not (Test-Path -LiteralPath $targetConfig)) {
+    Copy-Item -Force -Path $sourceConfig -Destination $targetConfig
+  }
+}
+
 function Ensure-DaemonService {
-  param([string]$ExePath)
+  param(
+    [string]$ExePath,
+    [string]$DataDirectory,
+    [string]$ReadyFile
+  )
 
   if (-not (Test-Path -LiteralPath $ExePath)) {
     Write-Warning "daemon exe not found; skipping service creation: $ExePath"
     return
   }
 
+  Ensure-Directory -Path $DataDirectory
+  Ensure-Directory -Path (Split-Path -Parent $ReadyFile)
+  $binaryPath = ('"{0}" --data-dir "{1}" --print-ready-file "{2}"' -f $ExePath, $DataDirectory, $ReadyFile)
+
   $existing = Get-Service -Name "VemVendingDaemon" -ErrorAction SilentlyContinue
   if (-not $existing) {
     New-Service `
       -Name "VemVendingDaemon" `
-      -BinaryPathName ('"{0}"' -f $ExePath) `
+      -BinaryPathName $binaryPath `
       -DisplayName "VEM Vending Daemon" `
       -StartupType Automatic | Out-Null
   } else {
-    sc.exe config VemVendingDaemon binPath= ('"{0}"' -f $ExePath) start= auto | Out-Null
+    sc.exe config VemVendingDaemon binPath= $binaryPath start= auto | Out-Null
   }
 
   sc.exe failure VemVendingDaemon reset= 86400 actions= restart/5000/restart/15000/""/0 | Out-Null
@@ -278,6 +302,7 @@ function Show-Verification {
 
 Assert-Administrator
 Ensure-Directory -Path $BringupDir
+Ensure-DaemonDataDirectory -BringupDirectory $BringupDir -DataDirectory $DaemonDataDir
 
 Write-Host "=== VEM Win10 machine provisioning ===" -ForegroundColor Cyan
 
@@ -288,7 +313,10 @@ Ensure-MachineUiLauncher `
   -WorkingDirectory $BringupDir
 
 Write-Host "[2/6] Configure daemon service" -ForegroundColor Yellow
-Ensure-DaemonService -ExePath $DaemonExe
+Ensure-DaemonService `
+  -ExePath $DaemonExe `
+  -DataDirectory $DaemonDataDir `
+  -ReadyFile $DaemonReadyFile
 
 Write-Host "[3/6] Configure VEMMachineUI logon task" -ForegroundColor Yellow
 Register-InteractiveLogonTask `
@@ -297,7 +325,9 @@ Register-InteractiveLogonTask `
   -Arguments ('"{0}"' -f $MachineUiLauncher) `
   -WorkingDirectory $BringupDir `
   -DelayISO "PT15S" `
-  -User $RunAsUser
+  -User $RunAsUser `
+  -RestartOnFailureCount 3 `
+  -RestartOnFailureIntervalISO "PT30S"
 
 Write-Host "[3b/6] Create desktop shortcut" -ForegroundColor Yellow
 Ensure-MachineUiShortcut `

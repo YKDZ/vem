@@ -1,9 +1,13 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::config::MachineProvisioningProfile;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock};
+
+const BACKEND_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
+const BACKEND_REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
 
 #[derive(Debug, Clone)]
 pub struct BackendClient {
@@ -76,9 +80,14 @@ pub struct StockMovementSaleSafetyBlocker {
 impl BackendClient {
     pub fn new(base_url: impl Into<String>) -> Self {
         let base_url = base_url.into().trim_end_matches('/').to_string();
+        let client = reqwest::Client::builder()
+            .connect_timeout(BACKEND_CONNECT_TIMEOUT)
+            .timeout(BACKEND_REQUEST_TIMEOUT)
+            .build()
+            .expect("build backend HTTP client");
         Self {
             base_url,
-            client: reqwest::Client::new(),
+            client,
             token: Arc::new(RwLock::new(None)),
             credentials: Arc::new(RwLock::new(None)),
             auth_lock: Arc::new(Mutex::new(())),
