@@ -642,6 +642,7 @@ describe("payment code flow", () => {
       publicConfigJson: {
         paymentCodePollIntervalSeconds: 1,
         paymentCodeMaxConfirmSeconds: 1,
+        paymentCodeReverseMaxAttempts: 3,
       },
       sensitiveConfigJson: {},
     };

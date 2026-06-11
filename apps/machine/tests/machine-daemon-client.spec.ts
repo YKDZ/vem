@@ -13,6 +13,7 @@ type ScenarioName =
   | "payment"
   | "dispensing"
   | "result"
+  | "provisioning"
   | "staleEventStream"
   | "syncBacklog";
 
@@ -357,6 +358,29 @@ function currentFixtures(): Record<string, unknown> {
     };
   }
 
+  if (scenario === "provisioning") {
+    return {
+      health: healthSnapshot({
+        configConfigured: false,
+        status: "maintenance",
+      }),
+      ready: readySnapshot({
+        ready: false,
+        canSell: false,
+        suggestedRoute: "maintenance",
+        blockingCodes: ["CONFIG_INCOMPLETE"],
+        blockingReasons: [
+          {
+            code: "CONFIG_INCOMPLETE",
+            component: "config",
+            message: "machine is not provisioned",
+          },
+        ],
+      }),
+      transaction: emptyTransaction,
+    };
+  }
+
   return {
     health: healthSnapshot(),
     ready: readySnapshot(),
@@ -407,13 +431,14 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
   }
 
   if (url.pathname === "/v1/config") {
+    const provisioned = scenario !== "provisioning";
     const payload = {
       public: publicConfig,
-      machineSecretConfigured: true,
-      mqttSigningSecretConfigured: true,
-      mqttPasswordConfigured: true,
-      provisioned: true,
-      provisioningIssues: [],
+      machineSecretConfigured: provisioned,
+      mqttSigningSecretConfigured: provisioned,
+      mqttPasswordConfigured: provisioned,
+      provisioned,
+      provisioningIssues: provisioned ? [] : ["machine_not_claimed"],
     };
     expectNoSecretFields(payload);
     respondJson(res, payload);
@@ -421,14 +446,22 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
   }
 
   if (url.pathname === "/v1/provisioning/claim") {
-    respondJson(
-      res,
-      {
-        code: "machine_claim_locked",
-        message: "machine claim code cannot be used",
-      },
-      400,
-    );
+    const respondClaimLocked = () => {
+      respondJson(
+        res,
+        {
+          code: "machine_claim_locked",
+          message: "machine claim code cannot be used",
+        },
+        400,
+      );
+    };
+    if (req.method === "POST") {
+      req.on("end", respondClaimLocked);
+      req.resume();
+    } else {
+      respondClaimLocked();
+    }
     return;
   }
 
@@ -702,12 +735,12 @@ test("daemon snapshots never expose secret fields to browser storage", async ({
 test("provisioning UI maps real daemon claim error contract without echoing code", async ({
   page,
 }) => {
-  scenario = "catalog";
-  await page.goto("/#/provisioning");
+  scenario = "provisioning";
+  await page.goto("/");
   await page.getByLabel("Machine Claim Code").fill("ABCD-2345");
   await page.getByRole("button", { name: "提交领取码" }).click();
 
-  await expect(page.getByText("领取码已锁定")).toBeVisible();
+  await expect(page.getByText("领取码已使用")).toBeVisible();
   await expect(page.getByText("ABCD-2345")).toHaveCount(0);
 });
 

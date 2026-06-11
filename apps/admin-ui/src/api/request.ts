@@ -21,6 +21,7 @@ type RetryableRequestConfig = AxiosRequestConfig & {
 
 const ACCESS_TOKEN_KEY = "vem.admin.accessToken";
 const REFRESH_TOKEN_KEY = "vem.admin.refreshToken";
+const MAX_PAGE_SIZE = 100;
 
 export const tokenStorage = {
   getAccessToken: (): string | null => localStorage.getItem(ACCESS_TOKEN_KEY),
@@ -73,11 +74,48 @@ function dispatchError(content: string): void {
   );
 }
 
+function normalizePageSize(value: unknown): unknown {
+  if (value === null || value === undefined || value === "") return value;
+
+  const pageSize = Number(value);
+  if (!Number.isFinite(pageSize)) return value;
+
+  return Math.min(MAX_PAGE_SIZE, Math.max(1, Math.trunc(pageSize)));
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+export function normalizeRequestParams(params: unknown): unknown {
+  if (!params) return params;
+
+  if (params instanceof URLSearchParams) {
+    if (!params.has("pageSize")) return params;
+    const nextParams = new URLSearchParams(params);
+    nextParams.set(
+      "pageSize",
+      String(normalizePageSize(params.get("pageSize"))),
+    );
+    return nextParams;
+  }
+
+  if (!isRecord(params) || !Object.hasOwn(params, "pageSize")) {
+    return params;
+  }
+
+  return {
+    ...params,
+    pageSize: normalizePageSize(params.pageSize),
+  };
+}
+
 request.interceptors.request.use((config) => {
   const token = tokenStorage.getAccessToken();
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
   }
+  config.params = normalizeRequestParams(config.params);
   return config;
 });
 

@@ -298,7 +298,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <section class="space-y-6">
+  <section class="space-y-8">
     <a-card>
       <div class="flex flex-wrap items-start justify-between gap-3">
         <div>
