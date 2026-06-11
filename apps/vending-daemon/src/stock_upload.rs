@@ -121,6 +121,14 @@ mod tests {
 
     use super::*;
 
+    async fn test_backend_client(server: &MockServer) -> Arc<BackendClient> {
+        let client = Arc::new(BackendClient::new(server.uri()));
+        client
+            .set_access_token_for_tests("test-backend-token")
+            .await;
+        client
+    }
+
     async fn seed_stock_movement_upload(store: &LocalStateStore, movement_id: &str) {
         store
             .apply_planogram(MachinePlanogramInput {
@@ -190,7 +198,7 @@ mod tests {
             .await;
         let runtime = StockMovementUploadRuntime::new(
             store.clone(),
-            Arc::new(BackendClient::new(server.uri())),
+            test_backend_client(&server).await,
             CancellationToken::new(),
         );
 
@@ -244,7 +252,7 @@ mod tests {
             .await;
         let runtime = StockMovementUploadRuntime::new(
             store.clone(),
-            Arc::new(BackendClient::new(server.uri())),
+            test_backend_client(&server).await,
             CancellationToken::new(),
         );
 

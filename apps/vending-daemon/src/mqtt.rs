@@ -1199,10 +1199,7 @@ mod tests {
         let vending = snapshot.vending.expect("vending summary");
         assert_eq!(vending.command_no.as_deref(), Some("CMD-SUCCESS"));
         assert_eq!(vending.status.as_deref(), Some("succeeded"));
-        assert_eq!(
-            vending.last_error.as_deref(),
-            Some("recording dispense succeeded")
-        );
+        assert_eq!(vending.last_error.as_deref(), None);
 
         let event = rx.recv().await.expect("transaction event");
         match event {

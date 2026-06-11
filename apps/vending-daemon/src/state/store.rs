@@ -973,7 +973,7 @@ impl LocalStateStore {
              ON CONFLICT(order_no) DO UPDATE SET
                payment_method = excluded.payment_method,
                payment_provider = excluded.payment_provider,
-               payment_attempt_json = excluded.payment_attempt_json,
+               payment_attempt_json = COALESCE(excluded.payment_attempt_json, order_sessions.payment_attempt_json),
                items_json = excluded.items_json,
                status = excluded.status,
                next_action = excluded.next_action,
@@ -3051,18 +3051,10 @@ fn merge_backend_payment_code_attempt(
     };
 
     let Some(backend_attempt) = backend_attempt else {
-        return Ok(if merged.is_empty() {
-            None
-        } else {
-            Some(serde_json::Value::Object(merged))
-        });
+        return Ok(None);
     };
     let Some(backend_attempt) = backend_attempt.as_object() else {
-        return Ok(if merged.is_empty() {
-            None
-        } else {
-            Some(serde_json::Value::Object(merged))
-        });
+        return Ok(None);
     };
 
     for (key, value) in backend_attempt {
@@ -4611,6 +4603,70 @@ mod tests {
         let json = row.expect("exists").0.expect("json");
         assert!(!json.contains("621234567890123456"));
         assert!(json.contains("6212****3456"));
+    }
+
+    #[tokio::test]
+    async fn backend_status_without_payment_attempt_preserves_local_scan_attempt() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        store
+            .upsert_order_session(OrderSessionUpsert {
+                order_no: "ORDER-PRESERVE-ATTEMPT",
+                payment_method: "payment_code",
+                payment_provider: Some("alipay"),
+                items_json: json!([]),
+                status: "waiting_payment",
+                next_action: "wait_payment",
+                payment_attempt_json: None,
+                recovery_strategy: "local",
+                last_backend_status_json: None,
+                last_error: None,
+            })
+            .await
+            .expect("seed");
+
+        store
+            .begin_payment_code_attempt(
+                "ORDER-PRESERVE-ATTEMPT",
+                "6212****3456",
+                "serial_text",
+                1_000,
+                None,
+            )
+            .await
+            .expect("begin attempt");
+        store
+            .apply_backend_order_status(
+                "ORDER-PRESERVE-ATTEMPT",
+                json!({
+                    "orderId": "order-preserve-attempt-id",
+                    "orderNo": "ORDER-PRESERVE-ATTEMPT",
+                    "machineCode": "MACHINE-SCAN",
+                    "orderStatus": "paid",
+                    "totalAmountCents": 300,
+                    "nextAction": "dispensing",
+                    "payment": {
+                        "paymentNo": "PAY-SCAN",
+                        "method": "payment_code",
+                        "providerCode": "alipay",
+                        "paymentUrl": null,
+                        "status": "succeeded",
+                        "expiresAt": "2026-05-30T00:05:00.000Z"
+                    }
+                }),
+            )
+            .await
+            .expect("apply status");
+
+        let attempt = store
+            .load_attempt_json("ORDER-PRESERVE-ATTEMPT")
+            .await
+            .expect("load")
+            .expect("attempt");
+        assert_eq!(attempt["source"], "serial_text");
+        assert_eq!(attempt["maskedAuthCode"], "6212****3456");
     }
 
     #[tokio::test]

@@ -27,6 +27,7 @@ describe("machine config", () => {
       },
       scannerAdapter: "disabled",
       scannerSerialPortPath: null,
+      scannerUsbIdentity: null,
       scannerBaudRate: 9600,
       scannerFrameSuffix: "crlf",
       visionEnabled: true,

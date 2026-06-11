@@ -2459,6 +2459,9 @@ mod tests {
         let (events_tx, _) = broadcast::channel(8);
         let (runtime_tx, _rx_raw) = mpsc::channel(8);
         let backend = Arc::new(BackendClient::new(backend_base_url));
+        backend
+            .set_access_token_for_tests("test-backend-token")
+            .await;
         let status_cache = RuntimeStatusCache::new(&public, state.clone()).await;
         let transaction = TransactionStateMachine::new(
             state.clone(),

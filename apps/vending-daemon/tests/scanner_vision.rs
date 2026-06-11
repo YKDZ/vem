@@ -257,12 +257,13 @@ async fn serial_text_scanner_retry_scan_uses_new_idempotency_key() {
         .await;
 
     let status_calls_clone = status_calls.clone();
+    let submit_calls_for_status = submit_calls.clone();
     Mock::given(method("GET"))
         .and(path("/machine-orders/ORD-SCAN/status"))
         .and(header("authorization", "Bearer token-123"))
         .respond_with(move |_request: &Request| {
-            let attempt = status_calls_clone.fetch_add(1, Ordering::SeqCst);
-            if attempt <= 1 {
+            let _attempt = status_calls_clone.fetch_add(1, Ordering::SeqCst);
+            if submit_calls_for_status.load(Ordering::SeqCst) < 2 {
                 ResponseTemplate::new(200).set_body_json(json!({
                     "orderId": "order-scan-id",
                     "orderNo": "ORD-SCAN",
@@ -372,7 +373,11 @@ async fn serial_text_scanner_retry_scan_uses_new_idempotency_key() {
     assert_eq!(failed["paymentCodeAttempt"]["source"], "serial_text");
 
     pty.write(b"621234567890129999\r\n").await;
-    let succeeded = wait_for_transaction(&daemon, |tx| tx["nextAction"] == "dispensing").await;
+    let succeeded = wait_for_transaction(&daemon, |tx| {
+        tx["nextAction"] == "dispensing"
+            && tx["paymentCodeAttempt"]["maskedAuthCode"] == "6212****9999"
+    })
+    .await;
     assert_eq!(
         succeeded["paymentCodeAttempt"]["maskedAuthCode"],
         "6212****9999"

@@ -85,6 +85,11 @@ impl BackendClient {
         }
     }
 
+    #[cfg(test)]
+    pub async fn set_access_token_for_tests(&self, token: impl Into<String>) {
+        *self.token.write().await = Some(token.into());
+    }
+
     fn endpoint(&self, path: &str) -> String {
         let trimmed = path.trim_start_matches('/');
         format!("{}/{}", self.base_url, trimmed)
