@@ -48,13 +48,12 @@ pub struct MachinePublicConfig {
     pub lower_controller_usb_identity: Option<SerialPortUsbIdentity>,
     pub scanner_adapter: ScannerAdapterKind,
     pub scanner_serial_port_path: Option<String>,
+    #[serde(default)]
+    pub scanner_usb_identity: Option<SerialPortUsbIdentity>,
     pub scanner_baud_rate: u32,
     pub scanner_frame_suffix: vending_core::scanner::ScannerFrameSuffix,
     pub vision_enabled: bool,
     pub vision_ws_url: String,
-    pub vision_auto_start: bool,
-    pub vision_process_command: Option<String>,
-    pub vision_process_args: Option<String>,
     pub vision_request_timeout_ms: u64,
     pub kiosk_mode: bool,
     #[serde(default = "default_stock_movement_retention_days")]
@@ -72,8 +71,11 @@ pub struct MachinePublicConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MachineConfigSecretsUpdate {
+    #[serde(alias = "machine_secret")]
     pub machine_secret: Option<String>,
+    #[serde(alias = "mqtt_signing_secret")]
     pub mqtt_signing_secret: Option<String>,
+    #[serde(alias = "mqtt_password")]
     pub mqtt_password: Option<String>,
 }
 
@@ -359,13 +361,11 @@ pub fn default_public_config() -> MachinePublicConfig {
         }),
         scanner_adapter: ScannerAdapterKind::Disabled,
         scanner_serial_port_path: None,
+        scanner_usb_identity: None,
         scanner_baud_rate: 9600,
         scanner_frame_suffix: vending_core::scanner::ScannerFrameSuffix::Crlf,
         vision_enabled: true,
         vision_ws_url: vending_core::vision::DEFAULT_VISION_WS_URL.to_string(),
-        vision_auto_start: false,
-        vision_process_command: None,
-        vision_process_args: None,
         vision_request_timeout_ms: 8_000,
         kiosk_mode: false,
         stock_movement_retention_days: default_stock_movement_retention_days(),
@@ -503,26 +503,6 @@ pub fn normalize_public_config(
 
     let vision_ws_url = config.vision_ws_url.trim().to_string();
 
-    let vision_process_command = config.vision_process_command.take().and_then(|value| {
-        let value = value.trim().to_string();
-        if value.is_empty() {
-            None
-        } else {
-            Some(value)
-        }
-    });
-    config.vision_process_command = vision_process_command;
-
-    let vision_process_args = config.vision_process_args.take().and_then(|value| {
-        let value = value.trim().to_string();
-        if value.is_empty() {
-            None
-        } else {
-            Some(value)
-        }
-    });
-    config.vision_process_args = vision_process_args;
-
     config.api_base_url = config.api_base_url.trim().trim_end_matches('/').to_string();
     config.mqtt_url = config.mqtt_url.trim().to_string();
 
@@ -549,14 +529,11 @@ pub fn normalize_public_config(
     }
     if matches!(&config.scanner_adapter, ScannerAdapterKind::SerialText)
         && config.scanner_serial_port_path.is_none()
+        && config.scanner_usb_identity.is_none()
     {
         return Err(
-            "scannerSerialPortPath is required when scannerAdapter=serial_text".to_string(),
+            "scannerSerialPortPath or scannerUsbIdentity is required when scannerAdapter=serial_text".to_string(),
         );
-    }
-    if config.vision_enabled && config.vision_auto_start && config.vision_process_command.is_none()
-    {
-        return Err("visionProcessCommand is required when visionAutoStart=true".to_string());
     }
     if !(1000..=30000).contains(&config.vision_request_timeout_ms) {
         return Err("visionRequestTimeoutMs must be between 1000 and 30000".to_string());
@@ -594,56 +571,6 @@ fn default_data_base_dir() -> Result<PathBuf, String> {
             Err("resolve ProgramData failed".to_string())
         }
     }
-}
-
-fn legacy_config_path() -> Result<PathBuf, String> {
-    #[cfg(unix)]
-    {
-        if let Ok(value) = env::var("XDG_CONFIG_HOME") {
-            return Ok(Path::new(&value)
-                .join("com.vem.machine")
-                .join("machine-config.json"));
-        }
-        let home = env::var("HOME").map_err(|error| format!("resolve HOME failed: {error}"))?;
-        Ok(Path::new(&home)
-            .join(".config")
-            .join("com.vem.machine")
-            .join("machine-config.json"))
-    }
-    #[cfg(windows)]
-    {
-        if let Ok(value) = env::var("APPDATA") {
-            return Ok(Path::new(&value)
-                .join("com.vem.machine")
-                .join("machine-config.json"));
-        }
-        Err("resolve APPDATA failed".to_string())
-    }
-}
-
-fn legacy_config_paths() -> Result<Vec<PathBuf>, String> {
-    Ok(vec![legacy_config_path()?, {
-        #[cfg(unix)]
-        {
-            if let Ok(value) = env::var("XDG_CONFIG_HOME") {
-                Path::new(&value).join("machine-config.json")
-            } else if let Ok(value) = env::var("HOME") {
-                Path::new(&value)
-                    .join(".config")
-                    .join("machine-config.json")
-            } else {
-                return Err("resolve HOME failed".to_string());
-            }
-        }
-        #[cfg(windows)]
-        {
-            if let Ok(value) = env::var("APPDATA") {
-                Path::new(&value).join("machine-config.json")
-            } else {
-                return Err("resolve APPDATA failed".to_string());
-            }
-        }
-    }])
 }
 
 fn daemon_config_path(data_dir: &Path) -> PathBuf {
@@ -881,44 +808,6 @@ impl ConfigStore {
             .map_err(|error| error.to_string())
     }
 
-    async fn migrate_legacy_if_needed(&self) -> Result<(), String> {
-        let daemon_path = daemon_config_path(&self.data_dir);
-        if daemon_path.exists() {
-            return Ok(());
-        }
-
-        let Some(legacy_path) = legacy_config_paths()?
-            .into_iter()
-            .find(|path| path.exists())
-        else {
-            return Ok(());
-        };
-
-        let content = fs::read_to_string(&legacy_path)
-            .await
-            .map_err(|error| format!("read legacy config failed: {error}"))?;
-        let public: MachinePublicConfig = serde_json::from_str(&content)
-            .map_err(|error| format!("parse legacy config failed: {error}"))?;
-        let public = normalize_public_config(public)?;
-
-        if let Some(parent) = daemon_path.parent() {
-            fs::create_dir_all(parent)
-                .await
-                .map_err(|error| format!("create daemon data dir failed: {error}"))?;
-        }
-        let payload = serde_json::to_string_pretty(&public)
-            .map_err(|error| format!("serialize daemon config failed: {error}"))?;
-        fs::write(&daemon_path, payload)
-            .await
-            .map_err(|error| format!("write daemon config failed: {error}"))?;
-
-        self.state
-            .put_metadata("last_migration_source", &legacy_path.to_string_lossy())
-            .await
-            .map_err(|error| error.to_string())?;
-        self.persist_snapshot(&public).await
-    }
-
     pub async fn runtime_secrets(&self) -> Result<MachineRuntimeSecrets, String> {
         let machine_secret = self
             .secrets
@@ -941,7 +830,6 @@ impl ConfigStore {
     }
 
     pub async fn load_public_config(&self) -> Result<MachinePublicConfig, String> {
-        self.migrate_legacy_if_needed().await?;
         let path = daemon_config_path(&self.data_dir);
         if !path.exists() {
             let default = default_public_config();
@@ -1153,14 +1041,14 @@ mod tests {
     use tempfile::TempDir;
     use tokio::sync::Mutex;
 
-    static LEGACY_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
-    struct LegacyEnvGuard {
+    struct EnvGuard {
         name: &'static str,
         previous: Option<String>,
     }
 
-    impl Drop for LegacyEnvGuard {
+    impl Drop for EnvGuard {
         fn drop(&mut self) {
             match &self.previous {
                 Some(value) => env::set_var(self.name, value),
@@ -1169,32 +1057,20 @@ mod tests {
         }
     }
 
-    fn set_legacy_home(base: &std::path::Path) -> LegacyEnvGuard {
-        #[cfg(unix)]
-        let name = "XDG_CONFIG_HOME";
-        #[cfg(windows)]
-        let name = "APPDATA";
-
-        let previous = env::var(name).ok();
-        env::set_var(name, base);
-
-        LegacyEnvGuard { name, previous }
-    }
-
-    fn set_env_var(name: &'static str, value: &str) -> LegacyEnvGuard {
+    fn set_env_var(name: &'static str, value: &str) -> EnvGuard {
         let previous = env::var(name).ok();
         env::set_var(name, value);
-        LegacyEnvGuard { name, previous }
+        EnvGuard { name, previous }
     }
 
-    fn remove_env_var(name: &'static str) -> LegacyEnvGuard {
+    fn remove_env_var(name: &'static str) -> EnvGuard {
         let previous = env::var(name).ok();
         env::remove_var(name);
-        LegacyEnvGuard { name, previous }
+        EnvGuard { name, previous }
     }
 
-    async fn with_legacy_env_lock() -> tokio::sync::MutexGuard<'static, ()> {
-        LEGACY_ENV_LOCK.get_or_init(|| Mutex::new(())).lock().await
+    async fn with_env_lock() -> tokio::sync::MutexGuard<'static, ()> {
+        ENV_LOCK.get_or_init(|| Mutex::new(())).lock().await
     }
 
     #[tokio::test]
@@ -1224,24 +1100,13 @@ mod tests {
         let scanner_missing = MachinePublicConfig {
             scanner_adapter: ScannerAdapterKind::SerialText,
             scanner_serial_port_path: None,
+            scanner_usb_identity: None,
             ..default_public_config()
         };
         let err = normalize_public_config(scanner_missing).unwrap_err();
         assert_eq!(
             err,
-            "scannerSerialPortPath is required when scannerAdapter=serial_text"
-        );
-
-        let vision_auto = MachinePublicConfig {
-            vision_enabled: true,
-            vision_auto_start: true,
-            vision_process_command: None,
-            ..default_public_config()
-        };
-        let err = normalize_public_config(vision_auto).unwrap_err();
-        assert_eq!(
-            err,
-            "visionProcessCommand is required when visionAutoStart=true"
+            "scannerSerialPortPath or scannerUsbIdentity is required when scannerAdapter=serial_text"
         );
     }
 
@@ -1265,6 +1130,32 @@ mod tests {
         assert_eq!(normalized.stock_movement_retention_days, 366);
     }
 
+    #[test]
+    fn machine_config_parses_without_process_management_fields() {
+        // After removing visionAutoStart/visionProcessCommand/visionProcessArgs,
+        // existing configs on disk (and bringup examples) that omit these fields
+        // must still parse correctly.
+        let json = serde_json::json!({
+            "machineCode": null,
+            "apiBaseUrl": "http://127.0.0.1:3000/api",
+            "mqttUrl": "mqtt://127.0.0.1:1883",
+            "mqttUsername": null,
+            "hardwareAdapter": "mock",
+            "serialPortPath": null,
+            "lowerControllerUsbIdentity": null,
+            "scannerAdapter": "disabled",
+            "scannerSerialPortPath": null,
+            "scannerBaudRate": 9600,
+            "scannerFrameSuffix": "crlf",
+            "visionEnabled": false,
+            "visionWsUrl": "ws://127.0.0.1:7892/ws",
+            "visionRequestTimeoutMs": 8000,
+            "kioskMode": false
+        });
+        let config: MachinePublicConfig = serde_json::from_value(json).expect("parse");
+        assert!(!config.vision_enabled);
+    }
+
     #[tokio::test]
     async fn normalize_public_config_preserves_custom_stock_movement_retention_days() {
         let config = MachinePublicConfig {
@@ -1273,60 +1164,6 @@ mod tests {
         };
         let normalized = normalize_public_config(config).expect("normalize");
         assert_eq!(normalized.stock_movement_retention_days, 90);
-    }
-
-    #[tokio::test]
-    async fn config_migrates_legacy_tauri_file_once() {
-        let _env_guard = with_legacy_env_lock().await;
-        let temp = TempDir::new().expect("temp");
-        let data_dir = temp.path().join("daemon");
-        let legacy_dir = temp.path().join("legacy");
-        let _legacy_home = set_legacy_home(&legacy_dir);
-        tokio::fs::create_dir_all(&legacy_dir).await.expect("mkdir");
-        let legacy_path = legacy_dir.join("machine-config.json");
-
-        let legacy_public = MachinePublicConfig {
-            api_base_url: "https://legacy.example/api".to_string(),
-            mqtt_url: "mqtt://legacy:1883".to_string(),
-            ..default_public_config()
-        };
-        let legacy_json =
-            serde_json::to_string_pretty(&legacy_public).expect("serialize legacy config");
-        tokio::fs::write(&legacy_path, legacy_json)
-            .await
-            .expect("write legacy");
-
-        let state = crate::state::LocalStateStore::open(&data_dir.join("state.db"))
-            .await
-            .expect("state");
-        let secrets: Arc<dyn SecretStore> = Arc::new(InMemorySecretStore::default());
-        let store = ConfigStore::new(data_dir.clone(), state.clone(), secrets);
-
-        let loaded = store.load_runtime_config().await.expect("load once");
-        assert_eq!(
-            loaded.public.api_base_url,
-            "https://legacy.example/api".trim_end_matches('/')
-        );
-
-        let migration: Option<String> = state
-            .get_metadata("last_migration_source")
-            .await
-            .expect("metadata")
-            .expect("metadata exists");
-        assert_eq!(migration.unwrap(), legacy_path.to_string_lossy());
-
-        let altered = MachinePublicConfig {
-            api_base_url: "https://changed.local/api".to_string(),
-            mqtt_url: "mqtt://changed:1883".to_string(),
-            ..default_public_config()
-        };
-        let altered_json = serde_json::to_string_pretty(&altered).expect("serialize altered");
-        tokio::fs::write(&legacy_path, altered_json)
-            .await
-            .expect("write changed legacy");
-
-        let second = store.load_runtime_config().await.expect("load twice");
-        assert_eq!(second.public.api_base_url, "https://legacy.example/api");
     }
 
     #[tokio::test]
@@ -1369,31 +1206,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn config_migration_records_once_only_when_daemon_config_absent() {
-        let _env_guard = with_legacy_env_lock().await;
-        let temp = TempDir::new().expect("temp");
-        let data_dir = temp.path().join("daemon");
-        let legacy_dir = temp.path().join("legacy");
-        tokio::fs::create_dir_all(&legacy_dir).await.expect("mkdir");
-        let _legacy_home = set_legacy_home(&legacy_dir);
-
-        let state = crate::state::LocalStateStore::open(&data_dir.join("state.db"))
-            .await
-            .expect("state");
-        let store = ConfigStore::new(
-            data_dir.clone(),
-            state,
-            std::sync::Arc::new(InMemorySecretStore::default()),
-        );
-
-        let first = store.load_public_config().await.expect("first load");
-        let second = store.load_public_config().await.expect("second load");
-        assert_eq!(first, second);
-    }
-
-    #[tokio::test]
     async fn first_boot_config_requires_installer_api_base_url_before_claiming() {
-        let _env_lock = with_legacy_env_lock().await;
+        let _env_lock = with_env_lock().await;
         let _default_api = remove_env_var("VEM_DEFAULT_API_BASE_URL");
         let temp = TempDir::new().expect("temp");
         let data_dir = temp.path().join("daemon");
@@ -1417,7 +1231,7 @@ mod tests {
 
     #[tokio::test]
     async fn installer_default_api_base_url_seeds_first_boot_config() {
-        let _env_lock = with_legacy_env_lock().await;
+        let _env_lock = with_env_lock().await;
         let _default_api = set_env_var(
             "VEM_DEFAULT_API_BASE_URL",
             " https://staging-api.example.com/api/ ",
@@ -1447,7 +1261,7 @@ mod tests {
 
     #[tokio::test]
     async fn saved_config_api_base_url_overrides_installer_default() {
-        let _env_lock = with_legacy_env_lock().await;
+        let _env_lock = with_env_lock().await;
         let _default_api = set_env_var(
             "VEM_DEFAULT_API_BASE_URL",
             "https://staging-api.example.com/api",
@@ -1524,5 +1338,26 @@ mod tests {
         assert!(!response.contains("\"machineSecret\""));
         assert!(!response.contains("\"mqttSigningSecret\""));
         assert!(!response.contains("\"mqttPassword\""));
+    }
+
+    #[test]
+    fn config_update_accepts_snake_case_secret_aliases() {
+        let request: MachineConfigUpdateRequest = serde_json::from_value(serde_json::json!({
+            "public": default_public_config(),
+            "secrets": {
+                "machine_secret": "machine-secret",
+                "mqtt_signing_secret": "signing-secret",
+                "mqtt_password": "password"
+            }
+        }))
+        .expect("request");
+
+        let secrets = request.secrets.expect("secrets");
+        assert_eq!(secrets.machine_secret.as_deref(), Some("machine-secret"));
+        assert_eq!(
+            secrets.mqtt_signing_secret.as_deref(),
+            Some("signing-secret")
+        );
+        assert_eq!(secrets.mqtt_password.as_deref(), Some("password"));
     }
 }

@@ -56,9 +56,6 @@ const publicConfig = {
   scannerFrameSuffix: "crlf",
   visionEnabled: true,
   visionWsUrl: "ws://127.0.0.1:7892/ws",
-  visionAutoStart: false,
-  visionProcessCommand: null,
-  visionProcessArgs: null,
   visionRequestTimeoutMs: 8000,
   kioskMode: true,
 };

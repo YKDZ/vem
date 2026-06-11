@@ -67,7 +67,7 @@ export const environmentControlResultPayloadSchema = z
     success: z.boolean(),
     errorCode: z.string().min(1).max(64).nullable().optional(),
     message: z.string().max(500).optional(),
-    airConditionerOn: z.boolean().optional(),
+    airConditionerOn: z.boolean().nullable().optional(),
     targetTemperatureCelsius: z.number().min(18).max(30).nullable().optional(),
     reportedAt: z.iso.datetime(),
   })

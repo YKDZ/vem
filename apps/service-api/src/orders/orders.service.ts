@@ -239,15 +239,15 @@ export class OrdersService {
     const paymentExpiresAt = new Date(
       Date.now() + qrExpiresMinutes * 60 * 1000,
     );
-    const draft = await this.createLocalMachineOrderDraft(
-      input,
-      machine.id,
-      paymentExpiresAt,
-      paymentSelection,
-      resolvedProviderConfig,
-    );
 
     if (paymentSelection.method === "payment_code") {
+      const draft = await this.createLocalMachineOrderDraft(
+        input,
+        machine.id,
+        paymentExpiresAt,
+        paymentSelection,
+        resolvedProviderConfig,
+      );
       await this.db
         .update(payments)
         .set({
@@ -266,6 +266,14 @@ export class OrdersService {
         paymentProviderCode: draft.providerCode,
       };
     }
+
+    const draft = await this.createLocalMachineOrderDraft(
+      input,
+      machine.id,
+      paymentExpiresAt,
+      paymentSelection,
+      resolvedProviderConfig,
+    );
 
     let intent: Awaited<ReturnType<typeof this.createPaymentIntent>>;
     try {
@@ -897,6 +905,7 @@ export class OrdersService {
       row.fulfillmentState,
       row.paymentStatus,
       command?.status ?? null,
+      paymentCodeAttempt?.status ?? null,
     );
 
     return {
@@ -931,7 +940,10 @@ export class OrdersService {
               ["failed", "reversed", "canceled"].includes(
                 paymentCodeAttempt.status,
               ),
-            message: paymentCodeAttempt.failureMessage,
+            message: describePaymentCodeAttempt(
+              paymentCodeAttempt.status,
+              paymentCodeAttempt.failureMessage,
+            ),
           }
         : null,
       vending: command
@@ -995,14 +1007,65 @@ function toIsoStringOrNull(value: Date | null): string | null {
   return value ? value.toISOString() : null;
 }
 
+function describePaymentCodeAttempt(
+  status: string,
+  failureMessage: string | null,
+): string | null {
+  const safeFailureMessage = isTechnicalPaymentCodeMessage(failureMessage)
+    ? null
+    : failureMessage;
+  if (status === "user_confirming") {
+    return "请在手机上确认支付";
+  }
+  if (status === "querying" || status === "unknown") {
+    return "正在确认支付结果，请勿重复出示付款码";
+  }
+  if (status === "reversing") {
+    return "支付结果未确认，正在撤销本次付款码交易";
+  }
+  if (status === "manual_handling") {
+    return "支付结果待人工处理，请联系工作人员";
+  }
+  if (status === "failed") {
+    return safeFailureMessage ?? "付款码无效或支付失败，请刷新付款码后重试";
+  }
+  if (status === "reversed" || status === "canceled") {
+    return safeFailureMessage ?? "本次付款码交易已撤销，请刷新付款码后重试";
+  }
+  return safeFailureMessage;
+}
+
+function isTechnicalPaymentCodeMessage(message: string | null): boolean {
+  if (!message) return false;
+  const lower = message.toLowerCase();
+  return (
+    lower.includes("httpclient") ||
+    lower.includes("request timeout") ||
+    lower.includes("timeout for") ||
+    lower.includes("status: 5") ||
+    lower.includes("status: 504") ||
+    lower.includes("gateway timeout") ||
+    lower.includes("gateway time-out") ||
+    lower.includes("econn") ||
+    lower.includes("socket") ||
+    message.includes("HTTP 请求错误") ||
+    message.includes("请求超时") ||
+    message.includes("网络超时")
+  );
+}
+
 function resolveMachineOrderNextAction(
   paymentState: OrderPaymentState,
   fulfillmentState: OrderFulfillmentState,
   paymentStatus: PaymentStatus,
   commandStatus: VendingCommandStatus | null,
+  paymentCodeAttemptStatus: string | null = null,
 ): MachineOrderStatusNextAction {
   const orderStatus = projectOrderStatus({ paymentState, fulfillmentState });
   if (orderStatus === "fulfilled") return "success";
+  if (paymentCodeAttemptStatus === "manual_handling") {
+    return "manual_handling";
+  }
   if (
     fulfillmentState === "dispense_failed" ||
     fulfillmentState === "partial_dispensed"

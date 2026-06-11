@@ -48,5 +48,7 @@ export function routeForStartup(input: {
     return { name: "result", params: { kind: next } };
   }
 
-  return input.ready?.canSell ? "/catalog" : "/offline";
+  if (input.ready?.canSell) return "/catalog";
+  if (input.ready?.suggestedRoute === "maintenance") return "/maintenance";
+  return "/offline";
 }

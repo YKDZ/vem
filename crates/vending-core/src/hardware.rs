@@ -71,6 +71,12 @@ pub struct HardwareStatus {
 #[async_trait]
 pub trait HardwareAdapter: Send + Sync {
     fn adapter_name(&self) -> &str;
+    fn schedule_next_dispense_fault_injection(&self) -> Result<(), String> {
+        Err(format!(
+            "{} hardware adapter does not support lower-controller fault injection",
+            self.adapter_name()
+        ))
+    }
     async fn self_check(&self) -> HardwareStatus;
     async fn query_environment_sample(&self) -> Result<Option<EnvironmentSample>, String> {
         Ok(None)

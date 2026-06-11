@@ -68,6 +68,20 @@ describe("shared API contract", () => {
     ).toBe(true);
   });
 
+  it("accepts environment control failure when confirmed switch state is unknown", () => {
+    const parsed = environmentControlResultPayloadSchema.parse({
+      commandNo: "MCMD-1",
+      success: false,
+      errorCode: "air_conditioner_switch_failed",
+      message: "no matching lower controller candidate responded to handshake",
+      airConditionerOn: null,
+      targetTemperatureCelsius: null,
+      reportedAt: "2026-06-09T10:25:35.327Z",
+    });
+
+    expect(parsed.airConditionerOn).toBeNull();
+  });
+
   it("accepts nested machine environment readings in heartbeat payload", () => {
     const parsed = heartbeatPayloadSchema.parse({
       machineCode: "M001",
@@ -813,6 +827,25 @@ describe("shared API contract", () => {
       });
       expect(result.paymentMethod).toBe("payment_code");
       expect(result.paymentProviderCode).toBe("alipay");
+    });
+
+    it("accepts null profileSnapshot from machine clients", () => {
+      const result = createMachineOrderSchema.parse({
+        machineCode: "M001",
+        items: [
+          {
+            inventoryId: "550e8400-e29b-41d4-a716-446655440000",
+            quantity: 1,
+            planogramVersion: "PLAN-1",
+            slotId: "550e8400-e29b-41d4-a716-446655440001",
+            slotCode: "A1",
+          },
+        ],
+        paymentMethod: "payment_code",
+        paymentProviderCode: "alipay",
+        profileSnapshot: null,
+      });
+      expect(result.profileSnapshot).toBeNull();
     });
 
     it("rejects payment_code with mock provider", () => {

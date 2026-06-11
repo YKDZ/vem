@@ -96,7 +96,14 @@ onMounted(async () => {
     connectivityStore.applyHealth(health);
     connectivityStore.applyReady(ready);
     connectivityStore.applySaleReadiness(saleReadiness);
-    checkoutStore.applyTransaction(transaction);
+    const startupTransaction = checkoutStore.shouldIgnoreTransaction(
+      transaction,
+    )
+      ? null
+      : transaction;
+    if (startupTransaction) {
+      checkoutStore.applyTransaction(startupTransaction);
+    }
 
     pushStep("同步配置");
     try {
@@ -139,7 +146,7 @@ onMounted(async () => {
         health,
         config: machineStore.configSummary,
         ready,
-        transaction,
+        transaction: startupTransaction,
       }),
     );
   } catch (error) {

@@ -31,9 +31,6 @@ describe("machine config", () => {
       scannerFrameSuffix: "crlf",
       visionEnabled: true,
       visionWsUrl: "ws://127.0.0.1:7892/ws",
-      visionAutoStart: false,
-      visionProcessCommand: null,
-      visionProcessArgs: null,
       visionRequestTimeoutMs: 8000,
       kioskMode: false,
       stockMovementRetentionDays: 30,
@@ -89,21 +86,11 @@ describe("machine config", () => {
     ).toBeNull();
   });
 
-  it("normalizes optional vision process fields", () => {
+  it("normalizes optional vision ws url", () => {
     const result = normalizeMachineConfig({
       visionWsUrl: " ws://127.0.0.1:7892/ws ",
-      visionProcessCommand: " pnpm ",
-      visionProcessArgs: " -F vision-mock dev ",
     });
     expect(result.visionWsUrl).toBe("ws://127.0.0.1:7892/ws");
-    expect(result.visionProcessCommand).toBe("pnpm");
-    expect(result.visionProcessArgs).toBe("-F vision-mock dev");
-  });
-
-  it("requires a vision process command when auto-start is enabled", () => {
-    expect(() => normalizeMachineConfig({ visionAutoStart: true })).toThrow(
-      /visionProcessCommand/,
-    );
   });
 
   it("allows serial adapter with default lower controller USB identity", () => {

@@ -34,9 +34,10 @@ import {
 } from "@vem/db";
 import {
   commandAckPayloadSchema,
-  environmentControlResultPayloadSchema,
   createMachineSchema,
   createMachineSlotSchema,
+  environmentControlResultPayloadSchema,
+  machineHeartbeatStatusPayloadSchema,
   pageQuerySchema,
   machineEnvironmentControlRequestSchema,
   publishMachinePlanogramVersionSchema,
@@ -44,6 +45,7 @@ import {
   type CommandAckPayload,
   type EnvironmentControlResultPayload,
   type MachineEnvironmentControlRequest,
+  type MachineHeartbeatStatusPayload,
   type MachineClaimRequest,
   type GenerateMachineClaimCodeRequest,
   type MachineProvisioningProfile,
@@ -233,26 +235,11 @@ function planogramVersionSnapshot(
   };
 }
 
-function parseLatestEnvironment(statusPayload: unknown) {
-  if (
-    typeof statusPayload !== "object" ||
-    statusPayload === null ||
-    !("environment" in statusPayload)
-  ) {
-    return null;
-  }
-
-  const environment = Reflect.get(statusPayload, "environment");
-  if (typeof environment !== "object" || environment === null) {
-    return null;
-  }
-
-  const sensorStatus = Reflect.get(environment, "sensorStatus");
-  return sensorStatus === "ok" ||
-    sensorStatus === "faulted" ||
-    sensorStatus === "unknown"
-    ? environment
-    : null;
+function parseLatestHeartbeatStatus(
+  statusPayload: unknown,
+): MachineHeartbeatStatusPayload | null {
+  const parsed = machineHeartbeatStatusPayloadSchema.safeParse(statusPayload);
+  return parsed.success ? parsed.data : null;
 }
 
 @Injectable()
@@ -306,13 +293,18 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
       .where(isNull(machines.deletedAt));
 
     const enrichedItems = await Promise.all(
-      items.map(async (machine) => ({
-        ...machine,
-        latestEnvironment: await this.getLatestEnvironment(machine.id),
-        latestEnvironmentCommand: await this.getLatestEnvironmentCommand(
-          machine.id,
-        ),
-      })),
+      items.map(async (machine) => {
+        const latestHeartbeat = await this.getLatestHeartbeatStatus(machine.id);
+        return {
+          ...machine,
+          latestHeartbeatStatus: latestHeartbeat?.statusPayload ?? null,
+          latestHeartbeatReportedAt: latestHeartbeat?.reportedAt ?? null,
+          latestEnvironment: latestHeartbeat?.statusPayload.environment ?? null,
+          latestEnvironmentCommand: await this.getLatestEnvironmentCommand(
+            machine.id,
+          ),
+        };
+      }),
     );
 
     return toPageResult(enrichedItems, query, Number(totalRow.total));
@@ -363,22 +355,36 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
       throw new NotFoundException("Machine not found");
     }
 
+    const latestHeartbeat = await this.getLatestHeartbeatStatus(id);
     return {
       ...machine,
-      latestEnvironment: await this.getLatestEnvironment(id),
+      latestHeartbeatStatus: latestHeartbeat?.statusPayload ?? null,
+      latestHeartbeatReportedAt: latestHeartbeat?.reportedAt ?? null,
+      latestEnvironment: latestHeartbeat?.statusPayload.environment ?? null,
       latestEnvironmentCommand: await this.getLatestEnvironmentCommand(id),
     };
   }
 
-  private async getLatestEnvironment(machineId: string) {
+  private async getLatestHeartbeatStatus(machineId: string): Promise<{
+    reportedAt: Date;
+    statusPayload: MachineHeartbeatStatusPayload;
+  } | null> {
     const [latestHeartbeat] = await this.db
-      .select({ statusPayloadJson: machineHeartbeats.statusPayloadJson })
+      .select({
+        reportedAt: machineHeartbeats.reportedAt,
+        statusPayloadJson: machineHeartbeats.statusPayloadJson,
+      })
       .from(machineHeartbeats)
       .where(eq(machineHeartbeats.machineId, machineId))
       .orderBy(desc(machineHeartbeats.reportedAt))
       .limit(1);
 
-    return parseLatestEnvironment(latestHeartbeat?.statusPayloadJson);
+    const statusPayload = parseLatestHeartbeatStatus(
+      latestHeartbeat?.statusPayloadJson,
+    );
+    return latestHeartbeat && statusPayload
+      ? { reportedAt: latestHeartbeat.reportedAt, statusPayload }
+      : null;
   }
 
   private async getLatestEnvironmentCommand(machineId: string) {

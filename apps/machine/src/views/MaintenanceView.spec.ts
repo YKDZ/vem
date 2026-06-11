@@ -20,6 +20,7 @@ const {
   getConfigMock,
   saveConfigMock,
   downloadLogExportMock,
+  callTauriCommandMock,
 } = vi.hoisted(() => ({
   routerReplaceMock: vi.fn(),
   initializeMock: vi.fn(),
@@ -35,6 +36,7 @@ const {
   getConfigMock: vi.fn(),
   saveConfigMock: vi.fn(),
   downloadLogExportMock: vi.fn(),
+  callTauriCommandMock: vi.fn(),
 }));
 
 vi.mock("vue-router", () => ({
@@ -65,6 +67,11 @@ vi.mock("@/daemon/client", () => ({
     saveConfig: saveConfigMock,
     downloadLogExport: downloadLogExportMock,
   },
+}));
+
+vi.mock("@/native/tauri", () => ({
+  isTauriRuntime: () => true,
+  callTauriCommand: callTauriCommandMock,
 }));
 
 import { useMachineStore } from "@/stores/machine";
@@ -178,9 +185,6 @@ function provisionedConfigSummary(): ConfigSummary {
       scannerFrameSuffix: "crlf",
       visionEnabled: true,
       visionWsUrl: "ws://secret-vision.example/ws",
-      visionAutoStart: true,
-      visionProcessCommand: "secret-vision-command",
-      visionProcessArgs: "--secret-vision-args",
       visionRequestTimeoutMs: 8000,
       kioskMode: true,
       stockMovementRetentionDays: 30,
@@ -256,6 +260,7 @@ beforeEach(() => {
   getConfigMock.mockResolvedValue(provisionedConfigSummary());
   saveConfigMock.mockResolvedValue({});
   downloadLogExportMock.mockResolvedValue(new Response("logs"));
+  callTauriCommandMock.mockResolvedValue(undefined);
   useMachineStore().$patch({ configLoaded: true });
 });
 
@@ -333,6 +338,7 @@ describe("MaintenanceView hardware config", () => {
     expect(host.textContent).toContain("扫码器");
     expect(host.textContent).toContain("视觉");
     expect(host.textContent).toContain("本地状态");
+    expect(host.textContent).toContain("回到目录");
     expect(host.textContent).toContain("导出日志");
     expect(host.textContent).toContain("硬件自检");
     expect(host.textContent).toContain("视觉状态");
@@ -448,6 +454,26 @@ describe("MaintenanceView hardware config", () => {
       expect(runHardwareSelfCheckMock).toHaveBeenCalledOnce();
       expect(getVisionStatusMock).toHaveBeenCalled();
       expect(downloadLogExportMock).toHaveBeenCalledOnce();
+    });
+  });
+
+  it("returns to the Windows desktop through the restricted Tauri command", async () => {
+    const host = await mountView();
+
+    buttonByText(host, "回到 Windows 桌面").click();
+
+    await vi.waitFor(() => {
+      expect(callTauriCommandMock).toHaveBeenCalledWith("return_to_desktop");
+    });
+  });
+
+  it("returns to the catalog from standard maintenance", async () => {
+    const host = await mountView();
+
+    buttonByText(host, "回到目录").click();
+
+    await vi.waitFor(() => {
+      expect(routerReplaceMock).toHaveBeenCalledWith("/catalog");
     });
   });
 });

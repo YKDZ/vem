@@ -1199,7 +1199,7 @@ describe("OrdersService (transaction boundary)", () => {
     it("cancels local order and releases reservation when provider create intent fails", async () => {
       const createPaymentIntent = vi
         .fn()
-        .mockRejectedValue(new Error("provider timeout"));
+        .mockRejectedValue(new Error("provider invalid request"));
       const releaseReservation = vi.fn().mockResolvedValue(undefined);
 
       const db = makeOrdersDbForSuccessfulLocalDraft();
@@ -1227,7 +1227,7 @@ describe("OrdersService (transaction boundary)", () => {
           paymentMethod: "qr_code",
           paymentProviderCode: "alipay",
         }),
-      ).rejects.toThrow("provider timeout");
+      ).rejects.toThrow("provider invalid request");
 
       expect(releaseReservation).toHaveBeenCalledWith(
         expect.anything(),
@@ -1238,6 +1238,7 @@ describe("OrdersService (transaction boundary)", () => {
           reason: "payment_failed",
         }),
       );
+      expect(createPaymentIntent).toHaveBeenCalledOnce();
       expect(db.orderStatusEvents).toContainEqual(
         expect.objectContaining({
           orderId: "ord-001",
@@ -1486,6 +1487,267 @@ describe("OrdersService (transaction boundary)", () => {
         canRetry: false,
       });
       expect(JSON.stringify(result)).not.toContain("28763443825664394");
+    });
+
+    it("describes reversed paymentCodeAttempt as retryable", async () => {
+      const db = makeDb();
+      db.select
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              innerJoin: vi.fn().mockReturnValue({
+                innerJoin: vi.fn().mockReturnValue({
+                  where: vi.fn().mockResolvedValue([
+                    {
+                      orderId: "ord-1",
+                      orderNo: "ORD001",
+                      machineCode: "M001",
+                      orderStatus: "pending_payment",
+                      paymentState: "awaiting_payment",
+                      fulfillmentState: "awaiting_fulfillment",
+                      totalAmountCents: 300,
+                      paymentId: "pay-1",
+                      paymentNo: "PAY001",
+                      paymentMethod: "payment_code",
+                      paymentStatus: "pending",
+                      paymentUrl: null,
+                      paymentExpiresAt: null,
+                      paidAt: null,
+                      failedReason: null,
+                      paymentProviderCode: "alipay",
+                    },
+                  ]),
+                }),
+              }),
+            }),
+          }),
+        })
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([]),
+              }),
+            }),
+          }),
+        })
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([]),
+              }),
+            }),
+          }),
+        })
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([
+                  {
+                    attemptNo: 1,
+                    status: "reversed",
+                    maskedAuthCode: "2876****4394",
+                    source: "serial_text",
+                    idempotencyKey: "idem-1",
+                    submittedAt: new Date("2026-05-24T10:00:00.000Z"),
+                    lastCheckedAt: new Date("2026-05-24T10:00:30.000Z"),
+                    failureMessage: null,
+                    isActive: false,
+                  },
+                ]),
+              }),
+            }),
+          }),
+        });
+
+      const service = makeService({ db });
+      const result = await service.getMachineOrderStatus("ORD001", {
+        machineCode: "M001",
+      });
+
+      expect(result.paymentCodeAttempt).toMatchObject({
+        status: "reversed",
+        canRetry: true,
+        message: "本次付款码交易已撤销，请刷新付款码后重试",
+      });
+      expect(result.nextAction).toBe("wait_payment");
+    });
+
+    it("sanitizes technical paymentCodeAttempt timeout messages while reversing", async () => {
+      const db = makeDb();
+      db.select
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              innerJoin: vi.fn().mockReturnValue({
+                innerJoin: vi.fn().mockReturnValue({
+                  where: vi.fn().mockResolvedValue([
+                    {
+                      orderId: "ord-1",
+                      orderNo: "ORD001",
+                      machineCode: "M001",
+                      orderStatus: "pending_payment",
+                      paymentState: "awaiting_payment",
+                      fulfillmentState: "awaiting_fulfillment",
+                      totalAmountCents: 300,
+                      paymentId: "pay-1",
+                      paymentNo: "PAY001",
+                      paymentMethod: "payment_code",
+                      paymentStatus: "pending",
+                      paymentUrl: null,
+                      paymentExpiresAt: null,
+                      paidAt: null,
+                      failedReason: null,
+                      paymentProviderCode: "alipay",
+                    },
+                  ]),
+                }),
+              }),
+            }),
+          }),
+        })
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([]),
+              }),
+            }),
+          }),
+        })
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([]),
+              }),
+            }),
+          }),
+        })
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([
+                  {
+                    attemptNo: 1,
+                    status: "reversing",
+                    maskedAuthCode: "2876****4394",
+                    source: "serial_text",
+                    idempotencyKey: "idem-1",
+                    submittedAt: new Date("2026-05-24T10:00:00.000Z"),
+                    lastCheckedAt: new Date("2026-05-24T10:00:30.000Z"),
+                    failureMessage:
+                      "HttpClient Request error: Request timeout for 5000 ms",
+                    isActive: true,
+                  },
+                ]),
+              }),
+            }),
+          }),
+        });
+
+      const service = makeService({ db });
+      const result = await service.getMachineOrderStatus("ORD001", {
+        machineCode: "M001",
+      });
+
+      expect(result.paymentCodeAttempt).toMatchObject({
+        status: "reversing",
+        canRetry: false,
+        message: "支付结果未确认，正在撤销本次付款码交易",
+      });
+      expect(JSON.stringify(result)).not.toContain("Request timeout");
+      expect(result.nextAction).toBe("wait_payment");
+    });
+
+    it("returns manual_handling nextAction for unresolved paymentCodeAttempt", async () => {
+      const db = makeDb();
+      db.select
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              innerJoin: vi.fn().mockReturnValue({
+                innerJoin: vi.fn().mockReturnValue({
+                  where: vi.fn().mockResolvedValue([
+                    {
+                      orderId: "ord-1",
+                      orderNo: "ORD001",
+                      machineCode: "M001",
+                      orderStatus: "pending_payment",
+                      paymentState: "awaiting_payment",
+                      fulfillmentState: "awaiting_fulfillment",
+                      totalAmountCents: 300,
+                      paymentId: "pay-1",
+                      paymentNo: "PAY001",
+                      paymentMethod: "payment_code",
+                      paymentStatus: "pending",
+                      paymentUrl: null,
+                      paymentExpiresAt: null,
+                      paidAt: null,
+                      failedReason: null,
+                      paymentProviderCode: "alipay",
+                    },
+                  ]),
+                }),
+              }),
+            }),
+          }),
+        })
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([]),
+              }),
+            }),
+          }),
+        })
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([]),
+              }),
+            }),
+          }),
+        })
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([
+                  {
+                    attemptNo: 1,
+                    status: "manual_handling",
+                    maskedAuthCode: "2876****4394",
+                    source: "serial_text",
+                    idempotencyKey: "idem-1",
+                    submittedAt: new Date("2026-05-24T10:00:00.000Z"),
+                    lastCheckedAt: new Date("2026-05-24T10:00:30.000Z"),
+                    failureMessage:
+                      "HttpClient Request error: Request timeout for 5000 ms",
+                    isActive: true,
+                  },
+                ]),
+              }),
+            }),
+          }),
+        });
+
+      const service = makeService({ db });
+      const result = await service.getMachineOrderStatus("ORD001", {
+        machineCode: "M001",
+      });
+
+      expect(result.paymentCodeAttempt).toMatchObject({
+        status: "manual_handling",
+        canRetry: false,
+        message: "支付结果待人工处理，请联系工作人员",
+      });
+      expect(result.nextAction).toBe("manual_handling");
     });
   });
 });

@@ -10,6 +10,7 @@ import type {
 
 import { Modal } from "antdv-next";
 import { computed, onMounted, ref } from "vue";
+import { useRouter } from "vue-router";
 
 import { requestLogExport } from "@/api/machine-ops";
 import {
@@ -35,6 +36,7 @@ import { useAuthStore } from "@/stores/auth";
 import { formatDateTime } from "@/utils/format";
 
 const authStore = useAuthStore();
+const router = useRouter();
 const canWrite = authStore.hasPermission("machines.write");
 const canCommand = authStore.hasPermission("machines.command");
 const canManageCredentials = authStore.hasPermission(
@@ -56,6 +58,18 @@ async function loadMachines(page = 1): Promise<void> {
   } finally {
     loading.value = false;
   }
+}
+
+async function openMachineDetail(m: Machine): Promise<void> {
+  await router.push({ name: "machine-detail", params: { id: m.id } });
+}
+
+function openMachineDetailWindow(m: Machine): void {
+  const href = router.resolve({
+    name: "machine-detail",
+    params: { id: m.id },
+  }).href;
+  window.open(href, `_blank`, "noopener,noreferrer");
 }
 
 // Machine form / drawer
@@ -507,6 +521,16 @@ async function handleRequestLogExport(m: Machine): Promise<void> {
           </template>
           <template v-else-if="column.key === 'actions'">
             <a-space>
+              <a-button
+                size="small"
+                type="primary"
+                @click="openMachineDetail(record)"
+              >
+                详情
+              </a-button>
+              <a-button size="small" @click="openMachineDetailWindow(record)">
+                新窗口
+              </a-button>
               <a-button size="small" @click="openEnvironment(record)"
                 >环境</a-button
               >

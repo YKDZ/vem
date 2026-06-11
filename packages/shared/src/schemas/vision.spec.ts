@@ -105,6 +105,33 @@ describe("vision protocol schemas", () => {
     expect(message.payload.profile.gender).toBe("unknown");
   });
 
+  it("accepts fair quality profile results from the real vision service", () => {
+    const message = visionProfileResultMessageSchema.parse({
+      ...BASE_ENVELOPE,
+      type: "vision.profile_result",
+      payload: {
+        eventId: "vision-event-003",
+        detectedAt: "2026-06-11T09:43:59.000Z",
+        profile: {
+          personPresent: true,
+          heightCm: null,
+          shoulderWidthCm: null,
+          ageRange: "adult",
+          gender: "female",
+          bodyType: "unknown",
+          confidence: 0.54,
+        },
+        quality: {
+          overall: "fair",
+          warnings: ["partial_body"],
+        },
+      },
+    });
+
+    expect(message.payload.quality.overall).toBe("fair");
+    expect(message.payload.profile.confidence).toBe(0.54);
+  });
+
   it("parses standard errors", () => {
     const message = visionErrorMessageSchema.parse({
       ...BASE_ENVELOPE,

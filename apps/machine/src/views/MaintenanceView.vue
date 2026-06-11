@@ -13,6 +13,7 @@ import {
 import { shouldShowAdvancedMaintenanceConfig } from "@/config/runtime-flags";
 import { daemonClient } from "@/daemon/client";
 import KioskLayout from "@/layouts/KioskLayout.vue";
+import { callTauriCommand, isTauriRuntime } from "@/native/tauri";
 import { useConnectivityStore } from "@/stores/connectivity";
 import { useMachineStore } from "@/stores/machine";
 import { useMqttStore } from "@/stores/mqtt";
@@ -32,6 +33,12 @@ const runtimeFlags = reactive({
 });
 const showAdvancedDebugConfig = computed(
   () => runtimeFlags.advancedMaintenanceConfig,
+);
+const wholeMachineMaintenanceLock = computed(
+  () =>
+    connectivityStore.ready?.blockingReasons.find(
+      (reason) => reason.code === "WHOLE_MACHINE_HARDWARE_FAULT",
+    ) ?? null,
 );
 
 function cloneLowerControllerUsbIdentity(
@@ -62,9 +69,6 @@ const form = reactive({
   scannerFrameSuffix: machineConfigDefaults.scannerFrameSuffix,
   visionEnabled: machineConfigDefaults.visionEnabled,
   visionWsUrl: machineConfigDefaults.visionWsUrl,
-  visionAutoStart: machineConfigDefaults.visionAutoStart,
-  visionProcessCommand: machineConfigDefaults.visionProcessCommand,
-  visionProcessArgs: machineConfigDefaults.visionProcessArgs,
   visionRequestTimeoutMs: machineConfigDefaults.visionRequestTimeoutMs,
   kioskMode: machineConfigDefaults.kioskMode,
   machineSecretInput: "",
@@ -88,9 +92,6 @@ function syncFormFromStore(): void {
   form.scannerFrameSuffix = machineStore.config.scannerFrameSuffix;
   form.visionEnabled = machineStore.config.visionEnabled;
   form.visionWsUrl = machineStore.config.visionWsUrl;
-  form.visionAutoStart = machineStore.config.visionAutoStart;
-  form.visionProcessCommand = machineStore.config.visionProcessCommand;
-  form.visionProcessArgs = machineStore.config.visionProcessArgs;
   form.visionRequestTimeoutMs = machineStore.config.visionRequestTimeoutMs;
   form.kioskMode = machineStore.config.kioskMode;
 }
@@ -137,6 +138,16 @@ const hardwareMaintenance = reactive({
 });
 
 const visionMaintenance = reactive({
+  loading: false,
+  message: null as string | null,
+});
+
+const wholeMachineLockMaintenance = reactive({
+  loading: false,
+  message: null as string | null,
+});
+
+const desktopMaintenance = reactive({
   loading: false,
   message: null as string | null,
 });
@@ -267,6 +278,41 @@ async function refreshDiagnostics(): Promise<void> {
       error instanceof Error ? error.message : String(error);
   } finally {
     diagnostics.loading = false;
+  }
+}
+
+async function clearWholeMachineLock(): Promise<void> {
+  wholeMachineLockMaintenance.loading = true;
+  wholeMachineLockMaintenance.message = null;
+  try {
+    await daemonClient.clearWholeMachineMaintenanceLock();
+    wholeMachineLockMaintenance.message = "整机维护锁已解除";
+    await refreshDiagnostics();
+  } catch (error) {
+    wholeMachineLockMaintenance.message =
+      error instanceof Error ? error.message : String(error);
+  } finally {
+    wholeMachineLockMaintenance.loading = false;
+  }
+}
+
+async function returnToCatalog(): Promise<void> {
+  await router.replace("/catalog");
+}
+
+async function returnToDesktop(): Promise<void> {
+  desktopMaintenance.loading = true;
+  desktopMaintenance.message = "正在回到 Windows 桌面";
+  try {
+    if (!isTauriRuntime()) {
+      desktopMaintenance.message = "当前不是 Tauri 运行环境，无法退出全屏应用";
+      return;
+    }
+    await callTauriCommand<void>("return_to_desktop");
+  } catch (error) {
+    desktopMaintenance.message =
+      error instanceof Error ? error.message : String(error);
+    desktopMaintenance.loading = false;
   }
 }
 
@@ -453,6 +499,21 @@ async function submitStockMovement(): Promise<void> {
           </p>
           <div class="flex flex-wrap gap-3">
             <button
+              class="kiosk-touch-target rounded-2xl border border-emerald-200/30 px-4 py-3 font-bold text-emerald-100"
+              type="button"
+              @click="returnToCatalog"
+            >
+              回到目录
+            </button>
+            <button
+              class="kiosk-touch-target rounded-2xl border border-slate-200/30 px-4 py-3 font-bold text-slate-100 disabled:opacity-50"
+              type="button"
+              :disabled="desktopMaintenance.loading"
+              @click="returnToDesktop"
+            >
+              回到 Windows 桌面
+            </button>
+            <button
               class="kiosk-touch-target rounded-2xl border border-sky-200/30 px-4 py-3 font-bold text-sky-100 disabled:opacity-50"
               type="button"
               :disabled="diagnostics.loading"
@@ -482,6 +543,36 @@ async function submitStockMovement(): Promise<void> {
               @click="refreshVisionStatus"
             >
               视觉状态
+            </button>
+          </div>
+        </div>
+
+        <div
+          v-if="
+            wholeMachineMaintenanceLock || wholeMachineLockMaintenance.message
+          "
+          class="mt-4 rounded-2xl border border-rose-300/30 bg-rose-500/15 p-4"
+        >
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <div class="text-left">
+              <p class="text-sm font-semibold text-rose-100">整机维护锁</p>
+              <p class="mt-1 text-sm text-rose-50/90">
+                {{
+                  wholeMachineMaintenanceLock?.message ??
+                  wholeMachineLockMaintenance.message
+                }}
+              </p>
+            </div>
+            <button
+              class="kiosk-touch-target rounded-2xl border border-rose-100/40 px-4 py-3 font-bold text-rose-50 disabled:opacity-50"
+              type="button"
+              :disabled="
+                wholeMachineLockMaintenance.loading ||
+                !wholeMachineMaintenanceLock
+              "
+              @click="clearWholeMachineLock"
+            >
+              确认解除整机锁
             </button>
           </div>
         </div>
@@ -554,6 +645,12 @@ async function submitStockMovement(): Promise<void> {
           class="mt-4 rounded-2xl bg-sky-500/15 p-4 text-sky-100"
         >
           {{ diagnostics.logsMessage }}
+        </p>
+        <p
+          v-if="desktopMaintenance.message"
+          class="mt-4 rounded-2xl bg-slate-500/15 p-4 text-slate-100"
+        >
+          {{ desktopMaintenance.message }}
         </p>
         <p
           v-if="hardwareMaintenance.message"
@@ -856,39 +953,6 @@ async function submitStockMovement(): Promise<void> {
                 min="1000"
                 step="500"
                 type="number"
-              />
-            </label>
-
-            <label class="flex items-center gap-3 text-left">
-              <input
-                v-model="form.visionAutoStart"
-                class="size-5 accent-fuchsia-300"
-                type="checkbox"
-              />
-              <span class="text-sm font-semibold text-slate-200"
-                >启动时托管视觉进程 visionAutoStart</span
-              >
-            </label>
-
-            <label class="grid gap-2 text-left">
-              <span class="text-sm font-semibold text-slate-200"
-                >视觉进程命令 visionProcessCommand</span
-              >
-              <input
-                v-model="form.visionProcessCommand"
-                class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-fuchsia-300"
-                placeholder="例如 pnpm"
-              />
-            </label>
-
-            <label class="grid gap-2 text-left">
-              <span class="text-sm font-semibold text-slate-200"
-                >视觉进程参数 visionProcessArgs</span
-              >
-              <input
-                v-model="form.visionProcessArgs"
-                class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-fuchsia-300"
-                placeholder="例如 -F vision-mock dev"
               />
             </label>
 

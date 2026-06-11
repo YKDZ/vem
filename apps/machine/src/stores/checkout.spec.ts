@@ -30,6 +30,7 @@ import type { MachineCatalogItem } from "@/types/catalog";
 
 import { useCatalogStore } from "./catalog";
 import {
+  isTerminalResultNextAction,
   normalizeNextAction,
   resultKindFromNextAction,
   useCheckoutStore,
@@ -200,6 +201,7 @@ describe("checkout helpers", () => {
   it("maps result next actions", () => {
     expect(resultKindFromNextAction("success")).toBe("success");
     expect(resultKindFromNextAction("wait_payment")).toBeNull();
+    expect(isTerminalResultNextAction("payment_failed")).toBe(true);
   });
 });
 
@@ -778,6 +780,61 @@ describe("checkout store", () => {
     await store.refreshCurrentTransaction();
 
     expect(store.flowStep).toBe("dispensing");
+  });
+
+  it("ignores a dismissed terminal current transaction", async () => {
+    const failedTransaction = makeTransactionSnapshot({
+      paymentStatus: "failed",
+      orderStatus: "canceled",
+      nextAction: "payment_failed",
+    });
+    getCurrentTransactionMock.mockResolvedValue(failedTransaction);
+
+    const store = useCheckoutStore();
+    store.applyTransaction(failedTransaction);
+    expect(store.flowStep).toBe("result");
+
+    store.dismissCurrentTerminalTransaction();
+    store.reset();
+    const refreshed = await store.refreshCurrentTransaction();
+
+    expect(refreshed).toBeNull();
+    expect(store.shouldIgnoreTransaction(failedTransaction)).toBe(true);
+    expect(store.currentOrder).toBeNull();
+    expect(store.status).toBeNull();
+    expect(store.flowStep).toBe("idle");
+  });
+
+  it("preserves reversed payment-code attempt and shows retry message", async () => {
+    getCurrentTransactionMock.mockResolvedValue(
+      makeTransactionSnapshot({
+        paymentCodeAttempt: {
+          attemptNo: 1,
+          status: "reversed",
+          maskedAuthCode: "2876****4394",
+          source: "serial_text",
+          idempotencyKey: "ORD-001:attempt-1",
+          submittedAt: "2026-01-01T00:00:05Z",
+          lastCheckedAt: "2026-01-01T00:00:35Z",
+          canRetry: true,
+          message: null,
+        },
+        operatorHint: null,
+      }),
+    );
+
+    const store = useCheckoutStore();
+    await store.refreshCurrentTransaction();
+
+    expect(store.status?.paymentCodeAttempt).toMatchObject({
+      status: "reversed",
+      canRetry: true,
+      message: "本次付款码交易已撤销，请刷新付款码后重试",
+    });
+    expect(store.paymentCodeMessage).toBe(
+      "本次付款码交易已撤销，请刷新付款码后重试",
+    );
+    expect(store.flowStep).toBe("payment");
   });
 
   it("drops concurrent dev payment submissions", async () => {

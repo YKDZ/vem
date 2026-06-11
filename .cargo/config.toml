@@ -1,0 +1,4 @@
+# NOTE: Do NOT add -mwindows for x86_64-pc-windows-gnu. It breaks WebView2 COM
+# initialization (tauri:// custom protocol fails to register), causing a blank
+# "no network" page. The windows_subsystem attribute in main.rs only works with
+# the MSVC toolchain. Console suppression is handled at the launcher level.

@@ -25,11 +25,14 @@ const canDisplayAsSaleReady = computed(
   () => connectivityStore.isSaleNetworkReady,
 );
 const displayItems = computed(() => catalogStore.availableItems);
-const degradedSyncMessage = computed(() => {
+const degradedStatusMessages = computed(() => {
+  const messages: string[] = [];
   if (mqttStore.outboxSize > 0) {
-    return `MQTT backlog：${mqttStore.outboxSize} 条待补发`;
+    messages.push(`MQTT backlog：${mqttStore.outboxSize} 条待补发`);
   }
-  return connectivityStore.degradedReasons[0] ?? null;
+  messages.push(...connectivityStore.degradedReasons);
+  messages.push(...connectivityStore.saleReadinessDegradedMessages);
+  return [...new Set(messages)];
 });
 
 async function refreshCatalog(): Promise<void> {
@@ -59,9 +62,9 @@ onMounted(async () => {
 
 <template>
   <KioskLayout>
-    <section class="flex h-full flex-col">
-      <div class="flex items-end justify-between gap-4">
-        <div>
+    <section class="flex h-full min-h-0 flex-col">
+      <div class="flex shrink-0 items-end justify-between gap-4">
+        <div class="min-w-0">
           <p class="text-sm tracking-[0.35em] text-sky-200 uppercase">
             CATALOG
           </p>
@@ -82,7 +85,7 @@ onMounted(async () => {
 
       <p
         v-if="!canDisplayAsSaleReady"
-        class="mt-5 rounded-2xl bg-amber-400/15 p-4 text-amber-100"
+        class="mt-5 shrink-0 rounded-2xl bg-amber-400/15 p-4 text-amber-100"
       >
         {{
           connectivityStore.saleReadinessBlockingMessages[0] ??
@@ -90,16 +93,20 @@ onMounted(async () => {
         }}，仅展示本地目录，购买入口已禁用。
       </p>
 
-      <p class="mt-5 rounded-2xl bg-fuchsia-400/15 p-4 text-fuchsia-100">
+      <p
+        class="mt-5 shrink-0 rounded-2xl bg-fuchsia-400/15 p-4 text-fuchsia-100"
+      >
         视觉状态：{{ visionStore.message }}
       </p>
 
-      <div v-if="recommendedItems.length > 0" class="mt-5">
+      <div v-if="recommendedItems.length > 0" class="mt-5 shrink-0">
         <p class="text-sm tracking-[0.35em] text-amber-200 uppercase">
           FOR YOU
         </p>
         <h3 class="text-2xl font-bold text-white">为你推荐</h3>
-        <div class="mt-3 flex gap-4 overflow-x-auto pb-4">
+        <div
+          class="kiosk-scroll mt-3 flex touch-pan-x gap-4 overflow-x-auto pb-4"
+        >
           <div
             v-for="item in recommendedItems"
             :key="item.inventoryId"
@@ -120,15 +127,16 @@ onMounted(async () => {
       </div>
 
       <p
-        v-if="degradedSyncMessage"
-        class="mt-5 rounded-2xl bg-sky-400/15 p-4 text-sky-100"
+        v-for="message in degradedStatusMessages"
+        :key="message"
+        class="mt-5 shrink-0 rounded-2xl bg-sky-400/15 p-4 text-sky-100"
       >
-        {{ degradedSyncMessage }}
+        {{ message }}
       </p>
 
       <div
         v-if="displayItems.length > 0"
-        class="mt-6 grid min-h-0 flex-1 grid-cols-2 gap-4 overflow-y-auto pb-8"
+        class="kiosk-scroll mt-6 grid min-h-0 flex-1 touch-pan-y grid-cols-2 gap-4 overflow-y-auto pr-1 pb-8"
       >
         <ProductCard
           v-for="item in displayItems"

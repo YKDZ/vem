@@ -1,4 +1,4 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
 use async_trait::async_trait;
 use tokio::sync::RwLock;
@@ -24,6 +24,29 @@ pub struct InMemorySecretStore {
 
 #[derive(Debug, Default, Clone)]
 pub struct EnvSecretStore;
+
+#[derive(Debug, Clone)]
+pub struct FileSecretStore {
+    dir: PathBuf,
+}
+
+impl FileSecretStore {
+    pub fn new(data_dir: PathBuf) -> Self {
+        Self {
+            dir: data_dir.join("secrets"),
+        }
+    }
+
+    fn account_path(&self, account: &str) -> Result<PathBuf, String> {
+        let file_name = match account {
+            MACHINE_SECRET_ACCOUNT => "machine_secret",
+            MQTT_SIGNING_SECRET_ACCOUNT => "mqtt_signing_secret",
+            MQTT_PASSWORD_ACCOUNT => "mqtt_password",
+            _ => return Err("unknown secret account".to_string()),
+        };
+        Ok(self.dir.join(file_name))
+    }
+}
 
 #[async_trait]
 impl SecretStore for InMemorySecretStore {
@@ -72,6 +95,40 @@ impl SecretStore for EnvSecretStore {
 }
 
 #[async_trait]
+impl SecretStore for FileSecretStore {
+    async fn read_secret(&self, account: &str) -> Result<Option<String>, String> {
+        let path = self.account_path(account)?;
+        match tokio::fs::read_to_string(path).await {
+            Ok(value) => Ok(Some(value.trim().to_string()).filter(|value| !value.is_empty())),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(format!("read file secret failed: {error}")),
+        }
+    }
+
+    async fn write_secret(&self, account: &str, value: &str) -> Result<(), String> {
+        let path = self.account_path(account)?;
+        let value = value.trim();
+        tokio::fs::create_dir_all(&self.dir)
+            .await
+            .map_err(|error| format!("create file secret dir failed: {error}"))?;
+        if value.is_empty() {
+            match tokio::fs::remove_file(path).await {
+                Ok(()) => return Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+                Err(error) => return Err(format!("remove file secret failed: {error}")),
+            }
+        }
+        let temp_path = path.with_extension("tmp");
+        tokio::fs::write(&temp_path, value)
+            .await
+            .map_err(|error| format!("write file secret failed: {error}"))?;
+        tokio::fs::rename(&temp_path, &path)
+            .await
+            .map_err(|error| format!("replace file secret failed: {error}"))
+    }
+}
+
+#[async_trait]
 impl SecretStore for KeyringSecretStore {
     async fn read_secret(&self, account: &str) -> Result<Option<String>, String> {
         let account = account.to_string();
@@ -106,11 +163,11 @@ impl SecretStore for KeyringSecretStore {
     }
 }
 
-pub fn default_secret_store() -> Arc<dyn SecretStore> {
-    if std::env::var("VEM_DAEMON_SECRET_STORE").ok().as_deref() == Some("env") {
-        Arc::new(EnvSecretStore)
-    } else {
-        Arc::new(KeyringSecretStore)
+pub fn default_secret_store(data_dir: PathBuf) -> Arc<dyn SecretStore> {
+    match std::env::var("VEM_DAEMON_SECRET_STORE").ok().as_deref() {
+        Some("env") => Arc::new(EnvSecretStore),
+        Some("file") => Arc::new(FileSecretStore::new(data_dir)),
+        _ => Arc::new(KeyringSecretStore),
     }
 }
 
@@ -157,5 +214,32 @@ mod tests {
         unsafe {
             std::env::remove_var("VEM_MQTT_SIGNING_SECRET");
         }
+    }
+
+    #[tokio::test]
+    async fn file_secret_store_round_trips_known_accounts() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = FileSecretStore::new(temp.path().to_path_buf());
+        store
+            .write_secret(MACHINE_SECRET_ACCOUNT, " machine-secret ")
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .read_secret(MACHINE_SECRET_ACCOUNT)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("machine-secret")
+        );
+        store
+            .write_secret(MACHINE_SECRET_ACCOUNT, "")
+            .await
+            .unwrap();
+        assert!(store
+            .read_secret(MACHINE_SECRET_ACCOUNT)
+            .await
+            .unwrap()
+            .is_none());
     }
 }

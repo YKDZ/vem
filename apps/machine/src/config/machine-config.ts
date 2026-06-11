@@ -56,25 +56,13 @@ export const machineConfigSchema = z
       .max(256)
       .nullable()
       .default(null),
+    scannerUsbIdentity: lowerControllerUsbIdentitySchema
+      .nullable()
+      .default(null),
     scannerBaudRate: z.int().min(1200).max(921600).default(9600),
     scannerFrameSuffix: z.enum(["crlf", "lf", "cr", "none"]).default("crlf"),
     visionEnabled: z.boolean().default(true),
     visionWsUrl: z.string().trim().pipe(z.url()).default(DEFAULT_VISION_WS_URL),
-    visionAutoStart: z.boolean().default(false),
-    visionProcessCommand: z
-      .string()
-      .trim()
-      .min(1)
-      .max(512)
-      .nullable()
-      .default(null),
-    visionProcessArgs: z
-      .string()
-      .trim()
-      .min(1)
-      .max(1000)
-      .nullable()
-      .default(null),
     visionRequestTimeoutMs: z.int().min(1000).max(30_000).default(8000),
     kioskMode: z.boolean().default(false),
     stockMovementRetentionDays: z.int().min(1).max(366).default(30),
@@ -92,23 +80,16 @@ export const machineConfigSchema = z
           "lowerControllerUsbIdentity or serialPortPath is required when hardwareAdapter=serial",
       });
     }
-    if (data.scannerAdapter === "serial_text" && !data.scannerSerialPortPath) {
+    if (
+      data.scannerAdapter === "serial_text" &&
+      !data.scannerSerialPortPath &&
+      !data.scannerUsbIdentity
+    ) {
       ctx.addIssue({
         code: "custom",
         path: ["scannerSerialPortPath"],
         message:
-          "scannerSerialPortPath is required when scannerAdapter=serial_text",
-      });
-    }
-    if (
-      data.visionEnabled &&
-      data.visionAutoStart &&
-      !data.visionProcessCommand
-    ) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["visionProcessCommand"],
-        message: "visionProcessCommand is required when visionAutoStart=true",
+          "scannerSerialPortPath or scannerUsbIdentity is required when scannerAdapter=serial_text",
       });
     }
   });
@@ -182,14 +163,6 @@ export function normalizeMachineConfig(input: unknown): MachineConfig {
   if (typeof processed.visionWsUrl === "string") {
     processed.visionWsUrl = processed.visionWsUrl.trim();
   }
-  if (typeof processed.visionProcessCommand === "string") {
-    const trimmed = processed.visionProcessCommand.trim();
-    processed.visionProcessCommand = trimmed.length > 0 ? trimmed : null;
-  }
-  if (typeof processed.visionProcessArgs === "string") {
-    const trimmed = processed.visionProcessArgs.trim();
-    processed.visionProcessArgs = trimmed.length > 0 ? trimmed : null;
-  }
   const parsed = machineConfigSchema.parse(processed);
   const machineSecret = parsed.machineSecret?.trim() || null;
   const mqttSigningSecret = parsed.mqttSigningSecret?.trim() || null;
@@ -214,9 +187,8 @@ export function normalizeMachineConfig(input: unknown): MachineConfig {
     mqttUrl: parsed.mqttUrl.trim(),
     serialPortPath: parsed.serialPortPath?.trim() || null,
     lowerControllerUsbIdentity: parsed.lowerControllerUsbIdentity,
+    scannerUsbIdentity: parsed.scannerUsbIdentity,
     scannerSerialPortPath: parsed.scannerSerialPortPath?.trim() || null,
     visionWsUrl: parsed.visionWsUrl.trim(),
-    visionProcessCommand: parsed.visionProcessCommand?.trim() || null,
-    visionProcessArgs: parsed.visionProcessArgs?.trim() || null,
   };
 }

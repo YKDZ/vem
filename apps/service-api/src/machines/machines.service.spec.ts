@@ -105,7 +105,12 @@ describe("MachinesService", () => {
             orderBy: () => ({
               limit: async () => [
                 {
+                  reportedAt: new Date("2026-05-05T12:00:05.000Z"),
                   statusPayloadJson: {
+                    network: "online",
+                    mqttConnected: true,
+                    hardwareStatus: "ok",
+                    localQueueSize: 0,
                     environment: {
                       temperatureCelsius: 24,
                       humidityRh: 53,
@@ -135,6 +140,12 @@ describe("MachinesService", () => {
 
     expect(result.items[0]).toEqual(
       expect.objectContaining({
+        latestHeartbeatReportedAt: new Date("2026-05-05T12:00:05.000Z"),
+        latestHeartbeatStatus: expect.objectContaining({
+          network: "online",
+          mqttConnected: true,
+          hardwareStatus: "ok",
+        }),
         latestEnvironment: expect.objectContaining({
           temperatureCelsius: 24,
           sensorStatus: "ok",
@@ -166,7 +177,12 @@ describe("MachinesService", () => {
             orderBy: () => ({
               limit: async () => [
                 {
+                  reportedAt: new Date("2026-05-05T12:00:05.000Z"),
                   statusPayloadJson: {
+                    network: "online",
+                    mqttConnected: true,
+                    hardwareStatus: "ok",
+                    localQueueSize: 0,
                     environment: {
                       temperatureCelsius: 24,
                       humidityRh: 53,
@@ -202,6 +218,16 @@ describe("MachinesService", () => {
 
     const result = await service.getMachine("machine-1");
 
+    expect(result.latestHeartbeatReportedAt).toEqual(
+      new Date("2026-05-05T12:00:05.000Z"),
+    );
+    expect(result.latestHeartbeatStatus).toEqual(
+      expect.objectContaining({
+        network: "online",
+        mqttConnected: true,
+        hardwareStatus: "ok",
+      }),
+    );
     expect(result.latestEnvironment).toEqual({
       temperatureCelsius: 24,
       humidityRh: 53,

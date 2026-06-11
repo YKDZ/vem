@@ -43,17 +43,52 @@ export const useConnectivityStore = defineStore("connectivity", {
     saleReadinessBlockingMessages: (state): string[] => {
       const components = state.saleReadiness?.components;
       if (!components) return [];
+      const blockingCodes = new Set(state.saleReadiness?.blockingCodes ?? []);
       return [
         components.platformReachability,
         components.machineAuthentication,
         components.activePlanogram,
         components.paymentOptions,
-        components.scannerCapability,
         components.syncHealth,
         components.wholeMachineBlockers,
+        components.slotSaleSafety,
       ]
-        .filter((component) => !component.ready)
+        .filter((component): component is NonNullable<typeof component> =>
+          Boolean(component),
+        )
+        .filter(
+          (component) => !component.ready && blockingCodes.has(component.code),
+        )
         .map((component) => component.message);
+    },
+    saleReadinessDegradedMessages: (state): string[] => {
+      const components = state.saleReadiness?.components;
+      if (!components) return [];
+
+      const paymentCode = components.paymentOptions.methods.find(
+        (method) => method.method === "payment_code",
+      );
+      const readyAlternative = components.paymentOptions.methods.some(
+        (method) => method.method !== "payment_code" && method.ready,
+      );
+      if (
+        components.scannerCapability.ready ||
+        !paymentCode ||
+        paymentCode.ready
+      ) {
+        return [];
+      }
+
+      const rawReason =
+        paymentCode.disabledReason ?? components.scannerCapability.message;
+      const scannerReason = rawReason.startsWith("扫码器不可用")
+        ? rawReason
+        : `扫码器不可用：${rawReason}`;
+      return [
+        readyAlternative
+          ? `${scannerReason}；付款码支付不可用，二维码支付仍可用。`
+          : `${scannerReason}；付款码支付不可用。`,
+      ];
     },
     isSaleNetworkReady: (state): boolean =>
       Boolean(

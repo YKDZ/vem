@@ -18,6 +18,13 @@ const apiMocks = vi.hoisted(() => ({
   generateMachineClaimCode: vi.fn(),
   revokeMachineClaimCode: vi.fn(),
 }));
+const routerMocks = vi.hoisted(() => ({
+  push: vi.fn(),
+  resolve: vi.fn(() => ({
+    href: "/machines/11111111-1111-4111-8111-111111111111",
+  })),
+}));
+const windowOpenMock = vi.hoisted(() => vi.fn());
 
 const {
   listMachines,
@@ -57,6 +64,10 @@ vi.mock("antdv-next", () => ({
     error: vi.fn(),
     success: vi.fn(),
   },
+}));
+
+vi.mock("vue-router", () => ({
+  useRouter: () => routerMocks,
 }));
 
 function createMachineFixture(overrides: Record<string, unknown> = {}) {
@@ -313,6 +324,7 @@ async function openClaimCodesDrawer(root: HTMLElement): Promise<void> {
 describe("MachinesView environment controls", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    window.open = windowOpenMock;
     commandEnvironment.mockResolvedValue({
       id: "cmd-1",
       commandNo: "MCMD202606040001",
@@ -358,6 +370,40 @@ describe("MachinesView environment controls", () => {
     expect(root.textContent).toContain("空调开");
     expect(root.textContent).toContain("目标 24 C");
     expect(root.querySelector("tbody input")).toBeNull();
+  });
+
+  it("opens the single machine operation page from the machine list", async () => {
+    listMachines.mockResolvedValue({
+      items: [createMachineFixture()],
+      total: 1,
+      page: 1,
+      pageSize: 20,
+    });
+
+    const { root } = await mountMachinesView();
+    Array.from(root.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("详情"))
+      ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await flushPromises();
+
+    expect(routerMocks.push).toHaveBeenCalledWith({
+      name: "machine-detail",
+      params: { id: "11111111-1111-4111-8111-111111111111" },
+    });
+
+    Array.from(root.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("新窗口"))
+      ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+
+    expect(routerMocks.resolve).toHaveBeenCalledWith({
+      name: "machine-detail",
+      params: { id: "11111111-1111-4111-8111-111111111111" },
+    });
+    expect(windowOpenMock).toHaveBeenCalledWith(
+      "/machines/11111111-1111-4111-8111-111111111111",
+      "_blank",
+      "noopener,noreferrer",
+    );
   });
 
   it("opens an environment drawer with the latest detailed reading", async () => {

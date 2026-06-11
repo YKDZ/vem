@@ -42,9 +42,6 @@ describe("routeForStartup", () => {
       scannerFrameSuffix: "crlf" as const,
       visionEnabled: true,
       visionWsUrl: "ws://127.0.0.1:7892/ws",
-      visionAutoStart: false,
-      visionProcessCommand: null,
-      visionProcessArgs: null,
       visionRequestTimeoutMs: 8000,
       kioskMode: false,
       stockMovementRetentionDays: 30,
@@ -223,6 +220,33 @@ describe("routeForStartup", () => {
         transaction: null,
       }),
     ).toBe("/offline");
+  });
+
+  it("routes maintenance when ready snapshot suggests maintenance", () => {
+    expect(
+      routeForStartup({
+        daemonAvailable: true,
+        health: { ...healthBase },
+        config: configBase,
+        ready: {
+          ready: false,
+          canSell: false,
+          mode: "maintenance",
+          blockingCodes: ["WHOLE_MACHINE_HARDWARE_FAULT"],
+          blockingReasons: [
+            {
+              code: "WHOLE_MACHINE_HARDWARE_FAULT",
+              component: "hardware",
+              message: "hardware fault",
+            },
+          ],
+          degradedReasons: [],
+          suggestedRoute: "maintenance",
+          updatedAt: "2026-01-01T00:00:00Z",
+        },
+        transaction: null,
+      }),
+    ).toBe("/maintenance");
   });
 
   it("routes catalog by default when sell available", () => {

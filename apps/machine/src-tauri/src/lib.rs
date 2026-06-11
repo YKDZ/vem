@@ -80,11 +80,23 @@ fn get_daemon_connection() -> Result<DaemonConnectionInfo, String> {
     })
 }
 
+#[tauri::command]
+fn return_to_desktop() -> Result<(), String> {
+    std::thread::spawn(|| {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        std::process::exit(0);
+    });
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![get_daemon_connection])
+        .invoke_handler(tauri::generate_handler![
+            get_daemon_connection,
+            return_to_desktop
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

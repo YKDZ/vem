@@ -1,7 +1,7 @@
 import type { VisionProfile } from "@vem/shared";
 import type { Ref } from "vue";
 
-import { readonly, ref, onUnmounted } from "vue";
+import { computed, readonly, ref, onUnmounted, watch } from "vue";
 
 import type { ScoredItem } from "@/types/catalog";
 
@@ -21,6 +21,7 @@ export function useVisionRecommendations(): {
 
   const currentProfile = ref<VisionProfile | null>(null);
   const recommendedItems = ref<readonly ScoredItem[]>([]);
+  const availableItems = computed(() => catalogStore.availableItems);
   let expireTimer: ReturnType<typeof setTimeout> | null = null;
 
   function clearState(): void {
@@ -32,21 +33,30 @@ export function useVisionRecommendations(): {
     }
   }
 
+  function recomputeRecommendations(): void {
+    const profile = currentProfile.value;
+    if (!profile) {
+      recommendedItems.value = [];
+      return;
+    }
+    recommendedItems.value = computeRecommendations(
+      profile,
+      availableItems.value,
+    );
+  }
+
   function handleProfile(payload: { profile: VisionProfile }): void {
     const profile = payload.profile;
 
-    // personPresent=false → treat as no profile
     if (!profile.personPresent) {
       clearState();
       return;
     }
 
-    // Low confidence → ignore this update
     if (profile.confidence !== undefined && profile.confidence < 0.5) {
       return;
     }
 
-    // Update profile and reset timer
     currentProfile.value = profile;
 
     if (expireTimer !== null) {
@@ -56,11 +66,7 @@ export function useVisionRecommendations(): {
       clearState();
     }, PROFILE_EXPIRE_MS);
 
-    // Compute recommendations
-    recommendedItems.value = computeRecommendations(
-      profile,
-      catalogStore.availableItems,
-    );
+    recomputeRecommendations();
   }
 
   const config = machineStore.config;
@@ -73,13 +79,21 @@ export function useVisionRecommendations(): {
     };
   }
 
+  const stopCatalogWatch = watch(availableItems, () => {
+    recomputeRecommendations();
+  });
+
   const subscription = subscribeVisionProfiles(config, {
     onProfile: handleProfile,
+    onError: (error) => {
+      console.warn("vision recommendation subscription failed", error);
+    },
   });
 
   // Clean up on unmount
   onUnmounted(() => {
     subscription.close();
+    stopCatalogWatch();
     clearState();
   });
 

@@ -16,9 +16,6 @@ fn minimal_config() -> serde_json::Value {
         "scannerFrameSuffix": "crlf",
         "visionEnabled": false,
         "visionWsUrl": "ws://127.0.0.1:7892/ws",
-        "visionAutoStart": false,
-        "visionProcessCommand": null,
-        "visionProcessArgs": null,
         "visionRequestTimeoutMs": 8000,
         "kioskMode": false
     })

@@ -3,6 +3,9 @@ import vue from "@vitejs/plugin-vue";
 import { resolve } from "node:path";
 import { defineConfig } from "vitest/config";
 
+const apiProxyTarget =
+  process.env.VEM_ADMIN_API_PROXY_TARGET ?? "http://localhost:3000";
+
 export default defineConfig({
   plugins: [vue(), tailwindcss()],
   resolve: {
@@ -13,7 +16,7 @@ export default defineConfig({
   server: {
     proxy: {
       "/api": {
-        target: "http://localhost:3000",
+        target: apiProxyTarget,
         changeOrigin: true,
       },
     },

@@ -461,9 +461,6 @@ async function reconciliationForFieldStockMovement(
   if (!isFieldStockMovement(input)) {
     return null;
   }
-  if (input.source === "local_maintenance") {
-    return fieldStockReconciliation(input.slotId, "local_maintenance");
-  }
   if (!input.attributedTo?.trim()) {
     return fieldStockReconciliation(input.slotId, "weak_attribution");
   }
@@ -490,14 +487,16 @@ async function reconciliationForFieldStockMovement(
   if (
     input.movementType === "stock_count_correction" &&
     input.source !== "approved_count" &&
-    input.source !== "platform_approved_count"
+    input.source !== "platform_approved_count" &&
+    input.source !== "local_maintenance"
   ) {
     return fieldStockReconciliation(input.slotId, "weak_attribution");
   }
   if (
     input.movementType === "planned_refill" &&
     input.source !== "field_service" &&
-    input.source !== "platform_planned_refill"
+    input.source !== "platform_planned_refill" &&
+    input.source !== "local_maintenance"
   ) {
     return fieldStockReconciliation(input.slotId, "weak_attribution");
   }

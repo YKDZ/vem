@@ -42,7 +42,7 @@ export const createMachineOrderSchema = z
     items: z.array(machineOrderItemSchema).min(1).max(10),
     paymentMethod: paymentMethodSchema,
     paymentProviderCode: machinePaymentProviderCodeSchema.optional(),
-    profileSnapshot: z.record(z.string(), z.unknown()).optional(),
+    profileSnapshot: z.record(z.string(), z.unknown()).nullable().optional(),
   })
   .superRefine((value, ctx) => {
     if (value.paymentMethod === "mock") {

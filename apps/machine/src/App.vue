@@ -1,5 +1,15 @@
 <script setup lang="ts">
-import { RouterView } from "vue-router";
+import { onMounted } from "vue";
+import { RouterView, useRoute, useRouter } from "vue-router";
+
+const route = useRoute();
+const router = useRouter();
+
+onMounted(async () => {
+  if (route.name !== "boot") {
+    await router.replace({ name: "boot" });
+  }
+});
 </script>
 
 <template>

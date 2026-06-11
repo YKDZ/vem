@@ -47,6 +47,10 @@ impl HardwareSupervisor {
         self.adapter.dispense(command).await
     }
 
+    pub fn schedule_next_dispense_fault_injection(&self) -> Result<(), String> {
+        self.adapter.schedule_next_dispense_fault_injection()
+    }
+
     pub async fn query_environment_sample(&self) -> Result<Option<EnvironmentSample>, String> {
         self.adapter.query_environment_sample().await
     }

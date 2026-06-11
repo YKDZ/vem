@@ -62,7 +62,7 @@ pub async fn run_console_with_token(
     let state = LocalStateStore::open(&data_dir.join("state.db"))
         .await
         .map_err(|error| error.to_string())?;
-    let secret_store = secret::default_secret_store();
+    let secret_store = secret::default_secret_store(data_dir.clone());
     let config_store = std::sync::Arc::new(ConfigStore::new(
         data_dir.clone(),
         state.clone(),
@@ -123,6 +123,7 @@ pub async fn run_console_with_token(
         token: ipc_token.clone(),
         config_store: config_store.clone(),
         state: state.clone(),
+        hardware: hardware.clone(),
         events: events_tx.clone(),
         runtime_tx: tx_raw.clone(),
         disk_pressure_probe: Arc::new(crate::health::DataDirDiskPressureProbe::default()),
@@ -168,18 +169,43 @@ pub async fn run_console_with_token(
 
     let vision = VisionSupervisor::new(runtime_config.public.clone());
     let vision_events = events_tx.clone();
+    let vision_stop = stop_token.clone();
     tokio::spawn(async move {
-        let snapshot = match vision.start().await {
-            Ok(snapshot) => snapshot,
-            Err(error) => crate::vision::VisionRuntimeSnapshot::failed(error),
-        };
-        let _ = vision_events.send(DaemonEvent::VisionChanged {
-            event_id: uuid::Uuid::new_v4().simple().to_string(),
-            updated_at: crate::state::store::now_iso(),
-            enabled: snapshot.enabled,
-            online: snapshot.online,
-            message: snapshot.message,
-        });
+        // 视觉服务由任务计划程序在用户登录后才启动，daemon 作为系统服务先行启动，
+        // 所以需要带退避重试，直到视觉服务就绪或 daemon 停止。
+        let mut backoff_ms = 2_000_u64;
+        loop {
+            let snapshot = match vision.start().await {
+                Ok(snapshot) if snapshot.online || !snapshot.enabled => {
+                    // 成功或已禁用，发布状态后退出循环
+                    let _ = vision_events.send(DaemonEvent::VisionChanged {
+                        event_id: uuid::Uuid::new_v4().simple().to_string(),
+                        updated_at: crate::state::store::now_iso(),
+                        enabled: snapshot.enabled,
+                        online: snapshot.online,
+                        message: snapshot.message,
+                    });
+                    return;
+                }
+                Ok(snapshot) => snapshot,
+                Err(error) => crate::vision::VisionRuntimeSnapshot::failed(error),
+            };
+            // 发布当前（离线）状态
+            let _ = vision_events.send(DaemonEvent::VisionChanged {
+                event_id: uuid::Uuid::new_v4().simple().to_string(),
+                updated_at: crate::state::store::now_iso(),
+                enabled: snapshot.enabled,
+                online: snapshot.online,
+                message: snapshot.message,
+            });
+            // 退避等待，最长 30 秒
+            tokio::select! {
+                _ = vision_stop.cancelled() => return,
+                _ = tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)) => {
+                    backoff_ms = (backoff_ms * 2).min(30_000);
+                }
+            }
+        }
     });
 
     let mut tasks = vec![
@@ -377,7 +403,14 @@ async fn cache_daemon_events(
     status_cache: ipc::RuntimeStatusCache,
     runtime_shutdown: Option<CancellationToken>,
 ) -> Result<(), String> {
-    while let Ok(event) = events.recv().await {
+    loop {
+        let event = match events.recv().await {
+            Ok(event) => event,
+            Err(broadcast::error::RecvError::Lagged(_missed)) => {
+                continue;
+            }
+            Err(broadcast::error::RecvError::Closed) => break,
+        };
         let updated_at = crate::state::store::now_iso();
         match event {
             DaemonEvent::MqttChanged {
@@ -495,6 +528,59 @@ mod tests {
         )
         .await
         .expect("runtime shutdown requested");
+
+        task.abort();
+        let _ = task.await;
+    }
+
+    #[tokio::test]
+    async fn cache_daemon_events_survives_lagged_broadcast_events() {
+        let temp = tempfile::tempdir().expect("temp");
+        let state = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("state");
+        let status_cache = ipc::RuntimeStatusCache::new(&default_public_config(), state).await;
+        let (events_tx, events_rx) = broadcast::channel(1);
+
+        events_tx
+            .send(DaemonEvent::MqttChanged {
+                event_id: "evt-missed".to_string(),
+                updated_at: crate::state::store::now_iso(),
+                connected: true,
+                last_error: None,
+            })
+            .expect("send missed event");
+        events_tx
+            .send(DaemonEvent::ScannerHealthChanged {
+                event_id: "evt-scanner-ready".to_string(),
+                updated_at: crate::state::store::now_iso(),
+                snapshot: vending_core::scanner::ScannerHealthSnapshot {
+                    online: true,
+                    adapter: vending_core::scanner::PAYMENT_CODE_SOURCE_SERIAL_TEXT.to_string(),
+                    port: Some("COM3".to_string()),
+                    level: vending_core::health::HealthLevel::Ok,
+                    code: "SCANNER_READY".to_string(),
+                    message: "scanner ready".to_string(),
+                    updated_at: crate::state::store::now_iso(),
+                },
+            })
+            .expect("send scanner event");
+
+        let task = tokio::spawn(cache_daemon_events(events_rx, status_cache.clone(), None));
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                let scanner = status_cache.scanner.read().await.clone();
+                if scanner.code == "SCANNER_READY" {
+                    assert!(scanner.online);
+                    assert_eq!(scanner.port.as_deref(), Some("COM3"));
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("scanner cache updated after lag");
 
         task.abort();
         let _ = task.await;

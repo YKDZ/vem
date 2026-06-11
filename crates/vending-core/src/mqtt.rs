@@ -22,13 +22,15 @@ pub struct MqttEnvelope {
 fn canonical_json_value(value: &Value) -> String {
     match value {
         Value::Object(map) => {
-            let pairs: Vec<String> = map
-                .iter()
-                .map(|(k, v)| {
+            let mut keys: Vec<&String> = map.keys().collect();
+            keys.sort();
+            let pairs: Vec<String> = keys
+                .into_iter()
+                .map(|k| {
                     format!(
                         "{}:{}",
                         serde_json::to_string(k).unwrap_or_default(),
-                        canonical_json_value(v)
+                        canonical_json_value(&map[k])
                     )
                 })
                 .collect();
@@ -38,7 +40,7 @@ fn canonical_json_value(value: &Value) -> String {
             let inner: Vec<String> = items.iter().map(canonical_json_value).collect();
             format!("[{}]", inner.join(","))
         }
-        Value::String(s) => format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\"")),
+        Value::String(s) => serde_json::to_string(s).unwrap_or_default(),
         other => other.to_string(),
     }
 }
@@ -146,6 +148,23 @@ mod tests {
     fn canonical_json_sorting_matches_expected() {
         let value = json!({ "b": 1, "a": 2 });
         assert_eq!(canonical_json(&value), r#"{"a":2,"b":1}"#);
+    }
+
+    #[test]
+    fn canonical_json_sorts_nested_objects() {
+        let value = json!({
+            "payload": {
+                "reportedAt": "2026-06-09T10:18:33.166Z",
+                "commandNo": "MCMD1",
+                "success": false,
+                "message": "line\nbreak",
+            },
+            "machineCode": "M001",
+        });
+        assert_eq!(
+            canonical_json(&value),
+            r#"{"machineCode":"M001","payload":{"commandNo":"MCMD1","message":"line\nbreak","reportedAt":"2026-06-09T10:18:33.166Z","success":false}}"#
+        );
     }
 
     #[test]

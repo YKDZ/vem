@@ -2,6 +2,7 @@ use tokio::sync::{broadcast, mpsc};
 use tokio_serial::SerialPortBuilderExt;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
+use vending_core::serial::SerialPortUsbIdentity;
 
 use crate::config::{MachinePublicConfig, ScannerAdapterKind};
 use crate::events::DaemonEvent;
@@ -9,6 +10,7 @@ use crate::events::DaemonEvent;
 #[derive(Debug, Clone)]
 pub struct ScannerRuntimeConfig {
     pub port_path: Option<String>,
+    pub usb_identity: Option<SerialPortUsbIdentity>,
     pub baud_rate: u32,
     pub source: String,
     pub frame_suffix: vending_core::scanner::ScannerFrameSuffix,
@@ -41,9 +43,15 @@ impl ScannerRuntime {
             ScannerAdapterKind::Disabled => None,
         };
 
+        let usb_identity = match config.scanner_adapter {
+            ScannerAdapterKind::SerialText => config.scanner_usb_identity.clone(),
+            ScannerAdapterKind::Disabled => None,
+        };
+
         Self {
             config: ScannerRuntimeConfig {
                 port_path,
+                usb_identity,
                 baud_rate: config.scanner_baud_rate,
                 source,
                 frame_suffix: config.scanner_frame_suffix,
@@ -66,43 +74,65 @@ impl ScannerRuntime {
             return Ok(());
         }
 
-        let Some(port_path) = self.config.port_path.clone() else {
-            self.emit_health(self.health_snapshot(
-                false,
-                vending_core::health::HealthLevel::Offline,
-                "SCANNER_PORT_MISSING",
-                "scanner serial port is not configured",
-            ));
-            self.shutdown.cancelled().await;
-            return Ok(());
-        };
-
         let mut backoff_ms = 500_u64;
         loop {
-            self.emit_health(self.health_snapshot(
-                false,
-                vending_core::health::HealthLevel::Degraded,
-                "SCANNER_OPENING",
-                format!("opening scanner serial port {port_path}"),
-            ));
+            // 优先通过 USB identity 动态解析当前 COM 口，避免重启后端口号变化
+            let resolved_port = if let Some(identity) = &self.config.usb_identity {
+                match vending_core::serial::find_port_path_by_usb_identity(identity) {
+                    Some(p) => Some(p),
+                    None => {
+                        self.emit_health(self.health_snapshot(
+                            false,
+                            vending_core::health::HealthLevel::Offline,
+                            "SCANNER_USB_NOT_FOUND",
+                            format!(
+                                "scanner USB device not found (VID={} PID={}), will retry",
+                                identity.vendor_id, identity.product_id
+                            ),
+                        ));
+                        tokio::select! {
+                            _ = self.shutdown.cancelled() => return Ok(()),
+                            _ = tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)) => {
+                                backoff_ms = (backoff_ms * 2).min(10_000);
+                            }
+                        }
+                        continue;
+                    }
+                }
+            } else {
+                self.config.port_path.clone()
+            };
+
+            let Some(port_path) = resolved_port else {
+                self.emit_health(self.health_snapshot(
+                    false,
+                    vending_core::health::HealthLevel::Offline,
+                    "SCANNER_PORT_MISSING",
+                    "scanner serial port is not configured",
+                ));
+                self.shutdown.cancelled().await;
+                return Ok(());
+            };
 
             match tokio_serial::new(&port_path, self.config.baud_rate).open_native_async() {
                 Ok(port) => {
                     backoff_ms = 500;
-                    self.emit_health(self.health_snapshot(
+                    self.emit_health(self.health_snapshot_with_port(
                         true,
                         vending_core::health::HealthLevel::Ok,
                         "SCANNER_READY",
                         "scanner ready",
+                        &port_path,
                     ));
                     self.read_loop(port).await?;
                 }
                 Err(error) => {
-                    self.emit_health(self.health_snapshot(
+                    self.emit_health(self.health_snapshot_with_port(
                         false,
                         vending_core::health::HealthLevel::Offline,
                         "SCANNER_OPEN_FAILED",
                         format!("open scanner serial failed: {error}"),
+                        &port_path,
                     ));
                 }
             }
@@ -123,10 +153,26 @@ impl ScannerRuntime {
         code: &str,
         message: impl Into<String>,
     ) -> vending_core::scanner::ScannerHealthSnapshot {
+        self.health_snapshot_with_port(online, level, code, message, "")
+    }
+
+    fn health_snapshot_with_port(
+        &self,
+        online: bool,
+        level: vending_core::health::HealthLevel,
+        code: &str,
+        message: impl Into<String>,
+        port: &str,
+    ) -> vending_core::scanner::ScannerHealthSnapshot {
+        let resolved_port = if port.is_empty() {
+            self.config.port_path.clone()
+        } else {
+            Some(port.to_string())
+        };
         vending_core::scanner::ScannerHealthSnapshot {
             online,
             adapter: self.config.source.clone(),
-            port: self.config.port_path.clone(),
+            port: resolved_port,
             level,
             code: code.to_string(),
             message: message.into(),
