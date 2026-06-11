@@ -2188,6 +2188,25 @@ async fn run_hardware_self_check(
         }
     }
 
+    if let Some(error_code) =
+        crate::state::store::classify_whole_machine_hardware_status_fault(&status)
+    {
+        if let Err(error) = ctx
+            .state
+            .record_whole_machine_hardware_fault_lock(
+                "hardware_self_check",
+                &status.message,
+                Some(error_code),
+            )
+            .await
+        {
+            return Err(store_error_response(
+                "whole_machine_lock_record_failed",
+                error,
+            ));
+        }
+    }
+
     *ctx.ui.status_cache.hardware.write().await = status.clone();
     Ok((status, config_updated))
 }

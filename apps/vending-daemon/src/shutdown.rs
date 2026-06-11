@@ -160,6 +160,7 @@ pub async fn run_console_with_token(
     }));
     let hardware_health = tokio::spawn(run_hardware_health_watcher(
         hardware.clone(),
+        state.clone(),
         ipc_ctx.ui.status_cache.clone(),
         stop_token.clone(),
     ));
@@ -384,11 +385,26 @@ async fn write_ready_file(path: &Path, bind: SocketAddr, token: &str) -> Result<
 
 async fn run_hardware_health_watcher(
     hardware: HardwareSupervisor,
+    state: LocalStateStore,
     status_cache: ipc::RuntimeStatusCache,
     shutdown: CancellationToken,
 ) -> Result<(), String> {
     loop {
         let status = hardware.self_check().await;
+        if let Some(error_code) =
+            crate::state::store::classify_whole_machine_hardware_status_fault(&status)
+        {
+            if let Err(error) = state
+                .record_whole_machine_hardware_fault_lock(
+                    "hardware_health_watcher",
+                    &status.message,
+                    Some(error_code),
+                )
+                .await
+            {
+                eprintln!("record whole-machine hardware fault lock failed: {error}");
+            }
+        }
         *status_cache.hardware.write().await = status;
         tokio::select! {
             _ = time::sleep(std::time::Duration::from_secs(10)) => {}
@@ -481,7 +497,44 @@ async fn wait_for_local_signal() -> Result<(), String> {
 mod tests {
     use super::*;
     use crate::config::default_public_config;
+    use async_trait::async_trait;
     use std::net::{IpAddr, Ipv4Addr};
+
+    #[derive(Debug)]
+    struct FaultySelfCheckAdapter;
+
+    #[async_trait]
+    impl vending_core::hardware::HardwareAdapter for FaultySelfCheckAdapter {
+        fn adapter_name(&self) -> &str {
+            "faulty-self-check"
+        }
+
+        async fn self_check(&self) -> vending_core::hardware::HardwareStatus {
+            vending_core::hardware::HardwareStatus {
+                adapter: "serial".to_string(),
+                online: false,
+                message: "lower controller responded with fault on COM3 (mechanical fault)"
+                    .to_string(),
+                port_path: Some("COM3".to_string()),
+                resolution_source: Some("configured".to_string()),
+                bound_usb_identity: None,
+                candidates: vec![],
+            }
+        }
+
+        async fn dispense(
+            &self,
+            command: vending_core::hardware::DispenseCommandPayload,
+        ) -> vending_core::hardware::DispenseResultPayload {
+            vending_core::hardware::DispenseResultPayload {
+                command_no: command.command_no,
+                success: false,
+                error_code: Some("JAMMED".to_string()),
+                message: "faulty self-check adapter does not dispense".to_string(),
+                reported_at: crate::state::store::now_iso(),
+            }
+        }
+    }
 
     #[test]
     fn default_console_config_uses_loopback_and_port() {
@@ -584,5 +637,44 @@ mod tests {
 
         task.abort();
         let _ = task.await;
+    }
+
+    #[tokio::test]
+    async fn hardware_health_watcher_records_whole_machine_lock_for_controller_fault() {
+        let temp = tempfile::tempdir().expect("temp");
+        let state = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("state");
+        let status_cache =
+            ipc::RuntimeStatusCache::new(&default_public_config(), state.clone()).await;
+        let shutdown = CancellationToken::new();
+        let task = tokio::spawn(run_hardware_health_watcher(
+            HardwareSupervisor::from_adapter(Arc::new(FaultySelfCheckAdapter)),
+            state.clone(),
+            status_cache,
+            shutdown.clone(),
+        ));
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if let Some(lock) = state
+                    .whole_machine_maintenance_lock()
+                    .await
+                    .expect("read lock")
+                {
+                    assert_eq!(lock.code, "WHOLE_MACHINE_HARDWARE_FAULT");
+                    assert_eq!(lock.source, "hardware_health_watcher");
+                    assert_eq!(lock.error_code.as_deref(), Some("JAMMED"));
+                    assert!(lock.message.contains("mechanical fault"));
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("whole-machine lock recorded");
+
+        shutdown.cancel();
+        task.await.expect("watcher task").expect("watcher result");
     }
 }

@@ -13,7 +13,7 @@ use super::schema::{
     MIGRATION_V7, SCHEMA_VERSION,
 };
 use vending_core::hardware::{
-    DispenseCommandPayload, DispenseResultPayload, EnvironmentControlResultPayload,
+    DispenseCommandPayload, DispenseResultPayload, EnvironmentControlResultPayload, HardwareStatus,
 };
 
 const COMMAND_LOG_TTL_DAYS: i64 = 30;
@@ -580,6 +580,32 @@ impl LocalStateStore {
     pub async fn clear_whole_machine_maintenance_lock(&self) -> Result<(), StoreError> {
         self.delete_metadata(WHOLE_MACHINE_MAINTENANCE_LOCK_KEY)
             .await
+    }
+
+    pub async fn record_whole_machine_hardware_fault_lock(
+        &self,
+        source: &str,
+        message: &str,
+        error_code: Option<&str>,
+    ) -> Result<(), StoreError> {
+        self.put_metadata(
+            WHOLE_MACHINE_MAINTENANCE_LOCK_KEY,
+            &WholeMachineMaintenanceLock {
+                code: "WHOLE_MACHINE_HARDWARE_FAULT".to_string(),
+                message: if message.trim().is_empty() {
+                    "lower controller hardware fault requires operator reset".to_string()
+                } else {
+                    message.to_string()
+                },
+                source: source.to_string(),
+                order_no: String::new(),
+                command_no: String::new(),
+                slot_code: String::new(),
+                error_code: error_code.map(ToString::to_string),
+                created_at: now_iso(),
+            },
+        )
+        .await
     }
 
     pub async fn acquire_runtime_lock(&self, owner_pid: u32) -> Result<(), StoreError> {
@@ -2292,6 +2318,20 @@ fn is_whole_machine_dispense_failure(error_code: Option<&str>, message: Option<&
                 || message.contains("heartbeat missing")
                 || message.contains("timed out before completion")
         }
+    }
+}
+
+pub fn classify_whole_machine_hardware_status_fault(
+    status: &HardwareStatus,
+) -> Option<&'static str> {
+    if status.online {
+        return None;
+    }
+    let message = status.message.to_ascii_lowercase();
+    if message.contains("mechanical fault") || message.contains("pickup platform blocked") {
+        Some("JAMMED")
+    } else {
+        None
     }
 }
 
