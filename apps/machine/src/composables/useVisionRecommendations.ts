@@ -5,7 +5,10 @@ import { computed, readonly, ref, onUnmounted, watch } from "vue";
 
 import type { ScoredItem } from "@/types/catalog";
 
-import { subscribeVisionProfiles } from "@/native/vision";
+import {
+  subscribeVisionProfiles,
+  type VisionProfileResultPayload,
+} from "@/native/vision";
 import { computeRecommendations } from "@/recommendation/engine";
 import { useCatalogStore } from "@/stores/catalog";
 import { useMachineStore } from "@/stores/machine";
@@ -15,22 +18,39 @@ const PROFILE_EXPIRE_MS = 60_000;
 export function useVisionRecommendations(): {
   recommendedItems: Readonly<Ref<readonly ScoredItem[]>>;
   currentProfile: Readonly<Ref<VisionProfile | null>>;
+  lastVisionResult: Readonly<Ref<VisionProfileResultPayload | null>>;
 } {
   const machineStore = useMachineStore();
   const catalogStore = useCatalogStore();
 
   const currentProfile = ref<VisionProfile | null>(null);
+  const lastVisionResult = ref<VisionProfileResultPayload | null>(null);
   const recommendedItems = ref<readonly ScoredItem[]>([]);
   const availableItems = computed(() => catalogStore.availableItems);
   let expireTimer: ReturnType<typeof setTimeout> | null = null;
 
   function clearState(): void {
     currentProfile.value = null;
+    lastVisionResult.value = null;
     recommendedItems.value = [];
     if (expireTimer !== null) {
       clearTimeout(expireTimer);
       expireTimer = null;
     }
+  }
+
+  function clearRecommendations(): void {
+    currentProfile.value = null;
+    recommendedItems.value = [];
+  }
+
+  function restartExpireTimer(): void {
+    if (expireTimer !== null) {
+      clearTimeout(expireTimer);
+    }
+    expireTimer = setTimeout(() => {
+      clearState();
+    }, PROFILE_EXPIRE_MS);
   }
 
   function recomputeRecommendations(): void {
@@ -45,26 +65,22 @@ export function useVisionRecommendations(): {
     );
   }
 
-  function handleProfile(payload: { profile: VisionProfile }): void {
+  function handleProfile(payload: VisionProfileResultPayload): void {
     const profile = payload.profile;
+    lastVisionResult.value = payload;
+    restartExpireTimer();
 
     if (!profile.personPresent) {
-      clearState();
+      clearRecommendations();
       return;
     }
 
     if (profile.confidence !== undefined && profile.confidence < 0.5) {
+      clearRecommendations();
       return;
     }
 
     currentProfile.value = profile;
-
-    if (expireTimer !== null) {
-      clearTimeout(expireTimer);
-    }
-    expireTimer = setTimeout(() => {
-      clearState();
-    }, PROFILE_EXPIRE_MS);
 
     recomputeRecommendations();
   }
@@ -76,6 +92,7 @@ export function useVisionRecommendations(): {
     return {
       recommendedItems: readonly(recommendedItems),
       currentProfile: readonly(currentProfile),
+      lastVisionResult,
     };
   }
 
@@ -100,5 +117,6 @@ export function useVisionRecommendations(): {
   return {
     recommendedItems: readonly(recommendedItems),
     currentProfile: readonly(currentProfile),
+    lastVisionResult,
   };
 }

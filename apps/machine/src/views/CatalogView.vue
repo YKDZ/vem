@@ -19,12 +19,62 @@ const catalogStore = useCatalogStore();
 const checkoutStore = useCheckoutStore();
 const visionStore = useVisionStore();
 const mqttStore = useMqttStore();
-const { recommendedItems } = useVisionRecommendations();
+const { recommendedItems, lastVisionResult } = useVisionRecommendations();
 
 const canDisplayAsSaleReady = computed(
   () => connectivityStore.isSaleNetworkReady,
 );
 const displayItems = computed(() => catalogStore.availableItems);
+const hasRecommendationPanel = computed(
+  () => recommendedItems.value.length > 0 || lastVisionResult.value !== null,
+);
+const visionRecognitionRows = computed(() => {
+  const result = lastVisionResult.value;
+  if (!result) return [];
+  const profile = result.profile;
+  return [
+    { label: "事件", value: result.eventId },
+    { label: "时间", value: result.detectedAt },
+    { label: "质量", value: result.quality.overall },
+    {
+      label: "置信度",
+      value:
+        typeof profile.confidence === "number"
+          ? `${Math.round(profile.confidence * 100)}%`
+          : "未返回",
+    },
+    {
+      label: "有人",
+      value: profile.personPresent ? "是" : "否",
+    },
+    {
+      label: "身高",
+      value:
+        typeof profile.heightCm === "number"
+          ? `${profile.heightCm} cm`
+          : "未返回",
+    },
+    {
+      label: "肩宽",
+      value:
+        typeof profile.shoulderWidthCm === "number"
+          ? `${profile.shoulderWidthCm} cm`
+          : "未返回",
+    },
+    { label: "年龄", value: profile.ageRange ?? "未返回" },
+    { label: "性别", value: profile.gender ?? "未返回" },
+    { label: "体型", value: profile.bodyType ?? "未返回" },
+    { label: "上衣颜色", value: profile.upperColor ?? "未返回" },
+  ];
+});
+const visionProfileJson = computed(() =>
+  lastVisionResult.value
+    ? JSON.stringify(lastVisionResult.value.profile, null, 2)
+    : "",
+);
+const visionQualityWarnings = computed(
+  () => lastVisionResult.value?.quality.warnings ?? [],
+);
 const degradedStatusMessages = computed(() => {
   const messages: string[] = [];
   if (mqttStore.outboxSize > 0) {
@@ -99,12 +149,46 @@ onMounted(async () => {
         视觉状态：{{ visionStore.message }}
       </p>
 
-      <div v-if="recommendedItems.length > 0" class="mt-5 shrink-0">
+      <div v-if="hasRecommendationPanel" class="mt-5 shrink-0">
         <p class="text-sm tracking-[0.35em] text-amber-200 uppercase">
           FOR YOU
         </p>
         <h3 class="text-2xl font-bold text-white">为你推荐</h3>
+
+        <section
+          v-if="lastVisionResult"
+          class="mt-3 rounded-2xl border border-fuchsia-300/20 bg-slate-950/45 p-4 text-sm text-slate-100"
+        >
+          <div class="flex items-center justify-between gap-3">
+            <p class="font-bold text-fuchsia-100">视觉识别结果</p>
+            <p class="text-xs text-slate-400">
+              {{ lastVisionResult.detectedAt }}
+            </p>
+          </div>
+          <div class="mt-3 grid grid-cols-2 gap-2">
+            <div
+              v-for="row in visionRecognitionRows"
+              :key="row.label"
+              class="min-w-0 rounded-lg bg-white/5 px-3 py-2"
+            >
+              <p class="text-xs text-slate-400">{{ row.label }}</p>
+              <p class="truncate font-semibold text-white">{{ row.value }}</p>
+            </div>
+          </div>
+          <p
+            v-if="visionQualityWarnings.length > 0"
+            class="mt-3 rounded-lg bg-amber-400/15 px-3 py-2 text-amber-100"
+          >
+            {{ visionQualityWarnings.join(" / ") }}
+          </p>
+          <pre
+            class="mt-3 max-h-32 overflow-auto rounded-lg bg-black/30 p-3 text-xs leading-relaxed text-slate-200"
+            >{{ visionProfileJson }}</pre
+          >
+        </section>
+
         <div
+          v-if="recommendedItems.length > 0"
           class="kiosk-scroll mt-3 flex touch-pan-x gap-4 overflow-x-auto pb-4"
         >
           <div
@@ -124,6 +208,12 @@ onMounted(async () => {
             </p>
           </div>
         </div>
+        <p
+          v-else
+          class="mt-3 rounded-2xl bg-white/10 p-4 text-sm text-slate-200"
+        >
+          暂无推荐商品
+        </p>
       </div>
 
       <p

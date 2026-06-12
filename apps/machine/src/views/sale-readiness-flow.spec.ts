@@ -15,6 +15,7 @@ const {
   getSaleReadinessMock,
   getCurrentTransactionMock,
   getPaymentOptionsMock,
+  subscribeVisionProfilesMock,
 } = vi.hoisted(() => ({
   routerPushMock: vi.fn(),
   routerBackMock: vi.fn(),
@@ -27,6 +28,7 @@ const {
   getSaleReadinessMock: vi.fn(),
   getCurrentTransactionMock: vi.fn(),
   getPaymentOptionsMock: vi.fn(),
+  subscribeVisionProfilesMock: vi.fn(),
 }));
 
 vi.mock("vue-router", () => ({
@@ -52,6 +54,11 @@ vi.mock("@/daemon/client", () => ({
   },
 }));
 
+vi.mock("@/native/vision", () => ({
+  subscribeVisionProfiles: subscribeVisionProfilesMock,
+}));
+
+import type { VisionProfileSubscriptionHandlers } from "@/native/vision";
 import type { MachineCatalogItem } from "@/types/catalog";
 
 import { useCatalogStore } from "@/stores/catalog";
@@ -64,11 +71,19 @@ import CheckoutView from "./CheckoutView.vue";
 
 let mountedApp: App<Element> | null = null;
 let pinia: ReturnType<typeof createPinia>;
+let latestVisionHandlers: VisionProfileSubscriptionHandlers | null = null;
 
 beforeEach(() => {
   pinia = createPinia();
   setActivePinia(pinia);
   vi.clearAllMocks();
+  latestVisionHandlers = null;
+  subscribeVisionProfilesMock.mockImplementation(
+    (_config: unknown, handlers: VisionProfileSubscriptionHandlers) => {
+      latestVisionHandlers = handlers;
+      return { close: vi.fn() };
+    },
+  );
   initializeMock.mockResolvedValue(undefined);
   subscribeEventsMock.mockReturnValue({ close: vi.fn() });
   getCurrentTransactionMock.mockResolvedValue({
@@ -492,6 +507,50 @@ describe("sale readiness UI flow", () => {
       name: "product-detail",
       params: { inventoryId: item.inventoryId },
     });
+  });
+
+  it("shows the latest vision recognition result in the recommendation area", async () => {
+    const item = makeCatalogItem();
+    useCatalogStore().applySnapshot({
+      items: [{ ...item, size: "M", targetGender: "male" }],
+      source: "local_stock",
+      planogramVersion: "PLAN-1",
+      lastUpdatedAt: "2026-06-04T00:00:00Z",
+    });
+
+    const host = await mountView(CatalogView);
+
+    expect(latestVisionHandlers).toBeTruthy();
+    await Promise.resolve(
+      latestVisionHandlers?.onProfile({
+        eventId: "vision-event-001",
+        detectedAt: "2026-06-12T10:20:30.000Z",
+        profile: {
+          personPresent: true,
+          heightCm: 172,
+          shoulderWidthCm: 43,
+          ageRange: "25-34",
+          gender: "male",
+          bodyType: "regular",
+          upperColor: "blue",
+          confidence: 0.91,
+        },
+        quality: {
+          overall: "good",
+          warnings: ["light glare"],
+        },
+      }),
+    );
+    await nextTick();
+
+    expect(host.textContent).toContain("视觉识别结果");
+    expect(host.textContent).toContain("vision-event-001");
+    expect(host.textContent).toContain("172 cm");
+    expect(host.textContent).toContain("91%");
+    expect(host.textContent).toContain("light glare");
+    expect(host.textContent).toContain('"heightCm": 172');
+    expect(host.textContent).toContain("矿泉水");
+    expect(host.textContent).toContain("尺码正好");
   });
 
   it("keeps checkout visible but disables order creation when readiness is blocked", async () => {
