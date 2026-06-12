@@ -4,15 +4,19 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const {
   getPaymentOptionsMock,
   createOrderMock,
+  cancelOrderMock,
   getCurrentTransactionMock,
   submitDevPaymentCodeMock,
   markMockPaymentMock,
+  getSaleViewMock,
 } = vi.hoisted(() => ({
   getPaymentOptionsMock: vi.fn(),
   createOrderMock: vi.fn(),
+  cancelOrderMock: vi.fn(),
   getCurrentTransactionMock: vi.fn(),
   submitDevPaymentCodeMock: vi.fn(),
   markMockPaymentMock: vi.fn(),
+  getSaleViewMock: vi.fn(),
 }));
 
 vi.mock("@/daemon/client", () => ({
@@ -20,9 +24,11 @@ vi.mock("@/daemon/client", () => ({
     currentConnection: { mock: true },
     getPaymentOptions: getPaymentOptionsMock,
     createOrder: createOrderMock,
+    cancelOrder: cancelOrderMock,
     getCurrentTransaction: getCurrentTransactionMock,
     submitDevPaymentCode: submitDevPaymentCodeMock,
     markMockPayment: markMockPaymentMock,
+    getSaleView: getSaleViewMock,
   },
 }));
 
@@ -780,6 +786,33 @@ describe("checkout store", () => {
     await store.refreshCurrentTransaction();
 
     expect(store.flowStep).toBe("dispensing");
+  });
+
+  it("cancels the current order through daemon and refreshes sale view", async () => {
+    cancelOrderMock.mockResolvedValue(
+      makeTransactionSnapshot({
+        paymentStatus: "canceled",
+        orderStatus: "canceled",
+        nextAction: "closed",
+      }),
+    );
+    getSaleViewMock.mockResolvedValue({
+      items: [makeCatalogItem({ saleableStock: 1 })],
+      source: "local_stock",
+      planogramVersion: "PLAN-1",
+      lastUpdatedAt: "2026-06-04T00:00:00Z",
+    });
+
+    const store = useCheckoutStore();
+    store.applyTransaction(makeTransactionSnapshot());
+    const snapshot = await store.cancelCurrentOrder();
+
+    expect(snapshot?.nextAction).toBe("closed");
+    expect(cancelOrderMock).toHaveBeenCalledWith("ORD-001");
+    expect(getSaleViewMock).toHaveBeenCalledOnce();
+    expect(store.currentOrder).toBeNull();
+    expect(store.status).toBeNull();
+    expect(store.flowStep).toBe("idle");
   });
 
   it("ignores a dismissed terminal current transaction", async () => {

@@ -828,6 +828,69 @@ describe("MachinesService planogram lifecycle", () => {
     expect(tx.update).not.toHaveBeenCalled();
   });
 
+  it("returns all active planogram slots in the machine stock snapshot", async () => {
+    mockDb.select.mockReturnValueOnce({
+      from: () => ({
+        innerJoin: () => ({
+          innerJoin: () => ({
+            innerJoin: () => ({
+              where: () => ({
+                orderBy: async () => [
+                  {
+                    machineCode: "M001",
+                    planogramVersion: "PLAN-1",
+                    slotId: "slot-1",
+                    slotCode: "A1",
+                    inventoryId: "inv-1",
+                    capacity: 10,
+                    onHandQty: 10,
+                    reservedQty: 0,
+                    availableQty: 10,
+                  },
+                  {
+                    machineCode: "M001",
+                    planogramVersion: "PLAN-1",
+                    slotId: "slot-2",
+                    slotCode: "A2",
+                    inventoryId: "inv-2",
+                    capacity: 10,
+                    onHandQty: 0,
+                    reservedQty: 0,
+                    availableQty: 0,
+                  },
+                ],
+              }),
+            }),
+          }),
+        }),
+      }),
+    });
+
+    const result = await service.getStockSnapshotByMachineCode("M001");
+
+    expect(result).toMatchObject({
+      machineCode: "M001",
+      planogramVersion: "PLAN-1",
+      slots: [
+        {
+          slotId: "slot-1",
+          slotCode: "A1",
+          inventoryId: "inv-1",
+          onHandQty: 10,
+          availableQty: 10,
+        },
+        {
+          slotId: "slot-2",
+          slotCode: "A2",
+          inventoryId: "inv-2",
+          onHandQty: 0,
+          availableQty: 0,
+        },
+      ],
+      serverTime: expect.any(String),
+    });
+  });
+
   it("rejects ack for a machine planogram version that is not published or active", async () => {
     const machine = {
       id: "550e8400-e29b-41d4-a716-446655440000",

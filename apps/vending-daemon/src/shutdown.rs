@@ -19,11 +19,14 @@ use crate::{
     runtime::{DaemonRuntime, RuntimeStartInput},
     scanner::ScannerRuntime,
     secret,
+    state::store::{MachinePlanogramInput, MachinePlanogramSlotInput},
     state::LocalStateStore,
     stock_upload::StockMovementUploadRuntime,
-    transaction::TransactionStateMachine,
+    transaction::{is_active_transaction, TransactionStateMachine},
     vision::VisionSupervisor,
 };
+
+const PLATFORM_STOCK_SYNC_INTERVAL: std::time::Duration = std::time::Duration::from_secs(15);
 
 #[derive(Debug, Clone)]
 pub struct ConsoleRunConfig {
@@ -167,6 +170,12 @@ pub async fn run_console_with_token(
     let stock_upload = tokio::spawn(
         StockMovementUploadRuntime::new(state.clone(), backend.clone(), stop_token.clone()).run(),
     );
+    let platform_stock_sync = tokio::spawn(run_platform_stock_sync_watcher(
+        state.clone(),
+        backend.clone(),
+        runtime_config.public.machine_code.clone(),
+        stop_token.clone(),
+    ));
 
     let vision = VisionSupervisor::new(runtime_config.public.clone());
     let vision_events = events_tx.clone();
@@ -215,6 +224,7 @@ pub async fn run_console_with_token(
         payment_watcher,
         hardware_health,
         stock_upload,
+        platform_stock_sync,
         ipc_task,
     ];
     if let Some(runtime_mqtt) = maybe_spawn_mqtt_task(
@@ -356,6 +366,80 @@ async fn run_payment_code_watcher(input: PaymentCodeWatcherInput) -> Result<(), 
             }
         }
     }
+}
+
+async fn run_platform_stock_sync_watcher(
+    state: LocalStateStore,
+    backend: Arc<BackendClient>,
+    machine_code: Option<String>,
+    shutdown: CancellationToken,
+) -> Result<(), String> {
+    let Some(machine_code) = machine_code else {
+        return Ok(());
+    };
+
+    loop {
+        if let Err(error) = sync_platform_planogram_and_stock(&state, &backend, &machine_code).await
+        {
+            eprintln!("platform stock sync failed: {error}");
+        }
+        tokio::select! {
+            _ = shutdown.cancelled() => return Ok(()),
+            _ = time::sleep(PLATFORM_STOCK_SYNC_INTERVAL) => {}
+        }
+    }
+}
+
+async fn sync_platform_planogram_and_stock(
+    state: &LocalStateStore,
+    backend: &BackendClient,
+    machine_code: &str,
+) -> Result<(), String> {
+    if let Some(current) = state
+        .current_transaction_snapshot()
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        if is_active_transaction(&current) {
+            return Ok(());
+        }
+    }
+
+    let published = backend.get_published_planogram(machine_code).await?;
+    if !published.is_null() {
+        let planogram_version = published
+            .get("planogramVersion")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| "published planogram response missing planogramVersion".to_string())?
+            .to_string();
+        let slots = published
+            .get("slots")
+            .cloned()
+            .ok_or_else(|| "published planogram response missing slots".to_string())
+            .and_then(|value| {
+                serde_json::from_value::<Vec<MachinePlanogramSlotInput>>(value)
+                    .map_err(|error| error.to_string())
+            })?;
+        state
+            .apply_planogram(MachinePlanogramInput {
+                planogram_version: planogram_version.clone(),
+                source: "platform_stock_sync".to_string(),
+                applied_by: None,
+                slots,
+            })
+            .await
+            .map_err(|error| error.to_string())?;
+        backend
+            .acknowledge_planogram(machine_code, &planogram_version)
+            .await?;
+    }
+
+    let snapshot = backend.get_stock_snapshot(machine_code).await?;
+    state
+        .apply_platform_stock_snapshot(&snapshot)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(())
 }
 
 async fn write_ready_file(path: &Path, bind: SocketAddr, token: &str) -> Result<(), String> {

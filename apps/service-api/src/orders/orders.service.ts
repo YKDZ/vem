@@ -13,6 +13,7 @@ import {
   inArray,
   inventories,
   inventoryMovements,
+  inventoryReservations,
   isNull,
   machinePlanogramSlots,
   machinePlanogramVersions,
@@ -77,6 +78,11 @@ function readQrExpiresMinutes(
     value <= 60
     ? value
     : 15;
+}
+
+function isTradeNotFoundError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /ACQ\.TRADE_NOT_EXIST|trade not exist|交易不存在/i.test(message);
 }
 
 function assertMachineOrderLineContextMatchesInventory(
@@ -160,6 +166,23 @@ type MachineOrderStatusRow = {
   paidAt: Date | null;
   failedReason: string | null;
   paymentProviderCode: string;
+};
+
+type CancelableMachineOrderRow = {
+  orderId: string;
+  orderNo: string;
+  machineId: string;
+  orderStatus: OrderStatus;
+  paymentState: OrderPaymentState;
+  fulfillmentState: OrderFulfillmentState;
+  paymentId: string;
+  paymentNo: string;
+  paymentMethod: "mock" | "qr_code" | "payment_code" | "face_pay";
+  paymentStatus: PaymentStatus;
+  providerId: string;
+  providerCode: string;
+  providerTradeNo: string | null;
+  providerConfigId: string | null;
 };
 
 @Injectable()
@@ -700,6 +723,235 @@ export class OrdersService {
     return row?.id ?? "unknown";
   }
 
+  private async releaseActiveReservationsForOrder(
+    tx: DrizzleTransaction,
+    input: { orderId: string; reason: "canceled" },
+  ): Promise<void> {
+    const reservations = await tx
+      .select({
+        inventoryId: inventoryReservations.inventoryId,
+        quantity: inventoryReservations.quantity,
+      })
+      .from(inventoryReservations)
+      .where(
+        and(
+          eq(inventoryReservations.orderId, input.orderId),
+          eq(inventoryReservations.status, "active"),
+        ),
+      );
+
+    await reservations.reduce<Promise<void>>(async (previous, reservation) => {
+      await previous;
+      await this.inventoryService.releaseReservation(tx, {
+        orderId: input.orderId,
+        inventoryId: reservation.inventoryId,
+        quantity: reservation.quantity,
+        reason: input.reason,
+      });
+    }, Promise.resolve());
+  }
+
+  private async findCancelableMachineOrderRow(
+    orderNo: string,
+    machineCode: string,
+  ): Promise<CancelableMachineOrderRow | null> {
+    const [row] = await this.db
+      .select({
+        orderId: orders.id,
+        orderNo: orders.orderNo,
+        machineId: orders.machineId,
+        orderStatus: orders.status,
+        paymentState: orders.paymentState,
+        fulfillmentState: orders.fulfillmentState,
+        paymentId: payments.id,
+        paymentNo: payments.paymentNo,
+        paymentMethod: payments.method,
+        paymentStatus: payments.status,
+        providerId: paymentProviders.id,
+        providerCode: paymentProviders.code,
+        providerTradeNo: payments.providerTradeNo,
+        providerConfigId: payments.paymentProviderConfigId,
+      })
+      .from(orders)
+      .innerJoin(machines, eq(machines.id, orders.machineId))
+      .innerJoin(payments, eq(payments.id, orders.paymentId))
+      .innerJoin(paymentProviders, eq(paymentProviders.id, payments.providerId))
+      .where(and(eq(orders.orderNo, orderNo), eq(machines.code, machineCode)));
+
+    return row ?? null;
+  }
+
+  private async assertNoActivePaymentCodeAttempt(
+    orderId: string,
+  ): Promise<void> {
+    const [activeAttempt] = await this.db
+      .select({
+        id: paymentCodeAttempts.id,
+        status: paymentCodeAttempts.status,
+      })
+      .from(paymentCodeAttempts)
+      .where(
+        and(
+          eq(paymentCodeAttempts.orderId, orderId),
+          eq(paymentCodeAttempts.isActive, true),
+          inArray(paymentCodeAttempts.status, [
+            "created",
+            "submitting",
+            "user_confirming",
+            "querying",
+            "unknown",
+            "manual_handling",
+          ]),
+        ),
+      )
+      .limit(1);
+
+    if (activeAttempt) {
+      throw new ConflictException("Payment code confirmation is in progress");
+    }
+  }
+
+  private async cancelProviderPaymentIfNeeded(
+    row: CancelableMachineOrderRow,
+  ): Promise<Record<string, unknown>> {
+    if (row.paymentMethod === "payment_code") {
+      await this.assertNoActivePaymentCodeAttempt(row.orderId);
+      return { skipped: true, reason: "payment_code_not_submitted" };
+    }
+
+    if (row.providerCode === "mock") {
+      return { skipped: true, reason: "mock_provider" };
+    }
+
+    if (!["created", "pending", "processing"].includes(row.paymentStatus)) {
+      return { skipped: true, reason: `payment_status_${row.paymentStatus}` };
+    }
+
+    const provider = this.paymentProviderRegistry.get(row.providerCode);
+    const config = await this.paymentProviderConfigService
+      .resolveForExistingPayment({
+        providerCode: row.providerCode,
+        providerConfigId: row.providerConfigId,
+        machineId: row.machineId,
+      })
+      .catch(() => ({
+        id: "",
+        providerCode: row.providerCode,
+        providerId: row.providerId,
+        machineId: null,
+        merchantNo: null,
+        appId: null,
+        publicConfigJson: {} as Record<string, unknown>,
+        sensitiveConfigJson: {} as Record<string, unknown>,
+      }));
+
+    try {
+      const result = await provider.cancelPayment({
+        paymentNo: row.paymentNo,
+        providerTradeNo: row.providerTradeNo,
+        config,
+      });
+      return result.rawPayload ?? { status: result.status };
+    } catch (error) {
+      if (isTradeNotFoundError(error)) {
+        return {
+          treatedAsCanceled: true,
+          reason: "provider_trade_not_found",
+          message: error instanceof Error ? error.message : String(error),
+        };
+      }
+      throw error;
+    }
+  }
+
+  async cancelMachineOrder(orderNo: string, query: MachineOrderStatusQuery) {
+    const row = await this.findCancelableMachineOrderRow(
+      orderNo,
+      query.machineCode,
+    );
+
+    if (!row) {
+      throw new NotFoundException("Machine order not found");
+    }
+
+    if (
+      row.orderStatus === "canceled" ||
+      row.orderStatus === "payment_expired" ||
+      row.paymentStatus === "canceled" ||
+      row.paymentStatus === "expired"
+    ) {
+      return await this.getMachineOrderStatus(orderNo, query);
+    }
+
+    if (
+      row.paymentState === "paid" ||
+      row.paymentStatus === "succeeded" ||
+      row.fulfillmentState !== "awaiting_fulfillment"
+    ) {
+      throw new ConflictException(
+        "Paid or dispensing orders cannot be canceled",
+      );
+    }
+
+    const providerPayload = await this.cancelProviderPaymentIfNeeded(row);
+
+    await this.db.transaction(async (tx) => {
+      await tx
+        .insert(paymentEvents)
+        .values({
+          paymentId: row.paymentId,
+          providerId: row.providerId,
+          eventType: "payment.machine_canceled",
+          providerEventId: `machine_cancel:${row.paymentNo}`,
+          rawPayloadJson: buildStoredEventPayload({
+            paymentNo: row.paymentNo,
+            orderNo: row.orderNo,
+            providerCode: row.providerCode,
+            ...providerPayload,
+          }),
+          signatureValid: true,
+          handledAt: new Date(),
+        })
+        .onConflictDoNothing();
+
+      await tx
+        .update(payments)
+        .set({
+          status: "canceled",
+          failedReason: null,
+          updatedAt: new Date(),
+        })
+        .where(eq(payments.id, row.paymentId));
+
+      await tx
+        .update(orders)
+        .set({
+          status: "canceled",
+          paymentState: "canceled",
+          fulfillmentState: "canceled",
+          canceledAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(orders.id, row.orderId));
+
+      if (row.orderStatus !== "canceled") {
+        await tx.insert(orderStatusEvents).values({
+          orderId: row.orderId,
+          fromStatus: row.orderStatus,
+          toStatus: "canceled",
+          reason: "machine_user_canceled",
+        });
+      }
+
+      await this.releaseActiveReservationsForOrder(tx, {
+        orderId: row.orderId,
+        reason: "canceled",
+      });
+    });
+
+    return await this.getMachineOrderStatus(orderNo, query);
+  }
+
   async listOrders(query: OrderQuery) {
     const filters: SQL[] = [];
     if (query.orderNo) {
@@ -1085,12 +1337,10 @@ function resolveMachineOrderNextAction(
   if (paymentState === "payment_expired" || paymentStatus === "expired") {
     return "payment_expired";
   }
-  if (
-    paymentState === "payment_failed" ||
-    paymentState === "canceled" ||
-    paymentStatus === "failed" ||
-    paymentStatus === "canceled"
-  ) {
+  if (paymentState === "canceled" || paymentStatus === "canceled") {
+    return "closed";
+  }
+  if (paymentState === "payment_failed" || paymentStatus === "failed") {
     return "payment_failed";
   }
 

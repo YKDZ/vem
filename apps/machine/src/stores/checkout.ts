@@ -623,6 +623,35 @@ export const useCheckoutStore = defineStore("checkout", {
         this.loading = false;
       }
     },
+    async cancelCurrentOrder(): Promise<TransactionSnapshot | null> {
+      const orderNo = this.currentOrder?.orderNo ?? this.transaction?.orderNo;
+      if (!orderNo) {
+        this.reset();
+        return null;
+      }
+
+      this.loading = true;
+      this.error = null;
+      try {
+        const snapshot = await daemonClient.cancelOrder(orderNo);
+        this.applyTransaction(snapshot);
+        this.dismissCurrentTerminalTransaction();
+        this.reset();
+        await useCatalogStore()
+          .refresh()
+          .catch((error: unknown) => {
+            this.error = `订单已取消，但目录刷新失败：${
+              error instanceof Error ? error.message : String(error)
+            }`;
+          });
+        return snapshot;
+      } catch (error) {
+        this.error = error instanceof Error ? error.message : String(error);
+        throw error;
+      } finally {
+        this.loading = false;
+      }
+    },
     async submitDevPaymentCode(
       authCode: string,
     ): Promise<TransactionSnapshot | null> {

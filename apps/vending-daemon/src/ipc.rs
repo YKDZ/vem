@@ -180,6 +180,7 @@ pub fn build_router(ctx: IpcContext) -> Router {
         )
         .route("/v1/payment-options", get(payment_options))
         .route("/v1/intents/create-order", post(create_order_intent))
+        .route("/v1/intents/cancel-order", post(cancel_order_intent))
         .route(
             "/v1/intents/dev-submit-payment-code",
             post(dev_submit_payment_code_intent),
@@ -335,6 +336,12 @@ struct CreateOrder {
     profile_snapshot: Option<serde_json::Value>,
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CancelOrder {
+    order_no: String,
+}
+
 struct VerifiedCreateOrderLine {
     inventory_id: String,
     quantity: u32,
@@ -429,6 +436,45 @@ fn create_order_error_response(error: &str) -> (StatusCode, Json<ErrorMessage>) 
         StatusCode::BAD_REQUEST,
         Json(ErrorMessage {
             code: "create_order_failed",
+            message: error.to_string(),
+        }),
+    )
+}
+
+fn cancel_order_error_response(error: &str) -> (StatusCode, Json<ErrorMessage>) {
+    if error.starts_with("backend request failed:")
+        || error.starts_with("backend read response failed:")
+        || error == "BACKEND_OFFLINE"
+        || error == "BACKEND_AUTH_FAILED"
+    {
+        return (
+            StatusCode::BAD_GATEWAY,
+            Json(ErrorMessage {
+                code: "backend_unavailable",
+                message: "后端服务暂不可用，请稍后重试".to_string(),
+            }),
+        );
+    }
+
+    if let Some((status, message)) = backend_api_error(error) {
+        return (
+            match status {
+                404 => StatusCode::NOT_FOUND,
+                409 => StatusCode::CONFLICT,
+                500..=599 => StatusCode::BAD_GATEWAY,
+                _ => StatusCode::BAD_REQUEST,
+            },
+            Json(ErrorMessage {
+                code: "cancel_order_failed",
+                message: message.to_string(),
+            }),
+        );
+    }
+
+    (
+        StatusCode::BAD_REQUEST,
+        Json(ErrorMessage {
+            code: "cancel_order_failed",
             message: error.to_string(),
         }),
     )
@@ -961,6 +1007,70 @@ async fn create_order_intent(
             )
             .await;
             create_order_error_response(&error).into_response()
+        }
+    }
+}
+
+async fn cancel_order_intent(
+    State(ctx): State<IpcContext>,
+    headers: HeaderMap,
+    Json(input): Json<CancelOrder>,
+) -> impl IntoResponse {
+    if let Err((status, error)) = require_token(&headers, &ctx.token).await {
+        return (status, error).into_response();
+    }
+
+    let order_no = input.order_no.trim();
+    if order_no.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorMessage {
+                code: "cancel_order_failed",
+                message: "orderNo is required".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    append_local_diagnostic_log(
+        &ctx,
+        "info",
+        "checkout",
+        "cancel_order_intent_received",
+        Some(serde_json::json!({ "orderNo": order_no })),
+    )
+    .await;
+
+    match ctx.ui.transaction.cancel_order(order_no).await {
+        Ok(snapshot) => {
+            append_local_diagnostic_log(
+                &ctx,
+                "info",
+                "checkout",
+                "cancel_order_intent_succeeded",
+                Some(serde_json::json!({
+                    "orderNo": snapshot.order_no.as_deref(),
+                    "orderStatus": snapshot.order_status.as_deref(),
+                    "nextAction": snapshot.next_action.as_deref(),
+                })),
+            )
+            .await;
+            (StatusCode::OK, Json(snapshot)).into_response()
+        }
+        Err(error) => {
+            append_local_diagnostic_log(
+                &ctx,
+                "warn",
+                "checkout",
+                "cancel_order_intent_failed",
+                Some(serde_json::json!({
+                    "orderNo": order_no,
+                    "code": "cancel_order_failed",
+                    "message": error,
+                })),
+            )
+            .await;
+            cancel_order_error_response(&error).into_response()
         }
     }
 }

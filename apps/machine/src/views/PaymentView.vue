@@ -92,6 +92,15 @@ async function simulateFail(): Promise<void> {
   await routeByStatus();
 }
 
+async function cancelOrder(): Promise<void> {
+  try {
+    await checkoutStore.cancelCurrentOrder();
+    await router.replace("/catalog");
+  } catch {
+    // checkoutStore.error already carries the operator-facing message.
+  }
+}
+
 onMounted(async () => {
   if (!order.value) {
     await router.replace("/catalog");
@@ -215,11 +224,12 @@ onUnmounted(() => {
 
       <div class="mt-auto flex flex-col gap-4">
         <button
-          class="kiosk-touch-target rounded-3xl border border-white/20 px-6 py-5 text-xl font-black"
+          class="kiosk-touch-target rounded-3xl border border-white/20 px-6 py-5 text-xl font-black disabled:border-slate-500 disabled:text-slate-400"
           type="button"
-          @click="router.replace('/catalog')"
+          :disabled="checkoutStore.loading"
+          @click="cancelOrder"
         >
-          取消返回
+          {{ checkoutStore.loading ? "正在取消..." : "取消订单" }}
         </button>
         <div v-if="showMockControls" class="grid grid-cols-2 gap-4">
           <button

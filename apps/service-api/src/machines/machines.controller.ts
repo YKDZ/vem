@@ -234,4 +234,16 @@ export class MachinesController {
       code === machine.code ? machine.code : "__forbidden__",
     );
   }
+
+  @Public()
+  @UseGuards(MachineAuthGuard)
+  @Get(":code/stock-snapshot")
+  async getMachineStockSnapshot(
+    @CurrentMachine() machine: AuthenticatedMachine,
+    @Param("code") code: string,
+  ) {
+    return await this.machinesService.getStockSnapshotByMachineCode(
+      code === machine.code ? machine.code : "__forbidden__",
+    );
+  }
 }

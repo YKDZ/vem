@@ -33,6 +33,10 @@ import { OrdersService } from "./orders.service";
 
 type CreateMachineOrderInput = z.infer<typeof createMachineOrderSchema>;
 type MachineOrderStatusQuery = z.infer<typeof machineOrderStatusQuerySchema>;
+const cancelMachineOrderSchema = z.object({
+  machineCode: z.string().min(1).max(64),
+});
+type CancelMachineOrderInput = z.infer<typeof cancelMachineOrderSchema>;
 
 @ApiTags("machine-orders")
 @Controller("machine-orders")
@@ -106,6 +110,22 @@ export class MachineOrdersController {
       machineCode,
       orderNo,
       clientIp: remoteIp,
+    });
+  }
+
+  @Public()
+  @UseGuards(MachineAuthGuard)
+  @Post(":orderNo/cancel")
+  async cancelMachineOrder(
+    @CurrentMachine() machine: AuthenticatedMachine,
+    @Param("orderNo") orderNo: string,
+    @Body(new ZodValidationPipe(cancelMachineOrderSchema))
+    body: CancelMachineOrderInput,
+  ) {
+    const machineCode =
+      body.machineCode === machine.code ? machine.code : "__forbidden__";
+    return await this.ordersService.cancelMachineOrder(orderNo, {
+      machineCode,
     });
   }
 

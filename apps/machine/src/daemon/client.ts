@@ -238,6 +238,15 @@ export class DaemonApiClient {
     );
   }
 
+  async cancelOrder(orderNo: string): Promise<TransactionSnapshot> {
+    return transactionSnapshotSchema.parse(
+      await this.request("/v1/intents/cancel-order", {
+        method: "POST",
+        body: { orderNo },
+      }),
+    );
+  }
+
   async submitDevPaymentCode(body: unknown): Promise<TransactionSnapshot> {
     return transactionSnapshotSchema.parse(
       await this.request("/v1/intents/dev-submit-payment-code", {

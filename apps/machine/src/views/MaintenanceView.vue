@@ -14,6 +14,7 @@ import { shouldShowAdvancedMaintenanceConfig } from "@/config/runtime-flags";
 import { daemonClient } from "@/daemon/client";
 import KioskLayout from "@/layouts/KioskLayout.vue";
 import { callTauriCommand, isTauriRuntime } from "@/native/tauri";
+import { useCatalogStore } from "@/stores/catalog";
 import { useConnectivityStore } from "@/stores/connectivity";
 import { useMachineStore } from "@/stores/machine";
 import { useMqttStore } from "@/stores/mqtt";
@@ -22,6 +23,7 @@ import { useScannerStore } from "@/stores/scanner";
 import { useVisionStore } from "@/stores/vision";
 
 const router = useRouter();
+const catalogStore = useCatalogStore();
 const connectivityStore = useConnectivityStore();
 const machineStore = useMachineStore();
 const mqttStore = useMqttStore();
@@ -289,8 +291,12 @@ async function clearWholeMachineLock(): Promise<void> {
     wholeMachineLockMaintenance.message = "整机维护锁已解除";
     await refreshDiagnostics();
   } catch (error) {
-    wholeMachineLockMaintenance.message =
-      error instanceof Error ? error.message : String(error);
+    const message = error instanceof Error ? error.message : String(error);
+    wholeMachineLockMaintenance.message = message.includes(
+      "must be healthy before clearing whole-machine lock",
+    )
+      ? `下位机仍处于故障状态，不能解除整机锁。请先按现场复位键并确认下位机恢复在线，再点击解除。(${message})`
+      : message;
   } finally {
     wholeMachineLockMaintenance.loading = false;
   }
@@ -362,7 +368,7 @@ async function submitStockMovement(): Promise<void> {
   stockMaintenance.loading = true;
   stockMaintenance.message = null;
   try {
-    await daemonClient.recordStockMovement({
+    const snapshot = await daemonClient.recordStockMovement({
       movementId: nextMovementId(),
       planogramVersion: stockForm.planogramVersion.trim(),
       slotId: stockForm.slotId,
@@ -371,6 +377,7 @@ async function submitStockMovement(): Promise<void> {
       source: "local_maintenance",
       attributedTo: stockForm.attributedTo.trim() || "front-panel",
     });
+    catalogStore.applySnapshot(snapshot);
     stockMaintenance.message = "库存动作已记录";
     await refreshStockMaintenanceView();
   } catch (error) {
@@ -561,6 +568,13 @@ async function submitStockMovement(): Promise<void> {
                   wholeMachineMaintenanceLock?.message ??
                   wholeMachineLockMaintenance.message
                 }}
+              </p>
+              <p
+                v-if="wholeMachineLockMaintenance.message"
+                class="mt-2 text-sm font-semibold text-rose-50"
+                aria-live="polite"
+              >
+                {{ wholeMachineLockMaintenance.message }}
               </p>
             </div>
             <button

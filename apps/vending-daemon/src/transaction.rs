@@ -172,6 +172,32 @@ impl TransactionStateMachine {
             .ok_or_else(|| "current transaction missing after create order".to_string())
     }
 
+    pub async fn cancel_order(
+        &self,
+        order_no: &str,
+    ) -> Result<vending_core::domain::CurrentTransactionSnapshot, String> {
+        let machine_code = self
+            .machine_code
+            .as_deref()
+            .ok_or_else(|| "machine code is required".to_string())?;
+
+        let status_json = self.backend.cancel_order(machine_code, order_no).await?;
+        self.state
+            .apply_backend_order_status(order_no, status_json)
+            .await
+            .map_err(|error| error.to_string())?;
+
+        let current = self
+            .state
+            .current_transaction_snapshot()
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "current transaction missing after cancel order".to_string())?;
+
+        self.emit_transaction_changed(order_no, &current);
+        Ok(current)
+    }
+
     pub async fn submit_payment_code(
         &self,
         raw: vending_core::scanner::RawPaymentCode,

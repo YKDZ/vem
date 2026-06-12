@@ -8,6 +8,7 @@ describe("MachineOrdersController", () => {
       listMachinePaymentOptions: vi.fn(),
       createMachineOrder: vi.fn(),
       getMachineOrderStatus: vi.fn(),
+      cancelMachineOrder: vi.fn(),
     };
     const paymentsService = {
       markMockSucceeded: vi.fn(),
@@ -63,6 +64,7 @@ describe("MachineOrdersController", () => {
         listMachinePaymentOptions: vi.fn(),
         createMachineOrder: vi.fn(),
         getMachineOrderStatus: vi.fn(),
+        cancelMachineOrder: vi.fn(),
       } as never,
       {
         markMockSucceeded: vi.fn(),
@@ -98,5 +100,33 @@ describe("MachineOrdersController", () => {
     expect(paymentCodeOrchestrator.submit).toHaveBeenCalledWith(
       expect.objectContaining({ machineCode: "__forbidden__" }),
     );
+  });
+
+  it("cancels machine orders using the authenticated machine code", async () => {
+    const ordersService = {
+      listMachinePaymentOptions: vi.fn(),
+      createMachineOrder: vi.fn(),
+      getMachineOrderStatus: vi.fn(),
+      cancelMachineOrder: vi.fn().mockResolvedValue({ orderNo: "ORD001" }),
+    };
+    const controller = new MachineOrdersController(
+      ordersService as never,
+      {
+        markMockSucceeded: vi.fn(),
+        markMockFailed: vi.fn(),
+      } as never,
+      {
+        submit: vi.fn(),
+      } as never,
+      { paymentMockEnabled: true } as never,
+    );
+
+    await controller.cancelMachineOrder({ code: "M001" } as never, "ORD001", {
+      machineCode: "M999",
+    });
+
+    expect(ordersService.cancelMachineOrder).toHaveBeenCalledWith("ORD001", {
+      machineCode: "__forbidden__",
+    });
   });
 });

@@ -376,4 +376,36 @@ describe("MachinesController planogram lifecycle", () => {
       "PLAN-1",
     );
   });
+
+  it("uses machine identity for stock snapshot fetch", async () => {
+    const getStockSnapshotByMachineCode = vi.fn().mockResolvedValue({
+      machineCode: "M001",
+      planogramVersion: "PLAN-1",
+      slots: [],
+    });
+    const controller = new MachinesController({
+      getStockSnapshotByMachineCode,
+    } as never);
+
+    await expect(
+      controller.getMachineStockSnapshot({ code: "M001" } as never, "M001"),
+    ).resolves.toEqual({
+      machineCode: "M001",
+      planogramVersion: "PLAN-1",
+      slots: [],
+    });
+    await expect(
+      controller.getMachineStockSnapshot({ code: "M001" } as never, "M002"),
+    ).resolves.toEqual({
+      machineCode: "M001",
+      planogramVersion: "PLAN-1",
+      slots: [],
+    });
+
+    expect(getStockSnapshotByMachineCode).toHaveBeenNthCalledWith(1, "M001");
+    expect(getStockSnapshotByMachineCode).toHaveBeenNthCalledWith(
+      2,
+      "__forbidden__",
+    );
+  });
 });

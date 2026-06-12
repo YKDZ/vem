@@ -1500,6 +1500,7 @@ impl LocalStateStore {
                         previous.physical_stock,
                         saleable_stock,
                         &previous.slot_sales_state,
+                        false,
                     )
                     .await?;
                     upsert_sale_safety_blocker_marker_in_tx(
@@ -1519,6 +1520,7 @@ impl LocalStateStore {
                         previous.physical_stock,
                         0,
                         "blocked_for_planogram_change",
+                        false,
                     )
                     .await?;
                 } else {
@@ -1537,6 +1539,7 @@ impl LocalStateStore {
                         previous.physical_stock,
                         saleable_stock,
                         slot_sales_state,
+                        false,
                     )
                     .await?;
                 }
@@ -1548,6 +1551,7 @@ impl LocalStateStore {
                     0,
                     0,
                     "needs_count",
+                    false,
                 )
                 .await?;
                 upsert_sale_safety_blocker_marker_in_tx(
@@ -1567,6 +1571,7 @@ impl LocalStateStore {
                     0,
                     0,
                     "needs_count",
+                    false,
                 )
                 .await?;
             }
@@ -1712,7 +1717,8 @@ impl LocalStateStore {
             insert_outbox_in_tx(&mut tx, &event).await?;
         }
 
-        if input.source == "local_maintenance" {
+        let reset_local_slot_hold = input.source == "local_maintenance";
+        if reset_local_slot_hold {
             clear_sale_safety_blocker_marker_in_tx(
                 &mut tx,
                 &input.planogram_version,
@@ -1733,12 +1739,92 @@ impl LocalStateStore {
             &input.slot_id,
             after_quantity,
             capacity,
+            reset_local_slot_hold,
         )
         .await?;
         upsert_sale_view_projection_in_tx(&mut tx, &input.planogram_version, &input.slot_id)
             .await?;
         tx.commit().await?;
         self.sale_view(machine_code.map(ToString::to_string)).await
+    }
+
+    pub async fn apply_platform_stock_snapshot(
+        &self,
+        snapshot: &crate::backend::MachineStockSnapshot,
+    ) -> Result<SaleViewSnapshot, StoreError> {
+        if snapshot.planogram_version.trim().is_empty() {
+            return Err(StoreError::InvalidStockInput(
+                "stock snapshot planogram version is required".to_string(),
+            ));
+        }
+
+        let mut tx = self.pool.begin().await?;
+        let active: Option<(String,)> = sqlx::query_as(
+            "SELECT planogram_version FROM machine_planogram_versions WHERE active = 1 LIMIT 1",
+        )
+        .fetch_optional(tx.as_mut())
+        .await?;
+        if active.as_ref().map(|(version,)| version.as_str())
+            != Some(snapshot.planogram_version.as_str())
+        {
+            return Err(StoreError::InvalidStockInput(format!(
+                "stock snapshot planogram {} is not active locally",
+                snapshot.planogram_version
+            )));
+        }
+
+        for slot in &snapshot.slots {
+            if slot.capacity < 0
+                || slot.on_hand_qty < 0
+                || slot.reserved_qty < 0
+                || slot.available_qty < 0
+            {
+                return Err(StoreError::InvalidStockInput(
+                    "stock snapshot quantities must be nonnegative".to_string(),
+                ));
+            }
+
+            let local_slot: Option<(String, i64)> = sqlx::query_as(
+                "SELECT inventory_id, capacity
+                 FROM machine_planogram_slots
+                 WHERE planogram_version = ?1 AND slot_id = ?2",
+            )
+            .bind(&snapshot.planogram_version)
+            .bind(&slot.slot_id)
+            .fetch_optional(tx.as_mut())
+            .await?;
+            let Some((inventory_id, capacity)) = local_slot else {
+                continue;
+            };
+            if inventory_id != slot.inventory_id {
+                return Err(StoreError::InvalidStockInput(format!(
+                    "stock snapshot inventory mismatch for slot {}",
+                    slot.slot_code
+                )));
+            }
+
+            let saleable_stock = slot.available_qty.min(capacity).max(0);
+            let slot_sales_state = if saleable_stock > 0 {
+                "sale_ready"
+            } else {
+                "sold_out"
+            };
+            upsert_stock_projection_with_state_in_tx(
+                &mut tx,
+                &snapshot.planogram_version,
+                &slot.slot_id,
+                slot.on_hand_qty,
+                saleable_stock,
+                slot_sales_state,
+                false,
+            )
+            .await?;
+            upsert_sale_view_projection_in_tx(&mut tx, &snapshot.planogram_version, &slot.slot_id)
+                .await?;
+        }
+
+        tx.commit().await?;
+        self.sale_view(Some(snapshot.machine_code.clone())).await
     }
 
     pub async fn block_slot_for_dispense_failure(
@@ -1810,6 +1896,7 @@ impl LocalStateStore {
             &slot_id,
             after_quantity,
             capacity,
+            false,
         )
         .await?;
         upsert_sale_view_projection_in_tx(&mut tx, &planogram_version, &slot_id).await?;
@@ -2480,6 +2567,7 @@ async fn upsert_stock_projection_in_tx(
     slot_id: &str,
     physical_stock: i64,
     capacity: i64,
+    reset_local_slot_hold: bool,
 ) -> Result<(), StoreError> {
     let physical_stock = physical_stock.max(0);
     let saleable_stock = physical_stock.min(capacity).max(0);
@@ -2495,6 +2583,7 @@ async fn upsert_stock_projection_in_tx(
         physical_stock,
         saleable_stock,
         slot_sales_state,
+        reset_local_slot_hold,
     )
     .await
 }
@@ -2506,6 +2595,7 @@ async fn upsert_stock_projection_with_state_in_tx(
     physical_stock: i64,
     saleable_stock: i64,
     slot_sales_state: &str,
+    reset_local_slot_hold: bool,
 ) -> Result<(), StoreError> {
     let updated_at = now_iso();
     sqlx::query(
@@ -2522,7 +2612,7 @@ async fn upsert_stock_projection_with_state_in_tx(
                WHERE b.planogram_version = current_stock_projection.planogram_version
                  AND b.slot_id = current_stock_projection.slot_id
              ) THEN current_stock_projection.slot_sales_state
-             WHEN current_stock_projection.slot_sales_state IN ('frozen','suspect') THEN current_stock_projection.slot_sales_state
+             WHEN ?7 = 0 AND current_stock_projection.slot_sales_state IN ('frozen','suspect') THEN current_stock_projection.slot_sales_state
              ELSE excluded.slot_sales_state
            END,
            updated_at=excluded.updated_at",
@@ -2533,6 +2623,7 @@ async fn upsert_stock_projection_with_state_in_tx(
     .bind(saleable_stock.max(0))
     .bind(slot_sales_state)
     .bind(updated_at)
+    .bind(if reset_local_slot_hold { 1_i64 } else { 0_i64 })
     .execute(tx.as_mut())
     .await?;
     Ok(())
@@ -3405,6 +3496,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn platform_stock_snapshot_updates_local_sale_view_without_upload_outbox() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_single_slot_planogram(&store).await;
+        store
+            .record_stock_movement(StockMovementInput {
+                movement_id: "MOVE-SEED".to_string(),
+                planogram_version: "PLAN-FAILURE".to_string(),
+                slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                movement_type: "stock_count_correction".to_string(),
+                quantity: 5,
+                source: "local_maintenance".to_string(),
+                attributed_to: None,
+            })
+            .await
+            .expect("seed stock");
+
+        let snapshot = crate::backend::MachineStockSnapshot {
+            machine_code: "M001".to_string(),
+            planogram_version: "PLAN-FAILURE".to_string(),
+            slots: vec![crate::backend::MachineStockSnapshotSlot {
+                slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                slot_code: "A1".to_string(),
+                inventory_id: "550e8400-e29b-41d4-a716-446655440002".to_string(),
+                capacity: 8,
+                on_hand_qty: 10,
+                reserved_qty: 0,
+                available_qty: 10,
+            }],
+            server_time: "2026-06-12T00:00:00.000Z".to_string(),
+        };
+
+        let sale_view = store
+            .apply_platform_stock_snapshot(&snapshot)
+            .await
+            .expect("apply snapshot");
+
+        assert_eq!(sale_view.items[0].physical_stock, 10);
+        assert_eq!(sale_view.items[0].saleable_stock, 8);
+        assert_eq!(sale_view.items[0].slot_sales_state, "sale_ready");
+        assert_eq!(store.outbox_size().await.expect("outbox"), 0);
+    }
+
+    #[tokio::test]
     async fn open_runs_migration_and_writes_schema_version() {
         let temp = TempDir::new().expect("temp");
         let path = temp.path().join("state.db");
@@ -3922,6 +4059,57 @@ mod tests {
             .await
             .expect("clear");
         assert_eq!(cleared.items[0].slot_sales_state, "sale_ready");
+    }
+
+    #[tokio::test]
+    async fn local_maintenance_refill_unfreezes_target_slot_after_dispense_failure() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_single_slot_planogram(&store).await;
+        store
+            .record_stock_movement(StockMovementInput {
+                movement_id: "MOVE-COUNT-BEFORE-JAM".to_string(),
+                planogram_version: "PLAN-FAILURE".to_string(),
+                slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                movement_type: "stock_count_correction".to_string(),
+                quantity: 4,
+                source: "field_count".to_string(),
+                attributed_to: Some("operator-1".to_string()),
+            })
+            .await
+            .expect("count");
+
+        let frozen = store
+            .block_slot_for_dispense_failure(
+                &dispense_command_for_slot("CMD-JAM-BEFORE-REFILL"),
+                Some("JAMMED"),
+                Some("lower controller reported pickup platform blocked"),
+            )
+            .await
+            .expect("block")
+            .expect("slot found");
+        assert_eq!(frozen.items[0].physical_stock, 4);
+        assert_eq!(frozen.items[0].saleable_stock, 4);
+        assert_eq!(frozen.items[0].slot_sales_state, "frozen");
+
+        let refilled = store
+            .record_stock_movement(StockMovementInput {
+                movement_id: "MOVE-LOCAL-REFILL-AFTER-JAM".to_string(),
+                planogram_version: "PLAN-FAILURE".to_string(),
+                slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                movement_type: "planned_refill".to_string(),
+                quantity: 1,
+                source: "local_maintenance".to_string(),
+                attributed_to: Some("front-panel".to_string()),
+            })
+            .await
+            .expect("local maintenance refill");
+
+        assert_eq!(refilled.items[0].physical_stock, 5);
+        assert_eq!(refilled.items[0].saleable_stock, 5);
+        assert_eq!(refilled.items[0].slot_sales_state, "sale_ready");
     }
 
     #[tokio::test]

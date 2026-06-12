@@ -267,6 +267,53 @@ describe("DaemonApiClient", () => {
     });
   });
 
+  it("posts cancel-order requests with the current order number", async () => {
+    vi.mocked(getDaemonConnectionInfo).mockResolvedValue({
+      baseUrl: "http://127.0.0.1:7891",
+      token: "token-1",
+      source: "browser_env",
+      mock: true,
+    });
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          orderId: "order-1",
+          orderNo: "ORD-001",
+          productSummary: null,
+          paymentNo: "PAY-001",
+          paymentMethod: "qr_code",
+          paymentProvider: "alipay",
+          paymentUrl: null,
+          paymentStatus: "canceled",
+          orderStatus: "canceled",
+          totalAmountCents: 1,
+          vending: null,
+          nextAction: "closed",
+          maskedAuthCode: null,
+          paymentCodeAttempt: null,
+          expiresAt: null,
+          errorCode: null,
+          errorMessage: null,
+          operatorHint: null,
+          updatedAt: "2026-06-12T00:00:00.000Z",
+        }),
+        { status: 200 },
+      ),
+    );
+
+    await expect(daemonClient.cancelOrder("ORD-001")).resolves.toMatchObject({
+      orderNo: "ORD-001",
+      nextAction: "closed",
+    });
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "http://127.0.0.1:7891/v1/intents/cancel-order",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ orderNo: "ORD-001" }),
+      }),
+    );
+  });
+
   it("retries after 401 once", async () => {
     vi.mocked(getDaemonConnectionInfo).mockResolvedValue({
       baseUrl: "http://127.0.0.1:7891",

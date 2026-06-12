@@ -33,6 +33,7 @@ function makeDb() {
 
 function makeService(overrides: {
   db?: ReturnType<typeof makeDb>;
+  inventoryService?: Partial<InventoryService>;
   registry?: Partial<PaymentProviderRegistry>;
   configService?: Partial<PaymentProviderConfigService>;
   paymentsService?: Partial<PaymentsService>;
@@ -62,6 +63,8 @@ function makeService(overrides: {
   const inventoryService: InventoryService = {
     reserveForOrder: vi.fn().mockResolvedValue(undefined),
     reserveItems: vi.fn().mockResolvedValue(undefined),
+    releaseReservation: vi.fn().mockResolvedValue(undefined),
+    ...overrides.inventoryService,
   } as unknown as InventoryService;
   const refundsService: RefundsService = {
     requestRefund: vi.fn().mockResolvedValue(undefined),
@@ -85,6 +88,32 @@ function makeService(overrides: {
     refundsService,
     paymentsService,
   );
+}
+
+function makeJoinedSelectResult(rows: unknown[]) {
+  return {
+    from: vi.fn().mockReturnValue({
+      innerJoin: vi.fn().mockReturnValue({
+        innerJoin: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue(rows),
+          }),
+        }),
+      }),
+    }),
+  };
+}
+
+function makeEmptyLatestSelectResult() {
+  return {
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        orderBy: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([]),
+        }),
+      }),
+    }),
+  };
 }
 
 describe("OrdersService", () => {
@@ -1287,6 +1316,95 @@ describe("OrdersService (transaction boundary)", () => {
           providerTradeNo: null,
         }),
       );
+    });
+  });
+
+  describe("cancelMachineOrder", () => {
+    it("cancels an unpaid machine order and releases active reservations", async () => {
+      const db = makeDb();
+      const releaseReservation = vi.fn().mockResolvedValue(undefined);
+      const row = {
+        orderId: "ord-1",
+        orderNo: "ORD001",
+        machineId: "mach-1",
+        machineCode: "M001",
+        orderStatus: "pending_payment",
+        paymentState: "awaiting_payment",
+        fulfillmentState: "awaiting_fulfillment",
+        totalAmountCents: 300,
+        paymentId: "pay-1",
+        paymentNo: "PAY001",
+        paymentMethod: "qr_code",
+        paymentStatus: "created",
+        paymentUrl: "https://pay.example/qr",
+        paymentExpiresAt: null,
+        paidAt: null,
+        failedReason: null,
+        providerId: "provider-mock",
+        providerCode: "mock",
+        paymentProviderCode: "mock",
+        providerTradeNo: null,
+        providerConfigId: null,
+      };
+      const canceledRow = {
+        ...row,
+        orderStatus: "canceled",
+        paymentState: "canceled",
+        fulfillmentState: "canceled",
+        paymentStatus: "canceled",
+      };
+      const tx = {
+        select: vi.fn().mockReturnValue({
+          from: vi.fn().mockReturnValue({
+            where: vi
+              .fn()
+              .mockResolvedValue([{ inventoryId: "inv-1", quantity: 2 }]),
+          }),
+        }),
+        insert: vi.fn().mockReturnValue({
+          values: vi.fn().mockReturnValue({
+            onConflictDoNothing: vi.fn().mockResolvedValue([]),
+          }),
+        }),
+        update: vi.fn().mockReturnValue({
+          set: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([]),
+          }),
+        }),
+      };
+
+      db.select
+        .mockReturnValueOnce(makeJoinedSelectResult([row]))
+        .mockReturnValueOnce(makeJoinedSelectResult([canceledRow]))
+        .mockReturnValueOnce(makeEmptyLatestSelectResult())
+        .mockReturnValueOnce(makeEmptyLatestSelectResult())
+        .mockReturnValueOnce(makeEmptyLatestSelectResult());
+      db.transaction.mockImplementationOnce(
+        async (cb: (txArg: typeof tx) => Promise<unknown>) => await cb(tx),
+      );
+
+      const service = makeService({
+        db,
+        inventoryService: { releaseReservation },
+      });
+
+      const result = await service.cancelMachineOrder("ORD001", {
+        machineCode: "M001",
+      });
+
+      expect(result).toMatchObject({
+        orderNo: "ORD001",
+        orderStatus: "canceled",
+        paymentState: "canceled",
+        fulfillmentState: "canceled",
+        nextAction: "closed",
+      });
+      expect(releaseReservation).toHaveBeenCalledWith(tx, {
+        orderId: "ord-1",
+        inventoryId: "inv-1",
+        quantity: 2,
+        reason: "canceled",
+      });
     });
   });
 

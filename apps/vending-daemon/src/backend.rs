@@ -77,6 +77,27 @@ pub struct StockMovementSaleSafetyBlocker {
     pub reason: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MachineStockSnapshot {
+    pub machine_code: String,
+    pub planogram_version: String,
+    pub slots: Vec<MachineStockSnapshotSlot>,
+    pub server_time: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MachineStockSnapshotSlot {
+    pub slot_id: String,
+    pub slot_code: String,
+    pub inventory_id: String,
+    pub capacity: i64,
+    pub on_hand_qty: i64,
+    pub reserved_qty: i64,
+    pub available_qty: i64,
+}
+
 impl BackendClient {
     pub fn new(base_url: impl Into<String>) -> Self {
         let base_url = base_url.into().trim_end_matches('/').to_string();
@@ -405,6 +426,17 @@ impl BackendClient {
         Ok(value)
     }
 
+    pub async fn cancel_order(
+        &self,
+        machine_code: &str,
+        order_no: &str,
+    ) -> Result<serde_json::Value, String> {
+        let url = format!("/machine-orders/{order_no}/cancel");
+        let body = serde_json::json!({ "machineCode": machine_code });
+        self.request_json(reqwest::Method::POST, &url, Some(body), true)
+            .await
+    }
+
     pub async fn submit_payment_code(
         &self,
         machine_code: &str,
@@ -476,6 +508,15 @@ impl BackendClient {
     ) -> Result<serde_json::Value, String> {
         let url = format!("/machines/{machine_code}/planogram-versions/published");
         self.request_json(reqwest::Method::GET, &url, None, true)
+            .await
+    }
+
+    pub async fn get_stock_snapshot(
+        &self,
+        machine_code: &str,
+    ) -> Result<MachineStockSnapshot, String> {
+        let url = format!("/machines/{machine_code}/stock-snapshot");
+        self.request_json_typed(reqwest::Method::GET, &url, None, true)
             .await
     }
 

@@ -874,6 +874,73 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
       .orderBy(products.sortOrder, machineSlots.layerNo, machineSlots.cellNo);
   }
 
+  async getStockSnapshotByMachineCode(code: string) {
+    const rows = await this.db
+      .select({
+        machineCode: machines.code,
+        planogramVersion: machinePlanogramVersions.planogramVersion,
+        slotId: machinePlanogramSlots.slotId,
+        slotCode: machinePlanogramSlots.slotCode,
+        inventoryId: machinePlanogramSlots.inventoryId,
+        capacity: machinePlanogramSlots.capacity,
+        onHandQty: inventories.onHandQty,
+        reservedQty: inventories.reservedQty,
+        availableQty: sql<number>`${inventories.onHandQty} - ${inventories.reservedQty}`,
+      })
+      .from(machines)
+      .innerJoin(
+        machinePlanogramVersions,
+        and(
+          eq(machinePlanogramVersions.machineId, machines.id),
+          eq(machinePlanogramVersions.status, "active"),
+          sql`${machinePlanogramVersions.acknowledgedAt} IS NOT NULL`,
+        ),
+      )
+      .innerJoin(
+        machinePlanogramSlots,
+        eq(
+          machinePlanogramSlots.machinePlanogramVersionId,
+          machinePlanogramVersions.id,
+        ),
+      )
+      .innerJoin(
+        inventories,
+        and(
+          eq(inventories.id, machinePlanogramSlots.inventoryId),
+          eq(inventories.machineId, machines.id),
+          eq(inventories.slotId, machinePlanogramSlots.slotId),
+        ),
+      )
+      .where(
+        and(
+          eq(machines.code, code),
+          isNull(machines.deletedAt),
+          inArray(machines.status, ["online", "maintenance"]),
+        ),
+      )
+      .orderBy(machinePlanogramSlots.layerNo, machinePlanogramSlots.cellNo);
+
+    const first = rows[0];
+    if (!first) {
+      throw new NotFoundException("Machine stock snapshot not found");
+    }
+
+    return {
+      machineCode: first.machineCode,
+      planogramVersion: first.planogramVersion,
+      slots: rows.map((row) => ({
+        slotId: row.slotId,
+        slotCode: row.slotCode,
+        inventoryId: row.inventoryId,
+        capacity: row.capacity,
+        onHandQty: row.onHandQty,
+        reservedQty: row.reservedQty,
+        availableQty: row.availableQty,
+      })),
+      serverTime: new Date().toISOString(),
+    };
+  }
+
   private async handleEnvironmentControlResult(
     machineCode: string,
     topic: string,
