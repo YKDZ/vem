@@ -1096,7 +1096,7 @@ impl LocalStateStore {
             "SELECT order_no, status, next_action, updated_at
                  FROM order_sessions
                  WHERE status != 'closed'
-                 ORDER BY updated_at DESC
+                 ORDER BY updated_at DESC, rowid DESC
                  LIMIT 1",
         )
         .fetch_optional(&self.pool)
@@ -1122,7 +1122,7 @@ impl LocalStateStore {
             "SELECT order_no,payment_method,payment_provider,payment_attempt_json,items_json,status,next_action,expires_at,last_backend_status_json,last_error,recovery_strategy,updated_at
              FROM order_sessions
              WHERE status != 'closed'
-             ORDER BY updated_at DESC
+             ORDER BY updated_at DESC, rowid DESC
              LIMIT 1",
         )
         .fetch_optional(&self.pool)
@@ -1775,7 +1775,7 @@ impl LocalStateStore {
             "SELECT status, next_action
              FROM order_sessions
              WHERE status != 'closed'
-             ORDER BY updated_at DESC
+             ORDER BY updated_at DESC, rowid DESC
              LIMIT 1",
         )
         .fetch_optional(tx.as_mut())
@@ -2149,7 +2149,7 @@ impl LocalStateStore {
             "SELECT items_json, status, next_action
              FROM order_sessions
              WHERE status != 'closed'
-             ORDER BY updated_at DESC
+             ORDER BY updated_at DESC, rowid DESC
              LIMIT 1",
         )
         .fetch_all(&self.pool)
