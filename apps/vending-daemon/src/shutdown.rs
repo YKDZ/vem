@@ -379,9 +379,10 @@ async fn run_platform_stock_sync_watcher(
     };
 
     loop {
-        if let Err(error) = sync_platform_planogram_and_stock(&state, &backend, &machine_code).await
-        {
-            eprintln!("platform stock sync failed: {error}");
+        match sync_platform_planogram_and_stock(&state, &backend, &machine_code).await {
+            Ok(()) => {}
+            Err(error) if error.contains("stock snapshot deferred") => {}
+            Err(error) => eprintln!("platform stock sync failed: {error}"),
         }
         tokio::select! {
             _ = shutdown.cancelled() => return Ok(()),

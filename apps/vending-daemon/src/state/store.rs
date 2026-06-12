@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::{collections::HashSet, path::Path};
 
 use chrono::{SecondsFormat, Utc};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -1759,6 +1759,28 @@ impl LocalStateStore {
         }
 
         let mut tx = self.pool.begin().await?;
+        let pending_uploads: (i64,) = sqlx::query_as(
+            "SELECT COUNT(1) FROM outbox_events WHERE kind = 'stock_movement_upload'",
+        )
+        .fetch_one(tx.as_mut())
+        .await?;
+        if pending_uploads.0 > 0 {
+            return Err(StoreError::InvalidStockInput(
+                "stock snapshot deferred while local stock movements are pending upload"
+                    .to_string(),
+            ));
+        }
+
+        let active_order: Option<(i64,)> =
+            sqlx::query_as("SELECT 1 FROM order_sessions WHERE status != 'closed' LIMIT 1")
+                .fetch_optional(tx.as_mut())
+                .await?;
+        if active_order.is_some() {
+            return Err(StoreError::InvalidStockInput(
+                "stock snapshot deferred while a local order is active".to_string(),
+            ));
+        }
+
         let active: Option<(String,)> = sqlx::query_as(
             "SELECT planogram_version FROM machine_planogram_versions WHERE active = 1 LIMIT 1",
         )
@@ -1773,7 +1795,31 @@ impl LocalStateStore {
             )));
         }
 
+        let local_slots: Vec<(String, String, String, i64)> = sqlx::query_as(
+            "SELECT slot_id, slot_code, inventory_id, capacity
+             FROM machine_planogram_slots
+             WHERE planogram_version = ?1
+             ORDER BY layer_no ASC, cell_no ASC",
+        )
+        .bind(&snapshot.planogram_version)
+        .fetch_all(tx.as_mut())
+        .await?;
+        if local_slots.len() != snapshot.slots.len() {
+            return Err(StoreError::InvalidStockInput(format!(
+                "stock snapshot slot count mismatch: local={}, platform={}",
+                local_slots.len(),
+                snapshot.slots.len()
+            )));
+        }
+
+        let mut seen_slot_ids = HashSet::with_capacity(snapshot.slots.len());
         for slot in &snapshot.slots {
+            if !seen_slot_ids.insert(slot.slot_id.clone()) {
+                return Err(StoreError::InvalidStockInput(format!(
+                    "stock snapshot duplicate slot {}",
+                    slot.slot_code
+                )));
+            }
             if slot.capacity < 0
                 || slot.on_hand_qty < 0
                 || slot.reserved_qty < 0
@@ -1784,26 +1830,35 @@ impl LocalStateStore {
                 ));
             }
 
-            let local_slot: Option<(String, i64)> = sqlx::query_as(
-                "SELECT inventory_id, capacity
-                 FROM machine_planogram_slots
-                 WHERE planogram_version = ?1 AND slot_id = ?2",
-            )
-            .bind(&snapshot.planogram_version)
-            .bind(&slot.slot_id)
-            .fetch_optional(tx.as_mut())
-            .await?;
-            let Some((inventory_id, capacity)) = local_slot else {
-                continue;
+            let Some((_, local_slot_code, inventory_id, capacity)) = local_slots
+                .iter()
+                .find(|(slot_id, _, _, _)| slot_id == &slot.slot_id)
+            else {
+                return Err(StoreError::InvalidStockInput(format!(
+                    "stock snapshot contains unknown slot {}",
+                    slot.slot_code
+                )));
             };
-            if inventory_id != slot.inventory_id {
+            if local_slot_code != &slot.slot_code {
+                return Err(StoreError::InvalidStockInput(format!(
+                    "stock snapshot slot code mismatch for slot {}",
+                    slot.slot_id
+                )));
+            }
+            if inventory_id != &slot.inventory_id {
                 return Err(StoreError::InvalidStockInput(format!(
                     "stock snapshot inventory mismatch for slot {}",
                     slot.slot_code
                 )));
             }
+            if *capacity != slot.capacity {
+                return Err(StoreError::InvalidStockInput(format!(
+                    "stock snapshot capacity mismatch for slot {}",
+                    slot.slot_code
+                )));
+            }
 
-            let saleable_stock = slot.available_qty.min(capacity).max(0);
+            let saleable_stock = slot.available_qty.min(*capacity).max(0);
             let slot_sales_state = if saleable_stock > 0 {
                 "sale_ready"
             } else {
@@ -3539,6 +3594,115 @@ mod tests {
         assert_eq!(sale_view.items[0].saleable_stock, 8);
         assert_eq!(sale_view.items[0].slot_sales_state, "sale_ready");
         assert_eq!(store.outbox_size().await.expect("outbox"), 0);
+    }
+
+    #[tokio::test]
+    async fn platform_stock_snapshot_does_not_override_pending_local_stock_upload() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_single_slot_planogram(&store).await;
+        store
+            .record_stock_movement(StockMovementInput {
+                movement_id: "MOVE-SEED-BEFORE-PENDING".to_string(),
+                planogram_version: "PLAN-FAILURE".to_string(),
+                slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                movement_type: "stock_count_correction".to_string(),
+                quantity: 5,
+                source: "local_maintenance".to_string(),
+                attributed_to: None,
+            })
+            .await
+            .expect("seed stock");
+        let local_refill = store
+            .record_stock_movement_with_upload(
+                StockMovementInput {
+                    movement_id: "MOVE-PENDING-REFILL".to_string(),
+                    planogram_version: "PLAN-FAILURE".to_string(),
+                    slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                    movement_type: "planned_refill".to_string(),
+                    quantity: 1,
+                    source: "local_maintenance".to_string(),
+                    attributed_to: None,
+                },
+                Some("M001"),
+                Some("https://platform.example/api"),
+            )
+            .await
+            .expect("pending refill");
+        assert_eq!(local_refill.items[0].physical_stock, 6);
+
+        let snapshot = crate::backend::MachineStockSnapshot {
+            machine_code: "M001".to_string(),
+            planogram_version: "PLAN-FAILURE".to_string(),
+            slots: vec![crate::backend::MachineStockSnapshotSlot {
+                slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                slot_code: "A1".to_string(),
+                inventory_id: "550e8400-e29b-41d4-a716-446655440002".to_string(),
+                capacity: 8,
+                on_hand_qty: 5,
+                reserved_qty: 0,
+                available_qty: 5,
+            }],
+            server_time: "2026-06-12T00:00:00.000Z".to_string(),
+        };
+
+        let error = store
+            .apply_platform_stock_snapshot(&snapshot)
+            .await
+            .expect_err("pending local upload defers snapshot");
+        assert!(error
+            .to_string()
+            .contains("local stock movements are pending upload"));
+        let sale_view = store
+            .sale_view(Some("M001".to_string()))
+            .await
+            .expect("view");
+        assert_eq!(sale_view.items[0].physical_stock, 6);
+        assert_eq!(sale_view.items[0].saleable_stock, 6);
+    }
+
+    #[tokio::test]
+    async fn platform_stock_snapshot_rejects_capacity_mismatch() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_single_slot_planogram(&store).await;
+        store
+            .record_stock_movement(StockMovementInput {
+                movement_id: "MOVE-SEED-CAPACITY".to_string(),
+                planogram_version: "PLAN-FAILURE".to_string(),
+                slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                movement_type: "stock_count_correction".to_string(),
+                quantity: 5,
+                source: "local_maintenance".to_string(),
+                attributed_to: None,
+            })
+            .await
+            .expect("seed stock");
+
+        let snapshot = crate::backend::MachineStockSnapshot {
+            machine_code: "M001".to_string(),
+            planogram_version: "PLAN-FAILURE".to_string(),
+            slots: vec![crate::backend::MachineStockSnapshotSlot {
+                slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                slot_code: "A1".to_string(),
+                inventory_id: "550e8400-e29b-41d4-a716-446655440002".to_string(),
+                capacity: 10,
+                on_hand_qty: 10,
+                reserved_qty: 0,
+                available_qty: 10,
+            }],
+            server_time: "2026-06-12T00:00:00.000Z".to_string(),
+        };
+
+        let error = store
+            .apply_platform_stock_snapshot(&snapshot)
+            .await
+            .expect_err("capacity mismatch is rejected");
+        assert!(error.to_string().contains("capacity mismatch"));
     }
 
     #[tokio::test]

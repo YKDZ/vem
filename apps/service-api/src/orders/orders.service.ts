@@ -185,6 +185,11 @@ type CancelableMachineOrderRow = {
   providerConfigId: string | null;
 };
 
+type CancelableMachineOrderCurrentRow = Pick<
+  CancelableMachineOrderRow,
+  "orderStatus" | "paymentState" | "fulfillmentState" | "paymentStatus"
+>;
+
 @Injectable()
 export class OrdersService {
   constructor(
@@ -811,6 +816,31 @@ export class OrdersService {
     }
   }
 
+  private assertMachineOrderCanStillBeCanceled(
+    row: CancelableMachineOrderCurrentRow,
+  ): "already_closed" | "cancelable" {
+    if (
+      row.orderStatus === "canceled" ||
+      row.orderStatus === "payment_expired" ||
+      row.paymentStatus === "canceled" ||
+      row.paymentStatus === "expired"
+    ) {
+      return "already_closed";
+    }
+
+    if (
+      row.paymentState === "paid" ||
+      row.paymentStatus === "succeeded" ||
+      row.fulfillmentState !== "awaiting_fulfillment"
+    ) {
+      throw new ConflictException(
+        "Paid or dispensing orders cannot be canceled",
+      );
+    }
+
+    return "cancelable";
+  }
+
   private async cancelProviderPaymentIfNeeded(
     row: CancelableMachineOrderRow,
   ): Promise<Record<string, unknown>> {
@@ -874,28 +904,33 @@ export class OrdersService {
       throw new NotFoundException("Machine order not found");
     }
 
-    if (
-      row.orderStatus === "canceled" ||
-      row.orderStatus === "payment_expired" ||
-      row.paymentStatus === "canceled" ||
-      row.paymentStatus === "expired"
-    ) {
+    if (this.assertMachineOrderCanStillBeCanceled(row) === "already_closed") {
       return await this.getMachineOrderStatus(orderNo, query);
-    }
-
-    if (
-      row.paymentState === "paid" ||
-      row.paymentStatus === "succeeded" ||
-      row.fulfillmentState !== "awaiting_fulfillment"
-    ) {
-      throw new ConflictException(
-        "Paid or dispensing orders cannot be canceled",
-      );
     }
 
     const providerPayload = await this.cancelProviderPaymentIfNeeded(row);
 
     await this.db.transaction(async (tx) => {
+      const [current] = await tx
+        .select({
+          orderStatus: orders.status,
+          paymentState: orders.paymentState,
+          fulfillmentState: orders.fulfillmentState,
+          paymentStatus: payments.status,
+        })
+        .from(orders)
+        .innerJoin(payments, eq(payments.id, orders.paymentId))
+        .where(eq(orders.id, row.orderId));
+
+      if (!current) {
+        throw new ConflictException("Machine order changed before cancel");
+      }
+      if (
+        this.assertMachineOrderCanStillBeCanceled(current) === "already_closed"
+      ) {
+        return;
+      }
+
       await tx
         .insert(paymentEvents)
         .values({
@@ -914,16 +949,27 @@ export class OrdersService {
         })
         .onConflictDoNothing();
 
-      await tx
+      const [paymentUpdate] = await tx
         .update(payments)
         .set({
           status: "canceled",
           failedReason: null,
           updatedAt: new Date(),
         })
-        .where(eq(payments.id, row.paymentId));
+        .where(
+          and(
+            eq(payments.id, row.paymentId),
+            inArray(payments.status, ["created", "pending", "processing"]),
+          ),
+        )
+        .returning({ id: payments.id });
+      if (!paymentUpdate) {
+        throw new ConflictException(
+          "Machine order payment changed before cancel",
+        );
+      }
 
-      await tx
+      const [orderUpdate] = await tx
         .update(orders)
         .set({
           status: "canceled",
@@ -932,7 +978,20 @@ export class OrdersService {
           canceledAt: new Date(),
           updatedAt: new Date(),
         })
-        .where(eq(orders.id, row.orderId));
+        .where(
+          and(
+            eq(orders.id, row.orderId),
+            eq(orders.fulfillmentState, "awaiting_fulfillment"),
+            inArray(orders.paymentState, [
+              "awaiting_payment",
+              "payment_failed",
+            ]),
+          ),
+        )
+        .returning({ id: orders.id });
+      if (!orderUpdate) {
+        throw new ConflictException("Machine order changed before cancel");
+      }
 
       if (row.orderStatus !== "canceled") {
         await tx.insert(orderStatusEvents).values({

@@ -1354,23 +1354,43 @@ describe("OrdersService (transaction boundary)", () => {
         paymentStatus: "canceled",
       };
       const tx = {
-        select: vi.fn().mockReturnValue({
-          from: vi.fn().mockReturnValue({
-            where: vi
-              .fn()
-              .mockResolvedValue([{ inventoryId: "inv-1", quantity: 2 }]),
+        select: vi
+          .fn()
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              innerJoin: vi.fn().mockReturnValue({
+                where: vi.fn().mockResolvedValue([row]),
+              }),
+            }),
+          })
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi
+                .fn()
+                .mockResolvedValue([{ inventoryId: "inv-1", quantity: 2 }]),
+            }),
           }),
-        }),
         insert: vi.fn().mockReturnValue({
           values: vi.fn().mockReturnValue({
             onConflictDoNothing: vi.fn().mockResolvedValue([]),
           }),
         }),
-        update: vi.fn().mockReturnValue({
-          set: vi.fn().mockReturnValue({
-            where: vi.fn().mockResolvedValue([]),
+        update: vi
+          .fn()
+          .mockReturnValueOnce({
+            set: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                returning: vi.fn().mockResolvedValue([{ id: "pay-1" }]),
+              }),
+            }),
+          })
+          .mockReturnValueOnce({
+            set: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                returning: vi.fn().mockResolvedValue([{ id: "ord-1" }]),
+              }),
+            }),
           }),
-        }),
       };
 
       db.select
@@ -1405,6 +1425,69 @@ describe("OrdersService (transaction boundary)", () => {
         quantity: 2,
         reason: "canceled",
       });
+    });
+
+    it("does not cancel or release reservations when payment succeeds before the transaction update", async () => {
+      const db = makeDb();
+      const releaseReservation = vi.fn().mockResolvedValue(undefined);
+      const row = {
+        orderId: "ord-1",
+        orderNo: "ORD001",
+        machineId: "mach-1",
+        machineCode: "M001",
+        orderStatus: "pending_payment",
+        paymentState: "awaiting_payment",
+        fulfillmentState: "awaiting_fulfillment",
+        totalAmountCents: 300,
+        paymentId: "pay-1",
+        paymentNo: "PAY001",
+        paymentMethod: "qr_code",
+        paymentStatus: "created",
+        paymentUrl: "https://pay.example/qr",
+        paymentExpiresAt: null,
+        paidAt: null,
+        failedReason: null,
+        providerId: "provider-mock",
+        providerCode: "mock",
+        paymentProviderCode: "mock",
+        providerTradeNo: null,
+        providerConfigId: null,
+      };
+      const tx = {
+        select: vi.fn().mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue([
+                {
+                  orderStatus: "paid",
+                  paymentState: "paid",
+                  fulfillmentState: "awaiting_fulfillment",
+                  paymentStatus: "succeeded",
+                },
+              ]),
+            }),
+          }),
+        }),
+        insert: vi.fn(),
+        update: vi.fn(),
+      };
+
+      db.select.mockReturnValueOnce(makeJoinedSelectResult([row]));
+      db.transaction.mockImplementationOnce(
+        async (cb: (txArg: typeof tx) => Promise<unknown>) => await cb(tx),
+      );
+
+      const service = makeService({
+        db,
+        inventoryService: { releaseReservation },
+      });
+
+      await expect(
+        service.cancelMachineOrder("ORD001", { machineCode: "M001" }),
+      ).rejects.toThrow(ConflictException);
+      expect(tx.insert).not.toHaveBeenCalled();
+      expect(tx.update).not.toHaveBeenCalled();
+      expect(releaseReservation).not.toHaveBeenCalled();
     });
   });
 
