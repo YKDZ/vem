@@ -1771,11 +1771,21 @@ impl LocalStateStore {
             ));
         }
 
-        let active_order: Option<(i64,)> =
-            sqlx::query_as("SELECT 1 FROM order_sessions WHERE status != 'closed' LIMIT 1")
-                .fetch_optional(tx.as_mut())
-                .await?;
-        if active_order.is_some() {
+        let latest_order_session: Option<(String, String)> = sqlx::query_as(
+            "SELECT status, next_action
+             FROM order_sessions
+             WHERE status != 'closed'
+             ORDER BY updated_at DESC
+             LIMIT 1",
+        )
+        .fetch_optional(tx.as_mut())
+        .await?;
+        if latest_order_session
+            .as_ref()
+            .is_some_and(|(status, next_action)| {
+                order_session_reserves_local_stock(status, next_action)
+            })
+        {
             return Err(StoreError::InvalidStockInput(
                 "stock snapshot deferred while a local order is active".to_string(),
             ));
@@ -3550,6 +3560,27 @@ mod tests {
         }
     }
 
+    fn single_slot_stock_snapshot(
+        on_hand_qty: i64,
+        reserved_qty: i64,
+        available_qty: i64,
+    ) -> crate::backend::MachineStockSnapshot {
+        crate::backend::MachineStockSnapshot {
+            machine_code: "M001".to_string(),
+            planogram_version: "PLAN-FAILURE".to_string(),
+            slots: vec![crate::backend::MachineStockSnapshotSlot {
+                slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                slot_code: "A1".to_string(),
+                inventory_id: "550e8400-e29b-41d4-a716-446655440002".to_string(),
+                capacity: 8,
+                on_hand_qty,
+                reserved_qty,
+                available_qty,
+            }],
+            server_time: "2026-06-12T00:00:00.000Z".to_string(),
+        }
+    }
+
     #[tokio::test]
     async fn platform_stock_snapshot_updates_local_sale_view_without_upload_outbox() {
         let temp = TempDir::new().expect("temp");
@@ -3594,6 +3625,140 @@ mod tests {
         assert_eq!(sale_view.items[0].saleable_stock, 8);
         assert_eq!(sale_view.items[0].slot_sales_state, "sale_ready");
         assert_eq!(store.outbox_size().await.expect("outbox"), 0);
+    }
+
+    #[tokio::test]
+    async fn platform_stock_snapshot_ignores_historical_terminal_orders() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_single_slot_planogram(&store).await;
+        store
+            .record_stock_movement(StockMovementInput {
+                movement_id: "MOVE-SEED-BEFORE-TERMINAL-ORDERS".to_string(),
+                planogram_version: "PLAN-FAILURE".to_string(),
+                slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                movement_type: "stock_count_correction".to_string(),
+                quantity: 5,
+                source: "local_maintenance".to_string(),
+                attributed_to: None,
+            })
+            .await
+            .expect("seed stock");
+
+        store
+            .upsert_order_session(OrderSessionUpsert {
+                order_no: "ORDER-HISTORICAL-PENDING",
+                payment_method: "payment_code",
+                payment_provider: Some("alipay"),
+                items_json: json!({
+                    "inventoryId": "550e8400-e29b-41d4-a716-446655440002",
+                    "slotId": "550e8400-e29b-41d4-a716-446655440001",
+                    "slotCode": "A1",
+                    "quantity": 1
+                }),
+                status: "pending_payment",
+                next_action: "wait_payment",
+                payment_attempt_json: None,
+                recovery_strategy: "local",
+                last_backend_status_json: None,
+                last_error: None,
+            })
+            .await
+            .expect("historical active order");
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+
+        for (order_no, status, next_action) in [
+            ("ORDER-SUCCEEDED", "succeeded", "success"),
+            ("ORDER-FAILED", "failed", "dispense_failed"),
+            ("ORDER-EXPIRED", "payment_expired", "payment_expired"),
+            ("ORDER-REFUND-PENDING", "refund_pending", "refund_pending"),
+        ] {
+            store
+                .upsert_order_session(OrderSessionUpsert {
+                    order_no,
+                    payment_method: "payment_code",
+                    payment_provider: Some("alipay"),
+                    items_json: json!({
+                        "inventoryId": "550e8400-e29b-41d4-a716-446655440002",
+                        "slotId": "550e8400-e29b-41d4-a716-446655440001",
+                        "slotCode": "A1",
+                        "quantity": 1
+                    }),
+                    status,
+                    next_action,
+                    payment_attempt_json: None,
+                    recovery_strategy: "local",
+                    last_backend_status_json: None,
+                    last_error: None,
+                })
+                .await
+                .expect("historical terminal order");
+        }
+
+        let sale_view = store
+            .apply_platform_stock_snapshot(&single_slot_stock_snapshot(10, 0, 10))
+            .await
+            .expect("terminal orders must not defer snapshot");
+
+        assert_eq!(sale_view.items[0].physical_stock, 10);
+        assert_eq!(sale_view.items[0].saleable_stock, 8);
+        assert_eq!(sale_view.items[0].slot_sales_state, "sale_ready");
+    }
+
+    #[tokio::test]
+    async fn platform_stock_snapshot_defers_while_local_order_is_active() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_single_slot_planogram(&store).await;
+        store
+            .record_stock_movement(StockMovementInput {
+                movement_id: "MOVE-SEED-BEFORE-ACTIVE-ORDER".to_string(),
+                planogram_version: "PLAN-FAILURE".to_string(),
+                slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                movement_type: "stock_count_correction".to_string(),
+                quantity: 5,
+                source: "local_maintenance".to_string(),
+                attributed_to: None,
+            })
+            .await
+            .expect("seed stock");
+        store
+            .upsert_order_session(OrderSessionUpsert {
+                order_no: "ORDER-ACTIVE",
+                payment_method: "payment_code",
+                payment_provider: Some("alipay"),
+                items_json: json!({
+                    "inventoryId": "550e8400-e29b-41d4-a716-446655440002",
+                    "slotId": "550e8400-e29b-41d4-a716-446655440001",
+                    "slotCode": "A1",
+                    "quantity": 1
+                }),
+                status: "pending_payment",
+                next_action: "wait_payment",
+                payment_attempt_json: None,
+                recovery_strategy: "local",
+                last_backend_status_json: None,
+                last_error: None,
+            })
+            .await
+            .expect("active order");
+
+        let error = store
+            .apply_platform_stock_snapshot(&single_slot_stock_snapshot(10, 0, 10))
+            .await
+            .expect_err("active local order defers snapshot");
+
+        assert!(error.to_string().contains("local order is active"));
+        let sale_view = store
+            .sale_view(Some("M001".to_string()))
+            .await
+            .expect("view");
+        assert_eq!(sale_view.items[0].physical_stock, 5);
+        assert_eq!(sale_view.items[0].saleable_stock, 4);
     }
 
     #[tokio::test]
