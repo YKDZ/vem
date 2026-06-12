@@ -8,6 +8,7 @@ use tokio::sync::{Mutex, RwLock};
 
 const BACKEND_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 const BACKEND_REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
+const BACKEND_PAYMENT_REQUEST_TIMEOUT: Duration = Duration::from_secs(45);
 
 #[derive(Debug, Clone)]
 pub struct BackendClient {
@@ -96,6 +97,8 @@ pub struct MachineStockSnapshotSlot {
     pub on_hand_qty: i64,
     pub reserved_qty: i64,
     pub available_qty: i64,
+    #[serde(default)]
+    pub slot_sales_state: Option<String>,
 }
 
 impl BackendClient {
@@ -208,8 +211,12 @@ impl BackendClient {
         path: &str,
         body: Option<serde_json::Value>,
         with_auth: bool,
+        timeout: Duration,
     ) -> Result<serde_json::Value, BackendRequestError> {
-        let mut request = self.client.request(method, self.endpoint(path));
+        let mut request = self
+            .client
+            .request(method, self.endpoint(path))
+            .timeout(timeout);
         if with_auth {
             let token = self.token.read().await.clone();
             if let Some(token) = token {
@@ -246,19 +253,31 @@ impl BackendClient {
         body: Option<serde_json::Value>,
         with_auth: bool,
     ) -> Result<serde_json::Value, String> {
+        self.request_json_with_timeout(method, path, body, with_auth, BACKEND_REQUEST_TIMEOUT)
+            .await
+    }
+
+    async fn request_json_with_timeout(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<serde_json::Value>,
+        with_auth: bool,
+        timeout: Duration,
+    ) -> Result<serde_json::Value, String> {
         if with_auth {
             self.ensure_authenticated().await?;
         }
 
         match self
-            .request_json_once(method.clone(), path, body.clone(), with_auth)
+            .request_json_once(method.clone(), path, body.clone(), with_auth, timeout)
             .await
         {
             Ok(value) => Ok(value),
             Err(BackendRequestError::AuthFailed) if with_auth => {
                 self.clear_token().await;
                 self.refresh_auth_token().await?;
-                self.request_json_once(method, path, body, with_auth)
+                self.request_json_once(method, path, body, with_auth, timeout)
                     .await
                     .map_err(BackendRequestError::into_string)
             }
@@ -319,6 +338,7 @@ impl BackendClient {
                 "/machine-auth/token",
                 Some(body),
                 false,
+                BACKEND_REQUEST_TIMEOUT,
             )
             .await
             .map_err(BackendRequestError::into_string)?;
@@ -388,8 +408,14 @@ impl BackendClient {
             "paymentProviderCode": payment_provider_code,
             "profileSnapshot": profile_snapshot,
         });
-        self.request_json(reqwest::Method::POST, "/machine-orders", Some(body), true)
-            .await
+        self.request_json_with_timeout(
+            reqwest::Method::POST,
+            "/machine-orders",
+            Some(body),
+            true,
+            BACKEND_PAYMENT_REQUEST_TIMEOUT,
+        )
+        .await
     }
 
     pub async fn get_order_status(
@@ -433,8 +459,14 @@ impl BackendClient {
     ) -> Result<serde_json::Value, String> {
         let url = format!("/machine-orders/{order_no}/cancel");
         let body = serde_json::json!({ "machineCode": machine_code });
-        self.request_json(reqwest::Method::POST, &url, Some(body), true)
-            .await
+        self.request_json_with_timeout(
+            reqwest::Method::POST,
+            &url,
+            Some(body),
+            true,
+            BACKEND_PAYMENT_REQUEST_TIMEOUT,
+        )
+        .await
     }
 
     pub async fn submit_payment_code(
@@ -454,8 +486,14 @@ impl BackendClient {
             "source": source,
             "scannerHealth": scanner_health,
         });
-        self.request_json(reqwest::Method::POST, &url, Some(body), true)
-            .await
+        self.request_json_with_timeout(
+            reqwest::Method::POST,
+            &url,
+            Some(body),
+            true,
+            BACKEND_PAYMENT_REQUEST_TIMEOUT,
+        )
+        .await
     }
 
     pub async fn list_pending_remote_ops(&self) -> Result<Vec<RemoteOp>, String> {

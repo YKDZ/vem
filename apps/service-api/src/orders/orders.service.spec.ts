@@ -279,6 +279,7 @@ describe("OrdersService", () => {
                       {
                         inventoryId: "inv-1",
                         variantId: "var-1",
+                        productId: "prod-1",
                         productName: "Cola",
                         sku: "COLA-355",
                         size: null,
@@ -286,8 +287,11 @@ describe("OrdersService", () => {
                         unitPriceCents: 300,
                         slotId: "slot-1",
                         slotCode: "A1",
+                        slotStatus: "enabled",
                         layerNo: 1,
                         cellNo: 1,
+                        variantStatus: "active",
+                        productStatus: "active",
                       },
                     ]),
                   }),
@@ -425,6 +429,7 @@ describe("OrdersService", () => {
                       {
                         inventoryId: "inv-2",
                         variantId: "var-2",
+                        productId: "prod-2",
                         productName: "Water",
                         sku: "WTR-500",
                         size: null,
@@ -432,8 +437,11 @@ describe("OrdersService", () => {
                         unitPriceCents: 200,
                         slotId: "slot-2",
                         slotCode: "B1",
+                        slotStatus: "enabled",
                         layerNo: 1,
                         cellNo: 2,
+                        variantStatus: "active",
+                        productStatus: "active",
                       },
                     ]),
                   }),
@@ -689,6 +697,7 @@ type OrdersDbHarness = {
     reason: string;
   }>;
   insertedOrderItems: Array<Record<string, unknown>>;
+  inventoryRows?: Array<Record<string, unknown>>;
   planogramContextRows?: Array<{
     planogramVersion: string;
     slotId: string;
@@ -784,27 +793,31 @@ function makeGenericTx(db: OrdersDbHarness) {
     update: vi.fn(),
   };
 
+  const inventoryRows = db.inventoryRows ?? [
+    {
+      inventoryId: "inv-001",
+      variantId: "var-001",
+      productId: "prod-001",
+      productName: "Cola",
+      sku: "COLA-355",
+      size: null,
+      color: null,
+      unitPriceCents: 300,
+      slotId: "slot-001",
+      slotCode: "A1",
+      slotStatus: "enabled",
+      layerNo: 1,
+      cellNo: 1,
+      variantStatus: "active",
+      productStatus: "active",
+    },
+  ];
   const inventorySelectResult = {
     from: vi.fn().mockReturnValue({
       innerJoin: vi.fn().mockReturnValue({
         innerJoin: vi.fn().mockReturnValue({
           innerJoin: vi.fn().mockReturnValue({
-            where: vi.fn().mockResolvedValue([
-              {
-                inventoryId: "inv-001",
-                variantId: "var-001",
-                productId: "prod-001",
-                productName: "Cola",
-                sku: "COLA-355",
-                size: null,
-                color: null,
-                unitPriceCents: 300,
-                slotId: "slot-001",
-                slotCode: "A1",
-                layerNo: 1,
-                cellNo: 1,
-              },
-            ]),
+            where: vi.fn().mockResolvedValue(inventoryRows),
           }),
         }),
       }),
@@ -933,6 +946,7 @@ function makeGenericTxForCancellation(db: OrdersDbHarness) {
 
 function makeOrdersDbForSuccessfulLocalDraft(options?: {
   transactionFinished?: () => void;
+  inventoryRows?: Array<Record<string, unknown>>;
   planogramContextRows?: Array<{
     planogramVersion: string;
     slotId: string;
@@ -947,6 +961,7 @@ function makeOrdersDbForSuccessfulLocalDraft(options?: {
     transaction: vi.fn(),
     orderStatusEvents: [],
     insertedOrderItems: [],
+    inventoryRows: options?.inventoryRows,
     planogramContextRows: options?.planogramContextRows ?? [
       {
         planogramVersion: "PLAN-ACTIVE",
@@ -1061,6 +1076,54 @@ describe("OrdersService (transaction boundary)", () => {
           paymentProviderCode: "alipay",
         }),
       ).rejects.toThrow(ConflictException);
+
+      expect(reserveForOrder).not.toHaveBeenCalled();
+    });
+
+    it("rejects a faulted machine slot before reserving inventory", async () => {
+      const reserveForOrder = vi.fn().mockResolvedValue(undefined);
+      const db = makeOrdersDbForSuccessfulLocalDraft({
+        inventoryRows: [
+          {
+            inventoryId: "inv-001",
+            variantId: "var-001",
+            productId: "prod-001",
+            productName: "Cola",
+            sku: "COLA-355",
+            size: null,
+            color: null,
+            unitPriceCents: 300,
+            slotId: "slot-001",
+            slotCode: "A1",
+            slotStatus: "faulted",
+            layerNo: 1,
+            cellNo: 1,
+            variantStatus: "active",
+            productStatus: "active",
+          },
+        ],
+      });
+      const service = makeOrdersService({
+        db,
+        inventoryService: { reserveForOrder },
+      });
+
+      await expect(
+        service.createMachineOrder({
+          machineCode: "M-001",
+          items: [
+            {
+              inventoryId: "inv-001",
+              quantity: 1,
+              planogramVersion: "PLAN-ACTIVE",
+              slotId: "slot-001",
+              slotCode: "A1",
+            },
+          ],
+          paymentMethod: "payment_code",
+          paymentProviderCode: "alipay",
+        }),
+      ).rejects.toThrow("Slot A1 is not available");
 
       expect(reserveForOrder).not.toHaveBeenCalled();
     });

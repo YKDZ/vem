@@ -76,6 +76,8 @@ const copyMap: Record<CheckoutResultKind, ResultCopy> = {
     icon: "—",
   },
 };
+const DISPENSE_RESOLUTION_RESULT_KINDS: ReadonlySet<CheckoutResultKind> =
+  new Set(["dispense_failed", "refund_pending", "refunded", "manual_handling"]);
 
 const kind = computed(() => String(route.params.kind) as CheckoutResultKind);
 const copy = computed(() => copyMap[kind.value] ?? copyMap.manual_handling);
@@ -87,7 +89,9 @@ const toneClass = computed(() => {
 const isDispenseFailureResult = computed(
   () => kind.value === "dispense_failed",
 );
-const resultReadinessChecked = ref(false);
+const isDispenseResolutionResult = computed(() =>
+  DISPENSE_RESOLUTION_RESULT_KINDS.has(kind.value),
+);
 const resultReadinessError = ref<string | null>(null);
 const requiresMaintenanceReview = computed(() => {
   if (!isDispenseFailureResult.value) return false;
@@ -104,32 +108,20 @@ const canAutoReturn = computed(
   () =>
     Boolean(checkoutStore.resultKind) &&
     connectivityStore.isSaleNetworkReady &&
-    !requiresMaintenanceReview.value &&
-    (!isDispenseFailureResult.value || resultReadinessChecked.value),
+    !isDispenseResolutionResult.value,
 );
+const canManuallyReturn = computed(() => !isDispenseResolutionResult.value);
 const autoReturnRemainingSeconds = ref(
   Math.ceil(AUTO_RETURN_DELAY_MS / AUTO_RETURN_TICK_MS),
 );
-const blockedSlotCount = computed(
-  () =>
-    connectivityStore.saleReadiness?.components.slotSaleSafety?.blockedSlots
-      .length ?? 0,
-);
 const autoReturnMessage = computed(() => {
   const seconds = autoReturnRemainingSeconds.value;
-  if (kind.value === "dispense_failed" && blockedSlotCount.value > 0) {
-    return `下位机已恢复，${blockedSlotCount.value} 个故障货道已锁定，${seconds} 秒后返回首页。`;
-  }
-  if (kind.value === "dispense_failed") {
-    return `下位机已恢复，${seconds} 秒后返回首页。`;
-  }
   return `设备已恢复，${seconds} 秒后返回首页。`;
 });
 
 let autoReturnTimer: number | null = null;
 let autoReturnStartedAt = 0;
 let returningToCatalog = false;
-let routingToMaintenance = false;
 
 function stopAutoReturn(): void {
   if (autoReturnTimer !== null) {
@@ -171,18 +163,8 @@ async function backToCatalog(): Promise<void> {
   await router.replace("/catalog");
 }
 
-async function routeToMaintenance(): Promise<void> {
-  if (routingToMaintenance) return;
-  routingToMaintenance = true;
-  stopAutoReturn();
-  checkoutStore.dismissCurrentTerminalTransaction();
-  checkoutStore.reset();
-  await router.replace("/maintenance");
-}
-
 async function refreshResultReadiness(): Promise<void> {
   if (!isDispenseFailureResult.value) {
-    resultReadinessChecked.value = true;
     return;
   }
   try {
@@ -195,14 +177,7 @@ async function refreshResultReadiness(): Promise<void> {
   } catch (error) {
     resultReadinessError.value =
       error instanceof Error ? error.message : String(error);
-    await routeToMaintenance();
     return;
-  } finally {
-    resultReadinessChecked.value = true;
-  }
-
-  if (requiresMaintenanceReview.value) {
-    await routeToMaintenance();
   }
 }
 
@@ -213,16 +188,6 @@ watch(
       startAutoReturn();
     } else {
       stopAutoReturn();
-    }
-  },
-  { immediate: true },
-);
-
-watch(
-  requiresMaintenanceReview,
-  (required) => {
-    if (required && resultReadinessChecked.value) {
-      void routeToMaintenance();
     }
   },
   { immediate: true },
@@ -258,13 +223,13 @@ onBeforeUnmount(stopAutoReturn);
           v-else-if="requiresMaintenanceReview"
           class="mt-4 text-base text-rose-100"
         >
-          设备已进入维护锁，正在转入维护页。
+          设备需要维护检查，当前保持本次处理结果。
         </p>
         <p
           v-else-if="resultReadinessError"
           class="mt-4 text-amber-100 text-base"
         >
-          无法确认设备恢复状态，正在转入维护页。
+          无法确认设备恢复状态，当前保持本次处理结果。
         </p>
 
         <div class="mt-8 grid gap-3 text-left text-slate-200">
@@ -287,13 +252,12 @@ onBeforeUnmount(stopAutoReturn);
       </div>
 
       <button
+        v-if="canManuallyReturn"
         class="kiosk-touch-target mt-8 w-full rounded-3xl bg-sky-400 px-6 py-5 text-2xl font-black text-slate-950 shadow-xl shadow-sky-950/40"
         type="button"
-        @click="
-          requiresMaintenanceReview ? routeToMaintenance() : backToCatalog()
-        "
+        @click="backToCatalog"
       >
-        {{ requiresMaintenanceReview ? "进入维护" : "返回首页" }}
+        返回首页
       </button>
     </section>
   </KioskLayout>

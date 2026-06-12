@@ -238,7 +238,7 @@ afterEach(() => {
 });
 
 describe("ResultView", () => {
-  it("auto-dismisses a terminal transaction once the machine is sale-ready again", async () => {
+  it("keeps a dispense failure result visible once the machine is sale-ready again", async () => {
     const transaction = terminalDispenseFailedTransaction();
     const checkoutStore = useCheckoutStore();
     checkoutStore.applyTransaction(transaction);
@@ -255,20 +255,20 @@ describe("ResultView", () => {
       expect(getReadyMock).toHaveBeenCalledOnce();
     });
 
-    expect(host.textContent).toContain("故障货道已锁定");
+    expect(host.textContent).toContain("出货失败");
+    expect(host.textContent).not.toContain("返回首页");
 
     await vi.advanceTimersByTimeAsync(6000);
 
-    await vi.waitFor(() => {
-      expect(routerReplaceMock).toHaveBeenCalledWith("/catalog");
-    });
-    expect(getSaleViewMock).toHaveBeenCalledOnce();
-    expect(checkoutStore.shouldIgnoreTransaction(transaction)).toBe(true);
-    expect(checkoutStore.currentOrder).toBeNull();
-    expect(checkoutStore.status).toBeNull();
+    expect(routerReplaceMock).not.toHaveBeenCalledWith("/catalog");
+    expect(routerReplaceMock).not.toHaveBeenCalledWith("/maintenance");
+    expect(getSaleViewMock).not.toHaveBeenCalled();
+    expect(checkoutStore.shouldIgnoreTransaction(transaction)).toBe(false);
+    expect(checkoutStore.currentOrder?.orderNo).toBe("ORD-FAILED-001");
+    expect(checkoutStore.status?.nextAction).toBe("dispense_failed");
   });
 
-  it("routes dispense failures to maintenance when the machine remains blocked", async () => {
+  it("keeps dispense failures on the result page when the machine remains blocked", async () => {
     const transaction = terminalDispenseFailedTransaction();
     useCheckoutStore().applyTransaction(transaction);
     applySaleReadiness(false);
@@ -281,16 +281,18 @@ describe("ResultView", () => {
 
     const host = await mountView();
 
-    expect(host.textContent).not.toContain("设备已恢复");
-
     await vi.waitFor(() => {
-      expect(routerReplaceMock).toHaveBeenCalledWith("/maintenance");
+      expect(getReadyMock).toHaveBeenCalledOnce();
     });
 
+    expect(host.textContent).toContain("出货失败");
+    expect(host.textContent).not.toContain("返回首页");
+    expect(routerReplaceMock).not.toHaveBeenCalledWith("/maintenance");
+    expect(routerReplaceMock).not.toHaveBeenCalledWith("/catalog");
     expect(getSaleViewMock).not.toHaveBeenCalled();
   });
 
-  it("refreshes stale ready state before deciding whether to return to catalog", async () => {
+  it("refreshes stale ready state without routing a dispense failure away from the result page", async () => {
     const transaction = terminalDispenseFailedTransaction();
     useCheckoutStore().applyTransaction(transaction);
     applySaleReadiness(true);
@@ -304,7 +306,8 @@ describe("ResultView", () => {
     await mountView();
     await vi.advanceTimersByTimeAsync(10000);
 
-    expect(routerReplaceMock).toHaveBeenCalledWith("/maintenance");
+    expect(getReadyMock).toHaveBeenCalledOnce();
+    expect(routerReplaceMock).not.toHaveBeenCalledWith("/maintenance");
     expect(routerReplaceMock).not.toHaveBeenCalledWith("/catalog");
     expect(getSaleViewMock).not.toHaveBeenCalled();
   });

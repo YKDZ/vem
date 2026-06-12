@@ -490,6 +490,96 @@ describe("RefundsService.requestPartialRefund", () => {
       }),
     );
   });
+
+  it("provider throws: records failed refund event and order transition for admin diagnosis", async () => {
+    const db = makeDb();
+    const insertedValues: Record<string, unknown>[] = [];
+    const updateSets: Record<string, unknown>[] = [];
+    const refundRow = makeRefundRow({
+      amountCents: 300,
+      reason: "auto_partial_dispense_failed",
+    });
+    const paymentRow = makeBasePaymentRow({
+      orderStatus: "dispense_failed",
+      fulfillmentState: "partial_dispensed",
+      providerCode: "mock",
+      paymentAmountCents: 800,
+      amountCents: 800,
+    });
+
+    db.select.mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        innerJoin: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                orderBy: vi.fn().mockResolvedValue([paymentRow]),
+              }),
+            }),
+          }),
+        }),
+      }),
+    });
+    db.select.mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([]),
+        }),
+      }),
+    });
+    db.update.mockReturnValue({
+      set: vi.fn().mockImplementation((values: Record<string, unknown>) => {
+        updateSets.push(values);
+        return { where: vi.fn().mockResolvedValue(undefined) };
+      }),
+    });
+    db.insert.mockReturnValue({
+      values: vi.fn().mockImplementation((values: Record<string, unknown>) => {
+        insertedValues.push(values);
+        return {
+          returning: vi.fn().mockResolvedValue([refundRow]),
+          onConflictDoNothing: vi.fn().mockResolvedValue([]),
+        };
+      }),
+    });
+
+    const refundPayment = vi
+      .fn()
+      .mockRejectedValue(new Error("provider timeout"));
+    const service = makeService({
+      db,
+      refundPayment,
+      supportsPartialRefund: true,
+    });
+
+    const result = await service.requestPartialRefund({
+      orderId: "ord-001",
+      orderItemIds: ["line-failed"],
+      amountCents: 300,
+      reason: "auto_partial_dispense_failed",
+    });
+
+    expect(result.status).toBe("failed");
+    expect(updateSets).toContainEqual(
+      expect.objectContaining({ status: "failed" }),
+    );
+    expect(insertedValues).toContainEqual(
+      expect.objectContaining({
+        eventType: "refund.failed",
+        status: "failed",
+      }),
+    );
+    expect(insertedValues).toContainEqual(
+      expect.objectContaining({
+        reason: "auto_partial_dispense_failed_failed",
+        toStatus: "manual_handling",
+        metadata: expect.objectContaining({
+          refundNo: refundRow.refundNo,
+          message: "provider timeout",
+        }),
+      }),
+    );
+  });
 });
 
 describe("RefundsService partial refund terminal states", () => {

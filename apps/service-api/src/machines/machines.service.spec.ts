@@ -834,31 +834,35 @@ describe("MachinesService planogram lifecycle", () => {
         innerJoin: () => ({
           innerJoin: () => ({
             innerJoin: () => ({
-              where: () => ({
-                orderBy: async () => [
-                  {
-                    machineCode: "M001",
-                    planogramVersion: "PLAN-1",
-                    slotId: "slot-1",
-                    slotCode: "A1",
-                    inventoryId: "inv-1",
-                    capacity: 10,
-                    onHandQty: 10,
-                    reservedQty: 0,
-                    availableQty: 10,
-                  },
-                  {
-                    machineCode: "M001",
-                    planogramVersion: "PLAN-1",
-                    slotId: "slot-2",
-                    slotCode: "A2",
-                    inventoryId: "inv-2",
-                    capacity: 10,
-                    onHandQty: 0,
-                    reservedQty: 0,
-                    availableQty: 0,
-                  },
-                ],
+              innerJoin: () => ({
+                where: () => ({
+                  orderBy: async () => [
+                    {
+                      machineCode: "M001",
+                      planogramVersion: "PLAN-1",
+                      slotId: "slot-1",
+                      slotCode: "A1",
+                      inventoryId: "inv-1",
+                      capacity: 10,
+                      slotStatus: "enabled",
+                      onHandQty: 10,
+                      reservedQty: 0,
+                      availableQty: 10,
+                    },
+                    {
+                      machineCode: "M001",
+                      planogramVersion: "PLAN-1",
+                      slotId: "slot-2",
+                      slotCode: "A2",
+                      inventoryId: "inv-2",
+                      capacity: 10,
+                      slotStatus: "faulted",
+                      onHandQty: 5,
+                      reservedQty: 0,
+                      availableQty: 0,
+                    },
+                  ],
+                }),
               }),
             }),
           }),
@@ -878,13 +882,15 @@ describe("MachinesService planogram lifecycle", () => {
           inventoryId: "inv-1",
           onHandQty: 10,
           availableQty: 10,
+          slotSalesState: "sale_ready",
         },
         {
           slotId: "slot-2",
           slotCode: "A2",
           inventoryId: "inv-2",
-          onHandQty: 0,
+          onHandQty: 5,
           availableQty: 0,
+          slotSalesState: "frozen",
         },
       ],
       serverTime: expect.any(String),

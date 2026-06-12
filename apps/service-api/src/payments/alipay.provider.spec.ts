@@ -216,7 +216,7 @@ describe("AlipayProvider", () => {
     ).rejects.toThrow("Alipay alipay.trade.precreate failed");
   });
 
-  it("cancels and rejects order-code QR when sandbox never observes the trade", async () => {
+  it("returns order-code QR when readiness probe does not observe the trade yet", async () => {
     const { sdk, factory } = makeSdk();
     vi.mocked(sdk.exec)
       .mockResolvedValueOnce({
@@ -232,28 +232,25 @@ describe("AlipayProvider", () => {
       });
     const provider = new AlipayProvider(factory);
 
-    await expect(
-      provider.createPaymentIntent({
-        config: makeRuntimeConfig({
-          publicConfigJson: {
-            ...makeRuntimeConfig().publicConfigJson,
-            orderCodeReadinessCheckEnabled: true,
-            orderCodeReadinessPollIntervalMs: 1,
-            orderCodeReadinessTimeoutMs: 1,
-          },
-        }),
-        paymentNo: "PAY202605060122",
-        orderNo: "ORD202605060122",
-        amountCents: 100,
-        expiresAt: new Date(Date.now() + 15 * 60_000),
+    const result = await provider.createPaymentIntent({
+      config: makeRuntimeConfig({
+        publicConfigJson: {
+          ...makeRuntimeConfig().publicConfigJson,
+          orderCodeReadinessCheckEnabled: true,
+          orderCodeReadinessPollIntervalMs: 1,
+          orderCodeReadinessTimeoutMs: 1,
+        },
       }),
-    ).rejects.toThrow("支付宝支付通道暂不可用，请稍后重试");
+      paymentNo: "PAY202605060122",
+      orderNo: "ORD202605060122",
+      amountCents: 100,
+      expiresAt: new Date(Date.now() + 15 * 60_000),
+    });
 
-    expect(sdk.exec).toHaveBeenCalledWith(
+    expect(result.paymentUrl).toBe("https://qr.alipay.com/bax-sandbox");
+    expect(sdk.exec).not.toHaveBeenCalledWith(
       "alipay.trade.cancel",
-      expect.objectContaining({
-        bizContent: { out_trade_no: "PAY202605060122" },
-      }),
+      expect.anything(),
     );
   });
 

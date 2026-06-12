@@ -1868,11 +1868,23 @@ impl LocalStateStore {
                 )));
             }
 
-            let saleable_stock = slot.available_qty.min(*capacity).max(0);
-            let slot_sales_state = if saleable_stock > 0 {
-                "sale_ready"
+            let raw_saleable_stock = slot.available_qty.min(*capacity).max(0);
+            let slot_sales_state = match slot.slot_sales_state.as_deref() {
+                Some(state) if !is_supported_slot_sales_state(state) => {
+                    return Err(StoreError::InvalidStockInput(format!(
+                        "stock snapshot unsupported slot sales state {} for slot {}",
+                        state, slot.slot_code
+                    )));
+                }
+                Some("sale_ready") if raw_saleable_stock <= 0 => "sold_out",
+                Some(state) => state,
+                None if raw_saleable_stock > 0 => "sale_ready",
+                None => "sold_out",
+            };
+            let saleable_stock = if slot_sales_state == "sale_ready" {
+                raw_saleable_stock
             } else {
-                "sold_out"
+                0
             };
             upsert_stock_projection_with_state_in_tx(
                 &mut tx,
@@ -3576,6 +3588,7 @@ mod tests {
                 on_hand_qty,
                 reserved_qty,
                 available_qty,
+                slot_sales_state: None,
             }],
             server_time: "2026-06-12T00:00:00.000Z".to_string(),
         }
@@ -3612,6 +3625,7 @@ mod tests {
                 on_hand_qty: 10,
                 reserved_qty: 0,
                 available_qty: 10,
+                slot_sales_state: None,
             }],
             server_time: "2026-06-12T00:00:00.000Z".to_string(),
         };
@@ -3625,6 +3639,52 @@ mod tests {
         assert_eq!(sale_view.items[0].saleable_stock, 8);
         assert_eq!(sale_view.items[0].slot_sales_state, "sale_ready");
         assert_eq!(store.outbox_size().await.expect("outbox"), 0);
+    }
+
+    #[tokio::test]
+    async fn platform_stock_snapshot_preserves_platform_slot_sale_blocker() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_single_slot_planogram(&store).await;
+        store
+            .record_stock_movement(StockMovementInput {
+                movement_id: "MOVE-SEED-PLATFORM-BLOCKER".to_string(),
+                planogram_version: "PLAN-FAILURE".to_string(),
+                slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                movement_type: "stock_count_correction".to_string(),
+                quantity: 5,
+                source: "local_maintenance".to_string(),
+                attributed_to: None,
+            })
+            .await
+            .expect("seed stock");
+
+        let snapshot = crate::backend::MachineStockSnapshot {
+            machine_code: "M001".to_string(),
+            planogram_version: "PLAN-FAILURE".to_string(),
+            slots: vec![crate::backend::MachineStockSnapshotSlot {
+                slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                slot_code: "A1".to_string(),
+                inventory_id: "550e8400-e29b-41d4-a716-446655440002".to_string(),
+                capacity: 8,
+                on_hand_qty: 5,
+                reserved_qty: 0,
+                available_qty: 5,
+                slot_sales_state: Some("frozen".to_string()),
+            }],
+            server_time: "2026-06-12T00:00:00.000Z".to_string(),
+        };
+
+        let sale_view = store
+            .apply_platform_stock_snapshot(&snapshot)
+            .await
+            .expect("apply snapshot");
+
+        assert_eq!(sale_view.items[0].physical_stock, 5);
+        assert_eq!(sale_view.items[0].saleable_stock, 0);
+        assert_eq!(sale_view.items[0].slot_sales_state, "frozen");
     }
 
     #[tokio::test]
@@ -3809,6 +3869,7 @@ mod tests {
                 on_hand_qty: 5,
                 reserved_qty: 0,
                 available_qty: 5,
+                slot_sales_state: None,
             }],
             server_time: "2026-06-12T00:00:00.000Z".to_string(),
         };
@@ -3859,6 +3920,7 @@ mod tests {
                 on_hand_qty: 10,
                 reserved_qty: 0,
                 available_qty: 10,
+                slot_sales_state: None,
             }],
             server_time: "2026-06-12T00:00:00.000Z".to_string(),
         };

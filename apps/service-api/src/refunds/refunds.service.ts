@@ -777,51 +777,21 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
 
       return await this.db.transaction(async (tx) => {
         if (result.status === "succeeded") {
-          await tx
-            .update(refunds)
-            .set({
-              status: "succeeded",
-              providerRefundNo: result.providerRefundNo,
-              refundedAt: result.refundedAt ?? new Date(),
-              updatedAt: new Date(),
-            })
-            .where(eq(refunds.id, created.refund.id));
-          await tx
-            .update(orderItems)
-            .set({
-              refundStatus: "refunded",
-              refundId: created.refund.id,
-              refundUpdatedAt: new Date(),
-            })
-            .where(inArray(orderItems.id, input.orderItemIds));
-          await tx
-            .update(payments)
-            .set({ status: "partial_refunded", updatedAt: new Date() })
-            .where(eq(payments.id, created.row.paymentId));
-          await tx
-            .update(orders)
-            .set({
-              status: "refunded",
-              paymentState: "partial_refunded",
-              fulfillmentState: created.row.fulfillmentState,
-              updatedAt: new Date(),
-            })
-            .where(eq(orders.id, input.orderId));
-          await tx
-            .insert(refundEvents)
-            .values({
-              refundId: created.refund.id,
-              paymentId: created.row.paymentId,
-              providerId: created.row.providerId,
-              eventType: "refund.succeeded",
-              providerEventId: `sync_succeeded:${created.refund.refundNo}`,
-              providerRefundNo: result.providerRefundNo,
-              status: "succeeded",
-              rawPayloadJson: buildStoredEventPayload(result.rawPayload ?? {}),
-              signatureValid: true,
-              handledAt: new Date(),
-            })
-            .onConflictDoNothing();
+          await this.applyPartialRefundTerminalState(tx, {
+            refundId: created.refund.id,
+            paymentId: created.row.paymentId,
+            providerId: created.row.providerId,
+            orderId: input.orderId,
+            refundNo: created.refund.refundNo,
+            providerRefundNo: result.providerRefundNo,
+            fulfillmentState: created.row.fulfillmentState,
+            status: "succeeded",
+            eventType: "refund.succeeded",
+            providerEventId: `sync_succeeded:${created.refund.refundNo}`,
+            rawPayloadJson: result.rawPayload ?? {},
+            orderEventReason: `${input.reason}_succeeded`,
+            refundedAt: result.refundedAt ?? null,
+          });
           return {
             ...created.refund,
             status: "succeeded" as const,
@@ -831,46 +801,22 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
         }
 
         if (result.status === "failed") {
-          await tx
-            .update(refunds)
-            .set({
-              status: "failed",
-              providerRefundNo: result.providerRefundNo,
-              updatedAt: new Date(),
-            })
-            .where(eq(refunds.id, created.refund.id));
-          await tx
-            .update(orderItems)
-            .set({ refundStatus: "failed", refundUpdatedAt: new Date() })
-            .where(inArray(orderItems.id, input.orderItemIds));
-          await tx
-            .update(payments)
-            .set({ status: "succeeded", updatedAt: new Date() })
-            .where(eq(payments.id, created.row.paymentId));
-          await tx
-            .update(orders)
-            .set({
-              status: "manual_handling",
-              paymentState: "paid",
-              fulfillmentState: created.row.fulfillmentState,
-              updatedAt: new Date(),
-            })
-            .where(eq(orders.id, input.orderId));
-          await tx
-            .insert(refundEvents)
-            .values({
-              refundId: created.refund.id,
-              paymentId: created.row.paymentId,
-              providerId: created.row.providerId,
-              eventType: "refund.failed",
-              providerEventId: `sync_failed:${created.refund.refundNo}`,
-              providerRefundNo: result.providerRefundNo,
-              status: "failed",
-              rawPayloadJson: buildStoredEventPayload(result.rawPayload ?? {}),
-              signatureValid: true,
-              handledAt: new Date(),
-            })
-            .onConflictDoNothing();
+          await this.applyPartialRefundTerminalState(tx, {
+            refundId: created.refund.id,
+            paymentId: created.row.paymentId,
+            providerId: created.row.providerId,
+            orderId: input.orderId,
+            refundNo: created.refund.refundNo,
+            providerRefundNo: result.providerRefundNo,
+            fulfillmentState: created.row.fulfillmentState,
+            status: "failed",
+            eventType: "refund.failed",
+            providerEventId: `sync_failed:${created.refund.refundNo}`,
+            rawPayloadJson: result.rawPayload ?? {},
+            orderEventReason: `${input.reason}_failed`,
+            failureMessage: "provider_returned_failed",
+            refundedAt: null,
+          });
           return {
             ...created.refund,
             status: "failed" as const,
@@ -908,29 +854,28 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
           providerRefundNo: result.providerRefundNo,
         };
       });
-    } catch {
+    } catch (error: unknown) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
       await this.db.transaction(async (tx) => {
-        await tx
-          .update(refunds)
-          .set({ status: "failed", updatedAt: new Date() })
-          .where(eq(refunds.id, created.refund.id));
-        await tx
-          .update(orderItems)
-          .set({ refundStatus: "failed", refundUpdatedAt: new Date() })
-          .where(inArray(orderItems.id, input.orderItemIds));
-        await tx
-          .update(orders)
-          .set({
-            status: "manual_handling",
-            paymentState: "paid",
-            fulfillmentState: created.row.fulfillmentState,
-            updatedAt: new Date(),
-          })
-          .where(eq(orders.id, input.orderId));
-        await tx
-          .update(payments)
-          .set({ status: "succeeded", updatedAt: new Date() })
-          .where(eq(payments.id, created.row.paymentId));
+        await this.applyPartialRefundTerminalState(tx, {
+          refundId: created.refund.id,
+          paymentId: created.row.paymentId,
+          providerId: created.row.providerId,
+          orderId: input.orderId,
+          refundNo: created.refund.refundNo,
+          providerRefundNo: null,
+          fulfillmentState: created.row.fulfillmentState,
+          status: "failed",
+          eventType: "refund.failed",
+          providerEventId: `sync_failed:${created.refund.refundNo}:${Date.now()}`,
+          rawPayloadJson: {
+            error: errorMessage,
+          },
+          orderEventReason: `${input.reason}_failed`,
+          failureMessage: errorMessage,
+          refundedAt: null,
+        });
       });
       return {
         ...created.refund,
@@ -1122,7 +1067,7 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
             status: dbRefundStatus,
             eventType: `refund.${dbRefundStatus}`,
             providerEventId: `reconcile_${dbRefundStatus}:${refund.refundNo}:${now.getTime()}`,
-            rawPayloadJson: {},
+            rawPayloadJson: result.rawPayload ?? {},
             orderEventReason:
               dbRefundStatus === "succeeded"
                 ? "reconcile_refund_succeeded"

@@ -2563,6 +2563,9 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
     if (query.status) {
       conditions.push(eq(refunds.status, query.status));
     }
+    if (query.reason) {
+      conditions.push(eq(refunds.reason, query.reason));
+    }
     if (query.createdFrom) {
       conditions.push(
         sql`${refunds.createdAt} >= ${new Date(query.createdFrom)}`,

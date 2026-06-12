@@ -235,6 +235,16 @@ function planogramVersionSnapshot(
   };
 }
 
+function platformSlotSalesState(
+  slotStatus: typeof machineSlots.$inferSelect.status,
+  availableQty: number,
+) {
+  if (slotStatus !== "enabled") {
+    return "frozen";
+  }
+  return availableQty > 0 ? "sale_ready" : "sold_out";
+}
+
 function parseLatestHeartbeatStatus(
   statusPayload: unknown,
 ): MachineHeartbeatStatusPayload | null {
@@ -883,9 +893,14 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
         slotCode: machinePlanogramSlots.slotCode,
         inventoryId: machinePlanogramSlots.inventoryId,
         capacity: machinePlanogramSlots.capacity,
+        slotStatus: machineSlots.status,
         onHandQty: inventories.onHandQty,
         reservedQty: inventories.reservedQty,
-        availableQty: sql<number>`${inventories.onHandQty} - ${inventories.reservedQty}`,
+        availableQty: sql<number>`case
+          when ${machineSlots.status} = 'enabled'
+          then ${inventories.onHandQty} - ${inventories.reservedQty}
+          else 0
+        end`,
       })
       .from(machines)
       .innerJoin(
@@ -909,6 +924,14 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
           eq(inventories.id, machinePlanogramSlots.inventoryId),
           eq(inventories.machineId, machines.id),
           eq(inventories.slotId, machinePlanogramSlots.slotId),
+        ),
+      )
+      .innerJoin(
+        machineSlots,
+        and(
+          eq(machineSlots.id, machinePlanogramSlots.slotId),
+          eq(machineSlots.machineId, machines.id),
+          isNull(machineSlots.deletedAt),
         ),
       )
       .where(
@@ -936,6 +959,10 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
         onHandQty: row.onHandQty,
         reservedQty: row.reservedQty,
         availableQty: row.availableQty,
+        slotSalesState: platformSlotSalesState(
+          row.slotStatus,
+          row.availableQty,
+        ),
       })),
       serverTime: new Date().toISOString(),
     };

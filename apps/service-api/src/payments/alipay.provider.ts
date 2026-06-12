@@ -631,14 +631,18 @@ export class AlipayProvider implements PaymentCodeCapableProvider {
     }
 
     const paymentUrl = assertSuccessfulPrecreate(data, input.paymentNo);
-    await this.ensureOrderCodeReadyBeforeDisplay(sdk, config, input.paymentNo);
+    await this.probeOrderCodeReadinessAfterPrecreate(
+      sdk,
+      config,
+      input.paymentNo,
+    );
     return {
       providerTradeNo: null,
       paymentUrl,
     };
   }
 
-  private async ensureOrderCodeReadyBeforeDisplay(
+  private async probeOrderCodeReadinessAfterPrecreate(
     sdk: AlipaySdkLike,
     config: AlipayConfig,
     paymentNo: string,
@@ -688,11 +692,9 @@ export class AlipayProvider implements PaymentCodeCapableProvider {
     const reason = lastError
       ? alipayErrorMessage(lastError)
       : (lastResult?.failedReason ?? lastResult?.status ?? "not_ready");
-    await this.cancelUnknownPrecreate(sdk, paymentNo, reason);
     this.logger.warn(
-      `alipay.trade.precreate not ready for ${paymentNo}: ${reason}`,
+      `alipay.trade.precreate readiness probe did not observe ${paymentNo}: ${reason}`,
     );
-    throw new BadGatewayException(ALIPAY_PAYMENT_CHANNEL_UNAVAILABLE_MESSAGE);
   }
 
   private async cancelUnknownPrecreate(

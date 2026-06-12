@@ -155,6 +155,60 @@ function makeService(overrides: {
 // ---- tests ------------------------------------------------------------------
 
 describe("PaymentsService", () => {
+  describe("listRefunds", () => {
+    it("applies the refund reason filter", async () => {
+      const db = makeDb();
+      const whereArgs: unknown[] = [];
+
+      db.select
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              innerJoin: vi.fn().mockReturnValue({
+                innerJoin: vi.fn().mockReturnValue({
+                  where: vi.fn().mockImplementation((whereArg: unknown) => {
+                    whereArgs.push(whereArg);
+                    return {
+                      orderBy: vi.fn().mockReturnValue({
+                        limit: vi.fn().mockReturnValue({
+                          offset: vi.fn().mockResolvedValue([]),
+                        }),
+                      }),
+                    };
+                  }),
+                }),
+              }),
+            }),
+          }),
+        })
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              innerJoin: vi.fn().mockReturnValue({
+                innerJoin: vi.fn().mockReturnValue({
+                  where: vi.fn().mockImplementation((whereArg: unknown) => {
+                    whereArgs.push(whereArg);
+                    return Promise.resolve([{ total: 0 }]);
+                  }),
+                }),
+              }),
+            }),
+          }),
+        });
+
+      const service = makeService({ db });
+
+      await service.listRefunds({
+        page: 1,
+        pageSize: 20,
+        reason: "auto_dispense_failed",
+      });
+
+      expect(whereArgs).toHaveLength(2);
+      expect(whereArgs.every((whereArg) => whereArg !== undefined)).toBe(true);
+    });
+  });
+
   describe("applyProviderPaymentResult", () => {
     it("dispatches only once for duplicate providerEventId", async () => {
       const createAndDispatchCommands = vi.fn().mockResolvedValue(undefined);

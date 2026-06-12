@@ -422,8 +422,11 @@ export class OrdersService {
           unitPriceCents: productVariants.priceCents,
           slotId: machineSlots.id,
           slotCode: machineSlots.slotCode,
+          slotStatus: machineSlots.status,
           layerNo: machineSlots.layerNo,
           cellNo: machineSlots.cellNo,
+          variantStatus: productVariants.status,
+          productStatus: products.status,
         })
         .from(inventories)
         .innerJoin(machineSlots, eq(machineSlots.id, inventories.slotId))
@@ -436,9 +439,6 @@ export class OrdersService {
           and(
             inArray(inventories.id, inventoryIds),
             eq(inventories.machineId, machineId),
-            eq(machineSlots.status, "enabled"),
-            eq(productVariants.status, "active"),
-            eq(products.status, "active"),
           ),
         );
 
@@ -450,6 +450,12 @@ export class OrdersService {
           throw new NotFoundException(
             `Inventory ${item.inventoryId} not found`,
           );
+        }
+        if (row.slotStatus !== "enabled") {
+          throw new ConflictException(`Slot ${row.slotCode} is not available`);
+        }
+        if (row.variantStatus !== "active" || row.productStatus !== "active") {
+          throw new ConflictException("Product is not available");
         }
         assertMachineOrderLineContextMatchesInventory(item, row);
         return {
