@@ -123,6 +123,7 @@ describe("AlipayProvider", () => {
     expect(result).toEqual({
       providerTradeNo: null,
       paymentUrl: "https://qr.alipay.com/bax-sandbox",
+      initialStatus: "pending",
     });
   });
 
@@ -216,7 +217,7 @@ describe("AlipayProvider", () => {
     ).rejects.toThrow("Alipay alipay.trade.precreate failed");
   });
 
-  it("returns order-code QR when readiness probe does not observe the trade yet", async () => {
+  it("marks order-code QR processing when readiness probe does not observe the trade yet", async () => {
     const { sdk, factory } = makeSdk();
     vi.mocked(sdk.exec)
       .mockResolvedValueOnce({
@@ -248,17 +249,18 @@ describe("AlipayProvider", () => {
     });
 
     expect(result.paymentUrl).toBe("https://qr.alipay.com/bax-sandbox");
+    expect(result.initialStatus).toBe("processing");
     expect(sdk.exec).not.toHaveBeenCalledWith(
       "alipay.trade.cancel",
       expect.anything(),
     );
   });
 
-  it("cancels and fails transient order-code precreate failures without reusing the same payment number", async () => {
+  it("fails transient order-code precreate failures without canceling an unknown provider trade", async () => {
     const { sdk, factory } = makeSdk();
-    vi.mocked(sdk.exec)
-      .mockRejectedValueOnce(new Error("HTTP 请求错误, status: 504"))
-      .mockResolvedValueOnce({ code: "10000", action: "close" });
+    vi.mocked(sdk.exec).mockRejectedValueOnce(
+      new Error("HTTP 请求错误, status: 504"),
+    );
     const provider = new AlipayProvider(factory);
 
     await expect(
@@ -276,12 +278,9 @@ describe("AlipayProvider", () => {
       "alipay.trade.precreate",
       expect.any(Object),
     );
-    expect(sdk.exec).toHaveBeenNthCalledWith(
-      2,
+    expect(sdk.exec).not.toHaveBeenCalledWith(
       "alipay.trade.cancel",
-      expect.objectContaining({
-        bizContent: { out_trade_no: "PAY202605060099" },
-      }),
+      expect.anything(),
     );
   });
 

@@ -619,7 +619,6 @@ export class AlipayProvider implements PaymentCodeCapableProvider {
       data = await sdk.exec("alipay.trade.precreate", request);
     } catch (error) {
       if (isIndeterminateAlipayError(error)) {
-        await this.cancelUnknownPrecreate(sdk, input.paymentNo, error);
         this.logger.warn(
           `alipay.trade.precreate unavailable for ${input.paymentNo}: ${alipayErrorMessage(error)}`,
         );
@@ -631,7 +630,7 @@ export class AlipayProvider implements PaymentCodeCapableProvider {
     }
 
     const paymentUrl = assertSuccessfulPrecreate(data, input.paymentNo);
-    await this.probeOrderCodeReadinessAfterPrecreate(
+    const ready = await this.probeOrderCodeReadinessAfterPrecreate(
       sdk,
       config,
       input.paymentNo,
@@ -639,6 +638,7 @@ export class AlipayProvider implements PaymentCodeCapableProvider {
     return {
       providerTradeNo: null,
       paymentUrl,
+      initialStatus: ready ? "pending" : "processing",
     };
   }
 
@@ -646,8 +646,8 @@ export class AlipayProvider implements PaymentCodeCapableProvider {
     sdk: AlipaySdkLike,
     config: AlipayConfig,
     paymentNo: string,
-  ): Promise<void> {
-    if (!config.orderCodeReadinessCheckEnabled) return;
+  ): Promise<boolean> {
+    if (!config.orderCodeReadinessCheckEnabled) return true;
 
     const deadline = Date.now() + config.orderCodeReadinessTimeoutMs;
     let lastResult: ProviderPaymentQueryResult | null = null;
@@ -663,7 +663,7 @@ export class AlipayProvider implements PaymentCodeCapableProvider {
         lastResult = result;
         lastError = null;
         if (result.status === "pending" || result.status === "succeeded") {
-          return;
+          return true;
         }
         if (
           result.status === "failed" ||
@@ -695,22 +695,7 @@ export class AlipayProvider implements PaymentCodeCapableProvider {
     this.logger.warn(
       `alipay.trade.precreate readiness probe did not observe ${paymentNo}: ${reason}`,
     );
-  }
-
-  private async cancelUnknownPrecreate(
-    sdk: AlipaySdkLike,
-    paymentNo: string,
-    originalError: unknown,
-  ): Promise<void> {
-    try {
-      await sdk.exec("alipay.trade.cancel", {
-        bizContent: { out_trade_no: paymentNo },
-      });
-    } catch (cancelError) {
-      this.logger.warn(
-        `alipay.trade.precreate remained unknown for ${paymentNo}; cancel also failed: original=${alipayErrorMessage(originalError)} cancel=${alipayErrorMessage(cancelError)}`,
-      );
-    }
+    return false;
   }
 
   async queryPayment(

@@ -567,6 +567,10 @@ export const useCheckoutStore = defineStore("checkout", {
     },
     async createOrder(): Promise<CreateMachineOrderResponse | null> {
       if (!this.selectedItem) throw new Error("No selected item");
+      const catalogStore = useCatalogStore();
+      await catalogStore.refresh().catch(() => {
+        // Keep the existing cached sale view; the backend still performs the authoritative stock check.
+      });
       const selectedItem = latestSaleViewItem(this.selectedItem);
       if (!selectedItem) {
         throw new Error("商品已更新，请重新选择");
@@ -600,6 +604,9 @@ export const useCheckoutStore = defineStore("checkout", {
         return this.currentOrder;
       } catch (error) {
         this.error = error instanceof Error ? error.message : String(error);
+        await catalogStore.refresh().catch(() => {
+          // Preserve the original order error; catalog refresh is best-effort after a rejected checkout.
+        });
         throw error;
       } finally {
         this.loading = false;

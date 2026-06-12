@@ -993,6 +993,7 @@ impl LocalStateStore {
         &self,
         input: OrderSessionUpsert<'_>,
     ) -> Result<(), StoreError> {
+        let expires_at = order_session_expires_at(&input);
         sqlx::query(
             "INSERT INTO order_sessions(order_no,payment_method,payment_provider,payment_attempt_json,items_json,status,next_action,expires_at,last_backend_status_json,last_error,recovery_strategy,updated_at)
              VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)
@@ -1016,7 +1017,7 @@ impl LocalStateStore {
         .bind(input.items_json.to_string())
         .bind(input.status)
         .bind(input.next_action)
-        .bind(now_iso_days(COMMAND_LOG_TTL_DAYS))
+        .bind(expires_at)
         .bind(
             input
                 .last_backend_status_json
@@ -1771,8 +1772,9 @@ impl LocalStateStore {
             ));
         }
 
-        let latest_order_session: Option<(String, String)> = sqlx::query_as(
-            "SELECT status, next_action
+        let now = now_iso();
+        let latest_order_session: Option<(String, String, Option<String>)> = sqlx::query_as(
+            "SELECT status, next_action, expires_at
              FROM order_sessions
              WHERE status != 'closed'
              ORDER BY updated_at DESC, rowid DESC
@@ -1782,8 +1784,8 @@ impl LocalStateStore {
         .await?;
         if latest_order_session
             .as_ref()
-            .is_some_and(|(status, next_action)| {
-                order_session_reserves_local_stock(status, next_action)
+            .is_some_and(|(status, next_action, expires_at)| {
+                order_session_reserves_local_stock(status, next_action, expires_at.as_deref(), &now)
             })
         {
             return Err(StoreError::InvalidStockInput(
@@ -2145,8 +2147,9 @@ impl LocalStateStore {
     }
 
     async fn active_order_reservations(&self) -> Result<Vec<LocalStockReservation>, StoreError> {
-        let rows: Vec<(String, String, String)> = sqlx::query_as(
-            "SELECT items_json, status, next_action
+        let now = now_iso();
+        let rows: Vec<(String, String, String, Option<String>)> = sqlx::query_as(
+            "SELECT items_json, status, next_action, expires_at
              FROM order_sessions
              WHERE status != 'closed'
              ORDER BY updated_at DESC, rowid DESC
@@ -2156,8 +2159,13 @@ impl LocalStateStore {
         .await?;
 
         let mut reservations = Vec::new();
-        for (items_json, status, next_action) in rows {
-            if !order_session_reserves_local_stock(&status, &next_action) {
+        for (items_json, status, next_action, expires_at) in rows {
+            if !order_session_reserves_local_stock(
+                &status,
+                &next_action,
+                expires_at.as_deref(),
+                &now,
+            ) {
                 continue;
             }
             let value = serde_json::from_str::<serde_json::Value>(&items_json)?;
@@ -2945,8 +2953,19 @@ struct LocalStockReservation {
     quantity: i64,
 }
 
-fn order_session_reserves_local_stock(status: &str, next_action: &str) -> bool {
+fn order_session_reserves_local_stock(
+    status: &str,
+    next_action: &str,
+    expires_at: Option<&str>,
+    now: &str,
+) -> bool {
     if order_session_terminal_status(status) || order_session_terminal_next_action(next_action) {
+        return false;
+    }
+    if matches!(status, "paid" | "dispensing") || matches!(next_action, "dispensing") {
+        return true;
+    }
+    if expires_at.is_some_and(|value| !value.trim().is_empty() && value <= now) {
         return false;
     }
     matches!(
@@ -2956,6 +2975,21 @@ fn order_session_reserves_local_stock(status: &str, next_action: &str) -> bool {
         next_action,
         "wait_payment" | "submit_payment" | "dispensing"
     )
+}
+
+fn order_session_expires_at(input: &OrderSessionUpsert<'_>) -> String {
+    input
+        .last_backend_status_json
+        .as_ref()
+        .and_then(|value| {
+            value
+                .pointer("/payment/expiresAt")
+                .or_else(|| value.get("expiresAt"))
+        })
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.trim().is_empty())
+        .map(ToString::to_string)
+        .unwrap_or_else(|| now_iso_days(COMMAND_LOG_TTL_DAYS))
 }
 
 fn order_session_terminal_status(status: &str) -> bool {
@@ -4235,6 +4269,56 @@ mod tests {
                 payment_attempt_json: None,
                 recovery_strategy: "local",
                 last_backend_status_json: None,
+                last_error: None,
+            })
+            .await
+            .expect("order");
+
+        let sale_view = store.sale_view(None).await.expect("sale view");
+
+        assert_eq!(sale_view.items[0].physical_stock, 1);
+        assert_eq!(sale_view.items[0].saleable_stock, 1);
+    }
+
+    #[tokio::test]
+    async fn sale_view_ignores_pending_order_after_payment_expires_at() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_single_slot_planogram(&store).await;
+        store
+            .record_stock_movement(StockMovementInput {
+                movement_id: "MOVE-COUNT-AFTER-PAYMENT-EXPIRES".to_string(),
+                planogram_version: "PLAN-FAILURE".to_string(),
+                slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                movement_type: "stock_count_correction".to_string(),
+                quantity: 1,
+                source: "field_count".to_string(),
+                attributed_to: Some("operator-1".to_string()),
+            })
+            .await
+            .expect("count");
+        store
+            .upsert_order_session(OrderSessionUpsert {
+                order_no: "ORDER-PENDING-EXPIRED-PAYMENT",
+                payment_method: "qr_code",
+                payment_provider: Some("alipay"),
+                items_json: json!({
+                    "inventoryId": "550e8400-e29b-41d4-a716-446655440002",
+                    "slotId": "550e8400-e29b-41d4-a716-446655440001",
+                    "slotCode": "A1",
+                    "quantity": 1
+                }),
+                status: "pending_payment",
+                next_action: "wait_payment",
+                payment_attempt_json: None,
+                recovery_strategy: "local",
+                last_backend_status_json: Some(json!({
+                    "payment": {
+                        "expiresAt": "2000-01-01T00:00:00.000Z"
+                    }
+                })),
                 last_error: None,
             })
             .await

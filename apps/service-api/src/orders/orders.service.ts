@@ -68,6 +68,8 @@ type MachineOrderStatusQuery = z.infer<typeof machineOrderStatusQuerySchema>;
 type OrderQuery = z.infer<typeof orderQuerySchema> &
   z.infer<typeof pageQuerySchema>;
 
+const DEFAULT_UNCONFIRMED_QR_DISPLAY_DELAY_MS = 30_000;
+
 function readQrExpiresMinutes(
   publicConfigJson: Record<string, unknown>,
 ): number {
@@ -83,6 +85,18 @@ function readQrExpiresMinutes(
 function isTradeNotFoundError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return /ACQ\.TRADE_NOT_EXIST|trade not exist|交易不存在/i.test(message);
+}
+
+function shouldExposePaymentUrl(row: MachineOrderStatusRow, now = new Date()) {
+  if (row.paymentMethod !== "qr_code") return true;
+  if (row.paymentStatus === "pending" || row.paymentStatus === "succeeded") {
+    return true;
+  }
+  if (row.paymentStatus !== "processing" || !row.paymentUrl) return false;
+  return (
+    now.getTime() - row.paymentCreatedAt.getTime() >=
+    DEFAULT_UNCONFIRMED_QR_DISPLAY_DELAY_MS
+  );
 }
 
 function assertMachineOrderLineContextMatchesInventory(
@@ -162,6 +176,7 @@ type MachineOrderStatusRow = {
   paymentMethod: "mock" | "qr_code" | "payment_code" | "face_pay";
   paymentStatus: PaymentStatus;
   paymentUrl: string | null;
+  paymentCreatedAt: Date;
   paymentExpiresAt: Date | null;
   paidAt: Date | null;
   failedReason: string | null;
@@ -219,6 +234,7 @@ export class OrdersService {
         paymentMethod: payments.method,
         paymentStatus: payments.status,
         paymentUrl: payments.paymentUrl,
+        paymentCreatedAt: payments.createdAt,
         paymentExpiresAt: payments.expiresAt,
         paidAt: payments.paidAt,
         failedReason: payments.failedReason,
@@ -325,10 +341,11 @@ export class OrdersService {
     }
 
     try {
+      const initialStatus = intent.initialStatus ?? "pending";
       await this.db
         .update(payments)
         .set({
-          status: "pending",
+          status: initialStatus,
           providerTradeNo: intent.providerTradeNo,
           paymentUrl: intent.paymentUrl,
           expiresAt: draft.expiresAt,
@@ -349,7 +366,10 @@ export class OrdersService {
       orderId: draft.orderId,
       orderNo: draft.orderNo,
       paymentNo: draft.paymentNo,
-      paymentUrl: intent.paymentUrl,
+      paymentUrl:
+        (intent.initialStatus ?? "pending") === "pending"
+          ? intent.paymentUrl
+          : null,
       expiresAt: draft.expiresAt,
       totalAmountCents: draft.totalAmountCents,
       paymentProviderCode: draft.providerCode,
@@ -1237,7 +1257,7 @@ export class OrdersService {
         paymentNo: row.paymentNo,
         method: row.paymentMethod,
         status: row.paymentStatus,
-        paymentUrl: row.paymentUrl,
+        paymentUrl: shouldExposePaymentUrl(row) ? row.paymentUrl : null,
         expiresAt: toIsoStringOrNull(row.paymentExpiresAt),
         paidAt: toIsoStringOrNull(row.paidAt),
         failedReason: row.failedReason,

@@ -1555,6 +1555,29 @@ describe("OrdersService (transaction boundary)", () => {
   });
 
   describe("getMachineOrderStatus", () => {
+    function machineOrderStatusRow(overrides: Record<string, unknown> = {}) {
+      return {
+        orderId: "ord-1",
+        orderNo: "ORD001",
+        machineCode: "M001",
+        orderStatus: "pending_payment",
+        paymentState: "awaiting_payment",
+        fulfillmentState: "awaiting_fulfillment",
+        totalAmountCents: 300,
+        paymentId: "pay-1",
+        paymentNo: "PAY001",
+        paymentMethod: "qr_code",
+        paymentStatus: "pending",
+        paymentUrl: "https://example.com/qr",
+        paymentCreatedAt: new Date(),
+        paymentExpiresAt: null,
+        paidAt: null,
+        failedReason: null,
+        paymentProviderCode: "alipay",
+        ...overrides,
+      };
+    }
+
     it("tries immediate reconcile for pending qr_code and returns refreshed status", async () => {
       const db = makeDb();
       const reconcilePendingPaymentOnRead = vi
@@ -1663,6 +1686,52 @@ describe("OrdersService (transaction boundary)", () => {
       expect(result.fulfillmentState).toBe("awaiting_fulfillment");
       expect(result.payment.status).toBe("succeeded");
       expect(result.nextAction).toBe("dispensing");
+    });
+
+    it("hides a freshly unconfirmed qr_code URL while provider readiness is processing", async () => {
+      const db = makeDb();
+      const row = machineOrderStatusRow({
+        paymentStatus: "processing",
+        paymentCreatedAt: new Date(),
+      });
+      db.select
+        .mockReturnValueOnce(makeJoinedSelectResult([row]))
+        .mockReturnValueOnce(makeJoinedSelectResult([row]))
+        .mockReturnValueOnce(makeEmptyLatestSelectResult())
+        .mockReturnValueOnce(makeEmptyLatestSelectResult())
+        .mockReturnValueOnce(makeEmptyLatestSelectResult());
+
+      const service = makeService({ db });
+      const result = await service.getMachineOrderStatus("ORD001", {
+        machineCode: "M001",
+      });
+
+      expect(result.payment.status).toBe("processing");
+      expect(result.payment.paymentUrl).toBeNull();
+      expect(result.nextAction).toBe("wait_payment");
+    });
+
+    it("exposes an unconfirmed qr_code URL after the fallback display delay", async () => {
+      const db = makeDb();
+      const row = machineOrderStatusRow({
+        paymentStatus: "processing",
+        paymentCreatedAt: new Date(Date.now() - 31_000),
+      });
+      db.select
+        .mockReturnValueOnce(makeJoinedSelectResult([row]))
+        .mockReturnValueOnce(makeJoinedSelectResult([row]))
+        .mockReturnValueOnce(makeEmptyLatestSelectResult())
+        .mockReturnValueOnce(makeEmptyLatestSelectResult())
+        .mockReturnValueOnce(makeEmptyLatestSelectResult());
+
+      const service = makeService({ db });
+      const result = await service.getMachineOrderStatus("ORD001", {
+        machineCode: "M001",
+      });
+
+      expect(result.payment.status).toBe("processing");
+      expect(result.payment.paymentUrl).toBe("https://example.com/qr");
+      expect(result.nextAction).toBe("wait_payment");
     });
 
     it("includes paymentCodeAttempt summary without plaintext auth code", async () => {

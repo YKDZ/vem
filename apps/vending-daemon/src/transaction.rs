@@ -117,7 +117,7 @@ impl TransactionStateMachine {
             .clone()
             .ok_or_else(|| "machine code is required".to_string())?;
 
-        let response = self
+        let response = match self
             .backend
             .create_order(
                 &machine_code,
@@ -126,7 +126,15 @@ impl TransactionStateMachine {
                 payment_provider_code.as_deref(),
                 profile_snapshot,
             )
-            .await?;
+            .await
+        {
+            Ok(response) => response,
+            Err(error) => {
+                self.refresh_platform_stock_after_order_refusal(&machine_code)
+                    .await;
+                return Err(error);
+            }
+        };
         let order_no = response
             .get("orderNo")
             .and_then(|value| value.as_str())
@@ -196,6 +204,13 @@ impl TransactionStateMachine {
 
         self.emit_transaction_changed(order_no, &current);
         Ok(current)
+    }
+
+    async fn refresh_platform_stock_after_order_refusal(&self, machine_code: &str) {
+        let Ok(snapshot) = self.backend.get_stock_snapshot(machine_code).await else {
+            return;
+        };
+        let _ = self.state.apply_platform_stock_snapshot(&snapshot).await;
     }
 
     pub async fn submit_payment_code(

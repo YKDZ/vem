@@ -2154,6 +2154,15 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         result.rawPayload,
       );
       await this.db
+        .update(payments)
+        .set({
+          status: providerStatus,
+          providerTradeNo:
+            result.providerTradeNo ?? payment.providerTradeNo ?? null,
+          updatedAt: new Date(),
+        })
+        .where(eq(payments.id, payment.id));
+      await this.db
         .update(paymentReconciliationAttempts)
         .set({
           status: providerStatus,
@@ -2715,6 +2724,15 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       const rawPayloadFields = buildReconciliationPayloadFields(
         result.rawPayload,
       );
+      await this.db
+        .update(payments)
+        .set({
+          status: providerStatus,
+          providerTradeNo:
+            result.providerTradeNo ?? payment.providerTradeNo ?? null,
+          updatedAt: new Date(),
+        })
+        .where(eq(payments.id, payment.id));
       await this.db
         .update(paymentReconciliationAttempts)
         .set({
