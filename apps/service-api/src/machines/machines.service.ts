@@ -805,15 +805,16 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
   }
 
   async createSlot(machineId: string, input: CreateMachineSlotInput) {
+    const slot = createMachineSlotSchema.parse(input);
     const [created] = await this.db
       .insert(machineSlots)
       .values({
         machineId,
-        layerNo: input.layerNo,
-        cellNo: input.cellNo,
-        slotCode: input.slotCode,
-        capacity: input.capacity,
-        status: input.status,
+        layerNo: slot.layerNo,
+        cellNo: slot.cellNo,
+        slotCode: slot.slotCode,
+        capacity: slot.capacity,
+        status: slot.status,
       })
       .returning();
     return created;

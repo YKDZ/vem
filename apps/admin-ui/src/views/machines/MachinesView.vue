@@ -8,6 +8,12 @@ import type {
   MachineStatus,
 } from "@vem/shared";
 
+import {
+  getMachineSlotMaxCellNo,
+  MACHINE_SLOT_MAX_LAYER_NO,
+  MACHINE_SLOT_MIN_LAYER_NO,
+  machineSlotCoordinateErrorMessage,
+} from "@vem/shared";
 import { Modal } from "antdv-next";
 import { computed, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
@@ -224,6 +230,12 @@ const slotForm = ref({
   status: "enabled" as MachineSlotStatus,
 });
 const slotSaving = ref(false);
+const slotMaxCellNo = computed(
+  () => getMachineSlotMaxCellNo(slotForm.value.layerNo) ?? 5,
+);
+const slotCoordinateError = computed(() =>
+  machineSlotCoordinateErrorMessage(slotForm.value),
+);
 
 async function openSlots(m: Machine): Promise<void> {
   currentMachineId.value = m.id;
@@ -249,6 +261,13 @@ function openCreateSlot(): void {
 
 async function saveSlot(): Promise<void> {
   if (!currentMachineId.value) return;
+  if (slotCoordinateError.value) {
+    Modal.error({
+      title: "货道坐标无效",
+      content: slotCoordinateError.value,
+    });
+    return;
+  }
   slotSaving.value = true;
   try {
     await createMachineSlot(currentMachineId.value, {
@@ -758,13 +777,22 @@ async function handleRequestLogExport(m: Machine): Promise<void> {
       ok-text="确定"
       cancel-text="取消"
       :confirm-loading="slotSaving"
+      :ok-button-props="{ disabled: Boolean(slotCoordinateError) }"
       @ok="saveSlot"
     >
       <a-form layout="vertical">
+        <a-alert
+          v-if="slotCoordinateError"
+          class="mb-4"
+          type="error"
+          :message="slotCoordinateError"
+          show-icon
+        />
         <a-form-item label="层号">
           <a-input-number
             v-model:value="slotForm.layerNo"
-            :min="1"
+            :min="MACHINE_SLOT_MIN_LAYER_NO"
+            :max="MACHINE_SLOT_MAX_LAYER_NO"
             class="w-full"
           />
         </a-form-item>
@@ -772,6 +800,7 @@ async function handleRequestLogExport(m: Machine): Promise<void> {
           <a-input-number
             v-model:value="slotForm.cellNo"
             :min="1"
+            :max="slotMaxCellNo"
             class="w-full"
           />
         </a-form-item>

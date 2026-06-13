@@ -4,7 +4,9 @@ import {
   HARDWARE_ERROR_HANDLING,
   adminUserStatuses,
   canonicalJson,
+  createMachineSlotSchema,
   createMachineOrderSchema,
+  dispenseCommandPayloadSchema,
   hardwareErrorCodes,
   environmentControlCommandPayloadSchema,
   environmentControlResultPayloadSchema,
@@ -20,6 +22,8 @@ import {
   machinePlanogramVersionSnapshotSchema,
   machineSaleViewItemSchema,
   machineSlotStatuses,
+  isValidMachineSlotCoordinate,
+  getMachineSlotMaxCellNo,
   maintenanceWorkOrderStatuses,
   mqttSignedEnvelopeSchema,
   notificationTypeSchema,
@@ -50,6 +54,34 @@ describe("shared API contract", () => {
     expect(paymentProviderStatuses).toEqual(["enabled", "disabled"]);
     expect(adminUserStatuses).toEqual(["active", "disabled"]);
     expect(roleStatuses).toEqual(["active", "disabled"]);
+  });
+
+  it("enforces hardware slot coordinate bounds across machine contracts", () => {
+    expect(getMachineSlotMaxCellNo(1)).toBe(5);
+    expect(getMachineSlotMaxCellNo(6)).toBe(5);
+    expect(getMachineSlotMaxCellNo(7)).toBe(4);
+    expect(getMachineSlotMaxCellNo(10)).toBe(4);
+    expect(isValidMachineSlotCoordinate({ layerNo: 7, cellNo: 4 })).toBe(true);
+    expect(isValidMachineSlotCoordinate({ layerNo: 7, cellNo: 5 })).toBe(false);
+
+    expect(() =>
+      createMachineSlotSchema.parse({
+        layerNo: 7,
+        cellNo: 5,
+        slotCode: "G5",
+        capacity: 8,
+        status: "enabled",
+      }),
+    ).toThrow();
+    expect(() =>
+      dispenseCommandPayloadSchema.parse({
+        commandNo: "CMD-1",
+        orderNo: "ORD-1",
+        slot: { layerNo: 11, cellNo: 1, slotCode: "K1" },
+        quantity: 1,
+        timeoutSeconds: 30,
+      }),
+    ).toThrow();
   });
 
   it("accepts structured machine heartbeat payload", () => {
