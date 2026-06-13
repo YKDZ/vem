@@ -56,6 +56,8 @@ type AlipayConfig = {
   orderCodeReadinessCheckEnabled: boolean;
   orderCodeReadinessTimeoutMs: number;
   orderCodeReadinessPollIntervalMs: number;
+  orderCodePrecreateMaxAttempts: number;
+  orderCodePrecreateRetryDelayMs: number;
 };
 
 function readRequiredString(
@@ -161,6 +163,16 @@ function parseAlipayConfig(input: PaymentProviderRuntimeConfig): AlipayConfig {
       source,
       "orderCodeReadinessPollIntervalMs",
       1_500,
+    ),
+    orderCodePrecreateMaxAttempts: readPositiveInteger(
+      source,
+      "orderCodePrecreateMaxAttempts",
+      3,
+    ),
+    orderCodePrecreateRetryDelayMs: readPositiveInteger(
+      source,
+      "orderCodePrecreateRetryDelayMs",
+      1_000,
     ),
   };
 }
@@ -614,20 +626,12 @@ export class AlipayProvider implements PaymentCodeCapableProvider {
       },
     };
 
-    let data: Record<string, unknown>;
-    try {
-      data = await sdk.exec("alipay.trade.precreate", request);
-    } catch (error) {
-      if (isIndeterminateAlipayError(error)) {
-        this.logger.warn(
-          `alipay.trade.precreate unavailable for ${input.paymentNo}: ${alipayErrorMessage(error)}`,
-        );
-        throw new BadGatewayException(
-          ALIPAY_PAYMENT_CHANNEL_UNAVAILABLE_MESSAGE,
-        );
-      }
-      throw error;
-    }
+    const data = await this.precreateOrderCodeWithRetry(
+      sdk,
+      config,
+      input.paymentNo,
+      request,
+    );
 
     const paymentUrl = assertSuccessfulPrecreate(data, input.paymentNo);
     const ready = await this.probeOrderCodeReadinessAfterPrecreate(
@@ -640,6 +644,38 @@ export class AlipayProvider implements PaymentCodeCapableProvider {
       paymentUrl,
       initialStatus: ready ? "pending" : "processing",
     };
+  }
+
+  private async precreateOrderCodeWithRetry(
+    sdk: AlipaySdkLike,
+    config: AlipayConfig,
+    paymentNo: string,
+    request: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const maxAttempts = Math.max(1, config.orderCodePrecreateMaxAttempts);
+    let lastError: unknown = null;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        // oxlint-disable-next-line no-await-in-loop -- retry must preserve out_trade_no idempotency.
+        return await sdk.exec("alipay.trade.precreate", request);
+      } catch (error) {
+        if (!isIndeterminateAlipayError(error)) {
+          throw error;
+        }
+        lastError = error;
+        this.logger.warn(
+          `alipay.trade.precreate attempt ${attempt}/${maxAttempts} unavailable for ${paymentNo}: ${alipayErrorMessage(error)}`,
+        );
+        if (attempt >= maxAttempts) break;
+        // oxlint-disable-next-line no-await-in-loop -- bounded retry delay for transient Alipay sandbox 5xx.
+        await sleep(config.orderCodePrecreateRetryDelayMs * attempt);
+      }
+    }
+
+    throw new BadGatewayException(ALIPAY_PAYMENT_CHANNEL_UNAVAILABLE_MESSAGE, {
+      cause: lastError,
+    });
   }
 
   private async probeOrderCodeReadinessAfterPrecreate(

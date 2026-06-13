@@ -256,25 +256,82 @@ describe("AlipayProvider", () => {
     );
   });
 
-  it("fails transient order-code precreate failures without canceling an unknown provider trade", async () => {
+  it("retries transient order-code precreate failures with the same payment number", async () => {
     const { sdk, factory } = makeSdk();
-    vi.mocked(sdk.exec).mockRejectedValueOnce(
+    vi.mocked(sdk.exec)
+      .mockRejectedValueOnce(new Error("HTTP 请求错误, status: 504"))
+      .mockResolvedValueOnce({
+        code: "10000",
+        out_trade_no: "PAY202605060099",
+        qr_code: "https://qr.alipay.com/bax-sandbox",
+      });
+    const provider = new AlipayProvider(factory);
+
+    const result = await provider.createPaymentIntent({
+      config: makeRuntimeConfig({
+        publicConfigJson: {
+          ...makeRuntimeConfig().publicConfigJson,
+          orderCodePrecreateRetryDelayMs: 1,
+        },
+      }),
+      paymentNo: "PAY202605060099",
+      orderNo: "ORD202605060099",
+      amountCents: 100,
+      expiresAt: new Date(Date.now() + 15 * 60_000),
+    });
+
+    expect(result.paymentUrl).toBe("https://qr.alipay.com/bax-sandbox");
+    expect(sdk.exec).toHaveBeenNthCalledWith(
+      1,
+      "alipay.trade.precreate",
+      expect.objectContaining({
+        bizContent: expect.objectContaining({
+          out_trade_no: "PAY202605060099",
+        }),
+      }),
+    );
+    expect(sdk.exec).toHaveBeenNthCalledWith(
+      2,
+      "alipay.trade.precreate",
+      expect.objectContaining({
+        bizContent: expect.objectContaining({
+          out_trade_no: "PAY202605060099",
+        }),
+      }),
+    );
+  });
+
+  it("fails transient order-code precreate failures after bounded retries", async () => {
+    const { sdk, factory } = makeSdk();
+    vi.mocked(sdk.exec).mockRejectedValue(
       new Error("HTTP 请求错误, status: 504"),
     );
     const provider = new AlipayProvider(factory);
 
     await expect(
       provider.createPaymentIntent({
-        config: makeRuntimeConfig(),
-        paymentNo: "PAY202605060099",
-        orderNo: "ORD202605060099",
+        config: makeRuntimeConfig({
+          publicConfigJson: {
+            ...makeRuntimeConfig().publicConfigJson,
+            orderCodePrecreateMaxAttempts: 2,
+            orderCodePrecreateRetryDelayMs: 1,
+          },
+        }),
+        paymentNo: "PAY202605060098",
+        orderNo: "ORD202605060098",
         amountCents: 100,
         expiresAt: new Date(Date.now() + 15 * 60_000),
       }),
     ).rejects.toThrow("支付宝支付通道暂不可用，请稍后重试");
 
+    expect(sdk.exec).toHaveBeenCalledTimes(2);
     expect(sdk.exec).toHaveBeenNthCalledWith(
       1,
+      "alipay.trade.precreate",
+      expect.any(Object),
+    );
+    expect(sdk.exec).toHaveBeenNthCalledWith(
+      2,
       "alipay.trade.precreate",
       expect.any(Object),
     );

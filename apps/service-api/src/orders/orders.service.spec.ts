@@ -1490,6 +1490,131 @@ describe("OrdersService (transaction boundary)", () => {
       });
     });
 
+    it("cancels locally and releases reservations when provider cancel returns an indeterminate 5xx", async () => {
+      const db = makeDb();
+      const releaseReservation = vi.fn().mockResolvedValue(undefined);
+      const cancelPayment = vi
+        .fn()
+        .mockRejectedValue(new Error("HTTP 请求错误, status: 504"));
+      const row = {
+        orderId: "ord-1",
+        orderNo: "ORD001",
+        machineId: "mach-1",
+        machineCode: "M001",
+        orderStatus: "pending_payment",
+        paymentState: "awaiting_payment",
+        fulfillmentState: "awaiting_fulfillment",
+        totalAmountCents: 300,
+        paymentId: "pay-1",
+        paymentNo: "PAY001",
+        paymentMethod: "qr_code",
+        paymentStatus: "processing",
+        paymentUrl: "https://pay.example/qr",
+        paymentExpiresAt: null,
+        paidAt: null,
+        failedReason: null,
+        providerId: "provider-alipay",
+        providerCode: "alipay",
+        paymentProviderCode: "alipay",
+        providerTradeNo: null,
+        providerConfigId: "cfg-1",
+      };
+      const canceledRow = {
+        ...row,
+        orderStatus: "canceled",
+        paymentState: "canceled",
+        fulfillmentState: "canceled",
+        paymentStatus: "canceled",
+      };
+      const tx = {
+        select: vi
+          .fn()
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              innerJoin: vi.fn().mockReturnValue({
+                where: vi.fn().mockResolvedValue([row]),
+              }),
+            }),
+          })
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi
+                .fn()
+                .mockResolvedValue([{ inventoryId: "inv-1", quantity: 1 }]),
+            }),
+          }),
+        insert: vi.fn().mockReturnValue({
+          values: vi.fn().mockReturnValue({
+            onConflictDoNothing: vi.fn().mockResolvedValue([]),
+          }),
+        }),
+        update: vi
+          .fn()
+          .mockReturnValueOnce({
+            set: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                returning: vi.fn().mockResolvedValue([{ id: "pay-1" }]),
+              }),
+            }),
+          })
+          .mockReturnValueOnce({
+            set: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                returning: vi.fn().mockResolvedValue([{ id: "ord-1" }]),
+              }),
+            }),
+          }),
+      };
+
+      db.select
+        .mockReturnValueOnce(makeJoinedSelectResult([row]))
+        .mockReturnValueOnce(makeJoinedSelectResult([canceledRow]))
+        .mockReturnValueOnce(makeEmptyLatestSelectResult())
+        .mockReturnValueOnce(makeEmptyLatestSelectResult())
+        .mockReturnValueOnce(makeEmptyLatestSelectResult());
+      db.transaction.mockImplementationOnce(
+        async (cb: (txArg: typeof tx) => Promise<unknown>) => await cb(tx),
+      );
+
+      const service = makeService({
+        db,
+        inventoryService: { releaseReservation },
+        registry: {
+          get: vi.fn().mockReturnValue({ cancelPayment }),
+        },
+        configService: {
+          resolveForExistingPayment: vi.fn().mockResolvedValue({
+            providerCode: "alipay",
+            merchantNo: null,
+            appId: null,
+            publicConfigJson: {},
+            sensitiveConfigJson: {},
+          }),
+        } as Partial<PaymentProviderConfigService>,
+      });
+
+      const result = await service.cancelMachineOrder("ORD001", {
+        machineCode: "M001",
+      });
+
+      expect(cancelPayment).toHaveBeenCalledWith(
+        expect.objectContaining({ paymentNo: "PAY001" }),
+      );
+      expect(result).toMatchObject({
+        orderNo: "ORD001",
+        orderStatus: "canceled",
+        paymentState: "canceled",
+        fulfillmentState: "canceled",
+        nextAction: "closed",
+      });
+      expect(releaseReservation).toHaveBeenCalledWith(tx, {
+        orderId: "ord-1",
+        inventoryId: "inv-1",
+        quantity: 1,
+        reason: "canceled",
+      });
+    });
+
     it("does not cancel or release reservations when payment succeeds before the transaction update", async () => {
       const db = makeDb();
       const releaseReservation = vi.fn().mockResolvedValue(undefined);

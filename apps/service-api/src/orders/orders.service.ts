@@ -87,6 +87,23 @@ function isTradeNotFoundError(error: unknown): boolean {
   return /ACQ\.TRADE_NOT_EXIST|trade not exist|交易不存在/i.test(message);
 }
 
+function isIndeterminateProviderError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  const lower = message.toLowerCase();
+  return (
+    lower.includes("timeout") ||
+    lower.includes("status: 5") ||
+    lower.includes("status: 504") ||
+    lower.includes("gateway timeout") ||
+    lower.includes("gateway time-out") ||
+    lower.includes("econn") ||
+    lower.includes("socket") ||
+    message.includes("HTTP 请求错误") ||
+    message.includes("请求超时") ||
+    message.includes("网络超时")
+  );
+}
+
 function shouldExposePaymentUrl(row: MachineOrderStatusRow, now = new Date()) {
   if (row.paymentMethod !== "qr_code") return true;
   if (row.paymentStatus === "pending" || row.paymentStatus === "succeeded") {
@@ -913,6 +930,13 @@ export class OrdersService {
         return {
           treatedAsCanceled: true,
           reason: "provider_trade_not_found",
+          message: error instanceof Error ? error.message : String(error),
+        };
+      }
+      if (isIndeterminateProviderError(error)) {
+        return {
+          providerCancelUnknown: true,
+          reason: "provider_cancel_indeterminate",
           message: error instanceof Error ? error.message : String(error),
         };
       }
