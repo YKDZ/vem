@@ -35,7 +35,7 @@ function handleMaintenanceTap(): void {
   maintenanceTapCount.value += 1;
   if (maintenanceTapCount.value >= MAINTENANCE_TAP_THRESHOLD) {
     maintenanceTapCount.value = 0;
-    void router.push("/maintenance");
+    void router.push({ path: "/maintenance", query: { source: "operator" } });
     return;
   }
   maintenanceTapResetTimer = window.setTimeout(() => {

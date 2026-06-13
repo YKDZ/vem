@@ -6,6 +6,7 @@ import { createApp, nextTick, type App } from "vue";
 import type { ConfigSummary } from "@/daemon/schemas";
 
 const {
+  routeMock,
   routerReplaceMock,
   initializeMock,
   getHealthMock,
@@ -23,6 +24,7 @@ const {
   downloadLogExportMock,
   callTauriCommandMock,
 } = vi.hoisted(() => ({
+  routeMock: { query: {} as Record<string, unknown> },
   routerReplaceMock: vi.fn(),
   initializeMock: vi.fn(),
   getHealthMock: vi.fn(),
@@ -42,6 +44,7 @@ const {
 }));
 
 vi.mock("vue-router", () => ({
+  useRoute: () => routeMock,
   useRouter: () => ({ replace: routerReplaceMock }),
 }));
 
@@ -169,6 +172,24 @@ function readyFixture() {
   };
 }
 
+function maintenanceReadyFixture() {
+  return {
+    ...readyFixture(),
+    ready: false,
+    canSell: false,
+    mode: "maintenance",
+    blockingCodes: ["LOWER_CONTROLLER_UNAVAILABLE"],
+    blockingReasons: [
+      {
+        code: "LOWER_CONTROLLER_UNAVAILABLE",
+        component: "hardware",
+        message: "lower controller unavailable",
+      },
+    ],
+    suggestedRoute: "maintenance",
+  };
+}
+
 function provisionedConfigSummary(): ConfigSummary {
   return {
     public: {
@@ -205,6 +226,7 @@ beforeEach(() => {
   pinia = createPinia();
   setActivePinia(pinia);
   vi.clearAllMocks();
+  routeMock.query = { source: "operator" };
   initializeMock.mockResolvedValue({
     baseUrl: "http://127.0.0.1:7891",
     token: "token-1",
@@ -274,6 +296,7 @@ afterEach(() => {
   mountedApp = null;
   document.body.innerHTML = "";
   vi.unstubAllEnvs();
+  vi.useRealTimers();
 });
 
 async function mountView(): Promise<HTMLElement> {
@@ -480,6 +503,40 @@ describe("MaintenanceView hardware config", () => {
     await vi.waitFor(() => {
       expect(routerReplaceMock).toHaveBeenCalledWith("/catalog");
     });
+  });
+
+  it("auto-refreshes system maintenance diagnostics and returns to catalog after recovery", async () => {
+    vi.useFakeTimers();
+    routeMock.query = {};
+    getReadyMock
+      .mockResolvedValueOnce(maintenanceReadyFixture())
+      .mockResolvedValue(readyFixture());
+
+    await mountView();
+    await vi.waitFor(() => {
+      expect(getReadyMock).toHaveBeenCalledOnce();
+    });
+    expect(routerReplaceMock).not.toHaveBeenCalledWith("/catalog");
+
+    await vi.advanceTimersByTimeAsync(5000);
+
+    await vi.waitFor(() => {
+      expect(routerReplaceMock).toHaveBeenCalledWith("/catalog");
+    });
+  });
+
+  it("keeps operator maintenance open while diagnostics auto-refresh", async () => {
+    vi.useFakeTimers();
+    routeMock.query = { source: "operator" };
+
+    await mountView();
+    await vi.waitFor(() => {
+      expect(getReadyMock).toHaveBeenCalledOnce();
+    });
+    await vi.advanceTimersByTimeAsync(5000);
+
+    expect(routerReplaceMock).not.toHaveBeenCalledWith("/catalog");
+    expect(getReadyMock).toHaveBeenCalledTimes(2);
   });
 
   it("shows why whole-machine lock clearing is rejected while hardware remains faulted", async () => {

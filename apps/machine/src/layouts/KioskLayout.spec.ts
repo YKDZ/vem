@@ -63,7 +63,10 @@ describe("KioskLayout", () => {
       );
     }
 
-    expect(routerPushMock).toHaveBeenCalledWith("/maintenance");
+    expect(routerPushMock).toHaveBeenCalledWith({
+      path: "/maintenance",
+      query: { source: "operator" },
+    });
 
     app.unmount();
   });

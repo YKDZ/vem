@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive } from "vue";
-import { useRouter } from "vue-router";
+import { computed, onMounted, onUnmounted, reactive } from "vue";
+import { useRoute, useRouter } from "vue-router";
 
 import MockHardwareControls from "@/components/MockHardwareControls.vue";
 import {
@@ -23,6 +23,7 @@ import { useScannerStore } from "@/stores/scanner";
 import { useVisionStore } from "@/stores/vision";
 
 const router = useRouter();
+const route = useRoute();
 const catalogStore = useCatalogStore();
 const connectivityStore = useConnectivityStore();
 const machineStore = useMachineStore();
@@ -30,6 +31,9 @@ const mqttStore = useMqttStore();
 const remoteOpsStore = useRemoteOpsStore();
 const scannerStore = useScannerStore();
 const visionStore = useVisionStore();
+const MAINTENANCE_DIAGNOSTIC_REFRESH_MS = 5000;
+let diagnosticsRefreshTimer: number | null = null;
+let diagnosticsRefreshInFlight: Promise<void> | null = null;
 const runtimeFlags = reactive({
   advancedMaintenanceConfig: false,
 });
@@ -42,6 +46,12 @@ const wholeMachineMaintenanceLock = computed(
       (reason) => reason.code === "WHOLE_MACHINE_HARDWARE_FAULT",
     ) ?? null,
 );
+const operatorEnteredMaintenance = computed(() => {
+  const source = route.query.source;
+  return Array.isArray(source)
+    ? source.includes("operator")
+    : source === "operator";
+});
 
 function cloneLowerControllerUsbIdentity(
   identity: MachineConfig["lowerControllerUsbIdentity"],
@@ -126,6 +136,11 @@ onMounted(async () => {
     refreshStockMaintenanceView(),
     refreshDiagnostics(),
   ]);
+  startDiagnosticsAutoRefresh();
+});
+
+onUnmounted(() => {
+  stopDiagnosticsAutoRefresh();
 });
 
 const diagnostics = reactive({
@@ -259,6 +274,16 @@ async function refreshVisionStatus(): Promise<void> {
 }
 
 async function refreshDiagnostics(): Promise<void> {
+  if (diagnosticsRefreshInFlight) {
+    return diagnosticsRefreshInFlight;
+  }
+  diagnosticsRefreshInFlight = runDiagnosticsRefresh().finally(() => {
+    diagnosticsRefreshInFlight = null;
+  });
+  return diagnosticsRefreshInFlight;
+}
+
+async function runDiagnosticsRefresh(): Promise<void> {
   diagnostics.loading = true;
   diagnostics.message = null;
   try {
@@ -275,11 +300,35 @@ async function refreshDiagnostics(): Promise<void> {
       visionStore.refresh(),
       remoteOpsStore.refresh(),
     ]);
+    await returnToCatalogAfterSystemRecovery();
   } catch (error) {
     diagnostics.message =
       error instanceof Error ? error.message : String(error);
   } finally {
     diagnostics.loading = false;
+  }
+}
+
+function startDiagnosticsAutoRefresh(): void {
+  stopDiagnosticsAutoRefresh();
+  diagnosticsRefreshTimer = window.setInterval(() => {
+    void refreshDiagnostics();
+  }, MAINTENANCE_DIAGNOSTIC_REFRESH_MS);
+}
+
+function stopDiagnosticsAutoRefresh(): void {
+  if (diagnosticsRefreshTimer !== null) {
+    window.clearInterval(diagnosticsRefreshTimer);
+    diagnosticsRefreshTimer = null;
+  }
+}
+
+async function returnToCatalogAfterSystemRecovery(): Promise<void> {
+  if (operatorEnteredMaintenance.value) {
+    return;
+  }
+  if (connectivityStore.ready?.canSell === true) {
+    await router.replace("/catalog");
   }
 }
 
