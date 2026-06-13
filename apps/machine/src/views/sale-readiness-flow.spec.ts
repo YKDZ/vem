@@ -61,7 +61,10 @@ vi.mock("@/native/vision", () => ({
 }));
 
 import type { VisionProfileSubscriptionHandlers } from "@/native/vision";
-import type { MachineCatalogItem } from "@/types/catalog";
+import type {
+  MachineCatalogItem,
+  MachineCatalogSlotCandidate,
+} from "@/types/catalog";
 
 import { useCatalogStore } from "@/stores/catalog";
 import { useCheckoutStore } from "@/stores/checkout";
@@ -163,7 +166,7 @@ afterEach(() => {
 });
 
 function makeCatalogItem(): MachineCatalogItem {
-  return {
+  const item = {
     machineCode: "M001",
     slotId: "550e8400-e29b-41d4-a716-446655440001",
     slotCode: "A1",
@@ -188,6 +191,29 @@ function makeCatalogItem(): MachineCatalogItem {
     slotSalesState: "sale_ready",
     productSortOrder: 1,
     targetGender: null,
+  } as Omit<
+    MachineCatalogItem,
+    "catalogKey" | "aggregatedSlotCount" | "slotCandidates"
+  >;
+  const slotCandidates: readonly MachineCatalogSlotCandidate[] = [
+    {
+      slotId: item.slotId,
+      slotCode: item.slotCode,
+      layerNo: item.layerNo,
+      cellNo: item.cellNo,
+      inventoryId: item.inventoryId,
+      capacity: item.capacity,
+      parLevel: item.parLevel,
+      physicalStock: item.physicalStock,
+      saleableStock: item.saleableStock,
+      slotSalesState: item.slotSalesState,
+    },
+  ];
+  return {
+    ...item,
+    catalogKey: `sku:${item.sku}`,
+    aggregatedSlotCount: 1,
+    slotCandidates,
   };
 }
 

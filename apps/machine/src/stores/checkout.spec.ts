@@ -32,7 +32,10 @@ vi.mock("@/daemon/client", () => ({
   },
 }));
 
-import type { MachineCatalogItem } from "@/types/catalog";
+import type {
+  MachineCatalogItem,
+  MachineCatalogSlotCandidate,
+} from "@/types/catalog";
 
 import { useCatalogStore } from "./catalog";
 import {
@@ -51,7 +54,7 @@ beforeEach(() => {
 function makeCatalogItem(
   overrides: Partial<MachineCatalogItem> = {},
 ): MachineCatalogItem {
-  return {
+  const item = {
     machineCode: "M001",
     slotId: "550e8400-e29b-41d4-a716-446655440001",
     slotCode: "A1",
@@ -77,6 +80,30 @@ function makeCatalogItem(
     productSortOrder: 1,
     targetGender: null,
     ...overrides,
+  } as Omit<
+    MachineCatalogItem,
+    "catalogKey" | "aggregatedSlotCount" | "slotCandidates"
+  >;
+  const slotCandidates: readonly MachineCatalogSlotCandidate[] =
+    overrides.slotCandidates ?? [
+      {
+        slotId: item.slotId,
+        slotCode: item.slotCode,
+        layerNo: item.layerNo,
+        cellNo: item.cellNo,
+        inventoryId: item.inventoryId,
+        capacity: item.capacity,
+        parLevel: item.parLevel,
+        physicalStock: item.physicalStock,
+        saleableStock: item.saleableStock,
+        slotSalesState: item.slotSalesState,
+      },
+    ];
+  return {
+    ...item,
+    catalogKey: overrides.catalogKey ?? `sku:${item.sku}`,
+    aggregatedSlotCount: overrides.aggregatedSlotCount ?? 1,
+    slotCandidates,
   };
 }
 
@@ -481,6 +508,7 @@ describe("checkout store", () => {
           slotId: "550e8400-e29b-41d4-a716-446655440011",
           slotCode: "B1",
           inventoryId: "550e8400-e29b-41d4-a716-446655440012",
+          sku: "WATER-NEW",
         }),
       ],
       source: "local_stock",
@@ -491,6 +519,62 @@ describe("checkout store", () => {
     expect(store.canCreateOrder).toBe(false);
     await expect(store.createOrder()).rejects.toThrow("商品已更新，请重新选择");
     expect(createOrderMock).not.toHaveBeenCalled();
+  });
+
+  it("creates an order from another saleable slot for the same SKU", async () => {
+    createOrderMock.mockResolvedValue(makeTransactionSnapshot());
+
+    const store = useCheckoutStore();
+    const catalogStore = useCatalogStore();
+    store.paymentOptions = [
+      {
+        optionKey: "payment_code:alipay",
+        providerCode: "alipay",
+        method: "payment_code",
+        displayName: "支付宝付款码",
+        description: "请出示付款码",
+        icon: "alipay",
+        disabled: false,
+        disabledReason: null,
+        recommended: true,
+      },
+    ];
+    store.selectedPaymentOptionKey = "payment_code:alipay";
+    applyNetworkSaleReady();
+    store.selectItem(makeCatalogItem({ saleableStock: 2 }));
+    catalogStore.applySnapshot({
+      items: [
+        makeCatalogItem({
+          physicalStock: 0,
+          saleableStock: 0,
+          slotSalesState: "sold_out",
+        }),
+        makeCatalogItem({
+          slotId: "550e8400-e29b-41d4-a716-446655440011",
+          slotCode: "B1",
+          layerNo: 2,
+          cellNo: 1,
+          inventoryId: "550e8400-e29b-41d4-a716-446655440012",
+          physicalStock: 5,
+          saleableStock: 5,
+          slotSalesState: "sale_ready",
+        }),
+      ],
+      source: "local_stock",
+      planogramVersion: "PLAN-1",
+      lastUpdatedAt: "2026-06-04T00:00:00Z",
+    });
+
+    expect(store.canCreateOrder).toBe(true);
+    await store.createOrder();
+
+    expect(createOrderMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        inventoryId: "550e8400-e29b-41d4-a716-446655440012",
+        slotId: "550e8400-e29b-41d4-a716-446655440011",
+        slotCode: "B1",
+      }),
+    );
   });
 
   it("blocks stale selected item when latest sale view is sold out", async () => {

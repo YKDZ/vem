@@ -29,6 +29,12 @@ const specText = computed(() => {
     item.value.sku
   );
 });
+const slotLabel = computed(() => {
+  if (!item.value) return "-";
+  return item.value.aggregatedSlotCount > 1
+    ? `多格口 · ${item.value.aggregatedSlotCount}处`
+    : formatMachineSlotCoordinate(item.value);
+});
 
 onMounted(async () => {
   if (!item.value) {
@@ -78,7 +84,7 @@ async function goCheckout(): Promise<void> {
             <span
               class="rounded-full bg-emerald-300/15 px-4 py-2 font-bold text-emerald-100"
             >
-              {{ formatMachineSlotCoordinate(item) }}
+              {{ slotLabel }}
             </span>
           </div>
 

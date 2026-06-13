@@ -63,6 +63,7 @@ describe("catalog store sale view", () => {
           slotCode: "A2",
           inventoryId: "550e8400-e29b-41d4-a716-446655440012",
           productName: "苏打水",
+          sku: "SODA-001",
           physicalStock: 0,
           saleableStock: 0,
           slotSalesState: "sold_out",
@@ -108,6 +109,40 @@ describe("catalog store sale view", () => {
 
     expect(store.items[0].slotSalesState).toBe("needs_platform_review");
     expect(store.availableItems).toHaveLength(0);
+  });
+
+  it("aggregates multiple saleable slots for the same SKU into one catalog item", async () => {
+    getSaleViewMock.mockResolvedValue({
+      items: [
+        saleViewItem({ saleableStock: 2, physicalStock: 2 }),
+        saleViewItem({
+          slotId: "550e8400-e29b-41d4-a716-446655440011",
+          slotCode: "B1",
+          layerNo: 2,
+          cellNo: 1,
+          inventoryId: "550e8400-e29b-41d4-a716-446655440012",
+          saleableStock: 5,
+          physicalStock: 5,
+        }),
+      ],
+      source: "local_stock",
+      planogramVersion: "PLAN-1",
+      lastUpdatedAt: "2026-06-04T00:00:00Z",
+    });
+
+    const store = useCatalogStore();
+    await store.load();
+
+    expect(store.availableItems).toHaveLength(1);
+    expect(store.availableItems[0]).toMatchObject({
+      sku: "WATER-001",
+      saleableStock: 7,
+      physicalStock: 7,
+      aggregatedSlotCount: 2,
+    });
+    expect(
+      store.availableItems[0].slotCandidates.map((slot) => slot.slotCode),
+    ).toEqual(["A1", "B1"]);
   });
 
   it("auto-refreshes the sale view without a manual catalog button", async () => {

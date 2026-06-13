@@ -280,7 +280,12 @@ function latestSaleViewItem(
   selectedItem: CheckoutSelectedItem | null,
 ): CheckoutSelectedItem | null {
   if (!selectedItem) return null;
-  return useCatalogStore().itemByInventoryId(selectedItem.inventoryId) ?? null;
+  const catalogStore = useCatalogStore();
+  return (
+    catalogStore.saleableItemFor(selectedItem) ??
+    catalogStore.itemByCatalogKey(selectedItem.catalogKey) ??
+    null
+  );
 }
 
 function isSaleableItem(

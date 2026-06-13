@@ -21,6 +21,11 @@ const specText = computed(
     [props.item.size, props.item.color].filter(Boolean).join(" / ") ||
     props.item.sku,
 );
+const slotLabel = computed(() =>
+  props.item.aggregatedSlotCount > 1
+    ? `多格口 · ${props.item.aggregatedSlotCount}处`
+    : formatMachineSlotCoordinate(props.item),
+);
 const buttonText = computed(() => {
   if (
     props.item.slotSalesState !== "sale_ready" ||
@@ -48,7 +53,7 @@ const buttonText = computed(() => {
         <span
           class="rounded-full bg-emerald-300/15 px-3 py-1 text-sm font-bold text-emerald-100"
         >
-          {{ formatMachineSlotCoordinate(item) }}
+          {{ slotLabel }}
         </span>
       </div>
       <p class="text-sm text-slate-300">{{ specText }}</p>

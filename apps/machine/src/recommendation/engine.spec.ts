@@ -2,7 +2,10 @@ import type { VisionProfile } from "@vem/shared";
 
 import { describe, it, expect } from "vitest";
 
-import type { MachineCatalogItem } from "@/types/catalog";
+import type {
+  MachineCatalogItem,
+  MachineCatalogSlotCandidate,
+} from "@/types/catalog";
 
 import { inferSize, scoreItem, computeRecommendations } from "./engine";
 
@@ -10,7 +13,7 @@ import { inferSize, scoreItem, computeRecommendations } from "./engine";
 function makeCatalogItem(
   override?: Partial<MachineCatalogItem>,
 ): MachineCatalogItem {
-  return {
+  const item = {
     machineCode: "test",
     slotId: "slot-1",
     slotCode: "A1",
@@ -36,6 +39,30 @@ function makeCatalogItem(
     productSortOrder: 10,
     targetGender: null,
     ...override,
+  } as Omit<
+    MachineCatalogItem,
+    "catalogKey" | "aggregatedSlotCount" | "slotCandidates"
+  >;
+  const slotCandidates: readonly MachineCatalogSlotCandidate[] =
+    override?.slotCandidates ?? [
+      {
+        slotId: item.slotId,
+        slotCode: item.slotCode,
+        layerNo: item.layerNo,
+        cellNo: item.cellNo,
+        inventoryId: item.inventoryId,
+        capacity: item.capacity,
+        parLevel: item.parLevel,
+        physicalStock: item.physicalStock,
+        saleableStock: item.saleableStock,
+        slotSalesState: item.slotSalesState,
+      },
+    ];
+  return {
+    ...item,
+    catalogKey: override?.catalogKey ?? `sku:${item.sku}`,
+    aggregatedSlotCount: override?.aggregatedSlotCount ?? 1,
+    slotCandidates,
   };
 }
 

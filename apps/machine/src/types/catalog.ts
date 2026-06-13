@@ -1,6 +1,25 @@
 import type { MachineSaleViewItem } from "@vem/shared";
 
-export type MachineCatalogItem = MachineSaleViewItem;
+export type MachineCatalogSlotCandidate = Pick<
+  MachineSaleViewItem,
+  | "slotId"
+  | "slotCode"
+  | "layerNo"
+  | "cellNo"
+  | "inventoryId"
+  | "capacity"
+  | "parLevel"
+  | "physicalStock"
+  | "saleableStock"
+  | "slotSalesState"
+>;
+
+export type MachineCatalogItem = MachineSaleViewItem & {
+  catalogKey: string;
+  aggregatedSlotCount: number;
+  slotCandidates: readonly MachineCatalogSlotCandidate[];
+};
+
 export type { MachineSaleViewItem };
 
 /** Recommendation engine output: item + score + reason */
