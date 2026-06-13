@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { formatMachineSlotCoordinate } from "@vem/shared";
 import { computed, onMounted, onUnmounted, reactive } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
@@ -194,6 +195,8 @@ const stockMaintenance = reactive({
   slots: [] as Array<{
     slotId: string;
     slotCode: string;
+    layerNo: number;
+    cellNo: number;
     productName: string;
     physicalStock: number;
     capacity: number;
@@ -413,6 +416,8 @@ async function refreshStockMaintenanceView(): Promise<void> {
     stockMaintenance.slots = snapshot.items.map((item) => ({
       slotId: item.slotId,
       slotCode: item.slotCode,
+      layerNo: item.layerNo,
+      cellNo: item.cellNo,
       productName: item.productName,
       physicalStock: item.physicalStock,
       capacity: item.capacity,
@@ -521,8 +526,10 @@ async function submitStockMovement(): Promise<void> {
                 :key="slot.slotId"
                 :value="slot.slotId"
               >
-                {{ slot.slotCode }} · {{ slot.productName }} ·
-                {{ slot.physicalStock }}/{{ slot.capacity }}
+                {{ formatMachineSlotCoordinate(slot) }} ·
+                {{ slot.productName }} · {{ slot.physicalStock }}/{{
+                  slot.capacity
+                }}
               </option>
             </select>
           </label>

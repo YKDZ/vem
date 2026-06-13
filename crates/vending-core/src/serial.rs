@@ -1,4 +1,5 @@
 use std::{
+    path::{Path, PathBuf},
     sync::atomic::{AtomicBool, Ordering},
     time::Duration,
 };
@@ -30,6 +31,7 @@ const HEARTBEAT_PROBE_INTERVAL: TokioDuration = TokioDuration::from_secs(1);
 /// 收到 Busy 回复后，下次重发出货指令前需等待的最小间隔
 const BUSY_RETRY_DELAY: TokioDuration = TokioDuration::from_millis(100);
 const COMMAND_ATTEMPTS: usize = 3;
+const SERIAL_PROTOCOL_LOG_MAX_BYTES: u64 = 2 * 1024 * 1024;
 static SERIAL_OPERATION_LOCK: Mutex<()> = Mutex::const_new(());
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -109,6 +111,62 @@ struct ResolvedSerialPort {
 struct OpenResolvedSerialPort {
     resolved: ResolvedSerialPort,
     port: SerialStream,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+struct SerialProtocolLogEntry {
+    ts: String,
+    operation: String,
+    direction: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    port_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    command_no: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    order_no: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    slot_code: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    layer_no: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cell_no: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    quantity: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    attempt: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    frame_hex: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    frame: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    result: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message: Option<String>,
+}
+
+impl SerialProtocolLogEntry {
+    fn new(operation: impl Into<String>, direction: impl Into<String>) -> Self {
+        Self {
+            ts: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            operation: operation.into(),
+            direction: direction.into(),
+            ..Self::default()
+        }
+    }
+
+    fn for_dispense(command: &DispenseCommandPayload, port_path: String) -> Self {
+        Self {
+            port_path: Some(port_path),
+            command_no: Some(command.command_no.clone()),
+            order_no: Some(command.order_no.clone()),
+            slot_code: Some(command.slot.slot_code.clone()),
+            layer_no: Some(command.slot.layer_no),
+            cell_no: Some(command.slot.cell_no),
+            quantity: Some(command.quantity),
+            ..Self::new("dispense", "event")
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -208,9 +266,74 @@ fn open_serial_port_path(port_path: &str) -> Result<SerialStream, String> {
         .map_err(|error| format!("open serial port {port_path} failed: {error}"))
 }
 
+fn bytes_to_hex(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .map(|byte| format!("{byte:02X}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn rotated_protocol_log_path(path: &Path) -> PathBuf {
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("serial-protocol.jsonl");
+    path.with_file_name(format!("{file_name}.1"))
+}
+
+async fn rotate_protocol_log_if_needed(path: &Path) -> Result<(), String> {
+    let metadata = match tokio::fs::metadata(path).await {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(format!("read serial protocol log metadata failed: {error}")),
+    };
+    if metadata.len() < SERIAL_PROTOCOL_LOG_MAX_BYTES {
+        return Ok(());
+    }
+    let rotated = rotated_protocol_log_path(path);
+    match tokio::fs::remove_file(&rotated).await {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(format!(
+                "remove rotated serial protocol log failed: {error}"
+            ))
+        }
+    }
+    tokio::fs::rename(path, rotated)
+        .await
+        .map_err(|error| format!("rotate serial protocol log failed: {error}"))?;
+    Ok(())
+}
+
+async fn append_protocol_log(path: &Path, entry: &SerialProtocolLogEntry) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|error| format!("create serial protocol log directory failed: {error}"))?;
+    }
+    rotate_protocol_log_if_needed(path).await?;
+    let mut file = tokio::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .await
+        .map_err(|error| format!("open serial protocol log failed: {error}"))?;
+    let line = serde_json::to_string(entry)
+        .map_err(|error| format!("serialize serial protocol log failed: {error}"))?;
+    let mut payload = line.into_bytes();
+    payload.push(b'\n');
+    tokio::io::AsyncWriteExt::write_all(&mut file, &payload)
+        .await
+        .map_err(|error| format!("write serial protocol log failed: {error}"))?;
+    Ok(())
+}
+
 pub struct SerialHardwareAdapter {
     port_path: Option<String>,
     usb_identity: Option<SerialPortUsbIdentity>,
+    protocol_log_path: Option<PathBuf>,
     op_lock: Mutex<()>,
     debug_inject_next_dispense_fault: AtomicBool,
 }
@@ -224,11 +347,81 @@ impl SerialHardwareAdapter {
         port_path: Option<String>,
         usb_identity: Option<SerialPortUsbIdentity>,
     ) -> Self {
+        Self::new_resolving_with_protocol_log(port_path, usb_identity, None)
+    }
+
+    pub fn new_resolving_with_protocol_log(
+        port_path: Option<String>,
+        usb_identity: Option<SerialPortUsbIdentity>,
+        protocol_log_path: Option<PathBuf>,
+    ) -> Self {
         Self {
             port_path,
             usb_identity,
+            protocol_log_path,
             op_lock: Mutex::new(()),
             debug_inject_next_dispense_fault: AtomicBool::new(false),
+        }
+    }
+
+    async fn log_protocol(&self, entry: SerialProtocolLogEntry) {
+        let Some(path) = &self.protocol_log_path else {
+            return;
+        };
+        if let Err(error) = append_protocol_log(path, &entry).await {
+            eprintln!("append serial protocol log failed: {error}");
+        }
+    }
+
+    async fn log_frame(
+        &self,
+        mut entry: SerialProtocolLogEntry,
+        direction: &str,
+        bytes: &[u8],
+        frame: Option<&str>,
+    ) {
+        entry.ts = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        entry.direction = direction.to_string();
+        entry.frame_hex = Some(bytes_to_hex(bytes));
+        entry.frame = frame.map(str::to_string);
+        self.log_protocol(entry).await;
+    }
+
+    async fn log_message(
+        &self,
+        mut entry: SerialProtocolLogEntry,
+        direction: &str,
+        result: Option<&str>,
+        message: Option<String>,
+    ) {
+        entry.ts = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        entry.direction = direction.to_string();
+        entry.result = result.map(str::to_string);
+        entry.message = message;
+        self.log_protocol(entry).await;
+    }
+
+    async fn read_lower_frame_logged<R>(
+        &self,
+        reader: &mut R,
+        read_timeout: Duration,
+        entry: SerialProtocolLogEntry,
+    ) -> Result<LowerFrame, String>
+    where
+        R: AsyncRead + Unpin,
+    {
+        match read_lower_frame(reader, read_timeout).await {
+            Ok(frame) => {
+                let bytes = frame.protocol_bytes();
+                self.log_frame(entry, "rx", &bytes, Some(frame.describe()))
+                    .await;
+                Ok(frame)
+            }
+            Err(error) => {
+                self.log_message(entry, "error", Some("read_failed"), Some(error.clone()))
+                    .await;
+                Err(error)
+            }
         }
     }
 
@@ -305,7 +498,7 @@ impl SerialHardwareAdapter {
         ))
     }
 
-    async fn open_operational_port_locked(&self) -> Result<SerialStream, String> {
+    async fn open_operational_port_locked(&self) -> Result<OpenResolvedSerialPort, String> {
         let OpenResolvedSerialPort { resolved, port } = self
             .open_resolved_serial_port_locked()
             .await
@@ -316,22 +509,37 @@ impl SerialHardwareAdapter {
                 resolved.frame.describe()
             ));
         }
-        Ok(port)
+        Ok(OpenResolvedSerialPort { resolved, port })
     }
 
     pub async fn query_environment_sample(&self) -> Result<Option<EnvironmentSample>, String> {
         let frame = build_environment_sample_query_frame();
         let _serial_guard = SERIAL_OPERATION_LOCK.lock().await;
         let _guard = self.op_lock.lock().await;
-        let mut port = self.open_operational_port_locked().await?;
+        let OpenResolvedSerialPort { resolved, mut port } =
+            self.open_operational_port_locked().await?;
+        let base_entry = SerialProtocolLogEntry {
+            port_path: Some(resolved.port_path),
+            ..SerialProtocolLogEntry::new("environment_query", "event")
+        };
         port.write_all(&frame)
             .await
             .map_err(|error| format!("serial environment query write failed: {error}"))?;
         port.flush()
             .await
             .map_err(|error| format!("serial environment query flush failed: {error}"))?;
+        self.log_frame(
+            base_entry.clone(),
+            "tx",
+            &frame,
+            Some("environment sample query"),
+        )
+        .await;
 
-        match read_lower_frame(&mut port, ENVIRONMENT_COMMAND_TIMEOUT).await? {
+        match self
+            .read_lower_frame_logged(&mut port, ENVIRONMENT_COMMAND_TIMEOUT, base_entry)
+            .await?
+        {
             LowerFrame::EnvironmentSample(sample) => Ok(Some(sample)),
             LowerFrame::NoValidEnvironmentSample => Ok(None),
             frame if frame.is_fault() => Err(format!(
@@ -349,15 +557,30 @@ impl SerialHardwareAdapter {
         let frame = build_target_temperature_frame(temperature_celsius)?;
         let _serial_guard = SERIAL_OPERATION_LOCK.lock().await;
         let _guard = self.op_lock.lock().await;
-        let mut port = self.open_operational_port_locked().await?;
+        let OpenResolvedSerialPort { resolved, mut port } =
+            self.open_operational_port_locked().await?;
+        let base_entry = SerialProtocolLogEntry {
+            port_path: Some(resolved.port_path),
+            ..SerialProtocolLogEntry::new("set_target_temperature", "event")
+        };
         port.write_all(&frame)
             .await
             .map_err(|error| format!("serial target temperature write failed: {error}"))?;
         port.flush()
             .await
             .map_err(|error| format!("serial target temperature flush failed: {error}"))?;
+        self.log_frame(
+            base_entry.clone(),
+            "tx",
+            &frame,
+            Some("set target temperature"),
+        )
+        .await;
 
-        match read_lower_frame(&mut port, ENVIRONMENT_COMMAND_TIMEOUT).await? {
+        match self
+            .read_lower_frame_logged(&mut port, ENVIRONMENT_COMMAND_TIMEOUT, base_entry)
+            .await?
+        {
             LowerFrame::TargetTemperatureEcho {
                 temperature_celsius: echoed,
             } if echoed == temperature_celsius => Ok(()),
@@ -376,15 +599,30 @@ impl SerialHardwareAdapter {
         let frame = build_air_conditioner_switch_frame(enabled);
         let _serial_guard = SERIAL_OPERATION_LOCK.lock().await;
         let _guard = self.op_lock.lock().await;
-        let mut port = self.open_operational_port_locked().await?;
+        let OpenResolvedSerialPort { resolved, mut port } =
+            self.open_operational_port_locked().await?;
+        let base_entry = SerialProtocolLogEntry {
+            port_path: Some(resolved.port_path),
+            ..SerialProtocolLogEntry::new("set_air_conditioner", "event")
+        };
         port.write_all(&frame)
             .await
             .map_err(|error| format!("serial air conditioner switch write failed: {error}"))?;
         port.flush()
             .await
             .map_err(|error| format!("serial air conditioner switch flush failed: {error}"))?;
+        self.log_frame(
+            base_entry.clone(),
+            "tx",
+            &frame,
+            Some("set air conditioner switch"),
+        )
+        .await;
 
-        match read_lower_frame(&mut port, ENVIRONMENT_COMMAND_TIMEOUT).await? {
+        match self
+            .read_lower_frame_logged(&mut port, ENVIRONMENT_COMMAND_TIMEOUT, base_entry)
+            .await?
+        {
             LowerFrame::AirConditionerSwitchEcho { enabled: echoed } if echoed == enabled => Ok(()),
             frame if frame.is_fault() => Err(format!(
                 "lower controller rejected air conditioner switch command: {}",
@@ -425,21 +663,26 @@ impl SerialHardwareAdapter {
 
         let _serial_guard = SERIAL_OPERATION_LOCK.lock().await;
         let _guard = self.op_lock.lock().await;
-        let mut port = self
+        let OpenResolvedSerialPort { resolved, mut port } = self
             .open_operational_port_locked()
             .await
             .map_err(DispenseFailure::timeout)?;
+        let base_entry = SerialProtocolLogEntry::for_dispense(command, resolved.port_path);
         let mut acknowledged = false;
 
-        for _attempt in 0..COMMAND_ATTEMPTS {
+        for attempt in 1..=COMMAND_ATTEMPTS {
             port.write_all(&frame).await.map_err(|error| {
                 DispenseFailure::timeout(format!("serial command write failed: {error}"))
             })?;
             port.flush().await.map_err(|error| {
                 DispenseFailure::timeout(format!("serial command flush failed: {error}"))
             })?;
+            let mut tx_entry = base_entry.clone();
+            tx_entry.attempt = Some(attempt);
+            self.log_frame(tx_entry, "tx", &frame, Some("dispense command"))
+                .await;
 
-            match wait_for_ack(&mut port).await {
+            match wait_for_ack(&mut port, self, &base_entry, attempt).await {
                 Ok(()) => {
                     acknowledged = true;
                     break;
@@ -458,6 +701,22 @@ impl SerialHardwareAdapter {
         if !acknowledged {
             let _ = port.write_all(&HANDSHAKE).await;
             let _ = port.flush().await;
+            self.log_frame(
+                base_entry.clone(),
+                "tx",
+                &HANDSHAKE,
+                Some("status query after missing ack"),
+            )
+            .await;
+            self.log_message(
+                base_entry.clone(),
+                "error",
+                Some("ack_timeout"),
+                Some(format!(
+                    "lower controller did not acknowledge command after {COMMAND_ATTEMPTS} attempts"
+                )),
+            )
+            .await;
             return Err(DispenseFailure::timeout(format!(
                 "lower controller did not acknowledge command after {COMMAND_ATTEMPTS} attempts"
             )));
@@ -479,9 +738,16 @@ impl SerialHardwareAdapter {
                     "serial debug fault injection flush failed: {error}"
                 ))
             })?;
+            self.log_frame(
+                base_entry.clone(),
+                "tx",
+                &DEBUG_DISPENSE_FAULT_FRAME,
+                Some("debug dispense fault injection"),
+            )
+            .await;
         }
 
-        wait_for_completion(&mut port, command_deadline).await
+        wait_for_completion(&mut port, command_deadline, self, &base_entry).await
     }
 }
 
@@ -714,6 +980,38 @@ impl LowerFrame {
             Self::TargetTemperatureEcho { .. } => "target temperature accepted",
             Self::AirConditionerSwitchEcho { .. } => "air conditioner switch accepted",
             Self::Unknown(_) => "unknown frame",
+        }
+    }
+
+    pub fn protocol_bytes(self) -> Vec<u8> {
+        match self {
+            Self::Ack => vec![FRAME_HEAD, 0x00],
+            Self::BoundaryError => vec![FRAME_HEAD, 0xE1],
+            Self::CrcError => vec![FRAME_HEAD, 0xE2],
+            Self::MechanicalError => vec![FRAME_HEAD, 0xE3],
+            Self::Busy => vec![FRAME_HEAD, 0xE4],
+            Self::PickupTimeout => vec![FRAME_HEAD, 0xE5],
+            Self::PickupPlatformBlocked => vec![FRAME_HEAD, 0xE6],
+            Self::AboutToDrop => vec![FRAME_HEAD, 0xF0],
+            Self::Completed => vec![FRAME_HEAD, 0xF1],
+            Self::IdleHeartbeat => vec![FRAME_HEAD, 0xAA],
+            Self::DispensingHeartbeat => vec![FRAME_HEAD, 0xAB],
+            Self::PickupHeartbeat => vec![FRAME_HEAD, 0xAC],
+            Self::ResetHeartbeat => vec![FRAME_HEAD, 0xAF],
+            Self::EnvironmentSample(sample) => vec![
+                FRAME_HEAD,
+                0xB0,
+                sample.temperature_celsius as u8,
+                sample.relative_humidity_percent,
+            ],
+            Self::NoValidEnvironmentSample => vec![FRAME_HEAD, 0xB0, 0x00, 0x00],
+            Self::TargetTemperatureEcho {
+                temperature_celsius,
+            } => vec![FRAME_HEAD, 0xB1, temperature_celsius as u8],
+            Self::AirConditionerSwitchEcho { enabled } => {
+                vec![FRAME_HEAD, 0xB2, if enabled { 0xFF } else { 0x00 }]
+            }
+            Self::Unknown(code) => vec![FRAME_HEAD, code],
         }
     }
 
@@ -1038,15 +1336,35 @@ async fn discover_lower_controller_port_open(
     }
 }
 
-async fn wait_for_ack(port: &mut SerialStream) -> Result<(), AckWaitError> {
+async fn wait_for_ack(
+    port: &mut SerialStream,
+    adapter: &SerialHardwareAdapter,
+    base_entry: &SerialProtocolLogEntry,
+    attempt: usize,
+) -> Result<(), AckWaitError> {
     let deadline = Instant::now() + COMMAND_ACK_TIMEOUT;
     loop {
         let now = Instant::now();
         if now >= deadline {
+            let mut entry = base_entry.clone();
+            entry.attempt = Some(attempt);
+            adapter
+                .log_message(
+                    entry,
+                    "error",
+                    Some("ack_timeout"),
+                    Some("serial read timeout while waiting for command ack".to_string()),
+                )
+                .await;
             return Err(AckWaitError::Timeout);
         }
         let remaining = deadline.saturating_duration_since(now);
-        let frame = match read_lower_frame(port, remaining).await {
+        let mut entry = base_entry.clone();
+        entry.attempt = Some(attempt);
+        let frame = match adapter
+            .read_lower_frame_logged(port, remaining, entry)
+            .await
+        {
             Ok(frame) => frame,
             Err(_) => return Err(AckWaitError::Timeout),
         };
@@ -1073,10 +1391,24 @@ async fn wait_for_ack(port: &mut SerialStream) -> Result<(), AckWaitError> {
 
 /// 当心跳中断（1s 内无有效帧）时，主动向下位机发送握手探测。
 /// 收到任意心跳帧视为探测成功；100ms 无回应返回 Err。
-async fn probe_handshake(port: &mut SerialStream) -> Result<LowerFrame, ()> {
+async fn probe_handshake(
+    port: &mut SerialStream,
+    adapter: &SerialHardwareAdapter,
+    base_entry: &SerialProtocolLogEntry,
+) -> Result<LowerFrame, ()> {
     port.write_all(&HANDSHAKE).await.map_err(|_| ())?;
     port.flush().await.map_err(|_| ())?;
-    match read_lower_frame(port, TokioDuration::from_millis(100)).await {
+    let mut tx_entry = base_entry.clone();
+    tx_entry.operation = "dispense_probe".to_string();
+    adapter
+        .log_frame(tx_entry, "tx", &HANDSHAKE, Some("heartbeat probe"))
+        .await;
+    let mut rx_entry = base_entry.clone();
+    rx_entry.operation = "dispense_probe".to_string();
+    match adapter
+        .read_lower_frame_logged(port, TokioDuration::from_millis(100), rx_entry)
+        .await
+    {
         Ok(frame) if frame.is_heartbeat() => Ok(frame),
         _ => Err(()),
     }
@@ -1085,11 +1417,21 @@ async fn probe_handshake(port: &mut SerialStream) -> Result<LowerFrame, ()> {
 async fn wait_for_completion(
     port: &mut SerialStream,
     command_deadline: Instant,
+    adapter: &SerialHardwareAdapter,
+    base_entry: &SerialProtocolLogEntry,
 ) -> Result<(), DispenseFailure> {
     let mut probe_failures: usize = 0;
     loop {
         let now = Instant::now();
         if now >= command_deadline {
+            adapter
+                .log_message(
+                    base_entry.clone(),
+                    "error",
+                    Some("completion_timeout"),
+                    Some("dispense command timed out before completion frame".to_string()),
+                )
+                .await;
             return Err(DispenseFailure::timeout(
                 "dispense command timed out before completion frame",
             ));
@@ -1097,19 +1439,30 @@ async fn wait_for_completion(
 
         // 以 1s 为间隔读帧；超过 1s 无帧则发握手探测
         let wait = HEARTBEAT_PROBE_INTERVAL.min(command_deadline.saturating_duration_since(now));
-        let frame = match read_lower_frame(port, wait).await {
+        let frame = match adapter
+            .read_lower_frame_logged(port, wait, base_entry.clone())
+            .await
+        {
             Ok(frame) => {
                 probe_failures = 0;
                 frame
             }
             Err(_) => {
                 if Instant::now() >= command_deadline {
+                    adapter
+                        .log_message(
+                            base_entry.clone(),
+                            "error",
+                            Some("completion_timeout"),
+                            Some("dispense command timed out before completion frame".to_string()),
+                        )
+                        .await;
                     return Err(DispenseFailure::timeout(
                         "dispense command timed out before completion frame",
                     ));
                 }
                 // 心跳中断——主动探测下位机
-                match probe_handshake(port).await {
+                match probe_handshake(port, adapter, base_entry).await {
                     Ok(_) => {
                         probe_failures = 0;
                         continue;
@@ -1117,6 +1470,14 @@ async fn wait_for_completion(
                     Err(()) => {
                         probe_failures += 1;
                         if probe_failures >= COMMAND_ATTEMPTS {
+                            adapter
+                                .log_message(
+                                    base_entry.clone(),
+                                    "error",
+                                    Some("heartbeat_missing"),
+                                    Some("lower controller heartbeat missing: no response after handshake probes".to_string()),
+                                )
+                                .await;
                             return Err(DispenseFailure::timeout(
                                 "lower controller heartbeat missing: no response after handshake probes",
                             ));
@@ -1128,7 +1489,17 @@ async fn wait_for_completion(
         };
 
         match frame {
-            LowerFrame::Completed => return Ok(()),
+            LowerFrame::Completed => {
+                adapter
+                    .log_message(
+                        base_entry.clone(),
+                        "event",
+                        Some("completed"),
+                        Some("dispense completed".to_string()),
+                    )
+                    .await;
+                return Ok(());
+            }
             LowerFrame::Ack
             | LowerFrame::AboutToDrop
             | LowerFrame::IdleHeartbeat
@@ -1230,6 +1601,20 @@ mod tests {
         assert_eq!(
             build_dispense_frame(2, 5).unwrap(),
             [0x55, 0x02, 0x05, 0x31]
+        );
+    }
+
+    #[test]
+    fn protocol_log_helpers_render_frames_as_hex() {
+        assert_eq!(bytes_to_hex(&[0x55, 0x02, 0x05, 0x31]), "55 02 05 31");
+        assert_eq!(LowerFrame::Completed.protocol_bytes(), [0x55, 0xF1]);
+        assert_eq!(
+            LowerFrame::EnvironmentSample(EnvironmentSample {
+                temperature_celsius: -1,
+                relative_humidity_percent: 55,
+            })
+            .protocol_bytes(),
+            [0x55, 0xB0, 0xFF, 0x37]
         );
     }
 

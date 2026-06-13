@@ -69,6 +69,24 @@ export function isValidMachineSlotCoordinate(
   return machineSlotCoordinateErrorMessage(input) === null;
 }
 
+function formatCoordinatePart(value: number | undefined): string {
+  return typeof value === "number" && Number.isInteger(value)
+    ? String(value)
+    : "--";
+}
+
+export function formatMachineSlotCoordinate(
+  input: MachineSlotCoordinateInput,
+): string {
+  return `行 ${formatCoordinatePart(input.layerNo)} / 格 ${formatCoordinatePart(input.cellNo)}`;
+}
+
+export function machineSlotCoordinateCode(
+  input: MachineSlotCoordinateInput,
+): string {
+  return `R${formatCoordinatePart(input.layerNo)}C${formatCoordinatePart(input.cellNo)}`;
+}
+
 export function addMachineSlotCoordinateIssue(
   input: MachineSlotCoordinateInput,
   ctx: {

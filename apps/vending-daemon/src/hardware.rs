@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
 
 use vending_core::{
     hardware::DispenseCommandPayload, hardware::HardwareAdapter, serial::EnvironmentSample,
@@ -17,14 +17,22 @@ impl HardwareSupervisor {
     }
 
     pub fn from_config(config: &MachinePublicConfig) -> Result<Self, String> {
+        Self::from_config_with_protocol_log(config, None)
+    }
+
+    pub fn from_config_with_protocol_log(
+        config: &MachinePublicConfig,
+        protocol_log_path: Option<PathBuf>,
+    ) -> Result<Self, String> {
         let adapter: Arc<dyn HardwareAdapter> = match config.hardware_adapter {
             HardwareAdapterKind::Mock => Arc::new(vending_core::hardware::MockHardwareAdapter),
-            HardwareAdapterKind::Serial => {
-                Arc::new(vending_core::serial::SerialHardwareAdapter::new_resolving(
+            HardwareAdapterKind::Serial => Arc::new(
+                vending_core::serial::SerialHardwareAdapter::new_resolving_with_protocol_log(
                     config.serial_port_path.clone(),
                     config.lower_controller_usb_identity.clone(),
-                ))
-            }
+                    protocol_log_path,
+                ),
+            ),
             HardwareAdapterKind::Bluetooth => {
                 return Err("bluetooth hardware adapter is not implemented".to_string());
             }

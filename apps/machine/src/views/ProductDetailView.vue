@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { formatMachineSlotCoordinate } from "@vem/shared";
 import { computed, onMounted } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
@@ -77,7 +78,7 @@ async function goCheckout(): Promise<void> {
             <span
               class="rounded-full bg-emerald-300/15 px-4 py-2 font-bold text-emerald-100"
             >
-              格口 {{ item.slotCode }}
+              {{ formatMachineSlotCoordinate(item) }}
             </span>
           </div>
 

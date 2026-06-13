@@ -173,7 +173,11 @@ impl MqttSyncRuntime {
                     command_no: command.command_no,
                 });
             }
-            if existing.status == vending_core::domain::CommandLogStatus::Dispensing {
+            if matches!(
+                existing.status,
+                vending_core::domain::CommandLogStatus::Acknowledged
+                    | vending_core::domain::CommandLogStatus::Dispensing
+            ) {
                 return Ok(CommandHandlingResult::ActiveDuplicate {
                     command_no: command.command_no,
                 });
@@ -696,6 +700,10 @@ mod tests {
         }
 
         async fn dispense(&self, cmd: DispenseCommandPayload) -> DispenseResultPayload {
+            self.operations
+                .lock()
+                .await
+                .push(format!("dispense:{}", cmd.command_no));
             if self.hang_dispense {
                 tokio::time::sleep(Duration::from_secs(60)).await;
             }
@@ -742,8 +750,8 @@ mod tests {
             .expect("planogram");
     }
 
-    fn signed_dispense_command(command_no: &str, timeout_seconds: u64) -> String {
-        let command = DispenseCommandPayload {
+    fn dispense_command_payload(command_no: &str, timeout_seconds: u64) -> DispenseCommandPayload {
+        DispenseCommandPayload {
             command_no: command_no.to_string(),
             order_no: "ORD-MQTT".to_string(),
             slot: vending_core::hardware::SlotPayload {
@@ -753,7 +761,11 @@ mod tests {
             },
             quantity: 1,
             timeout_seconds,
-        };
+        }
+    }
+
+    fn signed_dispense_command(command_no: &str, timeout_seconds: u64) -> String {
+        let command = dispense_command_payload(command_no, timeout_seconds);
         let envelope = sign_envelope(
             "M1",
             "secret",
@@ -761,6 +773,51 @@ mod tests {
             serde_json::to_value(&command).expect("payload"),
         );
         serde_json::to_string(&envelope).expect("envelope")
+    }
+
+    #[tokio::test]
+    async fn duplicate_acknowledged_dispense_command_does_not_call_hardware_again() {
+        let temp = tempfile::tempdir().expect("temp");
+        let state = crate::state::LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("state");
+        seed_single_slot_planogram(&state).await;
+
+        let command = dispense_command_payload("CMD-DUP-ACK", 5);
+        let ack_event = crate::state::store::OutboxInput::command_ack("M1", &command.command_no);
+        state
+            .record_command_ack_tx(&command, &ack_event)
+            .await
+            .expect("acknowledged command");
+
+        let adapter = Arc::new(RecordingEnvironmentAdapter::default());
+        let hardware = crate::hardware::HardwareSupervisor::from_adapter(adapter.clone());
+        let (event_tx, _rx) = tokio::sync::broadcast::channel(4);
+        let runtime = MqttSyncRuntime::new(
+            "M1".to_string(),
+            "secret".to_string(),
+            state,
+            hardware,
+            event_tx,
+            CancellationToken::new(),
+        );
+
+        let result = runtime
+            .handle_dispense_command(&signed_dispense_command("CMD-DUP-ACK", 5))
+            .await
+            .expect("handle duplicate");
+
+        assert!(matches!(
+            result,
+            CommandHandlingResult::ActiveDuplicate { command_no } if command_no == "CMD-DUP-ACK"
+        ));
+        let operations = adapter.operations.lock().await.clone();
+        assert!(
+            !operations
+                .iter()
+                .any(|operation| operation == "dispense:CMD-DUP-ACK"),
+            "duplicate command should not call hardware: {operations:?}"
+        );
     }
 
     fn signed_environment_command(

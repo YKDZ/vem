@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { formatMachineSlotCoordinate } from "@vem/shared";
 import { computed } from "vue";
 
 import type { MachineCatalogItem } from "@/types/catalog";
@@ -47,7 +48,7 @@ const buttonText = computed(() => {
         <span
           class="rounded-full bg-emerald-300/15 px-3 py-1 text-sm font-bold text-emerald-100"
         >
-          {{ item.slotCode }}
+          {{ formatMachineSlotCoordinate(item) }}
         </span>
       </div>
       <p class="text-sm text-slate-300">{{ specText }}</p>

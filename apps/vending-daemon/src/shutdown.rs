@@ -85,8 +85,11 @@ pub async fn run_console_with_token(
         .await
         .map_err(|error| format!("runtime secrets load failed: {error}"))?;
 
-    let hardware = HardwareSupervisor::from_config(&runtime_config.public)
-        .map_err(|error| format!("hardware config invalid: {error}"))?;
+    let hardware = HardwareSupervisor::from_config_with_protocol_log(
+        &runtime_config.public,
+        Some(data_dir.join("logs").join("serial-protocol.jsonl")),
+    )
+    .map_err(|error| format!("hardware config invalid: {error}"))?;
 
     let (tx_raw, rx_raw) = mpsc::channel(16);
     let (events_tx, _) = broadcast::channel(64);

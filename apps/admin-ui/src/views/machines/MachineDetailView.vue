@@ -5,6 +5,7 @@ import type {
   MachineSlotStatus,
 } from "@vem/shared";
 
+import { formatMachineSlotCoordinate } from "@vem/shared";
 import { Modal } from "antdv-next";
 import { computed, onMounted, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
@@ -115,8 +116,7 @@ const commandStatusColor: Record<string, string> = {
 };
 
 const slotColumns = [
-  { title: "货道", dataIndex: "slotCode", key: "slotCode" },
-  { title: "位置", key: "position" },
+  { title: "货道坐标", key: "coordinate" },
   { title: "状态", dataIndex: "status", key: "status" },
   { title: "容量", dataIndex: "capacity", key: "capacity" },
   { title: "商品", key: "product" },
@@ -172,6 +172,12 @@ function commandStatusLabel(status: MachineCommandStatus | null): string {
 
 function inventoryAvailableQty(inventory: Inventory): number {
   return inventory.availableQty ?? inventory.onHandQty - inventory.reservedQty;
+}
+
+function inventorySlotCoordinateLabel(inventory: Inventory | null): string {
+  if (!inventory) return "--";
+  const slot = slots.value.find((item) => item.id === inventory.slotId);
+  return slot ? formatMachineSlotCoordinate(slot) : inventory.slotId;
 }
 
 async function loadMachine(): Promise<void> {
@@ -476,8 +482,8 @@ onMounted(() => {
         :pagination="false"
       >
         <template #bodyCell="{ column, record }">
-          <template v-if="column.key === 'position'">
-            {{ record.layerNo }} 层 {{ record.cellNo }} 格
+          <template v-if="column.key === 'coordinate'">
+            {{ formatMachineSlotCoordinate(record) }}
           </template>
           <template v-else-if="column.key === 'status'">
             <a-tag
@@ -577,7 +583,7 @@ onMounted(() => {
           {{ refillInventoryRow?.productName ?? refillInventoryRow?.sku }}
         </a-form-item>
         <a-form-item label="货道">
-          {{ refillInventoryRow?.slotCode ?? refillInventoryRow?.slotId }}
+          {{ inventorySlotCoordinateLabel(refillInventoryRow) }}
         </a-form-item>
         <a-form-item label="补货数量">
           <a-input-number
@@ -603,7 +609,7 @@ onMounted(() => {
           {{ adjustInventoryRow?.productName ?? adjustInventoryRow?.sku }}
         </a-form-item>
         <a-form-item label="货道">
-          {{ adjustInventoryRow?.slotCode ?? adjustInventoryRow?.slotId }}
+          {{ inventorySlotCoordinateLabel(adjustInventoryRow) }}
         </a-form-item>
         <a-form-item label="调整数量（正数补充，负数扣减）">
           <a-input-number v-model:value="adjustForm.deltaQty" class="w-full" />

@@ -22,8 +22,10 @@ import {
   machinePlanogramVersionSnapshotSchema,
   machineSaleViewItemSchema,
   machineSlotStatuses,
+  formatMachineSlotCoordinate,
   isValidMachineSlotCoordinate,
   getMachineSlotMaxCellNo,
+  machineSlotCoordinateCode,
   maintenanceWorkOrderStatuses,
   mqttSignedEnvelopeSchema,
   notificationTypeSchema,
@@ -63,6 +65,10 @@ describe("shared API contract", () => {
     expect(getMachineSlotMaxCellNo(10)).toBe(4);
     expect(isValidMachineSlotCoordinate({ layerNo: 7, cellNo: 4 })).toBe(true);
     expect(isValidMachineSlotCoordinate({ layerNo: 7, cellNo: 5 })).toBe(false);
+    expect(formatMachineSlotCoordinate({ layerNo: 7, cellNo: 4 })).toBe(
+      "行 7 / 格 4",
+    );
+    expect(machineSlotCoordinateCode({ layerNo: 7, cellNo: 4 })).toBe("R7C4");
 
     expect(() =>
       createMachineSlotSchema.parse({

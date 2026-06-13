@@ -9,10 +9,12 @@ import type {
 } from "@vem/shared";
 
 import {
+  formatMachineSlotCoordinate,
   getMachineSlotMaxCellNo,
   MACHINE_SLOT_MAX_LAYER_NO,
   MACHINE_SLOT_MIN_LAYER_NO,
   machineSlotCoordinateErrorMessage,
+  machineSlotCoordinateCode,
 } from "@vem/shared";
 import { Modal } from "antdv-next";
 import { computed, onMounted, ref } from "vue";
@@ -273,7 +275,7 @@ async function saveSlot(): Promise<void> {
     await createMachineSlot(currentMachineId.value, {
       layerNo: slotForm.value.layerNo,
       cellNo: slotForm.value.cellNo,
-      slotCode: slotForm.value.slotCode,
+      slotCode: machineSlotCoordinateCode(slotForm.value),
       capacity: slotForm.value.capacity,
       status: slotForm.value.status,
     });
@@ -330,9 +332,7 @@ const machineColumns = [
 ];
 
 const slotColumns = [
-  { title: "层号", dataIndex: "layerNo", key: "layerNo" },
-  { title: "格号", dataIndex: "cellNo", key: "cellNo" },
-  { title: "格口编码", dataIndex: "slotCode", key: "slotCode" },
+  { title: "货道坐标", key: "coordinate" },
   { title: "容量", dataIndex: "capacity", key: "capacity" },
   { title: "状态", dataIndex: "status", key: "status" },
 ];
@@ -553,7 +553,7 @@ async function handleRequestLogExport(m: Machine): Promise<void> {
               <a-button size="small" @click="openEnvironment(record)"
                 >环境</a-button
               >
-              <a-button size="small" @click="openSlots(record)">格口</a-button>
+              <a-button size="small" @click="openSlots(record)">货道</a-button>
               <a-button
                 v-if="canManageCredentials"
                 size="small"
@@ -740,13 +740,13 @@ async function handleRequestLogExport(m: Machine): Promise<void> {
     <!-- Slots drawer -->
     <a-drawer
       v-model:open="slotDrawerOpen"
-      title="格口列表"
+      title="货道列表"
       width="600"
       :destroy-on-hidden="true"
     >
       <div class="mb-3">
         <a-button v-if="canWrite" type="primary" @click="openCreateSlot"
-          >新增格口</a-button
+          >新增货道</a-button
         >
       </div>
       <a-table
@@ -757,7 +757,10 @@ async function handleRequestLogExport(m: Machine): Promise<void> {
         :pagination="false"
       >
         <template #bodyCell="{ column, record }">
-          <template v-if="column.key === 'status'">
+          <template v-if="column.key === 'coordinate'">
+            {{ formatMachineSlotCoordinate(record) }}
+          </template>
+          <template v-else-if="column.key === 'status'">
             <a-tag
               :color="
                 slotStatusColor[record.status as MachineSlotStatus] ?? 'default'
@@ -773,7 +776,7 @@ async function handleRequestLogExport(m: Machine): Promise<void> {
     <!-- Slot form modal -->
     <a-modal
       v-model:open="slotFormOpen"
-      title="新增格口"
+      title="新增货道"
       ok-text="确定"
       cancel-text="取消"
       :confirm-loading="slotSaving"
@@ -788,7 +791,7 @@ async function handleRequestLogExport(m: Machine): Promise<void> {
           :message="slotCoordinateError"
           show-icon
         />
-        <a-form-item label="层号">
+        <a-form-item label="行号">
           <a-input-number
             v-model:value="slotForm.layerNo"
             :min="MACHINE_SLOT_MIN_LAYER_NO"
@@ -804,8 +807,8 @@ async function handleRequestLogExport(m: Machine): Promise<void> {
             class="w-full"
           />
         </a-form-item>
-        <a-form-item label="格口编码">
-          <a-input v-model:value="slotForm.slotCode" />
+        <a-form-item label="货道坐标">
+          {{ formatMachineSlotCoordinate(slotForm) }}
         </a-form-item>
         <a-form-item label="容量">
           <a-input-number
