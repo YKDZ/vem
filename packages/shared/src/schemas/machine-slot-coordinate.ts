@@ -1,10 +1,27 @@
 import { z } from "zod";
 
-export const MACHINE_SLOT_MIN_LAYER_NO = 1;
-export const MACHINE_SLOT_MAX_LAYER_NO = 10;
-export const MACHINE_SLOT_LOWER_MAX_LAYER_NO = 6;
-export const MACHINE_SLOT_LOWER_MAX_CELL_NO = 5;
-export const MACHINE_SLOT_UPPER_MAX_CELL_NO = 4;
+export const MACHINE_SLOT_HARDWARE_LAYOUT = {
+  minLayerNo: 1,
+  bands: [
+    { maxLayerNo: 6, maxCellNo: 5 },
+    { maxLayerNo: 11, maxCellNo: 4 },
+  ],
+} as const;
+
+export const MACHINE_SLOT_MIN_LAYER_NO =
+  MACHINE_SLOT_HARDWARE_LAYOUT.minLayerNo;
+export const MACHINE_SLOT_MAX_LAYER_NO =
+  MACHINE_SLOT_HARDWARE_LAYOUT.bands[
+    MACHINE_SLOT_HARDWARE_LAYOUT.bands.length - 1
+  ].maxLayerNo;
+export const MACHINE_SLOT_LOWER_MAX_LAYER_NO =
+  MACHINE_SLOT_HARDWARE_LAYOUT.bands[0].maxLayerNo;
+export const MACHINE_SLOT_LOWER_MAX_CELL_NO =
+  MACHINE_SLOT_HARDWARE_LAYOUT.bands[0].maxCellNo;
+export const MACHINE_SLOT_UPPER_MAX_CELL_NO =
+  MACHINE_SLOT_HARDWARE_LAYOUT.bands[
+    MACHINE_SLOT_HARDWARE_LAYOUT.bands.length - 1
+  ].maxCellNo;
 
 export const machineSlotLayerNoSchema = z
   .int()
@@ -23,17 +40,9 @@ export type MachineSlotCoordinateInput = {
 
 export function getMachineSlotMaxCellNo(layerNo: number): number | null {
   if (!Number.isInteger(layerNo)) return null;
-  if (
-    layerNo >= MACHINE_SLOT_MIN_LAYER_NO &&
-    layerNo <= MACHINE_SLOT_LOWER_MAX_LAYER_NO
-  ) {
-    return MACHINE_SLOT_LOWER_MAX_CELL_NO;
-  }
-  if (
-    layerNo > MACHINE_SLOT_LOWER_MAX_LAYER_NO &&
-    layerNo <= MACHINE_SLOT_MAX_LAYER_NO
-  ) {
-    return MACHINE_SLOT_UPPER_MAX_CELL_NO;
+  if (layerNo < MACHINE_SLOT_HARDWARE_LAYOUT.minLayerNo) return null;
+  for (const band of MACHINE_SLOT_HARDWARE_LAYOUT.bands) {
+    if (layerNo <= band.maxLayerNo) return band.maxCellNo;
   }
   return null;
 }

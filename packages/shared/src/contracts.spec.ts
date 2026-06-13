@@ -63,8 +63,13 @@ describe("shared API contract", () => {
     expect(getMachineSlotMaxCellNo(6)).toBe(5);
     expect(getMachineSlotMaxCellNo(7)).toBe(4);
     expect(getMachineSlotMaxCellNo(10)).toBe(4);
+    expect(getMachineSlotMaxCellNo(11)).toBe(4);
     expect(isValidMachineSlotCoordinate({ layerNo: 7, cellNo: 4 })).toBe(true);
+    expect(isValidMachineSlotCoordinate({ layerNo: 11, cellNo: 4 })).toBe(true);
     expect(isValidMachineSlotCoordinate({ layerNo: 7, cellNo: 5 })).toBe(false);
+    expect(isValidMachineSlotCoordinate({ layerNo: 11, cellNo: 5 })).toBe(
+      false,
+    );
     expect(formatMachineSlotCoordinate({ layerNo: 7, cellNo: 4 })).toBe(
       "行 7 / 格 4",
     );
@@ -83,7 +88,7 @@ describe("shared API contract", () => {
       dispenseCommandPayloadSchema.parse({
         commandNo: "CMD-1",
         orderNo: "ORD-1",
-        slot: { layerNo: 11, cellNo: 1, slotCode: "K1" },
+        slot: { layerNo: 12, cellNo: 1, slotCode: "R12C1" },
         quantity: 1,
         timeoutSeconds: 30,
       }),

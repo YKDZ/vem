@@ -1095,15 +1095,43 @@ pub fn crc16(data: &[u8]) -> u16 {
     crc
 }
 
-/// 校验货道号是否在硬件允许的范围内。
-/// 行（row）1-10；格（cell）：行 1-6 为 1-5，行 7-10 为 1-4。
-fn validate_slot_bounds(layer_no: u32, cell_no: u32) -> Result<(), String> {
-    if !(1..=10).contains(&layer_no) {
-        return Err(format!(
-            "layerNo {layer_no} is out of hardware bounds (1-10)"
-        ));
+#[derive(Clone, Copy)]
+struct SlotLayerBand {
+    max_layer_no: u32,
+    max_cell_no: u32,
+}
+
+const SLOT_MIN_LAYER_NO: u32 = 1;
+const SLOT_LAYER_BANDS: [SlotLayerBand; 2] = [
+    SlotLayerBand {
+        max_layer_no: 6,
+        max_cell_no: 5,
+    },
+    SlotLayerBand {
+        max_layer_no: 11,
+        max_cell_no: 4,
+    },
+];
+const SLOT_MAX_LAYER_NO: u32 = SLOT_LAYER_BANDS[SLOT_LAYER_BANDS.len() - 1].max_layer_no;
+
+fn max_cell_no_for_layer(layer_no: u32) -> Option<u32> {
+    if layer_no < SLOT_MIN_LAYER_NO {
+        return None;
     }
-    let max_cell = if layer_no <= 6 { 5u32 } else { 4u32 };
+    SLOT_LAYER_BANDS
+        .iter()
+        .find(|band| layer_no <= band.max_layer_no)
+        .map(|band| band.max_cell_no)
+}
+
+/// 校验货道号是否在硬件允许的范围内。
+/// 行（row）1-11；格（cell）：行 1-6 为 1-5，行 7-11 为 1-4。
+fn validate_slot_bounds(layer_no: u32, cell_no: u32) -> Result<(), String> {
+    let Some(max_cell) = max_cell_no_for_layer(layer_no) else {
+        return Err(format!(
+            "layerNo {layer_no} is out of hardware bounds ({SLOT_MIN_LAYER_NO}-{SLOT_MAX_LAYER_NO})"
+        ));
+    };
     if !(1..=max_cell).contains(&cell_no) {
         return Err(format!(
             "cellNo {cell_no} is out of hardware bounds for row {layer_no} (1-{max_cell})"
@@ -1802,17 +1830,19 @@ mod tests {
 
     #[test]
     fn validate_slot_bounds_rejects_out_of_range() {
-        // 行超出 1-10
+        // 行超出 1-11
         assert!(validate_slot_bounds(0, 1).is_err());
-        assert!(validate_slot_bounds(11, 1).is_err());
+        assert!(validate_slot_bounds(12, 1).is_err());
         // 行 1-6：格最大 5
         assert!(validate_slot_bounds(1, 5).is_ok());
         assert!(validate_slot_bounds(6, 5).is_ok());
         assert!(validate_slot_bounds(1, 6).is_err());
-        // 行 7-10：格最大 4
+        // 行 7-11：格最大 4
         assert!(validate_slot_bounds(7, 4).is_ok());
         assert!(validate_slot_bounds(10, 4).is_ok());
+        assert!(validate_slot_bounds(11, 4).is_ok());
         assert!(validate_slot_bounds(7, 5).is_err());
+        assert!(validate_slot_bounds(11, 5).is_err());
     }
 
     #[test]
@@ -1822,10 +1852,12 @@ mod tests {
         assert!(build_dispense_frame(6, 5).is_ok());
         assert!(build_dispense_frame(7, 4).is_ok());
         assert!(build_dispense_frame(10, 4).is_ok());
+        assert!(build_dispense_frame(11, 4).is_ok());
         // 超出硬件范围
         assert!(build_dispense_frame(0, 1).is_err());
-        assert!(build_dispense_frame(11, 1).is_err());
+        assert!(build_dispense_frame(12, 1).is_err());
         assert!(build_dispense_frame(7, 5).is_err());
+        assert!(build_dispense_frame(11, 5).is_err());
     }
 
     #[test]
