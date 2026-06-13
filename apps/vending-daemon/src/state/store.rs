@@ -1108,6 +1108,11 @@ impl LocalStateStore {
             backend_status_json.get("paymentCodeAttempt"),
         )?;
 
+        let merged_backend_status = merge_local_dispense_progress(
+            record.last_backend_status_json.as_deref(),
+            backend_status_json,
+        );
+
         self.upsert_order_session(OrderSessionUpsert {
             order_no,
             payment_method: &payment_method,
@@ -1117,7 +1122,7 @@ impl LocalStateStore {
             next_action: &next_action,
             payment_attempt_json,
             recovery_strategy: record.recovery_strategy.as_str(),
-            last_backend_status_json: Some(backend_status_json),
+            last_backend_status_json: Some(merged_backend_status),
             last_error: None,
         })
         .await
@@ -3435,6 +3440,57 @@ fn patch_backend_status_for_dispense_result(
     }
 }
 
+fn merge_local_dispense_progress(
+    local_backend_status_json: Option<&str>,
+    mut backend_status: serde_json::Value,
+) -> serde_json::Value {
+    let backend_next_action = backend_status
+        .get("nextAction")
+        .and_then(|value| value.as_str());
+    if backend_next_action != Some("dispensing") {
+        return backend_status;
+    }
+
+    let local = local_backend_status_json
+        .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok());
+    let local_reminder = local
+        .as_ref()
+        .and_then(|value| value.pointer("/vending/pickupReminder"))
+        .filter(|value| value.is_object())
+        .cloned();
+    let Some(local_reminder) = local_reminder else {
+        return backend_status;
+    };
+
+    if !backend_status.is_object() {
+        return backend_status;
+    }
+    let Some(object) = backend_status.as_object_mut() else {
+        return backend_status;
+    };
+    let vending = object
+        .entry("vending".to_string())
+        .or_insert_with(|| serde_json::json!({}));
+    if !vending.is_object() {
+        *vending = serde_json::json!({});
+    }
+    if let Some(vending) = vending.as_object_mut() {
+        let backend_command_no = vending
+            .get("commandNo")
+            .and_then(|value| value.as_str())
+            .map(ToString::to_string);
+        let local_command_no = local
+            .as_ref()
+            .and_then(|value| value.pointer("/vending/commandNo"))
+            .and_then(|value| value.as_str())
+            .map(ToString::to_string);
+        if backend_command_no.is_none() || backend_command_no == local_command_no {
+            vending.insert("pickupReminder".to_string(), local_reminder);
+        }
+    }
+    backend_status
+}
+
 fn patch_backend_status_for_dispense_progress(
     backend_status: &mut serde_json::Value,
     event: &DispenseProgressEvent,
@@ -5676,6 +5732,79 @@ mod tests {
         assert_eq!(reminder.warning_no, Some(2));
         assert!(reminder.message.contains("立即取走"));
         assert_eq!(snapshot.next_action.as_deref(), Some("dispensing"));
+    }
+
+    #[tokio::test]
+    async fn backend_status_refresh_preserves_local_pickup_reminder_while_dispensing() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        store
+            .upsert_order_session(OrderSessionUpsert {
+                order_no: "ORDER-PICKUP-REFRESH",
+                payment_method: "payment_code",
+                payment_provider: Some("alipay"),
+                items_json: json!([{ "name": "cola" }]),
+                status: "dispensing",
+                next_action: "dispensing",
+                payment_attempt_json: None,
+                recovery_strategy: "local",
+                last_backend_status_json: Some(json!({
+                    "orderNo": "ORDER-PICKUP-REFRESH",
+                    "orderStatus": "dispensing",
+                    "nextAction": "dispensing",
+                    "vending": {
+                        "commandNo": "CMD-PICKUP-REFRESH",
+                        "status": "dispensing",
+                        "lastError": null,
+                        "pickupReminder": {
+                            "level": "warning",
+                            "message": "请尽快取走商品",
+                            "warningNo": 1,
+                            "reportedAt": "2026-06-13T09:00:00.000Z"
+                        }
+                    }
+                })),
+                last_error: None,
+            })
+            .await
+            .expect("seed");
+
+        store
+            .apply_backend_order_status(
+                "ORDER-PICKUP-REFRESH",
+                json!({
+                    "orderNo": "ORDER-PICKUP-REFRESH",
+                    "orderStatus": "dispensing",
+                    "nextAction": "dispensing",
+                    "payment": {
+                        "method": "payment_code",
+                        "providerCode": "alipay",
+                        "status": "succeeded"
+                    },
+                    "vending": {
+                        "commandNo": "CMD-PICKUP-REFRESH",
+                        "status": "sent",
+                        "lastError": null
+                    }
+                }),
+            )
+            .await
+            .expect("refresh");
+
+        let snapshot = store
+            .current_transaction_snapshot()
+            .await
+            .expect("snapshot")
+            .expect("current");
+        let reminder = snapshot
+            .vending
+            .expect("vending")
+            .pickup_reminder
+            .expect("pickup reminder");
+        assert_eq!(reminder.message, "请尽快取走商品");
+        assert_eq!(reminder.warning_no, Some(1));
     }
 
     #[tokio::test]
