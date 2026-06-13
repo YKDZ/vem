@@ -208,6 +208,15 @@ export const machineOrderStatusResponseSchema = z.object({
       ackAt: z.iso.datetime().nullable(),
       resultAt: z.iso.datetime().nullable(),
       lastError: z.string().nullable(),
+      pickupReminder: z
+        .object({
+          level: z.enum(["info", "warning", "urgent"]),
+          message: z.string().min(1).max(256),
+          warningNo: z.int().positive().nullable(),
+          reportedAt: z.iso.datetime(),
+        })
+        .nullable()
+        .optional(),
     })
     .nullable(),
   refund: z

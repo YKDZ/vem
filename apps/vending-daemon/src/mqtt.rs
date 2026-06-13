@@ -14,11 +14,14 @@ use crate::{
 use vending_core::{
     environment::EnvironmentHeartbeatCache,
     hardware::{
-        DispenseCommandPayload, EnvironmentControlCommandPayload, EnvironmentControlResultPayload,
+        DispenseCommandPayload, DispenseProgressObserver, EnvironmentControlCommandPayload,
+        EnvironmentControlResultPayload,
     },
     mqtt::sign_envelope,
     serial::EnvironmentSample,
 };
+
+const DISPENSE_LOCAL_TIMEOUT_GRACE_SECONDS: u64 = 15;
 
 #[derive(Debug, Clone)]
 pub struct OutboxFlushResult {
@@ -200,10 +203,33 @@ impl MqttSyncRuntime {
             .await
             .map_err(|error| error.to_string())?;
 
-        let local_timeout = Duration::from_secs(command.timeout_seconds.max(1));
+        let local_timeout = Duration::from_secs(
+            command
+                .timeout_seconds
+                .max(1)
+                .saturating_add(DISPENSE_LOCAL_TIMEOUT_GRACE_SECONDS),
+        );
+        let progress_state = self.state.clone();
+        let progress_events = self.events.clone();
+        let progress: DispenseProgressObserver = Arc::new(move |event| {
+            let state = progress_state.clone();
+            let events = progress_events.clone();
+            tokio::spawn(async move {
+                let order_no = event.order_no.clone();
+                if state.record_dispense_progress(&event).await.is_ok() {
+                    let _ = events.send(DaemonEvent::TransactionChanged {
+                        event_id: Uuid::new_v4().simple().to_string(),
+                        updated_at: crate::state::store::now_iso(),
+                        order_no,
+                        status: "dispensing".to_string(),
+                    });
+                }
+            });
+        });
         let result = match tokio::time::timeout(
             local_timeout,
-            self.hardware.dispense(command.clone()),
+            self.hardware
+                .dispense_with_progress(command.clone(), Some(progress)),
         )
         .await
         {

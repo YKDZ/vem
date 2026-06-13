@@ -14,6 +14,17 @@ let pollTimer: number | undefined;
 
 const status = computed(() => checkoutStore.status);
 const command = computed(() => status.value?.vending ?? null);
+const pickupReminder = computed(() => command.value?.pickupReminder ?? null);
+const pickupReminderClass = computed(() => {
+  switch (pickupReminder.value?.level) {
+    case "urgent":
+      return "border-rose-300/60 bg-rose-500/25 text-rose-50";
+    case "warning":
+      return "border-amber-200/60 bg-amber-400/25 text-amber-50";
+    default:
+      return "border-sky-200/50 bg-sky-400/20 text-sky-50";
+  }
+});
 
 async function refreshStatus(): Promise<void> {
   await checkoutStore.refreshCurrentTransaction();
@@ -55,6 +66,22 @@ onUnmounted(() => {
         <p class="mt-4 text-lg text-slate-300">
           daemon 已接管 MQTT、硬件出货和 outbox 补发，UI 仅展示当前进度。
         </p>
+
+        <div
+          v-if="pickupReminder"
+          class="mt-6 rounded-3xl border p-6 text-left shadow-xl"
+          :class="pickupReminderClass"
+        >
+          <p class="text-sm font-bold tracking-[0.3em] uppercase">
+            PICKUP NOTICE
+          </p>
+          <h3 class="mt-2 text-3xl font-black">
+            {{ pickupReminder.message }}
+          </h3>
+          <p class="mt-2 text-base opacity-85">
+            请检查取货口并及时拿走商品，避免设备自动关闭取货口。
+          </p>
+        </div>
 
         <div class="mt-8 grid gap-3 text-left text-slate-200">
           <div class="rounded-2xl bg-slate-950/40 p-4">

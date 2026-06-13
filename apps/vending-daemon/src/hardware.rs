@@ -1,7 +1,8 @@
 use std::{path::PathBuf, sync::Arc};
 
 use vending_core::{
-    hardware::DispenseCommandPayload, hardware::HardwareAdapter, serial::EnvironmentSample,
+    hardware::DispenseCommandPayload, hardware::DispenseProgressObserver,
+    hardware::HardwareAdapter, serial::EnvironmentSample,
 };
 
 use crate::config::{HardwareAdapterKind, MachinePublicConfig};
@@ -53,6 +54,14 @@ impl HardwareSupervisor {
         command: DispenseCommandPayload,
     ) -> vending_core::hardware::DispenseResultPayload {
         self.adapter.dispense(command).await
+    }
+
+    pub async fn dispense_with_progress(
+        &self,
+        command: DispenseCommandPayload,
+        progress: Option<DispenseProgressObserver>,
+    ) -> vending_core::hardware::DispenseResultPayload {
+        self.adapter.dispense_with_progress(command, progress).await
     }
 
     pub fn schedule_next_dispense_fault_injection(&self) -> Result<(), String> {

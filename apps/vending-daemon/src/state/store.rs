@@ -13,7 +13,8 @@ use super::schema::{
     MIGRATION_V7, SCHEMA_VERSION,
 };
 use vending_core::hardware::{
-    DispenseCommandPayload, DispenseResultPayload, EnvironmentControlResultPayload, HardwareStatus,
+    DispenseCommandPayload, DispenseProgressEvent, DispenseProgressStage, DispenseResultPayload,
+    EnvironmentControlResultPayload, HardwareStatus,
 };
 
 const COMMAND_LOG_TTL_DAYS: i64 = 30;
@@ -721,6 +722,38 @@ impl LocalStateStore {
              WHERE command_no=?1 AND status='acknowledged'",
         )
         .bind(command_no)
+        .bind(now_iso())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn record_dispense_progress(
+        &self,
+        event: &DispenseProgressEvent,
+    ) -> Result<(), StoreError> {
+        let row: Option<(Option<String>,)> =
+            sqlx::query_as("SELECT last_backend_status_json FROM order_sessions WHERE order_no=?1")
+                .bind(&event.order_no)
+                .fetch_optional(&self.pool)
+                .await?;
+        let Some((last_backend_status_json,)) = row else {
+            return Ok(());
+        };
+
+        let mut backend_status = last_backend_status_json
+            .as_deref()
+            .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok())
+            .unwrap_or_else(|| serde_json::json!({}));
+        patch_backend_status_for_dispense_progress(&mut backend_status, event);
+
+        sqlx::query(
+            "UPDATE order_sessions
+             SET last_backend_status_json=?2, updated_at=?3
+             WHERE order_no=?1",
+        )
+        .bind(&event.order_no)
+        .bind(backend_status.to_string())
         .bind(now_iso())
         .execute(&self.pool)
         .await?;
@@ -3249,6 +3282,17 @@ fn map_vending_summary(
             .get("lastError")
             .and_then(|v| v.as_str())
             .map(ToString::to_string),
+        pickup_reminder: vending.get("pickupReminder").and_then(|value| {
+            Some(vending_core::domain::PickupReminderSummary {
+                level: value.get("level")?.as_str()?.to_string(),
+                message: value.get("message")?.as_str()?.to_string(),
+                warning_no: value
+                    .get("warningNo")
+                    .and_then(|v| v.as_u64())
+                    .and_then(|v| u8::try_from(v).ok()),
+                reported_at: value.get("reportedAt")?.as_str()?.to_string(),
+            })
+        }),
     })
 }
 
@@ -3387,6 +3431,56 @@ fn patch_backend_status_for_dispense_result(
             serde_json::Value::String(result.message.clone())
         };
         vending.insert("lastError".to_string(), last_error);
+        vending.insert("pickupReminder".to_string(), serde_json::Value::Null);
+    }
+}
+
+fn patch_backend_status_for_dispense_progress(
+    backend_status: &mut serde_json::Value,
+    event: &DispenseProgressEvent,
+) {
+    if !backend_status.is_object() {
+        *backend_status = serde_json::json!({});
+    }
+    let Some(object) = backend_status.as_object_mut() else {
+        return;
+    };
+    object.insert(
+        "nextAction".to_string(),
+        serde_json::Value::String("dispensing".to_string()),
+    );
+
+    let vending = object
+        .entry("vending".to_string())
+        .or_insert_with(|| serde_json::json!({}));
+    if !vending.is_object() {
+        *vending = serde_json::json!({});
+    }
+    if let Some(vending) = vending.as_object_mut() {
+        vending.insert(
+            "commandNo".to_string(),
+            serde_json::Value::String(event.command_no.clone()),
+        );
+        vending.insert(
+            "status".to_string(),
+            serde_json::Value::String("dispensing".to_string()),
+        );
+        let level = match event.stage {
+            DispenseProgressStage::OutletOpened | DispenseProgressStage::PickupWaiting => "info",
+            DispenseProgressStage::PickupTimeoutWarning if event.warning_no.unwrap_or(1) >= 2 => {
+                "urgent"
+            }
+            DispenseProgressStage::PickupTimeoutWarning => "warning",
+        };
+        vending.insert(
+            "pickupReminder".to_string(),
+            serde_json::json!({
+                "level": level,
+                "message": event.message,
+                "warningNo": event.warning_no,
+                "reportedAt": event.reported_at,
+            }),
+        );
     }
 }
 
@@ -5523,6 +5617,65 @@ mod tests {
         assert!(value.contains("\"source\":\"serial_text\""));
         assert!(value.contains("\"maskedAuthCode\":\"6212****3456\""));
         assert!(!value.contains("621234567890123456"));
+    }
+
+    #[tokio::test]
+    async fn dispense_progress_updates_current_transaction_pickup_reminder() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        store
+            .upsert_order_session(OrderSessionUpsert {
+                order_no: "ORDER-PICKUP-REMINDER",
+                payment_method: "payment_code",
+                payment_provider: Some("alipay"),
+                items_json: json!([{ "name": "cola" }]),
+                status: "dispensing",
+                next_action: "dispensing",
+                payment_attempt_json: None,
+                recovery_strategy: "local",
+                last_backend_status_json: Some(json!({
+                    "orderNo": "ORDER-PICKUP-REMINDER",
+                    "orderStatus": "dispensing",
+                    "nextAction": "dispensing",
+                    "vending": {
+                        "commandNo": "CMD-PICKUP-REMINDER",
+                        "status": "dispensing",
+                        "lastError": null
+                    }
+                })),
+                last_error: None,
+            })
+            .await
+            .expect("seed");
+
+        store
+            .record_dispense_progress(&DispenseProgressEvent {
+                command_no: "CMD-PICKUP-REMINDER".to_string(),
+                order_no: "ORDER-PICKUP-REMINDER".to_string(),
+                stage: DispenseProgressStage::PickupTimeoutWarning,
+                warning_no: Some(2),
+                message: "请立即取走商品，设备即将自动关闭取货口".to_string(),
+                reported_at: "2026-06-13T09:00:00.000Z".to_string(),
+            })
+            .await
+            .expect("record progress");
+
+        let snapshot = store
+            .current_transaction_snapshot()
+            .await
+            .expect("snapshot")
+            .expect("current");
+        let reminder = snapshot
+            .vending
+            .expect("vending")
+            .pickup_reminder
+            .expect("pickup reminder");
+        assert_eq!(reminder.level, "urgent");
+        assert_eq!(reminder.warning_no, Some(2));
+        assert!(reminder.message.contains("立即取走"));
+        assert_eq!(snapshot.next_action.as_deref(), Some("dispensing"));
     }
 
     #[tokio::test]

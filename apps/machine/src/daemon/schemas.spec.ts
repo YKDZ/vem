@@ -90,7 +90,17 @@ describe("daemon schemas", () => {
       paymentStatus: "pending",
       orderStatus: "waiting_payment",
       totalAmountCents: 100,
-      vending: null,
+      vending: {
+        commandNo: "CMD-001",
+        status: "dispensing",
+        lastError: null,
+        pickupReminder: {
+          level: "warning",
+          message: "请尽快取走商品",
+          warningNo: 1,
+          reportedAt: "2026-06-13T09:00:00.000Z",
+        },
+      },
       nextAction: "wait_payment",
       maskedAuthCode: "2876****4394",
       paymentCodeAttempt: {
@@ -110,6 +120,7 @@ describe("daemon schemas", () => {
       operatorHint: "请刷新付款码后重试",
       updatedAt: "2026-01-01T00:00:00Z",
     });
+    expect(tx.vending?.pickupReminder?.message).toBe("请尽快取走商品");
     expect(tx.paymentCodeAttempt?.source).toBe("serial_text");
 
     expect(() =>

@@ -504,6 +504,7 @@ export const useCheckoutStore = defineStore("checkout", {
               ackAt: null,
               resultAt: null,
               lastError: snapshot.vending.lastError,
+              pickupReminder: snapshot.vending.pickupReminder ?? null,
             }
           : null,
         refund: null,

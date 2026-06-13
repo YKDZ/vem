@@ -15,7 +15,8 @@ use tokio::{
 use tokio_serial::{DataBits, FlowControl, Parity, SerialPortBuilderExt, SerialStream, StopBits};
 
 use crate::hardware::{
-    DispenseCommandPayload, DispenseResultPayload, HardwareAdapter, HardwareStatus,
+    DispenseCommandPayload, DispenseProgressEvent, DispenseProgressObserver, DispenseProgressStage,
+    DispenseResultPayload, HardwareAdapter, HardwareStatus,
 };
 
 pub const FRAME_HEAD: u8 = 0x55;
@@ -28,6 +29,7 @@ const ENVIRONMENT_COMMAND_TIMEOUT: TokioDuration = TokioDuration::from_millis(20
 const HANDSHAKE_TIMEOUT: TokioDuration = TokioDuration::from_millis(1_000);
 /// 连续多长时间未收到心跳后，主动发送握手探测帧（来自补充协议文档第5点）
 const HEARTBEAT_PROBE_INTERVAL: TokioDuration = TokioDuration::from_secs(1);
+const DISPENSE_COMPLETION_GRACE: TokioDuration = TokioDuration::from_secs(10);
 /// 收到 Busy 回复后，下次重发出货指令前需等待的最小间隔
 const BUSY_RETRY_DELAY: TokioDuration = TokioDuration::from_millis(100);
 const COMMAND_ATTEMPTS: usize = 3;
@@ -644,6 +646,7 @@ impl SerialHardwareAdapter {
     async fn dispense_inner(
         &self,
         command: &DispenseCommandPayload,
+        progress: Option<DispenseProgressObserver>,
     ) -> Result<(), DispenseFailure> {
         // 单商品用 4 字节 CRC-8 帧；多件同货道用多商品帧（CRC-16）
         let frame: Vec<u8> = if command.quantity == 1 {
@@ -658,8 +661,9 @@ impl SerialHardwareAdapter {
             .collect();
             build_multi_dispense_frame(&slots).map_err(DispenseFailure::unknown)?
         };
-        let command_deadline =
-            Instant::now() + TokioDuration::from_secs(command.timeout_seconds.max(1));
+        let command_deadline = Instant::now()
+            + TokioDuration::from_secs(command.timeout_seconds.max(1))
+            + DISPENSE_COMPLETION_GRACE;
 
         let _serial_guard = SERIAL_OPERATION_LOCK.lock().await;
         let _guard = self.op_lock.lock().await;
@@ -747,7 +751,15 @@ impl SerialHardwareAdapter {
             .await;
         }
 
-        wait_for_completion(&mut port, command_deadline, self, &base_entry).await
+        wait_for_completion(
+            &mut port,
+            command,
+            command_deadline,
+            self,
+            &base_entry,
+            progress,
+        )
+        .await
     }
 }
 
@@ -827,8 +839,16 @@ impl HardwareAdapter for SerialHardwareAdapter {
     }
 
     async fn dispense(&self, command: DispenseCommandPayload) -> DispenseResultPayload {
+        self.dispense_with_progress(command, None).await
+    }
+
+    async fn dispense_with_progress(
+        &self,
+        command: DispenseCommandPayload,
+        progress: Option<DispenseProgressObserver>,
+    ) -> DispenseResultPayload {
         let reported_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-        match self.dispense_inner(&command).await {
+        match self.dispense_inner(&command, progress).await {
             Ok(()) => DispenseResultPayload {
                 command_no: command.command_no,
                 success: true,
@@ -1416,11 +1436,16 @@ async fn probe_handshake(
 
 async fn wait_for_completion(
     port: &mut SerialStream,
+    command: &DispenseCommandPayload,
     command_deadline: Instant,
     adapter: &SerialHardwareAdapter,
     base_entry: &SerialProtocolLogEntry,
+    progress: Option<DispenseProgressObserver>,
 ) -> Result<(), DispenseFailure> {
     let mut probe_failures: usize = 0;
+    let mut outlet_opened_reported = false;
+    let mut pickup_waiting_reported = false;
+    let mut pickup_timeout_warnings: u8 = 0;
     loop {
         let now = Instant::now();
         if now >= command_deadline {
@@ -1500,11 +1525,59 @@ async fn wait_for_completion(
                     .await;
                 return Ok(());
             }
+            LowerFrame::AboutToDrop => {
+                if !outlet_opened_reported {
+                    outlet_opened_reported = true;
+                    emit_dispense_progress(
+                        &progress,
+                        command,
+                        DispenseProgressStage::OutletOpened,
+                        None,
+                        "取货口已打开，请取走商品",
+                    );
+                }
+                continue;
+            }
+            LowerFrame::PickupHeartbeat => {
+                if !pickup_waiting_reported {
+                    pickup_waiting_reported = true;
+                    emit_dispense_progress(
+                        &progress,
+                        command,
+                        DispenseProgressStage::PickupWaiting,
+                        None,
+                        "下位机正在等待用户取货",
+                    );
+                }
+                continue;
+            }
+            LowerFrame::PickupTimeout => {
+                pickup_timeout_warnings = pickup_timeout_warnings.saturating_add(1);
+                let message = if pickup_timeout_warnings >= 2 {
+                    "请立即取走商品，设备即将自动关闭取货口"
+                } else {
+                    "请尽快取走商品"
+                };
+                adapter
+                    .log_message(
+                        base_entry.clone(),
+                        "event",
+                        Some("pickup_timeout_warning"),
+                        Some(message.to_string()),
+                    )
+                    .await;
+                emit_dispense_progress(
+                    &progress,
+                    command,
+                    DispenseProgressStage::PickupTimeoutWarning,
+                    Some(pickup_timeout_warnings),
+                    message,
+                );
+                continue;
+            }
             LowerFrame::Ack
-            | LowerFrame::AboutToDrop
             | LowerFrame::IdleHeartbeat
             | LowerFrame::DispensingHeartbeat
-            | LowerFrame::PickupHeartbeat
             | LowerFrame::ResetHeartbeat => continue,
             frame => {
                 return Err(frame.to_failure().unwrap_or_else(|| {
@@ -1516,6 +1589,26 @@ async fn wait_for_completion(
             }
         }
     }
+}
+
+fn emit_dispense_progress(
+    progress: &Option<DispenseProgressObserver>,
+    command: &DispenseCommandPayload,
+    stage: DispenseProgressStage,
+    warning_no: Option<u8>,
+    message: &str,
+) {
+    let Some(progress) = progress else {
+        return;
+    };
+    progress(DispenseProgressEvent {
+        command_no: command.command_no.clone(),
+        order_no: command.order_no.clone(),
+        stage,
+        warning_no,
+        message: message.to_string(),
+        reported_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+    });
 }
 
 pub async fn read_lower_frame<R>(

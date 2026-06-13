@@ -4,7 +4,7 @@ use std::{
     os::fd::AsRawFd,
     sync::{
         atomic::{AtomicUsize, Ordering},
-        Arc,
+        Arc, Mutex,
     },
     time::Duration,
 };
@@ -18,7 +18,7 @@ use tokio::{
     time::{sleep, timeout},
 };
 use vending_core::{
-    hardware::{DispenseCommandPayload, HardwareAdapter, SlotPayload},
+    hardware::{DispenseCommandPayload, DispenseProgressStage, HardwareAdapter, SlotPayload},
     serial::{
         build_dispense_frame, EnvironmentSample, SerialHardwareAdapter, DEBUG_DISPENSE_FAULT_FRAME,
         FRAME_HEAD,
@@ -39,6 +39,62 @@ fn command(command_no: &str) -> DispenseCommandPayload {
         quantity: 1,
         timeout_seconds: 2,
     }
+}
+
+#[tokio::test]
+async fn serial_adapter_treats_pickup_timeout_as_warning_until_final_result() {
+    let _pty_guard = PTY_TEST_LOCK.lock().await;
+    let mut pty = support::open_pty();
+    let slave_path = pty.slave_path.clone();
+    tokio::spawn(async move {
+        support::respond_to_handshake(&mut pty.master).await;
+        let _frame = support::read_single_dispense_frame(&mut pty.master).await;
+        support::send_lower_code(&mut pty.master, 0x00).await;
+        sleep(Duration::from_millis(10)).await;
+        support::send_lower_code(&mut pty.master, 0xF0).await;
+        sleep(Duration::from_millis(10)).await;
+        support::send_lower_code(&mut pty.master, 0xAC).await;
+        sleep(Duration::from_millis(10)).await;
+        support::send_lower_code(&mut pty.master, 0xE5).await;
+        sleep(Duration::from_millis(10)).await;
+        support::send_lower_code(&mut pty.master, 0xE5).await;
+        sleep(Duration::from_millis(10)).await;
+        support::send_lower_code(&mut pty.master, 0xF1).await;
+        sleep(Duration::from_millis(50)).await;
+    });
+
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let events_for_progress = events.clone();
+    let adapter = SerialHardwareAdapter::new(slave_path.to_string_lossy().to_string());
+    let result = timeout(
+        Duration::from_secs(10),
+        adapter.dispense_with_progress(
+            command("CMD-PTY-PICKUP-WARNINGS"),
+            Some(Arc::new(move |event| {
+                events_for_progress.lock().expect("events").push(event);
+            })),
+        ),
+    )
+    .await
+    .expect("test timeout");
+
+    assert!(result.success, "{result:?}");
+    let events = events.lock().expect("events");
+    let stages = events
+        .iter()
+        .map(|event| event.stage.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        stages,
+        vec![
+            DispenseProgressStage::OutletOpened,
+            DispenseProgressStage::PickupWaiting,
+            DispenseProgressStage::PickupTimeoutWarning,
+            DispenseProgressStage::PickupTimeoutWarning,
+        ],
+    );
+    assert_eq!(events[2].warning_no, Some(1));
+    assert_eq!(events[3].warning_no, Some(2));
 }
 
 #[tokio::test]

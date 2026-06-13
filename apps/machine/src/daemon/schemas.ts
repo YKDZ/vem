@@ -125,6 +125,15 @@ export const transactionSnapshotSchema = z.object({
       commandNo: z.string().nullable(),
       status: z.string().nullable(),
       lastError: z.string().nullable(),
+      pickupReminder: z
+        .object({
+          level: z.enum(["info", "warning", "urgent"]),
+          message: z.string(),
+          warningNo: z.number().int().positive().nullable(),
+          reportedAt: z.string(),
+        })
+        .nullable()
+        .optional(),
     })
     .nullable(),
   nextAction: z.string().nullable(),
