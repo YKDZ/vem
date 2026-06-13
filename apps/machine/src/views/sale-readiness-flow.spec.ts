@@ -14,6 +14,7 @@ const {
   getConfigMock,
   getSaleReadinessMock,
   getCurrentTransactionMock,
+  getSaleViewMock,
   getPaymentOptionsMock,
   subscribeVisionProfilesMock,
 } = vi.hoisted(() => ({
@@ -27,6 +28,7 @@ const {
   getConfigMock: vi.fn(),
   getSaleReadinessMock: vi.fn(),
   getCurrentTransactionMock: vi.fn(),
+  getSaleViewMock: vi.fn(),
   getPaymentOptionsMock: vi.fn(),
   subscribeVisionProfilesMock: vi.fn(),
 }));
@@ -49,7 +51,7 @@ vi.mock("@/daemon/client", () => ({
     getConfig: getConfigMock,
     getSaleReadiness: getSaleReadinessMock,
     getCurrentTransaction: getCurrentTransactionMock,
-    getSaleView: vi.fn(),
+    getSaleView: getSaleViewMock,
     getPaymentOptions: getPaymentOptionsMock,
   },
 }));
@@ -86,6 +88,7 @@ beforeEach(() => {
   );
   initializeMock.mockResolvedValue(undefined);
   subscribeEventsMock.mockReturnValue({ close: vi.fn() });
+  getSaleViewMock.mockRejectedValue(new Error("sale view not mocked"));
   getCurrentTransactionMock.mockResolvedValue({
     orderId: null,
     orderNo: null,
@@ -493,6 +496,11 @@ describe("sale readiness UI flow", () => {
 
     expect(host.textContent).toContain("矿泉水");
     expect(host.textContent).toContain("platform offline");
+    expect(
+      Array.from(host.querySelectorAll("button")).some(
+        (button) => button.textContent?.trim() === "刷新",
+      ),
+    ).toBe(false);
     const detailButton = Array.from(host.querySelectorAll("button")).find(
       (button) => button.textContent?.includes("查看详情"),
     );

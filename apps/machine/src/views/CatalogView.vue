@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted } from "vue";
+import { computed, onMounted, onUnmounted } from "vue";
 import { useRouter } from "vue-router";
 
 import type { MachineCatalogItem } from "@/types/catalog";
@@ -85,15 +85,6 @@ const degradedStatusMessages = computed(() => {
   return [...new Set(messages)];
 });
 
-async function refreshCatalog(): Promise<void> {
-  try {
-    await connectivityStore.refresh();
-  } catch {
-    // 仍然尝试展示 daemon 本地 sale-view。
-  }
-  await catalogStore.refresh();
-}
-
 async function selectProduct(item: MachineCatalogItem): Promise<void> {
   if (item.slotSalesState !== "sale_ready" || item.saleableStock <= 0) return;
   checkoutStore.selectItem(item);
@@ -103,10 +94,12 @@ async function selectProduct(item: MachineCatalogItem): Promise<void> {
   });
 }
 
-onMounted(async () => {
-  if (!catalogStore.hasItems) {
-    await catalogStore.load();
-  }
+onMounted(() => {
+  catalogStore.startAutoRefresh();
+});
+
+onUnmounted(() => {
+  catalogStore.stopAutoRefresh();
 });
 </script>
 
@@ -122,15 +115,12 @@ onMounted(async () => {
           <p class="mt-2 text-sm text-slate-300">
             最近更新：{{ catalogStore.lastUpdatedAt ?? "尚未同步" }}
             <span v-if="catalogStore.cachedOnly">（daemon 缓存）</span>
+            <span v-if="catalogStore.loading"> · 同步中</span>
+          </p>
+          <p v-if="catalogStore.error" class="mt-2 text-sm text-amber-200">
+            自动同步失败：{{ catalogStore.error }}
           </p>
         </div>
-        <button
-          class="kiosk-touch-target rounded-2xl border border-white/20 px-5 py-3 font-bold text-white"
-          type="button"
-          @click="refreshCatalog"
-        >
-          刷新
-        </button>
       </div>
 
       <p
@@ -242,7 +232,7 @@ onMounted(async () => {
         class="mt-8 rounded-4xl border border-white/10 bg-white/10 p-8 text-center text-slate-200"
       >
         <h3 class="text-2xl font-bold text-white">暂无可售商品</h3>
-        <p class="mt-3">请联系运维补货，或稍后刷新目录。</p>
+        <p class="mt-3">请联系运维补货，或等待系统自动同步目录。</p>
       </section>
     </section>
   </KioskLayout>

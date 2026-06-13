@@ -1,5 +1,5 @@
 import { createPinia, setActivePinia } from "pinia";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const { getSaleViewMock } = vi.hoisted(() => ({
   getSaleViewMock: vi.fn(),
@@ -47,6 +47,11 @@ describe("catalog store sale view", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
     vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    useCatalogStore().stopAutoRefresh();
+    vi.useRealTimers();
   });
 
   it("loads machine sale view and filters saleable items without availableQty", async () => {
@@ -103,5 +108,61 @@ describe("catalog store sale view", () => {
 
     expect(store.items[0].slotSalesState).toBe("needs_platform_review");
     expect(store.availableItems).toHaveLength(0);
+  });
+
+  it("auto-refreshes the sale view without a manual catalog button", async () => {
+    vi.useFakeTimers();
+    getSaleViewMock
+      .mockResolvedValueOnce({
+        items: [saleViewItem({ physicalStock: 1, saleableStock: 1 })],
+        source: "local_stock",
+        planogramVersion: "PLAN-1",
+        lastUpdatedAt: "2026-06-04T00:00:00Z",
+      })
+      .mockResolvedValueOnce({
+        items: [saleViewItem({ physicalStock: 5, saleableStock: 5 })],
+        source: "platform_stock_sync",
+        planogramVersion: "PLAN-1",
+        lastUpdatedAt: "2026-06-04T00:00:05Z",
+      });
+
+    const store = useCatalogStore();
+    store.startAutoRefresh(1_000);
+    await vi.waitFor(() => {
+      expect(store.items[0]?.saleableStock).toBe(1);
+    });
+
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    await vi.waitFor(() => {
+      expect(store.items[0]?.saleableStock).toBe(5);
+    });
+    expect(getSaleViewMock).toHaveBeenCalledTimes(2);
+    expect(store.source).toBe("platform_stock_sync");
+    expect(store.autoRefreshEnabled).toBe(true);
+  });
+
+  it("deduplicates overlapping sale-view refresh requests", async () => {
+    let resolveSnapshot: (value: unknown) => void = () => undefined;
+    getSaleViewMock.mockReturnValue(
+      new Promise((resolve) => {
+        resolveSnapshot = resolve;
+      }),
+    );
+
+    const store = useCatalogStore();
+    const first = store.refresh();
+    const second = store.refresh();
+
+    expect(getSaleViewMock).toHaveBeenCalledOnce();
+    resolveSnapshot?.({
+      items: [saleViewItem()],
+      source: "local_stock",
+      planogramVersion: "PLAN-1",
+      lastUpdatedAt: "2026-06-04T00:00:00Z",
+    });
+    await Promise.all([first, second]);
+
+    expect(store.items).toHaveLength(1);
   });
 });
