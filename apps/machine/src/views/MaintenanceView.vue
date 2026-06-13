@@ -46,6 +46,19 @@ const wholeMachineMaintenanceLock = computed(
       (reason) => reason.code === "WHOLE_MACHINE_HARDWARE_FAULT",
     ) ?? null,
 );
+const returnToCatalogBlockedReason = computed(() => {
+  if (connectivityStore.ready?.canSell === true) {
+    return null;
+  }
+  const reason = connectivityStore.ready?.blockingReasons[0];
+  if (reason) {
+    return reason.message;
+  }
+  if (!connectivityStore.ready) {
+    return "正在读取机器状态。";
+  }
+  return "机器未就绪。";
+});
 const operatorEnteredMaintenance = computed(() => {
   const source = route.query.source;
   return Array.isArray(source)
@@ -166,6 +179,10 @@ const wholeMachineLockMaintenance = reactive({
 
 const desktopMaintenance = reactive({
   loading: false,
+  message: null as string | null,
+});
+
+const catalogNavigation = reactive({
   message: null as string | null,
 });
 
@@ -352,6 +369,11 @@ async function clearWholeMachineLock(): Promise<void> {
 }
 
 async function returnToCatalog(): Promise<void> {
+  if (returnToCatalogBlockedReason.value) {
+    catalogNavigation.message = `暂不能回到目录：${returnToCatalogBlockedReason.value}`;
+    return;
+  }
+  catalogNavigation.message = null;
   await router.replace("/catalog");
 }
 
@@ -555,8 +577,9 @@ async function submitStockMovement(): Promise<void> {
           </p>
           <div class="flex flex-wrap gap-3">
             <button
-              class="kiosk-touch-target rounded-2xl border border-emerald-200/30 px-4 py-3 font-bold text-emerald-100"
+              class="kiosk-touch-target rounded-2xl border border-emerald-200/30 px-4 py-3 font-bold text-emerald-100 disabled:opacity-50"
               type="button"
+              :disabled="Boolean(returnToCatalogBlockedReason)"
               @click="returnToCatalog"
             >
               回到目录
@@ -602,6 +625,17 @@ async function submitStockMovement(): Promise<void> {
             </button>
           </div>
         </div>
+
+        <p
+          v-if="returnToCatalogBlockedReason || catalogNavigation.message"
+          class="mt-4 rounded-2xl bg-amber-500/15 p-4 text-amber-100"
+          aria-live="polite"
+        >
+          {{
+            catalogNavigation.message ??
+            `暂不能回到目录：${returnToCatalogBlockedReason}`
+          }}
+        </p>
 
         <div
           v-if="

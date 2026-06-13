@@ -505,6 +505,22 @@ describe("MaintenanceView hardware config", () => {
     });
   });
 
+  it("blocks returning to the catalog while the machine is not sellable", async () => {
+    getReadyMock.mockResolvedValue(maintenanceReadyFixture());
+
+    const host = await mountView();
+    const button = buttonByText(host, "回到目录");
+
+    expect(button.disabled).toBe(true);
+    expect(host.textContent).toContain("暂不能回到目录");
+    expect(host.textContent).toContain("lower controller unavailable");
+
+    button.click();
+    await nextTick();
+
+    expect(routerReplaceMock).not.toHaveBeenCalledWith("/catalog");
+  });
+
   it("auto-refreshes system maintenance diagnostics and returns to catalog after recovery", async () => {
     vi.useFakeTimers();
     routeMock.query = {};
