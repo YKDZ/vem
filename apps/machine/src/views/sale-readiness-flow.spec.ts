@@ -159,6 +159,7 @@ afterEach(() => {
   mountedApp?.unmount();
   mountedApp = null;
   document.body.innerHTML = "";
+  vi.useRealTimers();
 });
 
 function makeCatalogItem(): MachineCatalogItem {
@@ -192,7 +193,7 @@ function makeCatalogItem(): MachineCatalogItem {
 
 function healthSnapshot() {
   return {
-    status: "healthy",
+    status: "healthy" as const,
     process: {
       component: "daemon",
       level: "ok",
@@ -225,7 +226,7 @@ function readySnapshot() {
     blockingCodes: [],
     blockingReasons: [],
     degradedReasons: [],
-    suggestedRoute: "catalog",
+    suggestedRoute: "catalog" as const,
     updatedAt: "2026-06-04T00:00:00Z",
   };
 }
@@ -286,8 +287,8 @@ function saleReadiness(canStartNetworkAuthorizedSale: boolean) {
 }
 
 function applyBlockedSaleReadiness(): void {
-  useConnectivityStore().applyHealth({
-    status: "healthy",
+  const health = {
+    status: "healthy" as const,
     process: {
       component: "daemon",
       level: "ok",
@@ -309,18 +310,18 @@ function applyBlockedSaleReadiness(): void {
     currentTransaction: null,
     operatorReason: "",
     updatedAt: "2026-06-04T00:00:00Z",
-  });
-  useConnectivityStore().applyReady({
+  };
+  const ready = {
     ready: true,
     canSell: true,
     mode: "catalog",
     blockingCodes: [],
     blockingReasons: [],
     degradedReasons: [],
-    suggestedRoute: "catalog",
+    suggestedRoute: "catalog" as const,
     updatedAt: "2026-06-04T00:00:00Z",
-  });
-  useConnectivityStore().applySaleReadiness({
+  };
+  const readiness = {
     canStartNetworkAuthorizedSale: false,
     blockingCodes: ["PLATFORM_UNREACHABLE", "NO_PAYMENT_OPTIONS"],
     components: {
@@ -361,7 +362,13 @@ function applyBlockedSaleReadiness(): void {
         message: "hardware ready",
       },
     },
-  });
+  };
+  getHealthMock.mockResolvedValue(health);
+  getReadyMock.mockResolvedValue(ready);
+  getSaleReadinessMock.mockResolvedValue(readiness);
+  useConnectivityStore().applyHealth(health);
+  useConnectivityStore().applyReady(ready);
+  useConnectivityStore().applySaleReadiness(readiness);
 }
 
 async function mountView(component: object): Promise<HTMLElement> {
@@ -514,6 +521,53 @@ describe("sale readiness UI flow", () => {
     expect(routerPushMock).toHaveBeenCalledWith({
       name: "product-detail",
       params: { inventoryId: item.inventoryId },
+    });
+  });
+
+  it("leaves the catalog when readiness refresh requires maintenance", async () => {
+    vi.useFakeTimers();
+    const item = makeCatalogItem();
+    const blockedHealth = {
+      ...healthSnapshot(),
+      status: "degraded" as const,
+      hardwareOnline: false,
+      operatorReason: "LOWER_CONTROLLER_UNAVAILABLE",
+    };
+    const blockedReady = {
+      ...readySnapshot(),
+      ready: false,
+      canSell: false,
+      mode: "maintenance" as const,
+      blockingCodes: ["LOWER_CONTROLLER_UNAVAILABLE"],
+      blockingReasons: [
+        {
+          code: "LOWER_CONTROLLER_UNAVAILABLE",
+          component: "hardware",
+          message: "lower controller unavailable",
+        },
+      ],
+      suggestedRoute: "maintenance" as const,
+    };
+    useCatalogStore().applySnapshot({
+      items: [item],
+      source: "local_stock",
+      planogramVersion: "PLAN-1",
+      lastUpdatedAt: "2026-06-04T00:00:00Z",
+    });
+    getSaleViewMock.mockResolvedValue({
+      items: [item],
+      source: "local_stock",
+      planogramVersion: "PLAN-1",
+      lastUpdatedAt: "2026-06-04T00:00:00Z",
+    });
+    getHealthMock.mockResolvedValue(blockedHealth);
+    getReadyMock.mockResolvedValue(blockedReady);
+    getSaleReadinessMock.mockResolvedValue(saleReadiness(false));
+
+    await mountView(CatalogView);
+
+    await vi.waitFor(() => {
+      expect(routerReplaceMock).toHaveBeenCalledWith("/maintenance");
     });
   });
 

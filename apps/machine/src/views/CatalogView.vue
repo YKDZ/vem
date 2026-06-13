@@ -20,6 +20,9 @@ const checkoutStore = useCheckoutStore();
 const visionStore = useVisionStore();
 const mqttStore = useMqttStore();
 const { recommendedItems, lastVisionResult } = useVisionRecommendations();
+const READINESS_REFRESH_INTERVAL_MS = 5000;
+let readinessRefreshTimer: number | null = null;
+let readinessRefreshInFlight: Promise<void> | null = null;
 
 const canDisplayAsSaleReady = computed(
   () => connectivityStore.isSaleNetworkReady,
@@ -94,12 +97,54 @@ async function selectProduct(item: MachineCatalogItem): Promise<void> {
   });
 }
 
+function shouldEnterMaintenance(): boolean {
+  return (
+    connectivityStore.ready?.canSell === false &&
+    connectivityStore.ready.suggestedRoute === "maintenance"
+  );
+}
+
+async function refreshReadinessAndRoute(): Promise<void> {
+  if (readinessRefreshInFlight) {
+    return readinessRefreshInFlight;
+  }
+  readinessRefreshInFlight = connectivityStore
+    .refresh()
+    .then(async () => {
+      if (shouldEnterMaintenance()) {
+        await router.replace("/maintenance");
+      }
+    })
+    .catch(() => undefined)
+    .finally(() => {
+      readinessRefreshInFlight = null;
+    });
+  return readinessRefreshInFlight;
+}
+
+function startReadinessAutoRefresh(): void {
+  stopReadinessAutoRefresh();
+  void refreshReadinessAndRoute();
+  readinessRefreshTimer = window.setInterval(() => {
+    void refreshReadinessAndRoute();
+  }, READINESS_REFRESH_INTERVAL_MS);
+}
+
+function stopReadinessAutoRefresh(): void {
+  if (readinessRefreshTimer !== null) {
+    window.clearInterval(readinessRefreshTimer);
+    readinessRefreshTimer = null;
+  }
+}
+
 onMounted(() => {
   catalogStore.startAutoRefresh();
+  startReadinessAutoRefresh();
 });
 
 onUnmounted(() => {
   catalogStore.stopAutoRefresh();
+  stopReadinessAutoRefresh();
 });
 </script>
 
