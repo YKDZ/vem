@@ -111,7 +111,7 @@ describe("catalog store sale view", () => {
     expect(store.availableItems).toHaveLength(0);
   });
 
-  it("aggregates multiple saleable slots for the same SKU into one catalog item", async () => {
+  it("aggregates multiple saleable slots for the same variant into one catalog item", async () => {
     getSaleViewMock.mockResolvedValue({
       items: [
         saleViewItem({ saleableStock: 2, physicalStock: 2 }),
@@ -143,6 +143,56 @@ describe("catalog store sale view", () => {
     expect(
       store.availableItems[0].slotCandidates.map((slot) => slot.slotCode),
     ).toEqual(["A1", "B1"]);
+  });
+
+  it("aggregates different variants of the same product into one catalog item", async () => {
+    getSaleViewMock.mockResolvedValue({
+      items: [
+        saleViewItem({
+          sku: "TSHIRT-M-BLACK",
+          size: "M",
+          color: "黑色",
+          saleableStock: 2,
+          physicalStock: 2,
+        }),
+        saleViewItem({
+          slotId: "550e8400-e29b-41d4-a716-446655440011",
+          slotCode: "B1",
+          layerNo: 2,
+          cellNo: 1,
+          inventoryId: "550e8400-e29b-41d4-a716-446655440012",
+          variantId: "550e8400-e29b-41d4-a716-446655440013",
+          sku: "TSHIRT-L-WHITE",
+          size: "L",
+          color: "白色",
+          saleableStock: 5,
+          physicalStock: 5,
+        }),
+      ],
+      source: "local_stock",
+      planogramVersion: "PLAN-1",
+      lastUpdatedAt: "2026-06-04T00:00:00Z",
+    });
+
+    const store = useCatalogStore();
+    await store.load();
+
+    expect(store.availableItems).toHaveLength(1);
+    expect(store.availableItems[0]).toMatchObject({
+      productId: "550e8400-e29b-41d4-a716-446655440004",
+      saleableStock: 7,
+      physicalStock: 7,
+      aggregatedSlotCount: 2,
+    });
+    expect(
+      store.availableItems[0].variantCandidates.map((variant) => ({
+        sku: variant.sku,
+        saleableStock: variant.saleableStock,
+      })),
+    ).toEqual([
+      { sku: "TSHIRT-M-BLACK", saleableStock: 2 },
+      { sku: "TSHIRT-L-WHITE", saleableStock: 5 },
+    ]);
   });
 
   it("auto-refreshes the sale view without a manual catalog button", async () => {

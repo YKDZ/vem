@@ -93,7 +93,7 @@ async function selectProduct(item: MachineCatalogItem): Promise<void> {
   checkoutStore.selectItem(item);
   await router.push({
     name: "product-detail",
-    params: { inventoryId: item.inventoryId },
+    params: { catalogKey: item.catalogKey },
   });
 }
 
@@ -228,7 +228,7 @@ onUnmounted(() => {
         >
           <div
             v-for="item in recommendedItems"
-            :key="item.inventoryId"
+            :key="item.catalogKey"
             class="w-40 flex-shrink-0 cursor-pointer rounded-[1.75rem] border border-white/10 bg-white/10 p-4"
             @click="selectProduct(item)"
           >
@@ -265,7 +265,7 @@ onUnmounted(() => {
       >
         <ProductCard
           v-for="item in displayItems"
-          :key="item.inventoryId"
+          :key="item.catalogKey"
           :item="item"
           :disabled="false"
           @select="selectProduct"

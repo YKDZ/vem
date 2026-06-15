@@ -82,7 +82,10 @@ function makeCatalogItem(
     ...overrides,
   } as Omit<
     MachineCatalogItem,
-    "catalogKey" | "aggregatedSlotCount" | "slotCandidates"
+    | "catalogKey"
+    | "aggregatedSlotCount"
+    | "slotCandidates"
+    | "variantCandidates"
   >;
   const slotCandidates: readonly MachineCatalogSlotCandidate[] =
     overrides.slotCandidates ?? [
@@ -92,6 +95,11 @@ function makeCatalogItem(
         layerNo: item.layerNo,
         cellNo: item.cellNo,
         inventoryId: item.inventoryId,
+        variantId: item.variantId,
+        sku: item.sku,
+        size: item.size,
+        color: item.color,
+        priceCents: item.priceCents,
         capacity: item.capacity,
         parLevel: item.parLevel,
         physicalStock: item.physicalStock,
@@ -101,9 +109,24 @@ function makeCatalogItem(
     ];
   return {
     ...item,
-    catalogKey: overrides.catalogKey ?? `sku:${item.sku}`,
+    catalogKey: overrides.catalogKey ?? `product:${item.productId}`,
     aggregatedSlotCount: overrides.aggregatedSlotCount ?? 1,
     slotCandidates,
+    variantCandidates: overrides.variantCandidates ?? [
+      {
+        variantId: item.variantId,
+        sku: item.sku,
+        size: item.size,
+        color: item.color,
+        priceCents: item.priceCents,
+        capacity: item.capacity,
+        parLevel: item.parLevel,
+        physicalStock: item.physicalStock,
+        saleableStock: item.saleableStock,
+        slotSalesState: item.slotSalesState,
+        slotCandidates,
+      },
+    ],
   };
 }
 
@@ -508,6 +531,8 @@ describe("checkout store", () => {
           slotId: "550e8400-e29b-41d4-a716-446655440011",
           slotCode: "B1",
           inventoryId: "550e8400-e29b-41d4-a716-446655440012",
+          variantId: "550e8400-e29b-41d4-a716-446655440013",
+          productId: "550e8400-e29b-41d4-a716-446655440014",
           sku: "WATER-NEW",
         }),
       ],
@@ -521,7 +546,70 @@ describe("checkout store", () => {
     expect(createOrderMock).not.toHaveBeenCalled();
   });
 
-  it("creates an order from another saleable slot for the same SKU", async () => {
+  it("does not switch variants when another variant for the same product is saleable", async () => {
+    const store = useCheckoutStore();
+    const catalogStore = useCatalogStore();
+    store.paymentOptions = [
+      {
+        optionKey: "payment_code:alipay",
+        providerCode: "alipay",
+        method: "payment_code",
+        displayName: "支付宝付款码",
+        description: "请出示付款码",
+        icon: "alipay",
+        disabled: false,
+        disabledReason: null,
+        recommended: true,
+      },
+    ];
+    store.selectedPaymentOptionKey = "payment_code:alipay";
+    applyNetworkSaleReady();
+    store.selectItem(
+      makeCatalogItem({
+        variantId: "550e8400-e29b-41d4-a716-446655440003",
+        sku: "TSHIRT-M-BLACK",
+        size: "M",
+        color: "黑色",
+        saleableStock: 1,
+      }),
+    );
+    catalogStore.applySnapshot({
+      items: [
+        makeCatalogItem({
+          variantId: "550e8400-e29b-41d4-a716-446655440003",
+          sku: "TSHIRT-M-BLACK",
+          size: "M",
+          color: "黑色",
+          physicalStock: 0,
+          saleableStock: 0,
+          slotSalesState: "sold_out",
+        }),
+        makeCatalogItem({
+          slotId: "550e8400-e29b-41d4-a716-446655440011",
+          slotCode: "B1",
+          layerNo: 2,
+          cellNo: 1,
+          inventoryId: "550e8400-e29b-41d4-a716-446655440012",
+          variantId: "550e8400-e29b-41d4-a716-446655440013",
+          sku: "TSHIRT-L-BLACK",
+          size: "L",
+          color: "黑色",
+          physicalStock: 5,
+          saleableStock: 5,
+          slotSalesState: "sale_ready",
+        }),
+      ],
+      source: "local_stock",
+      planogramVersion: "PLAN-1",
+      lastUpdatedAt: "2026-06-04T00:00:00Z",
+    });
+
+    expect(store.canCreateOrder).toBe(false);
+    await expect(store.createOrder()).rejects.toThrow("商品已售罄");
+    expect(createOrderMock).not.toHaveBeenCalled();
+  });
+
+  it("creates an order from another saleable slot for the same variant", async () => {
     createOrderMock.mockResolvedValue(makeTransactionSnapshot());
 
     const store = useCheckoutStore();

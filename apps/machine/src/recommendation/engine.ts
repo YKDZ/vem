@@ -75,6 +75,24 @@ function computeStockScore(saleableStock: number): number {
   return Math.min(saleableStock, 10);
 }
 
+function bestVariantSizeScore(
+  userSize: string | null,
+  item: MachineCatalogItem,
+): number {
+  const saleableVariants = item.variantCandidates.filter(
+    (variant) =>
+      variant.slotSalesState === "sale_ready" && variant.saleableStock > 0,
+  );
+  const variants = saleableVariants.length
+    ? saleableVariants
+    : item.variantCandidates;
+  return variants.reduce(
+    (bestScore, variant) =>
+      Math.max(bestScore, computeSizeScore(userSize, variant.size ?? null)),
+    computeSizeScore(userSize, item.size ?? null),
+  );
+}
+
 /**
  * Sort fallback weight: max(0, 10 - productSortOrder)
  */
@@ -125,7 +143,7 @@ export function scoreItem(
   }
 
   const userSize = inferSize(profile.heightCm ?? undefined, profile.bodyType);
-  const sizeScore = computeSizeScore(userSize, item.size ?? null);
+  const sizeScore = bestVariantSizeScore(userSize, item);
   const stockScore = computeStockScore(item.saleableStock);
   const sortScore = computeSortScore(item.productSortOrder);
 

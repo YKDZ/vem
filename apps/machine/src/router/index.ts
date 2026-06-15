@@ -20,7 +20,7 @@ const routes: RouteRecordRaw[] = [
     component: async () => import("@/views/CatalogView.vue"),
   },
   {
-    path: "/products/:inventoryId",
+    path: "/products/:catalogKey",
     name: "product-detail",
     component: async () => import("@/views/ProductDetailView.vue"),
   },
@@ -45,6 +45,11 @@ const routes: RouteRecordRaw[] = [
           path: "/dev/vision",
           name: "vision-dev",
           component: async () => import("@/views/VisionDevView.vue"),
+        } satisfies RouteRecordRaw,
+        {
+          path: "/dev/ui-debug",
+          name: "ui-debug",
+          component: async () => import("@/views/dev/UiDebugView.vue"),
         } satisfies RouteRecordRaw,
       ]
     : []),

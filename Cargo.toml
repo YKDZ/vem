@@ -1,6 +1,7 @@
 [workspace]
 members = [
   "crates/vending-core",
+  "apps/lower-controller-sim",
   "apps/vending-daemon",
   "apps/machine/src-tauri",
 ]

@@ -8,11 +8,12 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serialport::{SerialPortInfo, SerialPortType};
 use tokio::{
-    io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
+    net::TcpStream,
     sync::Mutex,
     time::{sleep, timeout, Duration as TokioDuration, Instant},
 };
-use tokio_serial::{DataBits, FlowControl, Parity, SerialPortBuilderExt, SerialStream, StopBits};
+use tokio_serial::{DataBits, FlowControl, Parity, SerialPortBuilderExt, StopBits};
 
 use crate::hardware::{
     DispenseCommandPayload, DispenseProgressEvent, DispenseProgressObserver, DispenseProgressStage,
@@ -112,8 +113,14 @@ struct ResolvedSerialPort {
 
 struct OpenResolvedSerialPort {
     resolved: ResolvedSerialPort,
-    port: SerialStream,
+    port: LowerControllerStream,
 }
+
+trait LowerControllerIo: AsyncRead + AsyncWrite + Unpin + Send {}
+
+impl<T> LowerControllerIo for T where T: AsyncRead + AsyncWrite + Unpin + Send {}
+
+type LowerControllerStream = Box<dyn LowerControllerIo>;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "camelCase")]
@@ -258,14 +265,31 @@ fn usb_identity_for_port_path(port_path: &str) -> Option<SerialPortUsbIdentity> 
     })
 }
 
-fn open_serial_port_path(port_path: &str) -> Result<SerialStream, String> {
+async fn open_serial_port_path(port_path: &str) -> Result<LowerControllerStream, String> {
+    if let Some(address) = tcp_debug_transport_address(port_path) {
+        let stream = TcpStream::connect(address).await.map_err(|error| {
+            format!("connect lower controller tcp transport {address} failed: {error}")
+        })?;
+        stream
+            .set_nodelay(true)
+            .map_err(|error| format!("configure lower controller tcp transport failed: {error}"))?;
+        return Ok(Box::new(stream));
+    }
+
     tokio_serial::new(port_path, SERIAL_BAUD_RATE)
         .data_bits(DataBits::Eight)
         .parity(Parity::None)
         .stop_bits(StopBits::One)
         .flow_control(FlowControl::None)
         .open_native_async()
+        .map(|stream| Box::new(stream) as LowerControllerStream)
         .map_err(|error| format!("open serial port {port_path} failed: {error}"))
+}
+
+fn tcp_debug_transport_address(port_path: &str) -> Option<&str> {
+    port_path
+        .strip_prefix("tcp://")
+        .filter(|address| !address.trim().is_empty())
 }
 
 fn bytes_to_hex(bytes: &[u8]) -> String {
@@ -1114,7 +1138,7 @@ const SLOT_LAYER_BANDS: [SlotLayerBand; 2] = [
 ];
 const SLOT_MAX_LAYER_NO: u32 = SLOT_LAYER_BANDS[SLOT_LAYER_BANDS.len() - 1].max_layer_no;
 
-fn max_cell_no_for_layer(layer_no: u32) -> Option<u32> {
+pub fn max_cell_no_for_layer(layer_no: u32) -> Option<u32> {
     if layer_no < SLOT_MIN_LAYER_NO {
         return None;
     }
@@ -1126,7 +1150,7 @@ fn max_cell_no_for_layer(layer_no: u32) -> Option<u32> {
 
 /// 校验货道号是否在硬件允许的范围内。
 /// 行（row）1-11；格（cell）：行 1-6 为 1-5，行 7-11 为 1-4。
-fn validate_slot_bounds(layer_no: u32, cell_no: u32) -> Result<(), String> {
+pub fn validate_slot_bounds(layer_no: u32, cell_no: u32) -> Result<(), String> {
     let Some(max_cell) = max_cell_no_for_layer(layer_no) else {
         return Err(format!(
             "layerNo {layer_no} is out of hardware bounds ({SLOT_MIN_LAYER_NO}-{SLOT_MAX_LAYER_NO})"
@@ -1198,7 +1222,10 @@ pub fn build_multi_dispense_frame(slots: &[(u32, u32)]) -> Result<Vec<u8>, Strin
     Ok(frame)
 }
 
-async fn probe_lower_controller_stream(port: &mut SerialStream) -> Result<LowerFrame, String> {
+async fn probe_lower_controller_stream<S>(port: &mut S) -> Result<LowerFrame, String>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
     port.write_all(&HANDSHAKE)
         .await
         .map_err(|error| format!("serial handshake write failed: {error}"))?;
@@ -1216,8 +1243,8 @@ async fn probe_lower_controller_stream(port: &mut SerialStream) -> Result<LowerF
 
 async fn probe_open_lower_controller_port(
     port_path: &str,
-) -> Result<(LowerFrame, SerialStream), String> {
-    let mut port = open_serial_port_path(port_path)?;
+) -> Result<(LowerFrame, LowerControllerStream), String> {
+    let mut port = open_serial_port_path(port_path).await?;
     let frame = probe_lower_controller_stream(&mut port).await?;
     Ok((frame, port))
 }
@@ -1339,7 +1366,11 @@ async fn discover_lower_controller_port_open(
 
     let discovered_candidates = candidates.clone();
     let mut successes: Vec<LowerControllerDiscoveryCandidate> = vec![];
-    let mut selected: Option<(LowerControllerDiscoveryCandidate, LowerFrame, SerialStream)> = None;
+    let mut selected: Option<(
+        LowerControllerDiscoveryCandidate,
+        LowerFrame,
+        LowerControllerStream,
+    )> = None;
     for candidate in candidates {
         if let Ok((frame, port)) = probe_open_lower_controller_port(&candidate.port_path).await {
             let mut candidate = candidate;
@@ -1384,12 +1415,15 @@ async fn discover_lower_controller_port_open(
     }
 }
 
-async fn wait_for_ack(
-    port: &mut SerialStream,
+async fn wait_for_ack<S>(
+    port: &mut S,
     adapter: &SerialHardwareAdapter,
     base_entry: &SerialProtocolLogEntry,
     attempt: usize,
-) -> Result<(), AckWaitError> {
+) -> Result<(), AckWaitError>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
     let deadline = Instant::now() + COMMAND_ACK_TIMEOUT;
     loop {
         let now = Instant::now();
@@ -1439,11 +1473,14 @@ async fn wait_for_ack(
 
 /// 当心跳中断（1s 内无有效帧）时，主动向下位机发送握手探测。
 /// 收到任意心跳帧视为探测成功；100ms 无回应返回 Err。
-async fn probe_handshake(
-    port: &mut SerialStream,
+async fn probe_handshake<S>(
+    port: &mut S,
     adapter: &SerialHardwareAdapter,
     base_entry: &SerialProtocolLogEntry,
-) -> Result<LowerFrame, ()> {
+) -> Result<LowerFrame, ()>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
     port.write_all(&HANDSHAKE).await.map_err(|_| ())?;
     port.flush().await.map_err(|_| ())?;
     let mut tx_entry = base_entry.clone();
@@ -1462,14 +1499,17 @@ async fn probe_handshake(
     }
 }
 
-async fn wait_for_completion(
-    port: &mut SerialStream,
+async fn wait_for_completion<S>(
+    port: &mut S,
     command: &DispenseCommandPayload,
     command_deadline: Instant,
     adapter: &SerialHardwareAdapter,
     base_entry: &SerialProtocolLogEntry,
     progress: Option<DispenseProgressObserver>,
-) -> Result<(), DispenseFailure> {
+) -> Result<(), DispenseFailure>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
     let mut probe_failures: usize = 0;
     let mut outlet_opened_reported = false;
     let mut pickup_waiting_reported = false;

@@ -26,9 +26,8 @@ Preferred installer path:
 ```
 
 The script writes `VEM_DEFAULT_API_BASE_URL` as a service-level environment
-value before starting the daemon. On first boot, the daemon seeds
-`machine-config.json` with that API Base URL and the machine UI shows the
-standard Machine Claim Code page.
+value before starting the daemon. On first boot, the daemon uses that API Base
+URL for the standard Machine Claim Code page.
 
 When the script launches the machine UI, answer the first-boot prompts only
 after confirming the visible page is Machine Claim Code and the UI does not show
@@ -39,9 +38,9 @@ already made the same visual checks, pass
 
 Production uses the same command with `https://api.example.com/api`.
 
-If a deployment already writes `machine-config.json`, set `apiBaseUrl` there.
-An existing `machine-config.json` overrides VEM_DEFAULT_API_BASE_URL, so a field
-service override in the data dir is not replaced by the service environment.
+If local maintenance tooling has already written a daemon config file, its
+`apiBaseUrl` still overrides `VEM_DEFAULT_API_BASE_URL`; normal provisioning
+should prefer the service-level environment plus the network claim flow.
 
 ## Verify
 

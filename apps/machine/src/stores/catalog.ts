@@ -1,57 +1,160 @@
 import { defineStore } from "pinia";
 
-import type { MachineCatalogItem, MachineSaleViewItem } from "@/types/catalog";
+import type {
+  MachineCatalogItem,
+  MachineCatalogSlotCandidate,
+  MachineCatalogVariantCandidate,
+  MachineSaleViewItem,
+} from "@/types/catalog";
 
 import { daemonClient } from "@/daemon/client";
 
 const DEFAULT_AUTO_REFRESH_INTERVAL_MS = 5_000;
+const SIZE_ORDER = ["XS", "S", "M", "L", "XL", "XXL"] as const;
 
 let refreshInFlight: Promise<void> | null = null;
 let autoRefreshTimer: ReturnType<typeof setInterval> | null = null;
 let autoRefreshConsumers = 0;
 
-function catalogKeyFor(item: Pick<MachineSaleViewItem, "sku">): string {
-  return `sku:${item.sku}`;
+function catalogKeyFor(item: Pick<MachineSaleViewItem, "productId">): string {
+  return `product:${item.productId}`;
+}
+
+function slotCandidateFor(
+  candidate: MachineSaleViewItem,
+): MachineCatalogSlotCandidate {
+  return {
+    slotId: candidate.slotId,
+    slotCode: candidate.slotCode,
+    layerNo: candidate.layerNo,
+    cellNo: candidate.cellNo,
+    inventoryId: candidate.inventoryId,
+    variantId: candidate.variantId,
+    sku: candidate.sku,
+    size: candidate.size,
+    color: candidate.color,
+    priceCents: candidate.priceCents,
+    capacity: candidate.capacity,
+    parLevel: candidate.parLevel,
+    physicalStock: candidate.physicalStock,
+    saleableStock: candidate.saleableStock,
+    slotSalesState: candidate.slotSalesState,
+  };
+}
+
+function sizeRank(size: string | null): number {
+  if (!size) return Number.MAX_SAFE_INTEGER;
+  const index = SIZE_ORDER.indexOf(size as (typeof SIZE_ORDER)[number]);
+  return index === -1 ? Number.MAX_SAFE_INTEGER : index;
 }
 
 function asCatalogItem(
   item: MachineSaleViewItem,
   slotCandidates = [item],
 ): MachineCatalogItem {
+  const mappedSlotCandidates = slotCandidates.map(slotCandidateFor);
   return {
     ...item,
     catalogKey: catalogKeyFor(item),
-    aggregatedSlotCount: slotCandidates.length,
-    slotCandidates: slotCandidates.map((candidate) => ({
-      slotId: candidate.slotId,
-      slotCode: candidate.slotCode,
-      layerNo: candidate.layerNo,
-      cellNo: candidate.cellNo,
-      inventoryId: candidate.inventoryId,
-      capacity: candidate.capacity,
-      parLevel: candidate.parLevel,
-      physicalStock: candidate.physicalStock,
-      saleableStock: candidate.saleableStock,
-      slotSalesState: candidate.slotSalesState,
-    })),
+    aggregatedSlotCount: mappedSlotCandidates.length,
+    slotCandidates: mappedSlotCandidates,
+    variantCandidates: [
+      {
+        variantId: item.variantId,
+        sku: item.sku,
+        size: item.size,
+        color: item.color,
+        priceCents: item.priceCents,
+        capacity: item.capacity,
+        parLevel: item.parLevel,
+        physicalStock: item.physicalStock,
+        saleableStock: item.saleableStock,
+        slotSalesState: item.slotSalesState,
+        slotCandidates: mappedSlotCandidates,
+      },
+    ],
   };
 }
 
 function concreteSaleableItem(
   items: MachineCatalogItem[],
+  variantId?: string,
 ): MachineCatalogItem | null {
   const candidates = items
     .filter(
-      (item) => item.slotSalesState === "sale_ready" && item.saleableStock > 0,
+      (item) =>
+        (variantId === undefined || item.variantId === variantId) &&
+        item.slotSalesState === "sale_ready" &&
+        item.saleableStock > 0,
     )
     .sort(
       (a, b) =>
         a.productSortOrder - b.productSortOrder ||
+        a.priceCents - b.priceCents ||
         a.layerNo - b.layerNo ||
         a.cellNo - b.cellNo ||
         a.slotCode.localeCompare(b.slotCode),
     );
   return candidates[0] ?? null;
+}
+
+function aggregateVariantCandidates(
+  group: MachineCatalogItem[],
+): MachineCatalogVariantCandidate[] {
+  const variants = new Map<string, MachineCatalogItem[]>();
+  for (const item of group) {
+    const variantGroup = variants.get(item.variantId) ?? [];
+    variantGroup.push(item);
+    variants.set(item.variantId, variantGroup);
+  }
+
+  return [...variants.values()]
+    .map((variantGroup) => {
+      const representative =
+        concreteSaleableItem(variantGroup) ?? variantGroup[0];
+      const saleReadyItems = variantGroup.filter(
+        (item) => item.slotSalesState === "sale_ready",
+      );
+      const saleableStock = saleReadyItems.reduce(
+        (sum, item) => sum + item.saleableStock,
+        0,
+      );
+      const physicalStock = variantGroup.reduce(
+        (sum, item) => sum + item.physicalStock,
+        0,
+      );
+      const capacity = variantGroup.reduce(
+        (sum, item) => sum + item.capacity,
+        0,
+      );
+      const parLevel = variantGroup.reduce(
+        (sum, item) => sum + item.parLevel,
+        0,
+      );
+      return {
+        variantId: representative.variantId,
+        sku: representative.sku,
+        size: representative.size,
+        color: representative.color,
+        priceCents: representative.priceCents,
+        capacity,
+        parLevel,
+        physicalStock,
+        saleableStock,
+        slotSalesState:
+          saleableStock > 0 && saleReadyItems.length > 0
+            ? "sale_ready"
+            : representative.slotSalesState,
+        slotCandidates: variantGroup.flatMap((item) => item.slotCandidates),
+      };
+    })
+    .sort(
+      (a, b) =>
+        sizeRank(a.size) - sizeRank(b.size) ||
+        (a.color ?? "").localeCompare(b.color ?? "") ||
+        a.priceCents - b.priceCents ||
+        a.sku.localeCompare(b.sku),
+    );
 }
 
 function aggregateCatalogItems(
@@ -70,6 +173,7 @@ function aggregateCatalogItems(
       const saleReadyItems = group.filter(
         (item) => item.slotSalesState === "sale_ready",
       );
+      const variantCandidates = aggregateVariantCandidates(group);
       const saleableStock = saleReadyItems.reduce(
         (sum, item) => sum + item.saleableStock,
         0,
@@ -83,6 +187,12 @@ function aggregateCatalogItems(
 
       return {
         ...representative,
+        priceCents:
+          variantCandidates.find(
+            (candidate) =>
+              candidate.slotSalesState === "sale_ready" &&
+              candidate.saleableStock > 0,
+          )?.priceCents ?? representative.priceCents,
         physicalStock,
         saleableStock,
         capacity,
@@ -93,6 +203,7 @@ function aggregateCatalogItems(
             : representative.slotSalesState,
         aggregatedSlotCount: group.length,
         slotCandidates: group.flatMap((item) => item.slotCandidates),
+        variantCandidates,
       };
     })
     .sort(
@@ -125,7 +236,7 @@ export const useCatalogStore = defineStore("catalog", {
     itemByInventoryId:
       (state) =>
       (inventoryId: string): MachineCatalogItem | undefined =>
-        aggregateCatalogItems(state.items).find((item) =>
+        state.items.find((item) =>
           item.slotCandidates.some(
             (candidate) => candidate.inventoryId === inventoryId,
           ),
@@ -136,11 +247,20 @@ export const useCatalogStore = defineStore("catalog", {
         aggregateCatalogItems(state.items).find(
           (item) => item.catalogKey === catalogKey,
         ),
+    saleableVariantItemFor:
+      (state) =>
+      (catalogKey: string, variantId: string): MachineCatalogItem | null =>
+        concreteSaleableItem(
+          state.items.filter((item) => item.catalogKey === catalogKey),
+          variantId,
+        ),
     saleableItemFor:
       (state) =>
       (selectedItem: MachineCatalogItem): MachineCatalogItem | null => {
         const candidates = state.items.filter(
-          (item) => item.catalogKey === selectedItem.catalogKey,
+          (item) =>
+            item.catalogKey === selectedItem.catalogKey &&
+            item.variantId === selectedItem.variantId,
         );
         return concreteSaleableItem(candidates);
       },

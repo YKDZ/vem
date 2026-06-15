@@ -181,6 +181,7 @@ pub fn build_router(ctx: IpcContext) -> Router {
         .route("/v1/payment-options", get(payment_options))
         .route("/v1/intents/create-order", post(create_order_intent))
         .route("/v1/intents/cancel-order", post(cancel_order_intent))
+        .route("/v1/intents/mock-payment", post(mock_payment_intent))
         .route(
             "/v1/intents/dev-submit-payment-code",
             post(dev_submit_payment_code_intent),
@@ -340,6 +341,13 @@ struct CreateOrder {
 #[serde(rename_all = "camelCase")]
 struct CancelOrder {
     order_no: String,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MockPayment {
+    order_no: String,
+    succeed: bool,
 }
 
 struct VerifiedCreateOrderLine {
@@ -1071,6 +1079,86 @@ async fn cancel_order_intent(
             )
             .await;
             cancel_order_error_response(&error).into_response()
+        }
+    }
+}
+
+async fn mock_payment_intent(
+    State(ctx): State<IpcContext>,
+    headers: HeaderMap,
+    Json(input): Json<MockPayment>,
+) -> impl IntoResponse {
+    if let Err((status, error)) = require_token(&headers, &ctx.token).await {
+        return (status, error).into_response();
+    }
+
+    let order_no = input.order_no.trim();
+    if order_no.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorMessage {
+                code: "mock_payment_failed",
+                message: "orderNo is required".to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    append_local_diagnostic_log(
+        &ctx,
+        "info",
+        "checkout",
+        "mock_payment_intent_received",
+        Some(serde_json::json!({
+            "orderNo": order_no,
+            "succeed": input.succeed,
+        })),
+    )
+    .await;
+
+    match ctx
+        .ui
+        .transaction
+        .mark_mock_payment(order_no, input.succeed)
+        .await
+    {
+        Ok(snapshot) => {
+            append_local_diagnostic_log(
+                &ctx,
+                "info",
+                "checkout",
+                "mock_payment_intent_succeeded",
+                Some(serde_json::json!({
+                    "orderNo": snapshot.order_no.as_deref(),
+                    "orderStatus": snapshot.order_status.as_deref(),
+                    "nextAction": snapshot.next_action.as_deref(),
+                })),
+            )
+            .await;
+            (StatusCode::OK, Json(snapshot)).into_response()
+        }
+        Err(error) => {
+            append_local_diagnostic_log(
+                &ctx,
+                "warn",
+                "checkout",
+                "mock_payment_intent_failed",
+                Some(serde_json::json!({
+                    "orderNo": order_no,
+                    "succeed": input.succeed,
+                    "code": "mock_payment_failed",
+                    "message": error,
+                })),
+            )
+            .await;
+            (
+                StatusCode::BAD_GATEWAY,
+                Json(ErrorMessage {
+                    code: "mock_payment_failed",
+                    message: error,
+                }),
+            )
+                .into_response()
         }
     }
 }

@@ -206,6 +206,37 @@ impl TransactionStateMachine {
         Ok(current)
     }
 
+    pub async fn mark_mock_payment(
+        &self,
+        order_no: &str,
+        succeed: bool,
+    ) -> Result<vending_core::domain::CurrentTransactionSnapshot, String> {
+        let machine_code = self
+            .machine_code
+            .as_deref()
+            .ok_or_else(|| "machine code is required".to_string())?;
+
+        self.backend.mark_mock_payment(order_no, succeed).await?;
+        let status_json = self
+            .backend
+            .get_order_status(machine_code, order_no)
+            .await?;
+        self.state
+            .apply_backend_order_status(order_no, status_json)
+            .await
+            .map_err(|error| error.to_string())?;
+
+        let current = self
+            .state
+            .current_transaction_snapshot()
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "current transaction missing after mock payment".to_string())?;
+
+        self.emit_transaction_changed(order_no, &current);
+        Ok(current)
+    }
+
     async fn refresh_platform_stock_after_order_refusal(&self, machine_code: &str) {
         let Ok(snapshot) = self.backend.get_stock_snapshot(machine_code).await else {
             return;
@@ -788,6 +819,115 @@ mod tests {
             .await
             .expect("count");
         assert_eq!(order_count.0, 1);
+    }
+
+    #[tokio::test]
+    async fn mark_mock_payment_refreshes_current_order_from_backend() {
+        let temp = tempfile::tempdir().expect("temp");
+        let state = crate::state::LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("state");
+        state
+            .upsert_order_session(OrderSessionUpsert {
+                order_no: "ORDER-MOCK",
+                payment_method: "mock",
+                payment_provider: Some("mock"),
+                items_json: json!([{ "slotCode": "B4", "quantity": 1 }]),
+                status: "pending_payment",
+                next_action: "wait_payment",
+                payment_attempt_json: None,
+                recovery_strategy: "local",
+                last_backend_status_json: Some(json!({
+                    "orderNo": "ORDER-MOCK",
+                    "machineCode": "M-1",
+                    "orderStatus": "pending_payment",
+                    "nextAction": "wait_payment",
+                    "payment": {
+                        "paymentNo": "PAY-MOCK",
+                        "method": "mock",
+                        "providerCode": "mock",
+                        "status": "pending",
+                        "paymentUrl": "http://example.test/mock",
+                        "expiresAt": "2026-06-10T00:05:00.000Z"
+                    }
+                })),
+                last_error: None,
+            })
+            .await
+            .expect("seed");
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/machine-auth/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "accessToken": "token-123"
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/machine-orders/ORDER-MOCK/mock-payment/succeed"))
+            .and(header("authorization", "Bearer token-123"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "paymentNo": "PAY-MOCK",
+                "status": "succeeded",
+                "orderId": "550e8400-e29b-41d4-a716-446655440000",
+                "alreadyHandled": false
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/machine-orders/ORDER-MOCK/status"))
+            .and(header("authorization", "Bearer token-123"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "orderNo": "ORDER-MOCK",
+                "machineCode": "M-1",
+                "orderStatus": "paid",
+                "nextAction": "dispensing",
+                "payment": {
+                    "paymentNo": "PAY-MOCK",
+                    "method": "mock",
+                    "providerCode": "mock",
+                    "status": "succeeded",
+                    "paymentUrl": "http://example.test/mock",
+                    "expiresAt": "2026-06-10T00:05:00.000Z"
+                },
+                "vending": {
+                    "commandNo": "CMD-MOCK",
+                    "status": "sent",
+                    "lastError": null
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let backend = Arc::new(BackendClient::new(server.uri()));
+        backend.authenticate("M-1", "S-1").await.expect("auth");
+        let (events_tx, mut events_rx) = broadcast::channel(8);
+        let machine = TransactionStateMachine::new(
+            state.clone(),
+            backend,
+            Some("M-1".to_string()),
+            events_tx,
+        );
+
+        let current = machine
+            .mark_mock_payment("ORDER-MOCK", true)
+            .await
+            .expect("mock payment");
+        assert_eq!(current.order_status.as_deref(), Some("paid"));
+        assert_eq!(current.next_action.as_deref(), Some("dispensing"));
+        assert_eq!(current.payment_status.as_deref(), Some("succeeded"));
+
+        let event = events_rx.recv().await.expect("event");
+        match event {
+            DaemonEvent::TransactionChanged {
+                order_no, status, ..
+            } => {
+                assert_eq!(order_no, "ORDER-MOCK");
+                assert_eq!(status, "dispensing");
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
     }
 
     #[tokio::test]

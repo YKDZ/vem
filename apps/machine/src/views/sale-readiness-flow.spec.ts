@@ -193,7 +193,10 @@ function makeCatalogItem(): MachineCatalogItem {
     targetGender: null,
   } as Omit<
     MachineCatalogItem,
-    "catalogKey" | "aggregatedSlotCount" | "slotCandidates"
+    | "catalogKey"
+    | "aggregatedSlotCount"
+    | "slotCandidates"
+    | "variantCandidates"
   >;
   const slotCandidates: readonly MachineCatalogSlotCandidate[] = [
     {
@@ -202,6 +205,11 @@ function makeCatalogItem(): MachineCatalogItem {
       layerNo: item.layerNo,
       cellNo: item.cellNo,
       inventoryId: item.inventoryId,
+      variantId: item.variantId,
+      sku: item.sku,
+      size: item.size,
+      color: item.color,
+      priceCents: item.priceCents,
       capacity: item.capacity,
       parLevel: item.parLevel,
       physicalStock: item.physicalStock,
@@ -211,9 +219,24 @@ function makeCatalogItem(): MachineCatalogItem {
   ];
   return {
     ...item,
-    catalogKey: `sku:${item.sku}`,
+    catalogKey: `product:${item.productId}`,
     aggregatedSlotCount: 1,
     slotCandidates,
+    variantCandidates: [
+      {
+        variantId: item.variantId,
+        sku: item.sku,
+        size: item.size,
+        color: item.color,
+        priceCents: item.priceCents,
+        capacity: item.capacity,
+        parLevel: item.parLevel,
+        physicalStock: item.physicalStock,
+        saleableStock: item.saleableStock,
+        slotSalesState: item.slotSalesState,
+        slotCandidates,
+      },
+    ],
   };
 }
 
@@ -546,7 +569,7 @@ describe("sale readiness UI flow", () => {
     expect(useCheckoutStore().selectedItem?.inventoryId).toBe(item.inventoryId);
     expect(routerPushMock).toHaveBeenCalledWith({
       name: "product-detail",
-      params: { inventoryId: item.inventoryId },
+      params: { catalogKey: item.catalogKey },
     });
   });
 

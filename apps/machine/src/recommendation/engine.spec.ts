@@ -41,7 +41,10 @@ function makeCatalogItem(
     ...override,
   } as Omit<
     MachineCatalogItem,
-    "catalogKey" | "aggregatedSlotCount" | "slotCandidates"
+    | "catalogKey"
+    | "aggregatedSlotCount"
+    | "slotCandidates"
+    | "variantCandidates"
   >;
   const slotCandidates: readonly MachineCatalogSlotCandidate[] =
     override?.slotCandidates ?? [
@@ -51,6 +54,11 @@ function makeCatalogItem(
         layerNo: item.layerNo,
         cellNo: item.cellNo,
         inventoryId: item.inventoryId,
+        variantId: item.variantId,
+        sku: item.sku,
+        size: item.size,
+        color: item.color,
+        priceCents: item.priceCents,
         capacity: item.capacity,
         parLevel: item.parLevel,
         physicalStock: item.physicalStock,
@@ -60,9 +68,24 @@ function makeCatalogItem(
     ];
   return {
     ...item,
-    catalogKey: override?.catalogKey ?? `sku:${item.sku}`,
+    catalogKey: override?.catalogKey ?? `product:${item.productId}`,
     aggregatedSlotCount: override?.aggregatedSlotCount ?? 1,
     slotCandidates,
+    variantCandidates: override?.variantCandidates ?? [
+      {
+        variantId: item.variantId,
+        sku: item.sku,
+        size: item.size,
+        color: item.color,
+        priceCents: item.priceCents,
+        capacity: item.capacity,
+        parLevel: item.parLevel,
+        physicalStock: item.physicalStock,
+        saleableStock: item.saleableStock,
+        slotSalesState: item.slotSalesState,
+        slotCandidates,
+      },
+    ],
   };
 }
 

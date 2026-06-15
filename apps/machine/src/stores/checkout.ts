@@ -281,10 +281,14 @@ function latestSaleViewItem(
 ): CheckoutSelectedItem | null {
   if (!selectedItem) return null;
   const catalogStore = useCatalogStore();
+  const saleableItem = catalogStore.saleableItemFor(selectedItem);
+  if (saleableItem) return saleableItem;
   return (
-    catalogStore.saleableItemFor(selectedItem) ??
-    catalogStore.itemByCatalogKey(selectedItem.catalogKey) ??
-    null
+    catalogStore.items.find(
+      (item) =>
+        item.catalogKey === selectedItem.catalogKey &&
+        item.variantId === selectedItem.variantId,
+    ) ?? null
   );
 }
 
