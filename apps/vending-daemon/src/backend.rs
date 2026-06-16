@@ -1,15 +1,28 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::config::MachineProvisioningProfile;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
+
+const BACKEND_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
+const BACKEND_REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
+const BACKEND_PAYMENT_REQUEST_TIMEOUT: Duration = Duration::from_secs(45);
 
 #[derive(Debug, Clone)]
 pub struct BackendClient {
     base_url: String,
     client: reqwest::Client,
     token: Arc<RwLock<Option<String>>>,
+    credentials: Arc<RwLock<Option<MachineCredentials>>>,
+    auth_lock: Arc<Mutex<()>>,
+}
+
+#[derive(Debug, Clone)]
+struct MachineCredentials {
+    machine_code: String,
+    machine_secret: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -65,14 +78,49 @@ pub struct StockMovementSaleSafetyBlocker {
     pub reason: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MachineStockSnapshot {
+    pub machine_code: String,
+    pub planogram_version: String,
+    pub slots: Vec<MachineStockSnapshotSlot>,
+    pub server_time: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MachineStockSnapshotSlot {
+    pub slot_id: String,
+    pub slot_code: String,
+    pub inventory_id: String,
+    pub capacity: i64,
+    pub on_hand_qty: i64,
+    pub reserved_qty: i64,
+    pub available_qty: i64,
+    #[serde(default)]
+    pub slot_sales_state: Option<String>,
+}
+
 impl BackendClient {
     pub fn new(base_url: impl Into<String>) -> Self {
         let base_url = base_url.into().trim_end_matches('/').to_string();
+        let client = reqwest::Client::builder()
+            .connect_timeout(BACKEND_CONNECT_TIMEOUT)
+            .timeout(BACKEND_REQUEST_TIMEOUT)
+            .build()
+            .expect("build backend HTTP client");
         Self {
             base_url,
-            client: reqwest::Client::new(),
+            client,
             token: Arc::new(RwLock::new(None)),
+            credentials: Arc::new(RwLock::new(None)),
+            auth_lock: Arc::new(Mutex::new(())),
         }
+    }
+
+    #[cfg(test)]
+    pub async fn set_access_token_for_tests(&self, token: impl Into<String>) {
+        *self.token.write().await = Some(token.into());
     }
 
     fn endpoint(&self, path: &str) -> String {
@@ -113,14 +161,62 @@ impl BackendClient {
         Err(format!("BACKEND_API_ERROR: {code} {message}"))
     }
 
-    async fn request_json(
+    fn api_error_from_payload(payload: &str) -> Option<String> {
+        let value: serde_json::Value = serde_json::from_str(payload).ok()?;
+        let object = value.as_object()?;
+        if !(object.contains_key("code")
+            && object.contains_key("message")
+            && object.contains_key("data"))
+        {
+            return None;
+        }
+        let code = object.get("code").and_then(|value| {
+            value
+                .as_i64()
+                .map(|value| value.to_string())
+                .or_else(|| value.as_u64().map(|value| value.to_string()))
+                .or_else(|| value.as_str().map(ToString::to_string))
+        })?;
+        if code == "0" {
+            return None;
+        }
+        let message = object
+            .get("message")
+            .and_then(|value| value.as_str())
+            .unwrap_or("backend returned non-zero code");
+        Some(format!("BACKEND_API_ERROR: {code} {message}"))
+    }
+
+    fn http_error(
+        status: reqwest::StatusCode,
+        payload: &str,
+        with_auth: bool,
+    ) -> BackendRequestError {
+        if with_auth && matches!(status.as_u16(), 401 | 403) {
+            return BackendRequestError::AuthFailed;
+        }
+        if let Some(message) = Self::api_error_from_payload(payload) {
+            return BackendRequestError::Other(message);
+        }
+        match status.as_u16() {
+            401 | 403 => BackendRequestError::AuthFailed,
+            502..=504 => BackendRequestError::Other("BACKEND_OFFLINE".to_string()),
+            _ => BackendRequestError::Other(format!("BACKEND_HTTP_ERROR: {status} {payload}")),
+        }
+    }
+
+    async fn request_json_once(
         &self,
         method: reqwest::Method,
         path: &str,
         body: Option<serde_json::Value>,
         with_auth: bool,
-    ) -> Result<serde_json::Value, String> {
-        let mut request = self.client.request(method, self.endpoint(path));
+        timeout: Duration,
+    ) -> Result<serde_json::Value, BackendRequestError> {
+        let mut request = self
+            .client
+            .request(method, self.endpoint(path))
+            .timeout(timeout);
         if with_auth {
             let token = self.token.read().await.clone();
             if let Some(token) = token {
@@ -130,29 +226,63 @@ impl BackendClient {
         if let Some(body) = body {
             request = request.json(&body);
         }
-        let response = request
-            .send()
-            .await
-            .map_err(|error| format!("backend request failed: {error}"))?;
+        let response = request.send().await.map_err(|error| {
+            BackendRequestError::Other(format!("backend request failed: {error}"))
+        })?;
         let status = response.status();
-        let payload = response
-            .text()
-            .await
-            .map_err(|error| format!("backend read response failed: {error}"))?;
+        let payload = response.text().await.map_err(|error| {
+            BackendRequestError::Other(format!("backend read response failed: {error}"))
+        })?;
 
         if !status.is_success() {
-            return Err(match status.as_u16() {
-                401 | 403 => "BACKEND_AUTH_FAILED".to_string(),
-                502..=504 => "BACKEND_OFFLINE".to_string(),
-                _ => format!("BACKEND_HTTP_ERROR: {status} {payload}"),
-            });
+            return Err(Self::http_error(status, &payload, with_auth));
         }
         if payload.is_empty() {
             return Ok(serde_json::Value::Null);
         }
-        let value = serde_json::from_str(&payload)
-            .map_err(|error| format!("backend json parse failed: {error}"))?;
-        Self::unwrap_api_response(value)
+        let value = serde_json::from_str(&payload).map_err(|error| {
+            BackendRequestError::Other(format!("backend json parse failed: {error}"))
+        })?;
+        Self::unwrap_api_response(value).map_err(BackendRequestError::Other)
+    }
+
+    async fn request_json(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<serde_json::Value>,
+        with_auth: bool,
+    ) -> Result<serde_json::Value, String> {
+        self.request_json_with_timeout(method, path, body, with_auth, BACKEND_REQUEST_TIMEOUT)
+            .await
+    }
+
+    async fn request_json_with_timeout(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<serde_json::Value>,
+        with_auth: bool,
+        timeout: Duration,
+    ) -> Result<serde_json::Value, String> {
+        if with_auth {
+            self.ensure_authenticated().await?;
+        }
+
+        match self
+            .request_json_once(method.clone(), path, body.clone(), with_auth, timeout)
+            .await
+        {
+            Ok(value) => Ok(value),
+            Err(BackendRequestError::AuthFailed) if with_auth => {
+                self.clear_token().await;
+                self.refresh_auth_token().await?;
+                self.request_json_once(method, path, body, with_auth, timeout)
+                    .await
+                    .map_err(BackendRequestError::into_string)
+            }
+            Err(error) => Err(error.into_string()),
+        }
     }
 
     pub async fn request_json_typed<T>(
@@ -175,18 +305,43 @@ impl BackendClient {
         machine_code: &str,
         machine_secret: &str,
     ) -> Result<(), String> {
+        *self.credentials.write().await = Some(MachineCredentials {
+            machine_code: machine_code.to_string(),
+            machine_secret: machine_secret.to_string(),
+        });
+        self.refresh_auth_token().await
+    }
+
+    async fn clear_token(&self) {
+        *self.token.write().await = None;
+    }
+
+    async fn ensure_authenticated(&self) -> Result<(), String> {
+        if self.token.read().await.is_some() {
+            return Ok(());
+        }
+        self.refresh_auth_token().await
+    }
+
+    async fn refresh_auth_token(&self) -> Result<(), String> {
+        let _guard = self.auth_lock.lock().await;
+        let Some(credentials) = self.credentials.read().await.clone() else {
+            return Err("BACKEND_AUTH_NOT_CONFIGURED".to_string());
+        };
         let body = serde_json::json!({
-            "machineCode": machine_code,
-            "machineSecret": machine_secret,
+            "machineCode": credentials.machine_code,
+            "machineSecret": credentials.machine_secret,
         });
         let value = self
-            .request_json(
+            .request_json_once(
                 reqwest::Method::POST,
                 "/machine-auth/token",
                 Some(body),
                 false,
+                BACKEND_REQUEST_TIMEOUT,
             )
-            .await?;
+            .await
+            .map_err(BackendRequestError::into_string)?;
         let access_token = value
             .get("accessToken")
             .or_else(|| value.get("access_token"))
@@ -220,6 +375,9 @@ impl BackendClient {
             .map_err(|error| format!("backend read response failed: {error}"))?;
 
         if !status.is_success() {
+            if let Some(message) = Self::api_error_from_payload(&payload) {
+                return Err(message);
+            }
             return Err(match status.as_u16() {
                 502..=504 => "BACKEND_OFFLINE".to_string(),
                 _ => format!("BACKEND_HTTP_ERROR: {status} {payload}"),
@@ -250,8 +408,14 @@ impl BackendClient {
             "paymentProviderCode": payment_provider_code,
             "profileSnapshot": profile_snapshot,
         });
-        self.request_json(reqwest::Method::POST, "/machine-orders", Some(body), true)
-            .await
+        self.request_json_with_timeout(
+            reqwest::Method::POST,
+            "/machine-orders",
+            Some(body),
+            true,
+            BACKEND_PAYMENT_REQUEST_TIMEOUT,
+        )
+        .await
     }
 
     pub async fn get_order_status(
@@ -259,7 +423,21 @@ impl BackendClient {
         machine_code: &str,
         order_no: &str,
     ) -> Result<serde_json::Value, String> {
-        let url = format!("/machine-orders/{order_no}/status");
+        let url = reqwest::Url::parse("http://localhost")
+            .map(|mut url| {
+                url.set_path(&format!("/machine-orders/{order_no}/status"));
+                url.query_pairs_mut()
+                    .append_pair("machineCode", machine_code);
+                url
+            })
+            .map(|url| {
+                let path = url.path();
+                match url.query() {
+                    Some(query) => format!("{path}?{query}"),
+                    None => path.to_string(),
+                }
+            })
+            .map_err(|error| format!("build status url failed: {error}"))?;
         let value: serde_json::Value = self
             .request_json(reqwest::Method::GET, &url, None, true)
             .await?;
@@ -272,6 +450,23 @@ impl BackendClient {
             }
         }
         Ok(value)
+    }
+
+    pub async fn cancel_order(
+        &self,
+        machine_code: &str,
+        order_no: &str,
+    ) -> Result<serde_json::Value, String> {
+        let url = format!("/machine-orders/{order_no}/cancel");
+        let body = serde_json::json!({ "machineCode": machine_code });
+        self.request_json_with_timeout(
+            reqwest::Method::POST,
+            &url,
+            Some(body),
+            true,
+            BACKEND_PAYMENT_REQUEST_TIMEOUT,
+        )
+        .await
     }
 
     pub async fn submit_payment_code(
@@ -291,8 +486,14 @@ impl BackendClient {
             "source": source,
             "scannerHealth": scanner_health,
         });
-        self.request_json(reqwest::Method::POST, &url, Some(body), true)
-            .await
+        self.request_json_with_timeout(
+            reqwest::Method::POST,
+            &url,
+            Some(body),
+            true,
+            BACKEND_PAYMENT_REQUEST_TIMEOUT,
+        )
+        .await
     }
 
     pub async fn list_pending_remote_ops(&self) -> Result<Vec<RemoteOp>, String> {
@@ -348,6 +549,15 @@ impl BackendClient {
             .await
     }
 
+    pub async fn get_stock_snapshot(
+        &self,
+        machine_code: &str,
+    ) -> Result<MachineStockSnapshot, String> {
+        let url = format!("/machines/{machine_code}/stock-snapshot");
+        self.request_json_typed(reqwest::Method::GET, &url, None, true)
+            .await
+    }
+
     pub async fn acknowledge_planogram(
         &self,
         machine_code: &str,
@@ -393,10 +603,29 @@ impl BackendClient {
     }
 }
 
+enum BackendRequestError {
+    AuthFailed,
+    Other(String),
+}
+
+impl BackendRequestError {
+    fn into_string(self) -> String {
+        match self {
+            Self::AuthFailed => "BACKEND_AUTH_FAILED".to_string(),
+            Self::Other(message) => message,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wiremock::matchers::{body_partial_json, header, method, path};
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+    use wiremock::matchers::{body_partial_json, header, method, path, query_param};
+    use wiremock::Request;
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[tokio::test]
@@ -512,6 +741,223 @@ mod tests {
         client.authenticate("M-1", "S-1").await.expect("auth");
         let response = client.get_payment_options().await.expect("payment options");
         assert_eq!(response["options"].as_array().expect("array").len(), 0);
+    }
+
+    #[tokio::test]
+    async fn backend_preserves_service_api_error_envelope_on_502() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/machine-auth/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "accessToken": "token-123",
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/machine-orders/payment-options"))
+            .and(header("authorization", "Bearer token-123"))
+            .respond_with(ResponseTemplate::new(502).set_body_json(serde_json::json!({
+                "code": 502,
+                "message": "支付宝支付通道暂不可用，请稍后重试",
+                "data": null
+            })))
+            .mount(&server)
+            .await;
+
+        let client = BackendClient::new(server.uri());
+        client.authenticate("M-1", "S-1").await.expect("auth");
+        let error = client
+            .get_payment_options()
+            .await
+            .expect_err("service api error envelope should be preserved");
+
+        assert_eq!(
+            error,
+            "BACKEND_API_ERROR: 502 支付宝支付通道暂不可用，请稍后重试"
+        );
+    }
+
+    #[tokio::test]
+    async fn backend_reauthenticates_and_retries_when_machine_token_expires() {
+        let server = MockServer::start().await;
+        let auth_calls = Arc::new(AtomicUsize::new(0));
+        let auth_calls_for_mock = auth_calls.clone();
+        Mock::given(method("POST"))
+            .and(path("/machine-auth/token"))
+            .and(body_partial_json(serde_json::json!({
+                "machineCode": "M-1",
+                "machineSecret": "S-1",
+            })))
+            .respond_with(move |_request: &Request| {
+                let call = auth_calls_for_mock.fetch_add(1, Ordering::SeqCst);
+                let token = if call == 0 {
+                    "expired-token"
+                } else {
+                    "fresh-token"
+                };
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "accessToken": token,
+                }))
+            })
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/machine-orders/payment-options"))
+            .and(header("authorization", "Bearer expired-token"))
+            .respond_with(ResponseTemplate::new(401))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/machine-orders/payment-options"))
+            .and(header("authorization", "Bearer fresh-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "options": [{"optionKey": "payment_code:alipay"}],
+            })))
+            .mount(&server)
+            .await;
+
+        let client = BackendClient::new(server.uri());
+        client
+            .authenticate("M-1", "S-1")
+            .await
+            .expect("initial auth");
+
+        let response = client.get_payment_options().await.expect("payment options");
+
+        assert_eq!(response["options"][0]["optionKey"], "payment_code:alipay");
+        assert_eq!(auth_calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn backend_reauthenticates_when_service_api_wraps_invalid_token_in_error_envelope() {
+        let server = MockServer::start().await;
+        let auth_calls = Arc::new(AtomicUsize::new(0));
+        let auth_calls_for_mock = auth_calls.clone();
+        Mock::given(method("POST"))
+            .and(path("/machine-auth/token"))
+            .and(body_partial_json(serde_json::json!({
+                "machineCode": "M-1",
+                "machineSecret": "S-1",
+            })))
+            .respond_with(move |_request: &Request| {
+                let call = auth_calls_for_mock.fetch_add(1, Ordering::SeqCst);
+                let token = if call == 0 {
+                    "expired-token"
+                } else {
+                    "fresh-token"
+                };
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "accessToken": token,
+                }))
+            })
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/machine-orders/payment-options"))
+            .and(header("authorization", "Bearer expired-token"))
+            .respond_with(ResponseTemplate::new(401).set_body_json(serde_json::json!({
+                "code": 401,
+                "message": "Invalid machine token",
+                "data": null
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/machine-orders/payment-options"))
+            .and(header("authorization", "Bearer fresh-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "options": [{"optionKey": "payment_code:alipay"}],
+            })))
+            .mount(&server)
+            .await;
+
+        let client = BackendClient::new(server.uri());
+        client
+            .authenticate("M-1", "S-1")
+            .await
+            .expect("initial auth");
+
+        let response = client.get_payment_options().await.expect("payment options");
+
+        assert_eq!(response["options"][0]["optionKey"], "payment_code:alipay");
+        assert_eq!(auth_calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn backend_uses_stored_machine_credentials_after_initial_auth_failure() {
+        let server = MockServer::start().await;
+        let auth_calls = Arc::new(AtomicUsize::new(0));
+        let auth_calls_for_mock = auth_calls.clone();
+        Mock::given(method("POST"))
+            .and(path("/machine-auth/token"))
+            .and(body_partial_json(serde_json::json!({
+                "machineCode": "M-1",
+                "machineSecret": "S-1",
+            })))
+            .respond_with(move |_request: &Request| {
+                let call = auth_calls_for_mock.fetch_add(1, Ordering::SeqCst);
+                if call == 0 {
+                    ResponseTemplate::new(503)
+                } else {
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                        "accessToken": "token-after-recovery",
+                    }))
+                }
+            })
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/machine-orders/payment-options"))
+            .and(header("authorization", "Bearer token-after-recovery"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "options": [{"optionKey": "payment_code:alipay"}],
+            })))
+            .mount(&server)
+            .await;
+
+        let client = BackendClient::new(server.uri());
+        let initial_error = client
+            .authenticate("M-1", "S-1")
+            .await
+            .expect_err("initial auth should surface outage");
+        assert_eq!(initial_error, "BACKEND_OFFLINE");
+
+        let response = client.get_payment_options().await.expect("payment options");
+
+        assert_eq!(response["options"][0]["optionKey"], "payment_code:alipay");
+        assert_eq!(auth_calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn backend_get_order_status_sends_machine_code_query() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/machine-auth/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "accessToken": "token-123",
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/machine-orders/ORDER-1/status"))
+            .and(query_param("machineCode", "M-1"))
+            .and(header("authorization", "Bearer token-123"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "orderNo": "ORDER-1",
+                "machineCode": "M-1",
+                "orderStatus": "fulfilled",
+                "nextAction": "complete"
+            })))
+            .mount(&server)
+            .await;
+
+        let client = BackendClient::new(server.uri());
+        client.authenticate("M-1", "S-1").await.expect("auth");
+        let response = client
+            .get_order_status("M-1", "ORDER-1")
+            .await
+            .expect("status");
+        assert_eq!(response["orderStatus"], "fulfilled");
     }
 
     #[tokio::test]

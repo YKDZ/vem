@@ -105,7 +105,12 @@ describe("MachinesService", () => {
             orderBy: () => ({
               limit: async () => [
                 {
+                  reportedAt: new Date("2026-05-05T12:00:05.000Z"),
                   statusPayloadJson: {
+                    network: "online",
+                    mqttConnected: true,
+                    hardwareStatus: "ok",
+                    localQueueSize: 0,
                     environment: {
                       temperatureCelsius: 24,
                       humidityRh: 53,
@@ -135,6 +140,12 @@ describe("MachinesService", () => {
 
     expect(result.items[0]).toEqual(
       expect.objectContaining({
+        latestHeartbeatReportedAt: new Date("2026-05-05T12:00:05.000Z"),
+        latestHeartbeatStatus: expect.objectContaining({
+          network: "online",
+          mqttConnected: true,
+          hardwareStatus: "ok",
+        }),
         latestEnvironment: expect.objectContaining({
           temperatureCelsius: 24,
           sensorStatus: "ok",
@@ -166,7 +177,12 @@ describe("MachinesService", () => {
             orderBy: () => ({
               limit: async () => [
                 {
+                  reportedAt: new Date("2026-05-05T12:00:05.000Z"),
                   statusPayloadJson: {
+                    network: "online",
+                    mqttConnected: true,
+                    hardwareStatus: "ok",
+                    localQueueSize: 0,
                     environment: {
                       temperatureCelsius: 24,
                       humidityRh: 53,
@@ -202,6 +218,16 @@ describe("MachinesService", () => {
 
     const result = await service.getMachine("machine-1");
 
+    expect(result.latestHeartbeatReportedAt).toEqual(
+      new Date("2026-05-05T12:00:05.000Z"),
+    );
+    expect(result.latestHeartbeatStatus).toEqual(
+      expect.objectContaining({
+        network: "online",
+        mqttConnected: true,
+        hardwareStatus: "ok",
+      }),
+    );
     expect(result.latestEnvironment).toEqual({
       temperatureCelsius: 24,
       humidityRh: 53,
@@ -800,6 +826,75 @@ describe("MachinesService planogram lifecycle", () => {
       status: "active",
     });
     expect(tx.update).not.toHaveBeenCalled();
+  });
+
+  it("returns all active planogram slots in the machine stock snapshot", async () => {
+    mockDb.select.mockReturnValueOnce({
+      from: () => ({
+        innerJoin: () => ({
+          innerJoin: () => ({
+            innerJoin: () => ({
+              innerJoin: () => ({
+                where: () => ({
+                  orderBy: async () => [
+                    {
+                      machineCode: "M001",
+                      planogramVersion: "PLAN-1",
+                      slotId: "slot-1",
+                      slotCode: "A1",
+                      inventoryId: "inv-1",
+                      capacity: 10,
+                      slotStatus: "enabled",
+                      onHandQty: 10,
+                      reservedQty: 0,
+                      availableQty: 10,
+                    },
+                    {
+                      machineCode: "M001",
+                      planogramVersion: "PLAN-1",
+                      slotId: "slot-2",
+                      slotCode: "A2",
+                      inventoryId: "inv-2",
+                      capacity: 10,
+                      slotStatus: "faulted",
+                      onHandQty: 5,
+                      reservedQty: 0,
+                      availableQty: 0,
+                    },
+                  ],
+                }),
+              }),
+            }),
+          }),
+        }),
+      }),
+    });
+
+    const result = await service.getStockSnapshotByMachineCode("M001");
+
+    expect(result).toMatchObject({
+      machineCode: "M001",
+      planogramVersion: "PLAN-1",
+      slots: [
+        {
+          slotId: "slot-1",
+          slotCode: "A1",
+          inventoryId: "inv-1",
+          onHandQty: 10,
+          availableQty: 10,
+          slotSalesState: "sale_ready",
+        },
+        {
+          slotId: "slot-2",
+          slotCode: "A2",
+          inventoryId: "inv-2",
+          onHandQty: 5,
+          availableQty: 0,
+          slotSalesState: "frozen",
+        },
+      ],
+      serverTime: expect.any(String),
+    });
   });
 
   it("rejects ack for a machine planogram version that is not published or active", async () => {

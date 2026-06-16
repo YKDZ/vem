@@ -3,15 +3,19 @@ import { get, post } from "./request";
 export type Inventory = {
   id: string;
   machineId: string;
+  machineCode?: string;
   slotId: string;
   variantId: string;
   onHandQty: number;
   reservedQty: number;
+  availableQty?: number;
   lowStockThreshold: number;
   machineName?: string;
   slotCode?: string;
   sku?: string;
   productName?: string;
+  createdAt?: string;
+  updatedAt?: string;
 };
 
 export type InventoryMovement = {

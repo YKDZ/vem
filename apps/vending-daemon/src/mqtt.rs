@@ -14,11 +14,14 @@ use crate::{
 use vending_core::{
     environment::EnvironmentHeartbeatCache,
     hardware::{
-        DispenseCommandPayload, EnvironmentControlCommandPayload, EnvironmentControlResultPayload,
+        DispenseCommandPayload, DispenseProgressObserver, EnvironmentControlCommandPayload,
+        EnvironmentControlResultPayload,
     },
     mqtt::sign_envelope,
     serial::EnvironmentSample,
 };
+
+const DISPENSE_LOCAL_TIMEOUT_GRACE_SECONDS: u64 = 15;
 
 #[derive(Debug, Clone)]
 pub struct OutboxFlushResult {
@@ -149,7 +152,7 @@ impl MqttSyncRuntime {
 
         if let Some(existing) = self.state.get_command(&command.command_no).await? {
             if existing.result_payload.is_some() {
-                let ack = crate::state::store::OutboxInput::dispense_result(
+                let mut ack = crate::state::store::OutboxInput::dispense_result(
                     &self.machine_code,
                     &existing.result_payload.unwrap_or_else(|| {
                         vending_core::hardware::DispenseResultPayload {
@@ -161,6 +164,10 @@ impl MqttSyncRuntime {
                         }
                     }),
                 );
+                ack.payload_json = self.sign_outbox_payload(
+                    format!("result:{}", command.command_no),
+                    ack.payload_json,
+                )?;
                 self.state
                     .enqueue_outbox(&ack)
                     .await
@@ -169,15 +176,23 @@ impl MqttSyncRuntime {
                     command_no: command.command_no,
                 });
             }
-            if existing.status == vending_core::domain::CommandLogStatus::Dispensing {
+            if matches!(
+                existing.status,
+                vending_core::domain::CommandLogStatus::Acknowledged
+                    | vending_core::domain::CommandLogStatus::Dispensing
+            ) {
                 return Ok(CommandHandlingResult::ActiveDuplicate {
                     command_no: command.command_no,
                 });
             }
         }
 
-        let ack_event =
+        let mut ack_event =
             crate::state::store::OutboxInput::command_ack(&self.machine_code, &command.command_no);
+        ack_event.payload_json = self.sign_outbox_payload(
+            format!("ack:{}", command.command_no),
+            ack_event.payload_json,
+        )?;
         self.state
             .record_command_ack_tx(&command, &ack_event)
             .await
@@ -188,33 +203,85 @@ impl MqttSyncRuntime {
             .await
             .map_err(|error| error.to_string())?;
 
-        let local_timeout = Duration::from_secs(command.timeout_seconds.max(1));
+        let local_timeout = Duration::from_secs(
+            command
+                .timeout_seconds
+                .max(1)
+                .saturating_add(DISPENSE_LOCAL_TIMEOUT_GRACE_SECONDS),
+        );
+        let progress_state = self.state.clone();
+        let progress_events = self.events.clone();
+        let progress: DispenseProgressObserver = Arc::new(move |event| {
+            let state = progress_state.clone();
+            let events = progress_events.clone();
+            tokio::spawn(async move {
+                let order_no = event.order_no.clone();
+                if state.record_dispense_progress(&event).await.is_ok() {
+                    let _ = events.send(DaemonEvent::TransactionChanged {
+                        event_id: Uuid::new_v4().simple().to_string(),
+                        updated_at: crate::state::store::now_iso(),
+                        order_no,
+                        status: "dispensing".to_string(),
+                    });
+                }
+            });
+        });
         let result = match tokio::time::timeout(
             local_timeout,
-            self.hardware.dispense(command.clone()),
+            self.hardware
+                .dispense_with_progress(command.clone(), Some(progress)),
         )
         .await
         {
             Ok(result) => result,
-            Err(_) => {
-                self.state
-                    .block_slot_for_dispense_result_unknown(&command)
-                    .await
-                    .map_err(|error| error.to_string())?;
-                return Ok(CommandHandlingResult::Processed {
-                    command_no: command.command_no,
-                });
-            }
+            Err(_) => vending_core::hardware::DispenseResultPayload {
+                command_no: command.command_no.clone(),
+                success: false,
+                error_code: Some("MOTOR_TIMEOUT".to_string()),
+                message: format!(
+                    "dispense command timed out after {} seconds",
+                    local_timeout.as_secs()
+                ),
+                reported_at: crate::state::store::now_iso(),
+            },
         };
-        let result_event =
+        let mut result_event =
             crate::state::store::OutboxInput::dispense_result(&self.machine_code, &result);
-        self.state
+        result_event.payload_json = self.sign_outbox_payload(
+            format!("result:{}", command.command_no),
+            result_event.payload_json,
+        )?;
+        let result_recorded = self
+            .state
             .record_command_result_and_enqueue_tx(&command, &result, &result_event)
             .await
             .map_err(|error| error.to_string())?;
-        if !result.success {
+        self.state
+            .apply_dispense_result_to_order_session(&command, &result)
+            .await
+            .map_err(|error| error.to_string())?;
+        let _ = self.events.send(DaemonEvent::TransactionChanged {
+            event_id: Uuid::new_v4().simple().to_string(),
+            updated_at: crate::state::store::now_iso(),
+            order_no: command.order_no.clone(),
+            status: if result.success {
+                "success".to_string()
+            } else {
+                "dispense_failed".to_string()
+            },
+        });
+        if result_recorded && result.success {
             self.state
-                .block_slot_for_dispense_failure(&command, result.error_code.as_deref())
+                .apply_dispense_success_to_local_stock(&command)
+                .await
+                .map_err(|error| error.to_string())?;
+        } else if !result.success {
+            self.state
+                .block_slot_for_dispense_failure(
+                    &command,
+                    result.error_code.as_deref(),
+                    Some(result.message.as_str()),
+                )
                 .await
                 .map_err(|error| error.to_string())?;
         }
@@ -358,7 +425,12 @@ impl MqttSyncRuntime {
                     .map_err(|error| format!("serialize environment heartbeat failed: {error}"))?,
             },
         });
-        let heartbeat = crate::state::store::OutboxInput::heartbeat(&self.machine_code, payload);
+        let mut heartbeat =
+            crate::state::store::OutboxInput::heartbeat(&self.machine_code, payload);
+        heartbeat.payload_json = self.sign_outbox_payload(
+            format!("heartbeat:{}", Uuid::new_v4()),
+            heartbeat.payload_json,
+        )?;
         self.state
             .enqueue_outbox(&heartbeat)
             .await
@@ -654,6 +726,10 @@ mod tests {
         }
 
         async fn dispense(&self, cmd: DispenseCommandPayload) -> DispenseResultPayload {
+            self.operations
+                .lock()
+                .await
+                .push(format!("dispense:{}", cmd.command_no));
             if self.hang_dispense {
                 tokio::time::sleep(Duration::from_secs(60)).await;
             }
@@ -700,8 +776,8 @@ mod tests {
             .expect("planogram");
     }
 
-    fn signed_dispense_command(command_no: &str, timeout_seconds: u64) -> String {
-        let command = DispenseCommandPayload {
+    fn dispense_command_payload(command_no: &str, timeout_seconds: u64) -> DispenseCommandPayload {
+        DispenseCommandPayload {
             command_no: command_no.to_string(),
             order_no: "ORD-MQTT".to_string(),
             slot: vending_core::hardware::SlotPayload {
@@ -711,7 +787,11 @@ mod tests {
             },
             quantity: 1,
             timeout_seconds,
-        };
+        }
+    }
+
+    fn signed_dispense_command(command_no: &str, timeout_seconds: u64) -> String {
+        let command = dispense_command_payload(command_no, timeout_seconds);
         let envelope = sign_envelope(
             "M1",
             "secret",
@@ -719,6 +799,51 @@ mod tests {
             serde_json::to_value(&command).expect("payload"),
         );
         serde_json::to_string(&envelope).expect("envelope")
+    }
+
+    #[tokio::test]
+    async fn duplicate_acknowledged_dispense_command_does_not_call_hardware_again() {
+        let temp = tempfile::tempdir().expect("temp");
+        let state = crate::state::LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("state");
+        seed_single_slot_planogram(&state).await;
+
+        let command = dispense_command_payload("CMD-DUP-ACK", 5);
+        let ack_event = crate::state::store::OutboxInput::command_ack("M1", &command.command_no);
+        state
+            .record_command_ack_tx(&command, &ack_event)
+            .await
+            .expect("acknowledged command");
+
+        let adapter = Arc::new(RecordingEnvironmentAdapter::default());
+        let hardware = crate::hardware::HardwareSupervisor::from_adapter(adapter.clone());
+        let (event_tx, _rx) = tokio::sync::broadcast::channel(4);
+        let runtime = MqttSyncRuntime::new(
+            "M1".to_string(),
+            "secret".to_string(),
+            state,
+            hardware,
+            event_tx,
+            CancellationToken::new(),
+        );
+
+        let result = runtime
+            .handle_dispense_command(&signed_dispense_command("CMD-DUP-ACK", 5))
+            .await
+            .expect("handle duplicate");
+
+        assert!(matches!(
+            result,
+            CommandHandlingResult::ActiveDuplicate { command_no } if command_no == "CMD-DUP-ACK"
+        ));
+        let operations = adapter.operations.lock().await.clone();
+        assert!(
+            !operations
+                .iter()
+                .any(|operation| operation == "dispense:CMD-DUP-ACK"),
+            "duplicate command should not call hardware: {operations:?}"
+        );
     }
 
     fn signed_environment_command(
@@ -826,9 +951,14 @@ mod tests {
             .await
             .expect("outbox");
         assert_eq!(due.len(), 1);
-        let environment = &due[0].payload_json["statusPayload"]["environment"];
-        assert_eq!(due[0].payload_json["machineCode"], "M1");
-        assert_eq!(due[0].payload_json["statusPayload"]["hardwareStatus"], "ok");
+        let envelope: vending_core::mqtt::MqttEnvelope =
+            serde_json::from_value(due[0].payload_json.clone()).expect("envelope");
+        vending_core::mqtt::verify_envelope(&envelope, "M1", "secret", 300)
+            .expect("valid signed heartbeat");
+        let payload = &envelope.payload;
+        let environment = &payload["statusPayload"]["environment"];
+        assert_eq!(payload["machineCode"], "M1");
+        assert_eq!(payload["statusPayload"]["hardwareStatus"], "ok");
         assert_eq!(environment["temperatureCelsius"], 24);
         assert_eq!(environment["humidityRh"], 53);
         assert_eq!(environment["sampledAt"], "2026-05-05T12:00:00.000Z");
@@ -998,7 +1128,7 @@ mod tests {
             .iter()
             .find(|event| event.topic.as_deref() == Some("vem/machines/M1/events/heartbeat"))
             .expect("heartbeat");
-        let environment = &heartbeat.payload_json["statusPayload"]["environment"];
+        let environment = &heartbeat.payload_json["payload"]["statusPayload"]["environment"];
         assert_eq!(environment["airConditionerOn"], false);
         assert!(environment["targetTemperatureCelsius"].is_null());
     }
@@ -1039,7 +1169,7 @@ mod tests {
             .iter()
             .find(|event| event.topic.as_deref() == Some("vem/machines/M1/events/heartbeat"))
             .expect("heartbeat");
-        let environment = &heartbeat.payload_json["statusPayload"]["environment"];
+        let environment = &heartbeat.payload_json["payload"]["statusPayload"]["environment"];
         assert_eq!(environment["airConditionerOn"], true);
         assert_eq!(environment["targetTemperatureCelsius"], 24);
 
@@ -1066,13 +1196,109 @@ mod tests {
             .rev()
             .find(|event| event.topic.as_deref() == Some("vem/machines/M1/events/heartbeat"))
             .expect("latest heartbeat");
-        let restarted_environment = &latest_heartbeat.payload_json["statusPayload"]["environment"];
+        let restarted_environment =
+            &latest_heartbeat.payload_json["payload"]["statusPayload"]["environment"];
         assert_eq!(restarted_environment["airConditionerOn"], false);
         assert!(restarted_environment["targetTemperatureCelsius"].is_null());
     }
 
     #[tokio::test]
-    async fn hung_dispense_command_freezes_local_sale_view_without_final_result() {
+    async fn mqtt_dispense_success_updates_current_transaction_to_success() {
+        let temp = tempfile::tempdir().expect("temp");
+        let state = crate::state::LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("state");
+        state
+            .upsert_order_session(crate::state::store::OrderSessionUpsert {
+                order_no: "ORD-MQTT",
+                payment_method: "payment_code",
+                payment_provider: Some("alipay"),
+                items_json: serde_json::json!([{ "name": "water", "slotCode": "A1" }]),
+                status: "dispensing",
+                next_action: "dispensing",
+                payment_attempt_json: Some(serde_json::json!({
+                    "attemptNo": 1,
+                    "status": "succeeded",
+                    "maskedAuthCode": "2840****3066",
+                    "source": "serial_text",
+                    "idempotencyKey": "ORD-MQTT:one",
+                    "submittedAt": "2026-06-10T04:10:17.000Z",
+                    "lastCheckedAt": "2026-06-10T04:10:20.000Z",
+                    "canRetry": false,
+                    "message": "支付成功"
+                })),
+                recovery_strategy: "local",
+                last_backend_status_json: Some(serde_json::json!({
+                    "orderId": "order-id",
+                    "orderNo": "ORD-MQTT",
+                    "orderStatus": "dispensing",
+                    "fulfillmentState": "dispensing",
+                    "totalAmountCents": 1,
+                    "nextAction": "dispensing",
+                    "payment": {
+                        "paymentNo": "PAY-MQTT",
+                        "method": "payment_code",
+                        "providerCode": "alipay",
+                        "paymentUrl": null,
+                        "status": "succeeded",
+                        "expiresAt": "2026-06-10T04:16:26.596Z"
+                    },
+                    "vending": {
+                        "commandNo": "CMD-SUCCESS",
+                        "status": "sent",
+                        "lastError": null
+                    }
+                })),
+                last_error: None,
+            })
+            .await
+            .expect("active order session");
+
+        let hardware = crate::hardware::HardwareSupervisor::from_adapter(Arc::new(
+            RecordingEnvironmentAdapter::default(),
+        ));
+        let (event_tx, mut rx) = tokio::sync::broadcast::channel(4);
+        let runtime = MqttSyncRuntime::new(
+            "M1".to_string(),
+            "secret".to_string(),
+            state.clone(),
+            hardware,
+            event_tx,
+            CancellationToken::new(),
+        );
+
+        runtime
+            .handle_dispense_command(&signed_dispense_command("CMD-SUCCESS", 5))
+            .await
+            .expect("handle command");
+
+        let snapshot = state
+            .current_transaction_snapshot()
+            .await
+            .expect("snapshot")
+            .expect("current transaction");
+        assert_eq!(snapshot.order_no.as_deref(), Some("ORD-MQTT"));
+        assert_eq!(snapshot.order_status.as_deref(), Some("fulfilled"));
+        assert_eq!(snapshot.next_action.as_deref(), Some("success"));
+        let vending = snapshot.vending.expect("vending summary");
+        assert_eq!(vending.command_no.as_deref(), Some("CMD-SUCCESS"));
+        assert_eq!(vending.status.as_deref(), Some("succeeded"));
+        assert_eq!(vending.last_error.as_deref(), None);
+
+        let event = rx.recv().await.expect("transaction event");
+        match event {
+            DaemonEvent::TransactionChanged {
+                order_no, status, ..
+            } => {
+                assert_eq!(order_no, "ORD-MQTT");
+                assert_eq!(status, "success");
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn hung_dispense_command_records_timeout_result_and_locks_machine() {
         let temp = tempfile::tempdir().expect("temp");
         let state = crate::state::LocalStateStore::open(&temp.path().join("state.db"))
             .await
@@ -1085,7 +1311,7 @@ mod tests {
                 ..RecordingEnvironmentAdapter::default()
             },
         ));
-        let (event_tx, _rx) = tokio::sync::broadcast::channel(4);
+        let (event_tx, mut rx) = tokio::sync::broadcast::channel(4);
         let runtime = MqttSyncRuntime::new(
             "M1".to_string(),
             "secret".to_string(),
@@ -1113,9 +1339,11 @@ mod tests {
             .expect("command");
         assert_eq!(
             command.status,
-            vending_core::domain::CommandLogStatus::Dispensing
+            vending_core::domain::CommandLogStatus::Failed
         );
-        assert!(command.result_payload.is_none());
+        let result = command.result_payload.expect("timeout result");
+        assert!(!result.success);
+        assert_eq!(result.error_code.as_deref(), Some("MOTOR_TIMEOUT"));
 
         let due = state
             .list_due_outbox(chrono::Utc::now() + chrono::Duration::seconds(1))
@@ -1124,9 +1352,28 @@ mod tests {
         assert!(due.iter().any(|event| {
             event.topic.as_deref() == Some("vem/machines/M1/commands/CMD-HUNG/ack")
         }));
-        assert!(!due.iter().any(|event| {
+        assert!(due.iter().any(|event| {
             event.topic.as_deref() == Some("vem/machines/M1/events/dispense-result")
         }));
+
+        let lock = state
+            .whole_machine_maintenance_lock()
+            .await
+            .expect("lock lookup")
+            .expect("whole machine lock");
+        assert_eq!(lock.code, "WHOLE_MACHINE_HARDWARE_FAULT");
+        assert_eq!(lock.command_no, "CMD-HUNG");
+
+        let event = rx.recv().await.expect("transaction event");
+        match event {
+            DaemonEvent::TransactionChanged {
+                order_no, status, ..
+            } => {
+                assert_eq!(order_no, "ORD-MQTT");
+                assert_eq!(status, "dispense_failed");
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
     }
 
     #[tokio::test]
@@ -1261,7 +1508,7 @@ mod tests {
             .iter()
             .find(|event| event.topic.as_deref() == Some("vem/machines/M1/events/heartbeat"))
             .expect("heartbeat");
-        let environment = &heartbeat.payload_json["statusPayload"]["environment"];
+        let environment = &heartbeat.payload_json["payload"]["statusPayload"]["environment"];
         assert_eq!(environment["sensorStatus"], "faulted");
         assert_eq!(environment["airConditionerOn"], true);
     }

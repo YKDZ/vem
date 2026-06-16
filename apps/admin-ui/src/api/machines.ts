@@ -20,6 +20,8 @@ export type Machine = {
   lastSeenAt: string | null;
   createdAt: string;
   updatedAt: string;
+  latestHeartbeatStatus?: MachineHeartbeatStatusPayload | null;
+  latestHeartbeatReportedAt?: string | null;
   latestEnvironment?: MachineHeartbeatStatusPayload["environment"] | null;
   latestEnvironmentCommand?: MachineCommand | null;
 };
@@ -178,7 +180,7 @@ export async function rotateMachineCredentials(
   machineId: string,
 ): Promise<RotateCredentialsResult> {
   return await post<RotateCredentialsResult>(
-    `/machines/${machineId}/rotate-credentials`,
+    `/machines/${machineId}/credentials/rotate`,
     {},
   );
 }

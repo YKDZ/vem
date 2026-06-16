@@ -20,6 +20,7 @@ export type PaymentIntentInput = {
 export type PaymentIntentResult = {
   providerTradeNo: string | null;
   paymentUrl: string;
+  initialStatus?: "pending" | "processing";
 };
 
 export type ProviderPaymentQueryInput = {

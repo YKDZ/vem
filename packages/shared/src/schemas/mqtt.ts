@@ -1,6 +1,11 @@
 import { z } from "zod";
 
 import { hardwareErrorCodeSchema } from "../enums/hardware";
+import {
+  addMachineSlotCoordinateIssue,
+  machineSlotCellNoSchema,
+  machineSlotLayerNoSchema,
+} from "./machine-slot-coordinate";
 
 export const commandAckPayloadSchema = z
   .object({
@@ -11,11 +16,13 @@ export const commandAckPayloadSchema = z
 export const dispenseCommandPayloadSchema = z.object({
   commandNo: z.string().min(1).max(64),
   orderNo: z.string().min(1).max(64),
-  slot: z.object({
-    layerNo: z.int().min(1),
-    cellNo: z.int().min(1),
-    slotCode: z.string().min(1).max(32),
-  }),
+  slot: z
+    .object({
+      layerNo: machineSlotLayerNoSchema,
+      cellNo: machineSlotCellNoSchema,
+      slotCode: z.string().min(1).max(32),
+    })
+    .superRefine(addMachineSlotCoordinateIssue),
   quantity: z.int().positive(),
   timeoutSeconds: z.int().positive(),
 });
@@ -67,7 +74,7 @@ export const environmentControlResultPayloadSchema = z
     success: z.boolean(),
     errorCode: z.string().min(1).max(64).nullable().optional(),
     message: z.string().max(500).optional(),
-    airConditionerOn: z.boolean().optional(),
+    airConditionerOn: z.boolean().nullable().optional(),
     targetTemperatureCelsius: z.number().min(18).max(30).nullable().optional(),
     reportedAt: z.iso.datetime(),
   })

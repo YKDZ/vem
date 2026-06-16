@@ -110,6 +110,71 @@ function saleReadiness(canStartNetworkAuthorizedSale: boolean) {
   };
 }
 
+function scannerUnavailableWithQrReadySaleReadiness() {
+  return {
+    canStartNetworkAuthorizedSale: true,
+    blockingCodes: [],
+    components: {
+      platformReachability: {
+        ready: true,
+        code: "PLATFORM_REACHABLE",
+        message: "platform reachable",
+      },
+      machineAuthentication: {
+        ready: true,
+        code: "MACHINE_AUTH_READY",
+        message: "machine code configured",
+      },
+      activePlanogram: {
+        ready: true,
+        code: "ACTIVE_PLANOGRAM_READY",
+        message: "PLAN-1",
+      },
+      paymentOptions: {
+        ready: true,
+        code: "PAYMENT_OPTIONS_READY",
+        message: "payment option available",
+        methods: [
+          {
+            method: "qr_code",
+            optionKey: "qr",
+            providerCode: "alipay",
+            ready: true,
+          },
+          {
+            method: "payment_code",
+            optionKey: "payment-code",
+            providerCode: "alipay",
+            ready: false,
+            disabledReason: "扫码器不可用：scanner usb not found",
+          },
+        ],
+      },
+      scannerCapability: {
+        ready: false,
+        code: "SCANNER_UNAVAILABLE",
+        message: "scanner usb not found",
+      },
+      syncHealth: {
+        ready: true,
+        code: "SYNC_READY",
+        message: "sync connected",
+      },
+      wholeMachineBlockers: {
+        ready: true,
+        code: "WHOLE_MACHINE_READY",
+        message: "hardware ready",
+      },
+      slotSaleSafety: {
+        ready: true,
+        code: "SLOT_SALE_SAFETY_READY",
+        message: "slot sale safety ready",
+        blockedSlots: [],
+      },
+    },
+  };
+}
+
 beforeEach(() => {
   setActivePinia(createPinia());
   vi.clearAllMocks();
@@ -128,5 +193,26 @@ describe("connectivity sale readiness", () => {
     expect(store.saleReadiness?.canStartNetworkAuthorizedSale).toBe(false);
     expect(store.isSaleNetworkReady).toBe(false);
     expect(store.saleReadinessBlockingMessages).toEqual(["platform offline"]);
+  });
+
+  it("treats scanner outage as a visible payment-code degradation when qr payment remains ready", async () => {
+    getHealthMock.mockResolvedValue({
+      ...healthSnapshot(),
+      scannerOnline: false,
+      operatorReason: "SCANNER_USB_NOT_FOUND",
+    });
+    getReadyMock.mockResolvedValue(readySnapshot());
+    getSaleReadinessMock.mockResolvedValue(
+      scannerUnavailableWithQrReadySaleReadiness(),
+    );
+
+    const store = useConnectivityStore();
+    await store.refresh();
+
+    expect(store.isSaleNetworkReady).toBe(true);
+    expect(store.saleReadinessBlockingMessages).toEqual([]);
+    expect(store.saleReadinessDegradedMessages).toEqual([
+      "扫码器不可用：scanner usb not found；付款码支付不可用，二维码支付仍可用。",
+    ]);
   });
 });

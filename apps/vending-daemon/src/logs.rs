@@ -38,18 +38,24 @@ pub async fn append_local_log(path: &Path, entry: &LocalLogEntry) -> Result<(), 
 }
 
 pub async fn export_local_logs_zip(data_dir: &Path) -> Result<Vec<u8>, String> {
-    let log_path = data_dir.join("logs").join("machine-events.jsonl");
-    let content = tokio::fs::read(&log_path).await.unwrap_or_default();
-
     let mut output: Vec<u8> = Vec::new();
     let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut output));
     let options = zip::write::SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated);
 
-    zip.start_file("machine-events.jsonl", options)
-        .map_err(|error| format!("create zip entry failed: {error}"))?;
-    zip.write_all(&content)
-        .map_err(|error| format!("zip write failed: {error}"))?;
+    for file_name in [
+        "machine-events.jsonl",
+        "serial-protocol.jsonl",
+        "serial-protocol.jsonl.1",
+    ] {
+        let log_path = data_dir.join("logs").join(file_name);
+        let content = tokio::fs::read(&log_path).await.unwrap_or_default();
+        zip.start_file(file_name, options)
+            .map_err(|error| format!("create zip entry failed: {error}"))?;
+        zip.write_all(&content)
+            .map_err(|error| format!("zip write failed: {error}"))?;
+    }
+
     zip.finish()
         .map_err(|error| format!("zip finish failed: {error}"))?;
 
@@ -63,7 +69,7 @@ mod tests {
     use zip::ZipArchive;
 
     #[tokio::test]
-    async fn export_zip_contains_machine_events_jsonl() {
+    async fn export_zip_contains_local_log_files() {
         let temp = tempfile::tempdir().expect("tmp");
         let log_path = temp.path().join("logs").join("machine-events.jsonl");
         append_local_log(
@@ -90,6 +96,12 @@ mod tests {
         )
         .await
         .expect("append");
+        tokio::fs::write(
+            temp.path().join("logs").join("serial-protocol.jsonl"),
+            br#"{"operation":"dispense","direction":"tx"}"#,
+        )
+        .await
+        .expect("serial protocol log");
 
         let bytes = export_local_logs_zip(temp.path()).await.expect("export");
         let mut archive = ZipArchive::new(std::io::Cursor::new(bytes)).expect("zip");
@@ -98,5 +110,15 @@ mod tests {
         entry.read_to_string(&mut content).expect("read");
         assert!(content.contains("first"));
         assert!(content.contains("second"));
+        drop(entry);
+
+        let mut protocol = String::new();
+        archive
+            .by_name("serial-protocol.jsonl")
+            .expect("protocol entry")
+            .read_to_string(&mut protocol)
+            .expect("read protocol");
+        assert!(protocol.contains("\"operation\":\"dispense\""));
+        assert!(archive.by_name("serial-protocol.jsonl.1").is_ok());
     }
 }

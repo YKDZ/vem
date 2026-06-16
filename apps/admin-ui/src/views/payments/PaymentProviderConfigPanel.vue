@@ -52,7 +52,7 @@ async function loadAll(): Promise<void> {
   try {
     const [configRows, machineRows, checks] = await Promise.all([
       listPaymentProviderConfigs(),
-      listMachines({ page: 1, pageSize: 200 }),
+      listMachines({ page: 1, pageSize: 100 }),
       listPaymentProviderNotifyUrlChecks(),
     ]);
     configs.value = configRows;

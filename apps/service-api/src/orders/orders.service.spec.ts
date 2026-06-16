@@ -33,6 +33,7 @@ function makeDb() {
 
 function makeService(overrides: {
   db?: ReturnType<typeof makeDb>;
+  inventoryService?: Partial<InventoryService>;
   registry?: Partial<PaymentProviderRegistry>;
   configService?: Partial<PaymentProviderConfigService>;
   paymentsService?: Partial<PaymentsService>;
@@ -62,6 +63,8 @@ function makeService(overrides: {
   const inventoryService: InventoryService = {
     reserveForOrder: vi.fn().mockResolvedValue(undefined),
     reserveItems: vi.fn().mockResolvedValue(undefined),
+    releaseReservation: vi.fn().mockResolvedValue(undefined),
+    ...overrides.inventoryService,
   } as unknown as InventoryService;
   const refundsService: RefundsService = {
     requestRefund: vi.fn().mockResolvedValue(undefined),
@@ -85,6 +88,32 @@ function makeService(overrides: {
     refundsService,
     paymentsService,
   );
+}
+
+function makeJoinedSelectResult(rows: unknown[]) {
+  return {
+    from: vi.fn().mockReturnValue({
+      innerJoin: vi.fn().mockReturnValue({
+        innerJoin: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue(rows),
+          }),
+        }),
+      }),
+    }),
+  };
+}
+
+function makeEmptyLatestSelectResult() {
+  return {
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        orderBy: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue([]),
+        }),
+      }),
+    }),
+  };
 }
 
 describe("OrdersService", () => {
@@ -250,6 +279,7 @@ describe("OrdersService", () => {
                       {
                         inventoryId: "inv-1",
                         variantId: "var-1",
+                        productId: "prod-1",
                         productName: "Cola",
                         sku: "COLA-355",
                         size: null,
@@ -257,8 +287,11 @@ describe("OrdersService", () => {
                         unitPriceCents: 300,
                         slotId: "slot-1",
                         slotCode: "A1",
+                        slotStatus: "enabled",
                         layerNo: 1,
                         cellNo: 1,
+                        variantStatus: "active",
+                        productStatus: "active",
                       },
                     ]),
                   }),
@@ -396,6 +429,7 @@ describe("OrdersService", () => {
                       {
                         inventoryId: "inv-2",
                         variantId: "var-2",
+                        productId: "prod-2",
                         productName: "Water",
                         sku: "WTR-500",
                         size: null,
@@ -403,8 +437,11 @@ describe("OrdersService", () => {
                         unitPriceCents: 200,
                         slotId: "slot-2",
                         slotCode: "B1",
+                        slotStatus: "enabled",
                         layerNo: 1,
                         cellNo: 2,
+                        variantStatus: "active",
+                        productStatus: "active",
                       },
                     ]),
                   }),
@@ -660,6 +697,7 @@ type OrdersDbHarness = {
     reason: string;
   }>;
   insertedOrderItems: Array<Record<string, unknown>>;
+  inventoryRows?: Array<Record<string, unknown>>;
   planogramContextRows?: Array<{
     planogramVersion: string;
     slotId: string;
@@ -755,27 +793,31 @@ function makeGenericTx(db: OrdersDbHarness) {
     update: vi.fn(),
   };
 
+  const inventoryRows = db.inventoryRows ?? [
+    {
+      inventoryId: "inv-001",
+      variantId: "var-001",
+      productId: "prod-001",
+      productName: "Cola",
+      sku: "COLA-355",
+      size: null,
+      color: null,
+      unitPriceCents: 300,
+      slotId: "slot-001",
+      slotCode: "A1",
+      slotStatus: "enabled",
+      layerNo: 1,
+      cellNo: 1,
+      variantStatus: "active",
+      productStatus: "active",
+    },
+  ];
   const inventorySelectResult = {
     from: vi.fn().mockReturnValue({
       innerJoin: vi.fn().mockReturnValue({
         innerJoin: vi.fn().mockReturnValue({
           innerJoin: vi.fn().mockReturnValue({
-            where: vi.fn().mockResolvedValue([
-              {
-                inventoryId: "inv-001",
-                variantId: "var-001",
-                productId: "prod-001",
-                productName: "Cola",
-                sku: "COLA-355",
-                size: null,
-                color: null,
-                unitPriceCents: 300,
-                slotId: "slot-001",
-                slotCode: "A1",
-                layerNo: 1,
-                cellNo: 1,
-              },
-            ]),
+            where: vi.fn().mockResolvedValue(inventoryRows),
           }),
         }),
       }),
@@ -904,6 +946,7 @@ function makeGenericTxForCancellation(db: OrdersDbHarness) {
 
 function makeOrdersDbForSuccessfulLocalDraft(options?: {
   transactionFinished?: () => void;
+  inventoryRows?: Array<Record<string, unknown>>;
   planogramContextRows?: Array<{
     planogramVersion: string;
     slotId: string;
@@ -918,6 +961,7 @@ function makeOrdersDbForSuccessfulLocalDraft(options?: {
     transaction: vi.fn(),
     orderStatusEvents: [],
     insertedOrderItems: [],
+    inventoryRows: options?.inventoryRows,
     planogramContextRows: options?.planogramContextRows ?? [
       {
         planogramVersion: "PLAN-ACTIVE",
@@ -1032,6 +1076,54 @@ describe("OrdersService (transaction boundary)", () => {
           paymentProviderCode: "alipay",
         }),
       ).rejects.toThrow(ConflictException);
+
+      expect(reserveForOrder).not.toHaveBeenCalled();
+    });
+
+    it("rejects a faulted machine slot before reserving inventory", async () => {
+      const reserveForOrder = vi.fn().mockResolvedValue(undefined);
+      const db = makeOrdersDbForSuccessfulLocalDraft({
+        inventoryRows: [
+          {
+            inventoryId: "inv-001",
+            variantId: "var-001",
+            productId: "prod-001",
+            productName: "Cola",
+            sku: "COLA-355",
+            size: null,
+            color: null,
+            unitPriceCents: 300,
+            slotId: "slot-001",
+            slotCode: "A1",
+            slotStatus: "faulted",
+            layerNo: 1,
+            cellNo: 1,
+            variantStatus: "active",
+            productStatus: "active",
+          },
+        ],
+      });
+      const service = makeOrdersService({
+        db,
+        inventoryService: { reserveForOrder },
+      });
+
+      await expect(
+        service.createMachineOrder({
+          machineCode: "M-001",
+          items: [
+            {
+              inventoryId: "inv-001",
+              quantity: 1,
+              planogramVersion: "PLAN-ACTIVE",
+              slotId: "slot-001",
+              slotCode: "A1",
+            },
+          ],
+          paymentMethod: "payment_code",
+          paymentProviderCode: "alipay",
+        }),
+      ).rejects.toThrow("Slot A1 is not available");
 
       expect(reserveForOrder).not.toHaveBeenCalled();
     });
@@ -1199,7 +1291,7 @@ describe("OrdersService (transaction boundary)", () => {
     it("cancels local order and releases reservation when provider create intent fails", async () => {
       const createPaymentIntent = vi
         .fn()
-        .mockRejectedValue(new Error("provider timeout"));
+        .mockRejectedValue(new Error("provider invalid request"));
       const releaseReservation = vi.fn().mockResolvedValue(undefined);
 
       const db = makeOrdersDbForSuccessfulLocalDraft();
@@ -1227,7 +1319,7 @@ describe("OrdersService (transaction boundary)", () => {
           paymentMethod: "qr_code",
           paymentProviderCode: "alipay",
         }),
-      ).rejects.toThrow("provider timeout");
+      ).rejects.toThrow("provider invalid request");
 
       expect(releaseReservation).toHaveBeenCalledWith(
         expect.anything(),
@@ -1238,6 +1330,7 @@ describe("OrdersService (transaction boundary)", () => {
           reason: "payment_failed",
         }),
       );
+      expect(createPaymentIntent).toHaveBeenCalledOnce();
       expect(db.orderStatusEvents).toContainEqual(
         expect.objectContaining({
           orderId: "ord-001",
@@ -1289,7 +1382,327 @@ describe("OrdersService (transaction boundary)", () => {
     });
   });
 
+  describe("cancelMachineOrder", () => {
+    it("cancels an unpaid machine order and releases active reservations", async () => {
+      const db = makeDb();
+      const releaseReservation = vi.fn().mockResolvedValue(undefined);
+      const row = {
+        orderId: "ord-1",
+        orderNo: "ORD001",
+        machineId: "mach-1",
+        machineCode: "M001",
+        orderStatus: "pending_payment",
+        paymentState: "awaiting_payment",
+        fulfillmentState: "awaiting_fulfillment",
+        totalAmountCents: 300,
+        paymentId: "pay-1",
+        paymentNo: "PAY001",
+        paymentMethod: "qr_code",
+        paymentStatus: "created",
+        paymentUrl: "https://pay.example/qr",
+        paymentExpiresAt: null,
+        paidAt: null,
+        failedReason: null,
+        providerId: "provider-mock",
+        providerCode: "mock",
+        paymentProviderCode: "mock",
+        providerTradeNo: null,
+        providerConfigId: null,
+      };
+      const canceledRow = {
+        ...row,
+        orderStatus: "canceled",
+        paymentState: "canceled",
+        fulfillmentState: "canceled",
+        paymentStatus: "canceled",
+      };
+      const tx = {
+        select: vi
+          .fn()
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              innerJoin: vi.fn().mockReturnValue({
+                where: vi.fn().mockResolvedValue([row]),
+              }),
+            }),
+          })
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi
+                .fn()
+                .mockResolvedValue([{ inventoryId: "inv-1", quantity: 2 }]),
+            }),
+          }),
+        insert: vi.fn().mockReturnValue({
+          values: vi.fn().mockReturnValue({
+            onConflictDoNothing: vi.fn().mockResolvedValue([]),
+          }),
+        }),
+        update: vi
+          .fn()
+          .mockReturnValueOnce({
+            set: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                returning: vi.fn().mockResolvedValue([{ id: "pay-1" }]),
+              }),
+            }),
+          })
+          .mockReturnValueOnce({
+            set: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                returning: vi.fn().mockResolvedValue([{ id: "ord-1" }]),
+              }),
+            }),
+          }),
+      };
+
+      db.select
+        .mockReturnValueOnce(makeJoinedSelectResult([row]))
+        .mockReturnValueOnce(makeJoinedSelectResult([canceledRow]))
+        .mockReturnValueOnce(makeEmptyLatestSelectResult())
+        .mockReturnValueOnce(makeEmptyLatestSelectResult())
+        .mockReturnValueOnce(makeEmptyLatestSelectResult());
+      db.transaction.mockImplementationOnce(
+        async (cb: (txArg: typeof tx) => Promise<unknown>) => await cb(tx),
+      );
+
+      const service = makeService({
+        db,
+        inventoryService: { releaseReservation },
+      });
+
+      const result = await service.cancelMachineOrder("ORD001", {
+        machineCode: "M001",
+      });
+
+      expect(result).toMatchObject({
+        orderNo: "ORD001",
+        orderStatus: "canceled",
+        paymentState: "canceled",
+        fulfillmentState: "canceled",
+        nextAction: "closed",
+      });
+      expect(releaseReservation).toHaveBeenCalledWith(tx, {
+        orderId: "ord-1",
+        inventoryId: "inv-1",
+        quantity: 2,
+        reason: "canceled",
+      });
+    });
+
+    it("cancels locally and releases reservations when provider cancel returns an indeterminate 5xx", async () => {
+      const db = makeDb();
+      const releaseReservation = vi.fn().mockResolvedValue(undefined);
+      const cancelPayment = vi
+        .fn()
+        .mockRejectedValue(new Error("HTTP 请求错误, status: 504"));
+      const row = {
+        orderId: "ord-1",
+        orderNo: "ORD001",
+        machineId: "mach-1",
+        machineCode: "M001",
+        orderStatus: "pending_payment",
+        paymentState: "awaiting_payment",
+        fulfillmentState: "awaiting_fulfillment",
+        totalAmountCents: 300,
+        paymentId: "pay-1",
+        paymentNo: "PAY001",
+        paymentMethod: "qr_code",
+        paymentStatus: "processing",
+        paymentUrl: "https://pay.example/qr",
+        paymentExpiresAt: null,
+        paidAt: null,
+        failedReason: null,
+        providerId: "provider-alipay",
+        providerCode: "alipay",
+        paymentProviderCode: "alipay",
+        providerTradeNo: null,
+        providerConfigId: "cfg-1",
+      };
+      const canceledRow = {
+        ...row,
+        orderStatus: "canceled",
+        paymentState: "canceled",
+        fulfillmentState: "canceled",
+        paymentStatus: "canceled",
+      };
+      const tx = {
+        select: vi
+          .fn()
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              innerJoin: vi.fn().mockReturnValue({
+                where: vi.fn().mockResolvedValue([row]),
+              }),
+            }),
+          })
+          .mockReturnValueOnce({
+            from: vi.fn().mockReturnValue({
+              where: vi
+                .fn()
+                .mockResolvedValue([{ inventoryId: "inv-1", quantity: 1 }]),
+            }),
+          }),
+        insert: vi.fn().mockReturnValue({
+          values: vi.fn().mockReturnValue({
+            onConflictDoNothing: vi.fn().mockResolvedValue([]),
+          }),
+        }),
+        update: vi
+          .fn()
+          .mockReturnValueOnce({
+            set: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                returning: vi.fn().mockResolvedValue([{ id: "pay-1" }]),
+              }),
+            }),
+          })
+          .mockReturnValueOnce({
+            set: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                returning: vi.fn().mockResolvedValue([{ id: "ord-1" }]),
+              }),
+            }),
+          }),
+      };
+
+      db.select
+        .mockReturnValueOnce(makeJoinedSelectResult([row]))
+        .mockReturnValueOnce(makeJoinedSelectResult([canceledRow]))
+        .mockReturnValueOnce(makeEmptyLatestSelectResult())
+        .mockReturnValueOnce(makeEmptyLatestSelectResult())
+        .mockReturnValueOnce(makeEmptyLatestSelectResult());
+      db.transaction.mockImplementationOnce(
+        async (cb: (txArg: typeof tx) => Promise<unknown>) => await cb(tx),
+      );
+
+      const service = makeService({
+        db,
+        inventoryService: { releaseReservation },
+        registry: {
+          get: vi.fn().mockReturnValue({ cancelPayment }),
+        },
+        configService: {
+          resolveForExistingPayment: vi.fn().mockResolvedValue({
+            providerCode: "alipay",
+            merchantNo: null,
+            appId: null,
+            publicConfigJson: {},
+            sensitiveConfigJson: {},
+          }),
+        } as Partial<PaymentProviderConfigService>,
+      });
+
+      const result = await service.cancelMachineOrder("ORD001", {
+        machineCode: "M001",
+      });
+
+      expect(cancelPayment).toHaveBeenCalledWith(
+        expect.objectContaining({ paymentNo: "PAY001" }),
+      );
+      expect(result).toMatchObject({
+        orderNo: "ORD001",
+        orderStatus: "canceled",
+        paymentState: "canceled",
+        fulfillmentState: "canceled",
+        nextAction: "closed",
+      });
+      expect(releaseReservation).toHaveBeenCalledWith(tx, {
+        orderId: "ord-1",
+        inventoryId: "inv-1",
+        quantity: 1,
+        reason: "canceled",
+      });
+    });
+
+    it("does not cancel or release reservations when payment succeeds before the transaction update", async () => {
+      const db = makeDb();
+      const releaseReservation = vi.fn().mockResolvedValue(undefined);
+      const row = {
+        orderId: "ord-1",
+        orderNo: "ORD001",
+        machineId: "mach-1",
+        machineCode: "M001",
+        orderStatus: "pending_payment",
+        paymentState: "awaiting_payment",
+        fulfillmentState: "awaiting_fulfillment",
+        totalAmountCents: 300,
+        paymentId: "pay-1",
+        paymentNo: "PAY001",
+        paymentMethod: "qr_code",
+        paymentStatus: "created",
+        paymentUrl: "https://pay.example/qr",
+        paymentExpiresAt: null,
+        paidAt: null,
+        failedReason: null,
+        providerId: "provider-mock",
+        providerCode: "mock",
+        paymentProviderCode: "mock",
+        providerTradeNo: null,
+        providerConfigId: null,
+      };
+      const tx = {
+        select: vi.fn().mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue([
+                {
+                  orderStatus: "paid",
+                  paymentState: "paid",
+                  fulfillmentState: "awaiting_fulfillment",
+                  paymentStatus: "succeeded",
+                },
+              ]),
+            }),
+          }),
+        }),
+        insert: vi.fn(),
+        update: vi.fn(),
+      };
+
+      db.select.mockReturnValueOnce(makeJoinedSelectResult([row]));
+      db.transaction.mockImplementationOnce(
+        async (cb: (txArg: typeof tx) => Promise<unknown>) => await cb(tx),
+      );
+
+      const service = makeService({
+        db,
+        inventoryService: { releaseReservation },
+      });
+
+      await expect(
+        service.cancelMachineOrder("ORD001", { machineCode: "M001" }),
+      ).rejects.toThrow(ConflictException);
+      expect(tx.insert).not.toHaveBeenCalled();
+      expect(tx.update).not.toHaveBeenCalled();
+      expect(releaseReservation).not.toHaveBeenCalled();
+    });
+  });
+
   describe("getMachineOrderStatus", () => {
+    function machineOrderStatusRow(overrides: Record<string, unknown> = {}) {
+      return {
+        orderId: "ord-1",
+        orderNo: "ORD001",
+        machineCode: "M001",
+        orderStatus: "pending_payment",
+        paymentState: "awaiting_payment",
+        fulfillmentState: "awaiting_fulfillment",
+        totalAmountCents: 300,
+        paymentId: "pay-1",
+        paymentNo: "PAY001",
+        paymentMethod: "qr_code",
+        paymentStatus: "pending",
+        paymentUrl: "https://example.com/qr",
+        paymentCreatedAt: new Date(),
+        paymentExpiresAt: null,
+        paidAt: null,
+        failedReason: null,
+        paymentProviderCode: "alipay",
+        ...overrides,
+      };
+    }
+
     it("tries immediate reconcile for pending qr_code and returns refreshed status", async () => {
       const db = makeDb();
       const reconcilePendingPaymentOnRead = vi
@@ -1400,6 +1813,52 @@ describe("OrdersService (transaction boundary)", () => {
       expect(result.nextAction).toBe("dispensing");
     });
 
+    it("hides a freshly unconfirmed qr_code URL while provider readiness is processing", async () => {
+      const db = makeDb();
+      const row = machineOrderStatusRow({
+        paymentStatus: "processing",
+        paymentCreatedAt: new Date(),
+      });
+      db.select
+        .mockReturnValueOnce(makeJoinedSelectResult([row]))
+        .mockReturnValueOnce(makeJoinedSelectResult([row]))
+        .mockReturnValueOnce(makeEmptyLatestSelectResult())
+        .mockReturnValueOnce(makeEmptyLatestSelectResult())
+        .mockReturnValueOnce(makeEmptyLatestSelectResult());
+
+      const service = makeService({ db });
+      const result = await service.getMachineOrderStatus("ORD001", {
+        machineCode: "M001",
+      });
+
+      expect(result.payment.status).toBe("processing");
+      expect(result.payment.paymentUrl).toBeNull();
+      expect(result.nextAction).toBe("wait_payment");
+    });
+
+    it("exposes an unconfirmed qr_code URL after the fallback display delay", async () => {
+      const db = makeDb();
+      const row = machineOrderStatusRow({
+        paymentStatus: "processing",
+        paymentCreatedAt: new Date(Date.now() - 31_000),
+      });
+      db.select
+        .mockReturnValueOnce(makeJoinedSelectResult([row]))
+        .mockReturnValueOnce(makeJoinedSelectResult([row]))
+        .mockReturnValueOnce(makeEmptyLatestSelectResult())
+        .mockReturnValueOnce(makeEmptyLatestSelectResult())
+        .mockReturnValueOnce(makeEmptyLatestSelectResult());
+
+      const service = makeService({ db });
+      const result = await service.getMachineOrderStatus("ORD001", {
+        machineCode: "M001",
+      });
+
+      expect(result.payment.status).toBe("processing");
+      expect(result.payment.paymentUrl).toBe("https://example.com/qr");
+      expect(result.nextAction).toBe("wait_payment");
+    });
+
     it("includes paymentCodeAttempt summary without plaintext auth code", async () => {
       const db = makeDb();
       db.select
@@ -1486,6 +1945,267 @@ describe("OrdersService (transaction boundary)", () => {
         canRetry: false,
       });
       expect(JSON.stringify(result)).not.toContain("28763443825664394");
+    });
+
+    it("describes reversed paymentCodeAttempt as retryable", async () => {
+      const db = makeDb();
+      db.select
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              innerJoin: vi.fn().mockReturnValue({
+                innerJoin: vi.fn().mockReturnValue({
+                  where: vi.fn().mockResolvedValue([
+                    {
+                      orderId: "ord-1",
+                      orderNo: "ORD001",
+                      machineCode: "M001",
+                      orderStatus: "pending_payment",
+                      paymentState: "awaiting_payment",
+                      fulfillmentState: "awaiting_fulfillment",
+                      totalAmountCents: 300,
+                      paymentId: "pay-1",
+                      paymentNo: "PAY001",
+                      paymentMethod: "payment_code",
+                      paymentStatus: "pending",
+                      paymentUrl: null,
+                      paymentExpiresAt: null,
+                      paidAt: null,
+                      failedReason: null,
+                      paymentProviderCode: "alipay",
+                    },
+                  ]),
+                }),
+              }),
+            }),
+          }),
+        })
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([]),
+              }),
+            }),
+          }),
+        })
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([]),
+              }),
+            }),
+          }),
+        })
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([
+                  {
+                    attemptNo: 1,
+                    status: "reversed",
+                    maskedAuthCode: "2876****4394",
+                    source: "serial_text",
+                    idempotencyKey: "idem-1",
+                    submittedAt: new Date("2026-05-24T10:00:00.000Z"),
+                    lastCheckedAt: new Date("2026-05-24T10:00:30.000Z"),
+                    failureMessage: null,
+                    isActive: false,
+                  },
+                ]),
+              }),
+            }),
+          }),
+        });
+
+      const service = makeService({ db });
+      const result = await service.getMachineOrderStatus("ORD001", {
+        machineCode: "M001",
+      });
+
+      expect(result.paymentCodeAttempt).toMatchObject({
+        status: "reversed",
+        canRetry: true,
+        message: "本次付款码交易已撤销，请刷新付款码后重试",
+      });
+      expect(result.nextAction).toBe("wait_payment");
+    });
+
+    it("sanitizes technical paymentCodeAttempt timeout messages while reversing", async () => {
+      const db = makeDb();
+      db.select
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              innerJoin: vi.fn().mockReturnValue({
+                innerJoin: vi.fn().mockReturnValue({
+                  where: vi.fn().mockResolvedValue([
+                    {
+                      orderId: "ord-1",
+                      orderNo: "ORD001",
+                      machineCode: "M001",
+                      orderStatus: "pending_payment",
+                      paymentState: "awaiting_payment",
+                      fulfillmentState: "awaiting_fulfillment",
+                      totalAmountCents: 300,
+                      paymentId: "pay-1",
+                      paymentNo: "PAY001",
+                      paymentMethod: "payment_code",
+                      paymentStatus: "pending",
+                      paymentUrl: null,
+                      paymentExpiresAt: null,
+                      paidAt: null,
+                      failedReason: null,
+                      paymentProviderCode: "alipay",
+                    },
+                  ]),
+                }),
+              }),
+            }),
+          }),
+        })
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([]),
+              }),
+            }),
+          }),
+        })
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([]),
+              }),
+            }),
+          }),
+        })
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([
+                  {
+                    attemptNo: 1,
+                    status: "reversing",
+                    maskedAuthCode: "2876****4394",
+                    source: "serial_text",
+                    idempotencyKey: "idem-1",
+                    submittedAt: new Date("2026-05-24T10:00:00.000Z"),
+                    lastCheckedAt: new Date("2026-05-24T10:00:30.000Z"),
+                    failureMessage:
+                      "HttpClient Request error: Request timeout for 5000 ms",
+                    isActive: true,
+                  },
+                ]),
+              }),
+            }),
+          }),
+        });
+
+      const service = makeService({ db });
+      const result = await service.getMachineOrderStatus("ORD001", {
+        machineCode: "M001",
+      });
+
+      expect(result.paymentCodeAttempt).toMatchObject({
+        status: "reversing",
+        canRetry: false,
+        message: "支付结果未确认，正在撤销本次付款码交易",
+      });
+      expect(JSON.stringify(result)).not.toContain("Request timeout");
+      expect(result.nextAction).toBe("wait_payment");
+    });
+
+    it("returns manual_handling nextAction for unresolved paymentCodeAttempt", async () => {
+      const db = makeDb();
+      db.select
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              innerJoin: vi.fn().mockReturnValue({
+                innerJoin: vi.fn().mockReturnValue({
+                  where: vi.fn().mockResolvedValue([
+                    {
+                      orderId: "ord-1",
+                      orderNo: "ORD001",
+                      machineCode: "M001",
+                      orderStatus: "pending_payment",
+                      paymentState: "awaiting_payment",
+                      fulfillmentState: "awaiting_fulfillment",
+                      totalAmountCents: 300,
+                      paymentId: "pay-1",
+                      paymentNo: "PAY001",
+                      paymentMethod: "payment_code",
+                      paymentStatus: "pending",
+                      paymentUrl: null,
+                      paymentExpiresAt: null,
+                      paidAt: null,
+                      failedReason: null,
+                      paymentProviderCode: "alipay",
+                    },
+                  ]),
+                }),
+              }),
+            }),
+          }),
+        })
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([]),
+              }),
+            }),
+          }),
+        })
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([]),
+              }),
+            }),
+          }),
+        })
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([
+                  {
+                    attemptNo: 1,
+                    status: "manual_handling",
+                    maskedAuthCode: "2876****4394",
+                    source: "serial_text",
+                    idempotencyKey: "idem-1",
+                    submittedAt: new Date("2026-05-24T10:00:00.000Z"),
+                    lastCheckedAt: new Date("2026-05-24T10:00:30.000Z"),
+                    failureMessage:
+                      "HttpClient Request error: Request timeout for 5000 ms",
+                    isActive: true,
+                  },
+                ]),
+              }),
+            }),
+          }),
+        });
+
+      const service = makeService({ db });
+      const result = await service.getMachineOrderStatus("ORD001", {
+        machineCode: "M001",
+      });
+
+      expect(result.paymentCodeAttempt).toMatchObject({
+        status: "manual_handling",
+        canRetry: false,
+        message: "支付结果待人工处理，请联系工作人员",
+      });
+      expect(result.nextAction).toBe("manual_handling");
     });
   });
 });

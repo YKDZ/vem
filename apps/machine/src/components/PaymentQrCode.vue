@@ -6,6 +6,7 @@ const props = defineProps<{
   value: string | null | undefined;
   blocked?: boolean;
   overlayText?: string | null;
+  emptyText?: string | null;
 }>();
 
 const dataUrl = ref("");
@@ -50,7 +51,7 @@ watch(
       v-else
       class="flex size-[320px] max-h-[45vh] max-w-full items-center justify-center rounded-3xl bg-slate-100 text-center text-slate-500"
     >
-      {{ error ?? "暂无支付二维码" }}
+      {{ error ?? props.emptyText ?? "暂无支付二维码" }}
     </div>
     <div
       v-if="blocked"

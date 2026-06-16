@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { formatMachineSlotCoordinate } from "@vem/shared";
 import { computed, onMounted } from "vue";
 import { useRouter } from "vue-router";
 
@@ -16,9 +17,20 @@ const connectivityStore = useConnectivityStore();
 const item = computed(() => {
   const selectedItem = checkoutStore.selectedItem;
   if (!selectedItem) return null;
+  return catalogStore.saleableItemFor(selectedItem) ?? selectedItem;
+});
+const specText = computed(() => {
+  if (!item.value) return "-";
   return (
-    catalogStore.itemByInventoryId(selectedItem.inventoryId) ?? selectedItem
+    [item.value.size, item.value.color].filter(Boolean).join(" / ") ||
+    item.value.sku
   );
+});
+const slotLabel = computed(() => {
+  if (!item.value) return "-";
+  return item.value.aggregatedSlotCount > 1
+    ? `多格口 · ${item.value.aggregatedSlotCount}处`
+    : formatMachineSlotCoordinate(item.value);
 });
 const canSubmit = computed(
   () =>
@@ -84,7 +96,7 @@ async function submitOrder(): Promise<void> {
             <div>
               <h3 class="text-2xl font-bold">{{ item.productName }}</h3>
               <p class="mt-2 text-slate-300">
-                SKU {{ item.sku }} · 格口 {{ item.slotCode }} · 数量 1
+                {{ specText }} · {{ slotLabel }} · 数量 1
               </p>
             </div>
             <strong class="text-3xl font-black text-sky-200">

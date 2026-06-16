@@ -57,6 +57,58 @@ export function resultKindFromNextAction(
   return nextAction;
 }
 
+const DISMISSED_TERMINAL_ORDER_STORAGE_KEY =
+  "vem.machine.dismissedTerminalOrderNos";
+const DISMISSED_TERMINAL_ORDER_LIMIT = 50;
+
+function browserLocalStorage(): Storage | null {
+  if (typeof window === "undefined") return null;
+  try {
+    return window.localStorage;
+  } catch {
+    return null;
+  }
+}
+
+function readDismissedTerminalOrderNos(): string[] {
+  const storage = browserLocalStorage();
+  if (!storage) return [];
+  try {
+    const parsed = JSON.parse(
+      storage.getItem(DISMISSED_TERMINAL_ORDER_STORAGE_KEY) ?? "[]",
+    );
+    return Array.isArray(parsed)
+      ? parsed.filter((value): value is string => typeof value === "string")
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeDismissedTerminalOrderNos(orderNos: string[]): void {
+  const storage = browserLocalStorage();
+  if (!storage) return;
+  storage.setItem(
+    DISMISSED_TERMINAL_ORDER_STORAGE_KEY,
+    JSON.stringify(orderNos.slice(-DISMISSED_TERMINAL_ORDER_LIMIT)),
+  );
+}
+
+function rememberDismissedTerminalOrderNo(
+  current: string[],
+  orderNo: string,
+): string[] {
+  return [...current.filter((value) => value !== orderNo), orderNo].slice(
+    -DISMISSED_TERMINAL_ORDER_LIMIT,
+  );
+}
+
+export function isTerminalResultNextAction(
+  nextAction: string | null | undefined,
+): boolean {
+  return resultKindFromNextAction(normalizeNextAction(nextAction)) !== null;
+}
+
 function paymentMethodFromSnapshot(
   snapshot: TransactionSnapshot,
 ): MachineOrderStatus["payment"]["method"] {
@@ -162,6 +214,45 @@ function paymentStateFromSnapshot(
   }
 }
 
+function paymentCodeAttemptStatusFromSnapshot(
+  status: string | null | undefined,
+): NonNullable<MachineOrderStatus["paymentCodeAttempt"]>["status"] {
+  switch (status) {
+    case "created":
+    case "submitting":
+    case "user_confirming":
+    case "querying":
+    case "succeeded":
+    case "failed":
+    case "reversing":
+    case "reversed":
+    case "unknown":
+    case "manual_handling":
+    case "canceled":
+      return status;
+    default:
+      return "querying";
+  }
+}
+
+function paymentCodeAttemptMessageFromSnapshot(
+  attempt: TransactionSnapshot["paymentCodeAttempt"],
+  operatorHint: string | null | undefined,
+): string | null {
+  if (!attempt) return operatorHint ?? null;
+  if (attempt.message) return attempt.message;
+  if (attempt.status === "failed") {
+    return "付款码无效或支付失败，请刷新付款码后重试";
+  }
+  if (attempt.status === "reversed" || attempt.status === "canceled") {
+    return "本次付款码交易已撤销，请刷新付款码后重试";
+  }
+  if (attempt.status === "unknown" || attempt.status === "manual_handling") {
+    return "支付结果待确认，请联系工作人员处理";
+  }
+  return operatorHint ?? null;
+}
+
 function fulfillmentStateFromSnapshot(
   snapshot: TransactionSnapshot,
 ): MachineOrderStatus["fulfillmentState"] {
@@ -189,7 +280,16 @@ function latestSaleViewItem(
   selectedItem: CheckoutSelectedItem | null,
 ): CheckoutSelectedItem | null {
   if (!selectedItem) return null;
-  return useCatalogStore().itemByInventoryId(selectedItem.inventoryId) ?? null;
+  const catalogStore = useCatalogStore();
+  const saleableItem = catalogStore.saleableItemFor(selectedItem);
+  if (saleableItem) return saleableItem;
+  return (
+    catalogStore.items.find(
+      (item) =>
+        item.catalogKey === selectedItem.catalogKey &&
+        item.variantId === selectedItem.variantId,
+    ) ?? null
+  );
 }
 
 function isSaleableItem(
@@ -242,6 +342,7 @@ export const useCheckoutStore = defineStore("checkout", {
     paymentCodeMessage: null as string | null,
     paymentCodeLastMasked: null as string | null,
     paymentOptionsLoaded: false,
+    dismissedTerminalOrderNos: readDismissedTerminalOrderNos(),
   }),
   getters: {
     quantity: (): number => 1,
@@ -303,7 +404,44 @@ export const useCheckoutStore = defineStore("checkout", {
       this.paymentCodeLastMasked = null;
       this.nowMs = Date.now();
     },
+    shouldIgnoreTransaction(snapshot: TransactionSnapshot | null): boolean {
+      return Boolean(
+        snapshot?.orderNo &&
+        isTerminalResultNextAction(snapshot.nextAction) &&
+        this.dismissedTerminalOrderNos.includes(snapshot.orderNo),
+      );
+    },
+    dismissCurrentTerminalTransaction(): void {
+      const orderNo = this.transaction?.orderNo ?? this.currentOrder?.orderNo;
+      const nextAction =
+        this.status?.nextAction ?? this.transaction?.nextAction ?? null;
+      if (!orderNo || !isTerminalResultNextAction(nextAction)) return;
+      this.dismissedTerminalOrderNos = rememberDismissedTerminalOrderNo(
+        this.dismissedTerminalOrderNos,
+        orderNo,
+      );
+      writeDismissedTerminalOrderNos(this.dismissedTerminalOrderNos);
+    },
     applyTransaction(snapshot: TransactionSnapshot): void {
+      if (this.shouldIgnoreTransaction(snapshot)) {
+        if (
+          this.transaction?.orderNo === snapshot.orderNo ||
+          this.currentOrder?.orderNo === snapshot.orderNo
+        ) {
+          this.transaction = null;
+          this.currentOrder = null;
+          this.status = null;
+          if (
+            this.flowStep === "payment" ||
+            this.flowStep === "dispensing" ||
+            this.flowStep === "result"
+          ) {
+            this.flowStep = "idle";
+          }
+        }
+        return;
+      }
+
       this.transaction = snapshot;
 
       if (!snapshot.orderNo) {
@@ -348,13 +486,7 @@ export const useCheckoutStore = defineStore("checkout", {
         paymentCodeAttempt: attempt
           ? {
               attemptNo: attempt.attemptNo ?? 1,
-              status:
-                attempt.status === "failed" ||
-                attempt.status === "succeeded" ||
-                attempt.status === "user_confirming" ||
-                attempt.status === "querying"
-                  ? attempt.status
-                  : "querying",
+              status: paymentCodeAttemptStatusFromSnapshot(attempt.status),
               maskedAuthCode: attempt.maskedAuthCode,
               source:
                 attempt.source === "serial_text" ||
@@ -367,7 +499,10 @@ export const useCheckoutStore = defineStore("checkout", {
               submittedAt: attempt.submittedAt,
               lastCheckedAt: attempt.lastCheckedAt,
               canRetry: attempt.canRetry,
-              message: attempt.message ?? snapshot.operatorHint,
+              message: paymentCodeAttemptMessageFromSnapshot(
+                attempt,
+                snapshot.operatorHint,
+              ),
             }
           : null,
         vending: snapshot.vending
@@ -378,6 +513,7 @@ export const useCheckoutStore = defineStore("checkout", {
               ackAt: null,
               resultAt: null,
               lastError: snapshot.vending.lastError,
+              pickupReminder: snapshot.vending.pickupReminder ?? null,
             }
           : null,
         refund: null,
@@ -386,7 +522,8 @@ export const useCheckoutStore = defineStore("checkout", {
       };
 
       this.paymentCodeMessage =
-        attempt?.message ?? snapshot.operatorHint ?? this.paymentCodeMessage;
+        paymentCodeAttemptMessageFromSnapshot(attempt, snapshot.operatorHint) ??
+        this.paymentCodeMessage;
       this.paymentCodeLastMasked =
         attempt?.maskedAuthCode ??
         snapshot.maskedAuthCode ??
@@ -440,6 +577,10 @@ export const useCheckoutStore = defineStore("checkout", {
     },
     async createOrder(): Promise<CreateMachineOrderResponse | null> {
       if (!this.selectedItem) throw new Error("No selected item");
+      const catalogStore = useCatalogStore();
+      await catalogStore.refresh().catch(() => {
+        // Keep the existing cached sale view; the backend still performs the authoritative stock check.
+      });
       const selectedItem = latestSaleViewItem(this.selectedItem);
       if (!selectedItem) {
         throw new Error("商品已更新，请重新选择");
@@ -473,6 +614,9 @@ export const useCheckoutStore = defineStore("checkout", {
         return this.currentOrder;
       } catch (error) {
         this.error = error instanceof Error ? error.message : String(error);
+        await catalogStore.refresh().catch(() => {
+          // Preserve the original order error; catalog refresh is best-effort after a rejected checkout.
+        });
         throw error;
       } finally {
         this.loading = false;
@@ -483,11 +627,44 @@ export const useCheckoutStore = defineStore("checkout", {
       this.error = null;
       try {
         const snapshot = await daemonClient.getCurrentTransaction();
+        if (this.shouldIgnoreTransaction(snapshot)) {
+          this.applyTransaction(snapshot);
+          return null;
+        }
         this.applyTransaction(snapshot);
         return snapshot;
       } catch (error) {
         this.error = error instanceof Error ? error.message : String(error);
         return null;
+      } finally {
+        this.loading = false;
+      }
+    },
+    async cancelCurrentOrder(): Promise<TransactionSnapshot | null> {
+      const orderNo = this.currentOrder?.orderNo ?? this.transaction?.orderNo;
+      if (!orderNo) {
+        this.reset();
+        return null;
+      }
+
+      this.loading = true;
+      this.error = null;
+      try {
+        const snapshot = await daemonClient.cancelOrder(orderNo);
+        this.applyTransaction(snapshot);
+        this.dismissCurrentTerminalTransaction();
+        this.reset();
+        await useCatalogStore()
+          .refresh()
+          .catch((error: unknown) => {
+            this.error = `订单已取消，但目录刷新失败：${
+              error instanceof Error ? error.message : String(error)
+            }`;
+          });
+        return snapshot;
+      } catch (error) {
+        this.error = error instanceof Error ? error.message : String(error);
+        throw error;
       } finally {
         this.loading = false;
       }

@@ -25,9 +25,6 @@ fn mqtt_config(mqtt_url: String, serial_path: Option<String>) -> serde_json::Val
         "scannerFrameSuffix": "crlf",
         "visionEnabled": false,
         "visionWsUrl": "ws://127.0.0.1:7892/ws",
-        "visionAutoStart": false,
-        "visionProcessCommand": null,
-        "visionProcessArgs": null,
         "visionRequestTimeoutMs": 8000,
         "kioskMode": false
     })
@@ -191,15 +188,24 @@ async fn mqtt_command_flow_survives_without_ui_and_dedupes_replay() {
             .count(),
         1
     );
+    let first_ack = first_publishes
+        .iter()
+        .find(|(topic, _)| topic == ack_topic)
+        .map(|(_, payload)| serde_json::from_slice::<serde_json::Value>(payload).unwrap())
+        .expect("first ack publish");
+    assert_eq!(first_ack["payload"]["messageId"], "CMD-MQTT-1:ack");
+    assert!(first_ack["signature"].as_str().unwrap_or_default().len() >= 32);
     let first_result = first_publishes
         .iter()
         .find(|(topic, _)| topic == result_topic)
         .map(|(_, payload)| serde_json::from_slice::<serde_json::Value>(payload).unwrap())
         .expect("first result publish");
     assert_eq!(
-        first_result["success"], true,
+        first_result["payload"]["success"], true,
         "unexpected result: {first_result}"
     );
+    assert_eq!(first_result["payload"]["commandNo"], "CMD-MQTT-1");
+    assert!(first_result["signature"].as_str().unwrap_or_default().len() >= 32);
 
     publisher
         .publish(
@@ -253,7 +259,15 @@ async fn daemon_restart_flushes_persisted_outbox_result() {
         message: "seeded before restart".to_string(),
         reported_at: vending_daemon::state::store::now_iso(),
     };
-    let event = vending_daemon::state::store::OutboxInput::dispense_result("MACHINE-MQTT", &result);
+    let mut event =
+        vending_daemon::state::store::OutboxInput::dispense_result("MACHINE-MQTT", &result);
+    event.payload_json = serde_json::to_value(sign_envelope(
+        "MACHINE-MQTT",
+        sensitive::TEST_MQTT_SIGNING_SECRET,
+        "result:CMD-RECOVER-1",
+        event.payload_json,
+    ))
+    .expect("signed seeded result");
     state
         .record_command_result_and_enqueue_tx(&command, &result, &event)
         .await
@@ -282,7 +296,8 @@ async fn daemon_restart_flushes_persisted_outbox_result() {
     .expect("restart daemon");
     let publishes = collect_results.await.expect("collector task");
     let body: serde_json::Value = serde_json::from_slice(&publishes[0].1).unwrap();
-    assert_eq!(body["commandNo"], "CMD-RECOVER-1");
+    assert_eq!(body["payload"]["commandNo"], "CMD-RECOVER-1");
+    assert!(body["signature"].as_str().unwrap_or_default().len() >= 32);
 
     daemon2.terminate().await;
     let pool = sqlite::open_readonly(&data_dir.join("state.db")).await;

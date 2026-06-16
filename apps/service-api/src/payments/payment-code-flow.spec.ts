@@ -124,8 +124,11 @@ function makeOrdersDbForSuccessfulLocalDraft() {
                   unitPriceCents: 300,
                   slotId: "slot-001",
                   slotCode: "A1",
+                  slotStatus: "enabled",
                   layerNo: 1,
                   cellNo: 1,
+                  variantStatus: "active",
+                  productStatus: "active",
                 },
               ]),
             }),
@@ -642,6 +645,7 @@ describe("payment code flow", () => {
       publicConfigJson: {
         paymentCodePollIntervalSeconds: 1,
         paymentCodeMaxConfirmSeconds: 1,
+        paymentCodeReverseMaxAttempts: 3,
       },
       sensitiveConfigJson: {},
     };

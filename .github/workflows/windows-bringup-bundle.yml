@@ -2,9 +2,44 @@ name: Windows Bring-up Bundle
 
 on:
   workflow_dispatch:
+    inputs:
+      release_kind:
+        description: Bundle intent
+        required: false
+        default: smoke
+        type: choice
+        options:
+          - smoke
+          - field
+          - release
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/windows-bringup-bundle.yml
+      - apps/machine/**
+      - apps/vending-daemon/**
+      - crates/**
+      - packages/shared/**
+      - scripts/windows/**
+      - Cargo.lock
+      - Cargo.toml
+      - pnpm-lock.yaml
+      - package.json
+      - pnpm-workspace.yaml
   pull_request:
     paths:
       - .github/workflows/windows-bringup-bundle.yml
+      - apps/machine/**
+      - apps/vending-daemon/**
+      - crates/**
+      - packages/shared/**
+      - scripts/windows/**
+      - Cargo.lock
+      - Cargo.toml
+      - pnpm-lock.yaml
+      - package.json
+      - pnpm-workspace.yaml
 
 concurrency:
   group: windows-bringup-bundle-${{ github.ref }}
@@ -80,6 +115,7 @@ jobs:
           Copy-Item -Force -Path $machineExe.FullName -Destination (Join-Path $bundleRoot "machine.exe")
 
           Copy-Item -Force -Path (Join-Path $env:GITHUB_WORKSPACE "scripts\windows\vending-daemon-smoke.ps1") -Destination $scriptDir
+          Copy-Item -Force -Path (Join-Path $env:GITHUB_WORKSPACE "scripts\windows\setup-scheduled-tasks.ps1") -Destination $scriptDir
           Copy-Item -Force -Path (Join-Path $env:GITHUB_WORKSPACE "scripts\windows\machine-config.bringup.example.json") -Destination (Join-Path $bundleRoot "machine-config.bringup.example.json")
 
           $readme = @(
@@ -90,12 +126,17 @@ jobs:
             '- machine.exe',
             '- machine-config.bringup.example.json',
             '- scripts/windows/vending-daemon-smoke.ps1',
+            '- scripts/windows/setup-scheduled-tasks.ps1',
             '- VERSION.txt',
             '',
-            'Before running smoke:',
-            '1. Copy machine-config.bringup.example.json to machine-config.json.',
+            'Install or update machine services/tasks:',
+            '  powershell -ExecutionPolicy Bypass -File C:\VEM\bringup\scripts\windows\setup-scheduled-tasks.ps1 -StartNow',
+            '',
+            'Before installing services or running field smoke:',
+            '1. Copy machine-config.bringup.example.json to C:\VEM\bringup\machine-config.json.',
             '2. Fill machineCode, API/MQTT URLs, COM ports and scanner settings for the target machine.',
             '3. Provision machineSecret, mqttSigningSecret and mqttPassword through the controlled field secret path. Do not store real secrets in this bundle.',
+            '4. setup-scheduled-tasks.ps1 seeds C:\ProgramData\VEM\vending-daemon\machine-config.json from C:\VEM\bringup\machine-config.json only when the ProgramData config does not already exist.',
             '',
             'Example:',
             '  powershell -ExecutionPolicy Bypass -File C:\VEM\bringup\scripts\windows\vending-daemon-smoke.ps1 `',
@@ -121,6 +162,7 @@ jobs:
             "ref=${{ github.ref_name }}",
             "run_id=${{ github.run_id }}",
             "run_number=${{ github.run_number }}",
+            "release_kind=${{ github.event.inputs.release_kind || 'ci' }}",
             "built_at_utc=$((Get-Date).ToUniversalTime().ToString('o'))",
             "runner=$env:RUNNER_NAME",
             "daemon_source=$($daemonExe.FullName)",

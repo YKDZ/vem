@@ -45,15 +45,28 @@ const paymentCopy = computed(() =>
 const confirmingExpiredPayment = computed(
   () => expired.value && status.value?.nextAction === "wait_payment",
 );
+const preparingQrCode = computed(
+  () =>
+    !isPaymentCode.value &&
+    status.value?.nextAction === "wait_payment" &&
+    status.value.payment.status === "processing" &&
+    !order.value?.paymentUrl,
+);
 const qrBlocked = computed(
-  () => expired.value || confirmingExpiredPayment.value,
+  () =>
+    expired.value || confirmingExpiredPayment.value || preparingQrCode.value,
 );
 const qrOverlayText = computed(() =>
-  confirmingExpiredPayment.value
-    ? "正在确认支付结果"
-    : expired.value
-      ? "二维码已过期"
-      : null,
+  preparingQrCode.value
+    ? "正在准备支付二维码"
+    : confirmingExpiredPayment.value
+      ? "正在确认支付结果"
+      : expired.value
+        ? "二维码已过期"
+        : null,
+);
+const qrEmptyText = computed(() =>
+  preparingQrCode.value ? "正在准备支付二维码，请稍候" : "暂无支付二维码",
 );
 
 const showMockControls = computed(
@@ -90,6 +103,15 @@ async function simulateSuccess(): Promise<void> {
 async function simulateFail(): Promise<void> {
   await checkoutStore.markMockFailed();
   await routeByStatus();
+}
+
+async function cancelOrder(): Promise<void> {
+  try {
+    await checkoutStore.cancelCurrentOrder();
+    await router.replace("/catalog");
+  } catch {
+    // checkoutStore.error already carries the operator-facing message.
+  }
 }
 
 onMounted(async () => {
@@ -142,6 +164,7 @@ onUnmounted(() => {
             :value="order.paymentUrl"
             :blocked="qrBlocked"
             :overlay-text="qrOverlayText"
+            :empty-text="qrEmptyText"
           />
           <div
             v-else
@@ -202,6 +225,12 @@ onUnmounted(() => {
             >
               二维码已到期，系统正在向支付平台确认最终结果，请勿重复扫码或关闭页面。
             </p>
+            <p
+              v-else-if="preparingQrCode"
+              class="mt-3 rounded-2xl bg-sky-400/15 p-4 text-sky-100"
+            >
+              支付平台正在同步订单，请等待二维码出现后再扫码。
+            </p>
           </div>
         </div>
 
@@ -215,11 +244,12 @@ onUnmounted(() => {
 
       <div class="mt-auto flex flex-col gap-4">
         <button
-          class="kiosk-touch-target rounded-3xl border border-white/20 px-6 py-5 text-xl font-black"
+          class="kiosk-touch-target rounded-3xl border border-white/20 px-6 py-5 text-xl font-black disabled:border-slate-500 disabled:text-slate-400"
           type="button"
-          @click="router.replace('/catalog')"
+          :disabled="checkoutStore.loading"
+          @click="cancelOrder"
         >
-          取消返回
+          {{ checkoutStore.loading ? "正在取消..." : "取消订单" }}
         </button>
         <div v-if="showMockControls" class="grid grid-cols-2 gap-4">
           <button

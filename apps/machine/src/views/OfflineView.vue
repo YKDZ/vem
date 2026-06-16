@@ -70,7 +70,12 @@ async function retryBoot(): Promise<void> {
         <button
           class="kiosk-touch-target rounded-2xl border border-white/20 px-6 py-4 text-lg font-bold text-white"
           type="button"
-          @click="router.push('/maintenance')"
+          @click="
+            router.push({
+              path: '/maintenance',
+              query: { source: 'operator' },
+            })
+          "
         >
           进入维护配置
         </button>

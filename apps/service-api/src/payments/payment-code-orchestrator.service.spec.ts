@@ -146,7 +146,7 @@ describe("PaymentCodeOrchestratorService", () => {
   });
 
   it("applies provider payment result when charge succeeds", async () => {
-    const { service, paymentsService } = makeHarness();
+    const { service, attempts, paymentsService } = makeHarness();
 
     const result = await service.submit({
       orderNo: "ORD001",
@@ -159,7 +159,57 @@ describe("PaymentCodeOrchestratorService", () => {
 
     expect(result.status).toBe("succeeded");
     expect(result.nextAction).toBe("dispensing");
+    expect(attempts.markStatus).toHaveBeenCalledWith(
+      "attempt-1",
+      "succeeded",
+      expect.objectContaining({
+        failureCode: null,
+        failureMessage: null,
+        manualReason: null,
+      }),
+    );
     expect(paymentsService.applyProviderPaymentResult).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps indeterminate charge result active for provider query instead of retry", async () => {
+    const { service, attempts, paymentsService } = makeHarness({
+      provider: {
+        chargePaymentCode: vi.fn().mockResolvedValue({
+          status: "unknown",
+          providerTradeNo: null,
+          providerStatus: "ALIPAY_REQUEST_UNKNOWN",
+          failureCode: "ALIPAY_REQUEST_UNKNOWN",
+          failureMessage:
+            "HttpClient Request error: Request timeout for 5000 ms",
+          rawPayload: {},
+        }),
+      },
+    });
+    vi.spyOn(
+      service as unknown as { confirmLater: () => Promise<void> },
+      "confirmLater",
+    ).mockResolvedValue(undefined);
+
+    const result = await service.submit({
+      orderNo: "ORD001",
+      machineCode: "M001",
+      authCode: "28763443825664394",
+      idempotencyKey: "idem-timeout",
+      source: "serial_text",
+      clientIp: "127.0.0.1",
+    });
+
+    expect(result.status).toBe("querying");
+    expect(result.canRetry).toBe(false);
+    expect(result.nextAction).toBe("wait_payment");
+    expect(attempts.markStatus).toHaveBeenCalledWith(
+      "attempt-1",
+      "querying",
+      expect.objectContaining({
+        failureCode: "ALIPAY_REQUEST_UNKNOWN",
+      }),
+    );
+    expect(paymentsService.applyProviderPaymentResult).not.toHaveBeenCalled();
   });
 
   it("polls user_confirming attempt until query succeeds and applies success once", async () => {
@@ -231,6 +281,10 @@ describe("PaymentCodeOrchestratorService", () => {
     await privateApi.confirmAttempt("attempt-1", "alipay", config);
 
     expect(provider.reversePaymentCode).toHaveBeenCalledTimes(1);
+    expect(getAttempt()).toMatchObject({
+      status: "reversed",
+      failureMessage: "本次付款码交易已撤销，请刷新付款码后重试",
+    });
     setReplayAttempt({ ...getAttempt(), status: "reversed", isActive: false });
 
     const result = await service.submit({
@@ -244,11 +298,17 @@ describe("PaymentCodeOrchestratorService", () => {
 
     expect(result.status).toBe("reversed");
     expect(result.canRetry).toBe(true);
+    expect(result.message).toBe("本次付款码交易已撤销，请刷新付款码后重试");
   });
 
   it("marks attempt manual_handling after three reverse unknown results", async () => {
+    const config: PaymentProviderRuntimeConfig = {
+      ...baseConfig,
+      publicConfigJson: { paymentCodeReverseMaxAttempts: 3 },
+    };
     const { service, provider, attempts, paymentsService, getAttempt } =
       makeHarness({
+        config,
         provider: {
           reversePaymentCode: vi.fn().mockResolvedValue({
             status: "unknown",
@@ -262,8 +322,10 @@ describe("PaymentCodeOrchestratorService", () => {
           providerTradeNo: "ALI-TXN-004",
         },
       });
+    const privateApi = service as unknown as OrchestratorPrivateMethods;
+    vi.spyOn(privateApi, "wait").mockResolvedValue(undefined);
 
-    await service.reverseUnknownAttempt("attempt-1", "alipay", baseConfig);
+    await service.reverseUnknownAttempt("attempt-1", "alipay", config);
 
     expect(provider.reversePaymentCode).toHaveBeenCalledTimes(3);
     expect(attempts.markStatus).toHaveBeenLastCalledWith(
@@ -275,5 +337,84 @@ describe("PaymentCodeOrchestratorService", () => {
     );
     expect(getAttempt().status).toBe("manual_handling");
     expect(paymentsService.applyProviderPaymentResult).not.toHaveBeenCalled();
+  });
+
+  it("marks attempt manual_handling instead of leaving reversing when reverse throws", async () => {
+    const config: PaymentProviderRuntimeConfig = {
+      ...baseConfig,
+      publicConfigJson: { paymentCodeReverseMaxAttempts: 3 },
+    };
+    const { service, provider, attempts, getAttempt } = makeHarness({
+      config,
+      provider: {
+        reversePaymentCode: vi
+          .fn()
+          .mockRejectedValue(
+            new Error("HttpClient Request error: Request timeout for 5000 ms"),
+          ),
+      },
+      attempt: {
+        status: "querying",
+        providerTradeNo: "ALI-TXN-REVERSE-TIMEOUT",
+      },
+    });
+    const privateApi = service as unknown as OrchestratorPrivateMethods;
+    vi.spyOn(privateApi, "wait").mockResolvedValue(undefined);
+
+    await expect(
+      service.reverseUnknownAttempt("attempt-1", "alipay", config),
+    ).resolves.toBeUndefined();
+
+    expect(provider.reversePaymentCode).toHaveBeenCalledTimes(3);
+    expect(attempts.markStatus).toHaveBeenLastCalledWith(
+      "attempt-1",
+      "manual_handling",
+      expect.objectContaining({
+        isActive: true,
+        manualReason: "reverse_result_unknown_after_retries",
+      }),
+    );
+    expect(getAttempt()).toMatchObject({
+      status: "manual_handling",
+      failureCode: "PAYMENT_CODE_REVERSE_UNKNOWN",
+      failureMessage: "HttpClient Request error: Request timeout for 5000 ms",
+    });
+  });
+
+  it("clears stale failure fields when manual query confirms success", async () => {
+    const { service, attempts, paymentsService, getAttempt } = makeHarness({
+      provider: {
+        queryPaymentCode: vi.fn().mockResolvedValue({
+          status: "succeeded",
+          providerTradeNo: "ALI-TXN-005",
+          providerStatus: "TRADE_SUCCESS",
+          rawPayload: { trade_status: "TRADE_SUCCESS" },
+        }),
+      },
+      attempt: {
+        status: "querying",
+        providerTradeNo: "ALI-TXN-005",
+        failureCode: "PROVIDER_EXCEPTION",
+        failureMessage: "HttpClient Request error: Request timeout for 5000 ms",
+        manualReason: "previous_manual_note",
+      },
+    });
+
+    const updated = await service.manualQuery("attempt-1");
+
+    expect(updated.status).toBe("succeeded");
+    expect(getAttempt().failureCode).toBeNull();
+    expect(getAttempt().failureMessage).toBeNull();
+    expect(getAttempt().manualReason).toBeNull();
+    expect(attempts.markStatus).toHaveBeenCalledWith(
+      "attempt-1",
+      "succeeded",
+      expect.objectContaining({
+        failureCode: null,
+        failureMessage: null,
+        manualReason: null,
+      }),
+    );
+    expect(paymentsService.applyProviderPaymentResult).toHaveBeenCalledTimes(1);
   });
 });

@@ -7,19 +7,15 @@ export type MachineOp = {
   status: string;
   requestedAt: string;
   requestedByAdminUserId: string | null;
-};
-
-export type PageResult<T> = {
-  items: T[];
-  total: number;
-  page: number;
-  pageSize: number;
+  acceptedAt?: string | null;
+  finishedAt?: string | null;
+  failedReason?: string | null;
 };
 
 export async function listMachineOps(
   query?: Record<string, unknown>,
-): Promise<PageResult<MachineOp>> {
-  return await get<PageResult<MachineOp>>("/machine-ops", { params: query });
+): Promise<MachineOp[]> {
+  return await get<MachineOp[]>("/machine-ops", { params: query });
 }
 
 export async function requestLogExport(machineId: string): Promise<MachineOp> {

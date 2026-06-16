@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { formatMachineSlotCoordinate } from "@vem/shared";
 import { computed } from "vue";
 
 import type { MachineCatalogItem } from "@/types/catalog";
@@ -15,10 +16,48 @@ const emit = defineEmits<{
 }>();
 
 const initials = computed(() => props.item.productName.slice(0, 2));
-const specText = computed(
-  () =>
+const saleableVariants = computed(() =>
+  props.item.variantCandidates.filter(
+    (candidate) =>
+      candidate.slotSalesState === "sale_ready" && candidate.saleableStock > 0,
+  ),
+);
+const variantCount = computed(
+  () => saleableVariants.value.length || props.item.variantCandidates.length,
+);
+const specText = computed(() => {
+  if (variantCount.value > 1) {
+    const sizeCount = new Set(
+      props.item.variantCandidates.map((candidate) => candidate.size ?? "默认"),
+    ).size;
+    const styleCount = new Set(
+      props.item.variantCandidates.map(
+        (candidate) => candidate.color ?? "默认",
+      ),
+    ).size;
+    return [`${sizeCount}个尺码`, `${styleCount}种样式`].join(" · ");
+  }
+  return (
     [props.item.size, props.item.color].filter(Boolean).join(" / ") ||
-    props.item.sku,
+    props.item.sku
+  );
+});
+const priceText = computed(() => {
+  const prices = (
+    saleableVariants.value.length
+      ? saleableVariants.value
+      : props.item.variantCandidates
+  ).map((candidate) => candidate.priceCents);
+  const minPrice = Math.min(...prices);
+  const maxPrice = Math.max(...prices);
+  if (!Number.isFinite(minPrice)) return formatCents(props.item.priceCents);
+  if (minPrice === maxPrice) return formatCents(minPrice);
+  return `${formatCents(minPrice)}起`;
+});
+const slotLabel = computed(() =>
+  props.item.aggregatedSlotCount > 1
+    ? `多格口 · ${props.item.aggregatedSlotCount}处`
+    : formatMachineSlotCoordinate(props.item),
 );
 const buttonText = computed(() => {
   if (
@@ -47,13 +86,13 @@ const buttonText = computed(() => {
         <span
           class="rounded-full bg-emerald-300/15 px-3 py-1 text-sm font-bold text-emerald-100"
         >
-          {{ item.slotCode }}
+          {{ slotLabel }}
         </span>
       </div>
       <p class="text-sm text-slate-300">{{ specText }}</p>
       <div class="flex items-end justify-between">
         <p class="text-2xl font-black text-sky-200">
-          {{ formatCents(item.priceCents) }}
+          {{ priceText }}
         </p>
         <p class="text-sm text-slate-300">可售 {{ item.saleableStock }}</p>
       </div>

@@ -1,0 +1,116 @@
+import { z } from "zod";
+
+export const MACHINE_SLOT_HARDWARE_LAYOUT = {
+  minLayerNo: 1,
+  bands: [
+    { maxLayerNo: 6, maxCellNo: 5 },
+    { maxLayerNo: 11, maxCellNo: 4 },
+  ],
+} as const;
+
+export const MACHINE_SLOT_MIN_LAYER_NO =
+  MACHINE_SLOT_HARDWARE_LAYOUT.minLayerNo;
+export const MACHINE_SLOT_MAX_LAYER_NO =
+  MACHINE_SLOT_HARDWARE_LAYOUT.bands[
+    MACHINE_SLOT_HARDWARE_LAYOUT.bands.length - 1
+  ].maxLayerNo;
+export const MACHINE_SLOT_LOWER_MAX_LAYER_NO =
+  MACHINE_SLOT_HARDWARE_LAYOUT.bands[0].maxLayerNo;
+export const MACHINE_SLOT_LOWER_MAX_CELL_NO =
+  MACHINE_SLOT_HARDWARE_LAYOUT.bands[0].maxCellNo;
+export const MACHINE_SLOT_UPPER_MAX_CELL_NO =
+  MACHINE_SLOT_HARDWARE_LAYOUT.bands[
+    MACHINE_SLOT_HARDWARE_LAYOUT.bands.length - 1
+  ].maxCellNo;
+
+export const machineSlotLayerNoSchema = z
+  .int()
+  .min(MACHINE_SLOT_MIN_LAYER_NO)
+  .max(MACHINE_SLOT_MAX_LAYER_NO);
+
+export const machineSlotCellNoSchema = z
+  .int()
+  .min(1)
+  .max(MACHINE_SLOT_LOWER_MAX_CELL_NO);
+
+export type MachineSlotCoordinateInput = {
+  layerNo?: number;
+  cellNo?: number;
+};
+
+export function getMachineSlotMaxCellNo(layerNo: number): number | null {
+  if (!Number.isInteger(layerNo)) return null;
+  if (layerNo < MACHINE_SLOT_HARDWARE_LAYOUT.minLayerNo) return null;
+  for (const band of MACHINE_SLOT_HARDWARE_LAYOUT.bands) {
+    if (layerNo <= band.maxLayerNo) return band.maxCellNo;
+  }
+  return null;
+}
+
+export function machineSlotCoordinateErrorMessage(
+  input: MachineSlotCoordinateInput,
+): string | null {
+  if (typeof input.layerNo !== "number" || !Number.isInteger(input.layerNo)) {
+    return "layerNo must be an integer";
+  }
+  if (
+    input.layerNo < MACHINE_SLOT_MIN_LAYER_NO ||
+    input.layerNo > MACHINE_SLOT_MAX_LAYER_NO
+  ) {
+    return `layerNo ${input.layerNo} is out of hardware bounds (${MACHINE_SLOT_MIN_LAYER_NO}-${MACHINE_SLOT_MAX_LAYER_NO})`;
+  }
+  if (typeof input.cellNo !== "number" || !Number.isInteger(input.cellNo)) {
+    return "cellNo must be an integer";
+  }
+  const maxCellNo = getMachineSlotMaxCellNo(input.layerNo);
+  if (maxCellNo === null) {
+    return `layerNo ${input.layerNo} is out of hardware bounds (${MACHINE_SLOT_MIN_LAYER_NO}-${MACHINE_SLOT_MAX_LAYER_NO})`;
+  }
+  if (input.cellNo < 1 || input.cellNo > maxCellNo) {
+    return `cellNo ${input.cellNo} is out of hardware bounds for row ${input.layerNo} (1-${maxCellNo})`;
+  }
+  return null;
+}
+
+export function isValidMachineSlotCoordinate(
+  input: MachineSlotCoordinateInput,
+): boolean {
+  return machineSlotCoordinateErrorMessage(input) === null;
+}
+
+function formatCoordinatePart(value: number | undefined): string {
+  return typeof value === "number" && Number.isInteger(value)
+    ? String(value)
+    : "--";
+}
+
+export function formatMachineSlotCoordinate(
+  input: MachineSlotCoordinateInput,
+): string {
+  return `行 ${formatCoordinatePart(input.layerNo)} / 格 ${formatCoordinatePart(input.cellNo)}`;
+}
+
+export function machineSlotCoordinateCode(
+  input: MachineSlotCoordinateInput,
+): string {
+  return `R${formatCoordinatePart(input.layerNo)}C${formatCoordinatePart(input.cellNo)}`;
+}
+
+export function addMachineSlotCoordinateIssue(
+  input: MachineSlotCoordinateInput,
+  ctx: {
+    addIssue(issue: {
+      code: "custom";
+      path: Array<keyof MachineSlotCoordinateInput>;
+      message: string;
+    }): void;
+  },
+): void {
+  const message = machineSlotCoordinateErrorMessage(input);
+  if (!message) return;
+  ctx.addIssue({
+    code: "custom",
+    path: message.startsWith("layerNo") ? ["layerNo"] : ["cellNo"],
+    message,
+  });
+}

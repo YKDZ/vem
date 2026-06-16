@@ -17,6 +17,7 @@ export const visionServerMessageTypeSchema = z.enum([
 
 export const visionQualityOverallSchema = z.enum([
   "good",
+  "fair",
   "low_confidence",
   "partial",
 ]);

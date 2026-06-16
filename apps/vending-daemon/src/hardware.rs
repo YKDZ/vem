@@ -1,7 +1,8 @@
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
 
 use vending_core::{
-    hardware::DispenseCommandPayload, hardware::HardwareAdapter, serial::EnvironmentSample,
+    hardware::DispenseCommandPayload, hardware::DispenseProgressObserver,
+    hardware::HardwareAdapter, serial::EnvironmentSample,
 };
 
 use crate::config::{HardwareAdapterKind, MachinePublicConfig};
@@ -17,14 +18,22 @@ impl HardwareSupervisor {
     }
 
     pub fn from_config(config: &MachinePublicConfig) -> Result<Self, String> {
+        Self::from_config_with_protocol_log(config, None)
+    }
+
+    pub fn from_config_with_protocol_log(
+        config: &MachinePublicConfig,
+        protocol_log_path: Option<PathBuf>,
+    ) -> Result<Self, String> {
         let adapter: Arc<dyn HardwareAdapter> = match config.hardware_adapter {
             HardwareAdapterKind::Mock => Arc::new(vending_core::hardware::MockHardwareAdapter),
-            HardwareAdapterKind::Serial => {
-                Arc::new(vending_core::serial::SerialHardwareAdapter::new_resolving(
+            HardwareAdapterKind::Serial => Arc::new(
+                vending_core::serial::SerialHardwareAdapter::new_resolving_with_protocol_log(
                     config.serial_port_path.clone(),
                     config.lower_controller_usb_identity.clone(),
-                ))
-            }
+                    protocol_log_path,
+                ),
+            ),
             HardwareAdapterKind::Bluetooth => {
                 return Err("bluetooth hardware adapter is not implemented".to_string());
             }
@@ -45,6 +54,18 @@ impl HardwareSupervisor {
         command: DispenseCommandPayload,
     ) -> vending_core::hardware::DispenseResultPayload {
         self.adapter.dispense(command).await
+    }
+
+    pub async fn dispense_with_progress(
+        &self,
+        command: DispenseCommandPayload,
+        progress: Option<DispenseProgressObserver>,
+    ) -> vending_core::hardware::DispenseResultPayload {
+        self.adapter.dispense_with_progress(command, progress).await
+    }
+
+    pub fn schedule_next_dispense_fault_injection(&self) -> Result<(), String> {
+        self.adapter.schedule_next_dispense_fault_injection()
     }
 
     pub async fn query_environment_sample(&self) -> Result<Option<EnvironmentSample>, String> {

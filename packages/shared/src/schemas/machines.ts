@@ -6,6 +6,11 @@ import {
   machineSlotStatusSchema,
   machineStatusSchema,
 } from "../enums/machine";
+import {
+  addMachineSlotCoordinateIssue,
+  machineSlotCellNoSchema,
+  machineSlotLayerNoSchema,
+} from "./machine-slot-coordinate";
 import { machinePaymentOptionSchema } from "./orders";
 
 export const createMachineSchema = z.object({
@@ -16,16 +21,27 @@ export const createMachineSchema = z.object({
   mqttClientId: z.string().max(128).nullable().optional(),
 });
 
-export const createMachineSlotSchema = z.object({
-  layerNo: z.int().min(1),
-  cellNo: z.int().min(1),
-  slotCode: z.string().min(1).max(32),
-  capacity: z.int().min(0),
-  status: machineSlotStatusSchema.default("enabled"),
-});
+export const createMachineSlotSchema = z
+  .object({
+    layerNo: machineSlotLayerNoSchema,
+    cellNo: machineSlotCellNoSchema,
+    slotCode: z.string().min(1).max(32),
+    capacity: z.int().min(0),
+    status: machineSlotStatusSchema.default("enabled"),
+  })
+  .superRefine(addMachineSlotCoordinateIssue);
 
 export const updateMachineSchema = createMachineSchema.partial();
-export const updateMachineSlotSchema = createMachineSlotSchema.partial();
+export const updateMachineSlotSchema = z
+  .object({
+    layerNo: machineSlotLayerNoSchema,
+    cellNo: machineSlotCellNoSchema,
+    slotCode: z.string().min(1).max(32),
+    capacity: z.int().min(0),
+    status: machineSlotStatusSchema.default("enabled"),
+  })
+  .partial()
+  .superRefine(addMachineSlotCoordinateIssue);
 
 export const machineEnvironmentHeartbeatPayloadSchema = z.object({
   temperatureCelsius: z.number().optional(),
@@ -144,12 +160,12 @@ export type MachineAuthTokenResponse = z.infer<
   typeof machineAuthTokenResponseSchema
 >;
 
-export const machineCatalogItemSchema = z.object({
+const machineCatalogItemBaseSchema = z.object({
   machineCode: z.string().min(1).max(64),
   slotId: z.uuid(),
   slotCode: z.string().min(1).max(32),
-  layerNo: z.int().min(1),
-  cellNo: z.int().min(1),
+  layerNo: machineSlotLayerNoSchema,
+  cellNo: machineSlotCellNoSchema,
   inventoryId: z.uuid(),
   variantId: z.uuid(),
   productId: z.uuid(),
@@ -167,6 +183,9 @@ export const machineCatalogItemSchema = z.object({
   targetGender: z.enum(["male", "female"]).nullable().optional(),
 });
 
+export const machineCatalogItemSchema =
+  machineCatalogItemBaseSchema.superRefine(addMachineSlotCoordinateIssue);
+
 export type MachineCatalogItem = z.infer<typeof machineCatalogItemSchema>;
 
 export const machinePlanogramVersionStatusSchema = z.enum([
@@ -175,12 +194,13 @@ export const machinePlanogramVersionStatusSchema = z.enum([
   "retired",
 ]);
 
-export const machinePlanogramSlotSchema = machineCatalogItemSchema
+export const machinePlanogramSlotSchema = machineCatalogItemBaseSchema
   .omit({ machineCode: true, availableQty: true })
   .extend({
     capacity: z.int().nonnegative(),
     parLevel: z.int().nonnegative(),
-  });
+  })
+  .superRefine(addMachineSlotCoordinateIssue);
 
 export const publishMachinePlanogramVersionSchema = z.object({
   planogramVersion: z.string().min(1).max(128),
@@ -209,7 +229,7 @@ export type MachinePlanogramVersionSnapshot = z.infer<
   typeof machinePlanogramVersionSnapshotSchema
 >;
 
-export const machineSaleViewItemSchema = machineCatalogItemSchema
+export const machineSaleViewItemSchema = machineCatalogItemBaseSchema
   .omit({ availableQty: true })
   .extend({
     capacity: z.int().nonnegative(),
@@ -226,7 +246,8 @@ export const machineSaleViewItemSchema = machineCatalogItemSchema
       "movement_rejected",
       "needs_platform_review",
     ]),
-  });
+  })
+  .superRefine(addMachineSlotCoordinateIssue);
 
 export const machineSaleViewSnapshotSchema = z.object({
   items: z.array(machineSaleViewItemSchema),

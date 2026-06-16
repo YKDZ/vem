@@ -4,7 +4,7 @@ use std::{
     os::fd::AsRawFd,
     sync::{
         atomic::{AtomicUsize, Ordering},
-        Arc,
+        Arc, Mutex,
     },
     time::Duration,
 };
@@ -18,8 +18,11 @@ use tokio::{
     time::{sleep, timeout},
 };
 use vending_core::{
-    hardware::{DispenseCommandPayload, HardwareAdapter, SlotPayload},
-    serial::{build_dispense_frame, EnvironmentSample, SerialHardwareAdapter, FRAME_HEAD},
+    hardware::{DispenseCommandPayload, DispenseProgressStage, HardwareAdapter, SlotPayload},
+    serial::{
+        build_dispense_frame, EnvironmentSample, SerialHardwareAdapter, DEBUG_DISPENSE_FAULT_FRAME,
+        FRAME_HEAD,
+    },
 };
 
 static PTY_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
@@ -36,6 +39,62 @@ fn command(command_no: &str) -> DispenseCommandPayload {
         quantity: 1,
         timeout_seconds: 2,
     }
+}
+
+#[tokio::test]
+async fn serial_adapter_treats_pickup_timeout_as_warning_until_final_result() {
+    let _pty_guard = PTY_TEST_LOCK.lock().await;
+    let mut pty = support::open_pty();
+    let slave_path = pty.slave_path.clone();
+    tokio::spawn(async move {
+        support::respond_to_handshake(&mut pty.master).await;
+        let _frame = support::read_single_dispense_frame(&mut pty.master).await;
+        support::send_lower_code(&mut pty.master, 0x00).await;
+        sleep(Duration::from_millis(10)).await;
+        support::send_lower_code(&mut pty.master, 0xF0).await;
+        sleep(Duration::from_millis(10)).await;
+        support::send_lower_code(&mut pty.master, 0xAC).await;
+        sleep(Duration::from_millis(10)).await;
+        support::send_lower_code(&mut pty.master, 0xE5).await;
+        sleep(Duration::from_millis(10)).await;
+        support::send_lower_code(&mut pty.master, 0xE5).await;
+        sleep(Duration::from_millis(10)).await;
+        support::send_lower_code(&mut pty.master, 0xF1).await;
+        sleep(Duration::from_millis(50)).await;
+    });
+
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let events_for_progress = events.clone();
+    let adapter = SerialHardwareAdapter::new(slave_path.to_string_lossy().to_string());
+    let result = timeout(
+        Duration::from_secs(10),
+        adapter.dispense_with_progress(
+            command("CMD-PTY-PICKUP-WARNINGS"),
+            Some(Arc::new(move |event| {
+                events_for_progress.lock().expect("events").push(event);
+            })),
+        ),
+    )
+    .await
+    .expect("test timeout");
+
+    assert!(result.success, "{result:?}");
+    let events = events.lock().expect("events");
+    let stages = events
+        .iter()
+        .map(|event| event.stage.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        stages,
+        vec![
+            DispenseProgressStage::OutletOpened,
+            DispenseProgressStage::PickupWaiting,
+            DispenseProgressStage::PickupTimeoutWarning,
+            DispenseProgressStage::PickupTimeoutWarning,
+        ],
+    );
+    assert_eq!(events[2].warning_no, Some(1));
+    assert_eq!(events[3].warning_no, Some(2));
 }
 
 #[tokio::test]
@@ -124,7 +183,69 @@ async fn serial_adapter_reports_mechanical_fault_after_ack() {
 }
 
 #[tokio::test]
-async fn serial_adapter_serializes_environment_control_behind_active_dispense() {
+async fn serial_adapter_can_inject_documented_debug_dispense_fault_after_ack() {
+    let _pty_guard = PTY_TEST_LOCK.lock().await;
+    let mut pty = support::open_pty();
+    let slave_path = pty.slave_path.clone();
+    tokio::spawn(async move {
+        support::respond_to_handshake(&mut pty.master).await;
+        let frame = support::read_single_dispense_frame(&mut pty.master).await;
+        assert_eq!(frame, build_dispense_frame(2, 5).unwrap());
+        support::send_lower_code(&mut pty.master, 0x00).await;
+
+        let mut injected = [0_u8; 4];
+        tokio::io::AsyncReadExt::read_exact(&mut pty.master, &mut injected)
+            .await
+            .expect("read debug fault injection frame");
+        assert_eq!(injected, DEBUG_DISPENSE_FAULT_FRAME);
+
+        support::send_lower_code(&mut pty.master, 0xE3).await;
+        sleep(Duration::from_millis(50)).await;
+    });
+
+    let adapter = SerialHardwareAdapter::new(slave_path.to_string_lossy().to_string());
+    adapter
+        .schedule_next_dispense_fault_injection()
+        .expect("schedule injection");
+    let result = timeout(
+        Duration::from_secs(10),
+        adapter.dispense(command("CMD-PTY-INJECT-FAULT")),
+    )
+    .await
+    .expect("test timeout");
+    assert!(!result.success);
+    assert_eq!(result.error_code.as_deref(), Some("JAMMED"));
+    assert!(result.message.contains("mechanical fault"));
+}
+
+#[tokio::test]
+async fn serial_adapter_reports_pickup_platform_blocked_after_ack() {
+    let _pty_guard = PTY_TEST_LOCK.lock().await;
+    let mut pty = support::open_pty();
+    let slave_path = pty.slave_path.clone();
+    tokio::spawn(async move {
+        support::respond_to_handshake(&mut pty.master).await;
+        let _frame = support::read_single_dispense_frame(&mut pty.master).await;
+        support::send_lower_code(&mut pty.master, 0x00).await;
+        sleep(Duration::from_millis(10)).await;
+        support::send_lower_code(&mut pty.master, 0xE6).await;
+        sleep(Duration::from_millis(50)).await;
+    });
+
+    let adapter = SerialHardwareAdapter::new(slave_path.to_string_lossy().to_string());
+    let result = timeout(
+        Duration::from_secs(10),
+        adapter.dispense(command("CMD-PTY-BLOCKED")),
+    )
+    .await
+    .expect("test timeout");
+    assert!(!result.success);
+    assert_eq!(result.error_code.as_deref(), Some("JAMMED"));
+    assert!(result.message.contains("pickup platform blocked"));
+}
+
+#[tokio::test]
+async fn serial_adapter_serializes_cross_instance_control_behind_active_dispense() {
     let _pty_guard = PTY_TEST_LOCK.lock().await;
     let mut pty = support::open_pty();
     let slave_path = pty.slave_path.clone();
@@ -166,14 +287,15 @@ async fn serial_adapter_serializes_environment_control_behind_active_dispense() 
         sleep(Duration::from_millis(50)).await;
     });
 
-    let adapter = Arc::new(SerialHardwareAdapter::new(
+    let dispense_adapter = Arc::new(SerialHardwareAdapter::new(
         slave_path.to_string_lossy().to_string(),
     ));
-    let dispense_adapter = adapter.clone();
     let dispense =
         tokio::spawn(async move { dispense_adapter.dispense(command("CMD-SERIALIZE")).await });
     sleep(Duration::from_millis(25)).await;
-    let control_adapter = adapter.clone();
+    let control_adapter = Arc::new(SerialHardwareAdapter::new(
+        slave_path.to_string_lossy().to_string(),
+    ));
     let control =
         tokio::spawn(async move { control_adapter.set_air_conditioner_enabled(true).await });
 

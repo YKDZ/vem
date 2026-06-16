@@ -57,6 +57,12 @@ function dispatchDaemonEvent(event: DaemonEvent): void {
 
   if (event.type === "mqtt_changed") {
     mqttStore.applyMqttEvent(event);
+    if (event.connected) {
+      void Promise.allSettled([
+        connectivityStore.refresh(),
+        catalogStore.refresh(),
+      ]);
+    }
     return;
   }
 
@@ -72,11 +78,13 @@ function dispatchDaemonEvent(event: DaemonEvent): void {
 
   if (event.type === "transaction_changed") {
     void checkoutStore.refreshCurrentTransaction();
+    void catalogStore.refresh().catch(() => undefined);
     return;
   }
 
   if (event.type === "remote_op_result") {
     void remoteOpsStore.refresh();
+    void catalogStore.refresh().catch(() => undefined);
   }
 }
 
@@ -96,7 +104,14 @@ onMounted(async () => {
     connectivityStore.applyHealth(health);
     connectivityStore.applyReady(ready);
     connectivityStore.applySaleReadiness(saleReadiness);
-    checkoutStore.applyTransaction(transaction);
+    const startupTransaction = checkoutStore.shouldIgnoreTransaction(
+      transaction,
+    )
+      ? null
+      : transaction;
+    if (startupTransaction) {
+      checkoutStore.applyTransaction(startupTransaction);
+    }
 
     pushStep("同步配置");
     try {
@@ -125,6 +140,7 @@ onMounted(async () => {
         onStale: () => {
           void Promise.allSettled([
             connectivityStore.refresh(),
+            catalogStore.refresh(),
             mqttStore.refresh(),
             checkoutStore.refreshCurrentTransaction(),
           ]);
@@ -139,7 +155,7 @@ onMounted(async () => {
         health,
         config: machineStore.configSummary,
         ready,
-        transaction,
+        transaction: startupTransaction,
       }),
     );
   } catch (error) {

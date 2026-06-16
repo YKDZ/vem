@@ -34,9 +34,10 @@ import {
 } from "@vem/db";
 import {
   commandAckPayloadSchema,
-  environmentControlResultPayloadSchema,
   createMachineSchema,
   createMachineSlotSchema,
+  environmentControlResultPayloadSchema,
+  machineHeartbeatStatusPayloadSchema,
   pageQuerySchema,
   machineEnvironmentControlRequestSchema,
   publishMachinePlanogramVersionSchema,
@@ -44,6 +45,7 @@ import {
   type CommandAckPayload,
   type EnvironmentControlResultPayload,
   type MachineEnvironmentControlRequest,
+  type MachineHeartbeatStatusPayload,
   type MachineClaimRequest,
   type GenerateMachineClaimCodeRequest,
   type MachineProvisioningProfile,
@@ -233,26 +235,21 @@ function planogramVersionSnapshot(
   };
 }
 
-function parseLatestEnvironment(statusPayload: unknown) {
-  if (
-    typeof statusPayload !== "object" ||
-    statusPayload === null ||
-    !("environment" in statusPayload)
-  ) {
-    return null;
+function platformSlotSalesState(
+  slotStatus: typeof machineSlots.$inferSelect.status,
+  availableQty: number,
+) {
+  if (slotStatus !== "enabled") {
+    return "frozen";
   }
+  return availableQty > 0 ? "sale_ready" : "sold_out";
+}
 
-  const environment = Reflect.get(statusPayload, "environment");
-  if (typeof environment !== "object" || environment === null) {
-    return null;
-  }
-
-  const sensorStatus = Reflect.get(environment, "sensorStatus");
-  return sensorStatus === "ok" ||
-    sensorStatus === "faulted" ||
-    sensorStatus === "unknown"
-    ? environment
-    : null;
+function parseLatestHeartbeatStatus(
+  statusPayload: unknown,
+): MachineHeartbeatStatusPayload | null {
+  const parsed = machineHeartbeatStatusPayloadSchema.safeParse(statusPayload);
+  return parsed.success ? parsed.data : null;
 }
 
 @Injectable()
@@ -306,13 +303,18 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
       .where(isNull(machines.deletedAt));
 
     const enrichedItems = await Promise.all(
-      items.map(async (machine) => ({
-        ...machine,
-        latestEnvironment: await this.getLatestEnvironment(machine.id),
-        latestEnvironmentCommand: await this.getLatestEnvironmentCommand(
-          machine.id,
-        ),
-      })),
+      items.map(async (machine) => {
+        const latestHeartbeat = await this.getLatestHeartbeatStatus(machine.id);
+        return {
+          ...machine,
+          latestHeartbeatStatus: latestHeartbeat?.statusPayload ?? null,
+          latestHeartbeatReportedAt: latestHeartbeat?.reportedAt ?? null,
+          latestEnvironment: latestHeartbeat?.statusPayload.environment ?? null,
+          latestEnvironmentCommand: await this.getLatestEnvironmentCommand(
+            machine.id,
+          ),
+        };
+      }),
     );
 
     return toPageResult(enrichedItems, query, Number(totalRow.total));
@@ -363,22 +365,36 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
       throw new NotFoundException("Machine not found");
     }
 
+    const latestHeartbeat = await this.getLatestHeartbeatStatus(id);
     return {
       ...machine,
-      latestEnvironment: await this.getLatestEnvironment(id),
+      latestHeartbeatStatus: latestHeartbeat?.statusPayload ?? null,
+      latestHeartbeatReportedAt: latestHeartbeat?.reportedAt ?? null,
+      latestEnvironment: latestHeartbeat?.statusPayload.environment ?? null,
       latestEnvironmentCommand: await this.getLatestEnvironmentCommand(id),
     };
   }
 
-  private async getLatestEnvironment(machineId: string) {
+  private async getLatestHeartbeatStatus(machineId: string): Promise<{
+    reportedAt: Date;
+    statusPayload: MachineHeartbeatStatusPayload;
+  } | null> {
     const [latestHeartbeat] = await this.db
-      .select({ statusPayloadJson: machineHeartbeats.statusPayloadJson })
+      .select({
+        reportedAt: machineHeartbeats.reportedAt,
+        statusPayloadJson: machineHeartbeats.statusPayloadJson,
+      })
       .from(machineHeartbeats)
       .where(eq(machineHeartbeats.machineId, machineId))
       .orderBy(desc(machineHeartbeats.reportedAt))
       .limit(1);
 
-    return parseLatestEnvironment(latestHeartbeat?.statusPayloadJson);
+    const statusPayload = parseLatestHeartbeatStatus(
+      latestHeartbeat?.statusPayloadJson,
+    );
+    return latestHeartbeat && statusPayload
+      ? { reportedAt: latestHeartbeat.reportedAt, statusPayload }
+      : null;
   }
 
   private async getLatestEnvironmentCommand(machineId: string) {
@@ -789,15 +805,16 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
   }
 
   async createSlot(machineId: string, input: CreateMachineSlotInput) {
+    const slot = createMachineSlotSchema.parse(input);
     const [created] = await this.db
       .insert(machineSlots)
       .values({
         machineId,
-        layerNo: input.layerNo,
-        cellNo: input.cellNo,
-        slotCode: input.slotCode,
-        capacity: input.capacity,
-        status: input.status,
+        layerNo: slot.layerNo,
+        cellNo: slot.cellNo,
+        slotCode: slot.slotCode,
+        capacity: slot.capacity,
+        status: slot.status,
       })
       .returning();
     return created;
@@ -866,6 +883,90 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
         ),
       )
       .orderBy(products.sortOrder, machineSlots.layerNo, machineSlots.cellNo);
+  }
+
+  async getStockSnapshotByMachineCode(code: string) {
+    const rows = await this.db
+      .select({
+        machineCode: machines.code,
+        planogramVersion: machinePlanogramVersions.planogramVersion,
+        slotId: machinePlanogramSlots.slotId,
+        slotCode: machinePlanogramSlots.slotCode,
+        inventoryId: machinePlanogramSlots.inventoryId,
+        capacity: machinePlanogramSlots.capacity,
+        slotStatus: machineSlots.status,
+        onHandQty: inventories.onHandQty,
+        reservedQty: inventories.reservedQty,
+        availableQty: sql<number>`case
+          when ${machineSlots.status} = 'enabled'
+          then ${inventories.onHandQty} - ${inventories.reservedQty}
+          else 0
+        end`,
+      })
+      .from(machines)
+      .innerJoin(
+        machinePlanogramVersions,
+        and(
+          eq(machinePlanogramVersions.machineId, machines.id),
+          eq(machinePlanogramVersions.status, "active"),
+          sql`${machinePlanogramVersions.acknowledgedAt} IS NOT NULL`,
+        ),
+      )
+      .innerJoin(
+        machinePlanogramSlots,
+        eq(
+          machinePlanogramSlots.machinePlanogramVersionId,
+          machinePlanogramVersions.id,
+        ),
+      )
+      .innerJoin(
+        inventories,
+        and(
+          eq(inventories.id, machinePlanogramSlots.inventoryId),
+          eq(inventories.machineId, machines.id),
+          eq(inventories.slotId, machinePlanogramSlots.slotId),
+        ),
+      )
+      .innerJoin(
+        machineSlots,
+        and(
+          eq(machineSlots.id, machinePlanogramSlots.slotId),
+          eq(machineSlots.machineId, machines.id),
+          isNull(machineSlots.deletedAt),
+        ),
+      )
+      .where(
+        and(
+          eq(machines.code, code),
+          isNull(machines.deletedAt),
+          inArray(machines.status, ["online", "maintenance"]),
+        ),
+      )
+      .orderBy(machinePlanogramSlots.layerNo, machinePlanogramSlots.cellNo);
+
+    const first = rows[0];
+    if (!first) {
+      throw new NotFoundException("Machine stock snapshot not found");
+    }
+
+    return {
+      machineCode: first.machineCode,
+      planogramVersion: first.planogramVersion,
+      slots: rows.map((row) => ({
+        slotId: row.slotId,
+        slotCode: row.slotCode,
+        inventoryId: row.inventoryId,
+        capacity: row.capacity,
+        onHandQty: row.onHandQty,
+        reservedQty: row.reservedQty,
+        availableQty: row.availableQty,
+        slotSalesState: platformSlotSalesState(
+          row.slotStatus,
+          row.availableQty,
+        ),
+      })),
+      serverTime: new Date().toISOString(),
+    };
   }
 
   private async handleEnvironmentControlResult(

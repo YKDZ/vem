@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
@@ -30,6 +32,27 @@ pub struct DispenseResultPayload {
     pub message: String,
     pub reported_at: String,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DispenseProgressStage {
+    OutletOpened,
+    PickupWaiting,
+    PickupTimeoutWarning,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DispenseProgressEvent {
+    pub command_no: String,
+    pub order_no: String,
+    pub stage: DispenseProgressStage,
+    pub warning_no: Option<u8>,
+    pub message: String,
+    pub reported_at: String,
+}
+
+pub type DispenseProgressObserver = Arc<dyn Fn(DispenseProgressEvent) + Send + Sync>;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -71,6 +94,12 @@ pub struct HardwareStatus {
 #[async_trait]
 pub trait HardwareAdapter: Send + Sync {
     fn adapter_name(&self) -> &str;
+    fn schedule_next_dispense_fault_injection(&self) -> Result<(), String> {
+        Err(format!(
+            "{} hardware adapter does not support lower-controller fault injection",
+            self.adapter_name()
+        ))
+    }
     async fn self_check(&self) -> HardwareStatus;
     async fn query_environment_sample(&self) -> Result<Option<EnvironmentSample>, String> {
         Ok(None)
@@ -82,6 +111,13 @@ pub trait HardwareAdapter: Send + Sync {
         Err("air conditioner control is not supported by this hardware adapter".to_string())
     }
     async fn dispense(&self, cmd: DispenseCommandPayload) -> DispenseResultPayload;
+    async fn dispense_with_progress(
+        &self,
+        cmd: DispenseCommandPayload,
+        _progress: Option<DispenseProgressObserver>,
+    ) -> DispenseResultPayload {
+        self.dispense(cmd).await
+    }
 }
 
 #[derive(Debug, Default)]

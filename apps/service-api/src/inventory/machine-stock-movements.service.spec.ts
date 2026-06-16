@@ -457,7 +457,41 @@ describe("MachineStockMovementsService", () => {
     ]);
   });
 
-  it("routes local maintenance stock count correction to reconciliation", async () => {
+  it("applies attributed local maintenance refill to platform inventory", async () => {
+    const repo = new InMemoryMovementRepository();
+    const service = new MachineStockMovementsService(repo as never);
+
+    const result = await service.receiveRawMovement(machine, {
+      ...movement,
+      movementId: "MOVE-LOCAL-REFILL",
+      movementType: "planned_refill",
+      quantity: 3,
+      beforeQuantity: 2,
+      afterQuantity: 5,
+      source: "local_maintenance",
+      attributedTo: "front-panel",
+    });
+
+    expect(result.status).toBe("accepted");
+    expect(repo.fieldStockApplicationInputs).toEqual([
+      {
+        machineId: machine.id,
+        rawMovementId: result.receipt?.rawMovementId,
+        input: {
+          ...movement,
+          movementId: "MOVE-LOCAL-REFILL",
+          movementType: "planned_refill",
+          quantity: 3,
+          beforeQuantity: 2,
+          afterQuantity: 5,
+          source: "local_maintenance",
+          attributedTo: "front-panel",
+        },
+      },
+    ]);
+  });
+
+  it("routes unattributed local maintenance stock count correction to reconciliation", async () => {
     const repo = new InMemoryMovementRepository();
     const service = new MachineStockMovementsService(repo as never);
 
@@ -473,7 +507,7 @@ describe("MachineStockMovementsService", () => {
     });
 
     expect(result.status).toBe("reconciliation");
-    expect(result.reconciliation?.reason).toBe("local_maintenance");
+    expect(result.reconciliation?.reason).toBe("weak_attribution");
     expect(repo.fieldStockApplicationInputs).toHaveLength(0);
   });
 

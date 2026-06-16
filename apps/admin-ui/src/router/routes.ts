@@ -40,6 +40,16 @@ export const routes: RouteRecordRaw[] = [
         meta: { title: "机器管理", requiredPermissions: ["machines.read"] },
       },
       {
+        path: "machines/:id",
+        name: "machine-detail",
+        component: async () => import("@/views/machines/MachineDetailView.vue"),
+        meta: {
+          title: "机器详情",
+          hiddenInMenu: true,
+          requiredPermissions: ["machines.read"],
+        },
+      },
+      {
         path: "inventory",
         name: "inventory",
         component: async () => import("@/views/inventory/InventoryView.vue"),

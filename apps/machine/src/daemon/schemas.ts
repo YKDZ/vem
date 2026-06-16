@@ -86,13 +86,11 @@ export const configSummarySchema = z.object({
     lowerControllerUsbIdentity: usbIdentitySchema.nullable().optional(),
     scannerAdapter: z.enum(["disabled", "serial_text"]),
     scannerSerialPortPath: z.string().nullable(),
+    scannerUsbIdentity: usbIdentitySchema.nullable().optional(),
     scannerBaudRate: z.number().int(),
     scannerFrameSuffix: z.enum(["crlf", "lf", "cr", "none"]),
     visionEnabled: z.boolean(),
     visionWsUrl: z.string(),
-    visionAutoStart: z.boolean(),
-    visionProcessCommand: z.string().nullable(),
-    visionProcessArgs: z.string().nullable(),
     visionRequestTimeoutMs: z.number().int(),
     kioskMode: z.boolean(),
     stockMovementRetentionDays: z.number().int().min(1).max(366).default(30),
@@ -127,6 +125,15 @@ export const transactionSnapshotSchema = z.object({
       commandNo: z.string().nullable(),
       status: z.string().nullable(),
       lastError: z.string().nullable(),
+      pickupReminder: z
+        .object({
+          level: z.enum(["info", "warning", "urgent"]),
+          message: z.string(),
+          warningNo: z.number().int().positive().nullable(),
+          reportedAt: z.string(),
+        })
+        .nullable()
+        .optional(),
     })
     .nullable(),
   nextAction: z.string().nullable(),

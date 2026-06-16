@@ -64,6 +64,16 @@ pub struct VendingCommandSummary {
     pub command_no: Option<String>,
     pub status: Option<String>,
     pub last_error: Option<String>,
+    pub pickup_reminder: Option<PickupReminderSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PickupReminderSummary {
+    pub level: String,
+    pub message: String,
+    pub warning_no: Option<u8>,
+    pub reported_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -162,6 +172,7 @@ mod tests {
                 command_no: Some("CMD-1".to_string()),
                 status: Some("created".to_string()),
                 last_error: None,
+                pickup_reminder: None,
             }),
             next_action: Some("submit_payment".to_string()),
             masked_auth_code: Some("6212****3456".to_string()),

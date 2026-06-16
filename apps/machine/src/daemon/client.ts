@@ -39,17 +39,26 @@ export class DaemonUnavailableError extends Error {
   public readonly cause?: unknown;
   public readonly statusCode?: number;
   public readonly responseCode?: string;
+  public readonly responseMessage?: string;
+  public readonly responseBody?: string;
 
   constructor(
     message = "daemon unavailable",
     cause?: unknown,
-    metadata: { statusCode?: number; responseCode?: string } = {},
+    metadata: {
+      statusCode?: number;
+      responseCode?: string;
+      responseMessage?: string;
+      responseBody?: string;
+    } = {},
   ) {
     super(message);
     this.name = "DaemonUnavailableError";
     this.cause = cause;
     this.statusCode = metadata.statusCode;
     this.responseCode = metadata.responseCode;
+    this.responseMessage = metadata.responseMessage;
+    this.responseBody = metadata.responseBody;
   }
 }
 
@@ -92,6 +101,7 @@ export class DaemonApiClient {
     if (!response.ok) {
       const text = await response.text().catch(() => "");
       let responseCode: string | undefined;
+      let responseMessage: string | undefined;
       try {
         const parsed = text ? (JSON.parse(text) as unknown) : null;
         if (
@@ -102,13 +112,30 @@ export class DaemonApiClient {
         ) {
           responseCode = parsed.code;
         }
+        if (
+          typeof parsed === "object" &&
+          parsed !== null &&
+          "message" in parsed &&
+          typeof parsed.message === "string"
+        ) {
+          responseMessage = parsed.message;
+        }
       } catch {
         responseCode = undefined;
+        responseMessage = undefined;
       }
+      const statusMessage = `${path} returned HTTP ${response.status}`;
       throw new DaemonUnavailableError(
-        `${path} returned HTTP ${response.status}`,
+        responseMessage
+          ? `${responseMessage} (${statusMessage})`
+          : statusMessage,
         undefined,
-        { statusCode: response.status, responseCode },
+        {
+          statusCode: response.status,
+          responseCode,
+          responseMessage,
+          responseBody: text.slice(0, 2_000),
+        },
       );
     }
 
@@ -183,6 +210,13 @@ export class DaemonApiClient {
     );
   }
 
+  async clearWholeMachineMaintenanceLock(): Promise<unknown> {
+    return this.request("/v1/maintenance/whole-machine-lock/clear", {
+      method: "POST",
+      body: {},
+    });
+  }
+
   async getSaleReadiness(): Promise<MachineSaleReadiness> {
     return machineSaleReadinessSchema.parse(
       await this.request("/v1/sale-readiness"),
@@ -200,6 +234,15 @@ export class DaemonApiClient {
       await this.request("/v1/intents/create-order", {
         method: "POST",
         body,
+      }),
+    );
+  }
+
+  async cancelOrder(orderNo: string): Promise<TransactionSnapshot> {
+    return transactionSnapshotSchema.parse(
+      await this.request("/v1/intents/cancel-order", {
+        method: "POST",
+        body: { orderNo },
       }),
     );
   }

@@ -4,7 +4,9 @@ import {
   HARDWARE_ERROR_HANDLING,
   adminUserStatuses,
   canonicalJson,
+  createMachineSlotSchema,
   createMachineOrderSchema,
+  dispenseCommandPayloadSchema,
   hardwareErrorCodes,
   environmentControlCommandPayloadSchema,
   environmentControlResultPayloadSchema,
@@ -20,6 +22,10 @@ import {
   machinePlanogramVersionSnapshotSchema,
   machineSaleViewItemSchema,
   machineSlotStatuses,
+  formatMachineSlotCoordinate,
+  isValidMachineSlotCoordinate,
+  getMachineSlotMaxCellNo,
+  machineSlotCoordinateCode,
   maintenanceWorkOrderStatuses,
   mqttSignedEnvelopeSchema,
   notificationTypeSchema,
@@ -52,6 +58,43 @@ describe("shared API contract", () => {
     expect(roleStatuses).toEqual(["active", "disabled"]);
   });
 
+  it("enforces hardware slot coordinate bounds across machine contracts", () => {
+    expect(getMachineSlotMaxCellNo(1)).toBe(5);
+    expect(getMachineSlotMaxCellNo(6)).toBe(5);
+    expect(getMachineSlotMaxCellNo(7)).toBe(4);
+    expect(getMachineSlotMaxCellNo(10)).toBe(4);
+    expect(getMachineSlotMaxCellNo(11)).toBe(4);
+    expect(isValidMachineSlotCoordinate({ layerNo: 7, cellNo: 4 })).toBe(true);
+    expect(isValidMachineSlotCoordinate({ layerNo: 11, cellNo: 4 })).toBe(true);
+    expect(isValidMachineSlotCoordinate({ layerNo: 7, cellNo: 5 })).toBe(false);
+    expect(isValidMachineSlotCoordinate({ layerNo: 11, cellNo: 5 })).toBe(
+      false,
+    );
+    expect(formatMachineSlotCoordinate({ layerNo: 7, cellNo: 4 })).toBe(
+      "行 7 / 格 4",
+    );
+    expect(machineSlotCoordinateCode({ layerNo: 7, cellNo: 4 })).toBe("R7C4");
+
+    expect(() =>
+      createMachineSlotSchema.parse({
+        layerNo: 7,
+        cellNo: 5,
+        slotCode: "G5",
+        capacity: 8,
+        status: "enabled",
+      }),
+    ).toThrow();
+    expect(() =>
+      dispenseCommandPayloadSchema.parse({
+        commandNo: "CMD-1",
+        orderNo: "ORD-1",
+        slot: { layerNo: 12, cellNo: 1, slotCode: "R12C1" },
+        quantity: 1,
+        timeoutSeconds: 30,
+      }),
+    ).toThrow();
+  });
+
   it("accepts structured machine heartbeat payload", () => {
     expect(
       heartbeatPayloadSchema.parse({
@@ -66,6 +109,20 @@ describe("shared API contract", () => {
         },
       }).statusPayload.mqttConnected,
     ).toBe(true);
+  });
+
+  it("accepts environment control failure when confirmed switch state is unknown", () => {
+    const parsed = environmentControlResultPayloadSchema.parse({
+      commandNo: "MCMD-1",
+      success: false,
+      errorCode: "air_conditioner_switch_failed",
+      message: "no matching lower controller candidate responded to handshake",
+      airConditionerOn: null,
+      targetTemperatureCelsius: null,
+      reportedAt: "2026-06-09T10:25:35.327Z",
+    });
+
+    expect(parsed.airConditionerOn).toBeNull();
   });
 
   it("accepts nested machine environment readings in heartbeat payload", () => {
@@ -813,6 +870,25 @@ describe("shared API contract", () => {
       });
       expect(result.paymentMethod).toBe("payment_code");
       expect(result.paymentProviderCode).toBe("alipay");
+    });
+
+    it("accepts null profileSnapshot from machine clients", () => {
+      const result = createMachineOrderSchema.parse({
+        machineCode: "M001",
+        items: [
+          {
+            inventoryId: "550e8400-e29b-41d4-a716-446655440000",
+            quantity: 1,
+            planogramVersion: "PLAN-1",
+            slotId: "550e8400-e29b-41d4-a716-446655440001",
+            slotCode: "A1",
+          },
+        ],
+        paymentMethod: "payment_code",
+        paymentProviderCode: "alipay",
+        profileSnapshot: null,
+      });
+      expect(result.profileSnapshot).toBeNull();
     });
 
     it("rejects payment_code with mock provider", () => {

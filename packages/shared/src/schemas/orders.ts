@@ -42,7 +42,7 @@ export const createMachineOrderSchema = z
     items: z.array(machineOrderItemSchema).min(1).max(10),
     paymentMethod: paymentMethodSchema,
     paymentProviderCode: machinePaymentProviderCodeSchema.optional(),
-    profileSnapshot: z.record(z.string(), z.unknown()).optional(),
+    profileSnapshot: z.record(z.string(), z.unknown()).nullable().optional(),
   })
   .superRefine((value, ctx) => {
     if (value.paymentMethod === "mock") {
@@ -208,6 +208,15 @@ export const machineOrderStatusResponseSchema = z.object({
       ackAt: z.iso.datetime().nullable(),
       resultAt: z.iso.datetime().nullable(),
       lastError: z.string().nullable(),
+      pickupReminder: z
+        .object({
+          level: z.enum(["info", "warning", "urgent"]),
+          message: z.string().min(1).max(256),
+          warningNo: z.int().positive().nullable(),
+          reportedAt: z.iso.datetime(),
+        })
+        .nullable()
+        .optional(),
     })
     .nullable(),
   refund: z

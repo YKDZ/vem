@@ -19,11 +19,14 @@ use crate::{
     runtime::{DaemonRuntime, RuntimeStartInput},
     scanner::ScannerRuntime,
     secret,
+    state::store::{MachinePlanogramInput, MachinePlanogramSlotInput},
     state::LocalStateStore,
     stock_upload::StockMovementUploadRuntime,
-    transaction::TransactionStateMachine,
+    transaction::{is_active_transaction, TransactionStateMachine},
     vision::VisionSupervisor,
 };
+
+const PLATFORM_STOCK_SYNC_INTERVAL: std::time::Duration = std::time::Duration::from_secs(15);
 
 #[derive(Debug, Clone)]
 pub struct ConsoleRunConfig {
@@ -62,7 +65,7 @@ pub async fn run_console_with_token(
     let state = LocalStateStore::open(&data_dir.join("state.db"))
         .await
         .map_err(|error| error.to_string())?;
-    let secret_store = secret::default_secret_store();
+    let secret_store = secret::default_secret_store(data_dir.clone());
     let config_store = std::sync::Arc::new(ConfigStore::new(
         data_dir.clone(),
         state.clone(),
@@ -82,8 +85,11 @@ pub async fn run_console_with_token(
         .await
         .map_err(|error| format!("runtime secrets load failed: {error}"))?;
 
-    let hardware = HardwareSupervisor::from_config(&runtime_config.public)
-        .map_err(|error| format!("hardware config invalid: {error}"))?;
+    let hardware = HardwareSupervisor::from_config_with_protocol_log(
+        &runtime_config.public,
+        Some(data_dir.join("logs").join("serial-protocol.jsonl")),
+    )
+    .map_err(|error| format!("hardware config invalid: {error}"))?;
 
     let (tx_raw, rx_raw) = mpsc::channel(16);
     let (events_tx, _) = broadcast::channel(64);
@@ -123,6 +129,7 @@ pub async fn run_console_with_token(
         token: ipc_token.clone(),
         config_store: config_store.clone(),
         state: state.clone(),
+        hardware: hardware.clone(),
         events: events_tx.clone(),
         runtime_tx: tx_raw.clone(),
         disk_pressure_probe: Arc::new(crate::health::DataDirDiskPressureProbe::default()),
@@ -159,27 +166,59 @@ pub async fn run_console_with_token(
     }));
     let hardware_health = tokio::spawn(run_hardware_health_watcher(
         hardware.clone(),
+        state.clone(),
         ipc_ctx.ui.status_cache.clone(),
         stop_token.clone(),
     ));
     let stock_upload = tokio::spawn(
         StockMovementUploadRuntime::new(state.clone(), backend.clone(), stop_token.clone()).run(),
     );
+    let platform_stock_sync = tokio::spawn(run_platform_stock_sync_watcher(
+        state.clone(),
+        backend.clone(),
+        runtime_config.public.machine_code.clone(),
+        stop_token.clone(),
+    ));
 
     let vision = VisionSupervisor::new(runtime_config.public.clone());
     let vision_events = events_tx.clone();
+    let vision_stop = stop_token.clone();
     tokio::spawn(async move {
-        let snapshot = match vision.start().await {
-            Ok(snapshot) => snapshot,
-            Err(error) => crate::vision::VisionRuntimeSnapshot::failed(error),
-        };
-        let _ = vision_events.send(DaemonEvent::VisionChanged {
-            event_id: uuid::Uuid::new_v4().simple().to_string(),
-            updated_at: crate::state::store::now_iso(),
-            enabled: snapshot.enabled,
-            online: snapshot.online,
-            message: snapshot.message,
-        });
+        // 视觉服务由任务计划程序在用户登录后才启动，daemon 作为系统服务先行启动，
+        // 所以需要带退避重试，直到视觉服务就绪或 daemon 停止。
+        let mut backoff_ms = 2_000_u64;
+        loop {
+            let snapshot = match vision.start().await {
+                Ok(snapshot) if snapshot.online || !snapshot.enabled => {
+                    // 成功或已禁用，发布状态后退出循环
+                    let _ = vision_events.send(DaemonEvent::VisionChanged {
+                        event_id: uuid::Uuid::new_v4().simple().to_string(),
+                        updated_at: crate::state::store::now_iso(),
+                        enabled: snapshot.enabled,
+                        online: snapshot.online,
+                        message: snapshot.message,
+                    });
+                    return;
+                }
+                Ok(snapshot) => snapshot,
+                Err(error) => crate::vision::VisionRuntimeSnapshot::failed(error),
+            };
+            // 发布当前（离线）状态
+            let _ = vision_events.send(DaemonEvent::VisionChanged {
+                event_id: uuid::Uuid::new_v4().simple().to_string(),
+                updated_at: crate::state::store::now_iso(),
+                enabled: snapshot.enabled,
+                online: snapshot.online,
+                message: snapshot.message,
+            });
+            // 退避等待，最长 30 秒
+            tokio::select! {
+                _ = vision_stop.cancelled() => return,
+                _ = tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)) => {
+                    backoff_ms = (backoff_ms * 2).min(30_000);
+                }
+            }
+        }
     });
 
     let mut tasks = vec![
@@ -188,6 +227,7 @@ pub async fn run_console_with_token(
         payment_watcher,
         hardware_health,
         stock_upload,
+        platform_stock_sync,
         ipc_task,
     ];
     if let Some(runtime_mqtt) = maybe_spawn_mqtt_task(
@@ -331,6 +371,81 @@ async fn run_payment_code_watcher(input: PaymentCodeWatcherInput) -> Result<(), 
     }
 }
 
+async fn run_platform_stock_sync_watcher(
+    state: LocalStateStore,
+    backend: Arc<BackendClient>,
+    machine_code: Option<String>,
+    shutdown: CancellationToken,
+) -> Result<(), String> {
+    let Some(machine_code) = machine_code else {
+        return Ok(());
+    };
+
+    loop {
+        match sync_platform_planogram_and_stock(&state, &backend, &machine_code).await {
+            Ok(()) => {}
+            Err(error) if error.contains("stock snapshot deferred") => {}
+            Err(error) => eprintln!("platform stock sync failed: {error}"),
+        }
+        tokio::select! {
+            _ = shutdown.cancelled() => return Ok(()),
+            _ = time::sleep(PLATFORM_STOCK_SYNC_INTERVAL) => {}
+        }
+    }
+}
+
+async fn sync_platform_planogram_and_stock(
+    state: &LocalStateStore,
+    backend: &BackendClient,
+    machine_code: &str,
+) -> Result<(), String> {
+    if let Some(current) = state
+        .current_transaction_snapshot()
+        .await
+        .map_err(|error| error.to_string())?
+    {
+        if is_active_transaction(&current) {
+            return Ok(());
+        }
+    }
+
+    let published = backend.get_published_planogram(machine_code).await?;
+    if !published.is_null() {
+        let planogram_version = published
+            .get("planogramVersion")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| "published planogram response missing planogramVersion".to_string())?
+            .to_string();
+        let slots = published
+            .get("slots")
+            .cloned()
+            .ok_or_else(|| "published planogram response missing slots".to_string())
+            .and_then(|value| {
+                serde_json::from_value::<Vec<MachinePlanogramSlotInput>>(value)
+                    .map_err(|error| error.to_string())
+            })?;
+        state
+            .apply_planogram(MachinePlanogramInput {
+                planogram_version: planogram_version.clone(),
+                source: "platform_stock_sync".to_string(),
+                applied_by: None,
+                slots,
+            })
+            .await
+            .map_err(|error| error.to_string())?;
+        backend
+            .acknowledge_planogram(machine_code, &planogram_version)
+            .await?;
+    }
+
+    let snapshot = backend.get_stock_snapshot(machine_code).await?;
+    state
+        .apply_platform_stock_snapshot(&snapshot)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
 async fn write_ready_file(path: &Path, bind: SocketAddr, token: &str) -> Result<(), String> {
     let parent = path.parent().unwrap_or(Path::new("."));
     tokio::fs::create_dir_all(parent)
@@ -358,11 +473,26 @@ async fn write_ready_file(path: &Path, bind: SocketAddr, token: &str) -> Result<
 
 async fn run_hardware_health_watcher(
     hardware: HardwareSupervisor,
+    state: LocalStateStore,
     status_cache: ipc::RuntimeStatusCache,
     shutdown: CancellationToken,
 ) -> Result<(), String> {
     loop {
         let status = hardware.self_check().await;
+        if let Some(error_code) =
+            crate::state::store::classify_whole_machine_hardware_status_fault(&status)
+        {
+            if let Err(error) = state
+                .record_whole_machine_hardware_fault_lock(
+                    "hardware_health_watcher",
+                    &status.message,
+                    Some(error_code),
+                )
+                .await
+            {
+                eprintln!("record whole-machine hardware fault lock failed: {error}");
+            }
+        }
         *status_cache.hardware.write().await = status;
         tokio::select! {
             _ = time::sleep(std::time::Duration::from_secs(10)) => {}
@@ -377,7 +507,14 @@ async fn cache_daemon_events(
     status_cache: ipc::RuntimeStatusCache,
     runtime_shutdown: Option<CancellationToken>,
 ) -> Result<(), String> {
-    while let Ok(event) = events.recv().await {
+    loop {
+        let event = match events.recv().await {
+            Ok(event) => event,
+            Err(broadcast::error::RecvError::Lagged(_missed)) => {
+                continue;
+            }
+            Err(broadcast::error::RecvError::Closed) => break,
+        };
         let updated_at = crate::state::store::now_iso();
         match event {
             DaemonEvent::MqttChanged {
@@ -448,7 +585,44 @@ async fn wait_for_local_signal() -> Result<(), String> {
 mod tests {
     use super::*;
     use crate::config::default_public_config;
+    use async_trait::async_trait;
     use std::net::{IpAddr, Ipv4Addr};
+
+    #[derive(Debug)]
+    struct FaultySelfCheckAdapter;
+
+    #[async_trait]
+    impl vending_core::hardware::HardwareAdapter for FaultySelfCheckAdapter {
+        fn adapter_name(&self) -> &str {
+            "faulty-self-check"
+        }
+
+        async fn self_check(&self) -> vending_core::hardware::HardwareStatus {
+            vending_core::hardware::HardwareStatus {
+                adapter: "serial".to_string(),
+                online: false,
+                message: "lower controller responded with fault on COM3 (mechanical fault)"
+                    .to_string(),
+                port_path: Some("COM3".to_string()),
+                resolution_source: Some("configured".to_string()),
+                bound_usb_identity: None,
+                candidates: vec![],
+            }
+        }
+
+        async fn dispense(
+            &self,
+            command: vending_core::hardware::DispenseCommandPayload,
+        ) -> vending_core::hardware::DispenseResultPayload {
+            vending_core::hardware::DispenseResultPayload {
+                command_no: command.command_no,
+                success: false,
+                error_code: Some("JAMMED".to_string()),
+                message: "faulty self-check adapter does not dispense".to_string(),
+                reported_at: crate::state::store::now_iso(),
+            }
+        }
+    }
 
     #[test]
     fn default_console_config_uses_loopback_and_port() {
@@ -498,5 +672,97 @@ mod tests {
 
         task.abort();
         let _ = task.await;
+    }
+
+    #[tokio::test]
+    async fn cache_daemon_events_survives_lagged_broadcast_events() {
+        let temp = tempfile::tempdir().expect("temp");
+        let state = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("state");
+        let status_cache = ipc::RuntimeStatusCache::new(&default_public_config(), state).await;
+        let (events_tx, events_rx) = broadcast::channel(1);
+
+        events_tx
+            .send(DaemonEvent::MqttChanged {
+                event_id: "evt-missed".to_string(),
+                updated_at: crate::state::store::now_iso(),
+                connected: true,
+                last_error: None,
+            })
+            .expect("send missed event");
+        events_tx
+            .send(DaemonEvent::ScannerHealthChanged {
+                event_id: "evt-scanner-ready".to_string(),
+                updated_at: crate::state::store::now_iso(),
+                snapshot: vending_core::scanner::ScannerHealthSnapshot {
+                    online: true,
+                    adapter: vending_core::scanner::PAYMENT_CODE_SOURCE_SERIAL_TEXT.to_string(),
+                    port: Some("COM3".to_string()),
+                    level: vending_core::health::HealthLevel::Ok,
+                    code: "SCANNER_READY".to_string(),
+                    message: "scanner ready".to_string(),
+                    updated_at: crate::state::store::now_iso(),
+                },
+            })
+            .expect("send scanner event");
+
+        let task = tokio::spawn(cache_daemon_events(events_rx, status_cache.clone(), None));
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                let scanner = status_cache.scanner.read().await.clone();
+                if scanner.code == "SCANNER_READY" {
+                    assert!(scanner.online);
+                    assert_eq!(scanner.port.as_deref(), Some("COM3"));
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("scanner cache updated after lag");
+
+        task.abort();
+        let _ = task.await;
+    }
+
+    #[tokio::test]
+    async fn hardware_health_watcher_records_whole_machine_lock_for_controller_fault() {
+        let temp = tempfile::tempdir().expect("temp");
+        let state = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("state");
+        let status_cache =
+            ipc::RuntimeStatusCache::new(&default_public_config(), state.clone()).await;
+        let shutdown = CancellationToken::new();
+        let task = tokio::spawn(run_hardware_health_watcher(
+            HardwareSupervisor::from_adapter(Arc::new(FaultySelfCheckAdapter)),
+            state.clone(),
+            status_cache,
+            shutdown.clone(),
+        ));
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if let Some(lock) = state
+                    .whole_machine_maintenance_lock()
+                    .await
+                    .expect("read lock")
+                {
+                    assert_eq!(lock.code, "WHOLE_MACHINE_HARDWARE_FAULT");
+                    assert_eq!(lock.source, "hardware_health_watcher");
+                    assert_eq!(lock.error_code.as_deref(), Some("JAMMED"));
+                    assert!(lock.message.contains("mechanical fault"));
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("whole-machine lock recorded");
+
+        shutdown.cancel();
+        task.await.expect("watcher task").expect("watcher result");
     }
 }

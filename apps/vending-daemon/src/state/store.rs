@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::{collections::HashSet, path::Path};
 
 use chrono::{SecondsFormat, Utc};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -13,7 +13,8 @@ use super::schema::{
     MIGRATION_V7, SCHEMA_VERSION,
 };
 use vending_core::hardware::{
-    DispenseCommandPayload, DispenseResultPayload, EnvironmentControlResultPayload,
+    DispenseCommandPayload, DispenseProgressEvent, DispenseProgressStage, DispenseResultPayload,
+    EnvironmentControlResultPayload, HardwareStatus,
 };
 
 const COMMAND_LOG_TTL_DAYS: i64 = 30;
@@ -22,6 +23,7 @@ const OUTBOX_TTL_DAYS: i64 = 7;
 pub const OUTBOX_MAX_EVENTS: i64 = 500;
 const STOCK_LEDGER_REBUILT_AFTER_QUARANTINE_KEY: &str = "stock_ledger_rebuilt_after_quarantine";
 const STOCK_MOVEMENT_RETENTION_DAYS: i64 = 30;
+pub(crate) const WHOLE_MACHINE_MAINTENANCE_LOCK_KEY: &str = "whole_machine_maintenance_lock";
 
 type CommandRecordRow = (
     String,
@@ -81,6 +83,19 @@ type OrderSessionRecordRow = (
     String,
     String,
 );
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WholeMachineMaintenanceLock {
+    pub code: String,
+    pub message: String,
+    pub source: String,
+    pub order_no: String,
+    pub command_no: String,
+    pub slot_code: String,
+    pub error_code: Option<String>,
+    pub created_at: String,
+}
 
 #[derive(Debug, Error)]
 pub enum StoreError {
@@ -549,6 +564,51 @@ impl LocalStateStore {
         Ok(row.and_then(|(json,)| serde_json::from_str(&json).ok()))
     }
 
+    pub async fn delete_metadata(&self, key: &str) -> Result<(), StoreError> {
+        sqlx::query("DELETE FROM runtime_metadata WHERE key = ?1")
+            .bind(key)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn whole_machine_maintenance_lock(
+        &self,
+    ) -> Result<Option<WholeMachineMaintenanceLock>, StoreError> {
+        self.get_metadata(WHOLE_MACHINE_MAINTENANCE_LOCK_KEY).await
+    }
+
+    pub async fn clear_whole_machine_maintenance_lock(&self) -> Result<(), StoreError> {
+        self.delete_metadata(WHOLE_MACHINE_MAINTENANCE_LOCK_KEY)
+            .await
+    }
+
+    pub async fn record_whole_machine_hardware_fault_lock(
+        &self,
+        source: &str,
+        message: &str,
+        error_code: Option<&str>,
+    ) -> Result<(), StoreError> {
+        self.put_metadata(
+            WHOLE_MACHINE_MAINTENANCE_LOCK_KEY,
+            &WholeMachineMaintenanceLock {
+                code: "WHOLE_MACHINE_HARDWARE_FAULT".to_string(),
+                message: if message.trim().is_empty() {
+                    "lower controller hardware fault requires operator reset".to_string()
+                } else {
+                    message.to_string()
+                },
+                source: source.to_string(),
+                order_no: String::new(),
+                command_no: String::new(),
+                slot_code: String::new(),
+                error_code: error_code.map(ToString::to_string),
+                created_at: now_iso(),
+            },
+        )
+        .await
+    }
+
     pub async fn acquire_runtime_lock(&self, owner_pid: u32) -> Result<(), StoreError> {
         match sqlx::query(
             "INSERT INTO runtime_locks(lock_name,owner_pid,acquired_at,heartbeat_at)
@@ -668,12 +728,44 @@ impl LocalStateStore {
         Ok(())
     }
 
+    pub async fn record_dispense_progress(
+        &self,
+        event: &DispenseProgressEvent,
+    ) -> Result<(), StoreError> {
+        let row: Option<(Option<String>,)> =
+            sqlx::query_as("SELECT last_backend_status_json FROM order_sessions WHERE order_no=?1")
+                .bind(&event.order_no)
+                .fetch_optional(&self.pool)
+                .await?;
+        let Some((last_backend_status_json,)) = row else {
+            return Ok(());
+        };
+
+        let mut backend_status = last_backend_status_json
+            .as_deref()
+            .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok())
+            .unwrap_or_else(|| serde_json::json!({}));
+        patch_backend_status_for_dispense_progress(&mut backend_status, event);
+
+        sqlx::query(
+            "UPDATE order_sessions
+             SET last_backend_status_json=?2, updated_at=?3
+             WHERE order_no=?1",
+        )
+        .bind(&event.order_no)
+        .bind(backend_status.to_string())
+        .bind(now_iso())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
     pub async fn record_command_result_and_enqueue_tx(
         &self,
         command: &DispenseCommandPayload,
         result: &DispenseResultPayload,
         result_event: &OutboxInput,
-    ) -> Result<(), StoreError> {
+    ) -> Result<bool, StoreError> {
         let existing = self.get_command(&command.command_no).await?;
         if let Some(existing) = existing.as_ref() {
             if matches!(
@@ -681,7 +773,7 @@ impl LocalStateStore {
                 CommandLogStatus::Succeeded | CommandLogStatus::Failed
             ) && existing.result_payload.is_some()
             {
-                return Ok(());
+                return Ok(false);
             }
         }
 
@@ -712,6 +804,47 @@ impl LocalStateStore {
         .await?;
 
         tx.commit().await?;
+        Ok(true)
+    }
+
+    pub async fn apply_dispense_result_to_order_session(
+        &self,
+        command: &DispenseCommandPayload,
+        result: &DispenseResultPayload,
+    ) -> Result<(), StoreError> {
+        let row: Option<(Option<String>,)> =
+            sqlx::query_as("SELECT last_backend_status_json FROM order_sessions WHERE order_no=?1")
+                .bind(&command.order_no)
+                .fetch_optional(&self.pool)
+                .await?;
+        let Some((last_backend_status_json,)) = row else {
+            return Ok(());
+        };
+
+        let mut backend_status = last_backend_status_json
+            .as_deref()
+            .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok())
+            .unwrap_or_else(|| serde_json::json!({}));
+        patch_backend_status_for_dispense_result(&mut backend_status, command, result);
+
+        let (status, next_action) = if result.success {
+            ("succeeded", "success")
+        } else {
+            ("failed", "dispense_failed")
+        };
+        let now = now_iso();
+        sqlx::query(
+            "UPDATE order_sessions
+             SET status=?2, next_action=?3, last_backend_status_json=?4, updated_at=?5
+             WHERE order_no=?1",
+        )
+        .bind(&command.order_no)
+        .bind(status)
+        .bind(next_action)
+        .bind(backend_status.to_string())
+        .bind(now)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
@@ -893,13 +1026,14 @@ impl LocalStateStore {
         &self,
         input: OrderSessionUpsert<'_>,
     ) -> Result<(), StoreError> {
+        let expires_at = order_session_expires_at(&input);
         sqlx::query(
             "INSERT INTO order_sessions(order_no,payment_method,payment_provider,payment_attempt_json,items_json,status,next_action,expires_at,last_backend_status_json,last_error,recovery_strategy,updated_at)
              VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)
              ON CONFLICT(order_no) DO UPDATE SET
                payment_method = excluded.payment_method,
                payment_provider = excluded.payment_provider,
-               payment_attempt_json = excluded.payment_attempt_json,
+               payment_attempt_json = COALESCE(excluded.payment_attempt_json, order_sessions.payment_attempt_json),
                items_json = excluded.items_json,
                status = excluded.status,
                next_action = excluded.next_action,
@@ -916,7 +1050,7 @@ impl LocalStateStore {
         .bind(input.items_json.to_string())
         .bind(input.status)
         .bind(input.next_action)
-        .bind(now_iso_days(COMMAND_LOG_TTL_DAYS))
+        .bind(expires_at)
         .bind(
             input
                 .last_backend_status_json
@@ -931,6 +1065,69 @@ impl LocalStateStore {
         Ok(())
     }
 
+    pub async fn apply_backend_order_status(
+        &self,
+        order_no: &str,
+        backend_status_json: serde_json::Value,
+    ) -> Result<(), StoreError> {
+        let row: Option<OrderSessionRecordRow> = sqlx::query_as(
+            "SELECT order_no,payment_method,payment_provider,payment_attempt_json,items_json,status,next_action,expires_at,last_backend_status_json,last_error,recovery_strategy,updated_at
+             FROM order_sessions
+             WHERE order_no = ?1",
+        )
+        .bind(order_no)
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some(row) = row else {
+            return Ok(());
+        };
+        let record = to_order_session_record(row);
+        let items_json = serde_json::from_str::<serde_json::Value>(&record.items_json)?;
+        let payment_method = backend_status_json
+            .pointer("/payment/method")
+            .and_then(|value| value.as_str())
+            .unwrap_or(record.payment_method.as_str())
+            .to_string();
+        let payment_provider = backend_status_json
+            .pointer("/payment/providerCode")
+            .and_then(|value| value.as_str())
+            .map(ToString::to_string)
+            .or(record.payment_provider);
+        let status = backend_status_json
+            .get("orderStatus")
+            .and_then(|value| value.as_str())
+            .unwrap_or(record.status.as_str())
+            .to_string();
+        let next_action = backend_status_json
+            .get("nextAction")
+            .and_then(|value| value.as_str())
+            .unwrap_or(record.next_action.as_str())
+            .to_string();
+        let payment_attempt_json = merge_backend_payment_code_attempt(
+            record.payment_attempt_json.as_deref(),
+            backend_status_json.get("paymentCodeAttempt"),
+        )?;
+
+        let merged_backend_status = merge_local_dispense_progress(
+            record.last_backend_status_json.as_deref(),
+            backend_status_json,
+        );
+
+        self.upsert_order_session(OrderSessionUpsert {
+            order_no,
+            payment_method: &payment_method,
+            payment_provider: payment_provider.as_deref(),
+            items_json,
+            status: &status,
+            next_action: &next_action,
+            payment_attempt_json,
+            recovery_strategy: record.recovery_strategy.as_str(),
+            last_backend_status_json: Some(merged_backend_status),
+            last_error: None,
+        })
+        .await
+    }
+
     pub async fn current_order_session_snapshot(
         &self,
     ) -> Result<Option<vending_core::domain::TransactionSnapshot>, StoreError> {
@@ -938,7 +1135,7 @@ impl LocalStateStore {
             "SELECT order_no, status, next_action, updated_at
                  FROM order_sessions
                  WHERE status != 'closed'
-                 ORDER BY updated_at DESC
+                 ORDER BY updated_at DESC, rowid DESC
                  LIMIT 1",
         )
         .fetch_optional(&self.pool)
@@ -964,7 +1161,7 @@ impl LocalStateStore {
             "SELECT order_no,payment_method,payment_provider,payment_attempt_json,items_json,status,next_action,expires_at,last_backend_status_json,last_error,recovery_strategy,updated_at
              FROM order_sessions
              WHERE status != 'closed'
-             ORDER BY updated_at DESC
+             ORDER BY updated_at DESC, rowid DESC
              LIMIT 1",
         )
         .fetch_optional(&self.pool)
@@ -1053,16 +1250,28 @@ impl LocalStateStore {
         if !history.is_empty() {
             payload.insert("history".to_string(), serde_json::Value::Array(history));
         }
-        sqlx::query(
+        let updated = sqlx::query(
             "UPDATE order_sessions
              SET payment_attempt_json = ?2, updated_at = ?3
-             WHERE order_no = ?1",
+             WHERE order_no = ?1
+               AND (
+                 payment_attempt_json IS NULL
+                 OR COALESCE(json_extract(payment_attempt_json, '$.status'), '') NOT IN ('submitting', 'user_confirming', 'querying', 'processing')
+               )
+               AND NOT (
+                 COALESCE(json_extract(payment_attempt_json, '$.status'), '') IN ('failed', 'manual_handling', 'unknown')
+                 AND COALESCE(json_extract(payment_attempt_json, '$.canRetry'), 0) = 0
+               )",
         )
         .bind(order_no)
         .bind(serde_json::Value::Object(payload.clone()).to_string())
         .bind(now_iso())
         .execute(&self.pool)
-        .await?;
+        .await?
+        .rows_affected();
+        if updated != 1 {
+            return Err(StoreError::ActivePaymentCodeAttempt);
+        }
         Ok(payload
             .get("idempotencyKey")
             .and_then(|value| value.as_str())
@@ -1330,6 +1539,7 @@ impl LocalStateStore {
                         previous.physical_stock,
                         saleable_stock,
                         &previous.slot_sales_state,
+                        false,
                     )
                     .await?;
                     upsert_sale_safety_blocker_marker_in_tx(
@@ -1349,6 +1559,7 @@ impl LocalStateStore {
                         previous.physical_stock,
                         0,
                         "blocked_for_planogram_change",
+                        false,
                     )
                     .await?;
                 } else {
@@ -1367,6 +1578,7 @@ impl LocalStateStore {
                         previous.physical_stock,
                         saleable_stock,
                         slot_sales_state,
+                        false,
                     )
                     .await?;
                 }
@@ -1378,6 +1590,7 @@ impl LocalStateStore {
                     0,
                     0,
                     "needs_count",
+                    false,
                 )
                 .await?;
                 upsert_sale_safety_blocker_marker_in_tx(
@@ -1397,6 +1610,7 @@ impl LocalStateStore {
                     0,
                     0,
                     "needs_count",
+                    false,
                 )
                 .await?;
             }
@@ -1542,33 +1756,269 @@ impl LocalStateStore {
             insert_outbox_in_tx(&mut tx, &event).await?;
         }
 
-        clear_stock_ledger_loss_blocker_in_tx(&mut tx, &input.planogram_version, &input.slot_id)
+        let reset_local_slot_hold = input.source == "local_maintenance";
+        if reset_local_slot_hold {
+            clear_sale_safety_blocker_marker_in_tx(
+                &mut tx,
+                &input.planogram_version,
+                &input.slot_id,
+            )
             .await?;
+        } else {
+            clear_stock_ledger_loss_blocker_in_tx(
+                &mut tx,
+                &input.planogram_version,
+                &input.slot_id,
+            )
+            .await?;
+        }
         upsert_stock_projection_in_tx(
             &mut tx,
             &input.planogram_version,
             &input.slot_id,
             after_quantity,
             capacity,
+            reset_local_slot_hold,
         )
         .await?;
         upsert_sale_view_projection_in_tx(&mut tx, &input.planogram_version, &input.slot_id)
             .await?;
         tx.commit().await?;
-        self.sale_view(None).await
+        self.sale_view(machine_code.map(ToString::to_string)).await
+    }
+
+    pub async fn apply_platform_stock_snapshot(
+        &self,
+        snapshot: &crate::backend::MachineStockSnapshot,
+    ) -> Result<SaleViewSnapshot, StoreError> {
+        if snapshot.planogram_version.trim().is_empty() {
+            return Err(StoreError::InvalidStockInput(
+                "stock snapshot planogram version is required".to_string(),
+            ));
+        }
+
+        let mut tx = self.pool.begin().await?;
+        let pending_uploads: (i64,) = sqlx::query_as(
+            "SELECT COUNT(1) FROM outbox_events WHERE kind = 'stock_movement_upload'",
+        )
+        .fetch_one(tx.as_mut())
+        .await?;
+        if pending_uploads.0 > 0 {
+            return Err(StoreError::InvalidStockInput(
+                "stock snapshot deferred while local stock movements are pending upload"
+                    .to_string(),
+            ));
+        }
+
+        let now = now_iso();
+        let latest_order_session: Option<(String, String, Option<String>)> = sqlx::query_as(
+            "SELECT status, next_action, expires_at
+             FROM order_sessions
+             WHERE status != 'closed'
+             ORDER BY updated_at DESC, rowid DESC
+             LIMIT 1",
+        )
+        .fetch_optional(tx.as_mut())
+        .await?;
+        if latest_order_session
+            .as_ref()
+            .is_some_and(|(status, next_action, expires_at)| {
+                order_session_reserves_local_stock(status, next_action, expires_at.as_deref(), &now)
+            })
+        {
+            return Err(StoreError::InvalidStockInput(
+                "stock snapshot deferred while a local order is active".to_string(),
+            ));
+        }
+
+        let active: Option<(String,)> = sqlx::query_as(
+            "SELECT planogram_version FROM machine_planogram_versions WHERE active = 1 LIMIT 1",
+        )
+        .fetch_optional(tx.as_mut())
+        .await?;
+        if active.as_ref().map(|(version,)| version.as_str())
+            != Some(snapshot.planogram_version.as_str())
+        {
+            return Err(StoreError::InvalidStockInput(format!(
+                "stock snapshot planogram {} is not active locally",
+                snapshot.planogram_version
+            )));
+        }
+
+        let local_slots: Vec<(String, String, String, i64)> = sqlx::query_as(
+            "SELECT slot_id, slot_code, inventory_id, capacity
+             FROM machine_planogram_slots
+             WHERE planogram_version = ?1
+             ORDER BY layer_no ASC, cell_no ASC",
+        )
+        .bind(&snapshot.planogram_version)
+        .fetch_all(tx.as_mut())
+        .await?;
+        if local_slots.len() != snapshot.slots.len() {
+            return Err(StoreError::InvalidStockInput(format!(
+                "stock snapshot slot count mismatch: local={}, platform={}",
+                local_slots.len(),
+                snapshot.slots.len()
+            )));
+        }
+
+        let mut seen_slot_ids = HashSet::with_capacity(snapshot.slots.len());
+        for slot in &snapshot.slots {
+            if !seen_slot_ids.insert(slot.slot_id.clone()) {
+                return Err(StoreError::InvalidStockInput(format!(
+                    "stock snapshot duplicate slot {}",
+                    slot.slot_code
+                )));
+            }
+            if slot.capacity < 0
+                || slot.on_hand_qty < 0
+                || slot.reserved_qty < 0
+                || slot.available_qty < 0
+            {
+                return Err(StoreError::InvalidStockInput(
+                    "stock snapshot quantities must be nonnegative".to_string(),
+                ));
+            }
+
+            let Some((_, local_slot_code, inventory_id, capacity)) = local_slots
+                .iter()
+                .find(|(slot_id, _, _, _)| slot_id == &slot.slot_id)
+            else {
+                return Err(StoreError::InvalidStockInput(format!(
+                    "stock snapshot contains unknown slot {}",
+                    slot.slot_code
+                )));
+            };
+            if local_slot_code != &slot.slot_code {
+                return Err(StoreError::InvalidStockInput(format!(
+                    "stock snapshot slot code mismatch for slot {}",
+                    slot.slot_id
+                )));
+            }
+            if inventory_id != &slot.inventory_id {
+                return Err(StoreError::InvalidStockInput(format!(
+                    "stock snapshot inventory mismatch for slot {}",
+                    slot.slot_code
+                )));
+            }
+            if *capacity != slot.capacity {
+                return Err(StoreError::InvalidStockInput(format!(
+                    "stock snapshot capacity mismatch for slot {}",
+                    slot.slot_code
+                )));
+            }
+
+            let raw_saleable_stock = slot.available_qty.min(*capacity).max(0);
+            let slot_sales_state = match slot.slot_sales_state.as_deref() {
+                Some(state) if !is_supported_slot_sales_state(state) => {
+                    return Err(StoreError::InvalidStockInput(format!(
+                        "stock snapshot unsupported slot sales state {} for slot {}",
+                        state, slot.slot_code
+                    )));
+                }
+                Some("sale_ready") if raw_saleable_stock <= 0 => "sold_out",
+                Some(state) => state,
+                None if raw_saleable_stock > 0 => "sale_ready",
+                None => "sold_out",
+            };
+            let saleable_stock = if slot_sales_state == "sale_ready" {
+                raw_saleable_stock
+            } else {
+                0
+            };
+            upsert_stock_projection_with_state_in_tx(
+                &mut tx,
+                &snapshot.planogram_version,
+                &slot.slot_id,
+                slot.on_hand_qty,
+                saleable_stock,
+                slot_sales_state,
+                false,
+            )
+            .await?;
+            upsert_sale_view_projection_in_tx(&mut tx, &snapshot.planogram_version, &slot.slot_id)
+                .await?;
+        }
+
+        tx.commit().await?;
+        self.sale_view(Some(snapshot.machine_code.clone())).await
     }
 
     pub async fn block_slot_for_dispense_failure(
         &self,
         command: &DispenseCommandPayload,
         error_code: Option<&str>,
+        message: Option<&str>,
     ) -> Result<Option<SaleViewSnapshot>, StoreError> {
         let slot_sales_state = match error_code {
             Some("NO_DROP") => "suspect",
             _ => "frozen",
         };
+        if is_whole_machine_dispense_failure(error_code, message) {
+            self.put_metadata(
+                WHOLE_MACHINE_MAINTENANCE_LOCK_KEY,
+                &WholeMachineMaintenanceLock {
+                    code: "WHOLE_MACHINE_HARDWARE_FAULT".to_string(),
+                    message: message
+                        .filter(|value| !value.trim().is_empty())
+                        .unwrap_or("dispense hardware fault requires operator reset")
+                        .to_string(),
+                    source: "dispense_failure".to_string(),
+                    order_no: command.order_no.clone(),
+                    command_no: command.command_no.clone(),
+                    slot_code: command.slot.slot_code.clone(),
+                    error_code: error_code.map(ToString::to_string),
+                    created_at: now_iso(),
+                },
+            )
+            .await?;
+        }
         self.block_command_slot(command, slot_sales_state, "dispense_failure")
             .await
+    }
+
+    pub async fn apply_dispense_success_to_local_stock(
+        &self,
+        command: &DispenseCommandPayload,
+    ) -> Result<Option<SaleViewSnapshot>, StoreError> {
+        if command.quantity == 0 {
+            return Ok(None);
+        }
+
+        let mut tx = self.pool.begin().await?;
+        let row: Option<(String, String, i64, i64)> = sqlx::query_as(
+            "SELECT s.planogram_version, s.slot_id, s.capacity, c.physical_stock
+             FROM machine_planogram_slots s
+             JOIN machine_planogram_versions v
+               ON v.planogram_version = s.planogram_version AND v.active = 1
+             JOIN current_stock_projection c
+               ON c.planogram_version = s.planogram_version AND c.slot_id = s.slot_id
+             WHERE s.slot_code = ?1 AND s.layer_no = ?2 AND s.cell_no = ?3
+             LIMIT 1",
+        )
+        .bind(&command.slot.slot_code)
+        .bind(command.slot.layer_no)
+        .bind(command.slot.cell_no)
+        .fetch_optional(tx.as_mut())
+        .await?;
+
+        let Some((planogram_version, slot_id, capacity, physical_stock)) = row else {
+            return Ok(None);
+        };
+
+        let after_quantity = physical_stock - i64::from(command.quantity);
+        upsert_stock_projection_in_tx(
+            &mut tx,
+            &planogram_version,
+            &slot_id,
+            after_quantity,
+            capacity,
+            false,
+        )
+        .await?;
+        upsert_sale_view_projection_in_tx(&mut tx, &planogram_version, &slot_id).await?;
+        tx.commit().await?;
+        Ok(Some(self.sale_view(None).await?))
     }
 
     pub async fn block_slot_for_dispense_result_unknown(
@@ -1723,6 +2173,8 @@ impl LocalStateStore {
             last_updated_at = Some(updated_at);
             items.push(item);
         }
+        let reservations = self.active_order_reservations().await?;
+        apply_active_order_reservations(&mut items, &reservations);
 
         Ok(SaleViewSnapshot {
             items,
@@ -1730,6 +2182,34 @@ impl LocalStateStore {
             planogram_version: Some(planogram_version),
             last_updated_at,
         })
+    }
+
+    async fn active_order_reservations(&self) -> Result<Vec<LocalStockReservation>, StoreError> {
+        let now = now_iso();
+        let rows: Vec<(String, String, String, Option<String>)> = sqlx::query_as(
+            "SELECT items_json, status, next_action, expires_at
+             FROM order_sessions
+             WHERE status != 'closed'
+             ORDER BY updated_at DESC, rowid DESC
+             LIMIT 1",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut reservations = Vec::new();
+        for (items_json, status, next_action, expires_at) in rows {
+            if !order_session_reserves_local_stock(
+                &status,
+                &next_action,
+                expires_at.as_deref(),
+                &now,
+            ) {
+                continue;
+            }
+            let value = serde_json::from_str::<serde_json::Value>(&items_json)?;
+            collect_local_stock_reservations(&value, &mut reservations);
+        }
+        Ok(reservations)
     }
 
     pub async fn record_stock_movement_upload_response(
@@ -2038,6 +2518,33 @@ fn is_supported_slot_sales_state(value: &str) -> bool {
     )
 }
 
+fn is_whole_machine_dispense_failure(error_code: Option<&str>, message: Option<&str>) -> bool {
+    match error_code {
+        Some("JAMMED" | "MOTOR_TIMEOUT") => true,
+        _ => {
+            let message = message.unwrap_or_default().to_ascii_lowercase();
+            message.contains("mechanical fault")
+                || message.contains("pickup platform blocked")
+                || message.contains("heartbeat missing")
+                || message.contains("timed out before completion")
+        }
+    }
+}
+
+pub fn classify_whole_machine_hardware_status_fault(
+    status: &HardwareStatus,
+) -> Option<&'static str> {
+    if status.online {
+        return None;
+    }
+    let message = status.message.to_ascii_lowercase();
+    if message.contains("mechanical fault") || message.contains("pickup platform blocked") {
+        Some("JAMMED")
+    } else {
+        None
+    }
+}
+
 struct PreviousSlotProjection {
     slot_id: String,
     physical_stock: i64,
@@ -2183,6 +2690,7 @@ async fn upsert_stock_projection_in_tx(
     slot_id: &str,
     physical_stock: i64,
     capacity: i64,
+    reset_local_slot_hold: bool,
 ) -> Result<(), StoreError> {
     let physical_stock = physical_stock.max(0);
     let saleable_stock = physical_stock.min(capacity).max(0);
@@ -2198,6 +2706,7 @@ async fn upsert_stock_projection_in_tx(
         physical_stock,
         saleable_stock,
         slot_sales_state,
+        reset_local_slot_hold,
     )
     .await
 }
@@ -2209,6 +2718,7 @@ async fn upsert_stock_projection_with_state_in_tx(
     physical_stock: i64,
     saleable_stock: i64,
     slot_sales_state: &str,
+    reset_local_slot_hold: bool,
 ) -> Result<(), StoreError> {
     let updated_at = now_iso();
     sqlx::query(
@@ -2225,7 +2735,7 @@ async fn upsert_stock_projection_with_state_in_tx(
                WHERE b.planogram_version = current_stock_projection.planogram_version
                  AND b.slot_id = current_stock_projection.slot_id
              ) THEN current_stock_projection.slot_sales_state
-             WHEN current_stock_projection.slot_sales_state IN ('frozen','suspect') THEN current_stock_projection.slot_sales_state
+             WHEN ?7 = 0 AND current_stock_projection.slot_sales_state IN ('frozen','suspect') THEN current_stock_projection.slot_sales_state
              ELSE excluded.slot_sales_state
            END,
            updated_at=excluded.updated_at",
@@ -2236,6 +2746,7 @@ async fn upsert_stock_projection_with_state_in_tx(
     .bind(saleable_stock.max(0))
     .bind(slot_sales_state)
     .bind(updated_at)
+    .bind(if reset_local_slot_hold { 1_i64 } else { 0_i64 })
     .execute(tx.as_mut())
     .await?;
     Ok(())
@@ -2472,6 +2983,169 @@ fn to_health_level_string(level: vending_core::health::HealthLevel) -> &'static 
     }
 }
 
+#[derive(Debug, Clone)]
+struct LocalStockReservation {
+    inventory_id: Option<String>,
+    slot_id: Option<String>,
+    slot_code: Option<String>,
+    quantity: i64,
+}
+
+fn order_session_reserves_local_stock(
+    status: &str,
+    next_action: &str,
+    expires_at: Option<&str>,
+    now: &str,
+) -> bool {
+    if order_session_terminal_status(status) || order_session_terminal_next_action(next_action) {
+        return false;
+    }
+    if matches!(status, "paid" | "dispensing") || matches!(next_action, "dispensing") {
+        return true;
+    }
+    if expires_at.is_some_and(|value| !value.trim().is_empty() && value <= now) {
+        return false;
+    }
+    matches!(
+        status,
+        "waiting_payment" | "pending_payment" | "payment_submitted" | "paid" | "dispensing"
+    ) || matches!(
+        next_action,
+        "wait_payment" | "submit_payment" | "dispensing"
+    )
+}
+
+fn order_session_expires_at(input: &OrderSessionUpsert<'_>) -> String {
+    input
+        .last_backend_status_json
+        .as_ref()
+        .and_then(|value| {
+            value
+                .pointer("/payment/expiresAt")
+                .or_else(|| value.get("expiresAt"))
+        })
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.trim().is_empty())
+        .map(ToString::to_string)
+        .unwrap_or_else(|| now_iso_days(COMMAND_LOG_TTL_DAYS))
+}
+
+fn order_session_terminal_status(status: &str) -> bool {
+    if matches!(
+        status,
+        "payment_expired"
+            | "payment_failed"
+            | "canceled"
+            | "cancelled"
+            | "failed"
+            | "dispense_failed"
+            | "fulfilled"
+            | "succeeded"
+            | "manual_handling"
+            | "closed"
+    ) {
+        return true;
+    }
+    false
+}
+
+fn order_session_terminal_next_action(next_action: &str) -> bool {
+    matches!(
+        next_action,
+        "success"
+            | "payment_expired"
+            | "payment_failed"
+            | "dispense_failed"
+            | "refund_pending"
+            | "refunded"
+            | "manual_handling"
+            | "closed"
+    )
+}
+
+fn collect_local_stock_reservations(
+    value: &serde_json::Value,
+    reservations: &mut Vec<LocalStockReservation>,
+) {
+    match value {
+        serde_json::Value::Array(items) => {
+            for item in items {
+                collect_local_stock_reservations(item, reservations);
+            }
+        }
+        serde_json::Value::Object(object) => {
+            let quantity = object
+                .get("quantity")
+                .and_then(|value| value.as_i64())
+                .unwrap_or(1);
+            if quantity <= 0 {
+                return;
+            }
+            let inventory_id = object
+                .get("inventoryId")
+                .and_then(|value| value.as_str())
+                .map(ToString::to_string);
+            let slot_id = object
+                .get("slotId")
+                .and_then(|value| value.as_str())
+                .map(ToString::to_string);
+            let slot_code = object
+                .get("slotCode")
+                .and_then(|value| value.as_str())
+                .map(ToString::to_string);
+            if inventory_id.is_some() || slot_id.is_some() || slot_code.is_some() {
+                reservations.push(LocalStockReservation {
+                    inventory_id,
+                    slot_id,
+                    slot_code,
+                    quantity,
+                });
+            }
+        }
+        _ => {}
+    }
+}
+
+fn apply_active_order_reservations(
+    items: &mut [SaleViewItem],
+    reservations: &[LocalStockReservation],
+) {
+    for item in items {
+        let reserved_quantity: i64 = reservations
+            .iter()
+            .filter(|reservation| local_stock_reservation_matches_item(reservation, item))
+            .map(|reservation| reservation.quantity)
+            .sum();
+        if reserved_quantity > 0 {
+            item.saleable_stock = (item.saleable_stock - reserved_quantity).max(0);
+        }
+    }
+}
+
+fn local_stock_reservation_matches_item(
+    reservation: &LocalStockReservation,
+    item: &SaleViewItem,
+) -> bool {
+    if reservation
+        .inventory_id
+        .as_deref()
+        .is_some_and(|inventory_id| inventory_id == item.inventory_id.as_str())
+    {
+        return true;
+    }
+    if reservation
+        .slot_id
+        .as_deref()
+        .is_some_and(|slot_id| slot_id == item.slot_id.as_str())
+    {
+        return true;
+    }
+    reservation
+        .slot_code
+        .as_deref()
+        .is_some_and(|slot_code| slot_code == item.slot_code.as_str())
+}
+
 fn to_order_session_record(row: OrderSessionRecordRow) -> OrderSessionRecord {
     let (
         order_no,
@@ -2613,6 +3287,17 @@ fn map_vending_summary(
             .get("lastError")
             .and_then(|v| v.as_str())
             .map(ToString::to_string),
+        pickup_reminder: vending.get("pickupReminder").and_then(|value| {
+            Some(vending_core::domain::PickupReminderSummary {
+                level: value.get("level")?.as_str()?.to_string(),
+                message: value.get("message")?.as_str()?.to_string(),
+                warning_no: value
+                    .get("warningNo")
+                    .and_then(|v| v.as_u64())
+                    .and_then(|v| u8::try_from(v).ok()),
+                reported_at: value.get("reportedAt")?.as_str()?.to_string(),
+            })
+        }),
     })
 }
 
@@ -2656,15 +3341,219 @@ fn map_payment_code_attempt_summary(
     })
 }
 
+fn merge_backend_payment_code_attempt(
+    existing_json: Option<&str>,
+    backend_attempt: Option<&serde_json::Value>,
+) -> Result<Option<serde_json::Value>, StoreError> {
+    let mut merged = match existing_json {
+        Some(json) => match serde_json::from_str::<serde_json::Value>(json)? {
+            serde_json::Value::Object(map) => map,
+            _ => serde_json::Map::new(),
+        },
+        None => serde_json::Map::new(),
+    };
+
+    let Some(backend_attempt) = backend_attempt else {
+        return Ok(None);
+    };
+    let Some(backend_attempt) = backend_attempt.as_object() else {
+        return Ok(None);
+    };
+
+    for (key, value) in backend_attempt {
+        merged.insert(key.clone(), value.clone());
+    }
+
+    Ok(Some(serde_json::Value::Object(merged)))
+}
+
+fn patch_backend_status_for_dispense_result(
+    backend_status: &mut serde_json::Value,
+    command: &DispenseCommandPayload,
+    result: &DispenseResultPayload,
+) {
+    if !backend_status.is_object() {
+        *backend_status = serde_json::json!({});
+    }
+    let Some(object) = backend_status.as_object_mut() else {
+        return;
+    };
+
+    if result.success {
+        object.insert(
+            "orderStatus".to_string(),
+            serde_json::Value::String("fulfilled".to_string()),
+        );
+        object.insert(
+            "fulfillmentState".to_string(),
+            serde_json::Value::String("dispensed".to_string()),
+        );
+        object.insert(
+            "nextAction".to_string(),
+            serde_json::Value::String("success".to_string()),
+        );
+    } else {
+        object.insert(
+            "orderStatus".to_string(),
+            serde_json::Value::String("dispense_failed".to_string()),
+        );
+        object.insert(
+            "fulfillmentState".to_string(),
+            serde_json::Value::String("dispense_failed".to_string()),
+        );
+        object.insert(
+            "nextAction".to_string(),
+            serde_json::Value::String("dispense_failed".to_string()),
+        );
+    }
+
+    let vending = object
+        .entry("vending".to_string())
+        .or_insert_with(|| serde_json::json!({}));
+    if !vending.is_object() {
+        *vending = serde_json::json!({});
+    }
+    if let Some(vending) = vending.as_object_mut() {
+        vending.insert(
+            "commandNo".to_string(),
+            serde_json::Value::String(command.command_no.clone()),
+        );
+        vending.insert(
+            "status".to_string(),
+            serde_json::Value::String(if result.success {
+                "succeeded".to_string()
+            } else {
+                "failed".to_string()
+            }),
+        );
+        vending.insert(
+            "resultAt".to_string(),
+            serde_json::Value::String(result.reported_at.clone()),
+        );
+        let last_error = if result.success {
+            serde_json::Value::Null
+        } else {
+            serde_json::Value::String(result.message.clone())
+        };
+        vending.insert("lastError".to_string(), last_error);
+        vending.insert("pickupReminder".to_string(), serde_json::Value::Null);
+    }
+}
+
+fn merge_local_dispense_progress(
+    local_backend_status_json: Option<&str>,
+    mut backend_status: serde_json::Value,
+) -> serde_json::Value {
+    let backend_next_action = backend_status
+        .get("nextAction")
+        .and_then(|value| value.as_str());
+    if backend_next_action != Some("dispensing") {
+        return backend_status;
+    }
+
+    let local = local_backend_status_json
+        .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok());
+    let local_reminder = local
+        .as_ref()
+        .and_then(|value| value.pointer("/vending/pickupReminder"))
+        .filter(|value| value.is_object())
+        .cloned();
+    let Some(local_reminder) = local_reminder else {
+        return backend_status;
+    };
+
+    if !backend_status.is_object() {
+        return backend_status;
+    }
+    let Some(object) = backend_status.as_object_mut() else {
+        return backend_status;
+    };
+    let vending = object
+        .entry("vending".to_string())
+        .or_insert_with(|| serde_json::json!({}));
+    if !vending.is_object() {
+        *vending = serde_json::json!({});
+    }
+    if let Some(vending) = vending.as_object_mut() {
+        let backend_command_no = vending
+            .get("commandNo")
+            .and_then(|value| value.as_str())
+            .map(ToString::to_string);
+        let local_command_no = local
+            .as_ref()
+            .and_then(|value| value.pointer("/vending/commandNo"))
+            .and_then(|value| value.as_str())
+            .map(ToString::to_string);
+        if backend_command_no.is_none() || backend_command_no == local_command_no {
+            vending.insert("pickupReminder".to_string(), local_reminder);
+        }
+    }
+    backend_status
+}
+
+fn patch_backend_status_for_dispense_progress(
+    backend_status: &mut serde_json::Value,
+    event: &DispenseProgressEvent,
+) {
+    if !backend_status.is_object() {
+        *backend_status = serde_json::json!({});
+    }
+    let Some(object) = backend_status.as_object_mut() else {
+        return;
+    };
+    object.insert(
+        "nextAction".to_string(),
+        serde_json::Value::String("dispensing".to_string()),
+    );
+
+    let vending = object
+        .entry("vending".to_string())
+        .or_insert_with(|| serde_json::json!({}));
+    if !vending.is_object() {
+        *vending = serde_json::json!({});
+    }
+    if let Some(vending) = vending.as_object_mut() {
+        vending.insert(
+            "commandNo".to_string(),
+            serde_json::Value::String(event.command_no.clone()),
+        );
+        vending.insert(
+            "status".to_string(),
+            serde_json::Value::String("dispensing".to_string()),
+        );
+        let level = match event.stage {
+            DispenseProgressStage::OutletOpened | DispenseProgressStage::PickupWaiting => "info",
+            DispenseProgressStage::PickupTimeoutWarning if event.warning_no.unwrap_or(1) >= 2 => {
+                "urgent"
+            }
+            DispenseProgressStage::PickupTimeoutWarning => "warning",
+        };
+        vending.insert(
+            "pickupReminder".to_string(),
+            serde_json::json!({
+                "level": level,
+                "message": event.message,
+                "warningNo": event.warning_no,
+                "reportedAt": event.reported_at,
+            }),
+        );
+    }
+}
+
 fn parse_order_status(status: &str) -> Option<vending_core::domain::OrderSessionStatus> {
     match status {
-        "waiting_payment" => Some(vending_core::domain::OrderSessionStatus::WaitingPayment),
+        "waiting_payment" | "pending_payment" => {
+            Some(vending_core::domain::OrderSessionStatus::WaitingPayment)
+        }
         "payment_submitted" => Some(vending_core::domain::OrderSessionStatus::PaymentSubmitted),
         "dispensing" => Some(vending_core::domain::OrderSessionStatus::Dispensing),
-        "succeeded" => Some(vending_core::domain::OrderSessionStatus::Succeeded),
-        "failed" => Some(vending_core::domain::OrderSessionStatus::Failed),
+        "succeeded" | "fulfilled" => Some(vending_core::domain::OrderSessionStatus::Succeeded),
+        "failed" | "payment_failed" | "dispense_failed" => {
+            Some(vending_core::domain::OrderSessionStatus::Failed)
+        }
         "manual_handling" => Some(vending_core::domain::OrderSessionStatus::ManualHandling),
-        "closed" => Some(vending_core::domain::OrderSessionStatus::Closed),
+        "payment_expired" | "canceled" | "cancelled" | "expired" | "refunded"
+        | "partial_refunded" | "closed" => Some(vending_core::domain::OrderSessionStatus::Closed),
         _ => None,
     }
 }
@@ -2867,6 +3756,366 @@ mod tests {
         }
     }
 
+    fn single_slot_stock_snapshot(
+        on_hand_qty: i64,
+        reserved_qty: i64,
+        available_qty: i64,
+    ) -> crate::backend::MachineStockSnapshot {
+        crate::backend::MachineStockSnapshot {
+            machine_code: "M001".to_string(),
+            planogram_version: "PLAN-FAILURE".to_string(),
+            slots: vec![crate::backend::MachineStockSnapshotSlot {
+                slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                slot_code: "A1".to_string(),
+                inventory_id: "550e8400-e29b-41d4-a716-446655440002".to_string(),
+                capacity: 8,
+                on_hand_qty,
+                reserved_qty,
+                available_qty,
+                slot_sales_state: None,
+            }],
+            server_time: "2026-06-12T00:00:00.000Z".to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn platform_stock_snapshot_updates_local_sale_view_without_upload_outbox() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_single_slot_planogram(&store).await;
+        store
+            .record_stock_movement(StockMovementInput {
+                movement_id: "MOVE-SEED".to_string(),
+                planogram_version: "PLAN-FAILURE".to_string(),
+                slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                movement_type: "stock_count_correction".to_string(),
+                quantity: 5,
+                source: "local_maintenance".to_string(),
+                attributed_to: None,
+            })
+            .await
+            .expect("seed stock");
+
+        let snapshot = crate::backend::MachineStockSnapshot {
+            machine_code: "M001".to_string(),
+            planogram_version: "PLAN-FAILURE".to_string(),
+            slots: vec![crate::backend::MachineStockSnapshotSlot {
+                slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                slot_code: "A1".to_string(),
+                inventory_id: "550e8400-e29b-41d4-a716-446655440002".to_string(),
+                capacity: 8,
+                on_hand_qty: 10,
+                reserved_qty: 0,
+                available_qty: 10,
+                slot_sales_state: None,
+            }],
+            server_time: "2026-06-12T00:00:00.000Z".to_string(),
+        };
+
+        let sale_view = store
+            .apply_platform_stock_snapshot(&snapshot)
+            .await
+            .expect("apply snapshot");
+
+        assert_eq!(sale_view.items[0].physical_stock, 10);
+        assert_eq!(sale_view.items[0].saleable_stock, 8);
+        assert_eq!(sale_view.items[0].slot_sales_state, "sale_ready");
+        assert_eq!(store.outbox_size().await.expect("outbox"), 0);
+    }
+
+    #[tokio::test]
+    async fn platform_stock_snapshot_preserves_platform_slot_sale_blocker() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_single_slot_planogram(&store).await;
+        store
+            .record_stock_movement(StockMovementInput {
+                movement_id: "MOVE-SEED-PLATFORM-BLOCKER".to_string(),
+                planogram_version: "PLAN-FAILURE".to_string(),
+                slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                movement_type: "stock_count_correction".to_string(),
+                quantity: 5,
+                source: "local_maintenance".to_string(),
+                attributed_to: None,
+            })
+            .await
+            .expect("seed stock");
+
+        let snapshot = crate::backend::MachineStockSnapshot {
+            machine_code: "M001".to_string(),
+            planogram_version: "PLAN-FAILURE".to_string(),
+            slots: vec![crate::backend::MachineStockSnapshotSlot {
+                slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                slot_code: "A1".to_string(),
+                inventory_id: "550e8400-e29b-41d4-a716-446655440002".to_string(),
+                capacity: 8,
+                on_hand_qty: 5,
+                reserved_qty: 0,
+                available_qty: 5,
+                slot_sales_state: Some("frozen".to_string()),
+            }],
+            server_time: "2026-06-12T00:00:00.000Z".to_string(),
+        };
+
+        let sale_view = store
+            .apply_platform_stock_snapshot(&snapshot)
+            .await
+            .expect("apply snapshot");
+
+        assert_eq!(sale_view.items[0].physical_stock, 5);
+        assert_eq!(sale_view.items[0].saleable_stock, 0);
+        assert_eq!(sale_view.items[0].slot_sales_state, "frozen");
+    }
+
+    #[tokio::test]
+    async fn platform_stock_snapshot_ignores_historical_terminal_orders() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_single_slot_planogram(&store).await;
+        store
+            .record_stock_movement(StockMovementInput {
+                movement_id: "MOVE-SEED-BEFORE-TERMINAL-ORDERS".to_string(),
+                planogram_version: "PLAN-FAILURE".to_string(),
+                slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                movement_type: "stock_count_correction".to_string(),
+                quantity: 5,
+                source: "local_maintenance".to_string(),
+                attributed_to: None,
+            })
+            .await
+            .expect("seed stock");
+
+        store
+            .upsert_order_session(OrderSessionUpsert {
+                order_no: "ORDER-HISTORICAL-PENDING",
+                payment_method: "payment_code",
+                payment_provider: Some("alipay"),
+                items_json: json!({
+                    "inventoryId": "550e8400-e29b-41d4-a716-446655440002",
+                    "slotId": "550e8400-e29b-41d4-a716-446655440001",
+                    "slotCode": "A1",
+                    "quantity": 1
+                }),
+                status: "pending_payment",
+                next_action: "wait_payment",
+                payment_attempt_json: None,
+                recovery_strategy: "local",
+                last_backend_status_json: None,
+                last_error: None,
+            })
+            .await
+            .expect("historical active order");
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+
+        for (order_no, status, next_action) in [
+            ("ORDER-SUCCEEDED", "succeeded", "success"),
+            ("ORDER-FAILED", "failed", "dispense_failed"),
+            ("ORDER-EXPIRED", "payment_expired", "payment_expired"),
+            ("ORDER-REFUND-PENDING", "refund_pending", "refund_pending"),
+        ] {
+            store
+                .upsert_order_session(OrderSessionUpsert {
+                    order_no,
+                    payment_method: "payment_code",
+                    payment_provider: Some("alipay"),
+                    items_json: json!({
+                        "inventoryId": "550e8400-e29b-41d4-a716-446655440002",
+                        "slotId": "550e8400-e29b-41d4-a716-446655440001",
+                        "slotCode": "A1",
+                        "quantity": 1
+                    }),
+                    status,
+                    next_action,
+                    payment_attempt_json: None,
+                    recovery_strategy: "local",
+                    last_backend_status_json: None,
+                    last_error: None,
+                })
+                .await
+                .expect("historical terminal order");
+        }
+
+        let sale_view = store
+            .apply_platform_stock_snapshot(&single_slot_stock_snapshot(10, 0, 10))
+            .await
+            .expect("terminal orders must not defer snapshot");
+
+        assert_eq!(sale_view.items[0].physical_stock, 10);
+        assert_eq!(sale_view.items[0].saleable_stock, 8);
+        assert_eq!(sale_view.items[0].slot_sales_state, "sale_ready");
+    }
+
+    #[tokio::test]
+    async fn platform_stock_snapshot_defers_while_local_order_is_active() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_single_slot_planogram(&store).await;
+        store
+            .record_stock_movement(StockMovementInput {
+                movement_id: "MOVE-SEED-BEFORE-ACTIVE-ORDER".to_string(),
+                planogram_version: "PLAN-FAILURE".to_string(),
+                slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                movement_type: "stock_count_correction".to_string(),
+                quantity: 5,
+                source: "local_maintenance".to_string(),
+                attributed_to: None,
+            })
+            .await
+            .expect("seed stock");
+        store
+            .upsert_order_session(OrderSessionUpsert {
+                order_no: "ORDER-ACTIVE",
+                payment_method: "payment_code",
+                payment_provider: Some("alipay"),
+                items_json: json!({
+                    "inventoryId": "550e8400-e29b-41d4-a716-446655440002",
+                    "slotId": "550e8400-e29b-41d4-a716-446655440001",
+                    "slotCode": "A1",
+                    "quantity": 1
+                }),
+                status: "pending_payment",
+                next_action: "wait_payment",
+                payment_attempt_json: None,
+                recovery_strategy: "local",
+                last_backend_status_json: None,
+                last_error: None,
+            })
+            .await
+            .expect("active order");
+
+        let error = store
+            .apply_platform_stock_snapshot(&single_slot_stock_snapshot(10, 0, 10))
+            .await
+            .expect_err("active local order defers snapshot");
+
+        assert!(error.to_string().contains("local order is active"));
+        let sale_view = store
+            .sale_view(Some("M001".to_string()))
+            .await
+            .expect("view");
+        assert_eq!(sale_view.items[0].physical_stock, 5);
+        assert_eq!(sale_view.items[0].saleable_stock, 4);
+    }
+
+    #[tokio::test]
+    async fn platform_stock_snapshot_does_not_override_pending_local_stock_upload() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_single_slot_planogram(&store).await;
+        store
+            .record_stock_movement(StockMovementInput {
+                movement_id: "MOVE-SEED-BEFORE-PENDING".to_string(),
+                planogram_version: "PLAN-FAILURE".to_string(),
+                slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                movement_type: "stock_count_correction".to_string(),
+                quantity: 5,
+                source: "local_maintenance".to_string(),
+                attributed_to: None,
+            })
+            .await
+            .expect("seed stock");
+        let local_refill = store
+            .record_stock_movement_with_upload(
+                StockMovementInput {
+                    movement_id: "MOVE-PENDING-REFILL".to_string(),
+                    planogram_version: "PLAN-FAILURE".to_string(),
+                    slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                    movement_type: "planned_refill".to_string(),
+                    quantity: 1,
+                    source: "local_maintenance".to_string(),
+                    attributed_to: None,
+                },
+                Some("M001"),
+                Some("https://platform.example/api"),
+            )
+            .await
+            .expect("pending refill");
+        assert_eq!(local_refill.items[0].physical_stock, 6);
+
+        let snapshot = crate::backend::MachineStockSnapshot {
+            machine_code: "M001".to_string(),
+            planogram_version: "PLAN-FAILURE".to_string(),
+            slots: vec![crate::backend::MachineStockSnapshotSlot {
+                slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                slot_code: "A1".to_string(),
+                inventory_id: "550e8400-e29b-41d4-a716-446655440002".to_string(),
+                capacity: 8,
+                on_hand_qty: 5,
+                reserved_qty: 0,
+                available_qty: 5,
+                slot_sales_state: None,
+            }],
+            server_time: "2026-06-12T00:00:00.000Z".to_string(),
+        };
+
+        let error = store
+            .apply_platform_stock_snapshot(&snapshot)
+            .await
+            .expect_err("pending local upload defers snapshot");
+        assert!(error
+            .to_string()
+            .contains("local stock movements are pending upload"));
+        let sale_view = store
+            .sale_view(Some("M001".to_string()))
+            .await
+            .expect("view");
+        assert_eq!(sale_view.items[0].physical_stock, 6);
+        assert_eq!(sale_view.items[0].saleable_stock, 6);
+    }
+
+    #[tokio::test]
+    async fn platform_stock_snapshot_rejects_capacity_mismatch() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_single_slot_planogram(&store).await;
+        store
+            .record_stock_movement(StockMovementInput {
+                movement_id: "MOVE-SEED-CAPACITY".to_string(),
+                planogram_version: "PLAN-FAILURE".to_string(),
+                slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                movement_type: "stock_count_correction".to_string(),
+                quantity: 5,
+                source: "local_maintenance".to_string(),
+                attributed_to: None,
+            })
+            .await
+            .expect("seed stock");
+
+        let snapshot = crate::backend::MachineStockSnapshot {
+            machine_code: "M001".to_string(),
+            planogram_version: "PLAN-FAILURE".to_string(),
+            slots: vec![crate::backend::MachineStockSnapshotSlot {
+                slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                slot_code: "A1".to_string(),
+                inventory_id: "550e8400-e29b-41d4-a716-446655440002".to_string(),
+                capacity: 10,
+                on_hand_qty: 10,
+                reserved_qty: 0,
+                available_qty: 10,
+                slot_sales_state: None,
+            }],
+            server_time: "2026-06-12T00:00:00.000Z".to_string(),
+        };
+
+        let error = store
+            .apply_platform_stock_snapshot(&snapshot)
+            .await
+            .expect_err("capacity mismatch is rejected");
+        assert!(error.to_string().contains("capacity mismatch"));
+    }
+
     #[tokio::test]
     async fn open_runs_migration_and_writes_schema_version() {
         let temp = TempDir::new().expect("temp");
@@ -3021,12 +4270,361 @@ mod tests {
             .block_slot_for_dispense_failure(
                 &dispense_command_for_slot("CMD-NO-DROP"),
                 Some("NO_DROP"),
+                Some("drop sensor did not confirm item movement"),
             )
             .await
             .expect("block")
             .expect("slot found");
 
         assert_eq!(snapshot.items[0].slot_sales_state, "suspect");
+        assert!(store
+            .whole_machine_maintenance_lock()
+            .await
+            .expect("lock lookup")
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn successful_dispense_decrements_local_sale_view_once() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_single_slot_planogram(&store).await;
+        store
+            .record_stock_movement(StockMovementInput {
+                movement_id: "MOVE-COUNT-BEFORE-DISPENSE".to_string(),
+                planogram_version: "PLAN-FAILURE".to_string(),
+                slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                movement_type: "stock_count_correction".to_string(),
+                quantity: 4,
+                source: "field_count".to_string(),
+                attributed_to: Some("operator-1".to_string()),
+            })
+            .await
+            .expect("count");
+
+        let command = dispense_command_for_slot("CMD-SUCCESS");
+        let result = DispenseResultPayload {
+            command_no: command.command_no.clone(),
+            success: true,
+            error_code: None,
+            message: "serial: dispense completed".to_string(),
+            reported_at: now_iso(),
+        };
+        let event = OutboxInput::dispense_result("MACHINE-1", &result);
+
+        let first_recorded = store
+            .record_command_result_and_enqueue_tx(&command, &result, &event)
+            .await
+            .expect("record result");
+        assert!(first_recorded);
+        let snapshot = store
+            .apply_dispense_success_to_local_stock(&command)
+            .await
+            .expect("apply stock")
+            .expect("slot found");
+        assert_eq!(snapshot.items[0].physical_stock, 3);
+        assert_eq!(snapshot.items[0].saleable_stock, 3);
+
+        let duplicate_recorded = store
+            .record_command_result_and_enqueue_tx(&command, &result, &event)
+            .await
+            .expect("record duplicate");
+        assert!(!duplicate_recorded);
+        let persisted = store.sale_view(None).await.expect("sale view");
+        assert_eq!(persisted.items[0].physical_stock, 3);
+        assert_eq!(persisted.items[0].saleable_stock, 3);
+    }
+
+    #[tokio::test]
+    async fn sale_view_subtracts_active_order_reservation_from_saleable_stock() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_single_slot_planogram(&store).await;
+        store
+            .record_stock_movement(StockMovementInput {
+                movement_id: "MOVE-COUNT-BEFORE-ORDER".to_string(),
+                planogram_version: "PLAN-FAILURE".to_string(),
+                slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                movement_type: "stock_count_correction".to_string(),
+                quantity: 1,
+                source: "field_count".to_string(),
+                attributed_to: Some("operator-1".to_string()),
+            })
+            .await
+            .expect("count");
+        store
+            .upsert_order_session(OrderSessionUpsert {
+                order_no: "ORDER-RESERVED",
+                payment_method: "payment_code",
+                payment_provider: Some("alipay"),
+                items_json: json!({
+                    "inventoryId": "550e8400-e29b-41d4-a716-446655440002",
+                    "slotId": "550e8400-e29b-41d4-a716-446655440001",
+                    "slotCode": "A1",
+                    "quantity": 1
+                }),
+                status: "pending_payment",
+                next_action: "wait_payment",
+                payment_attempt_json: None,
+                recovery_strategy: "local",
+                last_backend_status_json: None,
+                last_error: None,
+            })
+            .await
+            .expect("order");
+
+        let sale_view = store.sale_view(None).await.expect("sale view");
+
+        assert_eq!(sale_view.items[0].physical_stock, 1);
+        assert_eq!(sale_view.items[0].saleable_stock, 0);
+        assert_eq!(sale_view.items[0].slot_sales_state, "sale_ready");
+    }
+
+    #[tokio::test]
+    async fn sale_view_ignores_expired_order_reservation() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_single_slot_planogram(&store).await;
+        store
+            .record_stock_movement(StockMovementInput {
+                movement_id: "MOVE-COUNT-AFTER-EXPIRED-ORDER".to_string(),
+                planogram_version: "PLAN-FAILURE".to_string(),
+                slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                movement_type: "stock_count_correction".to_string(),
+                quantity: 1,
+                source: "field_count".to_string(),
+                attributed_to: Some("operator-1".to_string()),
+            })
+            .await
+            .expect("count");
+        store
+            .upsert_order_session(OrderSessionUpsert {
+                order_no: "ORDER-EXPIRED",
+                payment_method: "payment_code",
+                payment_provider: Some("alipay"),
+                items_json: json!({
+                    "inventoryId": "550e8400-e29b-41d4-a716-446655440002",
+                    "slotId": "550e8400-e29b-41d4-a716-446655440001",
+                    "slotCode": "A1",
+                    "quantity": 1
+                }),
+                status: "payment_expired",
+                next_action: "payment_expired",
+                payment_attempt_json: None,
+                recovery_strategy: "local",
+                last_backend_status_json: None,
+                last_error: None,
+            })
+            .await
+            .expect("order");
+
+        let sale_view = store.sale_view(None).await.expect("sale view");
+
+        assert_eq!(sale_view.items[0].physical_stock, 1);
+        assert_eq!(sale_view.items[0].saleable_stock, 1);
+    }
+
+    #[tokio::test]
+    async fn sale_view_ignores_pending_order_after_payment_expires_at() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_single_slot_planogram(&store).await;
+        store
+            .record_stock_movement(StockMovementInput {
+                movement_id: "MOVE-COUNT-AFTER-PAYMENT-EXPIRES".to_string(),
+                planogram_version: "PLAN-FAILURE".to_string(),
+                slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                movement_type: "stock_count_correction".to_string(),
+                quantity: 1,
+                source: "field_count".to_string(),
+                attributed_to: Some("operator-1".to_string()),
+            })
+            .await
+            .expect("count");
+        store
+            .upsert_order_session(OrderSessionUpsert {
+                order_no: "ORDER-PENDING-EXPIRED-PAYMENT",
+                payment_method: "qr_code",
+                payment_provider: Some("alipay"),
+                items_json: json!({
+                    "inventoryId": "550e8400-e29b-41d4-a716-446655440002",
+                    "slotId": "550e8400-e29b-41d4-a716-446655440001",
+                    "slotCode": "A1",
+                    "quantity": 1
+                }),
+                status: "pending_payment",
+                next_action: "wait_payment",
+                payment_attempt_json: None,
+                recovery_strategy: "local",
+                last_backend_status_json: Some(json!({
+                    "payment": {
+                        "expiresAt": "2000-01-01T00:00:00.000Z"
+                    }
+                })),
+                last_error: None,
+            })
+            .await
+            .expect("order");
+
+        let sale_view = store.sale_view(None).await.expect("sale view");
+
+        assert_eq!(sale_view.items[0].physical_stock, 1);
+        assert_eq!(sale_view.items[0].saleable_stock, 1);
+    }
+
+    #[tokio::test]
+    async fn sale_view_ignores_terminal_next_action_even_when_status_is_stale() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_single_slot_planogram(&store).await;
+        store
+            .record_stock_movement(StockMovementInput {
+                movement_id: "MOVE-COUNT-STALE-EXPIRED-ORDER".to_string(),
+                planogram_version: "PLAN-FAILURE".to_string(),
+                slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                movement_type: "stock_count_correction".to_string(),
+                quantity: 1,
+                source: "field_count".to_string(),
+                attributed_to: Some("operator-1".to_string()),
+            })
+            .await
+            .expect("count");
+        store
+            .upsert_order_session(OrderSessionUpsert {
+                order_no: "ORDER-STALE-EXPIRED",
+                payment_method: "payment_code",
+                payment_provider: Some("alipay"),
+                items_json: json!({
+                    "inventoryId": "550e8400-e29b-41d4-a716-446655440002",
+                    "slotId": "550e8400-e29b-41d4-a716-446655440001",
+                    "slotCode": "A1",
+                    "quantity": 1
+                }),
+                status: "waiting_payment",
+                next_action: "payment_expired",
+                payment_attempt_json: None,
+                recovery_strategy: "local",
+                last_backend_status_json: None,
+                last_error: None,
+            })
+            .await
+            .expect("order");
+
+        let sale_view = store.sale_view(None).await.expect("sale view");
+
+        assert_eq!(sale_view.items[0].physical_stock, 1);
+        assert_eq!(sale_view.items[0].saleable_stock, 1);
+    }
+
+    #[tokio::test]
+    async fn sale_view_ignores_stale_historical_pending_orders_when_latest_is_terminal() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_single_slot_planogram(&store).await;
+        store
+            .record_stock_movement(StockMovementInput {
+                movement_id: "MOVE-COUNT-HISTORICAL-PENDING".to_string(),
+                planogram_version: "PLAN-FAILURE".to_string(),
+                slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                movement_type: "stock_count_correction".to_string(),
+                quantity: 1,
+                source: "field_count".to_string(),
+                attributed_to: Some("operator-1".to_string()),
+            })
+            .await
+            .expect("count");
+        store
+            .upsert_order_session(OrderSessionUpsert {
+                order_no: "ORDER-HISTORICAL-PENDING",
+                payment_method: "payment_code",
+                payment_provider: Some("alipay"),
+                items_json: json!({
+                    "inventoryId": "550e8400-e29b-41d4-a716-446655440002",
+                    "slotId": "550e8400-e29b-41d4-a716-446655440001",
+                    "slotCode": "A1",
+                    "quantity": 1
+                }),
+                status: "pending_payment",
+                next_action: "wait_payment",
+                payment_attempt_json: None,
+                recovery_strategy: "local",
+                last_backend_status_json: None,
+                last_error: None,
+            })
+            .await
+            .expect("historical order");
+        store
+            .upsert_order_session(OrderSessionUpsert {
+                order_no: "ORDER-LATEST-EXPIRED",
+                payment_method: "payment_code",
+                payment_provider: Some("alipay"),
+                items_json: json!({
+                    "inventoryId": "550e8400-e29b-41d4-a716-446655440002",
+                    "slotId": "550e8400-e29b-41d4-a716-446655440001",
+                    "slotCode": "A1",
+                    "quantity": 1
+                }),
+                status: "payment_expired",
+                next_action: "payment_expired",
+                payment_attempt_json: None,
+                recovery_strategy: "local",
+                last_backend_status_json: None,
+                last_error: None,
+            })
+            .await
+            .expect("latest order");
+
+        let sale_view = store.sale_view(None).await.expect("sale view");
+
+        assert_eq!(sale_view.items[0].physical_stock, 1);
+        assert_eq!(sale_view.items[0].saleable_stock, 1);
+    }
+
+    #[tokio::test]
+    async fn current_order_session_summary_maps_payment_expired_to_closed() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        store
+            .upsert_order_session(OrderSessionUpsert {
+                order_no: "ORDER-EXPIRED-SUMMARY",
+                payment_method: "payment_code",
+                payment_provider: Some("alipay"),
+                items_json: json!([]),
+                status: "payment_expired",
+                next_action: "payment_expired",
+                payment_attempt_json: None,
+                recovery_strategy: "local",
+                last_backend_status_json: None,
+                last_error: None,
+            })
+            .await
+            .expect("order");
+
+        let summary = store
+            .current_order_session_snapshot()
+            .await
+            .expect("summary")
+            .expect("current");
+
+        assert_eq!(
+            summary.status,
+            Some(vending_core::domain::OrderSessionStatus::Closed)
+        );
+        assert_eq!(summary.next_action.as_deref(), Some("payment_expired"));
     }
 
     #[tokio::test]
@@ -3041,12 +4639,21 @@ mod tests {
             .block_slot_for_dispense_failure(
                 &dispense_command_for_slot("CMD-JAMMED"),
                 Some("JAMMED"),
+                Some("lower controller reported mechanical fault during dispense"),
             )
             .await
             .expect("block")
             .expect("slot found");
 
         assert_eq!(snapshot.items[0].slot_sales_state, "frozen");
+        let lock = store
+            .whole_machine_maintenance_lock()
+            .await
+            .expect("lock lookup")
+            .expect("whole machine lock");
+        assert_eq!(lock.code, "WHOLE_MACHINE_HARDWARE_FAULT");
+        assert_eq!(lock.command_no, "CMD-JAMMED");
+        assert_eq!(lock.slot_code, "A1");
     }
 
     #[tokio::test]
@@ -3077,6 +4684,57 @@ mod tests {
             .await
             .expect("clear");
         assert_eq!(cleared.items[0].slot_sales_state, "sale_ready");
+    }
+
+    #[tokio::test]
+    async fn local_maintenance_refill_unfreezes_target_slot_after_dispense_failure() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_single_slot_planogram(&store).await;
+        store
+            .record_stock_movement(StockMovementInput {
+                movement_id: "MOVE-COUNT-BEFORE-JAM".to_string(),
+                planogram_version: "PLAN-FAILURE".to_string(),
+                slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                movement_type: "stock_count_correction".to_string(),
+                quantity: 4,
+                source: "field_count".to_string(),
+                attributed_to: Some("operator-1".to_string()),
+            })
+            .await
+            .expect("count");
+
+        let frozen = store
+            .block_slot_for_dispense_failure(
+                &dispense_command_for_slot("CMD-JAM-BEFORE-REFILL"),
+                Some("JAMMED"),
+                Some("lower controller reported pickup platform blocked"),
+            )
+            .await
+            .expect("block")
+            .expect("slot found");
+        assert_eq!(frozen.items[0].physical_stock, 4);
+        assert_eq!(frozen.items[0].saleable_stock, 4);
+        assert_eq!(frozen.items[0].slot_sales_state, "frozen");
+
+        let refilled = store
+            .record_stock_movement(StockMovementInput {
+                movement_id: "MOVE-LOCAL-REFILL-AFTER-JAM".to_string(),
+                planogram_version: "PLAN-FAILURE".to_string(),
+                slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                movement_type: "planned_refill".to_string(),
+                quantity: 1,
+                source: "local_maintenance".to_string(),
+                attributed_to: Some("front-panel".to_string()),
+            })
+            .await
+            .expect("local maintenance refill");
+
+        assert_eq!(refilled.items[0].physical_stock, 5);
+        assert_eq!(refilled.items[0].saleable_stock, 5);
+        assert_eq!(refilled.items[0].slot_sales_state, "sale_ready");
     }
 
     #[tokio::test]
@@ -3813,6 +5471,70 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn backend_status_without_payment_attempt_preserves_local_scan_attempt() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        store
+            .upsert_order_session(OrderSessionUpsert {
+                order_no: "ORDER-PRESERVE-ATTEMPT",
+                payment_method: "payment_code",
+                payment_provider: Some("alipay"),
+                items_json: json!([]),
+                status: "waiting_payment",
+                next_action: "wait_payment",
+                payment_attempt_json: None,
+                recovery_strategy: "local",
+                last_backend_status_json: None,
+                last_error: None,
+            })
+            .await
+            .expect("seed");
+
+        store
+            .begin_payment_code_attempt(
+                "ORDER-PRESERVE-ATTEMPT",
+                "6212****3456",
+                "serial_text",
+                1_000,
+                None,
+            )
+            .await
+            .expect("begin attempt");
+        store
+            .apply_backend_order_status(
+                "ORDER-PRESERVE-ATTEMPT",
+                json!({
+                    "orderId": "order-preserve-attempt-id",
+                    "orderNo": "ORDER-PRESERVE-ATTEMPT",
+                    "machineCode": "MACHINE-SCAN",
+                    "orderStatus": "paid",
+                    "totalAmountCents": 300,
+                    "nextAction": "dispensing",
+                    "payment": {
+                        "paymentNo": "PAY-SCAN",
+                        "method": "payment_code",
+                        "providerCode": "alipay",
+                        "paymentUrl": null,
+                        "status": "succeeded",
+                        "expiresAt": "2026-05-30T00:05:00.000Z"
+                    }
+                }),
+            )
+            .await
+            .expect("apply status");
+
+        let attempt = store
+            .load_attempt_json("ORDER-PRESERVE-ATTEMPT")
+            .await
+            .expect("load")
+            .expect("attempt");
+        assert_eq!(attempt["source"], "serial_text");
+        assert_eq!(attempt["maskedAuthCode"], "6212****3456");
+    }
+
+    #[tokio::test]
     async fn payment_code_retry_scan_creates_new_idempotency_key() {
         let temp = TempDir::new().expect("temp");
         let store = LocalStateStore::open(&temp.path().join("state.db"))
@@ -3951,6 +5673,226 @@ mod tests {
         assert!(value.contains("\"source\":\"serial_text\""));
         assert!(value.contains("\"maskedAuthCode\":\"6212****3456\""));
         assert!(!value.contains("621234567890123456"));
+    }
+
+    #[tokio::test]
+    async fn dispense_progress_updates_current_transaction_pickup_reminder() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        store
+            .upsert_order_session(OrderSessionUpsert {
+                order_no: "ORDER-PICKUP-REMINDER",
+                payment_method: "payment_code",
+                payment_provider: Some("alipay"),
+                items_json: json!([{ "name": "cola" }]),
+                status: "dispensing",
+                next_action: "dispensing",
+                payment_attempt_json: None,
+                recovery_strategy: "local",
+                last_backend_status_json: Some(json!({
+                    "orderNo": "ORDER-PICKUP-REMINDER",
+                    "orderStatus": "dispensing",
+                    "nextAction": "dispensing",
+                    "vending": {
+                        "commandNo": "CMD-PICKUP-REMINDER",
+                        "status": "dispensing",
+                        "lastError": null
+                    }
+                })),
+                last_error: None,
+            })
+            .await
+            .expect("seed");
+
+        store
+            .record_dispense_progress(&DispenseProgressEvent {
+                command_no: "CMD-PICKUP-REMINDER".to_string(),
+                order_no: "ORDER-PICKUP-REMINDER".to_string(),
+                stage: DispenseProgressStage::PickupTimeoutWarning,
+                warning_no: Some(2),
+                message: "请立即取走商品，设备即将自动关闭取货口".to_string(),
+                reported_at: "2026-06-13T09:00:00.000Z".to_string(),
+            })
+            .await
+            .expect("record progress");
+
+        let snapshot = store
+            .current_transaction_snapshot()
+            .await
+            .expect("snapshot")
+            .expect("current");
+        let reminder = snapshot
+            .vending
+            .expect("vending")
+            .pickup_reminder
+            .expect("pickup reminder");
+        assert_eq!(reminder.level, "urgent");
+        assert_eq!(reminder.warning_no, Some(2));
+        assert!(reminder.message.contains("立即取走"));
+        assert_eq!(snapshot.next_action.as_deref(), Some("dispensing"));
+    }
+
+    #[tokio::test]
+    async fn backend_status_refresh_preserves_local_pickup_reminder_while_dispensing() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        store
+            .upsert_order_session(OrderSessionUpsert {
+                order_no: "ORDER-PICKUP-REFRESH",
+                payment_method: "payment_code",
+                payment_provider: Some("alipay"),
+                items_json: json!([{ "name": "cola" }]),
+                status: "dispensing",
+                next_action: "dispensing",
+                payment_attempt_json: None,
+                recovery_strategy: "local",
+                last_backend_status_json: Some(json!({
+                    "orderNo": "ORDER-PICKUP-REFRESH",
+                    "orderStatus": "dispensing",
+                    "nextAction": "dispensing",
+                    "vending": {
+                        "commandNo": "CMD-PICKUP-REFRESH",
+                        "status": "dispensing",
+                        "lastError": null,
+                        "pickupReminder": {
+                            "level": "warning",
+                            "message": "请尽快取走商品",
+                            "warningNo": 1,
+                            "reportedAt": "2026-06-13T09:00:00.000Z"
+                        }
+                    }
+                })),
+                last_error: None,
+            })
+            .await
+            .expect("seed");
+
+        store
+            .apply_backend_order_status(
+                "ORDER-PICKUP-REFRESH",
+                json!({
+                    "orderNo": "ORDER-PICKUP-REFRESH",
+                    "orderStatus": "dispensing",
+                    "nextAction": "dispensing",
+                    "payment": {
+                        "method": "payment_code",
+                        "providerCode": "alipay",
+                        "status": "succeeded"
+                    },
+                    "vending": {
+                        "commandNo": "CMD-PICKUP-REFRESH",
+                        "status": "sent",
+                        "lastError": null
+                    }
+                }),
+            )
+            .await
+            .expect("refresh");
+
+        let snapshot = store
+            .current_transaction_snapshot()
+            .await
+            .expect("snapshot")
+            .expect("current");
+        let reminder = snapshot
+            .vending
+            .expect("vending")
+            .pickup_reminder
+            .expect("pickup reminder");
+        assert_eq!(reminder.message, "请尽快取走商品");
+        assert_eq!(reminder.warning_no, Some(1));
+    }
+
+    #[tokio::test]
+    async fn successful_dispense_result_clears_vending_last_error() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        let command = DispenseCommandPayload {
+            command_no: "CMD-SUCCESS-LAST-ERROR".to_string(),
+            order_no: "ORDER-SUCCESS-LAST-ERROR".to_string(),
+            slot: vending_core::hardware::SlotPayload {
+                layer_no: 1,
+                cell_no: 1,
+                slot_code: "A1".to_string(),
+            },
+            quantity: 1,
+            timeout_seconds: 10,
+        };
+        store
+            .upsert_order_session(OrderSessionUpsert {
+                order_no: &command.order_no,
+                payment_method: "payment_code",
+                payment_provider: Some("alipay"),
+                items_json: json!([{ "name": "cola" }]),
+                status: "dispensing",
+                next_action: "dispensing",
+                payment_attempt_json: None,
+                recovery_strategy: "local",
+                last_backend_status_json: Some(json!({
+                    "orderNo": command.order_no,
+                    "orderStatus": "paid",
+                    "fulfillmentState": "awaiting_fulfillment",
+                    "totalAmountCents": 1,
+                    "nextAction": "dispensing",
+                    "payment": {
+                        "paymentNo": "PAY-SUCCESS-LAST-ERROR",
+                        "method": "payment_code",
+                        "providerCode": "alipay",
+                        "status": "succeeded",
+                        "paymentUrl": null,
+                        "expiresAt": null
+                    },
+                    "vending": {
+                        "commandNo": command.command_no,
+                        "status": "running",
+                        "lastError": "previous warning"
+                    }
+                })),
+                last_error: None,
+            })
+            .await
+            .expect("seed order session");
+
+        store
+            .apply_dispense_result_to_order_session(
+                &command,
+                &DispenseResultPayload {
+                    command_no: command.command_no.clone(),
+                    success: true,
+                    error_code: None,
+                    message: "serial: dispense completed".to_string(),
+                    reported_at: now_iso(),
+                },
+            )
+            .await
+            .expect("apply result");
+
+        let snapshot = store
+            .current_transaction_snapshot()
+            .await
+            .expect("snapshot")
+            .expect("current");
+
+        assert_eq!(
+            snapshot
+                .vending
+                .as_ref()
+                .and_then(|vending| vending.status.as_deref()),
+            Some("succeeded")
+        );
+        assert_eq!(
+            snapshot
+                .vending
+                .as_ref()
+                .and_then(|vending| vending.last_error.as_deref()),
+            None
+        );
     }
 
     #[tokio::test]

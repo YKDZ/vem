@@ -187,9 +187,6 @@ describe("DaemonApiClient", () => {
               scannerFrameSuffix: "crlf",
               visionEnabled: true,
               visionWsUrl: "ws://127.0.0.1:7892/ws",
-              visionAutoStart: false,
-              visionProcessCommand: null,
-              visionProcessArgs: null,
               visionRequestTimeoutMs: 8000,
               kioskMode: false,
               stockMovementRetentionDays: 30,
@@ -240,7 +237,81 @@ describe("DaemonApiClient", () => {
     await expect(daemonClient.claimMachine("ABCD-2345")).rejects.toMatchObject({
       statusCode: 400,
       responseCode: "machine_claim_expired",
+      responseMessage: "claim ABCD-2345 expired with secret-value",
     });
+  });
+
+  it("surfaces daemon JSON error messages for failed create-order requests", async () => {
+    vi.mocked(getDaemonConnectionInfo).mockResolvedValue({
+      baseUrl: "http://127.0.0.1:7891",
+      token: "token-1",
+      source: "browser_env",
+      mock: true,
+    });
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          code: "create_order_blocked",
+          message: "selected payment provider is required for payment_code",
+        }),
+        { status: 400 },
+      ),
+    );
+
+    await expect(daemonClient.createOrder({})).rejects.toMatchObject({
+      message:
+        "selected payment provider is required for payment_code (/v1/intents/create-order returned HTTP 400)",
+      statusCode: 400,
+      responseCode: "create_order_blocked",
+      responseMessage: "selected payment provider is required for payment_code",
+    });
+  });
+
+  it("posts cancel-order requests with the current order number", async () => {
+    vi.mocked(getDaemonConnectionInfo).mockResolvedValue({
+      baseUrl: "http://127.0.0.1:7891",
+      token: "token-1",
+      source: "browser_env",
+      mock: true,
+    });
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          orderId: "order-1",
+          orderNo: "ORD-001",
+          productSummary: null,
+          paymentNo: "PAY-001",
+          paymentMethod: "qr_code",
+          paymentProvider: "alipay",
+          paymentUrl: null,
+          paymentStatus: "canceled",
+          orderStatus: "canceled",
+          totalAmountCents: 1,
+          vending: null,
+          nextAction: "closed",
+          maskedAuthCode: null,
+          paymentCodeAttempt: null,
+          expiresAt: null,
+          errorCode: null,
+          errorMessage: null,
+          operatorHint: null,
+          updatedAt: "2026-06-12T00:00:00.000Z",
+        }),
+        { status: 200 },
+      ),
+    );
+
+    await expect(daemonClient.cancelOrder("ORD-001")).resolves.toMatchObject({
+      orderNo: "ORD-001",
+      nextAction: "closed",
+    });
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "http://127.0.0.1:7891/v1/intents/cancel-order",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ orderNo: "ORD-001" }),
+      }),
+    );
   });
 
   it("retries after 401 once", async () => {

@@ -126,6 +126,41 @@ function readTimeoutCompensationSeconds(publicConfigJson: unknown): number {
     : 120;
 }
 
+function isPastTimeoutCompensation(
+  expiresAt: Date | null | undefined,
+  publicConfigJson: unknown,
+  now: Date,
+): boolean {
+  const compensationSeconds = readTimeoutCompensationSeconds(publicConfigJson);
+  const expiresAtMs = expiresAt ? expiresAt.getTime() : 0;
+  return now.getTime() >= expiresAtMs + compensationSeconds * 1000;
+}
+
+function isTradeNotFoundError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /ACQ\.TRADE_NOT_EXIST|trade not exist|交易不存在/i.test(message);
+}
+
+function buildReconciliationPayloadFields(rawPayload: unknown): {
+  rawPayloadSha256: string | null;
+  rawPayloadExcerpt: string | null;
+} {
+  if (!rawPayload) {
+    return { rawPayloadSha256: null, rawPayloadExcerpt: null };
+  }
+  const storedPayload = buildStoredEventPayload(rawPayload);
+  return {
+    rawPayloadSha256:
+      typeof storedPayload["payloadSha256"] === "string"
+        ? storedPayload["payloadSha256"]
+        : null,
+    rawPayloadExcerpt:
+      typeof storedPayload["payloadExcerpt"] === "string"
+        ? storedPayload["payloadExcerpt"]
+        : null,
+  };
+}
+
 const MACHINE_STATUS_POLL_MIN_INTERVAL_MS = 5_000;
 
 @Injectable()
@@ -576,14 +611,13 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
             }
 
             // If still pending/processing, check compensation window
-            const compensationSeconds = readTimeoutCompensationSeconds(
-              payment.publicConfigJson,
-            );
-            const compensationMs = compensationSeconds * 1000;
-            const expiresAtMs = payment.expiresAt
-              ? payment.expiresAt.getTime()
-              : 0;
-            if (now.getTime() < expiresAtMs + compensationMs) {
+            if (
+              !isPastTimeoutCompensation(
+                payment.expiresAt,
+                payment.publicConfigJson,
+                now,
+              )
+            ) {
               // Within compensation window — skip closing for now
               return false;
             }
@@ -602,39 +636,53 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
           } catch (error) {
             const message =
               error instanceof Error ? error.message : String(error);
-            const attemptNo = await this.nextPaymentReconciliationAttemptNo(
-              payment.paymentId,
-              "expire_compensation",
-            );
-            await this.db.insert(paymentReconciliationAttempts).values({
-              paymentId: payment.paymentId,
-              providerId: payment.providerId,
-              trigger: "expire_compensation",
-              attemptNo,
-              status: "network_error",
-              errorCode: "expire_compensation_failed",
-              errorMessage: message.slice(0, 500),
-              nextRetryAt: new Date(now.getTime() + reconcileBackoffMs(1)),
-              startedAt: now,
-              finishedAt: new Date(),
-            });
-            await this.db
-              .insert(paymentEvents)
-              .values({
+            const canExpireMissingProviderTrade =
+              !payment.providerTradeNo &&
+              isTradeNotFoundError(error) &&
+              isPastTimeoutCompensation(
+                payment.expiresAt,
+                payment.publicConfigJson,
+                now,
+              );
+            if (canExpireMissingProviderTrade) {
+              this.logger.warn(
+                `expireOverduePayments: expiring ${payment.paymentNo} after provider reported missing trade`,
+              );
+            } else {
+              const attemptNo = await this.nextPaymentReconciliationAttemptNo(
+                payment.paymentId,
+                "expire_compensation",
+              );
+              await this.db.insert(paymentReconciliationAttempts).values({
                 paymentId: payment.paymentId,
                 providerId: payment.providerId,
-                eventType: "payment.expire_compensation_failed",
-                providerEventId: `expire_compensation_failed:${payment.paymentNo}:${now.getTime()}`,
-                rawPayloadJson: buildStoredEventPayload({
-                  paymentNo: payment.paymentNo,
-                  providerCode: payment.providerCode,
-                  message,
-                }),
-                signatureValid: true,
-                handledAt: new Date(),
-              })
-              .onConflictDoNothing();
-            return false;
+                trigger: "expire_compensation",
+                attemptNo,
+                status: "network_error",
+                errorCode: "expire_compensation_failed",
+                errorMessage: message.slice(0, 500),
+                nextRetryAt: new Date(now.getTime() + reconcileBackoffMs(1)),
+                startedAt: now,
+                finishedAt: new Date(),
+              });
+              await this.db
+                .insert(paymentEvents)
+                .values({
+                  paymentId: payment.paymentId,
+                  providerId: payment.providerId,
+                  eventType: "payment.expire_compensation_failed",
+                  providerEventId: `expire_compensation_failed:${payment.paymentNo}:${now.getTime()}`,
+                  rawPayloadJson: buildStoredEventPayload({
+                    paymentNo: payment.paymentNo,
+                    providerCode: payment.providerCode,
+                    message,
+                  }),
+                  signatureValid: true,
+                  handledAt: new Date(),
+                })
+                .onConflictDoNothing();
+              return false;
+            }
           }
         }
 
@@ -1878,12 +1926,16 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
           if (providerStatus === "pending" || providerStatus === "processing") {
             const backoffMs = reconcileBackoffMs(attemptNo);
             const nextRetryAt = new Date(now.getTime() + backoffMs);
+            const rawPayloadFields = buildReconciliationPayloadFields(
+              result.rawPayload,
+            );
             await this.db
               .update(paymentReconciliationAttempts)
               .set({
                 status: providerStatus,
                 providerPaymentStatus: providerStatus,
                 providerTradeNo: result.providerTradeNo ?? null,
+                ...rawPayloadFields,
                 nextRetryAt,
                 finishedAt: new Date(),
               })
@@ -2098,12 +2150,25 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
 
     const providerStatus = result.status;
     if (providerStatus === "pending" || providerStatus === "processing") {
+      const rawPayloadFields = buildReconciliationPayloadFields(
+        result.rawPayload,
+      );
+      await this.db
+        .update(payments)
+        .set({
+          status: providerStatus,
+          providerTradeNo:
+            result.providerTradeNo ?? payment.providerTradeNo ?? null,
+          updatedAt: new Date(),
+        })
+        .where(eq(payments.id, payment.id));
       await this.db
         .update(paymentReconciliationAttempts)
         .set({
           status: providerStatus,
           providerPaymentStatus: providerStatus,
           providerTradeNo: result.providerTradeNo ?? null,
+          ...rawPayloadFields,
           nextRetryAt: new Date(
             now.getTime() + MACHINE_STATUS_POLL_MIN_INTERVAL_MS,
           ),
@@ -2507,6 +2572,9 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
     if (query.status) {
       conditions.push(eq(refunds.status, query.status));
     }
+    if (query.reason) {
+      conditions.push(eq(refunds.reason, query.reason));
+    }
     if (query.createdFrom) {
       conditions.push(
         sql`${refunds.createdAt} >= ${new Date(query.createdFrom)}`,
@@ -2653,6 +2721,18 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       providerStatus === "succeeded" || providerStatus === "failed";
 
     if (!isTerminal) {
+      const rawPayloadFields = buildReconciliationPayloadFields(
+        result.rawPayload,
+      );
+      await this.db
+        .update(payments)
+        .set({
+          status: providerStatus,
+          providerTradeNo:
+            result.providerTradeNo ?? payment.providerTradeNo ?? null,
+          updatedAt: new Date(),
+        })
+        .where(eq(payments.id, payment.id));
       await this.db
         .update(paymentReconciliationAttempts)
         .set({
@@ -2660,6 +2740,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
           status: providerStatus as "pending" | "processing",
           providerPaymentStatus: providerStatus,
           providerTradeNo: result.providerTradeNo ?? null,
+          ...rawPayloadFields,
           finishedAt: new Date(),
         })
         .where(eq(paymentReconciliationAttempts.id, attempt.id));

@@ -29,7 +29,7 @@ async function load(): Promise<void> {
     const [readinessRow, metricsRow, machineRows] = await Promise.all([
       getPaymentOpsReadiness(),
       getPaymentOpsMetrics(60),
-      listMachines({ page: 1, pageSize: 200 }),
+      listMachines({ page: 1, pageSize: 100 }),
     ]);
     readiness.value = readinessRow;
     metrics.value = metricsRow;

@@ -84,6 +84,9 @@ export class PaymentCodeOrchestratorService {
       await this.attempts.markStatus(attempt.id, "succeeded", {
         providerTradeNo: charge.providerTradeNo,
         providerStatus: charge.providerStatus ?? "succeeded",
+        failureCode: null,
+        failureMessage: null,
+        manualReason: null,
         rawPayloadJson: buildStoredEventPayload(charge.rawPayload ?? {}),
         finishedAt: new Date(),
       });
@@ -216,11 +219,37 @@ export class PaymentCodeOrchestratorService {
     }
 
     await this.wait(pollIntervalMs);
-    const query = await provider.queryPaymentCode({
-      paymentNo: lastAttempt.providerPaymentNo,
-      providerTradeNo: lastAttempt.providerTradeNo,
-      config,
-    });
+    let query: Awaited<ReturnType<typeof provider.queryPaymentCode>>;
+    try {
+      query = await provider.queryPaymentCode({
+        paymentNo: lastAttempt.providerPaymentNo,
+        providerTradeNo: lastAttempt.providerTradeNo,
+        config,
+      });
+    } catch (error) {
+      const message = this.errorMessage(error);
+      const nextAttempt = await this.attempts.markStatus(
+        attemptId,
+        "querying",
+        {
+          providerTradeNo: lastAttempt.providerTradeNo,
+          providerStatus: "PAYMENT_CODE_QUERY_UNKNOWN",
+          failureCode: "PAYMENT_CODE_QUERY_UNKNOWN",
+          failureMessage: message,
+          rawPayloadJson: buildStoredEventPayload({ error: message }),
+          lastCheckedAt: new Date(),
+        },
+      );
+      await this.pollAttemptUntilSettled(
+        provider,
+        attemptId,
+        config,
+        deadline,
+        pollIntervalMs,
+        nextAttempt,
+      );
+      return;
+    }
     const nextAttempt = await this.attempts.markStatus(
       attemptId,
       query.status === "succeeded"
@@ -280,7 +309,13 @@ export class PaymentCodeOrchestratorService {
     const provider = this.registry.getPaymentCodeProvider(providerCode);
     const attempt = await this.attempts.markStatus(attemptId, "reversing");
 
-    await this.reverseAttemptWithRetry(provider, attemptId, config, attempt, 3);
+    await this.reverseAttemptWithRetry(
+      provider,
+      attemptId,
+      config,
+      attempt,
+      this.reverseMaxAttempts(config),
+    );
   }
 
   private async reverseAttemptWithRetry(
@@ -294,23 +329,58 @@ export class PaymentCodeOrchestratorService {
       await this.attempts.markStatus(attemptId, "manual_handling", {
         isActive: true,
         manualReason: "reverse_result_unknown_after_retries",
+        failureCode: attempt.failureCode ?? "PAYMENT_CODE_REVERSE_UNKNOWN",
+        failureMessage:
+          attempt.failureMessage ?? "付款码撤销结果未知，需要人工确认",
         finishedAt: new Date(),
       });
       return;
     }
 
-    const reversed = await provider.reversePaymentCode({
-      paymentNo: attempt.providerPaymentNo,
-      providerTradeNo: attempt.providerTradeNo,
-      config,
-    });
+    let reversed: Awaited<ReturnType<typeof provider.reversePaymentCode>>;
+    try {
+      reversed = await provider.reversePaymentCode({
+        paymentNo: attempt.providerPaymentNo,
+        providerTradeNo: attempt.providerTradeNo,
+        config,
+      });
+    } catch (error) {
+      const message = this.errorMessage(error);
+      const nextAttempt = await this.attempts.markStatus(
+        attemptId,
+        "reversing",
+        {
+          providerStatus: "PAYMENT_CODE_REVERSE_UNKNOWN",
+          failureCode: "PAYMENT_CODE_REVERSE_UNKNOWN",
+          failureMessage: message,
+          rawPayloadJson: buildStoredEventPayload({ error: message }),
+          isActive: true,
+        },
+      );
+      this.logger.warn(
+        `payment_code reverse unknown for attempt ${attemptId}: ${message}`,
+      );
+      await this.wait(this.reverseRetryDelayMs(config));
+      await this.reverseAttemptWithRetry(
+        provider,
+        attemptId,
+        config,
+        nextAttempt,
+        remainingAttempts - 1,
+      );
+      return;
+    }
     const nextAttempt = await this.attempts.markStatus(
       attemptId,
       reversed.status === "reversed" ? "reversed" : "reversing",
       {
         providerStatus: reversed.providerStatus ?? reversed.status,
         failureCode: reversed.failureCode ?? null,
-        failureMessage: reversed.failureMessage ?? null,
+        failureMessage:
+          reversed.failureMessage ??
+          (reversed.status === "reversed"
+            ? "本次付款码交易已撤销，请刷新付款码后重试"
+            : null),
         rawPayloadJson: buildStoredEventPayload(reversed.rawPayload ?? {}),
         reversedAt: reversed.status === "reversed" ? new Date() : null,
         finishedAt: reversed.status === "reversed" ? new Date() : null,
@@ -321,6 +391,7 @@ export class PaymentCodeOrchestratorService {
       return;
     }
 
+    await this.wait(this.reverseRetryDelayMs(config));
     await this.reverseAttemptWithRetry(
       provider,
       attemptId,
@@ -347,6 +418,9 @@ export class PaymentCodeOrchestratorService {
       const updated = await this.attempts.markStatus(id, "succeeded", {
         providerTradeNo: result.providerTradeNo ?? ctx.attempt.providerTradeNo,
         providerStatus: result.providerStatus ?? "succeeded",
+        failureCode: null,
+        failureMessage: null,
+        manualReason: null,
         rawPayloadJson: buildStoredEventPayload(result.rawPayload ?? {}),
         lastCheckedAt: new Date(),
         finishedAt: new Date(),
@@ -463,10 +537,13 @@ export class PaymentCodeOrchestratorService {
       case "unknown":
         return "正在确认支付结果";
       case "failed":
+        return (
+          attempt.failureMessage ?? "付款码无效或支付失败，请刷新付款码后重试"
+        );
       case "reversed":
       case "canceled":
         return (
-          attempt.failureMessage ?? "付款码无效或支付失败，请刷新付款码后重试"
+          attempt.failureMessage ?? "本次付款码交易已撤销，请刷新付款码后重试"
         );
       case "created":
         return "正在提交付款码";
@@ -498,6 +575,40 @@ export class PaymentCodeOrchestratorService {
     return typeof value === "number" && Number.isFinite(value) && value > 0
       ? value
       : fallback;
+  }
+
+  private reverseRetryDelayMs(config: PaymentProviderRuntimeConfig): number {
+    return (
+      this.readNumber(
+        config.publicConfigJson,
+        "paymentCodeReverseRetryIntervalSeconds",
+        3,
+      ) * 1000
+    );
+  }
+
+  private reverseMaxAttempts(config: PaymentProviderRuntimeConfig): number {
+    const fallback = config.providerCode === "alipay" ? 20 : 3;
+    return Math.max(
+      1,
+      Math.floor(
+        this.readNumber(
+          config.publicConfigJson,
+          "paymentCodeReverseMaxAttempts",
+          fallback,
+        ),
+      ),
+    );
+  }
+
+  private errorMessage(error: unknown): string {
+    if (error instanceof Error) return error.message;
+    if (typeof error === "string") return error;
+    try {
+      return JSON.stringify(error);
+    } catch {
+      return String(error);
+    }
   }
 
   private async wait(ms: number): Promise<void> {

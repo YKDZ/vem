@@ -13,6 +13,7 @@ export * from "./schemas/auth";
 export * from "./schemas/dashboard";
 export * from "./schemas/inventory";
 export * from "./schemas/machines";
+export * from "./schemas/machine-slot-coordinate";
 export * from "./schemas/mqtt";
 export * from "./schemas/notifications";
 export * from "./schemas/orders";

@@ -14,7 +14,9 @@ const {
   getConfigMock,
   getSaleReadinessMock,
   getCurrentTransactionMock,
+  getSaleViewMock,
   getPaymentOptionsMock,
+  subscribeVisionProfilesMock,
 } = vi.hoisted(() => ({
   routerPushMock: vi.fn(),
   routerBackMock: vi.fn(),
@@ -26,7 +28,9 @@ const {
   getConfigMock: vi.fn(),
   getSaleReadinessMock: vi.fn(),
   getCurrentTransactionMock: vi.fn(),
+  getSaleViewMock: vi.fn(),
   getPaymentOptionsMock: vi.fn(),
+  subscribeVisionProfilesMock: vi.fn(),
 }));
 
 vi.mock("vue-router", () => ({
@@ -47,12 +51,20 @@ vi.mock("@/daemon/client", () => ({
     getConfig: getConfigMock,
     getSaleReadiness: getSaleReadinessMock,
     getCurrentTransaction: getCurrentTransactionMock,
-    getSaleView: vi.fn(),
+    getSaleView: getSaleViewMock,
     getPaymentOptions: getPaymentOptionsMock,
   },
 }));
 
-import type { MachineCatalogItem } from "@/types/catalog";
+vi.mock("@/native/vision", () => ({
+  subscribeVisionProfiles: subscribeVisionProfilesMock,
+}));
+
+import type { VisionProfileSubscriptionHandlers } from "@/native/vision";
+import type {
+  MachineCatalogItem,
+  MachineCatalogSlotCandidate,
+} from "@/types/catalog";
 
 import { useCatalogStore } from "@/stores/catalog";
 import { useCheckoutStore } from "@/stores/checkout";
@@ -64,13 +76,22 @@ import CheckoutView from "./CheckoutView.vue";
 
 let mountedApp: App<Element> | null = null;
 let pinia: ReturnType<typeof createPinia>;
+let latestVisionHandlers: VisionProfileSubscriptionHandlers | null = null;
 
 beforeEach(() => {
   pinia = createPinia();
   setActivePinia(pinia);
   vi.clearAllMocks();
+  latestVisionHandlers = null;
+  subscribeVisionProfilesMock.mockImplementation(
+    (_config: unknown, handlers: VisionProfileSubscriptionHandlers) => {
+      latestVisionHandlers = handlers;
+      return { close: vi.fn() };
+    },
+  );
   initializeMock.mockResolvedValue(undefined);
   subscribeEventsMock.mockReturnValue({ close: vi.fn() });
+  getSaleViewMock.mockRejectedValue(new Error("sale view not mocked"));
   getCurrentTransactionMock.mockResolvedValue({
     orderId: null,
     orderNo: null,
@@ -107,9 +128,6 @@ beforeEach(() => {
       scannerFrameSuffix: "crlf",
       visionEnabled: true,
       visionWsUrl: "ws://127.0.0.1:7892/ws",
-      visionAutoStart: false,
-      visionProcessCommand: null,
-      visionProcessArgs: null,
       visionRequestTimeoutMs: 8000,
       kioskMode: false,
       stockMovementRetentionDays: 30,
@@ -144,10 +162,11 @@ afterEach(() => {
   mountedApp?.unmount();
   mountedApp = null;
   document.body.innerHTML = "";
+  vi.useRealTimers();
 });
 
 function makeCatalogItem(): MachineCatalogItem {
-  return {
+  const item = {
     machineCode: "M001",
     slotId: "550e8400-e29b-41d4-a716-446655440001",
     slotCode: "A1",
@@ -172,12 +191,58 @@ function makeCatalogItem(): MachineCatalogItem {
     slotSalesState: "sale_ready",
     productSortOrder: 1,
     targetGender: null,
+  } as Omit<
+    MachineCatalogItem,
+    | "catalogKey"
+    | "aggregatedSlotCount"
+    | "slotCandidates"
+    | "variantCandidates"
+  >;
+  const slotCandidates: readonly MachineCatalogSlotCandidate[] = [
+    {
+      slotId: item.slotId,
+      slotCode: item.slotCode,
+      layerNo: item.layerNo,
+      cellNo: item.cellNo,
+      inventoryId: item.inventoryId,
+      variantId: item.variantId,
+      sku: item.sku,
+      size: item.size,
+      color: item.color,
+      priceCents: item.priceCents,
+      capacity: item.capacity,
+      parLevel: item.parLevel,
+      physicalStock: item.physicalStock,
+      saleableStock: item.saleableStock,
+      slotSalesState: item.slotSalesState,
+    },
+  ];
+  return {
+    ...item,
+    catalogKey: `product:${item.productId}`,
+    aggregatedSlotCount: 1,
+    slotCandidates,
+    variantCandidates: [
+      {
+        variantId: item.variantId,
+        sku: item.sku,
+        size: item.size,
+        color: item.color,
+        priceCents: item.priceCents,
+        capacity: item.capacity,
+        parLevel: item.parLevel,
+        physicalStock: item.physicalStock,
+        saleableStock: item.saleableStock,
+        slotSalesState: item.slotSalesState,
+        slotCandidates,
+      },
+    ],
   };
 }
 
 function healthSnapshot() {
   return {
-    status: "healthy",
+    status: "healthy" as const,
     process: {
       component: "daemon",
       level: "ok",
@@ -210,7 +275,7 @@ function readySnapshot() {
     blockingCodes: [],
     blockingReasons: [],
     degradedReasons: [],
-    suggestedRoute: "catalog",
+    suggestedRoute: "catalog" as const,
     updatedAt: "2026-06-04T00:00:00Z",
   };
 }
@@ -271,8 +336,8 @@ function saleReadiness(canStartNetworkAuthorizedSale: boolean) {
 }
 
 function applyBlockedSaleReadiness(): void {
-  useConnectivityStore().applyHealth({
-    status: "healthy",
+  const health = {
+    status: "healthy" as const,
     process: {
       component: "daemon",
       level: "ok",
@@ -294,18 +359,18 @@ function applyBlockedSaleReadiness(): void {
     currentTransaction: null,
     operatorReason: "",
     updatedAt: "2026-06-04T00:00:00Z",
-  });
-  useConnectivityStore().applyReady({
+  };
+  const ready = {
     ready: true,
     canSell: true,
     mode: "catalog",
     blockingCodes: [],
     blockingReasons: [],
     degradedReasons: [],
-    suggestedRoute: "catalog",
+    suggestedRoute: "catalog" as const,
     updatedAt: "2026-06-04T00:00:00Z",
-  });
-  useConnectivityStore().applySaleReadiness({
+  };
+  const readiness = {
     canStartNetworkAuthorizedSale: false,
     blockingCodes: ["PLATFORM_UNREACHABLE", "NO_PAYMENT_OPTIONS"],
     components: {
@@ -346,7 +411,13 @@ function applyBlockedSaleReadiness(): void {
         message: "hardware ready",
       },
     },
-  });
+  };
+  getHealthMock.mockResolvedValue(health);
+  getReadyMock.mockResolvedValue(ready);
+  getSaleReadinessMock.mockResolvedValue(readiness);
+  useConnectivityStore().applyHealth(health);
+  useConnectivityStore().applyReady(ready);
+  useConnectivityStore().applySaleReadiness(readiness);
 }
 
 async function mountView(component: object): Promise<HTMLElement> {
@@ -387,9 +458,6 @@ describe("sale readiness UI flow", () => {
         scannerFrameSuffix: "crlf",
         visionEnabled: true,
         visionWsUrl: "ws://127.0.0.1:7892/ws",
-        visionAutoStart: false,
-        visionProcessCommand: null,
-        visionProcessArgs: null,
         visionRequestTimeoutMs: 8000,
         kioskMode: false,
         stockMovementRetentionDays: 30,
@@ -484,6 +552,11 @@ describe("sale readiness UI flow", () => {
 
     expect(host.textContent).toContain("矿泉水");
     expect(host.textContent).toContain("platform offline");
+    expect(
+      Array.from(host.querySelectorAll("button")).some(
+        (button) => button.textContent?.trim() === "刷新",
+      ),
+    ).toBe(false);
     const detailButton = Array.from(host.querySelectorAll("button")).find(
       (button) => button.textContent?.includes("查看详情"),
     );
@@ -496,8 +569,99 @@ describe("sale readiness UI flow", () => {
     expect(useCheckoutStore().selectedItem?.inventoryId).toBe(item.inventoryId);
     expect(routerPushMock).toHaveBeenCalledWith({
       name: "product-detail",
-      params: { inventoryId: item.inventoryId },
+      params: { catalogKey: item.catalogKey },
     });
+  });
+
+  it("leaves the catalog when readiness refresh requires maintenance", async () => {
+    vi.useFakeTimers();
+    const item = makeCatalogItem();
+    const blockedHealth = {
+      ...healthSnapshot(),
+      status: "degraded" as const,
+      hardwareOnline: false,
+      operatorReason: "LOWER_CONTROLLER_UNAVAILABLE",
+    };
+    const blockedReady = {
+      ...readySnapshot(),
+      ready: false,
+      canSell: false,
+      mode: "maintenance" as const,
+      blockingCodes: ["LOWER_CONTROLLER_UNAVAILABLE"],
+      blockingReasons: [
+        {
+          code: "LOWER_CONTROLLER_UNAVAILABLE",
+          component: "hardware",
+          message: "lower controller unavailable",
+        },
+      ],
+      suggestedRoute: "maintenance" as const,
+    };
+    useCatalogStore().applySnapshot({
+      items: [item],
+      source: "local_stock",
+      planogramVersion: "PLAN-1",
+      lastUpdatedAt: "2026-06-04T00:00:00Z",
+    });
+    getSaleViewMock.mockResolvedValue({
+      items: [item],
+      source: "local_stock",
+      planogramVersion: "PLAN-1",
+      lastUpdatedAt: "2026-06-04T00:00:00Z",
+    });
+    getHealthMock.mockResolvedValue(blockedHealth);
+    getReadyMock.mockResolvedValue(blockedReady);
+    getSaleReadinessMock.mockResolvedValue(saleReadiness(false));
+
+    await mountView(CatalogView);
+
+    await vi.waitFor(() => {
+      expect(routerReplaceMock).toHaveBeenCalledWith("/maintenance");
+    });
+  });
+
+  it("shows the latest vision recognition result in the recommendation area", async () => {
+    const item = makeCatalogItem();
+    useCatalogStore().applySnapshot({
+      items: [{ ...item, size: "M", targetGender: "male" }],
+      source: "local_stock",
+      planogramVersion: "PLAN-1",
+      lastUpdatedAt: "2026-06-04T00:00:00Z",
+    });
+
+    const host = await mountView(CatalogView);
+
+    expect(latestVisionHandlers).toBeTruthy();
+    await Promise.resolve(
+      latestVisionHandlers?.onProfile({
+        eventId: "vision-event-001",
+        detectedAt: "2026-06-12T10:20:30.000Z",
+        profile: {
+          personPresent: true,
+          heightCm: 172,
+          shoulderWidthCm: 43,
+          ageRange: "25-34",
+          gender: "male",
+          bodyType: "regular",
+          upperColor: "blue",
+          confidence: 0.91,
+        },
+        quality: {
+          overall: "good",
+          warnings: ["light glare"],
+        },
+      }),
+    );
+    await nextTick();
+
+    expect(host.textContent).toContain("视觉识别结果");
+    expect(host.textContent).toContain("vision-event-001");
+    expect(host.textContent).toContain("172 cm");
+    expect(host.textContent).toContain("91%");
+    expect(host.textContent).toContain("light glare");
+    expect(host.textContent).toContain('"heightCm": 172');
+    expect(host.textContent).toContain("矿泉水");
+    expect(host.textContent).toContain("尺码正好");
   });
 
   it("keeps checkout visible but disables order creation when readiness is blocked", async () => {

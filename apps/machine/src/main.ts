@@ -5,9 +5,24 @@ import App from "./App.vue";
 import { router } from "./router";
 import "./style.css";
 
-const app = createApp(App);
+async function installDevTools(): Promise<void> {
+  if (!import.meta.env.DEV) return;
+  const { installUiDebugDaemon, shouldInstallUiDebugDaemon } =
+    await import("./dev/ui-debug-daemon");
+  if (shouldInstallUiDebugDaemon()) {
+    installUiDebugDaemon();
+  }
+}
 
-app.use(createPinia());
-app.use(router);
+async function bootstrap(): Promise<void> {
+  await installDevTools();
+  const app = createApp(App);
 
-app.mount("#app");
+  app.use(createPinia());
+  app.use(router);
+
+  await router.isReady();
+  app.mount("#app");
+}
+
+void bootstrap();

@@ -8,8 +8,17 @@ import type {
   MachineStatus,
 } from "@vem/shared";
 
+import {
+  formatMachineSlotCoordinate,
+  getMachineSlotMaxCellNo,
+  MACHINE_SLOT_MAX_LAYER_NO,
+  MACHINE_SLOT_MIN_LAYER_NO,
+  machineSlotCoordinateErrorMessage,
+  machineSlotCoordinateCode,
+} from "@vem/shared";
 import { Modal } from "antdv-next";
 import { computed, onMounted, ref } from "vue";
+import { useRouter } from "vue-router";
 
 import { requestLogExport } from "@/api/machine-ops";
 import {
@@ -35,6 +44,7 @@ import { useAuthStore } from "@/stores/auth";
 import { formatDateTime } from "@/utils/format";
 
 const authStore = useAuthStore();
+const router = useRouter();
 const canWrite = authStore.hasPermission("machines.write");
 const canCommand = authStore.hasPermission("machines.command");
 const canManageCredentials = authStore.hasPermission(
@@ -56,6 +66,18 @@ async function loadMachines(page = 1): Promise<void> {
   } finally {
     loading.value = false;
   }
+}
+
+async function openMachineDetail(m: Machine): Promise<void> {
+  await router.push({ name: "machine-detail", params: { id: m.id } });
+}
+
+function openMachineDetailWindow(m: Machine): void {
+  const href = router.resolve({
+    name: "machine-detail",
+    params: { id: m.id },
+  }).href;
+  window.open(href, `_blank`, "noopener,noreferrer");
 }
 
 // Machine form / drawer
@@ -210,6 +232,12 @@ const slotForm = ref({
   status: "enabled" as MachineSlotStatus,
 });
 const slotSaving = ref(false);
+const slotMaxCellNo = computed(
+  () => getMachineSlotMaxCellNo(slotForm.value.layerNo) ?? 5,
+);
+const slotCoordinateError = computed(() =>
+  machineSlotCoordinateErrorMessage(slotForm.value),
+);
 
 async function openSlots(m: Machine): Promise<void> {
   currentMachineId.value = m.id;
@@ -235,12 +263,19 @@ function openCreateSlot(): void {
 
 async function saveSlot(): Promise<void> {
   if (!currentMachineId.value) return;
+  if (slotCoordinateError.value) {
+    Modal.error({
+      title: "货道坐标无效",
+      content: slotCoordinateError.value,
+    });
+    return;
+  }
   slotSaving.value = true;
   try {
     await createMachineSlot(currentMachineId.value, {
       layerNo: slotForm.value.layerNo,
       cellNo: slotForm.value.cellNo,
-      slotCode: slotForm.value.slotCode,
+      slotCode: machineSlotCoordinateCode(slotForm.value),
       capacity: slotForm.value.capacity,
       status: slotForm.value.status,
     });
@@ -297,9 +332,7 @@ const machineColumns = [
 ];
 
 const slotColumns = [
-  { title: "层号", dataIndex: "layerNo", key: "layerNo" },
-  { title: "格号", dataIndex: "cellNo", key: "cellNo" },
-  { title: "格口编码", dataIndex: "slotCode", key: "slotCode" },
+  { title: "货道坐标", key: "coordinate" },
   { title: "容量", dataIndex: "capacity", key: "capacity" },
   { title: "状态", dataIndex: "status", key: "status" },
 ];
@@ -507,10 +540,20 @@ async function handleRequestLogExport(m: Machine): Promise<void> {
           </template>
           <template v-else-if="column.key === 'actions'">
             <a-space>
+              <a-button
+                size="small"
+                type="primary"
+                @click="openMachineDetail(record)"
+              >
+                详情
+              </a-button>
+              <a-button size="small" @click="openMachineDetailWindow(record)">
+                新窗口
+              </a-button>
               <a-button size="small" @click="openEnvironment(record)"
                 >环境</a-button
               >
-              <a-button size="small" @click="openSlots(record)">格口</a-button>
+              <a-button size="small" @click="openSlots(record)">货道</a-button>
               <a-button
                 v-if="canManageCredentials"
                 size="small"
@@ -697,13 +740,13 @@ async function handleRequestLogExport(m: Machine): Promise<void> {
     <!-- Slots drawer -->
     <a-drawer
       v-model:open="slotDrawerOpen"
-      title="格口列表"
+      title="货道列表"
       width="600"
       :destroy-on-hidden="true"
     >
       <div class="mb-3">
         <a-button v-if="canWrite" type="primary" @click="openCreateSlot"
-          >新增格口</a-button
+          >新增货道</a-button
         >
       </div>
       <a-table
@@ -714,7 +757,10 @@ async function handleRequestLogExport(m: Machine): Promise<void> {
         :pagination="false"
       >
         <template #bodyCell="{ column, record }">
-          <template v-if="column.key === 'status'">
+          <template v-if="column.key === 'coordinate'">
+            {{ formatMachineSlotCoordinate(record) }}
+          </template>
+          <template v-else-if="column.key === 'status'">
             <a-tag
               :color="
                 slotStatusColor[record.status as MachineSlotStatus] ?? 'default'
@@ -730,17 +776,26 @@ async function handleRequestLogExport(m: Machine): Promise<void> {
     <!-- Slot form modal -->
     <a-modal
       v-model:open="slotFormOpen"
-      title="新增格口"
+      title="新增货道"
       ok-text="确定"
       cancel-text="取消"
       :confirm-loading="slotSaving"
+      :ok-button-props="{ disabled: Boolean(slotCoordinateError) }"
       @ok="saveSlot"
     >
       <a-form layout="vertical">
-        <a-form-item label="层号">
+        <a-alert
+          v-if="slotCoordinateError"
+          class="mb-4"
+          type="error"
+          :message="slotCoordinateError"
+          show-icon
+        />
+        <a-form-item label="行号">
           <a-input-number
             v-model:value="slotForm.layerNo"
-            :min="1"
+            :min="MACHINE_SLOT_MIN_LAYER_NO"
+            :max="MACHINE_SLOT_MAX_LAYER_NO"
             class="w-full"
           />
         </a-form-item>
@@ -748,11 +803,12 @@ async function handleRequestLogExport(m: Machine): Promise<void> {
           <a-input-number
             v-model:value="slotForm.cellNo"
             :min="1"
+            :max="slotMaxCellNo"
             class="w-full"
           />
         </a-form-item>
-        <a-form-item label="格口编码">
-          <a-input v-model:value="slotForm.slotCode" />
+        <a-form-item label="货道坐标">
+          {{ formatMachineSlotCoordinate(slotForm) }}
         </a-form-item>
         <a-form-item label="容量">
           <a-input-number

@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive } from "vue";
-import { useRouter } from "vue-router";
+import { formatMachineSlotCoordinate } from "@vem/shared";
+import { computed, onMounted, onUnmounted, reactive } from "vue";
+import { useRoute, useRouter } from "vue-router";
 
 import MockHardwareControls from "@/components/MockHardwareControls.vue";
 import {
@@ -13,6 +14,8 @@ import {
 import { shouldShowAdvancedMaintenanceConfig } from "@/config/runtime-flags";
 import { daemonClient } from "@/daemon/client";
 import KioskLayout from "@/layouts/KioskLayout.vue";
+import { callTauriCommand, isTauriRuntime } from "@/native/tauri";
+import { useCatalogStore } from "@/stores/catalog";
 import { useConnectivityStore } from "@/stores/connectivity";
 import { useMachineStore } from "@/stores/machine";
 import { useMqttStore } from "@/stores/mqtt";
@@ -21,18 +24,48 @@ import { useScannerStore } from "@/stores/scanner";
 import { useVisionStore } from "@/stores/vision";
 
 const router = useRouter();
+const route = useRoute();
+const catalogStore = useCatalogStore();
 const connectivityStore = useConnectivityStore();
 const machineStore = useMachineStore();
 const mqttStore = useMqttStore();
 const remoteOpsStore = useRemoteOpsStore();
 const scannerStore = useScannerStore();
 const visionStore = useVisionStore();
+const MAINTENANCE_DIAGNOSTIC_REFRESH_MS = 5000;
+let diagnosticsRefreshTimer: number | null = null;
+let diagnosticsRefreshInFlight: Promise<void> | null = null;
 const runtimeFlags = reactive({
   advancedMaintenanceConfig: false,
 });
 const showAdvancedDebugConfig = computed(
   () => runtimeFlags.advancedMaintenanceConfig,
 );
+const wholeMachineMaintenanceLock = computed(
+  () =>
+    connectivityStore.ready?.blockingReasons.find(
+      (reason) => reason.code === "WHOLE_MACHINE_HARDWARE_FAULT",
+    ) ?? null,
+);
+const returnToCatalogBlockedReason = computed(() => {
+  if (connectivityStore.ready?.canSell === true) {
+    return null;
+  }
+  const reason = connectivityStore.ready?.blockingReasons[0];
+  if (reason) {
+    return reason.message;
+  }
+  if (!connectivityStore.ready) {
+    return "正在读取机器状态。";
+  }
+  return "机器未就绪。";
+});
+const operatorEnteredMaintenance = computed(() => {
+  const source = route.query.source;
+  return Array.isArray(source)
+    ? source.includes("operator")
+    : source === "operator";
+});
 
 function cloneLowerControllerUsbIdentity(
   identity: MachineConfig["lowerControllerUsbIdentity"],
@@ -62,9 +95,6 @@ const form = reactive({
   scannerFrameSuffix: machineConfigDefaults.scannerFrameSuffix,
   visionEnabled: machineConfigDefaults.visionEnabled,
   visionWsUrl: machineConfigDefaults.visionWsUrl,
-  visionAutoStart: machineConfigDefaults.visionAutoStart,
-  visionProcessCommand: machineConfigDefaults.visionProcessCommand,
-  visionProcessArgs: machineConfigDefaults.visionProcessArgs,
   visionRequestTimeoutMs: machineConfigDefaults.visionRequestTimeoutMs,
   kioskMode: machineConfigDefaults.kioskMode,
   machineSecretInput: "",
@@ -88,9 +118,6 @@ function syncFormFromStore(): void {
   form.scannerFrameSuffix = machineStore.config.scannerFrameSuffix;
   form.visionEnabled = machineStore.config.visionEnabled;
   form.visionWsUrl = machineStore.config.visionWsUrl;
-  form.visionAutoStart = machineStore.config.visionAutoStart;
-  form.visionProcessCommand = machineStore.config.visionProcessCommand;
-  form.visionProcessArgs = machineStore.config.visionProcessArgs;
   form.visionRequestTimeoutMs = machineStore.config.visionRequestTimeoutMs;
   form.kioskMode = machineStore.config.kioskMode;
 }
@@ -123,6 +150,11 @@ onMounted(async () => {
     refreshStockMaintenanceView(),
     refreshDiagnostics(),
   ]);
+  startDiagnosticsAutoRefresh();
+});
+
+onUnmounted(() => {
+  stopDiagnosticsAutoRefresh();
 });
 
 const diagnostics = reactive({
@@ -141,6 +173,20 @@ const visionMaintenance = reactive({
   message: null as string | null,
 });
 
+const wholeMachineLockMaintenance = reactive({
+  loading: false,
+  message: null as string | null,
+});
+
+const desktopMaintenance = reactive({
+  loading: false,
+  message: null as string | null,
+});
+
+const catalogNavigation = reactive({
+  message: null as string | null,
+});
+
 const stockMaintenance = reactive({
   loading: false,
   message: null as string | null,
@@ -149,6 +195,8 @@ const stockMaintenance = reactive({
   slots: [] as Array<{
     slotId: string;
     slotCode: string;
+    layerNo: number;
+    cellNo: number;
     productName: string;
     physicalStock: number;
     capacity: number;
@@ -246,6 +294,16 @@ async function refreshVisionStatus(): Promise<void> {
 }
 
 async function refreshDiagnostics(): Promise<void> {
+  if (diagnosticsRefreshInFlight) {
+    return diagnosticsRefreshInFlight;
+  }
+  diagnosticsRefreshInFlight = runDiagnosticsRefresh().finally(() => {
+    diagnosticsRefreshInFlight = null;
+  });
+  return diagnosticsRefreshInFlight;
+}
+
+async function runDiagnosticsRefresh(): Promise<void> {
   diagnostics.loading = true;
   diagnostics.message = null;
   try {
@@ -262,11 +320,79 @@ async function refreshDiagnostics(): Promise<void> {
       visionStore.refresh(),
       remoteOpsStore.refresh(),
     ]);
+    await returnToCatalogAfterSystemRecovery();
   } catch (error) {
     diagnostics.message =
       error instanceof Error ? error.message : String(error);
   } finally {
     diagnostics.loading = false;
+  }
+}
+
+function startDiagnosticsAutoRefresh(): void {
+  stopDiagnosticsAutoRefresh();
+  diagnosticsRefreshTimer = window.setInterval(() => {
+    void refreshDiagnostics();
+  }, MAINTENANCE_DIAGNOSTIC_REFRESH_MS);
+}
+
+function stopDiagnosticsAutoRefresh(): void {
+  if (diagnosticsRefreshTimer !== null) {
+    window.clearInterval(diagnosticsRefreshTimer);
+    diagnosticsRefreshTimer = null;
+  }
+}
+
+async function returnToCatalogAfterSystemRecovery(): Promise<void> {
+  if (operatorEnteredMaintenance.value) {
+    return;
+  }
+  if (connectivityStore.ready?.canSell === true) {
+    await router.replace("/catalog");
+  }
+}
+
+async function clearWholeMachineLock(): Promise<void> {
+  wholeMachineLockMaintenance.loading = true;
+  wholeMachineLockMaintenance.message = null;
+  try {
+    await daemonClient.clearWholeMachineMaintenanceLock();
+    wholeMachineLockMaintenance.message = "整机维护锁已解除";
+    await refreshDiagnostics();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    wholeMachineLockMaintenance.message = message.includes(
+      "must be healthy before clearing whole-machine lock",
+    )
+      ? `下位机仍处于故障状态，不能解除整机锁。请先按现场复位键并确认下位机恢复在线，再点击解除。(${message})`
+      : message;
+  } finally {
+    wholeMachineLockMaintenance.loading = false;
+  }
+}
+
+async function returnToCatalog(): Promise<void> {
+  if (returnToCatalogBlockedReason.value) {
+    catalogNavigation.message = `暂不能回到目录：${returnToCatalogBlockedReason.value}`;
+    return;
+  }
+  catalogNavigation.message = null;
+  await router.replace("/catalog");
+}
+
+async function returnToDesktop(): Promise<void> {
+  desktopMaintenance.loading = true;
+  desktopMaintenance.message = "正在回到 Windows 桌面";
+  try {
+    if (!isTauriRuntime()) {
+      desktopMaintenance.message = "当前不是 Tauri 运行环境，无法退出全屏应用";
+      return;
+    }
+    await callTauriCommand<void>("return_to_desktop");
+  } catch (error) {
+    desktopMaintenance.message =
+      error instanceof Error ? error.message : String(error);
+    desktopMaintenance.loading = false;
   }
 }
 
@@ -290,6 +416,8 @@ async function refreshStockMaintenanceView(): Promise<void> {
     stockMaintenance.slots = snapshot.items.map((item) => ({
       slotId: item.slotId,
       slotCode: item.slotCode,
+      layerNo: item.layerNo,
+      cellNo: item.cellNo,
       productName: item.productName,
       physicalStock: item.physicalStock,
       capacity: item.capacity,
@@ -316,7 +444,7 @@ async function submitStockMovement(): Promise<void> {
   stockMaintenance.loading = true;
   stockMaintenance.message = null;
   try {
-    await daemonClient.recordStockMovement({
+    const snapshot = await daemonClient.recordStockMovement({
       movementId: nextMovementId(),
       planogramVersion: stockForm.planogramVersion.trim(),
       slotId: stockForm.slotId,
@@ -325,6 +453,7 @@ async function submitStockMovement(): Promise<void> {
       source: "local_maintenance",
       attributedTo: stockForm.attributedTo.trim() || "front-panel",
     });
+    catalogStore.applySnapshot(snapshot);
     stockMaintenance.message = "库存动作已记录";
     await refreshStockMaintenanceView();
   } catch (error) {
@@ -397,8 +526,10 @@ async function submitStockMovement(): Promise<void> {
                 :key="slot.slotId"
                 :value="slot.slotId"
               >
-                {{ slot.slotCode }} · {{ slot.productName }} ·
-                {{ slot.physicalStock }}/{{ slot.capacity }}
+                {{ formatMachineSlotCoordinate(slot) }} ·
+                {{ slot.productName }} · {{ slot.physicalStock }}/{{
+                  slot.capacity
+                }}
               </option>
             </select>
           </label>
@@ -453,6 +584,22 @@ async function submitStockMovement(): Promise<void> {
           </p>
           <div class="flex flex-wrap gap-3">
             <button
+              class="kiosk-touch-target rounded-2xl border border-emerald-200/30 px-4 py-3 font-bold text-emerald-100 disabled:opacity-50"
+              type="button"
+              :disabled="Boolean(returnToCatalogBlockedReason)"
+              @click="returnToCatalog"
+            >
+              回到目录
+            </button>
+            <button
+              class="kiosk-touch-target rounded-2xl border border-slate-200/30 px-4 py-3 font-bold text-slate-100 disabled:opacity-50"
+              type="button"
+              :disabled="desktopMaintenance.loading"
+              @click="returnToDesktop"
+            >
+              回到 Windows 桌面
+            </button>
+            <button
               class="kiosk-touch-target rounded-2xl border border-sky-200/30 px-4 py-3 font-bold text-sky-100 disabled:opacity-50"
               type="button"
               :disabled="diagnostics.loading"
@@ -482,6 +629,54 @@ async function submitStockMovement(): Promise<void> {
               @click="refreshVisionStatus"
             >
               视觉状态
+            </button>
+          </div>
+        </div>
+
+        <p
+          v-if="returnToCatalogBlockedReason || catalogNavigation.message"
+          class="mt-4 rounded-2xl bg-amber-500/15 p-4 text-amber-100"
+          aria-live="polite"
+        >
+          {{
+            catalogNavigation.message ??
+            `暂不能回到目录：${returnToCatalogBlockedReason}`
+          }}
+        </p>
+
+        <div
+          v-if="
+            wholeMachineMaintenanceLock || wholeMachineLockMaintenance.message
+          "
+          class="mt-4 rounded-2xl border border-rose-300/30 bg-rose-500/15 p-4"
+        >
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <div class="text-left">
+              <p class="text-sm font-semibold text-rose-100">整机维护锁</p>
+              <p class="mt-1 text-sm text-rose-50/90">
+                {{
+                  wholeMachineMaintenanceLock?.message ??
+                  wholeMachineLockMaintenance.message
+                }}
+              </p>
+              <p
+                v-if="wholeMachineLockMaintenance.message"
+                class="mt-2 text-sm font-semibold text-rose-50"
+                aria-live="polite"
+              >
+                {{ wholeMachineLockMaintenance.message }}
+              </p>
+            </div>
+            <button
+              class="kiosk-touch-target rounded-2xl border border-rose-100/40 px-4 py-3 font-bold text-rose-50 disabled:opacity-50"
+              type="button"
+              :disabled="
+                wholeMachineLockMaintenance.loading ||
+                !wholeMachineMaintenanceLock
+              "
+              @click="clearWholeMachineLock"
+            >
+              确认解除整机锁
             </button>
           </div>
         </div>
@@ -554,6 +749,12 @@ async function submitStockMovement(): Promise<void> {
           class="mt-4 rounded-2xl bg-sky-500/15 p-4 text-sky-100"
         >
           {{ diagnostics.logsMessage }}
+        </p>
+        <p
+          v-if="desktopMaintenance.message"
+          class="mt-4 rounded-2xl bg-slate-500/15 p-4 text-slate-100"
+        >
+          {{ desktopMaintenance.message }}
         </p>
         <p
           v-if="hardwareMaintenance.message"
@@ -856,39 +1057,6 @@ async function submitStockMovement(): Promise<void> {
                 min="1000"
                 step="500"
                 type="number"
-              />
-            </label>
-
-            <label class="flex items-center gap-3 text-left">
-              <input
-                v-model="form.visionAutoStart"
-                class="size-5 accent-fuchsia-300"
-                type="checkbox"
-              />
-              <span class="text-sm font-semibold text-slate-200"
-                >启动时托管视觉进程 visionAutoStart</span
-              >
-            </label>
-
-            <label class="grid gap-2 text-left">
-              <span class="text-sm font-semibold text-slate-200"
-                >视觉进程命令 visionProcessCommand</span
-              >
-              <input
-                v-model="form.visionProcessCommand"
-                class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-fuchsia-300"
-                placeholder="例如 pnpm"
-              />
-            </label>
-
-            <label class="grid gap-2 text-left">
-              <span class="text-sm font-semibold text-slate-200"
-                >视觉进程参数 visionProcessArgs</span
-              >
-              <input
-                v-model="form.visionProcessArgs"
-                class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-fuchsia-300"
-                placeholder="例如 -F vision-mock dev"
               />
             </label>
 

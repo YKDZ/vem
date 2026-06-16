@@ -32,9 +32,6 @@ fn scanner_config(scanner_path: String) -> serde_json::Value {
         "scannerFrameSuffix": "crlf",
         "visionEnabled": false,
         "visionWsUrl": "ws://127.0.0.1:7892/ws",
-        "visionAutoStart": false,
-        "visionProcessCommand": null,
-        "visionProcessArgs": null,
         "visionRequestTimeoutMs": 8000,
         "kioskMode": false
     })
@@ -108,6 +105,7 @@ async fn scanner_open_failure_reports_offline() {
 async fn serial_text_scanner_submits_payment_code_and_refreshes_transaction() {
     let server = MockServer::start().await;
     let status_calls = Arc::new(AtomicUsize::new(0));
+    let submit_calls = Arc::new(AtomicUsize::new(0));
 
     Mock::given(method("POST"))
         .and(path("/machine-auth/token"))
@@ -127,12 +125,14 @@ async fn serial_text_scanner_submits_payment_code_and_refreshes_transaction() {
         .await;
 
     let status_calls_clone = status_calls.clone();
+    let submit_calls_for_status = submit_calls.clone();
     Mock::given(method("GET"))
         .and(path("/machine-orders/ORD-SCAN/status"))
         .and(header("authorization", "Bearer token-123"))
         .respond_with(move |_request: &Request| {
             let attempt = status_calls_clone.fetch_add(1, Ordering::SeqCst);
-            if attempt == 0 {
+            let submit_seen = submit_calls_for_status.load(Ordering::SeqCst) > 0;
+            if attempt == 0 || !submit_seen {
                 ResponseTemplate::new(200).set_body_json(json!({
                     "orderId": "order-scan-id",
                     "orderNo": "ORD-SCAN",
@@ -176,19 +176,23 @@ async fn serial_text_scanner_submits_payment_code_and_refreshes_transaction() {
         .mount(&server)
         .await;
 
+    let submit_calls_for_mock = submit_calls.clone();
     Mock::given(method("POST"))
         .and(path("/machine-orders/ORD-SCAN/payment-code/submit"))
         .and(header("authorization", "Bearer token-123"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "orderNo": "ORD-SCAN",
-            "paymentNo": "PAY-SCAN",
-            "attemptNo": 1,
-            "status": "succeeded",
-            "nextAction": "dispensing",
-            "message": "支付成功，正在出货",
-            "canRetry": false,
-            "serverTime": "2026-05-30T00:00:00.000Z"
-        })))
+        .respond_with(move |_request: &Request| {
+            submit_calls_for_mock.fetch_add(1, Ordering::SeqCst);
+            ResponseTemplate::new(200).set_body_json(json!({
+                "orderNo": "ORD-SCAN",
+                "paymentNo": "PAY-SCAN",
+                "attemptNo": 1,
+                "status": "succeeded",
+                "nextAction": "dispensing",
+                "message": "支付成功，正在出货",
+                "canRetry": false,
+                "serverTime": "2026-05-30T00:00:00.000Z"
+            }))
+        })
         .mount(&server)
         .await;
 
@@ -216,7 +220,10 @@ async fn serial_text_scanner_submits_payment_code_and_refreshes_transaction() {
     wait_for_scanner_code(&daemon, "SCANNER_READY").await;
     pty.write(b"621234567890123456\r\n").await;
 
-    let tx = wait_for_transaction(&daemon, |tx| tx["nextAction"] == "dispensing").await;
+    let tx = wait_for_transaction(&daemon, |tx| {
+        tx["nextAction"] == "dispensing" && tx["paymentCodeAttempt"]["source"] == "serial_text"
+    })
+    .await;
     assert_eq!(tx["paymentMethod"], "payment_code");
     assert_eq!(tx["nextAction"], "dispensing");
     assert_eq!(tx["paymentCodeAttempt"]["source"], "serial_text");
@@ -250,12 +257,13 @@ async fn serial_text_scanner_retry_scan_uses_new_idempotency_key() {
         .await;
 
     let status_calls_clone = status_calls.clone();
+    let submit_calls_for_status = submit_calls.clone();
     Mock::given(method("GET"))
         .and(path("/machine-orders/ORD-SCAN/status"))
         .and(header("authorization", "Bearer token-123"))
         .respond_with(move |_request: &Request| {
-            let attempt = status_calls_clone.fetch_add(1, Ordering::SeqCst);
-            if attempt <= 1 {
+            let _attempt = status_calls_clone.fetch_add(1, Ordering::SeqCst);
+            if submit_calls_for_status.load(Ordering::SeqCst) < 2 {
                 ResponseTemplate::new(200).set_body_json(json!({
                     "orderId": "order-scan-id",
                     "orderNo": "ORD-SCAN",
@@ -365,7 +373,11 @@ async fn serial_text_scanner_retry_scan_uses_new_idempotency_key() {
     assert_eq!(failed["paymentCodeAttempt"]["source"], "serial_text");
 
     pty.write(b"621234567890129999\r\n").await;
-    let succeeded = wait_for_transaction(&daemon, |tx| tx["nextAction"] == "dispensing").await;
+    let succeeded = wait_for_transaction(&daemon, |tx| {
+        tx["nextAction"] == "dispensing"
+            && tx["paymentCodeAttempt"]["maskedAuthCode"] == "6212****9999"
+    })
+    .await;
     assert_eq!(
         succeeded["paymentCodeAttempt"]["maskedAuthCode"],
         "6212****9999"

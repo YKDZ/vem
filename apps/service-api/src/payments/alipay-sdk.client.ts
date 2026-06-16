@@ -23,6 +23,12 @@ export type AlipaySdkLike = {
     path: string,
     options?: AlipayCurlOptions,
   ): Promise<AlipayCurlResult<T>>;
+  exec(
+    this: void,
+    method: string,
+    params?: Record<string, unknown>,
+    options?: { validateSign?: boolean; traceId?: string },
+  ): Promise<Record<string, unknown>>;
   checkNotifySignV2(this: void, postData: Record<string, string>): boolean;
 };
 
@@ -30,7 +36,9 @@ export type AlipaySdkCreateOptions = {
   appId: string;
   privateKey: string;
   keyType?: "PKCS1" | "PKCS8";
+  gateway?: string;
   endpoint?: string;
+  timeout?: number;
   camelcase?: boolean;
   appCertContent?: string;
   alipayPublicCertContent?: string;

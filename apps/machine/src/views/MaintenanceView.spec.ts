@@ -6,6 +6,7 @@ import { createApp, nextTick, type App } from "vue";
 import type { ConfigSummary } from "@/daemon/schemas";
 
 const {
+  routeMock,
   routerReplaceMock,
   initializeMock,
   getHealthMock,
@@ -16,11 +17,14 @@ const {
   getRemoteOpsStatusMock,
   getSaleViewMock,
   recordStockMovementMock,
+  clearWholeMachineMaintenanceLockMock,
   runHardwareSelfCheckMock,
   getConfigMock,
   saveConfigMock,
   downloadLogExportMock,
+  callTauriCommandMock,
 } = vi.hoisted(() => ({
+  routeMock: { query: {} as Record<string, unknown> },
   routerReplaceMock: vi.fn(),
   initializeMock: vi.fn(),
   getHealthMock: vi.fn(),
@@ -31,13 +35,16 @@ const {
   getRemoteOpsStatusMock: vi.fn(),
   getSaleViewMock: vi.fn(),
   recordStockMovementMock: vi.fn(),
+  clearWholeMachineMaintenanceLockMock: vi.fn(),
   runHardwareSelfCheckMock: vi.fn(),
   getConfigMock: vi.fn(),
   saveConfigMock: vi.fn(),
   downloadLogExportMock: vi.fn(),
+  callTauriCommandMock: vi.fn(),
 }));
 
 vi.mock("vue-router", () => ({
+  useRoute: () => routeMock,
   useRouter: () => ({ replace: routerReplaceMock }),
 }));
 
@@ -60,6 +67,7 @@ vi.mock("@/daemon/client", () => ({
     getRemoteOpsStatus: getRemoteOpsStatusMock,
     getSaleView: getSaleViewMock,
     recordStockMovement: recordStockMovementMock,
+    clearWholeMachineMaintenanceLock: clearWholeMachineMaintenanceLockMock,
     runHardwareSelfCheck: runHardwareSelfCheckMock,
     getConfig: getConfigMock,
     saveConfig: saveConfigMock,
@@ -67,6 +75,12 @@ vi.mock("@/daemon/client", () => ({
   },
 }));
 
+vi.mock("@/native/tauri", () => ({
+  isTauriRuntime: () => true,
+  callTauriCommand: callTauriCommandMock,
+}));
+
+import { useCatalogStore } from "@/stores/catalog";
 import { useMachineStore } from "@/stores/machine";
 
 import MaintenanceView from "./MaintenanceView.vue";
@@ -158,6 +172,24 @@ function readyFixture() {
   };
 }
 
+function maintenanceReadyFixture() {
+  return {
+    ...readyFixture(),
+    ready: false,
+    canSell: false,
+    mode: "maintenance",
+    blockingCodes: ["LOWER_CONTROLLER_UNAVAILABLE"],
+    blockingReasons: [
+      {
+        code: "LOWER_CONTROLLER_UNAVAILABLE",
+        component: "hardware",
+        message: "lower controller unavailable",
+      },
+    ],
+    suggestedRoute: "maintenance",
+  };
+}
+
 function provisionedConfigSummary(): ConfigSummary {
   return {
     public: {
@@ -178,9 +210,6 @@ function provisionedConfigSummary(): ConfigSummary {
       scannerFrameSuffix: "crlf",
       visionEnabled: true,
       visionWsUrl: "ws://secret-vision.example/ws",
-      visionAutoStart: true,
-      visionProcessCommand: "secret-vision-command",
-      visionProcessArgs: "--secret-vision-args",
       visionRequestTimeoutMs: 8000,
       kioskMode: true,
       stockMovementRetentionDays: 30,
@@ -197,6 +226,7 @@ beforeEach(() => {
   pinia = createPinia();
   setActivePinia(pinia);
   vi.clearAllMocks();
+  routeMock.query = { source: "operator" };
   initializeMock.mockResolvedValue({
     baseUrl: "http://127.0.0.1:7891",
     token: "token-1",
@@ -244,6 +274,7 @@ beforeEach(() => {
   });
   getSaleViewMock.mockResolvedValue(saleViewFixture());
   recordStockMovementMock.mockResolvedValue(saleViewFixture());
+  clearWholeMachineMaintenanceLockMock.mockResolvedValue({ cleared: true });
   runHardwareSelfCheckMock.mockResolvedValue({
     online: true,
     message: "ok",
@@ -256,6 +287,7 @@ beforeEach(() => {
   getConfigMock.mockResolvedValue(provisionedConfigSummary());
   saveConfigMock.mockResolvedValue({});
   downloadLogExportMock.mockResolvedValue(new Response("logs"));
+  callTauriCommandMock.mockResolvedValue(undefined);
   useMachineStore().$patch({ configLoaded: true });
 });
 
@@ -264,6 +296,7 @@ afterEach(() => {
   mountedApp = null;
   document.body.innerHTML = "";
   vi.unstubAllEnvs();
+  vi.useRealTimers();
 });
 
 async function mountView(): Promise<HTMLElement> {
@@ -333,6 +366,7 @@ describe("MaintenanceView hardware config", () => {
     expect(host.textContent).toContain("扫码器");
     expect(host.textContent).toContain("视觉");
     expect(host.textContent).toContain("本地状态");
+    expect(host.textContent).toContain("回到目录");
     expect(host.textContent).toContain("导出日志");
     expect(host.textContent).toContain("硬件自检");
     expect(host.textContent).toContain("视觉状态");
@@ -450,6 +484,113 @@ describe("MaintenanceView hardware config", () => {
       expect(downloadLogExportMock).toHaveBeenCalledOnce();
     });
   });
+
+  it("returns to the Windows desktop through the restricted Tauri command", async () => {
+    const host = await mountView();
+
+    buttonByText(host, "回到 Windows 桌面").click();
+
+    await vi.waitFor(() => {
+      expect(callTauriCommandMock).toHaveBeenCalledWith("return_to_desktop");
+    });
+  });
+
+  it("returns to the catalog from standard maintenance", async () => {
+    const host = await mountView();
+
+    buttonByText(host, "回到目录").click();
+
+    await vi.waitFor(() => {
+      expect(routerReplaceMock).toHaveBeenCalledWith("/catalog");
+    });
+  });
+
+  it("blocks returning to the catalog while the machine is not sellable", async () => {
+    getReadyMock.mockResolvedValue(maintenanceReadyFixture());
+
+    const host = await mountView();
+    const button = buttonByText(host, "回到目录");
+
+    expect(button.disabled).toBe(true);
+    expect(host.textContent).toContain("暂不能回到目录");
+    expect(host.textContent).toContain("lower controller unavailable");
+
+    button.click();
+    await nextTick();
+
+    expect(routerReplaceMock).not.toHaveBeenCalledWith("/catalog");
+  });
+
+  it("auto-refreshes system maintenance diagnostics and returns to catalog after recovery", async () => {
+    vi.useFakeTimers();
+    routeMock.query = {};
+    getReadyMock
+      .mockResolvedValueOnce(maintenanceReadyFixture())
+      .mockResolvedValue(readyFixture());
+
+    await mountView();
+    await vi.waitFor(() => {
+      expect(getReadyMock).toHaveBeenCalledOnce();
+    });
+    expect(routerReplaceMock).not.toHaveBeenCalledWith("/catalog");
+
+    await vi.advanceTimersByTimeAsync(5000);
+
+    await vi.waitFor(() => {
+      expect(routerReplaceMock).toHaveBeenCalledWith("/catalog");
+    });
+  });
+
+  it("keeps operator maintenance open while diagnostics auto-refresh", async () => {
+    vi.useFakeTimers();
+    routeMock.query = { source: "operator" };
+
+    await mountView();
+    await vi.waitFor(() => {
+      expect(getReadyMock).toHaveBeenCalledOnce();
+    });
+    await vi.advanceTimersByTimeAsync(5000);
+
+    expect(routerReplaceMock).not.toHaveBeenCalledWith("/catalog");
+    expect(getReadyMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("shows why whole-machine lock clearing is rejected while hardware remains faulted", async () => {
+    getReadyMock.mockResolvedValue({
+      ...readyFixture(),
+      ready: false,
+      canSell: false,
+      mode: "maintenance",
+      blockingCodes: [
+        "LOWER_CONTROLLER_UNAVAILABLE",
+        "WHOLE_MACHINE_HARDWARE_FAULT",
+      ],
+      blockingReasons: [
+        {
+          code: "WHOLE_MACHINE_HARDWARE_FAULT",
+          component: "hardware",
+          message:
+            "lower controller responded with fault on COM8 (pickup platform blocked)",
+        },
+      ],
+      suggestedRoute: "maintenance",
+    });
+    clearWholeMachineMaintenanceLockMock.mockRejectedValueOnce(
+      new Error(
+        "lower controller must be healthy before clearing whole-machine lock: lower controller responded with fault on COM8 (pickup platform blocked)",
+      ),
+    );
+    const host = await mountView();
+
+    buttonByText(host, "确认解除整机锁").click();
+
+    await vi.waitFor(() => {
+      expect(clearWholeMachineMaintenanceLockMock).toHaveBeenCalledOnce();
+      expect(host.textContent).toContain(
+        "lower controller must be healthy before clearing whole-machine lock",
+      );
+    });
+  });
 });
 
 describe("MaintenanceView stock maintenance", () => {
@@ -462,6 +603,19 @@ describe("MaintenanceView stock maintenance", () => {
 
   it("records no-login planned refill as local maintenance with attribution", async () => {
     const host = await mountView();
+    const updatedSaleView = {
+      ...saleViewFixture(),
+      items: [
+        {
+          ...saleViewFixture().items[0],
+          physicalStock: 5,
+          saleableStock: 5,
+          slotSalesState: "sale_ready",
+        },
+      ],
+      lastUpdatedAt: "2026-06-05T00:05:00.000Z",
+    };
+    recordStockMovementMock.mockResolvedValueOnce(updatedSaleView);
 
     submitButton(host).click();
 
@@ -475,6 +629,8 @@ describe("MaintenanceView stock maintenance", () => {
           attributedTo: "front-panel",
         }),
       );
+      expect(useCatalogStore().items[0]?.physicalStock).toBe(5);
+      expect(useCatalogStore().items[0]?.slotSalesState).toBe("sale_ready");
     });
   });
 

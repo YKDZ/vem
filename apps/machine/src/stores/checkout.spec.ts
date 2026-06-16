@@ -4,15 +4,19 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const {
   getPaymentOptionsMock,
   createOrderMock,
+  cancelOrderMock,
   getCurrentTransactionMock,
   submitDevPaymentCodeMock,
   markMockPaymentMock,
+  getSaleViewMock,
 } = vi.hoisted(() => ({
   getPaymentOptionsMock: vi.fn(),
   createOrderMock: vi.fn(),
+  cancelOrderMock: vi.fn(),
   getCurrentTransactionMock: vi.fn(),
   submitDevPaymentCodeMock: vi.fn(),
   markMockPaymentMock: vi.fn(),
+  getSaleViewMock: vi.fn(),
 }));
 
 vi.mock("@/daemon/client", () => ({
@@ -20,16 +24,22 @@ vi.mock("@/daemon/client", () => ({
     currentConnection: { mock: true },
     getPaymentOptions: getPaymentOptionsMock,
     createOrder: createOrderMock,
+    cancelOrder: cancelOrderMock,
     getCurrentTransaction: getCurrentTransactionMock,
     submitDevPaymentCode: submitDevPaymentCodeMock,
     markMockPayment: markMockPaymentMock,
+    getSaleView: getSaleViewMock,
   },
 }));
 
-import type { MachineCatalogItem } from "@/types/catalog";
+import type {
+  MachineCatalogItem,
+  MachineCatalogSlotCandidate,
+} from "@/types/catalog";
 
 import { useCatalogStore } from "./catalog";
 import {
+  isTerminalResultNextAction,
   normalizeNextAction,
   resultKindFromNextAction,
   useCheckoutStore,
@@ -44,7 +54,7 @@ beforeEach(() => {
 function makeCatalogItem(
   overrides: Partial<MachineCatalogItem> = {},
 ): MachineCatalogItem {
-  return {
+  const item = {
     machineCode: "M001",
     slotId: "550e8400-e29b-41d4-a716-446655440001",
     slotCode: "A1",
@@ -70,6 +80,53 @@ function makeCatalogItem(
     productSortOrder: 1,
     targetGender: null,
     ...overrides,
+  } as Omit<
+    MachineCatalogItem,
+    | "catalogKey"
+    | "aggregatedSlotCount"
+    | "slotCandidates"
+    | "variantCandidates"
+  >;
+  const slotCandidates: readonly MachineCatalogSlotCandidate[] =
+    overrides.slotCandidates ?? [
+      {
+        slotId: item.slotId,
+        slotCode: item.slotCode,
+        layerNo: item.layerNo,
+        cellNo: item.cellNo,
+        inventoryId: item.inventoryId,
+        variantId: item.variantId,
+        sku: item.sku,
+        size: item.size,
+        color: item.color,
+        priceCents: item.priceCents,
+        capacity: item.capacity,
+        parLevel: item.parLevel,
+        physicalStock: item.physicalStock,
+        saleableStock: item.saleableStock,
+        slotSalesState: item.slotSalesState,
+      },
+    ];
+  return {
+    ...item,
+    catalogKey: overrides.catalogKey ?? `product:${item.productId}`,
+    aggregatedSlotCount: overrides.aggregatedSlotCount ?? 1,
+    slotCandidates,
+    variantCandidates: overrides.variantCandidates ?? [
+      {
+        variantId: item.variantId,
+        sku: item.sku,
+        size: item.size,
+        color: item.color,
+        priceCents: item.priceCents,
+        capacity: item.capacity,
+        parLevel: item.parLevel,
+        physicalStock: item.physicalStock,
+        saleableStock: item.saleableStock,
+        slotSalesState: item.slotSalesState,
+        slotCandidates,
+      },
+    ],
   };
 }
 
@@ -200,6 +257,7 @@ describe("checkout helpers", () => {
   it("maps result next actions", () => {
     expect(resultKindFromNextAction("success")).toBe("success");
     expect(resultKindFromNextAction("wait_payment")).toBeNull();
+    expect(isTerminalResultNextAction("payment_failed")).toBe(true);
   });
 });
 
@@ -473,6 +531,9 @@ describe("checkout store", () => {
           slotId: "550e8400-e29b-41d4-a716-446655440011",
           slotCode: "B1",
           inventoryId: "550e8400-e29b-41d4-a716-446655440012",
+          variantId: "550e8400-e29b-41d4-a716-446655440013",
+          productId: "550e8400-e29b-41d4-a716-446655440014",
+          sku: "WATER-NEW",
         }),
       ],
       source: "local_stock",
@@ -483,6 +544,125 @@ describe("checkout store", () => {
     expect(store.canCreateOrder).toBe(false);
     await expect(store.createOrder()).rejects.toThrow("商品已更新，请重新选择");
     expect(createOrderMock).not.toHaveBeenCalled();
+  });
+
+  it("does not switch variants when another variant for the same product is saleable", async () => {
+    const store = useCheckoutStore();
+    const catalogStore = useCatalogStore();
+    store.paymentOptions = [
+      {
+        optionKey: "payment_code:alipay",
+        providerCode: "alipay",
+        method: "payment_code",
+        displayName: "支付宝付款码",
+        description: "请出示付款码",
+        icon: "alipay",
+        disabled: false,
+        disabledReason: null,
+        recommended: true,
+      },
+    ];
+    store.selectedPaymentOptionKey = "payment_code:alipay";
+    applyNetworkSaleReady();
+    store.selectItem(
+      makeCatalogItem({
+        variantId: "550e8400-e29b-41d4-a716-446655440003",
+        sku: "TSHIRT-M-BLACK",
+        size: "M",
+        color: "黑色",
+        saleableStock: 1,
+      }),
+    );
+    catalogStore.applySnapshot({
+      items: [
+        makeCatalogItem({
+          variantId: "550e8400-e29b-41d4-a716-446655440003",
+          sku: "TSHIRT-M-BLACK",
+          size: "M",
+          color: "黑色",
+          physicalStock: 0,
+          saleableStock: 0,
+          slotSalesState: "sold_out",
+        }),
+        makeCatalogItem({
+          slotId: "550e8400-e29b-41d4-a716-446655440011",
+          slotCode: "B1",
+          layerNo: 2,
+          cellNo: 1,
+          inventoryId: "550e8400-e29b-41d4-a716-446655440012",
+          variantId: "550e8400-e29b-41d4-a716-446655440013",
+          sku: "TSHIRT-L-BLACK",
+          size: "L",
+          color: "黑色",
+          physicalStock: 5,
+          saleableStock: 5,
+          slotSalesState: "sale_ready",
+        }),
+      ],
+      source: "local_stock",
+      planogramVersion: "PLAN-1",
+      lastUpdatedAt: "2026-06-04T00:00:00Z",
+    });
+
+    expect(store.canCreateOrder).toBe(false);
+    await expect(store.createOrder()).rejects.toThrow("商品已售罄");
+    expect(createOrderMock).not.toHaveBeenCalled();
+  });
+
+  it("creates an order from another saleable slot for the same variant", async () => {
+    createOrderMock.mockResolvedValue(makeTransactionSnapshot());
+
+    const store = useCheckoutStore();
+    const catalogStore = useCatalogStore();
+    store.paymentOptions = [
+      {
+        optionKey: "payment_code:alipay",
+        providerCode: "alipay",
+        method: "payment_code",
+        displayName: "支付宝付款码",
+        description: "请出示付款码",
+        icon: "alipay",
+        disabled: false,
+        disabledReason: null,
+        recommended: true,
+      },
+    ];
+    store.selectedPaymentOptionKey = "payment_code:alipay";
+    applyNetworkSaleReady();
+    store.selectItem(makeCatalogItem({ saleableStock: 2 }));
+    catalogStore.applySnapshot({
+      items: [
+        makeCatalogItem({
+          physicalStock: 0,
+          saleableStock: 0,
+          slotSalesState: "sold_out",
+        }),
+        makeCatalogItem({
+          slotId: "550e8400-e29b-41d4-a716-446655440011",
+          slotCode: "B1",
+          layerNo: 2,
+          cellNo: 1,
+          inventoryId: "550e8400-e29b-41d4-a716-446655440012",
+          physicalStock: 5,
+          saleableStock: 5,
+          slotSalesState: "sale_ready",
+        }),
+      ],
+      source: "local_stock",
+      planogramVersion: "PLAN-1",
+      lastUpdatedAt: "2026-06-04T00:00:00Z",
+    });
+
+    expect(store.canCreateOrder).toBe(true);
+    await store.createOrder();
+
+    expect(createOrderMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        inventoryId: "550e8400-e29b-41d4-a716-446655440012",
+        slotId: "550e8400-e29b-41d4-a716-446655440011",
+        slotCode: "B1",
+      }),
+    );
   });
 
   it("blocks stale selected item when latest sale view is sold out", async () => {
@@ -778,6 +958,88 @@ describe("checkout store", () => {
     await store.refreshCurrentTransaction();
 
     expect(store.flowStep).toBe("dispensing");
+  });
+
+  it("cancels the current order through daemon and refreshes sale view", async () => {
+    cancelOrderMock.mockResolvedValue(
+      makeTransactionSnapshot({
+        paymentStatus: "canceled",
+        orderStatus: "canceled",
+        nextAction: "closed",
+      }),
+    );
+    getSaleViewMock.mockResolvedValue({
+      items: [makeCatalogItem({ saleableStock: 1 })],
+      source: "local_stock",
+      planogramVersion: "PLAN-1",
+      lastUpdatedAt: "2026-06-04T00:00:00Z",
+    });
+
+    const store = useCheckoutStore();
+    store.applyTransaction(makeTransactionSnapshot());
+    const snapshot = await store.cancelCurrentOrder();
+
+    expect(snapshot?.nextAction).toBe("closed");
+    expect(cancelOrderMock).toHaveBeenCalledWith("ORD-001");
+    expect(getSaleViewMock).toHaveBeenCalledOnce();
+    expect(store.currentOrder).toBeNull();
+    expect(store.status).toBeNull();
+    expect(store.flowStep).toBe("idle");
+  });
+
+  it("ignores a dismissed terminal current transaction", async () => {
+    const failedTransaction = makeTransactionSnapshot({
+      paymentStatus: "failed",
+      orderStatus: "canceled",
+      nextAction: "payment_failed",
+    });
+    getCurrentTransactionMock.mockResolvedValue(failedTransaction);
+
+    const store = useCheckoutStore();
+    store.applyTransaction(failedTransaction);
+    expect(store.flowStep).toBe("result");
+
+    store.dismissCurrentTerminalTransaction();
+    store.reset();
+    const refreshed = await store.refreshCurrentTransaction();
+
+    expect(refreshed).toBeNull();
+    expect(store.shouldIgnoreTransaction(failedTransaction)).toBe(true);
+    expect(store.currentOrder).toBeNull();
+    expect(store.status).toBeNull();
+    expect(store.flowStep).toBe("idle");
+  });
+
+  it("preserves reversed payment-code attempt and shows retry message", async () => {
+    getCurrentTransactionMock.mockResolvedValue(
+      makeTransactionSnapshot({
+        paymentCodeAttempt: {
+          attemptNo: 1,
+          status: "reversed",
+          maskedAuthCode: "2876****4394",
+          source: "serial_text",
+          idempotencyKey: "ORD-001:attempt-1",
+          submittedAt: "2026-01-01T00:00:05Z",
+          lastCheckedAt: "2026-01-01T00:00:35Z",
+          canRetry: true,
+          message: null,
+        },
+        operatorHint: null,
+      }),
+    );
+
+    const store = useCheckoutStore();
+    await store.refreshCurrentTransaction();
+
+    expect(store.status?.paymentCodeAttempt).toMatchObject({
+      status: "reversed",
+      canRetry: true,
+      message: "本次付款码交易已撤销，请刷新付款码后重试",
+    });
+    expect(store.paymentCodeMessage).toBe(
+      "本次付款码交易已撤销，请刷新付款码后重试",
+    );
+    expect(store.flowStep).toBe("payment");
   });
 
   it("drops concurrent dev payment submissions", async () => {

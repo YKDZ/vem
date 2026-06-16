@@ -47,10 +47,17 @@ type AlipayConfig = {
   alipayPublicCertPem: string;
   alipayRootCertPem: string;
   notifyUrl: string;
+  gatewayUrl: string;
   endpoint: string;
   keyType: AlipayKeyType;
   qrExpiresMinutes: number;
+  requestTimeoutMs: number;
   timeoutCompensationSeconds: number;
+  orderCodeReadinessCheckEnabled: boolean;
+  orderCodeReadinessTimeoutMs: number;
+  orderCodeReadinessPollIntervalMs: number;
+  orderCodePrecreateMaxAttempts: number;
+  orderCodePrecreateRetryDelayMs: number;
 };
 
 function readRequiredString(
@@ -76,6 +83,21 @@ function readPositiveInteger(
     : fallback;
 }
 
+function readBoolean(
+  source: Record<string, unknown>,
+  key: string,
+  fallback: boolean,
+): boolean {
+  const value = source[key];
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["true", "1", "yes", "on"].includes(normalized)) return true;
+    if (["false", "0", "no", "off"].includes(normalized)) return false;
+  }
+  return fallback;
+}
+
 function normalizeEndpoint(gatewayUrl: string): string {
   const url = new URL(gatewayUrl);
   if (url.pathname.endsWith("/gateway.do")) {
@@ -99,6 +121,7 @@ function parseAlipayConfig(input: PaymentProviderRuntimeConfig): AlipayConfig {
       ? source["gatewayUrl"]
       : "https://openapi.alipay.com/gateway.do";
   const keyType = source["keyType"] === "PKCS1" ? "PKCS1" : "PKCS8";
+  const mode = typeof source["mode"] === "string" ? source["mode"] : null;
 
   return {
     appId: readRequiredString(source, "appId", "Alipay"),
@@ -116,13 +139,40 @@ function parseAlipayConfig(input: PaymentProviderRuntimeConfig): AlipayConfig {
       "Alipay",
     ),
     notifyUrl: readRequiredString(source, "notifyUrl", "Alipay"),
+    gatewayUrl,
     endpoint: normalizeEndpoint(gatewayUrl),
     keyType,
     qrExpiresMinutes: readPositiveInteger(source, "qrExpiresMinutes", 15),
+    requestTimeoutMs: readPositiveInteger(source, "requestTimeoutMs", 20_000),
     timeoutCompensationSeconds: readPositiveInteger(
       source,
       "timeoutCompensationSeconds",
       120,
+    ),
+    orderCodeReadinessCheckEnabled: readBoolean(
+      source,
+      "orderCodeReadinessCheckEnabled",
+      mode === "sandbox",
+    ),
+    orderCodeReadinessTimeoutMs: readPositiveInteger(
+      source,
+      "orderCodeReadinessTimeoutMs",
+      15_000,
+    ),
+    orderCodeReadinessPollIntervalMs: readPositiveInteger(
+      source,
+      "orderCodeReadinessPollIntervalMs",
+      1_500,
+    ),
+    orderCodePrecreateMaxAttempts: readPositiveInteger(
+      source,
+      "orderCodePrecreateMaxAttempts",
+      3,
+    ),
+    orderCodePrecreateRetryDelayMs: readPositiveInteger(
+      source,
+      "orderCodePrecreateRetryDelayMs",
+      1_000,
     ),
   };
 }
@@ -135,7 +185,9 @@ function createAlipaySdk(
     appId: config.appId,
     privateKey: config.privateKeyPem,
     keyType: config.keyType,
+    gateway: config.gatewayUrl,
     endpoint: config.endpoint,
+    timeout: config.requestTimeoutMs,
     camelcase: false,
     appCertContent: config.appCertPem,
     alipayPublicCertContent: config.alipayPublicCertPem,
@@ -143,12 +195,28 @@ function createAlipaySdk(
   });
 }
 
-type AlipayTradeData = Record<string, unknown> & {
-  qr_code?: string;
-  trade_status?: string;
-  trade_no?: string;
-  out_trade_no?: string;
+type AlipayErrorProperties = {
+  code?: unknown;
+  responseHttpStatus?: unknown;
+  status?: unknown;
 };
+
+function readAlipayErrorProperties(
+  error: unknown,
+): AlipayErrorProperties | null {
+  if (!error || typeof error !== "object") return null;
+  return error;
+}
+
+function parseAlipayDate(value: unknown): Date | null {
+  if (typeof value !== "string" || value.length === 0) return null;
+  const normalized = value.includes("T") ? value : value.replace(" ", "T");
+  const withTimezone = /(?:Z|[+-]\d{2}:\d{2})$/.test(normalized)
+    ? normalized
+    : `${normalized}+08:00`;
+  const parsed = new Date(withTimezone);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
 
 function readString(data: Record<string, unknown>, key: string): string {
   const value = data[key];
@@ -180,9 +248,30 @@ function timeoutExpress(expiresAt: Date): string {
   return `${minutes}m`;
 }
 
+async function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function mapAlipayTradeStatus(
   data: Record<string, unknown>,
 ): ProviderPaymentQueryResult {
+  const code = typeof data["code"] === "string" ? data["code"] : null;
+  const subCode =
+    typeof data["sub_code"] === "string" ? data["sub_code"] : null;
+  if (code && code !== "10000") {
+    const indeterminate =
+      code === "20000" ||
+      subCode === "ACQ.SYSTEM_ERROR" ||
+      subCode === "ACQ.TRADE_NOT_EXIST";
+    return {
+      status: indeterminate ? "processing" : "failed",
+      providerTradeNo:
+        typeof data["trade_no"] === "string" ? data["trade_no"] : null,
+      failedReason: subCode ?? code,
+      rawPayload: data,
+    };
+  }
+
   const tradeStatus =
     typeof data["trade_status"] === "string"
       ? data["trade_status"]
@@ -200,8 +289,39 @@ function mapAlipayTradeStatus(
     status: statusByTradeStatus[tradeStatus] ?? "pending",
     providerTradeNo:
       typeof data["trade_no"] === "string" ? data["trade_no"] : null,
+    paidAt:
+      parseAlipayDate(data["send_pay_date"] ?? data["gmt_payment"]) ??
+      undefined,
     rawPayload: data,
   };
+}
+
+function assertSuccessfulPrecreate(
+  data: Record<string, unknown>,
+  paymentNo: string,
+): string {
+  const code = typeof data["code"] === "string" ? data["code"] : null;
+  if (code !== "10000") {
+    const subCode =
+      typeof data["sub_code"] === "string" ? data["sub_code"] : code;
+    const subMsg =
+      typeof data["sub_msg"] === "string"
+        ? data["sub_msg"]
+        : "支付宝预下单失败";
+    throw new BadGatewayException(
+      `Alipay alipay.trade.precreate failed: ${subCode ?? "UNKNOWN"} ${subMsg}`,
+    );
+  }
+
+  const outTradeNo =
+    typeof data["out_trade_no"] === "string" ? data["out_trade_no"] : null;
+  if (outTradeNo && outTradeNo !== paymentNo) {
+    throw new BadGatewayException(
+      `Alipay alipay.trade.precreate out_trade_no mismatch: ${outTradeNo}`,
+    );
+  }
+
+  return readString(data, "qr_code");
 }
 
 function mapAlipayPaymentCodeResponse(
@@ -212,21 +332,7 @@ function mapAlipayPaymentCodeResponse(
     typeof data["sub_code"] === "string" ? data["sub_code"] : null;
   const tradeNo =
     typeof data["trade_no"] === "string" ? data["trade_no"] : null;
-  const gmtPayment =
-    typeof data["gmt_payment"] === "string"
-      ? new Date(data["gmt_payment"].replace(" ", "T"))
-      : null;
-  // v3 API: success response has no "code" field but contains trade_no + gmt_payment
-  if (!code && tradeNo && gmtPayment) {
-    return {
-      status: "succeeded",
-      providerTradeNo: tradeNo,
-      paidAt: gmtPayment,
-      providerStatus: "TRADE_SUCCESS",
-      rawPayload: data,
-    };
-  }
-  // v2 API compat
+  const gmtPayment = parseAlipayDate(data["gmt_payment"]);
   if (code === "10000") {
     return {
       status: "succeeded",
@@ -274,6 +380,131 @@ function mapAlipayPaymentCodeResponse(
     rawPayload: data,
   };
 }
+
+function mapAlipayPaymentCodeQueryResponse(
+  data: Record<string, unknown>,
+): ProviderPaymentCodeQueryResult {
+  const code = typeof data["code"] === "string" ? data["code"] : null;
+  const subCode =
+    typeof data["sub_code"] === "string" ? data["sub_code"] : null;
+  if (code === "10000") {
+    const result = mapAlipayTradeStatus(data);
+    if (result.status === "succeeded") {
+      return {
+        status: "succeeded",
+        providerTradeNo: result.providerTradeNo ?? null,
+        paidAt: result.paidAt ?? null,
+        providerStatus:
+          typeof data["trade_status"] === "string"
+            ? data["trade_status"]
+            : "TRADE_SUCCESS",
+        rawPayload: data,
+      };
+    }
+    if (result.status === "canceled") {
+      return {
+        status: "reversed",
+        providerTradeNo: result.providerTradeNo ?? null,
+        providerStatus: "TRADE_CLOSED",
+        rawPayload: data,
+      };
+    }
+    return {
+      status: "processing",
+      providerTradeNo: result.providerTradeNo ?? null,
+      providerStatus:
+        typeof data["trade_status"] === "string"
+          ? data["trade_status"]
+          : result.status,
+      rawPayload: data,
+    };
+  }
+  if (code === "20000" || subCode === "ACQ.SYSTEM_ERROR") {
+    return {
+      status: "unknown",
+      providerTradeNo: null,
+      providerStatus: code ?? subCode,
+      failureCode: subCode ?? code ?? "ALIPAY_QUERY_UNKNOWN",
+      failureMessage:
+        typeof data["sub_msg"] === "string"
+          ? data["sub_msg"]
+          : "支付宝付款码查询结果未知",
+      rawPayload: data,
+    };
+  }
+  if (subCode === "ACQ.TRADE_NOT_EXIST") {
+    return {
+      status: "processing",
+      providerTradeNo: null,
+      providerStatus: subCode,
+      failureCode: subCode,
+      failureMessage:
+        typeof data["sub_msg"] === "string"
+          ? data["sub_msg"]
+          : "支付宝交易暂不存在",
+      rawPayload: data,
+    };
+  }
+  return {
+    status: "failed",
+    providerTradeNo: null,
+    providerStatus: code ?? subCode,
+    failureCode: subCode ?? code ?? "ALIPAY_QUERY_FAILED",
+    failureMessage:
+      typeof data["sub_msg"] === "string"
+        ? data["sub_msg"]
+        : "支付宝付款码查询失败",
+    rawPayload: data,
+  };
+}
+
+function alipayErrorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (error && typeof error === "object") return JSON.stringify(error);
+  if (
+    typeof error === "string" ||
+    typeof error === "number" ||
+    typeof error === "boolean"
+  ) {
+    return `${error}`;
+  }
+  return "unknown_error";
+}
+
+function alipayErrorPropertyMessage(value: unknown): string | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean")
+    return `${value}`;
+  try {
+    return JSON.stringify(value) ?? "unserializable_error_property";
+  } catch {
+    return "unserializable_error_property";
+  }
+}
+
+function isIndeterminateAlipayError(error: unknown): boolean {
+  const properties = readAlipayErrorProperties(error);
+  const responseHttpStatus = properties?.responseHttpStatus;
+  const statusValue = properties?.status;
+  const status =
+    typeof responseHttpStatus === "number"
+      ? responseHttpStatus
+      : typeof statusValue === "number"
+        ? statusValue
+        : null;
+  const message = alipayErrorMessage(error).toLowerCase();
+  return (
+    (status !== null && status >= 500) ||
+    message.includes("timeout") ||
+    message.includes("504") ||
+    message.includes("gateway time-out") ||
+    message.includes("gateway timeout")
+  );
+}
+
+const ALIPAY_PAYMENT_CHANNEL_UNAVAILABLE_MESSAGE =
+  "支付宝支付通道暂不可用，请稍后重试";
 
 function mapAlipayRefund(
   data: Record<string, unknown>,
@@ -383,24 +614,124 @@ export class AlipayProvider implements PaymentCodeCapableProvider {
   ): Promise<PaymentIntentResult> {
     const config = parseAlipayConfig(input.config);
     const sdk = createAlipaySdk(this.sdkFactory, config);
-    const data = assertSuccessfulCurl(
-      await sdk.curl<AlipayTradeData>("POST", "/v3/alipay/trade/precreate", {
-        body: {
-          notify_url: config.notifyUrl,
-          out_trade_no: input.paymentNo,
-          total_amount: amountCentsToYuan(input.amountCents),
-          subject: `VEM order ${input.orderNo}`,
-          product_code: "QR_CODE_OFFLINE",
-          seller_id: config.sellerId,
-          timeout_express: timeoutExpress(input.expiresAt),
-        },
-      }),
-      "alipay.trade.precreate",
+    const request = {
+      notify_url: config.notifyUrl,
+      bizContent: {
+        out_trade_no: input.paymentNo,
+        total_amount: amountCentsToYuan(input.amountCents),
+        subject: `VEM order ${input.orderNo}`,
+        product_code: "QR_CODE_OFFLINE",
+        seller_id: config.sellerId,
+        timeout_express: timeoutExpress(input.expiresAt),
+      },
+    };
+
+    const data = await this.precreateOrderCodeWithRetry(
+      sdk,
+      config,
+      input.paymentNo,
+      request,
+    );
+
+    const paymentUrl = assertSuccessfulPrecreate(data, input.paymentNo);
+    const ready = await this.probeOrderCodeReadinessAfterPrecreate(
+      sdk,
+      config,
+      input.paymentNo,
     );
     return {
       providerTradeNo: null,
-      paymentUrl: readString(data, "qr_code"),
+      paymentUrl,
+      initialStatus: ready ? "pending" : "processing",
     };
+  }
+
+  private async precreateOrderCodeWithRetry(
+    sdk: AlipaySdkLike,
+    config: AlipayConfig,
+    paymentNo: string,
+    request: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const maxAttempts = Math.max(1, config.orderCodePrecreateMaxAttempts);
+    let lastError: unknown = null;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        // oxlint-disable-next-line no-await-in-loop -- retry must preserve out_trade_no idempotency.
+        return await sdk.exec("alipay.trade.precreate", request);
+      } catch (error) {
+        if (!isIndeterminateAlipayError(error)) {
+          throw error;
+        }
+        lastError = error;
+        this.logger.warn(
+          `alipay.trade.precreate attempt ${attempt}/${maxAttempts} unavailable for ${paymentNo}: ${alipayErrorMessage(error)}`,
+        );
+        if (attempt >= maxAttempts) break;
+        // oxlint-disable-next-line no-await-in-loop -- bounded retry delay for transient Alipay sandbox 5xx.
+        await sleep(config.orderCodePrecreateRetryDelayMs * attempt);
+      }
+    }
+
+    throw new BadGatewayException(ALIPAY_PAYMENT_CHANNEL_UNAVAILABLE_MESSAGE, {
+      cause: lastError,
+    });
+  }
+
+  private async probeOrderCodeReadinessAfterPrecreate(
+    sdk: AlipaySdkLike,
+    config: AlipayConfig,
+    paymentNo: string,
+  ): Promise<boolean> {
+    if (!config.orderCodeReadinessCheckEnabled) return true;
+
+    const deadline = Date.now() + config.orderCodeReadinessTimeoutMs;
+    let lastResult: ProviderPaymentQueryResult | null = null;
+    let lastError: unknown = null;
+
+    while (Date.now() <= deadline) {
+      try {
+        // oxlint-disable-next-line no-await-in-loop -- readiness polling must query sequentially until Alipay exposes the new order.
+        const data = await sdk.exec("alipay.trade.query", {
+          bizContent: { out_trade_no: paymentNo },
+        });
+        const result = mapAlipayTradeStatus(data);
+        lastResult = result;
+        lastError = null;
+        if (result.status === "pending" || result.status === "succeeded") {
+          return true;
+        }
+        if (
+          result.status === "failed" ||
+          result.status === "canceled" ||
+          result.status === "expired"
+        ) {
+          throw new BadGatewayException(
+            `Alipay order-code precreate validation failed: ${result.failedReason ?? result.status}`,
+          );
+        }
+      } catch (error) {
+        if (!isIndeterminateAlipayError(error)) {
+          throw error;
+        }
+        lastError = error;
+      }
+
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) break;
+      // oxlint-disable-next-line no-await-in-loop -- bounded backoff between sequential Alipay readiness probes.
+      await sleep(
+        Math.min(config.orderCodeReadinessPollIntervalMs, remainingMs),
+      );
+    }
+
+    const reason = lastError
+      ? alipayErrorMessage(lastError)
+      : (lastResult?.failedReason ?? lastResult?.status ?? "not_ready");
+    this.logger.warn(
+      `alipay.trade.precreate readiness probe did not observe ${paymentNo}: ${reason}`,
+    );
+    return false;
   }
 
   async queryPayment(
@@ -410,12 +741,9 @@ export class AlipayProvider implements PaymentCodeCapableProvider {
     const sdk = createAlipaySdk(this.sdkFactory, config);
     const body: Record<string, unknown> = { out_trade_no: input.paymentNo };
     if (input.providerTradeNo) body["trade_no"] = input.providerTradeNo;
-    const data = assertSuccessfulCurl(
-      await sdk.curl<AlipayTradeData>("POST", "/v3/alipay/trade/query", {
-        body,
-      }),
-      "alipay.trade.query",
-    );
+    const data = await sdk.exec("alipay.trade.query", {
+      bizContent: body,
+    });
     return mapAlipayTradeStatus(data);
   }
 
@@ -435,39 +763,19 @@ export class AlipayProvider implements PaymentCodeCapableProvider {
       seller_id: config.sellerId,
       store_id: input.storeId ?? undefined,
       terminal_id: input.terminalId ?? undefined,
-      query_options: ["fund_bill_list"],
     };
     try {
-      const data = assertSuccessfulCurl(
-        await sdk.curl<Record<string, unknown>>(
-          "POST",
-          "/v3/alipay/trade/pay",
-          {
-            body,
-          },
-        ),
-        "alipay.trade.pay",
-      );
+      const data = await sdk.exec("alipay.trade.pay", {
+        bizContent: body,
+      });
       return mapAlipayPaymentCodeResponse(data);
     } catch (err) {
-      const errCode =
-        err && typeof err === "object" && "code" in err
-          ? String((err as Record<string, unknown>).code)
-          : null;
-      const errStatus =
-        err && typeof err === "object" && "responseHttpStatus" in err
-          ? String((err as Record<string, unknown>).responseHttpStatus)
-          : "?";
-      const errMessage =
-        err instanceof Error
-          ? err.message
-          : err && typeof err === "object"
-            ? JSON.stringify(err)
-            : typeof err === "string"
-              ? err
-              : typeof err === "number" || typeof err === "boolean"
-                ? `${err}`
-                : "unknown_error";
+      const errProperties = readAlipayErrorProperties(err);
+      const codeValue = errProperties?.code;
+      const responseHttpStatus = errProperties?.responseHttpStatus;
+      const errCode = alipayErrorPropertyMessage(codeValue);
+      const errStatus = alipayErrorPropertyMessage(responseHttpStatus) ?? "?";
+      const errMessage = alipayErrorMessage(err);
       this.logger.error(
         `chargePaymentCode Alipay error code=${errCode} responseHttpStatus=${errStatus} message=${errMessage}`,
       );
@@ -480,6 +788,16 @@ export class AlipayProvider implements PaymentCodeCapableProvider {
           rawPayload: {},
         };
       }
+      if (isIndeterminateAlipayError(err)) {
+        return {
+          status: "unknown",
+          providerTradeNo: null,
+          providerStatus: errCode ?? "ALIPAY_REQUEST_UNKNOWN",
+          failureCode: errCode ?? "ALIPAY_REQUEST_UNKNOWN",
+          failureMessage: errMessage,
+          rawPayload: {},
+        };
+      }
       throw err;
     }
   }
@@ -487,39 +805,28 @@ export class AlipayProvider implements PaymentCodeCapableProvider {
   async queryPaymentCode(
     input: ProviderPaymentCodeQueryInput,
   ): Promise<ProviderPaymentCodeQueryResult> {
-    const result = await this.queryPayment(input);
-    if (result.status === "succeeded") {
-      return {
-        status: "succeeded",
-        providerTradeNo: result.providerTradeNo ?? null,
-        paidAt: result.paidAt ?? null,
-        providerStatus: "TRADE_SUCCESS",
-        rawPayload: result.rawPayload,
-      };
+    const config = parseAlipayConfig(input.config);
+    const sdk = createAlipaySdk(this.sdkFactory, config);
+    const body: Record<string, unknown> = { out_trade_no: input.paymentNo };
+    if (input.providerTradeNo) body["trade_no"] = input.providerTradeNo;
+    try {
+      const data = await sdk.exec("alipay.trade.query", {
+        bizContent: body,
+      });
+      return mapAlipayPaymentCodeQueryResponse(data);
+    } catch (err) {
+      if (isIndeterminateAlipayError(err)) {
+        return {
+          status: "unknown",
+          providerTradeNo: input.providerTradeNo,
+          providerStatus: "ALIPAY_QUERY_UNKNOWN",
+          failureCode: "ALIPAY_QUERY_UNKNOWN",
+          failureMessage: alipayErrorMessage(err),
+          rawPayload: {},
+        };
+      }
+      throw err;
     }
-    if (result.status === "pending" || result.status === "processing") {
-      return {
-        status: "processing",
-        providerTradeNo: result.providerTradeNo ?? null,
-        providerStatus: result.status,
-        rawPayload: result.rawPayload,
-      };
-    }
-    if (result.status === "canceled") {
-      return {
-        status: "reversed",
-        providerTradeNo: result.providerTradeNo ?? null,
-        providerStatus: "TRADE_CLOSED",
-        rawPayload: result.rawPayload,
-      };
-    }
-    return {
-      status: "failed",
-      providerTradeNo: result.providerTradeNo ?? null,
-      providerStatus: result.status,
-      failureMessage: result.failedReason ?? "支付宝付款码支付失败",
-      rawPayload: result.rawPayload,
-    };
   }
 
   async cancelPayment(
@@ -529,16 +836,21 @@ export class AlipayProvider implements PaymentCodeCapableProvider {
     const sdk = createAlipaySdk(this.sdkFactory, config);
     const body: Record<string, unknown> = { out_trade_no: input.paymentNo };
     if (input.providerTradeNo) body["trade_no"] = input.providerTradeNo;
-    const data = assertSuccessfulCurl(
-      await sdk.curl<Record<string, unknown>>(
-        "POST",
-        "/v3/alipay/trade/close",
-        {
-          body,
-        },
-      ),
-      "alipay.trade.close",
-    );
+    const data = await sdk.exec("alipay.trade.cancel", {
+      bizContent: body,
+    });
+    const code = typeof data["code"] === "string" ? data["code"] : null;
+    if (code && code !== "10000") {
+      const subCode =
+        typeof data["sub_code"] === "string" ? data["sub_code"] : code;
+      const subMsg =
+        typeof data["sub_msg"] === "string"
+          ? data["sub_msg"]
+          : "支付宝交易撤销失败";
+      throw new BadGatewayException(
+        `Alipay alipay.trade.cancel failed: ${subCode} ${subMsg}`,
+      );
+    }
     return { status: "canceled", rawPayload: data };
   }
 
@@ -547,21 +859,27 @@ export class AlipayProvider implements PaymentCodeCapableProvider {
   ): Promise<ProviderPaymentCodeReverseResult> {
     const config = parseAlipayConfig(input.config);
     const sdk = createAlipaySdk(this.sdkFactory, config);
-    const data = assertSuccessfulCurl(
-      await sdk.curl<Record<string, unknown>>(
-        "POST",
-        "/v3/alipay/trade/cancel",
-        {
-          body: {
-            out_trade_no: input.paymentNo,
-            ...(input.providerTradeNo
-              ? { trade_no: input.providerTradeNo }
-              : {}),
-          },
+    let data: Record<string, unknown>;
+    try {
+      data = await sdk.exec("alipay.trade.cancel", {
+        bizContent: {
+          out_trade_no: input.paymentNo,
+          ...(input.providerTradeNo ? { trade_no: input.providerTradeNo } : {}),
         },
-      ),
-      "alipay.trade.cancel",
-    );
+      });
+    } catch (err) {
+      if (isIndeterminateAlipayError(err)) {
+        return {
+          status: "unknown",
+          recall: true,
+          providerStatus: "ALIPAY_REVERSE_UNKNOWN",
+          failureCode: "ALIPAY_REVERSE_UNKNOWN",
+          failureMessage: alipayErrorMessage(err),
+          rawPayload: {},
+        };
+      }
+      throw err;
+    }
     const retryFlag = data["retry_flag"];
     const code = data["code"];
     if (code === "10000") {
