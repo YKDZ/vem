@@ -11,14 +11,6 @@ vi.mock("vue-router", () => ({
   useRouter: () => ({ push: routerPushMock }),
 }));
 
-vi.mock("@/components/HardwareStatusBadge.vue", () => ({
-  default: { template: "<div />" },
-}));
-
-vi.mock("@/components/NetworkStatusBadge.vue", () => ({
-  default: { template: "<div />" },
-}));
-
 import KioskLayout from "./KioskLayout.vue";
 
 beforeEach(() => {

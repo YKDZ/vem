@@ -4,11 +4,9 @@ import { useRouter } from "vue-router";
 
 import KioskLayout from "@/layouts/KioskLayout.vue";
 import { resultKindFromNextAction, useCheckoutStore } from "@/stores/checkout";
-import { useMqttStore } from "@/stores/mqtt";
 
 const router = useRouter();
 const checkoutStore = useCheckoutStore();
-const mqttStore = useMqttStore();
 
 let pollTimer: number | undefined;
 
@@ -18,13 +16,35 @@ const pickupReminder = computed(() => command.value?.pickupReminder ?? null);
 const pickupReminderClass = computed(() => {
   switch (pickupReminder.value?.level) {
     case "urgent":
-      return "border-rose-300/60 bg-rose-500/25 text-rose-50";
+      return "border-neutral-950 bg-neutral-950 text-white";
     case "warning":
-      return "border-amber-200/60 bg-amber-400/25 text-amber-50";
+      return "border-neutral-400 bg-neutral-100 text-neutral-950";
     default:
-      return "border-sky-200/50 bg-sky-400/20 text-sky-50";
+      return "border-neutral-200 bg-neutral-50 text-neutral-700";
   }
 });
+const progressText = computed(() => {
+  switch (command.value?.status) {
+    case "succeeded":
+      return "商品已送达，请从取货口取走。";
+    case "failed":
+    case "timeout":
+    case "result_unknown":
+      return "出货遇到问题，请联系工作人员处理。";
+    case "acknowledged":
+      return "设备正在出货，请稍候。";
+    case "sent":
+    case "pending":
+    default:
+      return "正在准备出货，请稍候。";
+  }
+});
+const hasCustomerVisibleError = computed(
+  () =>
+    command.value?.status === "failed" ||
+    command.value?.status === "timeout" ||
+    command.value?.status === "result_unknown",
+);
 
 async function refreshStatus(): Promise<void> {
   await checkoutStore.refreshCurrentTransaction();
@@ -54,27 +74,21 @@ onUnmounted(() => {
 <template>
   <KioskLayout>
     <section
-      class="flex h-full flex-col items-center justify-center text-center text-white"
+      class="flex h-full flex-col items-center justify-center text-center text-neutral-950"
     >
-      <div
-        class="w-full rounded-[2rem] border border-white/10 bg-white/10 p-8 shadow-2xl"
-      >
-        <p class="text-sm tracking-[0.35em] text-sky-200 uppercase">
-          DISPENSING
+      <div class="w-full rounded-lg border border-neutral-200 bg-white p-8">
+        <p class="text-sm font-semibold tracking-[0.2em] text-neutral-500">
+          出货中
         </p>
         <h2 class="mt-4 text-4xl font-black">支付成功，正在出货</h2>
-        <p class="mt-4 text-lg text-slate-300">
-          daemon 已接管 MQTT、硬件出货和 outbox 补发，UI 仅展示当前进度。
-        </p>
+        <p class="mt-4 text-lg text-neutral-600">{{ progressText }}</p>
 
         <div
           v-if="pickupReminder"
-          class="mt-6 rounded-3xl border p-6 text-left shadow-xl"
+          class="mt-6 rounded-lg border p-6 text-left"
           :class="pickupReminderClass"
         >
-          <p class="text-sm font-bold tracking-[0.3em] uppercase">
-            PICKUP NOTICE
-          </p>
+          <p class="text-sm font-bold tracking-[0.2em]">取货提醒</p>
           <h3 class="mt-2 text-3xl font-black">
             {{ pickupReminder.message }}
           </h3>
@@ -83,33 +97,21 @@ onUnmounted(() => {
           </p>
         </div>
 
-        <div class="mt-8 grid gap-3 text-left text-slate-200">
-          <div class="rounded-2xl bg-slate-950/40 p-4">
-            订单状态：{{ status?.orderStatus ?? "查询中" }}
-          </div>
-          <div class="rounded-2xl bg-slate-950/40 p-4">
-            支付状态：{{ status?.payment.status ?? "查询中" }}
-          </div>
-          <div class="rounded-2xl bg-slate-950/40 p-4">
-            出货命令：{{ command?.commandNo ?? "等待后端创建" }}
-          </div>
-          <div class="rounded-2xl bg-slate-950/40 p-4">
-            命令状态：{{ command?.status ?? "暂无" }}
+        <div class="mt-8 grid gap-3 text-left text-neutral-700">
+          <div class="rounded-lg border border-neutral-200 bg-neutral-50 p-4">
+            <div class="h-2 overflow-hidden rounded bg-neutral-200">
+              <div
+                class="h-full rounded bg-neutral-950"
+                :class="command ? 'w-2/3' : 'w-1/3'"
+              ></div>
+            </div>
+            <p class="mt-3">{{ progressText }}</p>
           </div>
           <div
-            v-if="command?.lastError"
-            class="rounded-2xl bg-rose-500/20 p-4 text-rose-100"
+            v-if="hasCustomerVisibleError"
+            class="rounded-lg border border-neutral-200 bg-neutral-50 p-4 text-neutral-800"
           >
-            {{ command.lastError }}
-          </div>
-          <div class="rounded-2xl bg-slate-950/40 p-4">
-            机器 MQTT：{{ mqttStore.status }}
-          </div>
-          <div class="rounded-2xl bg-slate-950/40 p-4">
-            本地 outbox：{{ mqttStore.outboxSize }} 条待补发
-          </div>
-          <div class="rounded-2xl bg-slate-950/40 p-4">
-            最近命令：{{ mqttStore.lastCommandNo ?? "暂无" }}
+            出货遇到问题，请联系工作人员处理。
           </div>
         </div>
       </div>

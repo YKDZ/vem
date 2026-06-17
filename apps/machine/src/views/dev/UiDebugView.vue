@@ -140,9 +140,11 @@ async function goPayment(): Promise<void> {
   await router.push("/payment");
 }
 
-async function goDispensing(): Promise<void> {
+async function goDispensing(
+  scenarioId: UiDebugScenarioId = "dispensing",
+): Promise<void> {
   const scenario = uiDebugScenarios.find(
-    (candidate) => candidate.id === "dispensing",
+    (candidate) => candidate.id === scenarioId,
   )!;
   setActiveUiDebugScenarioId(scenario.id);
   activeScenarioId.value = scenario.id;
@@ -222,8 +224,22 @@ onMounted(() => {
           <button class="debug-button" type="button" @click="goPayment">
             Payment
           </button>
-          <button class="debug-button" type="button" @click="goDispensing">
+          <button class="debug-button" type="button" @click="goDispensing()">
             Dispensing
+          </button>
+          <button
+            class="debug-button"
+            type="button"
+            @click="goDispensing('dispensing_pickup_15s')"
+          >
+            Dispensing 15s
+          </button>
+          <button
+            class="debug-button"
+            type="button"
+            @click="goDispensing('dispensing_pickup_25s')"
+          >
+            Dispensing 25s
           </button>
           <button
             class="debug-button"

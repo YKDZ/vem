@@ -1,0 +1,61 @@
+<script setup lang="ts">
+import { computed } from "vue";
+
+import type { MachineCatalogItem } from "@/types/catalog";
+
+import { formatCents } from "@/utils/format";
+
+const props = defineProps<{
+  item: MachineCatalogItem;
+  selected?: boolean;
+}>();
+
+const emit = defineEmits<{
+  select: [item: MachineCatalogItem];
+}>();
+
+const variantSummary = computed(() => {
+  const sizes = new Set(
+    props.item.variantCandidates.map((variant) => variant.size ?? "默认尺码"),
+  );
+  const colors = new Set(
+    props.item.variantCandidates.map((variant) => variant.color ?? "默认颜色"),
+  );
+  return `${sizes.size} 个尺码 / ${colors.size} 种颜色`;
+});
+
+const priceText = computed(() => {
+  const saleableVariants = props.item.variantCandidates.filter(
+    (variant) =>
+      variant.slotSalesState === "sale_ready" && variant.saleableStock > 0,
+  );
+  const variants = saleableVariants.length
+    ? saleableVariants
+    : props.item.variantCandidates;
+  const prices = variants.map((variant) => variant.priceCents);
+  const minPrice = Math.min(...prices);
+  const maxPrice = Math.max(...prices);
+  if (!Number.isFinite(minPrice)) return formatCents(props.item.priceCents);
+  return minPrice === maxPrice
+    ? formatCents(minPrice)
+    : `${formatCents(minPrice)}起`;
+});
+</script>
+
+<template>
+  <button
+    class="kiosk-touch-target flex min-h-[132px] w-full flex-col rounded-lg border bg-white p-4 text-left text-neutral-950 shadow-sm"
+    :class="selected ? 'border-neutral-950' : 'border-neutral-200'"
+    type="button"
+    @click="emit('select', item)"
+  >
+    <span class="text-lg leading-tight font-black">{{ item.productName }}</span>
+    <span class="mt-2 line-clamp-2 text-sm text-neutral-500">
+      {{ item.productDescription ?? variantSummary }}
+    </span>
+    <span class="mt-auto flex items-end justify-between gap-3 pt-4">
+      <span class="text-xl font-black">{{ priceText }}</span>
+      <span class="text-sm text-neutral-500">{{ variantSummary }}</span>
+    </span>
+  </button>
+</template>

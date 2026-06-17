@@ -40,7 +40,7 @@ watch(
 </script>
 
 <template>
-  <div class="relative rounded-[2rem] bg-white p-5 shadow-2xl">
+  <div class="relative rounded-lg bg-white p-5 shadow-sm">
     <img
       v-if="dataUrl"
       class="mx-auto size-[320px] max-h-[45vh] max-w-full"
@@ -49,13 +49,13 @@ watch(
     />
     <div
       v-else
-      class="flex size-[320px] max-h-[45vh] max-w-full items-center justify-center rounded-3xl bg-slate-100 text-center text-slate-500"
+      class="flex size-[320px] max-h-[45vh] max-w-full items-center justify-center rounded-lg bg-slate-100 text-center text-slate-500"
     >
       {{ error ?? props.emptyText ?? "暂无支付二维码" }}
     </div>
     <div
       v-if="blocked"
-      class="absolute inset-5 flex items-center justify-center rounded-3xl bg-slate-950/80 text-3xl font-black text-white"
+      class="absolute inset-5 flex items-center justify-center rounded-lg bg-slate-950/80 text-3xl font-black text-white"
     >
       {{ overlayText ?? "二维码不可用" }}
     </div>
