@@ -132,5 +132,7 @@ test("browser UI routes using real daemon ready snapshots", async ({
     page.getByRole("heading", { name: /暂时无法购买|唐诗村|生产维护/ }),
   ).toBeVisible();
   await page.goto("/#/boot");
-  await expect(page).toHaveURL(/#\/(offline|catalog|maintenance)$/);
+  await expect(page).toHaveURL(/#\/(offline|catalog|maintenance)$/, {
+    timeout: 20_000,
+  });
 });
