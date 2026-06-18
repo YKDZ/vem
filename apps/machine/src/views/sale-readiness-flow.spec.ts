@@ -175,14 +175,14 @@ function makeCatalogItem(): MachineCatalogItem {
     inventoryId: "550e8400-e29b-41d4-a716-446655440002",
     variantId: "550e8400-e29b-41d4-a716-446655440003",
     productId: "550e8400-e29b-41d4-a716-446655440004",
-    productName: "矿泉水",
+    productName: "基础短袖",
     productDescription: null,
     coverImageUrl: null,
     categoryId: null,
-    categoryName: null,
-    sku: "WATER-001",
-    size: null,
-    color: null,
+    categoryName: "T恤 / 基础短袖",
+    sku: "TEE-BASIC-M-BLACK",
+    size: "M",
+    color: "黑色",
     priceCents: 100,
     capacity: 8,
     parLevel: 6,
@@ -550,27 +550,26 @@ describe("sale readiness UI flow", () => {
 
     const host = await mountView(CatalogView);
 
-    expect(host.textContent).toContain("矿泉水");
+    expect(host.textContent).toContain("T恤");
     expect(host.textContent).toContain("platform offline");
     expect(
       Array.from(host.querySelectorAll("button")).some(
         (button) => button.textContent?.trim() === "刷新",
       ),
     ).toBe(false);
-    const detailButton = Array.from(host.querySelectorAll("button")).find(
-      (button) => button.textContent?.includes("查看详情"),
+    const categoryButton = Array.from(host.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("T恤"),
     );
-    expect(detailButton).toBeTruthy();
-    expect(detailButton?.disabled).toBe(false);
+    expect(categoryButton).toBeTruthy();
+    expect(categoryButton?.disabled).toBe(false);
 
-    detailButton?.click();
+    categoryButton?.click();
     await nextTick();
 
-    expect(useCheckoutStore().selectedItem?.inventoryId).toBe(item.inventoryId);
-    expect(routerPushMock).toHaveBeenCalledWith({
-      name: "product-detail",
-      params: { catalogKey: item.catalogKey },
-    });
+    expect(host.textContent).toContain("基础短袖");
+    expect(host.textContent).toContain("颜色");
+    expect(host.textContent).toContain("尺码");
+    expect(routerPushMock).not.toHaveBeenCalled();
   });
 
   it("leaves the catalog when readiness refresh requires maintenance", async () => {
@@ -620,7 +619,7 @@ describe("sale readiness UI flow", () => {
     });
   });
 
-  it("shows the latest vision recognition result in the recommendation area", async () => {
+  it("keeps vision recognition details silent in the catalog", async () => {
     const item = makeCatalogItem();
     useCatalogStore().applySnapshot({
       items: [{ ...item, size: "M", targetGender: "male" }],
@@ -654,14 +653,12 @@ describe("sale readiness UI flow", () => {
     );
     await nextTick();
 
-    expect(host.textContent).toContain("视觉识别结果");
-    expect(host.textContent).toContain("vision-event-001");
-    expect(host.textContent).toContain("172 cm");
-    expect(host.textContent).toContain("91%");
-    expect(host.textContent).toContain("light glare");
-    expect(host.textContent).toContain('"heightCm": 172');
-    expect(host.textContent).toContain("矿泉水");
-    expect(host.textContent).toContain("尺码正好");
+    expect(host.textContent).not.toContain("视觉识别结果");
+    expect(host.textContent).not.toContain("vision-event-001");
+    expect(host.textContent).not.toContain("172 cm");
+    expect(host.textContent).not.toContain("light glare");
+    expect(host.textContent).not.toContain('"heightCm": 172');
+    expect(host.textContent).toContain("T恤");
   });
 
   it("keeps checkout visible but disables order creation when readiness is blocked", async () => {
@@ -679,8 +676,8 @@ describe("sale readiness UI flow", () => {
     await nextTick();
 
     expect(host.textContent).toContain("确认购买");
-    expect(host.textContent).toContain("矿泉水");
-    expect(host.textContent).toContain("网络或 MQTT 未就绪");
+    expect(host.textContent).toContain("基础短袖");
+    expect(host.textContent).toContain("网络未就绪");
     const submitButton = Array.from(host.querySelectorAll("button")).find(
       (button) => button.textContent?.includes("确认并生成支付二维码"),
     );

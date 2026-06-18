@@ -8,11 +8,7 @@ import { daemonClient } from "@/daemon/client";
 import KioskLayout from "@/layouts/KioskLayout.vue";
 import { resultKindFromNextAction, useCheckoutStore } from "@/stores/checkout";
 import { useScannerStore } from "@/stores/scanner";
-import {
-  formatCents,
-  formatCountdown,
-  formatIsoDateTime,
-} from "@/utils/format";
+import { formatCents, formatCountdown } from "@/utils/format";
 import { getPaymentProviderCopy } from "@/utils/payment-copy";
 
 const router = useRouter();
@@ -139,26 +135,25 @@ onUnmounted(() => {
 
 <template>
   <KioskLayout>
-    <section v-if="order" class="flex h-full flex-col gap-5 text-white">
-      <div
-        class="rounded-4xl border border-white/10 bg-white/10 p-6 shadow-2xl"
-      >
-        <p class="text-sm tracking-[0.35em] text-sky-200 uppercase">PAYMENT</p>
+    <section v-if="order" class="flex h-full flex-col gap-5 text-neutral-950">
+      <div class="rounded-lg border border-neutral-200 bg-white p-6">
+        <p class="text-sm font-semibold tracking-[0.2em] text-neutral-500">
+          支付
+        </p>
         <div class="mt-2 flex items-start justify-between gap-4">
           <div>
             <h2 class="text-4xl font-black">{{ paymentCopy.title }}</h2>
-            <p class="mt-2 text-slate-300">{{ paymentCopy.subtitle }}</p>
-            <p class="mt-1 text-sm text-slate-400">订单 {{ order.orderNo }}</p>
+            <p class="mt-2 text-neutral-600">{{ paymentCopy.subtitle }}</p>
           </div>
           <div class="text-right">
-            <p class="text-sm text-slate-300">剩余支付时间</p>
-            <p class="text-4xl font-black text-amber-200">
+            <p class="text-sm text-neutral-500">剩余支付时间</p>
+            <p class="text-4xl font-black">
               {{ remainingText }}
             </p>
           </div>
         </div>
 
-        <div class="mt-6 grid gap-5">
+        <div class="mt-6 grid grid-cols-[1.2fr_0.8fr] gap-5">
           <PaymentQrCode
             v-if="!isPaymentCode"
             :value="order.paymentUrl"
@@ -168,75 +163,70 @@ onUnmounted(() => {
           />
           <div
             v-else
-            class="rounded-4xl border border-emerald-300/30 bg-emerald-400/10 p-8 text-center"
+            class="rounded-lg border border-neutral-200 bg-neutral-50 p-8 text-center"
           >
-            <p class="text-sm tracking-[0.3em] text-emerald-100 uppercase">
-              PAYMENT CODE
+            <p class="text-sm font-semibold tracking-[0.2em] text-neutral-500">
+              付款码
             </p>
             <h3 class="mt-3 text-3xl font-black">请出示付款码</h3>
-            <div class="mt-6 rounded-3xl bg-slate-950/45 p-5">
-              <p class="text-slate-300">扫码模块</p>
+            <div class="mt-6 rounded-lg border border-neutral-200 bg-white p-5">
+              <p class="text-neutral-500">扫码状态</p>
               <p
                 class="mt-2 text-xl font-black"
                 :class="
-                  scannerStore.online ? 'text-emerald-200' : 'text-amber-200'
+                  scannerStore.online ? 'text-neutral-950' : 'text-neutral-500'
                 "
               >
                 {{ scannerStore.message }}
               </p>
-              <p v-if="scannerStore.port" class="mt-2 text-sm text-slate-400">
-                端口：{{ scannerStore.port }}
-              </p>
-              <p v-if="scannerStore.lastMaskedCode" class="mt-3 text-slate-300">
-                已读取：{{ scannerStore.lastMaskedCode }}
+              <p
+                v-if="scannerStore.lastMaskedCode"
+                class="mt-3 text-neutral-600"
+              >
+                已读取付款码
               </p>
               <p
                 v-if="checkoutStore.paymentCodeMessage"
-                class="mt-3 rounded-2xl bg-sky-400/10 p-3 text-sky-100"
+                class="mt-3 rounded-md border border-neutral-200 bg-neutral-50 p-3 text-neutral-700"
               >
                 {{ checkoutStore.paymentCodeMessage }}
               </p>
               <RouterLink
                 v-if="canUseDevScan"
-                class="mt-4 inline-flex rounded-2xl border border-white/15 px-4 py-2 text-sm text-white"
+                class="mt-4 inline-flex rounded-md border border-neutral-300 px-4 py-2 text-sm text-neutral-600"
                 to="/dev/payment-code-scan"
               >
-                开发环境：手动模拟扫码
+                手动扫码测试
               </RouterLink>
             </div>
           </div>
-          <div class="rounded-3xl bg-slate-950/45 p-5">
-            <div class="flex items-center justify-between">
-              <span class="text-slate-300">应付金额</span>
-              <strong class="text-4xl font-black text-sky-200">
+          <div class="rounded-lg border border-neutral-200 bg-neutral-50 p-5">
+            <div class="flex h-full flex-col justify-between gap-6">
+              <span class="text-neutral-500">应付金额</span>
+              <strong class="text-5xl font-black">
                 {{ formatCents(order.totalAmountCents) }}
               </strong>
             </div>
-            <p class="mt-3 text-sm text-slate-400">
-              过期时间：{{ formatIsoDateTime(order.expiresAt) }}
-            </p>
-            <p class="mt-2 text-sm text-slate-400">
-              当前状态：{{ status?.orderStatus ?? "查询中" }} /
-              {{ status?.payment.status ?? "查询中" }}
-            </p>
-            <p
-              v-if="confirmingExpiredPayment"
-              class="mt-3 rounded-2xl bg-amber-400/15 p-4 text-amber-100"
-            >
-              二维码已到期，系统正在向支付平台确认最终结果，请勿重复扫码或关闭页面。
-            </p>
-            <p
-              v-else-if="preparingQrCode"
-              class="mt-3 rounded-2xl bg-sky-400/15 p-4 text-sky-100"
-            >
-              支付平台正在同步订单，请等待二维码出现后再扫码。
-            </p>
+            <div>
+              <p
+                v-if="confirmingExpiredPayment"
+                class="mt-5 rounded-md border border-neutral-200 bg-white p-4 text-neutral-700"
+              >
+                二维码已到期，系统正在向支付平台确认最终结果，请勿重复扫码或关闭页面。
+              </p>
+              <p
+                v-else-if="preparingQrCode"
+                class="mt-5 rounded-md border border-neutral-200 bg-white p-4 text-neutral-700"
+              >
+                支付平台正在同步订单，请等待二维码出现后再扫码。
+              </p>
+            </div>
           </div>
         </div>
 
         <p
           v-if="checkoutStore.error"
-          class="mt-5 rounded-2xl bg-rose-500/20 p-4 text-rose-100"
+          class="mt-5 rounded-md border border-neutral-200 bg-neutral-50 p-4 text-neutral-800"
         >
           {{ checkoutStore.error }}
         </p>
@@ -244,7 +234,7 @@ onUnmounted(() => {
 
       <div class="mt-auto flex flex-col gap-4">
         <button
-          class="kiosk-touch-target rounded-3xl border border-white/20 px-6 py-5 text-xl font-black disabled:border-slate-500 disabled:text-slate-400"
+          class="kiosk-touch-target rounded-lg border border-neutral-300 bg-white px-6 py-5 text-xl font-black text-neutral-950 disabled:bg-neutral-200 disabled:text-neutral-500"
           type="button"
           :disabled="checkoutStore.loading"
           @click="cancelOrder"
@@ -253,7 +243,7 @@ onUnmounted(() => {
         </button>
         <div v-if="showMockControls" class="grid grid-cols-2 gap-4">
           <button
-            class="kiosk-touch-target rounded-3xl bg-sky-400 px-6 py-5 text-xl font-black text-slate-950 disabled:bg-slate-500 disabled:text-slate-300"
+            class="kiosk-touch-target rounded-lg bg-neutral-950 px-6 py-5 text-xl font-black text-white disabled:bg-neutral-300 disabled:text-neutral-500"
             type="button"
             :disabled="checkoutStore.loading || expired"
             @click="simulateSuccess"
@@ -261,7 +251,7 @@ onUnmounted(() => {
             模拟支付成功
           </button>
           <button
-            class="kiosk-touch-target col-span-2 rounded-3xl bg-rose-400 px-6 py-5 text-xl font-black text-slate-950 disabled:bg-slate-500 disabled:text-slate-300"
+            class="kiosk-touch-target col-span-2 rounded-lg border border-neutral-300 bg-white px-6 py-5 text-xl font-black text-neutral-950 disabled:bg-neutral-200 disabled:text-neutral-500"
             type="button"
             :disabled="checkoutStore.loading"
             @click="simulateFail"

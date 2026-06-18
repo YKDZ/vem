@@ -47,7 +47,7 @@ const copyMap: Record<CheckoutResultKind, ResultCopy> = {
   },
   dispense_failed: {
     title: "出货失败",
-    subtitle: "系统已记录异常，正在按订单状态发起退款或转人工处理。",
+    subtitle: "请联系工作人员处理，已支付款项会按订单状态处理。",
     tone: "danger",
     icon: "!",
   },
@@ -82,9 +82,11 @@ const DISPENSE_RESOLUTION_RESULT_KINDS: ReadonlySet<CheckoutResultKind> =
 const kind = computed(() => String(route.params.kind) as CheckoutResultKind);
 const copy = computed(() => copyMap[kind.value] ?? copyMap.manual_handling);
 const toneClass = computed(() => {
-  if (copy.value.tone === "success") return "bg-emerald-400 text-slate-950";
-  if (copy.value.tone === "danger") return "bg-rose-400 text-slate-950";
-  return "bg-amber-300 text-slate-950";
+  if (copy.value.tone === "success") return "bg-neutral-950 text-white";
+  if (copy.value.tone === "danger") {
+    return "border border-neutral-950 bg-white text-neutral-950";
+  }
+  return "bg-neutral-200 text-neutral-950";
 });
 const isDispenseFailureResult = computed(
   () => kind.value === "dispense_failed",
@@ -203,11 +205,9 @@ onBeforeUnmount(stopAutoReturn);
 <template>
   <KioskLayout>
     <section
-      class="flex h-full flex-col items-center justify-center text-center text-white"
+      class="flex h-full flex-col items-center justify-center text-center text-neutral-950"
     >
-      <div
-        class="w-full rounded-4xl border border-white/10 bg-white/10 p-8 shadow-2xl"
-      >
+      <div class="w-full rounded-lg border border-neutral-200 bg-white p-8">
         <div
           class="mx-auto flex size-28 items-center justify-center rounded-full text-6xl font-black"
           :class="toneClass"
@@ -215,45 +215,27 @@ onBeforeUnmount(stopAutoReturn);
           {{ copy.icon }}
         </div>
         <h2 class="mt-6 text-5xl font-black">{{ copy.title }}</h2>
-        <p class="mt-4 text-xl text-slate-200">{{ copy.subtitle }}</p>
-        <p v-if="canAutoReturn" class="mt-4 text-base text-slate-300">
+        <p class="mt-4 text-xl text-neutral-700">{{ copy.subtitle }}</p>
+        <p v-if="canAutoReturn" class="mt-4 text-base text-neutral-500">
           {{ autoReturnMessage }}
         </p>
         <p
           v-else-if="requiresMaintenanceReview"
-          class="mt-4 text-base text-rose-100"
+          class="mt-4 text-base text-neutral-700"
         >
           设备需要维护检查，当前保持本次处理结果。
         </p>
         <p
           v-else-if="resultReadinessError"
-          class="mt-4 text-amber-100 text-base"
+          class="mt-4 text-base text-neutral-700"
         >
           无法确认设备恢复状态，当前保持本次处理结果。
         </p>
-
-        <div class="mt-8 grid gap-3 text-left text-slate-200">
-          <div class="rounded-2xl bg-slate-950/40 p-4">
-            订单号：{{ checkoutStore.currentOrder?.orderNo ?? "-" }}
-          </div>
-          <div class="rounded-2xl bg-slate-950/40 p-4">
-            订单状态：{{ checkoutStore.status?.orderStatus ?? "-" }}
-          </div>
-          <div class="rounded-2xl bg-slate-950/40 p-4">
-            支付状态：{{ checkoutStore.status?.payment.status ?? "-" }}
-          </div>
-          <div
-            v-if="checkoutStore.status?.vending?.lastError"
-            class="rounded-2xl bg-rose-500/20 p-4 text-rose-100"
-          >
-            {{ checkoutStore.status.vending.lastError }}
-          </div>
-        </div>
       </div>
 
       <button
         v-if="canManuallyReturn"
-        class="kiosk-touch-target mt-8 w-full rounded-3xl bg-sky-400 px-6 py-5 text-2xl font-black text-slate-950 shadow-xl shadow-sky-950/40"
+        class="kiosk-touch-target mt-8 w-full rounded-lg bg-neutral-950 px-6 py-5 text-2xl font-black text-white"
         type="button"
         @click="backToCatalog"
       >

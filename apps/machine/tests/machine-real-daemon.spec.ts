@@ -129,7 +129,7 @@ test("browser UI routes using real daemon ready snapshots", async ({
 }) => {
   await page.goto("/");
   await expect(
-    page.getByRole("heading", { name: /暂时无法购买|请选择商品|部署配置/ }),
+    page.getByRole("heading", { name: /暂时无法购买|唐诗村|生产维护/ }),
   ).toBeVisible();
   await page.goto("/#/boot");
   await expect(page).toHaveURL(/#\/(offline|catalog|maintenance)$/);

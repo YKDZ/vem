@@ -26,15 +26,15 @@ const saleViewItem = {
   inventoryId: "550e8400-e29b-41d4-a716-446655440002",
   variantId: "550e8400-e29b-41d4-a716-446655440003",
   productId: "550e8400-e29b-41d4-a716-446655440004",
-  productName: "矿泉水",
-  productDescription: null,
+  productName: "基础短袖",
+  productDescription: "T恤类目，基础版型短袖上衣。",
   coverImageUrl: null,
   categoryId: null,
-  categoryName: null,
-  sku: "WATER-001",
-  size: null,
-  color: null,
-  priceCents: 100,
+  categoryName: "T恤 / 基础短袖",
+  sku: "TEE-BASIC-M-BLACK",
+  size: "M",
+  color: "黑色",
+  priceCents: 5900,
   productSortOrder: 1,
   targetGender: null,
   capacity: 8,
@@ -212,14 +212,14 @@ function transactionSnapshot(
   return {
     orderId: "550e8400-e29b-41d4-a716-446655440010",
     orderNo: "ORD-001",
-    productSummary: { productName: "矿泉水" },
+    productSummary: { productName: "基础短袖" },
     paymentNo: "PAY-001",
     paymentMethod: nextAction === "wait_payment" ? "qr_code" : "mock",
     paymentProvider: "alipay",
     paymentUrl: "https://pay.example/qr",
     paymentStatus: nextAction === "success" ? "paid" : "pending",
     orderStatus: nextAction === "success" ? "completed" : "pending_payment",
-    totalAmountCents: 100,
+    totalAmountCents: 5900,
     vending:
       nextAction === "dispensing" || nextAction === "success"
         ? {
@@ -646,17 +646,14 @@ test.afterAll(async () => {
 test("routes ready daemon to catalog", async ({ page }) => {
   scenario = "catalog";
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: "请选择商品" })).toBeVisible();
+  await expect(page.getByRole("button", { name: /T恤/ })).toBeVisible();
 });
 
 test("catalog hides sold-out sale-view items", async ({ page }) => {
   scenario = "soldOut";
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: "请选择商品" })).toBeVisible();
-  await expect(
-    page.getByRole("heading", { name: "暂无可售商品" }),
-  ).toBeVisible();
-  await expect(page.getByRole("button", { name: "查看详情" })).toHaveCount(0);
+  await expect(page.getByText("暂无可售商品")).toBeVisible();
+  await expect(page.getByRole("button", { name: /T恤/ })).toHaveCount(0);
 });
 
 test("routes missing config to maintenance", async ({ page }) => {
@@ -679,7 +676,8 @@ test("restores active payment transaction", async ({ page }) => {
   await expect(
     page.getByRole("heading", { name: "支付宝扫码支付" }),
   ).toBeVisible();
-  await expect(page.getByText("订单 ORD-001")).toBeVisible();
+  await expect(page.getByText("应付金额")).toBeVisible();
+  await expect(page.getByText("¥59.00")).toBeVisible();
 });
 
 test("routes active dispensing transaction", async ({ page }) => {
@@ -699,7 +697,9 @@ test("routes finished transaction to result", async ({ page }) => {
 test("page reload keeps current transaction route", async ({ page }) => {
   scenario = "payment";
   await page.goto("/");
-  await expect(page.getByText("订单 ORD-001")).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "支付宝扫码支付" }),
+  ).toBeVisible();
   await page.goto("/#/boot");
   await expect(page).toHaveURL(/#\/payment$/);
   await expect(
@@ -712,7 +712,7 @@ test("daemon snapshots never expose secret fields to browser storage", async ({
 }) => {
   scenario = "catalog";
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: "请选择商品" })).toBeVisible();
+  await expect(page.getByRole("button", { name: /T恤/ })).toBeVisible();
   const storage = await page.evaluate(() => {
     const snapshotStorage = (storage: Storage) =>
       Object.fromEntries(
@@ -749,7 +749,7 @@ test("sync backlog routes to catalog but displays degraded sync status", async (
 }) => {
   scenario = "syncBacklog";
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: "请选择商品" })).toBeVisible();
+  await expect(page.getByRole("button", { name: /T恤/ })).toBeVisible();
   const body = await page.textContent("body");
-  expect(body ?? "").toContain("MQTT");
+  expect(body ?? "").not.toContain("MQTT");
 });
