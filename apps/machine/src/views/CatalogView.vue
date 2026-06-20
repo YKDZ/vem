@@ -232,7 +232,7 @@ onUnmounted(() => {
   <KioskLayout>
     <section
       v-if="!selectedTopCategoryKey"
-      class="catalog-home relative -mx-6 -my-5 flex min-h-0 flex-1 flex-col overflow-hidden px-7 py-6"
+      class="catalog-home relative flex min-h-0 flex-1 flex-col overflow-hidden px-7 py-6"
     >
       <div class="home-mist home-mist-left"></div>
       <div class="home-mist home-mist-right"></div>
@@ -493,12 +493,17 @@ onUnmounted(() => {
   display: none;
 }
 
+:global(.kiosk-shell:has(.catalog-home)) {
+  padding: 0;
+}
+
 :global(.kiosk-shell:has(.catalog-home) > .kiosk-scroll) {
   margin-top: 0;
   padding-bottom: 0;
 }
 
 .catalog-home {
+  width: 100%;
   background:
     radial-gradient(
       circle at 0% 4%,
@@ -511,9 +516,6 @@ onUnmounted(() => {
       transparent 30%
     ),
     linear-gradient(180deg, #fffdf8 0%, #fbf7eb 62%, #f6f0df 100%);
-  border: 1px solid rgba(89, 83, 66, 0.2);
-  border-radius: 20px;
-  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.78);
 }
 
 .home-mist {
@@ -611,7 +613,9 @@ onUnmounted(() => {
 }
 
 .category-section-title {
-  font-family: SimSun, "Songti SC", "Noto Serif CJK SC", serif;
+  font-family:
+    "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", "Source Han Sans SC",
+    sans-serif;
   font-size: 1.38rem;
   font-weight: 700;
   letter-spacing: 0.12em;
@@ -666,7 +670,9 @@ onUnmounted(() => {
 }
 
 .category-title-text {
-  font-family: SimSun, "Songti SC", "Noto Serif CJK SC", serif;
+  font-family:
+    "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", "Source Han Sans SC",
+    sans-serif;
   font-size: 1.72rem;
   font-weight: 700;
   line-height: 1;

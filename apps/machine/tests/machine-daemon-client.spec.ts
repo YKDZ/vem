@@ -653,6 +653,41 @@ test("routes ready daemon to catalog", async ({ page }) => {
   await expect(page.getByRole("button", { name: /T恤/ })).toBeVisible();
 });
 
+test("redesigned catalog home controls remain interactive", async ({
+  page,
+}) => {
+  scenario = "catalog";
+  await page.goto("/");
+
+  const carouselImage = page.getByRole("img", { name: "轮播展示" });
+  const firstCarouselSrc = await carouselImage.getAttribute("src");
+  await page.getByRole("button", { name: "下一张" }).click();
+  await expect
+    .poll(() => carouselImage.getAttribute("src"))
+    .not.toBe(firstCarouselSrc);
+  await page.getByRole("button", { name: "上一张" }).click();
+  await page.getByRole("button", { name: "切换到第 3 张" }).click();
+  await expect
+    .poll(() => carouselImage.getAttribute("src"))
+    .not.toBe(firstCarouselSrc);
+
+  await page.getByRole("button", { name: /T恤/ }).click();
+  await expect(
+    page.getByRole("heading", { name: "T恤", exact: true }),
+  ).toBeVisible();
+
+  await page.getByRole("button", { name: /基础短袖/ }).click();
+  await expect(
+    page.getByRole("heading", { name: "基础短袖", exact: true }),
+  ).toBeVisible();
+
+  await page.getByRole("button", { name: "下单" }).click();
+  await expect(page.getByRole("heading", { name: "确认购买" })).toBeVisible();
+
+  await page.getByRole("button", { name: "返回" }).click();
+  await expect(page.getByRole("button", { name: /T恤/ })).toBeVisible();
+});
+
 test("catalog hides sold-out sale-view items", async ({ page }) => {
   scenario = "soldOut";
   await page.goto("/");
