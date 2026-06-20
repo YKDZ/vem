@@ -19,6 +19,7 @@ let dataDir = "";
 let daemonOutput: string[] = [];
 
 const DAEMON_START_TIMEOUT_MS = 300_000;
+const DAEMON_HTTP_BASE_URL = "http://127.0.0.1:7891";
 
 test.setTimeout(DAEMON_START_TIMEOUT_MS);
 
@@ -117,6 +118,25 @@ test.beforeAll(async ({ browserName: _browserName }, testInfo) => {
     intervals: [250, 500, 1000],
     timeout: DAEMON_START_TIMEOUT_MS - 10_000,
   });
+  await expect(async () => {
+    const response = await fetch(`${DAEMON_HTTP_BASE_URL}/v1/config`, {
+      headers: { Authorization: "Bearer dev-token" },
+    }).catch((error: unknown) => {
+      throw new Error(
+        `daemon HTTP config check failed: ${
+          error instanceof Error ? error.message : String(error)
+        }\n${formatDaemonOutput()}`,
+      );
+    });
+    expect(response.ok).toBe(true);
+    const config = (await response.json()) as {
+      public?: { machineCode?: unknown };
+    };
+    expect(config.public?.machineCode).toBe("MACHINE-UI");
+  }).toPass({
+    intervals: [250, 500, 1000],
+    timeout: DAEMON_START_TIMEOUT_MS - 10_000,
+  });
 });
 
 test.afterAll(async () => {
@@ -125,14 +145,18 @@ test.afterAll(async () => {
 });
 
 test("browser UI routes using real daemon ready snapshots", async ({
+  context,
   page,
 }) => {
   await page.goto("/");
   await expect(
     page.getByRole("heading", { name: /暂时无法购买|唐诗村|生产维护/ }),
   ).toBeVisible();
-  await page.goto("/#/boot");
-  await expect(page).toHaveURL(/#\/(offline|catalog|maintenance)$/, {
+  await page.close();
+
+  const bootPage = await context.newPage();
+  await bootPage.goto("/#/boot");
+  await expect(bootPage).toHaveURL(/#\/(offline|catalog|maintenance)$/, {
     timeout: 20_000,
   });
 });

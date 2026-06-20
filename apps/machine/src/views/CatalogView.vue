@@ -44,7 +44,11 @@ let readinessRefreshTimer: number | null = null;
 let readinessRefreshInFlight: Promise<void> | null = null;
 let clockTimer: number | null = null;
 
-const carouselSlides = [carouselImage1, carouselImage2, carouselImage3] as const;
+const carouselSlides = [
+  carouselImage1,
+  carouselImage2,
+  carouselImage3,
+] as const;
 const homeCategoryMeta: Record<
   CatalogTopCategoryKey,
   { label: string; english: string; icon: string }
@@ -288,9 +292,7 @@ onUnmounted(() => {
               :key="index"
               class="carousel-dot rounded-full transition"
               :class="
-                index === activeCarouselIndex
-                  ? 'bg-[#6d815d]'
-                  : 'bg-[#b9bca6]'
+                index === activeCarouselIndex ? 'bg-[#6d815d]' : 'bg-[#b9bca6]'
               "
               type="button"
               :aria-label="`切换到第 ${index + 1} 张`"
@@ -311,9 +313,7 @@ onUnmounted(() => {
         class="relative z-10 mt-5 flex shrink-0 items-center justify-center gap-3 text-[#7b8d67]"
       >
         <span class="title-ornament title-ornament-left"></span>
-        <h2 class="category-section-title">
-          请选择商品类别
-        </h2>
+        <h2 class="category-section-title">请选择商品类别</h2>
         <span class="title-ornament title-ornament-right"></span>
       </div>
 
@@ -352,7 +352,7 @@ onUnmounted(() => {
         暂无可售商品
       </section>
 
-      <div class="relative z-10 mt-7 grid shrink-0 grid-cols-4 gap-2 pr-30">
+      <div class="relative z-30 mt-7 grid shrink-0 grid-cols-4 gap-2 pr-28">
         <button
           v-for="action in quickActions"
           :key="action.label"
@@ -404,10 +404,12 @@ onUnmounted(() => {
               />
             </svg>
           </span>
-          <span class="mt-2 block text-base font-semibold text-[#5f6e55]">
+          <span class="mt-2 block font-semibold text-[#5f6e55] text-base">
             {{ action.label }}
           </span>
-          <span class="mt-1 block text-[10px] text-[#b6b0a2]">
+          <span
+            class="mt-1 block rounded-full bg-[#fbf7eb]/85 px-1.5 text-[10px] text-[#8f8879]"
+          >
             {{ action.description }}
           </span>
         </button>
@@ -416,12 +418,12 @@ onUnmounted(() => {
       <img
         :src="sloganCalligraphyImage"
         alt="让温柔生长，让善意发生"
-        class="absolute bottom-12 left-14 z-10 w-52 opacity-90"
+        class="pointer-events-none absolute bottom-[-0.35rem] left-8 z-[2] w-36 opacity-20"
       />
       <img
         :src="mascotBottomImage"
         alt=""
-        class="home-bottom-mascot absolute right-0 bottom-2 z-20 w-40"
+        class="home-bottom-mascot pointer-events-none absolute right-0 bottom-1 z-[2] w-32"
         aria-hidden="true"
       />
       <div class="home-hills" aria-hidden="true"></div>
@@ -498,8 +500,16 @@ onUnmounted(() => {
 
 .catalog-home {
   background:
-    radial-gradient(circle at 0% 4%, rgba(141, 157, 118, 0.14), transparent 32%),
-    radial-gradient(circle at 100% 0%, rgba(210, 196, 151, 0.12), transparent 30%),
+    radial-gradient(
+      circle at 0% 4%,
+      rgba(141, 157, 118, 0.14),
+      transparent 32%
+    ),
+    radial-gradient(
+      circle at 100% 0%,
+      rgba(210, 196, 151, 0.12),
+      transparent 30%
+    ),
     linear-gradient(180deg, #fffdf8 0%, #fbf7eb 62%, #f6f0df 100%);
   border: 1px solid rgba(89, 83, 66, 0.2);
   border-radius: 20px;
@@ -618,8 +628,16 @@ onUnmounted(() => {
   border: 1px solid rgba(189, 178, 146, 0.65);
   border-radius: 20px;
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(252, 249, 239, 0.9)),
-    radial-gradient(circle at 85% 86%, rgba(126, 145, 104, 0.2), transparent 32%);
+    linear-gradient(
+      180deg,
+      rgba(255, 255, 255, 0.92),
+      rgba(252, 249, 239, 0.9)
+    ),
+    radial-gradient(
+      circle at 85% 86%,
+      rgba(126, 145, 104, 0.2),
+      transparent 32%
+    );
   padding: 26px 14px 20px;
   text-align: center;
   box-shadow: 0 14px 28px rgba(102, 92, 64, 0.1);
@@ -703,9 +721,8 @@ onUnmounted(() => {
   z-index: 1;
   height: 118px;
   pointer-events: none;
-  background:
-    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 620 118' preserveAspectRatio='none'%3E%3Cpath d='M0 54 C72 28 142 20 224 54 C314 92 388 96 472 58 C536 29 582 24 620 34 L620 118 L0 118 Z' fill='%23dfe8d6' fill-opacity='0.82'/%3E%3Cpath d='M0 76 C76 48 152 43 234 72 C318 101 396 98 472 72 C536 50 585 50 620 58 L620 118 L0 118 Z' fill='%23cbdcbe' fill-opacity='0.72'/%3E%3Cpath d='M0 96 C56 75 116 69 184 88 C266 111 340 110 422 88 C496 68 566 71 620 84 L620 118 L0 118 Z' fill='%2399b781' fill-opacity='0.66'/%3E%3Cpath d='M0 54 C72 28 142 20 224 54 C314 92 388 96 472 58 C536 29 582 24 620 34' fill='none' stroke='%23b6c6aa' stroke-opacity='0.72' stroke-width='2'/%3E%3Cpath d='M0 76 C76 48 152 43 234 72 C318 101 396 98 472 72 C536 50 585 50 620 58' fill='none' stroke='%23d7cda9' stroke-opacity='0.4' stroke-width='1.3'/%3E%3C/svg%3E")
-      bottom / 100% 100% no-repeat;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 620 118' preserveAspectRatio='none'%3E%3Cpath d='M0 54 C72 28 142 20 224 54 C314 92 388 96 472 58 C536 29 582 24 620 34 L620 118 L0 118 Z' fill='%23dfe8d6' fill-opacity='0.82'/%3E%3Cpath d='M0 76 C76 48 152 43 234 72 C318 101 396 98 472 72 C536 50 585 50 620 58 L620 118 L0 118 Z' fill='%23cbdcbe' fill-opacity='0.72'/%3E%3Cpath d='M0 96 C56 75 116 69 184 88 C266 111 340 110 422 88 C496 68 566 71 620 84 L620 118 L0 118 Z' fill='%2399b781' fill-opacity='0.66'/%3E%3Cpath d='M0 54 C72 28 142 20 224 54 C314 92 388 96 472 58 C536 29 582 24 620 34' fill='none' stroke='%23b6c6aa' stroke-opacity='0.72' stroke-width='2'/%3E%3Cpath d='M0 76 C76 48 152 43 234 72 C318 101 396 98 472 72 C536 50 585 50 620 58' fill='none' stroke='%23d7cda9' stroke-opacity='0.4' stroke-width='1.3'/%3E%3C/svg%3E")
+    bottom / 100% 100% no-repeat;
 }
 
 .home-bottom-mascot {
