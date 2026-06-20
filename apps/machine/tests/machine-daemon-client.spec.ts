@@ -243,6 +243,8 @@ function transactionSnapshot(
 let scenario: ScenarioName = "catalog";
 let server: {
   close(callback: (error?: Error | null) => void): void;
+  closeAllConnections(): void;
+  closeIdleConnections(): void;
 } | null = null;
 
 function respondJson(
@@ -632,6 +634,8 @@ test.beforeAll(async () => {
 });
 
 test.afterAll(async () => {
+  server?.closeIdleConnections();
+  server?.closeAllConnections();
   await new Promise<void>((resolve, reject) => {
     server?.close((error) => {
       if (error) {

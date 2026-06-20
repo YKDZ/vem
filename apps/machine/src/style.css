@@ -62,7 +62,12 @@ button,
 
 .kiosk-scroll {
   overscroll-behavior: contain;
+  scrollbar-width: none;
   -webkit-overflow-scrolling: touch;
+}
+
+.kiosk-scroll::-webkit-scrollbar {
+  display: none;
 }
 
 @media (max-aspect-ratio: 9 / 16) {
