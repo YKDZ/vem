@@ -660,6 +660,23 @@ export class MachineStockMovementsRepository {
     });
   }
 
+  async restoreSlotAfterAcceptedLocalMaintenance(input: {
+    machineId: string;
+    slotId: string;
+  }): Promise<void> {
+    await this.db
+      .update(machineSlots)
+      .set({ status: "enabled", updatedAt: new Date() })
+      .where(
+        and(
+          eq(machineSlots.machineId, input.machineId),
+          eq(machineSlots.id, input.slotId),
+          eq(machineSlots.status, "faulted"),
+          isNull(machineSlots.deletedAt),
+        ),
+      );
+  }
+
   private async insertRaw(
     input: InsertRawMachineStockMovement,
     status: {

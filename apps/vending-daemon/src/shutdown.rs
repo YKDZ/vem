@@ -103,12 +103,42 @@ pub async fn run_console_with_token(
         let _ = backend.authenticate(machine_code, secret).await;
     }
     let ui_status_cache = ipc::RuntimeStatusCache::new(&runtime_config.public, state.clone()).await;
+    let payment_code_submit_guard = {
+        let status_cache = ui_status_cache.clone();
+        let state = state.clone();
+        std::sync::Arc::new(move || {
+            let status_cache = status_cache.clone();
+            let state = state.clone();
+            Box::pin(async move {
+                let hardware = status_cache.hardware.read().await.clone();
+                if !hardware.online {
+                    return Err(format!(
+                        "MACHINE_NOT_READY_FOR_PAYMENT_CODE: {}",
+                        hardware.message
+                    ));
+                }
+                if let Some(lock) = state
+                    .whole_machine_maintenance_lock()
+                    .await
+                    .map_err(|error| error.to_string())?
+                {
+                    return Err(format!(
+                        "MACHINE_NOT_READY_FOR_PAYMENT_CODE: {}",
+                        lock.message
+                    ));
+                }
+                Ok(())
+            })
+                as std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>
+        })
+    };
     let transaction = TransactionStateMachine::new(
         state.clone(),
         backend.clone(),
         runtime_config.public.machine_code.clone(),
         events_tx.clone(),
-    );
+    )
+    .with_payment_code_submit_guard(payment_code_submit_guard);
     let ui = ipc::UiRuntimeServices {
         backend: backend.clone(),
         transaction,

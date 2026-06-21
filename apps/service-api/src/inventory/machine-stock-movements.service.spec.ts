@@ -62,6 +62,10 @@ class InMemoryMovementRepository {
     input: RawMachineStockMovement;
   }> = [];
   applyTrustedFieldStockMovementResult = true;
+  readonly localMaintenanceSlotRestoreInputs: Array<{
+    machineId: string;
+    slotId: string;
+  }> = [];
 
   async findByMachineMovement(
     machineId: string,
@@ -233,6 +237,13 @@ class InMemoryMovementRepository {
   }): Promise<boolean> {
     this.fieldStockApplicationInputs.push(input);
     return this.applyTrustedFieldStockMovementResult;
+  }
+
+  async restoreSlotAfterAcceptedLocalMaintenance(input: {
+    machineId: string;
+    slotId: string;
+  }): Promise<void> {
+    this.localMaintenanceSlotRestoreInputs.push(input);
   }
 
   async buildPendingFailedLinePartialRefundDecision() {
@@ -455,6 +466,7 @@ describe("MachineStockMovementsService", () => {
         input: approvedCount,
       },
     ]);
+    expect(repo.localMaintenanceSlotRestoreInputs).toHaveLength(0);
   });
 
   it("applies attributed local maintenance refill to platform inventory", async () => {
@@ -489,6 +501,44 @@ describe("MachineStockMovementsService", () => {
         },
       },
     ]);
+    expect(repo.localMaintenanceSlotRestoreInputs).toEqual([
+      {
+        machineId: machine.id,
+        slotId: movement.slotId,
+      },
+    ]);
+  });
+
+  it("restores faulted platform slot after accepted local maintenance stock count", async () => {
+    const repo = new InMemoryMovementRepository();
+    const service = new MachineStockMovementsService(repo as never);
+    const localCount: RawMachineStockMovement = {
+      ...movement,
+      movementId: "MOVE-LOCAL-COUNT-ACCEPTED",
+      movementType: "stock_count_correction",
+      quantity: 4,
+      beforeQuantity: 6,
+      afterQuantity: 4,
+      source: "local_maintenance",
+      attributedTo: "front-panel",
+    };
+
+    const result = await service.receiveRawMovement(machine, localCount);
+
+    expect(result.status).toBe("accepted");
+    expect(repo.fieldStockApplicationInputs).toEqual([
+      {
+        machineId: machine.id,
+        rawMovementId: result.receipt?.rawMovementId,
+        input: localCount,
+      },
+    ]);
+    expect(repo.localMaintenanceSlotRestoreInputs).toEqual([
+      {
+        machineId: machine.id,
+        slotId: movement.slotId,
+      },
+    ]);
   });
 
   it("routes unattributed local maintenance stock count correction to reconciliation", async () => {
@@ -509,6 +559,7 @@ describe("MachineStockMovementsService", () => {
     expect(result.status).toBe("reconciliation");
     expect(result.reconciliation?.reason).toBe("weak_attribution");
     expect(repo.fieldStockApplicationInputs).toHaveLength(0);
+    expect(repo.localMaintenanceSlotRestoreInputs).toHaveLength(0);
   });
 
   it("routes missing attribution to reconciliation without applying platform inventory", async () => {
