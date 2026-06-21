@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{future::Future, pin::Pin, sync::Arc};
 use uuid::Uuid;
 
 use tokio::sync::broadcast;
@@ -17,12 +17,16 @@ const PAYMENT_CODE_STATUS_POLL_MAX: Duration = Duration::from_millis(250);
 #[cfg(not(test))]
 const PAYMENT_CODE_STATUS_POLL_MAX: Duration = Duration::from_secs(45);
 
-#[derive(Debug, Clone)]
+type PaymentCodeSubmitGuard =
+    Arc<dyn Fn() -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>> + Send + Sync>;
+
+#[derive(Clone)]
 pub struct TransactionStateMachine {
     state: LocalStateStore,
     backend: Arc<BackendClient>,
     events: broadcast::Sender<DaemonEvent>,
     machine_code: Option<String>,
+    payment_code_submit_guard: Option<PaymentCodeSubmitGuard>,
 }
 
 impl TransactionStateMachine {
@@ -37,7 +41,13 @@ impl TransactionStateMachine {
             backend,
             events,
             machine_code,
+            payment_code_submit_guard: None,
         }
+    }
+
+    pub fn with_payment_code_submit_guard(mut self, guard: PaymentCodeSubmitGuard) -> Self {
+        self.payment_code_submit_guard = Some(guard);
+        self
     }
 
     pub async fn restore_current(
@@ -270,6 +280,9 @@ impl TransactionStateMachine {
             Some("wait_payment" | "submit_payment")
         ) {
             return Err("IGNORED_TRANSACTION_NOT_WAITING_PAYMENT".to_string());
+        }
+        if let Some(guard) = &self.payment_code_submit_guard {
+            guard().await?;
         }
         if let Some(attempt) = snapshot.payment_code_attempt.as_ref() {
             if matches!(
@@ -975,6 +988,85 @@ mod tests {
         .expect("row");
         assert!(!rows.contains("621234567890123456"));
         assert!(rows.contains("6212****3456"));
+    }
+
+    #[tokio::test]
+    async fn payment_code_submit_guard_blocks_backend_charge_when_machine_not_ready() {
+        let temp = tempfile::tempdir().expect("temp");
+        let state = crate::state::LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("state");
+        state
+            .upsert_order_session(OrderSessionUpsert {
+                order_no: "ORDER-HW-OFFLINE",
+                payment_method: "payment_code",
+                payment_provider: Some("alipay"),
+                items_json: serde_json::json!([]),
+                status: "waiting_payment",
+                next_action: "wait_payment",
+                payment_attempt_json: None,
+                recovery_strategy: "local",
+                last_backend_status_json: None,
+                last_error: None,
+            })
+            .await
+            .expect("seed");
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/machine-auth/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "accessToken": "token-123"
+            })))
+            .mount(&server)
+            .await;
+        let submit_mock = Mock::given(method("POST"))
+            .and(path("/machine-orders/ORDER-HW-OFFLINE/payment-code/submit"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "status": "succeeded",
+                "canRetry": false
+            })))
+            .expect(0)
+            .mount_as_scoped(&server)
+            .await;
+
+        let backend = Arc::new(BackendClient::new(server.uri()));
+        backend.authenticate("M-1", "S-1").await.expect("auth");
+        let (events_tx, _) = broadcast::channel(8);
+        let machine = TransactionStateMachine::new(
+            state.clone(),
+            backend,
+            Some("M-1".to_string()),
+            events_tx,
+        )
+        .with_payment_code_submit_guard(Arc::new(|| {
+            Box::pin(async {
+                Err("MACHINE_NOT_READY_FOR_PAYMENT_CODE: lower controller unavailable".to_string())
+            })
+        }));
+        let code = vending_core::scanner::RawPaymentCode {
+            auth_code: "2829123456784955".to_string(),
+            masked_code: "2829****4955".to_string(),
+            scanned_at_ms: 1_000,
+        };
+
+        let error = machine
+            .submit_payment_code(
+                code,
+                vending_core::scanner::PAYMENT_CODE_SOURCE_SERIAL_TEXT,
+                None,
+            )
+            .await
+            .expect_err("guard should reject payment code submit");
+        assert!(error.contains("MACHINE_NOT_READY_FOR_PAYMENT_CODE"));
+
+        let current = state
+            .current_transaction_snapshot()
+            .await
+            .expect("snapshot")
+            .expect("current");
+        assert!(current.payment_code_attempt.is_none());
+        drop(submit_mock);
     }
 
     #[tokio::test]

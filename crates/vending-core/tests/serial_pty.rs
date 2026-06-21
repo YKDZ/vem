@@ -454,3 +454,67 @@ async fn serial_adapter_queries_v1_environment_sample() {
         })
     );
 }
+
+#[tokio::test]
+async fn serial_adapter_ignores_heartbeat_before_environment_sample() {
+    let _pty_guard = PTY_TEST_LOCK.lock().await;
+    let mut pty = support::open_pty();
+    let slave_path = pty.slave_path.clone();
+    tokio::spawn(async move {
+        support::respond_to_handshake(&mut pty.master).await;
+        let mut frame = [0_u8; 2];
+        tokio::io::AsyncReadExt::read_exact(&mut pty.master, &mut frame)
+            .await
+            .expect("read environment query frame");
+        assert_eq!(frame, [FRAME_HEAD, 0xB0]);
+        pty.master
+            .write_all(&[FRAME_HEAD, 0xAA, FRAME_HEAD, 0xB0, 24, 53])
+            .await
+            .expect("write heartbeat then environment sample");
+        pty.master.flush().await.expect("flush");
+        sleep(Duration::from_millis(50)).await;
+    });
+
+    let adapter = SerialHardwareAdapter::new(slave_path.to_string_lossy().to_string());
+    let sample = timeout(Duration::from_secs(10), adapter.query_environment_sample())
+        .await
+        .expect("test timeout")
+        .expect("environment query accepted");
+    assert_eq!(
+        sample,
+        Some(EnvironmentSample {
+            temperature_celsius: 24,
+            relative_humidity_percent: 53,
+        })
+    );
+}
+
+#[tokio::test]
+async fn serial_adapter_ignores_heartbeat_before_air_conditioner_echo() {
+    let _pty_guard = PTY_TEST_LOCK.lock().await;
+    let mut pty = support::open_pty();
+    let slave_path = pty.slave_path.clone();
+    tokio::spawn(async move {
+        support::respond_to_handshake(&mut pty.master).await;
+        let mut frame = [0_u8; 3];
+        tokio::io::AsyncReadExt::read_exact(&mut pty.master, &mut frame)
+            .await
+            .expect("read air conditioner switch frame");
+        assert_eq!(frame, [FRAME_HEAD, 0xB2, 0xFF]);
+        pty.master
+            .write_all(&[FRAME_HEAD, 0xAA, FRAME_HEAD, 0xB2, 0xFF])
+            .await
+            .expect("write heartbeat then air conditioner switch echo");
+        pty.master.flush().await.expect("flush");
+        sleep(Duration::from_millis(50)).await;
+    });
+
+    let adapter = SerialHardwareAdapter::new(slave_path.to_string_lossy().to_string());
+    timeout(
+        Duration::from_secs(10),
+        adapter.set_air_conditioner_enabled(true),
+    )
+    .await
+    .expect("test timeout")
+    .expect("air conditioner switch accepted");
+}
