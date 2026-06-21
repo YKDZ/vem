@@ -1,9 +1,6 @@
 import type { VisionProfile } from "@vem/shared";
 
-import type { MachineCatalogItem, ScoredItem } from "@/types/catalog";
-
-/** Standard size order array, used for adjacent size calculation. */
-const SIZE_ORDER = ["XS", "S", "M", "L", "XL", "XXL"] as const;
+import type { MachineCatalogVariantCandidate } from "@/types/catalog";
 
 /**
  * Infer user's fitting size based on heightCm + bodyType.
@@ -34,153 +31,53 @@ export function inferSize(
   return "XL";
 }
 
-/**
- * Returns the index of a size in SIZE_ORDER, -1 if not found.
- */
-function sizeRank(size: string): number {
-  return SIZE_ORDER.indexOf(size as unknown as (typeof SIZE_ORDER)[number]);
+function variantIsSaleable(variant: MachineCatalogVariantCandidate): boolean {
+  return variant.slotSalesState === "sale_ready" && variant.saleableStock > 0;
 }
 
-/**
- * Calculate size score based on user's inferred size vs item size.
- * - Exact match: +50
- * - Adjacent (|rank diff| === 1): +25
- * - Other or userSize is null: +0
- */
-function computeSizeScore(
-  userSize: string | null,
-  itemSize: string | null,
-): number {
-  if (userSize === null || itemSize === null) {
-    return 0;
-  }
-  const userRank = sizeRank(userSize);
-  const itemRank = sizeRank(itemSize);
-  if (userRank < 0 || itemRank < 0) {
-    return 0;
-  }
-  if (userRank === itemRank) {
-    return 50;
-  }
-  if (Math.abs(userRank - itemRank) === 1) {
-    return 25;
-  }
-  return 0;
+function defaultVariant(
+  variants: readonly MachineCatalogVariantCandidate[],
+): MachineCatalogVariantCandidate | null {
+  return variants.find(variantIsSaleable) ?? variants[0] ?? null;
 }
 
-/**
- * Stock weight: min(saleableStock, 10)
- */
-function computeStockScore(saleableStock: number): number {
-  return Math.min(saleableStock, 10);
+function normalizeAttribute(value: string | null | undefined): string {
+  return (value ?? "").toLocaleLowerCase().replace(/\s+/g, "");
 }
 
-function bestVariantSizeScore(
-  userSize: string | null,
-  item: MachineCatalogItem,
-): number {
-  const saleableVariants = item.variantCandidates.filter(
-    (variant) =>
-      variant.slotSalesState === "sale_ready" && variant.saleableStock > 0,
-  );
-  const variants = saleableVariants.length
-    ? saleableVariants
-    : item.variantCandidates;
-  return variants.reduce(
-    (bestScore, variant) =>
-      Math.max(bestScore, computeSizeScore(userSize, variant.size ?? null)),
-    computeSizeScore(userSize, item.size ?? null),
-  );
-}
-
-/**
- * Sort fallback weight: max(0, 10 - productSortOrder)
- */
-function computeSortScore(productSortOrder: number): number {
-  return Math.max(0, 10 - productSortOrder);
-}
-
-/**
- * Gender hard filter per spec:
- * - profile.gender is not "unknown" + item.targetGender is not null + they conflict → return false (exclude)
- * - profile.gender === "unknown" or item.targetGender === null → don't filter
- * Returns false to indicate the item should be excluded.
- */
-function checkGenderFilter(
-  profileGender: string | undefined,
-  itemTargetGender: string | null | undefined,
+function matchesColor(
+  variant: MachineCatalogVariantCandidate,
+  preferredColor: string | undefined,
 ): boolean {
-  // If profile gender is unknown, don't filter
-  if (profileGender === undefined || profileGender === "unknown") {
-    return true;
-  }
-  // If item has no target gender, don't filter
-  if (itemTargetGender === undefined || itemTargetGender === null) {
-    return true;
-  }
-  // If target genders match, don't filter
-  if (profileGender === itemTargetGender) {
-    return true;
-  }
-  // Genders conflict
-  return false;
+  const color = normalizeAttribute(variant.color);
+  const preferred = normalizeAttribute(preferredColor);
+  return Boolean(color && preferred && color.includes(preferred));
 }
 
 /**
- * Score a single item:
- * 1. Call checkGenderFilter, exclude if returns false
- * 2. Accumulate sizeScore + stockScore + sortScore
- * 3. Generate reason text based on sizeScore
- * Returns null if item is filtered out by gender.
+ * Pick the initial product variant silently from a vision profile.
+ * Missing or unmatched signals fall back to the catalog's deterministic default.
  */
-export function scoreItem(
-  profile: VisionProfile,
-  item: MachineCatalogItem,
-): { score: number; reason: string } | null {
-  // Gender hard filter
-  if (!checkGenderFilter(profile.gender, item.targetGender)) {
-    return null;
-  }
+export function choosePreferredVariant(
+  variants: readonly MachineCatalogVariantCandidate[],
+  profile?: VisionProfile | null,
+): MachineCatalogVariantCandidate | null {
+  const fallback = defaultVariant(variants);
+  if (!fallback) return null;
 
-  const userSize = inferSize(profile.heightCm ?? undefined, profile.bodyType);
-  const sizeScore = bestVariantSizeScore(userSize, item);
-  const stockScore = computeStockScore(item.saleableStock);
-  const sortScore = computeSortScore(item.productSortOrder);
+  const inferredSize = inferSize(
+    profile?.heightCm ?? undefined,
+    profile?.bodyType,
+  );
+  const size =
+    inferredSize && variants.some((variant) => variant.size === inferredSize)
+      ? inferredSize
+      : fallback.size;
+  const sizePool = variants.filter((variant) => variant.size === size);
+  const scopedFallback = defaultVariant(sizePool) ?? fallback;
+  const colorMatch = sizePool.find((variant) =>
+    matchesColor(variant, profile?.upperColor),
+  );
 
-  const totalScore = sizeScore + stockScore + sortScore;
-
-  // Generate reason
-  let reason = "";
-  if (sizeScore === 50) {
-    reason = "尺码正好";
-  } else if (sizeScore === 25) {
-    reason = "尺码相近";
-  } else {
-    reason = "可选";
-  }
-
-  return { score: totalScore, reason };
-}
-
-/**
- * Main entry: receive vision profile + item list, output top 6 recommendations.
- * 1. Call scoreItem for each item, filter out nulls
- * 2. Sort by score descending
- * 3. Take top 6, map to ScoredItem
- */
-export function computeRecommendations(
-  profile: VisionProfile,
-  items: MachineCatalogItem[],
-): ScoredItem[] {
-  const scored = items
-    .map((item) => {
-      const scored = scoreItem(profile, item);
-      if (scored === null) return null;
-      return { ...item, ...scored };
-    })
-    .filter((result): result is ScoredItem => result !== null);
-
-  scored.sort((a, b) => b.score - a.score);
-
-  return scored.slice(0, 6);
+  return colorMatch ?? scopedFallback;
 }

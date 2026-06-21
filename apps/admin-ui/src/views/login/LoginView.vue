@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { App } from "antdv-next";
-import { reactive } from "vue";
+import { reactive, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
 import { useAuthStore } from "@/stores/auth";
@@ -11,15 +11,21 @@ const authStore = useAuthStore();
 const { message } = App.useApp();
 
 const formState = reactive({ username: "", password: "" });
+const loginError = ref<string | null>(null);
 
 async function submit(): Promise<void> {
-  await authStore.login(formState);
-  void message.success("登录成功");
-  const redirect =
-    typeof route.query.redirect === "string"
-      ? route.query.redirect
-      : "/dashboard";
-  await router.replace(redirect);
+  loginError.value = null;
+  try {
+    await authStore.login(formState);
+    void message.success("登录成功");
+    const redirect =
+      typeof route.query.redirect === "string"
+        ? route.query.redirect
+        : "/dashboard";
+    await router.replace(redirect);
+  } catch {
+    loginError.value = "登录失败，请检查用户名和密码。";
+  }
 }
 </script>
 
@@ -34,6 +40,13 @@ async function submit(): Promise<void> {
         :model="formState"
         @finish="submit"
       >
+        <a-alert
+          v-if="loginError"
+          class="mb-4"
+          type="error"
+          show-icon
+          :message="loginError"
+        />
         <a-form-item
           label="用户名"
           name="username"

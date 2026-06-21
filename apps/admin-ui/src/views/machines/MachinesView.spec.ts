@@ -17,6 +17,8 @@ const apiMocks = vi.hoisted(() => ({
   listMachineClaimCodes: vi.fn(),
   generateMachineClaimCode: vi.fn(),
   revokeMachineClaimCode: vi.fn(),
+  rotateMachineCredentials: vi.fn(),
+  requestLogExport: vi.fn(),
 }));
 const routerMocks = vi.hoisted(() => ({
   push: vi.fn(),
@@ -49,13 +51,13 @@ vi.mock("@/api/machines", async () => {
     createMachine: vi.fn(),
     createMachineSlot: vi.fn(),
     listMachineSlots: vi.fn(),
-    rotateMachineCredentials: vi.fn(),
+    rotateMachineCredentials: apiMocks.rotateMachineCredentials,
     updateMachine: vi.fn(),
   };
 });
 
 vi.mock("@/api/machine-ops", () => ({
-  requestLogExport: vi.fn(),
+  requestLogExport: apiMocks.requestLogExport,
 }));
 
 vi.mock("antdv-next", () => ({
@@ -978,5 +980,30 @@ describe("MachinesView claim code lifecycle", () => {
     const { root } = await mountMachinesView(["machines.read"]);
 
     expect(root.textContent).not.toContain("领取码");
+  });
+
+  it("requires credential permission for rotation and machine ops permission for log export", async () => {
+    const writeOnly = await mountMachinesView([
+      "machines.read",
+      "machines.write",
+    ]);
+    expect(writeOnly.root.textContent).not.toContain("轮换凭证");
+    expect(writeOnly.root.textContent).not.toContain("导出日志");
+    writeOnly.root.remove();
+
+    const credentialOnly = await mountMachinesView([
+      "machines.read",
+      "machines.manage-credentials",
+    ]);
+    expect(credentialOnly.root.textContent).toContain("轮换凭证");
+    expect(credentialOnly.root.textContent).not.toContain("导出日志");
+    credentialOnly.root.remove();
+
+    const opsOnly = await mountMachinesView([
+      "machines.read",
+      "machineOps.write",
+    ]);
+    expect(opsOnly.root.textContent).not.toContain("轮换凭证");
+    expect(opsOnly.root.textContent).toContain("导出日志");
   });
 });

@@ -275,6 +275,7 @@ export class PaymentCodeAttemptsService {
     const items = await this.db
       .select({
         id: paymentCodeAttempts.id,
+        orderId: paymentCodeAttempts.orderId,
         orderNo: orders.orderNo,
         paymentNo: payments.paymentNo,
         providerCode: paymentProviders.code,

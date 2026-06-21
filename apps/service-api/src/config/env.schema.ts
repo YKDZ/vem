@@ -86,6 +86,9 @@ const baseEnvSchema = z.object({
   BOOTSTRAP_ADMIN_PASSWORD: z.string().min(12).max(128),
 });
 
+const DEFAULT_PAYMENT_CONFIG_ENCRYPTION_KEY =
+  "dev-payment-config-encryption-key-change-me";
+
 export const envSchema = baseEnvSchema.superRefine((env, ctx) => {
   if (env.NODE_ENV === "production" && env.PAYMENT_MOCK_ENABLED) {
     ctx.addIssue({
@@ -118,12 +121,13 @@ export const envSchema = baseEnvSchema.superRefine((env, ctx) => {
   }
   if (
     env.NODE_ENV === "production" &&
-    env.PAYMENT_CONFIG_ENCRYPTION_KEY.length < 32
+    env.PAYMENT_CONFIG_ENCRYPTION_KEY === DEFAULT_PAYMENT_CONFIG_ENCRYPTION_KEY
   ) {
     ctx.addIssue({
       code: "custom",
       path: ["PAYMENT_CONFIG_ENCRYPTION_KEY"],
-      message: "PAYMENT_CONFIG_ENCRYPTION_KEY must be at least 32 characters",
+      message:
+        "PAYMENT_CONFIG_ENCRYPTION_KEY must be set explicitly in production",
     });
   }
   if (

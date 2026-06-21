@@ -13,17 +13,19 @@ async function bootstrap(): Promise<void> {
   app.enableCors({ origin: config.corsOrigins, credentials: true });
   app.use(helmet({ contentSecurityPolicy: false }));
 
-  const swaggerConfig = new DocumentBuilder()
-    .setTitle("VEM Service API")
-    .setDescription("Vending equipment management backend API")
-    .setVersion("0.2.0")
-    .addBearerAuth()
-    .build();
-  const documentFactory = () =>
-    SwaggerModule.createDocument(app, swaggerConfig);
-  SwaggerModule.setup("api/docs", app, documentFactory, {
-    jsonDocumentUrl: "api/docs-json",
-  });
+  if (config.nodeEnv !== "production") {
+    const swaggerConfig = new DocumentBuilder()
+      .setTitle("VEM Service API")
+      .setDescription("Vending equipment management backend API")
+      .setVersion("0.2.0")
+      .addBearerAuth()
+      .build();
+    const documentFactory = () =>
+      SwaggerModule.createDocument(app, swaggerConfig);
+    SwaggerModule.setup("api/docs", app, documentFactory, {
+      jsonDocumentUrl: "api/docs-json",
+    });
+  }
 
   await app.listen(config.servicePort);
 }

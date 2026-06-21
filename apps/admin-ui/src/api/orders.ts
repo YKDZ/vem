@@ -8,6 +8,8 @@ export type Order = {
   machineId: string;
   machineCode?: string;
   status: OrderStatus;
+  paymentState?: string;
+  fulfillmentState?: string;
   totalAmountCents: number;
   paidAt: string | null;
   dispensedAt: string | null;

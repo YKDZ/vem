@@ -51,6 +51,7 @@ beforeEach(() => {
   vi.spyOn(globalThis, "fetch").mockReset();
   daemonClient["connection"] = null;
   daemonClient["seenEventIds"].clear();
+  daemonClient["seenEventIdQueue"].length = 0;
 });
 
 function healthFixture() {
@@ -435,5 +436,49 @@ describe("DaemonApiClient", () => {
     first.onclose?.();
 
     expect(MockWebSocket.openCount).toBe(1);
+  });
+
+  it("bounds remembered event ids for long-running kiosks", async () => {
+    vi.mocked(getDaemonConnectionInfo).mockResolvedValue({
+      baseUrl: "http://127.0.0.1:7891",
+      token: "dev-token",
+      source: "browser_env",
+      mock: true,
+    });
+
+    const subscription = daemonClient.subscribeEvents({
+      onEvent: vi.fn(),
+      onError: vi.fn(),
+      onStale: vi.fn(),
+    });
+
+    await vi.waitFor(() => {
+      expect(MockWebSocket.openCount).toBe(1);
+    });
+    const socket = MockWebSocket.instances[0];
+    for (let index = 0; index < 1005; index += 1) {
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: "ready_changed",
+          eventId: `ready-${index}`,
+          updatedAt: "2026-01-01T00:00:00Z",
+          snapshot: {
+            ready: true,
+            canSell: true,
+            mode: "sale",
+            blockingCodes: [],
+            blockingReasons: [],
+            degradedReasons: [],
+            suggestedRoute: "catalog",
+            updatedAt: "2026-01-01T00:00:00Z",
+          },
+        }),
+      });
+    }
+
+    expect(daemonClient["seenEventIds"].size).toBeLessThanOrEqual(1000);
+    expect(daemonClient["seenEventIds"].has("ready-0")).toBe(false);
+    expect(daemonClient["seenEventIds"].has("ready-1004")).toBe(true);
+    subscription.close();
   });
 });

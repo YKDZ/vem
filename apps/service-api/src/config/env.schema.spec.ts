@@ -21,6 +21,9 @@ const baseValidEnv = {
   BOOTSTRAP_ADMIN_PASSWORD: "local-admin-password-12",
 };
 
+const productionPaymentConfigEncryptionKey =
+  "prod-payment-config-encryption-key-change-me-now";
+
 describe("validateEnv", () => {
   it("accepts valid development config with mock enabled", () => {
     const env = validateEnv(baseValidEnv);
@@ -34,6 +37,7 @@ describe("validateEnv", () => {
         ...baseValidEnv,
         NODE_ENV: "production",
         PAYMENT_MOCK_ENABLED: "true",
+        PAYMENT_CONFIG_ENCRYPTION_KEY: productionPaymentConfigEncryptionKey,
         MQTT_USERNAME: "vem_service",
         MQTT_PASSWORD: "strong-password-for-mqtt",
       }),
@@ -46,6 +50,7 @@ describe("validateEnv", () => {
         ...baseValidEnv,
         NODE_ENV: "production",
         PAYMENT_MOCK_ENABLED: "false",
+        PAYMENT_CONFIG_ENCRYPTION_KEY: productionPaymentConfigEncryptionKey,
         // no MQTT_USERNAME or MQTT_PASSWORD
       }),
     ).toThrow("MQTT_USERNAME and MQTT_PASSWORD are required in production");
@@ -58,6 +63,7 @@ describe("validateEnv", () => {
       PAYMENT_MOCK_ENABLED: "false",
       PAYMENT_PRODUCTION_READINESS_REQUIRED: "true",
       PAYMENT_WEBHOOK_BASE_URL: "https://pay.example.com",
+      PAYMENT_CONFIG_ENCRYPTION_KEY: productionPaymentConfigEncryptionKey,
       MQTT_USERNAME: "vem_service",
       MQTT_PASSWORD: "strong-password-for-mqtt",
     });
@@ -87,6 +93,7 @@ describe("validateEnv", () => {
         PAYMENT_MOCK_ENABLED: "false",
         PAYMENT_PRODUCTION_READINESS_REQUIRED: "true",
         PAYMENT_WEBHOOK_BASE_URL: "https://pay.example.com",
+        PAYMENT_CONFIG_ENCRYPTION_KEY: productionPaymentConfigEncryptionKey,
         MQTT_USERNAME: "u",
         MQTT_PASSWORD: "p",
         MACHINE_CLAIM_LOOKUP_HMAC_KEY:
@@ -94,6 +101,24 @@ describe("validateEnv", () => {
       }),
     ).toThrow(
       "MACHINE_CLAIM_LOOKUP_HMAC_KEY must be set explicitly in production",
+    );
+  });
+
+  it("rejects production config with the default payment config encryption key", () => {
+    expect(() =>
+      validateEnv({
+        ...baseValidEnv,
+        NODE_ENV: "production",
+        PAYMENT_MOCK_ENABLED: "false",
+        PAYMENT_PRODUCTION_READINESS_REQUIRED: "true",
+        PAYMENT_WEBHOOK_BASE_URL: "https://pay.example.com",
+        MQTT_USERNAME: "u",
+        MQTT_PASSWORD: "p",
+        PAYMENT_CONFIG_ENCRYPTION_KEY:
+          "dev-payment-config-encryption-key-change-me",
+      }),
+    ).toThrow(
+      "PAYMENT_CONFIG_ENCRYPTION_KEY must be set explicitly in production",
     );
   });
 
@@ -120,6 +145,7 @@ describe("validateEnv", () => {
         PAYMENT_MOCK_ENABLED: "false",
         PAYMENT_PRODUCTION_READINESS_REQUIRED: "false",
         PAYMENT_WEBHOOK_BASE_URL: "https://pay.example.com",
+        PAYMENT_CONFIG_ENCRYPTION_KEY: productionPaymentConfigEncryptionKey,
         MQTT_USERNAME: "u",
         MQTT_PASSWORD: "p",
       }),
@@ -136,6 +162,7 @@ describe("validateEnv", () => {
         PAYMENT_MOCK_ENABLED: "false",
         PAYMENT_PRODUCTION_READINESS_REQUIRED: "true",
         PAYMENT_WEBHOOK_BASE_URL: "http://pay.example.com",
+        PAYMENT_CONFIG_ENCRYPTION_KEY: productionPaymentConfigEncryptionKey,
         MQTT_USERNAME: "u",
         MQTT_PASSWORD: "p",
       }),
@@ -149,6 +176,7 @@ describe("validateEnv", () => {
       PAYMENT_MOCK_ENABLED: "false",
       PAYMENT_PRODUCTION_READINESS_REQUIRED: "true",
       PAYMENT_WEBHOOK_BASE_URL: "https://pay.example.com",
+      PAYMENT_CONFIG_ENCRYPTION_KEY: productionPaymentConfigEncryptionKey,
       MQTT_USERNAME: "u",
       MQTT_PASSWORD: "p",
     });

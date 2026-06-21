@@ -50,6 +50,7 @@ const canCommand = authStore.hasPermission("machines.command");
 const canManageCredentials = authStore.hasPermission(
   "machines.manage-credentials",
 );
+const canExportLogs = authStore.hasPermission("machineOps.write");
 
 const loading = ref(false);
 const machines = ref<PageResult<Machine>>({
@@ -569,7 +570,7 @@ async function handleRequestLogExport(m: Machine): Promise<void> {
                 编辑
               </a-button>
               <a-button
-                v-if="canWrite"
+                v-if="canManageCredentials"
                 size="small"
                 danger
                 :loading="rotatingId === record.id"
@@ -578,7 +579,7 @@ async function handleRequestLogExport(m: Machine): Promise<void> {
                 轮换凭证
               </a-button>
               <a-button
-                v-if="canWrite"
+                v-if="canExportLogs"
                 size="small"
                 :loading="exportingLogId === record.id"
                 @click="handleRequestLogExport(record)"

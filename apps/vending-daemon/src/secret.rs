@@ -122,10 +122,45 @@ impl SecretStore for FileSecretStore {
         tokio::fs::write(&temp_path, value)
             .await
             .map_err(|error| format!("write file secret failed: {error}"))?;
+        harden_secret_file_permissions(&temp_path).await?;
         tokio::fs::rename(&temp_path, &path)
             .await
-            .map_err(|error| format!("replace file secret failed: {error}"))
+            .map_err(|error| format!("replace file secret failed: {error}"))?;
+        harden_secret_file_permissions(&path).await?;
+        Ok(())
     }
+}
+
+async fn harden_secret_file_permissions(path: &std::path::Path) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let permissions = std::fs::Permissions::from_mode(0o600);
+        tokio::fs::set_permissions(path, permissions)
+            .await
+            .map_err(|error| format!("harden file secret permissions failed: {error}"))?;
+    }
+
+    #[cfg(windows)]
+    {
+        let status = tokio::process::Command::new("icacls")
+            .arg(path)
+            .arg("/inheritance:r")
+            .arg("/grant:r")
+            .arg("Administrators:F")
+            .arg("SYSTEM:F")
+            .status()
+            .await
+            .map_err(|error| format!("run icacls for file secret failed: {error}"))?;
+        if !status.success() {
+            return Err(format!(
+                "icacls for file secret failed with status {status}"
+            ));
+        }
+    }
+
+    Ok(())
 }
 
 #[async_trait]

@@ -2,7 +2,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { normalizeRequestParams } from "./request";
+import { normalizeRequestParams, tokenStorage } from "./request";
 
 describe("normalizeRequestParams", () => {
   it("clamps numeric pageSize query params to the backend pagination contract", () => {
@@ -37,5 +37,16 @@ describe("normalizeRequestParams", () => {
     const params = { page: 1, status: "paid" };
 
     expect(normalizeRequestParams(params)).toBe(params);
+  });
+});
+
+describe("tokenStorage", () => {
+  it("clears a stale refresh token when the next token response omits one", () => {
+    tokenStorage.setTokens("access-1", "refresh-1");
+
+    tokenStorage.setTokens("access-2");
+
+    expect(tokenStorage.getAccessToken()).toBe("access-2");
+    expect(tokenStorage.getRefreshToken()).toBeNull();
   });
 });

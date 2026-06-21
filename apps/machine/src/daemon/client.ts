@@ -72,9 +72,12 @@ type Subscription = {
   close(): void;
 };
 
+const MAX_SEEN_EVENT_IDS = 1000;
+
 export class DaemonApiClient {
   private connection: DaemonConnectionInfo | null = null;
   private readonly seenEventIds = new Set<string>();
+  private readonly seenEventIdQueue: string[] = [];
 
   private async request(
     path: string,
@@ -336,6 +339,11 @@ export class DaemonApiClient {
         const event = daemonEventSchema.parse(JSON.parse(String(message.data)));
         if (this.seenEventIds.has(event.eventId)) return;
         this.seenEventIds.add(event.eventId);
+        this.seenEventIdQueue.push(event.eventId);
+        while (this.seenEventIdQueue.length > MAX_SEEN_EVENT_IDS) {
+          const expired = this.seenEventIdQueue.shift();
+          if (expired) this.seenEventIds.delete(expired);
+        }
         handlers.onEvent(event);
       };
       socket.onerror = () => {

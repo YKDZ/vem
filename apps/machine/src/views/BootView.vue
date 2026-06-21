@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { onMounted, onUnmounted, ref } from "vue";
 import { useRouter } from "vue-router";
 
 import type { DaemonEvent } from "@/daemon/schemas";
@@ -171,6 +171,11 @@ onMounted(async () => {
       }),
     );
   }
+});
+
+onUnmounted(() => {
+  eventSubscription?.close();
+  eventSubscription = null;
 });
 </script>
 

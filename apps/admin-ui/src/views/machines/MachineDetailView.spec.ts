@@ -413,4 +413,19 @@ describe("MachineDetailView", () => {
       note: undefined,
     });
   });
+
+  it("renders faulted hardware status as an abnormal hardware tag", async () => {
+    apiMocks.getMachine.mockResolvedValue({
+      ...machineFixture(),
+      latestHeartbeatStatus: {
+        ...machineFixture().latestHeartbeatStatus,
+        hardwareStatus: "faulted",
+      },
+    });
+
+    const { root } = await mountView();
+
+    expect(root.textContent).toContain("硬件异常");
+    expect(root.textContent).not.toContain("硬件ok");
+  });
 });
