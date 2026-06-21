@@ -413,6 +413,12 @@ impl MqttSyncRuntime {
     pub async fn enqueue_heartbeat(&self) -> Result<(), String> {
         let reported_at = crate::state::store::now_iso();
         let environment = self.environment.read().await.heartbeat_payload();
+        let hardware_status = self.hardware.self_check().await;
+        let heartbeat_hardware_status = if hardware_status.online {
+            "ok"
+        } else {
+            "faulted"
+        };
         let payload = json!({
             "machineCode": self.machine_code,
             "reportedAt": reported_at,
@@ -420,7 +426,9 @@ impl MqttSyncRuntime {
                 "network": "online",
                 "mqttConnected": true,
                 "hardwareAdapter": self.hardware.adapter_name(),
-                "hardwareStatus": "ok",
+                "hardwareStatus": heartbeat_hardware_status,
+                "hardwareMessage": hardware_status.message,
+                "hardwarePortPath": hardware_status.port_path,
                 "environment": serde_json::to_value(environment)
                     .map_err(|error| format!("serialize environment heartbeat failed: {error}"))?,
             },
@@ -679,11 +687,23 @@ mod tests {
         mqtt::sign_envelope,
     };
 
-    #[derive(Debug, Default)]
+    #[derive(Debug)]
     struct RecordingEnvironmentAdapter {
         operations: Mutex<Vec<String>>,
         fail_on: Mutex<Option<String>>,
         hang_dispense: bool,
+        hardware_online: bool,
+    }
+
+    impl Default for RecordingEnvironmentAdapter {
+        fn default() -> Self {
+            Self {
+                operations: Mutex::new(vec![]),
+                fail_on: Mutex::new(None),
+                hang_dispense: false,
+                hardware_online: true,
+            }
+        }
     }
 
     #[async_trait]
@@ -695,8 +715,12 @@ mod tests {
         async fn self_check(&self) -> HardwareStatus {
             HardwareStatus {
                 adapter: "recording".to_string(),
-                online: true,
-                message: "recording adapter ready".to_string(),
+                online: self.hardware_online,
+                message: if self.hardware_online {
+                    "recording adapter ready".to_string()
+                } else {
+                    "lower controller unavailable".to_string()
+                },
                 port_path: None,
                 resolution_source: None,
                 bound_usb_identity: None,
@@ -965,6 +989,45 @@ mod tests {
         assert_eq!(environment["sensorStatus"], "ok");
         assert_eq!(environment["airConditionerOn"], false);
         assert!(environment["targetTemperatureCelsius"].is_null());
+    }
+
+    #[tokio::test]
+    async fn enqueue_heartbeat_reports_faulted_when_hardware_self_check_is_offline() {
+        let temp = tempfile::tempdir().expect("temp");
+        let state = crate::state::LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("state");
+
+        let hardware = crate::hardware::HardwareSupervisor::from_adapter(Arc::new(
+            RecordingEnvironmentAdapter {
+                hardware_online: false,
+                ..Default::default()
+            },
+        ));
+        let (event_tx, _rx) = tokio::sync::broadcast::channel(4);
+        let runtime = MqttSyncRuntime::new(
+            "M1".to_string(),
+            "secret".to_string(),
+            state.clone(),
+            hardware,
+            event_tx,
+            CancellationToken::new(),
+        );
+
+        runtime.enqueue_heartbeat().await.expect("heartbeat");
+
+        let due = state
+            .list_due_outbox(chrono::Utc::now() + chrono::Duration::seconds(1))
+            .await
+            .expect("outbox");
+        let envelope: vending_core::mqtt::MqttEnvelope =
+            serde_json::from_value(due[0].payload_json.clone()).expect("envelope");
+        let payload = &envelope.payload;
+        assert_eq!(payload["statusPayload"]["hardwareStatus"], "faulted");
+        assert_eq!(
+            payload["statusPayload"]["hardwareMessage"],
+            "lower controller unavailable"
+        );
     }
 
     #[tokio::test]

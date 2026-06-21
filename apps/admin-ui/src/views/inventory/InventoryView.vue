@@ -1,5 +1,8 @@
 <script setup lang="ts">
+import { App } from "antdv-next";
 import { onMounted, ref } from "vue";
+
+import type OrderDetailDrawer from "@/components/OrderDetailDrawer.vue";
 
 import {
   adjustInventory,
@@ -11,12 +14,17 @@ import {
   type InventoryMovement,
   type PageResult,
 } from "@/api/inventory";
+import OrderDetailDrawerComponent from "@/components/OrderDetailDrawer.vue";
 import { useAuthStore } from "@/stores/auth";
 import { formatDateTime } from "@/utils/format";
 
 const authStore = useAuthStore();
+const { message } = App.useApp();
 const canAdjust = authStore.hasPermission("inventory.adjust");
 const canRefill = authStore.hasPermission("inventory.refill");
+const orderDetailDrawer = ref<InstanceType<typeof OrderDetailDrawer> | null>(
+  null,
+);
 
 const loading = ref(false);
 const inventories = ref<PageResult<Inventory>>({
@@ -88,15 +96,22 @@ async function saveBind(): Promise<void> {
 
 // Refill
 const refillFormOpen = ref(false);
-const refillForm = ref({ inventoryId: "", quantity: 0, note: "" });
+const refillForm = ref({ inventoryId: "", quantity: 1, note: "" });
 const refillSaving = ref(false);
 
 function openRefill(inv: Inventory): void {
-  refillForm.value = { inventoryId: inv.id, quantity: 0, note: "" };
+  refillForm.value = { inventoryId: inv.id, quantity: 1, note: "" };
   refillFormOpen.value = true;
 }
 
 async function saveRefill(): Promise<void> {
+  if (
+    !Number.isFinite(refillForm.value.quantity) ||
+    refillForm.value.quantity < 1
+  ) {
+    void message.error("补货数量必须大于 0");
+    return;
+  }
   refillSaving.value = true;
   try {
     await refillInventory({
@@ -123,6 +138,13 @@ function openAdjust(inv: Inventory): void {
 }
 
 async function saveAdjust(): Promise<void> {
+  if (
+    !Number.isFinite(adjustForm.value.deltaQty) ||
+    adjustForm.value.deltaQty === 0
+  ) {
+    void message.error("调整数量不能为 0");
+    return;
+  }
   adjustSaving.value = true;
   try {
     await adjustInventory({
@@ -139,9 +161,9 @@ async function saveAdjust(): Promise<void> {
 }
 
 const inventoryColumns = [
-  { title: "机器", dataIndex: "machineId", key: "machineId" },
-  { title: "格口", dataIndex: "slotId", key: "slotId" },
-  { title: "SKU", dataIndex: "variantId", key: "variantId" },
+  { title: "机器", dataIndex: "machineCode", key: "machine" },
+  { title: "格口", dataIndex: "slotCode", key: "slot" },
+  { title: "商品 / SKU", dataIndex: "sku", key: "sku" },
   { title: "在库", dataIndex: "onHandQty", key: "onHandQty" },
   { title: "预占", dataIndex: "reservedQty", key: "reservedQty" },
   { title: "可售", key: "availableQty" },
@@ -156,7 +178,7 @@ const inventoryColumns = [
 const movementColumns = [
   { title: "变更数量", dataIndex: "deltaQty", key: "deltaQty" },
   { title: "原因", dataIndex: "reason", key: "reason" },
-  { title: "订单ID", dataIndex: "orderId", key: "orderId" },
+  { title: "订单", dataIndex: "orderNo", key: "order" },
   {
     title: "操作人",
     dataIndex: "operatorAdminUserId",
@@ -193,7 +215,36 @@ onMounted(() => {
         }"
       >
         <template #bodyCell="{ column, record }">
-          <template v-if="column.key === 'availableQty'">
+          <template v-if="column.key === 'machine'">
+            <RouterLink
+              :to="{ name: 'machine-detail', params: { id: record.machineId } }"
+            >
+              {{ record.machineCode ?? record.machineId }}
+            </RouterLink>
+          </template>
+          <template v-else-if="column.key === 'slot'">
+            <div class="font-medium">
+              {{ record.slotCode ?? record.slotId }}
+            </div>
+            <div class="text-xs text-slate-500">{{ record.slotId }}</div>
+          </template>
+          <template v-else-if="column.key === 'sku'">
+            <RouterLink
+              :to="{
+                name: 'products',
+                query: {
+                  q: record.sku ?? record.productName ?? record.variantId,
+                },
+              }"
+              class="font-medium"
+            >
+              {{ record.productName ?? "未知商品" }}
+            </RouterLink>
+            <div class="text-xs text-slate-500">
+              {{ record.sku ?? record.variantId }}
+            </div>
+          </template>
+          <template v-else-if="column.key === 'availableQty'">
             {{ record.onHandQty - record.reservedQty }}
             <a-tag
               v-if="
@@ -240,7 +291,18 @@ onMounted(() => {
         }"
       >
         <template #bodyCell="{ column, record }">
-          <template v-if="column.key === 'createdAt'">
+          <template v-if="column.key === 'order'">
+            <a-button
+              v-if="record.orderId"
+              type="link"
+              class="px-0"
+              @click="orderDetailDrawer?.show(record.orderId)"
+            >
+              {{ record.orderNo ?? record.orderId }}
+            </a-button>
+            <span v-else>-</span>
+          </template>
+          <template v-else-if="column.key === 'createdAt'">
             {{ formatDateTime(record.createdAt) }}
           </template>
         </template>
@@ -321,5 +383,7 @@ onMounted(() => {
         /></a-form-item>
       </a-form>
     </a-modal>
+
+    <OrderDetailDrawerComponent ref="orderDetailDrawer" />
   </section>
 </template>

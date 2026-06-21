@@ -115,6 +115,12 @@ const commandStatusColor: Record<string, string> = {
   timeout: "error",
 };
 
+const hardwareStatusColor: Record<string, string> = {
+  ok: "success",
+  degraded: "warning",
+  faulted: "error",
+};
+
 const slotColumns = [
   { title: "货道坐标", key: "coordinate" },
   { title: "状态", dataIndex: "status", key: "status" },
@@ -168,6 +174,13 @@ function commandStatusLabel(status: MachineCommandStatus | null): string {
   if (status === "failed") return "命令失败";
   if (status === "timeout") return "命令超时";
   return "命令状态未知";
+}
+
+function hardwareStatusLabel(status: string | undefined): string {
+  if (status === "ok") return "正常";
+  if (status === "degraded") return "降级";
+  if (status === "faulted") return "异常";
+  return "unknown";
 }
 
 function inventoryAvailableQty(inventory: Inventory): number {
@@ -362,7 +375,14 @@ onMounted(() => {
               }}
             </a-descriptions-item>
             <a-descriptions-item label="硬件">
-              {{ heartbeat?.hardwareStatus ?? "unknown" }}
+              <a-tag
+                :color="
+                  hardwareStatusColor[heartbeat?.hardwareStatus ?? ''] ??
+                  'default'
+                "
+              >
+                {{ hardwareStatusLabel(heartbeat?.hardwareStatus) }}
+              </a-tag>
             </a-descriptions-item>
             <a-descriptions-item label="本地队列">
               {{ heartbeat?.localQueueSize ?? "--" }}

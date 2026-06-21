@@ -480,7 +480,7 @@ async fn handle_multi_dispense<W>(
 where
     W: AsyncWrite + Unpin + Send + 'static,
 {
-    if data.is_empty() || data.len() % 2 != 0 {
+    if data.is_empty() || !data.len().is_multiple_of(2) {
         trace(
             &options,
             &format!("rx malformed multi dispense {raw:02X?} -> E2"),

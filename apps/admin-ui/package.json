@@ -37,6 +37,5 @@
     "vite": "catalog:",
     "vitest": "catalog:",
     "vue-tsc": "catalog:"
-  },
-  "packageManager": "pnpm@10.33.2"
+  }
 }

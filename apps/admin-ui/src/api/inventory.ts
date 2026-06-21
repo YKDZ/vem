@@ -6,6 +6,7 @@ export type Inventory = {
   machineCode?: string;
   slotId: string;
   variantId: string;
+  productId?: string;
   onHandQty: number;
   reservedQty: number;
   availableQty?: number;
@@ -24,6 +25,7 @@ export type InventoryMovement = {
   deltaQty: number;
   reason: string;
   orderId: string | null;
+  orderNo?: string | null;
   operatorAdminUserId: string | null;
   note: string | null;
   createdAt: string;

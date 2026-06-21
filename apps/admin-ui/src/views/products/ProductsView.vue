@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import type { ProductStatus, VariantStatus } from "@vem/shared";
 
-import { onMounted, ref } from "vue";
+import { onMounted, ref, watch } from "vue";
+import { useRoute } from "vue-router";
 
 import {
   createProduct,
@@ -38,6 +39,7 @@ type VariantForm = {
 
 const authStore = useAuthStore();
 const canWrite = authStore.hasPermission("products.write");
+const route = useRoute();
 
 const loading = ref(false);
 const products = ref<PageResult<Product>>({
@@ -48,6 +50,11 @@ const products = ref<PageResult<Product>>({
 });
 const filterKeyword = ref("");
 const filterStatus = ref<ProductStatus | undefined>(undefined);
+
+function syncFiltersFromRoute(): void {
+  const query = route.query.q;
+  filterKeyword.value = typeof query === "string" ? query : "";
+}
 
 async function loadProducts(page = 1): Promise<void> {
   loading.value = true;
@@ -239,8 +246,17 @@ const variantColumns = [
 ];
 
 onMounted(() => {
+  syncFiltersFromRoute();
   void loadProducts();
 });
+
+watch(
+  () => route.query.q,
+  () => {
+    syncFiltersFromRoute();
+    void loadProducts();
+  },
+);
 </script>
 
 <template>
@@ -249,7 +265,7 @@ onMounted(() => {
       <div class="mb-4 flex gap-3">
         <a-input
           v-model:value="filterKeyword"
-          placeholder="商品名称"
+          placeholder="商品名称 / SKU / 条码"
           class="max-w-48"
           @press-enter="loadProducts()"
         />

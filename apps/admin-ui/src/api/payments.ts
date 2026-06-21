@@ -6,6 +6,7 @@ export type Payment = {
   id: string;
   paymentNo: string;
   orderId: string;
+  orderNo: string;
   providerCode: string;
   method: string;
   status: string;
@@ -65,6 +66,8 @@ export type PaymentProviderNotifyUrlCheck = {
 export type PaymentEvent = {
   id: string;
   paymentId: string;
+  orderId: string;
+  orderNo: string;
   paymentNo: string;
   providerId: string;
   providerCode: string;
@@ -160,6 +163,7 @@ export async function listPaymentProviderNotifyUrlChecks(): Promise<
 
 export type WebhookAttempt = {
   id: string;
+  orderId: string | null;
   providerCode: string | null;
   eventKind: string;
   eventType: string | null;
@@ -179,6 +183,8 @@ export type WebhookAttempt = {
 export type ReconciliationAttempt = {
   id: string;
   paymentId: string;
+  orderId: string;
+  orderNo: string;
   paymentNo: string;
   providerCode: string;
   trigger: string;
@@ -197,6 +203,7 @@ export type Refund = {
   id: string;
   refundNo: string;
   paymentId: string;
+  orderId: string;
   paymentNo: string;
   orderNo: string;
   providerCode: string;
@@ -211,6 +218,7 @@ export type Refund = {
 
 export type PaymentCodeAttempt = {
   id: string;
+  orderId: string;
   orderNo: string;
   paymentNo: string;
   providerCode: "wechat_pay" | "alipay";

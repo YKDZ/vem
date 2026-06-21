@@ -88,6 +88,16 @@ type ReconciliationAttemptQuery = z.infer<
 type RefundListQuery = z.infer<typeof refundQuerySchema> &
   z.infer<typeof pageQuerySchema>;
 
+const PROVIDER_MUTABLE_PAYMENT_STATUSES: PaymentStatus[] = [
+  "created",
+  "pending",
+  "processing",
+];
+
+function canApplyProviderTerminalStatus(status: PaymentStatus): boolean {
+  return PROVIDER_MUTABLE_PAYMENT_STATUSES.includes(status);
+}
+
 type ProviderWebhookBusinessValidation =
   | { ok: true }
   | { ok: false; reason: string };
@@ -1242,6 +1252,8 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         id: paymentEvents.id,
         paymentId: paymentEvents.paymentId,
         paymentNo: payments.paymentNo,
+        orderId: payments.orderId,
+        orderNo: orders.orderNo,
         providerId: paymentEvents.providerId,
         providerCode: paymentProviders.code,
         eventType: paymentEvents.eventType,
@@ -1252,6 +1264,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       })
       .from(paymentEvents)
       .innerJoin(payments, eq(payments.id, paymentEvents.paymentId))
+      .innerJoin(orders, eq(orders.id, payments.orderId))
       .innerJoin(
         paymentProviders,
         eq(paymentProviders.id, paymentEvents.providerId),
@@ -1264,6 +1277,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       .select({ total: count() })
       .from(paymentEvents)
       .innerJoin(payments, eq(payments.id, paymentEvents.paymentId))
+      .innerJoin(orders, eq(orders.id, payments.orderId))
       .innerJoin(
         paymentProviders,
         eq(paymentProviders.id, paymentEvents.providerId),
@@ -1514,8 +1528,10 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
           .where(eq(payments.id, payment.id));
         if (!r) return null;
 
-        const shouldDispatch = r.paymentStatus !== "succeeded";
-        if (!shouldDispatch) {
+        if (r.paymentStatus === "succeeded") {
+          return { orderId: r.orderId, shouldDispatch: false };
+        }
+        if (!canApplyProviderTerminalStatus(r.paymentStatus)) {
           return { orderId: r.orderId, shouldDispatch: false };
         }
 
@@ -1576,6 +1592,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
           .innerJoin(orders, eq(orders.id, payments.orderId))
           .where(eq(payments.id, payment.id));
         if (!r) return;
+        if (!canApplyProviderTerminalStatus(r.paymentStatus)) return;
 
         await tx
           .update(payments)
@@ -2276,10 +2293,16 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
     eventTypeOverride?: string,
   ): Promise<boolean> {
     return await this.db.transaction(async (tx) => {
+      if (!providerId) return false;
       const [existing] = await tx
         .select({ id: paymentEvents.id })
         .from(paymentEvents)
-        .where(eq(paymentEvents.providerEventId, providerEventId))
+        .where(
+          and(
+            eq(paymentEvents.providerId, providerId),
+            eq(paymentEvents.providerEventId, providerEventId),
+          ),
+        )
         .limit(1);
       if (existing) return false;
 
@@ -2287,6 +2310,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         .select({
           paymentId: payments.id,
           paymentStatus: payments.status,
+          providerId: payments.providerId,
           orderId: orders.id,
           orderStatus: orders.status,
           fulfillmentState: orders.fulfillmentState,
@@ -2295,25 +2319,22 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         .innerJoin(orders, eq(orders.id, payments.orderId))
         .where(eq(payments.id, paymentId));
       if (!r) return false;
+      if (!canApplyProviderTerminalStatus(r.paymentStatus)) return false;
 
-      await tx
+      const inserted = await tx
         .insert(paymentEvents)
         .values({
           paymentId,
-          providerId:
-            providerId ??
-            (await this.db
-              .select({ id: payments.providerId })
-              .from(payments)
-              .where(eq(payments.id, paymentId))
-              .then(([p]) => p?.id ?? "")),
+          providerId: r.providerId,
           eventType: eventTypeOverride ?? `reconcile.payment.${newStatus}`,
           providerEventId,
           rawPayloadJson: buildStoredEventPayload(rawPayloadJson ?? {}),
           signatureValid: true,
           handledAt: new Date(),
         })
-        .onConflictDoNothing();
+        .onConflictDoNothing()
+        .returning({ id: paymentEvents.id });
+      if (inserted.length === 0) return false;
 
       if (newStatus === "succeeded") {
         const handledAt = occurredAt ?? new Date();
@@ -2434,6 +2455,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         eventKind: paymentWebhookAttempts.eventKind,
         eventType: paymentWebhookAttempts.eventType,
         paymentNo: paymentWebhookAttempts.paymentNo,
+        orderId: orders.id,
         refundNo: paymentWebhookAttempts.refundNo,
         orderNo: paymentWebhookAttempts.orderNo,
         signatureValid: paymentWebhookAttempts.signatureValid,
@@ -2512,6 +2534,8 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         id: paymentReconciliationAttempts.id,
         paymentId: paymentReconciliationAttempts.paymentId,
         paymentNo: payments.paymentNo,
+        orderId: payments.orderId,
+        orderNo: orders.orderNo,
         providerCode: paymentProviders.code,
         trigger: paymentReconciliationAttempts.trigger,
         attemptNo: paymentReconciliationAttempts.attemptNo,
@@ -2530,6 +2554,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         payments,
         eq(payments.id, paymentReconciliationAttempts.paymentId),
       )
+      .innerJoin(orders, eq(orders.id, payments.orderId))
       .innerJoin(
         paymentProviders,
         eq(paymentProviders.id, paymentReconciliationAttempts.providerId),
@@ -2546,6 +2571,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         payments,
         eq(payments.id, paymentReconciliationAttempts.paymentId),
       )
+      .innerJoin(orders, eq(orders.id, payments.orderId))
       .innerJoin(
         paymentProviders,
         eq(paymentProviders.id, paymentReconciliationAttempts.providerId),
@@ -2593,6 +2619,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         refundNo: refunds.refundNo,
         paymentId: refunds.paymentId,
         paymentNo: payments.paymentNo,
+        orderId: orders.id,
         orderNo: orders.orderNo,
         providerCode: paymentProviders.code,
         status: refunds.status,

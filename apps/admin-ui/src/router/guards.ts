@@ -21,7 +21,16 @@ export function setupRouterGuards(router: Router): void {
     }
 
     if (authStore.isAuthenticated && !authStore.currentAdmin) {
-      await authStore.fetchMe();
+      try {
+        await authStore.fetchMe();
+      } catch {
+        authStore.logout();
+        return {
+          path: "/login",
+          query: { redirect: to.fullPath },
+          replace: true,
+        };
+      }
     }
 
     const required = to.meta.requiredPermissions ?? [];

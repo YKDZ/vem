@@ -7,7 +7,9 @@ import {
   isNull,
   productVariants,
   products,
+  sql,
   type DrizzleClient,
+  type SQL,
 } from "@vem/db";
 import {
   createProductSchema,
@@ -22,6 +24,13 @@ import { getOffset, toPageResult } from "../common/pagination.util";
 import { DRIZZLE_CLIENT } from "../database/database.constants";
 
 type PageQueryInput = z.infer<typeof pageQuerySchema>;
+type ProductListInput = PageQueryInput & {
+  keyword?: string;
+  status?: "draft" | "active" | "inactive";
+};
+type ProductVariantListInput = PageQueryInput & {
+  productId?: string;
+};
 type CreateProductInput = z.infer<typeof createProductSchema>;
 type UpdateProductInput = z.infer<typeof updateProductSchema>;
 type CreateProductVariantInput = z.infer<typeof createProductVariantSchema>;
@@ -31,18 +40,41 @@ type UpdateProductVariantInput = z.infer<typeof updateProductVariantSchema>;
 export class ProductsService {
   constructor(@Inject(DRIZZLE_CLIENT) private readonly db: DrizzleClient) {}
 
-  async listProducts(query: PageQueryInput) {
+  async listProducts(query: ProductListInput) {
+    const filters: SQL[] = [isNull(products.deletedAt)];
+    if (query.status) {
+      filters.push(eq(products.status, query.status));
+    }
+    if (query.keyword?.trim()) {
+      const keyword = `%${query.keyword.trim()}%`;
+      filters.push(sql`(
+        ${products.name} ilike ${keyword}
+        or exists (
+          select 1 from ${productVariants}
+          where ${productVariants.productId} = ${products.id}
+            and ${productVariants.deletedAt} is null
+            and (
+              ${productVariants.sku} ilike ${keyword}
+              or ${productVariants.barcode} ilike ${keyword}
+              or ${productVariants.color} ilike ${keyword}
+              or ${productVariants.size} ilike ${keyword}
+            )
+        )
+      )`);
+    }
+    const whereClause = and(...filters);
+
     const items = await this.db
       .select()
       .from(products)
-      .where(isNull(products.deletedAt))
+      .where(whereClause)
       .orderBy(desc(products.createdAt))
       .limit(query.pageSize)
       .offset(getOffset(query));
     const [totalRow] = await this.db
       .select({ total: count() })
       .from(products)
-      .where(isNull(products.deletedAt));
+      .where(whereClause);
 
     return toPageResult(items, query, Number(totalRow.total));
   }
@@ -83,18 +115,24 @@ export class ProductsService {
     return updated;
   }
 
-  async listVariants(query: PageQueryInput) {
+  async listVariants(query: ProductVariantListInput) {
+    const filters: SQL[] = [isNull(productVariants.deletedAt)];
+    if (query.productId) {
+      filters.push(eq(productVariants.productId, query.productId));
+    }
+    const whereClause = and(...filters);
+
     const items = await this.db
       .select()
       .from(productVariants)
-      .where(isNull(productVariants.deletedAt))
+      .where(whereClause)
       .orderBy(desc(productVariants.createdAt))
       .limit(query.pageSize)
       .offset(getOffset(query));
     const [totalRow] = await this.db
       .select({ total: count() })
       .from(productVariants)
-      .where(isNull(productVariants.deletedAt));
+      .where(whereClause);
 
     return toPageResult(items, query, Number(totalRow.total));
   }

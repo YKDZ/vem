@@ -294,6 +294,121 @@ describe("PaymentsService", () => {
       expect(createAndDispatchCommands).toHaveBeenCalledTimes(1);
       expect(createAndDispatchCommands).toHaveBeenCalledWith("ord-001");
     });
+
+    it("does not dispatch when a late success arrives after cancellation", async () => {
+      const createAndDispatchCommands = vi.fn();
+      const db = makeDb();
+      db.select
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([
+                {
+                  paymentId: "pay-001",
+                  orderId: "ord-001",
+                  providerId: "prov-001",
+                },
+              ]),
+            }),
+          }),
+        })
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([]),
+            }),
+          }),
+        })
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue([
+                {
+                  paymentId: "pay-001",
+                  paymentStatus: "canceled",
+                  providerId: "prov-001",
+                  orderId: "ord-001",
+                  orderStatus: "canceled",
+                  fulfillmentState: "canceled",
+                },
+              ]),
+            }),
+          }),
+        });
+
+      const service = makeService({
+        db,
+        vendingService: { createAndDispatchCommands },
+      });
+
+      const applied = await service.applyProviderPaymentResult({
+        paymentId: "pay-001",
+        providerTradeNo: "TXN-LATE",
+        status: "succeeded",
+        eventType: "payment_code.succeeded",
+        providerEventId: "payment_code:PCA-LATE:succeeded",
+        rawPayload: {},
+      });
+
+      expect(applied).toBe(false);
+      expect(createAndDispatchCommands).not.toHaveBeenCalled();
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it("does not cancel an already succeeded payment on a late failure", async () => {
+      const db = makeDb();
+      db.select
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([
+                {
+                  paymentId: "pay-001",
+                  orderId: "ord-001",
+                  providerId: "prov-001",
+                },
+              ]),
+            }),
+          }),
+        })
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([]),
+            }),
+          }),
+        })
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue([
+                {
+                  paymentId: "pay-001",
+                  paymentStatus: "succeeded",
+                  providerId: "prov-001",
+                  orderId: "ord-001",
+                  orderStatus: "paid",
+                  fulfillmentState: "awaiting_fulfillment",
+                },
+              ]),
+            }),
+          }),
+        });
+
+      const service = makeService({ db });
+
+      const applied = await service.applyProviderPaymentResult({
+        paymentId: "pay-001",
+        providerTradeNo: "TXN-LATE",
+        status: "failed",
+        eventType: "payment_code.failed",
+        providerEventId: "payment_code:PCA-LATE:failed",
+        rawPayload: {},
+      });
+
+      expect(applied).toBe(false);
+      expect(db.update).not.toHaveBeenCalled();
+    });
   });
 
   describe("reconcilePendingPayments", () => {
@@ -377,7 +492,9 @@ describe("PaymentsService", () => {
       // insert event → success (no .returning() in applyPaymentStatusUpdate insert)
       db.insert.mockReturnValue({
         values: vi.fn().mockReturnValue({
-          onConflictDoNothing: vi.fn().mockResolvedValue([]),
+          onConflictDoNothing: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: "evt-001" }]),
+          }),
           returning: vi.fn().mockResolvedValue([{ id: "evt-001" }]),
         }),
       });

@@ -468,7 +468,39 @@ async fn write_ready_file(path: &Path, bind: SocketAddr, token: &str) -> Result<
             .map_err(|error| format!("serialize ready file failed: {error}"))?,
     )
     .await
-    .map_err(|error| format!("write ready file failed: {error}"))
+    .map_err(|error| format!("write ready file failed: {error}"))?;
+    harden_sensitive_file_permissions(path).await?;
+    Ok(())
+}
+
+async fn harden_sensitive_file_permissions(path: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let permissions = std::fs::Permissions::from_mode(0o600);
+        tokio::fs::set_permissions(path, permissions)
+            .await
+            .map_err(|error| format!("harden ready file permissions failed: {error}"))?;
+    }
+
+    #[cfg(windows)]
+    {
+        let status = tokio::process::Command::new("icacls")
+            .arg(path)
+            .arg("/inheritance:r")
+            .arg("/grant:r")
+            .arg("Administrators:F")
+            .arg("SYSTEM:F")
+            .status()
+            .await
+            .map_err(|error| format!("run icacls for ready file failed: {error}"))?;
+        if !status.success() {
+            return Err(format!("icacls for ready file failed with status {status}"));
+        }
+    }
+
+    Ok(())
 }
 
 async fn run_hardware_health_watcher(

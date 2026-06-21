@@ -8,7 +8,7 @@ import type {
   MachineCatalogVariantCandidate,
 } from "@/types/catalog";
 
-import { inferSize } from "@/recommendation/engine";
+import { choosePreferredVariant } from "@/recommendation/engine";
 import { useCatalogStore } from "@/stores/catalog";
 import { formatCents } from "@/utils/format";
 
@@ -29,6 +29,7 @@ type VariantOption = {
 
 const catalogStore = useCatalogStore();
 const selectedVariantId = ref<string | null>(null);
+const userSelectedVariant = ref(false);
 
 const variantCandidates = computed(() => props.item.variantCandidates);
 const selectedVariant = computed(
@@ -93,13 +94,9 @@ const showColorSelector = computed(
 );
 
 watch(
-  [
-    () => props.item.catalogKey,
-    () => props.profile?.heightCm,
-    () => props.profile?.bodyType,
-    () => props.profile?.upperColor,
-  ],
+  () => props.item.catalogKey,
   () => {
+    userSelectedVariant.value = false;
     selectedVariantId.value = chooseInitialVariant()?.variantId ?? null;
   },
   { immediate: true },
@@ -114,6 +111,7 @@ watch(variantCandidates, () => {
   ) {
     return;
   }
+  userSelectedVariant.value = false;
   selectedVariantId.value = chooseInitialVariant()?.variantId ?? null;
 });
 
@@ -126,40 +124,8 @@ function candidatePool(): readonly MachineCatalogVariantCandidate[] {
   return saleable.length ? saleable : variantCandidates.value;
 }
 
-function normalizeAttribute(value: string | null | undefined): string {
-  return (value ?? "").toLocaleLowerCase().replace(/\s+/g, "");
-}
-
-function matchesColor(
-  variant: MachineCatalogVariantCandidate,
-  preferredColor: string | undefined,
-): boolean {
-  const color = normalizeAttribute(variant.color);
-  const preferred = normalizeAttribute(preferredColor);
-  return Boolean(color && preferred && color.includes(preferred));
-}
-
-function randomVariant(
-  variants: readonly MachineCatalogVariantCandidate[],
-): MachineCatalogVariantCandidate | null {
-  if (variants.length === 0) return null;
-  return variants[Math.floor(Math.random() * variants.length)] ?? null;
-}
-
 function chooseInitialVariant(): MachineCatalogVariantCandidate | null {
-  const variants = candidatePool();
-  const preferredSize = inferSize(
-    props.profile?.heightCm ?? undefined,
-    props.profile?.bodyType,
-  );
-  const sizeMatches = preferredSize
-    ? variants.filter((variant) => variant.size === preferredSize)
-    : [];
-  const sizePool = sizeMatches.length ? sizeMatches : variants;
-  const colorMatch = sizePool.find((variant) =>
-    matchesColor(variant, props.profile?.upperColor),
-  );
-  return colorMatch ?? randomVariant(sizePool);
+  return choosePreferredVariant(candidatePool(), props.profile);
 }
 
 function attributeKey(value: string | null): string {
@@ -193,6 +159,7 @@ function pickVariant(candidates: MachineCatalogVariantCandidate[]): void {
 }
 
 function selectSize(size: string | null): void {
+  userSelectedVariant.value = true;
   const currentColor = selectedVariant.value?.color ?? null;
   const candidates = variantCandidates.value.filter(
     (variant) => variant.size === size,
@@ -204,6 +171,7 @@ function selectSize(size: string | null): void {
 }
 
 function selectColor(color: string | null): void {
+  userSelectedVariant.value = true;
   const currentSize = selectedVariant.value?.size ?? null;
   pickVariant(
     variantCandidates.value.filter(

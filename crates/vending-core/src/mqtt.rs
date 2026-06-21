@@ -108,12 +108,11 @@ pub fn verify_signature_bytes(envelope: &MqttEnvelope, signing_secret: &str) -> 
     let mut mac = HmacSha256::new_from_slice(signing_secret.as_bytes())
         .map_err(|error| format!("invalid signing key: {error}"))?;
     mac.update(input.as_bytes());
-    let expected = URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes());
-    if expected == envelope.signature {
-        Ok(())
-    } else {
-        Err("MQTT envelope signature invalid".to_string())
-    }
+    let signature = URL_SAFE_NO_PAD
+        .decode(envelope.signature.as_bytes())
+        .map_err(|_| "MQTT envelope signature invalid".to_string())?;
+    mac.verify_slice(&signature)
+        .map_err(|_| "MQTT envelope signature invalid".to_string())
 }
 
 pub fn verify_envelope(

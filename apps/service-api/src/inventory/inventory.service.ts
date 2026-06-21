@@ -15,6 +15,7 @@ import {
   machineSlots,
   machines,
   orderItems,
+  orders,
   productVariants,
   products,
   sql,
@@ -73,6 +74,7 @@ export class InventoryService {
         slotId: inventories.slotId,
         slotCode: machineSlots.slotCode,
         variantId: inventories.variantId,
+        productId: products.id,
         sku: productVariants.sku,
         productName: products.name,
         onHandQty: inventories.onHandQty,
@@ -168,8 +170,19 @@ export class InventoryService {
 
   async listMovements(query: PageQueryInput) {
     const items = await this.db
-      .select()
+      .select({
+        id: inventoryMovements.id,
+        inventoryId: inventoryMovements.inventoryId,
+        deltaQty: inventoryMovements.deltaQty,
+        reason: inventoryMovements.reason,
+        orderId: inventoryMovements.orderId,
+        orderNo: orders.orderNo,
+        operatorAdminUserId: inventoryMovements.operatorAdminUserId,
+        note: inventoryMovements.note,
+        createdAt: inventoryMovements.createdAt,
+      })
       .from(inventoryMovements)
+      .leftJoin(orders, eq(orders.id, inventoryMovements.orderId))
       .orderBy(desc(inventoryMovements.createdAt))
       .limit(query.pageSize)
       .offset(getOffset(query));
