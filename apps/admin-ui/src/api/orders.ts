@@ -56,12 +56,19 @@ export type OrderInvestigation = OrderDetail & {
     state: string;
     latestCommand: Record<string, unknown> | null;
     requiresPhysicalOutcomeConfirmation?: boolean;
+    availableRecoveryActions?: OrderRecoveryAction[];
   };
   stockReconciliationLinks: Array<Record<string, unknown>>;
   refunds: Array<Record<string, unknown>>;
   maintenanceWorkOrders: Array<Record<string, unknown>>;
   adminAuditEntries: Array<Record<string, unknown>>;
 };
+
+export type OrderRecoveryAction =
+  | "confirm_dispensed"
+  | "confirm_not_dispensed"
+  | "request_refund"
+  | "compensation_dispense";
 
 export type PageResult<T> = {
   items: T[];
@@ -88,4 +95,11 @@ export async function getOrderInvestigation(
 
 export async function requestRefund(id: string): Promise<void> {
   await post<void>(`/orders/${id}/refund`);
+}
+
+export async function createOrderRecoveryAction(
+  id: string,
+  input: { action: OrderRecoveryAction; note: string },
+): Promise<void> {
+  await post<void>(`/orders/${id}/recovery-actions`, input);
 }

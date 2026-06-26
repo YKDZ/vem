@@ -19,6 +19,7 @@ import { useAuthStore } from "@/stores/auth";
 import OrderDetailDrawer from "./OrderDetailDrawer.vue";
 
 const apiMocks = vi.hoisted(() => ({
+  createOrderRecoveryAction: vi.fn(),
   getOrderInvestigation: vi.fn(),
 }));
 
@@ -27,6 +28,7 @@ vi.mock("@/api/orders", async () => {
     await vi.importActual<typeof import("@/api/orders")>("@/api/orders");
   return {
     ...actual,
+    createOrderRecoveryAction: apiMocks.createOrderRecoveryAction,
     getOrderInvestigation: apiMocks.getOrderInvestigation,
   };
 });
@@ -257,6 +259,10 @@ describe("OrderDetailDrawer", () => {
           status: "result_unknown",
         },
         requiresPhysicalOutcomeConfirmation: true,
+        availableRecoveryActions: [
+          "confirm_dispensed",
+          "confirm_not_dispensed",
+        ],
       },
     });
 
@@ -270,6 +276,120 @@ describe("OrderDetailDrawer", () => {
     expect(document.body.textContent).toContain(
       "dispense result unknown after command timeout",
     );
+    expect(document.body.textContent).not.toContain("确认已出");
+  });
+
+  it("submits auditable recovery actions only with recovery permission and note", async () => {
+    apiMocks.getOrderInvestigation.mockResolvedValue({
+      ...baseInvestigation,
+      vendingCommands: [
+        {
+          id: "command-unknown",
+          commandNo: "VC-UNKNOWN",
+          status: "result_unknown",
+          machineCode: "VEM-001",
+          slotCode: "A1",
+        },
+      ],
+      fulfillmentProjection: {
+        state: "manual_handling",
+        latestCommand: {
+          commandNo: "VC-UNKNOWN",
+          status: "result_unknown",
+        },
+        requiresPhysicalOutcomeConfirmation: true,
+        availableRecoveryActions: [
+          "confirm_dispensed",
+          "confirm_not_dispensed",
+        ],
+      },
+    });
+    apiMocks.createOrderRecoveryAction.mockResolvedValue(undefined);
+
+    mountDrawer(["orders.read", "orders.recover"]);
+    await flushPromises();
+    await nextTick();
+
+    expect(document.body.textContent).toContain("确认已出");
+    const note = document.querySelector("textarea");
+    expect(note).toBeTruthy();
+    note!.value = "operator checked pickup bin";
+    note!.dispatchEvent(new Event("input"));
+    await nextTick();
+    document
+      .querySelectorAll("button")[0]
+      ?.dispatchEvent(new MouseEvent("click"));
+    await flushPromises();
+
+    expect(apiMocks.createOrderRecoveryAction).toHaveBeenCalledWith("order-1", {
+      action: "confirm_dispensed",
+      note: "operator checked pickup bin",
+    });
+  });
+
+  it("shows only remedy actions after physical not-dispensed confirmation", async () => {
+    apiMocks.getOrderInvestigation.mockResolvedValue({
+      ...baseInvestigation,
+      vendingCommands: [
+        {
+          id: "command-unknown",
+          commandNo: "VC-UNKNOWN",
+          status: "failed",
+          machineCode: "VEM-001",
+          slotCode: "A1",
+        },
+      ],
+      fulfillmentProjection: {
+        state: "dispense_failed",
+        latestCommand: {
+          commandNo: "VC-UNKNOWN",
+          status: "failed",
+        },
+        requiresPhysicalOutcomeConfirmation: false,
+        availableRecoveryActions: ["request_refund", "compensation_dispense"],
+      },
+    });
+
+    mountDrawer(["orders.read", "orders.recover"]);
+    await flushPromises();
+    await nextTick();
+
+    expect(document.body.textContent).not.toContain("确认已出");
+    expect(document.body.textContent).not.toContain("确认未出");
+    expect(document.body.textContent).toContain("申请退款");
+    expect(document.body.textContent).toContain("补偿出货");
+  });
+
+  it("hides recovery controls after recovery is complete", async () => {
+    apiMocks.getOrderInvestigation.mockResolvedValue({
+      ...baseInvestigation,
+      vendingCommands: [
+        {
+          id: "command-unknown",
+          commandNo: "VC-UNKNOWN",
+          status: "succeeded",
+          machineCode: "VEM-001",
+          slotCode: "A1",
+        },
+      ],
+      fulfillmentProjection: {
+        state: "dispensed",
+        latestCommand: {
+          commandNo: "VC-UNKNOWN",
+          status: "succeeded",
+        },
+        requiresPhysicalOutcomeConfirmation: false,
+        availableRecoveryActions: [],
+      },
+    });
+
+    mountDrawer(["orders.read", "orders.recover"]);
+    await flushPromises();
+    await nextTick();
+
+    expect(document.body.textContent).not.toContain("确认已出");
+    expect(document.body.textContent).not.toContain("申请退款");
+    expect(document.querySelector("textarea")).toBeNull();
   });
 
   it("shows a stable error state when the investigation API rejects", async () => {

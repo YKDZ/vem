@@ -1,4 +1,5 @@
 import {
+  Body,
   Controller,
   Get,
   Param,
@@ -7,7 +8,11 @@ import {
   Query,
 } from "@nestjs/common";
 import { ApiBearerAuth, ApiTags } from "@nestjs/swagger";
-import { orderQuerySchema, pageQuerySchema } from "@vem/shared";
+import {
+  orderQuerySchema,
+  orderRecoveryActionSchema,
+  pageQuerySchema,
+} from "@vem/shared";
 import { z } from "zod";
 
 import type { AuthenticatedAdmin } from "../common/request-user";
@@ -62,5 +67,16 @@ export class OrdersController {
     @CurrentAdmin() admin: AuthenticatedAdmin,
   ) {
     return await this.ordersService.requestMockRefund(id, admin.id);
+  }
+
+  @RequirePermissions("orders.recover")
+  @Post(":id/recovery-actions")
+  async createRecoveryAction(
+    @Param("id", ParseUUIDPipe) id: string,
+    @CurrentAdmin() admin: AuthenticatedAdmin,
+    @Body(new ZodValidationPipe(orderRecoveryActionSchema))
+    body: z.infer<typeof orderRecoveryActionSchema>,
+  ) {
+    return await this.ordersService.createRecoveryAction(id, admin.id, body);
   }
 }

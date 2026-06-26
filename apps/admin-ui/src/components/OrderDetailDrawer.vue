@@ -1,15 +1,22 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 
-import { getOrderInvestigation, type OrderInvestigation } from "@/api/orders";
+import {
+  createOrderRecoveryAction,
+  getOrderInvestigation,
+  type OrderInvestigation,
+  type OrderRecoveryAction,
+} from "@/api/orders";
 import { useAuthStore } from "@/stores/auth";
 import { formatCents, formatDateTime } from "@/utils/format";
 
 const authStore = useAuthStore();
 const open = ref(false);
 const loading = ref(false);
+const recoveryLoading = ref(false);
 const orderDetail = ref<OrderInvestigation | null>(null);
 const errorMessage = ref<string | null>(null);
+const recoveryNote = ref("");
 
 const canReadPayments = computed(() =>
   authStore.hasPermission("payments.read"),
@@ -21,6 +28,13 @@ const canReadMaintenance = computed(() =>
   authStore.hasPermission("maintenanceWorkOrders.read"),
 );
 const canReadAudit = computed(() => authStore.hasPermission("audit.read"));
+const canRecover = computed(() => authStore.hasPermission("orders.recover"));
+const canSubmitRecovery = computed(() => recoveryNote.value.trim().length > 0);
+const availableRecoveryActions = computed<OrderRecoveryAction[]>(() => {
+  return (
+    orderDetail.value?.fulfillmentProjection.availableRecoveryActions ?? []
+  );
+});
 
 const itemColumns = [
   { title: "商品", key: "product" },
@@ -131,6 +145,7 @@ async function show(orderId: string): Promise<void> {
   errorMessage.value = null;
   try {
     orderDetail.value = await getOrderInvestigation(orderId);
+    recoveryNote.value = "";
   } catch (error) {
     errorMessage.value =
       error instanceof Error && error.message.trim()
@@ -138,6 +153,23 @@ async function show(orderId: string): Promise<void> {
         : "订单调查加载失败";
   } finally {
     loading.value = false;
+  }
+}
+
+async function submitRecoveryAction(
+  action: OrderRecoveryAction,
+): Promise<void> {
+  if (!orderDetail.value || !canSubmitRecovery.value) return;
+  recoveryLoading.value = true;
+  try {
+    await createOrderRecoveryAction(orderDetail.value.order.id, {
+      action,
+      note: recoveryNote.value.trim(),
+    });
+    orderDetail.value = await getOrderInvestigation(orderDetail.value.order.id);
+    recoveryNote.value = "";
+  } finally {
+    recoveryLoading.value = false;
   }
 }
 
@@ -344,6 +376,51 @@ defineExpose({ show });
             }}
           </a-descriptions-item>
         </a-descriptions>
+        <div
+          v-if="canRecover && availableRecoveryActions.length > 0"
+          class="mt-3 space-y-2"
+        >
+          <textarea
+            v-model="recoveryNote"
+            class="w-full rounded border border-slate-300 px-3 py-2 text-sm"
+            rows="3"
+            placeholder="填写恢复动作备注"
+          />
+          <div class="flex flex-wrap gap-2">
+            <button
+              v-if="availableRecoveryActions.includes('confirm_dispensed')"
+              type="button"
+              :disabled="!canSubmitRecovery || recoveryLoading"
+              @click="submitRecoveryAction('confirm_dispensed')"
+            >
+              确认已出
+            </button>
+            <button
+              v-if="availableRecoveryActions.includes('confirm_not_dispensed')"
+              type="button"
+              :disabled="!canSubmitRecovery || recoveryLoading"
+              @click="submitRecoveryAction('confirm_not_dispensed')"
+            >
+              确认未出
+            </button>
+            <button
+              v-if="availableRecoveryActions.includes('request_refund')"
+              type="button"
+              :disabled="!canSubmitRecovery || recoveryLoading"
+              @click="submitRecoveryAction('request_refund')"
+            >
+              申请退款
+            </button>
+            <button
+              v-if="availableRecoveryActions.includes('compensation_dispense')"
+              type="button"
+              :disabled="!canSubmitRecovery || recoveryLoading"
+              @click="submitRecoveryAction('compensation_dispense')"
+            >
+              补偿出货
+            </button>
+          </div>
+        </div>
         <a-empty
           v-if="orderDetail.vendingCommands.length === 0"
           description="暂无出货命令"

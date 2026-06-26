@@ -32,31 +32,29 @@ function sanitizeMachineOrderProfileSnapshot(
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return null;
   }
-  const record = value as Record<string, unknown>;
-  if (typeof record.personPresent !== "boolean") return null;
+  const personPresent = Reflect.get(value, "personPresent");
+  if (typeof personPresent !== "boolean") return null;
 
   const snapshot: MachineOrderProfileSnapshot = {
-    personPresent: record.personPresent,
+    personPresent,
   };
-  if (record.heightCm === null) {
+  const heightCm = Reflect.get(value, "heightCm");
+  if (heightCm === null) {
     snapshot.heightCm = null;
   } else if (
-    typeof record.heightCm === "number" &&
-    record.heightCm >= 80 &&
-    record.heightCm <= 240
+    typeof heightCm === "number" &&
+    heightCm >= 80 &&
+    heightCm <= 240
   ) {
-    snapshot.heightCm = record.heightCm;
+    snapshot.heightCm = heightCm;
   }
-  const bodyType = boundedString(record.bodyType, 32);
+  const bodyType = boundedString(Reflect.get(value, "bodyType"), 32);
   if (bodyType !== undefined) snapshot.bodyType = bodyType;
-  const upperColor = boundedString(record.upperColor, 32);
+  const upperColor = boundedString(Reflect.get(value, "upperColor"), 32);
   if (upperColor !== undefined) snapshot.upperColor = upperColor;
-  if (
-    typeof record.confidence === "number" &&
-    record.confidence >= 0 &&
-    record.confidence <= 1
-  ) {
-    snapshot.confidence = record.confidence;
+  const confidence = Reflect.get(value, "confidence");
+  if (typeof confidence === "number" && confidence >= 0 && confidence <= 1) {
+    snapshot.confidence = confidence;
   }
   return snapshot;
 }
@@ -72,6 +70,18 @@ export const orderQuerySchema = z.object({
   createdFrom: z.iso.datetime().optional(),
   createdTo: z.iso.datetime().optional(),
 });
+
+export const orderRecoveryActionSchema = z.object({
+  action: z.enum([
+    "confirm_dispensed",
+    "confirm_not_dispensed",
+    "request_refund",
+    "compensation_dispense",
+  ]),
+  note: z.string().trim().min(1).max(500),
+});
+
+export type OrderRecoveryAction = z.infer<typeof orderRecoveryActionSchema>;
 
 export const machineOrderItemSchema = z.object({
   inventoryId: z.uuid(),

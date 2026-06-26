@@ -13,6 +13,8 @@ import {
   desc,
   eq,
   inArray,
+  inventories,
+  inventoryReservations,
   machineEvents,
   machineHeartbeats,
   machines,
@@ -20,6 +22,7 @@ import {
   orderItems,
   orders,
   orderStatusEvents,
+  sql,
   vendingCommands,
   type DrizzleClient,
   type DrizzleTransaction,
@@ -110,7 +113,12 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
     const existingCommands = await this.db
       .select()
       .from(vendingCommands)
-      .where(eq(vendingCommands.orderId, orderId))
+      .where(
+        and(
+          eq(vendingCommands.orderId, orderId),
+          eq(vendingCommands.commandKind, "dispatch"),
+        ),
+      )
       .orderBy(vendingCommands.createdAt);
     if (existingCommands.length > 0) {
       return existingCommands;
@@ -156,6 +164,7 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
               machineId: order.machineId,
               slotId: item.slotId,
               orderItemId: item.orderItemId,
+              commandKind: "dispatch",
               payloadJson: payload,
               status: "pending",
             })
@@ -330,7 +339,12 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
         return await this.db
           .select()
           .from(vendingCommands)
-          .where(eq(vendingCommands.orderId, orderId))
+          .where(
+            and(
+              eq(vendingCommands.orderId, orderId),
+              eq(vendingCommands.commandKind, "dispatch"),
+            ),
+          )
           .orderBy(vendingCommands.createdAt);
       }
       throw error;
@@ -477,7 +491,11 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
 
   async resolveCommand(
     id: string,
-    input: { result: "dispensed" | "not_dispensed"; note?: string },
+    input: {
+      result: "dispensed" | "not_dispensed";
+      note?: string;
+      requestRefund?: boolean;
+    },
   ) {
     const [command] = await this.db
       .select({
@@ -576,11 +594,164 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
       };
     });
 
-    if (failureContext) {
+    if (failureContext && input.requestRefund !== false) {
       await this.requestRefundForFailedLines(failureContext.refundDecision);
     }
 
     return { commandId: command.id, status: "failed" as const };
+  }
+
+  async createCompensationDispenseCommand(input: {
+    orderId: string;
+    recoveryActionId: string;
+    originalCommandNo: string;
+    note: string;
+  }) {
+    const [row] = await this.db
+      .select({
+        orderId: orders.id,
+        orderNo: orders.orderNo,
+        machineId: orders.machineId,
+        machineCode: machines.code,
+        orderStatus: orders.status,
+        orderItemId: orderItems.id,
+        slotId: orderItems.slotId,
+        inventoryId: orderItems.inventoryId,
+        quantity: orderItems.quantity,
+        layerNo: machineSlots.layerNo,
+        cellNo: machineSlots.cellNo,
+        slotCode: machineSlots.slotCode,
+      })
+      .from(orders)
+      .innerJoin(machines, eq(machines.id, orders.machineId))
+      .innerJoin(orderItems, eq(orderItems.orderId, orders.id))
+      .innerJoin(machineSlots, eq(machineSlots.id, orderItems.slotId))
+      .where(eq(orders.id, input.orderId))
+      .limit(1);
+    if (!row) {
+      throw new NotFoundException("Order item not found for compensation");
+    }
+
+    const commandNo = createBusinessNo("CMD");
+    const basePayload = dispenseCommandPayloadSchema.parse({
+      commandNo,
+      orderNo: row.orderNo,
+      slot: {
+        layerNo: row.layerNo,
+        cellNo: row.cellNo,
+        slotCode: row.slotCode,
+      },
+      quantity: row.quantity,
+      timeoutSeconds: 120,
+    });
+    const payload = {
+      ...basePayload,
+      recovery: {
+        action: "compensation_dispense",
+        originalCommandNo: input.originalCommandNo,
+        note: input.note,
+      },
+    };
+
+    const created = await this.db.transaction(async (tx) => {
+      const [inventory] = await tx
+        .update(inventories)
+        .set({
+          reservedQty: sql`${inventories.reservedQty} + ${row.quantity}`,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(inventories.id, row.inventoryId),
+            sql`${inventories.onHandQty} - ${inventories.reservedQty} >= ${row.quantity}`,
+          ),
+        )
+        .returning({ id: inventories.id });
+      if (!inventory) {
+        throw new ConflictException(
+          "Insufficient inventory for compensation dispense",
+        );
+      }
+
+      await tx.insert(inventoryReservations).values({
+        inventoryId: row.inventoryId,
+        orderId: row.orderId,
+        orderItemId: row.orderItemId,
+        quantity: row.quantity,
+        status: "active",
+        expiresAt: new Date(Date.now() + 15 * 60_000),
+      });
+
+      const [command] = await tx
+        .insert(vendingCommands)
+        .values({
+          commandNo,
+          orderId: row.orderId,
+          machineId: row.machineId,
+          slotId: row.slotId,
+          orderItemId: row.orderItemId,
+          commandKind: "compensation",
+          recoveryActionId: input.recoveryActionId,
+          payloadJson: payload,
+          status: "pending",
+        })
+        .returning();
+
+      await tx
+        .update(orders)
+        .set({
+          status: "dispensing",
+          fulfillmentState: "dispensing",
+          updatedAt: new Date(),
+        })
+        .where(eq(orders.id, row.orderId));
+
+      await tx.insert(orderStatusEvents).values({
+        orderId: row.orderId,
+        fromStatus: row.orderStatus,
+        toStatus: "dispensing",
+        reason: "compensation_dispense_requested",
+        metadata: {
+          commandNo,
+          originalCommandNo: input.originalCommandNo,
+        },
+      });
+
+      return command;
+    });
+
+    try {
+      const envelope = await this.mqttSignatureService.signForMachine({
+        machineCode: row.machineCode,
+        payload,
+        messageId: `command:${commandNo}`,
+      });
+      await this.mqttService.publish(
+        `vem/machines/${row.machineCode}/commands/dispense`,
+        envelope,
+      );
+      const [sent] = await this.db
+        .update(vendingCommands)
+        .set({
+          status: "sent",
+          sentAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(vendingCommands.id, created.id))
+        .returning();
+      return sent;
+    } catch (error) {
+      const [failed] = await this.db
+        .update(vendingCommands)
+        .set({
+          status: "failed",
+          lastError: error instanceof Error ? error.message : String(error),
+          updatedAt: new Date(),
+        })
+        .where(eq(vendingCommands.id, created.id))
+        .returning();
+      return failed;
+    }
   }
 
   private async resolveCommandAsDispensed(

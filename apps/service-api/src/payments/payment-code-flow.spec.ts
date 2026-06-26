@@ -249,6 +249,8 @@ function makeOrdersService(db = makeOrdersDbForSuccessfulLocalDraft()) {
       paymentProviderRegistry,
       configService,
       refundsService,
+      { record: vi.fn().mockResolvedValue(undefined) } as never,
+      { resolveCommand: vi.fn().mockResolvedValue({}) } as never,
     ),
     db,
     paymentProviderRegistry,

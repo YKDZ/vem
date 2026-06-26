@@ -1207,6 +1207,11 @@ export const vendingCommands = t.pgTable(
       .notNull()
       .references(() => machineSlots.id),
     orderItemId: t.uuid("order_item_id").references(() => orderItems.id),
+    commandKind: t
+      .varchar("command_kind", { length: 32 })
+      .default("dispatch")
+      .notNull(),
+    recoveryActionId: t.uuid("recovery_action_id"),
     payloadJson: t.jsonb("payload_json").$type<JsonObject>().notNull(),
     status: vendingCommandStatus("status").default("pending").notNull(),
     sentAt: t.timestamp("sent_at", { withTimezone: true }),
@@ -1221,14 +1226,77 @@ export const vendingCommands = t.pgTable(
     t.uniqueIndex("vending_commands_command_no_unique").on(table.commandNo),
     t
       .uniqueIndex("vending_commands_order_slot_unique")
-      .on(table.orderId, table.slotId),
+      .on(table.orderId, table.slotId)
+      .where(sql`${table.commandKind} = 'dispatch'`),
+    t
+      .uniqueIndex("vending_commands_recovery_action_unique")
+      .on(table.recoveryActionId)
+      .where(sql`${table.recoveryActionId} IS NOT NULL`),
     t.index("vending_commands_order_id_idx").on(table.orderId),
     t.index("vending_commands_order_item_id_idx").on(table.orderItemId),
     t.index("vending_commands_machine_id_idx").on(table.machineId),
     t.index("vending_commands_status_idx").on(table.status),
+    t.index("vending_commands_command_kind_idx").on(table.commandKind),
     t.check(
       "vending_commands_retry_count_non_negative",
       sql`${table.retryCount} >= 0`,
+    ),
+    t.check(
+      "vending_commands_command_kind_enum",
+      sql`${table.commandKind} IN ('dispatch', 'compensation')`,
+    ),
+  ],
+);
+
+export const orderRecoveryActions = t.pgTable(
+  "order_recovery_actions",
+  {
+    id: id(),
+    orderId: t
+      .uuid("order_id")
+      .notNull()
+      .references(() => orders.id),
+    commandId: t
+      .uuid("command_id")
+      .notNull()
+      .references(() => vendingCommands.id),
+    action: t.varchar("action", { length: 64 }).notNull(),
+    status: t.varchar("status", { length: 32 }).default("started").notNull(),
+    note: t.text("note").notNull(),
+    requestedByAdminUserId: t
+      .uuid("requested_by_admin_user_id")
+      .notNull()
+      .references(() => adminUsers.id),
+    resultJson: t.jsonb("result_json").$type<JsonObject>(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    t.index("order_recovery_actions_order_id_idx").on(table.orderId),
+    t.index("order_recovery_actions_command_id_idx").on(table.commandId),
+    t.index("order_recovery_actions_status_idx").on(table.status),
+    t
+      .uniqueIndex("order_recovery_actions_order_action_unique")
+      .on(table.orderId, table.action),
+    t
+      .uniqueIndex("order_recovery_actions_physical_outcome_unique")
+      .on(table.orderId)
+      .where(
+        sql`${table.action} IN ('confirm_dispensed', 'confirm_not_dispensed')`,
+      ),
+    t
+      .uniqueIndex("order_recovery_actions_remedy_unique")
+      .on(table.orderId)
+      .where(
+        sql`${table.action} IN ('request_refund', 'compensation_dispense')`,
+      ),
+    t.check(
+      "order_recovery_actions_action_enum",
+      sql`${table.action} IN ('confirm_dispensed', 'confirm_not_dispensed', 'request_refund', 'compensation_dispense')`,
+    ),
+    t.check(
+      "order_recovery_actions_status_enum",
+      sql`${table.status} IN ('started', 'completed', 'failed')`,
     ),
   ],
 );

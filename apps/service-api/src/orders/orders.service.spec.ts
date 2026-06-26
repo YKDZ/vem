@@ -39,6 +39,12 @@ function makeService(overrides: {
   registry?: Partial<PaymentProviderRegistry>;
   configService?: Partial<PaymentProviderConfigService>;
   paymentsService?: Partial<PaymentsService>;
+  refundsService?: Partial<RefundsService>;
+  auditService?: { record: ReturnType<typeof vi.fn> };
+  vendingService?: {
+    resolveCommand?: ReturnType<typeof vi.fn>;
+    createCompensationDispenseCommand?: ReturnType<typeof vi.fn>;
+  };
 }) {
   const db = overrides.db ?? makeDb();
   const registry: PaymentProviderRegistry = {
@@ -69,7 +75,8 @@ function makeService(overrides: {
     ...overrides.inventoryService,
   } as unknown as InventoryService;
   const refundsService: RefundsService = {
-    requestRefund: vi.fn().mockResolvedValue(undefined),
+    requestFullRefund: vi.fn().mockResolvedValue(undefined),
+    ...overrides.refundsService,
   } as unknown as RefundsService;
   const paymentsServiceBase = {
     reconcilePendingPaymentOnRead: vi
@@ -81,6 +88,14 @@ function makeService(overrides: {
     paymentsServiceBase,
     overrides.paymentsService ?? {},
   ) as unknown as PaymentsService;
+  const auditService = overrides.auditService ?? {
+    record: vi.fn().mockResolvedValue(undefined),
+  };
+  const vendingService = {
+    resolveCommand: vi.fn().mockResolvedValue({}),
+    createCompensationDispenseCommand: vi.fn().mockResolvedValue({}),
+    ...overrides.vendingService,
+  };
 
   return new OrdersService(
     db as never,
@@ -88,6 +103,8 @@ function makeService(overrides: {
     registry,
     configService,
     refundsService,
+    auditService as never,
+    vendingService as never,
     paymentsService,
   );
 }
@@ -186,6 +203,75 @@ function makeQueuedDb(rowsBySelect: unknown[][]) {
     update: vi.fn(),
     transaction: vi.fn(),
   };
+}
+
+function makeRecoveryDb(
+  rowsBySelect: unknown[][],
+  options?: { insertError?: Error },
+) {
+  class SelectResult implements PromiseLike<unknown[]> {
+    constructor(private readonly rows: unknown[]) {}
+
+    from() {
+      return this;
+    }
+
+    innerJoin() {
+      return this;
+    }
+
+    where() {
+      return this;
+    }
+
+    orderBy() {
+      return this;
+    }
+
+    limit() {
+      return this;
+    }
+
+    then<TResult1 = unknown[], TResult2 = never>(
+      onfulfilled?:
+        | ((value: unknown[]) => TResult1 | PromiseLike<TResult1>)
+        | null,
+      onrejected?:
+        | ((reason: unknown) => TResult2 | PromiseLike<TResult2>)
+        | null,
+    ): PromiseLike<TResult1 | TResult2> {
+      return Promise.resolve(this.rows).then(onfulfilled, onrejected);
+    }
+  }
+
+  const tx = {
+    select: vi.fn().mockImplementation(() => {
+      const rows = rowsBySelect.shift();
+      if (!rows) throw new Error("unexpected select");
+      return new SelectResult(rows);
+    }),
+    insert: vi.fn().mockReturnValue({
+      values: vi.fn(() => {
+        if (options?.insertError) throw options.insertError;
+        return {
+          returning: vi.fn().mockResolvedValue([{ id: "recovery-action-1" }]),
+        };
+      }),
+    }),
+  };
+  const db = {
+    transaction: vi
+      .fn()
+      .mockImplementation(async (fn: (transaction: typeof tx) => unknown) =>
+        fn(tx),
+      ),
+    update: vi.fn().mockReturnValue({
+      set: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([]),
+      }),
+    }),
+  };
+  return { db, tx };
 }
 
 function allInvestigationPermissions(): PermissionCode[] {
@@ -346,6 +432,8 @@ describe("OrdersService", () => {
             createdAt: paidAt,
           },
         ],
+        [{ total: 1 }],
+        [],
         [
           {
             id: "work-1",
@@ -467,6 +555,8 @@ describe("OrdersService", () => {
             createdAt: paidAt,
           },
         ],
+        [{ total: 0 }],
+        [],
         [],
       ]);
 
@@ -489,7 +579,7 @@ describe("OrdersService", () => {
         adminAuditEntries: [],
         orderStatusEvents: [],
       });
-      expect(db.select).toHaveBeenCalledTimes(4);
+      expect(db.select).toHaveBeenCalledTimes(6);
     });
 
     it("uses explicit payment DTO projections without raw payload or auth hash fields", async () => {
@@ -539,6 +629,8 @@ describe("OrdersService", () => {
         ],
         [],
         [{ id: "refund-1", refundNo: "RFD-1", orderId: "order-1" }],
+        [{ total: 1 }],
+        [],
         [],
       ]);
 
@@ -618,6 +710,8 @@ describe("OrdersService", () => {
         [{ id: "movement-1", orderId: "order-1" }],
         [{ id: "raw-1", machineId: "machine-1", movementId: "raw-stock-1" }],
         [{ id: "refund-1", orderId: "order-1" }],
+        [{ total: 1 }],
+        [],
         [{ id: "work-1", commandId: "command-1" }],
         [],
         [],
@@ -682,6 +776,8 @@ describe("OrdersService", () => {
         [],
         [],
         [],
+        [{ total: 0 }],
+        [],
         [],
       ]);
 
@@ -705,6 +801,148 @@ describe("OrdersService", () => {
         expect.arrayContaining(["machine_id", "machine-1"]),
       );
       expect(tokens).toEqual(expect.arrayContaining(["order-1", "ORD-1"]));
+    });
+  });
+
+  describe("createRecoveryAction", () => {
+    const resultUnknownCommand = {
+      id: "command-1",
+      commandNo: "CMD-1",
+      status: "result_unknown",
+      orderStatus: "manual_handling",
+      fulfillmentState: "manual_handling",
+    };
+
+    it("rejects recovery while the latest command is still in flight", async () => {
+      const { db, tx } = makeRecoveryDb([
+        [
+          {
+            ...resultUnknownCommand,
+            status: "acknowledged",
+            fulfillmentState: "dispensing",
+          },
+        ],
+        [],
+        [],
+      ]);
+      const service = makeService({ db: db as never });
+
+      await expect(
+        service.createRecoveryAction("order-1", "admin-1", {
+          action: "confirm_dispensed",
+          note: "operator tried too early",
+        }),
+      ).rejects.toBeInstanceOf(ConflictException);
+      expect(tx.insert).not.toHaveBeenCalled();
+    });
+
+    it("confirms not dispensed without immediately requesting a refund", async () => {
+      const { db } = makeRecoveryDb([[resultUnknownCommand], [], []]);
+      const requestFullRefund = vi.fn().mockResolvedValue({ id: "refund-1" });
+      const resolveCommand = vi.fn().mockResolvedValue({
+        commandId: "command-1",
+        status: "failed",
+      });
+      const auditService = { record: vi.fn().mockResolvedValue(undefined) };
+      const service = makeService({
+        db: db as never,
+        refundsService: { requestFullRefund },
+        auditService,
+        vendingService: { resolveCommand },
+      });
+
+      await expect(
+        service.createRecoveryAction("order-1", "admin-1", {
+          action: "confirm_not_dispensed",
+          note: "operator found product in slot",
+        }),
+      ).resolves.toMatchObject({
+        action: "confirm_not_dispensed",
+        commandId: "command-1",
+        status: "failed",
+      });
+      expect(resolveCommand).toHaveBeenCalledWith("command-1", {
+        result: "not_dispensed",
+        note: "operator found product in slot",
+        requestRefund: false,
+      });
+      expect(requestFullRefund).not.toHaveBeenCalled();
+    });
+
+    it("maps recovery action unique violations to conflict", async () => {
+      const uniqueViolation = Object.assign(new Error("unique violation"), {
+        code: "23505",
+      });
+      const { db } = makeRecoveryDb([[resultUnknownCommand], [], []], {
+        insertError: uniqueViolation,
+      });
+      const service = makeService({ db: db as never });
+
+      await expect(
+        service.createRecoveryAction("order-1", "admin-1", {
+          action: "confirm_dispensed",
+          note: "duplicate operator action",
+        }),
+      ).rejects.toBeInstanceOf(ConflictException);
+    });
+
+    it("requires completed not-dispensed confirmation before requesting refund", async () => {
+      const { db } = makeRecoveryDb([
+        [{ ...resultUnknownCommand, status: "failed" }],
+        [],
+        [],
+      ]);
+      const requestFullRefund = vi.fn();
+      const service = makeService({
+        db: db as never,
+        refundsService: { requestFullRefund },
+      });
+
+      await expect(
+        service.createRecoveryAction("order-1", "admin-1", {
+          action: "request_refund",
+          note: "refund after operator confirmation",
+        }),
+      ).rejects.toBeInstanceOf(ConflictException);
+      expect(requestFullRefund).not.toHaveBeenCalled();
+    });
+
+    it("requests refund only after completed not-dispensed confirmation", async () => {
+      const { db } = makeRecoveryDb([
+        [{ ...resultUnknownCommand, status: "failed" }],
+        [
+          {
+            id: "confirm-action-1",
+            commandId: "command-1",
+            action: "confirm_not_dispensed",
+            status: "completed",
+          },
+        ],
+        [],
+      ]);
+      const requestFullRefund = vi
+        .fn()
+        .mockResolvedValue({ id: "refund-1", status: "created" });
+      const service = makeService({
+        db: db as never,
+        refundsService: { requestFullRefund },
+      });
+
+      await expect(
+        service.createRecoveryAction("order-1", "admin-1", {
+          action: "request_refund",
+          note: "refund after operator confirmation",
+        }),
+      ).resolves.toMatchObject({
+        action: "request_refund",
+        commandId: "command-1",
+        status: "refund_requested",
+      });
+      expect(requestFullRefund).toHaveBeenCalledWith({
+        orderId: "order-1",
+        reason: "admin_refund",
+        requestedByAdminUserId: "admin-1",
+      });
     });
   });
 
@@ -1353,6 +1591,8 @@ function makeOrdersService(overrides: {
     paymentsServiceBase,
     overrides.paymentsService ?? {},
   ) as unknown as PaymentsService;
+  const auditService = { record: vi.fn().mockResolvedValue(undefined) };
+  const vendingService = { resolveCommand: vi.fn().mockResolvedValue({}) };
 
   return new OrdersService(
     db as never,
@@ -1360,6 +1600,8 @@ function makeOrdersService(overrides: {
     registry,
     configService,
     refundsService,
+    auditService as never,
+    vendingService as never,
     paymentsService,
   );
 }
