@@ -1212,6 +1212,7 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
     const machine = await this.findMachineByCode(machineCode);
     if (!machine) return;
 
+    const receivedAt = new Date();
     const reportedAt = new Date(payload.reportedAt);
 
     await this.db.transaction(async (tx) => {
@@ -1234,8 +1235,8 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
         .update(machines)
         .set({
           status: "online",
-          lastSeenAt: reportedAt,
-          updatedAt: new Date(),
+          lastSeenAt: receivedAt,
+          updatedAt: receivedAt,
         })
         .where(eq(machines.id, machine.id));
 
@@ -1243,6 +1244,13 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
         machineId: machine.id,
         statusPayloadJson: payload.statusPayload,
         reportedAt,
+      });
+
+      await this.notificationsService.resolveMachineOfflineNotification(tx, {
+        machineId: machine.id,
+        machineCode: machine.code,
+        recoveredAt: receivedAt,
+        lastSeenAt: receivedAt,
       });
     });
   }

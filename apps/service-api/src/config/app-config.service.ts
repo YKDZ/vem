@@ -77,6 +77,12 @@ export class AppConfigService {
     return this.config.get("MACHINE_COMMAND_TIMEOUT_SECONDS", { infer: true });
   }
 
+  get machineHeartbeatTimeoutSeconds(): number {
+    return this.config.get("MACHINE_HEARTBEAT_TIMEOUT_SECONDS", {
+      infer: true,
+    });
+  }
+
   get machineClaimCodeTtlSeconds(): number {
     return this.config.get("MACHINE_CLAIM_CODE_TTL_SECONDS", { infer: true });
   }

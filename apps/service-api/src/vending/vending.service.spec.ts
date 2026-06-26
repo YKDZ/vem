@@ -63,7 +63,7 @@ describe("VendingService heartbeat ingestion", () => {
           messageId: "heartbeat-1",
         }),
       } as never,
-      {} as never,
+      { resolveMachineOfflineNotification: vi.fn() } as never,
       {} as never,
       {} as never,
       {} as never,
@@ -81,6 +81,100 @@ describe("VendingService heartbeat ingestion", () => {
       reportedAt: new Date("2026-05-05T12:00:01.000Z"),
     });
   });
+
+  it.each([
+    {
+      reportedAt: "2026-05-05T13:00:00.000Z",
+      caseName: "future",
+    },
+    {
+      reportedAt: "2026-05-05T11:00:00.000Z",
+      caseName: "backdated",
+    },
+  ])(
+    "valid heartbeat marks the platform machine online using server receive time for $caseName reportedAt",
+    async ({ reportedAt }) => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-05-05T12:00:00.000Z"));
+      try {
+        const payload = {
+          machineCode: "M001",
+          reportedAt,
+          statusPayload: {
+            network: "online",
+            mqttConnected: true,
+            hardwareStatus: "ok",
+          },
+        };
+
+        const mockDb = {
+          select: vi.fn().mockReturnValue({
+            from: () => ({
+              where: async () => [{ id: "machine-1", code: "M001" }],
+            }),
+          }),
+          transaction: vi.fn(),
+        };
+        const machineEventValues = vi.fn().mockReturnValue({
+          onConflictDoNothing: () => ({
+            returning: async () => [{ id: "event-1" }],
+          }),
+        });
+        const machineSet = vi.fn().mockReturnValue({
+          where: async () => undefined,
+        });
+        const resolveMachineOfflineNotification = vi.fn();
+        const tx = {
+          insert: vi
+            .fn()
+            .mockReturnValueOnce({ values: machineEventValues })
+            .mockReturnValueOnce({ values: vi.fn() }),
+          update: vi.fn().mockReturnValue({ set: machineSet }),
+        };
+        mockDb.transaction.mockImplementation(
+          async (cb: (txArg: unknown) => Promise<void>) => {
+            await cb(tx);
+          },
+        );
+
+        const service = new VendingService(
+          mockDb as never,
+          { bindVendingService: vi.fn() } as never,
+          {
+            verifyFromTopic: vi.fn().mockResolvedValue({
+              payload,
+              messageId: "heartbeat-1",
+            }),
+          } as never,
+          { resolveMachineOfflineNotification } as never,
+          {} as never,
+          {} as never,
+          {} as never,
+          {} as never,
+        );
+
+        await service.handleMachineMessage(
+          "vem/machines/M001/events/heartbeat",
+          JSON.stringify({}),
+        );
+
+        expect(machineSet).toHaveBeenCalledWith(
+          expect.objectContaining({
+            status: "online",
+            lastSeenAt: new Date("2026-05-05T12:00:00.000Z"),
+          }),
+        );
+        expect(resolveMachineOfflineNotification).toHaveBeenCalledWith(tx, {
+          machineId: "machine-1",
+          machineCode: "M001",
+          recoveredAt: new Date("2026-05-05T12:00:00.000Z"),
+          lastSeenAt: new Date("2026-05-05T12:00:00.000Z"),
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
 });
 
 describe("VendingService environment control isolation", () => {

@@ -34,6 +34,7 @@ function makeConfig(
     paymentMockEnabled: boolean;
     paymentAlertWindowMinutes: number;
     paymentCertificateExpiryWarningDays: number;
+    machineHeartbeatTimeoutSeconds: number;
     notifyUrlCheck: ReturnType<
       AppConfigService["getPaymentNotifyUrlStaticCheck"]
     >;
@@ -45,6 +46,8 @@ function makeConfig(
     paymentAlertWindowMinutes: overrides.paymentAlertWindowMinutes ?? 60,
     paymentCertificateExpiryWarningDays:
       overrides.paymentCertificateExpiryWarningDays ?? 30,
+    machineHeartbeatTimeoutSeconds:
+      overrides.machineHeartbeatTimeoutSeconds ?? 120,
     getPaymentNotifyUrlStaticCheck: vi.fn().mockReturnValue(
       overrides.notifyUrlCheck ?? {
         providerCode: "alipay",
@@ -106,13 +109,27 @@ function makeService(options: {
 function mockMachinePreflightSelects(
   db: ReturnType<typeof makeDb>,
   heartbeatRows: unknown[],
+  machineOverrides: Partial<{
+    id: string;
+    code: string;
+    status: string;
+    lastSeenAt: Date | null;
+  }> = {},
 ) {
   let selectCallCount = 0;
   db.select.mockImplementation(() => {
     const callIdx = selectCallCount++;
     const result =
       callIdx === 0
-        ? [{ id: "mach-003", code: "M003", status: "online" }]
+        ? [
+            {
+              id: "mach-003",
+              code: "M003",
+              status: "online",
+              lastSeenAt: new Date(),
+              ...machineOverrides,
+            },
+          ]
         : heartbeatRows;
     const whereResult = {
       limit: vi.fn().mockResolvedValue(result.slice(0, 1)),
@@ -361,42 +378,66 @@ describe("PaymentOpsService.getMachinePreflight", () => {
   });
 
   it("adds scanner health warning for payment_code without blocking ready machine", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-26T04:02:30.000Z"));
     const db = makeDb();
     buildSelectSequence(db, [
-      [{ id: "mach-002", code: "M002", status: "online" }],
-    ]);
-
-    const providerConfigs = makeProviderConfigs();
-    vi.mocked(
-      providerConfigs.listMachinePaymentOptionsForMachine,
-    ).mockResolvedValue({
-      options: [
+      [
         {
-          optionKey: "payment_code:alipay",
-          providerCode: "alipay",
-          method: "payment_code",
-          displayName: "支付宝付款码",
-          description: "请出示支付宝付款码",
-          icon: "alipay",
-          disabled: false,
-          disabledReason: null,
-          recommended: true,
+          id: "mach-002",
+          code: "M002",
+          status: "online",
+          lastSeenAt: new Date("2026-06-26T04:02:00.000Z"),
         },
       ],
-      defaultOptionKey: "payment_code:alipay",
-      defaultProviderCode: "alipay",
-      serverTime: new Date().toISOString(),
-    });
+      [
+        {
+          reportedAt: new Date("2026-06-26T04:02:00.000Z"),
+          receivedAt: new Date("2026-06-26T04:02:00.000Z"),
+          statusPayloadJson: {
+            hardwareAdapter: "serial",
+            hardwarePortPath: "COM5",
+            hardwareStatus: "ok",
+          },
+        },
+      ],
+    ]);
 
-    const service = makeService({ db, providerConfigs });
-    const result = await service.getMachinePreflight("mach-002");
+    try {
+      const providerConfigs = makeProviderConfigs();
+      vi.mocked(
+        providerConfigs.listMachinePaymentOptionsForMachine,
+      ).mockResolvedValue({
+        options: [
+          {
+            optionKey: "payment_code:alipay",
+            providerCode: "alipay",
+            method: "payment_code",
+            displayName: "支付宝付款码",
+            description: "请出示支付宝付款码",
+            icon: "alipay",
+            disabled: false,
+            disabledReason: null,
+            recommended: true,
+          },
+        ],
+        defaultOptionKey: "payment_code:alipay",
+        defaultProviderCode: "alipay",
+        serverTime: new Date().toISOString(),
+      });
 
-    expect(result.status).toBe("ready");
-    expect(
-      result.checks.find(
-        (check) => check.code === "payment_code.scanner_health_not_reported",
-      ),
-    ).toMatchObject({ severity: "warning", passed: false });
+      const service = makeService({ db, providerConfigs });
+      const result = await service.getMachinePreflight("mach-002");
+
+      expect(result.status).toBe("ready");
+      expect(
+        result.checks.find(
+          (check) => check.code === "payment_code.scanner_health_not_reported",
+        ),
+      ).toMatchObject({ severity: "warning", passed: false });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("blocks production machine preflight when runtime heartbeat reports mock dispense hardware", async () => {
@@ -464,17 +505,185 @@ describe("PaymentOpsService.getMachinePreflight", () => {
   });
 
   it("allows production machine preflight when heartbeat reports real serial hardware", async () => {
-    const db = makeDb();
-    mockMachinePreflightSelects(db, [
-      {
-        reportedAt: new Date("2026-06-26T04:02:00.000Z"),
-        statusPayloadJson: {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-26T04:02:30.000Z"));
+    try {
+      const db = makeDb();
+      mockMachinePreflightSelects(
+        db,
+        [
+          {
+            reportedAt: new Date("2026-06-26T04:02:00.000Z"),
+            receivedAt: new Date("2026-06-26T04:02:00.000Z"),
+            statusPayloadJson: {
+              hardwareAdapter: "serial",
+              hardwarePortPath: "COM5",
+              hardwareStatus: "ok",
+            },
+          },
+        ],
+        { lastSeenAt: new Date("2026-06-26T04:02:00.000Z") },
+      );
+
+      const service = makeService({
+        db,
+        config: makeConfig({ nodeEnv: "production" }),
+      });
+      const result = await service.getMachinePreflight("mach-003");
+
+      expect(result.status).toBe("ready");
+      expect(
+        result.checks.find((check) => check.code === "machine_heartbeat.fresh"),
+      ).toMatchObject({
+        severity: "critical",
+        passed: true,
+        evidence: {
+          lastSeenAt: "2026-06-26T04:02:00.000Z",
+          reportedAt: "2026-06-26T04:02:00.000Z",
+          timeoutSeconds: 120,
+          ageSeconds: 30,
+        },
+      });
+      expect(
+        result.checks.find(
+          (check) => check.code === "production_dispense_path.ready",
+        ),
+      ).toMatchObject({
+        severity: "critical",
+        passed: true,
+        evidence: {
+          reportedAt: "2026-06-26T04:02:00.000Z",
           hardwareAdapter: "serial",
           hardwarePortPath: "COM5",
           hardwareStatus: "ok",
         },
-      },
-    ]);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    {
+      reportedAt: "2026-06-26T04:10:00.000Z",
+      caseName: "future",
+    },
+    {
+      reportedAt: "2026-06-26T03:00:00.000Z",
+      caseName: "backdated",
+    },
+  ])(
+    "uses server lastSeenAt, not $caseName reportedAt, for preflight heartbeat freshness",
+    async ({ reportedAt }) => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-06-26T04:02:30.000Z"));
+      try {
+        const db = makeDb();
+        mockMachinePreflightSelects(
+          db,
+          [
+            {
+              reportedAt: new Date(reportedAt),
+              receivedAt: new Date("2026-06-26T04:02:00.000Z"),
+              statusPayloadJson: {
+                hardwareAdapter: "serial",
+                hardwarePortPath: "COM5",
+                hardwareStatus: "ok",
+              },
+            },
+          ],
+          { lastSeenAt: new Date("2026-06-26T04:02:00.000Z") },
+        );
+
+        const service = makeService({
+          db,
+          config: makeConfig({ nodeEnv: "production" }),
+        });
+        const result = await service.getMachinePreflight("mach-003");
+
+        expect(result.status).toBe("ready");
+        expect(
+          result.checks.find(
+            (check) => check.code === "machine_heartbeat.fresh",
+          ),
+        ).toMatchObject({
+          passed: true,
+          evidence: {
+            lastSeenAt: "2026-06-26T04:02:00.000Z",
+            reportedAt,
+            ageSeconds: 30,
+          },
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it("blocks machine preflight when the latest heartbeat is stale", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-26T04:05:00.000Z"));
+    try {
+      const db = makeDb();
+      mockMachinePreflightSelects(
+        db,
+        [
+          {
+            reportedAt: new Date("2026-06-26T04:04:59.000Z"),
+            receivedAt: new Date("2026-06-26T04:02:30.000Z"),
+            statusPayloadJson: {
+              network: "online",
+              mqttConnected: true,
+              hardwareAdapter: "serial",
+              hardwarePortPath: "COM5",
+              hardwareStatus: "ok",
+            },
+          },
+        ],
+        { lastSeenAt: new Date("2026-06-26T04:02:30.000Z") },
+      );
+
+      const service = makeService({
+        db,
+        config: makeConfig({ machineHeartbeatTimeoutSeconds: 120 }),
+      });
+      const result = await service.getMachinePreflight("mach-003");
+
+      expect(result.status).toBe("blocked");
+      expect(
+        result.checks.find((check) => check.code === "machine_heartbeat.fresh"),
+      ).toMatchObject({
+        severity: "critical",
+        passed: false,
+        evidence: {
+          lastSeenAt: "2026-06-26T04:02:30.000Z",
+          reportedAt: "2026-06-26T04:04:59.000Z",
+          timeoutSeconds: 120,
+          ageSeconds: 150,
+        },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("blocks machine preflight when an online machine has no lastSeenAt", async () => {
+    const db = makeDb();
+    mockMachinePreflightSelects(
+      db,
+      [
+        {
+          reportedAt: new Date("2026-06-26T04:02:00.000Z"),
+          receivedAt: new Date("2026-06-26T04:02:00.000Z"),
+          statusPayloadJson: {
+            hardwareAdapter: "serial",
+            hardwarePortPath: "COM5",
+            hardwareStatus: "ok",
+          },
+        },
+      ],
+      { lastSeenAt: null },
+    );
 
     const service = makeService({
       db,
@@ -482,19 +691,17 @@ describe("PaymentOpsService.getMachinePreflight", () => {
     });
     const result = await service.getMachinePreflight("mach-003");
 
-    expect(result.status).toBe("ready");
+    expect(result.status).toBe("blocked");
     expect(
-      result.checks.find(
-        (check) => check.code === "production_dispense_path.ready",
-      ),
+      result.checks.find((check) => check.code === "machine_heartbeat.fresh"),
     ).toMatchObject({
       severity: "critical",
-      passed: true,
+      passed: false,
+      message: "Machine heartbeat receive time is missing",
       evidence: {
+        lastSeenAt: null,
         reportedAt: "2026-06-26T04:02:00.000Z",
-        hardwareAdapter: "serial",
-        hardwarePortPath: "COM5",
-        hardwareStatus: "ok",
+        ageSeconds: null,
       },
     });
   });
@@ -510,6 +717,16 @@ describe("PaymentOpsService.getMachinePreflight", () => {
     const result = await service.getMachinePreflight("mach-003");
 
     expect(result.status).toBe("blocked");
+    expect(
+      result.checks.find((check) => check.code === "machine_heartbeat.fresh"),
+    ).toMatchObject({
+      severity: "critical",
+      passed: false,
+      message: "Machine heartbeat is missing",
+      evidence: {
+        reportedAt: null,
+      },
+    });
     expect(
       result.checks.find(
         (check) => check.code === "production_dispense_path.evidence_missing",

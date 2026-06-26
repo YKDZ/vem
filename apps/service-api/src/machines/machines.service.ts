@@ -18,6 +18,8 @@ import {
   inArray,
   inventories,
   isNull,
+  lte,
+  or,
   machineClaimCodes,
   machinePlanogramSlots,
   machinePlanogramVersions,
@@ -63,6 +65,7 @@ import { DRIZZLE_CLIENT } from "../database/database.constants";
 import { MachineCredentialService } from "../machine-auth/machine-credential.service";
 import { MqttSignatureService } from "../mqtt/mqtt-signature.service";
 import { MqttService } from "../mqtt/mqtt.service";
+import { NotificationsService } from "../notifications/notifications.service";
 import { PaymentProviderConfigService } from "../payments/payment-provider-config.service";
 import {
   digestMachineClaimCodeLookup,
@@ -265,6 +268,7 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
     private readonly mqttService: MqttService,
     private readonly mqttSignatureService: MqttSignatureService,
     private readonly config: AppConfigService,
+    private readonly notificationsService: NotificationsService,
   ) {}
 
   onModuleInit(): void {
@@ -275,6 +279,13 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
       void this.markTimedOutMachineCommands().catch((error: unknown) => {
         this.logger.warn(
           `markTimedOutMachineCommands failed: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      });
+      void this.markTimedOutMachineHeartbeats().catch((error: unknown) => {
+        this.logger.warn(
+          `markTimedOutMachineHeartbeats failed: ${
             error instanceof Error ? error.message : String(error)
           }`,
         );
@@ -785,6 +796,70 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
           )
           .returning({ id: machineCommands.id });
         return Boolean(updated);
+      }),
+    );
+
+    return { processed: results.filter(Boolean).length };
+  }
+
+  async markTimedOutMachineHeartbeats(
+    now = new Date(),
+  ): Promise<{ processed: number }> {
+    const timeoutSeconds = this.config.machineHeartbeatTimeoutSeconds;
+    const staleBefore = new Date(now.getTime() - timeoutSeconds * 1_000);
+    const candidates = await this.db
+      .select({
+        id: machines.id,
+        code: machines.code,
+        status: machines.status,
+        lastSeenAt: machines.lastSeenAt,
+      })
+      .from(machines)
+      .where(
+        and(
+          eq(machines.status, "online"),
+          isNull(machines.deletedAt),
+          or(
+            isNull(machines.lastSeenAt),
+            lte(machines.lastSeenAt, staleBefore),
+          ),
+        ),
+      );
+
+    const results = await Promise.all(
+      candidates.map(async (machine) => {
+        let updated = false;
+        await this.db.transaction(async (tx) => {
+          const [offline] = await tx
+            .update(machines)
+            .set({
+              status: "offline",
+              updatedAt: now,
+            })
+            .where(
+              and(
+                eq(machines.id, machine.id),
+                eq(machines.status, "online"),
+                or(
+                  isNull(machines.lastSeenAt),
+                  lte(machines.lastSeenAt, staleBefore),
+                ),
+              ),
+            )
+            .returning({ id: machines.id });
+          if (!offline) {
+            return;
+          }
+          updated = true;
+          await this.notificationsService.createMachineOfflineNotification(tx, {
+            machineId: machine.id,
+            machineCode: machine.code,
+            lastSeenAt: machine.lastSeenAt,
+            timeoutSeconds,
+            detectedAt: now,
+          });
+        });
+        return updated;
       }),
     );
 

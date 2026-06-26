@@ -24,6 +24,7 @@ import {
 } from "../machine-auth/machine-credentials.util";
 import { MqttSignatureService } from "../mqtt/mqtt-signature.service";
 import { MqttService } from "../mqtt/mqtt.service";
+import { NotificationsService } from "../notifications/notifications.service";
 import { PaymentProviderConfigService } from "../payments/payment-provider-config.service";
 import { hashMachineClaimCodeVerifier } from "./machine-claim-code.util";
 import { MachinesService } from "./machines.service";
@@ -42,9 +43,10 @@ describe("MachinesService", () => {
   const signForMachine = vi.fn();
   const verifyFromTopic = vi.fn();
   const listMachinePaymentOptionsForMachine = vi.fn();
+  const createMachineOfflineNotification = vi.fn();
 
   beforeEach(async () => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
     const module = await Test.createTestingModule({
       providers: [
         MachinesService,
@@ -61,8 +63,15 @@ describe("MachinesService", () => {
           useValue: { signForMachine, verifyFromTopic },
         },
         {
+          provide: NotificationsService,
+          useValue: { createMachineOfflineNotification },
+        },
+        {
           provide: AppConfigService,
-          useValue: { machineCommandTimeoutSeconds: 5 },
+          useValue: {
+            machineCommandTimeoutSeconds: 5,
+            machineHeartbeatTimeoutSeconds: 120,
+          },
         },
       ],
     }).compile();
@@ -253,6 +262,86 @@ describe("MachinesService", () => {
     await expect(service.getMachine("missing")).rejects.toThrow(
       NotFoundException,
     );
+  });
+
+  it("marks stale online machines offline and creates an operator notification", async () => {
+    const now = new Date("2026-06-26T04:05:00.000Z");
+    const staleMachine = {
+      id: "machine-1",
+      code: "M001",
+      status: "online",
+      lastSeenAt: new Date("2026-06-26T04:02:30.000Z"),
+    };
+    const tx = {
+      update: vi.fn().mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: staleMachine.id }]),
+          }),
+        }),
+      }),
+    };
+    mockDb.select.mockReturnValueOnce({
+      from: () => ({
+        where: async () => [staleMachine],
+      }),
+    });
+    mockDb.transaction.mockImplementation(
+      async (cb: (txArg: unknown) => Promise<void>) => {
+        await cb(tx);
+      },
+    );
+
+    const result = await service.markTimedOutMachineHeartbeats(now);
+
+    expect(result).toEqual({ processed: 1 });
+    expect(createMachineOfflineNotification).toHaveBeenCalledWith(tx, {
+      machineId: "machine-1",
+      machineCode: "M001",
+      lastSeenAt: new Date("2026-06-26T04:02:30.000Z"),
+      timeoutSeconds: 120,
+      detectedAt: now,
+    });
+  });
+
+  it("marks online machines with null lastSeenAt offline and creates an operator notification", async () => {
+    const now = new Date("2026-06-26T04:05:00.000Z");
+    const staleMachine = {
+      id: "machine-1",
+      code: "M001",
+      status: "online",
+      lastSeenAt: null,
+    };
+    const tx = {
+      update: vi.fn().mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: staleMachine.id }]),
+          }),
+        }),
+      }),
+    };
+    mockDb.select.mockReturnValueOnce({
+      from: () => ({
+        where: async () => [staleMachine],
+      }),
+    });
+    mockDb.transaction.mockImplementation(
+      async (cb: (txArg: unknown) => Promise<void>) => {
+        await cb(tx);
+      },
+    );
+
+    const result = await service.markTimedOutMachineHeartbeats(now);
+
+    expect(result).toEqual({ processed: 1 });
+    expect(createMachineOfflineNotification).toHaveBeenCalledWith(tx, {
+      machineId: "machine-1",
+      machineCode: "M001",
+      lastSeenAt: null,
+      timeoutSeconds: 120,
+      detectedAt: now,
+    });
   });
 
   it("persists and publishes an environment control command", async () => {
@@ -548,6 +637,10 @@ describe("MachinesService planogram lifecycle", () => {
         {
           provide: AppConfigService,
           useValue: { machineCommandTimeoutSeconds: 5 },
+        },
+        {
+          provide: NotificationsService,
+          useValue: { createMachineOfflineNotification: vi.fn() },
         },
       ],
     }).compile();
@@ -959,6 +1052,7 @@ describe("MachinesService claim code lifecycle", () => {
           provide: AppConfigService,
           useValue: {
             machineCommandTimeoutSeconds: 5,
+            machineHeartbeatTimeoutSeconds: 120,
             machineClaimCodeTtlSeconds: 600,
             machineClaimLookupHmacKey:
               "test-machine-claim-lookup-hmac-key-change-me",
@@ -966,6 +1060,10 @@ describe("MachinesService claim code lifecycle", () => {
             mqttUsername: "machine-client",
             mqttPassword: "mqtt-password",
           },
+        },
+        {
+          provide: NotificationsService,
+          useValue: { createMachineOfflineNotification: vi.fn() },
         },
       ],
     }).compile();
