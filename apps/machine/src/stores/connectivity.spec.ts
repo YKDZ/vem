@@ -215,4 +215,35 @@ describe("connectivity sale readiness", () => {
       "扫码器不可用：scanner usb not found；付款码支付不可用，二维码支付仍可用。",
     ]);
   });
+
+  it("surfaces production dispense path blockers from sale readiness", () => {
+    const store = useConnectivityStore();
+    store.applySaleReadiness({
+      ...saleReadiness(false),
+      blockingCodes: ["PRODUCTION_DISPENSE_PATH_MOCK"],
+      components: {
+        ...saleReadiness(false).components,
+        platformReachability: {
+          ready: true,
+          code: "PLATFORM_REACHABLE",
+          message: "platform reachable",
+        },
+        paymentOptions: {
+          ready: true,
+          code: "PAYMENT_OPTIONS_READY",
+          message: "payment option available",
+          methods: [],
+        },
+        productionDispensePath: {
+          ready: false,
+          code: "PRODUCTION_DISPENSE_PATH_MOCK",
+          message: "生产出货路径不能使用 mock hardwareAdapter",
+        },
+      },
+    });
+
+    expect(store.saleReadinessBlockingMessages).toEqual([
+      "生产出货路径不能使用 mock hardwareAdapter",
+    ]);
+  });
 });

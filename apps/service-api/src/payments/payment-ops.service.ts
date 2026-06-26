@@ -9,7 +9,9 @@ import { Inject, Injectable } from "@nestjs/common";
 import {
   and,
   count,
+  desc,
   eq,
+  machineHeartbeats,
   machines,
   paymentCodeAttempts,
   paymentEvents,
@@ -199,6 +201,7 @@ export class PaymentOpsService {
         },
       },
     ];
+    checks.push(await this.checkProductionDispensePath(machine.id));
 
     if (options.options.some((item) => item.method === "payment_code")) {
       checks.push({
@@ -222,6 +225,80 @@ export class PaymentOpsService {
       availableProviders: options.options,
       checks,
       checkedAt: new Date().toISOString(),
+    };
+  }
+
+  private async checkProductionDispensePath(
+    machineId: string,
+  ): Promise<PaymentOpsCheck> {
+    const [heartbeat] = await this.db
+      .select({
+        reportedAt: machineHeartbeats.reportedAt,
+        statusPayloadJson: machineHeartbeats.statusPayloadJson,
+      })
+      .from(machineHeartbeats)
+      .where(eq(machineHeartbeats.machineId, machineId))
+      .orderBy(desc(machineHeartbeats.reportedAt))
+      .limit(1);
+    const isProduction = this.config.nodeEnv === "production";
+    const statusPayload =
+      typeof heartbeat?.statusPayloadJson === "object" &&
+      heartbeat.statusPayloadJson !== null
+        ? (heartbeat.statusPayloadJson as Record<string, unknown>)
+        : {};
+    const hardwareAdapter =
+      typeof statusPayload.hardwareAdapter === "string"
+        ? statusPayload.hardwareAdapter
+        : null;
+    const hardwarePortPath =
+      typeof statusPayload.hardwarePortPath === "string"
+        ? statusPayload.hardwarePortPath
+        : null;
+    const hardwareStatus =
+      typeof statusPayload.hardwareStatus === "string"
+        ? statusPayload.hardwareStatus
+        : null;
+    const hardwareMessage =
+      typeof statusPayload.hardwareMessage === "string"
+        ? statusPayload.hardwareMessage
+        : null;
+
+    let code = "production_dispense_path.ready";
+    let passed = true;
+    let message = "Production dispense path is ready";
+    if (isProduction && hardwareAdapter === "mock") {
+      code = "production_dispense_path.mock";
+      passed = false;
+      message = "生产出货路径不能使用 mock hardwareAdapter";
+    } else if (
+      isProduction &&
+      (!heartbeat || !hardwareAdapter || !hardwarePortPath)
+    ) {
+      code = "production_dispense_path.evidence_missing";
+      passed = false;
+      message = "生产出货路径缺少硬件心跳证据";
+    } else if (
+      isProduction &&
+      hardwarePortPath !== null &&
+      hardwarePortPath.trimStart().startsWith("tcp://")
+    ) {
+      code = "production_dispense_path.tcp_simulator";
+      passed = false;
+      message = "生产出货路径不能使用 tcp:// lower-controller simulator";
+    }
+
+    return {
+      code,
+      severity: isProduction ? "critical" : "warning",
+      passed,
+      message,
+      evidence: {
+        reportedAt: heartbeat?.reportedAt?.toISOString?.() ?? null,
+        hardwareAdapter,
+        hardwarePortPath,
+        hardwareStatus,
+        hardwareMessage,
+      },
     };
   }
 

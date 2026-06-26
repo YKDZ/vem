@@ -1097,6 +1097,23 @@ describe("shared API contract", () => {
       expect(result.availableProviders).toHaveLength(1);
     });
 
+    it("heartbeatPayloadSchema accepts production dispense path evidence", () => {
+      const result = heartbeatPayloadSchema.parse({
+        machineCode: "M001",
+        reportedAt: "2026-06-26T04:00:00.000Z",
+        statusPayload: {
+          hardwareAdapter: "serial",
+          hardwarePortPath: "tcp://127.0.0.1:17991",
+          hardwareStatus: "ok",
+        },
+      });
+
+      expect(result.statusPayload.hardwareAdapter).toBe("serial");
+      expect(result.statusPayload.hardwarePortPath).toBe(
+        "tcp://127.0.0.1:17991",
+      );
+    });
+
     it("paymentMachinePreflightSchema accepts payment_code options", () => {
       const result = paymentMachinePreflightSchema.parse({
         machineId: "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",

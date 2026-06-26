@@ -60,6 +60,8 @@ export const machineHeartbeatStatusPayloadSchema = z
     mqttConnected: z.boolean().optional(),
     hardwareAdapter: z.string().optional(),
     hardwareStatus: z.enum(["ok", "degraded", "faulted"]).optional(),
+    hardwareMessage: z.string().optional(),
+    hardwarePortPath: z.string().nullable().optional(),
     doorOpen: z.boolean().optional(),
     localQueueSize: z.int().nonnegative().optional(),
     lastCommandNo: z.string().max(64).nullable().optional(),

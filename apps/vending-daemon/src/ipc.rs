@@ -1468,6 +1468,7 @@ async fn machine_sale_readiness_snapshot(
         sync.mqtt_running && sync.mqtt_connected && outbox_usage < 0.9 && !disk_pressure.pressured;
 
     let hardware = ctx.ui.status_cache.hardware.read().await.clone();
+    let production_dispense_path = production_dispense_path_readiness(public.as_ref());
     let whole_machine_lock = ctx.state.whole_machine_maintenance_lock().await?;
     let whole_machine_ready = hardware.online && whole_machine_lock.is_none();
     let whole_machine_code = if !hardware.online {
@@ -1551,6 +1552,9 @@ async fn machine_sale_readiness_snapshot(
     if !hardware.online {
         blocking_codes.push("LOWER_CONTROLLER_UNAVAILABLE");
     }
+    if !production_dispense_path.ready {
+        blocking_codes.push(production_dispense_path.code);
+    }
     if let Some(lock) = whole_machine_lock.as_ref() {
         blocking_codes.push(lock.code.as_str());
     }
@@ -1563,6 +1567,7 @@ async fn machine_sale_readiness_snapshot(
         && payment_options_ready
         && sync_ready
         && whole_machine_ready
+        && production_dispense_path.ready
         && slot_sale_safety_ready;
 
     Ok(serde_json::json!({
@@ -1620,6 +1625,11 @@ async fn machine_sale_readiness_snapshot(
                 whole_machine_code.as_str(),
                 whole_machine_message,
             ),
+            "productionDispensePath": readiness_component(
+                production_dispense_path.ready,
+                production_dispense_path.code,
+                production_dispense_path.message,
+            ),
             "slotSaleSafety": serde_json::json!({
                 "ready": slot_sale_safety_ready,
                 "code": if slot_sale_safety_ready { "SLOT_SALE_SAFETY_READY" } else { "NO_SALEABLE_SLOTS" },
@@ -1638,6 +1648,65 @@ async fn machine_sale_readiness_snapshot(
             }),
         },
     }))
+}
+
+struct ProductionDispensePathReadiness {
+    ready: bool,
+    code: &'static str,
+    message: &'static str,
+}
+
+fn production_dispense_path_readiness(
+    public: Option<&crate::config::MachinePublicConfig>,
+) -> ProductionDispensePathReadiness {
+    let Some(public) = public else {
+        return ProductionDispensePathReadiness {
+            ready: false,
+            code: "PRODUCTION_DISPENSE_PATH_EVIDENCE_MISSING",
+            message: "生产出货路径缺少 production hardwareProfile 证据",
+        };
+    };
+    let Some(hardware_profile) = public.hardware_profile.as_ref() else {
+        return ProductionDispensePathReadiness {
+            ready: false,
+            code: "PRODUCTION_DISPENSE_PATH_EVIDENCE_MISSING",
+            message: "生产出货路径缺少 production hardwareProfile 证据",
+        };
+    };
+    if hardware_profile.profile != "production" {
+        return ProductionDispensePathReadiness {
+            ready: false,
+            code: "PRODUCTION_DISPENSE_PATH_EVIDENCE_MISSING",
+            message: "生产出货路径 hardwareProfile 不是 production",
+        };
+    }
+    if matches!(
+        public.hardware_adapter,
+        crate::config::HardwareAdapterKind::Mock
+    ) {
+        return ProductionDispensePathReadiness {
+            ready: false,
+            code: "PRODUCTION_DISPENSE_PATH_MOCK",
+            message: "生产出货路径不能使用 mock hardwareAdapter",
+        };
+    }
+    if public
+        .serial_port_path
+        .as_deref()
+        .map(|path| path.trim_start().starts_with("tcp://"))
+        .unwrap_or(false)
+    {
+        return ProductionDispensePathReadiness {
+            ready: false,
+            code: "PRODUCTION_DISPENSE_PATH_TCP_SIMULATOR",
+            message: "生产出货路径不能使用 tcp:// lower-controller simulator",
+        };
+    }
+    ProductionDispensePathReadiness {
+        ready: true,
+        code: "PRODUCTION_DISPENSE_PATH_READY",
+        message: "production dispense path ready",
+    }
 }
 
 fn is_slot_sale_safety_blocker(slot_sales_state: &str) -> bool {
@@ -2802,6 +2871,25 @@ mod tests {
             scanner.adapter = vending_core::scanner::PAYMENT_CODE_SOURCE_SERIAL_TEXT.to_string();
             scanner.code = "SCANNER_READY".to_string();
             scanner.message = "scanner ready".to_string();
+        }
+        {
+            let profile = valid_provisioning_profile();
+            let mut public = ctx.config_store.load_public_config().await.expect("config");
+            public.hardware_adapter = crate::config::HardwareAdapterKind::Serial;
+            public.serial_port_path = Some("/dev/ttyUSB0".to_string());
+            public.lower_controller_usb_identity = None;
+            public.hardware_profile = Some(
+                serde_json::from_value(profile["hardwareProfile"].clone())
+                    .expect("hardware profile"),
+            );
+            public.payment_capability = Some(
+                serde_json::from_value(profile["paymentCapability"].clone())
+                    .expect("payment capability"),
+            );
+            ctx.config_store
+                .save_public_config(public)
+                .await
+                .expect("save production config");
         }
     }
 
@@ -4538,6 +4626,289 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn sale_readiness_enforces_production_dispense_path_for_production_machine() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(wiremock::matchers::path("/machine-orders/payment-options"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "options": [{
+                    "optionKey": "qr_code:alipay",
+                    "providerCode": "alipay",
+                    "method": "qr_code",
+                    "displayName": "支付宝",
+                    "description": "请使用支付宝扫码支付",
+                    "icon": "alipay",
+                    "disabled": false,
+                    "disabledReason": null,
+                    "recommended": true
+                }],
+                "defaultOptionKey": "qr_code:alipay",
+                "defaultProviderCode": "alipay",
+                "serverTime": "2026-06-08T16:30:00.000Z"
+            })))
+            .mount(&server)
+            .await;
+
+        let temp_dir = tempdir().expect("tmp");
+        let ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            &server.uri(),
+        )
+        .await;
+        mark_runtime_sale_ready(&ctx).await;
+        {
+            let profile = valid_provisioning_profile();
+            let mut public = ctx.config_store.load_public_config().await.expect("config");
+            public.hardware_adapter = crate::config::HardwareAdapterKind::Mock;
+            public.serial_port_path = None;
+            public.hardware_profile = Some(
+                serde_json::from_value(profile["hardwareProfile"].clone())
+                    .expect("hardware profile"),
+            );
+            public.payment_capability = Some(
+                serde_json::from_value(profile["paymentCapability"].clone())
+                    .expect("payment capability"),
+            );
+            ctx.config_store
+                .save_public_config(public)
+                .await
+                .expect("save production config");
+        }
+        let app = build_router(ctx.clone());
+        let slot_id = "550e8400-e29b-41d4-a716-446655440301";
+        let inventory_id = "550e8400-e29b-41d4-a716-446655440302";
+        assert_eq!(
+            post_json(
+                &app,
+                "/v1/stock/planogram",
+                "token-1",
+                one_slot_planogram("PLAN-PRODUCTION-PATH", slot_id, inventory_id),
+            )
+            .await
+            .status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            post_json(
+                &app,
+                "/v1/stock/movements",
+                "token-1",
+                json!({
+                    "movementId": "MOVE-PRODUCTION-PATH-1",
+                    "planogramVersion": "PLAN-PRODUCTION-PATH",
+                    "slotId": slot_id,
+                    "movementType": "planned_refill",
+                    "quantity": 2,
+                    "source": "field_service",
+                    "attributedTo": "operator-1"
+                }),
+            )
+            .await
+            .status(),
+            StatusCode::CREATED
+        );
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/sale-readiness")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let readiness: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(readiness["canStartNetworkAuthorizedSale"], false);
+        assert!(readiness["blockingCodes"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("PRODUCTION_DISPENSE_PATH_MOCK")));
+        assert_eq!(
+            readiness["components"]["productionDispensePath"]["ready"],
+            false
+        );
+        assert_eq!(
+            readiness["components"]["productionDispensePath"]["code"],
+            "PRODUCTION_DISPENSE_PATH_MOCK"
+        );
+        assert_eq!(
+            readiness["components"]["productionDispensePath"]["message"],
+            "生产出货路径不能使用 mock hardwareAdapter"
+        );
+
+        {
+            let mut public = ctx.config_store.load_public_config().await.expect("config");
+            public.hardware_adapter = crate::config::HardwareAdapterKind::Serial;
+            public.serial_port_path = Some("/dev/ttyUSB0".to_string());
+            public.hardware_profile = None;
+            ctx.config_store
+                .save_public_config(public)
+                .await
+                .expect("save missing profile config");
+        }
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/sale-readiness")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let readiness: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(readiness["canStartNetworkAuthorizedSale"], false);
+        assert!(readiness["blockingCodes"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("PRODUCTION_DISPENSE_PATH_EVIDENCE_MISSING")));
+        assert_eq!(
+            readiness["components"]["productionDispensePath"]["code"],
+            "PRODUCTION_DISPENSE_PATH_EVIDENCE_MISSING"
+        );
+
+        {
+            let mut profile = valid_provisioning_profile();
+            profile["hardwareProfile"]["profile"] = json!("development");
+            let mut public = ctx.config_store.load_public_config().await.expect("config");
+            public.hardware_profile = Some(
+                serde_json::from_value(profile["hardwareProfile"].clone())
+                    .expect("hardware profile"),
+            );
+            ctx.config_store
+                .save_public_config(public)
+                .await
+                .expect("save non-production profile config");
+        }
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/sale-readiness")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let readiness: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(readiness["canStartNetworkAuthorizedSale"], false);
+        assert!(readiness["blockingCodes"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("PRODUCTION_DISPENSE_PATH_EVIDENCE_MISSING")));
+        assert_eq!(
+            readiness["components"]["productionDispensePath"]["message"],
+            "生产出货路径 hardwareProfile 不是 production"
+        );
+
+        {
+            let profile = valid_provisioning_profile();
+            let mut public = ctx.config_store.load_public_config().await.expect("config");
+            public.hardware_profile = Some(
+                serde_json::from_value(profile["hardwareProfile"].clone())
+                    .expect("hardware profile"),
+            );
+            public.hardware_adapter = crate::config::HardwareAdapterKind::Serial;
+            public.serial_port_path = Some("tcp://127.0.0.1:17991".to_string());
+            public.lower_controller_usb_identity = None;
+            ctx.config_store
+                .save_public_config(public)
+                .await
+                .expect("save tcp simulator config");
+        }
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/sale-readiness")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let readiness: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(readiness["canStartNetworkAuthorizedSale"], false);
+        assert!(readiness["blockingCodes"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("PRODUCTION_DISPENSE_PATH_TCP_SIMULATOR")));
+        assert_eq!(
+            readiness["components"]["productionDispensePath"]["message"],
+            "生产出货路径不能使用 tcp:// lower-controller simulator"
+        );
+
+        {
+            let mut public = ctx.config_store.load_public_config().await.expect("config");
+            public.serial_port_path = Some("/dev/ttyUSB0".to_string());
+            ctx.config_store
+                .save_public_config(public)
+                .await
+                .expect("save serial config");
+        }
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/sale-readiness")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let readiness: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            readiness["canStartNetworkAuthorizedSale"], true,
+            "readiness payload: {readiness}"
+        );
+        assert!(!readiness["blockingCodes"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("PRODUCTION_DISPENSE_PATH_MOCK")));
+        assert!(!readiness["blockingCodes"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("PRODUCTION_DISPENSE_PATH_TCP_SIMULATOR")));
+        assert_eq!(
+            readiness["components"]["productionDispensePath"]["ready"],
+            true
+        );
+    }
+
+    #[tokio::test]
     async fn create_order_intent_rechecks_local_slot_saleability() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
@@ -5823,6 +6194,15 @@ mod tests {
             .iter()
             .any(|code| code == "WHOLE_MACHINE_HARDWARE_FAULT"));
 
+        {
+            let mut public = ctx.config_store.load_public_config().await.expect("config");
+            public.hardware_adapter = crate::config::HardwareAdapterKind::Mock;
+            public.serial_port_path = None;
+            ctx.config_store
+                .save_public_config(public)
+                .await
+                .expect("save recovered hardware config");
+        }
         let clear_response = post_json(
             &app,
             "/v1/maintenance/whole-machine-lock/clear",

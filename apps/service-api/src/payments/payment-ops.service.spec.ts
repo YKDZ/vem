@@ -103,6 +103,31 @@ function makeService(options: {
   return new PaymentOpsService(db as never, config, secrets, providerConfigs);
 }
 
+function mockMachinePreflightSelects(
+  db: ReturnType<typeof makeDb>,
+  heartbeatRows: unknown[],
+) {
+  let selectCallCount = 0;
+  db.select.mockImplementation(() => {
+    const callIdx = selectCallCount++;
+    const result =
+      callIdx === 0
+        ? [{ id: "mach-003", code: "M003", status: "online" }]
+        : heartbeatRows;
+    const whereResult = {
+      limit: vi.fn().mockResolvedValue(result.slice(0, 1)),
+      orderBy: vi.fn().mockReturnValue({
+        limit: vi.fn().mockResolvedValue(result.slice(0, 1)),
+      }),
+    };
+    return {
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue(whereResult),
+      }),
+    };
+  });
+}
+
 /** Helper to set up db.select with specific results for different calls */
 function buildSelectSequence(
   db: ReturnType<typeof makeDb>,
@@ -119,6 +144,9 @@ function buildSelectSequence(
       // Make where() both awaitable AND chainable with .limit()
       const whereResult = Object.assign(Promise.resolve(result), {
         limit: vi.fn().mockResolvedValue(result.slice(0, 1)),
+        orderBy: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue(result.slice(0, 1)),
+        }),
       });
       return {
         where: vi.fn().mockReturnValue(whereResult),
@@ -369,6 +397,166 @@ describe("PaymentOpsService.getMachinePreflight", () => {
         (check) => check.code === "payment_code.scanner_health_not_reported",
       ),
     ).toMatchObject({ severity: "warning", passed: false });
+  });
+
+  it("blocks production machine preflight when runtime heartbeat reports mock dispense hardware", async () => {
+    const db = makeDb();
+    mockMachinePreflightSelects(db, [
+      {
+        reportedAt: new Date("2026-06-26T04:00:00.000Z"),
+        statusPayloadJson: {
+          hardwareAdapter: "mock",
+          hardwarePortPath: null,
+        },
+      },
+    ]);
+
+    const service = makeService({
+      db,
+      config: makeConfig({ nodeEnv: "production" }),
+    });
+    const result = await service.getMachinePreflight("mach-003");
+
+    expect(result.status).toBe("blocked");
+    expect(
+      result.checks.find(
+        (check) => check.code === "production_dispense_path.mock",
+      ),
+    ).toMatchObject({
+      severity: "critical",
+      passed: false,
+      message: "生产出货路径不能使用 mock hardwareAdapter",
+    });
+  });
+
+  it("blocks production machine preflight when heartbeat reports tcp lower-controller simulator", async () => {
+    const db = makeDb();
+    mockMachinePreflightSelects(db, [
+      {
+        reportedAt: new Date("2026-06-26T04:01:00.000Z"),
+        statusPayloadJson: {
+          hardwareAdapter: "serial",
+          hardwarePortPath: "tcp://127.0.0.1:17991",
+        },
+      },
+    ]);
+
+    const service = makeService({
+      db,
+      config: makeConfig({ nodeEnv: "production" }),
+    });
+    const result = await service.getMachinePreflight("mach-003");
+
+    expect(result.status).toBe("blocked");
+    expect(
+      result.checks.find(
+        (check) => check.code === "production_dispense_path.tcp_simulator",
+      ),
+    ).toMatchObject({
+      severity: "critical",
+      passed: false,
+      evidence: {
+        reportedAt: "2026-06-26T04:01:00.000Z",
+        hardwareAdapter: "serial",
+        hardwarePortPath: "tcp://127.0.0.1:17991",
+      },
+    });
+  });
+
+  it("allows production machine preflight when heartbeat reports real serial hardware", async () => {
+    const db = makeDb();
+    mockMachinePreflightSelects(db, [
+      {
+        reportedAt: new Date("2026-06-26T04:02:00.000Z"),
+        statusPayloadJson: {
+          hardwareAdapter: "serial",
+          hardwarePortPath: "COM5",
+          hardwareStatus: "ok",
+        },
+      },
+    ]);
+
+    const service = makeService({
+      db,
+      config: makeConfig({ nodeEnv: "production" }),
+    });
+    const result = await service.getMachinePreflight("mach-003");
+
+    expect(result.status).toBe("ready");
+    expect(
+      result.checks.find(
+        (check) => check.code === "production_dispense_path.ready",
+      ),
+    ).toMatchObject({
+      severity: "critical",
+      passed: true,
+      evidence: {
+        reportedAt: "2026-06-26T04:02:00.000Z",
+        hardwareAdapter: "serial",
+        hardwarePortPath: "COM5",
+        hardwareStatus: "ok",
+      },
+    });
+  });
+
+  it("blocks production machine preflight when no heartbeat evidence exists", async () => {
+    const db = makeDb();
+    mockMachinePreflightSelects(db, []);
+
+    const service = makeService({
+      db,
+      config: makeConfig({ nodeEnv: "production" }),
+    });
+    const result = await service.getMachinePreflight("mach-003");
+
+    expect(result.status).toBe("blocked");
+    expect(
+      result.checks.find(
+        (check) => check.code === "production_dispense_path.evidence_missing",
+      ),
+    ).toMatchObject({
+      severity: "critical",
+      passed: false,
+      evidence: {
+        reportedAt: null,
+        hardwareAdapter: null,
+        hardwarePortPath: null,
+      },
+    });
+  });
+
+  it("blocks production machine preflight when heartbeat lacks hardware evidence", async () => {
+    const db = makeDb();
+    mockMachinePreflightSelects(db, [
+      {
+        reportedAt: new Date("2026-06-26T04:03:00.000Z"),
+        statusPayloadJson: {
+          network: "online",
+          mqttConnected: true,
+        },
+      },
+    ]);
+
+    const service = makeService({
+      db,
+      config: makeConfig({ nodeEnv: "production" }),
+    });
+    const result = await service.getMachinePreflight("mach-003");
+
+    expect(result.status).toBe("blocked");
+    expect(
+      result.checks.find(
+        (check) => check.code === "production_dispense_path.evidence_missing",
+      ),
+    ).toMatchObject({
+      severity: "critical",
+      passed: false,
+      evidence: {
+        reportedAt: "2026-06-26T04:03:00.000Z",
+        hardwareAdapter: null,
+        hardwarePortPath: null,
+      },
+    });
   });
 });
 
