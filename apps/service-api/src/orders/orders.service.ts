@@ -25,6 +25,7 @@ import {
   paymentCodeAttempts,
   paymentEvents,
   paymentProviders,
+  paymentReconciliationAttempts,
   payments,
   productVariants,
   products,
@@ -1261,6 +1262,23 @@ export class OrdersService {
       .orderBy(desc(paymentCodeAttempts.createdAt))
       .limit(1);
 
+    const [paymentReconciliationAttempt] = await this.db
+      .select({
+        trigger: paymentReconciliationAttempts.trigger,
+        attemptNo: paymentReconciliationAttempts.attemptNo,
+        status: paymentReconciliationAttempts.status,
+        providerPaymentStatus:
+          paymentReconciliationAttempts.providerPaymentStatus,
+        errorCode: paymentReconciliationAttempts.errorCode,
+        nextRetryAt: paymentReconciliationAttempts.nextRetryAt,
+        startedAt: paymentReconciliationAttempts.startedAt,
+        finishedAt: paymentReconciliationAttempts.finishedAt,
+      })
+      .from(paymentReconciliationAttempts)
+      .where(eq(paymentReconciliationAttempts.paymentId, row.paymentId))
+      .orderBy(desc(paymentReconciliationAttempts.createdAt))
+      .limit(1);
+
     const nextAction = resolveMachineOrderNextAction(
       row.paymentState,
       row.fulfillmentState,
@@ -1286,6 +1304,25 @@ export class OrdersService {
         paidAt: toIsoStringOrNull(row.paidAt),
         failedReason: row.failedReason,
         providerCode: row.paymentProviderCode,
+        reconciliation: paymentReconciliationAttempt
+          ? {
+              trigger: paymentReconciliationAttempt.trigger,
+              attemptNo: paymentReconciliationAttempt.attemptNo,
+              status: paymentReconciliationAttempt.status,
+              providerPaymentStatus:
+                paymentReconciliationAttempt.providerPaymentStatus,
+              errorCode: paymentReconciliationAttempt.errorCode,
+              nextRetryAt: toIsoStringOrNull(
+                paymentReconciliationAttempt.nextRetryAt,
+              ),
+              startedAt: toIsoStringOrNull(
+                paymentReconciliationAttempt.startedAt,
+              ),
+              finishedAt: toIsoStringOrNull(
+                paymentReconciliationAttempt.finishedAt,
+              ),
+            }
+          : null,
       },
       paymentCodeAttempt: paymentCodeAttempt
         ? {

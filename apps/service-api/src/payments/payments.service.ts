@@ -98,6 +98,18 @@ function canApplyProviderTerminalStatus(status: PaymentStatus): boolean {
   return PROVIDER_MUTABLE_PAYMENT_STATUSES.includes(status);
 }
 
+function isProviderPaymentUncertainStatus(
+  status:
+    | "pending"
+    | "processing"
+    | "succeeded"
+    | "failed"
+    | "expired"
+    | "canceled",
+): status is "pending" | "processing" {
+  return status === "pending" || status === "processing";
+}
+
 type ProviderWebhookBusinessValidation =
   | { ok: true }
   | { ok: false; reason: string };
@@ -598,6 +610,15 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
             });
 
             if (queryResult.status === "succeeded") {
+              await this.recordExpireCompensationAttempt({
+                paymentId: payment.paymentId,
+                providerId: payment.providerId,
+                status: "succeeded",
+                providerPaymentStatus: "succeeded",
+                providerTradeNo: queryResult.providerTradeNo ?? null,
+                rawPayload: queryResult.rawPayload,
+                now,
+              });
               const providerEventId = `expire_query:${payment.paymentNo}:succeeded:${now.getTime()}`;
               const applied = await this.applyPaymentStatusUpdate(
                 payment.paymentId,
@@ -622,21 +643,28 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
 
             // If still pending/processing, check compensation window
             if (
+              isProviderPaymentUncertainStatus(queryResult.status) &&
               !isPastTimeoutCompensation(
                 payment.expiresAt,
                 payment.publicConfigJson,
                 now,
               )
             ) {
-              // Within compensation window — skip closing for now
+              await this.recordExpireCompensationAttempt({
+                paymentId: payment.paymentId,
+                providerId: payment.providerId,
+                status: queryResult.status,
+                providerPaymentStatus: queryResult.status,
+                providerTradeNo: queryResult.providerTradeNo ?? null,
+                rawPayload: queryResult.rawPayload,
+                nextRetryAt: new Date(now.getTime() + reconcileBackoffMs(1)),
+                now,
+              });
               return false;
             }
 
             // Past compensation window — cancel with provider
-            if (
-              queryResult.status === "pending" ||
-              queryResult.status === "processing"
-            ) {
+            if (isProviderPaymentUncertainStatus(queryResult.status)) {
               await provider.cancelPayment({
                 paymentNo: payment.paymentNo,
                 providerTradeNo: payment.providerTradeNo,
@@ -2028,6 +2056,36 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         ),
       );
     return Number(countRow.total) + 1;
+  }
+
+  private async recordExpireCompensationAttempt(input: {
+    paymentId: string;
+    providerId: string;
+    status: string;
+    providerPaymentStatus?: string | null;
+    providerTradeNo?: string | null;
+    rawPayload?: Record<string, unknown>;
+    nextRetryAt?: Date | null;
+    now: Date;
+  }): Promise<void> {
+    const attemptNo = await this.nextPaymentReconciliationAttemptNo(
+      input.paymentId,
+      "expire_compensation",
+    );
+    const rawPayloadFields = buildReconciliationPayloadFields(input.rawPayload);
+    await this.db.insert(paymentReconciliationAttempts).values({
+      paymentId: input.paymentId,
+      providerId: input.providerId,
+      trigger: "expire_compensation",
+      attemptNo,
+      status: input.status,
+      providerPaymentStatus: input.providerPaymentStatus ?? null,
+      providerTradeNo: input.providerTradeNo ?? null,
+      ...rawPayloadFields,
+      nextRetryAt: input.nextRetryAt ?? null,
+      startedAt: input.now,
+      finishedAt: new Date(),
+    });
   }
 
   async reconcilePendingPaymentOnRead(paymentId: string): Promise<{

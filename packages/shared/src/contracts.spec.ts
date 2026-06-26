@@ -38,6 +38,7 @@ import {
   paymentOpsReadinessSchema,
   paymentProviderStatuses,
   paymentProviderSensitiveConfigSchema,
+  paymentReconciliationAttemptQuerySchema,
   roleStatuses,
   upsertNotificationTargetSchema,
   upsertPaymentProviderConfigSchema,
@@ -1143,6 +1144,14 @@ describe("shared API contract", () => {
         manualOnly: true,
       });
       expect(result.manualOnly).toBe(true);
+    });
+
+    it("parses machine status poll reconciliation attempt filters", () => {
+      const result = paymentReconciliationAttemptQuerySchema.parse({
+        paymentNo: "PAY202606260001",
+        trigger: "machine_status_poll",
+      });
+      expect(result.trigger).toBe("machine_status_poll");
     });
   });
 });

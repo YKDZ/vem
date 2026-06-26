@@ -11,6 +11,36 @@ function makeRes() {
 }
 
 describe("PaymentsController", () => {
+  describe("listReconciliationAttempts", () => {
+    it("forwards machine_status_poll trigger filters", async () => {
+      const result = {
+        items: [],
+        page: 1,
+        pageSize: 20,
+        total: 0,
+      };
+      const paymentsService = {
+        listReconciliationAttempts: vi.fn().mockResolvedValue(result),
+      };
+      const controller = new PaymentsController(
+        paymentsService as unknown as PaymentsService,
+      );
+
+      await expect(
+        controller.listReconciliationAttempts({
+          page: 1,
+          pageSize: 20,
+          trigger: "machine_status_poll",
+        }),
+      ).resolves.toBe(result);
+      expect(paymentsService.listReconciliationAttempts).toHaveBeenCalledWith({
+        page: 1,
+        pageSize: 20,
+        trigger: "machine_status_poll",
+      });
+    });
+  });
+
   describe("handleWebhook", () => {
     let controller: PaymentsController;
     let paymentsService: Pick<PaymentsService, "handleProviderWebhook">;

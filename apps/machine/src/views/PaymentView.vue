@@ -213,6 +213,9 @@ onUnmounted(() => {
                 class="mt-5 rounded-md border border-neutral-200 bg-white p-4 text-neutral-700"
               >
                 二维码已到期，系统正在向支付平台确认最终结果，请勿重复扫码或关闭页面。
+                <span class="mt-3 block font-black text-neutral-950">
+                  订单凭证 {{ order.orderNo }}
+                </span>
               </p>
               <p
                 v-else-if="preparingQrCode"

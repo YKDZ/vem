@@ -11,7 +11,7 @@ import { OrdersService } from "./orders.service";
 
 function makeDb() {
   return {
-    select: vi.fn(),
+    select: vi.fn().mockImplementation(() => makeEmptyLatestSelectResult()),
     insert: vi.fn().mockReturnValue({
       values: vi.fn().mockReturnValue({
         onConflictDoNothing: vi.fn().mockResolvedValue([]),
@@ -1795,6 +1795,27 @@ describe("OrdersService (transaction boundary)", () => {
               }),
             }),
           }),
+        })
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([
+                  {
+                    trigger: "machine_status_poll",
+                    attemptNo: 1,
+                    status: "succeeded",
+                    providerPaymentStatus: "succeeded",
+                    errorCode: null,
+                    nextRetryAt: null,
+                    startedAt: new Date("2026-05-24T13:00:00.000Z"),
+                    finishedAt: new Date("2026-05-24T13:00:01.000Z"),
+                    createdAt: new Date("2026-05-24T13:00:00.000Z"),
+                  },
+                ]),
+              }),
+            }),
+          }),
         });
 
       const service = makeService({
@@ -1810,6 +1831,14 @@ describe("OrdersService (transaction boundary)", () => {
       expect(result.paymentState).toBe("paid");
       expect(result.fulfillmentState).toBe("awaiting_fulfillment");
       expect(result.payment.status).toBe("succeeded");
+      expect(result.payment.reconciliation).toMatchObject({
+        trigger: "machine_status_poll",
+        attemptNo: 1,
+        status: "succeeded",
+        providerPaymentStatus: "succeeded",
+        startedAt: "2026-05-24T13:00:00.000Z",
+        finishedAt: "2026-05-24T13:00:01.000Z",
+      });
       expect(result.nextAction).toBe("dispensing");
     });
 

@@ -186,6 +186,19 @@ export const machineOrderStatusResponseSchema = z.object({
     paidAt: z.iso.datetime().nullable(),
     failedReason: z.string().nullable(),
     providerCode: machinePaymentProviderCodeSchema.nullable(),
+    reconciliation: z
+      .object({
+        trigger: z.string().min(1).max(64),
+        attemptNo: z.int().positive(),
+        status: z.string().min(1).max(64),
+        providerPaymentStatus: z.string().min(1).max(64).nullable(),
+        errorCode: z.string().max(128).nullable(),
+        nextRetryAt: z.iso.datetime().nullable(),
+        startedAt: z.iso.datetime().nullable(),
+        finishedAt: z.iso.datetime().nullable(),
+      })
+      .nullable()
+      .optional(),
   }),
   paymentCodeAttempt: z
     .object({
