@@ -204,6 +204,15 @@ export class PaymentsController {
     return await this.paymentsService.listRefunds(query);
   }
 
+  @RequirePermissions("payments.configure")
+  @Post("refunds/:id/query")
+  async queryRefund(
+    @CurrentAdmin() admin: AuthenticatedAdmin,
+    @Param("id", ParseUUIDPipe) id: string,
+  ) {
+    return await this.paymentsService.manualReconcileRefund(id, admin.id);
+  }
+
   @Public()
   @Post("webhooks/:providerCode")
   async handleWebhook(

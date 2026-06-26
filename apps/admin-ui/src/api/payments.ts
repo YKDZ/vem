@@ -199,6 +199,20 @@ export type ReconciliationAttempt = {
   createdAt: string;
 };
 
+export type RefundReconciliationAttempt = {
+  trigger: string;
+  attemptNo: number;
+  status: string;
+  providerRefundStatus: string | null;
+  providerRefundNo: string | null;
+  errorCode: string | null;
+  errorMessage: string | null;
+  nextRetryAt: string | null;
+  startedAt: string;
+  finishedAt: string | null;
+  createdAt: string;
+};
+
 export type Refund = {
   id: string;
   refundNo: string;
@@ -212,6 +226,11 @@ export type Refund = {
   reason: string;
   providerRefundNo: string | null;
   refundedAt: string | null;
+  latestReconciliationStatus: string | null;
+  latestProviderRefundStatus: string | null;
+  latestReconciliationError: string | null;
+  latestReconciliationAt: string | null;
+  reconciliationAttempts: RefundReconciliationAttempt[];
   createdAt: string;
   updatedAt: string;
 };
@@ -258,6 +277,16 @@ export async function listRefunds(
   query?: Record<string, unknown>,
 ): Promise<PageResult<Refund>> {
   return await get<PageResult<Refund>>("/payments/refunds", { params: query });
+}
+
+export async function queryRefund(refundId: string): Promise<{
+  status: string;
+  reconciled: boolean;
+  reason?: string;
+}> {
+  return await post<{ status: string; reconciled: boolean; reason?: string }>(
+    `/payments/refunds/${refundId}/query`,
+  );
 }
 
 export async function listPaymentCodeAttempts(

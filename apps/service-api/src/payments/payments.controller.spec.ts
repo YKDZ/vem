@@ -41,6 +41,32 @@ describe("PaymentsController", () => {
     });
   });
 
+  describe("queryRefund", () => {
+    it("passes refund id and admin id to manualReconcileRefund()", async () => {
+      const result = {
+        status: "succeeded" as const,
+        reconciled: true,
+      };
+      const paymentsService = {
+        manualReconcileRefund: vi.fn().mockResolvedValue(result),
+      };
+      const controller = new PaymentsController(
+        paymentsService as unknown as PaymentsService,
+      );
+      const admin = {
+        id: "admin-001",
+      } as import("../common/request-user").AuthenticatedAdmin;
+
+      await expect(
+        controller.queryRefund(admin, "550e8400-e29b-41d4-a716-446655440000"),
+      ).resolves.toBe(result);
+      expect(paymentsService.manualReconcileRefund).toHaveBeenCalledWith(
+        "550e8400-e29b-41d4-a716-446655440000",
+        "admin-001",
+      );
+    });
+  });
+
   describe("handleWebhook", () => {
     let controller: PaymentsController;
     let paymentsService: Pick<PaymentsService, "handleProviderWebhook">;

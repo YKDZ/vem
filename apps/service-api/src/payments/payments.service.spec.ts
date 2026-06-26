@@ -156,6 +156,55 @@ function makeService(overrides: {
 
 describe("PaymentsService", () => {
   describe("listRefunds", () => {
+    it("selects recent reconciliation attempts for the admin refund trail", async () => {
+      const db = makeDb();
+      let selectedFields: Record<string, unknown> | undefined;
+
+      db.select
+        .mockImplementationOnce((fields: Record<string, unknown>) => {
+          selectedFields = fields;
+          return {
+            from: vi.fn().mockReturnValue({
+              innerJoin: vi.fn().mockReturnValue({
+                innerJoin: vi.fn().mockReturnValue({
+                  innerJoin: vi.fn().mockReturnValue({
+                    where: vi.fn().mockReturnValue({
+                      orderBy: vi.fn().mockReturnValue({
+                        limit: vi.fn().mockReturnValue({
+                          offset: vi.fn().mockResolvedValue([]),
+                        }),
+                      }),
+                    }),
+                  }),
+                }),
+              }),
+            }),
+          };
+        })
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              innerJoin: vi.fn().mockReturnValue({
+                innerJoin: vi.fn().mockReturnValue({
+                  where: vi.fn().mockResolvedValue([{ total: 0 }]),
+                }),
+              }),
+            }),
+          }),
+        });
+
+      const service = makeService({ db });
+
+      await service.listRefunds({ page: 1, pageSize: 20 });
+
+      expect(selectedFields).toEqual(
+        expect.objectContaining({
+          latestReconciliationStatus: expect.anything(),
+          reconciliationAttempts: expect.anything(),
+        }),
+      );
+    });
+
     it("applies the refund reason filter", async () => {
       const db = makeDb();
       const whereArgs: unknown[] = [];
