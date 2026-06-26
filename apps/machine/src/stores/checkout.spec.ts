@@ -259,6 +259,13 @@ describe("checkout helpers", () => {
     expect(resultKindFromNextAction("wait_payment")).toBeNull();
     expect(isTerminalResultNextAction("payment_failed")).toBe(true);
   });
+
+  it("maps unknown dispense projections to manual handling", () => {
+    expect(normalizeNextAction("result_unknown")).toBe("manual_handling");
+    expect(resultKindFromNextAction(normalizeNextAction("result_unknown"))).toBe(
+      "manual_handling",
+    );
+  });
 });
 
 describe("checkout store", () => {

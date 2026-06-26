@@ -87,6 +87,45 @@ function terminalUnknownDispenseTransaction() {
   };
 }
 
+function refundPendingTransaction() {
+  return {
+    ...terminalDispenseFailedTransaction(),
+    orderNo: "ORD-REFUND-001",
+    paymentNo: "PAY-REFUND-001",
+    paymentStatus: "refund_pending",
+    orderStatus: "refund_pending",
+    vending: {
+      commandNo: "CMD-REFUND",
+      status: "failed",
+      lastError: "refund requested after dispense failure",
+    },
+    nextAction: "refund_pending",
+  };
+}
+
+function refundedTransaction() {
+  return {
+    ...refundPendingTransaction(),
+    orderNo: "ORD-REFUNDED-001",
+    paymentNo: "PAY-REFUNDED-001",
+    paymentStatus: "refunded",
+    orderStatus: "refunded",
+    nextAction: "refunded",
+  };
+}
+
+function paymentFailedTransaction() {
+  return {
+    ...terminalDispenseFailedTransaction(),
+    orderNo: "ORD-PAYMENT-FAILED-001",
+    paymentNo: "PAY-PAYMENT-FAILED-001",
+    paymentStatus: "failed",
+    orderStatus: "canceled",
+    vending: null,
+    nextAction: "payment_failed",
+  };
+}
+
 function applySaleReadiness(
   canSell: boolean,
   blockedSlots: Array<{
@@ -253,7 +292,7 @@ afterEach(() => {
 });
 
 describe("ResultView", () => {
-  it("keeps a dispense failure result visible once the machine is sale-ready again", async () => {
+  it("allows a recovered dispense failure result to be dismissed back to catalog", async () => {
     const transaction = terminalDispenseFailedTransaction();
     const checkoutStore = useCheckoutStore();
     checkoutStore.applyTransaction(transaction);
@@ -271,16 +310,49 @@ describe("ResultView", () => {
     });
 
     expect(host.textContent).toContain("出货失败");
-    expect(host.textContent).not.toContain("返回首页");
+    expect(host.textContent).toContain("订单凭证 ORD-FAILED-001");
+    expect(host.textContent).toContain("返回首页");
 
-    await vi.advanceTimersByTimeAsync(6000);
+    const returnButton = Array.from(host.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("返回首页"),
+    );
+    returnButton?.click();
+    await nextTick();
+    await vi.waitFor(() => {
+      expect(routerReplaceMock).toHaveBeenCalledWith("/catalog");
+    });
 
-    expect(routerReplaceMock).not.toHaveBeenCalledWith("/catalog");
     expect(routerReplaceMock).not.toHaveBeenCalledWith("/maintenance");
-    expect(getSaleViewMock).not.toHaveBeenCalled();
-    expect(checkoutStore.shouldIgnoreTransaction(transaction)).toBe(false);
-    expect(checkoutStore.currentOrder?.orderNo).toBe("ORD-FAILED-001");
-    expect(checkoutStore.status?.nextAction).toBe("dispense_failed");
+    expect(getSaleViewMock).toHaveBeenCalledOnce();
+    expect(checkoutStore.shouldIgnoreTransaction(transaction)).toBe(true);
+    expect(checkoutStore.currentOrder).toBeNull();
+    expect(checkoutStore.status).toBeNull();
+  });
+
+  it("routes dismissal to catalog when sale-view refresh fails after fresh readiness is ready", async () => {
+    routeParams.kind = "payment_failed";
+    const transaction = paymentFailedTransaction();
+    const checkoutStore = useCheckoutStore();
+    checkoutStore.applyTransaction(transaction);
+    applySaleReadiness(true);
+    getSaleViewMock.mockRejectedValue(new Error("sale view unavailable"));
+
+    const host = await mountView();
+    await vi.waitFor(() => {
+      expect(getReadyMock).toHaveBeenCalledOnce();
+    });
+
+    const returnButton = Array.from(host.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("返回首页"),
+    );
+    returnButton?.click();
+    await nextTick();
+
+    await vi.waitFor(() => {
+      expect(routerReplaceMock).toHaveBeenCalledWith("/catalog");
+    });
+    expect(getSaleViewMock).toHaveBeenCalledOnce();
+    expect(checkoutStore.shouldIgnoreTransaction(transaction)).toBe(true);
   });
 
   it("keeps dispense failures on the result page when the machine remains blocked", async () => {
@@ -307,6 +379,38 @@ describe("ResultView", () => {
     expect(getSaleViewMock).not.toHaveBeenCalled();
   });
 
+  it("routes dismissed terminal results to maintenance when severe blockers remain", async () => {
+    routeParams.kind = "payment_failed";
+    const transaction = paymentFailedTransaction();
+    const checkoutStore = useCheckoutStore();
+    checkoutStore.applyTransaction(transaction);
+    applySaleReadiness(true);
+    getReadyMock.mockResolvedValue(
+      readyFixture(false, "WHOLE_MACHINE_HARDWARE_FAULT"),
+    );
+    getSaleReadinessMock.mockResolvedValue(
+      saleReadinessFixture(false, [], "WHOLE_MACHINE_HARDWARE_FAULT"),
+    );
+
+    const host = await mountView();
+    await vi.waitFor(() => {
+      expect(getReadyMock).toHaveBeenCalledOnce();
+    });
+
+    const returnButton = Array.from(host.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("返回首页"),
+    );
+    returnButton?.click();
+    await nextTick();
+
+    await vi.waitFor(() => {
+      expect(routerReplaceMock).toHaveBeenCalledWith("/maintenance");
+    });
+    expect(routerReplaceMock).not.toHaveBeenCalledWith("/catalog");
+    expect(getSaleViewMock).not.toHaveBeenCalled();
+    expect(checkoutStore.shouldIgnoreTransaction(transaction)).toBe(true);
+  });
+
   it("shows manual handling copy and customer order credential for result_unknown", async () => {
     routeParams.kind = "manual_handling";
     const transaction = terminalUnknownDispenseTransaction();
@@ -326,7 +430,33 @@ describe("ResultView", () => {
     expect(host.textContent).toContain("等待人工处理");
     expect(host.textContent).toContain("订单凭证 ORD-UNKNOWN-001");
     expect(host.textContent).toContain("出货结果待确认");
+    expect(host.textContent).toContain("返回首页");
+  });
+
+  it("shows refund processing credential and keeps the customer waiting", async () => {
+    routeParams.kind = "refund_pending";
+    const transaction = refundPendingTransaction();
+    useCheckoutStore().applyTransaction(transaction);
+    applySaleReadiness(true);
+
+    const host = await mountView();
+
+    expect(host.textContent).toContain("退款处理中");
+    expect(host.textContent).toContain("订单凭证 ORD-REFUND-001");
     expect(host.textContent).not.toContain("返回首页");
+  });
+
+  it("shows refunded credential and allows dismissing after recovery", async () => {
+    routeParams.kind = "refunded";
+    const transaction = refundedTransaction();
+    useCheckoutStore().applyTransaction(transaction);
+    applySaleReadiness(true);
+
+    const host = await mountView();
+
+    expect(host.textContent).toContain("已退款");
+    expect(host.textContent).toContain("订单凭证 ORD-REFUNDED-001");
+    expect(host.textContent).toContain("返回首页");
   });
 
   it("refreshes stale ready state without routing a dispense failure away from the result page", async () => {

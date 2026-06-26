@@ -35,6 +35,10 @@ export function routeForStartup(input: {
     return "/dispensing";
   }
 
+  if (next === "result_unknown") {
+    return { name: "result", params: { kind: "manual_handling" } };
+  }
+
   if (
     next === "success" ||
     next === "payment_failed" ||

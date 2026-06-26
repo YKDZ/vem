@@ -44,6 +44,8 @@ export function normalizeNextAction(
     case "manual_handling":
     case "closed":
       return nextAction;
+    case "result_unknown":
+      return "manual_handling";
     default:
       return "wait_payment";
   }

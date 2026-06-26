@@ -81,6 +81,7 @@ let latestVisionHandlers: VisionProfileSubscriptionHandlers | null = null;
 beforeEach(() => {
   pinia = createPinia();
   setActivePinia(pinia);
+  window.localStorage.clear();
   vi.clearAllMocks();
   latestVisionHandlers = null;
   subscribeVisionProfilesMock.mockImplementation(
@@ -536,6 +537,66 @@ describe("sale readiness UI flow", () => {
     await vi.waitFor(() => {
       expect(routerReplaceMock).toHaveBeenCalledWith("/catalog");
     });
+  });
+
+  it("does not reopen a dismissed terminal transaction during boot after a fresh reload", async () => {
+    const dismissedTransaction = {
+      orderId: "550e8400-e29b-41d4-a716-446655440010",
+      orderNo: "ORD-DISMISSED-001",
+      productSummary: null,
+      paymentNo: "PAY-DISMISSED-001",
+      paymentMethod: "payment_code",
+      paymentProvider: "alipay",
+      paymentUrl: null,
+      paymentStatus: "refunded",
+      orderStatus: "refunded",
+      totalAmountCents: 4900,
+      vending: {
+        commandNo: "CMD-DISMISSED",
+        status: "failed",
+        lastError: "dispense failure already handled",
+      },
+      nextAction: "refunded",
+      maskedAuthCode: null,
+      paymentCodeAttempt: null,
+      expiresAt: "2026-06-04T00:05:00Z",
+      errorCode: null,
+      errorMessage: null,
+      operatorHint: null,
+      updatedAt: "2026-06-04T00:10:00Z",
+    };
+    getHealthMock.mockResolvedValue(healthSnapshot());
+    getReadyMock.mockResolvedValue(readySnapshot());
+    getSaleReadinessMock.mockResolvedValue(saleReadiness(true));
+    getCurrentTransactionMock.mockResolvedValue(dismissedTransaction);
+    getSaleViewMock.mockResolvedValue({
+      items: [makeCatalogItem()],
+      source: "local_stock",
+      planogramVersion: "PLAN-1",
+      lastUpdatedAt: "2026-06-04T00:00:00Z",
+    });
+    const checkoutStore = useCheckoutStore();
+    checkoutStore.applyTransaction(dismissedTransaction);
+    checkoutStore.dismissCurrentTerminalTransaction();
+    checkoutStore.reset();
+
+    pinia = createPinia();
+    setActivePinia(pinia);
+    const reloadedCheckoutStore = useCheckoutStore();
+    expect(reloadedCheckoutStore.shouldIgnoreTransaction(dismissedTransaction)).toBe(
+      true,
+    );
+
+    await mountView(BootView);
+
+    await vi.waitFor(() => {
+      expect(routerReplaceMock).toHaveBeenCalledWith("/catalog");
+    });
+    expect(routerReplaceMock).not.toHaveBeenCalledWith({
+      name: "result",
+      params: { kind: "refunded" },
+    });
+    expect(reloadedCheckoutStore.currentOrder).toBeNull();
   });
 
   it("keeps catalog products visible and navigable when readiness is blocked", async () => {

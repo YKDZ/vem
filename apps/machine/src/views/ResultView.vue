@@ -78,6 +78,8 @@ const copyMap: Record<CheckoutResultKind, ResultCopy> = {
 };
 const DISPENSE_RESOLUTION_RESULT_KINDS: ReadonlySet<CheckoutResultKind> =
   new Set(["dispense_failed", "refund_pending", "refunded", "manual_handling"]);
+const WAIT_FOR_RESOLUTION_RESULT_KINDS: ReadonlySet<CheckoutResultKind> =
+  new Set(["refund_pending"]);
 
 const kind = computed(() => String(route.params.kind) as CheckoutResultKind);
 const copy = computed(() => copyMap[kind.value] ?? copyMap.manual_handling);
@@ -133,7 +135,12 @@ const canAutoReturn = computed(
     connectivityStore.isSaleNetworkReady &&
     !isDispenseResolutionResult.value,
 );
-const canManuallyReturn = computed(() => !isDispenseResolutionResult.value);
+const canManuallyReturn = computed(
+  () =>
+    Boolean(checkoutStore.resultKind) &&
+    !WAIT_FOR_RESOLUTION_RESULT_KINDS.has(kind.value) &&
+    (connectivityStore.isSaleNetworkReady || !isDispenseResolutionResult.value),
+);
 const autoReturnRemainingSeconds = ref(
   Math.ceil(AUTO_RETURN_DELAY_MS / AUTO_RETURN_TICK_MS),
 );
@@ -180,16 +187,24 @@ async function backToCatalog(): Promise<void> {
   if (returningToCatalog) return;
   returningToCatalog = true;
   stopAutoReturn();
+  await refreshResultReadiness();
   checkoutStore.dismissCurrentTerminalTransaction();
   checkoutStore.reset();
-  await catalogStore.refresh();
-  await router.replace("/catalog");
+  const targetRoute = connectivityStore.isSaleNetworkReady
+    ? "/catalog"
+    : connectivityStore.ready?.suggestedRoute === "maintenance"
+      ? "/maintenance"
+      : "/offline";
+  if (targetRoute === "/catalog") {
+    await catalogStore.refresh().catch((error: unknown) => {
+      resultReadinessError.value =
+        error instanceof Error ? error.message : String(error);
+    });
+  }
+  await router.replace(targetRoute);
 }
 
 async function refreshResultReadiness(): Promise<void> {
-  if (!isDispenseFailureResult.value) {
-    return;
-  }
   try {
     const [ready, saleReadiness] = await Promise.all([
       daemonClient.getReady(),
