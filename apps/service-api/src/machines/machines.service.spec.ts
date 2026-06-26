@@ -990,6 +990,66 @@ describe("MachinesService planogram lifecycle", () => {
     });
   });
 
+  it("projects open stock reconciliation blockers into machine stock snapshot sale eligibility", async () => {
+    mockDb.select.mockReturnValueOnce({
+      from: () => ({
+        innerJoin: () => ({
+          innerJoin: () => ({
+            innerJoin: () => ({
+              innerJoin: () => ({
+                where: () => ({
+                  orderBy: async () => [
+                    {
+                      machineCode: "M001",
+                      planogramVersion: "PLAN-1",
+                      slotId: "slot-1",
+                      slotCode: "A1",
+                      inventoryId: "inv-1",
+                      capacity: 10,
+                      slotStatus: "enabled",
+                      openSaleSafetyBlockerState: "needs_platform_review",
+                      onHandQty: 10,
+                      reservedQty: 0,
+                      availableQty: 0,
+                    },
+                    {
+                      machineCode: "M001",
+                      planogramVersion: "PLAN-1",
+                      slotId: "slot-2",
+                      slotCode: "A2",
+                      inventoryId: "inv-2",
+                      capacity: 10,
+                      slotStatus: "enabled",
+                      openSaleSafetyBlockerState: null,
+                      onHandQty: 5,
+                      reservedQty: 0,
+                      availableQty: 5,
+                    },
+                  ],
+                }),
+              }),
+            }),
+          }),
+        }),
+      }),
+    });
+
+    const result = await service.getStockSnapshotByMachineCode("M001");
+
+    expect(result.slots).toEqual([
+      expect.objectContaining({
+        slotId: "slot-1",
+        availableQty: 0,
+        slotSalesState: "needs_platform_review",
+      }),
+      expect.objectContaining({
+        slotId: "slot-2",
+        availableQty: 5,
+        slotSalesState: "sale_ready",
+      }),
+    ]);
+  });
+
   it("rejects ack for a machine planogram version that is not published or active", async () => {
     const machine = {
       id: "550e8400-e29b-41d4-a716-446655440000",

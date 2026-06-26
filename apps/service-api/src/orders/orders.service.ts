@@ -16,6 +16,7 @@ import {
   inventoryMovements,
   inventoryReservations,
   isNull,
+  machineRawStockMovementConflicts,
   machineRawStockMovements,
   machinePlanogramSlots,
   machinePlanogramVersions,
@@ -1463,6 +1464,8 @@ export class OrdersService {
       ? await this.db
           .select({
             id: machineRawStockMovements.id,
+            caseTable: sql<"machine_raw_stock_movements">`'machine_raw_stock_movements'`,
+            rawMovementId: sql<string | null>`null`,
             machineId: machineRawStockMovements.machineId,
             movementId: machineRawStockMovements.movementId,
             status: machineRawStockMovements.status,
@@ -1486,6 +1489,42 @@ export class OrdersService {
           )
           .orderBy(desc(machineRawStockMovements.receivedAt))
       : [];
+    const stockReconciliationConflictRows = canReadInventory
+      ? await this.db
+          .select({
+            id: machineRawStockMovementConflicts.id,
+            caseTable: sql<"machine_raw_stock_movement_conflicts">`'machine_raw_stock_movement_conflicts'`,
+            rawMovementId: machineRawStockMovementConflicts.rawMovementId,
+            machineId: machineRawStockMovementConflicts.machineId,
+            movementId: machineRawStockMovementConflicts.movementId,
+            status: machineRawStockMovementConflicts.status,
+            reconciliationReason:
+              machineRawStockMovementConflicts.reconciliationReason,
+            platformReviewStatus:
+              machineRawStockMovementConflicts.platformReviewStatus,
+            saleSafetyBlockerState:
+              machineRawStockMovementConflicts.saleSafetyBlockerState,
+            saleSafetyBlockerSlotId:
+              machineRawStockMovementConflicts.saleSafetyBlockerSlotId,
+            receivedAt: machineRawStockMovementConflicts.receivedAt,
+          })
+          .from(machineRawStockMovementConflicts)
+          .where(
+            and(
+              eq(machineRawStockMovementConflicts.machineId, order.machineId),
+              or(
+                sql`${machineRawStockMovementConflicts.normalizedJson}->>'orderId' = ${id}`,
+                sql`${machineRawStockMovementConflicts.normalizedJson}->>'orderNo' = ${order.orderNo}`,
+                sql`${machineRawStockMovementConflicts.payloadJson}->'orderContext'->>'orderNo' = ${order.orderNo}`,
+              ),
+            ),
+          )
+          .orderBy(desc(machineRawStockMovementConflicts.receivedAt))
+      : [];
+    const stockReconciliationLinks = [
+      ...stockReconciliationRows,
+      ...stockReconciliationConflictRows,
+    ].sort((a, b) => b.receivedAt.getTime() - a.receivedAt.getTime());
 
     const refundRows = canReadPayments
       ? await this.db
@@ -1589,13 +1628,19 @@ export class OrdersService {
               { resourceType: "inventory_movement", resourceId: movement.id },
               { resourceType: "inventory_movements", resourceId: movement.id },
             ]),
-            ...stockReconciliationRows.flatMap((movement) => [
+            ...stockReconciliationLinks.flatMap((movement) => [
               {
-                resourceType: "machine_raw_stock_movement",
+                resourceType:
+                  movement.caseTable === "machine_raw_stock_movement_conflicts"
+                    ? "machine_raw_stock_movement_conflict"
+                    : "machine_raw_stock_movement",
                 resourceId: movement.id,
               },
               {
-                resourceType: "machine_raw_stock_movements",
+                resourceType:
+                  movement.caseTable === "machine_raw_stock_movement_conflicts"
+                    ? "machine_raw_stock_movement_conflicts"
+                    : "machine_raw_stock_movements",
                 resourceId: movement.id,
               },
             ]),
@@ -1663,7 +1708,7 @@ export class OrdersService {
         ...recoveryProjection,
       },
       inventoryMovements: inventoryMovementRows,
-      stockReconciliationLinks: stockReconciliationRows,
+      stockReconciliationLinks,
       refunds: refundRows,
       maintenanceWorkOrders: maintenanceWorkOrderRows,
       adminAuditEntries: adminAuditRows,

@@ -31,6 +31,60 @@ export type InventoryMovement = {
   createdAt: string;
 };
 
+export type StockReconciliationCaseSummary = {
+  id: string;
+  caseTable: string;
+  rawMovementId: string | null;
+  machineId: string;
+  machineCode: string;
+  movementId: string;
+  movementType: string;
+  quantity: number;
+  source: string;
+  attributedTo: string | null;
+  receivedAt: string;
+  reconciliationReason: string | null;
+  platformReviewStatus: string | null;
+  slot: {
+    id: string;
+    code: string | null;
+    status: string | null;
+    saleEligibility: {
+      eligible: boolean;
+      slotSalesState: string;
+      reason: string | null;
+    };
+  };
+  inventory: {
+    id: string;
+    productName: string | null;
+    sku: string | null;
+    onHandQty: number;
+    reservedQty: number;
+    saleableQty: number;
+  } | null;
+  blocker: {
+    state: string;
+    reason: string | null;
+    linkedCaseId: string;
+    linkedOrderId: string | null;
+    linkedOrderNo: string | null;
+    linkedCommandId: string | null;
+    linkedCommandNo: string | null;
+  } | null;
+};
+
+export type StockReconciliationCaseDetail = StockReconciliationCaseSummary & {
+  planogramVersion: string;
+  evidence: {
+    rawPayload: Record<string, unknown>;
+    normalizedPayload: Record<string, unknown>;
+    inventory: StockReconciliationCaseSummary["inventory"];
+    linkedOrder: { id: string | null; orderNo: string | null } | null;
+    linkedCommand: { id: string | null; commandNo: string | null } | null;
+  };
+};
+
 export type PageResult<T> = {
   items: T[];
   total: number;
@@ -78,4 +132,36 @@ export async function listInventoryMovements(
   return await get<PageResult<InventoryMovement>>("/inventory-movements", {
     params: query,
   });
+}
+
+export async function listStockReconciliationCases(
+  query?: Record<string, unknown>,
+): Promise<PageResult<StockReconciliationCaseSummary>> {
+  return await get<PageResult<StockReconciliationCaseSummary>>(
+    "/stock-reconciliation-cases",
+    { params: query },
+  );
+}
+
+export async function getStockReconciliationCase(
+  id: string,
+): Promise<StockReconciliationCaseDetail> {
+  return await get<StockReconciliationCaseDetail>(
+    `/stock-reconciliation-cases/${id}`,
+  );
+}
+
+export async function resolveStockReconciliationCase(
+  id: string,
+  body: {
+    action: "accept_machine_stock" | "reject_machine_stock" | "manual_correct";
+    note: string;
+    clearBlocker?: boolean;
+    correctedOnHandQty?: number;
+  },
+): Promise<StockReconciliationCaseDetail> {
+  return await post<StockReconciliationCaseDetail>(
+    `/stock-reconciliation-cases/${id}/resolve`,
+    body,
+  );
 }

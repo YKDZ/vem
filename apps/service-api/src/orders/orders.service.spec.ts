@@ -422,6 +422,7 @@ describe("OrdersService", () => {
             receivedAt: paidAt,
           },
         ],
+        [],
         [
           {
             id: "refund-1",
@@ -708,7 +709,23 @@ describe("OrdersService", () => {
         [],
         [{ id: "command-1", commandNo: "VC-1", machineId: "machine-1" }],
         [{ id: "movement-1", orderId: "order-1" }],
-        [{ id: "raw-1", machineId: "machine-1", movementId: "raw-stock-1" }],
+        [
+          {
+            id: "raw-1",
+            machineId: "machine-1",
+            movementId: "raw-stock-1",
+            receivedAt: paidAt,
+          },
+        ],
+        [
+          {
+            id: "conflict-1",
+            machineId: "machine-1",
+            movementId: "raw-stock-1",
+            caseTable: "machine_raw_stock_movement_conflicts",
+            receivedAt: paidAt,
+          },
+        ],
         [{ id: "refund-1", orderId: "order-1" }],
         [{ total: 1 }],
         [],
@@ -719,9 +736,18 @@ describe("OrdersService", () => {
 
       const service = makeService({ db: db as never });
 
-      await service.getOrderInvestigation(
+      const investigation = await service.getOrderInvestigation(
         "order-1",
         allInvestigationPermissions(),
+      );
+
+      expect(investigation.stockReconciliationLinks).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            id: "conflict-1",
+            caseTable: "machine_raw_stock_movement_conflicts",
+          }),
+        ]),
       );
 
       const auditWhere = db.calls.find(
@@ -748,6 +774,12 @@ describe("OrdersService", () => {
         expect.arrayContaining(["machine_raw_stock_movement", "raw-1"]),
       );
       expect(tokens).toEqual(
+        expect.arrayContaining([
+          "machine_raw_stock_movement_conflict",
+          "conflict-1",
+        ]),
+      );
+      expect(tokens).toEqual(
         expect.arrayContaining(["maintenance_work_order", "work-1"]),
       );
     });
@@ -772,6 +804,7 @@ describe("OrdersService", () => {
             createdAt: paidAt,
           },
         ],
+        [],
         [],
         [],
         [],

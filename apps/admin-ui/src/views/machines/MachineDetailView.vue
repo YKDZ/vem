@@ -12,9 +12,14 @@ import { useRoute, useRouter } from "vue-router";
 
 import {
   adjustInventory,
+  getStockReconciliationCase,
   listInventories,
+  listStockReconciliationCases,
   refillInventory,
+  resolveStockReconciliationCase,
   type Inventory,
+  type StockReconciliationCaseDetail,
+  type StockReconciliationCaseSummary,
 } from "@/api/inventory";
 import {
   listMachineOps,
@@ -38,6 +43,8 @@ const authStore = useAuthStore();
 const canCommand = authStore.hasPermission("machines.command");
 const canRefill = authStore.hasPermission("inventory.refill");
 const canAdjust = authStore.hasPermission("inventory.adjust");
+const canReviewStockReconciliation =
+  authStore.hasPermission("inventory.adjust");
 const canExportLogs = authStore.hasPermission("machineOps.write");
 
 const machineId = computed(() => String(route.params.id ?? ""));
@@ -46,6 +53,7 @@ const machine = ref<Machine | null>(null);
 const slots = ref<MachineSlot[]>([]);
 const inventories = ref<Inventory[]>([]);
 const ops = ref<MachineOp[]>([]);
+const reconciliationCases = ref<StockReconciliationCaseSummary[]>([]);
 
 const environmentControlForm = ref({
   includeAirConditioner: false,
@@ -66,6 +74,15 @@ const adjustModalOpen = ref(false);
 const adjustSaving = ref(false);
 const adjustInventoryRow = ref<Inventory | null>(null);
 const adjustForm = ref({ deltaQty: 0, note: "" });
+
+const reconciliationModalOpen = ref(false);
+const reconciliationSaving = ref(false);
+const reconciliationDetail = ref<StockReconciliationCaseDetail | null>(null);
+const reconciliationForm = ref({
+  note: "",
+  correctedOnHandQty: 0,
+  clearBlocker: false,
+});
 
 const targetTemperatureInvalid = computed(() => {
   if (!environmentControlForm.value.includeTargetTemperature) return false;
@@ -136,6 +153,16 @@ const opColumns = [
   { title: "请求时间", dataIndex: "requestedAt", key: "requestedAt" },
   { title: "完成时间", dataIndex: "finishedAt", key: "finishedAt" },
   { title: "失败原因", dataIndex: "failedReason", key: "failedReason" },
+];
+
+const reconciliationColumns = [
+  { title: "货道", key: "slot" },
+  { title: "异常", dataIndex: "reconciliationReason", key: "reason" },
+  { title: "冻结/阻断", key: "blocker" },
+  { title: "售卖资格", key: "eligibility" },
+  { title: "关联", key: "linked" },
+  { title: "上报时间", dataIndex: "receivedAt", key: "receivedAt" },
+  { title: "操作", key: "actions" },
 ];
 
 function formatEnvironmentNumber(
@@ -220,10 +247,24 @@ async function loadOps(): Promise<void> {
   ops.value = await listMachineOps({ machineId: machineId.value });
 }
 
+async function loadReconciliationCases(): Promise<void> {
+  const result = await listStockReconciliationCases({
+    machineId: machineId.value,
+    page: 1,
+    pageSize: 20,
+  });
+  reconciliationCases.value = result.items;
+}
+
 async function refreshAll(): Promise<void> {
   loading.value = true;
   try {
-    await Promise.all([loadMachine(), loadInventoryData(), loadOps()]);
+    await Promise.all([
+      loadMachine(),
+      loadInventoryData(),
+      loadOps(),
+      loadReconciliationCases(),
+    ]);
   } finally {
     loading.value = false;
   }
@@ -308,6 +349,41 @@ async function handleRequestLogExport(): Promise<void> {
     Modal.error({ title: "请求失败", content: String(error) });
   } finally {
     exportingLogs.value = false;
+  }
+}
+
+async function openReconciliationCase(
+  row: StockReconciliationCaseSummary,
+): Promise<void> {
+  reconciliationDetail.value = await getStockReconciliationCase(row.id);
+  reconciliationForm.value = {
+    note: "",
+    correctedOnHandQty:
+      reconciliationDetail.value.evidence.inventory?.onHandQty ?? 0,
+    clearBlocker: false,
+  };
+  reconciliationModalOpen.value = true;
+}
+
+async function saveReconciliation(
+  action: "accept_machine_stock" | "reject_machine_stock" | "manual_correct",
+): Promise<void> {
+  if (!reconciliationDetail.value) return;
+  reconciliationSaving.value = true;
+  try {
+    await resolveStockReconciliationCase(reconciliationDetail.value.id, {
+      action,
+      note: reconciliationForm.value.note,
+      clearBlocker: reconciliationForm.value.clearBlocker,
+      correctedOnHandQty:
+        action === "manual_correct"
+          ? reconciliationForm.value.correctedOnHandQty
+          : undefined,
+    });
+    reconciliationModalOpen.value = false;
+    await Promise.all([loadInventoryData(), loadReconciliationCases()]);
+  } finally {
+    reconciliationSaving.value = false;
   }
 }
 
@@ -565,6 +641,62 @@ onMounted(() => {
       </a-table>
     </a-card>
 
+    <a-card title="库存异常复核">
+      <h2 class="mb-3 text-base font-medium">库存异常复核</h2>
+      <a-table
+        :columns="reconciliationColumns"
+        :data-source="reconciliationCases"
+        row-key="id"
+        :loading="loading && reconciliationCases.length === 0"
+        :pagination="false"
+      >
+        <template #bodyCell="{ column, record }">
+          <template v-if="column.key === 'slot'">
+            {{ record.slot.code ?? record.slot.id }}
+          </template>
+          <template v-else-if="column.key === 'blocker'">
+            <template v-if="record.blocker">
+              <a-tag color="error">{{ record.blocker.state }}</a-tag>
+              <div class="text-xs text-slate-500">
+                {{ record.blocker.reason ?? "--" }}
+              </div>
+            </template>
+            <span v-else>--</span>
+          </template>
+          <template v-else-if="column.key === 'eligibility'">
+            <a-tag
+              :color="
+                record.slot.saleEligibility.eligible ? 'success' : 'error'
+              "
+            >
+              {{ record.slot.saleEligibility.eligible ? "可售" : "不可售" }}
+            </a-tag>
+            <span class="ml-1 text-xs text-slate-500">
+              {{ record.slot.saleEligibility.slotSalesState }}
+            </span>
+          </template>
+          <template v-else-if="column.key === 'linked'">
+            <div>{{ record.blocker?.linkedOrderNo ?? "--" }}</div>
+            <div class="text-xs text-slate-500">
+              {{ record.blocker?.linkedCommandNo ?? "--" }}
+            </div>
+          </template>
+          <template v-else-if="column.key === 'receivedAt'">
+            {{ formatDateTime(record.receivedAt) }}
+          </template>
+          <template v-else-if="column.key === 'actions'">
+            <a-button
+              v-if="canReviewStockReconciliation"
+              size="small"
+              @click="openReconciliationCase(record)"
+            >
+              复核
+            </a-button>
+          </template>
+        </template>
+      </a-table>
+    </a-card>
+
     <a-card title="远程运维操作">
       <a-table
         :columns="opColumns"
@@ -615,6 +747,66 @@ onMounted(() => {
         <a-form-item label="备注">
           <a-input v-model:value="refillForm.note" />
         </a-form-item>
+      </a-form>
+    </a-modal>
+
+    <a-modal
+      v-model:open="reconciliationModalOpen"
+      title="库存异常复核"
+      :confirm-loading="reconciliationSaving"
+    >
+      <a-form layout="vertical">
+        <a-form-item label="货道">
+          {{
+            reconciliationDetail?.slot?.code ??
+            reconciliationDetail?.slot?.id ??
+            "--"
+          }}
+        </a-form-item>
+        <a-form-item label="证据">
+          <pre class="max-h-40 overflow-auto text-xs">{{
+            JSON.stringify(
+              reconciliationDetail?.evidence.rawPayload ?? {},
+              null,
+              2,
+            )
+          }}</pre>
+        </a-form-item>
+        <a-form-item label="复核备注">
+          <a-input v-model:value="reconciliationForm.note" />
+        </a-form-item>
+        <a-form-item label="修正后在库">
+          <a-input-number
+            v-model:value="reconciliationForm.correctedOnHandQty"
+            :min="0"
+            class="w-full"
+          />
+        </a-form-item>
+        <a-form-item v-if="reconciliationDetail?.blocker" label="货道冻结">
+          <a-checkbox v-model:checked="reconciliationForm.clearBlocker">
+            复核后清除当前冻结
+          </a-checkbox>
+        </a-form-item>
+        <a-space>
+          <a-button
+            :loading="reconciliationSaving"
+            @click="saveReconciliation('accept_machine_stock')"
+          >
+            接受
+          </a-button>
+          <a-button
+            :loading="reconciliationSaving"
+            @click="saveReconciliation('reject_machine_stock')"
+          >
+            拒绝
+          </a-button>
+          <a-button
+            :loading="reconciliationSaving"
+            @click="saveReconciliation('manual_correct')"
+          >
+            修正
+          </a-button>
+        </a-space>
       </a-form>
     </a-modal>
 

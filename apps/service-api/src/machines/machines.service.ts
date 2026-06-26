@@ -20,7 +20,9 @@ import {
   isNull,
   lte,
   or,
+  machineRawStockMovementConflicts,
   machineClaimCodes,
+  machineRawStockMovements,
   machinePlanogramSlots,
   machinePlanogramVersions,
   machineSlots,
@@ -241,7 +243,11 @@ function planogramVersionSnapshot(
 function platformSlotSalesState(
   slotStatus: typeof machineSlots.$inferSelect.status,
   availableQty: number,
+  openSaleSafetyBlockerState?: string | null,
 ) {
+  if (openSaleSafetyBlockerState) {
+    return openSaleSafetyBlockerState;
+  }
   if (slotStatus !== "enabled") {
     return "frozen";
   }
@@ -970,10 +976,54 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
         inventoryId: machinePlanogramSlots.inventoryId,
         capacity: machinePlanogramSlots.capacity,
         slotStatus: machineSlots.status,
+        openSaleSafetyBlockerState: sql<string | null>`(
+          select blocker_state
+          from (
+            select
+              ${machineRawStockMovements.saleSafetyBlockerState} as blocker_state,
+              ${machineRawStockMovements.receivedAt} as received_at
+            from ${machineRawStockMovements}
+            where ${machineRawStockMovements.machineId} = ${machines.id}
+              and ${machineRawStockMovements.saleSafetyBlockerSlotId} = ${machinePlanogramSlots.slotId}
+              and ${machineRawStockMovements.status} = 'reconciliation'
+              and ${machineRawStockMovements.platformReviewStatus} = 'open'
+              and ${machineRawStockMovements.saleSafetyBlockerState} is not null
+            union all
+            select
+              ${machineRawStockMovementConflicts.saleSafetyBlockerState} as blocker_state,
+              ${machineRawStockMovementConflicts.receivedAt} as received_at
+            from ${machineRawStockMovementConflicts}
+            where ${machineRawStockMovementConflicts.machineId} = ${machines.id}
+              and ${machineRawStockMovementConflicts.saleSafetyBlockerSlotId} = ${machinePlanogramSlots.slotId}
+              and ${machineRawStockMovementConflicts.status} = 'reconciliation'
+              and ${machineRawStockMovementConflicts.platformReviewStatus} = 'open'
+              and ${machineRawStockMovementConflicts.saleSafetyBlockerState} is not null
+          ) open_blockers
+          order by received_at desc
+          limit 1
+        )`,
         onHandQty: inventories.onHandQty,
         reservedQty: inventories.reservedQty,
         availableQty: sql<number>`case
           when ${machineSlots.status} = 'enabled'
+            and not exists (
+              select 1
+              from ${machineRawStockMovements}
+              where ${machineRawStockMovements.machineId} = ${machines.id}
+                and ${machineRawStockMovements.saleSafetyBlockerSlotId} = ${machinePlanogramSlots.slotId}
+                and ${machineRawStockMovements.status} = 'reconciliation'
+                and ${machineRawStockMovements.platformReviewStatus} = 'open'
+                and ${machineRawStockMovements.saleSafetyBlockerState} is not null
+            )
+            and not exists (
+              select 1
+              from ${machineRawStockMovementConflicts}
+              where ${machineRawStockMovementConflicts.machineId} = ${machines.id}
+                and ${machineRawStockMovementConflicts.saleSafetyBlockerSlotId} = ${machinePlanogramSlots.slotId}
+                and ${machineRawStockMovementConflicts.status} = 'reconciliation'
+                and ${machineRawStockMovementConflicts.platformReviewStatus} = 'open'
+                and ${machineRawStockMovementConflicts.saleSafetyBlockerState} is not null
+            )
           then ${inventories.onHandQty} - ${inventories.reservedQty}
           else 0
         end`,
@@ -1038,6 +1088,7 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
         slotSalesState: platformSlotSalesState(
           row.slotStatus,
           row.availableQty,
+          row.openSaleSafetyBlockerState,
         ),
       })),
       serverTime: new Date().toISOString(),
