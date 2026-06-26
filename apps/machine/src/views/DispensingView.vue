@@ -1,7 +1,11 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted } from "vue";
+import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useRouter } from "vue-router";
 
+import listSloganImage from "@/assets/home/list-slogan.png";
+import logoImage from "@/assets/home/logo.png";
+import mascotListImage from "@/assets/home/mascot-list.png";
+import mascotTopImage from "@/assets/home/mascot-top-cutout.png";
 import KioskLayout from "@/layouts/KioskLayout.vue";
 import { resultKindFromNextAction, useCheckoutStore } from "@/stores/checkout";
 
@@ -9,42 +13,35 @@ const router = useRouter();
 const checkoutStore = useCheckoutStore();
 
 let pollTimer: number | undefined;
+let clockTimer: number | undefined;
 
+const pickupSeconds = ref(60);
+const continueSeconds = ref(3);
+
+const hasOrder = computed(() => Boolean(checkoutStore.currentOrder));
 const status = computed(() => checkoutStore.status);
 const command = computed(() => status.value?.vending ?? null);
 const pickupReminder = computed(() => command.value?.pickupReminder ?? null);
-const pickupReminderClass = computed(() => {
-  switch (pickupReminder.value?.level) {
-    case "urgent":
-      return "border-neutral-950 bg-neutral-950 text-white";
-    case "warning":
-      return "border-neutral-400 bg-neutral-100 text-neutral-950";
-    default:
-      return "border-neutral-200 bg-neutral-50 text-neutral-700";
-  }
-});
-const progressText = computed(() => {
-  switch (command.value?.status) {
-    case "succeeded":
-      return "商品已送达，请从取货口取走。";
-    case "failed":
-    case "timeout":
-    case "result_unknown":
-      return "出货遇到问题，请联系工作人员处理。";
-    case "acknowledged":
-      return "设备正在出货，请稍候。";
-    case "sent":
-    case "pending":
-    default:
-      return "正在准备出货，请稍候。";
-  }
-});
 const hasCustomerVisibleError = computed(
   () =>
     command.value?.status === "failed" ||
     command.value?.status === "timeout" ||
     command.value?.status === "result_unknown",
 );
+const titleText = computed(() =>
+  hasCustomerVisibleError.value ? "出货异常" : "商品已出货",
+);
+const pickupTitle = computed(() =>
+  hasCustomerVisibleError.value ? "出货遇到问题" : "请取走您的商品",
+);
+const pickupSubtitle = computed(() => {
+  if (hasCustomerVisibleError.value) return "请联系工作人员处理";
+  return pickupReminder.value?.message ?? "如未取货，请在 60 秒内完成取货";
+});
+const pickupTimeText = computed(
+  () => `00:${String(pickupSeconds.value).padStart(2, "0")}`,
+);
+const continueText = computed(() => `继续购物（${continueSeconds.value}s）`);
 
 async function refreshStatus(): Promise<void> {
   await checkoutStore.refreshCurrentTransaction();
@@ -55,66 +52,766 @@ async function refreshStatus(): Promise<void> {
   }
 }
 
+async function goCatalog(): Promise<void> {
+  checkoutStore.reset();
+  await router.replace("/catalog");
+}
+
 onMounted(async () => {
   if (!checkoutStore.currentOrder) {
-    await router.replace("/catalog");
     return;
   }
   await refreshStatus();
   pollTimer = window.setInterval(() => {
     void refreshStatus();
   }, 2_000);
+  clockTimer = window.setInterval(() => {
+    pickupSeconds.value = Math.max(0, pickupSeconds.value - 1);
+    continueSeconds.value = Math.max(0, continueSeconds.value - 1);
+  }, 1_000);
 });
 
 onUnmounted(() => {
   if (pollTimer) window.clearInterval(pollTimer);
+  if (clockTimer) window.clearInterval(clockTimer);
 });
 </script>
 
 <template>
   <KioskLayout>
-    <section
-      class="flex h-full flex-col items-center justify-center text-center text-neutral-950"
-    >
-      <div class="w-full rounded-lg border border-neutral-200 bg-white p-8">
-        <p class="text-sm font-semibold tracking-[0.2em] text-neutral-500">
-          出货中
-        </p>
-        <h2 class="mt-4 text-4xl font-black">支付成功，正在出货</h2>
-        <p class="mt-4 text-lg text-neutral-600">{{ progressText }}</p>
+    <section v-if="hasOrder" class="dispensing-page">
+      <div class="dispensing-mist dispensing-mist-left"></div>
+      <div class="dispensing-mist dispensing-mist-right"></div>
 
+      <header class="dispensing-header">
+        <div class="dispensing-brand">
+          <img :src="logoImage" alt="唐诗村" />
+          <img :src="mascotTopImage" alt="" aria-hidden="true" />
+        </div>
+        <div class="dispensing-time">
+          <p>10:30</p>
+          <span>2026/06/15　星期二</span>
+        </div>
+      </header>
+
+      <button
+        class="dispensing-back kiosk-touch-target"
+        type="button"
+        @click="goCatalog"
+      >
+        <span aria-hidden="true">←</span>
+        返回
+      </button>
+
+      <div class="dispensing-title">
+        <h1>{{ titleText }}</h1>
+        <span aria-hidden="true"></span>
+      </div>
+
+      <main class="pickup-card">
         <div
-          v-if="pickupReminder"
-          class="mt-6 rounded-lg border p-6 text-left"
-          :class="pickupReminderClass"
+          class="pickup-illustration"
+          :class="{ 'pickup-error': hasCustomerVisibleError }"
         >
-          <p class="text-sm font-bold tracking-[0.2em]">取货提醒</p>
-          <h3 class="mt-2 text-3xl font-black">
-            {{ pickupReminder.message }}
-          </h3>
-          <p class="mt-2 text-base opacity-85">
-            请检查取货口并及时拿走商品，避免设备自动关闭取货口。
-          </p>
+          <svg viewBox="0 0 180 180" aria-hidden="true">
+            <circle cx="90" cy="90" r="88" fill="#fffdf8" />
+            <path
+              d="M56 84 90 72l35 12-34 13-35-13Z"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="3"
+            />
+            <path
+              d="m56 84 10 46 26 12 26-12 7-46M91 97v45M66 130l25-12 27 12"
+              fill="none"
+              stroke="currentColor"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              stroke-width="3"
+            />
+            <path
+              d="M75 71V48l43 8v27M75 48l25-10 43 8-25 10"
+              fill="none"
+              stroke="currentColor"
+              stroke-linejoin="round"
+              stroke-width="3"
+            />
+            <path
+              d="M92 69c8 0 14 6 14 14s-6 14-14 14-14-6-14-14 6-14 14-14Z"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              opacity=".5"
+            />
+          </svg>
+          <span aria-hidden="true">
+            <svg viewBox="0 0 24 24">
+              <path
+                d="m5 12 4 4 10-10"
+                fill="none"
+                stroke="currentColor"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2.6"
+              />
+            </svg>
+          </span>
         </div>
 
-        <div class="mt-8 grid gap-3 text-left text-neutral-700">
-          <div class="rounded-lg border border-neutral-200 bg-neutral-50 p-4">
-            <div class="h-2 overflow-hidden rounded bg-neutral-200">
-              <div
-                class="h-full rounded bg-neutral-950"
-                :class="command ? 'w-2/3' : 'w-1/3'"
-              ></div>
-            </div>
-            <p class="mt-3">{{ progressText }}</p>
+        <h2>{{ pickupTitle }}</h2>
+        <p class="pickup-subtitle">{{ pickupSubtitle }}</p>
+
+        <div class="pickup-divider" aria-hidden="true"></div>
+
+        <p class="pickup-time-label">剩余取货时间</p>
+        <strong class="pickup-time">{{ pickupTimeText }}</strong>
+        <p class="pickup-time-copy">超时未取货，商品将返回柜内</p>
+
+        <section class="pickup-notice">
+          <span aria-hidden="true">
+            <svg viewBox="0 0 24 24">
+              <path
+                d="M18 8a6 6 0 1 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"
+                fill="none"
+                stroke="currentColor"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="1.9"
+              />
+            </svg>
+          </span>
+          <div>
+            <h3>请轻轻关上取货口</h3>
+            <p>感谢您的购买，期待再次为您服务！</p>
           </div>
-          <div
-            v-if="hasCustomerVisibleError"
-            class="rounded-lg border border-neutral-200 bg-neutral-50 p-4 text-neutral-800"
-          >
-            出货遇到问题，请联系工作人员处理。
-          </div>
-        </div>
+        </section>
+      </main>
+
+      <div class="dispensing-actions">
+        <button class="dispensing-secondary" type="button" @click="goCatalog">
+          返回首页
+        </button>
+        <button class="dispensing-primary" type="button" @click="goCatalog">
+          {{ continueText }}
+        </button>
+      </div>
+
+      <section class="warm-tip">
+        <h2>❀ 温馨提示</h2>
+        <p>如商品有问题，请联系设备侧面客服热线</p>
+        <p>或扫描机身二维码进行反馈</p>
+      </section>
+
+      <img
+        :src="mascotListImage"
+        alt=""
+        class="dispensing-mascot pointer-events-none"
+        aria-hidden="true"
+      />
+      <img
+        :src="listSloganImage"
+        alt="让温柔贴近 让善意发生"
+        class="dispensing-slogan pointer-events-none"
+      />
+    </section>
+    <section v-else class="dispensing-empty-state">
+      <div>
+        <h1>取货状态已失效</h1>
+        <p>当前订单信息已更新或已结束，请返回商品列表重新选择。</p>
+        <button
+          class="kiosk-touch-target"
+          type="button"
+          @click="router.replace('/catalog')"
+        >
+          返回商品列表
+        </button>
       </div>
     </section>
   </KioskLayout>
 </template>
+
+<style scoped>
+:global(.kiosk-shell:has(.dispensing-page) > header) {
+  display: none;
+}
+
+:global(.kiosk-shell:has(.dispensing-page) > .kiosk-scroll) {
+  margin-top: 0;
+  padding-bottom: 0;
+}
+
+:global(.kiosk-shell:has(.dispensing-empty-state) > header) {
+  display: none;
+}
+
+.dispensing-empty-state {
+  display: grid;
+  min-height: 100%;
+  place-items: center;
+  color: #5c554c;
+  text-align: center;
+}
+
+.dispensing-empty-state > div {
+  width: min(100%, 28rem);
+  border: 1px solid rgba(211, 203, 180, 0.82);
+  border-radius: 20px;
+  background: rgba(255, 253, 248, 0.76);
+  padding: 2.4rem;
+}
+
+.dispensing-empty-state h1 {
+  font-size: 2rem;
+  font-weight: 800;
+}
+
+.dispensing-empty-state p {
+  margin-top: 0.8rem;
+  color: #746d63;
+}
+
+.dispensing-empty-state button {
+  margin-top: 1.6rem;
+  border-radius: 999px;
+  background: #6f835f;
+  padding: 0.9rem 1.8rem;
+  color: #fffdf8;
+  font-weight: 800;
+}
+
+.dispensing-page {
+  position: relative;
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  container-type: inline-size;
+  overflow: hidden;
+  margin: 0 -1.5rem -1.25rem;
+  padding: 1.7rem 4rem 1.2rem;
+  border: 1px solid rgba(89, 83, 66, 0.2);
+  border-radius: 28px;
+  background:
+    radial-gradient(
+      circle at 50% 18%,
+      rgba(255, 255, 255, 0.9),
+      transparent 36%
+    ),
+    radial-gradient(
+      circle at 0% 100%,
+      rgba(137, 157, 126, 0.15),
+      transparent 28%
+    ),
+    linear-gradient(180deg, #fffdf8 0%, #fbf7eb 62%, #f6f0df 100%);
+  color: #625b52;
+  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.82);
+}
+
+.dispensing-header {
+  position: relative;
+  z-index: 5;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.dispensing-brand {
+  display: flex;
+  align-items: center;
+  gap: 2.2rem;
+}
+
+.dispensing-brand img:first-child {
+  width: 13.2rem;
+  height: auto;
+}
+
+.dispensing-brand img:last-child {
+  width: 4.9rem;
+  height: 4.9rem;
+  object-fit: contain;
+}
+
+.dispensing-time {
+  color: #6f835f;
+  text-align: right;
+}
+
+.dispensing-time p {
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 3.25rem;
+  line-height: 1;
+}
+
+.dispensing-time span {
+  display: block;
+  margin-top: 0.8rem;
+  font-size: 0.9rem;
+}
+
+.dispensing-back {
+  position: relative;
+  z-index: 5;
+  display: inline-flex;
+  width: fit-content;
+  min-height: 52px;
+  align-items: center;
+  gap: 0.9rem;
+  margin-top: 3.5rem;
+  color: #6b6258;
+  font-family: SimSun, "Songti SC", "Noto Serif CJK SC", serif;
+  font-size: 1.55rem;
+  font-weight: 700;
+}
+
+.dispensing-back span {
+  display: grid;
+  width: 45px;
+  height: 45px;
+  place-items: center;
+  border: 1px solid rgba(198, 187, 154, 0.82);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.58);
+}
+
+.dispensing-title {
+  position: relative;
+  z-index: 4;
+  margin-top: 5.4rem;
+  text-align: center;
+}
+
+.dispensing-title h1 {
+  color: #4c463f;
+  font-family: SimSun, "Songti SC", "Noto Serif CJK SC", serif;
+  font-size: 2.85rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+}
+
+.dispensing-title span,
+.pickup-divider {
+  display: block;
+  width: 5.2rem;
+  height: 1.1rem;
+  margin: 1rem auto 0;
+  background: url("data:image/svg+xml,%3Csvg width='92' height='18' viewBox='0 0 92 18' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' stroke='%23c9b989' stroke-width='1.7'%3E%3Cpath d='M42 9h44'/%3E%3Cpath d='M50 13c15 0 21-8 5-8' stroke-linecap='round'/%3E%3Cpath d='M15 4c5 0 9 4 9 9M15 4c-5 0-9 4-9 9M15 4c0-5-4-7-7-1M15 4c0-5 4-7 7-1'/%3E%3C/g%3E%3C/svg%3E")
+    center / contain no-repeat;
+}
+
+.pickup-card {
+  position: relative;
+  z-index: 4;
+  width: min(100%, 48rem);
+  margin: 3rem auto 0;
+  border: 1px solid rgba(211, 203, 180, 0.82);
+  border-radius: 26px;
+  background: rgba(255, 253, 248, 0.58);
+  padding: 5.5rem 5.4rem 4.1rem;
+  text-align: center;
+  box-shadow: 0 22px 44px rgba(102, 92, 64, 0.07);
+}
+
+.pickup-illustration {
+  position: relative;
+  display: grid;
+  width: 15.8rem;
+  height: 15.8rem;
+  margin: 0 auto;
+  place-items: center;
+  border: 1px solid rgba(211, 203, 180, 0.82);
+  border-radius: 999px;
+  color: #c7bda9;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.pickup-illustration > svg {
+  width: 10.6rem;
+  height: 10.6rem;
+}
+
+.pickup-illustration span {
+  position: absolute;
+  right: 3.2rem;
+  bottom: 3rem;
+  display: grid;
+  width: 3.2rem;
+  height: 3.2rem;
+  place-items: center;
+  border-radius: 999px;
+  background: #6f835f;
+  color: #fffdf8;
+  box-shadow: 0 8px 18px rgba(85, 105, 76, 0.25);
+}
+
+.pickup-illustration span svg {
+  width: 1.8rem;
+  height: 1.8rem;
+}
+
+.pickup-error span {
+  background: #8b6f5f;
+}
+
+.pickup-card h2 {
+  margin-top: 3.5rem;
+  color: #6f835f;
+  font-family: SimSun, "Songti SC", "Noto Serif CJK SC", serif;
+  font-size: 2rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.pickup-subtitle {
+  margin-top: 1.1rem;
+  color: #7b746a;
+  font-size: 1.08rem;
+}
+
+.pickup-time-label {
+  margin-top: 3rem;
+  color: #5f584f;
+  font-size: 1.15rem;
+}
+
+.pickup-time {
+  display: block;
+  margin-top: 1.05rem;
+  color: #6f835f;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 2.85rem;
+  line-height: 1;
+  letter-spacing: 0.08em;
+}
+
+.pickup-time-copy {
+  margin-top: 1.2rem;
+  color: #827b70;
+  font-size: 1rem;
+}
+
+.pickup-notice {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 1.5rem;
+  align-items: center;
+  margin-top: 3rem;
+  border: 1px solid rgba(211, 203, 180, 0.74);
+  border-radius: 12px;
+  background: rgba(255, 253, 248, 0.54);
+  padding: 1.55rem 3.1rem;
+  text-align: left;
+}
+
+.pickup-notice span {
+  display: grid;
+  width: 4.6rem;
+  height: 4.6rem;
+  place-items: center;
+  border-radius: 999px;
+  background: #6f835f;
+  color: #fffdf8;
+}
+
+.pickup-notice span svg {
+  width: 2.5rem;
+  height: 2.5rem;
+}
+
+.pickup-notice div {
+  border-left: 1px solid rgba(211, 203, 180, 0.65);
+  padding-left: 1.55rem;
+}
+
+.pickup-notice h3 {
+  color: #625b52;
+  font-size: 1.1rem;
+  font-weight: 700;
+}
+
+.pickup-notice p {
+  margin-top: 0.65rem;
+  color: #756e64;
+  font-size: 1rem;
+}
+
+.dispensing-actions {
+  position: relative;
+  z-index: 5;
+  display: grid;
+  width: min(100%, 38rem);
+  grid-template-columns: 1fr 1fr;
+  gap: 5rem;
+  margin: 3rem auto 0;
+}
+
+.dispensing-actions button {
+  min-height: 4.25rem;
+  border-radius: 8px;
+  font-size: 1.25rem;
+  letter-spacing: 0.08em;
+}
+
+.dispensing-secondary {
+  border: 1px solid #9aa78f;
+  background: rgba(255, 253, 248, 0.72);
+  color: #6f835f;
+}
+
+.dispensing-primary {
+  background: #6f835f;
+  color: #fffdf8;
+  box-shadow: 0 10px 20px rgba(85, 105, 76, 0.16);
+}
+
+.warm-tip {
+  position: relative;
+  z-index: 5;
+  width: min(100%, 33rem);
+  margin: 3.8rem auto 0;
+  color: #746d63;
+  padding-left: 4.5rem;
+}
+
+.warm-tip h2 {
+  color: #5f584f;
+  font-family: SimSun, "Songti SC", "Noto Serif CJK SC", serif;
+  font-size: 1.2rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.warm-tip p {
+  margin-top: 1rem;
+  font-size: 1rem;
+}
+
+.dispensing-mascot {
+  position: absolute;
+  bottom: 1.25rem;
+  left: 0.65rem;
+  z-index: 3;
+  width: clamp(13rem, 22cqw, 18rem);
+  height: auto;
+  max-height: 24rem;
+  object-fit: contain;
+  object-position: left bottom;
+}
+
+.dispensing-slogan {
+  position: absolute;
+  right: 0;
+  bottom: 0.9rem;
+  left: 0;
+  z-index: 4;
+  width: 360px;
+  max-width: calc(100% - 2rem);
+  height: auto;
+  margin: 0 auto;
+  object-fit: contain;
+}
+
+.dispensing-mist {
+  position: absolute;
+  z-index: 0;
+  pointer-events: none;
+  border-radius: 999px;
+  opacity: 0.55;
+}
+
+.dispensing-mist-left {
+  bottom: 1rem;
+  left: -8rem;
+  width: 32rem;
+  height: 12rem;
+  background: rgba(131, 157, 126, 0.18);
+  filter: blur(30px);
+}
+
+.dispensing-mist-right {
+  right: -9rem;
+  top: 6rem;
+  width: 30rem;
+  height: 14rem;
+  background: rgba(206, 194, 156, 0.18);
+  filter: blur(36px);
+}
+
+@container (max-width: 720px) {
+  .dispensing-page {
+    padding: 0.75rem 1rem 0.7rem;
+    border-radius: 20px;
+  }
+
+  .dispensing-brand {
+    gap: 0.8rem;
+  }
+
+  .dispensing-brand img:first-child {
+    width: 6.8rem;
+  }
+
+  .dispensing-brand img:last-child {
+    width: 2.55rem;
+    height: 2.55rem;
+  }
+
+  .dispensing-time p {
+    font-size: 1.75rem;
+  }
+
+  .dispensing-time span {
+    margin-top: 0.3rem;
+    font-size: 0.66rem;
+  }
+
+  .dispensing-back {
+    min-height: 36px;
+    margin-top: 0.9rem;
+    gap: 0.6rem;
+    font-size: 0.98rem;
+  }
+
+  .dispensing-back span {
+    width: 32px;
+    height: 32px;
+  }
+
+  .dispensing-title {
+    margin-top: 1.35rem;
+  }
+
+  .dispensing-title h1 {
+    font-size: 1.55rem;
+  }
+
+  .dispensing-title span,
+  .pickup-divider {
+    margin-top: 0.45rem;
+  }
+
+  .pickup-card {
+    width: min(100%, 29.5rem);
+    margin-top: 0.95rem;
+    border-radius: 20px;
+    padding: 1.65rem 1.35rem 1.1rem;
+  }
+
+  .pickup-illustration {
+    width: 7.8rem;
+    height: 7.8rem;
+  }
+
+  .pickup-illustration > svg {
+    width: 5.2rem;
+    height: 5.2rem;
+  }
+
+  .pickup-illustration span {
+    right: 1.35rem;
+    bottom: 1.25rem;
+    width: 2rem;
+    height: 2rem;
+  }
+
+  .pickup-illustration span svg {
+    width: 1.25rem;
+    height: 1.25rem;
+  }
+
+  .pickup-card h2 {
+    margin-top: 1.2rem;
+    font-size: 1.28rem;
+  }
+
+  .pickup-subtitle,
+  .pickup-time-copy,
+  .pickup-notice p,
+  .warm-tip p {
+    font-size: 0.78rem;
+  }
+
+  .pickup-subtitle {
+    margin-top: 0.55rem;
+  }
+
+  .pickup-time-label {
+    margin-top: 1.15rem;
+    font-size: 0.92rem;
+  }
+
+  .pickup-time {
+    margin-top: 0.45rem;
+    font-size: 1.85rem;
+  }
+
+  .pickup-time-copy {
+    margin-top: 0.55rem;
+  }
+
+  .pickup-notice {
+    margin-top: 1rem;
+    gap: 0.75rem;
+    padding: 0.75rem 1rem;
+  }
+
+  .pickup-notice span {
+    width: 2.8rem;
+    height: 2.8rem;
+  }
+
+  .pickup-notice span svg {
+    width: 1.8rem;
+    height: 1.8rem;
+  }
+
+  .pickup-notice div {
+    padding-left: 0.8rem;
+  }
+
+  .pickup-notice h3 {
+    font-size: 0.9rem;
+  }
+
+  .pickup-notice p {
+    margin-top: 0.35rem;
+  }
+
+  .dispensing-actions {
+    width: min(100%, 26rem);
+    gap: 1rem;
+    margin-top: 1rem;
+  }
+
+  .dispensing-actions button {
+    min-height: 2.9rem;
+    font-size: 0.86rem;
+  }
+
+  .warm-tip {
+    width: min(100%, 22rem);
+    margin-top: 0.9rem;
+    padding-left: 6rem;
+  }
+
+  .warm-tip h2 {
+    font-size: 0.9rem;
+  }
+
+  .warm-tip p {
+    margin-top: 0.35rem;
+  }
+
+  .dispensing-mascot {
+    z-index: 1;
+    width: 7.6rem;
+    max-height: 10.2rem;
+    opacity: 0.9;
+  }
+
+  .dispensing-slogan {
+    bottom: 0.35rem;
+    width: 190px;
+  }
+}
+</style>

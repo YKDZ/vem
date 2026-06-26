@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useRouter } from "vue-router";
 
 import type { CatalogTopCategoryKey } from "@/catalog/view-model";
@@ -11,38 +11,44 @@ import carouselImage3 from "@/assets/home/carousel-3.jpg";
 import iconSocksImage from "@/assets/home/icon-socks.png";
 import iconTshirtImage from "@/assets/home/icon-tshirt.png";
 import iconUnderwearImage from "@/assets/home/icon-underwear.png";
+import listSloganImage from "@/assets/home/list-slogan.png";
+import listTitleImage from "@/assets/home/list-title.png";
 import logoImage from "@/assets/home/logo.png";
-import mascotBottomImage from "@/assets/home/mascot-bottom.png";
+import mascotListImage from "@/assets/home/mascot-list.png";
 import mascotTopImage from "@/assets/home/mascot-top-cutout.png";
 import sloganCalligraphyImage from "@/assets/home/slogan-calligraphy.png";
-import {
-  firstItemInGroups,
-  groupItemsByTopCategory,
-  groupSubcategories,
-} from "@/catalog/view-model";
-import ProductTile from "@/components/catalog/ProductTile.vue";
-import ProductDetailPanel from "@/components/product/ProductDetailPanel.vue";
-import { useVisionRecommendations } from "@/composables/useVisionRecommendations";
 import KioskLayout from "@/layouts/KioskLayout.vue";
-import { useCatalogStore } from "@/stores/catalog";
 import { useCheckoutStore } from "@/stores/checkout";
 import { useConnectivityStore } from "@/stores/connectivity";
 
 const router = useRouter();
 const connectivityStore = useConnectivityStore();
-const catalogStore = useCatalogStore();
 const checkoutStore = useCheckoutStore();
-const { currentProfile } = useVisionRecommendations();
 const READINESS_REFRESH_INTERVAL_MS = 5000;
 const CLOCK_REFRESH_INTERVAL_MS = 30_000;
 
 const selectedTopCategoryKey = ref<CatalogTopCategoryKey | null>(null);
-const selectedCatalogKey = ref<string | null>(null);
+const activeGenderFilter = ref<ProductGenderFilter>("all");
 const activeCarouselIndex = ref(0);
 const now = ref(new Date());
 let readinessRefreshTimer: number | null = null;
 let readinessRefreshInFlight: Promise<void> | null = null;
 let clockTimer: number | null = null;
+
+type ProductGenderFilter = "all" | "male" | "female" | "kids" | "elder";
+
+type DisplayProduct = {
+  id: string;
+  name: string;
+  categoryKey: CatalogTopCategoryKey;
+  gender: Exclude<ProductGenderFilter, "all">;
+  genderLabel: string;
+  colors: number;
+  sizeLabel: string;
+  price: string;
+  priceCents: number;
+  image: string;
+};
 
 const carouselSlides = [
   carouselImage1,
@@ -63,29 +69,146 @@ const quickActions = [
   { label: "优惠活动", description: "超值优惠享不停", icon: "coupon" },
   { label: "帮助中心", description: "常见问题解答", icon: "help" },
 ] as const;
+const homeCategoryEntries = (
+  Object.keys(homeCategoryMeta) as CatalogTopCategoryKey[]
+).map((key) => ({
+  key,
+  ...homeCategoryMeta[key],
+}));
+const genderFilters: {
+  key: ProductGenderFilter;
+  label: string;
+}[] = [
+  { key: "all", label: "全部" },
+  { key: "male", label: "男款" },
+  { key: "female", label: "女款" },
+  { key: "kids", label: "儿童" },
+  { key: "elder", label: "老人" },
+];
+const displayProducts: DisplayProduct[] = [
+  {
+    id: "socks-sport",
+    name: "运动袜",
+    categoryKey: "socks",
+    gender: "male",
+    genderLabel: "男款",
+    colors: 3,
+    sizeLabel: "常规码",
+    price: "¥ 15.00",
+    priceCents: 1500,
+    image: iconSocksImage,
+  },
+  {
+    id: "socks-business",
+    name: "商务袜",
+    categoryKey: "socks",
+    gender: "female",
+    genderLabel: "女款",
+    colors: 3,
+    sizeLabel: "常规码",
+    price: "¥ 18.00",
+    priceCents: 1800,
+    image: iconSocksImage,
+  },
+  {
+    id: "socks-casual",
+    name: "休闲袜",
+    categoryKey: "socks",
+    gender: "male",
+    genderLabel: "男款",
+    colors: 3,
+    sizeLabel: "常规码",
+    price: "¥ 15.00",
+    priceCents: 1500,
+    image: iconSocksImage,
+  },
+  {
+    id: "underwear-boxer",
+    name: "舒适平角裤",
+    categoryKey: "underwear",
+    gender: "male",
+    genderLabel: "男款",
+    colors: 2,
+    sizeLabel: "M-XL",
+    price: "¥ 29.00",
+    priceCents: 2900,
+    image: iconUnderwearImage,
+  },
+  {
+    id: "underwear-seamless",
+    name: "无痕内裤",
+    categoryKey: "underwear",
+    gender: "female",
+    genderLabel: "女款",
+    colors: 2,
+    sizeLabel: "均码",
+    price: "¥ 26.00",
+    priceCents: 2600,
+    image: iconUnderwearImage,
+  },
+  {
+    id: "underwear-soft",
+    name: "亲肤内裤",
+    categoryKey: "underwear",
+    gender: "elder",
+    genderLabel: "老人",
+    colors: 2,
+    sizeLabel: "L-XXL",
+    price: "¥ 32.00",
+    priceCents: 3200,
+    image: iconUnderwearImage,
+  },
+  {
+    id: "tshirt-basic",
+    name: "基础短袖",
+    categoryKey: "tshirts",
+    gender: "male",
+    genderLabel: "男款",
+    colors: 3,
+    sizeLabel: "M-XXL",
+    price: "¥ 39.00",
+    priceCents: 3900,
+    image: iconTshirtImage,
+  },
+  {
+    id: "tshirt-soft",
+    name: "柔棉T恤",
+    categoryKey: "tshirts",
+    gender: "female",
+    genderLabel: "女款",
+    colors: 3,
+    sizeLabel: "S-XL",
+    price: "¥ 42.00",
+    priceCents: 4200,
+    image: iconTshirtImage,
+  },
+  {
+    id: "tshirt-kids",
+    name: "儿童短袖",
+    categoryKey: "tshirts",
+    gender: "kids",
+    genderLabel: "儿童",
+    colors: 3,
+    sizeLabel: "110-150",
+    price: "¥ 35.00",
+    priceCents: 3500,
+    image: iconTshirtImage,
+  },
+];
 
 const canDisplayAsSaleReady = computed(
   () => connectivityStore.isSaleNetworkReady,
 );
-const categoryGroups = computed(() =>
-  groupItemsByTopCategory(catalogStore.availableItems),
+const activeProducts = computed(() =>
+  displayProducts.filter((product) => {
+    const matchesCategory =
+      product.categoryKey === selectedTopCategoryKey.value;
+    const matchesGender =
+      activeGenderFilter.value === "all" ||
+      product.gender === activeGenderFilter.value;
+    return matchesCategory && matchesGender;
+  }),
 );
-const activeTopCategory = computed(() =>
-  categoryGroups.value.find(
-    (group) => group.key === selectedTopCategoryKey.value,
-  ),
-);
-const subcategoryGroups = computed(() =>
-  groupSubcategories(activeTopCategory.value?.items ?? []),
-);
-const selectedItem = computed(() => {
-  const key = selectedCatalogKey.value;
-  if (!key) return firstItemInGroups(subcategoryGroups.value);
-  return (
-    activeTopCategory.value?.items.find((item) => item.catalogKey === key) ??
-    firstItemInGroups(subcategoryGroups.value)
-  );
-});
 const customerReadinessMessage = computed(() => {
   if (canDisplayAsSaleReady.value) return null;
   return (
@@ -100,29 +223,13 @@ const clockText = computed(() =>
     hour12: false,
   }),
 );
-const dateText = computed(() =>
-  now.value.toLocaleDateString("zh-CN", {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    weekday: "long",
-  }),
-);
-
-watch(
-  [activeTopCategory, subcategoryGroups],
-  () => {
-    const items = activeTopCategory.value?.items ?? [];
-    if (
-      selectedCatalogKey.value &&
-      items.some((item) => item.catalogKey === selectedCatalogKey.value)
-    ) {
-      return;
-    }
-    selectedCatalogKey.value =
-      firstItemInGroups(subcategoryGroups.value)?.catalogKey ?? null;
-  },
-  { immediate: true },
+const dateText = computed(
+  () =>
+    `${now.value.toLocaleDateString("zh-CN", {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    })} ${now.value.toLocaleDateString("zh-CN", { weekday: "long" })}`,
 );
 
 function shouldEnterMaintenance(): boolean {
@@ -193,36 +300,98 @@ function nextSlide(): void {
 
 function selectTopCategory(key: CatalogTopCategoryKey): void {
   selectedTopCategoryKey.value = key;
-  selectedCatalogKey.value =
-    firstItemInGroups(
-      groupSubcategories(
-        categoryGroups.value.find((group) => group.key === key)?.items ?? [],
-      ),
-    )?.catalogKey ?? null;
-}
-
-function selectProduct(item: MachineCatalogItem): void {
-  selectedCatalogKey.value = item.catalogKey;
+  activeGenderFilter.value = "all";
 }
 
 function backToHome(): void {
   selectedTopCategoryKey.value = null;
-  selectedCatalogKey.value = null;
+  activeGenderFilter.value = "all";
 }
 
-async function goCheckout(item: MachineCatalogItem): Promise<void> {
+function staticCatalogItemFor(product: DisplayProduct): MachineCatalogItem {
+  const variantId = `00000000-0000-4000-8000-${product.id
+    .replace(/[^a-z0-9]/gi, "")
+    .slice(0, 12)
+    .padEnd(12, "0")}`;
+  const slotId = `00000000-0000-4000-9000-${product.id
+    .replace(/[^a-z0-9]/gi, "")
+    .slice(0, 12)
+    .padEnd(12, "1")}`;
+  const inventoryId = `00000000-0000-4000-a000-${product.id
+    .replace(/[^a-z0-9]/gi, "")
+    .slice(0, 12)
+    .padEnd(12, "2")}`;
+  const productId = `00000000-0000-4000-b000-${product.id
+    .replace(/[^a-z0-9]/gi, "")
+    .slice(0, 12)
+    .padEnd(12, "3")}`;
+  const slotCandidate = {
+    slotId,
+    slotCode: "A01",
+    layerNo: 1,
+    cellNo: 1,
+    inventoryId,
+    variantId,
+    sku: product.id,
+    size: product.sizeLabel,
+    color: `${product.colors}种颜色`,
+    priceCents: product.priceCents,
+    capacity: 6,
+    parLevel: 6,
+    physicalStock: 3,
+    saleableStock: 3,
+    slotSalesState: "sale_ready" as const,
+  };
+  const variantCandidate = {
+    variantId,
+    sku: product.id,
+    size: product.sizeLabel,
+    color: `${product.colors}种颜色`,
+    priceCents: product.priceCents,
+    capacity: 6,
+    parLevel: 6,
+    physicalStock: 3,
+    saleableStock: 3,
+    slotSalesState: "sale_ready" as const,
+    slotCandidates: [slotCandidate],
+  };
+
+  return {
+    machineCode: "demo-machine",
+    ...slotCandidate,
+    productId,
+    productName: product.name,
+    productDescription: `${product.genderLabel}，${product.colors}种颜色，${product.sizeLabel}。`,
+    coverImageUrl: product.image,
+    categoryId: null,
+    categoryName: homeCategoryMeta[product.categoryKey].label,
+    productSortOrder: 0,
+    targetGender:
+      product.gender === "male" || product.gender === "female"
+        ? product.gender
+        : null,
+    catalogKey: `static:${product.id}`,
+    aggregatedSlotCount: 1,
+    slotCandidates: [slotCandidate],
+    variantCandidates: [variantCandidate],
+  };
+}
+
+async function openProductDetail(product: DisplayProduct): Promise<void> {
+  const item = staticCatalogItemFor(product);
   checkoutStore.selectItem(item);
-  await router.push("/checkout");
+  await router.push({
+    name: "product-detail",
+    params: { catalogKey: item.catalogKey },
+  });
 }
 
 onMounted(() => {
-  catalogStore.startAutoRefresh();
   startReadinessAutoRefresh();
   startClock();
 });
 
 onUnmounted(() => {
-  catalogStore.stopAutoRefresh();
   stopReadinessAutoRefresh();
   stopClock();
 });
@@ -255,7 +424,7 @@ onUnmounted(() => {
           <p class="font-serif text-4xl leading-none font-bold">
             {{ clockText }}
           </p>
-          <p class="mt-1 text-xs tracking-wide">{{ dateText }}</p>
+          <p class="mt-1 text-xs whitespace-nowrap">{{ dateText }}</p>
         </div>
       </header>
 
@@ -317,40 +486,29 @@ onUnmounted(() => {
         <span class="title-ornament title-ornament-right"></span>
       </div>
 
-      <div
-        v-if="categoryGroups.some((group) => group.items.length > 0)"
-        class="relative z-10 mt-5 grid shrink-0 grid-cols-3 gap-4"
-      >
+      <div class="relative z-10 mt-5 grid shrink-0 grid-cols-3 gap-4">
         <button
-          v-for="group in categoryGroups"
-          :key="group.key"
+          v-for="category in homeCategoryEntries"
+          :key="category.key"
           class="home-category-card kiosk-touch-target"
           type="button"
-          :disabled="group.items.length === 0"
-          @click="selectTopCategory(group.key)"
+          @click="selectTopCategory(category.key)"
         >
           <img
-            :src="homeCategoryMeta[group.key].icon"
+            :src="category.icon"
             alt=""
             class="category-illustration"
             aria-hidden="true"
           />
           <span class="category-title-text mt-3 block text-[#4b3f34]">
-            {{ homeCategoryMeta[group.key].label }}
+            {{ category.label }}
           </span>
           <span class="mt-2 block text-xs tracking-[0.2em] text-[#c2b8a6]">
-            {{ homeCategoryMeta[group.key].english }}
+            {{ category.english }}
           </span>
-          <span class="home-category-action">点击选购 ›</span>
+          <span class="home-category-action">点击选购</span>
         </button>
       </div>
-
-      <section
-        v-else
-        class="relative z-10 mt-6 flex min-h-0 flex-1 items-center justify-center rounded-2xl border border-[#ded6c2] bg-white/80 p-8 text-center text-[#6b735e]"
-      >
-        暂无可售商品
-      </section>
 
       <div class="relative z-30 mt-7 grid shrink-0 grid-cols-4 gap-2 pr-28">
         <button
@@ -421,7 +579,7 @@ onUnmounted(() => {
         class="pointer-events-none absolute bottom-[-0.35rem] left-8 z-[2] w-36 opacity-20"
       />
       <img
-        :src="mascotBottomImage"
+        :src="mascotListImage"
         alt=""
         class="home-bottom-mascot pointer-events-none absolute right-0 bottom-1 z-[2] w-32"
         aria-hidden="true"
@@ -429,76 +587,208 @@ onUnmounted(() => {
       <div class="home-hills" aria-hidden="true"></div>
     </section>
 
-    <section v-else class="flex min-h-0 flex-1 flex-col gap-4">
-      <div class="flex shrink-0 items-center justify-between gap-4">
-        <button
-          class="kiosk-touch-target rounded-lg border border-neutral-300 bg-white px-4 py-2 font-bold text-neutral-950"
-          type="button"
-          @click="backToHome"
-        >
-          返回
-        </button>
-        <h2 class="text-3xl font-black text-neutral-950">
-          {{ activeTopCategory?.label }}
-        </h2>
+    <section
+      v-else
+      class="catalog-list relative -mx-6 -my-5 flex min-h-0 flex-1 flex-col overflow-hidden px-7 py-6"
+    >
+      <div class="home-mist home-mist-left"></div>
+      <div class="home-mist home-mist-right"></div>
+
+      <header class="relative z-10 flex shrink-0 items-start justify-between">
+        <div class="flex items-center gap-3">
+          <button
+            class="catalog-back-button kiosk-touch-target"
+            type="button"
+            aria-label="返回首页"
+            @click="backToHome"
+          >
+            ‹
+          </button>
+          <img
+            :src="logoImage"
+            alt="唐诗村"
+            class="h-9 w-auto object-contain"
+          />
+          <img
+            :src="mascotTopImage"
+            alt=""
+            class="h-14 w-14 object-contain"
+            aria-hidden="true"
+          />
+        </div>
+        <div class="text-right text-[#6f835f]">
+          <p class="font-serif text-4xl leading-none font-bold">
+            {{ clockText }}
+          </p>
+          <p class="mt-1 text-xs whitespace-nowrap">{{ dateText }}</p>
+        </div>
+      </header>
+
+      <div class="list-heading-row">
+        <img
+          :src="listTitleImage"
+          alt="商品列表，请点击选择您需要的商品"
+          class="list-title-image"
+        />
+        <label class="catalog-search" aria-label="搜索商品">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path
+              d="m20 20-4.5-4.5M10.8 18a7.2 7.2 0 1 1 0-14.4 7.2 7.2 0 0 1 0 14.4Z"
+              fill="none"
+              stroke="currentColor"
+              stroke-linecap="round"
+              stroke-width="1.8"
+            />
+          </svg>
+          <input type="search" placeholder="搜索商品" />
+        </label>
       </div>
 
       <p
         v-if="customerReadinessMessage"
-        class="shrink-0 rounded-lg border border-neutral-300 bg-white p-4 text-neutral-800"
+        class="relative z-10 mt-3 shrink-0 rounded-2xl border border-[#d8cfb9] bg-white/80 p-3 text-sm text-[#5f644f]"
       >
         {{ customerReadinessMessage }}
       </p>
 
-      <div
-        class="grid min-h-0 flex-1 grid-cols-[minmax(0,1fr)_minmax(15rem,38%)] gap-4"
-      >
-        <div
-          class="kiosk-scroll min-h-0 overflow-y-auto rounded-lg border border-neutral-200 bg-neutral-50 p-4"
-        >
-          <section
-            v-for="group in subcategoryGroups"
-            :key="group.key"
-            class="mt-6 first:mt-0"
+      <div class="catalog-list-body">
+        <aside class="catalog-sidebar">
+          <button
+            v-for="category in homeCategoryEntries"
+            :key="category.key"
+            class="sidebar-category kiosk-touch-target"
+            :class="{
+              'sidebar-category-active':
+                category.key === selectedTopCategoryKey,
+            }"
+            type="button"
+            @click="selectTopCategory(category.key)"
           >
-            <h3 class="mb-3 text-xl font-black text-neutral-950">
-              {{ group.label }}
-            </h3>
-            <div class="grid grid-cols-1 gap-3">
-              <ProductTile
-                v-for="item in group.items"
-                :key="item.catalogKey"
-                :item="item"
-                :selected="item.catalogKey === selectedItem?.catalogKey"
-                @select="selectProduct"
-              />
-            </div>
-          </section>
-        </div>
+            <span>
+              <strong>{{ category.label }}</strong>
+              <small>{{ category.english }}</small>
+            </span>
+          </button>
+        </aside>
 
-        <ProductDetailPanel
-          v-if="selectedItem"
-          :key="selectedItem.catalogKey"
-          :item="selectedItem"
-          :profile="currentProfile"
-          @purchase="goCheckout"
-        />
+        <main class="product-main">
+          <div class="product-filter-row">
+            <button
+              v-for="filter in genderFilters"
+              :key="filter.key"
+              class="gender-filter kiosk-touch-target"
+              :class="{
+                'gender-filter-active': filter.key === activeGenderFilter,
+              }"
+              type="button"
+              @click="activeGenderFilter = filter.key"
+            >
+              {{ filter.label }}
+            </button>
+          </div>
+
+          <div class="kiosk-scroll product-scroll">
+            <div class="product-grid">
+              <button
+                v-for="product in activeProducts"
+                :key="product.id"
+                class="display-product-card"
+                type="button"
+                @click="openProductDetail(product)"
+              >
+                <div class="product-image-panel">
+                  <img :src="product.image" :alt="product.name" />
+                  <span class="product-bamboo" aria-hidden="true"></span>
+                </div>
+                <div class="mt-5">
+                  <h3>{{ product.name }}</h3>
+                  <p class="mt-3">
+                    {{ product.genderLabel }} ｜ {{ product.colors }}种颜色
+                  </p>
+                  <p class="mt-1">{{ product.sizeLabel }}</p>
+                  <strong>{{ product.price }}</strong>
+                </div>
+              </button>
+            </div>
+          </div>
+        </main>
       </div>
+
+      <img
+        :src="mascotListImage"
+        alt=""
+        class="list-bottom-mascot pointer-events-none absolute bottom-3 left-2 z-[3]"
+        aria-hidden="true"
+      />
+      <div class="list-bottom-bar">
+        <button class="checkout-button kiosk-touch-target" type="button">
+          去结算
+        </button>
+      </div>
+      <img
+        :src="listSloganImage"
+        alt="让温柔贴近 让善意发生"
+        class="list-slogan-image pointer-events-none"
+      />
     </section>
   </KioskLayout>
 </template>
 
 <style scoped>
-:global(.kiosk-shell:has(.catalog-home) > header) {
+:global(.kiosk-shell:has(.catalog-home) > header),
+:global(.kiosk-shell:has(.catalog-list) > header) {
   display: none;
 }
 
-:global(.kiosk-shell:has(.catalog-home) > .kiosk-scroll) {
+:global(.kiosk-shell:has(.catalog-home) > .kiosk-scroll),
+:global(.kiosk-shell:has(.catalog-list) > .kiosk-scroll) {
   margin-top: 0;
   padding-bottom: 0;
 }
 
-.catalog-home {
+.catalog-home,
+.catalog-list {
+  container-type: inline-size;
+}
+
+.catalog-list-body {
+  position: relative;
+  z-index: 10;
+  display: grid;
+  min-height: 0;
+  flex: 1;
+  grid-template-columns: 6.4rem minmax(0, 1fr);
+  gap: 1.05rem;
+  margin-top: 1.55rem;
+  padding-bottom: 7.5rem;
+}
+
+.product-main {
+  min-height: 0;
+}
+
+.product-filter-row {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 0.85rem;
+  align-items: center;
+}
+
+.product-scroll {
+  min-height: 0;
+  max-height: 100%;
+  margin-top: 1.35rem;
+  overflow-y: auto;
+  padding-right: 0.5rem;
+}
+
+.product-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1.15rem;
+}
+
+.catalog-list {
   background:
     radial-gradient(
       circle at 0% 4%,
@@ -514,6 +804,443 @@ onUnmounted(() => {
   border: 1px solid rgba(89, 83, 66, 0.2);
   border-radius: 20px;
   box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.78);
+}
+
+.catalog-back-button {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border: 1px solid rgba(198, 187, 154, 0.76);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.72);
+  color: #6f835f;
+  font-size: 2rem;
+  line-height: 1;
+  box-shadow: 0 8px 18px rgba(102, 92, 64, 0.08);
+}
+
+.list-heading-row {
+  position: relative;
+  z-index: 10;
+  display: grid;
+  grid-template-columns: 270px minmax(220px, 270px);
+  gap: 1.5rem;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 1.6rem;
+}
+
+.list-title-image {
+  width: 255px;
+  max-width: 100%;
+  height: auto;
+  object-fit: contain;
+}
+
+.catalog-search {
+  display: flex;
+  width: 360px;
+  min-height: 56px;
+  align-items: center;
+  gap: 12px;
+  justify-self: end;
+  border: 1px solid rgba(181, 171, 132, 0.82);
+  border-radius: 999px;
+  background:
+    linear-gradient(
+      180deg,
+      rgba(255, 254, 249, 0.9),
+      rgba(248, 243, 232, 0.78)
+    ),
+    rgba(255, 252, 244, 0.72);
+  padding: 0 20px;
+  color: #6f7f61;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.86),
+    inset 0 -10px 18px rgba(214, 204, 174, 0.12),
+    0 10px 22px rgba(102, 92, 64, 0.07);
+  transition:
+    border-color 0.18s ease,
+    box-shadow 0.18s ease,
+    background 0.18s ease;
+}
+
+.catalog-search:focus-within {
+  border-color: rgba(112, 132, 95, 0.88);
+  background: rgba(255, 254, 249, 0.95);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.95),
+    0 0 0 4px rgba(117, 136, 104, 0.12),
+    0 14px 28px rgba(102, 92, 64, 0.1);
+}
+
+.catalog-search svg {
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+  color: #6c8060;
+}
+
+.catalog-search input {
+  min-width: 0;
+  flex: 1;
+  background: transparent;
+  color: #5c554c;
+  font-size: 1.05rem;
+  outline: none;
+}
+
+.catalog-search input::placeholder {
+  color: #8f8879;
+}
+
+.catalog-sidebar {
+  position: relative;
+  z-index: 2;
+  align-self: start;
+  min-height: 37.5rem;
+  overflow: hidden;
+  border: 1px solid rgba(206, 197, 169, 0.78);
+  border-radius: 18px;
+  background: rgba(255, 253, 248, 0.7);
+  padding: 18px 0;
+  box-shadow: 0 12px 26px rgba(102, 92, 64, 0.08);
+}
+
+.sidebar-category {
+  display: flex;
+  width: calc(100% + 8px);
+  min-height: 66px;
+  align-items: center;
+  margin-left: 0;
+  padding: 0 10px;
+  border-radius: 0 18px 18px 0;
+  color: #60594d;
+  text-align: left;
+}
+
+.sidebar-category strong {
+  display: block;
+  font-family: SimSun, "Songti SC", "Noto Serif CJK SC", serif;
+  font-size: 1.04rem;
+  line-height: 1;
+}
+
+.sidebar-category small {
+  display: block;
+  margin-top: 8px;
+  color: #aaa293;
+  font-size: 0.5rem;
+  letter-spacing: 0.12em;
+}
+
+.sidebar-category-active {
+  background: linear-gradient(180deg, #758868, #627655);
+  color: #fffdf7;
+  box-shadow: 0 10px 18px rgba(82, 101, 65, 0.18);
+}
+
+.sidebar-category-active small {
+  color: rgba(255, 253, 247, 0.72);
+}
+
+.gender-filter {
+  min-width: 0;
+  min-height: 48px;
+  border: 1px solid rgba(206, 197, 169, 0.78);
+  border-radius: 999px;
+  background: rgba(255, 253, 248, 0.74);
+  color: #615a50;
+  font-family: SimSun, "Songti SC", "Noto Serif CJK SC", serif;
+  font-size: 1.08rem;
+  font-weight: 700;
+  box-shadow: 0 8px 16px rgba(102, 92, 64, 0.06);
+}
+
+.gender-filter-active {
+  border-color: transparent;
+  background: linear-gradient(180deg, #758868, #627655);
+  color: #fffdf7;
+}
+
+.display-product-card {
+  display: block;
+  width: 100%;
+  min-height: 244px;
+  overflow: hidden;
+  border: 1px solid rgba(211, 203, 180, 0.92);
+  border-radius: 20px;
+  background:
+    linear-gradient(
+      180deg,
+      rgba(255, 254, 250, 0.88),
+      rgba(249, 245, 236, 0.9)
+    ),
+    radial-gradient(
+      circle at 88% 88%,
+      rgba(129, 151, 107, 0.12),
+      transparent 34%
+    );
+  padding: 9px 9px 14px;
+  color: #4f473f;
+  text-align: left;
+  box-shadow: 0 14px 30px rgba(102, 92, 64, 0.08);
+}
+
+.product-image-panel {
+  position: relative;
+  display: grid;
+  height: 118px;
+  overflow: hidden;
+  place-items: center;
+  border-radius: 18px;
+  background: radial-gradient(circle at 50% 45%, #fff 0%, #f7f0e4 64%), #f7f0e4;
+}
+
+.product-image-panel img {
+  position: relative;
+  z-index: 2;
+  width: 78px;
+  height: 78px;
+  object-fit: contain;
+  filter: drop-shadow(0 16px 16px rgba(81, 70, 51, 0.12));
+}
+
+.product-bamboo {
+  position: absolute;
+  right: 0;
+  bottom: -8px;
+  width: 88px;
+  height: 132px;
+  opacity: 0.18;
+  background: url("data:image/svg+xml,%3Csvg width='88' height='132' viewBox='0 0 88 132' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' stroke='%23768b68' stroke-width='1.4' stroke-linecap='round'%3E%3Cpath d='M52 130C49 96 52 56 68 12'/%3E%3Cpath d='M38 126c3-31 1-65-10-98'/%3E%3Cpath d='M61 53c10-11 19-16 25-17-4 8-12 14-25 17Z'/%3E%3Cpath d='M56 82c11-9 20-12 27-12-5 7-13 11-27 12Z'/%3E%3Cpath d='M33 60C21 50 12 46 4 45c5 8 15 13 29 15Z'/%3E%3Cpath d='M35 92C22 85 12 83 5 84c7 6 17 9 30 8Z'/%3E%3C/g%3E%3C/svg%3E")
+    center / contain no-repeat;
+}
+
+.display-product-card h3 {
+  font-family: SimSun, "Songti SC", "Noto Serif CJK SC", serif;
+  font-size: 1.22rem;
+  font-weight: 700;
+  line-height: 1.1;
+}
+
+.display-product-card p {
+  color: #827b70;
+  font-size: 0.88rem;
+}
+
+.display-product-card strong {
+  display: block;
+  margin-top: 8px;
+  color: #6f835f;
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 1.42rem;
+  line-height: 1;
+  text-align: right;
+}
+
+.list-bottom-mascot {
+  width: 12.2rem;
+  height: 19.6rem;
+  object-fit: cover;
+  object-position: left bottom;
+  mix-blend-mode: multiply;
+}
+
+.list-bottom-bar {
+  position: absolute;
+  right: 44px;
+  bottom: 54px;
+  left: 162px;
+  z-index: 4;
+  display: grid;
+  min-height: 78px;
+  grid-template-columns: minmax(180px, 260px);
+  gap: 22px;
+  align-items: center;
+  justify-content: end;
+}
+
+.checkout-button {
+  min-height: 70px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #758868, #627655);
+  color: #fffdf7;
+  font-family: SimSun, "Songti SC", "Noto Serif CJK SC", serif;
+  font-size: 1.55rem;
+  font-weight: 700;
+  box-shadow: 0 14px 24px rgba(82, 101, 65, 0.2);
+}
+
+.list-slogan {
+  position: absolute;
+  right: 0;
+  bottom: 16px;
+  left: 0;
+  z-index: 4;
+  color: #a9a07d;
+  font-size: 0.95rem;
+  letter-spacing: 0.3em;
+  text-align: center;
+}
+
+.list-slogan-image {
+  position: absolute;
+  right: 0;
+  bottom: 12px;
+  left: 0;
+  z-index: 4;
+  width: 270px;
+  max-width: calc(100% - 2rem);
+  height: auto;
+  margin: 0 auto;
+  object-fit: contain;
+}
+
+@container (max-width: 720px) {
+  .catalog-list {
+    padding: 1.1rem 1.25rem 1rem;
+  }
+
+  .catalog-list header {
+    align-items: center;
+  }
+
+  .catalog-list header img:first-of-type {
+    height: 1.9rem;
+  }
+
+  .catalog-list header img:last-of-type {
+    width: 2.6rem;
+    height: 2.6rem;
+  }
+
+  .catalog-list header p:first-child {
+    font-size: 2rem;
+  }
+
+  .catalog-list header p:last-child {
+    max-width: 7rem;
+    font-size: 0.72rem;
+  }
+
+  .list-heading-row {
+    display: grid;
+    grid-template-columns: 206px minmax(180px, 1fr);
+    gap: 0.85rem;
+    justify-content: space-between;
+    margin-top: 1.2rem;
+  }
+
+  .list-title-image {
+    width: 206px;
+  }
+
+  .catalog-search {
+    width: min(100%, 230px);
+    min-height: 46px;
+    justify-self: end;
+    padding: 0 16px;
+  }
+
+  .catalog-list-body {
+    grid-template-columns: 5.9rem minmax(0, 1fr);
+    gap: 0.65rem;
+    margin-top: 1.1rem;
+    padding-bottom: 4.7rem;
+  }
+
+  .catalog-sidebar {
+    min-height: 31rem;
+    padding: 0.6rem 0;
+  }
+
+  .sidebar-category {
+    min-height: 62px;
+    padding: 0 0.5rem;
+  }
+
+  .sidebar-category strong {
+    font-size: 0.9rem;
+  }
+
+  .sidebar-category small {
+    margin-top: 0.32rem;
+    font-size: 0.48rem;
+  }
+
+  .product-filter-row {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 0.55rem;
+  }
+
+  .gender-filter {
+    min-width: 0;
+    min-height: 42px;
+    font-size: 0.92rem;
+  }
+
+  .product-scroll {
+    margin-top: 1rem;
+    padding-right: 0;
+  }
+
+  .product-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.65rem;
+  }
+
+  .display-product-card {
+    min-height: 196px;
+    padding: 0.55rem;
+  }
+
+  .product-image-panel {
+    height: 86px;
+  }
+
+  .product-image-panel img {
+    width: 58px;
+    height: 58px;
+  }
+
+  .display-product-card h3 {
+    font-size: 0.98rem;
+  }
+
+  .display-product-card p {
+    font-size: 0.72rem;
+  }
+
+  .display-product-card strong {
+    margin-top: 0.45rem;
+    font-size: 1rem;
+  }
+
+  .list-bottom-mascot {
+    width: 7.8rem;
+    height: 12.7rem;
+  }
+
+  .list-bottom-bar {
+    right: 1rem;
+    bottom: 2.3rem;
+    left: 6.7rem;
+    min-height: 54px;
+    grid-template-columns: minmax(7rem, 9rem);
+    gap: 0.65rem;
+  }
+
+  .checkout-button {
+    min-height: 52px;
+    font-size: 1.18rem;
+  }
+
+  .list-slogan-image {
+    bottom: 0.65rem;
+    width: 250px;
+  }
 }
 
 .home-mist {
@@ -726,15 +1453,7 @@ onUnmounted(() => {
 }
 
 .home-bottom-mascot {
-  mix-blend-mode: multiply;
   opacity: 0.96;
-  -webkit-mask-image:
-    linear-gradient(to right, transparent 0%, #000 20%, #000 100%),
-    linear-gradient(to bottom, transparent 0%, #000 16%, #000 100%);
-  mask-image:
-    linear-gradient(to right, transparent 0%, #000 20%, #000 100%),
-    linear-gradient(to bottom, transparent 0%, #000 16%, #000 100%);
-  -webkit-mask-composite: source-in;
-  mask-composite: intersect;
+  filter: drop-shadow(0 10px 18px rgba(80, 92, 66, 0.08));
 }
 </style>
