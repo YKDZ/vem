@@ -44,10 +44,7 @@ const paymentHint = computed(() => {
 });
 
 onMounted(async () => {
-  if (!item.value) {
-    await router.replace("/catalog");
-    return;
-  }
+  if (!item.value) return;
   try {
     await checkoutStore.loadPaymentOptions();
   } catch {
@@ -206,6 +203,24 @@ async function submitOrder(): Promise<void> {
               : "确认并生成支付二维码"
         }}
       </button>
+    </section>
+    <section
+      v-else
+      class="grid h-full place-items-center text-center text-neutral-950"
+    >
+      <div
+        class="w-full max-w-md rounded-lg border border-neutral-200 bg-white p-8"
+      >
+        <h2 class="text-3xl font-black">订单信息已失效</h2>
+        <p class="mt-3 text-neutral-600">请返回商品列表重新选择商品。</p>
+        <button
+          class="kiosk-touch-target mt-6 rounded-lg bg-neutral-950 px-6 py-4 text-lg font-black text-white"
+          type="button"
+          @click="router.replace('/catalog')"
+        >
+          返回商品列表
+        </button>
+      </div>
     </section>
   </KioskLayout>
 </template>
