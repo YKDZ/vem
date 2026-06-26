@@ -583,9 +583,9 @@ describe("sale readiness UI flow", () => {
     pinia = createPinia();
     setActivePinia(pinia);
     const reloadedCheckoutStore = useCheckoutStore();
-    expect(reloadedCheckoutStore.shouldIgnoreTransaction(dismissedTransaction)).toBe(
-      true,
-    );
+    expect(
+      reloadedCheckoutStore.shouldIgnoreTransaction(dismissedTransaction),
+    ).toBe(true);
 
     await mountView(BootView);
 

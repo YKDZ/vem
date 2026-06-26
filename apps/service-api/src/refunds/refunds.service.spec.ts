@@ -112,9 +112,7 @@ function mockUpdateSetCapture(
             .fn()
             .mockImplementation(() =>
               Promise.resolve(
-                terminalClaims[terminalClaimIndex++]
-                  ? [{ id: "rfd-001" }]
-                  : [],
+                terminalClaims[terminalClaimIndex++] ? [{ id: "rfd-001" }] : [],
               ),
             );
           return whereResult;

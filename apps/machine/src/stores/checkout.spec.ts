@@ -262,9 +262,9 @@ describe("checkout helpers", () => {
 
   it("maps unknown dispense projections to manual handling", () => {
     expect(normalizeNextAction("result_unknown")).toBe("manual_handling");
-    expect(resultKindFromNextAction(normalizeNextAction("result_unknown"))).toBe(
-      "manual_handling",
-    );
+    expect(
+      resultKindFromNextAction(normalizeNextAction("result_unknown")),
+    ).toBe("manual_handling");
   });
 });
 
