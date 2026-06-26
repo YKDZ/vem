@@ -39,6 +39,24 @@ impl PtyHarness {
         });
     }
 
+    pub fn spawn_lower_controller_heartbeat(mut self) {
+        tokio::spawn(async move {
+            loop {
+                let write_result = self
+                    .master
+                    .write_all(&[vending_core::serial::FRAME_HEAD, 0xAA])
+                    .await;
+                if write_result.is_err() {
+                    break;
+                }
+                if self.master.flush().await.is_err() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+        });
+    }
+
     pub async fn write(&mut self, bytes: &[u8]) {
         self.master.write_all(bytes).await.expect("write pty bytes");
         self.master.flush().await.expect("flush pty bytes");

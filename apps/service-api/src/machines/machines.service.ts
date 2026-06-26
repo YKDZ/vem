@@ -18,7 +18,11 @@ import {
   inArray,
   inventories,
   isNull,
+  lte,
+  or,
+  machineRawStockMovementConflicts,
   machineClaimCodes,
+  machineRawStockMovements,
   machinePlanogramSlots,
   machinePlanogramVersions,
   machineSlots,
@@ -63,6 +67,7 @@ import { DRIZZLE_CLIENT } from "../database/database.constants";
 import { MachineCredentialService } from "../machine-auth/machine-credential.service";
 import { MqttSignatureService } from "../mqtt/mqtt-signature.service";
 import { MqttService } from "../mqtt/mqtt.service";
+import { NotificationsService } from "../notifications/notifications.service";
 import { PaymentProviderConfigService } from "../payments/payment-provider-config.service";
 import {
   digestMachineClaimCodeLookup,
@@ -238,7 +243,11 @@ function planogramVersionSnapshot(
 function platformSlotSalesState(
   slotStatus: typeof machineSlots.$inferSelect.status,
   availableQty: number,
+  openSaleSafetyBlockerState?: string | null,
 ) {
+  if (openSaleSafetyBlockerState) {
+    return openSaleSafetyBlockerState;
+  }
   if (slotStatus !== "enabled") {
     return "frozen";
   }
@@ -259,12 +268,20 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
 
   constructor(
     @Inject(DRIZZLE_CLIENT) private readonly db: DrizzleClient,
+    @Inject(MachineCredentialService)
     private readonly machineCredentialService: MachineCredentialService,
+    @Inject(PaymentProviderConfigService)
     private readonly paymentProviderConfigService: PaymentProviderConfigService,
+    @Inject(AuditService)
     private readonly auditService: AuditService,
+    @Inject(MqttService)
     private readonly mqttService: MqttService,
+    @Inject(MqttSignatureService)
     private readonly mqttSignatureService: MqttSignatureService,
+    @Inject(AppConfigService)
     private readonly config: AppConfigService,
+    @Inject(NotificationsService)
+    private readonly notificationsService: NotificationsService,
   ) {}
 
   onModuleInit(): void {
@@ -275,6 +292,13 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
       void this.markTimedOutMachineCommands().catch((error: unknown) => {
         this.logger.warn(
           `markTimedOutMachineCommands failed: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      });
+      void this.markTimedOutMachineHeartbeats().catch((error: unknown) => {
+        this.logger.warn(
+          `markTimedOutMachineHeartbeats failed: ${
             error instanceof Error ? error.message : String(error)
           }`,
         );
@@ -791,6 +815,70 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
     return { processed: results.filter(Boolean).length };
   }
 
+  async markTimedOutMachineHeartbeats(
+    now = new Date(),
+  ): Promise<{ processed: number }> {
+    const timeoutSeconds = this.config.machineHeartbeatTimeoutSeconds;
+    const staleBefore = new Date(now.getTime() - timeoutSeconds * 1_000);
+    const candidates = await this.db
+      .select({
+        id: machines.id,
+        code: machines.code,
+        status: machines.status,
+        lastSeenAt: machines.lastSeenAt,
+      })
+      .from(machines)
+      .where(
+        and(
+          eq(machines.status, "online"),
+          isNull(machines.deletedAt),
+          or(
+            isNull(machines.lastSeenAt),
+            lte(machines.lastSeenAt, staleBefore),
+          ),
+        ),
+      );
+
+    const results = await Promise.all(
+      candidates.map(async (machine) => {
+        let updated = false;
+        await this.db.transaction(async (tx) => {
+          const [offline] = await tx
+            .update(machines)
+            .set({
+              status: "offline",
+              updatedAt: now,
+            })
+            .where(
+              and(
+                eq(machines.id, machine.id),
+                eq(machines.status, "online"),
+                or(
+                  isNull(machines.lastSeenAt),
+                  lte(machines.lastSeenAt, staleBefore),
+                ),
+              ),
+            )
+            .returning({ id: machines.id });
+          if (!offline) {
+            return;
+          }
+          updated = true;
+          await this.notificationsService.createMachineOfflineNotification(tx, {
+            machineId: machine.id,
+            machineCode: machine.code,
+            lastSeenAt: machine.lastSeenAt,
+            timeoutSeconds,
+            detectedAt: now,
+          });
+        });
+        return updated;
+      }),
+    );
+
+    return { processed: results.filter(Boolean).length };
+  }
+
   async listSlots(machineId: string) {
     return await this.db
       .select()
@@ -895,10 +983,54 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
         inventoryId: machinePlanogramSlots.inventoryId,
         capacity: machinePlanogramSlots.capacity,
         slotStatus: machineSlots.status,
+        openSaleSafetyBlockerState: sql<string | null>`(
+          select blocker_state
+          from (
+            select
+              ${machineRawStockMovements.saleSafetyBlockerState} as blocker_state,
+              ${machineRawStockMovements.receivedAt} as received_at
+            from ${machineRawStockMovements}
+            where ${machineRawStockMovements.machineId} = ${machines.id}
+              and ${machineRawStockMovements.saleSafetyBlockerSlotId} = ${machinePlanogramSlots.slotId}
+              and ${machineRawStockMovements.status} = 'reconciliation'
+              and ${machineRawStockMovements.platformReviewStatus} = 'open'
+              and ${machineRawStockMovements.saleSafetyBlockerState} is not null
+            union all
+            select
+              ${machineRawStockMovementConflicts.saleSafetyBlockerState} as blocker_state,
+              ${machineRawStockMovementConflicts.receivedAt} as received_at
+            from ${machineRawStockMovementConflicts}
+            where ${machineRawStockMovementConflicts.machineId} = ${machines.id}
+              and ${machineRawStockMovementConflicts.saleSafetyBlockerSlotId} = ${machinePlanogramSlots.slotId}
+              and ${machineRawStockMovementConflicts.status} = 'reconciliation'
+              and ${machineRawStockMovementConflicts.platformReviewStatus} = 'open'
+              and ${machineRawStockMovementConflicts.saleSafetyBlockerState} is not null
+          ) open_blockers
+          order by received_at desc
+          limit 1
+        )`,
         onHandQty: inventories.onHandQty,
         reservedQty: inventories.reservedQty,
         availableQty: sql<number>`case
           when ${machineSlots.status} = 'enabled'
+            and not exists (
+              select 1
+              from ${machineRawStockMovements}
+              where ${machineRawStockMovements.machineId} = ${machines.id}
+                and ${machineRawStockMovements.saleSafetyBlockerSlotId} = ${machinePlanogramSlots.slotId}
+                and ${machineRawStockMovements.status} = 'reconciliation'
+                and ${machineRawStockMovements.platformReviewStatus} = 'open'
+                and ${machineRawStockMovements.saleSafetyBlockerState} is not null
+            )
+            and not exists (
+              select 1
+              from ${machineRawStockMovementConflicts}
+              where ${machineRawStockMovementConflicts.machineId} = ${machines.id}
+                and ${machineRawStockMovementConflicts.saleSafetyBlockerSlotId} = ${machinePlanogramSlots.slotId}
+                and ${machineRawStockMovementConflicts.status} = 'reconciliation'
+                and ${machineRawStockMovementConflicts.platformReviewStatus} = 'open'
+                and ${machineRawStockMovementConflicts.saleSafetyBlockerState} is not null
+            )
           then ${inventories.onHandQty} - ${inventories.reservedQty}
           else 0
         end`,
@@ -963,6 +1095,7 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
         slotSalesState: platformSlotSalesState(
           row.slotStatus,
           row.availableQty,
+          row.openSaleSafetyBlockerState,
         ),
       })),
       serverTime: new Date().toISOString(),

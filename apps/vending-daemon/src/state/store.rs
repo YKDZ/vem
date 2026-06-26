@@ -10,7 +10,7 @@ use vending_core::domain::{CommandLogStatus, OutboxKind, OutboxTransport};
 
 use super::schema::{
     MIGRATION_V1, MIGRATION_V2, MIGRATION_V3, MIGRATION_V4, MIGRATION_V5, MIGRATION_V6,
-    MIGRATION_V7, SCHEMA_VERSION,
+    MIGRATION_V7, MIGRATION_V8, SCHEMA_VERSION,
 };
 use vending_core::hardware::{
     DispenseCommandPayload, DispenseProgressEvent, DispenseProgressStage, DispenseResultPayload,
@@ -24,6 +24,8 @@ pub const OUTBOX_MAX_EVENTS: i64 = 500;
 const STOCK_LEDGER_REBUILT_AFTER_QUARANTINE_KEY: &str = "stock_ledger_rebuilt_after_quarantine";
 const STOCK_MOVEMENT_RETENTION_DAYS: i64 = 30;
 pub(crate) const WHOLE_MACHINE_MAINTENANCE_LOCK_KEY: &str = "whole_machine_maintenance_lock";
+pub(crate) const WHOLE_MACHINE_LOCK_RECOVERY_EVIDENCE_KEY: &str =
+    "whole_machine_lock_recovery_evidence";
 
 type CommandRecordRow = (
     String,
@@ -95,6 +97,29 @@ pub struct WholeMachineMaintenanceLock {
     pub slot_code: String,
     pub error_code: Option<String>,
     pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WholeMachineMaintenanceLockClearEvidence {
+    pub adapter: String,
+    pub online: bool,
+    pub message: String,
+    pub port_path: Option<String>,
+    pub checked_at: String,
+    pub production_dispense_path_ready: bool,
+    pub production_dispense_path_code: String,
+    pub production_dispense_path_message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WholeMachineMaintenanceLockClearAudit {
+    pub id: String,
+    pub operator_note: String,
+    pub cleared_at: String,
+    pub previous: WholeMachineMaintenanceLock,
+    pub recovery_evidence: WholeMachineMaintenanceLockClearEvidence,
 }
 
 #[derive(Debug, Error)]
@@ -507,6 +532,12 @@ impl LocalStateStore {
                 .await
                 .map_err(StoreError::Sqlx)?;
         }
+        if current_version < 8 {
+            sqlx::query(MIGRATION_V8)
+                .execute(&self.pool)
+                .await
+                .map_err(StoreError::Sqlx)?;
+        }
         self.put_metadata("schema_version", &SCHEMA_VERSION).await?;
         Ok(())
     }
@@ -578,9 +609,78 @@ impl LocalStateStore {
         self.get_metadata(WHOLE_MACHINE_MAINTENANCE_LOCK_KEY).await
     }
 
-    pub async fn clear_whole_machine_maintenance_lock(&self) -> Result<(), StoreError> {
-        self.delete_metadata(WHOLE_MACHINE_MAINTENANCE_LOCK_KEY)
+    pub async fn record_whole_machine_lock_recovery_evidence(
+        &self,
+        evidence: &WholeMachineMaintenanceLockClearEvidence,
+    ) -> Result<(), StoreError> {
+        self.put_metadata(WHOLE_MACHINE_LOCK_RECOVERY_EVIDENCE_KEY, evidence)
             .await
+    }
+
+    pub async fn whole_machine_lock_recovery_evidence(
+        &self,
+    ) -> Result<Option<WholeMachineMaintenanceLockClearEvidence>, StoreError> {
+        self.get_metadata(WHOLE_MACHINE_LOCK_RECOVERY_EVIDENCE_KEY)
+            .await
+    }
+
+    pub async fn clear_whole_machine_maintenance_lock_with_audit(
+        &self,
+        audit: &WholeMachineMaintenanceLockClearAudit,
+    ) -> Result<(), StoreError> {
+        let recovery_evidence_json = serde_json::to_string(&audit.recovery_evidence)?;
+        let previous_lock_json = serde_json::to_string(&audit.previous)?;
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            "INSERT INTO whole_machine_lock_clear_audit_events(
+               id,operator_note,previous_lock_json,recovery_evidence_json,created_at
+             )
+             VALUES (?1,?2,?3,?4,?5)",
+        )
+        .bind(&audit.id)
+        .bind(&audit.operator_note)
+        .bind(previous_lock_json)
+        .bind(recovery_evidence_json)
+        .bind(&audit.cleared_at)
+        .execute(tx.as_mut())
+        .await?;
+        sqlx::query("DELETE FROM runtime_metadata WHERE key = ?1")
+            .bind(WHOLE_MACHINE_MAINTENANCE_LOCK_KEY)
+            .execute(tx.as_mut())
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    pub async fn whole_machine_lock_clear_audit(
+        &self,
+    ) -> Result<Option<WholeMachineMaintenanceLockClearAudit>, StoreError> {
+        let mut records = self.whole_machine_lock_clear_audits().await?;
+        Ok(records.pop())
+    }
+
+    pub async fn whole_machine_lock_clear_audits(
+        &self,
+    ) -> Result<Vec<WholeMachineMaintenanceLockClearAudit>, StoreError> {
+        let rows: Vec<(String, String, String, String, String)> = sqlx::query_as(
+            "SELECT id,operator_note,previous_lock_json,recovery_evidence_json,created_at
+             FROM whole_machine_lock_clear_audit_events
+             ORDER BY created_at ASC, id ASC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut audits = Vec::with_capacity(rows.len());
+        for (id, operator_note, previous_lock_json, recovery_evidence_json, cleared_at) in rows {
+            audits.push(WholeMachineMaintenanceLockClearAudit {
+                id,
+                operator_note,
+                cleared_at,
+                previous: serde_json::from_str(&previous_lock_json)?,
+                recovery_evidence: serde_json::from_str(&recovery_evidence_json)?,
+            });
+        }
+        Ok(audits)
     }
 
     pub async fn record_whole_machine_hardware_fault_lock(
@@ -668,6 +768,21 @@ impl LocalStateStore {
         .await?;
 
         row.map(to_command_record).transpose()
+    }
+
+    pub async fn list_active_unfinished_commands(
+        &self,
+    ) -> Result<Vec<CommandLogRecord>, StoreError> {
+        let rows: Vec<CommandRecordRow> = sqlx::query_as(
+            "SELECT command_no, order_no, command_payload_json, status, ack_at, dispensing_started_at, result_payload_json, error_code, error_message, updated_at, expires_at
+             FROM command_log
+             WHERE status IN ('acknowledged','dispensing') AND result_payload_json IS NULL
+             ORDER BY updated_at ASC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.into_iter().map(to_command_record).collect()
     }
 
     pub async fn prune_command_log(&self) -> Result<(u64, u64), StoreError> {
@@ -4141,6 +4256,7 @@ mod tests {
         assert!(names.contains(&"stock_movement_sync"));
         assert!(names.contains(&"current_stock_projection"));
         assert!(names.contains(&"sale_view_projection"));
+        assert!(names.contains(&"whole_machine_lock_clear_audit_events"));
 
         let schema_version: Option<i64> = store
             .get_metadata("schema_version")

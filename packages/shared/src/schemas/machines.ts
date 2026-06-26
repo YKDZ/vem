@@ -60,6 +60,27 @@ export const machineHeartbeatStatusPayloadSchema = z
     mqttConnected: z.boolean().optional(),
     hardwareAdapter: z.string().optional(),
     hardwareStatus: z.enum(["ok", "degraded", "faulted"]).optional(),
+    hardwareMessage: z.string().optional(),
+    hardwarePortPath: z.string().nullable().optional(),
+    wholeMachineMaintenanceLock: z
+      .object({
+        code: z.string(),
+        message: z.string(),
+        source: z.string(),
+        orderNo: z.string().optional(),
+        commandNo: z.string().optional(),
+        slotCode: z.string().optional(),
+        errorCode: z.string().nullable().optional(),
+        createdAt: z.iso.datetime().optional(),
+      })
+      .nullable()
+      .optional(),
+    saleReadiness: z
+      .object({
+        state: z.enum(["locked", "blocked", "restored"]),
+        blockingCodes: z.array(z.string()).default([]),
+      })
+      .optional(),
     doorOpen: z.boolean().optional(),
     localQueueSize: z.int().nonnegative().optional(),
     lastCommandNo: z.string().max(64).nullable().optional(),

@@ -94,6 +94,34 @@ function makeService(options: {
   return new RefundsService(db as never, registry, configService);
 }
 
+function mockUpdateSetCapture(
+  db: ReturnType<typeof makeDb>,
+  updateSets: Record<string, unknown>[],
+  terminalClaims: boolean[] = [true],
+) {
+  let terminalClaimIndex = 0;
+  db.update.mockReturnValue({
+    set: vi.fn().mockImplementation((values: Record<string, unknown>) => {
+      updateSets.push(values);
+      return {
+        where: vi.fn().mockImplementation(() => {
+          const whereResult = Promise.resolve(undefined) as Promise<void> & {
+            returning: ReturnType<typeof vi.fn>;
+          };
+          whereResult.returning = vi
+            .fn()
+            .mockImplementation(() =>
+              Promise.resolve(
+                terminalClaims[terminalClaimIndex++] ? [{ id: "rfd-001" }] : [],
+              ),
+            );
+          return whereResult;
+        }),
+      };
+    }),
+  });
+}
+
 describe("RefundsService.requestFullRefund", () => {
   it("succeeded refund: updates refund.status=succeeded, payment.status=refunded, order.status=refunded", async () => {
     const db = makeDb();
@@ -207,11 +235,12 @@ describe("RefundsService.requestFullRefund", () => {
     expect(result.status).toBe("succeeded");
   });
 
-  it("provider throws: order enters manual_handling, refund status=failed", async () => {
+  it("provider timeout/5xx keeps refund processing and records uncertainty trail", async () => {
     const db = makeDb();
     const paymentRow = makeBasePaymentRow();
     const initialRefundRow = makeRefundRow();
-    const failedRefundRow = makeRefundRow({ status: "failed" });
+    const insertedValues: Record<string, unknown>[] = [];
+    const updateSets: Record<string, unknown>[] = [];
 
     db.select.mockReturnValueOnce({
       from: vi.fn().mockReturnValue({
@@ -267,22 +296,15 @@ describe("RefundsService.requestFullRefund", () => {
       async (fn: (tx: unknown) => unknown) => fn(db),
     );
 
-    // After provider throws, error handler runs update
-    db.update.mockReturnValue({
-      set: vi.fn().mockReturnValue({
-        where: vi.fn().mockReturnValue({
-          returning: vi.fn().mockResolvedValue([failedRefundRow]),
-        }),
-      }),
-    });
-    // fallback for remaining inserts (orderStatusEvents + refundEvents.failed)
+    mockUpdateSetCapture(db, updateSets);
     db.insert.mockReturnValue({
-      values: vi.fn().mockImplementation(() =>
-        Object.assign(Promise.resolve(undefined), {
+      values: vi.fn().mockImplementation((values: Record<string, unknown>) => {
+        insertedValues.push(values);
+        return Object.assign(Promise.resolve(undefined), {
           onConflictDoNothing: vi.fn().mockResolvedValue([]),
           returning: vi.fn().mockResolvedValue([]),
-        }),
-      ),
+        });
+      }),
     });
 
     const refundPayment = vi
@@ -295,7 +317,19 @@ describe("RefundsService.requestFullRefund", () => {
       reason: "admin_refund",
     });
 
-    expect(result.status).toBe("failed");
+    expect(result.status).toBe("processing");
+    expect(updateSets).toContainEqual(
+      expect.objectContaining({ status: "processing" }),
+    );
+    expect(updateSets).not.toContainEqual(
+      expect.objectContaining({ status: "failed" }),
+    );
+    expect(insertedValues).toContainEqual(
+      expect.objectContaining({
+        eventType: "refund.request_uncertain",
+        status: "processing",
+      }),
+    );
   });
 
   it("duplicate same order+reason returns existing active refund (idempotent)", async () => {
@@ -375,12 +409,7 @@ describe("RefundsService.requestPartialRefund", () => {
         }),
       }),
     });
-    db.update.mockReturnValue({
-      set: vi.fn().mockImplementation((values: Record<string, unknown>) => {
-        updateSets.push(values);
-        return { where: vi.fn().mockResolvedValue(undefined) };
-      }),
-    });
+    mockUpdateSetCapture(db, updateSets);
     db.insert.mockReturnValue({
       values: vi.fn().mockReturnValue({
         returning: vi.fn().mockResolvedValue([refundRow]),
@@ -454,12 +483,7 @@ describe("RefundsService.requestPartialRefund", () => {
         }),
       }),
     });
-    db.update.mockReturnValue({
-      set: vi.fn().mockImplementation((values: Record<string, unknown>) => {
-        updateSets.push(values);
-        return { where: vi.fn().mockResolvedValue(undefined) };
-      }),
-    });
+    mockUpdateSetCapture(db, updateSets);
     db.insert.mockReturnValue({
       values: vi.fn().mockResolvedValue(undefined),
     });
@@ -491,7 +515,7 @@ describe("RefundsService.requestPartialRefund", () => {
     );
   });
 
-  it("provider throws: records failed refund event and order transition for admin diagnosis", async () => {
+  it("provider throws: keeps partial refund processing for later reconciliation", async () => {
     const db = makeDb();
     const insertedValues: Record<string, unknown>[] = [];
     const updateSets: Record<string, unknown>[] = [];
@@ -527,12 +551,7 @@ describe("RefundsService.requestPartialRefund", () => {
         }),
       }),
     });
-    db.update.mockReturnValue({
-      set: vi.fn().mockImplementation((values: Record<string, unknown>) => {
-        updateSets.push(values);
-        return { where: vi.fn().mockResolvedValue(undefined) };
-      }),
-    });
+    mockUpdateSetCapture(db, updateSets);
     db.insert.mockReturnValue({
       values: vi.fn().mockImplementation((values: Record<string, unknown>) => {
         insertedValues.push(values);
@@ -559,24 +578,14 @@ describe("RefundsService.requestPartialRefund", () => {
       reason: "auto_partial_dispense_failed",
     });
 
-    expect(result.status).toBe("failed");
-    expect(updateSets).toContainEqual(
+    expect(result.status).toBe("processing");
+    expect(updateSets).not.toContainEqual(
       expect.objectContaining({ status: "failed" }),
     );
     expect(insertedValues).toContainEqual(
       expect.objectContaining({
-        eventType: "refund.failed",
-        status: "failed",
-      }),
-    );
-    expect(insertedValues).toContainEqual(
-      expect.objectContaining({
-        reason: "auto_partial_dispense_failed_failed",
-        toStatus: "manual_handling",
-        metadata: expect.objectContaining({
-          refundNo: refundRow.refundNo,
-          message: "provider timeout",
-        }),
+        eventType: "refund.request_uncertain",
+        status: "processing",
       }),
     );
   });
@@ -628,12 +637,7 @@ describe("RefundsService partial refund terminal states", () => {
         onConflictDoNothing: vi.fn().mockResolvedValue([]),
       }),
     });
-    db.update.mockReturnValue({
-      set: vi.fn().mockImplementation((values: Record<string, unknown>) => {
-        updateSets.push(values);
-        return { where: vi.fn().mockResolvedValue(undefined) };
-      }),
-    });
+    mockUpdateSetCapture(db, updateSets);
 
     const queryRefund = vi.fn().mockResolvedValue({
       status: "succeeded",
@@ -668,6 +672,77 @@ describe("RefundsService partial refund terminal states", () => {
     expect(updateSets).not.toContainEqual(
       expect.objectContaining({ paymentState: "refunded" }),
     );
+  });
+
+  it("records max_attempts_exceeded once and excludes the refund from later scheduled scans", async () => {
+    const db = makeDb();
+    const insertValues: Record<string, unknown>[] = [];
+    const refundRow = makeRefundRow({
+      providerRefundNo: "MOCK-RFD001",
+    });
+
+    db.select
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              innerJoin: vi.fn().mockReturnValue({
+                where: vi.fn().mockReturnValue({
+                  limit: vi.fn().mockResolvedValue([
+                    {
+                      ...refundRow,
+                      providerCode: "mock",
+                      providerId: "provider-001",
+                      paymentNo: "PAY_WX_001",
+                      providerTradeNo: "TXN_WX_001",
+                      machineId: "mach-001",
+                      providerConfigId: null,
+                      fulfillmentState: "manual_handling",
+                    },
+                  ]),
+                }),
+              }),
+            }),
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([{ total: 12 }]),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              innerJoin: vi.fn().mockReturnValue({
+                where: vi.fn().mockReturnValue({
+                  limit: vi.fn().mockResolvedValue([]),
+                }),
+              }),
+            }),
+          }),
+        }),
+      });
+    db.insert.mockReturnValue({
+      values: vi.fn().mockImplementation((values: Record<string, unknown>) => {
+        insertValues.push(values);
+        return Promise.resolve(undefined);
+      }),
+    });
+    const queryRefund = vi.fn();
+    const service = makeService({ db, queryRefund });
+    const now = new Date("2026-06-05T00:01:00.000Z");
+
+    await service.reconcileProcessingRefunds(now);
+    await service.reconcileProcessingRefunds(now);
+
+    expect(queryRefund).not.toHaveBeenCalled();
+    expect(
+      insertValues.filter(
+        (values) => values["status"] === "max_attempts_exceeded",
+      ),
+    ).toHaveLength(1);
   });
 
   it("moves a processing partial refund webhook failure to manual handling and marks only refund lines failed", async () => {
@@ -711,12 +786,7 @@ describe("RefundsService partial refund terminal states", () => {
         }),
       }),
     });
-    db.update.mockReturnValue({
-      set: vi.fn().mockImplementation((values: Record<string, unknown>) => {
-        updateSets.push(values);
-        return { where: vi.fn().mockResolvedValue(undefined) };
-      }),
-    });
+    mockUpdateSetCapture(db, updateSets);
     const service = makeService({ db, supportsPartialRefund: true });
 
     const result = await service.applyProviderRefundWebhook({
@@ -749,6 +819,254 @@ describe("RefundsService partial refund terminal states", () => {
     );
     expect(updateSets).not.toContainEqual(
       expect.objectContaining({ paymentState: "refunded" }),
+    );
+  });
+});
+
+describe("RefundsService.queryRefund", () => {
+  function mockProcessingRefundSelect(
+    db: ReturnType<typeof makeDb>,
+    refundRow = makeRefundRow(),
+  ) {
+    db.select.mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        innerJoin: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([
+                  {
+                    ...refundRow,
+                    providerCode: "mock",
+                    providerId: "provider-001",
+                    paymentNo: "PAY_WX_001",
+                    providerTradeNo: "TXN_WX_001",
+                    machineId: "mach-001",
+                    providerConfigId: null,
+                    fulfillmentState: "manual_handling",
+                  },
+                ]),
+              }),
+            }),
+          }),
+        }),
+      }),
+    });
+    db.select.mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([{ total: 0 }]),
+      }),
+    });
+  }
+
+  it("manual query success applies refunded projection and records attempt", async () => {
+    const db = makeDb();
+    const updateSets: Record<string, unknown>[] = [];
+    mockProcessingRefundSelect(db);
+
+    db.insert.mockReturnValue({
+      values: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: "attempt-1" }]),
+        onConflictDoNothing: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: "event-1" }]),
+        }),
+      }),
+    });
+    mockUpdateSetCapture(db, updateSets);
+
+    const queryRefund = vi.fn().mockResolvedValue({
+      status: "succeeded",
+      providerRefundNo: "RF_001",
+      refundedAt: new Date("2026-06-05T00:00:00.000Z"),
+      rawPayload: { refund_status: "SUCCESS" },
+    });
+    const service = makeService({ db, queryRefund });
+
+    const result = await service.queryRefund("rfd-001", "manual");
+
+    expect(queryRefund).toHaveBeenCalledWith(
+      expect.objectContaining({
+        refundNo: "RFD001",
+        paymentNo: "PAY_WX_001",
+        providerTradeNo: "TXN_WX_001",
+        amountCents: 500,
+      }),
+    );
+    expect(result).toEqual({ status: "succeeded", reconciled: true });
+    expect(updateSets).toContainEqual(
+      expect.objectContaining({ status: "refunded" }),
+    );
+    expect(updateSets).toContainEqual(
+      expect.objectContaining({
+        status: "succeeded",
+        providerRefundStatus: "succeeded",
+      }),
+    );
+  });
+
+  it("manual query confirmed failure is the only terminal failed path", async () => {
+    const db = makeDb();
+    const updateSets: Record<string, unknown>[] = [];
+    mockProcessingRefundSelect(db);
+
+    db.insert.mockReturnValue({
+      values: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: "attempt-1" }]),
+        onConflictDoNothing: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: "event-1" }]),
+        }),
+      }),
+    });
+    mockUpdateSetCapture(db, updateSets);
+
+    const queryRefund = vi.fn().mockResolvedValue({
+      status: "failed",
+      providerRefundNo: "RF_001",
+      refundedAt: null,
+      rawPayload: { refund_status: "FAIL" },
+    });
+    const service = makeService({ db, queryRefund });
+
+    const result = await service.queryRefund("rfd-001", "manual");
+
+    expect(result).toEqual({ status: "failed", reconciled: true });
+    expect(updateSets).toContainEqual(
+      expect.objectContaining({ status: "failed" }),
+    );
+    expect(updateSets).toContainEqual(
+      expect.objectContaining({
+        status: "failed",
+        providerRefundStatus: "failed",
+      }),
+    );
+  });
+
+  it("manual query network error records attempt without failing refund", async () => {
+    const db = makeDb();
+    const updateSets: Record<string, unknown>[] = [];
+    mockProcessingRefundSelect(db);
+
+    db.insert.mockReturnValue({
+      values: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: "attempt-1" }]),
+      }),
+    });
+    db.update.mockReturnValue({
+      set: vi.fn().mockImplementation((values: Record<string, unknown>) => {
+        updateSets.push(values);
+        return { where: vi.fn().mockResolvedValue(undefined) };
+      }),
+    });
+
+    const queryRefund = vi.fn().mockRejectedValue(new Error("gateway timeout"));
+    const service = makeService({ db, queryRefund });
+
+    const result = await service.queryRefund("rfd-001", "manual");
+
+    expect(result).toEqual({
+      status: "processing",
+      reconciled: false,
+      reason: "query_failed",
+    });
+    expect(updateSets).toContainEqual(
+      expect.objectContaining({
+        status: "network_error",
+        errorCode: "query_failed",
+        errorMessage: "gateway timeout",
+      }),
+    );
+    expect(updateSets).not.toContainEqual(
+      expect.objectContaining({ status: "failed" }),
+    );
+  });
+
+  it("manual query keeps provider processing refunds non-terminal", async () => {
+    const db = makeDb();
+    const updateSets: Record<string, unknown>[] = [];
+    mockProcessingRefundSelect(db);
+
+    db.insert.mockReturnValue({
+      values: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: "attempt-1" }]),
+      }),
+    });
+    mockUpdateSetCapture(db, updateSets);
+
+    const queryRefund = vi.fn().mockResolvedValue({
+      status: "processing",
+      providerRefundNo: "RF_001",
+      refundedAt: null,
+      rawPayload: { refund_status: "PROCESSING" },
+    });
+    const service = makeService({ db, queryRefund });
+
+    const result = await service.queryRefund("rfd-001", "manual");
+
+    expect(result).toEqual({
+      status: "processing",
+      reconciled: false,
+      reason: "provider_processing",
+    });
+    expect(updateSets).toContainEqual(
+      expect.objectContaining({
+        status: "processing",
+        providerRefundNo: "RF_001",
+      }),
+    );
+    expect(updateSets).toContainEqual(
+      expect.objectContaining({
+        status: "processing",
+        providerRefundStatus: "processing",
+      }),
+    );
+    expect(updateSets).not.toContainEqual(
+      expect.objectContaining({ status: "refunded" }),
+    );
+  });
+
+  it("manual duplicate terminal query records already_terminal without duplicate domain events", async () => {
+    const db = makeDb();
+    const insertValues: Record<string, unknown>[] = [];
+    const updateSets: Record<string, unknown>[] = [];
+    mockProcessingRefundSelect(db);
+
+    db.insert.mockReturnValue({
+      values: vi.fn().mockImplementation((values: Record<string, unknown>) => {
+        insertValues.push(values);
+        return {
+          returning: vi.fn().mockResolvedValue([{ id: "attempt-1" }]),
+          onConflictDoNothing: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: "event-1" }]),
+          }),
+        };
+      }),
+    });
+    mockUpdateSetCapture(db, updateSets, [false]);
+
+    const queryRefund = vi.fn().mockResolvedValue({
+      status: "succeeded",
+      providerRefundNo: "RF_001",
+      refundedAt: new Date("2026-06-05T00:00:00.000Z"),
+      rawPayload: { refund_status: "SUCCESS" },
+    });
+    const service = makeService({ db, queryRefund });
+
+    const result = await service.queryRefund("rfd-001", "manual");
+
+    expect(result).toEqual({
+      status: "succeeded",
+      reconciled: false,
+      reason: "already_terminal",
+    });
+    expect(insertValues).toHaveLength(1);
+    expect(insertValues).not.toContainEqual(
+      expect.objectContaining({ eventType: "refund.succeeded" }),
+    );
+    expect(updateSets).toContainEqual(
+      expect.objectContaining({ status: "already_terminal" }),
+    );
+    expect(updateSets).not.toContainEqual(
+      expect.objectContaining({ status: "refunded" }),
     );
   });
 });

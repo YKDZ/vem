@@ -11,6 +11,62 @@ function makeRes() {
 }
 
 describe("PaymentsController", () => {
+  describe("listReconciliationAttempts", () => {
+    it("forwards machine_status_poll trigger filters", async () => {
+      const result = {
+        items: [],
+        page: 1,
+        pageSize: 20,
+        total: 0,
+      };
+      const paymentsService = {
+        listReconciliationAttempts: vi.fn().mockResolvedValue(result),
+      };
+      const controller = new PaymentsController(
+        paymentsService as unknown as PaymentsService,
+      );
+
+      await expect(
+        controller.listReconciliationAttempts({
+          page: 1,
+          pageSize: 20,
+          trigger: "machine_status_poll",
+        }),
+      ).resolves.toBe(result);
+      expect(paymentsService.listReconciliationAttempts).toHaveBeenCalledWith({
+        page: 1,
+        pageSize: 20,
+        trigger: "machine_status_poll",
+      });
+    });
+  });
+
+  describe("queryRefund", () => {
+    it("passes refund id and admin id to manualReconcileRefund()", async () => {
+      const result = {
+        status: "succeeded" as const,
+        reconciled: true,
+      };
+      const paymentsService = {
+        manualReconcileRefund: vi.fn().mockResolvedValue(result),
+      };
+      const controller = new PaymentsController(
+        paymentsService as unknown as PaymentsService,
+      );
+      const admin = {
+        id: "admin-001",
+      } as import("../common/request-user").AuthenticatedAdmin;
+
+      await expect(
+        controller.queryRefund(admin, "550e8400-e29b-41d4-a716-446655440000"),
+      ).resolves.toBe(result);
+      expect(paymentsService.manualReconcileRefund).toHaveBeenCalledWith(
+        "550e8400-e29b-41d4-a716-446655440000",
+        "admin-001",
+      );
+    });
+  });
+
   describe("handleWebhook", () => {
     let controller: PaymentsController;
     let paymentsService: Pick<PaymentsService, "handleProviderWebhook">;

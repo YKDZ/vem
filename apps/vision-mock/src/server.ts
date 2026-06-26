@@ -92,9 +92,6 @@ function createResultMessage(): VisionServerMessage {
       profile: {
         personPresent: true,
         heightCm: 172,
-        shoulderWidthCm: 43,
-        ageRange: "adult",
-        gender: "unknown",
         bodyType: "regular",
         upperColor: "dark",
         confidence: 0.86,

@@ -42,6 +42,22 @@ function makeHarness(overrides?: {
     manualReason: null,
     ...overrides?.attempt,
   };
+  const updateAttempt = (
+    status: string,
+    patch: Record<string, unknown> = {},
+  ) => {
+    const patchIsActive =
+      typeof patch.isActive === "boolean" ? patch.isActive : undefined;
+    attempt = {
+      ...attempt,
+      ...patch,
+      status,
+      isActive:
+        patchIsActive ??
+        !["succeeded", "failed", "reversed", "canceled"].includes(status),
+    };
+    return attempt;
+  };
   const payment = {
     id: "payment-1",
     paymentNo: "PAY001",
@@ -54,22 +70,19 @@ function makeHarness(overrides?: {
   };
 
   const attempts = {
-    createOrReplay: vi.fn().mockResolvedValue({
-      payment,
-      attempt,
-      replayed: false,
-    }),
+    createOrReplay: vi.fn(),
     markStatus: vi.fn().mockImplementation(async (_id, status, patch = {}) => {
-      attempt = {
-        ...attempt,
-        ...patch,
-        status,
-        isActive:
-          patch.isActive ??
-          !["succeeded", "failed", "reversed", "canceled"].includes(status),
-      };
-      return attempt;
+      return updateAttempt(status, patch);
     }),
+    markStatusIfCurrentStatusIn: vi
+      .fn()
+      .mockImplementation(async (_id, status, allowedStatuses, patch = {}) => {
+        if (!allowedStatuses.includes(attempt.status)) return null;
+        return updateAttempt(status, patch);
+      }),
+    toDto: vi.fn(),
+    listAttempts: vi.fn(),
+    latestForPayment: vi.fn(),
     getById: vi.fn().mockImplementation(async () => attempt),
     getContextById: vi.fn().mockImplementation(async () => ({
       attempt,
@@ -80,6 +93,12 @@ function makeHarness(overrides?: {
       providerConfigId: "cfg-1",
     })),
   };
+
+  attempts.createOrReplay.mockResolvedValue({
+    payment,
+    attempt,
+    replayed: false,
+  });
 
   const provider = {
     chargePaymentCode: vi.fn().mockResolvedValue({
@@ -130,6 +149,9 @@ function makeHarness(overrides?: {
     provider,
     paymentsService,
     getAttempt: () => attempt,
+    setAttempt(next: Record<string, unknown>) {
+      attempt = { ...attempt, ...next };
+    },
     setReplayAttempt(next: Record<string, unknown>) {
       attempts.createOrReplay.mockResolvedValue({
         payment,
@@ -242,6 +264,36 @@ describe("PaymentCodeOrchestratorService", () => {
     );
   });
 
+  it("manual query can converge an unknown attempt to success", async () => {
+    const { service, provider, paymentsService } = makeHarness({
+      provider: {
+        queryPaymentCode: vi.fn().mockResolvedValue({
+          status: "succeeded",
+          providerTradeNo: "ALI-TXN-UNKNOWN",
+          providerStatus: "TRADE_SUCCESS",
+          rawPayload: { trade_status: "TRADE_SUCCESS" },
+        }),
+      },
+      attempt: {
+        status: "unknown",
+        providerTradeNo: "ALI-TXN-UNKNOWN",
+      },
+    });
+
+    const result = await service.manualQuery("attempt-1");
+
+    expect(provider.queryPaymentCode).toHaveBeenCalledTimes(1);
+    expect(result.status).toBe("succeeded");
+    expect(paymentsService.applyProviderPaymentResult).toHaveBeenCalledTimes(1);
+    expect(paymentsService.applyProviderPaymentResult).toHaveBeenCalledWith(
+      expect.objectContaining({
+        paymentId: "payment-1",
+        providerTradeNo: "ALI-TXN-UNKNOWN",
+        status: "succeeded",
+      }),
+    );
+  });
+
   it("reverses after query stays pending until deadline and replayed attempt can retry", async () => {
     const config: PaymentProviderRuntimeConfig = {
       ...baseConfig,
@@ -328,9 +380,10 @@ describe("PaymentCodeOrchestratorService", () => {
     await service.reverseUnknownAttempt("attempt-1", "alipay", config);
 
     expect(provider.reversePaymentCode).toHaveBeenCalledTimes(3);
-    expect(attempts.markStatus).toHaveBeenLastCalledWith(
+    expect(attempts.markStatusIfCurrentStatusIn).toHaveBeenLastCalledWith(
       "attempt-1",
       "manual_handling",
+      expect.any(Array),
       expect.objectContaining({
         manualReason: "reverse_result_unknown_after_retries",
       }),
@@ -366,9 +419,10 @@ describe("PaymentCodeOrchestratorService", () => {
     ).resolves.toBeUndefined();
 
     expect(provider.reversePaymentCode).toHaveBeenCalledTimes(3);
-    expect(attempts.markStatus).toHaveBeenLastCalledWith(
+    expect(attempts.markStatusIfCurrentStatusIn).toHaveBeenLastCalledWith(
       "attempt-1",
       "manual_handling",
+      expect.any(Array),
       expect.objectContaining({
         isActive: true,
         manualReason: "reverse_result_unknown_after_retries",
@@ -406,9 +460,10 @@ describe("PaymentCodeOrchestratorService", () => {
     expect(getAttempt().failureCode).toBeNull();
     expect(getAttempt().failureMessage).toBeNull();
     expect(getAttempt().manualReason).toBeNull();
-    expect(attempts.markStatus).toHaveBeenCalledWith(
+    expect(attempts.markStatusIfCurrentStatusIn).toHaveBeenCalledWith(
       "attempt-1",
       "succeeded",
+      expect.any(Array),
       expect.objectContaining({
         failureCode: null,
         failureMessage: null,
@@ -416,5 +471,106 @@ describe("PaymentCodeOrchestratorService", () => {
       }),
     );
     expect(paymentsService.applyProviderPaymentResult).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not query provider or apply payment again for an already succeeded attempt", async () => {
+    const { service, provider, paymentsService, getAttempt } = makeHarness({
+      attempt: {
+        status: "succeeded",
+        isActive: false,
+        providerTradeNo: "ALI-TXN-PAID",
+        finishedAt: new Date("2026-06-26T04:00:00.000Z"),
+      },
+    });
+
+    const result = await service.manualQuery("attempt-1");
+
+    expect(result).toBe(getAttempt());
+    expect(provider.queryPaymentCode).not.toHaveBeenCalled();
+    expect(paymentsService.applyProviderPaymentResult).not.toHaveBeenCalled();
+  });
+
+  it("does not reverse an already failed terminal attempt", async () => {
+    const { service, provider, getAttempt } = makeHarness({
+      attempt: {
+        status: "failed",
+        isActive: false,
+        failureCode: "PAYMENT_CODE_FAILED",
+        finishedAt: new Date("2026-06-26T04:00:00.000Z"),
+      },
+    });
+
+    const result = await service.manualReverse(
+      "attempt-1",
+      "admin_manual_reverse",
+    );
+
+    expect(result).toBe(getAttempt());
+    expect(provider.reversePaymentCode).not.toHaveBeenCalled();
+  });
+
+  it("does not apply manual query success when a terminal update wins the race", async () => {
+    const { service, attempts, provider, paymentsService, setAttempt } =
+      makeHarness({
+        provider: {
+          queryPaymentCode: vi.fn().mockResolvedValue({
+            status: "succeeded",
+            providerTradeNo: "ALI-TXN-RACE",
+            providerStatus: "TRADE_SUCCESS",
+            rawPayload: { trade_status: "TRADE_SUCCESS" },
+          }),
+        },
+        attempt: {
+          status: "querying",
+          providerTradeNo: "ALI-TXN-RACE",
+        },
+      });
+    attempts.markStatusIfCurrentStatusIn.mockImplementationOnce(async () => {
+      setAttempt({
+        status: "reversed",
+        isActive: false,
+        finishedAt: new Date("2026-06-26T04:01:00.000Z"),
+      });
+      return null;
+    });
+
+    const result = await service.manualQuery("attempt-1");
+
+    expect(result.status).toBe("reversed");
+    expect(provider.queryPaymentCode).toHaveBeenCalledTimes(1);
+    expect(paymentsService.applyProviderPaymentResult).not.toHaveBeenCalled();
+  });
+
+  it("does not let background polling success overwrite a reversed attempt", async () => {
+    const { service, attempts, provider, paymentsService, setAttempt } =
+      makeHarness({
+        provider: {
+          queryPaymentCode: vi.fn().mockResolvedValue({
+            status: "succeeded",
+            providerTradeNo: "ALI-TXN-POLL-RACE",
+            providerStatus: "TRADE_SUCCESS",
+            rawPayload: { trade_status: "TRADE_SUCCESS" },
+          }),
+        },
+        attempt: {
+          status: "querying",
+          providerTradeNo: "ALI-TXN-POLL-RACE",
+        },
+      });
+    const privateApi = service as unknown as OrchestratorPrivateMethods;
+    vi.spyOn(privateApi, "wait").mockResolvedValue(undefined);
+    attempts.markStatusIfCurrentStatusIn.mockImplementationOnce(async () => {
+      setAttempt({
+        status: "reversed",
+        isActive: false,
+        finishedAt: new Date("2026-06-26T04:01:00.000Z"),
+      });
+      return null;
+    });
+
+    await privateApi.confirmAttempt("attempt-1", "alipay", baseConfig);
+
+    expect(provider.queryPaymentCode).toHaveBeenCalledTimes(1);
+    expect(paymentsService.applyProviderPaymentResult).not.toHaveBeenCalled();
   });
 });

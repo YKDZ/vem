@@ -97,7 +97,7 @@ export type DispenseResultPayload = z.infer<typeof dispenseResultPayloadSchema>;
 
 export const manualDispenseResolutionSchema = z.object({
   result: z.enum(["dispensed", "not_dispensed"]),
-  note: z.string().max(500).optional(),
+  note: z.string().trim().min(1).max(500),
 });
 
 export type ManualDispenseResolution = z.infer<

@@ -1,11 +1,14 @@
-import { Injectable } from "@nestjs/common";
+import { Inject, Injectable } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 
 import type { ServiceEnv } from "./env.schema";
 
 @Injectable()
 export class AppConfigService {
-  constructor(private readonly config: ConfigService<ServiceEnv, true>) {}
+  constructor(
+    @Inject(ConfigService)
+    private readonly config: ConfigService<ServiceEnv, true>,
+  ) {}
 
   get servicePort(): number {
     return this.config.get("SERVICE_PORT", { infer: true });
@@ -75,6 +78,12 @@ export class AppConfigService {
 
   get machineCommandTimeoutSeconds(): number {
     return this.config.get("MACHINE_COMMAND_TIMEOUT_SECONDS", { infer: true });
+  }
+
+  get machineHeartbeatTimeoutSeconds(): number {
+    return this.config.get("MACHINE_HEARTBEAT_TIMEOUT_SECONDS", {
+      infer: true,
+    });
   }
 
   get machineClaimCodeTtlSeconds(): number {

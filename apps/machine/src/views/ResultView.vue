@@ -78,6 +78,8 @@ const copyMap: Record<CheckoutResultKind, ResultCopy> = {
 };
 const DISPENSE_RESOLUTION_RESULT_KINDS: ReadonlySet<CheckoutResultKind> =
   new Set(["dispense_failed", "refund_pending", "refunded", "manual_handling"]);
+const WAIT_FOR_RESOLUTION_RESULT_KINDS: ReadonlySet<CheckoutResultKind> =
+  new Set(["refund_pending"]);
 
 const kind = computed(() => String(route.params.kind) as CheckoutResultKind);
 const copy = computed(() => copyMap[kind.value] ?? copyMap.manual_handling);
@@ -94,6 +96,27 @@ const isDispenseFailureResult = computed(
 const isDispenseResolutionResult = computed(() =>
   DISPENSE_RESOLUTION_RESULT_KINDS.has(kind.value),
 );
+const orderCredential = computed(
+  () =>
+    checkoutStore.currentOrder?.orderNo ??
+    checkoutStore.status?.orderNo ??
+    null,
+);
+const resultDetail = computed(() => {
+  if (
+    kind.value === "manual_handling" &&
+    checkoutStore.status?.vending?.status === "result_unknown"
+  ) {
+    return "出货结果待确认，请凭订单凭证联系工作人员处理。";
+  }
+  if (kind.value === "manual_handling") {
+    return "订单已进入人工处理，请凭订单凭证联系工作人员。";
+  }
+  if (kind.value === "dispense_failed") {
+    return "请凭订单凭证联系工作人员处理出货异常。";
+  }
+  return null;
+});
 const resultReadinessError = ref<string | null>(null);
 const requiresMaintenanceReview = computed(() => {
   if (!isDispenseFailureResult.value) return false;
@@ -112,7 +135,12 @@ const canAutoReturn = computed(
     connectivityStore.isSaleNetworkReady &&
     !isDispenseResolutionResult.value,
 );
-const canManuallyReturn = computed(() => !isDispenseResolutionResult.value);
+const canManuallyReturn = computed(
+  () =>
+    Boolean(checkoutStore.resultKind) &&
+    !WAIT_FOR_RESOLUTION_RESULT_KINDS.has(kind.value) &&
+    (connectivityStore.isSaleNetworkReady || !isDispenseResolutionResult.value),
+);
 const autoReturnRemainingSeconds = ref(
   Math.ceil(AUTO_RETURN_DELAY_MS / AUTO_RETURN_TICK_MS),
 );
@@ -159,16 +187,24 @@ async function backToCatalog(): Promise<void> {
   if (returningToCatalog) return;
   returningToCatalog = true;
   stopAutoReturn();
+  await refreshResultReadiness();
   checkoutStore.dismissCurrentTerminalTransaction();
   checkoutStore.reset();
-  await catalogStore.refresh();
-  await router.replace("/catalog");
+  const targetRoute = connectivityStore.isSaleNetworkReady
+    ? "/catalog"
+    : connectivityStore.ready?.suggestedRoute === "maintenance"
+      ? "/maintenance"
+      : "/offline";
+  if (targetRoute === "/catalog") {
+    await catalogStore.refresh().catch((error: unknown) => {
+      resultReadinessError.value =
+        error instanceof Error ? error.message : String(error);
+    });
+  }
+  await router.replace(targetRoute);
 }
 
 async function refreshResultReadiness(): Promise<void> {
-  if (!isDispenseFailureResult.value) {
-    return;
-  }
   try {
     const [ready, saleReadiness] = await Promise.all([
       daemonClient.getReady(),
@@ -216,6 +252,15 @@ onBeforeUnmount(stopAutoReturn);
         </div>
         <h2 class="mt-6 text-5xl font-black">{{ copy.title }}</h2>
         <p class="mt-4 text-xl text-neutral-700">{{ copy.subtitle }}</p>
+        <p
+          v-if="isDispenseResolutionResult && orderCredential"
+          class="mt-5 text-xl font-black text-neutral-950"
+        >
+          订单凭证 {{ orderCredential }}
+        </p>
+        <p v-if="resultDetail" class="mt-3 text-base text-neutral-700">
+          {{ resultDetail }}
+        </p>
         <p v-if="canAutoReturn" class="mt-4 text-base text-neutral-500">
           {{ autoReturnMessage }}
         </p>

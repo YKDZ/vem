@@ -13,6 +13,7 @@ import {
   mockFail,
   mockSucceed,
   queryPaymentCodeAttempt,
+  queryRefund,
   reversePaymentCodeAttempt,
   type PageResult,
   type Payment,
@@ -202,6 +203,7 @@ const reconciliationColumns = [
 
 // Refunds tab
 const refundsLoading = ref(false);
+const refundQueryingIds = ref<Set<string>>(new Set());
 const refundsList = ref<PageResult<Refund>>({
   items: [],
   total: 0,
@@ -256,6 +258,19 @@ async function doManualReconcile(paymentId: string): Promise<void> {
   await loadPayments();
 }
 
+async function doQueryRefund(refundId: string): Promise<void> {
+  if (refundQueryingIds.value.has(refundId)) return;
+  refundQueryingIds.value = new Set([...refundQueryingIds.value, refundId]);
+  try {
+    await queryRefund(refundId);
+    await loadRefunds(refundsList.value.page);
+  } finally {
+    const next = new Set(refundQueryingIds.value);
+    next.delete(refundId);
+    refundQueryingIds.value = next;
+  }
+}
+
 const refundColumns = [
   { title: "退款单号", dataIndex: "refundNo", key: "refundNo" },
   { title: "支付单号", dataIndex: "paymentNo", key: "paymentNo" },
@@ -264,8 +279,14 @@ const refundColumns = [
   { title: "状态", dataIndex: "status", key: "status" },
   { title: "金额", dataIndex: "amountCents", key: "amountCents" },
   { title: "原因", dataIndex: "reason", key: "reason" },
+  {
+    title: "最近查询",
+    dataIndex: "latestReconciliationStatus",
+    key: "latestReconciliation",
+  },
   { title: "退款时间", dataIndex: "refundedAt", key: "refundedAt" },
   { title: "创建时间", dataIndex: "createdAt", key: "createdAt" },
+  { title: "操作", key: "actions" },
 ];
 
 const paymentCodeAttemptColumns = [
@@ -544,6 +565,47 @@ onMounted(() => {
               "
             >
               {{ formatDateTime(record[column.key]) }}
+            </template>
+            <template v-else-if="column.key === 'latestReconciliation'">
+              <a-space
+                v-if="record.reconciliationAttempts.length > 0"
+                direction="vertical"
+                size="small"
+              >
+                <span
+                  v-for="attempt in record.reconciliationAttempts"
+                  :key="`${record.id}-${attempt.trigger}-${attempt.attemptNo}-${attempt.createdAt}`"
+                >
+                  #{{ attempt.attemptNo }} {{ attempt.trigger }}:
+                  {{ attempt.status }}
+                  <template v-if="attempt.providerRefundStatus">
+                    / provider {{ attempt.providerRefundStatus }}
+                  </template>
+                  <template v-if="attempt.errorMessage">
+                    / {{ attempt.errorMessage }}
+                  </template>
+                  <template v-if="attempt.finishedAt">
+                    / {{ formatDateTime(attempt.finishedAt) }}
+                  </template>
+                </span>
+              </a-space>
+              <span v-else>-</span>
+            </template>
+            <template v-else-if="column.key === 'actions'">
+              <a-button
+                v-if="
+                  canConfigure &&
+                  (record.status === 'processing' ||
+                    record.status === 'created')
+                "
+                size="small"
+                type="dashed"
+                :loading="refundQueryingIds.has(record.id)"
+                :disabled="refundQueryingIds.has(record.id)"
+                @click="doQueryRefund(record.id)"
+              >
+                查询
+              </a-button>
             </template>
           </template>
         </a-table>

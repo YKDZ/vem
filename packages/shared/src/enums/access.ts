@@ -16,6 +16,7 @@ export const permissionCodeSchema = z.enum([
   "inventory.adjust",
   "inventory.refill",
   "orders.read",
+  "orders.recover",
   "orders.refund",
   "payments.read",
   "payments.configure",

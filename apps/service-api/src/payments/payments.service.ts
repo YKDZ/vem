@@ -98,6 +98,18 @@ function canApplyProviderTerminalStatus(status: PaymentStatus): boolean {
   return PROVIDER_MUTABLE_PAYMENT_STATUSES.includes(status);
 }
 
+function isProviderPaymentUncertainStatus(
+  status:
+    | "pending"
+    | "processing"
+    | "succeeded"
+    | "failed"
+    | "expired"
+    | "canceled",
+): status is "pending" | "processing" {
+  return status === "pending" || status === "processing";
+}
+
 type ProviderWebhookBusinessValidation =
   | { ok: true }
   | { ok: false; reason: string };
@@ -598,6 +610,15 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
             });
 
             if (queryResult.status === "succeeded") {
+              await this.recordExpireCompensationAttempt({
+                paymentId: payment.paymentId,
+                providerId: payment.providerId,
+                status: "succeeded",
+                providerPaymentStatus: "succeeded",
+                providerTradeNo: queryResult.providerTradeNo ?? null,
+                rawPayload: queryResult.rawPayload,
+                now,
+              });
               const providerEventId = `expire_query:${payment.paymentNo}:succeeded:${now.getTime()}`;
               const applied = await this.applyPaymentStatusUpdate(
                 payment.paymentId,
@@ -622,21 +643,28 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
 
             // If still pending/processing, check compensation window
             if (
+              isProviderPaymentUncertainStatus(queryResult.status) &&
               !isPastTimeoutCompensation(
                 payment.expiresAt,
                 payment.publicConfigJson,
                 now,
               )
             ) {
-              // Within compensation window — skip closing for now
+              await this.recordExpireCompensationAttempt({
+                paymentId: payment.paymentId,
+                providerId: payment.providerId,
+                status: queryResult.status,
+                providerPaymentStatus: queryResult.status,
+                providerTradeNo: queryResult.providerTradeNo ?? null,
+                rawPayload: queryResult.rawPayload,
+                nextRetryAt: new Date(now.getTime() + reconcileBackoffMs(1)),
+                now,
+              });
               return false;
             }
 
             // Past compensation window — cancel with provider
-            if (
-              queryResult.status === "pending" ||
-              queryResult.status === "processing"
-            ) {
+            if (isProviderPaymentUncertainStatus(queryResult.status)) {
               await provider.cancelPayment({
                 paymentNo: payment.paymentNo,
                 providerTradeNo: payment.providerTradeNo,
@@ -2030,6 +2058,36 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
     return Number(countRow.total) + 1;
   }
 
+  private async recordExpireCompensationAttempt(input: {
+    paymentId: string;
+    providerId: string;
+    status: string;
+    providerPaymentStatus?: string | null;
+    providerTradeNo?: string | null;
+    rawPayload?: Record<string, unknown>;
+    nextRetryAt?: Date | null;
+    now: Date;
+  }): Promise<void> {
+    const attemptNo = await this.nextPaymentReconciliationAttemptNo(
+      input.paymentId,
+      "expire_compensation",
+    );
+    const rawPayloadFields = buildReconciliationPayloadFields(input.rawPayload);
+    await this.db.insert(paymentReconciliationAttempts).values({
+      paymentId: input.paymentId,
+      providerId: input.providerId,
+      trigger: "expire_compensation",
+      attemptNo,
+      status: input.status,
+      providerPaymentStatus: input.providerPaymentStatus ?? null,
+      providerTradeNo: input.providerTradeNo ?? null,
+      ...rawPayloadFields,
+      nextRetryAt: input.nextRetryAt ?? null,
+      startedAt: input.now,
+      finishedAt: new Date(),
+    });
+  }
+
   async reconcilePendingPaymentOnRead(paymentId: string): Promise<{
     status: PaymentStatus | "not_found";
     reconciled: boolean;
@@ -2627,6 +2685,84 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         reason: refunds.reason,
         providerRefundNo: refunds.providerRefundNo,
         refundedAt: refunds.refundedAt,
+        latestReconciliationStatus: sql<string | null>`(
+          select rra.status
+          from refund_reconciliation_attempts rra
+          where rra.refund_id = ${refunds.id}
+          order by rra.created_at desc
+          limit 1
+        )`,
+        latestProviderRefundStatus: sql<string | null>`(
+          select rra.provider_refund_status
+          from refund_reconciliation_attempts rra
+          where rra.refund_id = ${refunds.id}
+          order by rra.created_at desc
+          limit 1
+        )`,
+        latestReconciliationError: sql<string | null>`(
+          select rra.error_message
+          from refund_reconciliation_attempts rra
+          where rra.refund_id = ${refunds.id}
+          order by rra.created_at desc
+          limit 1
+        )`,
+        latestReconciliationAt: sql<Date | null>`(
+          select rra.finished_at
+          from refund_reconciliation_attempts rra
+          where rra.refund_id = ${refunds.id}
+          order by rra.created_at desc
+          limit 1
+        )`,
+        reconciliationAttempts: sql<
+          Array<{
+            trigger: string;
+            attemptNo: number;
+            status: string;
+            providerRefundStatus: string | null;
+            providerRefundNo: string | null;
+            errorCode: string | null;
+            errorMessage: string | null;
+            nextRetryAt: string | null;
+            startedAt: string;
+            finishedAt: string | null;
+            createdAt: string;
+          }>
+        >`coalesce((
+          select jsonb_agg(
+            jsonb_build_object(
+              'trigger', recent.trigger,
+              'attemptNo', recent.attempt_no,
+              'status', recent.status,
+              'providerRefundStatus', recent.provider_refund_status,
+              'providerRefundNo', recent.provider_refund_no,
+              'errorCode', recent.error_code,
+              'errorMessage', recent.error_message,
+              'nextRetryAt', recent.next_retry_at,
+              'startedAt', recent.started_at,
+              'finishedAt', recent.finished_at,
+              'createdAt', recent.created_at
+            )
+            order by recent.created_at desc
+          )
+          from (
+            select
+              rra.trigger,
+              rra.attempt_no,
+              rra.status,
+              rra.provider_refund_status,
+              rra.provider_refund_no,
+              rra.error_code,
+              rra.error_message,
+              rra.next_retry_at,
+              rra.started_at,
+              rra.finished_at,
+              rra.created_at
+            from refund_reconciliation_attempts rra
+            where rra.refund_id = ${refunds.id}
+            order by rra.created_at desc
+            limit 5
+          ) recent
+        ), '[]'::jsonb)`,
         createdAt: refunds.createdAt,
         updatedAt: refunds.updatedAt,
       })
@@ -2648,6 +2784,18 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       .where(whereClause);
 
     return toPageResult(items, query, Number(totalRow.total));
+  }
+
+  async manualReconcileRefund(refundId: string, adminUserId: string) {
+    const result = await this.refundsService.queryRefund(refundId, "manual");
+    await this.auditService.record({
+      adminUserId,
+      action: "payments.refund_manual_reconcile",
+      resourceType: "refund",
+      resourceId: refundId,
+      afterJson: result,
+    });
+    return result;
   }
 
   async manualReconcile(paymentId: string, adminUserId: string) {

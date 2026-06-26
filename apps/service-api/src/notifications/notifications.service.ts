@@ -3,6 +3,7 @@ import {
   count,
   desc,
   eq,
+  and,
   notifications,
   type DrizzleClient,
   type DrizzleTransaction,
@@ -53,6 +54,74 @@ export class NotificationsService {
         dedupeKey: `dispense_failed:${input.commandId}`,
       })
       .onConflictDoNothing({ target: notifications.dedupeKey });
+  }
+
+  async createMachineOfflineNotification(
+    tx: DrizzleTransaction,
+    input: {
+      machineId: string;
+      machineCode: string;
+      lastSeenAt: Date | null;
+      timeoutSeconds: number;
+      detectedAt: Date;
+    },
+  ): Promise<void> {
+    const lastSeenText = input.lastSeenAt
+      ? input.lastSeenAt.toISOString()
+      : "never";
+    const content = `机器 ${input.machineCode} 心跳超时：最后心跳 ${lastSeenText}，超时阈值 ${input.timeoutSeconds} 秒`;
+    await tx
+      .insert(notifications)
+      .values({
+        type: "machine_offline",
+        title: "机器心跳超时",
+        content,
+        severity: "critical",
+        resourceType: "machine",
+        resourceId: input.machineId,
+        status: "unread",
+        dedupeKey: `machine_offline_timeout:${input.machineId}`,
+        updatedAt: input.detectedAt,
+      })
+      .onConflictDoUpdate({
+        target: notifications.dedupeKey,
+        set: {
+          title: "机器心跳超时",
+          content,
+          severity: "critical",
+          status: "unread",
+          updatedAt: input.detectedAt,
+        },
+      });
+  }
+
+  async resolveMachineOfflineNotification(
+    tx: DrizzleTransaction,
+    input: {
+      machineId: string;
+      machineCode: string;
+      recoveredAt: Date;
+      lastSeenAt: Date;
+    },
+  ): Promise<void> {
+    await tx
+      .update(notifications)
+      .set({
+        title: "机器心跳已恢复",
+        content: `机器 ${input.machineCode} 心跳已恢复：服务端最后接收时间 ${input.lastSeenAt.toISOString()}`,
+        severity: "info",
+        status: "archived",
+        updatedAt: input.recoveredAt,
+      })
+      .where(
+        and(
+          eq(notifications.type, "machine_offline"),
+          eq(
+            notifications.dedupeKey,
+            `machine_offline_timeout:${input.machineId}`,
+          ),
+        ),
+      );
   }
 
   async createOperationalNotification(

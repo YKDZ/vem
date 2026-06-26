@@ -188,7 +188,7 @@ describe("vision mock server - protocol conformance", () => {
       expect(typeof result.payload.detectedAt).toBe("string");
       expect(result.payload.profile.personPresent).toBe(true);
       expect(result.payload.profile.heightCm).toBe(172);
-      expect(result.payload.profile.gender).toBe("unknown");
+      expect("gender" in result.payload.profile).toBe(false);
       expect(result.payload.quality.overall).toBe("good");
     } finally {
       messages.dispose();

@@ -103,17 +103,25 @@ watch(
 );
 
 watch(variantCandidates, () => {
-  if (
-    selectedVariantId.value &&
-    variantCandidates.value.some(
-      (variant) => variant.variantId === selectedVariantId.value,
-    )
-  ) {
+  const current = variantCandidates.value.find(
+    (variant) => variant.variantId === selectedVariantId.value,
+  );
+  if (current && (userSelectedVariant.value || variantIsSaleable(current))) {
     return;
   }
-  userSelectedVariant.value = false;
+  if (!current) {
+    userSelectedVariant.value = false;
+  }
   selectedVariantId.value = chooseInitialVariant()?.variantId ?? null;
 });
+
+watch(
+  () => props.profile,
+  () => {
+    if (userSelectedVariant.value) return;
+    selectedVariantId.value = chooseInitialVariant()?.variantId ?? null;
+  },
+);
 
 function variantIsSaleable(variant: MachineCatalogVariantCandidate): boolean {
   return variant.slotSalesState === "sale_ready" && variant.saleableStock > 0;

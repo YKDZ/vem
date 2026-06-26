@@ -1,4 +1,4 @@
-import { Injectable } from "@nestjs/common";
+import { Inject, Injectable } from "@nestjs/common";
 import { createHash, X509Certificate } from "node:crypto";
 
 import { AppConfigService } from "../config/app-config.service";
@@ -33,7 +33,9 @@ function certificateExpiresAt(value: string): string | null {
 
 @Injectable()
 export class PaymentConfigSecretService {
-  constructor(private readonly config: AppConfigService) {}
+  constructor(
+    @Inject(AppConfigService) private readonly config: AppConfigService,
+  ) {}
 
   encrypt(input: Record<string, unknown>): EncryptedJson {
     return encryptJson(input, this.config.paymentConfigEncryptionKey);

@@ -44,6 +44,8 @@ export function normalizeNextAction(
     case "manual_handling":
     case "closed":
       return nextAction;
+    case "result_unknown":
+      return "manual_handling";
     default:
       return "wait_payment";
   }
@@ -320,6 +322,7 @@ function vendingStatusFromSnapshot(
     case "succeeded":
     case "failed":
     case "timeout":
+    case "result_unknown":
       return snapshot.status;
     default:
       return "pending";

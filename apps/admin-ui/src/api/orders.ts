@@ -48,6 +48,28 @@ export type OrderDetail = {
   }>;
 };
 
+export type OrderInvestigation = OrderDetail & {
+  paymentWebhookAttempts: Array<Record<string, unknown>>;
+  paymentReconciliationAttempts: Array<Record<string, unknown>>;
+  paymentCodeAttempts: Array<Record<string, unknown>>;
+  fulfillmentProjection: {
+    state: string;
+    latestCommand: Record<string, unknown> | null;
+    requiresPhysicalOutcomeConfirmation?: boolean;
+    availableRecoveryActions?: OrderRecoveryAction[];
+  };
+  stockReconciliationLinks: Array<Record<string, unknown>>;
+  refunds: Array<Record<string, unknown>>;
+  maintenanceWorkOrders: Array<Record<string, unknown>>;
+  adminAuditEntries: Array<Record<string, unknown>>;
+};
+
+export type OrderRecoveryAction =
+  | "confirm_dispensed"
+  | "confirm_not_dispensed"
+  | "request_refund"
+  | "compensation_dispense";
+
 export type PageResult<T> = {
   items: T[];
   total: number;
@@ -65,6 +87,19 @@ export async function getOrderDetail(id: string): Promise<OrderDetail> {
   return await get<OrderDetail>(`/orders/${id}`);
 }
 
+export async function getOrderInvestigation(
+  id: string,
+): Promise<OrderInvestigation> {
+  return await get<OrderInvestigation>(`/orders/${id}/investigation`);
+}
+
 export async function requestRefund(id: string): Promise<void> {
   await post<void>(`/orders/${id}/refund`);
+}
+
+export async function createOrderRecoveryAction(
+  id: string,
+  input: { action: OrderRecoveryAction; note: string },
+): Promise<void> {
+  await post<void>(`/orders/${id}/recovery-actions`, input);
 }

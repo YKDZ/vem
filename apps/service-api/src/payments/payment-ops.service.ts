@@ -9,7 +9,9 @@ import { Inject, Injectable } from "@nestjs/common";
 import {
   and,
   count,
+  desc,
   eq,
+  machineHeartbeats,
   machines,
   paymentCodeAttempts,
   paymentEvents,
@@ -29,12 +31,40 @@ import { DRIZZLE_CLIENT } from "../database/database.constants";
 import { PaymentConfigSecretService } from "./payment-config-secret.service";
 import { PaymentProviderConfigService } from "./payment-provider-config.service";
 
+type LatestMachineHeartbeat = {
+  reportedAt: Date;
+  receivedAt: Date;
+  statusPayloadJson: unknown;
+} | null;
+
+type MachinePreflightRecord = {
+  id: string;
+  code: string;
+  status: "online" | "offline" | "maintenance" | "disabled";
+  lastSeenAt: Date | null;
+};
+
+function readHeartbeatStringField(
+  heartbeat: LatestMachineHeartbeat,
+  field: string,
+): string | null {
+  const payload = heartbeat?.statusPayloadJson;
+  if (typeof payload !== "object" || payload === null) {
+    return null;
+  }
+  const value = Reflect.get(payload, field);
+  return typeof value === "string" ? value : null;
+}
+
 @Injectable()
 export class PaymentOpsService {
   constructor(
     @Inject(DRIZZLE_CLIENT) private readonly db: DrizzleClient,
+    @Inject(AppConfigService)
     private readonly config: AppConfigService,
+    @Inject(PaymentConfigSecretService)
     private readonly paymentConfigSecrets: PaymentConfigSecretService,
+    @Inject(PaymentProviderConfigService)
     private readonly providerConfigs: PaymentProviderConfigService,
   ) {}
 
@@ -148,7 +178,12 @@ export class PaymentOpsService {
     machineId: string,
   ): Promise<PaymentMachinePreflight> {
     const [machine] = await this.db
-      .select({ id: machines.id, code: machines.code, status: machines.status })
+      .select({
+        id: machines.id,
+        code: machines.code,
+        status: machines.status,
+        lastSeenAt: machines.lastSeenAt,
+      })
       .from(machines)
       .where(eq(machines.id, machineId))
       .limit(1);
@@ -176,6 +211,7 @@ export class PaymentOpsService {
       await this.providerConfigs.listMachinePaymentOptionsForMachine(
         machine.id,
       );
+    const latestHeartbeat = await this.getLatestMachineHeartbeat(machine.id);
 
     const checks: PaymentOpsCheck[] = [
       {
@@ -198,7 +234,9 @@ export class PaymentOpsService {
           providerCodes: options.options.map((item) => item.providerCode),
         },
       },
+      this.checkMachineHeartbeatFresh(machine, latestHeartbeat),
     ];
+    checks.push(this.checkProductionDispensePath(latestHeartbeat));
 
     if (options.options.some((item) => item.method === "payment_code")) {
       checks.push({
@@ -222,6 +260,117 @@ export class PaymentOpsService {
       availableProviders: options.options,
       checks,
       checkedAt: new Date().toISOString(),
+    };
+  }
+
+  private async getLatestMachineHeartbeat(
+    machineId: string,
+  ): Promise<LatestMachineHeartbeat> {
+    const [heartbeat] = await this.db
+      .select({
+        reportedAt: machineHeartbeats.reportedAt,
+        receivedAt: machineHeartbeats.createdAt,
+        statusPayloadJson: machineHeartbeats.statusPayloadJson,
+      })
+      .from(machineHeartbeats)
+      .where(eq(machineHeartbeats.machineId, machineId))
+      .orderBy(desc(machineHeartbeats.createdAt))
+      .limit(1);
+    return heartbeat ?? null;
+  }
+
+  private checkMachineHeartbeatFresh(
+    machine: MachinePreflightRecord,
+    heartbeat: LatestMachineHeartbeat,
+  ): PaymentOpsCheck {
+    const timeoutSeconds = this.config.machineHeartbeatTimeoutSeconds;
+    const lastSeenAt = machine.lastSeenAt;
+    const ageSeconds = lastSeenAt
+      ? Math.floor((Date.now() - lastSeenAt.getTime()) / 1_000)
+      : null;
+    const passed =
+      heartbeat !== null && ageSeconds !== null && ageSeconds <= timeoutSeconds;
+    const message = !heartbeat
+      ? "Machine heartbeat is missing"
+      : ageSeconds === null
+        ? "Machine heartbeat receive time is missing"
+        : passed
+          ? "Machine heartbeat is fresh"
+          : "Machine heartbeat timed out";
+
+    return {
+      code: "machine_heartbeat.fresh",
+      severity: "critical",
+      passed,
+      message,
+      evidence: {
+        lastSeenAt: lastSeenAt?.toISOString() ?? null,
+        reportedAt: heartbeat?.reportedAt?.toISOString() ?? null,
+        heartbeatReceivedAt: heartbeat?.receivedAt?.toISOString() ?? null,
+        timeoutSeconds,
+        ageSeconds,
+      },
+    };
+  }
+
+  private checkProductionDispensePath(
+    heartbeat: LatestMachineHeartbeat,
+  ): PaymentOpsCheck {
+    const isProduction = this.config.nodeEnv === "production";
+    const hardwareAdapter = readHeartbeatStringField(
+      heartbeat,
+      "hardwareAdapter",
+    );
+    const hardwarePortPath = readHeartbeatStringField(
+      heartbeat,
+      "hardwarePortPath",
+    );
+    const hardwareStatus = readHeartbeatStringField(
+      heartbeat,
+      "hardwareStatus",
+    );
+    const hardwareMessage = readHeartbeatStringField(
+      heartbeat,
+      "hardwareMessage",
+    );
+
+    let code = "production_dispense_path.ready";
+    let passed = true;
+    let message = "Production dispense path is ready";
+    if (isProduction && hardwareAdapter === "mock") {
+      code = "production_dispense_path.mock";
+      passed = false;
+      message = "生产出货路径不能使用 mock hardwareAdapter";
+    } else if (
+      isProduction &&
+      (!heartbeat || !hardwareAdapter || !hardwarePortPath)
+    ) {
+      code = "production_dispense_path.evidence_missing";
+      passed = false;
+      message = "生产出货路径缺少硬件心跳证据";
+    } else if (
+      isProduction &&
+      hardwarePortPath !== null &&
+      hardwarePortPath.trimStart().startsWith("tcp://")
+    ) {
+      code = "production_dispense_path.tcp_simulator";
+      passed = false;
+      message = "生产出货路径不能使用 tcp:// lower-controller simulator";
+    }
+
+    return {
+      code,
+      severity: isProduction ? "critical" : "warning",
+      passed,
+      message,
+      evidence: {
+        heartbeatReceivedAt: heartbeat?.receivedAt?.toISOString?.() ?? null,
+        reportedAt: heartbeat?.reportedAt?.toISOString?.() ?? null,
+        hardwareAdapter,
+        hardwarePortPath,
+        hardwareStatus,
+        hardwareMessage,
+      },
     };
   }
 

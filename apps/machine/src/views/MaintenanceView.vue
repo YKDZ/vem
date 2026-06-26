@@ -47,6 +47,20 @@ const wholeMachineMaintenanceLock = computed(
       (reason) => reason.code === "WHOLE_MACHINE_HARDWARE_FAULT",
     ) ?? null,
 );
+const saleCriticalBlockers = computed(() =>
+  (connectivityStore.ready?.blockingReasons ?? []).map((reason) => ({
+    ...reason,
+    operatorLabel: saleCriticalBlockerLabel(reason.code),
+    operatorAction: saleCriticalBlockerAction(reason.code),
+  })),
+);
+const clearWholeMachineLockDisabled = computed(
+  () =>
+    wholeMachineLockMaintenance.loading ||
+    !wholeMachineMaintenanceLock.value ||
+    !wholeMachineLockMaintenance.selfCheckEvidence?.online ||
+    wholeMachineLockMaintenance.operatorNote.trim().length === 0,
+);
 const returnToCatalogBlockedReason = computed(() => {
   if (connectivityStore.ready?.canSell === true) {
     return null;
@@ -176,6 +190,13 @@ const visionMaintenance = reactive({
 const wholeMachineLockMaintenance = reactive({
   loading: false,
   message: null as string | null,
+  operatorNote: "",
+  selfCheckEvidence: null as null | {
+    online: boolean;
+    message: string;
+    portPath?: string | null;
+    checkedAt: string;
+  },
 });
 
 const desktopMaintenance = reactive({
@@ -245,6 +266,12 @@ async function runHardwareCheck(): Promise<void> {
   hardwareMaintenance.message = null;
   try {
     const result = await daemonClient.runHardwareSelfCheck();
+    wholeMachineLockMaintenance.selfCheckEvidence = {
+      online: result.online,
+      message: result.message,
+      portPath: result.portPath,
+      checkedAt: new Date().toISOString(),
+    };
     if (result.configUpdated) {
       await machineStore.loadConfig();
       if (runtimeFlags.advancedMaintenanceConfig) {
@@ -356,8 +383,11 @@ async function clearWholeMachineLock(): Promise<void> {
   wholeMachineLockMaintenance.loading = true;
   wholeMachineLockMaintenance.message = null;
   try {
-    await daemonClient.clearWholeMachineMaintenanceLock();
+    await daemonClient.clearWholeMachineMaintenanceLock(
+      wholeMachineLockMaintenance.operatorNote,
+    );
     wholeMachineLockMaintenance.message = "整机维护锁已解除";
+    wholeMachineLockMaintenance.operatorNote = "";
     await refreshDiagnostics();
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -369,6 +399,41 @@ async function clearWholeMachineLock(): Promise<void> {
   } finally {
     wholeMachineLockMaintenance.loading = false;
   }
+}
+
+function saleCriticalBlockerLabel(code: string): string {
+  const labels: Record<string, string> = {
+    LOWER_CONTROLLER_UNAVAILABLE: "下位机未在线",
+    WHOLE_MACHINE_HARDWARE_FAULT: "整机维护锁",
+    PRODUCTION_DISPENSE_PATH_EVIDENCE_MISSING: "生产出货路径证据缺失",
+    PRODUCTION_DISPENSE_PATH_MOCK: "当前不是生产出货路径",
+    SYNC_UNHEALTHY: "平台同步异常",
+    ACTIVE_PLANOGRAM_MISSING: "未加载有效货道图",
+    NO_PAYMENT_OPTIONS: "没有可用支付方式",
+    MACHINE_AUTH_MISSING: "机器身份未配置",
+    PLATFORM_UNREACHABLE: "后端不可达",
+    NO_SALEABLE_SLOTS: "没有可售货道",
+  };
+  return labels[code] ?? code;
+}
+
+function saleCriticalBlockerAction(code: string): string {
+  const actions: Record<string, string> = {
+    LOWER_CONTROLLER_UNAVAILABLE:
+      "检查下位机供电、串口线和 COM 口后运行硬件自检。",
+    WHOLE_MACHINE_HARDWARE_FAULT:
+      "处理卡货或机械故障，运行下位机自检，通过后填写处理记录解除整机锁。",
+    PRODUCTION_DISPENSE_PATH_EVIDENCE_MISSING:
+      "核对生产硬件配置和验收资料，确认真实下位机路径。",
+    PRODUCTION_DISPENSE_PATH_MOCK: "切换到生产下位机适配器后再恢复销售。",
+    SYNC_UNHEALTHY: "检查网络、MQTT 和本地队列积压。",
+    ACTIVE_PLANOGRAM_MISSING: "等待后台下发并应用有效货道图。",
+    NO_PAYMENT_OPTIONS: "检查支付配置和扫码器能力。",
+    MACHINE_AUTH_MISSING: "重新完成机器认领或凭证配置。",
+    PLATFORM_UNREACHABLE: "检查网络和后端 API 连通性。",
+    NO_SALEABLE_SLOTS: "补货、盘点或处理货道冻结后恢复可售库存。",
+  };
+  return actions[code] ?? "按现场 SOP 排查该阻塞项。";
 }
 
 async function returnToCatalog(): Promise<void> {
@@ -650,7 +715,7 @@ async function submitStockMovement(): Promise<void> {
           "
           class="mt-4 rounded-2xl border border-rose-300/30 bg-rose-500/15 p-4"
         >
-          <div class="flex flex-wrap items-center justify-between gap-3">
+          <div class="grid gap-4">
             <div class="text-left">
               <p class="text-sm font-semibold text-rose-100">整机维护锁</p>
               <p class="mt-1 text-sm text-rose-50/90">
@@ -667,13 +732,55 @@ async function submitStockMovement(): Promise<void> {
                 {{ wholeMachineLockMaintenance.message }}
               </p>
             </div>
+            <div
+              v-if="saleCriticalBlockers.length > 0"
+              class="grid gap-2 text-left"
+            >
+              <div
+                v-for="blocker in saleCriticalBlockers"
+                :key="`${blocker.component}-${blocker.code}`"
+                class="rounded-xl bg-slate-950/35 p-3 text-sm text-rose-50/90"
+              >
+                <div class="font-semibold text-rose-50">
+                  {{ blocker.operatorLabel }} · {{ blocker.code }}
+                </div>
+                <div class="mt-1">{{ blocker.message }}</div>
+                <div class="mt-1 text-rose-100/80">
+                  {{ blocker.operatorAction }}
+                </div>
+              </div>
+            </div>
+            <div
+              v-if="wholeMachineLockMaintenance.selfCheckEvidence"
+              class="rounded-xl bg-slate-950/35 p-3 text-left text-sm text-rose-50/90"
+            >
+              下位机自检：{{
+                wholeMachineLockMaintenance.selfCheckEvidence.online
+                  ? "通过"
+                  : "未通过"
+              }}
+              ·
+              {{ wholeMachineLockMaintenance.selfCheckEvidence.message }}
+              <span
+                v-if="wholeMachineLockMaintenance.selfCheckEvidence.portPath"
+              >
+                · {{ wholeMachineLockMaintenance.selfCheckEvidence.portPath }}
+              </span>
+            </div>
+            <label
+              class="grid gap-2 text-left text-sm font-semibold text-rose-50"
+            >
+              处理记录
+              <textarea
+                v-model="wholeMachineLockMaintenance.operatorNote"
+                class="min-h-24 rounded-xl border border-rose-100/30 bg-slate-950/45 p-3 font-normal text-white outline-none"
+                placeholder="填写现场处理、复位和自检结果"
+              />
+            </label>
             <button
               class="kiosk-touch-target rounded-2xl border border-rose-100/40 px-4 py-3 font-bold text-rose-50 disabled:opacity-50"
               type="button"
-              :disabled="
-                wholeMachineLockMaintenance.loading ||
-                !wholeMachineMaintenanceLock
-              "
+              :disabled="clearWholeMachineLockDisabled"
               @click="clearWholeMachineLock"
             >
               确认解除整机锁

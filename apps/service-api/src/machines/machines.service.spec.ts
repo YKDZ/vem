@@ -24,6 +24,7 @@ import {
 } from "../machine-auth/machine-credentials.util";
 import { MqttSignatureService } from "../mqtt/mqtt-signature.service";
 import { MqttService } from "../mqtt/mqtt.service";
+import { NotificationsService } from "../notifications/notifications.service";
 import { PaymentProviderConfigService } from "../payments/payment-provider-config.service";
 import { hashMachineClaimCodeVerifier } from "./machine-claim-code.util";
 import { MachinesService } from "./machines.service";
@@ -42,9 +43,10 @@ describe("MachinesService", () => {
   const signForMachine = vi.fn();
   const verifyFromTopic = vi.fn();
   const listMachinePaymentOptionsForMachine = vi.fn();
+  const createMachineOfflineNotification = vi.fn();
 
   beforeEach(async () => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
     const module = await Test.createTestingModule({
       providers: [
         MachinesService,
@@ -61,8 +63,15 @@ describe("MachinesService", () => {
           useValue: { signForMachine, verifyFromTopic },
         },
         {
+          provide: NotificationsService,
+          useValue: { createMachineOfflineNotification },
+        },
+        {
           provide: AppConfigService,
-          useValue: { machineCommandTimeoutSeconds: 5 },
+          useValue: {
+            machineCommandTimeoutSeconds: 5,
+            machineHeartbeatTimeoutSeconds: 120,
+          },
         },
       ],
     }).compile();
@@ -109,7 +118,21 @@ describe("MachinesService", () => {
                   statusPayloadJson: {
                     network: "online",
                     mqttConnected: true,
-                    hardwareStatus: "ok",
+                    hardwareStatus: "faulted",
+                    wholeMachineMaintenanceLock: {
+                      code: "WHOLE_MACHINE_HARDWARE_FAULT",
+                      message: "pickup platform blocked",
+                      source: "dispense_failure",
+                      orderNo: "ORD-1",
+                      commandNo: "CMD-1",
+                      slotCode: "A1",
+                      errorCode: "JAMMED",
+                      createdAt: "2026-05-05T12:00:01.000Z",
+                    },
+                    saleReadiness: {
+                      state: "locked",
+                      blockingCodes: ["WHOLE_MACHINE_HARDWARE_FAULT"],
+                    },
                     localQueueSize: 0,
                     environment: {
                       temperatureCelsius: 24,
@@ -144,7 +167,15 @@ describe("MachinesService", () => {
         latestHeartbeatStatus: expect.objectContaining({
           network: "online",
           mqttConnected: true,
-          hardwareStatus: "ok",
+          hardwareStatus: "faulted",
+          saleReadiness: {
+            state: "locked",
+            blockingCodes: ["WHOLE_MACHINE_HARDWARE_FAULT"],
+          },
+          wholeMachineMaintenanceLock: expect.objectContaining({
+            code: "WHOLE_MACHINE_HARDWARE_FAULT",
+            slotCode: "A1",
+          }),
         }),
         latestEnvironment: expect.objectContaining({
           temperatureCelsius: 24,
@@ -181,7 +212,21 @@ describe("MachinesService", () => {
                   statusPayloadJson: {
                     network: "online",
                     mqttConnected: true,
-                    hardwareStatus: "ok",
+                    hardwareStatus: "faulted",
+                    wholeMachineMaintenanceLock: {
+                      code: "WHOLE_MACHINE_HARDWARE_FAULT",
+                      message: "pickup platform blocked",
+                      source: "dispense_failure",
+                      orderNo: "ORD-1",
+                      commandNo: "CMD-1",
+                      slotCode: "A1",
+                      errorCode: "JAMMED",
+                      createdAt: "2026-05-05T12:00:01.000Z",
+                    },
+                    saleReadiness: {
+                      state: "locked",
+                      blockingCodes: ["WHOLE_MACHINE_HARDWARE_FAULT"],
+                    },
                     localQueueSize: 0,
                     environment: {
                       temperatureCelsius: 24,
@@ -225,7 +270,15 @@ describe("MachinesService", () => {
       expect.objectContaining({
         network: "online",
         mqttConnected: true,
-        hardwareStatus: "ok",
+        hardwareStatus: "faulted",
+        saleReadiness: {
+          state: "locked",
+          blockingCodes: ["WHOLE_MACHINE_HARDWARE_FAULT"],
+        },
+        wholeMachineMaintenanceLock: expect.objectContaining({
+          code: "WHOLE_MACHINE_HARDWARE_FAULT",
+          slotCode: "A1",
+        }),
       }),
     );
     expect(result.latestEnvironment).toEqual({
@@ -253,6 +306,86 @@ describe("MachinesService", () => {
     await expect(service.getMachine("missing")).rejects.toThrow(
       NotFoundException,
     );
+  });
+
+  it("marks stale online machines offline and creates an operator notification", async () => {
+    const now = new Date("2026-06-26T04:05:00.000Z");
+    const staleMachine = {
+      id: "machine-1",
+      code: "M001",
+      status: "online",
+      lastSeenAt: new Date("2026-06-26T04:02:30.000Z"),
+    };
+    const tx = {
+      update: vi.fn().mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: staleMachine.id }]),
+          }),
+        }),
+      }),
+    };
+    mockDb.select.mockReturnValueOnce({
+      from: () => ({
+        where: async () => [staleMachine],
+      }),
+    });
+    mockDb.transaction.mockImplementation(
+      async (cb: (txArg: unknown) => Promise<void>) => {
+        await cb(tx);
+      },
+    );
+
+    const result = await service.markTimedOutMachineHeartbeats(now);
+
+    expect(result).toEqual({ processed: 1 });
+    expect(createMachineOfflineNotification).toHaveBeenCalledWith(tx, {
+      machineId: "machine-1",
+      machineCode: "M001",
+      lastSeenAt: new Date("2026-06-26T04:02:30.000Z"),
+      timeoutSeconds: 120,
+      detectedAt: now,
+    });
+  });
+
+  it("marks online machines with null lastSeenAt offline and creates an operator notification", async () => {
+    const now = new Date("2026-06-26T04:05:00.000Z");
+    const staleMachine = {
+      id: "machine-1",
+      code: "M001",
+      status: "online",
+      lastSeenAt: null,
+    };
+    const tx = {
+      update: vi.fn().mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: staleMachine.id }]),
+          }),
+        }),
+      }),
+    };
+    mockDb.select.mockReturnValueOnce({
+      from: () => ({
+        where: async () => [staleMachine],
+      }),
+    });
+    mockDb.transaction.mockImplementation(
+      async (cb: (txArg: unknown) => Promise<void>) => {
+        await cb(tx);
+      },
+    );
+
+    const result = await service.markTimedOutMachineHeartbeats(now);
+
+    expect(result).toEqual({ processed: 1 });
+    expect(createMachineOfflineNotification).toHaveBeenCalledWith(tx, {
+      machineId: "machine-1",
+      machineCode: "M001",
+      lastSeenAt: null,
+      timeoutSeconds: 120,
+      detectedAt: now,
+    });
   });
 
   it("persists and publishes an environment control command", async () => {
@@ -548,6 +681,10 @@ describe("MachinesService planogram lifecycle", () => {
         {
           provide: AppConfigService,
           useValue: { machineCommandTimeoutSeconds: 5 },
+        },
+        {
+          provide: NotificationsService,
+          useValue: { createMachineOfflineNotification: vi.fn() },
         },
       ],
     }).compile();
@@ -897,6 +1034,66 @@ describe("MachinesService planogram lifecycle", () => {
     });
   });
 
+  it("projects open stock reconciliation blockers into machine stock snapshot sale eligibility", async () => {
+    mockDb.select.mockReturnValueOnce({
+      from: () => ({
+        innerJoin: () => ({
+          innerJoin: () => ({
+            innerJoin: () => ({
+              innerJoin: () => ({
+                where: () => ({
+                  orderBy: async () => [
+                    {
+                      machineCode: "M001",
+                      planogramVersion: "PLAN-1",
+                      slotId: "slot-1",
+                      slotCode: "A1",
+                      inventoryId: "inv-1",
+                      capacity: 10,
+                      slotStatus: "enabled",
+                      openSaleSafetyBlockerState: "needs_platform_review",
+                      onHandQty: 10,
+                      reservedQty: 0,
+                      availableQty: 0,
+                    },
+                    {
+                      machineCode: "M001",
+                      planogramVersion: "PLAN-1",
+                      slotId: "slot-2",
+                      slotCode: "A2",
+                      inventoryId: "inv-2",
+                      capacity: 10,
+                      slotStatus: "enabled",
+                      openSaleSafetyBlockerState: null,
+                      onHandQty: 5,
+                      reservedQty: 0,
+                      availableQty: 5,
+                    },
+                  ],
+                }),
+              }),
+            }),
+          }),
+        }),
+      }),
+    });
+
+    const result = await service.getStockSnapshotByMachineCode("M001");
+
+    expect(result.slots).toEqual([
+      expect.objectContaining({
+        slotId: "slot-1",
+        availableQty: 0,
+        slotSalesState: "needs_platform_review",
+      }),
+      expect.objectContaining({
+        slotId: "slot-2",
+        availableQty: 5,
+        slotSalesState: "sale_ready",
+      }),
+    ]);
+  });
+
   it("rejects ack for a machine planogram version that is not published or active", async () => {
     const machine = {
       id: "550e8400-e29b-41d4-a716-446655440000",
@@ -959,6 +1156,7 @@ describe("MachinesService claim code lifecycle", () => {
           provide: AppConfigService,
           useValue: {
             machineCommandTimeoutSeconds: 5,
+            machineHeartbeatTimeoutSeconds: 120,
             machineClaimCodeTtlSeconds: 600,
             machineClaimLookupHmacKey:
               "test-machine-claim-lookup-hmac-key-change-me",
@@ -966,6 +1164,10 @@ describe("MachinesService claim code lifecycle", () => {
             mqttUsername: "machine-client",
             mqttPassword: "mqtt-password",
           },
+        },
+        {
+          provide: NotificationsService,
+          useValue: { createMachineOfflineNotification: vi.fn() },
         },
       ],
     }).compile();

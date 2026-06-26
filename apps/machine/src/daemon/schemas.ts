@@ -234,6 +234,7 @@ export const machineSaleReadinessSchema = z.object({
     scannerCapability: saleReadinessComponentSchema,
     syncHealth: saleReadinessComponentSchema,
     wholeMachineBlockers: saleReadinessComponentSchema,
+    productionDispensePath: saleReadinessComponentSchema.optional(),
     slotSaleSafety: saleReadinessComponentSchema
       .extend({
         blockedSlots: z

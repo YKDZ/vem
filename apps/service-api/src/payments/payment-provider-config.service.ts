@@ -37,7 +37,9 @@ export type RuntimePaymentProviderConfig = {
 export class PaymentProviderConfigService {
   constructor(
     @Inject(DRIZZLE_CLIENT) private readonly db: DrizzleClient,
+    @Inject(PaymentConfigSecretService)
     private readonly secrets: PaymentConfigSecretService,
+    @Inject(AppConfigService)
     private readonly appConfig: AppConfigService,
   ) {}
 

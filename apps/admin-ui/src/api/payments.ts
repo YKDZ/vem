@@ -199,6 +199,20 @@ export type ReconciliationAttempt = {
   createdAt: string;
 };
 
+export type RefundReconciliationAttempt = {
+  trigger: string;
+  attemptNo: number;
+  status: string;
+  providerRefundStatus: string | null;
+  providerRefundNo: string | null;
+  errorCode: string | null;
+  errorMessage: string | null;
+  nextRetryAt: string | null;
+  startedAt: string;
+  finishedAt: string | null;
+  createdAt: string;
+};
+
 export type Refund = {
   id: string;
   refundNo: string;
@@ -212,6 +226,11 @@ export type Refund = {
   reason: string;
   providerRefundNo: string | null;
   refundedAt: string | null;
+  latestReconciliationStatus: string | null;
+  latestProviderRefundStatus: string | null;
+  latestReconciliationError: string | null;
+  latestReconciliationAt: string | null;
+  reconciliationAttempts: RefundReconciliationAttempt[];
   createdAt: string;
   updatedAt: string;
 };
@@ -227,6 +246,8 @@ export type PaymentCodeAttempt = {
   status: string;
   authCodeMasked: string;
   source: string;
+  providerTradeNo: string | null;
+  providerStatus: string | null;
   failureCode: string | null;
   failureMessage: string | null;
   manualReason: string | null;
@@ -260,6 +281,16 @@ export async function listRefunds(
   return await get<PageResult<Refund>>("/payments/refunds", { params: query });
 }
 
+export async function queryRefund(refundId: string): Promise<{
+  status: string;
+  reconciled: boolean;
+  reason?: string;
+}> {
+  return await post<{ status: string; reconciled: boolean; reason?: string }>(
+    `/payments/refunds/${refundId}/query`,
+  );
+}
+
 export async function listPaymentCodeAttempts(
   query?: Record<string, unknown>,
 ): Promise<PageResult<PaymentCodeAttempt>> {
@@ -269,17 +300,24 @@ export async function listPaymentCodeAttempts(
   );
 }
 
-export async function queryPaymentCodeAttempt(id: string): Promise<void> {
-  await post<void>(`/payments/payment-code-attempts/${id}/query`);
+export async function queryPaymentCodeAttempt(
+  id: string,
+): Promise<PaymentCodeAttempt> {
+  return await post<PaymentCodeAttempt>(
+    `/payments/payment-code-attempts/${id}/query`,
+  );
 }
 
 export async function reversePaymentCodeAttempt(
   id: string,
   reason: string,
-): Promise<void> {
-  await post<void>(`/payments/payment-code-attempts/${id}/reverse`, {
-    reason,
-  });
+): Promise<PaymentCodeAttempt> {
+  return await post<PaymentCodeAttempt>(
+    `/payments/payment-code-attempts/${id}/reverse`,
+    {
+      reason,
+    },
+  );
 }
 
 export async function manualReconcile(paymentId: string): Promise<{

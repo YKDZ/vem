@@ -19,6 +19,7 @@ import {
   notifications,
   notificationTargets,
   orderItems,
+  orderRecoveryActions,
   orders,
   orderStatusEvents,
   paymentCodeAttempts,
@@ -67,6 +68,7 @@ export const relations = defineRelations(
     refundEvents,
     refundReconciliationAttempts,
     orderItems,
+    orderRecoveryActions,
     orders,
     orderStatusEvents,
     paymentEvents,
@@ -426,6 +428,20 @@ export const relations = defineRelations(
       slot: r.one.machineSlots({
         from: r.vendingCommands.slotId,
         to: r.machineSlots.id,
+      }),
+    },
+    orderRecoveryActions: {
+      order: r.one.orders({
+        from: r.orderRecoveryActions.orderId,
+        to: r.orders.id,
+      }),
+      command: r.one.vendingCommands({
+        from: r.orderRecoveryActions.commandId,
+        to: r.vendingCommands.id,
+      }),
+      requestedByAdminUser: r.one.adminUsers({
+        from: r.orderRecoveryActions.requestedByAdminUserId,
+        to: r.adminUsers.id,
       }),
     },
     machineCommands: {

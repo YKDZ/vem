@@ -12,6 +12,57 @@ import {
 } from "../enums/payment-status";
 import { vendingCommandStatusSchema } from "../enums/vending";
 
+type MachineOrderProfileSnapshot = {
+  personPresent: boolean;
+  heightCm?: number | null;
+  bodyType?: string;
+  upperColor?: string;
+  confidence?: number;
+};
+
+function boundedString(value: unknown, maxLength: number): string | undefined {
+  if (typeof value !== "string") return undefined;
+  if (value.length < 1 || value.length > maxLength) return undefined;
+  return value;
+}
+
+function sanitizeMachineOrderProfileSnapshot(
+  value: unknown,
+): MachineOrderProfileSnapshot | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const personPresent = Reflect.get(value, "personPresent");
+  if (typeof personPresent !== "boolean") return null;
+
+  const snapshot: MachineOrderProfileSnapshot = {
+    personPresent,
+  };
+  const heightCm = Reflect.get(value, "heightCm");
+  if (heightCm === null) {
+    snapshot.heightCm = null;
+  } else if (
+    typeof heightCm === "number" &&
+    heightCm >= 80 &&
+    heightCm <= 240
+  ) {
+    snapshot.heightCm = heightCm;
+  }
+  const bodyType = boundedString(Reflect.get(value, "bodyType"), 32);
+  if (bodyType !== undefined) snapshot.bodyType = bodyType;
+  const upperColor = boundedString(Reflect.get(value, "upperColor"), 32);
+  if (upperColor !== undefined) snapshot.upperColor = upperColor;
+  const confidence = Reflect.get(value, "confidence");
+  if (typeof confidence === "number" && confidence >= 0 && confidence <= 1) {
+    snapshot.confidence = confidence;
+  }
+  return snapshot;
+}
+
+const machineOrderProfileSnapshotSchema = z
+  .unknown()
+  .transform((value) => sanitizeMachineOrderProfileSnapshot(value));
+
 export const orderQuerySchema = z.object({
   orderNo: z.string().max(64).optional(),
   machineId: z.uuid().optional(),
@@ -19,6 +70,18 @@ export const orderQuerySchema = z.object({
   createdFrom: z.iso.datetime().optional(),
   createdTo: z.iso.datetime().optional(),
 });
+
+export const orderRecoveryActionSchema = z.object({
+  action: z.enum([
+    "confirm_dispensed",
+    "confirm_not_dispensed",
+    "request_refund",
+    "compensation_dispense",
+  ]),
+  note: z.string().trim().min(1).max(500),
+});
+
+export type OrderRecoveryAction = z.infer<typeof orderRecoveryActionSchema>;
 
 export const machineOrderItemSchema = z.object({
   inventoryId: z.uuid(),
@@ -42,7 +105,7 @@ export const createMachineOrderSchema = z
     items: z.array(machineOrderItemSchema).min(1).max(10),
     paymentMethod: paymentMethodSchema,
     paymentProviderCode: machinePaymentProviderCodeSchema.optional(),
-    profileSnapshot: z.record(z.string(), z.unknown()).nullable().optional(),
+    profileSnapshot: machineOrderProfileSnapshotSchema.optional(),
   })
   .superRefine((value, ctx) => {
     if (value.paymentMethod === "mock") {
@@ -186,6 +249,19 @@ export const machineOrderStatusResponseSchema = z.object({
     paidAt: z.iso.datetime().nullable(),
     failedReason: z.string().nullable(),
     providerCode: machinePaymentProviderCodeSchema.nullable(),
+    reconciliation: z
+      .object({
+        trigger: z.string().min(1).max(64),
+        attemptNo: z.int().positive(),
+        status: z.string().min(1).max(64),
+        providerPaymentStatus: z.string().min(1).max(64).nullable(),
+        errorCode: z.string().max(128).nullable(),
+        nextRetryAt: z.iso.datetime().nullable(),
+        startedAt: z.iso.datetime().nullable(),
+        finishedAt: z.iso.datetime().nullable(),
+      })
+      .nullable()
+      .optional(),
   }),
   paymentCodeAttempt: z
     .object({

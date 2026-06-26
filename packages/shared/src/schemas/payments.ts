@@ -297,7 +297,9 @@ export const paymentReconciliationAttemptQuerySchema = z.object({
   orderNo: z.string().max(64).optional(),
   paymentNo: z.string().max(64).optional(),
   providerCode: z.string().max(64).optional(),
-  trigger: z.enum(["scheduled", "expire_compensation", "manual"]).optional(),
+  trigger: z
+    .enum(["scheduled", "expire_compensation", "machine_status_poll", "manual"])
+    .optional(),
   status: z.string().max(32).optional(),
   createdFrom: z.iso.datetime().optional(),
   createdTo: z.iso.datetime().optional(),

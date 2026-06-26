@@ -33,6 +33,12 @@ const baseEnvSchema = z.object({
     .min(1)
     .max(300)
     .default(5),
+  MACHINE_HEARTBEAT_TIMEOUT_SECONDS: z.coerce
+    .number()
+    .int()
+    .min(30)
+    .max(3600)
+    .default(180),
   MACHINE_CLAIM_CODE_TTL_SECONDS: z.coerce
     .number()
     .int()

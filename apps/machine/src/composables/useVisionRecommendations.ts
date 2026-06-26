@@ -43,9 +43,33 @@ export function useVisionRecommendations(): {
     }, PROFILE_EXPIRE_MS);
   }
 
+  function recommendationProfile(profile: VisionProfile): VisionProfile {
+    return {
+      personPresent: profile.personPresent,
+      heightCm: profile.heightCm ?? undefined,
+      bodyType: profile.bodyType,
+      upperColor: profile.upperColor,
+      confidence: profile.confidence,
+    };
+  }
+
+  function recommendationResult(
+    payload: VisionProfileResultPayload,
+  ): VisionProfileResultPayload {
+    return {
+      eventId: payload.eventId,
+      detectedAt: payload.detectedAt,
+      profile: recommendationProfile(payload.profile),
+      quality: {
+        overall: payload.quality.overall,
+        warnings: [],
+      },
+    };
+  }
+
   function handleProfile(payload: VisionProfileResultPayload): void {
-    const profile = payload.profile;
-    lastVisionResult.value = payload;
+    const profile = recommendationProfile(payload.profile);
+    lastVisionResult.value = recommendationResult(payload);
     restartExpireTimer();
 
     if (!profile.personPresent) {
@@ -75,6 +99,7 @@ export function useVisionRecommendations(): {
     onProfile: handleProfile,
     onError: (error) => {
       console.warn("vision profile subscription failed", error);
+      clearState();
     },
   });
 

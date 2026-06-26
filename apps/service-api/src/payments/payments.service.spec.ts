@@ -156,6 +156,55 @@ function makeService(overrides: {
 
 describe("PaymentsService", () => {
   describe("listRefunds", () => {
+    it("selects recent reconciliation attempts for the admin refund trail", async () => {
+      const db = makeDb();
+      let selectedFields: Record<string, unknown> | undefined;
+
+      db.select
+        .mockImplementationOnce((fields: Record<string, unknown>) => {
+          selectedFields = fields;
+          return {
+            from: vi.fn().mockReturnValue({
+              innerJoin: vi.fn().mockReturnValue({
+                innerJoin: vi.fn().mockReturnValue({
+                  innerJoin: vi.fn().mockReturnValue({
+                    where: vi.fn().mockReturnValue({
+                      orderBy: vi.fn().mockReturnValue({
+                        limit: vi.fn().mockReturnValue({
+                          offset: vi.fn().mockResolvedValue([]),
+                        }),
+                      }),
+                    }),
+                  }),
+                }),
+              }),
+            }),
+          };
+        })
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              innerJoin: vi.fn().mockReturnValue({
+                innerJoin: vi.fn().mockReturnValue({
+                  where: vi.fn().mockResolvedValue([{ total: 0 }]),
+                }),
+              }),
+            }),
+          }),
+        });
+
+      const service = makeService({ db });
+
+      await service.listRefunds({ page: 1, pageSize: 20 });
+
+      expect(selectedFields).toEqual(
+        expect.objectContaining({
+          latestReconciliationStatus: expect.anything(),
+          reconciliationAttempts: expect.anything(),
+        }),
+      );
+    });
+
     it("applies the refund reason filter", async () => {
       const db = makeDb();
       const whereArgs: unknown[] = [];
@@ -1453,6 +1502,12 @@ describe("PaymentsService", () => {
         },
       ]);
 
+      // nextPaymentReconciliationAttemptNo: count query
+      db.select.mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([{ total: 0 }]),
+        }),
+      });
       // applyPaymentStatusUpdate: check existing event (none) + select payment+order + insert event + update payment
       db.select.mockReturnValueOnce({
         from: vi.fn().mockReturnValue({
@@ -1475,6 +1530,19 @@ describe("PaymentsService", () => {
           }),
         }),
       });
+
+      const insertedValues: unknown[] = [];
+      db.insert.mockImplementation((_table: unknown) => ({
+        values: vi.fn().mockImplementation((vals: unknown) => {
+          insertedValues.push(vals);
+          return {
+            onConflictDoNothing: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([{ id: "evt-001" }]),
+            }),
+            returning: vi.fn().mockResolvedValue([{ id: "attempt-001" }]),
+          };
+        }),
+      }));
 
       const createAndDispatchCommands = vi.fn().mockResolvedValue(undefined);
       const service = makeService({
@@ -1507,7 +1575,176 @@ describe("PaymentsService", () => {
       expect(cancelPayment).not.toHaveBeenCalled();
       expect(createAndDispatchCommands).toHaveBeenCalledWith("ord-exp-001");
       expect(result.processed).toBeGreaterThanOrEqual(1);
+      expect(insertedValues).toContainEqual(
+        expect.objectContaining({
+          paymentId: "pay-exp-001",
+          providerId: "prov-alipay",
+          trigger: "expire_compensation",
+          attemptNo: 1,
+          status: "succeeded",
+          providerPaymentStatus: "succeeded",
+          providerTradeNo: "TXN_ALIPAY_001",
+        }),
+      );
     });
+
+    it("query pending inside compensation window → records reconciliation attempt and keeps order pending", async () => {
+      const now = new Date();
+      const expiresAt = new Date(now.getTime() - 10_000);
+      const queryPayment = vi.fn().mockResolvedValue({
+        status: "pending",
+        providerTradeNo: null,
+        rawPayload: { trade_state: "WAIT_BUYER_PAY" },
+      });
+      const cancelPayment = vi.fn();
+      const provider = { queryPayment, cancelPayment };
+
+      const db = makeDb();
+      makeOverdueSelectMock(db, [
+        {
+          paymentId: "pay-exp-confirming-001",
+          paymentNo: "PAY_CONFIRMING001",
+          providerId: "prov-alipay",
+          providerCode: "alipay",
+          providerTradeNo: null,
+          orderId: "ord-exp-confirming-001",
+          orderStatus: "pending_payment",
+          machineId: "mach-001",
+          expiresAt,
+          publicConfigJson: {},
+        },
+      ]);
+      db.select.mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([{ total: 0 }]),
+        }),
+      });
+
+      const insertedValues: unknown[] = [];
+      db.insert.mockImplementation((_table: unknown) => ({
+        values: vi.fn().mockImplementation((vals: unknown) => {
+          insertedValues.push(vals);
+          return {
+            onConflictDoNothing: vi.fn().mockResolvedValue([]),
+            returning: vi.fn().mockResolvedValue([]),
+          };
+        }),
+      }));
+      const releaseReservation = vi.fn();
+      const service = makeService({
+        db,
+        registry: {
+          has: vi.fn().mockReturnValue(true),
+          get: vi.fn().mockReturnValue(provider),
+        } as unknown as PaymentProviderRegistry,
+        configService: {
+          resolveForExistingPayment: vi.fn().mockResolvedValue({
+            providerCode: "alipay",
+            merchantNo: null,
+            appId: null,
+            publicConfigJson: {},
+            sensitiveConfigJson: {},
+          }),
+        },
+        inventoryService: {
+          releaseReservation,
+        } as unknown as InventoryService,
+      });
+
+      const result = await service.expireOverduePayments(now);
+
+      expect(result.processed).toBe(0);
+      expect(queryPayment).toHaveBeenCalled();
+      expect(cancelPayment).not.toHaveBeenCalled();
+      expect(releaseReservation).not.toHaveBeenCalled();
+      expect(db.update).not.toHaveBeenCalled();
+      expect(insertedValues).toContainEqual(
+        expect.objectContaining({
+          paymentId: "pay-exp-confirming-001",
+          providerId: "prov-alipay",
+          trigger: "expire_compensation",
+          attemptNo: 1,
+          status: "pending",
+          providerPaymentStatus: "pending",
+          providerTradeNo: null,
+        }),
+      );
+    });
+
+    it.each(["failed", "expired", "canceled"] as const)(
+      "query %s inside compensation window → expires locally without waiting",
+      async (providerStatus) => {
+        const now = new Date();
+        const expiresAt = new Date(now.getTime() - 10_000);
+        const queryPayment = vi.fn().mockResolvedValue({
+          status: providerStatus,
+          providerTradeNo: "TXN_TERMINAL_001",
+          rawPayload: { trade_state: providerStatus },
+        });
+        const cancelPayment = vi.fn();
+        const provider = { queryPayment, cancelPayment };
+
+        const db = makeDb();
+        makeOverdueSelectMock(db, [
+          {
+            paymentId: `pay-exp-${providerStatus}-001`,
+            paymentNo: `PAY_${providerStatus.toUpperCase()}001`,
+            providerId: "prov-alipay",
+            providerCode: "alipay",
+            providerTradeNo: "TXN_TERMINAL_001",
+            orderId: `ord-exp-${providerStatus}-001`,
+            orderStatus: "pending_payment",
+            machineId: "mach-001",
+            expiresAt,
+            publicConfigJson: {},
+          },
+        ]);
+        db.select.mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([
+              {
+                inventoryId: "inv-terminal-001",
+                quantity: 1,
+              },
+            ]),
+          }),
+        });
+
+        const releaseReservation = vi.fn().mockResolvedValue(undefined);
+        const service = makeService({
+          db,
+          registry: {
+            has: vi.fn().mockReturnValue(true),
+            get: vi.fn().mockReturnValue(provider),
+          } as unknown as PaymentProviderRegistry,
+          configService: {
+            resolveForExistingPayment: vi.fn().mockResolvedValue({
+              providerCode: "alipay",
+              merchantNo: null,
+              appId: null,
+              publicConfigJson: {},
+              sensitiveConfigJson: {},
+            }),
+          },
+          inventoryService: {
+            releaseReservation,
+          } as unknown as InventoryService,
+        });
+
+        const result = await service.expireOverduePayments(now);
+
+        expect(result.processed).toBe(1);
+        expect(queryPayment).toHaveBeenCalled();
+        expect(cancelPayment).not.toHaveBeenCalled();
+        expect(db.transaction).toHaveBeenCalled();
+        expect(releaseReservation).toHaveBeenCalledWith(db, {
+          orderId: `ord-exp-${providerStatus}-001`,
+          inventoryId: "inv-terminal-001",
+          quantity: 1,
+          reason: "payment_expired",
+        });
+      },
+    );
 
     it("query pending + past compensation window → cancel provider → expire locally", async () => {
       const now = new Date();

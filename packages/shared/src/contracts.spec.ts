@@ -38,6 +38,7 @@ import {
   paymentOpsReadinessSchema,
   paymentProviderStatuses,
   paymentProviderSensitiveConfigSchema,
+  paymentReconciliationAttemptQuerySchema,
   roleStatuses,
   upsertNotificationTargetSchema,
   upsertPaymentProviderConfigSchema,
@@ -109,6 +110,35 @@ describe("shared API contract", () => {
         },
       }).statusPayload.mqttConnected,
     ).toBe(true);
+  });
+
+  it("accepts whole-machine maintenance lock readiness status in heartbeat payload", () => {
+    const result = heartbeatPayloadSchema.parse({
+      machineCode: "M001",
+      reportedAt: "2026-06-26T08:00:00.000Z",
+      statusPayload: {
+        hardwareStatus: "faulted",
+        wholeMachineMaintenanceLock: {
+          code: "WHOLE_MACHINE_HARDWARE_FAULT",
+          message: "pickup platform blocked",
+          source: "dispense_failure",
+          orderNo: "ORD-1",
+          commandNo: "CMD-1",
+          slotCode: "A1",
+          errorCode: "JAMMED",
+          createdAt: "2026-06-26T07:55:00.000Z",
+        },
+        saleReadiness: {
+          state: "locked",
+          blockingCodes: ["WHOLE_MACHINE_HARDWARE_FAULT"],
+        },
+      },
+    });
+
+    expect(result.statusPayload.saleReadiness?.state).toBe("locked");
+    expect(result.statusPayload.wholeMachineMaintenanceLock?.slotCode).toBe(
+      "A1",
+    );
   });
 
   it("accepts environment control failure when confirmed switch state is unknown", () => {
@@ -891,6 +921,94 @@ describe("shared API contract", () => {
       expect(result.profileSnapshot).toBeNull();
     });
 
+    it("strips sensitive profileSnapshot fields from machine orders", () => {
+      const result = createMachineOrderSchema.parse({
+        machineCode: "M001",
+        items: [
+          {
+            inventoryId: "550e8400-e29b-41d4-a716-446655440000",
+            quantity: 1,
+            planogramVersion: "PLAN-1",
+            slotId: "550e8400-e29b-41d4-a716-446655440001",
+            slotCode: "A1",
+          },
+        ],
+        paymentMethod: "payment_code",
+        paymentProviderCode: "alipay",
+        profileSnapshot: {
+          personPresent: true,
+          heightCm: 172,
+          bodyType: "regular",
+          upperColor: "blue",
+          confidence: 0.91,
+          rawImageBase64: "data:image/jpeg;base64,raw",
+          identity: { id: "customer-1" },
+          faceEmbedding: [0.1, 0.2],
+          ageRange: "25-34",
+          gender: "male",
+        },
+      });
+
+      expect(result.profileSnapshot).toEqual({
+        personPresent: true,
+        heightCm: 172,
+        bodyType: "regular",
+        upperColor: "blue",
+        confidence: 0.91,
+      });
+    });
+
+    it("falls back to null for unknown legacy profileSnapshot shapes", () => {
+      const result = createMachineOrderSchema.parse({
+        machineCode: "M001",
+        items: [
+          {
+            inventoryId: "550e8400-e29b-41d4-a716-446655440000",
+            quantity: 1,
+            planogramVersion: "PLAN-1",
+            slotId: "550e8400-e29b-41d4-a716-446655440001",
+            slotCode: "A1",
+          },
+        ],
+        paymentMethod: "payment_code",
+        paymentProviderCode: "alipay",
+        profileSnapshot: {
+          ageRange: "adult",
+          gender: "female",
+          shoulderWidthCm: null,
+          legacyModelVersion: "vision-0",
+        },
+      });
+
+      expect(result.profileSnapshot).toBeNull();
+    });
+
+    it("sanitizes invalid profileSnapshot metadata without rejecting machine orders", () => {
+      const result = createMachineOrderSchema.parse({
+        machineCode: "M001",
+        items: [
+          {
+            inventoryId: "550e8400-e29b-41d4-a716-446655440000",
+            quantity: 1,
+            planogramVersion: "PLAN-1",
+            slotId: "550e8400-e29b-41d4-a716-446655440001",
+            slotCode: "A1",
+          },
+        ],
+        paymentMethod: "payment_code",
+        paymentProviderCode: "alipay",
+        profileSnapshot: {
+          personPresent: true,
+          heightCm: 300,
+          bodyType: "x".repeat(64),
+          upperColor: "",
+          confidence: 2,
+        },
+      });
+
+      expect(result.profileSnapshot).toEqual({ personPresent: true });
+    });
+
     it("rejects payment_code with mock provider", () => {
       expect(() =>
         createMachineOrderSchema.parse({
@@ -1097,6 +1215,23 @@ describe("shared API contract", () => {
       expect(result.availableProviders).toHaveLength(1);
     });
 
+    it("heartbeatPayloadSchema accepts production dispense path evidence", () => {
+      const result = heartbeatPayloadSchema.parse({
+        machineCode: "M001",
+        reportedAt: "2026-06-26T04:00:00.000Z",
+        statusPayload: {
+          hardwareAdapter: "serial",
+          hardwarePortPath: "tcp://127.0.0.1:17991",
+          hardwareStatus: "ok",
+        },
+      });
+
+      expect(result.statusPayload.hardwareAdapter).toBe("serial");
+      expect(result.statusPayload.hardwarePortPath).toBe(
+        "tcp://127.0.0.1:17991",
+      );
+    });
+
     it("paymentMachinePreflightSchema accepts payment_code options", () => {
       const result = paymentMachinePreflightSchema.parse({
         machineId: "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11",
@@ -1126,6 +1261,14 @@ describe("shared API contract", () => {
         manualOnly: true,
       });
       expect(result.manualOnly).toBe(true);
+    });
+
+    it("parses machine status poll reconciliation attempt filters", () => {
+      const result = paymentReconciliationAttemptQuerySchema.parse({
+        paymentNo: "PAY202606260001",
+        trigger: "machine_status_poll",
+      });
+      expect(result.trigger).toBe("machine_status_poll");
     });
   });
 });

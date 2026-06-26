@@ -5,16 +5,20 @@ import type { MqttClient } from "mqtt";
 import { Test } from "@nestjs/testing";
 import {
   and,
+  auditLogs,
   count,
+  desc,
   eq,
   inventories,
   inventoryMovements,
   inventoryReservations,
   machineSlots,
   orderItems,
+  orderRecoveryActions,
   orders,
   orderStatusEvents,
   refunds,
+  sql,
   vendingCommands,
   DrizzleDB,
 } from "@vem/db";
@@ -23,7 +27,6 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { AppModule } from "../app.module";
 import { AppConfigService } from "../config/app-config.service";
-import { VendingService } from "../vending/vending.service";
 import {
   cleanupBusinessTables,
   connectMqtt,
@@ -58,7 +61,6 @@ describe("fulfillment recovery e2e", { concurrent: false }, () => {
   let db: DrizzleDB;
   let mqttClient: MqttClient;
   let api: ReturnType<typeof request>;
-  let vendingService: VendingService;
 
   beforeAll(async () => {
     const moduleRef = await Test.createTestingModule({
@@ -70,7 +72,6 @@ describe("fulfillment recovery e2e", { concurrent: false }, () => {
     await app.init();
 
     appConfig = app.get(AppConfigService);
-    vendingService = app.get(VendingService);
     db = new DrizzleDB(appConfig.databaseUrl);
     await db.connect();
 
@@ -209,10 +210,11 @@ describe("fulfillment recovery e2e", { concurrent: false }, () => {
   }
 
   async function markUnknown(ctx: PaidCommandContext) {
-    const processed = await vendingService.markTimedOutCommands(
-      new Date(Date.now() + 180_000),
-    );
-    expect(processed.processed).toBe(1);
+    await publishDispenseResult(ctx, {
+      success: false,
+      errorCode: "UNKNOWN",
+      message: "dispense result unknown after daemon restart",
+    });
     await eventually(async () => {
       const [command] = await db.client
         .select({ status: vendingCommands.status })
@@ -288,7 +290,7 @@ describe("fulfillment recovery e2e", { concurrent: false }, () => {
     expect(await movementCount(ctx.orderId, "purchase_confirmed")).toBe(0);
   }, 60_000);
 
-  it("unknown result keeps reservation active and moves the command/order to manual handling", async () => {
+  it("unknown result keeps reservation active, freezes the slot, and moves the command/order to manual handling", async () => {
     const ctx = await createPaidCommand("M-E2E-REC-UNKNOWN");
 
     await markUnknown(ctx);
@@ -311,13 +313,34 @@ describe("fulfillment recovery e2e", { concurrent: false }, () => {
       })
       .from(orders)
       .where(eq(orders.id, ctx.orderId));
+    const [slot] = await db.client
+      .select({ status: machineSlots.status })
+      .from(machineSlots)
+      .where(eq(machineSlots.id, ctx.seeded.slotId));
+    const [event] = await db.client
+      .select({ metadata: orderStatusEvents.metadata })
+      .from(orderStatusEvents)
+      .where(
+        and(
+          eq(orderStatusEvents.orderId, ctx.orderId),
+          eq(orderStatusEvents.reason, "dispense_result_unknown"),
+        ),
+      );
 
     expect(reservation.status).toBe("active");
     expect(inventory).toEqual({ onHandQty: 2, reservedQty: 1 });
+    expect(slot.status).toBe("faulted");
     expect(order).toEqual({
       status: "manual_handling",
       fulfillmentState: "manual_handling",
     });
+    expect(event.metadata).toEqual(
+      expect.objectContaining({
+        commandNo: ctx.commandNo,
+        requiresPhysicalOutcomeConfirmation: true,
+        slotSalesState: "frozen",
+      }),
+    );
     expect(await movementCount(ctx.orderId, "purchase_confirmed")).toBe(0);
   }, 60_000);
 
@@ -493,5 +516,297 @@ describe("fulfillment recovery e2e", { concurrent: false }, () => {
       fulfillmentState: "dispensed",
     });
     expect(await movementCount(ctx.orderId, "purchase_confirmed")).toBe(1);
+  }, 60_000);
+
+  it("admin recovery confirms dispensed with required note and audit trail", async () => {
+    const ctx = await createPaidCommand("M-E2E-REC-ADMIN-YES");
+    await markUnknown(ctx);
+
+    const missingNote = await api
+      .post(`/api/orders/${ctx.orderId}/recovery-actions`)
+      .set("Authorization", `Bearer ${ctx.token}`)
+      .send({ action: "confirm_dispensed", note: " " });
+    expect(missingNote.status).toBe(400);
+
+    const response = await api
+      .post(`/api/orders/${ctx.orderId}/recovery-actions`)
+      .set("Authorization", `Bearer ${ctx.token}`)
+      .send({
+        action: "confirm_dispensed",
+        note: "operator verified pickup area was empty and customer received item",
+      });
+    expect(response.status).toBe(201);
+
+    const [reservation] = await db.client
+      .select({ status: inventoryReservations.status })
+      .from(inventoryReservations)
+      .where(eq(inventoryReservations.orderId, ctx.orderId));
+    const [inventory] = await db.client
+      .select({
+        onHandQty: inventories.onHandQty,
+        reservedQty: inventories.reservedQty,
+      })
+      .from(inventories)
+      .where(eq(inventories.id, ctx.seeded.inventoryId));
+    const [audit] = await db.client
+      .select({
+        action: auditLogs.action,
+        resourceType: auditLogs.resourceType,
+        resourceId: auditLogs.resourceId,
+        afterJson: auditLogs.afterJson,
+      })
+      .from(auditLogs)
+      .where(eq(auditLogs.resourceId, ctx.orderId))
+      .orderBy(desc(auditLogs.createdAt))
+      .limit(1);
+
+    expect(reservation.status).toBe("confirmed");
+    expect(inventory).toEqual({ onHandQty: 1, reservedQty: 0 });
+    expect(await movementCount(ctx.orderId, "purchase_confirmed")).toBe(1);
+    expect(audit).toMatchObject({
+      action: "orders.recovery.confirm_dispensed",
+      resourceType: "order",
+      resourceId: ctx.orderId,
+    });
+    expect(audit.afterJson).toEqual(
+      expect.objectContaining({
+        note: "operator verified pickup area was empty and customer received item",
+        commandNo: ctx.commandNo,
+      }),
+    );
+  }, 60_000);
+
+  it("admin recovery confirms not dispensed, requests refund, audits, and rejects duplicates", async () => {
+    const ctx = await createPaidCommand("M-E2E-REC-ADMIN-NO");
+    await markUnknown(ctx);
+
+    const response = await api
+      .post(`/api/orders/${ctx.orderId}/recovery-actions`)
+      .set("Authorization", `Bearer ${ctx.token}`)
+      .send({
+        action: "confirm_not_dispensed",
+        note: "operator found product still in slot after customer report",
+      });
+    expect(response.status).toBe(201);
+
+    const duplicate = await api
+      .post(`/api/orders/${ctx.orderId}/recovery-actions`)
+      .set("Authorization", `Bearer ${ctx.token}`)
+      .send({
+        action: "confirm_not_dispensed",
+        note: "second operator repeated the same confirmation",
+      });
+    expect(duplicate.status).toBe(409);
+
+    await eventually(async () => {
+      const [reservation] = await db.client
+        .select({ status: inventoryReservations.status })
+        .from(inventoryReservations)
+        .where(eq(inventoryReservations.orderId, ctx.orderId));
+      expect(reservation.status).toBe("released");
+    });
+
+    const [refundCount] = await db.client
+      .select({ total: count() })
+      .from(refunds)
+      .where(eq(refunds.orderId, ctx.orderId));
+    const [audit] = await db.client
+      .select({
+        action: auditLogs.action,
+        afterJson: auditLogs.afterJson,
+      })
+      .from(auditLogs)
+      .where(eq(auditLogs.resourceId, ctx.orderId))
+      .orderBy(desc(auditLogs.createdAt))
+      .limit(1);
+
+    expect(Number(refundCount.total)).toBe(0);
+    expect(await movementCount(ctx.orderId, "purchase_confirmed")).toBe(0);
+    expect(await movementCount(ctx.orderId, "reservation_released")).toBe(1);
+    expect(audit.action).toBe("orders.recovery.confirm_not_dispensed");
+    expect(audit.afterJson).toEqual(
+      expect.objectContaining({
+        note: "operator found product still in slot after customer report",
+        commandNo: ctx.commandNo,
+      }),
+    );
+
+    const refundResponse = await api
+      .post(`/api/orders/${ctx.orderId}/recovery-actions`)
+      .set("Authorization", `Bearer ${ctx.token}`)
+      .send({
+        action: "request_refund",
+        note: "operator requested refund after confirmed not dispensed",
+      });
+    expect(refundResponse.status).toBe(201);
+
+    const duplicateRefund = await api
+      .post(`/api/orders/${ctx.orderId}/recovery-actions`)
+      .set("Authorization", `Bearer ${ctx.token}`)
+      .send({
+        action: "request_refund",
+        note: "duplicate refund request",
+      });
+    expect(duplicateRefund.status).toBe(409);
+
+    const [refundCountAfterRequest] = await db.client
+      .select({ total: count() })
+      .from(refunds)
+      .where(eq(refunds.orderId, ctx.orderId));
+    const [refundAudit] = await db.client
+      .select({
+        action: auditLogs.action,
+        afterJson: auditLogs.afterJson,
+      })
+      .from(auditLogs)
+      .where(eq(auditLogs.resourceId, ctx.orderId))
+      .orderBy(desc(auditLogs.createdAt))
+      .limit(1);
+    expect(Number(refundCountAfterRequest.total)).toBe(1);
+    expect(refundAudit.action).toBe("orders.recovery.request_refund");
+    expect(refundAudit.afterJson).toEqual(
+      expect.objectContaining({
+        note: "operator requested refund after confirmed not dispensed",
+      }),
+    );
+  }, 60_000);
+
+  it("admin recovery creates compensation dispense as a new command number", async () => {
+    const ctx = await createPaidCommand("M-E2E-REC-ADMIN-COMP");
+    await markUnknown(ctx);
+
+    const confirmResponse = await api
+      .post(`/api/orders/${ctx.orderId}/recovery-actions`)
+      .set("Authorization", `Bearer ${ctx.token}`)
+      .send({
+        action: "confirm_not_dispensed",
+        note: "operator confirmed product stayed in slot",
+      });
+    expect(confirmResponse.status).toBe(201);
+
+    const commandPayloadPromise = waitForMqttMessage(
+      mqttClient,
+      `vem/machines/${ctx.seeded.machineCode}/commands/dispense`,
+    );
+    const compensationResponse = await api
+      .post(`/api/orders/${ctx.orderId}/recovery-actions`)
+      .set("Authorization", `Bearer ${ctx.token}`)
+      .send({
+        action: "compensation_dispense",
+        note: "operator authorized one replacement dispense",
+      });
+    expect(compensationResponse.status).toBe(201);
+
+    const duplicateCompensation = await api
+      .post(`/api/orders/${ctx.orderId}/recovery-actions`)
+      .set("Authorization", `Bearer ${ctx.token}`)
+      .send({
+        action: "compensation_dispense",
+        note: "duplicate replacement dispense",
+      });
+    expect(duplicateCompensation.status).toBe(409);
+
+    const commandPayloadText = await commandPayloadPromise;
+    const commandEnvelope = JSON.parse(commandPayloadText) as {
+      payload: {
+        commandNo: string;
+        recovery?: { originalCommandNo?: string };
+      };
+    };
+    expect(commandEnvelope.payload.commandNo).toBeTruthy();
+    expect(commandEnvelope.payload.commandNo).not.toBe(ctx.commandNo);
+    expect(commandEnvelope.payload.recovery?.originalCommandNo).toBe(
+      ctx.commandNo,
+    );
+
+    const commandRows = await db.client
+      .select({
+        commandNo: vendingCommands.commandNo,
+        commandKind: vendingCommands.commandKind,
+        recoveryActionId: vendingCommands.recoveryActionId,
+        payloadJson: vendingCommands.payloadJson,
+      })
+      .from(vendingCommands)
+      .where(eq(vendingCommands.orderId, ctx.orderId))
+      .orderBy(desc(vendingCommands.createdAt));
+    expect(commandRows).toHaveLength(2);
+    expect(commandRows[0]?.commandNo).not.toBe(ctx.commandNo);
+    expect(commandRows[0]?.commandKind).toBe("compensation");
+    expect(commandRows[0]?.recoveryActionId).toBeTruthy();
+    expect(commandRows[1]?.commandKind).toBe("dispatch");
+    expect(commandRows[0]?.payloadJson).toEqual(
+      expect.objectContaining({
+        recovery: expect.objectContaining({
+          action: "compensation_dispense",
+          originalCommandNo: ctx.commandNo,
+        }),
+      }),
+    );
+  }, 60_000);
+
+  it("admin recovery rejects in-flight commands before physical confirmation", async () => {
+    const ctx = await createPaidCommand("M-E2E-REC-INFLIGHT");
+
+    const response = await api
+      .post(`/api/orders/${ctx.orderId}/recovery-actions`)
+      .set("Authorization", `Bearer ${ctx.token}`)
+      .send({
+        action: "confirm_not_dispensed",
+        note: "operator tried before command timed out",
+      });
+    expect(response.status).toBe(409);
+
+    const [actionCount] = await db.client
+      .select({ total: count() })
+      .from(orderRecoveryActions)
+      .where(eq(orderRecoveryActions.orderId, ctx.orderId));
+    expect(Number(actionCount.total)).toBe(0);
+  }, 60_000);
+
+  it("admin recovery enforces refund-vs-compensation under concurrent requests", async () => {
+    const ctx = await createPaidCommand("M-E2E-REC-CONCURRENT");
+    await markUnknown(ctx);
+
+    const confirmResponse = await api
+      .post(`/api/orders/${ctx.orderId}/recovery-actions`)
+      .set("Authorization", `Bearer ${ctx.token}`)
+      .send({
+        action: "confirm_not_dispensed",
+        note: "operator confirmed product stayed in slot",
+      });
+    expect(confirmResponse.status).toBe(201);
+
+    const [refundResponse, compensationResponse] = await Promise.all([
+      api
+        .post(`/api/orders/${ctx.orderId}/recovery-actions`)
+        .set("Authorization", `Bearer ${ctx.token}`)
+        .send({
+          action: "request_refund",
+          note: "operator chose refund",
+        }),
+      api
+        .post(`/api/orders/${ctx.orderId}/recovery-actions`)
+        .set("Authorization", `Bearer ${ctx.token}`)
+        .send({
+          action: "compensation_dispense",
+          note: "operator chose compensation",
+        }),
+    ]);
+
+    expect(
+      [refundResponse.status, compensationResponse.status].sort(
+        (left, right) => left - right,
+      ),
+    ).toEqual([201, 409]);
+    const [remedyCount] = await db.client
+      .select({ total: count() })
+      .from(orderRecoveryActions)
+      .where(
+        and(
+          eq(orderRecoveryActions.orderId, ctx.orderId),
+          sql`${orderRecoveryActions.action} IN ('request_refund', 'compensation_dispense')`,
+        ),
+      );
+    expect(Number(remedyCount.total)).toBe(1);
   }, 60_000);
 });

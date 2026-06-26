@@ -45,6 +45,18 @@ const hasCustomerVisibleError = computed(
     command.value?.status === "timeout" ||
     command.value?.status === "result_unknown",
 );
+const pageLabel = computed(() =>
+  hasCustomerVisibleError.value ? "人工处理" : "出货中",
+);
+const pageTitle = computed(() =>
+  hasCustomerVisibleError.value ? "出货需要人工处理" : "支付成功，正在出货",
+);
+const orderCredential = computed(
+  () =>
+    checkoutStore.currentOrder?.orderNo ??
+    checkoutStore.status?.orderNo ??
+    null,
+);
 
 async function refreshStatus(): Promise<void> {
   await checkoutStore.refreshCurrentTransaction();
@@ -78,10 +90,16 @@ onUnmounted(() => {
     >
       <div class="w-full rounded-lg border border-neutral-200 bg-white p-8">
         <p class="text-sm font-semibold tracking-[0.2em] text-neutral-500">
-          出货中
+          {{ pageLabel }}
         </p>
-        <h2 class="mt-4 text-4xl font-black">支付成功，正在出货</h2>
+        <h2 class="mt-4 text-4xl font-black">{{ pageTitle }}</h2>
         <p class="mt-4 text-lg text-neutral-600">{{ progressText }}</p>
+        <p
+          v-if="hasCustomerVisibleError && orderCredential"
+          class="mt-3 text-base font-bold text-neutral-800"
+        >
+          订单凭证 {{ orderCredential }}
+        </p>
 
         <div
           v-if="pickupReminder"

@@ -1,4 +1,4 @@
-pub const SCHEMA_VERSION: i64 = 7;
+pub const SCHEMA_VERSION: i64 = 8;
 
 pub const MIGRATION_V1: &str = r#"
 PRAGMA journal_mode = WAL;
@@ -363,4 +363,19 @@ PRAGMA foreign_keys = ON;
 ALTER TABLE stock_movements ADD COLUMN before_quantity INTEGER NOT NULL DEFAULT 0 CHECK (before_quantity >= 0);
 ALTER TABLE stock_movements ADD COLUMN after_quantity INTEGER NOT NULL DEFAULT 0 CHECK (after_quantity >= 0);
 ALTER TABLE stock_movements ADD COLUMN slot_mapping_snapshot_json TEXT;
+"#;
+
+pub const MIGRATION_V8: &str = r#"
+PRAGMA foreign_keys = ON;
+
+CREATE TABLE IF NOT EXISTS whole_machine_lock_clear_audit_events (
+  id TEXT PRIMARY KEY,
+  operator_note TEXT NOT NULL,
+  previous_lock_json TEXT NOT NULL,
+  recovery_evidence_json TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_whole_machine_lock_clear_audit_created
+  ON whole_machine_lock_clear_audit_events(created_at);
 "#;

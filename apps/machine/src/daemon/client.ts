@@ -213,10 +213,12 @@ export class DaemonApiClient {
     );
   }
 
-  async clearWholeMachineMaintenanceLock(): Promise<unknown> {
+  async clearWholeMachineMaintenanceLock(
+    operatorNote: string,
+  ): Promise<unknown> {
     return this.request("/v1/maintenance/whole-machine-lock/clear", {
       method: "POST",
-      body: {},
+      body: { operatorNote },
     });
   }
 

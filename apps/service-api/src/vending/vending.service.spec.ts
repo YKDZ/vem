@@ -63,7 +63,7 @@ describe("VendingService heartbeat ingestion", () => {
           messageId: "heartbeat-1",
         }),
       } as never,
-      {} as never,
+      { resolveMachineOfflineNotification: vi.fn() } as never,
       {} as never,
       {} as never,
       {} as never,
@@ -81,6 +81,100 @@ describe("VendingService heartbeat ingestion", () => {
       reportedAt: new Date("2026-05-05T12:00:01.000Z"),
     });
   });
+
+  it.each([
+    {
+      reportedAt: "2026-05-05T13:00:00.000Z",
+      caseName: "future",
+    },
+    {
+      reportedAt: "2026-05-05T11:00:00.000Z",
+      caseName: "backdated",
+    },
+  ])(
+    "valid heartbeat marks the platform machine online using server receive time for $caseName reportedAt",
+    async ({ reportedAt }) => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-05-05T12:00:00.000Z"));
+      try {
+        const payload = {
+          machineCode: "M001",
+          reportedAt,
+          statusPayload: {
+            network: "online",
+            mqttConnected: true,
+            hardwareStatus: "ok",
+          },
+        };
+
+        const mockDb = {
+          select: vi.fn().mockReturnValue({
+            from: () => ({
+              where: async () => [{ id: "machine-1", code: "M001" }],
+            }),
+          }),
+          transaction: vi.fn(),
+        };
+        const machineEventValues = vi.fn().mockReturnValue({
+          onConflictDoNothing: () => ({
+            returning: async () => [{ id: "event-1" }],
+          }),
+        });
+        const machineSet = vi.fn().mockReturnValue({
+          where: async () => undefined,
+        });
+        const resolveMachineOfflineNotification = vi.fn();
+        const tx = {
+          insert: vi
+            .fn()
+            .mockReturnValueOnce({ values: machineEventValues })
+            .mockReturnValueOnce({ values: vi.fn() }),
+          update: vi.fn().mockReturnValue({ set: machineSet }),
+        };
+        mockDb.transaction.mockImplementation(
+          async (cb: (txArg: unknown) => Promise<void>) => {
+            await cb(tx);
+          },
+        );
+
+        const service = new VendingService(
+          mockDb as never,
+          { bindVendingService: vi.fn() } as never,
+          {
+            verifyFromTopic: vi.fn().mockResolvedValue({
+              payload,
+              messageId: "heartbeat-1",
+            }),
+          } as never,
+          { resolveMachineOfflineNotification } as never,
+          {} as never,
+          {} as never,
+          {} as never,
+          {} as never,
+        );
+
+        await service.handleMachineMessage(
+          "vem/machines/M001/events/heartbeat",
+          JSON.stringify({}),
+        );
+
+        expect(machineSet).toHaveBeenCalledWith(
+          expect.objectContaining({
+            status: "online",
+            lastSeenAt: new Date("2026-05-05T12:00:00.000Z"),
+          }),
+        );
+        expect(resolveMachineOfflineNotification).toHaveBeenCalledWith(tx, {
+          machineId: "machine-1",
+          machineCode: "M001",
+          recoveredAt: new Date("2026-05-05T12:00:00.000Z"),
+          lastSeenAt: new Date("2026-05-05T12:00:00.000Z"),
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
 });
 
 describe("VendingService environment control isolation", () => {
@@ -854,6 +948,242 @@ describe("VendingService line-level fulfillment", () => {
         orderItemIds: ["line-2"],
         amountCents: 300,
       }),
+    );
+  });
+
+  it("marks timed out commands result_unknown and freezes the slot pending physical confirmation", async () => {
+    const now = new Date("2026-06-26T07:00:00.000Z");
+    const updateSets: unknown[] = [];
+    const insertedValues: unknown[] = [];
+    const db = {
+      select: vi.fn().mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([
+            {
+              id: "cmd-timeout",
+              commandNo: "CMD-TIMEOUT",
+              orderId: "order1",
+              slotId: "slot1",
+              payloadJson: {
+                commandNo: "CMD-TIMEOUT",
+                orderNo: "ORD-1",
+                slot: { layerNo: 1, cellNo: 1, slotCode: "A1" },
+                quantity: 1,
+                timeoutSeconds: 1,
+              },
+              sentAt: new Date("2026-06-26T06:55:00.000Z"),
+              ackAt: null,
+            },
+          ]),
+        }),
+      }),
+      transaction: vi
+        .fn()
+        .mockImplementation(async (fn: (tx: unknown) => Promise<unknown>) => {
+          const tx = {
+            select: vi.fn().mockReturnValue({
+              from: vi.fn().mockReturnValue({
+                where: vi
+                  .fn()
+                  .mockResolvedValue([
+                    { status: "dispensing", paymentState: "paid" },
+                  ]),
+              }),
+            }),
+            update: vi.fn().mockReturnValue({
+              set: vi.fn((value: unknown) => {
+                updateSets.push(value);
+                return {
+                  where: vi.fn().mockReturnValue({
+                    returning: vi.fn().mockResolvedValue([{ id: "updated" }]),
+                  }),
+                };
+              }),
+            }),
+            insert: vi.fn().mockReturnValue({
+              values: vi.fn((value: unknown) => {
+                insertedValues.push(value);
+                return Promise.resolve();
+              }),
+            }),
+          };
+          return await fn(tx);
+        }),
+    };
+    const notificationsService = {
+      createDispenseFailedNotification: vi.fn().mockResolvedValue(undefined),
+    };
+    const service = makeService({ db, notificationsService });
+
+    const result = await service.markTimedOutCommands(now);
+
+    expect(result.processed).toBe(1);
+    expect(updateSets).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          status: "result_unknown",
+          lastError: "dispense result unknown after command timeout",
+        }),
+        expect.objectContaining({
+          fulfillmentState: "manual_handling",
+        }),
+        expect.objectContaining({
+          status: "faulted",
+        }),
+      ]),
+    );
+    expect(insertedValues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          reason: "dispense_result_unknown",
+          metadata: expect.objectContaining({
+            commandNo: "CMD-TIMEOUT",
+            requiresPhysicalOutcomeConfirmation: true,
+            slotSalesState: "frozen",
+          }),
+        }),
+      ]),
+    );
+    expect(
+      notificationsService.createDispenseFailedNotification,
+    ).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ commandId: "cmd-timeout" }),
+    );
+  });
+
+  it("treats daemon-reported UNKNOWN dispense result as manual handling without refunding", async () => {
+    const payload = {
+      commandNo: "CMD-UNKNOWN",
+      success: false,
+      errorCode: "UNKNOWN",
+      message: "dispense result unknown after daemon restart",
+      reportedAt: "2026-06-26T07:00:00.000Z",
+    };
+    const updateSets: unknown[] = [];
+    const insertedValues: unknown[] = [];
+    const db = {
+      select: vi.fn().mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([{ id: "machine1", code: "M001" }]),
+        }),
+      }),
+      transaction: vi
+        .fn()
+        .mockImplementation(async (fn: (tx: unknown) => Promise<unknown>) => {
+          const tx = {
+            insert: vi.fn().mockReturnValue({
+              values: vi.fn((value: unknown) => {
+                insertedValues.push(value);
+                return {
+                  onConflictDoNothing: vi.fn().mockReturnValue({
+                    returning: vi.fn().mockResolvedValue([{ id: "event1" }]),
+                  }),
+                };
+              }),
+            }),
+            select: vi
+              .fn()
+              .mockReturnValueOnce({
+                from: vi.fn().mockReturnValue({
+                  innerJoin: vi.fn().mockReturnValue({
+                    where: vi.fn().mockResolvedValue([
+                      {
+                        id: "cmd-unknown",
+                        commandNo: "CMD-UNKNOWN",
+                        orderId: "order1",
+                        machineId: "machine1",
+                        slotId: "slot1",
+                        orderItemId: "line1",
+                        status: "acknowledged",
+                        payloadJson: {},
+                        orderNo: "ORD-UNKNOWN",
+                      },
+                    ]),
+                  }),
+                }),
+              })
+              .mockReturnValueOnce({
+                from: vi.fn().mockReturnValue({
+                  where: vi
+                    .fn()
+                    .mockResolvedValue([
+                      { status: "dispensing", paymentState: "paid" },
+                    ]),
+                }),
+              }),
+            update: vi.fn().mockReturnValue({
+              set: vi.fn((value: unknown) => {
+                updateSets.push(value);
+                return {
+                  where: vi.fn().mockReturnValue({
+                    returning: vi.fn().mockResolvedValue([{ id: "updated" }]),
+                  }),
+                };
+              }),
+            }),
+          };
+          return await fn(tx);
+        }),
+    };
+    const releaseAffectedReservationForDispenseFailure = vi.fn();
+    const requestFullRefund = vi.fn();
+    const requestPartialRefund = vi.fn();
+    const notificationsService = {
+      createDispenseFailedNotification: vi.fn().mockResolvedValue(undefined),
+    };
+    const service = makeService({
+      db,
+      mqttSignatureService: {
+        verifyFromTopic: vi.fn().mockResolvedValue({
+          payload,
+          messageId: "result:CMD-UNKNOWN",
+        }),
+      },
+      notificationsService,
+      inventoryService: { releaseAffectedReservationForDispenseFailure },
+      refundsService: { requestFullRefund, requestPartialRefund },
+    });
+
+    await service.handleMachineMessage(
+      "vem/machines/M001/events/dispense-result",
+      JSON.stringify({}),
+    );
+
+    expect(updateSets).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          status: "result_unknown",
+          lastError: "dispense result unknown after daemon restart",
+        }),
+        expect.objectContaining({
+          fulfillmentState: "manual_handling",
+        }),
+        expect.objectContaining({
+          status: "faulted",
+        }),
+      ]),
+    );
+    expect(insertedValues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          reason: "dispense_result_unknown",
+          metadata: expect.objectContaining({
+            commandNo: "CMD-UNKNOWN",
+            requiresPhysicalOutcomeConfirmation: true,
+            slotSalesState: "frozen",
+          }),
+        }),
+      ]),
+    );
+    expect(releaseAffectedReservationForDispenseFailure).not.toHaveBeenCalled();
+    expect(requestFullRefund).not.toHaveBeenCalled();
+    expect(requestPartialRefund).not.toHaveBeenCalled();
+    expect(
+      notificationsService.createDispenseFailedNotification,
+    ).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ commandId: "cmd-unknown" }),
     );
   });
 

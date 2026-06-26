@@ -567,6 +567,11 @@ describe("MaintenanceView hardware config", () => {
       ],
       blockingReasons: [
         {
+          code: "LOWER_CONTROLLER_UNAVAILABLE",
+          component: "hardware",
+          message: "lower controller unavailable",
+        },
+        {
           code: "WHOLE_MACHINE_HARDWARE_FAULT",
           component: "hardware",
           message:
@@ -581,11 +586,34 @@ describe("MaintenanceView hardware config", () => {
       ),
     );
     const host = await mountView();
+    const clearButton = buttonByText(host, "确认解除整机锁");
 
-    buttonByText(host, "确认解除整机锁").click();
+    expect(host.textContent).toContain("整机维护锁");
+    expect(host.textContent).toContain("下位机未在线");
+    expect(host.textContent).toContain("处理卡货或机械故障");
+    expect(clearButton.disabled).toBe(true);
+
+    buttonByText(host, "硬件自检").click();
+    await vi.waitFor(() => {
+      expect(host.textContent).toContain("下位机自检：通过");
+    });
+    expect(clearButton.disabled).toBe(true);
+
+    const note = host.querySelector("textarea");
+    if (!(note instanceof HTMLTextAreaElement)) {
+      throw new Error("operator note textarea not found");
+    }
+    note.value = "现场复位下位机后，自检通过";
+    note.dispatchEvent(new Event("input"));
+    await nextTick();
+    expect(clearButton.disabled).toBe(false);
+
+    clearButton.click();
 
     await vi.waitFor(() => {
-      expect(clearWholeMachineMaintenanceLockMock).toHaveBeenCalledOnce();
+      expect(clearWholeMachineMaintenanceLockMock).toHaveBeenCalledWith(
+        "现场复位下位机后，自检通过",
+      );
       expect(host.textContent).toContain(
         "lower controller must be healthy before clearing whole-machine lock",
       );
