@@ -27,7 +27,7 @@ const emit = defineEmits<{
       <span class="text-sm text-neutral-500">
         {{ group.items.length }} 款商品
       </span>
-      <span class="font-bold text-base text-neutral-700">进入选择</span>
+      <span class="text-base font-bold text-neutral-700">进入选择</span>
     </span>
   </button>
 </template>

@@ -406,7 +406,7 @@ onUnmounted(() => {
               />
             </svg>
           </span>
-          <span class="mt-2 block font-semibold text-[#5f6e55] text-base">
+          <span class="mt-2 block text-base font-semibold text-[#5f6e55]">
             {{ action.label }}
           </span>
           <span

@@ -52,7 +52,7 @@ type PaidCommandContext = {
   orderItemId: string;
 };
 
-describe.sequential("fulfillment recovery e2e", () => {
+describe("fulfillment recovery e2e", { concurrent: false }, () => {
   let app: INestApplication;
   let appConfig: AppConfigService;
   let db: DrizzleDB;

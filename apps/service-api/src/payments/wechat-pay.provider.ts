@@ -84,8 +84,7 @@ function readRequiredString(
  */
 function extractPublicKeyFromCertificatePem(certPem: string): string {
   const cert = new X509Certificate(certPem);
-  // oxlint-disable-next-line no-unsafe-type-assertion -- export with format:'pem' always returns string
-  return cert.publicKey.export({ type: "spki", format: "pem" }) as string;
+  return cert.publicKey.export({ type: "spki", format: "pem" });
 }
 
 function parseWeChatPayConfig(

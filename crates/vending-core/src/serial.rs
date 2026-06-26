@@ -1318,7 +1318,7 @@ where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     match read_lower_controller_status(port, HEARTBEAT_LISTEN_TIMEOUT).await {
-        Ok(frame) => return Ok(frame),
+        Ok(frame) => Ok(frame),
         Err(listen_error) => {
             let mut last_error = listen_error;
             for _ in 0..COMMAND_ATTEMPTS {

@@ -15,7 +15,7 @@
     "typecheck": "tsc --noEmit && vue-tsc --noEmit"
   },
   "dependencies": {
-    "@antdv-next/icons": "^1.0.6",
+    "@antdv-next/icons": "^1.0.8",
     "@vem/shared": "workspace:*",
     "antdv-next": "catalog:",
     "axios": "catalog:",
@@ -26,7 +26,7 @@
     "zod": "catalog:"
   },
   "devDependencies": {
-    "@antdv-next/tailwind": "^1.0.2",
+    "@antdv-next/tailwind": "^1.1.1",
     "@playwright/test": "catalog:",
     "@tailwindcss/vite": "catalog:",
     "@types/node": "catalog:",

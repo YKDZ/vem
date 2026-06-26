@@ -16,18 +16,18 @@
     "@tsconfig/node24": "^24.0.4",
     "@types/node": "catalog:",
     "jsdom": "^29.1.1",
-    "marked": "^18.0.4",
+    "marked": "^18.0.5",
     "mermaid": "^11.15.0",
-    "oxfmt": "^0.47.0",
-    "oxlint": "^1.62.0",
-    "oxlint-tsgolint": "^0.22.1",
+    "oxfmt": "^0.56.0",
+    "oxlint": "^1.71.0",
+    "oxlint-tsgolint": "^0.23.0",
     "playwright": "catalog:",
     "tsx": "catalog:",
-    "turbo": "^2.9.8",
+    "turbo": "^2.10.0",
     "typescript": "catalog:",
     "unplugin-dts": "catalog:",
     "vite": "catalog:",
     "vitest": "catalog:"
   },
-  "packageManager": "pnpm@9.15.9"
+  "packageManager": "pnpm@11.9.0+sha512.bd682d5d03fe525ef7c9fd6780c6884d1e756ac4c9c9fe00c538782824310dcf90e3ddc4f53835f06dfaebd5085e41855e0bcbb3b60de2ac5bbab89e5036f03b"
 }
