@@ -118,7 +118,21 @@ describe("MachinesService", () => {
                   statusPayloadJson: {
                     network: "online",
                     mqttConnected: true,
-                    hardwareStatus: "ok",
+                    hardwareStatus: "faulted",
+                    wholeMachineMaintenanceLock: {
+                      code: "WHOLE_MACHINE_HARDWARE_FAULT",
+                      message: "pickup platform blocked",
+                      source: "dispense_failure",
+                      orderNo: "ORD-1",
+                      commandNo: "CMD-1",
+                      slotCode: "A1",
+                      errorCode: "JAMMED",
+                      createdAt: "2026-05-05T12:00:01.000Z",
+                    },
+                    saleReadiness: {
+                      state: "locked",
+                      blockingCodes: ["WHOLE_MACHINE_HARDWARE_FAULT"],
+                    },
                     localQueueSize: 0,
                     environment: {
                       temperatureCelsius: 24,
@@ -153,7 +167,15 @@ describe("MachinesService", () => {
         latestHeartbeatStatus: expect.objectContaining({
           network: "online",
           mqttConnected: true,
-          hardwareStatus: "ok",
+          hardwareStatus: "faulted",
+          saleReadiness: {
+            state: "locked",
+            blockingCodes: ["WHOLE_MACHINE_HARDWARE_FAULT"],
+          },
+          wholeMachineMaintenanceLock: expect.objectContaining({
+            code: "WHOLE_MACHINE_HARDWARE_FAULT",
+            slotCode: "A1",
+          }),
         }),
         latestEnvironment: expect.objectContaining({
           temperatureCelsius: 24,
@@ -190,7 +212,21 @@ describe("MachinesService", () => {
                   statusPayloadJson: {
                     network: "online",
                     mqttConnected: true,
-                    hardwareStatus: "ok",
+                    hardwareStatus: "faulted",
+                    wholeMachineMaintenanceLock: {
+                      code: "WHOLE_MACHINE_HARDWARE_FAULT",
+                      message: "pickup platform blocked",
+                      source: "dispense_failure",
+                      orderNo: "ORD-1",
+                      commandNo: "CMD-1",
+                      slotCode: "A1",
+                      errorCode: "JAMMED",
+                      createdAt: "2026-05-05T12:00:01.000Z",
+                    },
+                    saleReadiness: {
+                      state: "locked",
+                      blockingCodes: ["WHOLE_MACHINE_HARDWARE_FAULT"],
+                    },
                     localQueueSize: 0,
                     environment: {
                       temperatureCelsius: 24,
@@ -234,7 +270,15 @@ describe("MachinesService", () => {
       expect.objectContaining({
         network: "online",
         mqttConnected: true,
-        hardwareStatus: "ok",
+        hardwareStatus: "faulted",
+        saleReadiness: {
+          state: "locked",
+          blockingCodes: ["WHOLE_MACHINE_HARDWARE_FAULT"],
+        },
+        wholeMachineMaintenanceLock: expect.objectContaining({
+          code: "WHOLE_MACHINE_HARDWARE_FAULT",
+          slotCode: "A1",
+        }),
       }),
     );
     expect(result.latestEnvironment).toEqual({

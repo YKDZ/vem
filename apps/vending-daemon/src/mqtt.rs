@@ -44,6 +44,7 @@ pub struct MqttSyncRuntime {
     signing_secret: String,
     state: LocalStateStore,
     hardware: HardwareSupervisor,
+    readiness_context: Option<crate::ipc::IpcContext>,
     environment: Arc<RwLock<EnvironmentHeartbeatCache>>,
     events: broadcast::Sender<DaemonEvent>,
     shutdown: CancellationToken,
@@ -64,6 +65,7 @@ impl MqttSyncRuntime {
             signing_secret,
             state,
             hardware,
+            readiness_context: None,
             environment: Arc::new(RwLock::new(EnvironmentHeartbeatCache::default())),
             events,
             shutdown,
@@ -73,6 +75,11 @@ impl MqttSyncRuntime {
 
     pub fn with_client(mut self, client: AsyncClient) -> Self {
         self.mqtt_client = Some(Arc::new(RwLock::new(client)));
+        self
+    }
+
+    pub fn with_readiness_context(mut self, context: crate::ipc::IpcContext) -> Self {
+        self.readiness_context = Some(context);
         self
     }
 
@@ -488,6 +495,17 @@ impl MqttSyncRuntime {
         } else {
             "faulted"
         };
+        if let Some(context) = self.readiness_context.as_ref() {
+            *context.ui.status_cache.hardware.write().await = hardware_status.clone();
+        }
+        let whole_machine_lock = self
+            .state
+            .whole_machine_maintenance_lock()
+            .await
+            .map_err(|error| format!("read whole-machine maintenance lock failed: {error}"))?;
+        let sale_readiness = self
+            .heartbeat_sale_readiness(whole_machine_lock.is_some(), hardware_status.online)
+            .await?;
         let payload = json!({
             "machineCode": self.machine_code,
             "reportedAt": reported_at,
@@ -498,6 +516,8 @@ impl MqttSyncRuntime {
                 "hardwareStatus": heartbeat_hardware_status,
                 "hardwareMessage": hardware_status.message,
                 "hardwarePortPath": hardware_status.port_path,
+                "wholeMachineMaintenanceLock": whole_machine_lock,
+                "saleReadiness": sale_readiness,
                 "environment": serde_json::to_value(environment)
                     .map_err(|error| format!("serialize environment heartbeat failed: {error}"))?,
             },
@@ -513,6 +533,56 @@ impl MqttSyncRuntime {
             .await
             .map_err(|error| error.to_string())?;
         Ok(())
+    }
+
+    async fn heartbeat_sale_readiness(
+        &self,
+        whole_machine_locked: bool,
+        hardware_online: bool,
+    ) -> Result<serde_json::Value, String> {
+        if let Some(context) = self.readiness_context.as_ref() {
+            let snapshot = crate::ipc::machine_sale_readiness_snapshot(context)
+                .await
+                .map_err(|error| format!("read sale readiness failed: {error}"))?;
+            let blocking_codes = snapshot
+                .get("blockingCodes")
+                .and_then(|value| value.as_array())
+                .cloned()
+                .unwrap_or_default();
+            let can_start_sale = snapshot
+                .get("canStartNetworkAuthorizedSale")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false);
+            let state = if whole_machine_locked {
+                "locked"
+            } else if can_start_sale {
+                "restored"
+            } else {
+                "blocked"
+            };
+            return Ok(json!({
+                "state": state,
+                "blockingCodes": blocking_codes,
+            }));
+        }
+
+        let mut blocking_codes = Vec::new();
+        if whole_machine_locked {
+            blocking_codes.push("WHOLE_MACHINE_HARDWARE_FAULT");
+        } else if !hardware_online {
+            blocking_codes.push("LOWER_CONTROLLER_UNAVAILABLE");
+        }
+        let state = if whole_machine_locked {
+            "locked"
+        } else if hardware_online {
+            "restored"
+        } else {
+            "blocked"
+        };
+        Ok(json!({
+            "state": state,
+            "blockingCodes": blocking_codes,
+        }))
     }
 
     pub async fn flush_due_outbox(&self) -> Result<OutboxFlushResult, String> {
@@ -1345,6 +1415,69 @@ mod tests {
         assert_eq!(
             payload["statusPayload"]["hardwareMessage"],
             "lower controller unavailable"
+        );
+        assert_eq!(
+            payload["statusPayload"]["saleReadiness"]["state"],
+            "blocked"
+        );
+        assert_eq!(
+            payload["statusPayload"]["saleReadiness"]["blockingCodes"][0],
+            "LOWER_CONTROLLER_UNAVAILABLE"
+        );
+    }
+
+    #[tokio::test]
+    async fn enqueue_heartbeat_reports_whole_machine_maintenance_lock() {
+        let temp = tempfile::tempdir().expect("temp");
+        let state = crate::state::LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("state");
+        state
+            .put_metadata(
+                crate::state::store::WHOLE_MACHINE_MAINTENANCE_LOCK_KEY,
+                &crate::state::store::WholeMachineMaintenanceLock {
+                    code: "WHOLE_MACHINE_HARDWARE_FAULT".to_string(),
+                    message: "pickup platform blocked".to_string(),
+                    source: "dispense_failure".to_string(),
+                    order_no: "ORD-LOCKED".to_string(),
+                    command_no: "CMD-LOCKED".to_string(),
+                    slot_code: "A1".to_string(),
+                    error_code: Some("JAMMED".to_string()),
+                    created_at: crate::state::store::now_iso(),
+                },
+            )
+            .await
+            .expect("lock");
+        let hardware = crate::hardware::HardwareSupervisor::from_adapter(Arc::new(
+            RecordingEnvironmentAdapter {
+                hardware_online: true,
+                ..Default::default()
+            },
+        ));
+        let (event_tx, _rx) = tokio::sync::broadcast::channel(4);
+        let runtime = MqttSyncRuntime::new(
+            "M1".to_string(),
+            "secret".to_string(),
+            state.clone(),
+            hardware,
+            event_tx,
+            CancellationToken::new(),
+        );
+
+        runtime.enqueue_heartbeat().await.expect("heartbeat");
+
+        let due = state
+            .list_due_outbox(chrono::Utc::now() + chrono::Duration::seconds(1))
+            .await
+            .expect("outbox");
+        let envelope: vending_core::mqtt::MqttEnvelope =
+            serde_json::from_value(due[0].payload_json.clone()).expect("envelope");
+        let status = &envelope.payload["statusPayload"];
+        assert_eq!(status["hardwareStatus"], "ok");
+        assert_eq!(status["saleReadiness"]["state"], "locked");
+        assert_eq!(
+            status["wholeMachineMaintenanceLock"]["code"],
+            "WHOLE_MACHINE_HARDWARE_FAULT"
         );
     }
 

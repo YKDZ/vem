@@ -267,6 +267,7 @@ pub async fn run_console_with_token(
         events_tx.clone(),
         state.clone(),
         stop_token.clone(),
+        ipc_ctx.clone(),
     )? {
         tasks.push(runtime_mqtt);
     }
@@ -296,6 +297,7 @@ fn maybe_spawn_mqtt_task(
     events: broadcast::Sender<DaemonEvent>,
     state: LocalStateStore,
     shutdown: CancellationToken,
+    ipc_context: ipc::IpcContext,
 ) -> Result<Option<tokio::task::JoinHandle<Result<(), String>>>, String> {
     let machine_code = match &runtime_config.machine_code {
         Some(code) => code.clone(),
@@ -326,6 +328,7 @@ fn maybe_spawn_mqtt_task(
         events,
         shutdown,
     )
+    .with_readiness_context(ipc_context)
     .with_client(client);
     Ok(Some(tokio::spawn(Arc::new(mqtt).run(event_loop))))
 }

@@ -36,6 +36,18 @@ import {
 import { useAuthStore } from "@/stores/auth";
 import { formatDateTime } from "@/utils/format";
 
+type MachineSaleReadinessHeartbeat = {
+  state?: "locked" | "blocked" | "restored";
+  blockingCodes?: string[];
+};
+
+type WholeMachineMaintenanceLockHeartbeat = {
+  code?: string;
+  message?: string;
+  slotCode?: string;
+  commandNo?: string;
+};
+
 const route = useRoute();
 const router = useRouter();
 const authStore = useAuthStore();
@@ -100,6 +112,17 @@ const environmentCommandDisabled = computed(
 );
 
 const heartbeat = computed(() => machine.value?.latestHeartbeatStatus ?? null);
+const saleReadiness = computed(
+  () =>
+    (heartbeat.value?.saleReadiness as MachineSaleReadinessHeartbeat | null) ??
+    null,
+);
+const wholeMachineMaintenanceLock = computed(
+  () =>
+    (heartbeat.value
+      ?.wholeMachineMaintenanceLock as WholeMachineMaintenanceLockHeartbeat | null) ??
+    null,
+);
 const environment = computed(() => machine.value?.latestEnvironment ?? null);
 
 const slotRows = computed(() =>
@@ -208,6 +231,20 @@ function hardwareStatusLabel(status: string | undefined): string {
   if (status === "degraded") return "降级";
   if (status === "faulted") return "异常";
   return "unknown";
+}
+
+function saleReadinessStateLabel(status: string | undefined): string {
+  if (status === "locked") return "整机锁定";
+  if (status === "blocked") return "阻塞";
+  if (status === "restored") return "已恢复";
+  return "unknown";
+}
+
+function saleReadinessStateColor(status: string | undefined): string {
+  if (status === "locked") return "error";
+  if (status === "blocked") return "warning";
+  if (status === "restored") return "success";
+  return "default";
 }
 
 function inventoryAvailableQty(inventory: Inventory): number {
@@ -459,6 +496,29 @@ onMounted(() => {
               >
                 {{ hardwareStatusLabel(heartbeat?.hardwareStatus) }}
               </a-tag>
+            </a-descriptions-item>
+            <a-descriptions-item label="销售就绪">
+              <a-tag :color="saleReadinessStateColor(saleReadiness?.state)">
+                {{ saleReadinessStateLabel(saleReadiness?.state) }}
+              </a-tag>
+              <span v-if="saleReadiness?.blockingCodes?.length" class="ml-2">
+                {{ saleReadiness.blockingCodes.join("、") }}
+              </span>
+            </a-descriptions-item>
+            <a-descriptions-item
+              v-if="wholeMachineMaintenanceLock"
+              label="整机维护锁"
+            >
+              <a-tag color="error">{{
+                wholeMachineMaintenanceLock.code
+              }}</a-tag>
+              <div class="mt-1 text-xs text-slate-500">
+                {{ wholeMachineMaintenanceLock.message }}
+              </div>
+              <div class="mt-1 text-xs text-slate-500">
+                货道 {{ wholeMachineMaintenanceLock.slotCode ?? "--" }} · 命令
+                {{ wholeMachineMaintenanceLock.commandNo ?? "--" }}
+              </div>
             </a-descriptions-item>
             <a-descriptions-item label="本地队列">
               {{ heartbeat?.localQueueSize ?? "--" }}

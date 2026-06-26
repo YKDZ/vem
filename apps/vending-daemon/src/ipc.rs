@@ -37,6 +37,12 @@ use crate::{
 
 const SCANNER_READY_STALE_AFTER_SECONDS: i64 = 30;
 
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ClearWholeMachineMaintenanceLockRequest {
+    operator_note: String,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VisionStatusSnapshot {
@@ -1476,7 +1482,7 @@ async fn sale_readiness(State(ctx): State<IpcContext>, headers: HeaderMap) -> im
     }
 }
 
-async fn machine_sale_readiness_snapshot(
+pub(crate) async fn machine_sale_readiness_snapshot(
     ctx: &IpcContext,
 ) -> Result<serde_json::Value, StoreError> {
     let public = ctx.config_store.load_public_config().await.ok();
@@ -2290,9 +2296,22 @@ async fn update_slot_sales_state(
 async fn clear_whole_machine_maintenance_lock(
     State(ctx): State<IpcContext>,
     headers: HeaderMap,
+    Json(input): Json<ClearWholeMachineMaintenanceLockRequest>,
 ) -> impl IntoResponse {
     if let Err((status, error)) = require_token(&headers, &ctx.token).await {
         return (status, error).into_response();
+    }
+
+    let operator_note = input.operator_note.trim();
+    if operator_note.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorMessage {
+                code: "operator_note_required",
+                message: "operator note is required to clear whole-machine lock".to_string(),
+            }),
+        )
+            .into_response();
     }
 
     let previous = match ctx.state.whole_machine_maintenance_lock().await {
@@ -2302,38 +2321,108 @@ async fn clear_whole_machine_maintenance_lock(
         }
     };
 
-    if previous.is_some() {
-        match run_hardware_self_check(&ctx).await {
-            Ok((status, _config_updated)) => {
-                if !status.online {
-                    return (
-                        StatusCode::CONFLICT,
-                        Json(ErrorMessage {
-                            code: "hardware_still_unavailable",
-                            message: format!(
-                                "lower controller must be healthy before clearing whole-machine lock: {}",
-                                status.message
-                            ),
-                        }),
-                    )
-                        .into_response();
-                }
+    if let Some(previous_lock) = previous.as_ref() {
+        let evidence = match ctx.state.whole_machine_lock_recovery_evidence().await {
+            Ok(Some(evidence)) if evidence.online => evidence,
+            Ok(Some(evidence)) => {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(ErrorMessage {
+                        code: "hardware_still_unavailable",
+                        message: format!(
+                            "lower controller must have recovered self-check evidence before clearing whole-machine lock: {}",
+                            evidence.message
+                        ),
+                    }),
+                )
+                    .into_response();
             }
-            Err(response) => return response,
+            Ok(None) => {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(ErrorMessage {
+                        code: "self_check_evidence_required",
+                        message:
+                            "run lower-controller self-check before clearing whole-machine lock"
+                                .to_string(),
+                    }),
+                )
+                    .into_response();
+            }
+            Err(error) => {
+                return store_error_response("whole_machine_lock_evidence_read_failed", error);
+            }
+        };
+        if evidence.checked_at.as_str() < previous_lock.created_at.as_str() {
+            return (
+                StatusCode::CONFLICT,
+                Json(ErrorMessage {
+                    code: "stale_self_check_evidence",
+                    message:
+                        "lower-controller self-check evidence must be newer than the active whole-machine lock"
+                            .to_string(),
+                }),
+            )
+                .into_response();
         }
-    }
+        if !evidence.production_dispense_path_ready {
+            return (
+                StatusCode::CONFLICT,
+                Json(ErrorMessage {
+                    code: "production_dispense_path_required",
+                    message: format!(
+                        "production dispense path evidence is required before clearing whole-machine lock: {} ({})",
+                        evidence.production_dispense_path_message,
+                        evidence.production_dispense_path_code
+                    ),
+                }),
+            )
+                .into_response();
+        }
+        if evidence.adapter == "mock"
+            || evidence
+                .port_path
+                .as_deref()
+                .map(|path| path.trim_start().starts_with("tcp://"))
+                .unwrap_or(false)
+        {
+            return (
+                StatusCode::CONFLICT,
+                Json(ErrorMessage {
+                    code: "production_dispense_path_required",
+                    message:
+                        "mock adapter and tcp:// lower-controller simulator evidence cannot clear a whole-machine lock"
+                            .to_string(),
+                }),
+            )
+                .into_response();
+        }
 
-    match ctx.state.clear_whole_machine_maintenance_lock().await {
-        Ok(()) => (
+        let audit = crate::state::store::WholeMachineMaintenanceLockClearAudit {
+            id: uuid::Uuid::new_v4().to_string(),
+            operator_note: operator_note.to_string(),
+            cleared_at: crate::state::store::now_iso(),
+            previous: previous_lock.clone(),
+            recovery_evidence: evidence,
+        };
+        if let Err(error) = ctx
+            .state
+            .clear_whole_machine_maintenance_lock_with_audit(&audit)
+            .await
+        {
+            return store_error_response("whole_machine_lock_clear_failed", error);
+        }
+        return (
             StatusCode::OK,
             Json(serde_json::json!({
-                "cleared": previous.is_some(),
+                "cleared": true,
                 "previous": previous,
             })),
         )
-            .into_response(),
-        Err(error) => store_error_response("whole_machine_lock_clear_failed", error),
+            .into_response();
     }
+
+    (StatusCode::OK, Json(serde_json::json!({"cleared": false}))).into_response()
 }
 
 fn store_error_response(code: &'static str, error: StoreError) -> axum::response::Response {
@@ -2556,6 +2645,30 @@ async fn run_hardware_self_check(
         {
             return Err(store_error_response(
                 "whole_machine_lock_record_failed",
+                error,
+            ));
+        }
+    }
+
+    {
+        let production_dispense_path = production_dispense_path_readiness(Some(&public));
+        let evidence = crate::state::store::WholeMachineMaintenanceLockClearEvidence {
+            adapter: status.adapter.clone(),
+            online: status.online,
+            message: status.message.clone(),
+            port_path: status.port_path.clone(),
+            checked_at: crate::state::store::now_iso(),
+            production_dispense_path_ready: production_dispense_path.ready,
+            production_dispense_path_code: production_dispense_path.code.to_string(),
+            production_dispense_path_message: production_dispense_path.message.to_string(),
+        };
+        if let Err(error) = ctx
+            .state
+            .record_whole_machine_lock_recovery_evidence(&evidence)
+            .await
+        {
+            return Err(store_error_response(
+                "whole_machine_lock_evidence_write_failed",
                 error,
             ));
         }
@@ -6554,23 +6667,70 @@ mod tests {
             .iter()
             .any(|code| code == "WHOLE_MACHINE_HARDWARE_FAULT"));
 
-        {
-            let mut public = ctx.config_store.load_public_config().await.expect("config");
-            public.hardware_adapter = crate::config::HardwareAdapterKind::Mock;
-            public.serial_port_path = None;
-            ctx.config_store
-                .save_public_config(public)
-                .await
-                .expect("save recovered hardware config");
-        }
+        let restarted_ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            "http://127.0.0.1:0",
+        )
+        .await;
+        mark_runtime_sale_ready(&restarted_ctx).await;
+        let restarted_app = build_router(restarted_ctx);
+        let restarted_response = restarted_app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/sale-readiness")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = body::to_bytes(restarted_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let restarted_readiness: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(restarted_readiness["blockingCodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|code| code == "WHOLE_MACHINE_HARDWARE_FAULT"));
+
+        ctx.state
+            .record_whole_machine_lock_recovery_evidence(
+                &crate::state::store::WholeMachineMaintenanceLockClearEvidence {
+                    adapter: "serial".to_string(),
+                    online: true,
+                    message: "production lower controller self-check passed".to_string(),
+                    port_path: Some("/dev/ttyUSB0".to_string()),
+                    checked_at: crate::state::store::now_iso(),
+                    production_dispense_path_ready: true,
+                    production_dispense_path_code: "PRODUCTION_DISPENSE_PATH_READY".to_string(),
+                    production_dispense_path_message: "production dispense path ready".to_string(),
+                },
+            )
+            .await
+            .expect("production recovery evidence");
         let clear_response = post_json(
             &app,
             "/v1/maintenance/whole-machine-lock/clear",
             "token-1",
-            json!({}),
+            json!({ "operatorNote": "现场按复位键后自检通过，恢复销售" }),
         )
         .await;
         assert_eq!(clear_response.status(), StatusCode::OK);
+
+        let audit = ctx
+            .state
+            .whole_machine_lock_clear_audit()
+            .await
+            .expect("read clear audit")
+            .expect("clear audit");
+        assert_eq!(audit.operator_note, "现场按复位键后自检通过，恢复销售");
+        assert!(audit.recovery_evidence.online);
+        assert_eq!(audit.previous.code.as_str(), "WHOLE_MACHINE_HARDWARE_FAULT");
 
         let response = app
             .oneshot(
@@ -6640,7 +6800,7 @@ mod tests {
             &app,
             "/v1/maintenance/whole-machine-lock/clear",
             "token-1",
-            json!({}),
+            json!({ "operatorNote": "attempted clear before lower controller recovered" }),
         )
         .await;
         assert_eq!(clear_response.status(), StatusCode::CONFLICT);
@@ -6651,6 +6811,375 @@ mod tests {
             .await
             .expect("read lock");
         assert!(lock.is_some());
+    }
+
+    #[tokio::test]
+    async fn whole_machine_lock_clear_rejects_stale_self_check_evidence() {
+        let temp_dir = tempdir().expect("tmp");
+        let ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            "http://127.0.0.1:0",
+        )
+        .await;
+        ctx.state
+            .record_whole_machine_lock_recovery_evidence(
+                &crate::state::store::WholeMachineMaintenanceLockClearEvidence {
+                    adapter: "mock".to_string(),
+                    online: true,
+                    message: "hardware ready before fault".to_string(),
+                    port_path: None,
+                    checked_at: "2026-06-26T07:00:00.000Z".to_string(),
+                    production_dispense_path_ready: false,
+                    production_dispense_path_code: "PRODUCTION_DISPENSE_PATH_MOCK".to_string(),
+                    production_dispense_path_message: "生产出货路径不能使用 mock hardwareAdapter"
+                        .to_string(),
+                },
+            )
+            .await
+            .expect("evidence");
+        ctx.state
+            .put_metadata(
+                crate::state::store::WHOLE_MACHINE_MAINTENANCE_LOCK_KEY,
+                &crate::state::store::WholeMachineMaintenanceLock {
+                    code: "WHOLE_MACHINE_HARDWARE_FAULT".to_string(),
+                    message: "lower controller reported mechanical fault during dispense"
+                        .to_string(),
+                    source: "dispense_failure".to_string(),
+                    order_no: "ORD-LOCKED".to_string(),
+                    command_no: "CMD-LOCKED".to_string(),
+                    slot_code: "A1".to_string(),
+                    error_code: Some("JAMMED".to_string()),
+                    created_at: "2026-06-26T08:00:00.000Z".to_string(),
+                },
+            )
+            .await
+            .expect("lock");
+
+        let app = build_router(ctx.clone());
+        let clear_response = post_json(
+            &app,
+            "/v1/maintenance/whole-machine-lock/clear",
+            "token-1",
+            json!({ "operatorNote": "stale evidence should not clear" }),
+        )
+        .await;
+        assert_eq!(clear_response.status(), StatusCode::CONFLICT);
+
+        let lock = ctx
+            .state
+            .whole_machine_maintenance_lock()
+            .await
+            .expect("read lock");
+        assert!(lock.is_some());
+    }
+
+    #[tokio::test]
+    async fn whole_machine_lock_clear_rejects_mock_and_tcp_recovery_evidence() {
+        for (adapter, port_path, code, message) in [
+            (
+                "mock",
+                None,
+                "PRODUCTION_DISPENSE_PATH_MOCK",
+                "生产出货路径不能使用 mock hardwareAdapter",
+            ),
+            (
+                "serial",
+                Some("tcp://127.0.0.1:17991"),
+                "PRODUCTION_DISPENSE_PATH_TCP_SIMULATOR",
+                "生产出货路径不能使用 tcp:// lower-controller simulator",
+            ),
+        ] {
+            let temp_dir = tempdir().expect("tmp");
+            let ctx = test_ipc_context(
+                temp_dir.path(),
+                "token-1",
+                Some("MACHINE-1".to_string()),
+                "http://127.0.0.1:0",
+            )
+            .await;
+            ctx.state
+                .put_metadata(
+                    crate::state::store::WHOLE_MACHINE_MAINTENANCE_LOCK_KEY,
+                    &crate::state::store::WholeMachineMaintenanceLock {
+                        code: "WHOLE_MACHINE_HARDWARE_FAULT".to_string(),
+                        message: "lower controller reported mechanical fault during dispense"
+                            .to_string(),
+                        source: "dispense_failure".to_string(),
+                        order_no: "ORD-LOCKED".to_string(),
+                        command_no: "CMD-LOCKED".to_string(),
+                        slot_code: "A1".to_string(),
+                        error_code: Some("JAMMED".to_string()),
+                        created_at: "2026-06-26T08:00:00.000Z".to_string(),
+                    },
+                )
+                .await
+                .expect("lock");
+            ctx.state
+                .record_whole_machine_lock_recovery_evidence(
+                    &crate::state::store::WholeMachineMaintenanceLockClearEvidence {
+                        adapter: adapter.to_string(),
+                        online: true,
+                        message: "simulated lower controller self-check passed".to_string(),
+                        port_path: port_path.map(ToString::to_string),
+                        checked_at: "2026-06-26T08:01:00.000Z".to_string(),
+                        production_dispense_path_ready: false,
+                        production_dispense_path_code: code.to_string(),
+                        production_dispense_path_message: message.to_string(),
+                    },
+                )
+                .await
+                .expect("evidence");
+
+            let app = build_router(ctx.clone());
+            let clear_response = post_json(
+                &app,
+                "/v1/maintenance/whole-machine-lock/clear",
+                "token-1",
+                json!({ "operatorNote": "simulator evidence must not clear" }),
+            )
+            .await;
+            assert_eq!(clear_response.status(), StatusCode::CONFLICT);
+            assert!(ctx
+                .state
+                .whole_machine_maintenance_lock()
+                .await
+                .expect("lock")
+                .is_some());
+            assert!(ctx
+                .state
+                .whole_machine_lock_clear_audits()
+                .await
+                .expect("audits")
+                .is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn whole_machine_lock_clear_audit_appends_without_overwriting_history() {
+        let temp_dir = tempdir().expect("tmp");
+        let ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            "http://127.0.0.1:0",
+        )
+        .await;
+        let app = build_router(ctx.clone());
+
+        for (index, note) in [
+            "第一次现场复位并确认生产路径",
+            "第二次现场复位并确认生产路径",
+        ]
+        .iter()
+        .enumerate()
+        {
+            ctx.state
+                .put_metadata(
+                    crate::state::store::WHOLE_MACHINE_MAINTENANCE_LOCK_KEY,
+                    &crate::state::store::WholeMachineMaintenanceLock {
+                        code: "WHOLE_MACHINE_HARDWARE_FAULT".to_string(),
+                        message: format!("whole-machine hardware fault #{index}"),
+                        source: "dispense_failure".to_string(),
+                        order_no: format!("ORD-LOCKED-{index}"),
+                        command_no: format!("CMD-LOCKED-{index}"),
+                        slot_code: "A1".to_string(),
+                        error_code: Some("JAMMED".to_string()),
+                        created_at: format!("2026-06-26T08:0{index}:00.000Z"),
+                    },
+                )
+                .await
+                .expect("lock");
+            ctx.state
+                .record_whole_machine_lock_recovery_evidence(
+                    &crate::state::store::WholeMachineMaintenanceLockClearEvidence {
+                        adapter: "serial".to_string(),
+                        online: true,
+                        message: "production lower controller self-check passed".to_string(),
+                        port_path: Some("/dev/ttyUSB0".to_string()),
+                        checked_at: format!("2026-06-26T08:0{index}:30.000Z"),
+                        production_dispense_path_ready: true,
+                        production_dispense_path_code: "PRODUCTION_DISPENSE_PATH_READY".to_string(),
+                        production_dispense_path_message: "production dispense path ready"
+                            .to_string(),
+                    },
+                )
+                .await
+                .expect("evidence");
+
+            let clear_response = post_json(
+                &app,
+                "/v1/maintenance/whole-machine-lock/clear",
+                "token-1",
+                json!({ "operatorNote": note }),
+            )
+            .await;
+            assert_eq!(clear_response.status(), StatusCode::OK);
+        }
+
+        let audits = ctx
+            .state
+            .whole_machine_lock_clear_audits()
+            .await
+            .expect("audits");
+        assert_eq!(audits.len(), 2);
+        assert!(audits.iter().any(|audit| {
+            audit.operator_note == "第一次现场复位并确认生产路径"
+                && audit.previous.order_no == "ORD-LOCKED-0"
+        }));
+        assert!(audits.iter().any(|audit| {
+            audit.operator_note == "第二次现场复位并确认生产路径"
+                && audit.previous.order_no == "ORD-LOCKED-1"
+        }));
+    }
+
+    #[tokio::test]
+    async fn heartbeat_reports_blocked_after_lock_clear_when_production_path_is_blocked() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(wiremock::matchers::path("/machine-orders/payment-options"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "options": [{
+                    "optionKey": "qr_code:alipay",
+                    "providerCode": "alipay",
+                    "method": "qr_code",
+                    "displayName": "支付宝",
+                    "description": "请使用支付宝扫码支付",
+                    "icon": "alipay",
+                    "disabled": false,
+                    "disabledReason": null,
+                    "recommended": true
+                }],
+                "defaultOptionKey": "qr_code:alipay",
+                "defaultProviderCode": "alipay",
+                "serverTime": "2026-06-26T08:00:00.000Z"
+            })))
+            .mount(&server)
+            .await;
+
+        let temp_dir = tempdir().expect("tmp");
+        let ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            &server.uri(),
+        )
+        .await;
+        mark_runtime_sale_ready(&ctx).await;
+        let app = build_router(ctx.clone());
+        let slot_id = "550e8400-e29b-41d4-a716-446655441101";
+        let inventory_id = "550e8400-e29b-41d4-a716-446655441102";
+        assert_eq!(
+            post_json(
+                &app,
+                "/v1/stock/planogram",
+                "token-1",
+                one_slot_planogram("PLAN-HEARTBEAT-BLOCKED", slot_id, inventory_id),
+            )
+            .await
+            .status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            post_json(
+                &app,
+                "/v1/stock/movements",
+                "token-1",
+                json!({
+                    "movementId": "MOVE-HEARTBEAT-BLOCKED",
+                    "planogramVersion": "PLAN-HEARTBEAT-BLOCKED",
+                    "slotId": slot_id,
+                    "movementType": "planned_refill",
+                    "quantity": 2,
+                    "source": "field_service",
+                    "attributedTo": "operator-1"
+                }),
+            )
+            .await
+            .status(),
+            StatusCode::CREATED
+        );
+
+        ctx.state
+            .put_metadata(
+                crate::state::store::WHOLE_MACHINE_MAINTENANCE_LOCK_KEY,
+                &crate::state::store::WholeMachineMaintenanceLock {
+                    code: "WHOLE_MACHINE_HARDWARE_FAULT".to_string(),
+                    message: "pickup platform blocked".to_string(),
+                    source: "dispense_failure".to_string(),
+                    order_no: "ORD-HEARTBEAT-BLOCKED".to_string(),
+                    command_no: "CMD-HEARTBEAT-BLOCKED".to_string(),
+                    slot_code: "A1".to_string(),
+                    error_code: Some("JAMMED".to_string()),
+                    created_at: "2026-06-26T08:00:00.000Z".to_string(),
+                },
+            )
+            .await
+            .expect("lock");
+        ctx.state
+            .record_whole_machine_lock_recovery_evidence(
+                &crate::state::store::WholeMachineMaintenanceLockClearEvidence {
+                    adapter: "serial".to_string(),
+                    online: true,
+                    message: "production lower controller self-check passed".to_string(),
+                    port_path: Some("/dev/ttyUSB0".to_string()),
+                    checked_at: "2026-06-26T08:01:00.000Z".to_string(),
+                    production_dispense_path_ready: true,
+                    production_dispense_path_code: "PRODUCTION_DISPENSE_PATH_READY".to_string(),
+                    production_dispense_path_message: "production dispense path ready".to_string(),
+                },
+            )
+            .await
+            .expect("evidence");
+        let clear_response = post_json(
+            &app,
+            "/v1/maintenance/whole-machine-lock/clear",
+            "token-1",
+            json!({ "operatorNote": "cleared after production path check" }),
+        )
+        .await;
+        assert_eq!(clear_response.status(), StatusCode::OK);
+
+        let mut public = ctx.config_store.load_public_config().await.expect("config");
+        public.hardware_adapter = crate::config::HardwareAdapterKind::Mock;
+        public.serial_port_path = None;
+        ctx.config_store
+            .save_public_config(public.clone())
+            .await
+            .expect("save mock config");
+        let hardware = crate::hardware::HardwareSupervisor::from_config(&public).expect("hardware");
+        let (event_tx, _rx) = tokio::sync::broadcast::channel(4);
+        let runtime = crate::mqtt::MqttSyncRuntime::new(
+            "MACHINE-1".to_string(),
+            "secret".to_string(),
+            ctx.state.clone(),
+            hardware,
+            event_tx,
+            CancellationToken::new(),
+        )
+        .with_readiness_context(ctx.clone());
+
+        runtime.enqueue_heartbeat().await.expect("heartbeat");
+
+        let due = ctx
+            .state
+            .list_due_outbox(chrono::Utc::now() + chrono::Duration::seconds(1))
+            .await
+            .expect("outbox");
+        let heartbeat = due
+            .iter()
+            .rev()
+            .find(|event| event.topic.as_deref() == Some("vem/machines/MACHINE-1/events/heartbeat"))
+            .expect("heartbeat");
+        let envelope: vending_core::mqtt::MqttEnvelope =
+            serde_json::from_value(heartbeat.payload_json.clone()).expect("envelope");
+        let sale_readiness = &envelope.payload["statusPayload"]["saleReadiness"];
+        assert_eq!(sale_readiness["state"], "blocked");
+        assert!(sale_readiness["blockingCodes"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("PRODUCTION_DISPENSE_PATH_MOCK")));
     }
 
     #[tokio::test]

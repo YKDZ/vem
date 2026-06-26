@@ -454,13 +454,53 @@ describe("MachineDetailView", () => {
       latestHeartbeatStatus: {
         ...machineFixture().latestHeartbeatStatus,
         hardwareStatus: "faulted",
+        wholeMachineMaintenanceLock: {
+          code: "WHOLE_MACHINE_HARDWARE_FAULT",
+          message: "pickup platform blocked",
+          source: "dispense_failure",
+          orderNo: "ORD-1",
+          commandNo: "CMD-1",
+          slotCode: "A1",
+          errorCode: "JAMMED",
+          createdAt: "2026-06-26T08:00:00.000Z",
+        },
+        saleReadiness: {
+          state: "locked",
+          blockingCodes: ["WHOLE_MACHINE_HARDWARE_FAULT"],
+        },
       },
     });
 
     const { root } = await mountView();
 
     expect(root.textContent).toContain("硬件异常");
+    expect(root.textContent).toContain("整机锁定");
+    expect(root.textContent).toContain("WHOLE_MACHINE_HARDWARE_FAULT");
+    expect(root.textContent).toContain("pickup platform blocked");
     expect(root.textContent).not.toContain("硬件ok");
+  });
+
+  it("renders blocked sale readiness from heartbeat after lock has cleared", async () => {
+    apiMocks.getMachine.mockResolvedValue({
+      ...machineFixture(),
+      latestHeartbeatStatus: {
+        ...machineFixture().latestHeartbeatStatus,
+        hardwareStatus: "ok",
+        wholeMachineMaintenanceLock: null,
+        saleReadiness: {
+          state: "blocked",
+          blockingCodes: ["PRODUCTION_DISPENSE_PATH_MOCK"],
+        },
+      },
+    });
+
+    const { root } = await mountView();
+
+    expect(root.textContent).toContain("硬件正常");
+    expect(root.textContent).toContain("阻塞");
+    expect(root.textContent).toContain("PRODUCTION_DISPENSE_PATH_MOCK");
+    expect(root.textContent).not.toContain("已恢复");
+    expect(root.textContent).not.toContain("整机锁定");
   });
 
   it("shows stock reconciliation blockers and resolves them with a required note", async () => {

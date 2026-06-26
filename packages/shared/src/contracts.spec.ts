@@ -112,6 +112,35 @@ describe("shared API contract", () => {
     ).toBe(true);
   });
 
+  it("accepts whole-machine maintenance lock readiness status in heartbeat payload", () => {
+    const result = heartbeatPayloadSchema.parse({
+      machineCode: "M001",
+      reportedAt: "2026-06-26T08:00:00.000Z",
+      statusPayload: {
+        hardwareStatus: "faulted",
+        wholeMachineMaintenanceLock: {
+          code: "WHOLE_MACHINE_HARDWARE_FAULT",
+          message: "pickup platform blocked",
+          source: "dispense_failure",
+          orderNo: "ORD-1",
+          commandNo: "CMD-1",
+          slotCode: "A1",
+          errorCode: "JAMMED",
+          createdAt: "2026-06-26T07:55:00.000Z",
+        },
+        saleReadiness: {
+          state: "locked",
+          blockingCodes: ["WHOLE_MACHINE_HARDWARE_FAULT"],
+        },
+      },
+    });
+
+    expect(result.statusPayload.saleReadiness?.state).toBe("locked");
+    expect(result.statusPayload.wholeMachineMaintenanceLock?.slotCode).toBe(
+      "A1",
+    );
+  });
+
   it("accepts environment control failure when confirmed switch state is unknown", () => {
     const parsed = environmentControlResultPayloadSchema.parse({
       commandNo: "MCMD-1",
