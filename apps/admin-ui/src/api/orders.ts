@@ -55,6 +55,7 @@ export type OrderInvestigation = OrderDetail & {
   fulfillmentProjection: {
     state: string;
     latestCommand: Record<string, unknown> | null;
+    requiresPhysicalOutcomeConfirmation?: boolean;
   };
   stockReconciliationLinks: Array<Record<string, unknown>>;
   refunds: Array<Record<string, unknown>>;

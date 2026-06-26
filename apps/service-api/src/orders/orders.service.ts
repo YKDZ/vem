@@ -1186,6 +1186,19 @@ export class OrdersService {
       .from(orderStatusEvents)
       .where(eq(orderStatusEvents.orderId, id))
       .orderBy(desc(orderStatusEvents.createdAt));
+    const requiresPhysicalOutcomeConfirmation =
+      vendingCommandRows.some(
+        (command) => command.status === "result_unknown",
+      ) ||
+      orderStatusEventRows.some((event) => {
+        const metadata = event.metadata;
+        return (
+          typeof metadata === "object" &&
+          metadata !== null &&
+          "requiresPhysicalOutcomeConfirmation" in metadata &&
+          Reflect.get(metadata, "requiresPhysicalOutcomeConfirmation") === true
+        );
+      });
 
     return {
       order,
@@ -1570,6 +1583,18 @@ export class OrdersService {
       .from(orderStatusEvents)
       .where(eq(orderStatusEvents.orderId, id))
       .orderBy(desc(orderStatusEvents.createdAt));
+    const requiresPhysicalOutcomeConfirmation =
+      vendingCommandRows.some(
+        (command) => command.status === "result_unknown",
+      ) ||
+      orderStatusEventRows.some((event) => {
+        const metadata = event.metadata;
+        return (
+          typeof metadata === "object" &&
+          metadata !== null &&
+          Reflect.get(metadata, "requiresPhysicalOutcomeConfirmation") === true
+        );
+      });
 
     return {
       order,
@@ -1583,6 +1608,7 @@ export class OrdersService {
       fulfillmentProjection: {
         state: order.fulfillmentState,
         latestCommand: vendingCommandRows[0] ?? null,
+        requiresPhysicalOutcomeConfirmation,
       },
       inventoryMovements: inventoryMovementRows,
       stockReconciliationLinks: stockReconciliationRows,
@@ -1900,7 +1926,9 @@ function resolveMachineOrderNextAction(
 
   if (
     paymentState === "paid" &&
-    (commandStatus === "failed" || commandStatus === "timeout")
+    (commandStatus === "failed" ||
+      commandStatus === "timeout" ||
+      commandStatus === "result_unknown")
   ) {
     return "manual_handling";
   }

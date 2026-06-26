@@ -78,6 +78,11 @@ const vendingCommandColumns = [
   { title: "错误", dataIndex: "lastError", key: "lastError" },
 ];
 
+function formatVendingCommandStatus(status: unknown): string {
+  if (status === "result_unknown") return "待物理结果确认";
+  return typeof status === "string" ? status : "-";
+}
+
 const inventoryMovementColumns = [
   { title: "库存", dataIndex: "inventoryId", key: "inventoryId" },
   { title: "变化", dataIndex: "deltaQty", key: "deltaQty" },
@@ -330,6 +335,14 @@ defineExpose({ show });
               orderDetail.fulfillmentProjection.latestCommand?.commandNo ?? "-"
             }}
           </a-descriptions-item>
+          <a-descriptions-item label="物理结果确认">
+            {{
+              orderDetail.fulfillmentProjection
+                .requiresPhysicalOutcomeConfirmation
+                ? "需要确认"
+                : "无需确认"
+            }}
+          </a-descriptions-item>
         </a-descriptions>
         <a-empty
           v-if="orderDetail.vendingCommands.length === 0"
@@ -342,7 +355,16 @@ defineExpose({ show });
           row-key="id"
           :pagination="false"
           size="small"
-        />
+        >
+          <template #bodyCell="{ column, record }">
+            <template v-if="column.key === 'status'">
+              {{ formatVendingCommandStatus(record.status) }}
+            </template>
+            <template v-else-if="column.dataIndex">
+              {{ record[column.dataIndex] ?? "" }}
+            </template>
+          </template>
+        </a-table>
 
         <template v-if="canReadInventory">
           <a-divider>库存流水</a-divider>

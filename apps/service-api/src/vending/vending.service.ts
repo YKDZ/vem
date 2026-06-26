@@ -689,6 +689,7 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
         id: vendingCommands.id,
         commandNo: vendingCommands.commandNo,
         orderId: vendingCommands.orderId,
+        slotId: vendingCommands.slotId,
         payloadJson: vendingCommands.payloadJson,
         sentAt: vendingCommands.sentAt,
         ackAt: vendingCommands.ackAt,
@@ -708,61 +709,12 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
     const results = await Promise.all(
       toProcess.map(async (command) => {
         const changed = await this.db.transaction(async (tx) => {
-          const [updated] = await tx
-            .update(vendingCommands)
-            .set({
-              status: "result_unknown",
-              resultAt: now,
-              lastError: "dispense result unknown after command timeout",
-              updatedAt: new Date(),
-            })
-            .where(
-              and(
-                eq(vendingCommands.id, command.id),
-                inArray(vendingCommands.status, ["sent", "acknowledged"]),
-              ),
-            )
-            .returning({ id: vendingCommands.id });
-          if (!updated) return false;
-
-          const [currentOrder] = await tx
-            .select({
-              status: orders.status,
-              paymentState: orders.paymentState,
-            })
-            .from(orders)
-            .where(eq(orders.id, command.orderId));
-          if (currentOrder && currentOrder.status !== "manual_handling") {
-            const projectedStatus = projectOrderStatus({
-              paymentState: currentOrder.paymentState,
-              fulfillmentState: "manual_handling",
-            });
-            await tx
-              .update(orders)
-              .set({
-                status: projectedStatus,
-                fulfillmentState: "manual_handling",
-                updatedAt: new Date(),
-              })
-              .where(eq(orders.id, command.orderId));
-            await tx.insert(orderStatusEvents).values({
-              orderId: command.orderId,
-              fromStatus: currentOrder.status,
-              toStatus: projectedStatus,
-              reason: "dispense_result_unknown",
-              metadata: {
-                commandNo: command.commandNo,
-                slotSalesState: "frozen",
-              },
-            });
-          }
-
-          await this.notificationsService.createDispenseFailedNotification(tx, {
-            orderId: command.orderId,
-            commandId: command.id,
+          return await this.markDispenseResultUnknown(tx, {
+            command,
             message: "dispense result unknown after command timeout",
+            resultAt: now,
+            eligibleStatuses: ["sent", "acknowledged"],
           });
-          return true;
         });
         return changed;
       }),
@@ -770,6 +722,85 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
 
     const processed = results.filter(Boolean).length;
     return { processed };
+  }
+
+  private async markDispenseResultUnknown(
+    tx: DrizzleTransaction,
+    input: {
+      command: {
+        id: string;
+        commandNo: string;
+        orderId: string;
+        slotId: string;
+      };
+      message: string;
+      resultAt: Date;
+      eligibleStatuses: Array<
+        "pending" | "sent" | "acknowledged" | "result_unknown"
+      >;
+    },
+  ): Promise<boolean> {
+    const [updated] = await tx
+      .update(vendingCommands)
+      .set({
+        status: "result_unknown",
+        resultAt: input.resultAt,
+        lastError: input.message,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(vendingCommands.id, input.command.id),
+          inArray(vendingCommands.status, input.eligibleStatuses),
+        ),
+      )
+      .returning({ id: vendingCommands.id });
+    if (!updated) return false;
+
+    const [currentOrder] = await tx
+      .select({
+        status: orders.status,
+        paymentState: orders.paymentState,
+      })
+      .from(orders)
+      .where(eq(orders.id, input.command.orderId));
+    if (currentOrder && currentOrder.status !== "manual_handling") {
+      const projectedStatus = projectOrderStatus({
+        paymentState: currentOrder.paymentState,
+        fulfillmentState: "manual_handling",
+      });
+      await tx
+        .update(orders)
+        .set({
+          status: projectedStatus,
+          fulfillmentState: "manual_handling",
+          updatedAt: new Date(),
+        })
+        .where(eq(orders.id, input.command.orderId));
+      await tx.insert(orderStatusEvents).values({
+        orderId: input.command.orderId,
+        fromStatus: currentOrder.status,
+        toStatus: projectedStatus,
+        reason: "dispense_result_unknown",
+        metadata: {
+          commandNo: input.command.commandNo,
+          requiresPhysicalOutcomeConfirmation: true,
+          slotSalesState: "frozen",
+        },
+      });
+    }
+
+    await tx
+      .update(machineSlots)
+      .set({ status: "faulted", updatedAt: new Date() })
+      .where(eq(machineSlots.id, input.command.slotId));
+
+    await this.notificationsService.createDispenseFailedNotification(tx, {
+      orderId: input.command.orderId,
+      commandId: input.command.id,
+      message: input.message,
+    });
+    return true;
   }
 
   private async handleCommandAck(
@@ -912,6 +943,20 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
 
       if (command.status === "succeeded" || command.status === "failed") {
         return null;
+      }
+
+      if (payload.errorCode === "UNKNOWN") {
+        const changed = await this.markDispenseResultUnknown(tx, {
+          command,
+          message: payload.message,
+          resultAt: new Date(payload.reportedAt),
+          eligibleStatuses: ["pending", "sent", "acknowledged"],
+        });
+        return changed
+          ? {
+              kind: "unknown" as const,
+            }
+          : null;
       }
 
       await tx

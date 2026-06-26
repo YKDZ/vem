@@ -320,6 +320,7 @@ function vendingStatusFromSnapshot(
     case "succeeded":
     case "failed":
     case "timeout":
+    case "result_unknown":
       return snapshot.status;
     default:
       return "pending";

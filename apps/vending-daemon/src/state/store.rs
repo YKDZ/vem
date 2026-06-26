@@ -670,6 +670,21 @@ impl LocalStateStore {
         row.map(to_command_record).transpose()
     }
 
+    pub async fn list_active_unfinished_commands(
+        &self,
+    ) -> Result<Vec<CommandLogRecord>, StoreError> {
+        let rows: Vec<CommandRecordRow> = sqlx::query_as(
+            "SELECT command_no, order_no, command_payload_json, status, ack_at, dispensing_started_at, result_payload_json, error_code, error_message, updated_at, expires_at
+             FROM command_log
+             WHERE status IN ('acknowledged','dispensing') AND result_payload_json IS NULL
+             ORDER BY updated_at ASC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.into_iter().map(to_command_record).collect()
+    }
+
     pub async fn prune_command_log(&self) -> Result<(u64, u64), StoreError> {
         let deleted_expired = sqlx::query("DELETE FROM command_log WHERE expires_at < ?1")
             .bind(now_iso())

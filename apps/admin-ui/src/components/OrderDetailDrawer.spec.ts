@@ -161,6 +161,7 @@ const baseInvestigation = {
   fulfillmentProjection: {
     state: "dispense_failed",
     latestCommand: null,
+    requiresPhysicalOutcomeConfirmation: false,
   },
   inventoryMovements: [],
   stockReconciliationLinks: [],
@@ -234,6 +235,41 @@ describe("OrderDetailDrawer", () => {
     expect(document.body.textContent).not.toContain("inventory-1");
     expect(document.body.textContent).not.toContain("WO-1");
     expect(document.body.textContent).not.toContain("orders.refund_request");
+  });
+
+  it("identifies result_unknown vending commands as requiring physical outcome confirmation", async () => {
+    apiMocks.getOrderInvestigation.mockResolvedValue({
+      ...baseInvestigation,
+      vendingCommands: [
+        {
+          id: "command-unknown",
+          commandNo: "VC-UNKNOWN",
+          status: "result_unknown",
+          machineCode: "VEM-001",
+          slotCode: "A1",
+          lastError: "dispense result unknown after command timeout",
+        },
+      ],
+      fulfillmentProjection: {
+        state: "manual_handling",
+        latestCommand: {
+          commandNo: "VC-UNKNOWN",
+          status: "result_unknown",
+        },
+        requiresPhysicalOutcomeConfirmation: true,
+      },
+    });
+
+    mountDrawer(["orders.read"]);
+    await flushPromises();
+    await nextTick();
+
+    expect(document.body.textContent).toContain("VC-UNKNOWN");
+    expect(document.body.textContent).toContain("待物理结果确认");
+    expect(document.body.textContent).toContain("需要确认");
+    expect(document.body.textContent).toContain(
+      "dispense result unknown after command timeout",
+    );
   });
 
   it("shows a stable error state when the investigation API rejects", async () => {

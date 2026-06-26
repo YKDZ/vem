@@ -94,6 +94,27 @@ const isDispenseFailureResult = computed(
 const isDispenseResolutionResult = computed(() =>
   DISPENSE_RESOLUTION_RESULT_KINDS.has(kind.value),
 );
+const orderCredential = computed(
+  () =>
+    checkoutStore.currentOrder?.orderNo ??
+    checkoutStore.status?.orderNo ??
+    null,
+);
+const resultDetail = computed(() => {
+  if (
+    kind.value === "manual_handling" &&
+    checkoutStore.status?.vending?.status === "result_unknown"
+  ) {
+    return "出货结果待确认，请凭订单凭证联系工作人员处理。";
+  }
+  if (kind.value === "manual_handling") {
+    return "订单已进入人工处理，请凭订单凭证联系工作人员。";
+  }
+  if (kind.value === "dispense_failed") {
+    return "请凭订单凭证联系工作人员处理出货异常。";
+  }
+  return null;
+});
 const resultReadinessError = ref<string | null>(null);
 const requiresMaintenanceReview = computed(() => {
   if (!isDispenseFailureResult.value) return false;
@@ -216,6 +237,15 @@ onBeforeUnmount(stopAutoReturn);
         </div>
         <h2 class="mt-6 text-5xl font-black">{{ copy.title }}</h2>
         <p class="mt-4 text-xl text-neutral-700">{{ copy.subtitle }}</p>
+        <p
+          v-if="isDispenseResolutionResult && orderCredential"
+          class="mt-5 text-xl font-black text-neutral-950"
+        >
+          订单凭证 {{ orderCredential }}
+        </p>
+        <p v-if="resultDetail" class="mt-3 text-base text-neutral-700">
+          {{ resultDetail }}
+        </p>
         <p v-if="canAutoReturn" class="mt-4 text-base text-neutral-500">
           {{ autoReturnMessage }}
         </p>

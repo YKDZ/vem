@@ -72,6 +72,21 @@ function terminalDispenseFailedTransaction() {
   };
 }
 
+function terminalUnknownDispenseTransaction() {
+  return {
+    ...terminalDispenseFailedTransaction(),
+    orderNo: "ORD-UNKNOWN-001",
+    paymentNo: "PAY-UNKNOWN-001",
+    orderStatus: "manual_handling",
+    vending: {
+      commandNo: "CMD-UNKNOWN",
+      status: "result_unknown",
+      lastError: "dispense result unknown after daemon restart",
+    },
+    nextAction: "manual_handling",
+  };
+}
+
 function applySaleReadiness(
   canSell: boolean,
   blockedSlots: Array<{
@@ -290,6 +305,28 @@ describe("ResultView", () => {
     expect(routerReplaceMock).not.toHaveBeenCalledWith("/maintenance");
     expect(routerReplaceMock).not.toHaveBeenCalledWith("/catalog");
     expect(getSaleViewMock).not.toHaveBeenCalled();
+  });
+
+  it("shows manual handling copy and customer order credential for result_unknown", async () => {
+    routeParams.kind = "manual_handling";
+    const transaction = terminalUnknownDispenseTransaction();
+    const checkoutStore = useCheckoutStore();
+    checkoutStore.applyTransaction(transaction);
+    applySaleReadiness(true, [
+      {
+        slotId: "550e8400-e29b-41d4-a716-446655440001",
+        slotCode: "B1",
+        slotSalesState: "frozen",
+      },
+    ]);
+
+    const host = await mountView();
+
+    expect(checkoutStore.status?.nextAction).toBe("manual_handling");
+    expect(host.textContent).toContain("等待人工处理");
+    expect(host.textContent).toContain("订单凭证 ORD-UNKNOWN-001");
+    expect(host.textContent).toContain("出货结果待确认");
+    expect(host.textContent).not.toContain("返回首页");
   });
 
   it("refreshes stale ready state without routing a dispense failure away from the result page", async () => {

@@ -960,6 +960,31 @@ describe("checkout store", () => {
     expect(store.flowStep).toBe("dispensing");
   });
 
+  it("preserves result_unknown vending status from daemon manual handling transaction", async () => {
+    getCurrentTransactionMock.mockResolvedValue(
+      makeTransactionSnapshot({
+        paymentStatus: "succeeded",
+        orderStatus: "manual_handling",
+        nextAction: "manual_handling",
+        vending: {
+          commandNo: "CMD-UNKNOWN",
+          status: "result_unknown",
+          lastError: "dispense result unknown after daemon restart",
+        },
+      }),
+    );
+
+    const store = useCheckoutStore();
+    await store.refreshCurrentTransaction();
+
+    expect(store.flowStep).toBe("result");
+    expect(store.status?.nextAction).toBe("manual_handling");
+    expect(store.status?.vending).toMatchObject({
+      commandNo: "CMD-UNKNOWN",
+      status: "result_unknown",
+    });
+  });
+
   it("cancels the current order through daemon and refreshes sale view", async () => {
     cancelOrderMock.mockResolvedValue(
       makeTransactionSnapshot({

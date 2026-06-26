@@ -406,6 +406,10 @@ describe("OrdersService", () => {
             slotCode: "A1",
           },
         ],
+        fulfillmentProjection: {
+          state: "dispense_failed",
+          requiresPhysicalOutcomeConfirmation: false,
+        },
         inventoryMovements: [{ id: "movement-1" }],
         stockReconciliationLinks: [
           {
@@ -2473,6 +2477,51 @@ describe("OrdersService (transaction boundary)", () => {
       expect(result.payment.status).toBe("processing");
       expect(result.payment.paymentUrl).toBe("https://example.com/qr");
       expect(result.nextAction).toBe("wait_payment");
+    });
+
+    it("returns manual_handling nextAction for result_unknown vending command", async () => {
+      const db = makeDb();
+      const row = machineOrderStatusRow({
+        orderStatus: "paid",
+        paymentState: "paid",
+        fulfillmentState: "awaiting_fulfillment",
+        paymentStatus: "succeeded",
+        paidAt: new Date("2026-06-26T07:00:00.000Z"),
+      });
+      db.select
+        .mockReturnValueOnce(makeJoinedSelectResult([row]))
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              orderBy: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([
+                  {
+                    commandNo: "CMD-UNKNOWN",
+                    status: "result_unknown",
+                    sentAt: new Date("2026-06-26T07:00:00.000Z"),
+                    ackAt: new Date("2026-06-26T07:00:01.000Z"),
+                    resultAt: new Date("2026-06-26T07:02:00.000Z"),
+                    lastError: "dispense result unknown after command timeout",
+                  },
+                ]),
+              }),
+            }),
+          }),
+        })
+        .mockReturnValueOnce(makeEmptyLatestSelectResult())
+        .mockReturnValueOnce(makeEmptyLatestSelectResult())
+        .mockReturnValueOnce(makeEmptyLatestSelectResult());
+
+      const service = makeService({ db });
+      const result = await service.getMachineOrderStatus("ORD001", {
+        machineCode: "M001",
+      });
+
+      expect(result.vending).toMatchObject({
+        commandNo: "CMD-UNKNOWN",
+        status: "result_unknown",
+      });
+      expect(result.nextAction).toBe("manual_handling");
     });
 
     it("includes paymentCodeAttempt summary without plaintext auth code", async () => {

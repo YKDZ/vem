@@ -209,10 +209,11 @@ describe("fulfillment recovery e2e", { concurrent: false }, () => {
   }
 
   async function markUnknown(ctx: PaidCommandContext) {
-    const processed = await vendingService.markTimedOutCommands(
-      new Date(Date.now() + 180_000),
-    );
-    expect(processed.processed).toBe(1);
+    await publishDispenseResult(ctx, {
+      success: false,
+      errorCode: "UNKNOWN",
+      message: "dispense result unknown after daemon restart",
+    });
     await eventually(async () => {
       const [command] = await db.client
         .select({ status: vendingCommands.status })
@@ -288,7 +289,7 @@ describe("fulfillment recovery e2e", { concurrent: false }, () => {
     expect(await movementCount(ctx.orderId, "purchase_confirmed")).toBe(0);
   }, 60_000);
 
-  it("unknown result keeps reservation active and moves the command/order to manual handling", async () => {
+  it("unknown result keeps reservation active, freezes the slot, and moves the command/order to manual handling", async () => {
     const ctx = await createPaidCommand("M-E2E-REC-UNKNOWN");
 
     await markUnknown(ctx);
@@ -311,13 +312,34 @@ describe("fulfillment recovery e2e", { concurrent: false }, () => {
       })
       .from(orders)
       .where(eq(orders.id, ctx.orderId));
+    const [slot] = await db.client
+      .select({ status: machineSlots.status })
+      .from(machineSlots)
+      .where(eq(machineSlots.id, ctx.seeded.slotId));
+    const [event] = await db.client
+      .select({ metadata: orderStatusEvents.metadata })
+      .from(orderStatusEvents)
+      .where(
+        and(
+          eq(orderStatusEvents.orderId, ctx.orderId),
+          eq(orderStatusEvents.reason, "dispense_result_unknown"),
+        ),
+      );
 
     expect(reservation.status).toBe("active");
     expect(inventory).toEqual({ onHandQty: 2, reservedQty: 1 });
+    expect(slot.status).toBe("faulted");
     expect(order).toEqual({
       status: "manual_handling",
       fulfillmentState: "manual_handling",
     });
+    expect(event.metadata).toEqual(
+      expect.objectContaining({
+        commandNo: ctx.commandNo,
+        requiresPhysicalOutcomeConfirmation: true,
+        slotSalesState: "frozen",
+      }),
+    );
     expect(await movementCount(ctx.orderId, "purchase_confirmed")).toBe(0);
   }, 60_000);
 
