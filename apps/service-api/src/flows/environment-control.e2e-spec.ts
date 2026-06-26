@@ -87,7 +87,7 @@ async function pollMachineCommandStatus(
   return await poll(0);
 }
 
-describe.sequential("environment-control.e2e", () => {
+describe("environment-control.e2e", { concurrent: false }, () => {
   let app: INestApplication;
   let appConfig: AppConfigService;
   let db: DrizzleDB;

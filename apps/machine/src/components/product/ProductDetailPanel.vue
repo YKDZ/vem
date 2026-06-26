@@ -214,7 +214,7 @@ function purchase(): void {
         <h2 class="mt-1 text-3xl leading-tight font-black text-neutral-950">
           {{ item.productName }}
         </h2>
-        <p class="mt-3 leading-relaxed text-base text-neutral-600">
+        <p class="mt-3 text-base leading-relaxed text-neutral-600">
           {{ item.productDescription ?? "请选择颜色和尺码后下单。" }}
         </p>
       </div>
@@ -225,7 +225,7 @@ function purchase(): void {
           <button
             v-for="option in colorOptions"
             :key="attributeKey(option.value)"
-            class="kiosk-touch-target shrink-0 rounded-lg border px-4 py-2 font-bold text-base disabled:opacity-35"
+            class="kiosk-touch-target shrink-0 rounded-lg border px-4 py-2 text-base font-bold disabled:opacity-35"
             :class="
               selectedVariant?.color === option.value
                 ? 'border-neutral-950 bg-neutral-950 text-white'
@@ -246,7 +246,7 @@ function purchase(): void {
           <button
             v-for="option in sizeOptions"
             :key="attributeKey(option.value)"
-            class="kiosk-touch-target shrink-0 rounded-lg border px-5 py-2 font-black text-base disabled:opacity-35"
+            class="kiosk-touch-target shrink-0 rounded-lg border px-5 py-2 text-base font-black disabled:opacity-35"
             :class="
               selectedVariant?.size === option.value
                 ? 'border-neutral-950 bg-neutral-950 text-white'

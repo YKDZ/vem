@@ -23,6 +23,7 @@ playwright-report
 .agents/
 
 CONTEXT.md
+CONTEXT-MAP.md
 
 .tmp
 

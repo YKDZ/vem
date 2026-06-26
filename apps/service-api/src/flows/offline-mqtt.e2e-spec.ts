@@ -29,7 +29,7 @@ import {
   type CreatedOrderPayload,
 } from "./flow-test-helpers";
 
-describe.sequential("offline-mqtt.e2e", () => {
+describe("offline-mqtt.e2e", { concurrent: false }, () => {
   let app: INestApplication;
   let appConfig: AppConfigService;
   let db: DrizzleDB;
