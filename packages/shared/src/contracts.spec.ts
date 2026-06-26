@@ -892,6 +892,94 @@ describe("shared API contract", () => {
       expect(result.profileSnapshot).toBeNull();
     });
 
+    it("strips sensitive profileSnapshot fields from machine orders", () => {
+      const result = createMachineOrderSchema.parse({
+        machineCode: "M001",
+        items: [
+          {
+            inventoryId: "550e8400-e29b-41d4-a716-446655440000",
+            quantity: 1,
+            planogramVersion: "PLAN-1",
+            slotId: "550e8400-e29b-41d4-a716-446655440001",
+            slotCode: "A1",
+          },
+        ],
+        paymentMethod: "payment_code",
+        paymentProviderCode: "alipay",
+        profileSnapshot: {
+          personPresent: true,
+          heightCm: 172,
+          bodyType: "regular",
+          upperColor: "blue",
+          confidence: 0.91,
+          rawImageBase64: "data:image/jpeg;base64,raw",
+          identity: { id: "customer-1" },
+          faceEmbedding: [0.1, 0.2],
+          ageRange: "25-34",
+          gender: "male",
+        },
+      });
+
+      expect(result.profileSnapshot).toEqual({
+        personPresent: true,
+        heightCm: 172,
+        bodyType: "regular",
+        upperColor: "blue",
+        confidence: 0.91,
+      });
+    });
+
+    it("falls back to null for unknown legacy profileSnapshot shapes", () => {
+      const result = createMachineOrderSchema.parse({
+        machineCode: "M001",
+        items: [
+          {
+            inventoryId: "550e8400-e29b-41d4-a716-446655440000",
+            quantity: 1,
+            planogramVersion: "PLAN-1",
+            slotId: "550e8400-e29b-41d4-a716-446655440001",
+            slotCode: "A1",
+          },
+        ],
+        paymentMethod: "payment_code",
+        paymentProviderCode: "alipay",
+        profileSnapshot: {
+          ageRange: "adult",
+          gender: "female",
+          shoulderWidthCm: null,
+          legacyModelVersion: "vision-0",
+        },
+      });
+
+      expect(result.profileSnapshot).toBeNull();
+    });
+
+    it("sanitizes invalid profileSnapshot metadata without rejecting machine orders", () => {
+      const result = createMachineOrderSchema.parse({
+        machineCode: "M001",
+        items: [
+          {
+            inventoryId: "550e8400-e29b-41d4-a716-446655440000",
+            quantity: 1,
+            planogramVersion: "PLAN-1",
+            slotId: "550e8400-e29b-41d4-a716-446655440001",
+            slotCode: "A1",
+          },
+        ],
+        paymentMethod: "payment_code",
+        paymentProviderCode: "alipay",
+        profileSnapshot: {
+          personPresent: true,
+          heightCm: 300,
+          bodyType: "x".repeat(64),
+          upperColor: "",
+          confidence: 2,
+        },
+      });
+
+      expect(result.profileSnapshot).toEqual({ personPresent: true });
+    });
+
     it("rejects payment_code with mock provider", () => {
       expect(() =>
         createMachineOrderSchema.parse({

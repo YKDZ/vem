@@ -56,6 +56,44 @@ describe("vision protocol schemas", () => {
     expect(message.payload.profile.heightCm).toBe(172);
   });
 
+  it("does not pass through raw images, identifying model details, or sensitive inference fields", () => {
+    const message = visionProfileResultMessageSchema.parse({
+      ...BASE_ENVELOPE,
+      type: "vision.profile_result",
+      payload: {
+        eventId: "vision-event-raw",
+        detectedAt: "2026-05-29T12:00:00.000Z",
+        profile: {
+          personPresent: true,
+          heightCm: 172,
+          bodyType: "regular",
+          confidence: 0.86,
+          shoulderWidthCm: 43,
+          ageRange: "25-34",
+          gender: "male",
+          rawImageBase64: "data:image/jpeg;base64,raw",
+          identity: { id: "customer-1" },
+          faceEmbedding: [0.1, 0.2],
+        },
+        quality: {
+          overall: "good",
+          warnings: [],
+        },
+      },
+    });
+
+    expect(JSON.stringify(message.payload.profile)).not.toContain("raw");
+    expect(JSON.stringify(message.payload.profile)).not.toContain("identity");
+    expect(JSON.stringify(message.payload.profile)).not.toContain(
+      "faceEmbedding",
+    );
+    expect(JSON.stringify(message.payload.profile)).not.toContain(
+      "shoulderWidthCm",
+    );
+    expect(JSON.stringify(message.payload.profile)).not.toContain("ageRange");
+    expect(JSON.stringify(message.payload.profile)).not.toContain("gender");
+  });
+
   it("rejects impossible height values", () => {
     expect(() =>
       visionServerMessageSchema.parse({
@@ -77,7 +115,7 @@ describe("vision protocol schemas", () => {
     ).toThrow();
   });
 
-  it("accepts null for heightCm and shoulderWidthCm when out of range", () => {
+  it("accepts null heightCm and strips deprecated sensitive profile fields", () => {
     const message = visionProfileResultMessageSchema.parse({
       ...BASE_ENVELOPE,
       type: "vision.profile_result",
@@ -100,9 +138,9 @@ describe("vision protocol schemas", () => {
     });
 
     expect(message.payload.profile.heightCm).toBeNull();
-    expect(message.payload.profile.shoulderWidthCm).toBeNull();
-    expect(message.payload.profile.ageRange).toBe("unknown");
-    expect(message.payload.profile.gender).toBe("unknown");
+    expect("shoulderWidthCm" in message.payload.profile).toBe(false);
+    expect("ageRange" in message.payload.profile).toBe(false);
+    expect("gender" in message.payload.profile).toBe(false);
   });
 
   it("accepts fair quality profile results from the real vision service", () => {

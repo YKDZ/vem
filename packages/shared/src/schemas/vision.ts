@@ -57,14 +57,11 @@ export const visionProfileSchema = z
   .object({
     personPresent: z.boolean(),
     heightCm: z.number().min(80).max(240).nullable().optional(),
-    shoulderWidthCm: z.number().min(20).max(80).nullable().optional(),
-    ageRange: z.string().min(1).max(32).optional(),
-    gender: z.string().min(1).max(32).optional(),
     bodyType: z.string().min(1).max(32).optional(),
     upperColor: z.string().min(1).max(32).optional(),
     confidence: z.number().min(0).max(1).optional(),
   })
-  .loose();
+  .strip();
 
 export const visionProfileResultPayloadSchema = z.object({
   eventId: z.string().min(1).max(128),

@@ -980,7 +980,7 @@ async fn create_order_intent(
             &input.payment_method,
             payment_provider_code,
             items,
-            input.profile_snapshot,
+            sanitize_profile_snapshot(input.profile_snapshot),
         )
         .await
     {
@@ -1180,6 +1180,51 @@ fn create_order_request_log_data(input: &CreateOrder) -> serde_json::Value {
         "hasPaymentProviderCode": provider.is_some(),
         "hasProfileSnapshot": input.profile_snapshot.is_some(),
     })
+}
+
+fn sanitize_profile_snapshot(input: Option<serde_json::Value>) -> Option<serde_json::Value> {
+    let value = input?;
+    let object = value.as_object()?;
+    let mut sanitized = serde_json::Map::new();
+    let person_present = object.get("personPresent")?.as_bool()?;
+    sanitized.insert(
+        "personPresent".to_string(),
+        serde_json::Value::Bool(person_present),
+    );
+    if let Some(value) = object.get("heightCm") {
+        if value.is_null()
+            || value
+                .as_f64()
+                .is_some_and(|number| (80.0..=240.0).contains(&number))
+        {
+            sanitized.insert("heightCm".to_string(), value.clone());
+        }
+    }
+    if let Some(value) = object.get("bodyType").and_then(|value| value.as_str()) {
+        if !value.is_empty() && value.len() <= 32 {
+            sanitized.insert(
+                "bodyType".to_string(),
+                serde_json::Value::String(value.to_string()),
+            );
+        }
+    }
+    if let Some(value) = object.get("upperColor").and_then(|value| value.as_str()) {
+        if !value.is_empty() && value.len() <= 32 {
+            sanitized.insert(
+                "upperColor".to_string(),
+                serde_json::Value::String(value.to_string()),
+            );
+        }
+    }
+    if let Some(value) = object.get("confidence") {
+        if value
+            .as_f64()
+            .is_some_and(|number| (0.0..=1.0).contains(&number))
+        {
+            sanitized.insert("confidence".to_string(), value.clone());
+        }
+    }
+    Some(serde_json::Value::Object(sanitized))
 }
 
 async fn append_local_diagnostic_log(
@@ -2694,6 +2739,68 @@ mod tests {
         matchers::{body_partial_json, method, path},
         Mock, MockServer, ResponseTemplate,
     };
+
+    #[test]
+    fn sanitize_profile_snapshot_drops_raw_images_and_sensitive_inference() {
+        let sanitized = sanitize_profile_snapshot(Some(json!({
+            "personPresent": true,
+            "heightCm": 172,
+            "bodyType": "regular",
+            "upperColor": "blue",
+            "confidence": 0.91,
+            "rawImageBase64": "data:image/jpeg;base64,raw",
+            "identity": { "id": "customer-1" },
+            "faceEmbedding": [0.1, 0.2],
+            "ageRange": "25-34",
+            "gender": "male"
+        })))
+        .expect("sanitized profile");
+
+        assert_eq!(
+            sanitized,
+            json!({
+                "personPresent": true,
+                "heightCm": 172,
+                "bodyType": "regular",
+                "upperColor": "blue",
+                "confidence": 0.91
+            })
+        );
+    }
+
+    #[test]
+    fn sanitize_profile_snapshot_falls_back_null_without_required_fields() {
+        assert_eq!(
+            sanitize_profile_snapshot(Some(json!({
+                "heightCm": 172,
+                "bodyType": "regular",
+                "confidence": 0.9
+            }))),
+            None
+        );
+        assert_eq!(
+            sanitize_profile_snapshot(Some(json!({
+                "personPresent": "yes",
+                "heightCm": 172
+            }))),
+            None
+        );
+        assert_eq!(sanitize_profile_snapshot(Some(json!("legacy"))), None);
+    }
+
+    #[test]
+    fn sanitize_profile_snapshot_drops_invalid_optional_metadata() {
+        let sanitized = sanitize_profile_snapshot(Some(json!({
+            "personPresent": true,
+            "heightCm": 300,
+            "bodyType": "x".repeat(64),
+            "upperColor": "",
+            "confidence": 2
+        })))
+        .expect("sanitized profile");
+
+        assert_eq!(sanitized, json!({ "personPresent": true }));
+    }
 
     #[tokio::test]
     async fn ipc_token_is_reused_and_base64_decode_is_32_bytes() {

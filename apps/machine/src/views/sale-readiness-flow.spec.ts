@@ -649,7 +649,9 @@ describe("sale readiness UI flow", () => {
           overall: "good",
           warnings: ["light glare"],
         },
-      }),
+      } as Parameters<
+        NonNullable<typeof latestVisionHandlers>["onProfile"]
+      >[0]),
     );
     await nextTick();
 

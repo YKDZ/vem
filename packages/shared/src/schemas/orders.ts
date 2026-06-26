@@ -12,6 +12,59 @@ import {
 } from "../enums/payment-status";
 import { vendingCommandStatusSchema } from "../enums/vending";
 
+type MachineOrderProfileSnapshot = {
+  personPresent: boolean;
+  heightCm?: number | null;
+  bodyType?: string;
+  upperColor?: string;
+  confidence?: number;
+};
+
+function boundedString(value: unknown, maxLength: number): string | undefined {
+  if (typeof value !== "string") return undefined;
+  if (value.length < 1 || value.length > maxLength) return undefined;
+  return value;
+}
+
+function sanitizeMachineOrderProfileSnapshot(
+  value: unknown,
+): MachineOrderProfileSnapshot | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const record = value as Record<string, unknown>;
+  if (typeof record.personPresent !== "boolean") return null;
+
+  const snapshot: MachineOrderProfileSnapshot = {
+    personPresent: record.personPresent,
+  };
+  if (record.heightCm === null) {
+    snapshot.heightCm = null;
+  } else if (
+    typeof record.heightCm === "number" &&
+    record.heightCm >= 80 &&
+    record.heightCm <= 240
+  ) {
+    snapshot.heightCm = record.heightCm;
+  }
+  const bodyType = boundedString(record.bodyType, 32);
+  if (bodyType !== undefined) snapshot.bodyType = bodyType;
+  const upperColor = boundedString(record.upperColor, 32);
+  if (upperColor !== undefined) snapshot.upperColor = upperColor;
+  if (
+    typeof record.confidence === "number" &&
+    record.confidence >= 0 &&
+    record.confidence <= 1
+  ) {
+    snapshot.confidence = record.confidence;
+  }
+  return snapshot;
+}
+
+const machineOrderProfileSnapshotSchema = z
+  .unknown()
+  .transform((value) => sanitizeMachineOrderProfileSnapshot(value));
+
 export const orderQuerySchema = z.object({
   orderNo: z.string().max(64).optional(),
   machineId: z.uuid().optional(),
@@ -42,7 +95,7 @@ export const createMachineOrderSchema = z
     items: z.array(machineOrderItemSchema).min(1).max(10),
     paymentMethod: paymentMethodSchema,
     paymentProviderCode: machinePaymentProviderCodeSchema.optional(),
-    profileSnapshot: z.record(z.string(), z.unknown()).nullable().optional(),
+    profileSnapshot: machineOrderProfileSnapshotSchema.optional(),
   })
   .superRefine((value, ctx) => {
     if (value.paymentMethod === "mock") {
