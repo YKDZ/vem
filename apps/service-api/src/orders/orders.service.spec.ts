@@ -1,3 +1,5 @@
+import type { PermissionCode } from "@vem/shared";
+
 import { ConflictException, NotFoundException } from "@nestjs/common";
 import { describe, expect, it, vi } from "vitest";
 
@@ -116,7 +118,563 @@ function makeEmptyLatestSelectResult() {
   };
 }
 
+function makeQueuedDb(rowsBySelect: unknown[][]) {
+  const calls: Array<{
+    selection: unknown;
+    fromTable: unknown;
+    whereArgs: unknown[];
+  }> = [];
+
+  class SelectResult implements PromiseLike<unknown[]> {
+    constructor(
+      private readonly rows: unknown[],
+      private readonly call: (typeof calls)[number],
+    ) {}
+
+    from(table: unknown) {
+      this.call.fromTable = table;
+      return this;
+    }
+
+    innerJoin() {
+      return this;
+    }
+
+    leftJoin() {
+      return this;
+    }
+
+    where(condition: unknown) {
+      this.call.whereArgs.push(condition);
+      return this;
+    }
+
+    orderBy() {
+      return this;
+    }
+
+    limit() {
+      return this;
+    }
+
+    offset() {
+      return this;
+    }
+
+    then<TResult1 = unknown[], TResult2 = never>(
+      onfulfilled?:
+        | ((value: unknown[]) => TResult1 | PromiseLike<TResult1>)
+        | null,
+      onrejected?:
+        | ((reason: unknown) => TResult2 | PromiseLike<TResult2>)
+        | null,
+    ): PromiseLike<TResult1 | TResult2> {
+      return Promise.resolve(this.rows).then(onfulfilled, onrejected);
+    }
+  }
+
+  return {
+    calls,
+    select: vi.fn().mockImplementation((selection?: unknown) => {
+      const rows = rowsBySelect.shift();
+      if (!rows) throw new Error("unexpected select");
+      const call = { selection, fromTable: null, whereArgs: [] };
+      calls.push(call);
+      return new SelectResult(rows, call);
+    }),
+    insert: vi.fn(),
+    update: vi.fn(),
+    transaction: vi.fn(),
+  };
+}
+
+function allInvestigationPermissions(): PermissionCode[] {
+  return [
+    "orders.read",
+    "payments.read",
+    "inventory.read",
+    "maintenanceWorkOrders.read",
+    "audit.read",
+  ];
+}
+
+function collectDebugTokens(value: unknown): string[] {
+  const tokens: string[] = [];
+  const seen = new WeakSet<object>();
+
+  function visit(current: unknown): void {
+    if (
+      current === null ||
+      current === undefined ||
+      typeof current === "function"
+    ) {
+      return;
+    }
+    if (typeof current !== "object") {
+      tokens.push(String(current));
+      return;
+    }
+    if (seen.has(current)) return;
+    seen.add(current);
+
+    const record = current as Record<string, unknown>;
+    if (typeof record["name"] === "string") tokens.push(record["name"]);
+    if ("value" in record) visit(record["value"]);
+    for (const nested of Object.values(record)) visit(nested);
+  }
+
+  visit(value);
+  return tokens;
+}
+
 describe("OrdersService", () => {
+  describe("getOrderInvestigation", () => {
+    it("aggregates payment, fulfillment, inventory, refund, work order, and audit evidence for one order", async () => {
+      const paidAt = new Date("2026-06-26T04:00:00.000Z");
+      const db = makeQueuedDb([
+        [
+          {
+            id: "order-1",
+            orderNo: "ORD-1",
+            machineId: "machine-1",
+            machineCode: "VEM-001",
+            status: "manual_handling",
+            paymentState: "paid",
+            fulfillmentState: "dispense_failed",
+            totalAmountCents: 1200,
+            currency: "CNY",
+            paidAt,
+            dispensedAt: null,
+            canceledAt: null,
+            createdAt: new Date("2026-06-26T03:59:00.000Z"),
+          },
+        ],
+        [],
+        [
+          {
+            id: "payment-1",
+            paymentNo: "PAY-1",
+            orderId: "order-1",
+            status: "succeeded",
+            amountCents: 1200,
+            paidAt,
+            failedReason: null,
+            method: "payment_code",
+          },
+        ],
+        [{ id: "event-1", paymentId: "payment-1", eventType: "paid" }],
+        [
+          {
+            id: "webhook-1",
+            paymentNo: "PAY-1",
+            eventType: "payment.succeeded",
+            handled: true,
+            createdAt: paidAt,
+          },
+        ],
+        [
+          {
+            id: "reconcile-1",
+            paymentId: "payment-1",
+            trigger: "manual",
+            status: "succeeded",
+            attemptNo: 1,
+          },
+        ],
+        [
+          {
+            id: "code-1",
+            paymentId: "payment-1",
+            orderId: "order-1",
+            attemptNo: 1,
+            status: "succeeded",
+            authCodeMasked: "134***9988",
+          },
+        ],
+        [
+          {
+            id: "command-1",
+            commandNo: "VC-1",
+            status: "failed",
+            machineId: "machine-1",
+            machineCode: "VEM-001",
+            slotId: "slot-1",
+            slotCode: "A1",
+            orderItemId: "item-1",
+            lastError: "jammed",
+            resultAt: paidAt,
+            createdAt: paidAt,
+          },
+        ],
+        [
+          {
+            id: "movement-1",
+            inventoryId: "inventory-1",
+            deltaQty: 0,
+            reason: "purchase_reserved",
+            orderId: "order-1",
+            note: null,
+            createdAt: paidAt,
+          },
+        ],
+        [
+          {
+            id: "raw-1",
+            movementId: "raw-stock-1",
+            status: "reconciliation",
+            reconciliationReason: "order_context_mismatch",
+            platformReviewStatus: "open",
+            saleSafetyBlockerState: "needs_platform_review",
+            receivedAt: paidAt,
+          },
+        ],
+        [
+          {
+            id: "refund-1",
+            refundNo: "RFD-1",
+            status: "processing",
+            amountCents: 1200,
+            reason: "dispense_failed",
+            createdAt: paidAt,
+          },
+        ],
+        [
+          {
+            id: "work-1",
+            workOrderNo: "WO-1",
+            status: "open",
+            title: "Check slot",
+            commandId: "command-1",
+            createdAt: paidAt,
+          },
+        ],
+        [
+          {
+            id: "audit-1",
+            action: "orders.refund_request",
+            resourceType: "order",
+            resourceId: "order-1",
+            createdAt: paidAt,
+          },
+        ],
+        [],
+      ]);
+
+      const service = makeService({ db: db as never });
+
+      await expect(
+        service.getOrderInvestigation("order-1", allInvestigationPermissions()),
+      ).resolves.toMatchObject({
+        order: {
+          orderNo: "ORD-1",
+          machineCode: "VEM-001",
+          paymentState: "paid",
+          fulfillmentState: "dispense_failed",
+        },
+        payments: [{ paymentNo: "PAY-1", status: "succeeded" }],
+        paymentWebhookAttempts: [{ id: "webhook-1" }],
+        paymentReconciliationAttempts: [{ id: "reconcile-1" }],
+        paymentCodeAttempts: [{ id: "code-1", authCodeMasked: "134***9988" }],
+        vendingCommands: [
+          {
+            commandNo: "VC-1",
+            status: "failed",
+            machineCode: "VEM-001",
+            slotCode: "A1",
+          },
+        ],
+        inventoryMovements: [{ id: "movement-1" }],
+        stockReconciliationLinks: [
+          {
+            movementId: "raw-stock-1",
+            status: "reconciliation",
+            platformReviewStatus: "open",
+          },
+        ],
+        refunds: [{ refundNo: "RFD-1", status: "processing" }],
+        maintenanceWorkOrders: [{ workOrderNo: "WO-1", status: "open" }],
+        adminAuditEntries: [{ action: "orders.refund_request" }],
+        orderStatusEvents: [],
+      });
+    });
+
+    it("keeps orders.read users on order detail and fulfillment basics only", async () => {
+      const paidAt = new Date("2026-06-26T04:00:00.000Z");
+      const db = makeQueuedDb([
+        [
+          {
+            id: "order-1",
+            orderNo: "ORD-1",
+            machineId: "machine-1",
+            machineCode: "VEM-001",
+            status: "manual_handling",
+            paymentState: "paid",
+            fulfillmentState: "dispense_failed",
+            totalAmountCents: 1200,
+            currency: "CNY",
+            paidAt,
+            dispensedAt: null,
+            canceledAt: null,
+            createdAt: paidAt,
+          },
+        ],
+        [{ id: "item-1", orderId: "order-1", quantity: 1 }],
+        [
+          {
+            id: "command-1",
+            commandNo: "VC-1",
+            status: "failed",
+            machineId: "machine-1",
+            machineCode: "VEM-001",
+            slotId: "slot-1",
+            slotCode: "A1",
+            orderItemId: "item-1",
+            lastError: "jammed",
+            resultAt: paidAt,
+            createdAt: paidAt,
+          },
+        ],
+        [],
+      ]);
+
+      const service = makeService({ db: db as never });
+
+      await expect(
+        service.getOrderInvestigation("order-1", ["orders.read"]),
+      ).resolves.toMatchObject({
+        items: [{ id: "item-1" }],
+        payments: [],
+        paymentEvents: [],
+        paymentWebhookAttempts: [],
+        paymentReconciliationAttempts: [],
+        paymentCodeAttempts: [],
+        vendingCommands: [{ commandNo: "VC-1" }],
+        inventoryMovements: [],
+        stockReconciliationLinks: [],
+        refunds: [],
+        maintenanceWorkOrders: [],
+        adminAuditEntries: [],
+        orderStatusEvents: [],
+      });
+      expect(db.select).toHaveBeenCalledTimes(4);
+    });
+
+    it("uses explicit payment DTO projections without raw payload or auth hash fields", async () => {
+      const paidAt = new Date("2026-06-26T04:00:00.000Z");
+      const db = makeQueuedDb([
+        [
+          {
+            id: "order-1",
+            orderNo: "ORD-1",
+            machineId: "machine-1",
+            machineCode: "VEM-001",
+            status: "paid",
+            paymentState: "paid",
+            fulfillmentState: "dispensed",
+            totalAmountCents: 1200,
+            currency: "CNY",
+            paidAt,
+            dispensedAt: paidAt,
+            canceledAt: null,
+            createdAt: paidAt,
+          },
+        ],
+        [],
+        [{ id: "payment-1", paymentNo: "PAY-1", orderId: "order-1" }],
+        [{ id: "event-1", paymentId: "payment-1", eventType: "paid" }],
+        [
+          {
+            id: "webhook-1",
+            paymentId: "payment-1",
+            eventType: "payment.succeeded",
+          },
+        ],
+        [
+          {
+            id: "reconcile-1",
+            paymentId: "payment-1",
+            trigger: "manual",
+          },
+        ],
+        [
+          {
+            id: "code-1",
+            paymentId: "payment-1",
+            orderId: "order-1",
+            authCodeMasked: "134***9988",
+          },
+        ],
+        [],
+        [{ id: "refund-1", refundNo: "RFD-1", orderId: "order-1" }],
+        [],
+      ]);
+
+      const service = makeService({ db: db as never });
+
+      await service.getOrderInvestigation("order-1", [
+        "orders.read",
+        "payments.read",
+      ]);
+
+      const paymentEventSelection = db.calls.find(
+        (call) =>
+          typeof call.selection === "object" &&
+          call.selection !== null &&
+          "eventType" in call.selection &&
+          "signatureValid" in call.selection,
+      )?.selection as Record<string, unknown>;
+      const webhookSelection = db.calls.find(
+        (call) =>
+          typeof call.selection === "object" &&
+          call.selection !== null &&
+          "handled" in call.selection &&
+          "businessValid" in call.selection,
+      )?.selection as Record<string, unknown>;
+      const reconciliationSelection = db.calls.find(
+        (call) =>
+          typeof call.selection === "object" &&
+          call.selection !== null &&
+          "trigger" in call.selection &&
+          "attemptNo" in call.selection,
+      )?.selection as Record<string, unknown>;
+      const paymentCodeSelection = db.calls.find(
+        (call) =>
+          typeof call.selection === "object" &&
+          call.selection !== null &&
+          "authCodeMasked" in call.selection &&
+          "providerPaymentNo" in call.selection,
+      )?.selection as Record<string, unknown>;
+
+      expect(paymentEventSelection).not.toHaveProperty("rawPayloadJson");
+      expect(webhookSelection).not.toHaveProperty("rawBodyExcerpt");
+      expect(webhookSelection).not.toHaveProperty("redactedPayloadJson");
+      expect(reconciliationSelection).not.toHaveProperty("rawPayloadExcerpt");
+      expect(reconciliationSelection).not.toHaveProperty("rawPayloadSha256");
+      expect(paymentCodeSelection).not.toHaveProperty("authCodeHash");
+      expect(paymentCodeSelection).not.toHaveProperty("rawPayloadJson");
+      expect(paymentCodeSelection).not.toHaveProperty("scannerHealthJson");
+    });
+
+    it("matches audit entries by resource type and id across visible evidence partitions", async () => {
+      const paidAt = new Date("2026-06-26T04:00:00.000Z");
+      const db = makeQueuedDb([
+        [
+          {
+            id: "order-1",
+            orderNo: "ORD-1",
+            machineId: "machine-1",
+            machineCode: "VEM-001",
+            status: "manual_handling",
+            paymentState: "paid",
+            fulfillmentState: "dispense_failed",
+            totalAmountCents: 1200,
+            currency: "CNY",
+            paidAt,
+            dispensedAt: null,
+            canceledAt: null,
+            createdAt: paidAt,
+          },
+        ],
+        [],
+        [{ id: "payment-1", paymentNo: "PAY-1", orderId: "order-1" }],
+        [],
+        [],
+        [],
+        [],
+        [{ id: "command-1", commandNo: "VC-1", machineId: "machine-1" }],
+        [{ id: "movement-1", orderId: "order-1" }],
+        [{ id: "raw-1", machineId: "machine-1", movementId: "raw-stock-1" }],
+        [{ id: "refund-1", orderId: "order-1" }],
+        [{ id: "work-1", commandId: "command-1" }],
+        [],
+        [],
+      ]);
+
+      const service = makeService({ db: db as never });
+
+      await service.getOrderInvestigation(
+        "order-1",
+        allInvestigationPermissions(),
+      );
+
+      const auditWhere = db.calls.find(
+        (call) =>
+          typeof call.selection === "object" &&
+          call.selection !== null &&
+          "action" in call.selection &&
+          "resourceType" in call.selection,
+      )?.whereArgs[0];
+      const tokens = collectDebugTokens(auditWhere);
+
+      expect(tokens).toContain("resource_type");
+      expect(tokens).toContain("resource_id");
+      expect(tokens).toEqual(expect.arrayContaining(["order", "order-1"]));
+      expect(tokens).toEqual(expect.arrayContaining(["payment", "payment-1"]));
+      expect(tokens).toEqual(expect.arrayContaining(["refund", "refund-1"]));
+      expect(tokens).toEqual(
+        expect.arrayContaining(["vending_command", "command-1"]),
+      );
+      expect(tokens).toEqual(
+        expect.arrayContaining(["inventory_movement", "movement-1"]),
+      );
+      expect(tokens).toEqual(
+        expect.arrayContaining(["machine_raw_stock_movement", "raw-1"]),
+      );
+      expect(tokens).toEqual(
+        expect.arrayContaining(["maintenance_work_order", "work-1"]),
+      );
+    });
+
+    it("limits raw stock reconciliation evidence to the order machine", async () => {
+      const paidAt = new Date("2026-06-26T04:00:00.000Z");
+      const db = makeQueuedDb([
+        [
+          {
+            id: "order-1",
+            orderNo: "ORD-1",
+            machineId: "machine-1",
+            machineCode: "VEM-001",
+            status: "manual_handling",
+            paymentState: "paid",
+            fulfillmentState: "dispense_failed",
+            totalAmountCents: 1200,
+            currency: "CNY",
+            paidAt,
+            dispensedAt: null,
+            canceledAt: null,
+            createdAt: paidAt,
+          },
+        ],
+        [],
+        [],
+        [],
+        [],
+        [],
+      ]);
+
+      const service = makeService({ db: db as never });
+
+      await service.getOrderInvestigation("order-1", [
+        "orders.read",
+        "inventory.read",
+      ]);
+
+      const stockWhere = db.calls.find(
+        (call) =>
+          typeof call.selection === "object" &&
+          call.selection !== null &&
+          "movementId" in call.selection &&
+          "platformReviewStatus" in call.selection,
+      )?.whereArgs[0];
+      const tokens = collectDebugTokens(stockWhere);
+
+      expect(tokens).toEqual(
+        expect.arrayContaining(["machine_id", "machine-1"]),
+      );
+      expect(tokens).toEqual(expect.arrayContaining(["order-1", "ORD-1"]));
+    });
+  });
+
   describe("createMachineOrder", () => {
     it("throws NotFoundException when machine not found", async () => {
       const db = makeDb();

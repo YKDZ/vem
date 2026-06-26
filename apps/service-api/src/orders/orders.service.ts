@@ -7,6 +7,7 @@ import {
 } from "@nestjs/common";
 import {
   and,
+  auditLogs,
   count,
   desc,
   eq,
@@ -15,10 +16,12 @@ import {
   inventoryMovements,
   inventoryReservations,
   isNull,
+  machineRawStockMovements,
   machinePlanogramSlots,
   machinePlanogramVersions,
   machineSlots,
   machines,
+  maintenanceWorkOrders,
   orderItems,
   orders,
   orderStatusEvents,
@@ -26,9 +29,11 @@ import {
   paymentEvents,
   paymentProviders,
   paymentReconciliationAttempts,
+  paymentWebhookAttempts,
   payments,
   productVariants,
   products,
+  or,
   refunds,
   sql,
   vendingCommands,
@@ -47,6 +52,7 @@ import {
   type OrderFulfillmentState,
   type OrderPaymentState,
   type OrderStatus,
+  type PermissionCode,
   type PaymentCodeSource,
   type PaymentStatus,
   type VendingCommandStatus,
@@ -70,6 +76,13 @@ type OrderQuery = z.infer<typeof orderQuerySchema> &
   z.infer<typeof pageQuerySchema>;
 
 const DEFAULT_UNCONFIRMED_QR_DISPLAY_DELAY_MS = 30_000;
+
+function hasPermission(
+  permissions: ReadonlySet<PermissionCode>,
+  permission: PermissionCode,
+): boolean {
+  return permissions.has(permission);
+}
 
 function readQrExpiresMinutes(
   publicConfigJson: Record<string, unknown>,
@@ -1181,6 +1194,401 @@ export class OrdersService {
       paymentEvents: paymentEventRows,
       vendingCommands: vendingCommandRows,
       inventoryMovements: inventoryMovementRows,
+      orderStatusEvents: orderStatusEventRows,
+    };
+  }
+
+  async getOrderInvestigation(id: string, permissions: PermissionCode[]) {
+    const permissionSet = new Set(permissions);
+    const canReadPayments = hasPermission(permissionSet, "payments.read");
+    const canReadInventory = hasPermission(permissionSet, "inventory.read");
+    const canReadMaintenance = hasPermission(
+      permissionSet,
+      "maintenanceWorkOrders.read",
+    );
+    const canReadAudit = hasPermission(permissionSet, "audit.read");
+
+    const [order] = await this.db
+      .select({
+        id: orders.id,
+        orderNo: orders.orderNo,
+        machineId: orders.machineId,
+        machineCode: machines.code,
+        status: orders.status,
+        paymentState: orders.paymentState,
+        fulfillmentState: orders.fulfillmentState,
+        totalAmountCents: orders.totalAmountCents,
+        currency: orders.currency,
+        paidAt: orders.paidAt,
+        dispensedAt: orders.dispensedAt,
+        canceledAt: orders.canceledAt,
+        createdAt: orders.createdAt,
+      })
+      .from(orders)
+      .innerJoin(machines, eq(machines.id, orders.machineId))
+      .where(eq(orders.id, id));
+    if (!order) {
+      throw new NotFoundException("Order not found");
+    }
+
+    const items = await this.db
+      .select()
+      .from(orderItems)
+      .where(eq(orderItems.orderId, id))
+      .orderBy(orderItems.createdAt);
+
+    const paymentRows = canReadPayments
+      ? await this.db
+          .select({
+            id: payments.id,
+            paymentNo: payments.paymentNo,
+            orderId: payments.orderId,
+            method: payments.method,
+            status: payments.status,
+            amountCents: payments.amountCents,
+            providerTradeNo: payments.providerTradeNo,
+            expiresAt: payments.expiresAt,
+            paidAt: payments.paidAt,
+            failedReason: payments.failedReason,
+            createdAt: payments.createdAt,
+            updatedAt: payments.updatedAt,
+          })
+          .from(payments)
+          .where(eq(payments.orderId, id))
+          .orderBy(desc(payments.createdAt))
+      : [];
+
+    const paymentIds = paymentRows.map((payment) => payment.id);
+    const paymentEventRows =
+      !canReadPayments || paymentIds.length === 0
+        ? []
+        : await this.db
+            .select({
+              id: paymentEvents.id,
+              paymentId: paymentEvents.paymentId,
+              eventType: paymentEvents.eventType,
+              providerEventId: paymentEvents.providerEventId,
+              signatureValid: paymentEvents.signatureValid,
+              handledAt: paymentEvents.handledAt,
+              createdAt: paymentEvents.createdAt,
+            })
+            .from(paymentEvents)
+            .where(inArray(paymentEvents.paymentId, paymentIds))
+            .orderBy(desc(paymentEvents.createdAt));
+
+    const paymentWebhookAttemptRows = canReadPayments
+      ? await this.db
+          .select({
+            id: paymentWebhookAttempts.id,
+            providerCode: paymentWebhookAttempts.providerCode,
+            paymentId: paymentWebhookAttempts.paymentId,
+            refundId: paymentWebhookAttempts.refundId,
+            eventKind: paymentWebhookAttempts.eventKind,
+            eventType: paymentWebhookAttempts.eventType,
+            providerEventId: paymentWebhookAttempts.providerEventId,
+            paymentNo: paymentWebhookAttempts.paymentNo,
+            refundNo: paymentWebhookAttempts.refundNo,
+            orderNo: paymentWebhookAttempts.orderNo,
+            signatureValid: paymentWebhookAttempts.signatureValid,
+            businessValid: paymentWebhookAttempts.businessValid,
+            handled: paymentWebhookAttempts.handled,
+            duplicate: paymentWebhookAttempts.duplicate,
+            failureReason: paymentWebhookAttempts.failureReason,
+            errorCode: paymentWebhookAttempts.errorCode,
+            httpStatus: paymentWebhookAttempts.httpStatus,
+            createdAt: paymentWebhookAttempts.createdAt,
+            updatedAt: paymentWebhookAttempts.updatedAt,
+          })
+          .from(paymentWebhookAttempts)
+          .where(
+            paymentIds.length === 0
+              ? eq(paymentWebhookAttempts.orderNo, order.orderNo)
+              : or(
+                  eq(paymentWebhookAttempts.orderNo, order.orderNo),
+                  inArray(paymentWebhookAttempts.paymentId, paymentIds),
+                ),
+          )
+          .orderBy(desc(paymentWebhookAttempts.createdAt))
+      : [];
+
+    const paymentReconciliationAttemptRows =
+      !canReadPayments || paymentIds.length === 0
+        ? []
+        : await this.db
+            .select({
+              id: paymentReconciliationAttempts.id,
+              paymentId: paymentReconciliationAttempts.paymentId,
+              trigger: paymentReconciliationAttempts.trigger,
+              attemptNo: paymentReconciliationAttempts.attemptNo,
+              status: paymentReconciliationAttempts.status,
+              providerPaymentStatus:
+                paymentReconciliationAttempts.providerPaymentStatus,
+              providerTradeNo: paymentReconciliationAttempts.providerTradeNo,
+              errorCode: paymentReconciliationAttempts.errorCode,
+              errorMessage: paymentReconciliationAttempts.errorMessage,
+              nextRetryAt: paymentReconciliationAttempts.nextRetryAt,
+              startedAt: paymentReconciliationAttempts.startedAt,
+              finishedAt: paymentReconciliationAttempts.finishedAt,
+              createdAt: paymentReconciliationAttempts.createdAt,
+            })
+            .from(paymentReconciliationAttempts)
+            .where(inArray(paymentReconciliationAttempts.paymentId, paymentIds))
+            .orderBy(desc(paymentReconciliationAttempts.createdAt));
+
+    const paymentCodeAttemptRows = canReadPayments
+      ? await this.db
+          .select({
+            id: paymentCodeAttempts.id,
+            paymentId: paymentCodeAttempts.paymentId,
+            orderId: paymentCodeAttempts.orderId,
+            attemptNo: paymentCodeAttempts.attemptNo,
+            providerPaymentNo: paymentCodeAttempts.providerPaymentNo,
+            idempotencyKey: paymentCodeAttempts.idempotencyKey,
+            status: paymentCodeAttempts.status,
+            isActive: paymentCodeAttempts.isActive,
+            amountCents: paymentCodeAttempts.amountCents,
+            currency: paymentCodeAttempts.currency,
+            authCodeMasked: paymentCodeAttempts.authCodeMasked,
+            source: paymentCodeAttempts.source,
+            providerTradeNo: paymentCodeAttempts.providerTradeNo,
+            providerStatus: paymentCodeAttempts.providerStatus,
+            failureCode: paymentCodeAttempts.failureCode,
+            failureMessage: paymentCodeAttempts.failureMessage,
+            submittedAt: paymentCodeAttempts.submittedAt,
+            lastCheckedAt: paymentCodeAttempts.lastCheckedAt,
+            reversedAt: paymentCodeAttempts.reversedAt,
+            finishedAt: paymentCodeAttempts.finishedAt,
+            manualReason: paymentCodeAttempts.manualReason,
+            createdAt: paymentCodeAttempts.createdAt,
+            updatedAt: paymentCodeAttempts.updatedAt,
+          })
+          .from(paymentCodeAttempts)
+          .where(eq(paymentCodeAttempts.orderId, id))
+          .orderBy(desc(paymentCodeAttempts.createdAt))
+      : [];
+
+    const vendingCommandRows = await this.db
+      .select({
+        id: vendingCommands.id,
+        commandNo: vendingCommands.commandNo,
+        orderId: vendingCommands.orderId,
+        machineId: vendingCommands.machineId,
+        machineCode: machines.code,
+        slotId: vendingCommands.slotId,
+        slotCode: machineSlots.slotCode,
+        orderItemId: vendingCommands.orderItemId,
+        status: vendingCommands.status,
+        sentAt: vendingCommands.sentAt,
+        ackAt: vendingCommands.ackAt,
+        resultAt: vendingCommands.resultAt,
+        retryCount: vendingCommands.retryCount,
+        lastError: vendingCommands.lastError,
+        createdAt: vendingCommands.createdAt,
+        updatedAt: vendingCommands.updatedAt,
+      })
+      .from(vendingCommands)
+      .innerJoin(machines, eq(machines.id, vendingCommands.machineId))
+      .innerJoin(machineSlots, eq(machineSlots.id, vendingCommands.slotId))
+      .where(eq(vendingCommands.orderId, id))
+      .orderBy(desc(vendingCommands.createdAt));
+    const vendingCommandIds = vendingCommandRows.map((command) => command.id);
+
+    const inventoryMovementRows = canReadInventory
+      ? await this.db
+          .select({
+            id: inventoryMovements.id,
+            inventoryId: inventoryMovements.inventoryId,
+            deltaQty: inventoryMovements.deltaQty,
+            reason: inventoryMovements.reason,
+            orderId: inventoryMovements.orderId,
+            operatorAdminUserId: inventoryMovements.operatorAdminUserId,
+            note: inventoryMovements.note,
+            createdAt: inventoryMovements.createdAt,
+          })
+          .from(inventoryMovements)
+          .where(eq(inventoryMovements.orderId, id))
+          .orderBy(desc(inventoryMovements.createdAt))
+      : [];
+
+    const stockReconciliationRows = canReadInventory
+      ? await this.db
+          .select({
+            id: machineRawStockMovements.id,
+            machineId: machineRawStockMovements.machineId,
+            movementId: machineRawStockMovements.movementId,
+            status: machineRawStockMovements.status,
+            reconciliationReason: machineRawStockMovements.reconciliationReason,
+            platformReviewStatus: machineRawStockMovements.platformReviewStatus,
+            saleSafetyBlockerState:
+              machineRawStockMovements.saleSafetyBlockerState,
+            saleSafetyBlockerSlotId:
+              machineRawStockMovements.saleSafetyBlockerSlotId,
+            receivedAt: machineRawStockMovements.receivedAt,
+          })
+          .from(machineRawStockMovements)
+          .where(
+            and(
+              eq(machineRawStockMovements.machineId, order.machineId),
+              or(
+                sql`${machineRawStockMovements.normalizedJson}->>'orderId' = ${id}`,
+                sql`${machineRawStockMovements.normalizedJson}->>'orderNo' = ${order.orderNo}`,
+              ),
+            ),
+          )
+          .orderBy(desc(machineRawStockMovements.receivedAt))
+      : [];
+
+    const refundRows = canReadPayments
+      ? await this.db
+          .select({
+            id: refunds.id,
+            refundNo: refunds.refundNo,
+            paymentId: refunds.paymentId,
+            orderId: refunds.orderId,
+            amountCents: refunds.amountCents,
+            status: refunds.status,
+            providerRefundNo: refunds.providerRefundNo,
+            reason: refunds.reason,
+            requestedByAdminUserId: refunds.requestedByAdminUserId,
+            refundedAt: refunds.refundedAt,
+            createdAt: refunds.createdAt,
+            updatedAt: refunds.updatedAt,
+          })
+          .from(refunds)
+          .where(eq(refunds.orderId, id))
+          .orderBy(desc(refunds.createdAt))
+      : [];
+    const refundIds = refundRows.map((refund) => refund.id);
+
+    const maintenanceWorkOrderRows = canReadMaintenance
+      ? await this.db
+          .select({
+            id: maintenanceWorkOrders.id,
+            workOrderNo: maintenanceWorkOrders.workOrderNo,
+            machineId: maintenanceWorkOrders.machineId,
+            slotId: maintenanceWorkOrders.slotId,
+            orderId: maintenanceWorkOrders.orderId,
+            commandId: maintenanceWorkOrders.commandId,
+            title: maintenanceWorkOrders.title,
+            priority: maintenanceWorkOrders.priority,
+            status: maintenanceWorkOrders.status,
+            assigneeAdminUserId: maintenanceWorkOrders.assigneeAdminUserId,
+            createdAt: maintenanceWorkOrders.createdAt,
+            updatedAt: maintenanceWorkOrders.updatedAt,
+            resolvedAt: maintenanceWorkOrders.resolvedAt,
+          })
+          .from(maintenanceWorkOrders)
+          .where(
+            vendingCommandIds.length === 0
+              ? eq(maintenanceWorkOrders.orderId, id)
+              : or(
+                  eq(maintenanceWorkOrders.orderId, id),
+                  inArray(maintenanceWorkOrders.commandId, vendingCommandIds),
+                ),
+          )
+          .orderBy(desc(maintenanceWorkOrders.createdAt))
+      : [];
+    const maintenanceWorkOrderIds = maintenanceWorkOrderRows.map(
+      (workOrder) => workOrder.id,
+    );
+
+    const auditResourcePairs: Array<{
+      resourceType: string;
+      resourceId: string;
+    }> = [
+      { resourceType: "order", resourceId: id },
+      ...vendingCommandIds.flatMap((resourceId) => [
+        { resourceType: "vending_command", resourceId },
+        { resourceType: "vending_commands", resourceId },
+      ]),
+      ...(canReadPayments
+        ? [
+            ...paymentIds.map((resourceId) => ({
+              resourceType: "payment",
+              resourceId,
+            })),
+            ...refundIds.map((resourceId) => ({
+              resourceType: "refund",
+              resourceId,
+            })),
+          ]
+        : []),
+      ...(canReadInventory
+        ? [
+            ...inventoryMovementRows.flatMap((movement) => [
+              { resourceType: "inventory_movement", resourceId: movement.id },
+              { resourceType: "inventory_movements", resourceId: movement.id },
+            ]),
+            ...stockReconciliationRows.flatMap((movement) => [
+              {
+                resourceType: "machine_raw_stock_movement",
+                resourceId: movement.id,
+              },
+              {
+                resourceType: "machine_raw_stock_movements",
+                resourceId: movement.id,
+              },
+            ]),
+          ]
+        : []),
+      ...(canReadMaintenance
+        ? maintenanceWorkOrderIds.flatMap((resourceId) => [
+            { resourceType: "maintenance_work_order", resourceId },
+            { resourceType: "maintenance_work_orders", resourceId },
+          ])
+        : []),
+    ];
+
+    const adminAuditRows = canReadAudit
+      ? await this.db
+          .select({
+            id: auditLogs.id,
+            adminUserId: auditLogs.adminUserId,
+            action: auditLogs.action,
+            resourceType: auditLogs.resourceType,
+            resourceId: auditLogs.resourceId,
+            ipAddress: auditLogs.ipAddress,
+            userAgent: auditLogs.userAgent,
+            createdAt: auditLogs.createdAt,
+          })
+          .from(auditLogs)
+          .where(
+            or(
+              ...auditResourcePairs.map((pair) =>
+                and(
+                  eq(auditLogs.resourceType, pair.resourceType),
+                  eq(auditLogs.resourceId, pair.resourceId),
+                ),
+              ),
+            ),
+          )
+          .orderBy(desc(auditLogs.createdAt))
+      : [];
+
+    const orderStatusEventRows = await this.db
+      .select()
+      .from(orderStatusEvents)
+      .where(eq(orderStatusEvents.orderId, id))
+      .orderBy(desc(orderStatusEvents.createdAt));
+
+    return {
+      order,
+      items,
+      payments: paymentRows,
+      paymentEvents: paymentEventRows,
+      paymentWebhookAttempts: paymentWebhookAttemptRows,
+      paymentReconciliationAttempts: paymentReconciliationAttemptRows,
+      paymentCodeAttempts: paymentCodeAttemptRows,
+      vendingCommands: vendingCommandRows,
+      fulfillmentProjection: {
+        state: order.fulfillmentState,
+        latestCommand: vendingCommandRows[0] ?? null,
+      },
+      inventoryMovements: inventoryMovementRows,
+      stockReconciliationLinks: stockReconciliationRows,
+      refunds: refundRows,
+      maintenanceWorkOrders: maintenanceWorkOrderRows,
+      adminAuditEntries: adminAuditRows,
       orderStatusEvents: orderStatusEventRows,
     };
   }

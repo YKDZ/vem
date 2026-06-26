@@ -38,6 +38,18 @@ export class OrdersController {
   }
 
   @RequirePermissions("orders.read")
+  @Get(":id/investigation")
+  async getOrderInvestigation(
+    @Param("id", ParseUUIDPipe) id: string,
+    @CurrentAdmin() admin: AuthenticatedAdmin,
+  ) {
+    return await this.ordersService.getOrderInvestigation(
+      id,
+      admin.permissions,
+    );
+  }
+
+  @RequirePermissions("orders.read")
   @Get(":id")
   async getOrderDetail(@Param("id", ParseUUIDPipe) id: string) {
     return await this.ordersService.getOrderDetail(id);
