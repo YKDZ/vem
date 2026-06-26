@@ -5,6 +5,7 @@ import {
   Controller,
   ForbiddenException,
   Get,
+  Inject,
   Param,
   Post,
   Query,
@@ -42,9 +43,13 @@ type CancelMachineOrderInput = z.infer<typeof cancelMachineOrderSchema>;
 @Controller("machine-orders")
 export class MachineOrdersController {
   constructor(
+    @Inject(OrdersService)
     private readonly ordersService: OrdersService,
+    @Inject(PaymentsService)
     private readonly paymentsService: PaymentsService,
+    @Inject(PaymentCodeOrchestratorService)
     private readonly paymentCodeOrchestrator: PaymentCodeOrchestratorService,
+    @Inject(AppConfigService)
     private readonly config: AppConfigService,
   ) {}
 

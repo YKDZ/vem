@@ -60,8 +60,11 @@ function readHeartbeatStringField(
 export class PaymentOpsService {
   constructor(
     @Inject(DRIZZLE_CLIENT) private readonly db: DrizzleClient,
+    @Inject(AppConfigService)
     private readonly config: AppConfigService,
+    @Inject(PaymentConfigSecretService)
     private readonly paymentConfigSecrets: PaymentConfigSecretService,
+    @Inject(PaymentProviderConfigService)
     private readonly providerConfigs: PaymentProviderConfigService,
   ) {}
 

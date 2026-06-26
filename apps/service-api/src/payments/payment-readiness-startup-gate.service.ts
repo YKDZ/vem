@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleInit } from "@nestjs/common";
+import { Inject, Injectable, Logger, OnModuleInit } from "@nestjs/common";
 
 import { AppConfigService } from "../config/app-config.service";
 import { PaymentOpsService } from "./payment-ops.service";
@@ -8,7 +8,9 @@ export class PaymentReadinessStartupGateService implements OnModuleInit {
   private readonly logger = new Logger(PaymentReadinessStartupGateService.name);
 
   constructor(
+    @Inject(AppConfigService)
     private readonly config: AppConfigService,
+    @Inject(PaymentOpsService)
     private readonly ops: PaymentOpsService,
   ) {}
 

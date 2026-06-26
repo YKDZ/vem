@@ -98,6 +98,14 @@ type RecoveryActionRow = {
 };
 
 function isUniqueViolation(error: unknown): boolean {
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "cause" in error &&
+    isUniqueViolation(Reflect.get(error, "cause"))
+  ) {
+    return true;
+  }
   return (
     typeof error === "object" &&
     error !== null &&

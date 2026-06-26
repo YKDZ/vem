@@ -1,4 +1,5 @@
 import {
+  Inject,
   Injectable,
   Logger,
   OnApplicationShutdown,
@@ -19,7 +20,9 @@ export class MqttService implements OnModuleInit, OnApplicationShutdown {
   private client?: MqttClient;
   private readonly machineMessageHandlers: MachineMessageHandler[] = [];
 
-  constructor(private readonly config: AppConfigService) {}
+  constructor(
+    @Inject(AppConfigService) private readonly config: AppConfigService,
+  ) {}
 
   onModuleInit(): void {
     this.client = mqtt.connect(this.config.mqttUrl, {

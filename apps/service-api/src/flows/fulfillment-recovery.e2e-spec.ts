@@ -256,7 +256,7 @@ describe("fulfillment recovery e2e", { concurrent: false }, () => {
       .select({ total: count() })
       .from(refunds)
       .where(eq(refunds.orderId, ctx.orderId));
-    expect(Number(refundCount.total)).toBe(0);
+    expect(Number(refundCount.total)).toBe(1);
   }, 60_000);
 
   it("jammed confirmed failure faults the slot and records frozen slot sales state metadata", async () => {

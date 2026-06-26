@@ -284,7 +284,9 @@ const catalogSeedProducts: CatalogSeedProduct[] = [
 export class BootstrapService implements OnModuleInit {
   constructor(
     @Inject(DRIZZLE_CLIENT) private readonly db: DrizzleClient,
+    @Inject(AppConfigService)
     private readonly config: AppConfigService,
+    @Inject(PasswordService)
     private readonly passwordService: PasswordService,
   ) {}
 

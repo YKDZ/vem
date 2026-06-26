@@ -268,12 +268,19 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
 
   constructor(
     @Inject(DRIZZLE_CLIENT) private readonly db: DrizzleClient,
+    @Inject(MachineCredentialService)
     private readonly machineCredentialService: MachineCredentialService,
+    @Inject(PaymentProviderConfigService)
     private readonly paymentProviderConfigService: PaymentProviderConfigService,
+    @Inject(AuditService)
     private readonly auditService: AuditService,
+    @Inject(MqttService)
     private readonly mqttService: MqttService,
+    @Inject(MqttSignatureService)
     private readonly mqttSignatureService: MqttSignatureService,
+    @Inject(AppConfigService)
     private readonly config: AppConfigService,
+    @Inject(NotificationsService)
     private readonly notificationsService: NotificationsService,
   ) {}
 

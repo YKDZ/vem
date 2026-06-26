@@ -1,4 +1,4 @@
-import { Injectable } from "@nestjs/common";
+import { Inject, Injectable } from "@nestjs/common";
 
 import { AppConfigService } from "../config/app-config.service";
 import {
@@ -19,7 +19,9 @@ export type MachineCredentialBundle = {
 
 @Injectable()
 export class MachineCredentialService {
-  constructor(private readonly config: AppConfigService) {}
+  constructor(
+    @Inject(AppConfigService) private readonly config: AppConfigService,
+  ) {}
 
   createBundle(): MachineCredentialBundle {
     const machineSecret = generateMachineSecret();

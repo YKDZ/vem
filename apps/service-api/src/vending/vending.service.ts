@@ -67,12 +67,19 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
 
   constructor(
     @Inject(DRIZZLE_CLIENT) private readonly db: DrizzleClient,
+    @Inject(MqttService)
     private readonly mqttService: MqttService,
+    @Inject(MqttSignatureService)
     private readonly mqttSignatureService: MqttSignatureService,
+    @Inject(NotificationsService)
     private readonly notificationsService: NotificationsService,
+    @Inject(InventoryService)
     private readonly inventoryService: InventoryService,
+    @Inject(MachineStockMovementsService)
     private readonly machineStockMovementsService: MachineStockMovementsService,
+    @Inject(RefundsService)
     private readonly refundsService: RefundsService,
+    @Inject(MaintenanceWorkOrdersService)
     private readonly maintenanceWorkOrdersService: MaintenanceWorkOrdersService,
   ) {}
 
