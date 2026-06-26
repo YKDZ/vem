@@ -53,7 +53,9 @@ const ButtonStub = defineComponent({
       h(
         "button",
         {
-          onClick: () => emit("click"),
+          onClick: () => {
+            emit("click");
+          },
         },
         slots.default?.(),
       );

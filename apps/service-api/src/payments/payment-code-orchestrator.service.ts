@@ -28,6 +28,9 @@ export class PaymentCodeOrchestratorService {
     "reversed",
     "canceled",
   ] as const;
+  private static readonly terminalStatusSet: ReadonlySet<string> = new Set(
+    PaymentCodeOrchestratorService.terminalStatuses,
+  );
   private static readonly mutableStatuses = [
     "created",
     "submitting",
@@ -659,9 +662,7 @@ export class PaymentCodeOrchestratorService {
   }
 
   private isTerminalAttempt(attempt: PaymentCodeAttemptRow): boolean {
-    return PaymentCodeOrchestratorService.terminalStatuses.includes(
-      attempt.status as (typeof PaymentCodeOrchestratorService.terminalStatuses)[number],
-    );
+    return PaymentCodeOrchestratorService.terminalStatusSet.has(attempt.status);
   }
 
   private async markMutableStatus(
