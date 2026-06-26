@@ -249,4 +249,42 @@ describe("OrderDetailDrawer", () => {
     expect(document.body.textContent).toContain("订单调查");
     expect(document.body.textContent).toContain("Forbidden resource");
   });
+
+  it("renders payment-code query and reversal evidence without full auth codes", async () => {
+    apiMocks.getOrderInvestigation.mockResolvedValue({
+      ...baseInvestigation,
+      paymentCodeAttempts: [
+        {
+          id: "attempt-1",
+          attemptNo: 1,
+          status: "reversed",
+          authCodeMasked: "2876****4394",
+          source: "serial_text",
+          providerPaymentNo: "PCA001",
+          providerTradeNo: "ALI-TXN-001",
+          providerStatus: "TRADE_CLOSED",
+          failureCode: "PAYMENT_CODE_REVERSED",
+          failureMessage: "本次付款码交易已撤销，请刷新付款码后重试",
+          manualReason: "query_timeout_reversed",
+          lastCheckedAt: "2026-06-26T04:01:00.000Z",
+          reversedAt: "2026-06-26T04:02:00.000Z",
+        },
+      ],
+    });
+
+    mountDrawer(["orders.read", "payments.read"]);
+    await flushPromises();
+    await nextTick();
+
+    expect(document.body.textContent).toContain("PCA001");
+    expect(document.body.textContent).toContain("ALI-TXN-001");
+    expect(document.body.textContent).toContain("TRADE_CLOSED");
+    expect(document.body.textContent).toContain("PAYMENT_CODE_REVERSED");
+    expect(document.body.textContent).toContain(
+      "本次付款码交易已撤销，请刷新付款码后重试",
+    );
+    expect(document.body.textContent).toContain("query_timeout_reversed");
+    expect(document.body.textContent).toContain("2876****4394");
+    expect(document.body.textContent).not.toContain("28763443825664394");
+  });
 });

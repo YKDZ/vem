@@ -1042,6 +1042,79 @@ describe("checkout store", () => {
     expect(store.flowStep).toBe("payment");
   });
 
+  it("keeps the current order after one failed payment-code scan attempt", async () => {
+    const failedScan = makeTransactionSnapshot({
+      paymentCodeAttempt: {
+        attemptNo: 1,
+        status: "failed",
+        maskedAuthCode: "2876****4394",
+        source: "serial_text",
+        idempotencyKey: "ORD-001:attempt-1",
+        submittedAt: "2026-01-01T00:00:05Z",
+        lastCheckedAt: "2026-01-01T00:00:06Z",
+        canRetry: true,
+        message: "付款码已失效，请刷新付款码后重试",
+      },
+      nextAction: "wait_payment",
+      paymentStatus: "pending",
+      orderStatus: "pending_payment",
+      operatorHint: null,
+    });
+    getCurrentTransactionMock.mockResolvedValue(failedScan);
+
+    const store = useCheckoutStore();
+    store.applyTransaction(
+      makeTransactionSnapshot({ paymentCodeAttempt: null }),
+    );
+    await store.refreshCurrentTransaction();
+
+    expect(store.currentOrder?.orderNo).toBe("ORD-001");
+    expect(store.status?.nextAction).toBe("wait_payment");
+    expect(store.status?.paymentCodeAttempt).toMatchObject({
+      status: "failed",
+      canRetry: true,
+      message: "付款码已失效，请刷新付款码后重试",
+    });
+    expect(store.paymentCodeLastMasked).toBe("2876****4394");
+    expect(store.flowStep).toBe("payment");
+  });
+
+  it("keeps the current order while an unknown payment-code attempt is being queried", async () => {
+    const unknownScan = makeTransactionSnapshot({
+      paymentCodeAttempt: {
+        attemptNo: 1,
+        status: "querying",
+        maskedAuthCode: "2876****4394",
+        source: "serial_text",
+        idempotencyKey: "ORD-001:attempt-1",
+        submittedAt: "2026-01-01T00:00:05Z",
+        lastCheckedAt: "2026-01-01T00:00:06Z",
+        canRetry: false,
+        message: "正在确认支付结果",
+      },
+      nextAction: "wait_payment",
+      paymentStatus: "pending",
+      orderStatus: "pending_payment",
+      operatorHint: null,
+    });
+    getCurrentTransactionMock.mockResolvedValue(unknownScan);
+
+    const store = useCheckoutStore();
+    store.applyTransaction(
+      makeTransactionSnapshot({ paymentCodeAttempt: null }),
+    );
+    await store.refreshCurrentTransaction();
+
+    expect(store.currentOrder?.orderNo).toBe("ORD-001");
+    expect(store.status?.nextAction).toBe("wait_payment");
+    expect(store.status?.paymentCodeAttempt).toMatchObject({
+      status: "querying",
+      canRetry: false,
+      message: "正在确认支付结果",
+    });
+    expect(store.flowStep).toBe("payment");
+  });
+
   it("drops concurrent dev payment submissions", async () => {
     let resolveSubmit!: (
       value: ReturnType<typeof makeTransactionSnapshot>,

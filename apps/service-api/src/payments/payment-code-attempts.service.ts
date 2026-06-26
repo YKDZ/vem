@@ -11,6 +11,7 @@ import {
   count,
   desc,
   eq,
+  inArray,
   isNull,
   machines,
   orders,
@@ -42,6 +43,28 @@ export type CreatePaymentCodeAttemptInput = {
 };
 
 export type PaymentCodeAttemptRow = typeof paymentCodeAttempts.$inferSelect;
+export type PaymentCodeAttemptDto = {
+  id: string;
+  orderId: string;
+  orderNo?: string;
+  paymentNo?: string;
+  providerCode?: string;
+  attemptNo: number;
+  providerPaymentNo: string;
+  status: PaymentCodeAttemptStatus;
+  authCodeMasked: string;
+  source: string;
+  providerTradeNo: string | null;
+  providerStatus: string | null;
+  failureCode: string | null;
+  failureMessage: string | null;
+  manualReason: string | null;
+  submittedAt: Date | null;
+  lastCheckedAt: Date | null;
+  reversedAt: Date | null;
+  finishedAt: Date | null;
+  createdAt: Date;
+};
 type PaymentCodeAttemptListQuery = z.infer<
   typeof paymentCodeAttemptQuerySchema
 > &
@@ -179,9 +202,35 @@ export class PaymentCodeAttemptsService {
     status: PaymentCodeAttemptStatus,
     patch: Partial<typeof paymentCodeAttempts.$inferInsert> = {},
   ): Promise<PaymentCodeAttemptRow> {
+    const updated = await this.tryMarkStatus(id, status, patch);
+    if (!updated) throw new NotFoundException("Payment code attempt not found");
+    return updated;
+  }
+
+  async markStatusIfCurrentStatusIn(
+    id: string,
+    status: PaymentCodeAttemptStatus,
+    allowedCurrentStatuses: PaymentCodeAttemptStatus[],
+    patch: Partial<typeof paymentCodeAttempts.$inferInsert> = {},
+  ): Promise<PaymentCodeAttemptRow | null> {
+    return await this.tryMarkStatus(id, status, patch, allowedCurrentStatuses);
+  }
+
+  private async tryMarkStatus(
+    id: string,
+    status: PaymentCodeAttemptStatus,
+    patch: Partial<typeof paymentCodeAttempts.$inferInsert> = {},
+    allowedCurrentStatuses?: PaymentCodeAttemptStatus[],
+  ): Promise<PaymentCodeAttemptRow | null> {
     const terminal = ["succeeded", "failed", "reversed", "canceled"].includes(
       status,
     );
+    const conditions = [eq(paymentCodeAttempts.id, id)];
+    if (allowedCurrentStatuses) {
+      conditions.push(
+        inArray(paymentCodeAttempts.status, allowedCurrentStatuses),
+      );
+    }
     const [updated] = await this.db
       .update(paymentCodeAttempts)
       .set({
@@ -190,10 +239,9 @@ export class PaymentCodeAttemptsService {
         isActive: terminal ? false : (patch.isActive ?? true),
         updatedAt: new Date(),
       })
-      .where(eq(paymentCodeAttempts.id, id))
+      .where(and(...conditions))
       .returning();
-    if (!updated) throw new NotFoundException("Payment code attempt not found");
-    return updated;
+    return updated ?? null;
   }
 
   async getById(id: string): Promise<PaymentCodeAttemptRow> {
@@ -284,6 +332,8 @@ export class PaymentCodeAttemptsService {
         status: paymentCodeAttempts.status,
         authCodeMasked: paymentCodeAttempts.authCodeMasked,
         source: paymentCodeAttempts.source,
+        providerTradeNo: paymentCodeAttempts.providerTradeNo,
+        providerStatus: paymentCodeAttempts.providerStatus,
         failureCode: paymentCodeAttempts.failureCode,
         failureMessage: paymentCodeAttempts.failureMessage,
         manualReason: paymentCodeAttempts.manualReason,
@@ -329,6 +379,37 @@ export class PaymentCodeAttemptsService {
       .orderBy(desc(paymentCodeAttempts.createdAt))
       .limit(1);
     return row ?? null;
+  }
+
+  toDto(
+    row: PaymentCodeAttemptRow & {
+      orderNo?: string;
+      paymentNo?: string;
+      providerCode?: string;
+    },
+  ): PaymentCodeAttemptDto {
+    return {
+      id: row.id,
+      orderId: row.orderId,
+      orderNo: row.orderNo,
+      paymentNo: row.paymentNo,
+      providerCode: row.providerCode,
+      attemptNo: row.attemptNo,
+      providerPaymentNo: row.providerPaymentNo,
+      status: row.status,
+      authCodeMasked: row.authCodeMasked,
+      source: row.source,
+      providerTradeNo: row.providerTradeNo,
+      providerStatus: row.providerStatus,
+      failureCode: row.failureCode,
+      failureMessage: row.failureMessage,
+      manualReason: row.manualReason,
+      submittedAt: row.submittedAt,
+      lastCheckedAt: row.lastCheckedAt,
+      reversedAt: row.reversedAt,
+      finishedAt: row.finishedAt,
+      createdAt: row.createdAt,
+    };
   }
 
   private mapPayment(row: {

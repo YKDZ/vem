@@ -46,7 +46,7 @@ export class PaymentCodeController {
   @RequirePermissions("payments.configure")
   @Post(":id/query")
   async queryAttempt(@Param("id", ParseUUIDPipe) id: string) {
-    return await this.orchestrator.manualQuery(id);
+    return this.attempts.toDto(await this.orchestrator.manualQuery(id));
   }
 
   @RequirePermissions("payments.configure")
@@ -56,6 +56,8 @@ export class PaymentCodeController {
     @Body(new ZodValidationPipe(paymentCodeAttemptAdminActionSchema))
     body: z.infer<typeof paymentCodeAttemptAdminActionSchema>,
   ) {
-    return await this.orchestrator.manualReverse(id, body.reason);
+    return this.attempts.toDto(
+      await this.orchestrator.manualReverse(id, body.reason),
+    );
   }
 }

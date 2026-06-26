@@ -35,6 +35,8 @@ use crate::{
     transaction::TransactionStateMachine,
 };
 
+const SCANNER_READY_STALE_AFTER_SECONDS: i64 = 30;
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VisionStatusSnapshot {
@@ -1535,9 +1537,8 @@ async fn machine_sale_readiness_snapshot(
     };
 
     let scanner = ctx.ui.status_cache.scanner.read().await.clone();
-    let scanner_ready = scanner.online
-        && scanner.adapter == vending_core::scanner::PAYMENT_CODE_SOURCE_SERIAL_TEXT
-        && scanner.code == "SCANNER_READY";
+    let scanner_readiness = scanner_payment_code_readiness(&scanner);
+    let scanner_ready = scanner_readiness.ready;
 
     let payment_capability = load_machine_payment_capability(ctx).await;
     let payment_probe = ctx.ui.backend.get_payment_options().await;
@@ -1555,7 +1556,7 @@ async fn machine_sale_readiness_snapshot(
                     let mut disabled_reason = option.disabled_reason;
                     if option.method == "payment_code" && !scanner_ready {
                         ready = false;
-                        disabled_reason = Some(format!("扫码器不可用：{}", scanner.message));
+                        disabled_reason = Some(scanner_readiness.message.clone());
                     }
                     payment_methods.push(serde_json::json!({
                         "method": option.method,
@@ -1645,8 +1646,8 @@ async fn machine_sale_readiness_snapshot(
             }),
             "scannerCapability": readiness_component(
                 scanner_ready,
-                if scanner_ready { "SCANNER_READY" } else { "SCANNER_UNAVAILABLE" },
-                scanner.message,
+                scanner_readiness.code.as_str(),
+                scanner_readiness.message,
             ),
             "syncHealth": readiness_component(
                 sync_ready,
@@ -1772,6 +1773,54 @@ fn readiness_component(ready: bool, code: &str, message: impl Into<String>) -> s
         "code": code,
         "message": message.into(),
     })
+}
+
+struct ScannerPaymentCodeReadiness {
+    ready: bool,
+    code: String,
+    message: String,
+}
+
+fn scanner_payment_code_readiness(
+    scanner: &vending_core::scanner::ScannerHealthSnapshot,
+) -> ScannerPaymentCodeReadiness {
+    let base_ready = scanner.online
+        && scanner.adapter == vending_core::scanner::PAYMENT_CODE_SOURCE_SERIAL_TEXT
+        && scanner.code == "SCANNER_READY";
+    if !base_ready {
+        return ScannerPaymentCodeReadiness {
+            ready: false,
+            code: "SCANNER_UNAVAILABLE".to_string(),
+            message: format!("扫码器不可用：{}", scanner.message),
+        };
+    }
+
+    let parsed = chrono::DateTime::parse_from_rfc3339(&scanner.updated_at);
+    let Ok(updated_at) = parsed else {
+        return ScannerPaymentCodeReadiness {
+            ready: false,
+            code: "SCANNER_STATUS_STALE".to_string(),
+            message: "扫码器状态时间无效，请等待运行时重新上报".to_string(),
+        };
+    };
+    let age = chrono::Utc::now().signed_duration_since(updated_at.with_timezone(&chrono::Utc));
+    if age > chrono::Duration::seconds(SCANNER_READY_STALE_AFTER_SECONDS) {
+        return ScannerPaymentCodeReadiness {
+            ready: false,
+            code: "SCANNER_STATUS_STALE".to_string(),
+            message: format!(
+                "扫码器状态已过期（{} 秒未更新）：{}",
+                age.num_seconds(),
+                scanner.message
+            ),
+        };
+    }
+
+    ScannerPaymentCodeReadiness {
+        ready: true,
+        code: "SCANNER_READY".to_string(),
+        message: scanner.message.clone(),
+    }
 }
 
 fn is_supported_payment_method(value: &str) -> bool {
@@ -2312,6 +2361,7 @@ async fn payment_options(State(ctx): State<IpcContext>, headers: HeaderMap) -> i
         Ok(mut payload) => {
             let payment_capability = load_machine_payment_capability(&ctx).await;
             let scanner = ctx.ui.status_cache.scanner.read().await.clone();
+            let scanner_readiness = scanner_payment_code_readiness(&scanner);
             let mut default_option_key = serde_json::Value::Null;
             let mut default_provider_code = serde_json::Value::Null;
             if let Some(options) = payload
@@ -2329,20 +2379,12 @@ async fn payment_options(State(ctx): State<IpcContext>, headers: HeaderMap) -> i
                 for option in options.iter_mut() {
                     let is_payment_code = option.get("method").and_then(|value| value.as_str())
                         == Some("payment_code");
-                    if is_payment_code
-                        && (!scanner.online
-                            || scanner.adapter
-                                != vending_core::scanner::PAYMENT_CODE_SOURCE_SERIAL_TEXT
-                            || scanner.code != "SCANNER_READY")
-                    {
+                    if is_payment_code && !scanner_readiness.ready {
                         if let Some(map) = option.as_object_mut() {
                             map.insert("disabled".to_string(), serde_json::Value::Bool(true));
                             map.insert(
                                 "disabledReason".to_string(),
-                                serde_json::Value::String(format!(
-                                    "扫码器不可用：{}",
-                                    scanner.message
-                                )),
+                                serde_json::Value::String(scanner_readiness.message.clone()),
                             );
                         }
                     }
@@ -4649,6 +4691,217 @@ mod tests {
             .collect();
         assert_eq!(methods, vec!["qr_code:alipay"]);
         assert_eq!(readiness["components"]["paymentOptions"]["ready"], true);
+    }
+
+    #[tokio::test]
+    async fn payment_options_disable_stale_ready_payment_code_and_default_to_qr() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(wiremock::matchers::path("/machine-orders/payment-options"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "options": [
+                    {
+                        "optionKey": "payment_code:alipay",
+                        "providerCode": "alipay",
+                        "method": "payment_code",
+                        "displayName": "支付宝付款码",
+                        "description": "请出示支付宝付款码并靠近扫码窗口",
+                        "icon": "alipay",
+                        "recommended": true,
+                        "disabled": false,
+                        "disabledReason": null
+                    },
+                    {
+                        "optionKey": "qr_code:alipay",
+                        "providerCode": "alipay",
+                        "method": "qr_code",
+                        "displayName": "支付宝扫码",
+                        "description": "请使用支付宝扫描屏幕二维码",
+                        "icon": "alipay",
+                        "recommended": false,
+                        "disabled": false,
+                        "disabledReason": null
+                    }
+                ],
+                "defaultOptionKey": "payment_code:alipay",
+                "defaultProviderCode": "alipay",
+                "serverTime": "2026-06-04T00:00:00Z"
+            })))
+            .mount(&server)
+            .await;
+
+        let temp_dir = tempdir().expect("tmp");
+        let ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            &server.uri(),
+        )
+        .await;
+        mark_runtime_sale_ready(&ctx).await;
+        {
+            let mut scanner = ctx.ui.status_cache.scanner.write().await;
+            scanner.updated_at = (chrono::Utc::now() - chrono::Duration::seconds(120))
+                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        }
+        let app = build_router(ctx);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/payment-options")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let options: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let payment_code = options["options"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|option| option["optionKey"] == "payment_code:alipay")
+            .expect("payment code option");
+        assert_eq!(payment_code["disabled"], true);
+        assert!(payment_code["disabledReason"]
+            .as_str()
+            .unwrap()
+            .contains("过期"));
+        assert_eq!(options["defaultOptionKey"], "qr_code:alipay");
+        assert_eq!(options["defaultProviderCode"], "alipay");
+    }
+
+    #[tokio::test]
+    async fn sale_readiness_treats_stale_ready_scanner_as_payment_code_unavailable_only() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(wiremock::matchers::path("/machine-orders/payment-options"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "options": [
+                    {
+                        "optionKey": "payment_code:alipay",
+                        "providerCode": "alipay",
+                        "method": "payment_code",
+                        "displayName": "支付宝付款码",
+                        "description": "请出示支付宝付款码并靠近扫码窗口",
+                        "icon": "alipay",
+                        "recommended": true,
+                        "disabled": false,
+                        "disabledReason": null
+                    },
+                    {
+                        "optionKey": "qr_code:alipay",
+                        "providerCode": "alipay",
+                        "method": "qr_code",
+                        "displayName": "支付宝扫码",
+                        "description": "请使用支付宝扫描屏幕二维码",
+                        "icon": "alipay",
+                        "recommended": false,
+                        "disabled": false,
+                        "disabledReason": null
+                    }
+                ],
+                "defaultOptionKey": "payment_code:alipay",
+                "defaultProviderCode": "alipay",
+                "serverTime": "2026-06-04T00:00:00Z"
+            })))
+            .mount(&server)
+            .await;
+
+        let temp_dir = tempdir().expect("tmp");
+        let ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            &server.uri(),
+        )
+        .await;
+        mark_runtime_sale_ready(&ctx).await;
+        {
+            let mut scanner = ctx.ui.status_cache.scanner.write().await;
+            scanner.updated_at = (chrono::Utc::now() - chrono::Duration::seconds(120))
+                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        }
+        let app = build_router(ctx);
+        let slot_id = "550e8400-e29b-41d4-a716-446655440901";
+        let inventory_id = "550e8400-e29b-41d4-a716-446655440902";
+        assert_eq!(
+            post_json(
+                &app,
+                "/v1/stock/planogram",
+                "token-1",
+                one_slot_planogram("PLAN-SCANNER-STALE", slot_id, inventory_id),
+            )
+            .await
+            .status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            post_json(
+                &app,
+                "/v1/stock/movements",
+                "token-1",
+                json!({
+                    "movementId": "MOVE-SCANNER-STALE-1",
+                    "planogramVersion": "PLAN-SCANNER-STALE",
+                    "slotId": slot_id,
+                    "movementType": "planned_refill",
+                    "quantity": 2,
+                    "source": "field_service",
+                    "attributedTo": "operator-1"
+                }),
+            )
+            .await
+            .status(),
+            StatusCode::CREATED
+        );
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/sale-readiness")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let readiness: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(readiness["canStartNetworkAuthorizedSale"], true);
+        assert_eq!(readiness["components"]["paymentOptions"]["ready"], true);
+        assert_eq!(readiness["components"]["scannerCapability"]["ready"], false);
+        assert_eq!(
+            readiness["components"]["scannerCapability"]["code"],
+            "SCANNER_STATUS_STALE"
+        );
+        let methods = readiness["components"]["paymentOptions"]["methods"]
+            .as_array()
+            .unwrap();
+        let payment_code = methods
+            .iter()
+            .find(|method| method["optionKey"] == "payment_code:alipay")
+            .expect("payment code option");
+        let qr_code = methods
+            .iter()
+            .find(|method| method["optionKey"] == "qr_code:alipay")
+            .expect("qr code option");
+        assert_eq!(payment_code["ready"], false);
+        assert!(payment_code["disabledReason"]
+            .as_str()
+            .unwrap()
+            .contains("过期"));
+        assert_eq!(qr_code["ready"], true);
     }
 
     #[tokio::test]

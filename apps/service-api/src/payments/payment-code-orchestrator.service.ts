@@ -22,6 +22,28 @@ import { PaymentsService } from "./payments.service";
 @Injectable()
 export class PaymentCodeOrchestratorService {
   private readonly logger = new Logger(PaymentCodeOrchestratorService.name);
+  private static readonly terminalStatuses = [
+    "succeeded",
+    "failed",
+    "reversed",
+    "canceled",
+  ] as const;
+  private static readonly mutableStatuses = [
+    "created",
+    "submitting",
+    "user_confirming",
+    "querying",
+    "reversing",
+    "unknown",
+    "manual_handling",
+  ] as const;
+  private static readonly reversibleStatuses = [
+    "user_confirming",
+    "querying",
+    "reversing",
+    "unknown",
+    "manual_handling",
+  ] as const;
 
   constructor(
     private readonly attempts: PaymentCodeAttemptsService,
@@ -213,6 +235,7 @@ export class PaymentCodeOrchestratorService {
     pollIntervalMs: number,
     lastAttempt: PaymentCodeAttemptRow,
   ): Promise<void> {
+    if (this.isTerminalAttempt(lastAttempt)) return;
     if (Date.now() > deadline) {
       await this.reverseUnknownAttempt(attemptId, provider.code, config);
       return;
@@ -228,18 +251,14 @@ export class PaymentCodeOrchestratorService {
       });
     } catch (error) {
       const message = this.errorMessage(error);
-      const nextAttempt = await this.attempts.markStatus(
-        attemptId,
-        "querying",
-        {
-          providerTradeNo: lastAttempt.providerTradeNo,
-          providerStatus: "PAYMENT_CODE_QUERY_UNKNOWN",
-          failureCode: "PAYMENT_CODE_QUERY_UNKNOWN",
-          failureMessage: message,
-          rawPayloadJson: buildStoredEventPayload({ error: message }),
-          lastCheckedAt: new Date(),
-        },
-      );
+      const nextAttempt = await this.markMutableStatus(attemptId, "querying", {
+        providerTradeNo: lastAttempt.providerTradeNo,
+        providerStatus: "PAYMENT_CODE_QUERY_UNKNOWN",
+        failureCode: "PAYMENT_CODE_QUERY_UNKNOWN",
+        failureMessage: message,
+        rawPayloadJson: buildStoredEventPayload({ error: message }),
+        lastCheckedAt: new Date(),
+      });
       await this.pollAttemptUntilSettled(
         provider,
         attemptId,
@@ -250,7 +269,7 @@ export class PaymentCodeOrchestratorService {
       );
       return;
     }
-    const nextAttempt = await this.attempts.markStatus(
+    const { attempt: nextAttempt, changed } = await this.tryMarkMutableStatus(
       attemptId,
       query.status === "succeeded"
         ? "succeeded"
@@ -268,6 +287,7 @@ export class PaymentCodeOrchestratorService {
       },
     );
     if (query.status === "succeeded") {
+      if (!changed) return;
       await this.paymentsService.applyProviderPaymentResult({
         paymentId: nextAttempt.paymentId,
         providerTradeNo: query.providerTradeNo ?? nextAttempt.providerTradeNo,
@@ -280,7 +300,7 @@ export class PaymentCodeOrchestratorService {
       return;
     }
     if (query.status === "failed" || query.status === "reversed") {
-      await this.attempts.markStatus(
+      await this.markMutableStatus(
         attemptId,
         query.status === "reversed" ? "reversed" : "failed",
         {
@@ -307,7 +327,11 @@ export class PaymentCodeOrchestratorService {
     config: PaymentProviderRuntimeConfig,
   ): Promise<void> {
     const provider = this.registry.getPaymentCodeProvider(providerCode);
-    const attempt = await this.attempts.markStatus(attemptId, "reversing");
+    const { attempt, changed } = await this.tryMarkReversibleStatus(
+      attemptId,
+      "reversing",
+    );
+    if (!changed) return;
 
     await this.reverseAttemptWithRetry(
       provider,
@@ -325,8 +349,9 @@ export class PaymentCodeOrchestratorService {
     attempt: PaymentCodeAttemptRow,
     remainingAttempts: number,
   ): Promise<void> {
+    if (this.isTerminalAttempt(attempt)) return;
     if (remainingAttempts <= 0) {
-      await this.attempts.markStatus(attemptId, "manual_handling", {
+      await this.markReversibleStatus(attemptId, "manual_handling", {
         isActive: true,
         manualReason: "reverse_result_unknown_after_retries",
         failureCode: attempt.failureCode ?? "PAYMENT_CODE_REVERSE_UNKNOWN",
@@ -346,7 +371,7 @@ export class PaymentCodeOrchestratorService {
       });
     } catch (error) {
       const message = this.errorMessage(error);
-      const nextAttempt = await this.attempts.markStatus(
+      const nextAttempt = await this.markReversibleStatus(
         attemptId,
         "reversing",
         {
@@ -370,7 +395,7 @@ export class PaymentCodeOrchestratorService {
       );
       return;
     }
-    const nextAttempt = await this.attempts.markStatus(
+    const nextAttempt = await this.markReversibleStatus(
       attemptId,
       reversed.status === "reversed" ? "reversed" : "reversing",
       {
@@ -403,6 +428,9 @@ export class PaymentCodeOrchestratorService {
 
   async manualQuery(id: string): Promise<PaymentCodeAttemptRow> {
     const ctx = await this.attempts.getContextById(id);
+    if (this.isTerminalAttempt(ctx.attempt)) {
+      return ctx.attempt;
+    }
     const provider = this.registry.getPaymentCodeProvider(ctx.providerCode);
     const config = await this.configService.resolveForExistingPayment({
       providerCode: ctx.providerCode,
@@ -415,16 +443,22 @@ export class PaymentCodeOrchestratorService {
       config,
     });
     if (result.status === "succeeded") {
-      const updated = await this.attempts.markStatus(id, "succeeded", {
-        providerTradeNo: result.providerTradeNo ?? ctx.attempt.providerTradeNo,
-        providerStatus: result.providerStatus ?? "succeeded",
-        failureCode: null,
-        failureMessage: null,
-        manualReason: null,
-        rawPayloadJson: buildStoredEventPayload(result.rawPayload ?? {}),
-        lastCheckedAt: new Date(),
-        finishedAt: new Date(),
-      });
+      const { attempt: updated, changed } = await this.tryMarkMutableStatus(
+        id,
+        "succeeded",
+        {
+          providerTradeNo:
+            result.providerTradeNo ?? ctx.attempt.providerTradeNo,
+          providerStatus: result.providerStatus ?? "succeeded",
+          failureCode: null,
+          failureMessage: null,
+          manualReason: null,
+          rawPayloadJson: buildStoredEventPayload(result.rawPayload ?? {}),
+          lastCheckedAt: new Date(),
+          finishedAt: new Date(),
+        },
+      );
+      if (!changed) return updated;
       await this.paymentsService.applyProviderPaymentResult({
         paymentId: ctx.attempt.paymentId,
         providerTradeNo: result.providerTradeNo ?? ctx.attempt.providerTradeNo,
@@ -437,7 +471,7 @@ export class PaymentCodeOrchestratorService {
       return updated;
     }
     if (result.status === "reversed") {
-      return await this.attempts.markStatus(id, "reversed", {
+      return await this.markMutableStatus(id, "reversed", {
         providerTradeNo: result.providerTradeNo ?? ctx.attempt.providerTradeNo,
         providerStatus: result.providerStatus ?? result.status,
         failureCode: result.failureCode ?? null,
@@ -449,7 +483,7 @@ export class PaymentCodeOrchestratorService {
         isActive: false,
       });
     }
-    return await this.attempts.markStatus(
+    return await this.markMutableStatus(
       id,
       result.status === "failed"
         ? "failed"
@@ -473,6 +507,15 @@ export class PaymentCodeOrchestratorService {
     reason: string,
   ): Promise<PaymentCodeAttemptRow> {
     const ctx = await this.attempts.getContextById(id);
+    if (this.isTerminalAttempt(ctx.attempt)) {
+      return ctx.attempt;
+    }
+    const { attempt, changed } = await this.tryMarkReversibleStatus(
+      id,
+      "reversing",
+      { manualReason: reason },
+    );
+    if (!changed) return attempt;
     const provider = this.registry.getPaymentCodeProvider(ctx.providerCode);
     const config = await this.configService.resolveForExistingPayment({
       providerCode: ctx.providerCode,
@@ -480,11 +523,11 @@ export class PaymentCodeOrchestratorService {
       machineId: ctx.machineId,
     });
     const result = await provider.reversePaymentCode({
-      paymentNo: ctx.attempt.providerPaymentNo,
-      providerTradeNo: ctx.attempt.providerTradeNo,
+      paymentNo: attempt.providerPaymentNo,
+      providerTradeNo: attempt.providerTradeNo,
       config,
     });
-    return await this.attempts.markStatus(
+    return await this.markReversibleStatus(
       id,
       result.status === "reversed" ? "reversed" : "manual_handling",
       {
@@ -613,5 +656,57 @@ export class PaymentCodeOrchestratorService {
 
   private async wait(ms: number): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  private isTerminalAttempt(attempt: PaymentCodeAttemptRow): boolean {
+    return PaymentCodeOrchestratorService.terminalStatuses.includes(
+      attempt.status as (typeof PaymentCodeOrchestratorService.terminalStatuses)[number],
+    );
+  }
+
+  private async markMutableStatus(
+    id: string,
+    status: PaymentCodeAttemptRow["status"],
+    patch: Parameters<PaymentCodeAttemptsService["markStatus"]>[2] = {},
+  ): Promise<PaymentCodeAttemptRow> {
+    return (await this.tryMarkMutableStatus(id, status, patch)).attempt;
+  }
+
+  private async tryMarkMutableStatus(
+    id: string,
+    status: PaymentCodeAttemptRow["status"],
+    patch: Parameters<PaymentCodeAttemptsService["markStatus"]>[2] = {},
+  ): Promise<{ attempt: PaymentCodeAttemptRow; changed: boolean }> {
+    const updated = await this.attempts.markStatusIfCurrentStatusIn(
+      id,
+      status,
+      [...PaymentCodeOrchestratorService.mutableStatuses],
+      patch,
+    );
+    if (updated) return { attempt: updated, changed: true };
+    return { attempt: await this.attempts.getById(id), changed: false };
+  }
+
+  private async markReversibleStatus(
+    id: string,
+    status: PaymentCodeAttemptRow["status"],
+    patch: Parameters<PaymentCodeAttemptsService["markStatus"]>[2] = {},
+  ): Promise<PaymentCodeAttemptRow> {
+    return (await this.tryMarkReversibleStatus(id, status, patch)).attempt;
+  }
+
+  private async tryMarkReversibleStatus(
+    id: string,
+    status: PaymentCodeAttemptRow["status"],
+    patch: Parameters<PaymentCodeAttemptsService["markStatus"]>[2] = {},
+  ): Promise<{ attempt: PaymentCodeAttemptRow; changed: boolean }> {
+    const updated = await this.attempts.markStatusIfCurrentStatusIn(
+      id,
+      status,
+      [...PaymentCodeOrchestratorService.reversibleStatuses],
+      patch,
+    );
+    if (updated) return { attempt: updated, changed: true };
+    return { attempt: await this.attempts.getById(id), changed: false };
   }
 }

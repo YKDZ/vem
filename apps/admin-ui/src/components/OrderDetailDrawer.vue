@@ -55,6 +55,18 @@ const paymentCodeAttemptColumns = [
   { title: "次数", dataIndex: "attemptNo", key: "attemptNo" },
   { title: "状态", dataIndex: "status", key: "status" },
   { title: "付款码", dataIndex: "authCodeMasked", key: "authCodeMasked" },
+  {
+    title: "付款尝试号",
+    dataIndex: "providerPaymentNo",
+    key: "providerPaymentNo",
+  },
+  { title: "渠道交易号", dataIndex: "providerTradeNo", key: "providerTradeNo" },
+  { title: "渠道状态", dataIndex: "providerStatus", key: "providerStatus" },
+  { title: "错误码", dataIndex: "failureCode", key: "failureCode" },
+  { title: "失败消息", dataIndex: "failureMessage", key: "failureMessage" },
+  { title: "处理原因", dataIndex: "manualReason", key: "manualReason" },
+  { title: "查询时间", dataIndex: "lastCheckedAt", key: "lastCheckedAt" },
+  { title: "撤销时间", dataIndex: "reversedAt", key: "reversedAt" },
   { title: "来源", dataIndex: "source", key: "source" },
 ];
 

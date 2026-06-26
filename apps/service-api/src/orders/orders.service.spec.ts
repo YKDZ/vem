@@ -287,8 +287,16 @@ describe("OrdersService", () => {
             paymentId: "payment-1",
             orderId: "order-1",
             attemptNo: 1,
-            status: "succeeded",
+            status: "reversed",
+            providerPaymentNo: "PCA001",
+            providerTradeNo: "ALI-TXN-001",
+            providerStatus: "TRADE_CLOSED",
             authCodeMasked: "134***9988",
+            failureCode: "PAYMENT_CODE_REVERSED",
+            failureMessage: "本次付款码交易已撤销，请刷新付款码后重试",
+            manualReason: "query_timeout_reversed",
+            lastCheckedAt: new Date("2026-06-26T04:01:00.000Z"),
+            reversedAt: new Date("2026-06-26T04:02:00.000Z"),
           },
         ],
         [
@@ -362,9 +370,12 @@ describe("OrdersService", () => {
 
       const service = makeService({ db: db as never });
 
-      await expect(
-        service.getOrderInvestigation("order-1", allInvestigationPermissions()),
-      ).resolves.toMatchObject({
+      const investigation = await service.getOrderInvestigation(
+        "order-1",
+        allInvestigationPermissions(),
+      );
+
+      expect(investigation).toMatchObject({
         order: {
           orderNo: "ORD-1",
           machineCode: "VEM-001",
@@ -374,7 +385,19 @@ describe("OrdersService", () => {
         payments: [{ paymentNo: "PAY-1", status: "succeeded" }],
         paymentWebhookAttempts: [{ id: "webhook-1" }],
         paymentReconciliationAttempts: [{ id: "reconcile-1" }],
-        paymentCodeAttempts: [{ id: "code-1", authCodeMasked: "134***9988" }],
+        paymentCodeAttempts: [
+          {
+            id: "code-1",
+            status: "reversed",
+            providerPaymentNo: "PCA001",
+            providerTradeNo: "ALI-TXN-001",
+            providerStatus: "TRADE_CLOSED",
+            authCodeMasked: "134***9988",
+            failureCode: "PAYMENT_CODE_REVERSED",
+            failureMessage: "本次付款码交易已撤销，请刷新付款码后重试",
+            manualReason: "query_timeout_reversed",
+          },
+        ],
         vendingCommands: [
           {
             commandNo: "VC-1",
@@ -396,6 +419,12 @@ describe("OrdersService", () => {
         adminAuditEntries: [{ action: "orders.refund_request" }],
         orderStatusEvents: [],
       });
+      expect(JSON.stringify(investigation.paymentCodeAttempts)).not.toContain(
+        "authCodeHash",
+      );
+      expect(JSON.stringify(investigation.paymentCodeAttempts)).not.toContain(
+        "rawPayloadJson",
+      );
     });
 
     it("keeps orders.read users on order detail and fulfillment basics only", async () => {

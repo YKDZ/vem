@@ -246,6 +246,8 @@ export type PaymentCodeAttempt = {
   status: string;
   authCodeMasked: string;
   source: string;
+  providerTradeNo: string | null;
+  providerStatus: string | null;
   failureCode: string | null;
   failureMessage: string | null;
   manualReason: string | null;
@@ -298,17 +300,24 @@ export async function listPaymentCodeAttempts(
   );
 }
 
-export async function queryPaymentCodeAttempt(id: string): Promise<void> {
-  await post<void>(`/payments/payment-code-attempts/${id}/query`);
+export async function queryPaymentCodeAttempt(
+  id: string,
+): Promise<PaymentCodeAttempt> {
+  return await post<PaymentCodeAttempt>(
+    `/payments/payment-code-attempts/${id}/query`,
+  );
 }
 
 export async function reversePaymentCodeAttempt(
   id: string,
   reason: string,
-): Promise<void> {
-  await post<void>(`/payments/payment-code-attempts/${id}/reverse`, {
-    reason,
-  });
+): Promise<PaymentCodeAttempt> {
+  return await post<PaymentCodeAttempt>(
+    `/payments/payment-code-attempts/${id}/reverse`,
+    {
+      reason,
+    },
+  );
 }
 
 export async function manualReconcile(paymentId: string): Promise<{
