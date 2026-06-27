@@ -43,10 +43,18 @@ describe("MachinesService", () => {
   const signForMachine = vi.fn();
   const verifyFromTopic = vi.fn();
   const listMachinePaymentOptionsForMachine = vi.fn();
+  const listProductionPilotPaymentEvidenceForMachine = vi.fn();
   const createMachineOfflineNotification = vi.fn();
 
   beforeEach(async () => {
     vi.resetAllMocks();
+    listMachinePaymentOptionsForMachine.mockResolvedValue({ options: [] });
+    listProductionPilotPaymentEvidenceForMachine.mockImplementation(
+      async () => {
+        const paymentOptions = await listMachinePaymentOptionsForMachine();
+        return paymentOptions.options;
+      },
+    );
     const module = await Test.createTestingModule({
       providers: [
         MachinesService,
@@ -54,7 +62,10 @@ describe("MachinesService", () => {
         { provide: MachineCredentialService, useValue: {} },
         {
           provide: PaymentProviderConfigService,
-          useValue: { listMachinePaymentOptionsForMachine },
+          useValue: {
+            listMachinePaymentOptionsForMachine,
+            listProductionPilotPaymentEvidenceForMachine,
+          },
         },
         { provide: AuditService, useValue: { record: auditRecord } },
         { provide: MqttService, useValue: { publish } },
@@ -292,6 +303,859 @@ describe("MachinesService", () => {
     expect(result.latestEnvironmentCommand).toEqual(
       expect.objectContaining({ status: "succeeded" }),
     );
+  });
+
+  it("returns ready Production Pilot Readiness from machine detail evidence", async () => {
+    const machine = {
+      id: "machine-1",
+      code: "M001",
+      name: "Lobby",
+      status: "online",
+      lastSeenAt: new Date(),
+      deletedAt: null,
+    };
+    mockDb.select
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            limit: async () => [machine],
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            orderBy: () => ({
+              limit: async () => [
+                {
+                  reportedAt: new Date("2026-06-27T02:00:00.000Z"),
+                  statusPayloadJson: {
+                    network: "online",
+                    mqttConnected: true,
+                    hardwareAdapter: "serial",
+                    hardwarePortPath: "COM5",
+                    hardwareStatus: "ok",
+                    scannerHealth: {
+                      status: "online",
+                      portPath: "COM3",
+                      message: "scanner ready",
+                    },
+                    productionDispensePath: {
+                      status: "ready",
+                      message: "real lower-controller serial path ready",
+                    },
+                    saleReadiness: {
+                      state: "restored",
+                      blockingCodes: [],
+                    },
+                    physicalStockAttestation: {
+                      status: "ready",
+                      attestedAt: "2026-06-27T01:00:00.000Z",
+                    },
+                    recoveryDrill: {
+                      status: "ready",
+                      completedAt: "2026-06-27T01:20:00.000Z",
+                    },
+                    managedMachineUpdate: {
+                      status: "ready",
+                      currentVersion: "2026.06.27",
+                    },
+                  },
+                },
+              ],
+            }),
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            orderBy: () => ({
+              limit: async () => [],
+            }),
+          }),
+        }),
+      });
+    listMachinePaymentOptionsForMachine.mockResolvedValue({
+      options: [
+        {
+          providerCode: "alipay",
+          method: "qr_code",
+          mode: "production",
+          displayName: "Alipay",
+          description: "Alipay QR",
+          icon: "alipay",
+          recommended: true,
+        },
+      ],
+    });
+
+    const result = await service.getMachine("machine-1");
+
+    expect(result.productionPilotReadiness).toEqual(
+      expect.objectContaining({
+        status: "ready",
+        blockers: [],
+        degraded: [],
+        checks: expect.arrayContaining([
+          expect.objectContaining({
+            code: "machine_heartbeat.online",
+            status: "ready",
+          }),
+          expect.objectContaining({
+            code: "payment_readiness.ready",
+            status: "ready",
+          }),
+          expect.objectContaining({
+            code: "managed_machine_update.ready",
+            status: "ready",
+          }),
+        ]),
+      }),
+    );
+  });
+
+  it("blocks Production Pilot Readiness when an online machine heartbeat is stale", async () => {
+    const machine = {
+      id: "machine-1",
+      code: "M001",
+      name: "Lobby",
+      status: "online",
+      lastSeenAt: new Date("2026-01-01T00:00:00.000Z"),
+      deletedAt: null,
+    };
+    mockDb.select
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            limit: async () => [machine],
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            orderBy: () => ({
+              limit: async () => [
+                {
+                  reportedAt: new Date("2026-01-01T00:00:00.000Z"),
+                  statusPayloadJson: {
+                    network: "online",
+                    mqttConnected: true,
+                    scannerHealth: { status: "online" },
+                    productionDispensePath: { status: "ready" },
+                    saleReadiness: {
+                      state: "restored",
+                      blockingCodes: [],
+                    },
+                    physicalStockAttestation: { status: "ready" },
+                    recoveryDrill: { status: "ready" },
+                    managedMachineUpdate: { status: "ready" },
+                  },
+                },
+              ],
+            }),
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            orderBy: () => ({
+              limit: async () => [],
+            }),
+          }),
+        }),
+      });
+    listMachinePaymentOptionsForMachine.mockResolvedValue({
+      options: [
+        {
+          providerCode: "alipay",
+          method: "qr_code",
+          mode: "production",
+          displayName: "Alipay",
+          description: "Alipay QR",
+          icon: "alipay",
+          recommended: true,
+        },
+      ],
+    });
+
+    const result = await service.getMachine("machine-1");
+
+    expect(result.productionPilotReadiness.status).toBe("blocked");
+    expect(result.productionPilotReadiness.blockers).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "machine_heartbeat.stale",
+          status: "blocked",
+          message: "Machine heartbeat timed out",
+        }),
+      ]),
+    );
+  });
+
+  it("blocks Production Pilot Readiness when production dispense path evidence is missing", async () => {
+    const machine = {
+      id: "machine-1",
+      code: "M001",
+      name: "Lobby",
+      status: "online",
+      lastSeenAt: new Date(),
+      deletedAt: null,
+    };
+    mockDb.select
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            limit: async () => [machine],
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            orderBy: () => ({
+              limit: async () => [
+                {
+                  reportedAt: new Date("2026-06-27T02:00:00.000Z"),
+                  statusPayloadJson: {
+                    network: "online",
+                    mqttConnected: true,
+                    hardwareAdapter: "serial",
+                    hardwarePortPath: "COM5",
+                    hardwareStatus: "ok",
+                    scannerHealth: { status: "online" },
+                    saleReadiness: {
+                      state: "restored",
+                      blockingCodes: [],
+                    },
+                    physicalStockAttestation: { status: "ready" },
+                    recoveryDrill: { status: "ready" },
+                    managedMachineUpdate: { status: "ready" },
+                  },
+                },
+              ],
+            }),
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            orderBy: () => ({
+              limit: async () => [],
+            }),
+          }),
+        }),
+      });
+    listMachinePaymentOptionsForMachine.mockResolvedValue({
+      options: [
+        {
+          providerCode: "alipay",
+          method: "qr_code",
+          mode: "production",
+          displayName: "Alipay",
+          description: "Alipay QR",
+          icon: "alipay",
+          recommended: true,
+        },
+      ],
+    });
+
+    const result = await service.getMachine("machine-1");
+
+    expect(result.productionPilotReadiness.status).toBe("blocked");
+    expect(result.productionPilotReadiness.blockers).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "production_dispense_path.blocked",
+          status: "blocked",
+        }),
+      ]),
+    );
+  });
+
+  it("accepts production dispense path evidence under sale readiness components", async () => {
+    const machine = {
+      id: "machine-1",
+      code: "M001",
+      name: "Lobby",
+      status: "online",
+      lastSeenAt: new Date(),
+      deletedAt: null,
+    };
+    mockDb.select
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            limit: async () => [machine],
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            orderBy: () => ({
+              limit: async () => [
+                {
+                  reportedAt: new Date("2026-06-27T02:00:00.000Z"),
+                  statusPayloadJson: {
+                    network: "online",
+                    mqttConnected: true,
+                    scannerHealth: { status: "online" },
+                    saleReadiness: {
+                      state: "restored",
+                      blockingCodes: [],
+                      components: {
+                        productionDispensePath: {
+                          status: "ready",
+                          message: "real lower-controller serial path ready",
+                        },
+                      },
+                    },
+                    physicalStockAttestation: { status: "ready" },
+                    recoveryDrill: { status: "ready" },
+                    managedMachineUpdate: { status: "ready" },
+                  },
+                },
+              ],
+            }),
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            orderBy: () => ({
+              limit: async () => [],
+            }),
+          }),
+        }),
+      });
+    listMachinePaymentOptionsForMachine.mockResolvedValue({
+      options: [
+        {
+          providerCode: "alipay",
+          method: "qr_code",
+          mode: "production",
+          displayName: "Alipay",
+          description: "Alipay QR",
+          icon: "alipay",
+          recommended: true,
+        },
+      ],
+    });
+
+    const result = await service.getMachine("machine-1");
+
+    expect(result.productionPilotReadiness).toEqual(
+      expect.objectContaining({
+        status: "ready",
+        blockers: [],
+        degraded: [],
+        checks: expect.arrayContaining([
+          expect.objectContaining({
+            code: "production_dispense_path.ready",
+            status: "ready",
+          }),
+        ]),
+      }),
+    );
+  });
+
+  it("treats scannerHealth online boolean evidence as ready", async () => {
+    const machine = {
+      id: "machine-1",
+      code: "M001",
+      name: "Lobby",
+      status: "online",
+      lastSeenAt: new Date(),
+      deletedAt: null,
+    };
+    mockDb.select
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            limit: async () => [machine],
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            orderBy: () => ({
+              limit: async () => [
+                {
+                  reportedAt: new Date("2026-06-27T02:00:00.000Z"),
+                  statusPayloadJson: {
+                    network: "online",
+                    mqttConnected: true,
+                    scannerHealth: {
+                      online: true,
+                      portPath: "COM3",
+                      message: "scanner ready",
+                    },
+                    productionDispensePath: { status: "ready" },
+                    saleReadiness: {
+                      state: "restored",
+                      blockingCodes: [],
+                    },
+                    physicalStockAttestation: { status: "ready" },
+                    recoveryDrill: { status: "ready" },
+                    managedMachineUpdate: { status: "ready" },
+                  },
+                },
+              ],
+            }),
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            orderBy: () => ({
+              limit: async () => [],
+            }),
+          }),
+        }),
+      });
+    listMachinePaymentOptionsForMachine.mockResolvedValue({
+      options: [
+        {
+          providerCode: "alipay",
+          method: "qr_code",
+          mode: "production",
+          displayName: "Alipay",
+          description: "Alipay QR",
+          icon: "alipay",
+          recommended: true,
+        },
+      ],
+    });
+
+    const result = await service.getMachine("machine-1");
+
+    expect(result.productionPilotReadiness).toEqual(
+      expect.objectContaining({
+        status: "ready",
+        blockers: [],
+        degraded: [],
+        checks: expect.arrayContaining([
+          expect.objectContaining({
+            code: "scanner_runtime_status.ready",
+            status: "ready",
+          }),
+        ]),
+      }),
+    );
+  });
+
+  it("blocks Production Pilot Readiness for sandbox payment evidence", async () => {
+    const machine = {
+      id: "machine-1",
+      code: "M001",
+      name: "Lobby",
+      status: "online",
+      lastSeenAt: new Date(),
+      deletedAt: null,
+    };
+    mockDb.select
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            limit: async () => [machine],
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            orderBy: () => ({
+              limit: async () => [
+                {
+                  reportedAt: new Date("2026-06-27T02:00:00.000Z"),
+                  statusPayloadJson: {
+                    network: "online",
+                    mqttConnected: true,
+                    scannerHealth: { online: true },
+                    productionDispensePath: { status: "ready" },
+                    saleReadiness: {
+                      state: "restored",
+                      blockingCodes: [],
+                    },
+                    physicalStockAttestation: { status: "ready" },
+                    recoveryDrill: { status: "ready" },
+                    managedMachineUpdate: { status: "ready" },
+                  },
+                },
+              ],
+            }),
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            orderBy: () => ({
+              limit: async () => [],
+            }),
+          }),
+        }),
+      });
+    listMachinePaymentOptionsForMachine.mockResolvedValue({
+      options: [
+        {
+          providerCode: "alipay",
+          method: "qr_code",
+          mode: "sandbox",
+          displayName: "Alipay",
+          description: "Alipay QR",
+          icon: "alipay",
+          recommended: true,
+        },
+      ],
+    });
+
+    const result = await service.getMachine("machine-1");
+
+    expect(result.productionPilotReadiness.status).toBe("blocked");
+    expect(result.productionPilotReadiness.blockers).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "payment_readiness.no_production_provider",
+          status: "blocked",
+        }),
+      ]),
+    );
+  });
+
+  it("blocks Production Pilot Readiness when payment mode evidence is unknown", async () => {
+    const machine = {
+      id: "machine-1",
+      code: "M001",
+      name: "Lobby",
+      status: "online",
+      lastSeenAt: new Date(),
+      deletedAt: null,
+    };
+    mockDb.select
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            limit: async () => [machine],
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            orderBy: () => ({
+              limit: async () => [
+                {
+                  reportedAt: new Date("2026-06-27T02:00:00.000Z"),
+                  statusPayloadJson: {
+                    network: "online",
+                    mqttConnected: true,
+                    scannerHealth: { online: true },
+                    productionDispensePath: { status: "ready" },
+                    saleReadiness: {
+                      state: "restored",
+                      blockingCodes: [],
+                    },
+                    physicalStockAttestation: { status: "ready" },
+                    recoveryDrill: { status: "ready" },
+                    managedMachineUpdate: { status: "ready" },
+                  },
+                },
+              ],
+            }),
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            orderBy: () => ({
+              limit: async () => [],
+            }),
+          }),
+        }),
+      });
+    listMachinePaymentOptionsForMachine.mockResolvedValue({
+      options: [
+        {
+          providerCode: "alipay",
+          method: "qr_code",
+          displayName: "Alipay",
+          description: "Alipay QR",
+          icon: "alipay",
+          recommended: true,
+        },
+      ],
+    });
+
+    const result = await service.getMachine("machine-1");
+
+    expect(result.productionPilotReadiness.status).toBe("blocked");
+    expect(result.productionPilotReadiness.blockers).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "payment_readiness.no_production_provider",
+          status: "blocked",
+        }),
+      ]),
+    );
+  });
+
+  it("keeps scannerHealth offline boolean evidence degraded", async () => {
+    const machine = {
+      id: "machine-1",
+      code: "M001",
+      name: "Lobby",
+      status: "online",
+      lastSeenAt: new Date(),
+      deletedAt: null,
+    };
+    mockDb.select
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            limit: async () => [machine],
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            orderBy: () => ({
+              limit: async () => [
+                {
+                  reportedAt: new Date("2026-06-27T02:00:00.000Z"),
+                  statusPayloadJson: {
+                    network: "online",
+                    mqttConnected: true,
+                    scannerHealth: {
+                      online: false,
+                      portPath: "COM3",
+                      message: "scanner offline",
+                    },
+                    productionDispensePath: { status: "ready" },
+                    saleReadiness: {
+                      state: "restored",
+                      blockingCodes: [],
+                    },
+                    physicalStockAttestation: { status: "ready" },
+                    recoveryDrill: { status: "ready" },
+                    managedMachineUpdate: { status: "ready" },
+                  },
+                },
+              ],
+            }),
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            orderBy: () => ({
+              limit: async () => [],
+            }),
+          }),
+        }),
+      });
+    listMachinePaymentOptionsForMachine.mockResolvedValue({
+      options: [
+        {
+          providerCode: "alipay",
+          method: "qr_code",
+          mode: "production",
+          displayName: "Alipay",
+          description: "Alipay QR",
+          icon: "alipay",
+          recommended: true,
+        },
+      ],
+    });
+
+    const result = await service.getMachine("machine-1");
+
+    expect(result.productionPilotReadiness.status).toBe("degraded");
+    expect(result.productionPilotReadiness.degraded).toEqual([
+      expect.objectContaining({
+        code: "scanner_runtime_status.missing",
+        status: "degraded",
+      }),
+    ]);
+  });
+
+  it("returns stable Production Pilot Readiness blockers with operator actions", async () => {
+    const machine = {
+      id: "machine-1",
+      code: "M001",
+      name: "Lobby",
+      status: "online",
+      lastSeenAt: new Date(),
+      deletedAt: null,
+    };
+    mockDb.select
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            limit: async () => [machine],
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            orderBy: () => ({
+              limit: async () => [
+                {
+                  reportedAt: new Date("2026-06-27T02:00:00.000Z"),
+                  statusPayloadJson: {
+                    network: "online",
+                    mqttConnected: true,
+                    hardwareAdapter: "serial",
+                    hardwarePortPath: "COM5",
+                    hardwareStatus: "ok",
+                    scannerHealth: { status: "online" },
+                    saleReadiness: {
+                      state: "locked",
+                      blockingCodes: ["WHOLE_MACHINE_HARDWARE_FAULT"],
+                    },
+                    wholeMachineMaintenanceLock: {
+                      code: "WHOLE_MACHINE_HARDWARE_FAULT",
+                      message: "pickup platform blocked",
+                      source: "dispense_failure",
+                    },
+                  },
+                },
+              ],
+            }),
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            orderBy: () => ({
+              limit: async () => [],
+            }),
+          }),
+        }),
+      });
+
+    const result = await service.getMachine("machine-1");
+
+    expect(result.productionPilotReadiness.status).toBe("blocked");
+    expect(result.productionPilotReadiness.blockers).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "machine_sale_readiness.blocked",
+          status: "blocked",
+          message: "Machine Sale Readiness is not restored",
+          operatorAction:
+            "Resolve sale blockers shown by the machine runtime before production pilot.",
+        }),
+        expect.objectContaining({
+          code: "payment_readiness.no_production_provider",
+          status: "blocked",
+          operatorAction:
+            "Enable a real machine payment provider before production pilot.",
+        }),
+        expect.objectContaining({
+          code: "whole_machine_maintenance_lock.active",
+          status: "blocked",
+          message: "pickup platform blocked",
+          operatorAction:
+            "Clear the maintenance lock only after hardware health is restored and notes are recorded.",
+        }),
+      ]),
+    );
+  });
+
+  it("distinguishes degraded Production Pilot Readiness from blocked readiness", async () => {
+    const machine = {
+      id: "machine-1",
+      code: "M001",
+      name: "Lobby",
+      status: "online",
+      lastSeenAt: new Date(),
+      deletedAt: null,
+    };
+    mockDb.select
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            limit: async () => [machine],
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            orderBy: () => ({
+              limit: async () => [
+                {
+                  reportedAt: new Date("2026-06-27T02:00:00.000Z"),
+                  statusPayloadJson: {
+                    network: "online",
+                    mqttConnected: true,
+                    hardwareAdapter: "serial",
+                    hardwarePortPath: "COM5",
+                    hardwareStatus: "ok",
+                    productionDispensePath: { status: "ready" },
+                    saleReadiness: {
+                      state: "restored",
+                      blockingCodes: [],
+                    },
+                    physicalStockAttestation: { status: "ready" },
+                    recoveryDrill: { status: "ready" },
+                    managedMachineUpdate: { status: "ready" },
+                  },
+                },
+              ],
+            }),
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            orderBy: () => ({
+              limit: async () => [],
+            }),
+          }),
+        }),
+      });
+    listMachinePaymentOptionsForMachine.mockResolvedValue({
+      options: [
+        {
+          providerCode: "alipay",
+          method: "qr_code",
+          mode: "production",
+          displayName: "Alipay",
+          description: "Alipay QR",
+          icon: "alipay",
+          recommended: true,
+        },
+      ],
+    });
+
+    const result = await service.getMachine("machine-1");
+
+    expect(result.productionPilotReadiness.status).toBe("degraded");
+    expect(result.productionPilotReadiness.blockers).toEqual([]);
+    expect(result.productionPilotReadiness.degraded).toEqual([
+      expect.objectContaining({
+        code: "scanner_runtime_status.missing",
+        label: "Scanner Runtime Status",
+        status: "degraded",
+        operatorAction:
+          "Inspect the scanner runtime; QR payment can remain available if payment readiness is ready.",
+      }),
+    ]);
   });
 
   it("throws NotFoundException when machine does not exist", async () => {

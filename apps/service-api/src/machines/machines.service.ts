@@ -75,6 +75,7 @@ import {
   hashMachineClaimCodeVerifier,
   verifyMachineClaimCode,
 } from "./machine-claim-code.util";
+import { evaluateProductionPilotReadiness } from "./production-pilot-readiness";
 
 type PageQueryInput = z.infer<typeof pageQuerySchema>;
 type CreateMachineInput = z.infer<typeof createMachineSchema>;
@@ -390,12 +391,25 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
     }
 
     const latestHeartbeat = await this.getLatestHeartbeatStatus(id);
+    const [paymentOptions, paymentEvidence] = await Promise.all([
+      this.paymentProviderConfigService.listMachinePaymentOptionsForMachine(id),
+      this.paymentProviderConfigService.listProductionPilotPaymentEvidenceForMachine(
+        id,
+      ),
+    ]);
     return {
       ...machine,
       latestHeartbeatStatus: latestHeartbeat?.statusPayload ?? null,
       latestHeartbeatReportedAt: latestHeartbeat?.reportedAt ?? null,
       latestEnvironment: latestHeartbeat?.statusPayload.environment ?? null,
       latestEnvironmentCommand: await this.getLatestEnvironmentCommand(id),
+      productionPilotReadiness: evaluateProductionPilotReadiness({
+        machine,
+        latestHeartbeat,
+        paymentOptions: paymentEvidence,
+        machineHeartbeatTimeoutSeconds:
+          this.config.machineHeartbeatTimeoutSeconds,
+      }),
     };
   }
 

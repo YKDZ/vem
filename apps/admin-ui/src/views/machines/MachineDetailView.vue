@@ -112,6 +112,9 @@ const environmentCommandDisabled = computed(
 );
 
 const heartbeat = computed(() => machine.value?.latestHeartbeatStatus ?? null);
+const productionPilotReadiness = computed(
+  () => machine.value?.productionPilotReadiness ?? null,
+);
 const saleReadiness = computed(
   () =>
     (heartbeat.value?.saleReadiness as MachineSaleReadinessHeartbeat | null) ??
@@ -188,6 +191,14 @@ const reconciliationColumns = [
   { title: "操作", key: "actions" },
 ];
 
+const productionPilotReadinessColumns = [
+  { title: "检查项", dataIndex: "label", key: "label" },
+  { title: "状态", dataIndex: "status", key: "status" },
+  { title: "说明", dataIndex: "message", key: "message" },
+  { title: "操作建议", dataIndex: "operatorAction", key: "operatorAction" },
+  { title: "代码", dataIndex: "code", key: "code" },
+];
+
 function formatEnvironmentNumber(
   value: number | undefined,
   suffix: string,
@@ -244,6 +255,23 @@ function saleReadinessStateColor(status: string | undefined): string {
   if (status === "locked") return "error";
   if (status === "blocked") return "warning";
   if (status === "restored") return "success";
+  return "default";
+}
+
+function productionPilotReadinessStatusLabel(
+  status: string | undefined,
+): string {
+  if (status === "ready") return "生产试运营就绪";
+  if (status === "blocked") return "生产试运营阻塞";
+  if (status === "degraded") return "生产试运营降级";
+  return "生产试运营未知";
+}
+
+function readinessCheckStatusColor(status: string | undefined): string {
+  if (status === "ready") return "success";
+  if (status === "degraded") return "warning";
+  if (status === "blocked") return "error";
+  if (status === "missing") return "default";
   return "default";
 }
 
@@ -628,6 +656,58 @@ onMounted(() => {
         </a-card>
       </a-col>
     </a-row>
+
+    <a-card v-if="productionPilotReadiness">
+      <div class="mb-4 flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 class="text-lg font-semibold">Production Pilot Readiness</h2>
+          <p class="mt-1 text-sm text-slate-500">
+            区分生产试运营就绪、普通运行健康与 Machine Sale Readiness
+          </p>
+        </div>
+        <a-space>
+          <a-tag
+            :color="readinessCheckStatusColor(productionPilotReadiness.status)"
+          >
+            {{
+              productionPilotReadinessStatusLabel(
+                productionPilotReadiness.status,
+              )
+            }}
+          </a-tag>
+          <span class="text-sm text-slate-500">
+            阻塞 {{ productionPilotReadiness.blockers.length }} · 降级
+            {{ productionPilotReadiness.degraded.length }}
+          </span>
+        </a-space>
+      </div>
+      <a-table
+        :columns="productionPilotReadinessColumns"
+        :data-source="productionPilotReadiness.checks"
+        row-key="code"
+        :pagination="false"
+      >
+        <template #bodyCell="{ column, record }">
+          <template v-if="column.key === 'status'">
+            <a-tag :color="readinessCheckStatusColor(record.status)">
+              {{ record.status }}
+            </a-tag>
+          </template>
+          <template v-else-if="column.key === 'code'">
+            <span class="font-mono text-xs">{{ record.code }}</span>
+          </template>
+          <template v-else-if="column.key === 'label'">
+            {{ record.label }}
+          </template>
+          <template v-else-if="column.key === 'message'">
+            {{ record.message }}
+          </template>
+          <template v-else-if="column.key === 'operatorAction'">
+            {{ record.operatorAction }}
+          </template>
+        </template>
+      </a-table>
+    </a-card>
 
     <a-card title="货道与库存">
       <a-table
