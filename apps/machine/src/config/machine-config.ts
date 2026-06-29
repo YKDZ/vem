@@ -5,6 +5,27 @@ export const hardwareAdapterSchema = z.enum(["mock", "serial"]);
 
 export const scannerAdapterSchema = z.enum(["disabled", "serial_text"]);
 
+export const audioCueSettingsSchema = z.object({
+  enabled: z.boolean().default(false),
+  categories: z
+    .object({
+      presence: z.boolean().default(false),
+      transaction: z.boolean().default(false),
+    })
+    .default({
+      presence: false,
+      transaction: false,
+    }),
+});
+
+const audioCueSettingsDefaults = {
+  enabled: false,
+  categories: {
+    presence: false,
+    transaction: false,
+  },
+};
+
 const usbHexIdSchema = z
   .string()
   .trim()
@@ -64,6 +85,7 @@ export const machineConfigSchema = z
     visionEnabled: z.boolean().default(true),
     visionWsUrl: z.string().trim().pipe(z.url()).default(DEFAULT_VISION_WS_URL),
     visionRequestTimeoutMs: z.int().min(1000).max(30_000).default(8000),
+    audioCueSettings: audioCueSettingsSchema.default(audioCueSettingsDefaults),
     kioskMode: z.boolean().default(false),
     stockMovementRetentionDays: z.int().min(1).max(366).default(30),
   })
@@ -96,6 +118,7 @@ export const machineConfigSchema = z
 
 export type HardwareAdapter = z.infer<typeof hardwareAdapterSchema>;
 export type ScannerAdapter = z.infer<typeof scannerAdapterSchema>;
+export type AudioCueSettings = z.infer<typeof audioCueSettingsSchema>;
 export type MachineConfig = z.infer<typeof machineConfigSchema>;
 
 export const machineConfigDefaults: MachineConfig = machineConfigSchema.parse(
@@ -107,11 +130,25 @@ export function normalizeMachineConfig(input: unknown): MachineConfig {
     typeof input === "object" && input !== null && !Array.isArray(input)
       ? input
       : {};
+  const rawRecord = Object.fromEntries(Object.entries(rawObj));
   // Merge defaults + input into a plain Record, avoiding unsafe type assertions
   const processed: Record<string, unknown> = {
     ...machineConfigDefaults,
-    ...Object.fromEntries(Object.entries(rawObj)),
+    ...rawRecord,
   };
+  if (
+    !("audioCueSettings" in rawRecord) &&
+    typeof processed.presenceAudioEnabled === "boolean"
+  ) {
+    processed.audioCueSettings = {
+      enabled: processed.presenceAudioEnabled,
+      categories: {
+        presence: processed.presenceAudioEnabled,
+        transaction: false,
+      },
+    };
+  }
+  delete processed.presenceAudioEnabled;
   // Pre-normalize machineCode: whitespace-only string → null before schema validation
   if (typeof processed.machineCode === "string") {
     const trimmed = processed.machineCode.trim();
@@ -148,6 +185,7 @@ export function normalizeMachineConfig(input: unknown): MachineConfig {
       const trimmed = identity.serialNumber.trim();
       identity.serialNumber = trimmed.length > 0 ? trimmed : null;
     }
+    processed.lowerControllerUsbIdentity = identity;
   }
   if (typeof processed.scannerSerialPortPath === "string") {
     const trimmed = processed.scannerSerialPortPath.trim();

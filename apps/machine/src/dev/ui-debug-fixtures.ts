@@ -24,6 +24,7 @@ export type UiDebugScenarioId =
   | "ready"
   | "blocked"
   | "payment_qr"
+  | "payment_code"
   | "dispensing"
   | "dispensing_pickup_15s"
   | "dispensing_pickup_25s"
@@ -47,7 +48,7 @@ export type UiDebugScenario = {
 };
 
 const UPDATED_AT = "2026-06-14T08:00:00.000Z";
-const EXPIRES_AT = "2026-06-14T08:05:00.000Z";
+const EXPIRES_AT = new Date(Date.now() + 5 * 60_000).toISOString();
 
 function localStorageOrNull(): Storage | null {
   if (typeof window === "undefined") return null;
@@ -87,6 +88,13 @@ const config: ConfigSummary = {
     visionEnabled: true,
     visionWsUrl: "ws://ui-debug.local/vision",
     visionRequestTimeoutMs: 8000,
+    audioCueSettings: {
+      enabled: false,
+      categories: {
+        presence: false,
+        transaction: false,
+      },
+    },
     kioskMode: false,
     stockMovementRetentionDays: 30,
   },
@@ -639,6 +647,21 @@ const vision: VisionStatus = {
   online: true,
   message: "UI debug vision profile ready",
   updatedAt: UPDATED_AT,
+  latestDiagnosticPayload: {
+    type: "vision.profile_result",
+    payload: {
+      eventId: "UI-DEBUG-VISION-001",
+      detectedAt: UPDATED_AT,
+      profile: {
+        personPresent: true,
+        heightCm: 172,
+      },
+      quality: {
+        overall: "good",
+        warnings: [],
+      },
+    },
+  },
 };
 
 const remoteOps: RemoteOpsStatus = {
@@ -700,6 +723,36 @@ export const uiDebugScenarios: readonly UiDebugScenario[] = [
     saleView: baseSaleView,
     paymentOptions,
     transaction: transaction({}),
+    sync,
+    scanner,
+    vision,
+    remoteOps,
+  },
+  {
+    id: "payment_code",
+    name: "等待付款码",
+    description: "进入支付页，展示设备扫码器扫用户手机付款码。",
+    health: {
+      ...readyHealth,
+      currentTransaction: {
+        orderNo: "UI-DEBUG-ORDER",
+        status: "pending_payment",
+        nextAction: "wait_payment",
+        updatedAt: UPDATED_AT,
+      },
+    },
+    ready: readySnapshot,
+    config,
+    saleReadiness: saleReadiness(true),
+    saleView: baseSaleView,
+    paymentOptions,
+    transaction: transaction({
+      paymentMethod: "payment_code",
+      paymentProvider: "alipay",
+      paymentUrl: null,
+      paymentStatus: "processing",
+      operatorHint: "请出示付款码",
+    }),
     sync,
     scanner,
     vision,

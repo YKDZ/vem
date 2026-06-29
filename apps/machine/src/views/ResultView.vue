@@ -8,6 +8,8 @@ import listSloganImage from "@/assets/home/list-slogan.png";
 import logoImage from "@/assets/home/logo.png";
 import mascotListImage from "@/assets/home/mascot-list.png";
 import mascotTopImage from "@/assets/home/mascot-top-cutout.png";
+import { useMaintenanceEntry } from "@/composables/useMaintenanceEntry";
+import { requestTerminalResultCue } from "@/composables/useTransactionFeedbackCues";
 import { daemonClient } from "@/daemon/client";
 import KioskLayout from "@/layouts/KioskLayout.vue";
 import { useCatalogStore } from "@/stores/catalog";
@@ -19,6 +21,7 @@ const router = useRouter();
 const checkoutStore = useCheckoutStore();
 const catalogStore = useCatalogStore();
 const connectivityStore = useConnectivityStore();
+const { handleMaintenanceTap } = useMaintenanceEntry();
 
 const AUTO_RETURN_DELAY_MS = 6000;
 const AUTO_RETURN_TICK_MS = 1000;
@@ -87,16 +90,10 @@ const WAIT_FOR_RESOLUTION_RESULT_KINDS: ReadonlySet<CheckoutResultKind> =
 
 const kind = computed(() => String(route.params.kind) as CheckoutResultKind);
 const copy = computed(() => copyMap[kind.value] ?? copyMap.manual_handling);
-const toneClass = computed(() => {
-  if (copy.value.tone === "success") return "bg-neutral-950 text-white";
-  if (copy.value.tone === "danger") {
-    return "border border-neutral-950 bg-white text-neutral-950";
-  }
-  return "bg-neutral-200 text-neutral-950";
-});
 const isDispenseFailureResult = computed(
   () => kind.value === "dispense_failed",
 );
+const isSuccessResult = computed(() => kind.value === "success");
 const isDispenseResolutionResult = computed(() =>
   DISPENSE_RESOLUTION_RESULT_KINDS.has(kind.value),
 );
@@ -135,13 +132,14 @@ const requiresMaintenanceReview = computed(() => {
 });
 const canAutoReturn = computed(
   () =>
-    Boolean(checkoutStore.resultKind) &&
-    connectivityStore.isSaleNetworkReady &&
+    (isSuccessResult.value ||
+      (Boolean(checkoutStore.resultKind) &&
+        connectivityStore.isSaleNetworkReady)) &&
     !isDispenseResolutionResult.value,
 );
 const canManuallyReturn = computed(
   () =>
-    Boolean(checkoutStore.resultKind) &&
+    (isSuccessResult.value || Boolean(checkoutStore.resultKind)) &&
     !WAIT_FOR_RESOLUTION_RESULT_KINDS.has(kind.value) &&
     (connectivityStore.isSaleNetworkReady || !isDispenseResolutionResult.value),
 );
@@ -150,7 +148,7 @@ const autoReturnRemainingSeconds = ref(
 );
 const autoReturnMessage = computed(() => {
   const seconds = autoReturnRemainingSeconds.value;
-  return `设备已恢复，${seconds} 秒后返回首页。`;
+  return `${seconds} 秒后自动返回首页。`;
 });
 
 let autoReturnTimer: number | null = null;
@@ -236,6 +234,7 @@ watch(
 );
 
 onMounted(() => {
+  void requestTerminalResultCue(checkoutStore.transaction);
   void refreshResultReadiness();
 });
 
@@ -249,7 +248,7 @@ onBeforeUnmount(stopAutoReturn);
       <div class="failure-mist failure-mist-right"></div>
 
       <header class="failure-header">
-        <div class="failure-brand">
+        <div class="failure-brand" @click="handleMaintenanceTap">
           <img :src="logoImage" alt="唐诗村" />
           <img :src="mascotTopImage" alt="" aria-hidden="true" />
         </div>
@@ -348,53 +347,78 @@ onBeforeUnmount(stopAutoReturn);
         class="failure-slogan pointer-events-none"
       />
     </section>
-    <section
-      v-else
-      class="flex h-full flex-col items-center justify-center text-center text-neutral-950"
-    >
-      <div class="w-full rounded-lg border border-neutral-200 bg-white p-8">
-        <div
-          class="mx-auto flex size-28 items-center justify-center rounded-full text-6xl font-black"
-          :class="toneClass"
-        >
-          {{ copy.icon }}
+    <section v-else class="dispense-result-page">
+      <div class="result-mist result-mist-left"></div>
+      <div class="result-mist result-mist-right"></div>
+
+      <header class="result-header">
+        <div class="result-brand" @click="handleMaintenanceTap">
+          <img :src="logoImage" alt="唐诗村" />
+          <img :src="mascotTopImage" alt="" aria-hidden="true" />
         </div>
-        <h2 class="mt-6 text-5xl font-black">{{ copy.title }}</h2>
-        <p class="mt-4 text-xl text-neutral-700">{{ copy.subtitle }}</p>
+        <div class="result-time">
+          <p>10:30</p>
+          <span>2026/06/15　星期二</span>
+        </div>
+      </header>
+
+      <div class="result-title">
+        <h1>{{ copy.title }}</h1>
+        <span aria-hidden="true"></span>
+      </div>
+
+      <main class="result-card">
+        <div class="result-icon" :class="`result-icon-${copy.tone}`">
+          <span>{{ copy.icon }}</span>
+        </div>
+
+        <h2>{{ copy.subtitle }}</h2>
         <p
           v-if="isDispenseResolutionResult && orderCredential"
-          class="mt-5 text-xl font-black text-neutral-950"
+          class="result-order-credential"
         >
           订单凭证 {{ orderCredential }}
         </p>
-        <p v-if="resultDetail" class="mt-3 text-base text-neutral-700">
-          {{ resultDetail }}
-        </p>
-        <p v-if="canAutoReturn" class="mt-4 text-base text-neutral-500">
+        <p v-if="resultDetail" class="result-detail">{{ resultDetail }}</p>
+        <p v-if="canAutoReturn" class="result-detail">
           {{ autoReturnMessage }}
         </p>
-        <p
-          v-else-if="requiresMaintenanceReview"
-          class="mt-4 text-base text-neutral-700"
-        >
+        <p v-else-if="requiresMaintenanceReview" class="result-detail">
           设备需要维护检查，当前保持本次处理结果。
         </p>
-        <p
-          v-else-if="resultReadinessError"
-          class="mt-4 text-base text-neutral-700"
-        >
+        <p v-else-if="resultReadinessError" class="result-detail">
           无法确认设备恢复状态，当前保持本次处理结果。
         </p>
-      </div>
+
+        <section v-if="canManuallyReturn" class="result-notice">
+          <span aria-hidden="true">✓</span>
+          <div>
+            <h3>感谢您的使用</h3>
+            <p>如需继续购买，可返回首页重新选择商品。</p>
+          </div>
+        </section>
+      </main>
 
       <button
         v-if="canManuallyReturn"
-        class="kiosk-touch-target mt-8 w-full rounded-lg bg-neutral-950 px-6 py-5 text-2xl font-black text-white"
+        class="result-return-button kiosk-touch-target"
         type="button"
         @click="backToCatalog"
       >
         返回首页
       </button>
+
+      <img
+        :src="mascotListImage"
+        alt=""
+        class="result-mascot pointer-events-none"
+        aria-hidden="true"
+      />
+      <img
+        :src="listSloganImage"
+        alt="让温柔贴近 让善意发生"
+        class="result-slogan pointer-events-none"
+      />
     </section>
   </KioskLayout>
 </template>
@@ -404,11 +428,21 @@ onBeforeUnmount(stopAutoReturn);
   display: none;
 }
 
+:global(.kiosk-shell:has(.dispense-result-page) > header) {
+  display: none;
+}
+
 :global(.kiosk-shell:has(.dispense-failure-page) > .kiosk-scroll) {
   margin-top: 0;
   padding-bottom: 0;
 }
 
+:global(.kiosk-shell:has(.dispense-result-page) > .kiosk-scroll) {
+  margin-top: 0;
+  padding-bottom: 0;
+}
+
+.dispense-result-page,
 .dispense-failure-page {
   position: relative;
   display: flex;
@@ -417,10 +451,10 @@ onBeforeUnmount(stopAutoReturn);
   flex-direction: column;
   container-type: inline-size;
   overflow: hidden;
-  margin: 0 -1.5rem -1.25rem;
-  padding: 1.45rem 4rem 1.1rem;
-  border: 1px solid rgba(89, 83, 66, 0.2);
-  border-radius: 28px;
+  margin: 0;
+  padding: var(--machine-page-header-top) var(--machine-page-inline) 1.1rem;
+  border: 0;
+  border-radius: 0;
   background:
     radial-gradient(
       circle at 50% 18%,
@@ -434,9 +468,10 @@ onBeforeUnmount(stopAutoReturn);
     ),
     linear-gradient(180deg, #fffdf8 0%, #fbf7eb 62%, #f6f0df 100%);
   color: #625b52;
-  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.82);
+  box-shadow: none;
 }
 
+.result-header,
 .failure-header {
   position: relative;
   z-index: 5;
@@ -445,40 +480,47 @@ onBeforeUnmount(stopAutoReturn);
   justify-content: space-between;
 }
 
+.result-brand,
 .failure-brand {
   display: flex;
   align-items: center;
   gap: 2rem;
 }
 
+.result-brand img:first-child,
 .failure-brand img:first-child {
   width: 12.8rem;
   height: auto;
 }
 
+.result-brand img:last-child,
 .failure-brand img:last-child {
   width: 4.6rem;
   height: 4.6rem;
   object-fit: contain;
 }
 
+.result-time,
 .failure-time {
   color: #6f835f;
   text-align: right;
 }
 
+.result-time p,
 .failure-time p {
   font-family: Georgia, "Times New Roman", serif;
   font-size: 3rem;
   line-height: 1;
 }
 
+.result-time span,
 .failure-time span {
   display: block;
   margin-top: 0.65rem;
   font-size: 0.9rem;
 }
 
+.result-title,
 .failure-title {
   position: relative;
   z-index: 4;
@@ -486,6 +528,7 @@ onBeforeUnmount(stopAutoReturn);
   text-align: center;
 }
 
+.result-title h1,
 .failure-title h1 {
   color: #4c463f;
   font-family: SimSun, "Songti SC", "Noto Serif CJK SC", serif;
@@ -494,6 +537,7 @@ onBeforeUnmount(stopAutoReturn);
   letter-spacing: 0.12em;
 }
 
+.result-title span,
 .failure-title span {
   display: block;
   width: 5.2rem;
@@ -503,6 +547,7 @@ onBeforeUnmount(stopAutoReturn);
     center / contain no-repeat;
 }
 
+.result-card,
 .failure-card {
   position: relative;
   z-index: 4;
@@ -516,6 +561,7 @@ onBeforeUnmount(stopAutoReturn);
   box-shadow: 0 22px 44px rgba(102, 92, 64, 0.07);
 }
 
+.result-icon,
 .failure-icon {
   position: relative;
   display: grid;
@@ -527,6 +573,27 @@ onBeforeUnmount(stopAutoReturn);
   border-radius: 999px;
   color: #9b7466;
   background: rgba(255, 255, 255, 0.72);
+}
+
+.result-icon span {
+  display: grid;
+  width: 3.7rem;
+  height: 3.7rem;
+  place-items: center;
+  border-radius: 999px;
+  background: #6f835f;
+  color: #fffdf8;
+  font-size: 2rem;
+  font-weight: 900;
+  box-shadow: 0 10px 20px rgba(85, 105, 76, 0.18);
+}
+
+.result-icon-danger span {
+  background: #9b7466;
+}
+
+.result-icon-warning span {
+  background: #a18a61;
 }
 
 .failure-icon svg {
@@ -549,9 +616,10 @@ onBeforeUnmount(stopAutoReturn);
   font-weight: 900;
 }
 
+.result-card h2,
 .failure-card h2 {
   margin-top: 2.7rem;
-  color: #7c665d;
+  color: #6f835f;
   font-family: SimSun, "Songti SC", "Noto Serif CJK SC", serif;
   font-size: 2rem;
   font-weight: 700;
@@ -566,6 +634,7 @@ onBeforeUnmount(stopAutoReturn);
   line-height: 1.75;
 }
 
+.result-order-credential,
 .failure-order-credential {
   margin-top: 1rem;
   color: #5f584f;
@@ -573,12 +642,14 @@ onBeforeUnmount(stopAutoReturn);
   font-weight: 800;
 }
 
+.result-detail,
 .failure-detail {
   margin-top: 0.65rem;
   color: #756e64;
   font-size: 0.98rem;
 }
 
+.result-notice,
 .failure-notice {
   display: grid;
   grid-template-columns: auto 1fr;
@@ -592,6 +663,7 @@ onBeforeUnmount(stopAutoReturn);
   text-align: left;
 }
 
+.result-notice span,
 .failure-notice span {
   display: grid;
   width: 4.2rem;
@@ -602,22 +674,31 @@ onBeforeUnmount(stopAutoReturn);
   color: #fffdf8;
 }
 
+.result-notice span {
+  background: #6f835f;
+  font-size: 1.6rem;
+  font-weight: 900;
+}
+
 .failure-notice svg {
   width: 2.4rem;
   height: 2.4rem;
 }
 
+.result-notice div,
 .failure-notice div {
   border-left: 1px solid rgba(211, 203, 180, 0.65);
   padding-left: 1.35rem;
 }
 
+.result-notice h3,
 .failure-notice h3 {
   color: #625b52;
   font-size: 1.08rem;
   font-weight: 800;
 }
 
+.result-notice p,
 .failure-notice p,
 .failure-hint,
 .failure-warm-tip p {
@@ -625,6 +706,7 @@ onBeforeUnmount(stopAutoReturn);
   font-size: 0.98rem;
 }
 
+.result-notice p,
 .failure-notice p {
   margin-top: 0.55rem;
 }
@@ -633,10 +715,10 @@ onBeforeUnmount(stopAutoReturn);
   margin-top: 1.35rem;
 }
 
+.result-return-button,
 .failure-return-button {
   position: relative;
   z-index: 5;
-  width: min(100%, 24rem);
   min-height: 4.25rem;
   margin: 1.55rem auto 0;
   border-radius: 8px;
@@ -646,6 +728,14 @@ onBeforeUnmount(stopAutoReturn);
   font-weight: 800;
   letter-spacing: 0.08em;
   box-shadow: 0 10px 20px rgba(85, 105, 76, 0.16);
+}
+
+.result-return-button {
+  width: min(100%, 46rem);
+}
+
+.failure-return-button {
+  width: min(100%, 24rem);
 }
 
 .failure-warm-tip {
@@ -669,6 +759,7 @@ onBeforeUnmount(stopAutoReturn);
   margin-top: 0.85rem;
 }
 
+.result-mascot,
 .failure-mascot {
   position: absolute;
   bottom: 1rem;
@@ -681,6 +772,7 @@ onBeforeUnmount(stopAutoReturn);
   object-position: left bottom;
 }
 
+.result-slogan,
 .failure-slogan {
   position: absolute;
   right: 0;
@@ -694,6 +786,7 @@ onBeforeUnmount(stopAutoReturn);
   object-fit: contain;
 }
 
+.result-mist,
 .failure-mist {
   position: absolute;
   z-index: 0;
@@ -702,6 +795,7 @@ onBeforeUnmount(stopAutoReturn);
   opacity: 0.55;
 }
 
+.result-mist-left,
 .failure-mist-left {
   bottom: 1rem;
   left: -8rem;
@@ -711,6 +805,7 @@ onBeforeUnmount(stopAutoReturn);
   filter: blur(30px);
 }
 
+.result-mist-right,
 .failure-mist-right {
   right: -9rem;
   top: 6rem;

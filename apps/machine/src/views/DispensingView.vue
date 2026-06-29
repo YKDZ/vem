@@ -6,17 +6,19 @@ import listSloganImage from "@/assets/home/list-slogan.png";
 import logoImage from "@/assets/home/logo.png";
 import mascotListImage from "@/assets/home/mascot-list.png";
 import mascotTopImage from "@/assets/home/mascot-top-cutout.png";
+import { useMaintenanceEntry } from "@/composables/useMaintenanceEntry";
+import { requestDispensingStartedCue } from "@/composables/useTransactionFeedbackCues";
 import KioskLayout from "@/layouts/KioskLayout.vue";
 import { resultKindFromNextAction, useCheckoutStore } from "@/stores/checkout";
 
 const router = useRouter();
 const checkoutStore = useCheckoutStore();
+const { handleMaintenanceTap } = useMaintenanceEntry();
 
 let pollTimer: number | undefined;
 let clockTimer: number | undefined;
 
 const pickupSeconds = ref(60);
-const continueSeconds = ref(3);
 
 const hasOrder = computed(() => Boolean(checkoutStore.currentOrder));
 const status = computed(() => checkoutStore.status);
@@ -28,7 +30,6 @@ const hasCustomerVisibleError = computed(
     command.value?.status === "timeout" ||
     command.value?.status === "result_unknown",
 );
-const canReturnToCatalog = computed(() => !hasCustomerVisibleError.value);
 const orderCredential = computed(
   () =>
     checkoutStore.currentOrder?.orderNo ??
@@ -36,22 +37,41 @@ const orderCredential = computed(
     null,
 );
 const titleText = computed(() =>
-  hasCustomerVisibleError.value ? "出货异常" : "商品已出货",
+  hasCustomerVisibleError.value ? "出货异常" : "正在出货",
 );
 const pickupTitle = computed(() =>
-  hasCustomerVisibleError.value ? "出货遇到问题" : "请取走您的商品",
+  hasCustomerVisibleError.value
+    ? "出货遇到问题"
+    : pickupReminder.value?.level === "urgent"
+      ? "请立即取走商品"
+      : pickupReminder.value?.level === "warning"
+        ? "请及时取走商品"
+        : "请取走您的商品",
 );
 const pickupSubtitle = computed(() => {
   if (hasCustomerVisibleError.value) return "请联系工作人员处理";
   return pickupReminder.value?.message ?? "如未取货，请在 60 秒内完成取货";
 });
+const pickupNoticeTitle = computed(() =>
+  pickupReminder.value?.level === "urgent"
+    ? "取货口即将关闭"
+    : pickupReminder.value?.level === "warning"
+      ? "请尽快完成取货"
+      : "请轻轻关上取货口",
+);
+const pickupNoticeCopy = computed(() =>
+  pickupReminder.value?.level === "urgent"
+    ? "请立即取走商品，避免取货口超时关闭。"
+    : pickupReminder.value?.level === "warning"
+      ? "商品已在取货口等待，请及时取走。"
+      : "感谢您的购买，期待再次为您服务！",
+);
 const pickupTimeText = computed(
   () =>
     `${String(Math.floor(pickupSeconds.value / 60)).padStart(2, "0")}:${String(
       pickupSeconds.value % 60,
     ).padStart(2, "0")}`,
 );
-const continueText = computed(() => `继续购物（${continueSeconds.value}s）`);
 
 async function refreshStatus(): Promise<void> {
   await checkoutStore.refreshCurrentTransaction();
@@ -59,13 +79,9 @@ async function refreshStatus(): Promise<void> {
   const resultKind = resultKindFromNextAction(checkoutStore.status.nextAction);
   if (resultKind) {
     await router.replace({ name: "result", params: { kind: resultKind } });
+    return;
   }
-}
-
-async function goCatalog(): Promise<void> {
-  if (!canReturnToCatalog.value) return;
-  checkoutStore.reset();
-  await router.replace("/catalog");
+  await requestDispensingStartedCue(checkoutStore.transaction);
 }
 
 onMounted(async () => {
@@ -78,7 +94,6 @@ onMounted(async () => {
   }, 2_000);
   clockTimer = window.setInterval(() => {
     pickupSeconds.value = Math.max(0, pickupSeconds.value - 1);
-    continueSeconds.value = Math.max(0, continueSeconds.value - 1);
   }, 1_000);
 });
 
@@ -95,7 +110,7 @@ onUnmounted(() => {
       <div class="dispensing-mist dispensing-mist-right"></div>
 
       <header class="dispensing-header">
-        <div class="dispensing-brand">
+        <div class="dispensing-brand" @click="handleMaintenanceTap">
           <img :src="logoImage" alt="唐诗村" />
           <img :src="mascotTopImage" alt="" aria-hidden="true" />
         </div>
@@ -104,16 +119,6 @@ onUnmounted(() => {
           <span>2026/06/15　星期二</span>
         </div>
       </header>
-
-      <button
-        v-if="canReturnToCatalog"
-        class="dispensing-back kiosk-touch-target"
-        type="button"
-        @click="goCatalog"
-      >
-        <span aria-hidden="true">←</span>
-        返回
-      </button>
 
       <div class="dispensing-title">
         <h1>{{ titleText }}</h1>
@@ -199,20 +204,11 @@ onUnmounted(() => {
             </svg>
           </span>
           <div>
-            <h3>请轻轻关上取货口</h3>
-            <p>感谢您的购买，期待再次为您服务！</p>
+            <h3>{{ pickupNoticeTitle }}</h3>
+            <p>{{ pickupNoticeCopy }}</p>
           </div>
         </section>
       </main>
-
-      <div v-if="canReturnToCatalog" class="dispensing-actions">
-        <button class="dispensing-secondary" type="button" @click="goCatalog">
-          返回首页
-        </button>
-        <button class="dispensing-primary" type="button" @click="goCatalog">
-          {{ continueText }}
-        </button>
-      </div>
 
       <section class="warm-tip">
         <h2>❀ 温馨提示</h2>
@@ -305,10 +301,10 @@ onUnmounted(() => {
   flex-direction: column;
   container-type: inline-size;
   overflow: hidden;
-  margin: 0 -1.5rem -1.25rem;
-  padding: 1.7rem 4rem 1.2rem;
-  border: 1px solid rgba(89, 83, 66, 0.2);
-  border-radius: 28px;
+  margin: 0;
+  padding: var(--machine-page-header-top) var(--machine-page-inline) 1rem;
+  border: 0;
+  border-radius: 0;
   background:
     radial-gradient(
       circle at 50% 18%,
@@ -322,7 +318,7 @@ onUnmounted(() => {
     ),
     linear-gradient(180deg, #fffdf8 0%, #fbf7eb 62%, #f6f0df 100%);
   color: #625b52;
-  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.82);
+  box-shadow: none;
 }
 
 .dispensing-header {
@@ -367,35 +363,10 @@ onUnmounted(() => {
   font-size: 0.9rem;
 }
 
-.dispensing-back {
-  position: relative;
-  z-index: 5;
-  display: inline-flex;
-  width: fit-content;
-  min-height: 52px;
-  align-items: center;
-  gap: 0.9rem;
-  margin-top: 3.5rem;
-  color: #6b6258;
-  font-family: SimSun, "Songti SC", "Noto Serif CJK SC", serif;
-  font-size: 1.55rem;
-  font-weight: 700;
-}
-
-.dispensing-back span {
-  display: grid;
-  width: 45px;
-  height: 45px;
-  place-items: center;
-  border: 1px solid rgba(198, 187, 154, 0.82);
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.58);
-}
-
 .dispensing-title {
   position: relative;
   z-index: 4;
-  margin-top: 5.4rem;
+  margin-top: 4.6rem;
   text-align: center;
 }
 
@@ -421,11 +392,11 @@ onUnmounted(() => {
   position: relative;
   z-index: 4;
   width: min(100%, 48rem);
-  margin: 3rem auto 0;
+  margin: 1.4rem auto 0;
   border: 1px solid rgba(211, 203, 180, 0.82);
   border-radius: 26px;
   background: rgba(255, 253, 248, 0.58);
-  padding: 5.5rem 5.4rem 4.1rem;
+  padding: 2.4rem 4.2rem 2.1rem;
   text-align: center;
   box-shadow: 0 22px 44px rgba(102, 92, 64, 0.07);
 }
@@ -433,8 +404,8 @@ onUnmounted(() => {
 .pickup-illustration {
   position: relative;
   display: grid;
-  width: 15.8rem;
-  height: 15.8rem;
+  width: 10.8rem;
+  height: 10.8rem;
   margin: 0 auto;
   place-items: center;
   border: 1px solid rgba(211, 203, 180, 0.82);
@@ -444,14 +415,14 @@ onUnmounted(() => {
 }
 
 .pickup-illustration > svg {
-  width: 10.6rem;
-  height: 10.6rem;
+  width: 7.1rem;
+  height: 7.1rem;
 }
 
 .pickup-illustration span {
   position: absolute;
-  right: 3.2rem;
-  bottom: 3rem;
+  right: 2rem;
+  bottom: 1.9rem;
   display: grid;
   width: 3.2rem;
   height: 3.2rem;
@@ -472,7 +443,7 @@ onUnmounted(() => {
 }
 
 .pickup-card h2 {
-  margin-top: 3.5rem;
+  margin-top: 1.8rem;
   color: #6f835f;
   font-family: SimSun, "Songti SC", "Noto Serif CJK SC", serif;
   font-size: 2rem;
@@ -494,14 +465,14 @@ onUnmounted(() => {
 }
 
 .pickup-time-label {
-  margin-top: 3rem;
+  margin-top: 1.55rem;
   color: #5f584f;
   font-size: 1.15rem;
 }
 
 .pickup-time {
   display: block;
-  margin-top: 1.05rem;
+  margin-top: 0.75rem;
   color: #6f835f;
   font-family: Georgia, "Times New Roman", serif;
   font-size: 2.85rem;
@@ -510,7 +481,7 @@ onUnmounted(() => {
 }
 
 .pickup-time-copy {
-  margin-top: 1.2rem;
+  margin-top: 0.75rem;
   color: #827b70;
   font-size: 1rem;
 }
@@ -520,11 +491,11 @@ onUnmounted(() => {
   grid-template-columns: auto 1fr;
   gap: 1.5rem;
   align-items: center;
-  margin-top: 3rem;
+  margin-top: 1.6rem;
   border: 1px solid rgba(211, 203, 180, 0.74);
   border-radius: 12px;
   background: rgba(255, 253, 248, 0.54);
-  padding: 1.55rem 3.1rem;
+  padding: 1.15rem 2.2rem;
   text-align: left;
 }
 
@@ -560,40 +531,11 @@ onUnmounted(() => {
   font-size: 1rem;
 }
 
-.dispensing-actions {
-  position: relative;
-  z-index: 5;
-  display: grid;
-  width: min(100%, 38rem);
-  grid-template-columns: 1fr 1fr;
-  gap: 5rem;
-  margin: 3rem auto 0;
-}
-
-.dispensing-actions button {
-  min-height: 4.25rem;
-  border-radius: 8px;
-  font-size: 1.25rem;
-  letter-spacing: 0.08em;
-}
-
-.dispensing-secondary {
-  border: 1px solid #9aa78f;
-  background: rgba(255, 253, 248, 0.72);
-  color: #6f835f;
-}
-
-.dispensing-primary {
-  background: #6f835f;
-  color: #fffdf8;
-  box-shadow: 0 10px 20px rgba(85, 105, 76, 0.16);
-}
-
 .warm-tip {
   position: relative;
   z-index: 5;
   width: min(100%, 33rem);
-  margin: 3.8rem auto 0;
+  margin: 1.3rem auto 0;
   color: #746d63;
   padding-left: 4.5rem;
 }
@@ -688,18 +630,6 @@ onUnmounted(() => {
   .dispensing-time span {
     margin-top: 0.3rem;
     font-size: 0.66rem;
-  }
-
-  .dispensing-back {
-    min-height: 36px;
-    margin-top: 0.9rem;
-    gap: 0.6rem;
-    font-size: 0.98rem;
-  }
-
-  .dispensing-back span {
-    width: 32px;
-    height: 32px;
   }
 
   .dispensing-title {
@@ -801,17 +731,6 @@ onUnmounted(() => {
 
   .pickup-notice p {
     margin-top: 0.35rem;
-  }
-
-  .dispensing-actions {
-    width: min(100%, 26rem);
-    gap: 1rem;
-    margin-top: 1rem;
-  }
-
-  .dispensing-actions button {
-    min-height: 2.9rem;
-    font-size: 0.86rem;
   }
 
   .warm-tip {

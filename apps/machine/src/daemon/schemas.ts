@@ -11,6 +11,70 @@ const usbIdentitySchema = z.object({
   serialNumber: z.string().nullable().default(null),
 });
 
+const audioCueSettingsSchema = z.object({
+  enabled: z.boolean().default(false),
+  categories: z
+    .object({
+      presence: z.boolean().default(false),
+      transaction: z.boolean().default(false),
+    })
+    .default({
+      presence: false,
+      transaction: false,
+    }),
+});
+
+const configSummaryPublicSchema = z.preprocess(
+  (value) => {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+      return value;
+    }
+    const publicConfig: Record<string, unknown> = {
+      ...Object.fromEntries(Object.entries(value)),
+    };
+    if (
+      !("audioCueSettings" in publicConfig) &&
+      typeof publicConfig.presenceAudioEnabled === "boolean"
+    ) {
+      publicConfig.audioCueSettings = {
+        enabled: publicConfig.presenceAudioEnabled,
+        categories: {
+          presence: publicConfig.presenceAudioEnabled,
+          transaction: false,
+        },
+      };
+    }
+    delete publicConfig.presenceAudioEnabled;
+    return publicConfig;
+  },
+  z.object({
+    machineCode: z.string().nullable(),
+    apiBaseUrl: z.string(),
+    mqttUrl: z.string(),
+    mqttUsername: z.string().nullable(),
+    hardwareAdapter: z.enum(["mock", "serial"]),
+    serialPortPath: z.string().nullable(),
+    lowerControllerUsbIdentity: usbIdentitySchema.nullable().optional(),
+    scannerAdapter: z.enum(["disabled", "serial_text"]),
+    scannerSerialPortPath: z.string().nullable(),
+    scannerUsbIdentity: usbIdentitySchema.nullable().optional(),
+    scannerBaudRate: z.number().int(),
+    scannerFrameSuffix: z.enum(["crlf", "lf", "cr", "none"]),
+    visionEnabled: z.boolean(),
+    visionWsUrl: z.string(),
+    visionRequestTimeoutMs: z.number().int(),
+    audioCueSettings: audioCueSettingsSchema.default({
+      enabled: false,
+      categories: {
+        presence: false,
+        transaction: false,
+      },
+    }),
+    kioskMode: z.boolean(),
+    stockMovementRetentionDays: z.number().int().min(1).max(366).default(30),
+  }),
+);
+
 const lowerControllerCandidateSchema = z.object({
   portPath: z.string(),
   usbIdentity: usbIdentitySchema.nullable().optional(),
@@ -76,25 +140,7 @@ export const readySnapshotSchema = z.object({
 });
 
 export const configSummarySchema = z.object({
-  public: z.object({
-    machineCode: z.string().nullable(),
-    apiBaseUrl: z.string(),
-    mqttUrl: z.string(),
-    mqttUsername: z.string().nullable(),
-    hardwareAdapter: z.enum(["mock", "serial"]),
-    serialPortPath: z.string().nullable(),
-    lowerControllerUsbIdentity: usbIdentitySchema.nullable().optional(),
-    scannerAdapter: z.enum(["disabled", "serial_text"]),
-    scannerSerialPortPath: z.string().nullable(),
-    scannerUsbIdentity: usbIdentitySchema.nullable().optional(),
-    scannerBaudRate: z.number().int(),
-    scannerFrameSuffix: z.enum(["crlf", "lf", "cr", "none"]),
-    visionEnabled: z.boolean(),
-    visionWsUrl: z.string(),
-    visionRequestTimeoutMs: z.number().int(),
-    kioskMode: z.boolean(),
-    stockMovementRetentionDays: z.number().int().min(1).max(366).default(30),
-  }),
+  public: configSummaryPublicSchema,
   machineSecretConfigured: z.boolean(),
   mqttSigningSecretConfigured: z.boolean(),
   mqttPasswordConfigured: z.boolean(),

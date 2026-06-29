@@ -80,8 +80,10 @@ vi.mock("@/native/tauri", () => ({
   callTauriCommand: callTauriCommandMock,
 }));
 
+import { useAudioCueStore } from "@/stores/audio-cues";
 import { useCatalogStore } from "@/stores/catalog";
 import { useMachineStore } from "@/stores/machine";
+import { useVisionStore } from "@/stores/vision";
 
 import MaintenanceView from "./MaintenanceView.vue";
 
@@ -211,6 +213,13 @@ function provisionedConfigSummary(): ConfigSummary {
       visionEnabled: true,
       visionWsUrl: "ws://secret-vision.example/ws",
       visionRequestTimeoutMs: 8000,
+      audioCueSettings: {
+        enabled: false,
+        categories: {
+          presence: false,
+          transaction: false,
+        },
+      },
       kioskMode: true,
       stockMovementRetentionDays: 30,
     },
@@ -265,6 +274,7 @@ beforeEach(() => {
     online: true,
     message: "vision ready",
     updatedAt: "2026-06-05T00:00:00.000Z",
+    latestDiagnosticPayload: null,
   });
   getRemoteOpsStatusMock.mockResolvedValue({
     lastPolledAt: "2026-06-05T00:00:00.000Z",
@@ -360,6 +370,7 @@ describe("MaintenanceView hardware config", () => {
 
     expect(host.textContent).toContain("计划补货");
     expect(host.textContent).toContain("盘点修正");
+    expect(host.textContent).toContain("Maintenance Console");
     expect(host.textContent).toContain("后端");
     expect(host.textContent).toContain("MQTT");
     expect(host.textContent).toContain("下位机");
@@ -485,7 +496,334 @@ describe("MaintenanceView hardware config", () => {
     });
   });
 
+  it("shows vision runtime status and only the latest diagnostic payload", async () => {
+    getVisionStatusMock.mockResolvedValue({
+      enabled: true,
+      online: true,
+      message: "vision ready",
+      updatedAt: "2026-06-05T00:00:00.000Z",
+      latestDiagnosticPayload: {
+        type: "vision.profile_result",
+        payload: {
+          eventId: "VISION-LATEST-002",
+          detectedAt: "2026-06-05T00:00:02.000Z",
+          profile: {
+            personPresent: true,
+            heightCm: 172,
+          },
+          quality: {
+            overall: "good",
+            warnings: [],
+          },
+        },
+      },
+    });
+
+    const host = await mountView();
+
+    expect(host.textContent).toContain("Vision Runtime Status");
+    expect(host.textContent).toContain("在线 · vision ready");
+    expect(host.textContent).toContain("Latest Vision Diagnostic Payload");
+    expect(host.textContent).toContain("VISION-LATEST-002");
+    expect(host.textContent).toContain('"personPresent": true');
+    expect(host.textContent).not.toContain("VISION-OLD-001");
+    expect(
+      host.querySelectorAll("[data-test='vision-diagnostic-payload']"),
+    ).toHaveLength(1);
+  });
+
+  it("shows operator-only presence interaction status from the latest vision payload", async () => {
+    getVisionStatusMock.mockResolvedValue({
+      enabled: true,
+      online: true,
+      message: "vision ready",
+      updatedAt: "2026-06-05T00:00:00.000Z",
+      latestDiagnosticPayload: {
+        type: "vision.profile_result",
+        payload: {
+          eventId: "VISION-PRESENCE-STATUS-001",
+          detectedAt: "2026-06-05T00:00:05.000Z",
+          profile: {
+            personPresent: true,
+            heightCm: 172,
+            confidence: 0.92,
+          },
+          quality: {
+            overall: "good",
+            warnings: [],
+          },
+        },
+      },
+    });
+
+    const host = await mountView();
+
+    expect(host.textContent).toContain("Presence Interaction");
+    expect(host.textContent).toContain("有人 · 2026-06-05T00:00:05.000Z");
+    expect(host.textContent).toContain("VISION-PRESENCE-STATUS-001");
+  });
+
+  it("shows Machine Audio Cue settings with global and category state", async () => {
+    useMachineStore().$patch({
+      configSummary: {
+        ...provisionedConfigSummary(),
+        public: {
+          ...provisionedConfigSummary().public,
+          audioCueSettings: {
+            enabled: true,
+            categories: {
+              presence: true,
+              transaction: false,
+            },
+          },
+        },
+      },
+      configLoaded: true,
+    });
+
+    const host = await mountView();
+
+    expect(host.textContent).toContain("Audio Cue Settings");
+    expect(host.textContent).toContain("Machine Audio Cue");
+    expect(host.textContent).toContain("Global audio cues · Enabled");
+    expect(host.textContent).toContain("Presence audio cues · Enabled");
+    expect(host.textContent).toContain("Transaction audio cues · Disabled");
+    expect(host.textContent).not.toContain("来人音频提示");
+  });
+
+  it("shows latest Machine Audio Cue diagnostic details without full history", async () => {
+    const audioCueStore = useAudioCueStore();
+    audioCueStore.recordSuppressedCue({
+      category: "presence",
+      cueKey: "presence.detected",
+      message: "global audio cues disabled",
+      recordedAt: "2026-06-29T06:59:00.000Z",
+    });
+    audioCueStore.applySettings({
+      enabled: true,
+      categories: { presence: false, transaction: true },
+    });
+    const request = audioCueStore.requestCue({
+      category: "transaction",
+      cueKey: "payment.succeeded",
+      orderKey: "ORDER-107",
+      requestedAt: "2026-06-29T07:00:00.000Z",
+      nowMs: 1_000,
+    });
+    audioCueStore.recordPlaybackOutcome({
+      requestId: request?.requestId ?? "",
+      outcome: "played",
+      message: "playback completed",
+      recordedAt: "2026-06-29T07:00:01.000Z",
+    });
+
+    const host = await mountView();
+
+    expect(host.textContent).toContain("Latest Machine Audio Cue Diagnostic");
+    expect(host.textContent).toContain("Requested cue meaning");
+    expect(host.textContent).toContain("Payment succeeded");
+    expect(host.textContent).toContain("Category · Transaction audio cue");
+    expect(host.textContent).toContain("Playback outcome · Played");
+    expect(host.textContent).toContain(
+      "Suppression/drop reason · playback completed",
+    );
+    expect(host.textContent).toContain("Timestamp · 2026-06-29T07:00:01.000Z");
+    expect(host.textContent).toContain(
+      "Duplicate-suppression order key (debug only) · ORDER-107",
+    );
+    expect(host.textContent).toContain("ORDER-107");
+    expect(host.textContent).not.toContain("presence.detected");
+    expect(
+      host.querySelectorAll("[data-test='audio-cue-diagnostic']"),
+    ).toHaveLength(1);
+  });
+
+  it("labels playback failures as local audio diagnostics only", async () => {
+    const audioCueStore = useAudioCueStore();
+    audioCueStore.applySettings({
+      enabled: true,
+      categories: { presence: false, transaction: true },
+    });
+    const request = audioCueStore.requestCue({
+      category: "transaction",
+      cueKey: "dispense.failed",
+      orderKey: "ORDER-108",
+      requestedAt: "2026-06-29T07:05:00.000Z",
+      nowMs: 2_000,
+    });
+    audioCueStore.recordPlaybackOutcome({
+      requestId: request?.requestId ?? "",
+      outcome: "failed",
+      message: "NotAllowedError: user gesture required",
+      recordedAt: "2026-06-29T07:05:01.000Z",
+    });
+
+    const host = await mountView();
+
+    expect(host.textContent).toContain(
+      "Playback outcome · Local audio playback failed",
+    );
+    expect(host.textContent).toContain(
+      "Suppression/drop reason · NotAllowedError: user gesture required",
+    );
+    expect(host.textContent).not.toContain("Payment failed");
+    expect(host.textContent).not.toContain("Readiness failure");
+  });
+
+  it.each([
+    ["dispense.succeeded", "Dispense succeeded"],
+    ["dispense.failed", "Dispense failed"],
+    ["refund.pending", "Refund pending"],
+  ] as const)(
+    "labels the real production cue key %s",
+    async (cueKey, expectedLabel) => {
+      const audioCueStore = useAudioCueStore();
+      audioCueStore.recordSuppressedCue({
+        category: "transaction",
+        cueKey,
+        orderKey: "ORDER-REAL-CUE",
+        message: "duplicate transaction cue",
+        recordedAt: "2026-06-29T07:07:00.000Z",
+      });
+
+      const host = await mountView();
+
+      expect(host.textContent).toContain(expectedLabel);
+      expect(host.textContent).toContain(
+        "Duplicate-suppression order key (debug only) · ORDER-REAL-CUE",
+      );
+    },
+  );
+
+  it("shows suppression or drop reason for skipped Machine Audio Cues", async () => {
+    const audioCueStore = useAudioCueStore();
+    audioCueStore.recordSuppressedCue({
+      category: "presence",
+      cueKey: "presence.detected",
+      message: "presence audio cue category disabled",
+      recordedAt: "2026-06-29T07:10:00.000Z",
+    });
+
+    const host = await mountView();
+
+    expect(host.textContent).toContain("Presence detected");
+    expect(host.textContent).toContain("Category · Presence audio cue");
+    expect(host.textContent).toContain("Playback outcome · Skipped");
+    expect(host.textContent).toContain(
+      "Suppression/drop reason · presence audio cue category disabled",
+    );
+    expect(host.textContent).toContain("Timestamp · 2026-06-29T07:10:00.000Z");
+  });
+
+  it("does not couple maintenance interactions to customer-facing audio cue playback", async () => {
+    const audioCueStore = useAudioCueStore();
+    audioCueStore.applySettings({
+      enabled: true,
+      categories: { presence: true, transaction: true },
+    });
+
+    const host = await mountView();
+
+    buttonByText(host, "刷新诊断").click();
+    buttonByText(host, "硬件自检").click();
+    buttonByText(host, "视觉状态").click();
+    buttonByText(host, "导出日志").click();
+    buttonByText(host, "回到目录").click();
+
+    await vi.waitFor(() => {
+      expect(getReadyMock).toHaveBeenCalled();
+      expect(runHardwareSelfCheckMock).toHaveBeenCalledOnce();
+      expect(getVisionStatusMock).toHaveBeenCalled();
+      expect(downloadLogExportMock).toHaveBeenCalledOnce();
+      expect(routerReplaceMock).toHaveBeenCalledWith("/catalog");
+    });
+    expect(audioCueStore.playback.status).toBe("idle");
+    expect(audioCueStore.playback.request).toBeNull();
+    expect(audioCueStore.latestPlaybackDiagnostic).toBeNull();
+    expect(host.textContent).not.toContain("Payment failed");
+    expect(host.textContent).not.toContain("Dispensing failed");
+    expect(host.textContent).not.toContain("Refund failed");
+    expect(host.textContent).not.toContain("Readiness failure");
+  });
+
+  it("clears stale real-time profile result when daemon status has no payload", async () => {
+    useVisionStore().applyLatestProfileResult({
+      eventId: "VISION-REALTIME-003",
+      detectedAt: "2026-06-05T00:00:03.000Z",
+      profile: {
+        personPresent: true,
+        heightCm: 168,
+        bodyType: "regular",
+        confidence: 0.88,
+      },
+      quality: {
+        overall: "good",
+        warnings: [],
+      },
+    });
+
+    const host = await mountView();
+
+    expect(host.textContent).not.toContain("VISION-REALTIME-003");
+    expect(host.textContent).not.toContain('"heightCm": 168');
+    expect(host.textContent).toContain("无人 · not seen");
+    expect(host.textContent).toContain("No diagnostic payload returned yet.");
+  });
+
+  it("bounds the displayed latest diagnostic payload", async () => {
+    getVisionStatusMock.mockResolvedValue({
+      enabled: true,
+      online: true,
+      message: "vision ready",
+      updatedAt: "2026-06-05T00:00:00.000Z",
+      latestDiagnosticPayload: {
+        type: "vision.profile_result",
+        payload: {
+          eventId: "VISION-HUGE-004",
+          detectedAt: "2026-06-05T00:00:04.000Z",
+          profile: {
+            personPresent: true,
+            heightCm: 172,
+          },
+          quality: {
+            overall: "good",
+            warnings: ["x".repeat(20_000)],
+          },
+        },
+      },
+    });
+
+    const host = await mountView();
+    const payload = host.querySelector(
+      "[data-test='vision-diagnostic-payload']",
+    );
+    if (!(payload instanceof HTMLElement)) {
+      throw new Error("vision diagnostic payload not found");
+    }
+
+    expect(payload.textContent).toContain("VISION-HUGE-004");
+    expect(payload.textContent).toContain("truncated");
+    expect(payload.textContent?.length ?? 0).toBeLessThan(14_000);
+    expect(payload.textContent).not.toContain("x".repeat(5000));
+  });
+
+  it("does not expose Windows desktop exit in production customer maintenance", async () => {
+    const host = await mountView();
+
+    expect(host.textContent).not.toContain("回到 Windows 桌面");
+    expect(callTauriCommandMock).not.toHaveBeenCalled();
+  });
+
   it("returns to the Windows desktop through the restricted Tauri command", async () => {
+    initializeMock.mockResolvedValueOnce({
+      baseUrl: "http://127.0.0.1:7891",
+      token: "token-1",
+      source: "tauri_ready_file",
+      mock: false,
+      runtimeFlags: {
+        advancedMaintenanceConfig: true,
+      },
+    });
     const host = await mountView();
 
     buttonByText(host, "回到 Windows 桌面").click();

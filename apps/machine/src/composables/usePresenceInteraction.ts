@@ -9,6 +9,11 @@ import type {
   VisionProfileResultPayload,
 } from "@/native/vision";
 
+import {
+  createMachineAudioCuePlaybackAdapter,
+  type CustomerAudioCueEvent,
+  type PresenceAmbientLightLevel,
+} from "@/audio-cues/browser-playback";
 import { useVisionStore } from "@/stores/vision";
 
 const DEFAULT_PRESENCE_STALE_MS = 15_000;
@@ -22,6 +27,9 @@ export type PresenceInteractionState = {
 
 export type PresenceInteractionOptions = {
   presenceStaleMs?: number;
+  audioCueRequester?: {
+    requestCustomerAudioCue(event: CustomerAudioCueEvent): Promise<boolean>;
+  };
 };
 
 export function usePresenceInteraction(
@@ -32,6 +40,8 @@ export function usePresenceInteraction(
 } {
   const visionStore = useVisionStore();
   const presenceStaleMs = options.presenceStaleMs ?? DEFAULT_PRESENCE_STALE_MS;
+  const audioCueRequester =
+    options.audioCueRequester ?? createMachineAudioCuePlaybackAdapter();
 
   const state = ref<PresenceInteractionState>({
     personPresent: false,
@@ -39,6 +49,7 @@ export function usePresenceInteraction(
     source: "unavailable",
   });
   let staleTimer: ReturnType<typeof setTimeout> | null = null;
+  let initializedFromCurrentDiagnostic = false;
   const presenceClass = computed(() =>
     state.value.personPresent ? "presence-present" : "presence-idle",
   );
@@ -63,7 +74,26 @@ export function usePresenceInteraction(
     }, presenceStaleMs);
   }
 
-  function applyProfileResult(payload: VisionProfileResultPayload): void {
+  function requestPresenceCue(
+    payload: VisionProfileResultPayload | VisionPresenceStatusPayload,
+  ): void {
+    void audioCueRequester
+      .requestCustomerAudioCue({
+        type: "presence.detected",
+        ambientLightLevel: ambientLightLevelFor(payload),
+        requestedAt: payload.detectedAt,
+        nowMs: millisecondsForDetectedAt(payload.detectedAt),
+      })
+      .catch(() => {
+        // Audio cue playback is customer-experience best effort only.
+      });
+  }
+
+  function applyProfileResult(
+    payload: VisionProfileResultPayload,
+    options: { suppressAudioCue?: boolean } = {},
+  ): void {
+    const wasPresent = state.value.personPresent;
     const personPresent =
       payload.profile.personPresent &&
       (payload.profile.confidence === undefined ||
@@ -73,30 +103,43 @@ export function usePresenceInteraction(
       lastSeenAt: personPresent ? payload.detectedAt : state.value.lastSeenAt,
       source: "vision",
     };
+    if (personPresent && !wasPresent && !options.suppressAudioCue) {
+      requestPresenceCue(payload);
+    }
     restartStaleTimer();
   }
 
-  function applyPresenceStatus(payload: VisionPresenceStatusPayload): void {
+  function applyPresenceStatus(
+    payload: VisionPresenceStatusPayload,
+    options: { suppressAudioCue?: boolean } = {},
+  ): void {
+    const wasPresent = state.value.personPresent;
     const personPresent = payload.personPresent;
     state.value = {
       personPresent,
       lastSeenAt: personPresent ? payload.detectedAt : state.value.lastSeenAt,
       source: "vision",
     };
+    if (personPresent && !wasPresent && !options.suppressAudioCue) {
+      requestPresenceCue(payload);
+    }
     restartStaleTimer();
   }
 
   watch(
     () => visionStore.latestDiagnosticPayload,
     (payload) => {
+      const suppressAudioCue = !initializedFromCurrentDiagnostic;
       const profileResult = profileResultFromDiagnostic(payload);
       if (profileResult) {
-        applyProfileResult(profileResult);
+        applyProfileResult(profileResult, { suppressAudioCue });
+        initializedFromCurrentDiagnostic = true;
         return;
       }
       const presenceStatus = presenceStatusFromDiagnostic(payload);
       if (presenceStatus) {
-        applyPresenceStatus(presenceStatus);
+        applyPresenceStatus(presenceStatus, { suppressAudioCue });
+        initializedFromCurrentDiagnostic = true;
         return;
       }
       state.value = {
@@ -105,6 +148,7 @@ export function usePresenceInteraction(
         source: "unavailable",
       };
       clearStaleTimer();
+      initializedFromCurrentDiagnostic = true;
     },
     { immediate: true },
   );
@@ -149,4 +193,19 @@ function profileResultFromDiagnostic(
   }
   const result = visionProfileResultPayloadSchema.safeParse(value.payload);
   return result.success ? result.data : null;
+}
+
+function ambientLightLevelFor(
+  payload: VisionProfileResultPayload | VisionPresenceStatusPayload,
+): PresenceAmbientLightLevel {
+  if (!("ambientLight" in payload)) return "unknown";
+  const level = payload.ambientLight?.level;
+  return level === "bright" || level === "dim" || level === "dark"
+    ? level
+    : "unknown";
+}
+
+function millisecondsForDetectedAt(detectedAt: string): number {
+  const parsed = Date.parse(detectedAt);
+  return Number.isFinite(parsed) ? parsed : Date.now();
 }

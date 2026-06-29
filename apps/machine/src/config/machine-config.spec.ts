@@ -33,8 +33,47 @@ describe("machine config", () => {
       visionEnabled: true,
       visionWsUrl: "ws://127.0.0.1:7892/ws",
       visionRequestTimeoutMs: 8000,
+      audioCueSettings: {
+        enabled: false,
+        categories: {
+          presence: false,
+          transaction: false,
+        },
+      },
       kioskMode: false,
       stockMovementRetentionDays: 30,
+    });
+  });
+
+  it("migrates legacy presence audio opt-in into audio cue settings", () => {
+    expect(
+      normalizeMachineConfig({ presenceAudioEnabled: true }).audioCueSettings,
+    ).toEqual({
+      enabled: true,
+      categories: {
+        presence: true,
+        transaction: false,
+      },
+    });
+  });
+
+  it("preserves explicit audio cue category settings", () => {
+    expect(
+      normalizeMachineConfig({
+        audioCueSettings: {
+          enabled: true,
+          categories: {
+            presence: false,
+            transaction: true,
+          },
+        },
+      }).audioCueSettings,
+    ).toEqual({
+      enabled: true,
+      categories: {
+        presence: false,
+        transaction: true,
+      },
     });
   });
 

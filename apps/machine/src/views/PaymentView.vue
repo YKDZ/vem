@@ -7,6 +7,8 @@ import logoImage from "@/assets/home/logo.png";
 import mascotListImage from "@/assets/home/mascot-list.png";
 import mascotTopImage from "@/assets/home/mascot-top-cutout.png";
 import PaymentQrCode from "@/components/PaymentQrCode.vue";
+import { useMaintenanceEntry } from "@/composables/useMaintenanceEntry";
+import { requestPaymentSuccessCue } from "@/composables/useTransactionFeedbackCues";
 import { shouldShowMockPaymentControls } from "@/config/runtime-flags";
 import { daemonClient } from "@/daemon/client";
 import KioskLayout from "@/layouts/KioskLayout.vue";
@@ -17,6 +19,7 @@ import { formatCents, formatCountdown } from "@/utils/format";
 const router = useRouter();
 const checkoutStore = useCheckoutStore();
 const scannerStore = useScannerStore();
+const { handleMaintenanceTap } = useMaintenanceEntry();
 
 let pollTimer: number | undefined;
 let clockTimer: number | undefined;
@@ -36,6 +39,16 @@ const expired = computed(() => checkoutStore.remainingSeconds <= 0);
 const isPaymentCode = computed(
   () => status.value?.payment.method === "payment_code",
 );
+const paymentCodeStatusTitle = computed(() => {
+  if (scannerStore.lastMaskedCode) return "已读取付款码";
+  return scannerStore.online ? "扫码器已就绪" : "扫码器暂不可用";
+});
+const paymentCodeStatusCopy = computed(() => {
+  if (scannerStore.lastMaskedCode) return "正在确认支付结果，请稍候。";
+  return scannerStore.online
+    ? "请打开支付宝或微信付款码，靠近设备扫码窗口。"
+    : "请稍后重试，或返回选择二维码支付。";
+});
 const canUseDevScan = computed(
   () => import.meta.env.DEV && daemonClient.currentConnection?.mock === true,
 );
@@ -66,6 +79,51 @@ const qrOverlayText = computed(() =>
 const qrEmptyText = computed(() =>
   preparingQrCode.value ? "正在准备支付二维码，请稍候" : "暂无支付二维码",
 );
+const activePaymentCodeAttemptStatus = computed(
+  () => status.value?.paymentCodeAttempt?.status ?? null,
+);
+const paymentCodeCancelBlocked = computed(() =>
+  [
+    "submitting",
+    "user_confirming",
+    "querying",
+    "reversing",
+    "unknown",
+    "manual_handling",
+    "succeeded",
+  ].includes(activePaymentCodeAttemptStatus.value ?? ""),
+);
+const canCancelOrder = computed(() => {
+  if (!status.value) return false;
+  if (checkoutStore.loading) return false;
+  if (confirmingExpiredPayment.value) return false;
+  if (status.value.nextAction !== "wait_payment") return false;
+  if (status.value.orderStatus !== "pending_payment") return false;
+  if (
+    !["created", "pending", "processing"].includes(status.value.payment.status)
+  ) {
+    return false;
+  }
+  if (isPaymentCode.value && paymentCodeCancelBlocked.value) return false;
+  return true;
+});
+const cancelOrderDisabledReason = computed(() => {
+  if (checkoutStore.loading) return "正在同步订单状态";
+  if (confirmingExpiredPayment.value) return "支付结果确认中，暂不可取消";
+  if (isPaymentCode.value && paymentCodeCancelBlocked.value) {
+    return "付款码支付处理中，暂不可取消";
+  }
+  if (status.value?.nextAction !== "wait_payment") return "订单已进入下一阶段";
+  if (status.value?.orderStatus !== "pending_payment")
+    return "当前订单不可取消";
+  if (
+    status.value &&
+    !["created", "pending", "processing"].includes(status.value.payment.status)
+  ) {
+    return "当前支付状态不可取消";
+  }
+  return null;
+});
 
 const showMockControls = computed(
   () =>
@@ -79,6 +137,7 @@ const showMockControls = computed(
 async function routeByStatus(): Promise<void> {
   if (!status.value) return;
   if (status.value.nextAction === "dispensing") {
+    await requestPaymentSuccessCue(checkoutStore.transaction);
     await router.replace("/dispensing");
     return;
   }
@@ -104,9 +163,17 @@ async function simulateFail(): Promise<void> {
 }
 
 async function cancelOrder(): Promise<void> {
+  const catalogKey = checkoutStore.selectedItem?.catalogKey ?? null;
   try {
-    await checkoutStore.cancelCurrentOrder();
-    await router.replace("/catalog");
+    await checkoutStore.cancelCurrentOrder({ preserveSelectedItem: true });
+    if (catalogKey) {
+      await router.replace({
+        name: "product-detail",
+        params: { catalogKey },
+      });
+    } else {
+      await router.replace("/catalog");
+    }
   } catch {
     // checkoutStore.error already carries the operator-facing message.
   }
@@ -141,7 +208,7 @@ onUnmounted(() => {
       <div class="payment-mist payment-mist-right"></div>
 
       <header class="payment-header">
-        <div class="flex items-center gap-3">
+        <div class="flex items-center gap-3" @click="handleMaintenanceTap">
           <img
             :src="logoImage"
             alt="唐诗村"
@@ -160,15 +227,6 @@ onUnmounted(() => {
         </div>
       </header>
 
-      <button
-        class="payment-back-button kiosk-touch-target"
-        type="button"
-        @click="cancelOrder"
-      >
-        <span aria-hidden="true">←</span>
-        返回
-      </button>
-
       <div class="payment-title">
         <h1>订单支付</h1>
         <span aria-hidden="true"></span>
@@ -180,7 +238,7 @@ onUnmounted(() => {
           {{ formatCents(order.totalAmountCents) }}
         </strong>
 
-        <div class="qr-shell">
+        <div class="qr-shell" :class="{ 'payment-code-shell': isPaymentCode }">
           <PaymentQrCode
             v-if="!isPaymentCode"
             :value="order.paymentUrl"
@@ -189,13 +247,26 @@ onUnmounted(() => {
             :empty-text="qrEmptyText"
           />
           <div v-else class="payment-code-panel">
-            <p>请出示付款码</p>
-            <strong
-              :class="scannerStore.online ? 'text-[#4f6248]' : 'text-[#8b8274]'"
-            >
-              {{ scannerStore.message }}
-            </strong>
-            <p v-if="scannerStore.lastMaskedCode">已读取付款码</p>
+            <span class="payment-code-icon" aria-hidden="true">
+              <svg viewBox="0 0 48 48">
+                <path
+                  d="M14 8h20a4 4 0 0 1 4 4v24a4 4 0 0 1-4 4H14a4 4 0 0 1-4-4V12a4 4 0 0 1 4-4Z"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2.8"
+                />
+                <path
+                  d="M17 16h6M17 23h14M17 30h8M31 31l3 3 6-7"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2.8"
+                />
+              </svg>
+            </span>
+            <h2>{{ paymentCodeStatusTitle }}</h2>
+            <p>{{ paymentCodeStatusCopy }}</p>
             <p v-if="checkoutStore.paymentCodeMessage">
               {{ checkoutStore.paymentCodeMessage }}
             </p>
@@ -288,6 +359,20 @@ onUnmounted(() => {
           </span>
           <p>支付成功</p>
         </div>
+      </section>
+
+      <section class="payment-cancel-section">
+        <button
+          class="payment-cancel-button kiosk-touch-target"
+          type="button"
+          :disabled="!canCancelOrder"
+          @click="cancelOrder"
+        >
+          取消订单
+        </button>
+        <p v-if="cancelOrderDisabledReason" class="payment-cancel-hint">
+          {{ cancelOrderDisabledReason }}
+        </p>
       </section>
 
       <footer class="payment-footer">
@@ -397,10 +482,10 @@ onUnmounted(() => {
   align-items: center;
   container-type: inline-size;
   overflow: hidden;
-  margin: -1.25rem -1.5rem;
-  padding: 1.35rem 1.8rem 1rem;
-  border: 1px solid rgba(89, 83, 66, 0.2);
-  border-radius: 20px;
+  margin: 0;
+  padding: var(--machine-page-header-top) var(--machine-page-inline) 1rem;
+  border: 0;
+  border-radius: 0;
   background:
     radial-gradient(
       circle at 0% 4%,
@@ -414,31 +499,17 @@ onUnmounted(() => {
     ),
     linear-gradient(180deg, #fffdf8 0%, #fbf7eb 62%, #f6f0df 100%);
   color: #5c554c;
-  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.78);
+  box-shadow: none;
 }
 
 .payment-header {
   position: relative;
   z-index: 5;
   display: flex;
-  width: min(100%, 34.6rem);
+  width: 100%;
   flex-shrink: 0;
   align-items: center;
   justify-content: space-between;
-}
-
-.payment-back-button {
-  display: none;
-}
-
-.payment-back-button span {
-  display: grid;
-  width: 42px;
-  height: 42px;
-  place-items: center;
-  border: 1px solid rgba(198, 187, 154, 0.82);
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.62);
 }
 
 .payment-title {
@@ -502,6 +573,11 @@ onUnmounted(() => {
   margin: 2rem auto 0;
 }
 
+.qr-shell.payment-code-shell {
+  width: min(100%, 26rem);
+  margin-top: 1.8rem;
+}
+
 .qr-shell :deep(> div) {
   border: 1px solid rgba(211, 203, 180, 0.82);
   border-radius: 18px;
@@ -515,6 +591,14 @@ onUnmounted(() => {
   width: min(100%, 14.3rem);
   height: min(100vw, 14.3rem);
   max-height: 14.3rem;
+}
+
+.qr-shell.payment-code-shell :deep(> div) {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 0;
+  box-shadow: none;
 }
 
 .qr-instruction {
@@ -560,14 +644,42 @@ onUnmounted(() => {
 
 .payment-code-panel {
   display: grid;
-  min-height: 17rem;
-  place-items: center;
-  gap: 0.7rem;
+  min-height: 13.5rem;
+  justify-items: center;
+  align-content: center;
+  gap: 0.75rem;
   color: #6d665b;
 }
 
-.payment-code-panel strong {
-  font-size: 1.3rem;
+.payment-code-icon {
+  display: grid;
+  width: 5.4rem;
+  height: 5.4rem;
+  place-items: center;
+  border: 1px solid rgba(111, 131, 95, 0.25);
+  border-radius: 999px;
+  background: rgba(111, 131, 95, 0.08);
+  color: #6f835f;
+}
+
+.payment-code-icon svg {
+  width: 3.1rem;
+  height: 3.1rem;
+}
+
+.payment-code-panel h2 {
+  margin: 0;
+  color: #4f6248;
+  font-size: 1.35rem;
+  font-weight: 900;
+}
+
+.payment-code-panel p {
+  max-width: 19rem;
+  margin: 0;
+  color: #756e64;
+  font-size: 0.98rem;
+  line-height: 1.55;
 }
 
 .payment-code-panel a {
@@ -627,12 +739,46 @@ onUnmounted(() => {
   border-top: 1px dashed #d8cfb9;
 }
 
+.payment-cancel-section {
+  position: relative;
+  z-index: 5;
+  display: grid;
+  width: min(100%, 34rem);
+  margin: 1.4rem auto 0;
+  gap: 0.55rem;
+}
+
+.payment-cancel-button {
+  width: 100%;
+  min-height: 58px;
+  border-radius: 8px;
+  background: linear-gradient(180deg, #758868, #627655);
+  color: #fffdf7;
+  font-family: SimSun, "Songti SC", "Noto Serif CJK SC", serif;
+  font-size: 1.2rem;
+  font-weight: 800;
+  box-shadow: 0 12px 24px rgba(82, 101, 65, 0.16);
+}
+
+.payment-cancel-button:disabled {
+  cursor: not-allowed;
+  background: rgba(170, 168, 155, 0.54);
+  color: rgba(255, 253, 248, 0.72);
+  box-shadow: none;
+}
+
+.payment-cancel-hint {
+  color: #8a8175;
+  font-size: 0.86rem;
+  text-align: center;
+}
+
 .payment-footer {
   position: relative;
   z-index: 5;
   display: grid;
   width: min(100%, 34rem);
-  margin: auto auto 2.9rem;
+  margin: 0.95rem auto 2.9rem;
   justify-items: center;
   padding: 0 8rem;
 }
@@ -738,18 +884,6 @@ onUnmounted(() => {
     font-size: 0.72rem;
   }
 
-  .payment-back-button {
-    min-height: 40px;
-    margin-top: 1.2rem;
-    gap: 0.55rem;
-    font-size: 1.05rem;
-  }
-
-  .payment-back-button span {
-    width: 36px;
-    height: 36px;
-  }
-
   .payment-title {
     margin-top: 0.7rem;
   }
@@ -815,9 +949,19 @@ onUnmounted(() => {
     font-size: 0.78rem;
   }
 
+  .payment-cancel-section {
+    width: min(100%, 33.2rem);
+    margin-top: 1.1rem;
+  }
+
+  .payment-cancel-button {
+    min-height: 52px;
+    font-size: 1.02rem;
+  }
+
   .payment-footer {
     width: min(100%, 33.2rem);
-    margin-bottom: 2.6rem;
+    margin-bottom: 2.45rem;
     padding: 0 6rem;
   }
 

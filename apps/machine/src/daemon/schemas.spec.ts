@@ -78,6 +78,42 @@ describe("daemon schemas", () => {
     expect(parsed.public.stockMovementRetentionDays).toBe(90);
   });
 
+  it("migrates legacy daemon presence audio config into audio cue settings", () => {
+    const parsed = configSummarySchema.parse({
+      public: {
+        machineCode: "MACHINE-1",
+        apiBaseUrl: "http://localhost:3000/api",
+        mqttUrl: "mqtt://localhost:1883",
+        mqttUsername: null,
+        hardwareAdapter: "mock",
+        serialPortPath: null,
+        lowerControllerUsbIdentity: null,
+        scannerAdapter: "disabled",
+        scannerSerialPortPath: null,
+        scannerBaudRate: 9600,
+        scannerFrameSuffix: "crlf",
+        visionEnabled: true,
+        visionWsUrl: "ws://127.0.0.1:7892/ws",
+        visionRequestTimeoutMs: 8000,
+        presenceAudioEnabled: true,
+        kioskMode: false,
+        stockMovementRetentionDays: 90,
+      },
+      machineSecretConfigured: false,
+      mqttSigningSecretConfigured: false,
+      mqttPasswordConfigured: false,
+    });
+
+    expect(parsed.public.audioCueSettings).toEqual({
+      enabled: true,
+      categories: {
+        presence: true,
+        transaction: false,
+      },
+    });
+    expect("presenceAudioEnabled" in parsed.public).toBe(false);
+  });
+
   it("parses transaction attempt summary and restricted scanner adapter config", () => {
     const tx = transactionSnapshotSchema.parse({
       orderId: "550e8400-e29b-41d4-a716-446655440010",
