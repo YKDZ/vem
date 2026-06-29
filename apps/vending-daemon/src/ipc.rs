@@ -27,8 +27,8 @@ use crate::{
     logs,
     state::{
         store::{
-            MachinePlanogramInput, MachinePlanogramSlotInput, SlotSalesStateInput,
-            StockMovementInput, OUTBOX_MAX_EVENTS,
+            MachinePlanogramInput, MachinePlanogramSlotInput, PhysicalStockAttestationInput,
+            SlotSalesStateInput, StockMovementInput, OUTBOX_MAX_EVENTS,
         },
         LocalStateStore, StoreError,
     },
@@ -50,6 +50,7 @@ pub struct VisionStatusSnapshot {
     pub online: bool,
     pub message: String,
     pub updated_at: String,
+    pub latest_diagnostic_payload: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -131,6 +132,7 @@ impl RuntimeStatusCache {
                 online: false,
                 message: "unknown".to_string(),
                 updated_at: crate::state::store::now_iso(),
+                latest_diagnostic_payload: None,
             })),
             catalog: Arc::new(tokio::sync::RwLock::new(CatalogSnapshot {
                 items: vec![],
@@ -180,6 +182,10 @@ pub fn build_router(ctx: IpcContext) -> Router {
         .route("/v1/sale-readiness", get(sale_readiness))
         .route("/v1/stock/planogram", post(apply_planogram))
         .route("/v1/stock/planogram/sync", post(sync_planogram))
+        .route(
+            "/v1/stock/attestation",
+            post(record_physical_stock_attestation),
+        )
         .route("/v1/stock/movements", post(record_stock_movement))
         .route("/v1/stock/slot-sales-state", post(update_slot_sales_state))
         .route(
@@ -1522,6 +1528,9 @@ pub(crate) async fn machine_sale_readiness_snapshot(
 
     let hardware = ctx.ui.status_cache.hardware.read().await.clone();
     let production_dispense_path = production_dispense_path_readiness(public.as_ref());
+    let physical_stock_attestation = ctx.state.physical_stock_attestation_status().await?;
+    let physical_stock_attestation_ready = physical_stock_attestation.status == "ready";
+    let physical_stock_attestation_required = production_dispense_path.ready;
     let whole_machine_lock = ctx.state.whole_machine_maintenance_lock().await?;
     let whole_machine_ready = hardware.online && whole_machine_lock.is_none();
     let whole_machine_code = if !hardware.online {
@@ -1607,6 +1616,9 @@ pub(crate) async fn machine_sale_readiness_snapshot(
     if !production_dispense_path.ready {
         blocking_codes.push(production_dispense_path.code);
     }
+    if physical_stock_attestation_required && !physical_stock_attestation_ready {
+        blocking_codes.push(physical_stock_attestation.code.as_str());
+    }
     if let Some(lock) = whole_machine_lock.as_ref() {
         blocking_codes.push(lock.code.as_str());
     }
@@ -1620,6 +1632,7 @@ pub(crate) async fn machine_sale_readiness_snapshot(
         && sync_ready
         && whole_machine_ready
         && production_dispense_path.ready
+        && (!physical_stock_attestation_required || physical_stock_attestation_ready)
         && slot_sale_safety_ready;
 
     Ok(serde_json::json!({
@@ -1682,6 +1695,17 @@ pub(crate) async fn machine_sale_readiness_snapshot(
                 production_dispense_path.code,
                 production_dispense_path.message,
             ),
+            "physicalStockAttestation": serde_json::json!({
+                "ready": physical_stock_attestation_ready,
+                "required": physical_stock_attestation_required,
+                "status": physical_stock_attestation.status,
+                "code": physical_stock_attestation.code,
+                "message": physical_stock_attestation.message,
+                "attestationId": physical_stock_attestation.attestation_id,
+                "planogramVersion": physical_stock_attestation.planogram_version,
+                "attestedAt": physical_stock_attestation.attested_at,
+                "inconsistentSlots": physical_stock_attestation.inconsistent_slots,
+            }),
             "slotSaleSafety": serde_json::json!({
                 "ready": slot_sale_safety_ready,
                 "code": if slot_sale_safety_ready { "SLOT_SALE_SAFETY_READY" } else { "NO_SALEABLE_SLOTS" },
@@ -2225,6 +2249,53 @@ async fn apply_planogram(
     }
 }
 
+async fn record_physical_stock_attestation(
+    State(ctx): State<IpcContext>,
+    headers: HeaderMap,
+    Json(input): Json<PhysicalStockAttestationInput>,
+) -> impl IntoResponse {
+    if let Err((status, error)) = require_token(&headers, &ctx.token).await {
+        return (status, error).into_response();
+    }
+
+    let config = match ctx.config_store.load_public_config().await {
+        Ok(config) => config,
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorMessage {
+                    code: "config_load_failed",
+                    message: error,
+                }),
+            )
+                .into_response();
+        }
+    };
+    let Some(machine_code) = config.machine_code.as_deref() else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorMessage {
+                code: "machine_code_missing",
+                message: "machine code required for physical stock attestation upload".to_string(),
+            }),
+        )
+            .into_response();
+    };
+
+    match ctx
+        .state
+        .record_physical_stock_attestation_with_upload(
+            input,
+            Some(machine_code),
+            Some(&config.api_base_url),
+        )
+        .await
+    {
+        Ok(snapshot) => (StatusCode::CREATED, Json(snapshot)).into_response(),
+        Err(error) => store_error_response("physical_stock_attestation_failed", error),
+    }
+}
+
 async fn record_stock_movement(
     State(ctx): State<IpcContext>,
     headers: HeaderMap,
@@ -2734,6 +2805,8 @@ async fn vision_status(State(ctx): State<IpcContext>, headers: HeaderMap) -> imp
         "enabled": snapshot.enabled,
         "online": snapshot.online,
         "message": snapshot.message,
+        "updatedAt": snapshot.updated_at,
+        "latestDiagnosticPayload": snapshot.latest_diagnostic_payload,
     }))
     .into_response()
 }
@@ -3027,7 +3100,10 @@ mod tests {
                 .expect("hardware supervisor"),
             events: events_tx,
             runtime_tx,
-            disk_pressure_probe: Arc::new(crate::health::DataDirDiskPressureProbe::default()),
+            disk_pressure_probe: Arc::new(FixedDiskPressureProbe {
+                available_bytes: crate::health::DISK_PRESSURE_MIN_AVAILABLE_BYTES + 1,
+                threshold_bytes: crate::health::DISK_PRESSURE_MIN_AVAILABLE_BYTES,
+            }),
             ui: UiRuntimeServices {
                 backend,
                 transaction,
@@ -3187,6 +3263,33 @@ mod tests {
                 "targetGender": null
             }]
         })
+    }
+
+    async fn record_attested_stock(
+        app: &Router,
+        planogram_version: &str,
+        slot_id: &str,
+        quantity: i64,
+    ) {
+        let response = post_json(
+            app,
+            "/v1/stock/attestation",
+            "token-1",
+            json!({
+                "attestationId": format!("ATT-{planogram_version}"),
+                "planogramVersion": planogram_version,
+                "operatorId": "operator-1",
+                "slots": [{
+                    "slotId": slot_id,
+                    "slotCode": "A1",
+                    "sku": "WATER-001",
+                    "quantity": quantity,
+                    "enabled": true
+                }]
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CREATED);
     }
 
     fn valid_provisioning_profile() -> serde_json::Value {
@@ -4974,6 +5077,7 @@ mod tests {
             .status(),
             StatusCode::CREATED
         );
+        record_attested_stock(&app, "PLAN-SCANNER-STALE", slot_id, 2).await;
 
         let response = app
             .oneshot(
@@ -5182,6 +5286,7 @@ mod tests {
             .status(),
             StatusCode::CREATED
         );
+        record_attested_stock(&app, "PLAN-PRODUCTION-PATH", slot_id, 2).await;
 
         let response = app
             .clone()
@@ -5456,6 +5561,7 @@ mod tests {
             .status(),
             StatusCode::CREATED
         );
+        record_attested_stock(&app, "PLAN-FROZEN-CREATE", slot_id, 2).await;
         assert_eq!(
             post_json(
                 &app,
@@ -5601,6 +5707,7 @@ mod tests {
             .status(),
             StatusCode::CREATED
         );
+        record_attested_stock(&app, "PLAN-SCANNER-PAYMENT-CODE", slot_id, 2).await;
 
         let readiness_response = app
             .clone()
@@ -5760,6 +5867,7 @@ mod tests {
             .status(),
             StatusCode::CREATED
         );
+        record_attested_stock(&app, "PLAN-SCANNER-QR", slot_id, 2).await;
 
         let response = post_json(
             &app,
@@ -5870,6 +5978,7 @@ mod tests {
             .status(),
             StatusCode::CREATED
         );
+        record_attested_stock(&app, "PLAN-SCANNER-MOCK", slot_id, 2).await;
 
         let response = post_json(
             &app,
@@ -5984,6 +6093,7 @@ mod tests {
             .status(),
             StatusCode::CREATED
         );
+        record_attested_stock(&app, "PLAN-NETWORK-AUTH", slot_id, 2).await;
 
         let response = post_json(
             &app,
@@ -6078,6 +6188,7 @@ mod tests {
             .status(),
             StatusCode::CREATED
         );
+        record_attested_stock(&app, "PLAN-PLATFORM-REFUSAL", slot_id, 2).await;
 
         let response = post_json(
             &app,
@@ -7444,6 +7555,128 @@ mod tests {
             readiness["components"]["slotSaleSafety"]["blockedSlots"][0]["slotSalesState"],
             "needs_count"
         );
+    }
+
+    #[tokio::test]
+    async fn physical_stock_attestation_endpoint_unblocks_production_sale_readiness() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(wiremock::matchers::path("/machine-orders/payment-options"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "options": [{
+                    "optionKey": "qr_code:wechat_pay",
+                    "providerCode": "wechat_pay",
+                    "method": "qr_code",
+                    "displayName": "微信支付",
+                    "description": "生产二维码支付",
+                    "icon": "wechat",
+                    "recommended": true,
+                    "disabled": false,
+                    "disabledReason": null
+                }],
+                "defaultOptionKey": "qr_code:wechat_pay",
+                "defaultProviderCode": "wechat_pay",
+                "serverTime": "2026-06-04T00:00:00Z"
+            })))
+            .mount(&server)
+            .await;
+
+        let temp_dir = tempdir().expect("tmp");
+        let ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            &server.uri(),
+        )
+        .await;
+        mark_runtime_sale_ready(&ctx).await;
+        let app = build_router(ctx);
+        let slot_id = "550e8400-e29b-41d4-a716-4466554400d1";
+        let inventory_id = "550e8400-e29b-41d4-a716-4466554400d2";
+
+        assert_eq!(
+            post_json(
+                &app,
+                "/v1/stock/planogram",
+                "token-1",
+                one_slot_planogram("PLAN-PHYSICAL-ATTEST", slot_id, inventory_id),
+            )
+            .await
+            .status(),
+            StatusCode::OK
+        );
+
+        let readiness = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/sale-readiness")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(readiness.status(), StatusCode::OK);
+        let body = body::to_bytes(readiness.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let readiness: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            readiness["components"]["physicalStockAttestation"]["status"],
+            "missing"
+        );
+        assert!(readiness["blockingCodes"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("PHYSICAL_STOCK_ATTESTATION_MISSING")));
+
+        let attestation = post_json(
+            &app,
+            "/v1/stock/attestation",
+            "token-1",
+            json!({
+                "attestationId": "ATT-PROD-001",
+                "planogramVersion": "PLAN-PHYSICAL-ATTEST",
+                "operatorId": "operator-1",
+                "slots": [{
+                    "slotId": slot_id,
+                    "slotCode": "A1",
+                    "sku": "WATER-001",
+                    "quantity": 5,
+                    "enabled": true
+                }]
+            }),
+        )
+        .await;
+        assert_eq!(attestation.status(), StatusCode::CREATED);
+
+        let readiness = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/sale-readiness")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(readiness.status(), StatusCode::OK);
+        let body = body::to_bytes(readiness.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let readiness: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            readiness["components"]["physicalStockAttestation"]["status"],
+            "ready"
+        );
+        assert!(!readiness["blockingCodes"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("PHYSICAL_STOCK_ATTESTATION_MISSING")));
+        assert_eq!(readiness["canStartNetworkAuthorizedSale"], true);
     }
 
     #[tokio::test]

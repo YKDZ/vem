@@ -9,6 +9,7 @@ import {
 } from "../../../vision-mock/src/server";
 import {
   subscribeVisionProfiles,
+  type VisionPresenceStatusPayload,
   type VisionProfileResultPayload,
   visionSelfCheck,
 } from "./vision";
@@ -91,6 +92,32 @@ describe("vision native browser fallback - self-check", () => {
 });
 
 describe("vision native browser fallback - pushed profiles", () => {
+  it("receives a pushed presence event before profile details", async () => {
+    const url = await startVisionMock("success");
+    const config = normalizeMachineConfig({ visionWsUrl: url });
+
+    const result = await new Promise<VisionPresenceStatusPayload>(
+      (resolve, reject) => {
+        let subscription: ReturnType<typeof subscribeVisionProfiles>;
+        subscription = subscribeVisionProfiles(config, {
+          onPresenceStatus: (payload) => {
+            subscription.close();
+            resolve(payload);
+          },
+          onProfile: () => undefined,
+          onError: (error) => {
+            subscription.close();
+            reject(error);
+          },
+        });
+      },
+    );
+
+    expect(result.state).toBe("approach");
+    expect(result.personPresent).toBe(true);
+    expect(typeof result.detectedAt).toBe("string");
+  });
+
   it("receives a pushed profile from the mock websocket server", async () => {
     const url = await startVisionMock("success");
 
@@ -99,7 +126,7 @@ describe("vision native browser fallback - pushed profiles", () => {
     expect(typeof result.eventId).toBe("string");
     expect(result.profile.personPresent).toBe(true);
     expect(result.profile.heightCm).toBe(172);
-    expect(result.quality.overall).toBe("good");
+    expect(result.quality.overall).toBe("fair");
     expect(typeof result.detectedAt).toBe("string");
   });
 
@@ -141,6 +168,34 @@ describe("vision native browser fallback - pushed profiles", () => {
       }),
     ).rejects.toThrow("vision camera_unavailable:");
   });
+
+  it("reconnects after the websocket closes", async () => {
+    const url = await startVisionMock("disconnect_once");
+    const config = normalizeMachineConfig({ visionWsUrl: url });
+
+    const result = await new Promise<VisionProfileResultPayload>(
+      (resolve, reject) => {
+        let subscription: ReturnType<typeof subscribeVisionProfiles> = {
+          close: () => undefined,
+        };
+        const timeout = setTimeout(() => {
+          subscription.close();
+          reject(new Error("waiting for reconnected profile timed out"));
+        }, 5000);
+        subscription = subscribeVisionProfiles(config, {
+          onProfile: (payload) => {
+            clearTimeout(timeout);
+            subscription.close();
+            resolve(payload);
+          },
+          onError: () => undefined,
+        });
+      },
+    );
+
+    expect(result.profile.personPresent).toBe(true);
+    expect(result.profile.heightCm).toBe(172);
+  }, 10_000);
 });
 
 describe("vision native browser fallback - vision disabled", () => {

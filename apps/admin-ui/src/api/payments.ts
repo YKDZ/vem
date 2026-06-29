@@ -11,6 +11,9 @@ export type Payment = {
   method: string;
   status: string;
   amountCents: number;
+  isDrill?: boolean;
+  isTest?: boolean;
+  scenario?: string | null;
   expiresAt: string | null;
   paidAt: string | null;
   failedReason: string | null;
@@ -223,6 +226,9 @@ export type Refund = {
   providerCode: string;
   status: string;
   amountCents: number;
+  isDrill?: boolean;
+  isTest?: boolean;
+  scenario?: string | null;
   reason: string;
   providerRefundNo: string | null;
   refundedAt: string | null;
@@ -281,13 +287,17 @@ export async function listRefunds(
   return await get<PageResult<Refund>>("/payments/refunds", { params: query });
 }
 
-export async function queryRefund(refundId: string): Promise<{
+export async function queryRefund(
+  refundId: string,
+  reason?: string,
+): Promise<{
   status: string;
   reconciled: boolean;
   reason?: string;
 }> {
   return await post<{ status: string; reconciled: boolean; reason?: string }>(
     `/payments/refunds/${refundId}/query`,
+    { reason: reason ?? "admin_refund_status_query" },
   );
 }
 
@@ -302,9 +312,11 @@ export async function listPaymentCodeAttempts(
 
 export async function queryPaymentCodeAttempt(
   id: string,
+  reason = "admin_payment_code_query",
 ): Promise<PaymentCodeAttempt> {
   return await post<PaymentCodeAttempt>(
     `/payments/payment-code-attempts/${id}/query`,
+    { reason },
   );
 }
 
@@ -320,13 +332,17 @@ export async function reversePaymentCodeAttempt(
   );
 }
 
-export async function manualReconcile(paymentId: string): Promise<{
+export async function manualReconcile(
+  paymentId: string,
+  reason = "admin_manual_payment_reconcile",
+): Promise<{
   status: string;
   reconciled: boolean;
   reason?: string;
 }> {
   return await post<{ status: string; reconciled: boolean; reason?: string }>(
     `/payments/${paymentId}/reconcile`,
+    { reason },
   );
 }
 
@@ -372,13 +388,18 @@ export type PaymentMachinePreflight = {
   machineCode: string;
   status: "ready" | "blocked";
   availableProviders: Array<{
+    optionKey: string;
     providerCode: "mock" | "wechat_pay" | "alipay";
     method: "mock" | "qr_code" | "payment_code" | "face_pay";
     displayName: string;
     description: string;
     icon: "mock" | "wechat" | "alipay";
     recommended: boolean;
+    disabled: boolean;
+    disabledReason: string | null;
   }>;
+  defaultOptionKey: string | null;
+  defaultProviderCode: "mock" | "wechat_pay" | "alipay" | null;
   checks: PaymentOpsCheck[];
   checkedAt: string;
 };

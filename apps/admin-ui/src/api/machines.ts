@@ -24,6 +24,23 @@ export type Machine = {
   latestHeartbeatReportedAt?: string | null;
   latestEnvironment?: MachineHeartbeatStatusPayload["environment"] | null;
   latestEnvironmentCommand?: MachineCommand | null;
+  productionPilotReadiness?: ProductionPilotReadiness | null;
+};
+
+export type ProductionPilotReadinessCheck = {
+  code: string;
+  label: string;
+  status: "ready" | "blocked" | "degraded" | "missing";
+  message: string;
+  operatorAction: string;
+};
+
+export type ProductionPilotReadiness = {
+  status: "ready" | "blocked" | "degraded";
+  checkedAt: string;
+  blockers: ProductionPilotReadinessCheck[];
+  degraded: ProductionPilotReadinessCheck[];
+  checks: ProductionPilotReadinessCheck[];
 };
 
 export type MachineCommand = {

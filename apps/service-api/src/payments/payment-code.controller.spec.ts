@@ -1,9 +1,20 @@
+import { paymentCodeAttemptAdminActionSchema } from "@vem/shared";
 import { describe, expect, it, vi } from "vitest";
 
+import { AuditService } from "../audit/audit.service";
 import { PaymentCodeAttemptsService } from "./payment-code-attempts.service";
 import { PaymentCodeController } from "./payment-code.controller";
 
 describe("PaymentCodeController", () => {
+  it("rejects whitespace-only manual query and reverse reasons", () => {
+    expect(() =>
+      paymentCodeAttemptAdminActionSchema.parse({ reason: "   " }),
+    ).toThrow();
+    expect(() =>
+      paymentCodeAttemptAdminActionSchema.parse({ reason: "\n\t" }),
+    ).toThrow();
+  });
+
   it("returns payment code attempts list without exposing authCodeHash fields", async () => {
     const attempts = {
       listAttempts: vi.fn().mockResolvedValue({
@@ -40,6 +51,7 @@ describe("PaymentCodeController", () => {
     const controller = new PaymentCodeController(
       attempts as never,
       orchestrator as never,
+      { record: vi.fn() } as unknown as AuditService,
     );
 
     const result = await controller.listAttempts({
@@ -82,9 +94,11 @@ describe("PaymentCodeController", () => {
     const controller = new PaymentCodeController(
       attempts as never,
       orchestrator as never,
+      { record: vi.fn() } as unknown as AuditService,
     );
 
     const result = await controller.reverseAttempt(
+      { id: "admin-1" } as never,
       "550e8400-e29b-41d4-a716-446655440000",
       {
         reason: "admin_manual_reverse",
@@ -133,10 +147,13 @@ describe("PaymentCodeController", () => {
     const controller = new PaymentCodeController(
       attempts as never,
       orchestrator as never,
+      { record: vi.fn() } as unknown as AuditService,
     );
 
     const result = await controller.queryAttempt(
+      { id: "admin-1" } as never,
       "550e8400-e29b-41d4-a716-446655440000",
+      { reason: "operator checked uncertain payment code result" },
     );
 
     expect(JSON.stringify(result)).toContain("WAIT_BUYER_PAY");
@@ -145,5 +162,63 @@ describe("PaymentCodeController", () => {
     expect(JSON.stringify(result)).not.toContain("rawPayloadJson");
     expect(JSON.stringify(result)).not.toContain("scannerHealthJson");
     expect(JSON.stringify(result)).not.toContain("28763443825664394");
+  });
+
+  it("records actor and reason for manual query without leaking payment code payload", async () => {
+    const attempts = new PaymentCodeAttemptsService({} as never);
+    const orchestrator = {
+      manualQuery: vi.fn().mockResolvedValue({
+        id: "attempt-1",
+        orderId: "order-1",
+        attemptNo: 1,
+        providerPaymentNo: "PCA001",
+        status: "querying",
+        authCodeMasked: "2876****4394",
+        source: "serial_text",
+        providerTradeNo: "ALI-TXN-001",
+        providerStatus: "WAIT_BUYER_PAY",
+        failureCode: "PAYMENT_CODE_QUERY_UNKNOWN",
+        failureMessage: "provider timeout",
+        manualReason: null,
+        submittedAt: null,
+        lastCheckedAt: new Date("2026-06-26T04:00:00.000Z"),
+        reversedAt: null,
+        finishedAt: null,
+        createdAt: new Date("2026-06-26T03:59:00.000Z"),
+        authCodeHash: "secret-hash",
+        rawPayloadJson: { auth_code: "28763443825664394" },
+        scannerHealthJson: { port: "COM3", lastRawText: "28763443825664394" },
+      }),
+      manualReverse: vi.fn(),
+    };
+    const audit = { record: vi.fn().mockResolvedValue(undefined) };
+    const controller = new PaymentCodeController(
+      attempts as never,
+      orchestrator as never,
+      audit as unknown as AuditService,
+    );
+
+    const result = await controller.queryAttempt(
+      { id: "admin-1" } as never,
+      "550e8400-e29b-41d4-a716-446655440000",
+      { reason: "customer says payment app is still confirming" },
+    );
+
+    expect(audit.record).toHaveBeenCalledWith({
+      adminUserId: "admin-1",
+      action: "payments.payment_code_attempt.query",
+      resourceType: "payment_code_attempt",
+      resourceId: "550e8400-e29b-41d4-a716-446655440000",
+      afterJson: {
+        reason: "customer says payment app is still confirming",
+        result,
+      },
+    });
+    expect(JSON.stringify(audit.record.mock.calls)).not.toContain(
+      "28763443825664394",
+    );
+    expect(JSON.stringify(audit.record.mock.calls)).not.toContain(
+      "authCodeHash",
+    );
   });
 });

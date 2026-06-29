@@ -80,6 +80,7 @@ export const machineHeartbeatStatusPayloadSchema = z
         state: z.enum(["locked", "blocked", "restored"]),
         blockingCodes: z.array(z.string()).default([]),
       })
+      .loose()
       .optional(),
     doorOpen: z.boolean().optional(),
     localQueueSize: z.int().nonnegative().optional(),

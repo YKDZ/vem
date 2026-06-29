@@ -24,7 +24,10 @@ function Read-JsonFile([string]$Path) {
   if (-not (Test-Path $Path)) {
     throw "file not found: $Path"
   }
-  return Get-Content $Path -Raw | ConvertFrom-Json
+  return [System.IO.File]::ReadAllText(
+    $Path,
+    [System.Text.Encoding]::UTF8
+  ) | ConvertFrom-Json
 }
 
 function Get-IpcBaseUrl($Ready) {

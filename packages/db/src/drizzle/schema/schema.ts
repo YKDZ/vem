@@ -662,6 +662,8 @@ export const orders = t.pgTable(
     paymentId: t
       .uuid("payment_id")
       .references((): t.AnyPgColumn => payments.id),
+    isDrill: t.boolean("is_drill").default(false).notNull(),
+    drillScenario: t.varchar("drill_scenario", { length: 64 }),
     profileSnapshot: t.jsonb("profile_snapshot").$type<JsonObject>(),
     createdFrom: orderSource("created_from").default("machine_ui").notNull(),
     paidAt: t.timestamp("paid_at", { withTimezone: true }),
@@ -674,6 +676,7 @@ export const orders = t.pgTable(
     t.uniqueIndex("orders_order_no_unique").on(table.orderNo),
     t.index("orders_machine_id_idx").on(table.machineId),
     t.index("orders_status_idx").on(table.status),
+    t.index("orders_is_drill_idx").on(table.isDrill),
     t.index("orders_payment_state_idx").on(table.paymentState),
     t.index("orders_fulfillment_state_idx").on(table.fulfillmentState),
     t.index("orders_created_at_idx").on(table.createdAt),
@@ -852,6 +855,8 @@ export const payments = t.pgTable(
     status: paymentStatus("status").default("created").notNull(),
     amountCents: t.integer("amount_cents").notNull(),
     providerTradeNo: t.varchar("provider_trade_no", { length: 128 }),
+    isDrill: t.boolean("is_drill").default(false).notNull(),
+    drillScenario: t.varchar("drill_scenario", { length: 64 }),
     paymentUrl: t.text("payment_url"),
     expiresAt: t.timestamp("expires_at", { withTimezone: true }),
     paidAt: t.timestamp("paid_at", { withTimezone: true }),
@@ -867,6 +872,7 @@ export const payments = t.pgTable(
     t.index("payments_order_id_idx").on(table.orderId),
     t.index("payments_provider_id_idx").on(table.providerId),
     t.index("payments_status_idx").on(table.status),
+    t.index("payments_is_drill_idx").on(table.isDrill),
     t.index("payments_created_at_idx").on(table.createdAt),
     t.check(
       "payments_amount_cents_non_negative",
@@ -987,6 +993,8 @@ export const refunds = t.pgTable(
     amountCents: t.integer("amount_cents").notNull(),
     status: refundStatus("status").default("created").notNull(),
     providerRefundNo: t.varchar("provider_refund_no", { length: 128 }),
+    isDrill: t.boolean("is_drill").default(false).notNull(),
+    drillScenario: t.varchar("drill_scenario", { length: 64 }),
     reason: t.text("reason").notNull(),
     requestedByAdminUserId: t
       .uuid("requested_by_admin_user_id")
@@ -999,6 +1007,7 @@ export const refunds = t.pgTable(
     t.uniqueIndex("refunds_refund_no_unique").on(table.refundNo),
     t.index("refunds_payment_id_idx").on(table.paymentId),
     t.index("refunds_order_id_idx").on(table.orderId),
+    t.index("refunds_is_drill_idx").on(table.isDrill),
     t
       .uniqueIndex("refunds_order_reason_active_unique")
       .on(table.orderId, table.reason)

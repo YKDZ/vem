@@ -11,6 +11,9 @@ export type Order = {
   paymentState?: string;
   fulfillmentState?: string;
   totalAmountCents: number;
+  isDrill?: boolean;
+  isTest?: boolean;
+  scenario?: string | null;
   paidAt: string | null;
   dispensedAt: string | null;
   createdAt: string;

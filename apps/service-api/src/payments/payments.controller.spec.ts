@@ -2,7 +2,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { PaymentsService } from "./payments.service";
 
-import { PaymentsController } from "./payments.controller";
+import {
+  paymentOperatorReasonSchema,
+  PaymentsController,
+} from "./payments.controller";
 
 function makeRes() {
   return {
@@ -11,6 +14,20 @@ function makeRes() {
 }
 
 describe("PaymentsController", () => {
+  describe("operator reason validation", () => {
+    it("rejects whitespace-only manual reconcile reasons", () => {
+      expect(() =>
+        paymentOperatorReasonSchema.parse({ reason: "   " }),
+      ).toThrow();
+    });
+
+    it("rejects whitespace-only refund query reasons", () => {
+      expect(() =>
+        paymentOperatorReasonSchema.parse({ reason: "\n\t" }),
+      ).toThrow();
+    });
+  });
+
   describe("listReconciliationAttempts", () => {
     it("forwards machine_status_poll trigger filters", async () => {
       const result = {
@@ -42,7 +59,7 @@ describe("PaymentsController", () => {
   });
 
   describe("queryRefund", () => {
-    it("passes refund id and admin id to manualReconcileRefund()", async () => {
+    it("passes refund id, admin id, and reason to manualReconcileRefund()", async () => {
       const result = {
         status: "succeeded" as const,
         reconciled: true,
@@ -58,11 +75,45 @@ describe("PaymentsController", () => {
       } as import("../common/request-user").AuthenticatedAdmin;
 
       await expect(
-        controller.queryRefund(admin, "550e8400-e29b-41d4-a716-446655440000"),
+        controller.queryRefund(admin, "550e8400-e29b-41d4-a716-446655440000", {
+          reason: "customer refund status check",
+        }),
       ).resolves.toBe(result);
       expect(paymentsService.manualReconcileRefund).toHaveBeenCalledWith(
         "550e8400-e29b-41d4-a716-446655440000",
         "admin-001",
+        "customer refund status check",
+      );
+    });
+  });
+
+  describe("manualReconcile", () => {
+    it("passes payment id, admin id, and reason to manualReconcile()", async () => {
+      const result = {
+        status: "succeeded" as const,
+        reconciled: true,
+      };
+      const paymentsService = {
+        manualReconcile: vi.fn().mockResolvedValue(result),
+      };
+      const controller = new PaymentsController(
+        paymentsService as unknown as PaymentsService,
+      );
+      const admin = {
+        id: "admin-001",
+      } as import("../common/request-user").AuthenticatedAdmin;
+
+      await expect(
+        controller.manualReconcile(
+          admin,
+          "550e8400-e29b-41d4-a716-446655440000",
+          { reason: "customer sees paid but platform is pending" },
+        ),
+      ).resolves.toBe(result);
+      expect(paymentsService.manualReconcile).toHaveBeenCalledWith(
+        "550e8400-e29b-41d4-a716-446655440000",
+        "admin-001",
+        "customer sees paid but platform is pending",
       );
     });
   });

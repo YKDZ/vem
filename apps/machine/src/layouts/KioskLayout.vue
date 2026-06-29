@@ -1,46 +1,24 @@
 <script setup lang="ts">
-import { onBeforeUnmount, ref } from "vue";
-import { useRouter } from "vue-router";
+import logoImage from "@/assets/home/logo.png";
+import mascotTopImage from "@/assets/home/mascot-top-cutout.png";
+import { useMaintenanceEntry } from "@/composables/useMaintenanceEntry";
 
-const router = useRouter();
-const MAINTENANCE_TAP_THRESHOLD = 7;
-const MAINTENANCE_TAP_RESET_MS = 1600;
-
-const maintenanceTapCount = ref(0);
-let maintenanceTapResetTimer: number | null = null;
-
-function clearMaintenanceTapResetTimer(): void {
-  if (maintenanceTapResetTimer !== null) {
-    window.clearTimeout(maintenanceTapResetTimer);
-    maintenanceTapResetTimer = null;
-  }
-}
-
-function handleMaintenanceTap(): void {
-  clearMaintenanceTapResetTimer();
-  maintenanceTapCount.value += 1;
-  if (maintenanceTapCount.value >= MAINTENANCE_TAP_THRESHOLD) {
-    maintenanceTapCount.value = 0;
-    void router.push({ path: "/maintenance", query: { source: "operator" } });
-    return;
-  }
-  maintenanceTapResetTimer = window.setTimeout(() => {
-    maintenanceTapCount.value = 0;
-    maintenanceTapResetTimer = null;
-  }, MAINTENANCE_TAP_RESET_MS);
-}
-
-onBeforeUnmount(clearMaintenanceTapResetTimer);
+const { handleMaintenanceTap } = useMaintenanceEntry();
 </script>
 
 <template>
-  <main class="kiosk-shell flex min-h-0 flex-col px-6 py-5">
+  <main
+    class="kiosk-shell flex min-h-0 flex-col px-[var(--machine-page-inline)] pt-[var(--machine-page-header-top)] pb-5"
+  >
     <header class="flex items-center justify-between gap-3">
-      <div @click="handleMaintenanceTap">
-        <p class="text-xs font-semibold tracking-[0.24em] text-neutral-500">
-          汉麻衣物自动售货机
-        </p>
-        <h1 class="mt-1 text-2xl font-bold text-neutral-950">唐诗村</h1>
+      <div class="flex items-center gap-3" @click="handleMaintenanceTap">
+        <img :src="logoImage" alt="唐诗村" />
+        <img
+          :src="mascotTopImage"
+          alt=""
+          class="h-14 w-14 object-contain"
+          aria-hidden="true"
+        />
       </div>
     </header>
 

@@ -18,6 +18,8 @@ import mascotListImage from "@/assets/home/mascot-list.png";
 import mascotTopImage from "@/assets/home/mascot-top-cutout.png";
 import sloganCalligraphyImage from "@/assets/home/slogan-calligraphy.png";
 import { groupItemsByTopCategory } from "@/catalog/view-model";
+import { useMaintenanceEntry } from "@/composables/useMaintenanceEntry";
+import { usePresenceInteraction } from "@/composables/usePresenceInteraction";
 import { useVisionRecommendations } from "@/composables/useVisionRecommendations";
 import KioskLayout from "@/layouts/KioskLayout.vue";
 import { useCatalogStore } from "@/stores/catalog";
@@ -30,6 +32,8 @@ const connectivityStore = useConnectivityStore();
 const catalogStore = useCatalogStore();
 const checkoutStore = useCheckoutStore();
 useVisionRecommendations();
+const { presenceClass } = usePresenceInteraction();
+const { handleMaintenanceTap } = useMaintenanceEntry();
 const READINESS_REFRESH_INTERVAL_MS = 5000;
 const CLOCK_REFRESH_INTERVAL_MS = 30_000;
 
@@ -103,6 +107,9 @@ const displayProducts = computed(() =>
     group.items.map((item) => toDisplayProduct(item, group.key)),
   ),
 );
+const availableCategoryKeys = computed(
+  () => new Set(categoryGroups.value.map((group) => group.key)),
+);
 const activeProducts = computed(() =>
   displayProducts.value.filter((product) => {
     const matchesCategory =
@@ -120,6 +127,7 @@ const customerReadinessMessage = computed(() => {
     "设备暂时不可购买，请稍后再试。"
   );
 });
+const hasAnySaleableProduct = computed(() => displayProducts.value.length > 0);
 const clockText = computed(() =>
   now.value.toLocaleTimeString("zh-CN", {
     hour: "2-digit",
@@ -203,8 +211,21 @@ function nextSlide(): void {
 }
 
 function selectTopCategory(key: CatalogTopCategoryKey): void {
+  if (!categoryHasProducts(key)) return;
   selectedTopCategoryKey.value = key;
   activeGenderFilter.value = "all";
+}
+
+function categoryHasProducts(key: CatalogTopCategoryKey): boolean {
+  return (
+    availableCategoryKeys.value.has(key) &&
+    displayProducts.value.some(
+      (product) =>
+        product.categoryKey === key &&
+        product.item.slotSalesState === "sale_ready" &&
+        product.item.saleableStock > 0,
+    )
+  );
 }
 
 function backToHome(): void {
@@ -287,12 +308,13 @@ onUnmounted(() => {
     <section
       v-if="!selectedTopCategoryKey"
       class="catalog-home relative -mx-6 -my-5 flex min-h-0 flex-1 flex-col overflow-hidden px-7 py-6"
+      :class="presenceClass"
     >
       <div class="home-mist home-mist-left"></div>
       <div class="home-mist home-mist-right"></div>
 
       <header class="relative z-10 flex shrink-0 items-start justify-between">
-        <div class="flex items-center gap-3">
+        <div class="flex items-center gap-3" @click="handleMaintenanceTap">
           <img
             :src="logoImage"
             alt="唐诗村"
@@ -314,9 +336,9 @@ onUnmounted(() => {
       </header>
 
       <div
-        class="relative z-10 mt-6 shrink-0 overflow-hidden rounded-[26px] border border-[#ded6c2] bg-[#f8f3e8] p-2 shadow-[0_16px_40px_rgba(101,94,71,0.12)]"
+        class="home-carousel-shell relative z-10 mt-6 shrink-0 overflow-hidden rounded-[26px] border border-[#ded6c2] bg-[#f8f3e8] p-2 shadow-[0_16px_40px_rgba(101,94,71,0.12)]"
       >
-        <div class="relative aspect-[2.32/1] overflow-hidden rounded-[20px]">
+        <div class="relative aspect-video overflow-hidden rounded-[20px]">
           <img
             :src="carouselSlides[activeCarouselIndex]"
             alt="轮播展示"
@@ -358,24 +380,27 @@ onUnmounted(() => {
 
       <p
         v-if="customerReadinessMessage"
-        class="relative z-10 mt-3 shrink-0 rounded-2xl border border-[#d8cfb9] bg-white/80 p-3 text-sm text-[#5f644f]"
+        class="home-readiness-message relative z-10 mt-3 shrink-0 rounded-2xl border border-[#d8cfb9] bg-white/80 p-3 text-sm text-[#5f644f]"
       >
         {{ customerReadinessMessage }}
       </p>
 
       <div
-        class="relative z-10 mt-5 flex shrink-0 items-center justify-center gap-3 text-[#7b8d67]"
+        class="home-category-heading relative z-10 mt-5 flex shrink-0 items-center justify-center gap-3 text-[#7b8d67]"
       >
         <span class="title-ornament title-ornament-left"></span>
         <h2 class="category-section-title">请选择商品类别</h2>
         <span class="title-ornament title-ornament-right"></span>
       </div>
 
-      <div class="relative z-10 mt-5 grid shrink-0 grid-cols-3 gap-4">
+      <div
+        class="home-category-grid relative z-10 mt-5 grid shrink-0 grid-cols-3 gap-4"
+      >
         <button
           v-for="category in homeCategoryEntries"
           :key="category.key"
           class="home-category-card kiosk-touch-target"
+          :disabled="!categoryHasProducts(category.key)"
           type="button"
           @click="selectTopCategory(category.key)"
         >
@@ -391,11 +416,22 @@ onUnmounted(() => {
           <span class="mt-2 block text-xs tracking-[0.2em] text-[#c2b8a6]">
             {{ category.english }}
           </span>
-          <span class="home-category-action">点击选购</span>
+          <span class="home-category-action">
+            {{ categoryHasProducts(category.key) ? "点击选购" : "暂时售罄" }}
+          </span>
         </button>
       </div>
 
-      <div class="relative z-30 mt-7 grid shrink-0 grid-cols-4 gap-2 pr-28">
+      <p
+        v-if="!hasAnySaleableProduct"
+        class="home-empty-message relative z-10 mt-5 shrink-0 rounded-2xl border border-[#d8cfb9] bg-white/82 p-4 text-center text-base font-semibold text-[#5f644f]"
+      >
+        暂无可售商品，请稍后再来或联系工作人员。
+      </p>
+
+      <div
+        class="home-quick-grid relative z-30 mt-7 grid shrink-0 grid-cols-4 gap-2 pr-28"
+      >
         <button
           v-for="action in quickActions"
           :key="action.label"
@@ -461,7 +497,7 @@ onUnmounted(() => {
       <img
         :src="sloganCalligraphyImage"
         alt="让温柔生长，让善意发生"
-        class="pointer-events-none absolute bottom-[-0.35rem] left-8 z-[2] w-36 opacity-20"
+        class="home-slogan pointer-events-none absolute bottom-[-0.35rem] left-8 z-[2] w-36 opacity-20"
       />
       <img
         :src="mascotListImage"
@@ -474,21 +510,14 @@ onUnmounted(() => {
 
     <section
       v-else
-      class="catalog-list relative -mx-6 -my-5 flex min-h-0 flex-1 flex-col overflow-hidden px-7 py-6"
+      class="catalog-list relative flex min-h-0 flex-1 flex-col overflow-hidden px-[var(--machine-page-inline)] pt-[var(--machine-page-header-top)] pb-6"
+      :class="presenceClass"
     >
       <div class="home-mist home-mist-left"></div>
       <div class="home-mist home-mist-right"></div>
 
       <header class="relative z-10 flex shrink-0 items-start justify-between">
-        <div class="flex items-center gap-3">
-          <button
-            class="catalog-back-button kiosk-touch-target"
-            type="button"
-            aria-label="返回首页"
-            @click="backToHome"
-          >
-            ‹
-          </button>
+        <div class="flex items-center gap-3" @click="handleMaintenanceTap">
           <img
             :src="logoImage"
             alt="唐诗村"
@@ -510,23 +539,22 @@ onUnmounted(() => {
       </header>
 
       <div class="list-heading-row">
-        <img
-          :src="listTitleImage"
-          alt="商品列表，请点击选择您需要的商品"
-          class="list-title-image"
-        />
-        <label class="catalog-search" aria-label="搜索商品">
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path
-              d="m20 20-4.5-4.5M10.8 18a7.2 7.2 0 1 1 0-14.4 7.2 7.2 0 0 1 0 14.4Z"
-              fill="none"
-              stroke="currentColor"
-              stroke-linecap="round"
-              stroke-width="1.8"
-            />
-          </svg>
-          <input type="search" placeholder="搜索商品" />
-        </label>
+        <div class="list-title-group">
+          <button
+            class="catalog-back-button kiosk-touch-target"
+            type="button"
+            aria-label="返回首页"
+            @click="backToHome"
+          >
+            <span aria-hidden="true">←</span>
+            返回
+          </button>
+          <img
+            :src="listTitleImage"
+            alt="商品列表，请点击选择您需要的商品"
+            class="list-title-image"
+          />
+        </div>
       </div>
 
       <p
@@ -546,6 +574,7 @@ onUnmounted(() => {
               'sidebar-category-active':
                 category.key === selectedTopCategoryKey,
             }"
+            :disabled="!categoryHasProducts(category.key)"
             type="button"
             @click="selectTopCategory(category.key)"
           >
@@ -573,7 +602,7 @@ onUnmounted(() => {
           </div>
 
           <div class="kiosk-scroll product-scroll">
-            <div class="product-grid">
+            <div v-if="activeProducts.length > 0" class="product-grid">
               <button
                 v-for="product in activeProducts"
                 :key="product.id"
@@ -595,6 +624,9 @@ onUnmounted(() => {
                 </div>
               </button>
             </div>
+            <p v-else class="product-empty-message">
+              当前分类暂无可售商品，请选择其他分类或联系工作人员。
+            </p>
           </div>
         </main>
       </div>
@@ -631,14 +663,106 @@ onUnmounted(() => {
   container-type: inline-size;
 }
 
+.catalog-home.presence-present,
+.catalog-list.presence-present {
+  filter: saturate(1.03) brightness(1.01);
+}
+
+.catalog-home {
+  --home-inline: var(--machine-page-inline);
+  --home-block-start: var(--machine-page-header-top);
+  --home-block-end: clamp(24px, 2.3vh, 44px);
+  --home-carousel-gap: clamp(24px, 2.92vh, 56px);
+  --home-heading-gap: clamp(20px, 3.02vh, 58px);
+  --home-category-gap: clamp(20px, 2.19vh, 42px);
+  --home-quick-gap: clamp(28px, 3.96vh, 76px);
+  --home-card-height: clamp(268px, 29.2vh, 560px);
+  --home-hills-height: clamp(118px, 9.9vh, 190px);
+  display: grid;
+  width: 100%;
+  grid-template-rows: auto auto auto auto auto auto minmax(0, 1fr);
+  align-content: start;
+  margin: 0;
+  padding: var(--home-block-start) var(--home-inline) var(--home-block-end);
+  background:
+    radial-gradient(
+      circle at 0% 4%,
+      rgba(141, 157, 118, 0.14),
+      transparent 32%
+    ),
+    radial-gradient(
+      circle at 100% 0%,
+      rgba(210, 196, 151, 0.12),
+      transparent 30%
+    ),
+    linear-gradient(180deg, #fffdf8 0%, #fbf7eb 62%, #f6f0df 100%);
+}
+
+.catalog-home > header {
+  grid-row: 1;
+}
+
+.catalog-home > header img[alt="唐诗村"] {
+  height: clamp(36px, 5.9vw, 64px);
+}
+
+.catalog-home > header img[aria-hidden="true"] {
+  width: clamp(56px, 8.1vw, 88px);
+  height: clamp(56px, 8.1vw, 88px);
+}
+
+.catalog-home > header p:first-child {
+  font-size: clamp(2.25rem, 5.19vw, 3.5rem);
+}
+
+.catalog-home > header p:last-child {
+  margin-top: clamp(0.25rem, 0.46vh, 0.55rem);
+  font-size: clamp(0.75rem, 1.4vw, 0.95rem);
+}
+
+.home-carousel-shell {
+  grid-row: 2;
+  margin-top: var(--home-carousel-gap);
+  padding: clamp(8px, 0.93vw, 10px);
+  border-radius: clamp(26px, 2.8vw, 30px);
+}
+
+.home-carousel-shell > div {
+  border-radius: clamp(20px, 2.22vw, 24px);
+}
+
+.home-readiness-message {
+  grid-row: 3;
+  margin-top: clamp(12px, 1.04vh, 20px);
+}
+
+.home-category-heading {
+  grid-row: 4;
+  margin-top: var(--home-heading-gap);
+  gap: clamp(12px, 1.85vw, 20px);
+}
+
+.home-category-grid {
+  grid-row: 5;
+  gap: clamp(16px, 2.41vw, 26px);
+  margin-top: var(--home-category-gap);
+}
+
+.home-quick-grid {
+  grid-row: 6;
+  gap: clamp(8px, 1.67vw, 18px);
+  margin-top: var(--home-quick-gap);
+  padding-right: clamp(112px, 20.4vw, 220px);
+}
+
 .catalog-list-body {
   position: relative;
   z-index: 10;
   display: grid;
   min-height: 0;
   flex: 1;
-  grid-template-columns: 6.4rem minmax(0, 1fr);
-  gap: 1.05rem;
+  grid-template-columns: 8.4rem minmax(0, 1fr);
+  gap: 1.4rem;
   margin-top: 1.55rem;
   padding-bottom: 7.5rem;
 }
@@ -664,11 +788,12 @@ onUnmounted(() => {
 
 .product-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 1.15rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1.35rem;
 }
 
 .catalog-list {
+  margin: 0;
   background:
     radial-gradient(
       circle at 0% 4%,
@@ -681,12 +806,24 @@ onUnmounted(() => {
       transparent 30%
     ),
     linear-gradient(180deg, #fffdf8 0%, #fbf7eb 62%, #f6f0df 100%);
-  border: 1px solid rgba(89, 83, 66, 0.2);
-  border-radius: 20px;
-  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.78);
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
 }
 
 .catalog-back-button {
+  display: inline-flex;
+  min-height: 48px;
+  align-items: center;
+  gap: 0.75rem;
+  flex: 0 0 auto;
+  color: #6b6258;
+  font-family: SimSun, "Songti SC", "Noto Serif CJK SC", serif;
+  font-size: 1.35rem;
+  font-weight: 700;
+}
+
+.catalog-back-button span {
   display: grid;
   width: 42px;
   height: 42px;
@@ -703,12 +840,16 @@ onUnmounted(() => {
 .list-heading-row {
   position: relative;
   z-index: 10;
-  display: grid;
-  grid-template-columns: 270px minmax(220px, 270px);
-  gap: 1.5rem;
+  display: flex;
   align-items: center;
-  justify-content: space-between;
-  margin-top: 1.6rem;
+  margin-top: 1.45rem;
+}
+
+.list-title-group {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.85rem;
 }
 
 .list-title-image {
@@ -718,68 +859,11 @@ onUnmounted(() => {
   object-fit: contain;
 }
 
-.catalog-search {
-  display: flex;
-  width: 360px;
-  min-height: 56px;
-  align-items: center;
-  gap: 12px;
-  justify-self: end;
-  border: 1px solid rgba(181, 171, 132, 0.82);
-  border-radius: 999px;
-  background:
-    linear-gradient(
-      180deg,
-      rgba(255, 254, 249, 0.9),
-      rgba(248, 243, 232, 0.78)
-    ),
-    rgba(255, 252, 244, 0.72);
-  padding: 0 20px;
-  color: #6f7f61;
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.86),
-    inset 0 -10px 18px rgba(214, 204, 174, 0.12),
-    0 10px 22px rgba(102, 92, 64, 0.07);
-  transition:
-    border-color 0.18s ease,
-    box-shadow 0.18s ease,
-    background 0.18s ease;
-}
-
-.catalog-search:focus-within {
-  border-color: rgba(112, 132, 95, 0.88);
-  background: rgba(255, 254, 249, 0.95);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.95),
-    0 0 0 4px rgba(117, 136, 104, 0.12),
-    0 14px 28px rgba(102, 92, 64, 0.1);
-}
-
-.catalog-search svg {
-  width: 28px;
-  height: 28px;
-  flex: 0 0 auto;
-  color: #6c8060;
-}
-
-.catalog-search input {
-  min-width: 0;
-  flex: 1;
-  background: transparent;
-  color: #5c554c;
-  font-size: 1.05rem;
-  outline: none;
-}
-
-.catalog-search input::placeholder {
-  color: #8f8879;
-}
-
 .catalog-sidebar {
   position: relative;
   z-index: 2;
   align-self: start;
-  min-height: 37.5rem;
+  min-height: 44rem;
   overflow: hidden;
   border: 1px solid rgba(206, 197, 169, 0.78);
   border-radius: 18px;
@@ -791,7 +875,7 @@ onUnmounted(() => {
 .sidebar-category {
   display: flex;
   width: calc(100% + 8px);
-  min-height: 66px;
+  min-height: 5rem;
   align-items: center;
   margin-left: 0;
   padding: 0 10px;
@@ -803,7 +887,7 @@ onUnmounted(() => {
 .sidebar-category strong {
   display: block;
   font-family: SimSun, "Songti SC", "Noto Serif CJK SC", serif;
-  font-size: 1.04rem;
+  font-size: 1.18rem;
   line-height: 1;
 }
 
@@ -811,7 +895,7 @@ onUnmounted(() => {
   display: block;
   margin-top: 8px;
   color: #aaa293;
-  font-size: 0.5rem;
+  font-size: 0.62rem;
   letter-spacing: 0.12em;
 }
 
@@ -823,6 +907,11 @@ onUnmounted(() => {
 
 .sidebar-category-active small {
   color: rgba(255, 253, 247, 0.72);
+}
+
+.sidebar-category:disabled {
+  cursor: not-allowed;
+  opacity: 0.46;
 }
 
 .gender-filter {
@@ -847,7 +936,7 @@ onUnmounted(() => {
 .display-product-card {
   display: block;
   width: 100%;
-  min-height: 244px;
+  min-height: 17.5rem;
   overflow: hidden;
   border: 1px solid rgba(211, 203, 180, 0.92);
   border-radius: 20px;
@@ -871,7 +960,7 @@ onUnmounted(() => {
 .product-image-panel {
   position: relative;
   display: grid;
-  height: 118px;
+  height: 9.2rem;
   overflow: hidden;
   place-items: center;
   border-radius: 18px;
@@ -881,8 +970,8 @@ onUnmounted(() => {
 .product-image-panel img {
   position: relative;
   z-index: 2;
-  width: 78px;
-  height: 78px;
+  width: 6rem;
+  height: 6rem;
   object-fit: contain;
   filter: drop-shadow(0 16px 16px rgba(81, 70, 51, 0.12));
 }
@@ -1114,29 +1203,29 @@ onUnmounted(() => {
   position: absolute;
   top: 50%;
   display: grid;
-  width: 38px;
-  height: 38px;
-  min-height: 38px;
+  width: clamp(38px, 5.19vw, 56px);
+  height: clamp(38px, 5.19vw, 56px);
+  min-height: clamp(38px, 5.19vw, 56px);
   transform: translateY(-50%);
   place-items: center;
   border-radius: 999px;
   background: rgba(112, 133, 95, 0.86);
   color: #fffdf5;
-  font-size: 2.1rem;
+  font-size: clamp(2.1rem, 4.45vw, 3rem);
   line-height: 1;
   box-shadow: 0 8px 22px rgba(61, 75, 49, 0.18);
 }
 
 .carousel-dot {
-  width: 10px;
-  height: 10px;
-  min-height: 10px;
+  width: clamp(10px, 1.3vw, 14px);
+  height: clamp(10px, 1.3vw, 14px);
+  min-height: clamp(10px, 1.3vw, 14px);
 }
 
 .title-ornament {
   position: relative;
-  width: 76px;
-  height: 14px;
+  width: clamp(76px, 11.48vw, 124px);
+  height: clamp(14px, 2.04vw, 22px);
   color: #c9b989;
 }
 
@@ -1149,14 +1238,14 @@ onUnmounted(() => {
 }
 
 .title-ornament::before {
-  width: 52px;
+  width: clamp(52px, 7.96vw, 86px);
   height: 1px;
   background: currentColor;
 }
 
 .title-ornament::after {
-  width: 10px;
-  height: 10px;
+  width: clamp(10px, 1.48vw, 16px);
+  height: clamp(10px, 1.48vw, 16px);
   border: 1.5px solid currentColor;
   border-radius: 999px 999px 999px 2px;
   transform: translateY(-50%) rotate(45deg);
@@ -1180,7 +1269,7 @@ onUnmounted(() => {
 
 .category-section-title {
   font-family: SimSun, "Songti SC", "Noto Serif CJK SC", serif;
-  font-size: 1.38rem;
+  font-size: clamp(1.38rem, 3.19vw, 2.15rem);
   font-weight: 700;
   letter-spacing: 0.12em;
   line-height: 1;
@@ -1189,12 +1278,13 @@ onUnmounted(() => {
 .home-category-card {
   position: relative;
   display: flex;
-  min-height: 268px;
+  height: var(--home-card-height);
+  min-height: 0;
   flex-direction: column;
   align-items: center;
   overflow: hidden;
   border: 1px solid rgba(189, 178, 146, 0.65);
-  border-radius: 20px;
+  border-radius: clamp(20px, 2.22vw, 24px);
   background:
     linear-gradient(
       180deg,
@@ -1206,58 +1296,79 @@ onUnmounted(() => {
       rgba(126, 145, 104, 0.2),
       transparent 32%
     );
-  padding: 26px 14px 20px;
+  padding: clamp(26px, 4.26vh, 46px) clamp(14px, 1.85vw, 20px)
+    clamp(20px, 3.15vh, 34px);
   text-align: center;
   box-shadow: 0 14px 28px rgba(102, 92, 64, 0.1);
 }
 
 .home-category-card::before {
   position: absolute;
-  right: -24px;
-  bottom: -8px;
-  width: 122px;
-  height: 82px;
+  right: clamp(-34px, -3.15vw, -24px);
+  bottom: clamp(-12px, -1.11vw, -8px);
+  width: clamp(122px, 17.59vw, 190px);
+  height: clamp(82px, 11.85vw, 128px);
   content: "";
   background: rgba(126, 145, 104, 0.12);
   border-radius: 65% 35% 0 0;
 }
 
 .home-category-card:disabled {
+  cursor: not-allowed;
   opacity: 0.52;
 }
 
+.product-empty-message {
+  display: grid;
+  min-height: 18rem;
+  place-items: center;
+  border: 1px solid rgba(206, 197, 169, 0.78);
+  border-radius: 18px;
+  background: rgba(255, 253, 248, 0.74);
+  color: #5f644f;
+  font-size: 1.12rem;
+  font-weight: 700;
+  text-align: center;
+}
+
 .category-illustration {
-  width: 116px;
-  height: 116px;
+  width: clamp(116px, 17.6vw, 190px);
+  height: clamp(116px, 17.6vw, 190px);
   object-fit: contain;
   filter: drop-shadow(0 8px 10px rgba(80, 92, 66, 0.08));
 }
 
 .category-title-text {
   font-family: SimSun, "Songti SC", "Noto Serif CJK SC", serif;
-  font-size: 1.72rem;
+  margin-top: clamp(12px, 1.88vh, 36px);
+  font-size: clamp(1.72rem, 4vw, 2.7rem);
   font-weight: 700;
   line-height: 1;
+}
+
+.home-category-card > span:nth-of-type(2) {
+  margin-top: clamp(8px, 0.94vh, 18px);
+  font-size: clamp(0.75rem, 1.48vw, 1rem);
 }
 
 .home-category-action {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 32px;
+  min-height: clamp(32px, 4.63vw, 50px);
   margin-top: auto;
-  padding: 0 16px;
+  padding: 0 clamp(16px, 2.59vw, 28px);
   border-radius: 999px;
   background: linear-gradient(180deg, #869674, #728462);
   color: #fffdf7;
-  font-size: 0.8rem;
+  font-size: clamp(0.8rem, 1.6vw, 1.08rem);
   font-weight: 700;
   box-shadow: 0 8px 16px rgba(74, 88, 58, 0.16);
 }
 
 .quick-action {
   display: flex;
-  min-height: 78px;
+  min-height: clamp(78px, 13.9vw, 150px);
   flex-direction: column;
   align-items: center;
   justify-content: flex-start;
@@ -1266,19 +1377,29 @@ onUnmounted(() => {
 
 .quick-action-icon {
   display: grid;
-  width: 50px;
-  height: 50px;
+  width: clamp(50px, 7.22vw, 78px);
+  height: clamp(50px, 7.22vw, 78px);
   place-items: center;
   border: 1px solid rgba(202, 192, 162, 0.72);
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.64);
   color: #738462;
-  box-shadow: inset 0 0 0 4px rgba(245, 241, 228, 0.9);
+  box-shadow: inset 0 0 0 clamp(4px, 0.65vw, 7px) rgba(245, 241, 228, 0.9);
 }
 
 .quick-action-icon svg {
-  width: 28px;
-  height: 28px;
+  width: clamp(28px, 4.07vw, 44px);
+  height: clamp(28px, 4.07vw, 44px);
+}
+
+.quick-action span:nth-of-type(2) {
+  margin-top: clamp(8px, 0.73vh, 14px);
+  font-size: clamp(1rem, 2.15vw, 1.45rem);
+}
+
+.quick-action span:nth-of-type(3) {
+  margin-top: clamp(4px, 0.42vh, 8px);
+  font-size: clamp(0.625rem, 1.21vw, 0.82rem);
 }
 
 .home-hills {
@@ -1287,14 +1408,22 @@ onUnmounted(() => {
   bottom: 0;
   left: 0;
   z-index: 1;
-  height: 118px;
+  height: var(--home-hills-height);
   pointer-events: none;
   background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 620 118' preserveAspectRatio='none'%3E%3Cpath d='M0 54 C72 28 142 20 224 54 C314 92 388 96 472 58 C536 29 582 24 620 34 L620 118 L0 118 Z' fill='%23dfe8d6' fill-opacity='0.82'/%3E%3Cpath d='M0 76 C76 48 152 43 234 72 C318 101 396 98 472 72 C536 50 585 50 620 58 L620 118 L0 118 Z' fill='%23cbdcbe' fill-opacity='0.72'/%3E%3Cpath d='M0 96 C56 75 116 69 184 88 C266 111 340 110 422 88 C496 68 566 71 620 84 L620 118 L0 118 Z' fill='%2399b781' fill-opacity='0.66'/%3E%3Cpath d='M0 54 C72 28 142 20 224 54 C314 92 388 96 472 58 C536 29 582 24 620 34' fill='none' stroke='%23b6c6aa' stroke-opacity='0.72' stroke-width='2'/%3E%3Cpath d='M0 76 C76 48 152 43 234 72 C318 101 396 98 472 72 C536 50 585 50 620 58' fill='none' stroke='%23d7cda9' stroke-opacity='0.4' stroke-width='1.3'/%3E%3C/svg%3E")
     bottom / 100% 100% no-repeat;
 }
 
 .home-bottom-mascot {
+  bottom: clamp(4px, 0.52vh, 10px);
+  width: clamp(128px, 22.2vw, 240px);
   opacity: 0.96;
   filter: drop-shadow(0 10px 18px rgba(80, 92, 66, 0.08));
+}
+
+.home-slogan {
+  bottom: clamp(-6px, 4.38vh, 84px);
+  left: var(--home-inline);
+  width: clamp(144px, 24.1vw, 260px);
 }
 </style>

@@ -47,7 +47,10 @@ function Read-JsonObject([string]$Path) {
   if (-not (Test-Path $Path)) {
     throw "config not found: $Path"
   }
-  return Get-Content $Path -Raw | ConvertFrom-Json
+  return [System.IO.File]::ReadAllText(
+    $Path,
+    [System.Text.Encoding]::UTF8
+  ) | ConvertFrom-Json
 }
 
 function Set-JsonProperty($Object, [string]$Name, $Value) {

@@ -45,6 +45,7 @@ pub enum DaemonEvent {
         enabled: bool,
         online: bool,
         message: String,
+        latest_diagnostic_payload: Option<serde_json::Value>,
     },
     RuntimeReconfigureRequested {
         event_id: String,

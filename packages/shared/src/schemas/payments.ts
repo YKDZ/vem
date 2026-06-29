@@ -7,7 +7,11 @@ import {
   paymentStatusSchema,
   refundStatusSchema,
 } from "../enums/payment-status";
-import { machinePaymentOptionSchema } from "./orders";
+import {
+  machinePaymentOptionKeySchema,
+  machinePaymentOptionSchema,
+  machinePaymentProviderCodeSchema,
+} from "./orders";
 
 export const paymentQuerySchema = z.object({
   orderNo: z.string().max(64).optional(),
@@ -327,8 +331,45 @@ export const paymentCodeAttemptQuerySchema = z.object({
 });
 
 export const paymentCodeAttemptAdminActionSchema = z.object({
-  reason: z.string().min(1).max(256),
+  reason: z.string().trim().min(1).max(256),
 });
+
+export const protectedPaymentDrillScenarioSchema = z.enum([
+  "payment_code_unknown",
+  "user_confirming_timeout",
+  "query_failed_then_reversed",
+  "qr_reconcile_failed",
+  "refund_required",
+  "manual_handling",
+]);
+
+export type ProtectedPaymentDrillScenario = z.infer<
+  typeof protectedPaymentDrillScenarioSchema
+>;
+
+export const createProtectedPaymentDrillSchema = z.strictObject({
+  machineId: z.uuid(),
+  scenario: protectedPaymentDrillScenarioSchema,
+  reason: z.string().trim().min(1).max(500),
+});
+
+export const protectedPaymentDrillRecoveryActionSchema = z.strictObject({
+  action: z.enum([
+    "query_payment_code",
+    "reverse_payment_code",
+    "reconcile_qr",
+    "request_refund",
+    "mark_manual_handling",
+  ]),
+  reason: z.string().trim().min(1).max(500),
+});
+
+export type CreateProtectedPaymentDrillInput = z.infer<
+  typeof createProtectedPaymentDrillSchema
+>;
+export type ProtectedPaymentDrillRecoveryAction = z.infer<
+  typeof protectedPaymentDrillRecoveryActionSchema
+>;
 
 // ---- Payment Ops / Readiness / Preflight -----------------------------------
 
@@ -376,6 +417,8 @@ export const paymentMachinePreflightSchema = z.object({
   machineCode: z.string().min(1).max(64),
   status: z.enum(["ready", "blocked"]),
   availableProviders: z.array(machinePaymentOptionSchema),
+  defaultOptionKey: machinePaymentOptionKeySchema.nullable(),
+  defaultProviderCode: machinePaymentProviderCodeSchema.nullable(),
   checks: z.array(paymentOpsCheckSchema),
   checkedAt: z.iso.datetime(),
 });

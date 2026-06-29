@@ -7,7 +7,7 @@
     "build": "vue-tsc --noEmit && vite build",
     "dev": "vite --host 0.0.0.0",
     "fmt": "oxfmt",
-    "lint": "pnpm exec oxlint --type-aware --config oxlint.config.json",
+    "lint": "pnpm exec oxlint --type-aware --config oxlint.config.ts",
     "lint-fix": "oxlint --fix --type-aware",
     "preview": "vite preview --host 0.0.0.0",
     "tauri": "tauri",

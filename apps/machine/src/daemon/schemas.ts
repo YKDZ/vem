@@ -187,6 +187,7 @@ export const visionStatusSchema = z.object({
   online: z.boolean(),
   message: z.string(),
   updatedAt: z.string().optional(),
+  latestDiagnosticPayload: z.unknown().nullable().optional(),
 });
 
 export const remoteOpsStatusSchema = z.object({
@@ -307,6 +308,7 @@ export const daemonEventSchema = z.discriminatedUnion("type", [
     enabled: z.boolean(),
     online: z.boolean(),
     message: z.string(),
+    latestDiagnosticPayload: z.unknown().nullable().optional(),
   }),
   z.object({
     type: z.literal("remote_op_result"),

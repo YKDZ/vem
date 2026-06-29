@@ -33,6 +33,12 @@ export type RuntimePaymentProviderConfig = {
   sensitiveConfigJson: Record<string, unknown>;
 };
 
+export type ProductionPilotPaymentEvidence = {
+  providerCode: string;
+  method: "qr_code" | "payment_code";
+  mode: string | null;
+};
+
 @Injectable()
 export class PaymentProviderConfigService {
   constructor(
@@ -337,5 +343,42 @@ export class PaymentProviderConfigService {
       defaultProviderCode: options[0]?.providerCode ?? null,
       serverTime: new Date().toISOString(),
     };
+  }
+
+  async listProductionPilotPaymentEvidenceForMachine(
+    machineId: string,
+  ): Promise<ProductionPilotPaymentEvidence[]> {
+    const evidence: ProductionPilotPaymentEvidence[] = [];
+    for (const providerCode of ["alipay", "wechat_pay"] as const) {
+      try {
+        // oxlint-disable-next-line no-await-in-loop
+        const config = await this.resolveForPayment({
+          providerCode,
+          machineId,
+        });
+        const mode = this.productionModeEvidence(
+          providerCode,
+          config.publicConfigJson,
+        );
+        evidence.push({ providerCode, method: "qr_code", mode });
+        if (config.publicConfigJson["paymentCodeEnabled"] === true) {
+          evidence.push({ providerCode, method: "payment_code", mode });
+        }
+      } catch {
+        // Unavailable providers are not production pilot payment evidence.
+      }
+    }
+    return evidence;
+  }
+
+  private productionModeEvidence(
+    providerCode: "alipay" | "wechat_pay",
+    publicConfigJson: Record<string, unknown>,
+  ): string | null {
+    if (providerCode === "alipay") {
+      const mode = publicConfigJson["mode"];
+      return typeof mode === "string" ? mode : null;
+    }
+    return "production";
   }
 }

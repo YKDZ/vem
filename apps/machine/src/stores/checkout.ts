@@ -181,6 +181,9 @@ function paymentStateFromSnapshot(
   snapshot: TransactionSnapshot,
 ): MachineOrderStatus["paymentState"] {
   switch (snapshot.paymentStatus) {
+    case null:
+    case "pending_payment":
+      return "awaiting_payment";
     case "succeeded":
       return "paid";
     case "failed":
@@ -196,6 +199,8 @@ function paymentStateFromSnapshot(
   }
 
   switch (orderStatusFromSnapshot(snapshot)) {
+    case "pending_payment":
+      return "awaiting_payment";
     case "payment_expired":
       return "payment_expired";
     case "canceled":
@@ -220,6 +225,9 @@ function paymentCodeAttemptStatusFromSnapshot(
   status: string | null | undefined,
 ): NonNullable<MachineOrderStatus["paymentCodeAttempt"]>["status"] {
   switch (status) {
+    case null:
+    case undefined:
+      return "querying";
     case "created":
     case "submitting":
     case "user_confirming":
@@ -259,6 +267,9 @@ function fulfillmentStateFromSnapshot(
   snapshot: TransactionSnapshot,
 ): MachineOrderStatus["fulfillmentState"] {
   switch (orderStatusFromSnapshot(snapshot)) {
+    case "pending_payment":
+    case "paid":
+      return "awaiting_fulfillment";
     case "dispensing":
       return "dispensing";
     case "fulfilled":
@@ -643,12 +654,15 @@ export const useCheckoutStore = defineStore("checkout", {
         this.loading = false;
       }
     },
-    async cancelCurrentOrder(): Promise<TransactionSnapshot | null> {
+    async cancelCurrentOrder(options?: {
+      preserveSelectedItem?: boolean;
+    }): Promise<TransactionSnapshot | null> {
       const orderNo = this.currentOrder?.orderNo ?? this.transaction?.orderNo;
       if (!orderNo) {
         this.reset();
         return null;
       }
+      const selectedItemBeforeCancel = this.selectedItem;
 
       this.loading = true;
       this.error = null;
@@ -657,6 +671,10 @@ export const useCheckoutStore = defineStore("checkout", {
         this.applyTransaction(snapshot);
         this.dismissCurrentTerminalTransaction();
         this.reset();
+        if (options?.preserveSelectedItem && selectedItemBeforeCancel) {
+          this.selectedItem = selectedItemBeforeCancel;
+          this.flowStep = "detail";
+        }
         await useCatalogStore()
           .refresh()
           .catch((error: unknown) => {

@@ -266,6 +266,9 @@ type MachineOrderStatusRow = {
   paidAt: Date | null;
   failedReason: string | null;
   paymentProviderCode: string;
+  isDrill: boolean;
+  isTest: boolean;
+  scenario: string | null;
 };
 
 type CancelableMachineOrderRow = {
@@ -326,6 +329,9 @@ export class OrdersService {
         paidAt: payments.paidAt,
         failedReason: payments.failedReason,
         paymentProviderCode: paymentProviders.code,
+        isDrill: orders.isDrill,
+        isTest: orders.isDrill,
+        scenario: orders.drillScenario,
       })
       .from(orders)
       .innerJoin(machines, eq(machines.id, orders.machineId))
@@ -1160,6 +1166,9 @@ export class OrdersService {
         paymentState: orders.paymentState,
         fulfillmentState: orders.fulfillmentState,
         totalAmountCents: orders.totalAmountCents,
+        isDrill: orders.isDrill,
+        isTest: orders.isDrill,
+        scenario: orders.drillScenario,
         paidAt: orders.paidAt,
         dispensedAt: orders.dispensedAt,
         createdAt: orders.createdAt,
@@ -1823,6 +1832,7 @@ export class OrdersService {
             status: vendingCommands.status,
             orderStatus: orders.status,
             fulfillmentState: orders.fulfillmentState,
+            isDrill: orders.isDrill,
           })
           .from(vendingCommands)
           .innerJoin(orders, eq(orders.id, vendingCommands.orderId))
@@ -1830,6 +1840,11 @@ export class OrdersService {
           .orderBy(desc(vendingCommands.createdAt));
         if (commandRows.length === 0) {
           throw new NotFoundException("Vending command not found for order");
+        }
+        if (commandRows.some((row) => row.isDrill)) {
+          throw new ConflictException(
+            "Protected drill recovery uses drill simulation endpoints",
+          );
         }
 
         const recoveryActionRows = await tx
@@ -2115,6 +2130,7 @@ export class OrdersService {
 
     if (
       row.paymentMethod === "qr_code" &&
+      !row.isDrill &&
       (row.paymentStatus === "pending" || row.paymentStatus === "processing")
     ) {
       await this.paymentsService

@@ -503,6 +503,51 @@ describe("MachineDetailView", () => {
     expect(root.textContent).not.toContain("整机锁定");
   });
 
+  it("renders a distinct ready Production Pilot Readiness summary for daily inspection", async () => {
+    apiMocks.getMachine.mockResolvedValue({
+      ...machineFixture(),
+      productionPilotReadiness: {
+        status: "ready",
+        checkedAt: "2026-06-27T02:00:00.000Z",
+        blockers: [],
+        degraded: [],
+        checks: [
+          {
+            code: "machine_heartbeat.online",
+            label: "Online / Last Heartbeat",
+            status: "ready",
+            message: "Machine heartbeat is fresh",
+            operatorAction: "Continue daily inspection.",
+          },
+          {
+            code: "machine_sale_readiness.restored",
+            label: "Machine Sale Readiness",
+            status: "ready",
+            message: "Machine Sale Readiness is restored",
+            operatorAction: "Continue daily inspection.",
+          },
+          {
+            code: "payment_readiness.ready",
+            label: "Payment Readiness",
+            status: "ready",
+            message: "Payment Readiness has at least one production provider",
+            operatorAction: "Continue daily inspection.",
+          },
+        ],
+      },
+    });
+
+    const { root } = await mountView();
+
+    expect(root.textContent).toContain("Production Pilot Readiness");
+    expect(root.textContent).toContain("生产试运营就绪");
+    expect(root.textContent).toContain("Online / Last Heartbeat");
+    expect(root.textContent).toContain("Machine Sale Readiness");
+    expect(root.textContent).toContain("Payment Readiness");
+    expect(root.textContent).toContain("Machine heartbeat is fresh");
+    expect(root.textContent).toContain("Continue daily inspection.");
+  });
+
   it("shows stock reconciliation blockers and resolves them with a required note", async () => {
     apiMocks.listStockReconciliationCases.mockResolvedValue({
       items: [

@@ -306,6 +306,54 @@ describe("PaymentProviderConfigService", () => {
       expect(result.defaultProviderCode).toBe("mock");
     });
   });
+
+  describe("listProductionPilotPaymentEvidenceForMachine", () => {
+    it("returns explicit production mode evidence for enabled Alipay methods", async () => {
+      const service = makeListOptionsService([
+        [
+          makeRow({
+            providerCode: "alipay",
+            publicConfigJson: {
+              mode: "production",
+              paymentCodeEnabled: true,
+            },
+          }),
+        ],
+        [],
+      ]);
+
+      const result =
+        await service.listProductionPilotPaymentEvidenceForMachine("machine-1");
+
+      expect(result).toEqual([
+        { providerCode: "alipay", method: "qr_code", mode: "production" },
+        {
+          providerCode: "alipay",
+          method: "payment_code",
+          mode: "production",
+        },
+      ]);
+    });
+
+    it("preserves Alipay sandbox mode as non-production evidence", async () => {
+      const service = makeListOptionsService([
+        [
+          makeRow({
+            providerCode: "alipay",
+            publicConfigJson: { mode: "sandbox" },
+          }),
+        ],
+        [],
+      ]);
+
+      const result =
+        await service.listProductionPilotPaymentEvidenceForMachine("machine-1");
+
+      expect(result).toEqual([
+        { providerCode: "alipay", method: "qr_code", mode: "sandbox" },
+      ]);
+    });
+  });
 });
 
 describe("PaymentProviderConfigService", () => {

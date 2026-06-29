@@ -204,6 +204,10 @@ const reconciliationColumns = [
 // Refunds tab
 const refundsLoading = ref(false);
 const refundQueryingIds = ref<Set<string>>(new Set());
+const reasonDialogOpen = ref(false);
+const reasonDialogTitle = ref("");
+const reasonDialogValue = ref("");
+let resolveReasonDialog: ((reason: string | null) => void) | null = null;
 const refundsList = ref<PageResult<Refund>>({
   items: [],
   total: 0,
@@ -240,29 +244,57 @@ async function loadPaymentCodeAttempts(page = 1): Promise<void> {
   }
 }
 
+function requestOperationReason(title: string): Promise<string | null> {
+  reasonDialogTitle.value = title;
+  reasonDialogValue.value = "";
+  reasonDialogOpen.value = true;
+  return new Promise((resolve) => {
+    resolveReasonDialog = resolve;
+  });
+}
+
+function confirmReasonDialog(): void {
+  const reason = reasonDialogValue.value.trim();
+  if (!reason) return;
+  reasonDialogOpen.value = false;
+  resolveReasonDialog?.(reason);
+  resolveReasonDialog = null;
+}
+
+function cancelReasonDialog(): void {
+  reasonDialogOpen.value = false;
+  resolveReasonDialog?.(null);
+  resolveReasonDialog = null;
+}
+
 async function doQueryPaymentCodeAttempt(id: string): Promise<void> {
-  await queryPaymentCodeAttempt(id);
+  const reason = await requestOperationReason("请输入付款码查询原因");
+  if (!reason) return;
+  await queryPaymentCodeAttempt(id, reason);
   await loadPaymentCodeAttempts(paymentCodeAttemptsList.value.page);
 }
 
 async function doReversePaymentCodeAttempt(id: string): Promise<void> {
-  await reversePaymentCodeAttempt(
-    id,
-    "admin_manual_reverse_from_payments_view",
-  );
+  const reason = await requestOperationReason("请输入付款码撤销原因");
+  if (!reason) return;
+  await reversePaymentCodeAttempt(id, reason);
   await loadPaymentCodeAttempts(paymentCodeAttemptsList.value.page);
 }
 
 async function doManualReconcile(paymentId: string): Promise<void> {
-  await manualReconcile(paymentId);
+  const reason = await requestOperationReason("请输入手动对账原因");
+  if (!reason) return;
+  await manualReconcile(paymentId, reason);
   await loadPayments();
 }
 
 async function doQueryRefund(refundId: string): Promise<void> {
+  const reason = await requestOperationReason("请输入退款查询原因");
+  if (!reason) return;
   if (refundQueryingIds.value.has(refundId)) return;
   refundQueryingIds.value = new Set([...refundQueryingIds.value, refundId]);
   try {
-    await queryRefund(refundId);
+    await queryRefund(refundId, reason);
     await loadRefunds(refundsList.value.page);
   } finally {
     const next = new Set(refundQueryingIds.value);
@@ -672,5 +704,21 @@ onMounted(() => {
       </a-tab-pane>
     </a-tabs>
     <OrderDetailDrawer ref="orderDetailDrawer" />
+    <a-modal
+      v-model:open="reasonDialogOpen"
+      :title="reasonDialogTitle"
+      ok-text="确认"
+      cancel-text="取消"
+      :ok-button-props="{ disabled: !reasonDialogValue.trim() }"
+      @ok="confirmReasonDialog"
+      @cancel="cancelReasonDialog"
+    >
+      <a-textarea
+        v-model:value="reasonDialogValue"
+        :rows="4"
+        placeholder="请输入本次操作原因"
+        autofocus
+      />
+    </a-modal>
   </a-card>
 </template>

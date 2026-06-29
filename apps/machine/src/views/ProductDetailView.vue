@@ -11,6 +11,7 @@ import listSloganImage from "@/assets/home/list-slogan.png";
 import logoImage from "@/assets/home/logo.png";
 import mascotListImage from "@/assets/home/mascot-list.png";
 import mascotTopImage from "@/assets/home/mascot-top-cutout.png";
+import { useMaintenanceEntry } from "@/composables/useMaintenanceEntry";
 import KioskLayout from "@/layouts/KioskLayout.vue";
 import { useCatalogStore } from "@/stores/catalog";
 import { useCheckoutStore } from "@/stores/checkout";
@@ -26,6 +27,7 @@ const route = useRoute();
 const router = useRouter();
 const catalogStore = useCatalogStore();
 const checkoutStore = useCheckoutStore();
+const { handleMaintenanceTap } = useMaintenanceEntry();
 
 const selectedVariantId = ref<string | null>(null);
 
@@ -214,7 +216,7 @@ async function purchase(): Promise<void> {
       <div class="detail-mist detail-mist-right"></div>
 
       <header class="detail-header">
-        <div class="flex items-center gap-3">
+        <div class="flex items-center gap-3" @click="handleMaintenanceTap">
           <img
             :src="logoImage"
             alt="唐诗村"
@@ -236,6 +238,7 @@ async function purchase(): Promise<void> {
       <button
         class="detail-back-button kiosk-touch-target"
         type="button"
+        aria-label="返回商品列表"
         @click="router.push('/catalog')"
       >
         <span aria-hidden="true">←</span>
@@ -372,6 +375,17 @@ async function purchase(): Promise<void> {
               库存：<strong>{{ stockText }}</strong>
             </p>
           </section>
+
+          <div class="detail-bottom-bar">
+            <button
+              class="detail-buy-button kiosk-touch-target"
+              type="button"
+              :disabled="!canBuy"
+              @click="purchase"
+            >
+              {{ canBuy ? `立即购买 ${priceText}` : "该规格暂不可购买" }}
+            </button>
+          </div>
         </section>
       </main>
 
@@ -381,17 +395,6 @@ async function purchase(): Promise<void> {
         class="detail-mascot pointer-events-none"
         aria-hidden="true"
       />
-
-      <div class="detail-bottom-bar">
-        <button
-          class="detail-buy-button kiosk-touch-target"
-          type="button"
-          :disabled="!canBuy"
-          @click="purchase"
-        >
-          {{ canBuy ? `立即购买 ${priceText}` : "该规格暂不可购买" }}
-        </button>
-      </div>
 
       <img
         :src="listSloganImage"
@@ -472,10 +475,10 @@ async function purchase(): Promise<void> {
   flex-direction: column;
   container-type: inline-size;
   overflow: hidden;
-  margin: -1.25rem -1.5rem;
-  padding: 1.5rem 1.7rem 1rem;
-  border: 1px solid rgba(89, 83, 66, 0.2);
-  border-radius: 20px;
+  margin: 0;
+  padding: var(--machine-page-header-top) var(--machine-page-inline) 1rem;
+  border: 0;
+  border-radius: 0;
   background:
     radial-gradient(
       circle at 0% 4%,
@@ -488,7 +491,7 @@ async function purchase(): Promise<void> {
       transparent 30%
     ),
     linear-gradient(180deg, #fffdf8 0%, #fbf7eb 62%, #f6f0df 100%);
-  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.78);
+  box-shadow: none;
 }
 
 .detail-header {
@@ -505,18 +508,14 @@ async function purchase(): Promise<void> {
   z-index: 5;
   display: inline-flex;
   width: fit-content;
-  min-height: 52px;
+  min-height: 48px;
   align-items: center;
   gap: 0.75rem;
   margin-top: 1.9rem;
   color: #6b6258;
   font-family: SimSun, "Songti SC", "Noto Serif CJK SC", serif;
-  font-size: 1.32rem;
+  font-size: 1.35rem;
   font-weight: 700;
-}
-
-.detail-back-button span {
-  flex: 0 0 auto;
 }
 
 .detail-back-button span {
@@ -524,9 +523,13 @@ async function purchase(): Promise<void> {
   width: 42px;
   height: 42px;
   place-items: center;
-  border: 1px solid rgba(198, 187, 154, 0.82);
+  border: 1px solid rgba(198, 187, 154, 0.76);
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.62);
+  background: rgba(255, 255, 255, 0.72);
+  color: #6f835f;
+  font-size: 2rem;
+  line-height: 1;
+  box-shadow: 0 8px 18px rgba(102, 92, 64, 0.08);
 }
 
 .detail-main {
@@ -538,7 +541,7 @@ async function purchase(): Promise<void> {
   grid-template-columns: minmax(20rem, 45%) minmax(0, 1fr);
   gap: 2.7rem;
   margin-top: 1.25rem;
-  padding: 0 1.8rem 7.4rem 1.2rem;
+  padding: 0 1.8rem 2rem 1.2rem;
 }
 
 .detail-image-card {
@@ -755,22 +758,14 @@ async function purchase(): Promise<void> {
 }
 
 .detail-bottom-bar {
-  position: absolute;
-  right: 2.1rem;
-  bottom: 2.65rem;
-  left: 18.4rem;
-  z-index: 6;
   display: grid;
-  min-height: 78px;
-  grid-template-columns: minmax(220px, 330px);
-  gap: 1.2rem;
-  align-items: center;
-  justify-content: end;
+  margin-top: 1.85rem;
 }
 
 .detail-buy-button {
   min-height: 70px;
-  border-radius: 999px;
+  width: 100%;
+  border-radius: 8px;
   background: linear-gradient(180deg, #758868, #627655);
   color: #fffdf7;
   font-family: SimSun, "Songti SC", "Noto Serif CJK SC", serif;
@@ -850,15 +845,18 @@ async function purchase(): Promise<void> {
   }
 
   .detail-back-button {
-    min-height: 40px;
+    width: fit-content;
+    height: auto;
+    min-height: 36px;
     margin-top: 1.25rem;
     gap: 0.55rem;
-    font-size: 1.05rem;
+    font-size: 1rem;
   }
 
   .detail-back-button span {
     width: 36px;
     height: 36px;
+    font-size: 1.75rem;
   }
 
   .detail-main {
@@ -868,7 +866,7 @@ async function purchase(): Promise<void> {
     min-height: 0;
     overflow-y: auto;
     margin-top: 1rem;
-    padding: 0 0.2rem 10rem;
+    padding: 0 0.2rem 2rem;
   }
 
   .detail-image-card {
@@ -987,9 +985,6 @@ async function purchase(): Promise<void> {
   }
 
   .detail-bottom-bar {
-    right: 0.9rem;
-    bottom: 2.35rem;
-    left: 8.1rem;
     min-height: 58px;
     grid-template-columns: minmax(130px, 180px);
     gap: 0.55rem;

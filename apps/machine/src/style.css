@@ -15,7 +15,10 @@
     BlinkMacSystemFont,
     "Segoe UI",
     sans-serif;
-  font-size: 16px;
+  font-size: clamp(16px, 2.04vw, 22px);
+  --machine-brand-logo-width: clamp(8.75rem, 24vw, 12rem);
+  --machine-page-inline: clamp(1.45rem, 4.82vw, 2.36rem);
+  --machine-page-header-top: clamp(1.6rem, 2.7vh, 2.4rem);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -55,6 +58,12 @@ button,
   min-height: 48px;
 }
 
+img[alt="唐诗村"] {
+  width: var(--machine-brand-logo-width) !important;
+  height: auto !important;
+  object-fit: contain;
+}
+
 .kiosk-shell {
   width: min(100vw, calc(100dvh * 9 / 16));
   height: min(100dvh, calc(100vw * 16 / 9));
@@ -72,6 +81,89 @@ button,
 
 .kiosk-scroll::-webkit-scrollbar {
   display: none;
+}
+
+.kiosk-shell:has(.catalog-home),
+.kiosk-shell:has(.catalog-list),
+.kiosk-shell:has(.product-detail-page),
+.kiosk-shell:has(.payment-page),
+.kiosk-shell:has(.dispensing-page),
+.kiosk-shell:has(.dispense-failure-page),
+.kiosk-shell:has(.dispense-result-page),
+.kiosk-shell:has(.offline-page),
+.kiosk-shell:has(.maintenance-page),
+.kiosk-shell:has(.provisioning-page) {
+  padding: 0;
+}
+
+.kiosk-shell:has(.catalog-home) > .kiosk-scroll,
+.kiosk-shell:has(.catalog-list) > .kiosk-scroll,
+.kiosk-shell:has(.product-detail-page) > .kiosk-scroll,
+.kiosk-shell:has(.payment-page) > .kiosk-scroll,
+.kiosk-shell:has(.dispensing-page) > .kiosk-scroll,
+.kiosk-shell:has(.dispense-failure-page) > .kiosk-scroll,
+.kiosk-shell:has(.dispense-result-page) > .kiosk-scroll,
+.kiosk-shell:has(.offline-page) > .kiosk-scroll,
+.kiosk-shell:has(.maintenance-page) > .kiosk-scroll,
+.kiosk-shell:has(.provisioning-page) > .kiosk-scroll {
+  width: 100%;
+  height: 100%;
+  margin-top: 0;
+  padding-bottom: 0;
+}
+
+.catalog-home::before,
+.catalog-list::before,
+.product-detail-page::before,
+.payment-page::before,
+.dispensing-page::before,
+.dispense-result-page::before,
+.dispense-failure-page::before,
+.offline-page::before {
+  content: "";
+  position: absolute;
+  bottom: -1.15rem;
+  left: -2.7rem;
+  z-index: 1;
+  width: min(30rem, 52%);
+  height: 8.8rem;
+  pointer-events: none;
+  border-radius: 52% 100% 0 0 / 100% 100% 0 0;
+  background:
+    radial-gradient(
+      ellipse at 24% 28%,
+      rgba(139, 161, 128, 0.24),
+      rgba(139, 161, 128, 0.13) 42%,
+      rgba(139, 161, 128, 0) 76%
+    ),
+    linear-gradient(180deg, rgba(255, 253, 247, 0), rgba(139, 161, 128, 0.18));
+}
+
+.catalog-home::after,
+.catalog-list::after,
+.product-detail-page::after,
+.payment-page::after,
+.dispensing-page::after,
+.dispense-result-page::after,
+.dispense-failure-page::after,
+.offline-page::after {
+  content: "";
+  position: absolute;
+  right: -5.4rem;
+  bottom: -0.65rem;
+  z-index: 1;
+  width: min(44rem, 74%);
+  height: 9.8rem;
+  pointer-events: none;
+  border-radius: 100% 62% 0 0 / 100% 100% 0 0;
+  background:
+    radial-gradient(
+      ellipse at 70% 44%,
+      rgba(183, 177, 154, 0.18),
+      rgba(183, 177, 154, 0.09) 48%,
+      rgba(183, 177, 154, 0) 78%
+    ),
+    linear-gradient(180deg, rgba(255, 253, 247, 0), rgba(183, 177, 154, 0.11));
 }
 
 @media (max-aspect-ratio: 9 / 16) {

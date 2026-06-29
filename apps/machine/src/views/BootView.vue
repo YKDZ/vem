@@ -72,6 +72,7 @@ function dispatchDaemonEvent(event: DaemonEvent): void {
       online: event.online,
       message: event.message,
       updatedAt: event.updatedAt,
+      latestDiagnosticPayload: event.latestDiagnosticPayload ?? null,
     });
     return;
   }
