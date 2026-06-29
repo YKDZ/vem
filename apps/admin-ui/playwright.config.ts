@@ -1,8 +1,10 @@
 import { defineConfig, devices } from "@playwright/test";
 
+const chromiumChannel = process.env.PLAYWRIGHT_CHROMIUM_CHANNEL ?? "chrome";
+
 const chromiumUse = {
   ...devices["Desktop Chrome"],
-  ...(process.env.CI ? { channel: "chrome" as const } : {}),
+  channel: chromiumChannel,
 };
 
 export default defineConfig({
@@ -16,6 +18,11 @@ export default defineConfig({
   use: {
     baseURL: process.env.PLAYWRIGHT_BASE_URL ?? "http://localhost:5173",
     trace: "on-first-retry",
+  },
+  webServer: {
+    command: "pnpm -F admin-ui dev",
+    url: "http://127.0.0.1:5173",
+    reuseExistingServer: !process.env.CI,
   },
   projects: [
     {

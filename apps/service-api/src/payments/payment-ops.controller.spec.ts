@@ -98,6 +98,8 @@ describe("PaymentOpsController", () => {
         machineCode: "M-001",
         status: "blocked" as const,
         availableProviders: [],
+        defaultOptionKey: null,
+        defaultProviderCode: null,
         checks: [],
         checkedAt: new Date().toISOString(),
       };

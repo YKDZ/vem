@@ -3,7 +3,14 @@ import { createPinia, setActivePinia } from "pinia";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createApp, defineComponent, nextTick } from "vue";
 
-import type { VisionProfileResultPayload } from "@/native/vision";
+import type {
+  VisionPresenceStatusPayload,
+  VisionProfileResultPayload,
+} from "@/native/vision";
+
+import { machineConfigDefaults } from "@/config/machine-config";
+import { useMachineStore } from "@/stores/machine";
+import { useVisionStore } from "@/stores/vision";
 
 const { subscribeVisionProfilesMock } = vi.hoisted(() => ({
   subscribeVisionProfilesMock: vi.fn(),
@@ -15,11 +22,33 @@ vi.mock("@/native/vision", () => ({
 
 import { useVisionRecommendations } from "./useVisionRecommendations";
 
+function profilePayload(
+  eventId: string,
+  confidence = 0.91,
+): VisionProfileResultPayload {
+  return {
+    eventId,
+    detectedAt: "2026-06-12T10:20:30.000Z",
+    profile: {
+      personPresent: true,
+      heightCm: 172,
+      bodyType: "regular",
+      confidence,
+    },
+    quality: {
+      overall: "good",
+      warnings: [],
+    },
+  };
+}
+
 describe("useVisionRecommendations", () => {
   let host: HTMLDivElement;
+  let pinia: ReturnType<typeof createPinia>;
 
   beforeEach(() => {
-    setActivePinia(createPinia());
+    pinia = createPinia();
+    setActivePinia(pinia);
     host = document.createElement("div");
     document.body.appendChild(host);
     subscribeVisionProfilesMock.mockReset();
@@ -57,7 +86,7 @@ describe("useVisionRecommendations", () => {
       },
     });
 
-    createApp(App).use(createPinia()).mount(host);
+    createApp(App).use(pinia).mount(host);
     await nextTick();
     expect(onProfile).toBeTruthy();
     const emitProfile = onProfile as unknown as (
@@ -71,7 +100,7 @@ describe("useVisionRecommendations", () => {
           personPresent: true,
           heightCm: 172,
           shoulderWidthCm: 43,
-          ageRange: "25-34",
+          ageRange: "adult",
           gender: "male",
           bodyType: "regular",
           upperColor: "blue",
@@ -139,7 +168,7 @@ describe("useVisionRecommendations", () => {
       },
     });
 
-    createApp(App).use(createPinia()).mount(host);
+    createApp(App).use(pinia).mount(host);
     await nextTick();
     expect(onProfile).toBeTruthy();
     expect(onError).toBeTruthy();
@@ -173,5 +202,137 @@ describe("useVisionRecommendations", () => {
 
     expect(captured.currentProfile?.value).toBeNull();
     expect(captured.lastVisionResult?.value).toBeNull();
+    expect(useVisionStore().latestDiagnosticPayload).toBeNull();
+  });
+
+  it("publishes explicit presence events without fabricating recommendation profiles", async () => {
+    const captured: Partial<ReturnType<typeof useVisionRecommendations>> = {};
+    let onPresenceStatus:
+      | ((payload: VisionPresenceStatusPayload) => void | Promise<void>)
+      | null = null;
+    subscribeVisionProfilesMock.mockImplementation(
+      (
+        _config: unknown,
+        handlers: {
+          onPresenceStatus?: (
+            payload: VisionPresenceStatusPayload,
+          ) => void | Promise<void>;
+        },
+      ) => {
+        onPresenceStatus = handlers.onPresenceStatus ?? null;
+        return { close: vi.fn() };
+      },
+    );
+    const App = defineComponent({
+      setup() {
+        const recommendations = useVisionRecommendations();
+        captured.currentProfile = recommendations.currentProfile;
+        captured.lastVisionResult = recommendations.lastVisionResult;
+        return () => null;
+      },
+    });
+
+    createApp(App).use(pinia).mount(host);
+    await nextTick();
+    expect(onPresenceStatus).toBeTruthy();
+    const emitPresenceStatus = onPresenceStatus as unknown as (
+      payload: VisionPresenceStatusPayload,
+    ) => void | Promise<void>;
+
+    await Promise.resolve(
+      emitPresenceStatus({
+        eventId: "VISION-PRESENCE-EVENT-001",
+        state: "approach",
+        reason: "person_present_but_not_close",
+        detectedAt: "2026-06-29T10:00:00.000Z",
+        personPresent: true,
+        closeNow: false,
+        close: false,
+        closeTrigger: null,
+        proximity: { present: true, closeNow: false, close: false },
+      }),
+    );
+    await nextTick();
+
+    expect(captured.currentProfile?.value).toBeNull();
+    expect(captured.lastVisionResult?.value).toBeNull();
+    expect(useVisionStore().presence).toEqual({
+      personPresent: true,
+      lastSeenAt: "2026-06-29T10:00:00.000Z",
+    });
+  });
+
+  it("publishes only the latest real profile result to the maintenance diagnostic store", async () => {
+    let onProfile:
+      | ((payload: VisionProfileResultPayload) => void | Promise<void>)
+      | null = null;
+    subscribeVisionProfilesMock.mockImplementation(
+      (
+        _config: unknown,
+        handlers: {
+          onProfile: (
+            payload: VisionProfileResultPayload,
+          ) => void | Promise<void>;
+        },
+      ) => {
+        onProfile = handlers.onProfile;
+        return { close: vi.fn() };
+      },
+    );
+    const App = defineComponent({
+      setup() {
+        useVisionRecommendations();
+        return () => null;
+      },
+    });
+
+    createApp(App).use(pinia).mount(host);
+    await nextTick();
+    expect(onProfile).toBeTruthy();
+    const emitProfile = onProfile as unknown as (
+      payload: VisionProfileResultPayload,
+    ) => void | Promise<void>;
+
+    await Promise.resolve(emitProfile(profilePayload("VISION-OLD-001", 0.7)));
+    await Promise.resolve(emitProfile(profilePayload("VISION-LATEST-002")));
+    await nextTick();
+
+    const diagnosticPayload = JSON.stringify(
+      useVisionStore().latestDiagnosticPayload,
+    );
+    expect(diagnosticPayload).toContain("VISION-LATEST-002");
+    expect(diagnosticPayload).not.toContain("VISION-OLD-001");
+  });
+
+  it("does not subscribe or publish a diagnostic payload when vision is disabled", async () => {
+    useVisionStore().applyLatestProfileResult(
+      profilePayload("VISION-STALE-DISABLED"),
+    );
+    useMachineStore().$patch({
+      configLoaded: true,
+      configSummary: {
+        public: {
+          ...machineConfigDefaults,
+          visionEnabled: false,
+        },
+        machineSecretConfigured: false,
+        mqttSigningSecretConfigured: false,
+        mqttPasswordConfigured: false,
+        provisioned: true,
+        provisioningIssues: [],
+      },
+    });
+    const App = defineComponent({
+      setup() {
+        useVisionRecommendations();
+        return () => null;
+      },
+    });
+
+    createApp(App).use(pinia).mount(host);
+    await nextTick();
+
+    expect(subscribeVisionProfilesMock).not.toHaveBeenCalled();
+    expect(useVisionStore().latestDiagnosticPayload).toBeNull();
   });
 });

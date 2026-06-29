@@ -494,6 +494,7 @@ async function reconciliationForFieldStockMovement(
     input.movementType === "stock_count_correction" &&
     input.source !== "approved_count" &&
     input.source !== "platform_approved_count" &&
+    input.source !== "physical_stock_attestation" &&
     input.source !== "local_maintenance"
   ) {
     return fieldStockReconciliation(input.slotId, "weak_attribution");

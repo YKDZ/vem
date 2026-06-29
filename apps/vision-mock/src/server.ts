@@ -16,6 +16,9 @@ import {
 export const MOCK_VISION_SCENARIOS = [
   "success",
   "no_person",
+  "presence_only",
+  "presence_absent",
+  "disconnect_once",
   "camera_unavailable",
 ] as const;
 
@@ -66,7 +69,7 @@ function createReadyMessage(): VisionServerMessage {
       serverVersion: "0.2.0",
       cameraReady: true,
       modelReady: true,
-      capabilities: ["profile_push"],
+      capabilities: ["profile_push", "presence_status", "ambient_light"],
     },
   } satisfies VisionServerMessage;
   return message;
@@ -92,15 +95,63 @@ function createResultMessage(): VisionServerMessage {
       profile: {
         personPresent: true,
         heightCm: 172,
+        shoulderWidthCm: 43,
+        ageRange: "adult",
+        gender: "unknown",
         bodyType: "regular",
         upperColor: "dark",
         confidence: 0.86,
       },
       quality: {
-        overall: "good",
+        overall: "fair",
         warnings: [],
+        sampleCount: 1,
+        validFrameCount: 1,
       },
     },
+  } satisfies VisionServerMessage;
+  return message;
+}
+
+function createPresenceMessage(
+  state: "approach" | "empty",
+  ambientLightEnabled: boolean,
+): VisionServerMessage {
+  const detectedAt = nowIso();
+  const personPresent = state !== "empty";
+  const payload = {
+    eventId: messageId("presence-event"),
+    state,
+    detectedAt,
+    reason: personPresent ? "person_present_but_not_close" : "no_person",
+    personPresent,
+    closeNow: false,
+    close: false,
+    closeTrigger: null,
+    proximity: {
+      present: personPresent,
+      closeNow: false,
+      close: false,
+      method: "person_detector+face_area_ratio",
+    },
+    ...(ambientLightEnabled
+      ? {
+          ambientLight: {
+            level: personPresent ? "dim" : "bright",
+            measuredAt: detectedAt,
+            source: "camera",
+            confidence: 0.82,
+            sample: {
+              lumaMean: personPresent ? 72 : 128,
+            },
+          },
+        }
+      : {}),
+  } satisfies VisionServerMessage["payload"];
+  const message = {
+    ...baseEnvelope("presence"),
+    type: "vision.presence_status",
+    payload,
   } satisfies VisionServerMessage;
   return message;
 }
@@ -154,6 +205,8 @@ async function pushScenarioEvents(
   options: Required<
     Pick<MockVisionServerOptions, "scenario" | "pushIntervalMs">
   >,
+  presenceStatusEnabled: boolean,
+  ambientLightEnabled: boolean,
 ): Promise<void> {
   await delay(options.pushIntervalMs);
   if (socket.readyState !== socket.OPEN) return;
@@ -171,6 +224,33 @@ async function pushScenarioEvents(
   }
 
   if (options.scenario === "no_person") {
+    if (presenceStatusEnabled) {
+      sendServerMessage(
+        socket,
+        createPresenceMessage("empty", ambientLightEnabled),
+      );
+    }
+    return;
+  }
+
+  if (options.scenario === "presence_absent") {
+    if (presenceStatusEnabled) {
+      sendServerMessage(
+        socket,
+        createPresenceMessage("empty", ambientLightEnabled),
+      );
+    }
+    return;
+  }
+
+  if (presenceStatusEnabled) {
+    sendServerMessage(
+      socket,
+      createPresenceMessage("approach", ambientLightEnabled),
+    );
+  }
+
+  if (options.scenario === "presence_only") {
     return;
   }
 
@@ -182,7 +262,7 @@ function handleClientRawMessage(
   data: RawData,
   options: Required<
     Pick<MockVisionServerOptions, "scenario" | "pushIntervalMs">
-  >,
+  > & { disconnectOnceServed: { value: boolean } },
 ): void {
   const message = parseClientMessage(data);
   if (!message) {
@@ -200,7 +280,20 @@ function handleClientRawMessage(
   switch (message.type) {
     case "vision.hello":
       sendServerMessage(socket, createReadyMessage());
-      void pushScenarioEvents(socket, options);
+      if (
+        options.scenario === "disconnect_once" &&
+        !options.disconnectOnceServed.value
+      ) {
+        options.disconnectOnceServed.value = true;
+        socket.close();
+        return;
+      }
+      void pushScenarioEvents(
+        socket,
+        options,
+        message.payload.capabilities.includes("presence_status"),
+        message.payload.capabilities.includes("ambient_light"),
+      );
       return;
     case "vision.ping":
       sendServerMessage(socket, createPongMessage());
@@ -233,10 +326,15 @@ export function startMockVisionServer(
   const scenario = options.scenario ?? "success";
   const pushIntervalMs = options.pushIntervalMs ?? DEFAULT_PUSH_INTERVAL_MS;
   const server = new WebSocketServer({ host, port, path: wsPath });
+  const disconnectOnceServed = { value: false };
 
   server.on("connection", (socket) => {
     socket.on("message", (data) => {
-      handleClientRawMessage(socket, data, { scenario, pushIntervalMs });
+      handleClientRawMessage(socket, data, {
+        scenario,
+        pushIntervalMs,
+        disconnectOnceServed,
+      });
     });
   });
 

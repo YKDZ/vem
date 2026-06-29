@@ -140,6 +140,16 @@ async function goPayment(): Promise<void> {
   await router.push("/payment");
 }
 
+async function goPaymentCode(): Promise<void> {
+  const scenario = uiDebugScenarios.find(
+    (candidate) => candidate.id === "payment_qr",
+  )!;
+  setActiveUiDebugScenarioId(scenario.id);
+  activeScenarioId.value = scenario.id;
+  applyScenarioToStores(scenario);
+  await router.push("/payment");
+}
+
 async function goDispensing(
   scenarioId: UiDebugScenarioId = "dispensing",
 ): Promise<void> {
@@ -223,6 +233,9 @@ onMounted(() => {
           </button>
           <button class="debug-button" type="button" @click="goPayment">
             Payment
+          </button>
+          <button class="debug-button" type="button" @click="goPaymentCode">
+            Payment Code
           </button>
           <button class="debug-button" type="button" @click="goDispensing()">
             Dispensing

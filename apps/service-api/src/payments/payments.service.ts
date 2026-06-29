@@ -291,6 +291,9 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         method: payments.method,
         status: payments.status,
         amountCents: payments.amountCents,
+        isDrill: payments.isDrill,
+        isTest: payments.isDrill,
+        scenario: payments.drillScenario,
         paymentUrl: payments.paymentUrl,
         expiresAt: payments.expiresAt,
         paidAt: payments.paidAt,
@@ -1858,6 +1861,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         orderId: payments.orderId,
         machineId: orders.machineId,
         providerConfigId: payments.paymentProviderConfigId,
+        isDrill: payments.isDrill,
       })
       .from(payments)
       .innerJoin(orders, eq(orders.id, payments.orderId))
@@ -1865,6 +1869,8 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       .where(
         and(
           inArray(payments.status, ["pending", "processing"]),
+          eq(payments.isDrill, false),
+          eq(orders.isDrill, false),
           sql`${payments.createdAt} >= ${cutoff}`,
           sql`${payments.expiresAt} IS NULL OR ${payments.expiresAt} > ${now}`,
           sql`not exists (
@@ -1883,6 +1889,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
     await Promise.all(
       pendingPayments.map(async (payment) => {
         try {
+          if (payment.isDrill) return;
           if (!this.paymentProviderRegistry.has(payment.providerCode)) return;
 
           // Count previous scheduled attempts for backoff
@@ -2104,6 +2111,8 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         orderId: payments.orderId,
         machineId: orders.machineId,
         providerConfigId: payments.paymentProviderConfigId,
+        isDrill: payments.isDrill,
+        orderIsDrill: orders.isDrill,
       })
       .from(payments)
       .innerJoin(orders, eq(orders.id, payments.orderId))
@@ -2124,6 +2133,14 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         status: payment.status,
         reconciled: false,
         reason: "already_terminal",
+      };
+    }
+
+    if (payment.isDrill || payment.orderIsDrill) {
+      return {
+        status: payment.status,
+        reconciled: false,
+        reason: "protected_payment_drill",
       };
     }
 
@@ -2372,11 +2389,14 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
           orderId: orders.id,
           orderStatus: orders.status,
           fulfillmentState: orders.fulfillmentState,
+          isDrill: payments.isDrill,
+          orderIsDrill: orders.isDrill,
         })
         .from(payments)
         .innerJoin(orders, eq(orders.id, payments.orderId))
         .where(eq(payments.id, paymentId));
       if (!r) return false;
+      if (r.isDrill || r.orderIsDrill) return false;
       if (!canApplyProviderTerminalStatus(r.paymentStatus)) return false;
 
       const inserted = await tx
@@ -2682,6 +2702,9 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         providerCode: paymentProviders.code,
         status: refunds.status,
         amountCents: refunds.amountCents,
+        isDrill: refunds.isDrill,
+        isTest: refunds.isDrill,
+        scenario: refunds.drillScenario,
         reason: refunds.reason,
         providerRefundNo: refunds.providerRefundNo,
         refundedAt: refunds.refundedAt,
@@ -2786,19 +2809,55 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
     return toPageResult(items, query, Number(totalRow.total));
   }
 
-  async manualReconcileRefund(refundId: string, adminUserId: string) {
+  async manualReconcileRefund(
+    refundId: string,
+    adminUserId: string,
+    reason: string,
+  ) {
     const result = await this.refundsService.queryRefund(refundId, "manual");
     await this.auditService.record({
       adminUserId,
       action: "payments.refund_manual_reconcile",
       resourceType: "refund",
       resourceId: refundId,
-      afterJson: result,
+      afterJson: { reason, result },
     });
     return result;
   }
 
-  async manualReconcile(paymentId: string, adminUserId: string) {
+  private async recordManualReconcileAudit(input: {
+    adminUserId: string;
+    operatorReason: string;
+    paymentId: string;
+    paymentNo: string;
+    providerStatus: string;
+    applied: boolean;
+    outcome: string;
+    errorCode?: string;
+    errorMessage?: string;
+  }): Promise<void> {
+    await this.auditService.record({
+      adminUserId: input.adminUserId,
+      action: "payments.manual_reconcile",
+      resourceType: "payment",
+      resourceId: input.paymentId,
+      afterJson: {
+        reason: input.operatorReason,
+        paymentNo: input.paymentNo,
+        providerStatus: input.providerStatus,
+        applied: input.applied,
+        outcome: input.outcome,
+        ...(input.errorCode ? { errorCode: input.errorCode } : {}),
+        ...(input.errorMessage ? { errorMessage: input.errorMessage } : {}),
+      },
+    });
+  }
+
+  async manualReconcile(
+    paymentId: string,
+    adminUserId: string,
+    reason: string,
+  ) {
     const [payment] = await this.db
       .select({
         id: payments.id,
@@ -2810,6 +2869,8 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         orderId: payments.orderId,
         machineId: orders.machineId,
         providerConfigId: payments.paymentProviderConfigId,
+        isDrill: payments.isDrill,
+        orderIsDrill: orders.isDrill,
       })
       .from(payments)
       .innerJoin(orders, eq(orders.id, payments.orderId))
@@ -2822,10 +2883,36 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
     }
 
     if (payment.status !== "pending" && payment.status !== "processing") {
+      await this.recordManualReconcileAudit({
+        adminUserId,
+        operatorReason: reason,
+        paymentId: payment.id,
+        paymentNo: payment.paymentNo,
+        providerStatus: payment.status,
+        applied: false,
+        outcome: "already_terminal",
+      });
       return {
         status: payment.status,
         reconciled: false,
         reason: "already_terminal",
+      };
+    }
+
+    if (payment.isDrill || payment.orderIsDrill) {
+      await this.recordManualReconcileAudit({
+        adminUserId,
+        operatorReason: reason,
+        paymentId: payment.id,
+        paymentNo: payment.paymentNo,
+        providerStatus: payment.status,
+        applied: false,
+        outcome: "protected_payment_drill",
+      });
+      return {
+        status: payment.status,
+        reconciled: false,
+        reason: "protected_payment_drill",
       };
     }
 
@@ -2888,6 +2975,17 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
           finishedAt: new Date(),
         })
         .where(eq(paymentReconciliationAttempts.id, attempt.id));
+      await this.recordManualReconcileAudit({
+        adminUserId,
+        operatorReason: reason,
+        paymentId: payment.id,
+        paymentNo: payment.paymentNo,
+        providerStatus: payment.status,
+        applied: false,
+        outcome: "query_failed",
+        errorCode: "query_failed",
+        errorMessage: errMsg.slice(0, 500),
+      });
       throw err;
     }
 
@@ -2919,6 +3017,15 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
           finishedAt: new Date(),
         })
         .where(eq(paymentReconciliationAttempts.id, attempt.id));
+      await this.recordManualReconcileAudit({
+        adminUserId,
+        operatorReason: reason,
+        paymentId: payment.id,
+        paymentNo: payment.paymentNo,
+        providerStatus,
+        applied: false,
+        outcome: `provider_${providerStatus}`,
+      });
       return {
         status: payment.status,
         reconciled: false,
@@ -2960,12 +3067,16 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         .catch(() => {});
     }
 
-    await this.auditService.record({
-      adminUserId: adminUserId,
-      action: "payments.manual_reconcile",
-      resourceType: "payment",
-      resourceId: payment.id,
-      afterJson: { paymentNo: payment.paymentNo, providerStatus, applied },
+    await this.recordManualReconcileAudit({
+      adminUserId,
+      operatorReason: reason,
+      paymentId: payment.id,
+      paymentNo: payment.paymentNo,
+      providerStatus,
+      applied,
+      outcome: applied
+        ? `applied_${providerStatus}`
+        : `provider_${providerStatus}`,
     });
 
     return { status: providerStatus, reconciled: applied };

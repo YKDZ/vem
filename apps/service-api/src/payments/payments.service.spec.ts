@@ -78,6 +78,7 @@ function makeService(overrides: {
   configService?: Partial<PaymentProviderConfigService>;
   vendingService?: Partial<VendingService>;
   inventoryService?: Partial<InventoryService>;
+  auditService?: Partial<AuditService>;
 }) {
   const db = overrides.db ?? makeDb();
   const registry: PaymentProviderRegistry = {
@@ -126,6 +127,7 @@ function makeService(overrides: {
   } as unknown as AppConfigService;
   const auditService: AuditService = {
     record: vi.fn().mockResolvedValue(undefined),
+    ...overrides.auditService,
   } as unknown as AuditService;
   const secretService: PaymentConfigSecretService = {
     encrypt: vi.fn().mockReturnValue({ encrypted: "xxx" }),
@@ -156,6 +158,56 @@ function makeService(overrides: {
 
 describe("PaymentsService", () => {
   describe("listRefunds", () => {
+    it("projects drill markers in the admin refund list", async () => {
+      const db = makeDb();
+      let selectedFields: Record<string, unknown> | undefined;
+
+      db.select
+        .mockImplementationOnce((fields: Record<string, unknown>) => {
+          selectedFields = fields;
+          return {
+            from: vi.fn().mockReturnValue({
+              innerJoin: vi.fn().mockReturnValue({
+                innerJoin: vi.fn().mockReturnValue({
+                  innerJoin: vi.fn().mockReturnValue({
+                    where: vi.fn().mockReturnValue({
+                      orderBy: vi.fn().mockReturnValue({
+                        limit: vi.fn().mockReturnValue({
+                          offset: vi.fn().mockResolvedValue([]),
+                        }),
+                      }),
+                    }),
+                  }),
+                }),
+              }),
+            }),
+          };
+        })
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              innerJoin: vi.fn().mockReturnValue({
+                innerJoin: vi.fn().mockReturnValue({
+                  where: vi.fn().mockResolvedValue([{ total: 0 }]),
+                }),
+              }),
+            }),
+          }),
+        });
+
+      const service = makeService({ db });
+
+      await service.listRefunds({ page: 1, pageSize: 20 });
+
+      expect(selectedFields).toEqual(
+        expect.objectContaining({
+          isDrill: expect.anything(),
+          isTest: expect.anything(),
+          scenario: expect.anything(),
+        }),
+      );
+    });
+
     it("selects recent reconciliation attempts for the admin refund trail", async () => {
       const db = makeDb();
       let selectedFields: Record<string, unknown> | undefined;
@@ -255,6 +307,54 @@ describe("PaymentsService", () => {
 
       expect(whereArgs).toHaveLength(2);
       expect(whereArgs.every((whereArg) => whereArg !== undefined)).toBe(true);
+    });
+  });
+
+  describe("listPayments", () => {
+    it("projects drill markers in the admin payment list", async () => {
+      const db = makeDb();
+      let selectedFields: Record<string, unknown> | undefined;
+
+      db.select
+        .mockImplementationOnce((fields: Record<string, unknown>) => {
+          selectedFields = fields;
+          return {
+            from: vi.fn().mockReturnValue({
+              innerJoin: vi.fn().mockReturnValue({
+                innerJoin: vi.fn().mockReturnValue({
+                  where: vi.fn().mockReturnValue({
+                    orderBy: vi.fn().mockReturnValue({
+                      limit: vi.fn().mockReturnValue({
+                        offset: vi.fn().mockResolvedValue([]),
+                      }),
+                    }),
+                  }),
+                }),
+              }),
+            }),
+          };
+        })
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              innerJoin: vi.fn().mockReturnValue({
+                where: vi.fn().mockResolvedValue([{ total: 0 }]),
+              }),
+            }),
+          }),
+        });
+
+      const service = makeService({ db });
+
+      await service.listPayments({ page: 1, pageSize: 20 });
+
+      expect(selectedFields).toEqual(
+        expect.objectContaining({
+          isDrill: expect.anything(),
+          isTest: expect.anything(),
+          scenario: expect.anything(),
+        }),
+      );
     });
   });
 
@@ -461,6 +561,49 @@ describe("PaymentsService", () => {
   });
 
   describe("reconcilePendingPayments", () => {
+    it("skips drill payments without calling the provider", async () => {
+      const queryPayment = vi.fn();
+      const provider = { queryPayment };
+
+      const db = makeDb();
+      db.select.mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([
+                  {
+                    id: "pay-drill-001",
+                    paymentNo: "DRILL-PAY001",
+                    providerId: "prov-001",
+                    providerCode: "wechat_pay",
+                    providerTradeNo: "DRILL-ORD001",
+                    orderId: "ord-drill-001",
+                    machineId: "mach-001",
+                    providerConfigId: null,
+                    isDrill: true,
+                  },
+                ]),
+              }),
+            }),
+          }),
+        }),
+      });
+
+      const service = makeService({
+        db,
+        registry: {
+          has: vi.fn().mockReturnValue(true),
+          get: vi.fn().mockReturnValue(provider),
+        } as unknown as PaymentProviderRegistry,
+      });
+
+      const { reconciled } = await service.reconcilePendingPayments();
+
+      expect(reconciled).toBe(0);
+      expect(queryPayment).not.toHaveBeenCalled();
+    });
+
     it("applies succeeded status and calls createAndDispatchCommands once", async () => {
       const createAndDispatchCommands = vi.fn().mockResolvedValue(undefined);
       const queryPayment = vi.fn().mockResolvedValue({
@@ -609,6 +752,336 @@ describe("PaymentsService", () => {
       const { reconciled } = await service.reconcilePendingPayments();
       expect(reconciled).toBe(0);
       expect(createAndDispatchCommands).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("reconcilePendingPaymentOnRead", () => {
+    it("skips protected payment drill payments without calling the provider", async () => {
+      const queryPayment = vi.fn();
+      const provider = { queryPayment };
+      const db = makeDb();
+
+      db.select.mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([
+                  {
+                    id: "pay-drill-001",
+                    paymentNo: "DRILL-PAY001",
+                    status: "processing",
+                    providerId: "prov-001",
+                    providerCode: "wechat_pay",
+                    providerTradeNo: "DRILL-ORD001",
+                    orderId: "ord-drill-001",
+                    machineId: "mach-001",
+                    providerConfigId: null,
+                    isDrill: true,
+                    orderIsDrill: true,
+                  },
+                ]),
+              }),
+            }),
+          }),
+        }),
+      });
+      const service = makeService({
+        db,
+        registry: {
+          has: vi.fn().mockReturnValue(true),
+          get: vi.fn().mockReturnValue(provider),
+        } as unknown as PaymentProviderRegistry,
+      });
+
+      await expect(
+        service.reconcilePendingPaymentOnRead("pay-drill-001"),
+      ).resolves.toEqual({
+        status: "processing",
+        reconciled: false,
+        reason: "protected_payment_drill",
+      });
+      expect(queryPayment).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("manualReconcile", () => {
+    function mockManualPaymentSelect(
+      db: ReturnType<typeof makeDb>,
+      payment: {
+        id?: string;
+        paymentNo?: string;
+        status?: string;
+        providerId?: string;
+        providerCode?: string;
+        providerTradeNo?: string | null;
+        orderId?: string;
+        machineId?: string;
+        providerConfigId?: string | null;
+        isDrill?: boolean;
+        orderIsDrill?: boolean;
+      },
+    ) {
+      db.select.mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([
+                  {
+                    id: "pay-001",
+                    paymentNo: "PAY001",
+                    status: "processing",
+                    providerId: "prov-001",
+                    providerCode: "alipay",
+                    providerTradeNo: null,
+                    orderId: "ord-001",
+                    machineId: "mach-001",
+                    providerConfigId: null,
+                    isDrill: false,
+                    orderIsDrill: false,
+                    ...payment,
+                  },
+                ]),
+              }),
+            }),
+          }),
+        }),
+      });
+    }
+
+    function mockManualAttemptCount(db: ReturnType<typeof makeDb>) {
+      db.select.mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([{ total: 0 }]),
+        }),
+      });
+    }
+
+    function mockManualAttemptInsert(db: ReturnType<typeof makeDb>) {
+      db.insert.mockReturnValueOnce({
+        values: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ id: "reconcile-001" }]),
+        }),
+      });
+    }
+
+    it("skips protected payment drill payments without calling the provider", async () => {
+      const queryPayment = vi.fn();
+      const provider = { queryPayment };
+      const db = makeDb();
+
+      db.select.mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([
+                  {
+                    id: "pay-drill-001",
+                    paymentNo: "DRILL-PAY001",
+                    status: "processing",
+                    providerId: "prov-001",
+                    providerCode: "wechat_pay",
+                    providerTradeNo: "DRILL-ORD001",
+                    orderId: "ord-drill-001",
+                    machineId: "mach-001",
+                    providerConfigId: null,
+                    isDrill: true,
+                    orderIsDrill: true,
+                  },
+                ]),
+              }),
+            }),
+          }),
+        }),
+      });
+      const audit = { record: vi.fn().mockResolvedValue(undefined) };
+
+      const service = makeService({
+        db,
+        registry: {
+          has: vi.fn().mockReturnValue(true),
+          get: vi.fn().mockReturnValue(provider),
+        } as unknown as PaymentProviderRegistry,
+        auditService: audit,
+      });
+
+      await expect(
+        service.manualReconcile(
+          "pay-drill-001",
+          "admin-1",
+          "operator verified protected drill should not hit provider",
+        ),
+      ).resolves.toEqual({
+        status: "processing",
+        reconciled: false,
+        reason: "protected_payment_drill",
+      });
+      expect(queryPayment).not.toHaveBeenCalled();
+      expect(audit.record).toHaveBeenCalledWith({
+        adminUserId: "admin-1",
+        action: "payments.manual_reconcile",
+        resourceType: "payment",
+        resourceId: "pay-drill-001",
+        afterJson: {
+          reason: "operator verified protected drill should not hit provider",
+          paymentNo: "DRILL-PAY001",
+          providerStatus: "processing",
+          applied: false,
+          outcome: "protected_payment_drill",
+        },
+      });
+    });
+
+    it("audits already-terminal manual reconcile attempts without calling the provider", async () => {
+      const queryPayment = vi.fn();
+      const db = makeDb();
+      mockManualPaymentSelect(db, {
+        id: "pay-terminal-001",
+        paymentNo: "PAY-TERM001",
+        status: "succeeded",
+      });
+      const audit = { record: vi.fn().mockResolvedValue(undefined) };
+      const service = makeService({
+        db,
+        registry: {
+          get: vi.fn().mockReturnValue({ queryPayment }),
+        } as unknown as PaymentProviderRegistry,
+        auditService: audit,
+      });
+
+      await expect(
+        service.manualReconcile(
+          "pay-terminal-001",
+          "admin-2",
+          "operator confirmed provider already terminal",
+        ),
+      ).resolves.toEqual({
+        status: "succeeded",
+        reconciled: false,
+        reason: "already_terminal",
+      });
+
+      expect(queryPayment).not.toHaveBeenCalled();
+      expect(audit.record).toHaveBeenCalledWith(
+        expect.objectContaining({
+          adminUserId: "admin-2",
+          resourceId: "pay-terminal-001",
+          afterJson: {
+            reason: "operator confirmed provider already terminal",
+            paymentNo: "PAY-TERM001",
+            providerStatus: "succeeded",
+            applied: false,
+            outcome: "already_terminal",
+          },
+        }),
+      );
+    });
+
+    it("audits provider query failures before rethrowing", async () => {
+      const db = makeDb();
+      mockManualPaymentSelect(db, {
+        id: "pay-query-001",
+        paymentNo: "PAY-QUERY001",
+      });
+      mockManualAttemptCount(db);
+      mockManualAttemptInsert(db);
+      const providerError = new Error("provider timeout");
+      const provider = {
+        queryPayment: vi.fn().mockRejectedValue(providerError),
+      };
+      const audit = { record: vi.fn().mockResolvedValue(undefined) };
+      const service = makeService({
+        db,
+        registry: {
+          get: vi.fn().mockReturnValue(provider),
+        } as unknown as PaymentProviderRegistry,
+        auditService: audit,
+      });
+
+      await expect(
+        service.manualReconcile(
+          "pay-query-001",
+          "admin-3",
+          "operator retried uncertain payment query",
+        ),
+      ).rejects.toThrow("provider timeout");
+
+      expect(audit.record).toHaveBeenCalledWith(
+        expect.objectContaining({
+          adminUserId: "admin-3",
+          resourceId: "pay-query-001",
+          afterJson: expect.objectContaining({
+            reason: "operator retried uncertain payment query",
+            paymentNo: "PAY-QUERY001",
+            providerStatus: "processing",
+            applied: false,
+            outcome: "query_failed",
+            errorCode: "query_failed",
+          }),
+        }),
+      );
+    });
+
+    it("audits still-uncertain provider statuses without leaking raw provider payload", async () => {
+      const db = makeDb();
+      mockManualPaymentSelect(db, {
+        id: "pay-pending-001",
+        paymentNo: "PAY-PENDING001",
+      });
+      mockManualAttemptCount(db);
+      mockManualAttemptInsert(db);
+      const provider = {
+        queryPayment: vi.fn().mockResolvedValue({
+          status: "pending",
+          providerTradeNo: "ALI-TXN-001",
+          rawPayload: {
+            auth_code: "28763443825664394",
+            access_token: "provider-secret-token",
+          },
+        }),
+      };
+      const audit = { record: vi.fn().mockResolvedValue(undefined) };
+      const service = makeService({
+        db,
+        registry: {
+          get: vi.fn().mockReturnValue(provider),
+        } as unknown as PaymentProviderRegistry,
+        auditService: audit,
+      });
+
+      await expect(
+        service.manualReconcile(
+          "pay-pending-001",
+          "admin-4",
+          "operator checked provider pending status",
+        ),
+      ).resolves.toEqual({
+        status: "processing",
+        reconciled: false,
+        reason: "provider_pending",
+      });
+
+      expect(audit.record).toHaveBeenCalledWith(
+        expect.objectContaining({
+          adminUserId: "admin-4",
+          resourceId: "pay-pending-001",
+          afterJson: {
+            reason: "operator checked provider pending status",
+            paymentNo: "PAY-PENDING001",
+            providerStatus: "pending",
+            applied: false,
+            outcome: "provider_pending",
+          },
+        }),
+      );
+      expect(JSON.stringify(audit.record.mock.calls)).not.toContain(
+        "28763443825664394",
+      );
+      expect(JSON.stringify(audit.record.mock.calls)).not.toContain(
+        "provider-secret-token",
+      );
     });
   });
 

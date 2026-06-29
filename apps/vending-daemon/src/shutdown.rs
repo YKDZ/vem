@@ -162,7 +162,7 @@ pub async fn run_console_with_token(
         hardware: hardware.clone(),
         events: events_tx.clone(),
         runtime_tx: tx_raw.clone(),
-        disk_pressure_probe: Arc::new(crate::health::DataDirDiskPressureProbe::default()),
+        disk_pressure_probe: Arc::new(crate::health::DataDirDiskPressureProbe::from_env()),
         ui,
     };
     let (ipc_handle, ipc_task) = ipc::run_server(config.bind, ipc_ctx.clone())
@@ -227,6 +227,7 @@ pub async fn run_console_with_token(
                         enabled: snapshot.enabled,
                         online: snapshot.online,
                         message: snapshot.message,
+                        latest_diagnostic_payload: snapshot.latest_diagnostic_payload,
                     });
                     return;
                 }
@@ -240,6 +241,7 @@ pub async fn run_console_with_token(
                 enabled: snapshot.enabled,
                 online: snapshot.online,
                 message: snapshot.message,
+                latest_diagnostic_payload: snapshot.latest_diagnostic_payload,
             });
             // 退避等待，最长 30 秒
             tokio::select! {
@@ -596,12 +598,14 @@ async fn cache_daemon_events(
                 enabled,
                 online,
                 message,
+                latest_diagnostic_payload,
                 ..
             } => {
                 let mut cache = status_cache.vision.write().await;
                 cache.enabled = enabled;
                 cache.online = online;
                 cache.message = message;
+                cache.latest_diagnostic_payload = latest_diagnostic_payload;
                 cache.updated_at = updated_at;
             }
             DaemonEvent::ScannerHealthChanged { snapshot, .. } => {

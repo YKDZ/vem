@@ -391,24 +391,29 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
     }
 
     const latestHeartbeat = await this.getLatestHeartbeatStatus(id);
-    const [paymentOptions, paymentEvidence] = await Promise.all([
-      this.paymentProviderConfigService.listMachinePaymentOptionsForMachine(id),
+    const [paymentEvidence, latestEnvironmentCommand] = await Promise.all([
       this.paymentProviderConfigService.listProductionPilotPaymentEvidenceForMachine(
         id,
       ),
+      this.getLatestEnvironmentCommand(id),
     ]);
+    const activeAcknowledgedPlanogramVersion =
+      await this.getActiveAcknowledgedPlanogramVersion(id);
     return {
       ...machine,
       latestHeartbeatStatus: latestHeartbeat?.statusPayload ?? null,
       latestHeartbeatReportedAt: latestHeartbeat?.reportedAt ?? null,
       latestEnvironment: latestHeartbeat?.statusPayload.environment ?? null,
-      latestEnvironmentCommand: await this.getLatestEnvironmentCommand(id),
+      latestEnvironmentCommand,
       productionPilotReadiness: evaluateProductionPilotReadiness({
         machine,
         latestHeartbeat,
         paymentOptions: paymentEvidence,
         machineHeartbeatTimeoutSeconds:
           this.config.machineHeartbeatTimeoutSeconds,
+        platformPlanogram: {
+          activeAcknowledgedPlanogramVersion,
+        },
       }),
     };
   }
@@ -449,6 +454,25 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
       .limit(1);
 
     return latestCommand ?? null;
+  }
+
+  private async getActiveAcknowledgedPlanogramVersion(
+    machineId: string,
+  ): Promise<string | null> {
+    const [version] = await this.db
+      .select({ planogramVersion: machinePlanogramVersions.planogramVersion })
+      .from(machinePlanogramVersions)
+      .where(
+        and(
+          eq(machinePlanogramVersions.machineId, machineId),
+          eq(machinePlanogramVersions.status, "active"),
+          sql`${machinePlanogramVersions.acknowledgedAt} IS NOT NULL`,
+        ),
+      )
+      .orderBy(desc(machinePlanogramVersions.activeAt))
+      .limit(1);
+
+    return version?.planogramVersion ?? null;
   }
 
   async commandEnvironment(
@@ -654,10 +678,13 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
       .where(
         and(
           eq(machinePlanogramVersions.machineId, machine.id),
-          eq(machinePlanogramVersions.status, "published"),
+          inArray(machinePlanogramVersions.status, ["published", "active"]),
         ),
       )
-      .orderBy(desc(machinePlanogramVersions.publishedAt))
+      .orderBy(
+        sql`case when ${machinePlanogramVersions.status} = 'published' then 0 else 1 end`,
+        desc(machinePlanogramVersions.publishedAt),
+      )
       .limit(1);
 
     if (!version) {

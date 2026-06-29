@@ -5,9 +5,11 @@ import { readonly, ref, onUnmounted } from "vue";
 
 import {
   subscribeVisionProfiles,
+  type VisionPresenceStatusPayload,
   type VisionProfileResultPayload,
 } from "@/native/vision";
 import { useMachineStore } from "@/stores/machine";
+import { useVisionStore } from "@/stores/vision";
 
 const PROFILE_EXPIRE_MS = 60_000;
 
@@ -16,6 +18,7 @@ export function useVisionRecommendations(): {
   lastVisionResult: Readonly<Ref<VisionProfileResultPayload | null>>;
 } {
   const machineStore = useMachineStore();
+  const visionStore = useVisionStore();
 
   const currentProfile = ref<VisionProfile | null>(null);
   const lastVisionResult = ref<VisionProfileResultPayload | null>(null);
@@ -68,6 +71,7 @@ export function useVisionRecommendations(): {
   }
 
   function handleProfile(payload: VisionProfileResultPayload): void {
+    visionStore.applyLatestProfileResult(payload);
     const profile = recommendationProfile(payload.profile);
     lastVisionResult.value = recommendationResult(payload);
     restartExpireTimer();
@@ -85,10 +89,18 @@ export function useVisionRecommendations(): {
     currentProfile.value = profile;
   }
 
+  function handlePresence(payload: VisionPresenceStatusPayload): void {
+    visionStore.applyPresenceStatus(payload);
+    if (!payload.personPresent) {
+      clearCurrentProfile();
+    }
+  }
+
   const config = machineStore.config;
 
   // If vision is not enabled, skip subscription
   if (!config.visionEnabled) {
+    visionStore.clearLatestDiagnosticPayload();
     return {
       currentProfile: readonly(currentProfile),
       lastVisionResult,
@@ -96,10 +108,11 @@ export function useVisionRecommendations(): {
   }
 
   const subscription = subscribeVisionProfiles(config, {
+    onPresenceStatus: handlePresence,
     onProfile: handleProfile,
-    onError: (error) => {
-      console.warn("vision profile subscription failed", error);
+    onError: () => {
       clearState();
+      visionStore.clearLatestDiagnosticPayload();
     },
   });
 

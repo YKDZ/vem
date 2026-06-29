@@ -506,6 +506,11 @@ impl MqttSyncRuntime {
         let sale_readiness = self
             .heartbeat_sale_readiness(whole_machine_lock.is_some(), hardware_status.online)
             .await?;
+        let physical_stock_attestation = self
+            .state
+            .physical_stock_attestation_status()
+            .await
+            .map_err(|error| format!("read physical stock attestation failed: {error}"))?;
         let payload = json!({
             "machineCode": self.machine_code,
             "reportedAt": reported_at,
@@ -518,6 +523,7 @@ impl MqttSyncRuntime {
                 "hardwarePortPath": hardware_status.port_path,
                 "wholeMachineMaintenanceLock": whole_machine_lock,
                 "saleReadiness": sale_readiness,
+                "physicalStockAttestation": physical_stock_attestation,
                 "environment": serde_json::to_value(environment)
                     .map_err(|error| format!("serialize environment heartbeat failed: {error}"))?,
             },

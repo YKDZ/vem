@@ -1019,6 +1019,34 @@ describe("checkout store", () => {
     expect(store.flowStep).toBe("idle");
   });
 
+  it("can preserve selected item after canceling from payment UI", async () => {
+    cancelOrderMock.mockResolvedValue(
+      makeTransactionSnapshot({
+        paymentStatus: "canceled",
+        orderStatus: "canceled",
+        nextAction: "closed",
+      }),
+    );
+    getSaleViewMock.mockResolvedValue({
+      items: [makeCatalogItem({ saleableStock: 1 })],
+      source: "local_stock",
+      planogramVersion: "PLAN-1",
+      lastUpdatedAt: "2026-06-04T00:00:00Z",
+    });
+
+    const item = makeCatalogItem({ catalogKey: "product:SOCK-001" });
+    const store = useCheckoutStore();
+    store.selectItem(item);
+    store.applyTransaction(makeTransactionSnapshot());
+
+    await store.cancelCurrentOrder({ preserveSelectedItem: true });
+
+    expect(store.currentOrder).toBeNull();
+    expect(store.status).toBeNull();
+    expect(store.selectedItem?.catalogKey).toBe("product:SOCK-001");
+    expect(store.flowStep).toBe("detail");
+  });
+
   it("ignores a dismissed terminal current transaction", async () => {
     const failedTransaction = makeTransactionSnapshot({
       paymentStatus: "failed",

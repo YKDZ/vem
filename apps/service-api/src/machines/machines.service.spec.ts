@@ -48,6 +48,15 @@ describe("MachinesService", () => {
 
   beforeEach(async () => {
     vi.resetAllMocks();
+    mockDb.select.mockReturnValue({
+      from: () => ({
+        where: () => ({
+          orderBy: () => ({
+            limit: async () => [{ planogramVersion: "PLAN-1" }],
+          }),
+        }),
+      }),
+    });
     listMachinePaymentOptionsForMachine.mockResolvedValue({ options: [] });
     listProductionPilotPaymentEvidenceForMachine.mockImplementation(
       async () => {
@@ -350,6 +359,7 @@ describe("MachinesService", () => {
                     },
                     physicalStockAttestation: {
                       status: "ready",
+                      planogramVersion: "PLAN-1",
                       attestedAt: "2026-06-27T01:00:00.000Z",
                     },
                     recoveryDrill: {
@@ -448,7 +458,10 @@ describe("MachinesService", () => {
                       state: "restored",
                       blockingCodes: [],
                     },
-                    physicalStockAttestation: { status: "ready" },
+                    physicalStockAttestation: {
+                      status: "ready",
+                      planogramVersion: "PLAN-1",
+                    },
                     recoveryDrill: { status: "ready" },
                     managedMachineUpdate: { status: "ready" },
                   },
@@ -530,7 +543,10 @@ describe("MachinesService", () => {
                       state: "restored",
                       blockingCodes: [],
                     },
-                    physicalStockAttestation: { status: "ready" },
+                    physicalStockAttestation: {
+                      status: "ready",
+                      planogramVersion: "PLAN-1",
+                    },
                     recoveryDrill: { status: "ready" },
                     managedMachineUpdate: { status: "ready" },
                   },
@@ -614,7 +630,10 @@ describe("MachinesService", () => {
                         },
                       },
                     },
-                    physicalStockAttestation: { status: "ready" },
+                    physicalStockAttestation: {
+                      status: "ready",
+                      planogramVersion: "PLAN-1",
+                    },
                     recoveryDrill: { status: "ready" },
                     managedMachineUpdate: { status: "ready" },
                   },
@@ -701,7 +720,10 @@ describe("MachinesService", () => {
                       state: "restored",
                       blockingCodes: [],
                     },
-                    physicalStockAttestation: { status: "ready" },
+                    physicalStockAttestation: {
+                      status: "ready",
+                      planogramVersion: "PLAN-1",
+                    },
                     recoveryDrill: { status: "ready" },
                     managedMachineUpdate: { status: "ready" },
                   },
@@ -784,7 +806,10 @@ describe("MachinesService", () => {
                       state: "restored",
                       blockingCodes: [],
                     },
-                    physicalStockAttestation: { status: "ready" },
+                    physicalStockAttestation: {
+                      status: "ready",
+                      planogramVersion: "PLAN-1",
+                    },
                     recoveryDrill: { status: "ready" },
                     managedMachineUpdate: { status: "ready" },
                   },
@@ -863,7 +888,10 @@ describe("MachinesService", () => {
                       state: "restored",
                       blockingCodes: [],
                     },
-                    physicalStockAttestation: { status: "ready" },
+                    physicalStockAttestation: {
+                      status: "ready",
+                      planogramVersion: "PLAN-1",
+                    },
                     recoveryDrill: { status: "ready" },
                     managedMachineUpdate: { status: "ready" },
                   },
@@ -945,7 +973,10 @@ describe("MachinesService", () => {
                       state: "restored",
                       blockingCodes: [],
                     },
-                    physicalStockAttestation: { status: "ready" },
+                    physicalStockAttestation: {
+                      status: "ready",
+                      planogramVersion: "PLAN-1",
+                    },
                     recoveryDrill: { status: "ready" },
                     managedMachineUpdate: { status: "ready" },
                   },
@@ -1110,7 +1141,10 @@ describe("MachinesService", () => {
                       state: "restored",
                       blockingCodes: [],
                     },
-                    physicalStockAttestation: { status: "ready" },
+                    physicalStockAttestation: {
+                      status: "ready",
+                      planogramVersion: "PLAN-1",
+                    },
                     recoveryDrill: { status: "ready" },
                     managedMachineUpdate: { status: "ready" },
                   },
@@ -1725,6 +1759,58 @@ describe("MachinesService planogram lifecycle", () => {
       service.getMachinePlanogramVersions(machine.id),
     ).resolves.toEqual(
       expect.objectContaining({ activePlanogramVersion: "PLAN-1" }),
+    );
+  });
+
+  it("returns the active planogram when no published version is waiting for acknowledgement", async () => {
+    const machine = {
+      id: "550e8400-e29b-41d4-a716-446655440000",
+      code: "M001",
+    };
+    const active = {
+      id: "550e8400-e29b-41d4-a716-446655440010",
+      machineId: machine.id,
+      planogramVersion: "PLAN-1",
+      status: "active",
+      publishedAt: new Date("2026-06-04T12:00:00.000Z"),
+      acknowledgedAt: new Date("2026-06-04T12:05:00.000Z"),
+      activeAt: new Date("2026-06-04T12:05:00.000Z"),
+      createdAt: new Date("2026-06-04T12:00:00.000Z"),
+      updatedAt: new Date("2026-06-04T12:05:00.000Z"),
+    };
+    mockDb.select
+      .mockReturnValueOnce({
+        from: () => ({ where: () => ({ limit: async () => [machine] }) }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            orderBy: () => ({ limit: async () => [active] }),
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            orderBy: async () => [
+              {
+                ...slot,
+                machinePlanogramVersionId: active.id,
+              },
+            ],
+          }),
+        }),
+      });
+
+    await expect(
+      service.getPublishedPlanogramByMachineCode(machine.code),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        machineCode: "M001",
+        planogramVersion: "PLAN-1",
+        status: "active",
+        slots: [expect.objectContaining({ slotCode: "A1" })],
+      }),
     );
   });
 

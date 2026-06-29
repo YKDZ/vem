@@ -17,6 +17,7 @@ const {
   getSaleViewMock,
   getPaymentOptionsMock,
   subscribeVisionProfilesMock,
+  routeParams,
 } = vi.hoisted(() => ({
   routerPushMock: vi.fn(),
   routerBackMock: vi.fn(),
@@ -31,6 +32,7 @@ const {
   getSaleViewMock: vi.fn(),
   getPaymentOptionsMock: vi.fn(),
   subscribeVisionProfilesMock: vi.fn(),
+  routeParams: {} as Record<string, string>,
 }));
 
 vi.mock("vue-router", () => ({
@@ -39,7 +41,7 @@ vi.mock("vue-router", () => ({
     back: routerBackMock,
     replace: routerReplaceMock,
   }),
-  useRoute: () => ({ params: {} }),
+  useRoute: () => ({ params: routeParams }),
 }));
 
 vi.mock("@/daemon/client", () => ({
@@ -69,10 +71,13 @@ import type {
 import { useCatalogStore } from "@/stores/catalog";
 import { useCheckoutStore } from "@/stores/checkout";
 import { useConnectivityStore } from "@/stores/connectivity";
+import { useVisionStore } from "@/stores/vision";
 
 import BootView from "./BootView.vue";
 import CatalogView from "./CatalogView.vue";
 import CheckoutView from "./CheckoutView.vue";
+import PaymentView from "./PaymentView.vue";
+import ProductDetailView from "./ProductDetailView.vue";
 
 let mountedApp: App<Element> | null = null;
 let pinia: ReturnType<typeof createPinia>;
@@ -83,6 +88,9 @@ beforeEach(() => {
   setActivePinia(pinia);
   window.localStorage.clear();
   vi.clearAllMocks();
+  for (const key of Object.keys(routeParams)) {
+    delete routeParams[key];
+  }
   latestVisionHandlers = null;
   subscribeVisionProfilesMock.mockImplementation(
     (_config: unknown, handlers: VisionProfileSubscriptionHandlers) => {
@@ -239,6 +247,57 @@ function makeCatalogItem(): MachineCatalogItem {
       },
     ],
   };
+}
+
+function transactionSnapshot(overrides: Record<string, unknown> = {}) {
+  return {
+    orderId: "550e8400-e29b-41d4-a716-446655440010",
+    orderNo: "ORD-PRIVACY-001",
+    productSummary: null,
+    paymentNo: "PAY-PRIVACY-001",
+    paymentMethod: "qr_code",
+    paymentProvider: "alipay",
+    paymentUrl: "https://pay.example/1",
+    paymentStatus: "pending",
+    orderStatus: "pending_payment",
+    totalAmountCents: 100,
+    vending: null,
+    nextAction: "wait_payment",
+    maskedAuthCode: null,
+    paymentCodeAttempt: null,
+    expiresAt: "2026-06-04T00:05:00Z",
+    errorCode: null,
+    errorMessage: null,
+    operatorHint: null,
+    updatedAt: "2026-06-04T00:00:00Z",
+    ...overrides,
+  };
+}
+
+function applySensitiveVisionProfile(): void {
+  useVisionStore().applyLatestProfileResult({
+    eventId: "vision-event-001",
+    detectedAt: "2026-06-12T10:20:30.000Z",
+    profile: {
+      personPresent: true,
+      heightCm: 172,
+      bodyType: "regular",
+      upperColor: "blue",
+      confidence: 0.91,
+    },
+    quality: {
+      overall: "good",
+      warnings: ["light glare"],
+    },
+  });
+}
+
+function expectRecognitionDetailsHidden(host: HTMLElement): void {
+  expect(host.textContent).not.toContain("vision-event-001");
+  expect(host.textContent).not.toContain("172 cm");
+  expect(host.textContent).not.toContain("light glare");
+  expect(host.textContent).not.toContain('"heightCm": 172');
+  expect(host.textContent).not.toContain('"confidence": 0.91');
 }
 
 function healthSnapshot() {
@@ -700,7 +759,7 @@ describe("sale readiness UI flow", () => {
           personPresent: true,
           heightCm: 172,
           shoulderWidthCm: 43,
-          ageRange: "25-34",
+          ageRange: "adult",
           gender: "male",
           bodyType: "regular",
           upperColor: "blue",
@@ -716,12 +775,87 @@ describe("sale readiness UI flow", () => {
     );
     await nextTick();
 
+    expect(host.querySelector(".presence-present")).toBeTruthy();
     expect(host.textContent).not.toContain("视觉识别结果");
     expect(host.textContent).not.toContain("vision-event-001");
     expect(host.textContent).not.toContain("172 cm");
     expect(host.textContent).not.toContain("light glare");
     expect(host.textContent).not.toContain('"heightCm": 172');
     expect(host.textContent).toContain("T恤");
+  });
+
+  it("keeps vision recognition details silent in the product detail page", async () => {
+    const item = makeCatalogItem();
+    useCatalogStore().applySnapshot({
+      items: [{ ...item, size: "M", targetGender: "male" }],
+      source: "local_stock",
+      planogramVersion: "PLAN-1",
+      lastUpdatedAt: "2026-06-04T00:00:00Z",
+    });
+    routeParams.catalogKey = item.catalogKey;
+    applySensitiveVisionProfile();
+
+    const host = await mountView(ProductDetailView);
+
+    expect(host.textContent).toContain("基础短袖");
+    expectRecognitionDetailsHidden(host);
+  });
+
+  it("keeps vision recognition details silent in checkout", async () => {
+    const item = makeCatalogItem();
+    useCatalogStore().applySnapshot({
+      items: [item],
+      source: "local_stock",
+      planogramVersion: "PLAN-1",
+      lastUpdatedAt: "2026-06-04T00:00:00Z",
+    });
+    useCheckoutStore().selectItem(item);
+    applyBlockedSaleReadiness();
+    applySensitiveVisionProfile();
+
+    const host = await mountView(CheckoutView);
+
+    expect(host.textContent).toContain("确认购买");
+    expectRecognitionDetailsHidden(host);
+  });
+
+  it("keeps vision recognition details silent during payment", async () => {
+    const transaction = transactionSnapshot();
+    useCheckoutStore().applyTransaction(transaction);
+    getCurrentTransactionMock.mockResolvedValue(transaction);
+    applySensitiveVisionProfile();
+
+    const host = await mountView(PaymentView);
+
+    expect(host.textContent).toContain("订单支付");
+    expectRecognitionDetailsHidden(host);
+  });
+
+  it("keeps sale navigation available when vision presence is unavailable", async () => {
+    const item = makeCatalogItem();
+    useCatalogStore().applySnapshot({
+      items: [item],
+      source: "local_stock",
+      planogramVersion: "PLAN-1",
+      lastUpdatedAt: "2026-06-04T00:00:00Z",
+    });
+
+    const host = await mountView(CatalogView);
+    latestVisionHandlers?.onError?.(
+      new Error("vision camera_unavailable: camera unavailable"),
+    );
+    await nextTick();
+
+    expect(host.querySelector(".presence-present")).toBeNull();
+    expect(host.textContent).toContain("T恤");
+    const categoryButton = Array.from(host.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("T恤"),
+    );
+    categoryButton?.click();
+    await nextTick();
+
+    expect(host.textContent).toContain("基础短袖");
+    expect(routerPushMock).not.toHaveBeenCalled();
   });
 
   it("keeps checkout visible but disables order creation when readiness is blocked", async () => {

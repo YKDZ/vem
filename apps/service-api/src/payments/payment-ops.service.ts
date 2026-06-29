@@ -52,8 +52,54 @@ function readHeartbeatStringField(
   if (typeof payload !== "object" || payload === null) {
     return null;
   }
-  const value = Reflect.get(payload, field);
+  const value: unknown = Reflect.get(payload, field);
   return typeof value === "string" ? value : null;
+}
+
+function readHeartbeatRecordField(
+  heartbeat: LatestMachineHeartbeat,
+  field: string,
+): Record<string, unknown> | null {
+  const payload = heartbeat?.statusPayloadJson;
+  if (typeof payload !== "object" || payload === null) {
+    return null;
+  }
+  const value: unknown = Reflect.get(payload, field);
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return null;
+  }
+  return Object.fromEntries(Object.entries(value));
+}
+
+function readStringFromRecord(
+  record: Record<string, unknown> | null,
+  field: string,
+): string | null {
+  const value = record?.[field];
+  return typeof value === "string" ? value : null;
+}
+
+function readBooleanFromRecord(
+  record: Record<string, unknown> | null,
+  field: string,
+): boolean | null {
+  const value = record?.[field];
+  return typeof value === "boolean" ? value : null;
+}
+
+function isPaymentCodeScannerReady(heartbeat: LatestMachineHeartbeat): boolean {
+  const scannerHealth = readHeartbeatRecordField(heartbeat, "scannerHealth");
+  const status = readStringFromRecord(scannerHealth, "status");
+  const online = readBooleanFromRecord(scannerHealth, "online");
+  return status === "ready" || status === "online" || online === true;
+}
+
+function hasNonEmptyString(
+  source: Record<string, unknown>,
+  key: string,
+): boolean {
+  const value = source[key];
+  return typeof value === "string" && value.trim().length > 0;
 }
 
 @Injectable()
@@ -102,7 +148,9 @@ export class PaymentOpsService {
         failed: sql<number>`count(*) filter (where ${payments.status} = 'failed')`,
       })
       .from(payments)
-      .where(sql`${payments.createdAt} >= ${from}`);
+      .where(
+        and(sql`${payments.createdAt} >= ${from}`, eq(payments.isDrill, false)),
+      );
 
     const [webhookTotals] = await this.db
       .select({
@@ -115,9 +163,14 @@ export class PaymentOpsService {
     const [reconcileTotals] = await this.db
       .select({ total: count() })
       .from(paymentReconciliationAttempts)
+      .innerJoin(
+        payments,
+        eq(payments.id, paymentReconciliationAttempts.paymentId),
+      )
       .where(
         and(
           sql`${paymentReconciliationAttempts.createdAt} >= ${from}`,
+          eq(payments.isDrill, false),
           sql`${paymentReconciliationAttempts.status} in ('network_error', 'config_error', 'max_attempts_exceeded')`,
         ),
       );
@@ -128,7 +181,9 @@ export class PaymentOpsService {
         overdue: sql<number>`count(*) filter (where ${refunds.status} = 'processing' and ${refunds.updatedAt} < ${new Date(measuredAt.getTime() - 30 * 60_000)})`,
       })
       .from(refunds)
-      .where(sql`${refunds.createdAt} >= ${from}`);
+      .where(
+        and(sql`${refunds.createdAt} >= ${from}`, eq(refunds.isDrill, false)),
+      );
 
     const [paymentCodeTotals] = await this.db
       .select({
@@ -136,7 +191,13 @@ export class PaymentOpsService {
         reverseFailed: sql<number>`count(*) filter (where ${paymentCodeAttempts.status} = 'manual_handling' or ${paymentCodeAttempts.failureCode} like '%REVERSE%')`,
       })
       .from(paymentCodeAttempts)
-      .where(sql`${paymentCodeAttempts.createdAt} >= ${from}`);
+      .innerJoin(payments, eq(payments.id, paymentCodeAttempts.paymentId))
+      .where(
+        and(
+          sql`${paymentCodeAttempts.createdAt} >= ${from}`,
+          eq(payments.isDrill, false),
+        ),
+      );
 
     const [paymentCodeDuplicateRejected] = await this.db
       .select({ total: count() })
@@ -194,6 +255,8 @@ export class PaymentOpsService {
         machineCode: "",
         status: "blocked",
         availableProviders: [],
+        defaultOptionKey: null,
+        defaultProviderCode: null,
         checks: [
           {
             code: "machine_not_found",
@@ -212,6 +275,17 @@ export class PaymentOpsService {
         machine.id,
       );
     const latestHeartbeat = await this.getLatestMachineHeartbeat(machine.id);
+    const hasPaymentCodeOption = options.options.some(
+      (item) => item.method === "payment_code",
+    );
+    const scannerReady = isPaymentCodeScannerReady(latestHeartbeat);
+    const availableProviders =
+      hasPaymentCodeOption && !scannerReady
+        ? options.options
+            .filter((item) => item.method !== "payment_code")
+            .map((item, index) => ({ ...item, recommended: index === 0 }))
+        : options.options;
+    const defaultOption = availableProviders.find((item) => item.recommended);
 
     const checks: PaymentOpsCheck[] = [
       {
@@ -238,15 +312,8 @@ export class PaymentOpsService {
     ];
     checks.push(this.checkProductionDispensePath(latestHeartbeat));
 
-    if (options.options.some((item) => item.method === "payment_code")) {
-      checks.push({
-        code: "payment_code.scanner_health_not_reported",
-        severity: "warning",
-        passed: false,
-        message:
-          "付款码支付已启用，但服务端尚未收到扫码模块健康证据；二维码支付不受影响",
-        evidence: { method: "payment_code", machineId },
-      });
+    if (hasPaymentCodeOption) {
+      checks.push(this.checkPaymentCodeScannerRuntime(latestHeartbeat));
     }
 
     const criticalFailed = checks.some(
@@ -257,7 +324,9 @@ export class PaymentOpsService {
       machineId: machine.id,
       machineCode: machine.code,
       status: criticalFailed ? "blocked" : "ready",
-      availableProviders: options.options,
+      availableProviders,
+      defaultOptionKey: defaultOption?.optionKey ?? null,
+      defaultProviderCode: defaultOption?.providerCode ?? null,
       checks,
       checkedAt: new Date().toISOString(),
     };
@@ -374,6 +443,39 @@ export class PaymentOpsService {
     };
   }
 
+  private checkPaymentCodeScannerRuntime(
+    heartbeat: LatestMachineHeartbeat,
+  ): PaymentOpsCheck {
+    const scannerHealth = readHeartbeatRecordField(heartbeat, "scannerHealth");
+    const status = readStringFromRecord(scannerHealth, "status");
+    const message = readStringFromRecord(scannerHealth, "message");
+    const online = readBooleanFromRecord(scannerHealth, "online");
+    const ready = isPaymentCodeScannerReady(heartbeat);
+    const reported = scannerHealth !== null;
+
+    if (ready) {
+      return {
+        code: "payment_code.scanner_runtime.ready",
+        severity: "info",
+        passed: true,
+        message: "付款码支付扫码模块健康证据已上报",
+        evidence: { status, online, message },
+      };
+    }
+
+    return {
+      code: reported
+        ? "payment_code.scanner_runtime.degraded"
+        : "payment_code.scanner_health_not_reported",
+      severity: "warning",
+      passed: false,
+      message: reported
+        ? "付款码支付已启用，但扫码模块未就绪；二维码支付不受影响"
+        : "付款码支付已启用，但服务端尚未收到扫码模块健康证据；二维码支付不受影响",
+      evidence: { status, online, message },
+    };
+  }
+
   private async checkMockProviderDisabled(): Promise<PaymentOpsCheck> {
     const [mockProvider] = await this.db
       .select({ status: paymentProviders.status })
@@ -420,20 +522,49 @@ export class PaymentOpsService {
       if (row.configStatus !== "enabled") return false;
       if (!row.merchantNo || !row.appId) return false;
       if (!isEncryptedJson(row.configEncryptedJson)) return false;
+      let sensitiveConfig: Record<string, unknown>;
+      try {
+        sensitiveConfig = this.paymentConfigSecrets.decrypt(
+          row.configEncryptedJson,
+        );
+      } catch {
+        return false;
+      }
       const publicConfig =
         typeof row.publicConfigJson === "object" &&
         row.publicConfigJson !== null
           ? (row.publicConfigJson as Record<string, unknown>)
           : {};
       if (row.providerCode === "wechat_pay") {
-        return Boolean(
-          publicConfig["platformCertificateSerialNo"] &&
-          (publicConfig["merchantCertificateSerialNo"] ||
-            publicConfig["certificateSerialNo"]),
+        const hasMerchantSerial =
+          hasNonEmptyString(publicConfig, "merchantCertificateSerialNo") ||
+          hasNonEmptyString(publicConfig, "certificateSerialNo");
+        const hasPlatformKey =
+          hasNonEmptyString(sensitiveConfig, "platformCertificatePem") ||
+          hasNonEmptyString(sensitiveConfig, "platformPublicKeyPem");
+        const baseComplete =
+          hasMerchantSerial &&
+          hasNonEmptyString(publicConfig, "platformCertificateSerialNo") &&
+          hasNonEmptyString(sensitiveConfig, "apiV3Key") &&
+          hasNonEmptyString(sensitiveConfig, "privateKeyPem") &&
+          hasPlatformKey;
+        if (!baseComplete) return false;
+        if (publicConfig["paymentCodeEnabled"] !== true) return true;
+        return (
+          hasNonEmptyString(sensitiveConfig, "apiV2Key") &&
+          hasNonEmptyString(sensitiveConfig, "merchantApiCertPem") &&
+          hasNonEmptyString(sensitiveConfig, "merchantApiKeyPem")
         );
       }
       if (row.providerCode === "alipay") {
-        return typeof publicConfig["gatewayUrl"] === "string";
+        return (
+          hasNonEmptyString(publicConfig, "gatewayUrl") &&
+          hasNonEmptyString(publicConfig, "keyType") &&
+          hasNonEmptyString(sensitiveConfig, "privateKeyPem") &&
+          hasNonEmptyString(sensitiveConfig, "appCertPem") &&
+          hasNonEmptyString(sensitiveConfig, "alipayPublicCertPem") &&
+          hasNonEmptyString(sensitiveConfig, "alipayRootCertPem")
+        );
       }
       return false;
     });
@@ -630,7 +761,10 @@ export class PaymentOpsService {
       .select({ total: count() })
       .from(refunds)
       .where(
-        sql`${refunds.status} = 'failed' or (${refunds.status} = 'processing' and ${refunds.updatedAt} < ${overdueBefore})`,
+        and(
+          eq(refunds.isDrill, false),
+          sql`${refunds.status} = 'failed' or (${refunds.status} = 'processing' and ${refunds.updatedAt} < ${overdueBefore})`,
+        ),
       );
 
     const total = Number(row.total);

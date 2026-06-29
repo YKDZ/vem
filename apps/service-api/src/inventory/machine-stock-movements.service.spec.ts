@@ -469,6 +469,33 @@ describe("MachineStockMovementsService", () => {
     expect(repo.localMaintenanceSlotRestoreInputs).toHaveLength(0);
   });
 
+  it("applies physical stock attestation count correction to platform inventory", async () => {
+    const repo = new InMemoryMovementRepository();
+    const service = new MachineStockMovementsService(repo as never);
+    const attestedCount: RawMachineStockMovement = {
+      ...movement,
+      movementId: "ATT-001:550e8400-e29b-41d4-a716-446655440001",
+      movementType: "stock_count_correction",
+      quantity: 4,
+      beforeQuantity: 6,
+      afterQuantity: 4,
+      source: "physical_stock_attestation",
+      attributedTo: "operator-1",
+    };
+
+    const result = await service.receiveRawMovement(machine, attestedCount);
+
+    expect(result.status).toBe("accepted");
+    expect(repo.fieldStockApplicationInputs).toEqual([
+      {
+        machineId: machine.id,
+        rawMovementId: result.receipt?.rawMovementId,
+        input: attestedCount,
+      },
+    ]);
+    expect(repo.reconciliationInputs).toHaveLength(0);
+  });
+
   it("applies attributed local maintenance refill to platform inventory", async () => {
     const repo = new InMemoryMovementRepository();
     const service = new MachineStockMovementsService(repo as never);

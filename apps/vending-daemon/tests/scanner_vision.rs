@@ -468,6 +468,14 @@ async fn vision_mock_process_updates_ready_status() {
     let vision_status = wait_for_vision_ready(&daemon).await;
     assert_eq!(vision_status["enabled"], true);
     assert_eq!(vision_status["online"], true);
+    assert_eq!(
+        vision_status["latestDiagnosticPayload"]["type"],
+        "vision.ready"
+    );
+    assert_eq!(
+        vision_status["latestDiagnosticPayload"]["payload"]["serverName"],
+        "test-vision"
+    );
 
     daemon.terminate().await;
     vision.abort();
@@ -587,22 +595,25 @@ async fn prepare_local_sale_view(daemon: &DaemonHarness) {
         .expect("planogram request");
     assert_eq!(planogram.status(), reqwest::StatusCode::OK);
 
-    let movement = client
-        .post(format!("{base}/v1/stock/movements"))
+    let attestation = client
+        .post(format!("{base}/v1/stock/attestation"))
         .header("Authorization", daemon.bearer())
         .json(&json!({
-            "movementId": "MOVE-SCAN-REFILL",
+            "attestationId": "ATT-SCAN-READY",
             "planogramVersion": "PLAN-SCAN",
-            "slotId": "550e8400-e29b-41d4-a716-446655440001",
-            "movementType": "planned_refill",
-            "quantity": 3,
-            "source": "field_service",
-            "attributedTo": "test"
+            "operatorId": "test",
+            "slots": [{
+                "slotId": "550e8400-e29b-41d4-a716-446655440001",
+                "slotCode": "A1",
+                "sku": "WATER-001",
+                "quantity": 3,
+                "enabled": true
+            }]
         }))
         .send()
         .await
-        .expect("movement request");
-    assert_eq!(movement.status(), reqwest::StatusCode::CREATED);
+        .expect("attestation request");
+    assert_eq!(attestation.status(), reqwest::StatusCode::CREATED);
 }
 
 async fn wait_for_sync_connected(daemon: &DaemonHarness) -> serde_json::Value {
@@ -637,8 +648,10 @@ async fn create_payment_code_order(daemon: &DaemonHarness) -> serde_json::Value 
         .send()
         .await
         .expect("create order request");
-    assert_eq!(response.status(), reqwest::StatusCode::OK);
-    response.json().await.expect("create order json")
+    let status = response.status();
+    let body = response.text().await.expect("create order body");
+    assert_eq!(status, reqwest::StatusCode::OK, "create order body: {body}");
+    serde_json::from_str(&body).expect("create order json")
 }
 
 async fn wait_for_transaction(

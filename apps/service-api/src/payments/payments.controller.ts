@@ -67,6 +67,9 @@ const webhookAttemptListQuerySchema = paymentWebhookAttemptQuerySchema.extend(
 const reconciliationAttemptListQuerySchema =
   paymentReconciliationAttemptQuerySchema.extend(pageQuerySchema.shape);
 const refundListQuerySchema = refundQuerySchema.extend(pageQuerySchema.shape);
+export const paymentOperatorReasonSchema = z.object({
+  reason: z.string().trim().min(1).max(256),
+});
 
 @ApiTags("payments")
 @ApiBearerAuth()
@@ -191,8 +194,14 @@ export class PaymentsController {
   async manualReconcile(
     @CurrentAdmin() admin: AuthenticatedAdmin,
     @Param("id", ParseUUIDPipe) id: string,
+    @Body(new ZodValidationPipe(paymentOperatorReasonSchema))
+    body: z.infer<typeof paymentOperatorReasonSchema>,
   ) {
-    return await this.paymentsService.manualReconcile(id, admin.id);
+    return await this.paymentsService.manualReconcile(
+      id,
+      admin.id,
+      body.reason,
+    );
   }
 
   @RequirePermissions("payments.read")
@@ -209,8 +218,14 @@ export class PaymentsController {
   async queryRefund(
     @CurrentAdmin() admin: AuthenticatedAdmin,
     @Param("id", ParseUUIDPipe) id: string,
+    @Body(new ZodValidationPipe(paymentOperatorReasonSchema))
+    body: z.infer<typeof paymentOperatorReasonSchema>,
   ) {
-    return await this.paymentsService.manualReconcileRefund(id, admin.id);
+    return await this.paymentsService.manualReconcileRefund(
+      id,
+      admin.id,
+      body.reason,
+    );
   }
 
   @Public()

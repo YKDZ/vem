@@ -142,15 +142,8 @@ export function normalizeMachineConfig(input: unknown): MachineConfig {
     const trimmed = processed.serialPortPath.trim();
     processed.serialPortPath = trimmed.length > 0 ? trimmed : null;
   }
-  if (
-    typeof processed.lowerControllerUsbIdentity === "object" &&
-    processed.lowerControllerUsbIdentity !== null &&
-    !Array.isArray(processed.lowerControllerUsbIdentity)
-  ) {
-    const identity = processed.lowerControllerUsbIdentity as Record<
-      string,
-      unknown
-    >;
+  if (isPlainRecord(processed.lowerControllerUsbIdentity)) {
+    const identity = processed.lowerControllerUsbIdentity;
     if (typeof identity.serialNumber === "string") {
       const trimmed = identity.serialNumber.trim();
       identity.serialNumber = trimmed.length > 0 ? trimmed : null;
@@ -191,4 +184,8 @@ export function normalizeMachineConfig(input: unknown): MachineConfig {
     scannerSerialPortPath: parsed.scannerSerialPortPath?.trim() || null,
     visionWsUrl: parsed.visionWsUrl.trim(),
   };
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

@@ -27,11 +27,16 @@ type PaymentOptionEvidence = {
   mode?: string | null;
 };
 
+type PlatformPlanogramEvidence = {
+  activeAcknowledgedPlanogramVersion: string | null;
+};
+
 export type ProductionPilotReadinessInput = {
   machine: MachineEvidence;
   latestHeartbeat: LatestHeartbeatEvidence;
   paymentOptions: PaymentOptionEvidence[];
   machineHeartbeatTimeoutSeconds: number;
+  platformPlanogram?: PlatformPlanogramEvidence;
 };
 
 export type ProductionPilotReadiness = {
@@ -140,6 +145,44 @@ export function evaluateProductionPilotReadiness(
     payload,
     "physicalStockAttestation",
   );
+  const physicalStockAttestationPlanogramVersion = evidenceString(
+    payload,
+    "physicalStockAttestation",
+    "planogramVersion",
+  );
+  const platformActiveAcknowledgedPlanogramVersion =
+    input.platformPlanogram?.activeAcknowledgedPlanogramVersion ?? null;
+  const physicalStockAttestationPlanogramMatches =
+    physicalStockAttestationStatus !== "ready" ||
+    input.platformPlanogram === undefined ||
+    (platformActiveAcknowledgedPlanogramVersion !== null &&
+      physicalStockAttestationPlanogramVersion ===
+        platformActiveAcknowledgedPlanogramVersion);
+  const physicalStockAttestationPlanogramMismatch =
+    physicalStockAttestationStatus === "ready" &&
+    !physicalStockAttestationPlanogramMatches;
+  const physicalStockAttestationReady =
+    physicalStockAttestationStatus === "ready" &&
+    physicalStockAttestationPlanogramMatches;
+  const physicalStockAttestationCode = physicalStockAttestationPlanogramMismatch
+    ? "physical_stock_attestation.planogram_mismatch"
+    : physicalStockAttestationStatus === "ready"
+      ? "physical_stock_attestation.ready"
+      : physicalStockAttestationStatus === "stale"
+        ? "physical_stock_attestation.stale"
+        : physicalStockAttestationStatus === "inconsistent"
+          ? "physical_stock_attestation.inconsistent"
+          : "physical_stock_attestation.missing";
+  const physicalStockAttestationMessage =
+    physicalStockAttestationPlanogramMismatch
+      ? "Physical Stock Attestation planogram does not match the platform active acknowledged planogram"
+      : physicalStockAttestationStatus === "ready"
+        ? "Physical Stock Attestation is complete"
+        : physicalStockAttestationStatus === "stale"
+          ? "Physical Stock Attestation is stale for the active planogram"
+          : physicalStockAttestationStatus === "inconsistent"
+            ? "Physical Stock Attestation is inconsistent with current machine stock state"
+            : "Physical Stock Attestation evidence is missing";
   const recoveryDrillStatus = evidenceStatus(payload, "recoveryDrill");
   const managedMachineUpdateStatus = evidenceStatus(
     payload,
@@ -254,20 +297,26 @@ export function evaluateProductionPilotReadiness(
         : "Continue daily inspection.",
     }),
     check({
-      code:
-        physicalStockAttestationStatus === "ready"
-          ? "physical_stock_attestation.ready"
-          : "physical_stock_attestation.missing",
+      code: physicalStockAttestationCode,
       label: "Physical Stock Attestation",
-      status: physicalStockAttestationStatus === "ready" ? "ready" : "missing",
-      message:
-        physicalStockAttestationStatus === "ready"
-          ? "Physical Stock Attestation is complete"
-          : "Physical Stock Attestation evidence is missing",
-      operatorAction:
-        physicalStockAttestationStatus === "ready"
-          ? "Continue daily inspection."
-          : "Record physical slot contents through the stock attestation workflow before production pilot.",
+      status: physicalStockAttestationReady
+        ? "ready"
+        : physicalStockAttestationPlanogramMismatch
+          ? "blocked"
+          : physicalStockAttestationStatus === "stale" ||
+              physicalStockAttestationStatus === "inconsistent"
+            ? "blocked"
+            : "missing",
+      message: physicalStockAttestationMessage,
+      operatorAction: physicalStockAttestationReady
+        ? "Continue daily inspection."
+        : physicalStockAttestationPlanogramMismatch
+          ? "Apply and acknowledge the platform planogram on the machine, then record a new Physical Stock Attestation."
+          : physicalStockAttestationStatus === "stale"
+            ? "Record a new physical stock attestation against the active planogram."
+            : physicalStockAttestationStatus === "inconsistent"
+              ? "Resolve planogram, slot enablement, and local stock ledger inconsistencies before production pilot."
+              : "Record physical slot contents through the stock attestation workflow before production pilot.",
     }),
     check({
       code:

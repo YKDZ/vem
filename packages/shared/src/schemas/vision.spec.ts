@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   VISION_PROTOCOL,
   visionErrorMessageSchema,
+  visionPresenceStatusMessageSchema,
   visionProfileResultMessageSchema,
   visionServerMessageSchema,
   visionClientMessageSchema,
@@ -23,12 +24,13 @@ describe("vision protocol schemas", () => {
         clientRole: "machine",
         machineCode: "M001",
         protocolVersion: 1,
-        capabilities: ["profile_push"],
+        capabilities: ["profile_push", "presence_status", "ambient_light"],
       },
     });
 
     expect(message.type).toBe("vision.hello");
     expect(message.payload.capabilities).toContain("profile_push");
+    expect(message.payload.capabilities).toContain("ambient_light");
   });
 
   it("parses a pushed profile result", () => {
@@ -56,7 +58,79 @@ describe("vision protocol schemas", () => {
     expect(message.payload.profile.heightCm).toBe(172);
   });
 
-  it("does not pass through raw images, identifying model details, or sensitive inference fields", () => {
+  it("parses a pushed presence status from the real vision service", () => {
+    const message = visionPresenceStatusMessageSchema.parse({
+      ...BASE_ENVELOPE,
+      type: "vision.presence_status",
+      payload: {
+        eventId: "presence-event-001",
+        state: "approach",
+        reason: "person_present_but_not_close",
+        detectedAt: "2026-06-29T10:00:00.000Z",
+        personPresent: true,
+        closeNow: false,
+        close: false,
+        closeTrigger: null,
+        proximity: {
+          present: true,
+          close: false,
+          closeNow: false,
+          largestPersonRatio: 0.12,
+        },
+        ambientLight: {
+          level: "dim",
+          measuredAt: "2026-06-29T10:00:00.000Z",
+          source: "camera",
+          confidence: 0.82,
+          sample: {
+            lumaMean: 74.5,
+          },
+        },
+      },
+    });
+
+    expect(message.type).toBe("vision.presence_status");
+    expect(message.payload.state).toBe("approach");
+    expect(message.payload.personPresent).toBe(true);
+    expect(message.payload.ambientLight?.level).toBe("dim");
+    expect(message.payload.ambientLight?.sample?.lumaMean).toBe(74.5);
+  });
+
+  it("rejects unknown ambient light levels", () => {
+    expect(() =>
+      visionServerMessageSchema.parse({
+        ...BASE_ENVELOPE,
+        type: "vision.presence_status",
+        payload: {
+          eventId: "presence-event-001",
+          state: "approach",
+          detectedAt: "2026-06-29T10:00:00.000Z",
+          personPresent: true,
+          proximity: {},
+          ambientLight: {
+            level: "night",
+            measuredAt: "2026-06-29T10:00:00.000Z",
+          },
+        },
+      }),
+    ).toThrow();
+  });
+
+  it("rejects malformed presence status payloads", () => {
+    expect(() =>
+      visionServerMessageSchema.parse({
+        ...BASE_ENVELOPE,
+        type: "vision.presence_status",
+        payload: {
+          eventId: "presence-event-001",
+          state: "empty",
+          detectedAt: "2026-06-29T10:00:00.000Z",
+        },
+      }),
+    ).toThrow();
+  });
+
+  it("passes through real vision profile fields but strips raw images and identity fields", () => {
     const message = visionProfileResultMessageSchema.parse({
       ...BASE_ENVELOPE,
       type: "vision.profile_result",
@@ -69,7 +143,7 @@ describe("vision protocol schemas", () => {
           bodyType: "regular",
           confidence: 0.86,
           shoulderWidthCm: 43,
-          ageRange: "25-34",
+          ageRange: "adult",
           gender: "male",
           rawImageBase64: "data:image/jpeg;base64,raw",
           identity: { id: "customer-1" },
@@ -87,11 +161,9 @@ describe("vision protocol schemas", () => {
     expect(JSON.stringify(message.payload.profile)).not.toContain(
       "faceEmbedding",
     );
-    expect(JSON.stringify(message.payload.profile)).not.toContain(
-      "shoulderWidthCm",
-    );
-    expect(JSON.stringify(message.payload.profile)).not.toContain("ageRange");
-    expect(JSON.stringify(message.payload.profile)).not.toContain("gender");
+    expect(message.payload.profile.shoulderWidthCm).toBe(43);
+    expect(message.payload.profile.ageRange).toBe("adult");
+    expect(message.payload.profile.gender).toBe("male");
   });
 
   it("rejects impossible height values", () => {
@@ -115,7 +187,7 @@ describe("vision protocol schemas", () => {
     ).toThrow();
   });
 
-  it("accepts null heightCm and strips deprecated sensitive profile fields", () => {
+  it("accepts null heightCm and real optional profile fields", () => {
     const message = visionProfileResultMessageSchema.parse({
       ...BASE_ENVELOPE,
       type: "vision.profile_result",
@@ -138,9 +210,9 @@ describe("vision protocol schemas", () => {
     });
 
     expect(message.payload.profile.heightCm).toBeNull();
-    expect("shoulderWidthCm" in message.payload.profile).toBe(false);
-    expect("ageRange" in message.payload.profile).toBe(false);
-    expect("gender" in message.payload.profile).toBe(false);
+    expect(message.payload.profile.shoulderWidthCm).toBeNull();
+    expect(message.payload.profile.ageRange).toBe("unknown");
+    expect(message.payload.profile.gender).toBe("unknown");
   });
 
   it("accepts fair quality profile results from the real vision service", () => {
