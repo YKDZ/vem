@@ -2028,8 +2028,8 @@ async fn validate_create_order_intent(
     ctx: &IpcContext,
     input: &CreateOrder,
 ) -> Result<VerifiedCreateOrderLine, String> {
-    if input.quantity == 0 {
-        return Err("quantity must be positive".to_string());
+    if input.quantity != 1 {
+        return Err("quantity must be exactly 1 for lower controller protocol v1".to_string());
     }
 
     let readiness = machine_sale_readiness_snapshot(ctx)
@@ -5191,6 +5191,120 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("ACTIVE_PLANOGRAM_MISSING"));
+
+        let backend_create_order_requests = server
+            .received_requests()
+            .await
+            .expect("recorded requests")
+            .into_iter()
+            .filter(|request| request.url.path() == "/machine-orders")
+            .count();
+        assert_eq!(backend_create_order_requests, 0);
+    }
+
+    #[tokio::test]
+    async fn create_order_intent_rejects_multi_quantity_for_v1_lower_controller_protocol() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(wiremock::matchers::path("/machine-orders/payment-options"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "options": [{
+                    "optionKey": "mock:mock",
+                    "providerCode": "mock",
+                    "method": "mock",
+                    "displayName": "模拟支付",
+                    "description": "本地模拟",
+                    "icon": "mock",
+                    "recommended": true,
+                    "disabled": false,
+                    "disabledReason": null
+                }],
+                "defaultOptionKey": "mock:mock",
+                "defaultProviderCode": "mock",
+                "serverTime": "2026-06-04T00:00:00Z"
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(wiremock::matchers::path("/machine-orders"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "orderNo": "ORD-MULTI-UNEXPECTED",
+                "nextAction": "wait_payment",
+                "orderStatus": "pending_payment"
+            })))
+            .mount(&server)
+            .await;
+
+        let temp_dir = tempdir().expect("tmp");
+        let ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            &server.uri(),
+        )
+        .await;
+        mark_runtime_sale_ready(&ctx).await;
+        let app = build_router(ctx);
+        let slot_id = "550e8400-e29b-41d4-a716-446655440701";
+        let inventory_id = "550e8400-e29b-41d4-a716-446655440702";
+        assert_eq!(
+            post_json(
+                &app,
+                "/v1/stock/planogram",
+                "token-1",
+                one_slot_planogram("PLAN-SINGLE-ITEM-ONLY", slot_id, inventory_id),
+            )
+            .await
+            .status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            post_json(
+                &app,
+                "/v1/stock/movements",
+                "token-1",
+                json!({
+                    "movementId": "MOVE-SINGLE-ITEM-ONLY-1",
+                    "planogramVersion": "PLAN-SINGLE-ITEM-ONLY",
+                    "slotId": slot_id,
+                    "movementType": "planned_refill",
+                    "quantity": 3,
+                    "source": "field_service",
+                    "attributedTo": "operator-1"
+                }),
+            )
+            .await
+            .status(),
+            StatusCode::CREATED
+        );
+        record_attested_stock(&app, "PLAN-SINGLE-ITEM-ONLY", slot_id, 3).await;
+
+        let response = post_json(
+            &app,
+            "/v1/intents/create-order",
+            "token-1",
+            json!({
+                "inventoryId": inventory_id,
+                "quantity": 2,
+                "planogramVersion": "PLAN-SINGLE-ITEM-ONLY",
+                "slotId": slot_id,
+                "slotCode": "A1",
+                "paymentMethod": "mock",
+                "paymentProviderCode": "mock",
+                "profileSnapshot": null
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["code"], "create_order_blocked");
+        assert!(payload["message"]
+            .as_str()
+            .unwrap()
+            .contains("quantity must be exactly 1"));
 
         let backend_create_order_requests = server
             .received_requests()

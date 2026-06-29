@@ -21,7 +21,6 @@ use crate::hardware::{
 };
 
 pub const FRAME_HEAD: u8 = 0x55;
-pub const FRAME_MULTI_TAIL: u8 = 0x56;
 pub const DEBUG_DISPENSE_FAULT_FRAME: [u8; 4] = [FRAME_HEAD, 0xFF, 0xFF, 0xFF];
 const HANDSHAKE: [u8; 2] = build_status_query_frame();
 const SERIAL_BAUD_RATE: u32 = 115_200;
@@ -714,19 +713,14 @@ impl SerialHardwareAdapter {
         command: &DispenseCommandPayload,
         progress: Option<DispenseProgressObserver>,
     ) -> Result<(), DispenseFailure> {
-        // 单商品用 4 字节 CRC-8 帧；多件同货道用多商品帧（CRC-16）
-        let frame: Vec<u8> = if command.quantity == 1 {
-            build_dispense_frame(command.slot.layer_no, command.slot.cell_no)
-                .map(|f| f.to_vec())
-                .map_err(DispenseFailure::unknown)?
-        } else {
-            let slots: Vec<(u32, u32)> = std::iter::repeat_n(
-                (command.slot.layer_no, command.slot.cell_no),
-                command.quantity as usize,
-            )
-            .collect();
-            build_multi_dispense_frame(&slots).map_err(DispenseFailure::unknown)?
-        };
+        if command.quantity != 1 {
+            return Err(DispenseFailure::unknown(
+                "lower controller protocol v1 supports only single-item dispense commands",
+            ));
+        }
+        let frame = build_dispense_frame(command.slot.layer_no, command.slot.cell_no)
+            .map(|frame| frame.to_vec())
+            .map_err(DispenseFailure::unknown)?;
         let command_deadline = Instant::now()
             + TokioDuration::from_secs(command.timeout_seconds.max(1))
             + DISPENSE_COMPLETION_GRACE;
@@ -757,8 +751,52 @@ impl SerialHardwareAdapter {
                     acknowledged = true;
                     break;
                 }
-                // 超时或 CRC 错误：立即重发
-                Err(AckWaitError::Timeout) | Err(AckWaitError::CrcRetry) => continue,
+                // ACK 可能丢失；先查状态，避免在下位机已开始出货时重发出货指令。
+                Err(AckWaitError::Timeout) => {
+                    match query_status_after_missing_ack(&mut port, self, &base_entry).await {
+                        Ok(frame) if frame.indicates_command_in_progress() => {
+                            self.log_message(
+                                base_entry.clone(),
+                                "event",
+                                Some("ack_recovered_by_status"),
+                                Some(format!(
+                                    "missing ack recovered by lower controller status: {}",
+                                    frame.describe()
+                                )),
+                            )
+                            .await;
+                            acknowledged = true;
+                            break;
+                        }
+                        Ok(frame) => {
+                            self.log_message(
+                            base_entry.clone(),
+                            "event",
+                            Some("ack_timeout_status_retry"),
+                            Some(format!(
+                                "lower controller did not acknowledge command; status query returned {}",
+                                frame.describe()
+                            )),
+                        )
+                        .await;
+                            continue;
+                        }
+                        Err(error) => {
+                            self.log_message(
+                            base_entry.clone(),
+                            "event",
+                            Some("ack_timeout_status_retry"),
+                            Some(format!(
+                                "lower controller did not acknowledge command; status query failed: {error}"
+                            )),
+                        )
+                        .await;
+                            continue;
+                        }
+                    }
+                }
+                // CRC 错误：通讯噪声导致，可立即重发
+                Err(AckWaitError::CrcRetry) => continue,
                 // 下位机繁忙：等待 100ms 后重发
                 Err(AckWaitError::BusyRetry) => {
                     sleep(BUSY_RETRY_DELAY).await;
@@ -1193,23 +1231,6 @@ pub fn crc8(data: &[u8]) -> u8 {
     crc
 }
 
-/// CRC-16/CCITT（poly=0x1021, init=0x0000, 无反射）
-/// 用于多商品帧校验，具体算法待与硬件方联调时确认。
-pub fn crc16(data: &[u8]) -> u16 {
-    let mut crc = 0x0000u16;
-    for byte in data {
-        crc ^= (*byte as u16) << 8;
-        for _ in 0..8 {
-            if crc & 0x8000 != 0 {
-                crc = (crc << 1) ^ 0x1021;
-            } else {
-                crc <<= 1;
-            }
-        }
-    }
-    crc
-}
-
 #[derive(Clone, Copy)]
 struct SlotLayerBand {
     max_layer_no: u32,
@@ -1284,33 +1305,6 @@ pub fn build_dispense_frame(layer_no: u32, cell_no: u32) -> Result<[u8; 4], Stri
     validate_slot_bounds(layer_no, cell_no)?;
     let crc = crc8(&[layer, cell]);
     Ok([FRAME_HEAD, layer, cell, crc])
-}
-
-/// 构造多商品出货帧：[0x55, row1, cell1, row2, cell2, ..., 0x56, crc_hi, crc_lo]
-/// 同一货道多件时，重复传入相同的 (layer_no, cell_no)。
-/// CRC-16 仅覆盖数据段（行列字节），不含帧头/帧尾。
-pub fn build_multi_dispense_frame(slots: &[(u32, u32)]) -> Result<Vec<u8>, String> {
-    if slots.is_empty() {
-        return Err("at least one slot is required".to_string());
-    }
-    let mut data: Vec<u8> = Vec::with_capacity(slots.len() * 2);
-    for &(layer_no, cell_no) in slots {
-        let layer = u8::try_from(layer_no)
-            .map_err(|_| format!("layerNo {layer_no} exceeds uint8 protocol range"))?;
-        let cell = u8::try_from(cell_no)
-            .map_err(|_| format!("cellNo {cell_no} exceeds uint8 protocol range"))?;
-        validate_slot_bounds(layer_no, cell_no)?;
-        data.push(layer);
-        data.push(cell);
-    }
-    let crc = crc16(&data);
-    let mut frame = Vec::with_capacity(1 + data.len() + 3);
-    frame.push(FRAME_HEAD);
-    frame.extend_from_slice(&data);
-    frame.push(FRAME_MULTI_TAIL);
-    frame.push((crc >> 8) as u8);
-    frame.push(crc as u8);
-    Ok(frame)
 }
 
 async fn probe_lower_controller_stream<S>(port: &mut S) -> Result<LowerFrame, String>
@@ -2128,34 +2122,6 @@ mod tests {
         assert!(build_dispense_frame(12, 1).is_err());
         assert!(build_dispense_frame(7, 5).is_err());
         assert!(build_dispense_frame(11, 5).is_err());
-    }
-
-    #[test]
-    fn build_multi_dispense_frame_has_correct_structure() {
-        // 两件相同货道
-        let frame = build_multi_dispense_frame(&[(2, 5), (2, 5)]).unwrap();
-        // 帧头 + 4字节数据 + 帧尾 + 2字节CRC
-        assert_eq!(frame.len(), 8);
-        assert_eq!(frame[0], 0x55); // 帧头
-        assert_eq!(frame[1], 0x02); // row1
-        assert_eq!(frame[2], 0x05); // cell1
-        assert_eq!(frame[3], 0x02); // row2
-        assert_eq!(frame[4], 0x05); // cell2
-        assert_eq!(frame[5], 0x56); // 多商品帧尾
-                                    // CRC-16 覆盖数据段 [0x02, 0x05, 0x02, 0x05]
-        let expected_crc = crc16(&[0x02, 0x05, 0x02, 0x05]);
-        assert_eq!(frame[6], (expected_crc >> 8) as u8);
-        assert_eq!(frame[7], expected_crc as u8);
-    }
-
-    #[test]
-    fn build_multi_dispense_frame_rejects_empty() {
-        assert!(build_multi_dispense_frame(&[]).is_err());
-    }
-
-    #[test]
-    fn build_multi_dispense_frame_rejects_out_of_bounds_slot() {
-        assert!(build_multi_dispense_frame(&[(7, 5)]).is_err());
     }
 
     #[tokio::test]
