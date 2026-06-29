@@ -3,7 +3,11 @@ import { formatMachineSlotCoordinate } from "@vem/shared";
 import { computed, onMounted, onUnmounted, reactive } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
+import listSloganImage from "@/assets/home/list-slogan.png";
+import logoImage from "@/assets/home/logo.png";
+import mascotTopImage from "@/assets/home/mascot-top-cutout.png";
 import MockHardwareControls from "@/components/MockHardwareControls.vue";
+import { useMaintenanceEntry } from "@/composables/useMaintenanceEntry";
 import {
   machineConfigDefaults,
   normalizeMachineConfig,
@@ -15,6 +19,7 @@ import { shouldShowAdvancedMaintenanceConfig } from "@/config/runtime-flags";
 import { daemonClient } from "@/daemon/client";
 import KioskLayout from "@/layouts/KioskLayout.vue";
 import { callTauriCommand, isTauriRuntime } from "@/native/tauri";
+import { useAudioCueStore } from "@/stores/audio-cues";
 import { useCatalogStore } from "@/stores/catalog";
 import { useConnectivityStore } from "@/stores/connectivity";
 import { useMachineStore } from "@/stores/machine";
@@ -26,19 +31,29 @@ import { useVisionStore } from "@/stores/vision";
 const router = useRouter();
 const route = useRoute();
 const catalogStore = useCatalogStore();
+const audioCueStore = useAudioCueStore();
 const connectivityStore = useConnectivityStore();
 const machineStore = useMachineStore();
 const mqttStore = useMqttStore();
 const remoteOpsStore = useRemoteOpsStore();
 const scannerStore = useScannerStore();
 const visionStore = useVisionStore();
+const { handleMaintenanceTap } = useMaintenanceEntry();
 const MAINTENANCE_DIAGNOSTIC_REFRESH_MS = 5000;
+const DIAGNOSTIC_DISPLAY_MAX_CHARS = 12_000;
+const DIAGNOSTIC_DISPLAY_MAX_DEPTH = 8;
+const DIAGNOSTIC_DISPLAY_MAX_OBJECT_ENTRIES = 80;
+const DIAGNOSTIC_DISPLAY_MAX_ARRAY_ITEMS = 40;
+const DIAGNOSTIC_DISPLAY_MAX_STRING_CHARS = 1000;
 let diagnosticsRefreshTimer: number | null = null;
 let diagnosticsRefreshInFlight: Promise<void> | null = null;
 const runtimeFlags = reactive({
   advancedMaintenanceConfig: false,
 });
 const showAdvancedDebugConfig = computed(
+  () => runtimeFlags.advancedMaintenanceConfig,
+);
+const showProtectedDesktopExit = computed(
   () => runtimeFlags.advancedMaintenanceConfig,
 );
 const wholeMachineMaintenanceLock = computed(
@@ -54,6 +69,56 @@ const saleCriticalBlockers = computed(() =>
     operatorAction: saleCriticalBlockerAction(reason.code),
   })),
 );
+const latestVisionDiagnosticPayloadText = computed(() => {
+  if (visionStore.latestDiagnosticPayload === null) {
+    return "No diagnostic payload returned yet.";
+  }
+  return serializeDiagnosticPayload(visionStore.latestDiagnosticPayload);
+});
+const audioCueSettingsRows = computed(() => [
+  {
+    label: "Global audio cues",
+    enabled: machineStore.config.audioCueSettings.enabled,
+  },
+  {
+    label: "Presence audio cues",
+    enabled: machineStore.config.audioCueSettings.categories.presence,
+  },
+  {
+    label: "Transaction audio cues",
+    enabled: machineStore.config.audioCueSettings.categories.transaction,
+  },
+]);
+const latestAudioCueDiagnosticRows = computed(() => {
+  const diagnostic = audioCueStore.latestPlaybackDiagnostic;
+  if (!diagnostic) return [];
+  return [
+    {
+      label: "Requested cue meaning",
+      value: audioCueMeaningLabel(diagnostic.cueKey),
+    },
+    {
+      label: "Category",
+      value: audioCueCategoryLabel(diagnostic.category),
+    },
+    {
+      label: "Playback outcome",
+      value: audioCueOutcomeLabel(diagnostic.outcome),
+    },
+    {
+      label: "Suppression/drop reason",
+      value: diagnostic.message ?? "none",
+    },
+    {
+      label: "Timestamp",
+      value: diagnostic.recordedAt,
+    },
+    {
+      label: "Duplicate-suppression order key (debug only)",
+      value: diagnostic.orderKey ?? "none",
+    },
+  ];
+});
 const clearWholeMachineLockDisabled = computed(
   () =>
     wholeMachineLockMaintenance.loading ||
@@ -110,6 +175,14 @@ const form = reactive({
   visionEnabled: machineConfigDefaults.visionEnabled,
   visionWsUrl: machineConfigDefaults.visionWsUrl,
   visionRequestTimeoutMs: machineConfigDefaults.visionRequestTimeoutMs,
+  audioCueSettings: {
+    enabled: machineConfigDefaults.audioCueSettings.enabled,
+    categories: {
+      presence: machineConfigDefaults.audioCueSettings.categories.presence,
+      transaction:
+        machineConfigDefaults.audioCueSettings.categories.transaction,
+    },
+  },
   kioskMode: machineConfigDefaults.kioskMode,
   machineSecretInput: "",
   mqttSigningSecretInput: "",
@@ -133,7 +206,146 @@ function syncFormFromStore(): void {
   form.visionEnabled = machineStore.config.visionEnabled;
   form.visionWsUrl = machineStore.config.visionWsUrl;
   form.visionRequestTimeoutMs = machineStore.config.visionRequestTimeoutMs;
+  form.audioCueSettings = {
+    enabled: machineStore.config.audioCueSettings.enabled,
+    categories: {
+      presence: machineStore.config.audioCueSettings.categories.presence,
+      transaction: machineStore.config.audioCueSettings.categories.transaction,
+    },
+  };
   form.kioskMode = machineStore.config.kioskMode;
+}
+
+type DiagnosticSerializationState = {
+  remainingChars: number;
+  truncated: boolean;
+  seen: WeakSet<object>;
+};
+
+function serializeDiagnosticPayload(value: unknown): string {
+  const state: DiagnosticSerializationState = {
+    remainingChars: DIAGNOSTIC_DISPLAY_MAX_CHARS,
+    truncated: false,
+    seen: new WeakSet<object>(),
+  };
+  const bounded = boundDiagnosticValue(value, state, 0);
+  let text: string;
+  try {
+    text = JSON.stringify(bounded, null, 2);
+  } catch (error) {
+    text = `Unable to serialize diagnostic payload: ${
+      error instanceof Error ? error.message : String(error)
+    }`;
+  }
+  if (text.length > DIAGNOSTIC_DISPLAY_MAX_CHARS) {
+    state.truncated = true;
+    text = `${text.slice(0, DIAGNOSTIC_DISPLAY_MAX_CHARS)}\n... truncated`;
+  }
+  if (state.truncated && !text.includes("truncated")) {
+    text = `${text}\n... truncated`;
+  }
+  return text;
+}
+
+function boundDiagnosticValue(
+  value: unknown,
+  state: DiagnosticSerializationState,
+  depth: number,
+): unknown {
+  if (state.remainingChars <= 0) {
+    state.truncated = true;
+    return "[truncated]";
+  }
+  if (typeof value === "string") {
+    return boundDiagnosticString(value, state);
+  }
+  if (
+    value === null ||
+    typeof value === "boolean" ||
+    typeof value === "number"
+  ) {
+    state.remainingChars -= String(value).length;
+    return value;
+  }
+  if (typeof value === "bigint") {
+    const serialized = `${value.toString()}n`;
+    state.remainingChars -= serialized.length;
+    return serialized;
+  }
+  if (typeof value !== "object") {
+    const serialized = String(value);
+    state.remainingChars -= serialized.length;
+    return serialized;
+  }
+  if (state.seen.has(value)) {
+    state.truncated = true;
+    return "[Circular]";
+  }
+  if (depth >= DIAGNOSTIC_DISPLAY_MAX_DEPTH) {
+    state.truncated = true;
+    return "[Max depth reached]";
+  }
+  state.seen.add(value);
+  if (Array.isArray(value)) {
+    const output: unknown[] = [];
+    for (
+      let index = 0;
+      index < value.length &&
+      index < DIAGNOSTIC_DISPLAY_MAX_ARRAY_ITEMS &&
+      state.remainingChars > 0;
+      index += 1
+    ) {
+      output.push(boundDiagnosticValue(value[index], state, depth + 1));
+    }
+    if (output.length < value.length) {
+      state.truncated = true;
+      output.push(`[... truncated ${value.length - output.length} items]`);
+    }
+    return output;
+  }
+
+  const output: Record<string, unknown> = {};
+  let included = 0;
+  let omitted = 0;
+  for (const key in value) {
+    if (!Object.prototype.hasOwnProperty.call(value, key)) continue;
+    if (
+      included >= DIAGNOSTIC_DISPLAY_MAX_OBJECT_ENTRIES ||
+      state.remainingChars <= 0
+    ) {
+      omitted += 1;
+      continue;
+    }
+    state.remainingChars -= key.length;
+    output[key] = boundDiagnosticValue(
+      (value as Record<string, unknown>)[key],
+      state,
+      depth + 1,
+    );
+    included += 1;
+  }
+  if (omitted > 0) {
+    state.truncated = true;
+    output.__truncated = `${omitted} fields omitted`;
+  }
+  return output;
+}
+
+function boundDiagnosticString(
+  value: string,
+  state: DiagnosticSerializationState,
+): string {
+  const maxLength = Math.min(
+    value.length,
+    DIAGNOSTIC_DISPLAY_MAX_STRING_CHARS,
+    Math.max(state.remainingChars, 0),
+  );
+  state.remainingChars -= maxLength;
+  if (maxLength < value.length) {
+    state.truncated = true;
+    return `${value.slice(0, maxLength)}... truncated`;
+  }
+  return value;
 }
 
 onMounted(async () => {
@@ -436,6 +648,38 @@ function saleCriticalBlockerAction(code: string): string {
   return actions[code] ?? "按现场 SOP 排查该阻塞项。";
 }
 
+function audioCueMeaningLabel(cueKey: string): string {
+  const labels: Record<string, string> = {
+    "presence.detected": "Presence detected",
+    "payment.succeeded": "Payment succeeded",
+    "dispensing.started": "Dispensing started",
+    "dispense.succeeded": "Dispense succeeded",
+    "dispense.failed": "Dispense failed",
+    "refund.pending": "Refund pending",
+    "refund.completed": "Refund completed",
+    "manual_handling.required": "Manual handling required",
+  };
+  return labels[cueKey] ?? cueKey;
+}
+
+function audioCueCategoryLabel(category: string): string {
+  const labels: Record<string, string> = {
+    presence: "Presence audio cue",
+    transaction: "Transaction audio cue",
+  };
+  return labels[category] ?? category;
+}
+
+function audioCueOutcomeLabel(outcome: string): string {
+  const labels: Record<string, string> = {
+    played: "Played",
+    completed: "Completed",
+    failed: "Local audio playback failed",
+    skipped: "Skipped",
+  };
+  return labels[outcome] ?? outcome;
+}
+
 async function returnToCatalog(): Promise<void> {
   if (returnToCatalogBlockedReason.value) {
     catalogNavigation.message = `暂不能回到目录：${returnToCatalogBlockedReason.value}`;
@@ -446,6 +690,9 @@ async function returnToCatalog(): Promise<void> {
 }
 
 async function returnToDesktop(): Promise<void> {
+  if (!showProtectedDesktopExit.value) {
+    return;
+  }
   desktopMaintenance.loading = true;
   desktopMaintenance.message = "正在回到 Windows 桌面";
   try {
@@ -532,13 +779,17 @@ async function submitStockMovement(): Promise<void> {
 
 <template>
   <KioskLayout>
-    <section
-      class="rounded-4xl border border-white/10 bg-white/10 p-6 text-white shadow-2xl"
-    >
-      <p class="text-sm tracking-[0.35em] text-amber-200 uppercase">
-        MAINTENANCE
-      </p>
-      <h2 class="mt-3 text-3xl font-bold">生产维护</h2>
+    <section class="maintenance-page">
+      <header class="maintenance-header">
+        <div class="maintenance-brand" @click="handleMaintenanceTap">
+          <img :src="logoImage" alt="唐诗村" />
+          <img :src="mascotTopImage" alt="" aria-hidden="true" />
+        </div>
+        <div class="maintenance-title-block">
+          <p>MAINTENANCE</p>
+          <h2>生产维护</h2>
+        </div>
+      </header>
 
       <div class="mt-6 rounded-3xl border border-white/10 bg-slate-950/30 p-5">
         <p
@@ -645,7 +896,7 @@ async function submitStockMovement(): Promise<void> {
           <p
             class="text-sm font-semibold tracking-[0.28em] text-sky-200 uppercase"
           >
-            Diagnostics
+            Maintenance Console
           </p>
           <div class="flex flex-wrap gap-3">
             <button
@@ -657,6 +908,7 @@ async function submitStockMovement(): Promise<void> {
               回到目录
             </button>
             <button
+              v-if="showProtectedDesktopExit"
               class="kiosk-touch-target rounded-2xl border border-slate-200/30 px-4 py-3 font-bold text-slate-100 disabled:opacity-50"
               type="button"
               :disabled="desktopMaintenance.loading"
@@ -789,54 +1041,61 @@ async function submitStockMovement(): Promise<void> {
         </div>
 
         <dl class="mt-4 grid gap-3 md:grid-cols-2">
-          <div class="rounded-2xl bg-slate-950/45 p-4">
+          <div class="border-t border-white/10 py-3">
             <dt class="text-sm text-slate-400">后端</dt>
             <dd class="mt-1 font-bold text-white">
               {{ machineStore.health?.backendOnline ? "在线" : "不可用" }}
               · {{ machineStore.health?.status ?? "unknown" }}
             </dd>
           </div>
-          <div class="rounded-2xl bg-slate-950/45 p-4">
+          <div class="border-t border-white/10 py-3">
             <dt class="text-sm text-slate-400">Readiness</dt>
             <dd class="mt-1 font-bold text-white">
               {{ connectivityStore.ready?.ready ? "就绪" : "未就绪" }}
               · {{ connectivityStore.ready?.mode ?? "unknown" }}
             </dd>
           </div>
-          <div class="rounded-2xl bg-slate-950/45 p-4">
+          <div class="border-t border-white/10 py-3">
             <dt class="text-sm text-slate-400">MQTT</dt>
             <dd class="mt-1 font-bold text-white">
               {{ mqttStore.status }} · outbox {{ mqttStore.outboxSize }}
             </dd>
           </div>
-          <div class="rounded-2xl bg-slate-950/45 p-4">
+          <div class="border-t border-white/10 py-3">
             <dt class="text-sm text-slate-400">下位机</dt>
             <dd class="mt-1 font-bold text-white">
               {{ machineStore.health?.hardwareOnline ? "在线" : "不可用" }}
             </dd>
           </div>
-          <div class="rounded-2xl bg-slate-950/45 p-4">
+          <div class="border-t border-white/10 py-3">
             <dt class="text-sm text-slate-400">扫码器</dt>
             <dd class="mt-1 font-bold text-white">
               {{ scannerStore.online ? "在线" : "不可用" }} ·
               {{ scannerStore.message }}
             </dd>
           </div>
-          <div class="rounded-2xl bg-slate-950/45 p-4">
-            <dt class="text-sm text-slate-400">视觉</dt>
+          <div class="border-t border-white/10 py-3">
+            <dt class="text-sm text-slate-400">Vision Runtime Status</dt>
             <dd class="mt-1 font-bold text-white">
               {{ visionStore.online ? "在线" : "不可用" }} ·
               {{ visionStore.message }}
             </dd>
           </div>
-          <div class="rounded-2xl bg-slate-950/45 p-4">
+          <div class="border-t border-white/10 py-3">
+            <dt class="text-sm text-slate-400">Presence Interaction</dt>
+            <dd class="mt-1 font-bold text-white">
+              {{ visionStore.presence.personPresent ? "有人" : "无人" }} ·
+              {{ visionStore.presence.lastSeenAt ?? "not seen" }}
+            </dd>
+          </div>
+          <div class="border-t border-white/10 py-3">
             <dt class="text-sm text-slate-400">本地状态</dt>
             <dd class="mt-1 font-bold text-white">
               {{ stockMaintenance.source ?? "unknown" }} ·
               {{ stockMaintenance.planogramVersion ?? "no planogram" }}
             </dd>
           </div>
-          <div class="rounded-2xl bg-slate-950/45 p-4">
+          <div class="border-t border-white/10 py-3">
             <dt class="text-sm text-slate-400">Remote Ops</dt>
             <dd class="mt-1 font-bold text-white">
               pending {{ remoteOpsStore.pending }} ·
@@ -844,6 +1103,90 @@ async function submitStockMovement(): Promise<void> {
             </dd>
           </div>
         </dl>
+
+        <section
+          v-if="saleCriticalBlockers.length > 0"
+          class="mt-5 border-t border-white/10 pt-4 text-left"
+        >
+          <h3 class="text-sm font-semibold text-slate-200">
+            Readiness Blockers
+          </h3>
+          <ul class="mt-2 grid gap-2 text-sm text-slate-100">
+            <li
+              v-for="blocker in saleCriticalBlockers"
+              :key="`${blocker.component}-${blocker.code}`"
+            >
+              <span class="font-semibold">
+                {{ blocker.operatorLabel }} · {{ blocker.code }}:
+              </span>
+              {{ blocker.message }}
+              <span class="text-slate-300"> {{ blocker.operatorAction }}</span>
+            </li>
+          </ul>
+        </section>
+
+        <section class="mt-5 border-t border-white/10 pt-4 text-left">
+          <h3 class="text-sm font-semibold text-slate-200">
+            Audio Cue Settings
+          </h3>
+          <p class="mt-1 text-sm text-slate-300">
+            Machine Audio Cue categories are local customer-experience settings.
+          </p>
+          <dl class="mt-3 grid gap-3 md:grid-cols-3">
+            <div
+              v-for="row in audioCueSettingsRows"
+              :key="row.label"
+              class="rounded-xl bg-slate-950/35 p-3"
+            >
+              <dt class="text-xs font-semibold text-slate-400">
+                Machine Audio Cue
+              </dt>
+              <dd class="mt-1 font-bold text-white">
+                {{ row.label }} · {{ row.enabled ? "Enabled" : "Disabled" }}
+              </dd>
+            </div>
+          </dl>
+        </section>
+
+        <section
+          class="mt-5 border-t border-white/10 pt-4 text-left"
+          data-test="audio-cue-diagnostic"
+        >
+          <h3 class="text-sm font-semibold text-slate-200">
+            Latest Machine Audio Cue Diagnostic
+          </h3>
+          <p
+            v-if="latestAudioCueDiagnosticRows.length === 0"
+            class="mt-2 text-sm text-slate-300"
+          >
+            No Machine Audio Cue diagnostic recorded yet.
+          </p>
+          <dl v-else class="mt-3 grid gap-3 md:grid-cols-2">
+            <div
+              v-for="row in latestAudioCueDiagnosticRows"
+              :key="row.label"
+              class="rounded-xl bg-slate-950/35 p-3"
+            >
+              <dt class="text-xs font-semibold text-slate-400">
+                {{ row.label }}
+              </dt>
+              <dd class="mt-1 font-bold text-white">
+                {{ row.label }} · {{ row.value }}
+              </dd>
+            </div>
+          </dl>
+        </section>
+
+        <section class="mt-5 border-t border-white/10 pt-4 text-left">
+          <h3 class="text-sm font-semibold text-slate-200">
+            Latest Vision Diagnostic Payload
+          </h3>
+          <pre
+            class="mt-2 max-h-72 overflow-auto text-sm leading-6 break-words whitespace-pre-wrap text-slate-100"
+            data-test="vision-diagnostic-payload"
+            >{{ latestVisionDiagnosticPayloadText }}</pre
+          >
+        </section>
 
         <p
           v-if="diagnostics.message"
@@ -1167,6 +1510,39 @@ async function submitStockMovement(): Promise<void> {
               />
             </label>
 
+            <fieldset class="grid gap-3 text-left md:grid-cols-3">
+              <label class="flex items-center gap-3">
+                <input
+                  v-model="form.audioCueSettings.enabled"
+                  class="size-5 accent-fuchsia-300"
+                  type="checkbox"
+                />
+                <span class="text-sm font-semibold text-slate-200"
+                  >启用 Machine Audio Cue audioCueSettings.enabled</span
+                >
+              </label>
+              <label class="flex items-center gap-3">
+                <input
+                  v-model="form.audioCueSettings.categories.presence"
+                  class="size-5 accent-fuchsia-300"
+                  type="checkbox"
+                />
+                <span class="text-sm font-semibold text-slate-200"
+                  >Presence audio cues categories.presence</span
+                >
+              </label>
+              <label class="flex items-center gap-3">
+                <input
+                  v-model="form.audioCueSettings.categories.transaction"
+                  class="size-5 accent-fuchsia-300"
+                  type="checkbox"
+                />
+                <span class="text-sm font-semibold text-slate-200"
+                  >Transaction audio cues categories.transaction</span
+                >
+              </label>
+            </fieldset>
+
             <div class="grid gap-3 md:grid-cols-2">
               <button
                 class="kiosk-touch-target rounded-2xl border border-fuchsia-200/30 px-4 py-3 font-bold text-fuchsia-100 disabled:opacity-50"
@@ -1221,6 +1597,294 @@ async function submitStockMovement(): Promise<void> {
       >
         <MockHardwareControls />
       </div>
+      <img
+        :src="listSloganImage"
+        alt=""
+        aria-hidden="true"
+        class="maintenance-slogan"
+      />
     </section>
   </KioskLayout>
 </template>
+
+<style scoped>
+:global(.kiosk-shell:has(.maintenance-page)) {
+  padding: 0;
+}
+
+:global(.kiosk-shell:has(.maintenance-page) > header) {
+  display: none;
+}
+
+:global(.kiosk-shell:has(.maintenance-page) > .kiosk-scroll) {
+  width: 100%;
+  height: 100%;
+  margin-top: 0;
+  padding-bottom: 0;
+}
+
+.maintenance-page {
+  position: relative;
+  min-height: 100%;
+  padding: var(--machine-page-header-top) var(--machine-page-inline) 2.5rem;
+  overflow-x: hidden;
+  color: #3f3b34;
+  background:
+    radial-gradient(
+      circle at 18% 6%,
+      rgba(255, 255, 255, 0.92),
+      rgba(255, 255, 255, 0) 28%
+    ),
+    linear-gradient(180deg, #faf8f1 0%, #f4efe2 54%, #efe8d8 100%);
+}
+
+.maintenance-header {
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 1rem;
+  align-items: center;
+  padding: 0.35rem 0 1rem;
+  background: linear-gradient(
+    180deg,
+    rgba(250, 248, 241, 0.96) 0%,
+    rgba(250, 248, 241, 0.86) 74%,
+    rgba(250, 248, 241, 0) 100%
+  );
+  backdrop-filter: blur(4px);
+}
+
+.maintenance-brand {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 1.1rem;
+}
+
+.maintenance-brand img:first-child {
+  width: clamp(9rem, 25cqw, 13.2rem);
+  height: auto;
+}
+
+.maintenance-brand img:last-child {
+  width: clamp(2.5rem, 8cqw, 4rem);
+  height: auto;
+  opacity: 0.82;
+}
+
+.maintenance-title-block {
+  text-align: right;
+}
+
+.maintenance-title-block p,
+.maintenance-page p[class*="uppercase"] {
+  margin: 0;
+  color: #6d7f5f;
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+}
+
+.maintenance-title-block h2 {
+  margin-top: 0.18rem;
+  color: #263326;
+  font-size: 1.45rem;
+  font-weight: 800;
+  letter-spacing: 0;
+}
+
+.maintenance-page > div,
+.maintenance-page > form {
+  position: relative;
+  z-index: 1;
+}
+
+.maintenance-page > div[class*="rounded-3xl"],
+.maintenance-page > form {
+  border: 1px solid rgba(126, 112, 82, 0.28) !important;
+  border-radius: 0.65rem !important;
+  background: rgba(255, 253, 247, 0.84) !important;
+  padding: 1rem !important;
+  color: #403c34 !important;
+  box-shadow: 0 1rem 2.4rem rgba(98, 80, 50, 0.08) !important;
+}
+
+.maintenance-page > form {
+  display: grid;
+  gap: 0.9rem;
+}
+
+.maintenance-page :is(.rounded-4xl, .rounded-3xl, .rounded-2xl, .rounded-xl) {
+  border-radius: 0.42rem !important;
+}
+
+.maintenance-page
+  :is(
+    .bg-slate-950\/30,
+    .bg-slate-950\/35,
+    .bg-slate-950\/40,
+    .bg-slate-950\/45
+  ) {
+  background: rgba(248, 244, 234, 0.72) !important;
+}
+
+.maintenance-page
+  :is(
+    .text-white,
+    .text-slate-50,
+    .text-slate-100,
+    .text-slate-200,
+    .text-slate-300,
+    .text-slate-400
+  ) {
+  color: #463f34 !important;
+}
+
+.maintenance-page
+  :is(
+    .text-emerald-100,
+    .text-emerald-200,
+    .text-sky-100,
+    .text-sky-200,
+    .text-fuchsia-100,
+    .text-fuchsia-200
+  ) {
+  color: #5f7353 !important;
+}
+
+.maintenance-page [class*="text-rose-"] {
+  color: #7b3430 !important;
+}
+
+.maintenance-page
+  :is(
+    .border-white\/10,
+    .border-slate-200\/30,
+    .border-sky-200\/30,
+    .border-emerald-200\/30,
+    .border-fuchsia-200\/30
+  ) {
+  border-color: rgba(126, 112, 82, 0.24) !important;
+}
+
+.maintenance-page :is(input, select, textarea) {
+  border: 1px solid rgba(126, 112, 82, 0.3) !important;
+  border-radius: 0.38rem !important;
+  background: rgba(255, 255, 255, 0.76) !important;
+  color: #2f2a23 !important;
+}
+
+.maintenance-page :is(input, select) {
+  min-height: 2.85rem;
+}
+
+.maintenance-page label {
+  gap: 0.38rem;
+}
+
+.maintenance-page label > span,
+.maintenance-page label {
+  color: #4d463c !important;
+}
+
+.maintenance-page button {
+  border-radius: 0.42rem !important;
+  border-color: rgba(93, 112, 80, 0.38) !important;
+  background: rgba(255, 253, 247, 0.86) !important;
+  color: #49613f !important;
+  box-shadow: none !important;
+}
+
+.maintenance-page button[type="submit"],
+.maintenance-page button:last-child:not([type="button"]) {
+  background: #6f835f !important;
+  color: #fffdf7 !important;
+}
+
+.maintenance-page dl {
+  overflow: hidden;
+  border: 1px solid rgba(126, 112, 82, 0.22);
+  border-radius: 0.48rem;
+  background: rgba(255, 253, 247, 0.66);
+}
+
+.maintenance-page dl > div {
+  min-height: 4.05rem;
+  border-bottom: 1px solid rgba(126, 112, 82, 0.16);
+  border-radius: 0 !important;
+  background: transparent !important;
+  padding: 0.7rem 0.85rem !important;
+}
+
+.maintenance-page dl > div:nth-last-child(-n + 2) {
+  border-bottom: 0;
+}
+
+.maintenance-page dt {
+  color: #7b7468 !important;
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
+.maintenance-page dd {
+  color: #2e2a24 !important;
+  font-size: 0.92rem;
+  line-height: 1.35;
+}
+
+.maintenance-page :is(.bg-amber-500\/15, .bg-amber-500\/20) {
+  border: 1px solid rgba(181, 126, 34, 0.24);
+  background: rgba(255, 246, 220, 0.82) !important;
+  color: #70501d !important;
+}
+
+.maintenance-page :is(.bg-rose-500\/15, .bg-rose-500\/20) {
+  border: 1px solid rgba(174, 74, 70, 0.28);
+  background: rgba(255, 239, 235, 0.9) !important;
+  color: #7b3430 !important;
+}
+
+.maintenance-page
+  :is(
+    .bg-sky-500\/15,
+    .bg-fuchsia-500\/15,
+    .bg-emerald-500\/15,
+    .bg-slate-500\/15
+  ) {
+  border: 1px solid rgba(99, 119, 85, 0.2);
+  background: rgba(242, 247, 236, 0.88) !important;
+  color: #4f6845 !important;
+}
+
+.maintenance-page .grid.gap-3.md\:grid-cols-2,
+.maintenance-page .grid.gap-4.md\:grid-cols-2 {
+  gap: 0.55rem;
+}
+
+.maintenance-page .maintenance-slogan {
+  display: block;
+  width: min(24rem, 62%);
+  margin: 1.2rem auto 0;
+  opacity: 0.45;
+}
+
+@media (max-width: 760px) {
+  .maintenance-page {
+    padding: 1.5rem 1.45rem 2rem;
+  }
+
+  .maintenance-header {
+    grid-template-columns: 1fr;
+  }
+
+  .maintenance-title-block {
+    text-align: left;
+  }
+
+  .maintenance-page dl > div:nth-last-child(2) {
+    border-bottom: 1px solid rgba(126, 112, 82, 0.16);
+  }
+}
+</style>

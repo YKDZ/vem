@@ -64,6 +64,13 @@ function unprovisionedConfig() {
       visionEnabled: true,
       visionWsUrl: "ws://127.0.0.1:7892/ws",
       visionRequestTimeoutMs: 8000,
+      audioCueSettings: {
+        enabled: false,
+        categories: {
+          presence: false,
+          transaction: false,
+        },
+      },
       kioskMode: false,
       stockMovementRetentionDays: 30,
     },

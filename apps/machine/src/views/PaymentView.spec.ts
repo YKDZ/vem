@@ -3,8 +3,17 @@ import { createPinia, setActivePinia } from "pinia";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createApp, nextTick, type App } from "vue";
 
-const { getCurrentTransactionMock, routerReplaceMock } = vi.hoisted(() => ({
+const {
+  cancelOrderMock,
+  getCurrentTransactionMock,
+  getSaleViewMock,
+  requestPaymentSuccessCueMock,
+  routerReplaceMock,
+} = vi.hoisted(() => ({
+  cancelOrderMock: vi.fn(),
   getCurrentTransactionMock: vi.fn(),
+  getSaleViewMock: vi.fn(),
+  requestPaymentSuccessCueMock: vi.fn(),
   routerReplaceMock: vi.fn(),
 }));
 
@@ -28,8 +37,14 @@ vi.mock("@/components/PaymentQrCode.vue", () => ({
 vi.mock("@/daemon/client", () => ({
   daemonClient: {
     currentConnection: { mock: false },
+    cancelOrder: cancelOrderMock,
     getCurrentTransaction: getCurrentTransactionMock,
+    getSaleView: getSaleViewMock,
   },
+}));
+
+vi.mock("@/composables/useTransactionFeedbackCues", () => ({
+  requestPaymentSuccessCue: requestPaymentSuccessCueMock,
 }));
 
 import { useCheckoutStore } from "@/stores/checkout";
@@ -63,6 +78,15 @@ function expiredQrConfirmingTransaction() {
   };
 }
 
+function activeQrPaymentTransaction() {
+  return {
+    ...expiredQrConfirmingTransaction(),
+    orderNo: "ORD-CANCEL-001",
+    expiresAt: "2026-06-11T06:20:00.000Z",
+    updatedAt: "2026-06-11T06:16:32.320Z",
+  };
+}
+
 async function mountView(): Promise<HTMLElement> {
   const host = document.createElement("div");
   document.body.append(host);
@@ -75,6 +99,17 @@ async function mountView(): Promise<HTMLElement> {
   return host;
 }
 
+async function flushPromises(times = 20): Promise<void> {
+  await flushMicrotasks(times);
+  await nextTick();
+}
+
+async function flushMicrotasks(remaining: number): Promise<void> {
+  if (remaining <= 0) return;
+  await Promise.resolve();
+  await flushMicrotasks(remaining - 1);
+}
+
 beforeEach(() => {
   pinia = createPinia();
   setActivePinia(pinia);
@@ -82,6 +117,18 @@ beforeEach(() => {
   vi.setSystemTime(new Date("2026-06-11T06:16:32.320Z"));
   vi.clearAllMocks();
   getCurrentTransactionMock.mockResolvedValue(expiredQrConfirmingTransaction());
+  cancelOrderMock.mockResolvedValue({
+    ...expiredQrConfirmingTransaction(),
+    paymentStatus: "canceled",
+    orderStatus: "canceled",
+    nextAction: "closed",
+  });
+  getSaleViewMock.mockResolvedValue({
+    items: [],
+    source: "local_stock",
+    planogramVersion: "PLAN-1",
+    lastUpdatedAt: "2026-06-11T06:16:32.320Z",
+  });
 });
 
 afterEach(() => {
@@ -102,5 +149,67 @@ describe("PaymentView", () => {
     expect(host.textContent).toContain("订单凭证");
     expect(host.textContent).toContain("ORD-CONFIRM-001");
     expect(routerReplaceMock).not.toHaveBeenCalled();
+  });
+
+  it("disables cancel while expired QR payment is confirming", async () => {
+    const checkoutStore = useCheckoutStore();
+    checkoutStore.applyTransaction(expiredQrConfirmingTransaction());
+
+    const host = await mountView();
+    const cancelButton = host.querySelector("button.payment-cancel-button");
+
+    expect(cancelButton).toBeInstanceOf(HTMLButtonElement);
+    expect((cancelButton as HTMLButtonElement).disabled).toBe(true);
+    expect(host.textContent).toContain("支付结果确认中，暂不可取消");
+  });
+
+  it("cancels an active payment and returns to product detail", async () => {
+    getCurrentTransactionMock.mockResolvedValue(activeQrPaymentTransaction());
+    const checkoutStore = useCheckoutStore();
+    checkoutStore.selectedItem = {
+      catalogKey: "product:SOCK-001",
+    } as NonNullable<typeof checkoutStore.selectedItem>;
+    checkoutStore.applyTransaction(activeQrPaymentTransaction());
+
+    const host = await mountView();
+    const cancelButton = host.querySelector("button.payment-cancel-button");
+    expect(cancelButton).toBeInstanceOf(HTMLButtonElement);
+    (cancelButton as HTMLButtonElement).click();
+    await flushPromises();
+
+    expect(cancelOrderMock).toHaveBeenCalledWith("ORD-CANCEL-001");
+    expect(routerReplaceMock).toHaveBeenCalledWith({
+      name: "product-detail",
+      params: { catalogKey: "product:SOCK-001" },
+    });
+  });
+
+  it("requests payment success feedback before routing to dispensing", async () => {
+    const paidTransaction = {
+      ...activeQrPaymentTransaction(),
+      paymentStatus: "succeeded",
+      orderStatus: "dispensing",
+      nextAction: "dispensing",
+      vending: {
+        commandNo: "CMD-PAYMENT-SUCCESS-001",
+        status: "sent",
+        lastError: null,
+      },
+      updatedAt: "2026-06-11T06:16:33.000Z",
+    };
+    getCurrentTransactionMock.mockResolvedValue(paidTransaction);
+    const checkoutStore = useCheckoutStore();
+    checkoutStore.applyTransaction({
+      ...activeQrPaymentTransaction(),
+      paymentStatus: "processing",
+      orderStatus: "pending_payment",
+      nextAction: "wait_payment",
+    });
+
+    await mountView();
+    await flushPromises();
+
+    expect(requestPaymentSuccessCueMock).toHaveBeenCalledWith(paidTransaction);
+    expect(routerReplaceMock).toHaveBeenCalledWith("/dispensing");
   });
 });

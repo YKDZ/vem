@@ -28,6 +28,24 @@ pub enum ScannerAdapterKind {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct AudioCueCategorySettings {
+    #[serde(default)]
+    pub presence: bool,
+    #[serde(default)]
+    pub transaction: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioCueSettings {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub categories: AudioCueCategorySettings,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct MachinePublicConfig {
     pub machine_code: Option<String>,
     #[serde(default)]
@@ -55,6 +73,10 @@ pub struct MachinePublicConfig {
     pub vision_enabled: bool,
     pub vision_ws_url: String,
     pub vision_request_timeout_ms: u64,
+    #[serde(default)]
+    pub audio_cue_settings: AudioCueSettings,
+    #[serde(default, skip_serializing)]
+    pub presence_audio_enabled: Option<bool>,
     pub kiosk_mode: bool,
     #[serde(default = "default_stock_movement_retention_days")]
     pub stock_movement_retention_days: i64,
@@ -292,6 +314,24 @@ pub fn default_stock_movement_retention_days() -> i64 {
     30
 }
 
+impl Default for AudioCueSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            categories: AudioCueCategorySettings::default(),
+        }
+    }
+}
+
+impl Default for AudioCueCategorySettings {
+    fn default() -> Self {
+        Self {
+            presence: false,
+            transaction: false,
+        }
+    }
+}
+
 fn provisioning_issues(
     public: &MachinePublicConfig,
     machine_secret_configured: bool,
@@ -367,6 +407,8 @@ pub fn default_public_config() -> MachinePublicConfig {
         vision_enabled: true,
         vision_ws_url: vending_core::vision::DEFAULT_VISION_WS_URL.to_string(),
         vision_request_timeout_ms: 8_000,
+        audio_cue_settings: AudioCueSettings::default(),
+        presence_audio_enabled: None,
         kiosk_mode: false,
         stock_movement_retention_days: default_stock_movement_retention_days(),
         runtime_endpoints: None,
@@ -502,6 +544,19 @@ pub fn normalize_public_config(
     config.scanner_serial_port_path = scanner_serial_port_path;
 
     let vision_ws_url = config.vision_ws_url.trim().to_string();
+
+    if config.audio_cue_settings == AudioCueSettings::default()
+        && config.presence_audio_enabled == Some(true)
+    {
+        config.audio_cue_settings = AudioCueSettings {
+            enabled: true,
+            categories: AudioCueCategorySettings {
+                presence: true,
+                transaction: false,
+            },
+        };
+    }
+    config.presence_audio_enabled = None;
 
     config.api_base_url = config.api_base_url.trim().trim_end_matches('/').to_string();
     config.mqtt_url = config.mqtt_url.trim().to_string();
@@ -1156,6 +1211,45 @@ mod tests {
         assert!(!config.vision_enabled);
     }
 
+    #[test]
+    fn legacy_presence_audio_config_migrates_to_audio_cue_settings() {
+        let json = serde_json::json!({
+            "machineCode": null,
+            "apiBaseUrl": "http://127.0.0.1:3000/api",
+            "mqttUrl": "mqtt://127.0.0.1:1883",
+            "mqttUsername": null,
+            "hardwareAdapter": "mock",
+            "serialPortPath": null,
+            "lowerControllerUsbIdentity": null,
+            "scannerAdapter": "disabled",
+            "scannerSerialPortPath": null,
+            "scannerBaudRate": 9600,
+            "scannerFrameSuffix": "crlf",
+            "visionEnabled": false,
+            "visionWsUrl": "ws://127.0.0.1:7892/ws",
+            "visionRequestTimeoutMs": 8000,
+            "presenceAudioEnabled": true,
+            "kioskMode": false
+        });
+
+        let config: MachinePublicConfig = serde_json::from_value(json).expect("parse");
+        let normalized = normalize_public_config(config).expect("normalize");
+
+        assert_eq!(
+            normalized.audio_cue_settings,
+            AudioCueSettings {
+                enabled: true,
+                categories: AudioCueCategorySettings {
+                    presence: true,
+                    transaction: false,
+                },
+            }
+        );
+        let serialized = serde_json::to_value(&normalized).expect("serialize");
+        assert!(serialized.get("audioCueSettings").is_some());
+        assert!(serialized.get("presenceAudioEnabled").is_none());
+    }
+
     #[tokio::test]
     async fn normalize_public_config_preserves_custom_stock_movement_retention_days() {
         let config = MachinePublicConfig {
@@ -1338,6 +1432,63 @@ mod tests {
         assert!(!response.contains("\"machineSecret\""));
         assert!(!response.contains("\"mqttSigningSecret\""));
         assert!(!response.contains("\"mqttPassword\""));
+    }
+
+    #[tokio::test]
+    async fn save_config_update_round_trips_audio_cue_settings() {
+        let temp = TempDir::new().expect("temp");
+        let data_dir = temp.path().join("daemon");
+        let state = crate::state::LocalStateStore::open(&data_dir.join("state.db"))
+            .await
+            .expect("state");
+        let store = ConfigStore::new(
+            data_dir.clone(),
+            state,
+            std::sync::Arc::new(InMemorySecretStore::default()),
+        );
+        let request = MachineConfigUpdateRequest {
+            public: MachinePublicConfig {
+                audio_cue_settings: AudioCueSettings {
+                    enabled: true,
+                    categories: AudioCueCategorySettings {
+                        presence: false,
+                        transaction: true,
+                    },
+                },
+                ..default_public_config()
+            },
+            secrets: None,
+        };
+
+        let runtime = store
+            .save_config_update(request)
+            .await
+            .expect("save config update");
+        let reloaded = store.load_runtime_config().await.expect("reload config");
+
+        assert_eq!(
+            runtime.public.audio_cue_settings,
+            AudioCueSettings {
+                enabled: true,
+                categories: AudioCueCategorySettings {
+                    presence: false,
+                    transaction: true,
+                },
+            }
+        );
+        assert_eq!(
+            reloaded.public.audio_cue_settings,
+            runtime.public.audio_cue_settings
+        );
+
+        let saved = tokio::fs::read_to_string(daemon_config_path(&data_dir))
+            .await
+            .expect("read config");
+        let saved: serde_json::Value = serde_json::from_str(&saved).expect("json");
+        assert_eq!(saved["audioCueSettings"]["enabled"], true);
+        assert_eq!(saved["audioCueSettings"]["categories"]["presence"], false);
+        assert_eq!(saved["audioCueSettings"]["categories"]["transaction"], true);
+        assert!(saved.get("presenceAudioEnabled").is_none());
     }
 
     #[test]

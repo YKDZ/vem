@@ -9,12 +9,14 @@ const {
   getReadyMock,
   getSaleReadinessMock,
   getSaleViewMock,
+  requestTerminalResultCueMock,
   routeParams,
   routerReplaceMock,
 } = vi.hoisted(() => ({
   getReadyMock: vi.fn(),
   getSaleReadinessMock: vi.fn(),
   getSaleViewMock: vi.fn(),
+  requestTerminalResultCueMock: vi.fn(),
   routeParams: { kind: "dispense_failed" },
   routerReplaceMock: vi.fn(),
 }));
@@ -36,8 +38,13 @@ vi.mock("@/daemon/client", () => ({
   },
 }));
 
+vi.mock("@/composables/useTransactionFeedbackCues", () => ({
+  requestTerminalResultCue: requestTerminalResultCueMock,
+}));
+
 import { useCheckoutStore } from "@/stores/checkout";
 import { useConnectivityStore } from "@/stores/connectivity";
+import { useVisionStore } from "@/stores/vision";
 
 import ResultView from "./ResultView.vue";
 
@@ -112,6 +119,32 @@ function refundedTransaction() {
     orderStatus: "refunded",
     nextAction: "refunded",
   };
+}
+
+function applySensitiveVisionProfile(): void {
+  useVisionStore().applyLatestProfileResult({
+    eventId: "vision-event-001",
+    detectedAt: "2026-06-12T10:20:30.000Z",
+    profile: {
+      personPresent: true,
+      heightCm: 172,
+      bodyType: "regular",
+      upperColor: "blue",
+      confidence: 0.91,
+    },
+    quality: {
+      overall: "good",
+      warnings: ["light glare"],
+    },
+  });
+}
+
+function expectRecognitionDetailsHidden(host: HTMLElement): void {
+  expect(host.textContent).not.toContain("vision-event-001");
+  expect(host.textContent).not.toContain("172 cm");
+  expect(host.textContent).not.toContain("light glare");
+  expect(host.textContent).not.toContain('"heightCm": 172');
+  expect(host.textContent).not.toContain('"confidence": 0.91');
 }
 
 function paymentFailedTransaction() {
@@ -329,6 +362,18 @@ describe("ResultView", () => {
     expect(checkoutStore.status).toBeNull();
   });
 
+  it("requests terminal transaction feedback for the restored result", async () => {
+    const transaction = refundedTransaction();
+    const checkoutStore = useCheckoutStore();
+    routeParams.kind = "refunded";
+    checkoutStore.applyTransaction(transaction);
+    applySaleReadiness(true);
+
+    await mountView();
+
+    expect(requestTerminalResultCueMock).toHaveBeenCalledWith(transaction);
+  });
+
   it("routes dismissal to catalog when sale-view refresh fails after fresh readiness is ready", async () => {
     routeParams.kind = "payment_failed";
     const transaction = paymentFailedTransaction();
@@ -457,6 +502,19 @@ describe("ResultView", () => {
     expect(host.textContent).toContain("已退款");
     expect(host.textContent).toContain("订单凭证 ORD-REFUNDED-001");
     expect(host.textContent).toContain("返回首页");
+  });
+
+  it("keeps vision recognition details silent on the customer result page", async () => {
+    routeParams.kind = "refunded";
+    const transaction = refundedTransaction();
+    useCheckoutStore().applyTransaction(transaction);
+    applySaleReadiness(true);
+    applySensitiveVisionProfile();
+
+    const host = await mountView();
+
+    expect(host.textContent).toContain("已退款");
+    expectRecognitionDetailsHidden(host);
   });
 
   it("refreshes stale ready state without routing a dispense failure away from the result page", async () => {
