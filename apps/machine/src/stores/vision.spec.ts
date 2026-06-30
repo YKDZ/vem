@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { VisionStatus } from "@/daemon/schemas";
 import type {
+  VisionPersonDepartedPayload,
   VisionPresenceStatusPayload,
   VisionProfileResultPayload,
 } from "@/native/vision";
@@ -38,6 +39,16 @@ function presencePayload(personPresent = true): VisionPresenceStatusPayload {
   };
 }
 
+function departurePayload(): VisionPersonDepartedPayload {
+  return {
+    eventId: "VISION-DEPARTURE-001",
+    detectedAt: "2026-06-29T10:05:00.000Z",
+    lastSeenAt: "2026-06-29T10:04:55.000Z",
+    reason: "left_frame",
+    absenceDurationMs: 1000,
+  };
+}
+
 function visionStatus(
   latestDiagnosticPayload: unknown,
   overrides: Partial<VisionStatus> = {},
@@ -67,6 +78,7 @@ describe("useVisionStore", () => {
     expect(visionStore.presence).toEqual({
       personPresent: false,
       lastSeenAt: null,
+      departedAt: null,
     });
 
     const errorDiagnostic = {
@@ -109,6 +121,7 @@ describe("useVisionStore", () => {
     expect(visionStore.presence).toEqual({
       personPresent: true,
       lastSeenAt: "2026-06-29T10:00:00.000Z",
+      departedAt: null,
     });
 
     visionStore.applyStatus(
@@ -120,6 +133,24 @@ describe("useVisionStore", () => {
     expect(visionStore.presence).toEqual({
       personPresent: false,
       lastSeenAt: "2026-06-29T10:00:00.000Z",
+      departedAt: null,
+    });
+  });
+
+  it("applies explicit person departed diagnostics", () => {
+    const visionStore = useVisionStore();
+
+    visionStore.applyPresenceStatus(presencePayload(true));
+    visionStore.applyPersonDeparted(departurePayload());
+
+    expect(visionStore.latestDiagnosticPayload).toEqual({
+      type: "vision.person_departed",
+      payload: departurePayload(),
+    });
+    expect(visionStore.presence).toEqual({
+      personPresent: false,
+      lastSeenAt: "2026-06-29T10:04:55.000Z",
+      departedAt: "2026-06-29T10:05:00.000Z",
     });
   });
 });

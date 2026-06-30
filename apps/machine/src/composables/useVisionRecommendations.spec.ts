@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createApp, defineComponent, nextTick } from "vue";
 
 import type {
+  VisionPersonDepartedPayload,
   VisionPresenceStatusPayload,
   VisionProfileResultPayload,
 } from "@/native/vision";
@@ -259,6 +260,71 @@ describe("useVisionRecommendations", () => {
     expect(useVisionStore().presence).toEqual({
       personPresent: true,
       lastSeenAt: "2026-06-29T10:00:00.000Z",
+      departedAt: null,
+    });
+  });
+
+  it("clears recommendation profile when vision reports departure", async () => {
+    const captured: Partial<ReturnType<typeof useVisionRecommendations>> = {};
+    let onProfile:
+      | ((payload: VisionProfileResultPayload) => void | Promise<void>)
+      | null = null;
+    let onPersonDeparted:
+      | ((payload: VisionPersonDepartedPayload) => void | Promise<void>)
+      | null = null;
+    subscribeVisionProfilesMock.mockImplementation(
+      (
+        _config: unknown,
+        handlers: {
+          onProfile: (
+            payload: VisionProfileResultPayload,
+          ) => void | Promise<void>;
+          onPersonDeparted?: (
+            payload: VisionPersonDepartedPayload,
+          ) => void | Promise<void>;
+        },
+      ) => {
+        onProfile = handlers.onProfile;
+        onPersonDeparted = handlers.onPersonDeparted ?? null;
+        return { close: vi.fn() };
+      },
+    );
+    const App = defineComponent({
+      setup() {
+        const recommendations = useVisionRecommendations();
+        captured.currentProfile = recommendations.currentProfile;
+        return () => null;
+      },
+    });
+
+    createApp(App).use(pinia).mount(host);
+    await nextTick();
+    const emitProfile = onProfile as unknown as (
+      payload: VisionProfileResultPayload,
+    ) => void | Promise<void>;
+    const emitPersonDeparted = onPersonDeparted as unknown as (
+      payload: VisionPersonDepartedPayload,
+    ) => void | Promise<void>;
+
+    await Promise.resolve(emitProfile(profilePayload("VISION-PRESENT-001")));
+    await nextTick();
+    expect(captured.currentProfile?.value?.personPresent).toBe(true);
+
+    await Promise.resolve(
+      emitPersonDeparted({
+        eventId: "VISION-DEPARTURE-001",
+        detectedAt: "2026-06-29T10:05:00.000Z",
+        lastSeenAt: "2026-06-29T10:04:55.000Z",
+        reason: "left_frame",
+      }),
+    );
+    await nextTick();
+
+    expect(captured.currentProfile?.value).toBeNull();
+    expect(useVisionStore().presence).toEqual({
+      personPresent: false,
+      lastSeenAt: "2026-06-29T10:04:55.000Z",
+      departedAt: "2026-06-29T10:05:00.000Z",
     });
   });
 

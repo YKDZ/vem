@@ -68,6 +68,7 @@ import type {
   MachineCatalogSlotCandidate,
 } from "@/types/catalog";
 
+import { resetCustomerPresenceSessionForTests } from "@/composables/usePresenceInteraction";
 import { useCatalogStore } from "@/stores/catalog";
 import { useCheckoutStore } from "@/stores/checkout";
 import { useConnectivityStore } from "@/stores/connectivity";
@@ -84,6 +85,7 @@ let pinia: ReturnType<typeof createPinia>;
 let latestVisionHandlers: VisionProfileSubscriptionHandlers | null = null;
 
 beforeEach(() => {
+  resetCustomerPresenceSessionForTests();
   pinia = createPinia();
   setActivePinia(pinia);
   window.localStorage.clear();
@@ -168,6 +170,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  resetCustomerPresenceSessionForTests();
   mountedApp?.unmount();
   mountedApp = null;
   document.body.innerHTML = "";

@@ -31,7 +31,12 @@ function nowIso(): string {
 }
 
 function createHelloMessage(
-  capabilities: string[] = ["profile_push", "presence_status", "ambient_light"],
+  capabilities: string[] = [
+    "profile_push",
+    "presence_status",
+    "person_departed",
+    "ambient_light",
+  ],
 ): VisionClientMessage {
   const message = {
     protocol: VISION_PROTOCOL,
@@ -181,6 +186,7 @@ describe("vision mock server - protocol conformance", () => {
       expect(ready.payload.modelReady).toBe(true);
       expect(ready.payload.capabilities).toContain("profile_push");
       expect(ready.payload.capabilities).toContain("presence_status");
+      expect(ready.payload.capabilities).toContain("person_departed");
       expect(ready.payload.capabilities).toContain("ambient_light");
 
       const presence = await messages.next();
@@ -231,6 +237,61 @@ describe("vision mock server - protocol conformance", () => {
         () => true,
       );
       expect(timedOut).toBe(true);
+    } finally {
+      messages.dispose();
+      socket.close();
+    }
+  });
+});
+
+describe("vision mock server - departure events", () => {
+  it("pushes person_departed after presence when requested", async () => {
+    const url = await createServer("departure_after_presence");
+    const socket = await openSocket(url);
+    const messages = createServerMessageReader(socket);
+
+    try {
+      socket.send(JSON.stringify(createHelloMessage()));
+      const ready = await messages.next();
+      expect(ready.type).toBe("vision.ready");
+
+      const presence = await messages.next();
+      expect(presence.type).toBe("vision.presence_status");
+
+      const departed = await messages.next();
+      if (departed.type !== "vision.person_departed") {
+        throw new Error(`expected person departed, got ${departed.type}`);
+      }
+      expect(departed.payload.reason).toBe("left_frame");
+      expect(departed.payload.lastSeenAt).toBe(
+        presence.type === "vision.presence_status"
+          ? presence.payload.detectedAt
+          : null,
+      );
+      expect(departed.payload.ambientLight?.level).toBe("bright");
+    } finally {
+      messages.dispose();
+      socket.close();
+    }
+  });
+
+  it("does not push person_departed when the capability is absent", async () => {
+    const url = await createServer("departure_after_presence");
+    const socket = await openSocket(url);
+    const messages = createServerMessageReader(socket);
+
+    try {
+      socket.send(
+        JSON.stringify(createHelloMessage(["profile_push", "presence_status"])),
+      );
+      const ready = await messages.next();
+      expect(ready.type).toBe("vision.ready");
+
+      const presence = await messages.next();
+      expect(presence.type).toBe("vision.presence_status");
+
+      const result = await messages.next();
+      expect(result.type).toBe("vision.profile_result");
     } finally {
       messages.dispose();
       socket.close();

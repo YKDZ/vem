@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   VISION_PROTOCOL,
   visionErrorMessageSchema,
+  visionPersonDepartedMessageSchema,
   visionPresenceStatusMessageSchema,
   visionProfileResultMessageSchema,
   visionServerMessageSchema,
@@ -24,12 +25,18 @@ describe("vision protocol schemas", () => {
         clientRole: "machine",
         machineCode: "M001",
         protocolVersion: 1,
-        capabilities: ["profile_push", "presence_status", "ambient_light"],
+        capabilities: [
+          "profile_push",
+          "presence_status",
+          "person_departed",
+          "ambient_light",
+        ],
       },
     });
 
     expect(message.type).toBe("vision.hello");
     expect(message.payload.capabilities).toContain("profile_push");
+    expect(message.payload.capabilities).toContain("person_departed");
     expect(message.payload.capabilities).toContain("ambient_light");
   });
 
@@ -94,6 +101,30 @@ describe("vision protocol schemas", () => {
     expect(message.payload.personPresent).toBe(true);
     expect(message.payload.ambientLight?.level).toBe("dim");
     expect(message.payload.ambientLight?.sample?.lumaMean).toBe(74.5);
+  });
+
+  it("parses a pushed person departed event", () => {
+    const message = visionPersonDepartedMessageSchema.parse({
+      ...BASE_ENVELOPE,
+      type: "vision.person_departed",
+      payload: {
+        eventId: "departure-event-001",
+        detectedAt: "2026-06-29T10:03:30.000Z",
+        lastSeenAt: "2026-06-29T10:03:10.000Z",
+        reason: "left_frame",
+        absenceDurationMs: 1200,
+        ambientLight: {
+          level: "bright",
+          measuredAt: "2026-06-29T10:03:30.000Z",
+          source: "camera",
+          confidence: 0.91,
+        },
+      },
+    });
+
+    expect(message.type).toBe("vision.person_departed");
+    expect(message.payload.reason).toBe("left_frame");
+    expect(message.payload.lastSeenAt).toBe("2026-06-29T10:03:10.000Z");
   });
 
   it("rejects unknown ambient light levels", () => {
