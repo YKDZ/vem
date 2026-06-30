@@ -13,10 +13,10 @@ import {
 } from "./machine-slot-coordinate";
 import { machinePaymentOptionSchema } from "./orders";
 
-export const createMachineSchema = z.object({
+export const createMachineSchema = z.strictObject({
   code: z.string().min(1).max(64),
   name: z.string().min(1).max(128),
-  locationText: z.string().max(500).nullable().optional(),
+  locationLabel: z.string().max(500).nullable().optional(),
   status: machineStatusSchema.default("offline"),
   mqttClientId: z.string().max(128).nullable().optional(),
 });
@@ -385,7 +385,7 @@ export const machineProvisioningProfileSchema = z.strictObject({
     code: z.string().min(1).max(64),
     name: z.string().min(1).max(128),
     status: machineStatusSchema,
-    locationText: z.string().nullable(),
+    locationLabel: z.string().nullable(),
   }),
   credentials: z.strictObject({
     machineSecret: z.string().min(32).max(256),

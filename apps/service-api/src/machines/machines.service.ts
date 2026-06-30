@@ -104,7 +104,7 @@ type MachineClaimCandidate = {
   lockedAt: Date | null;
   machineCode: string;
   machineName: string;
-  machineLocationText: string | null;
+  machineLocationLabel: string | null;
   machineStatus: MachineProvisioningProfile["machine"]["status"];
   machineMqttClientId: string | null;
   machineSecretVersion: number;
@@ -351,7 +351,7 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
       .values({
         code: input.code,
         name: input.name,
-        locationText: input.locationText ?? null,
+        locationLabel: input.locationLabel ?? null,
         status: input.status,
         mqttClientId: input.mqttClientId ?? null,
       })
@@ -365,7 +365,7 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
       .set({
         code: input.code,
         name: input.name,
-        locationText: input.locationText,
+        locationLabel: input.locationLabel,
         status: input.status,
         mqttClientId: input.mqttClientId,
         updatedAt: new Date(),
@@ -1423,7 +1423,7 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
         lockedAt: machineClaimCodes.lockedAt,
         machineCode: machines.code,
         machineName: machines.name,
-        machineLocationText: machines.locationText,
+        machineLocationLabel: machines.locationLabel,
         machineStatus: machines.status,
         machineMqttClientId: machines.mqttClientId,
         machineSecretVersion: machines.secretVersion,
@@ -1530,7 +1530,7 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
         code: claimCode.machineCode,
         name: claimCode.machineName,
         status: claimCode.machineStatus,
-        locationText: claimCode.machineLocationText,
+        locationLabel: claimCode.machineLocationLabel,
       },
       credentials: {
         machineSecret: bundle.machineSecret,

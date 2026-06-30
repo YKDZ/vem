@@ -385,7 +385,7 @@ export const machines = t.pgTable(
     id: id(),
     code: t.varchar("code", { length: 64 }).notNull(),
     name: t.varchar("name", { length: 128 }).notNull(),
-    locationText: t.text("location_text"),
+    locationLabel: t.text("location_label"),
     status: machineStatus("status").default("offline").notNull(),
     lastSeenAt: t.timestamp("last_seen_at", { withTimezone: true }),
     mqttClientId: t.varchar("mqtt_client_id", { length: 128 }),

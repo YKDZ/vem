@@ -45,7 +45,7 @@ test.beforeAll(async ({ browserName: _browserName }, testInfo) => {
       machineCode: "MACHINE-UI",
       machineName: "Machine UI E2E",
       machineStatus: "online",
-      machineLocationText: "E2E lab",
+      machineLocationLabel: "E2E lab",
       apiBaseUrl: "http://127.0.0.1:9/api",
       mqttUrl: "mqtt://127.0.0.1:1883",
       mqttUsername: null,

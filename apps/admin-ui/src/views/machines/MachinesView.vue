@@ -87,7 +87,7 @@ const editingMachine = ref<Machine | null>(null);
 const machineForm = ref({
   code: "",
   name: "",
-  locationText: "",
+  locationLabel: "",
   status: "offline" as MachineStatus,
   mqttClientId: "",
 });
@@ -98,7 +98,7 @@ function openCreateMachine(): void {
   machineForm.value = {
     code: "",
     name: "",
-    locationText: "",
+    locationLabel: "",
     status: "offline",
     mqttClientId: "",
   };
@@ -110,7 +110,7 @@ function openEditMachine(m: Machine): void {
   machineForm.value = {
     code: m.code,
     name: m.name,
-    locationText: m.locationText ?? "",
+    locationLabel: m.locationLabel ?? "",
     status: m.status,
     mqttClientId: m.mqttClientId ?? "",
   };
@@ -123,7 +123,7 @@ async function saveMachine(): Promise<void> {
     const body = {
       code: machineForm.value.code,
       name: machineForm.value.name,
-      locationText: machineForm.value.locationText || null,
+      locationLabel: machineForm.value.locationLabel || null,
       status: machineForm.value.status,
       mqttClientId: machineForm.value.mqttClientId || null,
     };
@@ -325,7 +325,11 @@ const statusColor: Record<string, string> = {
 const machineColumns = [
   { title: "编码", dataIndex: "code", key: "code" },
   { title: "名称", dataIndex: "name", key: "name" },
-  { title: "位置", dataIndex: "locationText", key: "locationText" },
+  {
+    title: "Machine Location Label",
+    dataIndex: "locationLabel",
+    key: "locationLabel",
+  },
   { title: "状态", dataIndex: "status", key: "status" },
   { title: "最近心跳", dataIndex: "lastSeenAt", key: "lastSeenAt" },
   { title: "环境", key: "environment" },
@@ -605,8 +609,8 @@ async function handleRequestLogExport(m: Machine): Promise<void> {
         <a-form-item label="名称">
           <a-input v-model:value="machineForm.name" />
         </a-form-item>
-        <a-form-item label="位置描述">
-          <a-input v-model:value="machineForm.locationText" />
+        <a-form-item label="Machine Location Label">
+          <a-input v-model:value="machineForm.locationLabel" />
         </a-form-item>
         <a-form-item label="状态">
           <a-select v-model:value="machineForm.status">

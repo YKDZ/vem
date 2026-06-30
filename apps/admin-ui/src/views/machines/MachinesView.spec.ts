@@ -19,6 +19,8 @@ const apiMocks = vi.hoisted(() => ({
   revokeMachineClaimCode: vi.fn(),
   rotateMachineCredentials: vi.fn(),
   requestLogExport: vi.fn(),
+  createMachine: vi.fn(),
+  updateMachine: vi.fn(),
 }));
 const routerMocks = vi.hoisted(() => ({
   push: vi.fn(),
@@ -35,6 +37,7 @@ const {
   listMachineClaimCodes,
   generateMachineClaimCode,
   revokeMachineClaimCode,
+  updateMachine,
 } = apiMocks;
 
 vi.mock("@/api/machines", async () => {
@@ -48,11 +51,11 @@ vi.mock("@/api/machines", async () => {
     listMachineClaimCodes: apiMocks.listMachineClaimCodes,
     generateMachineClaimCode: apiMocks.generateMachineClaimCode,
     revokeMachineClaimCode: apiMocks.revokeMachineClaimCode,
-    createMachine: vi.fn(),
+    createMachine: apiMocks.createMachine,
     createMachineSlot: vi.fn(),
     listMachineSlots: vi.fn(),
     rotateMachineCredentials: apiMocks.rotateMachineCredentials,
-    updateMachine: vi.fn(),
+    updateMachine: apiMocks.updateMachine,
   };
 });
 
@@ -77,7 +80,7 @@ function createMachineFixture(overrides: Record<string, unknown> = {}) {
     id: "11111111-1111-4111-8111-111111111111",
     code: "M001",
     name: "前厅机器",
-    locationText: "一层",
+    locationLabel: "一层",
     status: "online",
     mqttClientId: "mqtt-M001",
     lastSeenAt: "2026-06-04T05:00:00.000Z",
@@ -343,6 +346,45 @@ describe("MachinesView environment controls", () => {
 
   afterEach(() => {
     document.body.innerHTML = "";
+  });
+
+  it("edits Machine Location Label through the canonical locationLabel payload", async () => {
+    listMachines.mockResolvedValue({
+      items: [createMachineFixture()],
+      total: 1,
+      page: 1,
+      pageSize: 20,
+    });
+    updateMachine.mockResolvedValue(createMachineFixture());
+
+    const { root } = await mountMachinesView([
+      "machines.read",
+      "machines.write",
+    ]);
+
+    expect(root.textContent).toContain("Machine Location Label");
+
+    Array.from(root.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("编辑"))
+      ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await nextTick();
+
+    const dialog = requireElement(
+      root.querySelector<HTMLElement>('[role="dialog"]'),
+      "machine dialog",
+    );
+    expect(dialog.textContent).toContain("Machine Location Label");
+
+    Array.from(dialog.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("保存"))
+      ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await flushPromises();
+
+    expect(updateMachine).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({ locationLabel: "一层" }),
+    );
+    expect(updateMachine.mock.calls[0][1]).not.toHaveProperty("locationText");
   });
 
   it("shows a compact environment summary in the machine list without row controls", async () => {

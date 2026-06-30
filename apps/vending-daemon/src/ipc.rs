@@ -3299,7 +3299,7 @@ mod tests {
                 "code": "M001",
                 "name": "Lobby",
                 "status": "offline",
-                "locationText": "1F"
+                "locationLabel": "1F"
             },
             "credentials": {
                 "machineSecret": "vms_local-machine-shared-secret-change-before-prod",

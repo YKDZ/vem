@@ -469,7 +469,7 @@ onMounted(() => {
             {{ machine?.code ?? "机器" }} · {{ machine?.name ?? "加载中" }}
           </h1>
           <p class="mt-1 text-sm text-slate-500">
-            {{ machine?.locationText ?? "未设置位置" }}
+            {{ machine?.locationLabel ?? "未设置 Machine Location Label" }}
           </p>
         </div>
         <a-space>

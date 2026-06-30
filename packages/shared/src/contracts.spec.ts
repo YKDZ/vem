@@ -4,6 +4,7 @@ import {
   HARDWARE_ERROR_HANDLING,
   adminUserStatuses,
   canonicalJson,
+  createMachineSchema,
   createMachineSlotSchema,
   createMachineOrderSchema,
   createProtectedFulfillmentDrillSchema,
@@ -99,6 +100,28 @@ describe("shared API contract", () => {
         slot: { layerNo: 12, cellNo: 1, slotCode: "R12C1" },
         quantity: 1,
         timeoutSeconds: 30,
+      }),
+    ).toThrow();
+  });
+
+  it("uses Machine Location Label in machine write contracts", () => {
+    expect(
+      createMachineSchema.parse({
+        code: "M001",
+        name: "Lobby",
+        locationLabel: "1F",
+      }),
+    ).toEqual({
+      code: "M001",
+      name: "Lobby",
+      locationLabel: "1F",
+      status: "offline",
+    });
+    expect(() =>
+      createMachineSchema.parse({
+        code: "M001",
+        name: "Lobby",
+        locationText: "1F",
       }),
     ).toThrow();
   });
@@ -324,7 +347,7 @@ describe("shared API contract", () => {
         code: "M001",
         name: "Lobby",
         status: "offline",
-        locationText: "1F",
+        locationLabel: "1F",
       },
       credentials: {
         machineSecret:
@@ -366,6 +389,15 @@ describe("shared API contract", () => {
     };
 
     expect(machineProvisioningProfileSchema.parse(profile)).toEqual(profile);
+    expect(() =>
+      machineProvisioningProfileSchema.parse({
+        ...profile,
+        machine: {
+          ...profile.machine,
+          locationText: "1F",
+        },
+      }),
+    ).toThrow();
     expect(() =>
       machineProvisioningProfileSchema.parse({
         ...profile,

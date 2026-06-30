@@ -26,7 +26,7 @@ pub enum ScannerAdapterKind {
     SerialText,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct AudioCueCategorySettings {
     #[serde(default)]
@@ -35,7 +35,7 @@ pub struct AudioCueCategorySettings {
     pub transaction: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct AudioCueSettings {
     #[serde(default)]
@@ -54,8 +54,8 @@ pub struct MachinePublicConfig {
     pub machine_name: Option<String>,
     #[serde(default)]
     pub machine_status: Option<String>,
-    #[serde(default)]
-    pub machine_location_text: Option<String>,
+    #[serde(default, alias = "machineLocationText")]
+    pub machine_location_label: Option<String>,
     pub api_base_url: String,
     pub mqtt_url: String,
     pub mqtt_username: Option<String>,
@@ -128,7 +128,7 @@ pub struct ProvisioningMachine {
     pub code: String,
     pub name: String,
     pub status: String,
-    pub location_text: Option<String>,
+    pub location_label: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -314,24 +314,6 @@ pub fn default_stock_movement_retention_days() -> i64 {
     30
 }
 
-impl Default for AudioCueSettings {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            categories: AudioCueCategorySettings::default(),
-        }
-    }
-}
-
-impl Default for AudioCueCategorySettings {
-    fn default() -> Self {
-        Self {
-            presence: false,
-            transaction: false,
-        }
-    }
-}
-
 fn provisioning_issues(
     public: &MachinePublicConfig,
     machine_secret_configured: bool,
@@ -387,7 +369,7 @@ pub fn default_public_config() -> MachinePublicConfig {
         machine_id: None,
         machine_name: None,
         machine_status: None,
-        machine_location_text: None,
+        machine_location_label: None,
         api_base_url: env_var("VEM_DEFAULT_API_BASE_URL").unwrap_or_default(),
         mqtt_url: "mqtt://localhost:1883".to_string(),
         mqtt_username: None,
@@ -490,7 +472,7 @@ pub fn normalize_public_config(
     });
     config.machine_status = machine_status;
 
-    let machine_location_text = config.machine_location_text.take().and_then(|value| {
+    let machine_location_label = config.machine_location_label.take().and_then(|value| {
         let value = value.trim().to_string();
         if value.is_empty() {
             None
@@ -498,7 +480,7 @@ pub fn normalize_public_config(
             Some(value)
         }
     });
-    config.machine_location_text = machine_location_text;
+    config.machine_location_label = machine_location_label;
 
     let mqtt_username = config.mqtt_username.take().and_then(|value| {
         let value = value.trim().to_string();
@@ -999,7 +981,7 @@ impl ConfigStore {
         public.machine_code = Some(profile.machine.code.clone());
         public.machine_name = Some(profile.machine.name.clone());
         public.machine_status = Some(profile.machine.status.clone());
-        public.machine_location_text = profile.machine.location_text.clone();
+        public.machine_location_label = profile.machine.location_label.clone();
         public.mqtt_url = profile.credentials.mqtt_connection.url.clone();
         public.mqtt_username = profile.credentials.mqtt_connection.username.clone();
         public.mqtt_client_id = Some(profile.credentials.mqtt_connection.client_id.clone());

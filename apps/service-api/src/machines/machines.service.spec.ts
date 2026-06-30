@@ -2154,7 +2154,7 @@ describe("MachinesService claim code lifecycle", () => {
       lockedAt: null,
       machineCode: "M001",
       machineName: "Lobby",
-      machineLocationText: "1F",
+      machineLocationLabel: "1F",
       machineStatus: "offline" as const,
       machineMqttClientId: null,
       machineSecretVersion: 1,
@@ -2167,7 +2167,7 @@ describe("MachinesService claim code lifecycle", () => {
       id: "550e8400-e29b-41d4-a716-446655440000",
       code: "M001",
       name: "Lobby",
-      locationText: "1F",
+      locationLabel: "1F",
       status: "offline",
       mqttClientId: null,
       secretVersion: 1,
@@ -2190,7 +2190,7 @@ describe("MachinesService claim code lifecycle", () => {
       updatedAt: new Date("2026-06-08T16:00:00.000Z"),
       machineCode: machine.code,
       machineName: machine.name,
-      machineLocationText: machine.locationText,
+      machineLocationLabel: machine.locationLabel,
       machineStatus: machine.status,
       machineMqttClientId: machine.mqttClientId,
       machineSecretVersion: machine.secretVersion,
@@ -2245,6 +2245,7 @@ describe("MachinesService claim code lifecycle", () => {
           id: machine.id,
           code: "M001",
           name: "Lobby",
+          locationLabel: "1F",
         }),
         credentials: expect.objectContaining({
           machineSecret: "vms_rotated-machine-secret-change-before-production",
@@ -2273,6 +2274,7 @@ describe("MachinesService claim code lifecycle", () => {
         }),
       }),
     );
+    expect(result.machine).not.toHaveProperty("locationText");
     expect(consumeSet).toHaveBeenCalledWith(
       expect.objectContaining({
         state: "consumed",

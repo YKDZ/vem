@@ -296,7 +296,7 @@ function machineFixture() {
     id: "11111111-1111-4111-8111-111111111111",
     code: "M001",
     name: "前厅机器",
-    locationText: "一层",
+    locationLabel: "一层",
     status: "online",
     mqttClientId: "mqtt-M001",
     lastSeenAt: "2026-06-04T05:00:00.000Z",

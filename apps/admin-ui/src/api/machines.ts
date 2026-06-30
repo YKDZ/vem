@@ -14,7 +14,7 @@ export type Machine = {
   id: string;
   code: string;
   name: string;
-  locationText: string | null;
+  locationLabel: string | null;
   status: MachineStatus;
   mqttClientId: string | null;
   lastSeenAt: string | null;
@@ -92,7 +92,7 @@ export type GenerateMachineClaimCodeResult = MachineClaimCodeSnapshot & {
 export type CreateMachineInput = {
   code: string;
   name: string;
-  locationText?: string | null;
+  locationLabel?: string | null;
   status?: MachineStatus;
   mqttClientId?: string | null;
 };
