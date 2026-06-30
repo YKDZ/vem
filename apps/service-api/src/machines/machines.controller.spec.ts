@@ -22,6 +22,42 @@ import { MachinesController } from "./machines.controller";
 import { MachinesService } from "./machines.service";
 
 describe("MachinesController environment commands", () => {
+  it("requires machines.write and forwards the requester when updating machine location", async () => {
+    const updateMachine = vi.fn().mockResolvedValue({ id: "machine-1" });
+    const controller = new MachinesController({ updateMachine } as never);
+
+    const permissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      MachinesController.prototype.updateMachine,
+    );
+
+    expect(permissions).toEqual(["machines.write"]);
+    await expect(
+      controller.updateMachine(
+        { id: "admin-1" } as never,
+        "550e8400-e29b-41d4-a716-446655440000",
+        {
+          geoLocation: {
+            latitude: 31.2304,
+            longitude: 121.4737,
+            timezone: "Asia/Shanghai",
+          },
+        },
+      ),
+    ).resolves.toEqual({ id: "machine-1" });
+    expect(updateMachine).toHaveBeenCalledWith(
+      "550e8400-e29b-41d4-a716-446655440000",
+      {
+        geoLocation: {
+          latitude: 31.2304,
+          longitude: 121.4737,
+          timezone: "Asia/Shanghai",
+        },
+      },
+      "admin-1",
+    );
+  });
+
   it("requires machines.command and forwards the requester", async () => {
     const commandEnvironment = vi.fn().mockResolvedValue({ id: "command-1" });
     const controller = new MachinesController({ commandEnvironment } as never);

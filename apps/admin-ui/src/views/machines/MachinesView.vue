@@ -35,6 +35,7 @@ import {
   updateMachine,
   type GenerateMachineClaimCodeResult,
   type Machine,
+  type MachineGeoLocation,
   type MachineClaimCodeSnapshot,
   type MachineSlot,
   type PageResult,
@@ -88,6 +89,10 @@ const machineForm = ref({
   code: "",
   name: "",
   locationLabel: "",
+  includeGeoLocation: false,
+  geoLatitude: null as number | null,
+  geoLongitude: null as number | null,
+  geoTimezone: "Asia/Shanghai",
   status: "offline" as MachineStatus,
   mqttClientId: "",
 });
@@ -99,6 +104,10 @@ function openCreateMachine(): void {
     code: "",
     name: "",
     locationLabel: "",
+    includeGeoLocation: false,
+    geoLatitude: null,
+    geoLongitude: null,
+    geoTimezone: "Asia/Shanghai",
     status: "offline",
     mqttClientId: "",
   };
@@ -111,19 +120,72 @@ function openEditMachine(m: Machine): void {
     code: m.code,
     name: m.name,
     locationLabel: m.locationLabel ?? "",
+    includeGeoLocation: m.geoLocation !== null,
+    geoLatitude: m.geoLocation?.latitude ?? null,
+    geoLongitude: m.geoLocation?.longitude ?? null,
+    geoTimezone: m.geoLocation?.timezone ?? "Asia/Shanghai",
     status: m.status,
     mqttClientId: m.mqttClientId ?? "",
   };
   machineDrawerOpen.value = true;
 }
 
+function isValidTimeZone(value: string): boolean {
+  try {
+    Intl.DateTimeFormat("en-US", { timeZone: value });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function resolveMachineGeoLocationForm():
+  | MachineGeoLocation
+  | null
+  | undefined {
+  if (!machineForm.value.includeGeoLocation) return null;
+  const latitude = machineForm.value.geoLatitude;
+  const longitude = machineForm.value.geoLongitude;
+  const timezone = machineForm.value.geoTimezone.trim();
+  if (
+    typeof latitude !== "number" ||
+    Number.isNaN(latitude) ||
+    latitude < -90 ||
+    latitude > 90
+  ) {
+    return undefined;
+  }
+  if (
+    typeof longitude !== "number" ||
+    Number.isNaN(longitude) ||
+    longitude < -180 ||
+    longitude > 180
+  ) {
+    return undefined;
+  }
+  if (!timezone || !isValidTimeZone(timezone)) {
+    return undefined;
+  }
+  return { latitude, longitude, timezone };
+}
+
 async function saveMachine(): Promise<void> {
+  const geoLocation = resolveMachineGeoLocationForm();
+  if (geoLocation === undefined) {
+    Modal.error({
+      title: "Machine Geo Location 无效",
+      content:
+        "请填写完整 WGS84 纬度、经度和 IANA 时区；纬度 -90..90，经度 -180..180。",
+    });
+    return;
+  }
   machineSaving.value = true;
   try {
     const body = {
       code: machineForm.value.code,
       name: machineForm.value.name,
       locationLabel: machineForm.value.locationLabel || null,
+      geoLocation,
       status: machineForm.value.status,
       mqttClientId: machineForm.value.mqttClientId || null,
     };
@@ -315,6 +377,11 @@ function targetTemperatureLabel(value: number | null | undefined): string {
   return `目标 ${formatEnvironmentNumber(value, "C")}`;
 }
 
+function formatGeoLocation(geoLocation: MachineGeoLocation | null): string {
+  if (!geoLocation) return "未配置";
+  return `${geoLocation.latitude}, ${geoLocation.longitude} · ${geoLocation.timezone}`;
+}
+
 const statusColor: Record<string, string> = {
   online: "success",
   offline: "default",
@@ -330,6 +397,7 @@ const machineColumns = [
     dataIndex: "locationLabel",
     key: "locationLabel",
   },
+  { title: "Machine Geo Location", key: "geoLocation" },
   { title: "状态", dataIndex: "status", key: "status" },
   { title: "最近心跳", dataIndex: "lastSeenAt", key: "lastSeenAt" },
   { title: "环境", key: "environment" },
@@ -510,6 +578,11 @@ async function handleRequestLogExport(m: Machine): Promise<void> {
           <template v-else-if="column.key === 'lastSeenAt'">
             {{ formatDateTime(record.lastSeenAt) }}
           </template>
+          <template v-else-if="column.key === 'geoLocation'">
+            <span class="text-xs">
+              {{ formatGeoLocation(record.geoLocation) }}
+            </span>
+          </template>
           <template v-else-if="column.key === 'environment'">
             <div v-if="record.latestEnvironment" class="text-xs leading-5">
               <div>
@@ -611,6 +684,41 @@ async function handleRequestLogExport(m: Machine): Promise<void> {
         </a-form-item>
         <a-form-item label="Machine Location Label">
           <a-input v-model:value="machineForm.locationLabel" />
+        </a-form-item>
+        <a-alert
+          class="mb-4"
+          type="info"
+          message="Machine Geo Location 使用 WGS84 室外代表性站点坐标，用于天气、日出日落和本地时区计算；不是室内定位，也不要直接填写 GCJ-02 或 BD-09 地图坐标。"
+          show-icon
+        />
+        <a-form-item label="配置 Machine Geo Location">
+          <a-checkbox v-model:checked="machineForm.includeGeoLocation">
+            启用固定地理坐标
+          </a-checkbox>
+        </a-form-item>
+        <a-form-item label="纬度 latitude">
+          <a-input-number
+            v-model:value="machineForm.geoLatitude"
+            :min="-90"
+            :max="90"
+            :disabled="!machineForm.includeGeoLocation"
+            class="w-full"
+          />
+        </a-form-item>
+        <a-form-item label="经度 longitude">
+          <a-input-number
+            v-model:value="machineForm.geoLongitude"
+            :min="-180"
+            :max="180"
+            :disabled="!machineForm.includeGeoLocation"
+            class="w-full"
+          />
+        </a-form-item>
+        <a-form-item label="IANA 时区">
+          <a-input
+            v-model:value="machineForm.geoTimezone"
+            :disabled="!machineForm.includeGeoLocation"
+          />
         </a-form-item>
         <a-form-item label="状态">
           <a-select v-model:value="machineForm.status">

@@ -84,10 +84,11 @@ export class MachinesController {
   @RequirePermissions("machines.write")
   @Patch(":id")
   async updateMachine(
+    @CurrentAdmin() admin: AuthenticatedAdmin,
     @Param("id", ParseUUIDPipe) id: string,
     @Body(new ZodValidationPipe(updateMachineSchema)) body: UpdateMachineInput,
   ) {
-    return await this.machinesService.updateMachine(id, body);
+    return await this.machinesService.updateMachine(id, body, admin.id);
   }
 
   @RequirePermissions("machines.read")

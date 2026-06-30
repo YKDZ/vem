@@ -103,6 +103,10 @@ describe("MachinesService", () => {
       id: "machine-1",
       code: "M001",
       name: "Lobby",
+      locationLabel: "1F",
+      geoLatitude: 31.2304,
+      geoLongitude: 121.4737,
+      geoTimezone: "Asia/Shanghai",
       status: "online",
       deletedAt: null,
     };
@@ -202,8 +206,56 @@ describe("MachinesService", () => {
           sensorStatus: "ok",
         }),
         latestEnvironmentCommand: latestCommand,
+        geoLocation: {
+          latitude: 31.2304,
+          longitude: 121.4737,
+          timezone: "Asia/Shanghai",
+        },
       }),
     );
+  });
+
+  it("creates machines with nullable Machine Geo Location fields", async () => {
+    const created = {
+      id: "machine-1",
+      code: "M001",
+      name: "Lobby",
+      locationLabel: null,
+      geoLatitude: 31.2304,
+      geoLongitude: 121.4737,
+      geoTimezone: "Asia/Shanghai",
+      status: "offline",
+      mqttClientId: null,
+      deletedAt: null,
+    };
+    const insertValues = vi.fn().mockReturnValue({
+      returning: async () => [created],
+    });
+    mockDb.insert.mockReturnValueOnce({ values: insertValues });
+
+    const result = await service.createMachine({
+      code: "M001",
+      name: "Lobby",
+      geoLocation: {
+        latitude: 31.2304,
+        longitude: 121.4737,
+        timezone: "Asia/Shanghai",
+      },
+      status: "offline",
+    });
+
+    expect(insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        geoLatitude: 31.2304,
+        geoLongitude: 121.4737,
+        geoTimezone: "Asia/Shanghai",
+      }),
+    );
+    expect(result.geoLocation).toEqual({
+      latitude: 31.2304,
+      longitude: 121.4737,
+      timezone: "Asia/Shanghai",
+    });
   });
 
   it("returns latest environment state from the most recent heartbeat", async () => {
@@ -211,6 +263,10 @@ describe("MachinesService", () => {
       id: "machine-1",
       code: "M001",
       name: "Lobby",
+      locationLabel: "1F",
+      geoLatitude: null,
+      geoLongitude: null,
+      geoTimezone: null,
       status: "online",
       deletedAt: null,
     };
@@ -312,6 +368,7 @@ describe("MachinesService", () => {
     expect(result.latestEnvironmentCommand).toEqual(
       expect.objectContaining({ status: "succeeded" }),
     );
+    expect(result.geoLocation).toBeNull();
   });
 
   it("returns ready Production Pilot Readiness from machine detail evidence", async () => {
@@ -1204,6 +1261,150 @@ describe("MachinesService", () => {
     await expect(service.getMachine("missing")).rejects.toThrow(
       NotFoundException,
     );
+  });
+
+  it("updates Machine Geo Location as one audited machine location value", async () => {
+    const existing = {
+      id: "machine-1",
+      code: "M001",
+      name: "Lobby",
+      locationLabel: "1F",
+      geoLatitude: null,
+      geoLongitude: null,
+      geoTimezone: null,
+      status: "offline",
+      mqttClientId: null,
+      deletedAt: null,
+    };
+    const updated = {
+      ...existing,
+      geoLatitude: 31.2304,
+      geoLongitude: 121.4737,
+      geoTimezone: "Asia/Shanghai",
+      updatedAt: new Date("2026-06-30T13:55:00.000Z"),
+    };
+    const updateSet = vi.fn().mockReturnValue({
+      where: () => ({ returning: async () => [updated] }),
+    });
+
+    mockDb.select.mockReturnValueOnce({
+      from: () => ({
+        where: () => ({
+          limit: async () => [existing],
+        }),
+      }),
+    });
+    mockDb.update.mockReturnValueOnce({ set: updateSet });
+
+    const result = await service.updateMachine(
+      "machine-1",
+      {
+        geoLocation: {
+          latitude: 31.2304,
+          longitude: 121.4737,
+          timezone: "Asia/Shanghai",
+        },
+      },
+      "admin-1",
+    );
+
+    expect(updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        geoLatitude: 31.2304,
+        geoLongitude: 121.4737,
+        geoTimezone: "Asia/Shanghai",
+      }),
+    );
+    expect(result.geoLocation).toEqual({
+      latitude: 31.2304,
+      longitude: 121.4737,
+      timezone: "Asia/Shanghai",
+    });
+    expect(auditRecord).toHaveBeenCalledWith({
+      adminUserId: "admin-1",
+      action: "machines.location.update",
+      resourceType: "machine",
+      resourceId: "machine-1",
+      beforeJson: {
+        locationLabel: "1F",
+        geoLocation: null,
+      },
+      afterJson: {
+        locationLabel: "1F",
+        geoLocation: {
+          latitude: 31.2304,
+          longitude: 121.4737,
+          timezone: "Asia/Shanghai",
+        },
+      },
+    });
+  });
+
+  it("clears Machine Geo Location as one audited machine location value", async () => {
+    const existing = {
+      id: "machine-1",
+      code: "M001",
+      name: "Lobby",
+      locationLabel: "1F",
+      geoLatitude: 31.2304,
+      geoLongitude: 121.4737,
+      geoTimezone: "Asia/Shanghai",
+      status: "offline",
+      mqttClientId: null,
+      deletedAt: null,
+    };
+    const updated = {
+      ...existing,
+      geoLatitude: null,
+      geoLongitude: null,
+      geoTimezone: null,
+      updatedAt: new Date("2026-06-30T13:56:00.000Z"),
+    };
+    const updateSet = vi.fn().mockReturnValue({
+      where: () => ({ returning: async () => [updated] }),
+    });
+
+    mockDb.select.mockReturnValueOnce({
+      from: () => ({
+        where: () => ({
+          limit: async () => [existing],
+        }),
+      }),
+    });
+    mockDb.update.mockReturnValueOnce({ set: updateSet });
+
+    const result = await service.updateMachine(
+      "machine-1",
+      { geoLocation: null },
+      "admin-1",
+    );
+
+    expect(updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        geoLatitude: null,
+        geoLongitude: null,
+        geoTimezone: null,
+      }),
+    );
+    expect(result.geoLocation).toBeNull();
+    expect(auditRecord).toHaveBeenCalledWith({
+      adminUserId: "admin-1",
+      action: "machines.location.update",
+      resourceType: "machine",
+      resourceId: "machine-1",
+      beforeJson: {
+        locationLabel: "1F",
+        geoLocation: {
+          latitude: 31.2304,
+          longitude: 121.4737,
+          timezone: "Asia/Shanghai",
+        },
+      },
+      afterJson: {
+        locationLabel: "1F",
+        geoLocation: null,
+      },
+    });
   });
 
   it("marks stale online machines offline and creates an operator notification", async () => {

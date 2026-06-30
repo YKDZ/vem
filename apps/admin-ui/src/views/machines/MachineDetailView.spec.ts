@@ -297,6 +297,11 @@ function machineFixture() {
     code: "M001",
     name: "前厅机器",
     locationLabel: "一层",
+    geoLocation: {
+      latitude: 31.2304,
+      longitude: 121.4737,
+      timezone: "Asia/Shanghai",
+    },
     status: "online",
     mqttClientId: "mqtt-M001",
     lastSeenAt: "2026-06-04T05:00:00.000Z",
@@ -403,6 +408,9 @@ describe("MachineDetailView", () => {
       pageSize: 100,
     });
     expect(root.textContent).toContain("M001");
+    expect(root.textContent).toContain("Machine Geo Location");
+    expect(root.textContent).toContain("31.2304, 121.4737");
+    expect(root.textContent).toContain("Asia/Shanghai");
     expect(root.textContent).toContain("23 C");
     expect(root.textContent).toContain("空调关");
     expect(root.textContent).toContain("测试衬衫");

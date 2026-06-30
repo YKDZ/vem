@@ -13,10 +13,28 @@ import {
 } from "./machine-slot-coordinate";
 import { machinePaymentOptionSchema } from "./orders";
 
+function isIanaTimeZone(value: string): boolean {
+  try {
+    Intl.DateTimeFormat("en-US", { timeZone: value });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export const machineGeoLocationSchema = z.strictObject({
+  latitude: z.number().min(-90).max(90),
+  longitude: z.number().min(-180).max(180),
+  timezone: z.string().refine(isIanaTimeZone, {
+    message: "Timezone must be a valid IANA time zone",
+  }),
+});
+
 export const createMachineSchema = z.strictObject({
   code: z.string().min(1).max(64),
   name: z.string().min(1).max(128),
   locationLabel: z.string().max(500).nullable().optional(),
+  geoLocation: machineGeoLocationSchema.nullable().optional(),
   status: machineStatusSchema.default("offline"),
   mqttClientId: z.string().max(128).nullable().optional(),
 });

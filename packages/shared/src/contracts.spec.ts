@@ -126,6 +126,71 @@ describe("shared API contract", () => {
     ).toThrow();
   });
 
+  it("validates nullable all-or-nothing Machine Geo Location in machine write contracts", () => {
+    expect(
+      createMachineSchema.parse({
+        code: "M001",
+        name: "Lobby",
+        geoLocation: {
+          latitude: 31.2304,
+          longitude: 121.4737,
+          timezone: "Asia/Shanghai",
+        },
+      }).geoLocation,
+    ).toEqual({
+      latitude: 31.2304,
+      longitude: 121.4737,
+      timezone: "Asia/Shanghai",
+    });
+    expect(
+      createMachineSchema.parse({
+        code: "M001",
+        name: "Lobby",
+        geoLocation: null,
+      }).geoLocation,
+    ).toBeNull();
+    expect(() =>
+      createMachineSchema.parse({
+        code: "M001",
+        name: "Lobby",
+        geoLocation: { latitude: 31.2304, timezone: "Asia/Shanghai" },
+      }),
+    ).toThrow();
+    expect(() =>
+      createMachineSchema.parse({
+        code: "M001",
+        name: "Lobby",
+        geoLocation: {
+          latitude: 91,
+          longitude: 121.4737,
+          timezone: "Asia/Shanghai",
+        },
+      }),
+    ).toThrow();
+    expect(() =>
+      createMachineSchema.parse({
+        code: "M001",
+        name: "Lobby",
+        geoLocation: {
+          latitude: 31.2304,
+          longitude: 181,
+          timezone: "Asia/Shanghai",
+        },
+      }),
+    ).toThrow();
+    expect(() =>
+      createMachineSchema.parse({
+        code: "M001",
+        name: "Lobby",
+        geoLocation: {
+          latitude: 31.2304,
+          longitude: 121.4737,
+          timezone: "Shanghai",
+        },
+      }),
+    ).toThrow();
+  });
+
   it("accepts structured machine heartbeat payload", () => {
     expect(
       heartbeatPayloadSchema.parse({
@@ -395,6 +460,19 @@ describe("shared API contract", () => {
         machine: {
           ...profile.machine,
           locationText: "1F",
+        },
+      }),
+    ).toThrow();
+    expect(() =>
+      machineProvisioningProfileSchema.parse({
+        ...profile,
+        machine: {
+          ...profile.machine,
+          geoLocation: {
+            latitude: 31.2304,
+            longitude: 121.4737,
+            timezone: "Asia/Shanghai",
+          },
         },
       }),
     ).toThrow();

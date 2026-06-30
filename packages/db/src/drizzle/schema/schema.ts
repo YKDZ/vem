@@ -386,6 +386,9 @@ export const machines = t.pgTable(
     code: t.varchar("code", { length: 64 }).notNull(),
     name: t.varchar("name", { length: 128 }).notNull(),
     locationLabel: t.text("location_label"),
+    geoLatitude: t.doublePrecision("geo_latitude"),
+    geoLongitude: t.doublePrecision("geo_longitude"),
+    geoTimezone: t.text("geo_timezone"),
     status: machineStatus("status").default("offline").notNull(),
     lastSeenAt: t.timestamp("last_seen_at", { withTimezone: true }),
     mqttClientId: t.varchar("mqtt_client_id", { length: 128 }),
@@ -407,6 +410,22 @@ export const machines = t.pgTable(
     t.index("machines_status_idx").on(table.status),
     t.index("machines_last_seen_at_idx").on(table.lastSeenAt),
     t.index("machines_credential_revoked_at_idx").on(table.credentialRevokedAt),
+    t.check(
+      "machines_geo_location_all_or_nothing_check",
+      sql`(
+        (${table.geoLatitude} IS NULL AND ${table.geoLongitude} IS NULL AND ${table.geoTimezone} IS NULL)
+        OR
+        (${table.geoLatitude} IS NOT NULL AND ${table.geoLongitude} IS NOT NULL AND ${table.geoTimezone} IS NOT NULL)
+      )`,
+    ),
+    t.check(
+      "machines_geo_location_coordinate_range_check",
+      sql`(
+        ${table.geoLatitude} IS NULL
+        OR
+        (${table.geoLatitude} >= -90 AND ${table.geoLatitude} <= 90 AND ${table.geoLongitude} >= -180 AND ${table.geoLongitude} <= 180)
+      )`,
+    ),
   ],
 );
 

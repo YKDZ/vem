@@ -10,11 +10,18 @@ import type {
 
 import { get, patch, post } from "./request";
 
+export type MachineGeoLocation = {
+  latitude: number;
+  longitude: number;
+  timezone: string;
+};
+
 export type Machine = {
   id: string;
   code: string;
   name: string;
   locationLabel: string | null;
+  geoLocation: MachineGeoLocation | null;
   status: MachineStatus;
   mqttClientId: string | null;
   lastSeenAt: string | null;
@@ -93,6 +100,7 @@ export type CreateMachineInput = {
   code: string;
   name: string;
   locationLabel?: string | null;
+  geoLocation?: MachineGeoLocation | null;
   status?: MachineStatus;
   mqttClientId?: string | null;
 };

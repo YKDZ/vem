@@ -81,6 +81,11 @@ type PageQueryInput = z.infer<typeof pageQuerySchema>;
 type CreateMachineInput = z.infer<typeof createMachineSchema>;
 type UpdateMachineInput = z.infer<typeof updateMachineSchema>;
 type CreateMachineSlotInput = z.infer<typeof createMachineSlotSchema>;
+type MachineGeoLocation = {
+  latitude: number;
+  longitude: number;
+  timezone: string;
+};
 
 type PlanogramVersionRecord = typeof machinePlanogramVersions.$inferSelect;
 
@@ -88,6 +93,7 @@ type MachineIdentity = {
   id: string;
   code: string;
 };
+type MachineRecord = typeof machines.$inferSelect;
 
 type MachineClaimCodeRecord = typeof machineClaimCodes.$inferSelect;
 type MachineClaimCandidate = {
@@ -262,6 +268,64 @@ function parseLatestHeartbeatStatus(
   return parsed.success ? parsed.data : null;
 }
 
+function machineGeoLocationFromRow(
+  machine: Pick<MachineRecord, "geoLatitude" | "geoLongitude" | "geoTimezone">,
+): MachineGeoLocation | null {
+  if (
+    machine.geoLatitude === null &&
+    machine.geoLongitude === null &&
+    machine.geoTimezone === null
+  ) {
+    return null;
+  }
+  if (
+    typeof machine.geoLatitude !== "number" ||
+    typeof machine.geoLongitude !== "number" ||
+    typeof machine.geoTimezone !== "string"
+  ) {
+    return null;
+  }
+  return {
+    latitude: machine.geoLatitude,
+    longitude: machine.geoLongitude,
+    timezone: machine.geoTimezone,
+  };
+}
+
+function machineSnapshot<T extends MachineRecord>(machine: T) {
+  const { geoLatitude, geoLongitude, geoTimezone, ...rest } = machine;
+  return {
+    ...rest,
+    geoLocation: machineGeoLocationFromRow({
+      geoLatitude,
+      geoLongitude,
+      geoTimezone,
+    }),
+  };
+}
+
+function machineLocationAuditSnapshot(machine: MachineRecord) {
+  return {
+    locationLabel: machine.locationLabel,
+    geoLocation: machineGeoLocationFromRow(machine),
+  };
+}
+
+function machineGeoLocationValues(
+  geoLocation: MachineGeoLocation | null | undefined,
+) {
+  if (geoLocation === undefined) {
+    return {};
+  }
+  return geoLocation === null
+    ? { geoLatitude: null, geoLongitude: null, geoTimezone: null }
+    : {
+        geoLatitude: geoLocation.latitude,
+        geoLongitude: geoLocation.longitude,
+        geoTimezone: geoLocation.timezone,
+      };
+}
+
 @Injectable()
 export class MachinesService implements OnModuleInit, OnApplicationShutdown {
   private readonly logger = new Logger(MachinesService.name);
@@ -331,7 +395,7 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
       items.map(async (machine) => {
         const latestHeartbeat = await this.getLatestHeartbeatStatus(machine.id);
         return {
-          ...machine,
+          ...machineSnapshot(machine),
           latestHeartbeatStatus: latestHeartbeat?.statusPayload ?? null,
           latestHeartbeatReportedAt: latestHeartbeat?.reportedAt ?? null,
           latestEnvironment: latestHeartbeat?.statusPayload.environment ?? null,
@@ -352,20 +416,36 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
         code: input.code,
         name: input.name,
         locationLabel: input.locationLabel ?? null,
+        ...machineGeoLocationValues(input.geoLocation),
         status: input.status,
         mqttClientId: input.mqttClientId ?? null,
       })
       .returning();
-    return created;
+    return machineSnapshot(created);
   }
 
-  async updateMachine(id: string, input: UpdateMachineInput) {
+  async updateMachine(
+    id: string,
+    input: UpdateMachineInput,
+    adminUserId: string,
+  ) {
+    const [current] = await this.db
+      .select()
+      .from(machines)
+      .where(and(eq(machines.id, id), isNull(machines.deletedAt)))
+      .limit(1);
+
+    if (!current) {
+      throw new NotFoundException("Machine not found");
+    }
+
     const [updated] = await this.db
       .update(machines)
       .set({
         code: input.code,
         name: input.name,
         locationLabel: input.locationLabel,
+        ...machineGeoLocationValues(input.geoLocation),
         status: input.status,
         mqttClientId: input.mqttClientId,
         updatedAt: new Date(),
@@ -376,7 +456,22 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
     if (!updated) {
       throw new NotFoundException("Machine not found");
     }
-    return updated;
+    const beforeLocation = machineLocationAuditSnapshot(current);
+    const afterLocation = machineLocationAuditSnapshot(updated);
+    if (
+      JSON.stringify(beforeLocation) !== JSON.stringify(afterLocation) &&
+      ("locationLabel" in input || "geoLocation" in input)
+    ) {
+      await this.auditService.record({
+        adminUserId,
+        action: "machines.location.update",
+        resourceType: "machine",
+        resourceId: updated.id,
+        beforeJson: beforeLocation,
+        afterJson: afterLocation,
+      });
+    }
+    return machineSnapshot(updated);
   }
 
   async getMachine(id: string) {
@@ -400,7 +495,7 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
     const activeAcknowledgedPlanogramVersion =
       await this.getActiveAcknowledgedPlanogramVersion(id);
     return {
-      ...machine,
+      ...machineSnapshot(machine),
       latestHeartbeatStatus: latestHeartbeat?.statusPayload ?? null,
       latestHeartbeatReportedAt: latestHeartbeat?.reportedAt ?? null,
       latestEnvironment: latestHeartbeat?.statusPayload.environment ?? null,
