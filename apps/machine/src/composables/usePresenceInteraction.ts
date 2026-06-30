@@ -23,7 +23,6 @@ import type {
 import {
   createMachineAudioCuePlaybackAdapter,
   type CustomerAudioCueEvent,
-  type PresenceAmbientLightLevel,
 } from "@/audio-cues/browser-playback";
 import { useVisionStore } from "@/stores/vision";
 
@@ -144,15 +143,11 @@ function restartDepartureTimers(): void {
   restartInactivityTimer();
 }
 
-function requestPresenceCue(input: {
-  requestedAt: string;
-  ambientLightLevel: PresenceAmbientLightLevel;
-}): void {
+function requestPresenceCue(input: { requestedAt: string }): void {
   if (!activeOptions) return;
   void activeOptions.audioCueRequester
     .requestCustomerAudioCue({
       type: "presence.detected",
-      ambientLightLevel: input.ambientLightLevel,
       requestedAt: input.requestedAt,
       nowMs: millisecondsForDetectedAt(input.requestedAt),
     })
@@ -164,7 +159,6 @@ function requestPresenceCue(input: {
 function markPresent(input: {
   source: Exclude<PresenceInteractionSource, "inactivity" | "unavailable">;
   seenAt: string;
-  ambientLightLevel: PresenceAmbientLightLevel;
   suppressAudioCue?: boolean;
 }): void {
   const wasPresent = state.value.personPresent;
@@ -178,7 +172,6 @@ function markPresent(input: {
   if (!wasPresent && !input.suppressAudioCue) {
     requestPresenceCue({
       requestedAt: input.seenAt,
-      ambientLightLevel: input.ambientLightLevel,
     });
   }
   restartDepartureTimers();
@@ -213,7 +206,6 @@ function registerInteraction(): void {
     markPresent({
       source: "local_interaction",
       seenAt,
-      ambientLightLevel: "unknown",
     });
     return;
   }
@@ -239,7 +231,6 @@ function applyProfileResult(
   markPresent({
     source: "vision",
     seenAt: payload.detectedAt,
-    ambientLightLevel: ambientLightLevelFor(payload),
     suppressAudioCue: options.suppressAudioCue,
   });
 }
@@ -259,7 +250,6 @@ function applyPresenceStatus(
   markPresent({
     source: "vision",
     seenAt: payload.detectedAt,
-    ambientLightLevel: ambientLightLevelFor(payload),
     suppressAudioCue: options.suppressAudioCue,
   });
 }
@@ -450,16 +440,6 @@ function profileResultFromDiagnostic(
   }
   const result = visionProfileResultPayloadSchema.safeParse(value.payload);
   return result.success ? result.data : null;
-}
-
-function ambientLightLevelFor(
-  payload: VisionProfileResultPayload | VisionPresenceStatusPayload,
-): PresenceAmbientLightLevel {
-  if (!("ambientLight" in payload)) return "unknown";
-  const level = payload.ambientLight?.level;
-  return level === "bright" || level === "dim" || level === "dark"
-    ? level
-    : "unknown";
 }
 
 function millisecondsForDetectedAt(detectedAt: string): number {

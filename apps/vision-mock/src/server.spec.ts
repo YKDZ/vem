@@ -35,7 +35,6 @@ function createHelloMessage(
     "profile_push",
     "presence_status",
     "person_departed",
-    "ambient_light",
   ],
 ): VisionClientMessage {
   const message = {
@@ -187,7 +186,6 @@ describe("vision mock server - protocol conformance", () => {
       expect(ready.payload.capabilities).toContain("profile_push");
       expect(ready.payload.capabilities).toContain("presence_status");
       expect(ready.payload.capabilities).toContain("person_departed");
-      expect(ready.payload.capabilities).toContain("ambient_light");
 
       const presence = await messages.next();
       if (presence.type !== "vision.presence_status") {
@@ -195,7 +193,6 @@ describe("vision mock server - protocol conformance", () => {
       }
       expect(presence.payload.state).toBe("approach");
       expect(presence.payload.personPresent).toBe(true);
-      expect(presence.payload.ambientLight?.level).toBe("dim");
 
       const result = await messages.next();
       if (result.type !== "vision.profile_result") {
@@ -268,7 +265,6 @@ describe("vision mock server - departure events", () => {
           ? presence.payload.detectedAt
           : null,
       );
-      expect(departed.payload.ambientLight?.level).toBe("bright");
     } finally {
       messages.dispose();
       socket.close();
@@ -316,7 +312,6 @@ describe("vision mock server - no_person scenario", () => {
       }
       expect(presence.payload.state).toBe("empty");
       expect(presence.payload.personPresent).toBe(false);
-      expect(presence.payload.ambientLight?.level).toBe("bright");
 
       const timedOut = await messages.next(100).then(
         () => false,
@@ -344,30 +339,6 @@ describe("vision mock server - no_person scenario", () => {
         () => true,
       );
       expect(timedOut).toBe(true);
-    } finally {
-      messages.dispose();
-      socket.close();
-    }
-  });
-
-  it("omits ambient light when ambient_light is not requested", async () => {
-    const url = await createServer("presence_only");
-    const socket = await openSocket(url);
-    const messages = createServerMessageReader(socket);
-
-    try {
-      socket.send(
-        JSON.stringify(createHelloMessage(["profile_push", "presence_status"])),
-      );
-      const ready = await messages.next();
-      expect(ready.type).toBe("vision.ready");
-
-      const presence = await messages.next();
-      if (presence.type !== "vision.presence_status") {
-        throw new Error(`expected presence status, got ${presence.type}`);
-      }
-      expect(presence.payload.personPresent).toBe(true);
-      expect(presence.payload.ambientLight).toBeUndefined();
     } finally {
       messages.dispose();
       socket.close();

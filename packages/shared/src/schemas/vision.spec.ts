@@ -25,19 +25,13 @@ describe("vision protocol schemas", () => {
         clientRole: "machine",
         machineCode: "M001",
         protocolVersion: 1,
-        capabilities: [
-          "profile_push",
-          "presence_status",
-          "person_departed",
-          "ambient_light",
-        ],
+        capabilities: ["profile_push", "presence_status", "person_departed"],
       },
     });
 
     expect(message.type).toBe("vision.hello");
     expect(message.payload.capabilities).toContain("profile_push");
     expect(message.payload.capabilities).toContain("person_departed");
-    expect(message.payload.capabilities).toContain("ambient_light");
   });
 
   it("parses a pushed profile result", () => {
@@ -84,23 +78,12 @@ describe("vision protocol schemas", () => {
           closeNow: false,
           largestPersonRatio: 0.12,
         },
-        ambientLight: {
-          level: "dim",
-          measuredAt: "2026-06-29T10:00:00.000Z",
-          source: "camera",
-          confidence: 0.82,
-          sample: {
-            lumaMean: 74.5,
-          },
-        },
       },
     });
 
     expect(message.type).toBe("vision.presence_status");
     expect(message.payload.state).toBe("approach");
     expect(message.payload.personPresent).toBe(true);
-    expect(message.payload.ambientLight?.level).toBe("dim");
-    expect(message.payload.ambientLight?.sample?.lumaMean).toBe(74.5);
   });
 
   it("parses a pushed person departed event", () => {
@@ -113,38 +96,12 @@ describe("vision protocol schemas", () => {
         lastSeenAt: "2026-06-29T10:03:10.000Z",
         reason: "left_frame",
         absenceDurationMs: 1200,
-        ambientLight: {
-          level: "bright",
-          measuredAt: "2026-06-29T10:03:30.000Z",
-          source: "camera",
-          confidence: 0.91,
-        },
       },
     });
 
     expect(message.type).toBe("vision.person_departed");
     expect(message.payload.reason).toBe("left_frame");
     expect(message.payload.lastSeenAt).toBe("2026-06-29T10:03:10.000Z");
-  });
-
-  it("rejects unknown ambient light levels", () => {
-    expect(() =>
-      visionServerMessageSchema.parse({
-        ...BASE_ENVELOPE,
-        type: "vision.presence_status",
-        payload: {
-          eventId: "presence-event-001",
-          state: "approach",
-          detectedAt: "2026-06-29T10:00:00.000Z",
-          personPresent: true,
-          proximity: {},
-          ambientLight: {
-            level: "night",
-            measuredAt: "2026-06-29T10:00:00.000Z",
-          },
-        },
-      }),
-    ).toThrow();
   });
 
   it("rejects malformed presence status payloads", () => {

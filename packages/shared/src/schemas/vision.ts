@@ -83,18 +83,6 @@ export const visionProfileResultPayloadSchema = z.object({
     .loose(),
 });
 
-export const visionAmbientLightLevelSchema = z.enum(["bright", "dim", "dark"]);
-
-export const visionAmbientLightSchema = z
-  .object({
-    level: visionAmbientLightLevelSchema,
-    measuredAt: z.iso.datetime(),
-    source: z.literal("camera").default("camera"),
-    confidence: z.number().min(0).max(1).optional(),
-    sample: z.record(z.string(), z.unknown()).optional(),
-  })
-  .loose();
-
 export const visionPresenceStatusPayloadSchema = z
   .object({
     eventId: z.string().min(1).max(128),
@@ -106,7 +94,6 @@ export const visionPresenceStatusPayloadSchema = z
     close: z.boolean().optional(),
     closeTrigger: z.string().min(1).max(64).nullable().optional(),
     proximity: z.record(z.string(), z.unknown()).default({}),
-    ambientLight: visionAmbientLightSchema.optional(),
   })
   .loose();
 
@@ -126,7 +113,6 @@ export const visionPersonDepartedPayloadSchema = z
       ])
       .default("unknown"),
     absenceDurationMs: z.number().int().nonnegative().optional(),
-    ambientLight: visionAmbientLightSchema.optional(),
   })
   .loose();
 
@@ -205,9 +191,6 @@ export type VisionServerMessageType = z.infer<
   typeof visionServerMessageTypeSchema
 >;
 export type VisionErrorCode = z.infer<typeof visionErrorCodeSchema>;
-export type VisionAmbientLightLevel = z.infer<
-  typeof visionAmbientLightLevelSchema
->;
 export type VisionProfile = z.infer<typeof visionProfileSchema>;
 export type VisionClientMessage = z.infer<typeof visionClientMessageSchema>;
 export type VisionServerMessage = z.infer<typeof visionServerMessageSchema>;

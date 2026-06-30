@@ -218,7 +218,7 @@ beforeEach(() => {
 });
 
 describe("createMachineAudioCuePlaybackAdapter", () => {
-  it("maps semantic presence variants to browser audio sources without caller asset paths", async () => {
+  it("maps semantic presence cues to a browser audio source without caller asset paths", async () => {
     const created: MockAudio[] = [];
     const adapter = createMachineAudioCuePlaybackAdapter({
       audioFactory: (src) => {
@@ -230,42 +230,12 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
 
     await adapter.requestCustomerAudioCue({
       type: "presence.detected",
-      ambientLightLevel: "bright",
       requestedAt: "2026-06-29T08:00:00.000Z",
       nowMs: 0,
     });
-    created[created.length - 1]?.emit("ended");
-    await adapter.requestCustomerAudioCue({
-      type: "presence.detected",
-      ambientLightLevel: "dim",
-      requestedAt: "2026-06-29T08:00:01.000Z",
-      nowMs: 10_000,
-    });
-    created[created.length - 1]?.emit("ended");
-    await adapter.requestCustomerAudioCue({
-      type: "presence.detected",
-      ambientLightLevel: "dark",
-      requestedAt: "2026-06-29T08:00:02.000Z",
-      nowMs: 20_000,
-    });
-    created[created.length - 1]?.emit("ended");
-    await adapter.requestCustomerAudioCue({
-      type: "presence.detected",
-      ambientLightLevel: "unknown",
-      requestedAt: "2026-06-29T08:00:03.000Z",
-      nowMs: 30_000,
-    });
 
-    expect(created).toHaveLength(4);
-    expect(new Set(created.map((audio) => audio.src)).size).toBe(4);
-    expect(created.map((audio) => audio.src)).toEqual(
-      expect.arrayContaining([
-        expect.stringContaining("presence-bright"),
-        expect.stringContaining("presence-dim"),
-        expect.stringContaining("presence-dark"),
-        expect.stringContaining("presence-unknown"),
-      ]),
-    );
+    expect(created).toHaveLength(1);
+    expect(created[0].src).toContain("presence-detected");
   });
 
   it("records playback start and completion diagnostics around pending browser playback", async () => {
@@ -389,13 +359,11 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
 
     await adapter.requestCustomerAudioCue({
       type: "presence.detected",
-      ambientLightLevel: "bright",
       requestedAt: "2026-06-29T08:03:00.000Z",
       nowMs: 1_000,
     });
     await adapter.requestCustomerAudioCue({
       type: "presence.detected",
-      ambientLightLevel: "dim",
       requestedAt: "2026-06-29T08:03:03.000Z",
       nowMs: 4_000,
     });
@@ -439,7 +407,6 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
 
     await adapter.requestCustomerAudioCue({
       type: "presence.detected",
-      ambientLightLevel: "bright",
       requestedAt: "2026-06-29T08:03:10.000Z",
       nowMs: 50_000,
     });
@@ -448,7 +415,6 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
     await expect(
       adapter.requestCustomerAudioCue({
         type: "presence.detected",
-        ambientLightLevel: "dim",
         requestedAt: "2026-06-29T08:03:11.000Z",
         nowMs: 51_000,
       }),
@@ -488,7 +454,6 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
       await expect(
         adapter.requestCustomerAudioCue({
           type: "presence.detected",
-          ambientLightLevel: "bright",
           requestedAt: "2026-06-29T08:03:12.000Z",
           nowMs: 52_000,
         }),
@@ -515,7 +480,6 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
 
     await adapter.requestCustomerAudioCue({
       type: "presence.detected",
-      ambientLightLevel: "bright",
       requestedAt: "2026-06-29T08:03:20.000Z",
       nowMs: 1_000,
     });
@@ -523,7 +487,6 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
     await expect(
       adapter.requestCustomerAudioCue({
         type: "presence.detected",
-        ambientLightLevel: "dim",
         requestedAt: "2026-06-29T08:03:23.000Z",
         nowMs: 4_000,
       }),
@@ -540,7 +503,6 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
     await expect(
       adapter.requestCustomerAudioCue({
         type: "presence.detected",
-        ambientLightLevel: "dark",
         requestedAt: "2026-06-29T08:03:30.000Z",
         nowMs: 11_000,
       }),
@@ -564,7 +526,6 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
 
     await adapter.requestCustomerAudioCue({
       type: "presence.detected",
-      ambientLightLevel: "bright",
       requestedAt: "2026-06-29T08:03:40.000Z",
       nowMs: 2_000,
     });
@@ -573,7 +534,6 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
     await expect(
       adapter.requestCustomerAudioCue({
         type: "presence.detected",
-        ambientLightLevel: "dim",
         requestedAt: "2026-06-29T08:03:43.000Z",
         nowMs: 5_000,
       }),
@@ -609,7 +569,6 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
     });
     await adapter.requestCustomerAudioCue({
       type: "presence.detected",
-      ambientLightLevel: "dark",
       requestedAt: "2026-06-29T08:04:02.000Z",
     });
 
@@ -633,7 +592,6 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
 
     await adapter.requestCustomerAudioCue({
       type: "presence.detected",
-      ambientLightLevel: "bright",
       requestedAt: "2026-06-29T08:05:00.000Z",
       nowMs: 10_000,
     });
@@ -668,7 +626,6 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
 
     await adapter.requestCustomerAudioCue({
       type: "presence.detected",
-      ambientLightLevel: "bright",
       requestedAt: "2026-06-29T08:06:00.000Z",
       nowMs: 20_000,
     });
@@ -711,7 +668,6 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
 
     await presenceRequester.requestCustomerAudioCue({
       type: "presence.detected",
-      ambientLightLevel: "bright",
       requestedAt: "2026-06-29T08:06:10.000Z",
       nowMs: 22_000,
     });
@@ -742,7 +698,6 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
 
     await adapter.requestCustomerAudioCue({
       type: "presence.detected",
-      ambientLightLevel: "bright",
       requestedAt: "2026-06-29T08:07:00.000Z",
       nowMs: 30_000,
     });
@@ -750,7 +705,6 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
 
     await adapter.requestCustomerAudioCue({
       type: "presence.detected",
-      ambientLightLevel: "dim",
       requestedAt: "2026-06-29T08:07:03.000Z",
       nowMs: 33_000,
     });
@@ -771,7 +725,6 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
 
     await adapter.requestCustomerAudioCue({
       type: "presence.detected",
-      ambientLightLevel: "bright",
       requestedAt: "2026-06-29T08:07:10.000Z",
       nowMs: 35_000,
     });
@@ -799,7 +752,6 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
 
     await adapter.requestCustomerAudioCue({
       type: "presence.detected",
-      ambientLightLevel: "dark",
       requestedAt: "2026-06-29T08:08:00.000Z",
       nowMs: 40_000,
     });

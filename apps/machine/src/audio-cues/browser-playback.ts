@@ -5,12 +5,9 @@ import type {
 
 import { useAudioCueStore } from "@/stores/audio-cues";
 
-export type PresenceAmbientLightLevel = "bright" | "dim" | "dark" | "unknown";
-
 export type CustomerAudioCueEvent =
   | {
       type: "presence.detected";
-      ambientLightLevel?: PresenceAmbientLightLevel | null;
       requestedAt?: string;
       nowMs?: number;
     }
@@ -84,10 +81,7 @@ const PLACEHOLDER_TONE_SOURCE =
   "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABAAZGF0YQAAAAA=";
 
 const CUE_SOURCES: Record<string, string> = {
-  "presence.detected:bright": `${PLACEHOLDER_TONE_SOURCE}#presence-bright`,
-  "presence.detected:dim": `${PLACEHOLDER_TONE_SOURCE}#presence-dim`,
-  "presence.detected:dark": `${PLACEHOLDER_TONE_SOURCE}#presence-dark`,
-  "presence.detected:unknown": `${PLACEHOLDER_TONE_SOURCE}#presence-unknown`,
+  "presence.detected": `${PLACEHOLDER_TONE_SOURCE}#presence-detected`,
   "payment.succeeded": `${PLACEHOLDER_TONE_SOURCE}#payment-succeeded`,
   "dispensing.started": `${PLACEHOLDER_TONE_SOURCE}#dispensing-started`,
   "dispense.succeeded": `${PLACEHOLDER_TONE_SOURCE}#dispense-succeeded`,
@@ -289,13 +283,6 @@ export function createMachineAudioCuePlaybackAdapter(
 function descriptorFromEvent(event: CustomerAudioCueEvent): CueDescriptor {
   const nowMs = event.nowMs ?? Date.now();
   if (event.type === "presence.detected") {
-    const ambientLightLevel = event.ambientLightLevel ?? "unknown";
-    const variant =
-      ambientLightLevel === "bright" ||
-      ambientLightLevel === "dim" ||
-      ambientLightLevel === "dark"
-        ? ambientLightLevel
-        : "unknown";
     return {
       category: "presence",
       cueKey: event.type,
@@ -305,7 +292,7 @@ function descriptorFromEvent(event: CustomerAudioCueEvent): CueDescriptor {
       minimumIntervalMs: PRESENCE_MINIMUM_INTERVAL_MS,
       priority: CUE_PRIORITIES[event.type],
       staleAfterMs: PRESENCE_STALE_AFTER_MS,
-      source: CUE_SOURCES[`${event.type}:${variant}`],
+      source: CUE_SOURCES[event.type],
     };
   }
 
@@ -335,12 +322,7 @@ function isStaleLowPriorityCue(
 }
 
 function sourceForRequest(request: CustomerAudioCueRequest): string {
-  if (request.cueKey === "presence.detected") {
-    return CUE_SOURCES["presence.detected:unknown"];
-  }
-  return (
-    CUE_SOURCES[request.cueKey] ?? CUE_SOURCES["presence.detected:unknown"]
-  );
+  return CUE_SOURCES[request.cueKey] ?? CUE_SOURCES["presence.detected"];
 }
 
 function defaultBrowserAudioFactory(src: string): BrowserAudioElement {
