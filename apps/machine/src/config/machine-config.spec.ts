@@ -9,6 +9,7 @@ describe("machine config", () => {
   it("uses first-stage defaults", () => {
     expect(machineConfigDefaults).toEqual({
       machineCode: null,
+      machineLocationLabel: null,
       machineSecret: null,
       machineSecretConfigured: false,
       mqttSigningSecret: null,
@@ -104,6 +105,17 @@ describe("machine config", () => {
   it("turns empty machineCode into null", () => {
     expect(
       normalizeMachineConfig({ machineCode: "   " }).machineCode,
+    ).toBeNull();
+  });
+
+  it("normalizes optional Machine Location Label", () => {
+    expect(
+      normalizeMachineConfig({ machineLocationLabel: " E2E lab " })
+        .machineLocationLabel,
+    ).toBe("E2E lab");
+    expect(
+      normalizeMachineConfig({ machineLocationLabel: "   " })
+        .machineLocationLabel,
     ).toBeNull();
   });
 

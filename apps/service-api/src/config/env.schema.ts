@@ -88,6 +88,23 @@ const baseEnvSchema = z.object({
     .min(1)
     .max(90)
     .default(30),
+  QWEATHER_API_KEY: z.string().min(1).optional(),
+  QWEATHER_API_HOST: z
+    .string()
+    .min(1)
+    .regex(/^[a-zA-Z0-9.-]+$/)
+    .optional(),
+  QWEATHER_WEATHER_NOW_PATH: z
+    .string()
+    .regex(/^\/.+/)
+    .default("/v7/weather/now"),
+  QWEATHER_SUN_PATH: z.string().regex(/^\/.+/).default("/v7/astronomy/sun"),
+  QWEATHER_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .min(100)
+    .max(30_000)
+    .default(3_000),
   BOOTSTRAP_ADMIN_USERNAME: z.string().min(3).max(64).default("admin"),
   BOOTSTRAP_ADMIN_PASSWORD: z.string().min(12).max(128),
 });
@@ -156,6 +173,35 @@ export const envSchema = baseEnvSchema.superRefine((env, ctx) => {
         message: "PAYMENT_WEBHOOK_BASE_URL must use https in production",
       });
     }
+  }
+  const qweatherConfigured = Boolean(
+    env.QWEATHER_API_KEY || env.QWEATHER_API_HOST,
+  );
+  if (qweatherConfigured && !env.QWEATHER_API_KEY) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["QWEATHER_API_KEY"],
+      message: "QWEATHER_API_KEY is required when QWeather is configured",
+    });
+  }
+  if (qweatherConfigured && !env.QWEATHER_API_HOST) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["QWEATHER_API_HOST"],
+      message: "QWEATHER_API_HOST is required when QWeather is configured",
+    });
+  }
+  if (
+    env.QWEATHER_API_HOST &&
+    ["api.qweather.com", "devapi.qweather.com", "geoapi.qweather.com"].includes(
+      env.QWEATHER_API_HOST,
+    )
+  ) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["QWEATHER_API_HOST"],
+      message: "QWEATHER_API_HOST must be the account-specific API Host",
+    });
   }
 });
 

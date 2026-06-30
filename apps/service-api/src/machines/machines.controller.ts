@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  ForbiddenException,
   Get,
   Param,
   ParseUUIDPipe,
@@ -49,6 +50,9 @@ type GenerateMachineClaimCodeRequestInput = z.infer<
   typeof generateMachineClaimCodeRequestSchema
 >;
 type PageQueryInput = z.infer<typeof pageQuerySchema>;
+type ExternalNaturalEnvironment = Awaited<
+  ReturnType<MachinesService["getExternalNaturalEnvironmentForMachine"]>
+>;
 
 @ApiTags("machines")
 @ApiBearerAuth()
@@ -84,10 +88,21 @@ export class MachinesController {
   @RequirePermissions("machines.write")
   @Patch(":id")
   async updateMachine(
+    @CurrentAdmin() admin: AuthenticatedAdmin,
     @Param("id", ParseUUIDPipe) id: string,
     @Body(new ZodValidationPipe(updateMachineSchema)) body: UpdateMachineInput,
   ) {
-    return await this.machinesService.updateMachine(id, body);
+    return await this.machinesService.updateMachine(id, body, admin.id);
+  }
+
+  @RequirePermissions("machines.read")
+  @Get(":id/external-natural-environment")
+  async getExternalNaturalEnvironment(
+    @Param("id", ParseUUIDPipe) id: string,
+  ): Promise<ExternalNaturalEnvironment> {
+    return await this.machinesService.getExternalNaturalEnvironmentForMachine(
+      id,
+    );
   }
 
   @RequirePermissions("machines.read")
@@ -194,6 +209,21 @@ export class MachinesController {
       id,
       claimCodeId,
       admin.id,
+    );
+  }
+
+  @Public()
+  @UseGuards(MachineAuthGuard)
+  @Get("by-code/:code/external-natural-environment")
+  async getOwnExternalNaturalEnvironment(
+    @CurrentMachine() machine: AuthenticatedMachine,
+    @Param("code") code: string,
+  ): Promise<ExternalNaturalEnvironment> {
+    if (code !== machine.code) {
+      throw new ForbiddenException("Machine can only read its own environment");
+    }
+    return await this.machinesService.getExternalNaturalEnvironmentForMachineCode(
+      machine.code,
     );
   }
 

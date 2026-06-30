@@ -24,6 +24,7 @@ vi.mock("@/native/daemon-connection", () => ({
 
 const publicConfig = {
   machineCode: "M001",
+  machineLocationLabel: "E2E lab",
   apiBaseUrl: "http://127.0.0.1:3000/api",
   mqttUrl: "mqtt://127.0.0.1:1883",
   mqttUsername: "machine",
@@ -360,6 +361,43 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
     });
     return;
   }
+  if (url.pathname === "/v1/natural-context") {
+    respondJson(res, {
+      status: "stale",
+      machineCode: "MACHINE-1",
+      checkedAt: "2026-06-30T14:00:00.000Z",
+      degraded: true,
+      customerFacingBlocked: false,
+      externalEnvironment: {
+        status: "stale",
+        machineId: "550e8400-e29b-41d4-a716-446655440000",
+        machineCode: "MACHINE-1",
+        checkedAt: "2026-06-30T14:00:00.000Z",
+        localTime: {
+          timezone: "Asia/Shanghai",
+          localDate: "2026-06-30",
+          localClock: "22:00:00",
+        },
+        weather: {
+          temperatureCelsius: 28,
+          conditionText: "Sunny",
+          observedAt: "2026-06-30T13:50:00.000Z",
+        },
+        sun: {
+          sunriseAt: "2026-06-29T21:53:00.000Z",
+          sunsetAt: "2026-06-30T10:02:00.000Z",
+        },
+        diagnostic: {
+          reason: "provider_unavailable",
+          message: "External Natural Environment provider is unavailable",
+        },
+      },
+      localSiteSignals: {
+        status: "unavailable",
+      },
+    });
+    return;
+  }
   if (url.pathname === "/v1/vision/status") {
     respondJson(res, {
       enabled: true,
@@ -460,5 +498,27 @@ describe("machine daemon client integration", () => {
     expect(paymentCode?.disabledReason).toContain("扫码器不可用");
     expect(qrCode?.disabled).toBe(false);
     expect(options.defaultOptionKey).toBe("qr_code:alipay");
+  });
+
+  it("retains the Machine Location Label in config summaries", async () => {
+    const config = await daemonClient.getConfig();
+
+    expect(config.public.machineLocationLabel).toBe("E2E lab");
+    expect(config.public).not.toHaveProperty("machineLocationText");
+  });
+
+  it("loads Natural Context Projection from daemon IPC", async () => {
+    const snapshot = await daemonClient.getNaturalContext();
+
+    expect(snapshot.status).toBe("stale");
+    expect(snapshot.degraded).toBe(true);
+    expect(snapshot.customerFacingBlocked).toBe(false);
+    expect(snapshot.externalEnvironment.status).toBe("stale");
+    if (snapshot.externalEnvironment.status !== "stale") {
+      throw new Error("expected stale external environment");
+    }
+    expect(snapshot.externalEnvironment.diagnostic.reason).toBe(
+      "provider_unavailable",
+    );
   });
 });

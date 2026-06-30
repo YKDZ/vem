@@ -4,6 +4,7 @@ import {
   HARDWARE_ERROR_HANDLING,
   adminUserStatuses,
   canonicalJson,
+  createMachineSchema,
   createMachineSlotSchema,
   createMachineOrderSchema,
   createProtectedFulfillmentDrillSchema,
@@ -34,6 +35,8 @@ import {
   orderStatuses,
   paymentCodeAttemptAdminActionSchema,
   paymentMachinePreflightSchema,
+  externalNaturalEnvironmentSchema,
+  updateMachineSchema,
   paymentCodeAttemptQuerySchema,
   paymentCodeSubmitResponseSchema,
   paymentCodeSubmitSchema,
@@ -101,6 +104,242 @@ describe("shared API contract", () => {
         timeoutSeconds: 30,
       }),
     ).toThrow();
+  });
+
+  it("uses Machine Location Label in machine write contracts", () => {
+    expect(
+      createMachineSchema.parse({
+        code: "M001",
+        name: "Lobby",
+        locationLabel: "1F",
+      }),
+    ).toEqual({
+      code: "M001",
+      name: "Lobby",
+      locationLabel: "1F",
+      status: "offline",
+    });
+    expect(() =>
+      createMachineSchema.parse({
+        code: "M001",
+        name: "Lobby",
+        locationText: "1F",
+      }),
+    ).toThrow();
+  });
+
+  it("does not apply create defaults to Machine partial update contracts", () => {
+    expect(updateMachineSchema.parse({ geoLocation: null })).toEqual({
+      geoLocation: null,
+    });
+  });
+
+  it("validates nullable all-or-nothing Machine Geo Location in machine write contracts", () => {
+    expect(
+      createMachineSchema.parse({
+        code: "M001",
+        name: "Lobby",
+        geoLocation: {
+          latitude: 31.2304,
+          longitude: 121.4737,
+          timezone: "Asia/Shanghai",
+        },
+      }).geoLocation,
+    ).toEqual({
+      latitude: 31.2304,
+      longitude: 121.4737,
+      timezone: "Asia/Shanghai",
+    });
+    expect(
+      createMachineSchema.parse({
+        code: "M001",
+        name: "Lobby",
+        geoLocation: null,
+      }).geoLocation,
+    ).toBeNull();
+    expect(() =>
+      createMachineSchema.parse({
+        code: "M001",
+        name: "Lobby",
+        geoLocation: { latitude: 31.2304, timezone: "Asia/Shanghai" },
+      }),
+    ).toThrow();
+    expect(() =>
+      createMachineSchema.parse({
+        code: "M001",
+        name: "Lobby",
+        geoLocation: {
+          latitude: 91,
+          longitude: 121.4737,
+          timezone: "Asia/Shanghai",
+        },
+      }),
+    ).toThrow();
+    expect(() =>
+      createMachineSchema.parse({
+        code: "M001",
+        name: "Lobby",
+        geoLocation: {
+          latitude: 31.2304,
+          longitude: 181,
+          timezone: "Asia/Shanghai",
+        },
+      }),
+    ).toThrow();
+    expect(() =>
+      createMachineSchema.parse({
+        code: "M001",
+        name: "Lobby",
+        geoLocation: {
+          latitude: 31.2304,
+          longitude: 121.4737,
+          timezone: "Shanghai",
+        },
+      }),
+    ).toThrow();
+  });
+
+  it("defines External Natural Environment unconfigured as HTTP-success payload without weather or sun data", () => {
+    expect(
+      externalNaturalEnvironmentSchema.parse({
+        status: "unconfigured",
+        machineId: "550e8400-e29b-41d4-a716-446655440000",
+        machineCode: "M001",
+        checkedAt: "2026-06-30T14:00:00.000Z",
+        diagnostic: {
+          reason: "machine_geo_location_missing",
+          message: "Machine Geo Location is not configured",
+        },
+      }),
+    ).toEqual({
+      status: "unconfigured",
+      machineId: "550e8400-e29b-41d4-a716-446655440000",
+      machineCode: "M001",
+      checkedAt: "2026-06-30T14:00:00.000Z",
+      diagnostic: {
+        reason: "machine_geo_location_missing",
+        message: "Machine Geo Location is not configured",
+      },
+    });
+
+    expect(() =>
+      externalNaturalEnvironmentSchema.parse({
+        status: "ready",
+        machineId: "550e8400-e29b-41d4-a716-446655440000",
+        machineCode: "M001",
+        checkedAt: "2026-06-30T14:00:00.000Z",
+      }),
+    ).toThrow();
+    expect(() =>
+      externalNaturalEnvironmentSchema.parse({
+        status: "unconfigured",
+        machineId: "550e8400-e29b-41d4-a716-446655440000",
+        machineCode: "M001",
+        checkedAt: "2026-06-30T14:00:00.000Z",
+        weather: { temperatureCelsius: 28 },
+        sun: { sunriseAt: "2026-06-30T21:00:00.000Z" },
+        diagnostic: {
+          reason: "machine_geo_location_missing",
+          message: "Machine Geo Location is not configured",
+        },
+      }),
+    ).toThrow();
+  });
+
+  it("defines External Natural Environment ready as normalized local time, weather, and sun data", () => {
+    expect(
+      externalNaturalEnvironmentSchema.parse({
+        status: "ready",
+        machineId: "550e8400-e29b-41d4-a716-446655440000",
+        machineCode: "M001",
+        checkedAt: "2026-06-30T14:00:00.000Z",
+        localTime: {
+          timezone: "Asia/Shanghai",
+          localDate: "2026-06-30",
+          localClock: "22:00:00",
+        },
+        weather: {
+          temperatureCelsius: 28,
+          conditionText: "Sunny",
+          observedAt: "2026-06-30T13:50:00.000Z",
+        },
+        sun: {
+          sunriseAt: "2026-06-29T21:53:00.000Z",
+          sunsetAt: "2026-06-30T10:02:00.000Z",
+        },
+      }),
+    ).toEqual({
+      status: "ready",
+      machineId: "550e8400-e29b-41d4-a716-446655440000",
+      machineCode: "M001",
+      checkedAt: "2026-06-30T14:00:00.000Z",
+      localTime: {
+        timezone: "Asia/Shanghai",
+        localDate: "2026-06-30",
+        localClock: "22:00:00",
+      },
+      weather: {
+        temperatureCelsius: 28,
+        conditionText: "Sunny",
+        observedAt: "2026-06-30T13:50:00.000Z",
+      },
+      sun: {
+        sunriseAt: "2026-06-29T21:53:00.000Z",
+        sunsetAt: "2026-06-30T10:02:00.000Z",
+      },
+    });
+  });
+
+  it("defines External Natural Environment stale as normalized cached data with safe diagnostics", () => {
+    expect(
+      externalNaturalEnvironmentSchema.parse({
+        status: "stale",
+        machineId: "550e8400-e29b-41d4-a716-446655440000",
+        machineCode: "M001",
+        checkedAt: "2026-06-30T14:10:00.000Z",
+        localTime: {
+          timezone: "Asia/Shanghai",
+          localDate: "2026-06-30",
+          localClock: "22:10:00",
+        },
+        weather: {
+          temperatureCelsius: 28,
+          conditionText: "Sunny",
+          observedAt: "2026-06-30T13:50:00.000Z",
+        },
+        sun: {
+          sunriseAt: "2026-06-29T21:53:00.000Z",
+          sunsetAt: "2026-06-30T10:02:00.000Z",
+        },
+        diagnostic: {
+          reason: "provider_unavailable",
+          message: "External Natural Environment provider is unavailable",
+        },
+      }),
+    ).toEqual({
+      status: "stale",
+      machineId: "550e8400-e29b-41d4-a716-446655440000",
+      machineCode: "M001",
+      checkedAt: "2026-06-30T14:10:00.000Z",
+      localTime: {
+        timezone: "Asia/Shanghai",
+        localDate: "2026-06-30",
+        localClock: "22:10:00",
+      },
+      weather: {
+        temperatureCelsius: 28,
+        conditionText: "Sunny",
+        observedAt: "2026-06-30T13:50:00.000Z",
+      },
+      sun: {
+        sunriseAt: "2026-06-29T21:53:00.000Z",
+        sunsetAt: "2026-06-30T10:02:00.000Z",
+      },
+      diagnostic: {
+        reason: "provider_unavailable",
+        message: "External Natural Environment provider is unavailable",
+      },
+    });
   });
 
   it("accepts structured machine heartbeat payload", () => {
@@ -324,7 +563,7 @@ describe("shared API contract", () => {
         code: "M001",
         name: "Lobby",
         status: "offline",
-        locationText: "1F",
+        locationLabel: "1F",
       },
       credentials: {
         machineSecret:
@@ -366,6 +605,28 @@ describe("shared API contract", () => {
     };
 
     expect(machineProvisioningProfileSchema.parse(profile)).toEqual(profile);
+    expect(() =>
+      machineProvisioningProfileSchema.parse({
+        ...profile,
+        machine: {
+          ...profile.machine,
+          locationText: "1F",
+        },
+      }),
+    ).toThrow();
+    expect(() =>
+      machineProvisioningProfileSchema.parse({
+        ...profile,
+        machine: {
+          ...profile.machine,
+          geoLocation: {
+            latitude: 31.2304,
+            longitude: 121.4737,
+            timezone: "Asia/Shanghai",
+          },
+        },
+      }),
+    ).toThrow();
     expect(() =>
       machineProvisioningProfileSchema.parse({
         ...profile,

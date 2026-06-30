@@ -6,6 +6,7 @@ pub mod health;
 pub mod ipc;
 pub mod logs;
 pub mod mqtt;
+pub mod natural_context;
 pub mod runtime;
 pub mod scanner;
 pub mod secret;

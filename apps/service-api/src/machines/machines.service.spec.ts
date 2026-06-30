@@ -6,7 +6,7 @@ import {
 } from "@nestjs/common";
 import { JwtService } from "@nestjs/jwt";
 import { Test } from "@nestjs/testing";
-import { mqttSigningInput } from "@vem/shared";
+import { mqttSigningInput, updateMachineSchema } from "@vem/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
@@ -26,6 +26,7 @@ import { MqttSignatureService } from "../mqtt/mqtt-signature.service";
 import { MqttService } from "../mqtt/mqtt.service";
 import { NotificationsService } from "../notifications/notifications.service";
 import { PaymentProviderConfigService } from "../payments/payment-provider-config.service";
+import { EXTERNAL_NATURAL_ENVIRONMENT_PROVIDER } from "./external-natural-environment.provider";
 import { hashMachineClaimCodeVerifier } from "./machine-claim-code.util";
 import { MachinesService } from "./machines.service";
 
@@ -45,6 +46,8 @@ describe("MachinesService", () => {
   const listMachinePaymentOptionsForMachine = vi.fn();
   const listProductionPilotPaymentEvidenceForMachine = vi.fn();
   const createMachineOfflineNotification = vi.fn();
+  const fetchWeatherNow = vi.fn();
+  const fetchSun = vi.fn();
 
   beforeEach(async () => {
     vi.resetAllMocks();
@@ -87,6 +90,10 @@ describe("MachinesService", () => {
           useValue: { createMachineOfflineNotification },
         },
         {
+          provide: EXTERNAL_NATURAL_ENVIRONMENT_PROVIDER,
+          useValue: { fetchWeatherNow, fetchSun },
+        },
+        {
           provide: AppConfigService,
           useValue: {
             machineCommandTimeoutSeconds: 5,
@@ -103,6 +110,10 @@ describe("MachinesService", () => {
       id: "machine-1",
       code: "M001",
       name: "Lobby",
+      locationLabel: "1F",
+      geoLatitude: 31.2304,
+      geoLongitude: 121.4737,
+      geoTimezone: "Asia/Shanghai",
       status: "online",
       deletedAt: null,
     };
@@ -202,8 +213,56 @@ describe("MachinesService", () => {
           sensorStatus: "ok",
         }),
         latestEnvironmentCommand: latestCommand,
+        geoLocation: {
+          latitude: 31.2304,
+          longitude: 121.4737,
+          timezone: "Asia/Shanghai",
+        },
       }),
     );
+  });
+
+  it("creates machines with nullable Machine Geo Location fields", async () => {
+    const created = {
+      id: "machine-1",
+      code: "M001",
+      name: "Lobby",
+      locationLabel: null,
+      geoLatitude: 31.2304,
+      geoLongitude: 121.4737,
+      geoTimezone: "Asia/Shanghai",
+      status: "offline",
+      mqttClientId: null,
+      deletedAt: null,
+    };
+    const insertValues = vi.fn().mockReturnValue({
+      returning: async () => [created],
+    });
+    mockDb.insert.mockReturnValueOnce({ values: insertValues });
+
+    const result = await service.createMachine({
+      code: "M001",
+      name: "Lobby",
+      geoLocation: {
+        latitude: 31.2304,
+        longitude: 121.4737,
+        timezone: "Asia/Shanghai",
+      },
+      status: "offline",
+    });
+
+    expect(insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        geoLatitude: 31.2304,
+        geoLongitude: 121.4737,
+        geoTimezone: "Asia/Shanghai",
+      }),
+    );
+    expect(result.geoLocation).toEqual({
+      latitude: 31.2304,
+      longitude: 121.4737,
+      timezone: "Asia/Shanghai",
+    });
   });
 
   it("returns latest environment state from the most recent heartbeat", async () => {
@@ -211,6 +270,10 @@ describe("MachinesService", () => {
       id: "machine-1",
       code: "M001",
       name: "Lobby",
+      locationLabel: "1F",
+      geoLatitude: null,
+      geoLongitude: null,
+      geoTimezone: null,
       status: "online",
       deletedAt: null,
     };
@@ -312,9 +375,10 @@ describe("MachinesService", () => {
     expect(result.latestEnvironmentCommand).toEqual(
       expect.objectContaining({ status: "succeeded" }),
     );
+    expect(result.geoLocation).toBeNull();
   });
 
-  it("returns ready Production Pilot Readiness from machine detail evidence", async () => {
+  it("keeps otherwise ready Production Pilot Readiness degraded while natural context is unconfigured", async () => {
     const machine = {
       id: "machine-1",
       code: "M001",
@@ -404,9 +468,14 @@ describe("MachinesService", () => {
 
     expect(result.productionPilotReadiness).toEqual(
       expect.objectContaining({
-        status: "ready",
+        status: "degraded",
         blockers: [],
-        degraded: [],
+        degraded: expect.arrayContaining([
+          expect.objectContaining({
+            code: "natural_context_readiness.unconfigured",
+            status: "degraded",
+          }),
+        ]),
         checks: expect.arrayContaining([
           expect.objectContaining({
             code: "machine_heartbeat.online",
@@ -670,9 +739,14 @@ describe("MachinesService", () => {
 
     expect(result.productionPilotReadiness).toEqual(
       expect.objectContaining({
-        status: "ready",
+        status: "degraded",
         blockers: [],
-        degraded: [],
+        degraded: expect.arrayContaining([
+          expect.objectContaining({
+            code: "natural_context_readiness.unconfigured",
+            status: "degraded",
+          }),
+        ]),
         checks: expect.arrayContaining([
           expect.objectContaining({
             code: "production_dispense_path.ready",
@@ -760,9 +834,14 @@ describe("MachinesService", () => {
 
     expect(result.productionPilotReadiness).toEqual(
       expect.objectContaining({
-        status: "ready",
+        status: "degraded",
         blockers: [],
-        degraded: [],
+        degraded: expect.arrayContaining([
+          expect.objectContaining({
+            code: "natural_context_readiness.unconfigured",
+            status: "degraded",
+          }),
+        ]),
         checks: expect.arrayContaining([
           expect.objectContaining({
             code: "scanner_runtime_status.ready",
@@ -1012,12 +1091,18 @@ describe("MachinesService", () => {
     const result = await service.getMachine("machine-1");
 
     expect(result.productionPilotReadiness.status).toBe("degraded");
-    expect(result.productionPilotReadiness.degraded).toEqual([
-      expect.objectContaining({
-        code: "scanner_runtime_status.missing",
-        status: "degraded",
-      }),
-    ]);
+    expect(result.productionPilotReadiness.degraded).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "scanner_runtime_status.missing",
+          status: "degraded",
+        }),
+        expect.objectContaining({
+          code: "natural_context_readiness.unconfigured",
+          status: "degraded",
+        }),
+      ]),
+    );
   });
 
   it("returns stable Production Pilot Readiness blockers with operator actions", async () => {
@@ -1181,13 +1266,104 @@ describe("MachinesService", () => {
 
     expect(result.productionPilotReadiness.status).toBe("degraded");
     expect(result.productionPilotReadiness.blockers).toEqual([]);
+    expect(result.productionPilotReadiness.degraded).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "scanner_runtime_status.missing",
+          label: "Scanner Runtime Status",
+          status: "degraded",
+          operatorAction:
+            "Inspect the scanner runtime; QR payment can remain available if payment readiness is ready.",
+        }),
+        expect.objectContaining({
+          code: "natural_context_readiness.unconfigured",
+          status: "degraded",
+        }),
+      ]),
+    );
+  });
+
+  it("reports configured geo without a provider path as degraded Natural Context Readiness in machine detail", async () => {
+    const machine = {
+      id: "machine-1",
+      code: "M001",
+      name: "Lobby",
+      locationLabel: "1F",
+      geoLatitude: 31.2304,
+      geoLongitude: 121.4737,
+      geoTimezone: "Asia/Shanghai",
+      status: "online",
+      lastSeenAt: new Date(),
+      deletedAt: null,
+    };
+    mockDb.select
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            limit: async () => [machine],
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            orderBy: () => ({
+              limit: async () => [
+                {
+                  reportedAt: new Date("2026-06-27T02:00:00.000Z"),
+                  statusPayloadJson: {
+                    scannerHealth: { status: "online" },
+                    productionDispensePath: { status: "ready" },
+                    saleReadiness: {
+                      state: "restored",
+                      blockingCodes: [],
+                    },
+                    physicalStockAttestation: {
+                      status: "ready",
+                      planogramVersion: "PLAN-1",
+                    },
+                    recoveryDrill: { status: "ready" },
+                    managedMachineUpdate: { status: "ready" },
+                  },
+                },
+              ],
+            }),
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            orderBy: () => ({
+              limit: async () => [],
+            }),
+          }),
+        }),
+      });
+    listMachinePaymentOptionsForMachine.mockResolvedValue({
+      options: [
+        {
+          providerCode: "alipay",
+          method: "qr_code",
+          mode: "production",
+          displayName: "Alipay",
+          description: "Alipay QR",
+          icon: "alipay",
+          recommended: true,
+        },
+      ],
+    });
+
+    const result = await service.getMachine("machine-1");
+
+    expect(result.productionPilotReadiness.status).toBe("degraded");
+    expect(result.productionPilotReadiness.blockers).toEqual([]);
     expect(result.productionPilotReadiness.degraded).toEqual([
       expect.objectContaining({
-        code: "scanner_runtime_status.missing",
-        label: "Scanner Runtime Status",
+        code: "natural_context_readiness.unavailable",
+        label: "Natural Context Readiness",
         status: "degraded",
-        operatorAction:
-          "Inspect the scanner runtime; QR payment can remain available if payment readiness is ready.",
+        message: "External Natural Environment is unavailable",
       }),
     ]);
   });
@@ -1204,6 +1380,670 @@ describe("MachinesService", () => {
     await expect(service.getMachine("missing")).rejects.toThrow(
       NotFoundException,
     );
+  });
+
+  it("returns unconfigured External Natural Environment when Machine Geo Location is missing", async () => {
+    mockDb.select.mockReturnValueOnce({
+      from: () => ({
+        where: () => ({
+          limit: async () => [
+            {
+              id: "550e8400-e29b-41d4-a716-446655440000",
+              code: "M001",
+              name: "Lobby",
+              locationLabel: "1F",
+              geoLatitude: null,
+              geoLongitude: null,
+              geoTimezone: null,
+              status: "online",
+              deletedAt: null,
+            },
+          ],
+        }),
+      }),
+    });
+
+    const result = await service.getExternalNaturalEnvironmentForMachine(
+      "550e8400-e29b-41d4-a716-446655440000",
+      new Date("2026-06-30T14:00:00.000Z"),
+    );
+
+    expect(result).toEqual({
+      status: "unconfigured",
+      machineId: "550e8400-e29b-41d4-a716-446655440000",
+      machineCode: "M001",
+      checkedAt: "2026-06-30T14:00:00.000Z",
+      diagnostic: {
+        reason: "machine_geo_location_missing",
+        message: "Machine Geo Location is not configured",
+      },
+    });
+    expect(result).not.toHaveProperty("weather");
+    expect(result).not.toHaveProperty("sun");
+    expect(fetchWeatherNow).not.toHaveBeenCalled();
+    expect(fetchSun).not.toHaveBeenCalled();
+  });
+
+  it("returns ready External Natural Environment from QWeather for configured Machine Geo Location", async () => {
+    mockDb.select.mockReturnValueOnce({
+      from: () => ({
+        where: () => ({
+          limit: async () => [
+            {
+              id: "550e8400-e29b-41d4-a716-446655440000",
+              code: "M001",
+              name: "Lobby",
+              locationLabel: "1F",
+              geoLatitude: 31.2304,
+              geoLongitude: 121.4737,
+              geoTimezone: "Asia/Shanghai",
+              status: "online",
+              deletedAt: null,
+            },
+          ],
+        }),
+      }),
+    });
+    fetchWeatherNow.mockResolvedValueOnce({
+      temperatureCelsius: 28,
+      conditionText: "Sunny",
+      observedAt: "2026-06-30T13:50:00.000Z",
+    });
+    fetchSun.mockResolvedValueOnce({
+      sunriseAt: "2026-06-29T21:53:00.000Z",
+      sunsetAt: "2026-06-30T10:02:00.000Z",
+    });
+
+    const result = await service.getExternalNaturalEnvironmentForMachine(
+      "550e8400-e29b-41d4-a716-446655440000",
+      new Date("2026-06-30T14:00:00.000Z"),
+    );
+
+    expect(fetchWeatherNow).toHaveBeenCalledWith({
+      geoLocation: {
+        latitude: 31.2304,
+        longitude: 121.4737,
+        timezone: "Asia/Shanghai",
+      },
+      checkedAt: new Date("2026-06-30T14:00:00.000Z"),
+    });
+    expect(fetchSun).toHaveBeenCalledWith({
+      geoLocation: {
+        latitude: 31.2304,
+        longitude: 121.4737,
+        timezone: "Asia/Shanghai",
+      },
+      checkedAt: new Date("2026-06-30T14:00:00.000Z"),
+    });
+    expect(result).toEqual({
+      status: "ready",
+      machineId: "550e8400-e29b-41d4-a716-446655440000",
+      machineCode: "M001",
+      checkedAt: "2026-06-30T14:00:00.000Z",
+      localTime: {
+        timezone: "Asia/Shanghai",
+        localDate: "2026-06-30",
+        localClock: "22:00:00",
+      },
+      weather: {
+        temperatureCelsius: 28,
+        conditionText: "Sunny",
+        observedAt: "2026-06-30T13:50:00.000Z",
+      },
+      sun: {
+        sunriseAt: "2026-06-29T21:53:00.000Z",
+        sunsetAt: "2026-06-30T10:02:00.000Z",
+      },
+    });
+    expect(result).not.toHaveProperty("diagnostic");
+  });
+
+  it("returns cached External Natural Environment for the same Machine Geo Location within the weather TTL", async () => {
+    const machine = {
+      id: "550e8400-e29b-41d4-a716-446655440000",
+      code: "M001",
+      name: "Lobby",
+      locationLabel: "1F",
+      geoLatitude: 31.2304,
+      geoLongitude: 121.4737,
+      geoTimezone: "Asia/Shanghai",
+      status: "online",
+      deletedAt: null,
+    };
+    mockDb.select
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            limit: async () => [machine],
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            limit: async () => [machine],
+          }),
+        }),
+      });
+    fetchWeatherNow.mockResolvedValueOnce({
+      temperatureCelsius: 28,
+      conditionText: "Sunny",
+      observedAt: "2026-06-30T13:50:00.000Z",
+    });
+    fetchSun.mockResolvedValueOnce({
+      sunriseAt: "2026-06-29T21:53:00.000Z",
+      sunsetAt: "2026-06-30T10:02:00.000Z",
+    });
+
+    const first = await service.getExternalNaturalEnvironmentForMachine(
+      "550e8400-e29b-41d4-a716-446655440000",
+      new Date("2026-06-30T14:00:00.000Z"),
+    );
+    const second = await service.getExternalNaturalEnvironmentForMachine(
+      "550e8400-e29b-41d4-a716-446655440000",
+      new Date("2026-06-30T14:09:59.000Z"),
+    );
+
+    expect(fetchWeatherNow).toHaveBeenCalledTimes(1);
+    expect(fetchSun).toHaveBeenCalledTimes(1);
+    expect(second).toEqual({
+      ...first,
+      checkedAt: "2026-06-30T14:09:59.000Z",
+      localTime: {
+        timezone: "Asia/Shanghai",
+        localDate: "2026-06-30",
+        localClock: "22:09:59",
+      },
+    });
+  });
+
+  it("returns stale cached External Natural Environment when provider refresh fails after the weather TTL", async () => {
+    const machine = {
+      id: "550e8400-e29b-41d4-a716-446655440000",
+      code: "M001",
+      name: "Lobby",
+      locationLabel: "1F",
+      geoLatitude: 31.2304,
+      geoLongitude: 121.4737,
+      geoTimezone: "Asia/Shanghai",
+      status: "online",
+      deletedAt: null,
+    };
+    mockDb.select
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            limit: async () => [machine],
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            limit: async () => [machine],
+          }),
+        }),
+      });
+    fetchWeatherNow
+      .mockResolvedValueOnce({
+        temperatureCelsius: 28,
+        conditionText: "Sunny",
+        observedAt: "2026-06-30T13:50:00.000Z",
+      })
+      .mockRejectedValueOnce(
+        new Error("QWeather 401 for API key secret-qweather-api-key"),
+      );
+    fetchSun.mockResolvedValueOnce({
+      sunriseAt: "2026-06-29T21:53:00.000Z",
+      sunsetAt: "2026-06-30T10:02:00.000Z",
+    });
+
+    await service.getExternalNaturalEnvironmentForMachine(
+      "550e8400-e29b-41d4-a716-446655440000",
+      new Date("2026-06-30T14:00:00.000Z"),
+    );
+    const result = await service.getExternalNaturalEnvironmentForMachine(
+      "550e8400-e29b-41d4-a716-446655440000",
+      new Date("2026-06-30T14:10:00.000Z"),
+    );
+
+    expect(fetchWeatherNow).toHaveBeenCalledTimes(2);
+    expect(fetchSun).toHaveBeenCalledTimes(1);
+    expect(result).toEqual({
+      status: "stale",
+      machineId: "550e8400-e29b-41d4-a716-446655440000",
+      machineCode: "M001",
+      checkedAt: "2026-06-30T14:10:00.000Z",
+      localTime: {
+        timezone: "Asia/Shanghai",
+        localDate: "2026-06-30",
+        localClock: "22:10:00",
+      },
+      weather: {
+        temperatureCelsius: 28,
+        conditionText: "Sunny",
+        observedAt: "2026-06-30T13:50:00.000Z",
+      },
+      sun: {
+        sunriseAt: "2026-06-29T21:53:00.000Z",
+        sunsetAt: "2026-06-30T10:02:00.000Z",
+      },
+      diagnostic: {
+        reason: "provider_unavailable",
+        message: "External Natural Environment provider is unavailable",
+      },
+    });
+    expect(JSON.stringify(result)).not.toContain("secret-qweather-api-key");
+  });
+
+  it("refreshes weather after 10 minutes while reusing same-date sunrise and sunset for 24 hours", async () => {
+    const machine = {
+      id: "550e8400-e29b-41d4-a716-446655440000",
+      code: "M001",
+      name: "Lobby",
+      locationLabel: "1F",
+      geoLatitude: 31.2304,
+      geoLongitude: 121.4737,
+      geoTimezone: "Asia/Shanghai",
+      status: "online",
+      deletedAt: null,
+    };
+    mockDb.select
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            limit: async () => [machine],
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            limit: async () => [machine],
+          }),
+        }),
+      });
+    fetchWeatherNow
+      .mockResolvedValueOnce({
+        temperatureCelsius: 28,
+        conditionText: "Sunny",
+        observedAt: "2026-06-30T13:50:00.000Z",
+      })
+      .mockResolvedValueOnce({
+        temperatureCelsius: 29,
+        conditionText: "Cloudy",
+        observedAt: "2026-06-30T14:10:00.000Z",
+      });
+    fetchSun.mockResolvedValueOnce({
+      sunriseAt: "2026-06-29T21:53:00.000Z",
+      sunsetAt: "2026-06-30T10:02:00.000Z",
+    });
+
+    await service.getExternalNaturalEnvironmentForMachine(
+      "550e8400-e29b-41d4-a716-446655440000",
+      new Date("2026-06-30T14:00:00.000Z"),
+    );
+    const result = await service.getExternalNaturalEnvironmentForMachine(
+      "550e8400-e29b-41d4-a716-446655440000",
+      new Date("2026-06-30T14:10:00.000Z"),
+    );
+
+    expect(fetchWeatherNow).toHaveBeenCalledTimes(2);
+    expect(fetchSun).toHaveBeenCalledTimes(1);
+    expect(result.weather).toEqual({
+      temperatureCelsius: 29,
+      conditionText: "Cloudy",
+      observedAt: "2026-06-30T14:10:00.000Z",
+    });
+    expect(result.sun).toEqual({
+      sunriseAt: "2026-06-29T21:53:00.000Z",
+      sunsetAt: "2026-06-30T10:02:00.000Z",
+    });
+  });
+
+  it("refreshes sunrise and sunset separately for a new effective local date", async () => {
+    const machine = {
+      id: "550e8400-e29b-41d4-a716-446655440000",
+      code: "M001",
+      name: "Lobby",
+      locationLabel: "1F",
+      geoLatitude: 31.2304,
+      geoLongitude: 121.4737,
+      geoTimezone: "Asia/Shanghai",
+      status: "online",
+      deletedAt: null,
+    };
+    mockDb.select
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            limit: async () => [machine],
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            limit: async () => [machine],
+          }),
+        }),
+      });
+    fetchWeatherNow
+      .mockResolvedValueOnce({
+        temperatureCelsius: 28,
+        conditionText: "Sunny",
+        observedAt: "2026-06-30T13:50:00.000Z",
+      })
+      .mockResolvedValueOnce({
+        temperatureCelsius: 27,
+        conditionText: "Cloudy",
+        observedAt: "2026-07-01T13:50:00.000Z",
+      });
+    fetchSun
+      .mockResolvedValueOnce({
+        sunriseAt: "2026-06-29T21:53:00.000Z",
+        sunsetAt: "2026-06-30T10:02:00.000Z",
+      })
+      .mockResolvedValueOnce({
+        sunriseAt: "2026-06-30T21:54:00.000Z",
+        sunsetAt: "2026-07-01T10:02:00.000Z",
+      });
+
+    await service.getExternalNaturalEnvironmentForMachine(
+      "550e8400-e29b-41d4-a716-446655440000",
+      new Date("2026-06-30T14:00:00.000Z"),
+    );
+    const result = await service.getExternalNaturalEnvironmentForMachine(
+      "550e8400-e29b-41d4-a716-446655440000",
+      new Date("2026-07-01T14:00:00.000Z"),
+    );
+
+    expect(fetchWeatherNow).toHaveBeenCalledTimes(2);
+    expect(fetchSun).toHaveBeenCalledTimes(2);
+    expect(result.sun).toEqual({
+      sunriseAt: "2026-06-30T21:54:00.000Z",
+      sunsetAt: "2026-07-01T10:02:00.000Z",
+    });
+  });
+
+  it("returns unavailable External Natural Environment with redacted diagnostics when QWeather fails", async () => {
+    mockDb.select.mockReturnValueOnce({
+      from: () => ({
+        where: () => ({
+          limit: async () => [
+            {
+              id: "550e8400-e29b-41d4-a716-446655440000",
+              code: "M001",
+              name: "Lobby",
+              locationLabel: "1F",
+              geoLatitude: 31.2304,
+              geoLongitude: 121.4737,
+              geoTimezone: "Asia/Shanghai",
+              status: "online",
+              deletedAt: null,
+            },
+          ],
+        }),
+      }),
+    });
+    fetchWeatherNow.mockRejectedValueOnce(
+      new Error("QWeather 401 for API key secret-qweather-api-key"),
+    );
+    fetchSun.mockResolvedValueOnce({
+      sunriseAt: "2026-06-29T21:53:00.000Z",
+      sunsetAt: "2026-06-30T10:02:00.000Z",
+    });
+
+    const result = await service.getExternalNaturalEnvironmentForMachine(
+      "550e8400-e29b-41d4-a716-446655440000",
+      new Date("2026-06-30T14:00:00.000Z"),
+    );
+
+    expect(result).toEqual({
+      status: "unavailable",
+      machineId: "550e8400-e29b-41d4-a716-446655440000",
+      machineCode: "M001",
+      checkedAt: "2026-06-30T14:00:00.000Z",
+      diagnostic: {
+        reason: "provider_unavailable",
+        message: "External Natural Environment provider is unavailable",
+      },
+    });
+    expect(JSON.stringify(result)).not.toContain("secret-qweather-api-key");
+    expect(result).not.toHaveProperty("weather");
+    expect(result).not.toHaveProperty("sun");
+  });
+
+  it("returns the authenticated machine's own unconfigured External Natural Environment by machine code", async () => {
+    mockDb.select.mockReturnValueOnce({
+      from: () => ({
+        where: () => ({
+          limit: async () => [
+            {
+              id: "550e8400-e29b-41d4-a716-446655440000",
+              code: "M001",
+              name: "Lobby",
+              locationLabel: "1F",
+              geoLatitude: null,
+              geoLongitude: null,
+              geoTimezone: null,
+              status: "online",
+              deletedAt: null,
+            },
+          ],
+        }),
+      }),
+    });
+
+    await expect(
+      service.getExternalNaturalEnvironmentForMachineCode(
+        "M001",
+        new Date("2026-06-30T14:00:00.000Z"),
+      ),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        status: "unconfigured",
+        machineCode: "M001",
+        diagnostic: expect.objectContaining({
+          reason: "machine_geo_location_missing",
+        }),
+      }),
+    );
+  });
+
+  it("updates Machine Geo Location as one audited machine location value", async () => {
+    const existing = {
+      id: "machine-1",
+      code: "M001",
+      name: "Lobby",
+      locationLabel: "1F",
+      geoLatitude: null,
+      geoLongitude: null,
+      geoTimezone: null,
+      status: "offline",
+      mqttClientId: null,
+      deletedAt: null,
+    };
+    const updated = {
+      ...existing,
+      geoLatitude: 31.2304,
+      geoLongitude: 121.4737,
+      geoTimezone: "Asia/Shanghai",
+      updatedAt: new Date("2026-06-30T13:55:00.000Z"),
+    };
+    const updateSet = vi.fn().mockReturnValue({
+      where: () => ({ returning: async () => [updated] }),
+    });
+
+    mockDb.select.mockReturnValueOnce({
+      from: () => ({
+        where: () => ({
+          limit: async () => [existing],
+        }),
+      }),
+    });
+    mockDb.update.mockReturnValueOnce({ set: updateSet });
+
+    const result = await service.updateMachine(
+      "machine-1",
+      {
+        geoLocation: {
+          latitude: 31.2304,
+          longitude: 121.4737,
+          timezone: "Asia/Shanghai",
+        },
+      },
+      "admin-1",
+    );
+
+    expect(updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        geoLatitude: 31.2304,
+        geoLongitude: 121.4737,
+        geoTimezone: "Asia/Shanghai",
+      }),
+    );
+    expect(result.geoLocation).toEqual({
+      latitude: 31.2304,
+      longitude: 121.4737,
+      timezone: "Asia/Shanghai",
+    });
+    expect(auditRecord).toHaveBeenCalledWith({
+      adminUserId: "admin-1",
+      action: "machines.location.update",
+      resourceType: "machine",
+      resourceId: "machine-1",
+      beforeJson: {
+        locationLabel: "1F",
+        geoLocation: null,
+      },
+      afterJson: {
+        locationLabel: "1F",
+        geoLocation: {
+          latitude: 31.2304,
+          longitude: 121.4737,
+          timezone: "Asia/Shanghai",
+        },
+      },
+    });
+  });
+
+  it("clears Machine Geo Location as one audited machine location value", async () => {
+    const existing = {
+      id: "machine-1",
+      code: "M001",
+      name: "Lobby",
+      locationLabel: "1F",
+      geoLatitude: 31.2304,
+      geoLongitude: 121.4737,
+      geoTimezone: "Asia/Shanghai",
+      status: "offline",
+      mqttClientId: null,
+      deletedAt: null,
+    };
+    const updated = {
+      ...existing,
+      geoLatitude: null,
+      geoLongitude: null,
+      geoTimezone: null,
+      updatedAt: new Date("2026-06-30T13:56:00.000Z"),
+    };
+    const updateSet = vi.fn().mockReturnValue({
+      where: () => ({ returning: async () => [updated] }),
+    });
+
+    mockDb.select.mockReturnValueOnce({
+      from: () => ({
+        where: () => ({
+          limit: async () => [existing],
+        }),
+      }),
+    });
+    mockDb.update.mockReturnValueOnce({ set: updateSet });
+
+    const result = await service.updateMachine(
+      "machine-1",
+      { geoLocation: null },
+      "admin-1",
+    );
+
+    expect(updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        geoLatitude: null,
+        geoLongitude: null,
+        geoTimezone: null,
+      }),
+    );
+    expect(result.geoLocation).toBeNull();
+    expect(auditRecord).toHaveBeenCalledWith({
+      adminUserId: "admin-1",
+      action: "machines.location.update",
+      resourceType: "machine",
+      resourceId: "machine-1",
+      beforeJson: {
+        locationLabel: "1F",
+        geoLocation: {
+          latitude: 31.2304,
+          longitude: 121.4737,
+          timezone: "Asia/Shanghai",
+        },
+      },
+      afterJson: {
+        locationLabel: "1F",
+        geoLocation: null,
+      },
+    });
+  });
+
+  it("patches Machine Geo Location without defaulting omitted machine fields", async () => {
+    const existing = {
+      id: "machine-1",
+      code: "M001",
+      name: "Lobby",
+      locationLabel: "1F",
+      geoLatitude: 31.2304,
+      geoLongitude: 121.4737,
+      geoTimezone: "Asia/Shanghai",
+      status: "online",
+      mqttClientId: "mqtt-client-1",
+      deletedAt: null,
+    };
+    const updateSet = vi.fn((values: Record<string, unknown>) => ({
+      where: () => ({
+        returning: async () => [
+          {
+            ...existing,
+            ...Object.fromEntries(
+              Object.entries(values).filter(([, value]) => value !== undefined),
+            ),
+          },
+        ],
+      }),
+    }));
+
+    mockDb.select.mockReturnValueOnce({
+      from: () => ({
+        where: () => ({
+          limit: async () => [existing],
+        }),
+      }),
+    });
+    mockDb.update.mockReturnValueOnce({ set: updateSet });
+
+    const result = await service.updateMachine(
+      "machine-1",
+      updateMachineSchema.parse({ geoLocation: null }),
+      "admin-1",
+    );
+
+    expect(result).toMatchObject({
+      code: "M001",
+      name: "Lobby",
+      locationLabel: "1F",
+      status: "online",
+      mqttClientId: "mqtt-client-1",
+      geoLocation: null,
+    });
   });
 
   it("marks stale online machines offline and creates an operator notification", async () => {
@@ -2154,7 +2994,7 @@ describe("MachinesService claim code lifecycle", () => {
       lockedAt: null,
       machineCode: "M001",
       machineName: "Lobby",
-      machineLocationText: "1F",
+      machineLocationLabel: "1F",
       machineStatus: "offline" as const,
       machineMqttClientId: null,
       machineSecretVersion: 1,
@@ -2167,7 +3007,7 @@ describe("MachinesService claim code lifecycle", () => {
       id: "550e8400-e29b-41d4-a716-446655440000",
       code: "M001",
       name: "Lobby",
-      locationText: "1F",
+      locationLabel: "1F",
       status: "offline",
       mqttClientId: null,
       secretVersion: 1,
@@ -2190,7 +3030,7 @@ describe("MachinesService claim code lifecycle", () => {
       updatedAt: new Date("2026-06-08T16:00:00.000Z"),
       machineCode: machine.code,
       machineName: machine.name,
-      machineLocationText: machine.locationText,
+      machineLocationLabel: machine.locationLabel,
       machineStatus: machine.status,
       machineMqttClientId: machine.mqttClientId,
       machineSecretVersion: machine.secretVersion,
@@ -2245,6 +3085,7 @@ describe("MachinesService claim code lifecycle", () => {
           id: machine.id,
           code: "M001",
           name: "Lobby",
+          locationLabel: "1F",
         }),
         credentials: expect.objectContaining({
           machineSecret: "vms_rotated-machine-secret-change-before-production",
@@ -2273,6 +3114,7 @@ describe("MachinesService claim code lifecycle", () => {
         }),
       }),
     );
+    expect(result.machine).not.toHaveProperty("locationText");
     expect(consumeSet).toHaveBeenCalledWith(
       expect.objectContaining({
         state: "consumed",

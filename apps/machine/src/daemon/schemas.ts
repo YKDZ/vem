@@ -49,6 +49,7 @@ const configSummaryPublicSchema = z.preprocess(
   },
   z.object({
     machineCode: z.string().nullable(),
+    machineLocationLabel: z.string().nullable().optional(),
     apiBaseUrl: z.string(),
     mqttUrl: z.string(),
     mqttUsername: z.string().nullable(),
@@ -243,6 +244,79 @@ export const remoteOpsStatusSchema = z.object({
   processing: z.string().nullable(),
 });
 
+const externalNaturalEnvironmentDiagnosticSchema = z.object({
+  reason: z.enum(["machine_geo_location_missing", "provider_unavailable"]),
+  message: z.string().min(1),
+});
+
+const externalNaturalEnvironmentWeatherSchema = z.object({
+  temperatureCelsius: z.number(),
+  conditionText: z.string().min(1),
+  observedAt: z.string(),
+});
+
+const externalNaturalEnvironmentLocalTimeSchema = z.object({
+  timezone: z.string().min(1),
+  localDate: z.string().min(1),
+  localClock: z.string().min(1),
+});
+
+const externalNaturalEnvironmentSunSchema = z.object({
+  sunriseAt: z.string(),
+  sunsetAt: z.string(),
+});
+
+export const externalNaturalEnvironmentProjectionSchema = z.discriminatedUnion(
+  "status",
+  [
+    z.object({
+      status: z.literal("ready"),
+      machineId: z.string().optional(),
+      machineCode: z.string().nullable().optional(),
+      checkedAt: z.string(),
+      localTime: externalNaturalEnvironmentLocalTimeSchema,
+      weather: externalNaturalEnvironmentWeatherSchema,
+      sun: externalNaturalEnvironmentSunSchema,
+    }),
+    z.object({
+      status: z.literal("stale"),
+      machineId: z.string().optional(),
+      machineCode: z.string().nullable().optional(),
+      checkedAt: z.string(),
+      localTime: externalNaturalEnvironmentLocalTimeSchema,
+      weather: externalNaturalEnvironmentWeatherSchema,
+      sun: externalNaturalEnvironmentSunSchema,
+      diagnostic: externalNaturalEnvironmentDiagnosticSchema,
+    }),
+    z.object({
+      status: z.literal("unavailable"),
+      machineId: z.string().optional(),
+      machineCode: z.string().nullable().optional(),
+      checkedAt: z.string(),
+      diagnostic: externalNaturalEnvironmentDiagnosticSchema,
+    }),
+    z.object({
+      status: z.literal("unconfigured"),
+      machineId: z.string().optional(),
+      machineCode: z.string().nullable().optional(),
+      checkedAt: z.string(),
+      diagnostic: externalNaturalEnvironmentDiagnosticSchema,
+    }),
+  ],
+);
+
+export const naturalContextSnapshotSchema = z.object({
+  status: z.enum(["ready", "stale", "unavailable", "unconfigured"]),
+  machineCode: z.string().nullable().optional(),
+  externalEnvironment: externalNaturalEnvironmentProjectionSchema,
+  localSiteSignals: z.object({
+    status: z.enum(["unavailable"]),
+  }),
+  degraded: z.boolean(),
+  customerFacingBlocked: z.boolean(),
+  checkedAt: z.string(),
+});
+
 export const hardwareSelfCheckSchema = z.object({
   adapter: z.string(),
   online: z.boolean(),
@@ -376,6 +450,9 @@ export type SyncStatus = z.infer<typeof syncStatusSchema>;
 export type ScannerStatus = z.infer<typeof scannerStatusSchema>;
 export type VisionStatus = z.infer<typeof visionStatusSchema>;
 export type RemoteOpsStatus = z.infer<typeof remoteOpsStatusSchema>;
+export type NaturalContextSnapshot = z.infer<
+  typeof naturalContextSnapshotSchema
+>;
 export type HardwareSelfCheck = z.infer<typeof hardwareSelfCheckSchema>;
 export type MachineSaleReadiness = z.infer<typeof machineSaleReadinessSchema>;
 export type CatalogSnapshot = z.infer<typeof catalogSnapshotSchema>;

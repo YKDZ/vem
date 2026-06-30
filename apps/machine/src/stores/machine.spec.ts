@@ -95,6 +95,59 @@ describe("useMachineStore", () => {
     );
   });
 
+  it("preserves the Machine Location Label through daemon config save", async () => {
+    const config = {
+      ...normalizeMachineConfig({
+        machineCode: "MACHINE-1",
+      }),
+      machineLocationLabel: "E2E lab",
+    };
+    getConfigMock.mockResolvedValue({
+      public: {
+        ...config,
+        machineSecret: undefined,
+        machineSecretConfigured: undefined,
+        mqttSigningSecret: undefined,
+        mqttSigningSecretConfigured: undefined,
+        mqttPassword: undefined,
+        mqttPasswordConfigured: undefined,
+      },
+      machineSecretConfigured: false,
+      mqttSigningSecretConfigured: false,
+      mqttPasswordConfigured: false,
+    });
+    saveConfigMock.mockResolvedValue({
+      public: {
+        ...config,
+        machineSecret: undefined,
+        machineSecretConfigured: undefined,
+        mqttSigningSecret: undefined,
+        mqttSigningSecretConfigured: undefined,
+        mqttPassword: undefined,
+        mqttPasswordConfigured: undefined,
+      },
+      machineSecretConfigured: false,
+      mqttSigningSecretConfigured: false,
+      mqttPasswordConfigured: false,
+    });
+
+    const store = useMachineStore();
+    await store.loadConfig();
+    await store.saveConfig(store.config);
+
+    expect(store.config.machineLocationLabel).toBe("E2E lab");
+    expect(saveConfigMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        public: expect.objectContaining({
+          machineLocationLabel: "E2E lab",
+        }),
+      }),
+    );
+    expect(saveConfigMock.mock.calls[0]?.[0].public).not.toHaveProperty(
+      "machineLocationText",
+    );
+  });
+
   it("round-trips audio cue settings through daemon config save", async () => {
     const config = normalizeMachineConfig({
       machineCode: "MACHINE-1",

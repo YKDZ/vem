@@ -24,6 +24,7 @@ import { useCatalogStore } from "@/stores/catalog";
 import { useConnectivityStore } from "@/stores/connectivity";
 import { useMachineStore } from "@/stores/machine";
 import { useMqttStore } from "@/stores/mqtt";
+import { useNaturalContextStore } from "@/stores/natural-context";
 import { useRemoteOpsStore } from "@/stores/remote-ops";
 import { useScannerStore } from "@/stores/scanner";
 import { useVisionStore } from "@/stores/vision";
@@ -35,6 +36,7 @@ const audioCueStore = useAudioCueStore();
 const connectivityStore = useConnectivityStore();
 const machineStore = useMachineStore();
 const mqttStore = useMqttStore();
+const naturalContextStore = useNaturalContextStore();
 const remoteOpsStore = useRemoteOpsStore();
 const scannerStore = useScannerStore();
 const visionStore = useVisionStore();
@@ -119,6 +121,11 @@ const latestAudioCueDiagnosticRows = computed(() => {
     },
   ];
 });
+const naturalContextDiagnosticMessage = computed(() =>
+  naturalContextStore.snapshot?.degraded || naturalContextStore.error
+    ? naturalContextStore.operatorMessage
+    : null,
+);
 const clearWholeMachineLockDisabled = computed(
   () =>
     wholeMachineLockMaintenance.loading ||
@@ -160,6 +167,7 @@ function cloneLowerControllerUsbIdentity(
 
 const form = reactive({
   machineCode: machineConfigDefaults.machineCode,
+  machineLocationLabel: machineConfigDefaults.machineLocationLabel,
   apiBaseUrl: machineConfigDefaults.apiBaseUrl,
   mqttUrl: machineConfigDefaults.mqttUrl,
   mqttUsername: machineConfigDefaults.mqttUsername,
@@ -191,6 +199,7 @@ const form = reactive({
 
 function syncFormFromStore(): void {
   form.machineCode = machineStore.config.machineCode;
+  form.machineLocationLabel = machineStore.config.machineLocationLabel;
   form.apiBaseUrl = machineStore.config.apiBaseUrl;
   form.mqttUrl = machineStore.config.mqttUrl;
   form.mqttUsername = machineStore.config.mqttUsername;
@@ -557,6 +566,7 @@ async function runDiagnosticsRefresh(): Promise<void> {
       mqttStore.refresh(),
       scannerStore.refresh(),
       visionStore.refresh(),
+      naturalContextStore.refresh(),
       remoteOpsStore.refresh(),
     ]);
     await returnToCatalogAfterSystemRecovery();
@@ -678,6 +688,12 @@ function audioCueOutcomeLabel(outcome: string): string {
     skipped: "Skipped",
   };
   return labels[outcome] ?? outcome;
+}
+
+function naturalContextDisplayStatus(): string {
+  const snapshot = naturalContextStore.snapshot;
+  if (!snapshot) return "Unknown";
+  return `${snapshot.degraded ? "Degraded" : "Ready"} · ${snapshot.status}`;
 }
 
 async function returnToCatalog(): Promise<void> {
@@ -1089,6 +1105,18 @@ async function submitStockMovement(): Promise<void> {
             </dd>
           </div>
           <div class="border-t border-white/10 py-3">
+            <dt class="text-sm text-slate-400">Natural Context</dt>
+            <dd class="mt-1 font-bold text-white">
+              {{ naturalContextDisplayStatus() }}
+            </dd>
+            <dd
+              v-if="naturalContextDiagnosticMessage"
+              class="mt-1 text-sm font-semibold text-amber-100"
+            >
+              {{ naturalContextDiagnosticMessage }}
+            </dd>
+          </div>
+          <div class="border-t border-white/10 py-3">
             <dt class="text-sm text-slate-400">本地状态</dt>
             <dd class="mt-1 font-bold text-white">
               {{ stockMaintenance.source ?? "unknown" }} ·
@@ -1240,6 +1268,17 @@ async function submitStockMovement(): Promise<void> {
             v-model="form.machineCode"
             class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-sky-300"
             placeholder="例如 M001"
+          />
+        </label>
+
+        <label class="grid gap-2 text-left">
+          <span class="text-sm font-semibold text-slate-200"
+            >Machine Location Label</span
+          >
+          <input
+            v-model="form.machineLocationLabel"
+            class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-sky-300"
+            placeholder="例如 一层大厅"
           />
         </label>
 

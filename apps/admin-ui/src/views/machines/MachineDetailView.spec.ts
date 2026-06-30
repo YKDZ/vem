@@ -296,7 +296,12 @@ function machineFixture() {
     id: "11111111-1111-4111-8111-111111111111",
     code: "M001",
     name: "前厅机器",
-    locationText: "一层",
+    locationLabel: "一层",
+    geoLocation: {
+      latitude: 31.2304,
+      longitude: 121.4737,
+      timezone: "Asia/Shanghai",
+    },
     status: "online",
     mqttClientId: "mqtt-M001",
     lastSeenAt: "2026-06-04T05:00:00.000Z",
@@ -403,6 +408,9 @@ describe("MachineDetailView", () => {
       pageSize: 100,
     });
     expect(root.textContent).toContain("M001");
+    expect(root.textContent).toContain("Machine Geo Location");
+    expect(root.textContent).toContain("31.2304, 121.4737");
+    expect(root.textContent).toContain("Asia/Shanghai");
     expect(root.textContent).toContain("23 C");
     expect(root.textContent).toContain("空调关");
     expect(root.textContent).toContain("测试衬衫");
@@ -546,6 +554,53 @@ describe("MachineDetailView", () => {
     expect(root.textContent).toContain("Payment Readiness");
     expect(root.textContent).toContain("Machine heartbeat is fresh");
     expect(root.textContent).toContain("Continue daily inspection.");
+  });
+
+  it("renders Natural Context Readiness as degraded when External Natural Environment is unconfigured", async () => {
+    apiMocks.getMachine.mockResolvedValue({
+      ...machineFixture(),
+      geoLocation: null,
+      productionPilotReadiness: {
+        status: "degraded",
+        checkedAt: "2026-06-30T14:00:00.000Z",
+        blockers: [],
+        degraded: [
+          {
+            code: "natural_context_readiness.unconfigured",
+            label: "Natural Context Readiness",
+            status: "degraded",
+            message:
+              "Machine Geo Location is missing for External Natural Environment",
+            operatorAction:
+              "Configure Machine Geo Location or inspect External Natural Environment diagnostics; this does not block core sales readiness.",
+          },
+        ],
+        checks: [
+          {
+            code: "natural_context_readiness.unconfigured",
+            label: "Natural Context Readiness",
+            status: "degraded",
+            message:
+              "Machine Geo Location is missing for External Natural Environment",
+            operatorAction:
+              "Configure Machine Geo Location or inspect External Natural Environment diagnostics; this does not block core sales readiness.",
+          },
+        ],
+      },
+    });
+
+    const { root } = await mountView();
+
+    expect(root.textContent).toContain("Production Pilot Readiness");
+    expect(root.textContent).toContain("生产试运营降级");
+    expect(root.textContent).toContain("降级 1");
+    expect(root.textContent).toContain("Natural Context Readiness");
+    expect(root.textContent).toContain(
+      "natural_context_readiness.unconfigured",
+    );
+    expect(root.textContent).toContain(
+      "Machine Geo Location is missing for External Natural Environment",
+    );
   });
 
   it("shows stock reconciliation blockers and resolves them with a required note", async () => {

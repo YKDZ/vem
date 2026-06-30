@@ -13,13 +13,104 @@ import {
 } from "./machine-slot-coordinate";
 import { machinePaymentOptionSchema } from "./orders";
 
-export const createMachineSchema = z.object({
+function isIanaTimeZone(value: string): boolean {
+  try {
+    Intl.DateTimeFormat("en-US", { timeZone: value });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export const machineGeoLocationSchema = z.strictObject({
+  latitude: z.number().min(-90).max(90),
+  longitude: z.number().min(-180).max(180),
+  timezone: z.string().refine(isIanaTimeZone, {
+    message: "Timezone must be a valid IANA time zone",
+  }),
+});
+
+export const externalNaturalEnvironmentStatusSchema = z.enum([
+  "ready",
+  "stale",
+  "unavailable",
+  "unconfigured",
+]);
+
+export const externalNaturalEnvironmentDiagnosticReasonSchema = z.enum([
+  "machine_geo_location_missing",
+  "provider_unavailable",
+]);
+
+const externalNaturalEnvironmentBaseSchema = z.strictObject({
+  machineId: z.uuid(),
+  machineCode: z.string().min(1).max(64),
+  checkedAt: z.iso.datetime(),
+});
+
+const externalNaturalEnvironmentDiagnosticSchema = z.strictObject({
+  reason: externalNaturalEnvironmentDiagnosticReasonSchema,
+  message: z.string().min(1),
+});
+
+const externalNaturalEnvironmentWeatherSchema = z.strictObject({
+  temperatureCelsius: z.number(),
+  conditionText: z.string().min(1),
+  observedAt: z.iso.datetime(),
+});
+
+const externalNaturalEnvironmentLocalTimeSchema = z.strictObject({
+  timezone: z.string().refine(isIanaTimeZone, {
+    message: "Timezone must be a valid IANA time zone",
+  }),
+  localDate: z.iso.date(),
+  localClock: z.iso.time(),
+});
+
+const externalNaturalEnvironmentSunSchema = z.strictObject({
+  sunriseAt: z.iso.datetime(),
+  sunsetAt: z.iso.datetime(),
+});
+
+export const externalNaturalEnvironmentSchema = z.discriminatedUnion("status", [
+  externalNaturalEnvironmentBaseSchema.extend({
+    status: z.literal("ready"),
+    localTime: externalNaturalEnvironmentLocalTimeSchema,
+    weather: externalNaturalEnvironmentWeatherSchema,
+    sun: externalNaturalEnvironmentSunSchema,
+  }),
+  externalNaturalEnvironmentBaseSchema.extend({
+    status: z.literal("stale"),
+    localTime: externalNaturalEnvironmentLocalTimeSchema,
+    weather: externalNaturalEnvironmentWeatherSchema,
+    sun: externalNaturalEnvironmentSunSchema,
+    diagnostic: externalNaturalEnvironmentDiagnosticSchema,
+  }),
+  externalNaturalEnvironmentBaseSchema.extend({
+    status: z.literal("unavailable"),
+    diagnostic: externalNaturalEnvironmentDiagnosticSchema,
+  }),
+  externalNaturalEnvironmentBaseSchema.extend({
+    status: z.literal("unconfigured"),
+    diagnostic: externalNaturalEnvironmentDiagnosticSchema,
+  }),
+]);
+
+const machineWriteShape = {
   code: z.string().min(1).max(64),
   name: z.string().min(1).max(128),
-  locationText: z.string().max(500).nullable().optional(),
-  status: machineStatusSchema.default("offline"),
+  locationLabel: z.string().max(500).nullable().optional(),
+  geoLocation: machineGeoLocationSchema.nullable().optional(),
+  status: machineStatusSchema,
   mqttClientId: z.string().max(128).nullable().optional(),
+};
+
+export const createMachineSchema = z.strictObject({
+  ...machineWriteShape,
+  status: machineStatusSchema.default("offline"),
 });
+
+export const updateMachineSchema = z.strictObject(machineWriteShape).partial();
 
 export const createMachineSlotSchema = z
   .object({
@@ -31,7 +122,6 @@ export const createMachineSlotSchema = z
   })
   .superRefine(addMachineSlotCoordinateIssue);
 
-export const updateMachineSchema = createMachineSchema.partial();
 export const updateMachineSlotSchema = z
   .object({
     layerNo: machineSlotLayerNoSchema,
@@ -115,6 +205,12 @@ export const machineEnvironmentControlRequestSchema = z
 
 export type MachineHeartbeatStatusPayload = z.infer<
   typeof machineHeartbeatStatusPayloadSchema
+>;
+export type ExternalNaturalEnvironmentStatus = z.infer<
+  typeof externalNaturalEnvironmentStatusSchema
+>;
+export type ExternalNaturalEnvironment = z.infer<
+  typeof externalNaturalEnvironmentSchema
 >;
 export type HeartbeatPayload = z.infer<typeof heartbeatPayloadSchema>;
 export type MachineEnvironmentControlRequest = z.infer<
@@ -385,7 +481,7 @@ export const machineProvisioningProfileSchema = z.strictObject({
     code: z.string().min(1).max(64),
     name: z.string().min(1).max(128),
     status: machineStatusSchema,
-    locationText: z.string().nullable(),
+    locationLabel: z.string().nullable(),
   }),
   credentials: z.strictObject({
     machineSecret: z.string().min(32).max(256),

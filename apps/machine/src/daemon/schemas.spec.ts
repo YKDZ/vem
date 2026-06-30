@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   configSummarySchema,
   daemonEventSchema,
+  naturalContextSnapshotSchema,
   scannerStatusSchema,
   transactionSnapshotSchema,
 } from "./schemas";
@@ -48,6 +49,34 @@ describe("daemon schemas", () => {
       snapshot: parsed,
     } as never);
     expect(event.type).toBe("scanner_health_changed");
+  });
+
+  it("parses daemon-owned Natural Context Projection", () => {
+    const parsed = naturalContextSnapshotSchema.parse({
+      status: "unconfigured",
+      machineCode: "MACHINE-NATURAL",
+      checkedAt: "2026-06-30T14:00:00.000Z",
+      degraded: true,
+      customerFacingBlocked: false,
+      externalEnvironment: {
+        status: "unconfigured",
+        machineId: "550e8400-e29b-41d4-a716-446655440000",
+        machineCode: "MACHINE-NATURAL",
+        checkedAt: "2026-06-30T14:00:00.000Z",
+        diagnostic: {
+          reason: "machine_geo_location_missing",
+          message: "Machine Geo Location is not configured",
+        },
+      },
+      localSiteSignals: {
+        status: "unavailable",
+      },
+    });
+
+    expect(parsed.status).toBe("unconfigured");
+    expect(parsed.degraded).toBe(true);
+    expect(parsed.customerFacingBlocked).toBe(false);
+    expect(parsed.externalEnvironment.status).toBe("unconfigured");
   });
 
   it("parses daemon config summary with stock movement retention days", () => {

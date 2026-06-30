@@ -578,6 +578,15 @@ impl BackendClient {
         .await
     }
 
+    pub async fn get_external_natural_environment(
+        &self,
+        machine_code: &str,
+    ) -> Result<serde_json::Value, String> {
+        let url = format!("/machines/by-code/{machine_code}/external-natural-environment");
+        self.request_json(reqwest::Method::GET, &url, None, true)
+            .await
+    }
+
     pub async fn submit_stock_movement_upload(
         &self,
         payload: &serde_json::Value,

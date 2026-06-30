@@ -90,6 +90,7 @@ export const useMachineStore = defineStore("machine", {
         this.configSummary = await daemonClient.saveConfig({
           public: {
             machineCode: config.machineCode,
+            machineLocationLabel: config.machineLocationLabel,
             apiBaseUrl: config.apiBaseUrl,
             mqttUrl: config.mqttUrl,
             mqttUsername: config.mqttUsername,

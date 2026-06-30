@@ -31,6 +31,7 @@ import {
   getMachine,
   listMachineSlots,
   type Machine,
+  type MachineGeoLocation,
   type MachineSlot,
 } from "@/api/machines";
 import { useAuthStore } from "@/stores/auth";
@@ -225,6 +226,11 @@ function airConditionerLabel(on: boolean | undefined): string {
 function targetTemperatureLabel(value: number | null | undefined): string {
   if (typeof value !== "number") return "目标未知";
   return `目标 ${formatEnvironmentNumber(value, "C")}`;
+}
+
+function formatGeoLocation(geoLocation: MachineGeoLocation | null): string {
+  if (!geoLocation) return "未配置";
+  return `${geoLocation.latitude}, ${geoLocation.longitude} · ${geoLocation.timezone}`;
 }
 
 function commandStatusLabel(status: MachineCommandStatus | null): string {
@@ -469,7 +475,11 @@ onMounted(() => {
             {{ machine?.code ?? "机器" }} · {{ machine?.name ?? "加载中" }}
           </h1>
           <p class="mt-1 text-sm text-slate-500">
-            {{ machine?.locationText ?? "未设置位置" }}
+            {{ machine?.locationLabel ?? "未设置 Machine Location Label" }}
+          </p>
+          <p class="mt-1 text-sm text-slate-500">
+            Machine Geo Location:
+            {{ formatGeoLocation(machine?.geoLocation ?? null) }}
           </p>
         </div>
         <a-space>

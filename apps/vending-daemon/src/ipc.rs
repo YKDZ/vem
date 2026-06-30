@@ -25,6 +25,7 @@ use crate::{
     events::DaemonEvent,
     hardware::HardwareSupervisor,
     logs,
+    natural_context::MachineNaturalContextSnapshot,
     state::{
         store::{
             MachinePlanogramInput, MachinePlanogramSlotInput, PhysicalStockAttestationInput,
@@ -210,6 +211,7 @@ pub fn build_router(ctx: IpcContext) -> Router {
         .route("/v1/sync/status", get(sync_status))
         .route("/v1/scanner/status", get(scanner_status))
         .route("/v1/vision/status", get(vision_status))
+        .route("/v1/natural-context", get(natural_context))
         .route("/v1/remote-ops/status", get(remote_ops_status))
         .route("/v1/logs/export", get(export_logs))
         .route("/v1/events", get(events_ws))
@@ -2811,6 +2813,66 @@ async fn vision_status(State(ctx): State<IpcContext>, headers: HeaderMap) -> imp
     .into_response()
 }
 
+async fn natural_context(State(ctx): State<IpcContext>, headers: HeaderMap) -> impl IntoResponse {
+    if let Err((status, error)) = require_token(&headers, &ctx.token).await {
+        return (status, error).into_response();
+    }
+
+    let public = match ctx.config_store.load_public_config().await {
+        Ok(public) => public,
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorMessage {
+                    code: "config_load_failed",
+                    message: error,
+                }),
+            )
+                .into_response();
+        }
+    };
+    let Some(machine_code) = public.machine_code.clone() else {
+        return Json(MachineNaturalContextSnapshot::unconfigured(
+            None,
+            "Machine is not provisioned for Natural Context",
+        ))
+        .into_response();
+    };
+
+    match ctx
+        .ui
+        .backend
+        .get_external_natural_environment(&machine_code)
+        .await
+    {
+        Ok(external) => Json(MachineNaturalContextSnapshot::from_external_environment(
+            Some(machine_code),
+            external,
+        ))
+        .into_response(),
+        Err(error) => Json(MachineNaturalContextSnapshot::unavailable(
+            Some(machine_code),
+            backend_natural_context_message(&error),
+        ))
+        .into_response(),
+    }
+}
+
+fn backend_natural_context_message(error: &str) -> String {
+    match error {
+        "BACKEND_AUTH_NOT_CONFIGURED" => {
+            "Machine credentials are not configured for Natural Context".to_string()
+        }
+        "BACKEND_AUTH_FAILED" => {
+            "Machine authentication failed while refreshing Natural Context".to_string()
+        }
+        "BACKEND_OFFLINE" => {
+            "Service API is unavailable while refreshing Natural Context".to_string()
+        }
+        _ => "External Natural Environment is unavailable".to_string(),
+    }
+}
+
 async fn remote_ops_status(State(ctx): State<IpcContext>, headers: HeaderMap) -> impl IntoResponse {
     if let Err((status, error)) = require_token(&headers, &ctx.token).await {
         return (status, error).into_response();
@@ -3299,7 +3361,7 @@ mod tests {
                 "code": "M001",
                 "name": "Lobby",
                 "status": "offline",
-                "locationText": "1F"
+                "locationLabel": "1F"
             },
             "credentials": {
                 "machineSecret": "vms_local-machine-shared-secret-change-before-prod",
@@ -3349,6 +3411,26 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method(Method::POST)
+                    .uri(uri)
+                    .header(AUTHORIZATION, format!("Bearer {token}"))
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(axum::body::Body::from(payload.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
+    async fn put_json(
+        app: &Router,
+        uri: &str,
+        token: &str,
+        payload: serde_json::Value,
+    ) -> axum::response::Response {
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::PUT)
                     .uri(uri)
                     .header(AUTHORIZATION, format!("Bearer {token}"))
                     .header(CONTENT_TYPE, "application/json")
@@ -3481,6 +3563,44 @@ mod tests {
         assert!(!config_text.contains("vms_local-machine"));
         assert!(!config_text.contains("vms_local-mqtt"));
         assert!(!config_text.contains("mqtt-password"));
+    }
+
+    #[tokio::test]
+    async fn config_put_rejects_legacy_machine_location_text() {
+        let temp_dir = tempdir().expect("tmp");
+        let app = build_router(
+            test_ipc_context(temp_dir.path(), "token-1", None, "http://127.0.0.1:0").await,
+        );
+
+        let response = put_json(
+            &app,
+            "/v1/config",
+            "token-1",
+            json!({
+                "public": {
+                    "machineCode": "M001",
+                    "machineLocationText": "Legacy lobby",
+                    "apiBaseUrl": "http://127.0.0.1:3000/api",
+                    "mqttUrl": "mqtt://127.0.0.1:1883",
+                    "mqttUsername": null,
+                    "hardwareAdapter": "mock",
+                    "serialPortPath": null,
+                    "lowerControllerUsbIdentity": null,
+                    "scannerAdapter": "disabled",
+                    "scannerSerialPortPath": null,
+                    "scannerBaudRate": 9600,
+                    "scannerFrameSuffix": "crlf",
+                    "visionEnabled": false,
+                    "visionWsUrl": "ws://127.0.0.1:7892/ws",
+                    "visionRequestTimeoutMs": 8000,
+                    "kioskMode": false
+                },
+                "secrets": null
+            }),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     }
 
     #[tokio::test]

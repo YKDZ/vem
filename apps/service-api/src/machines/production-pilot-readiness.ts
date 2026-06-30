@@ -31,12 +31,17 @@ type PlatformPlanogramEvidence = {
   activeAcknowledgedPlanogramVersion: string | null;
 };
 
+type ExternalNaturalEnvironmentEvidence = {
+  status: "ready" | "stale" | "unavailable" | "unconfigured";
+};
+
 export type ProductionPilotReadinessInput = {
   machine: MachineEvidence;
   latestHeartbeat: LatestHeartbeatEvidence;
   paymentOptions: PaymentOptionEvidence[];
   machineHeartbeatTimeoutSeconds: number;
   platformPlanogram?: PlatformPlanogramEvidence;
+  externalNaturalEnvironment?: ExternalNaturalEnvironmentEvidence;
 };
 
 export type ProductionPilotReadiness = {
@@ -202,6 +207,11 @@ export function evaluateProductionPilotReadiness(
     scannerStatus === "online" ||
     scannerStatus === "ready" ||
     scannerOnline === true;
+  const externalNaturalEnvironmentStatus =
+    input.externalNaturalEnvironment?.status ?? "unconfigured";
+  const naturalContextReady =
+    externalNaturalEnvironmentStatus === "ready" ||
+    externalNaturalEnvironmentStatus === "stale";
 
   const checks = [
     check({
@@ -269,6 +279,21 @@ export function evaluateProductionPilotReadiness(
       operatorAction: scannerReady
         ? "Continue daily inspection."
         : "Inspect the scanner runtime; QR payment can remain available if payment readiness is ready.",
+    }),
+    check({
+      code: naturalContextReady
+        ? "natural_context_readiness.ready"
+        : `natural_context_readiness.${externalNaturalEnvironmentStatus}`,
+      label: "Natural Context Readiness",
+      status: naturalContextReady ? "ready" : "degraded",
+      message: naturalContextReady
+        ? "External Natural Environment is available for Natural Context"
+        : externalNaturalEnvironmentStatus === "unconfigured"
+          ? "Machine Geo Location is missing for External Natural Environment"
+          : "External Natural Environment is unavailable",
+      operatorAction: naturalContextReady
+        ? "Continue daily inspection."
+        : "Configure Machine Geo Location or inspect External Natural Environment diagnostics; this does not block core sales readiness.",
     }),
     check({
       code: productionDispensePathReady
