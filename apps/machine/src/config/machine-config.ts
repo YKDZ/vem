@@ -43,6 +43,13 @@ export const lowerControllerUsbIdentitySchema = z
 export const machineConfigSchema = z
   .object({
     machineCode: z.string().trim().min(1).max(64).nullable().default(null),
+    machineLocationLabel: z
+      .string()
+      .trim()
+      .min(1)
+      .max(256)
+      .nullable()
+      .default(null),
     machineSecret: z.string().trim().min(32).max(256).nullable().default(null),
     machineSecretConfigured: z.boolean().default(false),
     mqttSigningSecret: z
@@ -154,6 +161,10 @@ export function normalizeMachineConfig(input: unknown): MachineConfig {
     const trimmed = processed.machineCode.trim();
     processed.machineCode = trimmed.length > 0 ? trimmed : null;
   }
+  if (typeof processed.machineLocationLabel === "string") {
+    const trimmed = processed.machineLocationLabel.trim();
+    processed.machineLocationLabel = trimmed.length > 0 ? trimmed : null;
+  }
   // Pre-normalize machineSecret: whitespace-only string → null before schema validation
   if (typeof processed.machineSecret === "string") {
     const trimmed = processed.machineSecret.trim();
@@ -201,6 +212,7 @@ export function normalizeMachineConfig(input: unknown): MachineConfig {
   return {
     ...parsed,
     machineCode: parsed.machineCode?.trim() || null,
+    machineLocationLabel: parsed.machineLocationLabel?.trim() || null,
     machineSecret,
     machineSecretConfigured: Boolean(
       machineSecret || parsed.machineSecretConfigured,

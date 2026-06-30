@@ -24,6 +24,7 @@ vi.mock("@/native/daemon-connection", () => ({
 
 const publicConfig = {
   machineCode: "M001",
+  machineLocationLabel: "E2E lab",
   apiBaseUrl: "http://127.0.0.1:3000/api",
   mqttUrl: "mqtt://127.0.0.1:1883",
   mqttUsername: "machine",
@@ -460,5 +461,12 @@ describe("machine daemon client integration", () => {
     expect(paymentCode?.disabledReason).toContain("扫码器不可用");
     expect(qrCode?.disabled).toBe(false);
     expect(options.defaultOptionKey).toBe("qr_code:alipay");
+  });
+
+  it("retains the Machine Location Label in config summaries", async () => {
+    const config = await daemonClient.getConfig();
+
+    expect(config.public.machineLocationLabel).toBe("E2E lab");
+    expect(config.public).not.toHaveProperty("machineLocationText");
   });
 });

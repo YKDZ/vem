@@ -45,6 +45,7 @@ pub struct AudioCueSettings {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 #[serde(rename_all = "camelCase")]
 pub struct MachinePublicConfig {
     pub machine_code: Option<String>,
@@ -54,7 +55,7 @@ pub struct MachinePublicConfig {
     pub machine_name: Option<String>,
     #[serde(default)]
     pub machine_status: Option<String>,
-    #[serde(default, alias = "machineLocationText")]
+    #[serde(default)]
     pub machine_location_label: Option<String>,
     pub api_base_url: String,
     pub mqtt_url: String,
@@ -877,9 +878,11 @@ impl ConfigStore {
         let content = fs::read_to_string(&path)
             .await
             .map_err(|error| format!("read daemon config failed: {error}"))?;
-        let public: MachinePublicConfig = serde_json::from_str(&content)
-            .map_err(|error| format!("parse daemon config failed: {error}"))?;
+        let (public, migrated) = parse_persisted_public_config(&content)?;
         let public = normalize_public_config(public)?;
+        if migrated {
+            self.write_public_config_file(&public).await?;
+        }
         self.persist_snapshot(&public).await?;
         Ok(public)
     }
@@ -889,19 +892,24 @@ impl ConfigStore {
         config: MachinePublicConfig,
     ) -> Result<MachinePublicRuntimeConfig, String> {
         let normalized = normalize_public_config(config)?;
+        self.write_public_config_file(&normalized).await?;
+        self.persist_snapshot(&normalized).await?;
+        self.public_runtime_config(normalized).await
+    }
+
+    async fn write_public_config_file(&self, public: &MachinePublicConfig) -> Result<(), String> {
         fs::create_dir_all(&self.data_dir)
             .await
             .map_err(|error| format!("create daemon data dir failed: {error}"))?;
         fs::create_dir_all(self.data_dir.join("logs"))
             .await
             .map_err(|error| format!("create daemon log dir failed: {error}"))?;
-        let payload = serde_json::to_string_pretty(&normalized)
+        let payload = serde_json::to_string_pretty(public)
             .map_err(|error| format!("serialize daemon config failed: {error}"))?;
         fs::write(daemon_config_path(&self.data_dir), payload)
             .await
             .map_err(|error| format!("write daemon config failed: {error}"))?;
-        self.persist_snapshot(&normalized).await?;
-        self.public_runtime_config(normalized).await
+        Ok(())
     }
 
     async fn public_runtime_config(
@@ -1068,6 +1076,25 @@ impl ConfigStore {
             .map_err(|error| error.to_string())?;
         Ok(runtime)
     }
+}
+
+fn parse_persisted_public_config(content: &str) -> Result<(MachinePublicConfig, bool), String> {
+    let mut value: serde_json::Value = serde_json::from_str(content)
+        .map_err(|error| format!("parse daemon config failed: {error}"))?;
+    let mut migrated = false;
+    if let serde_json::Value::Object(ref mut object) = value {
+        if !object.contains_key("machineLocationLabel") {
+            if let Some(legacy) = object.remove("machineLocationText") {
+                object.insert("machineLocationLabel".to_string(), legacy);
+                migrated = true;
+            }
+        } else {
+            migrated = object.remove("machineLocationText").is_some();
+        }
+    }
+    serde_json::from_value(value)
+        .map(|public| (public, migrated))
+        .map_err(|error| format!("parse daemon config failed: {error}"))
 }
 
 #[cfg(test)]
@@ -1367,6 +1394,59 @@ mod tests {
             runtime.public.api_base_url,
             "https://production-api.example.com/api"
         );
+    }
+
+    #[tokio::test]
+    async fn load_public_config_migrates_legacy_disk_machine_location_text() {
+        let temp = TempDir::new().expect("temp");
+        let data_dir = temp.path().join("daemon");
+        tokio::fs::create_dir_all(&data_dir)
+            .await
+            .expect("create config dir");
+        tokio::fs::write(
+            daemon_config_path(&data_dir),
+            serde_json::json!({
+                "machineCode": "M001",
+                "machineLocationText": "Legacy lobby",
+                "apiBaseUrl": "http://127.0.0.1:3000/api",
+                "mqttUrl": "mqtt://127.0.0.1:1883",
+                "mqttUsername": null,
+                "hardwareAdapter": "mock",
+                "serialPortPath": null,
+                "lowerControllerUsbIdentity": null,
+                "scannerAdapter": "disabled",
+                "scannerSerialPortPath": null,
+                "scannerBaudRate": 9600,
+                "scannerFrameSuffix": "crlf",
+                "visionEnabled": false,
+                "visionWsUrl": "ws://127.0.0.1:7892/ws",
+                "visionRequestTimeoutMs": 8000,
+                "kioskMode": false
+            })
+            .to_string(),
+        )
+        .await
+        .expect("write legacy config");
+        let state = crate::state::LocalStateStore::open(&data_dir.join("state.db"))
+            .await
+            .expect("state");
+        let store = ConfigStore::new(
+            data_dir.clone(),
+            state,
+            std::sync::Arc::new(InMemorySecretStore::default()),
+        );
+
+        let public = store.load_public_config().await.expect("load config");
+
+        assert_eq!(
+            public.machine_location_label.as_deref(),
+            Some("Legacy lobby")
+        );
+        let saved = tokio::fs::read_to_string(daemon_config_path(&data_dir))
+            .await
+            .expect("read migrated config");
+        assert!(saved.contains("\"machineLocationLabel\""));
+        assert!(!saved.contains("machineLocationText"));
     }
 
     #[tokio::test]

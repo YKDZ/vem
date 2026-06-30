@@ -49,6 +49,7 @@ const configSummaryPublicSchema = z.preprocess(
   },
   z.object({
     machineCode: z.string().nullable(),
+    machineLocationLabel: z.string().nullable().optional(),
     apiBaseUrl: z.string(),
     mqttUrl: z.string(),
     mqttUsername: z.string().nullable(),

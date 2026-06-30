@@ -3359,6 +3359,26 @@ mod tests {
             .unwrap()
     }
 
+    async fn put_json(
+        app: &Router,
+        uri: &str,
+        token: &str,
+        payload: serde_json::Value,
+    ) -> axum::response::Response {
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::PUT)
+                    .uri(uri)
+                    .header(AUTHORIZATION, format!("Bearer {token}"))
+                    .header(CONTENT_TYPE, "application/json")
+                    .body(axum::body::Body::from(payload.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
     async fn claim_with_profile(profile: serde_json::Value) -> (StatusCode, serde_json::Value) {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
@@ -3481,6 +3501,44 @@ mod tests {
         assert!(!config_text.contains("vms_local-machine"));
         assert!(!config_text.contains("vms_local-mqtt"));
         assert!(!config_text.contains("mqtt-password"));
+    }
+
+    #[tokio::test]
+    async fn config_put_rejects_legacy_machine_location_text() {
+        let temp_dir = tempdir().expect("tmp");
+        let app = build_router(
+            test_ipc_context(temp_dir.path(), "token-1", None, "http://127.0.0.1:0").await,
+        );
+
+        let response = put_json(
+            &app,
+            "/v1/config",
+            "token-1",
+            json!({
+                "public": {
+                    "machineCode": "M001",
+                    "machineLocationText": "Legacy lobby",
+                    "apiBaseUrl": "http://127.0.0.1:3000/api",
+                    "mqttUrl": "mqtt://127.0.0.1:1883",
+                    "mqttUsername": null,
+                    "hardwareAdapter": "mock",
+                    "serialPortPath": null,
+                    "lowerControllerUsbIdentity": null,
+                    "scannerAdapter": "disabled",
+                    "scannerSerialPortPath": null,
+                    "scannerBaudRate": 9600,
+                    "scannerFrameSuffix": "crlf",
+                    "visionEnabled": false,
+                    "visionWsUrl": "ws://127.0.0.1:7892/ws",
+                    "visionRequestTimeoutMs": 8000,
+                    "kioskMode": false
+                },
+                "secrets": null
+            }),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
     }
 
     #[tokio::test]

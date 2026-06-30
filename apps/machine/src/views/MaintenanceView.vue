@@ -160,6 +160,7 @@ function cloneLowerControllerUsbIdentity(
 
 const form = reactive({
   machineCode: machineConfigDefaults.machineCode,
+  machineLocationLabel: machineConfigDefaults.machineLocationLabel,
   apiBaseUrl: machineConfigDefaults.apiBaseUrl,
   mqttUrl: machineConfigDefaults.mqttUrl,
   mqttUsername: machineConfigDefaults.mqttUsername,
@@ -191,6 +192,7 @@ const form = reactive({
 
 function syncFormFromStore(): void {
   form.machineCode = machineStore.config.machineCode;
+  form.machineLocationLabel = machineStore.config.machineLocationLabel;
   form.apiBaseUrl = machineStore.config.apiBaseUrl;
   form.mqttUrl = machineStore.config.mqttUrl;
   form.mqttUsername = machineStore.config.mqttUsername;
@@ -1240,6 +1242,17 @@ async function submitStockMovement(): Promise<void> {
             v-model="form.machineCode"
             class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-sky-300"
             placeholder="例如 M001"
+          />
+        </label>
+
+        <label class="grid gap-2 text-left">
+          <span class="text-sm font-semibold text-slate-200"
+            >Machine Location Label</span
+          >
+          <input
+            v-model="form.machineLocationLabel"
+            class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-sky-300"
+            placeholder="例如 一层大厅"
           />
         </label>
 

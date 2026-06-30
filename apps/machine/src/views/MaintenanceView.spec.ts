@@ -196,6 +196,7 @@ function provisionedConfigSummary(): ConfigSummary {
   return {
     public: {
       machineCode: "SECRET-MACHINE-CODE",
+      machineLocationLabel: "E2E lab",
       apiBaseUrl: "https://api.secret.example/v1",
       mqttUrl: "mqtt://secret-broker.example:1883",
       mqttUsername: "secret-mqtt-user",
@@ -411,6 +412,7 @@ describe("MaintenanceView hardware config", () => {
     const select = hardwareAdapterSelect(host);
 
     expect(host.textContent).toContain("machineCode");
+    expect(host.textContent).toContain("Machine Location Label");
     expect(host.textContent).toContain("machineSecret");
     expect(host.textContent).toContain("mqttSigningSecret");
     expect(host.textContent).toContain("mqttPassword");
@@ -457,6 +459,7 @@ describe("MaintenanceView hardware config", () => {
     const host = await mountView();
 
     expect(host.textContent).not.toContain("SECRET-MACHINE-CODE");
+    expect(host.textContent).not.toContain("E2E lab");
     expect(host.textContent).not.toContain("https://api.secret.example/v1");
     expect(host.textContent).not.toContain("mqtt://secret-broker.example:1883");
     expect(host.textContent).not.toContain("secret-mqtt-user");
