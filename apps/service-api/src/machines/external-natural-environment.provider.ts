@@ -12,15 +12,19 @@ export type ExternalNaturalEnvironmentProviderResult = {
     localDate: string;
     localClock: string;
   };
-  weather: {
-    temperatureCelsius: number;
-    conditionText: string;
-    observedAt: string;
-  };
-  sun: {
-    sunriseAt: string;
-    sunsetAt: string;
-  };
+  weather: ExternalNaturalEnvironmentWeather;
+  sun: ExternalNaturalEnvironmentSun;
+};
+
+export type ExternalNaturalEnvironmentWeather = {
+  temperatureCelsius: number;
+  conditionText: string;
+  observedAt: string;
+};
+
+export type ExternalNaturalEnvironmentSun = {
+  sunriseAt: string;
+  sunsetAt: string;
 };
 
 export type ExternalNaturalEnvironmentProviderInput = {
@@ -29,9 +33,12 @@ export type ExternalNaturalEnvironmentProviderInput = {
 };
 
 export interface ExternalNaturalEnvironmentProvider {
-  fetch(
+  fetchWeatherNow(
     input: ExternalNaturalEnvironmentProviderInput,
-  ): Promise<ExternalNaturalEnvironmentProviderResult>;
+  ): Promise<ExternalNaturalEnvironmentWeather>;
+  fetchSun(
+    input: ExternalNaturalEnvironmentProviderInput,
+  ): Promise<ExternalNaturalEnvironmentSun>;
 }
 
 export const EXTERNAL_NATURAL_ENVIRONMENT_PROVIDER = Symbol(
@@ -40,7 +47,11 @@ export const EXTERNAL_NATURAL_ENVIRONMENT_PROVIDER = Symbol(
 
 @Injectable()
 export class UnconfiguredExternalNaturalEnvironmentProvider implements ExternalNaturalEnvironmentProvider {
-  async fetch(): Promise<ExternalNaturalEnvironmentProviderResult> {
+  async fetchWeatherNow(): Promise<ExternalNaturalEnvironmentWeather> {
+    throw new Error("External Natural Environment provider is not configured");
+  }
+
+  async fetchSun(): Promise<ExternalNaturalEnvironmentSun> {
     throw new Error("External Natural Environment provider is not configured");
   }
 }

@@ -3,6 +3,7 @@ import type {
   MachineClaimCodePurpose,
   MachineClaimCodeState,
   MachineEnvironmentControlRequest,
+  ExternalNaturalEnvironment,
   MachineHeartbeatStatusPayload,
   MachineSlotStatus,
   MachineStatus,
@@ -14,31 +15,6 @@ export type MachineGeoLocation = {
   latitude: number;
   longitude: number;
   timezone: string;
-};
-
-export type ExternalNaturalEnvironment = {
-  status: "ready" | "stale" | "unavailable" | "unconfigured";
-  machineId: string;
-  machineCode: string;
-  checkedAt: string;
-  localTime?: {
-    timezone: string;
-    localDate: string;
-    localClock: string;
-  };
-  weather?: {
-    temperatureCelsius: number;
-    conditionText: string;
-    observedAt: string;
-  };
-  sun?: {
-    sunriseAt: string;
-    sunsetAt: string;
-  };
-  diagnostic?: {
-    reason: "machine_geo_location_missing" | "provider_unavailable";
-    message: string;
-  };
 };
 
 export type Machine = {

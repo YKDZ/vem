@@ -46,7 +46,8 @@ describe("MachinesService", () => {
   const listMachinePaymentOptionsForMachine = vi.fn();
   const listProductionPilotPaymentEvidenceForMachine = vi.fn();
   const createMachineOfflineNotification = vi.fn();
-  const fetchExternalNaturalEnvironment = vi.fn();
+  const fetchWeatherNow = vi.fn();
+  const fetchSun = vi.fn();
 
   beforeEach(async () => {
     vi.resetAllMocks();
@@ -90,7 +91,7 @@ describe("MachinesService", () => {
         },
         {
           provide: EXTERNAL_NATURAL_ENVIRONMENT_PROVIDER,
-          useValue: { fetch: fetchExternalNaturalEnvironment },
+          useValue: { fetchWeatherNow, fetchSun },
         },
         {
           provide: AppConfigService,
@@ -1419,6 +1420,8 @@ describe("MachinesService", () => {
     });
     expect(result).not.toHaveProperty("weather");
     expect(result).not.toHaveProperty("sun");
+    expect(fetchWeatherNow).not.toHaveBeenCalled();
+    expect(fetchSun).not.toHaveBeenCalled();
   });
 
   it("returns ready External Natural Environment from QWeather for configured Machine Geo Location", async () => {
@@ -1441,21 +1444,14 @@ describe("MachinesService", () => {
         }),
       }),
     });
-    fetchExternalNaturalEnvironment.mockResolvedValueOnce({
-      localTime: {
-        timezone: "Asia/Shanghai",
-        localDate: "2026-06-30",
-        localClock: "22:00:00",
-      },
-      weather: {
-        temperatureCelsius: 28,
-        conditionText: "Sunny",
-        observedAt: "2026-06-30T13:50:00.000Z",
-      },
-      sun: {
-        sunriseAt: "2026-06-29T21:53:00.000Z",
-        sunsetAt: "2026-06-30T10:02:00.000Z",
-      },
+    fetchWeatherNow.mockResolvedValueOnce({
+      temperatureCelsius: 28,
+      conditionText: "Sunny",
+      observedAt: "2026-06-30T13:50:00.000Z",
+    });
+    fetchSun.mockResolvedValueOnce({
+      sunriseAt: "2026-06-29T21:53:00.000Z",
+      sunsetAt: "2026-06-30T10:02:00.000Z",
     });
 
     const result = await service.getExternalNaturalEnvironmentForMachine(
@@ -1463,7 +1459,15 @@ describe("MachinesService", () => {
       new Date("2026-06-30T14:00:00.000Z"),
     );
 
-    expect(fetchExternalNaturalEnvironment).toHaveBeenCalledWith({
+    expect(fetchWeatherNow).toHaveBeenCalledWith({
+      geoLocation: {
+        latitude: 31.2304,
+        longitude: 121.4737,
+        timezone: "Asia/Shanghai",
+      },
+      checkedAt: new Date("2026-06-30T14:00:00.000Z"),
+    });
+    expect(fetchSun).toHaveBeenCalledWith({
       geoLocation: {
         latitude: 31.2304,
         longitude: 121.4737,
@@ -1494,6 +1498,274 @@ describe("MachinesService", () => {
     expect(result).not.toHaveProperty("diagnostic");
   });
 
+  it("returns cached External Natural Environment for the same Machine Geo Location within the weather TTL", async () => {
+    const machine = {
+      id: "550e8400-e29b-41d4-a716-446655440000",
+      code: "M001",
+      name: "Lobby",
+      locationLabel: "1F",
+      geoLatitude: 31.2304,
+      geoLongitude: 121.4737,
+      geoTimezone: "Asia/Shanghai",
+      status: "online",
+      deletedAt: null,
+    };
+    mockDb.select
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            limit: async () => [machine],
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            limit: async () => [machine],
+          }),
+        }),
+      });
+    fetchWeatherNow.mockResolvedValueOnce({
+      temperatureCelsius: 28,
+      conditionText: "Sunny",
+      observedAt: "2026-06-30T13:50:00.000Z",
+    });
+    fetchSun.mockResolvedValueOnce({
+      sunriseAt: "2026-06-29T21:53:00.000Z",
+      sunsetAt: "2026-06-30T10:02:00.000Z",
+    });
+
+    const first = await service.getExternalNaturalEnvironmentForMachine(
+      "550e8400-e29b-41d4-a716-446655440000",
+      new Date("2026-06-30T14:00:00.000Z"),
+    );
+    const second = await service.getExternalNaturalEnvironmentForMachine(
+      "550e8400-e29b-41d4-a716-446655440000",
+      new Date("2026-06-30T14:09:59.000Z"),
+    );
+
+    expect(fetchWeatherNow).toHaveBeenCalledTimes(1);
+    expect(fetchSun).toHaveBeenCalledTimes(1);
+    expect(second).toEqual({
+      ...first,
+      checkedAt: "2026-06-30T14:09:59.000Z",
+      localTime: {
+        timezone: "Asia/Shanghai",
+        localDate: "2026-06-30",
+        localClock: "22:09:59",
+      },
+    });
+  });
+
+  it("returns stale cached External Natural Environment when provider refresh fails after the weather TTL", async () => {
+    const machine = {
+      id: "550e8400-e29b-41d4-a716-446655440000",
+      code: "M001",
+      name: "Lobby",
+      locationLabel: "1F",
+      geoLatitude: 31.2304,
+      geoLongitude: 121.4737,
+      geoTimezone: "Asia/Shanghai",
+      status: "online",
+      deletedAt: null,
+    };
+    mockDb.select
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            limit: async () => [machine],
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            limit: async () => [machine],
+          }),
+        }),
+      });
+    fetchWeatherNow
+      .mockResolvedValueOnce({
+        temperatureCelsius: 28,
+        conditionText: "Sunny",
+        observedAt: "2026-06-30T13:50:00.000Z",
+      })
+      .mockRejectedValueOnce(
+        new Error("QWeather 401 for API key secret-qweather-api-key"),
+      );
+    fetchSun.mockResolvedValueOnce({
+      sunriseAt: "2026-06-29T21:53:00.000Z",
+      sunsetAt: "2026-06-30T10:02:00.000Z",
+    });
+
+    await service.getExternalNaturalEnvironmentForMachine(
+      "550e8400-e29b-41d4-a716-446655440000",
+      new Date("2026-06-30T14:00:00.000Z"),
+    );
+    const result = await service.getExternalNaturalEnvironmentForMachine(
+      "550e8400-e29b-41d4-a716-446655440000",
+      new Date("2026-06-30T14:10:00.000Z"),
+    );
+
+    expect(fetchWeatherNow).toHaveBeenCalledTimes(2);
+    expect(fetchSun).toHaveBeenCalledTimes(1);
+    expect(result).toEqual({
+      status: "stale",
+      machineId: "550e8400-e29b-41d4-a716-446655440000",
+      machineCode: "M001",
+      checkedAt: "2026-06-30T14:10:00.000Z",
+      localTime: {
+        timezone: "Asia/Shanghai",
+        localDate: "2026-06-30",
+        localClock: "22:10:00",
+      },
+      weather: {
+        temperatureCelsius: 28,
+        conditionText: "Sunny",
+        observedAt: "2026-06-30T13:50:00.000Z",
+      },
+      sun: {
+        sunriseAt: "2026-06-29T21:53:00.000Z",
+        sunsetAt: "2026-06-30T10:02:00.000Z",
+      },
+      diagnostic: {
+        reason: "provider_unavailable",
+        message: "External Natural Environment provider is unavailable",
+      },
+    });
+    expect(JSON.stringify(result)).not.toContain("secret-qweather-api-key");
+  });
+
+  it("refreshes weather after 10 minutes while reusing same-date sunrise and sunset for 24 hours", async () => {
+    const machine = {
+      id: "550e8400-e29b-41d4-a716-446655440000",
+      code: "M001",
+      name: "Lobby",
+      locationLabel: "1F",
+      geoLatitude: 31.2304,
+      geoLongitude: 121.4737,
+      geoTimezone: "Asia/Shanghai",
+      status: "online",
+      deletedAt: null,
+    };
+    mockDb.select
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            limit: async () => [machine],
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            limit: async () => [machine],
+          }),
+        }),
+      });
+    fetchWeatherNow
+      .mockResolvedValueOnce({
+        temperatureCelsius: 28,
+        conditionText: "Sunny",
+        observedAt: "2026-06-30T13:50:00.000Z",
+      })
+      .mockResolvedValueOnce({
+        temperatureCelsius: 29,
+        conditionText: "Cloudy",
+        observedAt: "2026-06-30T14:10:00.000Z",
+      });
+    fetchSun.mockResolvedValueOnce({
+      sunriseAt: "2026-06-29T21:53:00.000Z",
+      sunsetAt: "2026-06-30T10:02:00.000Z",
+    });
+
+    await service.getExternalNaturalEnvironmentForMachine(
+      "550e8400-e29b-41d4-a716-446655440000",
+      new Date("2026-06-30T14:00:00.000Z"),
+    );
+    const result = await service.getExternalNaturalEnvironmentForMachine(
+      "550e8400-e29b-41d4-a716-446655440000",
+      new Date("2026-06-30T14:10:00.000Z"),
+    );
+
+    expect(fetchWeatherNow).toHaveBeenCalledTimes(2);
+    expect(fetchSun).toHaveBeenCalledTimes(1);
+    expect(result.weather).toEqual({
+      temperatureCelsius: 29,
+      conditionText: "Cloudy",
+      observedAt: "2026-06-30T14:10:00.000Z",
+    });
+    expect(result.sun).toEqual({
+      sunriseAt: "2026-06-29T21:53:00.000Z",
+      sunsetAt: "2026-06-30T10:02:00.000Z",
+    });
+  });
+
+  it("refreshes sunrise and sunset separately for a new effective local date", async () => {
+    const machine = {
+      id: "550e8400-e29b-41d4-a716-446655440000",
+      code: "M001",
+      name: "Lobby",
+      locationLabel: "1F",
+      geoLatitude: 31.2304,
+      geoLongitude: 121.4737,
+      geoTimezone: "Asia/Shanghai",
+      status: "online",
+      deletedAt: null,
+    };
+    mockDb.select
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            limit: async () => [machine],
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            limit: async () => [machine],
+          }),
+        }),
+      });
+    fetchWeatherNow
+      .mockResolvedValueOnce({
+        temperatureCelsius: 28,
+        conditionText: "Sunny",
+        observedAt: "2026-06-30T13:50:00.000Z",
+      })
+      .mockResolvedValueOnce({
+        temperatureCelsius: 27,
+        conditionText: "Cloudy",
+        observedAt: "2026-07-01T13:50:00.000Z",
+      });
+    fetchSun
+      .mockResolvedValueOnce({
+        sunriseAt: "2026-06-29T21:53:00.000Z",
+        sunsetAt: "2026-06-30T10:02:00.000Z",
+      })
+      .mockResolvedValueOnce({
+        sunriseAt: "2026-06-30T21:54:00.000Z",
+        sunsetAt: "2026-07-01T10:02:00.000Z",
+      });
+
+    await service.getExternalNaturalEnvironmentForMachine(
+      "550e8400-e29b-41d4-a716-446655440000",
+      new Date("2026-06-30T14:00:00.000Z"),
+    );
+    const result = await service.getExternalNaturalEnvironmentForMachine(
+      "550e8400-e29b-41d4-a716-446655440000",
+      new Date("2026-07-01T14:00:00.000Z"),
+    );
+
+    expect(fetchWeatherNow).toHaveBeenCalledTimes(2);
+    expect(fetchSun).toHaveBeenCalledTimes(2);
+    expect(result.sun).toEqual({
+      sunriseAt: "2026-06-30T21:54:00.000Z",
+      sunsetAt: "2026-07-01T10:02:00.000Z",
+    });
+  });
+
   it("returns unavailable External Natural Environment with redacted diagnostics when QWeather fails", async () => {
     mockDb.select.mockReturnValueOnce({
       from: () => ({
@@ -1514,9 +1786,13 @@ describe("MachinesService", () => {
         }),
       }),
     });
-    fetchExternalNaturalEnvironment.mockRejectedValueOnce(
+    fetchWeatherNow.mockRejectedValueOnce(
       new Error("QWeather 401 for API key secret-qweather-api-key"),
     );
+    fetchSun.mockResolvedValueOnce({
+      sunriseAt: "2026-06-29T21:53:00.000Z",
+      sunsetAt: "2026-06-30T10:02:00.000Z",
+    });
 
     const result = await service.getExternalNaturalEnvironmentForMachine(
       "550e8400-e29b-41d4-a716-446655440000",

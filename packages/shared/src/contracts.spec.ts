@@ -290,6 +290,58 @@ describe("shared API contract", () => {
     });
   });
 
+  it("defines External Natural Environment stale as normalized cached data with safe diagnostics", () => {
+    expect(
+      externalNaturalEnvironmentSchema.parse({
+        status: "stale",
+        machineId: "550e8400-e29b-41d4-a716-446655440000",
+        machineCode: "M001",
+        checkedAt: "2026-06-30T14:10:00.000Z",
+        localTime: {
+          timezone: "Asia/Shanghai",
+          localDate: "2026-06-30",
+          localClock: "22:10:00",
+        },
+        weather: {
+          temperatureCelsius: 28,
+          conditionText: "Sunny",
+          observedAt: "2026-06-30T13:50:00.000Z",
+        },
+        sun: {
+          sunriseAt: "2026-06-29T21:53:00.000Z",
+          sunsetAt: "2026-06-30T10:02:00.000Z",
+        },
+        diagnostic: {
+          reason: "provider_unavailable",
+          message: "External Natural Environment provider is unavailable",
+        },
+      }),
+    ).toEqual({
+      status: "stale",
+      machineId: "550e8400-e29b-41d4-a716-446655440000",
+      machineCode: "M001",
+      checkedAt: "2026-06-30T14:10:00.000Z",
+      localTime: {
+        timezone: "Asia/Shanghai",
+        localDate: "2026-06-30",
+        localClock: "22:10:00",
+      },
+      weather: {
+        temperatureCelsius: 28,
+        conditionText: "Sunny",
+        observedAt: "2026-06-30T13:50:00.000Z",
+      },
+      sun: {
+        sunriseAt: "2026-06-29T21:53:00.000Z",
+        sunsetAt: "2026-06-30T10:02:00.000Z",
+      },
+      diagnostic: {
+        reason: "provider_unavailable",
+        message: "External Natural Environment provider is unavailable",
+      },
+    });
+  });
+
   it("accepts structured machine heartbeat payload", () => {
     expect(
       heartbeatPayloadSchema.parse({

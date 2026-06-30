@@ -5,6 +5,8 @@ import type {
   ExternalNaturalEnvironmentProvider,
   ExternalNaturalEnvironmentProviderInput,
   ExternalNaturalEnvironmentProviderResult,
+  ExternalNaturalEnvironmentSun,
+  ExternalNaturalEnvironmentWeather,
 } from "./external-natural-environment.provider";
 
 import { AppConfigService } from "../config/app-config.service";
@@ -59,6 +61,20 @@ export class QWeatherClient {
   async fetchExternalNaturalEnvironment(
     input: ExternalNaturalEnvironmentProviderInput,
   ): Promise<ExternalNaturalEnvironmentProviderResult> {
+    const [weather, sun] = await Promise.all([
+      this.fetchWeatherNow(input),
+      this.fetchSun(input),
+    ]);
+    return {
+      localTime: formatLocalTime(input.checkedAt, input.geoLocation.timezone),
+      weather,
+      sun,
+    };
+  }
+
+  async fetchWeatherNow(
+    input: ExternalNaturalEnvironmentProviderInput,
+  ): Promise<ExternalNaturalEnvironmentWeather> {
     if (!this.config.apiKey || !this.config.apiHost) {
       throw new QWeatherProviderError("QWeather provider is not configured");
     }
@@ -67,29 +83,38 @@ export class QWeatherClient {
       input.geoLocation.longitude,
       input.geoLocation.latitude,
     );
-    const [weatherNow, sun] = await Promise.all([
-      this.fetchWeatherNow(location),
-      this.fetchSun(
-        location,
-        localDateYmd(input.checkedAt, input.geoLocation.timezone),
-      ),
-    ]);
+    const weatherNow = await this.requestWeatherNow(location);
 
     return {
-      localTime: formatLocalTime(input.checkedAt, input.geoLocation.timezone),
-      weather: {
-        temperatureCelsius: Number(weatherNow.now.temp),
-        conditionText: weatherNow.now.text,
-        observedAt: parseProviderIso(weatherNow.now.obsTime),
-      },
-      sun: {
-        sunriseAt: parseProviderIso(sun.sunrise),
-        sunsetAt: parseProviderIso(sun.sunset),
-      },
+      temperatureCelsius: Number(weatherNow.now.temp),
+      conditionText: weatherNow.now.text,
+      observedAt: parseProviderIso(weatherNow.now.obsTime),
     };
   }
 
-  private async fetchWeatherNow(location: string) {
+  async fetchSun(
+    input: ExternalNaturalEnvironmentProviderInput,
+  ): Promise<ExternalNaturalEnvironmentSun> {
+    if (!this.config.apiKey || !this.config.apiHost) {
+      throw new QWeatherProviderError("QWeather provider is not configured");
+    }
+
+    const location = formatQWeatherLocation(
+      input.geoLocation.longitude,
+      input.geoLocation.latitude,
+    );
+    const sun = await this.requestSun(
+      location,
+      localDateYmd(input.checkedAt, input.geoLocation.timezone),
+    );
+
+    return {
+      sunriseAt: parseProviderIso(sun.sunrise),
+      sunsetAt: parseProviderIso(sun.sunset),
+    };
+  }
+
+  private async requestWeatherNow(location: string) {
     const url = buildUrl(this.apiHost(), this.config.weatherNowPath, {
       location,
       unit: "m",
@@ -116,7 +141,7 @@ export class QWeatherClient {
     };
   }
 
-  private async fetchSun(location: string, date: string) {
+  private async requestSun(location: string, date: string) {
     const url = buildUrl(this.apiHost(), this.config.sunPath, {
       location,
       date,
@@ -184,16 +209,26 @@ export class QWeatherExternalNaturalEnvironmentProvider implements ExternalNatur
     private readonly config: AppConfigService,
   ) {}
 
-  async fetch(
+  async fetchWeatherNow(
     input: ExternalNaturalEnvironmentProviderInput,
-  ): Promise<ExternalNaturalEnvironmentProviderResult> {
-    return await new QWeatherClient({
+  ): Promise<ExternalNaturalEnvironmentWeather> {
+    return await this.client().fetchWeatherNow(input);
+  }
+
+  async fetchSun(
+    input: ExternalNaturalEnvironmentProviderInput,
+  ): Promise<ExternalNaturalEnvironmentSun> {
+    return await this.client().fetchSun(input);
+  }
+
+  private client(): QWeatherClient {
+    return new QWeatherClient({
       apiKey: this.config.qweatherApiKey,
       apiHost: this.config.qweatherApiHost,
       weatherNowPath: this.config.qweatherWeatherNowPath,
       sunPath: this.config.qweatherSunPath,
       timeoutMs: this.config.qweatherTimeoutMs,
-    }).fetchExternalNaturalEnvironment(input);
+    });
   }
 }
 

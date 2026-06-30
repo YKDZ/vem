@@ -74,6 +74,8 @@ import {
   EXTERNAL_NATURAL_ENVIRONMENT_PROVIDER,
   UnconfiguredExternalNaturalEnvironmentProvider,
   type ExternalNaturalEnvironmentProvider,
+  type ExternalNaturalEnvironmentSun,
+  type ExternalNaturalEnvironmentWeather,
 } from "./external-natural-environment.provider";
 import {
   digestMachineClaimCodeLookup,
@@ -116,6 +118,10 @@ type ExternalNaturalEnvironment = {
     message: string;
   };
 };
+type CachedExternalNaturalEnvironmentValue<T> = {
+  value: T;
+  cachedAtMs: number;
+};
 
 type PlanogramVersionRecord = typeof machinePlanogramVersions.$inferSelect;
 
@@ -149,6 +155,8 @@ type MachineClaimCandidate = {
 const MACHINE_CLAIM_CODE_MAX_FAILED_ATTEMPTS = 5;
 const MACHINE_CLAIM_CODES_MACHINE_OPEN_UNIQUE =
   "machine_claim_codes_machine_open_unique";
+const WEATHER_NOW_CACHE_TTL_MS = 10 * 60 * 1000;
+const SUN_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
 function toIso(value: Date | string): string {
   return value instanceof Date ? value.toISOString() : value;
@@ -360,6 +368,16 @@ async function externalNaturalEnvironmentSnapshot(
   machine: MachineRecord,
   now: Date,
   provider: ExternalNaturalEnvironmentProvider,
+  cache?: {
+    weatherNow: Map<
+      string,
+      CachedExternalNaturalEnvironmentValue<ExternalNaturalEnvironmentWeather>
+    >;
+    sun: Map<
+      string,
+      CachedExternalNaturalEnvironmentValue<ExternalNaturalEnvironmentSun>
+    >;
+  },
 ): Promise<ExternalNaturalEnvironment> {
   const base = {
     machineId: machine.id,
@@ -377,18 +395,63 @@ async function externalNaturalEnvironmentSnapshot(
       },
     };
   }
-  let providerResult: Awaited<
-    ReturnType<ExternalNaturalEnvironmentProvider["fetch"]>
-  > | null;
+  const cacheKey = machineGeoLocationCacheKey(geoLocation);
+  const sunCacheKey = `${cacheKey}|${localDateYmd(now, geoLocation.timezone)}`;
+  const cachedWeather = usableCachedValue(
+    cache?.weatherNow.get(cacheKey),
+    now,
+    WEATHER_NOW_CACHE_TTL_MS,
+  );
+  const cachedSun = usableCachedValue(
+    cache?.sun.get(sunCacheKey),
+    now,
+    SUN_CACHE_TTL_MS,
+  );
+  let weather: ExternalNaturalEnvironmentWeather | null =
+    cachedWeather ?? null;
+  let sun: ExternalNaturalEnvironmentSun | null = cachedSun ?? null;
   try {
-    providerResult = await provider.fetch({
-      geoLocation,
-      checkedAt: now,
-    });
+    const input = { geoLocation, checkedAt: now };
+    const [weatherResult, sunResult] = await Promise.all([
+      weather
+        ? Promise.resolve(weather)
+        : provider.fetchWeatherNow(input).then((value) => {
+            cache?.weatherNow.set(cacheKey, {
+              value,
+              cachedAtMs: now.getTime(),
+            });
+            return value;
+          }),
+      sun
+        ? Promise.resolve(sun)
+        : provider.fetchSun(input).then((value) => {
+            cache?.sun.set(sunCacheKey, {
+              value,
+              cachedAtMs: now.getTime(),
+            });
+            return value;
+          }),
+    ]);
+    weather = weatherResult;
+    sun = sunResult;
   } catch {
-    providerResult = null;
+    weather = cache?.weatherNow.get(cacheKey)?.value ?? null;
+    sun = cache?.sun.get(sunCacheKey)?.value ?? null;
+    if (weather && sun) {
+      return {
+        ...base,
+        status: "stale",
+        localTime: formatLocalTime(now, geoLocation.timezone),
+        weather,
+        sun,
+        diagnostic: {
+          reason: "provider_unavailable",
+          message: "External Natural Environment provider is unavailable",
+        },
+      };
+    }
   }
-  if (!providerResult) {
+  if (!weather || !sun) {
     return {
       ...base,
       status: "unavailable",
@@ -401,16 +464,67 @@ async function externalNaturalEnvironmentSnapshot(
   return {
     ...base,
     status: "ready",
-    localTime: providerResult.localTime,
-    weather: providerResult.weather,
-    sun: providerResult.sun,
+    localTime: formatLocalTime(now, geoLocation.timezone),
+    weather,
+    sun,
   };
+}
+
+function machineGeoLocationCacheKey(geoLocation: MachineGeoLocation): string {
+  return [
+    geoLocation.latitude.toFixed(6),
+    geoLocation.longitude.toFixed(6),
+    geoLocation.timezone,
+  ].join("|");
+}
+
+function usableCachedValue<T>(
+  cached: CachedExternalNaturalEnvironmentValue<T> | undefined,
+  now: Date,
+  ttlMs: number,
+): T | undefined {
+  if (!cached || now.getTime() - cached.cachedAtMs >= ttlMs) {
+    return undefined;
+  }
+  return cached.value;
+}
+
+function formatLocalTime(checkedAt: Date, timezone: string) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(checkedAt);
+  const part = (type: string) =>
+    parts.find((item) => item.type === type)?.value ?? "";
+  return {
+    timezone,
+    localDate: `${part("year")}-${part("month")}-${part("day")}`,
+    localClock: `${part("hour")}:${part("minute")}:${part("second")}`,
+  };
+}
+
+function localDateYmd(checkedAt: Date, timezone: string): string {
+  return formatLocalTime(checkedAt, timezone).localDate.replaceAll("-", "");
 }
 
 @Injectable()
 export class MachinesService implements OnModuleInit, OnApplicationShutdown {
   private readonly logger = new Logger(MachinesService.name);
   private timeoutInterval?: NodeJS.Timeout;
+  private readonly externalNaturalEnvironmentCache = new Map<
+    string,
+    CachedExternalNaturalEnvironmentValue<ExternalNaturalEnvironmentWeather>
+  >();
+  private readonly externalNaturalEnvironmentSunCache = new Map<
+    string,
+    CachedExternalNaturalEnvironmentValue<ExternalNaturalEnvironmentSun>
+  >();
 
   constructor(
     @Inject(DRIZZLE_CLIENT) private readonly db: DrizzleClient,
@@ -614,6 +728,7 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
               machine,
               new Date(),
               this.getExternalNaturalEnvironmentProvider(),
+              this.externalNaturalEnvironmentCaches(),
             )
           ).status,
         },
@@ -639,6 +754,7 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
       machine,
       now,
       this.getExternalNaturalEnvironmentProvider(),
+      this.externalNaturalEnvironmentCaches(),
     );
   }
 
@@ -660,7 +776,15 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
       machine,
       now,
       this.getExternalNaturalEnvironmentProvider(),
+      this.externalNaturalEnvironmentCaches(),
     );
+  }
+
+  private externalNaturalEnvironmentCaches() {
+    return {
+      weatherNow: this.externalNaturalEnvironmentCache,
+      sun: this.externalNaturalEnvironmentSunCache,
+    };
   }
 
   private async getLatestHeartbeatStatus(machineId: string): Promise<{
