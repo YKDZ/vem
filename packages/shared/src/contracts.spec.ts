@@ -246,6 +246,50 @@ describe("shared API contract", () => {
     ).toThrow();
   });
 
+  it("defines External Natural Environment ready as normalized local time, weather, and sun data", () => {
+    expect(
+      externalNaturalEnvironmentSchema.parse({
+        status: "ready",
+        machineId: "550e8400-e29b-41d4-a716-446655440000",
+        machineCode: "M001",
+        checkedAt: "2026-06-30T14:00:00.000Z",
+        localTime: {
+          timezone: "Asia/Shanghai",
+          localDate: "2026-06-30",
+          localClock: "22:00:00",
+        },
+        weather: {
+          temperatureCelsius: 28,
+          conditionText: "Sunny",
+          observedAt: "2026-06-30T13:50:00.000Z",
+        },
+        sun: {
+          sunriseAt: "2026-06-29T21:53:00.000Z",
+          sunsetAt: "2026-06-30T10:02:00.000Z",
+        },
+      }),
+    ).toEqual({
+      status: "ready",
+      machineId: "550e8400-e29b-41d4-a716-446655440000",
+      machineCode: "M001",
+      checkedAt: "2026-06-30T14:00:00.000Z",
+      localTime: {
+        timezone: "Asia/Shanghai",
+        localDate: "2026-06-30",
+        localClock: "22:00:00",
+      },
+      weather: {
+        temperatureCelsius: 28,
+        conditionText: "Sunny",
+        observedAt: "2026-06-30T13:50:00.000Z",
+      },
+      sun: {
+        sunriseAt: "2026-06-29T21:53:00.000Z",
+        sunsetAt: "2026-06-30T10:02:00.000Z",
+      },
+    });
+  });
+
   it("accepts structured machine heartbeat payload", () => {
     expect(
       heartbeatPayloadSchema.parse({

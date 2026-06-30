@@ -21,6 +21,11 @@ export type ExternalNaturalEnvironment = {
   machineId: string;
   machineCode: string;
   checkedAt: string;
+  localTime?: {
+    timezone: string;
+    localDate: string;
+    localClock: string;
+  };
   weather?: {
     temperatureCelsius: number;
     conditionText: string;

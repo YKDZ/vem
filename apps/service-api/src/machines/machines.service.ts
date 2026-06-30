@@ -7,6 +7,7 @@ import {
   NotFoundException,
   OnApplicationShutdown,
   OnModuleInit,
+  Optional,
   UnauthorizedException,
 } from "@nestjs/common";
 import {
@@ -70,6 +71,11 @@ import { MqttService } from "../mqtt/mqtt.service";
 import { NotificationsService } from "../notifications/notifications.service";
 import { PaymentProviderConfigService } from "../payments/payment-provider-config.service";
 import {
+  EXTERNAL_NATURAL_ENVIRONMENT_PROVIDER,
+  UnconfiguredExternalNaturalEnvironmentProvider,
+  type ExternalNaturalEnvironmentProvider,
+} from "./external-natural-environment.provider";
+import {
   digestMachineClaimCodeLookup,
   generateHumanMachineClaimCode,
   hashMachineClaimCodeVerifier,
@@ -91,6 +97,11 @@ type ExternalNaturalEnvironment = {
   machineId: string;
   machineCode: string;
   checkedAt: string;
+  localTime?: {
+    timezone: string;
+    localDate: string;
+    localClock: string;
+  };
   weather?: {
     temperatureCelsius: number;
     conditionText: string;
@@ -345,16 +356,18 @@ function machineGeoLocationValues(
       };
 }
 
-function externalNaturalEnvironmentSnapshot(
+async function externalNaturalEnvironmentSnapshot(
   machine: MachineRecord,
   now: Date,
-): ExternalNaturalEnvironment {
+  provider: ExternalNaturalEnvironmentProvider,
+): Promise<ExternalNaturalEnvironment> {
   const base = {
     machineId: machine.id,
     machineCode: machine.code,
     checkedAt: now.toISOString(),
   };
-  if (!machineGeoLocationFromRow(machine)) {
+  const geoLocation = machineGeoLocationFromRow(machine);
+  if (!geoLocation) {
     return {
       ...base,
       status: "unconfigured",
@@ -364,13 +377,33 @@ function externalNaturalEnvironmentSnapshot(
       },
     };
   }
+  let providerResult: Awaited<
+    ReturnType<ExternalNaturalEnvironmentProvider["fetch"]>
+  > | null;
+  try {
+    providerResult = await provider.fetch({
+      geoLocation,
+      checkedAt: now,
+    });
+  } catch {
+    providerResult = null;
+  }
+  if (!providerResult) {
+    return {
+      ...base,
+      status: "unavailable",
+      diagnostic: {
+        reason: "provider_unavailable",
+        message: "External Natural Environment provider is unavailable",
+      },
+    };
+  }
   return {
     ...base,
-    status: "unavailable",
-    diagnostic: {
-      reason: "provider_unavailable",
-      message: "External Natural Environment provider is not configured",
-    },
+    status: "ready",
+    localTime: providerResult.localTime,
+    weather: providerResult.weather,
+    sun: providerResult.sun,
   };
 }
 
@@ -395,6 +428,9 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
     private readonly config: AppConfigService,
     @Inject(NotificationsService)
     private readonly notificationsService: NotificationsService,
+    @Optional()
+    @Inject(EXTERNAL_NATURAL_ENVIRONMENT_PROVIDER)
+    private readonly externalNaturalEnvironmentProvider?: ExternalNaturalEnvironmentProvider,
   ) {}
 
   onModuleInit(): void {
@@ -424,6 +460,13 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
       clearInterval(this.timeoutInterval);
       this.timeoutInterval = undefined;
     }
+  }
+
+  private getExternalNaturalEnvironmentProvider(): ExternalNaturalEnvironmentProvider {
+    return (
+      this.externalNaturalEnvironmentProvider ??
+      new UnconfiguredExternalNaturalEnvironmentProvider()
+    );
   }
 
   async listMachines(query: PageQueryInput) {
@@ -566,8 +609,13 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
           activeAcknowledgedPlanogramVersion,
         },
         externalNaturalEnvironment: {
-          status: externalNaturalEnvironmentSnapshot(machine, new Date())
-            .status,
+          status: (
+            await externalNaturalEnvironmentSnapshot(
+              machine,
+              new Date(),
+              this.getExternalNaturalEnvironmentProvider(),
+            )
+          ).status,
         },
       }),
     };
@@ -587,7 +635,11 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
       throw new NotFoundException("Machine not found");
     }
 
-    return externalNaturalEnvironmentSnapshot(machine, now);
+    return externalNaturalEnvironmentSnapshot(
+      machine,
+      now,
+      this.getExternalNaturalEnvironmentProvider(),
+    );
   }
 
   async getExternalNaturalEnvironmentForMachineCode(
@@ -604,7 +656,11 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
       throw new NotFoundException("Machine not found");
     }
 
-    return externalNaturalEnvironmentSnapshot(machine, now);
+    return externalNaturalEnvironmentSnapshot(
+      machine,
+      now,
+      this.getExternalNaturalEnvironmentProvider(),
+    );
   }
 
   private async getLatestHeartbeatStatus(machineId: string): Promise<{

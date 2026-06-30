@@ -88,6 +88,13 @@ const baseEnvSchema = z.object({
     .min(1)
     .max(90)
     .default(30),
+  QWEATHER_API_TOKEN: z.string().min(1).optional(),
+  QWEATHER_API_BASE_URL: z.url().default("https://api.qweather.com"),
+  QWEATHER_WEATHER_NOW_PATH: z
+    .string()
+    .regex(/^\/.+/)
+    .default("/v7/weather/now"),
+  QWEATHER_SUN_PATH: z.string().regex(/^\/.+/).default("/v7/astronomy/sun"),
   BOOTSTRAP_ADMIN_USERNAME: z.string().min(3).max(64).default("admin"),
   BOOTSTRAP_ADMIN_PASSWORD: z.string().min(12).max(128),
 });

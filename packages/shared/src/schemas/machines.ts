@@ -59,6 +59,14 @@ const externalNaturalEnvironmentWeatherSchema = z.strictObject({
   observedAt: z.iso.datetime(),
 });
 
+const externalNaturalEnvironmentLocalTimeSchema = z.strictObject({
+  timezone: z.string().refine(isIanaTimeZone, {
+    message: "Timezone must be a valid IANA time zone",
+  }),
+  localDate: z.iso.date(),
+  localClock: z.iso.time(),
+});
+
 const externalNaturalEnvironmentSunSchema = z.strictObject({
   sunriseAt: z.iso.datetime(),
   sunsetAt: z.iso.datetime(),
@@ -67,11 +75,13 @@ const externalNaturalEnvironmentSunSchema = z.strictObject({
 export const externalNaturalEnvironmentSchema = z.discriminatedUnion("status", [
   externalNaturalEnvironmentBaseSchema.extend({
     status: z.literal("ready"),
+    localTime: externalNaturalEnvironmentLocalTimeSchema,
     weather: externalNaturalEnvironmentWeatherSchema,
     sun: externalNaturalEnvironmentSunSchema,
   }),
   externalNaturalEnvironmentBaseSchema.extend({
     status: z.literal("stale"),
+    localTime: externalNaturalEnvironmentLocalTimeSchema,
     weather: externalNaturalEnvironmentWeatherSchema,
     sun: externalNaturalEnvironmentSunSchema,
     diagnostic: externalNaturalEnvironmentDiagnosticSchema,

@@ -31,6 +31,21 @@ describe("validateEnv", () => {
     expect(env.NODE_ENV).toBe("development");
   });
 
+  it("accepts QWeather credentials and endpoint settings for External Natural Environment", () => {
+    const env = validateEnv({
+      ...baseValidEnv,
+      QWEATHER_API_TOKEN: "qweather-service-api-token",
+      QWEATHER_API_BASE_URL: "https://api.qweather.example",
+      QWEATHER_WEATHER_NOW_PATH: "/v7/weather/now",
+      QWEATHER_SUN_PATH: "/v7/astronomy/sun",
+    });
+
+    expect(env.QWEATHER_API_TOKEN).toBe("qweather-service-api-token");
+    expect(env.QWEATHER_API_BASE_URL).toBe("https://api.qweather.example");
+    expect(env.QWEATHER_WEATHER_NOW_PATH).toBe("/v7/weather/now");
+    expect(env.QWEATHER_SUN_PATH).toBe("/v7/astronomy/sun");
+  });
+
   it("rejects production config with PAYMENT_MOCK_ENABLED=true", () => {
     expect(() =>
       validateEnv({

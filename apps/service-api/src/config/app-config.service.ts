@@ -128,6 +128,22 @@ export class AppConfigService {
     });
   }
 
+  get qweatherApiToken(): string | undefined {
+    return this.config.get("QWEATHER_API_TOKEN", { infer: true });
+  }
+
+  get qweatherApiBaseUrl(): string {
+    return this.config.get("QWEATHER_API_BASE_URL", { infer: true });
+  }
+
+  get qweatherWeatherNowPath(): string {
+    return this.config.get("QWEATHER_WEATHER_NOW_PATH", { infer: true });
+  }
+
+  get qweatherSunPath(): string {
+    return this.config.get("QWEATHER_SUN_PATH", { infer: true });
+  }
+
   buildPaymentNotifyUrl(providerCode: string): string {
     const rawBase = this.paymentWebhookBaseUrl.replace(/\/+$/, "");
     const encodedProviderCode = encodeURIComponent(providerCode);

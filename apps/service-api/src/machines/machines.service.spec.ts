@@ -26,6 +26,7 @@ import { MqttSignatureService } from "../mqtt/mqtt-signature.service";
 import { MqttService } from "../mqtt/mqtt.service";
 import { NotificationsService } from "../notifications/notifications.service";
 import { PaymentProviderConfigService } from "../payments/payment-provider-config.service";
+import { EXTERNAL_NATURAL_ENVIRONMENT_PROVIDER } from "./external-natural-environment.provider";
 import { hashMachineClaimCodeVerifier } from "./machine-claim-code.util";
 import { MachinesService } from "./machines.service";
 
@@ -45,6 +46,7 @@ describe("MachinesService", () => {
   const listMachinePaymentOptionsForMachine = vi.fn();
   const listProductionPilotPaymentEvidenceForMachine = vi.fn();
   const createMachineOfflineNotification = vi.fn();
+  const fetchExternalNaturalEnvironment = vi.fn();
 
   beforeEach(async () => {
     vi.resetAllMocks();
@@ -85,6 +87,10 @@ describe("MachinesService", () => {
         {
           provide: NotificationsService,
           useValue: { createMachineOfflineNotification },
+        },
+        {
+          provide: EXTERNAL_NATURAL_ENVIRONMENT_PROVIDER,
+          useValue: { fetch: fetchExternalNaturalEnvironment },
         },
         {
           provide: AppConfigService,
@@ -1411,6 +1417,123 @@ describe("MachinesService", () => {
         message: "Machine Geo Location is not configured",
       },
     });
+    expect(result).not.toHaveProperty("weather");
+    expect(result).not.toHaveProperty("sun");
+  });
+
+  it("returns ready External Natural Environment from QWeather for configured Machine Geo Location", async () => {
+    mockDb.select.mockReturnValueOnce({
+      from: () => ({
+        where: () => ({
+          limit: async () => [
+            {
+              id: "550e8400-e29b-41d4-a716-446655440000",
+              code: "M001",
+              name: "Lobby",
+              locationLabel: "1F",
+              geoLatitude: 31.2304,
+              geoLongitude: 121.4737,
+              geoTimezone: "Asia/Shanghai",
+              status: "online",
+              deletedAt: null,
+            },
+          ],
+        }),
+      }),
+    });
+    fetchExternalNaturalEnvironment.mockResolvedValueOnce({
+      localTime: {
+        timezone: "Asia/Shanghai",
+        localDate: "2026-06-30",
+        localClock: "22:00:00",
+      },
+      weather: {
+        temperatureCelsius: 28,
+        conditionText: "Sunny",
+        observedAt: "2026-06-30T13:50:00.000Z",
+      },
+      sun: {
+        sunriseAt: "2026-06-29T21:53:00.000Z",
+        sunsetAt: "2026-06-30T10:02:00.000Z",
+      },
+    });
+
+    const result = await service.getExternalNaturalEnvironmentForMachine(
+      "550e8400-e29b-41d4-a716-446655440000",
+      new Date("2026-06-30T14:00:00.000Z"),
+    );
+
+    expect(fetchExternalNaturalEnvironment).toHaveBeenCalledWith({
+      geoLocation: {
+        latitude: 31.2304,
+        longitude: 121.4737,
+        timezone: "Asia/Shanghai",
+      },
+      checkedAt: new Date("2026-06-30T14:00:00.000Z"),
+    });
+    expect(result).toEqual({
+      status: "ready",
+      machineId: "550e8400-e29b-41d4-a716-446655440000",
+      machineCode: "M001",
+      checkedAt: "2026-06-30T14:00:00.000Z",
+      localTime: {
+        timezone: "Asia/Shanghai",
+        localDate: "2026-06-30",
+        localClock: "22:00:00",
+      },
+      weather: {
+        temperatureCelsius: 28,
+        conditionText: "Sunny",
+        observedAt: "2026-06-30T13:50:00.000Z",
+      },
+      sun: {
+        sunriseAt: "2026-06-29T21:53:00.000Z",
+        sunsetAt: "2026-06-30T10:02:00.000Z",
+      },
+    });
+    expect(result).not.toHaveProperty("diagnostic");
+  });
+
+  it("returns unavailable External Natural Environment with redacted diagnostics when QWeather fails", async () => {
+    mockDb.select.mockReturnValueOnce({
+      from: () => ({
+        where: () => ({
+          limit: async () => [
+            {
+              id: "550e8400-e29b-41d4-a716-446655440000",
+              code: "M001",
+              name: "Lobby",
+              locationLabel: "1F",
+              geoLatitude: 31.2304,
+              geoLongitude: 121.4737,
+              geoTimezone: "Asia/Shanghai",
+              status: "online",
+              deletedAt: null,
+            },
+          ],
+        }),
+      }),
+    });
+    fetchExternalNaturalEnvironment.mockRejectedValueOnce(
+      new Error("QWeather 401 for token secret-qweather-token"),
+    );
+
+    const result = await service.getExternalNaturalEnvironmentForMachine(
+      "550e8400-e29b-41d4-a716-446655440000",
+      new Date("2026-06-30T14:00:00.000Z"),
+    );
+
+    expect(result).toEqual({
+      status: "unavailable",
+      machineId: "550e8400-e29b-41d4-a716-446655440000",
+      machineCode: "M001",
+      checkedAt: "2026-06-30T14:00:00.000Z",
+      diagnostic: {
+        reason: "provider_unavailable",
+        message: "External Natural Environment provider is unavailable",
+      },
+    });
+    expect(JSON.stringify(result)).not.toContain("secret-qweather-token");
     expect(result).not.toHaveProperty("weather");
     expect(result).not.toHaveProperty("sun");
   });
