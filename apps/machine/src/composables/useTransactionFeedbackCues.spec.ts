@@ -356,7 +356,6 @@ describe("transaction feedback cues", () => {
 
     await requester.requestCustomerAudioCue({
       type: "presence.detected",
-      ambientLightLevel: "bright",
       requestedAt: "2026-06-29T09:00:00.000Z",
       nowMs: new Date("2026-06-29T09:00:00.000Z").getTime(),
     });

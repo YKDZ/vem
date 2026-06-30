@@ -88,12 +88,7 @@ function createHelloMessage(machineCode: string | null): VisionClientMessage {
       clientRole: "machine",
       machineCode,
       protocolVersion: 1,
-      capabilities: [
-        "profile_push",
-        "presence_status",
-        "person_departed",
-        "ambient_light",
-      ],
+      capabilities: ["profile_push", "presence_status", "person_departed"],
     },
   } satisfies VisionClientMessage;
   return message;

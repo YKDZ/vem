@@ -17,7 +17,6 @@ let pinia: ReturnType<typeof createPinia>;
 
 type RequestedPresenceCue = {
   type: "presence.detected";
-  ambientLightLevel?: "bright" | "dim" | "dark" | "unknown" | null;
   requestedAt?: string;
   nowMs?: number;
 };
@@ -60,7 +59,6 @@ function emitPresenceStatus(input: {
   eventId: string;
   personPresent: boolean;
   detectedAt: string;
-  ambientLightLevel?: "bright" | "dim" | "dark";
 }): void {
   useVisionStore().applyPresenceStatus({
     eventId: input.eventId,
@@ -76,16 +74,6 @@ function emitPresenceStatus(input: {
       closeNow: false,
       close: false,
     },
-    ...(input.ambientLightLevel
-      ? {
-          ambientLight: {
-            level: input.ambientLightLevel,
-            measuredAt: input.detectedAt,
-            source: "camera" as const,
-            confidence: 0.82,
-          },
-        }
-      : {}),
   });
 }
 
@@ -158,7 +146,7 @@ describe("usePresenceInteraction", () => {
     expect(presence.presenceClass?.value).toBe("presence-present");
   });
 
-  it("requests a bright presence audio cue when local presence transitions to present", async () => {
+  it("requests a presence audio cue when local presence transitions to present", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-06-29T10:00:00.000Z"));
     enablePresenceAudioCues();
@@ -171,7 +159,6 @@ describe("usePresenceInteraction", () => {
       eventId: "VISION-PRESENCE-EVENT-BRIGHT",
       detectedAt: "2026-06-29T10:00:00.000Z",
       personPresent: true,
-      ambientLightLevel: "bright",
     });
     await nextTick();
 
@@ -180,43 +167,11 @@ describe("usePresenceInteraction", () => {
     expect(requester.events).toEqual([
       {
         type: "presence.detected",
-        ambientLightLevel: "bright",
         requestedAt: "2026-06-29T10:00:00.000Z",
         nowMs: new Date("2026-06-29T10:00:00.000Z").getTime(),
       },
     ]);
   });
-
-  it.each([
-    ["dim", "dim"],
-    ["dark", "dark"],
-    [undefined, "unknown"],
-  ] as const)(
-    "requests the %s ambient light presence cue variant",
-    async (ambientLightLevel, expectedVariant) => {
-      enablePresenceAudioCues();
-      const requester = createPresenceCueRequester();
-      await mountPresence({
-        audioCueRequester: requester,
-      });
-
-      emitPresenceStatus({
-        eventId: `VISION-PRESENCE-EVENT-${expectedVariant}`,
-        detectedAt: "2026-06-29T10:01:00.000Z",
-        personPresent: true,
-        ambientLightLevel,
-      });
-      await nextTick();
-
-      expect(requester.events).toMatchObject([
-        {
-          type: "presence.detected",
-          ambientLightLevel: expectedVariant,
-          requestedAt: "2026-06-29T10:01:00.000Z",
-        },
-      ]);
-    },
-  );
 
   it("does not accept a duplicate welcome cue during the central presence cooldown", async () => {
     vi.useFakeTimers();
@@ -231,7 +186,6 @@ describe("usePresenceInteraction", () => {
       eventId: "VISION-PRESENCE-EVENT-FIRST",
       detectedAt: "2026-06-29T10:02:00.000Z",
       personPresent: true,
-      ambientLightLevel: "bright",
     });
     await nextTick();
     emitPresenceStatus({
@@ -244,7 +198,6 @@ describe("usePresenceInteraction", () => {
       eventId: "VISION-PRESENCE-EVENT-SECOND",
       detectedAt: "2026-06-29T10:02:02.000Z",
       personPresent: true,
-      ambientLightLevel: "dim",
     });
     await nextTick();
 
@@ -252,7 +205,6 @@ describe("usePresenceInteraction", () => {
     expect(requester.events).toEqual([
       expect.objectContaining({
         type: "presence.detected",
-        ambientLightLevel: "bright",
       }),
     ]);
   });
@@ -263,7 +215,6 @@ describe("usePresenceInteraction", () => {
       eventId: "VISION-PRESENCE-EVENT-CACHED",
       detectedAt: "2026-06-29T10:03:00.000Z",
       personPresent: true,
-      ambientLightLevel: "dark",
     });
 
     const firstRequester = createPresenceCueRequester();
@@ -303,7 +254,6 @@ describe("usePresenceInteraction", () => {
         eventId: "VISION-PRESENCE-EVENT-MUTED",
         detectedAt: "2026-06-29T10:04:00.000Z",
         personPresent: true,
-        ambientLightLevel: "bright",
       });
       await nextTick();
 
@@ -327,7 +277,6 @@ describe("usePresenceInteraction", () => {
       eventId: "VISION-PRESENCE-EVENT-FAILS",
       detectedAt: "2026-06-29T10:05:00.000Z",
       personPresent: true,
-      ambientLightLevel: "bright",
     });
     await nextTick();
     await Promise.resolve();
@@ -357,7 +306,6 @@ describe("usePresenceInteraction", () => {
         eventId: "VISION-PRESENCE-EVENT-NO-DIRECT-AUDIO",
         detectedAt: "2026-06-29T10:06:00.000Z",
         personPresent: true,
-        ambientLightLevel: "bright",
       });
       await nextTick();
     } finally {
@@ -368,7 +316,7 @@ describe("usePresenceInteraction", () => {
     expect(audioConstructor).not.toHaveBeenCalled();
   });
 
-  it("derives person presence from explicit vision presence events and requests the ambient light cue variant", async () => {
+  it("derives person presence from explicit vision presence events and requests a presence cue", async () => {
     enablePresenceAudioCues();
     const requester = createPresenceCueRequester();
     const presence = await mountPresence({
@@ -385,12 +333,6 @@ describe("usePresenceInteraction", () => {
       close: false,
       closeTrigger: null,
       proximity: { present: true, closeNow: false, close: false },
-      ambientLight: {
-        level: "dim",
-        measuredAt: "2026-06-29T10:00:00.000Z",
-        source: "camera",
-        confidence: 0.82,
-      },
     });
     await nextTick();
 
@@ -405,7 +347,6 @@ describe("usePresenceInteraction", () => {
     expect(requester.events).toMatchObject([
       {
         type: "presence.detected",
-        ambientLightLevel: "dim",
         requestedAt: "2026-06-29T10:00:00.000Z",
       },
     ]);
@@ -525,7 +466,6 @@ describe("usePresenceInteraction", () => {
     expect(requester.events).toEqual([
       expect.objectContaining({
         type: "presence.detected",
-        ambientLightLevel: "unknown",
       }),
     ]);
   });

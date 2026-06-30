@@ -155,7 +155,6 @@ describe("vision native browser fallback - pushed profiles", () => {
 
     expect(result.reason).toBe("left_frame");
     expect(result.lastSeenAt).toBeTruthy();
-    expect(result.ambientLight?.level).toBe("bright");
   });
 
   it("keeps waiting silently when no person is detected", async () => {
