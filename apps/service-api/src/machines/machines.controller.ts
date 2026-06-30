@@ -214,7 +214,7 @@ export class MachinesController {
 
   @Public()
   @UseGuards(MachineAuthGuard)
-  @Get(":code/external-natural-environment")
+  @Get("by-code/:code/external-natural-environment")
   async getOwnExternalNaturalEnvironment(
     @CurrentMachine() machine: AuthenticatedMachine,
     @Param("code") code: string,

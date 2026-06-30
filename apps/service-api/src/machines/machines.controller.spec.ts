@@ -84,6 +84,13 @@ describe("MachinesController environment commands", () => {
 });
 
 describe("MachinesController External Natural Environment", () => {
+  let app: INestApplication | undefined;
+
+  afterEach(async () => {
+    await app?.close();
+    app = undefined;
+  });
+
   it("requires machines.read for admin machine environment diagnostics", async () => {
     const getExternalNaturalEnvironmentForMachine = vi.fn().mockResolvedValue({
       status: "unconfigured",
@@ -170,6 +177,96 @@ describe("MachinesController External Natural Environment", () => {
     expect(getExternalNaturalEnvironmentForMachineCode).toHaveBeenCalledWith(
       "M001",
     );
+  });
+
+  it("routes machine-authenticated External Natural Environment reads through the machine API route", async () => {
+    const getExternalNaturalEnvironmentForMachine = vi.fn();
+    const getExternalNaturalEnvironmentForMachineCode = vi
+      .fn()
+      .mockResolvedValue({
+        status: "unconfigured",
+        machineId: "550e8400-e29b-41d4-a716-446655440000",
+        machineCode: "M001",
+        checkedAt: "2026-06-30T14:00:00.000Z",
+        diagnostic: {
+          reason: "machine_geo_location_missing",
+          message: "Machine Geo Location is not configured",
+        },
+      });
+    const verifyToken = vi.fn().mockResolvedValue({
+      id: "550e8400-e29b-41d4-a716-446655440000",
+      code: "M001",
+      status: "online",
+    });
+    const module = await Test.createTestingModule({
+      controllers: [MachinesController],
+      providers: [
+        {
+          provide: MachinesService,
+          useValue: {
+            getExternalNaturalEnvironmentForMachine,
+            getExternalNaturalEnvironmentForMachineCode,
+          },
+        },
+        {
+          provide: MachineAuthService,
+          useValue: { verifyToken },
+        },
+      ],
+    }).compile();
+    app = module.createNestApplication();
+    await app.init();
+
+    await request(app.getHttpServer())
+      .get("/machines/by-code/M001/external-natural-environment")
+      .set("Authorization", "Bearer machine-token")
+      .expect(200)
+      .expect((response) => {
+        expect(response.body).toEqual(
+          expect.objectContaining({
+            status: "unconfigured",
+            machineCode: "M001",
+          }),
+        );
+      });
+
+    expect(verifyToken).toHaveBeenCalledWith("machine-token");
+    expect(getExternalNaturalEnvironmentForMachine).not.toHaveBeenCalled();
+    expect(getExternalNaturalEnvironmentForMachineCode).toHaveBeenCalledWith(
+      "M001",
+    );
+  });
+
+  it("rejects machine-authenticated External Natural Environment reads for another machine code through HTTP", async () => {
+    const getExternalNaturalEnvironmentForMachineCode = vi.fn();
+    const verifyToken = vi.fn().mockResolvedValue({
+      id: "550e8400-e29b-41d4-a716-446655440000",
+      code: "M001",
+      status: "online",
+    });
+    const module = await Test.createTestingModule({
+      controllers: [MachinesController],
+      providers: [
+        {
+          provide: MachinesService,
+          useValue: { getExternalNaturalEnvironmentForMachineCode },
+        },
+        {
+          provide: MachineAuthService,
+          useValue: { verifyToken },
+        },
+      ],
+    }).compile();
+    app = module.createNestApplication();
+    await app.init();
+
+    await request(app.getHttpServer())
+      .get("/machines/by-code/M002/external-natural-environment")
+      .set("Authorization", "Bearer machine-token")
+      .expect(403);
+
+    expect(verifyToken).toHaveBeenCalledWith("machine-token");
+    expect(getExternalNaturalEnvironmentForMachineCode).not.toHaveBeenCalled();
   });
 });
 

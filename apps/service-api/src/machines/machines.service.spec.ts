@@ -371,7 +371,7 @@ describe("MachinesService", () => {
     expect(result.geoLocation).toBeNull();
   });
 
-  it("returns ready Production Pilot Readiness from machine detail evidence", async () => {
+  it("keeps otherwise ready Production Pilot Readiness degraded while natural context is unconfigured", async () => {
     const machine = {
       id: "machine-1",
       code: "M001",
@@ -461,9 +461,14 @@ describe("MachinesService", () => {
 
     expect(result.productionPilotReadiness).toEqual(
       expect.objectContaining({
-        status: "ready",
+        status: "degraded",
         blockers: [],
-        degraded: [],
+        degraded: expect.arrayContaining([
+          expect.objectContaining({
+            code: "natural_context_readiness.unconfigured",
+            status: "degraded",
+          }),
+        ]),
         checks: expect.arrayContaining([
           expect.objectContaining({
             code: "machine_heartbeat.online",
@@ -727,9 +732,14 @@ describe("MachinesService", () => {
 
     expect(result.productionPilotReadiness).toEqual(
       expect.objectContaining({
-        status: "ready",
+        status: "degraded",
         blockers: [],
-        degraded: [],
+        degraded: expect.arrayContaining([
+          expect.objectContaining({
+            code: "natural_context_readiness.unconfigured",
+            status: "degraded",
+          }),
+        ]),
         checks: expect.arrayContaining([
           expect.objectContaining({
             code: "production_dispense_path.ready",
@@ -817,9 +827,14 @@ describe("MachinesService", () => {
 
     expect(result.productionPilotReadiness).toEqual(
       expect.objectContaining({
-        status: "ready",
+        status: "degraded",
         blockers: [],
-        degraded: [],
+        degraded: expect.arrayContaining([
+          expect.objectContaining({
+            code: "natural_context_readiness.unconfigured",
+            status: "degraded",
+          }),
+        ]),
         checks: expect.arrayContaining([
           expect.objectContaining({
             code: "scanner_runtime_status.ready",
@@ -1069,12 +1084,18 @@ describe("MachinesService", () => {
     const result = await service.getMachine("machine-1");
 
     expect(result.productionPilotReadiness.status).toBe("degraded");
-    expect(result.productionPilotReadiness.degraded).toEqual([
-      expect.objectContaining({
-        code: "scanner_runtime_status.missing",
-        status: "degraded",
-      }),
-    ]);
+    expect(result.productionPilotReadiness.degraded).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "scanner_runtime_status.missing",
+          status: "degraded",
+        }),
+        expect.objectContaining({
+          code: "natural_context_readiness.unconfigured",
+          status: "degraded",
+        }),
+      ]),
+    );
   });
 
   it("returns stable Production Pilot Readiness blockers with operator actions", async () => {
@@ -1238,13 +1259,104 @@ describe("MachinesService", () => {
 
     expect(result.productionPilotReadiness.status).toBe("degraded");
     expect(result.productionPilotReadiness.blockers).toEqual([]);
+    expect(result.productionPilotReadiness.degraded).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "scanner_runtime_status.missing",
+          label: "Scanner Runtime Status",
+          status: "degraded",
+          operatorAction:
+            "Inspect the scanner runtime; QR payment can remain available if payment readiness is ready.",
+        }),
+        expect.objectContaining({
+          code: "natural_context_readiness.unconfigured",
+          status: "degraded",
+        }),
+      ]),
+    );
+  });
+
+  it("reports configured geo without a provider path as degraded Natural Context Readiness in machine detail", async () => {
+    const machine = {
+      id: "machine-1",
+      code: "M001",
+      name: "Lobby",
+      locationLabel: "1F",
+      geoLatitude: 31.2304,
+      geoLongitude: 121.4737,
+      geoTimezone: "Asia/Shanghai",
+      status: "online",
+      lastSeenAt: new Date(),
+      deletedAt: null,
+    };
+    mockDb.select
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            limit: async () => [machine],
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            orderBy: () => ({
+              limit: async () => [
+                {
+                  reportedAt: new Date("2026-06-27T02:00:00.000Z"),
+                  statusPayloadJson: {
+                    scannerHealth: { status: "online" },
+                    productionDispensePath: { status: "ready" },
+                    saleReadiness: {
+                      state: "restored",
+                      blockingCodes: [],
+                    },
+                    physicalStockAttestation: {
+                      status: "ready",
+                      planogramVersion: "PLAN-1",
+                    },
+                    recoveryDrill: { status: "ready" },
+                    managedMachineUpdate: { status: "ready" },
+                  },
+                },
+              ],
+            }),
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            orderBy: () => ({
+              limit: async () => [],
+            }),
+          }),
+        }),
+      });
+    listMachinePaymentOptionsForMachine.mockResolvedValue({
+      options: [
+        {
+          providerCode: "alipay",
+          method: "qr_code",
+          mode: "production",
+          displayName: "Alipay",
+          description: "Alipay QR",
+          icon: "alipay",
+          recommended: true,
+        },
+      ],
+    });
+
+    const result = await service.getMachine("machine-1");
+
+    expect(result.productionPilotReadiness.status).toBe("degraded");
+    expect(result.productionPilotReadiness.blockers).toEqual([]);
     expect(result.productionPilotReadiness.degraded).toEqual([
       expect.objectContaining({
-        code: "scanner_runtime_status.missing",
-        label: "Scanner Runtime Status",
+        code: "natural_context_readiness.unavailable",
+        label: "Natural Context Readiness",
         status: "degraded",
-        operatorAction:
-          "Inspect the scanner runtime; QR payment can remain available if payment readiness is ready.",
+        message: "External Natural Environment is unavailable",
       }),
     ]);
   });

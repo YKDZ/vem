@@ -566,12 +566,8 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
           activeAcknowledgedPlanogramVersion,
         },
         externalNaturalEnvironment: {
-          status:
-            machine.geoLatitude === null &&
-            machine.geoLongitude === null &&
-            machine.geoTimezone === null
-              ? "unconfigured"
-              : "ready",
+          status: externalNaturalEnvironmentSnapshot(machine, new Date())
+            .status,
         },
       }),
     };
