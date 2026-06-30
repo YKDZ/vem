@@ -407,8 +407,7 @@ async function externalNaturalEnvironmentSnapshot(
     now,
     SUN_CACHE_TTL_MS,
   );
-  let weather: ExternalNaturalEnvironmentWeather | null =
-    cachedWeather ?? null;
+  let weather: ExternalNaturalEnvironmentWeather | null = cachedWeather ?? null;
   let sun: ExternalNaturalEnvironmentSun | null = cachedSun ?? null;
   try {
     const input = { geoLocation, checkedAt: now };

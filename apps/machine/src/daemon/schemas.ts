@@ -266,8 +266,9 @@ const externalNaturalEnvironmentSunSchema = z.object({
   sunsetAt: z.string(),
 });
 
-export const externalNaturalEnvironmentProjectionSchema =
-  z.discriminatedUnion("status", [
+export const externalNaturalEnvironmentProjectionSchema = z.discriminatedUnion(
+  "status",
+  [
     z.object({
       status: z.literal("ready"),
       machineId: z.string().optional(),
@@ -301,7 +302,8 @@ export const externalNaturalEnvironmentProjectionSchema =
       checkedAt: z.string(),
       diagnostic: externalNaturalEnvironmentDiagnosticSchema,
     }),
-  ]);
+  ],
+);
 
 export const naturalContextSnapshotSchema = z.object({
   status: z.enum(["ready", "stale", "unavailable", "unconfigured"]),
