@@ -1263,6 +1263,83 @@ describe("MachinesService", () => {
     );
   });
 
+  it("returns unconfigured External Natural Environment when Machine Geo Location is missing", async () => {
+    mockDb.select.mockReturnValueOnce({
+      from: () => ({
+        where: () => ({
+          limit: async () => [
+            {
+              id: "550e8400-e29b-41d4-a716-446655440000",
+              code: "M001",
+              name: "Lobby",
+              locationLabel: "1F",
+              geoLatitude: null,
+              geoLongitude: null,
+              geoTimezone: null,
+              status: "online",
+              deletedAt: null,
+            },
+          ],
+        }),
+      }),
+    });
+
+    const result = await service.getExternalNaturalEnvironmentForMachine(
+      "550e8400-e29b-41d4-a716-446655440000",
+      new Date("2026-06-30T14:00:00.000Z"),
+    );
+
+    expect(result).toEqual({
+      status: "unconfigured",
+      machineId: "550e8400-e29b-41d4-a716-446655440000",
+      machineCode: "M001",
+      checkedAt: "2026-06-30T14:00:00.000Z",
+      diagnostic: {
+        reason: "machine_geo_location_missing",
+        message: "Machine Geo Location is not configured",
+      },
+    });
+    expect(result).not.toHaveProperty("weather");
+    expect(result).not.toHaveProperty("sun");
+  });
+
+  it("returns the authenticated machine's own unconfigured External Natural Environment by machine code", async () => {
+    mockDb.select.mockReturnValueOnce({
+      from: () => ({
+        where: () => ({
+          limit: async () => [
+            {
+              id: "550e8400-e29b-41d4-a716-446655440000",
+              code: "M001",
+              name: "Lobby",
+              locationLabel: "1F",
+              geoLatitude: null,
+              geoLongitude: null,
+              geoTimezone: null,
+              status: "online",
+              deletedAt: null,
+            },
+          ],
+        }),
+      }),
+    });
+
+    await expect(
+      service.getExternalNaturalEnvironmentForMachineCode(
+        "M001",
+        new Date("2026-06-30T14:00:00.000Z"),
+      ),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        status: "unconfigured",
+        machineCode: "M001",
+        diagnostic: expect.objectContaining({
+          reason: "machine_geo_location_missing",
+        }),
+      }),
+    );
+  });
+
   it("updates Machine Geo Location as one audited machine location value", async () => {
     const existing = {
       id: "machine-1",

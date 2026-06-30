@@ -30,6 +30,62 @@ export const machineGeoLocationSchema = z.strictObject({
   }),
 });
 
+export const externalNaturalEnvironmentStatusSchema = z.enum([
+  "ready",
+  "stale",
+  "unavailable",
+  "unconfigured",
+]);
+
+export const externalNaturalEnvironmentDiagnosticReasonSchema = z.enum([
+  "machine_geo_location_missing",
+  "provider_unavailable",
+]);
+
+const externalNaturalEnvironmentBaseSchema = z.strictObject({
+  machineId: z.uuid(),
+  machineCode: z.string().min(1).max(64),
+  checkedAt: z.iso.datetime(),
+});
+
+const externalNaturalEnvironmentDiagnosticSchema = z.strictObject({
+  reason: externalNaturalEnvironmentDiagnosticReasonSchema,
+  message: z.string().min(1),
+});
+
+const externalNaturalEnvironmentWeatherSchema = z.strictObject({
+  temperatureCelsius: z.number(),
+  conditionText: z.string().min(1),
+  observedAt: z.iso.datetime(),
+});
+
+const externalNaturalEnvironmentSunSchema = z.strictObject({
+  sunriseAt: z.iso.datetime(),
+  sunsetAt: z.iso.datetime(),
+});
+
+export const externalNaturalEnvironmentSchema = z.discriminatedUnion("status", [
+  externalNaturalEnvironmentBaseSchema.extend({
+    status: z.literal("ready"),
+    weather: externalNaturalEnvironmentWeatherSchema,
+    sun: externalNaturalEnvironmentSunSchema,
+  }),
+  externalNaturalEnvironmentBaseSchema.extend({
+    status: z.literal("stale"),
+    weather: externalNaturalEnvironmentWeatherSchema,
+    sun: externalNaturalEnvironmentSunSchema,
+    diagnostic: externalNaturalEnvironmentDiagnosticSchema,
+  }),
+  externalNaturalEnvironmentBaseSchema.extend({
+    status: z.literal("unavailable"),
+    diagnostic: externalNaturalEnvironmentDiagnosticSchema,
+  }),
+  externalNaturalEnvironmentBaseSchema.extend({
+    status: z.literal("unconfigured"),
+    diagnostic: externalNaturalEnvironmentDiagnosticSchema,
+  }),
+]);
+
 const machineWriteShape = {
   code: z.string().min(1).max(64),
   name: z.string().min(1).max(128),
@@ -139,6 +195,12 @@ export const machineEnvironmentControlRequestSchema = z
 
 export type MachineHeartbeatStatusPayload = z.infer<
   typeof machineHeartbeatStatusPayloadSchema
+>;
+export type ExternalNaturalEnvironmentStatus = z.infer<
+  typeof externalNaturalEnvironmentStatusSchema
+>;
+export type ExternalNaturalEnvironment = z.infer<
+  typeof externalNaturalEnvironmentSchema
 >;
 export type HeartbeatPayload = z.infer<typeof heartbeatPayloadSchema>;
 export type MachineEnvironmentControlRequest = z.infer<

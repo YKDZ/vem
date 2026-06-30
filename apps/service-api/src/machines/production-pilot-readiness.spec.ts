@@ -93,4 +93,24 @@ describe("evaluateProductionPilotReadiness", () => {
       }),
     );
   });
+
+  it("reports unconfigured External Natural Environment as degraded Natural Context Readiness", () => {
+    const result = evaluateProductionPilotReadiness(
+      {
+        ...readyInput,
+        externalNaturalEnvironment: { status: "unconfigured" },
+      },
+      new Date("2026-06-27T02:00:30.000Z"),
+    );
+
+    expect(result.status).toBe("degraded");
+    expect(result.blockers).toEqual([]);
+    expect(result.degraded).toContainEqual(
+      expect.objectContaining({
+        code: "natural_context_readiness.unconfigured",
+        label: "Natural Context Readiness",
+        status: "degraded",
+      }),
+    );
+  });
 });

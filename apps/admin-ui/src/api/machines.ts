@@ -16,6 +16,26 @@ export type MachineGeoLocation = {
   timezone: string;
 };
 
+export type ExternalNaturalEnvironment = {
+  status: "ready" | "stale" | "unavailable" | "unconfigured";
+  machineId: string;
+  machineCode: string;
+  checkedAt: string;
+  weather?: {
+    temperatureCelsius: number;
+    conditionText: string;
+    observedAt: string;
+  };
+  sun?: {
+    sunriseAt: string;
+    sunsetAt: string;
+  };
+  diagnostic?: {
+    reason: "machine_geo_location_missing" | "provider_unavailable";
+    message: string;
+  };
+};
+
 export type Machine = {
   id: string;
   code: string;
@@ -128,6 +148,14 @@ export async function listMachines(
 
 export async function getMachine(id: string): Promise<Machine> {
   return await get<Machine>(`/machines/${id}`);
+}
+
+export async function getExternalNaturalEnvironment(
+  id: string,
+): Promise<ExternalNaturalEnvironment> {
+  return await get<ExternalNaturalEnvironment>(
+    `/machines/${id}/external-natural-environment`,
+  );
 }
 
 export async function createMachine(

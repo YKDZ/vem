@@ -86,6 +86,25 @@ type MachineGeoLocation = {
   longitude: number;
   timezone: string;
 };
+type ExternalNaturalEnvironment = {
+  status: "ready" | "stale" | "unavailable" | "unconfigured";
+  machineId: string;
+  machineCode: string;
+  checkedAt: string;
+  weather?: {
+    temperatureCelsius: number;
+    conditionText: string;
+    observedAt: string;
+  };
+  sun?: {
+    sunriseAt: string;
+    sunsetAt: string;
+  };
+  diagnostic?: {
+    reason: "machine_geo_location_missing" | "provider_unavailable";
+    message: string;
+  };
+};
 
 type PlanogramVersionRecord = typeof machinePlanogramVersions.$inferSelect;
 
@@ -326,6 +345,35 @@ function machineGeoLocationValues(
       };
 }
 
+function externalNaturalEnvironmentSnapshot(
+  machine: MachineRecord,
+  now: Date,
+): ExternalNaturalEnvironment {
+  const base = {
+    machineId: machine.id,
+    machineCode: machine.code,
+    checkedAt: now.toISOString(),
+  };
+  if (!machineGeoLocationFromRow(machine)) {
+    return {
+      ...base,
+      status: "unconfigured",
+      diagnostic: {
+        reason: "machine_geo_location_missing",
+        message: "Machine Geo Location is not configured",
+      },
+    };
+  }
+  return {
+    ...base,
+    status: "unavailable",
+    diagnostic: {
+      reason: "provider_unavailable",
+      message: "External Natural Environment provider is not configured",
+    },
+  };
+}
+
 @Injectable()
 export class MachinesService implements OnModuleInit, OnApplicationShutdown {
   private readonly logger = new Logger(MachinesService.name);
@@ -517,8 +565,50 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
         platformPlanogram: {
           activeAcknowledgedPlanogramVersion,
         },
+        externalNaturalEnvironment: {
+          status:
+            machine.geoLatitude === null &&
+            machine.geoLongitude === null &&
+            machine.geoTimezone === null
+              ? "unconfigured"
+              : "ready",
+        },
       }),
     };
+  }
+
+  async getExternalNaturalEnvironmentForMachine(
+    id: string,
+    now = new Date(),
+  ): Promise<ExternalNaturalEnvironment> {
+    const [machine] = await this.db
+      .select()
+      .from(machines)
+      .where(and(eq(machines.id, id), isNull(machines.deletedAt)))
+      .limit(1);
+
+    if (!machine) {
+      throw new NotFoundException("Machine not found");
+    }
+
+    return externalNaturalEnvironmentSnapshot(machine, now);
+  }
+
+  async getExternalNaturalEnvironmentForMachineCode(
+    code: string,
+    now = new Date(),
+  ): Promise<ExternalNaturalEnvironment> {
+    const [machine] = await this.db
+      .select()
+      .from(machines)
+      .where(and(eq(machines.code, code), isNull(machines.deletedAt)))
+      .limit(1);
+
+    if (!machine) {
+      throw new NotFoundException("Machine not found");
+    }
+
+    return externalNaturalEnvironmentSnapshot(machine, now);
   }
 
   private async getLatestHeartbeatStatus(machineId: string): Promise<{

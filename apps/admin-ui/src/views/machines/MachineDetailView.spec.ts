@@ -556,6 +556,53 @@ describe("MachineDetailView", () => {
     expect(root.textContent).toContain("Continue daily inspection.");
   });
 
+  it("renders Natural Context Readiness as degraded when External Natural Environment is unconfigured", async () => {
+    apiMocks.getMachine.mockResolvedValue({
+      ...machineFixture(),
+      geoLocation: null,
+      productionPilotReadiness: {
+        status: "degraded",
+        checkedAt: "2026-06-30T14:00:00.000Z",
+        blockers: [],
+        degraded: [
+          {
+            code: "natural_context_readiness.unconfigured",
+            label: "Natural Context Readiness",
+            status: "degraded",
+            message:
+              "Machine Geo Location is missing for External Natural Environment",
+            operatorAction:
+              "Configure Machine Geo Location or inspect External Natural Environment diagnostics; this does not block core sales readiness.",
+          },
+        ],
+        checks: [
+          {
+            code: "natural_context_readiness.unconfigured",
+            label: "Natural Context Readiness",
+            status: "degraded",
+            message:
+              "Machine Geo Location is missing for External Natural Environment",
+            operatorAction:
+              "Configure Machine Geo Location or inspect External Natural Environment diagnostics; this does not block core sales readiness.",
+          },
+        ],
+      },
+    });
+
+    const { root } = await mountView();
+
+    expect(root.textContent).toContain("Production Pilot Readiness");
+    expect(root.textContent).toContain("生产试运营降级");
+    expect(root.textContent).toContain("降级 1");
+    expect(root.textContent).toContain("Natural Context Readiness");
+    expect(root.textContent).toContain(
+      "natural_context_readiness.unconfigured",
+    );
+    expect(root.textContent).toContain(
+      "Machine Geo Location is missing for External Natural Environment",
+    );
+  });
+
   it("shows stock reconciliation blockers and resolves them with a required note", async () => {
     apiMocks.listStockReconciliationCases.mockResolvedValue({
       items: [

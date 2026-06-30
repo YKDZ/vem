@@ -1,7 +1,7 @@
 import type { INestApplication } from "@nestjs/common";
 import type { NextFunction, Request, Response } from "express";
 
-import { ConflictException } from "@nestjs/common";
+import { ConflictException, ForbiddenException } from "@nestjs/common";
 import { GUARDS_METADATA } from "@nestjs/common/constants";
 import { APP_GUARD } from "@nestjs/core";
 import { JwtService } from "@nestjs/jwt";
@@ -79,6 +79,96 @@ describe("MachinesController environment commands", () => {
       "550e8400-e29b-41d4-a716-446655440000",
       { airConditionerOn: true },
       "admin-1",
+    );
+  });
+});
+
+describe("MachinesController External Natural Environment", () => {
+  it("requires machines.read for admin machine environment diagnostics", async () => {
+    const getExternalNaturalEnvironmentForMachine = vi.fn().mockResolvedValue({
+      status: "unconfigured",
+      machineId: "550e8400-e29b-41d4-a716-446655440000",
+      machineCode: "M001",
+      checkedAt: "2026-06-30T14:00:00.000Z",
+      diagnostic: {
+        reason: "machine_geo_location_missing",
+        message: "Machine Geo Location is not configured",
+      },
+    });
+    const controller = new MachinesController({
+      getExternalNaturalEnvironmentForMachine,
+    } as never);
+
+    const permissions = Reflect.getMetadata(
+      REQUIRED_PERMISSIONS_KEY,
+      MachinesController.prototype.getExternalNaturalEnvironment,
+    );
+
+    expect(permissions).toEqual(["machines.read"]);
+    await expect(
+      controller.getExternalNaturalEnvironment(
+        "550e8400-e29b-41d4-a716-446655440000",
+      ),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        status: "unconfigured",
+        diagnostic: expect.objectContaining({
+          reason: "machine_geo_location_missing",
+        }),
+      }),
+    );
+    expect(getExternalNaturalEnvironmentForMachine).toHaveBeenCalledWith(
+      "550e8400-e29b-41d4-a716-446655440000",
+    );
+  });
+
+  it("allows a machine to read only its own External Natural Environment", async () => {
+    const getExternalNaturalEnvironmentForMachineCode = vi
+      .fn()
+      .mockResolvedValue({
+        status: "unconfigured",
+        machineId: "550e8400-e29b-41d4-a716-446655440000",
+        machineCode: "M001",
+        checkedAt: "2026-06-30T14:00:00.000Z",
+        diagnostic: {
+          reason: "machine_geo_location_missing",
+          message: "Machine Geo Location is not configured",
+        },
+      });
+    const controller = new MachinesController({
+      getExternalNaturalEnvironmentForMachineCode,
+    } as never);
+
+    const isPublic = Reflect.getMetadata(
+      IS_PUBLIC_KEY,
+      MachinesController.prototype.getOwnExternalNaturalEnvironment,
+    );
+    const guards =
+      Reflect.getMetadata(
+        GUARDS_METADATA,
+        MachinesController.prototype.getOwnExternalNaturalEnvironment,
+      ) ?? [];
+
+    expect(isPublic).toBe(true);
+    expect(guards).toContain(MachineAuthGuard);
+    await expect(
+      controller.getOwnExternalNaturalEnvironment(
+        { code: "M001" } as never,
+        "M001",
+      ),
+    ).resolves.toEqual(expect.objectContaining({ status: "unconfigured" }));
+    await expect(
+      controller.getOwnExternalNaturalEnvironment(
+        { code: "M001" } as never,
+        "M002",
+      ),
+    ).rejects.toThrow(ForbiddenException);
+
+    expect(getExternalNaturalEnvironmentForMachineCode).toHaveBeenCalledTimes(
+      1,
+    );
+    expect(getExternalNaturalEnvironmentForMachineCode).toHaveBeenCalledWith(
+      "M001",
     );
   });
 });

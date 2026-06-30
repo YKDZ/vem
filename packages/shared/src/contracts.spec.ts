@@ -35,6 +35,7 @@ import {
   orderStatuses,
   paymentCodeAttemptAdminActionSchema,
   paymentMachinePreflightSchema,
+  externalNaturalEnvironmentSchema,
   updateMachineSchema,
   paymentCodeAttemptQuerySchema,
   paymentCodeSubmitResponseSchema,
@@ -193,6 +194,53 @@ describe("shared API contract", () => {
           latitude: 31.2304,
           longitude: 121.4737,
           timezone: "Shanghai",
+        },
+      }),
+    ).toThrow();
+  });
+
+  it("defines External Natural Environment unconfigured as HTTP-success payload without weather or sun data", () => {
+    expect(
+      externalNaturalEnvironmentSchema.parse({
+        status: "unconfigured",
+        machineId: "550e8400-e29b-41d4-a716-446655440000",
+        machineCode: "M001",
+        checkedAt: "2026-06-30T14:00:00.000Z",
+        diagnostic: {
+          reason: "machine_geo_location_missing",
+          message: "Machine Geo Location is not configured",
+        },
+      }),
+    ).toEqual({
+      status: "unconfigured",
+      machineId: "550e8400-e29b-41d4-a716-446655440000",
+      machineCode: "M001",
+      checkedAt: "2026-06-30T14:00:00.000Z",
+      diagnostic: {
+        reason: "machine_geo_location_missing",
+        message: "Machine Geo Location is not configured",
+      },
+    });
+
+    expect(() =>
+      externalNaturalEnvironmentSchema.parse({
+        status: "ready",
+        machineId: "550e8400-e29b-41d4-a716-446655440000",
+        machineCode: "M001",
+        checkedAt: "2026-06-30T14:00:00.000Z",
+      }),
+    ).toThrow();
+    expect(() =>
+      externalNaturalEnvironmentSchema.parse({
+        status: "unconfigured",
+        machineId: "550e8400-e29b-41d4-a716-446655440000",
+        machineCode: "M001",
+        checkedAt: "2026-06-30T14:00:00.000Z",
+        weather: { temperatureCelsius: 28 },
+        sun: { sunriseAt: "2026-06-30T21:00:00.000Z" },
+        diagnostic: {
+          reason: "machine_geo_location_missing",
+          message: "Machine Geo Location is not configured",
         },
       }),
     ).toThrow();
