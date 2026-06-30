@@ -9,6 +9,7 @@ import {
 } from "../../../vision-mock/src/server";
 import {
   subscribeVisionProfiles,
+  type VisionPersonDepartedPayload,
   type VisionPresenceStatusPayload,
   type VisionProfileResultPayload,
   visionSelfCheck,
@@ -128,6 +129,33 @@ describe("vision native browser fallback - pushed profiles", () => {
     expect(result.profile.heightCm).toBe(172);
     expect(result.quality.overall).toBe("fair");
     expect(typeof result.detectedAt).toBe("string");
+  });
+
+  it("receives a pushed departure event from the mock websocket server", async () => {
+    const url = await startVisionMock("departure_after_presence");
+    const config = normalizeMachineConfig({ visionWsUrl: url });
+
+    const result = await new Promise<VisionPersonDepartedPayload>(
+      (resolve, reject) => {
+        let subscription: ReturnType<typeof subscribeVisionProfiles>;
+        subscription = subscribeVisionProfiles(config, {
+          onPresenceStatus: () => undefined,
+          onPersonDeparted: (payload) => {
+            subscription.close();
+            resolve(payload);
+          },
+          onProfile: () => undefined,
+          onError: (error) => {
+            subscription.close();
+            reject(error);
+          },
+        });
+      },
+    );
+
+    expect(result.reason).toBe("left_frame");
+    expect(result.lastSeenAt).toBeTruthy();
+    expect(result.ambientLight?.level).toBe("bright");
   });
 
   it("keeps waiting silently when no person is detected", async () => {

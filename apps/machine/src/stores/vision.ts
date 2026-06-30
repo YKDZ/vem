@@ -1,5 +1,6 @@
 import {
   visionPresenceStatusPayloadSchema,
+  visionPersonDepartedPayloadSchema,
   visionProfileResultPayloadSchema,
 } from "@vem/shared";
 import { defineStore } from "pinia";
@@ -7,6 +8,7 @@ import { defineStore } from "pinia";
 import type { VisionStatus } from "@/daemon/schemas";
 import type {
   VisionPresenceStatusPayload,
+  VisionPersonDepartedPayload,
   VisionProfileResultPayload,
 } from "@/native/vision";
 
@@ -22,9 +24,15 @@ type VisionPresenceStatusDiagnosticPayload = {
   payload: VisionPresenceStatusPayload;
 };
 
+type VisionPersonDepartedDiagnosticPayload = {
+  type: "vision.person_departed";
+  payload: VisionPersonDepartedPayload;
+};
+
 type VisionPresenceState = {
   personPresent: boolean;
   lastSeenAt: string | null;
+  departedAt: string | null;
 };
 
 export const useVisionStore = defineStore("vision", {
@@ -37,6 +45,7 @@ export const useVisionStore = defineStore("vision", {
     presence: {
       personPresent: false,
       lastSeenAt: null,
+      departedAt: null,
     } as VisionPresenceState,
   }),
   actions: {
@@ -75,9 +84,24 @@ export const useVisionStore = defineStore("vision", {
       this.updatedAt = new Date().toISOString();
       this.applyPresenceFromPresenceStatus(parsed);
     },
+    applyPersonDeparted(payload: VisionPersonDepartedPayload): void {
+      const parsed = visionPersonDepartedPayloadSchema.parse(payload);
+      this.latestDiagnosticPayload = {
+        type: "vision.person_departed",
+        payload: parsed,
+      } satisfies VisionPersonDepartedDiagnosticPayload;
+      this.enabled = true;
+      this.online = true;
+      this.updatedAt = new Date().toISOString();
+      this.applyPresenceFromPersonDeparted(parsed);
+    },
     clearLatestDiagnosticPayload(): void {
       this.latestDiagnosticPayload = null;
-      this.presence = { personPresent: false, lastSeenAt: null };
+      this.presence = {
+        personPresent: false,
+        lastSeenAt: null,
+        departedAt: null,
+      };
     },
     applyPresenceFromDiagnostic(value: unknown): void {
       const profileDiagnostic = parseProfileResultDiagnostic(value);
@@ -90,7 +114,16 @@ export const useVisionStore = defineStore("vision", {
         this.applyPresenceFromPresenceStatus(presenceDiagnostic.payload);
         return;
       }
-      this.presence = { personPresent: false, lastSeenAt: null };
+      const departureDiagnostic = parsePersonDepartedDiagnostic(value);
+      if (departureDiagnostic) {
+        this.applyPresenceFromPersonDeparted(departureDiagnostic.payload);
+        return;
+      }
+      this.presence = {
+        personPresent: false,
+        lastSeenAt: null,
+        departedAt: null,
+      };
     },
     applyPresenceFromProfileResult(payload: VisionProfileResultPayload): void {
       const personPresent = payload.profile.personPresent;
@@ -99,6 +132,7 @@ export const useVisionStore = defineStore("vision", {
         lastSeenAt: personPresent
           ? payload.detectedAt
           : this.presence.lastSeenAt,
+        departedAt: personPresent ? null : this.presence.departedAt,
       };
     },
     applyPresenceFromPresenceStatus(
@@ -110,6 +144,16 @@ export const useVisionStore = defineStore("vision", {
         lastSeenAt: personPresent
           ? payload.detectedAt
           : this.presence.lastSeenAt,
+        departedAt: personPresent ? null : this.presence.departedAt,
+      };
+    },
+    applyPresenceFromPersonDeparted(
+      payload: VisionPersonDepartedPayload,
+    ): void {
+      this.presence = {
+        personPresent: false,
+        lastSeenAt: payload.lastSeenAt ?? this.presence.lastSeenAt,
+        departedAt: payload.detectedAt,
       };
     },
     async refresh(): Promise<void> {
@@ -153,6 +197,27 @@ function parsePresenceStatusDiagnostic(
     if (result.success) {
       return {
         type: "vision.presence_status",
+        payload: result.data,
+      };
+    }
+  }
+  return null;
+}
+
+function parsePersonDepartedDiagnostic(
+  value: unknown,
+): VisionPersonDepartedDiagnosticPayload | null {
+  if (
+    typeof value === "object" &&
+    value !== null &&
+    "type" in value &&
+    value.type === "vision.person_departed" &&
+    "payload" in value
+  ) {
+    const result = visionPersonDepartedPayloadSchema.safeParse(value.payload);
+    if (result.success) {
+      return {
+        type: "vision.person_departed",
         payload: result.data,
       };
     }

@@ -8,7 +8,10 @@ import { useVisionStore } from "@/stores/vision";
 
 import type { PresenceInteractionState } from "./usePresenceInteraction";
 
-import { usePresenceInteraction } from "./usePresenceInteraction";
+import {
+  resetCustomerPresenceSessionForTests,
+  usePresenceInteraction,
+} from "./usePresenceInteraction";
 
 let pinia: ReturnType<typeof createPinia>;
 
@@ -117,11 +120,13 @@ async function mountPresence(
 
 describe("usePresenceInteraction", () => {
   beforeEach(() => {
+    resetCustomerPresenceSessionForTests();
     pinia = createPinia();
     setActivePinia(pinia);
   });
 
   afterEach(() => {
+    resetCustomerPresenceSessionForTests();
     document.body.innerHTML = "";
     vi.useRealTimers();
   });
@@ -331,6 +336,8 @@ describe("usePresenceInteraction", () => {
     expect(presence.state?.value).toEqual({
       personPresent: true,
       lastSeenAt: "2026-06-29T10:05:00.000Z",
+      departedAt: null,
+      lastInteractionAt: null,
       source: "vision",
     });
     expect(presence.presenceClass?.value).toBe("presence-present");
@@ -390,6 +397,8 @@ describe("usePresenceInteraction", () => {
     expect(presence.state?.value).toEqual({
       personPresent: true,
       lastSeenAt: "2026-06-29T10:00:00.000Z",
+      departedAt: null,
+      lastInteractionAt: null,
       source: "vision",
     });
     expect(presence.presenceClass?.value).toBe("presence-present");
@@ -417,6 +426,8 @@ describe("usePresenceInteraction", () => {
     expect(presence.state?.value).toEqual({
       personPresent: false,
       lastSeenAt: "2026-06-29T10:00:00.000Z",
+      departedAt: "2026-06-29T10:00:05.000Z",
+      lastInteractionAt: null,
       source: "vision",
     });
     expect(presence.presenceClass?.value).toBe("presence-idle");
@@ -450,7 +461,9 @@ describe("usePresenceInteraction", () => {
 
     expect(presence.state?.value).toEqual({
       personPresent: false,
-      lastSeenAt: null,
+      lastSeenAt: "2026-06-27T10:00:00.000Z",
+      departedAt: null,
+      lastInteractionAt: null,
       source: "unavailable",
     });
     expect(presence.presenceClass?.value).toBe("presence-idle");
@@ -458,6 +471,7 @@ describe("usePresenceInteraction", () => {
 
   it("expires locally cached present state when vision diagnostics stop arriving", async () => {
     vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-29T10:00:00.000Z"));
     const presence = await mountPresence({
       presenceStaleMs: 1000,
     });
@@ -482,8 +496,87 @@ describe("usePresenceInteraction", () => {
     expect(presence.state?.value).toEqual({
       personPresent: false,
       lastSeenAt: "2026-06-29T10:00:00.000Z",
+      departedAt: "2026-06-29T10:00:01.000Z",
+      lastInteractionAt: null,
       source: "unavailable",
     });
     expect(presence.presenceClass?.value).toBe("presence-idle");
+  });
+
+  it("treats the first local touch as a presence signal before vision arrives", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-29T11:00:00.000Z"));
+    enablePresenceAudioCues();
+    const requester = createPresenceCueRequester();
+    const presence = await mountPresence({
+      audioCueRequester: requester,
+    });
+
+    window.dispatchEvent(new Event("pointerdown"));
+    await nextTick();
+
+    expect(presence.state?.value).toEqual({
+      personPresent: true,
+      lastSeenAt: "2026-06-29T11:00:00.000Z",
+      departedAt: null,
+      lastInteractionAt: "2026-06-29T11:00:00.000Z",
+      source: "local_interaction",
+    });
+    expect(requester.events).toEqual([
+      expect.objectContaining({
+        type: "presence.detected",
+        ambientLightLevel: "unknown",
+      }),
+    ]);
+  });
+
+  it("applies explicit vision person departed events", async () => {
+    const presence = await mountPresence();
+
+    emitPresenceStatus({
+      eventId: "VISION-PRESENCE-EVENT-PRESENT",
+      detectedAt: "2026-06-29T11:05:00.000Z",
+      personPresent: true,
+    });
+    await nextTick();
+    useVisionStore().applyPersonDeparted({
+      eventId: "VISION-DEPARTURE-EVENT-001",
+      detectedAt: "2026-06-29T11:05:08.000Z",
+      lastSeenAt: "2026-06-29T11:05:06.000Z",
+      reason: "left_frame",
+      absenceDurationMs: 1200,
+    });
+    await nextTick();
+
+    expect(presence.state?.value).toEqual({
+      personPresent: false,
+      lastSeenAt: "2026-06-29T11:05:06.000Z",
+      departedAt: "2026-06-29T11:05:08.000Z",
+      lastInteractionAt: null,
+      source: "vision",
+    });
+  });
+
+  it("falls back to departed after a present customer stops interacting", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-29T11:10:00.000Z"));
+    const presence = await mountPresence({
+      inactivityDepartureMs: 3000,
+    });
+
+    window.dispatchEvent(new Event("pointerdown"));
+    await nextTick();
+    expect(presence.state?.value.personPresent).toBe(true);
+
+    vi.advanceTimersByTime(3000);
+    await nextTick();
+
+    expect(presence.state?.value).toEqual({
+      personPresent: false,
+      lastSeenAt: "2026-06-29T11:10:00.000Z",
+      departedAt: "2026-06-29T11:10:03.000Z",
+      lastInteractionAt: "2026-06-29T11:10:00.000Z",
+      source: "inactivity",
+    });
   });
 });

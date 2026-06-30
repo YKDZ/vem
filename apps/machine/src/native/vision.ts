@@ -2,6 +2,7 @@ import {
   DEFAULT_VISION_WS_URL,
   VISION_PROTOCOL,
   visionPresenceStatusPayloadSchema,
+  visionPersonDepartedPayloadSchema,
   visionProfileResultPayloadSchema,
   visionReadyPayloadSchema,
   visionServerMessageSchema,
@@ -38,12 +39,18 @@ export type VisionProfileResultPayload = z.infer<
 export type VisionPresenceStatusPayload = z.infer<
   typeof visionPresenceStatusPayloadSchema
 >;
+export type VisionPersonDepartedPayload = z.infer<
+  typeof visionPersonDepartedPayloadSchema
+>;
 export type { VisionProfile };
 
 export interface VisionProfileSubscriptionHandlers {
   onReady?: (ready: z.infer<typeof visionReadyPayloadSchema>) => void;
   onPresenceStatus?: (
     payload: VisionPresenceStatusPayload,
+  ) => void | Promise<void>;
+  onPersonDeparted?: (
+    payload: VisionPersonDepartedPayload,
   ) => void | Promise<void>;
   onProfile: (payload: VisionProfileResultPayload) => void | Promise<void>;
   onError?: (error: Error) => void;
@@ -81,7 +88,12 @@ function createHelloMessage(machineCode: string | null): VisionClientMessage {
       clientRole: "machine",
       machineCode,
       protocolVersion: 1,
-      capabilities: ["profile_push", "presence_status", "ambient_light"],
+      capabilities: [
+        "profile_push",
+        "presence_status",
+        "person_departed",
+        "ambient_light",
+      ],
     },
   } satisfies VisionClientMessage;
   return message;
@@ -373,6 +385,16 @@ export function subscribeVisionProfiles(
     }
     if (message.type === "vision.presence_status") {
       void Promise.resolve(handlers.onPresenceStatus?.(message.payload)).catch(
+        (error: unknown) => {
+          handlers.onError?.(
+            error instanceof Error ? error : new Error(String(error)),
+          );
+        },
+      );
+      return;
+    }
+    if (message.type === "vision.person_departed") {
+      void Promise.resolve(handlers.onPersonDeparted?.(message.payload)).catch(
         (error: unknown) => {
           handlers.onError?.(
             error instanceof Error ? error : new Error(String(error)),

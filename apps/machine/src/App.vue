@@ -2,8 +2,11 @@
 import { onMounted } from "vue";
 import { RouterView, useRoute, useRouter } from "vue-router";
 
+import { useReturnHomeOnCustomerDeparture } from "@/composables/usePresenceInteraction";
+
 const route = useRoute();
 const router = useRouter();
+useReturnHomeOnCustomerDeparture();
 
 onMounted(async () => {
   if (

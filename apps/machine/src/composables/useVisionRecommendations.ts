@@ -5,6 +5,7 @@ import { readonly, ref, onUnmounted } from "vue";
 
 import {
   subscribeVisionProfiles,
+  type VisionPersonDepartedPayload,
   type VisionPresenceStatusPayload,
   type VisionProfileResultPayload,
 } from "@/native/vision";
@@ -96,6 +97,11 @@ export function useVisionRecommendations(): {
     }
   }
 
+  function handlePersonDeparted(payload: VisionPersonDepartedPayload): void {
+    visionStore.applyPersonDeparted(payload);
+    clearCurrentProfile();
+  }
+
   const config = machineStore.config;
 
   // If vision is not enabled, skip subscription
@@ -109,6 +115,7 @@ export function useVisionRecommendations(): {
 
   const subscription = subscribeVisionProfiles(config, {
     onPresenceStatus: handlePresence,
+    onPersonDeparted: handlePersonDeparted,
     onProfile: handleProfile,
     onError: () => {
       clearState();

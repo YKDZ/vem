@@ -11,6 +11,7 @@ export const visionClientMessageTypeSchema = z.enum([
 export const visionServerMessageTypeSchema = z.enum([
   "vision.ready",
   "vision.presence_status",
+  "vision.person_departed",
   "vision.profile_result",
   "vision.error",
   "vision.pong",
@@ -109,6 +110,26 @@ export const visionPresenceStatusPayloadSchema = z
   })
   .loose();
 
+export const visionPersonDepartedPayloadSchema = z
+  .object({
+    eventId: z.string().min(1).max(128),
+    detectedAt: z.iso.datetime(),
+    lastSeenAt: z.iso.datetime().nullable().optional(),
+    reason: z
+      .enum([
+        "no_person",
+        "left_frame",
+        "tracking_lost",
+        "absence_timeout",
+        "manual",
+        "unknown",
+      ])
+      .default("unknown"),
+    absenceDurationMs: z.number().int().nonnegative().optional(),
+    ambientLight: visionAmbientLightSchema.optional(),
+  })
+  .loose();
+
 export const visionErrorPayloadSchema = z
   .object({
     eventId: z.string().min(1).max(128).optional(),
@@ -147,6 +168,12 @@ export const visionPresenceStatusMessageSchema =
     payload: visionPresenceStatusPayloadSchema,
   });
 
+export const visionPersonDepartedMessageSchema =
+  visionEnvelopeBaseSchema.extend({
+    type: z.literal("vision.person_departed"),
+    payload: visionPersonDepartedPayloadSchema,
+  });
+
 export const visionErrorMessageSchema = visionEnvelopeBaseSchema.extend({
   type: z.literal("vision.error"),
   payload: visionErrorPayloadSchema,
@@ -165,6 +192,7 @@ export const visionClientMessageSchema = z.discriminatedUnion("type", [
 export const visionServerMessageSchema = z.discriminatedUnion("type", [
   visionReadyMessageSchema,
   visionPresenceStatusMessageSchema,
+  visionPersonDepartedMessageSchema,
   visionProfileResultMessageSchema,
   visionErrorMessageSchema,
   visionPongMessageSchema,
@@ -189,5 +217,8 @@ export type VisionProfileResultMessage = z.infer<
 >;
 export type VisionPresenceStatusMessage = z.infer<
   typeof visionPresenceStatusMessageSchema
+>;
+export type VisionPersonDepartedMessage = z.infer<
+  typeof visionPersonDepartedMessageSchema
 >;
 export type VisionErrorMessage = z.infer<typeof visionErrorMessageSchema>;

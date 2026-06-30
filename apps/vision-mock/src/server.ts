@@ -18,6 +18,7 @@ export const MOCK_VISION_SCENARIOS = [
   "no_person",
   "presence_only",
   "presence_absent",
+  "departure_after_presence",
   "disconnect_once",
   "camera_unavailable",
 ] as const;
@@ -69,7 +70,12 @@ function createReadyMessage(): VisionServerMessage {
       serverVersion: "0.2.0",
       cameraReady: true,
       modelReady: true,
-      capabilities: ["profile_push", "presence_status", "ambient_light"],
+      capabilities: [
+        "profile_push",
+        "presence_status",
+        "person_departed",
+        "ambient_light",
+      ],
     },
   } satisfies VisionServerMessage;
   return message;
@@ -156,6 +162,39 @@ function createPresenceMessage(
   return message;
 }
 
+function createPersonDepartedMessage(
+  lastSeenAt: string | null,
+  ambientLightEnabled: boolean,
+): VisionServerMessage {
+  const detectedAt = nowIso();
+  const payload = {
+    eventId: messageId("departure-event"),
+    detectedAt,
+    lastSeenAt,
+    reason: "left_frame",
+    absenceDurationMs: 1200,
+    ...(ambientLightEnabled
+      ? {
+          ambientLight: {
+            level: "bright",
+            measuredAt: detectedAt,
+            source: "camera",
+            confidence: 0.86,
+            sample: {
+              lumaMean: 126,
+            },
+          },
+        }
+      : {}),
+  } satisfies VisionServerMessage["payload"];
+  const message = {
+    ...baseEnvelope("departure"),
+    type: "vision.person_departed",
+    payload,
+  } satisfies VisionServerMessage;
+  return message;
+}
+
 function createErrorMessage(input: {
   eventId?: string;
   code: VisionErrorCode;
@@ -206,6 +245,7 @@ async function pushScenarioEvents(
     Pick<MockVisionServerOptions, "scenario" | "pushIntervalMs">
   >,
   presenceStatusEnabled: boolean,
+  personDepartedEnabled: boolean,
   ambientLightEnabled: boolean,
 ): Promise<void> {
   await delay(options.pushIntervalMs);
@@ -244,10 +284,23 @@ async function pushScenarioEvents(
   }
 
   if (presenceStatusEnabled) {
-    sendServerMessage(
-      socket,
-      createPresenceMessage("approach", ambientLightEnabled),
-    );
+    const presence = createPresenceMessage("approach", ambientLightEnabled);
+    sendServerMessage(socket, presence);
+    if (
+      options.scenario === "departure_after_presence" &&
+      personDepartedEnabled
+    ) {
+      await delay(options.pushIntervalMs);
+      const lastSeenAt =
+        presence.type === "vision.presence_status"
+          ? presence.payload.detectedAt
+          : null;
+      sendServerMessage(
+        socket,
+        createPersonDepartedMessage(lastSeenAt, ambientLightEnabled),
+      );
+      return;
+    }
   }
 
   if (options.scenario === "presence_only") {
@@ -292,6 +345,7 @@ function handleClientRawMessage(
         socket,
         options,
         message.payload.capabilities.includes("presence_status"),
+        message.payload.capabilities.includes("person_departed"),
         message.payload.capabilities.includes("ambient_light"),
       );
       return;

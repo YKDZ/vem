@@ -154,7 +154,12 @@ async fn send_hello(socket: &mut VisionSocket, machine_code: Option<String>) -> 
             client_role: "machine",
             machine_code,
             protocol_version: 1,
-            capabilities: vec!["profile_push", "presence_status", "ambient_light"],
+            capabilities: vec![
+                "profile_push",
+                "presence_status",
+                "person_departed",
+                "ambient_light",
+            ],
         },
     )
     .await
@@ -209,7 +214,12 @@ mod tests {
             let hello: Value = serde_json::from_str(first.to_text().expect("text")).expect("json");
             assert_eq!(
                 hello["payload"]["capabilities"],
-                serde_json::json!(["profile_push", "presence_status", "ambient_light"])
+                serde_json::json!([
+                    "profile_push",
+                    "presence_status",
+                    "person_departed",
+                    "ambient_light"
+                ])
             );
             ws_stream
                 .send(Message::Text(
