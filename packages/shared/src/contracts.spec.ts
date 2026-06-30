@@ -35,6 +35,7 @@ import {
   orderStatuses,
   paymentCodeAttemptAdminActionSchema,
   paymentMachinePreflightSchema,
+  updateMachineSchema,
   paymentCodeAttemptQuerySchema,
   paymentCodeSubmitResponseSchema,
   paymentCodeSubmitSchema,
@@ -124,6 +125,12 @@ describe("shared API contract", () => {
         locationText: "1F",
       }),
     ).toThrow();
+  });
+
+  it("does not apply create defaults to Machine partial update contracts", () => {
+    expect(updateMachineSchema.parse({ geoLocation: null })).toEqual({
+      geoLocation: null,
+    });
   });
 
   it("validates nullable all-or-nothing Machine Geo Location in machine write contracts", () => {

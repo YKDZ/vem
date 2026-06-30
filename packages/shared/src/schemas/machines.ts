@@ -30,14 +30,21 @@ export const machineGeoLocationSchema = z.strictObject({
   }),
 });
 
-export const createMachineSchema = z.strictObject({
+const machineWriteShape = {
   code: z.string().min(1).max(64),
   name: z.string().min(1).max(128),
   locationLabel: z.string().max(500).nullable().optional(),
   geoLocation: machineGeoLocationSchema.nullable().optional(),
-  status: machineStatusSchema.default("offline"),
+  status: machineStatusSchema,
   mqttClientId: z.string().max(128).nullable().optional(),
+};
+
+export const createMachineSchema = z.strictObject({
+  ...machineWriteShape,
+  status: machineStatusSchema.default("offline"),
 });
+
+export const updateMachineSchema = z.strictObject(machineWriteShape).partial();
 
 export const createMachineSlotSchema = z
   .object({
@@ -49,7 +56,6 @@ export const createMachineSlotSchema = z
   })
   .superRefine(addMachineSlotCoordinateIssue);
 
-export const updateMachineSchema = createMachineSchema.partial();
 export const updateMachineSlotSchema = z
   .object({
     layerNo: machineSlotLayerNoSchema,

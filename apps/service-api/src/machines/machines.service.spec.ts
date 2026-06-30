@@ -6,7 +6,7 @@ import {
 } from "@nestjs/common";
 import { JwtService } from "@nestjs/jwt";
 import { Test } from "@nestjs/testing";
-import { mqttSigningInput } from "@vem/shared";
+import { mqttSigningInput, updateMachineSchema } from "@vem/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
@@ -1404,6 +1404,57 @@ describe("MachinesService", () => {
         locationLabel: "1F",
         geoLocation: null,
       },
+    });
+  });
+
+  it("patches Machine Geo Location without defaulting omitted machine fields", async () => {
+    const existing = {
+      id: "machine-1",
+      code: "M001",
+      name: "Lobby",
+      locationLabel: "1F",
+      geoLatitude: 31.2304,
+      geoLongitude: 121.4737,
+      geoTimezone: "Asia/Shanghai",
+      status: "online",
+      mqttClientId: "mqtt-client-1",
+      deletedAt: null,
+    };
+    const updateSet = vi.fn((values: Record<string, unknown>) => ({
+      where: () => ({
+        returning: async () => [
+          {
+            ...existing,
+            ...Object.fromEntries(
+              Object.entries(values).filter(([, value]) => value !== undefined),
+            ),
+          },
+        ],
+      }),
+    }));
+
+    mockDb.select.mockReturnValueOnce({
+      from: () => ({
+        where: () => ({
+          limit: async () => [existing],
+        }),
+      }),
+    });
+    mockDb.update.mockReturnValueOnce({ set: updateSet });
+
+    const result = await service.updateMachine(
+      "machine-1",
+      updateMachineSchema.parse({ geoLocation: null }),
+      "admin-1",
+    );
+
+    expect(result).toMatchObject({
+      code: "M001",
+      name: "Lobby",
+      locationLabel: "1F",
+      status: "online",
+      mqttClientId: "mqtt-client-1",
+      geoLocation: null,
     });
   });
 

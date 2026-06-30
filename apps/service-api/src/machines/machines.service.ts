@@ -439,17 +439,25 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
       throw new NotFoundException("Machine not found");
     }
 
+    const updateValues: Partial<typeof machines.$inferInsert> = {
+      updatedAt: new Date(),
+    };
+    if (input.code !== undefined) updateValues.code = input.code;
+    if (input.name !== undefined) updateValues.name = input.name;
+    if (input.locationLabel !== undefined) {
+      updateValues.locationLabel = input.locationLabel;
+    }
+    if ("geoLocation" in input) {
+      Object.assign(updateValues, machineGeoLocationValues(input.geoLocation));
+    }
+    if (input.status !== undefined) updateValues.status = input.status;
+    if (input.mqttClientId !== undefined) {
+      updateValues.mqttClientId = input.mqttClientId;
+    }
+
     const [updated] = await this.db
       .update(machines)
-      .set({
-        code: input.code,
-        name: input.name,
-        locationLabel: input.locationLabel,
-        ...machineGeoLocationValues(input.geoLocation),
-        status: input.status,
-        mqttClientId: input.mqttClientId,
-        updatedAt: new Date(),
-      })
+      .set(updateValues)
       .where(and(eq(machines.id, id), isNull(machines.deletedAt)))
       .returning();
 
