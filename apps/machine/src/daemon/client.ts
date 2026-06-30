@@ -11,6 +11,7 @@ import {
   healthSnapshotSchema,
   machinePaymentOptionsResponseSchema,
   machineSaleReadinessSchema,
+  naturalContextSnapshotSchema,
   readySnapshotSchema,
   remoteOpsStatusSchema,
   machineSaleViewSnapshotSchema,
@@ -25,6 +26,7 @@ import {
   type HealthSnapshot,
   type HardwareSelfCheck,
   type MachineSaleReadiness,
+  type NaturalContextSnapshot,
   type ProvisioningClaimResponse,
   type ReadySnapshot,
   type RemoteOpsStatus,
@@ -277,6 +279,12 @@ export class DaemonApiClient {
 
   async getVisionStatus(): Promise<VisionStatus> {
     return visionStatusSchema.parse(await this.request("/v1/vision/status"));
+  }
+
+  async getNaturalContext(): Promise<NaturalContextSnapshot> {
+    return naturalContextSnapshotSchema.parse(
+      await this.request("/v1/natural-context"),
+    );
   }
 
   async getRemoteOpsStatus(): Promise<RemoteOpsStatus> {

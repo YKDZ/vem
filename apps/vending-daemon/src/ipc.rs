@@ -25,6 +25,7 @@ use crate::{
     events::DaemonEvent,
     hardware::HardwareSupervisor,
     logs,
+    natural_context::MachineNaturalContextSnapshot,
     state::{
         store::{
             MachinePlanogramInput, MachinePlanogramSlotInput, PhysicalStockAttestationInput,
@@ -210,6 +211,7 @@ pub fn build_router(ctx: IpcContext) -> Router {
         .route("/v1/sync/status", get(sync_status))
         .route("/v1/scanner/status", get(scanner_status))
         .route("/v1/vision/status", get(vision_status))
+        .route("/v1/natural-context", get(natural_context))
         .route("/v1/remote-ops/status", get(remote_ops_status))
         .route("/v1/logs/export", get(export_logs))
         .route("/v1/events", get(events_ws))
@@ -2809,6 +2811,66 @@ async fn vision_status(State(ctx): State<IpcContext>, headers: HeaderMap) -> imp
         "latestDiagnosticPayload": snapshot.latest_diagnostic_payload,
     }))
     .into_response()
+}
+
+async fn natural_context(State(ctx): State<IpcContext>, headers: HeaderMap) -> impl IntoResponse {
+    if let Err((status, error)) = require_token(&headers, &ctx.token).await {
+        return (status, error).into_response();
+    }
+
+    let public = match ctx.config_store.load_public_config().await {
+        Ok(public) => public,
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorMessage {
+                    code: "config_load_failed",
+                    message: error,
+                }),
+            )
+                .into_response();
+        }
+    };
+    let Some(machine_code) = public.machine_code.clone() else {
+        return Json(MachineNaturalContextSnapshot::unconfigured(
+            None,
+            "Machine is not provisioned for Natural Context",
+        ))
+        .into_response();
+    };
+
+    match ctx
+        .ui
+        .backend
+        .get_external_natural_environment(&machine_code)
+        .await
+    {
+        Ok(external) => Json(MachineNaturalContextSnapshot::from_external_environment(
+            Some(machine_code),
+            external,
+        ))
+        .into_response(),
+        Err(error) => Json(MachineNaturalContextSnapshot::unavailable(
+            Some(machine_code),
+            backend_natural_context_message(&error),
+        ))
+        .into_response(),
+    }
+}
+
+fn backend_natural_context_message(error: &str) -> String {
+    match error {
+        "BACKEND_AUTH_NOT_CONFIGURED" => {
+            "Machine credentials are not configured for Natural Context".to_string()
+        }
+        "BACKEND_AUTH_FAILED" => {
+            "Machine authentication failed while refreshing Natural Context".to_string()
+        }
+        "BACKEND_OFFLINE" => {
+            "Service API is unavailable while refreshing Natural Context".to_string()
+        }
+        _ => "External Natural Environment is unavailable".to_string(),
+    }
 }
 
 async fn remote_ops_status(State(ctx): State<IpcContext>, headers: HeaderMap) -> impl IntoResponse {

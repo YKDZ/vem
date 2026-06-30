@@ -24,6 +24,7 @@ import { useCatalogStore } from "@/stores/catalog";
 import { useConnectivityStore } from "@/stores/connectivity";
 import { useMachineStore } from "@/stores/machine";
 import { useMqttStore } from "@/stores/mqtt";
+import { useNaturalContextStore } from "@/stores/natural-context";
 import { useRemoteOpsStore } from "@/stores/remote-ops";
 import { useScannerStore } from "@/stores/scanner";
 import { useVisionStore } from "@/stores/vision";
@@ -35,6 +36,7 @@ const audioCueStore = useAudioCueStore();
 const connectivityStore = useConnectivityStore();
 const machineStore = useMachineStore();
 const mqttStore = useMqttStore();
+const naturalContextStore = useNaturalContextStore();
 const remoteOpsStore = useRemoteOpsStore();
 const scannerStore = useScannerStore();
 const visionStore = useVisionStore();
@@ -119,6 +121,11 @@ const latestAudioCueDiagnosticRows = computed(() => {
     },
   ];
 });
+const naturalContextDiagnosticMessage = computed(() =>
+  naturalContextStore.snapshot?.degraded || naturalContextStore.error
+    ? naturalContextStore.operatorMessage
+    : null,
+);
 const clearWholeMachineLockDisabled = computed(
   () =>
     wholeMachineLockMaintenance.loading ||
@@ -559,6 +566,7 @@ async function runDiagnosticsRefresh(): Promise<void> {
       mqttStore.refresh(),
       scannerStore.refresh(),
       visionStore.refresh(),
+      naturalContextStore.refresh(),
       remoteOpsStore.refresh(),
     ]);
     await returnToCatalogAfterSystemRecovery();
@@ -680,6 +688,12 @@ function audioCueOutcomeLabel(outcome: string): string {
     skipped: "Skipped",
   };
   return labels[outcome] ?? outcome;
+}
+
+function naturalContextDisplayStatus(): string {
+  const snapshot = naturalContextStore.snapshot;
+  if (!snapshot) return "Unknown";
+  return `${snapshot.degraded ? "Degraded" : "Ready"} · ${snapshot.status}`;
 }
 
 async function returnToCatalog(): Promise<void> {
@@ -1088,6 +1102,18 @@ async function submitStockMovement(): Promise<void> {
             <dd class="mt-1 font-bold text-white">
               {{ visionStore.presence.personPresent ? "有人" : "无人" }} ·
               {{ visionStore.presence.lastSeenAt ?? "not seen" }}
+            </dd>
+          </div>
+          <div class="border-t border-white/10 py-3">
+            <dt class="text-sm text-slate-400">Natural Context</dt>
+            <dd class="mt-1 font-bold text-white">
+              {{ naturalContextDisplayStatus() }}
+            </dd>
+            <dd
+              v-if="naturalContextDiagnosticMessage"
+              class="mt-1 text-sm font-semibold text-amber-100"
+            >
+              {{ naturalContextDiagnosticMessage }}
             </dd>
           </div>
           <div class="border-t border-white/10 py-3">

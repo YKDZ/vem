@@ -14,6 +14,7 @@ const {
   getSyncStatusMock,
   getScannerStatusMock,
   getVisionStatusMock,
+  getNaturalContextMock,
   getRemoteOpsStatusMock,
   getSaleViewMock,
   recordStockMovementMock,
@@ -32,6 +33,7 @@ const {
   getSyncStatusMock: vi.fn(),
   getScannerStatusMock: vi.fn(),
   getVisionStatusMock: vi.fn(),
+  getNaturalContextMock: vi.fn(),
   getRemoteOpsStatusMock: vi.fn(),
   getSaleViewMock: vi.fn(),
   recordStockMovementMock: vi.fn(),
@@ -64,6 +66,7 @@ vi.mock("@/daemon/client", () => ({
     getSyncStatus: getSyncStatusMock,
     getScannerStatus: getScannerStatusMock,
     getVisionStatus: getVisionStatusMock,
+    getNaturalContext: getNaturalContextMock,
     getRemoteOpsStatus: getRemoteOpsStatusMock,
     getSaleView: getSaleViewMock,
     recordStockMovement: recordStockMovementMock,
@@ -276,6 +279,36 @@ beforeEach(() => {
     message: "vision ready",
     updatedAt: "2026-06-05T00:00:00.000Z",
     latestDiagnosticPayload: null,
+  });
+  getNaturalContextMock.mockResolvedValue({
+    status: "ready",
+    machineCode: "SECRET-MACHINE-CODE",
+    checkedAt: "2026-06-30T14:00:00.000Z",
+    degraded: false,
+    customerFacingBlocked: false,
+    externalEnvironment: {
+      status: "ready",
+      machineId: "550e8400-e29b-41d4-a716-446655440000",
+      machineCode: "SECRET-MACHINE-CODE",
+      checkedAt: "2026-06-30T14:00:00.000Z",
+      localTime: {
+        timezone: "Asia/Shanghai",
+        localDate: "2026-06-30",
+        localClock: "22:00:00",
+      },
+      weather: {
+        temperatureCelsius: 28,
+        conditionText: "Sunny",
+        observedAt: "2026-06-30T13:50:00.000Z",
+      },
+      sun: {
+        sunriseAt: "2026-06-29T21:53:00.000Z",
+        sunsetAt: "2026-06-30T10:02:00.000Z",
+      },
+    },
+    localSiteSignals: {
+      status: "unavailable",
+    },
   });
   getRemoteOpsStatusMock.mockResolvedValue({
     lastPolledAt: "2026-06-05T00:00:00.000Z",
@@ -564,6 +597,44 @@ describe("MaintenanceView hardware config", () => {
     expect(host.textContent).toContain("Presence Interaction");
     expect(host.textContent).toContain("有人 · 2026-06-05T00:00:05.000Z");
     expect(host.textContent).toContain("VISION-PRESENCE-STATUS-001");
+  });
+
+  it("shows Natural Context Degradation without blocking customer catalog return", async () => {
+    getNaturalContextMock.mockResolvedValue({
+      status: "unconfigured",
+      machineCode: "MACHINE-NATURAL",
+      checkedAt: "2026-06-30T14:00:00.000Z",
+      degraded: true,
+      customerFacingBlocked: false,
+      externalEnvironment: {
+        status: "unconfigured",
+        machineId: "550e8400-e29b-41d4-a716-446655440000",
+        machineCode: "MACHINE-NATURAL",
+        checkedAt: "2026-06-30T14:00:00.000Z",
+        diagnostic: {
+          reason: "machine_geo_location_missing",
+          message: "Machine Geo Location is not configured",
+        },
+      },
+      localSiteSignals: {
+        status: "unavailable",
+      },
+    });
+
+    const host = await mountView();
+
+    expect(getNaturalContextMock).toHaveBeenCalled();
+    expect(host.textContent).toContain("Natural Context");
+    expect(host.textContent).toContain("Degraded · unconfigured");
+    expect(host.textContent).toContain(
+      "Machine Geo Location is not configured",
+    );
+    expect(host.textContent).not.toContain("Natural Context Readiness failure");
+
+    buttonByText(host, "回到目录").click();
+    await vi.waitFor(() => {
+      expect(routerReplaceMock).toHaveBeenCalledWith("/catalog");
+    });
   });
 
   it("shows Machine Audio Cue settings with global and category state", async () => {
