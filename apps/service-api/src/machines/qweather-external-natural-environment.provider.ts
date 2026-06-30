@@ -10,15 +10,17 @@ import type {
 import { AppConfigService } from "../config/app-config.service";
 
 type QWeatherClientConfig = {
-  apiToken?: string;
-  apiBaseUrl: string;
+  apiKey?: string;
+  apiHost?: string;
   weatherNowPath: string;
   sunPath: string;
+  timeoutMs?: number;
 };
 
 type QWeatherRequest = {
   url: string;
-  authorization: string;
+  headers: Record<string, string>;
+  signal?: AbortSignal;
 };
 
 type FetchJson = (request: QWeatherRequest) => Promise<unknown>;
@@ -40,6 +42,8 @@ const qweatherSunResponseSchema = z.object({
   sunset: z.string(),
 });
 
+const DEFAULT_QWEATHER_TIMEOUT_MS = 3_000;
+
 export class QWeatherProviderError extends Error {
   constructor(message = "QWeather provider unavailable") {
     super(message);
@@ -55,7 +59,7 @@ export class QWeatherClient {
   async fetchExternalNaturalEnvironment(
     input: ExternalNaturalEnvironmentProviderInput,
   ): Promise<ExternalNaturalEnvironmentProviderResult> {
-    if (!this.config.apiToken) {
+    if (!this.config.apiKey || !this.config.apiHost) {
       throw new QWeatherProviderError("QWeather provider is not configured");
     }
 
@@ -86,14 +90,14 @@ export class QWeatherClient {
   }
 
   private async fetchWeatherNow(location: string) {
-    const url = buildUrl(this.config.apiBaseUrl, this.config.weatherNowPath, {
+    const url = buildUrl(this.apiHost(), this.config.weatherNowPath, {
       location,
       unit: "m",
     });
     const parsed = qweatherWeatherNowResponseSchema.safeParse(
-      await this.fetchJson({
+      await this.fetchProviderJson({
         url,
-        authorization: `Bearer ${this.config.apiToken ?? ""}`,
+        headers: this.authHeaders(),
       }),
     );
     if (!parsed.success || parsed.data.code !== "200" || !parsed.data.now) {
@@ -113,20 +117,63 @@ export class QWeatherClient {
   }
 
   private async fetchSun(location: string, date: string) {
-    const url = buildUrl(this.config.apiBaseUrl, this.config.sunPath, {
+    const url = buildUrl(this.apiHost(), this.config.sunPath, {
       location,
       date,
     });
     const parsed = qweatherSunResponseSchema.safeParse(
-      await this.fetchJson({
+      await this.fetchProviderJson({
         url,
-        authorization: `Bearer ${this.config.apiToken ?? ""}`,
+        headers: this.authHeaders(),
       }),
     );
     if (parsed.success && parsed.data.code === "200") {
       return parsed.data;
     }
     throw new QWeatherProviderError();
+  }
+
+  private authHeaders(): Record<string, string> {
+    const apiKey = this.config.apiKey;
+    if (!apiKey) {
+      throw new QWeatherProviderError("QWeather provider is not configured");
+    }
+    return { "X-QW-Api-Key": apiKey };
+  }
+
+  private apiHost(): string {
+    const apiHost = this.config.apiHost;
+    if (!apiHost) {
+      throw new QWeatherProviderError("QWeather provider is not configured");
+    }
+    return apiHost;
+  }
+
+  private async fetchProviderJson(
+    request: Omit<QWeatherRequest, "signal">,
+  ): Promise<unknown> {
+    const controller = new AbortController();
+    const timeoutMs = this.config.timeoutMs ?? DEFAULT_QWEATHER_TIMEOUT_MS;
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timeoutHandle = setTimeout(() => {
+        controller.abort();
+        reject(new QWeatherProviderError());
+      }, timeoutMs);
+    });
+
+    try {
+      return await Promise.race([
+        this.fetchJson({ ...request, signal: controller.signal }),
+        timeout,
+      ]);
+    } catch {
+      throw new QWeatherProviderError();
+    } finally {
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
+    }
   }
 }
 
@@ -141,17 +188,19 @@ export class QWeatherExternalNaturalEnvironmentProvider implements ExternalNatur
     input: ExternalNaturalEnvironmentProviderInput,
   ): Promise<ExternalNaturalEnvironmentProviderResult> {
     return await new QWeatherClient({
-      apiToken: this.config.qweatherApiToken,
-      apiBaseUrl: this.config.qweatherApiBaseUrl,
+      apiKey: this.config.qweatherApiKey,
+      apiHost: this.config.qweatherApiHost,
       weatherNowPath: this.config.qweatherWeatherNowPath,
       sunPath: this.config.qweatherSunPath,
+      timeoutMs: this.config.qweatherTimeoutMs,
     }).fetchExternalNaturalEnvironment(input);
   }
 }
 
 async function defaultFetchJson(request: QWeatherRequest): Promise<unknown> {
   const response = await fetch(request.url, {
-    headers: { Authorization: request.authorization },
+    headers: request.headers,
+    signal: request.signal,
   });
   if (!response.ok) {
     throw new QWeatherProviderError();
@@ -160,14 +209,11 @@ async function defaultFetchJson(request: QWeatherRequest): Promise<unknown> {
 }
 
 function buildUrl(
-  apiBaseUrl: string,
+  apiHost: string,
   path: string,
   query: Record<string, string>,
 ): string {
-  const url = new URL(
-    path,
-    apiBaseUrl.endsWith("/") ? apiBaseUrl : `${apiBaseUrl}/`,
-  );
+  const url = new URL(path, `https://${apiHost}/`);
   for (const [key, value] of Object.entries(query)) {
     url.searchParams.set(key, value);
   }

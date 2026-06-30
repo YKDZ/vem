@@ -1515,7 +1515,7 @@ describe("MachinesService", () => {
       }),
     });
     fetchExternalNaturalEnvironment.mockRejectedValueOnce(
-      new Error("QWeather 401 for token secret-qweather-token"),
+      new Error("QWeather 401 for API key secret-qweather-api-key"),
     );
 
     const result = await service.getExternalNaturalEnvironmentForMachine(
@@ -1533,7 +1533,7 @@ describe("MachinesService", () => {
         message: "External Natural Environment provider is unavailable",
       },
     });
-    expect(JSON.stringify(result)).not.toContain("secret-qweather-token");
+    expect(JSON.stringify(result)).not.toContain("secret-qweather-api-key");
     expect(result).not.toHaveProperty("weather");
     expect(result).not.toHaveProperty("sun");
   });

@@ -128,12 +128,12 @@ export class AppConfigService {
     });
   }
 
-  get qweatherApiToken(): string | undefined {
-    return this.config.get("QWEATHER_API_TOKEN", { infer: true });
+  get qweatherApiKey(): string | undefined {
+    return this.config.get("QWEATHER_API_KEY", { infer: true });
   }
 
-  get qweatherApiBaseUrl(): string {
-    return this.config.get("QWEATHER_API_BASE_URL", { infer: true });
+  get qweatherApiHost(): string | undefined {
+    return this.config.get("QWEATHER_API_HOST", { infer: true });
   }
 
   get qweatherWeatherNowPath(): string {
@@ -142,6 +142,10 @@ export class AppConfigService {
 
   get qweatherSunPath(): string {
     return this.config.get("QWEATHER_SUN_PATH", { infer: true });
+  }
+
+  get qweatherTimeoutMs(): number {
+    return this.config.get("QWEATHER_TIMEOUT_MS", { infer: true });
   }
 
   buildPaymentNotifyUrl(providerCode: string): string {
