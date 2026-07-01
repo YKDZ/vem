@@ -1,9 +1,4 @@
 import {
-  visionPersonDepartedPayloadSchema,
-  visionPresenceStatusPayloadSchema,
-  visionProfileResultPayloadSchema,
-} from "@vem/shared";
-import {
   computed,
   onUnmounted,
   readonly,
@@ -14,12 +9,6 @@ import {
 } from "vue";
 import { useRoute, useRouter, type RouteLocationRaw } from "vue-router";
 
-import type {
-  VisionPersonDepartedPayload,
-  VisionPresenceStatusPayload,
-  VisionProfileResultPayload,
-} from "@/native/vision";
-
 import {
   createMachineAudioCuePlaybackAdapter,
   type CustomerAudioCueEvent,
@@ -28,7 +17,6 @@ import { useVisionStore } from "@/stores/vision";
 
 const DEFAULT_PRESENCE_STALE_MS = 15_000;
 const DEFAULT_INACTIVITY_DEPARTURE_MS = 45_000;
-const PRESENCE_CONFIDENCE_THRESHOLD = 0.5;
 const RETURN_HOME_ROUTE_NAMES = new Set(["product-detail", "checkout"]);
 
 export type PresenceInteractionSource =
@@ -212,56 +200,6 @@ function registerInteraction(): void {
   restartInactivityTimer();
 }
 
-function applyProfileResult(
-  payload: VisionProfileResultPayload,
-  options: { suppressAudioCue?: boolean } = {},
-): void {
-  const personPresent =
-    payload.profile.personPresent &&
-    (payload.profile.confidence === undefined ||
-      payload.profile.confidence >= PRESENCE_CONFIDENCE_THRESHOLD);
-  if (!personPresent) {
-    markDeparted({
-      source: "vision",
-      departedAt: payload.detectedAt,
-      keepLastSeenAt: true,
-    });
-    return;
-  }
-  markPresent({
-    source: "vision",
-    seenAt: payload.detectedAt,
-    suppressAudioCue: options.suppressAudioCue,
-  });
-}
-
-function applyPresenceStatus(
-  payload: VisionPresenceStatusPayload,
-  options: { suppressAudioCue?: boolean } = {},
-): void {
-  if (!payload.personPresent) {
-    markDeparted({
-      source: "vision",
-      departedAt: payload.detectedAt,
-      keepLastSeenAt: true,
-    });
-    return;
-  }
-  markPresent({
-    source: "vision",
-    seenAt: payload.detectedAt,
-    suppressAudioCue: options.suppressAudioCue,
-  });
-}
-
-function applyPersonDeparted(payload: VisionPersonDepartedPayload): void {
-  markDeparted({
-    source: "vision",
-    departedAt: payload.detectedAt,
-    lastSeenAt: payload.lastSeenAt ?? state.value.lastSeenAt,
-  });
-}
-
 function onLocalInteraction(): void {
   registerInteraction();
 }
@@ -299,31 +237,46 @@ function startCustomerPresenceSession(
   const visionStore = useVisionStore();
   installInteractionListeners();
   stopVisionWatch = watch(
-    () => visionStore.latestDiagnosticPayload,
-    (payload) => {
+    () => ({ ...visionStore.presence }),
+    (presence) => {
       const suppressAudioCue = !initializedFromCurrentDiagnostic;
-      const profileResult = profileResultFromDiagnostic(payload);
-      if (profileResult) {
-        applyProfileResult(profileResult, { suppressAudioCue });
+      if (!presence.source) {
+        markDeparted({
+          source: "unavailable",
+          departedAt: null,
+          lastSeenAt: null,
+        });
         initializedFromCurrentDiagnostic = true;
         return;
       }
-      const presenceStatus = presenceStatusFromDiagnostic(payload);
-      if (presenceStatus) {
-        applyPresenceStatus(presenceStatus, { suppressAudioCue });
+      if (!presence.personPresent) {
+        markDeparted({
+          source: "vision",
+          departedAt: presence.departedAt ?? presence.lastChangedAt,
+          lastSeenAt: presence.lastSeenAt,
+          keepLastSeenAt: presence.source !== "person_departed",
+        });
         initializedFromCurrentDiagnostic = true;
         return;
       }
-      const personDeparted = personDepartedFromDiagnostic(payload);
-      if (personDeparted) {
-        applyPersonDeparted(personDeparted);
+
+      if (
+        presence.source === "profile_result" &&
+        presence.profileNotUsableReason === "low_confidence"
+      ) {
+        markDeparted({
+          source: "vision",
+          departedAt: presence.lastChangedAt,
+          keepLastSeenAt: true,
+        });
         initializedFromCurrentDiagnostic = true;
         return;
       }
-      markDeparted({
-        source: "unavailable",
-        departedAt: null,
-        lastSeenAt: null,
+
+      markPresent({
+        source: "vision",
+        seenAt: presence.lastSeenAt ?? presence.lastChangedAt ?? nowIso(),
+        suppressAudioCue,
       });
       initializedFromCurrentDiagnostic = true;
     },
@@ -392,54 +345,6 @@ export function useReturnHomeOnCustomerDeparture(
       void router.replace(returnRoute);
     },
   );
-}
-
-function presenceStatusFromDiagnostic(
-  value: unknown,
-): VisionPresenceStatusPayload | null {
-  if (
-    typeof value !== "object" ||
-    value === null ||
-    !("type" in value) ||
-    value.type !== "vision.presence_status" ||
-    !("payload" in value)
-  ) {
-    return null;
-  }
-  const result = visionPresenceStatusPayloadSchema.safeParse(value.payload);
-  return result.success ? result.data : null;
-}
-
-function personDepartedFromDiagnostic(
-  value: unknown,
-): VisionPersonDepartedPayload | null {
-  if (
-    typeof value !== "object" ||
-    value === null ||
-    !("type" in value) ||
-    value.type !== "vision.person_departed" ||
-    !("payload" in value)
-  ) {
-    return null;
-  }
-  const result = visionPersonDepartedPayloadSchema.safeParse(value.payload);
-  return result.success ? result.data : null;
-}
-
-function profileResultFromDiagnostic(
-  value: unknown,
-): VisionProfileResultPayload | null {
-  if (
-    typeof value !== "object" ||
-    value === null ||
-    !("type" in value) ||
-    value.type !== "vision.profile_result" ||
-    !("payload" in value)
-  ) {
-    return null;
-  }
-  const result = visionProfileResultPayloadSchema.safeParse(value.payload);
-  return result.success ? result.data : null;
 }
 
 function millisecondsForDetectedAt(detectedAt: string): number {

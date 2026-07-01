@@ -116,6 +116,7 @@ describe("vision native browser fallback - pushed profiles", () => {
 
     expect(result.state).toBe("approach");
     expect(result.personPresent).toBe(true);
+    expect(result.occupancy?.state).toBe("single");
     expect(typeof result.detectedAt).toBe("string");
   });
 
@@ -126,6 +127,8 @@ describe("vision native browser fallback - pushed profiles", () => {
 
     expect(typeof result.eventId).toBe("string");
     expect(result.profile.personPresent).toBe(true);
+    expect(result.occupancy?.state).toBe("single");
+    expect(result.quality.profileUsable).toBe(true);
     expect(result.profile.heightCm).toBe(172);
     expect(result.quality.overall).toBe("fair");
     expect(typeof result.detectedAt).toBe("string");

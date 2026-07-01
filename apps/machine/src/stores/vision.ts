@@ -1,4 +1,6 @@
 import {
+  type VisionPresenceOccupancyState,
+  type VisionProfileNotUsableReason,
   visionPresenceStatusPayloadSchema,
   visionPersonDepartedPayloadSchema,
   visionProfileResultPayloadSchema,
@@ -31,8 +33,28 @@ type VisionPersonDepartedDiagnosticPayload = {
 
 type VisionPresenceState = {
   personPresent: boolean;
+  occupancyState: VisionPresenceOccupancyState;
+  occupancyConfidence: number | null;
+  profileUsable: boolean;
+  profileNotUsableReason: VisionProfileNotUsableReason | null;
   lastSeenAt: string | null;
   departedAt: string | null;
+  lastChangedAt: string | null;
+  source: "profile_result" | "presence_status" | "person_departed" | null;
+};
+
+const PROFILE_CONFIDENCE_THRESHOLD = 0.5;
+
+const EMPTY_PRESENCE: VisionPresenceState = {
+  personPresent: false,
+  occupancyState: "none",
+  occupancyConfidence: null,
+  profileUsable: false,
+  profileNotUsableReason: null,
+  lastSeenAt: null,
+  departedAt: null,
+  lastChangedAt: null,
+  source: null,
 };
 
 export const useVisionStore = defineStore("vision", {
@@ -42,12 +64,20 @@ export const useVisionStore = defineStore("vision", {
     message: "等待 daemon 状态",
     updatedAt: null as string | null,
     latestDiagnosticPayload: null as unknown,
-    presence: {
-      personPresent: false,
-      lastSeenAt: null,
-      departedAt: null,
-    } as VisionPresenceState,
+    presence: { ...EMPTY_PRESENCE } as VisionPresenceState,
   }),
+  getters: {
+    isSinglePersonPresent: (state): boolean =>
+      state.presence.personPresent &&
+      state.presence.occupancyState === "single",
+    isMultiplePeoplePresent: (state): boolean =>
+      state.presence.personPresent &&
+      state.presence.occupancyState === "multiple",
+    canUseLatestProfileForRecommendation: (state): boolean =>
+      state.presence.personPresent &&
+      state.presence.profileUsable &&
+      state.presence.occupancyState !== "multiple",
+  },
   actions: {
     applyStatus(status: VisionStatus): void {
       this.enabled = status.enabled;
@@ -97,11 +127,7 @@ export const useVisionStore = defineStore("vision", {
     },
     clearLatestDiagnosticPayload(): void {
       this.latestDiagnosticPayload = null;
-      this.presence = {
-        personPresent: false,
-        lastSeenAt: null,
-        departedAt: null,
-      };
+      this.presence = { ...EMPTY_PRESENCE };
     },
     applyPresenceFromDiagnostic(value: unknown): void {
       const profileDiagnostic = parseProfileResultDiagnostic(value);
@@ -119,32 +145,55 @@ export const useVisionStore = defineStore("vision", {
         this.applyPresenceFromPersonDeparted(departureDiagnostic.payload);
         return;
       }
-      this.presence = {
-        personPresent: false,
-        lastSeenAt: null,
-        departedAt: null,
-      };
+      this.presence = { ...EMPTY_PRESENCE };
     },
     applyPresenceFromProfileResult(payload: VisionProfileResultPayload): void {
       const personPresent = payload.profile.personPresent;
+      const occupancy = normalizeOccupancy(payload.occupancy, personPresent);
+      const profileUsable = profileResultUsable(payload, occupancy.state);
       this.presence = {
         personPresent,
+        occupancyState: occupancy.state,
+        occupancyConfidence: occupancy.confidence,
+        profileUsable,
+        profileNotUsableReason:
+          payload.quality.notUsableReason ??
+          (profileUsable
+            ? null
+            : profileNotUsableReason(payload, occupancy.state)),
         lastSeenAt: personPresent
           ? payload.detectedAt
           : this.presence.lastSeenAt,
         departedAt: personPresent ? null : this.presence.departedAt,
+        lastChangedAt: payload.detectedAt,
+        source: "profile_result",
       };
     },
     applyPresenceFromPresenceStatus(
       payload: VisionPresenceStatusPayload,
     ): void {
       const personPresent = payload.personPresent;
+      const occupancy = normalizeOccupancy(payload.occupancy, personPresent);
       this.presence = {
         personPresent,
+        occupancyState: occupancy.state,
+        occupancyConfidence: occupancy.confidence,
+        profileUsable: presenceStatusProfileUsable(
+          this.presence.profileUsable,
+          personPresent,
+          occupancy.state,
+        ),
+        profileNotUsableReason: presenceStatusProfileNotUsableReason(
+          this.presence.profileNotUsableReason,
+          personPresent,
+          occupancy.state,
+        ),
         lastSeenAt: personPresent
           ? payload.detectedAt
           : this.presence.lastSeenAt,
         departedAt: personPresent ? null : this.presence.departedAt,
+        lastChangedAt: payload.detectedAt,
+        source: "presence_status",
       };
     },
     applyPresenceFromPersonDeparted(
@@ -152,8 +201,14 @@ export const useVisionStore = defineStore("vision", {
     ): void {
       this.presence = {
         personPresent: false,
+        occupancyState: "none",
+        occupancyConfidence: null,
+        profileUsable: false,
+        profileNotUsableReason: null,
         lastSeenAt: payload.lastSeenAt ?? this.presence.lastSeenAt,
         departedAt: payload.detectedAt,
+        lastChangedAt: payload.detectedAt,
+        source: "person_departed",
       };
     },
     async refresh(): Promise<void> {
@@ -161,6 +216,77 @@ export const useVisionStore = defineStore("vision", {
     },
   },
 });
+
+function normalizeOccupancy(
+  occupancy:
+    | VisionProfileResultPayload["occupancy"]
+    | VisionPresenceStatusPayload["occupancy"]
+    | undefined,
+  personPresent: boolean,
+): { state: VisionPresenceOccupancyState; confidence: number | null } {
+  if (occupancy) {
+    return {
+      state: occupancy.state,
+      confidence: occupancy.confidence ?? null,
+    };
+  }
+  return {
+    state: personPresent ? "unknown" : "none",
+    confidence: null,
+  };
+}
+
+function profileResultUsable(
+  payload: VisionProfileResultPayload,
+  occupancyState: VisionPresenceOccupancyState,
+): boolean {
+  if (!payload.profile.personPresent) return false;
+  if (occupancyState === "multiple") return false;
+  if (
+    payload.profile.confidence !== undefined &&
+    payload.profile.confidence < PROFILE_CONFIDENCE_THRESHOLD
+  ) {
+    return false;
+  }
+  if (payload.quality.profileUsable === false) return false;
+  return true;
+}
+
+function profileNotUsableReason(
+  payload: VisionProfileResultPayload,
+  occupancyState: VisionPresenceOccupancyState,
+): VisionProfileNotUsableReason | null {
+  if (occupancyState === "multiple") return "multiple_people";
+  if (!payload.profile.personPresent) return "no_person";
+  if (
+    payload.profile.confidence !== undefined &&
+    payload.profile.confidence < PROFILE_CONFIDENCE_THRESHOLD
+  ) {
+    return "low_confidence";
+  }
+  if (payload.quality.profileUsable === false) return "unknown";
+  return null;
+}
+
+function presenceStatusProfileUsable(
+  current: boolean,
+  personPresent: boolean,
+  occupancyState: VisionPresenceOccupancyState,
+): boolean {
+  if (!personPresent) return false;
+  if (occupancyState === "multiple") return false;
+  return current;
+}
+
+function presenceStatusProfileNotUsableReason(
+  current: VisionProfileNotUsableReason | null,
+  personPresent: boolean,
+  occupancyState: VisionPresenceOccupancyState,
+): VisionProfileNotUsableReason | null {
+  if (!personPresent) return null;
+  if (occupancyState === "multiple") return "multiple_people";
+  return current === "multiple_people" ? null : current;
+}
 
 function parseProfileResultDiagnostic(
   value: unknown,

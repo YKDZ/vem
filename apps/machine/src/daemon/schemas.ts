@@ -1,4 +1,5 @@
 import {
+  environmentControlResultPayloadSchema,
   machineCatalogItemSchema,
   machinePaymentOptionsResponseSchema,
   machineSaleViewSnapshotSchema,
@@ -328,6 +329,9 @@ export const hardwareSelfCheckSchema = z.object({
   configUpdated: z.boolean().default(false),
 });
 
+export const environmentControlResultSchema =
+  environmentControlResultPayloadSchema;
+
 const saleReadinessComponentSchema = z.object({
   ready: z.boolean(),
   code: z.string(),
@@ -454,6 +458,9 @@ export type NaturalContextSnapshot = z.infer<
   typeof naturalContextSnapshotSchema
 >;
 export type HardwareSelfCheck = z.infer<typeof hardwareSelfCheckSchema>;
+export type EnvironmentControlResult = z.infer<
+  typeof environmentControlResultSchema
+>;
 export type MachineSaleReadiness = z.infer<typeof machineSaleReadinessSchema>;
 export type CatalogSnapshot = z.infer<typeof catalogSnapshotSchema>;
 export type SaleViewSnapshot = z.infer<typeof machineSaleViewSnapshotSchema>;

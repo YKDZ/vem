@@ -86,6 +86,30 @@ describe("vision protocol schemas", () => {
     expect(message.payload.personPresent).toBe(true);
   });
 
+  it("parses presence occupancy without requiring a precise headcount", () => {
+    const message = visionPresenceStatusMessageSchema.parse({
+      ...BASE_ENVELOPE,
+      type: "vision.presence_status",
+      payload: {
+        eventId: "presence-event-multiple",
+        state: "approach",
+        reason: "multiple_people_present",
+        detectedAt: "2026-06-29T10:00:00.000Z",
+        personPresent: true,
+        occupancy: {
+          state: "multiple",
+          confidence: 0.89,
+        },
+        proximity: {
+          present: true,
+        },
+      },
+    });
+
+    expect(message.payload.personPresent).toBe(true);
+    expect(message.payload.occupancy?.state).toBe("multiple");
+  });
+
   it("parses a pushed person departed event", () => {
     const message = visionPersonDepartedMessageSchema.parse({
       ...BASE_ENVELOPE,
@@ -102,6 +126,37 @@ describe("vision protocol schemas", () => {
     expect(message.type).toBe("vision.person_departed");
     expect(message.payload.reason).toBe("left_frame");
     expect(message.payload.lastSeenAt).toBe("2026-06-29T10:03:10.000Z");
+  });
+
+  it("marks multiple-person profile results as machine-readable unusable", () => {
+    const message = visionProfileResultMessageSchema.parse({
+      ...BASE_ENVELOPE,
+      type: "vision.profile_result",
+      payload: {
+        eventId: "vision-event-multiple",
+        detectedAt: "2026-06-29T10:00:00.000Z",
+        occupancy: {
+          state: "multiple",
+          confidence: 0.91,
+        },
+        profile: {
+          personPresent: true,
+          heightCm: 172,
+          bodyType: "regular",
+          confidence: 0.86,
+        },
+        quality: {
+          overall: "poor",
+          warnings: ["multiple_people"],
+          profileUsable: false,
+          notUsableReason: "multiple_people",
+        },
+      },
+    });
+
+    expect(message.payload.occupancy?.state).toBe("multiple");
+    expect(message.payload.quality.profileUsable).toBe(false);
+    expect(message.payload.quality.notUsableReason).toBe("multiple_people");
   });
 
   it("rejects malformed presence status payloads", () => {

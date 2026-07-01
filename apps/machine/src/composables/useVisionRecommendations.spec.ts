@@ -139,6 +139,57 @@ describe("useVisionRecommendations", () => {
     expect(serializedResult).not.toContain("faceEmbedding");
   });
 
+  it("does not use multiple-person profile results for recommendations", async () => {
+    const captured: Partial<ReturnType<typeof useVisionRecommendations>> = {};
+    let onProfile:
+      | ((payload: VisionProfileResultPayload) => void | Promise<void>)
+      | null = null;
+    subscribeVisionProfilesMock.mockImplementation(
+      (
+        _config: unknown,
+        handlers: {
+          onProfile: (
+            payload: VisionProfileResultPayload,
+          ) => void | Promise<void>;
+        },
+      ) => {
+        onProfile = handlers.onProfile;
+        return { close: vi.fn() };
+      },
+    );
+    const App = defineComponent({
+      setup() {
+        const recommendations = useVisionRecommendations();
+        captured.currentProfile = recommendations.currentProfile;
+        return () => null;
+      },
+    });
+
+    createApp(App).use(pinia).mount(host);
+    await nextTick();
+    const emitProfile = onProfile as unknown as (
+      payload: VisionProfileResultPayload,
+    ) => void | Promise<void>;
+
+    await Promise.resolve(
+      emitProfile({
+        ...profilePayload("VISION-MULTIPLE-001"),
+        occupancy: { state: "multiple", confidence: 0.93 },
+        quality: {
+          overall: "poor",
+          warnings: ["multiple_people"],
+          profileUsable: false,
+          notUsableReason: "multiple_people",
+        },
+      }),
+    );
+    await nextTick();
+
+    expect(captured.currentProfile?.value).toBeNull();
+    expect(useVisionStore().isMultiplePeoplePresent).toBe(true);
+    expect(useVisionStore().canUseLatestProfileForRecommendation).toBe(false);
+  });
+
   it("clears stale recommendation state when the subscription reports an error", async () => {
     const captured: Partial<ReturnType<typeof useVisionRecommendations>> = {};
     let onProfile:
@@ -257,8 +308,9 @@ describe("useVisionRecommendations", () => {
 
     expect(captured.currentProfile?.value).toBeNull();
     expect(captured.lastVisionResult?.value).toBeNull();
-    expect(useVisionStore().presence).toEqual({
+    expect(useVisionStore().presence).toMatchObject({
       personPresent: true,
+      occupancyState: "unknown",
       lastSeenAt: "2026-06-29T10:00:00.000Z",
       departedAt: null,
     });
@@ -321,8 +373,9 @@ describe("useVisionRecommendations", () => {
     await nextTick();
 
     expect(captured.currentProfile?.value).toBeNull();
-    expect(useVisionStore().presence).toEqual({
+    expect(useVisionStore().presence).toMatchObject({
       personPresent: false,
+      occupancyState: "none",
       lastSeenAt: "2026-06-29T10:04:55.000Z",
       departedAt: "2026-06-29T10:05:00.000Z",
     });

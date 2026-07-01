@@ -595,7 +595,9 @@ describe("MaintenanceView hardware config", () => {
     const host = await mountView();
 
     expect(host.textContent).toContain("Presence Interaction");
-    expect(host.textContent).toContain("有人 · 2026-06-05T00:00:05.000Z");
+    expect(host.textContent).toContain(
+      "有人 · unknown · profile usable · 2026-06-05T00:00:05.000Z",
+    );
     expect(host.textContent).toContain("VISION-PRESENCE-STATUS-001");
   });
 
@@ -840,7 +842,9 @@ describe("MaintenanceView hardware config", () => {
 
     expect(host.textContent).not.toContain("VISION-REALTIME-003");
     expect(host.textContent).not.toContain('"heightCm": 168');
-    expect(host.textContent).toContain("无人 · not seen");
+    expect(host.textContent).toContain(
+      "无人 · none · profile unusable · not seen",
+    );
     expect(host.textContent).toContain("No diagnostic payload returned yet.");
   });
 
