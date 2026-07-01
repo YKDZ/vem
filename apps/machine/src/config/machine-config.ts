@@ -92,6 +92,13 @@ export const machineConfigSchema = z
     visionEnabled: z.boolean().default(true),
     visionWsUrl: z.string().trim().pipe(z.url()).default(DEFAULT_VISION_WS_URL),
     visionRequestTimeoutMs: z.int().min(1000).max(30_000).default(8000),
+    tryOnCameraDeviceId: z
+      .string()
+      .trim()
+      .min(1)
+      .max(512)
+      .nullable()
+      .default(null),
     audioCueSettings: audioCueSettingsSchema.default(audioCueSettingsDefaults),
     kioskMode: z.boolean().default(false),
     stockMovementRetentionDays: z.int().min(1).max(366).default(30),
@@ -205,6 +212,10 @@ export function normalizeMachineConfig(input: unknown): MachineConfig {
   if (typeof processed.visionWsUrl === "string") {
     processed.visionWsUrl = processed.visionWsUrl.trim();
   }
+  if (typeof processed.tryOnCameraDeviceId === "string") {
+    const trimmed = processed.tryOnCameraDeviceId.trim();
+    processed.tryOnCameraDeviceId = trimmed.length > 0 ? trimmed : null;
+  }
   const parsed = machineConfigSchema.parse(processed);
   const machineSecret = parsed.machineSecret?.trim() || null;
   const mqttSigningSecret = parsed.mqttSigningSecret?.trim() || null;
@@ -233,6 +244,7 @@ export function normalizeMachineConfig(input: unknown): MachineConfig {
     scannerUsbIdentity: parsed.scannerUsbIdentity,
     scannerSerialPortPath: parsed.scannerSerialPortPath?.trim() || null,
     visionWsUrl: parsed.visionWsUrl.trim(),
+    tryOnCameraDeviceId: parsed.tryOnCameraDeviceId?.trim() || null,
   };
 }
 

@@ -65,6 +65,7 @@ const configSummaryPublicSchema = z.preprocess(
     visionEnabled: z.boolean(),
     visionWsUrl: z.string(),
     visionRequestTimeoutMs: z.number().int(),
+    tryOnCameraDeviceId: z.string().nullable().default(null),
     audioCueSettings: audioCueSettingsSchema.default({
       enabled: false,
       categories: {
