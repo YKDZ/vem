@@ -432,6 +432,9 @@ watch(
                 清除
               </a-button>
             </div>
+            <p class="text-xs leading-5 text-slate-500">
+              支持 PNG、JPEG、WebP，单个文件不超过 5 MB。请在系统外完成修图、裁剪、压缩和背景处理；后台不提供编辑、裁剪或去背工具。
+            </p>
           </div>
         </a-form-item>
         <a-form-item label="状态">
@@ -560,6 +563,10 @@ watch(
                 清除
               </a-button>
             </div>
+            <p class="text-xs leading-5 text-slate-500">
+              支持 PNG、JPEG、WebP，单个文件不超过 5 MB。请在系统外准备正面、居中、透明背景优先的剪影；后台不提供编辑、裁剪或去背工具。不同款式或颜色需要分别上传剪影，V1
+              不要求按尺码区分剪影。
+            </p>
           </div>
         </a-form-item>
         <a-form-item label="状态">
