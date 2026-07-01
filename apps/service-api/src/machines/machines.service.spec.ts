@@ -2444,6 +2444,7 @@ describe("MachinesService planogram lifecycle", () => {
     productName: "矿泉水",
     productDescription: null,
     coverImageUrl: null,
+    tryOnSilhouetteUrl: null,
     categoryId: null,
     categoryName: null,
     sku: "WATER-001",
@@ -2457,6 +2458,8 @@ describe("MachinesService planogram lifecycle", () => {
   };
   const canonicalCoverImageUrl =
     "http://service.test/api/media-assets/550e8400-e29b-41d4-a716-446655440124/content";
+  const canonicalTryOnSilhouetteUrl =
+    "http://service.test/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content";
 
   it("publishes a machine planogram version without making it active", async () => {
     const machine = {
@@ -2496,12 +2499,15 @@ describe("MachinesService planogram lifecycle", () => {
       })
       .mockReturnValueOnce({
         from: () => ({
-          leftJoin: () => ({
+          innerJoin: () => ({
             where: async () => [
               {
                 productId: slot.productId,
-                publicUrl:
+                variantId: slot.variantId,
+                displayImagePublicUrl:
                   "/api/media-assets/550e8400-e29b-41d4-a716-446655440124/content",
+                tryOnSilhouettePublicUrl:
+                  "/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
               },
             ],
           }),
@@ -2533,9 +2539,15 @@ describe("MachinesService planogram lifecycle", () => {
       }),
     );
     expect(insertSlotsValues).toHaveBeenCalledWith([
-      expect.objectContaining({ coverImageUrl: canonicalCoverImageUrl }),
+      expect.objectContaining({
+        coverImageUrl: canonicalCoverImageUrl,
+        tryOnSilhouetteUrl: canonicalTryOnSilhouetteUrl,
+      }),
     ]);
     expect(result.slots[0]?.coverImageUrl).toBe(canonicalCoverImageUrl);
+    expect(result.slots[0]?.tryOnSilhouetteUrl).toBe(
+      canonicalTryOnSilhouetteUrl,
+    );
     expect(auditRecord).toHaveBeenCalledWith(
       expect.objectContaining({
         action: "machines.planogram.publish",
@@ -2580,6 +2592,8 @@ describe("MachinesService planogram lifecycle", () => {
       productDescription: slot.productDescription,
       coverImageUrl:
         "/api/media-assets/550e8400-e29b-41d4-a716-446655440124/content",
+      tryOnSilhouetteUrl:
+        "/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
       categoryId: slot.categoryId,
       categoryName: slot.categoryName,
       sku: slot.sku,
@@ -2603,6 +2617,7 @@ describe("MachinesService planogram lifecycle", () => {
       {
         ...catalogRow,
         coverImageUrl: canonicalCoverImageUrl,
+        tryOnSilhouetteUrl: canonicalTryOnSilhouetteUrl,
       },
     ]);
   });

@@ -797,7 +797,7 @@ describe("shared API contract", () => {
       productName: "矿泉水",
       productDescription: null,
       coverImageUrl:
-        "https://service.example.com/api/media-assets/550e8400-e29b-41d4-a716-446655440124/content",
+        "http://service.test/api/media-assets/550e8400-e29b-41d4-a716-446655440124/content",
       categoryId: null,
       categoryName: null,
       sku: "WATER-001",
@@ -825,6 +825,82 @@ describe("shared API contract", () => {
             coverImageUrl: "https://example.com/free-form.jpg",
           },
         ],
+      }),
+    ).toThrow();
+    expect(() =>
+      publishMachinePlanogramVersionSchema.parse({
+        planogramVersion: "PLAN-2026-06-04",
+        slots: [
+          {
+            ...slot,
+            coverImageUrl:
+              "https://evil.example/api/media-assets/550e8400-e29b-41d4-a716-446655440124/content",
+          },
+        ],
+      }),
+    ).toThrow();
+  });
+
+  it("accepts variant try-on silhouettes only as managed media URLs", () => {
+    const slot = {
+      slotId: "550e8400-e29b-41d4-a716-446655440001",
+      slotCode: "A1",
+      layerNo: 1,
+      cellNo: 1,
+      inventoryId: "550e8400-e29b-41d4-a716-446655440002",
+      variantId: "550e8400-e29b-41d4-a716-446655440003",
+      productId: "550e8400-e29b-41d4-a716-446655440004",
+      productName: "基础短袖",
+      productDescription: null,
+      coverImageUrl: null,
+      tryOnSilhouetteUrl:
+        "/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
+      categoryId: null,
+      categoryName: "T恤",
+      sku: "TSHIRT-M-WHITE",
+      size: "M",
+      color: "白色",
+      priceCents: 200,
+      productSortOrder: 1,
+      targetGender: null,
+      capacity: 8,
+      parLevel: 6,
+    };
+
+    expect(
+      publishMachinePlanogramVersionSchema.parse({
+        planogramVersion: "PLAN-2026-06-04",
+        slots: [slot],
+      }).slots[0]?.tryOnSilhouetteUrl,
+    ).toBe(slot.tryOnSilhouetteUrl);
+    expect(
+      machineSaleViewItemSchema.parse({
+        ...slot,
+        machineCode: "M001",
+        physicalStock: 1,
+        saleableStock: 1,
+        slotSalesState: "sale_ready",
+      }).tryOnSilhouetteUrl,
+    ).toBe(slot.tryOnSilhouetteUrl);
+    expect(() =>
+      machineSaleViewItemSchema.parse({
+        ...slot,
+        machineCode: "M001",
+        tryOnSilhouetteUrl: "https://example.com/free-form.png",
+        physicalStock: 1,
+        saleableStock: 1,
+        slotSalesState: "sale_ready",
+      }),
+    ).toThrow();
+    expect(() =>
+      machineSaleViewItemSchema.parse({
+        ...slot,
+        machineCode: "M001",
+        tryOnSilhouetteUrl:
+          "https://evil.example/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
+        physicalStock: 1,
+        saleableStock: 1,
+        slotSalesState: "sale_ready",
       }),
     ).toThrow();
   });

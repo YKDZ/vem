@@ -12,6 +12,7 @@ import {
   updateProduct,
   updateProductVariant,
   uploadProductDisplayImage,
+  uploadTryOnSilhouette,
   type PageResult,
   type Product,
   type ProductVariant,
@@ -38,6 +39,8 @@ type VariantForm = {
   color: string;
   barcode: string;
   targetGender: "male" | "female" | null;
+  tryOnSilhouetteMediaAssetId: string | null;
+  tryOnSilhouettePublicUrl: string | null;
 };
 
 const authStore = useAuthStore();
@@ -178,8 +181,11 @@ const variantForm = ref<VariantForm>({
   color: "",
   barcode: "",
   targetGender: null,
+  tryOnSilhouetteMediaAssetId: null,
+  tryOnSilhouettePublicUrl: null,
 });
 const variantSaving = ref(false);
+const tryOnSilhouetteUploading = ref(false);
 
 async function openVariants(p: Product): Promise<void> {
   currentProductId.value = p.id;
@@ -205,6 +211,8 @@ function openCreateVariant(): void {
     color: "",
     barcode: "",
     targetGender: null,
+    tryOnSilhouetteMediaAssetId: null,
+    tryOnSilhouettePublicUrl: null,
   };
   variantFormOpen.value = true;
 }
@@ -221,8 +229,31 @@ function openEditVariant(v: ProductVariant): void {
     color: v.color ?? "",
     barcode: v.barcode ?? "",
     targetGender: v.targetGender ?? null,
+    tryOnSilhouetteMediaAssetId: v.tryOnSilhouetteMediaAssetId,
+    tryOnSilhouettePublicUrl: v.tryOnSilhouetteMediaAsset?.publicUrl ?? null,
   };
   variantFormOpen.value = true;
+}
+
+async function onTryOnSilhouetteSelected(event: Event): Promise<void> {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  input.value = "";
+  if (!file) return;
+
+  tryOnSilhouetteUploading.value = true;
+  try {
+    const asset = await uploadTryOnSilhouette(file);
+    variantForm.value.tryOnSilhouetteMediaAssetId = asset.id;
+    variantForm.value.tryOnSilhouettePublicUrl = asset.publicUrl;
+  } finally {
+    tryOnSilhouetteUploading.value = false;
+  }
+}
+
+function clearTryOnSilhouette(): void {
+  variantForm.value.tryOnSilhouetteMediaAssetId = null;
+  variantForm.value.tryOnSilhouettePublicUrl = null;
 }
 
 async function saveVariant(): Promise<void> {
@@ -238,6 +269,8 @@ async function saveVariant(): Promise<void> {
       color: variantForm.value.color || null,
       barcode: variantForm.value.barcode || null,
       targetGender: variantForm.value.targetGender || null,
+      tryOnSilhouetteMediaAssetId:
+        variantForm.value.tryOnSilhouetteMediaAssetId,
     };
     if (editingVariant.value) {
       await updateProductVariant(editingVariant.value.id, body);
@@ -498,6 +531,36 @@ watch(
             <a-select-option value="male">男款</a-select-option>
             <a-select-option value="female">女款</a-select-option>
           </a-select>
+        </a-form-item>
+        <a-form-item label="试穿剪影">
+          <div class="space-y-3">
+            <img
+              v-if="variantForm.tryOnSilhouettePublicUrl"
+              class="h-32 w-24 rounded border border-slate-200 object-contain"
+              :src="variantForm.tryOnSilhouettePublicUrl"
+              :alt="`${variantForm.sku || 'SKU'} 试穿剪影`"
+            />
+            <div class="flex items-center gap-2">
+              <a-button :loading="tryOnSilhouetteUploading">
+                <label class="cursor-pointer">
+                  上传剪影
+                  <input
+                    class="hidden"
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp"
+                    @change="onTryOnSilhouetteSelected"
+                  />
+                </label>
+              </a-button>
+              <a-button
+                v-if="variantForm.tryOnSilhouetteMediaAssetId"
+                danger
+                @click="clearTryOnSilhouette"
+              >
+                清除
+              </a-button>
+            </div>
+          </div>
         </a-form-item>
         <a-form-item label="状态">
           <a-select v-model:value="variantForm.status">

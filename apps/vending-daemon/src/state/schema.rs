@@ -1,4 +1,4 @@
-pub const SCHEMA_VERSION: i64 = 9;
+pub const SCHEMA_VERSION: i64 = 10;
 
 pub const MIGRATION_V1: &str = r#"
 PRAGMA journal_mode = WAL;
@@ -229,6 +229,14 @@ FROM sale_view_projection;
 
 DROP TABLE sale_view_projection;
 ALTER TABLE sale_view_projection_v3 RENAME TO sale_view_projection;
+
+PRAGMA foreign_keys = ON;
+"#;
+
+pub const MIGRATION_V10: &str = r#"
+PRAGMA foreign_keys = OFF;
+
+ALTER TABLE machine_planogram_slots ADD COLUMN try_on_silhouette_url TEXT;
 
 PRAGMA foreign_keys = ON;
 "#;

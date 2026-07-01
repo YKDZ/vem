@@ -34,6 +34,7 @@ export const createProductVariantSchema = z.object({
   costCents: z.int().min(0).nullable().optional(),
   status: variantStatusSchema.default("active"),
   targetGender: z.enum(["male", "female"]).nullable().optional(),
+  tryOnSilhouetteMediaAssetId: z.uuid().nullable().optional(),
 });
 
 export const updateProductVariantSchema = createProductVariantSchema.partial();

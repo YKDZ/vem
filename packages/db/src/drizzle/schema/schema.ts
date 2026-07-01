@@ -382,6 +382,9 @@ export const productVariants = t.pgTable(
     targetGender: t.varchar("target_gender", { length: 8 }),
     priceCents: t.integer("price_cents").notNull(),
     costCents: t.integer("cost_cents"),
+    tryOnSilhouetteMediaAssetId: t
+      .uuid("try_on_silhouette_media_asset_id")
+      .references(() => mediaAssets.id),
     status: variantStatus("status").default("active").notNull(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -391,6 +394,9 @@ export const productVariants = t.pgTable(
     t.uniqueIndex("product_variants_sku_unique").on(table.sku),
     t.index("product_variants_product_id_idx").on(table.productId),
     t.index("product_variants_status_idx").on(table.status),
+    t
+      .index("product_variants_try_on_silhouette_media_asset_id_idx")
+      .on(table.tryOnSilhouetteMediaAssetId),
     t.check(
       "product_variants_price_cents_non_negative",
       sql`${table.priceCents} >= 0`,
@@ -603,6 +609,7 @@ export const machinePlanogramSlots = t.pgTable(
     productName: t.varchar("product_name", { length: 128 }).notNull(),
     productDescription: t.text("product_description"),
     coverImageUrl: t.text("cover_image_url"),
+    tryOnSilhouetteUrl: t.text("try_on_silhouette_url"),
     categoryId: t.uuid("category_id"),
     categoryName: t.varchar("category_name", { length: 128 }),
     sku: t.varchar("sku", { length: 64 }).notNull(),

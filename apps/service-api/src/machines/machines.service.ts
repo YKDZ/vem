@@ -226,6 +226,7 @@ function planogramSlotValues(
     productName: slot.productName,
     productDescription: slot.productDescription,
     coverImageUrl: slot.coverImageUrl,
+    tryOnSilhouetteUrl: slot.tryOnSilhouetteUrl ?? null,
     categoryId: slot.categoryId,
     categoryName: slot.categoryName,
     sku: slot.sku,
@@ -253,6 +254,7 @@ function planogramSlotSnapshot(
     productName: row.productName,
     productDescription: row.productDescription,
     coverImageUrl: row.coverImageUrl,
+    tryOnSilhouetteUrl: row.tryOnSilhouetteUrl ?? null,
     categoryId: row.categoryId,
     categoryName: row.categoryName,
     sku: row.sku,
@@ -1009,34 +1011,56 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
   private async withCanonicalPlanogramCoverImages(
     slots: MachinePlanogramSlot[],
   ): Promise<MachinePlanogramSlot[]> {
-    const productIds = [...new Set(slots.map((slot) => slot.productId))];
-    if (productIds.length === 0) return slots;
+    const variantIds = [...new Set(slots.map((slot) => slot.variantId))];
+    if (variantIds.length === 0) return slots;
 
     const rows = await this.db
       .select({
+        variantId: productVariants.id,
         productId: products.id,
-        publicUrl: mediaAssets.publicUrl,
+        displayImagePublicUrl: sql<string | null>`(
+          select ${mediaAssets.publicUrl}
+          from ${mediaAssets}
+          where ${mediaAssets.id} = ${products.displayImageMediaAssetId}
+            and ${mediaAssets.purpose} = 'product_display_image'
+            and ${mediaAssets.deletedAt} is null
+          limit 1
+        )`,
+        tryOnSilhouettePublicUrl: sql<string | null>`(
+          select ${mediaAssets.publicUrl}
+          from ${mediaAssets}
+          where ${mediaAssets.id} = ${productVariants.tryOnSilhouetteMediaAssetId}
+            and ${mediaAssets.purpose} = 'try_on_silhouette'
+            and ${mediaAssets.deletedAt} is null
+          limit 1
+        )`,
       })
-      .from(products)
-      .leftJoin(
-        mediaAssets,
+      .from(productVariants)
+      .innerJoin(products, eq(products.id, productVariants.productId))
+      .where(
         and(
-          eq(mediaAssets.id, products.displayImageMediaAssetId),
-          eq(mediaAssets.purpose, "product_display_image"),
-          isNull(mediaAssets.deletedAt),
+          inArray(productVariants.id, variantIds),
+          isNull(productVariants.deletedAt),
+          isNull(products.deletedAt),
         ),
-      )
-      .where(and(inArray(products.id, productIds), isNull(products.deletedAt)));
+      );
     const coverImageUrls = new Map(
       rows.map((row) => [
         row.productId,
-        this.machineRenderableMediaAssetUrl(row.publicUrl),
+        this.machineRenderableMediaAssetUrl(row.displayImagePublicUrl),
+      ]),
+    );
+    const tryOnSilhouetteUrls = new Map(
+      rows.map((row) => [
+        row.variantId,
+        this.machineRenderableMediaAssetUrl(row.tryOnSilhouettePublicUrl),
       ]),
     );
 
     return slots.map((slot) => ({
       ...slot,
       coverImageUrl: coverImageUrls.get(slot.productId) ?? null,
+      tryOnSilhouetteUrl: tryOnSilhouetteUrls.get(slot.variantId) ?? null,
     }));
   }
 
@@ -1048,6 +1072,9 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
       ...snapshot,
       coverImageUrl: this.machineRenderableMediaAssetUrl(
         snapshot.coverImageUrl,
+      ),
+      tryOnSilhouetteUrl: this.machineRenderableMediaAssetUrl(
+        snapshot.tryOnSilhouetteUrl ?? null,
       ),
     };
   }
@@ -1399,6 +1426,14 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
         productName: products.name,
         productDescription: products.description,
         coverImageUrl: mediaAssets.publicUrl,
+        tryOnSilhouetteUrl: sql<string | null>`(
+          select ${mediaAssets.publicUrl}
+          from ${mediaAssets}
+          where ${mediaAssets.id} = ${productVariants.tryOnSilhouetteMediaAssetId}
+            and ${mediaAssets.purpose} = 'try_on_silhouette'
+            and ${mediaAssets.deletedAt} is null
+          limit 1
+        )`,
         categoryId: products.categoryId,
         categoryName: productCategories.name,
         sku: productVariants.sku,
@@ -1458,6 +1493,9 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
     return rows.map((row) => ({
       ...row,
       coverImageUrl: this.machineRenderableMediaAssetUrl(row.coverImageUrl),
+      tryOnSilhouetteUrl: this.machineRenderableMediaAssetUrl(
+        row.tryOnSilhouetteUrl,
+      ),
     }));
   }
 

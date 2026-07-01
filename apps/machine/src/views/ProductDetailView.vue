@@ -94,6 +94,9 @@ const stockText = computed(() => selectedVariant.value?.saleableStock ?? 0);
 const skuText = computed(
   () => selectedVariant.value?.sku ?? item.value?.sku ?? "-",
 );
+const selectedTryOnSilhouetteUrl = computed(
+  () => selectedVariant.value?.tryOnSilhouetteUrl ?? null,
+);
 const sizeOptions = computed(() =>
   uniqueVariantOptions(
     variantCandidates.value,
@@ -374,6 +377,17 @@ async function purchase(): Promise<void> {
             <p>
               库存：<strong>{{ stockText }}</strong>
             </p>
+          </section>
+
+          <section v-if="selectedTryOnSilhouetteUrl" class="try-on-entry">
+            <button
+              class="try-on-button kiosk-touch-target"
+              type="button"
+              disabled
+              data-test="try-on-entry"
+            >
+              虚拟试穿 即将开放
+            </button>
           </section>
 
           <div class="detail-bottom-bar">
@@ -746,6 +760,26 @@ async function purchase(): Promise<void> {
   font-size: 1.4rem;
 }
 
+.try-on-entry {
+  display: grid;
+  margin-top: 1.55rem;
+}
+
+.try-on-button {
+  min-height: 56px;
+  border: 1px solid rgba(111, 131, 95, 0.7);
+  border-radius: 8px;
+  background: rgba(255, 253, 248, 0.72);
+  color: #5f7352;
+  font-family: SimSun, "Songti SC", "Noto Serif CJK SC", serif;
+  font-size: 1.14rem;
+  font-weight: 700;
+}
+
+.try-on-button:disabled {
+  opacity: 1;
+}
+
 .detail-mascot {
   position: absolute;
   bottom: 0.72rem;
@@ -974,6 +1008,16 @@ async function purchase(): Promise<void> {
     max-height: 8.5rem;
     overflow-y: auto;
     padding-right: 0.2rem;
+  }
+
+  .try-on-entry {
+    margin-top: 0.85rem;
+  }
+
+  .try-on-button {
+    min-height: 44px;
+    padding: 0 0.7rem;
+    font-size: 0.88rem;
   }
 
   .detail-mascot {

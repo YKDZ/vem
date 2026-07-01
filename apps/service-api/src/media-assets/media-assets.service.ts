@@ -14,11 +14,23 @@ import { AppConfigService } from "../config/app-config.service";
 import { DRIZZLE_CLIENT } from "../database/database.constants";
 
 export const MAX_PRODUCT_DISPLAY_IMAGE_BYTES = 5 * 1024 * 1024;
-const PRODUCT_DISPLAY_IMAGE_TYPES = new Map([
+export const MAX_TRY_ON_SILHOUETTE_BYTES = MAX_PRODUCT_DISPLAY_IMAGE_BYTES;
+const MANAGED_IMAGE_TYPES = new Map([
   ["image/jpeg", { extension: ".jpg", matches: isJpeg }],
   ["image/png", { extension: ".png", matches: isPng }],
   ["image/webp", { extension: ".webp", matches: isWebp }],
 ]);
+type ManagedImagePurpose = "product_display_image" | "try_on_silhouette";
+const MANAGED_IMAGE_PURPOSE_CONFIG = {
+  product_display_image: {
+    directory: "product-display-images",
+    label: "Product display image",
+  },
+  try_on_silhouette: {
+    directory: "try-on-silhouettes",
+    label: "Try-on silhouette",
+  },
+} satisfies Record<ManagedImagePurpose, { directory: string; label: string }>;
 
 type UploadedImage = {
   originalname: string;
@@ -40,31 +52,40 @@ export class MediaAssetsService {
   ) {}
 
   async storeProductDisplayImage(file: UploadedImage | undefined) {
+    return await this.storeManagedImage("product_display_image", file);
+  }
+
+  async storeTryOnSilhouette(file: UploadedImage | undefined) {
+    return await this.storeManagedImage("try_on_silhouette", file);
+  }
+
+  private async storeManagedImage(
+    purpose: ManagedImagePurpose,
+    file: UploadedImage | undefined,
+  ) {
+    const config = MANAGED_IMAGE_PURPOSE_CONFIG[purpose];
     if (!file) {
-      throw new BadRequestException("Product display image file is required");
+      throw new BadRequestException(`${config.label} file is required`);
     }
-    const imageType = this.validateProductDisplayImage(file);
+    const imageType = this.validateManagedImage(file, config.label);
     const id = randomUUID();
-    const storageKey = `product-display-images/${id}${imageType.extension}`;
+    const storageKey = `${config.directory}/${id}${imageType.extension}`;
     const absolutePath = join(this.config.mediaAssetStorageRoot, storageKey);
     const publicUrl = buildPublicAssetUrl(
       id,
       this.config.mediaAssetPublicBaseUrl,
     );
 
-    await mkdir(
-      join(this.config.mediaAssetStorageRoot, "product-display-images"),
-      {
-        recursive: true,
-      },
-    );
+    await mkdir(join(this.config.mediaAssetStorageRoot, config.directory), {
+      recursive: true,
+    });
     await writeFile(absolutePath, file.buffer, { flag: "wx" });
 
     const [created] = await this.db
       .insert(mediaAssets)
       .values({
         id,
-        purpose: "product_display_image",
+        purpose,
         storageProvider: "local",
         storageKey,
         contentType: imageType.contentType,
@@ -102,29 +123,28 @@ export class MediaAssetsService {
     };
   }
 
-  private validateProductDisplayImage(file: UploadedImage): {
+  private validateManagedImage(
+    file: UploadedImage,
+    label: string,
+  ): {
     contentType: string;
     extension: string;
   } {
     if (file.size > MAX_PRODUCT_DISPLAY_IMAGE_BYTES) {
-      throw new BadRequestException(
-        "Product display image must be 5 MB or less",
-      );
+      throw new BadRequestException(`${label} must be 5 MB or less`);
     }
     if (file.mimetype === "image/svg+xml") {
       throw new BadRequestException(
-        "SVG product display images are not supported",
+        `SVG ${label.toLowerCase()}s are not supported`,
       );
     }
-    const expectedType = PRODUCT_DISPLAY_IMAGE_TYPES.get(file.mimetype);
+    const expectedType = MANAGED_IMAGE_TYPES.get(file.mimetype);
     if (!expectedType) {
-      throw new BadRequestException(
-        "Product display image must be JPEG, PNG, or WebP",
-      );
+      throw new BadRequestException(`${label} must be JPEG, PNG, or WebP`);
     }
     if (!expectedType.matches(file.buffer)) {
       throw new BadRequestException(
-        "Product display image content does not match its declared type",
+        `${label} content does not match its declared type`,
       );
     }
     if (file.buffer.byteLength !== file.size) {

@@ -46,6 +46,7 @@ type ProductDisplayImageAssetSummary = {
   publicUrl: string;
   contentType: string;
 };
+type VariantTryOnSilhouetteAssetSummary = ProductDisplayImageAssetSummary;
 
 @Injectable()
 export class ProductsService {
@@ -209,9 +210,24 @@ export class ProductsService {
     }
     const whereClause = and(...filters);
 
-    const items = await this.db
-      .select()
+    const rows = await this.db
+      .select({
+        variant: productVariants,
+        tryOnSilhouetteMediaAsset: {
+          id: mediaAssets.id,
+          publicUrl: mediaAssets.publicUrl,
+          contentType: mediaAssets.contentType,
+        },
+      })
       .from(productVariants)
+      .leftJoin(
+        mediaAssets,
+        and(
+          eq(mediaAssets.id, productVariants.tryOnSilhouetteMediaAssetId),
+          eq(mediaAssets.purpose, "try_on_silhouette"),
+          isNull(mediaAssets.deletedAt),
+        ),
+      )
       .where(whereClause)
       .orderBy(desc(productVariants.createdAt))
       .limit(query.pageSize)
@@ -221,10 +237,23 @@ export class ProductsService {
       .from(productVariants)
       .where(whereClause);
 
-    return toPageResult(items, query, Number(totalRow.total));
+    return toPageResult(
+      rows.map((row) => ({
+        ...row.variant,
+        tryOnSilhouetteMediaAsset: row.tryOnSilhouetteMediaAsset?.id
+          ? row.tryOnSilhouetteMediaAsset
+          : null,
+      })),
+      query,
+      Number(totalRow.total),
+    );
   }
 
   async createVariant(input: CreateProductVariantInput) {
+    const tryOnSilhouetteMediaAsset =
+      await this.requireVariantTryOnSilhouetteAsset(
+        input.tryOnSilhouetteMediaAssetId ?? null,
+      );
     const [created] = await this.db
       .insert(productVariants)
       .values({
@@ -235,14 +264,20 @@ export class ProductsService {
         barcode: input.barcode ?? null,
         priceCents: input.priceCents,
         costCents: input.costCents ?? null,
+        tryOnSilhouetteMediaAssetId: input.tryOnSilhouetteMediaAssetId ?? null,
         status: input.status,
         targetGender: input.targetGender ?? null,
       })
       .returning();
-    return created;
+    return { ...created, tryOnSilhouetteMediaAsset };
   }
 
   async updateVariant(id: string, input: UpdateProductVariantInput) {
+    const requestedTryOnSilhouetteMediaAsset =
+      await this.requireVariantTryOnSilhouetteAsset(
+        input.tryOnSilhouetteMediaAssetId ?? null,
+        "tryOnSilhouetteMediaAssetId" in input,
+      );
     const [updated] = await this.db
       .update(productVariants)
       .set({
@@ -253,6 +288,7 @@ export class ProductsService {
         barcode: input.barcode,
         priceCents: input.priceCents,
         costCents: input.costCents,
+        tryOnSilhouetteMediaAssetId: input.tryOnSilhouetteMediaAssetId,
         status: input.status,
         targetGender: input.targetGender,
         updatedAt: new Date(),
@@ -263,6 +299,49 @@ export class ProductsService {
     if (!updated) {
       throw new NotFoundException("Product variant not found");
     }
-    return updated;
+    return {
+      ...updated,
+      tryOnSilhouetteMediaAsset:
+        requestedTryOnSilhouetteMediaAsset ??
+        (await this.findVariantTryOnSilhouetteAsset(
+          updated.tryOnSilhouetteMediaAssetId,
+        )),
+    };
+  }
+
+  private async requireVariantTryOnSilhouetteAsset(
+    id: string | null,
+    validate = true,
+  ): Promise<VariantTryOnSilhouetteAssetSummary | null> {
+    if (!validate || id === null) return null;
+    const asset = await this.findVariantTryOnSilhouetteAsset(id);
+    if (!asset) {
+      throw new BadRequestException(
+        "Variant try-on silhouette media asset not found",
+      );
+    }
+    return asset;
+  }
+
+  private async findVariantTryOnSilhouetteAsset(
+    id: string | null,
+  ): Promise<VariantTryOnSilhouetteAssetSummary | null> {
+    if (!id) return null;
+    const [asset] = await this.db
+      .select({
+        id: mediaAssets.id,
+        publicUrl: mediaAssets.publicUrl,
+        contentType: mediaAssets.contentType,
+      })
+      .from(mediaAssets)
+      .where(
+        and(
+          eq(mediaAssets.id, id),
+          eq(mediaAssets.purpose, "try_on_silhouette"),
+          isNull(mediaAssets.deletedAt),
+        ),
+      )
+      .limit(1);
+    return asset ?? null;
   }
 }

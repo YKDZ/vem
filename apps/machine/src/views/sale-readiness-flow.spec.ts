@@ -190,6 +190,7 @@ function makeCatalogItem(): MachineCatalogItem {
     productName: "基础短袖",
     productDescription: null,
     coverImageUrl: null,
+    tryOnSilhouetteUrl: null,
     categoryId: null,
     categoryName: "T恤 / 基础短袖",
     sku: "TEE-BASIC-M-BLACK",
@@ -802,6 +803,55 @@ describe("sale readiness UI flow", () => {
 
     expect(host.textContent).toContain("基础短袖");
     expectRecognitionDetailsHidden(host);
+  });
+
+  it("shows routed product detail try-on entry only for the selected variant silhouette", async () => {
+    const item = makeCatalogItem();
+    const silhouettedVariant: MachineCatalogItem = {
+      ...item,
+      slotId: "550e8400-e29b-41d4-a716-446655440021",
+      inventoryId: "550e8400-e29b-41d4-a716-446655440022",
+      variantId: "550e8400-e29b-41d4-a716-446655440023",
+      sku: "TEE-BASIC-L-WHITE",
+      size: "L",
+      color: "白色",
+      tryOnSilhouetteUrl:
+        "/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
+    };
+    useCatalogStore().applySnapshot({
+      items: [item, silhouettedVariant],
+      source: "local_stock",
+      planogramVersion: "PLAN-1",
+      lastUpdatedAt: "2026-06-04T00:00:00Z",
+    });
+    routeParams.catalogKey = item.catalogKey;
+
+    const host = await mountView(ProductDetailView);
+
+    expect(host.textContent).toContain("基础短袖");
+    expect(host.querySelector('[data-test="try-on-entry"]')).toBeNull();
+
+    const sizeLButton = Array.from(host.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "L",
+    );
+    expect(sizeLButton).toBeTruthy();
+    sizeLButton?.click();
+    await nextTick();
+
+    const tryOnEntry = host.querySelector<HTMLButtonElement>(
+      '[data-test="try-on-entry"]',
+    );
+    expect(tryOnEntry).toBeTruthy();
+    expect(tryOnEntry?.disabled).toBe(true);
+
+    const sizeMButton = Array.from(host.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "M",
+    );
+    expect(sizeMButton).toBeTruthy();
+    sizeMButton?.click();
+    await nextTick();
+
+    expect(host.querySelector('[data-test="try-on-entry"]')).toBeNull();
   });
 
   it("keeps vision recognition details silent in checkout", async () => {
