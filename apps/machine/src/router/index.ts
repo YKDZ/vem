@@ -25,6 +25,11 @@ const routes: RouteRecordRaw[] = [
     component: async () => import("@/views/ProductDetailView.vue"),
   },
   {
+    path: "/products/:catalogKey/try-on",
+    name: "virtual-try-on",
+    component: async () => import("@/views/VirtualTryOnView.vue"),
+  },
+  {
     path: "/checkout",
     name: "checkout",
     component: async () => import("@/views/CheckoutView.vue"),

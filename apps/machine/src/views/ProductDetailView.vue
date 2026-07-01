@@ -97,6 +97,10 @@ const skuText = computed(
 const selectedTryOnSilhouetteUrl = computed(
   () => selectedVariant.value?.tryOnSilhouetteUrl ?? null,
 );
+const routedVariantId = computed(() => {
+  const value = route.query.variantId;
+  return typeof value === "string" ? value : null;
+});
 const sizeOptions = computed(() =>
   uniqueVariantOptions(
     variantCandidates.value,
@@ -140,9 +144,12 @@ const featureCards = [
 ] as const;
 
 watch(
-  variantCandidates,
+  [variantCandidates, routedVariantId],
   () => {
     selectedVariantId.value =
+      variantCandidates.value.find(
+        (variant) => variant.variantId === routedVariantId.value,
+      )?.variantId ??
       variantCandidates.value.find(variantIsSaleable)?.variantId ??
       variantCandidates.value[0]?.variantId ??
       null;
@@ -209,6 +216,16 @@ async function purchase(): Promise<void> {
   if (!concreteItem || !canBuy.value) return;
   checkoutStore.selectItem(concreteItem);
   await router.push("/checkout");
+}
+
+async function enterTryOn(): Promise<void> {
+  const variant = selectedVariant.value;
+  if (!variant?.tryOnSilhouetteUrl) return;
+  await router.push({
+    name: "virtual-try-on",
+    params: { catalogKey: catalogKey.value },
+    query: { variantId: variant.variantId },
+  });
 }
 </script>
 
@@ -383,10 +400,10 @@ async function purchase(): Promise<void> {
             <button
               class="try-on-button kiosk-touch-target"
               type="button"
-              disabled
               data-test="try-on-entry"
+              @click="enterTryOn"
             >
-              虚拟试穿 即将开放
+              虚拟试穿
             </button>
           </section>
 

@@ -23,14 +23,12 @@ import { usePresenceInteraction } from "@/composables/usePresenceInteraction";
 import { useVisionRecommendations } from "@/composables/useVisionRecommendations";
 import KioskLayout from "@/layouts/KioskLayout.vue";
 import { useCatalogStore } from "@/stores/catalog";
-import { useCheckoutStore } from "@/stores/checkout";
 import { useConnectivityStore } from "@/stores/connectivity";
 import { formatCents } from "@/utils/format";
 
 const router = useRouter();
 const connectivityStore = useConnectivityStore();
 const catalogStore = useCatalogStore();
-const checkoutStore = useCheckoutStore();
 useVisionRecommendations();
 const { presenceClass } = usePresenceInteraction();
 const { handleMaintenanceTap } = useMaintenanceEntry();
@@ -283,7 +281,6 @@ function toDisplayProduct(
 }
 
 async function openProductDetail(product: DisplayProduct): Promise<void> {
-  checkoutStore.selectItem(product.item);
   await router.push({
     name: "product-detail",
     params: { catalogKey: product.item.catalogKey },

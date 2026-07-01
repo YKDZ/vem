@@ -17,7 +17,11 @@ import { useVisionStore } from "@/stores/vision";
 
 const DEFAULT_PRESENCE_STALE_MS = 15_000;
 const DEFAULT_INACTIVITY_DEPARTURE_MS = 45_000;
-const RETURN_HOME_ROUTE_NAMES = new Set(["product-detail", "checkout"]);
+const RETURN_HOME_ROUTE_NAMES = new Set([
+  "product-detail",
+  "virtual-try-on",
+  "checkout",
+]);
 
 export type PresenceInteractionSource =
   | "vision"
