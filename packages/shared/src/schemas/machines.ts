@@ -278,6 +278,29 @@ export type MachineAuthTokenResponse = z.infer<
   typeof machineAuthTokenResponseSchema
 >;
 
+const managedMediaAssetContentPathPattern =
+  /^\/api\/media-assets\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/content$/i;
+
+const managedMediaAssetContentUrlSchema = z.string().refine(
+  (value) => {
+    if (!value.startsWith("/") && !/^https?:\/\//i.test(value)) return false;
+    try {
+      const url = new URL(value, "http://vem.local");
+      return (
+        managedMediaAssetContentPathPattern.test(url.pathname) &&
+        url.search === "" &&
+        url.hash === ""
+      );
+    } catch {
+      return false;
+    }
+  },
+  {
+    message:
+      "coverImageUrl must point to a managed media asset content endpoint",
+  },
+);
+
 const machineCatalogItemBaseSchema = z.object({
   machineCode: z.string().min(1).max(64),
   slotId: z.uuid(),
@@ -289,7 +312,7 @@ const machineCatalogItemBaseSchema = z.object({
   productId: z.uuid(),
   productName: z.string().min(1).max(128),
   productDescription: z.string().nullable(),
-  coverImageUrl: z.string().nullable(),
+  coverImageUrl: managedMediaAssetContentUrlSchema.nullable(),
   categoryId: z.uuid().nullable(),
   categoryName: z.string().nullable(),
   sku: z.string().min(1).max(64),

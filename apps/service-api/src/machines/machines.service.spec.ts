@@ -2418,7 +2418,11 @@ describe("MachinesService planogram lifecycle", () => {
         },
         {
           provide: AppConfigService,
-          useValue: { machineCommandTimeoutSeconds: 5 },
+          useValue: {
+            machineCommandTimeoutSeconds: 5,
+            mediaAssetPublicBaseUrl: undefined,
+            paymentWebhookBaseUrl: "http://service.test/api/payments/webhooks",
+          },
         },
         {
           provide: NotificationsService,
@@ -2451,6 +2455,8 @@ describe("MachinesService planogram lifecycle", () => {
     capacity: 8,
     parLevel: 6,
   };
+  const canonicalCoverImageUrl =
+    "http://service.test/api/media-assets/550e8400-e29b-41d4-a716-446655440124/content";
 
   it("publishes a machine planogram version without making it active", async () => {
     const machine = {
@@ -2487,6 +2493,19 @@ describe("MachinesService planogram lifecycle", () => {
       })
       .mockReturnValueOnce({
         from: () => ({ where: async () => [{ id: slot.slotId }] }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          leftJoin: () => ({
+            where: async () => [
+              {
+                productId: slot.productId,
+                publicUrl:
+                  "/api/media-assets/550e8400-e29b-41d4-a716-446655440124/content",
+              },
+            ],
+          }),
+        }),
       });
     mockDb.transaction.mockImplementationOnce(
       async (cb: (txArg: typeof tx) => Promise<unknown>) => await cb(tx),
@@ -2513,6 +2532,10 @@ describe("MachinesService planogram lifecycle", () => {
         status: "published",
       }),
     );
+    expect(insertSlotsValues).toHaveBeenCalledWith([
+      expect.objectContaining({ coverImageUrl: canonicalCoverImageUrl }),
+    ]);
+    expect(result.slots[0]?.coverImageUrl).toBe(canonicalCoverImageUrl);
     expect(auditRecord).toHaveBeenCalledWith(
       expect.objectContaining({
         action: "machines.planogram.publish",
@@ -2541,6 +2564,47 @@ describe("MachinesService planogram lifecycle", () => {
       ),
     ).rejects.toThrow(BadRequestException);
     expect(mockDb.transaction).not.toHaveBeenCalled();
+  });
+
+  it("returns machine-renderable absolute managed image URLs in catalog rows", async () => {
+    const catalogRow = {
+      machineCode: "M001",
+      slotId: slot.slotId,
+      slotCode: slot.slotCode,
+      layerNo: slot.layerNo,
+      cellNo: slot.cellNo,
+      inventoryId: slot.inventoryId,
+      variantId: slot.variantId,
+      productId: slot.productId,
+      productName: slot.productName,
+      productDescription: slot.productDescription,
+      coverImageUrl:
+        "/api/media-assets/550e8400-e29b-41d4-a716-446655440124/content",
+      categoryId: slot.categoryId,
+      categoryName: slot.categoryName,
+      sku: slot.sku,
+      size: slot.size,
+      color: slot.color,
+      priceCents: slot.priceCents,
+      availableQty: 1,
+      productSortOrder: slot.productSortOrder,
+      targetGender: slot.targetGender,
+    };
+    const query = {
+      from: vi.fn(() => query),
+      innerJoin: vi.fn(() => query),
+      leftJoin: vi.fn(() => query),
+      where: vi.fn(() => query),
+      orderBy: vi.fn(async () => [catalogRow]),
+    };
+    mockDb.select.mockReturnValueOnce(query);
+
+    await expect(service.getCatalogByMachineCode("M001")).resolves.toEqual([
+      {
+        ...catalogRow,
+        coverImageUrl: canonicalCoverImageUrl,
+      },
+    ]);
   });
 
   it("reports no active planogram until an acknowledged version is active", async () => {

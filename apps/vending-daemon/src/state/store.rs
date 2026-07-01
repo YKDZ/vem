@@ -4286,6 +4286,62 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn sale_view_preserves_product_display_image_asset_url() {
+        let temp = TempDir::new().expect("tempdir");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+
+        let sale_view = store
+            .apply_planogram(MachinePlanogramInput {
+                planogram_version: "PLAN-MEDIA".to_string(),
+                source: "test".to_string(),
+                applied_by: None,
+                slots: vec![MachinePlanogramSlotInput {
+                    slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                    slot_code: "A1".to_string(),
+                    layer_no: 1,
+                    cell_no: 1,
+                    capacity: 8,
+                    par_level: 6,
+                    inventory_id: "550e8400-e29b-41d4-a716-446655440002".to_string(),
+                    variant_id: "550e8400-e29b-41d4-a716-446655440003".to_string(),
+                    product_id: "550e8400-e29b-41d4-a716-446655440004".to_string(),
+                    product_name: "shirt".to_string(),
+                    product_description: None,
+                    cover_image_url: Some(
+                        "/api/media-assets/550e8400-e29b-41d4-a716-446655440124/content"
+                            .to_string(),
+                    ),
+                    category_id: None,
+                    category_name: None,
+                    sku: "TEE-001".to_string(),
+                    size: Some("M".to_string()),
+                    color: Some("white".to_string()),
+                    price_cents: 3900,
+                    product_sort_order: 1,
+                    target_gender: None,
+                }],
+            })
+            .await
+            .expect("planogram");
+
+        assert_eq!(
+            sale_view.items[0].cover_image_url.as_deref(),
+            Some("/api/media-assets/550e8400-e29b-41d4-a716-446655440124/content")
+        );
+
+        let reopened = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("reopen");
+        let persisted = reopened.sale_view(None).await.expect("sale view");
+        assert_eq!(
+            persisted.items[0].cover_image_url.as_deref(),
+            Some("/api/media-assets/550e8400-e29b-41d4-a716-446655440124/content")
+        );
+    }
+
     fn single_slot_stock_snapshot(
         on_hand_qty: i64,
         reserved_qty: i64,

@@ -1,4 +1,7 @@
-/docs
+/docs/*
+!/docs/adr/
+/docs/adr/*
+!/docs/adr/0020-store-product-images-on-service-api-local-storage-first.md
 
 .pnpm-store
 node_modules

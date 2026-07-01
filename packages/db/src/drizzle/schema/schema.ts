@@ -320,6 +320,27 @@ export const productCategories = t.pgTable(
   ],
 );
 
+export const mediaAssets = t.pgTable(
+  "media_assets",
+  {
+    id: id(),
+    purpose: t.varchar("purpose", { length: 64 }).notNull(),
+    storageProvider: t.varchar("storage_provider", { length: 32 }).notNull(),
+    storageKey: t.text("storage_key").notNull(),
+    contentType: t.varchar("content_type", { length: 128 }).notNull(),
+    byteSize: t.integer("byte_size").notNull(),
+    originalFilename: t.varchar("original_filename", { length: 255 }),
+    sha256: t.varchar("sha256", { length: 64 }).notNull(),
+    publicUrl: t.text("public_url").notNull(),
+    createdAt: createdAt(),
+    deletedAt: deletedAt(),
+  },
+  (table) => [
+    t.index("media_assets_purpose_idx").on(table.purpose),
+    t.index("media_assets_storage_provider_idx").on(table.storageProvider),
+  ],
+);
+
 export const products = t.pgTable(
   "products",
   {
@@ -328,6 +349,9 @@ export const products = t.pgTable(
     categoryId: t.uuid("category_id").references(() => productCategories.id),
     description: t.text("description"),
     coverImageUrl: t.text("cover_image_url"),
+    displayImageMediaAssetId: t
+      .uuid("display_image_media_asset_id")
+      .references(() => mediaAssets.id),
     status: productStatus("status").default("draft").notNull(),
     sortOrder: t.integer("sort_order").default(0).notNull(),
     createdAt: createdAt(),
@@ -337,6 +361,9 @@ export const products = t.pgTable(
   (table) => [
     t.index("products_category_id_idx").on(table.categoryId),
     t.index("products_status_idx").on(table.status),
+    t
+      .index("products_display_image_media_asset_id_idx")
+      .on(table.displayImageMediaAssetId),
   ],
 );
 

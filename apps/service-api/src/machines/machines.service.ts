@@ -30,6 +30,7 @@ import {
   machineCommands,
   machineEvents,
   machineHeartbeats,
+  mediaAssets,
   machines,
   productCategories,
   productVariants,
@@ -967,6 +968,9 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
         "Planogram slots must belong to the target machine",
       );
     }
+    const canonicalSlots = await this.withCanonicalPlanogramCoverImages(
+      planogram.slots,
+    );
 
     const created = await this.db.transaction(async (tx) => {
       const [version] = await tx
@@ -981,7 +985,7 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
       await tx
         .insert(machinePlanogramSlots)
         .values(
-          planogram.slots.map((slot) => planogramSlotValues(version.id, slot)),
+          canonicalSlots.map((slot) => planogramSlotValues(version.id, slot)),
         )
         .returning({ id: machinePlanogramSlots.id });
 
@@ -995,11 +999,75 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
       resourceId: machine.id,
       afterJson: {
         planogramVersion: created.planogramVersion,
-        slotCount: planogram.slots.length,
+        slotCount: canonicalSlots.length,
       },
     });
 
-    return planogramVersionSnapshot(machine, created, planogram.slots);
+    return planogramVersionSnapshot(machine, created, canonicalSlots);
+  }
+
+  private async withCanonicalPlanogramCoverImages(
+    slots: MachinePlanogramSlot[],
+  ): Promise<MachinePlanogramSlot[]> {
+    const productIds = [...new Set(slots.map((slot) => slot.productId))];
+    if (productIds.length === 0) return slots;
+
+    const rows = await this.db
+      .select({
+        productId: products.id,
+        publicUrl: mediaAssets.publicUrl,
+      })
+      .from(products)
+      .leftJoin(
+        mediaAssets,
+        and(
+          eq(mediaAssets.id, products.displayImageMediaAssetId),
+          eq(mediaAssets.purpose, "product_display_image"),
+          isNull(mediaAssets.deletedAt),
+        ),
+      )
+      .where(and(inArray(products.id, productIds), isNull(products.deletedAt)));
+    const coverImageUrls = new Map(
+      rows.map((row) => [
+        row.productId,
+        this.machineRenderableMediaAssetUrl(row.publicUrl),
+      ]),
+    );
+
+    return slots.map((slot) => ({
+      ...slot,
+      coverImageUrl: coverImageUrls.get(slot.productId) ?? null,
+    }));
+  }
+
+  private planogramSlotSnapshotForMachine(
+    row: typeof machinePlanogramSlots.$inferSelect,
+  ): MachinePlanogramSlot {
+    const snapshot = planogramSlotSnapshot(row);
+    return {
+      ...snapshot,
+      coverImageUrl: this.machineRenderableMediaAssetUrl(
+        snapshot.coverImageUrl,
+      ),
+    };
+  }
+
+  private machineRenderableMediaAssetUrl(
+    publicUrl: string | null,
+  ): string | null {
+    if (!publicUrl) return null;
+    if (/^https?:\/\//i.test(publicUrl)) return publicUrl;
+    if (!publicUrl.startsWith("/api/media-assets/")) return publicUrl;
+
+    const baseUrl =
+      this.config.mediaAssetPublicBaseUrl ?? this.config.paymentWebhookBaseUrl;
+    if (!baseUrl) return publicUrl;
+
+    try {
+      return new URL(publicUrl, baseUrl).toString();
+    } catch {
+      return publicUrl;
+    }
   }
 
   async getMachinePlanogramVersions(machineId: string) {
@@ -1072,7 +1140,7 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
     return planogramVersionSnapshot(
       machine,
       version,
-      slots.map(planogramSlotSnapshot),
+      slots.map((slot) => this.planogramSlotSnapshotForMachine(slot)),
     );
   }
 
@@ -1318,7 +1386,7 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
   }
 
   async getCatalogByMachineCode(code: string) {
-    return await this.db
+    const rows = await this.db
       .select({
         machineCode: machines.code,
         slotId: machineSlots.id,
@@ -1330,7 +1398,7 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
         productId: products.id,
         productName: products.name,
         productDescription: products.description,
-        coverImageUrl: products.coverImageUrl,
+        coverImageUrl: mediaAssets.publicUrl,
         categoryId: products.categoryId,
         categoryName: productCategories.name,
         sku: productVariants.sku,
@@ -1371,6 +1439,13 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
         productCategories,
         eq(productCategories.id, products.categoryId),
       )
+      .leftJoin(
+        mediaAssets,
+        and(
+          eq(mediaAssets.id, products.displayImageMediaAssetId),
+          isNull(mediaAssets.deletedAt),
+        ),
+      )
       .where(
         and(
           eq(machines.code, code),
@@ -1380,6 +1455,10 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
         ),
       )
       .orderBy(products.sortOrder, machineSlots.layerNo, machineSlots.cellNo);
+    return rows.map((row) => ({
+      ...row,
+      coverImageUrl: this.machineRenderableMediaAssetUrl(row.coverImageUrl),
+    }));
   }
 
   async getStockSnapshotByMachineCode(code: string) {

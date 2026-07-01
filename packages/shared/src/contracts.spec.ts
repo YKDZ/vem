@@ -7,6 +7,7 @@ import {
   createMachineSchema,
   createMachineSlotSchema,
   createMachineOrderSchema,
+  createProductSchema,
   createProtectedFulfillmentDrillSchema,
   createProtectedPaymentDrillSchema,
   dispenseCommandPayloadSchema,
@@ -36,6 +37,7 @@ import {
   paymentCodeAttemptAdminActionSchema,
   paymentMachinePreflightSchema,
   externalNaturalEnvironmentSchema,
+  updateProductSchema,
   updateMachineSchema,
   paymentCodeAttemptQuerySchema,
   paymentCodeSubmitResponseSchema,
@@ -45,6 +47,7 @@ import {
   paymentProviderStatuses,
   paymentProviderSensitiveConfigSchema,
   paymentReconciliationAttemptQuerySchema,
+  publishMachinePlanogramVersionSchema,
   protectedFulfillmentDrillRecoveryActionSchema,
   protectedFulfillmentDrillScenarioSchema,
   protectedPaymentDrillRecoveryActionSchema,
@@ -132,6 +135,33 @@ describe("shared API contract", () => {
     expect(updateMachineSchema.parse({ geoLocation: null })).toEqual({
       geoLocation: null,
     });
+  });
+
+  it("uses managed media asset references for product display image writes", () => {
+    const displayImageMediaAssetId = "550e8400-e29b-41d4-a716-446655440124";
+
+    expect(
+      createProductSchema.parse({
+        name: "基础短袖",
+        displayImageMediaAssetId,
+      }),
+    ).toEqual({
+      name: "基础短袖",
+      displayImageMediaAssetId,
+      status: "draft",
+      sortOrder: 0,
+    });
+
+    expect(() =>
+      createProductSchema.parse({
+        name: "基础短袖",
+        coverImageUrl: "https://example.com/free-form.jpg",
+      }),
+    ).toThrow();
+
+    expect(
+      updateProductSchema.parse({ displayImageMediaAssetId: null }),
+    ).toEqual({ displayImageMediaAssetId: null });
   });
 
   it("validates nullable all-or-nothing Machine Geo Location in machine write contracts", () => {
@@ -729,7 +759,8 @@ describe("shared API contract", () => {
           productId: "550e8400-e29b-41d4-a716-446655440004",
           productName: "矿泉水",
           productDescription: null,
-          coverImageUrl: null,
+          coverImageUrl:
+            "/api/media-assets/550e8400-e29b-41d4-a716-446655440124/content",
           categoryId: null,
           categoryName: null,
           sku: "WATER-001",
@@ -754,6 +785,50 @@ describe("shared API contract", () => {
     ).toThrow();
   });
 
+  it("rejects arbitrary planogram cover image URLs", () => {
+    const slot = {
+      slotId: "550e8400-e29b-41d4-a716-446655440001",
+      slotCode: "A1",
+      layerNo: 1,
+      cellNo: 1,
+      inventoryId: "550e8400-e29b-41d4-a716-446655440002",
+      variantId: "550e8400-e29b-41d4-a716-446655440003",
+      productId: "550e8400-e29b-41d4-a716-446655440004",
+      productName: "矿泉水",
+      productDescription: null,
+      coverImageUrl:
+        "https://service.example.com/api/media-assets/550e8400-e29b-41d4-a716-446655440124/content",
+      categoryId: null,
+      categoryName: null,
+      sku: "WATER-001",
+      size: "550ml",
+      color: null,
+      priceCents: 200,
+      productSortOrder: 1,
+      targetGender: null,
+      capacity: 8,
+      parLevel: 6,
+    };
+
+    expect(
+      publishMachinePlanogramVersionSchema.parse({
+        planogramVersion: "PLAN-2026-06-04",
+        slots: [slot],
+      }).slots[0]?.coverImageUrl,
+    ).toBe(slot.coverImageUrl);
+    expect(() =>
+      publishMachinePlanogramVersionSchema.parse({
+        planogramVersion: "PLAN-2026-06-04",
+        slots: [
+          {
+            ...slot,
+            coverImageUrl: "https://example.com/free-form.jpg",
+          },
+        ],
+      }),
+    ).toThrow();
+  });
+
   it("accepts machine sale view slot sales states", () => {
     const base = {
       machineCode: "M001",
@@ -766,7 +841,8 @@ describe("shared API contract", () => {
       productId: "550e8400-e29b-41d4-a716-446655440004",
       productName: "矿泉水",
       productDescription: null,
-      coverImageUrl: null,
+      coverImageUrl:
+        "/api/media-assets/550e8400-e29b-41d4-a716-446655440124/content",
       categoryId: null,
       categoryName: null,
       sku: "WATER-001",

@@ -2,10 +2,18 @@ import type { ProductStatus, VariantStatus } from "@vem/shared";
 
 import { get, patch, post } from "./request";
 
+export type MediaAssetSummary = {
+  id: string;
+  publicUrl: string;
+  contentType: string;
+};
+
 export type Product = {
   id: string;
   name: string;
   description: string | null;
+  displayImageMediaAssetId: string | null;
+  displayImageMediaAsset: MediaAssetSummary | null;
   status: ProductStatus;
   sortOrder: number;
   createdAt: string;
@@ -34,6 +42,11 @@ export type ProductQuery = {
   pageSize?: number;
 };
 
+type ProductWrite = Omit<
+  Product,
+  "id" | "createdAt" | "updatedAt" | "displayImageMediaAsset"
+>;
+
 export type PageResult<T> = {
   items: T[];
   total: number;
@@ -47,17 +60,26 @@ export async function listProducts(
   return await get<PageResult<Product>>("/products", { params: query });
 }
 
-export async function createProduct(
-  body: Omit<Product, "id" | "createdAt" | "updatedAt">,
-): Promise<Product> {
+export async function createProduct(body: ProductWrite): Promise<Product> {
   return await post<Product>("/products", body);
 }
 
 export async function updateProduct(
   id: string,
-  body: Partial<Omit<Product, "id" | "createdAt" | "updatedAt">>,
+  body: Partial<ProductWrite>,
 ): Promise<Product> {
   return await patch<Product>(`/products/${id}`, body);
+}
+
+export async function uploadProductDisplayImage(
+  file: File,
+): Promise<MediaAssetSummary> {
+  const body = new FormData();
+  body.append("file", file);
+  return await post<MediaAssetSummary, FormData>(
+    "/media-assets/product-display-images",
+    body,
+  );
 }
 
 export async function listProductVariants(

@@ -1,10 +1,16 @@
-import { Inject, Injectable, NotFoundException } from "@nestjs/common";
+import {
+  BadRequestException,
+  Inject,
+  Injectable,
+  NotFoundException,
+} from "@nestjs/common";
 import {
   and,
   count,
   desc,
   eq,
   isNull,
+  mediaAssets,
   productVariants,
   products,
   sql,
@@ -35,6 +41,11 @@ type CreateProductInput = z.infer<typeof createProductSchema>;
 type UpdateProductInput = z.infer<typeof updateProductSchema>;
 type CreateProductVariantInput = z.infer<typeof createProductVariantSchema>;
 type UpdateProductVariantInput = z.infer<typeof updateProductVariantSchema>;
+type ProductDisplayImageAssetSummary = {
+  id: string;
+  publicUrl: string;
+  contentType: string;
+};
 
 @Injectable()
 export class ProductsService {
@@ -64,9 +75,23 @@ export class ProductsService {
     }
     const whereClause = and(...filters);
 
-    const items = await this.db
-      .select()
+    const rows = await this.db
+      .select({
+        product: products,
+        displayImageMediaAsset: {
+          id: mediaAssets.id,
+          publicUrl: mediaAssets.publicUrl,
+          contentType: mediaAssets.contentType,
+        },
+      })
       .from(products)
+      .leftJoin(
+        mediaAssets,
+        and(
+          eq(mediaAssets.id, products.displayImageMediaAssetId),
+          isNull(mediaAssets.deletedAt),
+        ),
+      )
       .where(whereClause)
       .orderBy(desc(products.createdAt))
       .limit(query.pageSize)
@@ -76,32 +101,51 @@ export class ProductsService {
       .from(products)
       .where(whereClause);
 
-    return toPageResult(items, query, Number(totalRow.total));
+    return toPageResult(
+      rows.map((row) => ({
+        ...row.product,
+        displayImageMediaAsset: row.displayImageMediaAsset?.id
+          ? row.displayImageMediaAsset
+          : null,
+      })),
+      query,
+      Number(totalRow.total),
+    );
   }
 
   async createProduct(input: CreateProductInput) {
+    const displayImageMediaAsset = await this.requireProductDisplayImageAsset(
+      input.displayImageMediaAssetId ?? null,
+    );
     const [created] = await this.db
       .insert(products)
       .values({
         name: input.name,
         categoryId: input.categoryId ?? null,
         description: input.description ?? null,
-        coverImageUrl: input.coverImageUrl ?? null,
+        displayImageMediaAssetId: input.displayImageMediaAssetId ?? null,
+        coverImageUrl: null,
         status: input.status,
         sortOrder: input.sortOrder,
       })
       .returning();
-    return created;
+    return { ...created, displayImageMediaAsset };
   }
 
   async updateProduct(id: string, input: UpdateProductInput) {
+    const requestedDisplayImageMediaAsset =
+      await this.requireProductDisplayImageAsset(
+        input.displayImageMediaAssetId ?? null,
+        "displayImageMediaAssetId" in input,
+      );
     const [updated] = await this.db
       .update(products)
       .set({
         name: input.name,
         categoryId: input.categoryId,
         description: input.description,
-        coverImageUrl: input.coverImageUrl,
+        displayImageMediaAssetId: input.displayImageMediaAssetId,
+        coverImageUrl: null,
         status: input.status,
         sortOrder: input.sortOrder,
         updatedAt: new Date(),
@@ -112,7 +156,50 @@ export class ProductsService {
     if (!updated) {
       throw new NotFoundException("Product not found");
     }
-    return updated;
+    return {
+      ...updated,
+      displayImageMediaAsset:
+        requestedDisplayImageMediaAsset ??
+        (await this.findProductDisplayImageAsset(
+          updated.displayImageMediaAssetId,
+        )),
+    };
+  }
+
+  private async requireProductDisplayImageAsset(
+    id: string | null,
+    validate = true,
+  ): Promise<ProductDisplayImageAssetSummary | null> {
+    if (!validate || id === null) return null;
+    const asset = await this.findProductDisplayImageAsset(id);
+    if (!asset) {
+      throw new BadRequestException(
+        "Product display image media asset not found",
+      );
+    }
+    return asset;
+  }
+
+  private async findProductDisplayImageAsset(
+    id: string | null,
+  ): Promise<ProductDisplayImageAssetSummary | null> {
+    if (!id) return null;
+    const [asset] = await this.db
+      .select({
+        id: mediaAssets.id,
+        publicUrl: mediaAssets.publicUrl,
+        contentType: mediaAssets.contentType,
+      })
+      .from(mediaAssets)
+      .where(
+        and(
+          eq(mediaAssets.id, id),
+          eq(mediaAssets.purpose, "product_display_image"),
+          isNull(mediaAssets.deletedAt),
+        ),
+      )
+      .limit(1);
+    return asset ?? null;
   }
 
   async listVariants(query: ProductVariantListInput) {
