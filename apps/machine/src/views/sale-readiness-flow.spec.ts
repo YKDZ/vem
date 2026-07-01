@@ -16,6 +16,7 @@ const {
   getCurrentTransactionMock,
   getSaleViewMock,
   getPaymentOptionsMock,
+  createOrderMock,
   subscribeVisionProfilesMock,
   routeParams,
   routeQuery,
@@ -33,6 +34,7 @@ const {
   getCurrentTransactionMock: vi.fn(),
   getSaleViewMock: vi.fn(),
   getPaymentOptionsMock: vi.fn(),
+  createOrderMock: vi.fn(),
   subscribeVisionProfilesMock: vi.fn(),
   routeParams: {} as Record<string, string>,
   routeQuery: {} as Record<string, string>,
@@ -65,6 +67,7 @@ vi.mock("@/daemon/client", () => ({
     getCurrentTransaction: getCurrentTransactionMock,
     getSaleView: getSaleViewMock,
     getPaymentOptions: getPaymentOptionsMock,
+    createOrder: createOrderMock,
   },
 }));
 
@@ -99,6 +102,7 @@ import VirtualTryOnView from "./VirtualTryOnView.vue";
 let mountedApp: App<Element> | null = null;
 let pinia: ReturnType<typeof createPinia>;
 let latestVisionHandlers: VisionProfileSubscriptionHandlers | null = null;
+let propertyRestorers: Array<() => void> = [];
 
 beforeEach(() => {
   resetCustomerPresenceSessionForTests();
@@ -187,15 +191,27 @@ beforeEach(() => {
     defaultProviderCode: "mock",
     serverTime: "2026-06-04T00:00:00Z",
   });
+  createOrderMock.mockResolvedValue(transactionSnapshot());
 });
 
 afterEach(() => {
   resetCustomerPresenceSessionForTests();
-  mountedApp?.unmount();
+  unmountMountedView();
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+  for (const restore of propertyRestorers.splice(0).reverse()) {
+    restore();
+  }
+});
+
+function unmountMountedView(): void {
+  const app = mountedApp;
+  if (app) {
+    app.unmount();
+  }
   mountedApp = null;
   document.body.innerHTML = "";
-  vi.useRealTimers();
-});
+}
 
 function makeCatalogItem(): MachineCatalogItem {
   const item = {
@@ -297,6 +313,48 @@ function installMediaDevicesMock(getUserMedia = vi.fn()) {
     value: { getUserMedia },
   });
   return { getUserMedia };
+}
+
+function replaceTestProperty(
+  target: object,
+  key: PropertyKey,
+  value: unknown,
+): void {
+  const descriptor = Object.getOwnPropertyDescriptor(target, key);
+  Object.defineProperty(target, key, {
+    configurable: true,
+    writable: true,
+    value,
+  });
+  propertyRestorers.push(() => {
+    if (descriptor) {
+      Object.defineProperty(target, key, descriptor);
+    } else {
+      delete (target as Record<PropertyKey, unknown>)[key];
+    }
+  });
+}
+
+function spyEgressMethod(
+  target: object,
+  key: PropertyKey,
+  implementation: (...args: never[]) => unknown = () => undefined,
+) {
+  const current = (target as Record<PropertyKey, unknown>)[key];
+  if (typeof current === "function") {
+    return vi
+      .spyOn(target as Record<string, (...args: never[]) => unknown>, key as string)
+      .mockImplementation(implementation);
+  }
+  const mock = vi.fn(implementation);
+  replaceTestProperty(target, key, mock);
+  return mock;
+}
+
+function stubEgressConstructor(name: string) {
+  const mock = vi.fn();
+  replaceTestProperty(globalThis, name, mock);
+  return mock;
 }
 
 function makeMediaStream() {
@@ -998,6 +1056,125 @@ describe("sale readiness UI flow", () => {
     expect(silhouette?.className).toContain("try-on-silhouette-fixed");
   });
 
+  it("keeps try-on preview local without capture, upload, storage, or diagnostic logging", async () => {
+    const item = makeCatalogItem();
+    const silhouettedVariant: MachineCatalogItem = {
+      ...item,
+      variantId: "550e8400-e29b-41d4-a716-446655440023",
+      sku: "TEE-BASIC-L-WHITE",
+      size: "L",
+      color: "白色",
+      tryOnSilhouetteUrl:
+        "/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
+    };
+    useCatalogStore().applySnapshot({
+      items: [silhouettedVariant],
+      source: "local_stock",
+      planogramVersion: "PLAN-1",
+      lastUpdatedAt: "2026-06-04T00:00:00Z",
+    });
+    applyTryOnCameraConfig("try-on-camera-1");
+    const { stream } = makeMediaStream();
+    const media = installMediaDevicesMock(vi.fn().mockResolvedValue(stream));
+    routeParams.catalogKey = item.catalogKey;
+    routeQuery.variantId = silhouettedVariant.variantId;
+    const fetchSpy = spyEgressMethod(globalThis, "fetch", () =>
+      Promise.resolve(new Response(null)),
+    );
+    const sendBeaconSpy = spyEgressMethod(navigator, "sendBeacon", () => false);
+    const xhrSpy = stubEgressConstructor("XMLHttpRequest");
+    const webSocketSpy = stubEgressConstructor("WebSocket");
+    const mediaRecorderSpy = stubEgressConstructor("MediaRecorder");
+    const imageCaptureSpy = stubEgressConstructor("ImageCapture");
+    const tauriInvokeSpy = vi.fn();
+    const tauriCoreInvokeSpy = vi.fn();
+    replaceTestProperty(globalThis, "__TAURI_INTERNALS__", {
+      invoke: tauriInvokeSpy,
+    });
+    replaceTestProperty(globalThis, "__TAURI__", {
+      core: { invoke: tauriCoreInvokeSpy },
+    });
+    const storageSetSpy = vi.spyOn(Storage.prototype, "setItem");
+    const canvasToDataUrlSpy = vi
+      .spyOn(HTMLCanvasElement.prototype, "toDataURL")
+      .mockReturnValue("data:,");
+    const canvasToBlobSpy = vi
+      .spyOn(HTMLCanvasElement.prototype, "toBlob")
+      .mockImplementation(() => undefined);
+    const consoleLogSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const consoleInfoSpy = vi
+      .spyOn(console, "info")
+      .mockImplementation(() => {});
+    const consoleWarnSpy = vi
+      .spyOn(console, "warn")
+      .mockImplementation(() => {});
+    const consoleErrorSpy = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+
+    await mountView(VirtualTryOnView);
+
+    await vi.waitFor(() => {
+      expect(media.getUserMedia).toHaveBeenCalledWith({
+        audio: false,
+        video: { deviceId: { exact: "try-on-camera-1" } },
+      });
+    });
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(sendBeaconSpy).not.toHaveBeenCalled();
+    expect(xhrSpy).not.toHaveBeenCalled();
+    expect(webSocketSpy).not.toHaveBeenCalled();
+    expect(mediaRecorderSpy).not.toHaveBeenCalled();
+    expect(imageCaptureSpy).not.toHaveBeenCalled();
+    expect(tauriInvokeSpy).not.toHaveBeenCalled();
+    expect(tauriCoreInvokeSpy).not.toHaveBeenCalled();
+    expect(storageSetSpy).not.toHaveBeenCalled();
+    expect(canvasToDataUrlSpy).not.toHaveBeenCalled();
+    expect(canvasToBlobSpy).not.toHaveBeenCalled();
+    expect(consoleLogSpy).not.toHaveBeenCalled();
+    expect(consoleInfoSpy).not.toHaveBeenCalled();
+    expect(consoleWarnSpy).not.toHaveBeenCalled();
+    expect(consoleErrorSpy).not.toHaveBeenCalled();
+  });
+
+  it("does not subscribe to vision profiles or require them for virtual try-on", async () => {
+    const item = makeCatalogItem();
+    const silhouettedVariant: MachineCatalogItem = {
+      ...item,
+      variantId: "550e8400-e29b-41d4-a716-446655440023",
+      sku: "TEE-BASIC-L-WHITE",
+      size: "L",
+      color: "白色",
+      tryOnSilhouetteUrl:
+        "/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
+    };
+    useCatalogStore().applySnapshot({
+      items: [silhouettedVariant],
+      source: "local_stock",
+      planogramVersion: "PLAN-1",
+      lastUpdatedAt: "2026-06-04T00:00:00Z",
+    });
+    applyTryOnCameraConfig("try-on-camera-1");
+    applySensitiveVisionProfile();
+    const { stream } = makeMediaStream();
+    const media = installMediaDevicesMock(vi.fn().mockResolvedValue(stream));
+    routeParams.catalogKey = item.catalogKey;
+    routeQuery.variantId = silhouettedVariant.variantId;
+
+    const host = await mountView(VirtualTryOnView);
+
+    await vi.waitFor(() => {
+      expect(media.getUserMedia).toHaveBeenCalledWith({
+        audio: false,
+        video: { deviceId: { exact: "try-on-camera-1" } },
+      });
+    });
+    expect(subscribeVisionProfilesMock).not.toHaveBeenCalled();
+    expect(host.querySelector<HTMLVideoElement>('[data-test="try-on-video"]'))
+      .toBeTruthy();
+    expectRecognitionDetailsHidden(host);
+  });
+
   it("does not fall back to a default camera when try-on camera config is missing", async () => {
     const item = makeCatalogItem();
     const tryOnSilhouetteUrl =
@@ -1066,6 +1243,184 @@ describe("sale readiness UI flow", () => {
     expect(host.querySelector('[data-test="try-on-error"]')?.textContent).toContain(
       "维护人员检查摄像头配置与调试",
     );
+  });
+
+  it("keeps product detail and checkout usable after try-on camera failure without sending frame data", async () => {
+    const item = makeCatalogItem();
+    const silhouettedVariant: MachineCatalogItem = {
+      ...item,
+      variantId: "550e8400-e29b-41d4-a716-446655440023",
+      sku: "TEE-BASIC-L-WHITE",
+      size: "L",
+      color: "白色",
+      tryOnSilhouetteUrl:
+        "/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
+    };
+    const saleView = {
+      items: [silhouettedVariant],
+      source: "local_stock" as const,
+      planogramVersion: "PLAN-1",
+      lastUpdatedAt: "2026-06-04T00:00:00Z",
+    };
+    useCatalogStore().applySnapshot(saleView);
+    useConnectivityStore().applyHealth(healthSnapshot());
+    useConnectivityStore().applyReady(readySnapshot());
+    useConnectivityStore().applySaleReadiness(saleReadiness(true));
+    getSaleViewMock.mockResolvedValue(saleView);
+    applySensitiveVisionProfile();
+    applyTryOnCameraConfig("missing-camera");
+    const media = installMediaDevicesMock(
+      vi.fn().mockRejectedValue(new DOMException("missing", "NotFoundError")),
+    );
+    routeParams.catalogKey = item.catalogKey;
+    routeQuery.variantId = silhouettedVariant.variantId;
+
+    let host = await mountView(VirtualTryOnView);
+
+    await vi.waitFor(() => {
+      expect(media.getUserMedia).toHaveBeenCalledTimes(1);
+    });
+    expect(host.querySelector('[data-test="try-on-error"]')?.textContent).toContain(
+      "维护人员检查摄像头配置与调试",
+    );
+
+    unmountMountedView();
+
+    routeParams.catalogKey = item.catalogKey;
+    routeQuery.variantId = silhouettedVariant.variantId;
+    host = await mountView(ProductDetailView);
+
+    const buyButton = Array.from(host.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("立即购买"),
+    );
+    expect(buyButton).toBeTruthy();
+    expect(buyButton?.disabled).toBe(false);
+    buyButton?.click();
+    await nextTick();
+
+    expect(routerPushMock).toHaveBeenCalledWith("/checkout");
+    expect(useCheckoutStore().selectedItem?.variantId).toBe(
+      silhouettedVariant.variantId,
+    );
+
+    unmountMountedView();
+
+    host = await mountView(CheckoutView);
+    await vi.waitFor(() => {
+      expect(useCheckoutStore().selectedPaymentOptionKey).toBe("mock:mock");
+    });
+
+    const submitButton = Array.from(host.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("确认并生成支付二维码"),
+    );
+    expect(submitButton).toBeTruthy();
+    expect(submitButton?.disabled).toBe(false);
+    submitButton?.click();
+
+    await vi.waitFor(() => {
+      expect(createOrderMock).toHaveBeenCalledOnce();
+    });
+    expect(createOrderMock).toHaveBeenCalledWith({
+      inventoryId: silhouettedVariant.inventoryId,
+      quantity: 1,
+      planogramVersion: "PLAN-1",
+      slotId: silhouettedVariant.slotId,
+      slotCode: silhouettedVariant.slotCode,
+      paymentMethod: "mock",
+      paymentProviderCode: "mock",
+      profileSnapshot: null,
+    });
+    expect(JSON.stringify(createOrderMock.mock.calls)).not.toMatch(
+      /frame|image|raw|canvas|dataUrl|blob|base64|diagnostic|vision/i,
+    );
+    expect(media.getUserMedia).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps product detail and checkout usable when try-on camera config is missing", async () => {
+    const item = makeCatalogItem();
+    const silhouettedVariant: MachineCatalogItem = {
+      ...item,
+      variantId: "550e8400-e29b-41d4-a716-446655440023",
+      sku: "TEE-BASIC-L-WHITE",
+      size: "L",
+      color: "白色",
+      tryOnSilhouetteUrl:
+        "/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
+    };
+    const saleView = {
+      items: [silhouettedVariant],
+      source: "local_stock" as const,
+      planogramVersion: "PLAN-1",
+      lastUpdatedAt: "2026-06-04T00:00:00Z",
+    };
+    useCatalogStore().applySnapshot(saleView);
+    useConnectivityStore().applyHealth(healthSnapshot());
+    useConnectivityStore().applyReady(readySnapshot());
+    useConnectivityStore().applySaleReadiness(saleReadiness(true));
+    getSaleViewMock.mockResolvedValue(saleView);
+    applySensitiveVisionProfile();
+    applyTryOnCameraConfig(null);
+    const media = installMediaDevicesMock();
+    routeParams.catalogKey = item.catalogKey;
+    routeQuery.variantId = silhouettedVariant.variantId;
+
+    let host = await mountView(VirtualTryOnView);
+
+    expect(media.getUserMedia).not.toHaveBeenCalled();
+    expect(host.querySelector('[data-test="try-on-error"]')?.textContent).toContain(
+      "维护人员检查摄像头配置与调试",
+    );
+
+    unmountMountedView();
+
+    routeParams.catalogKey = item.catalogKey;
+    routeQuery.variantId = silhouettedVariant.variantId;
+    host = await mountView(ProductDetailView);
+
+    const buyButton = Array.from(host.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("立即购买"),
+    );
+    expect(buyButton).toBeTruthy();
+    expect(buyButton?.disabled).toBe(false);
+    buyButton?.click();
+    await nextTick();
+
+    expect(routerPushMock).toHaveBeenCalledWith("/checkout");
+    expect(useCheckoutStore().selectedItem?.variantId).toBe(
+      silhouettedVariant.variantId,
+    );
+
+    unmountMountedView();
+
+    host = await mountView(CheckoutView);
+    await vi.waitFor(() => {
+      expect(useCheckoutStore().selectedPaymentOptionKey).toBe("mock:mock");
+    });
+
+    const submitButton = Array.from(host.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("确认并生成支付二维码"),
+    );
+    expect(submitButton).toBeTruthy();
+    expect(submitButton?.disabled).toBe(false);
+    submitButton?.click();
+
+    await vi.waitFor(() => {
+      expect(createOrderMock).toHaveBeenCalledOnce();
+    });
+    expect(createOrderMock).toHaveBeenCalledWith({
+      inventoryId: silhouettedVariant.inventoryId,
+      quantity: 1,
+      planogramVersion: "PLAN-1",
+      slotId: silhouettedVariant.slotId,
+      slotCode: silhouettedVariant.slotCode,
+      paymentMethod: "mock",
+      paymentProviderCode: "mock",
+      profileSnapshot: null,
+    });
+    expect(JSON.stringify(createOrderMock.mock.calls)).not.toMatch(
+      /frame|image|raw|canvas|dataUrl|blob|base64|diagnostic|vision/i,
+    );
+    expectRecognitionDetailsHidden(host);
   });
 
   it("stops try-on media tracks immediately when leaving the view", async () => {
