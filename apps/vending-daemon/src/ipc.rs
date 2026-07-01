@@ -44,6 +44,14 @@ struct ClearWholeMachineMaintenanceLockRequest {
     operator_note: String,
 }
 
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalEnvironmentControlRequest {
+    air_conditioner_on: Option<bool>,
+    target_temperature_celsius: Option<i8>,
+    timeout_seconds: Option<u64>,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct VisionStatusSnapshot {
@@ -204,6 +212,7 @@ pub fn build_router(ctx: IpcContext) -> Router {
         .route("/v1/transactions/current", get(current_transaction))
         .route("/v1/transactions/:order_no", get(transaction_by_order_no))
         .route("/v1/hardware/self-check", post(hardware_self_check))
+        .route("/v1/environment/control", post(control_environment))
         .route(
             "/v1/hardware/fault-injection/next-dispense",
             post(schedule_next_dispense_fault_injection),
@@ -2751,6 +2760,98 @@ async fn run_hardware_self_check(
     Ok((status, config_updated))
 }
 
+async fn control_environment(
+    State(ctx): State<IpcContext>,
+    headers: HeaderMap,
+    Json(request): Json<LocalEnvironmentControlRequest>,
+) -> impl IntoResponse {
+    if let Err((status, error)) = require_token(&headers, &ctx.token).await {
+        return (status, error).into_response();
+    }
+
+    if request.air_conditioner_on.is_none() && request.target_temperature_celsius.is_none() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorMessage {
+                code: "invalid_environment_control_request",
+                message: "At least one of airConditionerOn or targetTemperatureCelsius is required"
+                    .to_string(),
+            }),
+        )
+            .into_response();
+    }
+
+    if let Some(timeout_seconds) = request.timeout_seconds {
+        if timeout_seconds == 0 {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorMessage {
+                    code: "invalid_environment_control_request",
+                    message: "timeoutSeconds must be positive".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    }
+
+    if let Some(target) = request.target_temperature_celsius {
+        if !(18..=30).contains(&target) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorMessage {
+                    code: "invalid_environment_control_request",
+                    message: "targetTemperatureCelsius must be between 18 and 30".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    }
+
+    let command_no = format!("local-env-{}", uuid::Uuid::new_v4());
+    let mut confirmed_target = None;
+    let mut confirmed_switch = None;
+    let mut failure = None;
+
+    if let Some(target) = request.target_temperature_celsius {
+        match ctx.hardware.set_target_temperature(target).await {
+            Ok(()) => confirmed_target = Some(target),
+            Err(error) => failure = Some(("target_temperature_failed".to_string(), error)),
+        }
+    }
+
+    if failure.is_none() {
+        if let Some(enabled) = request.air_conditioner_on {
+            match ctx.hardware.set_air_conditioner_enabled(enabled).await {
+                Ok(()) => confirmed_switch = Some(enabled),
+                Err(error) => failure = Some(("air_conditioner_switch_failed".to_string(), error)),
+            }
+        }
+    }
+
+    let result = match failure {
+        Some((error_code, message)) => vending_core::hardware::EnvironmentControlResultPayload {
+            command_no,
+            success: false,
+            error_code: Some(error_code),
+            message: Some(message),
+            air_conditioner_on: confirmed_switch,
+            target_temperature_celsius: confirmed_target,
+            reported_at: crate::state::store::now_iso(),
+        },
+        None => vending_core::hardware::EnvironmentControlResultPayload {
+            command_no,
+            success: true,
+            error_code: None,
+            message: Some("environment control completed".to_string()),
+            air_conditioner_on: confirmed_switch,
+            target_temperature_celsius: confirmed_target,
+            reported_at: crate::state::store::now_iso(),
+        },
+    };
+
+    Json(result).into_response()
+}
+
 fn hardware_fault_injection_enabled() -> bool {
     std::env::var("VEM_ENABLE_HARDWARE_FAULT_INJECTION")
         .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
@@ -3230,6 +3331,48 @@ mod tests {
         .await;
 
         assert_eq!(status, StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn local_environment_control_endpoint_controls_air_conditioner() {
+        let temp = tempdir().expect("temp");
+        let ctx =
+            test_ipc_context(temp.path(), "token-1", Some("M1".to_string()), "http://api").await;
+        let app = build_router(ctx);
+
+        let response = post_json(
+            &app,
+            "/v1/environment/control",
+            "token-1",
+            json!({
+                "airConditionerOn": true,
+                "targetTemperatureCelsius": 24,
+                "timeoutSeconds": 5
+            }),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        let payload: serde_json::Value = serde_json::from_slice(&body).expect("json");
+        assert_eq!(payload["success"], true);
+        assert_eq!(payload["airConditionerOn"], true);
+        assert_eq!(payload["targetTemperatureCelsius"], 24);
+        assert_eq!(payload["message"], "environment control completed");
+    }
+
+    #[tokio::test]
+    async fn local_environment_control_endpoint_rejects_empty_request() {
+        let temp = tempdir().expect("temp");
+        let ctx =
+            test_ipc_context(temp.path(), "token-1", Some("M1".to_string()), "http://api").await;
+        let app = build_router(ctx);
+
+        let response = post_json(&app, "/v1/environment/control", "token-1", json!({})).await;
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
     struct FixedDiskPressureProbe {

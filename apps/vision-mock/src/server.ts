@@ -93,6 +93,10 @@ function createResultMessage(): VisionServerMessage {
     payload: {
       eventId: messageId("event"),
       detectedAt,
+      occupancy: {
+        state: "single",
+        confidence: 0.88,
+      },
       profile: {
         personPresent: true,
         heightCm: 172,
@@ -106,6 +110,7 @@ function createResultMessage(): VisionServerMessage {
       quality: {
         overall: "fair",
         warnings: [],
+        profileUsable: true,
         sampleCount: 1,
         validFrameCount: 1,
       },
@@ -125,6 +130,10 @@ function createPresenceMessage(
     detectedAt,
     reason: personPresent ? "person_present_but_not_close" : "no_person",
     personPresent,
+    occupancy: {
+      state: personPresent ? "single" : "none",
+      confidence: 0.86,
+    },
     closeNow: false,
     close: false,
     closeTrigger: null,

@@ -8,6 +8,7 @@ import {
   configSummarySchema,
   daemonEventSchema,
   hardwareSelfCheckSchema,
+  environmentControlResultSchema,
   healthSnapshotSchema,
   machinePaymentOptionsResponseSchema,
   machineSaleReadinessSchema,
@@ -25,6 +26,7 @@ import {
   type DaemonEvent,
   type HealthSnapshot,
   type HardwareSelfCheck,
+  type EnvironmentControlResult,
   type MachineSaleReadiness,
   type NaturalContextSnapshot,
   type ProvisioningClaimResponse,
@@ -296,6 +298,15 @@ export class DaemonApiClient {
   async runHardwareSelfCheck(): Promise<HardwareSelfCheck> {
     return hardwareSelfCheckSchema.parse(
       await this.request("/v1/hardware/self-check", { method: "POST" }),
+    );
+  }
+
+  async controlEnvironment(body: unknown): Promise<EnvironmentControlResult> {
+    return environmentControlResultSchema.parse(
+      await this.request("/v1/environment/control", {
+        method: "POST",
+        body,
+      }),
     );
   }
 

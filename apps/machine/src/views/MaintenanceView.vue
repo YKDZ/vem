@@ -1101,6 +1101,9 @@ async function submitStockMovement(): Promise<void> {
             <dt class="text-sm text-slate-400">Presence Interaction</dt>
             <dd class="mt-1 font-bold text-white">
               {{ visionStore.presence.personPresent ? "有人" : "无人" }} ·
+              {{ visionStore.presence.occupancyState }} · profile
+              {{ visionStore.presence.profileUsable ? "usable" : "unusable" }}
+              ·
               {{ visionStore.presence.lastSeenAt ?? "not seen" }}
             </dd>
           </div>

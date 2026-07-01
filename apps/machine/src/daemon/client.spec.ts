@@ -242,6 +242,49 @@ describe("DaemonApiClient", () => {
     });
   });
 
+  it("controls machine environment through daemon IPC", async () => {
+    vi.mocked(getDaemonConnectionInfo).mockResolvedValue({
+      baseUrl: "http://127.0.0.1:7891",
+      token: "token-1",
+      source: "browser_env",
+      mock: true,
+    });
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          commandNo: "local-env-1",
+          success: true,
+          errorCode: null,
+          message: "environment control completed",
+          airConditionerOn: true,
+          targetTemperatureCelsius: 24,
+          reportedAt: "2026-07-01T07:00:00.000Z",
+        }),
+        { status: 200 },
+      ),
+    );
+
+    const result = await daemonClient.controlEnvironment({
+      airConditionerOn: true,
+      targetTemperatureCelsius: 24,
+      timeoutSeconds: 5,
+    });
+
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "http://127.0.0.1:7891/v1/environment/control",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          airConditionerOn: true,
+          targetTemperatureCelsius: 24,
+          timeoutSeconds: 5,
+        }),
+      }),
+    );
+    expect(result.airConditionerOn).toBe(true);
+    expect(result.targetTemperatureCelsius).toBe(24);
+  });
+
   it("surfaces daemon JSON error messages for failed create-order requests", async () => {
     vi.mocked(getDaemonConnectionInfo).mockResolvedValue({
       baseUrl: "http://127.0.0.1:7891",

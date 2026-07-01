@@ -82,6 +82,11 @@ export function useVisionRecommendations(): {
       return;
     }
 
+    if (!visionStore.canUseLatestProfileForRecommendation) {
+      clearCurrentProfile();
+      return;
+    }
+
     if (profile.confidence !== undefined && profile.confidence < 0.5) {
       clearCurrentProfile();
       return;

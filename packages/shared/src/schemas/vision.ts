@@ -25,6 +25,21 @@ export const visionQualityOverallSchema = z.enum([
   "partial",
 ]);
 
+export const visionPresenceOccupancyStateSchema = z.enum([
+  "none",
+  "single",
+  "multiple",
+  "unknown",
+]);
+
+export const visionProfileNotUsableReasonSchema = z.enum([
+  "multiple_people",
+  "no_person",
+  "low_confidence",
+  "insufficient_quality",
+  "unknown",
+]);
+
 export const visionErrorCodeSchema = z.enum([
   "invalid_message",
   "unsupported_version",
@@ -71,14 +86,24 @@ export const visionProfileSchema = z
   })
   .strip();
 
+export const visionPresenceOccupancySchema = z
+  .object({
+    state: visionPresenceOccupancyStateSchema,
+    confidence: z.number().min(0).max(1).optional(),
+  })
+  .loose();
+
 export const visionProfileResultPayloadSchema = z.object({
   eventId: z.string().min(1).max(128),
   detectedAt: z.iso.datetime(),
+  occupancy: visionPresenceOccupancySchema.optional(),
   profile: visionProfileSchema,
   quality: z
     .object({
       overall: visionQualityOverallSchema,
       warnings: z.array(z.string().min(1).max(256)).default([]),
+      profileUsable: z.boolean().optional(),
+      notUsableReason: visionProfileNotUsableReasonSchema.optional(),
     })
     .loose(),
 });
@@ -90,6 +115,7 @@ export const visionPresenceStatusPayloadSchema = z
     state: z.string().min(1).max(64),
     reason: z.string().min(1).max(128).optional(),
     personPresent: z.boolean(),
+    occupancy: visionPresenceOccupancySchema.optional(),
     closeNow: z.boolean().optional(),
     close: z.boolean().optional(),
     closeTrigger: z.string().min(1).max(64).nullable().optional(),
@@ -191,6 +217,15 @@ export type VisionServerMessageType = z.infer<
   typeof visionServerMessageTypeSchema
 >;
 export type VisionErrorCode = z.infer<typeof visionErrorCodeSchema>;
+export type VisionPresenceOccupancyState = z.infer<
+  typeof visionPresenceOccupancyStateSchema
+>;
+export type VisionPresenceOccupancy = z.infer<
+  typeof visionPresenceOccupancySchema
+>;
+export type VisionProfileNotUsableReason = z.infer<
+  typeof visionProfileNotUsableReasonSchema
+>;
 export type VisionProfile = z.infer<typeof visionProfileSchema>;
 export type VisionClientMessage = z.infer<typeof visionClientMessageSchema>;
 export type VisionServerMessage = z.infer<typeof visionServerMessageSchema>;
