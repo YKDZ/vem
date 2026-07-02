@@ -5,9 +5,13 @@ param(
   [switch]$ExpectSimulator,
   [switch]$RequireScannerOnline,
   [switch]$RequireHardwareOnline,
+  [switch]$RequireVisionOnline,
   [switch]$RequireBackendOnline,
   [switch]$RequireMqttConnected,
-  [switch]$RequireCanSell
+  [switch]$RequireCanSell,
+  [string]$VisionTaskName = "VEM\StartVisionServer",
+  [string]$VisionDirectory = "C:\VEM\vision",
+  [string]$VisionLauncher = "C:\VEM\bringup\start_vision.bat"
 )
 
 $ErrorActionPreference = "Stop"
@@ -93,6 +97,38 @@ if ($ExpectSimulator) {
   }
   if ($null -eq $config -or -not ([string]$config.serialPortPath).StartsWith("tcp://")) {
     Add-Failure $failures "ExpectSimulator requires serialPortPath=tcp://..., got: $($config.serialPortPath)"
+  }
+}
+
+$visionTask = Get-ScheduledTask -TaskName "StartVisionServer" -TaskPath "\VEM\" -ErrorAction SilentlyContinue
+$visionLauncherExists = Test-Path -LiteralPath $VisionLauncher
+$visionDirectoryExists = Test-Path -LiteralPath $VisionDirectory
+$visionProcess = Get-CimInstance Win32_Process -Filter "name = 'python.exe' or name = 'pythonw.exe' or name = 'cmd.exe'" -ErrorAction SilentlyContinue |
+  Where-Object { $_.CommandLine -like "*$VisionDirectory*" } |
+  Select-Object -First 1
+$checks.vision = [pscustomobject]@{
+  taskName = $VisionTaskName
+  taskReady = $null -ne $visionTask -and [string]$visionTask.State -ne "Disabled"
+  taskState = if ($null -ne $visionTask) { [string]$visionTask.State } else { $null }
+  launcher = $VisionLauncher
+  launcherExists = $visionLauncherExists
+  directory = $VisionDirectory
+  directoryExists = $visionDirectoryExists
+  processRunning = $null -ne $visionProcess
+  processId = if ($null -ne $visionProcess) { $visionProcess.ProcessId } else { $null }
+}
+if ($RequireVisionOnline) {
+  if ($null -eq $visionTask -or [string]$visionTask.State -eq "Disabled") {
+    Add-Failure $failures "vision task is not ready: $VisionTaskName"
+  }
+  if (-not $visionLauncherExists) {
+    Add-Failure $failures "vision launcher not found: $VisionLauncher"
+  }
+  if (-not $visionDirectoryExists) {
+    Add-Failure $failures "vision directory not found: $VisionDirectory"
+  }
+  if ($null -eq $visionProcess) {
+    Add-Failure $failures "vision process is not running from $VisionDirectory"
   }
 }
 

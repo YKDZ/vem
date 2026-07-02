@@ -4,6 +4,7 @@
   "scripts": {
     "check": "tsx node_modules/oxfmt/dist/cli.js . --check && cargo fmt --all -- --check && turbo typecheck lint test",
     "check:fix": "tsx node_modules/oxfmt/dist/cli.js . && cargo fmt --all && turbo lint -- --fix && turbo typecheck test",
+    "check:machine-vision-deployment": "node scripts/check-machine-vision-deployment.mjs",
     "check:managed-update": "node scripts/check-managed-machine-update.mjs",
     "fmt": "tsx node_modules/oxfmt/dist/cli.js . && cargo fmt --all",
     "fmt:check": "tsx node_modules/oxfmt/dist/cli.js . --check && cargo fmt --all -- --check",

@@ -55,6 +55,7 @@ type DisplayProduct = {
   sizeLabel: string;
   price: string;
   image: string;
+  hasProductImage: boolean;
   item: MachineCatalogItem;
 };
 
@@ -276,6 +277,7 @@ function toDisplayProduct(
     sizeLabel: sizeLabel || item.size || "常规码",
     price: formatCents(item.priceCents),
     image: item.coverImageUrl || fallbackImageForCategory(categoryKey),
+    hasProductImage: Boolean(item.coverImageUrl),
     item,
   };
 }
@@ -608,7 +610,13 @@ onUnmounted(() => {
                 @click="openProductDetail(product)"
               >
                 <div class="product-image-panel">
-                  <img :src="product.image" :alt="product.name" />
+                  <img
+                    :src="product.image"
+                    :alt="product.name"
+                    :class="{
+                      'product-image-fallback': !product.hasProductImage,
+                    }"
+                  />
                   <span class="product-bamboo" aria-hidden="true"></span>
                 </div>
                 <div class="mt-5">
@@ -957,7 +965,8 @@ onUnmounted(() => {
 .product-image-panel {
   position: relative;
   display: grid;
-  height: 9.2rem;
+  aspect-ratio: 1 / 1;
+  height: auto;
   overflow: hidden;
   place-items: center;
   border-radius: 18px;
@@ -965,12 +974,23 @@ onUnmounted(() => {
 }
 
 .product-image-panel img {
-  position: relative;
+  position: absolute;
+  inset: 0;
   z-index: 2;
-  width: 6rem;
-  height: 6rem;
-  object-fit: contain;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center center;
   filter: drop-shadow(0 16px 16px rgba(81, 70, 51, 0.12));
+}
+
+.product-image-panel img.product-image-fallback {
+  top: 50%;
+  left: 50%;
+  width: 72%;
+  height: 72%;
+  object-fit: contain;
+  transform: translate(-50%, -50%);
 }
 
 .product-bamboo {
@@ -1138,12 +1158,18 @@ onUnmounted(() => {
   }
 
   .product-image-panel {
-    height: 86px;
+    aspect-ratio: 1 / 1;
+    height: auto;
   }
 
   .product-image-panel img {
-    width: 58px;
-    height: 58px;
+    width: 100%;
+    height: 100%;
+  }
+
+  .product-image-panel img.product-image-fallback {
+    width: 72%;
+    height: 72%;
   }
 
   .display-product-card h3 {

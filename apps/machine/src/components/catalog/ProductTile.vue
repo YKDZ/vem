@@ -55,7 +55,7 @@ const priceText = computed(() => {
     >
       <img
         v-if="item.coverImageUrl"
-        class="h-full w-full object-cover"
+        class="h-full w-full object-cover object-center"
         :src="item.coverImageUrl"
         :alt="item.productName"
       />
