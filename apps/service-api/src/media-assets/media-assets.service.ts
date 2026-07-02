@@ -48,7 +48,7 @@ type MediaAssetsConfig = Pick<
 export class MediaAssetsService {
   constructor(
     @Inject(DRIZZLE_CLIENT) private readonly db: DrizzleClient,
-    private readonly config: MediaAssetsConfig,
+    @Inject(AppConfigService) private readonly config: MediaAssetsConfig,
   ) {}
 
   async storeProductDisplayImage(file: UploadedImage | undefined) {
