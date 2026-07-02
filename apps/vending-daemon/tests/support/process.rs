@@ -73,6 +73,7 @@ impl DaemonHarness {
             .arg("--print-ready-file")
             .arg(&ready_file)
             .env("VEM_DAEMON_SECRET_STORE", "env")
+            .env("VEM_DISK_PRESSURE_MIN_AVAILABLE_BYTES", "0")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         for (key, value) in extra_env {

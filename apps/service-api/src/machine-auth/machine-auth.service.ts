@@ -21,8 +21,11 @@ export type MachineJwtPayload = {
 export class MachineAuthService {
   constructor(
     @Inject(DRIZZLE_CLIENT) private readonly db: DrizzleClient,
+    @Inject(JwtService)
     private readonly jwtService: JwtService,
+    @Inject(AppConfigService)
     private readonly config: AppConfigService,
+    @Inject(MachineCredentialService)
     private readonly machineCredentialService: MachineCredentialService,
   ) {}
 

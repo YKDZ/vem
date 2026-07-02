@@ -1,9 +1,13 @@
 <script setup lang="ts">
 import { formatMachineSlotCoordinate } from "@vem/shared";
-import { computed, onMounted, onUnmounted, reactive } from "vue";
+import { computed, onMounted, onUnmounted, reactive, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
+import listSloganImage from "@/assets/home/list-slogan.png";
+import logoImage from "@/assets/home/logo.png";
+import mascotTopImage from "@/assets/home/mascot-top-cutout.png";
 import MockHardwareControls from "@/components/MockHardwareControls.vue";
+import { useMaintenanceEntry } from "@/composables/useMaintenanceEntry";
 import {
   machineConfigDefaults,
   normalizeMachineConfig,
@@ -15,10 +19,12 @@ import { shouldShowAdvancedMaintenanceConfig } from "@/config/runtime-flags";
 import { daemonClient } from "@/daemon/client";
 import KioskLayout from "@/layouts/KioskLayout.vue";
 import { callTauriCommand, isTauriRuntime } from "@/native/tauri";
+import { useAudioCueStore } from "@/stores/audio-cues";
 import { useCatalogStore } from "@/stores/catalog";
 import { useConnectivityStore } from "@/stores/connectivity";
 import { useMachineStore } from "@/stores/machine";
 import { useMqttStore } from "@/stores/mqtt";
+import { useNaturalContextStore } from "@/stores/natural-context";
 import { useRemoteOpsStore } from "@/stores/remote-ops";
 import { useScannerStore } from "@/stores/scanner";
 import { useVisionStore } from "@/stores/vision";
@@ -26,13 +32,21 @@ import { useVisionStore } from "@/stores/vision";
 const router = useRouter();
 const route = useRoute();
 const catalogStore = useCatalogStore();
+const audioCueStore = useAudioCueStore();
 const connectivityStore = useConnectivityStore();
 const machineStore = useMachineStore();
 const mqttStore = useMqttStore();
+const naturalContextStore = useNaturalContextStore();
 const remoteOpsStore = useRemoteOpsStore();
 const scannerStore = useScannerStore();
 const visionStore = useVisionStore();
+const { handleMaintenanceTap } = useMaintenanceEntry();
 const MAINTENANCE_DIAGNOSTIC_REFRESH_MS = 5000;
+const DIAGNOSTIC_DISPLAY_MAX_CHARS = 12_000;
+const DIAGNOSTIC_DISPLAY_MAX_DEPTH = 8;
+const DIAGNOSTIC_DISPLAY_MAX_OBJECT_ENTRIES = 80;
+const DIAGNOSTIC_DISPLAY_MAX_ARRAY_ITEMS = 40;
+const DIAGNOSTIC_DISPLAY_MAX_STRING_CHARS = 1000;
 let diagnosticsRefreshTimer: number | null = null;
 let diagnosticsRefreshInFlight: Promise<void> | null = null;
 const runtimeFlags = reactive({
@@ -41,11 +55,83 @@ const runtimeFlags = reactive({
 const showAdvancedDebugConfig = computed(
   () => runtimeFlags.advancedMaintenanceConfig,
 );
+const showProtectedDesktopExit = computed(
+  () => runtimeFlags.advancedMaintenanceConfig,
+);
 const wholeMachineMaintenanceLock = computed(
   () =>
     connectivityStore.ready?.blockingReasons.find(
       (reason) => reason.code === "WHOLE_MACHINE_HARDWARE_FAULT",
     ) ?? null,
+);
+const saleCriticalBlockers = computed(() =>
+  (connectivityStore.ready?.blockingReasons ?? []).map((reason) => ({
+    ...reason,
+    operatorLabel: saleCriticalBlockerLabel(reason.code),
+    operatorAction: saleCriticalBlockerAction(reason.code),
+  })),
+);
+const latestVisionDiagnosticPayloadText = computed(() => {
+  if (visionStore.latestDiagnosticPayload === null) {
+    return "No diagnostic payload returned yet.";
+  }
+  return serializeDiagnosticPayload(visionStore.latestDiagnosticPayload);
+});
+const audioCueSettingsRows = computed(() => [
+  {
+    label: "Global audio cues",
+    enabled: machineStore.config.audioCueSettings.enabled,
+  },
+  {
+    label: "Presence audio cues",
+    enabled: machineStore.config.audioCueSettings.categories.presence,
+  },
+  {
+    label: "Transaction audio cues",
+    enabled: machineStore.config.audioCueSettings.categories.transaction,
+  },
+]);
+const latestAudioCueDiagnosticRows = computed(() => {
+  const diagnostic = audioCueStore.latestPlaybackDiagnostic;
+  if (!diagnostic) return [];
+  return [
+    {
+      label: "Requested cue meaning",
+      value: audioCueMeaningLabel(diagnostic.cueKey),
+    },
+    {
+      label: "Category",
+      value: audioCueCategoryLabel(diagnostic.category),
+    },
+    {
+      label: "Playback outcome",
+      value: audioCueOutcomeLabel(diagnostic.outcome),
+    },
+    {
+      label: "Suppression/drop reason",
+      value: diagnostic.message ?? "none",
+    },
+    {
+      label: "Timestamp",
+      value: diagnostic.recordedAt,
+    },
+    {
+      label: "Duplicate-suppression order key (debug only)",
+      value: diagnostic.orderKey ?? "none",
+    },
+  ];
+});
+const naturalContextDiagnosticMessage = computed(() =>
+  naturalContextStore.snapshot?.degraded || naturalContextStore.error
+    ? naturalContextStore.operatorMessage
+    : null,
+);
+const clearWholeMachineLockDisabled = computed(
+  () =>
+    wholeMachineLockMaintenance.loading ||
+    !wholeMachineMaintenanceLock.value ||
+    !wholeMachineLockMaintenance.selfCheckEvidence?.online ||
+    wholeMachineLockMaintenance.operatorNote.trim().length === 0,
 );
 const returnToCatalogBlockedReason = computed(() => {
   if (connectivityStore.ready?.canSell === true) {
@@ -67,6 +153,13 @@ const operatorEnteredMaintenance = computed(() => {
     : source === "operator";
 });
 
+type TryOnCameraDeviceOption = {
+  deviceId: string;
+  label: string;
+};
+
+type TryOnCameraLoadingReason = "devices" | "preview";
+
 function cloneLowerControllerUsbIdentity(
   identity: MachineConfig["lowerControllerUsbIdentity"],
 ) {
@@ -81,6 +174,7 @@ function cloneLowerControllerUsbIdentity(
 
 const form = reactive({
   machineCode: machineConfigDefaults.machineCode,
+  machineLocationLabel: machineConfigDefaults.machineLocationLabel,
   apiBaseUrl: machineConfigDefaults.apiBaseUrl,
   mqttUrl: machineConfigDefaults.mqttUrl,
   mqttUsername: machineConfigDefaults.mqttUsername,
@@ -96,14 +190,51 @@ const form = reactive({
   visionEnabled: machineConfigDefaults.visionEnabled,
   visionWsUrl: machineConfigDefaults.visionWsUrl,
   visionRequestTimeoutMs: machineConfigDefaults.visionRequestTimeoutMs,
+  tryOnCameraDeviceId: machineConfigDefaults.tryOnCameraDeviceId,
+  audioCueSettings: {
+    enabled: machineConfigDefaults.audioCueSettings.enabled,
+    categories: {
+      presence: machineConfigDefaults.audioCueSettings.categories.presence,
+      transaction:
+        machineConfigDefaults.audioCueSettings.categories.transaction,
+    },
+  },
   kioskMode: machineConfigDefaults.kioskMode,
   machineSecretInput: "",
   mqttSigningSecretInput: "",
   mqttPasswordInput: "",
 });
 
+const tryOnCameraPreviewVideo = ref<HTMLVideoElement | null>(null);
+const tryOnCamera = reactive({
+  loading: false,
+  previewing: false,
+  message: null as string | null,
+  devices: [] as TryOnCameraDeviceOption[],
+  previewStream: null as MediaStream | null,
+});
+let maintenanceViewMounted = false;
+let tryOnCameraPreviewRequestSequence = 0;
+let tryOnCameraLoadingReason: TryOnCameraLoadingReason | null = null;
+
+const tryOnCameraOptions = computed(() => {
+  const options = [...tryOnCamera.devices];
+  const selectedDeviceId = form.tryOnCameraDeviceId;
+  if (
+    selectedDeviceId &&
+    !options.some((device) => device.deviceId === selectedDeviceId)
+  ) {
+    options.unshift({
+      deviceId: selectedDeviceId,
+      label: `Saved camera not currently available (${selectedDeviceId})`,
+    });
+  }
+  return options;
+});
+
 function syncFormFromStore(): void {
   form.machineCode = machineStore.config.machineCode;
+  form.machineLocationLabel = machineStore.config.machineLocationLabel;
   form.apiBaseUrl = machineStore.config.apiBaseUrl;
   form.mqttUrl = machineStore.config.mqttUrl;
   form.mqttUsername = machineStore.config.mqttUsername;
@@ -119,10 +250,151 @@ function syncFormFromStore(): void {
   form.visionEnabled = machineStore.config.visionEnabled;
   form.visionWsUrl = machineStore.config.visionWsUrl;
   form.visionRequestTimeoutMs = machineStore.config.visionRequestTimeoutMs;
+  form.tryOnCameraDeviceId = machineStore.config.tryOnCameraDeviceId;
+  form.audioCueSettings = {
+    enabled: machineStore.config.audioCueSettings.enabled,
+    categories: {
+      presence: machineStore.config.audioCueSettings.categories.presence,
+      transaction: machineStore.config.audioCueSettings.categories.transaction,
+    },
+  };
   form.kioskMode = machineStore.config.kioskMode;
 }
 
+type DiagnosticSerializationState = {
+  remainingChars: number;
+  truncated: boolean;
+  seen: WeakSet<object>;
+};
+
+function serializeDiagnosticPayload(value: unknown): string {
+  const state: DiagnosticSerializationState = {
+    remainingChars: DIAGNOSTIC_DISPLAY_MAX_CHARS,
+    truncated: false,
+    seen: new WeakSet<object>(),
+  };
+  const bounded = boundDiagnosticValue(value, state, 0);
+  let text: string;
+  try {
+    text = JSON.stringify(bounded, null, 2);
+  } catch (error) {
+    text = `Unable to serialize diagnostic payload: ${
+      error instanceof Error ? error.message : String(error)
+    }`;
+  }
+  if (text.length > DIAGNOSTIC_DISPLAY_MAX_CHARS) {
+    state.truncated = true;
+    text = `${text.slice(0, DIAGNOSTIC_DISPLAY_MAX_CHARS)}\n... truncated`;
+  }
+  if (state.truncated && !text.includes("truncated")) {
+    text = `${text}\n... truncated`;
+  }
+  return text;
+}
+
+function boundDiagnosticValue(
+  value: unknown,
+  state: DiagnosticSerializationState,
+  depth: number,
+): unknown {
+  if (state.remainingChars <= 0) {
+    state.truncated = true;
+    return "[truncated]";
+  }
+  if (typeof value === "string") {
+    return boundDiagnosticString(value, state);
+  }
+  if (
+    value === null ||
+    typeof value === "boolean" ||
+    typeof value === "number"
+  ) {
+    state.remainingChars -= String(value).length;
+    return value;
+  }
+  if (typeof value === "bigint") {
+    const serialized = `${value.toString()}n`;
+    state.remainingChars -= serialized.length;
+    return serialized;
+  }
+  if (typeof value !== "object") {
+    const serialized = String(value);
+    state.remainingChars -= serialized.length;
+    return serialized;
+  }
+  if (state.seen.has(value)) {
+    state.truncated = true;
+    return "[Circular]";
+  }
+  if (depth >= DIAGNOSTIC_DISPLAY_MAX_DEPTH) {
+    state.truncated = true;
+    return "[Max depth reached]";
+  }
+  state.seen.add(value);
+  if (Array.isArray(value)) {
+    const output: unknown[] = [];
+    for (
+      let index = 0;
+      index < value.length &&
+      index < DIAGNOSTIC_DISPLAY_MAX_ARRAY_ITEMS &&
+      state.remainingChars > 0;
+      index += 1
+    ) {
+      output.push(boundDiagnosticValue(value[index], state, depth + 1));
+    }
+    if (output.length < value.length) {
+      state.truncated = true;
+      output.push(`[... truncated ${value.length - output.length} items]`);
+    }
+    return output;
+  }
+
+  const output: Record<string, unknown> = {};
+  let included = 0;
+  let omitted = 0;
+  for (const key in value) {
+    if (!Object.prototype.hasOwnProperty.call(value, key)) continue;
+    if (
+      included >= DIAGNOSTIC_DISPLAY_MAX_OBJECT_ENTRIES ||
+      state.remainingChars <= 0
+    ) {
+      omitted += 1;
+      continue;
+    }
+    state.remainingChars -= key.length;
+    output[key] = boundDiagnosticValue(
+      (value as Record<string, unknown>)[key],
+      state,
+      depth + 1,
+    );
+    included += 1;
+  }
+  if (omitted > 0) {
+    state.truncated = true;
+    output.__truncated = `${omitted} fields omitted`;
+  }
+  return output;
+}
+
+function boundDiagnosticString(
+  value: string,
+  state: DiagnosticSerializationState,
+): string {
+  const maxLength = Math.min(
+    value.length,
+    DIAGNOSTIC_DISPLAY_MAX_STRING_CHARS,
+    Math.max(state.remainingChars, 0),
+  );
+  state.remainingChars -= maxLength;
+  if (maxLength < value.length) {
+    state.truncated = true;
+    return `${value.slice(0, maxLength)}... truncated`;
+  }
+  return value;
+}
+
 onMounted(async () => {
+  maintenanceViewMounted = true;
   try {
     const connection = await daemonClient.initialize();
     runtimeFlags.advancedMaintenanceConfig =
@@ -154,7 +426,9 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
+  maintenanceViewMounted = false;
   stopDiagnosticsAutoRefresh();
+  stopTryOnCameraPreview();
 });
 
 const diagnostics = reactive({
@@ -176,6 +450,13 @@ const visionMaintenance = reactive({
 const wholeMachineLockMaintenance = reactive({
   loading: false,
   message: null as string | null,
+  operatorNote: "",
+  selfCheckEvidence: null as null | {
+    online: boolean;
+    message: string;
+    portPath?: string | null;
+    checkedAt: string;
+  },
 });
 
 const desktopMaintenance = reactive({
@@ -217,6 +498,150 @@ const scannerAdapters: ScannerAdapter[] = ["disabled", "serial_text"];
 
 const scannerFrameSuffixes = ["crlf", "lf", "cr", "none"] as const;
 
+function setTryOnCameraLoading(reason: TryOnCameraLoadingReason | null): void {
+  tryOnCameraLoadingReason = reason;
+  tryOnCamera.loading = reason !== null;
+}
+
+function stopMediaStreamTracks(stream: MediaStream): void {
+  stream.getTracks().forEach((track) => track.stop());
+}
+
+function shortCameraIdentifier(value: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+  return trimmed.length <= 8 ? trimmed : `...${trimmed.slice(-8)}`;
+}
+
+function formatTryOnCameraDeviceLabel(
+  device: MediaDeviceInfo,
+  index: number,
+): string {
+  const ordinalLabel = `Camera ${index + 1}`;
+  const liveLabel = device.label.trim() || "Unlabeled camera";
+  const identityParts = [
+    ["id", shortCameraIdentifier(device.deviceId)],
+    ["group", shortCameraIdentifier(device.groupId)],
+  ]
+    .filter((item): item is [string, string] => item[1] !== null)
+    .map(([kind, suffix]) => `${kind}: ${suffix}`);
+  const identitySuffix =
+    identityParts.length > 0 ? ` (${identityParts.join(" / ")})` : "";
+
+  return `${ordinalLabel} - ${liveLabel}${identitySuffix}`;
+}
+
+async function refreshTryOnCameraDevices(): Promise<void> {
+  setTryOnCameraLoading("devices");
+  tryOnCamera.message = null;
+  try {
+    if (
+      !navigator.mediaDevices?.getUserMedia ||
+      !navigator.mediaDevices.enumerateDevices
+    ) {
+      tryOnCamera.devices = [];
+      tryOnCamera.message = "当前浏览器不支持摄像头枚举。";
+      return;
+    }
+    const permissionStream = await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: true,
+    });
+    stopMediaStreamTracks(permissionStream);
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    tryOnCamera.devices = devices
+      .filter((device) => device.kind === "videoinput")
+      .map((device, index) => ({
+        deviceId: device.deviceId,
+        label: formatTryOnCameraDeviceLabel(device, index),
+      }));
+    tryOnCamera.message =
+      tryOnCamera.devices.length > 0
+        ? `已读取 ${tryOnCamera.devices.length} 个摄像头。`
+        : "未发现可用摄像头。";
+  } catch (error) {
+    tryOnCamera.message =
+      error instanceof Error ? error.message : String(error);
+  } finally {
+    if (tryOnCameraLoadingReason === "devices") {
+      setTryOnCameraLoading(null);
+    }
+  }
+}
+
+async function previewTryOnCamera(): Promise<void> {
+  stopTryOnCameraPreview();
+  const deviceId = form.tryOnCameraDeviceId;
+  if (!deviceId) {
+    tryOnCamera.message = "请选择 Virtual Try-On Camera 后再预览。";
+    return;
+  }
+  tryOnCameraPreviewRequestSequence += 1;
+  const requestSequence = tryOnCameraPreviewRequestSequence;
+  setTryOnCameraLoading("preview");
+  tryOnCamera.message = null;
+  try {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      tryOnCamera.message = "当前浏览器不支持摄像头预览。";
+      return;
+    }
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: { deviceId: { exact: deviceId } },
+    });
+    if (
+      !maintenanceViewMounted ||
+      requestSequence !== tryOnCameraPreviewRequestSequence ||
+      form.tryOnCameraDeviceId !== deviceId
+    ) {
+      stopMediaStreamTracks(stream);
+      return;
+    }
+    tryOnCamera.previewStream = stream;
+    tryOnCamera.previewing = true;
+    if (tryOnCameraPreviewVideo.value) {
+      tryOnCameraPreviewVideo.value.srcObject = stream;
+    }
+  } catch (error) {
+    if (
+      maintenanceViewMounted &&
+      requestSequence === tryOnCameraPreviewRequestSequence &&
+      form.tryOnCameraDeviceId === deviceId
+    ) {
+      tryOnCamera.message =
+        error instanceof Error ? error.message : String(error);
+    }
+  } finally {
+    if (
+      requestSequence === tryOnCameraPreviewRequestSequence &&
+      tryOnCameraLoadingReason === "preview"
+    ) {
+      setTryOnCameraLoading(null);
+    }
+  }
+}
+
+function stopTryOnCameraPreview(): void {
+  tryOnCameraPreviewRequestSequence += 1;
+  if (tryOnCamera.previewStream) {
+    stopMediaStreamTracks(tryOnCamera.previewStream);
+  }
+  tryOnCamera.previewStream = null;
+  tryOnCamera.previewing = false;
+  if (tryOnCameraLoadingReason === "preview") {
+    setTryOnCameraLoading(null);
+  }
+  if (tryOnCameraPreviewVideo.value) {
+    tryOnCameraPreviewVideo.value.srcObject = null;
+  }
+}
+
+function handleTryOnCameraSelectionChange(): void {
+  stopTryOnCameraPreview();
+}
+
 async function saveAndReboot(): Promise<void> {
   if (!runtimeFlags.advancedMaintenanceConfig) {
     return;
@@ -245,6 +670,12 @@ async function runHardwareCheck(): Promise<void> {
   hardwareMaintenance.message = null;
   try {
     const result = await daemonClient.runHardwareSelfCheck();
+    wholeMachineLockMaintenance.selfCheckEvidence = {
+      online: result.online,
+      message: result.message,
+      portPath: result.portPath,
+      checkedAt: new Date().toISOString(),
+    };
     if (result.configUpdated) {
       await machineStore.loadConfig();
       if (runtimeFlags.advancedMaintenanceConfig) {
@@ -318,6 +749,7 @@ async function runDiagnosticsRefresh(): Promise<void> {
       mqttStore.refresh(),
       scannerStore.refresh(),
       visionStore.refresh(),
+      naturalContextStore.refresh(),
       remoteOpsStore.refresh(),
     ]);
     await returnToCatalogAfterSystemRecovery();
@@ -356,8 +788,11 @@ async function clearWholeMachineLock(): Promise<void> {
   wholeMachineLockMaintenance.loading = true;
   wholeMachineLockMaintenance.message = null;
   try {
-    await daemonClient.clearWholeMachineMaintenanceLock();
+    await daemonClient.clearWholeMachineMaintenanceLock(
+      wholeMachineLockMaintenance.operatorNote,
+    );
     wholeMachineLockMaintenance.message = "整机维护锁已解除";
+    wholeMachineLockMaintenance.operatorNote = "";
     await refreshDiagnostics();
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -371,6 +806,79 @@ async function clearWholeMachineLock(): Promise<void> {
   }
 }
 
+function saleCriticalBlockerLabel(code: string): string {
+  const labels: Record<string, string> = {
+    LOWER_CONTROLLER_UNAVAILABLE: "下位机未在线",
+    WHOLE_MACHINE_HARDWARE_FAULT: "整机维护锁",
+    PRODUCTION_DISPENSE_PATH_EVIDENCE_MISSING: "生产出货路径证据缺失",
+    PRODUCTION_DISPENSE_PATH_MOCK: "当前不是生产出货路径",
+    SYNC_UNHEALTHY: "平台同步异常",
+    ACTIVE_PLANOGRAM_MISSING: "未加载有效货道图",
+    NO_PAYMENT_OPTIONS: "没有可用支付方式",
+    MACHINE_AUTH_MISSING: "机器身份未配置",
+    PLATFORM_UNREACHABLE: "后端不可达",
+    NO_SALEABLE_SLOTS: "没有可售货道",
+  };
+  return labels[code] ?? code;
+}
+
+function saleCriticalBlockerAction(code: string): string {
+  const actions: Record<string, string> = {
+    LOWER_CONTROLLER_UNAVAILABLE:
+      "检查下位机供电、串口线和 COM 口后运行硬件自检。",
+    WHOLE_MACHINE_HARDWARE_FAULT:
+      "处理卡货或机械故障，运行下位机自检，通过后填写处理记录解除整机锁。",
+    PRODUCTION_DISPENSE_PATH_EVIDENCE_MISSING:
+      "核对生产硬件配置和验收资料，确认真实下位机路径。",
+    PRODUCTION_DISPENSE_PATH_MOCK: "切换到生产下位机适配器后再恢复销售。",
+    SYNC_UNHEALTHY: "检查网络、MQTT 和本地队列积压。",
+    ACTIVE_PLANOGRAM_MISSING: "等待后台下发并应用有效货道图。",
+    NO_PAYMENT_OPTIONS: "检查支付配置和扫码器能力。",
+    MACHINE_AUTH_MISSING: "重新完成机器认领或凭证配置。",
+    PLATFORM_UNREACHABLE: "检查网络和后端 API 连通性。",
+    NO_SALEABLE_SLOTS: "补货、盘点或处理货道冻结后恢复可售库存。",
+  };
+  return actions[code] ?? "按现场 SOP 排查该阻塞项。";
+}
+
+function audioCueMeaningLabel(cueKey: string): string {
+  const labels: Record<string, string> = {
+    "presence.detected": "Presence detected",
+    "payment.succeeded": "Payment succeeded",
+    "dispensing.started": "Dispensing started",
+    "dispense.succeeded": "Dispense succeeded",
+    "dispense.failed": "Dispense failed",
+    "refund.pending": "Refund pending",
+    "refund.completed": "Refund completed",
+    "manual_handling.required": "Manual handling required",
+  };
+  return labels[cueKey] ?? cueKey;
+}
+
+function audioCueCategoryLabel(category: string): string {
+  const labels: Record<string, string> = {
+    presence: "Presence audio cue",
+    transaction: "Transaction audio cue",
+  };
+  return labels[category] ?? category;
+}
+
+function audioCueOutcomeLabel(outcome: string): string {
+  const labels: Record<string, string> = {
+    played: "Played",
+    completed: "Completed",
+    failed: "Local audio playback failed",
+    skipped: "Skipped",
+  };
+  return labels[outcome] ?? outcome;
+}
+
+function naturalContextDisplayStatus(): string {
+  const snapshot = naturalContextStore.snapshot;
+  if (!snapshot) return "Unknown";
+  return `${snapshot.degraded ? "Degraded" : "Ready"} · ${snapshot.status}`;
+}
+
 async function returnToCatalog(): Promise<void> {
   if (returnToCatalogBlockedReason.value) {
     catalogNavigation.message = `暂不能回到目录：${returnToCatalogBlockedReason.value}`;
@@ -381,6 +889,9 @@ async function returnToCatalog(): Promise<void> {
 }
 
 async function returnToDesktop(): Promise<void> {
+  if (!showProtectedDesktopExit.value) {
+    return;
+  }
   desktopMaintenance.loading = true;
   desktopMaintenance.message = "正在回到 Windows 桌面";
   try {
@@ -467,13 +978,17 @@ async function submitStockMovement(): Promise<void> {
 
 <template>
   <KioskLayout>
-    <section
-      class="rounded-4xl border border-white/10 bg-white/10 p-6 text-white shadow-2xl"
-    >
-      <p class="text-sm tracking-[0.35em] text-amber-200 uppercase">
-        MAINTENANCE
-      </p>
-      <h2 class="mt-3 text-3xl font-bold">生产维护</h2>
+    <section class="maintenance-page">
+      <header class="maintenance-header">
+        <div class="maintenance-brand" @click="handleMaintenanceTap">
+          <img :src="logoImage" alt="唐诗村" />
+          <img :src="mascotTopImage" alt="" aria-hidden="true" />
+        </div>
+        <div class="maintenance-title-block">
+          <p>MAINTENANCE</p>
+          <h2>生产维护</h2>
+        </div>
+      </header>
 
       <div class="mt-6 rounded-3xl border border-white/10 bg-slate-950/30 p-5">
         <p
@@ -580,7 +1095,7 @@ async function submitStockMovement(): Promise<void> {
           <p
             class="text-sm font-semibold tracking-[0.28em] text-sky-200 uppercase"
           >
-            Diagnostics
+            Maintenance Console
           </p>
           <div class="flex flex-wrap gap-3">
             <button
@@ -592,6 +1107,7 @@ async function submitStockMovement(): Promise<void> {
               回到目录
             </button>
             <button
+              v-if="showProtectedDesktopExit"
               class="kiosk-touch-target rounded-2xl border border-slate-200/30 px-4 py-3 font-bold text-slate-100 disabled:opacity-50"
               type="button"
               :disabled="desktopMaintenance.loading"
@@ -650,7 +1166,7 @@ async function submitStockMovement(): Promise<void> {
           "
           class="mt-4 rounded-2xl border border-rose-300/30 bg-rose-500/15 p-4"
         >
-          <div class="flex flex-wrap items-center justify-between gap-3">
+          <div class="grid gap-4">
             <div class="text-left">
               <p class="text-sm font-semibold text-rose-100">整机维护锁</p>
               <p class="mt-1 text-sm text-rose-50/90">
@@ -667,13 +1183,55 @@ async function submitStockMovement(): Promise<void> {
                 {{ wholeMachineLockMaintenance.message }}
               </p>
             </div>
+            <div
+              v-if="saleCriticalBlockers.length > 0"
+              class="grid gap-2 text-left"
+            >
+              <div
+                v-for="blocker in saleCriticalBlockers"
+                :key="`${blocker.component}-${blocker.code}`"
+                class="rounded-xl bg-slate-950/35 p-3 text-sm text-rose-50/90"
+              >
+                <div class="font-semibold text-rose-50">
+                  {{ blocker.operatorLabel }} · {{ blocker.code }}
+                </div>
+                <div class="mt-1">{{ blocker.message }}</div>
+                <div class="mt-1 text-rose-100/80">
+                  {{ blocker.operatorAction }}
+                </div>
+              </div>
+            </div>
+            <div
+              v-if="wholeMachineLockMaintenance.selfCheckEvidence"
+              class="rounded-xl bg-slate-950/35 p-3 text-left text-sm text-rose-50/90"
+            >
+              下位机自检：{{
+                wholeMachineLockMaintenance.selfCheckEvidence.online
+                  ? "通过"
+                  : "未通过"
+              }}
+              ·
+              {{ wholeMachineLockMaintenance.selfCheckEvidence.message }}
+              <span
+                v-if="wholeMachineLockMaintenance.selfCheckEvidence.portPath"
+              >
+                · {{ wholeMachineLockMaintenance.selfCheckEvidence.portPath }}
+              </span>
+            </div>
+            <label
+              class="grid gap-2 text-left text-sm font-semibold text-rose-50"
+            >
+              处理记录
+              <textarea
+                v-model="wholeMachineLockMaintenance.operatorNote"
+                class="min-h-24 rounded-xl border border-rose-100/30 bg-slate-950/45 p-3 font-normal text-white outline-none"
+                placeholder="填写现场处理、复位和自检结果"
+              />
+            </label>
             <button
               class="kiosk-touch-target rounded-2xl border border-rose-100/40 px-4 py-3 font-bold text-rose-50 disabled:opacity-50"
               type="button"
-              :disabled="
-                wholeMachineLockMaintenance.loading ||
-                !wholeMachineMaintenanceLock
-              "
+              :disabled="clearWholeMachineLockDisabled"
               @click="clearWholeMachineLock"
             >
               确认解除整机锁
@@ -682,54 +1240,76 @@ async function submitStockMovement(): Promise<void> {
         </div>
 
         <dl class="mt-4 grid gap-3 md:grid-cols-2">
-          <div class="rounded-2xl bg-slate-950/45 p-4">
+          <div class="border-t border-white/10 py-3">
             <dt class="text-sm text-slate-400">后端</dt>
             <dd class="mt-1 font-bold text-white">
               {{ machineStore.health?.backendOnline ? "在线" : "不可用" }}
               · {{ machineStore.health?.status ?? "unknown" }}
             </dd>
           </div>
-          <div class="rounded-2xl bg-slate-950/45 p-4">
+          <div class="border-t border-white/10 py-3">
             <dt class="text-sm text-slate-400">Readiness</dt>
             <dd class="mt-1 font-bold text-white">
               {{ connectivityStore.ready?.ready ? "就绪" : "未就绪" }}
               · {{ connectivityStore.ready?.mode ?? "unknown" }}
             </dd>
           </div>
-          <div class="rounded-2xl bg-slate-950/45 p-4">
+          <div class="border-t border-white/10 py-3">
             <dt class="text-sm text-slate-400">MQTT</dt>
             <dd class="mt-1 font-bold text-white">
               {{ mqttStore.status }} · outbox {{ mqttStore.outboxSize }}
             </dd>
           </div>
-          <div class="rounded-2xl bg-slate-950/45 p-4">
+          <div class="border-t border-white/10 py-3">
             <dt class="text-sm text-slate-400">下位机</dt>
             <dd class="mt-1 font-bold text-white">
               {{ machineStore.health?.hardwareOnline ? "在线" : "不可用" }}
             </dd>
           </div>
-          <div class="rounded-2xl bg-slate-950/45 p-4">
+          <div class="border-t border-white/10 py-3">
             <dt class="text-sm text-slate-400">扫码器</dt>
             <dd class="mt-1 font-bold text-white">
               {{ scannerStore.online ? "在线" : "不可用" }} ·
               {{ scannerStore.message }}
             </dd>
           </div>
-          <div class="rounded-2xl bg-slate-950/45 p-4">
-            <dt class="text-sm text-slate-400">视觉</dt>
+          <div class="border-t border-white/10 py-3">
+            <dt class="text-sm text-slate-400">Vision Runtime Status</dt>
             <dd class="mt-1 font-bold text-white">
               {{ visionStore.online ? "在线" : "不可用" }} ·
               {{ visionStore.message }}
             </dd>
           </div>
-          <div class="rounded-2xl bg-slate-950/45 p-4">
+          <div class="border-t border-white/10 py-3">
+            <dt class="text-sm text-slate-400">Presence Interaction</dt>
+            <dd class="mt-1 font-bold text-white">
+              {{ visionStore.presence.personPresent ? "有人" : "无人" }} ·
+              {{ visionStore.presence.occupancyState }} · profile
+              {{ visionStore.presence.profileUsable ? "usable" : "unusable" }}
+              ·
+              {{ visionStore.presence.lastSeenAt ?? "not seen" }}
+            </dd>
+          </div>
+          <div class="border-t border-white/10 py-3">
+            <dt class="text-sm text-slate-400">Natural Context</dt>
+            <dd class="mt-1 font-bold text-white">
+              {{ naturalContextDisplayStatus() }}
+            </dd>
+            <dd
+              v-if="naturalContextDiagnosticMessage"
+              class="mt-1 text-sm font-semibold text-amber-100"
+            >
+              {{ naturalContextDiagnosticMessage }}
+            </dd>
+          </div>
+          <div class="border-t border-white/10 py-3">
             <dt class="text-sm text-slate-400">本地状态</dt>
             <dd class="mt-1 font-bold text-white">
               {{ stockMaintenance.source ?? "unknown" }} ·
               {{ stockMaintenance.planogramVersion ?? "no planogram" }}
             </dd>
           </div>
-          <div class="rounded-2xl bg-slate-950/45 p-4">
+          <div class="border-t border-white/10 py-3">
             <dt class="text-sm text-slate-400">Remote Ops</dt>
             <dd class="mt-1 font-bold text-white">
               pending {{ remoteOpsStore.pending }} ·
@@ -737,6 +1317,90 @@ async function submitStockMovement(): Promise<void> {
             </dd>
           </div>
         </dl>
+
+        <section
+          v-if="saleCriticalBlockers.length > 0"
+          class="mt-5 border-t border-white/10 pt-4 text-left"
+        >
+          <h3 class="text-sm font-semibold text-slate-200">
+            Readiness Blockers
+          </h3>
+          <ul class="mt-2 grid gap-2 text-sm text-slate-100">
+            <li
+              v-for="blocker in saleCriticalBlockers"
+              :key="`${blocker.component}-${blocker.code}`"
+            >
+              <span class="font-semibold">
+                {{ blocker.operatorLabel }} · {{ blocker.code }}:
+              </span>
+              {{ blocker.message }}
+              <span class="text-slate-300"> {{ blocker.operatorAction }}</span>
+            </li>
+          </ul>
+        </section>
+
+        <section class="mt-5 border-t border-white/10 pt-4 text-left">
+          <h3 class="text-sm font-semibold text-slate-200">
+            Audio Cue Settings
+          </h3>
+          <p class="mt-1 text-sm text-slate-300">
+            Machine Audio Cue categories are local customer-experience settings.
+          </p>
+          <dl class="mt-3 grid gap-3 md:grid-cols-3">
+            <div
+              v-for="row in audioCueSettingsRows"
+              :key="row.label"
+              class="rounded-xl bg-slate-950/35 p-3"
+            >
+              <dt class="text-xs font-semibold text-slate-400">
+                Machine Audio Cue
+              </dt>
+              <dd class="mt-1 font-bold text-white">
+                {{ row.label }} · {{ row.enabled ? "Enabled" : "Disabled" }}
+              </dd>
+            </div>
+          </dl>
+        </section>
+
+        <section
+          class="mt-5 border-t border-white/10 pt-4 text-left"
+          data-test="audio-cue-diagnostic"
+        >
+          <h3 class="text-sm font-semibold text-slate-200">
+            Latest Machine Audio Cue Diagnostic
+          </h3>
+          <p
+            v-if="latestAudioCueDiagnosticRows.length === 0"
+            class="mt-2 text-sm text-slate-300"
+          >
+            No Machine Audio Cue diagnostic recorded yet.
+          </p>
+          <dl v-else class="mt-3 grid gap-3 md:grid-cols-2">
+            <div
+              v-for="row in latestAudioCueDiagnosticRows"
+              :key="row.label"
+              class="rounded-xl bg-slate-950/35 p-3"
+            >
+              <dt class="text-xs font-semibold text-slate-400">
+                {{ row.label }}
+              </dt>
+              <dd class="mt-1 font-bold text-white">
+                {{ row.label }} · {{ row.value }}
+              </dd>
+            </div>
+          </dl>
+        </section>
+
+        <section class="mt-5 border-t border-white/10 pt-4 text-left">
+          <h3 class="text-sm font-semibold text-slate-200">
+            Latest Vision Diagnostic Payload
+          </h3>
+          <pre
+            class="mt-2 max-h-72 overflow-auto text-sm leading-6 break-words whitespace-pre-wrap text-slate-100"
+            data-test="vision-diagnostic-payload"
+            >{{ latestVisionDiagnosticPayloadText }}</pre
+          >
+        </section>
 
         <p
           v-if="diagnostics.message"
@@ -790,6 +1454,17 @@ async function submitStockMovement(): Promise<void> {
             v-model="form.machineCode"
             class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-sky-300"
             placeholder="例如 M001"
+          />
+        </label>
+
+        <label class="grid gap-2 text-left">
+          <span class="text-sm font-semibold text-slate-200"
+            >Machine Location Label</span
+          >
+          <input
+            v-model="form.machineLocationLabel"
+            class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-sky-300"
+            placeholder="例如 一层大厅"
           />
         </label>
 
@@ -1060,6 +1735,115 @@ async function submitStockMovement(): Promise<void> {
               />
             </label>
 
+            <div class="grid gap-4 rounded-2xl border border-white/10 p-4">
+              <div class="grid gap-1 text-left">
+                <span class="text-sm font-semibold text-slate-200">
+                  Virtual Try-On Camera
+                </span>
+                <span class="text-xs text-slate-300">
+                  tryOnCameraDeviceId
+                </span>
+              </div>
+
+              <label class="grid gap-2 text-left">
+                <span class="text-sm font-semibold text-slate-200"
+                  >试衣摄像头</span
+                >
+                <select
+                  v-model="form.tryOnCameraDeviceId"
+                  class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-fuchsia-300"
+                  data-test="try-on-camera-select"
+                  @change="handleTryOnCameraSelectionChange"
+                >
+                  <option :value="null">不配置试衣摄像头</option>
+                  <option
+                    v-for="device in tryOnCameraOptions"
+                    :key="device.deviceId"
+                    :value="device.deviceId"
+                  >
+                    {{ device.label }}
+                  </option>
+                </select>
+              </label>
+
+              <div class="grid gap-3 md:grid-cols-3">
+                <button
+                  class="kiosk-touch-target rounded-2xl border border-fuchsia-200/30 px-4 py-3 font-bold text-fuchsia-100 disabled:opacity-50"
+                  type="button"
+                  :disabled="tryOnCamera.loading"
+                  @click="refreshTryOnCameraDevices"
+                >
+                  授权并刷新摄像头
+                </button>
+                <button
+                  class="kiosk-touch-target rounded-2xl border border-fuchsia-200/30 px-4 py-3 font-bold text-fuchsia-100 disabled:opacity-50"
+                  type="button"
+                  :disabled="tryOnCamera.loading || !form.tryOnCameraDeviceId"
+                  @click="previewTryOnCamera"
+                >
+                  预览摄像头
+                </button>
+                <button
+                  class="kiosk-touch-target rounded-2xl border border-slate-200/30 px-4 py-3 font-bold text-slate-100 disabled:opacity-50"
+                  type="button"
+                  :disabled="!tryOnCamera.previewing"
+                  @click="stopTryOnCameraPreview"
+                >
+                  关闭预览
+                </button>
+              </div>
+
+              <video
+                v-show="tryOnCamera.previewing"
+                ref="tryOnCameraPreviewVideo"
+                autoplay
+                muted
+                playsinline
+                class="aspect-video w-full rounded-2xl border border-white/10 bg-slate-950 object-cover"
+                data-test="try-on-camera-preview"
+              />
+
+              <p
+                v-if="tryOnCamera.message"
+                class="rounded-2xl bg-fuchsia-500/15 p-4 text-fuchsia-100"
+              >
+                {{ tryOnCamera.message }}
+              </p>
+            </div>
+
+            <fieldset class="grid gap-3 text-left md:grid-cols-3">
+              <label class="flex items-center gap-3">
+                <input
+                  v-model="form.audioCueSettings.enabled"
+                  class="size-5 accent-fuchsia-300"
+                  type="checkbox"
+                />
+                <span class="text-sm font-semibold text-slate-200"
+                  >启用 Machine Audio Cue audioCueSettings.enabled</span
+                >
+              </label>
+              <label class="flex items-center gap-3">
+                <input
+                  v-model="form.audioCueSettings.categories.presence"
+                  class="size-5 accent-fuchsia-300"
+                  type="checkbox"
+                />
+                <span class="text-sm font-semibold text-slate-200"
+                  >Presence audio cues categories.presence</span
+                >
+              </label>
+              <label class="flex items-center gap-3">
+                <input
+                  v-model="form.audioCueSettings.categories.transaction"
+                  class="size-5 accent-fuchsia-300"
+                  type="checkbox"
+                />
+                <span class="text-sm font-semibold text-slate-200"
+                  >Transaction audio cues categories.transaction</span
+                >
+              </label>
+            </fieldset>
+
             <div class="grid gap-3 md:grid-cols-2">
               <button
                 class="kiosk-touch-target rounded-2xl border border-fuchsia-200/30 px-4 py-3 font-bold text-fuchsia-100 disabled:opacity-50"
@@ -1114,6 +1898,294 @@ async function submitStockMovement(): Promise<void> {
       >
         <MockHardwareControls />
       </div>
+      <img
+        :src="listSloganImage"
+        alt=""
+        aria-hidden="true"
+        class="maintenance-slogan"
+      />
     </section>
   </KioskLayout>
 </template>
+
+<style scoped>
+:global(.kiosk-shell:has(.maintenance-page)) {
+  padding: 0;
+}
+
+:global(.kiosk-shell:has(.maintenance-page) > header) {
+  display: none;
+}
+
+:global(.kiosk-shell:has(.maintenance-page) > .kiosk-scroll) {
+  width: 100%;
+  height: 100%;
+  margin-top: 0;
+  padding-bottom: 0;
+}
+
+.maintenance-page {
+  position: relative;
+  min-height: 100%;
+  padding: var(--machine-page-header-top) var(--machine-page-inline) 2.5rem;
+  overflow-x: hidden;
+  color: #3f3b34;
+  background:
+    radial-gradient(
+      circle at 18% 6%,
+      rgba(255, 255, 255, 0.92),
+      rgba(255, 255, 255, 0) 28%
+    ),
+    linear-gradient(180deg, #faf8f1 0%, #f4efe2 54%, #efe8d8 100%);
+}
+
+.maintenance-header {
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 1rem;
+  align-items: center;
+  padding: 0.35rem 0 1rem;
+  background: linear-gradient(
+    180deg,
+    rgba(250, 248, 241, 0.96) 0%,
+    rgba(250, 248, 241, 0.86) 74%,
+    rgba(250, 248, 241, 0) 100%
+  );
+  backdrop-filter: blur(4px);
+}
+
+.maintenance-brand {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 1.1rem;
+}
+
+.maintenance-brand img:first-child {
+  width: clamp(9rem, 25cqw, 13.2rem);
+  height: auto;
+}
+
+.maintenance-brand img:last-child {
+  width: clamp(2.5rem, 8cqw, 4rem);
+  height: auto;
+  opacity: 0.82;
+}
+
+.maintenance-title-block {
+  text-align: right;
+}
+
+.maintenance-title-block p,
+.maintenance-page p[class*="uppercase"] {
+  margin: 0;
+  color: #6d7f5f;
+  font-size: 0.74rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+}
+
+.maintenance-title-block h2 {
+  margin-top: 0.18rem;
+  color: #263326;
+  font-size: 1.45rem;
+  font-weight: 800;
+  letter-spacing: 0;
+}
+
+.maintenance-page > div,
+.maintenance-page > form {
+  position: relative;
+  z-index: 1;
+}
+
+.maintenance-page > div[class*="rounded-3xl"],
+.maintenance-page > form {
+  border: 1px solid rgba(126, 112, 82, 0.28) !important;
+  border-radius: 0.65rem !important;
+  background: rgba(255, 253, 247, 0.84) !important;
+  padding: 1rem !important;
+  color: #403c34 !important;
+  box-shadow: 0 1rem 2.4rem rgba(98, 80, 50, 0.08) !important;
+}
+
+.maintenance-page > form {
+  display: grid;
+  gap: 0.9rem;
+}
+
+.maintenance-page :is(.rounded-4xl, .rounded-3xl, .rounded-2xl, .rounded-xl) {
+  border-radius: 0.42rem !important;
+}
+
+.maintenance-page
+  :is(
+    .bg-slate-950\/30,
+    .bg-slate-950\/35,
+    .bg-slate-950\/40,
+    .bg-slate-950\/45
+  ) {
+  background: rgba(248, 244, 234, 0.72) !important;
+}
+
+.maintenance-page
+  :is(
+    .text-white,
+    .text-slate-50,
+    .text-slate-100,
+    .text-slate-200,
+    .text-slate-300,
+    .text-slate-400
+  ) {
+  color: #463f34 !important;
+}
+
+.maintenance-page
+  :is(
+    .text-emerald-100,
+    .text-emerald-200,
+    .text-sky-100,
+    .text-sky-200,
+    .text-fuchsia-100,
+    .text-fuchsia-200
+  ) {
+  color: #5f7353 !important;
+}
+
+.maintenance-page [class*="text-rose-"] {
+  color: #7b3430 !important;
+}
+
+.maintenance-page
+  :is(
+    .border-white\/10,
+    .border-slate-200\/30,
+    .border-sky-200\/30,
+    .border-emerald-200\/30,
+    .border-fuchsia-200\/30
+  ) {
+  border-color: rgba(126, 112, 82, 0.24) !important;
+}
+
+.maintenance-page :is(input, select, textarea) {
+  border: 1px solid rgba(126, 112, 82, 0.3) !important;
+  border-radius: 0.38rem !important;
+  background: rgba(255, 255, 255, 0.76) !important;
+  color: #2f2a23 !important;
+}
+
+.maintenance-page :is(input, select) {
+  min-height: 2.85rem;
+}
+
+.maintenance-page label {
+  gap: 0.38rem;
+}
+
+.maintenance-page label > span,
+.maintenance-page label {
+  color: #4d463c !important;
+}
+
+.maintenance-page button {
+  border-radius: 0.42rem !important;
+  border-color: rgba(93, 112, 80, 0.38) !important;
+  background: rgba(255, 253, 247, 0.86) !important;
+  color: #49613f !important;
+  box-shadow: none !important;
+}
+
+.maintenance-page button[type="submit"],
+.maintenance-page button:last-child:not([type="button"]) {
+  background: #6f835f !important;
+  color: #fffdf7 !important;
+}
+
+.maintenance-page dl {
+  overflow: hidden;
+  border: 1px solid rgba(126, 112, 82, 0.22);
+  border-radius: 0.48rem;
+  background: rgba(255, 253, 247, 0.66);
+}
+
+.maintenance-page dl > div {
+  min-height: 4.05rem;
+  border-bottom: 1px solid rgba(126, 112, 82, 0.16);
+  border-radius: 0 !important;
+  background: transparent !important;
+  padding: 0.7rem 0.85rem !important;
+}
+
+.maintenance-page dl > div:nth-last-child(-n + 2) {
+  border-bottom: 0;
+}
+
+.maintenance-page dt {
+  color: #7b7468 !important;
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
+.maintenance-page dd {
+  color: #2e2a24 !important;
+  font-size: 0.92rem;
+  line-height: 1.35;
+}
+
+.maintenance-page :is(.bg-amber-500\/15, .bg-amber-500\/20) {
+  border: 1px solid rgba(181, 126, 34, 0.24);
+  background: rgba(255, 246, 220, 0.82) !important;
+  color: #70501d !important;
+}
+
+.maintenance-page :is(.bg-rose-500\/15, .bg-rose-500\/20) {
+  border: 1px solid rgba(174, 74, 70, 0.28);
+  background: rgba(255, 239, 235, 0.9) !important;
+  color: #7b3430 !important;
+}
+
+.maintenance-page
+  :is(
+    .bg-sky-500\/15,
+    .bg-fuchsia-500\/15,
+    .bg-emerald-500\/15,
+    .bg-slate-500\/15
+  ) {
+  border: 1px solid rgba(99, 119, 85, 0.2);
+  background: rgba(242, 247, 236, 0.88) !important;
+  color: #4f6845 !important;
+}
+
+.maintenance-page .grid.gap-3.md\:grid-cols-2,
+.maintenance-page .grid.gap-4.md\:grid-cols-2 {
+  gap: 0.55rem;
+}
+
+.maintenance-page .maintenance-slogan {
+  display: block;
+  width: min(24rem, 62%);
+  margin: 1.2rem auto 0;
+  opacity: 0.45;
+}
+
+@media (max-width: 760px) {
+  .maintenance-page {
+    padding: 1.5rem 1.45rem 2rem;
+  }
+
+  .maintenance-header {
+    grid-template-columns: 1fr;
+  }
+
+  .maintenance-title-block {
+    text-align: left;
+  }
+
+  .maintenance-page dl > div:nth-last-child(2) {
+    border-bottom: 1px solid rgba(126, 112, 82, 0.16);
+  }
+}
+</style>

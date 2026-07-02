@@ -1,11 +1,14 @@
-import { Injectable } from "@nestjs/common";
+import { Inject, Injectable } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 
 import type { ServiceEnv } from "./env.schema";
 
 @Injectable()
 export class AppConfigService {
-  constructor(private readonly config: ConfigService<ServiceEnv, true>) {}
+  constructor(
+    @Inject(ConfigService)
+    private readonly config: ConfigService<ServiceEnv, true>,
+  ) {}
 
   get servicePort(): number {
     return this.config.get("SERVICE_PORT", { infer: true });
@@ -77,6 +80,12 @@ export class AppConfigService {
     return this.config.get("MACHINE_COMMAND_TIMEOUT_SECONDS", { infer: true });
   }
 
+  get machineHeartbeatTimeoutSeconds(): number {
+    return this.config.get("MACHINE_HEARTBEAT_TIMEOUT_SECONDS", {
+      infer: true,
+    });
+  }
+
   get machineClaimCodeTtlSeconds(): number {
     return this.config.get("MACHINE_CLAIM_CODE_TTL_SECONDS", { infer: true });
   }
@@ -91,6 +100,14 @@ export class AppConfigService {
 
   get paymentWebhookBaseUrl(): string {
     return this.config.get("PAYMENT_WEBHOOK_BASE_URL", { infer: true });
+  }
+
+  get mediaAssetStorageRoot(): string {
+    return this.config.get("MEDIA_ASSET_STORAGE_ROOT", { infer: true });
+  }
+
+  get mediaAssetPublicBaseUrl(): string | undefined {
+    return this.config.get("MEDIA_ASSET_PUBLIC_BASE_URL", { infer: true });
   }
 
   get paymentConfigEncryptionKey(): string {
@@ -117,6 +134,26 @@ export class AppConfigService {
     return this.config.get("PAYMENT_CERTIFICATE_EXPIRY_WARNING_DAYS", {
       infer: true,
     });
+  }
+
+  get qweatherApiKey(): string | undefined {
+    return this.config.get("QWEATHER_API_KEY", { infer: true });
+  }
+
+  get qweatherApiHost(): string | undefined {
+    return this.config.get("QWEATHER_API_HOST", { infer: true });
+  }
+
+  get qweatherWeatherNowPath(): string {
+    return this.config.get("QWEATHER_WEATHER_NOW_PATH", { infer: true });
+  }
+
+  get qweatherSunPath(): string {
+    return this.config.get("QWEATHER_SUN_PATH", { infer: true });
+  }
+
+  get qweatherTimeoutMs(): number {
+    return this.config.get("QWEATHER_TIMEOUT_MS", { infer: true });
   }
 
   buildPaymentNotifyUrl(providerCode: string): string {

@@ -11,7 +11,7 @@ import listSloganImage from "@/assets/home/list-slogan.png";
 import logoImage from "@/assets/home/logo.png";
 import mascotListImage from "@/assets/home/mascot-list.png";
 import mascotTopImage from "@/assets/home/mascot-top-cutout.png";
-import { useKioskClock } from "@/composables/useKioskClock";
+import { useMaintenanceEntry } from "@/composables/useMaintenanceEntry";
 import KioskLayout from "@/layouts/KioskLayout.vue";
 import { useCatalogStore } from "@/stores/catalog";
 import { useCheckoutStore } from "@/stores/checkout";
@@ -27,7 +27,7 @@ const route = useRoute();
 const router = useRouter();
 const catalogStore = useCatalogStore();
 const checkoutStore = useCheckoutStore();
-const { clockText, dateText } = useKioskClock();
+const { handleMaintenanceTap } = useMaintenanceEntry();
 
 const selectedVariantId = ref<string | null>(null);
 
@@ -94,6 +94,13 @@ const stockText = computed(() => selectedVariant.value?.saleableStock ?? 0);
 const skuText = computed(
   () => selectedVariant.value?.sku ?? item.value?.sku ?? "-",
 );
+const selectedTryOnSilhouetteUrl = computed(
+  () => selectedVariant.value?.tryOnSilhouetteUrl ?? null,
+);
+const routedVariantId = computed(() => {
+  const value = route.query.variantId;
+  return typeof value === "string" ? value : null;
+});
 const sizeOptions = computed(() =>
   uniqueVariantOptions(
     variantCandidates.value,
@@ -137,9 +144,12 @@ const featureCards = [
 ] as const;
 
 watch(
-  variantCandidates,
+  [variantCandidates, routedVariantId],
   () => {
     selectedVariantId.value =
+      variantCandidates.value.find(
+        (variant) => variant.variantId === routedVariantId.value,
+      )?.variantId ??
       variantCandidates.value.find(variantIsSaleable)?.variantId ??
       variantCandidates.value[0]?.variantId ??
       null;
@@ -207,6 +217,16 @@ async function purchase(): Promise<void> {
   checkoutStore.selectItem(concreteItem);
   await router.push("/checkout");
 }
+
+async function enterTryOn(): Promise<void> {
+  const variant = selectedVariant.value;
+  if (!variant?.tryOnSilhouetteUrl) return;
+  await router.push({
+    name: "virtual-try-on",
+    params: { catalogKey: catalogKey.value },
+    query: { variantId: variant.variantId },
+  });
+}
 </script>
 
 <template>
@@ -216,25 +236,34 @@ async function purchase(): Promise<void> {
       <div class="detail-mist detail-mist-right"></div>
 
       <header class="detail-header">
-        <div class="detail-header-left">
-          <button
-            class="detail-back-button kiosk-touch-target"
-            type="button"
-            aria-label="返回"
-            @click="router.push('/catalog')"
-          >
-            <span aria-hidden="true">‹</span>
-          </button>
-          <div class="detail-brand">
-            <img :src="logoImage" alt="唐诗村" />
-            <img :src="mascotTopImage" alt="" aria-hidden="true" />
-          </div>
+        <div class="flex items-center gap-3" @click="handleMaintenanceTap">
+          <img
+            :src="logoImage"
+            alt="唐诗村"
+            class="h-9 w-auto object-contain"
+          />
+          <img
+            :src="mascotTopImage"
+            alt=""
+            class="h-14 w-14 object-contain"
+            aria-hidden="true"
+          />
         </div>
-        <div class="detail-time">
-          <p>{{ clockText }}</p>
-          <span>{{ dateText }}</span>
+        <div class="text-right text-[#6f835f]">
+          <p class="font-serif text-4xl leading-none font-bold">10:30</p>
+          <p class="mt-1 text-xs tracking-wide">2026/06/15　星期二</p>
         </div>
       </header>
+
+      <button
+        class="detail-back-button kiosk-touch-target"
+        type="button"
+        aria-label="返回商品列表"
+        @click="router.push('/catalog')"
+      >
+        <span aria-hidden="true">&lt;</span>
+        返回
+      </button>
 
       <main class="detail-main">
         <section class="detail-image-card">
@@ -242,6 +271,7 @@ async function purchase(): Promise<void> {
             <img
               :src="productImageUrl ?? fallbackImage"
               :alt="item.productName"
+              :class="{ 'detail-image-fallback': !productImageUrl }"
             />
             <span class="detail-bamboo" aria-hidden="true"></span>
             <span class="detail-image-count">1/5</span>
@@ -366,6 +396,28 @@ async function purchase(): Promise<void> {
               库存：<strong>{{ stockText }}</strong>
             </p>
           </section>
+
+          <section v-if="selectedTryOnSilhouetteUrl" class="try-on-entry">
+            <button
+              class="try-on-button kiosk-touch-target"
+              type="button"
+              data-test="try-on-entry"
+              @click="enterTryOn"
+            >
+              虚拟试穿
+            </button>
+          </section>
+
+          <div class="detail-bottom-bar">
+            <button
+              class="detail-buy-button kiosk-touch-target"
+              type="button"
+              :disabled="!canBuy"
+              @click="purchase"
+            >
+              {{ canBuy ? `立即购买 ${priceText}` : "该规格暂不可购买" }}
+            </button>
+          </div>
         </section>
       </main>
 
@@ -375,17 +427,6 @@ async function purchase(): Promise<void> {
         class="detail-mascot pointer-events-none"
         aria-hidden="true"
       />
-
-      <div class="detail-bottom-bar">
-        <button
-          class="detail-buy-button kiosk-touch-target"
-          type="button"
-          :disabled="!canBuy"
-          @click="purchase"
-        >
-          {{ canBuy ? `立即购买 ${priceText}` : "该规格暂不可购买" }}
-        </button>
-      </div>
 
       <img
         :src="listSloganImage"
@@ -466,10 +507,10 @@ async function purchase(): Promise<void> {
   flex-direction: column;
   container-type: inline-size;
   overflow: hidden;
-  margin: -1.25rem -1.5rem;
-  padding: 1.5rem 1.7rem 1rem;
-  border: 1px solid rgba(89, 83, 66, 0.2);
-  border-radius: 20px;
+  margin: 0;
+  padding: var(--machine-page-header-top) var(--machine-page-inline) 1rem;
+  border: 0;
+  border-radius: 0;
   background:
     radial-gradient(
       circle at 0% 4%,
@@ -482,7 +523,7 @@ async function purchase(): Promise<void> {
       transparent 30%
     ),
     linear-gradient(180deg, #fffdf8 0%, #fbf7eb 62%, #f6f0df 100%);
-  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.78);
+  box-shadow: none;
 }
 
 .detail-header {
@@ -490,75 +531,38 @@ async function purchase(): Promise<void> {
   z-index: 5;
   display: flex;
   flex-shrink: 0;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
 }
 
-.detail-header-left,
-.detail-brand {
-  display: flex;
-  align-items: center;
-}
-
-.detail-header-left {
-  gap: 0.68rem;
-}
-
-.detail-brand {
-  gap: 0.75rem;
-}
-
-.detail-brand img:first-child {
-  height: 2.35rem;
-  width: auto;
-  object-fit: contain;
-}
-
-.detail-brand img:last-child {
-  width: 3.5rem;
-  height: 3.5rem;
-  object-fit: contain;
-}
-
-.detail-time {
-  color: #6f835f;
-  text-align: right;
-}
-
-.detail-time p {
-  font-family: Georgia, "Times New Roman", serif;
-  font-size: 2.35rem;
-  font-weight: 700;
-  line-height: 1;
-}
-
-.detail-time span {
-  display: block;
-  margin-top: 0.22rem;
-  font-size: 0.62rem;
-  letter-spacing: 0;
-}
-
 .detail-back-button {
-  display: grid;
-  width: 3rem;
-  height: 3rem;
-  min-width: 3rem;
-  min-height: 3rem;
-  flex: 0 0 auto;
-  place-items: center;
-  border: 1px solid rgba(198, 187, 154, 0.82);
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.58);
-  color: #879077;
-  box-shadow: 0 3px 10px rgba(94, 87, 69, 0.06);
+  position: relative;
+  z-index: 5;
+  display: inline-flex;
+  width: fit-content;
+  min-height: 48px;
+  align-items: center;
+  gap: 0.75rem;
+  margin-top: 1.9rem;
+  color: #6b6258;
+  font-family: SimSun, "Songti SC", "Noto Serif CJK SC", serif;
+  font-size: 1.35rem;
+  font-weight: 700;
 }
 
 .detail-back-button span {
-  margin-top: -0.08rem;
-  font-size: 2rem;
-  font-weight: 800;
+  display: grid;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border: 1px solid rgba(198, 187, 154, 0.76);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.72);
+  color: #6f835f;
+  font-size: 1.65rem;
+  font-weight: 900;
   line-height: 1;
+  box-shadow: 0 8px 18px rgba(102, 92, 64, 0.08);
 }
 
 .detail-main {
@@ -570,7 +574,7 @@ async function purchase(): Promise<void> {
   grid-template-columns: minmax(20rem, 45%) minmax(0, 1fr);
   gap: 2.7rem;
   margin-top: 1.25rem;
-  padding: 0 1.8rem 7.4rem 1.2rem;
+  padding: 0 1.8rem 2rem 1.2rem;
 }
 
 .detail-image-card {
@@ -584,7 +588,7 @@ async function purchase(): Promise<void> {
   position: relative;
   display: grid;
   width: 100%;
-  aspect-ratio: 0.82;
+  aspect-ratio: 3 / 4;
   overflow: hidden;
   place-items: center;
   border: 1px solid rgba(211, 203, 180, 0.92);
@@ -606,12 +610,23 @@ async function purchase(): Promise<void> {
 }
 
 .detail-image-inner img {
-  position: relative;
+  position: absolute;
+  inset: 0;
   z-index: 2;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center center;
+  filter: drop-shadow(0 18px 18px rgba(81, 70, 51, 0.12));
+}
+
+.detail-image-inner img.detail-image-fallback {
+  top: 50%;
+  left: 50%;
   width: min(80%, 26rem);
   height: min(70%, 26rem);
   object-fit: contain;
-  filter: drop-shadow(0 18px 18px rgba(81, 70, 51, 0.12));
+  transform: translate(-50%, -50%);
 }
 
 .detail-bamboo {
@@ -775,6 +790,26 @@ async function purchase(): Promise<void> {
   font-size: 1.4rem;
 }
 
+.try-on-entry {
+  display: grid;
+  margin-top: 1.55rem;
+}
+
+.try-on-button {
+  min-height: 56px;
+  border: 1px solid rgba(111, 131, 95, 0.7);
+  border-radius: 8px;
+  background: rgba(255, 253, 248, 0.72);
+  color: #5f7352;
+  font-family: SimSun, "Songti SC", "Noto Serif CJK SC", serif;
+  font-size: 1.14rem;
+  font-weight: 700;
+}
+
+.try-on-button:disabled {
+  opacity: 1;
+}
+
 .detail-mascot {
   position: absolute;
   bottom: 0.72rem;
@@ -787,22 +822,14 @@ async function purchase(): Promise<void> {
 }
 
 .detail-bottom-bar {
-  position: absolute;
-  right: 2.1rem;
-  bottom: 4.35rem;
-  left: 18.4rem;
-  z-index: 6;
   display: grid;
-  min-height: 78px;
-  grid-template-columns: minmax(220px, 330px);
-  gap: 1.2rem;
-  align-items: center;
-  justify-content: center;
+  margin-top: 1.85rem;
 }
 
 .detail-buy-button {
   min-height: 70px;
-  border-radius: 999px;
+  width: 100%;
+  border-radius: 8px;
   background: linear-gradient(180deg, #758868, #627655);
   color: #fffdf7;
   font-family: SimSun, "Songti SC", "Noto Serif CJK SC", serif;
@@ -864,29 +891,35 @@ async function purchase(): Promise<void> {
     align-items: center;
   }
 
-  .detail-brand img:first-child {
+  .detail-header img:first-child {
     height: 1.85rem;
   }
 
-  .detail-brand img:last-child {
+  .detail-header img:last-child {
     width: 2.6rem;
     height: 2.6rem;
   }
 
-  .detail-time p {
+  .detail-header p:first-child {
     font-size: 2rem;
   }
 
-  .detail-time span {
+  .detail-header p:last-child {
     font-size: 0.72rem;
   }
 
   .detail-back-button {
-    width: 3rem;
-    height: 3rem;
+    width: fit-content;
+    height: auto;
+    min-height: 36px;
+    margin-top: 1.25rem;
+    gap: 0.55rem;
+    font-size: 1rem;
   }
 
   .detail-back-button span {
+    width: 36px;
+    height: 36px;
     font-size: 1.75rem;
   }
 
@@ -897,7 +930,7 @@ async function purchase(): Promise<void> {
     min-height: 0;
     overflow-y: auto;
     margin-top: 1rem;
-    padding: 0 0.2rem 10rem;
+    padding: 0 0.2rem 2rem;
   }
 
   .detail-image-card {
@@ -906,11 +939,16 @@ async function purchase(): Promise<void> {
   }
 
   .detail-image-inner {
-    aspect-ratio: 0.86;
+    aspect-ratio: 3 / 4;
     border-radius: 20px;
   }
 
   .detail-image-inner img {
+    width: 100%;
+    height: 100%;
+  }
+
+  .detail-image-inner img.detail-image-fallback {
     width: min(78%, 13rem);
     height: min(70%, 13rem);
   }
@@ -1007,6 +1045,16 @@ async function purchase(): Promise<void> {
     padding-right: 0.2rem;
   }
 
+  .try-on-entry {
+    margin-top: 0.85rem;
+  }
+
+  .try-on-button {
+    min-height: 44px;
+    padding: 0 0.7rem;
+    font-size: 0.88rem;
+  }
+
   .detail-mascot {
     bottom: 0.6rem;
     left: 0.35rem;
@@ -1016,13 +1064,9 @@ async function purchase(): Promise<void> {
   }
 
   .detail-bottom-bar {
-    right: 0.9rem;
-    bottom: 3.75rem;
-    left: 8.1rem;
     min-height: 58px;
     grid-template-columns: minmax(130px, 180px);
     gap: 0.55rem;
-    justify-content: center;
   }
 
   .detail-buy-button {

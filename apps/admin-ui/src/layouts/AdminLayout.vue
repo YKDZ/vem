@@ -101,7 +101,7 @@ function logout(): void {
       >
         <span
           v-show="!appStore.sidebarCollapsed"
-          class="pl-2 font-bold text-base"
+          class="pl-2 text-base font-bold"
           style="color: #2563eb"
           >VEM</span
         >

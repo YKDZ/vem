@@ -7,6 +7,7 @@ import {
   NotFoundException,
   OnApplicationShutdown,
   OnModuleInit,
+  Optional,
   UnauthorizedException,
 } from "@nestjs/common";
 import {
@@ -18,13 +19,18 @@ import {
   inArray,
   inventories,
   isNull,
+  lte,
+  or,
+  machineRawStockMovementConflicts,
   machineClaimCodes,
+  machineRawStockMovements,
   machinePlanogramSlots,
   machinePlanogramVersions,
   machineSlots,
   machineCommands,
   machineEvents,
   machineHeartbeats,
+  mediaAssets,
   machines,
   productCategories,
   productVariants,
@@ -63,18 +69,60 @@ import { DRIZZLE_CLIENT } from "../database/database.constants";
 import { MachineCredentialService } from "../machine-auth/machine-credential.service";
 import { MqttSignatureService } from "../mqtt/mqtt-signature.service";
 import { MqttService } from "../mqtt/mqtt.service";
+import { NotificationsService } from "../notifications/notifications.service";
 import { PaymentProviderConfigService } from "../payments/payment-provider-config.service";
+import {
+  EXTERNAL_NATURAL_ENVIRONMENT_PROVIDER,
+  UnconfiguredExternalNaturalEnvironmentProvider,
+  type ExternalNaturalEnvironmentProvider,
+  type ExternalNaturalEnvironmentSun,
+  type ExternalNaturalEnvironmentWeather,
+} from "./external-natural-environment.provider";
 import {
   digestMachineClaimCodeLookup,
   generateHumanMachineClaimCode,
   hashMachineClaimCodeVerifier,
   verifyMachineClaimCode,
 } from "./machine-claim-code.util";
+import { evaluateProductionPilotReadiness } from "./production-pilot-readiness";
 
 type PageQueryInput = z.infer<typeof pageQuerySchema>;
 type CreateMachineInput = z.infer<typeof createMachineSchema>;
 type UpdateMachineInput = z.infer<typeof updateMachineSchema>;
 type CreateMachineSlotInput = z.infer<typeof createMachineSlotSchema>;
+type MachineGeoLocation = {
+  latitude: number;
+  longitude: number;
+  timezone: string;
+};
+type ExternalNaturalEnvironment = {
+  status: "ready" | "stale" | "unavailable" | "unconfigured";
+  machineId: string;
+  machineCode: string;
+  checkedAt: string;
+  localTime?: {
+    timezone: string;
+    localDate: string;
+    localClock: string;
+  };
+  weather?: {
+    temperatureCelsius: number;
+    conditionText: string;
+    observedAt: string;
+  };
+  sun?: {
+    sunriseAt: string;
+    sunsetAt: string;
+  };
+  diagnostic?: {
+    reason: "machine_geo_location_missing" | "provider_unavailable";
+    message: string;
+  };
+};
+type CachedExternalNaturalEnvironmentValue<T> = {
+  value: T;
+  cachedAtMs: number;
+};
 
 type PlanogramVersionRecord = typeof machinePlanogramVersions.$inferSelect;
 
@@ -82,6 +130,7 @@ type MachineIdentity = {
   id: string;
   code: string;
 };
+type MachineRecord = typeof machines.$inferSelect;
 
 type MachineClaimCodeRecord = typeof machineClaimCodes.$inferSelect;
 type MachineClaimCandidate = {
@@ -98,7 +147,7 @@ type MachineClaimCandidate = {
   lockedAt: Date | null;
   machineCode: string;
   machineName: string;
-  machineLocationText: string | null;
+  machineLocationLabel: string | null;
   machineStatus: MachineProvisioningProfile["machine"]["status"];
   machineMqttClientId: string | null;
   machineSecretVersion: number;
@@ -107,6 +156,8 @@ type MachineClaimCandidate = {
 const MACHINE_CLAIM_CODE_MAX_FAILED_ATTEMPTS = 5;
 const MACHINE_CLAIM_CODES_MACHINE_OPEN_UNIQUE =
   "machine_claim_codes_machine_open_unique";
+const WEATHER_NOW_CACHE_TTL_MS = 10 * 60 * 1000;
+const SUN_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
 function toIso(value: Date | string): string {
   return value instanceof Date ? value.toISOString() : value;
@@ -175,6 +226,7 @@ function planogramSlotValues(
     productName: slot.productName,
     productDescription: slot.productDescription,
     coverImageUrl: slot.coverImageUrl,
+    tryOnSilhouetteUrl: slot.tryOnSilhouetteUrl ?? null,
     categoryId: slot.categoryId,
     categoryName: slot.categoryName,
     sku: slot.sku,
@@ -202,6 +254,7 @@ function planogramSlotSnapshot(
     productName: row.productName,
     productDescription: row.productDescription,
     coverImageUrl: row.coverImageUrl,
+    tryOnSilhouetteUrl: row.tryOnSilhouetteUrl ?? null,
     categoryId: row.categoryId,
     categoryName: row.categoryName,
     sku: row.sku,
@@ -238,7 +291,11 @@ function planogramVersionSnapshot(
 function platformSlotSalesState(
   slotStatus: typeof machineSlots.$inferSelect.status,
   availableQty: number,
+  openSaleSafetyBlockerState?: string | null,
 ) {
+  if (openSaleSafetyBlockerState) {
+    return openSaleSafetyBlockerState;
+  }
   if (slotStatus !== "enabled") {
     return "frozen";
   }
@@ -252,19 +309,244 @@ function parseLatestHeartbeatStatus(
   return parsed.success ? parsed.data : null;
 }
 
+function machineGeoLocationFromRow(
+  machine: Pick<MachineRecord, "geoLatitude" | "geoLongitude" | "geoTimezone">,
+): MachineGeoLocation | null {
+  if (
+    machine.geoLatitude === null &&
+    machine.geoLongitude === null &&
+    machine.geoTimezone === null
+  ) {
+    return null;
+  }
+  if (
+    typeof machine.geoLatitude !== "number" ||
+    typeof machine.geoLongitude !== "number" ||
+    typeof machine.geoTimezone !== "string"
+  ) {
+    return null;
+  }
+  return {
+    latitude: machine.geoLatitude,
+    longitude: machine.geoLongitude,
+    timezone: machine.geoTimezone,
+  };
+}
+
+function machineSnapshot<T extends MachineRecord>(machine: T) {
+  const { geoLatitude, geoLongitude, geoTimezone, ...rest } = machine;
+  return {
+    ...rest,
+    geoLocation: machineGeoLocationFromRow({
+      geoLatitude,
+      geoLongitude,
+      geoTimezone,
+    }),
+  };
+}
+
+function machineLocationAuditSnapshot(machine: MachineRecord) {
+  return {
+    locationLabel: machine.locationLabel,
+    geoLocation: machineGeoLocationFromRow(machine),
+  };
+}
+
+function machineGeoLocationValues(
+  geoLocation: MachineGeoLocation | null | undefined,
+) {
+  if (geoLocation === undefined) {
+    return {};
+  }
+  return geoLocation === null
+    ? { geoLatitude: null, geoLongitude: null, geoTimezone: null }
+    : {
+        geoLatitude: geoLocation.latitude,
+        geoLongitude: geoLocation.longitude,
+        geoTimezone: geoLocation.timezone,
+      };
+}
+
+async function externalNaturalEnvironmentSnapshot(
+  machine: MachineRecord,
+  now: Date,
+  provider: ExternalNaturalEnvironmentProvider,
+  cache?: {
+    weatherNow: Map<
+      string,
+      CachedExternalNaturalEnvironmentValue<ExternalNaturalEnvironmentWeather>
+    >;
+    sun: Map<
+      string,
+      CachedExternalNaturalEnvironmentValue<ExternalNaturalEnvironmentSun>
+    >;
+  },
+): Promise<ExternalNaturalEnvironment> {
+  const base = {
+    machineId: machine.id,
+    machineCode: machine.code,
+    checkedAt: now.toISOString(),
+  };
+  const geoLocation = machineGeoLocationFromRow(machine);
+  if (!geoLocation) {
+    return {
+      ...base,
+      status: "unconfigured",
+      diagnostic: {
+        reason: "machine_geo_location_missing",
+        message: "Machine Geo Location is not configured",
+      },
+    };
+  }
+  const cacheKey = machineGeoLocationCacheKey(geoLocation);
+  const sunCacheKey = `${cacheKey}|${localDateYmd(now, geoLocation.timezone)}`;
+  const cachedWeather = usableCachedValue(
+    cache?.weatherNow.get(cacheKey),
+    now,
+    WEATHER_NOW_CACHE_TTL_MS,
+  );
+  const cachedSun = usableCachedValue(
+    cache?.sun.get(sunCacheKey),
+    now,
+    SUN_CACHE_TTL_MS,
+  );
+  let weather: ExternalNaturalEnvironmentWeather | null = cachedWeather ?? null;
+  let sun: ExternalNaturalEnvironmentSun | null = cachedSun ?? null;
+  try {
+    const input = { geoLocation, checkedAt: now };
+    const [weatherResult, sunResult] = await Promise.all([
+      weather
+        ? Promise.resolve(weather)
+        : provider.fetchWeatherNow(input).then((value) => {
+            cache?.weatherNow.set(cacheKey, {
+              value,
+              cachedAtMs: now.getTime(),
+            });
+            return value;
+          }),
+      sun
+        ? Promise.resolve(sun)
+        : provider.fetchSun(input).then((value) => {
+            cache?.sun.set(sunCacheKey, {
+              value,
+              cachedAtMs: now.getTime(),
+            });
+            return value;
+          }),
+    ]);
+    weather = weatherResult;
+    sun = sunResult;
+  } catch {
+    weather = cache?.weatherNow.get(cacheKey)?.value ?? null;
+    sun = cache?.sun.get(sunCacheKey)?.value ?? null;
+    if (weather && sun) {
+      return {
+        ...base,
+        status: "stale",
+        localTime: formatLocalTime(now, geoLocation.timezone),
+        weather,
+        sun,
+        diagnostic: {
+          reason: "provider_unavailable",
+          message: "External Natural Environment provider is unavailable",
+        },
+      };
+    }
+  }
+  if (!weather || !sun) {
+    return {
+      ...base,
+      status: "unavailable",
+      diagnostic: {
+        reason: "provider_unavailable",
+        message: "External Natural Environment provider is unavailable",
+      },
+    };
+  }
+  return {
+    ...base,
+    status: "ready",
+    localTime: formatLocalTime(now, geoLocation.timezone),
+    weather,
+    sun,
+  };
+}
+
+function machineGeoLocationCacheKey(geoLocation: MachineGeoLocation): string {
+  return [
+    geoLocation.latitude.toFixed(6),
+    geoLocation.longitude.toFixed(6),
+    geoLocation.timezone,
+  ].join("|");
+}
+
+function usableCachedValue<T>(
+  cached: CachedExternalNaturalEnvironmentValue<T> | undefined,
+  now: Date,
+  ttlMs: number,
+): T | undefined {
+  if (!cached || now.getTime() - cached.cachedAtMs >= ttlMs) {
+    return undefined;
+  }
+  return cached.value;
+}
+
+function formatLocalTime(checkedAt: Date, timezone: string) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(checkedAt);
+  const part = (type: string) =>
+    parts.find((item) => item.type === type)?.value ?? "";
+  return {
+    timezone,
+    localDate: `${part("year")}-${part("month")}-${part("day")}`,
+    localClock: `${part("hour")}:${part("minute")}:${part("second")}`,
+  };
+}
+
+function localDateYmd(checkedAt: Date, timezone: string): string {
+  return formatLocalTime(checkedAt, timezone).localDate.replaceAll("-", "");
+}
+
 @Injectable()
 export class MachinesService implements OnModuleInit, OnApplicationShutdown {
   private readonly logger = new Logger(MachinesService.name);
   private timeoutInterval?: NodeJS.Timeout;
+  private readonly externalNaturalEnvironmentCache = new Map<
+    string,
+    CachedExternalNaturalEnvironmentValue<ExternalNaturalEnvironmentWeather>
+  >();
+  private readonly externalNaturalEnvironmentSunCache = new Map<
+    string,
+    CachedExternalNaturalEnvironmentValue<ExternalNaturalEnvironmentSun>
+  >();
 
   constructor(
     @Inject(DRIZZLE_CLIENT) private readonly db: DrizzleClient,
+    @Inject(MachineCredentialService)
     private readonly machineCredentialService: MachineCredentialService,
+    @Inject(PaymentProviderConfigService)
     private readonly paymentProviderConfigService: PaymentProviderConfigService,
+    @Inject(AuditService)
     private readonly auditService: AuditService,
+    @Inject(MqttService)
     private readonly mqttService: MqttService,
+    @Inject(MqttSignatureService)
     private readonly mqttSignatureService: MqttSignatureService,
+    @Inject(AppConfigService)
     private readonly config: AppConfigService,
+    @Inject(NotificationsService)
+    private readonly notificationsService: NotificationsService,
+    @Optional()
+    @Inject(EXTERNAL_NATURAL_ENVIRONMENT_PROVIDER)
+    private readonly externalNaturalEnvironmentProvider?: ExternalNaturalEnvironmentProvider,
   ) {}
 
   onModuleInit(): void {
@@ -279,6 +561,13 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
           }`,
         );
       });
+      void this.markTimedOutMachineHeartbeats().catch((error: unknown) => {
+        this.logger.warn(
+          `markTimedOutMachineHeartbeats failed: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      });
     }, 60_000);
   }
 
@@ -287,6 +576,13 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
       clearInterval(this.timeoutInterval);
       this.timeoutInterval = undefined;
     }
+  }
+
+  private getExternalNaturalEnvironmentProvider(): ExternalNaturalEnvironmentProvider {
+    return (
+      this.externalNaturalEnvironmentProvider ??
+      new UnconfiguredExternalNaturalEnvironmentProvider()
+    );
   }
 
   async listMachines(query: PageQueryInput) {
@@ -306,7 +602,7 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
       items.map(async (machine) => {
         const latestHeartbeat = await this.getLatestHeartbeatStatus(machine.id);
         return {
-          ...machine,
+          ...machineSnapshot(machine),
           latestHeartbeatStatus: latestHeartbeat?.statusPayload ?? null,
           latestHeartbeatReportedAt: latestHeartbeat?.reportedAt ?? null,
           latestEnvironment: latestHeartbeat?.statusPayload.environment ?? null,
@@ -326,32 +622,71 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
       .values({
         code: input.code,
         name: input.name,
-        locationText: input.locationText ?? null,
+        locationLabel: input.locationLabel ?? null,
+        ...machineGeoLocationValues(input.geoLocation),
         status: input.status,
         mqttClientId: input.mqttClientId ?? null,
       })
       .returning();
-    return created;
+    return machineSnapshot(created);
   }
 
-  async updateMachine(id: string, input: UpdateMachineInput) {
+  async updateMachine(
+    id: string,
+    input: UpdateMachineInput,
+    adminUserId: string,
+  ) {
+    const [current] = await this.db
+      .select()
+      .from(machines)
+      .where(and(eq(machines.id, id), isNull(machines.deletedAt)))
+      .limit(1);
+
+    if (!current) {
+      throw new NotFoundException("Machine not found");
+    }
+
+    const updateValues: Partial<typeof machines.$inferInsert> = {
+      updatedAt: new Date(),
+    };
+    if (input.code !== undefined) updateValues.code = input.code;
+    if (input.name !== undefined) updateValues.name = input.name;
+    if (input.locationLabel !== undefined) {
+      updateValues.locationLabel = input.locationLabel;
+    }
+    if ("geoLocation" in input) {
+      Object.assign(updateValues, machineGeoLocationValues(input.geoLocation));
+    }
+    if (input.status !== undefined) updateValues.status = input.status;
+    if (input.mqttClientId !== undefined) {
+      updateValues.mqttClientId = input.mqttClientId;
+    }
+
     const [updated] = await this.db
       .update(machines)
-      .set({
-        code: input.code,
-        name: input.name,
-        locationText: input.locationText,
-        status: input.status,
-        mqttClientId: input.mqttClientId,
-        updatedAt: new Date(),
-      })
+      .set(updateValues)
       .where(and(eq(machines.id, id), isNull(machines.deletedAt)))
       .returning();
 
     if (!updated) {
       throw new NotFoundException("Machine not found");
     }
-    return updated;
+    const beforeLocation = machineLocationAuditSnapshot(current);
+    const afterLocation = machineLocationAuditSnapshot(updated);
+    if (
+      JSON.stringify(beforeLocation) !== JSON.stringify(afterLocation) &&
+      ("locationLabel" in input || "geoLocation" in input)
+    ) {
+      await this.auditService.record({
+        adminUserId,
+        action: "machines.location.update",
+        resourceType: "machine",
+        resourceId: updated.id,
+        beforeJson: beforeLocation,
+        afterJson: afterLocation,
+      });
+    }
+    return machineSnapshot(updated);
   }
 
   async getMachine(id: string) {
@@ -366,12 +701,91 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
     }
 
     const latestHeartbeat = await this.getLatestHeartbeatStatus(id);
+    const [paymentEvidence, latestEnvironmentCommand] = await Promise.all([
+      this.paymentProviderConfigService.listProductionPilotPaymentEvidenceForMachine(
+        id,
+      ),
+      this.getLatestEnvironmentCommand(id),
+    ]);
+    const activeAcknowledgedPlanogramVersion =
+      await this.getActiveAcknowledgedPlanogramVersion(id);
     return {
-      ...machine,
+      ...machineSnapshot(machine),
       latestHeartbeatStatus: latestHeartbeat?.statusPayload ?? null,
       latestHeartbeatReportedAt: latestHeartbeat?.reportedAt ?? null,
       latestEnvironment: latestHeartbeat?.statusPayload.environment ?? null,
-      latestEnvironmentCommand: await this.getLatestEnvironmentCommand(id),
+      latestEnvironmentCommand,
+      productionPilotReadiness: evaluateProductionPilotReadiness({
+        machine,
+        latestHeartbeat,
+        paymentOptions: paymentEvidence,
+        machineHeartbeatTimeoutSeconds:
+          this.config.machineHeartbeatTimeoutSeconds,
+        platformPlanogram: {
+          activeAcknowledgedPlanogramVersion,
+        },
+        externalNaturalEnvironment: {
+          status: (
+            await externalNaturalEnvironmentSnapshot(
+              machine,
+              new Date(),
+              this.getExternalNaturalEnvironmentProvider(),
+              this.externalNaturalEnvironmentCaches(),
+            )
+          ).status,
+        },
+      }),
+    };
+  }
+
+  async getExternalNaturalEnvironmentForMachine(
+    id: string,
+    now = new Date(),
+  ): Promise<ExternalNaturalEnvironment> {
+    const [machine] = await this.db
+      .select()
+      .from(machines)
+      .where(and(eq(machines.id, id), isNull(machines.deletedAt)))
+      .limit(1);
+
+    if (!machine) {
+      throw new NotFoundException("Machine not found");
+    }
+
+    return externalNaturalEnvironmentSnapshot(
+      machine,
+      now,
+      this.getExternalNaturalEnvironmentProvider(),
+      this.externalNaturalEnvironmentCaches(),
+    );
+  }
+
+  async getExternalNaturalEnvironmentForMachineCode(
+    code: string,
+    now = new Date(),
+  ): Promise<ExternalNaturalEnvironment> {
+    const [machine] = await this.db
+      .select()
+      .from(machines)
+      .where(and(eq(machines.code, code), isNull(machines.deletedAt)))
+      .limit(1);
+
+    if (!machine) {
+      throw new NotFoundException("Machine not found");
+    }
+
+    return externalNaturalEnvironmentSnapshot(
+      machine,
+      now,
+      this.getExternalNaturalEnvironmentProvider(),
+      this.externalNaturalEnvironmentCaches(),
+    );
+  }
+
+  private externalNaturalEnvironmentCaches() {
+    return {
+      weatherNow: this.externalNaturalEnvironmentCache,
+      sun: this.externalNaturalEnvironmentSunCache,
     };
   }
 
@@ -411,6 +825,25 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
       .limit(1);
 
     return latestCommand ?? null;
+  }
+
+  private async getActiveAcknowledgedPlanogramVersion(
+    machineId: string,
+  ): Promise<string | null> {
+    const [version] = await this.db
+      .select({ planogramVersion: machinePlanogramVersions.planogramVersion })
+      .from(machinePlanogramVersions)
+      .where(
+        and(
+          eq(machinePlanogramVersions.machineId, machineId),
+          eq(machinePlanogramVersions.status, "active"),
+          sql`${machinePlanogramVersions.acknowledgedAt} IS NOT NULL`,
+        ),
+      )
+      .orderBy(desc(machinePlanogramVersions.activeAt))
+      .limit(1);
+
+    return version?.planogramVersion ?? null;
   }
 
   async commandEnvironment(
@@ -537,6 +970,9 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
         "Planogram slots must belong to the target machine",
       );
     }
+    const canonicalSlots = await this.withCanonicalPlanogramCoverImages(
+      planogram.slots,
+    );
 
     const created = await this.db.transaction(async (tx) => {
       const [version] = await tx
@@ -551,7 +987,7 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
       await tx
         .insert(machinePlanogramSlots)
         .values(
-          planogram.slots.map((slot) => planogramSlotValues(version.id, slot)),
+          canonicalSlots.map((slot) => planogramSlotValues(version.id, slot)),
         )
         .returning({ id: machinePlanogramSlots.id });
 
@@ -565,11 +1001,100 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
       resourceId: machine.id,
       afterJson: {
         planogramVersion: created.planogramVersion,
-        slotCount: planogram.slots.length,
+        slotCount: canonicalSlots.length,
       },
     });
 
-    return planogramVersionSnapshot(machine, created, planogram.slots);
+    return planogramVersionSnapshot(machine, created, canonicalSlots);
+  }
+
+  private async withCanonicalPlanogramCoverImages(
+    slots: MachinePlanogramSlot[],
+  ): Promise<MachinePlanogramSlot[]> {
+    const variantIds = [...new Set(slots.map((slot) => slot.variantId))];
+    if (variantIds.length === 0) return slots;
+
+    const rows = await this.db
+      .select({
+        variantId: productVariants.id,
+        productId: products.id,
+        displayImagePublicUrl: sql<string | null>`(
+          select ${mediaAssets.publicUrl}
+          from ${mediaAssets}
+          where ${mediaAssets.id} = ${products.displayImageMediaAssetId}
+            and ${mediaAssets.purpose} = 'product_display_image'
+            and ${mediaAssets.deletedAt} is null
+          limit 1
+        )`,
+        tryOnSilhouettePublicUrl: sql<string | null>`(
+          select ${mediaAssets.publicUrl}
+          from ${mediaAssets}
+          where ${mediaAssets.id} = ${productVariants.tryOnSilhouetteMediaAssetId}
+            and ${mediaAssets.purpose} = 'try_on_silhouette'
+            and ${mediaAssets.deletedAt} is null
+          limit 1
+        )`,
+      })
+      .from(productVariants)
+      .innerJoin(products, eq(products.id, productVariants.productId))
+      .where(
+        and(
+          inArray(productVariants.id, variantIds),
+          isNull(productVariants.deletedAt),
+          isNull(products.deletedAt),
+        ),
+      );
+    const coverImageUrls = new Map(
+      rows.map((row) => [
+        row.productId,
+        this.machineRenderableMediaAssetUrl(row.displayImagePublicUrl),
+      ]),
+    );
+    const tryOnSilhouetteUrls = new Map(
+      rows.map((row) => [
+        row.variantId,
+        this.machineRenderableMediaAssetUrl(row.tryOnSilhouettePublicUrl),
+      ]),
+    );
+
+    return slots.map((slot) => ({
+      ...slot,
+      coverImageUrl: coverImageUrls.get(slot.productId) ?? null,
+      tryOnSilhouetteUrl: tryOnSilhouetteUrls.get(slot.variantId) ?? null,
+    }));
+  }
+
+  private planogramSlotSnapshotForMachine(
+    row: typeof machinePlanogramSlots.$inferSelect,
+  ): MachinePlanogramSlot {
+    const snapshot = planogramSlotSnapshot(row);
+    return {
+      ...snapshot,
+      coverImageUrl: this.machineRenderableMediaAssetUrl(
+        snapshot.coverImageUrl,
+      ),
+      tryOnSilhouetteUrl: this.machineRenderableMediaAssetUrl(
+        snapshot.tryOnSilhouetteUrl ?? null,
+      ),
+    };
+  }
+
+  private machineRenderableMediaAssetUrl(
+    publicUrl: string | null,
+  ): string | null {
+    if (!publicUrl) return null;
+    if (/^https?:\/\//i.test(publicUrl)) return publicUrl;
+    if (!publicUrl.startsWith("/api/media-assets/")) return publicUrl;
+
+    const baseUrl =
+      this.config.mediaAssetPublicBaseUrl ?? this.config.paymentWebhookBaseUrl;
+    if (!baseUrl) return publicUrl;
+
+    try {
+      return new URL(publicUrl, baseUrl).toString();
+    } catch {
+      return publicUrl;
+    }
   }
 
   async getMachinePlanogramVersions(machineId: string) {
@@ -616,10 +1141,13 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
       .where(
         and(
           eq(machinePlanogramVersions.machineId, machine.id),
-          eq(machinePlanogramVersions.status, "published"),
+          inArray(machinePlanogramVersions.status, ["published", "active"]),
         ),
       )
-      .orderBy(desc(machinePlanogramVersions.publishedAt))
+      .orderBy(
+        sql`case when ${machinePlanogramVersions.status} = 'published' then 0 else 1 end`,
+        desc(machinePlanogramVersions.publishedAt),
+      )
       .limit(1);
 
     if (!version) {
@@ -639,7 +1167,7 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
     return planogramVersionSnapshot(
       machine,
       version,
-      slots.map(planogramSlotSnapshot),
+      slots.map((slot) => this.planogramSlotSnapshotForMachine(slot)),
     );
   }
 
@@ -791,6 +1319,70 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
     return { processed: results.filter(Boolean).length };
   }
 
+  async markTimedOutMachineHeartbeats(
+    now = new Date(),
+  ): Promise<{ processed: number }> {
+    const timeoutSeconds = this.config.machineHeartbeatTimeoutSeconds;
+    const staleBefore = new Date(now.getTime() - timeoutSeconds * 1_000);
+    const candidates = await this.db
+      .select({
+        id: machines.id,
+        code: machines.code,
+        status: machines.status,
+        lastSeenAt: machines.lastSeenAt,
+      })
+      .from(machines)
+      .where(
+        and(
+          eq(machines.status, "online"),
+          isNull(machines.deletedAt),
+          or(
+            isNull(machines.lastSeenAt),
+            lte(machines.lastSeenAt, staleBefore),
+          ),
+        ),
+      );
+
+    const results = await Promise.all(
+      candidates.map(async (machine) => {
+        let updated = false;
+        await this.db.transaction(async (tx) => {
+          const [offline] = await tx
+            .update(machines)
+            .set({
+              status: "offline",
+              updatedAt: now,
+            })
+            .where(
+              and(
+                eq(machines.id, machine.id),
+                eq(machines.status, "online"),
+                or(
+                  isNull(machines.lastSeenAt),
+                  lte(machines.lastSeenAt, staleBefore),
+                ),
+              ),
+            )
+            .returning({ id: machines.id });
+          if (!offline) {
+            return;
+          }
+          updated = true;
+          await this.notificationsService.createMachineOfflineNotification(tx, {
+            machineId: machine.id,
+            machineCode: machine.code,
+            lastSeenAt: machine.lastSeenAt,
+            timeoutSeconds,
+            detectedAt: now,
+          });
+        });
+        return updated;
+      }),
+    );
+
+    return { processed: results.filter(Boolean).length };
+  }
+
   async listSlots(machineId: string) {
     return await this.db
       .select()
@@ -821,7 +1413,7 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
   }
 
   async getCatalogByMachineCode(code: string) {
-    return await this.db
+    const rows = await this.db
       .select({
         machineCode: machines.code,
         slotId: machineSlots.id,
@@ -833,7 +1425,15 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
         productId: products.id,
         productName: products.name,
         productDescription: products.description,
-        coverImageUrl: products.coverImageUrl,
+        coverImageUrl: mediaAssets.publicUrl,
+        tryOnSilhouetteUrl: sql<string | null>`(
+          select ${mediaAssets.publicUrl}
+          from ${mediaAssets}
+          where ${mediaAssets.id} = ${productVariants.tryOnSilhouetteMediaAssetId}
+            and ${mediaAssets.purpose} = 'try_on_silhouette'
+            and ${mediaAssets.deletedAt} is null
+          limit 1
+        )`,
         categoryId: products.categoryId,
         categoryName: productCategories.name,
         sku: productVariants.sku,
@@ -874,6 +1474,13 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
         productCategories,
         eq(productCategories.id, products.categoryId),
       )
+      .leftJoin(
+        mediaAssets,
+        and(
+          eq(mediaAssets.id, products.displayImageMediaAssetId),
+          isNull(mediaAssets.deletedAt),
+        ),
+      )
       .where(
         and(
           eq(machines.code, code),
@@ -883,6 +1490,13 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
         ),
       )
       .orderBy(products.sortOrder, machineSlots.layerNo, machineSlots.cellNo);
+    return rows.map((row) => ({
+      ...row,
+      coverImageUrl: this.machineRenderableMediaAssetUrl(row.coverImageUrl),
+      tryOnSilhouetteUrl: this.machineRenderableMediaAssetUrl(
+        row.tryOnSilhouetteUrl,
+      ),
+    }));
   }
 
   async getStockSnapshotByMachineCode(code: string) {
@@ -895,10 +1509,54 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
         inventoryId: machinePlanogramSlots.inventoryId,
         capacity: machinePlanogramSlots.capacity,
         slotStatus: machineSlots.status,
+        openSaleSafetyBlockerState: sql<string | null>`(
+          select blocker_state
+          from (
+            select
+              ${machineRawStockMovements.saleSafetyBlockerState} as blocker_state,
+              ${machineRawStockMovements.receivedAt} as received_at
+            from ${machineRawStockMovements}
+            where ${machineRawStockMovements.machineId} = ${machines.id}
+              and ${machineRawStockMovements.saleSafetyBlockerSlotId} = ${machinePlanogramSlots.slotId}
+              and ${machineRawStockMovements.status} = 'reconciliation'
+              and ${machineRawStockMovements.platformReviewStatus} = 'open'
+              and ${machineRawStockMovements.saleSafetyBlockerState} is not null
+            union all
+            select
+              ${machineRawStockMovementConflicts.saleSafetyBlockerState} as blocker_state,
+              ${machineRawStockMovementConflicts.receivedAt} as received_at
+            from ${machineRawStockMovementConflicts}
+            where ${machineRawStockMovementConflicts.machineId} = ${machines.id}
+              and ${machineRawStockMovementConflicts.saleSafetyBlockerSlotId} = ${machinePlanogramSlots.slotId}
+              and ${machineRawStockMovementConflicts.status} = 'reconciliation'
+              and ${machineRawStockMovementConflicts.platformReviewStatus} = 'open'
+              and ${machineRawStockMovementConflicts.saleSafetyBlockerState} is not null
+          ) open_blockers
+          order by received_at desc
+          limit 1
+        )`,
         onHandQty: inventories.onHandQty,
         reservedQty: inventories.reservedQty,
         availableQty: sql<number>`case
           when ${machineSlots.status} = 'enabled'
+            and not exists (
+              select 1
+              from ${machineRawStockMovements}
+              where ${machineRawStockMovements.machineId} = ${machines.id}
+                and ${machineRawStockMovements.saleSafetyBlockerSlotId} = ${machinePlanogramSlots.slotId}
+                and ${machineRawStockMovements.status} = 'reconciliation'
+                and ${machineRawStockMovements.platformReviewStatus} = 'open'
+                and ${machineRawStockMovements.saleSafetyBlockerState} is not null
+            )
+            and not exists (
+              select 1
+              from ${machineRawStockMovementConflicts}
+              where ${machineRawStockMovementConflicts.machineId} = ${machines.id}
+                and ${machineRawStockMovementConflicts.saleSafetyBlockerSlotId} = ${machinePlanogramSlots.slotId}
+                and ${machineRawStockMovementConflicts.status} = 'reconciliation'
+                and ${machineRawStockMovementConflicts.platformReviewStatus} = 'open'
+                and ${machineRawStockMovementConflicts.saleSafetyBlockerState} is not null
+            )
           then ${inventories.onHandQty} - ${inventories.reservedQty}
           else 0
         end`,
@@ -963,6 +1621,7 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
         slotSalesState: platformSlotSalesState(
           row.slotStatus,
           row.availableQty,
+          row.openSaleSafetyBlockerState,
         ),
       })),
       serverTime: new Date().toISOString(),
@@ -1249,7 +1908,7 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
         lockedAt: machineClaimCodes.lockedAt,
         machineCode: machines.code,
         machineName: machines.name,
-        machineLocationText: machines.locationText,
+        machineLocationLabel: machines.locationLabel,
         machineStatus: machines.status,
         machineMqttClientId: machines.mqttClientId,
         machineSecretVersion: machines.secretVersion,
@@ -1356,7 +2015,7 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
         code: claimCode.machineCode,
         name: claimCode.machineName,
         status: claimCode.machineStatus,
-        locationText: claimCode.machineLocationText,
+        locationLabel: claimCode.machineLocationLabel,
       },
       credentials: {
         machineSecret: bundle.machineSecret,

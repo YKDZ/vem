@@ -43,6 +43,14 @@ describe("routeForStartup", () => {
       visionEnabled: true,
       visionWsUrl: "ws://127.0.0.1:7892/ws",
       visionRequestTimeoutMs: 8000,
+      tryOnCameraDeviceId: null,
+      audioCueSettings: {
+        enabled: false,
+        categories: {
+          presence: false,
+          transaction: false,
+        },
+      },
       kioskMode: false,
       stockMovementRetentionDays: 30,
     },
@@ -199,6 +207,51 @@ describe("routeForStartup", () => {
         },
       }),
     ).toMatchObject({ name: "result", params: { kind: "success" } });
+  });
+
+  it("routes unknown dispense result to manual handling", () => {
+    expect(
+      routeForStartup({
+        daemonAvailable: true,
+        health: healthBase,
+        config: configBase,
+        ready: {
+          ready: true,
+          canSell: true,
+          mode: "daemon",
+          blockingCodes: [],
+          blockingReasons: [],
+          degradedReasons: [],
+          suggestedRoute: "catalog",
+          updatedAt: "2026-01-01T00:00:00Z",
+        },
+        transaction: {
+          orderId: null,
+          orderNo: "ord",
+          productSummary: null,
+          paymentNo: null,
+          paymentMethod: null,
+          paymentProvider: null,
+          paymentUrl: null,
+          paymentStatus: null,
+          orderStatus: null,
+          totalAmountCents: null,
+          vending: {
+            commandNo: "cmd",
+            status: "result_unknown",
+            lastError: "unknown dispense result",
+          },
+          nextAction: "result_unknown",
+          maskedAuthCode: null,
+          paymentCodeAttempt: null,
+          expiresAt: null,
+          errorCode: null,
+          errorMessage: null,
+          operatorHint: null,
+          updatedAt: "2026-01-01T00:00:00Z",
+        },
+      }),
+    ).toMatchObject({ name: "result", params: { kind: "manual_handling" } });
   });
 
   it("routes offline based on ready snapshot", () => {

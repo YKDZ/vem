@@ -3,6 +3,7 @@ import type {
   MachineClaimCodePurpose,
   MachineClaimCodeState,
   MachineEnvironmentControlRequest,
+  ExternalNaturalEnvironment,
   MachineHeartbeatStatusPayload,
   MachineSlotStatus,
   MachineStatus,
@@ -10,11 +11,18 @@ import type {
 
 import { get, patch, post } from "./request";
 
+export type MachineGeoLocation = {
+  latitude: number;
+  longitude: number;
+  timezone: string;
+};
+
 export type Machine = {
   id: string;
   code: string;
   name: string;
-  locationText: string | null;
+  locationLabel: string | null;
+  geoLocation: MachineGeoLocation | null;
   status: MachineStatus;
   mqttClientId: string | null;
   lastSeenAt: string | null;
@@ -24,6 +32,23 @@ export type Machine = {
   latestHeartbeatReportedAt?: string | null;
   latestEnvironment?: MachineHeartbeatStatusPayload["environment"] | null;
   latestEnvironmentCommand?: MachineCommand | null;
+  productionPilotReadiness?: ProductionPilotReadiness | null;
+};
+
+export type ProductionPilotReadinessCheck = {
+  code: string;
+  label: string;
+  status: "ready" | "blocked" | "degraded" | "missing";
+  message: string;
+  operatorAction: string;
+};
+
+export type ProductionPilotReadiness = {
+  status: "ready" | "blocked" | "degraded";
+  checkedAt: string;
+  blockers: ProductionPilotReadinessCheck[];
+  degraded: ProductionPilotReadinessCheck[];
+  checks: ProductionPilotReadinessCheck[];
 };
 
 export type MachineCommand = {
@@ -75,7 +100,8 @@ export type GenerateMachineClaimCodeResult = MachineClaimCodeSnapshot & {
 export type CreateMachineInput = {
   code: string;
   name: string;
-  locationText?: string | null;
+  locationLabel?: string | null;
+  geoLocation?: MachineGeoLocation | null;
   status?: MachineStatus;
   mqttClientId?: string | null;
 };
@@ -103,6 +129,14 @@ export async function listMachines(
 
 export async function getMachine(id: string): Promise<Machine> {
   return await get<Machine>(`/machines/${id}`);
+}
+
+export async function getExternalNaturalEnvironment(
+  id: string,
+): Promise<ExternalNaturalEnvironment> {
+  return await get<ExternalNaturalEnvironment>(
+    `/machines/${id}/external-natural-environment`,
+  );
 }
 
 export async function createMachine(

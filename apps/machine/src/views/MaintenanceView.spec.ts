@@ -14,6 +14,7 @@ const {
   getSyncStatusMock,
   getScannerStatusMock,
   getVisionStatusMock,
+  getNaturalContextMock,
   getRemoteOpsStatusMock,
   getSaleViewMock,
   recordStockMovementMock,
@@ -32,6 +33,7 @@ const {
   getSyncStatusMock: vi.fn(),
   getScannerStatusMock: vi.fn(),
   getVisionStatusMock: vi.fn(),
+  getNaturalContextMock: vi.fn(),
   getRemoteOpsStatusMock: vi.fn(),
   getSaleViewMock: vi.fn(),
   recordStockMovementMock: vi.fn(),
@@ -64,6 +66,7 @@ vi.mock("@/daemon/client", () => ({
     getSyncStatus: getSyncStatusMock,
     getScannerStatus: getScannerStatusMock,
     getVisionStatus: getVisionStatusMock,
+    getNaturalContext: getNaturalContextMock,
     getRemoteOpsStatus: getRemoteOpsStatusMock,
     getSaleView: getSaleViewMock,
     recordStockMovement: recordStockMovementMock,
@@ -80,13 +83,16 @@ vi.mock("@/native/tauri", () => ({
   callTauriCommand: callTauriCommandMock,
 }));
 
+import { useAudioCueStore } from "@/stores/audio-cues";
 import { useCatalogStore } from "@/stores/catalog";
 import { useMachineStore } from "@/stores/machine";
+import { useVisionStore } from "@/stores/vision";
 
 import MaintenanceView from "./MaintenanceView.vue";
 
 let mountedApp: App<Element> | null = null;
 let pinia: ReturnType<typeof createPinia>;
+let originalMediaDevices: MediaDevices | undefined;
 
 function saleViewFixture() {
   return {
@@ -194,6 +200,7 @@ function provisionedConfigSummary(): ConfigSummary {
   return {
     public: {
       machineCode: "SECRET-MACHINE-CODE",
+      machineLocationLabel: "E2E lab",
       apiBaseUrl: "https://api.secret.example/v1",
       mqttUrl: "mqtt://secret-broker.example:1883",
       mqttUsername: "secret-mqtt-user",
@@ -211,6 +218,14 @@ function provisionedConfigSummary(): ConfigSummary {
       visionEnabled: true,
       visionWsUrl: "ws://secret-vision.example/ws",
       visionRequestTimeoutMs: 8000,
+      tryOnCameraDeviceId: null,
+      audioCueSettings: {
+        enabled: false,
+        categories: {
+          presence: false,
+          transaction: false,
+        },
+      },
       kioskMode: true,
       stockMovementRetentionDays: 30,
     },
@@ -265,6 +280,37 @@ beforeEach(() => {
     online: true,
     message: "vision ready",
     updatedAt: "2026-06-05T00:00:00.000Z",
+    latestDiagnosticPayload: null,
+  });
+  getNaturalContextMock.mockResolvedValue({
+    status: "ready",
+    machineCode: "SECRET-MACHINE-CODE",
+    checkedAt: "2026-06-30T14:00:00.000Z",
+    degraded: false,
+    customerFacingBlocked: false,
+    externalEnvironment: {
+      status: "ready",
+      machineId: "550e8400-e29b-41d4-a716-446655440000",
+      machineCode: "SECRET-MACHINE-CODE",
+      checkedAt: "2026-06-30T14:00:00.000Z",
+      localTime: {
+        timezone: "Asia/Shanghai",
+        localDate: "2026-06-30",
+        localClock: "22:00:00",
+      },
+      weather: {
+        temperatureCelsius: 28,
+        conditionText: "Sunny",
+        observedAt: "2026-06-30T13:50:00.000Z",
+      },
+      sun: {
+        sunriseAt: "2026-06-29T21:53:00.000Z",
+        sunsetAt: "2026-06-30T10:02:00.000Z",
+      },
+    },
+    localSiteSignals: {
+      status: "unavailable",
+    },
   });
   getRemoteOpsStatusMock.mockResolvedValue({
     lastPolledAt: "2026-06-05T00:00:00.000Z",
@@ -289,6 +335,7 @@ beforeEach(() => {
   downloadLogExportMock.mockResolvedValue(new Response("logs"));
   callTauriCommandMock.mockResolvedValue(undefined);
   useMachineStore().$patch({ configLoaded: true });
+  originalMediaDevices = navigator.mediaDevices;
 });
 
 afterEach(() => {
@@ -297,6 +344,10 @@ afterEach(() => {
   document.body.innerHTML = "";
   vi.unstubAllEnvs();
   vi.useRealTimers();
+  Object.defineProperty(navigator, "mediaDevices", {
+    configurable: true,
+    value: originalMediaDevices,
+  });
 });
 
 async function mountView(): Promise<HTMLElement> {
@@ -342,6 +393,70 @@ function hardwareAdapterSelect(host: HTMLElement): HTMLSelectElement {
   return select;
 }
 
+function selectByTest(host: HTMLElement, testId: string): HTMLSelectElement {
+  const select = host.querySelector(`[data-test='${testId}']`);
+  if (!(select instanceof HTMLSelectElement)) {
+    throw new Error(`${testId} select not found`);
+  }
+  return select;
+}
+
+function videoByTest(host: HTMLElement, testId: string): HTMLVideoElement {
+  const video = host.querySelector(`[data-test='${testId}']`);
+  if (!(video instanceof HTMLVideoElement)) {
+    throw new Error(`${testId} video not found`);
+  }
+  return video;
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+  return { promise, reject, resolve };
+}
+
+function mockMediaDevices(options: {
+  devices: MediaDeviceInfo[];
+  previewTracks?: MediaStreamTrack[];
+  previewStream?: MediaStream | Promise<MediaStream>;
+}) {
+  const permissionTrack = {
+    stop: vi.fn(),
+  } as unknown as MediaStreamTrack;
+  const previewTracks = options.previewTracks ?? [
+    { stop: vi.fn() } as unknown as MediaStreamTrack,
+  ];
+  const permissionStream = {
+    getTracks: () => [permissionTrack],
+  } as unknown as MediaStream;
+  const previewStream = {
+    getTracks: () => previewTracks,
+  } as unknown as MediaStream;
+  const getUserMedia = vi
+    .fn()
+    .mockResolvedValueOnce(permissionStream)
+    .mockImplementation(async () => options.previewStream ?? previewStream);
+  const enumerateDevices = vi.fn().mockResolvedValue(options.devices);
+  Object.defineProperty(navigator, "mediaDevices", {
+    configurable: true,
+    value: {
+      getUserMedia,
+      enumerateDevices,
+    },
+  });
+  return {
+    enumerateDevices,
+    getUserMedia,
+    permissionTrack,
+    previewStream,
+    previewTracks,
+  };
+}
+
 function movementTypeSelect(host: HTMLElement): HTMLSelectElement {
   const select = Array.from(host.querySelectorAll("select")).find((item) =>
     Array.from(item.options).some(
@@ -360,6 +475,7 @@ describe("MaintenanceView hardware config", () => {
 
     expect(host.textContent).toContain("计划补货");
     expect(host.textContent).toContain("盘点修正");
+    expect(host.textContent).toContain("Maintenance Console");
     expect(host.textContent).toContain("后端");
     expect(host.textContent).toContain("MQTT");
     expect(host.textContent).toContain("下位机");
@@ -400,6 +516,7 @@ describe("MaintenanceView hardware config", () => {
     const select = hardwareAdapterSelect(host);
 
     expect(host.textContent).toContain("machineCode");
+    expect(host.textContent).toContain("Machine Location Label");
     expect(host.textContent).toContain("machineSecret");
     expect(host.textContent).toContain("mqttSigningSecret");
     expect(host.textContent).toContain("mqttPassword");
@@ -408,6 +525,7 @@ describe("MaintenanceView hardware config", () => {
     expect(host.textContent).toContain("硬件适配器");
     expect(host.textContent).toContain("扫码器适配器");
     expect(host.textContent).toContain("visionWsUrl");
+    expect(host.textContent).toContain("Virtual Try-On Camera");
     expect(host.textContent).toContain("MockHardwareControls");
     expect(Array.from(select.options).map((option) => option.value)).toEqual([
       "mock",
@@ -415,6 +533,377 @@ describe("MaintenanceView hardware config", () => {
     ]);
     expect(host.textContent).not.toContain("bluetooth");
     expect(host.textContent).not.toContain("vendor_sdk");
+  });
+
+  it("enumerates, previews, and saves only the selected Virtual Try-On Camera device id", async () => {
+    initializeMock.mockResolvedValueOnce({
+      baseUrl: "http://127.0.0.1:7891",
+      token: "token-1",
+      source: "tauri_ready_file",
+      mock: false,
+      runtimeFlags: {
+        advancedMaintenanceConfig: true,
+      },
+    });
+    const stoppedPreviewTrack = {
+      stop: vi.fn(),
+    } as unknown as MediaStreamTrack;
+    const media = mockMediaDevices({
+      devices: [
+        {
+          kind: "videoinput",
+          deviceId: "try-on-camera-1",
+          groupId: "group-1",
+          label: "USB Try-On Camera",
+          toJSON: () => ({}),
+        } as MediaDeviceInfo,
+        {
+          kind: "videoinput",
+          deviceId: "try-on-camera-2",
+          groupId: "group-2",
+          label: "Ceiling Service Camera",
+          toJSON: () => ({}),
+        } as MediaDeviceInfo,
+      ],
+      previewTracks: [stoppedPreviewTrack],
+    });
+
+    const host = await mountView();
+
+    buttonByText(host, "授权并刷新摄像头").click();
+    await vi.waitFor(() => {
+      expect(media.enumerateDevices).toHaveBeenCalled();
+    });
+    // oxlint-disable-next-line typescript/unbound-method
+    const permissionTrackStop = vi.mocked(media.permissionTrack.stop);
+    expect(permissionTrackStop).toHaveBeenCalledOnce();
+    expect(host.textContent).toContain("USB Try-On Camera");
+    expect(host.textContent).toContain("Ceiling Service Camera");
+
+    const cameraSelect = selectByTest(host, "try-on-camera-select");
+    cameraSelect.value = "try-on-camera-1";
+    cameraSelect.dispatchEvent(new Event("change"));
+    await nextTick();
+
+    buttonByText(host, "预览摄像头").click();
+    await vi.waitFor(() => {
+      const getUserMedia = vi.mocked(media.getUserMedia);
+      expect(getUserMedia).toHaveBeenCalledWith({
+        audio: false,
+        video: { deviceId: { exact: "try-on-camera-1" } },
+      });
+    });
+
+    cameraSelect.value = "try-on-camera-2";
+    cameraSelect.dispatchEvent(new Event("change"));
+    await vi.waitFor(() => {
+      // oxlint-disable-next-line typescript/unbound-method
+      const stoppedPreviewTrackStop = vi.mocked(stoppedPreviewTrack.stop);
+      expect(stoppedPreviewTrackStop).toHaveBeenCalledOnce();
+    });
+
+    buttonByText(host, "保存配置并重新自检").click();
+    await vi.waitFor(() => {
+      expect(saveConfigMock).toHaveBeenCalled();
+    });
+    const publicConfig = saveConfigMock.mock.calls[0]?.[0].public;
+    expect(publicConfig).toMatchObject({
+      tryOnCameraDeviceId: "try-on-camera-2",
+    });
+    expect(publicConfig).not.toHaveProperty("tryOnCameraLabel");
+  });
+
+  it("renders unique live Virtual Try-On Camera labels for operator selection", async () => {
+    initializeMock.mockResolvedValueOnce({
+      baseUrl: "http://127.0.0.1:7891",
+      token: "token-1",
+      source: "tauri_ready_file",
+      mock: false,
+      runtimeFlags: {
+        advancedMaintenanceConfig: true,
+      },
+    });
+    const media = mockMediaDevices({
+      devices: [
+        {
+          kind: "videoinput",
+          deviceId: "camera-00000001",
+          groupId: "group-00000101",
+          label: "USB Camera",
+          toJSON: () => ({}),
+        } as MediaDeviceInfo,
+        {
+          kind: "videoinput",
+          deviceId: "camera-00000002",
+          groupId: "group-00000102",
+          label: "USB Camera",
+          toJSON: () => ({}),
+        } as MediaDeviceInfo,
+        {
+          kind: "videoinput",
+          deviceId: "camera-00000003",
+          groupId: "group-00000103",
+          label: "",
+          toJSON: () => ({}),
+        } as MediaDeviceInfo,
+      ],
+    });
+
+    const host = await mountView();
+
+    buttonByText(host, "授权并刷新摄像头").click();
+    await vi.waitFor(() => {
+      expect(media.enumerateDevices).toHaveBeenCalled();
+    });
+
+    const cameraSelect = selectByTest(host, "try-on-camera-select");
+    expect(
+      Array.from(cameraSelect.options).map((option) => option.text),
+    ).toEqual([
+      "不配置试衣摄像头",
+      "Camera 1 - USB Camera (id: ...00000001 / group: ...00000101)",
+      "Camera 2 - USB Camera (id: ...00000002 / group: ...00000102)",
+      "Camera 3 - Unlabeled camera (id: ...00000003 / group: ...00000103)",
+    ]);
+  });
+
+  it("clears the Virtual Try-On Camera video srcObject and stops tracks when closing preview", async () => {
+    initializeMock.mockResolvedValueOnce({
+      baseUrl: "http://127.0.0.1:7891",
+      token: "token-1",
+      source: "tauri_ready_file",
+      mock: false,
+      runtimeFlags: {
+        advancedMaintenanceConfig: true,
+      },
+    });
+    const stoppedPreviewTrack = {
+      stop: vi.fn(),
+    } as unknown as MediaStreamTrack;
+    const media = mockMediaDevices({
+      devices: [
+        {
+          kind: "videoinput",
+          deviceId: "try-on-camera-1",
+          groupId: "group-1",
+          label: "USB Try-On Camera",
+          toJSON: () => ({}),
+        } as MediaDeviceInfo,
+      ],
+      previewTracks: [stoppedPreviewTrack],
+    });
+
+    const host = await mountView();
+
+    buttonByText(host, "授权并刷新摄像头").click();
+    await vi.waitFor(() => {
+      expect(media.enumerateDevices).toHaveBeenCalled();
+    });
+    const cameraSelect = selectByTest(host, "try-on-camera-select");
+    cameraSelect.value = "try-on-camera-1";
+    cameraSelect.dispatchEvent(new Event("change"));
+    await nextTick();
+
+    buttonByText(host, "预览摄像头").click();
+    const previewVideo = videoByTest(host, "try-on-camera-preview");
+    await vi.waitFor(() => {
+      expect(previewVideo.srcObject).toBe(media.previewStream);
+    });
+
+    buttonByText(host, "关闭预览").click();
+    await nextTick();
+
+    // oxlint-disable-next-line typescript/unbound-method
+    const stoppedPreviewTrackStop = vi.mocked(stoppedPreviewTrack.stop);
+    expect(stoppedPreviewTrackStop).toHaveBeenCalledOnce();
+    expect(previewVideo.srcObject).toBeNull();
+  });
+
+  it("stops a stale pending Virtual Try-On Camera stream when selection changes before preview resolves", async () => {
+    initializeMock.mockResolvedValueOnce({
+      baseUrl: "http://127.0.0.1:7891",
+      token: "token-1",
+      source: "tauri_ready_file",
+      mock: false,
+      runtimeFlags: {
+        advancedMaintenanceConfig: true,
+      },
+    });
+    const stalePreviewTrack = {
+      stop: vi.fn(),
+    } as unknown as MediaStreamTrack;
+    const stalePreviewStream = {
+      getTracks: () => [stalePreviewTrack],
+    } as unknown as MediaStream;
+    const pendingPreview = deferred<MediaStream>();
+    const media = mockMediaDevices({
+      devices: [
+        {
+          kind: "videoinput",
+          deviceId: "try-on-camera-1",
+          groupId: "group-1",
+          label: "USB Try-On Camera",
+          toJSON: () => ({}),
+        } as MediaDeviceInfo,
+        {
+          kind: "videoinput",
+          deviceId: "try-on-camera-2",
+          groupId: "group-2",
+          label: "Ceiling Service Camera",
+          toJSON: () => ({}),
+        } as MediaDeviceInfo,
+      ],
+      previewStream: pendingPreview.promise,
+    });
+
+    const host = await mountView();
+
+    buttonByText(host, "授权并刷新摄像头").click();
+    await vi.waitFor(() => {
+      expect(media.enumerateDevices).toHaveBeenCalled();
+    });
+    const cameraSelect = selectByTest(host, "try-on-camera-select");
+    cameraSelect.value = "try-on-camera-1";
+    cameraSelect.dispatchEvent(new Event("change"));
+    await nextTick();
+
+    buttonByText(host, "预览摄像头").click();
+    await vi.waitFor(() => {
+      expect(media.getUserMedia).toHaveBeenLastCalledWith({
+        audio: false,
+        video: { deviceId: { exact: "try-on-camera-1" } },
+      });
+    });
+
+    const previewVideo = videoByTest(host, "try-on-camera-preview");
+    cameraSelect.value = "try-on-camera-2";
+    cameraSelect.dispatchEvent(new Event("change"));
+    await nextTick();
+
+    pendingPreview.resolve(stalePreviewStream);
+    await vi.waitFor(() => {
+      // oxlint-disable-next-line typescript/unbound-method
+      const stalePreviewTrackStop = vi.mocked(stalePreviewTrack.stop);
+      expect(stalePreviewTrackStop).toHaveBeenCalledOnce();
+    });
+    expect(previewVideo.srcObject).toBeNull();
+  });
+
+  it("stops a pending Virtual Try-On Camera stream when the view unmounts before preview resolves", async () => {
+    initializeMock.mockResolvedValueOnce({
+      baseUrl: "http://127.0.0.1:7891",
+      token: "token-1",
+      source: "tauri_ready_file",
+      mock: false,
+      runtimeFlags: {
+        advancedMaintenanceConfig: true,
+      },
+    });
+    const stalePreviewTrack = {
+      stop: vi.fn(),
+    } as unknown as MediaStreamTrack;
+    const stalePreviewStream = {
+      getTracks: () => [stalePreviewTrack],
+    } as unknown as MediaStream;
+    const pendingPreview = deferred<MediaStream>();
+    const media = mockMediaDevices({
+      devices: [
+        {
+          kind: "videoinput",
+          deviceId: "try-on-camera-1",
+          groupId: "group-1",
+          label: "USB Try-On Camera",
+          toJSON: () => ({}),
+        } as MediaDeviceInfo,
+      ],
+      previewStream: pendingPreview.promise,
+    });
+
+    const host = await mountView();
+
+    buttonByText(host, "授权并刷新摄像头").click();
+    await vi.waitFor(() => {
+      expect(media.enumerateDevices).toHaveBeenCalled();
+    });
+    const cameraSelect = selectByTest(host, "try-on-camera-select");
+    cameraSelect.value = "try-on-camera-1";
+    cameraSelect.dispatchEvent(new Event("change"));
+    await nextTick();
+
+    buttonByText(host, "预览摄像头").click();
+    await vi.waitFor(() => {
+      expect(media.getUserMedia).toHaveBeenLastCalledWith({
+        audio: false,
+        video: { deviceId: { exact: "try-on-camera-1" } },
+      });
+    });
+    const previewVideo = videoByTest(host, "try-on-camera-preview");
+
+    mountedApp?.unmount();
+    mountedApp = null;
+    pendingPreview.resolve(stalePreviewStream);
+
+    await vi.waitFor(() => {
+      // oxlint-disable-next-line typescript/unbound-method
+      const stalePreviewTrackStop = vi.mocked(stalePreviewTrack.stop);
+      expect(stalePreviewTrackStop).toHaveBeenCalledOnce();
+    });
+    expect(previewVideo.srcObject).toBeNull();
+  });
+
+  it("keeps an invalid saved Virtual Try-On Camera explicit instead of falling back to an available camera", async () => {
+    initializeMock.mockResolvedValueOnce({
+      baseUrl: "http://127.0.0.1:7891",
+      token: "token-1",
+      source: "tauri_ready_file",
+      mock: false,
+      runtimeFlags: {
+        advancedMaintenanceConfig: true,
+      },
+    });
+    getConfigMock.mockResolvedValueOnce({
+      ...provisionedConfigSummary(),
+      public: {
+        ...provisionedConfigSummary().public,
+        tryOnCameraDeviceId: "missing-camera",
+      },
+    });
+    useMachineStore().$patch({
+      configSummary: null,
+      configLoaded: false,
+    });
+    mockMediaDevices({
+      devices: [
+        {
+          kind: "videoinput",
+          deviceId: "available-camera",
+          groupId: "group-1",
+          label: "Available Camera",
+          toJSON: () => ({}),
+        } as MediaDeviceInfo,
+      ],
+    });
+
+    const host = await mountView();
+
+    buttonByText(host, "授权并刷新摄像头").click();
+    await vi.waitFor(() => {
+      expect(host.textContent).toContain("Available Camera");
+    });
+
+    const cameraSelect = selectByTest(host, "try-on-camera-select");
+    expect(cameraSelect.value).toBe("missing-camera");
+    expect(host.textContent).toContain(
+      "Saved camera not currently available (missing-camera)",
+    );
+
+    buttonByText(host, "保存配置并重新自检").click();
+    await vi.waitFor(() => {
+      expect(saveConfigMock).toHaveBeenCalled();
+    });
+    expect(saveConfigMock.mock.calls[0]?.[0].public).toMatchObject({
+      tryOnCameraDeviceId: "missing-camera",
+    });
   });
 
   it("keeps advanced debug configuration hidden when daemon disables it even if Vite env enables it", async () => {
@@ -446,6 +935,7 @@ describe("MaintenanceView hardware config", () => {
     const host = await mountView();
 
     expect(host.textContent).not.toContain("SECRET-MACHINE-CODE");
+    expect(host.textContent).not.toContain("E2E lab");
     expect(host.textContent).not.toContain("https://api.secret.example/v1");
     expect(host.textContent).not.toContain("mqtt://secret-broker.example:1883");
     expect(host.textContent).not.toContain("secret-mqtt-user");
@@ -485,7 +975,376 @@ describe("MaintenanceView hardware config", () => {
     });
   });
 
+  it("shows vision runtime status and only the latest diagnostic payload", async () => {
+    getVisionStatusMock.mockResolvedValue({
+      enabled: true,
+      online: true,
+      message: "vision ready",
+      updatedAt: "2026-06-05T00:00:00.000Z",
+      latestDiagnosticPayload: {
+        type: "vision.profile_result",
+        payload: {
+          eventId: "VISION-LATEST-002",
+          detectedAt: "2026-06-05T00:00:02.000Z",
+          profile: {
+            personPresent: true,
+            heightCm: 172,
+          },
+          quality: {
+            overall: "good",
+            warnings: [],
+          },
+        },
+      },
+    });
+
+    const host = await mountView();
+
+    expect(host.textContent).toContain("Vision Runtime Status");
+    expect(host.textContent).toContain("在线 · vision ready");
+    expect(host.textContent).toContain("Latest Vision Diagnostic Payload");
+    expect(host.textContent).toContain("VISION-LATEST-002");
+    expect(host.textContent).toContain('"personPresent": true');
+    expect(host.textContent).not.toContain("VISION-OLD-001");
+    expect(
+      host.querySelectorAll("[data-test='vision-diagnostic-payload']"),
+    ).toHaveLength(1);
+  });
+
+  it("shows operator-only presence interaction status from the latest vision payload", async () => {
+    getVisionStatusMock.mockResolvedValue({
+      enabled: true,
+      online: true,
+      message: "vision ready",
+      updatedAt: "2026-06-05T00:00:00.000Z",
+      latestDiagnosticPayload: {
+        type: "vision.profile_result",
+        payload: {
+          eventId: "VISION-PRESENCE-STATUS-001",
+          detectedAt: "2026-06-05T00:00:05.000Z",
+          profile: {
+            personPresent: true,
+            heightCm: 172,
+            confidence: 0.92,
+          },
+          quality: {
+            overall: "good",
+            warnings: [],
+          },
+        },
+      },
+    });
+
+    const host = await mountView();
+
+    expect(host.textContent).toContain("Presence Interaction");
+    expect(host.textContent).toContain(
+      "有人 · unknown · profile usable · 2026-06-05T00:00:05.000Z",
+    );
+    expect(host.textContent).toContain("VISION-PRESENCE-STATUS-001");
+  });
+
+  it("shows Natural Context Degradation without blocking customer catalog return", async () => {
+    getNaturalContextMock.mockResolvedValue({
+      status: "unconfigured",
+      machineCode: "MACHINE-NATURAL",
+      checkedAt: "2026-06-30T14:00:00.000Z",
+      degraded: true,
+      customerFacingBlocked: false,
+      externalEnvironment: {
+        status: "unconfigured",
+        machineId: "550e8400-e29b-41d4-a716-446655440000",
+        machineCode: "MACHINE-NATURAL",
+        checkedAt: "2026-06-30T14:00:00.000Z",
+        diagnostic: {
+          reason: "machine_geo_location_missing",
+          message: "Machine Geo Location is not configured",
+        },
+      },
+      localSiteSignals: {
+        status: "unavailable",
+      },
+    });
+
+    const host = await mountView();
+
+    expect(getNaturalContextMock).toHaveBeenCalled();
+    expect(host.textContent).toContain("Natural Context");
+    expect(host.textContent).toContain("Degraded · unconfigured");
+    expect(host.textContent).toContain(
+      "Machine Geo Location is not configured",
+    );
+    expect(host.textContent).not.toContain("Natural Context Readiness failure");
+
+    buttonByText(host, "回到目录").click();
+    await vi.waitFor(() => {
+      expect(routerReplaceMock).toHaveBeenCalledWith("/catalog");
+    });
+  });
+
+  it("shows Machine Audio Cue settings with global and category state", async () => {
+    useMachineStore().$patch({
+      configSummary: {
+        ...provisionedConfigSummary(),
+        public: {
+          ...provisionedConfigSummary().public,
+          audioCueSettings: {
+            enabled: true,
+            categories: {
+              presence: true,
+              transaction: false,
+            },
+          },
+        },
+      },
+      configLoaded: true,
+    });
+
+    const host = await mountView();
+
+    expect(host.textContent).toContain("Audio Cue Settings");
+    expect(host.textContent).toContain("Machine Audio Cue");
+    expect(host.textContent).toContain("Global audio cues · Enabled");
+    expect(host.textContent).toContain("Presence audio cues · Enabled");
+    expect(host.textContent).toContain("Transaction audio cues · Disabled");
+    expect(host.textContent).not.toContain("来人音频提示");
+  });
+
+  it("shows latest Machine Audio Cue diagnostic details without full history", async () => {
+    const audioCueStore = useAudioCueStore();
+    audioCueStore.recordSuppressedCue({
+      category: "presence",
+      cueKey: "presence.detected",
+      message: "global audio cues disabled",
+      recordedAt: "2026-06-29T06:59:00.000Z",
+    });
+    audioCueStore.applySettings({
+      enabled: true,
+      categories: { presence: false, transaction: true },
+    });
+    const request = audioCueStore.requestCue({
+      category: "transaction",
+      cueKey: "payment.succeeded",
+      orderKey: "ORDER-107",
+      requestedAt: "2026-06-29T07:00:00.000Z",
+      nowMs: 1_000,
+    });
+    audioCueStore.recordPlaybackOutcome({
+      requestId: request?.requestId ?? "",
+      outcome: "played",
+      message: "playback completed",
+      recordedAt: "2026-06-29T07:00:01.000Z",
+    });
+
+    const host = await mountView();
+
+    expect(host.textContent).toContain("Latest Machine Audio Cue Diagnostic");
+    expect(host.textContent).toContain("Requested cue meaning");
+    expect(host.textContent).toContain("Payment succeeded");
+    expect(host.textContent).toContain("Category · Transaction audio cue");
+    expect(host.textContent).toContain("Playback outcome · Played");
+    expect(host.textContent).toContain(
+      "Suppression/drop reason · playback completed",
+    );
+    expect(host.textContent).toContain("Timestamp · 2026-06-29T07:00:01.000Z");
+    expect(host.textContent).toContain(
+      "Duplicate-suppression order key (debug only) · ORDER-107",
+    );
+    expect(host.textContent).toContain("ORDER-107");
+    expect(host.textContent).not.toContain("presence.detected");
+    expect(
+      host.querySelectorAll("[data-test='audio-cue-diagnostic']"),
+    ).toHaveLength(1);
+  });
+
+  it("labels playback failures as local audio diagnostics only", async () => {
+    const audioCueStore = useAudioCueStore();
+    audioCueStore.applySettings({
+      enabled: true,
+      categories: { presence: false, transaction: true },
+    });
+    const request = audioCueStore.requestCue({
+      category: "transaction",
+      cueKey: "dispense.failed",
+      orderKey: "ORDER-108",
+      requestedAt: "2026-06-29T07:05:00.000Z",
+      nowMs: 2_000,
+    });
+    audioCueStore.recordPlaybackOutcome({
+      requestId: request?.requestId ?? "",
+      outcome: "failed",
+      message: "NotAllowedError: user gesture required",
+      recordedAt: "2026-06-29T07:05:01.000Z",
+    });
+
+    const host = await mountView();
+
+    expect(host.textContent).toContain(
+      "Playback outcome · Local audio playback failed",
+    );
+    expect(host.textContent).toContain(
+      "Suppression/drop reason · NotAllowedError: user gesture required",
+    );
+    expect(host.textContent).not.toContain("Payment failed");
+    expect(host.textContent).not.toContain("Readiness failure");
+  });
+
+  it.each([
+    ["dispense.succeeded", "Dispense succeeded"],
+    ["dispense.failed", "Dispense failed"],
+    ["refund.pending", "Refund pending"],
+  ] as const)(
+    "labels the real production cue key %s",
+    async (cueKey, expectedLabel) => {
+      const audioCueStore = useAudioCueStore();
+      audioCueStore.recordSuppressedCue({
+        category: "transaction",
+        cueKey,
+        orderKey: "ORDER-REAL-CUE",
+        message: "duplicate transaction cue",
+        recordedAt: "2026-06-29T07:07:00.000Z",
+      });
+
+      const host = await mountView();
+
+      expect(host.textContent).toContain(expectedLabel);
+      expect(host.textContent).toContain(
+        "Duplicate-suppression order key (debug only) · ORDER-REAL-CUE",
+      );
+    },
+  );
+
+  it("shows suppression or drop reason for skipped Machine Audio Cues", async () => {
+    const audioCueStore = useAudioCueStore();
+    audioCueStore.recordSuppressedCue({
+      category: "presence",
+      cueKey: "presence.detected",
+      message: "presence audio cue category disabled",
+      recordedAt: "2026-06-29T07:10:00.000Z",
+    });
+
+    const host = await mountView();
+
+    expect(host.textContent).toContain("Presence detected");
+    expect(host.textContent).toContain("Category · Presence audio cue");
+    expect(host.textContent).toContain("Playback outcome · Skipped");
+    expect(host.textContent).toContain(
+      "Suppression/drop reason · presence audio cue category disabled",
+    );
+    expect(host.textContent).toContain("Timestamp · 2026-06-29T07:10:00.000Z");
+  });
+
+  it("does not couple maintenance interactions to customer-facing audio cue playback", async () => {
+    const audioCueStore = useAudioCueStore();
+    audioCueStore.applySettings({
+      enabled: true,
+      categories: { presence: true, transaction: true },
+    });
+
+    const host = await mountView();
+
+    buttonByText(host, "刷新诊断").click();
+    buttonByText(host, "硬件自检").click();
+    buttonByText(host, "视觉状态").click();
+    buttonByText(host, "导出日志").click();
+    buttonByText(host, "回到目录").click();
+
+    await vi.waitFor(() => {
+      expect(getReadyMock).toHaveBeenCalled();
+      expect(runHardwareSelfCheckMock).toHaveBeenCalledOnce();
+      expect(getVisionStatusMock).toHaveBeenCalled();
+      expect(downloadLogExportMock).toHaveBeenCalledOnce();
+      expect(routerReplaceMock).toHaveBeenCalledWith("/catalog");
+    });
+    expect(audioCueStore.playback.status).toBe("idle");
+    expect(audioCueStore.playback.request).toBeNull();
+    expect(audioCueStore.latestPlaybackDiagnostic).toBeNull();
+    expect(host.textContent).not.toContain("Payment failed");
+    expect(host.textContent).not.toContain("Dispensing failed");
+    expect(host.textContent).not.toContain("Refund failed");
+    expect(host.textContent).not.toContain("Readiness failure");
+  });
+
+  it("clears stale real-time profile result when daemon status has no payload", async () => {
+    useVisionStore().applyLatestProfileResult({
+      eventId: "VISION-REALTIME-003",
+      detectedAt: "2026-06-05T00:00:03.000Z",
+      profile: {
+        personPresent: true,
+        heightCm: 168,
+        bodyType: "regular",
+        confidence: 0.88,
+      },
+      quality: {
+        overall: "good",
+        warnings: [],
+      },
+    });
+
+    const host = await mountView();
+
+    expect(host.textContent).not.toContain("VISION-REALTIME-003");
+    expect(host.textContent).not.toContain('"heightCm": 168');
+    expect(host.textContent).toContain(
+      "无人 · none · profile unusable · not seen",
+    );
+    expect(host.textContent).toContain("No diagnostic payload returned yet.");
+  });
+
+  it("bounds the displayed latest diagnostic payload", async () => {
+    getVisionStatusMock.mockResolvedValue({
+      enabled: true,
+      online: true,
+      message: "vision ready",
+      updatedAt: "2026-06-05T00:00:00.000Z",
+      latestDiagnosticPayload: {
+        type: "vision.profile_result",
+        payload: {
+          eventId: "VISION-HUGE-004",
+          detectedAt: "2026-06-05T00:00:04.000Z",
+          profile: {
+            personPresent: true,
+            heightCm: 172,
+          },
+          quality: {
+            overall: "good",
+            warnings: ["x".repeat(20_000)],
+          },
+        },
+      },
+    });
+
+    const host = await mountView();
+    const payload = host.querySelector(
+      "[data-test='vision-diagnostic-payload']",
+    );
+    if (!(payload instanceof HTMLElement)) {
+      throw new Error("vision diagnostic payload not found");
+    }
+
+    expect(payload.textContent).toContain("VISION-HUGE-004");
+    expect(payload.textContent).toContain("truncated");
+    expect(payload.textContent?.length ?? 0).toBeLessThan(14_000);
+    expect(payload.textContent).not.toContain("x".repeat(5000));
+  });
+
+  it("does not expose Windows desktop exit in production customer maintenance", async () => {
+    const host = await mountView();
+
+    expect(host.textContent).not.toContain("回到 Windows 桌面");
+    expect(callTauriCommandMock).not.toHaveBeenCalled();
+  });
+
   it("returns to the Windows desktop through the restricted Tauri command", async () => {
+    initializeMock.mockResolvedValueOnce({
+      baseUrl: "http://127.0.0.1:7891",
+      token: "token-1",
+      source: "tauri_ready_file",
+      mock: false,
+      runtimeFlags: {
+        advancedMaintenanceConfig: true,
+      },
+    });
     const host = await mountView();
 
     buttonByText(host, "回到 Windows 桌面").click();
@@ -567,6 +1426,11 @@ describe("MaintenanceView hardware config", () => {
       ],
       blockingReasons: [
         {
+          code: "LOWER_CONTROLLER_UNAVAILABLE",
+          component: "hardware",
+          message: "lower controller unavailable",
+        },
+        {
           code: "WHOLE_MACHINE_HARDWARE_FAULT",
           component: "hardware",
           message:
@@ -581,11 +1445,34 @@ describe("MaintenanceView hardware config", () => {
       ),
     );
     const host = await mountView();
+    const clearButton = buttonByText(host, "确认解除整机锁");
 
-    buttonByText(host, "确认解除整机锁").click();
+    expect(host.textContent).toContain("整机维护锁");
+    expect(host.textContent).toContain("下位机未在线");
+    expect(host.textContent).toContain("处理卡货或机械故障");
+    expect(clearButton.disabled).toBe(true);
+
+    buttonByText(host, "硬件自检").click();
+    await vi.waitFor(() => {
+      expect(host.textContent).toContain("下位机自检：通过");
+    });
+    expect(clearButton.disabled).toBe(true);
+
+    const note = host.querySelector("textarea");
+    if (!(note instanceof HTMLTextAreaElement)) {
+      throw new Error("operator note textarea not found");
+    }
+    note.value = "现场复位下位机后，自检通过";
+    note.dispatchEvent(new Event("input"));
+    await nextTick();
+    expect(clearButton.disabled).toBe(false);
+
+    clearButton.click();
 
     await vi.waitFor(() => {
-      expect(clearWholeMachineMaintenanceLockMock).toHaveBeenCalledOnce();
+      expect(clearWholeMachineMaintenanceLockMock).toHaveBeenCalledWith(
+        "现场复位下位机后，自检通过",
+      );
       expect(host.textContent).toContain(
         "lower controller must be healthy before clearing whole-machine lock",
       );

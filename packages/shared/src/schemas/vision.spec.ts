@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   VISION_PROTOCOL,
   visionErrorMessageSchema,
+  visionPersonDepartedMessageSchema,
+  visionPresenceStatusMessageSchema,
   visionProfileResultMessageSchema,
   visionServerMessageSchema,
   visionClientMessageSchema,
@@ -23,12 +25,13 @@ describe("vision protocol schemas", () => {
         clientRole: "machine",
         machineCode: "M001",
         protocolVersion: 1,
-        capabilities: ["profile_push"],
+        capabilities: ["profile_push", "presence_status", "person_departed"],
       },
     });
 
     expect(message.type).toBe("vision.hello");
     expect(message.payload.capabilities).toContain("profile_push");
+    expect(message.payload.capabilities).toContain("person_departed");
   });
 
   it("parses a pushed profile result", () => {
@@ -56,6 +59,156 @@ describe("vision protocol schemas", () => {
     expect(message.payload.profile.heightCm).toBe(172);
   });
 
+  it("parses a pushed presence status from the real vision service", () => {
+    const message = visionPresenceStatusMessageSchema.parse({
+      ...BASE_ENVELOPE,
+      type: "vision.presence_status",
+      payload: {
+        eventId: "presence-event-001",
+        state: "approach",
+        reason: "person_present_but_not_close",
+        detectedAt: "2026-06-29T10:00:00.000Z",
+        personPresent: true,
+        closeNow: false,
+        close: false,
+        closeTrigger: null,
+        proximity: {
+          present: true,
+          close: false,
+          closeNow: false,
+          largestPersonRatio: 0.12,
+        },
+      },
+    });
+
+    expect(message.type).toBe("vision.presence_status");
+    expect(message.payload.state).toBe("approach");
+    expect(message.payload.personPresent).toBe(true);
+  });
+
+  it("parses presence occupancy without requiring a precise headcount", () => {
+    const message = visionPresenceStatusMessageSchema.parse({
+      ...BASE_ENVELOPE,
+      type: "vision.presence_status",
+      payload: {
+        eventId: "presence-event-multiple",
+        state: "approach",
+        reason: "multiple_people_present",
+        detectedAt: "2026-06-29T10:00:00.000Z",
+        personPresent: true,
+        occupancy: {
+          state: "multiple",
+          confidence: 0.89,
+        },
+        proximity: {
+          present: true,
+        },
+      },
+    });
+
+    expect(message.payload.personPresent).toBe(true);
+    expect(message.payload.occupancy?.state).toBe("multiple");
+  });
+
+  it("parses a pushed person departed event", () => {
+    const message = visionPersonDepartedMessageSchema.parse({
+      ...BASE_ENVELOPE,
+      type: "vision.person_departed",
+      payload: {
+        eventId: "departure-event-001",
+        detectedAt: "2026-06-29T10:03:30.000Z",
+        lastSeenAt: "2026-06-29T10:03:10.000Z",
+        reason: "left_frame",
+        absenceDurationMs: 1200,
+      },
+    });
+
+    expect(message.type).toBe("vision.person_departed");
+    expect(message.payload.reason).toBe("left_frame");
+    expect(message.payload.lastSeenAt).toBe("2026-06-29T10:03:10.000Z");
+  });
+
+  it("marks multiple-person profile results as machine-readable unusable", () => {
+    const message = visionProfileResultMessageSchema.parse({
+      ...BASE_ENVELOPE,
+      type: "vision.profile_result",
+      payload: {
+        eventId: "vision-event-multiple",
+        detectedAt: "2026-06-29T10:00:00.000Z",
+        occupancy: {
+          state: "multiple",
+          confidence: 0.91,
+        },
+        profile: {
+          personPresent: true,
+          heightCm: 172,
+          bodyType: "regular",
+          confidence: 0.86,
+        },
+        quality: {
+          overall: "poor",
+          warnings: ["multiple_people"],
+          profileUsable: false,
+          notUsableReason: "multiple_people",
+        },
+      },
+    });
+
+    expect(message.payload.occupancy?.state).toBe("multiple");
+    expect(message.payload.quality.profileUsable).toBe(false);
+    expect(message.payload.quality.notUsableReason).toBe("multiple_people");
+  });
+
+  it("rejects malformed presence status payloads", () => {
+    expect(() =>
+      visionServerMessageSchema.parse({
+        ...BASE_ENVELOPE,
+        type: "vision.presence_status",
+        payload: {
+          eventId: "presence-event-001",
+          state: "empty",
+          detectedAt: "2026-06-29T10:00:00.000Z",
+        },
+      }),
+    ).toThrow();
+  });
+
+  it("passes through real vision profile fields but strips raw images and identity fields", () => {
+    const message = visionProfileResultMessageSchema.parse({
+      ...BASE_ENVELOPE,
+      type: "vision.profile_result",
+      payload: {
+        eventId: "vision-event-raw",
+        detectedAt: "2026-05-29T12:00:00.000Z",
+        profile: {
+          personPresent: true,
+          heightCm: 172,
+          bodyType: "regular",
+          confidence: 0.86,
+          shoulderWidthCm: 43,
+          ageRange: "adult",
+          gender: "male",
+          rawImageBase64: "data:image/jpeg;base64,raw",
+          identity: { id: "customer-1" },
+          faceEmbedding: [0.1, 0.2],
+        },
+        quality: {
+          overall: "good",
+          warnings: [],
+        },
+      },
+    });
+
+    expect(JSON.stringify(message.payload.profile)).not.toContain("raw");
+    expect(JSON.stringify(message.payload.profile)).not.toContain("identity");
+    expect(JSON.stringify(message.payload.profile)).not.toContain(
+      "faceEmbedding",
+    );
+    expect(message.payload.profile.shoulderWidthCm).toBe(43);
+    expect(message.payload.profile.ageRange).toBe("adult");
+    expect(message.payload.profile.gender).toBe("male");
+  });
+
   it("rejects impossible height values", () => {
     expect(() =>
       visionServerMessageSchema.parse({
@@ -77,7 +230,7 @@ describe("vision protocol schemas", () => {
     ).toThrow();
   });
 
-  it("accepts null for heightCm and shoulderWidthCm when out of range", () => {
+  it("accepts null heightCm and real optional profile fields", () => {
     const message = visionProfileResultMessageSchema.parse({
       ...BASE_ENVELOPE,
       type: "vision.profile_result",

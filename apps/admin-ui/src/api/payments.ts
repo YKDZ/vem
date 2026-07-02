@@ -6,10 +6,14 @@ export type Payment = {
   id: string;
   paymentNo: string;
   orderId: string;
+  orderNo: string;
   providerCode: string;
   method: string;
   status: string;
   amountCents: number;
+  isDrill?: boolean;
+  isTest?: boolean;
+  scenario?: string | null;
   expiresAt: string | null;
   paidAt: string | null;
   failedReason: string | null;
@@ -65,6 +69,8 @@ export type PaymentProviderNotifyUrlCheck = {
 export type PaymentEvent = {
   id: string;
   paymentId: string;
+  orderId: string;
+  orderNo: string;
   paymentNo: string;
   providerId: string;
   providerCode: string;
@@ -160,6 +166,7 @@ export async function listPaymentProviderNotifyUrlChecks(): Promise<
 
 export type WebhookAttempt = {
   id: string;
+  orderId: string | null;
   providerCode: string | null;
   eventKind: string;
   eventType: string | null;
@@ -179,6 +186,8 @@ export type WebhookAttempt = {
 export type ReconciliationAttempt = {
   id: string;
   paymentId: string;
+  orderId: string;
+  orderNo: string;
   paymentNo: string;
   providerCode: string;
   trigger: string;
@@ -193,24 +202,48 @@ export type ReconciliationAttempt = {
   createdAt: string;
 };
 
+export type RefundReconciliationAttempt = {
+  trigger: string;
+  attemptNo: number;
+  status: string;
+  providerRefundStatus: string | null;
+  providerRefundNo: string | null;
+  errorCode: string | null;
+  errorMessage: string | null;
+  nextRetryAt: string | null;
+  startedAt: string;
+  finishedAt: string | null;
+  createdAt: string;
+};
+
 export type Refund = {
   id: string;
   refundNo: string;
   paymentId: string;
+  orderId: string;
   paymentNo: string;
   orderNo: string;
   providerCode: string;
   status: string;
   amountCents: number;
+  isDrill?: boolean;
+  isTest?: boolean;
+  scenario?: string | null;
   reason: string;
   providerRefundNo: string | null;
   refundedAt: string | null;
+  latestReconciliationStatus: string | null;
+  latestProviderRefundStatus: string | null;
+  latestReconciliationError: string | null;
+  latestReconciliationAt: string | null;
+  reconciliationAttempts: RefundReconciliationAttempt[];
   createdAt: string;
   updatedAt: string;
 };
 
 export type PaymentCodeAttempt = {
   id: string;
+  orderId: string;
   orderNo: string;
   paymentNo: string;
   providerCode: "wechat_pay" | "alipay";
@@ -219,6 +252,8 @@ export type PaymentCodeAttempt = {
   status: string;
   authCodeMasked: string;
   source: string;
+  providerTradeNo: string | null;
+  providerStatus: string | null;
   failureCode: string | null;
   failureMessage: string | null;
   manualReason: string | null;
@@ -252,6 +287,20 @@ export async function listRefunds(
   return await get<PageResult<Refund>>("/payments/refunds", { params: query });
 }
 
+export async function queryRefund(
+  refundId: string,
+  reason?: string,
+): Promise<{
+  status: string;
+  reconciled: boolean;
+  reason?: string;
+}> {
+  return await post<{ status: string; reconciled: boolean; reason?: string }>(
+    `/payments/refunds/${refundId}/query`,
+    { reason: reason ?? "admin_refund_status_query" },
+  );
+}
+
 export async function listPaymentCodeAttempts(
   query?: Record<string, unknown>,
 ): Promise<PageResult<PaymentCodeAttempt>> {
@@ -261,26 +310,39 @@ export async function listPaymentCodeAttempts(
   );
 }
 
-export async function queryPaymentCodeAttempt(id: string): Promise<void> {
-  await post<void>(`/payments/payment-code-attempts/${id}/query`);
+export async function queryPaymentCodeAttempt(
+  id: string,
+  reason = "admin_payment_code_query",
+): Promise<PaymentCodeAttempt> {
+  return await post<PaymentCodeAttempt>(
+    `/payments/payment-code-attempts/${id}/query`,
+    { reason },
+  );
 }
 
 export async function reversePaymentCodeAttempt(
   id: string,
   reason: string,
-): Promise<void> {
-  await post<void>(`/payments/payment-code-attempts/${id}/reverse`, {
-    reason,
-  });
+): Promise<PaymentCodeAttempt> {
+  return await post<PaymentCodeAttempt>(
+    `/payments/payment-code-attempts/${id}/reverse`,
+    {
+      reason,
+    },
+  );
 }
 
-export async function manualReconcile(paymentId: string): Promise<{
+export async function manualReconcile(
+  paymentId: string,
+  reason = "admin_manual_payment_reconcile",
+): Promise<{
   status: string;
   reconciled: boolean;
   reason?: string;
 }> {
   return await post<{ status: string; reconciled: boolean; reason?: string }>(
     `/payments/${paymentId}/reconcile`,
+    { reason },
   );
 }
 
@@ -326,13 +388,18 @@ export type PaymentMachinePreflight = {
   machineCode: string;
   status: "ready" | "blocked";
   availableProviders: Array<{
+    optionKey: string;
     providerCode: "mock" | "wechat_pay" | "alipay";
     method: "mock" | "qr_code" | "payment_code" | "face_pay";
     displayName: string;
     description: string;
     icon: "mock" | "wechat" | "alipay";
     recommended: boolean;
+    disabled: boolean;
+    disabledReason: string | null;
   }>;
+  defaultOptionKey: string | null;
+  defaultProviderCode: "mock" | "wechat_pay" | "alipay" | null;
   checks: PaymentOpsCheck[];
   checkedAt: string;
 };

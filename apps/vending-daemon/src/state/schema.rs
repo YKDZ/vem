@@ -1,4 +1,4 @@
-pub const SCHEMA_VERSION: i64 = 7;
+pub const SCHEMA_VERSION: i64 = 10;
 
 pub const MIGRATION_V1: &str = r#"
 PRAGMA journal_mode = WAL;
@@ -132,7 +132,7 @@ CREATE TABLE IF NOT EXISTS stock_movements (
   movement_id TEXT PRIMARY KEY,
   planogram_version TEXT NOT NULL,
   slot_id TEXT NOT NULL,
-  movement_type TEXT NOT NULL CHECK (movement_type IN ('planned_refill','stock_count_correction')),
+  movement_type TEXT NOT NULL CHECK (movement_type IN ('planned_refill','stock_count_correction','dispense_succeeded')),
   quantity INTEGER NOT NULL CHECK (quantity >= 0),
   source TEXT NOT NULL,
   attributed_to TEXT,
@@ -229,6 +229,14 @@ FROM sale_view_projection;
 
 DROP TABLE sale_view_projection;
 ALTER TABLE sale_view_projection_v3 RENAME TO sale_view_projection;
+
+PRAGMA foreign_keys = ON;
+"#;
+
+pub const MIGRATION_V10: &str = r#"
+PRAGMA foreign_keys = OFF;
+
+ALTER TABLE machine_planogram_slots ADD COLUMN try_on_silhouette_url TEXT;
 
 PRAGMA foreign_keys = ON;
 "#;
@@ -363,4 +371,55 @@ PRAGMA foreign_keys = ON;
 ALTER TABLE stock_movements ADD COLUMN before_quantity INTEGER NOT NULL DEFAULT 0 CHECK (before_quantity >= 0);
 ALTER TABLE stock_movements ADD COLUMN after_quantity INTEGER NOT NULL DEFAULT 0 CHECK (after_quantity >= 0);
 ALTER TABLE stock_movements ADD COLUMN slot_mapping_snapshot_json TEXT;
+"#;
+
+pub const MIGRATION_V8: &str = r#"
+PRAGMA foreign_keys = ON;
+
+CREATE TABLE IF NOT EXISTS whole_machine_lock_clear_audit_events (
+  id TEXT PRIMARY KEY,
+  operator_note TEXT NOT NULL,
+  previous_lock_json TEXT NOT NULL,
+  recovery_evidence_json TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_whole_machine_lock_clear_audit_created
+  ON whole_machine_lock_clear_audit_events(created_at);
+"#;
+
+pub const MIGRATION_V9: &str = r#"
+PRAGMA foreign_keys = OFF;
+
+CREATE TABLE IF NOT EXISTS stock_movements_v9 (
+  movement_id TEXT PRIMARY KEY,
+  planogram_version TEXT NOT NULL,
+  slot_id TEXT NOT NULL,
+  movement_type TEXT NOT NULL CHECK (movement_type IN ('planned_refill','stock_count_correction','dispense_succeeded')),
+  quantity INTEGER NOT NULL CHECK (quantity >= 0),
+  source TEXT NOT NULL,
+  attributed_to TEXT,
+  occurred_at TEXT NOT NULL,
+  before_quantity INTEGER NOT NULL DEFAULT 0 CHECK (before_quantity >= 0),
+  after_quantity INTEGER NOT NULL DEFAULT 0 CHECK (after_quantity >= 0),
+  slot_mapping_snapshot_json TEXT,
+  FOREIGN KEY (planogram_version, slot_id) REFERENCES machine_planogram_slots(planogram_version, slot_id)
+);
+
+INSERT OR REPLACE INTO stock_movements_v9(
+  movement_id,planogram_version,slot_id,movement_type,quantity,source,attributed_to,
+  occurred_at,before_quantity,after_quantity,slot_mapping_snapshot_json
+)
+SELECT
+  movement_id,planogram_version,slot_id,movement_type,quantity,source,attributed_to,
+  occurred_at,before_quantity,after_quantity,slot_mapping_snapshot_json
+FROM stock_movements;
+
+DROP TABLE stock_movements;
+ALTER TABLE stock_movements_v9 RENAME TO stock_movements;
+
+CREATE INDEX IF NOT EXISTS idx_stock_movements_slot_time
+  ON stock_movements(planogram_version, slot_id, occurred_at, movement_id);
+
+PRAGMA foreign_keys = ON;
 "#;

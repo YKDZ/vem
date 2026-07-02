@@ -1,47 +1,41 @@
 import type { VisionProfile } from "@vem/shared";
 import type { Ref } from "vue";
 
-import { computed, readonly, ref, onUnmounted, watch } from "vue";
-
-import type { ScoredItem } from "@/types/catalog";
+import { readonly, ref, onUnmounted } from "vue";
 
 import {
   subscribeVisionProfiles,
+  type VisionPersonDepartedPayload,
+  type VisionPresenceStatusPayload,
   type VisionProfileResultPayload,
 } from "@/native/vision";
-import { computeRecommendations } from "@/recommendation/engine";
-import { useCatalogStore } from "@/stores/catalog";
 import { useMachineStore } from "@/stores/machine";
+import { useVisionStore } from "@/stores/vision";
 
 const PROFILE_EXPIRE_MS = 60_000;
 
 export function useVisionRecommendations(): {
-  recommendedItems: Readonly<Ref<readonly ScoredItem[]>>;
   currentProfile: Readonly<Ref<VisionProfile | null>>;
   lastVisionResult: Readonly<Ref<VisionProfileResultPayload | null>>;
 } {
   const machineStore = useMachineStore();
-  const catalogStore = useCatalogStore();
+  const visionStore = useVisionStore();
 
   const currentProfile = ref<VisionProfile | null>(null);
   const lastVisionResult = ref<VisionProfileResultPayload | null>(null);
-  const recommendedItems = ref<readonly ScoredItem[]>([]);
-  const availableItems = computed(() => catalogStore.availableItems);
   let expireTimer: ReturnType<typeof setTimeout> | null = null;
 
   function clearState(): void {
     currentProfile.value = null;
     lastVisionResult.value = null;
-    recommendedItems.value = [];
     if (expireTimer !== null) {
       clearTimeout(expireTimer);
       expireTimer = null;
     }
   }
 
-  function clearRecommendations(): void {
+  function clearCurrentProfile(): void {
     currentProfile.value = null;
-    recommendedItems.value = [];
   }
 
   function restartExpireTimer(): void {
@@ -53,69 +47,94 @@ export function useVisionRecommendations(): {
     }, PROFILE_EXPIRE_MS);
   }
 
-  function recomputeRecommendations(): void {
-    const profile = currentProfile.value;
-    if (!profile) {
-      recommendedItems.value = [];
-      return;
-    }
-    recommendedItems.value = computeRecommendations(
-      profile,
-      availableItems.value,
-    );
+  function recommendationProfile(profile: VisionProfile): VisionProfile {
+    return {
+      personPresent: profile.personPresent,
+      heightCm: profile.heightCm ?? undefined,
+      bodyType: profile.bodyType,
+      upperColor: profile.upperColor,
+      confidence: profile.confidence,
+    };
+  }
+
+  function recommendationResult(
+    payload: VisionProfileResultPayload,
+  ): VisionProfileResultPayload {
+    return {
+      eventId: payload.eventId,
+      detectedAt: payload.detectedAt,
+      profile: recommendationProfile(payload.profile),
+      quality: {
+        overall: payload.quality.overall,
+        warnings: [],
+      },
+    };
   }
 
   function handleProfile(payload: VisionProfileResultPayload): void {
-    const profile = payload.profile;
-    lastVisionResult.value = payload;
+    visionStore.applyLatestProfileResult(payload);
+    const profile = recommendationProfile(payload.profile);
+    lastVisionResult.value = recommendationResult(payload);
     restartExpireTimer();
 
     if (!profile.personPresent) {
-      clearRecommendations();
+      clearCurrentProfile();
+      return;
+    }
+
+    if (!visionStore.canUseLatestProfileForRecommendation) {
+      clearCurrentProfile();
       return;
     }
 
     if (profile.confidence !== undefined && profile.confidence < 0.5) {
-      clearRecommendations();
+      clearCurrentProfile();
       return;
     }
 
     currentProfile.value = profile;
+  }
 
-    recomputeRecommendations();
+  function handlePresence(payload: VisionPresenceStatusPayload): void {
+    visionStore.applyPresenceStatus(payload);
+    if (!payload.personPresent) {
+      clearCurrentProfile();
+    }
+  }
+
+  function handlePersonDeparted(payload: VisionPersonDepartedPayload): void {
+    visionStore.applyPersonDeparted(payload);
+    clearCurrentProfile();
   }
 
   const config = machineStore.config;
 
   // If vision is not enabled, skip subscription
   if (!config.visionEnabled) {
+    visionStore.clearLatestDiagnosticPayload();
     return {
-      recommendedItems: readonly(recommendedItems),
       currentProfile: readonly(currentProfile),
       lastVisionResult,
     };
   }
 
-  const stopCatalogWatch = watch(availableItems, () => {
-    recomputeRecommendations();
-  });
-
   const subscription = subscribeVisionProfiles(config, {
+    onPresenceStatus: handlePresence,
+    onPersonDeparted: handlePersonDeparted,
     onProfile: handleProfile,
-    onError: (error) => {
-      console.warn("vision recommendation subscription failed", error);
+    onError: () => {
+      clearState();
+      visionStore.clearLatestDiagnosticPayload();
     },
   });
 
   // Clean up on unmount
   onUnmounted(() => {
     subscription.close();
-    stopCatalogWatch();
     clearState();
   });
 
   return {
-    recommendedItems: readonly(recommendedItems),
     currentProfile: readonly(currentProfile),
     lastVisionResult,
   };

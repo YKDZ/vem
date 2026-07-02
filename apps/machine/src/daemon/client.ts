@@ -8,9 +8,11 @@ import {
   configSummarySchema,
   daemonEventSchema,
   hardwareSelfCheckSchema,
+  environmentControlResultSchema,
   healthSnapshotSchema,
   machinePaymentOptionsResponseSchema,
   machineSaleReadinessSchema,
+  naturalContextSnapshotSchema,
   readySnapshotSchema,
   remoteOpsStatusSchema,
   machineSaleViewSnapshotSchema,
@@ -24,7 +26,9 @@ import {
   type DaemonEvent,
   type HealthSnapshot,
   type HardwareSelfCheck,
+  type EnvironmentControlResult,
   type MachineSaleReadiness,
+  type NaturalContextSnapshot,
   type ProvisioningClaimResponse,
   type ReadySnapshot,
   type RemoteOpsStatus,
@@ -72,9 +76,12 @@ type Subscription = {
   close(): void;
 };
 
+const MAX_SEEN_EVENT_IDS = 1000;
+
 export class DaemonApiClient {
   private connection: DaemonConnectionInfo | null = null;
   private readonly seenEventIds = new Set<string>();
+  private readonly seenEventIdQueue: string[] = [];
 
   private async request(
     path: string,
@@ -210,10 +217,12 @@ export class DaemonApiClient {
     );
   }
 
-  async clearWholeMachineMaintenanceLock(): Promise<unknown> {
+  async clearWholeMachineMaintenanceLock(
+    operatorNote: string,
+  ): Promise<unknown> {
     return this.request("/v1/maintenance/whole-machine-lock/clear", {
       method: "POST",
-      body: {},
+      body: { operatorNote },
     });
   }
 
@@ -274,6 +283,12 @@ export class DaemonApiClient {
     return visionStatusSchema.parse(await this.request("/v1/vision/status"));
   }
 
+  async getNaturalContext(): Promise<NaturalContextSnapshot> {
+    return naturalContextSnapshotSchema.parse(
+      await this.request("/v1/natural-context"),
+    );
+  }
+
   async getRemoteOpsStatus(): Promise<RemoteOpsStatus> {
     return remoteOpsStatusSchema.parse(
       await this.request("/v1/remote-ops/status"),
@@ -283,6 +298,15 @@ export class DaemonApiClient {
   async runHardwareSelfCheck(): Promise<HardwareSelfCheck> {
     return hardwareSelfCheckSchema.parse(
       await this.request("/v1/hardware/self-check", { method: "POST" }),
+    );
+  }
+
+  async controlEnvironment(body: unknown): Promise<EnvironmentControlResult> {
+    return environmentControlResultSchema.parse(
+      await this.request("/v1/environment/control", {
+        method: "POST",
+        body,
+      }),
     );
   }
 
@@ -336,6 +360,11 @@ export class DaemonApiClient {
         const event = daemonEventSchema.parse(JSON.parse(String(message.data)));
         if (this.seenEventIds.has(event.eventId)) return;
         this.seenEventIds.add(event.eventId);
+        this.seenEventIdQueue.push(event.eventId);
+        while (this.seenEventIdQueue.length > MAX_SEEN_EVENT_IDS) {
+          const expired = this.seenEventIdQueue.shift();
+          if (expired) this.seenEventIds.delete(expired);
+        }
         handlers.onEvent(event);
       };
       socket.onerror = () => {

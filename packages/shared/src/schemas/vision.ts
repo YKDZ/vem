@@ -10,6 +10,8 @@ export const visionClientMessageTypeSchema = z.enum([
 
 export const visionServerMessageTypeSchema = z.enum([
   "vision.ready",
+  "vision.presence_status",
+  "vision.person_departed",
   "vision.profile_result",
   "vision.error",
   "vision.pong",
@@ -18,8 +20,24 @@ export const visionServerMessageTypeSchema = z.enum([
 export const visionQualityOverallSchema = z.enum([
   "good",
   "fair",
+  "poor",
   "low_confidence",
   "partial",
+]);
+
+export const visionPresenceOccupancyStateSchema = z.enum([
+  "none",
+  "single",
+  "multiple",
+  "unknown",
+]);
+
+export const visionProfileNotUsableReasonSchema = z.enum([
+  "multiple_people",
+  "no_person",
+  "low_confidence",
+  "insufficient_quality",
+  "unknown",
 ]);
 
 export const visionErrorCodeSchema = z.enum([
@@ -58,10 +76,19 @@ export const visionProfileSchema = z
     personPresent: z.boolean(),
     heightCm: z.number().min(80).max(240).nullable().optional(),
     shoulderWidthCm: z.number().min(20).max(80).nullable().optional(),
-    ageRange: z.string().min(1).max(32).optional(),
-    gender: z.string().min(1).max(32).optional(),
+    ageRange: z
+      .enum(["child", "teen", "adult", "senior", "unknown"])
+      .optional(),
+    gender: z.enum(["male", "female", "unknown"]).optional(),
     bodyType: z.string().min(1).max(32).optional(),
     upperColor: z.string().min(1).max(32).optional(),
+    confidence: z.number().min(0).max(1).optional(),
+  })
+  .strip();
+
+export const visionPresenceOccupancySchema = z
+  .object({
+    state: visionPresenceOccupancyStateSchema,
     confidence: z.number().min(0).max(1).optional(),
   })
   .loose();
@@ -69,12 +96,51 @@ export const visionProfileSchema = z
 export const visionProfileResultPayloadSchema = z.object({
   eventId: z.string().min(1).max(128),
   detectedAt: z.iso.datetime(),
+  occupancy: visionPresenceOccupancySchema.optional(),
   profile: visionProfileSchema,
-  quality: z.object({
-    overall: visionQualityOverallSchema,
-    warnings: z.array(z.string().min(1).max(256)).default([]),
-  }),
+  quality: z
+    .object({
+      overall: visionQualityOverallSchema,
+      warnings: z.array(z.string().min(1).max(256)).default([]),
+      profileUsable: z.boolean().optional(),
+      notUsableReason: visionProfileNotUsableReasonSchema.optional(),
+    })
+    .loose(),
 });
+
+export const visionPresenceStatusPayloadSchema = z
+  .object({
+    eventId: z.string().min(1).max(128),
+    detectedAt: z.iso.datetime(),
+    state: z.string().min(1).max(64),
+    reason: z.string().min(1).max(128).optional(),
+    personPresent: z.boolean(),
+    occupancy: visionPresenceOccupancySchema.optional(),
+    closeNow: z.boolean().optional(),
+    close: z.boolean().optional(),
+    closeTrigger: z.string().min(1).max(64).nullable().optional(),
+    proximity: z.record(z.string(), z.unknown()).default({}),
+  })
+  .loose();
+
+export const visionPersonDepartedPayloadSchema = z
+  .object({
+    eventId: z.string().min(1).max(128),
+    detectedAt: z.iso.datetime(),
+    lastSeenAt: z.iso.datetime().nullable().optional(),
+    reason: z
+      .enum([
+        "no_person",
+        "left_frame",
+        "tracking_lost",
+        "absence_timeout",
+        "manual",
+        "unknown",
+      ])
+      .default("unknown"),
+    absenceDurationMs: z.number().int().nonnegative().optional(),
+  })
+  .loose();
 
 export const visionErrorPayloadSchema = z
   .object({
@@ -108,6 +174,18 @@ export const visionProfileResultMessageSchema = visionEnvelopeBaseSchema.extend(
   },
 );
 
+export const visionPresenceStatusMessageSchema =
+  visionEnvelopeBaseSchema.extend({
+    type: z.literal("vision.presence_status"),
+    payload: visionPresenceStatusPayloadSchema,
+  });
+
+export const visionPersonDepartedMessageSchema =
+  visionEnvelopeBaseSchema.extend({
+    type: z.literal("vision.person_departed"),
+    payload: visionPersonDepartedPayloadSchema,
+  });
+
 export const visionErrorMessageSchema = visionEnvelopeBaseSchema.extend({
   type: z.literal("vision.error"),
   payload: visionErrorPayloadSchema,
@@ -125,6 +203,8 @@ export const visionClientMessageSchema = z.discriminatedUnion("type", [
 
 export const visionServerMessageSchema = z.discriminatedUnion("type", [
   visionReadyMessageSchema,
+  visionPresenceStatusMessageSchema,
+  visionPersonDepartedMessageSchema,
   visionProfileResultMessageSchema,
   visionErrorMessageSchema,
   visionPongMessageSchema,
@@ -137,11 +217,26 @@ export type VisionServerMessageType = z.infer<
   typeof visionServerMessageTypeSchema
 >;
 export type VisionErrorCode = z.infer<typeof visionErrorCodeSchema>;
+export type VisionPresenceOccupancyState = z.infer<
+  typeof visionPresenceOccupancyStateSchema
+>;
+export type VisionPresenceOccupancy = z.infer<
+  typeof visionPresenceOccupancySchema
+>;
+export type VisionProfileNotUsableReason = z.infer<
+  typeof visionProfileNotUsableReasonSchema
+>;
 export type VisionProfile = z.infer<typeof visionProfileSchema>;
 export type VisionClientMessage = z.infer<typeof visionClientMessageSchema>;
 export type VisionServerMessage = z.infer<typeof visionServerMessageSchema>;
 export type VisionReadyMessage = z.infer<typeof visionReadyMessageSchema>;
 export type VisionProfileResultMessage = z.infer<
   typeof visionProfileResultMessageSchema
+>;
+export type VisionPresenceStatusMessage = z.infer<
+  typeof visionPresenceStatusMessageSchema
+>;
+export type VisionPersonDepartedMessage = z.infer<
+  typeof visionPersonDepartedMessageSchema
 >;
 export type VisionErrorMessage = z.infer<typeof visionErrorMessageSchema>;

@@ -16,6 +16,10 @@ import {
 export const MOCK_VISION_SCENARIOS = [
   "success",
   "no_person",
+  "presence_only",
+  "presence_absent",
+  "departure_after_presence",
+  "disconnect_once",
   "camera_unavailable",
 ] as const;
 
@@ -66,7 +70,7 @@ function createReadyMessage(): VisionServerMessage {
       serverVersion: "0.2.0",
       cameraReady: true,
       modelReady: true,
-      capabilities: ["profile_push"],
+      capabilities: ["profile_push", "presence_status", "person_departed"],
     },
   } satisfies VisionServerMessage;
   return message;
@@ -89,6 +93,10 @@ function createResultMessage(): VisionServerMessage {
     payload: {
       eventId: messageId("event"),
       detectedAt,
+      occupancy: {
+        state: "single",
+        confidence: 0.88,
+      },
       profile: {
         personPresent: true,
         heightCm: 172,
@@ -100,10 +108,65 @@ function createResultMessage(): VisionServerMessage {
         confidence: 0.86,
       },
       quality: {
-        overall: "good",
+        overall: "fair",
         warnings: [],
+        profileUsable: true,
+        sampleCount: 1,
+        validFrameCount: 1,
       },
     },
+  } satisfies VisionServerMessage;
+  return message;
+}
+
+function createPresenceMessage(
+  state: "approach" | "empty",
+): VisionServerMessage {
+  const detectedAt = nowIso();
+  const personPresent = state !== "empty";
+  const payload = {
+    eventId: messageId("presence-event"),
+    state,
+    detectedAt,
+    reason: personPresent ? "person_present_but_not_close" : "no_person",
+    personPresent,
+    occupancy: {
+      state: personPresent ? "single" : "none",
+      confidence: 0.86,
+    },
+    closeNow: false,
+    close: false,
+    closeTrigger: null,
+    proximity: {
+      present: personPresent,
+      closeNow: false,
+      close: false,
+      method: "person_detector+face_area_ratio",
+    },
+  } satisfies VisionServerMessage["payload"];
+  const message = {
+    ...baseEnvelope("presence"),
+    type: "vision.presence_status",
+    payload,
+  } satisfies VisionServerMessage;
+  return message;
+}
+
+function createPersonDepartedMessage(
+  lastSeenAt: string | null,
+): VisionServerMessage {
+  const detectedAt = nowIso();
+  const payload = {
+    eventId: messageId("departure-event"),
+    detectedAt,
+    lastSeenAt,
+    reason: "left_frame",
+    absenceDurationMs: 1200,
+  } satisfies VisionServerMessage["payload"];
+  const message = {
+    ...baseEnvelope("departure"),
+    type: "vision.person_departed",
+    payload,
   } satisfies VisionServerMessage;
   return message;
 }
@@ -157,6 +220,8 @@ async function pushScenarioEvents(
   options: Required<
     Pick<MockVisionServerOptions, "scenario" | "pushIntervalMs">
   >,
+  presenceStatusEnabled: boolean,
+  personDepartedEnabled: boolean,
 ): Promise<void> {
   await delay(options.pushIntervalMs);
   if (socket.readyState !== socket.OPEN) return;
@@ -174,6 +239,37 @@ async function pushScenarioEvents(
   }
 
   if (options.scenario === "no_person") {
+    if (presenceStatusEnabled) {
+      sendServerMessage(socket, createPresenceMessage("empty"));
+    }
+    return;
+  }
+
+  if (options.scenario === "presence_absent") {
+    if (presenceStatusEnabled) {
+      sendServerMessage(socket, createPresenceMessage("empty"));
+    }
+    return;
+  }
+
+  if (presenceStatusEnabled) {
+    const presence = createPresenceMessage("approach");
+    sendServerMessage(socket, presence);
+    if (
+      options.scenario === "departure_after_presence" &&
+      personDepartedEnabled
+    ) {
+      await delay(options.pushIntervalMs);
+      const lastSeenAt =
+        presence.type === "vision.presence_status"
+          ? presence.payload.detectedAt
+          : null;
+      sendServerMessage(socket, createPersonDepartedMessage(lastSeenAt));
+      return;
+    }
+  }
+
+  if (options.scenario === "presence_only") {
     return;
   }
 
@@ -185,7 +281,7 @@ function handleClientRawMessage(
   data: RawData,
   options: Required<
     Pick<MockVisionServerOptions, "scenario" | "pushIntervalMs">
-  >,
+  > & { disconnectOnceServed: { value: boolean } },
 ): void {
   const message = parseClientMessage(data);
   if (!message) {
@@ -203,7 +299,20 @@ function handleClientRawMessage(
   switch (message.type) {
     case "vision.hello":
       sendServerMessage(socket, createReadyMessage());
-      void pushScenarioEvents(socket, options);
+      if (
+        options.scenario === "disconnect_once" &&
+        !options.disconnectOnceServed.value
+      ) {
+        options.disconnectOnceServed.value = true;
+        socket.close();
+        return;
+      }
+      void pushScenarioEvents(
+        socket,
+        options,
+        message.payload.capabilities.includes("presence_status"),
+        message.payload.capabilities.includes("person_departed"),
+      );
       return;
     case "vision.ping":
       sendServerMessage(socket, createPongMessage());
@@ -236,10 +345,15 @@ export function startMockVisionServer(
   const scenario = options.scenario ?? "success";
   const pushIntervalMs = options.pushIntervalMs ?? DEFAULT_PUSH_INTERVAL_MS;
   const server = new WebSocketServer({ host, port, path: wsPath });
+  const disconnectOnceServed = { value: false };
 
   server.on("connection", (socket) => {
     socket.on("message", (data) => {
-      handleClientRawMessage(socket, data, { scenario, pushIntervalMs });
+      handleClientRawMessage(socket, data, {
+        scenario,
+        pushIntervalMs,
+        disconnectOnceServed,
+      });
     });
   });
 

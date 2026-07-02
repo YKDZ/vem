@@ -36,283 +36,257 @@ type CatalogSeedProduct = {
   }[];
 };
 
+type ProductLineSeed = {
+  category: "袜子" | "内裤" | "T恤";
+  name: string;
+  description: string;
+  sortOrder: number;
+  skuPrefix: string;
+  colors: readonly VariantOption[];
+  sizes: readonly VariantOption[];
+  targetGender: "male" | "female" | null;
+  priceCents: number;
+  costCents: number;
+};
+
+type VariantOption = {
+  code: string;
+  label: string;
+};
+
+const oneSize: readonly VariantOption[] = [{ code: "REG", label: "常规码" }];
+
+const standardSizes: readonly VariantOption[] = [
+  { code: "S", label: "小码" },
+  { code: "M", label: "中码" },
+  { code: "L", label: "大码" },
+];
+
+const threeColors: readonly VariantOption[] = [
+  { code: "BLK", label: "黑色" },
+  { code: "WHT", label: "白色" },
+  { code: "GRY", label: "灰色" },
+];
+
+const fiveColors: readonly VariantOption[] = [
+  ...threeColors,
+  { code: "NVY", label: "藏青色" },
+  { code: "BGE", label: "肤色" },
+];
+
+const sevenColors: readonly VariantOption[] = [
+  ...fiveColors,
+  { code: "BLU", label: "蓝色" },
+  { code: "PNK", label: "粉色" },
+];
+
+function productLine(input: ProductLineSeed): CatalogSeedProduct {
+  return {
+    name: input.name,
+    category: input.category,
+    description: input.description,
+    sortOrder: input.sortOrder,
+    variants: input.colors.flatMap((color) =>
+      input.sizes.map((size, index) => ({
+        sku: `${input.skuPrefix}-${color.code}-${size.code}`,
+        size: size.label,
+        color: color.label,
+        barcode: `${input.skuPrefix}-${color.code}-${size.code}`,
+        targetGender: input.targetGender,
+        priceCents: input.priceCents,
+        costCents: input.costCents + index,
+      })),
+    ),
+  };
+}
+
+const sockSeries = [
+  { code: "SPORT", label: "运动袜" },
+  { code: "BIZ", label: "商务袜" },
+  { code: "CASUAL", label: "休闲袜" },
+  { code: "FASHION", label: "时尚潮袜" },
+] as const;
+
+const middleUnderwearSeries = [
+  { code: "FASHION", label: "时尚" },
+  { code: "FORMAL", label: "正装" },
+  { code: "SPORT", label: "运动" },
+  { code: "BIZ", label: "商务" },
+] as const;
+
 const catalogSeedProducts: CatalogSeedProduct[] = [
-  {
-    name: "轻氧圆领短袖 T 恤",
-    category: "上装",
-    description: "180g 精梳棉基础款，适合视觉识别纯色上装和日常推荐测试。",
-    sortOrder: 10,
-    variants: [
-      {
-        sku: "APP-TS-CORE-WHT-M",
-        size: "M",
-        color: "白色",
-        barcode: "6901000001011",
-        targetGender: null,
-        priceCents: 5900,
-        costCents: 2600,
-      },
-      {
-        sku: "APP-TS-CORE-BLK-L",
-        size: "L",
-        color: "黑色",
-        barcode: "6901000001028",
-        targetGender: null,
-        priceCents: 5900,
-        costCents: 2600,
-      },
-      {
-        sku: "APP-TS-CORE-SKY-S",
-        size: "S",
-        color: "雾蓝",
-        barcode: "6901000001035",
-        targetGender: null,
-        priceCents: 5900,
-        costCents: 2600,
-      },
-    ],
-  },
-  {
-    name: "速干运动背心",
-    category: "运动服",
-    description: "轻薄速干面料，覆盖运动场景和无袖轮廓识别样本。",
-    sortOrder: 20,
-    variants: [
-      {
-        sku: "APP-VEST-RUN-GRY-M",
-        size: "M",
-        color: "石墨灰",
-        barcode: "6901000002018",
-        targetGender: "male",
-        priceCents: 4900,
-        costCents: 2100,
-      },
-      {
-        sku: "APP-VEST-RUN-PNK-S",
-        size: "S",
-        color: "珊瑚粉",
-        barcode: "6901000002025",
-        targetGender: "female",
-        priceCents: 4900,
-        costCents: 2100,
-      },
-    ],
-  },
-  {
-    name: "轻量防晒外套",
-    category: "外套",
-    description: "连帽薄外套，适合测试外套、长袖、浅色大面积布料识别。",
-    sortOrder: 30,
-    variants: [
-      {
-        sku: "APP-JKT-SUN-IVY-M",
-        size: "M",
-        color: "象牙白",
-        barcode: "6901000003015",
-        targetGender: "female",
-        priceCents: 12900,
-        costCents: 6200,
-      },
-      {
-        sku: "APP-JKT-SUN-NVY-L",
-        size: "L",
-        color: "海军蓝",
-        barcode: "6901000003022",
-        targetGender: "male",
-        priceCents: 12900,
-        costCents: 6200,
-      },
-    ],
-  },
-  {
-    name: "高腰瑜伽九分裤",
-    category: "下装",
-    description: "弹力紧身裤型，覆盖贴身下装和深色细节识别样本。",
-    sortOrder: 40,
-    variants: [
-      {
-        sku: "APP-LEG-YOGA-BLK-S",
-        size: "S",
-        color: "黑色",
-        barcode: "6901000004012",
-        targetGender: "female",
-        priceCents: 9900,
-        costCents: 4800,
-      },
-      {
-        sku: "APP-LEG-YOGA-MAU-M",
-        size: "M",
-        color: "豆沙紫",
-        barcode: "6901000004029",
-        targetGender: "female",
-        priceCents: 9900,
-        costCents: 4800,
-      },
-    ],
-  },
-  {
-    name: "商务中筒袜三双装",
-    category: "袜子",
-    description: "棉混纺中筒袜，多件组合商品，用于小件包装检测和推荐搭配。",
-    sortOrder: 50,
-    variants: [
-      {
-        sku: "SOC-BIZ-MID-BLK-3P",
-        size: "均码",
-        color: "黑色三双",
-        barcode: "6901000005019",
-        targetGender: "male",
+  ...sockSeries.flatMap((series, seriesIndex) =>
+    [
+      { code: "M", label: "男士", targetGender: "male" as const },
+      { code: "F", label: "女士", targetGender: "female" as const },
+    ].map((gender, genderIndex) =>
+      productLine({
+        category: "袜子",
+        name: `唐诗村${gender.label}${series.label}`,
+        description: `唐诗村${gender.label}${series.label}，来自企业方商品清单。`,
+        sortOrder: 100 + seriesIndex * 10 + genderIndex,
+        skuPrefix: `TSC-SOCK-${gender.code}-${series.code}`,
+        colors: threeColors,
+        sizes: oneSize,
+        targetGender: gender.targetGender,
         priceCents: 3900,
         costCents: 1500,
-      },
-      {
-        sku: "SOC-BIZ-MID-MIX-3P",
-        size: "均码",
-        color: "黑灰藏青",
-        barcode: "6901000005026",
-        targetGender: "male",
-        priceCents: 3900,
-        costCents: 1500,
-      },
-    ],
-  },
-  {
-    name: "运动船袜五双装",
-    category: "袜子",
-    description: "低帮运动袜，多色组合，适合小包装和颜色多样性测试。",
-    sortOrder: 60,
-    variants: [
-      {
-        sku: "SOC-ANK-SPT-WHT-5P",
-        size: "均码",
-        color: "白色五双",
-        barcode: "6901000006016",
-        targetGender: null,
-        priceCents: 3500,
-        costCents: 1300,
-      },
-      {
-        sku: "SOC-ANK-SPT-COL-5P",
-        size: "均码",
-        color: "彩色五双",
-        barcode: "6901000006023",
-        targetGender: null,
-        priceCents: 3900,
-        costCents: 1500,
-      },
-    ],
-  },
-  {
-    name: "无痕舒适文胸",
-    category: "内衣",
-    description: "无钢圈贴身内衣，覆盖女性内衣 SKU 和尺码推荐样本。",
-    sortOrder: 70,
-    variants: [
-      {
-        sku: "UND-BRA-SEAM-BGE-M",
-        size: "M",
-        color: "肤色",
-        barcode: "6901000007013",
-        targetGender: "female",
-        priceCents: 8900,
-        costCents: 4200,
-      },
-      {
-        sku: "UND-BRA-SEAM-BLK-L",
-        size: "L",
-        color: "黑色",
-        barcode: "6901000007020",
-        targetGender: "female",
-        priceCents: 8900,
-        costCents: 4200,
-      },
-    ],
-  },
-  {
-    name: "莫代尔男士平角裤三条装",
-    category: "内衣",
-    description: "贴身基础内衣组合装，用于男士尺码和补货推荐测试。",
-    sortOrder: 80,
-    variants: [
-      {
-        sku: "UND-BOX-MOD-BLK-L-3P",
-        size: "L",
-        color: "黑色三条",
-        barcode: "6901000008010",
-        targetGender: "male",
-        priceCents: 6900,
-        costCents: 3000,
-      },
-      {
-        sku: "UND-BOX-MOD-GRY-XL-3P",
-        size: "XL",
-        color: "灰色三条",
-        barcode: "6901000008027",
-        targetGender: "male",
-        priceCents: 6900,
-        costCents: 3000,
-      },
-    ],
-  },
-  {
-    name: "家居棉质睡裙",
-    category: "家居服",
-    description: "宽松连身家居服，覆盖长款柔性衣物识别和女性推荐样本。",
-    sortOrder: 90,
-    variants: [
-      {
-        sku: "HOME-DRESS-COT-LAV-M",
-        size: "M",
-        color: "薰衣草紫",
-        barcode: "6901000009017",
-        targetGender: "female",
-        priceCents: 11900,
-        costCents: 5400,
-      },
-      {
-        sku: "HOME-DRESS-COT-CRM-L",
-        size: "L",
-        color: "奶油白",
-        barcode: "6901000009024",
-        targetGender: "female",
-        priceCents: 11900,
-        costCents: 5400,
-      },
-    ],
-  },
-  {
-    name: "轻薄保暖打底衫",
-    category: "内衣",
-    description: "贴身长袖打底，适合季节推荐、保暖属性和薄包装测试。",
-    sortOrder: 100,
-    variants: [
-      {
-        sku: "UND-BASE-WARM-BGE-M",
-        size: "M",
-        color: "米杏色",
-        barcode: "6901000010013",
-        targetGender: "female",
-        priceCents: 7900,
-        costCents: 3600,
-      },
-      {
-        sku: "UND-BASE-WARM-GRY-L",
-        size: "L",
-        color: "浅灰色",
-        barcode: "6901000010020",
-        targetGender: "male",
-        priceCents: 7900,
-        costCents: 3600,
-      },
-    ],
-  },
+      }),
+    ),
+  ),
+  ...[
+    {
+      code: "GIRL",
+      label: "女童",
+      targetGender: "female" as const,
+    },
+    {
+      code: "BOY",
+      label: "男童",
+      targetGender: "male" as const,
+    },
+  ].map((group, index) =>
+    productLine({
+      category: "内裤",
+      name: `唐诗村${group.label}内裤`,
+      description: `唐诗村${group.label}儿童内裤，来自企业方商品清单。`,
+      sortOrder: 200 + index,
+      skuPrefix: `TSC-UND-KID-${group.code}`,
+      colors: sevenColors,
+      sizes: standardSizes,
+      targetGender: group.targetGender,
+      priceCents: 6900,
+      costCents: 3000,
+    }),
+  ),
+  ...[
+    {
+      genderCode: "M",
+      genderLabel: "男士",
+      ageGroups: [
+        { code: "YOUTH", label: "青年" },
+        { code: "ADULT", label: "成年" },
+      ],
+      targetGender: "male" as const,
+    },
+    {
+      genderCode: "F",
+      genderLabel: "女士",
+      ageGroups: [
+        { code: "YOUTH", label: "少女" },
+        { code: "ADULT", label: "成年" },
+      ],
+      targetGender: "female" as const,
+    },
+  ].flatMap((gender, genderIndex) =>
+    gender.ageGroups.flatMap((ageGroup, ageIndex) =>
+      middleUnderwearSeries.map((series, seriesIndex) =>
+        productLine({
+          category: "内裤",
+          name: `唐诗村${gender.genderLabel}${ageGroup.label}${series.label}内裤`,
+          description: `唐诗村中年${gender.genderLabel}${ageGroup.label}${series.label}内裤，来自企业方商品清单。`,
+          sortOrder: 300 + genderIndex * 100 + ageIndex * 40 + seriesIndex * 5,
+          skuPrefix: `TSC-UND-MID-${gender.genderCode}-${ageGroup.code}-${series.code}`,
+          colors: fiveColors,
+          sizes: standardSizes,
+          targetGender: gender.targetGender,
+          priceCents: 6900,
+          costCents: 3000,
+        }),
+      ),
+    ),
+  ),
+  ...[
+    {
+      code: "M-OUTDOOR",
+      label: "男士户外",
+      targetGender: "male" as const,
+    },
+    {
+      code: "F-DAILY",
+      label: "女士日常",
+      targetGender: "female" as const,
+    },
+  ].map((group, index) =>
+    productLine({
+      category: "内裤",
+      name: `唐诗村老年${group.label}内裤`,
+      description: `唐诗村老年${group.label}内裤，来自企业方商品清单。`,
+      sortOrder: 500 + index,
+      skuPrefix: `TSC-UND-ELDER-${group.code}`,
+      colors: threeColors,
+      sizes: standardSizes,
+      targetGender: group.targetGender,
+      priceCents: 6900,
+      costCents: 3000,
+    }),
+  ),
+  ...[
+    {
+      code: "GIRL-SS",
+      label: "女童短袖",
+      targetGender: "female" as const,
+      colors: sevenColors,
+      sortOrder: 600,
+    },
+    {
+      code: "BOY-LS",
+      label: "男童长袖",
+      targetGender: "male" as const,
+      colors: sevenColors,
+      sortOrder: 610,
+    },
+    {
+      code: "M-SS",
+      label: "男士短袖",
+      targetGender: "male" as const,
+      colors: fiveColors,
+      sortOrder: 700,
+    },
+    {
+      code: "F-LS",
+      label: "女士长袖",
+      targetGender: "female" as const,
+      colors: fiveColors,
+      sortOrder: 710,
+    },
+    {
+      code: "ELDER-M-SS",
+      label: "老年男士短袖",
+      targetGender: "male" as const,
+      colors: threeColors,
+      sortOrder: 800,
+    },
+    {
+      code: "ELDER-F-LS",
+      label: "老年女士长袖",
+      targetGender: "female" as const,
+      colors: threeColors,
+      sortOrder: 810,
+    },
+  ].map((group) =>
+    productLine({
+      category: "T恤",
+      name: `唐诗村${group.label}T恤`,
+      description: `唐诗村${group.label}T恤，来自企业方商品清单。`,
+      sortOrder: group.sortOrder,
+      skuPrefix: `TSC-TEE-${group.code}`,
+      colors: group.colors,
+      sizes: standardSizes,
+      targetGender: group.targetGender,
+      priceCents: 5900,
+      costCents: 2600,
+    }),
+  ),
 ];
 
 @Injectable()
 export class BootstrapService implements OnModuleInit {
   constructor(
     @Inject(DRIZZLE_CLIENT) private readonly db: DrizzleClient,
+    @Inject(AppConfigService)
     private readonly config: AppConfigService,
+    @Inject(PasswordService)
     private readonly passwordService: PasswordService,
   ) {}
 

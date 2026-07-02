@@ -88,6 +88,28 @@ type ReconciliationAttemptQuery = z.infer<
 type RefundListQuery = z.infer<typeof refundQuerySchema> &
   z.infer<typeof pageQuerySchema>;
 
+const PROVIDER_MUTABLE_PAYMENT_STATUSES: PaymentStatus[] = [
+  "created",
+  "pending",
+  "processing",
+];
+
+function canApplyProviderTerminalStatus(status: PaymentStatus): boolean {
+  return PROVIDER_MUTABLE_PAYMENT_STATUSES.includes(status);
+}
+
+function isProviderPaymentUncertainStatus(
+  status:
+    | "pending"
+    | "processing"
+    | "succeeded"
+    | "failed"
+    | "expired"
+    | "canceled",
+): status is "pending" | "processing" {
+  return status === "pending" || status === "processing";
+}
+
 type ProviderWebhookBusinessValidation =
   | { ok: true }
   | { ok: false; reason: string };
@@ -269,6 +291,9 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         method: payments.method,
         status: payments.status,
         amountCents: payments.amountCents,
+        isDrill: payments.isDrill,
+        isTest: payments.isDrill,
+        scenario: payments.drillScenario,
         paymentUrl: payments.paymentUrl,
         expiresAt: payments.expiresAt,
         paidAt: payments.paidAt,
@@ -588,6 +613,15 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
             });
 
             if (queryResult.status === "succeeded") {
+              await this.recordExpireCompensationAttempt({
+                paymentId: payment.paymentId,
+                providerId: payment.providerId,
+                status: "succeeded",
+                providerPaymentStatus: "succeeded",
+                providerTradeNo: queryResult.providerTradeNo ?? null,
+                rawPayload: queryResult.rawPayload,
+                now,
+              });
               const providerEventId = `expire_query:${payment.paymentNo}:succeeded:${now.getTime()}`;
               const applied = await this.applyPaymentStatusUpdate(
                 payment.paymentId,
@@ -612,21 +646,28 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
 
             // If still pending/processing, check compensation window
             if (
+              isProviderPaymentUncertainStatus(queryResult.status) &&
               !isPastTimeoutCompensation(
                 payment.expiresAt,
                 payment.publicConfigJson,
                 now,
               )
             ) {
-              // Within compensation window — skip closing for now
+              await this.recordExpireCompensationAttempt({
+                paymentId: payment.paymentId,
+                providerId: payment.providerId,
+                status: queryResult.status,
+                providerPaymentStatus: queryResult.status,
+                providerTradeNo: queryResult.providerTradeNo ?? null,
+                rawPayload: queryResult.rawPayload,
+                nextRetryAt: new Date(now.getTime() + reconcileBackoffMs(1)),
+                now,
+              });
               return false;
             }
 
             // Past compensation window — cancel with provider
-            if (
-              queryResult.status === "pending" ||
-              queryResult.status === "processing"
-            ) {
+            if (isProviderPaymentUncertainStatus(queryResult.status)) {
               await provider.cancelPayment({
                 paymentNo: payment.paymentNo,
                 providerTradeNo: payment.providerTradeNo,
@@ -1242,6 +1283,8 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         id: paymentEvents.id,
         paymentId: paymentEvents.paymentId,
         paymentNo: payments.paymentNo,
+        orderId: payments.orderId,
+        orderNo: orders.orderNo,
         providerId: paymentEvents.providerId,
         providerCode: paymentProviders.code,
         eventType: paymentEvents.eventType,
@@ -1252,6 +1295,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       })
       .from(paymentEvents)
       .innerJoin(payments, eq(payments.id, paymentEvents.paymentId))
+      .innerJoin(orders, eq(orders.id, payments.orderId))
       .innerJoin(
         paymentProviders,
         eq(paymentProviders.id, paymentEvents.providerId),
@@ -1264,6 +1308,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       .select({ total: count() })
       .from(paymentEvents)
       .innerJoin(payments, eq(payments.id, paymentEvents.paymentId))
+      .innerJoin(orders, eq(orders.id, payments.orderId))
       .innerJoin(
         paymentProviders,
         eq(paymentProviders.id, paymentEvents.providerId),
@@ -1514,8 +1559,10 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
           .where(eq(payments.id, payment.id));
         if (!r) return null;
 
-        const shouldDispatch = r.paymentStatus !== "succeeded";
-        if (!shouldDispatch) {
+        if (r.paymentStatus === "succeeded") {
+          return { orderId: r.orderId, shouldDispatch: false };
+        }
+        if (!canApplyProviderTerminalStatus(r.paymentStatus)) {
           return { orderId: r.orderId, shouldDispatch: false };
         }
 
@@ -1576,6 +1623,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
           .innerJoin(orders, eq(orders.id, payments.orderId))
           .where(eq(payments.id, payment.id));
         if (!r) return;
+        if (!canApplyProviderTerminalStatus(r.paymentStatus)) return;
 
         await tx
           .update(payments)
@@ -1813,6 +1861,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         orderId: payments.orderId,
         machineId: orders.machineId,
         providerConfigId: payments.paymentProviderConfigId,
+        isDrill: payments.isDrill,
       })
       .from(payments)
       .innerJoin(orders, eq(orders.id, payments.orderId))
@@ -1820,6 +1869,8 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       .where(
         and(
           inArray(payments.status, ["pending", "processing"]),
+          eq(payments.isDrill, false),
+          eq(orders.isDrill, false),
           sql`${payments.createdAt} >= ${cutoff}`,
           sql`${payments.expiresAt} IS NULL OR ${payments.expiresAt} > ${now}`,
           sql`not exists (
@@ -1838,6 +1889,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
     await Promise.all(
       pendingPayments.map(async (payment) => {
         try {
+          if (payment.isDrill) return;
           if (!this.paymentProviderRegistry.has(payment.providerCode)) return;
 
           // Count previous scheduled attempts for backoff
@@ -2013,6 +2065,36 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
     return Number(countRow.total) + 1;
   }
 
+  private async recordExpireCompensationAttempt(input: {
+    paymentId: string;
+    providerId: string;
+    status: string;
+    providerPaymentStatus?: string | null;
+    providerTradeNo?: string | null;
+    rawPayload?: Record<string, unknown>;
+    nextRetryAt?: Date | null;
+    now: Date;
+  }): Promise<void> {
+    const attemptNo = await this.nextPaymentReconciliationAttemptNo(
+      input.paymentId,
+      "expire_compensation",
+    );
+    const rawPayloadFields = buildReconciliationPayloadFields(input.rawPayload);
+    await this.db.insert(paymentReconciliationAttempts).values({
+      paymentId: input.paymentId,
+      providerId: input.providerId,
+      trigger: "expire_compensation",
+      attemptNo,
+      status: input.status,
+      providerPaymentStatus: input.providerPaymentStatus ?? null,
+      providerTradeNo: input.providerTradeNo ?? null,
+      ...rawPayloadFields,
+      nextRetryAt: input.nextRetryAt ?? null,
+      startedAt: input.now,
+      finishedAt: new Date(),
+    });
+  }
+
   async reconcilePendingPaymentOnRead(paymentId: string): Promise<{
     status: PaymentStatus | "not_found";
     reconciled: boolean;
@@ -2029,6 +2111,8 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         orderId: payments.orderId,
         machineId: orders.machineId,
         providerConfigId: payments.paymentProviderConfigId,
+        isDrill: payments.isDrill,
+        orderIsDrill: orders.isDrill,
       })
       .from(payments)
       .innerJoin(orders, eq(orders.id, payments.orderId))
@@ -2049,6 +2133,14 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         status: payment.status,
         reconciled: false,
         reason: "already_terminal",
+      };
+    }
+
+    if (payment.isDrill || payment.orderIsDrill) {
+      return {
+        status: payment.status,
+        reconciled: false,
+        reason: "protected_payment_drill",
       };
     }
 
@@ -2276,10 +2368,16 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
     eventTypeOverride?: string,
   ): Promise<boolean> {
     return await this.db.transaction(async (tx) => {
+      if (!providerId) return false;
       const [existing] = await tx
         .select({ id: paymentEvents.id })
         .from(paymentEvents)
-        .where(eq(paymentEvents.providerEventId, providerEventId))
+        .where(
+          and(
+            eq(paymentEvents.providerId, providerId),
+            eq(paymentEvents.providerEventId, providerEventId),
+          ),
+        )
         .limit(1);
       if (existing) return false;
 
@@ -2287,33 +2385,34 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         .select({
           paymentId: payments.id,
           paymentStatus: payments.status,
+          providerId: payments.providerId,
           orderId: orders.id,
           orderStatus: orders.status,
           fulfillmentState: orders.fulfillmentState,
+          isDrill: payments.isDrill,
+          orderIsDrill: orders.isDrill,
         })
         .from(payments)
         .innerJoin(orders, eq(orders.id, payments.orderId))
         .where(eq(payments.id, paymentId));
       if (!r) return false;
+      if (r.isDrill || r.orderIsDrill) return false;
+      if (!canApplyProviderTerminalStatus(r.paymentStatus)) return false;
 
-      await tx
+      const inserted = await tx
         .insert(paymentEvents)
         .values({
           paymentId,
-          providerId:
-            providerId ??
-            (await this.db
-              .select({ id: payments.providerId })
-              .from(payments)
-              .where(eq(payments.id, paymentId))
-              .then(([p]) => p?.id ?? "")),
+          providerId: r.providerId,
           eventType: eventTypeOverride ?? `reconcile.payment.${newStatus}`,
           providerEventId,
           rawPayloadJson: buildStoredEventPayload(rawPayloadJson ?? {}),
           signatureValid: true,
           handledAt: new Date(),
         })
-        .onConflictDoNothing();
+        .onConflictDoNothing()
+        .returning({ id: paymentEvents.id });
+      if (inserted.length === 0) return false;
 
       if (newStatus === "succeeded") {
         const handledAt = occurredAt ?? new Date();
@@ -2434,6 +2533,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         eventKind: paymentWebhookAttempts.eventKind,
         eventType: paymentWebhookAttempts.eventType,
         paymentNo: paymentWebhookAttempts.paymentNo,
+        orderId: orders.id,
         refundNo: paymentWebhookAttempts.refundNo,
         orderNo: paymentWebhookAttempts.orderNo,
         signatureValid: paymentWebhookAttempts.signatureValid,
@@ -2512,6 +2612,8 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         id: paymentReconciliationAttempts.id,
         paymentId: paymentReconciliationAttempts.paymentId,
         paymentNo: payments.paymentNo,
+        orderId: payments.orderId,
+        orderNo: orders.orderNo,
         providerCode: paymentProviders.code,
         trigger: paymentReconciliationAttempts.trigger,
         attemptNo: paymentReconciliationAttempts.attemptNo,
@@ -2530,6 +2632,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         payments,
         eq(payments.id, paymentReconciliationAttempts.paymentId),
       )
+      .innerJoin(orders, eq(orders.id, payments.orderId))
       .innerJoin(
         paymentProviders,
         eq(paymentProviders.id, paymentReconciliationAttempts.providerId),
@@ -2546,6 +2649,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         payments,
         eq(payments.id, paymentReconciliationAttempts.paymentId),
       )
+      .innerJoin(orders, eq(orders.id, payments.orderId))
       .innerJoin(
         paymentProviders,
         eq(paymentProviders.id, paymentReconciliationAttempts.providerId),
@@ -2593,13 +2697,95 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         refundNo: refunds.refundNo,
         paymentId: refunds.paymentId,
         paymentNo: payments.paymentNo,
+        orderId: orders.id,
         orderNo: orders.orderNo,
         providerCode: paymentProviders.code,
         status: refunds.status,
         amountCents: refunds.amountCents,
+        isDrill: refunds.isDrill,
+        isTest: refunds.isDrill,
+        scenario: refunds.drillScenario,
         reason: refunds.reason,
         providerRefundNo: refunds.providerRefundNo,
         refundedAt: refunds.refundedAt,
+        latestReconciliationStatus: sql<string | null>`(
+          select rra.status
+          from refund_reconciliation_attempts rra
+          where rra.refund_id = ${refunds.id}
+          order by rra.created_at desc
+          limit 1
+        )`,
+        latestProviderRefundStatus: sql<string | null>`(
+          select rra.provider_refund_status
+          from refund_reconciliation_attempts rra
+          where rra.refund_id = ${refunds.id}
+          order by rra.created_at desc
+          limit 1
+        )`,
+        latestReconciliationError: sql<string | null>`(
+          select rra.error_message
+          from refund_reconciliation_attempts rra
+          where rra.refund_id = ${refunds.id}
+          order by rra.created_at desc
+          limit 1
+        )`,
+        latestReconciliationAt: sql<Date | null>`(
+          select rra.finished_at
+          from refund_reconciliation_attempts rra
+          where rra.refund_id = ${refunds.id}
+          order by rra.created_at desc
+          limit 1
+        )`,
+        reconciliationAttempts: sql<
+          Array<{
+            trigger: string;
+            attemptNo: number;
+            status: string;
+            providerRefundStatus: string | null;
+            providerRefundNo: string | null;
+            errorCode: string | null;
+            errorMessage: string | null;
+            nextRetryAt: string | null;
+            startedAt: string;
+            finishedAt: string | null;
+            createdAt: string;
+          }>
+        >`coalesce((
+          select jsonb_agg(
+            jsonb_build_object(
+              'trigger', recent.trigger,
+              'attemptNo', recent.attempt_no,
+              'status', recent.status,
+              'providerRefundStatus', recent.provider_refund_status,
+              'providerRefundNo', recent.provider_refund_no,
+              'errorCode', recent.error_code,
+              'errorMessage', recent.error_message,
+              'nextRetryAt', recent.next_retry_at,
+              'startedAt', recent.started_at,
+              'finishedAt', recent.finished_at,
+              'createdAt', recent.created_at
+            )
+            order by recent.created_at desc
+          )
+          from (
+            select
+              rra.trigger,
+              rra.attempt_no,
+              rra.status,
+              rra.provider_refund_status,
+              rra.provider_refund_no,
+              rra.error_code,
+              rra.error_message,
+              rra.next_retry_at,
+              rra.started_at,
+              rra.finished_at,
+              rra.created_at
+            from refund_reconciliation_attempts rra
+            where rra.refund_id = ${refunds.id}
+            order by rra.created_at desc
+            limit 5
+          ) recent
+        ), '[]'::jsonb)`,
         createdAt: refunds.createdAt,
         updatedAt: refunds.updatedAt,
       })
@@ -2623,7 +2809,55 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
     return toPageResult(items, query, Number(totalRow.total));
   }
 
-  async manualReconcile(paymentId: string, adminUserId: string) {
+  async manualReconcileRefund(
+    refundId: string,
+    adminUserId: string,
+    reason: string,
+  ) {
+    const result = await this.refundsService.queryRefund(refundId, "manual");
+    await this.auditService.record({
+      adminUserId,
+      action: "payments.refund_manual_reconcile",
+      resourceType: "refund",
+      resourceId: refundId,
+      afterJson: { reason, result },
+    });
+    return result;
+  }
+
+  private async recordManualReconcileAudit(input: {
+    adminUserId: string;
+    operatorReason: string;
+    paymentId: string;
+    paymentNo: string;
+    providerStatus: string;
+    applied: boolean;
+    outcome: string;
+    errorCode?: string;
+    errorMessage?: string;
+  }): Promise<void> {
+    await this.auditService.record({
+      adminUserId: input.adminUserId,
+      action: "payments.manual_reconcile",
+      resourceType: "payment",
+      resourceId: input.paymentId,
+      afterJson: {
+        reason: input.operatorReason,
+        paymentNo: input.paymentNo,
+        providerStatus: input.providerStatus,
+        applied: input.applied,
+        outcome: input.outcome,
+        ...(input.errorCode ? { errorCode: input.errorCode } : {}),
+        ...(input.errorMessage ? { errorMessage: input.errorMessage } : {}),
+      },
+    });
+  }
+
+  async manualReconcile(
+    paymentId: string,
+    adminUserId: string,
+    reason: string,
+  ) {
     const [payment] = await this.db
       .select({
         id: payments.id,
@@ -2635,6 +2869,8 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         orderId: payments.orderId,
         machineId: orders.machineId,
         providerConfigId: payments.paymentProviderConfigId,
+        isDrill: payments.isDrill,
+        orderIsDrill: orders.isDrill,
       })
       .from(payments)
       .innerJoin(orders, eq(orders.id, payments.orderId))
@@ -2647,10 +2883,36 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
     }
 
     if (payment.status !== "pending" && payment.status !== "processing") {
+      await this.recordManualReconcileAudit({
+        adminUserId,
+        operatorReason: reason,
+        paymentId: payment.id,
+        paymentNo: payment.paymentNo,
+        providerStatus: payment.status,
+        applied: false,
+        outcome: "already_terminal",
+      });
       return {
         status: payment.status,
         reconciled: false,
         reason: "already_terminal",
+      };
+    }
+
+    if (payment.isDrill || payment.orderIsDrill) {
+      await this.recordManualReconcileAudit({
+        adminUserId,
+        operatorReason: reason,
+        paymentId: payment.id,
+        paymentNo: payment.paymentNo,
+        providerStatus: payment.status,
+        applied: false,
+        outcome: "protected_payment_drill",
+      });
+      return {
+        status: payment.status,
+        reconciled: false,
+        reason: "protected_payment_drill",
       };
     }
 
@@ -2713,6 +2975,17 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
           finishedAt: new Date(),
         })
         .where(eq(paymentReconciliationAttempts.id, attempt.id));
+      await this.recordManualReconcileAudit({
+        adminUserId,
+        operatorReason: reason,
+        paymentId: payment.id,
+        paymentNo: payment.paymentNo,
+        providerStatus: payment.status,
+        applied: false,
+        outcome: "query_failed",
+        errorCode: "query_failed",
+        errorMessage: errMsg.slice(0, 500),
+      });
       throw err;
     }
 
@@ -2744,6 +3017,15 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
           finishedAt: new Date(),
         })
         .where(eq(paymentReconciliationAttempts.id, attempt.id));
+      await this.recordManualReconcileAudit({
+        adminUserId,
+        operatorReason: reason,
+        paymentId: payment.id,
+        paymentNo: payment.paymentNo,
+        providerStatus,
+        applied: false,
+        outcome: `provider_${providerStatus}`,
+      });
       return {
         status: payment.status,
         reconciled: false,
@@ -2785,12 +3067,16 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         .catch(() => {});
     }
 
-    await this.auditService.record({
-      adminUserId: adminUserId,
-      action: "payments.manual_reconcile",
-      resourceType: "payment",
-      resourceId: payment.id,
-      afterJson: { paymentNo: payment.paymentNo, providerStatus, applied },
+    await this.recordManualReconcileAudit({
+      adminUserId,
+      operatorReason: reason,
+      paymentId: payment.id,
+      paymentNo: payment.paymentNo,
+      providerStatus,
+      applied,
+      outcome: applied
+        ? `applied_${providerStatus}`
+        : `provider_${providerStatus}`,
     });
 
     return { status: providerStatus, reconciled: applied };

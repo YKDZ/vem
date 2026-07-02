@@ -51,6 +51,7 @@ export const useConnectivityStore = defineStore("connectivity", {
         components.paymentOptions,
         components.syncHealth,
         components.wholeMachineBlockers,
+        components.productionDispensePath,
         components.slotSaleSafety,
       ]
         .filter((component): component is NonNullable<typeof component> =>

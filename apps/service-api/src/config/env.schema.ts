@@ -33,6 +33,12 @@ const baseEnvSchema = z.object({
     .min(1)
     .max(300)
     .default(5),
+  MACHINE_HEARTBEAT_TIMEOUT_SECONDS: z.coerce
+    .number()
+    .int()
+    .min(30)
+    .max(3600)
+    .default(180),
   MACHINE_CLAIM_CODE_TTL_SECONDS: z.coerce
     .number()
     .int()
@@ -50,6 +56,11 @@ const baseEnvSchema = z.object({
     }, z.boolean())
     .default(false),
   PAYMENT_WEBHOOK_BASE_URL: z.url(),
+  MEDIA_ASSET_STORAGE_ROOT: z
+    .string()
+    .min(1)
+    .default("/var/lib/vem/service-api/media-assets"),
+  MEDIA_ASSET_PUBLIC_BASE_URL: z.url().optional(),
   PAYMENT_CONFIG_ENCRYPTION_KEY: z
     .string()
     .min(32)
@@ -82,9 +93,29 @@ const baseEnvSchema = z.object({
     .min(1)
     .max(90)
     .default(30),
+  QWEATHER_API_KEY: z.string().min(1).optional(),
+  QWEATHER_API_HOST: z
+    .string()
+    .min(1)
+    .regex(/^[a-zA-Z0-9.-]+$/)
+    .optional(),
+  QWEATHER_WEATHER_NOW_PATH: z
+    .string()
+    .regex(/^\/.+/)
+    .default("/v7/weather/now"),
+  QWEATHER_SUN_PATH: z.string().regex(/^\/.+/).default("/v7/astronomy/sun"),
+  QWEATHER_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .min(100)
+    .max(30_000)
+    .default(3_000),
   BOOTSTRAP_ADMIN_USERNAME: z.string().min(3).max(64).default("admin"),
   BOOTSTRAP_ADMIN_PASSWORD: z.string().min(12).max(128),
 });
+
+const DEFAULT_PAYMENT_CONFIG_ENCRYPTION_KEY =
+  "dev-payment-config-encryption-key-change-me";
 
 export const envSchema = baseEnvSchema.superRefine((env, ctx) => {
   if (env.NODE_ENV === "production" && env.PAYMENT_MOCK_ENABLED) {
@@ -118,12 +149,13 @@ export const envSchema = baseEnvSchema.superRefine((env, ctx) => {
   }
   if (
     env.NODE_ENV === "production" &&
-    env.PAYMENT_CONFIG_ENCRYPTION_KEY.length < 32
+    env.PAYMENT_CONFIG_ENCRYPTION_KEY === DEFAULT_PAYMENT_CONFIG_ENCRYPTION_KEY
   ) {
     ctx.addIssue({
       code: "custom",
       path: ["PAYMENT_CONFIG_ENCRYPTION_KEY"],
-      message: "PAYMENT_CONFIG_ENCRYPTION_KEY must be at least 32 characters",
+      message:
+        "PAYMENT_CONFIG_ENCRYPTION_KEY must be set explicitly in production",
     });
   }
   if (
@@ -146,6 +178,35 @@ export const envSchema = baseEnvSchema.superRefine((env, ctx) => {
         message: "PAYMENT_WEBHOOK_BASE_URL must use https in production",
       });
     }
+  }
+  const qweatherConfigured = Boolean(
+    env.QWEATHER_API_KEY || env.QWEATHER_API_HOST,
+  );
+  if (qweatherConfigured && !env.QWEATHER_API_KEY) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["QWEATHER_API_KEY"],
+      message: "QWEATHER_API_KEY is required when QWeather is configured",
+    });
+  }
+  if (qweatherConfigured && !env.QWEATHER_API_HOST) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["QWEATHER_API_HOST"],
+      message: "QWEATHER_API_HOST is required when QWeather is configured",
+    });
+  }
+  if (
+    env.QWEATHER_API_HOST &&
+    ["api.qweather.com", "devapi.qweather.com", "geoapi.qweather.com"].includes(
+      env.QWEATHER_API_HOST,
+    )
+  ) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["QWEATHER_API_HOST"],
+      message: "QWEATHER_API_HOST must be the account-specific API Host",
+    });
   }
 });
 

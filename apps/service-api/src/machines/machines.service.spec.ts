@@ -6,7 +6,7 @@ import {
 } from "@nestjs/common";
 import { JwtService } from "@nestjs/jwt";
 import { Test } from "@nestjs/testing";
-import { mqttSigningInput } from "@vem/shared";
+import { mqttSigningInput, updateMachineSchema } from "@vem/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 
@@ -24,7 +24,9 @@ import {
 } from "../machine-auth/machine-credentials.util";
 import { MqttSignatureService } from "../mqtt/mqtt-signature.service";
 import { MqttService } from "../mqtt/mqtt.service";
+import { NotificationsService } from "../notifications/notifications.service";
 import { PaymentProviderConfigService } from "../payments/payment-provider-config.service";
+import { EXTERNAL_NATURAL_ENVIRONMENT_PROVIDER } from "./external-natural-environment.provider";
 import { hashMachineClaimCodeVerifier } from "./machine-claim-code.util";
 import { MachinesService } from "./machines.service";
 
@@ -42,9 +44,29 @@ describe("MachinesService", () => {
   const signForMachine = vi.fn();
   const verifyFromTopic = vi.fn();
   const listMachinePaymentOptionsForMachine = vi.fn();
+  const listProductionPilotPaymentEvidenceForMachine = vi.fn();
+  const createMachineOfflineNotification = vi.fn();
+  const fetchWeatherNow = vi.fn();
+  const fetchSun = vi.fn();
 
   beforeEach(async () => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
+    mockDb.select.mockReturnValue({
+      from: () => ({
+        where: () => ({
+          orderBy: () => ({
+            limit: async () => [{ planogramVersion: "PLAN-1" }],
+          }),
+        }),
+      }),
+    });
+    listMachinePaymentOptionsForMachine.mockResolvedValue({ options: [] });
+    listProductionPilotPaymentEvidenceForMachine.mockImplementation(
+      async () => {
+        const paymentOptions = await listMachinePaymentOptionsForMachine();
+        return paymentOptions.options;
+      },
+    );
     const module = await Test.createTestingModule({
       providers: [
         MachinesService,
@@ -52,7 +74,10 @@ describe("MachinesService", () => {
         { provide: MachineCredentialService, useValue: {} },
         {
           provide: PaymentProviderConfigService,
-          useValue: { listMachinePaymentOptionsForMachine },
+          useValue: {
+            listMachinePaymentOptionsForMachine,
+            listProductionPilotPaymentEvidenceForMachine,
+          },
         },
         { provide: AuditService, useValue: { record: auditRecord } },
         { provide: MqttService, useValue: { publish } },
@@ -61,8 +86,19 @@ describe("MachinesService", () => {
           useValue: { signForMachine, verifyFromTopic },
         },
         {
+          provide: NotificationsService,
+          useValue: { createMachineOfflineNotification },
+        },
+        {
+          provide: EXTERNAL_NATURAL_ENVIRONMENT_PROVIDER,
+          useValue: { fetchWeatherNow, fetchSun },
+        },
+        {
           provide: AppConfigService,
-          useValue: { machineCommandTimeoutSeconds: 5 },
+          useValue: {
+            machineCommandTimeoutSeconds: 5,
+            machineHeartbeatTimeoutSeconds: 120,
+          },
         },
       ],
     }).compile();
@@ -74,6 +110,10 @@ describe("MachinesService", () => {
       id: "machine-1",
       code: "M001",
       name: "Lobby",
+      locationLabel: "1F",
+      geoLatitude: 31.2304,
+      geoLongitude: 121.4737,
+      geoTimezone: "Asia/Shanghai",
       status: "online",
       deletedAt: null,
     };
@@ -109,7 +149,21 @@ describe("MachinesService", () => {
                   statusPayloadJson: {
                     network: "online",
                     mqttConnected: true,
-                    hardwareStatus: "ok",
+                    hardwareStatus: "faulted",
+                    wholeMachineMaintenanceLock: {
+                      code: "WHOLE_MACHINE_HARDWARE_FAULT",
+                      message: "pickup platform blocked",
+                      source: "dispense_failure",
+                      orderNo: "ORD-1",
+                      commandNo: "CMD-1",
+                      slotCode: "A1",
+                      errorCode: "JAMMED",
+                      createdAt: "2026-05-05T12:00:01.000Z",
+                    },
+                    saleReadiness: {
+                      state: "locked",
+                      blockingCodes: ["WHOLE_MACHINE_HARDWARE_FAULT"],
+                    },
                     localQueueSize: 0,
                     environment: {
                       temperatureCelsius: 24,
@@ -144,15 +198,71 @@ describe("MachinesService", () => {
         latestHeartbeatStatus: expect.objectContaining({
           network: "online",
           mqttConnected: true,
-          hardwareStatus: "ok",
+          hardwareStatus: "faulted",
+          saleReadiness: {
+            state: "locked",
+            blockingCodes: ["WHOLE_MACHINE_HARDWARE_FAULT"],
+          },
+          wholeMachineMaintenanceLock: expect.objectContaining({
+            code: "WHOLE_MACHINE_HARDWARE_FAULT",
+            slotCode: "A1",
+          }),
         }),
         latestEnvironment: expect.objectContaining({
           temperatureCelsius: 24,
           sensorStatus: "ok",
         }),
         latestEnvironmentCommand: latestCommand,
+        geoLocation: {
+          latitude: 31.2304,
+          longitude: 121.4737,
+          timezone: "Asia/Shanghai",
+        },
       }),
     );
+  });
+
+  it("creates machines with nullable Machine Geo Location fields", async () => {
+    const created = {
+      id: "machine-1",
+      code: "M001",
+      name: "Lobby",
+      locationLabel: null,
+      geoLatitude: 31.2304,
+      geoLongitude: 121.4737,
+      geoTimezone: "Asia/Shanghai",
+      status: "offline",
+      mqttClientId: null,
+      deletedAt: null,
+    };
+    const insertValues = vi.fn().mockReturnValue({
+      returning: async () => [created],
+    });
+    mockDb.insert.mockReturnValueOnce({ values: insertValues });
+
+    const result = await service.createMachine({
+      code: "M001",
+      name: "Lobby",
+      geoLocation: {
+        latitude: 31.2304,
+        longitude: 121.4737,
+        timezone: "Asia/Shanghai",
+      },
+      status: "offline",
+    });
+
+    expect(insertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        geoLatitude: 31.2304,
+        geoLongitude: 121.4737,
+        geoTimezone: "Asia/Shanghai",
+      }),
+    );
+    expect(result.geoLocation).toEqual({
+      latitude: 31.2304,
+      longitude: 121.4737,
+      timezone: "Asia/Shanghai",
+    });
   });
 
   it("returns latest environment state from the most recent heartbeat", async () => {
@@ -160,6 +270,10 @@ describe("MachinesService", () => {
       id: "machine-1",
       code: "M001",
       name: "Lobby",
+      locationLabel: "1F",
+      geoLatitude: null,
+      geoLongitude: null,
+      geoTimezone: null,
       status: "online",
       deletedAt: null,
     };
@@ -181,7 +295,21 @@ describe("MachinesService", () => {
                   statusPayloadJson: {
                     network: "online",
                     mqttConnected: true,
-                    hardwareStatus: "ok",
+                    hardwareStatus: "faulted",
+                    wholeMachineMaintenanceLock: {
+                      code: "WHOLE_MACHINE_HARDWARE_FAULT",
+                      message: "pickup platform blocked",
+                      source: "dispense_failure",
+                      orderNo: "ORD-1",
+                      commandNo: "CMD-1",
+                      slotCode: "A1",
+                      errorCode: "JAMMED",
+                      createdAt: "2026-05-05T12:00:01.000Z",
+                    },
+                    saleReadiness: {
+                      state: "locked",
+                      blockingCodes: ["WHOLE_MACHINE_HARDWARE_FAULT"],
+                    },
                     localQueueSize: 0,
                     environment: {
                       temperatureCelsius: 24,
@@ -225,7 +353,15 @@ describe("MachinesService", () => {
       expect.objectContaining({
         network: "online",
         mqttConnected: true,
-        hardwareStatus: "ok",
+        hardwareStatus: "faulted",
+        saleReadiness: {
+          state: "locked",
+          blockingCodes: ["WHOLE_MACHINE_HARDWARE_FAULT"],
+        },
+        wholeMachineMaintenanceLock: expect.objectContaining({
+          code: "WHOLE_MACHINE_HARDWARE_FAULT",
+          slotCode: "A1",
+        }),
       }),
     );
     expect(result.latestEnvironment).toEqual({
@@ -239,6 +375,997 @@ describe("MachinesService", () => {
     expect(result.latestEnvironmentCommand).toEqual(
       expect.objectContaining({ status: "succeeded" }),
     );
+    expect(result.geoLocation).toBeNull();
+  });
+
+  it("keeps otherwise ready Production Pilot Readiness degraded while natural context is unconfigured", async () => {
+    const machine = {
+      id: "machine-1",
+      code: "M001",
+      name: "Lobby",
+      status: "online",
+      lastSeenAt: new Date(),
+      deletedAt: null,
+    };
+    mockDb.select
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            limit: async () => [machine],
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            orderBy: () => ({
+              limit: async () => [
+                {
+                  reportedAt: new Date("2026-06-27T02:00:00.000Z"),
+                  statusPayloadJson: {
+                    network: "online",
+                    mqttConnected: true,
+                    hardwareAdapter: "serial",
+                    hardwarePortPath: "COM5",
+                    hardwareStatus: "ok",
+                    scannerHealth: {
+                      status: "online",
+                      portPath: "COM3",
+                      message: "scanner ready",
+                    },
+                    productionDispensePath: {
+                      status: "ready",
+                      message: "real lower-controller serial path ready",
+                    },
+                    saleReadiness: {
+                      state: "restored",
+                      blockingCodes: [],
+                    },
+                    physicalStockAttestation: {
+                      status: "ready",
+                      planogramVersion: "PLAN-1",
+                      attestedAt: "2026-06-27T01:00:00.000Z",
+                    },
+                    recoveryDrill: {
+                      status: "ready",
+                      completedAt: "2026-06-27T01:20:00.000Z",
+                    },
+                    managedMachineUpdate: {
+                      status: "ready",
+                      currentVersion: "2026.06.27",
+                    },
+                  },
+                },
+              ],
+            }),
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            orderBy: () => ({
+              limit: async () => [],
+            }),
+          }),
+        }),
+      });
+    listMachinePaymentOptionsForMachine.mockResolvedValue({
+      options: [
+        {
+          providerCode: "alipay",
+          method: "qr_code",
+          mode: "production",
+          displayName: "Alipay",
+          description: "Alipay QR",
+          icon: "alipay",
+          recommended: true,
+        },
+      ],
+    });
+
+    const result = await service.getMachine("machine-1");
+
+    expect(result.productionPilotReadiness).toEqual(
+      expect.objectContaining({
+        status: "degraded",
+        blockers: [],
+        degraded: expect.arrayContaining([
+          expect.objectContaining({
+            code: "natural_context_readiness.unconfigured",
+            status: "degraded",
+          }),
+        ]),
+        checks: expect.arrayContaining([
+          expect.objectContaining({
+            code: "machine_heartbeat.online",
+            status: "ready",
+          }),
+          expect.objectContaining({
+            code: "payment_readiness.ready",
+            status: "ready",
+          }),
+          expect.objectContaining({
+            code: "managed_machine_update.ready",
+            status: "ready",
+          }),
+        ]),
+      }),
+    );
+  });
+
+  it("blocks Production Pilot Readiness when an online machine heartbeat is stale", async () => {
+    const machine = {
+      id: "machine-1",
+      code: "M001",
+      name: "Lobby",
+      status: "online",
+      lastSeenAt: new Date("2026-01-01T00:00:00.000Z"),
+      deletedAt: null,
+    };
+    mockDb.select
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            limit: async () => [machine],
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            orderBy: () => ({
+              limit: async () => [
+                {
+                  reportedAt: new Date("2026-01-01T00:00:00.000Z"),
+                  statusPayloadJson: {
+                    network: "online",
+                    mqttConnected: true,
+                    scannerHealth: { status: "online" },
+                    productionDispensePath: { status: "ready" },
+                    saleReadiness: {
+                      state: "restored",
+                      blockingCodes: [],
+                    },
+                    physicalStockAttestation: {
+                      status: "ready",
+                      planogramVersion: "PLAN-1",
+                    },
+                    recoveryDrill: { status: "ready" },
+                    managedMachineUpdate: { status: "ready" },
+                  },
+                },
+              ],
+            }),
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            orderBy: () => ({
+              limit: async () => [],
+            }),
+          }),
+        }),
+      });
+    listMachinePaymentOptionsForMachine.mockResolvedValue({
+      options: [
+        {
+          providerCode: "alipay",
+          method: "qr_code",
+          mode: "production",
+          displayName: "Alipay",
+          description: "Alipay QR",
+          icon: "alipay",
+          recommended: true,
+        },
+      ],
+    });
+
+    const result = await service.getMachine("machine-1");
+
+    expect(result.productionPilotReadiness.status).toBe("blocked");
+    expect(result.productionPilotReadiness.blockers).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "machine_heartbeat.stale",
+          status: "blocked",
+          message: "Machine heartbeat timed out",
+        }),
+      ]),
+    );
+  });
+
+  it("blocks Production Pilot Readiness when production dispense path evidence is missing", async () => {
+    const machine = {
+      id: "machine-1",
+      code: "M001",
+      name: "Lobby",
+      status: "online",
+      lastSeenAt: new Date(),
+      deletedAt: null,
+    };
+    mockDb.select
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            limit: async () => [machine],
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            orderBy: () => ({
+              limit: async () => [
+                {
+                  reportedAt: new Date("2026-06-27T02:00:00.000Z"),
+                  statusPayloadJson: {
+                    network: "online",
+                    mqttConnected: true,
+                    hardwareAdapter: "serial",
+                    hardwarePortPath: "COM5",
+                    hardwareStatus: "ok",
+                    scannerHealth: { status: "online" },
+                    saleReadiness: {
+                      state: "restored",
+                      blockingCodes: [],
+                    },
+                    physicalStockAttestation: {
+                      status: "ready",
+                      planogramVersion: "PLAN-1",
+                    },
+                    recoveryDrill: { status: "ready" },
+                    managedMachineUpdate: { status: "ready" },
+                  },
+                },
+              ],
+            }),
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            orderBy: () => ({
+              limit: async () => [],
+            }),
+          }),
+        }),
+      });
+    listMachinePaymentOptionsForMachine.mockResolvedValue({
+      options: [
+        {
+          providerCode: "alipay",
+          method: "qr_code",
+          mode: "production",
+          displayName: "Alipay",
+          description: "Alipay QR",
+          icon: "alipay",
+          recommended: true,
+        },
+      ],
+    });
+
+    const result = await service.getMachine("machine-1");
+
+    expect(result.productionPilotReadiness.status).toBe("blocked");
+    expect(result.productionPilotReadiness.blockers).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "production_dispense_path.blocked",
+          status: "blocked",
+        }),
+      ]),
+    );
+  });
+
+  it("accepts production dispense path evidence under sale readiness components", async () => {
+    const machine = {
+      id: "machine-1",
+      code: "M001",
+      name: "Lobby",
+      status: "online",
+      lastSeenAt: new Date(),
+      deletedAt: null,
+    };
+    mockDb.select
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            limit: async () => [machine],
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            orderBy: () => ({
+              limit: async () => [
+                {
+                  reportedAt: new Date("2026-06-27T02:00:00.000Z"),
+                  statusPayloadJson: {
+                    network: "online",
+                    mqttConnected: true,
+                    scannerHealth: { status: "online" },
+                    saleReadiness: {
+                      state: "restored",
+                      blockingCodes: [],
+                      components: {
+                        productionDispensePath: {
+                          status: "ready",
+                          message: "real lower-controller serial path ready",
+                        },
+                      },
+                    },
+                    physicalStockAttestation: {
+                      status: "ready",
+                      planogramVersion: "PLAN-1",
+                    },
+                    recoveryDrill: { status: "ready" },
+                    managedMachineUpdate: { status: "ready" },
+                  },
+                },
+              ],
+            }),
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            orderBy: () => ({
+              limit: async () => [],
+            }),
+          }),
+        }),
+      });
+    listMachinePaymentOptionsForMachine.mockResolvedValue({
+      options: [
+        {
+          providerCode: "alipay",
+          method: "qr_code",
+          mode: "production",
+          displayName: "Alipay",
+          description: "Alipay QR",
+          icon: "alipay",
+          recommended: true,
+        },
+      ],
+    });
+
+    const result = await service.getMachine("machine-1");
+
+    expect(result.productionPilotReadiness).toEqual(
+      expect.objectContaining({
+        status: "degraded",
+        blockers: [],
+        degraded: expect.arrayContaining([
+          expect.objectContaining({
+            code: "natural_context_readiness.unconfigured",
+            status: "degraded",
+          }),
+        ]),
+        checks: expect.arrayContaining([
+          expect.objectContaining({
+            code: "production_dispense_path.ready",
+            status: "ready",
+          }),
+        ]),
+      }),
+    );
+  });
+
+  it("treats scannerHealth online boolean evidence as ready", async () => {
+    const machine = {
+      id: "machine-1",
+      code: "M001",
+      name: "Lobby",
+      status: "online",
+      lastSeenAt: new Date(),
+      deletedAt: null,
+    };
+    mockDb.select
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            limit: async () => [machine],
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            orderBy: () => ({
+              limit: async () => [
+                {
+                  reportedAt: new Date("2026-06-27T02:00:00.000Z"),
+                  statusPayloadJson: {
+                    network: "online",
+                    mqttConnected: true,
+                    scannerHealth: {
+                      online: true,
+                      portPath: "COM3",
+                      message: "scanner ready",
+                    },
+                    productionDispensePath: { status: "ready" },
+                    saleReadiness: {
+                      state: "restored",
+                      blockingCodes: [],
+                    },
+                    physicalStockAttestation: {
+                      status: "ready",
+                      planogramVersion: "PLAN-1",
+                    },
+                    recoveryDrill: { status: "ready" },
+                    managedMachineUpdate: { status: "ready" },
+                  },
+                },
+              ],
+            }),
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            orderBy: () => ({
+              limit: async () => [],
+            }),
+          }),
+        }),
+      });
+    listMachinePaymentOptionsForMachine.mockResolvedValue({
+      options: [
+        {
+          providerCode: "alipay",
+          method: "qr_code",
+          mode: "production",
+          displayName: "Alipay",
+          description: "Alipay QR",
+          icon: "alipay",
+          recommended: true,
+        },
+      ],
+    });
+
+    const result = await service.getMachine("machine-1");
+
+    expect(result.productionPilotReadiness).toEqual(
+      expect.objectContaining({
+        status: "degraded",
+        blockers: [],
+        degraded: expect.arrayContaining([
+          expect.objectContaining({
+            code: "natural_context_readiness.unconfigured",
+            status: "degraded",
+          }),
+        ]),
+        checks: expect.arrayContaining([
+          expect.objectContaining({
+            code: "scanner_runtime_status.ready",
+            status: "ready",
+          }),
+        ]),
+      }),
+    );
+  });
+
+  it("blocks Production Pilot Readiness for sandbox payment evidence", async () => {
+    const machine = {
+      id: "machine-1",
+      code: "M001",
+      name: "Lobby",
+      status: "online",
+      lastSeenAt: new Date(),
+      deletedAt: null,
+    };
+    mockDb.select
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            limit: async () => [machine],
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            orderBy: () => ({
+              limit: async () => [
+                {
+                  reportedAt: new Date("2026-06-27T02:00:00.000Z"),
+                  statusPayloadJson: {
+                    network: "online",
+                    mqttConnected: true,
+                    scannerHealth: { online: true },
+                    productionDispensePath: { status: "ready" },
+                    saleReadiness: {
+                      state: "restored",
+                      blockingCodes: [],
+                    },
+                    physicalStockAttestation: {
+                      status: "ready",
+                      planogramVersion: "PLAN-1",
+                    },
+                    recoveryDrill: { status: "ready" },
+                    managedMachineUpdate: { status: "ready" },
+                  },
+                },
+              ],
+            }),
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            orderBy: () => ({
+              limit: async () => [],
+            }),
+          }),
+        }),
+      });
+    listMachinePaymentOptionsForMachine.mockResolvedValue({
+      options: [
+        {
+          providerCode: "alipay",
+          method: "qr_code",
+          mode: "sandbox",
+          displayName: "Alipay",
+          description: "Alipay QR",
+          icon: "alipay",
+          recommended: true,
+        },
+      ],
+    });
+
+    const result = await service.getMachine("machine-1");
+
+    expect(result.productionPilotReadiness.status).toBe("blocked");
+    expect(result.productionPilotReadiness.blockers).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "payment_readiness.no_production_provider",
+          status: "blocked",
+        }),
+      ]),
+    );
+  });
+
+  it("blocks Production Pilot Readiness when payment mode evidence is unknown", async () => {
+    const machine = {
+      id: "machine-1",
+      code: "M001",
+      name: "Lobby",
+      status: "online",
+      lastSeenAt: new Date(),
+      deletedAt: null,
+    };
+    mockDb.select
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            limit: async () => [machine],
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            orderBy: () => ({
+              limit: async () => [
+                {
+                  reportedAt: new Date("2026-06-27T02:00:00.000Z"),
+                  statusPayloadJson: {
+                    network: "online",
+                    mqttConnected: true,
+                    scannerHealth: { online: true },
+                    productionDispensePath: { status: "ready" },
+                    saleReadiness: {
+                      state: "restored",
+                      blockingCodes: [],
+                    },
+                    physicalStockAttestation: {
+                      status: "ready",
+                      planogramVersion: "PLAN-1",
+                    },
+                    recoveryDrill: { status: "ready" },
+                    managedMachineUpdate: { status: "ready" },
+                  },
+                },
+              ],
+            }),
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            orderBy: () => ({
+              limit: async () => [],
+            }),
+          }),
+        }),
+      });
+    listMachinePaymentOptionsForMachine.mockResolvedValue({
+      options: [
+        {
+          providerCode: "alipay",
+          method: "qr_code",
+          displayName: "Alipay",
+          description: "Alipay QR",
+          icon: "alipay",
+          recommended: true,
+        },
+      ],
+    });
+
+    const result = await service.getMachine("machine-1");
+
+    expect(result.productionPilotReadiness.status).toBe("blocked");
+    expect(result.productionPilotReadiness.blockers).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "payment_readiness.no_production_provider",
+          status: "blocked",
+        }),
+      ]),
+    );
+  });
+
+  it("keeps scannerHealth offline boolean evidence degraded", async () => {
+    const machine = {
+      id: "machine-1",
+      code: "M001",
+      name: "Lobby",
+      status: "online",
+      lastSeenAt: new Date(),
+      deletedAt: null,
+    };
+    mockDb.select
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            limit: async () => [machine],
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            orderBy: () => ({
+              limit: async () => [
+                {
+                  reportedAt: new Date("2026-06-27T02:00:00.000Z"),
+                  statusPayloadJson: {
+                    network: "online",
+                    mqttConnected: true,
+                    scannerHealth: {
+                      online: false,
+                      portPath: "COM3",
+                      message: "scanner offline",
+                    },
+                    productionDispensePath: { status: "ready" },
+                    saleReadiness: {
+                      state: "restored",
+                      blockingCodes: [],
+                    },
+                    physicalStockAttestation: {
+                      status: "ready",
+                      planogramVersion: "PLAN-1",
+                    },
+                    recoveryDrill: { status: "ready" },
+                    managedMachineUpdate: { status: "ready" },
+                  },
+                },
+              ],
+            }),
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            orderBy: () => ({
+              limit: async () => [],
+            }),
+          }),
+        }),
+      });
+    listMachinePaymentOptionsForMachine.mockResolvedValue({
+      options: [
+        {
+          providerCode: "alipay",
+          method: "qr_code",
+          mode: "production",
+          displayName: "Alipay",
+          description: "Alipay QR",
+          icon: "alipay",
+          recommended: true,
+        },
+      ],
+    });
+
+    const result = await service.getMachine("machine-1");
+
+    expect(result.productionPilotReadiness.status).toBe("degraded");
+    expect(result.productionPilotReadiness.degraded).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "scanner_runtime_status.missing",
+          status: "degraded",
+        }),
+        expect.objectContaining({
+          code: "natural_context_readiness.unconfigured",
+          status: "degraded",
+        }),
+      ]),
+    );
+  });
+
+  it("returns stable Production Pilot Readiness blockers with operator actions", async () => {
+    const machine = {
+      id: "machine-1",
+      code: "M001",
+      name: "Lobby",
+      status: "online",
+      lastSeenAt: new Date(),
+      deletedAt: null,
+    };
+    mockDb.select
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            limit: async () => [machine],
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            orderBy: () => ({
+              limit: async () => [
+                {
+                  reportedAt: new Date("2026-06-27T02:00:00.000Z"),
+                  statusPayloadJson: {
+                    network: "online",
+                    mqttConnected: true,
+                    hardwareAdapter: "serial",
+                    hardwarePortPath: "COM5",
+                    hardwareStatus: "ok",
+                    scannerHealth: { status: "online" },
+                    saleReadiness: {
+                      state: "locked",
+                      blockingCodes: ["WHOLE_MACHINE_HARDWARE_FAULT"],
+                    },
+                    wholeMachineMaintenanceLock: {
+                      code: "WHOLE_MACHINE_HARDWARE_FAULT",
+                      message: "pickup platform blocked",
+                      source: "dispense_failure",
+                    },
+                  },
+                },
+              ],
+            }),
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            orderBy: () => ({
+              limit: async () => [],
+            }),
+          }),
+        }),
+      });
+
+    const result = await service.getMachine("machine-1");
+
+    expect(result.productionPilotReadiness.status).toBe("blocked");
+    expect(result.productionPilotReadiness.blockers).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "machine_sale_readiness.blocked",
+          status: "blocked",
+          message: "Machine Sale Readiness is not restored",
+          operatorAction:
+            "Resolve sale blockers shown by the machine runtime before production pilot.",
+        }),
+        expect.objectContaining({
+          code: "payment_readiness.no_production_provider",
+          status: "blocked",
+          operatorAction:
+            "Enable a real machine payment provider before production pilot.",
+        }),
+        expect.objectContaining({
+          code: "whole_machine_maintenance_lock.active",
+          status: "blocked",
+          message: "pickup platform blocked",
+          operatorAction:
+            "Clear the maintenance lock only after hardware health is restored and notes are recorded.",
+        }),
+      ]),
+    );
+  });
+
+  it("distinguishes degraded Production Pilot Readiness from blocked readiness", async () => {
+    const machine = {
+      id: "machine-1",
+      code: "M001",
+      name: "Lobby",
+      status: "online",
+      lastSeenAt: new Date(),
+      deletedAt: null,
+    };
+    mockDb.select
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            limit: async () => [machine],
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            orderBy: () => ({
+              limit: async () => [
+                {
+                  reportedAt: new Date("2026-06-27T02:00:00.000Z"),
+                  statusPayloadJson: {
+                    network: "online",
+                    mqttConnected: true,
+                    hardwareAdapter: "serial",
+                    hardwarePortPath: "COM5",
+                    hardwareStatus: "ok",
+                    productionDispensePath: { status: "ready" },
+                    saleReadiness: {
+                      state: "restored",
+                      blockingCodes: [],
+                    },
+                    physicalStockAttestation: {
+                      status: "ready",
+                      planogramVersion: "PLAN-1",
+                    },
+                    recoveryDrill: { status: "ready" },
+                    managedMachineUpdate: { status: "ready" },
+                  },
+                },
+              ],
+            }),
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            orderBy: () => ({
+              limit: async () => [],
+            }),
+          }),
+        }),
+      });
+    listMachinePaymentOptionsForMachine.mockResolvedValue({
+      options: [
+        {
+          providerCode: "alipay",
+          method: "qr_code",
+          mode: "production",
+          displayName: "Alipay",
+          description: "Alipay QR",
+          icon: "alipay",
+          recommended: true,
+        },
+      ],
+    });
+
+    const result = await service.getMachine("machine-1");
+
+    expect(result.productionPilotReadiness.status).toBe("degraded");
+    expect(result.productionPilotReadiness.blockers).toEqual([]);
+    expect(result.productionPilotReadiness.degraded).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "scanner_runtime_status.missing",
+          label: "Scanner Runtime Status",
+          status: "degraded",
+          operatorAction:
+            "Inspect the scanner runtime; QR payment can remain available if payment readiness is ready.",
+        }),
+        expect.objectContaining({
+          code: "natural_context_readiness.unconfigured",
+          status: "degraded",
+        }),
+      ]),
+    );
+  });
+
+  it("reports configured geo without a provider path as degraded Natural Context Readiness in machine detail", async () => {
+    const machine = {
+      id: "machine-1",
+      code: "M001",
+      name: "Lobby",
+      locationLabel: "1F",
+      geoLatitude: 31.2304,
+      geoLongitude: 121.4737,
+      geoTimezone: "Asia/Shanghai",
+      status: "online",
+      lastSeenAt: new Date(),
+      deletedAt: null,
+    };
+    mockDb.select
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            limit: async () => [machine],
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            orderBy: () => ({
+              limit: async () => [
+                {
+                  reportedAt: new Date("2026-06-27T02:00:00.000Z"),
+                  statusPayloadJson: {
+                    scannerHealth: { status: "online" },
+                    productionDispensePath: { status: "ready" },
+                    saleReadiness: {
+                      state: "restored",
+                      blockingCodes: [],
+                    },
+                    physicalStockAttestation: {
+                      status: "ready",
+                      planogramVersion: "PLAN-1",
+                    },
+                    recoveryDrill: { status: "ready" },
+                    managedMachineUpdate: { status: "ready" },
+                  },
+                },
+              ],
+            }),
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            orderBy: () => ({
+              limit: async () => [],
+            }),
+          }),
+        }),
+      });
+    listMachinePaymentOptionsForMachine.mockResolvedValue({
+      options: [
+        {
+          providerCode: "alipay",
+          method: "qr_code",
+          mode: "production",
+          displayName: "Alipay",
+          description: "Alipay QR",
+          icon: "alipay",
+          recommended: true,
+        },
+      ],
+    });
+
+    const result = await service.getMachine("machine-1");
+
+    expect(result.productionPilotReadiness.status).toBe("degraded");
+    expect(result.productionPilotReadiness.blockers).toEqual([]);
+    expect(result.productionPilotReadiness.degraded).toEqual([
+      expect.objectContaining({
+        code: "natural_context_readiness.unavailable",
+        label: "Natural Context Readiness",
+        status: "degraded",
+        message: "External Natural Environment is unavailable",
+      }),
+    ]);
   });
 
   it("throws NotFoundException when machine does not exist", async () => {
@@ -253,6 +1380,750 @@ describe("MachinesService", () => {
     await expect(service.getMachine("missing")).rejects.toThrow(
       NotFoundException,
     );
+  });
+
+  it("returns unconfigured External Natural Environment when Machine Geo Location is missing", async () => {
+    mockDb.select.mockReturnValueOnce({
+      from: () => ({
+        where: () => ({
+          limit: async () => [
+            {
+              id: "550e8400-e29b-41d4-a716-446655440000",
+              code: "M001",
+              name: "Lobby",
+              locationLabel: "1F",
+              geoLatitude: null,
+              geoLongitude: null,
+              geoTimezone: null,
+              status: "online",
+              deletedAt: null,
+            },
+          ],
+        }),
+      }),
+    });
+
+    const result = await service.getExternalNaturalEnvironmentForMachine(
+      "550e8400-e29b-41d4-a716-446655440000",
+      new Date("2026-06-30T14:00:00.000Z"),
+    );
+
+    expect(result).toEqual({
+      status: "unconfigured",
+      machineId: "550e8400-e29b-41d4-a716-446655440000",
+      machineCode: "M001",
+      checkedAt: "2026-06-30T14:00:00.000Z",
+      diagnostic: {
+        reason: "machine_geo_location_missing",
+        message: "Machine Geo Location is not configured",
+      },
+    });
+    expect(result).not.toHaveProperty("weather");
+    expect(result).not.toHaveProperty("sun");
+    expect(fetchWeatherNow).not.toHaveBeenCalled();
+    expect(fetchSun).not.toHaveBeenCalled();
+  });
+
+  it("returns ready External Natural Environment from QWeather for configured Machine Geo Location", async () => {
+    mockDb.select.mockReturnValueOnce({
+      from: () => ({
+        where: () => ({
+          limit: async () => [
+            {
+              id: "550e8400-e29b-41d4-a716-446655440000",
+              code: "M001",
+              name: "Lobby",
+              locationLabel: "1F",
+              geoLatitude: 31.2304,
+              geoLongitude: 121.4737,
+              geoTimezone: "Asia/Shanghai",
+              status: "online",
+              deletedAt: null,
+            },
+          ],
+        }),
+      }),
+    });
+    fetchWeatherNow.mockResolvedValueOnce({
+      temperatureCelsius: 28,
+      conditionText: "Sunny",
+      observedAt: "2026-06-30T13:50:00.000Z",
+    });
+    fetchSun.mockResolvedValueOnce({
+      sunriseAt: "2026-06-29T21:53:00.000Z",
+      sunsetAt: "2026-06-30T10:02:00.000Z",
+    });
+
+    const result = await service.getExternalNaturalEnvironmentForMachine(
+      "550e8400-e29b-41d4-a716-446655440000",
+      new Date("2026-06-30T14:00:00.000Z"),
+    );
+
+    expect(fetchWeatherNow).toHaveBeenCalledWith({
+      geoLocation: {
+        latitude: 31.2304,
+        longitude: 121.4737,
+        timezone: "Asia/Shanghai",
+      },
+      checkedAt: new Date("2026-06-30T14:00:00.000Z"),
+    });
+    expect(fetchSun).toHaveBeenCalledWith({
+      geoLocation: {
+        latitude: 31.2304,
+        longitude: 121.4737,
+        timezone: "Asia/Shanghai",
+      },
+      checkedAt: new Date("2026-06-30T14:00:00.000Z"),
+    });
+    expect(result).toEqual({
+      status: "ready",
+      machineId: "550e8400-e29b-41d4-a716-446655440000",
+      machineCode: "M001",
+      checkedAt: "2026-06-30T14:00:00.000Z",
+      localTime: {
+        timezone: "Asia/Shanghai",
+        localDate: "2026-06-30",
+        localClock: "22:00:00",
+      },
+      weather: {
+        temperatureCelsius: 28,
+        conditionText: "Sunny",
+        observedAt: "2026-06-30T13:50:00.000Z",
+      },
+      sun: {
+        sunriseAt: "2026-06-29T21:53:00.000Z",
+        sunsetAt: "2026-06-30T10:02:00.000Z",
+      },
+    });
+    expect(result).not.toHaveProperty("diagnostic");
+  });
+
+  it("returns cached External Natural Environment for the same Machine Geo Location within the weather TTL", async () => {
+    const machine = {
+      id: "550e8400-e29b-41d4-a716-446655440000",
+      code: "M001",
+      name: "Lobby",
+      locationLabel: "1F",
+      geoLatitude: 31.2304,
+      geoLongitude: 121.4737,
+      geoTimezone: "Asia/Shanghai",
+      status: "online",
+      deletedAt: null,
+    };
+    mockDb.select
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            limit: async () => [machine],
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            limit: async () => [machine],
+          }),
+        }),
+      });
+    fetchWeatherNow.mockResolvedValueOnce({
+      temperatureCelsius: 28,
+      conditionText: "Sunny",
+      observedAt: "2026-06-30T13:50:00.000Z",
+    });
+    fetchSun.mockResolvedValueOnce({
+      sunriseAt: "2026-06-29T21:53:00.000Z",
+      sunsetAt: "2026-06-30T10:02:00.000Z",
+    });
+
+    const first = await service.getExternalNaturalEnvironmentForMachine(
+      "550e8400-e29b-41d4-a716-446655440000",
+      new Date("2026-06-30T14:00:00.000Z"),
+    );
+    const second = await service.getExternalNaturalEnvironmentForMachine(
+      "550e8400-e29b-41d4-a716-446655440000",
+      new Date("2026-06-30T14:09:59.000Z"),
+    );
+
+    expect(fetchWeatherNow).toHaveBeenCalledTimes(1);
+    expect(fetchSun).toHaveBeenCalledTimes(1);
+    expect(second).toEqual({
+      ...first,
+      checkedAt: "2026-06-30T14:09:59.000Z",
+      localTime: {
+        timezone: "Asia/Shanghai",
+        localDate: "2026-06-30",
+        localClock: "22:09:59",
+      },
+    });
+  });
+
+  it("returns stale cached External Natural Environment when provider refresh fails after the weather TTL", async () => {
+    const machine = {
+      id: "550e8400-e29b-41d4-a716-446655440000",
+      code: "M001",
+      name: "Lobby",
+      locationLabel: "1F",
+      geoLatitude: 31.2304,
+      geoLongitude: 121.4737,
+      geoTimezone: "Asia/Shanghai",
+      status: "online",
+      deletedAt: null,
+    };
+    mockDb.select
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            limit: async () => [machine],
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            limit: async () => [machine],
+          }),
+        }),
+      });
+    fetchWeatherNow
+      .mockResolvedValueOnce({
+        temperatureCelsius: 28,
+        conditionText: "Sunny",
+        observedAt: "2026-06-30T13:50:00.000Z",
+      })
+      .mockRejectedValueOnce(
+        new Error("QWeather 401 for API key secret-qweather-api-key"),
+      );
+    fetchSun.mockResolvedValueOnce({
+      sunriseAt: "2026-06-29T21:53:00.000Z",
+      sunsetAt: "2026-06-30T10:02:00.000Z",
+    });
+
+    await service.getExternalNaturalEnvironmentForMachine(
+      "550e8400-e29b-41d4-a716-446655440000",
+      new Date("2026-06-30T14:00:00.000Z"),
+    );
+    const result = await service.getExternalNaturalEnvironmentForMachine(
+      "550e8400-e29b-41d4-a716-446655440000",
+      new Date("2026-06-30T14:10:00.000Z"),
+    );
+
+    expect(fetchWeatherNow).toHaveBeenCalledTimes(2);
+    expect(fetchSun).toHaveBeenCalledTimes(1);
+    expect(result).toEqual({
+      status: "stale",
+      machineId: "550e8400-e29b-41d4-a716-446655440000",
+      machineCode: "M001",
+      checkedAt: "2026-06-30T14:10:00.000Z",
+      localTime: {
+        timezone: "Asia/Shanghai",
+        localDate: "2026-06-30",
+        localClock: "22:10:00",
+      },
+      weather: {
+        temperatureCelsius: 28,
+        conditionText: "Sunny",
+        observedAt: "2026-06-30T13:50:00.000Z",
+      },
+      sun: {
+        sunriseAt: "2026-06-29T21:53:00.000Z",
+        sunsetAt: "2026-06-30T10:02:00.000Z",
+      },
+      diagnostic: {
+        reason: "provider_unavailable",
+        message: "External Natural Environment provider is unavailable",
+      },
+    });
+    expect(JSON.stringify(result)).not.toContain("secret-qweather-api-key");
+  });
+
+  it("refreshes weather after 10 minutes while reusing same-date sunrise and sunset for 24 hours", async () => {
+    const machine = {
+      id: "550e8400-e29b-41d4-a716-446655440000",
+      code: "M001",
+      name: "Lobby",
+      locationLabel: "1F",
+      geoLatitude: 31.2304,
+      geoLongitude: 121.4737,
+      geoTimezone: "Asia/Shanghai",
+      status: "online",
+      deletedAt: null,
+    };
+    mockDb.select
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            limit: async () => [machine],
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            limit: async () => [machine],
+          }),
+        }),
+      });
+    fetchWeatherNow
+      .mockResolvedValueOnce({
+        temperatureCelsius: 28,
+        conditionText: "Sunny",
+        observedAt: "2026-06-30T13:50:00.000Z",
+      })
+      .mockResolvedValueOnce({
+        temperatureCelsius: 29,
+        conditionText: "Cloudy",
+        observedAt: "2026-06-30T14:10:00.000Z",
+      });
+    fetchSun.mockResolvedValueOnce({
+      sunriseAt: "2026-06-29T21:53:00.000Z",
+      sunsetAt: "2026-06-30T10:02:00.000Z",
+    });
+
+    await service.getExternalNaturalEnvironmentForMachine(
+      "550e8400-e29b-41d4-a716-446655440000",
+      new Date("2026-06-30T14:00:00.000Z"),
+    );
+    const result = await service.getExternalNaturalEnvironmentForMachine(
+      "550e8400-e29b-41d4-a716-446655440000",
+      new Date("2026-06-30T14:10:00.000Z"),
+    );
+
+    expect(fetchWeatherNow).toHaveBeenCalledTimes(2);
+    expect(fetchSun).toHaveBeenCalledTimes(1);
+    expect(result.weather).toEqual({
+      temperatureCelsius: 29,
+      conditionText: "Cloudy",
+      observedAt: "2026-06-30T14:10:00.000Z",
+    });
+    expect(result.sun).toEqual({
+      sunriseAt: "2026-06-29T21:53:00.000Z",
+      sunsetAt: "2026-06-30T10:02:00.000Z",
+    });
+  });
+
+  it("refreshes sunrise and sunset separately for a new effective local date", async () => {
+    const machine = {
+      id: "550e8400-e29b-41d4-a716-446655440000",
+      code: "M001",
+      name: "Lobby",
+      locationLabel: "1F",
+      geoLatitude: 31.2304,
+      geoLongitude: 121.4737,
+      geoTimezone: "Asia/Shanghai",
+      status: "online",
+      deletedAt: null,
+    };
+    mockDb.select
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            limit: async () => [machine],
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            limit: async () => [machine],
+          }),
+        }),
+      });
+    fetchWeatherNow
+      .mockResolvedValueOnce({
+        temperatureCelsius: 28,
+        conditionText: "Sunny",
+        observedAt: "2026-06-30T13:50:00.000Z",
+      })
+      .mockResolvedValueOnce({
+        temperatureCelsius: 27,
+        conditionText: "Cloudy",
+        observedAt: "2026-07-01T13:50:00.000Z",
+      });
+    fetchSun
+      .mockResolvedValueOnce({
+        sunriseAt: "2026-06-29T21:53:00.000Z",
+        sunsetAt: "2026-06-30T10:02:00.000Z",
+      })
+      .mockResolvedValueOnce({
+        sunriseAt: "2026-06-30T21:54:00.000Z",
+        sunsetAt: "2026-07-01T10:02:00.000Z",
+      });
+
+    await service.getExternalNaturalEnvironmentForMachine(
+      "550e8400-e29b-41d4-a716-446655440000",
+      new Date("2026-06-30T14:00:00.000Z"),
+    );
+    const result = await service.getExternalNaturalEnvironmentForMachine(
+      "550e8400-e29b-41d4-a716-446655440000",
+      new Date("2026-07-01T14:00:00.000Z"),
+    );
+
+    expect(fetchWeatherNow).toHaveBeenCalledTimes(2);
+    expect(fetchSun).toHaveBeenCalledTimes(2);
+    expect(result.sun).toEqual({
+      sunriseAt: "2026-06-30T21:54:00.000Z",
+      sunsetAt: "2026-07-01T10:02:00.000Z",
+    });
+  });
+
+  it("returns unavailable External Natural Environment with redacted diagnostics when QWeather fails", async () => {
+    mockDb.select.mockReturnValueOnce({
+      from: () => ({
+        where: () => ({
+          limit: async () => [
+            {
+              id: "550e8400-e29b-41d4-a716-446655440000",
+              code: "M001",
+              name: "Lobby",
+              locationLabel: "1F",
+              geoLatitude: 31.2304,
+              geoLongitude: 121.4737,
+              geoTimezone: "Asia/Shanghai",
+              status: "online",
+              deletedAt: null,
+            },
+          ],
+        }),
+      }),
+    });
+    fetchWeatherNow.mockRejectedValueOnce(
+      new Error("QWeather 401 for API key secret-qweather-api-key"),
+    );
+    fetchSun.mockResolvedValueOnce({
+      sunriseAt: "2026-06-29T21:53:00.000Z",
+      sunsetAt: "2026-06-30T10:02:00.000Z",
+    });
+
+    const result = await service.getExternalNaturalEnvironmentForMachine(
+      "550e8400-e29b-41d4-a716-446655440000",
+      new Date("2026-06-30T14:00:00.000Z"),
+    );
+
+    expect(result).toEqual({
+      status: "unavailable",
+      machineId: "550e8400-e29b-41d4-a716-446655440000",
+      machineCode: "M001",
+      checkedAt: "2026-06-30T14:00:00.000Z",
+      diagnostic: {
+        reason: "provider_unavailable",
+        message: "External Natural Environment provider is unavailable",
+      },
+    });
+    expect(JSON.stringify(result)).not.toContain("secret-qweather-api-key");
+    expect(result).not.toHaveProperty("weather");
+    expect(result).not.toHaveProperty("sun");
+  });
+
+  it("returns the authenticated machine's own unconfigured External Natural Environment by machine code", async () => {
+    mockDb.select.mockReturnValueOnce({
+      from: () => ({
+        where: () => ({
+          limit: async () => [
+            {
+              id: "550e8400-e29b-41d4-a716-446655440000",
+              code: "M001",
+              name: "Lobby",
+              locationLabel: "1F",
+              geoLatitude: null,
+              geoLongitude: null,
+              geoTimezone: null,
+              status: "online",
+              deletedAt: null,
+            },
+          ],
+        }),
+      }),
+    });
+
+    await expect(
+      service.getExternalNaturalEnvironmentForMachineCode(
+        "M001",
+        new Date("2026-06-30T14:00:00.000Z"),
+      ),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        status: "unconfigured",
+        machineCode: "M001",
+        diagnostic: expect.objectContaining({
+          reason: "machine_geo_location_missing",
+        }),
+      }),
+    );
+  });
+
+  it("updates Machine Geo Location as one audited machine location value", async () => {
+    const existing = {
+      id: "machine-1",
+      code: "M001",
+      name: "Lobby",
+      locationLabel: "1F",
+      geoLatitude: null,
+      geoLongitude: null,
+      geoTimezone: null,
+      status: "offline",
+      mqttClientId: null,
+      deletedAt: null,
+    };
+    const updated = {
+      ...existing,
+      geoLatitude: 31.2304,
+      geoLongitude: 121.4737,
+      geoTimezone: "Asia/Shanghai",
+      updatedAt: new Date("2026-06-30T13:55:00.000Z"),
+    };
+    const updateSet = vi.fn().mockReturnValue({
+      where: () => ({ returning: async () => [updated] }),
+    });
+
+    mockDb.select.mockReturnValueOnce({
+      from: () => ({
+        where: () => ({
+          limit: async () => [existing],
+        }),
+      }),
+    });
+    mockDb.update.mockReturnValueOnce({ set: updateSet });
+
+    const result = await service.updateMachine(
+      "machine-1",
+      {
+        geoLocation: {
+          latitude: 31.2304,
+          longitude: 121.4737,
+          timezone: "Asia/Shanghai",
+        },
+      },
+      "admin-1",
+    );
+
+    expect(updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        geoLatitude: 31.2304,
+        geoLongitude: 121.4737,
+        geoTimezone: "Asia/Shanghai",
+      }),
+    );
+    expect(result.geoLocation).toEqual({
+      latitude: 31.2304,
+      longitude: 121.4737,
+      timezone: "Asia/Shanghai",
+    });
+    expect(auditRecord).toHaveBeenCalledWith({
+      adminUserId: "admin-1",
+      action: "machines.location.update",
+      resourceType: "machine",
+      resourceId: "machine-1",
+      beforeJson: {
+        locationLabel: "1F",
+        geoLocation: null,
+      },
+      afterJson: {
+        locationLabel: "1F",
+        geoLocation: {
+          latitude: 31.2304,
+          longitude: 121.4737,
+          timezone: "Asia/Shanghai",
+        },
+      },
+    });
+  });
+
+  it("clears Machine Geo Location as one audited machine location value", async () => {
+    const existing = {
+      id: "machine-1",
+      code: "M001",
+      name: "Lobby",
+      locationLabel: "1F",
+      geoLatitude: 31.2304,
+      geoLongitude: 121.4737,
+      geoTimezone: "Asia/Shanghai",
+      status: "offline",
+      mqttClientId: null,
+      deletedAt: null,
+    };
+    const updated = {
+      ...existing,
+      geoLatitude: null,
+      geoLongitude: null,
+      geoTimezone: null,
+      updatedAt: new Date("2026-06-30T13:56:00.000Z"),
+    };
+    const updateSet = vi.fn().mockReturnValue({
+      where: () => ({ returning: async () => [updated] }),
+    });
+
+    mockDb.select.mockReturnValueOnce({
+      from: () => ({
+        where: () => ({
+          limit: async () => [existing],
+        }),
+      }),
+    });
+    mockDb.update.mockReturnValueOnce({ set: updateSet });
+
+    const result = await service.updateMachine(
+      "machine-1",
+      { geoLocation: null },
+      "admin-1",
+    );
+
+    expect(updateSet).toHaveBeenCalledWith(
+      expect.objectContaining({
+        geoLatitude: null,
+        geoLongitude: null,
+        geoTimezone: null,
+      }),
+    );
+    expect(result.geoLocation).toBeNull();
+    expect(auditRecord).toHaveBeenCalledWith({
+      adminUserId: "admin-1",
+      action: "machines.location.update",
+      resourceType: "machine",
+      resourceId: "machine-1",
+      beforeJson: {
+        locationLabel: "1F",
+        geoLocation: {
+          latitude: 31.2304,
+          longitude: 121.4737,
+          timezone: "Asia/Shanghai",
+        },
+      },
+      afterJson: {
+        locationLabel: "1F",
+        geoLocation: null,
+      },
+    });
+  });
+
+  it("patches Machine Geo Location without defaulting omitted machine fields", async () => {
+    const existing = {
+      id: "machine-1",
+      code: "M001",
+      name: "Lobby",
+      locationLabel: "1F",
+      geoLatitude: 31.2304,
+      geoLongitude: 121.4737,
+      geoTimezone: "Asia/Shanghai",
+      status: "online",
+      mqttClientId: "mqtt-client-1",
+      deletedAt: null,
+    };
+    const updateSet = vi.fn((values: Record<string, unknown>) => ({
+      where: () => ({
+        returning: async () => [
+          {
+            ...existing,
+            ...Object.fromEntries(
+              Object.entries(values).filter(([, value]) => value !== undefined),
+            ),
+          },
+        ],
+      }),
+    }));
+
+    mockDb.select.mockReturnValueOnce({
+      from: () => ({
+        where: () => ({
+          limit: async () => [existing],
+        }),
+      }),
+    });
+    mockDb.update.mockReturnValueOnce({ set: updateSet });
+
+    const result = await service.updateMachine(
+      "machine-1",
+      updateMachineSchema.parse({ geoLocation: null }),
+      "admin-1",
+    );
+
+    expect(result).toMatchObject({
+      code: "M001",
+      name: "Lobby",
+      locationLabel: "1F",
+      status: "online",
+      mqttClientId: "mqtt-client-1",
+      geoLocation: null,
+    });
+  });
+
+  it("marks stale online machines offline and creates an operator notification", async () => {
+    const now = new Date("2026-06-26T04:05:00.000Z");
+    const staleMachine = {
+      id: "machine-1",
+      code: "M001",
+      status: "online",
+      lastSeenAt: new Date("2026-06-26T04:02:30.000Z"),
+    };
+    const tx = {
+      update: vi.fn().mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: staleMachine.id }]),
+          }),
+        }),
+      }),
+    };
+    mockDb.select.mockReturnValueOnce({
+      from: () => ({
+        where: async () => [staleMachine],
+      }),
+    });
+    mockDb.transaction.mockImplementation(
+      async (cb: (txArg: unknown) => Promise<void>) => {
+        await cb(tx);
+      },
+    );
+
+    const result = await service.markTimedOutMachineHeartbeats(now);
+
+    expect(result).toEqual({ processed: 1 });
+    expect(createMachineOfflineNotification).toHaveBeenCalledWith(tx, {
+      machineId: "machine-1",
+      machineCode: "M001",
+      lastSeenAt: new Date("2026-06-26T04:02:30.000Z"),
+      timeoutSeconds: 120,
+      detectedAt: now,
+    });
+  });
+
+  it("marks online machines with null lastSeenAt offline and creates an operator notification", async () => {
+    const now = new Date("2026-06-26T04:05:00.000Z");
+    const staleMachine = {
+      id: "machine-1",
+      code: "M001",
+      status: "online",
+      lastSeenAt: null,
+    };
+    const tx = {
+      update: vi.fn().mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: staleMachine.id }]),
+          }),
+        }),
+      }),
+    };
+    mockDb.select.mockReturnValueOnce({
+      from: () => ({
+        where: async () => [staleMachine],
+      }),
+    });
+    mockDb.transaction.mockImplementation(
+      async (cb: (txArg: unknown) => Promise<void>) => {
+        await cb(tx);
+      },
+    );
+
+    const result = await service.markTimedOutMachineHeartbeats(now);
+
+    expect(result).toEqual({ processed: 1 });
+    expect(createMachineOfflineNotification).toHaveBeenCalledWith(tx, {
+      machineId: "machine-1",
+      machineCode: "M001",
+      lastSeenAt: null,
+      timeoutSeconds: 120,
+      detectedAt: now,
+    });
   });
 
   it("persists and publishes an environment control command", async () => {
@@ -547,7 +2418,15 @@ describe("MachinesService planogram lifecycle", () => {
         },
         {
           provide: AppConfigService,
-          useValue: { machineCommandTimeoutSeconds: 5 },
+          useValue: {
+            machineCommandTimeoutSeconds: 5,
+            mediaAssetPublicBaseUrl: undefined,
+            paymentWebhookBaseUrl: "http://service.test/api/payments/webhooks",
+          },
+        },
+        {
+          provide: NotificationsService,
+          useValue: { createMachineOfflineNotification: vi.fn() },
         },
       ],
     }).compile();
@@ -565,6 +2444,7 @@ describe("MachinesService planogram lifecycle", () => {
     productName: "矿泉水",
     productDescription: null,
     coverImageUrl: null,
+    tryOnSilhouetteUrl: null,
     categoryId: null,
     categoryName: null,
     sku: "WATER-001",
@@ -576,6 +2456,10 @@ describe("MachinesService planogram lifecycle", () => {
     capacity: 8,
     parLevel: 6,
   };
+  const canonicalCoverImageUrl =
+    "http://service.test/api/media-assets/550e8400-e29b-41d4-a716-446655440124/content";
+  const canonicalTryOnSilhouetteUrl =
+    "http://service.test/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content";
 
   it("publishes a machine planogram version without making it active", async () => {
     const machine = {
@@ -612,6 +2496,22 @@ describe("MachinesService planogram lifecycle", () => {
       })
       .mockReturnValueOnce({
         from: () => ({ where: async () => [{ id: slot.slotId }] }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          innerJoin: () => ({
+            where: async () => [
+              {
+                productId: slot.productId,
+                variantId: slot.variantId,
+                displayImagePublicUrl:
+                  "/api/media-assets/550e8400-e29b-41d4-a716-446655440124/content",
+                tryOnSilhouettePublicUrl:
+                  "/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
+              },
+            ],
+          }),
+        }),
       });
     mockDb.transaction.mockImplementationOnce(
       async (cb: (txArg: typeof tx) => Promise<unknown>) => await cb(tx),
@@ -637,6 +2537,16 @@ describe("MachinesService planogram lifecycle", () => {
         planogramVersion: "PLAN-1",
         status: "published",
       }),
+    );
+    expect(insertSlotsValues).toHaveBeenCalledWith([
+      expect.objectContaining({
+        coverImageUrl: canonicalCoverImageUrl,
+        tryOnSilhouetteUrl: canonicalTryOnSilhouetteUrl,
+      }),
+    ]);
+    expect(result.slots[0]?.coverImageUrl).toBe(canonicalCoverImageUrl);
+    expect(result.slots[0]?.tryOnSilhouetteUrl).toBe(
+      canonicalTryOnSilhouetteUrl,
     );
     expect(auditRecord).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -666,6 +2576,50 @@ describe("MachinesService planogram lifecycle", () => {
       ),
     ).rejects.toThrow(BadRequestException);
     expect(mockDb.transaction).not.toHaveBeenCalled();
+  });
+
+  it("returns machine-renderable absolute managed image URLs in catalog rows", async () => {
+    const catalogRow = {
+      machineCode: "M001",
+      slotId: slot.slotId,
+      slotCode: slot.slotCode,
+      layerNo: slot.layerNo,
+      cellNo: slot.cellNo,
+      inventoryId: slot.inventoryId,
+      variantId: slot.variantId,
+      productId: slot.productId,
+      productName: slot.productName,
+      productDescription: slot.productDescription,
+      coverImageUrl:
+        "/api/media-assets/550e8400-e29b-41d4-a716-446655440124/content",
+      tryOnSilhouetteUrl:
+        "/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
+      categoryId: slot.categoryId,
+      categoryName: slot.categoryName,
+      sku: slot.sku,
+      size: slot.size,
+      color: slot.color,
+      priceCents: slot.priceCents,
+      availableQty: 1,
+      productSortOrder: slot.productSortOrder,
+      targetGender: slot.targetGender,
+    };
+    const query = {
+      from: vi.fn(() => query),
+      innerJoin: vi.fn(() => query),
+      leftJoin: vi.fn(() => query),
+      where: vi.fn(() => query),
+      orderBy: vi.fn(async () => [catalogRow]),
+    };
+    mockDb.select.mockReturnValueOnce(query);
+
+    await expect(service.getCatalogByMachineCode("M001")).resolves.toEqual([
+      {
+        ...catalogRow,
+        coverImageUrl: canonicalCoverImageUrl,
+        tryOnSilhouetteUrl: canonicalTryOnSilhouetteUrl,
+      },
+    ]);
   });
 
   it("reports no active planogram until an acknowledged version is active", async () => {
@@ -724,6 +2678,58 @@ describe("MachinesService planogram lifecycle", () => {
       service.getMachinePlanogramVersions(machine.id),
     ).resolves.toEqual(
       expect.objectContaining({ activePlanogramVersion: "PLAN-1" }),
+    );
+  });
+
+  it("returns the active planogram when no published version is waiting for acknowledgement", async () => {
+    const machine = {
+      id: "550e8400-e29b-41d4-a716-446655440000",
+      code: "M001",
+    };
+    const active = {
+      id: "550e8400-e29b-41d4-a716-446655440010",
+      machineId: machine.id,
+      planogramVersion: "PLAN-1",
+      status: "active",
+      publishedAt: new Date("2026-06-04T12:00:00.000Z"),
+      acknowledgedAt: new Date("2026-06-04T12:05:00.000Z"),
+      activeAt: new Date("2026-06-04T12:05:00.000Z"),
+      createdAt: new Date("2026-06-04T12:00:00.000Z"),
+      updatedAt: new Date("2026-06-04T12:05:00.000Z"),
+    };
+    mockDb.select
+      .mockReturnValueOnce({
+        from: () => ({ where: () => ({ limit: async () => [machine] }) }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            orderBy: () => ({ limit: async () => [active] }),
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            orderBy: async () => [
+              {
+                ...slot,
+                machinePlanogramVersionId: active.id,
+              },
+            ],
+          }),
+        }),
+      });
+
+    await expect(
+      service.getPublishedPlanogramByMachineCode(machine.code),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        machineCode: "M001",
+        planogramVersion: "PLAN-1",
+        status: "active",
+        slots: [expect.objectContaining({ slotCode: "A1" })],
+      }),
     );
   });
 
@@ -897,6 +2903,66 @@ describe("MachinesService planogram lifecycle", () => {
     });
   });
 
+  it("projects open stock reconciliation blockers into machine stock snapshot sale eligibility", async () => {
+    mockDb.select.mockReturnValueOnce({
+      from: () => ({
+        innerJoin: () => ({
+          innerJoin: () => ({
+            innerJoin: () => ({
+              innerJoin: () => ({
+                where: () => ({
+                  orderBy: async () => [
+                    {
+                      machineCode: "M001",
+                      planogramVersion: "PLAN-1",
+                      slotId: "slot-1",
+                      slotCode: "A1",
+                      inventoryId: "inv-1",
+                      capacity: 10,
+                      slotStatus: "enabled",
+                      openSaleSafetyBlockerState: "needs_platform_review",
+                      onHandQty: 10,
+                      reservedQty: 0,
+                      availableQty: 0,
+                    },
+                    {
+                      machineCode: "M001",
+                      planogramVersion: "PLAN-1",
+                      slotId: "slot-2",
+                      slotCode: "A2",
+                      inventoryId: "inv-2",
+                      capacity: 10,
+                      slotStatus: "enabled",
+                      openSaleSafetyBlockerState: null,
+                      onHandQty: 5,
+                      reservedQty: 0,
+                      availableQty: 5,
+                    },
+                  ],
+                }),
+              }),
+            }),
+          }),
+        }),
+      }),
+    });
+
+    const result = await service.getStockSnapshotByMachineCode("M001");
+
+    expect(result.slots).toEqual([
+      expect.objectContaining({
+        slotId: "slot-1",
+        availableQty: 0,
+        slotSalesState: "needs_platform_review",
+      }),
+      expect.objectContaining({
+        slotId: "slot-2",
+        availableQty: 5,
+        slotSalesState: "sale_ready",
+      }),
+    ]);
+  });
+
   it("rejects ack for a machine planogram version that is not published or active", async () => {
     const machine = {
       id: "550e8400-e29b-41d4-a716-446655440000",
@@ -959,6 +3025,7 @@ describe("MachinesService claim code lifecycle", () => {
           provide: AppConfigService,
           useValue: {
             machineCommandTimeoutSeconds: 5,
+            machineHeartbeatTimeoutSeconds: 120,
             machineClaimCodeTtlSeconds: 600,
             machineClaimLookupHmacKey:
               "test-machine-claim-lookup-hmac-key-change-me",
@@ -966,6 +3033,10 @@ describe("MachinesService claim code lifecycle", () => {
             mqttUsername: "machine-client",
             mqttPassword: "mqtt-password",
           },
+        },
+        {
+          provide: NotificationsService,
+          useValue: { createMachineOfflineNotification: vi.fn() },
         },
       ],
     }).compile();
@@ -1002,7 +3073,7 @@ describe("MachinesService claim code lifecycle", () => {
       lockedAt: null,
       machineCode: "M001",
       machineName: "Lobby",
-      machineLocationText: "1F",
+      machineLocationLabel: "1F",
       machineStatus: "offline" as const,
       machineMqttClientId: null,
       machineSecretVersion: 1,
@@ -1015,7 +3086,7 @@ describe("MachinesService claim code lifecycle", () => {
       id: "550e8400-e29b-41d4-a716-446655440000",
       code: "M001",
       name: "Lobby",
-      locationText: "1F",
+      locationLabel: "1F",
       status: "offline",
       mqttClientId: null,
       secretVersion: 1,
@@ -1038,7 +3109,7 @@ describe("MachinesService claim code lifecycle", () => {
       updatedAt: new Date("2026-06-08T16:00:00.000Z"),
       machineCode: machine.code,
       machineName: machine.name,
-      machineLocationText: machine.locationText,
+      machineLocationLabel: machine.locationLabel,
       machineStatus: machine.status,
       machineMqttClientId: machine.mqttClientId,
       machineSecretVersion: machine.secretVersion,
@@ -1093,6 +3164,7 @@ describe("MachinesService claim code lifecycle", () => {
           id: machine.id,
           code: "M001",
           name: "Lobby",
+          locationLabel: "1F",
         }),
         credentials: expect.objectContaining({
           machineSecret: "vms_rotated-machine-secret-change-before-production",
@@ -1121,6 +3193,7 @@ describe("MachinesService claim code lifecycle", () => {
         }),
       }),
     );
+    expect(result.machine).not.toHaveProperty("locationText");
     expect(consumeSet).toHaveBeenCalledWith(
       expect.objectContaining({
         state: "consumed",

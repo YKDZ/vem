@@ -3,6 +3,7 @@ import type { Request } from "express";
 import {
   CanActivate,
   ExecutionContext,
+  Inject,
   Injectable,
   UnauthorizedException,
 } from "@nestjs/common";
@@ -18,9 +19,13 @@ type JwtPayload = { sub: string; username: string };
 @Injectable()
 export class JwtAuthGuard implements CanActivate {
   constructor(
+    @Inject(Reflector)
     private readonly reflector: Reflector,
+    @Inject(JwtService)
     private readonly jwtService: JwtService,
+    @Inject(AppConfigService)
     private readonly config: AppConfigService,
+    @Inject(AccessService)
     private readonly accessService: AccessService,
   ) {}
 

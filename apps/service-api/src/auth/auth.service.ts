@@ -22,9 +22,13 @@ import { PasswordService } from "./password.service";
 export class AuthService {
   constructor(
     @Inject(DRIZZLE_CLIENT) private readonly db: DrizzleClient,
+    @Inject(JwtService)
     private readonly jwtService: JwtService,
+    @Inject(AppConfigService)
     private readonly config: AppConfigService,
+    @Inject(PasswordService)
     private readonly passwordService: PasswordService,
+    @Inject(AccessService)
     private readonly accessService: AccessService,
   ) {}
 

@@ -1,4 +1,4 @@
-import { Injectable } from "@nestjs/common";
+import { Inject, Injectable } from "@nestjs/common";
 import { z } from "zod";
 
 import type {
@@ -24,7 +24,9 @@ export class MockPaymentProvider implements PaymentProvider {
   readonly code = "mock";
   readonly supportsPartialRefund = true;
 
-  constructor(private readonly config: AppConfigService) {}
+  constructor(
+    @Inject(AppConfigService) private readonly config: AppConfigService,
+  ) {}
 
   async createPaymentIntent(
     input: PaymentIntentInput,

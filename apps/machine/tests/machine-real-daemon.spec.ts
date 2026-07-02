@@ -45,7 +45,7 @@ test.beforeAll(async ({ browserName: _browserName }, testInfo) => {
       machineCode: "MACHINE-UI",
       machineName: "Machine UI E2E",
       machineStatus: "online",
-      machineLocationText: "E2E lab",
+      machineLocationLabel: "E2E lab",
       apiBaseUrl: "http://127.0.0.1:9/api",
       mqttUrl: "mqtt://127.0.0.1:1883",
       mqttUsername: null,
@@ -150,7 +150,9 @@ test("browser UI routes using real daemon ready snapshots", async ({
 }) => {
   await page.goto("/");
   await expect(
-    page.getByRole("heading", { name: /暂时无法购买|唐诗村|生产维护/ }),
+    page.getByRole("heading", {
+      name: /暂时无法购买|设备离线|生产维护|请选择商品类别/,
+    }),
   ).toBeVisible();
   await page.close();
 

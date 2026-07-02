@@ -26,7 +26,26 @@ pub enum ScannerAdapterKind {
     SerialText,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioCueCategorySettings {
+    #[serde(default)]
+    pub presence: bool,
+    #[serde(default)]
+    pub transaction: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AudioCueSettings {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub categories: AudioCueCategorySettings,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 #[serde(rename_all = "camelCase")]
 pub struct MachinePublicConfig {
     pub machine_code: Option<String>,
@@ -37,7 +56,7 @@ pub struct MachinePublicConfig {
     #[serde(default)]
     pub machine_status: Option<String>,
     #[serde(default)]
-    pub machine_location_text: Option<String>,
+    pub machine_location_label: Option<String>,
     pub api_base_url: String,
     pub mqtt_url: String,
     pub mqtt_username: Option<String>,
@@ -55,6 +74,12 @@ pub struct MachinePublicConfig {
     pub vision_enabled: bool,
     pub vision_ws_url: String,
     pub vision_request_timeout_ms: u64,
+    #[serde(default)]
+    pub try_on_camera_device_id: Option<String>,
+    #[serde(default)]
+    pub audio_cue_settings: AudioCueSettings,
+    #[serde(default, skip_serializing)]
+    pub presence_audio_enabled: Option<bool>,
     pub kiosk_mode: bool,
     #[serde(default = "default_stock_movement_retention_days")]
     pub stock_movement_retention_days: i64,
@@ -106,7 +131,7 @@ pub struct ProvisioningMachine {
     pub code: String,
     pub name: String,
     pub status: String,
-    pub location_text: Option<String>,
+    pub location_label: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -347,7 +372,7 @@ pub fn default_public_config() -> MachinePublicConfig {
         machine_id: None,
         machine_name: None,
         machine_status: None,
-        machine_location_text: None,
+        machine_location_label: None,
         api_base_url: env_var("VEM_DEFAULT_API_BASE_URL").unwrap_or_default(),
         mqtt_url: "mqtt://localhost:1883".to_string(),
         mqtt_username: None,
@@ -367,6 +392,9 @@ pub fn default_public_config() -> MachinePublicConfig {
         vision_enabled: true,
         vision_ws_url: vending_core::vision::DEFAULT_VISION_WS_URL.to_string(),
         vision_request_timeout_ms: 8_000,
+        try_on_camera_device_id: None,
+        audio_cue_settings: AudioCueSettings::default(),
+        presence_audio_enabled: None,
         kiosk_mode: false,
         stock_movement_retention_days: default_stock_movement_retention_days(),
         runtime_endpoints: None,
@@ -448,7 +476,7 @@ pub fn normalize_public_config(
     });
     config.machine_status = machine_status;
 
-    let machine_location_text = config.machine_location_text.take().and_then(|value| {
+    let machine_location_label = config.machine_location_label.take().and_then(|value| {
         let value = value.trim().to_string();
         if value.is_empty() {
             None
@@ -456,7 +484,7 @@ pub fn normalize_public_config(
             Some(value)
         }
     });
-    config.machine_location_text = machine_location_text;
+    config.machine_location_label = machine_location_label;
 
     let mqtt_username = config.mqtt_username.take().and_then(|value| {
         let value = value.trim().to_string();
@@ -502,6 +530,28 @@ pub fn normalize_public_config(
     config.scanner_serial_port_path = scanner_serial_port_path;
 
     let vision_ws_url = config.vision_ws_url.trim().to_string();
+    let try_on_camera_device_id = config.try_on_camera_device_id.take().and_then(|value| {
+        let value = value.trim().to_string();
+        if value.is_empty() {
+            None
+        } else {
+            Some(value)
+        }
+    });
+    config.try_on_camera_device_id = try_on_camera_device_id;
+
+    if config.audio_cue_settings == AudioCueSettings::default()
+        && config.presence_audio_enabled == Some(true)
+    {
+        config.audio_cue_settings = AudioCueSettings {
+            enabled: true,
+            categories: AudioCueCategorySettings {
+                presence: true,
+                transaction: false,
+            },
+        };
+    }
+    config.presence_audio_enabled = None;
 
     config.api_base_url = config.api_base_url.trim().trim_end_matches('/').to_string();
     config.mqtt_url = config.mqtt_url.trim().to_string();
@@ -840,9 +890,11 @@ impl ConfigStore {
         let content = fs::read_to_string(&path)
             .await
             .map_err(|error| format!("read daemon config failed: {error}"))?;
-        let public: MachinePublicConfig = serde_json::from_str(&content)
-            .map_err(|error| format!("parse daemon config failed: {error}"))?;
+        let (public, migrated) = parse_persisted_public_config(&content)?;
         let public = normalize_public_config(public)?;
+        if migrated {
+            self.write_public_config_file(&public).await?;
+        }
         self.persist_snapshot(&public).await?;
         Ok(public)
     }
@@ -852,19 +904,24 @@ impl ConfigStore {
         config: MachinePublicConfig,
     ) -> Result<MachinePublicRuntimeConfig, String> {
         let normalized = normalize_public_config(config)?;
+        self.write_public_config_file(&normalized).await?;
+        self.persist_snapshot(&normalized).await?;
+        self.public_runtime_config(normalized).await
+    }
+
+    async fn write_public_config_file(&self, public: &MachinePublicConfig) -> Result<(), String> {
         fs::create_dir_all(&self.data_dir)
             .await
             .map_err(|error| format!("create daemon data dir failed: {error}"))?;
         fs::create_dir_all(self.data_dir.join("logs"))
             .await
             .map_err(|error| format!("create daemon log dir failed: {error}"))?;
-        let payload = serde_json::to_string_pretty(&normalized)
+        let payload = serde_json::to_string_pretty(public)
             .map_err(|error| format!("serialize daemon config failed: {error}"))?;
         fs::write(daemon_config_path(&self.data_dir), payload)
             .await
             .map_err(|error| format!("write daemon config failed: {error}"))?;
-        self.persist_snapshot(&normalized).await?;
-        self.public_runtime_config(normalized).await
+        Ok(())
     }
 
     async fn public_runtime_config(
@@ -944,7 +1001,7 @@ impl ConfigStore {
         public.machine_code = Some(profile.machine.code.clone());
         public.machine_name = Some(profile.machine.name.clone());
         public.machine_status = Some(profile.machine.status.clone());
-        public.machine_location_text = profile.machine.location_text.clone();
+        public.machine_location_label = profile.machine.location_label.clone();
         public.mqtt_url = profile.credentials.mqtt_connection.url.clone();
         public.mqtt_username = profile.credentials.mqtt_connection.username.clone();
         public.mqtt_client_id = Some(profile.credentials.mqtt_connection.client_id.clone());
@@ -1031,6 +1088,25 @@ impl ConfigStore {
             .map_err(|error| error.to_string())?;
         Ok(runtime)
     }
+}
+
+fn parse_persisted_public_config(content: &str) -> Result<(MachinePublicConfig, bool), String> {
+    let mut value: serde_json::Value = serde_json::from_str(content)
+        .map_err(|error| format!("parse daemon config failed: {error}"))?;
+    let mut migrated = false;
+    if let serde_json::Value::Object(ref mut object) = value {
+        if !object.contains_key("machineLocationLabel") {
+            if let Some(legacy) = object.remove("machineLocationText") {
+                object.insert("machineLocationLabel".to_string(), legacy);
+                migrated = true;
+            }
+        } else {
+            migrated = object.remove("machineLocationText").is_some();
+        }
+    }
+    serde_json::from_value(value)
+        .map(|public| (public, migrated))
+        .map_err(|error| format!("parse daemon config failed: {error}"))
 }
 
 #[cfg(test)]
@@ -1156,6 +1232,45 @@ mod tests {
         assert!(!config.vision_enabled);
     }
 
+    #[test]
+    fn legacy_presence_audio_config_migrates_to_audio_cue_settings() {
+        let json = serde_json::json!({
+            "machineCode": null,
+            "apiBaseUrl": "http://127.0.0.1:3000/api",
+            "mqttUrl": "mqtt://127.0.0.1:1883",
+            "mqttUsername": null,
+            "hardwareAdapter": "mock",
+            "serialPortPath": null,
+            "lowerControllerUsbIdentity": null,
+            "scannerAdapter": "disabled",
+            "scannerSerialPortPath": null,
+            "scannerBaudRate": 9600,
+            "scannerFrameSuffix": "crlf",
+            "visionEnabled": false,
+            "visionWsUrl": "ws://127.0.0.1:7892/ws",
+            "visionRequestTimeoutMs": 8000,
+            "presenceAudioEnabled": true,
+            "kioskMode": false
+        });
+
+        let config: MachinePublicConfig = serde_json::from_value(json).expect("parse");
+        let normalized = normalize_public_config(config).expect("normalize");
+
+        assert_eq!(
+            normalized.audio_cue_settings,
+            AudioCueSettings {
+                enabled: true,
+                categories: AudioCueCategorySettings {
+                    presence: true,
+                    transaction: false,
+                },
+            }
+        );
+        let serialized = serde_json::to_value(&normalized).expect("serialize");
+        assert!(serialized.get("audioCueSettings").is_some());
+        assert!(serialized.get("presenceAudioEnabled").is_none());
+    }
+
     #[tokio::test]
     async fn normalize_public_config_preserves_custom_stock_movement_retention_days() {
         let config = MachinePublicConfig {
@@ -1164,6 +1279,49 @@ mod tests {
         };
         let normalized = normalize_public_config(config).expect("normalize");
         assert_eq!(normalized.stock_movement_retention_days, 90);
+    }
+
+    #[tokio::test]
+    async fn save_config_update_round_trips_try_on_camera_device_id_only() {
+        let temp = TempDir::new().expect("temp");
+        let data_dir = temp.path().join("daemon");
+        let state = crate::state::LocalStateStore::open(&data_dir.join("state.db"))
+            .await
+            .expect("state");
+        let store = ConfigStore::new(
+            data_dir.clone(),
+            state,
+            std::sync::Arc::new(InMemorySecretStore::default()),
+        );
+        let request = MachineConfigUpdateRequest {
+            public: MachinePublicConfig {
+                try_on_camera_device_id: Some(" try-on-camera-1 ".to_string()),
+                ..default_public_config()
+            },
+            secrets: None,
+        };
+
+        let runtime = store
+            .save_config_update(request)
+            .await
+            .expect("save config update");
+        let reloaded = store.load_runtime_config().await.expect("reload config");
+
+        assert_eq!(
+            runtime.public.try_on_camera_device_id.as_deref(),
+            Some("try-on-camera-1")
+        );
+        assert_eq!(
+            reloaded.public.try_on_camera_device_id,
+            runtime.public.try_on_camera_device_id
+        );
+
+        let saved = tokio::fs::read_to_string(daemon_config_path(&data_dir))
+            .await
+            .expect("read config");
+        let saved: serde_json::Value = serde_json::from_str(&saved).expect("json");
+        assert_eq!(saved["tryOnCameraDeviceId"], "try-on-camera-1");
+        assert!(saved.get("tryOnCameraLabel").is_none());
     }
 
     #[tokio::test]
@@ -1294,6 +1452,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn load_public_config_migrates_legacy_disk_machine_location_text() {
+        let temp = TempDir::new().expect("temp");
+        let data_dir = temp.path().join("daemon");
+        tokio::fs::create_dir_all(&data_dir)
+            .await
+            .expect("create config dir");
+        tokio::fs::write(
+            daemon_config_path(&data_dir),
+            serde_json::json!({
+                "machineCode": "M001",
+                "machineLocationText": "Legacy lobby",
+                "apiBaseUrl": "http://127.0.0.1:3000/api",
+                "mqttUrl": "mqtt://127.0.0.1:1883",
+                "mqttUsername": null,
+                "hardwareAdapter": "mock",
+                "serialPortPath": null,
+                "lowerControllerUsbIdentity": null,
+                "scannerAdapter": "disabled",
+                "scannerSerialPortPath": null,
+                "scannerBaudRate": 9600,
+                "scannerFrameSuffix": "crlf",
+                "visionEnabled": false,
+                "visionWsUrl": "ws://127.0.0.1:7892/ws",
+                "visionRequestTimeoutMs": 8000,
+                "kioskMode": false
+            })
+            .to_string(),
+        )
+        .await
+        .expect("write legacy config");
+        let state = crate::state::LocalStateStore::open(&data_dir.join("state.db"))
+            .await
+            .expect("state");
+        let store = ConfigStore::new(
+            data_dir.clone(),
+            state,
+            std::sync::Arc::new(InMemorySecretStore::default()),
+        );
+
+        let public = store.load_public_config().await.expect("load config");
+
+        assert_eq!(
+            public.machine_location_label.as_deref(),
+            Some("Legacy lobby")
+        );
+        let saved = tokio::fs::read_to_string(daemon_config_path(&data_dir))
+            .await
+            .expect("read migrated config");
+        assert!(saved.contains("\"machineLocationLabel\""));
+        assert!(!saved.contains("machineLocationText"));
+    }
+
+    #[tokio::test]
     async fn save_config_update_saves_secrets_flags_and_redacts_runtime_response() {
         let temp = TempDir::new().expect("temp");
         let data_dir = temp.path().join("daemon");
@@ -1338,6 +1549,63 @@ mod tests {
         assert!(!response.contains("\"machineSecret\""));
         assert!(!response.contains("\"mqttSigningSecret\""));
         assert!(!response.contains("\"mqttPassword\""));
+    }
+
+    #[tokio::test]
+    async fn save_config_update_round_trips_audio_cue_settings() {
+        let temp = TempDir::new().expect("temp");
+        let data_dir = temp.path().join("daemon");
+        let state = crate::state::LocalStateStore::open(&data_dir.join("state.db"))
+            .await
+            .expect("state");
+        let store = ConfigStore::new(
+            data_dir.clone(),
+            state,
+            std::sync::Arc::new(InMemorySecretStore::default()),
+        );
+        let request = MachineConfigUpdateRequest {
+            public: MachinePublicConfig {
+                audio_cue_settings: AudioCueSettings {
+                    enabled: true,
+                    categories: AudioCueCategorySettings {
+                        presence: false,
+                        transaction: true,
+                    },
+                },
+                ..default_public_config()
+            },
+            secrets: None,
+        };
+
+        let runtime = store
+            .save_config_update(request)
+            .await
+            .expect("save config update");
+        let reloaded = store.load_runtime_config().await.expect("reload config");
+
+        assert_eq!(
+            runtime.public.audio_cue_settings,
+            AudioCueSettings {
+                enabled: true,
+                categories: AudioCueCategorySettings {
+                    presence: false,
+                    transaction: true,
+                },
+            }
+        );
+        assert_eq!(
+            reloaded.public.audio_cue_settings,
+            runtime.public.audio_cue_settings
+        );
+
+        let saved = tokio::fs::read_to_string(daemon_config_path(&data_dir))
+            .await
+            .expect("read config");
+        let saved: serde_json::Value = serde_json::from_str(&saved).expect("json");
+        assert_eq!(saved["audioCueSettings"]["enabled"], true);
+        assert_eq!(saved["audioCueSettings"]["categories"]["presence"], false);
+        assert_eq!(saved["audioCueSettings"]["categories"]["transaction"], true);
+        assert!(saved.get("presenceAudioEnabled").is_none());
     }
 
     #[test]

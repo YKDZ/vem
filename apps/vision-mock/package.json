@@ -14,7 +14,7 @@
   },
   "dependencies": {
     "@vem/shared": "workspace:*",
-    "ws": "^8.20.0"
+    "ws": "^8.21.0"
   },
   "devDependencies": {
     "@types/node": "catalog:",

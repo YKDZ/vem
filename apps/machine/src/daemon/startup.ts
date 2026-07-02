@@ -23,7 +23,7 @@ export function routeForStartup(input: {
 }): StartupRoute {
   if (!input.daemonAvailable) return "/maintenance";
   if (!input.config) return "/provisioning";
-  if (input.config?.provisioned === false) return "/provisioning";
+  if (!input.config.provisioned) return "/provisioning";
   if (!input.health?.configConfigured) return "/maintenance";
 
   const next = input.transaction?.nextAction;
@@ -33,6 +33,10 @@ export function routeForStartup(input: {
 
   if (next === "dispensing") {
     return "/dispensing";
+  }
+
+  if (next === "result_unknown") {
+    return { name: "result", params: { kind: "manual_handling" } };
   }
 
   if (

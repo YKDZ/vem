@@ -13,6 +13,7 @@ import {
   mockFail,
   mockSucceed,
   queryPaymentCodeAttempt,
+  queryRefund,
   reversePaymentCodeAttempt,
   type PageResult,
   type Payment,
@@ -23,6 +24,7 @@ import {
   type ReconciliationAttempt,
   type Refund,
 } from "@/api/payments";
+import OrderDetailDrawer from "@/components/OrderDetailDrawer.vue";
 import { useAuthStore } from "@/stores/auth";
 import { formatCents, formatDateTime } from "@/utils/format";
 
@@ -31,6 +33,15 @@ import PaymentProviderConfigPanel from "./PaymentProviderConfigPanel.vue";
 
 const authStore = useAuthStore();
 const canConfigure = authStore.hasPermission("payments.configure");
+const orderDetailDrawer = ref<InstanceType<typeof OrderDetailDrawer> | null>(
+  null,
+);
+
+function openOrderDetail(orderId?: string | null): void {
+  if (orderId) {
+    orderDetailDrawer.value?.show(orderId);
+  }
+}
 
 // Payments tab
 const paymentsLoading = ref(false);
@@ -93,7 +104,7 @@ async function loadEvents(page = 1): Promise<void> {
 
 const paymentColumns = [
   { title: "支付单号", dataIndex: "paymentNo", key: "paymentNo" },
-  { title: "订单", dataIndex: "orderId", key: "orderId" },
+  { title: "订单号", dataIndex: "orderNo", key: "order" },
   { title: "Provider", dataIndex: "providerCode", key: "providerCode" },
   { title: "状态", dataIndex: "status", key: "status" },
   { title: "金额", dataIndex: "amountCents", key: "amountCents" },
@@ -113,6 +124,7 @@ const eventColumns = [
   { title: "事件类型", dataIndex: "eventType", key: "eventType" },
   { title: "Provider", dataIndex: "providerCode", key: "providerCode" },
   { title: "支付单号", dataIndex: "paymentNo", key: "paymentNo" },
+  { title: "订单号", dataIndex: "orderNo", key: "order" },
   { title: "验签", dataIndex: "signatureValid", key: "signatureValid" },
   { title: "处理时间", dataIndex: "handledAt", key: "handledAt" },
   { title: "创建时间", dataIndex: "createdAt", key: "createdAt" },
@@ -141,6 +153,7 @@ const webhookAttemptColumns = [
   { title: "类型", dataIndex: "eventKind", key: "eventKind" },
   { title: "事件", dataIndex: "eventType", key: "eventType" },
   { title: "支付单号", dataIndex: "paymentNo", key: "paymentNo" },
+  { title: "订单号", dataIndex: "orderNo", key: "order" },
   { title: "退款单号", dataIndex: "refundNo", key: "refundNo" },
   { title: "验签", dataIndex: "signatureValid", key: "signatureValid" },
   { title: "业务验证", dataIndex: "businessValid", key: "businessValid" },
@@ -173,6 +186,7 @@ async function loadReconciliationAttempts(page = 1): Promise<void> {
 
 const reconciliationColumns = [
   { title: "支付单号", dataIndex: "paymentNo", key: "paymentNo" },
+  { title: "订单号", dataIndex: "orderNo", key: "order" },
   { title: "Provider", dataIndex: "providerCode", key: "providerCode" },
   { title: "触发方式", dataIndex: "trigger", key: "trigger" },
   { title: "第N次", dataIndex: "attemptNo", key: "attemptNo" },
@@ -189,6 +203,11 @@ const reconciliationColumns = [
 
 // Refunds tab
 const refundsLoading = ref(false);
+const refundQueryingIds = ref<Set<string>>(new Set());
+const reasonDialogOpen = ref(false);
+const reasonDialogTitle = ref("");
+const reasonDialogValue = ref("");
+let resolveReasonDialog: ((reason: string | null) => void) | null = null;
 const refundsList = ref<PageResult<Refund>>({
   items: [],
   total: 0,
@@ -225,38 +244,85 @@ async function loadPaymentCodeAttempts(page = 1): Promise<void> {
   }
 }
 
+function requestOperationReason(title: string): Promise<string | null> {
+  reasonDialogTitle.value = title;
+  reasonDialogValue.value = "";
+  reasonDialogOpen.value = true;
+  return new Promise((resolve) => {
+    resolveReasonDialog = resolve;
+  });
+}
+
+function confirmReasonDialog(): void {
+  const reason = reasonDialogValue.value.trim();
+  if (!reason) return;
+  reasonDialogOpen.value = false;
+  resolveReasonDialog?.(reason);
+  resolveReasonDialog = null;
+}
+
+function cancelReasonDialog(): void {
+  reasonDialogOpen.value = false;
+  resolveReasonDialog?.(null);
+  resolveReasonDialog = null;
+}
+
 async function doQueryPaymentCodeAttempt(id: string): Promise<void> {
-  await queryPaymentCodeAttempt(id);
+  const reason = await requestOperationReason("请输入付款码查询原因");
+  if (!reason) return;
+  await queryPaymentCodeAttempt(id, reason);
   await loadPaymentCodeAttempts(paymentCodeAttemptsList.value.page);
 }
 
 async function doReversePaymentCodeAttempt(id: string): Promise<void> {
-  await reversePaymentCodeAttempt(
-    id,
-    "admin_manual_reverse_from_payments_view",
-  );
+  const reason = await requestOperationReason("请输入付款码撤销原因");
+  if (!reason) return;
+  await reversePaymentCodeAttempt(id, reason);
   await loadPaymentCodeAttempts(paymentCodeAttemptsList.value.page);
 }
 
 async function doManualReconcile(paymentId: string): Promise<void> {
-  await manualReconcile(paymentId);
+  const reason = await requestOperationReason("请输入手动对账原因");
+  if (!reason) return;
+  await manualReconcile(paymentId, reason);
   await loadPayments();
+}
+
+async function doQueryRefund(refundId: string): Promise<void> {
+  const reason = await requestOperationReason("请输入退款查询原因");
+  if (!reason) return;
+  if (refundQueryingIds.value.has(refundId)) return;
+  refundQueryingIds.value = new Set([...refundQueryingIds.value, refundId]);
+  try {
+    await queryRefund(refundId, reason);
+    await loadRefunds(refundsList.value.page);
+  } finally {
+    const next = new Set(refundQueryingIds.value);
+    next.delete(refundId);
+    refundQueryingIds.value = next;
+  }
 }
 
 const refundColumns = [
   { title: "退款单号", dataIndex: "refundNo", key: "refundNo" },
   { title: "支付单号", dataIndex: "paymentNo", key: "paymentNo" },
-  { title: "订单号", dataIndex: "orderNo", key: "orderNo" },
+  { title: "订单号", dataIndex: "orderNo", key: "order" },
   { title: "Provider", dataIndex: "providerCode", key: "providerCode" },
   { title: "状态", dataIndex: "status", key: "status" },
   { title: "金额", dataIndex: "amountCents", key: "amountCents" },
   { title: "原因", dataIndex: "reason", key: "reason" },
+  {
+    title: "最近查询",
+    dataIndex: "latestReconciliationStatus",
+    key: "latestReconciliation",
+  },
   { title: "退款时间", dataIndex: "refundedAt", key: "refundedAt" },
   { title: "创建时间", dataIndex: "createdAt", key: "createdAt" },
+  { title: "操作", key: "actions" },
 ];
 
 const paymentCodeAttemptColumns = [
-  { title: "订单号", dataIndex: "orderNo", key: "orderNo" },
+  { title: "订单号", dataIndex: "orderNo", key: "order" },
   { title: "支付单号", dataIndex: "paymentNo", key: "paymentNo" },
   { title: "渠道", dataIndex: "providerCode", key: "providerCode" },
   { title: "尝试", dataIndex: "attemptNo", key: "attemptNo" },
@@ -300,6 +366,16 @@ onMounted(() => {
           <template #bodyCell="{ column, record }">
             <template v-if="column.key === 'amountCents'">
               {{ formatCents(record.amountCents) }}
+            </template>
+            <template v-else-if="column.key === 'order'">
+              <a-button
+                type="link"
+                size="small"
+                class="px-0"
+                @click="openOrderDetail(record.orderId)"
+              >
+                {{ record.orderNo || record.orderId }}
+              </a-button>
             </template>
             <template
               v-else-if="column.key === 'paidAt' || column.key === 'createdAt'"
@@ -380,6 +456,16 @@ onMounted(() => {
                 {{ record.signatureValid ? "有效" : "无效" }}
               </a-tag>
             </template>
+            <template v-else-if="column.key === 'order'">
+              <a-button
+                type="link"
+                size="small"
+                class="px-0"
+                @click="openOrderDetail(record.orderId)"
+              >
+                {{ record.orderNo || record.orderId }}
+              </a-button>
+            </template>
             <template
               v-else-if="
                 column.key === 'handledAt' || column.key === 'createdAt'
@@ -424,6 +510,18 @@ onMounted(() => {
               >
               <span v-else>-</span>
             </template>
+            <template v-else-if="column.key === 'order'">
+              <a-button
+                v-if="record.orderId"
+                type="link"
+                size="small"
+                class="px-0"
+                @click="openOrderDetail(record.orderId)"
+              >
+                {{ record.orderNo || record.orderId }}
+              </a-button>
+              <span v-else>{{ record.orderNo || "-" }}</span>
+            </template>
             <template v-else-if="column.key === 'createdAt'">
               {{ formatDateTime(record.createdAt) }}
             </template>
@@ -445,8 +543,20 @@ onMounted(() => {
           }"
         >
           <template #bodyCell="{ column, record }">
+            <template v-if="column.key === 'order'">
+              <a-button
+                type="link"
+                size="small"
+                class="px-0"
+                @click="openOrderDetail(record.orderId)"
+              >
+                {{ record.orderNo || record.orderId }}
+              </a-button>
+            </template>
             <template
-              v-if="column.key === 'nextRetryAt' || column.key === 'createdAt'"
+              v-else-if="
+                column.key === 'nextRetryAt' || column.key === 'createdAt'
+              "
             >
               {{ formatDateTime(record[column.key]) }}
             </template>
@@ -471,12 +581,63 @@ onMounted(() => {
             <template v-if="column.key === 'amountCents'">
               {{ formatCents(record.amountCents) }}
             </template>
+            <template v-else-if="column.key === 'order'">
+              <a-button
+                type="link"
+                size="small"
+                class="px-0"
+                @click="openOrderDetail(record.orderId)"
+              >
+                {{ record.orderNo || record.orderId }}
+              </a-button>
+            </template>
             <template
               v-else-if="
                 column.key === 'refundedAt' || column.key === 'createdAt'
               "
             >
               {{ formatDateTime(record[column.key]) }}
+            </template>
+            <template v-else-if="column.key === 'latestReconciliation'">
+              <a-space
+                v-if="record.reconciliationAttempts.length > 0"
+                direction="vertical"
+                size="small"
+              >
+                <span
+                  v-for="attempt in record.reconciliationAttempts"
+                  :key="`${record.id}-${attempt.trigger}-${attempt.attemptNo}-${attempt.createdAt}`"
+                >
+                  #{{ attempt.attemptNo }} {{ attempt.trigger }}:
+                  {{ attempt.status }}
+                  <template v-if="attempt.providerRefundStatus">
+                    / provider {{ attempt.providerRefundStatus }}
+                  </template>
+                  <template v-if="attempt.errorMessage">
+                    / {{ attempt.errorMessage }}
+                  </template>
+                  <template v-if="attempt.finishedAt">
+                    / {{ formatDateTime(attempt.finishedAt) }}
+                  </template>
+                </span>
+              </a-space>
+              <span v-else>-</span>
+            </template>
+            <template v-else-if="column.key === 'actions'">
+              <a-button
+                v-if="
+                  canConfigure &&
+                  (record.status === 'processing' ||
+                    record.status === 'created')
+                "
+                size="small"
+                type="dashed"
+                :loading="refundQueryingIds.has(record.id)"
+                :disabled="refundQueryingIds.has(record.id)"
+                @click="doQueryRefund(record.id)"
+              >
+                查询
+              </a-button>
             </template>
           </template>
         </a-table>
@@ -496,7 +657,17 @@ onMounted(() => {
           }"
         >
           <template #bodyCell="{ column, record }">
-            <template v-if="column.key === 'actions'">
+            <template v-if="column.key === 'order'">
+              <a-button
+                type="link"
+                size="small"
+                class="px-0"
+                @click="openOrderDetail(record.orderId)"
+              >
+                {{ record.orderNo || record.orderId }}
+              </a-button>
+            </template>
+            <template v-else-if="column.key === 'actions'">
               <a-space v-if="canConfigure">
                 <a-button
                   size="small"
@@ -532,5 +703,22 @@ onMounted(() => {
         <PaymentOpsPanel />
       </a-tab-pane>
     </a-tabs>
+    <OrderDetailDrawer ref="orderDetailDrawer" />
+    <a-modal
+      v-model:open="reasonDialogOpen"
+      :title="reasonDialogTitle"
+      ok-text="确认"
+      cancel-text="取消"
+      :ok-button-props="{ disabled: !reasonDialogValue.trim() }"
+      @ok="confirmReasonDialog"
+      @cancel="cancelReasonDialog"
+    >
+      <a-textarea
+        v-model:value="reasonDialogValue"
+        :rows="4"
+        placeholder="请输入本次操作原因"
+        autofocus
+      />
+    </a-modal>
   </a-card>
 </template>

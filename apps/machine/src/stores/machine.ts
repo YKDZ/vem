@@ -7,6 +7,7 @@ import {
   type MachineConfig,
 } from "@/config/machine-config";
 import { daemonClient } from "@/daemon/client";
+import { useAudioCueStore } from "@/stores/audio-cues";
 
 type MachineState = {
   configSummary: ConfigSummary | null;
@@ -73,6 +74,7 @@ export const useMachineStore = defineStore("machine", {
       this.error = null;
       try {
         this.configSummary = await daemonClient.getConfig();
+        applyRuntimeAudioCueSettings(this.configSummary);
         this.configLoaded = true;
       } catch (error) {
         this.error = error instanceof Error ? error.message : String(error);
@@ -88,6 +90,7 @@ export const useMachineStore = defineStore("machine", {
         this.configSummary = await daemonClient.saveConfig({
           public: {
             machineCode: config.machineCode,
+            machineLocationLabel: config.machineLocationLabel,
             apiBaseUrl: config.apiBaseUrl,
             mqttUrl: config.mqttUrl,
             mqttUsername: config.mqttUsername,
@@ -101,6 +104,8 @@ export const useMachineStore = defineStore("machine", {
             visionEnabled: config.visionEnabled,
             visionWsUrl: config.visionWsUrl,
             visionRequestTimeoutMs: config.visionRequestTimeoutMs,
+            tryOnCameraDeviceId: config.tryOnCameraDeviceId,
+            audioCueSettings: config.audioCueSettings,
             kioskMode: config.kioskMode,
             stockMovementRetentionDays: config.stockMovementRetentionDays,
           },
@@ -110,6 +115,7 @@ export const useMachineStore = defineStore("machine", {
             mqttPassword: config.mqttPassword,
           },
         });
+        applyRuntimeAudioCueSettings(this.configSummary);
         this.configLoaded = true;
       } catch (error) {
         this.error = error instanceof Error ? error.message : String(error);
@@ -120,3 +126,7 @@ export const useMachineStore = defineStore("machine", {
     },
   },
 });
+
+function applyRuntimeAudioCueSettings(configSummary: ConfigSummary): void {
+  useAudioCueStore().applySettings(configSummary.public.audioCueSettings);
+}

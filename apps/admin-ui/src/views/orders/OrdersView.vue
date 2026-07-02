@@ -2,13 +2,12 @@
 import { onMounted, ref } from "vue";
 
 import {
-  getOrderDetail,
   listOrders,
   requestRefund,
   type Order,
-  type OrderDetail,
   type PageResult,
 } from "@/api/orders";
+import OrderDetailDrawer from "@/components/OrderDetailDrawer.vue";
 import { useAuthStore } from "@/stores/auth";
 import { formatCents, formatDateTime } from "@/utils/format";
 
@@ -39,19 +38,12 @@ async function loadOrders(page = 1): Promise<void> {
   }
 }
 
-// Detail drawer
-const detailDrawerOpen = ref(false);
-const detailLoading = ref(false);
-const orderDetail = ref<OrderDetail | null>(null);
+const orderDetailDrawer = ref<InstanceType<typeof OrderDetailDrawer> | null>(
+  null,
+);
 
 async function openDetail(order: Order): Promise<void> {
-  detailDrawerOpen.value = true;
-  detailLoading.value = true;
-  try {
-    orderDetail.value = await getOrderDetail(order.id);
-  } finally {
-    detailLoading.value = false;
-  }
+  await orderDetailDrawer.value?.show(order.id);
 }
 
 async function doRefund(id: string): Promise<void> {
@@ -61,24 +53,12 @@ async function doRefund(id: string): Promise<void> {
 
 const orderColumns = [
   { title: "订单号", dataIndex: "orderNo", key: "orderNo" },
-  { title: "机器", dataIndex: "machineId", key: "machineId" },
+  { title: "机器", dataIndex: "machineCode", key: "machine" },
   { title: "状态", dataIndex: "status", key: "status" },
   { title: "金额", dataIndex: "totalAmountCents", key: "totalAmountCents" },
   { title: "支付时间", dataIndex: "paidAt", key: "paidAt" },
   { title: "创建时间", dataIndex: "createdAt", key: "createdAt" },
   { title: "操作", key: "actions" },
-];
-
-const itemColumns = [
-  { title: "SKU ID", dataIndex: "variantId", key: "variantId" },
-  { title: "数量", dataIndex: "quantity", key: "quantity" },
-  { title: "单价(分)", dataIndex: "unitPriceCents", key: "unitPriceCents" },
-];
-
-const paymentColumns = [
-  { title: "支付单号", dataIndex: "paymentNo", key: "paymentNo" },
-  { title: "状态", dataIndex: "status", key: "status" },
-  { title: "金额(分)", dataIndex: "amountCents", key: "amountCents" },
 ];
 
 onMounted(() => void loadOrders());
@@ -128,7 +108,19 @@ onMounted(() => void loadOrders());
         }"
       >
         <template #bodyCell="{ column, record }">
-          <template v-if="column.key === 'totalAmountCents'">
+          <template v-if="column.key === 'orderNo'">
+            <a-button type="link" class="px-0" @click="openDetail(record)">
+              {{ record.orderNo }}
+            </a-button>
+          </template>
+          <template v-else-if="column.key === 'machine'">
+            <RouterLink
+              :to="{ name: 'machine-detail', params: { id: record.machineId } }"
+            >
+              {{ record.machineCode ?? record.machineId }}
+            </RouterLink>
+          </template>
+          <template v-else-if="column.key === 'totalAmountCents'">
             {{ formatCents(record.totalAmountCents) }}
           </template>
           <template
@@ -156,86 +148,6 @@ onMounted(() => void loadOrders());
       </a-table>
     </a-card>
 
-    <!-- Order detail drawer -->
-    <a-drawer
-      v-model:open="detailDrawerOpen"
-      title="订单详情"
-      size="large"
-      :destroy-on-hidden="true"
-    >
-      <a-spin :spinning="detailLoading">
-        <template v-if="orderDetail">
-          <a-descriptions :column="2" bordered>
-            <a-descriptions-item label="订单号">{{
-              orderDetail.order.orderNo
-            }}</a-descriptions-item>
-            <a-descriptions-item label="状态">{{
-              orderDetail.order.status
-            }}</a-descriptions-item>
-            <a-descriptions-item label="金额">
-              {{ formatCents(orderDetail.order.totalAmountCents) }}
-            </a-descriptions-item>
-            <a-descriptions-item label="创建时间">
-              {{ formatDateTime(orderDetail.order.createdAt) }}
-            </a-descriptions-item>
-          </a-descriptions>
-
-          <a-divider>状态时间线</a-divider>
-          <a-timeline>
-            <a-timeline-item
-              v-for="event in orderDetail.orderStatusEvents"
-              :key="event.id"
-            >
-              {{ event.fromStatus ?? "(起始)" }} → {{ event.toStatus }}
-              <span class="ml-2 text-xs text-slate-400">
-                {{ formatDateTime(event.createdAt) }}
-              </span>
-            </a-timeline-item>
-          </a-timeline>
-
-          <a-divider>订单明细</a-divider>
-          <a-table
-            :columns="itemColumns"
-            :data-source="orderDetail.items"
-            row-key="id"
-            :pagination="false"
-            size="small"
-          />
-
-          <a-divider>支付流水</a-divider>
-          <a-table
-            :columns="paymentColumns"
-            :data-source="orderDetail.payments"
-            row-key="id"
-            :pagination="false"
-            size="small"
-          />
-
-          <a-divider>支付事件</a-divider>
-          <a-table
-            :data-source="orderDetail.paymentEvents"
-            row-key="id"
-            :pagination="false"
-            size="small"
-          />
-
-          <a-divider>出货命令</a-divider>
-          <a-table
-            :data-source="orderDetail.vendingCommands"
-            row-key="id"
-            :pagination="false"
-            size="small"
-          />
-
-          <a-divider>库存流水</a-divider>
-          <a-table
-            :data-source="orderDetail.inventoryMovements"
-            row-key="id"
-            :pagination="false"
-            size="small"
-          />
-        </template>
-      </a-spin>
-    </a-drawer>
+    <OrderDetailDrawer ref="orderDetailDrawer" />
   </section>
 </template>

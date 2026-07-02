@@ -34,6 +34,7 @@ function makeConfig(
     paymentMockEnabled: boolean;
     paymentAlertWindowMinutes: number;
     paymentCertificateExpiryWarningDays: number;
+    machineHeartbeatTimeoutSeconds: number;
     notifyUrlCheck: ReturnType<
       AppConfigService["getPaymentNotifyUrlStaticCheck"]
     >;
@@ -45,6 +46,8 @@ function makeConfig(
     paymentAlertWindowMinutes: overrides.paymentAlertWindowMinutes ?? 60,
     paymentCertificateExpiryWarningDays:
       overrides.paymentCertificateExpiryWarningDays ?? 30,
+    machineHeartbeatTimeoutSeconds:
+      overrides.machineHeartbeatTimeoutSeconds ?? 120,
     getPaymentNotifyUrlStaticCheck: vi.fn().mockReturnValue(
       overrides.notifyUrlCheck ?? {
         providerCode: "alipay",
@@ -103,6 +106,45 @@ function makeService(options: {
   return new PaymentOpsService(db as never, config, secrets, providerConfigs);
 }
 
+function mockMachinePreflightSelects(
+  db: ReturnType<typeof makeDb>,
+  heartbeatRows: unknown[],
+  machineOverrides: Partial<{
+    id: string;
+    code: string;
+    status: string;
+    lastSeenAt: Date | null;
+  }> = {},
+) {
+  let selectCallCount = 0;
+  db.select.mockImplementation(() => {
+    const callIdx = selectCallCount++;
+    const result =
+      callIdx === 0
+        ? [
+            {
+              id: "mach-003",
+              code: "M003",
+              status: "online",
+              lastSeenAt: new Date(),
+              ...machineOverrides,
+            },
+          ]
+        : heartbeatRows;
+    const whereResult = {
+      limit: vi.fn().mockResolvedValue(result.slice(0, 1)),
+      orderBy: vi.fn().mockReturnValue({
+        limit: vi.fn().mockResolvedValue(result.slice(0, 1)),
+      }),
+    };
+    return {
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue(whereResult),
+      }),
+    };
+  });
+}
+
 /** Helper to set up db.select with specific results for different calls */
 function buildSelectSequence(
   db: ReturnType<typeof makeDb>,
@@ -119,6 +161,9 @@ function buildSelectSequence(
       // Make where() both awaitable AND chainable with .limit()
       const whereResult = Object.assign(Promise.resolve(result), {
         limit: vi.fn().mockResolvedValue(result.slice(0, 1)),
+        orderBy: vi.fn().mockReturnValue({
+          limit: vi.fn().mockResolvedValue(result.slice(0, 1)),
+        }),
       });
       return {
         where: vi.fn().mockReturnValue(whereResult),
@@ -243,6 +288,7 @@ describe("PaymentOpsService.getReadiness", () => {
                     appId: "APP001",
                     publicConfigJson: {
                       gatewayUrl: "https://openapi.alipay.com",
+                      keyType: "PKCS8",
                     },
                     configEncryptedJson: {
                       v: 1,
@@ -285,12 +331,157 @@ describe("PaymentOpsService.getReadiness", () => {
       };
     });
 
-    const service = makeService({ db });
+    const secrets = makeSecrets();
+    vi.mocked(secrets.decrypt).mockReturnValue({
+      privateKeyPem: "alipay-private-key",
+      appCertPem: "alipay-app-cert",
+      alipayPublicCertPem: "alipay-public-cert",
+      alipayRootCertPem: "alipay-root-cert",
+    });
+
+    const service = makeService({ db, secrets });
     const result = await service.getReadiness();
     const providerCheck = result.checks.find(
       (c) => c.code === "real_provider_config_present",
     );
     expect(providerCheck?.passed).toBe(true);
+  });
+
+  it("does not treat an encrypted empty real-provider secret blob as production-ready", async () => {
+    const db = makeDb();
+    let selectCallCount = 0;
+    db.select.mockImplementation(() => {
+      const callIdx = selectCallCount++;
+      return {
+        from: vi.fn().mockImplementation(() => {
+          if (callIdx === 1) {
+            return {
+              innerJoin: vi.fn().mockReturnValue({
+                where: vi.fn().mockResolvedValue([
+                  {
+                    providerCode: "alipay",
+                    providerStatus: "enabled",
+                    configStatus: "enabled",
+                    machineId: null,
+                    merchantNo: "MERCHANT001",
+                    appId: "APP001",
+                    publicConfigJson: {
+                      gatewayUrl: "https://openapi.alipay.com",
+                      keyType: "PKCS8",
+                    },
+                    configEncryptedJson: {
+                      v: 1,
+                      alg: "aes-256-gcm",
+                      iv: "yyy",
+                      tag: "zzz",
+                      ciphertext: "xxx",
+                    },
+                  },
+                ]),
+              }),
+            };
+          }
+          const zeroRow = [{ total: 0 }];
+          const whereResult = Object.assign(Promise.resolve(zeroRow), {
+            limit: vi.fn().mockResolvedValue([]),
+          });
+          return {
+            where: vi.fn().mockReturnValue(whereResult),
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue([]),
+            }),
+            limit: vi.fn().mockResolvedValue([]),
+          };
+        }),
+      };
+    });
+    const secrets = makeSecrets();
+    vi.mocked(secrets.decrypt).mockReturnValue({});
+
+    const service = makeService({ db, secrets });
+    const result = await service.getReadiness();
+    const providerCheck = result.checks.find(
+      (c) => c.code === "real_provider_config_present",
+    );
+
+    expect(providerCheck?.passed).toBe(false);
+    expect(JSON.stringify(providerCheck?.evidence)).not.toContain(
+      "privateKeyPem",
+    );
+  });
+
+  it("counts complete decrypted provider credentials without leaking secret values", async () => {
+    const db = makeDb();
+    let selectCallCount = 0;
+    db.select.mockImplementation(() => {
+      const callIdx = selectCallCount++;
+      return {
+        from: vi.fn().mockImplementation(() => {
+          if (callIdx === 1) {
+            return {
+              innerJoin: vi.fn().mockReturnValue({
+                where: vi.fn().mockResolvedValue([
+                  {
+                    providerCode: "wechat_pay",
+                    providerStatus: "enabled",
+                    configStatus: "enabled",
+                    machineId: null,
+                    merchantNo: "1900000109",
+                    appId: "wx1234567890abcdef",
+                    publicConfigJson: {
+                      merchantCertificateSerialNo: "MERCHANT_CERT_SERIAL",
+                      platformCertificateSerialNo: "PLATFORM_CERT_SERIAL",
+                      paymentCodeEnabled: true,
+                    },
+                    configEncryptedJson: {
+                      v: 1,
+                      alg: "aes-256-gcm",
+                      iv: "yyy",
+                      tag: "zzz",
+                      ciphertext: "xxx",
+                    },
+                  },
+                ]),
+              }),
+            };
+          }
+          const zeroRow = [{ total: 0 }];
+          const whereResult = Object.assign(Promise.resolve(zeroRow), {
+            limit: vi.fn().mockResolvedValue([]),
+          });
+          return {
+            where: vi.fn().mockReturnValue(whereResult),
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue([]),
+            }),
+            limit: vi.fn().mockResolvedValue([]),
+          };
+        }),
+      };
+    });
+    const secrets = makeSecrets();
+    vi.mocked(secrets.decrypt).mockReturnValue({
+      apiV3Key: "0123456789abcdef0123456789abcdef",
+      privateKeyPem: "wechat-private-key",
+      platformPublicKeyPem: "wechat-platform-public-key",
+      apiV2Key: "abcdef0123456789abcdef0123456789",
+      merchantApiCertPem: "wechat-merchant-cert",
+      merchantApiKeyPem: "wechat-merchant-key",
+    });
+
+    const service = makeService({ db, secrets });
+    const result = await service.getReadiness();
+    const providerCheck = result.checks.find(
+      (c) => c.code === "real_provider_config_present",
+    );
+
+    expect(providerCheck?.passed).toBe(true);
+    expect(JSON.stringify(providerCheck?.evidence)).not.toContain(
+      "wechat-private-key",
+    );
+    expect(JSON.stringify(providerCheck?.evidence)).not.toContain(
+      "abcdef0123456789abcdef0123456789",
+    );
   });
 });
 
@@ -333,42 +524,571 @@ describe("PaymentOpsService.getMachinePreflight", () => {
   });
 
   it("adds scanner health warning for payment_code without blocking ready machine", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-26T04:02:30.000Z"));
     const db = makeDb();
     buildSelectSequence(db, [
-      [{ id: "mach-002", code: "M002", status: "online" }],
-    ]);
-
-    const providerConfigs = makeProviderConfigs();
-    vi.mocked(
-      providerConfigs.listMachinePaymentOptionsForMachine,
-    ).mockResolvedValue({
-      options: [
+      [
         {
-          optionKey: "payment_code:alipay",
-          providerCode: "alipay",
-          method: "payment_code",
-          displayName: "支付宝付款码",
-          description: "请出示支付宝付款码",
-          icon: "alipay",
-          disabled: false,
-          disabledReason: null,
-          recommended: true,
+          id: "mach-002",
+          code: "M002",
+          status: "online",
+          lastSeenAt: new Date("2026-06-26T04:02:00.000Z"),
         },
       ],
-      defaultOptionKey: "payment_code:alipay",
-      defaultProviderCode: "alipay",
-      serverTime: new Date().toISOString(),
+      [
+        {
+          reportedAt: new Date("2026-06-26T04:02:00.000Z"),
+          receivedAt: new Date("2026-06-26T04:02:00.000Z"),
+          statusPayloadJson: {
+            hardwareAdapter: "serial",
+            hardwarePortPath: "COM5",
+            hardwareStatus: "ok",
+          },
+        },
+      ],
+    ]);
+
+    try {
+      const providerConfigs = makeProviderConfigs();
+      vi.mocked(
+        providerConfigs.listMachinePaymentOptionsForMachine,
+      ).mockResolvedValue({
+        options: [
+          {
+            optionKey: "payment_code:alipay",
+            providerCode: "alipay",
+            method: "payment_code",
+            displayName: "支付宝付款码",
+            description: "请出示支付宝付款码",
+            icon: "alipay",
+            disabled: false,
+            disabledReason: null,
+            recommended: true,
+          },
+        ],
+        defaultOptionKey: "payment_code:alipay",
+        defaultProviderCode: "alipay",
+        serverTime: new Date().toISOString(),
+      });
+
+      const service = makeService({ db, providerConfigs });
+      const result = await service.getMachinePreflight("mach-002");
+
+      expect(result.status).toBe("ready");
+      expect(
+        result.checks.find(
+          (check) => check.code === "payment_code.scanner_health_not_reported",
+        ),
+      ).toMatchObject({ severity: "warning", passed: false });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("passes scanner runtime check for payment_code when heartbeat reports scanner ready", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-26T04:02:30.000Z"));
+    const db = makeDb();
+    buildSelectSequence(db, [
+      [
+        {
+          id: "mach-002",
+          code: "M002",
+          status: "online",
+          lastSeenAt: new Date("2026-06-26T04:02:00.000Z"),
+        },
+      ],
+      [
+        {
+          reportedAt: new Date("2026-06-26T04:02:00.000Z"),
+          receivedAt: new Date("2026-06-26T04:02:00.000Z"),
+          statusPayloadJson: {
+            hardwareAdapter: "serial",
+            hardwarePortPath: "COM5",
+            hardwareStatus: "ok",
+            scannerHealth: {
+              status: "ready",
+              online: true,
+              message: "scanner ready",
+            },
+          },
+        },
+      ],
+    ]);
+
+    try {
+      const providerConfigs = makeProviderConfigs();
+      vi.mocked(
+        providerConfigs.listMachinePaymentOptionsForMachine,
+      ).mockResolvedValue({
+        options: [
+          {
+            optionKey: "payment_code:alipay",
+            providerCode: "alipay",
+            method: "payment_code",
+            displayName: "支付宝付款码",
+            description: "请出示支付宝付款码",
+            icon: "alipay",
+            disabled: false,
+            disabledReason: null,
+            recommended: true,
+          },
+        ],
+        defaultOptionKey: "payment_code:alipay",
+        defaultProviderCode: "alipay",
+        serverTime: new Date().toISOString(),
+      });
+
+      const service = makeService({ db, providerConfigs });
+      const result = await service.getMachinePreflight("mach-002");
+
+      expect(result.status).toBe("ready");
+      expect(
+        result.checks.find(
+          (check) => check.code === "payment_code.scanner_runtime.ready",
+        ),
+      ).toMatchObject({
+        severity: "info",
+        passed: true,
+        message: "付款码支付扫码模块健康证据已上报",
+      });
+      expect(
+        result.checks.some(
+          (check) => check.code === "payment_code.scanner_health_not_reported",
+        ),
+      ).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("warns when payment_code is available but scanner runtime is degraded", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-26T04:02:30.000Z"));
+    const db = makeDb();
+    buildSelectSequence(db, [
+      [
+        {
+          id: "mach-002",
+          code: "M002",
+          status: "online",
+          lastSeenAt: new Date("2026-06-26T04:02:00.000Z"),
+        },
+      ],
+      [
+        {
+          reportedAt: new Date("2026-06-26T04:02:00.000Z"),
+          receivedAt: new Date("2026-06-26T04:02:00.000Z"),
+          statusPayloadJson: {
+            hardwareAdapter: "serial",
+            hardwarePortPath: "COM5",
+            hardwareStatus: "ok",
+            scannerHealth: {
+              status: "degraded",
+              online: false,
+              message: "scanner serial port unavailable",
+            },
+          },
+        },
+      ],
+    ]);
+
+    try {
+      const providerConfigs = makeProviderConfigs();
+      vi.mocked(
+        providerConfigs.listMachinePaymentOptionsForMachine,
+      ).mockResolvedValue({
+        options: [
+          {
+            optionKey: "payment_code:alipay",
+            providerCode: "alipay",
+            method: "payment_code",
+            displayName: "支付宝付款码",
+            description: "请出示支付宝付款码",
+            icon: "alipay",
+            disabled: false,
+            disabledReason: null,
+            recommended: true,
+          },
+          {
+            optionKey: "qr_code:alipay",
+            providerCode: "alipay",
+            method: "qr_code",
+            displayName: "支付宝扫码",
+            description: "请使用支付宝扫码支付",
+            icon: "alipay",
+            disabled: false,
+            disabledReason: null,
+            recommended: false,
+          },
+        ],
+        defaultOptionKey: "payment_code:alipay",
+        defaultProviderCode: "alipay",
+        serverTime: new Date().toISOString(),
+      });
+
+      const service = makeService({ db, providerConfigs });
+      const result = await service.getMachinePreflight("mach-002");
+
+      expect(result.status).toBe("ready");
+      expect(
+        result.checks.find(
+          (check) => check.code === "payment_code.scanner_runtime.degraded",
+        ),
+      ).toMatchObject({
+        severity: "warning",
+        passed: false,
+        message: "付款码支付已启用，但扫码模块未就绪；二维码支付不受影响",
+      });
+      expect(result.availableProviders).toEqual([
+        expect.objectContaining({
+          optionKey: "qr_code:alipay",
+          method: "qr_code",
+          disabled: false,
+          recommended: true,
+        }),
+      ]);
+      expect(result.defaultOptionKey).toBe("qr_code:alipay");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("blocks production machine preflight when runtime heartbeat reports mock dispense hardware", async () => {
+    const db = makeDb();
+    mockMachinePreflightSelects(db, [
+      {
+        reportedAt: new Date("2026-06-26T04:00:00.000Z"),
+        statusPayloadJson: {
+          hardwareAdapter: "mock",
+          hardwarePortPath: null,
+        },
+      },
+    ]);
+
+    const service = makeService({
+      db,
+      config: makeConfig({ nodeEnv: "production" }),
     });
+    const result = await service.getMachinePreflight("mach-003");
 
-    const service = makeService({ db, providerConfigs });
-    const result = await service.getMachinePreflight("mach-002");
-
-    expect(result.status).toBe("ready");
+    expect(result.status).toBe("blocked");
     expect(
       result.checks.find(
-        (check) => check.code === "payment_code.scanner_health_not_reported",
+        (check) => check.code === "production_dispense_path.mock",
       ),
-    ).toMatchObject({ severity: "warning", passed: false });
+    ).toMatchObject({
+      severity: "critical",
+      passed: false,
+      message: "生产出货路径不能使用 mock hardwareAdapter",
+    });
+  });
+
+  it("blocks production machine preflight when heartbeat reports tcp lower-controller simulator", async () => {
+    const db = makeDb();
+    mockMachinePreflightSelects(db, [
+      {
+        reportedAt: new Date("2026-06-26T04:01:00.000Z"),
+        statusPayloadJson: {
+          hardwareAdapter: "serial",
+          hardwarePortPath: "tcp://127.0.0.1:17991",
+        },
+      },
+    ]);
+
+    const service = makeService({
+      db,
+      config: makeConfig({ nodeEnv: "production" }),
+    });
+    const result = await service.getMachinePreflight("mach-003");
+
+    expect(result.status).toBe("blocked");
+    expect(
+      result.checks.find(
+        (check) => check.code === "production_dispense_path.tcp_simulator",
+      ),
+    ).toMatchObject({
+      severity: "critical",
+      passed: false,
+      evidence: {
+        reportedAt: "2026-06-26T04:01:00.000Z",
+        hardwareAdapter: "serial",
+        hardwarePortPath: "tcp://127.0.0.1:17991",
+      },
+    });
+  });
+
+  it("allows production machine preflight when heartbeat reports real serial hardware", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-26T04:02:30.000Z"));
+    try {
+      const db = makeDb();
+      mockMachinePreflightSelects(
+        db,
+        [
+          {
+            reportedAt: new Date("2026-06-26T04:02:00.000Z"),
+            receivedAt: new Date("2026-06-26T04:02:00.000Z"),
+            statusPayloadJson: {
+              hardwareAdapter: "serial",
+              hardwarePortPath: "COM5",
+              hardwareStatus: "ok",
+            },
+          },
+        ],
+        { lastSeenAt: new Date("2026-06-26T04:02:00.000Z") },
+      );
+
+      const service = makeService({
+        db,
+        config: makeConfig({ nodeEnv: "production" }),
+      });
+      const result = await service.getMachinePreflight("mach-003");
+
+      expect(result.status).toBe("ready");
+      expect(
+        result.checks.find((check) => check.code === "machine_heartbeat.fresh"),
+      ).toMatchObject({
+        severity: "critical",
+        passed: true,
+        evidence: {
+          lastSeenAt: "2026-06-26T04:02:00.000Z",
+          reportedAt: "2026-06-26T04:02:00.000Z",
+          timeoutSeconds: 120,
+          ageSeconds: 30,
+        },
+      });
+      expect(
+        result.checks.find(
+          (check) => check.code === "production_dispense_path.ready",
+        ),
+      ).toMatchObject({
+        severity: "critical",
+        passed: true,
+        evidence: {
+          reportedAt: "2026-06-26T04:02:00.000Z",
+          hardwareAdapter: "serial",
+          hardwarePortPath: "COM5",
+          hardwareStatus: "ok",
+        },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    {
+      reportedAt: "2026-06-26T04:10:00.000Z",
+      caseName: "future",
+    },
+    {
+      reportedAt: "2026-06-26T03:00:00.000Z",
+      caseName: "backdated",
+    },
+  ])(
+    "uses server lastSeenAt, not $caseName reportedAt, for preflight heartbeat freshness",
+    async ({ reportedAt }) => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-06-26T04:02:30.000Z"));
+      try {
+        const db = makeDb();
+        mockMachinePreflightSelects(
+          db,
+          [
+            {
+              reportedAt: new Date(reportedAt),
+              receivedAt: new Date("2026-06-26T04:02:00.000Z"),
+              statusPayloadJson: {
+                hardwareAdapter: "serial",
+                hardwarePortPath: "COM5",
+                hardwareStatus: "ok",
+              },
+            },
+          ],
+          { lastSeenAt: new Date("2026-06-26T04:02:00.000Z") },
+        );
+
+        const service = makeService({
+          db,
+          config: makeConfig({ nodeEnv: "production" }),
+        });
+        const result = await service.getMachinePreflight("mach-003");
+
+        expect(result.status).toBe("ready");
+        expect(
+          result.checks.find(
+            (check) => check.code === "machine_heartbeat.fresh",
+          ),
+        ).toMatchObject({
+          passed: true,
+          evidence: {
+            lastSeenAt: "2026-06-26T04:02:00.000Z",
+            reportedAt,
+            ageSeconds: 30,
+          },
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it("blocks machine preflight when the latest heartbeat is stale", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-26T04:05:00.000Z"));
+    try {
+      const db = makeDb();
+      mockMachinePreflightSelects(
+        db,
+        [
+          {
+            reportedAt: new Date("2026-06-26T04:04:59.000Z"),
+            receivedAt: new Date("2026-06-26T04:02:30.000Z"),
+            statusPayloadJson: {
+              network: "online",
+              mqttConnected: true,
+              hardwareAdapter: "serial",
+              hardwarePortPath: "COM5",
+              hardwareStatus: "ok",
+            },
+          },
+        ],
+        { lastSeenAt: new Date("2026-06-26T04:02:30.000Z") },
+      );
+
+      const service = makeService({
+        db,
+        config: makeConfig({ machineHeartbeatTimeoutSeconds: 120 }),
+      });
+      const result = await service.getMachinePreflight("mach-003");
+
+      expect(result.status).toBe("blocked");
+      expect(
+        result.checks.find((check) => check.code === "machine_heartbeat.fresh"),
+      ).toMatchObject({
+        severity: "critical",
+        passed: false,
+        evidence: {
+          lastSeenAt: "2026-06-26T04:02:30.000Z",
+          reportedAt: "2026-06-26T04:04:59.000Z",
+          timeoutSeconds: 120,
+          ageSeconds: 150,
+        },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("blocks machine preflight when an online machine has no lastSeenAt", async () => {
+    const db = makeDb();
+    mockMachinePreflightSelects(
+      db,
+      [
+        {
+          reportedAt: new Date("2026-06-26T04:02:00.000Z"),
+          receivedAt: new Date("2026-06-26T04:02:00.000Z"),
+          statusPayloadJson: {
+            hardwareAdapter: "serial",
+            hardwarePortPath: "COM5",
+            hardwareStatus: "ok",
+          },
+        },
+      ],
+      { lastSeenAt: null },
+    );
+
+    const service = makeService({
+      db,
+      config: makeConfig({ nodeEnv: "production" }),
+    });
+    const result = await service.getMachinePreflight("mach-003");
+
+    expect(result.status).toBe("blocked");
+    expect(
+      result.checks.find((check) => check.code === "machine_heartbeat.fresh"),
+    ).toMatchObject({
+      severity: "critical",
+      passed: false,
+      message: "Machine heartbeat receive time is missing",
+      evidence: {
+        lastSeenAt: null,
+        reportedAt: "2026-06-26T04:02:00.000Z",
+        ageSeconds: null,
+      },
+    });
+  });
+
+  it("blocks production machine preflight when no heartbeat evidence exists", async () => {
+    const db = makeDb();
+    mockMachinePreflightSelects(db, []);
+
+    const service = makeService({
+      db,
+      config: makeConfig({ nodeEnv: "production" }),
+    });
+    const result = await service.getMachinePreflight("mach-003");
+
+    expect(result.status).toBe("blocked");
+    expect(
+      result.checks.find((check) => check.code === "machine_heartbeat.fresh"),
+    ).toMatchObject({
+      severity: "critical",
+      passed: false,
+      message: "Machine heartbeat is missing",
+      evidence: {
+        reportedAt: null,
+      },
+    });
+    expect(
+      result.checks.find(
+        (check) => check.code === "production_dispense_path.evidence_missing",
+      ),
+    ).toMatchObject({
+      severity: "critical",
+      passed: false,
+      evidence: {
+        reportedAt: null,
+        hardwareAdapter: null,
+        hardwarePortPath: null,
+      },
+    });
+  });
+
+  it("blocks production machine preflight when heartbeat lacks hardware evidence", async () => {
+    const db = makeDb();
+    mockMachinePreflightSelects(db, [
+      {
+        reportedAt: new Date("2026-06-26T04:03:00.000Z"),
+        statusPayloadJson: {
+          network: "online",
+          mqttConnected: true,
+        },
+      },
+    ]);
+
+    const service = makeService({
+      db,
+      config: makeConfig({ nodeEnv: "production" }),
+    });
+    const result = await service.getMachinePreflight("mach-003");
+
+    expect(result.status).toBe("blocked");
+    expect(
+      result.checks.find(
+        (check) => check.code === "production_dispense_path.evidence_missing",
+      ),
+    ).toMatchObject({
+      severity: "critical",
+      passed: false,
+      evidence: {
+        reportedAt: "2026-06-26T04:03:00.000Z",
+        hardwareAdapter: null,
+        hardwarePortPath: null,
+      },
+    });
   });
 });
 

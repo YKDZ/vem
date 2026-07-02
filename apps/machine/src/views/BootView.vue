@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { onMounted, onUnmounted, ref } from "vue";
 import { useRouter } from "vue-router";
 
 import type { DaemonEvent } from "@/daemon/schemas";
@@ -72,6 +72,7 @@ function dispatchDaemonEvent(event: DaemonEvent): void {
       online: event.online,
       message: event.message,
       updatedAt: event.updatedAt,
+      latestDiagnosticPayload: event.latestDiagnosticPayload ?? null,
     });
     return;
   }
@@ -171,6 +172,11 @@ onMounted(async () => {
       }),
     );
   }
+});
+
+onUnmounted(() => {
+  eventSubscription?.close();
+  eventSubscription = null;
 });
 </script>
 

@@ -103,12 +103,42 @@ pub async fn run_console_with_token(
         let _ = backend.authenticate(machine_code, secret).await;
     }
     let ui_status_cache = ipc::RuntimeStatusCache::new(&runtime_config.public, state.clone()).await;
+    let payment_code_submit_guard = {
+        let status_cache = ui_status_cache.clone();
+        let state = state.clone();
+        std::sync::Arc::new(move || {
+            let status_cache = status_cache.clone();
+            let state = state.clone();
+            Box::pin(async move {
+                let hardware = status_cache.hardware.read().await.clone();
+                if !hardware.online {
+                    return Err(format!(
+                        "MACHINE_NOT_READY_FOR_PAYMENT_CODE: {}",
+                        hardware.message
+                    ));
+                }
+                if let Some(lock) = state
+                    .whole_machine_maintenance_lock()
+                    .await
+                    .map_err(|error| error.to_string())?
+                {
+                    return Err(format!(
+                        "MACHINE_NOT_READY_FOR_PAYMENT_CODE: {}",
+                        lock.message
+                    ));
+                }
+                Ok(())
+            })
+                as std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>
+        })
+    };
     let transaction = TransactionStateMachine::new(
         state.clone(),
         backend.clone(),
         runtime_config.public.machine_code.clone(),
         events_tx.clone(),
-    );
+    )
+    .with_payment_code_submit_guard(payment_code_submit_guard);
     let ui = ipc::UiRuntimeServices {
         backend: backend.clone(),
         transaction,
@@ -132,7 +162,7 @@ pub async fn run_console_with_token(
         hardware: hardware.clone(),
         events: events_tx.clone(),
         runtime_tx: tx_raw.clone(),
-        disk_pressure_probe: Arc::new(crate::health::DataDirDiskPressureProbe::default()),
+        disk_pressure_probe: Arc::new(crate::health::DataDirDiskPressureProbe::from_env()),
         ui,
     };
     let (ipc_handle, ipc_task) = ipc::run_server(config.bind, ipc_ctx.clone())
@@ -197,6 +227,7 @@ pub async fn run_console_with_token(
                         enabled: snapshot.enabled,
                         online: snapshot.online,
                         message: snapshot.message,
+                        latest_diagnostic_payload: snapshot.latest_diagnostic_payload,
                     });
                     return;
                 }
@@ -210,6 +241,7 @@ pub async fn run_console_with_token(
                 enabled: snapshot.enabled,
                 online: snapshot.online,
                 message: snapshot.message,
+                latest_diagnostic_payload: snapshot.latest_diagnostic_payload,
             });
             // 退避等待，最长 30 秒
             tokio::select! {
@@ -237,6 +269,7 @@ pub async fn run_console_with_token(
         events_tx.clone(),
         state.clone(),
         stop_token.clone(),
+        ipc_ctx.clone(),
     )? {
         tasks.push(runtime_mqtt);
     }
@@ -266,6 +299,7 @@ fn maybe_spawn_mqtt_task(
     events: broadcast::Sender<DaemonEvent>,
     state: LocalStateStore,
     shutdown: CancellationToken,
+    ipc_context: ipc::IpcContext,
 ) -> Result<Option<tokio::task::JoinHandle<Result<(), String>>>, String> {
     let machine_code = match &runtime_config.machine_code {
         Some(code) => code.clone(),
@@ -296,6 +330,7 @@ fn maybe_spawn_mqtt_task(
         events,
         shutdown,
     )
+    .with_readiness_context(ipc_context)
     .with_client(client);
     Ok(Some(tokio::spawn(Arc::new(mqtt).run(event_loop))))
 }
@@ -468,7 +503,39 @@ async fn write_ready_file(path: &Path, bind: SocketAddr, token: &str) -> Result<
             .map_err(|error| format!("serialize ready file failed: {error}"))?,
     )
     .await
-    .map_err(|error| format!("write ready file failed: {error}"))
+    .map_err(|error| format!("write ready file failed: {error}"))?;
+    harden_sensitive_file_permissions(path).await?;
+    Ok(())
+}
+
+async fn harden_sensitive_file_permissions(path: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let permissions = std::fs::Permissions::from_mode(0o600);
+        tokio::fs::set_permissions(path, permissions)
+            .await
+            .map_err(|error| format!("harden ready file permissions failed: {error}"))?;
+    }
+
+    #[cfg(windows)]
+    {
+        let status = tokio::process::Command::new("icacls")
+            .arg(path)
+            .arg("/inheritance:r")
+            .arg("/grant:r")
+            .arg("Administrators:F")
+            .arg("SYSTEM:F")
+            .status()
+            .await
+            .map_err(|error| format!("run icacls for ready file failed: {error}"))?;
+        if !status.success() {
+            return Err(format!("icacls for ready file failed with status {status}"));
+        }
+    }
+
+    Ok(())
 }
 
 async fn run_hardware_health_watcher(
@@ -531,12 +598,14 @@ async fn cache_daemon_events(
                 enabled,
                 online,
                 message,
+                latest_diagnostic_payload,
                 ..
             } => {
                 let mut cache = status_cache.vision.write().await;
                 cache.enabled = enabled;
                 cache.online = online;
                 cache.message = message;
+                cache.latest_diagnostic_payload = latest_diagnostic_payload;
                 cache.updated_at = updated_at;
             }
             DaemonEvent::ScannerHealthChanged { snapshot, .. } => {

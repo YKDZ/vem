@@ -259,6 +259,13 @@ describe("checkout helpers", () => {
     expect(resultKindFromNextAction("wait_payment")).toBeNull();
     expect(isTerminalResultNextAction("payment_failed")).toBe(true);
   });
+
+  it("maps unknown dispense projections to manual handling", () => {
+    expect(normalizeNextAction("result_unknown")).toBe("manual_handling");
+    expect(
+      resultKindFromNextAction(normalizeNextAction("result_unknown")),
+    ).toBe("manual_handling");
+  });
 });
 
 describe("checkout store", () => {
@@ -960,6 +967,31 @@ describe("checkout store", () => {
     expect(store.flowStep).toBe("dispensing");
   });
 
+  it("preserves result_unknown vending status from daemon manual handling transaction", async () => {
+    getCurrentTransactionMock.mockResolvedValue(
+      makeTransactionSnapshot({
+        paymentStatus: "succeeded",
+        orderStatus: "manual_handling",
+        nextAction: "manual_handling",
+        vending: {
+          commandNo: "CMD-UNKNOWN",
+          status: "result_unknown",
+          lastError: "dispense result unknown after daemon restart",
+        },
+      }),
+    );
+
+    const store = useCheckoutStore();
+    await store.refreshCurrentTransaction();
+
+    expect(store.flowStep).toBe("result");
+    expect(store.status?.nextAction).toBe("manual_handling");
+    expect(store.status?.vending).toMatchObject({
+      commandNo: "CMD-UNKNOWN",
+      status: "result_unknown",
+    });
+  });
+
   it("cancels the current order through daemon and refreshes sale view", async () => {
     cancelOrderMock.mockResolvedValue(
       makeTransactionSnapshot({
@@ -985,6 +1017,34 @@ describe("checkout store", () => {
     expect(store.currentOrder).toBeNull();
     expect(store.status).toBeNull();
     expect(store.flowStep).toBe("idle");
+  });
+
+  it("can preserve selected item after canceling from payment UI", async () => {
+    cancelOrderMock.mockResolvedValue(
+      makeTransactionSnapshot({
+        paymentStatus: "canceled",
+        orderStatus: "canceled",
+        nextAction: "closed",
+      }),
+    );
+    getSaleViewMock.mockResolvedValue({
+      items: [makeCatalogItem({ saleableStock: 1 })],
+      source: "local_stock",
+      planogramVersion: "PLAN-1",
+      lastUpdatedAt: "2026-06-04T00:00:00Z",
+    });
+
+    const item = makeCatalogItem({ catalogKey: "product:SOCK-001" });
+    const store = useCheckoutStore();
+    store.selectItem(item);
+    store.applyTransaction(makeTransactionSnapshot());
+
+    await store.cancelCurrentOrder({ preserveSelectedItem: true });
+
+    expect(store.currentOrder).toBeNull();
+    expect(store.status).toBeNull();
+    expect(store.selectedItem?.catalogKey).toBe("product:SOCK-001");
+    expect(store.flowStep).toBe("detail");
   });
 
   it("ignores a dismissed terminal current transaction", async () => {
@@ -1039,6 +1099,79 @@ describe("checkout store", () => {
     expect(store.paymentCodeMessage).toBe(
       "本次付款码交易已撤销，请刷新付款码后重试",
     );
+    expect(store.flowStep).toBe("payment");
+  });
+
+  it("keeps the current order after one failed payment-code scan attempt", async () => {
+    const failedScan = makeTransactionSnapshot({
+      paymentCodeAttempt: {
+        attemptNo: 1,
+        status: "failed",
+        maskedAuthCode: "2876****4394",
+        source: "serial_text",
+        idempotencyKey: "ORD-001:attempt-1",
+        submittedAt: "2026-01-01T00:00:05Z",
+        lastCheckedAt: "2026-01-01T00:00:06Z",
+        canRetry: true,
+        message: "付款码已失效，请刷新付款码后重试",
+      },
+      nextAction: "wait_payment",
+      paymentStatus: "pending",
+      orderStatus: "pending_payment",
+      operatorHint: null,
+    });
+    getCurrentTransactionMock.mockResolvedValue(failedScan);
+
+    const store = useCheckoutStore();
+    store.applyTransaction(
+      makeTransactionSnapshot({ paymentCodeAttempt: null }),
+    );
+    await store.refreshCurrentTransaction();
+
+    expect(store.currentOrder?.orderNo).toBe("ORD-001");
+    expect(store.status?.nextAction).toBe("wait_payment");
+    expect(store.status?.paymentCodeAttempt).toMatchObject({
+      status: "failed",
+      canRetry: true,
+      message: "付款码已失效，请刷新付款码后重试",
+    });
+    expect(store.paymentCodeLastMasked).toBe("2876****4394");
+    expect(store.flowStep).toBe("payment");
+  });
+
+  it("keeps the current order while an unknown payment-code attempt is being queried", async () => {
+    const unknownScan = makeTransactionSnapshot({
+      paymentCodeAttempt: {
+        attemptNo: 1,
+        status: "querying",
+        maskedAuthCode: "2876****4394",
+        source: "serial_text",
+        idempotencyKey: "ORD-001:attempt-1",
+        submittedAt: "2026-01-01T00:00:05Z",
+        lastCheckedAt: "2026-01-01T00:00:06Z",
+        canRetry: false,
+        message: "正在确认支付结果",
+      },
+      nextAction: "wait_payment",
+      paymentStatus: "pending",
+      orderStatus: "pending_payment",
+      operatorHint: null,
+    });
+    getCurrentTransactionMock.mockResolvedValue(unknownScan);
+
+    const store = useCheckoutStore();
+    store.applyTransaction(
+      makeTransactionSnapshot({ paymentCodeAttempt: null }),
+    );
+    await store.refreshCurrentTransaction();
+
+    expect(store.currentOrder?.orderNo).toBe("ORD-001");
+    expect(store.status?.nextAction).toBe("wait_payment");
+    expect(store.status?.paymentCodeAttempt).toMatchObject({
+      status: "querying",
+      canRetry: false,
+      message: "正在确认支付结果",
+    });
     expect(store.flowStep).toBe("payment");
   });
 

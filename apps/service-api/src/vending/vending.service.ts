@@ -13,6 +13,8 @@ import {
   desc,
   eq,
   inArray,
+  inventories,
+  inventoryReservations,
   machineEvents,
   machineHeartbeats,
   machines,
@@ -20,6 +22,7 @@ import {
   orderItems,
   orders,
   orderStatusEvents,
+  sql,
   vendingCommands,
   type DrizzleClient,
   type DrizzleTransaction,
@@ -57,6 +60,15 @@ function isUniqueViolation(error: unknown): boolean {
   );
 }
 
+function isProtectedFulfillmentDrillPayload(value: unknown): boolean {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    Reflect.get(value, "kind") === "protected_fulfillment_drill" &&
+    Reflect.get(value, "isDrill") === true
+  );
+}
+
 @Injectable()
 export class VendingService implements OnModuleInit, OnApplicationShutdown {
   private readonly logger = new Logger(VendingService.name);
@@ -64,12 +76,19 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
 
   constructor(
     @Inject(DRIZZLE_CLIENT) private readonly db: DrizzleClient,
+    @Inject(MqttService)
     private readonly mqttService: MqttService,
+    @Inject(MqttSignatureService)
     private readonly mqttSignatureService: MqttSignatureService,
+    @Inject(NotificationsService)
     private readonly notificationsService: NotificationsService,
+    @Inject(InventoryService)
     private readonly inventoryService: InventoryService,
+    @Inject(MachineStockMovementsService)
     private readonly machineStockMovementsService: MachineStockMovementsService,
+    @Inject(RefundsService)
     private readonly refundsService: RefundsService,
+    @Inject(MaintenanceWorkOrdersService)
     private readonly maintenanceWorkOrdersService: MaintenanceWorkOrdersService,
   ) {}
 
@@ -110,7 +129,12 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
     const existingCommands = await this.db
       .select()
       .from(vendingCommands)
-      .where(eq(vendingCommands.orderId, orderId))
+      .where(
+        and(
+          eq(vendingCommands.orderId, orderId),
+          eq(vendingCommands.commandKind, "dispatch"),
+        ),
+      )
       .orderBy(vendingCommands.createdAt);
     if (existingCommands.length > 0) {
       return existingCommands;
@@ -156,6 +180,7 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
               machineId: order.machineId,
               slotId: item.slotId,
               orderItemId: item.orderItemId,
+              commandKind: "dispatch",
               payloadJson: payload,
               status: "pending",
             })
@@ -330,7 +355,12 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
         return await this.db
           .select()
           .from(vendingCommands)
-          .where(eq(vendingCommands.orderId, orderId))
+          .where(
+            and(
+              eq(vendingCommands.orderId, orderId),
+              eq(vendingCommands.commandKind, "dispatch"),
+            ),
+          )
           .orderBy(vendingCommands.createdAt);
       }
       throw error;
@@ -477,7 +507,11 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
 
   async resolveCommand(
     id: string,
-    input: { result: "dispensed" | "not_dispensed"; note?: string },
+    input: {
+      result: "dispensed" | "not_dispensed";
+      note?: string;
+      requestRefund?: boolean;
+    },
   ) {
     const [command] = await this.db
       .select({
@@ -491,6 +525,7 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
         status: vendingCommands.status,
         payloadJson: vendingCommands.payloadJson,
         orderNo: orders.orderNo,
+        orderIsDrill: orders.isDrill,
       })
       .from(vendingCommands)
       .innerJoin(machines, eq(machines.id, vendingCommands.machineId))
@@ -498,6 +533,14 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
       .where(eq(vendingCommands.id, id));
     if (!command) {
       throw new NotFoundException("Vending command not found");
+    }
+    if (
+      command.orderIsDrill ||
+      isProtectedFulfillmentDrillPayload(command.payloadJson)
+    ) {
+      throw new ConflictException(
+        "Protected drill commands cannot be resolved through normal vending endpoints",
+      );
     }
 
     if (input.result === "dispensed") {
@@ -576,11 +619,164 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
       };
     });
 
-    if (failureContext) {
+    if (failureContext && input.requestRefund !== false) {
       await this.requestRefundForFailedLines(failureContext.refundDecision);
     }
 
     return { commandId: command.id, status: "failed" as const };
+  }
+
+  async createCompensationDispenseCommand(input: {
+    orderId: string;
+    recoveryActionId: string;
+    originalCommandNo: string;
+    note: string;
+  }) {
+    const [row] = await this.db
+      .select({
+        orderId: orders.id,
+        orderNo: orders.orderNo,
+        machineId: orders.machineId,
+        machineCode: machines.code,
+        orderStatus: orders.status,
+        orderItemId: orderItems.id,
+        slotId: orderItems.slotId,
+        inventoryId: orderItems.inventoryId,
+        quantity: orderItems.quantity,
+        layerNo: machineSlots.layerNo,
+        cellNo: machineSlots.cellNo,
+        slotCode: machineSlots.slotCode,
+      })
+      .from(orders)
+      .innerJoin(machines, eq(machines.id, orders.machineId))
+      .innerJoin(orderItems, eq(orderItems.orderId, orders.id))
+      .innerJoin(machineSlots, eq(machineSlots.id, orderItems.slotId))
+      .where(eq(orders.id, input.orderId))
+      .limit(1);
+    if (!row) {
+      throw new NotFoundException("Order item not found for compensation");
+    }
+
+    const commandNo = createBusinessNo("CMD");
+    const basePayload = dispenseCommandPayloadSchema.parse({
+      commandNo,
+      orderNo: row.orderNo,
+      slot: {
+        layerNo: row.layerNo,
+        cellNo: row.cellNo,
+        slotCode: row.slotCode,
+      },
+      quantity: row.quantity,
+      timeoutSeconds: 120,
+    });
+    const payload = {
+      ...basePayload,
+      recovery: {
+        action: "compensation_dispense",
+        originalCommandNo: input.originalCommandNo,
+        note: input.note,
+      },
+    };
+
+    const created = await this.db.transaction(async (tx) => {
+      const [inventory] = await tx
+        .update(inventories)
+        .set({
+          reservedQty: sql`${inventories.reservedQty} + ${row.quantity}`,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(inventories.id, row.inventoryId),
+            sql`${inventories.onHandQty} - ${inventories.reservedQty} >= ${row.quantity}`,
+          ),
+        )
+        .returning({ id: inventories.id });
+      if (!inventory) {
+        throw new ConflictException(
+          "Insufficient inventory for compensation dispense",
+        );
+      }
+
+      await tx.insert(inventoryReservations).values({
+        inventoryId: row.inventoryId,
+        orderId: row.orderId,
+        orderItemId: row.orderItemId,
+        quantity: row.quantity,
+        status: "active",
+        expiresAt: new Date(Date.now() + 15 * 60_000),
+      });
+
+      const [command] = await tx
+        .insert(vendingCommands)
+        .values({
+          commandNo,
+          orderId: row.orderId,
+          machineId: row.machineId,
+          slotId: row.slotId,
+          orderItemId: row.orderItemId,
+          commandKind: "compensation",
+          recoveryActionId: input.recoveryActionId,
+          payloadJson: payload,
+          status: "pending",
+        })
+        .returning();
+
+      await tx
+        .update(orders)
+        .set({
+          status: "dispensing",
+          fulfillmentState: "dispensing",
+          updatedAt: new Date(),
+        })
+        .where(eq(orders.id, row.orderId));
+
+      await tx.insert(orderStatusEvents).values({
+        orderId: row.orderId,
+        fromStatus: row.orderStatus,
+        toStatus: "dispensing",
+        reason: "compensation_dispense_requested",
+        metadata: {
+          commandNo,
+          originalCommandNo: input.originalCommandNo,
+        },
+      });
+
+      return command;
+    });
+
+    try {
+      const envelope = await this.mqttSignatureService.signForMachine({
+        machineCode: row.machineCode,
+        payload,
+        messageId: `command:${commandNo}`,
+      });
+      await this.mqttService.publish(
+        `vem/machines/${row.machineCode}/commands/dispense`,
+        envelope,
+      );
+      const [sent] = await this.db
+        .update(vendingCommands)
+        .set({
+          status: "sent",
+          sentAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(vendingCommands.id, created.id))
+        .returning();
+      return sent;
+    } catch (error) {
+      const [failed] = await this.db
+        .update(vendingCommands)
+        .set({
+          status: "failed",
+          lastError: error instanceof Error ? error.message : String(error),
+          updatedAt: new Date(),
+        })
+        .where(eq(vendingCommands.id, created.id))
+        .returning();
+      return failed;
+    }
   }
 
   private async resolveCommandAsDispensed(
@@ -689,6 +885,7 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
         id: vendingCommands.id,
         commandNo: vendingCommands.commandNo,
         orderId: vendingCommands.orderId,
+        slotId: vendingCommands.slotId,
         payloadJson: vendingCommands.payloadJson,
         sentAt: vendingCommands.sentAt,
         ackAt: vendingCommands.ackAt,
@@ -697,6 +894,9 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
       .where(inArray(vendingCommands.status, ["sent", "acknowledged"]));
 
     const toProcess = candidates.filter((command) => {
+      if (isProtectedFulfillmentDrillPayload(command.payloadJson)) {
+        return false;
+      }
       const payload = dispenseCommandPayloadSchema.parse(command.payloadJson);
       const baseAt = command.ackAt ?? command.sentAt;
       if (!baseAt) return false;
@@ -708,61 +908,12 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
     const results = await Promise.all(
       toProcess.map(async (command) => {
         const changed = await this.db.transaction(async (tx) => {
-          const [updated] = await tx
-            .update(vendingCommands)
-            .set({
-              status: "result_unknown",
-              resultAt: now,
-              lastError: "dispense result unknown after command timeout",
-              updatedAt: new Date(),
-            })
-            .where(
-              and(
-                eq(vendingCommands.id, command.id),
-                inArray(vendingCommands.status, ["sent", "acknowledged"]),
-              ),
-            )
-            .returning({ id: vendingCommands.id });
-          if (!updated) return false;
-
-          const [currentOrder] = await tx
-            .select({
-              status: orders.status,
-              paymentState: orders.paymentState,
-            })
-            .from(orders)
-            .where(eq(orders.id, command.orderId));
-          if (currentOrder && currentOrder.status !== "manual_handling") {
-            const projectedStatus = projectOrderStatus({
-              paymentState: currentOrder.paymentState,
-              fulfillmentState: "manual_handling",
-            });
-            await tx
-              .update(orders)
-              .set({
-                status: projectedStatus,
-                fulfillmentState: "manual_handling",
-                updatedAt: new Date(),
-              })
-              .where(eq(orders.id, command.orderId));
-            await tx.insert(orderStatusEvents).values({
-              orderId: command.orderId,
-              fromStatus: currentOrder.status,
-              toStatus: projectedStatus,
-              reason: "dispense_result_unknown",
-              metadata: {
-                commandNo: command.commandNo,
-                slotSalesState: "frozen",
-              },
-            });
-          }
-
-          await this.notificationsService.createDispenseFailedNotification(tx, {
-            orderId: command.orderId,
-            commandId: command.id,
+          return await this.markDispenseResultUnknown(tx, {
+            command,
             message: "dispense result unknown after command timeout",
+            resultAt: now,
+            eligibleStatuses: ["sent", "acknowledged"],
           });
-          return true;
         });
         return changed;
       }),
@@ -770,6 +921,85 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
 
     const processed = results.filter(Boolean).length;
     return { processed };
+  }
+
+  private async markDispenseResultUnknown(
+    tx: DrizzleTransaction,
+    input: {
+      command: {
+        id: string;
+        commandNo: string;
+        orderId: string;
+        slotId: string;
+      };
+      message: string;
+      resultAt: Date;
+      eligibleStatuses: Array<
+        "pending" | "sent" | "acknowledged" | "result_unknown"
+      >;
+    },
+  ): Promise<boolean> {
+    const [updated] = await tx
+      .update(vendingCommands)
+      .set({
+        status: "result_unknown",
+        resultAt: input.resultAt,
+        lastError: input.message,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(vendingCommands.id, input.command.id),
+          inArray(vendingCommands.status, input.eligibleStatuses),
+        ),
+      )
+      .returning({ id: vendingCommands.id });
+    if (!updated) return false;
+
+    const [currentOrder] = await tx
+      .select({
+        status: orders.status,
+        paymentState: orders.paymentState,
+      })
+      .from(orders)
+      .where(eq(orders.id, input.command.orderId));
+    if (currentOrder && currentOrder.status !== "manual_handling") {
+      const projectedStatus = projectOrderStatus({
+        paymentState: currentOrder.paymentState,
+        fulfillmentState: "manual_handling",
+      });
+      await tx
+        .update(orders)
+        .set({
+          status: projectedStatus,
+          fulfillmentState: "manual_handling",
+          updatedAt: new Date(),
+        })
+        .where(eq(orders.id, input.command.orderId));
+      await tx.insert(orderStatusEvents).values({
+        orderId: input.command.orderId,
+        fromStatus: currentOrder.status,
+        toStatus: projectedStatus,
+        reason: "dispense_result_unknown",
+        metadata: {
+          commandNo: input.command.commandNo,
+          requiresPhysicalOutcomeConfirmation: true,
+          slotSalesState: "frozen",
+        },
+      });
+    }
+
+    await tx
+      .update(machineSlots)
+      .set({ status: "faulted", updatedAt: new Date() })
+      .where(eq(machineSlots.id, input.command.slotId));
+
+    await this.notificationsService.createDispenseFailedNotification(tx, {
+      orderId: input.command.orderId,
+      commandId: input.command.id,
+      message: input.message,
+    });
+    return true;
   }
 
   private async handleCommandAck(
@@ -883,6 +1113,7 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
           status: vendingCommands.status,
           payloadJson: vendingCommands.payloadJson,
           orderNo: orders.orderNo,
+          orderIsDrill: orders.isDrill,
         })
         .from(vendingCommands)
         .innerJoin(orders, eq(orders.id, vendingCommands.orderId))
@@ -893,6 +1124,12 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
           ),
         );
       if (!command) {
+        return null;
+      }
+      if (
+        command.orderIsDrill ||
+        isProtectedFulfillmentDrillPayload(command.payloadJson)
+      ) {
         return null;
       }
 
@@ -912,6 +1149,20 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
 
       if (command.status === "succeeded" || command.status === "failed") {
         return null;
+      }
+
+      if (payload.errorCode === "UNKNOWN") {
+        const changed = await this.markDispenseResultUnknown(tx, {
+          command,
+          message: payload.message,
+          resultAt: new Date(payload.reportedAt),
+          eligibleStatuses: ["pending", "sent", "acknowledged"],
+        });
+        return changed
+          ? {
+              kind: "unknown" as const,
+            }
+          : null;
       }
 
       await tx
@@ -1212,6 +1463,7 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
     const machine = await this.findMachineByCode(machineCode);
     if (!machine) return;
 
+    const receivedAt = new Date();
     const reportedAt = new Date(payload.reportedAt);
 
     await this.db.transaction(async (tx) => {
@@ -1234,8 +1486,8 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
         .update(machines)
         .set({
           status: "online",
-          lastSeenAt: reportedAt,
-          updatedAt: new Date(),
+          lastSeenAt: receivedAt,
+          updatedAt: receivedAt,
         })
         .where(eq(machines.id, machine.id));
 
@@ -1243,6 +1495,13 @@ export class VendingService implements OnModuleInit, OnApplicationShutdown {
         machineId: machine.id,
         statusPayloadJson: payload.statusPayload,
         reportedAt,
+      });
+
+      await this.notificationsService.resolveMachineOfflineNotification(tx, {
+        machineId: machine.id,
+        machineCode: machine.code,
+        recoveredAt: receivedAt,
+        lastSeenAt: receivedAt,
       });
     });
   }

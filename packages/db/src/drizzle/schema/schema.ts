@@ -320,6 +320,27 @@ export const productCategories = t.pgTable(
   ],
 );
 
+export const mediaAssets = t.pgTable(
+  "media_assets",
+  {
+    id: id(),
+    purpose: t.varchar("purpose", { length: 64 }).notNull(),
+    storageProvider: t.varchar("storage_provider", { length: 32 }).notNull(),
+    storageKey: t.text("storage_key").notNull(),
+    contentType: t.varchar("content_type", { length: 128 }).notNull(),
+    byteSize: t.integer("byte_size").notNull(),
+    originalFilename: t.varchar("original_filename", { length: 255 }),
+    sha256: t.varchar("sha256", { length: 64 }).notNull(),
+    publicUrl: t.text("public_url").notNull(),
+    createdAt: createdAt(),
+    deletedAt: deletedAt(),
+  },
+  (table) => [
+    t.index("media_assets_purpose_idx").on(table.purpose),
+    t.index("media_assets_storage_provider_idx").on(table.storageProvider),
+  ],
+);
+
 export const products = t.pgTable(
   "products",
   {
@@ -328,6 +349,9 @@ export const products = t.pgTable(
     categoryId: t.uuid("category_id").references(() => productCategories.id),
     description: t.text("description"),
     coverImageUrl: t.text("cover_image_url"),
+    displayImageMediaAssetId: t
+      .uuid("display_image_media_asset_id")
+      .references(() => mediaAssets.id),
     status: productStatus("status").default("draft").notNull(),
     sortOrder: t.integer("sort_order").default(0).notNull(),
     createdAt: createdAt(),
@@ -337,6 +361,9 @@ export const products = t.pgTable(
   (table) => [
     t.index("products_category_id_idx").on(table.categoryId),
     t.index("products_status_idx").on(table.status),
+    t
+      .index("products_display_image_media_asset_id_idx")
+      .on(table.displayImageMediaAssetId),
   ],
 );
 
@@ -355,6 +382,9 @@ export const productVariants = t.pgTable(
     targetGender: t.varchar("target_gender", { length: 8 }),
     priceCents: t.integer("price_cents").notNull(),
     costCents: t.integer("cost_cents"),
+    tryOnSilhouetteMediaAssetId: t
+      .uuid("try_on_silhouette_media_asset_id")
+      .references(() => mediaAssets.id),
     status: variantStatus("status").default("active").notNull(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -364,6 +394,9 @@ export const productVariants = t.pgTable(
     t.uniqueIndex("product_variants_sku_unique").on(table.sku),
     t.index("product_variants_product_id_idx").on(table.productId),
     t.index("product_variants_status_idx").on(table.status),
+    t
+      .index("product_variants_try_on_silhouette_media_asset_id_idx")
+      .on(table.tryOnSilhouetteMediaAssetId),
     t.check(
       "product_variants_price_cents_non_negative",
       sql`${table.priceCents} >= 0`,
@@ -385,7 +418,10 @@ export const machines = t.pgTable(
     id: id(),
     code: t.varchar("code", { length: 64 }).notNull(),
     name: t.varchar("name", { length: 128 }).notNull(),
-    locationText: t.text("location_text"),
+    locationLabel: t.text("location_label"),
+    geoLatitude: t.doublePrecision("geo_latitude"),
+    geoLongitude: t.doublePrecision("geo_longitude"),
+    geoTimezone: t.text("geo_timezone"),
     status: machineStatus("status").default("offline").notNull(),
     lastSeenAt: t.timestamp("last_seen_at", { withTimezone: true }),
     mqttClientId: t.varchar("mqtt_client_id", { length: 128 }),
@@ -407,6 +443,22 @@ export const machines = t.pgTable(
     t.index("machines_status_idx").on(table.status),
     t.index("machines_last_seen_at_idx").on(table.lastSeenAt),
     t.index("machines_credential_revoked_at_idx").on(table.credentialRevokedAt),
+    t.check(
+      "machines_geo_location_all_or_nothing_check",
+      sql`(
+        (${table.geoLatitude} IS NULL AND ${table.geoLongitude} IS NULL AND ${table.geoTimezone} IS NULL)
+        OR
+        (${table.geoLatitude} IS NOT NULL AND ${table.geoLongitude} IS NOT NULL AND ${table.geoTimezone} IS NOT NULL)
+      )`,
+    ),
+    t.check(
+      "machines_geo_location_coordinate_range_check",
+      sql`(
+        ${table.geoLatitude} IS NULL
+        OR
+        (${table.geoLatitude} >= -90 AND ${table.geoLatitude} <= 90 AND ${table.geoLongitude} >= -180 AND ${table.geoLongitude} <= 180)
+      )`,
+    ),
   ],
 );
 
@@ -557,6 +609,7 @@ export const machinePlanogramSlots = t.pgTable(
     productName: t.varchar("product_name", { length: 128 }).notNull(),
     productDescription: t.text("product_description"),
     coverImageUrl: t.text("cover_image_url"),
+    tryOnSilhouetteUrl: t.text("try_on_silhouette_url"),
     categoryId: t.uuid("category_id"),
     categoryName: t.varchar("category_name", { length: 128 }),
     sku: t.varchar("sku", { length: 64 }).notNull(),
@@ -662,6 +715,8 @@ export const orders = t.pgTable(
     paymentId: t
       .uuid("payment_id")
       .references((): t.AnyPgColumn => payments.id),
+    isDrill: t.boolean("is_drill").default(false).notNull(),
+    drillScenario: t.varchar("drill_scenario", { length: 64 }),
     profileSnapshot: t.jsonb("profile_snapshot").$type<JsonObject>(),
     createdFrom: orderSource("created_from").default("machine_ui").notNull(),
     paidAt: t.timestamp("paid_at", { withTimezone: true }),
@@ -674,6 +729,7 @@ export const orders = t.pgTable(
     t.uniqueIndex("orders_order_no_unique").on(table.orderNo),
     t.index("orders_machine_id_idx").on(table.machineId),
     t.index("orders_status_idx").on(table.status),
+    t.index("orders_is_drill_idx").on(table.isDrill),
     t.index("orders_payment_state_idx").on(table.paymentState),
     t.index("orders_fulfillment_state_idx").on(table.fulfillmentState),
     t.index("orders_created_at_idx").on(table.createdAt),
@@ -852,6 +908,8 @@ export const payments = t.pgTable(
     status: paymentStatus("status").default("created").notNull(),
     amountCents: t.integer("amount_cents").notNull(),
     providerTradeNo: t.varchar("provider_trade_no", { length: 128 }),
+    isDrill: t.boolean("is_drill").default(false).notNull(),
+    drillScenario: t.varchar("drill_scenario", { length: 64 }),
     paymentUrl: t.text("payment_url"),
     expiresAt: t.timestamp("expires_at", { withTimezone: true }),
     paidAt: t.timestamp("paid_at", { withTimezone: true }),
@@ -867,6 +925,7 @@ export const payments = t.pgTable(
     t.index("payments_order_id_idx").on(table.orderId),
     t.index("payments_provider_id_idx").on(table.providerId),
     t.index("payments_status_idx").on(table.status),
+    t.index("payments_is_drill_idx").on(table.isDrill),
     t.index("payments_created_at_idx").on(table.createdAt),
     t.check(
       "payments_amount_cents_non_negative",
@@ -987,6 +1046,8 @@ export const refunds = t.pgTable(
     amountCents: t.integer("amount_cents").notNull(),
     status: refundStatus("status").default("created").notNull(),
     providerRefundNo: t.varchar("provider_refund_no", { length: 128 }),
+    isDrill: t.boolean("is_drill").default(false).notNull(),
+    drillScenario: t.varchar("drill_scenario", { length: 64 }),
     reason: t.text("reason").notNull(),
     requestedByAdminUserId: t
       .uuid("requested_by_admin_user_id")
@@ -999,6 +1060,7 @@ export const refunds = t.pgTable(
     t.uniqueIndex("refunds_refund_no_unique").on(table.refundNo),
     t.index("refunds_payment_id_idx").on(table.paymentId),
     t.index("refunds_order_id_idx").on(table.orderId),
+    t.index("refunds_is_drill_idx").on(table.isDrill),
     t
       .uniqueIndex("refunds_order_reason_active_unique")
       .on(table.orderId, table.reason)
@@ -1207,6 +1269,11 @@ export const vendingCommands = t.pgTable(
       .notNull()
       .references(() => machineSlots.id),
     orderItemId: t.uuid("order_item_id").references(() => orderItems.id),
+    commandKind: t
+      .varchar("command_kind", { length: 32 })
+      .default("dispatch")
+      .notNull(),
+    recoveryActionId: t.uuid("recovery_action_id"),
     payloadJson: t.jsonb("payload_json").$type<JsonObject>().notNull(),
     status: vendingCommandStatus("status").default("pending").notNull(),
     sentAt: t.timestamp("sent_at", { withTimezone: true }),
@@ -1221,14 +1288,77 @@ export const vendingCommands = t.pgTable(
     t.uniqueIndex("vending_commands_command_no_unique").on(table.commandNo),
     t
       .uniqueIndex("vending_commands_order_slot_unique")
-      .on(table.orderId, table.slotId),
+      .on(table.orderId, table.slotId)
+      .where(sql`${table.commandKind} = 'dispatch'`),
+    t
+      .uniqueIndex("vending_commands_recovery_action_unique")
+      .on(table.recoveryActionId)
+      .where(sql`${table.recoveryActionId} IS NOT NULL`),
     t.index("vending_commands_order_id_idx").on(table.orderId),
     t.index("vending_commands_order_item_id_idx").on(table.orderItemId),
     t.index("vending_commands_machine_id_idx").on(table.machineId),
     t.index("vending_commands_status_idx").on(table.status),
+    t.index("vending_commands_command_kind_idx").on(table.commandKind),
     t.check(
       "vending_commands_retry_count_non_negative",
       sql`${table.retryCount} >= 0`,
+    ),
+    t.check(
+      "vending_commands_command_kind_enum",
+      sql`${table.commandKind} IN ('dispatch', 'compensation')`,
+    ),
+  ],
+);
+
+export const orderRecoveryActions = t.pgTable(
+  "order_recovery_actions",
+  {
+    id: id(),
+    orderId: t
+      .uuid("order_id")
+      .notNull()
+      .references(() => orders.id),
+    commandId: t
+      .uuid("command_id")
+      .notNull()
+      .references(() => vendingCommands.id),
+    action: t.varchar("action", { length: 64 }).notNull(),
+    status: t.varchar("status", { length: 32 }).default("started").notNull(),
+    note: t.text("note").notNull(),
+    requestedByAdminUserId: t
+      .uuid("requested_by_admin_user_id")
+      .notNull()
+      .references(() => adminUsers.id),
+    resultJson: t.jsonb("result_json").$type<JsonObject>(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    t.index("order_recovery_actions_order_id_idx").on(table.orderId),
+    t.index("order_recovery_actions_command_id_idx").on(table.commandId),
+    t.index("order_recovery_actions_status_idx").on(table.status),
+    t
+      .uniqueIndex("order_recovery_actions_order_action_unique")
+      .on(table.orderId, table.action),
+    t
+      .uniqueIndex("order_recovery_actions_physical_outcome_unique")
+      .on(table.orderId)
+      .where(
+        sql`${table.action} IN ('confirm_dispensed', 'confirm_not_dispensed')`,
+      ),
+    t
+      .uniqueIndex("order_recovery_actions_remedy_unique")
+      .on(table.orderId)
+      .where(
+        sql`${table.action} IN ('request_refund', 'compensation_dispense')`,
+      ),
+    t.check(
+      "order_recovery_actions_action_enum",
+      sql`${table.action} IN ('confirm_dispensed', 'confirm_not_dispensed', 'request_refund', 'compensation_dispense')`,
+    ),
+    t.check(
+      "order_recovery_actions_status_enum",
+      sql`${table.status} IN ('started', 'completed', 'failed')`,
     ),
   ],
 );

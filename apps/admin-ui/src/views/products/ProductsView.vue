@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import type { ProductStatus, VariantStatus } from "@vem/shared";
 
-import { onMounted, ref } from "vue";
+import { onMounted, ref, watch } from "vue";
+import { useRoute } from "vue-router";
 
 import {
   createProduct,
@@ -10,6 +11,8 @@ import {
   listProducts,
   updateProduct,
   updateProductVariant,
+  uploadProductDisplayImage,
+  uploadTryOnSilhouette,
   type PageResult,
   type Product,
   type ProductVariant,
@@ -20,6 +23,8 @@ import { formatDateTime } from "@/utils/format";
 type ProductForm = {
   name: string;
   description: string;
+  displayImageMediaAssetId: string | null;
+  displayImagePublicUrl: string | null;
   status: ProductStatus;
   sortOrder: number;
 };
@@ -34,10 +39,13 @@ type VariantForm = {
   color: string;
   barcode: string;
   targetGender: "male" | "female" | null;
+  tryOnSilhouetteMediaAssetId: string | null;
+  tryOnSilhouettePublicUrl: string | null;
 };
 
 const authStore = useAuthStore();
 const canWrite = authStore.hasPermission("products.write");
+const route = useRoute();
 
 const loading = ref(false);
 const products = ref<PageResult<Product>>({
@@ -48,6 +56,11 @@ const products = ref<PageResult<Product>>({
 });
 const filterKeyword = ref("");
 const filterStatus = ref<ProductStatus | undefined>(undefined);
+
+function syncFiltersFromRoute(): void {
+  const query = route.query.q;
+  filterKeyword.value = typeof query === "string" ? query : "";
+}
 
 async function loadProducts(page = 1): Promise<void> {
   loading.value = true;
@@ -69,16 +82,21 @@ const editingProduct = ref<Product | null>(null);
 const productForm = ref<ProductForm>({
   name: "",
   description: "",
+  displayImageMediaAssetId: null,
+  displayImagePublicUrl: null,
   status: "draft",
   sortOrder: 0,
 });
 const productSaving = ref(false);
+const productImageUploading = ref(false);
 
 function openCreateProduct(): void {
   editingProduct.value = null;
   productForm.value = {
     name: "",
     description: "",
+    displayImageMediaAssetId: null,
+    displayImagePublicUrl: null,
     status: "draft",
     sortOrder: 0,
   };
@@ -90,10 +108,33 @@ function openEditProduct(p: Product): void {
   productForm.value = {
     name: p.name,
     description: p.description ?? "",
+    displayImageMediaAssetId: p.displayImageMediaAssetId,
+    displayImagePublicUrl: p.displayImageMediaAsset?.publicUrl ?? null,
     status: p.status,
     sortOrder: p.sortOrder,
   };
   productDrawerOpen.value = true;
+}
+
+async function onProductDisplayImageSelected(event: Event): Promise<void> {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  input.value = "";
+  if (!file) return;
+
+  productImageUploading.value = true;
+  try {
+    const asset = await uploadProductDisplayImage(file);
+    productForm.value.displayImageMediaAssetId = asset.id;
+    productForm.value.displayImagePublicUrl = asset.publicUrl;
+  } finally {
+    productImageUploading.value = false;
+  }
+}
+
+function clearProductDisplayImage(): void {
+  productForm.value.displayImageMediaAssetId = null;
+  productForm.value.displayImagePublicUrl = null;
 }
 
 async function saveProduct(): Promise<void> {
@@ -103,6 +144,7 @@ async function saveProduct(): Promise<void> {
       await updateProduct(editingProduct.value.id, {
         name: productForm.value.name,
         description: productForm.value.description || null,
+        displayImageMediaAssetId: productForm.value.displayImageMediaAssetId,
         status: productForm.value.status,
         sortOrder: productForm.value.sortOrder,
       });
@@ -110,6 +152,7 @@ async function saveProduct(): Promise<void> {
       await createProduct({
         name: productForm.value.name,
         description: productForm.value.description || null,
+        displayImageMediaAssetId: productForm.value.displayImageMediaAssetId,
         status: productForm.value.status,
         sortOrder: productForm.value.sortOrder,
       });
@@ -138,8 +181,11 @@ const variantForm = ref<VariantForm>({
   color: "",
   barcode: "",
   targetGender: null,
+  tryOnSilhouetteMediaAssetId: null,
+  tryOnSilhouettePublicUrl: null,
 });
 const variantSaving = ref(false);
+const tryOnSilhouetteUploading = ref(false);
 
 async function openVariants(p: Product): Promise<void> {
   currentProductId.value = p.id;
@@ -165,6 +211,8 @@ function openCreateVariant(): void {
     color: "",
     barcode: "",
     targetGender: null,
+    tryOnSilhouetteMediaAssetId: null,
+    tryOnSilhouettePublicUrl: null,
   };
   variantFormOpen.value = true;
 }
@@ -181,8 +229,31 @@ function openEditVariant(v: ProductVariant): void {
     color: v.color ?? "",
     barcode: v.barcode ?? "",
     targetGender: v.targetGender ?? null,
+    tryOnSilhouetteMediaAssetId: v.tryOnSilhouetteMediaAssetId,
+    tryOnSilhouettePublicUrl: v.tryOnSilhouetteMediaAsset?.publicUrl ?? null,
   };
   variantFormOpen.value = true;
+}
+
+async function onTryOnSilhouetteSelected(event: Event): Promise<void> {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  input.value = "";
+  if (!file) return;
+
+  tryOnSilhouetteUploading.value = true;
+  try {
+    const asset = await uploadTryOnSilhouette(file);
+    variantForm.value.tryOnSilhouetteMediaAssetId = asset.id;
+    variantForm.value.tryOnSilhouettePublicUrl = asset.publicUrl;
+  } finally {
+    tryOnSilhouetteUploading.value = false;
+  }
+}
+
+function clearTryOnSilhouette(): void {
+  variantForm.value.tryOnSilhouetteMediaAssetId = null;
+  variantForm.value.tryOnSilhouettePublicUrl = null;
 }
 
 async function saveVariant(): Promise<void> {
@@ -198,6 +269,8 @@ async function saveVariant(): Promise<void> {
       color: variantForm.value.color || null,
       barcode: variantForm.value.barcode || null,
       targetGender: variantForm.value.targetGender || null,
+      tryOnSilhouetteMediaAssetId:
+        variantForm.value.tryOnSilhouetteMediaAssetId,
     };
     if (editingVariant.value) {
       await updateProductVariant(editingVariant.value.id, body);
@@ -239,8 +312,17 @@ const variantColumns = [
 ];
 
 onMounted(() => {
+  syncFiltersFromRoute();
   void loadProducts();
 });
+
+watch(
+  () => route.query.q,
+  () => {
+    syncFiltersFromRoute();
+    void loadProducts();
+  },
+);
 </script>
 
 <template>
@@ -249,7 +331,7 @@ onMounted(() => {
       <div class="mb-4 flex gap-3">
         <a-input
           v-model:value="filterKeyword"
-          placeholder="商品名称"
+          placeholder="商品名称 / SKU / 条码"
           class="max-w-48"
           @press-enter="loadProducts()"
         />
@@ -321,6 +403,40 @@ onMounted(() => {
         </a-form-item>
         <a-form-item label="描述">
           <a-textarea v-model:value="productForm.description" :rows="3" />
+        </a-form-item>
+        <a-form-item label="展示图">
+          <div class="space-y-3">
+            <img
+              v-if="productForm.displayImagePublicUrl"
+              class="h-32 w-32 rounded border border-slate-200 object-cover"
+              :src="productForm.displayImagePublicUrl"
+              :alt="productForm.name || '商品展示图'"
+            />
+            <div class="flex items-center gap-2">
+              <a-button :loading="productImageUploading">
+                <label class="cursor-pointer">
+                  上传图片
+                  <input
+                    class="hidden"
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp"
+                    @change="onProductDisplayImageSelected"
+                  />
+                </label>
+              </a-button>
+              <a-button
+                v-if="productForm.displayImageMediaAssetId"
+                danger
+                @click="clearProductDisplayImage"
+              >
+                清除
+              </a-button>
+            </div>
+            <p class="text-xs leading-5 text-slate-500">
+              支持 PNG、JPEG、WebP，单个文件不超过 5
+              MB。请在系统外完成修图、裁剪、压缩和背景处理；后台不提供编辑、裁剪或去背工具。
+            </p>
+          </div>
         </a-form-item>
         <a-form-item label="状态">
           <a-select v-model:value="productForm.status">
@@ -419,6 +535,41 @@ onMounted(() => {
             <a-select-option value="male">男款</a-select-option>
             <a-select-option value="female">女款</a-select-option>
           </a-select>
+        </a-form-item>
+        <a-form-item label="试穿剪影">
+          <div class="space-y-3">
+            <img
+              v-if="variantForm.tryOnSilhouettePublicUrl"
+              class="h-32 w-24 rounded border border-slate-200 object-contain"
+              :src="variantForm.tryOnSilhouettePublicUrl"
+              :alt="`${variantForm.sku || 'SKU'} 试穿剪影`"
+            />
+            <div class="flex items-center gap-2">
+              <a-button :loading="tryOnSilhouetteUploading">
+                <label class="cursor-pointer">
+                  上传剪影
+                  <input
+                    class="hidden"
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp"
+                    @change="onTryOnSilhouetteSelected"
+                  />
+                </label>
+              </a-button>
+              <a-button
+                v-if="variantForm.tryOnSilhouetteMediaAssetId"
+                danger
+                @click="clearTryOnSilhouette"
+              >
+                清除
+              </a-button>
+            </div>
+            <p class="text-xs leading-5 text-slate-500">
+              支持 PNG、JPEG、WebP，单个文件不超过 5
+              MB。请在系统外准备正面、居中、透明背景优先的剪影；后台不提供编辑、裁剪或去背工具。不同款式或颜色需要分别上传剪影，V1
+              不要求按尺码区分剪影。
+            </p>
+          </div>
         </a-form-item>
         <a-form-item label="状态">
           <a-select v-model:value="variantForm.status">

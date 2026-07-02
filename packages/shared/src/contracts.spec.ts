@@ -4,8 +4,12 @@ import {
   HARDWARE_ERROR_HANDLING,
   adminUserStatuses,
   canonicalJson,
+  createMachineSchema,
   createMachineSlotSchema,
   createMachineOrderSchema,
+  createProductSchema,
+  createProtectedFulfillmentDrillSchema,
+  createProtectedPaymentDrillSchema,
   dispenseCommandPayloadSchema,
   hardwareErrorCodes,
   environmentControlCommandPayloadSchema,
@@ -30,7 +34,11 @@ import {
   mqttSignedEnvelopeSchema,
   notificationTypeSchema,
   orderStatuses,
+  paymentCodeAttemptAdminActionSchema,
   paymentMachinePreflightSchema,
+  externalNaturalEnvironmentSchema,
+  updateProductSchema,
+  updateMachineSchema,
   paymentCodeAttemptQuerySchema,
   paymentCodeSubmitResponseSchema,
   paymentCodeSubmitSchema,
@@ -38,6 +46,12 @@ import {
   paymentOpsReadinessSchema,
   paymentProviderStatuses,
   paymentProviderSensitiveConfigSchema,
+  paymentReconciliationAttemptQuerySchema,
+  publishMachinePlanogramVersionSchema,
+  protectedFulfillmentDrillRecoveryActionSchema,
+  protectedFulfillmentDrillScenarioSchema,
+  protectedPaymentDrillRecoveryActionSchema,
+  protectedPaymentDrillScenarioSchema,
   roleStatuses,
   upsertNotificationTargetSchema,
   upsertPaymentProviderConfigSchema,
@@ -95,6 +109,269 @@ describe("shared API contract", () => {
     ).toThrow();
   });
 
+  it("uses Machine Location Label in machine write contracts", () => {
+    expect(
+      createMachineSchema.parse({
+        code: "M001",
+        name: "Lobby",
+        locationLabel: "1F",
+      }),
+    ).toEqual({
+      code: "M001",
+      name: "Lobby",
+      locationLabel: "1F",
+      status: "offline",
+    });
+    expect(() =>
+      createMachineSchema.parse({
+        code: "M001",
+        name: "Lobby",
+        locationText: "1F",
+      }),
+    ).toThrow();
+  });
+
+  it("does not apply create defaults to Machine partial update contracts", () => {
+    expect(updateMachineSchema.parse({ geoLocation: null })).toEqual({
+      geoLocation: null,
+    });
+  });
+
+  it("uses managed media asset references for product display image writes", () => {
+    const displayImageMediaAssetId = "550e8400-e29b-41d4-a716-446655440124";
+
+    expect(
+      createProductSchema.parse({
+        name: "基础短袖",
+        displayImageMediaAssetId,
+      }),
+    ).toEqual({
+      name: "基础短袖",
+      displayImageMediaAssetId,
+      status: "draft",
+      sortOrder: 0,
+    });
+
+    expect(() =>
+      createProductSchema.parse({
+        name: "基础短袖",
+        coverImageUrl: "https://example.com/free-form.jpg",
+      }),
+    ).toThrow();
+
+    expect(
+      updateProductSchema.parse({ displayImageMediaAssetId: null }),
+    ).toEqual({ displayImageMediaAssetId: null });
+  });
+
+  it("validates nullable all-or-nothing Machine Geo Location in machine write contracts", () => {
+    expect(
+      createMachineSchema.parse({
+        code: "M001",
+        name: "Lobby",
+        geoLocation: {
+          latitude: 31.2304,
+          longitude: 121.4737,
+          timezone: "Asia/Shanghai",
+        },
+      }).geoLocation,
+    ).toEqual({
+      latitude: 31.2304,
+      longitude: 121.4737,
+      timezone: "Asia/Shanghai",
+    });
+    expect(
+      createMachineSchema.parse({
+        code: "M001",
+        name: "Lobby",
+        geoLocation: null,
+      }).geoLocation,
+    ).toBeNull();
+    expect(() =>
+      createMachineSchema.parse({
+        code: "M001",
+        name: "Lobby",
+        geoLocation: { latitude: 31.2304, timezone: "Asia/Shanghai" },
+      }),
+    ).toThrow();
+    expect(() =>
+      createMachineSchema.parse({
+        code: "M001",
+        name: "Lobby",
+        geoLocation: {
+          latitude: 91,
+          longitude: 121.4737,
+          timezone: "Asia/Shanghai",
+        },
+      }),
+    ).toThrow();
+    expect(() =>
+      createMachineSchema.parse({
+        code: "M001",
+        name: "Lobby",
+        geoLocation: {
+          latitude: 31.2304,
+          longitude: 181,
+          timezone: "Asia/Shanghai",
+        },
+      }),
+    ).toThrow();
+    expect(() =>
+      createMachineSchema.parse({
+        code: "M001",
+        name: "Lobby",
+        geoLocation: {
+          latitude: 31.2304,
+          longitude: 121.4737,
+          timezone: "Shanghai",
+        },
+      }),
+    ).toThrow();
+  });
+
+  it("defines External Natural Environment unconfigured as HTTP-success payload without weather or sun data", () => {
+    expect(
+      externalNaturalEnvironmentSchema.parse({
+        status: "unconfigured",
+        machineId: "550e8400-e29b-41d4-a716-446655440000",
+        machineCode: "M001",
+        checkedAt: "2026-06-30T14:00:00.000Z",
+        diagnostic: {
+          reason: "machine_geo_location_missing",
+          message: "Machine Geo Location is not configured",
+        },
+      }),
+    ).toEqual({
+      status: "unconfigured",
+      machineId: "550e8400-e29b-41d4-a716-446655440000",
+      machineCode: "M001",
+      checkedAt: "2026-06-30T14:00:00.000Z",
+      diagnostic: {
+        reason: "machine_geo_location_missing",
+        message: "Machine Geo Location is not configured",
+      },
+    });
+
+    expect(() =>
+      externalNaturalEnvironmentSchema.parse({
+        status: "ready",
+        machineId: "550e8400-e29b-41d4-a716-446655440000",
+        machineCode: "M001",
+        checkedAt: "2026-06-30T14:00:00.000Z",
+      }),
+    ).toThrow();
+    expect(() =>
+      externalNaturalEnvironmentSchema.parse({
+        status: "unconfigured",
+        machineId: "550e8400-e29b-41d4-a716-446655440000",
+        machineCode: "M001",
+        checkedAt: "2026-06-30T14:00:00.000Z",
+        weather: { temperatureCelsius: 28 },
+        sun: { sunriseAt: "2026-06-30T21:00:00.000Z" },
+        diagnostic: {
+          reason: "machine_geo_location_missing",
+          message: "Machine Geo Location is not configured",
+        },
+      }),
+    ).toThrow();
+  });
+
+  it("defines External Natural Environment ready as normalized local time, weather, and sun data", () => {
+    expect(
+      externalNaturalEnvironmentSchema.parse({
+        status: "ready",
+        machineId: "550e8400-e29b-41d4-a716-446655440000",
+        machineCode: "M001",
+        checkedAt: "2026-06-30T14:00:00.000Z",
+        localTime: {
+          timezone: "Asia/Shanghai",
+          localDate: "2026-06-30",
+          localClock: "22:00:00",
+        },
+        weather: {
+          temperatureCelsius: 28,
+          conditionText: "Sunny",
+          observedAt: "2026-06-30T13:50:00.000Z",
+        },
+        sun: {
+          sunriseAt: "2026-06-29T21:53:00.000Z",
+          sunsetAt: "2026-06-30T10:02:00.000Z",
+        },
+      }),
+    ).toEqual({
+      status: "ready",
+      machineId: "550e8400-e29b-41d4-a716-446655440000",
+      machineCode: "M001",
+      checkedAt: "2026-06-30T14:00:00.000Z",
+      localTime: {
+        timezone: "Asia/Shanghai",
+        localDate: "2026-06-30",
+        localClock: "22:00:00",
+      },
+      weather: {
+        temperatureCelsius: 28,
+        conditionText: "Sunny",
+        observedAt: "2026-06-30T13:50:00.000Z",
+      },
+      sun: {
+        sunriseAt: "2026-06-29T21:53:00.000Z",
+        sunsetAt: "2026-06-30T10:02:00.000Z",
+      },
+    });
+  });
+
+  it("defines External Natural Environment stale as normalized cached data with safe diagnostics", () => {
+    expect(
+      externalNaturalEnvironmentSchema.parse({
+        status: "stale",
+        machineId: "550e8400-e29b-41d4-a716-446655440000",
+        machineCode: "M001",
+        checkedAt: "2026-06-30T14:10:00.000Z",
+        localTime: {
+          timezone: "Asia/Shanghai",
+          localDate: "2026-06-30",
+          localClock: "22:10:00",
+        },
+        weather: {
+          temperatureCelsius: 28,
+          conditionText: "Sunny",
+          observedAt: "2026-06-30T13:50:00.000Z",
+        },
+        sun: {
+          sunriseAt: "2026-06-29T21:53:00.000Z",
+          sunsetAt: "2026-06-30T10:02:00.000Z",
+        },
+        diagnostic: {
+          reason: "provider_unavailable",
+          message: "External Natural Environment provider is unavailable",
+        },
+      }),
+    ).toEqual({
+      status: "stale",
+      machineId: "550e8400-e29b-41d4-a716-446655440000",
+      machineCode: "M001",
+      checkedAt: "2026-06-30T14:10:00.000Z",
+      localTime: {
+        timezone: "Asia/Shanghai",
+        localDate: "2026-06-30",
+        localClock: "22:10:00",
+      },
+      weather: {
+        temperatureCelsius: 28,
+        conditionText: "Sunny",
+        observedAt: "2026-06-30T13:50:00.000Z",
+      },
+      sun: {
+        sunriseAt: "2026-06-29T21:53:00.000Z",
+        sunsetAt: "2026-06-30T10:02:00.000Z",
+      },
+      diagnostic: {
+        reason: "provider_unavailable",
+        message: "External Natural Environment provider is unavailable",
+      },
+    });
+  });
+
   it("accepts structured machine heartbeat payload", () => {
     expect(
       heartbeatPayloadSchema.parse({
@@ -109,6 +386,35 @@ describe("shared API contract", () => {
         },
       }).statusPayload.mqttConnected,
     ).toBe(true);
+  });
+
+  it("accepts whole-machine maintenance lock readiness status in heartbeat payload", () => {
+    const result = heartbeatPayloadSchema.parse({
+      machineCode: "M001",
+      reportedAt: "2026-06-26T08:00:00.000Z",
+      statusPayload: {
+        hardwareStatus: "faulted",
+        wholeMachineMaintenanceLock: {
+          code: "WHOLE_MACHINE_HARDWARE_FAULT",
+          message: "pickup platform blocked",
+          source: "dispense_failure",
+          orderNo: "ORD-1",
+          commandNo: "CMD-1",
+          slotCode: "A1",
+          errorCode: "JAMMED",
+          createdAt: "2026-06-26T07:55:00.000Z",
+        },
+        saleReadiness: {
+          state: "locked",
+          blockingCodes: ["WHOLE_MACHINE_HARDWARE_FAULT"],
+        },
+      },
+    });
+
+    expect(result.statusPayload.saleReadiness?.state).toBe("locked");
+    expect(result.statusPayload.wholeMachineMaintenanceLock?.slotCode).toBe(
+      "A1",
+    );
   });
 
   it("accepts environment control failure when confirmed switch state is unknown", () => {
@@ -287,7 +593,7 @@ describe("shared API contract", () => {
         code: "M001",
         name: "Lobby",
         status: "offline",
-        locationText: "1F",
+        locationLabel: "1F",
       },
       credentials: {
         machineSecret:
@@ -329,6 +635,28 @@ describe("shared API contract", () => {
     };
 
     expect(machineProvisioningProfileSchema.parse(profile)).toEqual(profile);
+    expect(() =>
+      machineProvisioningProfileSchema.parse({
+        ...profile,
+        machine: {
+          ...profile.machine,
+          locationText: "1F",
+        },
+      }),
+    ).toThrow();
+    expect(() =>
+      machineProvisioningProfileSchema.parse({
+        ...profile,
+        machine: {
+          ...profile.machine,
+          geoLocation: {
+            latitude: 31.2304,
+            longitude: 121.4737,
+            timezone: "Asia/Shanghai",
+          },
+        },
+      }),
+    ).toThrow();
     expect(() =>
       machineProvisioningProfileSchema.parse({
         ...profile,
@@ -431,7 +759,8 @@ describe("shared API contract", () => {
           productId: "550e8400-e29b-41d4-a716-446655440004",
           productName: "矿泉水",
           productDescription: null,
-          coverImageUrl: null,
+          coverImageUrl:
+            "/api/media-assets/550e8400-e29b-41d4-a716-446655440124/content",
           categoryId: null,
           categoryName: null,
           sku: "WATER-001",
@@ -456,6 +785,126 @@ describe("shared API contract", () => {
     ).toThrow();
   });
 
+  it("rejects arbitrary planogram cover image URLs", () => {
+    const slot = {
+      slotId: "550e8400-e29b-41d4-a716-446655440001",
+      slotCode: "A1",
+      layerNo: 1,
+      cellNo: 1,
+      inventoryId: "550e8400-e29b-41d4-a716-446655440002",
+      variantId: "550e8400-e29b-41d4-a716-446655440003",
+      productId: "550e8400-e29b-41d4-a716-446655440004",
+      productName: "矿泉水",
+      productDescription: null,
+      coverImageUrl:
+        "http://service.test/api/media-assets/550e8400-e29b-41d4-a716-446655440124/content",
+      categoryId: null,
+      categoryName: null,
+      sku: "WATER-001",
+      size: "550ml",
+      color: null,
+      priceCents: 200,
+      productSortOrder: 1,
+      targetGender: null,
+      capacity: 8,
+      parLevel: 6,
+    };
+
+    expect(
+      publishMachinePlanogramVersionSchema.parse({
+        planogramVersion: "PLAN-2026-06-04",
+        slots: [slot],
+      }).slots[0]?.coverImageUrl,
+    ).toBe(slot.coverImageUrl);
+    expect(() =>
+      publishMachinePlanogramVersionSchema.parse({
+        planogramVersion: "PLAN-2026-06-04",
+        slots: [
+          {
+            ...slot,
+            coverImageUrl: "https://example.com/free-form.jpg",
+          },
+        ],
+      }),
+    ).toThrow();
+    expect(() =>
+      publishMachinePlanogramVersionSchema.parse({
+        planogramVersion: "PLAN-2026-06-04",
+        slots: [
+          {
+            ...slot,
+            coverImageUrl:
+              "https://evil.example/api/media-assets/550e8400-e29b-41d4-a716-446655440124/content",
+          },
+        ],
+      }),
+    ).toThrow();
+  });
+
+  it("accepts variant try-on silhouettes only as managed media URLs", () => {
+    const slot = {
+      slotId: "550e8400-e29b-41d4-a716-446655440001",
+      slotCode: "A1",
+      layerNo: 1,
+      cellNo: 1,
+      inventoryId: "550e8400-e29b-41d4-a716-446655440002",
+      variantId: "550e8400-e29b-41d4-a716-446655440003",
+      productId: "550e8400-e29b-41d4-a716-446655440004",
+      productName: "基础短袖",
+      productDescription: null,
+      coverImageUrl: null,
+      tryOnSilhouetteUrl:
+        "/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
+      categoryId: null,
+      categoryName: "T恤",
+      sku: "TSHIRT-M-WHITE",
+      size: "M",
+      color: "白色",
+      priceCents: 200,
+      productSortOrder: 1,
+      targetGender: null,
+      capacity: 8,
+      parLevel: 6,
+    };
+
+    expect(
+      publishMachinePlanogramVersionSchema.parse({
+        planogramVersion: "PLAN-2026-06-04",
+        slots: [slot],
+      }).slots[0]?.tryOnSilhouetteUrl,
+    ).toBe(slot.tryOnSilhouetteUrl);
+    expect(
+      machineSaleViewItemSchema.parse({
+        ...slot,
+        machineCode: "M001",
+        physicalStock: 1,
+        saleableStock: 1,
+        slotSalesState: "sale_ready",
+      }).tryOnSilhouetteUrl,
+    ).toBe(slot.tryOnSilhouetteUrl);
+    expect(() =>
+      machineSaleViewItemSchema.parse({
+        ...slot,
+        machineCode: "M001",
+        tryOnSilhouetteUrl: "https://example.com/free-form.png",
+        physicalStock: 1,
+        saleableStock: 1,
+        slotSalesState: "sale_ready",
+      }),
+    ).toThrow();
+    expect(() =>
+      machineSaleViewItemSchema.parse({
+        ...slot,
+        machineCode: "M001",
+        tryOnSilhouetteUrl:
+          "https://evil.example/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
+        physicalStock: 1,
+        saleableStock: 1,
+        slotSalesState: "sale_ready",
+      }),
+    ).toThrow();
+  });
+
   it("accepts machine sale view slot sales states", () => {
     const base = {
       machineCode: "M001",
@@ -468,7 +917,8 @@ describe("shared API contract", () => {
       productId: "550e8400-e29b-41d4-a716-446655440004",
       productName: "矿泉水",
       productDescription: null,
-      coverImageUrl: null,
+      coverImageUrl:
+        "/api/media-assets/550e8400-e29b-41d4-a716-446655440124/content",
       categoryId: null,
       categoryName: null,
       sku: "WATER-001",
@@ -891,6 +1341,94 @@ describe("shared API contract", () => {
       expect(result.profileSnapshot).toBeNull();
     });
 
+    it("strips sensitive profileSnapshot fields from machine orders", () => {
+      const result = createMachineOrderSchema.parse({
+        machineCode: "M001",
+        items: [
+          {
+            inventoryId: "550e8400-e29b-41d4-a716-446655440000",
+            quantity: 1,
+            planogramVersion: "PLAN-1",
+            slotId: "550e8400-e29b-41d4-a716-446655440001",
+            slotCode: "A1",
+          },
+        ],
+        paymentMethod: "payment_code",
+        paymentProviderCode: "alipay",
+        profileSnapshot: {
+          personPresent: true,
+          heightCm: 172,
+          bodyType: "regular",
+          upperColor: "blue",
+          confidence: 0.91,
+          rawImageBase64: "data:image/jpeg;base64,raw",
+          identity: { id: "customer-1" },
+          faceEmbedding: [0.1, 0.2],
+          ageRange: "adult",
+          gender: "male",
+        },
+      });
+
+      expect(result.profileSnapshot).toEqual({
+        personPresent: true,
+        heightCm: 172,
+        bodyType: "regular",
+        upperColor: "blue",
+        confidence: 0.91,
+      });
+    });
+
+    it("falls back to null for unknown legacy profileSnapshot shapes", () => {
+      const result = createMachineOrderSchema.parse({
+        machineCode: "M001",
+        items: [
+          {
+            inventoryId: "550e8400-e29b-41d4-a716-446655440000",
+            quantity: 1,
+            planogramVersion: "PLAN-1",
+            slotId: "550e8400-e29b-41d4-a716-446655440001",
+            slotCode: "A1",
+          },
+        ],
+        paymentMethod: "payment_code",
+        paymentProviderCode: "alipay",
+        profileSnapshot: {
+          ageRange: "adult",
+          gender: "female",
+          shoulderWidthCm: null,
+          legacyModelVersion: "vision-0",
+        },
+      });
+
+      expect(result.profileSnapshot).toBeNull();
+    });
+
+    it("sanitizes invalid profileSnapshot metadata without rejecting machine orders", () => {
+      const result = createMachineOrderSchema.parse({
+        machineCode: "M001",
+        items: [
+          {
+            inventoryId: "550e8400-e29b-41d4-a716-446655440000",
+            quantity: 1,
+            planogramVersion: "PLAN-1",
+            slotId: "550e8400-e29b-41d4-a716-446655440001",
+            slotCode: "A1",
+          },
+        ],
+        paymentMethod: "payment_code",
+        paymentProviderCode: "alipay",
+        profileSnapshot: {
+          personPresent: true,
+          heightCm: 300,
+          bodyType: "x".repeat(64),
+          upperColor: "",
+          confidence: 2,
+        },
+      });
+
+      expect(result.profileSnapshot).toEqual({ personPresent: true });
+    });
+
     it("rejects payment_code with mock provider", () => {
       expect(() =>
         createMachineOrderSchema.parse({
@@ -1090,11 +1628,30 @@ describe("shared API contract", () => {
             icon: "alipay",
           },
         ],
+        defaultOptionKey: "qr_code:alipay",
+        defaultProviderCode: "alipay",
         checks: [],
         checkedAt: "2026-05-06T10:00:00.000Z",
       });
       expect(result.status).toBe("ready");
       expect(result.availableProviders).toHaveLength(1);
+    });
+
+    it("heartbeatPayloadSchema accepts production dispense path evidence", () => {
+      const result = heartbeatPayloadSchema.parse({
+        machineCode: "M001",
+        reportedAt: "2026-06-26T04:00:00.000Z",
+        statusPayload: {
+          hardwareAdapter: "serial",
+          hardwarePortPath: "tcp://127.0.0.1:17991",
+          hardwareStatus: "ok",
+        },
+      });
+
+      expect(result.statusPayload.hardwareAdapter).toBe("serial");
+      expect(result.statusPayload.hardwarePortPath).toBe(
+        "tcp://127.0.0.1:17991",
+      );
     });
 
     it("paymentMachinePreflightSchema accepts payment_code options", () => {
@@ -1112,10 +1669,18 @@ describe("shared API contract", () => {
             icon: "wechat",
           },
         ],
+        defaultOptionKey: "payment_code:wechat_pay",
+        defaultProviderCode: "wechat_pay",
         checks: [],
         checkedAt: "2026-05-06T10:00:00.000Z",
       });
       expect(result.availableProviders[0]?.method).toBe("payment_code");
+    });
+
+    it("rejects whitespace-only payment_code admin action reasons", () => {
+      expect(() =>
+        paymentCodeAttemptAdminActionSchema.parse({ reason: "   " }),
+      ).toThrow();
     });
 
     it("parses payment_code attempt query schema", () => {
@@ -1126,6 +1691,129 @@ describe("shared API contract", () => {
         manualOnly: true,
       });
       expect(result.manualOnly).toBe(true);
+    });
+
+    it("parses machine status poll reconciliation attempt filters", () => {
+      const result = paymentReconciliationAttemptQuerySchema.parse({
+        paymentNo: "PAY202606260001",
+        trigger: "machine_status_poll",
+      });
+      expect(result.trigger).toBe("machine_status_poll");
+    });
+
+    it("parses protected payment drill contracts and requires operator reasons", () => {
+      expect(
+        protectedPaymentDrillScenarioSchema.parse("payment_code_unknown"),
+      ).toBe("payment_code_unknown");
+      expect(
+        createProtectedPaymentDrillSchema.parse({
+          machineId: "550e8400-e29b-41d4-a716-446655440000",
+          scenario: "qr_reconcile_failed",
+          reason: "pre-launch payment recovery rehearsal",
+        }),
+      ).toEqual({
+        machineId: "550e8400-e29b-41d4-a716-446655440000",
+        scenario: "qr_reconcile_failed",
+        reason: "pre-launch payment recovery rehearsal",
+      });
+      expect(() =>
+        createProtectedPaymentDrillSchema.parse({
+          machineId: "550e8400-e29b-41d4-a716-446655440000",
+          scenario: "qr_reconcile_failed",
+          reason: " ",
+        }),
+      ).toThrow();
+      expect(() =>
+        createProtectedPaymentDrillSchema.parse({
+          machineId: "550e8400-e29b-41d4-a716-446655440000",
+          scenario: "qr_reconcile_failed",
+          reason: "pre-launch payment recovery rehearsal",
+          targetOrderId: "550e8400-e29b-41d4-a716-446655440001",
+        }),
+      ).toThrow();
+      expect(() =>
+        protectedPaymentDrillRecoveryActionSchema.parse({
+          action: "request_refund",
+          reason: "",
+        }),
+      ).toThrow();
+      expect(() =>
+        protectedPaymentDrillRecoveryActionSchema.parse({
+          action: "request_refund",
+          reason: "operator rehearsed refund recovery",
+          targetOrderId: "550e8400-e29b-41d4-a716-446655440001",
+        }),
+      ).toThrow();
+      expect(() =>
+        protectedPaymentDrillRecoveryActionSchema.parse({
+          action: "request_refund",
+          reason: "operator rehearsed refund recovery",
+          extra: "must be rejected",
+        }),
+      ).toThrow();
+    });
+
+    it("parses protected fulfillment drill contracts and rejects target orders", () => {
+      expect(
+        protectedFulfillmentDrillScenarioSchema.parse(
+          "unknown_dispense_result",
+        ),
+      ).toBe("unknown_dispense_result");
+      expect(
+        createProtectedFulfillmentDrillSchema.parse({
+          machineId: "550e8400-e29b-41d4-a716-446655440000",
+          scenario: "dispense_failed",
+          reason: "pre-launch fulfillment recovery rehearsal",
+        }),
+      ).toEqual({
+        machineId: "550e8400-e29b-41d4-a716-446655440000",
+        scenario: "dispense_failed",
+        reason: "pre-launch fulfillment recovery rehearsal",
+      });
+      expect(() =>
+        createProtectedFulfillmentDrillSchema.parse({
+          machineId: "550e8400-e29b-41d4-a716-446655440000",
+          scenario: "dispense_failed",
+          reason: " ",
+        }),
+      ).toThrow();
+      expect(() =>
+        createProtectedFulfillmentDrillSchema.parse({
+          machineId: "550e8400-e29b-41d4-a716-446655440000",
+          scenario: "dispense_failed",
+          reason: "pre-launch fulfillment recovery rehearsal",
+          targetOrderId: "550e8400-e29b-41d4-a716-446655440001",
+        }),
+      ).toThrow();
+      expect(
+        protectedFulfillmentDrillRecoveryActionSchema.parse({
+          action: "confirm_not_dispensed",
+          reason: "operator confirmed the drill item did not dispense",
+        }),
+      ).toEqual({
+        action: "confirm_not_dispensed",
+        reason: "operator confirmed the drill item did not dispense",
+      });
+      expect(() =>
+        protectedFulfillmentDrillRecoveryActionSchema.parse({
+          action: "request_refund",
+          reason: "",
+        }),
+      ).toThrow();
+      expect(() =>
+        protectedFulfillmentDrillRecoveryActionSchema.parse({
+          action: "request_refund",
+          reason: "operator rehearsed refund recovery",
+          targetOrderId: "550e8400-e29b-41d4-a716-446655440001",
+        }),
+      ).toThrow();
+      expect(() =>
+        protectedFulfillmentDrillRecoveryActionSchema.parse({
+          action: "request_refund",
+          reason: "operator rehearsed refund recovery",
+          extra: "must be rejected",
+        }),
+      ).toThrow();
     });
   });
 });

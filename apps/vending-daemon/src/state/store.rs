@@ -1,4 +1,7 @@
-use std::{collections::HashSet, path::Path};
+use std::{
+    collections::{HashMap, HashSet},
+    path::Path,
+};
 
 use chrono::{SecondsFormat, Utc};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -9,8 +12,8 @@ use uuid::Uuid;
 use vending_core::domain::{CommandLogStatus, OutboxKind, OutboxTransport};
 
 use super::schema::{
-    MIGRATION_V1, MIGRATION_V2, MIGRATION_V3, MIGRATION_V4, MIGRATION_V5, MIGRATION_V6,
-    MIGRATION_V7, SCHEMA_VERSION,
+    MIGRATION_V1, MIGRATION_V10, MIGRATION_V2, MIGRATION_V3, MIGRATION_V4, MIGRATION_V5,
+    MIGRATION_V6, MIGRATION_V7, MIGRATION_V8, MIGRATION_V9, SCHEMA_VERSION,
 };
 use vending_core::hardware::{
     DispenseCommandPayload, DispenseProgressEvent, DispenseProgressStage, DispenseResultPayload,
@@ -23,7 +26,10 @@ const OUTBOX_TTL_DAYS: i64 = 7;
 pub const OUTBOX_MAX_EVENTS: i64 = 500;
 const STOCK_LEDGER_REBUILT_AFTER_QUARANTINE_KEY: &str = "stock_ledger_rebuilt_after_quarantine";
 const STOCK_MOVEMENT_RETENTION_DAYS: i64 = 30;
+const PHYSICAL_STOCK_ATTESTATION_KEY: &str = "physical_stock_attestation";
 pub(crate) const WHOLE_MACHINE_MAINTENANCE_LOCK_KEY: &str = "whole_machine_maintenance_lock";
+pub(crate) const WHOLE_MACHINE_LOCK_RECOVERY_EVIDENCE_KEY: &str =
+    "whole_machine_lock_recovery_evidence";
 
 type CommandRecordRow = (
     String,
@@ -95,6 +101,29 @@ pub struct WholeMachineMaintenanceLock {
     pub slot_code: String,
     pub error_code: Option<String>,
     pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WholeMachineMaintenanceLockClearEvidence {
+    pub adapter: String,
+    pub online: bool,
+    pub message: String,
+    pub port_path: Option<String>,
+    pub checked_at: String,
+    pub production_dispense_path_ready: bool,
+    pub production_dispense_path_code: String,
+    pub production_dispense_path_message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WholeMachineMaintenanceLockClearAudit {
+    pub id: String,
+    pub operator_note: String,
+    pub cleared_at: String,
+    pub previous: WholeMachineMaintenanceLock,
+    pub recovery_evidence: WholeMachineMaintenanceLockClearEvidence,
 }
 
 #[derive(Debug, Error)]
@@ -220,6 +249,8 @@ pub struct MachinePlanogramSlotInput {
     pub product_name: String,
     pub product_description: Option<String>,
     pub cover_image_url: Option<String>,
+    #[serde(default)]
+    pub try_on_silhouette_url: Option<String>,
     pub category_id: Option<String>,
     pub category_name: Option<String>,
     pub sku: String,
@@ -240,6 +271,47 @@ pub struct StockMovementInput {
     pub quantity: i64,
     pub source: String,
     pub attributed_to: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PhysicalStockAttestationInput {
+    pub attestation_id: String,
+    pub planogram_version: String,
+    pub operator_id: String,
+    pub slots: Vec<PhysicalStockAttestationSlotInput>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PhysicalStockAttestationSlotInput {
+    pub slot_id: String,
+    pub slot_code: String,
+    pub sku: String,
+    pub quantity: i64,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PhysicalStockAttestationStatus {
+    pub status: String,
+    pub code: String,
+    pub message: String,
+    pub attestation_id: Option<String>,
+    pub planogram_version: Option<String>,
+    pub attested_at: Option<String>,
+    pub inconsistent_slots: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredPhysicalStockAttestation {
+    attestation_id: String,
+    planogram_version: String,
+    operator_id: String,
+    attested_at: String,
+    slots: Vec<PhysicalStockAttestationSlotInput>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -274,6 +346,8 @@ pub struct SaleViewItem {
     pub product_name: String,
     pub product_description: Option<String>,
     pub cover_image_url: Option<String>,
+    #[serde(default)]
+    pub try_on_silhouette_url: Option<String>,
     pub category_id: Option<String>,
     pub category_name: Option<String>,
     pub sku: String,
@@ -507,6 +581,24 @@ impl LocalStateStore {
                 .await
                 .map_err(StoreError::Sqlx)?;
         }
+        if current_version < 8 {
+            sqlx::query(MIGRATION_V8)
+                .execute(&self.pool)
+                .await
+                .map_err(StoreError::Sqlx)?;
+        }
+        if current_version < 9 {
+            sqlx::query(MIGRATION_V9)
+                .execute(&self.pool)
+                .await
+                .map_err(StoreError::Sqlx)?;
+        }
+        if current_version < 10 {
+            sqlx::query(MIGRATION_V10)
+                .execute(&self.pool)
+                .await
+                .map_err(StoreError::Sqlx)?;
+        }
         self.put_metadata("schema_version", &SCHEMA_VERSION).await?;
         Ok(())
     }
@@ -578,9 +670,78 @@ impl LocalStateStore {
         self.get_metadata(WHOLE_MACHINE_MAINTENANCE_LOCK_KEY).await
     }
 
-    pub async fn clear_whole_machine_maintenance_lock(&self) -> Result<(), StoreError> {
-        self.delete_metadata(WHOLE_MACHINE_MAINTENANCE_LOCK_KEY)
+    pub async fn record_whole_machine_lock_recovery_evidence(
+        &self,
+        evidence: &WholeMachineMaintenanceLockClearEvidence,
+    ) -> Result<(), StoreError> {
+        self.put_metadata(WHOLE_MACHINE_LOCK_RECOVERY_EVIDENCE_KEY, evidence)
             .await
+    }
+
+    pub async fn whole_machine_lock_recovery_evidence(
+        &self,
+    ) -> Result<Option<WholeMachineMaintenanceLockClearEvidence>, StoreError> {
+        self.get_metadata(WHOLE_MACHINE_LOCK_RECOVERY_EVIDENCE_KEY)
+            .await
+    }
+
+    pub async fn clear_whole_machine_maintenance_lock_with_audit(
+        &self,
+        audit: &WholeMachineMaintenanceLockClearAudit,
+    ) -> Result<(), StoreError> {
+        let recovery_evidence_json = serde_json::to_string(&audit.recovery_evidence)?;
+        let previous_lock_json = serde_json::to_string(&audit.previous)?;
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(
+            "INSERT INTO whole_machine_lock_clear_audit_events(
+               id,operator_note,previous_lock_json,recovery_evidence_json,created_at
+             )
+             VALUES (?1,?2,?3,?4,?5)",
+        )
+        .bind(&audit.id)
+        .bind(&audit.operator_note)
+        .bind(previous_lock_json)
+        .bind(recovery_evidence_json)
+        .bind(&audit.cleared_at)
+        .execute(tx.as_mut())
+        .await?;
+        sqlx::query("DELETE FROM runtime_metadata WHERE key = ?1")
+            .bind(WHOLE_MACHINE_MAINTENANCE_LOCK_KEY)
+            .execute(tx.as_mut())
+            .await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    pub async fn whole_machine_lock_clear_audit(
+        &self,
+    ) -> Result<Option<WholeMachineMaintenanceLockClearAudit>, StoreError> {
+        let mut records = self.whole_machine_lock_clear_audits().await?;
+        Ok(records.pop())
+    }
+
+    pub async fn whole_machine_lock_clear_audits(
+        &self,
+    ) -> Result<Vec<WholeMachineMaintenanceLockClearAudit>, StoreError> {
+        let rows: Vec<(String, String, String, String, String)> = sqlx::query_as(
+            "SELECT id,operator_note,previous_lock_json,recovery_evidence_json,created_at
+             FROM whole_machine_lock_clear_audit_events
+             ORDER BY created_at ASC, id ASC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut audits = Vec::with_capacity(rows.len());
+        for (id, operator_note, previous_lock_json, recovery_evidence_json, cleared_at) in rows {
+            audits.push(WholeMachineMaintenanceLockClearAudit {
+                id,
+                operator_note,
+                cleared_at,
+                previous: serde_json::from_str(&previous_lock_json)?,
+                recovery_evidence: serde_json::from_str(&recovery_evidence_json)?,
+            });
+        }
+        Ok(audits)
     }
 
     pub async fn record_whole_machine_hardware_fault_lock(
@@ -668,6 +829,21 @@ impl LocalStateStore {
         .await?;
 
         row.map(to_command_record).transpose()
+    }
+
+    pub async fn list_active_unfinished_commands(
+        &self,
+    ) -> Result<Vec<CommandLogRecord>, StoreError> {
+        let rows: Vec<CommandRecordRow> = sqlx::query_as(
+            "SELECT command_no, order_no, command_payload_json, status, ack_at, dispensing_started_at, result_payload_json, error_code, error_message, updated_at, expires_at
+             FROM command_log
+             WHERE status IN ('acknowledged','dispensing') AND result_payload_json IS NULL
+             ORDER BY updated_at ASC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.into_iter().map(to_command_record).collect()
     }
 
     pub async fn prune_command_log(&self) -> Result<(u64, u64), StoreError> {
@@ -1497,8 +1673,9 @@ impl LocalStateStore {
                 "INSERT INTO machine_planogram_slots(
                    planogram_version,slot_id,slot_code,layer_no,cell_no,capacity,par_level,
                    inventory_id,variant_id,product_id,product_name,product_description,cover_image_url,
-                   category_id,category_name,sku,size,color,price_cents,product_sort_order,target_gender
-                 ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)",
+                   try_on_silhouette_url,category_id,category_name,sku,size,color,price_cents,
+                   product_sort_order,target_gender
+                 ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)",
             )
             .bind(&input.planogram_version)
             .bind(&slot.slot_id)
@@ -1513,6 +1690,7 @@ impl LocalStateStore {
             .bind(&slot.product_name)
             .bind(&slot.product_description)
             .bind(&slot.cover_image_url)
+            .bind(&slot.try_on_silhouette_url)
             .bind(&slot.category_id)
             .bind(&slot.category_name)
             .bind(&slot.sku)
@@ -1787,6 +1965,335 @@ impl LocalStateStore {
         self.sale_view(machine_code.map(ToString::to_string)).await
     }
 
+    pub async fn record_physical_stock_attestation(
+        &self,
+        input: PhysicalStockAttestationInput,
+    ) -> Result<SaleViewSnapshot, StoreError> {
+        self.record_physical_stock_attestation_with_upload(input, None, None)
+            .await
+    }
+
+    pub async fn record_physical_stock_attestation_with_upload(
+        &self,
+        input: PhysicalStockAttestationInput,
+        machine_code: Option<&str>,
+        api_base_url: Option<&str>,
+    ) -> Result<SaleViewSnapshot, StoreError> {
+        if input.attestation_id.trim().is_empty()
+            || input.planogram_version.trim().is_empty()
+            || input.operator_id.trim().is_empty()
+            || input.slots.is_empty()
+        {
+            return Err(StoreError::InvalidStockInput(
+                "attestation id, planogram version, operator id, and slots are required"
+                    .to_string(),
+            ));
+        }
+
+        let mut tx = self.pool.begin().await?;
+        let planogram: Option<(i64,)> = sqlx::query_as(
+            "SELECT active FROM machine_planogram_versions WHERE planogram_version = ?1",
+        )
+        .bind(&input.planogram_version)
+        .fetch_optional(tx.as_mut())
+        .await?;
+        if planogram != Some((1,)) {
+            return Err(StoreError::InvalidStockInput(
+                "attestation planogram version is not active".to_string(),
+            ));
+        }
+
+        let rows = sqlx::query(
+            "SELECT slot_id, slot_code, sku, capacity, inventory_id, variant_id
+             FROM machine_planogram_slots
+             WHERE planogram_version = ?1
+             ORDER BY layer_no ASC, cell_no ASC",
+        )
+        .bind(&input.planogram_version)
+        .fetch_all(tx.as_mut())
+        .await?;
+        if rows.len() != input.slots.len() {
+            return Err(StoreError::InvalidStockInput(
+                "attestation must include every active planogram slot exactly once".to_string(),
+            ));
+        }
+
+        let mut attested_slots = HashMap::with_capacity(input.slots.len());
+        for slot in &input.slots {
+            if slot.quantity < 0 {
+                return Err(StoreError::InvalidStockInput(
+                    "attested quantity must be nonnegative".to_string(),
+                ));
+            }
+            if attested_slots.insert(slot.slot_id.as_str(), slot).is_some() {
+                return Err(StoreError::InvalidStockInput(format!(
+                    "duplicate attested slot {}",
+                    slot.slot_code
+                )));
+            }
+        }
+
+        let attested_at = now_iso();
+        for row in rows {
+            let slot_id: String = row.try_get("slot_id")?;
+            let slot_code: String = row.try_get("slot_code")?;
+            let sku: String = row.try_get("sku")?;
+            let capacity: i64 = row.try_get("capacity")?;
+            let inventory_id: String = row.try_get("inventory_id")?;
+            let variant_id: String = row.try_get("variant_id")?;
+            let Some(slot) = attested_slots.get(slot_id.as_str()) else {
+                return Err(StoreError::InvalidStockInput(format!(
+                    "missing attested slot {}",
+                    slot_code
+                )));
+            };
+            if slot.slot_code != slot_code || slot.sku != sku {
+                return Err(StoreError::InvalidStockInput(format!(
+                    "attested slot {} does not match active planogram mapping",
+                    slot.slot_code
+                )));
+            }
+            if slot.quantity > capacity {
+                return Err(StoreError::InvalidStockInput(format!(
+                    "attested slot {} exceeds capacity",
+                    slot.slot_code
+                )));
+            }
+
+            let before_quantity: Option<(i64,)> = sqlx::query_as(
+                "SELECT physical_stock
+                 FROM current_stock_projection
+                 WHERE planogram_version = ?1 AND slot_id = ?2",
+            )
+            .bind(&input.planogram_version)
+            .bind(&slot_id)
+            .fetch_optional(tx.as_mut())
+            .await?;
+            let before_quantity = before_quantity.map_or(0, |(quantity,)| quantity);
+            let slot_mapping_snapshot = serde_json::json!({
+                "slotCode": slot_code,
+                "capacity": capacity,
+                "inventoryId": inventory_id,
+                "variantId": variant_id,
+            });
+            let movement_id = format!("{}:{}", input.attestation_id, slot_id);
+            sqlx::query(
+                "INSERT INTO stock_movements(
+                   movement_id,planogram_version,slot_id,movement_type,quantity,
+                   before_quantity,after_quantity,slot_mapping_snapshot_json,
+                   source,attributed_to,occurred_at
+                 ) VALUES (?1,?2,?3,'stock_count_correction',?4,?5,?4,?6,'physical_stock_attestation',?7,?8)",
+            )
+            .bind(&movement_id)
+            .bind(&input.planogram_version)
+            .bind(&slot_id)
+            .bind(slot.quantity)
+            .bind(before_quantity)
+            .bind(slot_mapping_snapshot.to_string())
+            .bind(&input.operator_id)
+            .bind(&attested_at)
+            .execute(tx.as_mut())
+            .await?;
+
+            if let (Some(machine_code), Some(api_base_url)) = (machine_code, api_base_url) {
+                let payload = serde_json::json!({
+                    "machineCode": machine_code,
+                    "movementId": movement_id,
+                    "planogramVersion": input.planogram_version,
+                    "slotId": slot_id,
+                    "movementType": "stock_count_correction",
+                    "quantity": slot.quantity,
+                    "beforeQuantity": before_quantity,
+                    "afterQuantity": slot.quantity,
+                    "slotMappingSnapshot": slot_mapping_snapshot,
+                    "source": "physical_stock_attestation",
+                    "attributedTo": input.operator_id,
+                    "occurredAt": attested_at,
+                });
+                let target_url = format!(
+                    "{}/machine-stock-movements",
+                    api_base_url.trim_end_matches('/')
+                );
+                let event = OutboxInput::stock_movement_upload(&movement_id, target_url, payload);
+                let now = now_iso();
+                sqlx::query(
+                    "INSERT INTO stock_movement_sync(
+                       movement_id,status,outbox_event_id,attempt_count,created_at,updated_at
+                     ) VALUES (?1,'pending',?2,0,?3,?3)
+                     ON CONFLICT(movement_id) DO NOTHING",
+                )
+                .bind(&movement_id)
+                .bind(&event.id)
+                .bind(&now)
+                .execute(tx.as_mut())
+                .await?;
+                insert_outbox_in_tx(&mut tx, &event).await?;
+            }
+
+            clear_sale_safety_blocker_marker_in_tx(&mut tx, &input.planogram_version, &slot_id)
+                .await?;
+            let slot_sales_state = if !slot.enabled {
+                "frozen"
+            } else if slot.quantity > 0 {
+                "sale_ready"
+            } else {
+                "sold_out"
+            };
+            let saleable_stock = if slot_sales_state == "sale_ready" {
+                slot.quantity
+            } else {
+                0
+            };
+            upsert_stock_projection_with_state_in_tx(
+                &mut tx,
+                &input.planogram_version,
+                &slot_id,
+                slot.quantity,
+                saleable_stock,
+                slot_sales_state,
+                true,
+            )
+            .await?;
+            upsert_sale_view_projection_in_tx(&mut tx, &input.planogram_version, &slot_id).await?;
+        }
+
+        let stored = StoredPhysicalStockAttestation {
+            attestation_id: input.attestation_id,
+            planogram_version: input.planogram_version.clone(),
+            operator_id: input.operator_id,
+            attested_at,
+            slots: input.slots,
+        };
+        sqlx::query(
+            "INSERT INTO runtime_metadata(key,value_json,updated_at)
+             VALUES (?1,?2,?3)
+             ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json, updated_at=excluded.updated_at",
+        )
+        .bind(PHYSICAL_STOCK_ATTESTATION_KEY)
+        .bind(serde_json::to_string(&stored)?)
+        .bind(now_iso())
+        .execute(tx.as_mut())
+        .await?;
+
+        tx.commit().await?;
+        self.sale_view(machine_code.map(ToString::to_string)).await
+    }
+
+    pub async fn physical_stock_attestation_status(
+        &self,
+    ) -> Result<PhysicalStockAttestationStatus, StoreError> {
+        let stored = self
+            .get_metadata::<StoredPhysicalStockAttestation>(PHYSICAL_STOCK_ATTESTATION_KEY)
+            .await?;
+        let Some(stored) = stored else {
+            return Ok(PhysicalStockAttestationStatus {
+                status: "missing".to_string(),
+                code: "PHYSICAL_STOCK_ATTESTATION_MISSING".to_string(),
+                message: "physical stock attestation is missing".to_string(),
+                attestation_id: None,
+                planogram_version: None,
+                attested_at: None,
+                inconsistent_slots: vec![],
+            });
+        };
+
+        let active: Option<(String,)> = sqlx::query_as(
+            "SELECT planogram_version FROM machine_planogram_versions WHERE active = 1 LIMIT 1",
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+        if active.as_ref().map(|(version,)| version.as_str())
+            != Some(stored.planogram_version.as_str())
+        {
+            return Ok(PhysicalStockAttestationStatus {
+                status: "stale".to_string(),
+                code: "PHYSICAL_STOCK_ATTESTATION_STALE".to_string(),
+                message: "physical stock attestation is for a stale planogram".to_string(),
+                attestation_id: Some(stored.attestation_id),
+                planogram_version: Some(stored.planogram_version),
+                attested_at: Some(stored.attested_at),
+                inconsistent_slots: vec![],
+            });
+        }
+
+        let mut inconsistent_slots = Vec::new();
+        let rows = sqlx::query(
+            "SELECT s.slot_id, s.slot_code, s.sku, s.capacity, c.physical_stock, c.slot_sales_state
+             FROM machine_planogram_slots s
+             LEFT JOIN current_stock_projection c
+               ON c.planogram_version = s.planogram_version AND c.slot_id = s.slot_id
+             WHERE s.planogram_version = ?1
+             ORDER BY s.layer_no ASC, s.cell_no ASC",
+        )
+        .bind(&stored.planogram_version)
+        .fetch_all(&self.pool)
+        .await?;
+        let attested_slots: HashMap<&str, &PhysicalStockAttestationSlotInput> = stored
+            .slots
+            .iter()
+            .map(|slot| (slot.slot_id.as_str(), slot))
+            .collect();
+        for row in rows {
+            let slot_id: String = row.try_get("slot_id")?;
+            let slot_code: String = row.try_get("slot_code")?;
+            let sku: String = row.try_get("sku")?;
+            let capacity: i64 = row.try_get("capacity")?;
+            let physical_stock: Option<i64> = row.try_get("physical_stock")?;
+            let slot_sales_state: Option<String> = row.try_get("slot_sales_state")?;
+            let replayed_stock: Option<(i64,)> = sqlx::query_as(
+                "SELECT after_quantity
+                 FROM stock_movements
+                 WHERE planogram_version = ?1 AND slot_id = ?2
+                 ORDER BY occurred_at DESC, movement_id DESC
+                 LIMIT 1",
+            )
+            .bind(&stored.planogram_version)
+            .bind(&slot_id)
+            .fetch_optional(&self.pool)
+            .await?;
+            let Some(attested) = attested_slots.get(slot_id.as_str()) else {
+                inconsistent_slots.push(slot_code);
+                continue;
+            };
+            if attested.slot_code != slot_code
+                || attested.sku != sku
+                || attested.quantity > capacity
+                || physical_stock.is_none()
+                || physical_stock.is_some_and(|quantity| quantity > capacity)
+                || replayed_stock.is_none()
+                || physical_stock != replayed_stock.map(|(quantity,)| quantity)
+                || slot_sales_state
+                    .as_deref()
+                    .is_some_and(is_reconciliation_sale_safety_blocker)
+            {
+                inconsistent_slots.push(slot_code);
+            }
+        }
+
+        let status = if inconsistent_slots.is_empty() {
+            (
+                "ready",
+                "PHYSICAL_STOCK_ATTESTATION_READY",
+                "physical stock attestation is ready",
+            )
+        } else {
+            (
+                "inconsistent",
+                "PHYSICAL_STOCK_ATTESTATION_INCONSISTENT",
+                "physical stock attestation is inconsistent with local stock state",
+            )
+        };
+        Ok(PhysicalStockAttestationStatus {
+            status: status.0.to_string(),
+            code: status.1.to_string(),
+            message: status.2.to_string(),
+            attestation_id: Some(stored.attestation_id),
+            planogram_version: Some(stored.planogram_version),
+            attested_at: Some(stored.attested_at),
+            inconsistent_slots,
+        })
+    }
+
     pub async fn apply_platform_stock_snapshot(
         &self,
         snapshot: &crate::backend::MachineStockSnapshot,
@@ -1986,8 +2493,8 @@ impl LocalStateStore {
         }
 
         let mut tx = self.pool.begin().await?;
-        let row: Option<(String, String, i64, i64)> = sqlx::query_as(
-            "SELECT s.planogram_version, s.slot_id, s.capacity, c.physical_stock
+        let row: Option<(String, String, String, i64, String, String, i64)> = sqlx::query_as(
+            "SELECT s.planogram_version, s.slot_id, s.slot_code, s.capacity, s.inventory_id, s.variant_id, c.physical_stock
              FROM machine_planogram_slots s
              JOIN machine_planogram_versions v
                ON v.planogram_version = s.planogram_version AND v.active = 1
@@ -2002,11 +2509,46 @@ impl LocalStateStore {
         .fetch_optional(tx.as_mut())
         .await?;
 
-        let Some((planogram_version, slot_id, capacity, physical_stock)) = row else {
+        let Some((
+            planogram_version,
+            slot_id,
+            slot_code,
+            capacity,
+            inventory_id,
+            variant_id,
+            physical_stock,
+        )) = row
+        else {
             return Ok(None);
         };
 
-        let after_quantity = physical_stock - i64::from(command.quantity);
+        let dispense_quantity = i64::from(command.quantity);
+        let after_quantity = physical_stock - dispense_quantity;
+        let occurred_at = now_iso();
+        let slot_mapping_snapshot = serde_json::json!({
+            "slotCode": slot_code,
+            "capacity": capacity,
+            "inventoryId": inventory_id,
+            "variantId": variant_id,
+        });
+        sqlx::query(
+            "INSERT INTO stock_movements(
+               movement_id,planogram_version,slot_id,movement_type,quantity,
+               before_quantity,after_quantity,slot_mapping_snapshot_json,
+               source,attributed_to,occurred_at
+             ) VALUES (?1,?2,?3,'dispense_succeeded',?4,?5,?6,?7,'vending_command',?8,?9)",
+        )
+        .bind(format!("dispense:{}", command.command_no))
+        .bind(&planogram_version)
+        .bind(&slot_id)
+        .bind(dispense_quantity)
+        .bind(physical_stock)
+        .bind(after_quantity)
+        .bind(slot_mapping_snapshot.to_string())
+        .bind(&command.order_no)
+        .bind(&occurred_at)
+        .execute(tx.as_mut())
+        .await?;
         upsert_stock_projection_in_tx(
             &mut tx,
             &planogram_version,
@@ -2466,7 +3008,8 @@ async fn planogram_slots_match_in_tx(
         "SELECT
            slot_id,slot_code,layer_no,cell_no,capacity,par_level,
            inventory_id,variant_id,product_id,product_name,product_description,cover_image_url,
-           category_id,category_name,sku,size,color,price_cents,product_sort_order,target_gender
+           try_on_silhouette_url,category_id,category_name,sku,size,color,price_cents,
+           product_sort_order,target_gender
          FROM machine_planogram_slots
          WHERE planogram_version = ?1
          ORDER BY slot_id ASC",
@@ -2490,6 +3033,7 @@ async fn planogram_slots_match_in_tx(
             product_name: row.try_get("product_name")?,
             product_description: row.try_get("product_description")?,
             cover_image_url: row.try_get("cover_image_url")?,
+            try_on_silhouette_url: row.try_get("try_on_silhouette_url")?,
             category_id: row.try_get("category_id")?,
             category_name: row.try_get("category_name")?,
             sku: row.try_get("sku")?,
@@ -2819,6 +3363,7 @@ async fn upsert_sale_view_projection_in_tx(
            s.product_name,
            s.product_description,
            s.cover_image_url,
+           s.try_on_silhouette_url,
            s.category_id,
            s.category_name,
            s.sku,
@@ -2854,6 +3399,7 @@ async fn upsert_sale_view_projection_in_tx(
         product_name: row.try_get("product_name")?,
         product_description: row.try_get("product_description")?,
         cover_image_url: row.try_get("cover_image_url")?,
+        try_on_silhouette_url: row.try_get("try_on_silhouette_url")?,
         category_id: row.try_get("category_id")?,
         category_name: row.try_get("category_name")?,
         sku: row.try_get("sku")?,
@@ -3728,6 +4274,7 @@ mod tests {
                     product_name: "water".to_string(),
                     product_description: None,
                     cover_image_url: None,
+                    try_on_silhouette_url: None,
                     category_id: None,
                     category_name: None,
                     sku: "WATER-001".to_string(),
@@ -3754,6 +4301,74 @@ mod tests {
             quantity: 1,
             timeout_seconds: 10,
         }
+    }
+
+    #[tokio::test]
+    async fn sale_view_preserves_product_display_image_asset_url() {
+        let temp = TempDir::new().expect("tempdir");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+
+        let sale_view = store
+            .apply_planogram(MachinePlanogramInput {
+                planogram_version: "PLAN-MEDIA".to_string(),
+                source: "test".to_string(),
+                applied_by: None,
+                slots: vec![MachinePlanogramSlotInput {
+                    slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                    slot_code: "A1".to_string(),
+                    layer_no: 1,
+                    cell_no: 1,
+                    capacity: 8,
+                    par_level: 6,
+                    inventory_id: "550e8400-e29b-41d4-a716-446655440002".to_string(),
+                    variant_id: "550e8400-e29b-41d4-a716-446655440003".to_string(),
+                    product_id: "550e8400-e29b-41d4-a716-446655440004".to_string(),
+                    product_name: "shirt".to_string(),
+                    product_description: None,
+                    cover_image_url: Some(
+                        "/api/media-assets/550e8400-e29b-41d4-a716-446655440124/content"
+                            .to_string(),
+                    ),
+                    try_on_silhouette_url: Some(
+                        "/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content"
+                            .to_string(),
+                    ),
+                    category_id: None,
+                    category_name: None,
+                    sku: "TEE-001".to_string(),
+                    size: Some("M".to_string()),
+                    color: Some("white".to_string()),
+                    price_cents: 3900,
+                    product_sort_order: 1,
+                    target_gender: None,
+                }],
+            })
+            .await
+            .expect("planogram");
+
+        assert_eq!(
+            sale_view.items[0].cover_image_url.as_deref(),
+            Some("/api/media-assets/550e8400-e29b-41d4-a716-446655440124/content")
+        );
+        assert_eq!(
+            sale_view.items[0].try_on_silhouette_url.as_deref(),
+            Some("/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content")
+        );
+
+        let reopened = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("reopen");
+        let persisted = reopened.sale_view(None).await.expect("sale view");
+        assert_eq!(
+            persisted.items[0].cover_image_url.as_deref(),
+            Some("/api/media-assets/550e8400-e29b-41d4-a716-446655440124/content")
+        );
+        assert_eq!(
+            persisted.items[0].try_on_silhouette_url.as_deref(),
+            Some("/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content")
+        );
     }
 
     fn single_slot_stock_snapshot(
@@ -4141,6 +4756,7 @@ mod tests {
         assert!(names.contains(&"stock_movement_sync"));
         assert!(names.contains(&"current_stock_projection"));
         assert!(names.contains(&"sale_view_projection"));
+        assert!(names.contains(&"whole_machine_lock_clear_audit_events"));
 
         let schema_version: Option<i64> = store
             .get_metadata("schema_version")
@@ -4210,6 +4826,7 @@ mod tests {
                     product_name: "water".to_string(),
                     product_description: None,
                     cover_image_url: None,
+                    try_on_silhouette_url: None,
                     category_id: None,
                     category_name: None,
                     sku: "WATER-001".to_string(),
@@ -4326,6 +4943,15 @@ mod tests {
             .expect("slot found");
         assert_eq!(snapshot.items[0].physical_stock, 3);
         assert_eq!(snapshot.items[0].saleable_stock, 3);
+        let movement: (String, i64, i64, i64) = sqlx::query_as(
+            "SELECT movement_type, quantity, before_quantity, after_quantity
+             FROM stock_movements
+             WHERE movement_id = 'dispense:CMD-SUCCESS'",
+        )
+        .fetch_one(store.pool())
+        .await
+        .expect("dispense stock movement");
+        assert_eq!(movement, ("dispense_succeeded".to_string(), 1, 4, 3));
 
         let duplicate_recorded = store
             .record_command_result_and_enqueue_tx(&command, &result, &event)
@@ -4335,6 +4961,312 @@ mod tests {
         let persisted = store.sale_view(None).await.expect("sale view");
         assert_eq!(persisted.items[0].physical_stock, 3);
         assert_eq!(persisted.items[0].saleable_stock, 3);
+    }
+
+    #[tokio::test]
+    async fn physical_stock_attestation_aligns_ledger_and_keeps_disabled_or_empty_slots_unsaleable()
+    {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        store
+            .apply_planogram(MachinePlanogramInput {
+                planogram_version: "PLAN-ATTEST".to_string(),
+                source: "test".to_string(),
+                applied_by: None,
+                slots: vec![
+                    MachinePlanogramSlotInput {
+                        slot_id: "550e8400-e29b-41d4-a716-4466554400a1".to_string(),
+                        slot_code: "A1".to_string(),
+                        layer_no: 1,
+                        cell_no: 1,
+                        capacity: 8,
+                        par_level: 6,
+                        inventory_id: "550e8400-e29b-41d4-a716-4466554400b1".to_string(),
+                        variant_id: "550e8400-e29b-41d4-a716-446655440003".to_string(),
+                        product_id: "550e8400-e29b-41d4-a716-446655440004".to_string(),
+                        product_name: "water".to_string(),
+                        product_description: None,
+                        cover_image_url: None,
+                        try_on_silhouette_url: None,
+                        category_id: None,
+                        category_name: None,
+                        sku: "WATER-001".to_string(),
+                        size: Some("550ml".to_string()),
+                        color: None,
+                        price_cents: 200,
+                        product_sort_order: 1,
+                        target_gender: None,
+                    },
+                    MachinePlanogramSlotInput {
+                        slot_id: "550e8400-e29b-41d4-a716-4466554400a2".to_string(),
+                        slot_code: "A2".to_string(),
+                        layer_no: 1,
+                        cell_no: 2,
+                        capacity: 8,
+                        par_level: 6,
+                        inventory_id: "550e8400-e29b-41d4-a716-4466554400b2".to_string(),
+                        variant_id: "550e8400-e29b-41d4-a716-446655440013".to_string(),
+                        product_id: "550e8400-e29b-41d4-a716-446655440014".to_string(),
+                        product_name: "tea".to_string(),
+                        product_description: None,
+                        cover_image_url: None,
+                        try_on_silhouette_url: None,
+                        category_id: None,
+                        category_name: None,
+                        sku: "TEA-001".to_string(),
+                        size: Some("500ml".to_string()),
+                        color: None,
+                        price_cents: 300,
+                        product_sort_order: 2,
+                        target_gender: None,
+                    },
+                    MachinePlanogramSlotInput {
+                        slot_id: "550e8400-e29b-41d4-a716-4466554400a3".to_string(),
+                        slot_code: "A3".to_string(),
+                        layer_no: 1,
+                        cell_no: 3,
+                        capacity: 8,
+                        par_level: 6,
+                        inventory_id: "550e8400-e29b-41d4-a716-4466554400b3".to_string(),
+                        variant_id: "550e8400-e29b-41d4-a716-446655440023".to_string(),
+                        product_id: "550e8400-e29b-41d4-a716-446655440024".to_string(),
+                        product_name: "juice".to_string(),
+                        product_description: None,
+                        cover_image_url: None,
+                        try_on_silhouette_url: None,
+                        category_id: None,
+                        category_name: None,
+                        sku: "JUICE-001".to_string(),
+                        size: Some("450ml".to_string()),
+                        color: None,
+                        price_cents: 400,
+                        product_sort_order: 3,
+                        target_gender: None,
+                    },
+                ],
+            })
+            .await
+            .expect("planogram");
+
+        let sale_view = store
+            .record_physical_stock_attestation(PhysicalStockAttestationInput {
+                attestation_id: "ATT-001".to_string(),
+                planogram_version: "PLAN-ATTEST".to_string(),
+                operator_id: "operator-1".to_string(),
+                slots: vec![
+                    PhysicalStockAttestationSlotInput {
+                        slot_id: "550e8400-e29b-41d4-a716-4466554400a1".to_string(),
+                        slot_code: "A1".to_string(),
+                        sku: "WATER-001".to_string(),
+                        quantity: 5,
+                        enabled: true,
+                    },
+                    PhysicalStockAttestationSlotInput {
+                        slot_id: "550e8400-e29b-41d4-a716-4466554400a2".to_string(),
+                        slot_code: "A2".to_string(),
+                        sku: "TEA-001".to_string(),
+                        quantity: 0,
+                        enabled: true,
+                    },
+                    PhysicalStockAttestationSlotInput {
+                        slot_id: "550e8400-e29b-41d4-a716-4466554400a3".to_string(),
+                        slot_code: "A3".to_string(),
+                        sku: "JUICE-001".to_string(),
+                        quantity: 4,
+                        enabled: false,
+                    },
+                ],
+            })
+            .await
+            .expect("attestation");
+
+        assert_eq!(sale_view.items[0].physical_stock, 5);
+        assert_eq!(sale_view.items[0].saleable_stock, 5);
+        assert_eq!(sale_view.items[0].slot_sales_state, "sale_ready");
+        assert_eq!(sale_view.items[1].physical_stock, 0);
+        assert_eq!(sale_view.items[1].saleable_stock, 0);
+        assert_eq!(sale_view.items[1].slot_sales_state, "sold_out");
+        assert_eq!(sale_view.items[2].physical_stock, 4);
+        assert_eq!(sale_view.items[2].saleable_stock, 0);
+        assert_eq!(sale_view.items[2].slot_sales_state, "frozen");
+
+        let status = store
+            .physical_stock_attestation_status()
+            .await
+            .expect("attestation status");
+        assert_eq!(status.status, "ready");
+        assert_eq!(status.attestation_id.as_deref(), Some("ATT-001"));
+        assert_eq!(status.inconsistent_slots, Vec::<String>::new());
+    }
+
+    #[tokio::test]
+    async fn physical_stock_attestation_creates_uploadable_stock_count_corrections() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_single_slot_planogram(&store).await;
+
+        store
+            .record_physical_stock_attestation_with_upload(
+                PhysicalStockAttestationInput {
+                    attestation_id: "ATT-UPLOAD".to_string(),
+                    planogram_version: "PLAN-FAILURE".to_string(),
+                    operator_id: "operator-1".to_string(),
+                    slots: vec![PhysicalStockAttestationSlotInput {
+                        slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                        slot_code: "A1".to_string(),
+                        sku: "WATER-001".to_string(),
+                        quantity: 3,
+                        enabled: true,
+                    }],
+                },
+                Some("MACHINE-1"),
+                Some("https://platform.example/api"),
+            )
+            .await
+            .expect("attestation");
+
+        let movement_id = "ATT-UPLOAD:550e8400-e29b-41d4-a716-446655440001";
+        let sync = store
+            .stock_movement_sync_record(movement_id)
+            .await
+            .expect("sync")
+            .expect("sync exists");
+        assert_eq!(sync.status, "pending");
+        assert_eq!(
+            sync.outbox_event_id,
+            format!("stock-movement:{movement_id}")
+        );
+
+        let outbox = store
+            .outbox_record(&format!("stock-movement:{movement_id}"))
+            .await
+            .expect("outbox")
+            .expect("outbox exists");
+        assert_eq!(outbox.kind, OutboxKind::StockMovementUpload);
+        assert_eq!(outbox.payload_json["machineCode"], "MACHINE-1");
+        assert_eq!(
+            outbox.payload_json["movementType"],
+            "stock_count_correction"
+        );
+        assert_eq!(outbox.payload_json["source"], "physical_stock_attestation");
+        assert_eq!(outbox.payload_json["attributedTo"], "operator-1");
+        assert_eq!(outbox.payload_json["beforeQuantity"], 0);
+        assert_eq!(outbox.payload_json["afterQuantity"], 3);
+        assert_eq!(
+            outbox.payload_json["slotMappingSnapshot"]["inventoryId"],
+            "550e8400-e29b-41d4-a716-446655440002"
+        );
+    }
+
+    #[tokio::test]
+    async fn physical_stock_attestation_status_detects_projection_that_does_not_replay_from_facts()
+    {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_single_slot_planogram(&store).await;
+        store
+            .record_physical_stock_attestation(PhysicalStockAttestationInput {
+                attestation_id: "ATT-REPLAY".to_string(),
+                planogram_version: "PLAN-FAILURE".to_string(),
+                operator_id: "operator-1".to_string(),
+                slots: vec![PhysicalStockAttestationSlotInput {
+                    slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                    slot_code: "A1".to_string(),
+                    sku: "WATER-001".to_string(),
+                    quantity: 3,
+                    enabled: true,
+                }],
+            })
+            .await
+            .expect("attestation");
+
+        sqlx::query(
+            "UPDATE current_stock_projection
+             SET physical_stock = 2
+             WHERE planogram_version = 'PLAN-FAILURE'
+               AND slot_id = '550e8400-e29b-41d4-a716-446655440001'",
+        )
+        .execute(store.pool())
+        .await
+        .expect("corrupt projection");
+
+        let status = store
+            .physical_stock_attestation_status()
+            .await
+            .expect("attestation status");
+
+        assert_eq!(status.status, "inconsistent");
+        assert_eq!(status.inconsistent_slots, vec!["A1".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn physical_stock_attestation_becomes_stale_when_active_planogram_changes() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        seed_single_slot_planogram(&store).await;
+        store
+            .record_physical_stock_attestation(PhysicalStockAttestationInput {
+                attestation_id: "ATT-STALE".to_string(),
+                planogram_version: "PLAN-FAILURE".to_string(),
+                operator_id: "operator-1".to_string(),
+                slots: vec![PhysicalStockAttestationSlotInput {
+                    slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                    slot_code: "A1".to_string(),
+                    sku: "WATER-001".to_string(),
+                    quantity: 3,
+                    enabled: true,
+                }],
+            })
+            .await
+            .expect("attestation");
+
+        store
+            .apply_planogram(MachinePlanogramInput {
+                planogram_version: "PLAN-AFTER-ATTEST".to_string(),
+                source: "test".to_string(),
+                applied_by: None,
+                slots: vec![MachinePlanogramSlotInput {
+                    slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                    slot_code: "A1".to_string(),
+                    layer_no: 1,
+                    cell_no: 1,
+                    capacity: 8,
+                    par_level: 6,
+                    inventory_id: "550e8400-e29b-41d4-a716-446655440002".to_string(),
+                    variant_id: "550e8400-e29b-41d4-a716-446655440003".to_string(),
+                    product_id: "550e8400-e29b-41d4-a716-446655440004".to_string(),
+                    product_name: "water".to_string(),
+                    product_description: None,
+                    cover_image_url: None,
+                    try_on_silhouette_url: None,
+                    category_id: None,
+                    category_name: None,
+                    sku: "WATER-001".to_string(),
+                    size: Some("550ml".to_string()),
+                    color: None,
+                    price_cents: 200,
+                    product_sort_order: 1,
+                    target_gender: None,
+                }],
+            })
+            .await
+            .expect("new planogram");
+
+        let status = store
+            .physical_stock_attestation_status()
+            .await
+            .expect("attestation status");
+
+        assert_eq!(status.status, "stale");
+        assert_eq!(status.code, "PHYSICAL_STOCK_ATTESTATION_STALE");
     }
 
     #[tokio::test]
@@ -4817,6 +5749,7 @@ mod tests {
                     product_name: "water".to_string(),
                     product_description: None,
                     cover_image_url: None,
+                    try_on_silhouette_url: None,
                     category_id: None,
                     category_name: None,
                     sku: "WATER-001".to_string(),
@@ -4912,6 +5845,7 @@ mod tests {
                     product_name: "water".to_string(),
                     product_description: None,
                     cover_image_url: None,
+                    try_on_silhouette_url: None,
                     category_id: None,
                     category_name: None,
                     sku: "WATER-001".to_string(),

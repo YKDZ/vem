@@ -21,5 +21,11 @@ export default defineConfig({
         "typescript/no-unsafe-type-assertion": "off",
       },
     },
+    {
+      files: ["src/dev/**/*.ts"],
+      rules: {
+        "typescript/no-unsafe-type-assertion": "off",
+      },
+    },
   ],
 });

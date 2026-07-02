@@ -1,4 +1,5 @@
 import {
+  environmentControlResultPayloadSchema,
   machineCatalogItemSchema,
   machinePaymentOptionsResponseSchema,
   machineSaleViewSnapshotSchema,
@@ -10,6 +11,72 @@ const usbIdentitySchema = z.object({
   productId: z.string(),
   serialNumber: z.string().nullable().default(null),
 });
+
+const audioCueSettingsSchema = z.object({
+  enabled: z.boolean().default(false),
+  categories: z
+    .object({
+      presence: z.boolean().default(false),
+      transaction: z.boolean().default(false),
+    })
+    .default({
+      presence: false,
+      transaction: false,
+    }),
+});
+
+const configSummaryPublicSchema = z.preprocess(
+  (value) => {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+      return value;
+    }
+    const publicConfig: Record<string, unknown> = {
+      ...Object.fromEntries(Object.entries(value)),
+    };
+    if (
+      !("audioCueSettings" in publicConfig) &&
+      typeof publicConfig.presenceAudioEnabled === "boolean"
+    ) {
+      publicConfig.audioCueSettings = {
+        enabled: publicConfig.presenceAudioEnabled,
+        categories: {
+          presence: publicConfig.presenceAudioEnabled,
+          transaction: false,
+        },
+      };
+    }
+    delete publicConfig.presenceAudioEnabled;
+    return publicConfig;
+  },
+  z.object({
+    machineCode: z.string().nullable(),
+    machineLocationLabel: z.string().nullable().optional(),
+    apiBaseUrl: z.string(),
+    mqttUrl: z.string(),
+    mqttUsername: z.string().nullable(),
+    hardwareAdapter: z.enum(["mock", "serial"]),
+    serialPortPath: z.string().nullable(),
+    lowerControllerUsbIdentity: usbIdentitySchema.nullable().optional(),
+    scannerAdapter: z.enum(["disabled", "serial_text"]),
+    scannerSerialPortPath: z.string().nullable(),
+    scannerUsbIdentity: usbIdentitySchema.nullable().optional(),
+    scannerBaudRate: z.number().int(),
+    scannerFrameSuffix: z.enum(["crlf", "lf", "cr", "none"]),
+    visionEnabled: z.boolean(),
+    visionWsUrl: z.string(),
+    visionRequestTimeoutMs: z.number().int(),
+    tryOnCameraDeviceId: z.string().nullable().default(null),
+    audioCueSettings: audioCueSettingsSchema.default({
+      enabled: false,
+      categories: {
+        presence: false,
+        transaction: false,
+      },
+    }),
+    kioskMode: z.boolean(),
+    stockMovementRetentionDays: z.number().int().min(1).max(366).default(30),
+  }),
+);
 
 const lowerControllerCandidateSchema = z.object({
   portPath: z.string(),
@@ -76,25 +143,7 @@ export const readySnapshotSchema = z.object({
 });
 
 export const configSummarySchema = z.object({
-  public: z.object({
-    machineCode: z.string().nullable(),
-    apiBaseUrl: z.string(),
-    mqttUrl: z.string(),
-    mqttUsername: z.string().nullable(),
-    hardwareAdapter: z.enum(["mock", "serial"]),
-    serialPortPath: z.string().nullable(),
-    lowerControllerUsbIdentity: usbIdentitySchema.nullable().optional(),
-    scannerAdapter: z.enum(["disabled", "serial_text"]),
-    scannerSerialPortPath: z.string().nullable(),
-    scannerUsbIdentity: usbIdentitySchema.nullable().optional(),
-    scannerBaudRate: z.number().int(),
-    scannerFrameSuffix: z.enum(["crlf", "lf", "cr", "none"]),
-    visionEnabled: z.boolean(),
-    visionWsUrl: z.string(),
-    visionRequestTimeoutMs: z.number().int(),
-    kioskMode: z.boolean(),
-    stockMovementRetentionDays: z.number().int().min(1).max(366).default(30),
-  }),
+  public: configSummaryPublicSchema,
   machineSecretConfigured: z.boolean(),
   mqttSigningSecretConfigured: z.boolean(),
   mqttPasswordConfigured: z.boolean(),
@@ -187,6 +236,7 @@ export const visionStatusSchema = z.object({
   online: z.boolean(),
   message: z.string(),
   updatedAt: z.string().optional(),
+  latestDiagnosticPayload: z.unknown().nullable().optional(),
 });
 
 export const remoteOpsStatusSchema = z.object({
@@ -194,6 +244,79 @@ export const remoteOpsStatusSchema = z.object({
   pending: z.number().int().nonnegative(),
   lastError: z.string().nullable(),
   processing: z.string().nullable(),
+});
+
+const externalNaturalEnvironmentDiagnosticSchema = z.object({
+  reason: z.enum(["machine_geo_location_missing", "provider_unavailable"]),
+  message: z.string().min(1),
+});
+
+const externalNaturalEnvironmentWeatherSchema = z.object({
+  temperatureCelsius: z.number(),
+  conditionText: z.string().min(1),
+  observedAt: z.string(),
+});
+
+const externalNaturalEnvironmentLocalTimeSchema = z.object({
+  timezone: z.string().min(1),
+  localDate: z.string().min(1),
+  localClock: z.string().min(1),
+});
+
+const externalNaturalEnvironmentSunSchema = z.object({
+  sunriseAt: z.string(),
+  sunsetAt: z.string(),
+});
+
+export const externalNaturalEnvironmentProjectionSchema = z.discriminatedUnion(
+  "status",
+  [
+    z.object({
+      status: z.literal("ready"),
+      machineId: z.string().optional(),
+      machineCode: z.string().nullable().optional(),
+      checkedAt: z.string(),
+      localTime: externalNaturalEnvironmentLocalTimeSchema,
+      weather: externalNaturalEnvironmentWeatherSchema,
+      sun: externalNaturalEnvironmentSunSchema,
+    }),
+    z.object({
+      status: z.literal("stale"),
+      machineId: z.string().optional(),
+      machineCode: z.string().nullable().optional(),
+      checkedAt: z.string(),
+      localTime: externalNaturalEnvironmentLocalTimeSchema,
+      weather: externalNaturalEnvironmentWeatherSchema,
+      sun: externalNaturalEnvironmentSunSchema,
+      diagnostic: externalNaturalEnvironmentDiagnosticSchema,
+    }),
+    z.object({
+      status: z.literal("unavailable"),
+      machineId: z.string().optional(),
+      machineCode: z.string().nullable().optional(),
+      checkedAt: z.string(),
+      diagnostic: externalNaturalEnvironmentDiagnosticSchema,
+    }),
+    z.object({
+      status: z.literal("unconfigured"),
+      machineId: z.string().optional(),
+      machineCode: z.string().nullable().optional(),
+      checkedAt: z.string(),
+      diagnostic: externalNaturalEnvironmentDiagnosticSchema,
+    }),
+  ],
+);
+
+export const naturalContextSnapshotSchema = z.object({
+  status: z.enum(["ready", "stale", "unavailable", "unconfigured"]),
+  machineCode: z.string().nullable().optional(),
+  externalEnvironment: externalNaturalEnvironmentProjectionSchema,
+  localSiteSignals: z.object({
+    status: z.enum(["unavailable"]),
+  }),
+  degraded: z.boolean(),
+  customerFacingBlocked: z.boolean(),
+  checkedAt: z.string(),
 });
 
 export const hardwareSelfCheckSchema = z.object({
@@ -206,6 +329,9 @@ export const hardwareSelfCheckSchema = z.object({
   candidates: z.array(lowerControllerCandidateSchema).default([]),
   configUpdated: z.boolean().default(false),
 });
+
+export const environmentControlResultSchema =
+  environmentControlResultPayloadSchema;
 
 const saleReadinessComponentSchema = z.object({
   ready: z.boolean(),
@@ -234,6 +360,7 @@ export const machineSaleReadinessSchema = z.object({
     scannerCapability: saleReadinessComponentSchema,
     syncHealth: saleReadinessComponentSchema,
     wholeMachineBlockers: saleReadinessComponentSchema,
+    productionDispensePath: saleReadinessComponentSchema.optional(),
     slotSaleSafety: saleReadinessComponentSchema
       .extend({
         blockedSlots: z
@@ -306,6 +433,7 @@ export const daemonEventSchema = z.discriminatedUnion("type", [
     enabled: z.boolean(),
     online: z.boolean(),
     message: z.string(),
+    latestDiagnosticPayload: z.unknown().nullable().optional(),
   }),
   z.object({
     type: z.literal("remote_op_result"),
@@ -327,7 +455,13 @@ export type SyncStatus = z.infer<typeof syncStatusSchema>;
 export type ScannerStatus = z.infer<typeof scannerStatusSchema>;
 export type VisionStatus = z.infer<typeof visionStatusSchema>;
 export type RemoteOpsStatus = z.infer<typeof remoteOpsStatusSchema>;
+export type NaturalContextSnapshot = z.infer<
+  typeof naturalContextSnapshotSchema
+>;
 export type HardwareSelfCheck = z.infer<typeof hardwareSelfCheckSchema>;
+export type EnvironmentControlResult = z.infer<
+  typeof environmentControlResultSchema
+>;
 export type MachineSaleReadiness = z.infer<typeof machineSaleReadinessSchema>;
 export type CatalogSnapshot = z.infer<typeof catalogSnapshotSchema>;
 export type SaleViewSnapshot = z.infer<typeof machineSaleViewSnapshotSchema>;

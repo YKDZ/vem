@@ -7,28 +7,50 @@ import logoImage from "@/assets/home/logo.png";
 import mascotListImage from "@/assets/home/mascot-list.png";
 import mascotTopImage from "@/assets/home/mascot-top-cutout.png";
 import PaymentQrCode from "@/components/PaymentQrCode.vue";
-import { useKioskClock } from "@/composables/useKioskClock";
+import { useMaintenanceEntry } from "@/composables/useMaintenanceEntry";
+import { requestPaymentSuccessCue } from "@/composables/useTransactionFeedbackCues";
 import { shouldShowMockPaymentControls } from "@/config/runtime-flags";
 import { daemonClient } from "@/daemon/client";
 import KioskLayout from "@/layouts/KioskLayout.vue";
 import { resultKindFromNextAction, useCheckoutStore } from "@/stores/checkout";
+import { useScannerStore } from "@/stores/scanner";
 import { formatCents, formatCountdown } from "@/utils/format";
 
 const router = useRouter();
 const checkoutStore = useCheckoutStore();
-const { clockText, dateText } = useKioskClock();
+const scannerStore = useScannerStore();
+const { handleMaintenanceTap } = useMaintenanceEntry();
 
 let pollTimer: number | undefined;
 let clockTimer: number | undefined;
 
 const order = computed(() => checkoutStore.currentOrder);
 const status = computed(() => checkoutStore.status);
+const orderCredential = computed(
+  () =>
+    checkoutStore.currentOrder?.orderNo ??
+    checkoutStore.status?.orderNo ??
+    null,
+);
 const remainingText = computed(() =>
   formatCountdown(checkoutStore.remainingSeconds),
 );
 const expired = computed(() => checkoutStore.remainingSeconds <= 0);
 const isPaymentCode = computed(
   () => status.value?.payment.method === "payment_code",
+);
+const paymentCodeStatusTitle = computed(() => {
+  if (scannerStore.lastMaskedCode) return "已读取付款码";
+  return scannerStore.online ? "扫码器已就绪" : "扫码器暂不可用";
+});
+const paymentCodeStatusCopy = computed(() => {
+  if (scannerStore.lastMaskedCode) return "正在确认支付结果，请稍候。";
+  return scannerStore.online
+    ? "请打开支付宝或微信付款码，靠近设备扫码窗口。"
+    : "请稍后重试，或返回选择二维码支付。";
+});
+const canUseDevScan = computed(
+  () => import.meta.env.DEV && daemonClient.currentConnection?.mock === true,
 );
 
 const confirmingExpiredPayment = computed(
@@ -57,6 +79,51 @@ const qrOverlayText = computed(() =>
 const qrEmptyText = computed(() =>
   preparingQrCode.value ? "正在准备支付二维码，请稍候" : "暂无支付二维码",
 );
+const activePaymentCodeAttemptStatus = computed(
+  () => status.value?.paymentCodeAttempt?.status ?? null,
+);
+const paymentCodeCancelBlocked = computed(() =>
+  [
+    "submitting",
+    "user_confirming",
+    "querying",
+    "reversing",
+    "unknown",
+    "manual_handling",
+    "succeeded",
+  ].includes(activePaymentCodeAttemptStatus.value ?? ""),
+);
+const canCancelOrder = computed(() => {
+  if (!status.value) return false;
+  if (checkoutStore.loading) return false;
+  if (confirmingExpiredPayment.value) return false;
+  if (status.value.nextAction !== "wait_payment") return false;
+  if (status.value.orderStatus !== "pending_payment") return false;
+  if (
+    !["created", "pending", "processing"].includes(status.value.payment.status)
+  ) {
+    return false;
+  }
+  if (isPaymentCode.value && paymentCodeCancelBlocked.value) return false;
+  return true;
+});
+const cancelOrderDisabledReason = computed(() => {
+  if (checkoutStore.loading) return "正在同步订单状态";
+  if (confirmingExpiredPayment.value) return "支付结果确认中，暂不可取消";
+  if (isPaymentCode.value && paymentCodeCancelBlocked.value) {
+    return "付款码支付处理中，暂不可取消";
+  }
+  if (status.value?.nextAction !== "wait_payment") return "订单已进入下一阶段";
+  if (status.value?.orderStatus !== "pending_payment")
+    return "当前订单不可取消";
+  if (
+    status.value &&
+    !["created", "pending", "processing"].includes(status.value.payment.status)
+  ) {
+    return "当前支付状态不可取消";
+  }
+  return null;
+});
 
 const showMockControls = computed(
   () =>
@@ -70,6 +137,7 @@ const showMockControls = computed(
 async function routeByStatus(): Promise<void> {
   if (!status.value) return;
   if (status.value.nextAction === "dispensing") {
+    await requestPaymentSuccessCue(checkoutStore.transaction);
     await router.replace("/dispensing");
     return;
   }
@@ -95,9 +163,17 @@ async function simulateFail(): Promise<void> {
 }
 
 async function cancelOrder(): Promise<void> {
+  const catalogKey = checkoutStore.selectedItem?.catalogKey ?? null;
   try {
-    await checkoutStore.cancelCurrentOrder();
-    await router.replace("/catalog");
+    await checkoutStore.cancelCurrentOrder({ preserveSelectedItem: true });
+    if (catalogKey) {
+      await router.replace({
+        name: "product-detail",
+        params: { catalogKey },
+      });
+    } else {
+      await router.replace("/catalog");
+    }
   } catch {
     // checkoutStore.error already carries the operator-facing message.
   }
@@ -108,6 +184,9 @@ onMounted(async () => {
     return;
   }
   await refreshStatus();
+  if (isPaymentCode.value) {
+    await scannerStore.refresh();
+  }
   pollTimer = window.setInterval(() => {
     void refreshStatus();
   }, 2_000);
@@ -129,23 +208,22 @@ onUnmounted(() => {
       <div class="payment-mist payment-mist-right"></div>
 
       <header class="payment-header">
-        <div class="payment-header-left">
-          <button
-            class="payment-back-button kiosk-touch-target"
-            type="button"
-            aria-label="返回"
-            @click="cancelOrder"
-          >
-            <span aria-hidden="true">‹</span>
-          </button>
-          <div class="payment-brand">
-            <img :src="logoImage" alt="唐诗村" />
-            <img :src="mascotTopImage" alt="" aria-hidden="true" />
-          </div>
+        <div class="flex items-center gap-3" @click="handleMaintenanceTap">
+          <img
+            :src="logoImage"
+            alt="唐诗村"
+            class="h-9 w-auto object-contain"
+          />
+          <img
+            :src="mascotTopImage"
+            alt=""
+            class="h-14 w-14 object-contain"
+            aria-hidden="true"
+          />
         </div>
-        <div class="payment-time">
-          <p>{{ clockText }}</p>
-          <span>{{ dateText }}</span>
+        <div class="text-right text-[#6f835f]">
+          <p class="font-serif text-4xl leading-none font-bold">10:30</p>
+          <p class="mt-1 text-xs tracking-wide">2026/06/15　星期二</p>
         </div>
       </header>
 
@@ -160,7 +238,7 @@ onUnmounted(() => {
           {{ formatCents(order.totalAmountCents) }}
         </strong>
 
-        <div class="qr-shell">
+        <div class="qr-shell" :class="{ 'payment-code-shell': isPaymentCode }">
           <PaymentQrCode
             v-if="!isPaymentCode"
             :value="order.paymentUrl"
@@ -169,20 +247,48 @@ onUnmounted(() => {
             :empty-text="qrEmptyText"
           />
           <div v-else class="payment-code-panel">
-            <p>请出示付款码</p>
+            <span class="payment-code-icon" aria-hidden="true">
+              <svg viewBox="0 0 48 48">
+                <path
+                  d="M14 8h20a4 4 0 0 1 4 4v24a4 4 0 0 1-4 4H14a4 4 0 0 1-4-4V12a4 4 0 0 1 4-4Z"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2.8"
+                />
+                <path
+                  d="M17 16h6M17 23h14M17 30h8M31 31l3 3 6-7"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  stroke-width="2.8"
+                />
+              </svg>
+            </span>
+            <h2>{{ paymentCodeStatusTitle }}</h2>
+            <p>{{ paymentCodeStatusCopy }}</p>
+            <p v-if="checkoutStore.paymentCodeMessage">
+              {{ checkoutStore.paymentCodeMessage }}
+            </p>
+            <RouterLink v-if="canUseDevScan" to="/dev/payment-code-scan">
+              手动扫码测试
+            </RouterLink>
           </div>
         </div>
 
         <p class="qr-instruction">
           {{
             isPaymentCode
-              ? "请出示付款码完成支付"
+              ? "请将付款码靠近扫码窗口完成支付"
               : "请使用微信 / 支付宝扫码支付"
           }}
         </p>
 
         <p v-if="confirmingExpiredPayment" class="payment-hint">
           二维码已到期，系统正在向支付平台确认最终结果，请勿重复扫码或关闭页面。
+          <span v-if="orderCredential" class="payment-order-credential">
+            订单凭证 {{ orderCredential }}
+          </span>
         </p>
         <p v-else-if="preparingQrCode" class="payment-hint">
           支付平台正在同步订单，请等待二维码出现后再扫码。
@@ -253,6 +359,20 @@ onUnmounted(() => {
           </span>
           <p>支付成功</p>
         </div>
+      </section>
+
+      <section class="payment-cancel-section">
+        <button
+          class="payment-cancel-button kiosk-touch-target"
+          type="button"
+          :disabled="!canCancelOrder"
+          @click="cancelOrder"
+        >
+          取消订单
+        </button>
+        <p v-if="cancelOrderDisabledReason" class="payment-cancel-hint">
+          {{ cancelOrderDisabledReason }}
+        </p>
       </section>
 
       <footer class="payment-footer">
@@ -362,10 +482,10 @@ onUnmounted(() => {
   align-items: center;
   container-type: inline-size;
   overflow: hidden;
-  margin: -1.25rem -1.5rem;
-  padding: 1.35rem 1.8rem 1rem;
-  border: 1px solid rgba(89, 83, 66, 0.2);
-  border-radius: 20px;
+  margin: 0;
+  padding: var(--machine-page-header-top) var(--machine-page-inline) 1rem;
+  border: 0;
+  border-radius: 0;
   background:
     radial-gradient(
       circle at 0% 4%,
@@ -379,84 +499,17 @@ onUnmounted(() => {
     ),
     linear-gradient(180deg, #fffdf8 0%, #fbf7eb 62%, #f6f0df 100%);
   color: #5c554c;
-  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.78);
+  box-shadow: none;
 }
 
 .payment-header {
   position: relative;
   z-index: 5;
   display: flex;
-  width: min(100%, 34.6rem);
+  width: 100%;
   flex-shrink: 0;
   align-items: center;
   justify-content: space-between;
-}
-
-.payment-header-left,
-.payment-brand {
-  display: flex;
-  align-items: center;
-}
-
-.payment-header-left {
-  gap: 0.68rem;
-}
-
-.payment-brand {
-  gap: 0.75rem;
-}
-
-.payment-brand img:first-child {
-  height: 2.35rem;
-  width: auto;
-  object-fit: contain;
-}
-
-.payment-brand img:last-child {
-  width: 3.5rem;
-  height: 3.5rem;
-  object-fit: contain;
-}
-
-.payment-time {
-  color: #6f835f;
-  text-align: right;
-}
-
-.payment-time p {
-  font-family: Georgia, "Times New Roman", serif;
-  font-size: 2.35rem;
-  font-weight: 700;
-  line-height: 1;
-}
-
-.payment-time span {
-  display: block;
-  margin-top: 0.22rem;
-  font-size: 0.62rem;
-  letter-spacing: 0;
-}
-
-.payment-back-button {
-  display: grid;
-  width: 3rem;
-  height: 3rem;
-  min-width: 3rem;
-  min-height: 3rem;
-  flex: 0 0 auto;
-  place-items: center;
-  border: 1px solid rgba(198, 187, 154, 0.82);
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.58);
-  color: #879077;
-  box-shadow: 0 3px 10px rgba(94, 87, 69, 0.06);
-}
-
-.payment-back-button span {
-  margin-top: -0.08rem;
-  font-size: 2rem;
-  font-weight: 800;
-  line-height: 1;
 }
 
 .payment-title {
@@ -520,6 +573,11 @@ onUnmounted(() => {
   margin: 2rem auto 0;
 }
 
+.qr-shell.payment-code-shell {
+  width: min(100%, 26rem);
+  margin-top: 1.8rem;
+}
+
 .qr-shell :deep(> div) {
   border: 1px solid rgba(211, 203, 180, 0.82);
   border-radius: 18px;
@@ -535,6 +593,14 @@ onUnmounted(() => {
   max-height: 14.3rem;
 }
 
+.qr-shell.payment-code-shell :deep(> div) {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 0;
+  box-shadow: none;
+}
+
 .qr-instruction {
   margin-top: 0.9rem;
   color: #4f4a43;
@@ -542,7 +608,7 @@ onUnmounted(() => {
 }
 
 .payment-countdown-label {
-  margin-top: 1.35rem;
+  margin-top: 2.35rem;
 }
 
 .payment-countdown {
@@ -554,16 +620,9 @@ onUnmounted(() => {
 }
 
 .payment-expire-copy {
-  position: relative;
-  z-index: 2;
-  width: min(100%, 30rem);
-  margin-top: 0.85rem;
-  margin-right: auto;
-  margin-left: auto;
+  margin-top: 1.25rem;
   color: #827b70;
   font-size: 0.95rem;
-  line-height: 1.5;
-  text-align: center;
 }
 
 .payment-hint {
@@ -576,16 +635,51 @@ onUnmounted(() => {
   color: #6d665b;
 }
 
+.payment-order-credential {
+  display: block;
+  margin-top: 0.55rem;
+  color: #4f4a43;
+  font-weight: 800;
+}
+
 .payment-code-panel {
   display: grid;
-  min-height: 17rem;
-  place-items: center;
-  gap: 0.7rem;
+  min-height: 13.5rem;
+  justify-items: center;
+  align-content: center;
+  gap: 0.75rem;
   color: #6d665b;
 }
 
-.payment-code-panel strong {
-  font-size: 1.3rem;
+.payment-code-icon {
+  display: grid;
+  width: 5.4rem;
+  height: 5.4rem;
+  place-items: center;
+  border: 1px solid rgba(111, 131, 95, 0.25);
+  border-radius: 999px;
+  background: rgba(111, 131, 95, 0.08);
+  color: #6f835f;
+}
+
+.payment-code-icon svg {
+  width: 3.1rem;
+  height: 3.1rem;
+}
+
+.payment-code-panel h2 {
+  margin: 0;
+  color: #4f6248;
+  font-size: 1.35rem;
+  font-weight: 900;
+}
+
+.payment-code-panel p {
+  max-width: 19rem;
+  margin: 0;
+  color: #756e64;
+  font-size: 0.98rem;
+  line-height: 1.55;
 }
 
 .payment-code-panel a {
@@ -596,15 +690,15 @@ onUnmounted(() => {
 
 .payment-steps {
   position: relative;
-  z-index: 6;
+  z-index: 4;
   display: grid;
   width: min(100%, 34rem);
   grid-template-columns: 1fr 1fr 1fr 1fr 1fr;
   align-items: center;
-  margin: 2.75rem auto 0;
+  margin: 2.25rem auto 0;
   border: 1px solid rgba(211, 203, 180, 0.88);
   border-radius: 18px;
-  background: rgba(255, 253, 248, 0.88);
+  background: rgba(255, 253, 248, 0.68);
   padding: 0.95rem 3rem 0.85rem;
 }
 
@@ -645,12 +739,46 @@ onUnmounted(() => {
   border-top: 1px dashed #d8cfb9;
 }
 
+.payment-cancel-section {
+  position: relative;
+  z-index: 5;
+  display: grid;
+  width: min(100%, 34rem);
+  margin: 1.4rem auto 0;
+  gap: 0.55rem;
+}
+
+.payment-cancel-button {
+  width: 100%;
+  min-height: 58px;
+  border-radius: 8px;
+  background: linear-gradient(180deg, #758868, #627655);
+  color: #fffdf7;
+  font-family: SimSun, "Songti SC", "Noto Serif CJK SC", serif;
+  font-size: 1.2rem;
+  font-weight: 800;
+  box-shadow: 0 12px 24px rgba(82, 101, 65, 0.16);
+}
+
+.payment-cancel-button:disabled {
+  cursor: not-allowed;
+  background: rgba(170, 168, 155, 0.54);
+  color: rgba(255, 253, 248, 0.72);
+  box-shadow: none;
+}
+
+.payment-cancel-hint {
+  color: #8a8175;
+  font-size: 0.86rem;
+  text-align: center;
+}
+
 .payment-footer {
   position: relative;
   z-index: 5;
   display: grid;
   width: min(100%, 34rem);
-  margin: auto auto 2.9rem;
+  margin: 0.95rem auto 2.9rem;
   justify-items: center;
   padding: 0 8rem;
 }
@@ -664,10 +792,10 @@ onUnmounted(() => {
   position: absolute;
   bottom: 1.25rem;
   left: 0;
-  z-index: 1;
-  width: clamp(10rem, 20cqw, 13.2rem);
+  z-index: 2;
+  width: clamp(12rem, 24cqw, 15.5rem);
   height: auto;
-  max-height: 16rem;
+  max-height: 19rem;
   object-fit: contain;
   object-position: left bottom;
 }
@@ -739,30 +867,21 @@ onUnmounted(() => {
     align-items: center;
   }
 
-  .payment-brand img:first-child {
+  .payment-header img:first-child {
     height: 1.85rem;
   }
 
-  .payment-brand img:last-child {
+  .payment-header img:last-child {
     width: 2.6rem;
     height: 2.6rem;
   }
 
-  .payment-time p {
+  .payment-header p:first-child {
     font-size: 2rem;
   }
 
-  .payment-time span {
+  .payment-header p:last-child {
     font-size: 0.72rem;
-  }
-
-  .payment-back-button {
-    width: 3rem;
-    height: 3rem;
-  }
-
-  .payment-back-button span {
-    font-size: 1.75rem;
   }
 
   .payment-title {
@@ -802,7 +921,7 @@ onUnmounted(() => {
   }
 
   .payment-countdown-label {
-    margin-top: 1.05rem;
+    margin-top: 2.1rem;
   }
 
   .payment-countdown {
@@ -816,7 +935,7 @@ onUnmounted(() => {
 
   .payment-steps {
     width: min(100%, 33.2rem);
-    margin-top: 2.65rem;
+    margin-top: 2.2rem;
     border-radius: 16px;
     padding: 0.85rem 2.2rem 0.75rem;
   }
@@ -830,9 +949,19 @@ onUnmounted(() => {
     font-size: 0.78rem;
   }
 
+  .payment-cancel-section {
+    width: min(100%, 33.2rem);
+    margin-top: 1.1rem;
+  }
+
+  .payment-cancel-button {
+    min-height: 52px;
+    font-size: 1.02rem;
+  }
+
   .payment-footer {
     width: min(100%, 33.2rem);
-    margin-bottom: 2.6rem;
+    margin-bottom: 2.45rem;
     padding: 0 6rem;
   }
 
@@ -841,9 +970,8 @@ onUnmounted(() => {
   }
 
   .payment-mascot {
-    width: 8.8rem;
-    max-height: 11.5rem;
-    opacity: 0.9;
+    width: 12.3rem;
+    max-height: 15.5rem;
   }
 
   .payment-slogan {

@@ -43,6 +43,7 @@ const fallbackImage = computed(() => {
   if (category?.key === "tshirts") return iconTshirtImage;
   return iconSocksImage;
 });
+const hasProductImage = computed(() => Boolean(item.value?.coverImageUrl));
 const canSubmit = computed(
   () =>
     Boolean(item.value) &&
@@ -120,25 +121,27 @@ async function submitOrder(): Promise<void> {
   <KioskLayout>
     <section v-if="item" class="checkout-page">
       <header class="checkout-header">
-        <div class="checkout-header-left">
-          <button
-            class="checkout-back kiosk-touch-target"
-            type="button"
-            aria-label="返回"
-            @click="router.back()"
-          >
-            <span aria-hidden="true">‹</span>
-          </button>
-          <div class="checkout-brand">
-            <img :src="logoImage" alt="唐诗唐" />
-            <img :src="mascotTopImage" alt="" aria-hidden="true" />
-          </div>
+        <div class="checkout-brand">
+          <img :src="logoImage" alt="唐诗村" />
+          <img :src="mascotTopImage" alt="" aria-hidden="true" />
         </div>
         <div class="checkout-clock">
           <p>{{ clockText }}</p>
           <span>{{ dateText }}</span>
         </div>
       </header>
+
+      <div class="checkout-back-row">
+        <button
+          class="checkout-back kiosk-touch-target"
+          type="button"
+          aria-label="返回"
+          @click="router.back()"
+        >
+          <span aria-hidden="true">&lt;</span>
+          返回
+        </button>
+      </div>
 
       <div class="checkout-title-row">
         <div>
@@ -159,6 +162,7 @@ async function submitOrder(): Promise<void> {
               <img
                 :src="item.coverImageUrl ?? fallbackImage"
                 :alt="item.productName"
+                :class="{ 'product-image-fallback': !hasProductImage }"
               />
             </div>
             <div class="product-copy">
@@ -316,6 +320,8 @@ async function submitOrder(): Promise<void> {
 }
 
 :global(.kiosk-shell:has(.checkout-page) > .kiosk-scroll) {
+  width: 100%;
+  height: 100%;
   margin-top: 0;
   padding-bottom: 0;
 }
@@ -323,15 +329,16 @@ async function submitOrder(): Promise<void> {
 .checkout-page {
   position: relative;
   display: flex;
+  width: 100%;
   min-height: 0;
   flex: 1;
   flex-direction: column;
   align-items: center;
   overflow: hidden;
-  margin: -1.25rem -1.5rem;
-  padding: 1.35rem 1.8rem 0.9rem;
-  border: 1px solid rgba(89, 83, 66, 0.2);
-  border-radius: 20px;
+  margin: 0;
+  padding: var(--machine-page-header-top) var(--machine-page-inline) 1rem;
+  border: 0;
+  border-radius: 0;
   background:
     radial-gradient(
       circle at 5% 8%,
@@ -345,7 +352,7 @@ async function submitOrder(): Promise<void> {
     ),
     linear-gradient(180deg, #fffdf8 0%, #fbf7ef 58%, #f4eddd 100%);
   color: #5b554b;
-  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.78);
+  box-shadow: none;
 }
 
 .checkout-page::after {
@@ -361,6 +368,7 @@ async function submitOrder(): Promise<void> {
 }
 
 .checkout-header,
+.checkout-back-row,
 .checkout-title-row,
 .checkout-main,
 .checkout-tip,
@@ -368,7 +376,7 @@ async function submitOrder(): Promise<void> {
 .checkout-nav {
   position: relative;
   z-index: 2;
-  width: min(100%, 34.7rem);
+  width: 100%;
 }
 
 .checkout-header {
@@ -378,12 +386,6 @@ async function submitOrder(): Promise<void> {
   justify-content: space-between;
 }
 
-.checkout-header-left {
-  display: flex;
-  align-items: center;
-  gap: 0.68rem;
-}
-
 .checkout-brand {
   display: flex;
   align-items: center;
@@ -391,14 +393,14 @@ async function submitOrder(): Promise<void> {
 }
 
 .checkout-brand img:first-child {
-  height: 2.35rem;
+  height: clamp(36px, 5.9vw, 64px);
   width: auto;
   object-fit: contain;
 }
 
 .checkout-brand img:last-child {
-  width: 3.5rem;
-  height: 3.5rem;
+  width: clamp(56px, 8.1vw, 88px);
+  height: clamp(56px, 8.1vw, 88px);
   object-fit: contain;
 }
 
@@ -409,45 +411,60 @@ async function submitOrder(): Promise<void> {
 
 .checkout-clock p {
   font-family: Georgia, "Times New Roman", serif;
-  font-size: 2.35rem;
+  font-size: clamp(2.25rem, 5.19vw, 3.5rem);
   font-weight: 700;
   line-height: 1;
 }
 
 .checkout-clock span {
   display: block;
-  margin-top: 0.22rem;
-  font-size: 0.62rem;
+  margin-top: clamp(0.25rem, 0.46vh, 0.55rem);
+  font-size: clamp(0.75rem, 1.4vw, 0.95rem);
   letter-spacing: 0;
 }
 
 .checkout-back {
-  display: grid;
-  width: 3rem;
-  height: 3rem;
-  min-width: 3rem;
-  min-height: 3rem;
+  display: inline-flex;
+  width: fit-content;
+  min-height: 48px;
   flex: 0 0 auto;
-  place-items: center;
-  border: 1px solid rgba(198, 187, 154, 0.82);
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.58);
-  color: #879077;
-  box-shadow: 0 3px 10px rgba(94, 87, 69, 0.06);
+  align-items: center;
+  gap: 0.75rem;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: #6b6258;
+  font-family: SimSun, "Songti SC", "Noto Serif CJK SC", serif;
+  font-size: 1.35rem;
+  font-weight: 700;
+  box-shadow: none;
 }
 
 .checkout-back span {
-  margin-top: -0.08rem;
-  font-size: 2rem;
-  font-weight: 800;
+  display: grid;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border: 1px solid rgba(198, 187, 154, 0.76);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.72);
+  color: #6f835f;
+  font-size: 1.65rem;
+  font-weight: 900;
   line-height: 1;
+  box-shadow: 0 8px 18px rgba(102, 92, 64, 0.08);
+}
+
+.checkout-back-row {
+  margin-top: clamp(2rem, 4.3vh, 5.15rem);
 }
 
 .checkout-title-row {
   display: flex;
   align-items: flex-end;
   justify-content: space-between;
-  margin-top: 1.85rem;
+  gap: 1rem;
+  margin-top: clamp(1.6rem, 3.05vh, 3.65rem);
 }
 
 .checkout-title-row p,
@@ -462,7 +479,7 @@ async function submitOrder(): Promise<void> {
   margin-top: 0.65rem;
   color: #6f835f;
   font-family: SimSun, "Songti SC", "Noto Serif CJK SC", serif;
-  font-size: 2.35rem;
+  font-size: clamp(2.3rem, 5.6vw, 3.6rem);
   font-weight: 800;
   line-height: 1;
   letter-spacing: 0;
@@ -474,27 +491,28 @@ async function submitOrder(): Promise<void> {
 
 .checkout-amount strong {
   display: block;
-  margin-top: 0.7rem;
+  margin-top: 0.5rem;
   color: #6f835f;
   font-family: Georgia, "Times New Roman", serif;
-  font-size: 2.15rem;
+  font-size: clamp(2rem, 4.7vw, 3.05rem);
   line-height: 1;
 }
 
 .checkout-main {
   display: grid;
   min-height: 0;
-  grid-template-columns: 1fr 1fr;
-  gap: 0.7rem;
-  margin-top: 1.25rem;
+  flex: 0 0 auto;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: clamp(0.75rem, 2vw, 1.05rem);
+  margin-top: clamp(1.4rem, 2.2vh, 2.65rem);
 }
 
 .checkout-panel {
-  min-height: 15.6rem;
+  min-height: 0;
   border: 1px solid rgba(219, 211, 191, 0.88);
-  border-radius: 14px;
+  border-radius: 18px;
   background: rgba(255, 253, 248, 0.62);
-  padding: 1.25rem;
+  padding: clamp(1.1rem, 2.3vw, 1.5rem);
 }
 
 .checkout-panel h2 {
@@ -506,9 +524,9 @@ async function submitOrder(): Promise<void> {
 
 .product-summary {
   display: grid;
-  grid-template-columns: 7.4rem 1fr;
-  gap: 1.1rem;
-  margin-top: 1.45rem;
+  grid-template-columns: clamp(7rem, 20vw, 10rem) 1fr;
+  gap: clamp(0.9rem, 2.2vw, 1.3rem);
+  margin-top: clamp(1.35rem, 2.3vh, 2.4rem);
 }
 
 .product-image {
@@ -530,6 +548,11 @@ async function submitOrder(): Promise<void> {
   object-fit: cover;
 }
 
+.product-image img.product-image-fallback {
+  padding: 1rem;
+  object-fit: contain;
+}
+
 .product-copy {
   display: flex;
   min-width: 0;
@@ -539,22 +562,22 @@ async function submitOrder(): Promise<void> {
 
 .product-copy h3 {
   color: #5a554d;
-  font-size: 1.1rem;
+  font-size: clamp(1.2rem, 3vw, 1.7rem);
   font-weight: 900;
   line-height: 1.25;
 }
 
 .product-copy p {
-  margin-top: 0.55rem;
+  margin-top: 0.6rem;
   color: #8a8478;
-  font-size: 0.9rem;
+  font-size: clamp(0.9rem, 2.1vw, 1.1rem);
 }
 
 .product-copy strong {
   margin-top: auto;
   color: #738665;
   font-family: Georgia, "Times New Roman", serif;
-  font-size: 1.18rem;
+  font-size: clamp(1.25rem, 3.2vw, 1.75rem);
 }
 
 .payment-heading p {
@@ -565,21 +588,21 @@ async function submitOrder(): Promise<void> {
 
 .payment-list {
   display: grid;
-  gap: 0.45rem;
-  margin-top: 1.15rem;
+  gap: clamp(0.48rem, 1.05vh, 0.9rem);
+  margin-top: clamp(1rem, 1.65vh, 1.55rem);
 }
 
 .payment-option {
   position: relative;
   display: grid;
-  min-height: 3.52rem;
-  grid-template-columns: 2.35rem 1fr auto;
+  min-height: clamp(3.6rem, 5.25vh, 4.7rem);
+  grid-template-columns: clamp(2.4rem, 6.4vw, 3.35rem) 1fr auto;
   align-items: center;
-  gap: 0.8rem;
+  gap: clamp(0.7rem, 1.9vw, 1rem);
   border: 1px solid rgba(219, 211, 191, 0.78);
-  border-radius: 10px;
+  border-radius: 12px;
   background: rgba(255, 255, 255, 0.54);
-  padding: 0.55rem 0.75rem;
+  padding: clamp(0.5rem, 1.35vw, 0.75rem);
   color: #5a554d;
   text-align: left;
 }
@@ -596,13 +619,13 @@ async function submitOrder(): Promise<void> {
 
 .payment-option-icon {
   display: grid;
-  width: 2.35rem;
-  height: 2.35rem;
+  width: clamp(2.4rem, 6.4vw, 3.35rem);
+  height: clamp(2.4rem, 6.4vw, 3.35rem);
   place-items: center;
-  border-radius: 8px;
+  border-radius: 10px;
   background: #f5f6f1;
   color: #4a90e2;
-  font-size: 1.35rem;
+  font-size: clamp(1.3rem, 3.4vw, 1.7rem);
   font-weight: 900;
 }
 
@@ -617,8 +640,8 @@ async function submitOrder(): Promise<void> {
 }
 
 .payment-option-icon img {
-  width: 1.9rem;
-  height: 1.9rem;
+  width: 72%;
+  height: 72%;
   object-fit: contain;
 }
 
@@ -630,7 +653,7 @@ async function submitOrder(): Promise<void> {
 
 .payment-option-copy strong {
   overflow: hidden;
-  font-size: 0.98rem;
+  font-size: clamp(0.98rem, 2.45vw, 1.2rem);
   font-weight: 900;
   line-height: 1.2;
   text-overflow: ellipsis;
@@ -640,7 +663,7 @@ async function submitOrder(): Promise<void> {
 .payment-option-copy small {
   overflow: hidden;
   color: #9a9489;
-  font-size: 0.72rem;
+  font-size: clamp(0.68rem, 1.75vw, 0.82rem);
   line-height: 1.25;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -651,7 +674,7 @@ async function submitOrder(): Promise<void> {
   border-radius: 999px;
   padding: 0.12rem 0.36rem;
   color: #758568;
-  font-size: 0.66rem;
+  font-size: clamp(0.62rem, 1.55vw, 0.76rem);
   font-weight: 800;
 }
 
@@ -667,23 +690,23 @@ async function submitOrder(): Promise<void> {
 
 .checkout-tip {
   display: flex;
-  min-height: 7.2rem;
+  min-height: clamp(8.2rem, 12.7vh, 13rem);
   align-items: center;
   justify-content: space-between;
-  margin-top: 1rem;
+  margin-top: clamp(1.1rem, 2.15vh, 2.55rem);
   overflow: hidden;
   border: 1px solid rgba(219, 211, 191, 0.88);
-  border-radius: 14px;
+  border-radius: 18px;
   background:
     url("data:image/svg+xml,%3Csvg width='88' height='132' viewBox='0 0 88 132' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' stroke='%23768b68' stroke-width='1.25' stroke-linecap='round' opacity='.22'%3E%3Cpath d='M52 130C49 96 52 56 68 12'/%3E%3Cpath d='M38 126c3-31 1-65-10-98'/%3E%3Cpath d='M61 53c10-11 19-16 25-17-4 8-12 14-25 17Z'/%3E%3Cpath d='M56 82c11-9 20-12 27-12-5 7-13 11-27 12Z'/%3E%3Cpath d='M33 60C21 50 12 46 4 45c5 8 15 13 29 15Z'/%3E%3C/g%3E%3C/svg%3E")
       left center / auto 100% no-repeat,
     rgba(255, 253, 248, 0.68);
-  padding: 1.25rem 1.6rem;
+  padding: clamp(1.2rem, 2.8vw, 1.8rem);
 }
 
 .checkout-tip h2 {
   color: #6f835f;
-  font-size: 0.95rem;
+  font-size: clamp(1.05rem, 2.6vw, 1.35rem);
   font-weight: 900;
   letter-spacing: 0.08em;
 }
@@ -691,25 +714,26 @@ async function submitOrder(): Promise<void> {
 .checkout-tip p {
   margin-top: 0.75rem;
   color: #8a8478;
-  font-size: 0.83rem;
+  font-size: clamp(0.88rem, 2.15vw, 1.08rem);
   line-height: 1.55;
 }
 
 .checkout-tip img {
-  width: 7.3rem;
+  width: clamp(7.3rem, 21vw, 11rem);
   height: auto;
   align-self: flex-end;
   margin: -1rem -1rem -1.35rem 1rem;
+  transform: scaleX(-1);
 }
 
 .checkout-submit {
-  min-height: 4.2rem;
-  margin-top: 0.75rem;
+  min-height: clamp(4.6rem, 7vh, 6rem);
+  margin-top: clamp(1rem, 2vh, 2rem);
   flex-shrink: 0;
-  border-radius: 12px;
+  border-radius: 16px;
   background: linear-gradient(180deg, #819274, #687b5d);
   color: #fffdf7;
-  font-size: 1.1rem;
+  font-size: clamp(1.2rem, 3vw, 1.55rem);
   font-weight: 900;
   letter-spacing: 0.04em;
   box-shadow: 0 12px 20px rgba(96, 115, 84, 0.18);
@@ -724,9 +748,9 @@ async function submitOrder(): Promise<void> {
 .checkout-nav {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
-  gap: 1rem;
-  margin-top: 0.95rem;
-  padding: 0 2.8rem;
+  gap: clamp(0.75rem, 2vw, 1.2rem);
+  margin-top: clamp(1rem, 2vh, 2rem);
+  padding: 0 clamp(0.5rem, 4vw, 2.8rem);
 }
 
 .checkout-nav span {
@@ -738,8 +762,8 @@ async function submitOrder(): Promise<void> {
 
 .checkout-nav i {
   display: grid;
-  width: 2.1rem;
-  height: 2.1rem;
+  width: clamp(2.3rem, 6.5vw, 3.3rem);
+  height: clamp(2.3rem, 6.5vw, 3.3rem);
   place-items: center;
   border: 1px solid rgba(194, 190, 174, 0.8);
   border-radius: 999px;
@@ -751,13 +775,13 @@ async function submitOrder(): Promise<void> {
 
 .checkout-nav strong {
   margin-top: 0.35rem;
-  font-size: 0.76rem;
+  font-size: clamp(0.78rem, 2vw, 0.95rem);
   font-weight: 800;
 }
 
 .checkout-nav small {
   margin-top: 0.16rem;
-  font-size: 0.58rem;
+  font-size: clamp(0.58rem, 1.55vw, 0.72rem);
 }
 
 .checkout-empty-state {
@@ -797,99 +821,57 @@ async function submitOrder(): Promise<void> {
 
 @container (max-width: 720px) {
   .checkout-page {
-    padding: 1rem 0.75rem 0.75rem;
+    padding: var(--machine-page-header-top) var(--machine-page-inline) 0.75rem;
   }
 
   .checkout-header,
+  .checkout-back-row,
   .checkout-title-row,
   .checkout-main,
   .checkout-tip,
   .checkout-submit,
   .checkout-nav {
-    width: min(100%, 34.2rem);
-  }
-
-  .checkout-brand img:first-child {
-    height: 1.85rem;
-  }
-
-  .checkout-brand img:last-child {
-    width: 2.7rem;
-    height: 2.7rem;
-  }
-
-  .checkout-back {
-    width: 3rem;
-    height: 3rem;
-  }
-
-  .checkout-back span {
-    font-size: 1.75rem;
-  }
-
-  .checkout-clock p {
-    font-size: 2rem;
-  }
-
-  .checkout-clock span {
-    font-size: 0.56rem;
+    width: 100%;
   }
 
   .checkout-title-row {
-    margin-top: 1.2rem;
-  }
-
-  .checkout-title-row h1 {
-    font-size: 1.95rem;
-  }
-
-  .checkout-amount strong {
-    font-size: 1.8rem;
+    margin-top: 1.5rem;
   }
 
   .checkout-main {
-    gap: 0.55rem;
-    margin-top: 1rem;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 0.6rem;
+    margin-top: 1.1rem;
   }
 
   .checkout-panel {
-    min-height: 15rem;
     padding: 1rem;
   }
 
   .product-summary {
-    grid-template-columns: 6.6rem 1fr;
-    gap: 0.85rem;
+    grid-template-columns: 6.3rem 1fr;
+    gap: 0.8rem;
   }
 
   .payment-option {
-    min-height: 3.25rem;
-    grid-template-columns: 2rem 1fr auto;
-    gap: 0.62rem;
-    padding: 0.46rem 0.58rem;
+    min-height: 3.55rem;
+    grid-template-columns: 2.2rem 1fr auto;
+    gap: 0.55rem;
+    padding: 0.5rem;
   }
 
   .payment-option-icon {
-    width: 2rem;
-    height: 2rem;
-    font-size: 1.1rem;
-  }
-
-  .payment-option-copy strong {
-    font-size: 0.86rem;
-  }
-
-  .payment-option-copy small {
-    font-size: 0.65rem;
+    width: 2.2rem;
+    height: 2.2rem;
   }
 
   .checkout-tip {
-    min-height: 6.25rem;
+    min-height: 7.2rem;
     padding: 1rem 1.1rem;
   }
 
   .checkout-tip img {
-    width: 6.1rem;
+    width: 6.8rem;
   }
 
   .checkout-submit {

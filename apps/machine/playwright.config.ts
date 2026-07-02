@@ -14,10 +14,14 @@ function readEnv(name: string): string | undefined {
 }
 
 const isCi = Boolean(readEnv("CI"));
+const chromiumChannel = readEnv("PLAYWRIGHT_CHROMIUM_CHANNEL") ?? "chrome";
 
 const chromiumUse = {
   ...devices["Desktop Chrome"],
-  ...(isCi ? { channel: "chrome" as const } : {}),
+  channel: chromiumChannel,
+  viewport: { width: 1080, height: 1920 },
+  deviceScaleFactor: 1,
+  isMobile: false,
 };
 
 export default defineConfig({

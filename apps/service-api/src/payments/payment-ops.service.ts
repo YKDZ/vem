@@ -9,7 +9,9 @@ import { Inject, Injectable } from "@nestjs/common";
 import {
   and,
   count,
+  desc,
   eq,
+  machineHeartbeats,
   machines,
   paymentCodeAttempts,
   paymentEvents,
@@ -29,12 +31,86 @@ import { DRIZZLE_CLIENT } from "../database/database.constants";
 import { PaymentConfigSecretService } from "./payment-config-secret.service";
 import { PaymentProviderConfigService } from "./payment-provider-config.service";
 
+type LatestMachineHeartbeat = {
+  reportedAt: Date;
+  receivedAt: Date;
+  statusPayloadJson: unknown;
+} | null;
+
+type MachinePreflightRecord = {
+  id: string;
+  code: string;
+  status: "online" | "offline" | "maintenance" | "disabled";
+  lastSeenAt: Date | null;
+};
+
+function readHeartbeatStringField(
+  heartbeat: LatestMachineHeartbeat,
+  field: string,
+): string | null {
+  const payload = heartbeat?.statusPayloadJson;
+  if (typeof payload !== "object" || payload === null) {
+    return null;
+  }
+  const value: unknown = Reflect.get(payload, field);
+  return typeof value === "string" ? value : null;
+}
+
+function readHeartbeatRecordField(
+  heartbeat: LatestMachineHeartbeat,
+  field: string,
+): Record<string, unknown> | null {
+  const payload = heartbeat?.statusPayloadJson;
+  if (typeof payload !== "object" || payload === null) {
+    return null;
+  }
+  const value: unknown = Reflect.get(payload, field);
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return null;
+  }
+  return Object.fromEntries(Object.entries(value));
+}
+
+function readStringFromRecord(
+  record: Record<string, unknown> | null,
+  field: string,
+): string | null {
+  const value = record?.[field];
+  return typeof value === "string" ? value : null;
+}
+
+function readBooleanFromRecord(
+  record: Record<string, unknown> | null,
+  field: string,
+): boolean | null {
+  const value = record?.[field];
+  return typeof value === "boolean" ? value : null;
+}
+
+function isPaymentCodeScannerReady(heartbeat: LatestMachineHeartbeat): boolean {
+  const scannerHealth = readHeartbeatRecordField(heartbeat, "scannerHealth");
+  const status = readStringFromRecord(scannerHealth, "status");
+  const online = readBooleanFromRecord(scannerHealth, "online");
+  return status === "ready" || status === "online" || online === true;
+}
+
+function hasNonEmptyString(
+  source: Record<string, unknown>,
+  key: string,
+): boolean {
+  const value = source[key];
+  return typeof value === "string" && value.trim().length > 0;
+}
+
 @Injectable()
 export class PaymentOpsService {
   constructor(
     @Inject(DRIZZLE_CLIENT) private readonly db: DrizzleClient,
+    @Inject(AppConfigService)
     private readonly config: AppConfigService,
+    @Inject(PaymentConfigSecretService)
     private readonly paymentConfigSecrets: PaymentConfigSecretService,
+    @Inject(PaymentProviderConfigService)
     private readonly providerConfigs: PaymentProviderConfigService,
   ) {}
 
@@ -72,7 +148,9 @@ export class PaymentOpsService {
         failed: sql<number>`count(*) filter (where ${payments.status} = 'failed')`,
       })
       .from(payments)
-      .where(sql`${payments.createdAt} >= ${from}`);
+      .where(
+        and(sql`${payments.createdAt} >= ${from}`, eq(payments.isDrill, false)),
+      );
 
     const [webhookTotals] = await this.db
       .select({
@@ -85,9 +163,14 @@ export class PaymentOpsService {
     const [reconcileTotals] = await this.db
       .select({ total: count() })
       .from(paymentReconciliationAttempts)
+      .innerJoin(
+        payments,
+        eq(payments.id, paymentReconciliationAttempts.paymentId),
+      )
       .where(
         and(
           sql`${paymentReconciliationAttempts.createdAt} >= ${from}`,
+          eq(payments.isDrill, false),
           sql`${paymentReconciliationAttempts.status} in ('network_error', 'config_error', 'max_attempts_exceeded')`,
         ),
       );
@@ -98,7 +181,9 @@ export class PaymentOpsService {
         overdue: sql<number>`count(*) filter (where ${refunds.status} = 'processing' and ${refunds.updatedAt} < ${new Date(measuredAt.getTime() - 30 * 60_000)})`,
       })
       .from(refunds)
-      .where(sql`${refunds.createdAt} >= ${from}`);
+      .where(
+        and(sql`${refunds.createdAt} >= ${from}`, eq(refunds.isDrill, false)),
+      );
 
     const [paymentCodeTotals] = await this.db
       .select({
@@ -106,7 +191,13 @@ export class PaymentOpsService {
         reverseFailed: sql<number>`count(*) filter (where ${paymentCodeAttempts.status} = 'manual_handling' or ${paymentCodeAttempts.failureCode} like '%REVERSE%')`,
       })
       .from(paymentCodeAttempts)
-      .where(sql`${paymentCodeAttempts.createdAt} >= ${from}`);
+      .innerJoin(payments, eq(payments.id, paymentCodeAttempts.paymentId))
+      .where(
+        and(
+          sql`${paymentCodeAttempts.createdAt} >= ${from}`,
+          eq(payments.isDrill, false),
+        ),
+      );
 
     const [paymentCodeDuplicateRejected] = await this.db
       .select({ total: count() })
@@ -148,7 +239,12 @@ export class PaymentOpsService {
     machineId: string,
   ): Promise<PaymentMachinePreflight> {
     const [machine] = await this.db
-      .select({ id: machines.id, code: machines.code, status: machines.status })
+      .select({
+        id: machines.id,
+        code: machines.code,
+        status: machines.status,
+        lastSeenAt: machines.lastSeenAt,
+      })
       .from(machines)
       .where(eq(machines.id, machineId))
       .limit(1);
@@ -159,6 +255,8 @@ export class PaymentOpsService {
         machineCode: "",
         status: "blocked",
         availableProviders: [],
+        defaultOptionKey: null,
+        defaultProviderCode: null,
         checks: [
           {
             code: "machine_not_found",
@@ -176,6 +274,18 @@ export class PaymentOpsService {
       await this.providerConfigs.listMachinePaymentOptionsForMachine(
         machine.id,
       );
+    const latestHeartbeat = await this.getLatestMachineHeartbeat(machine.id);
+    const hasPaymentCodeOption = options.options.some(
+      (item) => item.method === "payment_code",
+    );
+    const scannerReady = isPaymentCodeScannerReady(latestHeartbeat);
+    const availableProviders =
+      hasPaymentCodeOption && !scannerReady
+        ? options.options
+            .filter((item) => item.method !== "payment_code")
+            .map((item, index) => ({ ...item, recommended: index === 0 }))
+        : options.options;
+    const defaultOption = availableProviders.find((item) => item.recommended);
 
     const checks: PaymentOpsCheck[] = [
       {
@@ -198,17 +308,12 @@ export class PaymentOpsService {
           providerCodes: options.options.map((item) => item.providerCode),
         },
       },
+      this.checkMachineHeartbeatFresh(machine, latestHeartbeat),
     ];
+    checks.push(this.checkProductionDispensePath(latestHeartbeat));
 
-    if (options.options.some((item) => item.method === "payment_code")) {
-      checks.push({
-        code: "payment_code.scanner_health_not_reported",
-        severity: "warning",
-        passed: false,
-        message:
-          "付款码支付已启用，但服务端尚未收到扫码模块健康证据；二维码支付不受影响",
-        evidence: { method: "payment_code", machineId },
-      });
+    if (hasPaymentCodeOption) {
+      checks.push(this.checkPaymentCodeScannerRuntime(latestHeartbeat));
     }
 
     const criticalFailed = checks.some(
@@ -219,9 +324,155 @@ export class PaymentOpsService {
       machineId: machine.id,
       machineCode: machine.code,
       status: criticalFailed ? "blocked" : "ready",
-      availableProviders: options.options,
+      availableProviders,
+      defaultOptionKey: defaultOption?.optionKey ?? null,
+      defaultProviderCode: defaultOption?.providerCode ?? null,
       checks,
       checkedAt: new Date().toISOString(),
+    };
+  }
+
+  private async getLatestMachineHeartbeat(
+    machineId: string,
+  ): Promise<LatestMachineHeartbeat> {
+    const [heartbeat] = await this.db
+      .select({
+        reportedAt: machineHeartbeats.reportedAt,
+        receivedAt: machineHeartbeats.createdAt,
+        statusPayloadJson: machineHeartbeats.statusPayloadJson,
+      })
+      .from(machineHeartbeats)
+      .where(eq(machineHeartbeats.machineId, machineId))
+      .orderBy(desc(machineHeartbeats.createdAt))
+      .limit(1);
+    return heartbeat ?? null;
+  }
+
+  private checkMachineHeartbeatFresh(
+    machine: MachinePreflightRecord,
+    heartbeat: LatestMachineHeartbeat,
+  ): PaymentOpsCheck {
+    const timeoutSeconds = this.config.machineHeartbeatTimeoutSeconds;
+    const lastSeenAt = machine.lastSeenAt;
+    const ageSeconds = lastSeenAt
+      ? Math.floor((Date.now() - lastSeenAt.getTime()) / 1_000)
+      : null;
+    const passed =
+      heartbeat !== null && ageSeconds !== null && ageSeconds <= timeoutSeconds;
+    const message = !heartbeat
+      ? "Machine heartbeat is missing"
+      : ageSeconds === null
+        ? "Machine heartbeat receive time is missing"
+        : passed
+          ? "Machine heartbeat is fresh"
+          : "Machine heartbeat timed out";
+
+    return {
+      code: "machine_heartbeat.fresh",
+      severity: "critical",
+      passed,
+      message,
+      evidence: {
+        lastSeenAt: lastSeenAt?.toISOString() ?? null,
+        reportedAt: heartbeat?.reportedAt?.toISOString() ?? null,
+        heartbeatReceivedAt: heartbeat?.receivedAt?.toISOString() ?? null,
+        timeoutSeconds,
+        ageSeconds,
+      },
+    };
+  }
+
+  private checkProductionDispensePath(
+    heartbeat: LatestMachineHeartbeat,
+  ): PaymentOpsCheck {
+    const isProduction = this.config.nodeEnv === "production";
+    const hardwareAdapter = readHeartbeatStringField(
+      heartbeat,
+      "hardwareAdapter",
+    );
+    const hardwarePortPath = readHeartbeatStringField(
+      heartbeat,
+      "hardwarePortPath",
+    );
+    const hardwareStatus = readHeartbeatStringField(
+      heartbeat,
+      "hardwareStatus",
+    );
+    const hardwareMessage = readHeartbeatStringField(
+      heartbeat,
+      "hardwareMessage",
+    );
+
+    let code = "production_dispense_path.ready";
+    let passed = true;
+    let message = "Production dispense path is ready";
+    if (isProduction && hardwareAdapter === "mock") {
+      code = "production_dispense_path.mock";
+      passed = false;
+      message = "生产出货路径不能使用 mock hardwareAdapter";
+    } else if (
+      isProduction &&
+      (!heartbeat || !hardwareAdapter || !hardwarePortPath)
+    ) {
+      code = "production_dispense_path.evidence_missing";
+      passed = false;
+      message = "生产出货路径缺少硬件心跳证据";
+    } else if (
+      isProduction &&
+      hardwarePortPath !== null &&
+      hardwarePortPath.trimStart().startsWith("tcp://")
+    ) {
+      code = "production_dispense_path.tcp_simulator";
+      passed = false;
+      message = "生产出货路径不能使用 tcp:// lower-controller simulator";
+    }
+
+    return {
+      code,
+      severity: isProduction ? "critical" : "warning",
+      passed,
+      message,
+      evidence: {
+        heartbeatReceivedAt: heartbeat?.receivedAt?.toISOString?.() ?? null,
+        reportedAt: heartbeat?.reportedAt?.toISOString?.() ?? null,
+        hardwareAdapter,
+        hardwarePortPath,
+        hardwareStatus,
+        hardwareMessage,
+      },
+    };
+  }
+
+  private checkPaymentCodeScannerRuntime(
+    heartbeat: LatestMachineHeartbeat,
+  ): PaymentOpsCheck {
+    const scannerHealth = readHeartbeatRecordField(heartbeat, "scannerHealth");
+    const status = readStringFromRecord(scannerHealth, "status");
+    const message = readStringFromRecord(scannerHealth, "message");
+    const online = readBooleanFromRecord(scannerHealth, "online");
+    const ready = isPaymentCodeScannerReady(heartbeat);
+    const reported = scannerHealth !== null;
+
+    if (ready) {
+      return {
+        code: "payment_code.scanner_runtime.ready",
+        severity: "info",
+        passed: true,
+        message: "付款码支付扫码模块健康证据已上报",
+        evidence: { status, online, message },
+      };
+    }
+
+    return {
+      code: reported
+        ? "payment_code.scanner_runtime.degraded"
+        : "payment_code.scanner_health_not_reported",
+      severity: "warning",
+      passed: false,
+      message: reported
+        ? "付款码支付已启用，但扫码模块未就绪；二维码支付不受影响"
+        : "付款码支付已启用，但服务端尚未收到扫码模块健康证据；二维码支付不受影响",
+      evidence: { status, online, message },
     };
   }
 
@@ -271,20 +522,49 @@ export class PaymentOpsService {
       if (row.configStatus !== "enabled") return false;
       if (!row.merchantNo || !row.appId) return false;
       if (!isEncryptedJson(row.configEncryptedJson)) return false;
+      let sensitiveConfig: Record<string, unknown>;
+      try {
+        sensitiveConfig = this.paymentConfigSecrets.decrypt(
+          row.configEncryptedJson,
+        );
+      } catch {
+        return false;
+      }
       const publicConfig =
         typeof row.publicConfigJson === "object" &&
         row.publicConfigJson !== null
           ? (row.publicConfigJson as Record<string, unknown>)
           : {};
       if (row.providerCode === "wechat_pay") {
-        return Boolean(
-          publicConfig["platformCertificateSerialNo"] &&
-          (publicConfig["merchantCertificateSerialNo"] ||
-            publicConfig["certificateSerialNo"]),
+        const hasMerchantSerial =
+          hasNonEmptyString(publicConfig, "merchantCertificateSerialNo") ||
+          hasNonEmptyString(publicConfig, "certificateSerialNo");
+        const hasPlatformKey =
+          hasNonEmptyString(sensitiveConfig, "platformCertificatePem") ||
+          hasNonEmptyString(sensitiveConfig, "platformPublicKeyPem");
+        const baseComplete =
+          hasMerchantSerial &&
+          hasNonEmptyString(publicConfig, "platformCertificateSerialNo") &&
+          hasNonEmptyString(sensitiveConfig, "apiV3Key") &&
+          hasNonEmptyString(sensitiveConfig, "privateKeyPem") &&
+          hasPlatformKey;
+        if (!baseComplete) return false;
+        if (publicConfig["paymentCodeEnabled"] !== true) return true;
+        return (
+          hasNonEmptyString(sensitiveConfig, "apiV2Key") &&
+          hasNonEmptyString(sensitiveConfig, "merchantApiCertPem") &&
+          hasNonEmptyString(sensitiveConfig, "merchantApiKeyPem")
         );
       }
       if (row.providerCode === "alipay") {
-        return typeof publicConfig["gatewayUrl"] === "string";
+        return (
+          hasNonEmptyString(publicConfig, "gatewayUrl") &&
+          hasNonEmptyString(publicConfig, "keyType") &&
+          hasNonEmptyString(sensitiveConfig, "privateKeyPem") &&
+          hasNonEmptyString(sensitiveConfig, "appCertPem") &&
+          hasNonEmptyString(sensitiveConfig, "alipayPublicCertPem") &&
+          hasNonEmptyString(sensitiveConfig, "alipayRootCertPem")
+        );
       }
       return false;
     });
@@ -481,7 +761,10 @@ export class PaymentOpsService {
       .select({ total: count() })
       .from(refunds)
       .where(
-        sql`${refunds.status} = 'failed' or (${refunds.status} = 'processing' and ${refunds.updatedAt} < ${overdueBefore})`,
+        and(
+          eq(refunds.isDrill, false),
+          sql`${refunds.status} = 'failed' or (${refunds.status} = 'processing' and ${refunds.updatedAt} < ${overdueBefore})`,
+        ),
       );
 
     const total = Number(row.total);

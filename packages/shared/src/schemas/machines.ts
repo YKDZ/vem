@@ -13,13 +13,104 @@ import {
 } from "./machine-slot-coordinate";
 import { machinePaymentOptionSchema } from "./orders";
 
-export const createMachineSchema = z.object({
+function isIanaTimeZone(value: string): boolean {
+  try {
+    Intl.DateTimeFormat("en-US", { timeZone: value });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export const machineGeoLocationSchema = z.strictObject({
+  latitude: z.number().min(-90).max(90),
+  longitude: z.number().min(-180).max(180),
+  timezone: z.string().refine(isIanaTimeZone, {
+    message: "Timezone must be a valid IANA time zone",
+  }),
+});
+
+export const externalNaturalEnvironmentStatusSchema = z.enum([
+  "ready",
+  "stale",
+  "unavailable",
+  "unconfigured",
+]);
+
+export const externalNaturalEnvironmentDiagnosticReasonSchema = z.enum([
+  "machine_geo_location_missing",
+  "provider_unavailable",
+]);
+
+const externalNaturalEnvironmentBaseSchema = z.strictObject({
+  machineId: z.uuid(),
+  machineCode: z.string().min(1).max(64),
+  checkedAt: z.iso.datetime(),
+});
+
+const externalNaturalEnvironmentDiagnosticSchema = z.strictObject({
+  reason: externalNaturalEnvironmentDiagnosticReasonSchema,
+  message: z.string().min(1),
+});
+
+const externalNaturalEnvironmentWeatherSchema = z.strictObject({
+  temperatureCelsius: z.number(),
+  conditionText: z.string().min(1),
+  observedAt: z.iso.datetime(),
+});
+
+const externalNaturalEnvironmentLocalTimeSchema = z.strictObject({
+  timezone: z.string().refine(isIanaTimeZone, {
+    message: "Timezone must be a valid IANA time zone",
+  }),
+  localDate: z.iso.date(),
+  localClock: z.iso.time(),
+});
+
+const externalNaturalEnvironmentSunSchema = z.strictObject({
+  sunriseAt: z.iso.datetime(),
+  sunsetAt: z.iso.datetime(),
+});
+
+export const externalNaturalEnvironmentSchema = z.discriminatedUnion("status", [
+  externalNaturalEnvironmentBaseSchema.extend({
+    status: z.literal("ready"),
+    localTime: externalNaturalEnvironmentLocalTimeSchema,
+    weather: externalNaturalEnvironmentWeatherSchema,
+    sun: externalNaturalEnvironmentSunSchema,
+  }),
+  externalNaturalEnvironmentBaseSchema.extend({
+    status: z.literal("stale"),
+    localTime: externalNaturalEnvironmentLocalTimeSchema,
+    weather: externalNaturalEnvironmentWeatherSchema,
+    sun: externalNaturalEnvironmentSunSchema,
+    diagnostic: externalNaturalEnvironmentDiagnosticSchema,
+  }),
+  externalNaturalEnvironmentBaseSchema.extend({
+    status: z.literal("unavailable"),
+    diagnostic: externalNaturalEnvironmentDiagnosticSchema,
+  }),
+  externalNaturalEnvironmentBaseSchema.extend({
+    status: z.literal("unconfigured"),
+    diagnostic: externalNaturalEnvironmentDiagnosticSchema,
+  }),
+]);
+
+const machineWriteShape = {
   code: z.string().min(1).max(64),
   name: z.string().min(1).max(128),
-  locationText: z.string().max(500).nullable().optional(),
-  status: machineStatusSchema.default("offline"),
+  locationLabel: z.string().max(500).nullable().optional(),
+  geoLocation: machineGeoLocationSchema.nullable().optional(),
+  status: machineStatusSchema,
   mqttClientId: z.string().max(128).nullable().optional(),
+};
+
+export const createMachineSchema = z.strictObject({
+  ...machineWriteShape,
+  status: machineStatusSchema.default("offline"),
 });
+
+export const updateMachineSchema = z.strictObject(machineWriteShape).partial();
 
 export const createMachineSlotSchema = z
   .object({
@@ -31,7 +122,6 @@ export const createMachineSlotSchema = z
   })
   .superRefine(addMachineSlotCoordinateIssue);
 
-export const updateMachineSchema = createMachineSchema.partial();
 export const updateMachineSlotSchema = z
   .object({
     layerNo: machineSlotLayerNoSchema,
@@ -60,6 +150,28 @@ export const machineHeartbeatStatusPayloadSchema = z
     mqttConnected: z.boolean().optional(),
     hardwareAdapter: z.string().optional(),
     hardwareStatus: z.enum(["ok", "degraded", "faulted"]).optional(),
+    hardwareMessage: z.string().optional(),
+    hardwarePortPath: z.string().nullable().optional(),
+    wholeMachineMaintenanceLock: z
+      .object({
+        code: z.string(),
+        message: z.string(),
+        source: z.string(),
+        orderNo: z.string().optional(),
+        commandNo: z.string().optional(),
+        slotCode: z.string().optional(),
+        errorCode: z.string().nullable().optional(),
+        createdAt: z.iso.datetime().optional(),
+      })
+      .nullable()
+      .optional(),
+    saleReadiness: z
+      .object({
+        state: z.enum(["locked", "blocked", "restored"]),
+        blockingCodes: z.array(z.string()).default([]),
+      })
+      .loose()
+      .optional(),
     doorOpen: z.boolean().optional(),
     localQueueSize: z.int().nonnegative().optional(),
     lastCommandNo: z.string().max(64).nullable().optional(),
@@ -93,6 +205,12 @@ export const machineEnvironmentControlRequestSchema = z
 
 export type MachineHeartbeatStatusPayload = z.infer<
   typeof machineHeartbeatStatusPayloadSchema
+>;
+export type ExternalNaturalEnvironmentStatus = z.infer<
+  typeof externalNaturalEnvironmentStatusSchema
+>;
+export type ExternalNaturalEnvironment = z.infer<
+  typeof externalNaturalEnvironmentSchema
 >;
 export type HeartbeatPayload = z.infer<typeof heartbeatPayloadSchema>;
 export type MachineEnvironmentControlRequest = z.infer<
@@ -160,6 +278,43 @@ export type MachineAuthTokenResponse = z.infer<
   typeof machineAuthTokenResponseSchema
 >;
 
+const managedMediaAssetContentPathPattern =
+  /^\/api\/media-assets\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\/content$/i;
+
+const managedMediaAssetAbsoluteUrlHostnames = new Set([
+  "118.25.104.160",
+  "localhost",
+  "127.0.0.1",
+  "service.test",
+]);
+
+function isManagedMediaAssetAbsoluteUrl(url: URL): boolean {
+  return (
+    (url.protocol === "http:" || url.protocol === "https:") &&
+    url.username === "" &&
+    url.password === "" &&
+    managedMediaAssetAbsoluteUrlHostnames.has(url.hostname) &&
+    managedMediaAssetContentPathPattern.test(url.pathname) &&
+    url.search === "" &&
+    url.hash === ""
+  );
+}
+
+const managedMediaAssetContentUrlSchema = z.string().refine(
+  (value) => {
+    if (managedMediaAssetContentPathPattern.test(value)) return true;
+    if (!/^https?:\/\//i.test(value)) return false;
+    try {
+      return isManagedMediaAssetAbsoluteUrl(new URL(value));
+    } catch {
+      return false;
+    }
+  },
+  {
+    message: "media URL must point to a managed media asset content endpoint",
+  },
+);
+
 const machineCatalogItemBaseSchema = z.object({
   machineCode: z.string().min(1).max(64),
   slotId: z.uuid(),
@@ -171,7 +326,8 @@ const machineCatalogItemBaseSchema = z.object({
   productId: z.uuid(),
   productName: z.string().min(1).max(128),
   productDescription: z.string().nullable(),
-  coverImageUrl: z.string().nullable(),
+  coverImageUrl: managedMediaAssetContentUrlSchema.nullable(),
+  tryOnSilhouetteUrl: managedMediaAssetContentUrlSchema.nullable().optional(),
   categoryId: z.uuid().nullable(),
   categoryName: z.string().nullable(),
   sku: z.string().min(1).max(64),
@@ -363,7 +519,7 @@ export const machineProvisioningProfileSchema = z.strictObject({
     code: z.string().min(1).max(64),
     name: z.string().min(1).max(128),
     status: machineStatusSchema,
-    locationText: z.string().nullable(),
+    locationLabel: z.string().nullable(),
   }),
   credentials: z.strictObject({
     machineSecret: z.string().min(32).max(256),

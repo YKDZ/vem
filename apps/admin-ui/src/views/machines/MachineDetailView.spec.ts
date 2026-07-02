@@ -17,6 +17,9 @@ const apiMocks = vi.hoisted(() => ({
   listInventories: vi.fn(),
   refillInventory: vi.fn(),
   adjustInventory: vi.fn(),
+  listStockReconciliationCases: vi.fn(),
+  getStockReconciliationCase: vi.fn(),
+  resolveStockReconciliationCase: vi.fn(),
   listMachineOps: vi.fn(),
   requestLogExport: vi.fn(),
 }));
@@ -46,6 +49,9 @@ vi.mock("@/api/inventory", () => ({
   listInventories: apiMocks.listInventories,
   refillInventory: apiMocks.refillInventory,
   adjustInventory: apiMocks.adjustInventory,
+  listStockReconciliationCases: apiMocks.listStockReconciliationCases,
+  getStockReconciliationCase: apiMocks.getStockReconciliationCase,
+  resolveStockReconciliationCase: apiMocks.resolveStockReconciliationCase,
 }));
 
 vi.mock("@/api/machine-ops", () => ({
@@ -171,6 +177,26 @@ const InputNumberStub = defineComponent({
   },
 });
 
+const InputStub = defineComponent({
+  props: {
+    value: { type: String, default: "" },
+    disabled: { type: Boolean, default: false },
+  },
+  emits: ["update:value"],
+  setup(props, { emit }) {
+    return () =>
+      h("input", {
+        value: props.value,
+        disabled: props.disabled,
+        onInput: (event: Event) => {
+          if (event.target instanceof HTMLInputElement) {
+            emit("update:value", event.target.value);
+          }
+        },
+      });
+  },
+});
+
 const ModalStub = defineComponent({
   props: {
     open: { type: Boolean, default: false },
@@ -218,11 +244,11 @@ function installStubs(app: ReturnType<typeof createApp>): void {
     "a-descriptions-item",
     "a-form",
     "a-form-item",
-    "a-input",
     "a-tag",
   ]) {
     app.component(name, PassthroughStub);
   }
+  app.component("a-input", InputStub);
   app.component("a-table", TableStub);
   app.component("a-button", ButtonStub);
   app.component("a-checkbox", CheckboxStub);
@@ -270,7 +296,12 @@ function machineFixture() {
     id: "11111111-1111-4111-8111-111111111111",
     code: "M001",
     name: "前厅机器",
-    locationText: "一层",
+    locationLabel: "一层",
+    geoLocation: {
+      latitude: 31.2304,
+      longitude: 121.4737,
+      timezone: "Asia/Shanghai",
+    },
     status: "online",
     mqttClientId: "mqtt-M001",
     lastSeenAt: "2026-06-04T05:00:00.000Z",
@@ -345,6 +376,14 @@ describe("MachineDetailView", () => {
       pageSize: 100,
     });
     apiMocks.listMachineOps.mockResolvedValue([]);
+    apiMocks.listStockReconciliationCases.mockResolvedValue({
+      items: [],
+      total: 0,
+      page: 1,
+      pageSize: 20,
+    });
+    apiMocks.getStockReconciliationCase.mockResolvedValue(null);
+    apiMocks.resolveStockReconciliationCase.mockResolvedValue({});
     apiMocks.commandEnvironment.mockResolvedValue({
       id: "cmd-2",
       commandNo: "MCMD2",
@@ -369,6 +408,9 @@ describe("MachineDetailView", () => {
       pageSize: 100,
     });
     expect(root.textContent).toContain("M001");
+    expect(root.textContent).toContain("Machine Geo Location");
+    expect(root.textContent).toContain("31.2304, 121.4737");
+    expect(root.textContent).toContain("Asia/Shanghai");
     expect(root.textContent).toContain("23 C");
     expect(root.textContent).toContain("空调关");
     expect(root.textContent).toContain("测试衬衫");
@@ -412,5 +454,399 @@ describe("MachineDetailView", () => {
       quantity: 6,
       note: undefined,
     });
+  });
+
+  it("renders faulted hardware status as an abnormal hardware tag", async () => {
+    apiMocks.getMachine.mockResolvedValue({
+      ...machineFixture(),
+      latestHeartbeatStatus: {
+        ...machineFixture().latestHeartbeatStatus,
+        hardwareStatus: "faulted",
+        wholeMachineMaintenanceLock: {
+          code: "WHOLE_MACHINE_HARDWARE_FAULT",
+          message: "pickup platform blocked",
+          source: "dispense_failure",
+          orderNo: "ORD-1",
+          commandNo: "CMD-1",
+          slotCode: "A1",
+          errorCode: "JAMMED",
+          createdAt: "2026-06-26T08:00:00.000Z",
+        },
+        saleReadiness: {
+          state: "locked",
+          blockingCodes: ["WHOLE_MACHINE_HARDWARE_FAULT"],
+        },
+      },
+    });
+
+    const { root } = await mountView();
+
+    expect(root.textContent).toContain("硬件异常");
+    expect(root.textContent).toContain("整机锁定");
+    expect(root.textContent).toContain("WHOLE_MACHINE_HARDWARE_FAULT");
+    expect(root.textContent).toContain("pickup platform blocked");
+    expect(root.textContent).not.toContain("硬件ok");
+  });
+
+  it("renders blocked sale readiness from heartbeat after lock has cleared", async () => {
+    apiMocks.getMachine.mockResolvedValue({
+      ...machineFixture(),
+      latestHeartbeatStatus: {
+        ...machineFixture().latestHeartbeatStatus,
+        hardwareStatus: "ok",
+        wholeMachineMaintenanceLock: null,
+        saleReadiness: {
+          state: "blocked",
+          blockingCodes: ["PRODUCTION_DISPENSE_PATH_MOCK"],
+        },
+      },
+    });
+
+    const { root } = await mountView();
+
+    expect(root.textContent).toContain("硬件正常");
+    expect(root.textContent).toContain("阻塞");
+    expect(root.textContent).toContain("PRODUCTION_DISPENSE_PATH_MOCK");
+    expect(root.textContent).not.toContain("已恢复");
+    expect(root.textContent).not.toContain("整机锁定");
+  });
+
+  it("renders a distinct ready Production Pilot Readiness summary for daily inspection", async () => {
+    apiMocks.getMachine.mockResolvedValue({
+      ...machineFixture(),
+      productionPilotReadiness: {
+        status: "ready",
+        checkedAt: "2026-06-27T02:00:00.000Z",
+        blockers: [],
+        degraded: [],
+        checks: [
+          {
+            code: "machine_heartbeat.online",
+            label: "Online / Last Heartbeat",
+            status: "ready",
+            message: "Machine heartbeat is fresh",
+            operatorAction: "Continue daily inspection.",
+          },
+          {
+            code: "machine_sale_readiness.restored",
+            label: "Machine Sale Readiness",
+            status: "ready",
+            message: "Machine Sale Readiness is restored",
+            operatorAction: "Continue daily inspection.",
+          },
+          {
+            code: "payment_readiness.ready",
+            label: "Payment Readiness",
+            status: "ready",
+            message: "Payment Readiness has at least one production provider",
+            operatorAction: "Continue daily inspection.",
+          },
+        ],
+      },
+    });
+
+    const { root } = await mountView();
+
+    expect(root.textContent).toContain("Production Pilot Readiness");
+    expect(root.textContent).toContain("生产试运营就绪");
+    expect(root.textContent).toContain("Online / Last Heartbeat");
+    expect(root.textContent).toContain("Machine Sale Readiness");
+    expect(root.textContent).toContain("Payment Readiness");
+    expect(root.textContent).toContain("Machine heartbeat is fresh");
+    expect(root.textContent).toContain("Continue daily inspection.");
+  });
+
+  it("renders Natural Context Readiness as degraded when External Natural Environment is unconfigured", async () => {
+    apiMocks.getMachine.mockResolvedValue({
+      ...machineFixture(),
+      geoLocation: null,
+      productionPilotReadiness: {
+        status: "degraded",
+        checkedAt: "2026-06-30T14:00:00.000Z",
+        blockers: [],
+        degraded: [
+          {
+            code: "natural_context_readiness.unconfigured",
+            label: "Natural Context Readiness",
+            status: "degraded",
+            message:
+              "Machine Geo Location is missing for External Natural Environment",
+            operatorAction:
+              "Configure Machine Geo Location or inspect External Natural Environment diagnostics; this does not block core sales readiness.",
+          },
+        ],
+        checks: [
+          {
+            code: "natural_context_readiness.unconfigured",
+            label: "Natural Context Readiness",
+            status: "degraded",
+            message:
+              "Machine Geo Location is missing for External Natural Environment",
+            operatorAction:
+              "Configure Machine Geo Location or inspect External Natural Environment diagnostics; this does not block core sales readiness.",
+          },
+        ],
+      },
+    });
+
+    const { root } = await mountView();
+
+    expect(root.textContent).toContain("Production Pilot Readiness");
+    expect(root.textContent).toContain("生产试运营降级");
+    expect(root.textContent).toContain("降级 1");
+    expect(root.textContent).toContain("Natural Context Readiness");
+    expect(root.textContent).toContain(
+      "natural_context_readiness.unconfigured",
+    );
+    expect(root.textContent).toContain(
+      "Machine Geo Location is missing for External Natural Environment",
+    );
+  });
+
+  it("shows stock reconciliation blockers and resolves them with a required note", async () => {
+    apiMocks.listStockReconciliationCases.mockResolvedValue({
+      items: [
+        {
+          id: "raw-1",
+          caseTable: "machine_raw_stock_movements",
+          rawMovementId: null,
+          machineId: "11111111-1111-4111-8111-111111111111",
+          machineCode: "M001",
+          movementId: "MOVE-1",
+          movementType: "stock_count_correction",
+          quantity: 4,
+          source: "local_maintenance",
+          attributedTo: "operator",
+          receivedAt: "2026-06-04T04:01:00.000Z",
+          reconciliationReason: "weak_attribution",
+          platformReviewStatus: "open",
+          slot: {
+            id: "22222222-2222-4222-8222-222222222222",
+            code: "A2",
+            status: "enabled",
+            saleEligibility: {
+              eligible: false,
+              slotSalesState: "needs_platform_review",
+              reason: "weak_attribution",
+            },
+          },
+          blocker: {
+            state: "needs_platform_review",
+            reason: "weak_attribution",
+            linkedCaseId: "raw-1",
+            linkedOrderId: "order-1",
+            linkedOrderNo: "ORD-1",
+            linkedCommandId: "command-1",
+            linkedCommandNo: "VCMD-1",
+          },
+          inventory: null,
+        },
+      ],
+      total: 1,
+      page: 1,
+      pageSize: 20,
+    });
+    apiMocks.getStockReconciliationCase.mockResolvedValue({
+      id: "raw-1",
+      caseTable: "machine_raw_stock_movements",
+      rawMovementId: null,
+      machineId: "11111111-1111-4111-8111-111111111111",
+      machineCode: "M001",
+      movementId: "MOVE-1",
+      movementType: "stock_count_correction",
+      quantity: 4,
+      source: "local_maintenance",
+      attributedTo: "operator",
+      receivedAt: "2026-06-04T04:01:00.000Z",
+      reconciliationReason: "weak_attribution",
+      platformReviewStatus: "open",
+      planogramVersion: "PLAN-1",
+      slot: {
+        id: "22222222-2222-4222-8222-222222222222",
+        code: "A2",
+        status: "enabled",
+        saleEligibility: {
+          eligible: false,
+          slotSalesState: "needs_platform_review",
+          reason: "weak_attribution",
+        },
+      },
+      inventory: null,
+      blocker: {
+        state: "needs_platform_review",
+        reason: "weak_attribution",
+        linkedCaseId: "raw-1",
+        linkedOrderId: "order-1",
+        linkedOrderNo: "ORD-1",
+        linkedCommandId: "command-1",
+        linkedCommandNo: "VCMD-1",
+      },
+      evidence: {
+        rawPayload: { movementId: "MOVE-1", afterQuantity: 4 },
+        normalizedPayload: { movementId: "MOVE-1" },
+        inventory: {
+          id: "inv-1",
+          productName: "测试衬衫",
+          sku: "SKU-A2",
+          onHandQty: 6,
+          reservedQty: 0,
+          saleableQty: 0,
+        },
+        linkedOrder: { id: "order-1", orderNo: "ORD-1" },
+        linkedCommand: { id: "command-1", commandNo: "VCMD-1" },
+      },
+    });
+
+    const { root } = await mountView();
+
+    expect(apiMocks.listStockReconciliationCases).toHaveBeenCalledWith({
+      machineId: "11111111-1111-4111-8111-111111111111",
+      page: 1,
+      pageSize: 20,
+    });
+    expect(root.textContent).toContain("库存异常复核");
+    expect(root.textContent).toContain("needs_platform_review");
+    expect(root.textContent).toContain("ORD-1");
+    expect(root.textContent).toContain("不可售");
+
+    Array.from(root.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("复核"))
+      ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await flushPromises();
+    await nextTick();
+    const noteInput = root.querySelector<HTMLInputElement>(
+      '[role="dialog"] input',
+    );
+    expect(noteInput).not.toBeNull();
+    noteInput!.value = "现场复核证据齐全，解除冻结";
+    noteInput!.dispatchEvent(new Event("input", { bubbles: true }));
+    const clearCheckbox = root.querySelector<HTMLInputElement>(
+      '[role="dialog"] input[type="checkbox"]',
+    );
+    expect(clearCheckbox).not.toBeNull();
+    clearCheckbox!.checked = true;
+    clearCheckbox!.dispatchEvent(new Event("change", { bubbles: true }));
+    Array.from(root.querySelectorAll('[role="dialog"] button'))
+      .find((button) => button.textContent?.includes("接受"))
+      ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await flushPromises();
+
+    expect(apiMocks.resolveStockReconciliationCase).toHaveBeenCalledWith(
+      "raw-1",
+      {
+        action: "accept_machine_stock",
+        note: "现场复核证据齐全，解除冻结",
+        clearBlocker: true,
+      },
+    );
+  });
+
+  it("keeps a stock reconciliation blocker unless the operator selects clear", async () => {
+    apiMocks.listStockReconciliationCases.mockResolvedValue({
+      items: [
+        {
+          id: "raw-1",
+          caseTable: "machine_raw_stock_movements",
+          rawMovementId: null,
+          machineId: "11111111-1111-4111-8111-111111111111",
+          machineCode: "M001",
+          movementId: "MOVE-1",
+          movementType: "stock_count_correction",
+          quantity: 4,
+          source: "local_maintenance",
+          attributedTo: "operator",
+          receivedAt: "2026-06-04T04:01:00.000Z",
+          reconciliationReason: "weak_attribution",
+          platformReviewStatus: "open",
+          slot: {
+            id: "22222222-2222-4222-8222-222222222222",
+            code: "A2",
+            status: "enabled",
+            saleEligibility: {
+              eligible: false,
+              slotSalesState: "needs_platform_review",
+              reason: "weak_attribution",
+            },
+          },
+          inventory: null,
+          blocker: {
+            state: "needs_platform_review",
+            reason: "weak_attribution",
+            linkedCaseId: "raw-1",
+            linkedOrderId: null,
+            linkedOrderNo: null,
+            linkedCommandId: null,
+            linkedCommandNo: null,
+          },
+        },
+      ],
+      total: 1,
+      page: 1,
+      pageSize: 20,
+    });
+    apiMocks.getStockReconciliationCase.mockResolvedValue({
+      id: "raw-1",
+      caseTable: "machine_raw_stock_movements",
+      rawMovementId: null,
+      machineId: "11111111-1111-4111-8111-111111111111",
+      machineCode: "M001",
+      movementId: "MOVE-1",
+      movementType: "stock_count_correction",
+      quantity: 4,
+      source: "local_maintenance",
+      attributedTo: "operator",
+      receivedAt: "2026-06-04T04:01:00.000Z",
+      reconciliationReason: "weak_attribution",
+      platformReviewStatus: "open",
+      planogramVersion: "PLAN-1",
+      slot: {
+        id: "22222222-2222-4222-8222-222222222222",
+        code: "A2",
+        status: "enabled",
+        saleEligibility: {
+          eligible: false,
+          slotSalesState: "needs_platform_review",
+          reason: "weak_attribution",
+        },
+      },
+      inventory: null,
+      blocker: {
+        state: "needs_platform_review",
+        reason: "weak_attribution",
+        linkedCaseId: "raw-1",
+        linkedOrderId: null,
+        linkedOrderNo: null,
+        linkedCommandId: null,
+        linkedCommandNo: null,
+      },
+      evidence: {
+        rawPayload: { movementId: "MOVE-1", afterQuantity: 4 },
+        normalizedPayload: { movementId: "MOVE-1" },
+        inventory: null,
+        linkedOrder: null,
+        linkedCommand: null,
+      },
+    });
+
+    const { root } = await mountView();
+    Array.from(root.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("复核"))
+      ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await flushPromises();
+    await nextTick();
+    const noteInput = root.querySelector<HTMLInputElement>(
+      '[role="dialog"] input',
+    );
+    noteInput!.value = "仅关闭 case，保留冻结";
+    noteInput!.dispatchEvent(new Event("input", { bubbles: true }));
+    Array.from(root.querySelectorAll('[role="dialog"] button'))
+      .find((button) => button.textContent?.includes("拒绝"))
+      ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await flushPromises();
+
+    expect(apiMocks.resolveStockReconciliationCase).toHaveBeenCalledWith(
+      "raw-1",
+      expect.objectContaining({ clearBlocker: false }),
+    );
   });
 });

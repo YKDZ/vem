@@ -5,6 +5,7 @@ pub struct VisionRuntimeSnapshot {
     pub enabled: bool,
     pub online: bool,
     pub message: String,
+    pub latest_diagnostic_payload: Option<serde_json::Value>,
 }
 
 impl VisionRuntimeSnapshot {
@@ -13,10 +14,22 @@ impl VisionRuntimeSnapshot {
             enabled: false,
             online: false,
             message: "disabled".to_string(),
+            latest_diagnostic_payload: Some(serde_json::json!({
+                "type": "vision.disabled",
+                "payload": {
+                    "message": "disabled"
+                }
+            })),
         }
     }
 
     pub fn from_ready(payload: vending_core::vision::VisionReadyPayload) -> Self {
+        let latest_diagnostic_payload = serde_json::to_value(&payload).ok().map(|payload| {
+            serde_json::json!({
+                "type": "vision.ready",
+                "payload": payload
+            })
+        });
         Self {
             enabled: true,
             online: true,
@@ -35,14 +48,22 @@ impl VisionRuntimeSnapshot {
             )
             .trim_end()
             .to_string(),
+            latest_diagnostic_payload,
         }
     }
 
     pub fn failed(message: impl Into<String>) -> Self {
+        let message = message.into();
         Self {
             enabled: true,
             online: false,
-            message: message.into(),
+            message: message.clone(),
+            latest_diagnostic_payload: Some(serde_json::json!({
+                "type": "vision.error",
+                "payload": {
+                    "message": message
+                }
+            })),
         }
     }
 }

@@ -40,7 +40,7 @@ import {
   type CreatedOrderPayload,
 } from "./flow-test-helpers";
 
-describe.sequential("core-flow.e2e", () => {
+describe("core-flow.e2e", { concurrent: false }, () => {
   let app: INestApplication;
   let appConfig: AppConfigService;
   let db: DrizzleDB;

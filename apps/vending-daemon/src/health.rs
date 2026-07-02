@@ -5,6 +5,7 @@ use tokio::sync::RwLock;
 use crate::state::{store::OUTBOX_MAX_EVENTS, LocalStateStore};
 
 pub const DISK_PRESSURE_MIN_AVAILABLE_BYTES: u64 = 128 * 1024 * 1024;
+pub const DISK_PRESSURE_MIN_AVAILABLE_BYTES_ENV: &str = "VEM_DISK_PRESSURE_MIN_AVAILABLE_BYTES";
 pub const DISK_PRESSURE_CODE: &str = "DISK_CAPACITY_PRESSURE";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,6 +35,14 @@ impl Default for DataDirDiskPressureProbe {
 
 impl DataDirDiskPressureProbe {
     pub fn new(threshold_bytes: u64) -> Self {
+        Self { threshold_bytes }
+    }
+
+    pub fn from_env() -> Self {
+        let threshold_bytes = std::env::var(DISK_PRESSURE_MIN_AVAILABLE_BYTES_ENV)
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(DISK_PRESSURE_MIN_AVAILABLE_BYTES);
         Self { threshold_bytes }
     }
 }

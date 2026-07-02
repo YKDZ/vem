@@ -21,7 +21,9 @@ import {
 export class MqttSignatureService {
   constructor(
     @Inject(DRIZZLE_CLIENT) private readonly db: DrizzleClient,
+    @Inject(AppConfigService)
     private readonly config: AppConfigService,
+    @Inject(MachineCredentialService)
     private readonly machineCredentialService: MachineCredentialService,
   ) {}
 

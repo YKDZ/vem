@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   configSummarySchema,
   daemonEventSchema,
+  naturalContextSnapshotSchema,
   scannerStatusSchema,
   transactionSnapshotSchema,
 } from "./schemas";
@@ -50,6 +51,34 @@ describe("daemon schemas", () => {
     expect(event.type).toBe("scanner_health_changed");
   });
 
+  it("parses daemon-owned Natural Context Projection", () => {
+    const parsed = naturalContextSnapshotSchema.parse({
+      status: "unconfigured",
+      machineCode: "MACHINE-NATURAL",
+      checkedAt: "2026-06-30T14:00:00.000Z",
+      degraded: true,
+      customerFacingBlocked: false,
+      externalEnvironment: {
+        status: "unconfigured",
+        machineId: "550e8400-e29b-41d4-a716-446655440000",
+        machineCode: "MACHINE-NATURAL",
+        checkedAt: "2026-06-30T14:00:00.000Z",
+        diagnostic: {
+          reason: "machine_geo_location_missing",
+          message: "Machine Geo Location is not configured",
+        },
+      },
+      localSiteSignals: {
+        status: "unavailable",
+      },
+    });
+
+    expect(parsed.status).toBe("unconfigured");
+    expect(parsed.degraded).toBe(true);
+    expect(parsed.customerFacingBlocked).toBe(false);
+    expect(parsed.externalEnvironment.status).toBe("unconfigured");
+  });
+
   it("parses daemon config summary with stock movement retention days", () => {
     const parsed = configSummarySchema.parse({
       public: {
@@ -67,6 +96,7 @@ describe("daemon schemas", () => {
         visionEnabled: true,
         visionWsUrl: "ws://127.0.0.1:7892/ws",
         visionRequestTimeoutMs: 8000,
+        tryOnCameraDeviceId: "try-on-camera-1",
         kioskMode: false,
         stockMovementRetentionDays: 90,
       },
@@ -76,6 +106,44 @@ describe("daemon schemas", () => {
     });
 
     expect(parsed.public.stockMovementRetentionDays).toBe(90);
+    expect(parsed.public.tryOnCameraDeviceId).toBe("try-on-camera-1");
+    expect(parsed.public).not.toHaveProperty("tryOnCameraLabel");
+  });
+
+  it("migrates legacy daemon presence audio config into audio cue settings", () => {
+    const parsed = configSummarySchema.parse({
+      public: {
+        machineCode: "MACHINE-1",
+        apiBaseUrl: "http://localhost:3000/api",
+        mqttUrl: "mqtt://localhost:1883",
+        mqttUsername: null,
+        hardwareAdapter: "mock",
+        serialPortPath: null,
+        lowerControllerUsbIdentity: null,
+        scannerAdapter: "disabled",
+        scannerSerialPortPath: null,
+        scannerBaudRate: 9600,
+        scannerFrameSuffix: "crlf",
+        visionEnabled: true,
+        visionWsUrl: "ws://127.0.0.1:7892/ws",
+        visionRequestTimeoutMs: 8000,
+        presenceAudioEnabled: true,
+        kioskMode: false,
+        stockMovementRetentionDays: 90,
+      },
+      machineSecretConfigured: false,
+      mqttSigningSecretConfigured: false,
+      mqttPasswordConfigured: false,
+    });
+
+    expect(parsed.public.audioCueSettings).toEqual({
+      enabled: true,
+      categories: {
+        presence: true,
+        transaction: false,
+      },
+    });
+    expect("presenceAudioEnabled" in parsed.public).toBe(false);
   });
 
   it("parses transaction attempt summary and restricted scanner adapter config", () => {

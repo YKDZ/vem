@@ -3,12 +3,9 @@ use std::{fmt, future::Future, io, sync::Arc, time::Duration};
 use tokio::{
     io::{split, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     sync::{mpsc, Mutex},
-    time::{interval, sleep, timeout, MissedTickBehavior},
+    time::{interval, sleep, MissedTickBehavior},
 };
-use vending_core::serial::{
-    build_multi_dispense_frame, crc16, crc8, validate_slot_bounds, EnvironmentSample, LowerFrame,
-    FRAME_HEAD, FRAME_MULTI_TAIL,
-};
+use vending_core::serial::{crc8, validate_slot_bounds, EnvironmentSample, LowerFrame, FRAME_HEAD};
 
 pub trait SimulatorIo: AsyncRead + AsyncWrite + Unpin + Send {}
 
@@ -178,11 +175,6 @@ enum UpperFrame {
         layer_no: u8,
         cell_no: u8,
         crc: u8,
-        raw: Vec<u8>,
-    },
-    MultiDispense {
-        data: Vec<u8>,
-        crc: u16,
         raw: Vec<u8>,
     },
 }
@@ -430,9 +422,6 @@ where
         } => {
             handle_single_dispense(layer_no, cell_no, crc, raw, writer, state, options).await?;
         }
-        UpperFrame::MultiDispense { data, crc, raw } => {
-            handle_multi_dispense(data, crc, raw, writer, state, options).await?;
-        }
     }
     Ok(())
 }
@@ -467,66 +456,6 @@ where
         return Ok(());
     }
     start_dispense(vec![(layer_no, cell_no)], writer, state, options).await
-}
-
-async fn handle_multi_dispense<W>(
-    data: Vec<u8>,
-    crc: u16,
-    raw: Vec<u8>,
-    writer: SharedWriter<W>,
-    state: SharedState,
-    options: SimulatorOptions,
-) -> Result<(), SimulatorError>
-where
-    W: AsyncWrite + Unpin + Send + 'static,
-{
-    if data.is_empty() || data.len() % 2 != 0 {
-        trace(
-            &options,
-            &format!("rx malformed multi dispense {raw:02X?} -> E2"),
-        );
-        send_frame(&writer, LowerFrame::CrcError).await?;
-        return Ok(());
-    }
-    let slots = data
-        .chunks_exact(2)
-        .map(|chunk| (chunk[0] as u32, chunk[1] as u32))
-        .collect::<Vec<_>>();
-    if slots
-        .iter()
-        .any(|(layer_no, cell_no)| validate_slot_bounds(*layer_no, *cell_no).is_err())
-    {
-        trace(
-            &options,
-            &format!("rx invalid multi dispense {raw:02X?} -> E1"),
-        );
-        send_frame(&writer, LowerFrame::BoundaryError).await?;
-        return Ok(());
-    }
-    let expected_crc = crc16(&data);
-    if crc != expected_crc {
-        trace(
-            &options,
-            &format!("rx bad crc multi dispense {raw:02X?} -> E2"),
-        );
-        send_frame(&writer, LowerFrame::CrcError).await?;
-        return Ok(());
-    }
-    let expected = build_multi_dispense_frame(&slots)
-        .expect("validated multi dispense slots should build expected frame");
-    if expected != raw {
-        trace(
-            &options,
-            &format!("rx malformed multi dispense {raw:02X?} -> E2"),
-        );
-        send_frame(&writer, LowerFrame::CrcError).await?;
-        return Ok(());
-    }
-    let display_slots = slots
-        .into_iter()
-        .map(|(layer_no, cell_no)| (layer_no as u8, cell_no as u8))
-        .collect();
-    start_dispense(display_slots, writer, state, options).await
 }
 
 async fn start_dispense<W>(
@@ -740,57 +669,19 @@ where
 async fn read_dispense_after_layer<R>(
     reader: &mut R,
     layer_no: u8,
-    command_frame_gap: Duration,
+    _command_frame_gap: Duration,
 ) -> io::Result<UpperFrame>
 where
     R: AsyncRead + Unpin,
 {
     let cell_no = reader.read_u8().await?;
-    let third = reader.read_u8().await?;
-    let fourth = match timeout(command_frame_gap, reader.read_u8()).await {
-        Ok(result) => result?,
-        Err(_) => {
-            return Ok(UpperFrame::SingleDispense {
-                layer_no,
-                cell_no,
-                crc: third,
-                raw: vec![FRAME_HEAD, layer_no, cell_no, third],
-            })
-        }
-    };
-
-    let mut data = vec![layer_no, cell_no];
-    let mut raw = vec![FRAME_HEAD, layer_no, cell_no, third, fourth];
-    if third == FRAME_MULTI_TAIL {
-        let crc = ((fourth as u16) << 8) | reader.read_u8().await? as u16;
-        raw.push((crc & 0x00FF) as u8);
-        return Ok(UpperFrame::MultiDispense { data, crc, raw });
-    }
-
-    data.push(third);
-    if fourth == FRAME_MULTI_TAIL {
-        let crc_hi = reader.read_u8().await?;
-        let crc_lo = reader.read_u8().await?;
-        raw.push(crc_hi);
-        raw.push(crc_lo);
-        let crc = ((crc_hi as u16) << 8) | crc_lo as u16;
-        return Ok(UpperFrame::MultiDispense { data, crc, raw });
-    }
-    data.push(fourth);
-
-    loop {
-        let byte = reader.read_u8().await?;
-        raw.push(byte);
-        if byte == FRAME_MULTI_TAIL {
-            let crc_hi = reader.read_u8().await?;
-            let crc_lo = reader.read_u8().await?;
-            raw.push(crc_hi);
-            raw.push(crc_lo);
-            let crc = ((crc_hi as u16) << 8) | crc_lo as u16;
-            return Ok(UpperFrame::MultiDispense { data, crc, raw });
-        }
-        data.push(byte);
-    }
+    let crc = reader.read_u8().await?;
+    Ok(UpperFrame::SingleDispense {
+        layer_no,
+        cell_no,
+        crc,
+        raw: vec![FRAME_HEAD, layer_no, cell_no, crc],
+    })
 }
 
 async fn send_repeated_frame<W>(
@@ -846,6 +737,7 @@ mod tests {
         io::{duplex, AsyncWriteExt},
         net::TcpListener,
         sync::watch,
+        time::timeout,
     };
     use vending_core::{
         hardware::{DispenseCommandPayload, HardwareAdapter, SlotPayload},

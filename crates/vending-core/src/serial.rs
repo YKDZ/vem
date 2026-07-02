@@ -21,15 +21,14 @@ use crate::hardware::{
 };
 
 pub const FRAME_HEAD: u8 = 0x55;
-pub const FRAME_MULTI_TAIL: u8 = 0x56;
 pub const DEBUG_DISPENSE_FAULT_FRAME: [u8; 4] = [FRAME_HEAD, 0xFF, 0xFF, 0xFF];
 const HANDSHAKE: [u8; 2] = build_status_query_frame();
 const SERIAL_BAUD_RATE: u32 = 115_200;
-const COMMAND_ACK_TIMEOUT: TokioDuration = TokioDuration::from_millis(100);
+const COMMAND_ACK_TIMEOUT: TokioDuration = TokioDuration::from_millis(200);
 const ENVIRONMENT_COMMAND_TIMEOUT: TokioDuration = TokioDuration::from_millis(200);
-const HANDSHAKE_TIMEOUT: TokioDuration = TokioDuration::from_millis(1_000);
-/// 连续多长时间未收到心跳后，主动发送握手探测帧（来自补充协议文档第5点）
-const HEARTBEAT_PROBE_INTERVAL: TokioDuration = TokioDuration::from_secs(1);
+const STATUS_QUERY_TIMEOUT: TokioDuration = TokioDuration::from_millis(200);
+/// 连续 2s 未收到下位机心跳后，再主动发送状态查询帧（来自通信文档第 6.5 节）。
+const HEARTBEAT_LISTEN_TIMEOUT: TokioDuration = TokioDuration::from_secs(2);
 const DISPENSE_COMPLETION_GRACE: TokioDuration = TokioDuration::from_secs(10);
 /// 收到 Busy 回复后，下次重发出货指令前需等待的最小间隔
 const BUSY_RETRY_DELAY: TokioDuration = TokioDuration::from_millis(100);
@@ -563,7 +562,12 @@ impl SerialHardwareAdapter {
         .await;
 
         match self
-            .read_lower_frame_logged(&mut port, ENVIRONMENT_COMMAND_TIMEOUT, base_entry)
+            .read_environment_command_response_logged(
+                &mut port,
+                ENVIRONMENT_COMMAND_TIMEOUT,
+                base_entry,
+                EnvironmentCommandResponseKind::Sample,
+            )
             .await?
         {
             LowerFrame::EnvironmentSample(sample) => Ok(Some(sample)),
@@ -604,7 +608,12 @@ impl SerialHardwareAdapter {
         .await;
 
         match self
-            .read_lower_frame_logged(&mut port, ENVIRONMENT_COMMAND_TIMEOUT, base_entry)
+            .read_environment_command_response_logged(
+                &mut port,
+                ENVIRONMENT_COMMAND_TIMEOUT,
+                base_entry,
+                EnvironmentCommandResponseKind::TargetTemperatureEcho,
+            )
             .await?
         {
             LowerFrame::TargetTemperatureEcho {
@@ -646,7 +655,12 @@ impl SerialHardwareAdapter {
         .await;
 
         match self
-            .read_lower_frame_logged(&mut port, ENVIRONMENT_COMMAND_TIMEOUT, base_entry)
+            .read_environment_command_response_logged(
+                &mut port,
+                ENVIRONMENT_COMMAND_TIMEOUT,
+                base_entry,
+                EnvironmentCommandResponseKind::AirConditionerSwitchEcho,
+            )
             .await?
         {
             LowerFrame::AirConditionerSwitchEcho { enabled: echoed } if echoed == enabled => Ok(()),
@@ -661,6 +675,33 @@ impl SerialHardwareAdapter {
         }
     }
 
+    async fn read_environment_command_response_logged<R>(
+        &self,
+        reader: &mut R,
+        read_timeout: Duration,
+        entry: SerialProtocolLogEntry,
+        expected: EnvironmentCommandResponseKind,
+    ) -> Result<LowerFrame, String>
+    where
+        R: AsyncRead + Unpin,
+    {
+        let deadline = Instant::now() + read_timeout;
+        loop {
+            let remaining = deadline
+                .checked_duration_since(Instant::now())
+                .ok_or_else(|| {
+                    format!("serial read timeout waiting for {}", expected.describe())
+                })?;
+            let frame = self
+                .read_lower_frame_logged(reader, remaining, entry.clone())
+                .await?;
+            if frame.is_heartbeat() {
+                continue;
+            }
+            return Ok(frame);
+        }
+    }
+
     async fn handshake(&self) -> Result<ResolvedSerialPort, SerialResolutionError> {
         let _serial_guard = SERIAL_OPERATION_LOCK.lock().await;
         let _guard = self.op_lock.lock().await;
@@ -672,19 +713,14 @@ impl SerialHardwareAdapter {
         command: &DispenseCommandPayload,
         progress: Option<DispenseProgressObserver>,
     ) -> Result<(), DispenseFailure> {
-        // 单商品用 4 字节 CRC-8 帧；多件同货道用多商品帧（CRC-16）
-        let frame: Vec<u8> = if command.quantity == 1 {
-            build_dispense_frame(command.slot.layer_no, command.slot.cell_no)
-                .map(|f| f.to_vec())
-                .map_err(DispenseFailure::unknown)?
-        } else {
-            let slots: Vec<(u32, u32)> = std::iter::repeat_n(
-                (command.slot.layer_no, command.slot.cell_no),
-                command.quantity as usize,
-            )
-            .collect();
-            build_multi_dispense_frame(&slots).map_err(DispenseFailure::unknown)?
-        };
+        if command.quantity != 1 {
+            return Err(DispenseFailure::unknown(
+                "lower controller protocol v1 supports only single-item dispense commands",
+            ));
+        }
+        let frame = build_dispense_frame(command.slot.layer_no, command.slot.cell_no)
+            .map(|frame| frame.to_vec())
+            .map_err(DispenseFailure::unknown)?;
         let command_deadline = Instant::now()
             + TokioDuration::from_secs(command.timeout_seconds.max(1))
             + DISPENSE_COMPLETION_GRACE;
@@ -715,8 +751,52 @@ impl SerialHardwareAdapter {
                     acknowledged = true;
                     break;
                 }
-                // 超时或 CRC 错误：立即重发
-                Err(AckWaitError::Timeout) | Err(AckWaitError::CrcRetry) => continue,
+                // ACK 可能丢失；先查状态，避免在下位机已开始出货时重发出货指令。
+                Err(AckWaitError::Timeout) => {
+                    match query_status_after_missing_ack(&mut port, self, &base_entry).await {
+                        Ok(frame) if frame.indicates_command_in_progress() => {
+                            self.log_message(
+                                base_entry.clone(),
+                                "event",
+                                Some("ack_recovered_by_status"),
+                                Some(format!(
+                                    "missing ack recovered by lower controller status: {}",
+                                    frame.describe()
+                                )),
+                            )
+                            .await;
+                            acknowledged = true;
+                            break;
+                        }
+                        Ok(frame) => {
+                            self.log_message(
+                            base_entry.clone(),
+                            "event",
+                            Some("ack_timeout_status_retry"),
+                            Some(format!(
+                                "lower controller did not acknowledge command; status query returned {}",
+                                frame.describe()
+                            )),
+                        )
+                        .await;
+                            continue;
+                        }
+                        Err(error) => {
+                            self.log_message(
+                            base_entry.clone(),
+                            "event",
+                            Some("ack_timeout_status_retry"),
+                            Some(format!(
+                                "lower controller did not acknowledge command; status query failed: {error}"
+                            )),
+                        )
+                        .await;
+                            continue;
+                        }
+                    }
+                }
+                // CRC 错误：通讯噪声导致，可立即重发
+                Err(AckWaitError::CrcRetry) => continue,
                 // 下位机繁忙：等待 100ms 后重发
                 Err(AckWaitError::BusyRetry) => {
                     sleep(BUSY_RETRY_DELAY).await;
@@ -727,27 +807,52 @@ impl SerialHardwareAdapter {
         }
 
         if !acknowledged {
-            let _ = port.write_all(&HANDSHAKE).await;
-            let _ = port.flush().await;
-            self.log_frame(
-                base_entry.clone(),
-                "tx",
-                &HANDSHAKE,
-                Some("status query after missing ack"),
-            )
-            .await;
-            self.log_message(
-                base_entry.clone(),
-                "error",
-                Some("ack_timeout"),
-                Some(format!(
-                    "lower controller did not acknowledge command after {COMMAND_ATTEMPTS} attempts"
-                )),
-            )
-            .await;
-            return Err(DispenseFailure::timeout(format!(
-                "lower controller did not acknowledge command after {COMMAND_ATTEMPTS} attempts"
-            )));
+            match query_status_after_missing_ack(&mut port, self, &base_entry).await {
+                Ok(frame) if frame.indicates_command_in_progress() => {
+                    self.log_message(
+                        base_entry.clone(),
+                        "event",
+                        Some("ack_recovered_by_status"),
+                        Some(format!(
+                            "missing ack recovered by lower controller status: {}",
+                            frame.describe()
+                        )),
+                    )
+                    .await;
+                }
+                Ok(frame) => {
+                    self.log_message(
+                        base_entry.clone(),
+                        "error",
+                        Some("ack_timeout"),
+                        Some(format!(
+                            "lower controller did not acknowledge command after {COMMAND_ATTEMPTS} attempts; status query returned {}",
+                            frame.describe()
+                        )),
+                    )
+                    .await;
+                    return Err(frame.to_failure().unwrap_or_else(|| {
+                        DispenseFailure::timeout(format!(
+                            "lower controller did not acknowledge command after {COMMAND_ATTEMPTS} attempts; status query returned {}",
+                            frame.describe()
+                        ))
+                    }));
+                }
+                Err(error) => {
+                    self.log_message(
+                        base_entry.clone(),
+                        "error",
+                        Some("ack_timeout"),
+                        Some(format!(
+                            "lower controller did not acknowledge command after {COMMAND_ATTEMPTS} attempts; status query failed: {error}"
+                        )),
+                    )
+                    .await;
+                    return Err(DispenseFailure::timeout(format!(
+                        "lower controller did not acknowledge command after {COMMAND_ATTEMPTS} attempts; status query failed: {error}"
+                    )));
+                }
+            }
         }
 
         if self
@@ -931,6 +1036,23 @@ enum AckWaitError {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EnvironmentCommandResponseKind {
+    Sample,
+    TargetTemperatureEcho,
+    AirConditionerSwitchEcho,
+}
+
+impl EnvironmentCommandResponseKind {
+    fn describe(self) -> &'static str {
+        match self {
+            Self::Sample => "environment sample",
+            Self::TargetTemperatureEcho => "target temperature echo",
+            Self::AirConditionerSwitchEcho => "air conditioner switch echo",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EnvironmentSample {
     pub temperature_celsius: i8,
     pub relative_humidity_percent: u8,
@@ -1002,6 +1124,13 @@ impl LowerFrame {
 
     pub fn is_lower_controller_status(self) -> bool {
         self.is_heartbeat() || matches!(self, Self::MechanicalError | Self::PickupPlatformBlocked)
+    }
+
+    pub fn indicates_command_in_progress(self) -> bool {
+        matches!(
+            self,
+            Self::DispensingHeartbeat | Self::PickupHeartbeat | Self::ResetHeartbeat
+        )
     }
 
     pub fn describe(self) -> &'static str {
@@ -1102,23 +1231,6 @@ pub fn crc8(data: &[u8]) -> u8 {
     crc
 }
 
-/// CRC-16/CCITT（poly=0x1021, init=0x0000, 无反射）
-/// 用于多商品帧校验，具体算法待与硬件方联调时确认。
-pub fn crc16(data: &[u8]) -> u16 {
-    let mut crc = 0x0000u16;
-    for byte in data {
-        crc ^= (*byte as u16) << 8;
-        for _ in 0..8 {
-            if crc & 0x8000 != 0 {
-                crc = (crc << 1) ^ 0x1021;
-            } else {
-                crc <<= 1;
-            }
-        }
-    }
-    crc
-}
-
 #[derive(Clone, Copy)]
 struct SlotLayerBand {
     max_layer_no: u32,
@@ -1195,46 +1307,42 @@ pub fn build_dispense_frame(layer_no: u32, cell_no: u32) -> Result<[u8; 4], Stri
     Ok([FRAME_HEAD, layer, cell, crc])
 }
 
-/// 构造多商品出货帧：[0x55, row1, cell1, row2, cell2, ..., 0x56, crc_hi, crc_lo]
-/// 同一货道多件时，重复传入相同的 (layer_no, cell_no)。
-/// CRC-16 仅覆盖数据段（行列字节），不含帧头/帧尾。
-pub fn build_multi_dispense_frame(slots: &[(u32, u32)]) -> Result<Vec<u8>, String> {
-    if slots.is_empty() {
-        return Err("at least one slot is required".to_string());
-    }
-    let mut data: Vec<u8> = Vec::with_capacity(slots.len() * 2);
-    for &(layer_no, cell_no) in slots {
-        let layer = u8::try_from(layer_no)
-            .map_err(|_| format!("layerNo {layer_no} exceeds uint8 protocol range"))?;
-        let cell = u8::try_from(cell_no)
-            .map_err(|_| format!("cellNo {cell_no} exceeds uint8 protocol range"))?;
-        validate_slot_bounds(layer_no, cell_no)?;
-        data.push(layer);
-        data.push(cell);
-    }
-    let crc = crc16(&data);
-    let mut frame = Vec::with_capacity(1 + data.len() + 3);
-    frame.push(FRAME_HEAD);
-    frame.extend_from_slice(&data);
-    frame.push(FRAME_MULTI_TAIL);
-    frame.push((crc >> 8) as u8);
-    frame.push(crc as u8);
-    Ok(frame)
-}
-
 async fn probe_lower_controller_stream<S>(port: &mut S) -> Result<LowerFrame, String>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    port.write_all(&HANDSHAKE)
-        .await
-        .map_err(|error| format!("serial handshake write failed: {error}"))?;
-    port.flush()
-        .await
-        .map_err(|error| format!("serial handshake flush failed: {error}"))?;
+    match read_lower_controller_status(port, HEARTBEAT_LISTEN_TIMEOUT).await {
+        Ok(frame) => Ok(frame),
+        Err(listen_error) => {
+            let mut last_error = listen_error;
+            for _ in 0..COMMAND_ATTEMPTS {
+                port.write_all(&HANDSHAKE)
+                    .await
+                    .map_err(|error| format!("serial status query write failed: {error}"))?;
+                port.flush()
+                    .await
+                    .map_err(|error| format!("serial status query flush failed: {error}"))?;
+                match read_lower_controller_status(port, STATUS_QUERY_TIMEOUT).await {
+                    Ok(frame) => return Ok(frame),
+                    Err(error) => last_error = error,
+                }
+            }
+            Err(format!(
+                "no heartbeat within 2s and status query failed after {COMMAND_ATTEMPTS} attempts: {last_error}"
+            ))
+        }
+    }
+}
 
+async fn read_lower_controller_status<S>(
+    port: &mut S,
+    read_timeout: Duration,
+) -> Result<LowerFrame, String>
+where
+    S: AsyncRead + Unpin,
+{
     loop {
-        let frame = read_lower_frame(port, HANDSHAKE_TIMEOUT).await?;
+        let frame = read_lower_frame(port, read_timeout).await?;
         if frame.is_lower_controller_status() {
             return Ok(frame);
         }
@@ -1471,8 +1579,51 @@ where
     }
 }
 
-/// 当心跳中断（1s 内无有效帧）时，主动向下位机发送握手探测。
-/// 收到任意心跳帧视为探测成功；100ms 无回应返回 Err。
+async fn query_status_after_missing_ack<S>(
+    port: &mut S,
+    adapter: &SerialHardwareAdapter,
+    base_entry: &SerialProtocolLogEntry,
+) -> Result<LowerFrame, String>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let mut last_error = "status query not attempted".to_string();
+    for attempt in 1..=COMMAND_ATTEMPTS {
+        port.write_all(&HANDSHAKE)
+            .await
+            .map_err(|error| format!("serial status query write failed: {error}"))?;
+        port.flush()
+            .await
+            .map_err(|error| format!("serial status query flush failed: {error}"))?;
+        let mut tx_entry = base_entry.clone();
+        tx_entry.operation = "dispense_ack_recovery".to_string();
+        tx_entry.attempt = Some(attempt);
+        adapter
+            .log_frame(
+                tx_entry,
+                "tx",
+                &HANDSHAKE,
+                Some("status query after missing ack"),
+            )
+            .await;
+
+        let mut rx_entry = base_entry.clone();
+        rx_entry.operation = "dispense_ack_recovery".to_string();
+        rx_entry.attempt = Some(attempt);
+        match adapter
+            .read_lower_frame_logged(port, STATUS_QUERY_TIMEOUT, rx_entry)
+            .await
+        {
+            Ok(frame) if frame.is_lower_controller_status() => return Ok(frame),
+            Ok(frame) => last_error = format!("unexpected frame {}", frame.describe()),
+            Err(error) => last_error = error,
+        }
+    }
+    Err(last_error)
+}
+
+/// 当心跳中断（2s 内无有效帧）时，主动向下位机发送状态查询。
+/// 收到任意心跳/持续故障状态视为探测成功；200ms 无回应返回 Err。
 async fn probe_handshake<S>(
     port: &mut S,
     adapter: &SerialHardwareAdapter,
@@ -1491,10 +1642,10 @@ where
     let mut rx_entry = base_entry.clone();
     rx_entry.operation = "dispense_probe".to_string();
     match adapter
-        .read_lower_frame_logged(port, TokioDuration::from_millis(100), rx_entry)
+        .read_lower_frame_logged(port, STATUS_QUERY_TIMEOUT, rx_entry)
         .await
     {
-        Ok(frame) if frame.is_heartbeat() => Ok(frame),
+        Ok(frame) if frame.is_lower_controller_status() => Ok(frame),
         _ => Err(()),
     }
 }
@@ -1530,8 +1681,8 @@ where
             ));
         }
 
-        // 以 1s 为间隔读帧；超过 1s 无帧则发握手探测
-        let wait = HEARTBEAT_PROBE_INTERVAL.min(command_deadline.saturating_duration_since(now));
+        // 按文档监听心跳；连续 2s 无有效帧后才发送状态查询。
+        let wait = HEARTBEAT_LISTEN_TIMEOUT.min(command_deadline.saturating_duration_since(now));
         let frame = match adapter
             .read_lower_frame_logged(port, wait, base_entry.clone())
             .await
@@ -1699,8 +1850,19 @@ where
             if temperature_byte == 0x00 && humidity == 0x00 {
                 return Ok(LowerFrame::NoValidEnvironmentSample);
             }
+            let temperature_celsius = temperature_byte as i8;
+            if !(-10..=100).contains(&temperature_celsius) {
+                return Err(format!(
+                    "environment sample temperature {temperature_celsius} out of protocol range -10..100 C"
+                ));
+            }
+            if humidity > 100 {
+                return Err(format!(
+                    "environment sample humidity {humidity} out of protocol range 0..100 %RH"
+                ));
+            }
             return Ok(LowerFrame::EnvironmentSample(EnvironmentSample {
-                temperature_celsius: temperature_byte as i8,
+                temperature_celsius,
                 relative_humidity_percent: humidity,
             }));
         }
@@ -1777,6 +1939,68 @@ mod tests {
             .protocol_bytes(),
             [0x55, 0xB0, 0xFF, 0x37]
         );
+    }
+
+    #[tokio::test]
+    async fn probe_lower_controller_waits_for_heartbeat_before_status_query() {
+        let (mut host, mut controller) = duplex(64);
+        let probe = tokio::spawn(async move { probe_lower_controller_stream(&mut host).await });
+
+        let mut unexpected = [0u8; 2];
+        assert!(
+            timeout(
+                TokioDuration::from_millis(50),
+                controller.read_exact(&mut unexpected)
+            )
+            .await
+            .is_err(),
+            "probe should not send 55 A0 while still waiting for heartbeat"
+        );
+
+        controller
+            .write_all(&LowerFrame::IdleHeartbeat.protocol_bytes())
+            .await
+            .expect("write heartbeat");
+        let frame = probe.await.expect("probe task").expect("probe frame");
+        assert_eq!(frame, LowerFrame::IdleHeartbeat);
+    }
+
+    #[tokio::test]
+    async fn missing_ack_status_query_can_recover_active_dispense_state() {
+        let (mut host, mut controller) = duplex(64);
+        let adapter = SerialHardwareAdapter::new("COM-TEST".to_string());
+        let entry = SerialProtocolLogEntry::for_dispense(
+            &DispenseCommandPayload {
+                command_no: "CMD-1".to_string(),
+                order_no: "ORD-1".to_string(),
+                slot: crate::hardware::SlotPayload {
+                    slot_code: "A1".to_string(),
+                    layer_no: 1,
+                    cell_no: 1,
+                },
+                quantity: 1,
+                timeout_seconds: 30,
+            },
+            "COM-TEST".to_string(),
+        );
+        let query = tokio::spawn(async move {
+            query_status_after_missing_ack(&mut host, &adapter, &entry).await
+        });
+
+        let mut sent = [0u8; 2];
+        controller
+            .read_exact(&mut sent)
+            .await
+            .expect("read status query");
+        assert_eq!(sent, build_status_query_frame());
+        controller
+            .write_all(&LowerFrame::DispensingHeartbeat.protocol_bytes())
+            .await
+            .expect("write dispensing heartbeat");
+
+        let frame = query.await.expect("query task").expect("status frame");
+        assert_eq!(frame, LowerFrame::DispensingHeartbeat);
+        assert!(frame.indicates_command_in_progress());
     }
 
     #[test]
@@ -1900,34 +2124,6 @@ mod tests {
         assert!(build_dispense_frame(11, 5).is_err());
     }
 
-    #[test]
-    fn build_multi_dispense_frame_has_correct_structure() {
-        // 两件相同货道
-        let frame = build_multi_dispense_frame(&[(2, 5), (2, 5)]).unwrap();
-        // 帧头 + 4字节数据 + 帧尾 + 2字节CRC
-        assert_eq!(frame.len(), 8);
-        assert_eq!(frame[0], 0x55); // 帧头
-        assert_eq!(frame[1], 0x02); // row1
-        assert_eq!(frame[2], 0x05); // cell1
-        assert_eq!(frame[3], 0x02); // row2
-        assert_eq!(frame[4], 0x05); // cell2
-        assert_eq!(frame[5], 0x56); // 多商品帧尾
-                                    // CRC-16 覆盖数据段 [0x02, 0x05, 0x02, 0x05]
-        let expected_crc = crc16(&[0x02, 0x05, 0x02, 0x05]);
-        assert_eq!(frame[6], (expected_crc >> 8) as u8);
-        assert_eq!(frame[7], expected_crc as u8);
-    }
-
-    #[test]
-    fn build_multi_dispense_frame_rejects_empty() {
-        assert!(build_multi_dispense_frame(&[]).is_err());
-    }
-
-    #[test]
-    fn build_multi_dispense_frame_rejects_out_of_bounds_slot() {
-        assert!(build_multi_dispense_frame(&[(7, 5)]).is_err());
-    }
-
     #[tokio::test]
     async fn read_lower_frame_skips_noise_before_frame_head() {
         let (mut tx, mut rx) = duplex(8);
@@ -1960,6 +2156,32 @@ mod tests {
                 relative_humidity_percent: 45,
             })
         );
+    }
+
+    #[tokio::test]
+    async fn read_lower_frame_rejects_out_of_range_environment_sample() {
+        let (mut tx, mut rx) = duplex(16);
+        tokio::spawn(async move {
+            tx.write_all(&[FRAME_HEAD, 0xB0, 101, 53])
+                .await
+                .expect("seed high temperature");
+            tx.write_all(&[FRAME_HEAD, 0xB0, 24, 101])
+                .await
+                .expect("seed high humidity");
+        });
+
+        let temperature_error = read_lower_frame(&mut rx, Duration::from_millis(100))
+            .await
+            .expect_err("high temperature should be rejected");
+        assert!(
+            temperature_error.contains("temperature"),
+            "{temperature_error}"
+        );
+
+        let humidity_error = read_lower_frame(&mut rx, Duration::from_millis(100))
+            .await
+            .expect_err("high humidity should be rejected");
+        assert!(humidity_error.contains("humidity"), "{humidity_error}");
     }
 
     #[tokio::test]

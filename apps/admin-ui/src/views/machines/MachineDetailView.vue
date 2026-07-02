@@ -12,9 +12,14 @@ import { useRoute, useRouter } from "vue-router";
 
 import {
   adjustInventory,
+  getStockReconciliationCase,
   listInventories,
+  listStockReconciliationCases,
   refillInventory,
+  resolveStockReconciliationCase,
   type Inventory,
+  type StockReconciliationCaseDetail,
+  type StockReconciliationCaseSummary,
 } from "@/api/inventory";
 import {
   listMachineOps,
@@ -26,10 +31,23 @@ import {
   getMachine,
   listMachineSlots,
   type Machine,
+  type MachineGeoLocation,
   type MachineSlot,
 } from "@/api/machines";
 import { useAuthStore } from "@/stores/auth";
 import { formatDateTime } from "@/utils/format";
+
+type MachineSaleReadinessHeartbeat = {
+  state?: "locked" | "blocked" | "restored";
+  blockingCodes?: string[];
+};
+
+type WholeMachineMaintenanceLockHeartbeat = {
+  code?: string;
+  message?: string;
+  slotCode?: string;
+  commandNo?: string;
+};
 
 const route = useRoute();
 const router = useRouter();
@@ -38,6 +56,8 @@ const authStore = useAuthStore();
 const canCommand = authStore.hasPermission("machines.command");
 const canRefill = authStore.hasPermission("inventory.refill");
 const canAdjust = authStore.hasPermission("inventory.adjust");
+const canReviewStockReconciliation =
+  authStore.hasPermission("inventory.adjust");
 const canExportLogs = authStore.hasPermission("machineOps.write");
 
 const machineId = computed(() => String(route.params.id ?? ""));
@@ -46,6 +66,7 @@ const machine = ref<Machine | null>(null);
 const slots = ref<MachineSlot[]>([]);
 const inventories = ref<Inventory[]>([]);
 const ops = ref<MachineOp[]>([]);
+const reconciliationCases = ref<StockReconciliationCaseSummary[]>([]);
 
 const environmentControlForm = ref({
   includeAirConditioner: false,
@@ -67,6 +88,15 @@ const adjustSaving = ref(false);
 const adjustInventoryRow = ref<Inventory | null>(null);
 const adjustForm = ref({ deltaQty: 0, note: "" });
 
+const reconciliationModalOpen = ref(false);
+const reconciliationSaving = ref(false);
+const reconciliationDetail = ref<StockReconciliationCaseDetail | null>(null);
+const reconciliationForm = ref({
+  note: "",
+  correctedOnHandQty: 0,
+  clearBlocker: false,
+});
+
 const targetTemperatureInvalid = computed(() => {
   if (!environmentControlForm.value.includeTargetTemperature) return false;
   const value = environmentControlForm.value.targetTemperatureCelsius;
@@ -83,6 +113,20 @@ const environmentCommandDisabled = computed(
 );
 
 const heartbeat = computed(() => machine.value?.latestHeartbeatStatus ?? null);
+const productionPilotReadiness = computed(
+  () => machine.value?.productionPilotReadiness ?? null,
+);
+const saleReadiness = computed(
+  () =>
+    (heartbeat.value?.saleReadiness as MachineSaleReadinessHeartbeat | null) ??
+    null,
+);
+const wholeMachineMaintenanceLock = computed(
+  () =>
+    (heartbeat.value
+      ?.wholeMachineMaintenanceLock as WholeMachineMaintenanceLockHeartbeat | null) ??
+    null,
+);
 const environment = computed(() => machine.value?.latestEnvironment ?? null);
 
 const slotRows = computed(() =>
@@ -115,6 +159,12 @@ const commandStatusColor: Record<string, string> = {
   timeout: "error",
 };
 
+const hardwareStatusColor: Record<string, string> = {
+  ok: "success",
+  degraded: "warning",
+  faulted: "error",
+};
+
 const slotColumns = [
   { title: "货道坐标", key: "coordinate" },
   { title: "状态", dataIndex: "status", key: "status" },
@@ -130,6 +180,24 @@ const opColumns = [
   { title: "请求时间", dataIndex: "requestedAt", key: "requestedAt" },
   { title: "完成时间", dataIndex: "finishedAt", key: "finishedAt" },
   { title: "失败原因", dataIndex: "failedReason", key: "failedReason" },
+];
+
+const reconciliationColumns = [
+  { title: "货道", key: "slot" },
+  { title: "异常", dataIndex: "reconciliationReason", key: "reason" },
+  { title: "冻结/阻断", key: "blocker" },
+  { title: "售卖资格", key: "eligibility" },
+  { title: "关联", key: "linked" },
+  { title: "上报时间", dataIndex: "receivedAt", key: "receivedAt" },
+  { title: "操作", key: "actions" },
+];
+
+const productionPilotReadinessColumns = [
+  { title: "检查项", dataIndex: "label", key: "label" },
+  { title: "状态", dataIndex: "status", key: "status" },
+  { title: "说明", dataIndex: "message", key: "message" },
+  { title: "操作建议", dataIndex: "operatorAction", key: "operatorAction" },
+  { title: "代码", dataIndex: "code", key: "code" },
 ];
 
 function formatEnvironmentNumber(
@@ -160,6 +228,11 @@ function targetTemperatureLabel(value: number | null | undefined): string {
   return `目标 ${formatEnvironmentNumber(value, "C")}`;
 }
 
+function formatGeoLocation(geoLocation: MachineGeoLocation | null): string {
+  if (!geoLocation) return "未配置";
+  return `${geoLocation.latitude}, ${geoLocation.longitude} · ${geoLocation.timezone}`;
+}
+
 function commandStatusLabel(status: MachineCommandStatus | null): string {
   if (status === "pending") return "命令待发送";
   if (status === "sent") return "命令已发送";
@@ -168,6 +241,44 @@ function commandStatusLabel(status: MachineCommandStatus | null): string {
   if (status === "failed") return "命令失败";
   if (status === "timeout") return "命令超时";
   return "命令状态未知";
+}
+
+function hardwareStatusLabel(status: string | undefined): string {
+  if (status === "ok") return "正常";
+  if (status === "degraded") return "降级";
+  if (status === "faulted") return "异常";
+  return "unknown";
+}
+
+function saleReadinessStateLabel(status: string | undefined): string {
+  if (status === "locked") return "整机锁定";
+  if (status === "blocked") return "阻塞";
+  if (status === "restored") return "已恢复";
+  return "unknown";
+}
+
+function saleReadinessStateColor(status: string | undefined): string {
+  if (status === "locked") return "error";
+  if (status === "blocked") return "warning";
+  if (status === "restored") return "success";
+  return "default";
+}
+
+function productionPilotReadinessStatusLabel(
+  status: string | undefined,
+): string {
+  if (status === "ready") return "生产试运营就绪";
+  if (status === "blocked") return "生产试运营阻塞";
+  if (status === "degraded") return "生产试运营降级";
+  return "生产试运营未知";
+}
+
+function readinessCheckStatusColor(status: string | undefined): string {
+  if (status === "ready") return "success";
+  if (status === "degraded") return "warning";
+  if (status === "blocked") return "error";
+  if (status === "missing") return "default";
+  return "default";
 }
 
 function inventoryAvailableQty(inventory: Inventory): number {
@@ -207,10 +318,24 @@ async function loadOps(): Promise<void> {
   ops.value = await listMachineOps({ machineId: machineId.value });
 }
 
+async function loadReconciliationCases(): Promise<void> {
+  const result = await listStockReconciliationCases({
+    machineId: machineId.value,
+    page: 1,
+    pageSize: 20,
+  });
+  reconciliationCases.value = result.items;
+}
+
 async function refreshAll(): Promise<void> {
   loading.value = true;
   try {
-    await Promise.all([loadMachine(), loadInventoryData(), loadOps()]);
+    await Promise.all([
+      loadMachine(),
+      loadInventoryData(),
+      loadOps(),
+      loadReconciliationCases(),
+    ]);
   } finally {
     loading.value = false;
   }
@@ -298,6 +423,41 @@ async function handleRequestLogExport(): Promise<void> {
   }
 }
 
+async function openReconciliationCase(
+  row: StockReconciliationCaseSummary,
+): Promise<void> {
+  reconciliationDetail.value = await getStockReconciliationCase(row.id);
+  reconciliationForm.value = {
+    note: "",
+    correctedOnHandQty:
+      reconciliationDetail.value.evidence.inventory?.onHandQty ?? 0,
+    clearBlocker: false,
+  };
+  reconciliationModalOpen.value = true;
+}
+
+async function saveReconciliation(
+  action: "accept_machine_stock" | "reject_machine_stock" | "manual_correct",
+): Promise<void> {
+  if (!reconciliationDetail.value) return;
+  reconciliationSaving.value = true;
+  try {
+    await resolveStockReconciliationCase(reconciliationDetail.value.id, {
+      action,
+      note: reconciliationForm.value.note,
+      clearBlocker: reconciliationForm.value.clearBlocker,
+      correctedOnHandQty:
+        action === "manual_correct"
+          ? reconciliationForm.value.correctedOnHandQty
+          : undefined,
+    });
+    reconciliationModalOpen.value = false;
+    await Promise.all([loadInventoryData(), loadReconciliationCases()]);
+  } finally {
+    reconciliationSaving.value = false;
+  }
+}
+
 onMounted(() => {
   void refreshAll();
 });
@@ -315,7 +475,11 @@ onMounted(() => {
             {{ machine?.code ?? "机器" }} · {{ machine?.name ?? "加载中" }}
           </h1>
           <p class="mt-1 text-sm text-slate-500">
-            {{ machine?.locationText ?? "未设置位置" }}
+            {{ machine?.locationLabel ?? "未设置 Machine Location Label" }}
+          </p>
+          <p class="mt-1 text-sm text-slate-500">
+            Machine Geo Location:
+            {{ formatGeoLocation(machine?.geoLocation ?? null) }}
           </p>
         </div>
         <a-space>
@@ -362,7 +526,37 @@ onMounted(() => {
               }}
             </a-descriptions-item>
             <a-descriptions-item label="硬件">
-              {{ heartbeat?.hardwareStatus ?? "unknown" }}
+              <a-tag
+                :color="
+                  hardwareStatusColor[heartbeat?.hardwareStatus ?? ''] ??
+                  'default'
+                "
+              >
+                {{ hardwareStatusLabel(heartbeat?.hardwareStatus) }}
+              </a-tag>
+            </a-descriptions-item>
+            <a-descriptions-item label="销售就绪">
+              <a-tag :color="saleReadinessStateColor(saleReadiness?.state)">
+                {{ saleReadinessStateLabel(saleReadiness?.state) }}
+              </a-tag>
+              <span v-if="saleReadiness?.blockingCodes?.length" class="ml-2">
+                {{ saleReadiness.blockingCodes.join("、") }}
+              </span>
+            </a-descriptions-item>
+            <a-descriptions-item
+              v-if="wholeMachineMaintenanceLock"
+              label="整机维护锁"
+            >
+              <a-tag color="error">{{
+                wholeMachineMaintenanceLock.code
+              }}</a-tag>
+              <div class="mt-1 text-xs text-slate-500">
+                {{ wholeMachineMaintenanceLock.message }}
+              </div>
+              <div class="mt-1 text-xs text-slate-500">
+                货道 {{ wholeMachineMaintenanceLock.slotCode ?? "--" }} · 命令
+                {{ wholeMachineMaintenanceLock.commandNo ?? "--" }}
+              </div>
             </a-descriptions-item>
             <a-descriptions-item label="本地队列">
               {{ heartbeat?.localQueueSize ?? "--" }}
@@ -473,6 +667,58 @@ onMounted(() => {
       </a-col>
     </a-row>
 
+    <a-card v-if="productionPilotReadiness">
+      <div class="mb-4 flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 class="text-lg font-semibold">Production Pilot Readiness</h2>
+          <p class="mt-1 text-sm text-slate-500">
+            区分生产试运营就绪、普通运行健康与 Machine Sale Readiness
+          </p>
+        </div>
+        <a-space>
+          <a-tag
+            :color="readinessCheckStatusColor(productionPilotReadiness.status)"
+          >
+            {{
+              productionPilotReadinessStatusLabel(
+                productionPilotReadiness.status,
+              )
+            }}
+          </a-tag>
+          <span class="text-sm text-slate-500">
+            阻塞 {{ productionPilotReadiness.blockers.length }} · 降级
+            {{ productionPilotReadiness.degraded.length }}
+          </span>
+        </a-space>
+      </div>
+      <a-table
+        :columns="productionPilotReadinessColumns"
+        :data-source="productionPilotReadiness.checks"
+        row-key="code"
+        :pagination="false"
+      >
+        <template #bodyCell="{ column, record }">
+          <template v-if="column.key === 'status'">
+            <a-tag :color="readinessCheckStatusColor(record.status)">
+              {{ record.status }}
+            </a-tag>
+          </template>
+          <template v-else-if="column.key === 'code'">
+            <span class="font-mono text-xs">{{ record.code }}</span>
+          </template>
+          <template v-else-if="column.key === 'label'">
+            {{ record.label }}
+          </template>
+          <template v-else-if="column.key === 'message'">
+            {{ record.message }}
+          </template>
+          <template v-else-if="column.key === 'operatorAction'">
+            {{ record.operatorAction }}
+          </template>
+        </template>
+      </a-table>
+    </a-card>
+
     <a-card title="货道与库存">
       <a-table
         :columns="slotColumns"
@@ -545,6 +791,62 @@ onMounted(() => {
       </a-table>
     </a-card>
 
+    <a-card title="库存异常复核">
+      <h2 class="mb-3 text-base font-medium">库存异常复核</h2>
+      <a-table
+        :columns="reconciliationColumns"
+        :data-source="reconciliationCases"
+        row-key="id"
+        :loading="loading && reconciliationCases.length === 0"
+        :pagination="false"
+      >
+        <template #bodyCell="{ column, record }">
+          <template v-if="column.key === 'slot'">
+            {{ record.slot.code ?? record.slot.id }}
+          </template>
+          <template v-else-if="column.key === 'blocker'">
+            <template v-if="record.blocker">
+              <a-tag color="error">{{ record.blocker.state }}</a-tag>
+              <div class="text-xs text-slate-500">
+                {{ record.blocker.reason ?? "--" }}
+              </div>
+            </template>
+            <span v-else>--</span>
+          </template>
+          <template v-else-if="column.key === 'eligibility'">
+            <a-tag
+              :color="
+                record.slot.saleEligibility.eligible ? 'success' : 'error'
+              "
+            >
+              {{ record.slot.saleEligibility.eligible ? "可售" : "不可售" }}
+            </a-tag>
+            <span class="ml-1 text-xs text-slate-500">
+              {{ record.slot.saleEligibility.slotSalesState }}
+            </span>
+          </template>
+          <template v-else-if="column.key === 'linked'">
+            <div>{{ record.blocker?.linkedOrderNo ?? "--" }}</div>
+            <div class="text-xs text-slate-500">
+              {{ record.blocker?.linkedCommandNo ?? "--" }}
+            </div>
+          </template>
+          <template v-else-if="column.key === 'receivedAt'">
+            {{ formatDateTime(record.receivedAt) }}
+          </template>
+          <template v-else-if="column.key === 'actions'">
+            <a-button
+              v-if="canReviewStockReconciliation"
+              size="small"
+              @click="openReconciliationCase(record)"
+            >
+              复核
+            </a-button>
+          </template>
+        </template>
+      </a-table>
+    </a-card>
+
     <a-card title="远程运维操作">
       <a-table
         :columns="opColumns"
@@ -595,6 +897,66 @@ onMounted(() => {
         <a-form-item label="备注">
           <a-input v-model:value="refillForm.note" />
         </a-form-item>
+      </a-form>
+    </a-modal>
+
+    <a-modal
+      v-model:open="reconciliationModalOpen"
+      title="库存异常复核"
+      :confirm-loading="reconciliationSaving"
+    >
+      <a-form layout="vertical">
+        <a-form-item label="货道">
+          {{
+            reconciliationDetail?.slot?.code ??
+            reconciliationDetail?.slot?.id ??
+            "--"
+          }}
+        </a-form-item>
+        <a-form-item label="证据">
+          <pre class="max-h-40 overflow-auto text-xs">{{
+            JSON.stringify(
+              reconciliationDetail?.evidence.rawPayload ?? {},
+              null,
+              2,
+            )
+          }}</pre>
+        </a-form-item>
+        <a-form-item label="复核备注">
+          <a-input v-model:value="reconciliationForm.note" />
+        </a-form-item>
+        <a-form-item label="修正后在库">
+          <a-input-number
+            v-model:value="reconciliationForm.correctedOnHandQty"
+            :min="0"
+            class="w-full"
+          />
+        </a-form-item>
+        <a-form-item v-if="reconciliationDetail?.blocker" label="货道冻结">
+          <a-checkbox v-model:checked="reconciliationForm.clearBlocker">
+            复核后清除当前冻结
+          </a-checkbox>
+        </a-form-item>
+        <a-space>
+          <a-button
+            :loading="reconciliationSaving"
+            @click="saveReconciliation('accept_machine_stock')"
+          >
+            接受
+          </a-button>
+          <a-button
+            :loading="reconciliationSaving"
+            @click="saveReconciliation('reject_machine_stock')"
+          >
+            拒绝
+          </a-button>
+          <a-button
+            :loading="reconciliationSaving"
+            @click="saveReconciliation('manual_correct')"
+          >
+            修正
+          </a-button>
+        </a-space>
       </a-form>
     </a-modal>
 

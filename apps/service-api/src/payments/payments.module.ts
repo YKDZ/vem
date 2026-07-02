@@ -9,6 +9,11 @@ import { VendingModule } from "../vending/vending.module";
 import { PaymentCodeAttemptsService } from "./payment-code-attempts.service";
 import { PaymentCodeOrchestratorService } from "./payment-code-orchestrator.service";
 import { PaymentCodeController } from "./payment-code.controller";
+import { PaymentDrillsController } from "./payment-drills.controller";
+import {
+  DrizzlePaymentDrillStore,
+  PaymentDrillsService,
+} from "./payment-drills.service";
 import { PaymentOpsAlertService } from "./payment-ops-alert.service";
 import { PaymentOpsController } from "./payment-ops.controller";
 import { PaymentOpsService } from "./payment-ops.service";
@@ -33,9 +38,12 @@ import { PaymentsService } from "./payments.service";
     PaymentsController,
     PaymentOpsController,
     PaymentCodeController,
+    PaymentDrillsController,
   ],
   providers: [
     PaymentsService,
+    DrizzlePaymentDrillStore,
+    PaymentDrillsService,
     PaymentReconciliationService,
     PaymentWebhookAttemptRecorderService,
     PaymentOpsService,

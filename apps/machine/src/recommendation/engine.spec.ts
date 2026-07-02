@@ -7,7 +7,7 @@ import type {
   MachineCatalogSlotCandidate,
 } from "@/types/catalog";
 
-import { inferSize, scoreItem, computeRecommendations } from "./engine";
+import { choosePreferredVariant, inferSize } from "./engine";
 
 /** Create a minimal MachineCatalogItem for testing */
 function makeCatalogItem(
@@ -125,246 +125,104 @@ describe("inferSize", () => {
   });
 });
 
-describe("scoreItem — size matching", () => {
-  // 175cm regular → size "L"
-  const baseProfile: VisionProfile = {
-    personPresent: true,
-    heightCm: 175,
-    bodyType: "regular",
-    gender: "male",
-  };
-
-  it("exact match, score includes 50 points", () => {
-    const item = makeCatalogItem({
-      size: "L",
-      capacity: 10,
-      parLevel: 8,
-      physicalStock: 0,
-      saleableStock: 0,
-      slotSalesState: "sold_out",
-      productSortOrder: 10,
-    });
-    const result = scoreItem(baseProfile, item);
-    expect(result).not.toBeNull();
-    expect(result!.score).toBeGreaterThanOrEqual(50);
-  });
-
-  it("adjacent size (M vs L), score includes 25 points", () => {
-    const item = makeCatalogItem({
-      size: "M",
-      capacity: 10,
-      parLevel: 8,
-      physicalStock: 0,
-      saleableStock: 0,
-      slotSalesState: "sold_out",
-      productSortOrder: 10,
-    });
-    const result = scoreItem(baseProfile, item);
-    expect(result).not.toBeNull();
-    expect(result!.score).toBeGreaterThanOrEqual(25);
-    expect(result!.score).toBeLessThan(50);
-  });
-
-  it("non-matching size, score is only stockScore + sortScore", () => {
-    const item = makeCatalogItem({
-      size: "XS",
-      capacity: 10,
-      parLevel: 8,
-      physicalStock: 0,
-      saleableStock: 0,
-      slotSalesState: "sold_out",
-      productSortOrder: 10,
-    });
-    const result = scoreItem(baseProfile, item);
-    expect(result).not.toBeNull();
-    expect(result!.score).toBeLessThan(25);
-  });
-
-  it("item.size=null, size dimension is 0", () => {
-    const item = makeCatalogItem({
-      size: null,
-      capacity: 10,
-      parLevel: 8,
-      physicalStock: 0,
-      saleableStock: 0,
-      slotSalesState: "sold_out",
-      productSortOrder: 10,
-    });
-    const result = scoreItem(baseProfile, item);
-    expect(result).not.toBeNull();
-    expect(result!.score).toBeLessThan(25);
-  });
-});
-
-describe("scoreItem — gender filtering", () => {
-  it("targetGender=male, profile.gender=female → returns null (excluded)", () => {
-    const profile: VisionProfile = {
-      personPresent: true,
-      gender: "female",
-    };
-    const item = makeCatalogItem({ targetGender: "male" });
-    expect(scoreItem(profile, item)).toBeNull();
-  });
-
-  it("targetGender=female, profile.gender=male → returns null (excluded)", () => {
-    const profile: VisionProfile = {
-      personPresent: true,
-      gender: "male",
-    };
-    const item = makeCatalogItem({ targetGender: "female" });
-    expect(scoreItem(profile, item)).toBeNull();
-  });
-
-  it("targetGender=null → not excluded", () => {
-    const profile: VisionProfile = {
-      personPresent: true,
-      gender: "male",
-    };
-    const item = makeCatalogItem({ targetGender: null });
-    expect(scoreItem(profile, item)).not.toBeNull();
-  });
-
-  it("profile.gender=unknown → doesn't filter any targetGender", () => {
-    const profile: VisionProfile = {
-      personPresent: true,
-      gender: "unknown",
-    };
-    const itemMale = makeCatalogItem({ targetGender: "male" });
-    const itemFemale = makeCatalogItem({ targetGender: "female" });
-    const itemNull = makeCatalogItem({ targetGender: null });
-    expect(scoreItem(profile, itemMale)).not.toBeNull();
-    expect(scoreItem(profile, itemFemale)).not.toBeNull();
-    expect(scoreItem(profile, itemNull)).not.toBeNull();
-  });
-});
-
-describe("scoreItem — stock and sort weight", () => {
-  it("saleableStock=5 → stockScore=5", () => {
-    const profile: VisionProfile = { personPresent: true };
-    const item = makeCatalogItem({
-      saleableStock: 5,
-      productSortOrder: 10,
-      size: null,
-    });
-    const result = scoreItem(profile, item);
-    expect(result).not.toBeNull();
-    expect(result!.score).toBe(5);
-  });
-
-  it("saleableStock=15 → stockScore=10 (capped)", () => {
-    const profile: VisionProfile = {
-      personPresent: true,
-      heightCm: null,
-      bodyType: undefined,
-    };
-    const item = makeCatalogItem({
-      saleableStock: 15,
-      productSortOrder: 10,
-      size: null,
-    });
-    const result = scoreItem(profile, item);
-    expect(result).not.toBeNull();
-    expect(result!.score).toBe(10);
-  });
-
-  it("productSortOrder=3 → sortScore=7", () => {
-    const profile: VisionProfile = {
-      personPresent: true,
-      heightCm: null,
-      bodyType: undefined,
-    };
-    const item = makeCatalogItem({
-      capacity: 10,
-      parLevel: 8,
-      physicalStock: 0,
-      saleableStock: 0,
-      slotSalesState: "sold_out",
-      productSortOrder: 3,
-      size: null,
-    });
-    const result = scoreItem(profile, item);
-    expect(result).not.toBeNull();
-    expect(result!.score).toBe(7);
-  });
-
-  it("productSortOrder=12 → sortScore=0 (floor)", () => {
-    const profile: VisionProfile = {
-      personPresent: true,
-      heightCm: null,
-      bodyType: undefined,
-    };
-    const item = makeCatalogItem({
-      capacity: 10,
-      parLevel: 8,
-      physicalStock: 0,
-      saleableStock: 0,
-      slotSalesState: "sold_out",
-      productSortOrder: 12,
-      size: null,
-    });
-    const result = scoreItem(profile, item);
-    expect(result).not.toBeNull();
-    expect(result!.score).toBe(0);
-  });
-});
-
-describe("computeRecommendations", () => {
-  it("returns results sorted by score descending", () => {
-    const profile: VisionProfile = {
-      personPresent: true,
-      heightCm: 175,
-      bodyType: "regular",
-      gender: "unknown",
-    };
-    const items = [
-      makeCatalogItem({ sku: "low", saleableStock: 1, productSortOrder: 10 }),
-      makeCatalogItem({
-        sku: "high",
-        saleableStock: 10,
-        productSortOrder: 0,
+describe("choosePreferredVariant", () => {
+  const variants = makeCatalogItem({
+    variantCandidates: [
+      {
+        variantId: "m-white",
+        sku: "M-WHITE",
         size: "M",
-      }),
-    ];
-    const result = computeRecommendations(profile, items);
-    expect(result.length).toBe(2);
-    expect(result[0].sku).toBe("high");
-    expect(result[1].sku).toBe("low");
+        color: "白色",
+        priceCents: 1000,
+        capacity: 10,
+        parLevel: 8,
+        physicalStock: 3,
+        saleableStock: 3,
+        slotSalesState: "sale_ready",
+        slotCandidates: [],
+      },
+      {
+        variantId: "m-black",
+        sku: "M-BLACK",
+        size: "M",
+        color: "黑色",
+        priceCents: 1000,
+        capacity: 10,
+        parLevel: 8,
+        physicalStock: 3,
+        saleableStock: 3,
+        slotSalesState: "sale_ready",
+        slotCandidates: [],
+      },
+      {
+        variantId: "l-blue",
+        sku: "L-BLUE",
+        size: "L",
+        color: "深蓝色",
+        priceCents: 1000,
+        capacity: 10,
+        parLevel: 8,
+        physicalStock: 3,
+        saleableStock: 3,
+        slotSalesState: "sale_ready",
+        slotCandidates: [],
+      },
+    ],
+  }).variantCandidates;
+
+  it("uses inferred size and recognized color when both match", () => {
+    const profile: VisionProfile = {
+      personPresent: true,
+      heightCm: 178,
+      bodyType: "regular",
+      upperColor: "蓝",
+    };
+    expect(choosePreferredVariant(variants, profile)?.variantId).toBe("l-blue");
   });
 
-  it("returns at most 6 items", () => {
-    const profile: VisionProfile = { personPresent: true };
-    const items = Array.from({ length: 10 }, (_, i) =>
-      makeCatalogItem({ sku: `item-${i}`, saleableStock: i }),
+  it("falls back to default color inside the inferred size when color is missing", () => {
+    const profile: VisionProfile = {
+      personPresent: true,
+      heightCm: 178,
+      bodyType: "regular",
+    };
+    expect(choosePreferredVariant(variants, profile)?.variantId).toBe("l-blue");
+  });
+
+  it("falls back to default size but still applies recognized color within that size", () => {
+    const profile: VisionProfile = {
+      personPresent: true,
+      upperColor: "黑",
+    };
+    expect(choosePreferredVariant(variants, profile)?.variantId).toBe(
+      "m-black",
     );
-    const result = computeRecommendations(profile, items);
-    expect(result.length).toBe(6);
   });
 
-  it("returns fewer than 6 when not enough items pass filter", () => {
-    const profile: VisionProfile = { personPresent: true, gender: "male" };
-    const items = [
-      makeCatalogItem({ sku: "m1", targetGender: "male" }),
-      makeCatalogItem({ sku: "f1", targetGender: "female" }),
-      makeCatalogItem({ sku: "f2", targetGender: "female" }),
-    ];
-    const result = computeRecommendations(profile, items);
-    expect(result.length).toBe(1);
-    expect(result[0].sku).toBe("m1");
+  it("falls back to the first saleable variant when recognized signals do not match", () => {
+    const profile: VisionProfile = {
+      personPresent: true,
+      heightCm: 190,
+      bodyType: "regular",
+      upperColor: "红",
+    };
+    expect(choosePreferredVariant(variants, profile)?.variantId).toBe(
+      "m-white",
+    );
   });
 
-  it("when catalog is empty, returns empty array", () => {
-    const profile: VisionProfile = { personPresent: true };
-    const result = computeRecommendations(profile, []);
-    expect(result).toEqual([]);
+  it("uses the first variant when no variant is saleable", () => {
+    const soldOutVariants = variants.map((variant) => ({
+      ...variant,
+      saleableStock: 0,
+      slotSalesState: "sold_out" as const,
+    }));
+    expect(choosePreferredVariant(soldOutVariants, null)?.variantId).toBe(
+      "m-white",
+    );
   });
 
-  it("when all items are filtered by gender, returns empty array", () => {
-    const profile: VisionProfile = { personPresent: true, gender: "male" };
-    const items = [
-      makeCatalogItem({ sku: "f1", targetGender: "female" }),
-      makeCatalogItem({ sku: "f2", targetGender: "female" }),
-    ];
-    const result = computeRecommendations(profile, items);
-    expect(result).toEqual([]);
+  it("returns null for an empty variant list", () => {
+    expect(choosePreferredVariant([], { personPresent: true })).toBeNull();
   });
 });

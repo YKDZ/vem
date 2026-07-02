@@ -1,5 +1,6 @@
 import {
   ConflictException,
+  Inject,
   Injectable,
   NotFoundException,
 } from "@nestjs/common";
@@ -31,8 +32,11 @@ export class PaymentProviderRegistry {
   private readonly providers: Map<string, PaymentProvider>;
 
   constructor(
+    @Inject(MockPaymentProvider)
     mockPaymentProvider: MockPaymentProvider,
+    @Inject(WeChatPayProvider)
     weChatPayProvider: WeChatPayProvider,
+    @Inject(AlipayProvider)
     alipayProvider: AlipayProvider,
   ) {
     this.providers = new Map(

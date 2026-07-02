@@ -51,6 +51,26 @@ function isUniqueViolation(error: unknown): boolean {
   );
 }
 
+function buildRefundReconciliationPayloadFields(rawPayload: unknown): {
+  rawPayloadSha256: string | null;
+  rawPayloadExcerpt: string | null;
+} {
+  if (!rawPayload) {
+    return { rawPayloadSha256: null, rawPayloadExcerpt: null };
+  }
+  const storedPayload = buildStoredEventPayload(rawPayload);
+  return {
+    rawPayloadSha256:
+      typeof storedPayload["payloadSha256"] === "string"
+        ? storedPayload["payloadSha256"]
+        : null,
+    rawPayloadExcerpt:
+      typeof storedPayload["payloadExcerpt"] === "string"
+        ? storedPayload["payloadExcerpt"]
+        : null,
+  };
+}
+
 @Injectable()
 export class RefundsService implements OnModuleInit, OnApplicationShutdown {
   private readonly logger = new Logger(RefundsService.name);
@@ -100,20 +120,35 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
       orderEventReason: string;
       failureMessage?: string | null;
       refundedAt?: Date | null;
+      requireOpen?: boolean;
     },
-  ): Promise<void> {
-    await tx
-      .update(refunds)
-      .set({
-        status: input.status,
-        providerRefundNo: input.providerRefundNo,
-        refundedAt:
-          input.status === "succeeded"
-            ? (input.refundedAt ?? new Date())
-            : null,
-        updatedAt: new Date(),
-      })
-      .where(eq(refunds.id, input.refundId));
+  ): Promise<boolean> {
+    const refundUpdate = {
+      status: input.status,
+      providerRefundNo: input.providerRefundNo,
+      refundedAt:
+        input.status === "succeeded" ? (input.refundedAt ?? new Date()) : null,
+      updatedAt: new Date(),
+    };
+
+    if (input.requireOpen) {
+      const updated = await tx
+        .update(refunds)
+        .set(refundUpdate)
+        .where(
+          and(
+            eq(refunds.id, input.refundId),
+            inArray(refunds.status, ["created", "processing"]),
+          ),
+        )
+        .returning({ id: refunds.id });
+      if (updated.length === 0) return false;
+    } else {
+      await tx
+        .update(refunds)
+        .set(refundUpdate)
+        .where(eq(refunds.id, input.refundId));
+    }
 
     await tx
       .insert(refundEvents)
@@ -167,7 +202,7 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
           providerRefundNo: input.providerRefundNo,
         },
       });
-      return;
+      return true;
     }
 
     await tx
@@ -202,6 +237,7 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
         message: input.failureMessage ?? null,
       },
     });
+    return true;
   }
 
   private async applyRefundTerminalState(
@@ -220,20 +256,35 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
       orderEventReason: string;
       failureMessage?: string | null;
       refundedAt?: Date | null;
+      requireOpen?: boolean;
     },
-  ): Promise<void> {
-    await tx
-      .update(refunds)
-      .set({
-        status: input.status,
-        providerRefundNo: input.providerRefundNo,
-        refundedAt:
-          input.status === "succeeded"
-            ? (input.refundedAt ?? new Date())
-            : null,
-        updatedAt: new Date(),
-      })
-      .where(eq(refunds.id, input.refundId));
+  ): Promise<boolean> {
+    const refundUpdate = {
+      status: input.status,
+      providerRefundNo: input.providerRefundNo,
+      refundedAt:
+        input.status === "succeeded" ? (input.refundedAt ?? new Date()) : null,
+      updatedAt: new Date(),
+    };
+
+    if (input.requireOpen) {
+      const updated = await tx
+        .update(refunds)
+        .set(refundUpdate)
+        .where(
+          and(
+            eq(refunds.id, input.refundId),
+            inArray(refunds.status, ["created", "processing"]),
+          ),
+        )
+        .returning({ id: refunds.id });
+      if (updated.length === 0) return false;
+    } else {
+      await tx
+        .update(refunds)
+        .set(refundUpdate)
+        .where(eq(refunds.id, input.refundId));
+    }
 
     await tx
       .insert(refundEvents)
@@ -278,7 +329,7 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
           providerRefundNo: input.providerRefundNo,
         },
       });
-      return;
+      return true;
     }
 
     // failed path: restore payment to succeeded, move order to manual_handling
@@ -310,6 +361,45 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
         message: input.failureMessage ?? null,
       },
     });
+    return true;
+  }
+
+  private async recordRefundRequestUncertain(
+    tx: DrizzleTransaction,
+    input: {
+      refundId: string;
+      paymentId: string;
+      providerId: string;
+      refundNo: string;
+      providerRefundNo?: string | null;
+      errorMessage: string;
+    },
+  ): Promise<void> {
+    await tx
+      .update(refunds)
+      .set({
+        status: "processing",
+        providerRefundNo: input.providerRefundNo ?? null,
+        updatedAt: new Date(),
+      })
+      .where(eq(refunds.id, input.refundId));
+    await tx
+      .insert(refundEvents)
+      .values({
+        refundId: input.refundId,
+        paymentId: input.paymentId,
+        providerId: input.providerId,
+        eventType: "refund.request_uncertain",
+        providerEventId: `request_uncertain:${input.refundNo}:${Date.now()}`,
+        providerRefundNo: input.providerRefundNo ?? null,
+        status: "processing",
+        rawPayloadJson: buildStoredEventPayload({
+          error: input.errorMessage,
+        }),
+        signatureValid: true,
+        handledAt: new Date(),
+      })
+      .onConflictDoNothing();
   }
 
   async requestFullRefund(input: {
@@ -331,6 +421,8 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
           amountCents: payments.amountCents,
           machineId: machines.id,
           providerConfigId: payments.paymentProviderConfigId,
+          isDrill: orders.isDrill,
+          paymentIsDrill: payments.isDrill,
         })
         .from(orders)
         .innerJoin(payments, eq(payments.id, orders.paymentId))
@@ -342,6 +434,11 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
         .where(eq(orders.id, input.orderId))
         .orderBy(desc(payments.createdAt));
       if (!row) throw new NotFoundException("Order payment not found");
+      if (row.isDrill || row.paymentIsDrill) {
+        throw new ConflictException(
+          "Protected payment drill orders cannot use the production refund flow",
+        );
+      }
 
       const [existing] = await tx
         .select()
@@ -561,32 +658,23 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
     } catch (error: unknown) {
       const errorMessage =
         error instanceof Error ? error.message : String(error);
-      const failed = await this.db.transaction(async (tx) => {
-        await this.applyRefundTerminalState(tx, {
+      const uncertain = await this.db.transaction(async (tx) => {
+        await this.recordRefundRequestUncertain(tx, {
           refundId: created.refund.id,
           paymentId: created.row.paymentId,
           providerId: created.row.providerId,
-          orderId: input.orderId,
           refundNo: created.refund.refundNo,
           providerRefundNo: null,
-          status: "failed",
-          eventType: "refund.failed",
-          providerEventId: `sync_failed:${created.refund.refundNo}:${Date.now()}`,
-          rawPayloadJson: {
-            error: errorMessage,
-          },
-          orderEventReason: `${input.reason}_failed`,
-          failureMessage: errorMessage,
-          refundedAt: null,
+          errorMessage,
         });
         return {
           ...created.refund,
-          status: "failed" as const,
+          status: "processing" as const,
           providerRefundNo: null,
           refundedAt: null,
         };
       });
-      return failed;
+      return uncertain;
     }
   }
 
@@ -615,6 +703,8 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
           paymentAmountCents: payments.amountCents,
           machineId: machines.id,
           providerConfigId: payments.paymentProviderConfigId,
+          isDrill: orders.isDrill,
+          paymentIsDrill: payments.isDrill,
         })
         .from(orders)
         .innerJoin(payments, eq(payments.id, orders.paymentId))
@@ -626,6 +716,11 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
         .where(eq(orders.id, input.orderId))
         .orderBy(desc(payments.createdAt));
       if (!row) throw new NotFoundException("Order payment not found");
+      if (row.isDrill || row.paymentIsDrill) {
+        throw new ConflictException(
+          "Protected payment drill orders cannot use the production refund flow",
+        );
+      }
       if (input.amountCents >= row.paymentAmountCents) {
         throw new ConflictException(
           "Partial refund amount must be less than payment amount",
@@ -858,28 +953,18 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
       const errorMessage =
         error instanceof Error ? error.message : String(error);
       await this.db.transaction(async (tx) => {
-        await this.applyPartialRefundTerminalState(tx, {
+        await this.recordRefundRequestUncertain(tx, {
           refundId: created.refund.id,
           paymentId: created.row.paymentId,
           providerId: created.row.providerId,
-          orderId: input.orderId,
           refundNo: created.refund.refundNo,
           providerRefundNo: null,
-          fulfillmentState: created.row.fulfillmentState,
-          status: "failed",
-          eventType: "refund.failed",
-          providerEventId: `sync_failed:${created.refund.refundNo}:${Date.now()}`,
-          rawPayloadJson: {
-            error: errorMessage,
-          },
-          orderEventReason: `${input.reason}_failed`,
-          failureMessage: errorMessage,
-          refundedAt: null,
+          errorMessage,
         });
       });
       return {
         ...created.refund,
-        status: "failed" as const,
+        status: "processing" as const,
         providerRefundNo: null,
         refundedAt: null,
       };
@@ -912,6 +997,9 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
         providerConfigId: payments.paymentProviderConfigId,
         reason: refunds.reason,
         fulfillmentState: orders.fulfillmentState,
+        isDrill: refunds.isDrill,
+        paymentIsDrill: payments.isDrill,
+        orderIsDrill: orders.isDrill,
       })
       .from(refunds)
       .innerJoin(payments, eq(payments.id, refunds.paymentId))
@@ -920,12 +1008,21 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
       .where(
         and(
           eq(refunds.status, "processing"),
+          eq(refunds.isDrill, false),
+          eq(payments.isDrill, false),
+          eq(orders.isDrill, false),
           sql`not exists (
     select 1
     from refund_reconciliation_attempts rra
     where rra.refund_id = ${refunds.id}
       and rra.next_retry_at is not null
       and rra.next_retry_at > ${now}
+  )`,
+          sql`not exists (
+    select 1
+    from refund_reconciliation_attempts rra
+    where rra.refund_id = ${refunds.id}
+      and rra.status = 'max_attempts_exceeded'
   )`,
         ),
       )
@@ -934,6 +1031,9 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
     // oxlint-disable no-await-in-loop -- sequential retry/reconciliation loop; parallel execution would be incorrect here
     for (const refund of processingRefunds) {
       try {
+        if (refund.isDrill || refund.paymentIsDrill || refund.orderIsDrill) {
+          continue;
+        }
         if (!this.paymentProviderRegistry.has(refund.providerCode)) continue;
         const provider = this.paymentProviderRegistry.get(refund.providerCode);
         if (!provider.queryRefund) continue;
@@ -945,39 +1045,17 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
         const attemptNo = Number(countRow.total) + 1;
 
         if (attemptNo > 12) {
-          await this.db.transaction(async (tx) => {
-            await tx.insert(refundReconciliationAttempts).values({
-              refundId: refund.id,
-              providerId: refund.providerId,
-              trigger: "scheduled",
-              attemptNo,
-              status: "max_attempts_exceeded",
-              startedAt: now,
-              finishedAt: now,
-            });
-            const terminalInput = {
-              refundId: refund.id,
-              paymentId: refund.paymentId,
-              providerId: refund.providerId,
-              orderId: refund.orderId,
-              refundNo: refund.refundNo,
-              providerRefundNo: refund.providerRefundNo,
-              status: "failed",
-              eventType: "refund.failed",
-              providerEventId: `max_attempts_exceeded:${refund.refundNo}:${now.getTime()}`,
-              rawPayloadJson: { refundNo: refund.refundNo, attemptNo },
-              orderEventReason: "refund_reconcile_max_attempts_exceeded",
-              failureMessage: "refund query max attempts exceeded",
-              refundedAt: null,
-            } as const;
-            if (refund.reason === "auto_partial_dispense_failed") {
-              await this.applyPartialRefundTerminalState(tx, {
-                ...terminalInput,
-                fulfillmentState: refund.fulfillmentState,
-              });
-              return;
-            }
-            await this.applyRefundTerminalState(tx, terminalInput);
+          await this.db.insert(refundReconciliationAttempts).values({
+            refundId: refund.id,
+            providerId: refund.providerId,
+            trigger: "scheduled",
+            attemptNo,
+            status: "max_attempts_exceeded",
+            errorCode: "max_attempts_exceeded",
+            errorMessage:
+              "refund query max attempts exceeded; manual provider confirmation required",
+            startedAt: now,
+            finishedAt: now,
           });
           continue;
         }
@@ -1045,6 +1123,7 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
               status: "processing",
               providerRefundStatus: refundStatus,
               providerRefundNo: result.providerRefundNo ?? null,
+              ...buildRefundReconciliationPayloadFields(result.rawPayload),
               nextRetryAt: new Date(now.getTime() + backoffMs),
               finishedAt: new Date(),
             })
@@ -1053,7 +1132,7 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
         }
 
         // Terminal: succeeded or failed
-        await this.db.transaction(async (tx) => {
+        const terminalized = await this.db.transaction(async (tx) => {
           const dbRefundStatus =
             refundStatus === "succeeded" ? "succeeded" : "failed";
           const terminalInput = {
@@ -1077,21 +1156,29 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
             refundedAt: result.refundedAt ?? null,
           } as const;
           if (refund.reason === "auto_partial_dispense_failed") {
-            await this.applyPartialRefundTerminalState(tx, {
+            return await this.applyPartialRefundTerminalState(tx, {
               ...terminalInput,
               fulfillmentState: refund.fulfillmentState,
+              requireOpen: true,
             });
-            return;
           }
-          await this.applyRefundTerminalState(tx, terminalInput);
+          return await this.applyRefundTerminalState(tx, {
+            ...terminalInput,
+            requireOpen: true,
+          });
         });
 
         await this.db
           .update(refundReconciliationAttempts)
           .set({
-            status: refundStatus === "succeeded" ? "succeeded" : "failed",
+            status: terminalized
+              ? refundStatus === "succeeded"
+                ? "succeeded"
+                : "failed"
+              : "already_terminal",
             providerRefundStatus: refundStatus,
             providerRefundNo: result.providerRefundNo ?? null,
+            ...buildRefundReconciliationPayloadFields(result.rawPayload),
             finishedAt: new Date(),
           })
           .where(eq(refundReconciliationAttempts.id, attempt.id));
@@ -1102,6 +1189,210 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
       }
     }
     // oxlint-enable no-await-in-loop
+  }
+
+  async queryRefund(refundId: string, trigger: "manual" | "scheduled") {
+    const [refund] = await this.db
+      .select({
+        id: refunds.id,
+        refundNo: refunds.refundNo,
+        status: refunds.status,
+        paymentId: refunds.paymentId,
+        orderId: refunds.orderId,
+        amountCents: refunds.amountCents,
+        providerRefundNo: refunds.providerRefundNo,
+        providerCode: paymentProviders.code,
+        providerId: paymentProviders.id,
+        paymentNo: payments.paymentNo,
+        providerTradeNo: payments.providerTradeNo,
+        machineId: orders.machineId,
+        providerConfigId: payments.paymentProviderConfigId,
+        reason: refunds.reason,
+        fulfillmentState: orders.fulfillmentState,
+        isDrill: refunds.isDrill,
+        paymentIsDrill: payments.isDrill,
+        orderIsDrill: orders.isDrill,
+      })
+      .from(refunds)
+      .innerJoin(payments, eq(payments.id, refunds.paymentId))
+      .innerJoin(paymentProviders, eq(paymentProviders.id, payments.providerId))
+      .innerJoin(orders, eq(orders.id, refunds.orderId))
+      .where(eq(refunds.id, refundId))
+      .limit(1);
+
+    if (!refund) throw new NotFoundException("Refund not found");
+    if (refund.isDrill || refund.paymentIsDrill || refund.orderIsDrill) {
+      return {
+        status: refund.status,
+        reconciled: false,
+        reason: "protected_payment_drill",
+      };
+    }
+    if (refund.status !== "processing" && refund.status !== "created") {
+      return {
+        status: refund.status,
+        reconciled: false,
+        reason: "already_terminal",
+      };
+    }
+
+    const provider = this.paymentProviderRegistry.get(refund.providerCode);
+    if (!provider.queryRefund) {
+      throw new ConflictException("Refund query is not supported");
+    }
+
+    const config = await this.paymentProviderConfigService
+      .resolveForExistingPayment({
+        providerCode: refund.providerCode,
+        providerConfigId: refund.providerConfigId ?? null,
+        machineId: refund.machineId,
+      })
+      .catch(() => ({
+        providerCode: refund.providerCode,
+        merchantNo: null,
+        appId: null,
+        publicConfigJson: {},
+        sensitiveConfigJson: {},
+      }));
+
+    const [countRow] = await this.db
+      .select({ total: count() })
+      .from(refundReconciliationAttempts)
+      .where(
+        and(
+          eq(refundReconciliationAttempts.refundId, refund.id),
+          eq(refundReconciliationAttempts.trigger, trigger),
+        ),
+      );
+    const attemptNo = Number(countRow.total) + 1;
+    const startedAt = new Date();
+    const [attempt] = await this.db
+      .insert(refundReconciliationAttempts)
+      .values({
+        refundId: refund.id,
+        providerId: refund.providerId,
+        trigger,
+        attemptNo,
+        status: "pending",
+        startedAt,
+      })
+      .returning({ id: refundReconciliationAttempts.id });
+
+    let result: Awaited<ReturnType<NonNullable<typeof provider.queryRefund>>>;
+    try {
+      result = await provider.queryRefund({
+        refundNo: refund.refundNo,
+        paymentNo: refund.paymentNo,
+        providerRefundNo: refund.providerRefundNo,
+        providerTradeNo: refund.providerTradeNo,
+        amountCents: refund.amountCents,
+        config,
+      });
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      await this.db
+        .update(refundReconciliationAttempts)
+        .set({
+          status: "network_error",
+          errorCode: "query_failed",
+          errorMessage: errMsg.slice(0, 500),
+          nextRetryAt: new Date(
+            startedAt.getTime() + reconcileBackoffMs(attemptNo),
+          ),
+          finishedAt: new Date(),
+        })
+        .where(eq(refundReconciliationAttempts.id, attempt.id));
+      return {
+        status: refund.status,
+        reconciled: false,
+        reason: "query_failed",
+      };
+    }
+
+    if (result.status === "processing") {
+      await this.db
+        .update(refunds)
+        .set({
+          status: "processing",
+          providerRefundNo: result.providerRefundNo ?? refund.providerRefundNo,
+          updatedAt: new Date(),
+        })
+        .where(eq(refunds.id, refund.id));
+      await this.db
+        .update(refundReconciliationAttempts)
+        .set({
+          status: "processing",
+          providerRefundStatus: result.status,
+          providerRefundNo: result.providerRefundNo ?? null,
+          ...buildRefundReconciliationPayloadFields(result.rawPayload),
+          nextRetryAt: new Date(
+            startedAt.getTime() + reconcileBackoffMs(attemptNo),
+          ),
+          finishedAt: new Date(),
+        })
+        .where(eq(refundReconciliationAttempts.id, attempt.id));
+      return {
+        status: "processing",
+        reconciled: false,
+        reason: "provider_processing",
+      };
+    }
+
+    const dbRefundStatus =
+      result.status === "succeeded" ? "succeeded" : "failed";
+    const terminalized = await this.db.transaction(async (tx) => {
+      const terminalInput = {
+        refundId: refund.id,
+        paymentId: refund.paymentId,
+        providerId: refund.providerId,
+        orderId: refund.orderId,
+        refundNo: refund.refundNo,
+        providerRefundNo: result.providerRefundNo ?? refund.providerRefundNo,
+        status: dbRefundStatus,
+        eventType: `refund.${dbRefundStatus}`,
+        providerEventId: `manual_query_${dbRefundStatus}:${refund.refundNo}:${Date.now()}`,
+        rawPayloadJson: result.rawPayload ?? {},
+        orderEventReason:
+          dbRefundStatus === "succeeded"
+            ? "manual_query_refund_succeeded"
+            : "manual_query_refund_failed",
+        failureMessage:
+          dbRefundStatus === "failed" ? "provider_returned_failed" : null,
+        refundedAt: result.refundedAt ?? null,
+      } as const;
+      if (refund.reason === "auto_partial_dispense_failed") {
+        return await this.applyPartialRefundTerminalState(tx, {
+          ...terminalInput,
+          fulfillmentState: refund.fulfillmentState,
+          requireOpen: true,
+        });
+      }
+      return await this.applyRefundTerminalState(tx, {
+        ...terminalInput,
+        requireOpen: true,
+      });
+    });
+
+    await this.db
+      .update(refundReconciliationAttempts)
+      .set({
+        status: terminalized ? dbRefundStatus : "already_terminal",
+        providerRefundStatus: result.status,
+        providerRefundNo: result.providerRefundNo ?? null,
+        ...buildRefundReconciliationPayloadFields(result.rawPayload),
+        finishedAt: new Date(),
+      })
+      .where(eq(refundReconciliationAttempts.id, attempt.id));
+
+    if (!terminalized) {
+      return {
+        status: dbRefundStatus,
+        reconciled: false,
+        reason: "already_terminal",
+      };
+    }
+
+    return { status: dbRefundStatus, reconciled: true };
   }
 
   async applyProviderRefundWebhook(input: {
@@ -1146,6 +1437,9 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
         providerRefundNo: refunds.providerRefundNo,
         reason: refunds.reason,
         fulfillmentState: orders.fulfillmentState,
+        isDrill: refunds.isDrill,
+        paymentIsDrill: payments.isDrill,
+        orderIsDrill: orders.isDrill,
       })
       .from(refunds)
       .innerJoin(payments, eq(payments.id, refunds.paymentId))
@@ -1155,6 +1449,9 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
       .limit(1);
 
     if (!row) return { handled: false, reason: "refund_not_found" };
+    if (row.isDrill || row.paymentIsDrill || row.orderIsDrill) {
+      return { handled: false, reason: "protected_payment_drill" };
+    }
 
     const eventStatus =
       input.refundStatus === "succeeded"
@@ -1232,10 +1529,14 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
         await this.applyPartialRefundTerminalState(tx, {
           ...terminalInput,
           fulfillmentState: row.fulfillmentState,
+          requireOpen: true,
         });
         return;
       }
-      await this.applyRefundTerminalState(tx, terminalInput);
+      await this.applyRefundTerminalState(tx, {
+        ...terminalInput,
+        requireOpen: true,
+      });
     });
 
     return {

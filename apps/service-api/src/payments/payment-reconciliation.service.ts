@@ -1,4 +1,5 @@
 import {
+  Inject,
   Injectable,
   Logger,
   OnApplicationShutdown,
@@ -16,7 +17,9 @@ export class PaymentReconciliationService
   private timer?: NodeJS.Timeout;
 
   constructor(
+    @Inject(PaymentsService)
     private readonly paymentsService: PaymentsService,
+    @Inject(AppConfigService)
     private readonly config: AppConfigService,
   ) {}
 

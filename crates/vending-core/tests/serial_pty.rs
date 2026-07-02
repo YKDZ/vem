@@ -127,6 +127,62 @@ async fn serial_adapter_dispenses_once_on_ack_and_completed() {
 }
 
 #[tokio::test]
+async fn serial_adapter_rejects_multi_quantity_before_opening_serial() {
+    let adapter = SerialHardwareAdapter::new("/definitely/not/a/serial-port".to_string());
+    let mut command = command("CMD-PTY-MULTI-REJECTED");
+    command.quantity = 2;
+
+    let result = adapter.dispense(command).await;
+
+    assert!(!result.success);
+    assert_eq!(result.error_code.as_deref(), Some("UNKNOWN"));
+    assert!(result.message.contains("single-item dispense"));
+}
+
+#[tokio::test]
+async fn serial_adapter_queries_status_after_missing_ack_before_retrying_dispense() {
+    let _pty_guard = PTY_TEST_LOCK.lock().await;
+    let mut pty = support::open_pty();
+    let slave_path = pty.slave_path.clone();
+    let writes = Arc::new(AtomicUsize::new(0));
+    let writes_for_task = writes.clone();
+    tokio::spawn(async move {
+        support::respond_to_handshake(&mut pty.master).await;
+
+        let frame = support::read_single_dispense_frame(&mut pty.master).await;
+        writes_for_task.fetch_add(1, Ordering::SeqCst);
+        assert_eq!(frame, build_dispense_frame(2, 5).unwrap());
+
+        let mut status_query = [0_u8; 2];
+        tokio::io::AsyncReadExt::read_exact(&mut pty.master, &mut status_query)
+            .await
+            .expect("read status query after missing ack");
+        assert_eq!(
+            status_query,
+            [
+                FRAME_HEAD,
+                vending_core::serial::build_status_query_frame()[1]
+            ]
+        );
+        support::send_lower_code(&mut pty.master, 0xAB).await;
+        sleep(Duration::from_millis(10)).await;
+        support::send_lower_code(&mut pty.master, 0xF1).await;
+        sleep(Duration::from_millis(50)).await;
+    });
+
+    let adapter = SerialHardwareAdapter::new(slave_path.to_string_lossy().to_string());
+    let result = timeout(
+        Duration::from_secs(10),
+        adapter.dispense(command("CMD-PTY-ACK-QUERY-FIRST")),
+    )
+    .await
+    .expect("test timeout");
+
+    assert!(result.success, "{result:?}");
+    assert_eq!(writes.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
 async fn serial_adapter_retries_busy_and_crc_before_success() {
     let _pty_guard = PTY_TEST_LOCK.lock().await;
     let mut pty = support::open_pty();
@@ -453,4 +509,68 @@ async fn serial_adapter_queries_v1_environment_sample() {
             relative_humidity_percent: 88,
         })
     );
+}
+
+#[tokio::test]
+async fn serial_adapter_ignores_heartbeat_before_environment_sample() {
+    let _pty_guard = PTY_TEST_LOCK.lock().await;
+    let mut pty = support::open_pty();
+    let slave_path = pty.slave_path.clone();
+    tokio::spawn(async move {
+        support::respond_to_handshake(&mut pty.master).await;
+        let mut frame = [0_u8; 2];
+        tokio::io::AsyncReadExt::read_exact(&mut pty.master, &mut frame)
+            .await
+            .expect("read environment query frame");
+        assert_eq!(frame, [FRAME_HEAD, 0xB0]);
+        pty.master
+            .write_all(&[FRAME_HEAD, 0xAA, FRAME_HEAD, 0xB0, 24, 53])
+            .await
+            .expect("write heartbeat then environment sample");
+        pty.master.flush().await.expect("flush");
+        sleep(Duration::from_millis(50)).await;
+    });
+
+    let adapter = SerialHardwareAdapter::new(slave_path.to_string_lossy().to_string());
+    let sample = timeout(Duration::from_secs(10), adapter.query_environment_sample())
+        .await
+        .expect("test timeout")
+        .expect("environment query accepted");
+    assert_eq!(
+        sample,
+        Some(EnvironmentSample {
+            temperature_celsius: 24,
+            relative_humidity_percent: 53,
+        })
+    );
+}
+
+#[tokio::test]
+async fn serial_adapter_ignores_heartbeat_before_air_conditioner_echo() {
+    let _pty_guard = PTY_TEST_LOCK.lock().await;
+    let mut pty = support::open_pty();
+    let slave_path = pty.slave_path.clone();
+    tokio::spawn(async move {
+        support::respond_to_handshake(&mut pty.master).await;
+        let mut frame = [0_u8; 3];
+        tokio::io::AsyncReadExt::read_exact(&mut pty.master, &mut frame)
+            .await
+            .expect("read air conditioner switch frame");
+        assert_eq!(frame, [FRAME_HEAD, 0xB2, 0xFF]);
+        pty.master
+            .write_all(&[FRAME_HEAD, 0xAA, FRAME_HEAD, 0xB2, 0xFF])
+            .await
+            .expect("write heartbeat then air conditioner switch echo");
+        pty.master.flush().await.expect("flush");
+        sleep(Duration::from_millis(50)).await;
+    });
+
+    let adapter = SerialHardwareAdapter::new(slave_path.to_string_lossy().to_string());
+    timeout(
+        Duration::from_secs(10),
+        adapter.set_air_conditioner_enabled(true),
+    )
+    .await
+    .expect("test timeout")
+    .expect("air conditioner switch accepted");
 }

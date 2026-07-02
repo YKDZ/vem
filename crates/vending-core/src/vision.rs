@@ -154,7 +154,12 @@ async fn send_hello(socket: &mut VisionSocket, machine_code: Option<String>) -> 
             client_role: "machine",
             machine_code,
             protocol_version: 1,
-            capabilities: vec!["profile_push"],
+            capabilities: vec![
+                "profile_push",
+                "presence_status",
+                "person_departed",
+                "ambient_light",
+            ],
         },
     )
     .await
@@ -206,6 +211,16 @@ mod tests {
             let mut ws_stream = accept_async(stream).await.expect("accept ws");
             let first = ws_stream.next().await.expect("next").expect("msg");
             assert!(first.is_text());
+            let hello: Value = serde_json::from_str(first.to_text().expect("text")).expect("json");
+            assert_eq!(
+                hello["payload"]["capabilities"],
+                serde_json::json!([
+                    "profile_push",
+                    "presence_status",
+                    "person_departed",
+                    "ambient_light"
+                ])
+            );
             ws_stream
                 .send(Message::Text(
                     r#"{"protocol":"vem.vision.v1","type":"vision.ready","messageId":"1","timestamp":"x","payload":{"serverName":"s","serverVersion":"1","cameraReady":true,"modelReady":true,"capabilities":[]}}"#

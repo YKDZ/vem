@@ -5,6 +5,27 @@ export const hardwareAdapterSchema = z.enum(["mock", "serial"]);
 
 export const scannerAdapterSchema = z.enum(["disabled", "serial_text"]);
 
+export const audioCueSettingsSchema = z.object({
+  enabled: z.boolean().default(false),
+  categories: z
+    .object({
+      presence: z.boolean().default(false),
+      transaction: z.boolean().default(false),
+    })
+    .default({
+      presence: false,
+      transaction: false,
+    }),
+});
+
+const audioCueSettingsDefaults = {
+  enabled: false,
+  categories: {
+    presence: false,
+    transaction: false,
+  },
+};
+
 const usbHexIdSchema = z
   .string()
   .trim()
@@ -22,6 +43,13 @@ export const lowerControllerUsbIdentitySchema = z
 export const machineConfigSchema = z
   .object({
     machineCode: z.string().trim().min(1).max(64).nullable().default(null),
+    machineLocationLabel: z
+      .string()
+      .trim()
+      .min(1)
+      .max(256)
+      .nullable()
+      .default(null),
     machineSecret: z.string().trim().min(32).max(256).nullable().default(null),
     machineSecretConfigured: z.boolean().default(false),
     mqttSigningSecret: z
@@ -64,6 +92,14 @@ export const machineConfigSchema = z
     visionEnabled: z.boolean().default(true),
     visionWsUrl: z.string().trim().pipe(z.url()).default(DEFAULT_VISION_WS_URL),
     visionRequestTimeoutMs: z.int().min(1000).max(30_000).default(8000),
+    tryOnCameraDeviceId: z
+      .string()
+      .trim()
+      .min(1)
+      .max(512)
+      .nullable()
+      .default(null),
+    audioCueSettings: audioCueSettingsSchema.default(audioCueSettingsDefaults),
     kioskMode: z.boolean().default(false),
     stockMovementRetentionDays: z.int().min(1).max(366).default(30),
   })
@@ -96,6 +132,7 @@ export const machineConfigSchema = z
 
 export type HardwareAdapter = z.infer<typeof hardwareAdapterSchema>;
 export type ScannerAdapter = z.infer<typeof scannerAdapterSchema>;
+export type AudioCueSettings = z.infer<typeof audioCueSettingsSchema>;
 export type MachineConfig = z.infer<typeof machineConfigSchema>;
 
 export const machineConfigDefaults: MachineConfig = machineConfigSchema.parse(
@@ -107,15 +144,33 @@ export function normalizeMachineConfig(input: unknown): MachineConfig {
     typeof input === "object" && input !== null && !Array.isArray(input)
       ? input
       : {};
+  const rawRecord = Object.fromEntries(Object.entries(rawObj));
   // Merge defaults + input into a plain Record, avoiding unsafe type assertions
   const processed: Record<string, unknown> = {
     ...machineConfigDefaults,
-    ...Object.fromEntries(Object.entries(rawObj)),
+    ...rawRecord,
   };
+  if (
+    !("audioCueSettings" in rawRecord) &&
+    typeof processed.presenceAudioEnabled === "boolean"
+  ) {
+    processed.audioCueSettings = {
+      enabled: processed.presenceAudioEnabled,
+      categories: {
+        presence: processed.presenceAudioEnabled,
+        transaction: false,
+      },
+    };
+  }
+  delete processed.presenceAudioEnabled;
   // Pre-normalize machineCode: whitespace-only string → null before schema validation
   if (typeof processed.machineCode === "string") {
     const trimmed = processed.machineCode.trim();
     processed.machineCode = trimmed.length > 0 ? trimmed : null;
+  }
+  if (typeof processed.machineLocationLabel === "string") {
+    const trimmed = processed.machineLocationLabel.trim();
+    processed.machineLocationLabel = trimmed.length > 0 ? trimmed : null;
   }
   // Pre-normalize machineSecret: whitespace-only string → null before schema validation
   if (typeof processed.machineSecret === "string") {
@@ -142,19 +197,13 @@ export function normalizeMachineConfig(input: unknown): MachineConfig {
     const trimmed = processed.serialPortPath.trim();
     processed.serialPortPath = trimmed.length > 0 ? trimmed : null;
   }
-  if (
-    typeof processed.lowerControllerUsbIdentity === "object" &&
-    processed.lowerControllerUsbIdentity !== null &&
-    !Array.isArray(processed.lowerControllerUsbIdentity)
-  ) {
-    const identity = processed.lowerControllerUsbIdentity as Record<
-      string,
-      unknown
-    >;
+  if (isPlainRecord(processed.lowerControllerUsbIdentity)) {
+    const identity = processed.lowerControllerUsbIdentity;
     if (typeof identity.serialNumber === "string") {
       const trimmed = identity.serialNumber.trim();
       identity.serialNumber = trimmed.length > 0 ? trimmed : null;
     }
+    processed.lowerControllerUsbIdentity = identity;
   }
   if (typeof processed.scannerSerialPortPath === "string") {
     const trimmed = processed.scannerSerialPortPath.trim();
@@ -163,6 +212,10 @@ export function normalizeMachineConfig(input: unknown): MachineConfig {
   if (typeof processed.visionWsUrl === "string") {
     processed.visionWsUrl = processed.visionWsUrl.trim();
   }
+  if (typeof processed.tryOnCameraDeviceId === "string") {
+    const trimmed = processed.tryOnCameraDeviceId.trim();
+    processed.tryOnCameraDeviceId = trimmed.length > 0 ? trimmed : null;
+  }
   const parsed = machineConfigSchema.parse(processed);
   const machineSecret = parsed.machineSecret?.trim() || null;
   const mqttSigningSecret = parsed.mqttSigningSecret?.trim() || null;
@@ -170,6 +223,7 @@ export function normalizeMachineConfig(input: unknown): MachineConfig {
   return {
     ...parsed,
     machineCode: parsed.machineCode?.trim() || null,
+    machineLocationLabel: parsed.machineLocationLabel?.trim() || null,
     machineSecret,
     machineSecretConfigured: Boolean(
       machineSecret || parsed.machineSecretConfigured,
@@ -190,5 +244,10 @@ export function normalizeMachineConfig(input: unknown): MachineConfig {
     scannerUsbIdentity: parsed.scannerUsbIdentity,
     scannerSerialPortPath: parsed.scannerSerialPortPath?.trim() || null,
     visionWsUrl: parsed.visionWsUrl.trim(),
+    tryOnCameraDeviceId: parsed.tryOnCameraDeviceId?.trim() || null,
   };
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

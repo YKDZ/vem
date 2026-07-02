@@ -17,6 +17,10 @@ const apiMocks = vi.hoisted(() => ({
   listMachineClaimCodes: vi.fn(),
   generateMachineClaimCode: vi.fn(),
   revokeMachineClaimCode: vi.fn(),
+  rotateMachineCredentials: vi.fn(),
+  requestLogExport: vi.fn(),
+  createMachine: vi.fn(),
+  updateMachine: vi.fn(),
 }));
 const routerMocks = vi.hoisted(() => ({
   push: vi.fn(),
@@ -33,6 +37,8 @@ const {
   listMachineClaimCodes,
   generateMachineClaimCode,
   revokeMachineClaimCode,
+  createMachine,
+  updateMachine,
 } = apiMocks;
 
 vi.mock("@/api/machines", async () => {
@@ -46,16 +52,16 @@ vi.mock("@/api/machines", async () => {
     listMachineClaimCodes: apiMocks.listMachineClaimCodes,
     generateMachineClaimCode: apiMocks.generateMachineClaimCode,
     revokeMachineClaimCode: apiMocks.revokeMachineClaimCode,
-    createMachine: vi.fn(),
+    createMachine: apiMocks.createMachine,
     createMachineSlot: vi.fn(),
     listMachineSlots: vi.fn(),
-    rotateMachineCredentials: vi.fn(),
-    updateMachine: vi.fn(),
+    rotateMachineCredentials: apiMocks.rotateMachineCredentials,
+    updateMachine: apiMocks.updateMachine,
   };
 });
 
 vi.mock("@/api/machine-ops", () => ({
-  requestLogExport: vi.fn(),
+  requestLogExport: apiMocks.requestLogExport,
 }));
 
 vi.mock("antdv-next", () => ({
@@ -75,7 +81,8 @@ function createMachineFixture(overrides: Record<string, unknown> = {}) {
     id: "11111111-1111-4111-8111-111111111111",
     code: "M001",
     name: "前厅机器",
-    locationText: "一层",
+    locationLabel: "一层",
+    geoLocation: null,
     status: "online",
     mqttClientId: "mqtt-M001",
     lastSeenAt: "2026-06-04T05:00:00.000Z",
@@ -220,6 +227,24 @@ const InputNumberStub = defineComponent({
   },
 });
 
+const InputStub = defineComponent({
+  props: {
+    value: { type: String, default: "" },
+    disabled: { type: Boolean, default: false },
+  },
+  emits: ["update:value"],
+  setup(props, { emit }) {
+    return () =>
+      h("input", {
+        value: props.value,
+        disabled: props.disabled,
+        onInput: (event: Event) => {
+          emit("update:value", getEventInput(event).value);
+        },
+      });
+  },
+});
+
 const DrawerStub = defineComponent({
   props: {
     open: { type: Boolean, default: false },
@@ -243,11 +268,15 @@ const TagStub = defineComponent({
 });
 
 const PassthroughStub = defineComponent({
-  props: { label: { type: String, default: "" } },
+  props: {
+    label: { type: String, default: "" },
+    message: { type: String, default: "" },
+  },
   setup(props, { slots }) {
     return () =>
       h("div", [
         props.label ? h("span", props.label) : null,
+        props.message ? h("span", props.message) : null,
         slots.default?.(),
       ]);
   },
@@ -266,7 +295,6 @@ function installStubs(app: ReturnType<typeof createApp>): void {
     "a-typography-text",
     "a-select",
     "a-select-option",
-    "a-input",
   ];
   app.component("a-table", TableStub);
   app.component("a-button", ButtonStub);
@@ -274,6 +302,7 @@ function installStubs(app: ReturnType<typeof createApp>): void {
   app.component("a-tag", TagStub);
   app.component("a-checkbox", CheckboxStub);
   app.component("a-switch", SwitchStub);
+  app.component("a-input", InputStub);
   app.component("a-input-number", InputNumberStub);
   for (const name of passthroughComponents) {
     app.component(name, PassthroughStub);
@@ -341,6 +370,294 @@ describe("MachinesView environment controls", () => {
 
   afterEach(() => {
     document.body.innerHTML = "";
+  });
+
+  it("edits Machine Location Label through the canonical locationLabel payload", async () => {
+    listMachines.mockResolvedValue({
+      items: [createMachineFixture()],
+      total: 1,
+      page: 1,
+      pageSize: 20,
+    });
+    updateMachine.mockResolvedValue(createMachineFixture());
+
+    const { root } = await mountMachinesView([
+      "machines.read",
+      "machines.write",
+    ]);
+
+    expect(root.textContent).toContain("Machine Location Label");
+
+    Array.from(root.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("编辑"))
+      ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await nextTick();
+
+    const dialog = requireElement(
+      root.querySelector<HTMLElement>('[role="dialog"]'),
+      "machine dialog",
+    );
+    expect(dialog.textContent).toContain("Machine Location Label");
+
+    Array.from(dialog.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("保存"))
+      ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await flushPromises();
+
+    expect(updateMachine).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({ locationLabel: "一层" }),
+    );
+    expect(updateMachine.mock.calls[0][1]).not.toHaveProperty("locationText");
+  });
+
+  it("edits Machine Geo Location through the canonical geoLocation payload", async () => {
+    listMachines.mockResolvedValue({
+      items: [
+        createMachineFixture({
+          geoLocation: {
+            latitude: 31.2304,
+            longitude: 121.4737,
+            timezone: "Asia/Shanghai",
+          },
+        }),
+      ],
+      total: 1,
+      page: 1,
+      pageSize: 20,
+    });
+    updateMachine.mockResolvedValue(createMachineFixture());
+
+    const { root } = await mountMachinesView([
+      "machines.read",
+      "machines.write",
+    ]);
+
+    expect(root.textContent).toContain("Machine Geo Location");
+    expect(root.textContent).toContain("31.2304, 121.4737");
+
+    Array.from(root.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("编辑"))
+      ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await nextTick();
+
+    const dialog = requireElement(
+      root.querySelector<HTMLElement>('[role="dialog"]'),
+      "machine dialog",
+    );
+    expect(dialog.textContent).toContain("WGS84 室外代表性站点坐标");
+    expect(dialog.textContent).toContain("GCJ-02");
+    expect(dialog.textContent).toContain("BD-09");
+
+    const numberInputs = dialog.querySelectorAll<HTMLInputElement>(
+      'input[type="number"]',
+    );
+    numberInputs[0].value = "30.25";
+    numberInputs[0].dispatchEvent(new Event("input", { bubbles: true }));
+    numberInputs[1].value = "120.5";
+    numberInputs[1].dispatchEvent(new Event("input", { bubbles: true }));
+    const timezoneInput = Array.from(
+      dialog.querySelectorAll<HTMLInputElement>('input:not([type="number"])'),
+    ).find((input) => input.value === "Asia/Shanghai");
+    expect(timezoneInput).toBeDefined();
+    timezoneInput!.value = "Asia/Tokyo";
+    timezoneInput!.dispatchEvent(new Event("input", { bubbles: true }));
+    await nextTick();
+
+    Array.from(dialog.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("保存"))
+      ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await flushPromises();
+
+    expect(updateMachine).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({
+        geoLocation: {
+          latitude: 30.25,
+          longitude: 120.5,
+          timezone: "Asia/Tokyo",
+        },
+      }),
+    );
+  });
+
+  it("blocks invalid Machine Geo Location before submitting the machine form", async () => {
+    listMachines.mockResolvedValue({
+      items: [
+        createMachineFixture({
+          geoLocation: {
+            latitude: 31.2304,
+            longitude: 121.4737,
+            timezone: "Asia/Shanghai",
+          },
+        }),
+      ],
+      total: 1,
+      page: 1,
+      pageSize: 20,
+    });
+
+    const { root } = await mountMachinesView([
+      "machines.read",
+      "machines.write",
+    ]);
+    Array.from(root.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("编辑"))
+      ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await nextTick();
+
+    const dialog = requireElement(
+      root.querySelector<HTMLElement>('[role="dialog"]'),
+      "machine dialog",
+    );
+    const latitudeInput = requireElement(
+      dialog.querySelector<HTMLInputElement>('input[type="number"]'),
+      "latitude input",
+    );
+    latitudeInput.value = "91";
+    latitudeInput.dispatchEvent(new Event("input", { bubbles: true }));
+    await nextTick();
+
+    Array.from(dialog.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("保存"))
+      ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await flushPromises();
+
+    expect(updateMachine).not.toHaveBeenCalled();
+  });
+
+  it("blocks invalid Machine Geo Location timezone before submitting the machine form", async () => {
+    listMachines.mockResolvedValue({
+      items: [
+        createMachineFixture({
+          geoLocation: {
+            latitude: 31.2304,
+            longitude: 121.4737,
+            timezone: "Asia/Shanghai",
+          },
+        }),
+      ],
+      total: 1,
+      page: 1,
+      pageSize: 20,
+    });
+
+    const { root } = await mountMachinesView([
+      "machines.read",
+      "machines.write",
+    ]);
+    Array.from(root.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("编辑"))
+      ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await nextTick();
+
+    const dialog = requireElement(
+      root.querySelector<HTMLElement>('[role="dialog"]'),
+      "machine dialog",
+    );
+    const timezoneInput = Array.from(
+      dialog.querySelectorAll<HTMLInputElement>('input:not([type="number"])'),
+    ).find((input) => input.value === "Asia/Shanghai");
+    expect(timezoneInput).toBeDefined();
+    timezoneInput!.value = "Shanghai";
+    timezoneInput!.dispatchEvent(new Event("input", { bubbles: true }));
+    await nextTick();
+
+    Array.from(dialog.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("保存"))
+      ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await flushPromises();
+
+    expect(updateMachine).not.toHaveBeenCalled();
+  });
+
+  it("clears Machine Geo Location when the geo location checkbox is disabled", async () => {
+    listMachines.mockResolvedValue({
+      items: [
+        createMachineFixture({
+          geoLocation: {
+            latitude: 31.2304,
+            longitude: 121.4737,
+            timezone: "Asia/Shanghai",
+          },
+        }),
+      ],
+      total: 1,
+      page: 1,
+      pageSize: 20,
+    });
+    updateMachine.mockResolvedValue(createMachineFixture());
+
+    const { root } = await mountMachinesView([
+      "machines.read",
+      "machines.write",
+    ]);
+    Array.from(root.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("编辑"))
+      ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await nextTick();
+
+    const dialog = requireElement(
+      root.querySelector<HTMLElement>('[role="dialog"]'),
+      "machine dialog",
+    );
+    const geoCheckbox = requireElement(
+      Array.from(dialog.querySelectorAll("label"))
+        .find((label) => label.textContent?.includes("启用固定地理坐标"))
+        ?.querySelector("input"),
+      "geo checkbox",
+    );
+    geoCheckbox.checked = false;
+    geoCheckbox.dispatchEvent(new Event("change", { bubbles: true }));
+    await nextTick();
+
+    Array.from(dialog.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("保存"))
+      ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await flushPromises();
+
+    expect(updateMachine).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({ geoLocation: null }),
+    );
+  });
+
+  it("defaults new machine geo timezone to Asia/Shanghai while leaving geo location unset", async () => {
+    listMachines.mockResolvedValue({
+      items: [],
+      total: 0,
+      page: 1,
+      pageSize: 20,
+    });
+    createMachine.mockResolvedValue(createMachineFixture());
+
+    const { root } = await mountMachinesView([
+      "machines.read",
+      "machines.write",
+    ]);
+    Array.from(root.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("新增机器"))
+      ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await nextTick();
+
+    const dialog = requireElement(
+      root.querySelector<HTMLElement>('[role="dialog"]'),
+      "machine dialog",
+    );
+    expect(
+      Array.from(dialog.querySelectorAll<HTMLInputElement>("input")).some(
+        (input) => input.value === "Asia/Shanghai",
+      ),
+    ).toBe(true);
+
+    Array.from(dialog.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("保存"))
+      ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await flushPromises();
+
+    expect(createMachine).toHaveBeenCalledWith(
+      expect.objectContaining({ geoLocation: null }),
+    );
   });
 
   it("shows a compact environment summary in the machine list without row controls", async () => {
@@ -978,5 +1295,30 @@ describe("MachinesView claim code lifecycle", () => {
     const { root } = await mountMachinesView(["machines.read"]);
 
     expect(root.textContent).not.toContain("领取码");
+  });
+
+  it("requires credential permission for rotation and machine ops permission for log export", async () => {
+    const writeOnly = await mountMachinesView([
+      "machines.read",
+      "machines.write",
+    ]);
+    expect(writeOnly.root.textContent).not.toContain("轮换凭证");
+    expect(writeOnly.root.textContent).not.toContain("导出日志");
+    writeOnly.root.remove();
+
+    const credentialOnly = await mountMachinesView([
+      "machines.read",
+      "machines.manage-credentials",
+    ]);
+    expect(credentialOnly.root.textContent).toContain("轮换凭证");
+    expect(credentialOnly.root.textContent).not.toContain("导出日志");
+    credentialOnly.root.remove();
+
+    const opsOnly = await mountMachinesView([
+      "machines.read",
+      "machineOps.write",
+    ]);
+    expect(opsOnly.root.textContent).not.toContain("轮换凭证");
+    expect(opsOnly.root.textContent).toContain("导出日志");
   });
 });

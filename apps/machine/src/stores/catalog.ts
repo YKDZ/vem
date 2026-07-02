@@ -11,6 +11,7 @@ import { daemonClient } from "@/daemon/client";
 
 const DEFAULT_AUTO_REFRESH_INTERVAL_MS = 5_000;
 const SIZE_ORDER = ["XS", "S", "M", "L", "XL", "XXL"] as const;
+type KnownSize = (typeof SIZE_ORDER)[number];
 
 let refreshInFlight: Promise<void> | null = null;
 let autoRefreshTimer: ReturnType<typeof setInterval> | null = null;
@@ -44,7 +45,11 @@ function slotCandidateFor(
 
 function sizeRank(size: string | null): number {
   if (!size) return Number.MAX_SAFE_INTEGER;
-  const index = SIZE_ORDER.indexOf(size as (typeof SIZE_ORDER)[number]);
+  const knownSize: KnownSize | undefined = SIZE_ORDER.find(
+    (candidate) => candidate === size,
+  );
+  if (!knownSize) return Number.MAX_SAFE_INTEGER;
+  const index = SIZE_ORDER.indexOf(knownSize);
   return index === -1 ? Number.MAX_SAFE_INTEGER : index;
 }
 
@@ -65,6 +70,7 @@ function asCatalogItem(
         size: item.size,
         color: item.color,
         priceCents: item.priceCents,
+        tryOnSilhouetteUrl: item.tryOnSilhouetteUrl ?? null,
         capacity: item.capacity,
         parLevel: item.parLevel,
         physicalStock: item.physicalStock,
@@ -137,6 +143,7 @@ function aggregateVariantCandidates(
         size: representative.size,
         color: representative.color,
         priceCents: representative.priceCents,
+        tryOnSilhouetteUrl: representative.tryOnSilhouetteUrl ?? null,
         capacity,
         parLevel,
         physicalStock,

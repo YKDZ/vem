@@ -51,6 +51,7 @@ beforeEach(() => {
   vi.spyOn(globalThis, "fetch").mockReset();
   daemonClient["connection"] = null;
   daemonClient["seenEventIds"].clear();
+  daemonClient["seenEventIdQueue"].length = 0;
 });
 
 function healthFixture() {
@@ -239,6 +240,49 @@ describe("DaemonApiClient", () => {
       responseCode: "machine_claim_expired",
       responseMessage: "claim ABCD-2345 expired with secret-value",
     });
+  });
+
+  it("controls machine environment through daemon IPC", async () => {
+    vi.mocked(getDaemonConnectionInfo).mockResolvedValue({
+      baseUrl: "http://127.0.0.1:7891",
+      token: "token-1",
+      source: "browser_env",
+      mock: true,
+    });
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          commandNo: "local-env-1",
+          success: true,
+          errorCode: null,
+          message: "environment control completed",
+          airConditionerOn: true,
+          targetTemperatureCelsius: 24,
+          reportedAt: "2026-07-01T07:00:00.000Z",
+        }),
+        { status: 200 },
+      ),
+    );
+
+    const result = await daemonClient.controlEnvironment({
+      airConditionerOn: true,
+      targetTemperatureCelsius: 24,
+      timeoutSeconds: 5,
+    });
+
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "http://127.0.0.1:7891/v1/environment/control",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          airConditionerOn: true,
+          targetTemperatureCelsius: 24,
+          timeoutSeconds: 5,
+        }),
+      }),
+    );
+    expect(result.airConditionerOn).toBe(true);
+    expect(result.targetTemperatureCelsius).toBe(24);
   });
 
   it("surfaces daemon JSON error messages for failed create-order requests", async () => {
@@ -435,5 +479,49 @@ describe("DaemonApiClient", () => {
     first.onclose?.();
 
     expect(MockWebSocket.openCount).toBe(1);
+  });
+
+  it("bounds remembered event ids for long-running kiosks", async () => {
+    vi.mocked(getDaemonConnectionInfo).mockResolvedValue({
+      baseUrl: "http://127.0.0.1:7891",
+      token: "dev-token",
+      source: "browser_env",
+      mock: true,
+    });
+
+    const subscription = daemonClient.subscribeEvents({
+      onEvent: vi.fn(),
+      onError: vi.fn(),
+      onStale: vi.fn(),
+    });
+
+    await vi.waitFor(() => {
+      expect(MockWebSocket.openCount).toBe(1);
+    });
+    const socket = MockWebSocket.instances[0];
+    for (let index = 0; index < 1005; index += 1) {
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: "ready_changed",
+          eventId: `ready-${index}`,
+          updatedAt: "2026-01-01T00:00:00Z",
+          snapshot: {
+            ready: true,
+            canSell: true,
+            mode: "sale",
+            blockingCodes: [],
+            blockingReasons: [],
+            degradedReasons: [],
+            suggestedRoute: "catalog",
+            updatedAt: "2026-01-01T00:00:00Z",
+          },
+        }),
+      });
+    }
+
+    expect(daemonClient["seenEventIds"].size).toBeLessThanOrEqual(1000);
+    expect(daemonClient["seenEventIds"].has("ready-0")).toBe(false);
+    expect(daemonClient["seenEventIds"].has("ready-1004")).toBe(true);
+    subscription.close();
   });
 });

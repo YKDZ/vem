@@ -26,7 +26,18 @@ type CreateProductInput = z.infer<typeof createProductSchema>;
 type UpdateProductInput = z.infer<typeof updateProductSchema>;
 type CreateProductVariantInput = z.infer<typeof createProductVariantSchema>;
 type UpdateProductVariantInput = z.infer<typeof updateProductVariantSchema>;
-type PageQueryInput = z.infer<typeof pageQuerySchema>;
+
+const productListQuerySchema = pageQuerySchema.extend({
+  keyword: z.string().max(128).optional(),
+  status: z.enum(["draft", "active", "inactive"]).optional(),
+});
+
+const productVariantListQuerySchema = pageQuerySchema.extend({
+  productId: z.uuid().optional(),
+});
+
+type ProductListQuery = z.infer<typeof productListQuerySchema>;
+type ProductVariantListQuery = z.infer<typeof productVariantListQuerySchema>;
 
 @ApiTags("products")
 @ApiBearerAuth()
@@ -37,7 +48,8 @@ export class ProductsController {
   @RequirePermissions("products.read")
   @Get("products")
   async listProducts(
-    @Query(new ZodValidationPipe(pageQuerySchema)) query: PageQueryInput,
+    @Query(new ZodValidationPipe(productListQuerySchema))
+    query: ProductListQuery,
   ) {
     return await this.productsService.listProducts(query);
   }
@@ -62,7 +74,8 @@ export class ProductsController {
   @RequirePermissions("products.read")
   @Get("product-variants")
   async listVariants(
-    @Query(new ZodValidationPipe(pageQuerySchema)) query: PageQueryInput,
+    @Query(new ZodValidationPipe(productVariantListQuerySchema))
+    query: ProductVariantListQuery,
   ) {
     return await this.productsService.listVariants(query);
   }

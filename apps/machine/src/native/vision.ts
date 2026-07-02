@@ -1,6 +1,8 @@
 import {
   DEFAULT_VISION_WS_URL,
   VISION_PROTOCOL,
+  visionPresenceStatusPayloadSchema,
+  visionPersonDepartedPayloadSchema,
   visionProfileResultPayloadSchema,
   visionReadyPayloadSchema,
   visionServerMessageSchema,
@@ -34,10 +36,22 @@ export type VisionSelfCheckResult = z.infer<typeof visionSelfCheckResultSchema>;
 export type VisionProfileResultPayload = z.infer<
   typeof visionProfileResultPayloadSchema
 >;
+export type VisionPresenceStatusPayload = z.infer<
+  typeof visionPresenceStatusPayloadSchema
+>;
+export type VisionPersonDepartedPayload = z.infer<
+  typeof visionPersonDepartedPayloadSchema
+>;
 export type { VisionProfile };
 
 export interface VisionProfileSubscriptionHandlers {
   onReady?: (ready: z.infer<typeof visionReadyPayloadSchema>) => void;
+  onPresenceStatus?: (
+    payload: VisionPresenceStatusPayload,
+  ) => void | Promise<void>;
+  onPersonDeparted?: (
+    payload: VisionPersonDepartedPayload,
+  ) => void | Promise<void>;
   onProfile: (payload: VisionProfileResultPayload) => void | Promise<void>;
   onError?: (error: Error) => void;
   onStatus?: (message: string) => void;
@@ -48,6 +62,10 @@ export interface VisionProfileSubscription {
 }
 
 const CONNECT_TIMEOUT_MS = 3000;
+const PING_INTERVAL_MS = 10_000;
+const PONG_TIMEOUT_MS = 5_000;
+const RECONNECT_BASE_DELAY_MS = 1_000;
+const RECONNECT_MAX_DELAY_MS = 10_000;
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -70,8 +88,19 @@ function createHelloMessage(machineCode: string | null): VisionClientMessage {
       clientRole: "machine",
       machineCode,
       protocolVersion: 1,
-      capabilities: ["profile_push"],
+      capabilities: ["profile_push", "presence_status", "person_departed"],
     },
+  } satisfies VisionClientMessage;
+  return message;
+}
+
+function createPingMessage(): VisionClientMessage {
+  const message = {
+    protocol: VISION_PROTOCOL,
+    type: "vision.ping",
+    messageId: createMessageId("ping"),
+    timestamp: nowIso(),
+    payload: {},
   } satisfies VisionClientMessage;
   return message;
 }
@@ -264,12 +293,108 @@ export function subscribeVisionProfiles(
 
   let closed = false;
   let socket: WebSocket | null = null;
+  let pingTimer: ReturnType<typeof setTimeout> | null = null;
+  let pongTimer: ReturnType<typeof setTimeout> | null = null;
+  let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  let reconnectAttempt = 0;
+
+  const clearPingTimers = (): void => {
+    if (pingTimer !== null) {
+      clearTimeout(pingTimer);
+      pingTimer = null;
+    }
+    if (pongTimer !== null) {
+      clearTimeout(pongTimer);
+      pongTimer = null;
+    }
+  };
+
+  const stopSocket = (): void => {
+    clearPingTimers();
+    if (socket) {
+      closeSocket(socket);
+      socket = null;
+    }
+  };
+
+  const reportError = (error: unknown): void => {
+    handlers.onError?.(
+      error instanceof Error ? error : new Error(String(error)),
+    );
+  };
+
+  const scheduleReconnect = (reason: string): void => {
+    if (closed || reconnectTimer !== null) return;
+    stopSocket();
+    const delayMs = Math.min(
+      RECONNECT_BASE_DELAY_MS * 2 ** reconnectAttempt,
+      RECONNECT_MAX_DELAY_MS,
+    );
+    reconnectAttempt += 1;
+    handlers.onStatus?.(
+      `${reason}，${Math.round(delayMs / 1000)} 秒后重连视觉模块`,
+    );
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      void connect();
+    }, delayMs);
+  };
+
+  const schedulePing = (): void => {
+    if (closed) return;
+    if (pingTimer !== null) clearTimeout(pingTimer);
+    pingTimer = setTimeout(() => {
+      pingTimer = null;
+      if (closed || !socket || socket.readyState !== WebSocket.OPEN) return;
+      try {
+        socket.send(serializeClientMessage(createPingMessage()));
+      } catch (error) {
+        reportError(error);
+        scheduleReconnect("视觉模块心跳发送失败");
+        return;
+      }
+      if (pongTimer !== null) clearTimeout(pongTimer);
+      pongTimer = setTimeout(() => {
+        pongTimer = null;
+        reportError(new Error("vision websocket pong timed out"));
+        scheduleReconnect("视觉模块心跳超时");
+      }, PONG_TIMEOUT_MS);
+      schedulePing();
+    }, PING_INTERVAL_MS);
+  };
 
   const handleServerMessage = (message: VisionServerMessage): void => {
     if (message.type === "vision.ready") {
       handlers.onReady?.(message.payload);
       handlers.onStatus?.(
         `视觉模块就绪：${message.payload.serverName} ${message.payload.serverVersion}`,
+      );
+      return;
+    }
+    if (message.type === "vision.pong") {
+      if (pongTimer !== null) {
+        clearTimeout(pongTimer);
+        pongTimer = null;
+      }
+      return;
+    }
+    if (message.type === "vision.presence_status") {
+      void Promise.resolve(handlers.onPresenceStatus?.(message.payload)).catch(
+        (error: unknown) => {
+          handlers.onError?.(
+            error instanceof Error ? error : new Error(String(error)),
+          );
+        },
+      );
+      return;
+    }
+    if (message.type === "vision.person_departed") {
+      void Promise.resolve(handlers.onPersonDeparted?.(message.payload)).catch(
+        (error: unknown) => {
+          handlers.onError?.(
+            error instanceof Error ? error : new Error(String(error)),
+          );
+        },
       );
       return;
     }
@@ -290,11 +415,13 @@ export function subscribeVisionProfiles(
 
   const connect = async (): Promise<void> => {
     try {
-      socket = await openVisionSocket(socketUrl(config));
+      const connectedSocket = await openVisionSocket(socketUrl(config));
       if (closed) {
-        closeSocket(socket);
+        closeSocket(connectedSocket);
         return;
       }
+      socket = connectedSocket;
+      reconnectAttempt = 0;
       socket.addEventListener("message", (event) => {
         if (typeof event.data !== "string") {
           handlers.onError?.(
@@ -306,22 +433,25 @@ export function subscribeVisionProfiles(
           const decoded: unknown = JSON.parse(event.data);
           handleServerMessage(visionServerMessageSchema.parse(decoded));
         } catch (error) {
-          handlers.onError?.(
-            error instanceof Error ? error : new Error(String(error)),
-          );
+          reportError(error);
         }
       });
       socket.addEventListener("error", () => {
-        handlers.onError?.(new Error("vision websocket error"));
+        reportError(new Error("vision websocket error"));
+        scheduleReconnect("视觉模块连接异常");
+      });
+      socket.addEventListener("close", () => {
+        if (closed) return;
+        scheduleReconnect("视觉模块连接已断开");
       });
       socket.send(
         serializeClientMessage(createHelloMessage(config.machineCode)),
       );
+      schedulePing();
       handlers.onStatus?.("已连接机器视觉模块，等待识别结果推送");
     } catch (error) {
-      handlers.onError?.(
-        error instanceof Error ? error : new Error(String(error)),
-      );
+      reportError(error);
+      scheduleReconnect("视觉模块连接失败");
     }
   };
 
@@ -330,7 +460,11 @@ export function subscribeVisionProfiles(
   return {
     close: () => {
       closed = true;
-      if (socket) closeSocket(socket);
+      if (reconnectTimer !== null) {
+        clearTimeout(reconnectTimer);
+        reconnectTimer = null;
+      }
+      stopSocket();
     },
   };
 }

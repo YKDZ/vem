@@ -249,6 +249,8 @@ function makeOrdersService(db = makeOrdersDbForSuccessfulLocalDraft()) {
       paymentProviderRegistry,
       configService,
       refundsService,
+      { record: vi.fn().mockResolvedValue(undefined) } as never,
+      { resolveCommand: vi.fn().mockResolvedValue({}) } as never,
     ),
     db,
     paymentProviderRegistry,
@@ -365,6 +367,23 @@ function makeFlowHarness(overrides?: {
       });
       return next;
     }),
+    markStatusIfCurrentStatusIn: vi
+      .fn()
+      .mockImplementation(async (id, status, allowedStatuses, patch = {}) => {
+        const current = attemptById.get(id);
+        if (!current) throw new Error(`attempt ${id} not found`);
+        if (!allowedStatuses.includes(current.status)) return null;
+        const next = replaceAttempt({
+          ...current,
+          ...patch,
+          status,
+          isActive:
+            patch.isActive ??
+            !["succeeded", "failed", "reversed", "canceled"].includes(status),
+          updatedAt: new Date(),
+        });
+        return next;
+      }),
     getById: vi.fn().mockImplementation(async (id) => {
       const row = attemptById.get(id);
       if (!row) throw new Error(`attempt ${id} not found`);

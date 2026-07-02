@@ -7,7 +7,7 @@
     "build": "vue-tsc --noEmit && vite build",
     "dev": "vite --host 0.0.0.0",
     "fmt": "oxfmt",
-    "lint": "pnpm exec oxlint --type-aware --config oxlint.config.json",
+    "lint": "pnpm exec oxlint --type-aware --config oxlint.config.ts",
     "lint-fix": "oxlint --fix --type-aware",
     "preview": "vite preview --host 0.0.0.0",
     "tauri": "tauri",
@@ -17,8 +17,8 @@
     "typecheck": "tsc --noEmit && vue-tsc --noEmit"
   },
   "dependencies": {
-    "@tauri-apps/api": "^2",
-    "@tauri-apps/plugin-opener": "^2",
+    "@tauri-apps/api": "^2.11.1",
+    "@tauri-apps/plugin-opener": "^2.5.4",
     "@vem/shared": "workspace:*",
     "axios": "catalog:",
     "mqtt": "^5.15.1",

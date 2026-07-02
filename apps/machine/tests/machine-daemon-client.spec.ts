@@ -231,7 +231,7 @@ function transactionSnapshot(
     nextAction,
     maskedAuthCode: null,
     paymentCodeAttempt: null,
-    expiresAt: "2026-01-01T00:05:00Z",
+    expiresAt: new Date(Date.now() + 5 * 60_000).toISOString(),
     errorCode: null,
     errorMessage: null,
     operatorHint: null,
@@ -392,6 +392,9 @@ function currentFixtures(): Record<string, unknown> {
 
 function handleRequest(req: IncomingMessage, res: ServerResponse): void {
   const url = new URL(req.url ?? "/", "http://127.0.0.1:7891");
+  if (process.env.VEM_E2E_TRACE === "1") {
+    console.error(`[mock-daemon] ${scenario} ${req.method} ${url.pathname}`);
+  }
 
   if (req.method === "OPTIONS") {
     res.writeHead(204, {
@@ -653,11 +656,49 @@ test("routes ready daemon to catalog", async ({ page }) => {
   await expect(page.getByRole("button", { name: /T恤/ })).toBeVisible();
 });
 
+test("redesigned catalog home controls remain interactive", async ({
+  page,
+}) => {
+  scenario = "catalog";
+  await page.goto("/");
+
+  const carouselImage = page.getByRole("img", { name: "轮播展示" });
+  const firstCarouselSrc = await carouselImage.getAttribute("src");
+  await expect(page.getByRole("button", { name: "下一张" })).toBeVisible();
+  await page.getByRole("button", { name: "下一张" }).click({ force: true });
+  await expect
+    .poll(async () => await carouselImage.getAttribute("src"))
+    .not.toBe(firstCarouselSrc);
+  await page.getByRole("button", { name: "上一张" }).click({ force: true });
+  await page
+    .getByRole("button", { name: "切换到第 3 张" })
+    .click({ force: true });
+  await expect
+    .poll(async () => await carouselImage.getAttribute("src"))
+    .not.toBe(firstCarouselSrc);
+
+  await page.getByRole("button", { name: /T恤/ }).click();
+  await expect(
+    page.getByRole("img", { name: "商品列表，请点击选择您需要的商品" }),
+  ).toBeVisible();
+
+  await page.getByRole("button", { name: /基础短袖/ }).click();
+  await expect(
+    page.getByRole("heading", { name: "基础短袖", exact: true }),
+  ).toBeVisible();
+
+  await page.getByRole("button", { name: /立即购买/ }).click();
+  await expect(page.getByRole("heading", { name: "确认购买" })).toBeVisible();
+
+  await page.getByRole("button", { name: "返回" }).click();
+  await expect(page.getByRole("button", { name: /立即购买/ })).toBeVisible();
+});
+
 test("catalog hides sold-out sale-view items", async ({ page }) => {
   scenario = "soldOut";
   await page.goto("/");
   await expect(page.getByText("暂无可售商品")).toBeVisible();
-  await expect(page.getByRole("button", { name: /T恤/ })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /T恤/ })).toBeDisabled();
 });
 
 test("routes missing config to maintenance", async ({ page }) => {
@@ -669,17 +710,13 @@ test("routes missing config to maintenance", async ({ page }) => {
 test("routes not-ready daemon to offline", async ({ page }) => {
   scenario = "offline";
   await page.goto("/");
-  await expect(
-    page.getByRole("heading", { name: "暂时无法购买" }),
-  ).toBeVisible();
+  await expect(page.getByRole("heading", { name: "设备离线" })).toBeVisible();
 });
 
 test("restores active payment transaction", async ({ page }) => {
   scenario = "payment";
   await page.goto("/");
-  await expect(
-    page.getByRole("heading", { name: "支付宝扫码支付" }),
-  ).toBeVisible();
+  await expect(page.getByText("请使用微信 / 支付宝扫码支付")).toBeVisible();
   await expect(page.getByText("应付金额")).toBeVisible();
   await expect(page.getByText("¥59.00")).toBeVisible();
 });
@@ -687,9 +724,7 @@ test("restores active payment transaction", async ({ page }) => {
 test("routes active dispensing transaction", async ({ page }) => {
   scenario = "dispensing";
   await page.goto("/");
-  await expect(
-    page.getByRole("heading", { name: "支付成功，正在出货" }),
-  ).toBeVisible();
+  await expect(page.getByRole("heading", { name: "正在出货" })).toBeVisible();
 });
 
 test("routes finished transaction to result", async ({ page }) => {
@@ -701,14 +736,10 @@ test("routes finished transaction to result", async ({ page }) => {
 test("page reload keeps current transaction route", async ({ page }) => {
   scenario = "payment";
   await page.goto("/");
-  await expect(
-    page.getByRole("heading", { name: "支付宝扫码支付" }),
-  ).toBeVisible();
+  await expect(page.getByText("请使用微信 / 支付宝扫码支付")).toBeVisible();
   await page.goto("/#/boot");
   await expect(page).toHaveURL(/#\/payment$/);
-  await expect(
-    page.getByRole("heading", { name: "支付宝扫码支付" }),
-  ).toBeVisible();
+  await expect(page.getByText("请使用微信 / 支付宝扫码支付")).toBeVisible();
 });
 
 test("daemon snapshots never expose secret fields to browser storage", async ({
@@ -741,7 +772,7 @@ test("provisioning UI maps real daemon claim error contract without echoing code
 }) => {
   scenario = "provisioning";
   await page.goto("/");
-  await page.getByLabel("Machine Claim Code").fill("ABCD-2345");
+  await page.getByLabel("领取码").fill("ABCD-2345");
   await page.getByRole("button", { name: "提交领取码" }).click();
 
   await expect(page.getByText("领取码已使用")).toBeVisible();

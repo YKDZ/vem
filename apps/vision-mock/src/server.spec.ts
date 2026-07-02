@@ -30,7 +30,13 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
-function createHelloMessage(): VisionClientMessage {
+function createHelloMessage(
+  capabilities: string[] = [
+    "profile_push",
+    "presence_status",
+    "person_departed",
+  ],
+): VisionClientMessage {
   const message = {
     protocol: VISION_PROTOCOL,
     type: "vision.hello",
@@ -40,7 +46,7 @@ function createHelloMessage(): VisionClientMessage {
       clientRole: "machine",
       machineCode: "M001",
       protocolVersion: 1,
-      capabilities: ["profile_push"],
+      capabilities,
     },
   } satisfies VisionClientMessage;
   return message;
@@ -178,6 +184,15 @@ describe("vision mock server - protocol conformance", () => {
       expect(ready.payload.cameraReady).toBe(true);
       expect(ready.payload.modelReady).toBe(true);
       expect(ready.payload.capabilities).toContain("profile_push");
+      expect(ready.payload.capabilities).toContain("presence_status");
+      expect(ready.payload.capabilities).toContain("person_departed");
+
+      const presence = await messages.next();
+      if (presence.type !== "vision.presence_status") {
+        throw new Error(`expected presence status, got ${presence.type}`);
+      }
+      expect(presence.payload.state).toBe("approach");
+      expect(presence.payload.personPresent).toBe(true);
 
       const result = await messages.next();
       if (result.type !== "vision.profile_result") {
@@ -188,23 +203,134 @@ describe("vision mock server - protocol conformance", () => {
       expect(typeof result.payload.detectedAt).toBe("string");
       expect(result.payload.profile.personPresent).toBe(true);
       expect(result.payload.profile.heightCm).toBe(172);
+      expect(result.payload.profile.shoulderWidthCm).toBe(43);
       expect(result.payload.profile.gender).toBe("unknown");
-      expect(result.payload.quality.overall).toBe("good");
+      expect(result.payload.quality.overall).toBe("fair");
     } finally {
       messages.dispose();
       socket.close();
     }
   }, 20_000);
+
+  it("can push presence without profile details", async () => {
+    const url = await createServer("presence_only");
+    const socket = await openSocket(url);
+    const messages = createServerMessageReader(socket);
+
+    try {
+      socket.send(JSON.stringify(createHelloMessage()));
+      const ready = await messages.next();
+      expect(ready.type).toBe("vision.ready");
+
+      const presence = await messages.next();
+      if (presence.type !== "vision.presence_status") {
+        throw new Error(`expected presence status, got ${presence.type}`);
+      }
+      expect(presence.payload.state).toBe("approach");
+      expect(presence.payload.personPresent).toBe(true);
+
+      const timedOut = await messages.next(100).then(
+        () => false,
+        () => true,
+      );
+      expect(timedOut).toBe(true);
+    } finally {
+      messages.dispose();
+      socket.close();
+    }
+  });
+});
+
+describe("vision mock server - departure events", () => {
+  it("pushes person_departed after presence when requested", async () => {
+    const url = await createServer("departure_after_presence");
+    const socket = await openSocket(url);
+    const messages = createServerMessageReader(socket);
+
+    try {
+      socket.send(JSON.stringify(createHelloMessage()));
+      const ready = await messages.next();
+      expect(ready.type).toBe("vision.ready");
+
+      const presence = await messages.next();
+      expect(presence.type).toBe("vision.presence_status");
+
+      const departed = await messages.next();
+      if (departed.type !== "vision.person_departed") {
+        throw new Error(`expected person departed, got ${departed.type}`);
+      }
+      expect(departed.payload.reason).toBe("left_frame");
+      expect(departed.payload.lastSeenAt).toBe(
+        presence.type === "vision.presence_status"
+          ? presence.payload.detectedAt
+          : null,
+      );
+    } finally {
+      messages.dispose();
+      socket.close();
+    }
+  });
+
+  it("does not push person_departed when the capability is absent", async () => {
+    const url = await createServer("departure_after_presence");
+    const socket = await openSocket(url);
+    const messages = createServerMessageReader(socket);
+
+    try {
+      socket.send(
+        JSON.stringify(createHelloMessage(["profile_push", "presence_status"])),
+      );
+      const ready = await messages.next();
+      expect(ready.type).toBe("vision.ready");
+
+      const presence = await messages.next();
+      expect(presence.type).toBe("vision.presence_status");
+
+      const result = await messages.next();
+      expect(result.type).toBe("vision.profile_result");
+    } finally {
+      messages.dispose();
+      socket.close();
+    }
+  });
 });
 
 describe("vision mock server - no_person scenario", () => {
-  it("stays silent after ready when no person is detected", async () => {
+  it("pushes empty presence when no person is detected and presence_status is requested", async () => {
     const url = await createServer("no_person");
     const socket = await openSocket(url);
     const messages = createServerMessageReader(socket);
 
     try {
       socket.send(JSON.stringify(createHelloMessage()));
+      const ready = await messages.next();
+      expect(ready.type).toBe("vision.ready");
+
+      const presence = await messages.next();
+      if (presence.type !== "vision.presence_status") {
+        throw new Error(`expected presence status, got ${presence.type}`);
+      }
+      expect(presence.payload.state).toBe("empty");
+      expect(presence.payload.personPresent).toBe(false);
+
+      const timedOut = await messages.next(100).then(
+        () => false,
+        () => true,
+      );
+      expect(timedOut).toBe(true);
+    } finally {
+      messages.dispose();
+      socket.close();
+    }
+  });
+
+  it("stays silent after ready when presence_status is not requested", async () => {
+    const url = await createServer("no_person");
+    const socket = await openSocket(url);
+    const messages = createServerMessageReader(socket);
+
+    try {
+      socket.send(JSON.stringify(createHelloMessage(["profile_push"])));
       const ready = await messages.next();
       expect(ready.type).toBe("vision.ready");
 

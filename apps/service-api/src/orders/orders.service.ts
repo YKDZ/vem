@@ -7,6 +7,7 @@ import {
 } from "@nestjs/common";
 import {
   and,
+  auditLogs,
   count,
   desc,
   eq,
@@ -15,19 +16,26 @@ import {
   inventoryMovements,
   inventoryReservations,
   isNull,
+  machineRawStockMovementConflicts,
+  machineRawStockMovements,
   machinePlanogramSlots,
   machinePlanogramVersions,
   machineSlots,
   machines,
+  maintenanceWorkOrders,
   orderItems,
+  orderRecoveryActions,
   orders,
   orderStatusEvents,
   paymentCodeAttempts,
   paymentEvents,
   paymentProviders,
+  paymentReconciliationAttempts,
+  paymentWebhookAttempts,
   payments,
   productVariants,
   products,
+  or,
   refunds,
   sql,
   vendingCommands,
@@ -46,12 +54,15 @@ import {
   type OrderFulfillmentState,
   type OrderPaymentState,
   type OrderStatus,
+  type PermissionCode,
   type PaymentCodeSource,
   type PaymentStatus,
+  type OrderRecoveryAction,
   type VendingCommandStatus,
 } from "@vem/shared";
 import { z } from "zod";
 
+import { AuditService } from "../audit/audit.service";
 import { createBusinessNo } from "../common/business-no.util";
 import { getOffset, toPageResult } from "../common/pagination.util";
 import { DRIZZLE_CLIENT } from "../database/database.constants";
@@ -61,6 +72,7 @@ import { PaymentProviderRegistry } from "../payments/payment-provider.registry";
 import { buildStoredEventPayload } from "../payments/payment-redaction.util";
 import { PaymentsService } from "../payments/payments.service";
 import { RefundsService } from "../refunds/refunds.service";
+import { VendingService } from "../vending/vending.service";
 import { projectOrderStatus } from "./order-state-projection";
 
 type CreateMachineOrderInput = z.infer<typeof createMachineOrderSchema>;
@@ -69,6 +81,62 @@ type OrderQuery = z.infer<typeof orderQuerySchema> &
   z.infer<typeof pageQuerySchema>;
 
 const DEFAULT_UNCONFIRMED_QR_DISPLAY_DELAY_MS = 30_000;
+const RECOVERY_ACTIONS = [
+  "confirm_dispensed",
+  "confirm_not_dispensed",
+  "request_refund",
+  "compensation_dispense",
+] as const;
+const ACTIVE_REFUND_STATUSES = ["created", "processing", "succeeded"] as const;
+
+type RecoveryActionName = (typeof RECOVERY_ACTIONS)[number];
+type RecoveryActionRow = {
+  id: string;
+  commandId: string;
+  action: string;
+  status: string;
+};
+
+function isUniqueViolation(error: unknown): boolean {
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "cause" in error &&
+    isUniqueViolation(Reflect.get(error, "cause"))
+  ) {
+    return true;
+  }
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    Reflect.get(error, "code") === "23505"
+  );
+}
+
+function normalizeRecoveryAction(
+  input: OrderRecoveryAction,
+): RecoveryActionName {
+  const action = input.action;
+  if (RECOVERY_ACTIONS.some((candidate) => candidate === action)) {
+    return action;
+  }
+  throw new ConflictException(`Unsupported recovery action ${action}`);
+}
+
+function isCompletedAction(
+  row: RecoveryActionRow,
+  action: RecoveryActionName,
+): boolean {
+  return row.action === action && row.status === "completed";
+}
+
+function hasPermission(
+  permissions: ReadonlySet<PermissionCode>,
+  permission: PermissionCode,
+): boolean {
+  return permissions.has(permission);
+}
 
 function readQrExpiresMinutes(
   publicConfigJson: Record<string, unknown>,
@@ -198,6 +266,9 @@ type MachineOrderStatusRow = {
   paidAt: Date | null;
   failedReason: string | null;
   paymentProviderCode: string;
+  isDrill: boolean;
+  isTest: boolean;
+  scenario: string | null;
 };
 
 type CancelableMachineOrderRow = {
@@ -230,6 +301,8 @@ export class OrdersService {
     private readonly paymentProviderRegistry: PaymentProviderRegistry,
     private readonly paymentProviderConfigService: PaymentProviderConfigService,
     private readonly refundsService: RefundsService,
+    private readonly auditService: AuditService,
+    private readonly vendingService: VendingService,
     @Optional() private readonly paymentsService?: PaymentsService,
   ) {}
 
@@ -256,6 +329,9 @@ export class OrdersService {
         paidAt: payments.paidAt,
         failedReason: payments.failedReason,
         paymentProviderCode: paymentProviders.code,
+        isDrill: orders.isDrill,
+        isTest: orders.isDrill,
+        scenario: orders.drillScenario,
       })
       .from(orders)
       .innerJoin(machines, eq(machines.id, orders.machineId))
@@ -1090,6 +1166,9 @@ export class OrdersService {
         paymentState: orders.paymentState,
         fulfillmentState: orders.fulfillmentState,
         totalAmountCents: orders.totalAmountCents,
+        isDrill: orders.isDrill,
+        isTest: orders.isDrill,
+        scenario: orders.drillScenario,
         paidAt: orders.paidAt,
         dispensedAt: orders.dispensedAt,
         createdAt: orders.createdAt,
@@ -1184,12 +1263,862 @@ export class OrdersService {
     };
   }
 
+  async getOrderInvestigation(id: string, permissions: PermissionCode[]) {
+    const permissionSet = new Set(permissions);
+    const canReadPayments = hasPermission(permissionSet, "payments.read");
+    const canReadInventory = hasPermission(permissionSet, "inventory.read");
+    const canReadMaintenance = hasPermission(
+      permissionSet,
+      "maintenanceWorkOrders.read",
+    );
+    const canReadAudit = hasPermission(permissionSet, "audit.read");
+
+    const [order] = await this.db
+      .select({
+        id: orders.id,
+        orderNo: orders.orderNo,
+        machineId: orders.machineId,
+        machineCode: machines.code,
+        status: orders.status,
+        paymentState: orders.paymentState,
+        fulfillmentState: orders.fulfillmentState,
+        totalAmountCents: orders.totalAmountCents,
+        currency: orders.currency,
+        paidAt: orders.paidAt,
+        dispensedAt: orders.dispensedAt,
+        canceledAt: orders.canceledAt,
+        createdAt: orders.createdAt,
+      })
+      .from(orders)
+      .innerJoin(machines, eq(machines.id, orders.machineId))
+      .where(eq(orders.id, id));
+    if (!order) {
+      throw new NotFoundException("Order not found");
+    }
+
+    const items = await this.db
+      .select()
+      .from(orderItems)
+      .where(eq(orderItems.orderId, id))
+      .orderBy(orderItems.createdAt);
+
+    const paymentRows = canReadPayments
+      ? await this.db
+          .select({
+            id: payments.id,
+            paymentNo: payments.paymentNo,
+            orderId: payments.orderId,
+            method: payments.method,
+            status: payments.status,
+            amountCents: payments.amountCents,
+            providerTradeNo: payments.providerTradeNo,
+            expiresAt: payments.expiresAt,
+            paidAt: payments.paidAt,
+            failedReason: payments.failedReason,
+            createdAt: payments.createdAt,
+            updatedAt: payments.updatedAt,
+          })
+          .from(payments)
+          .where(eq(payments.orderId, id))
+          .orderBy(desc(payments.createdAt))
+      : [];
+
+    const paymentIds = paymentRows.map((payment) => payment.id);
+    const paymentEventRows =
+      !canReadPayments || paymentIds.length === 0
+        ? []
+        : await this.db
+            .select({
+              id: paymentEvents.id,
+              paymentId: paymentEvents.paymentId,
+              eventType: paymentEvents.eventType,
+              providerEventId: paymentEvents.providerEventId,
+              signatureValid: paymentEvents.signatureValid,
+              handledAt: paymentEvents.handledAt,
+              createdAt: paymentEvents.createdAt,
+            })
+            .from(paymentEvents)
+            .where(inArray(paymentEvents.paymentId, paymentIds))
+            .orderBy(desc(paymentEvents.createdAt));
+
+    const paymentWebhookAttemptRows = canReadPayments
+      ? await this.db
+          .select({
+            id: paymentWebhookAttempts.id,
+            providerCode: paymentWebhookAttempts.providerCode,
+            paymentId: paymentWebhookAttempts.paymentId,
+            refundId: paymentWebhookAttempts.refundId,
+            eventKind: paymentWebhookAttempts.eventKind,
+            eventType: paymentWebhookAttempts.eventType,
+            providerEventId: paymentWebhookAttempts.providerEventId,
+            paymentNo: paymentWebhookAttempts.paymentNo,
+            refundNo: paymentWebhookAttempts.refundNo,
+            orderNo: paymentWebhookAttempts.orderNo,
+            signatureValid: paymentWebhookAttempts.signatureValid,
+            businessValid: paymentWebhookAttempts.businessValid,
+            handled: paymentWebhookAttempts.handled,
+            duplicate: paymentWebhookAttempts.duplicate,
+            failureReason: paymentWebhookAttempts.failureReason,
+            errorCode: paymentWebhookAttempts.errorCode,
+            httpStatus: paymentWebhookAttempts.httpStatus,
+            createdAt: paymentWebhookAttempts.createdAt,
+            updatedAt: paymentWebhookAttempts.updatedAt,
+          })
+          .from(paymentWebhookAttempts)
+          .where(
+            paymentIds.length === 0
+              ? eq(paymentWebhookAttempts.orderNo, order.orderNo)
+              : or(
+                  eq(paymentWebhookAttempts.orderNo, order.orderNo),
+                  inArray(paymentWebhookAttempts.paymentId, paymentIds),
+                ),
+          )
+          .orderBy(desc(paymentWebhookAttempts.createdAt))
+      : [];
+
+    const paymentReconciliationAttemptRows =
+      !canReadPayments || paymentIds.length === 0
+        ? []
+        : await this.db
+            .select({
+              id: paymentReconciliationAttempts.id,
+              paymentId: paymentReconciliationAttempts.paymentId,
+              trigger: paymentReconciliationAttempts.trigger,
+              attemptNo: paymentReconciliationAttempts.attemptNo,
+              status: paymentReconciliationAttempts.status,
+              providerPaymentStatus:
+                paymentReconciliationAttempts.providerPaymentStatus,
+              providerTradeNo: paymentReconciliationAttempts.providerTradeNo,
+              errorCode: paymentReconciliationAttempts.errorCode,
+              errorMessage: paymentReconciliationAttempts.errorMessage,
+              nextRetryAt: paymentReconciliationAttempts.nextRetryAt,
+              startedAt: paymentReconciliationAttempts.startedAt,
+              finishedAt: paymentReconciliationAttempts.finishedAt,
+              createdAt: paymentReconciliationAttempts.createdAt,
+            })
+            .from(paymentReconciliationAttempts)
+            .where(inArray(paymentReconciliationAttempts.paymentId, paymentIds))
+            .orderBy(desc(paymentReconciliationAttempts.createdAt));
+
+    const paymentCodeAttemptRows = canReadPayments
+      ? await this.db
+          .select({
+            id: paymentCodeAttempts.id,
+            paymentId: paymentCodeAttempts.paymentId,
+            orderId: paymentCodeAttempts.orderId,
+            attemptNo: paymentCodeAttempts.attemptNo,
+            providerPaymentNo: paymentCodeAttempts.providerPaymentNo,
+            idempotencyKey: paymentCodeAttempts.idempotencyKey,
+            status: paymentCodeAttempts.status,
+            isActive: paymentCodeAttempts.isActive,
+            amountCents: paymentCodeAttempts.amountCents,
+            currency: paymentCodeAttempts.currency,
+            authCodeMasked: paymentCodeAttempts.authCodeMasked,
+            source: paymentCodeAttempts.source,
+            providerTradeNo: paymentCodeAttempts.providerTradeNo,
+            providerStatus: paymentCodeAttempts.providerStatus,
+            failureCode: paymentCodeAttempts.failureCode,
+            failureMessage: paymentCodeAttempts.failureMessage,
+            submittedAt: paymentCodeAttempts.submittedAt,
+            lastCheckedAt: paymentCodeAttempts.lastCheckedAt,
+            reversedAt: paymentCodeAttempts.reversedAt,
+            finishedAt: paymentCodeAttempts.finishedAt,
+            manualReason: paymentCodeAttempts.manualReason,
+            createdAt: paymentCodeAttempts.createdAt,
+            updatedAt: paymentCodeAttempts.updatedAt,
+          })
+          .from(paymentCodeAttempts)
+          .where(eq(paymentCodeAttempts.orderId, id))
+          .orderBy(desc(paymentCodeAttempts.createdAt))
+      : [];
+
+    const vendingCommandRows = await this.db
+      .select({
+        id: vendingCommands.id,
+        commandNo: vendingCommands.commandNo,
+        orderId: vendingCommands.orderId,
+        machineId: vendingCommands.machineId,
+        machineCode: machines.code,
+        slotId: vendingCommands.slotId,
+        slotCode: machineSlots.slotCode,
+        orderItemId: vendingCommands.orderItemId,
+        commandKind: vendingCommands.commandKind,
+        recoveryActionId: vendingCommands.recoveryActionId,
+        status: vendingCommands.status,
+        sentAt: vendingCommands.sentAt,
+        ackAt: vendingCommands.ackAt,
+        resultAt: vendingCommands.resultAt,
+        retryCount: vendingCommands.retryCount,
+        lastError: vendingCommands.lastError,
+        createdAt: vendingCommands.createdAt,
+        updatedAt: vendingCommands.updatedAt,
+      })
+      .from(vendingCommands)
+      .innerJoin(machines, eq(machines.id, vendingCommands.machineId))
+      .innerJoin(machineSlots, eq(machineSlots.id, vendingCommands.slotId))
+      .where(eq(vendingCommands.orderId, id))
+      .orderBy(desc(vendingCommands.createdAt));
+    const vendingCommandIds = vendingCommandRows.map((command) => command.id);
+
+    const inventoryMovementRows = canReadInventory
+      ? await this.db
+          .select({
+            id: inventoryMovements.id,
+            inventoryId: inventoryMovements.inventoryId,
+            deltaQty: inventoryMovements.deltaQty,
+            reason: inventoryMovements.reason,
+            orderId: inventoryMovements.orderId,
+            operatorAdminUserId: inventoryMovements.operatorAdminUserId,
+            note: inventoryMovements.note,
+            createdAt: inventoryMovements.createdAt,
+          })
+          .from(inventoryMovements)
+          .where(eq(inventoryMovements.orderId, id))
+          .orderBy(desc(inventoryMovements.createdAt))
+      : [];
+
+    const stockReconciliationRows = canReadInventory
+      ? await this.db
+          .select({
+            id: machineRawStockMovements.id,
+            caseTable: sql<"machine_raw_stock_movements">`'machine_raw_stock_movements'`,
+            rawMovementId: sql<string | null>`null`,
+            machineId: machineRawStockMovements.machineId,
+            movementId: machineRawStockMovements.movementId,
+            status: machineRawStockMovements.status,
+            reconciliationReason: machineRawStockMovements.reconciliationReason,
+            platformReviewStatus: machineRawStockMovements.platformReviewStatus,
+            saleSafetyBlockerState:
+              machineRawStockMovements.saleSafetyBlockerState,
+            saleSafetyBlockerSlotId:
+              machineRawStockMovements.saleSafetyBlockerSlotId,
+            receivedAt: machineRawStockMovements.receivedAt,
+          })
+          .from(machineRawStockMovements)
+          .where(
+            and(
+              eq(machineRawStockMovements.machineId, order.machineId),
+              or(
+                sql`${machineRawStockMovements.normalizedJson}->>'orderId' = ${id}`,
+                sql`${machineRawStockMovements.normalizedJson}->>'orderNo' = ${order.orderNo}`,
+              ),
+            ),
+          )
+          .orderBy(desc(machineRawStockMovements.receivedAt))
+      : [];
+    const stockReconciliationConflictRows = canReadInventory
+      ? await this.db
+          .select({
+            id: machineRawStockMovementConflicts.id,
+            caseTable: sql<"machine_raw_stock_movement_conflicts">`'machine_raw_stock_movement_conflicts'`,
+            rawMovementId: machineRawStockMovementConflicts.rawMovementId,
+            machineId: machineRawStockMovementConflicts.machineId,
+            movementId: machineRawStockMovementConflicts.movementId,
+            status: machineRawStockMovementConflicts.status,
+            reconciliationReason:
+              machineRawStockMovementConflicts.reconciliationReason,
+            platformReviewStatus:
+              machineRawStockMovementConflicts.platformReviewStatus,
+            saleSafetyBlockerState:
+              machineRawStockMovementConflicts.saleSafetyBlockerState,
+            saleSafetyBlockerSlotId:
+              machineRawStockMovementConflicts.saleSafetyBlockerSlotId,
+            receivedAt: machineRawStockMovementConflicts.receivedAt,
+          })
+          .from(machineRawStockMovementConflicts)
+          .where(
+            and(
+              eq(machineRawStockMovementConflicts.machineId, order.machineId),
+              or(
+                sql`${machineRawStockMovementConflicts.normalizedJson}->>'orderId' = ${id}`,
+                sql`${machineRawStockMovementConflicts.normalizedJson}->>'orderNo' = ${order.orderNo}`,
+                sql`${machineRawStockMovementConflicts.payloadJson}->'orderContext'->>'orderNo' = ${order.orderNo}`,
+              ),
+            ),
+          )
+          .orderBy(desc(machineRawStockMovementConflicts.receivedAt))
+      : [];
+    const stockReconciliationLinks = [
+      ...stockReconciliationRows,
+      ...stockReconciliationConflictRows,
+    ].sort((a, b) => b.receivedAt.getTime() - a.receivedAt.getTime());
+
+    const refundRows = canReadPayments
+      ? await this.db
+          .select({
+            id: refunds.id,
+            refundNo: refunds.refundNo,
+            paymentId: refunds.paymentId,
+            orderId: refunds.orderId,
+            amountCents: refunds.amountCents,
+            status: refunds.status,
+            providerRefundNo: refunds.providerRefundNo,
+            reason: refunds.reason,
+            requestedByAdminUserId: refunds.requestedByAdminUserId,
+            refundedAt: refunds.refundedAt,
+            createdAt: refunds.createdAt,
+            updatedAt: refunds.updatedAt,
+          })
+          .from(refunds)
+          .where(eq(refunds.orderId, id))
+          .orderBy(desc(refunds.createdAt))
+      : [];
+    const refundIds = refundRows.map((refund) => refund.id);
+    const [activeRefundCount] = await this.db
+      .select({ total: count() })
+      .from(refunds)
+      .where(
+        and(
+          eq(refunds.orderId, id),
+          inArray(refunds.status, ACTIVE_REFUND_STATUSES),
+        ),
+      );
+    const activeRefundExists = Number(activeRefundCount.total) > 0;
+
+    const recoveryActionRows = await this.db
+      .select({
+        id: orderRecoveryActions.id,
+        commandId: orderRecoveryActions.commandId,
+        action: orderRecoveryActions.action,
+        status: orderRecoveryActions.status,
+      })
+      .from(orderRecoveryActions)
+      .where(eq(orderRecoveryActions.orderId, id))
+      .orderBy(desc(orderRecoveryActions.createdAt));
+
+    const maintenanceWorkOrderRows = canReadMaintenance
+      ? await this.db
+          .select({
+            id: maintenanceWorkOrders.id,
+            workOrderNo: maintenanceWorkOrders.workOrderNo,
+            machineId: maintenanceWorkOrders.machineId,
+            slotId: maintenanceWorkOrders.slotId,
+            orderId: maintenanceWorkOrders.orderId,
+            commandId: maintenanceWorkOrders.commandId,
+            title: maintenanceWorkOrders.title,
+            priority: maintenanceWorkOrders.priority,
+            status: maintenanceWorkOrders.status,
+            assigneeAdminUserId: maintenanceWorkOrders.assigneeAdminUserId,
+            createdAt: maintenanceWorkOrders.createdAt,
+            updatedAt: maintenanceWorkOrders.updatedAt,
+            resolvedAt: maintenanceWorkOrders.resolvedAt,
+          })
+          .from(maintenanceWorkOrders)
+          .where(
+            vendingCommandIds.length === 0
+              ? eq(maintenanceWorkOrders.orderId, id)
+              : or(
+                  eq(maintenanceWorkOrders.orderId, id),
+                  inArray(maintenanceWorkOrders.commandId, vendingCommandIds),
+                ),
+          )
+          .orderBy(desc(maintenanceWorkOrders.createdAt))
+      : [];
+    const maintenanceWorkOrderIds = maintenanceWorkOrderRows.map(
+      (workOrder) => workOrder.id,
+    );
+
+    const auditResourcePairs: Array<{
+      resourceType: string;
+      resourceId: string;
+    }> = [
+      { resourceType: "order", resourceId: id },
+      ...vendingCommandIds.flatMap((resourceId) => [
+        { resourceType: "vending_command", resourceId },
+        { resourceType: "vending_commands", resourceId },
+      ]),
+      ...(canReadPayments
+        ? [
+            ...paymentIds.map((resourceId) => ({
+              resourceType: "payment",
+              resourceId,
+            })),
+            ...refundIds.map((resourceId) => ({
+              resourceType: "refund",
+              resourceId,
+            })),
+          ]
+        : []),
+      ...(canReadInventory
+        ? [
+            ...inventoryMovementRows.flatMap((movement) => [
+              { resourceType: "inventory_movement", resourceId: movement.id },
+              { resourceType: "inventory_movements", resourceId: movement.id },
+            ]),
+            ...stockReconciliationLinks.flatMap((movement) => [
+              {
+                resourceType:
+                  movement.caseTable === "machine_raw_stock_movement_conflicts"
+                    ? "machine_raw_stock_movement_conflict"
+                    : "machine_raw_stock_movement",
+                resourceId: movement.id,
+              },
+              {
+                resourceType:
+                  movement.caseTable === "machine_raw_stock_movement_conflicts"
+                    ? "machine_raw_stock_movement_conflicts"
+                    : "machine_raw_stock_movements",
+                resourceId: movement.id,
+              },
+            ]),
+          ]
+        : []),
+      ...(canReadMaintenance
+        ? maintenanceWorkOrderIds.flatMap((resourceId) => [
+            { resourceType: "maintenance_work_order", resourceId },
+            { resourceType: "maintenance_work_orders", resourceId },
+          ])
+        : []),
+    ];
+
+    const adminAuditRows = canReadAudit
+      ? await this.db
+          .select({
+            id: auditLogs.id,
+            adminUserId: auditLogs.adminUserId,
+            action: auditLogs.action,
+            resourceType: auditLogs.resourceType,
+            resourceId: auditLogs.resourceId,
+            ipAddress: auditLogs.ipAddress,
+            userAgent: auditLogs.userAgent,
+            createdAt: auditLogs.createdAt,
+          })
+          .from(auditLogs)
+          .where(
+            or(
+              ...auditResourcePairs.map((pair) =>
+                and(
+                  eq(auditLogs.resourceType, pair.resourceType),
+                  eq(auditLogs.resourceId, pair.resourceId),
+                ),
+              ),
+            ),
+          )
+          .orderBy(desc(auditLogs.createdAt))
+      : [];
+
+    const orderStatusEventRows = await this.db
+      .select()
+      .from(orderStatusEvents)
+      .where(eq(orderStatusEvents.orderId, id))
+      .orderBy(desc(orderStatusEvents.createdAt));
+    const recoveryProjection = this.buildRecoveryProjection({
+      order,
+      vendingCommandRows,
+      orderStatusEventRows,
+      recoveryActionRows,
+      activeRefundExists,
+    });
+
+    return {
+      order,
+      items,
+      payments: paymentRows,
+      paymentEvents: paymentEventRows,
+      paymentWebhookAttempts: paymentWebhookAttemptRows,
+      paymentReconciliationAttempts: paymentReconciliationAttemptRows,
+      paymentCodeAttempts: paymentCodeAttemptRows,
+      vendingCommands: vendingCommandRows,
+      fulfillmentProjection: {
+        state: order.fulfillmentState,
+        latestCommand: vendingCommandRows[0] ?? null,
+        ...recoveryProjection,
+      },
+      inventoryMovements: inventoryMovementRows,
+      stockReconciliationLinks,
+      refunds: refundRows,
+      maintenanceWorkOrders: maintenanceWorkOrderRows,
+      adminAuditEntries: adminAuditRows,
+      orderStatusEvents: orderStatusEventRows,
+    };
+  }
+
   async requestMockRefund(orderId: string, adminUserId: string) {
     return await this.refundsService.requestFullRefund({
       orderId,
       reason: "admin_refund",
       requestedByAdminUserId: adminUserId,
     });
+  }
+
+  private buildRecoveryProjection(input: {
+    order: { fulfillmentState: OrderFulfillmentState };
+    vendingCommandRows: Array<{ id: string; status: VendingCommandStatus }>;
+    orderStatusEventRows: Array<{ metadata: unknown }>;
+    recoveryActionRows: RecoveryActionRow[];
+    activeRefundExists: boolean;
+  }): {
+    requiresPhysicalOutcomeConfirmation: boolean;
+    availableRecoveryActions: RecoveryActionName[];
+  } {
+    const terminalRecoveryExists =
+      input.activeRefundExists ||
+      input.recoveryActionRows.some(
+        (row) =>
+          row.action === "confirm_dispensed" ||
+          row.action === "request_refund" ||
+          row.action === "compensation_dispense",
+      );
+    if (terminalRecoveryExists) {
+      return {
+        requiresPhysicalOutcomeConfirmation: false,
+        availableRecoveryActions: [],
+      };
+    }
+
+    const confirmedNotDispensed = input.recoveryActionRows.some((row) =>
+      isCompletedAction(row, "confirm_not_dispensed"),
+    );
+    if (confirmedNotDispensed) {
+      return {
+        requiresPhysicalOutcomeConfirmation: false,
+        availableRecoveryActions: ["request_refund", "compensation_dispense"],
+      };
+    }
+    const physicalOutcomeActionExists = input.recoveryActionRows.some(
+      (row) =>
+        row.action === "confirm_dispensed" ||
+        row.action === "confirm_not_dispensed",
+    );
+    if (physicalOutcomeActionExists) {
+      return {
+        requiresPhysicalOutcomeConfirmation: false,
+        availableRecoveryActions: [],
+      };
+    }
+
+    const hasPhysicalOutcomeBlocker =
+      input.order.fulfillmentState === "manual_handling" &&
+      (input.vendingCommandRows.some(
+        (command) => command.status === "result_unknown",
+      ) ||
+        input.orderStatusEventRows.some((event) => {
+          const metadata = event.metadata;
+          return (
+            typeof metadata === "object" &&
+            metadata !== null &&
+            Reflect.get(metadata, "requiresPhysicalOutcomeConfirmation") ===
+              true
+          );
+        }));
+
+    return {
+      requiresPhysicalOutcomeConfirmation: hasPhysicalOutcomeBlocker,
+      availableRecoveryActions: hasPhysicalOutcomeBlocker
+        ? ["confirm_dispensed", "confirm_not_dispensed"]
+        : [],
+    };
+  }
+
+  private async startRecoveryAction(
+    orderId: string,
+    adminUserId: string,
+    action: RecoveryActionName,
+    note: string,
+  ): Promise<{
+    actionId: string;
+    command: {
+      id: string;
+      commandNo: string;
+      status: VendingCommandStatus;
+    };
+  }> {
+    try {
+      return await this.db.transaction(async (tx) => {
+        const commandRows = await tx
+          .select({
+            id: vendingCommands.id,
+            commandNo: vendingCommands.commandNo,
+            status: vendingCommands.status,
+            orderStatus: orders.status,
+            fulfillmentState: orders.fulfillmentState,
+            isDrill: orders.isDrill,
+          })
+          .from(vendingCommands)
+          .innerJoin(orders, eq(orders.id, vendingCommands.orderId))
+          .where(eq(vendingCommands.orderId, orderId))
+          .orderBy(desc(vendingCommands.createdAt));
+        if (commandRows.length === 0) {
+          throw new NotFoundException("Vending command not found for order");
+        }
+        if (commandRows.some((row) => row.isDrill)) {
+          throw new ConflictException(
+            "Protected drill recovery uses drill simulation endpoints",
+          );
+        }
+
+        const recoveryActionRows = await tx
+          .select({
+            id: orderRecoveryActions.id,
+            commandId: orderRecoveryActions.commandId,
+            action: orderRecoveryActions.action,
+            status: orderRecoveryActions.status,
+          })
+          .from(orderRecoveryActions)
+          .where(eq(orderRecoveryActions.orderId, orderId));
+
+        const activeRefundRows = await tx
+          .select({ id: refunds.id })
+          .from(refunds)
+          .where(
+            and(
+              eq(refunds.orderId, orderId),
+              inArray(refunds.status, ACTIVE_REFUND_STATUSES),
+            ),
+          )
+          .limit(1);
+
+        const command =
+          action === "request_refund" || action === "compensation_dispense"
+            ? this.findConfirmedNotDispensedCommand(
+                commandRows,
+                recoveryActionRows,
+              )
+            : commandRows.find((row) => row.status === "result_unknown");
+        if (!command) {
+          const latest = commandRows[0];
+          throw new ConflictException(
+            `Order recovery is not available for command status ${latest.status}`,
+          );
+        }
+
+        if (
+          (action === "confirm_dispensed" ||
+            action === "confirm_not_dispensed") &&
+          (command.status !== "result_unknown" ||
+            command.fulfillmentState !== "manual_handling")
+        ) {
+          throw new ConflictException(
+            `Order recovery is not available for command status ${command.status}`,
+          );
+        }
+
+        if (
+          (action === "request_refund" || action === "compensation_dispense") &&
+          !recoveryActionRows.some((row) =>
+            isCompletedAction(row, "confirm_not_dispensed"),
+          )
+        ) {
+          throw new ConflictException(
+            "Refund or compensation recovery requires confirmed not-dispensed recovery first",
+          );
+        }
+
+        if (
+          (action === "request_refund" || action === "compensation_dispense") &&
+          activeRefundRows.length > 0
+        ) {
+          throw new ConflictException(
+            "Refund and compensation recovery actions are mutually exclusive",
+          );
+        }
+
+        const [created] = await tx
+          .insert(orderRecoveryActions)
+          .values({
+            orderId,
+            commandId: command.id,
+            action,
+            status: "started",
+            note,
+            requestedByAdminUserId: adminUserId,
+          })
+          .returning({ id: orderRecoveryActions.id });
+
+        return {
+          actionId: created.id,
+          command: {
+            id: command.id,
+            commandNo: command.commandNo,
+            status: command.status,
+          },
+        };
+      });
+    } catch (error) {
+      if (isUniqueViolation(error)) {
+        throw new ConflictException("Recovery action already recorded");
+      }
+      throw error;
+    }
+  }
+
+  private findConfirmedNotDispensedCommand(
+    commandRows: Array<{
+      id: string;
+      commandNo: string;
+      status: VendingCommandStatus;
+      orderStatus: OrderStatus;
+      fulfillmentState: OrderFulfillmentState;
+    }>,
+    recoveryActionRows: RecoveryActionRow[],
+  ) {
+    const confirmation = recoveryActionRows.find((row) =>
+      isCompletedAction(row, "confirm_not_dispensed"),
+    );
+    if (!confirmation) return null;
+    return (
+      commandRows.find((command) => command.id === confirmation.commandId) ??
+      null
+    );
+  }
+
+  private async completeRecoveryAction(
+    actionId: string,
+    resultJson: Record<string, unknown>,
+  ): Promise<void> {
+    await this.db
+      .update(orderRecoveryActions)
+      .set({
+        status: "completed",
+        resultJson,
+        updatedAt: new Date(),
+      })
+      .where(eq(orderRecoveryActions.id, actionId));
+  }
+
+  private async failRecoveryAction(
+    actionId: string,
+    error: unknown,
+  ): Promise<void> {
+    await this.db
+      .update(orderRecoveryActions)
+      .set({
+        status: "failed",
+        resultJson: {
+          error: error instanceof Error ? error.message : String(error),
+        },
+        updatedAt: new Date(),
+      })
+      .where(eq(orderRecoveryActions.id, actionId));
+  }
+
+  async createRecoveryAction(
+    orderId: string,
+    adminUserId: string,
+    input: OrderRecoveryAction,
+  ) {
+    const action = normalizeRecoveryAction(input);
+    const recovery = await this.startRecoveryAction(
+      orderId,
+      adminUserId,
+      action,
+      input.note,
+    );
+    const auditAction = `orders.recovery.${action}`;
+
+    try {
+      if (action === "request_refund") {
+        const refund = await this.requestMockRefund(orderId, adminUserId);
+        await this.completeRecoveryAction(recovery.actionId, { refund });
+        await this.auditService.record({
+          adminUserId,
+          action: auditAction,
+          resourceType: "order",
+          resourceId: orderId,
+          beforeJson: {
+            recoveryActionId: recovery.actionId,
+            commandId: recovery.command.id,
+            commandNo: recovery.command.commandNo,
+            commandStatus: recovery.command.status,
+          },
+          afterJson: {
+            note: input.note,
+            recoveryActionId: recovery.actionId,
+            commandId: recovery.command.id,
+            commandNo: recovery.command.commandNo,
+            refund,
+          },
+        });
+        return {
+          action,
+          recoveryActionId: recovery.actionId,
+          commandId: recovery.command.id,
+          status: "refund_requested" as const,
+        };
+      }
+
+      if (action === "compensation_dispense") {
+        const compensation =
+          await this.vendingService.createCompensationDispenseCommand({
+            orderId,
+            recoveryActionId: recovery.actionId,
+            originalCommandNo: recovery.command.commandNo,
+            note: input.note,
+          });
+        await this.completeRecoveryAction(recovery.actionId, {
+          compensationCommandId: compensation.id,
+          compensationCommandNo: compensation.commandNo,
+          compensationStatus: compensation.status,
+        });
+        await this.auditService.record({
+          adminUserId,
+          action: auditAction,
+          resourceType: "order",
+          resourceId: orderId,
+          beforeJson: {
+            recoveryActionId: recovery.actionId,
+            commandId: recovery.command.id,
+            commandNo: recovery.command.commandNo,
+            commandStatus: recovery.command.status,
+          },
+          afterJson: {
+            note: input.note,
+            recoveryActionId: recovery.actionId,
+            originalCommandNo: recovery.command.commandNo,
+            compensationCommandId: compensation.id,
+            compensationCommandNo: compensation.commandNo,
+            compensationStatus: compensation.status,
+          },
+        });
+        return {
+          action,
+          recoveryActionId: recovery.actionId,
+          commandId: compensation.id,
+          commandNo: compensation.commandNo,
+          status: compensation.status,
+        };
+      }
+
+      const result = await this.vendingService.resolveCommand(
+        recovery.command.id,
+        {
+          result:
+            action === "confirm_dispensed" ? "dispensed" : "not_dispensed",
+          note: input.note,
+          requestRefund: false,
+        },
+      );
+      await this.completeRecoveryAction(recovery.actionId, { result });
+      await this.auditService.record({
+        adminUserId,
+        action: auditAction,
+        resourceType: "order",
+        resourceId: orderId,
+        beforeJson: {
+          recoveryActionId: recovery.actionId,
+          commandId: recovery.command.id,
+          commandNo: recovery.command.commandNo,
+          commandStatus: recovery.command.status,
+        },
+        afterJson: {
+          note: input.note,
+          recoveryActionId: recovery.actionId,
+          commandId: recovery.command.id,
+          commandNo: recovery.command.commandNo,
+          result,
+        },
+      });
+
+      return {
+        action,
+        recoveryActionId: recovery.actionId,
+        commandId: recovery.command.id,
+        status: result.status,
+      };
+    } catch (error) {
+      await this.failRecoveryAction(recovery.actionId, error);
+      throw error;
+    }
   }
 
   async getMachineOrderStatus(orderNo: string, query: MachineOrderStatusQuery) {
@@ -1201,6 +2130,7 @@ export class OrdersService {
 
     if (
       row.paymentMethod === "qr_code" &&
+      !row.isDrill &&
       (row.paymentStatus === "pending" || row.paymentStatus === "processing")
     ) {
       await this.paymentsService
@@ -1261,6 +2191,23 @@ export class OrdersService {
       .orderBy(desc(paymentCodeAttempts.createdAt))
       .limit(1);
 
+    const [paymentReconciliationAttempt] = await this.db
+      .select({
+        trigger: paymentReconciliationAttempts.trigger,
+        attemptNo: paymentReconciliationAttempts.attemptNo,
+        status: paymentReconciliationAttempts.status,
+        providerPaymentStatus:
+          paymentReconciliationAttempts.providerPaymentStatus,
+        errorCode: paymentReconciliationAttempts.errorCode,
+        nextRetryAt: paymentReconciliationAttempts.nextRetryAt,
+        startedAt: paymentReconciliationAttempts.startedAt,
+        finishedAt: paymentReconciliationAttempts.finishedAt,
+      })
+      .from(paymentReconciliationAttempts)
+      .where(eq(paymentReconciliationAttempts.paymentId, row.paymentId))
+      .orderBy(desc(paymentReconciliationAttempts.createdAt))
+      .limit(1);
+
     const nextAction = resolveMachineOrderNextAction(
       row.paymentState,
       row.fulfillmentState,
@@ -1286,6 +2233,25 @@ export class OrdersService {
         paidAt: toIsoStringOrNull(row.paidAt),
         failedReason: row.failedReason,
         providerCode: row.paymentProviderCode,
+        reconciliation: paymentReconciliationAttempt
+          ? {
+              trigger: paymentReconciliationAttempt.trigger,
+              attemptNo: paymentReconciliationAttempt.attemptNo,
+              status: paymentReconciliationAttempt.status,
+              providerPaymentStatus:
+                paymentReconciliationAttempt.providerPaymentStatus,
+              errorCode: paymentReconciliationAttempt.errorCode,
+              nextRetryAt: toIsoStringOrNull(
+                paymentReconciliationAttempt.nextRetryAt,
+              ),
+              startedAt: toIsoStringOrNull(
+                paymentReconciliationAttempt.startedAt,
+              ),
+              finishedAt: toIsoStringOrNull(
+                paymentReconciliationAttempt.finishedAt,
+              ),
+            }
+          : null,
       },
       paymentCodeAttempt: paymentCodeAttempt
         ? {
@@ -1455,7 +2421,9 @@ function resolveMachineOrderNextAction(
 
   if (
     paymentState === "paid" &&
-    (commandStatus === "failed" || commandStatus === "timeout")
+    (commandStatus === "failed" ||
+      commandStatus === "timeout" ||
+      commandStatus === "result_unknown")
   ) {
     return "manual_handling";
   }

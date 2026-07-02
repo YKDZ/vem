@@ -183,6 +183,40 @@ onMounted(() => {
         "
         :description="`机器：${preflight.machineCode}，可用渠道：${preflight.availableProviders.map((item) => `${item.method}/${item.providerCode}`).join(', ') || '无'}`"
       />
+      <a-table
+        v-if="preflight"
+        class="mt-4"
+        row-key="code"
+        :pagination="false"
+        :data-source="preflight.checks"
+        :columns="[
+          { title: '检查项', dataIndex: 'code', key: 'code' },
+          { title: '级别', dataIndex: 'severity', key: 'severity' },
+          { title: '结果', dataIndex: 'passed', key: 'passed' },
+          { title: '说明', dataIndex: 'message', key: 'message' },
+        ]"
+      >
+        <template #bodyCell="{ column, record }">
+          <template v-if="column.key === 'passed'">
+            <a-tag :color="record.passed ? 'success' : 'error'">
+              {{ record.passed ? "通过" : "阻塞" }}
+            </a-tag>
+          </template>
+          <template v-else-if="column.key === 'severity'">
+            <a-tag
+              :color="
+                record.severity === 'critical'
+                  ? 'error'
+                  : record.severity === 'warning'
+                    ? 'warning'
+                    : 'default'
+              "
+            >
+              {{ record.severity }}
+            </a-tag>
+          </template>
+        </template>
+      </a-table>
     </a-card>
   </a-space>
 </template>

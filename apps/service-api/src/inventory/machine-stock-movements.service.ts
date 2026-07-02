@@ -217,6 +217,12 @@ export class MachineStockMovementsService {
             reconciliation,
           );
         }
+        if (isLocalMaintenanceRecoveryMovement(trustedInput)) {
+          await this.repository.restoreSlotAfterAcceptedLocalMaintenance({
+            machineId: machine.id,
+            slotId: trustedInput.slotId,
+          });
+        }
       }
       return acceptedResponse(trustedInput.movementId, stored, "accepted");
     } catch (error) {
@@ -488,6 +494,7 @@ async function reconciliationForFieldStockMovement(
     input.movementType === "stock_count_correction" &&
     input.source !== "approved_count" &&
     input.source !== "platform_approved_count" &&
+    input.source !== "physical_stock_attestation" &&
     input.source !== "local_maintenance"
   ) {
     return fieldStockReconciliation(input.slotId, "weak_attribution");
@@ -533,6 +540,12 @@ function isAutoAppliedFieldStockMovement(
   input: RawMachineStockMovement,
 ): input is FieldStockMovement {
   return isFieldStockMovement(input);
+}
+
+function isLocalMaintenanceRecoveryMovement(
+  input: RawMachineStockMovement,
+): input is FieldStockMovement {
+  return isFieldStockMovement(input) && input.source === "local_maintenance";
 }
 
 function fieldStockApplicationFailedReconciliation(

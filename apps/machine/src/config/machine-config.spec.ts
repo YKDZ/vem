@@ -9,6 +9,7 @@ describe("machine config", () => {
   it("uses first-stage defaults", () => {
     expect(machineConfigDefaults).toEqual({
       machineCode: null,
+      machineLocationLabel: null,
       machineSecret: null,
       machineSecretConfigured: false,
       mqttSigningSecret: null,
@@ -33,8 +34,48 @@ describe("machine config", () => {
       visionEnabled: true,
       visionWsUrl: "ws://127.0.0.1:7892/ws",
       visionRequestTimeoutMs: 8000,
+      tryOnCameraDeviceId: null,
+      audioCueSettings: {
+        enabled: false,
+        categories: {
+          presence: false,
+          transaction: false,
+        },
+      },
       kioskMode: false,
       stockMovementRetentionDays: 30,
+    });
+  });
+
+  it("migrates legacy presence audio opt-in into audio cue settings", () => {
+    expect(
+      normalizeMachineConfig({ presenceAudioEnabled: true }).audioCueSettings,
+    ).toEqual({
+      enabled: true,
+      categories: {
+        presence: true,
+        transaction: false,
+      },
+    });
+  });
+
+  it("preserves explicit audio cue category settings", () => {
+    expect(
+      normalizeMachineConfig({
+        audioCueSettings: {
+          enabled: true,
+          categories: {
+            presence: false,
+            transaction: true,
+          },
+        },
+      }).audioCueSettings,
+    ).toEqual({
+      enabled: true,
+      categories: {
+        presence: false,
+        transaction: true,
+      },
     });
   });
 
@@ -68,6 +109,17 @@ describe("machine config", () => {
     ).toBeNull();
   });
 
+  it("normalizes optional Machine Location Label", () => {
+    expect(
+      normalizeMachineConfig({ machineLocationLabel: " E2E lab " })
+        .machineLocationLabel,
+    ).toBe("E2E lab");
+    expect(
+      normalizeMachineConfig({ machineLocationLabel: "   " })
+        .machineLocationLabel,
+    ).toBeNull();
+  });
+
   it("turns empty machineSecret into null", () => {
     expect(
       normalizeMachineConfig({ machineSecret: "   " }).machineSecret,
@@ -92,6 +144,19 @@ describe("machine config", () => {
       visionWsUrl: " ws://127.0.0.1:7892/ws ",
     });
     expect(result.visionWsUrl).toBe("ws://127.0.0.1:7892/ws");
+  });
+
+  it("preserves an explicit nullable Virtual Try-On Camera device id", () => {
+    expect(
+      normalizeMachineConfig({
+        tryOnCameraDeviceId: " camera-device-1 ",
+      }).tryOnCameraDeviceId,
+    ).toBe("camera-device-1");
+    expect(
+      normalizeMachineConfig({ tryOnCameraDeviceId: "   " })
+        .tryOnCameraDeviceId,
+    ).toBeNull();
+    expect(normalizeMachineConfig({}).tryOnCameraDeviceId).toBeNull();
   });
 
   it("allows serial adapter with default lower controller USB identity", () => {
