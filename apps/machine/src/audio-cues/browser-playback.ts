@@ -55,7 +55,7 @@ const PRESENCE_STALE_AFTER_MS = 2_000;
 const PLACEHOLDER_TONE_SOURCE =
   "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABAAZGF0YQAAAAA=";
 
-const CUE_SOURCES: Record<string, string> = {
+const CUE_SOURCES: Record<CustomerExperienceEvent["type"], string> = {
   "presence.detected": `${PLACEHOLDER_TONE_SOURCE}#presence-detected`,
   "presence.welcome.day": `${PLACEHOLDER_TONE_SOURCE}#presence-welcome-day`,
   "presence.welcome.night": `${PLACEHOLDER_TONE_SOURCE}#presence-welcome-night`,
@@ -76,6 +76,12 @@ const CUE_SOURCES: Record<string, string> = {
   "manual_handling.required": `${PLACEHOLDER_TONE_SOURCE}#manual-handling-required`,
   "system.hardware_fault": `${PLACEHOLDER_TONE_SOURCE}#system-hardware-fault`,
 };
+
+const CUE_SOURCE_BY_KEY: Readonly<Record<string, string | undefined>> =
+  CUE_SOURCES;
+
+const CUE_PRIORITY_BY_KEY: Readonly<Record<string, number | undefined>> =
+  CUSTOMER_EXPERIENCE_EVENT_PRIORITIES;
 
 const sharedPlaybackState: SharedPlaybackState = {
   pendingSources: new Map<string, string>(),
@@ -292,11 +298,7 @@ function descriptorFromEvent(event: CustomerExperienceEvent): CueDescriptor {
 }
 
 function priorityFor(cueKey: string): number {
-  return (
-    CUSTOMER_EXPERIENCE_EVENT_PRIORITIES[
-      cueKey as keyof typeof CUSTOMER_EXPERIENCE_EVENT_PRIORITIES
-    ] ?? 0
-  );
+  return CUE_PRIORITY_BY_KEY[cueKey] ?? 0;
 }
 
 function isStaleLowPriorityCue(
@@ -308,7 +310,7 @@ function isStaleLowPriorityCue(
 }
 
 function sourceForRequest(request: CustomerAudioCueRequest): string {
-  return CUE_SOURCES[request.cueKey] ?? CUE_SOURCES["presence.detected"];
+  return CUE_SOURCE_BY_KEY[request.cueKey] ?? CUE_SOURCES["presence.detected"];
 }
 
 function defaultBrowserAudioFactory(src: string): BrowserAudioElement {
