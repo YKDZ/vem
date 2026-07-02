@@ -79,6 +79,7 @@ impl MqttSyncRuntime {
     }
 
     pub fn with_readiness_context(mut self, context: crate::ipc::IpcContext) -> Self {
+        self.environment = context.ui.status_cache.environment.clone();
         self.readiness_context = Some(context);
         self
     }

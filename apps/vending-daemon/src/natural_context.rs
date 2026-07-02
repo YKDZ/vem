@@ -1,3 +1,5 @@
+use vending_core::environment::{EnvironmentHeartbeatPayload, EnvironmentSensorStatus};
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MachineNaturalContextSnapshot {
@@ -23,12 +25,45 @@ pub enum NaturalContextStatus {
 #[serde(rename_all = "camelCase")]
 pub struct LocalSiteSignalsProjection {
     pub status: LocalSiteSignalsStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temperature_celsius: Option<i8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub humidity_rh: Option<u8>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sampled_at: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum LocalSiteSignalsStatus {
+    Ok,
+    Faulted,
+    Unknown,
     Unavailable,
+}
+
+impl LocalSiteSignalsProjection {
+    pub fn unavailable() -> Self {
+        Self {
+            status: LocalSiteSignalsStatus::Unavailable,
+            temperature_celsius: None,
+            humidity_rh: None,
+            sampled_at: None,
+        }
+    }
+
+    pub fn from_environment(payload: EnvironmentHeartbeatPayload) -> Self {
+        Self {
+            status: match payload.sensor_status {
+                EnvironmentSensorStatus::Ok => LocalSiteSignalsStatus::Ok,
+                EnvironmentSensorStatus::Faulted => LocalSiteSignalsStatus::Faulted,
+                EnvironmentSensorStatus::Unknown => LocalSiteSignalsStatus::Unknown,
+            },
+            temperature_celsius: payload.temperature_celsius,
+            humidity_rh: payload.humidity_rh,
+            sampled_at: payload.sampled_at,
+        }
+    }
 }
 
 impl MachineNaturalContextSnapshot {
@@ -43,7 +78,7 @@ impl MachineNaturalContextSnapshot {
                 "message": message.into(),
             },
         });
-        Self::from_external_environment(machine_code, external_environment)
+        Self::from_external_environment(machine_code, external_environment, None)
     }
 
     pub fn unavailable(machine_code: Option<String>, message: impl Into<String>) -> Self {
@@ -57,12 +92,13 @@ impl MachineNaturalContextSnapshot {
                 "message": message.into(),
             },
         });
-        Self::from_external_environment(machine_code, external_environment)
+        Self::from_external_environment(machine_code, external_environment, None)
     }
 
     pub fn from_external_environment(
         machine_code: Option<String>,
         external_environment: serde_json::Value,
+        local_environment: Option<EnvironmentHeartbeatPayload>,
     ) -> Self {
         let status = match external_environment
             .get("status")
@@ -83,9 +119,9 @@ impl MachineNaturalContextSnapshot {
             status,
             machine_code,
             external_environment,
-            local_site_signals: LocalSiteSignalsProjection {
-                status: LocalSiteSignalsStatus::Unavailable,
-            },
+            local_site_signals: local_environment
+                .map(LocalSiteSignalsProjection::from_environment)
+                .unwrap_or_else(LocalSiteSignalsProjection::unavailable),
             customer_facing_blocked: false,
             checked_at,
         }

@@ -141,6 +141,13 @@ impl HardwareAdapter for MockHardwareAdapter {
         }
     }
 
+    async fn query_environment_sample(&self) -> Result<Option<EnvironmentSample>, String> {
+        Ok(Some(EnvironmentSample {
+            temperature_celsius: 24,
+            relative_humidity_percent: 50,
+        }))
+    }
+
     async fn set_target_temperature(&self, _temperature_celsius: i8) -> Result<(), String> {
         Ok(())
     }
@@ -200,5 +207,19 @@ mod tests {
         let result = adapter.dispense(payload).await;
         assert!(result.success);
         assert!(result.error_code.is_none());
+    }
+
+    #[tokio::test]
+    async fn mock_hardware_reports_stable_environment_sample() {
+        let adapter = MockHardwareAdapter;
+
+        let sample = adapter
+            .query_environment_sample()
+            .await
+            .expect("mock environment query")
+            .expect("mock sample");
+
+        assert_eq!(sample.temperature_celsius, 24);
+        assert_eq!(sample.relative_humidity_percent, 50);
     }
 }

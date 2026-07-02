@@ -69,7 +69,10 @@ describe("daemon schemas", () => {
         },
       },
       localSiteSignals: {
-        status: "unavailable",
+        status: "ok",
+        temperatureCelsius: 24,
+        humidityRh: 50,
+        sampledAt: "2026-06-30T14:00:00.000Z",
       },
     });
 
@@ -77,6 +80,7 @@ describe("daemon schemas", () => {
     expect(parsed.degraded).toBe(true);
     expect(parsed.customerFacingBlocked).toBe(false);
     expect(parsed.externalEnvironment.status).toBe("unconfigured");
+    expect(parsed.localSiteSignals.temperatureCelsius).toBe(24);
   });
 
   it("parses daemon config summary with stock movement retention days", () => {
