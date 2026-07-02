@@ -299,6 +299,7 @@ async fn daemon_restart_flushes_persisted_outbox_result() {
     assert_eq!(body["payload"]["commandNo"], "CMD-RECOVER-1");
     assert!(body["signature"].as_str().unwrap_or_default().len() >= 32);
 
+    wait_for_empty_outbox(&data_dir).await;
     daemon2.terminate().await;
     let pool = sqlite::open_readonly(&data_dir.join("state.db")).await;
     assert_eq!(
@@ -347,6 +348,18 @@ async fn broker_unavailable_keeps_due_outbox_with_retry_error() {
         .await,
         1
     );
+}
+
+async fn wait_for_empty_outbox(data_dir: &std::path::Path) {
+    for _ in 0..20 {
+        let pool = sqlite::open_readonly(&data_dir.join("state.db")).await;
+        let count = sqlite::scalar_i64(&pool, "SELECT COUNT(1) FROM outbox_events").await;
+        if count == 0 {
+            return;
+        }
+        drop(pool);
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
 }
 
 async fn wait_for_mqtt_connected(daemon: &DaemonHarness) {
