@@ -7,16 +7,16 @@ import logoImage from "@/assets/home/logo.png";
 import mascotListImage from "@/assets/home/mascot-list.png";
 import mascotTopImage from "@/assets/home/mascot-top-cutout.png";
 import PaymentQrCode from "@/components/PaymentQrCode.vue";
+import { useKioskClock } from "@/composables/useKioskClock";
 import { shouldShowMockPaymentControls } from "@/config/runtime-flags";
 import { daemonClient } from "@/daemon/client";
 import KioskLayout from "@/layouts/KioskLayout.vue";
 import { resultKindFromNextAction, useCheckoutStore } from "@/stores/checkout";
-import { useScannerStore } from "@/stores/scanner";
 import { formatCents, formatCountdown } from "@/utils/format";
 
 const router = useRouter();
 const checkoutStore = useCheckoutStore();
-const scannerStore = useScannerStore();
+const { clockText, dateText } = useKioskClock();
 
 let pollTimer: number | undefined;
 let clockTimer: number | undefined;
@@ -29,9 +29,6 @@ const remainingText = computed(() =>
 const expired = computed(() => checkoutStore.remainingSeconds <= 0);
 const isPaymentCode = computed(
   () => status.value?.payment.method === "payment_code",
-);
-const canUseDevScan = computed(
-  () => import.meta.env.DEV && daemonClient.currentConnection?.mock === true,
 );
 
 const confirmingExpiredPayment = computed(
@@ -111,9 +108,6 @@ onMounted(async () => {
     return;
   }
   await refreshStatus();
-  if (isPaymentCode.value) {
-    await scannerStore.refresh();
-  }
   pollTimer = window.setInterval(() => {
     void refreshStatus();
   }, 2_000);
@@ -135,33 +129,25 @@ onUnmounted(() => {
       <div class="payment-mist payment-mist-right"></div>
 
       <header class="payment-header">
-        <div class="flex items-center gap-3">
-          <img
-            :src="logoImage"
-            alt="唐诗村"
-            class="h-9 w-auto object-contain"
-          />
-          <img
-            :src="mascotTopImage"
-            alt=""
-            class="h-14 w-14 object-contain"
-            aria-hidden="true"
-          />
+        <div class="payment-header-left">
+          <button
+            class="payment-back-button kiosk-touch-target"
+            type="button"
+            aria-label="返回"
+            @click="cancelOrder"
+          >
+            <span aria-hidden="true">‹</span>
+          </button>
+          <div class="payment-brand">
+            <img :src="logoImage" alt="唐诗村" />
+            <img :src="mascotTopImage" alt="" aria-hidden="true" />
+          </div>
         </div>
-        <div class="text-right text-[#6f835f]">
-          <p class="font-serif text-4xl leading-none font-bold">10:30</p>
-          <p class="mt-1 text-xs tracking-wide">2026/06/15　星期二</p>
+        <div class="payment-time">
+          <p>{{ clockText }}</p>
+          <span>{{ dateText }}</span>
         </div>
       </header>
-
-      <button
-        class="payment-back-button kiosk-touch-target"
-        type="button"
-        @click="cancelOrder"
-      >
-        <span aria-hidden="true">←</span>
-        返回
-      </button>
 
       <div class="payment-title">
         <h1>订单支付</h1>
@@ -184,25 +170,13 @@ onUnmounted(() => {
           />
           <div v-else class="payment-code-panel">
             <p>请出示付款码</p>
-            <strong
-              :class="scannerStore.online ? 'text-[#4f6248]' : 'text-[#8b8274]'"
-            >
-              {{ scannerStore.message }}
-            </strong>
-            <p v-if="scannerStore.lastMaskedCode">已读取付款码</p>
-            <p v-if="checkoutStore.paymentCodeMessage">
-              {{ checkoutStore.paymentCodeMessage }}
-            </p>
-            <RouterLink v-if="canUseDevScan" to="/dev/payment-code-scan">
-              手动扫码测试
-            </RouterLink>
           </div>
         </div>
 
         <p class="qr-instruction">
           {{
             isPaymentCode
-              ? "请将付款码靠近扫码窗口完成支付"
+              ? "请出示付款码完成支付"
               : "请使用微信 / 支付宝扫码支付"
           }}
         </p>
@@ -418,18 +392,71 @@ onUnmounted(() => {
   justify-content: space-between;
 }
 
-.payment-back-button {
-  display: none;
+.payment-header-left,
+.payment-brand {
+  display: flex;
+  align-items: center;
 }
 
-.payment-back-button span {
+.payment-header-left {
+  gap: 0.68rem;
+}
+
+.payment-brand {
+  gap: 0.75rem;
+}
+
+.payment-brand img:first-child {
+  height: 2.35rem;
+  width: auto;
+  object-fit: contain;
+}
+
+.payment-brand img:last-child {
+  width: 3.5rem;
+  height: 3.5rem;
+  object-fit: contain;
+}
+
+.payment-time {
+  color: #6f835f;
+  text-align: right;
+}
+
+.payment-time p {
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 2.35rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.payment-time span {
+  display: block;
+  margin-top: 0.22rem;
+  font-size: 0.62rem;
+  letter-spacing: 0;
+}
+
+.payment-back-button {
   display: grid;
-  width: 42px;
-  height: 42px;
+  width: 3rem;
+  height: 3rem;
+  min-width: 3rem;
+  min-height: 3rem;
+  flex: 0 0 auto;
   place-items: center;
   border: 1px solid rgba(198, 187, 154, 0.82);
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.62);
+  background: rgba(255, 255, 255, 0.58);
+  color: #879077;
+  box-shadow: 0 3px 10px rgba(94, 87, 69, 0.06);
+}
+
+.payment-back-button span {
+  margin-top: -0.08rem;
+  font-size: 2rem;
+  font-weight: 800;
+  line-height: 1;
 }
 
 .payment-title {
@@ -515,7 +542,7 @@ onUnmounted(() => {
 }
 
 .payment-countdown-label {
-  margin-top: 2.35rem;
+  margin-top: 1.35rem;
 }
 
 .payment-countdown {
@@ -527,9 +554,16 @@ onUnmounted(() => {
 }
 
 .payment-expire-copy {
-  margin-top: 1.25rem;
+  position: relative;
+  z-index: 2;
+  width: min(100%, 30rem);
+  margin-top: 0.85rem;
+  margin-right: auto;
+  margin-left: auto;
   color: #827b70;
   font-size: 0.95rem;
+  line-height: 1.5;
+  text-align: center;
 }
 
 .payment-hint {
@@ -562,15 +596,15 @@ onUnmounted(() => {
 
 .payment-steps {
   position: relative;
-  z-index: 4;
+  z-index: 6;
   display: grid;
   width: min(100%, 34rem);
   grid-template-columns: 1fr 1fr 1fr 1fr 1fr;
   align-items: center;
-  margin: 2.25rem auto 0;
+  margin: 2.75rem auto 0;
   border: 1px solid rgba(211, 203, 180, 0.88);
   border-radius: 18px;
-  background: rgba(255, 253, 248, 0.68);
+  background: rgba(255, 253, 248, 0.88);
   padding: 0.95rem 3rem 0.85rem;
 }
 
@@ -630,10 +664,10 @@ onUnmounted(() => {
   position: absolute;
   bottom: 1.25rem;
   left: 0;
-  z-index: 2;
-  width: clamp(12rem, 24cqw, 15.5rem);
+  z-index: 1;
+  width: clamp(10rem, 20cqw, 13.2rem);
   height: auto;
-  max-height: 19rem;
+  max-height: 16rem;
   object-fit: contain;
   object-position: left bottom;
 }
@@ -705,33 +739,30 @@ onUnmounted(() => {
     align-items: center;
   }
 
-  .payment-header img:first-child {
+  .payment-brand img:first-child {
     height: 1.85rem;
   }
 
-  .payment-header img:last-child {
+  .payment-brand img:last-child {
     width: 2.6rem;
     height: 2.6rem;
   }
 
-  .payment-header p:first-child {
+  .payment-time p {
     font-size: 2rem;
   }
 
-  .payment-header p:last-child {
+  .payment-time span {
     font-size: 0.72rem;
   }
 
   .payment-back-button {
-    min-height: 40px;
-    margin-top: 1.2rem;
-    gap: 0.55rem;
-    font-size: 1.05rem;
+    width: 3rem;
+    height: 3rem;
   }
 
   .payment-back-button span {
-    width: 36px;
-    height: 36px;
+    font-size: 1.75rem;
   }
 
   .payment-title {
@@ -771,7 +802,7 @@ onUnmounted(() => {
   }
 
   .payment-countdown-label {
-    margin-top: 2.1rem;
+    margin-top: 1.05rem;
   }
 
   .payment-countdown {
@@ -785,7 +816,7 @@ onUnmounted(() => {
 
   .payment-steps {
     width: min(100%, 33.2rem);
-    margin-top: 2.2rem;
+    margin-top: 2.65rem;
     border-radius: 16px;
     padding: 0.85rem 2.2rem 0.75rem;
   }
@@ -810,8 +841,9 @@ onUnmounted(() => {
   }
 
   .payment-mascot {
-    width: 12.3rem;
-    max-height: 15.5rem;
+    width: 8.8rem;
+    max-height: 11.5rem;
+    opacity: 0.9;
   }
 
   .payment-slogan {

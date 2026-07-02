@@ -6,11 +6,13 @@ import listSloganImage from "@/assets/home/list-slogan.png";
 import logoImage from "@/assets/home/logo.png";
 import mascotListImage from "@/assets/home/mascot-list.png";
 import mascotTopImage from "@/assets/home/mascot-top-cutout.png";
+import { useKioskClock } from "@/composables/useKioskClock";
 import KioskLayout from "@/layouts/KioskLayout.vue";
 import { resultKindFromNextAction, useCheckoutStore } from "@/stores/checkout";
 
 const router = useRouter();
 const checkoutStore = useCheckoutStore();
+const { clockText, dateText } = useKioskClock();
 
 let pollTimer: number | undefined;
 let clockTimer: number | undefined;
@@ -84,24 +86,25 @@ onUnmounted(() => {
       <div class="dispensing-mist dispensing-mist-right"></div>
 
       <header class="dispensing-header">
-        <div class="dispensing-brand">
-          <img :src="logoImage" alt="唐诗村" />
-          <img :src="mascotTopImage" alt="" aria-hidden="true" />
+        <div class="dispensing-header-left">
+          <button
+            class="dispensing-back kiosk-touch-target"
+            type="button"
+            aria-label="返回"
+            @click="goCatalog"
+          >
+            <span aria-hidden="true">‹</span>
+          </button>
+          <div class="dispensing-brand">
+            <img :src="logoImage" alt="唐诗村" />
+            <img :src="mascotTopImage" alt="" aria-hidden="true" />
+          </div>
         </div>
         <div class="dispensing-time">
-          <p>10:30</p>
-          <span>2026/06/15　星期二</span>
+          <p>{{ clockText }}</p>
+          <span>{{ dateText }}</span>
         </div>
       </header>
-
-      <button
-        class="dispensing-back kiosk-touch-target"
-        type="button"
-        @click="goCatalog"
-      >
-        <span aria-hidden="true">←</span>
-        返回
-      </button>
 
       <div class="dispensing-title">
         <h1>{{ titleText }}</h1>
@@ -311,24 +314,31 @@ onUnmounted(() => {
   position: relative;
   z-index: 5;
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
+}
+
+.dispensing-header-left {
+  display: flex;
+  align-items: center;
+  gap: 0.68rem;
 }
 
 .dispensing-brand {
   display: flex;
   align-items: center;
-  gap: 2.2rem;
+  gap: 0.75rem;
 }
 
 .dispensing-brand img:first-child {
-  width: 13.2rem;
-  height: auto;
+  height: 2.35rem;
+  width: auto;
+  object-fit: contain;
 }
 
 .dispensing-brand img:last-child {
-  width: 4.9rem;
-  height: 4.9rem;
+  width: 3.5rem;
+  height: 3.5rem;
   object-fit: contain;
 }
 
@@ -339,39 +349,37 @@ onUnmounted(() => {
 
 .dispensing-time p {
   font-family: Georgia, "Times New Roman", serif;
-  font-size: 3.25rem;
+  font-size: 2.35rem;
+  font-weight: 700;
   line-height: 1;
 }
 
 .dispensing-time span {
   display: block;
-  margin-top: 0.8rem;
-  font-size: 0.9rem;
+  margin-top: 0.22rem;
+  font-size: 0.62rem;
 }
 
 .dispensing-back {
-  position: relative;
-  z-index: 5;
-  display: inline-flex;
-  width: fit-content;
-  min-height: 52px;
-  align-items: center;
-  gap: 0.9rem;
-  margin-top: 3.5rem;
-  color: #6b6258;
-  font-family: SimSun, "Songti SC", "Noto Serif CJK SC", serif;
-  font-size: 1.55rem;
-  font-weight: 700;
-}
-
-.dispensing-back span {
   display: grid;
-  width: 45px;
-  height: 45px;
+  width: 3rem;
+  height: 3rem;
+  min-width: 3rem;
+  min-height: 3rem;
+  flex: 0 0 auto;
   place-items: center;
   border: 1px solid rgba(198, 187, 154, 0.82);
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.58);
+  color: #879077;
+  box-shadow: 0 3px 10px rgba(94, 87, 69, 0.06);
+}
+
+.dispensing-back span {
+  margin-top: -0.08rem;
+  font-size: 2rem;
+  font-weight: 800;
+  line-height: 1;
 }
 
 .dispensing-title {
@@ -648,33 +656,30 @@ onUnmounted(() => {
   }
 
   .dispensing-brand img:first-child {
-    width: 6.8rem;
+    height: 1.85rem;
+    width: auto;
   }
 
   .dispensing-brand img:last-child {
-    width: 2.55rem;
-    height: 2.55rem;
+    width: 2.6rem;
+    height: 2.6rem;
   }
 
   .dispensing-time p {
-    font-size: 1.75rem;
+    font-size: 2rem;
   }
 
   .dispensing-time span {
-    margin-top: 0.3rem;
-    font-size: 0.66rem;
+    font-size: 0.72rem;
   }
 
   .dispensing-back {
-    min-height: 36px;
-    margin-top: 0.9rem;
-    gap: 0.6rem;
-    font-size: 0.98rem;
+    width: 3rem;
+    height: 3rem;
   }
 
   .dispensing-back span {
-    width: 32px;
-    height: 32px;
+    font-size: 1.75rem;
   }
 
   .dispensing-title {

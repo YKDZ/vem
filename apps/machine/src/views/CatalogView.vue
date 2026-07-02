@@ -17,6 +17,7 @@ import logoImage from "@/assets/home/logo.png";
 import mascotListImage from "@/assets/home/mascot-list.png";
 import mascotTopImage from "@/assets/home/mascot-top-cutout.png";
 import sloganCalligraphyImage from "@/assets/home/slogan-calligraphy.png";
+import { useKioskClock } from "@/composables/useKioskClock";
 import KioskLayout from "@/layouts/KioskLayout.vue";
 import { useCheckoutStore } from "@/stores/checkout";
 import { useConnectivityStore } from "@/stores/connectivity";
@@ -25,15 +26,13 @@ const router = useRouter();
 const connectivityStore = useConnectivityStore();
 const checkoutStore = useCheckoutStore();
 const READINESS_REFRESH_INTERVAL_MS = 5000;
-const CLOCK_REFRESH_INTERVAL_MS = 30_000;
+const { clockText, dateText } = useKioskClock();
 
 const selectedTopCategoryKey = ref<CatalogTopCategoryKey | null>(null);
 const activeGenderFilter = ref<ProductGenderFilter>("all");
 const activeCarouselIndex = ref(0);
-const now = ref(new Date());
 let readinessRefreshTimer: number | null = null;
 let readinessRefreshInFlight: Promise<void> | null = null;
-let clockTimer: number | null = null;
 
 type ProductGenderFilter = "all" | "male" | "female" | "kids" | "elder";
 
@@ -216,22 +215,6 @@ const customerReadinessMessage = computed(() => {
     "设备暂时不可购买，请稍后再试。"
   );
 });
-const clockText = computed(() =>
-  now.value.toLocaleTimeString("zh-CN", {
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  }),
-);
-const dateText = computed(
-  () =>
-    `${now.value.toLocaleDateString("zh-CN", {
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-    })} ${now.value.toLocaleDateString("zh-CN", { weekday: "long" })}`,
-);
-
 function shouldEnterMaintenance(): boolean {
   return (
     connectivityStore.ready?.canSell === false &&
@@ -269,21 +252,6 @@ function stopReadinessAutoRefresh(): void {
   if (readinessRefreshTimer !== null) {
     window.clearInterval(readinessRefreshTimer);
     readinessRefreshTimer = null;
-  }
-}
-
-function startClock(): void {
-  stopClock();
-  now.value = new Date();
-  clockTimer = window.setInterval(() => {
-    now.value = new Date();
-  }, CLOCK_REFRESH_INTERVAL_MS);
-}
-
-function stopClock(): void {
-  if (clockTimer !== null) {
-    window.clearInterval(clockTimer);
-    clockTimer = null;
   }
 }
 
@@ -388,12 +356,10 @@ async function openProductDetail(product: DisplayProduct): Promise<void> {
 
 onMounted(() => {
   startReadinessAutoRefresh();
-  startClock();
 });
 
 onUnmounted(() => {
   stopReadinessAutoRefresh();
-  stopClock();
 });
 </script>
 
@@ -720,11 +686,6 @@ onUnmounted(() => {
         class="list-bottom-mascot pointer-events-none absolute bottom-3 left-2 z-[3]"
         aria-hidden="true"
       />
-      <div class="list-bottom-bar">
-        <button class="checkout-button kiosk-touch-target" type="button">
-          去结算
-        </button>
-      </div>
       <img
         :src="listSloganImage"
         alt="让温柔贴近 让善意发生"
@@ -1048,31 +1009,6 @@ onUnmounted(() => {
   mix-blend-mode: multiply;
 }
 
-.list-bottom-bar {
-  position: absolute;
-  right: 44px;
-  bottom: 54px;
-  left: 162px;
-  z-index: 4;
-  display: grid;
-  min-height: 78px;
-  grid-template-columns: minmax(180px, 260px);
-  gap: 22px;
-  align-items: center;
-  justify-content: end;
-}
-
-.checkout-button {
-  min-height: 70px;
-  border-radius: 999px;
-  background: linear-gradient(180deg, #758868, #627655);
-  color: #fffdf7;
-  font-family: SimSun, "Songti SC", "Noto Serif CJK SC", serif;
-  font-size: 1.55rem;
-  font-weight: 700;
-  box-shadow: 0 14px 24px rgba(82, 101, 65, 0.2);
-}
-
 .list-slogan {
   position: absolute;
   right: 0;
@@ -1221,20 +1157,6 @@ onUnmounted(() => {
   .list-bottom-mascot {
     width: 7.8rem;
     height: 12.7rem;
-  }
-
-  .list-bottom-bar {
-    right: 1rem;
-    bottom: 2.3rem;
-    left: 6.7rem;
-    min-height: 54px;
-    grid-template-columns: minmax(7rem, 9rem);
-    gap: 0.65rem;
-  }
-
-  .checkout-button {
-    min-height: 52px;
-    font-size: 1.18rem;
   }
 
   .list-slogan-image {

@@ -11,6 +11,7 @@ import listSloganImage from "@/assets/home/list-slogan.png";
 import logoImage from "@/assets/home/logo.png";
 import mascotListImage from "@/assets/home/mascot-list.png";
 import mascotTopImage from "@/assets/home/mascot-top-cutout.png";
+import { useKioskClock } from "@/composables/useKioskClock";
 import KioskLayout from "@/layouts/KioskLayout.vue";
 import { useCatalogStore } from "@/stores/catalog";
 import { useCheckoutStore } from "@/stores/checkout";
@@ -26,6 +27,7 @@ const route = useRoute();
 const router = useRouter();
 const catalogStore = useCatalogStore();
 const checkoutStore = useCheckoutStore();
+const { clockText, dateText } = useKioskClock();
 
 const selectedVariantId = ref<string | null>(null);
 
@@ -214,33 +216,25 @@ async function purchase(): Promise<void> {
       <div class="detail-mist detail-mist-right"></div>
 
       <header class="detail-header">
-        <div class="flex items-center gap-3">
-          <img
-            :src="logoImage"
-            alt="唐诗村"
-            class="h-9 w-auto object-contain"
-          />
-          <img
-            :src="mascotTopImage"
-            alt=""
-            class="h-14 w-14 object-contain"
-            aria-hidden="true"
-          />
+        <div class="detail-header-left">
+          <button
+            class="detail-back-button kiosk-touch-target"
+            type="button"
+            aria-label="返回"
+            @click="router.push('/catalog')"
+          >
+            <span aria-hidden="true">‹</span>
+          </button>
+          <div class="detail-brand">
+            <img :src="logoImage" alt="唐诗村" />
+            <img :src="mascotTopImage" alt="" aria-hidden="true" />
+          </div>
         </div>
-        <div class="text-right text-[#6f835f]">
-          <p class="font-serif text-4xl leading-none font-bold">10:30</p>
-          <p class="mt-1 text-xs tracking-wide">2026/06/15　星期二</p>
+        <div class="detail-time">
+          <p>{{ clockText }}</p>
+          <span>{{ dateText }}</span>
         </div>
       </header>
-
-      <button
-        class="detail-back-button kiosk-touch-target"
-        type="button"
-        @click="router.push('/catalog')"
-      >
-        <span aria-hidden="true">←</span>
-        返回
-      </button>
 
       <main class="detail-main">
         <section class="detail-image-card">
@@ -496,37 +490,75 @@ async function purchase(): Promise<void> {
   z-index: 5;
   display: flex;
   flex-shrink: 0;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
 }
 
-.detail-back-button {
-  position: relative;
-  z-index: 5;
-  display: inline-flex;
-  width: fit-content;
-  min-height: 52px;
+.detail-header-left,
+.detail-brand {
+  display: flex;
   align-items: center;
+}
+
+.detail-header-left {
+  gap: 0.68rem;
+}
+
+.detail-brand {
   gap: 0.75rem;
-  margin-top: 1.9rem;
-  color: #6b6258;
-  font-family: SimSun, "Songti SC", "Noto Serif CJK SC", serif;
-  font-size: 1.32rem;
+}
+
+.detail-brand img:first-child {
+  height: 2.35rem;
+  width: auto;
+  object-fit: contain;
+}
+
+.detail-brand img:last-child {
+  width: 3.5rem;
+  height: 3.5rem;
+  object-fit: contain;
+}
+
+.detail-time {
+  color: #6f835f;
+  text-align: right;
+}
+
+.detail-time p {
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 2.35rem;
   font-weight: 700;
+  line-height: 1;
 }
 
-.detail-back-button span {
-  flex: 0 0 auto;
+.detail-time span {
+  display: block;
+  margin-top: 0.22rem;
+  font-size: 0.62rem;
+  letter-spacing: 0;
 }
 
-.detail-back-button span {
+.detail-back-button {
   display: grid;
-  width: 42px;
-  height: 42px;
+  width: 3rem;
+  height: 3rem;
+  min-width: 3rem;
+  min-height: 3rem;
+  flex: 0 0 auto;
   place-items: center;
   border: 1px solid rgba(198, 187, 154, 0.82);
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.62);
+  background: rgba(255, 255, 255, 0.58);
+  color: #879077;
+  box-shadow: 0 3px 10px rgba(94, 87, 69, 0.06);
+}
+
+.detail-back-button span {
+  margin-top: -0.08rem;
+  font-size: 2rem;
+  font-weight: 800;
+  line-height: 1;
 }
 
 .detail-main {
@@ -757,7 +789,7 @@ async function purchase(): Promise<void> {
 .detail-bottom-bar {
   position: absolute;
   right: 2.1rem;
-  bottom: 2.65rem;
+  bottom: 4.35rem;
   left: 18.4rem;
   z-index: 6;
   display: grid;
@@ -765,7 +797,7 @@ async function purchase(): Promise<void> {
   grid-template-columns: minmax(220px, 330px);
   gap: 1.2rem;
   align-items: center;
-  justify-content: end;
+  justify-content: center;
 }
 
 .detail-buy-button {
@@ -832,33 +864,30 @@ async function purchase(): Promise<void> {
     align-items: center;
   }
 
-  .detail-header img:first-child {
+  .detail-brand img:first-child {
     height: 1.85rem;
   }
 
-  .detail-header img:last-child {
+  .detail-brand img:last-child {
     width: 2.6rem;
     height: 2.6rem;
   }
 
-  .detail-header p:first-child {
+  .detail-time p {
     font-size: 2rem;
   }
 
-  .detail-header p:last-child {
+  .detail-time span {
     font-size: 0.72rem;
   }
 
   .detail-back-button {
-    min-height: 40px;
-    margin-top: 1.25rem;
-    gap: 0.55rem;
-    font-size: 1.05rem;
+    width: 3rem;
+    height: 3rem;
   }
 
   .detail-back-button span {
-    width: 36px;
-    height: 36px;
+    font-size: 1.75rem;
   }
 
   .detail-main {
@@ -988,11 +1017,12 @@ async function purchase(): Promise<void> {
 
   .detail-bottom-bar {
     right: 0.9rem;
-    bottom: 2.35rem;
+    bottom: 3.75rem;
     left: 8.1rem;
     min-height: 58px;
     grid-template-columns: minmax(130px, 180px);
     gap: 0.55rem;
+    justify-content: center;
   }
 
   .detail-buy-button {

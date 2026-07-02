@@ -8,6 +8,7 @@ import listSloganImage from "@/assets/home/list-slogan.png";
 import logoImage from "@/assets/home/logo.png";
 import mascotListImage from "@/assets/home/mascot-list.png";
 import mascotTopImage from "@/assets/home/mascot-top-cutout.png";
+import { useKioskClock } from "@/composables/useKioskClock";
 import { daemonClient } from "@/daemon/client";
 import KioskLayout from "@/layouts/KioskLayout.vue";
 import { useCatalogStore } from "@/stores/catalog";
@@ -19,6 +20,7 @@ const router = useRouter();
 const checkoutStore = useCheckoutStore();
 const catalogStore = useCatalogStore();
 const connectivityStore = useConnectivityStore();
+const { clockText, dateText } = useKioskClock();
 
 const AUTO_RETURN_DELAY_MS = 6000;
 const AUTO_RETURN_TICK_MS = 1000;
@@ -208,13 +210,23 @@ onBeforeUnmount(stopAutoReturn);
       <div class="failure-mist failure-mist-right"></div>
 
       <header class="failure-header">
-        <div class="failure-brand">
-          <img :src="logoImage" alt="唐诗村" />
-          <img :src="mascotTopImage" alt="" aria-hidden="true" />
+        <div class="failure-header-left">
+          <button
+            class="failure-back kiosk-touch-target"
+            type="button"
+            aria-label="返回"
+            @click="backToCatalog"
+          >
+            <span aria-hidden="true">‹</span>
+          </button>
+          <div class="failure-brand">
+            <img :src="logoImage" alt="唐诗村" />
+            <img :src="mascotTopImage" alt="" aria-hidden="true" />
+          </div>
         </div>
         <div class="failure-time">
-          <p>10:30</p>
-          <span>2026/06/15　星期二</span>
+          <p>{{ clockText }}</p>
+          <span>{{ dateText }}</span>
         </div>
       </header>
 
@@ -378,24 +390,31 @@ onBeforeUnmount(stopAutoReturn);
   position: relative;
   z-index: 5;
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
+}
+
+.failure-header-left {
+  display: flex;
+  align-items: center;
+  gap: 0.68rem;
 }
 
 .failure-brand {
   display: flex;
   align-items: center;
-  gap: 2rem;
+  gap: 0.75rem;
 }
 
 .failure-brand img:first-child {
-  width: 12.8rem;
-  height: auto;
+  height: 2.35rem;
+  width: auto;
+  object-fit: contain;
 }
 
 .failure-brand img:last-child {
-  width: 4.6rem;
-  height: 4.6rem;
+  width: 3.5rem;
+  height: 3.5rem;
   object-fit: contain;
 }
 
@@ -406,14 +425,37 @@ onBeforeUnmount(stopAutoReturn);
 
 .failure-time p {
   font-family: Georgia, "Times New Roman", serif;
-  font-size: 3rem;
+  font-size: 2.35rem;
+  font-weight: 700;
   line-height: 1;
 }
 
 .failure-time span {
   display: block;
-  margin-top: 0.65rem;
-  font-size: 0.9rem;
+  margin-top: 0.22rem;
+  font-size: 0.62rem;
+}
+
+.failure-back {
+  display: grid;
+  width: 3rem;
+  height: 3rem;
+  min-width: 3rem;
+  min-height: 3rem;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid rgba(198, 187, 154, 0.82);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.58);
+  color: #879077;
+  box-shadow: 0 3px 10px rgba(94, 87, 69, 0.06);
+}
+
+.failure-back span {
+  margin-top: -0.08rem;
+  font-size: 2rem;
+  font-weight: 800;
+  line-height: 1;
 }
 
 .failure-title {
@@ -640,21 +682,30 @@ onBeforeUnmount(stopAutoReturn);
   }
 
   .failure-brand img:first-child {
-    width: 6.8rem;
+    height: 1.85rem;
+    width: auto;
   }
 
   .failure-brand img:last-child {
-    width: 2.55rem;
-    height: 2.55rem;
+    width: 2.6rem;
+    height: 2.6rem;
   }
 
   .failure-time p {
-    font-size: 1.75rem;
+    font-size: 2rem;
   }
 
   .failure-time span {
-    margin-top: 0.3rem;
-    font-size: 0.66rem;
+    font-size: 0.72rem;
+  }
+
+  .failure-back {
+    width: 3rem;
+    height: 3rem;
+  }
+
+  .failure-back span {
+    font-size: 1.75rem;
   }
 
   .failure-title {
