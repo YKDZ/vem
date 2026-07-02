@@ -27,20 +27,6 @@ on:
       - pnpm-lock.yaml
       - package.json
       - pnpm-workspace.yaml
-  pull_request:
-    paths:
-      - .github/workflows/windows-bringup-bundle.yml
-      - apps/machine/**
-      - apps/vending-daemon/**
-      - crates/**
-      - packages/shared/**
-      - scripts/windows/**
-      - Cargo.lock
-      - Cargo.toml
-      - pnpm-lock.yaml
-      - package.json
-      - pnpm-workspace.yaml
-
 concurrency:
   group: windows-bringup-bundle-${{ github.ref }}
   cancel-in-progress: false
