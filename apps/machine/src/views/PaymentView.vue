@@ -8,7 +8,6 @@ import mascotListImage from "@/assets/home/mascot-list.png";
 import mascotTopImage from "@/assets/home/mascot-top-cutout.png";
 import PaymentQrCode from "@/components/PaymentQrCode.vue";
 import { useMaintenanceEntry } from "@/composables/useMaintenanceEntry";
-import { requestPaymentSuccessCue } from "@/composables/useTransactionFeedbackCues";
 import { shouldShowMockPaymentControls } from "@/config/runtime-flags";
 import { daemonClient } from "@/daemon/client";
 import KioskLayout from "@/layouts/KioskLayout.vue";
@@ -137,7 +136,6 @@ const showMockControls = computed(
 async function routeByStatus(): Promise<void> {
   if (!status.value) return;
   if (status.value.nextAction === "dispensing") {
-    await requestPaymentSuccessCue(checkoutStore.transaction);
     await router.replace("/dispensing");
     return;
   }

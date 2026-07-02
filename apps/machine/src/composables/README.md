@@ -17,6 +17,13 @@
 - `latestResult`, `airConditionerOn`, `targetTemperatureCelsius`, and
   `latestControlSucceeded`：最近一次已确认的本地命令结果。
 
+## 顾客体验事件
+
+- `CustomerExperienceEvent`，来自 `../customer-events/events`：面向顾客体验功能的语义事件类型。它覆盖迎宾、触屏唤醒、多人围观、选品、支付提示、支付成功、出货/取货结果、超时提示、休眠提示、彩蛋和设备故障等事件。
+- `useCustomerExperienceEvents`，来自 `./useCustomerExperienceEvents`：提供轻量的 `emit` / `on` 事件总线，供功能实现方订阅或派发这些语义事件。
+- `createMachineAudioCuePlaybackAdapter().requestCustomerExperienceEvent(event)`：音频播放方消费顾客体验事件的入口。旧的 `requestCustomerAudioCue(event)` 仍可用，但新代码应优先使用通用命名。
+- 这里仅提供事件基础设施；具体什么时候派发某个事件，应由对应功能流程负责。
+
 ## 本地温度信息
 
 - 客户端或维护 UI 需要当前本地温湿度上下文时，优先使用 `useNaturalContextStore().snapshot?.localSiteSignals`。

@@ -7,13 +7,11 @@ const {
   cancelOrderMock,
   getCurrentTransactionMock,
   getSaleViewMock,
-  requestPaymentSuccessCueMock,
   routerReplaceMock,
 } = vi.hoisted(() => ({
   cancelOrderMock: vi.fn(),
   getCurrentTransactionMock: vi.fn(),
   getSaleViewMock: vi.fn(),
-  requestPaymentSuccessCueMock: vi.fn(),
   routerReplaceMock: vi.fn(),
 }));
 
@@ -41,10 +39,6 @@ vi.mock("@/daemon/client", () => ({
     getCurrentTransaction: getCurrentTransactionMock,
     getSaleView: getSaleViewMock,
   },
-}));
-
-vi.mock("@/composables/useTransactionFeedbackCues", () => ({
-  requestPaymentSuccessCue: requestPaymentSuccessCueMock,
 }));
 
 import { useCheckoutStore } from "@/stores/checkout";
@@ -184,7 +178,7 @@ describe("PaymentView", () => {
     });
   });
 
-  it("requests payment success feedback before routing to dispensing", async () => {
+  it("routes paid transactions to dispensing", async () => {
     const paidTransaction = {
       ...activeQrPaymentTransaction(),
       paymentStatus: "succeeded",
@@ -209,7 +203,6 @@ describe("PaymentView", () => {
     await mountView();
     await flushPromises();
 
-    expect(requestPaymentSuccessCueMock).toHaveBeenCalledWith(paidTransaction);
     expect(routerReplaceMock).toHaveBeenCalledWith("/dispensing");
   });
 });

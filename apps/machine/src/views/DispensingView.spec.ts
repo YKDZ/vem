@@ -3,13 +3,8 @@ import { createPinia, setActivePinia } from "pinia";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createApp, nextTick, type App } from "vue";
 
-const {
-  getCurrentTransactionMock,
-  requestDispensingStartedCueMock,
-  routerReplaceMock,
-} = vi.hoisted(() => ({
+const { getCurrentTransactionMock, routerReplaceMock } = vi.hoisted(() => ({
   getCurrentTransactionMock: vi.fn(),
-  requestDispensingStartedCueMock: vi.fn(),
   routerReplaceMock: vi.fn(),
 }));
 
@@ -25,10 +20,6 @@ vi.mock("@/daemon/client", () => ({
   daemonClient: {
     getCurrentTransaction: getCurrentTransactionMock,
   },
-}));
-
-vi.mock("@/composables/useTransactionFeedbackCues", () => ({
-  requestDispensingStartedCue: requestDispensingStartedCueMock,
 }));
 
 import { useCheckoutStore } from "@/stores/checkout";
@@ -135,7 +126,7 @@ describe("DispensingView", () => {
     });
   });
 
-  it("requests dispensing-start transaction feedback for the active order", async () => {
+  it("keeps dispensing transaction on the dispensing page", async () => {
     const transaction = dispensingTransaction();
     getCurrentTransactionMock.mockResolvedValue(transaction);
     useCheckoutStore().applyTransaction(transaction);
@@ -143,7 +134,6 @@ describe("DispensingView", () => {
     const host = await mountView();
 
     expect(host.textContent).toContain("正在出货");
-    expect(requestDispensingStartedCueMock).toHaveBeenCalledWith(transaction);
     expect(routerReplaceMock).not.toHaveBeenCalled();
   });
 });

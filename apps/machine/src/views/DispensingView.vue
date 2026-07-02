@@ -7,7 +7,6 @@ import logoImage from "@/assets/home/logo.png";
 import mascotListImage from "@/assets/home/mascot-list.png";
 import mascotTopImage from "@/assets/home/mascot-top-cutout.png";
 import { useMaintenanceEntry } from "@/composables/useMaintenanceEntry";
-import { requestDispensingStartedCue } from "@/composables/useTransactionFeedbackCues";
 import KioskLayout from "@/layouts/KioskLayout.vue";
 import { resultKindFromNextAction, useCheckoutStore } from "@/stores/checkout";
 
@@ -79,9 +78,7 @@ async function refreshStatus(): Promise<void> {
   const resultKind = resultKindFromNextAction(checkoutStore.status.nextAction);
   if (resultKind) {
     await router.replace({ name: "result", params: { kind: resultKind } });
-    return;
   }
-  await requestDispensingStartedCue(checkoutStore.transaction);
 }
 
 onMounted(async () => {

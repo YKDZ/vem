@@ -9,7 +9,6 @@ import logoImage from "@/assets/home/logo.png";
 import mascotListImage from "@/assets/home/mascot-list.png";
 import mascotTopImage from "@/assets/home/mascot-top-cutout.png";
 import { useMaintenanceEntry } from "@/composables/useMaintenanceEntry";
-import { requestTerminalResultCue } from "@/composables/useTransactionFeedbackCues";
 import { daemonClient } from "@/daemon/client";
 import KioskLayout from "@/layouts/KioskLayout.vue";
 import { useCatalogStore } from "@/stores/catalog";
@@ -234,7 +233,6 @@ watch(
 );
 
 onMounted(() => {
-  void requestTerminalResultCue(checkoutStore.transaction);
   void refreshResultReadiness();
 });
 
