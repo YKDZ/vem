@@ -3,27 +3,14 @@ import type {
   CustomerAudioCueRequest,
 } from "@/stores/audio-cues";
 
+import {
+  CUSTOMER_EXPERIENCE_EVENT_PRIORITIES,
+  describeCustomerExperienceEvent,
+  type CustomerExperienceEvent,
+} from "@/customer-events/events";
 import { useAudioCueStore } from "@/stores/audio-cues";
 
-export type CustomerAudioCueEvent =
-  | {
-      type: "presence.detected";
-      requestedAt?: string;
-      nowMs?: number;
-    }
-  | {
-      type:
-        | "payment.succeeded"
-        | "dispensing.started"
-        | "dispense.succeeded"
-        | "dispense.failed"
-        | "refund.pending"
-        | "refund.completed"
-        | "manual_handling.required";
-      orderKey: string;
-      requestedAt?: string;
-      nowMs?: number;
-    };
+export type CustomerAudioCueEvent = CustomerExperienceEvent;
 
 export type BrowserAudioElement = {
   readonly src: string;
@@ -63,32 +50,31 @@ type CueDescriptor = {
   source: string;
 };
 
-const PRESENCE_MINIMUM_INTERVAL_MS = 10_000;
 const PRESENCE_STALE_AFTER_MS = 2_000;
-
-const CUE_PRIORITIES: Record<string, number> = {
-  "presence.detected": 10,
-  "payment.succeeded": 40,
-  "dispensing.started": 40,
-  "dispense.succeeded": 40,
-  "refund.pending": 50,
-  "dispense.failed": 90,
-  "manual_handling.required": 100,
-  "refund.completed": 50,
-};
 
 const PLACEHOLDER_TONE_SOURCE =
   "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABAAZGF0YQAAAAA=";
 
 const CUE_SOURCES: Record<string, string> = {
   "presence.detected": `${PLACEHOLDER_TONE_SOURCE}#presence-detected`,
+  "presence.welcome.day": `${PLACEHOLDER_TONE_SOURCE}#presence-welcome-day`,
+  "presence.welcome.night": `${PLACEHOLDER_TONE_SOURCE}#presence-welcome-night`,
+  "presence.easter_egg": `${PLACEHOLDER_TONE_SOURCE}#presence-easter-egg`,
+  "interaction.awakened": `${PLACEHOLDER_TONE_SOURCE}#interaction-awakened`,
+  "privacy.crowd_detected": `${PLACEHOLDER_TONE_SOURCE}#privacy-crowd-detected`,
+  "idle.assistance_prompt": `${PLACEHOLDER_TONE_SOURCE}#idle-assistance-prompt`,
+  "idle.sleep": `${PLACEHOLDER_TONE_SOURCE}#idle-sleep`,
+  "product.selected": `${PLACEHOLDER_TONE_SOURCE}#product-selected`,
+  "payment.prompt": `${PLACEHOLDER_TONE_SOURCE}#payment-prompt`,
   "payment.succeeded": `${PLACEHOLDER_TONE_SOURCE}#payment-succeeded`,
   "dispensing.started": `${PLACEHOLDER_TONE_SOURCE}#dispensing-started`,
   "dispense.succeeded": `${PLACEHOLDER_TONE_SOURCE}#dispense-succeeded`,
   "dispense.failed": `${PLACEHOLDER_TONE_SOURCE}#dispense-failed`,
+  "pickup.completed": `${PLACEHOLDER_TONE_SOURCE}#pickup-completed`,
   "refund.pending": `${PLACEHOLDER_TONE_SOURCE}#refund-pending`,
   "refund.completed": `${PLACEHOLDER_TONE_SOURCE}#refund-completed`,
   "manual_handling.required": `${PLACEHOLDER_TONE_SOURCE}#manual-handling-required`,
+  "system.hardware_fault": `${PLACEHOLDER_TONE_SOURCE}#system-hardware-fault`,
 };
 
 const sharedPlaybackState: SharedPlaybackState = {
@@ -99,6 +85,9 @@ const sharedPlaybackState: SharedPlaybackState = {
 export function createMachineAudioCuePlaybackAdapter(
   options: MachineAudioCuePlaybackAdapterOptions = {},
 ): {
+  requestCustomerExperienceEvent(
+    event: CustomerExperienceEvent,
+  ): Promise<boolean>;
   requestCustomerAudioCue(event: CustomerAudioCueEvent): Promise<boolean>;
   startPendingCue(): Promise<boolean>;
   clearPendingCue(message?: string): boolean;
@@ -107,8 +96,8 @@ export function createMachineAudioCuePlaybackAdapter(
   const audioFactory = options.audioFactory ?? defaultBrowserAudioFactory;
   const autoStart = options.autoStart ?? true;
 
-  async function requestCustomerAudioCue(
-    event: CustomerAudioCueEvent,
+  async function requestCustomerExperienceEvent(
+    event: CustomerExperienceEvent,
   ): Promise<boolean> {
     const store = useAudioCueStore();
     const descriptor = descriptorFromEvent(event);
@@ -186,6 +175,12 @@ export function createMachineAudioCuePlaybackAdapter(
     return startPlayback(request, descriptor.source);
   }
 
+  async function requestCustomerAudioCue(
+    event: CustomerAudioCueEvent,
+  ): Promise<boolean> {
+    return requestCustomerExperienceEvent(event);
+  }
+
   async function startPendingCue(): Promise<boolean> {
     const store = useAudioCueStore();
     const request = store.playback.request;
@@ -259,6 +254,7 @@ export function createMachineAudioCuePlaybackAdapter(
   }
 
   return {
+    requestCustomerExperienceEvent,
     requestCustomerAudioCue,
     startPendingCue,
     clearPendingCue,
@@ -280,37 +276,27 @@ export function createMachineAudioCuePlaybackAdapter(
   }
 }
 
-function descriptorFromEvent(event: CustomerAudioCueEvent): CueDescriptor {
-  const nowMs = event.nowMs ?? Date.now();
-  if (event.type === "presence.detected") {
-    return {
-      category: "presence",
-      cueKey: event.type,
-      orderKey: null,
-      requestedAt: event.requestedAt,
-      nowMs,
-      minimumIntervalMs: PRESENCE_MINIMUM_INTERVAL_MS,
-      priority: CUE_PRIORITIES[event.type],
-      staleAfterMs: PRESENCE_STALE_AFTER_MS,
-      source: CUE_SOURCES[event.type],
-    };
-  }
-
+function descriptorFromEvent(event: CustomerExperienceEvent): CueDescriptor {
+  const descriptor = describeCustomerExperienceEvent(event);
   return {
-    category: "transaction",
-    cueKey: event.type,
-    orderKey: event.orderKey,
-    requestedAt: event.requestedAt,
-    nowMs,
-    minimumIntervalMs: undefined,
-    priority: CUE_PRIORITIES[event.type],
-    staleAfterMs: null,
-    source: CUE_SOURCES[event.type],
+    category: descriptor.category,
+    cueKey: descriptor.eventKey,
+    orderKey: descriptor.orderKey,
+    requestedAt: descriptor.requestedAt,
+    nowMs: descriptor.nowMs,
+    minimumIntervalMs: descriptor.minimumIntervalMs,
+    priority: descriptor.priority,
+    staleAfterMs: descriptor.staleAfterMs,
+    source: CUE_SOURCES[descriptor.eventKey],
   };
 }
 
 function priorityFor(cueKey: string): number {
-  return CUE_PRIORITIES[cueKey] ?? 0;
+  return (
+    CUSTOMER_EXPERIENCE_EVENT_PRIORITIES[
+      cueKey as keyof typeof CUSTOMER_EXPERIENCE_EVENT_PRIORITIES
+    ] ?? 0
+  );
 }
 
 function isStaleLowPriorityCue(

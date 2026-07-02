@@ -9,10 +9,6 @@ import {
 } from "vue";
 import { useRoute, useRouter, type RouteLocationRaw } from "vue-router";
 
-import {
-  createMachineAudioCuePlaybackAdapter,
-  type CustomerAudioCueEvent,
-} from "@/audio-cues/browser-playback";
 import { useVisionStore } from "@/stores/vision";
 
 const DEFAULT_PRESENCE_STALE_MS = 15_000;
@@ -40,9 +36,6 @@ export type PresenceInteractionState = {
 export type PresenceInteractionOptions = {
   presenceStaleMs?: number;
   inactivityDepartureMs?: number;
-  audioCueRequester?: {
-    requestCustomerAudioCue(event: CustomerAudioCueEvent): Promise<boolean>;
-  };
 };
 
 type CustomerPresenceSession = {
@@ -72,12 +65,6 @@ let stopVisionWatch: WatchStopHandle | null = null;
 let initializedFromCurrentDiagnostic = false;
 let activeOptions: Required<PresenceInteractionOptions> | null = null;
 
-function defaultAudioCueRequester(): {
-  requestCustomerAudioCue(event: CustomerAudioCueEvent): Promise<boolean>;
-} {
-  return createMachineAudioCuePlaybackAdapter();
-}
-
 function optionsWithDefaults(
   options: PresenceInteractionOptions,
 ): Required<PresenceInteractionOptions> {
@@ -85,7 +72,6 @@ function optionsWithDefaults(
     presenceStaleMs: options.presenceStaleMs ?? DEFAULT_PRESENCE_STALE_MS,
     inactivityDepartureMs:
       options.inactivityDepartureMs ?? DEFAULT_INACTIVITY_DEPARTURE_MS,
-    audioCueRequester: options.audioCueRequester ?? defaultAudioCueRequester(),
   };
 }
 
@@ -135,25 +121,11 @@ function restartDepartureTimers(): void {
   restartInactivityTimer();
 }
 
-function requestPresenceCue(input: { requestedAt: string }): void {
-  if (!activeOptions) return;
-  void activeOptions.audioCueRequester
-    .requestCustomerAudioCue({
-      type: "presence.detected",
-      requestedAt: input.requestedAt,
-      nowMs: millisecondsForDetectedAt(input.requestedAt),
-    })
-    .catch(() => {
-      // Audio cue playback is customer-experience best effort only.
-    });
-}
-
 function markPresent(input: {
   source: Exclude<PresenceInteractionSource, "inactivity" | "unavailable">;
   seenAt: string;
   suppressAudioCue?: boolean;
 }): void {
-  const wasPresent = state.value.personPresent;
   state.value = {
     personPresent: true,
     lastSeenAt: input.seenAt,
@@ -161,11 +133,6 @@ function markPresent(input: {
     lastInteractionAt: state.value.lastInteractionAt,
     source: input.source,
   };
-  if (!wasPresent && !input.suppressAudioCue) {
-    requestPresenceCue({
-      requestedAt: input.seenAt,
-    });
-  }
   restartDepartureTimers();
 }
 
@@ -349,9 +316,4 @@ export function useReturnHomeOnCustomerDeparture(
       void router.replace(returnRoute);
     },
   );
-}
-
-function millisecondsForDetectedAt(detectedAt: string): number {
-  const parsed = Date.parse(detectedAt);
-  return Number.isFinite(parsed) ? parsed : Date.now();
 }

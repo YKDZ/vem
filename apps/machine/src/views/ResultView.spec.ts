@@ -9,14 +9,12 @@ const {
   getReadyMock,
   getSaleReadinessMock,
   getSaleViewMock,
-  requestTerminalResultCueMock,
   routeParams,
   routerReplaceMock,
 } = vi.hoisted(() => ({
   getReadyMock: vi.fn(),
   getSaleReadinessMock: vi.fn(),
   getSaleViewMock: vi.fn(),
-  requestTerminalResultCueMock: vi.fn(),
   routeParams: { kind: "dispense_failed" },
   routerReplaceMock: vi.fn(),
 }));
@@ -36,10 +34,6 @@ vi.mock("@/daemon/client", () => ({
     getSaleReadiness: getSaleReadinessMock,
     getSaleView: getSaleViewMock,
   },
-}));
-
-vi.mock("@/composables/useTransactionFeedbackCues", () => ({
-  requestTerminalResultCue: requestTerminalResultCueMock,
 }));
 
 import { useCheckoutStore } from "@/stores/checkout";
@@ -362,7 +356,7 @@ describe("ResultView", () => {
     expect(checkoutStore.status).toBeNull();
   });
 
-  it("requests terminal transaction feedback for the restored result", async () => {
+  it("refreshes readiness for the restored terminal result", async () => {
     const transaction = refundedTransaction();
     const checkoutStore = useCheckoutStore();
     routeParams.kind = "refunded";
@@ -371,7 +365,7 @@ describe("ResultView", () => {
 
     await mountView();
 
-    expect(requestTerminalResultCueMock).toHaveBeenCalledWith(transaction);
+    expect(getReadyMock).toHaveBeenCalledOnce();
   });
 
   it("routes dismissal to catalog when sale-view refresh fails after fresh readiness is ready", async () => {
