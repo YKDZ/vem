@@ -2,16 +2,27 @@ import { z } from "zod";
 
 import { productStatusSchema, variantStatusSchema } from "../enums/catalog";
 
-export const createProductSchema = z.object({
+const productWriteFields = {
   name: z.string().min(1).max(128),
   categoryId: z.uuid().nullable().optional(),
   description: z.string().max(2000).nullable().optional(),
-  coverImageUrl: z.url().nullable().optional(),
+  displayImageMediaAssetId: z.uuid().nullable().optional(),
+};
+
+export const createProductSchema = z.strictObject({
+  ...productWriteFields,
   status: productStatusSchema.default("draft"),
   sortOrder: z.int().min(0).default(0),
 });
 
-export const updateProductSchema = createProductSchema.partial();
+export const updateProductSchema = z.strictObject({
+  name: productWriteFields.name.optional(),
+  categoryId: productWriteFields.categoryId,
+  description: productWriteFields.description,
+  displayImageMediaAssetId: productWriteFields.displayImageMediaAssetId,
+  status: productStatusSchema.optional(),
+  sortOrder: z.int().min(0).optional(),
+});
 
 export const createProductVariantSchema = z.object({
   productId: z.uuid(),
@@ -23,6 +34,7 @@ export const createProductVariantSchema = z.object({
   costCents: z.int().min(0).nullable().optional(),
   status: variantStatusSchema.default("active"),
   targetGender: z.enum(["male", "female"]).nullable().optional(),
+  tryOnSilhouetteMediaAssetId: z.uuid().nullable().optional(),
 });
 
 export const updateProductVariantSchema = createProductVariantSchema.partial();

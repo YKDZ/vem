@@ -75,6 +75,8 @@ pub struct MachinePublicConfig {
     pub vision_ws_url: String,
     pub vision_request_timeout_ms: u64,
     #[serde(default)]
+    pub try_on_camera_device_id: Option<String>,
+    #[serde(default)]
     pub audio_cue_settings: AudioCueSettings,
     #[serde(default, skip_serializing)]
     pub presence_audio_enabled: Option<bool>,
@@ -390,6 +392,7 @@ pub fn default_public_config() -> MachinePublicConfig {
         vision_enabled: true,
         vision_ws_url: vending_core::vision::DEFAULT_VISION_WS_URL.to_string(),
         vision_request_timeout_ms: 8_000,
+        try_on_camera_device_id: None,
         audio_cue_settings: AudioCueSettings::default(),
         presence_audio_enabled: None,
         kiosk_mode: false,
@@ -527,6 +530,15 @@ pub fn normalize_public_config(
     config.scanner_serial_port_path = scanner_serial_port_path;
 
     let vision_ws_url = config.vision_ws_url.trim().to_string();
+    let try_on_camera_device_id = config.try_on_camera_device_id.take().and_then(|value| {
+        let value = value.trim().to_string();
+        if value.is_empty() {
+            None
+        } else {
+            Some(value)
+        }
+    });
+    config.try_on_camera_device_id = try_on_camera_device_id;
 
     if config.audio_cue_settings == AudioCueSettings::default()
         && config.presence_audio_enabled == Some(true)
@@ -1267,6 +1279,49 @@ mod tests {
         };
         let normalized = normalize_public_config(config).expect("normalize");
         assert_eq!(normalized.stock_movement_retention_days, 90);
+    }
+
+    #[tokio::test]
+    async fn save_config_update_round_trips_try_on_camera_device_id_only() {
+        let temp = TempDir::new().expect("temp");
+        let data_dir = temp.path().join("daemon");
+        let state = crate::state::LocalStateStore::open(&data_dir.join("state.db"))
+            .await
+            .expect("state");
+        let store = ConfigStore::new(
+            data_dir.clone(),
+            state,
+            std::sync::Arc::new(InMemorySecretStore::default()),
+        );
+        let request = MachineConfigUpdateRequest {
+            public: MachinePublicConfig {
+                try_on_camera_device_id: Some(" try-on-camera-1 ".to_string()),
+                ..default_public_config()
+            },
+            secrets: None,
+        };
+
+        let runtime = store
+            .save_config_update(request)
+            .await
+            .expect("save config update");
+        let reloaded = store.load_runtime_config().await.expect("reload config");
+
+        assert_eq!(
+            runtime.public.try_on_camera_device_id.as_deref(),
+            Some("try-on-camera-1")
+        );
+        assert_eq!(
+            reloaded.public.try_on_camera_device_id,
+            runtime.public.try_on_camera_device_id
+        );
+
+        let saved = tokio::fs::read_to_string(daemon_config_path(&data_dir))
+            .await
+            .expect("read config");
+        let saved: serde_json::Value = serde_json::from_str(&saved).expect("json");
+        assert_eq!(saved["tryOnCameraDeviceId"], "try-on-camera-1");
+        assert!(saved.get("tryOnCameraLabel").is_none());
     }
 
     #[tokio::test]

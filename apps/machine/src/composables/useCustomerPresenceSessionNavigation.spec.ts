@@ -85,6 +85,24 @@ describe("customer presence navigation", () => {
     unmount();
   });
 
+  it("returns virtual try-on to catalog when the customer leaves", async () => {
+    routeName.value = "virtual-try-on";
+    const unmount = await mountReturnHomeController();
+
+    emitPresence(true, "2026-06-30T08:05:00.000Z");
+    await nextTick();
+    useVisionStore().applyPersonDeparted({
+      eventId: "VISION-DEPARTURE-TRY-ON-001",
+      detectedAt: "2026-06-30T08:05:05.000Z",
+      lastSeenAt: "2026-06-30T08:05:04.000Z",
+      reason: "left_frame",
+    });
+    await nextTick();
+
+    expect(routerReplaceMock).toHaveBeenCalledWith({ name: "catalog" });
+    unmount();
+  });
+
   it("does not interrupt payment when the customer leaves", async () => {
     routeName.value = "payment";
     const unmount = await mountReturnHomeController();

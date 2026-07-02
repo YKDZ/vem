@@ -218,10 +218,7 @@ export const useVisionStore = defineStore("vision", {
 });
 
 function normalizeOccupancy(
-  occupancy:
-    | VisionProfileResultPayload["occupancy"]
-    | VisionPresenceStatusPayload["occupancy"]
-    | undefined,
+  occupancy: VisionPresenceStatusPayload["occupancy"] | undefined,
   personPresent: boolean,
 ): { state: VisionPresenceOccupancyState; confidence: number | null } {
   if (occupancy) {

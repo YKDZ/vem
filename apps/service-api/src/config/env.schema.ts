@@ -56,6 +56,11 @@ const baseEnvSchema = z.object({
     }, z.boolean())
     .default(false),
   PAYMENT_WEBHOOK_BASE_URL: z.url(),
+  MEDIA_ASSET_STORAGE_ROOT: z
+    .string()
+    .min(1)
+    .default("/var/lib/vem/service-api/media-assets"),
+  MEDIA_ASSET_PUBLIC_BASE_URL: z.url().optional(),
   PAYMENT_CONFIG_ENCRYPTION_KEY: z
     .string()
     .min(32)

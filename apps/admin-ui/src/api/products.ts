@@ -2,10 +2,18 @@ import type { ProductStatus, VariantStatus } from "@vem/shared";
 
 import { get, patch, post } from "./request";
 
+export type MediaAssetSummary = {
+  id: string;
+  publicUrl: string;
+  contentType: string;
+};
+
 export type Product = {
   id: string;
   name: string;
   description: string | null;
+  displayImageMediaAssetId: string | null;
+  displayImageMediaAsset: MediaAssetSummary | null;
   status: ProductStatus;
   sortOrder: number;
   createdAt: string;
@@ -23,9 +31,15 @@ export type ProductVariant = {
   costCents: number | null;
   status: VariantStatus;
   targetGender?: "male" | "female" | null;
+  tryOnSilhouetteMediaAssetId: string | null;
+  tryOnSilhouetteMediaAsset: MediaAssetSummary | null;
   createdAt: string;
   updatedAt: string;
 };
+type ProductVariantWrite = Omit<
+  ProductVariant,
+  "id" | "createdAt" | "updatedAt" | "tryOnSilhouetteMediaAsset"
+>;
 
 export type ProductQuery = {
   keyword?: string;
@@ -33,6 +47,11 @@ export type ProductQuery = {
   page?: number;
   pageSize?: number;
 };
+
+type ProductWrite = Omit<
+  Product,
+  "id" | "createdAt" | "updatedAt" | "displayImageMediaAsset"
+>;
 
 export type PageResult<T> = {
   items: T[];
@@ -47,17 +66,37 @@ export async function listProducts(
   return await get<PageResult<Product>>("/products", { params: query });
 }
 
-export async function createProduct(
-  body: Omit<Product, "id" | "createdAt" | "updatedAt">,
-): Promise<Product> {
+export async function createProduct(body: ProductWrite): Promise<Product> {
   return await post<Product>("/products", body);
 }
 
 export async function updateProduct(
   id: string,
-  body: Partial<Omit<Product, "id" | "createdAt" | "updatedAt">>,
+  body: Partial<ProductWrite>,
 ): Promise<Product> {
   return await patch<Product>(`/products/${id}`, body);
+}
+
+export async function uploadProductDisplayImage(
+  file: File,
+): Promise<MediaAssetSummary> {
+  const body = new FormData();
+  body.append("file", file);
+  return await post<MediaAssetSummary, FormData>(
+    "/media-assets/product-display-images",
+    body,
+  );
+}
+
+export async function uploadTryOnSilhouette(
+  file: File,
+): Promise<MediaAssetSummary> {
+  const body = new FormData();
+  body.append("file", file);
+  return await post<MediaAssetSummary, FormData>(
+    "/media-assets/try-on-silhouettes",
+    body,
+  );
 }
 
 export async function listProductVariants(
@@ -69,14 +108,14 @@ export async function listProductVariants(
 }
 
 export async function createProductVariant(
-  body: Omit<ProductVariant, "id" | "createdAt" | "updatedAt">,
+  body: ProductVariantWrite,
 ): Promise<ProductVariant> {
   return await post<ProductVariant>("/product-variants", body);
 }
 
 export async function updateProductVariant(
   id: string,
-  body: Partial<Omit<ProductVariant, "id" | "createdAt" | "updatedAt">>,
+  body: Partial<ProductVariantWrite>,
 ): Promise<ProductVariant> {
   return await patch<ProductVariant>(`/product-variants/${id}`, body);
 }

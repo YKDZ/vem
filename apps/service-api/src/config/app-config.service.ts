@@ -102,6 +102,14 @@ export class AppConfigService {
     return this.config.get("PAYMENT_WEBHOOK_BASE_URL", { infer: true });
   }
 
+  get mediaAssetStorageRoot(): string {
+    return this.config.get("MEDIA_ASSET_STORAGE_ROOT", { infer: true });
+  }
+
+  get mediaAssetPublicBaseUrl(): string | undefined {
+    return this.config.get("MEDIA_ASSET_PUBLIC_BASE_URL", { infer: true });
+  }
+
   get paymentConfigEncryptionKey(): string {
     return this.config.get("PAYMENT_CONFIG_ENCRYPTION_KEY", { infer: true });
   }

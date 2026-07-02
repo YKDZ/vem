@@ -95,6 +95,41 @@ describe("useMachineStore", () => {
     );
   });
 
+  it("saves only the Virtual Try-On Camera device id", async () => {
+    const config = normalizeMachineConfig({
+      machineCode: "MACHINE-1",
+      tryOnCameraDeviceId: "try-on-camera-1",
+    });
+    saveConfigMock.mockResolvedValue({
+      public: {
+        ...config,
+        machineSecret: undefined,
+        machineSecretConfigured: undefined,
+        mqttSigningSecret: undefined,
+        mqttSigningSecretConfigured: undefined,
+        mqttPassword: undefined,
+        mqttPasswordConfigured: undefined,
+      },
+      machineSecretConfigured: false,
+      mqttSigningSecretConfigured: false,
+      mqttPasswordConfigured: false,
+    });
+
+    const store = useMachineStore();
+    await store.saveConfig(config);
+
+    expect(saveConfigMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        public: expect.objectContaining({
+          tryOnCameraDeviceId: "try-on-camera-1",
+        }),
+      }),
+    );
+    expect(saveConfigMock.mock.calls[0]?.[0].public).not.toHaveProperty(
+      "tryOnCameraLabel",
+    );
+  });
+
   it("preserves the Machine Location Label through daemon config save", async () => {
     const config = {
       ...normalizeMachineConfig({

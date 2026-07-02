@@ -58,6 +58,9 @@ const selectedConcreteItem = computed(() => {
 const selectedCoverImageUrl = computed(
   () => selectedConcreteItem.value?.coverImageUrl ?? props.item.coverImageUrl,
 );
+const selectedTryOnSilhouetteUrl = computed(
+  () => selectedVariant.value?.tryOnSilhouetteUrl ?? null,
+);
 const specText = computed(() => {
   const variant = selectedVariant.value;
   if (!variant) return "-";
@@ -267,6 +270,15 @@ function purchase(): void {
             {{ option.label }}
           </button>
         </div>
+      </section>
+
+      <section v-if="selectedTryOnSilhouetteUrl" class="mt-6">
+        <button
+          class="kiosk-touch-target w-full rounded-lg border border-neutral-950 bg-white px-5 py-3 text-lg font-black text-neutral-950"
+          type="button"
+        >
+          试穿
+        </button>
       </section>
     </div>
 

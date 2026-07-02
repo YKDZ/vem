@@ -34,6 +34,7 @@ describe("machine config", () => {
       visionEnabled: true,
       visionWsUrl: "ws://127.0.0.1:7892/ws",
       visionRequestTimeoutMs: 8000,
+      tryOnCameraDeviceId: null,
       audioCueSettings: {
         enabled: false,
         categories: {
@@ -143,6 +144,19 @@ describe("machine config", () => {
       visionWsUrl: " ws://127.0.0.1:7892/ws ",
     });
     expect(result.visionWsUrl).toBe("ws://127.0.0.1:7892/ws");
+  });
+
+  it("preserves an explicit nullable Virtual Try-On Camera device id", () => {
+    expect(
+      normalizeMachineConfig({
+        tryOnCameraDeviceId: " camera-device-1 ",
+      }).tryOnCameraDeviceId,
+    ).toBe("camera-device-1");
+    expect(
+      normalizeMachineConfig({ tryOnCameraDeviceId: "   " })
+        .tryOnCameraDeviceId,
+    ).toBeNull();
+    expect(normalizeMachineConfig({}).tryOnCameraDeviceId).toBeNull();
   });
 
   it("allows serial adapter with default lower controller USB identity", () => {

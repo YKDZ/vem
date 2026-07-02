@@ -12,8 +12,8 @@ use uuid::Uuid;
 use vending_core::domain::{CommandLogStatus, OutboxKind, OutboxTransport};
 
 use super::schema::{
-    MIGRATION_V1, MIGRATION_V2, MIGRATION_V3, MIGRATION_V4, MIGRATION_V5, MIGRATION_V6,
-    MIGRATION_V7, MIGRATION_V8, MIGRATION_V9, SCHEMA_VERSION,
+    MIGRATION_V1, MIGRATION_V10, MIGRATION_V2, MIGRATION_V3, MIGRATION_V4, MIGRATION_V5,
+    MIGRATION_V6, MIGRATION_V7, MIGRATION_V8, MIGRATION_V9, SCHEMA_VERSION,
 };
 use vending_core::hardware::{
     DispenseCommandPayload, DispenseProgressEvent, DispenseProgressStage, DispenseResultPayload,
@@ -249,6 +249,8 @@ pub struct MachinePlanogramSlotInput {
     pub product_name: String,
     pub product_description: Option<String>,
     pub cover_image_url: Option<String>,
+    #[serde(default)]
+    pub try_on_silhouette_url: Option<String>,
     pub category_id: Option<String>,
     pub category_name: Option<String>,
     pub sku: String,
@@ -344,6 +346,8 @@ pub struct SaleViewItem {
     pub product_name: String,
     pub product_description: Option<String>,
     pub cover_image_url: Option<String>,
+    #[serde(default)]
+    pub try_on_silhouette_url: Option<String>,
     pub category_id: Option<String>,
     pub category_name: Option<String>,
     pub sku: String,
@@ -585,6 +589,12 @@ impl LocalStateStore {
         }
         if current_version < 9 {
             sqlx::query(MIGRATION_V9)
+                .execute(&self.pool)
+                .await
+                .map_err(StoreError::Sqlx)?;
+        }
+        if current_version < 10 {
+            sqlx::query(MIGRATION_V10)
                 .execute(&self.pool)
                 .await
                 .map_err(StoreError::Sqlx)?;
@@ -1663,8 +1673,9 @@ impl LocalStateStore {
                 "INSERT INTO machine_planogram_slots(
                    planogram_version,slot_id,slot_code,layer_no,cell_no,capacity,par_level,
                    inventory_id,variant_id,product_id,product_name,product_description,cover_image_url,
-                   category_id,category_name,sku,size,color,price_cents,product_sort_order,target_gender
-                 ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)",
+                   try_on_silhouette_url,category_id,category_name,sku,size,color,price_cents,
+                   product_sort_order,target_gender
+                 ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)",
             )
             .bind(&input.planogram_version)
             .bind(&slot.slot_id)
@@ -1679,6 +1690,7 @@ impl LocalStateStore {
             .bind(&slot.product_name)
             .bind(&slot.product_description)
             .bind(&slot.cover_image_url)
+            .bind(&slot.try_on_silhouette_url)
             .bind(&slot.category_id)
             .bind(&slot.category_name)
             .bind(&slot.sku)
@@ -2996,7 +3008,8 @@ async fn planogram_slots_match_in_tx(
         "SELECT
            slot_id,slot_code,layer_no,cell_no,capacity,par_level,
            inventory_id,variant_id,product_id,product_name,product_description,cover_image_url,
-           category_id,category_name,sku,size,color,price_cents,product_sort_order,target_gender
+           try_on_silhouette_url,category_id,category_name,sku,size,color,price_cents,
+           product_sort_order,target_gender
          FROM machine_planogram_slots
          WHERE planogram_version = ?1
          ORDER BY slot_id ASC",
@@ -3020,6 +3033,7 @@ async fn planogram_slots_match_in_tx(
             product_name: row.try_get("product_name")?,
             product_description: row.try_get("product_description")?,
             cover_image_url: row.try_get("cover_image_url")?,
+            try_on_silhouette_url: row.try_get("try_on_silhouette_url")?,
             category_id: row.try_get("category_id")?,
             category_name: row.try_get("category_name")?,
             sku: row.try_get("sku")?,
@@ -3349,6 +3363,7 @@ async fn upsert_sale_view_projection_in_tx(
            s.product_name,
            s.product_description,
            s.cover_image_url,
+           s.try_on_silhouette_url,
            s.category_id,
            s.category_name,
            s.sku,
@@ -3384,6 +3399,7 @@ async fn upsert_sale_view_projection_in_tx(
         product_name: row.try_get("product_name")?,
         product_description: row.try_get("product_description")?,
         cover_image_url: row.try_get("cover_image_url")?,
+        try_on_silhouette_url: row.try_get("try_on_silhouette_url")?,
         category_id: row.try_get("category_id")?,
         category_name: row.try_get("category_name")?,
         sku: row.try_get("sku")?,
@@ -4258,6 +4274,7 @@ mod tests {
                     product_name: "water".to_string(),
                     product_description: None,
                     cover_image_url: None,
+                    try_on_silhouette_url: None,
                     category_id: None,
                     category_name: None,
                     sku: "WATER-001".to_string(),
@@ -4284,6 +4301,74 @@ mod tests {
             quantity: 1,
             timeout_seconds: 10,
         }
+    }
+
+    #[tokio::test]
+    async fn sale_view_preserves_product_display_image_asset_url() {
+        let temp = TempDir::new().expect("tempdir");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+
+        let sale_view = store
+            .apply_planogram(MachinePlanogramInput {
+                planogram_version: "PLAN-MEDIA".to_string(),
+                source: "test".to_string(),
+                applied_by: None,
+                slots: vec![MachinePlanogramSlotInput {
+                    slot_id: "550e8400-e29b-41d4-a716-446655440001".to_string(),
+                    slot_code: "A1".to_string(),
+                    layer_no: 1,
+                    cell_no: 1,
+                    capacity: 8,
+                    par_level: 6,
+                    inventory_id: "550e8400-e29b-41d4-a716-446655440002".to_string(),
+                    variant_id: "550e8400-e29b-41d4-a716-446655440003".to_string(),
+                    product_id: "550e8400-e29b-41d4-a716-446655440004".to_string(),
+                    product_name: "shirt".to_string(),
+                    product_description: None,
+                    cover_image_url: Some(
+                        "/api/media-assets/550e8400-e29b-41d4-a716-446655440124/content"
+                            .to_string(),
+                    ),
+                    try_on_silhouette_url: Some(
+                        "/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content"
+                            .to_string(),
+                    ),
+                    category_id: None,
+                    category_name: None,
+                    sku: "TEE-001".to_string(),
+                    size: Some("M".to_string()),
+                    color: Some("white".to_string()),
+                    price_cents: 3900,
+                    product_sort_order: 1,
+                    target_gender: None,
+                }],
+            })
+            .await
+            .expect("planogram");
+
+        assert_eq!(
+            sale_view.items[0].cover_image_url.as_deref(),
+            Some("/api/media-assets/550e8400-e29b-41d4-a716-446655440124/content")
+        );
+        assert_eq!(
+            sale_view.items[0].try_on_silhouette_url.as_deref(),
+            Some("/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content")
+        );
+
+        let reopened = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("reopen");
+        let persisted = reopened.sale_view(None).await.expect("sale view");
+        assert_eq!(
+            persisted.items[0].cover_image_url.as_deref(),
+            Some("/api/media-assets/550e8400-e29b-41d4-a716-446655440124/content")
+        );
+        assert_eq!(
+            persisted.items[0].try_on_silhouette_url.as_deref(),
+            Some("/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content")
+        );
     }
 
     fn single_slot_stock_snapshot(
@@ -4741,6 +4826,7 @@ mod tests {
                     product_name: "water".to_string(),
                     product_description: None,
                     cover_image_url: None,
+                    try_on_silhouette_url: None,
                     category_id: None,
                     category_name: None,
                     sku: "WATER-001".to_string(),
@@ -4903,6 +4989,7 @@ mod tests {
                         product_name: "water".to_string(),
                         product_description: None,
                         cover_image_url: None,
+                        try_on_silhouette_url: None,
                         category_id: None,
                         category_name: None,
                         sku: "WATER-001".to_string(),
@@ -4925,6 +5012,7 @@ mod tests {
                         product_name: "tea".to_string(),
                         product_description: None,
                         cover_image_url: None,
+                        try_on_silhouette_url: None,
                         category_id: None,
                         category_name: None,
                         sku: "TEA-001".to_string(),
@@ -4947,6 +5035,7 @@ mod tests {
                         product_name: "juice".to_string(),
                         product_description: None,
                         cover_image_url: None,
+                        try_on_silhouette_url: None,
                         category_id: None,
                         category_name: None,
                         sku: "JUICE-001".to_string(),
@@ -5157,6 +5246,7 @@ mod tests {
                     product_name: "water".to_string(),
                     product_description: None,
                     cover_image_url: None,
+                    try_on_silhouette_url: None,
                     category_id: None,
                     category_name: None,
                     sku: "WATER-001".to_string(),
@@ -5659,6 +5749,7 @@ mod tests {
                     product_name: "water".to_string(),
                     product_description: None,
                     cover_image_url: None,
+                    try_on_silhouette_url: None,
                     category_id: None,
                     category_name: None,
                     sku: "WATER-001".to_string(),
@@ -5754,6 +5845,7 @@ mod tests {
                     product_name: "water".to_string(),
                     product_description: None,
                     cover_image_url: None,
+                    try_on_silhouette_url: None,
                     category_id: None,
                     category_name: None,
                     sku: "WATER-001".to_string(),

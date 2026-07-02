@@ -3497,6 +3497,23 @@ mod tests {
         assert_eq!(response.status(), StatusCode::CREATED);
     }
 
+    async fn get_ipc_json(app: &Router, uri: &str, token: Option<&str>) -> serde_json::Value {
+        let mut builder = Request::builder().method(Method::GET).uri(uri);
+        if let Some(token) = token {
+            builder = builder.header(AUTHORIZATION, format!("Bearer {token}"));
+        }
+        let response = app
+            .clone()
+            .oneshot(builder.body(axum::body::Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        serde_json::from_slice(&body).unwrap()
+    }
+
     fn valid_provisioning_profile() -> serde_json::Value {
         json!({
             "machine": {
@@ -5170,6 +5187,171 @@ mod tests {
             .collect();
         assert_eq!(methods, vec!["qr_code:alipay"]);
         assert_eq!(readiness["components"]["paymentOptions"]["ready"], true);
+    }
+
+    #[tokio::test]
+    async fn try_on_camera_and_unavailable_vision_do_not_block_sale_readiness_or_payment_options() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(wiremock::matchers::path("/machine-orders/payment-options"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "options": [
+                    {
+                        "optionKey": "payment_code:alipay",
+                        "providerCode": "alipay",
+                        "method": "payment_code",
+                        "displayName": "支付宝付款码",
+                        "description": "请出示支付宝付款码并靠近扫码窗口",
+                        "icon": "alipay",
+                        "recommended": true,
+                        "disabled": false,
+                        "disabledReason": null
+                    },
+                    {
+                        "optionKey": "qr_code:alipay",
+                        "providerCode": "alipay",
+                        "method": "qr_code",
+                        "displayName": "支付宝扫码",
+                        "description": "请使用支付宝扫描屏幕二维码",
+                        "icon": "alipay",
+                        "recommended": false,
+                        "disabled": false,
+                        "disabledReason": null
+                    }
+                ],
+                "defaultOptionKey": "payment_code:alipay",
+                "defaultProviderCode": "alipay",
+                "serverTime": "2026-06-04T00:00:00Z"
+            })))
+            .mount(&server)
+            .await;
+
+        for (case_name, try_on_camera_device_id, vision_enabled, slot_suffix) in [
+            ("missing_try_on_camera", None, true, "1101"),
+            (
+                "disabled_vision_with_missing_try_on_camera",
+                None,
+                false,
+                "1201",
+            ),
+            (
+                "configured_but_unavailable_try_on_camera",
+                Some("missing-camera".to_string()),
+                true,
+                "1301",
+            ),
+        ] {
+            let temp_dir = tempdir().expect("tmp");
+            let ctx = test_ipc_context(
+                temp_dir.path(),
+                "token-1",
+                Some("MACHINE-1".to_string()),
+                &server.uri(),
+            )
+            .await;
+            mark_runtime_sale_ready(&ctx).await;
+            {
+                let mut public = ctx.config_store.load_public_config().await.expect("config");
+                public.try_on_camera_device_id = try_on_camera_device_id;
+                public.vision_enabled = vision_enabled;
+                ctx.config_store
+                    .save_public_config(public)
+                    .await
+                    .expect("save try-on config");
+            }
+            {
+                let mut vision = ctx.ui.status_cache.vision.write().await;
+                vision.enabled = vision_enabled;
+                vision.online = false;
+                vision.message = format!("{case_name}: camera unavailable");
+                vision.latest_diagnostic_payload = Some(json!({
+                    "frameImageBase64": "raw-frame-must-remain-diagnostic-only"
+                }));
+            }
+            let app = build_router(ctx);
+            let slot_id = format!("550e8400-e29b-41d4-a716-44665544{slot_suffix}");
+            let inventory_id = format!("550e8400-e29b-41d4-a716-44665545{slot_suffix}");
+            let planogram_version = format!("PLAN-TRY-ON-{slot_suffix}");
+            assert_eq!(
+                post_json(
+                    &app,
+                    "/v1/stock/planogram",
+                    "token-1",
+                    one_slot_planogram(&planogram_version, &slot_id, &inventory_id),
+                )
+                .await
+                .status(),
+                StatusCode::OK,
+                "{case_name}: planogram should apply"
+            );
+            assert_eq!(
+                post_json(
+                    &app,
+                    "/v1/stock/movements",
+                    "token-1",
+                    json!({
+                        "movementId": format!("MOVE-{slot_suffix}"),
+                        "planogramVersion": planogram_version,
+                        "slotId": slot_id,
+                        "movementType": "planned_refill",
+                        "quantity": 2,
+                        "source": "field_service",
+                        "attributedTo": "operator-1"
+                    }),
+                )
+                .await
+                .status(),
+                StatusCode::CREATED,
+                "{case_name}: stock movement should apply"
+            );
+            record_attested_stock(&app, &planogram_version, &slot_id, 2).await;
+
+            let readyz = get_ipc_json(&app, "/readyz", None).await;
+            assert_eq!(readyz["canSell"], true, "{case_name}: readyz can sell");
+            assert_eq!(readyz["suggestedRoute"], "catalog");
+            assert!(
+                readyz["blockingCodes"].as_array().unwrap().is_empty(),
+                "{case_name}: readyz blockers should stay empty"
+            );
+
+            let readiness = get_ipc_json(&app, "/v1/sale-readiness", Some("token-1")).await;
+            assert_eq!(
+                readiness["canStartNetworkAuthorizedSale"], true,
+                "{case_name}: sale readiness should remain ready"
+            );
+            assert!(
+                readiness["blockingCodes"].as_array().unwrap().is_empty(),
+                "{case_name}: sale readiness blockers should stay empty"
+            );
+            assert_eq!(
+                readiness["components"]["paymentOptions"]["ready"], true,
+                "{case_name}: payment options component should remain ready"
+            );
+            assert!(readiness["components"].get("vision").is_none());
+            let readiness_text = readiness.to_string();
+            assert!(!readiness_text.contains("frameImageBase64"));
+            assert!(!readiness_text.contains("missing-camera"));
+
+            let payment_options = get_ipc_json(&app, "/v1/payment-options", Some("token-1")).await;
+            assert_eq!(
+                payment_options["defaultOptionKey"], "payment_code:alipay",
+                "{case_name}: default payment option should be unchanged"
+            );
+            let option_keys: Vec<&str> = payment_options["options"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|option| option["optionKey"].as_str())
+                .collect();
+            assert_eq!(
+                option_keys,
+                vec!["payment_code:alipay", "qr_code:alipay"],
+                "{case_name}: payment option list should be unchanged"
+            );
+            let payment_options_text = payment_options.to_string();
+            assert!(!payment_options_text.contains("frameImageBase64"));
+            assert!(!payment_options_text.contains("missing-camera"));
+        }
     }
 
     #[tokio::test]

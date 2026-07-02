@@ -195,6 +195,56 @@ describe("catalog store sale view", () => {
     ]);
   });
 
+  it("keeps try-on silhouettes on the selected variant rather than product category", async () => {
+    getSaleViewMock.mockResolvedValue({
+      items: [
+        saleViewItem({
+          productName: "基础短袖",
+          categoryName: "T恤",
+          sku: "TSHIRT-M-WHITE",
+          size: "M",
+          color: "白色",
+          tryOnSilhouetteUrl:
+            "/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
+        }),
+        saleViewItem({
+          slotId: "550e8400-e29b-41d4-a716-446655440011",
+          slotCode: "B1",
+          layerNo: 2,
+          cellNo: 1,
+          inventoryId: "550e8400-e29b-41d4-a716-446655440012",
+          variantId: "550e8400-e29b-41d4-a716-446655440013",
+          productName: "基础短袖",
+          categoryName: "T恤",
+          sku: "TSHIRT-L-BLUE",
+          size: "L",
+          color: "蓝色",
+          tryOnSilhouetteUrl: null,
+        }),
+      ],
+      source: "local_stock",
+      planogramVersion: "PLAN-1",
+      lastUpdatedAt: "2026-06-04T00:00:00Z",
+    });
+
+    const store = useCatalogStore();
+    await store.load();
+
+    expect(
+      store.availableItems[0].variantCandidates.map((variant) => ({
+        sku: variant.sku,
+        tryOnSilhouetteUrl: variant.tryOnSilhouetteUrl,
+      })),
+    ).toEqual([
+      {
+        sku: "TSHIRT-M-WHITE",
+        tryOnSilhouetteUrl:
+          "/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
+      },
+      { sku: "TSHIRT-L-BLUE", tryOnSilhouetteUrl: null },
+    ]);
+  });
+
   it("auto-refreshes the sale view without a manual catalog button", async () => {
     vi.useFakeTimers();
     getSaleViewMock

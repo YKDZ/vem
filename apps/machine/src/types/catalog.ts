@@ -21,7 +21,7 @@ export type MachineCatalogSlotCandidate = Pick<
 
 export type MachineCatalogVariantCandidate = Pick<
   MachineSaleViewItem,
-  "variantId" | "sku" | "size" | "color" | "priceCents"
+  "variantId" | "sku" | "size" | "color" | "priceCents" | "tryOnSilhouetteUrl"
 > & {
   capacity: number;
   parLevel: number;

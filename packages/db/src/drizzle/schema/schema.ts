@@ -320,6 +320,27 @@ export const productCategories = t.pgTable(
   ],
 );
 
+export const mediaAssets = t.pgTable(
+  "media_assets",
+  {
+    id: id(),
+    purpose: t.varchar("purpose", { length: 64 }).notNull(),
+    storageProvider: t.varchar("storage_provider", { length: 32 }).notNull(),
+    storageKey: t.text("storage_key").notNull(),
+    contentType: t.varchar("content_type", { length: 128 }).notNull(),
+    byteSize: t.integer("byte_size").notNull(),
+    originalFilename: t.varchar("original_filename", { length: 255 }),
+    sha256: t.varchar("sha256", { length: 64 }).notNull(),
+    publicUrl: t.text("public_url").notNull(),
+    createdAt: createdAt(),
+    deletedAt: deletedAt(),
+  },
+  (table) => [
+    t.index("media_assets_purpose_idx").on(table.purpose),
+    t.index("media_assets_storage_provider_idx").on(table.storageProvider),
+  ],
+);
+
 export const products = t.pgTable(
   "products",
   {
@@ -328,6 +349,9 @@ export const products = t.pgTable(
     categoryId: t.uuid("category_id").references(() => productCategories.id),
     description: t.text("description"),
     coverImageUrl: t.text("cover_image_url"),
+    displayImageMediaAssetId: t
+      .uuid("display_image_media_asset_id")
+      .references(() => mediaAssets.id),
     status: productStatus("status").default("draft").notNull(),
     sortOrder: t.integer("sort_order").default(0).notNull(),
     createdAt: createdAt(),
@@ -337,6 +361,9 @@ export const products = t.pgTable(
   (table) => [
     t.index("products_category_id_idx").on(table.categoryId),
     t.index("products_status_idx").on(table.status),
+    t
+      .index("products_display_image_media_asset_id_idx")
+      .on(table.displayImageMediaAssetId),
   ],
 );
 
@@ -355,6 +382,9 @@ export const productVariants = t.pgTable(
     targetGender: t.varchar("target_gender", { length: 8 }),
     priceCents: t.integer("price_cents").notNull(),
     costCents: t.integer("cost_cents"),
+    tryOnSilhouetteMediaAssetId: t
+      .uuid("try_on_silhouette_media_asset_id")
+      .references(() => mediaAssets.id),
     status: variantStatus("status").default("active").notNull(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -364,6 +394,9 @@ export const productVariants = t.pgTable(
     t.uniqueIndex("product_variants_sku_unique").on(table.sku),
     t.index("product_variants_product_id_idx").on(table.productId),
     t.index("product_variants_status_idx").on(table.status),
+    t
+      .index("product_variants_try_on_silhouette_media_asset_id_idx")
+      .on(table.tryOnSilhouetteMediaAssetId),
     t.check(
       "product_variants_price_cents_non_negative",
       sql`${table.priceCents} >= 0`,
@@ -576,6 +609,7 @@ export const machinePlanogramSlots = t.pgTable(
     productName: t.varchar("product_name", { length: 128 }).notNull(),
     productDescription: t.text("product_description"),
     coverImageUrl: t.text("cover_image_url"),
+    tryOnSilhouetteUrl: t.text("try_on_silhouette_url"),
     categoryId: t.uuid("category_id"),
     categoryName: t.varchar("category_name", { length: 128 }),
     sku: t.varchar("sku", { length: 64 }).notNull(),
