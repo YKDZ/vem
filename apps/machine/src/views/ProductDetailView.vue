@@ -261,7 +261,7 @@ async function enterTryOn(): Promise<void> {
         aria-label="返回商品列表"
         @click="router.push('/catalog')"
       >
-        <span aria-hidden="true">←</span>
+        <span aria-hidden="true">&lt;</span>
         返回
       </button>
 
@@ -559,7 +559,8 @@ async function enterTryOn(): Promise<void> {
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.72);
   color: #6f835f;
-  font-size: 2rem;
+  font-size: 1.65rem;
+  font-weight: 900;
   line-height: 1;
   box-shadow: 0 8px 18px rgba(102, 92, 64, 0.08);
 }
