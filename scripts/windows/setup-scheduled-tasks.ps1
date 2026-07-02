@@ -52,8 +52,8 @@ param(
   [string]$MachineUiDebugLauncher = "C:\VEM\bringup\launch-machine-ui-debug.vbs",
   [string]$MachineUiShortcutName = "VEM Machine UI.lnk",
   [string]$MachineUiDebugShortcutName = "VEM Machine UI Debug.lnk",
-  [string]$VisionLauncher = "C:\VEM\start_vision.bat",
-  [string]$VisionWorkingDirectory = "D:\ai-cv\vending_vision",
+  [string]$VisionLauncher = "C:\VEM\bringup\start_vision.bat",
+  [string]$VisionWorkingDirectory = "C:\VEM\vision",
 
   [switch]$ConfigureKioskAccounts,
   [switch]$ConfigureRemoteMaintenanceAccess,

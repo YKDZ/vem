@@ -271,6 +271,7 @@ async function enterTryOn(): Promise<void> {
             <img
               :src="productImageUrl ?? fallbackImage"
               :alt="item.productName"
+              :class="{ 'detail-image-fallback': !productImageUrl }"
             />
             <span class="detail-bamboo" aria-hidden="true"></span>
             <span class="detail-image-count">1/5</span>
@@ -586,7 +587,7 @@ async function enterTryOn(): Promise<void> {
   position: relative;
   display: grid;
   width: 100%;
-  aspect-ratio: 0.82;
+  aspect-ratio: 3 / 4;
   overflow: hidden;
   place-items: center;
   border: 1px solid rgba(211, 203, 180, 0.92);
@@ -608,12 +609,23 @@ async function enterTryOn(): Promise<void> {
 }
 
 .detail-image-inner img {
-  position: relative;
+  position: absolute;
+  inset: 0;
   z-index: 2;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center center;
+  filter: drop-shadow(0 18px 18px rgba(81, 70, 51, 0.12));
+}
+
+.detail-image-inner img.detail-image-fallback {
+  top: 50%;
+  left: 50%;
   width: min(80%, 26rem);
   height: min(70%, 26rem);
   object-fit: contain;
-  filter: drop-shadow(0 18px 18px rgba(81, 70, 51, 0.12));
+  transform: translate(-50%, -50%);
 }
 
 .detail-bamboo {
@@ -926,11 +938,16 @@ async function enterTryOn(): Promise<void> {
   }
 
   .detail-image-inner {
-    aspect-ratio: 0.86;
+    aspect-ratio: 3 / 4;
     border-radius: 20px;
   }
 
   .detail-image-inner img {
+    width: 100%;
+    height: 100%;
+  }
+
+  .detail-image-inner img.detail-image-fallback {
     width: min(78%, 13rem);
     height: min(70%, 13rem);
   }
