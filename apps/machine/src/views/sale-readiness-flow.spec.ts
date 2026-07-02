@@ -85,12 +85,12 @@ import {
   resetCustomerPresenceSessionForTests,
   useReturnHomeOnCustomerDeparture,
 } from "@/composables/usePresenceInteraction";
+import { machineConfigDefaults } from "@/config/machine-config";
 import { useCatalogStore } from "@/stores/catalog";
 import { useCheckoutStore } from "@/stores/checkout";
 import { useConnectivityStore } from "@/stores/connectivity";
 import { useMachineStore } from "@/stores/machine";
 import { useVisionStore } from "@/stores/vision";
-import { machineConfigDefaults } from "@/config/machine-config";
 
 import BootView from "./BootView.vue";
 import CatalogView from "./CatalogView.vue";
@@ -343,7 +343,10 @@ function spyEgressMethod(
   const current = (target as Record<PropertyKey, unknown>)[key];
   if (typeof current === "function") {
     return vi
-      .spyOn(target as Record<string, (...args: never[]) => unknown>, key as string)
+      .spyOn(
+        target as Record<string, (...args: never[]) => unknown>,
+        key as string,
+      )
       .mockImplementation(implementation);
   }
   const mock = vi.fn(implementation);
@@ -1170,8 +1173,9 @@ describe("sale readiness UI flow", () => {
       });
     });
     expect(subscribeVisionProfilesMock).not.toHaveBeenCalled();
-    expect(host.querySelector<HTMLVideoElement>('[data-test="try-on-video"]'))
-      .toBeTruthy();
+    expect(
+      host.querySelector<HTMLVideoElement>('[data-test="try-on-video"]'),
+    ).toBeTruthy();
     expectRecognitionDetailsHidden(host);
   });
 
@@ -1201,9 +1205,9 @@ describe("sale readiness UI flow", () => {
     const host = await mountView(VirtualTryOnView);
 
     expect(media.getUserMedia).not.toHaveBeenCalled();
-    expect(host.querySelector('[data-test="try-on-error"]')?.textContent).toContain(
-      "维护人员检查摄像头配置与调试",
-    );
+    expect(
+      host.querySelector('[data-test="try-on-error"]')?.textContent,
+    ).toContain("维护人员检查摄像头配置与调试");
   });
 
   it("does not retry with video fallback when the configured try-on camera fails", async () => {
@@ -1240,9 +1244,9 @@ describe("sale readiness UI flow", () => {
       video: { deviceId: { exact: "missing-camera" } },
     });
     expect(media.getUserMedia).not.toHaveBeenCalledWith({ video: true });
-    expect(host.querySelector('[data-test="try-on-error"]')?.textContent).toContain(
-      "维护人员检查摄像头配置与调试",
-    );
+    expect(
+      host.querySelector('[data-test="try-on-error"]')?.textContent,
+    ).toContain("维护人员检查摄像头配置与调试");
   });
 
   it("keeps product detail and checkout usable after try-on camera failure without sending frame data", async () => {
@@ -1280,9 +1284,9 @@ describe("sale readiness UI flow", () => {
     await vi.waitFor(() => {
       expect(media.getUserMedia).toHaveBeenCalledTimes(1);
     });
-    expect(host.querySelector('[data-test="try-on-error"]')?.textContent).toContain(
-      "维护人员检查摄像头配置与调试",
-    );
+    expect(
+      host.querySelector('[data-test="try-on-error"]')?.textContent,
+    ).toContain("维护人员检查摄像头配置与调试");
 
     unmountMountedView();
 
@@ -1367,9 +1371,9 @@ describe("sale readiness UI flow", () => {
     let host = await mountView(VirtualTryOnView);
 
     expect(media.getUserMedia).not.toHaveBeenCalled();
-    expect(host.querySelector('[data-test="try-on-error"]')?.textContent).toContain(
-      "维护人员检查摄像头配置与调试",
-    );
+    expect(
+      host.querySelector('[data-test="try-on-error"]')?.textContent,
+    ).toContain("维护人员检查摄像头配置与调试");
 
     unmountMountedView();
 

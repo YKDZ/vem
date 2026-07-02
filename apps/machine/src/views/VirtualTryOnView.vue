@@ -49,11 +49,13 @@ async function startCamera(): Promise<void> {
     return;
   }
   if (!deviceId) {
-    errorMessage.value = "试穿摄像头未配置，请联系维护人员检查摄像头配置与调试。";
+    errorMessage.value =
+      "试穿摄像头未配置，请联系维护人员检查摄像头配置与调试。";
     return;
   }
   if (!navigator.mediaDevices?.getUserMedia) {
-    errorMessage.value = "当前设备无法打开试穿摄像头，请联系维护人员检查摄像头配置与调试。";
+    errorMessage.value =
+      "当前设备无法打开试穿摄像头，请联系维护人员检查摄像头配置与调试。";
     return;
   }
 
