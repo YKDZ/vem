@@ -79,6 +79,7 @@ pub struct RuntimeStatusCache {
     pub scanner: Arc<tokio::sync::RwLock<vending_core::scanner::ScannerHealthSnapshot>>,
     pub vision: Arc<tokio::sync::RwLock<VisionStatusSnapshot>>,
     pub catalog: Arc<tokio::sync::RwLock<CatalogSnapshot>>,
+    pub environment: Arc<tokio::sync::RwLock<vending_core::environment::EnvironmentHeartbeatCache>>,
 }
 
 impl RuntimeStatusCache {
@@ -150,6 +151,9 @@ impl RuntimeStatusCache {
                 source: "uninitialized".to_string(),
                 last_error: None,
             })),
+            environment: Arc::new(tokio::sync::RwLock::new(
+                vending_core::environment::EnvironmentHeartbeatCache::default(),
+            )),
         }
     }
 }
@@ -2940,6 +2944,8 @@ async fn natural_context(State(ctx): State<IpcContext>, headers: HeaderMap) -> i
         .into_response();
     };
 
+    let local_site_signals = local_site_signals_snapshot(&ctx).await;
+
     match ctx
         .ui
         .backend
@@ -2949,6 +2955,7 @@ async fn natural_context(State(ctx): State<IpcContext>, headers: HeaderMap) -> i
         Ok(external) => Json(MachineNaturalContextSnapshot::from_external_environment(
             Some(machine_code),
             external,
+            Some(local_site_signals),
         ))
         .into_response(),
         Err(error) => Json(MachineNaturalContextSnapshot::unavailable(
@@ -2957,6 +2964,30 @@ async fn natural_context(State(ctx): State<IpcContext>, headers: HeaderMap) -> i
         ))
         .into_response(),
     }
+}
+
+async fn local_site_signals_snapshot(
+    ctx: &IpcContext,
+) -> vending_core::environment::EnvironmentHeartbeatPayload {
+    let cached = ctx
+        .ui
+        .status_cache
+        .environment
+        .read()
+        .await
+        .heartbeat_payload();
+    if cached.sensor_status != vending_core::environment::EnvironmentSensorStatus::Unknown {
+        return cached;
+    }
+
+    if let Ok(sample) = ctx.hardware.query_environment_sample().await {
+        let sampled_at = crate::state::store::now_iso();
+        let mut cache = ctx.ui.status_cache.environment.write().await;
+        cache.record_query_result(sample, sampled_at);
+        return cache.heartbeat_payload();
+    }
+
+    cached
 }
 
 fn backend_natural_context_message(error: &str) -> String {

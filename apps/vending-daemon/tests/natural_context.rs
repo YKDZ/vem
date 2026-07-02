@@ -79,7 +79,9 @@ async fn daemon_fetches_external_environment_and_exposes_operator_visible_natura
         snapshot["externalEnvironment"]["weather"]["temperatureCelsius"],
         28
     );
-    assert_eq!(snapshot["localSiteSignals"]["status"], "unavailable");
+    assert_eq!(snapshot["localSiteSignals"]["status"], "ok");
+    assert_eq!(snapshot["localSiteSignals"]["temperatureCelsius"], 24);
+    assert_eq!(snapshot["localSiteSignals"]["humidityRh"], 50);
     assert_eq!(snapshot["degraded"], false);
     assert_eq!(snapshot["customerFacingBlocked"], false);
 

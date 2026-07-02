@@ -312,7 +312,10 @@ export const naturalContextSnapshotSchema = z.object({
   machineCode: z.string().nullable().optional(),
   externalEnvironment: externalNaturalEnvironmentProjectionSchema,
   localSiteSignals: z.object({
-    status: z.enum(["unavailable"]),
+    status: z.enum(["ok", "faulted", "unknown", "unavailable"]),
+    temperatureCelsius: z.number().optional(),
+    humidityRh: z.number().min(0).max(100).optional(),
+    sampledAt: z.string().optional(),
   }),
   degraded: z.boolean(),
   customerFacingBlocked: z.boolean(),
