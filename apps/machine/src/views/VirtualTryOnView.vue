@@ -41,7 +41,8 @@ onBeforeUnmount(() => {
 
 async function startCamera(): Promise<void> {
   const deviceId = machineStore.config.tryOnCameraDeviceId;
-  const requestSequence = ++startupSequence;
+  startupSequence += 1;
+  const requestSequence = startupSequence;
   errorMessage.value = null;
 
   if (!silhouetteUrl.value) {

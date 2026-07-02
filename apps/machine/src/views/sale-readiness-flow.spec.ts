@@ -1081,8 +1081,10 @@ describe("sale readiness UI flow", () => {
     const media = installMediaDevicesMock(vi.fn().mockResolvedValue(stream));
     routeParams.catalogKey = item.catalogKey;
     routeQuery.variantId = silhouettedVariant.variantId;
-    const fetchSpy = spyEgressMethod(globalThis, "fetch", () =>
-      Promise.resolve(new Response(null)),
+    const fetchSpy = spyEgressMethod(
+      globalThis,
+      "fetch",
+      async () => new Response(null),
     );
     const sendBeaconSpy = spyEgressMethod(navigator, "sendBeacon", () => false);
     const xhrSpy = stubEgressConstructor("XMLHttpRequest");
@@ -1104,16 +1106,18 @@ describe("sale readiness UI flow", () => {
     const canvasToBlobSpy = vi
       .spyOn(HTMLCanvasElement.prototype, "toBlob")
       .mockImplementation(() => undefined);
-    const consoleLogSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const consoleLogSpy = vi
+      .spyOn(console, "log")
+      .mockImplementation(() => undefined);
     const consoleInfoSpy = vi
       .spyOn(console, "info")
-      .mockImplementation(() => {});
+      .mockImplementation(() => undefined);
     const consoleWarnSpy = vi
       .spyOn(console, "warn")
-      .mockImplementation(() => {});
+      .mockImplementation(() => undefined);
     const consoleErrorSpy = vi
       .spyOn(console, "error")
-      .mockImplementation(() => {});
+      .mockImplementation(() => undefined);
 
     await mountView(VirtualTryOnView);
 
@@ -1493,10 +1497,9 @@ describe("sale readiness UI flow", () => {
     routeParams.catalogKey = item.catalogKey;
     routeQuery.variantId = silhouettedVariant.variantId;
     const showTryOn = ref(true);
-    routerReplaceMock.mockImplementation(() => {
+    routerReplaceMock.mockImplementation(async () => {
       showTryOn.value = false;
       routeName.value = "catalog";
-      return Promise.resolve();
     });
 
     const App = defineComponent({
@@ -1556,11 +1559,11 @@ describe("sale readiness UI flow", () => {
     });
     applyTryOnCameraConfig("try-on-camera-1");
     const { stream, tracks } = makeMediaStream();
-    let resolveStream: (stream: MediaStream) => void = () => {};
+    let resolveStream: (stream: MediaStream) => void = () => undefined;
     installMediaDevicesMock(
       vi.fn(
-        () =>
-          new Promise<MediaStream>((resolve) => {
+        async () =>
+          await new Promise<MediaStream>((resolve) => {
             resolveStream = resolve;
           }),
       ),
@@ -1572,9 +1575,10 @@ describe("sale readiness UI flow", () => {
     mountedApp?.unmount();
     mountedApp = null;
     resolveStream(stream);
-    await nextTick();
 
-    expect(tracks[0]?.stop).toHaveBeenCalledOnce();
+    await vi.waitFor(() => {
+      expect(tracks[0]?.stop).toHaveBeenCalledOnce();
+    });
   });
 
   it("restores the selected variant when returning from virtual try-on to product detail", async () => {

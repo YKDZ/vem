@@ -439,9 +439,7 @@ function mockMediaDevices(options: {
   const getUserMedia = vi
     .fn()
     .mockResolvedValueOnce(permissionStream)
-    .mockImplementation(() =>
-      Promise.resolve(options.previewStream ?? previewStream),
-    );
+    .mockImplementation(async () => options.previewStream ?? previewStream);
   const enumerateDevices = vi.fn().mockResolvedValue(options.devices);
   Object.defineProperty(navigator, "mediaDevices", {
     configurable: true,
@@ -576,7 +574,9 @@ describe("MaintenanceView hardware config", () => {
     await vi.waitFor(() => {
       expect(media.enumerateDevices).toHaveBeenCalled();
     });
-    expect(media.permissionTrack.stop).toHaveBeenCalledOnce();
+    // oxlint-disable-next-line typescript/unbound-method
+    const permissionTrackStop = vi.mocked(media.permissionTrack.stop);
+    expect(permissionTrackStop).toHaveBeenCalledOnce();
     expect(host.textContent).toContain("USB Try-On Camera");
     expect(host.textContent).toContain("Ceiling Service Camera");
 
@@ -587,7 +587,8 @@ describe("MaintenanceView hardware config", () => {
 
     buttonByText(host, "预览摄像头").click();
     await vi.waitFor(() => {
-      expect(media.getUserMedia).toHaveBeenCalledWith({
+      const getUserMedia = vi.mocked(media.getUserMedia);
+      expect(getUserMedia).toHaveBeenCalledWith({
         audio: false,
         video: { deviceId: { exact: "try-on-camera-1" } },
       });
@@ -596,7 +597,9 @@ describe("MaintenanceView hardware config", () => {
     cameraSelect.value = "try-on-camera-2";
     cameraSelect.dispatchEvent(new Event("change"));
     await vi.waitFor(() => {
-      expect(stoppedPreviewTrack.stop).toHaveBeenCalledOnce();
+      // oxlint-disable-next-line typescript/unbound-method
+      const stoppedPreviewTrackStop = vi.mocked(stoppedPreviewTrack.stop);
+      expect(stoppedPreviewTrackStop).toHaveBeenCalledOnce();
     });
 
     buttonByText(host, "保存配置并重新自检").click();
@@ -710,7 +713,9 @@ describe("MaintenanceView hardware config", () => {
     buttonByText(host, "关闭预览").click();
     await nextTick();
 
-    expect(stoppedPreviewTrack.stop).toHaveBeenCalledOnce();
+    // oxlint-disable-next-line typescript/unbound-method
+    const stoppedPreviewTrackStop = vi.mocked(stoppedPreviewTrack.stop);
+    expect(stoppedPreviewTrackStop).toHaveBeenCalledOnce();
     expect(previewVideo.srcObject).toBeNull();
   });
 
@@ -777,7 +782,9 @@ describe("MaintenanceView hardware config", () => {
 
     pendingPreview.resolve(stalePreviewStream);
     await vi.waitFor(() => {
-      expect(stalePreviewTrack.stop).toHaveBeenCalledOnce();
+      // oxlint-disable-next-line typescript/unbound-method
+      const stalePreviewTrackStop = vi.mocked(stalePreviewTrack.stop);
+      expect(stalePreviewTrackStop).toHaveBeenCalledOnce();
     });
     expect(previewVideo.srcObject).toBeNull();
   });
@@ -837,7 +844,9 @@ describe("MaintenanceView hardware config", () => {
     pendingPreview.resolve(stalePreviewStream);
 
     await vi.waitFor(() => {
-      expect(stalePreviewTrack.stop).toHaveBeenCalledOnce();
+      // oxlint-disable-next-line typescript/unbound-method
+      const stalePreviewTrackStop = vi.mocked(stalePreviewTrack.stop);
+      expect(stalePreviewTrackStop).toHaveBeenCalledOnce();
     });
     expect(previewVideo.srcObject).toBeNull();
   });

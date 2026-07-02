@@ -578,7 +578,8 @@ async function previewTryOnCamera(): Promise<void> {
     tryOnCamera.message = "请选择 Virtual Try-On Camera 后再预览。";
     return;
   }
-  const requestSequence = ++tryOnCameraPreviewRequestSequence;
+  tryOnCameraPreviewRequestSequence += 1;
+  const requestSequence = tryOnCameraPreviewRequestSequence;
   setTryOnCameraLoading("preview");
   tryOnCamera.message = null;
   try {
