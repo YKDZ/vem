@@ -12,6 +12,7 @@ dist
 
 test-results
 playwright-report
+runtime-screenshot-artifacts
 
 .env
 

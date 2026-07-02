@@ -46,9 +46,33 @@ const reasonText = computed(() => {
   return "当前设备暂时无法购买";
 });
 
-const errorCode = computed(
-  () => connectivityStore.ready?.blockingCodes[0] ?? "OFFLINE_1001",
-);
+const supportHint = computed(() => {
+  const codes = connectivityStore.ready?.blockingCodes ?? [];
+  if (connectivityStore.loading) return "状态检测中";
+  if (codes.includes("WHOLE_MACHINE_HARDWARE_FAULT")) return "设备维护";
+  if (
+    codes.includes("LOWER_CONTROLLER_UNAVAILABLE") ||
+    codes.includes("SLOT_SALE_SAFETY_BLOCKED")
+  ) {
+    return "出货状态待确认";
+  }
+  if (
+    codes.includes("PLATFORM_UNREACHABLE") ||
+    codes.includes("BACKEND_UNREACHABLE") ||
+    codes.includes("mqtt")
+  ) {
+    return "网络连接异常";
+  }
+  if (
+    codes.includes("NO_PAYMENT_OPTIONS") ||
+    codes.includes("PAYMENT_OPTIONS_UNAVAILABLE")
+  ) {
+    return "支付服务不可用";
+  }
+  if (codes.includes("ACTIVE_PLANOGRAM_MISSING")) return "商品信息未准备";
+  if (!connectivityStore.ready) return "状态读取中";
+  return "暂不可售";
+});
 
 async function retryBoot(): Promise<void> {
   await router.replace("/boot");
@@ -120,7 +144,7 @@ async function retryBoot(): Promise<void> {
           </svg>
         </button>
 
-        <p class="offline-code">错误代码：{{ errorCode }}</p>
+        <p class="offline-code">客服提示：{{ supportHint }}</p>
       </main>
 
       <section class="offline-alternatives">

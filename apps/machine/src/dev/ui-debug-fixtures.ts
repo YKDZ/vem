@@ -22,13 +22,18 @@ const UI_DEBUG_SALE_VIEW_OVERRIDE_PREFIX =
 
 export type UiDebugScenarioId =
   | "ready"
+  | "sold_out"
   | "blocked"
   | "payment_qr"
   | "payment_code"
+  | "payment_failed"
   | "dispensing"
   | "dispensing_pickup_15s"
   | "dispensing_pickup_25s"
-  | "dispense_failed";
+  | "dispense_failed"
+  | "manual_handling"
+  | "refund_pending"
+  | "refunded";
 
 export type UiDebugScenario = {
   id: UiDebugScenarioId;
@@ -545,6 +550,16 @@ const baseSaleView = machineSaleViewSnapshotSchema.parse({
   lastUpdatedAt: UPDATED_AT,
 });
 
+const soldOutSaleView = machineSaleViewSnapshotSchema.parse({
+  ...baseSaleView,
+  items: baseSaleView.items.map((item) => ({
+    ...item,
+    physicalStock: 0,
+    saleableStock: 0,
+    slotSalesState: "frozen",
+  })),
+});
+
 const paymentOptions = machinePaymentOptionsResponseSchema.parse({
   options: [
     {
@@ -706,6 +721,22 @@ export const uiDebugScenarios: readonly UiDebugScenario[] = [
     remoteOps,
   },
   {
+    id: "sold_out",
+    name: "售罄目录",
+    description: "健康机器但全部商品暂时售罄，验证顾客可见下一步。",
+    health: readyHealth,
+    ready: readySnapshot,
+    config,
+    saleReadiness: saleReadiness(true),
+    saleView: soldOutSaleView,
+    paymentOptions,
+    transaction: emptyTransaction,
+    sync,
+    scanner,
+    vision,
+    remoteOps,
+  },
+  {
     id: "payment_qr",
     name: "等待扫码支付",
     description: "进入支付页，展示二维码和倒计时。",
@@ -753,6 +784,36 @@ export const uiDebugScenarios: readonly UiDebugScenario[] = [
       paymentUrl: null,
       paymentStatus: "processing",
       operatorHint: "请出示付款码",
+    }),
+    sync,
+    scanner,
+    vision,
+    remoteOps,
+  },
+  {
+    id: "payment_failed",
+    name: "支付失败",
+    description: "支付未完成或顾客取消后进入终态结果页。",
+    health: {
+      ...readyHealth,
+      currentTransaction: {
+        orderNo: "UI-DEBUG-ORDER",
+        status: "canceled",
+        nextAction: "payment_failed",
+        updatedAt: UPDATED_AT,
+      },
+    },
+    ready: readySnapshot,
+    config,
+    saleReadiness: saleReadiness(true),
+    saleView: baseSaleView,
+    paymentOptions,
+    transaction: transaction({
+      paymentStatus: "canceled",
+      orderStatus: "canceled",
+      nextAction: "payment_failed",
+      paymentUrl: null,
+      expiresAt: null,
     }),
     sync,
     scanner,
@@ -877,6 +938,114 @@ export const uiDebugScenarios: readonly UiDebugScenario[] = [
       errorCode: "MOTOR_TIMEOUT",
       errorMessage: "mock: motor timeout",
       operatorHint: "请检查下位机和货道",
+    }),
+    sync,
+    scanner,
+    vision,
+    remoteOps,
+  },
+  {
+    id: "manual_handling",
+    name: "人工处理",
+    description: "支付成功但出货结果未知，需要顾客保留订单凭证。",
+    health: {
+      ...blockedHealth,
+      currentTransaction: {
+        orderNo: "UI-DEBUG-ORDER",
+        status: "manual_handling",
+        nextAction: "manual_handling",
+        updatedAt: UPDATED_AT,
+      },
+    },
+    ready: blockedReady,
+    config,
+    saleReadiness: saleReadiness(false),
+    saleView: baseSaleView,
+    paymentOptions,
+    transaction: transaction({
+      paymentStatus: "succeeded",
+      orderStatus: "manual_handling",
+      nextAction: "manual_handling",
+      vending: {
+        commandNo: "UI-DEBUG-CMD",
+        status: "result_unknown",
+        lastError: "mock: dispense result unknown",
+      },
+      errorCode: "DISPENSE_RESULT_UNKNOWN",
+      errorMessage: "mock: dispense result unknown",
+      operatorHint: "请人工复核出货结果",
+    }),
+    sync,
+    scanner,
+    vision,
+    remoteOps,
+  },
+  {
+    id: "refund_pending",
+    name: "退款处理中",
+    description: "出货异常已发起退款，顾客需要保留订单凭证等待原路通知。",
+    health: {
+      ...blockedHealth,
+      currentTransaction: {
+        orderNo: "UI-DEBUG-ORDER",
+        status: "refund_pending",
+        nextAction: "refund_pending",
+        updatedAt: UPDATED_AT,
+      },
+    },
+    ready: blockedReady,
+    config,
+    saleReadiness: saleReadiness(false),
+    saleView: baseSaleView,
+    paymentOptions,
+    transaction: transaction({
+      paymentStatus: "refund_pending",
+      orderStatus: "refund_pending",
+      nextAction: "refund_pending",
+      vending: {
+        commandNo: "UI-DEBUG-CMD",
+        status: "failed",
+        lastError: "refund requested after dispense failure",
+      },
+      errorCode: "REFUND_PENDING",
+      errorMessage: "refund requested after dispense failure",
+      operatorHint: "退款处理中",
+    }),
+    sync,
+    scanner,
+    vision,
+    remoteOps,
+  },
+  {
+    id: "refunded",
+    name: "退款完成",
+    description: "出货异常退款已完成，顾客可返回首页。",
+    health: {
+      ...readyHealth,
+      currentTransaction: {
+        orderNo: "UI-DEBUG-ORDER",
+        status: "refunded",
+        nextAction: "refunded",
+        updatedAt: UPDATED_AT,
+      },
+    },
+    ready: readySnapshot,
+    config,
+    saleReadiness: saleReadiness(true),
+    saleView: baseSaleView,
+    paymentOptions,
+    transaction: transaction({
+      paymentStatus: "refunded",
+      orderStatus: "refunded",
+      nextAction: "refunded",
+      vending: {
+        commandNo: "UI-DEBUG-CMD",
+        status: "failed",
+        lastError: "mock: dispense failed before refund",
+      },
+      errorCode: "REFUNDED",
+      errorMessage: "mock: refund completed",
+      operatorHint: "退款已完成",
     }),
     sync,
     scanner,

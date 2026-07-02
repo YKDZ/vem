@@ -469,7 +469,7 @@ describe("ResultView", () => {
     expect(host.textContent).toContain("等待人工处理");
     expect(host.textContent).toContain("订单凭证 ORD-UNKNOWN-001");
     expect(host.textContent).toContain("出货结果待确认");
-    expect(host.textContent).toContain("返回首页");
+    expect(host.textContent).not.toContain("返回首页");
   });
 
   it("shows refund processing credential and keeps the customer waiting", async () => {
