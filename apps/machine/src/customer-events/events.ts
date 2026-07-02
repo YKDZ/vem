@@ -93,6 +93,15 @@ export function categoryForCustomerExperienceEvent(
   type: CustomerExperienceEvent["type"],
 ): AudioCueCategory {
   switch (type) {
+    case "presence.detected":
+    case "presence.welcome.day":
+    case "presence.welcome.night":
+    case "presence.easter_egg":
+    case "interaction.awakened":
+    case "privacy.crowd_detected":
+    case "idle.assistance_prompt":
+    case "idle.sleep":
+      return "presence";
     case "product.selected":
     case "payment.prompt":
     case "payment.succeeded":
@@ -105,8 +114,6 @@ export function categoryForCustomerExperienceEvent(
     case "manual_handling.required":
     case "system.hardware_fault":
       return "transaction";
-    default:
-      return "presence";
   }
 }
 
