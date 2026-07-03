@@ -418,30 +418,35 @@ async function waitForTryOnStarted(
   timeoutMs: number,
 ): Promise<Extract<VisionServerMessage, { type: "vision.try_on.started" }>> {
   const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const message = await nextServerMessage(
-      socket,
-      Math.max(1, deadline - Date.now()),
-    );
-    if (message.type === "vision.error") {
-      throw errorFromVisionMessage(message);
-    }
-    if (
-      message.type === "vision.try_on.started" &&
-      message.payload.sessionId === sessionId
-    ) {
-      return message;
-    }
-    if (
-      message.type === "vision.try_on.stopped" &&
-      message.payload.sessionId === sessionId
-    ) {
-      throw new Error(
-        `vision try-on session stopped: ${message.payload.reason}`,
-      );
-    }
+  return await waitForTryOnStartedBefore(socket, sessionId, deadline);
+}
+
+async function waitForTryOnStartedBefore(
+  socket: WebSocket,
+  sessionId: string,
+  deadline: number,
+): Promise<Extract<VisionServerMessage, { type: "vision.try_on.started" }>> {
+  const remainingMs = deadline - Date.now();
+  if (remainingMs <= 0) {
+    throw new Error("waiting for vision try-on preview timed out");
   }
-  throw new Error("waiting for vision try-on preview timed out");
+  const message = await nextServerMessage(socket, remainingMs);
+  if (message.type === "vision.error") {
+    throw errorFromVisionMessage(message);
+  }
+  if (
+    message.type === "vision.try_on.started" &&
+    message.payload.sessionId === sessionId
+  ) {
+    return message;
+  }
+  if (
+    message.type === "vision.try_on.stopped" &&
+    message.payload.sessionId === sessionId
+  ) {
+    throw new Error(`vision try-on session stopped: ${message.payload.reason}`);
+  }
+  return await waitForTryOnStartedBefore(socket, sessionId, deadline);
 }
 
 export function subscribeVisionProfiles(
