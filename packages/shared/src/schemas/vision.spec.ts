@@ -8,6 +8,7 @@ import {
   visionProfileResultMessageSchema,
   visionServerMessageSchema,
   visionClientMessageSchema,
+  visionTryOnStartedMessageSchema,
 } from "./vision";
 
 const BASE_ENVELOPE = {
@@ -32,6 +33,44 @@ describe("vision protocol schemas", () => {
     expect(message.type).toBe("vision.hello");
     expect(message.payload.capabilities).toContain("profile_push");
     expect(message.payload.capabilities).toContain("person_departed");
+  });
+
+  it("parses try-on session control messages", () => {
+    const start = visionClientMessageSchema.parse({
+      ...BASE_ENVELOPE,
+      type: "vision.try_on.start",
+      payload: {
+        sessionId: "try-on-session-001",
+        catalogKey: "catalog-001",
+        variantId: "variant-001",
+      },
+    });
+    const stop = visionClientMessageSchema.parse({
+      ...BASE_ENVELOPE,
+      type: "vision.try_on.stop",
+      payload: {
+        sessionId: "try-on-session-001",
+        reason: "user_exit",
+      },
+    });
+
+    expect(start.type).toBe("vision.try_on.start");
+    expect(stop.type).toBe("vision.try_on.stop");
+  });
+
+  it("parses a try-on started message with an MJPEG preview URL", () => {
+    const message = visionTryOnStartedMessageSchema.parse({
+      ...BASE_ENVELOPE,
+      type: "vision.try_on.started",
+      payload: {
+        sessionId: "try-on-session-001",
+        previewUrl: "http://127.0.0.1:7892/try-on/session-001.mjpeg",
+        streamType: "mjpeg",
+      },
+    });
+
+    expect(message.type).toBe("vision.try_on.started");
+    expect(message.payload.streamType).toBe("mjpeg");
   });
 
   it("parses a pushed profile result", () => {

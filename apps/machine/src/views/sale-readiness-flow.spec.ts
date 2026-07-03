@@ -18,6 +18,7 @@ const {
   getPaymentOptionsMock,
   createOrderMock,
   subscribeVisionProfilesMock,
+  openVisionTryOnSessionMock,
   routeParams,
   routeQuery,
   routeName,
@@ -36,6 +37,7 @@ const {
   getPaymentOptionsMock: vi.fn(),
   createOrderMock: vi.fn(),
   subscribeVisionProfilesMock: vi.fn(),
+  openVisionTryOnSessionMock: vi.fn(),
   routeParams: {} as Record<string, string>,
   routeQuery: {} as Record<string, string>,
   routeName: { value: "catalog" },
@@ -73,6 +75,7 @@ vi.mock("@/daemon/client", () => ({
 
 vi.mock("@/native/vision", () => ({
   subscribeVisionProfiles: subscribeVisionProfilesMock,
+  openVisionTryOnSession: openVisionTryOnSessionMock,
 }));
 
 import type { VisionProfileSubscriptionHandlers } from "@/native/vision";
@@ -289,14 +292,15 @@ function makeCatalogItem(): MachineCatalogItem {
   };
 }
 
-function applyTryOnCameraConfig(deviceId: string | null): void {
+function applyVisionTryOnConfig(): void {
   useMachineStore().$patch({
     configLoaded: true,
     configSummary: {
       public: {
         ...machineConfigDefaults,
         machineCode: "M001",
-        tryOnCameraDeviceId: deviceId,
+        visionEnabled: true,
+        visionWsUrl: "ws://127.0.0.1:7892/ws",
       },
       machineSecretConfigured: true,
       mqttSigningSecretConfigured: true,
@@ -307,12 +311,17 @@ function applyTryOnCameraConfig(deviceId: string | null): void {
   });
 }
 
-function installMediaDevicesMock(getUserMedia = vi.fn()) {
-  Object.defineProperty(navigator, "mediaDevices", {
-    configurable: true,
-    value: { getUserMedia },
+function mockTryOnSession(
+  previewUrl = "http://127.0.0.1:7892/try-on/mock.mjpeg",
+) {
+  const stop = vi.fn(async () => undefined);
+  openVisionTryOnSessionMock.mockResolvedValue({
+    sessionId: "try-on-session-001",
+    previewUrl,
+    streamType: "mjpeg",
+    stop,
   });
-  return { getUserMedia };
+  return { previewUrl, stop };
 }
 
 function replaceTestProperty(
@@ -358,14 +367,6 @@ function stubEgressConstructor(name: string) {
   const mock = vi.fn();
   replaceTestProperty(globalThis, name, mock);
   return mock;
-}
-
-function makeMediaStream() {
-  const tracks = [{ stop: vi.fn() }];
-  return {
-    stream: { getTracks: () => tracks } as unknown as MediaStream,
-    tracks,
-  };
 }
 
 function transactionSnapshot(overrides: Record<string, unknown> = {}) {
@@ -1033,25 +1034,29 @@ describe("sale readiness UI flow", () => {
       planogramVersion: "PLAN-1",
       lastUpdatedAt: "2026-06-04T00:00:00Z",
     });
-    applyTryOnCameraConfig("try-on-camera-1");
-    const { stream } = makeMediaStream();
-    const media = installMediaDevicesMock(vi.fn().mockResolvedValue(stream));
+    applyVisionTryOnConfig();
+    const { previewUrl } = mockTryOnSession();
     routeParams.catalogKey = item.catalogKey;
     routeQuery.variantId = silhouettedVariant.variantId;
 
     const host = await mountView(VirtualTryOnView);
 
     await vi.waitFor(() => {
-      expect(media.getUserMedia).toHaveBeenCalledWith({
-        audio: false,
-        video: { deviceId: { exact: "try-on-camera-1" } },
-      });
+      expect(openVisionTryOnSessionMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          visionWsUrl: "ws://127.0.0.1:7892/ws",
+        }),
+        {
+          catalogKey: item.catalogKey,
+          variantId: silhouettedVariant.variantId,
+        },
+      );
     });
-    const video = host.querySelector<HTMLVideoElement>(
-      '[data-test="try-on-video"]',
+    const preview = host.querySelector<HTMLImageElement>(
+      '[data-test="try-on-preview"]',
     );
-    expect(video).toBeTruthy();
-    expect(video?.srcObject).toBe(stream);
+    expect(preview).toBeTruthy();
+    expect(preview?.getAttribute("src")).toBe(previewUrl);
     const silhouette = host.querySelector<HTMLImageElement>(
       '[data-test="try-on-silhouette"]',
     );
@@ -1076,9 +1081,8 @@ describe("sale readiness UI flow", () => {
       planogramVersion: "PLAN-1",
       lastUpdatedAt: "2026-06-04T00:00:00Z",
     });
-    applyTryOnCameraConfig("try-on-camera-1");
-    const { stream } = makeMediaStream();
-    const media = installMediaDevicesMock(vi.fn().mockResolvedValue(stream));
+    applyVisionTryOnConfig();
+    mockTryOnSession();
     routeParams.catalogKey = item.catalogKey;
     routeQuery.variantId = silhouettedVariant.variantId;
     const fetchSpy = spyEgressMethod(
@@ -1088,7 +1092,6 @@ describe("sale readiness UI flow", () => {
     );
     const sendBeaconSpy = spyEgressMethod(navigator, "sendBeacon", () => false);
     const xhrSpy = stubEgressConstructor("XMLHttpRequest");
-    const webSocketSpy = stubEgressConstructor("WebSocket");
     const mediaRecorderSpy = stubEgressConstructor("MediaRecorder");
     const imageCaptureSpy = stubEgressConstructor("ImageCapture");
     const tauriInvokeSpy = vi.fn();
@@ -1122,15 +1125,17 @@ describe("sale readiness UI flow", () => {
     await mountView(VirtualTryOnView);
 
     await vi.waitFor(() => {
-      expect(media.getUserMedia).toHaveBeenCalledWith({
-        audio: false,
-        video: { deviceId: { exact: "try-on-camera-1" } },
-      });
+      expect(openVisionTryOnSessionMock).toHaveBeenCalledWith(
+        expect.anything(),
+        {
+          catalogKey: item.catalogKey,
+          variantId: silhouettedVariant.variantId,
+        },
+      );
     });
     expect(fetchSpy).not.toHaveBeenCalled();
     expect(sendBeaconSpy).not.toHaveBeenCalled();
     expect(xhrSpy).not.toHaveBeenCalled();
-    expect(webSocketSpy).not.toHaveBeenCalled();
     expect(mediaRecorderSpy).not.toHaveBeenCalled();
     expect(imageCaptureSpy).not.toHaveBeenCalled();
     expect(tauriInvokeSpy).not.toHaveBeenCalled();
@@ -1161,29 +1166,25 @@ describe("sale readiness UI flow", () => {
       planogramVersion: "PLAN-1",
       lastUpdatedAt: "2026-06-04T00:00:00Z",
     });
-    applyTryOnCameraConfig("try-on-camera-1");
+    applyVisionTryOnConfig();
     applySensitiveVisionProfile();
-    const { stream } = makeMediaStream();
-    const media = installMediaDevicesMock(vi.fn().mockResolvedValue(stream));
+    mockTryOnSession();
     routeParams.catalogKey = item.catalogKey;
     routeQuery.variantId = silhouettedVariant.variantId;
 
     const host = await mountView(VirtualTryOnView);
 
     await vi.waitFor(() => {
-      expect(media.getUserMedia).toHaveBeenCalledWith({
-        audio: false,
-        video: { deviceId: { exact: "try-on-camera-1" } },
-      });
+      expect(openVisionTryOnSessionMock).toHaveBeenCalled();
     });
     expect(subscribeVisionProfilesMock).not.toHaveBeenCalled();
     expect(
-      host.querySelector<HTMLVideoElement>('[data-test="try-on-video"]'),
+      host.querySelector<HTMLImageElement>('[data-test="try-on-preview"]'),
     ).toBeTruthy();
     expectRecognitionDetailsHidden(host);
   });
 
-  it("does not fall back to a default camera when try-on camera config is missing", async () => {
+  it("does not directly open a default camera when vision try-on fails", async () => {
     const item = makeCatalogItem();
     const tryOnSilhouetteUrl =
       "/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content";
@@ -1201,20 +1202,22 @@ describe("sale readiness UI flow", () => {
       planogramVersion: "PLAN-1",
       lastUpdatedAt: "2026-06-04T00:00:00Z",
     });
-    applyTryOnCameraConfig(null);
-    const media = installMediaDevicesMock();
+    applyVisionTryOnConfig();
+    openVisionTryOnSessionMock.mockRejectedValue(new Error("vision down"));
+    const getUserMedia = vi.fn();
+    replaceTestProperty(navigator, "mediaDevices", { getUserMedia });
     routeParams.catalogKey = item.catalogKey;
     routeQuery.variantId = silhouettedVariant.variantId;
 
     const host = await mountView(VirtualTryOnView);
 
-    expect(media.getUserMedia).not.toHaveBeenCalled();
+    expect(getUserMedia).not.toHaveBeenCalled();
     expect(
       host.querySelector('[data-test="try-on-error"]')?.textContent,
-    ).toContain("维护人员检查摄像头配置与调试");
+    ).toContain("虚拟试穿预览启动失败");
   });
 
-  it("does not retry with video fallback when the configured try-on camera fails", async () => {
+  it("does not retry with browser video fallback when vision try-on fails", async () => {
     const item = makeCatalogItem();
     const silhouettedVariant: MachineCatalogItem = {
       ...item,
@@ -1231,26 +1234,24 @@ describe("sale readiness UI flow", () => {
       planogramVersion: "PLAN-1",
       lastUpdatedAt: "2026-06-04T00:00:00Z",
     });
-    applyTryOnCameraConfig("missing-camera");
-    const media = installMediaDevicesMock(
-      vi.fn().mockRejectedValue(new DOMException("missing", "NotFoundError")),
+    applyVisionTryOnConfig();
+    openVisionTryOnSessionMock.mockRejectedValue(
+      new Error("camera unavailable"),
     );
+    const getUserMedia = vi.fn();
+    replaceTestProperty(navigator, "mediaDevices", { getUserMedia });
     routeParams.catalogKey = item.catalogKey;
     routeQuery.variantId = silhouettedVariant.variantId;
 
     const host = await mountView(VirtualTryOnView);
 
     await vi.waitFor(() => {
-      expect(media.getUserMedia).toHaveBeenCalledTimes(1);
+      expect(openVisionTryOnSessionMock).toHaveBeenCalledTimes(1);
     });
-    expect(media.getUserMedia).toHaveBeenCalledWith({
-      audio: false,
-      video: { deviceId: { exact: "missing-camera" } },
-    });
-    expect(media.getUserMedia).not.toHaveBeenCalledWith({ video: true });
+    expect(getUserMedia).not.toHaveBeenCalled();
     expect(
       host.querySelector('[data-test="try-on-error"]')?.textContent,
-    ).toContain("维护人员检查摄像头配置与调试");
+    ).toContain("虚拟试穿预览启动失败");
   });
 
   it("keeps product detail and checkout usable after try-on camera failure without sending frame data", async () => {
@@ -1276,9 +1277,9 @@ describe("sale readiness UI flow", () => {
     useConnectivityStore().applySaleReadiness(saleReadiness(true));
     getSaleViewMock.mockResolvedValue(saleView);
     applySensitiveVisionProfile();
-    applyTryOnCameraConfig("missing-camera");
-    const media = installMediaDevicesMock(
-      vi.fn().mockRejectedValue(new DOMException("missing", "NotFoundError")),
+    applyVisionTryOnConfig();
+    openVisionTryOnSessionMock.mockRejectedValue(
+      new Error("camera unavailable"),
     );
     routeParams.catalogKey = item.catalogKey;
     routeQuery.variantId = silhouettedVariant.variantId;
@@ -1286,11 +1287,11 @@ describe("sale readiness UI flow", () => {
     let host = await mountView(VirtualTryOnView);
 
     await vi.waitFor(() => {
-      expect(media.getUserMedia).toHaveBeenCalledTimes(1);
+      expect(openVisionTryOnSessionMock).toHaveBeenCalledTimes(1);
     });
     expect(
       host.querySelector('[data-test="try-on-error"]')?.textContent,
-    ).toContain("维护人员检查摄像头配置与调试");
+    ).toContain("虚拟试穿预览启动失败");
 
     unmountMountedView();
 
@@ -1341,10 +1342,10 @@ describe("sale readiness UI flow", () => {
     expect(JSON.stringify(createOrderMock.mock.calls)).not.toMatch(
       /frame|image|raw|canvas|dataUrl|blob|base64|diagnostic|vision/i,
     );
-    expect(media.getUserMedia).toHaveBeenCalledTimes(1);
+    expect(openVisionTryOnSessionMock).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps product detail and checkout usable when try-on camera config is missing", async () => {
+  it("keeps product detail and checkout usable when vision try-on is unavailable", async () => {
     const item = makeCatalogItem();
     const silhouettedVariant: MachineCatalogItem = {
       ...item,
@@ -1367,17 +1368,21 @@ describe("sale readiness UI flow", () => {
     useConnectivityStore().applySaleReadiness(saleReadiness(true));
     getSaleViewMock.mockResolvedValue(saleView);
     applySensitiveVisionProfile();
-    applyTryOnCameraConfig(null);
-    const media = installMediaDevicesMock();
+    applyVisionTryOnConfig();
+    openVisionTryOnSessionMock.mockRejectedValue(
+      new Error("vision unavailable"),
+    );
     routeParams.catalogKey = item.catalogKey;
     routeQuery.variantId = silhouettedVariant.variantId;
 
     let host = await mountView(VirtualTryOnView);
 
-    expect(media.getUserMedia).not.toHaveBeenCalled();
+    await vi.waitFor(() => {
+      expect(openVisionTryOnSessionMock).toHaveBeenCalledTimes(1);
+    });
     expect(
       host.querySelector('[data-test="try-on-error"]')?.textContent,
-    ).toContain("维护人员检查摄像头配置与调试");
+    ).toContain("虚拟试穿预览启动失败");
 
     unmountMountedView();
 
@@ -1431,7 +1436,7 @@ describe("sale readiness UI flow", () => {
     expectRecognitionDetailsHidden(host);
   });
 
-  it("stops try-on media tracks immediately when leaving the view", async () => {
+  it("stops the try-on session immediately when leaving the view", async () => {
     const item = makeCatalogItem();
     const silhouettedVariant: MachineCatalogItem = {
       ...item,
@@ -1448,9 +1453,8 @@ describe("sale readiness UI flow", () => {
       planogramVersion: "PLAN-1",
       lastUpdatedAt: "2026-06-04T00:00:00Z",
     });
-    applyTryOnCameraConfig("try-on-camera-1");
-    const { stream, tracks } = makeMediaStream();
-    installMediaDevicesMock(vi.fn().mockResolvedValue(stream));
+    applyVisionTryOnConfig();
+    const { previewUrl, stop } = mockTryOnSession();
     routeParams.catalogKey = item.catalogKey;
     routeQuery.variantId = silhouettedVariant.variantId;
 
@@ -1458,22 +1462,25 @@ describe("sale readiness UI flow", () => {
 
     await vi.waitFor(() => {
       expect(
-        host.querySelector<HTMLVideoElement>('[data-test="try-on-video"]')
-          ?.srcObject,
-      ).toBe(stream);
+        host
+          .querySelector<HTMLImageElement>('[data-test="try-on-preview"]')
+          ?.getAttribute("src"),
+      ).toBe(previewUrl);
     });
     host.querySelector<HTMLButtonElement>('[data-test="try-on-exit"]')?.click();
     await nextTick();
 
-    expect(tracks[0]?.stop).toHaveBeenCalledOnce();
-    expect(routerPushMock).toHaveBeenCalledWith({
-      name: "product-detail",
-      params: { catalogKey: item.catalogKey },
-      query: { variantId: silhouettedVariant.variantId },
+    expect(stop).toHaveBeenCalledWith("user_exit");
+    await vi.waitFor(() => {
+      expect(routerPushMock).toHaveBeenCalledWith({
+        name: "product-detail",
+        params: { catalogKey: item.catalogKey },
+        query: { variantId: silhouettedVariant.variantId },
+      });
     });
   });
 
-  it("stops try-on media tracks when customer departure returns home", async () => {
+  it("stops the try-on session when customer departure returns home", async () => {
     const item = makeCatalogItem();
     const silhouettedVariant: MachineCatalogItem = {
       ...item,
@@ -1490,9 +1497,8 @@ describe("sale readiness UI flow", () => {
       planogramVersion: "PLAN-1",
       lastUpdatedAt: "2026-06-04T00:00:00Z",
     });
-    applyTryOnCameraConfig("try-on-camera-1");
-    const { stream, tracks } = makeMediaStream();
-    installMediaDevicesMock(vi.fn().mockResolvedValue(stream));
+    applyVisionTryOnConfig();
+    const { previewUrl, stop } = mockTryOnSession();
     routeName.value = "virtual-try-on";
     routeParams.catalogKey = item.catalogKey;
     routeQuery.variantId = silhouettedVariant.variantId;
@@ -1512,9 +1518,10 @@ describe("sale readiness UI flow", () => {
 
     await vi.waitFor(() => {
       expect(
-        host.querySelector<HTMLVideoElement>('[data-test="try-on-video"]')
-          ?.srcObject,
-      ).toBe(stream);
+        host
+          .querySelector<HTMLImageElement>('[data-test="try-on-preview"]')
+          ?.getAttribute("src"),
+      ).toBe(previewUrl);
     });
     useVisionStore().applyPresenceStatus({
       eventId: "VISION-PRESENCE-PRESENT",
@@ -1537,10 +1544,10 @@ describe("sale readiness UI flow", () => {
     await nextTick();
 
     expect(routerReplaceMock).toHaveBeenCalledWith({ name: "catalog" });
-    expect(tracks[0]?.stop).toHaveBeenCalledOnce();
+    expect(stop).toHaveBeenCalledWith("route_leave");
   });
 
-  it("stops a stale try-on stream if camera startup completes after unmount", async () => {
+  it("stops a stale try-on session if startup completes after unmount", async () => {
     const item = makeCatalogItem();
     const silhouettedVariant: MachineCatalogItem = {
       ...item,
@@ -1557,16 +1564,14 @@ describe("sale readiness UI flow", () => {
       planogramVersion: "PLAN-1",
       lastUpdatedAt: "2026-06-04T00:00:00Z",
     });
-    applyTryOnCameraConfig("try-on-camera-1");
-    const { stream, tracks } = makeMediaStream();
-    let resolveStream: (stream: MediaStream) => void = () => undefined;
-    installMediaDevicesMock(
-      vi.fn(
-        async () =>
-          await new Promise<MediaStream>((resolve) => {
-            resolveStream = resolve;
-          }),
-      ),
+    applyVisionTryOnConfig();
+    const stop = vi.fn(async () => undefined);
+    let resolveSession: (session: unknown) => void = () => undefined;
+    openVisionTryOnSessionMock.mockImplementation(
+      async () =>
+        await new Promise((resolve) => {
+          resolveSession = resolve;
+        }),
     );
     routeParams.catalogKey = item.catalogKey;
     routeQuery.variantId = silhouettedVariant.variantId;
@@ -1574,10 +1579,15 @@ describe("sale readiness UI flow", () => {
     await mountView(VirtualTryOnView);
     mountedApp?.unmount();
     mountedApp = null;
-    resolveStream(stream);
+    resolveSession({
+      sessionId: "try-on-session-stale",
+      previewUrl: "http://127.0.0.1:7892/try-on/stale.mjpeg",
+      streamType: "mjpeg",
+      stop,
+    });
 
     await vi.waitFor(() => {
-      expect(tracks[0]?.stop).toHaveBeenCalledOnce();
+      expect(stop).toHaveBeenCalledWith("replaced");
     });
   });
 

@@ -6,6 +6,8 @@ export const DEFAULT_VISION_WS_URL = "ws://127.0.0.1:7892/ws" as const;
 export const visionClientMessageTypeSchema = z.enum([
   "vision.hello",
   "vision.ping",
+  "vision.try_on.start",
+  "vision.try_on.stop",
 ]);
 
 export const visionServerMessageTypeSchema = z.enum([
@@ -13,6 +15,8 @@ export const visionServerMessageTypeSchema = z.enum([
   "vision.presence_status",
   "vision.person_departed",
   "vision.profile_result",
+  "vision.try_on.started",
+  "vision.try_on.stopped",
   "vision.error",
   "vision.pong",
 ]);
@@ -44,6 +48,7 @@ export const visionErrorCodeSchema = z.enum([
   "invalid_message",
   "unsupported_version",
   "camera_unavailable",
+  "try_on_unavailable",
   "model_not_ready",
   "internal_error",
 ]);
@@ -162,6 +167,57 @@ export const visionPingMessageSchema = visionEnvelopeBaseSchema.extend({
   payload: emptyPayloadSchema,
 });
 
+export const visionTryOnStartPayloadSchema = z
+  .object({
+    sessionId: z.string().min(1).max(128),
+    catalogKey: z.string().min(1).max(128).optional(),
+    variantId: z.string().min(1).max(128).optional(),
+  })
+  .loose();
+
+export const visionTryOnStopPayloadSchema = z
+  .object({
+    sessionId: z.string().min(1).max(128),
+    reason: z
+      .enum(["user_exit", "route_leave", "replaced", "error", "unknown"])
+      .default("unknown"),
+  })
+  .loose();
+
+export const visionTryOnStartedPayloadSchema = z
+  .object({
+    sessionId: z.string().min(1).max(128),
+    previewUrl: z.string().trim().pipe(z.url()),
+    streamType: z.literal("mjpeg").default("mjpeg"),
+  })
+  .loose();
+
+export const visionTryOnStoppedPayloadSchema = z
+  .object({
+    sessionId: z.string().min(1).max(128),
+    reason: z
+      .enum([
+        "client_stop",
+        "person_departed",
+        "camera_lost",
+        "session_replaced",
+        "timeout",
+        "unknown",
+      ])
+      .default("unknown"),
+  })
+  .loose();
+
+export const visionTryOnStartMessageSchema = visionEnvelopeBaseSchema.extend({
+  type: z.literal("vision.try_on.start"),
+  payload: visionTryOnStartPayloadSchema,
+});
+
+export const visionTryOnStopMessageSchema = visionEnvelopeBaseSchema.extend({
+  type: z.literal("vision.try_on.stop"),
+  payload: visionTryOnStopPayloadSchema,
+});
+
 export const visionReadyMessageSchema = visionEnvelopeBaseSchema.extend({
   type: z.literal("vision.ready"),
   payload: visionReadyPayloadSchema,
@@ -186,6 +242,16 @@ export const visionPersonDepartedMessageSchema =
     payload: visionPersonDepartedPayloadSchema,
   });
 
+export const visionTryOnStartedMessageSchema = visionEnvelopeBaseSchema.extend({
+  type: z.literal("vision.try_on.started"),
+  payload: visionTryOnStartedPayloadSchema,
+});
+
+export const visionTryOnStoppedMessageSchema = visionEnvelopeBaseSchema.extend({
+  type: z.literal("vision.try_on.stopped"),
+  payload: visionTryOnStoppedPayloadSchema,
+});
+
 export const visionErrorMessageSchema = visionEnvelopeBaseSchema.extend({
   type: z.literal("vision.error"),
   payload: visionErrorPayloadSchema,
@@ -199,6 +265,8 @@ export const visionPongMessageSchema = visionEnvelopeBaseSchema.extend({
 export const visionClientMessageSchema = z.discriminatedUnion("type", [
   visionHelloMessageSchema,
   visionPingMessageSchema,
+  visionTryOnStartMessageSchema,
+  visionTryOnStopMessageSchema,
 ]);
 
 export const visionServerMessageSchema = z.discriminatedUnion("type", [
@@ -206,6 +274,8 @@ export const visionServerMessageSchema = z.discriminatedUnion("type", [
   visionPresenceStatusMessageSchema,
   visionPersonDepartedMessageSchema,
   visionProfileResultMessageSchema,
+  visionTryOnStartedMessageSchema,
+  visionTryOnStoppedMessageSchema,
   visionErrorMessageSchema,
   visionPongMessageSchema,
 ]);
@@ -238,5 +308,11 @@ export type VisionPresenceStatusMessage = z.infer<
 >;
 export type VisionPersonDepartedMessage = z.infer<
   typeof visionPersonDepartedMessageSchema
+>;
+export type VisionTryOnStartedMessage = z.infer<
+  typeof visionTryOnStartedMessageSchema
+>;
+export type VisionTryOnStoppedMessage = z.infer<
+  typeof visionTryOnStoppedMessageSchema
 >;
 export type VisionErrorMessage = z.infer<typeof visionErrorMessageSchema>;

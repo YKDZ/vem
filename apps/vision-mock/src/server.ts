@@ -70,7 +70,13 @@ function createReadyMessage(): VisionServerMessage {
       serverVersion: "0.2.0",
       cameraReady: true,
       modelReady: true,
-      capabilities: ["profile_push", "presence_status", "person_departed"],
+      capabilities: [
+        "profile_push",
+        "presence_status",
+        "person_departed",
+        "ambient_light",
+        "try_on_session",
+      ],
     },
   } satisfies VisionServerMessage;
   return message;
@@ -185,6 +191,31 @@ function createErrorMessage(input: {
       code: input.code,
       message: input.message,
       retryable: input.retryable,
+    },
+  } satisfies VisionServerMessage;
+  return message;
+}
+
+function createTryOnStartedMessage(sessionId: string): VisionServerMessage {
+  const message = {
+    ...baseEnvelope("try-on-started"),
+    type: "vision.try_on.started",
+    payload: {
+      sessionId,
+      previewUrl: "http://127.0.0.1:7892/try-on/mock.mjpeg",
+      streamType: "mjpeg",
+    },
+  } satisfies VisionServerMessage;
+  return message;
+}
+
+function createTryOnStoppedMessage(sessionId: string): VisionServerMessage {
+  const message = {
+    ...baseEnvelope("try-on-stopped"),
+    type: "vision.try_on.stopped",
+    payload: {
+      sessionId,
+      reason: "client_stop",
     },
   } satisfies VisionServerMessage;
   return message;
@@ -316,6 +347,18 @@ function handleClientRawMessage(
       return;
     case "vision.ping":
       sendServerMessage(socket, createPongMessage());
+      return;
+    case "vision.try_on.start":
+      sendServerMessage(
+        socket,
+        createTryOnStartedMessage(message.payload.sessionId),
+      );
+      return;
+    case "vision.try_on.stop":
+      sendServerMessage(
+        socket,
+        createTryOnStoppedMessage(message.payload.sessionId),
+      );
       return;
   }
 }

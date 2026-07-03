@@ -8,6 +8,7 @@ import {
   type MockVisionServer,
 } from "../../../vision-mock/src/server";
 import {
+  openVisionTryOnSession,
   subscribeVisionProfiles,
   type VisionPersonDepartedPayload,
   type VisionPresenceStatusPayload,
@@ -226,6 +227,30 @@ describe("vision native browser fallback - pushed profiles", () => {
     expect(result.profile.personPresent).toBe(true);
     expect(result.profile.heightCm).toBe(172);
   }, 10_000);
+});
+
+describe("vision native browser fallback - try-on sessions", () => {
+  it("opens a try-on session and returns an MJPEG preview URL", async () => {
+    const url = await startVisionMock("presence_only");
+    const config = normalizeMachineConfig({ visionWsUrl: url });
+
+    const session = await openVisionTryOnSession(config, {
+      catalogKey: "catalog-001",
+      variantId: "variant-001",
+    });
+
+    expect(session.streamType).toBe("mjpeg");
+    expect(session.previewUrl).toContain(".mjpeg");
+    await session.stop("user_exit");
+  });
+
+  it("rejects try-on sessions when vision is disabled", async () => {
+    const config = normalizeMachineConfig({ visionEnabled: false });
+
+    await expect(openVisionTryOnSession(config)).rejects.toThrow(
+      "视觉模块未启用",
+    );
+  });
 });
 
 describe("vision native browser fallback - vision disabled", () => {
