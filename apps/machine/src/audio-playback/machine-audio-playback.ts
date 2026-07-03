@@ -64,12 +64,19 @@ type MachineAudioPlaybackOptions = {
   nativeDriver?: MachineAudioPlaybackDriver | null;
   browserDriver?: MachineAudioPlaybackDriver;
   volume?: number;
+  onDiagnostic?: (diagnostic: MachineAudioPlaybackDiagnostic) => void;
 };
 
 type MockMachineAudioPlaybackDriver = MachineAudioPlaybackDriver & {
   readonly requests: Array<{ sourceUrl: string; volume: number }>;
   readonly stops: string[];
   completeActive(): void;
+};
+
+type MockMachineAudioPlaybackDriverOptions = {
+  name?: MachineAudioPlaybackDriverName;
+  startDelayMs?: number;
+  completeAfterMs?: number;
 };
 
 let requestSequence = 1;
@@ -239,17 +246,32 @@ export function createMachineAudioPlayback(
       message: input.message ?? null,
       recordedAt: new Date().toISOString(),
     };
+    options.onDiagnostic?.(latestDiagnostic);
   }
 }
 
 export function createMockMachineAudioPlaybackDriver(
-  name: MachineAudioPlaybackDriverName = "mock",
+  input: MachineAudioPlaybackDriverName | MockMachineAudioPlaybackDriverOptions =
+    "mock",
 ): MockMachineAudioPlaybackDriver {
+  const options =
+    typeof input === "string"
+      ? { name: input }
+      : {
+          name: input.name ?? "mock",
+          startDelayMs: input.startDelayMs,
+          completeAfterMs: input.completeAfterMs,
+        };
   const requests: Array<{ sourceUrl: string; volume: number }> = [];
   const stops: string[] = [];
   let activePlayback: MachineAudioPlaybackDriverPlayOptions | null = null;
+  function completeActive(): void {
+    const completedPlayback = activePlayback;
+    activePlayback = null;
+    completedPlayback?.onCompleted?.();
+  }
   return {
-    name,
+    name: options.name,
     requests,
     stops,
     async playLocal(
@@ -257,17 +279,23 @@ export function createMockMachineAudioPlaybackDriver(
       playOptions?: MachineAudioPlaybackDriverPlayOptions,
     ): Promise<void> {
       requests.push({ sourceUrl, volume: playOptions?.volume ?? 1 });
+      if (options.startDelayMs && options.startDelayMs > 0) {
+        await new Promise<void>((resolve) => {
+          setTimeout(resolve, options.startDelayMs);
+        });
+      }
       activePlayback = playOptions ?? null;
+      if (options.completeAfterMs && options.completeAfterMs > 0) {
+        setTimeout(() => {
+          completeActive();
+        }, options.completeAfterMs);
+      }
     },
     stop(): void {
       activePlayback = null;
       stops.push(new Date().toISOString());
     },
-    completeActive(): void {
-      const completedPlayback = activePlayback;
-      activePlayback = null;
-      completedPlayback?.onCompleted?.();
-    },
+    completeActive,
   };
 }
 
