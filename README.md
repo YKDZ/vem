@@ -1,6 +1,6 @@
 # VEM
 
-VEM 是智能自动售货机软件系统，覆盖机器端触屏 UI、机器本地 daemon、后端 API、运营管理后台、视觉模拟服务、下位机模拟器和共享类型契约。
+VEM 是智能服装自动售货机软件系统，覆盖机器端触屏 UI、机器本地 daemon、后端 API、运营管理后台、视觉模拟服务、下位机模拟器和共享类型契约。真实视觉代码来自 [hbhjt/vending-vision](https://github.com/hbhjt/vending-vision)。
 
 ## 模块
 
