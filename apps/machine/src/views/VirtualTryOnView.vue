@@ -1,20 +1,15 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
+import { useTryOnPreview } from "@/composables/useTryOnPreview";
 import { useCatalogStore } from "@/stores/catalog";
-import { useMachineStore } from "@/stores/machine";
 
 const route = useRoute();
 const router = useRouter();
 const catalogStore = useCatalogStore();
-const machineStore = useMachineStore();
-
-const videoElement = ref<HTMLVideoElement | null>(null);
-const errorMessage = ref<string | null>(null);
-const stream = ref<MediaStream | null>(null);
-let disposed = false;
-let startupSequence = 0;
+const { previewUrl, errorMessage, isStarting, startPreview, stopPreview } =
+  useTryOnPreview();
 
 const catalogKey = computed(() => String(route.params.catalogKey ?? ""));
 const variantId = computed(() => String(route.query.variantId ?? ""));
@@ -30,77 +25,19 @@ const silhouetteUrl = computed(
 );
 
 onMounted(() => {
-  void startCamera();
+  void startPreview({
+    catalogKey: catalogKey.value,
+    variantId: variantId.value,
+    silhouetteUrl: silhouetteUrl.value,
+  });
 });
 
 onBeforeUnmount(() => {
-  disposed = true;
-  startupSequence += 1;
-  stopCurrentStream();
+  void stopPreview("route_leave");
 });
 
-async function startCamera(): Promise<void> {
-  const deviceId = machineStore.config.tryOnCameraDeviceId;
-  startupSequence += 1;
-  const requestSequence = startupSequence;
-  errorMessage.value = null;
-
-  if (!silhouetteUrl.value) {
-    errorMessage.value = "当前规格暂不支持虚拟试穿。";
-    return;
-  }
-  if (!deviceId) {
-    errorMessage.value =
-      "试穿摄像头未配置，请联系维护人员检查摄像头配置与调试。";
-    return;
-  }
-  if (!navigator.mediaDevices?.getUserMedia) {
-    errorMessage.value =
-      "当前设备无法打开试穿摄像头，请联系维护人员检查摄像头配置与调试。";
-    return;
-  }
-
-  let openedStream: MediaStream | null = null;
-  try {
-    openedStream = await navigator.mediaDevices.getUserMedia({
-      audio: false,
-      video: { deviceId: { exact: deviceId } },
-    });
-    if (disposed || requestSequence !== startupSequence) {
-      stopMediaStreamTracks(openedStream);
-      return;
-    }
-    stream.value = openedStream;
-    if (videoElement.value) {
-      videoElement.value.srcObject = openedStream;
-    }
-  } catch {
-    if (openedStream) stopMediaStreamTracks(openedStream);
-    if (!disposed && requestSequence === startupSequence) {
-      errorMessage.value =
-        "试穿摄像头启动失败，请联系维护人员检查摄像头配置与调试。";
-    }
-  }
-}
-
-function stopCurrentStream(): void {
-  if (stream.value) {
-    stopMediaStreamTracks(stream.value);
-    stream.value = null;
-  }
-  if (videoElement.value) {
-    videoElement.value.srcObject = null;
-  }
-}
-
-function stopMediaStreamTracks(target: MediaStream): void {
-  for (const track of target.getTracks()) {
-    track.stop();
-  }
-}
-
 async function exitTryOn(): Promise<void> {
-  stopCurrentStream();
+  await stopPreview("user_exit");
   await router.push({
     name: "product-detail",
     params: { catalogKey: catalogKey.value },
@@ -111,14 +48,19 @@ async function exitTryOn(): Promise<void> {
 
 <template>
   <main class="virtual-try-on-view">
-    <video
-      ref="videoElement"
-      class="try-on-video"
-      autoplay
-      muted
-      playsinline
-      data-test="try-on-video"
-    ></video>
+    <img
+      v-if="previewUrl"
+      class="try-on-preview"
+      :src="previewUrl"
+      alt=""
+      aria-hidden="true"
+      data-test="try-on-preview"
+    />
+    <div
+      v-else
+      class="try-on-preview-placeholder"
+      data-test="try-on-preview-placeholder"
+    ></div>
     <img
       v-if="silhouetteUrl"
       class="try-on-silhouette try-on-silhouette-fixed"
@@ -129,6 +71,13 @@ async function exitTryOn(): Promise<void> {
     />
     <section v-if="errorMessage" class="try-on-error" data-test="try-on-error">
       <p>{{ errorMessage }}</p>
+    </section>
+    <section
+      v-else-if="isStarting"
+      class="try-on-error"
+      data-test="try-on-starting"
+    >
+      <p>正在启动虚拟试穿预览...</p>
     </section>
     <button
       class="try-on-exit kiosk-touch-target"
@@ -149,7 +98,8 @@ async function exitTryOn(): Promise<void> {
   background: #111;
 }
 
-.try-on-video {
+.try-on-preview,
+.try-on-preview-placeholder {
   position: absolute;
   inset: 0;
   width: 100%;
