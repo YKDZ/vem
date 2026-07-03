@@ -17,6 +17,7 @@ export type MachineAudioPlaybackDiagnostic = {
 };
 
 type MachineAudioPlaybackDriverPlayOptions = {
+  volume: number;
   onCompleted?: () => void;
 };
 
@@ -34,6 +35,7 @@ export type MachineAudioPlaybackDriver = {
 export type BrowserMachineAudioElement = {
   readonly src: string;
   currentTime: number;
+  volume: number;
   play(): Promise<void>;
   pause(): void;
   addEventListener(event: "ended", listener: () => void): void;
@@ -57,10 +59,11 @@ export type MachineAudioPlayback = {
 
 type MachineAudioPlaybackOptions = {
   driver: MachineAudioPlaybackDriver;
+  volume?: number;
 };
 
 type MockMachineAudioPlaybackDriver = MachineAudioPlaybackDriver & {
-  readonly requests: Array<{ sourceUrl: string }>;
+  readonly requests: Array<{ sourceUrl: string; volume: number }>;
   readonly stops: string[];
   completeActive(): void;
 };
@@ -72,6 +75,7 @@ export function createMachineAudioPlayback(
 ): MachineAudioPlayback {
   let latestDiagnostic: MachineAudioPlaybackDiagnostic | null = null;
   let activePlayback: { requestId: string; sourceUrl: string } | null = null;
+  const volume = normalizePlaybackVolume(options.volume);
 
   async function playLocal(sourceUrl: string): Promise<boolean> {
     stop();
@@ -85,6 +89,7 @@ export function createMachineAudioPlayback(
     });
     try {
       await options.driver.playLocal(sourceUrl, {
+        volume,
         onCompleted: () => {
           if (activePlayback?.requestId !== requestId) return;
           activePlayback = null;
@@ -152,7 +157,7 @@ export function createMachineAudioPlayback(
 }
 
 export function createMockMachineAudioPlaybackDriver(): MockMachineAudioPlaybackDriver {
-  const requests: Array<{ sourceUrl: string }> = [];
+  const requests: Array<{ sourceUrl: string; volume: number }> = [];
   const stops: string[] = [];
   let activePlayback: MachineAudioPlaybackDriverPlayOptions | null = null;
   return {
@@ -163,7 +168,7 @@ export function createMockMachineAudioPlaybackDriver(): MockMachineAudioPlayback
       sourceUrl: string,
       playOptions?: MachineAudioPlaybackDriverPlayOptions,
     ): Promise<void> {
-      requests.push({ sourceUrl });
+      requests.push({ sourceUrl, volume: playOptions?.volume ?? 1 });
       activePlayback = playOptions ?? null;
     },
     stop(): void {
@@ -192,6 +197,7 @@ export function createBrowserMachineAudioPlaybackDriver(
     ): Promise<void> {
       const audio = audioFactory(sourceUrl);
       activeAudio = audio;
+      audio.volume = playOptions?.volume ?? 1;
       audio.addEventListener("ended", () => {
         if (activeAudio !== audio) return;
         activeAudio = null;
@@ -212,4 +218,10 @@ function defaultBrowserAudioFactory(
   sourceUrl: string,
 ): BrowserMachineAudioElement {
   return new Audio(sourceUrl);
+}
+
+function normalizePlaybackVolume(value: unknown): number {
+  const numericValue = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(numericValue)) return 1;
+  return Math.min(1, Math.max(0, numericValue));
 }

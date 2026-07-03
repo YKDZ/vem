@@ -17,6 +17,7 @@ import {
 class MockBrowserAudio implements BrowserMachineAudioElement {
   readonly src: string;
   currentTime = 0;
+  volume = 1;
   readonly play = vi.fn<() => Promise<void>>();
   readonly pause = vi.fn<() => void>();
   private readonly listeners = new Map<string, Array<() => void>>();
@@ -197,6 +198,7 @@ describe("createMachineAudioPlayback", () => {
     expect(driver.requests).toEqual([
       {
         sourceUrl: "/assets/customer-greeting.wav",
+        volume: 1,
       },
     ]);
     expect(playback.latestDiagnostic()).toMatchObject({
@@ -204,6 +206,23 @@ describe("createMachineAudioPlayback", () => {
       driver: "mock",
       sourceUrl: "/assets/customer-greeting.wav",
     });
+  });
+
+  it("passes normalized global Machine Audio volume to the mock driver", async () => {
+    const driver = createMockMachineAudioPlaybackDriver();
+    const playback = createMachineAudioPlayback({
+      driver,
+      volume: 0.35,
+    });
+
+    await playback.playLocal("/assets/customer-greeting.wav");
+
+    expect(driver.requests).toEqual([
+      {
+        sourceUrl: "/assets/customer-greeting.wav",
+        volume: 0.35,
+      },
+    ]);
   });
 
   it("plays a local packaged audio URL through the browser driver", async () => {
@@ -229,6 +248,24 @@ describe("createMachineAudioPlayback", () => {
       driver: "browser",
       sourceUrl: "/assets/payment-succeeded.wav",
     });
+  });
+
+  it("sets normalized global Machine Audio volume on browser playback", async () => {
+    const created: MockBrowserAudio[] = [];
+    const driver = createBrowserMachineAudioPlaybackDriver({
+      audioFactory: (sourceUrl) => {
+        const audio = new MockBrowserAudio(sourceUrl);
+        created.push(audio);
+        return audio;
+      },
+    });
+    const playback = createMachineAudioPlayback({ driver, volume: 0.35 });
+
+    await playback.playLocal("/assets/payment-succeeded.wav");
+
+    expect(created).toHaveLength(1);
+    expect(created[0].volume).toBe(0.35);
+    expect(created[0].play).toHaveBeenCalledTimes(1);
   });
 
   it("exposes the requested diagnostic while driver playback is starting", async () => {
@@ -304,8 +341,8 @@ describe("createMachineAudioPlayback", () => {
 
     expect(driver.stops).toHaveLength(1);
     expect(driver.requests).toEqual([
-      { sourceUrl: "/assets/presence-greeting.wav" },
-      { sourceUrl: "/assets/payment-prompt.wav" },
+      { sourceUrl: "/assets/presence-greeting.wav", volume: 1 },
+      { sourceUrl: "/assets/payment-prompt.wav", volume: 1 },
     ]);
     expect(playback.latestDiagnostic()).toMatchObject({
       status: "started",

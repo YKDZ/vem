@@ -9,12 +9,14 @@ import {
   type CustomerExperienceEvent,
 } from "@/customer-events/events";
 import { useAudioCueStore } from "@/stores/audio-cues";
+import { useMachineStore } from "@/stores/machine";
 
 export type CustomerAudioCueEvent = CustomerExperienceEvent;
 
 export type BrowserAudioElement = {
   readonly src: string;
   currentTime: number;
+  volume: number;
   play(): Promise<void>;
   pause(): void;
   addEventListener(event: "ended", listener: () => void): void;
@@ -236,6 +238,9 @@ export function createMachineAudioCuePlaybackAdapter(
     });
 
     try {
+      audio.volume = normalizeMachineAudioVolume(
+        useMachineStore().config.machineAudioVolume,
+      );
       await audio.play();
       if (request.orderKey) {
         store.rememberOrderCuePlayed(request.orderKey, request.cueKey);
@@ -315,4 +320,10 @@ function sourceForRequest(request: CustomerAudioCueRequest): string {
 
 function defaultBrowserAudioFactory(src: string): BrowserAudioElement {
   return new Audio(src);
+}
+
+function normalizeMachineAudioVolume(value: unknown): number {
+  const numericValue = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(numericValue)) return 0.7;
+  return Math.min(1, Math.max(0, numericValue));
 }

@@ -93,6 +93,7 @@ const config: ConfigSummary = {
     visionEnabled: true,
     visionWsUrl: "ws://ui-debug.local/vision",
     visionRequestTimeoutMs: 8000,
+    machineAudioVolume: 0.7,
     audioCueSettings: {
       enabled: false,
       categories: {

@@ -44,7 +44,7 @@ pub struct AudioCueSettings {
     pub categories: AudioCueCategorySettings,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 #[serde(rename_all = "camelCase")]
 pub struct MachinePublicConfig {
@@ -74,6 +74,8 @@ pub struct MachinePublicConfig {
     pub vision_enabled: bool,
     pub vision_ws_url: String,
     pub vision_request_timeout_ms: u64,
+    #[serde(default = "default_machine_audio_volume")]
+    pub machine_audio_volume: f64,
     #[serde(default, skip_serializing)]
     pub try_on_camera_device_id: Option<String>,
     #[serde(default)]
@@ -248,7 +250,7 @@ fn default_payment_capability_enabled() -> bool {
     true
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct MachineRuntimeConfig {
     pub public: MachinePublicConfig,
@@ -286,7 +288,7 @@ impl MachineRuntimeConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct MachinePublicRuntimeConfig {
     pub public: MachinePublicConfig,
@@ -315,6 +317,10 @@ pub const STOCK_MOVEMENT_RETENTION_MAX_DAYS: i64 = 366;
 
 pub fn default_stock_movement_retention_days() -> i64 {
     30
+}
+
+pub fn default_machine_audio_volume() -> f64 {
+    0.7
 }
 
 fn provisioning_issues(
@@ -392,6 +398,7 @@ pub fn default_public_config() -> MachinePublicConfig {
         vision_enabled: true,
         vision_ws_url: vending_core::vision::DEFAULT_VISION_WS_URL.to_string(),
         vision_request_timeout_ms: 8_000,
+        machine_audio_volume: default_machine_audio_volume(),
         try_on_camera_device_id: None,
         audio_cue_settings: AudioCueSettings::default(),
         presence_audio_enabled: None,
@@ -580,6 +587,10 @@ pub fn normalize_public_config(
     if !(1000..=30000).contains(&config.vision_request_timeout_ms) {
         return Err("visionRequestTimeoutMs must be between 1000 and 30000".to_string());
     }
+    if !config.machine_audio_volume.is_finite() {
+        config.machine_audio_volume = default_machine_audio_volume();
+    }
+    config.machine_audio_volume = config.machine_audio_volume.clamp(0.0, 1.0);
     if vision_ws_url.is_empty() {
         return Err("visionWsUrl is required".to_string());
     }
@@ -883,8 +894,9 @@ impl ConfigStore {
             .await
             .map_err(|error| format!("read daemon config failed: {error}"))?;
         let (public, migrated) = parse_persisted_public_config(&content)?;
+        let parsed_public = public.clone();
         let public = normalize_public_config(public)?;
-        if migrated {
+        if migrated || public != parsed_public {
             self.write_public_config_file(&public).await?;
         }
         self.persist_snapshot(&public).await?;
@@ -1087,13 +1099,16 @@ fn parse_persisted_public_config(content: &str) -> Result<(MachinePublicConfig, 
         .map_err(|error| format!("parse daemon config failed: {error}"))?;
     let mut migrated = false;
     if let serde_json::Value::Object(ref mut object) = value {
+        if !object.contains_key("machineAudioVolume") {
+            migrated = true;
+        }
         if !object.contains_key("machineLocationLabel") {
             if let Some(legacy) = object.remove("machineLocationText") {
                 object.insert("machineLocationLabel".to_string(), legacy);
                 migrated = true;
             }
         } else {
-            migrated = object.remove("machineLocationText").is_some();
+            migrated = object.remove("machineLocationText").is_some() || migrated;
         }
     }
     serde_json::from_value(value)
@@ -1491,6 +1506,123 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn load_public_config_backfills_default_machine_audio_volume() {
+        let temp = TempDir::new().expect("temp");
+        let data_dir = temp.path().join("daemon");
+        tokio::fs::create_dir_all(&data_dir)
+            .await
+            .expect("create config dir");
+        tokio::fs::write(
+            daemon_config_path(&data_dir),
+            serde_json::json!({
+                "machineCode": "M001",
+                "machineLocationLabel": "Lobby",
+                "apiBaseUrl": "http://127.0.0.1:3000/api",
+                "mqttUrl": "mqtt://127.0.0.1:1883",
+                "mqttUsername": null,
+                "hardwareAdapter": "mock",
+                "serialPortPath": null,
+                "lowerControllerUsbIdentity": null,
+                "scannerAdapter": "disabled",
+                "scannerSerialPortPath": null,
+                "scannerBaudRate": 9600,
+                "scannerFrameSuffix": "crlf",
+                "visionEnabled": false,
+                "visionWsUrl": "ws://127.0.0.1:7892/ws",
+                "visionRequestTimeoutMs": 8000,
+                "audioCueSettings": {
+                    "enabled": false,
+                    "categories": {
+                        "presence": false,
+                        "transaction": false
+                    }
+                },
+                "kioskMode": false,
+                "stockMovementRetentionDays": 30
+            })
+            .to_string(),
+        )
+        .await
+        .expect("write config");
+        let state = crate::state::LocalStateStore::open(&data_dir.join("state.db"))
+            .await
+            .expect("state");
+        let store = ConfigStore::new(
+            data_dir.clone(),
+            state,
+            std::sync::Arc::new(InMemorySecretStore::default()),
+        );
+
+        let public = store.load_public_config().await.expect("load config");
+
+        assert_eq!(public.machine_audio_volume, default_machine_audio_volume());
+        let saved = tokio::fs::read_to_string(daemon_config_path(&data_dir))
+            .await
+            .expect("read backfilled config");
+        let saved: serde_json::Value = serde_json::from_str(&saved).expect("json");
+        assert_eq!(saved["machineAudioVolume"], default_machine_audio_volume());
+    }
+
+    #[tokio::test]
+    async fn load_public_config_backfills_clamped_machine_audio_volume() {
+        let temp = TempDir::new().expect("temp");
+        let data_dir = temp.path().join("daemon");
+        tokio::fs::create_dir_all(&data_dir)
+            .await
+            .expect("create config dir");
+        tokio::fs::write(
+            daemon_config_path(&data_dir),
+            serde_json::json!({
+                "machineCode": "M001",
+                "machineLocationLabel": "Lobby",
+                "apiBaseUrl": "http://127.0.0.1:3000/api",
+                "mqttUrl": "mqtt://127.0.0.1:1883",
+                "mqttUsername": null,
+                "hardwareAdapter": "mock",
+                "serialPortPath": null,
+                "lowerControllerUsbIdentity": null,
+                "scannerAdapter": "disabled",
+                "scannerSerialPortPath": null,
+                "scannerBaudRate": 9600,
+                "scannerFrameSuffix": "crlf",
+                "visionEnabled": false,
+                "visionWsUrl": "ws://127.0.0.1:7892/ws",
+                "visionRequestTimeoutMs": 8000,
+                "machineAudioVolume": 1.25,
+                "audioCueSettings": {
+                    "enabled": false,
+                    "categories": {
+                        "presence": false,
+                        "transaction": false
+                    }
+                },
+                "kioskMode": false,
+                "stockMovementRetentionDays": 30
+            })
+            .to_string(),
+        )
+        .await
+        .expect("write config");
+        let state = crate::state::LocalStateStore::open(&data_dir.join("state.db"))
+            .await
+            .expect("state");
+        let store = ConfigStore::new(
+            data_dir.clone(),
+            state,
+            std::sync::Arc::new(InMemorySecretStore::default()),
+        );
+
+        let public = store.load_public_config().await.expect("load config");
+
+        assert_eq!(public.machine_audio_volume, 1.0);
+        let saved = tokio::fs::read_to_string(daemon_config_path(&data_dir))
+            .await
+            .expect("read backfilled config");
+        let saved: serde_json::Value = serde_json::from_str(&saved).expect("json");
+        assert_eq!(saved["machineAudioVolume"], 1.0);
+    }
+
+    #[tokio::test]
     async fn save_config_update_saves_secrets_flags_and_redacts_runtime_response() {
         let temp = TempDir::new().expect("temp");
         let data_dir = temp.path().join("daemon");
@@ -1592,6 +1724,42 @@ mod tests {
         assert_eq!(saved["audioCueSettings"]["categories"]["presence"], false);
         assert_eq!(saved["audioCueSettings"]["categories"]["transaction"], true);
         assert!(saved.get("presenceAudioEnabled").is_none());
+    }
+
+    #[tokio::test]
+    async fn save_config_update_round_trips_machine_audio_volume() {
+        let temp = TempDir::new().expect("temp");
+        let data_dir = temp.path().join("daemon");
+        let state = crate::state::LocalStateStore::open(&data_dir.join("state.db"))
+            .await
+            .expect("state");
+        let store = ConfigStore::new(
+            data_dir.clone(),
+            state,
+            std::sync::Arc::new(InMemorySecretStore::default()),
+        );
+        let request = MachineConfigUpdateRequest {
+            public: MachinePublicConfig {
+                machine_audio_volume: 0.35,
+                ..default_public_config()
+            },
+            secrets: None,
+        };
+
+        let runtime = store
+            .save_config_update(request)
+            .await
+            .expect("save config update");
+        let reloaded = store.load_runtime_config().await.expect("reload config");
+
+        assert_eq!(runtime.public.machine_audio_volume, 0.35);
+        assert_eq!(reloaded.public.machine_audio_volume, 0.35);
+
+        let saved = tokio::fs::read_to_string(daemon_config_path(&data_dir))
+            .await
+            .expect("read config");
+        let saved: serde_json::Value = serde_json::from_str(&saved).expect("json");
+        assert_eq!(saved["machineAudioVolume"], 0.35);
     }
 
     #[test]

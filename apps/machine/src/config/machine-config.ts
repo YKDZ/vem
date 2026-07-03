@@ -18,6 +18,8 @@ export const audioCueSettingsSchema = z.object({
     }),
 });
 
+const machineAudioVolumeDefault = 0.7;
+
 const audioCueSettingsDefaults = {
   enabled: false,
   categories: {
@@ -92,6 +94,11 @@ export const machineConfigSchema = z
     visionEnabled: z.boolean().default(true),
     visionWsUrl: z.string().trim().pipe(z.url()).default(DEFAULT_VISION_WS_URL),
     visionRequestTimeoutMs: z.int().min(1000).max(30_000).default(8000),
+    machineAudioVolume: z
+      .number()
+      .min(0)
+      .max(1)
+      .default(machineAudioVolumeDefault),
     audioCueSettings: audioCueSettingsSchema.default(audioCueSettingsDefaults),
     kioskMode: z.boolean().default(false),
     stockMovementRetentionDays: z.int().min(1).max(366).default(30),
@@ -205,6 +212,9 @@ export function normalizeMachineConfig(input: unknown): MachineConfig {
   if (typeof processed.visionWsUrl === "string") {
     processed.visionWsUrl = processed.visionWsUrl.trim();
   }
+  processed.machineAudioVolume = normalizeMachineAudioVolume(
+    processed.machineAudioVolume,
+  );
   delete processed.tryOnCameraDeviceId;
   const parsed = machineConfigSchema.parse(processed);
   const machineSecret = parsed.machineSecret?.trim() || null;
@@ -234,7 +244,16 @@ export function normalizeMachineConfig(input: unknown): MachineConfig {
     scannerUsbIdentity: parsed.scannerUsbIdentity,
     scannerSerialPortPath: parsed.scannerSerialPortPath?.trim() || null,
     visionWsUrl: parsed.visionWsUrl.trim(),
+    machineAudioVolume: parsed.machineAudioVolume,
   };
+}
+
+function normalizeMachineAudioVolume(value: unknown): number {
+  const numericValue = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(numericValue)) {
+    return machineAudioVolumeDefault;
+  }
+  return Math.min(1, Math.max(0, numericValue));
 }
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {

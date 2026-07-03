@@ -238,4 +238,37 @@ describe("useMachineStore", () => {
       orderKey: "ORDER-1",
     });
   });
+
+  it("round-trips global Machine Audio volume through daemon config save", async () => {
+    const config = normalizeMachineConfig({
+      machineCode: "MACHINE-1",
+      machineAudioVolume: 0.35,
+    });
+    saveConfigMock.mockResolvedValue({
+      public: {
+        ...config,
+        machineSecret: undefined,
+        machineSecretConfigured: undefined,
+        mqttSigningSecret: undefined,
+        mqttSigningSecretConfigured: undefined,
+        mqttPassword: undefined,
+        mqttPasswordConfigured: undefined,
+      },
+      machineSecretConfigured: false,
+      mqttSigningSecretConfigured: false,
+      mqttPasswordConfigured: false,
+    });
+
+    const store = useMachineStore();
+    await store.saveConfig(config);
+
+    expect(saveConfigMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        public: expect.objectContaining({
+          machineAudioVolume: 0.35,
+        }),
+      }),
+    );
+    expect(store.config.machineAudioVolume).toBe(0.35);
+  });
 });

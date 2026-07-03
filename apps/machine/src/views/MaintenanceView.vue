@@ -84,15 +84,25 @@ const latestVisionDiagnosticPayloadText = computed(() => {
 const audioCueSettingsRows = computed(() => [
   {
     label: "Global audio cues",
-    enabled: machineStore.config.audioCueSettings.enabled,
+    value: machineStore.config.audioCueSettings.enabled
+      ? "Enabled"
+      : "Disabled",
   },
   {
     label: "Presence audio cues",
-    enabled: machineStore.config.audioCueSettings.categories.presence,
+    value: machineStore.config.audioCueSettings.categories.presence
+      ? "Enabled"
+      : "Disabled",
   },
   {
     label: "Transaction audio cues",
-    enabled: machineStore.config.audioCueSettings.categories.transaction,
+    value: machineStore.config.audioCueSettings.categories.transaction
+      ? "Enabled"
+      : "Disabled",
+  },
+  {
+    label: "Machine Audio volume",
+    value: `${machineAudioVolumePercent(machineStore.config.machineAudioVolume)}%`,
   },
 ]);
 const latestAudioCueDiagnosticRows = computed(() => {
@@ -187,6 +197,9 @@ const form = reactive({
   visionEnabled: machineConfigDefaults.visionEnabled,
   visionWsUrl: machineConfigDefaults.visionWsUrl,
   visionRequestTimeoutMs: machineConfigDefaults.visionRequestTimeoutMs,
+  machineAudioVolumePercent: machineAudioVolumePercent(
+    machineConfigDefaults.machineAudioVolume,
+  ),
   audioCueSettings: {
     enabled: machineConfigDefaults.audioCueSettings.enabled,
     categories: {
@@ -230,6 +243,9 @@ function syncFormFromStore(): void {
   form.visionEnabled = machineStore.config.visionEnabled;
   form.visionWsUrl = machineStore.config.visionWsUrl;
   form.visionRequestTimeoutMs = machineStore.config.visionRequestTimeoutMs;
+  form.machineAudioVolumePercent = machineAudioVolumePercent(
+    machineStore.config.machineAudioVolume,
+  );
   form.audioCueSettings = {
     enabled: machineStore.config.audioCueSettings.enabled,
     categories: {
@@ -542,6 +558,7 @@ async function saveAndReboot(): Promise<void> {
   try {
     const normalized = normalizeMachineConfig({
       ...form,
+      machineAudioVolume: form.machineAudioVolumePercent / 100,
       machineSecret: form.machineSecretInput.trim() || null,
       mqttSigningSecret: form.mqttSigningSecretInput.trim() || null,
       mqttPassword: form.mqttPasswordInput.trim() || null,
@@ -615,6 +632,10 @@ async function refreshVisionStatus(): Promise<void> {
   } finally {
     visionMaintenance.loading = false;
   }
+}
+
+function machineAudioVolumePercent(volume: number): number {
+  return Math.round(Math.min(1, Math.max(0, volume)) * 100);
 }
 
 async function refreshDiagnostics(): Promise<void> {
@@ -1262,7 +1283,7 @@ async function submitStockMovement(): Promise<void> {
                 Machine Audio Cue
               </dt>
               <dd class="mt-1 font-bold text-white">
-                {{ row.label }} · {{ row.enabled ? "Enabled" : "Disabled" }}
+                {{ row.label }} · {{ row.value }}
               </dd>
             </div>
           </dl>
@@ -1741,6 +1762,24 @@ async function submitStockMovement(): Promise<void> {
                 >
               </label>
             </fieldset>
+
+            <label class="grid gap-2 text-left">
+              <span class="text-sm font-semibold text-slate-200"
+                >Machine Audio 音量 machineAudioVolume</span
+              >
+              <div class="flex items-center gap-3">
+                <input
+                  v-model.number="form.machineAudioVolumePercent"
+                  class="kiosk-touch-target w-32 rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-fuchsia-300"
+                  data-test="machine-audio-volume-percent"
+                  max="100"
+                  min="0"
+                  step="1"
+                  type="number"
+                />
+                <span class="text-sm font-bold text-slate-200">%</span>
+              </div>
+            </label>
 
             <div class="grid gap-3 md:grid-cols-2">
               <button

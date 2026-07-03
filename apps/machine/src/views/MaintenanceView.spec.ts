@@ -223,6 +223,7 @@ function provisionedConfigSummary(): ConfigSummary {
       visionEnabled: true,
       visionWsUrl: "ws://secret-vision.example/ws",
       visionRequestTimeoutMs: 8000,
+      machineAudioVolume: 0.7,
       audioCueSettings: {
         enabled: false,
         categories: {
@@ -404,6 +405,14 @@ function imgByTest(host: HTMLElement, testId: string): HTMLImageElement {
     throw new Error(`${testId} image not found`);
   }
   return image;
+}
+
+function inputByTest(host: HTMLElement, testId: string): HTMLInputElement {
+  const input = host.querySelector(`[data-test='${testId}']`);
+  if (!(input instanceof HTMLInputElement)) {
+    throw new Error(`${testId} input not found`);
+  }
+  return input;
 }
 
 function movementTypeSelect(host: HTMLElement): HTMLSelectElement {
@@ -795,6 +804,7 @@ describe("MaintenanceView hardware config", () => {
               transaction: false,
             },
           },
+          machineAudioVolume: 0.35,
         },
       },
       configLoaded: true,
@@ -807,7 +817,46 @@ describe("MaintenanceView hardware config", () => {
     expect(host.textContent).toContain("Global audio cues · Enabled");
     expect(host.textContent).toContain("Presence audio cues · Enabled");
     expect(host.textContent).toContain("Transaction audio cues · Disabled");
+    expect(host.textContent).toContain("Machine Audio volume · 35%");
     expect(host.textContent).not.toContain("来人音频提示");
+  });
+
+  it("edits Machine Audio volume as a percent and saves normalized config", async () => {
+    initializeMock.mockResolvedValueOnce({
+      baseUrl: "http://127.0.0.1:7891",
+      token: "token-1",
+      source: "tauri_ready_file",
+      mock: false,
+      runtimeFlags: {
+        advancedMaintenanceConfig: true,
+      },
+    });
+    useMachineStore().$patch({
+      configSummary: {
+        ...provisionedConfigSummary(),
+        public: {
+          ...provisionedConfigSummary().public,
+          machineAudioVolume: 0.35,
+        },
+      },
+      configLoaded: true,
+    });
+    const host = await mountView();
+    const input = inputByTest(host, "machine-audio-volume-percent");
+
+    expect(input.value).toBe("35");
+
+    input.value = "42";
+    input.dispatchEvent(new Event("input"));
+    await nextTick();
+    buttonByText(host, "保存配置并重新自检").click();
+
+    await vi.waitFor(() => {
+      expect(saveConfigMock).toHaveBeenCalled();
+    });
+    expect(saveConfigMock.mock.calls[0]?.[0].public).toMatchObject({
+      machineAudioVolume: 0.42,
+    });
   });
 
   it("shows latest Machine Audio Cue diagnostic details without full history", async () => {

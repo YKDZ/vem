@@ -1,8 +1,19 @@
 import { createPinia, setActivePinia } from "pinia";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+const { getConfigMock } = vi.hoisted(() => ({
+  getConfigMock: vi.fn(),
+}));
+
+vi.mock("@/daemon/client", () => ({
+  daemonClient: {
+    getConfig: getConfigMock,
+  },
+}));
+
 import type { HealthSnapshot } from "@/daemon/schemas";
 
+import { normalizeMachineConfig } from "@/config/machine-config";
 import { useAudioCueStore } from "@/stores/audio-cues";
 import { useCheckoutStore } from "@/stores/checkout";
 import { useConnectivityStore } from "@/stores/connectivity";
@@ -16,6 +27,7 @@ import {
 class MockAudio implements BrowserAudioElement {
   readonly src: string;
   currentTime = 0;
+  volume = 1;
   readonly play = vi.fn<() => Promise<void>>();
   readonly pause = vi.fn<() => void>();
   private listeners = new Map<string, Array<() => void>>();
@@ -214,6 +226,7 @@ beforeEach(() => {
     value: memoryStorage(),
   });
   setActivePinia(createPinia());
+  vi.clearAllMocks();
   enableAudioCues();
 });
 
@@ -236,6 +249,52 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
 
     expect(created).toHaveLength(1);
     expect(created[0].src).toContain("presence-detected");
+  });
+
+  it("uses loaded global Machine Audio volume for live browser cue playback", async () => {
+    const config = normalizeMachineConfig({
+      machineCode: "MACHINE-1",
+      machineAudioVolume: 0.35,
+      audioCueSettings: {
+        enabled: true,
+        categories: {
+          presence: true,
+          transaction: true,
+        },
+      },
+    });
+    getConfigMock.mockResolvedValue({
+      public: {
+        ...config,
+        machineSecret: undefined,
+        machineSecretConfigured: undefined,
+        mqttSigningSecret: undefined,
+        mqttSigningSecretConfigured: undefined,
+        mqttPassword: undefined,
+        mqttPasswordConfigured: undefined,
+      },
+      machineSecretConfigured: false,
+      mqttSigningSecretConfigured: false,
+      mqttPasswordConfigured: false,
+    });
+    const created: MockAudio[] = [];
+    const adapter = createMachineAudioCuePlaybackAdapter({
+      audioFactory: (src) => {
+        const audio = new MockAudio(src);
+        created.push(audio);
+        return audio;
+      },
+    });
+
+    await useMachineStore().loadConfig();
+    await adapter.requestCustomerAudioCue({
+      type: "payment.succeeded",
+      orderKey: "ORDER-VOLUME-1",
+      requestedAt: "2026-06-29T08:00:30.000Z",
+    });
+
+    expect(created).toHaveLength(1);
+    expect(created[0].volume).toBe(0.35);
   });
 
   it("records playback start and completion diagnostics around pending browser playback", async () => {
