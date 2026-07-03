@@ -18,6 +18,8 @@ use tokio_tungstenite::{accept_async, tungstenite::Message};
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
+static SCANNER_VISION_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 fn scanner_config(scanner_path: String) -> serde_json::Value {
     serde_json::json!({
         "machineCode": "MACHINE-SCAN",
@@ -61,6 +63,7 @@ fn production_scanner_config(
 
 #[tokio::test]
 async fn scanner_code_is_masked_in_events_and_not_persisted_plaintext() {
+    let _guard = SCANNER_VISION_TEST_LOCK.lock().await;
     let pty = PtyHarness::open();
     let scanner_path = pty.slave_path.to_string_lossy().to_string();
     pty.spawn_scanner_writer(b"621234567890123456\r\n621234567890123456\r\n");
@@ -98,6 +101,7 @@ async fn scanner_code_is_masked_in_events_and_not_persisted_plaintext() {
 
 #[tokio::test]
 async fn scanner_open_failure_reports_offline() {
+    let _guard = SCANNER_VISION_TEST_LOCK.lock().await;
     let mut daemon = DaemonHarness::start(
         scanner_config("/dev/vem-missing-scanner".to_string()),
         &[("VEM_MACHINE_SECRET", sensitive::TEST_MACHINE_SECRET)],
@@ -125,6 +129,7 @@ async fn scanner_open_failure_reports_offline() {
 
 #[tokio::test]
 async fn serial_text_scanner_submits_payment_code_and_refreshes_transaction() {
+    let _guard = SCANNER_VISION_TEST_LOCK.lock().await;
     let server = MockServer::start().await;
     let status_calls = Arc::new(AtomicUsize::new(0));
     let submit_calls = Arc::new(AtomicUsize::new(0));
@@ -260,6 +265,7 @@ async fn serial_text_scanner_submits_payment_code_and_refreshes_transaction() {
 
 #[tokio::test]
 async fn serial_text_scanner_retry_scan_uses_new_idempotency_key() {
+    let _guard = SCANNER_VISION_TEST_LOCK.lock().await;
     let server = MockServer::start().await;
     let status_calls = Arc::new(AtomicUsize::new(0));
     let submit_calls = Arc::new(AtomicUsize::new(0));
@@ -438,6 +444,7 @@ async fn serial_text_scanner_retry_scan_uses_new_idempotency_key() {
 
 #[tokio::test]
 async fn vision_disabled_reports_disabled_status() {
+    let _guard = SCANNER_VISION_TEST_LOCK.lock().await;
     let pty = PtyHarness::open();
     let mut config = scanner_config(pty.slave_path.to_string_lossy().to_string());
     config["scannerAdapter"] = serde_json::json!("disabled");
@@ -453,6 +460,7 @@ async fn vision_disabled_reports_disabled_status() {
 
 #[tokio::test]
 async fn vision_mock_process_updates_ready_status() {
+    let _guard = SCANNER_VISION_TEST_LOCK.lock().await;
     let port = pick_unused_port().expect("vision mock port");
     let vision = spawn_vision_ready_server(port).await;
     let pty = PtyHarness::open();
