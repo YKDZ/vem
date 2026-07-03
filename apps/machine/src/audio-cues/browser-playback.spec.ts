@@ -13,39 +13,73 @@ vi.mock("@/daemon/client", () => ({
 
 import type { HealthSnapshot } from "@/daemon/schemas";
 
+import {
+  createMachineAudioPlayback,
+  createMockMachineAudioPlaybackDriver,
+  type MachineAudioPlayback,
+  type MachineAudioPlaybackDiagnostic,
+  type MachineAudioPlaybackDriver,
+} from "@/audio-playback/machine-audio-playback";
 import { normalizeMachineConfig } from "@/config/machine-config";
 import { useAudioCueStore } from "@/stores/audio-cues";
 import { useCheckoutStore } from "@/stores/checkout";
 import { useConnectivityStore } from "@/stores/connectivity";
 import { useMachineStore } from "@/stores/machine";
 
-import {
-  createMachineAudioCuePlaybackAdapter,
-  type BrowserAudioElement,
-} from "./browser-playback";
+import { createMachineAudioCuePlaybackAdapter } from "./browser-playback";
 
-class MockAudio implements BrowserAudioElement {
-  readonly src: string;
-  currentTime = 0;
-  volume = 1;
-  readonly play = vi.fn<() => Promise<void>>();
-  readonly pause = vi.fn<() => void>();
-  private listeners = new Map<string, Array<() => void>>();
+type MockPlaybackDriver = ReturnType<
+  typeof createMockMachineAudioPlaybackDriver
+>;
 
-  constructor(src: string, playResult: Promise<void> = Promise.resolve()) {
-    this.src = src;
-    this.play.mockReturnValue(playResult);
-  }
+type CapturedPlayback = {
+  driver: MockPlaybackDriver | MachineAudioPlaybackDriver;
+  playback: MachineAudioPlayback;
+  diagnostics: MachineAudioPlaybackDiagnostic[];
+};
 
-  addEventListener(event: string, listener: () => void): void {
-    this.listeners.set(event, [...(this.listeners.get(event) ?? []), listener]);
-  }
+function createPlaybackHarness(
+  driverFactory: () => MachineAudioPlaybackDriver = () =>
+    createMockMachineAudioPlaybackDriver(),
+): {
+  created: CapturedPlayback[];
+  playbackFactory: (options: {
+    volume: number;
+    onDiagnostic: (diagnostic: MachineAudioPlaybackDiagnostic) => void;
+  }) => MachineAudioPlayback;
+} {
+  const created: CapturedPlayback[] = [];
+  return {
+    created,
+    playbackFactory: (options) => {
+      const driver = driverFactory();
+      const diagnostics: MachineAudioPlaybackDiagnostic[] = [];
+      const playback = createMachineAudioPlayback({
+        driver,
+        volume: options.volume,
+        onDiagnostic: (diagnostic) => {
+          diagnostics.push(diagnostic);
+          options.onDiagnostic(diagnostic);
+        },
+      });
+      created.push({ driver, playback, diagnostics });
+      return playback;
+    },
+  };
+}
 
-  emit(event: string): void {
-    for (const listener of this.listeners.get(event) ?? []) {
-      listener();
-    }
-  }
+function failingPlaybackDriver(message: string): MachineAudioPlaybackDriver {
+  return {
+    name: "mock",
+    async playLocal(): Promise<void> {
+      throw new Error(message);
+    },
+    stop: vi.fn<() => void>(),
+  };
+}
+
+function mockDriver(playback: CapturedPlayback): MockPlaybackDriver {
+  return playback.driver as MockPlaybackDriver;
 }
 
 function enableAudioCues(): void {
@@ -231,14 +265,10 @@ beforeEach(() => {
 });
 
 describe("createMachineAudioCuePlaybackAdapter", () => {
-  it("maps semantic presence cues to a browser audio source without caller asset paths", async () => {
-    const created: MockAudio[] = [];
+  it("maps semantic presence cues to a Machine Audio Playback source without caller asset paths", async () => {
+    const playback = createPlaybackHarness();
     const adapter = createMachineAudioCuePlaybackAdapter({
-      audioFactory: (src) => {
-        const audio = new MockAudio(src);
-        created.push(audio);
-        return audio;
-      },
+      playbackFactory: playback.playbackFactory,
     });
 
     await adapter.requestCustomerAudioCue({
@@ -247,8 +277,10 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
       nowMs: 0,
     });
 
-    expect(created).toHaveLength(1);
-    expect(created[0].src).toContain("presence-detected");
+    expect(playback.created).toHaveLength(1);
+    expect(mockDriver(playback.created[0]).requests[0].sourceUrl).toContain(
+      "presence-detected",
+    );
   });
 
   it("uses loaded global Machine Audio volume for live browser cue playback", async () => {
@@ -277,13 +309,9 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
       mqttSigningSecretConfigured: false,
       mqttPasswordConfigured: false,
     });
-    const created: MockAudio[] = [];
+    const playback = createPlaybackHarness();
     const adapter = createMachineAudioCuePlaybackAdapter({
-      audioFactory: (src) => {
-        const audio = new MockAudio(src);
-        created.push(audio);
-        return audio;
-      },
+      playbackFactory: playback.playbackFactory,
     });
 
     await useMachineStore().loadConfig();
@@ -293,47 +321,111 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
       requestedAt: "2026-06-29T08:00:30.000Z",
     });
 
-    expect(created).toHaveLength(1);
-    expect(created[0].volume).toBe(0.35);
+    expect(playback.created).toHaveLength(1);
+    expect(mockDriver(playback.created[0]).requests[0].volume).toBe(0.35);
   });
 
-  it("records playback start and completion diagnostics around pending browser playback", async () => {
-    let resolvePlay!: () => void;
-    const playStarted = new Promise<void>((resolve) => {
-      resolvePlay = resolve;
-    });
-    const audio = new MockAudio("unused", playStarted);
+  it("records cue playback as played while preserving completion as playback-only diagnostics", async () => {
+    const playback = createPlaybackHarness();
     const adapter = createMachineAudioCuePlaybackAdapter({
-      audioFactory: () => audio,
+      playbackFactory: playback.playbackFactory,
     });
     const store = useAudioCueStore();
 
-    const playback = adapter.requestCustomerAudioCue({
+    const request = adapter.requestCustomerAudioCue({
       type: "payment.succeeded",
       orderKey: "ORDER-1",
       requestedAt: "2026-06-29T08:01:00.000Z",
     });
 
-    expect(store.playback.status).toBe("playing");
-    expect(store.latestPlaybackDiagnostic).toBeNull();
+    await request;
 
-    resolvePlay();
-    await playback;
-
-    expect(store.playback.status).toBe("playing");
+    expect(store.playback.status).toBe("idle");
     expect(store.latestPlaybackDiagnostic).toMatchObject({
       cueKey: "payment.succeeded",
       orderKey: "ORDER-1",
       outcome: "played",
     });
 
-    audio.emit("ended");
+    mockDriver(playback.created[0]).completeActive();
 
     expect(store.playback.status).toBe("idle");
     expect(store.latestPlaybackDiagnostic).toMatchObject({
       cueKey: "payment.succeeded",
       orderKey: "ORDER-1",
-      outcome: "completed",
+      outcome: "played",
+    });
+    const diagnostics = playback.created[0].diagnostics;
+    expect(diagnostics[diagnostics.length - 1]).toMatchObject({
+      status: "completed",
+      driver: "mock",
+    });
+  });
+
+  it("delegates autonomous cue playback to the native-capable Machine Audio Playback path", async () => {
+    const nativeDriver = createMockMachineAudioPlaybackDriver("native");
+    const browserDriver = createMockMachineAudioPlaybackDriver("browser");
+    const adapter = createMachineAudioCuePlaybackAdapter({
+      playbackFactory: (options) =>
+        createMachineAudioPlayback({
+          nativeDriver,
+          browserDriver,
+          volume: options.volume,
+          onDiagnostic: options.onDiagnostic,
+        }),
+    });
+
+    await adapter.requestCustomerAudioCue({
+      type: "presence.detected",
+      requestedAt: "2026-06-29T08:01:30.000Z",
+      nowMs: 30_000,
+    });
+
+    expect(nativeDriver.requests).toHaveLength(1);
+    expect(nativeDriver.requests[0].sourceUrl).toContain("presence-detected");
+    expect(browserDriver.requests).toHaveLength(0);
+    expect(useAudioCueStore().latestPlaybackDiagnostic).toMatchObject({
+      cueKey: "presence.detected",
+      outcome: "played",
+    });
+  });
+
+  it("does not let native-started transaction cues suppress later lower-priority cues forever", async () => {
+    const nativeDriver = createMockMachineAudioPlaybackDriver("native");
+    const browserDriver = createMockMachineAudioPlaybackDriver("browser");
+    const adapter = createMachineAudioCuePlaybackAdapter({
+      playbackFactory: (options) =>
+        createMachineAudioPlayback({
+          nativeDriver,
+          browserDriver,
+          volume: options.volume,
+          onDiagnostic: options.onDiagnostic,
+        }),
+    });
+
+    await adapter.requestCustomerAudioCue({
+      type: "manual_handling.required",
+      orderKey: "ORDER-NATIVE-1",
+      requestedAt: "2026-06-29T08:01:31.000Z",
+      nowMs: 31_000,
+    });
+
+    expect(useAudioCueStore().playback.status).toBe("idle");
+
+    await expect(
+      adapter.requestCustomerAudioCue({
+        type: "presence.detected",
+        requestedAt: "2026-06-29T08:01:40.000Z",
+        nowMs: 40_000,
+      }),
+    ).resolves.toBe(true);
+
+    expect(nativeDriver.requests).toHaveLength(2);
+    expect(nativeDriver.requests[1].sourceUrl).toContain("presence-detected");
+    expect(browserDriver.requests).toHaveLength(0);
+    expect(useAudioCueStore().latestPlaybackDiagnostic).toMatchObject({
+      cueKey: "presence.detected",
+      outcome: "played",
     });
   });
 
@@ -378,9 +470,11 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
       applyReadyRuntime();
       const initialCheckout = checkoutObservation();
       const initialReadiness = readinessObservation();
+      const playback = createPlaybackHarness(() =>
+        failingPlaybackDriver("NotAllowedError"),
+      );
       const adapter = createMachineAudioCuePlaybackAdapter({
-        audioFactory: () =>
-          new MockAudio("unused", Promise.reject(new Error("NotAllowedError"))),
+        playbackFactory: playback.playbackFactory,
       });
 
       await adapter.requestCustomerAudioCue({
@@ -405,13 +499,9 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
   );
 
   it("lets manual handling outrank pending presence while dropping stale low-priority cues", async () => {
-    const created: MockAudio[] = [];
+    const playback = createPlaybackHarness();
     const adapter = createMachineAudioCuePlaybackAdapter({
-      audioFactory: (src) => {
-        const audio = new MockAudio(src);
-        created.push(audio);
-        return audio;
-      },
+      playbackFactory: playback.playbackFactory,
       autoStart: false,
     });
     const store = useAudioCueStore();
@@ -427,7 +517,7 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
       nowMs: 4_000,
     });
 
-    expect(created).toHaveLength(0);
+    expect(playback.created).toHaveLength(0);
     expect(store.playback.status).toBe("idle");
     expect(store.latestPlaybackDiagnostic).toMatchObject({
       cueKey: "presence.detected",
@@ -455,13 +545,9 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
   });
 
   it("suppresses duplicate presence cues during the central cooldown", async () => {
-    const created: MockAudio[] = [];
+    const playback = createPlaybackHarness();
     const adapter = createMachineAudioCuePlaybackAdapter({
-      audioFactory: (src) => {
-        const audio = new MockAudio(src);
-        created.push(audio);
-        return audio;
-      },
+      playbackFactory: playback.playbackFactory,
     });
 
     await adapter.requestCustomerAudioCue({
@@ -469,7 +555,7 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
       requestedAt: "2026-06-29T08:03:10.000Z",
       nowMs: 50_000,
     });
-    created[0].emit("ended");
+    mockDriver(playback.created[0]).completeActive();
 
     await expect(
       adapter.requestCustomerAudioCue({
@@ -479,7 +565,7 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
       }),
     ).resolves.toBe(false);
 
-    expect(created).toHaveLength(1);
+    expect(playback.created).toHaveLength(1);
     expect(useAudioCueStore().playback.status).toBe("idle");
     expect(useAudioCueStore().latestPlaybackDiagnostic).toMatchObject({
       category: "presence",
@@ -506,8 +592,9 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
     "records the latest diagnostic when production presence cues are suppressed by %s",
     async (_settingName, settings, message) => {
       useAudioCueStore().applySettings(settings);
+      const playback = createPlaybackHarness();
       const adapter = createMachineAudioCuePlaybackAdapter({
-        audioFactory: () => new MockAudio("unused"),
+        playbackFactory: playback.playbackFactory,
       });
 
       await expect(
@@ -531,8 +618,9 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
   );
 
   it("preserves presence cooldown after dropping a stale pending presence cue", async () => {
+    const playback = createPlaybackHarness();
     const adapter = createMachineAudioCuePlaybackAdapter({
-      audioFactory: () => new MockAudio("unused"),
+      playbackFactory: playback.playbackFactory,
       autoStart: false,
     });
     const store = useAudioCueStore();
@@ -572,14 +660,10 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
     });
   });
 
-  it("stops stale playing presence audio when cooldown suppresses its replacement", async () => {
-    const created: MockAudio[] = [];
+  it("stops stale playing presence playback when cooldown suppresses its replacement", async () => {
+    const playback = createPlaybackHarness();
     const adapter = createMachineAudioCuePlaybackAdapter({
-      audioFactory: (src) => {
-        const audio = new MockAudio(src);
-        created.push(audio);
-        return audio;
-      },
+      playbackFactory: playback.playbackFactory,
     });
     const store = useAudioCueStore();
 
@@ -588,8 +672,6 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
       requestedAt: "2026-06-29T08:03:40.000Z",
       nowMs: 2_000,
     });
-    created[0].currentTime = 1.75;
-
     await expect(
       adapter.requestCustomerAudioCue({
         type: "presence.detected",
@@ -598,9 +680,8 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
       }),
     ).resolves.toBe(false);
 
-    expect(created).toHaveLength(1);
-    expect(created[0].pause).toHaveBeenCalledOnce();
-    expect(created[0].currentTime).toBe(0);
+    expect(playback.created).toHaveLength(1);
+    expect(mockDriver(playback.created[0]).stops).toHaveLength(1);
     expect(store.playback.status).toBe("idle");
     expect(store.latestPlaybackDiagnostic).toMatchObject({
       cueKey: "presence.detected",
@@ -610,8 +691,9 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
   });
 
   it("keeps lower priority transaction and presence cues from replacing pending failure cues", async () => {
+    const playback = createPlaybackHarness();
     const adapter = createMachineAudioCuePlaybackAdapter({
-      audioFactory: () => new MockAudio("unused"),
+      playbackFactory: playback.playbackFactory,
       autoStart: false,
     });
     const store = useAudioCueStore();
@@ -643,8 +725,9 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
   });
 
   it("lets transaction progress cues outrank fresh presence cues", async () => {
+    const playback = createPlaybackHarness();
     const adapter = createMachineAudioCuePlaybackAdapter({
-      audioFactory: () => new MockAudio("unused"),
+      playbackFactory: playback.playbackFactory,
       autoStart: false,
     });
     const store = useAudioCueStore();
@@ -673,14 +756,10 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
     });
   });
 
-  it("stops already-playing lower-priority browser audio before starting a priority replacement", async () => {
-    const created: MockAudio[] = [];
+  it("stops already-playing lower-priority generic playback before starting a priority replacement", async () => {
+    const playback = createPlaybackHarness();
     const adapter = createMachineAudioCuePlaybackAdapter({
-      audioFactory: (src) => {
-        const audio = new MockAudio(src);
-        created.push(audio);
-        return audio;
-      },
+      playbackFactory: playback.playbackFactory,
     });
 
     await adapter.requestCustomerAudioCue({
@@ -688,8 +767,6 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
       requestedAt: "2026-06-29T08:06:00.000Z",
       nowMs: 20_000,
     });
-    created[0].currentTime = 1.5;
-
     await adapter.requestCustomerAudioCue({
       type: "manual_handling.required",
       orderKey: "ORDER-6",
@@ -697,32 +774,27 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
       nowMs: 21_000,
     });
 
-    expect(created).toHaveLength(2);
-    expect(created[0].pause).toHaveBeenCalledOnce();
-    expect(created[0].currentTime).toBe(0);
-    expect(created[1].src).toContain("manual-handling-required");
-    expect(useAudioCueStore().playback.request).toMatchObject({
+    expect(playback.created).toHaveLength(2);
+    expect(mockDriver(playback.created[0]).stops).toHaveLength(1);
+    expect(mockDriver(playback.created[1]).requests[0].sourceUrl).toContain(
+      "manual-handling-required",
+    );
+    expect(useAudioCueStore().playback.status).toBe("idle");
+    expect(useAudioCueStore().latestPlaybackDiagnostic).toMatchObject({
       cueKey: "manual_handling.required",
       orderKey: "ORDER-6",
+      outcome: "played",
     });
   });
 
   it("shares active playback ownership across separately created cue requesters", async () => {
-    const presenceAudio: MockAudio[] = [];
-    const transactionAudio: MockAudio[] = [];
+    const presencePlayback = createPlaybackHarness();
+    const transactionPlayback = createPlaybackHarness();
     const presenceRequester = createMachineAudioCuePlaybackAdapter({
-      audioFactory: (src) => {
-        const audio = new MockAudio(src);
-        presenceAudio.push(audio);
-        return audio;
-      },
+      playbackFactory: presencePlayback.playbackFactory,
     });
     const transactionRequester = createMachineAudioCuePlaybackAdapter({
-      audioFactory: (src) => {
-        const audio = new MockAudio(src);
-        transactionAudio.push(audio);
-        return audio;
-      },
+      playbackFactory: transactionPlayback.playbackFactory,
     });
 
     await presenceRequester.requestCustomerAudioCue({
@@ -730,8 +802,6 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
       requestedAt: "2026-06-29T08:06:10.000Z",
       nowMs: 22_000,
     });
-    presenceAudio[0].currentTime = 1.25;
-
     await transactionRequester.requestCustomerAudioCue({
       type: "dispense.failed",
       orderKey: "ORDER-6B",
@@ -739,19 +809,23 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
       nowMs: 23_000,
     });
 
-    expect(presenceAudio[0].pause).toHaveBeenCalledOnce();
-    expect(presenceAudio[0].currentTime).toBe(0);
-    expect(transactionAudio).toHaveLength(1);
-    expect(transactionAudio[0].src).toContain("dispense-failed");
-    expect(useAudioCueStore().playback.request).toMatchObject({
+    expect(mockDriver(presencePlayback.created[0]).stops).toHaveLength(1);
+    expect(transactionPlayback.created).toHaveLength(1);
+    expect(
+      mockDriver(transactionPlayback.created[0]).requests[0].sourceUrl,
+    ).toContain("dispense-failed");
+    expect(useAudioCueStore().playback.status).toBe("idle");
+    expect(useAudioCueStore().latestPlaybackDiagnostic).toMatchObject({
       cueKey: "dispense.failed",
       orderKey: "ORDER-6B",
+      outcome: "played",
     });
   });
 
   it("drops the source for a stale pending cue when cooldown suppresses its replacement", async () => {
+    const playback = createPlaybackHarness();
     const adapter = createMachineAudioCuePlaybackAdapter({
-      audioFactory: () => new MockAudio("unused"),
+      playbackFactory: playback.playbackFactory,
       autoStart: false,
     });
 
@@ -772,13 +846,9 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
   });
 
   it("drops the source for a pending cue when a higher-priority cue replaces it", async () => {
-    const created: MockAudio[] = [];
+    const playback = createPlaybackHarness();
     const adapter = createMachineAudioCuePlaybackAdapter({
-      audioFactory: (src) => {
-        const audio = new MockAudio(src);
-        created.push(audio);
-        return audio;
-      },
+      playbackFactory: playback.playbackFactory,
       autoStart: false,
     });
 
@@ -798,13 +868,16 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
 
     expect(adapter.pendingSourceCount()).toBe(1);
     await adapter.startPendingCue();
-    expect(created).toHaveLength(1);
-    expect(created[0].src).toContain("dispense-failed");
+    expect(playback.created).toHaveLength(1);
+    expect(mockDriver(playback.created[0]).requests[0].sourceUrl).toContain(
+      "dispense-failed",
+    );
   });
 
   it("clears a deferred pending cue and its retained source", async () => {
+    const playback = createPlaybackHarness();
     const adapter = createMachineAudioCuePlaybackAdapter({
-      audioFactory: () => new MockAudio("unused"),
+      playbackFactory: playback.playbackFactory,
       autoStart: false,
     });
     const store = useAudioCueStore();
@@ -829,13 +902,9 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
   });
 
   it("suppresses duplicate transaction cues remembered by the central audio cue store", async () => {
-    const created: MockAudio[] = [];
+    const playback = createPlaybackHarness();
     const adapter = createMachineAudioCuePlaybackAdapter({
-      audioFactory: (src) => {
-        const audio = new MockAudio(src);
-        created.push(audio);
-        return audio;
-      },
+      playbackFactory: playback.playbackFactory,
     });
     const store = useAudioCueStore();
 
@@ -844,7 +913,7 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
       orderKey: "ORDER-8",
       requestedAt: "2026-06-29T08:09:00.000Z",
     });
-    created[0].emit("ended");
+    mockDriver(playback.created[0]).completeActive();
 
     expect(store.hasOrderCuePlayed("ORDER-8", "payment.succeeded")).toBe(true);
 
@@ -856,7 +925,7 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
       }),
     ).resolves.toBe(false);
 
-    expect(created).toHaveLength(1);
+    expect(playback.created).toHaveLength(1);
     expect(store.latestPlaybackDiagnostic).toMatchObject({
       cueKey: "payment.succeeded",
       orderKey: "ORDER-8",

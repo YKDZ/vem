@@ -28,7 +28,9 @@ class MockBrowserAudio implements BrowserMachineAudioElement {
     this.src = src;
   }
 
-  addEventListener(): void {}
+  addEventListener(): void {
+    return undefined;
+  }
 }
 
 beforeEach(() => {
