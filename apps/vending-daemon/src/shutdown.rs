@@ -521,12 +521,17 @@ async fn harden_sensitive_file_permissions(path: &Path) -> Result<(), String> {
 
     #[cfg(windows)]
     {
-        let status = tokio::process::Command::new("icacls")
+        let mut command = tokio::process::Command::new("icacls");
+        command
             .arg(path)
             .arg("/inheritance:r")
             .arg("/grant:r")
             .arg("Administrators:F")
-            .arg("SYSTEM:F")
+            .arg("SYSTEM:F");
+        for principal in ready_file_reader_principals() {
+            command.arg(format!("{principal}:R"));
+        }
+        let status = command
             .status()
             .await
             .map_err(|error| format!("run icacls for ready file failed: {error}"))?;
@@ -536,6 +541,17 @@ async fn harden_sensitive_file_permissions(path: &Path) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+#[cfg_attr(not(windows), allow(dead_code))]
+fn ready_file_reader_principals() -> Vec<String> {
+    std::env::var("VEM_DAEMON_READY_FILE_READERS")
+        .unwrap_or_default()
+        .split([',', ';'])
+        .map(str::trim)
+        .filter(|principal| !principal.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
 }
 
 async fn run_hardware_health_watcher(
@@ -706,6 +722,21 @@ mod tests {
         let data_dir = std::path::Path::new("/tmp/vem-daemon-data");
         let path = default_ready_file_path(data_dir);
         assert_eq!(path, data_dir.join("daemon-ready.json"));
+    }
+
+    #[test]
+    fn ready_file_reader_principals_parse_env_list() {
+        std::env::set_var(
+            "VEM_DAEMON_READY_FILE_READERS",
+            "VEMKiosk; DESKTOP-2IDRN2K\\VEMKiosk,  ",
+        );
+
+        assert_eq!(
+            ready_file_reader_principals(),
+            vec!["VEMKiosk", "DESKTOP-2IDRN2K\\VEMKiosk"]
+        );
+
+        std::env::remove_var("VEM_DAEMON_READY_FILE_READERS");
     }
 
     #[tokio::test]
