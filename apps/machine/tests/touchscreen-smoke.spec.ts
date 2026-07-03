@@ -46,6 +46,131 @@ const UI_DEBUG_TRANSACTION_STORAGE_KEY = "vem.machine.uiDebug.transaction";
 const UI_DEBUG_PAYMENT_RESULT_STORAGE_KEY = "vem.machine.uiDebug.paymentResult";
 const UI_DEBUG_DISPENSE_RESULT_STORAGE_KEY =
   "vem.machine.uiDebug.dispenseResult";
+const UI_DEBUG_ADVANCED_MAINTENANCE_CONFIG_STORAGE_KEY =
+  "vem.machine.uiDebug.advancedMaintenanceConfig";
+const TRY_ON_PREVIEW_DIAGNOSTIC_URL =
+  "http://127.0.0.1:7892/try-on/e2e-maintenance.mjpeg";
+
+async function enableUiDebugAdvancedMaintenanceConfig(
+  page: Page,
+): Promise<void> {
+  await page.addInitScript((storageKey) => {
+    window.localStorage.setItem(storageKey, "1");
+  }, UI_DEBUG_ADVANCED_MAINTENANCE_CONFIG_STORAGE_KEY);
+}
+
+async function installMockVisionTryOnWebSocket(page: Page): Promise<void> {
+  await page.addInitScript((previewUrl) => {
+    const NativeWebSocket = window.WebSocket;
+    class MockVisionTryOnWebSocket extends EventTarget {
+      static readonly CONNECTING = NativeWebSocket.CONNECTING;
+      static readonly OPEN = NativeWebSocket.OPEN;
+      static readonly CLOSING = NativeWebSocket.CLOSING;
+      static readonly CLOSED = NativeWebSocket.CLOSED;
+      readonly CONNECTING = NativeWebSocket.CONNECTING;
+      readonly OPEN = NativeWebSocket.OPEN;
+      readonly CLOSING = NativeWebSocket.CLOSING;
+      readonly CLOSED = NativeWebSocket.CLOSED;
+      binaryType: BinaryType = "blob";
+      bufferedAmount = 0;
+      extensions = "";
+      onclose: ((event: CloseEvent) => void) | null = null;
+      onerror: ((event: Event) => void) | null = null;
+      onmessage: ((event: MessageEvent) => void) | null = null;
+      onopen: ((event: Event) => void) | null = null;
+      protocol = "";
+      readyState = NativeWebSocket.CONNECTING;
+      url: string;
+
+      constructor(url: string | URL) {
+        super();
+        this.url = String(url);
+        window.setTimeout(() => {
+          this.readyState = NativeWebSocket.OPEN;
+          const event = new Event("open");
+          this.dispatchEvent(event);
+          this.onopen?.(event);
+        }, 0);
+      }
+
+      close(): void {
+        if (this.readyState === NativeWebSocket.CLOSED) return;
+        this.readyState = NativeWebSocket.CLOSED;
+        const event = new CloseEvent("close", { code: 1000, reason: "mock" });
+        this.dispatchEvent(event);
+        this.onclose?.(event);
+      }
+
+      send(data: string | ArrayBufferLike | Blob | ArrayBufferView): void {
+        const message = JSON.parse(this.messageText(data)) as {
+          type?: string;
+          payload?: { sessionId?: string };
+        };
+        if (message.type === "vision.hello") {
+          this.emitServerMessage({
+            protocol: "vem.vision.v1",
+            type: "vision.ready",
+            messageId: "ready-e2e",
+            timestamp: new Date().toISOString(),
+            payload: {
+              serverName: "vision-e2e",
+              serverVersion: "0.0.0-test",
+              service: "vision-e2e",
+              cameraReady: true,
+              modelReady: true,
+              capabilities: ["try_on_session"],
+            },
+          });
+          return;
+        }
+        if (message.type === "vision.try_on.start") {
+          this.emitServerMessage({
+            protocol: "vem.vision.v1",
+            type: "vision.try_on.started",
+            messageId: "try-on-started-e2e",
+            timestamp: new Date().toISOString(),
+            payload: {
+              sessionId: message.payload?.sessionId ?? "try-on-e2e",
+              previewUrl,
+              streamType: "mjpeg",
+            },
+          });
+        }
+      }
+
+      private messageText(
+        data: string | ArrayBufferLike | Blob | ArrayBufferView,
+      ): string {
+        if (typeof data === "string") {
+          return data;
+        }
+        if (data instanceof Blob) {
+          throw new Error(
+            "mock vision websocket does not accept Blob messages",
+          );
+        }
+        const buffer = ArrayBuffer.isView(data)
+          ? data.buffer.slice(
+              data.byteOffset,
+              data.byteOffset + data.byteLength,
+            )
+          : data;
+        return new TextDecoder().decode(buffer);
+      }
+
+      private emitServerMessage(payload: unknown): void {
+        window.setTimeout(() => {
+          const event = new MessageEvent("message", {
+            data: JSON.stringify(payload),
+          });
+          this.dispatchEvent(event);
+          this.onmessage?.(event);
+        }, 0);
+      }
+    }
+    window.WebSocket = MockVisionTryOnWebSocket as typeof WebSocket;
+  }, TRY_ON_PREVIEW_DIAGNOSTIC_URL);
+}
 
 async function createStoredQrPaymentFromReadyCatalog(
   page: Page,
@@ -601,14 +726,40 @@ test("runtime matrix can directly load maintenance state", async ({ page }) => {
   ).toBeVisible();
   await expect(page.getByRole("button", { name: "刷新诊断" })).toBeVisible();
   await expect(page.getByRole("button", { name: "导出日志" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "硬件自检" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "视觉状态" })).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "硬件自检" }).first(),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "视觉状态" }).first(),
+  ).toBeVisible();
   await expect(page.getByRole("button", { name: "回到目录" })).toBeDisabled();
   await expect(
     page.getByRole("button", { name: "回到 Windows 桌面" }),
   ).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "保存并重启" })).toHaveCount(0);
   await expect(page.getByText("Admin Operations Console")).toHaveCount(0);
+});
+
+test("maintenance can start and release the vision try-on preview diagnostic", async ({
+  page,
+}) => {
+  await enableUiDebugAdvancedMaintenanceConfig(page);
+  await installMockVisionTryOnWebSocket(page);
+  await loadMachineRuntimeScenario(page, maintenanceScenario);
+
+  await expect(page).toHaveURL(/#\/maintenance$/);
+  await expect(page.getByText("视觉试衣预览诊断")).toBeVisible();
+
+  await tapLocator(page, page.getByRole("button", { name: "启动试衣预览" }));
+
+  const preview = page.locator("[data-test='try-on-camera-preview']");
+  await expect(preview).toBeVisible();
+  await expect(preview).toHaveAttribute("src", TRY_ON_PREVIEW_DIAGNOSTIC_URL);
+  await expect(page.getByText("mjpeg", { exact: true })).toBeVisible();
+  await expect(page.getByText(TRY_ON_PREVIEW_DIAGNOSTIC_URL)).toBeVisible();
+
+  await tapLocator(page, page.getByRole("button", { name: "释放试衣预览" }));
+  await expect(preview).toHaveCount(0);
+  await expect(page.getByText("试衣预览诊断已释放。")).toBeVisible();
 });
 
 test("maintenance route recovers to catalog when the machine can sell", async ({

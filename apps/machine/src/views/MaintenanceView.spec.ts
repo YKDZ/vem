@@ -24,6 +24,7 @@ const {
   saveConfigMock,
   downloadLogExportMock,
   callTauriCommandMock,
+  openVisionTryOnSessionMock,
 } = vi.hoisted(() => ({
   routeMock: { query: {} as Record<string, unknown> },
   routerReplaceMock: vi.fn(),
@@ -43,6 +44,7 @@ const {
   saveConfigMock: vi.fn(),
   downloadLogExportMock: vi.fn(),
   callTauriCommandMock: vi.fn(),
+  openVisionTryOnSessionMock: vi.fn(),
 }));
 
 vi.mock("vue-router", () => ({
@@ -83,6 +85,10 @@ vi.mock("@/native/tauri", () => ({
   callTauriCommand: callTauriCommandMock,
 }));
 
+vi.mock("@/native/vision", () => ({
+  openVisionTryOnSession: openVisionTryOnSessionMock,
+}));
+
 import { useAudioCueStore } from "@/stores/audio-cues";
 import { useCatalogStore } from "@/stores/catalog";
 import { useMachineStore } from "@/stores/machine";
@@ -92,7 +98,6 @@ import MaintenanceView from "./MaintenanceView.vue";
 
 let mountedApp: App<Element> | null = null;
 let pinia: ReturnType<typeof createPinia>;
-let originalMediaDevices: MediaDevices | undefined;
 
 function saleViewFixture() {
   return {
@@ -218,7 +223,6 @@ function provisionedConfigSummary(): ConfigSummary {
       visionEnabled: true,
       visionWsUrl: "ws://secret-vision.example/ws",
       visionRequestTimeoutMs: 8000,
-      tryOnCameraDeviceId: null,
       audioCueSettings: {
         enabled: false,
         categories: {
@@ -334,8 +338,13 @@ beforeEach(() => {
   saveConfigMock.mockResolvedValue({});
   downloadLogExportMock.mockResolvedValue(new Response("logs"));
   callTauriCommandMock.mockResolvedValue(undefined);
+  openVisionTryOnSessionMock.mockResolvedValue({
+    sessionId: "maintenance-session-1",
+    previewUrl: "http://127.0.0.1:7892/try-on/maintenance.mjpeg",
+    streamType: "mjpeg",
+    stop: vi.fn().mockResolvedValue(undefined),
+  });
   useMachineStore().$patch({ configLoaded: true });
-  originalMediaDevices = navigator.mediaDevices;
 });
 
 afterEach(() => {
@@ -344,10 +353,6 @@ afterEach(() => {
   document.body.innerHTML = "";
   vi.unstubAllEnvs();
   vi.useRealTimers();
-  Object.defineProperty(navigator, "mediaDevices", {
-    configurable: true,
-    value: originalMediaDevices,
-  });
 });
 
 async function mountView(): Promise<HTMLElement> {
@@ -393,68 +398,12 @@ function hardwareAdapterSelect(host: HTMLElement): HTMLSelectElement {
   return select;
 }
 
-function selectByTest(host: HTMLElement, testId: string): HTMLSelectElement {
-  const select = host.querySelector(`[data-test='${testId}']`);
-  if (!(select instanceof HTMLSelectElement)) {
-    throw new Error(`${testId} select not found`);
+function imgByTest(host: HTMLElement, testId: string): HTMLImageElement {
+  const image = host.querySelector(`[data-test='${testId}']`);
+  if (!(image instanceof HTMLImageElement)) {
+    throw new Error(`${testId} image not found`);
   }
-  return select;
-}
-
-function videoByTest(host: HTMLElement, testId: string): HTMLVideoElement {
-  const video = host.querySelector(`[data-test='${testId}']`);
-  if (!(video instanceof HTMLVideoElement)) {
-    throw new Error(`${testId} video not found`);
-  }
-  return video;
-}
-
-function deferred<T>() {
-  let resolve!: (value: T | PromiseLike<T>) => void;
-  let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((promiseResolve, promiseReject) => {
-    resolve = promiseResolve;
-    reject = promiseReject;
-  });
-  return { promise, reject, resolve };
-}
-
-function mockMediaDevices(options: {
-  devices: MediaDeviceInfo[];
-  previewTracks?: MediaStreamTrack[];
-  previewStream?: MediaStream | Promise<MediaStream>;
-}) {
-  const permissionTrack = {
-    stop: vi.fn(),
-  } as unknown as MediaStreamTrack;
-  const previewTracks = options.previewTracks ?? [
-    { stop: vi.fn() } as unknown as MediaStreamTrack,
-  ];
-  const permissionStream = {
-    getTracks: () => [permissionTrack],
-  } as unknown as MediaStream;
-  const previewStream = {
-    getTracks: () => previewTracks,
-  } as unknown as MediaStream;
-  const getUserMedia = vi
-    .fn()
-    .mockResolvedValueOnce(permissionStream)
-    .mockImplementation(async () => options.previewStream ?? previewStream);
-  const enumerateDevices = vi.fn().mockResolvedValue(options.devices);
-  Object.defineProperty(navigator, "mediaDevices", {
-    configurable: true,
-    value: {
-      getUserMedia,
-      enumerateDevices,
-    },
-  });
-  return {
-    enumerateDevices,
-    getUserMedia,
-    permissionTrack,
-    previewStream,
-    previewTracks,
-  };
+  return image;
 }
 
 function movementTypeSelect(host: HTMLElement): HTMLSelectElement {
@@ -525,7 +474,8 @@ describe("MaintenanceView hardware config", () => {
     expect(host.textContent).toContain("硬件适配器");
     expect(host.textContent).toContain("扫码器适配器");
     expect(host.textContent).toContain("visionWsUrl");
-    expect(host.textContent).toContain("Virtual Try-On Camera");
+    expect(host.textContent).toContain("视觉试衣预览诊断");
+    expect(host.textContent).toContain("vision.try_on.*");
     expect(host.textContent).toContain("MockHardwareControls");
     expect(Array.from(select.options).map((option) => option.value)).toEqual([
       "mock",
@@ -535,7 +485,7 @@ describe("MaintenanceView hardware config", () => {
     expect(host.textContent).not.toContain("vendor_sdk");
   });
 
-  it("enumerates, previews, and saves only the selected Virtual Try-On Camera device id", async () => {
+  it("starts and stops the vision try-on preview diagnostic session", async () => {
     initializeMock.mockResolvedValueOnce({
       baseUrl: "http://127.0.0.1:7891",
       token: "token-1",
@@ -545,75 +495,64 @@ describe("MaintenanceView hardware config", () => {
         advancedMaintenanceConfig: true,
       },
     });
-    const stoppedPreviewTrack = {
-      stop: vi.fn(),
-    } as unknown as MediaStreamTrack;
-    const media = mockMediaDevices({
-      devices: [
-        {
-          kind: "videoinput",
-          deviceId: "try-on-camera-1",
-          groupId: "group-1",
-          label: "USB Try-On Camera",
-          toJSON: () => ({}),
-        } as MediaDeviceInfo,
-        {
-          kind: "videoinput",
-          deviceId: "try-on-camera-2",
-          groupId: "group-2",
-          label: "Ceiling Service Camera",
-          toJSON: () => ({}),
-        } as MediaDeviceInfo,
-      ],
-      previewTracks: [stoppedPreviewTrack],
+    const stop = vi.fn().mockResolvedValue(undefined);
+    openVisionTryOnSessionMock.mockResolvedValueOnce({
+      sessionId: "maintenance-session-42",
+      previewUrl: "http://127.0.0.1:7892/try-on/maintenance-42.mjpeg",
+      streamType: "mjpeg",
+      stop,
     });
-
     const host = await mountView();
 
-    buttonByText(host, "授权并刷新摄像头").click();
+    buttonByText(host, "启动试衣预览").click();
     await vi.waitFor(() => {
-      expect(media.enumerateDevices).toHaveBeenCalled();
+      expect(openVisionTryOnSessionMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          visionWsUrl: "ws://127.0.0.1:7892/ws",
+        }),
+        {
+          catalogKey: "maintenance-diagnostic",
+          variantId: "maintenance-diagnostic",
+        },
+      );
     });
-    // oxlint-disable-next-line typescript/unbound-method
-    const permissionTrackStop = vi.mocked(media.permissionTrack.stop);
-    expect(permissionTrackStop).toHaveBeenCalledOnce();
-    expect(host.textContent).toContain("USB Try-On Camera");
-    expect(host.textContent).toContain("Ceiling Service Camera");
+    const preview = imgByTest(host, "try-on-camera-preview");
+    expect(preview.getAttribute("src")).toBe(
+      "http://127.0.0.1:7892/try-on/maintenance-42.mjpeg",
+    );
+    expect(host.textContent).toContain("maintenance-session-42");
+    expect(host.textContent).toContain("mjpeg");
 
-    const cameraSelect = selectByTest(host, "try-on-camera-select");
-    cameraSelect.value = "try-on-camera-1";
-    cameraSelect.dispatchEvent(new Event("change"));
-    await nextTick();
-
-    buttonByText(host, "预览摄像头").click();
+    buttonByText(host, "释放试衣预览").click();
     await vi.waitFor(() => {
-      const getUserMedia = vi.mocked(media.getUserMedia);
-      expect(getUserMedia).toHaveBeenCalledWith({
-        audio: false,
-        video: { deviceId: { exact: "try-on-camera-1" } },
-      });
+      expect(stop).toHaveBeenCalledOnce();
     });
+    expect(
+      host.querySelector("[data-test='try-on-camera-preview']"),
+    ).toBeNull();
+  });
 
-    cameraSelect.value = "try-on-camera-2";
-    cameraSelect.dispatchEvent(new Event("change"));
-    await vi.waitFor(() => {
-      // oxlint-disable-next-line typescript/unbound-method
-      const stoppedPreviewTrackStop = vi.mocked(stoppedPreviewTrack.stop);
-      expect(stoppedPreviewTrackStop).toHaveBeenCalledOnce();
+  it("does not save a machine-owned try-on camera device id", async () => {
+    initializeMock.mockResolvedValueOnce({
+      baseUrl: "http://127.0.0.1:7891",
+      token: "token-1",
+      source: "tauri_ready_file",
+      mock: false,
+      runtimeFlags: {
+        advancedMaintenanceConfig: true,
+      },
     });
-
+    const host = await mountView();
     buttonByText(host, "保存配置并重新自检").click();
     await vi.waitFor(() => {
       expect(saveConfigMock).toHaveBeenCalled();
     });
     const publicConfig = saveConfigMock.mock.calls[0]?.[0].public;
-    expect(publicConfig).toMatchObject({
-      tryOnCameraDeviceId: "try-on-camera-2",
-    });
+    expect(publicConfig).not.toHaveProperty("tryOnCameraDeviceId");
     expect(publicConfig).not.toHaveProperty("tryOnCameraLabel");
   });
 
-  it("renders unique live Virtual Try-On Camera labels for operator selection", async () => {
+  it("releases the vision try-on preview diagnostic session on unmount", async () => {
     initializeMock.mockResolvedValueOnce({
       baseUrl: "http://127.0.0.1:7891",
       token: "token-1",
@@ -623,235 +562,28 @@ describe("MaintenanceView hardware config", () => {
         advancedMaintenanceConfig: true,
       },
     });
-    const media = mockMediaDevices({
-      devices: [
-        {
-          kind: "videoinput",
-          deviceId: "camera-00000001",
-          groupId: "group-00000101",
-          label: "USB Camera",
-          toJSON: () => ({}),
-        } as MediaDeviceInfo,
-        {
-          kind: "videoinput",
-          deviceId: "camera-00000002",
-          groupId: "group-00000102",
-          label: "USB Camera",
-          toJSON: () => ({}),
-        } as MediaDeviceInfo,
-        {
-          kind: "videoinput",
-          deviceId: "camera-00000003",
-          groupId: "group-00000103",
-          label: "",
-          toJSON: () => ({}),
-        } as MediaDeviceInfo,
-      ],
+    const stop = vi.fn().mockResolvedValue(undefined);
+    openVisionTryOnSessionMock.mockResolvedValueOnce({
+      sessionId: "maintenance-session-99",
+      previewUrl: "http://127.0.0.1:7892/try-on/maintenance-99.mjpeg",
+      streamType: "mjpeg",
+      stop,
     });
-
     const host = await mountView();
 
-    buttonByText(host, "授权并刷新摄像头").click();
+    buttonByText(host, "启动试衣预览").click();
     await vi.waitFor(() => {
-      expect(media.enumerateDevices).toHaveBeenCalled();
+      expect(host.textContent).toContain("maintenance-session-99");
     });
-
-    const cameraSelect = selectByTest(host, "try-on-camera-select");
-    expect(
-      Array.from(cameraSelect.options).map((option) => option.text),
-    ).toEqual([
-      "不配置试衣摄像头",
-      "Camera 1 - USB Camera (id: ...00000001 / group: ...00000101)",
-      "Camera 2 - USB Camera (id: ...00000002 / group: ...00000102)",
-      "Camera 3 - Unlabeled camera (id: ...00000003 / group: ...00000103)",
-    ]);
-  });
-
-  it("clears the Virtual Try-On Camera video srcObject and stops tracks when closing preview", async () => {
-    initializeMock.mockResolvedValueOnce({
-      baseUrl: "http://127.0.0.1:7891",
-      token: "token-1",
-      source: "tauri_ready_file",
-      mock: false,
-      runtimeFlags: {
-        advancedMaintenanceConfig: true,
-      },
-    });
-    const stoppedPreviewTrack = {
-      stop: vi.fn(),
-    } as unknown as MediaStreamTrack;
-    const media = mockMediaDevices({
-      devices: [
-        {
-          kind: "videoinput",
-          deviceId: "try-on-camera-1",
-          groupId: "group-1",
-          label: "USB Try-On Camera",
-          toJSON: () => ({}),
-        } as MediaDeviceInfo,
-      ],
-      previewTracks: [stoppedPreviewTrack],
-    });
-
-    const host = await mountView();
-
-    buttonByText(host, "授权并刷新摄像头").click();
-    await vi.waitFor(() => {
-      expect(media.enumerateDevices).toHaveBeenCalled();
-    });
-    const cameraSelect = selectByTest(host, "try-on-camera-select");
-    cameraSelect.value = "try-on-camera-1";
-    cameraSelect.dispatchEvent(new Event("change"));
-    await nextTick();
-
-    buttonByText(host, "预览摄像头").click();
-    const previewVideo = videoByTest(host, "try-on-camera-preview");
-    await vi.waitFor(() => {
-      expect(previewVideo.srcObject).toBe(media.previewStream);
-    });
-
-    buttonByText(host, "关闭预览").click();
-    await nextTick();
-
-    // oxlint-disable-next-line typescript/unbound-method
-    const stoppedPreviewTrackStop = vi.mocked(stoppedPreviewTrack.stop);
-    expect(stoppedPreviewTrackStop).toHaveBeenCalledOnce();
-    expect(previewVideo.srcObject).toBeNull();
-  });
-
-  it("stops a stale pending Virtual Try-On Camera stream when selection changes before preview resolves", async () => {
-    initializeMock.mockResolvedValueOnce({
-      baseUrl: "http://127.0.0.1:7891",
-      token: "token-1",
-      source: "tauri_ready_file",
-      mock: false,
-      runtimeFlags: {
-        advancedMaintenanceConfig: true,
-      },
-    });
-    const stalePreviewTrack = {
-      stop: vi.fn(),
-    } as unknown as MediaStreamTrack;
-    const stalePreviewStream = {
-      getTracks: () => [stalePreviewTrack],
-    } as unknown as MediaStream;
-    const pendingPreview = deferred<MediaStream>();
-    const media = mockMediaDevices({
-      devices: [
-        {
-          kind: "videoinput",
-          deviceId: "try-on-camera-1",
-          groupId: "group-1",
-          label: "USB Try-On Camera",
-          toJSON: () => ({}),
-        } as MediaDeviceInfo,
-        {
-          kind: "videoinput",
-          deviceId: "try-on-camera-2",
-          groupId: "group-2",
-          label: "Ceiling Service Camera",
-          toJSON: () => ({}),
-        } as MediaDeviceInfo,
-      ],
-      previewStream: pendingPreview.promise,
-    });
-
-    const host = await mountView();
-
-    buttonByText(host, "授权并刷新摄像头").click();
-    await vi.waitFor(() => {
-      expect(media.enumerateDevices).toHaveBeenCalled();
-    });
-    const cameraSelect = selectByTest(host, "try-on-camera-select");
-    cameraSelect.value = "try-on-camera-1";
-    cameraSelect.dispatchEvent(new Event("change"));
-    await nextTick();
-
-    buttonByText(host, "预览摄像头").click();
-    await vi.waitFor(() => {
-      expect(media.getUserMedia).toHaveBeenLastCalledWith({
-        audio: false,
-        video: { deviceId: { exact: "try-on-camera-1" } },
-      });
-    });
-
-    const previewVideo = videoByTest(host, "try-on-camera-preview");
-    cameraSelect.value = "try-on-camera-2";
-    cameraSelect.dispatchEvent(new Event("change"));
-    await nextTick();
-
-    pendingPreview.resolve(stalePreviewStream);
-    await vi.waitFor(() => {
-      // oxlint-disable-next-line typescript/unbound-method
-      const stalePreviewTrackStop = vi.mocked(stalePreviewTrack.stop);
-      expect(stalePreviewTrackStop).toHaveBeenCalledOnce();
-    });
-    expect(previewVideo.srcObject).toBeNull();
-  });
-
-  it("stops a pending Virtual Try-On Camera stream when the view unmounts before preview resolves", async () => {
-    initializeMock.mockResolvedValueOnce({
-      baseUrl: "http://127.0.0.1:7891",
-      token: "token-1",
-      source: "tauri_ready_file",
-      mock: false,
-      runtimeFlags: {
-        advancedMaintenanceConfig: true,
-      },
-    });
-    const stalePreviewTrack = {
-      stop: vi.fn(),
-    } as unknown as MediaStreamTrack;
-    const stalePreviewStream = {
-      getTracks: () => [stalePreviewTrack],
-    } as unknown as MediaStream;
-    const pendingPreview = deferred<MediaStream>();
-    const media = mockMediaDevices({
-      devices: [
-        {
-          kind: "videoinput",
-          deviceId: "try-on-camera-1",
-          groupId: "group-1",
-          label: "USB Try-On Camera",
-          toJSON: () => ({}),
-        } as MediaDeviceInfo,
-      ],
-      previewStream: pendingPreview.promise,
-    });
-
-    const host = await mountView();
-
-    buttonByText(host, "授权并刷新摄像头").click();
-    await vi.waitFor(() => {
-      expect(media.enumerateDevices).toHaveBeenCalled();
-    });
-    const cameraSelect = selectByTest(host, "try-on-camera-select");
-    cameraSelect.value = "try-on-camera-1";
-    cameraSelect.dispatchEvent(new Event("change"));
-    await nextTick();
-
-    buttonByText(host, "预览摄像头").click();
-    await vi.waitFor(() => {
-      expect(media.getUserMedia).toHaveBeenLastCalledWith({
-        audio: false,
-        video: { deviceId: { exact: "try-on-camera-1" } },
-      });
-    });
-    const previewVideo = videoByTest(host, "try-on-camera-preview");
 
     mountedApp?.unmount();
     mountedApp = null;
-    pendingPreview.resolve(stalePreviewStream);
-
     await vi.waitFor(() => {
-      // oxlint-disable-next-line typescript/unbound-method
-      const stalePreviewTrackStop = vi.mocked(stalePreviewTrack.stop);
-      expect(stalePreviewTrackStop).toHaveBeenCalledOnce();
+      expect(stop).toHaveBeenCalledOnce();
     });
-    expect(previewVideo.srcObject).toBeNull();
   });
 
-  it("keeps an invalid saved Virtual Try-On Camera explicit instead of falling back to an available camera", async () => {
+  it("shows vision try-on diagnostic startup failures", async () => {
     initializeMock.mockResolvedValueOnce({
       baseUrl: "http://127.0.0.1:7891",
       token: "token-1",
@@ -861,49 +593,17 @@ describe("MaintenanceView hardware config", () => {
         advancedMaintenanceConfig: true,
       },
     });
-    getConfigMock.mockResolvedValueOnce({
-      ...provisionedConfigSummary(),
-      public: {
-        ...provisionedConfigSummary().public,
-        tryOnCameraDeviceId: "missing-camera",
-      },
-    });
-    useMachineStore().$patch({
-      configSummary: null,
-      configLoaded: false,
-    });
-    mockMediaDevices({
-      devices: [
-        {
-          kind: "videoinput",
-          deviceId: "available-camera",
-          groupId: "group-1",
-          label: "Available Camera",
-          toJSON: () => ({}),
-        } as MediaDeviceInfo,
-      ],
-    });
+    openVisionTryOnSessionMock.mockRejectedValueOnce(new Error("vision down"));
 
     const host = await mountView();
 
-    buttonByText(host, "授权并刷新摄像头").click();
+    buttonByText(host, "启动试衣预览").click();
     await vi.waitFor(() => {
-      expect(host.textContent).toContain("Available Camera");
+      expect(host.textContent).toContain("vision down");
     });
-
-    const cameraSelect = selectByTest(host, "try-on-camera-select");
-    expect(cameraSelect.value).toBe("missing-camera");
-    expect(host.textContent).toContain(
-      "Saved camera not currently available (missing-camera)",
-    );
-
-    buttonByText(host, "保存配置并重新自检").click();
-    await vi.waitFor(() => {
-      expect(saveConfigMock).toHaveBeenCalled();
-    });
-    expect(saveConfigMock.mock.calls[0]?.[0].public).toMatchObject({
-      tryOnCameraDeviceId: "missing-camera",
-    });
+    expect(
+      host.querySelector("[data-test='try-on-camera-preview']"),
+    ).toBeNull();
   });
 
   it("keeps advanced debug configuration hidden when daemon disables it even if Vite env enables it", async () => {

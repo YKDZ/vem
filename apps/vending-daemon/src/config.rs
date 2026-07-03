@@ -74,7 +74,7 @@ pub struct MachinePublicConfig {
     pub vision_enabled: bool,
     pub vision_ws_url: String,
     pub vision_request_timeout_ms: u64,
-    #[serde(default)]
+    #[serde(default, skip_serializing)]
     pub try_on_camera_device_id: Option<String>,
     #[serde(default)]
     pub audio_cue_settings: AudioCueSettings,
@@ -530,15 +530,7 @@ pub fn normalize_public_config(
     config.scanner_serial_port_path = scanner_serial_port_path;
 
     let vision_ws_url = config.vision_ws_url.trim().to_string();
-    let try_on_camera_device_id = config.try_on_camera_device_id.take().and_then(|value| {
-        let value = value.trim().to_string();
-        if value.is_empty() {
-            None
-        } else {
-            Some(value)
-        }
-    });
-    config.try_on_camera_device_id = try_on_camera_device_id;
+    config.try_on_camera_device_id = None;
 
     if config.audio_cue_settings == AudioCueSettings::default()
         && config.presence_audio_enabled == Some(true)
@@ -1282,7 +1274,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn save_config_update_round_trips_try_on_camera_device_id_only() {
+    async fn save_config_update_accepts_but_drops_legacy_try_on_camera_device_id() {
         let temp = TempDir::new().expect("temp");
         let data_dir = temp.path().join("daemon");
         let state = crate::state::LocalStateStore::open(&data_dir.join("state.db"))
@@ -1307,20 +1299,14 @@ mod tests {
             .expect("save config update");
         let reloaded = store.load_runtime_config().await.expect("reload config");
 
-        assert_eq!(
-            runtime.public.try_on_camera_device_id.as_deref(),
-            Some("try-on-camera-1")
-        );
-        assert_eq!(
-            reloaded.public.try_on_camera_device_id,
-            runtime.public.try_on_camera_device_id
-        );
+        assert!(runtime.public.try_on_camera_device_id.is_none());
+        assert!(reloaded.public.try_on_camera_device_id.is_none());
 
         let saved = tokio::fs::read_to_string(daemon_config_path(&data_dir))
             .await
             .expect("read config");
         let saved: serde_json::Value = serde_json::from_str(&saved).expect("json");
-        assert_eq!(saved["tryOnCameraDeviceId"], "try-on-camera-1");
+        assert!(saved.get("tryOnCameraDeviceId").is_none());
         assert!(saved.get("tryOnCameraLabel").is_none());
     }
 
