@@ -250,6 +250,139 @@ describe("createMachineAudioPlayback", () => {
     });
   });
 
+  it("plays a local packaged audio URL through the native driver when it is preferred", async () => {
+    const nativeDriver = createMockMachineAudioPlaybackDriver("native");
+    const browserDriver = createBrowserMachineAudioPlaybackDriver({
+      audioFactory: () => new MockBrowserAudio("/unused.wav"),
+    });
+    const playback = createMachineAudioPlayback({
+      nativeDriver,
+      browserDriver,
+    });
+
+    const played = await playback.playLocal("/assets/payment-succeeded.wav");
+
+    expect(played).toBe(true);
+    expect(playback.currentDriver()).toBe("native");
+    expect(nativeDriver.requests).toEqual([
+      {
+        sourceUrl: "/assets/payment-succeeded.wav",
+        volume: 1,
+      },
+    ]);
+    expect(playback.latestDiagnostic()).toMatchObject({
+      status: "started",
+      driver: "native",
+      sourceUrl: "/assets/payment-succeeded.wav",
+    });
+  });
+
+  it("falls back to browser playback once when native playback fails to start", async () => {
+    const nativeStops: string[] = [];
+    const nativeDriver = {
+      name: "native" as const,
+      playLocal: vi
+        .fn<() => Promise<void>>()
+        .mockRejectedValue(new Error("native output unavailable")),
+      stop: vi.fn(() => {
+        nativeStops.push(new Date().toISOString());
+      }),
+    };
+    const created: MockBrowserAudio[] = [];
+    const browserDriver = createBrowserMachineAudioPlaybackDriver({
+      audioFactory: (sourceUrl) => {
+        const audio = new MockBrowserAudio(sourceUrl);
+        created.push(audio);
+        return audio;
+      },
+    });
+    const playback = createMachineAudioPlayback({
+      nativeDriver,
+      browserDriver,
+    });
+
+    const played = await playback.playLocal("/assets/payment-succeeded.wav");
+
+    expect(played).toBe(true);
+    expect(nativeDriver.playLocal).toHaveBeenCalledTimes(1);
+    expect(created).toHaveLength(1);
+    expect(created[0].play).toHaveBeenCalledTimes(1);
+    expect(playback.currentDriver()).toBe("browser");
+    expect(playback.latestDiagnostic()).toMatchObject({
+      status: "started",
+      driver: "browser",
+      sourceUrl: "/assets/payment-succeeded.wav",
+      message: "native playback degraded: native output unavailable",
+    });
+    expect(nativeStops).toEqual([]);
+  });
+
+  it("falls back to browser playback when native playback is unavailable", async () => {
+    const created: MockBrowserAudio[] = [];
+    const browserDriver = createBrowserMachineAudioPlaybackDriver({
+      audioFactory: (sourceUrl) => {
+        const audio = new MockBrowserAudio(sourceUrl);
+        created.push(audio);
+        return audio;
+      },
+    });
+    const playback = createMachineAudioPlayback({
+      nativeDriver: null,
+      browserDriver,
+    });
+
+    const played = await playback.playLocal("/assets/presence-greeting.wav");
+
+    expect(played).toBe(true);
+    expect(created).toHaveLength(1);
+    expect(playback.currentDriver()).toBe("browser");
+    expect(playback.latestDiagnostic()).toMatchObject({
+      status: "started",
+      driver: "browser",
+      sourceUrl: "/assets/presence-greeting.wav",
+      message: "native playback degraded: native playback unavailable",
+    });
+  });
+
+  it("records browser fallback failure without automatically retrying", async () => {
+    const nativeDriver = {
+      name: "native" as const,
+      playLocal: vi
+        .fn<() => Promise<void>>()
+        .mockRejectedValue(new Error("native output unavailable")),
+      stop: vi.fn(),
+    };
+    const created: MockBrowserAudio[] = [];
+    const browserDriver = createBrowserMachineAudioPlaybackDriver({
+      audioFactory: (sourceUrl) => {
+        const audio = new MockBrowserAudio(
+          sourceUrl,
+          Promise.reject(new Error("NotAllowedError")),
+        );
+        created.push(audio);
+        return audio;
+      },
+    });
+    const playback = createMachineAudioPlayback({
+      nativeDriver,
+      browserDriver,
+    });
+
+    const played = await playback.playLocal("/assets/refund-pending.wav");
+
+    expect(played).toBe(false);
+    expect(nativeDriver.playLocal).toHaveBeenCalledTimes(1);
+    expect(created).toHaveLength(1);
+    expect(created[0].play).toHaveBeenCalledTimes(1);
+    expect(playback.latestDiagnostic()).toMatchObject({
+      status: "failed",
+      driver: "browser",
+      sourceUrl: "/assets/refund-pending.wav",
+      message:
+        "native playback degraded: native output unavailable; NotAllowedError",
+    });
+  });
+
   it("sets normalized global Machine Audio volume on browser playback", async () => {
     const created: MockBrowserAudio[] = [];
     const driver = createBrowserMachineAudioPlaybackDriver({

@@ -1,4 +1,6 @@
-export type MachineAudioPlaybackDriverName = "browser" | "mock";
+import { callTauriCommand, isTauriRuntime } from "@/native/tauri";
+
+export type MachineAudioPlaybackDriverName = "browser" | "mock" | "native";
 
 export type MachineAudioPlaybackStatus =
   | "requested"
@@ -58,7 +60,9 @@ export type MachineAudioPlayback = {
 };
 
 type MachineAudioPlaybackOptions = {
-  driver: MachineAudioPlaybackDriver;
+  driver?: MachineAudioPlaybackDriver;
+  nativeDriver?: MachineAudioPlaybackDriver | null;
+  browserDriver?: MachineAudioPlaybackDriver;
   volume?: number;
 };
 
@@ -74,56 +78,137 @@ export function createMachineAudioPlayback(
   options: MachineAudioPlaybackOptions,
 ): MachineAudioPlayback {
   let latestDiagnostic: MachineAudioPlaybackDiagnostic | null = null;
-  let activePlayback: { requestId: string; sourceUrl: string } | null = null;
+  let activePlayback: {
+    requestId: string;
+    sourceUrl: string;
+    driver: MachineAudioPlaybackDriver;
+  } | null = null;
   const volume = normalizePlaybackVolume(options.volume);
+  const hasExplicitNativeDriver = Object.prototype.hasOwnProperty.call(
+    options,
+    "nativeDriver",
+  );
+  const shouldPreferNative =
+    !options.driver && (hasExplicitNativeDriver || isTauriRuntime());
+  const nativeDriver =
+    !options.driver && hasExplicitNativeDriver
+      ? options.nativeDriver
+      : !options.driver && shouldPreferNative
+        ? createTauriNativeMachineAudioPlaybackDriver()
+        : undefined;
+  const browserDriver =
+    options.browserDriver ??
+    (!options.driver ? createBrowserMachineAudioPlaybackDriver() : undefined);
+  const nativePlaybackUnavailable =
+    !options.driver &&
+    shouldPreferNative &&
+    nativeDriver === null &&
+    Boolean(browserDriver);
+  const selectedDriver = options.driver ?? nativeDriver ?? browserDriver;
+  if (!selectedDriver) {
+    throw new Error("Machine Audio Playback requires a playback driver");
+  }
+  const driver: MachineAudioPlaybackDriver = selectedDriver;
+  let currentDriverName: MachineAudioPlaybackDriverName = driver.name;
 
   async function playLocal(sourceUrl: string): Promise<boolean> {
     stop();
     const requestId = `machine-audio-playback-${requestSequence}`;
     requestSequence += 1;
-    activePlayback = { requestId, sourceUrl };
+    activePlayback = { requestId, sourceUrl, driver };
     recordDiagnostic({
       requestId,
       status: "requested",
       sourceUrl,
     });
+    if (nativePlaybackUnavailable) {
+      const fallbackResult = await tryStartPlayback({
+        driver,
+        requestId,
+        sourceUrl,
+        message: "native playback degraded: native playback unavailable",
+      });
+      return fallbackResult.started;
+    }
+    const primaryResult = await tryStartPlayback({
+      driver,
+      requestId,
+      sourceUrl,
+    });
+    if (primaryResult.started) return true;
+    if (primaryResult.error && driver.name === "native" && browserDriver) {
+      activePlayback = {
+        requestId,
+        sourceUrl,
+        driver: browserDriver,
+      };
+      const fallbackResult = await tryStartPlayback({
+        driver: browserDriver,
+        requestId,
+        sourceUrl,
+        message: `native playback degraded: ${primaryResult.error}`,
+      });
+      return fallbackResult.started;
+    }
+    return false;
+  }
+
+  async function tryStartPlayback(input: {
+    driver: MachineAudioPlaybackDriver;
+    requestId: string;
+    sourceUrl: string;
+    message?: string | null;
+  }): Promise<{ started: boolean; error: string | null }> {
+    currentDriverName = input.driver.name;
     try {
-      await options.driver.playLocal(sourceUrl, {
+      await input.driver.playLocal(input.sourceUrl, {
         volume,
         onCompleted: () => {
-          if (activePlayback?.requestId !== requestId) return;
+          if (activePlayback?.requestId !== input.requestId) return;
           activePlayback = null;
           recordDiagnostic({
-            requestId,
+            requestId: input.requestId,
             status: "completed",
-            sourceUrl,
+            sourceUrl: input.sourceUrl,
+            driver: input.driver.name,
           });
         },
       });
-      if (activePlayback?.requestId !== requestId) return false;
+      if (activePlayback?.requestId !== input.requestId) {
+        return { started: false, error: null };
+      }
       recordDiagnostic({
-        requestId,
+        requestId: input.requestId,
         status: "started",
-        sourceUrl,
+        sourceUrl: input.sourceUrl,
+        message: input.message,
+        driver: input.driver.name,
       });
-      return true;
+      return { started: true, error: null };
     } catch (error) {
-      if (activePlayback?.requestId !== requestId) return false;
+      if (activePlayback?.requestId !== input.requestId) {
+        return { started: false, error: null };
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      if (input.driver.name === "native" && browserDriver) {
+        return { started: false, error: message };
+      }
       activePlayback = null;
       recordDiagnostic({
-        requestId,
+        requestId: input.requestId,
         status: "failed",
-        sourceUrl,
-        message: error instanceof Error ? error.message : String(error),
+        sourceUrl: input.sourceUrl,
+        message: input.message ? `${input.message}; ${message}` : message,
+        driver: input.driver.name,
       });
-      return false;
+      return { started: false, error: message };
     }
   }
 
   function stop(): void {
     const stoppedPlayback = activePlayback;
     if (!stoppedPlayback) return;
-    options.driver.stop();
+    stoppedPlayback.driver.stop();
     activePlayback = null;
     recordDiagnostic({
       requestId: stoppedPlayback.requestId,
@@ -135,7 +220,7 @@ export function createMachineAudioPlayback(
   return {
     playLocal,
     stop,
-    currentDriver: () => options.driver.name,
+    currentDriver: () => currentDriverName,
     latestDiagnostic: () => latestDiagnostic,
   };
 
@@ -143,12 +228,13 @@ export function createMachineAudioPlayback(
     requestId: string;
     status: MachineAudioPlaybackStatus;
     sourceUrl: string;
+    driver?: MachineAudioPlaybackDriverName;
     message?: string | null;
   }): void {
     latestDiagnostic = {
       requestId: input.requestId,
       status: input.status,
-      driver: options.driver.name,
+      driver: input.driver ?? currentDriverName,
       sourceUrl: input.sourceUrl,
       message: input.message ?? null,
       recordedAt: new Date().toISOString(),
@@ -156,12 +242,14 @@ export function createMachineAudioPlayback(
   }
 }
 
-export function createMockMachineAudioPlaybackDriver(): MockMachineAudioPlaybackDriver {
+export function createMockMachineAudioPlaybackDriver(
+  name: MachineAudioPlaybackDriverName = "mock",
+): MockMachineAudioPlaybackDriver {
   const requests: Array<{ sourceUrl: string; volume: number }> = [];
   const stops: string[] = [];
   let activePlayback: MachineAudioPlaybackDriverPlayOptions | null = null;
   return {
-    name: "mock",
+    name,
     requests,
     stops,
     async playLocal(
@@ -218,6 +306,25 @@ function defaultBrowserAudioFactory(
   sourceUrl: string,
 ): BrowserMachineAudioElement {
   return new Audio(sourceUrl);
+}
+
+export function createTauriNativeMachineAudioPlaybackDriver(): MachineAudioPlaybackDriver | null {
+  if (!isTauriRuntime()) return null;
+  return {
+    name: "native",
+    async playLocal(
+      sourceUrl: string,
+      playOptions?: MachineAudioPlaybackDriverPlayOptions,
+    ): Promise<void> {
+      await callTauriCommand<void>("play_machine_audio", {
+        sourceUrl,
+        volume: playOptions?.volume ?? 1,
+      });
+    },
+    stop(): void {
+      void callTauriCommand<void>("stop_machine_audio").catch(() => undefined);
+    },
+  };
 }
 
 function normalizePlaybackVolume(value: unknown): number {
