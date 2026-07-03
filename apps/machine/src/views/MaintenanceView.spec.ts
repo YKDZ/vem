@@ -105,9 +105,9 @@ vi.mock("@/audio-playback/machine-audio-playback", async (importOriginal) => {
     ) => {
       const override = machineAudioPlaybackFactoryOverride.current;
       if (override) {
-        return override(
-          options,
-        ) as ReturnType<typeof actual.createMachineAudioPlayback>;
+        return override(options) as ReturnType<
+          typeof actual.createMachineAudioPlayback
+        >;
       }
       return actual.createMachineAudioPlayback(options);
     },

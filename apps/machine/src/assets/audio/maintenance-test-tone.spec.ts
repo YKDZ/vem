@@ -1,5 +1,4 @@
 import { readFileSync } from "node:fs";
-
 import { describe, expect, it } from "vitest";
 
 describe("maintenance Machine Audio test tone asset", () => {

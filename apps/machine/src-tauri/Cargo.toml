@@ -25,4 +25,10 @@ serde = { workspace = true }
 serde_json.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-rodio = { version = "0.22.2", default-features = false, features = ["playback", "wav", "mp3", "vorbis", "flac"] }
+rodio = { version = "0.22.2", default-features = false, features = [
+  "playback",
+  "wav",
+  "mp3",
+  "vorbis",
+  "flac",
+] }

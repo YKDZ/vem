@@ -251,8 +251,9 @@ export function createMachineAudioPlayback(
 }
 
 export function createMockMachineAudioPlaybackDriver(
-  input: MachineAudioPlaybackDriverName | MockMachineAudioPlaybackDriverOptions =
-    "mock",
+  input:
+    | MachineAudioPlaybackDriverName
+    | MockMachineAudioPlaybackDriverOptions = "mock",
 ): MockMachineAudioPlaybackDriver {
   const options =
     typeof input === "string"
