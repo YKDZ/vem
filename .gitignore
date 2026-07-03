@@ -1,7 +1,4 @@
-/docs/*
-!/docs/adr/
-/docs/adr/*
-!/docs/adr/0020-store-product-images-on-service-api-local-storage-first.md
+/docs/
 
 .pnpm-store
 node_modules
@@ -25,9 +22,10 @@ runtime-screenshot-artifacts
 /tmp
 
 .agents/
+.scratch/
+.codex/
 
-CONTEXT.md
-CONTEXT-MAP.md
+CONTEXT*
 
 .tmp
 
