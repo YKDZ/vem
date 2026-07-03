@@ -4,38 +4,43 @@ import type {
 } from "@/stores/audio-cues";
 
 import {
+  createMachineAudioPlayback,
+  type MachineAudioPlayback,
+  type MachineAudioPlaybackDiagnostic,
+} from "@/audio-playback/machine-audio-playback";
+import {
   CUSTOMER_EXPERIENCE_EVENT_PRIORITIES,
   describeCustomerExperienceEvent,
   type CustomerExperienceEvent,
 } from "@/customer-events/events";
 import { useAudioCueStore } from "@/stores/audio-cues";
+import { useMachineStore } from "@/stores/machine";
 
 export type CustomerAudioCueEvent = CustomerExperienceEvent;
 
-export type BrowserAudioElement = {
-  readonly src: string;
-  currentTime: number;
-  play(): Promise<void>;
-  pause(): void;
-  addEventListener(event: "ended", listener: () => void): void;
-  addEventListener(event: string, listener: () => void): void;
+type MachineAudioCuePlaybackFactoryOptions = {
+  volume: number;
+  onDiagnostic: (diagnostic: MachineAudioPlaybackDiagnostic) => void;
 };
 
-type BrowserAudioFactory = (src: string) => BrowserAudioElement;
+type MachineAudioCuePlaybackFactory = (
+  options: MachineAudioCuePlaybackFactoryOptions,
+) => MachineAudioPlayback;
 
 type MachineAudioCuePlaybackAdapterOptions = {
-  audioFactory?: BrowserAudioFactory;
+  playbackFactory?: MachineAudioCuePlaybackFactory;
   autoStart?: boolean;
 };
 
-type ActiveAudio = {
+type ActiveCuePlayback = {
   requestId: string;
-  audio: BrowserAudioElement;
+  request: CustomerAudioCueRequest;
+  playback: MachineAudioPlayback;
 };
 
 type SharedPlaybackState = {
   pendingSources: Map<string, string>;
-  activeAudio: ActiveAudio | null;
+  activePlayback: ActiveCuePlayback | null;
 };
 
 type CueDescriptor = {
@@ -85,7 +90,7 @@ const CUE_PRIORITY_BY_KEY: Readonly<Record<string, number | undefined>> =
 
 const sharedPlaybackState: SharedPlaybackState = {
   pendingSources: new Map<string, string>(),
-  activeAudio: null,
+  activePlayback: null,
 };
 
 export function createMachineAudioCuePlaybackAdapter(
@@ -99,7 +104,8 @@ export function createMachineAudioCuePlaybackAdapter(
   clearPendingCue(message?: string): boolean;
   pendingSourceCount(): number;
 } {
-  const audioFactory = options.audioFactory ?? defaultBrowserAudioFactory;
+  const playbackFactory =
+    options.playbackFactory ?? defaultMachineAudioPlaybackFactory;
   const autoStart = options.autoStart ?? true;
 
   async function requestCustomerExperienceEvent(
@@ -131,7 +137,7 @@ export function createMachineAudioCuePlaybackAdapter(
       const currentPriority = priorityFor(currentRequest.cueKey);
       if (isStaleLowPriorityCue(currentRequest, descriptor.nowMs)) {
         sharedPlaybackState.pendingSources.delete(currentRequest.requestId);
-        stopActiveAudio(currentRequest.requestId);
+        stopActivePlayback(currentRequest.requestId);
         store.recordPlaybackOutcome({
           requestId: currentRequest.requestId,
           outcome: "skipped",
@@ -150,7 +156,7 @@ export function createMachineAudioCuePlaybackAdapter(
         return false;
       } else {
         sharedPlaybackState.pendingSources.delete(currentRequest.requestId);
-        stopActiveAudio(currentRequest.requestId);
+        stopActivePlayback(currentRequest.requestId);
         store.recordPlaybackOutcome({
           requestId: currentRequest.requestId,
           outcome: "skipped",
@@ -171,7 +177,10 @@ export function createMachineAudioCuePlaybackAdapter(
           ? undefined
           : descriptor.minimumIntervalMs,
     });
-    if (!request) return false;
+    if (!request) {
+      stopStaleActivePresencePlayback(descriptor.nowMs);
+      return false;
+    }
     sharedPlaybackState.pendingSources.set(
       request.requestId,
       descriptor.source,
@@ -218,37 +227,59 @@ export function createMachineAudioCuePlaybackAdapter(
     const store = useAudioCueStore();
     if (!store.markCuePlaying(request.requestId)) return false;
     sharedPlaybackState.pendingSources.delete(request.requestId);
-    stopActiveAudio();
+    stopActivePlayback();
 
-    const audio = audioFactory(source);
-    sharedPlaybackState.activeAudio = {
-      requestId: request.requestId,
-      audio,
-    };
-    audio.addEventListener("ended", () => {
-      if (sharedPlaybackState.activeAudio?.requestId === request.requestId) {
-        sharedPlaybackState.activeAudio = null;
-      }
-      store.recordPlaybackOutcome({
-        requestId: request.requestId,
-        outcome: "completed",
-      });
+    const playback = playbackFactory({
+      volume: normalizeMachineAudioVolume(
+        useMachineStore().config.machineAudioVolume,
+      ),
+      onDiagnostic: (diagnostic) => {
+        if (
+          diagnostic.status !== "completed" ||
+          sharedPlaybackState.activePlayback?.requestId !== request.requestId
+        ) {
+          return;
+        }
+        sharedPlaybackState.activePlayback = null;
+      },
     });
+    sharedPlaybackState.activePlayback = {
+      requestId: request.requestId,
+      request,
+      playback,
+    };
 
     try {
-      await audio.play();
+      const started = await playback.playLocal(source);
+      if (!started) {
+        if (
+          sharedPlaybackState.activePlayback?.requestId === request.requestId
+        ) {
+          sharedPlaybackState.activePlayback = null;
+        }
+        store.recordPlaybackOutcome({
+          requestId: request.requestId,
+          outcome: "failed",
+          message:
+            playback.latestDiagnostic()?.message ??
+            "Machine Audio Playback did not start",
+        });
+        return false;
+      }
+      if (sharedPlaybackState.activePlayback?.requestId !== request.requestId) {
+        return false;
+      }
       if (request.orderKey) {
         store.rememberOrderCuePlayed(request.orderKey, request.cueKey);
       }
       store.recordPlaybackOutcome({
         requestId: request.requestId,
         outcome: "played",
-        finishPlayback: false,
       });
       return true;
     } catch (error) {
-      if (sharedPlaybackState.activeAudio?.requestId === request.requestId) {
-        sharedPlaybackState.activeAudio = null;
+      if (sharedPlaybackState.activePlayback?.requestId === request.requestId) {
+        sharedPlaybackState.activePlayback = null;
       }
       store.recordPlaybackOutcome({
         requestId: request.requestId,
@@ -267,18 +298,23 @@ export function createMachineAudioCuePlaybackAdapter(
     pendingSourceCount: () => sharedPlaybackState.pendingSources.size,
   };
 
-  function stopActiveAudio(requestId?: string): void {
+  function stopActivePlayback(requestId?: string): void {
     if (
       requestId !== undefined &&
-      sharedPlaybackState.activeAudio?.requestId !== requestId
+      sharedPlaybackState.activePlayback?.requestId !== requestId
     ) {
       return;
     }
-    if (!sharedPlaybackState.activeAudio) return;
-    const audio = sharedPlaybackState.activeAudio.audio;
-    sharedPlaybackState.activeAudio = null;
-    audio.pause();
-    audio.currentTime = 0;
+    if (!sharedPlaybackState.activePlayback) return;
+    const playback = sharedPlaybackState.activePlayback.playback;
+    sharedPlaybackState.activePlayback = null;
+    playback.stop();
+  }
+
+  function stopStaleActivePresencePlayback(nowMs: number): void {
+    const activeRequest = sharedPlaybackState.activePlayback?.request;
+    if (!activeRequest || !isStaleLowPriorityCue(activeRequest, nowMs)) return;
+    stopActivePlayback(activeRequest.requestId);
   }
 }
 
@@ -313,6 +349,14 @@ function sourceForRequest(request: CustomerAudioCueRequest): string {
   return CUE_SOURCE_BY_KEY[request.cueKey] ?? CUE_SOURCES["presence.detected"];
 }
 
-function defaultBrowserAudioFactory(src: string): BrowserAudioElement {
-  return new Audio(src);
+function defaultMachineAudioPlaybackFactory(
+  options: MachineAudioCuePlaybackFactoryOptions,
+): MachineAudioPlayback {
+  return createMachineAudioPlayback(options);
+}
+
+function normalizeMachineAudioVolume(value: unknown): number {
+  const numericValue = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(numericValue)) return 0.7;
+  return Math.min(1, Math.max(0, numericValue));
 }

@@ -20,6 +20,10 @@ const productionPilotSopPath = resolve(
   currentDir,
   "../../../public/production-pilot-sop.md",
 );
+const nearFieldCustomerSpeakerRunbookPath = resolve(
+  currentDir,
+  "../../../public/near-field-customer-speaker-acceptance.md",
+);
 
 function readWhitepaper(): string {
   return readFileSync(whitepaperPath, "utf8");
@@ -242,5 +246,42 @@ describe("public production pilot SOP", () => {
     }
 
     expect(content).toContain("顾客订单凭证");
+  });
+});
+
+describe("public near-field customer speaker acceptance runbook", () => {
+  it("documents field acceptance without turning audio into sale evidence", () => {
+    const content = readFileSync(nearFieldCustomerSpeakerRunbookPath, "utf8");
+
+    for (const token of [
+      "# Near-Field Customer Speaker Field Acceptance Runbook",
+      "Near-Field Customer Speaker",
+      "Customer Audio Zone",
+      "wired",
+      "low-power",
+      "directionally installed",
+      "not Bluetooth",
+      "not public-address style",
+      "OS default audio output",
+      "does not bind",
+      "speaker device ID",
+      "protected maintenance",
+      "Machine Audio Test Playback",
+      "Win10/Tauri production runtime",
+      "requested",
+      "started",
+      "completed",
+      "failed",
+      "clear inside the Customer Audio Zone",
+      "unobtrusive outside it",
+      "human field acceptance",
+      "not part of default E2E/CI",
+    ]) {
+      expect(content).toContain(token);
+    }
+
+    expect(content).toMatch(
+      /Machine Audio playback success is customer-experience evidence only\.\s+It must not be treated as sale readiness evidence, payment evidence, dispensing evidence, refund evidence, or manual-handling evidence\./,
+    );
   });
 });

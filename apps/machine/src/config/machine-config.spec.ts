@@ -34,6 +34,7 @@ describe("machine config", () => {
       visionEnabled: true,
       visionWsUrl: "ws://127.0.0.1:7892/ws",
       visionRequestTimeoutMs: 8000,
+      machineAudioVolume: 0.7,
       audioCueSettings: {
         enabled: false,
         categories: {
@@ -76,6 +77,25 @@ describe("machine config", () => {
         transaction: true,
       },
     });
+  });
+
+  it("preserves global Machine Audio volume as a normalized value", () => {
+    expect(
+      normalizeMachineConfig({
+        machineAudioVolume: 0.42,
+      }).machineAudioVolume,
+    ).toBe(0.42);
+  });
+
+  it("clamps global Machine Audio volume into the normalized range", () => {
+    expect(normalizeMachineConfig({ machineAudioVolume: -0.2 })).toHaveProperty(
+      "machineAudioVolume",
+      0,
+    );
+    expect(normalizeMachineConfig({ machineAudioVolume: 1.2 })).toHaveProperty(
+      "machineAudioVolume",
+      1,
+    );
   });
 
   it("preserves custom stock movement retention days", () => {

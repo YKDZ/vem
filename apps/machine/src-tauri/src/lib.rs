@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+mod native_audio;
+use native_audio::{play_machine_audio, stop_machine_audio, MachineAudioState};
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DaemonReadyFile {
@@ -93,8 +96,11 @@ fn return_to_desktop() -> Result<(), String> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .manage(MachineAudioState::default())
         .invoke_handler(tauri::generate_handler![
             get_daemon_connection,
+            play_machine_audio,
+            stop_machine_audio,
             return_to_desktop
         ])
         .run(tauri::generate_context!())

@@ -104,6 +104,7 @@ export const useMachineStore = defineStore("machine", {
             visionEnabled: config.visionEnabled,
             visionWsUrl: config.visionWsUrl,
             visionRequestTimeoutMs: config.visionRequestTimeoutMs,
+            machineAudioVolume: config.machineAudioVolume,
             audioCueSettings: config.audioCueSettings,
             kioskMode: config.kioskMode,
             stockMovementRetentionDays: config.stockMovementRetentionDays,

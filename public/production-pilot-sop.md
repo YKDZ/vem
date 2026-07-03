@@ -8,6 +8,7 @@
 
 - 机器运行界面：面向顾客的购买屏幕。
 - 机器维护界面：现场维护屏幕，用于查看就绪状态、库存、daemon 健康、扫码器状态、下位机状态，以及维护锁动作。
+- 近场顾客喇叭现场验收运行手册：使用 [Near-Field Customer Speaker Field Acceptance Runbook](./near-field-customer-speaker-acceptance.md) 验收 Win10/Tauri 生产机器上的真实顾客音频区域。
 - 管理后台：浏览器控制台，用于支付、订单、机器、退款、审计条目和生产就绪。使用 `/machines/:id` 查看机器心跳、货道销售状态、库存异常复核和机器阻断项。
 - 库存对账入口：管理后台中的库存异常复核流程，动作为 `accept_machine_stock`、`reject_machine_stock`、`manual_correct`，以及可选的 `clearBlocker`。
 - 当前版本没有控制台动作时，运营人员可使用的已发布 API：

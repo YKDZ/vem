@@ -100,6 +100,7 @@ describe("daemon schemas", () => {
         visionEnabled: true,
         visionWsUrl: "ws://127.0.0.1:7892/ws",
         visionRequestTimeoutMs: 8000,
+        machineAudioVolume: 0.35,
         kioskMode: false,
         stockMovementRetentionDays: 90,
       },
@@ -109,6 +110,7 @@ describe("daemon schemas", () => {
     });
 
     expect(parsed.public.stockMovementRetentionDays).toBe(90);
+    expect(parsed.public.machineAudioVolume).toBe(0.35);
     expect(parsed.public).not.toHaveProperty("tryOnCameraDeviceId");
     expect(parsed.public).not.toHaveProperty("tryOnCameraLabel");
   });

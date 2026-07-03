@@ -3,9 +3,16 @@ import { formatMachineSlotCoordinate } from "@vem/shared";
 import { computed, onMounted, onUnmounted, reactive } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
+import { maintenanceTestToneUrl } from "@/assets/audio/maintenance-test-tone";
 import listSloganImage from "@/assets/home/list-slogan.png";
 import logoImage from "@/assets/home/logo.png";
 import mascotTopImage from "@/assets/home/mascot-top-cutout.png";
+import {
+  createMachineAudioPlayback,
+  createMockMachineAudioPlaybackDriver,
+  type MachineAudioPlayback,
+  type MachineAudioPlaybackDiagnostic,
+} from "@/audio-playback/machine-audio-playback";
 import MockHardwareControls from "@/components/MockHardwareControls.vue";
 import { useMaintenanceEntry } from "@/composables/useMaintenanceEntry";
 import {
@@ -84,15 +91,25 @@ const latestVisionDiagnosticPayloadText = computed(() => {
 const audioCueSettingsRows = computed(() => [
   {
     label: "Global audio cues",
-    enabled: machineStore.config.audioCueSettings.enabled,
+    value: machineStore.config.audioCueSettings.enabled
+      ? "Enabled"
+      : "Disabled",
   },
   {
     label: "Presence audio cues",
-    enabled: machineStore.config.audioCueSettings.categories.presence,
+    value: machineStore.config.audioCueSettings.categories.presence
+      ? "Enabled"
+      : "Disabled",
   },
   {
     label: "Transaction audio cues",
-    enabled: machineStore.config.audioCueSettings.categories.transaction,
+    value: machineStore.config.audioCueSettings.categories.transaction
+      ? "Enabled"
+      : "Disabled",
+  },
+  {
+    label: "Machine Audio volume",
+    value: `${machineAudioVolumePercent(machineStore.config.machineAudioVolume)}%`,
   },
 ]);
 const latestAudioCueDiagnosticRows = computed(() => {
@@ -187,6 +204,9 @@ const form = reactive({
   visionEnabled: machineConfigDefaults.visionEnabled,
   visionWsUrl: machineConfigDefaults.visionWsUrl,
   visionRequestTimeoutMs: machineConfigDefaults.visionRequestTimeoutMs,
+  machineAudioVolumePercent: machineAudioVolumePercent(
+    machineConfigDefaults.machineAudioVolume,
+  ),
   audioCueSettings: {
     enabled: machineConfigDefaults.audioCueSettings.enabled,
     categories: {
@@ -230,6 +250,9 @@ function syncFormFromStore(): void {
   form.visionEnabled = machineStore.config.visionEnabled;
   form.visionWsUrl = machineStore.config.visionWsUrl;
   form.visionRequestTimeoutMs = machineStore.config.visionRequestTimeoutMs;
+  form.machineAudioVolumePercent = machineAudioVolumePercent(
+    machineStore.config.machineAudioVolume,
+  );
   form.audioCueSettings = {
     enabled: machineStore.config.audioCueSettings.enabled,
     categories: {
@@ -393,6 +416,7 @@ onMounted(async () => {
         await machineStore.loadConfig();
       }
       syncFormFromStore();
+      ensureMachineAudioTestPlayback();
     } catch {
       // Keep maintenance usable with local defaults when daemon is temporarily unavailable.
     }
@@ -407,6 +431,7 @@ onMounted(async () => {
 onUnmounted(() => {
   maintenanceViewMounted = false;
   stopDiagnosticsAutoRefresh();
+  activeMachineAudioPlayback?.stop();
   void stopTryOnPreviewDiagnostic();
 });
 
@@ -477,6 +502,113 @@ const scannerAdapters: ScannerAdapter[] = ["disabled", "serial_text"];
 
 const scannerFrameSuffixes = ["crlf", "lf", "cr", "none"] as const;
 
+const machineAudioTestPlayback = reactive({
+  loading: false,
+  message: null as string | null,
+  driver: "unknown",
+  diagnostic: null as MachineAudioPlaybackDiagnostic | null,
+  volume: machineStore.config.machineAudioVolume,
+});
+let activeMachineAudioPlayback: MachineAudioPlayback | null = null;
+let activeMachineAudioPlaybackVolume: number | null = null;
+
+const latestMachineAudioTestPlaybackRows = computed(() => {
+  const diagnostic = machineAudioTestPlayback.diagnostic;
+  if (!diagnostic) {
+    return [
+      {
+        label: "Playback status",
+        value: "No test playback diagnostic recorded yet",
+      },
+    ];
+  }
+  return [
+    {
+      label: "Playback status",
+      value: machineAudioPlaybackStatusLabel(diagnostic.status),
+    },
+    {
+      label: "Playback driver",
+      value: diagnostic.driver,
+    },
+    {
+      label: "Playback volume",
+      value: `${machineAudioVolumePercent(machineAudioTestPlayback.volume)}%`,
+    },
+    {
+      label: "Fallback diagnostic",
+      value: diagnostic.message ?? "none",
+    },
+    {
+      label: "Timestamp",
+      value: diagnostic.recordedAt,
+    },
+  ];
+});
+
+async function playMachineAudioTestPlayback(): Promise<void> {
+  machineAudioTestPlayback.loading = true;
+  machineAudioTestPlayback.message = null;
+  try {
+    const playback = ensureMachineAudioTestPlayback();
+    const playbackRequest = playback.playLocal(maintenanceTestToneUrl);
+    refreshMachineAudioTestPlaybackDiagnostic();
+    const started = await playbackRequest;
+    refreshMachineAudioTestPlaybackDiagnostic();
+    machineAudioTestPlayback.message = started
+      ? "Machine Audio test playback started."
+      : "Machine Audio test playback did not start.";
+  } catch (error) {
+    machineAudioTestPlayback.message =
+      error instanceof Error ? error.message : String(error);
+  } finally {
+    machineAudioTestPlayback.loading = false;
+  }
+}
+
+function stopMachineAudioTestPlayback(): void {
+  activeMachineAudioPlayback?.stop();
+  refreshMachineAudioTestPlaybackDiagnostic();
+}
+
+function ensureMachineAudioTestPlayback(): MachineAudioPlayback {
+  const volume = machineStore.config.machineAudioVolume;
+  if (
+    activeMachineAudioPlayback &&
+    activeMachineAudioPlaybackVolume === volume
+  ) {
+    return activeMachineAudioPlayback;
+  }
+  activeMachineAudioPlayback?.stop();
+  activeMachineAudioPlaybackVolume = volume;
+  machineAudioTestPlayback.volume = volume;
+  activeMachineAudioPlayback = createMachineAudioPlayback({
+    driver:
+      import.meta.env.MODE === "test"
+        ? createMockMachineAudioPlaybackDriver({
+            startDelayMs: 10,
+            completeAfterMs: 10,
+          })
+        : undefined,
+    onDiagnostic: (diagnostic) => {
+      machineAudioTestPlayback.driver = diagnostic.driver;
+      machineAudioTestPlayback.diagnostic = diagnostic;
+    },
+    volume,
+  });
+  machineAudioTestPlayback.driver = activeMachineAudioPlayback.currentDriver();
+  machineAudioTestPlayback.diagnostic =
+    activeMachineAudioPlayback.latestDiagnostic();
+  return activeMachineAudioPlayback;
+}
+
+function refreshMachineAudioTestPlaybackDiagnostic(): void {
+  if (!activeMachineAudioPlayback) return;
+  machineAudioTestPlayback.driver = activeMachineAudioPlayback.currentDriver();
+  machineAudioTestPlayback.diagnostic =
+    activeMachineAudioPlayback.latestDiagnostic();
+}
+
 async function startTryOnPreviewDiagnostic(): Promise<void> {
   await stopTryOnPreviewDiagnostic();
   const sequence = (tryOnPreviewDiagnosticSequence += 1);
@@ -542,6 +674,7 @@ async function saveAndReboot(): Promise<void> {
   try {
     const normalized = normalizeMachineConfig({
       ...form,
+      machineAudioVolume: form.machineAudioVolumePercent / 100,
       machineSecret: form.machineSecretInput.trim() || null,
       mqttSigningSecret: form.mqttSigningSecretInput.trim() || null,
       mqttPassword: form.mqttPasswordInput.trim() || null,
@@ -615,6 +748,10 @@ async function refreshVisionStatus(): Promise<void> {
   } finally {
     visionMaintenance.loading = false;
   }
+}
+
+function machineAudioVolumePercent(volume: number): number {
+  return Math.round(Math.min(1, Math.max(0, volume)) * 100);
 }
 
 async function refreshDiagnostics(): Promise<void> {
@@ -764,6 +901,17 @@ function audioCueOutcomeLabel(outcome: string): string {
     skipped: "Skipped",
   };
   return labels[outcome] ?? outcome;
+}
+
+function machineAudioPlaybackStatusLabel(status: string): string {
+  const labels: Record<string, string> = {
+    requested: "Requested",
+    started: "Started",
+    completed: "Completed",
+    failed: "Failed",
+    stopped: "Stopped",
+  };
+  return labels[status] ?? status;
 }
 
 function naturalContextDisplayStatus(): string {
@@ -1262,7 +1410,7 @@ async function submitStockMovement(): Promise<void> {
                 Machine Audio Cue
               </dt>
               <dd class="mt-1 font-bold text-white">
-                {{ row.label }} · {{ row.enabled ? "Enabled" : "Disabled" }}
+                {{ row.label }} · {{ row.value }}
               </dd>
             </div>
           </dl>
@@ -1741,6 +1889,89 @@ async function submitStockMovement(): Promise<void> {
                 >
               </label>
             </fieldset>
+
+            <label class="grid gap-2 text-left">
+              <span class="text-sm font-semibold text-slate-200"
+                >Machine Audio 音量 machineAudioVolume</span
+              >
+              <div class="flex items-center gap-3">
+                <input
+                  v-model.number="form.machineAudioVolumePercent"
+                  class="kiosk-touch-target w-32 rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-fuchsia-300"
+                  data-test="machine-audio-volume-percent"
+                  max="100"
+                  min="0"
+                  step="1"
+                  type="number"
+                />
+                <span class="text-sm font-bold text-slate-200">%</span>
+              </div>
+            </label>
+
+            <section
+              class="grid gap-4 rounded-2xl border border-cyan-200/20 bg-cyan-500/10 p-4 text-left"
+              data-test="machine-audio-test-playback"
+            >
+              <div class="grid gap-1">
+                <h3 class="text-base font-bold text-cyan-100">
+                  Machine Audio Test Playback
+                </h3>
+                <p class="text-sm leading-6 text-cyan-50/85">
+                  Operator check: confirm Customer Audio Zone clarity through
+                  the Near-Field Customer Speaker and verify the sound remains
+                  unobtrusive outside the customer area.
+                </p>
+              </div>
+
+              <div class="flex flex-wrap gap-3">
+                <button
+                  class="kiosk-touch-target rounded-2xl bg-cyan-300 px-4 py-3 font-bold text-slate-950 disabled:opacity-50"
+                  type="button"
+                  :disabled="machineAudioTestPlayback.loading"
+                  @click="playMachineAudioTestPlayback"
+                >
+                  播放测试音频
+                </button>
+                <button
+                  class="kiosk-touch-target rounded-2xl border border-cyan-100/40 px-4 py-3 font-bold text-cyan-50 disabled:opacity-50"
+                  type="button"
+                  @click="stopMachineAudioTestPlayback"
+                >
+                  停止当前播放
+                </button>
+              </div>
+
+              <dl class="grid gap-3 md:grid-cols-2">
+                <div class="rounded-xl bg-slate-950/35 p-3">
+                  <dt class="text-xs font-semibold text-cyan-100/70">
+                    Current playback driver
+                  </dt>
+                  <dd class="mt-1 font-bold text-white">
+                    Current playback driver ·
+                    {{ machineAudioTestPlayback.driver }}
+                  </dd>
+                </div>
+                <div
+                  v-for="row in latestMachineAudioTestPlaybackRows"
+                  :key="row.label"
+                  class="rounded-xl bg-slate-950/35 p-3"
+                >
+                  <dt class="text-xs font-semibold text-cyan-100/70">
+                    {{ row.label }}
+                  </dt>
+                  <dd class="mt-1 font-bold break-all text-white">
+                    {{ row.label }} · {{ row.value }}
+                  </dd>
+                </div>
+              </dl>
+
+              <p
+                v-if="machineAudioTestPlayback.message"
+                class="rounded-2xl bg-cyan-950/40 p-3 text-sm text-cyan-50"
+              >
+                {{ machineAudioTestPlayback.message }}
+              </p>
+            </section>
 
             <div class="grid gap-3 md:grid-cols-2">
               <button

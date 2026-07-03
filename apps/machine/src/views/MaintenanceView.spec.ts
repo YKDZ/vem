@@ -25,6 +25,7 @@ const {
   downloadLogExportMock,
   callTauriCommandMock,
   openVisionTryOnSessionMock,
+  machineAudioPlaybackFactoryOverride,
 } = vi.hoisted(() => ({
   routeMock: { query: {} as Record<string, unknown> },
   routerReplaceMock: vi.fn(),
@@ -45,6 +46,9 @@ const {
   downloadLogExportMock: vi.fn(),
   callTauriCommandMock: vi.fn(),
   openVisionTryOnSessionMock: vi.fn(),
+  machineAudioPlaybackFactoryOverride: {
+    current: null as null | ((options: unknown) => unknown),
+  },
 }));
 
 vi.mock("vue-router", () => ({
@@ -88,6 +92,27 @@ vi.mock("@/native/tauri", () => ({
 vi.mock("@/native/vision", () => ({
   openVisionTryOnSession: openVisionTryOnSessionMock,
 }));
+
+vi.mock("@/audio-playback/machine-audio-playback", async (importOriginal) => {
+  const actual =
+    await importOriginal<
+      typeof import("@/audio-playback/machine-audio-playback")
+    >();
+  return {
+    ...actual,
+    createMachineAudioPlayback: (
+      options: Parameters<typeof actual.createMachineAudioPlayback>[0],
+    ) => {
+      const override = machineAudioPlaybackFactoryOverride.current;
+      if (override) {
+        return override(options) as ReturnType<
+          typeof actual.createMachineAudioPlayback
+        >;
+      }
+      return actual.createMachineAudioPlayback(options);
+    },
+  };
+});
 
 import { useAudioCueStore } from "@/stores/audio-cues";
 import { useCatalogStore } from "@/stores/catalog";
@@ -223,6 +248,7 @@ function provisionedConfigSummary(): ConfigSummary {
       visionEnabled: true,
       visionWsUrl: "ws://secret-vision.example/ws",
       visionRequestTimeoutMs: 8000,
+      machineAudioVolume: 0.7,
       audioCueSettings: {
         enabled: false,
         categories: {
@@ -345,6 +371,7 @@ beforeEach(() => {
     stop: vi.fn().mockResolvedValue(undefined),
   });
   useMachineStore().$patch({ configLoaded: true });
+  machineAudioPlaybackFactoryOverride.current = null;
 });
 
 afterEach(() => {
@@ -404,6 +431,14 @@ function imgByTest(host: HTMLElement, testId: string): HTMLImageElement {
     throw new Error(`${testId} image not found`);
   }
   return image;
+}
+
+function inputByTest(host: HTMLElement, testId: string): HTMLInputElement {
+  const input = host.querySelector(`[data-test='${testId}']`);
+  if (!(input instanceof HTMLInputElement)) {
+    throw new Error(`${testId} input not found`);
+  }
+  return input;
 }
 
 function movementTypeSelect(host: HTMLElement): HTMLSelectElement {
@@ -795,6 +830,7 @@ describe("MaintenanceView hardware config", () => {
               transaction: false,
             },
           },
+          machineAudioVolume: 0.35,
         },
       },
       configLoaded: true,
@@ -807,7 +843,182 @@ describe("MaintenanceView hardware config", () => {
     expect(host.textContent).toContain("Global audio cues · Enabled");
     expect(host.textContent).toContain("Presence audio cues · Enabled");
     expect(host.textContent).toContain("Transaction audio cues · Disabled");
+    expect(host.textContent).toContain("Machine Audio volume · 35%");
     expect(host.textContent).not.toContain("来人音频提示");
+  });
+
+  it("edits Machine Audio volume as a percent and saves normalized config", async () => {
+    initializeMock.mockResolvedValueOnce({
+      baseUrl: "http://127.0.0.1:7891",
+      token: "token-1",
+      source: "tauri_ready_file",
+      mock: false,
+      runtimeFlags: {
+        advancedMaintenanceConfig: true,
+      },
+    });
+    useMachineStore().$patch({
+      configSummary: {
+        ...provisionedConfigSummary(),
+        public: {
+          ...provisionedConfigSummary().public,
+          machineAudioVolume: 0.35,
+        },
+      },
+      configLoaded: true,
+    });
+    const host = await mountView();
+    const input = inputByTest(host, "machine-audio-volume-percent");
+
+    expect(input.value).toBe("35");
+
+    input.value = "42";
+    input.dispatchEvent(new Event("input"));
+    await nextTick();
+    buttonByText(host, "保存配置并重新自检").click();
+
+    await vi.waitFor(() => {
+      expect(saveConfigMock).toHaveBeenCalled();
+    });
+    expect(saveConfigMock.mock.calls[0]?.[0].public).toMatchObject({
+      machineAudioVolume: 0.42,
+    });
+  });
+
+  it("plays protected maintenance Machine Audio test playback with mock diagnostics and global volume", async () => {
+    initializeMock.mockResolvedValueOnce({
+      baseUrl: "http://127.0.0.1:7891",
+      token: "token-1",
+      source: "tauri_ready_file",
+      mock: false,
+      runtimeFlags: {
+        advancedMaintenanceConfig: true,
+      },
+    });
+    useMachineStore().$patch({
+      configSummary: {
+        ...provisionedConfigSummary(),
+        public: {
+          ...provisionedConfigSummary().public,
+          machineAudioVolume: 0.35,
+        },
+      },
+      configLoaded: true,
+    });
+    const host = await mountView();
+    vi.useFakeTimers();
+
+    expect(host.textContent).toContain("Machine Audio Test Playback");
+    expect(host.textContent).toContain("Current playback driver · mock");
+    expect(host.textContent).toContain(
+      "Operator check: confirm Customer Audio Zone clarity",
+    );
+    expect(host.textContent).toContain("Machine Audio volume · 35%");
+
+    buttonByText(host, "播放测试音频").click();
+    await vi.advanceTimersByTimeAsync(10);
+    await nextTick();
+
+    expect(host.textContent).toContain("Playback status · Started");
+    expect(host.textContent).toContain("Current playback driver · mock");
+    expect(host.textContent).toContain("Playback volume · 35%");
+  });
+
+  it("shows requested and completed Machine Audio test playback diagnostics without real audio hardware", async () => {
+    initializeMock.mockResolvedValueOnce({
+      baseUrl: "http://127.0.0.1:7891",
+      token: "token-1",
+      source: "tauri_ready_file",
+      mock: false,
+      runtimeFlags: {
+        advancedMaintenanceConfig: true,
+      },
+    });
+    const host = await mountView();
+    vi.useFakeTimers();
+
+    buttonByText(host, "播放测试音频").click();
+    await nextTick();
+
+    expect(host.textContent).toContain("Playback status · Requested");
+
+    await vi.runAllTimersAsync();
+    await nextTick();
+
+    expect(host.textContent).toContain("Playback status · Completed");
+    expect(host.textContent).toContain("Current playback driver · mock");
+  });
+
+  it("stops protected maintenance Machine Audio test playback and shows a stopped diagnostic", async () => {
+    initializeMock.mockResolvedValueOnce({
+      baseUrl: "http://127.0.0.1:7891",
+      token: "token-1",
+      source: "tauri_ready_file",
+      mock: false,
+      runtimeFlags: {
+        advancedMaintenanceConfig: true,
+      },
+    });
+    const host = await mountView();
+    vi.useFakeTimers();
+
+    buttonByText(host, "播放测试音频").click();
+    await vi.advanceTimersByTimeAsync(10);
+    await nextTick();
+
+    expect(host.textContent).toContain("Playback status · Started");
+
+    buttonByText(host, "停止当前播放").click();
+
+    await vi.waitFor(() => {
+      expect(host.textContent).toContain("Playback status · Stopped");
+    });
+    expect(host.textContent).toContain("Current playback driver · mock");
+  });
+
+  it("renders Machine Audio test playback fallback diagnostics", async () => {
+    initializeMock.mockResolvedValueOnce({
+      baseUrl: "http://127.0.0.1:7891",
+      token: "token-1",
+      source: "tauri_ready_file",
+      mock: false,
+      runtimeFlags: {
+        advancedMaintenanceConfig: true,
+      },
+    });
+    const fallbackDiagnostic = {
+      requestId: "maintenance-fallback-1",
+      status: "started" as const,
+      driver: "browser" as const,
+      sourceUrl: "/assets/maintenance-test-tone.wav",
+      message: "native playback degraded: native output unavailable",
+      recordedAt: "2026-07-03T08:05:00.000Z",
+    };
+    machineAudioPlaybackFactoryOverride.current = (options) => {
+      const playbackOptions = options as {
+        onDiagnostic?: (diagnostic: typeof fallbackDiagnostic) => void;
+      };
+      return {
+        playLocal: vi.fn(async () => {
+          playbackOptions.onDiagnostic?.(fallbackDiagnostic);
+          return true;
+        }),
+        stop: vi.fn(),
+        currentDriver: () => "browser" as const,
+        latestDiagnostic: () => fallbackDiagnostic,
+      };
+    };
+    const host = await mountView();
+
+    buttonByText(host, "播放测试音频").click();
+
+    await vi.waitFor(() => {
+      expect(host.textContent).toContain("Current playback driver · browser");
+    });
+    expect(host.textContent).toContain(
+      "Fallback diagnostic · native playback degraded: native output unavailable",
+    );
+    expect(host.textContent).toContain("Playback status · Started");
   });
 
   it("shows latest Machine Audio Cue diagnostic details without full history", async () => {

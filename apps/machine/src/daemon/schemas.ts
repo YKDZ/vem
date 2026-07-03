@@ -65,6 +65,7 @@ const configSummaryPublicSchema = z.preprocess(
     visionEnabled: z.boolean(),
     visionWsUrl: z.string(),
     visionRequestTimeoutMs: z.number().int(),
+    machineAudioVolume: z.number().min(0).max(1).default(0.7),
     audioCueSettings: audioCueSettingsSchema.default({
       enabled: false,
       categories: {
