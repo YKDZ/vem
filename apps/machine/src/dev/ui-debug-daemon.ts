@@ -22,15 +22,14 @@ const connection: DaemonConnectionInfo = {
   token: "ui-debug-token",
   source: "browser_env",
   mock: true,
-  runtimeFlags: {
-    advancedMaintenanceConfig: true,
-  },
 };
 
 const UI_DEBUG_TRANSACTION_STORAGE_KEY = "vem.machine.uiDebug.transaction";
 const UI_DEBUG_PAYMENT_RESULT_STORAGE_KEY = "vem.machine.uiDebug.paymentResult";
 const UI_DEBUG_DISPENSE_RESULT_STORAGE_KEY =
   "vem.machine.uiDebug.dispenseResult";
+const UI_DEBUG_ADVANCED_MAINTENANCE_CONFIG_STORAGE_KEY =
+  "vem.machine.uiDebug.advancedMaintenanceConfig";
 
 let installed = false;
 let currentTransaction: TransactionSnapshot | null = null;
@@ -78,6 +77,18 @@ function clearTransactionMarkers(): void {
 
 function currentScenario() {
   return getActiveUiDebugScenario();
+}
+
+function uiDebugConnection(): DaemonConnectionInfo {
+  return {
+    ...connection,
+    runtimeFlags: {
+      advancedMaintenanceConfig:
+        localStorageOrNull()?.getItem(
+          UI_DEBUG_ADVANCED_MAINTENANCE_CONFIG_STORAGE_KEY,
+        ) === "1",
+    },
+  };
 }
 
 function currentSaleView(): SaleViewSnapshot {
@@ -267,11 +278,12 @@ export function installUiDebugDaemon(): void {
   if (installed) return;
   installed = true;
   const client = daemonClient as unknown as Record<string, unknown>;
-  client.connection = connection;
+  client.connection = uiDebugConnection();
 
   client.initialize = async () => {
-    client.connection = connection;
-    return connection;
+    const nextConnection = uiDebugConnection();
+    client.connection = nextConnection;
+    return nextConnection;
   };
   client.getHealth = async () => currentScenario().health;
   client.getReady = async () => currentScenario().ready;

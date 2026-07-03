@@ -46,8 +46,18 @@ const UI_DEBUG_TRANSACTION_STORAGE_KEY = "vem.machine.uiDebug.transaction";
 const UI_DEBUG_PAYMENT_RESULT_STORAGE_KEY = "vem.machine.uiDebug.paymentResult";
 const UI_DEBUG_DISPENSE_RESULT_STORAGE_KEY =
   "vem.machine.uiDebug.dispenseResult";
+const UI_DEBUG_ADVANCED_MAINTENANCE_CONFIG_STORAGE_KEY =
+  "vem.machine.uiDebug.advancedMaintenanceConfig";
 const TRY_ON_PREVIEW_DIAGNOSTIC_URL =
   "http://127.0.0.1:7892/try-on/e2e-maintenance.mjpeg";
+
+async function enableUiDebugAdvancedMaintenanceConfig(
+  page: Page,
+): Promise<void> {
+  await page.addInitScript((storageKey) => {
+    window.localStorage.setItem(storageKey, "1");
+  }, UI_DEBUG_ADVANCED_MAINTENANCE_CONFIG_STORAGE_KEY);
+}
 
 async function installMockVisionTryOnWebSocket(page: Page): Promise<void> {
   await page.addInitScript((previewUrl) => {
@@ -716,19 +726,23 @@ test("runtime matrix can directly load maintenance state", async ({ page }) => {
   ).toBeVisible();
   await expect(page.getByRole("button", { name: "刷新诊断" })).toBeVisible();
   await expect(page.getByRole("button", { name: "导出日志" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "硬件自检" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "视觉状态" })).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "硬件自检" }).first(),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "视觉状态" }).first(),
+  ).toBeVisible();
   await expect(page.getByRole("button", { name: "回到目录" })).toBeDisabled();
   await expect(
     page.getByRole("button", { name: "回到 Windows 桌面" }),
   ).toHaveCount(0);
-  await expect(page.getByText("视觉试衣预览诊断")).toBeVisible();
   await expect(page.getByText("Admin Operations Console")).toHaveCount(0);
 });
 
 test("maintenance can start and release the vision try-on preview diagnostic", async ({
   page,
 }) => {
+  await enableUiDebugAdvancedMaintenanceConfig(page);
   await installMockVisionTryOnWebSocket(page);
   await loadMachineRuntimeScenario(page, maintenanceScenario);
 
