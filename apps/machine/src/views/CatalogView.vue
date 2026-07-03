@@ -18,6 +18,7 @@ import mascotListImage from "@/assets/home/mascot-list.png";
 import mascotTopImage from "@/assets/home/mascot-top-cutout.png";
 import sloganCalligraphyImage from "@/assets/home/slogan-calligraphy.png";
 import { groupItemsByTopCategory } from "@/catalog/view-model";
+import { useCatalogNotifications } from "@/composables/useCatalogNotifications";
 import { useMaintenanceEntry } from "@/composables/useMaintenanceEntry";
 import { usePresenceInteraction } from "@/composables/usePresenceInteraction";
 import { useVisionRecommendations } from "@/composables/useVisionRecommendations";
@@ -32,6 +33,7 @@ const catalogStore = useCatalogStore();
 useVisionRecommendations();
 const { presenceClass } = usePresenceInteraction();
 const { handleMaintenanceTap } = useMaintenanceEntry();
+const { primaryNotification } = useCatalogNotifications();
 const READINESS_REFRESH_INTERVAL_MS = 5000;
 const CLOCK_REFRESH_INTERVAL_MS = 30_000;
 
@@ -95,9 +97,6 @@ const genderFilters: {
   { key: "elder", label: "老人" },
 ];
 
-const canDisplayAsSaleReady = computed(
-  () => connectivityStore.isSaleNetworkReady,
-);
 const categoryGroups = computed(() =>
   groupItemsByTopCategory(catalogStore.availableItems),
 );
@@ -119,13 +118,6 @@ const activeProducts = computed(() =>
     return matchesCategory && matchesGender;
   }),
 );
-const customerReadinessMessage = computed(() => {
-  if (canDisplayAsSaleReady.value) return null;
-  return (
-    connectivityStore.saleReadinessBlockingMessages[0] ??
-    "设备暂时不可购买，请稍后再试。"
-  );
-});
 const hasAnySaleableProduct = computed(() => displayProducts.value.length > 0);
 const clockText = computed(() =>
   now.value.toLocaleTimeString("zh-CN", {
@@ -377,12 +369,32 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <p
-        v-if="customerReadinessMessage"
-        class="home-readiness-message relative z-10 mt-3 shrink-0 rounded-2xl border border-[#d8cfb9] bg-white/80 p-3 text-sm text-[#5f644f]"
+      <div
+        v-if="primaryNotification"
+        class="catalog-notification home-readiness-message"
+        :class="`catalog-notification-${primaryNotification.tone}`"
+        role="status"
       >
-        {{ customerReadinessMessage }}
-      </p>
+        <span class="catalog-notification-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24">
+            <path
+              d="M4 10v4h3l5 4V6l-5 4H4Z"
+              fill="none"
+              stroke="currentColor"
+              stroke-linejoin="round"
+              stroke-width="2"
+            />
+            <path
+              d="M15.5 9.5a3.5 3.5 0 0 1 0 5M18 7a7 7 0 0 1 0 10"
+              fill="none"
+              stroke="currentColor"
+              stroke-linecap="round"
+              stroke-width="2"
+            />
+          </svg>
+        </span>
+        <span>{{ primaryNotification.message }}</span>
+      </div>
 
       <div
         class="home-category-heading relative z-10 mt-5 flex shrink-0 items-center justify-center gap-3 text-[#7b8d67]"
@@ -556,12 +568,32 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <p
-        v-if="customerReadinessMessage"
-        class="relative z-10 mt-3 shrink-0 rounded-2xl border border-[#d8cfb9] bg-white/80 p-3 text-sm text-[#5f644f]"
+      <div
+        v-if="primaryNotification"
+        class="catalog-notification relative z-10 mt-3 shrink-0"
+        :class="`catalog-notification-${primaryNotification.tone}`"
+        role="status"
       >
-        {{ customerReadinessMessage }}
-      </p>
+        <span class="catalog-notification-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24">
+            <path
+              d="M4 10v4h3l5 4V6l-5 4H4Z"
+              fill="none"
+              stroke="currentColor"
+              stroke-linejoin="round"
+              stroke-width="2"
+            />
+            <path
+              d="M15.5 9.5a3.5 3.5 0 0 1 0 5M18 7a7 7 0 0 1 0 10"
+              fill="none"
+              stroke="currentColor"
+              stroke-linecap="round"
+              stroke-width="2"
+            />
+          </svg>
+        </span>
+        <span>{{ primaryNotification.message }}</span>
+      </div>
 
       <div class="catalog-list-body">
         <aside class="catalog-sidebar">
@@ -739,6 +771,49 @@ onUnmounted(() => {
 .home-readiness-message {
   grid-row: 3;
   margin-top: clamp(12px, 1.04vh, 20px);
+}
+
+.catalog-notification {
+  position: relative;
+  z-index: 10;
+  display: grid;
+  grid-template-columns: clamp(30px, 3.33vw, 36px) minmax(0, 1fr);
+  align-items: center;
+  gap: clamp(10px, 1.48vw, 16px);
+  padding: clamp(10px, 1.11vw, 14px) clamp(12px, 1.67vw, 18px);
+  border: 1px solid #d8cfb9;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.86);
+  color: #5f644f;
+  font-size: clamp(0.83rem, 1.3vw, 0.95rem);
+  font-weight: 650;
+  line-height: 1.45;
+  box-shadow: 0 10px 26px rgba(101, 94, 71, 0.08);
+}
+
+.catalog-notification-warning {
+  border-color: rgba(201, 172, 105, 0.72);
+  background: rgba(255, 251, 235, 0.9);
+}
+
+.catalog-notification-info {
+  border-color: rgba(135, 157, 126, 0.48);
+  background: rgba(250, 253, 246, 0.9);
+}
+
+.catalog-notification-icon {
+  display: grid;
+  width: clamp(30px, 3.33vw, 36px);
+  height: clamp(30px, 3.33vw, 36px);
+  place-items: center;
+  border-radius: 999px;
+  background: rgba(109, 129, 93, 0.12);
+  color: #6d815d;
+}
+
+.catalog-notification-icon svg {
+  width: 68%;
+  height: 68%;
 }
 
 .home-category-heading {

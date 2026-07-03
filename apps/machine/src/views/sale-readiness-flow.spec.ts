@@ -791,7 +791,9 @@ describe("sale readiness UI flow", () => {
     const host = await mountView(CatalogView);
 
     expect(host.textContent).toContain("T恤");
-    expect(host.textContent).toContain("platform offline");
+    expect(host.textContent).toContain("网络连接暂时不可用，请稍后再试。");
+    expect(host.textContent).not.toContain("platform offline");
+    expect(host.querySelector(".catalog-notification-icon")).toBeTruthy();
     expect(
       Array.from(host.querySelectorAll("button")).some(
         (button) => button.textContent?.trim() === "刷新",
