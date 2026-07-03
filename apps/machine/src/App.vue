@@ -3,17 +3,33 @@ import { onMounted } from "vue";
 import { RouterView, useRoute, useRouter } from "vue-router";
 
 import { useReturnHomeOnCustomerDeparture } from "@/composables/usePresenceInteraction";
+import { installActiveUiDebugRuntimeScenario } from "@/dev/runtime-scenario-loader";
 
 const route = useRoute();
 const router = useRouter();
 useReturnHomeOnCustomerDeparture();
+installActiveUiDebugRuntimeScenario();
+
+function isDevDirectRouteAllowed(): boolean {
+  if (!import.meta.env.DEV) return false;
+  if (
+    route.path.startsWith("/dev/") ||
+    window.location.hash.startsWith("#/dev/")
+  ) {
+    return true;
+  }
+  try {
+    if (window.localStorage.getItem("vem.machine.uiDebug.enabled") === "1") {
+      return true;
+    }
+  } catch {
+    return false;
+  }
+  return new URLSearchParams(window.location.search).get("uiDebug") === "1";
+}
 
 onMounted(async () => {
-  if (
-    import.meta.env.DEV &&
-    (route.path.startsWith("/dev/") ||
-      window.location.hash.startsWith("#/dev/"))
-  ) {
+  if (isDevDirectRouteAllowed()) {
     return;
   }
   if (route.name !== "boot") {

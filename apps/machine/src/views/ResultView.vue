@@ -85,7 +85,7 @@ const copyMap: Record<CheckoutResultKind, ResultCopy> = {
 const DISPENSE_RESOLUTION_RESULT_KINDS: ReadonlySet<CheckoutResultKind> =
   new Set(["dispense_failed", "refund_pending", "refunded", "manual_handling"]);
 const WAIT_FOR_RESOLUTION_RESULT_KINDS: ReadonlySet<CheckoutResultKind> =
-  new Set(["refund_pending"]);
+  new Set(["manual_handling", "refund_pending"]);
 
 const kind = computed(() => String(route.params.kind) as CheckoutResultKind);
 const copy = computed(() => copyMap[kind.value] ?? copyMap.manual_handling);
@@ -105,7 +105,8 @@ const orderCredential = computed(
 const resultDetail = computed(() => {
   if (
     kind.value === "manual_handling" &&
-    checkoutStore.status?.vending?.status === "result_unknown"
+    (checkoutStore.status?.vending?.status === "result_unknown" ||
+      checkoutStore.transaction?.vending?.status === "result_unknown")
   ) {
     return "出货结果待确认，请凭订单凭证联系工作人员处理。";
   }

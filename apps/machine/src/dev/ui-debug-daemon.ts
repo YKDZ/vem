@@ -24,11 +24,53 @@ const connection: DaemonConnectionInfo = {
   mock: true,
 };
 
+const UI_DEBUG_TRANSACTION_STORAGE_KEY = "vem.machine.uiDebug.transaction";
+const UI_DEBUG_PAYMENT_RESULT_STORAGE_KEY = "vem.machine.uiDebug.paymentResult";
+const UI_DEBUG_DISPENSE_RESULT_STORAGE_KEY =
+  "vem.machine.uiDebug.dispenseResult";
+
 let installed = false;
 let currentTransaction: TransactionSnapshot | null = null;
 
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+function localStorageOrNull(): Storage | null {
+  if (typeof window === "undefined") return null;
+  try {
+    return window.localStorage;
+  } catch {
+    return null;
+  }
+}
+
+function readStoredTransaction(): TransactionSnapshot | null {
+  const raw = localStorageOrNull()?.getItem(UI_DEBUG_TRANSACTION_STORAGE_KEY);
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as TransactionSnapshot;
+  } catch {
+    localStorageOrNull()?.removeItem(UI_DEBUG_TRANSACTION_STORAGE_KEY);
+    return null;
+  }
+}
+
+function persistTransaction(snapshot: TransactionSnapshot | null): void {
+  const storage = localStorageOrNull();
+  if (!storage) return;
+  if (!snapshot) {
+    storage.removeItem(UI_DEBUG_TRANSACTION_STORAGE_KEY);
+    return;
+  }
+  storage.setItem(UI_DEBUG_TRANSACTION_STORAGE_KEY, JSON.stringify(snapshot));
+}
+
+function clearTransactionMarkers(): void {
+  const storage = localStorageOrNull();
+  if (!storage) return;
+  storage.removeItem(UI_DEBUG_PAYMENT_RESULT_STORAGE_KEY);
+  storage.removeItem(UI_DEBUG_DISPENSE_RESULT_STORAGE_KEY);
 }
 
 function currentScenario() {
@@ -40,6 +82,49 @@ function currentSaleView(): SaleViewSnapshot {
 }
 
 function currentTransactionOrScenario(): TransactionSnapshot {
+  currentTransaction = currentTransaction ?? readStoredTransaction();
+  if (
+    currentTransaction?.nextAction === "wait_payment" &&
+    localStorageOrNull()?.getItem(UI_DEBUG_PAYMENT_RESULT_STORAGE_KEY) ===
+      "success"
+  ) {
+    currentTransaction = {
+      ...currentTransaction,
+      paymentStatus: "succeeded",
+      orderStatus: "dispensing",
+      nextAction: "dispensing",
+      vending: {
+        commandNo: "UI-DEBUG-CMD",
+        status: "sent",
+        lastError: null,
+        pickupReminder: null,
+      },
+      updatedAt: nowIso(),
+    };
+    localStorageOrNull()?.removeItem(UI_DEBUG_PAYMENT_RESULT_STORAGE_KEY);
+    persistTransaction(currentTransaction);
+  }
+  if (
+    currentTransaction?.nextAction === "dispensing" &&
+    localStorageOrNull()?.getItem(UI_DEBUG_DISPENSE_RESULT_STORAGE_KEY) ===
+      "success"
+  ) {
+    currentTransaction = {
+      ...currentTransaction,
+      paymentStatus: "succeeded",
+      orderStatus: "fulfilled",
+      nextAction: "success",
+      vending: {
+        commandNo: currentTransaction.vending?.commandNo ?? "UI-DEBUG-CMD",
+        status: "succeeded",
+        lastError: null,
+        pickupReminder: null,
+      },
+      updatedAt: nowIso(),
+    };
+    localStorageOrNull()?.removeItem(UI_DEBUG_DISPENSE_RESULT_STORAGE_KEY);
+    persistTransaction(currentTransaction);
+  }
   return currentTransaction ?? currentScenario().transaction;
 }
 
@@ -119,6 +204,7 @@ function createTransactionFromOrder(body: unknown): TransactionSnapshot {
       paymentMethod === "payment_code" ? "请出示付款码" : "等待用户支付",
     updatedAt: nowIso(),
   };
+  persistTransaction(currentTransaction);
   return currentTransaction;
 }
 
@@ -138,6 +224,7 @@ function transitionMockPayment(succeed: boolean): TransactionSnapshot {
       : null,
     updatedAt: nowIso(),
   };
+  persistTransaction(currentTransaction);
   return currentTransaction;
 }
 
@@ -150,6 +237,7 @@ function closedTransaction(): TransactionSnapshot {
     nextAction: "closed",
     updatedAt: nowIso(),
   };
+  persistTransaction(currentTransaction);
   return currentTransaction;
 }
 
@@ -159,10 +247,17 @@ export function shouldInstallUiDebugDaemon(): boolean {
 
 export function resetUiDebugTransaction(): void {
   currentTransaction = null;
+  persistTransaction(null);
+  clearTransactionMarkers();
+}
+
+export function hasStoredUiDebugTransaction(): boolean {
+  return readStoredTransaction() !== null;
 }
 
 export function setUiDebugTransaction(snapshot: TransactionSnapshot): void {
   currentTransaction = snapshot;
+  persistTransaction(snapshot);
 }
 
 export function installUiDebugDaemon(): void {

@@ -1241,6 +1241,13 @@ async function submitStockMovement(): Promise<void> {
 
         <dl class="mt-4 grid gap-3 md:grid-cols-2">
           <div class="border-t border-white/10 py-3">
+            <dt class="text-sm text-slate-400">Daemon</dt>
+            <dd class="mt-1 font-bold text-white">
+              {{ machineStore.health?.status ?? "unknown" }} ·
+              {{ machineStore.health?.process.message ?? "not connected" }}
+            </dd>
+          </div>
+          <div class="border-t border-white/10 py-3">
             <dt class="text-sm text-slate-400">后端</dt>
             <dd class="mt-1 font-bold text-white">
               {{ machineStore.health?.backendOnline ? "在线" : "不可用" }}
@@ -1252,6 +1259,12 @@ async function submitStockMovement(): Promise<void> {
             <dd class="mt-1 font-bold text-white">
               {{ connectivityStore.ready?.ready ? "就绪" : "未就绪" }}
               · {{ connectivityStore.ready?.mode ?? "unknown" }}
+            </dd>
+          </div>
+          <div class="border-t border-white/10 py-3">
+            <dt class="text-sm text-slate-400">Sync</dt>
+            <dd class="mt-1 font-bold text-white">
+              {{ mqttStore.status }} · {{ mqttStore.lastError ?? "ok" }}
             </dd>
           </div>
           <div class="border-t border-white/10 py-3">

@@ -35,6 +35,17 @@ const orderCredential = computed(
     checkoutStore.status?.orderNo ??
     null,
 );
+const productName = computed(() => {
+  const summary = checkoutStore.transaction?.productSummary;
+  if (!summary || typeof summary !== "object") return null;
+  for (const key of ["name", "productName", "title"]) {
+    const value = (summary as Record<string, unknown>)[key];
+    if (typeof value === "string" && value.trim().length > 0) {
+      return value;
+    }
+  }
+  return null;
+});
 const titleText = computed(() =>
   hasCustomerVisibleError.value ? "出货异常" : "正在出货",
 );
@@ -174,12 +185,19 @@ onUnmounted(() => {
 
         <h2>{{ pickupTitle }}</h2>
         <p class="pickup-subtitle">{{ pickupSubtitle }}</p>
-        <p
-          v-if="hasCustomerVisibleError && orderCredential"
-          class="pickup-order-credential"
+        <div
+          v-if="productName || orderCredential"
+          class="pickup-order-context"
+          aria-label="出货订单信息"
         >
-          订单凭证 {{ orderCredential }}
-        </p>
+          <p v-if="productName">
+            <span>商品</span>
+            <strong>{{ productName }}</strong>
+          </p>
+          <p v-if="orderCredential" class="pickup-order-credential">
+            <strong>订单凭证 {{ orderCredential }}</strong>
+          </p>
+        </div>
 
         <div class="pickup-divider" aria-hidden="true"></div>
 
@@ -454,9 +472,37 @@ onUnmounted(() => {
   font-size: 1.08rem;
 }
 
-.pickup-order-credential {
-  margin-top: 1rem;
+.pickup-order-context {
+  display: grid;
+  gap: 0.45rem;
+  width: min(100%, 25rem);
+  margin: 1rem auto 0;
+  border: 1px solid rgba(211, 203, 180, 0.74);
+  border-radius: 8px;
+  background: rgba(255, 253, 248, 0.62);
+  padding: 0.75rem 1.15rem;
   color: #5f584f;
+}
+
+.pickup-order-context p {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  margin: 0;
+}
+
+.pickup-order-context span {
+  flex: 0 0 auto;
+  color: #827b70;
+  font-size: 0.92rem;
+  font-weight: 700;
+}
+
+.pickup-order-context strong {
+  min-width: 0;
+  text-align: right;
+  overflow-wrap: anywhere;
   font-size: 1.05rem;
   font-weight: 800;
 }
@@ -677,11 +723,18 @@ onUnmounted(() => {
   }
 
   .pickup-subtitle,
-  .pickup-order-credential,
+  .pickup-order-context span,
+  .pickup-order-context strong,
   .pickup-time-copy,
   .pickup-notice p,
   .warm-tip p {
     font-size: 0.78rem;
+  }
+
+  .pickup-order-context {
+    gap: 0.32rem;
+    margin-top: 0.65rem;
+    padding: 0.55rem 0.8rem;
   }
 
   .pickup-subtitle {

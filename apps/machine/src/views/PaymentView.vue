@@ -511,7 +511,8 @@ onUnmounted(() => {
 }
 
 .payment-title {
-  display: none;
+  margin-top: 1rem;
+  text-align: center;
 }
 
 .payment-title h1 {
@@ -519,7 +520,7 @@ onUnmounted(() => {
   font-family: SimSun, "Songti SC", "Noto Serif CJK SC", serif;
   font-size: 2.1rem;
   font-weight: 700;
-  letter-spacing: 0.12em;
+  letter-spacing: 0;
 }
 
 .payment-title span {

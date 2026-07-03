@@ -13,14 +13,64 @@ function readEnv(name: string): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
+function writeEnv(name: string, value: string): void {
+  const runtimeProcess = Reflect.get(globalThis, "process");
+  if (typeof runtimeProcess !== "object" || runtimeProcess === null) {
+    return;
+  }
+  const env = Reflect.get(runtimeProcess, "env");
+  if (typeof env !== "object" || env === null) {
+    return;
+  }
+  Reflect.set(env, name, value);
+}
+
+function readArgv(): readonly string[] {
+  const runtimeProcess = Reflect.get(globalThis, "process");
+  if (typeof runtimeProcess !== "object" || runtimeProcess === null) {
+    return [];
+  }
+  const argv = Reflect.get(runtimeProcess, "argv");
+  if (!Array.isArray(argv)) {
+    return [];
+  }
+  return argv.filter((arg): arg is string => typeof arg === "string");
+}
+
+function hasExplicitProjectArg(
+  argv: readonly string[],
+  projectName: string,
+): boolean {
+  return argv.some((arg, index) => {
+    if (arg === `--project=${projectName}`) {
+      return true;
+    }
+    return arg === "--project" && argv[index + 1] === projectName;
+  });
+}
+
 const isCi = Boolean(readEnv("CI"));
 const chromiumChannel = readEnv("PLAYWRIGHT_CHROMIUM_CHANNEL") ?? "chrome";
+const touchscreenSmokeTestMatch = /touchscreen-smoke\.spec\.ts/;
+const runtimeScreenshotsProjectName = "machine-runtime-screenshots";
+const runtimeScreenshotsTestMatch = /machine-runtime-screenshots\.spec\.ts/;
+const explicitRuntimeScreenshotsProject = hasExplicitProjectArg(
+  readArgv(),
+  runtimeScreenshotsProjectName,
+);
+if (explicitRuntimeScreenshotsProject) {
+  writeEnv("VEM_MACHINE_RUNTIME_SCREENSHOTS_PROJECT", "1");
+}
+const includeRuntimeScreenshotsProject =
+  readEnv("VEM_MACHINE_RUNTIME_SCREENSHOTS_PROJECT") === "1" ||
+  explicitRuntimeScreenshotsProject;
 
 const chromiumUse = {
   ...devices["Desktop Chrome"],
   channel: chromiumChannel,
   viewport: { width: 1080, height: 1920 },
   deviceScaleFactor: 1,
+  hasTouch: true,
   isMobile: false,
 };
 
@@ -49,8 +99,23 @@ export default defineConfig({
   },
   projects: [
     {
-      name: "chromium",
+      name: "machine-runtime-touchscreen",
+      testIgnore: [touchscreenSmokeTestMatch, runtimeScreenshotsTestMatch],
       use: chromiumUse,
     },
+    {
+      name: "machine-touchscreen-smoke",
+      testMatch: touchscreenSmokeTestMatch,
+      use: chromiumUse,
+    },
+    ...(includeRuntimeScreenshotsProject
+      ? [
+          {
+            name: runtimeScreenshotsProjectName,
+            testMatch: runtimeScreenshotsTestMatch,
+            use: chromiumUse,
+          },
+        ]
+      : []),
   ],
 });

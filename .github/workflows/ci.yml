@@ -6,6 +6,11 @@ on:
       - main
   pull_request:
   workflow_dispatch:
+    inputs:
+      machine_runtime_screenshot_scenarios:
+        description: "Optional comma-separated Machine Runtime Console screenshot scenario ids. Empty runs all included scenarios."
+        required: false
+        default: ""
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -139,6 +144,9 @@ jobs:
       - name: Run Machine UI daemon E2E tests
         run: pnpm -F machine test:e2e -- machine-daemon-client.spec.ts machine-real-daemon.spec.ts
 
+      - name: Run Machine Runtime Console touch smoke
+        run: pnpm -F machine test:e2e:touch-smoke
+
       - name: Upload Machine Playwright Report
         if: failure()
         uses: actions/upload-artifact@v4
@@ -146,6 +154,48 @@ jobs:
           name: machine-playwright-report
           path: apps/machine/playwright-report/
           retention-days: 7
+
+  machine-runtime-screenshots:
+    name: Machine Runtime Screenshot Artifacts
+    needs: [static]
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install Dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify Chrome Browser
+        run: google-chrome --version
+
+      - name: Capture Machine Runtime Console screenshots
+        run: pnpm -F machine test:e2e:screenshots
+        env:
+          VEM_MACHINE_RUNTIME_SCREENSHOT_SCENARIOS: ${{ inputs.machine_runtime_screenshot_scenarios || '' }}
+
+      - name: Stitch Machine Runtime Console overview
+        run: pnpm -F machine screenshots:runtime:stitch
+
+      - name: Upload Machine Runtime Console screenshot artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: machine-runtime-screenshot-artifacts
+          path: apps/machine/runtime-screenshot-artifacts/
+          if-no-files-found: error
+          retention-days: 14
 
   e2e-tests:
     name: E2E Tests

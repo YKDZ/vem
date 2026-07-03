@@ -4,33 +4,30 @@ import { useRouter } from "vue-router";
 
 import type { SaleViewSnapshot } from "@/daemon/schemas";
 
+import { applyUiDebugScenarioToStores } from "@/dev/runtime-scenario-loader";
 import {
-  installUiDebugDaemon,
-  resetUiDebugTransaction,
-  setUiDebugTransaction,
-} from "@/dev/ui-debug-daemon";
+  machineRuntimeScenarios,
+  type MachineRuntimeScenario,
+} from "@/dev/runtime-scenarios";
+import { installUiDebugDaemon } from "@/dev/ui-debug-daemon";
 import {
   clearSaleViewOverride,
   enableUiDebugMode,
   getActiveUiDebugScenario,
+  getUiDebugScenario,
   getSaleViewForScenario,
   saveSaleViewOverride,
   setActiveUiDebugScenarioId,
   uiDebugScenarios,
-  type UiDebugScenario,
   type UiDebugScenarioId,
 } from "@/dev/ui-debug-fixtures";
 import KioskLayout from "@/layouts/KioskLayout.vue";
 import { useCatalogStore } from "@/stores/catalog";
 import { useCheckoutStore } from "@/stores/checkout";
-import { useConnectivityStore } from "@/stores/connectivity";
-import { useMachineStore } from "@/stores/machine";
 
 const router = useRouter();
 const catalogStore = useCatalogStore();
 const checkoutStore = useCheckoutStore();
-const connectivityStore = useConnectivityStore();
-const machineStore = useMachineStore();
 
 const activeScenarioId = ref<UiDebugScenarioId>(getActiveUiDebugScenario().id);
 const saleViewJson = ref("");
@@ -43,24 +40,6 @@ const activeScenario = computed(
       (scenario) => scenario.id === activeScenarioId.value,
     ) ?? uiDebugScenarios[0],
 );
-
-function applyScenarioToStores(scenario: UiDebugScenario): void {
-  const saleView = getSaleViewForScenario(scenario.id);
-  machineStore.configSummary = scenario.config;
-  machineStore.configLoaded = true;
-  machineStore.applyHealth(scenario.health);
-  connectivityStore.applyHealth(scenario.health);
-  connectivityStore.applyReady(scenario.ready);
-  connectivityStore.applySaleReadiness(scenario.saleReadiness);
-  catalogStore.applySnapshot(saleView);
-  resetUiDebugTransaction();
-  if (scenario.transaction.orderNo) {
-    checkoutStore.applyTransaction(scenario.transaction);
-    setUiDebugTransaction(scenario.transaction);
-  } else {
-    checkoutStore.reset();
-  }
-}
 
 function refreshEditor(): void {
   saleViewJson.value = JSON.stringify(
@@ -75,7 +54,7 @@ function refreshEditor(): void {
 function selectScenario(id: UiDebugScenarioId): void {
   activeScenarioId.value = id;
   setActiveUiDebugScenarioId(id);
-  applyScenarioToStores(activeScenario.value);
+  applyUiDebugScenarioToStores(activeScenario.value);
   refreshEditor();
 }
 
@@ -94,7 +73,7 @@ function saveEditor(): void {
 
 function resetEditor(): void {
   clearSaleViewOverride(activeScenario.value.id);
-  applyScenarioToStores(activeScenario.value);
+  applyUiDebugScenarioToStores(activeScenario.value);
   refreshEditor();
 }
 
@@ -103,12 +82,12 @@ async function goBoot(): Promise<void> {
 }
 
 async function goCatalog(): Promise<void> {
-  applyScenarioToStores(activeScenario.value);
+  applyUiDebugScenarioToStores(activeScenario.value);
   await router.push("/catalog");
 }
 
 async function goProductDetail(): Promise<void> {
-  applyScenarioToStores(activeScenario.value);
+  applyUiDebugScenarioToStores(activeScenario.value);
   const item = catalogStore.availableItems[0];
   if (!item) return;
   checkoutStore.selectItem(item);
@@ -119,7 +98,7 @@ async function goProductDetail(): Promise<void> {
 }
 
 async function goCheckout(): Promise<void> {
-  applyScenarioToStores(activeScenario.value);
+  applyUiDebugScenarioToStores(activeScenario.value);
   const item = catalogStore.availableItems[0];
   if (!item) return;
   const concreteItem =
@@ -136,7 +115,7 @@ async function goPayment(): Promise<void> {
       : activeScenario.value;
   setActiveUiDebugScenarioId(scenario.id);
   activeScenarioId.value = scenario.id;
-  applyScenarioToStores(scenario);
+  applyUiDebugScenarioToStores(scenario);
   await router.push("/payment");
 }
 
@@ -146,7 +125,7 @@ async function goPaymentCode(): Promise<void> {
   )!;
   setActiveUiDebugScenarioId(scenario.id);
   activeScenarioId.value = scenario.id;
-  applyScenarioToStores(scenario);
+  applyUiDebugScenarioToStores(scenario);
   await router.push("/payment");
 }
 
@@ -158,7 +137,7 @@ async function goDispensing(
   )!;
   setActiveUiDebugScenarioId(scenario.id);
   activeScenarioId.value = scenario.id;
-  applyScenarioToStores(scenario);
+  applyUiDebugScenarioToStores(scenario);
   await router.push("/dispensing");
 }
 
@@ -170,19 +149,29 @@ async function goResult(kind: string): Promise<void> {
   )!;
   setActiveUiDebugScenarioId(scenario.id);
   activeScenarioId.value = scenario.id;
-  applyScenarioToStores(scenario);
+  applyUiDebugScenarioToStores(scenario);
   await router.push({ name: "result", params: { kind } });
 }
 
 async function goStaticRoute(path: string): Promise<void> {
-  applyScenarioToStores(activeScenario.value);
+  applyUiDebugScenarioToStores(activeScenario.value);
   await router.push(path);
+}
+
+async function goRuntimeScenario(
+  scenario: MachineRuntimeScenario,
+): Promise<void> {
+  const fixture = getUiDebugScenario(scenario.fixtureScenarioId);
+  setActiveUiDebugScenarioId(fixture.id);
+  activeScenarioId.value = fixture.id;
+  applyUiDebugScenarioToStores(fixture);
+  await router.push(scenario.targetRoute);
 }
 
 onMounted(() => {
   enableUiDebugMode();
   installUiDebugDaemon();
-  applyScenarioToStores(activeScenario.value);
+  applyUiDebugScenarioToStores(activeScenario.value);
   refreshEditor();
 });
 </script>
@@ -214,6 +203,24 @@ onMounted(() => {
           <p class="text-lg font-black">{{ scenario.name }}</p>
           <p class="mt-1 text-sm text-slate-300">{{ scenario.description }}</p>
         </button>
+      </section>
+
+      <section class="rounded-3xl border border-white/10 bg-white/10 p-5">
+        <h3 class="text-xl font-black">场景矩阵</h3>
+        <div class="mt-4 grid grid-cols-2 gap-3">
+          <button
+            v-for="scenario in machineRuntimeScenarios"
+            :key="scenario.id"
+            class="debug-button text-left"
+            type="button"
+            @click="goRuntimeScenario(scenario)"
+          >
+            <span class="block text-base">{{ scenario.name }}</span>
+            <span class="mt-1 block text-xs text-slate-300">
+              {{ scenario.targetRoute }}
+            </span>
+          </button>
+        </div>
       </section>
 
       <section class="rounded-3xl border border-white/10 bg-white/10 p-5">
