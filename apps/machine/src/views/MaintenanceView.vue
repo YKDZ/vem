@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { formatMachineSlotCoordinate } from "@vem/shared";
-import { computed, onMounted, onUnmounted, reactive, ref } from "vue";
+import { computed, onMounted, onUnmounted, reactive } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
 import listSloganImage from "@/assets/home/list-slogan.png";
@@ -19,6 +19,10 @@ import { shouldShowAdvancedMaintenanceConfig } from "@/config/runtime-flags";
 import { daemonClient } from "@/daemon/client";
 import KioskLayout from "@/layouts/KioskLayout.vue";
 import { callTauriCommand, isTauriRuntime } from "@/native/tauri";
+import {
+  openVisionTryOnSession,
+  type VisionTryOnSession,
+} from "@/native/vision";
 import { useAudioCueStore } from "@/stores/audio-cues";
 import { useCatalogStore } from "@/stores/catalog";
 import { useConnectivityStore } from "@/stores/connectivity";
@@ -153,13 +157,6 @@ const operatorEnteredMaintenance = computed(() => {
     : source === "operator";
 });
 
-type TryOnCameraDeviceOption = {
-  deviceId: string;
-  label: string;
-};
-
-type TryOnCameraLoadingReason = "devices" | "preview";
-
 function cloneLowerControllerUsbIdentity(
   identity: MachineConfig["lowerControllerUsbIdentity"],
 ) {
@@ -190,7 +187,6 @@ const form = reactive({
   visionEnabled: machineConfigDefaults.visionEnabled,
   visionWsUrl: machineConfigDefaults.visionWsUrl,
   visionRequestTimeoutMs: machineConfigDefaults.visionRequestTimeoutMs,
-  tryOnCameraDeviceId: machineConfigDefaults.tryOnCameraDeviceId,
   audioCueSettings: {
     enabled: machineConfigDefaults.audioCueSettings.enabled,
     categories: {
@@ -205,32 +201,16 @@ const form = reactive({
   mqttPasswordInput: "",
 });
 
-const tryOnCameraPreviewVideo = ref<HTMLVideoElement | null>(null);
-const tryOnCamera = reactive({
+const tryOnPreviewDiagnostic = reactive({
   loading: false,
-  previewing: false,
   message: null as string | null,
-  devices: [] as TryOnCameraDeviceOption[],
-  previewStream: null as MediaStream | null,
+  previewUrl: null as string | null,
+  sessionId: null as string | null,
+  streamType: null as string | null,
 });
+let tryOnPreviewDiagnosticSession: VisionTryOnSession | null = null;
 let maintenanceViewMounted = false;
-let tryOnCameraPreviewRequestSequence = 0;
-let tryOnCameraLoadingReason: TryOnCameraLoadingReason | null = null;
-
-const tryOnCameraOptions = computed(() => {
-  const options = [...tryOnCamera.devices];
-  const selectedDeviceId = form.tryOnCameraDeviceId;
-  if (
-    selectedDeviceId &&
-    !options.some((device) => device.deviceId === selectedDeviceId)
-  ) {
-    options.unshift({
-      deviceId: selectedDeviceId,
-      label: `Saved camera not currently available (${selectedDeviceId})`,
-    });
-  }
-  return options;
-});
+let tryOnPreviewDiagnosticSequence = 0;
 
 function syncFormFromStore(): void {
   form.machineCode = machineStore.config.machineCode;
@@ -250,7 +230,6 @@ function syncFormFromStore(): void {
   form.visionEnabled = machineStore.config.visionEnabled;
   form.visionWsUrl = machineStore.config.visionWsUrl;
   form.visionRequestTimeoutMs = machineStore.config.visionRequestTimeoutMs;
-  form.tryOnCameraDeviceId = machineStore.config.tryOnCameraDeviceId;
   form.audioCueSettings = {
     enabled: machineStore.config.audioCueSettings.enabled,
     categories: {
@@ -428,7 +407,7 @@ onMounted(async () => {
 onUnmounted(() => {
   maintenanceViewMounted = false;
   stopDiagnosticsAutoRefresh();
-  stopTryOnCameraPreview();
+  void stopTryOnPreviewDiagnostic();
 });
 
 const diagnostics = reactive({
@@ -498,148 +477,62 @@ const scannerAdapters: ScannerAdapter[] = ["disabled", "serial_text"];
 
 const scannerFrameSuffixes = ["crlf", "lf", "cr", "none"] as const;
 
-function setTryOnCameraLoading(reason: TryOnCameraLoadingReason | null): void {
-  tryOnCameraLoadingReason = reason;
-  tryOnCamera.loading = reason !== null;
-}
-
-function stopMediaStreamTracks(stream: MediaStream): void {
-  stream.getTracks().forEach((track) => track.stop());
-}
-
-function shortCameraIdentifier(value: string): string | null {
-  const trimmed = value.trim();
-  if (!trimmed) {
-    return null;
-  }
-  return trimmed.length <= 8 ? trimmed : `...${trimmed.slice(-8)}`;
-}
-
-function formatTryOnCameraDeviceLabel(
-  device: MediaDeviceInfo,
-  index: number,
-): string {
-  const ordinalLabel = `Camera ${index + 1}`;
-  const liveLabel = device.label.trim() || "Unlabeled camera";
-  const identityParts = [
-    ["id", shortCameraIdentifier(device.deviceId)],
-    ["group", shortCameraIdentifier(device.groupId)],
-  ]
-    .filter((item): item is [string, string] => item[1] !== null)
-    .map(([kind, suffix]) => `${kind}: ${suffix}`);
-  const identitySuffix =
-    identityParts.length > 0 ? ` (${identityParts.join(" / ")})` : "";
-
-  return `${ordinalLabel} - ${liveLabel}${identitySuffix}`;
-}
-
-async function refreshTryOnCameraDevices(): Promise<void> {
-  setTryOnCameraLoading("devices");
-  tryOnCamera.message = null;
+async function startTryOnPreviewDiagnostic(): Promise<void> {
+  await stopTryOnPreviewDiagnostic();
+  const sequence = (tryOnPreviewDiagnosticSequence += 1);
+  tryOnPreviewDiagnostic.loading = true;
+  tryOnPreviewDiagnostic.message = null;
   try {
-    if (
-      !navigator.mediaDevices?.getUserMedia ||
-      !navigator.mediaDevices.enumerateDevices
-    ) {
-      tryOnCamera.devices = [];
-      tryOnCamera.message = "当前浏览器不支持摄像头枚举。";
-      return;
-    }
-    const permissionStream = await navigator.mediaDevices.getUserMedia({
-      audio: false,
-      video: true,
-    });
-    stopMediaStreamTracks(permissionStream);
-    const devices = await navigator.mediaDevices.enumerateDevices();
-    tryOnCamera.devices = devices
-      .filter((device) => device.kind === "videoinput")
-      .map((device, index) => ({
-        deviceId: device.deviceId,
-        label: formatTryOnCameraDeviceLabel(device, index),
-      }));
-    tryOnCamera.message =
-      tryOnCamera.devices.length > 0
-        ? `已读取 ${tryOnCamera.devices.length} 个摄像头。`
-        : "未发现可用摄像头。";
-  } catch (error) {
-    tryOnCamera.message =
-      error instanceof Error ? error.message : String(error);
-  } finally {
-    if (tryOnCameraLoadingReason === "devices") {
-      setTryOnCameraLoading(null);
-    }
-  }
-}
-
-async function previewTryOnCamera(): Promise<void> {
-  stopTryOnCameraPreview();
-  const deviceId = form.tryOnCameraDeviceId;
-  if (!deviceId) {
-    tryOnCamera.message = "请选择 Virtual Try-On Camera 后再预览。";
-    return;
-  }
-  tryOnCameraPreviewRequestSequence += 1;
-  const requestSequence = tryOnCameraPreviewRequestSequence;
-  setTryOnCameraLoading("preview");
-  tryOnCamera.message = null;
-  try {
-    if (!navigator.mediaDevices?.getUserMedia) {
-      tryOnCamera.message = "当前浏览器不支持摄像头预览。";
-      return;
-    }
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: false,
-      video: { deviceId: { exact: deviceId } },
+    const session = await openVisionTryOnSession(machineStore.config, {
+      catalogKey: "maintenance-diagnostic",
+      variantId: "maintenance-diagnostic",
     });
     if (
       !maintenanceViewMounted ||
-      requestSequence !== tryOnCameraPreviewRequestSequence ||
-      form.tryOnCameraDeviceId !== deviceId
+      sequence !== tryOnPreviewDiagnosticSequence
     ) {
-      stopMediaStreamTracks(stream);
+      await session.stop();
       return;
     }
-    tryOnCamera.previewStream = stream;
-    tryOnCamera.previewing = true;
-    if (tryOnCameraPreviewVideo.value) {
-      tryOnCameraPreviewVideo.value.srcObject = stream;
-    }
+    tryOnPreviewDiagnosticSession = session;
+    tryOnPreviewDiagnostic.previewUrl = session.previewUrl;
+    tryOnPreviewDiagnostic.sessionId = session.sessionId;
+    tryOnPreviewDiagnostic.streamType = session.streamType;
+    tryOnPreviewDiagnostic.message = "试衣预览诊断已启动。";
   } catch (error) {
-    if (
-      maintenanceViewMounted &&
-      requestSequence === tryOnCameraPreviewRequestSequence &&
-      form.tryOnCameraDeviceId === deviceId
-    ) {
-      tryOnCamera.message =
+    if (maintenanceViewMounted && sequence === tryOnPreviewDiagnosticSequence) {
+      tryOnPreviewDiagnostic.message =
         error instanceof Error ? error.message : String(error);
     }
   } finally {
-    if (
-      requestSequence === tryOnCameraPreviewRequestSequence &&
-      tryOnCameraLoadingReason === "preview"
-    ) {
-      setTryOnCameraLoading(null);
+    if (sequence === tryOnPreviewDiagnosticSequence) {
+      tryOnPreviewDiagnostic.loading = false;
     }
   }
 }
 
-function stopTryOnCameraPreview(): void {
-  tryOnCameraPreviewRequestSequence += 1;
-  if (tryOnCamera.previewStream) {
-    stopMediaStreamTracks(tryOnCamera.previewStream);
+async function stopTryOnPreviewDiagnostic(): Promise<void> {
+  tryOnPreviewDiagnosticSequence += 1;
+  const session = tryOnPreviewDiagnosticSession;
+  tryOnPreviewDiagnosticSession = null;
+  tryOnPreviewDiagnostic.loading = false;
+  tryOnPreviewDiagnostic.previewUrl = null;
+  tryOnPreviewDiagnostic.sessionId = null;
+  tryOnPreviewDiagnostic.streamType = null;
+  if (!session) {
+    return;
   }
-  tryOnCamera.previewStream = null;
-  tryOnCamera.previewing = false;
-  if (tryOnCameraLoadingReason === "preview") {
-    setTryOnCameraLoading(null);
+  try {
+    await session.stop();
+    if (maintenanceViewMounted) {
+      tryOnPreviewDiagnostic.message = "试衣预览诊断已释放。";
+    }
+  } catch (error) {
+    if (maintenanceViewMounted) {
+      tryOnPreviewDiagnostic.message =
+        error instanceof Error ? error.message : String(error);
+    }
   }
-  if (tryOnCameraPreviewVideo.value) {
-    tryOnCameraPreviewVideo.value.srcObject = null;
-  }
-}
-
-function handleTryOnCameraSelectionChange(): void {
-  stopTryOnCameraPreview();
 }
 
 async function saveAndReboot(): Promise<void> {
@@ -1751,76 +1644,68 @@ async function submitStockMovement(): Promise<void> {
             <div class="grid gap-4 rounded-2xl border border-white/10 p-4">
               <div class="grid gap-1 text-left">
                 <span class="text-sm font-semibold text-slate-200">
-                  Virtual Try-On Camera
+                  视觉试衣预览诊断
                 </span>
-                <span class="text-xs text-slate-300">
-                  tryOnCameraDeviceId
-                </span>
+                <span class="text-xs text-slate-300">vision.try_on.*</span>
               </div>
 
-              <label class="grid gap-2 text-left">
-                <span class="text-sm font-semibold text-slate-200"
-                  >试衣摄像头</span
-                >
-                <select
-                  v-model="form.tryOnCameraDeviceId"
-                  class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-fuchsia-300"
-                  data-test="try-on-camera-select"
-                  @change="handleTryOnCameraSelectionChange"
-                >
-                  <option :value="null">不配置试衣摄像头</option>
-                  <option
-                    v-for="device in tryOnCameraOptions"
-                    :key="device.deviceId"
-                    :value="device.deviceId"
-                  >
-                    {{ device.label }}
-                  </option>
-                </select>
-              </label>
-
-              <div class="grid gap-3 md:grid-cols-3">
+              <div class="grid gap-3 md:grid-cols-2">
                 <button
                   class="kiosk-touch-target rounded-2xl border border-fuchsia-200/30 px-4 py-3 font-bold text-fuchsia-100 disabled:opacity-50"
                   type="button"
-                  :disabled="tryOnCamera.loading"
-                  @click="refreshTryOnCameraDevices"
+                  :disabled="
+                    tryOnPreviewDiagnostic.loading ||
+                    Boolean(tryOnPreviewDiagnostic.previewUrl)
+                  "
+                  @click="startTryOnPreviewDiagnostic"
                 >
-                  授权并刷新摄像头
-                </button>
-                <button
-                  class="kiosk-touch-target rounded-2xl border border-fuchsia-200/30 px-4 py-3 font-bold text-fuchsia-100 disabled:opacity-50"
-                  type="button"
-                  :disabled="tryOnCamera.loading || !form.tryOnCameraDeviceId"
-                  @click="previewTryOnCamera"
-                >
-                  预览摄像头
+                  启动试衣预览
                 </button>
                 <button
                   class="kiosk-touch-target rounded-2xl border border-slate-200/30 px-4 py-3 font-bold text-slate-100 disabled:opacity-50"
                   type="button"
-                  :disabled="!tryOnCamera.previewing"
-                  @click="stopTryOnCameraPreview"
+                  :disabled="!tryOnPreviewDiagnostic.previewUrl"
+                  @click="stopTryOnPreviewDiagnostic"
                 >
-                  关闭预览
+                  释放试衣预览
                 </button>
               </div>
 
-              <video
-                v-show="tryOnCamera.previewing"
-                ref="tryOnCameraPreviewVideo"
-                autoplay
-                muted
-                playsinline
+              <img
+                v-if="tryOnPreviewDiagnostic.previewUrl"
+                :src="tryOnPreviewDiagnostic.previewUrl"
                 class="aspect-video w-full rounded-2xl border border-white/10 bg-slate-950 object-cover"
                 data-test="try-on-camera-preview"
+                alt=""
               />
 
+              <dl
+                v-if="tryOnPreviewDiagnostic.previewUrl"
+                class="grid gap-2 rounded-2xl bg-slate-950/50 p-4 text-left text-sm text-slate-100"
+              >
+                <div class="grid gap-1">
+                  <dt class="text-xs text-slate-400 uppercase">Session</dt>
+                  <dd class="break-all">
+                    {{ tryOnPreviewDiagnostic.sessionId }}
+                  </dd>
+                </div>
+                <div class="grid gap-1">
+                  <dt class="text-xs text-slate-400 uppercase">Stream</dt>
+                  <dd>{{ tryOnPreviewDiagnostic.streamType }}</dd>
+                </div>
+                <div class="grid gap-1">
+                  <dt class="text-xs text-slate-400 uppercase">Preview URL</dt>
+                  <dd class="break-all">
+                    {{ tryOnPreviewDiagnostic.previewUrl }}
+                  </dd>
+                </div>
+              </dl>
+
               <p
-                v-if="tryOnCamera.message"
+                v-if="tryOnPreviewDiagnostic.message"
                 class="rounded-2xl bg-fuchsia-500/15 p-4 text-fuchsia-100"
               >
-                {{ tryOnCamera.message }}
+                {{ tryOnPreviewDiagnostic.message }}
               </p>
             </div>
 

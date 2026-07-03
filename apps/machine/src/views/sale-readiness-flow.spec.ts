@@ -1014,7 +1014,7 @@ describe("sale readiness UI flow", () => {
     expect(host.querySelector('[data-test="try-on-entry"]')).toBeNull();
   });
 
-  it("starts virtual try-on with the configured camera and overlays the selected silhouette", async () => {
+  it("starts virtual try-on with the vision preview stream and overlays the selected silhouette", async () => {
     const item = makeCatalogItem();
     const tryOnSilhouetteUrl =
       "/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content";

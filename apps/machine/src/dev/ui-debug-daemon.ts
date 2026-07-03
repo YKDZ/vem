@@ -22,6 +22,9 @@ const connection: DaemonConnectionInfo = {
   token: "ui-debug-token",
   source: "browser_env",
   mock: true,
+  runtimeFlags: {
+    advancedMaintenanceConfig: true,
+  },
 };
 
 const UI_DEBUG_TRANSACTION_STORAGE_KEY = "vem.machine.uiDebug.transaction";

@@ -5221,7 +5221,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn try_on_camera_and_unavailable_vision_do_not_block_sale_readiness_or_payment_options() {
+    async fn unavailable_vision_does_not_block_sale_readiness_or_payment_options() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(wiremock::matchers::path("/machine-orders/payment-options"))
@@ -5257,20 +5257,9 @@ mod tests {
             .mount(&server)
             .await;
 
-        for (case_name, try_on_camera_device_id, vision_enabled, slot_suffix) in [
-            ("missing_try_on_camera", None, true, "1101"),
-            (
-                "disabled_vision_with_missing_try_on_camera",
-                None,
-                false,
-                "1201",
-            ),
-            (
-                "configured_but_unavailable_try_on_camera",
-                Some("missing-camera".to_string()),
-                true,
-                "1301",
-            ),
+        for (case_name, vision_enabled, slot_suffix) in [
+            ("unavailable_vision", true, "1101"),
+            ("disabled_vision", false, "1201"),
         ] {
             let temp_dir = tempdir().expect("tmp");
             let ctx = test_ipc_context(
@@ -5283,12 +5272,11 @@ mod tests {
             mark_runtime_sale_ready(&ctx).await;
             {
                 let mut public = ctx.config_store.load_public_config().await.expect("config");
-                public.try_on_camera_device_id = try_on_camera_device_id;
                 public.vision_enabled = vision_enabled;
                 ctx.config_store
                     .save_public_config(public)
                     .await
-                    .expect("save try-on config");
+                    .expect("save vision config");
             }
             {
                 let mut vision = ctx.ui.status_cache.vision.write().await;

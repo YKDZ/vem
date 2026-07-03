@@ -93,7 +93,6 @@ const config: ConfigSummary = {
     visionEnabled: true,
     visionWsUrl: "ws://ui-debug.local/vision",
     visionRequestTimeoutMs: 8000,
-    tryOnCameraDeviceId: null,
     audioCueSettings: {
       enabled: false,
       categories: {

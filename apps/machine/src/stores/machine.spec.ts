@@ -95,7 +95,7 @@ describe("useMachineStore", () => {
     );
   });
 
-  it("saves only the Virtual Try-On Camera device id", async () => {
+  it("does not save machine-owned Virtual Try-On Camera device ids", async () => {
     const config = normalizeMachineConfig({
       machineCode: "MACHINE-1",
       tryOnCameraDeviceId: "try-on-camera-1",
@@ -120,10 +120,11 @@ describe("useMachineStore", () => {
 
     expect(saveConfigMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        public: expect.objectContaining({
-          tryOnCameraDeviceId: "try-on-camera-1",
-        }),
+        public: expect.any(Object),
       }),
+    );
+    expect(saveConfigMock.mock.calls[0]?.[0].public).not.toHaveProperty(
+      "tryOnCameraDeviceId",
     );
     expect(saveConfigMock.mock.calls[0]?.[0].public).not.toHaveProperty(
       "tryOnCameraLabel",

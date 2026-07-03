@@ -43,7 +43,6 @@ describe("routeForStartup", () => {
       visionEnabled: true,
       visionWsUrl: "ws://127.0.0.1:7892/ws",
       visionRequestTimeoutMs: 8000,
-      tryOnCameraDeviceId: null,
       audioCueSettings: {
         enabled: false,
         categories: {
