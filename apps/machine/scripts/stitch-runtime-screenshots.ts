@@ -7,20 +7,20 @@ const DEFAULT_ARTIFACT_DIR = resolve(
   process.cwd(),
   "runtime-screenshot-artifacts",
 );
-const SCREENSHOT_TILE_WIDTH = 270;
-const SCREENSHOT_TILE_HEIGHT = 480;
-const LABEL_HEIGHT = 34;
+const SCREENSHOT_TILE_WIDTH = 540;
+const SCREENSHOT_TILE_HEIGHT = 960;
+const LABEL_HEIGHT = 60;
 const TILE_WIDTH = SCREENSHOT_TILE_WIDTH;
 const TILE_HEIGHT = LABEL_HEIGHT + SCREENSHOT_TILE_HEIGHT;
-const GAP = 20;
-const PADDING = 24;
+const GAP = 28;
+const PADDING = 32;
 const COLUMNS = 3;
 const MAX_TILES_PER_OVERVIEW = 9;
 const BACKGROUND = { r: 16, g: 19, b: 24, a: 255 };
 const BORDER = { r: 228, g: 232, b: 238, a: 255 };
 const LABEL_BACKGROUND = { r: 35, g: 41, b: 52, a: 255 };
 const LABEL_TEXT = { r: 247, g: 250, b: 252, a: 255 };
-const FONT_SCALE = 3;
+const FONT_SCALE = 5;
 const FONT_WIDTH = 5;
 const FONT_HEIGHT = 7;
 const FONT_GAP = 1;
@@ -228,7 +228,7 @@ function stitchOverview(scenarios: ScenarioScreenshot[]): PNG {
     const y = PADDING + row * (TILE_HEIGHT + GAP);
     drawBorder(overview, x, y, TILE_WIDTH, TILE_HEIGHT);
     fillRect(overview, x, y, TILE_WIDTH, LABEL_HEIGHT, LABEL_BACKGROUND);
-    drawText(overview, overviewLabel(scenario), x + 10, y + 7, LABEL_TEXT);
+    drawText(overview, overviewLabel(scenario), x + 14, y + 12, LABEL_TEXT);
     drawScaledImage(
       overview,
       scenario.screenshotPng,
