@@ -34,6 +34,10 @@ const ALLOWED_SCHEDULED_TASKS = new Set([
 
 const STARTUP_BRINGUP_EVIDENCE_FILE =
   "C:\\ProgramData\\VEM\\vending-daemon\\startup-bringup-evidence.json";
+const TESTBED_PROVISIONING_EVIDENCE_FILE =
+  "C:\\ProgramData\\VEM\\vending-daemon\\testbed-provisioning-evidence.json";
+const RUNTIME_ACCEPTANCE_REPORT_FILE =
+  "C:\\ProgramData\\VEM\\vending-daemon\\runtime-acceptance-report.json";
 
 const PLATFORM_TARGETS = {
   "vem-vps": {
@@ -57,6 +61,11 @@ const FINAL_PUBLIC_CONFIG_FIELDS = [
 ];
 
 const EXPECTED_KIOSK_USER = "VEMKiosk";
+const TESTBED_MACHINE_CODE_PREFIX = "VEM-TESTBED-";
+const EXPECTED_MACHINE_UI_TASK_NAME = "VEMMachineUI";
+const EXPECTED_MACHINE_UI_COMMAND = "C:\\Windows\\System32\\wscript.exe";
+const EXPECTED_MACHINE_UI_LAUNCHER = "C:\\VEM\\bringup\\launch-machine-ui.vbs";
+const EXPECTED_MACHINE_UI_WORKING_DIRECTORY = "C:\\VEM\\bringup";
 const EXPECTED_PORTRAIT_WIDTH_PX = 1080;
 const EXPECTED_PORTRAIT_HEIGHT_PX = 1920;
 
@@ -230,6 +239,377 @@ export function isStrictTauriHashRouteUrl(value) {
   } catch {
     return false;
   }
+}
+
+function isSha256(value) {
+  return /^[a-fA-F0-9]{64}$/.test(String(value ?? ""));
+}
+
+function addDiagnostic(diagnostics, code, message) {
+  diagnostics.push({ code, message });
+}
+
+function runtimeAssertion(status, asserted) {
+  return { status, asserted };
+}
+
+export function buildRuntimeAcceptanceReport(facts = {}) {
+  const diagnostics = [];
+
+  if (
+    !String(facts.target?.machineCode ?? "").startsWith(
+      TESTBED_MACHINE_CODE_PREFIX,
+    )
+  ) {
+    addDiagnostic(
+      diagnostics,
+      "testbed_machine_identity_required",
+      "Machine Runtime Testbed MVP reports must use a VEM-TESTBED-* machine identity.",
+    );
+  }
+  const observedMachineCode = facts.provisioning?.machineCode ?? null;
+  if (!present(observedMachineCode)) {
+    addDiagnostic(
+      diagnostics,
+      "daemon_config_machine_identity_missing",
+      "Runtime acceptance must include the daemon-observed machine identity from config IPC.",
+    );
+  } else if (
+    !String(observedMachineCode).startsWith(TESTBED_MACHINE_CODE_PREFIX)
+  ) {
+    addDiagnostic(
+      diagnostics,
+      "daemon_config_machine_identity_required",
+      "Daemon-observed machine identity must be a VEM-TESTBED-* machine identity.",
+    );
+  } else if (observedMachineCode !== facts.target?.machineCode) {
+    addDiagnostic(
+      diagnostics,
+      "daemon_config_machine_identity_mismatch",
+      "Daemon-observed machine identity must match the requested testbed target.",
+    );
+  }
+  if (!isSha256(facts.artifacts?.daemonSha256)) {
+    addDiagnostic(
+      diagnostics,
+      "daemon_artifact_hash_missing",
+      "Runtime acceptance requires a SHA-256 hash for vending-daemon.exe.",
+    );
+  }
+  if (!isSha256(facts.artifacts?.machineUiSha256)) {
+    addDiagnostic(
+      diagnostics,
+      "machine_ui_artifact_hash_missing",
+      "Runtime acceptance requires a SHA-256 hash for machine.exe.",
+    );
+  }
+  if (facts.readyFile?.exists !== true) {
+    addDiagnostic(
+      diagnostics,
+      "ready_file_missing",
+      "Daemon ready file must exist before runtime-ready can pass.",
+    );
+  }
+  if (facts.readyFile?.readableByKioskUser !== true) {
+    addDiagnostic(
+      diagnostics,
+      "ready_file_not_readable_by_kiosk",
+      "Daemon ready file must be readable by the VEMKiosk user.",
+    );
+  }
+  if (
+    facts.readyFile?.ipcEndpointPresent !== true ||
+    facts.readyFile?.tokenPresent !== true
+  ) {
+    addDiagnostic(
+      diagnostics,
+      "daemon_ipc_handoff_missing",
+      "Ready file must include the daemon IPC endpoint and token.",
+    );
+  }
+  if (facts.daemonRuntime?.ipcReachable !== true) {
+    addDiagnostic(
+      diagnostics,
+      "daemon_ipc_unreachable",
+      "Daemon IPC must be reachable through the ready-file handoff.",
+    );
+  }
+  if (
+    facts.serviceState?.daemonService?.installed !== true ||
+    facts.serviceState?.daemonService?.running !== true ||
+    facts.serviceState?.daemonService?.startupType !== "automatic"
+  ) {
+    addDiagnostic(
+      diagnostics,
+      "daemon_service_not_running",
+      "Vending Daemon must be installed, running, and configured for automatic startup.",
+    );
+  }
+  if (facts.startupBringup?.machineUiStartup?.mode === "scheduled_task") {
+    if (facts.serviceState?.machineUiTask?.exists !== true) {
+      addDiagnostic(
+        diagnostics,
+        "machine_ui_task_missing",
+        "VEMMachineUI scheduled task must exist before runtime-ready can pass.",
+      );
+    }
+    if (facts.serviceState?.machineUiTask?.enabled !== true) {
+      addDiagnostic(
+        diagnostics,
+        "machine_ui_task_disabled",
+        "VEMMachineUI scheduled task must be enabled before runtime-ready can pass.",
+      );
+    }
+    if (facts.serviceState?.machineUiTask?.runAsUser !== EXPECTED_KIOSK_USER) {
+      addDiagnostic(
+        diagnostics,
+        "machine_ui_task_user_mismatch",
+        "VEMMachineUI scheduled task must run as the VEMKiosk user.",
+      );
+    }
+  }
+  if (
+    facts.startupBringup?.configuredBy !==
+      "scripts/windows/setup-scheduled-tasks.ps1" ||
+    facts.startupBringup?.productionBringup !== true
+  ) {
+    addDiagnostic(
+      diagnostics,
+      "production_bringup_required",
+      "Fresh Bring-Up Acceptance must use the production bring-up script path.",
+    );
+  }
+  if (facts.startupBringup?.daemonOwnedInitialization === true) {
+    addDiagnostic(
+      diagnostics,
+      "daemon_owned_startup_initialization",
+      "Winlogon auto-logon and customer startup must not be daemon-owned initialization.",
+    );
+  }
+  if (facts.startupBringup?.autoLogon?.configured !== true) {
+    addDiagnostic(
+      diagnostics,
+      "winlogon_autologon_missing",
+      "Winlogon auto-logon must be configured by production bring-up before runtime-ready can pass.",
+    );
+  }
+  if (facts.startupBringup?.autoLogon?.user !== EXPECTED_KIOSK_USER) {
+    addDiagnostic(
+      diagnostics,
+      "winlogon_autologon_user_mismatch",
+      "Winlogon auto-logon must target the VEMKiosk customer session.",
+    );
+  }
+  if (facts.startupBringup?.autoLogon?.force !== true) {
+    addDiagnostic(
+      diagnostics,
+      "winlogon_force_autologon_missing",
+      "Winlogon ForceAutoLogon must be enabled for unattended cold boot acceptance.",
+    );
+  }
+  if (facts.startupBringup?.machineUiStartup?.configured !== true) {
+    addDiagnostic(
+      diagnostics,
+      "machine_ui_startup_missing",
+      "Machine UI startup must be configured by production bring-up.",
+    );
+  }
+  if (
+    facts.startupBringup?.machineUiStartup?.runAsUser !== EXPECTED_KIOSK_USER
+  ) {
+    addDiagnostic(
+      diagnostics,
+      "machine_ui_startup_user_mismatch",
+      "Machine UI startup must target the VEMKiosk customer session.",
+    );
+  }
+  if (facts.startupBringup?.machineUiStartup?.mode === "scheduled_task") {
+    const machineUiStartupCommand = facts.startupBringup?.startupCommands?.find(
+      (command) =>
+        command?.name === EXPECTED_MACHINE_UI_TASK_NAME ||
+        command?.name === `\\${EXPECTED_MACHINE_UI_TASK_NAME}`,
+    );
+
+    if (machineUiStartupCommand?.exists !== true) {
+      addDiagnostic(
+        diagnostics,
+        "machine_ui_startup_command_missing",
+        "Production bring-up must provide live VEMMachineUI startup command evidence.",
+      );
+    } else {
+      if (machineUiStartupCommand.enabled !== true) {
+        addDiagnostic(
+          diagnostics,
+          "machine_ui_startup_command_disabled",
+          "VEMMachineUI startup command must be enabled.",
+        );
+      }
+      if (machineUiStartupCommand.runAsUser !== EXPECTED_KIOSK_USER) {
+        addDiagnostic(
+          diagnostics,
+          "machine_ui_startup_command_user_mismatch",
+          "VEMMachineUI startup command must run as the VEMKiosk user.",
+        );
+      }
+      if (machineUiStartupCommand.command !== EXPECTED_MACHINE_UI_COMMAND) {
+        addDiagnostic(
+          diagnostics,
+          "machine_ui_startup_command_path_mismatch",
+          "VEMMachineUI startup command must use the production wscript launcher path.",
+        );
+      }
+      if (
+        !String(machineUiStartupCommand.arguments ?? "").includes(
+          EXPECTED_MACHINE_UI_LAUNCHER,
+        )
+      ) {
+        addDiagnostic(
+          diagnostics,
+          "machine_ui_startup_arguments_mismatch",
+          "VEMMachineUI startup arguments must point at the production machine UI launcher.",
+        );
+      }
+      if (
+        machineUiStartupCommand.workingDirectory !==
+        EXPECTED_MACHINE_UI_WORKING_DIRECTORY
+      ) {
+        addDiagnostic(
+          diagnostics,
+          "machine_ui_startup_working_directory_mismatch",
+          "VEMMachineUI startup working directory must be the production bring-up directory.",
+        );
+      }
+    }
+  }
+  if (facts.provisioning?.provisioned !== true) {
+    addDiagnostic(
+      diagnostics,
+      "machine_provisioning_incomplete",
+      "Machine Provisioning must complete before runtime-ready can pass.",
+    );
+  }
+  if (facts.provisioning?.usedDaemonIpcClaimPath !== true) {
+    addDiagnostic(
+      diagnostics,
+      "machine_provisioning_bypassed_daemon_ipc",
+      "Machine Provisioning must use the daemon IPC claim path.",
+    );
+  }
+  if (facts.daemonRuntime?.readyz?.ready !== true) {
+    addDiagnostic(
+      diagnostics,
+      "daemon_readyz_not_ready",
+      "Daemon readyz must report ready before runtime-ready can pass.",
+    );
+  }
+  if (facts.daemonRuntime?.healthz?.backendOnline !== true) {
+    addDiagnostic(
+      diagnostics,
+      "backend_connectivity_failed",
+      "Daemon health must report backend connectivity.",
+    );
+  }
+  if (facts.daemonRuntime?.healthz?.mqttConnected !== true) {
+    addDiagnostic(
+      diagnostics,
+      "mqtt_connectivity_failed",
+      "Daemon health must report MQTT connectivity.",
+    );
+  }
+  if (
+    facts.kioskRuntime?.webviewRunning !== true ||
+    !isStrictTauriHashRouteUrl(facts.kioskRuntime?.url)
+  ) {
+    addDiagnostic(
+      diagnostics,
+      "kiosk_webview_missing",
+      "Machine Runtime Console must be running as a Tauri WebView serving tauri.localhost with a hash route.",
+    );
+  }
+  if (facts.kioskRuntime?.sessionUser !== EXPECTED_KIOSK_USER) {
+    addDiagnostic(
+      diagnostics,
+      "kiosk_session_user_mismatch",
+      "Machine Runtime Console must run in the VEMKiosk customer session.",
+    );
+  }
+  if (
+    facts.kioskRuntime?.sessionId === null ||
+    facts.displayEvidence?.interactiveDesktopDisplayBaseline?.sessionId ===
+      null ||
+    facts.displayEvidence?.portraitKioskAcceptance?.sessionId === null
+  ) {
+    addDiagnostic(
+      diagnostics,
+      "kiosk_session_id_missing",
+      "Runtime acceptance requires observed interactive VEMKiosk session ids.",
+    );
+  }
+  if (
+    facts.kioskRuntime?.sessionId !==
+      facts.displayEvidence?.interactiveDesktopDisplayBaseline?.sessionId ||
+    facts.kioskRuntime?.sessionId !==
+      facts.displayEvidence?.portraitKioskAcceptance?.sessionId
+  ) {
+    addDiagnostic(
+      diagnostics,
+      "kiosk_session_id_mismatch",
+      "Machine Runtime Console evidence must match the active VEMKiosk interactive session.",
+    );
+  }
+  if (
+    facts.displayEvidence?.portraitKioskAcceptance?.sessionUser !==
+    EXPECTED_KIOSK_USER
+  ) {
+    addDiagnostic(
+      diagnostics,
+      "portrait_kiosk_session_user_mismatch",
+      "Portrait Kiosk Acceptance must be captured from the VEMKiosk customer session.",
+    );
+  }
+  if (
+    facts.displayEvidence?.interactiveDesktopDisplayBaseline?.status !==
+      "passed" ||
+    facts.displayEvidence?.interactiveDesktopDisplayBaseline?.widthPx !==
+      EXPECTED_PORTRAIT_WIDTH_PX ||
+    facts.displayEvidence?.interactiveDesktopDisplayBaseline?.heightPx !==
+      EXPECTED_PORTRAIT_HEIGHT_PX
+  ) {
+    addDiagnostic(
+      diagnostics,
+      "interactive_desktop_display_baseline_missing",
+      "Interactive Desktop Display Baseline must pass at exactly 1080x1920 before runtime-ready can pass.",
+    );
+  }
+  if (
+    facts.displayEvidence?.portraitKioskAcceptance?.status !== "passed" ||
+    facts.displayEvidence?.portraitKioskAcceptance?.source !==
+      "interactive_kiosk_session" ||
+    facts.displayEvidence?.portraitKioskAcceptance?.widthPx !==
+      EXPECTED_PORTRAIT_WIDTH_PX ||
+    facts.displayEvidence?.portraitKioskAcceptance?.heightPx !==
+      EXPECTED_PORTRAIT_HEIGHT_PX
+  ) {
+    addDiagnostic(
+      diagnostics,
+      "portrait_kiosk_acceptance_missing",
+      "Portrait Kiosk Acceptance requires 1080x1920 evidence from the interactive kiosk session.",
+    );
+  }
+
+  return {
+    schemaVersion: "runtime-acceptance-report/v1",
+    ...facts,
+    result: {
+      runtimeReady:
+        diagnostics.length === 0
+          ? runtimeAssertion("passed", true)
+          : runtimeAssertion("failed", false),
+      simulatedHardwareReady: runtimeAssertion("not_asserted", false),
+      sellReady: runtimeAssertion("not_asserted", false),
+    },
+    diagnostics,
+  };
 }
 
 export function buildKioskRuntimeEvidence({
@@ -494,6 +874,7 @@ export function buildRemotePowerShellScript(options = {}) {
     "inventory-reset",
     "bring-up",
     "provision",
+    "runtime-acceptance",
   ];
   if (!supportedModes.includes(mode)) {
     throw new Error(`unsupported mode: ${mode}`);
@@ -967,6 +1348,18 @@ function Convert-ProvisioningFacts($DaemonIpc, $ProvisioningActions) {
   }
 }
 
+function Get-PersistedProvisioningActions {
+  $path = ${psString(TESTBED_PROVISIONING_EVIDENCE_FILE)}
+  if (-not (Test-Path -LiteralPath $path)) {
+    return @()
+  }
+  try {
+    return @((Read-JsonFile $path))
+  } catch {
+    return @()
+  }
+}
+
 function Invoke-TestbedProvisioningClaim($Actions) {
   $status = "succeeded"
   $message = $null
@@ -1063,12 +1456,29 @@ function Invoke-TestbedProvisioningClaim($Actions) {
     $message = [string]$_
   }
 
-  $Actions.Add([pscustomobject]@{
+  $action = [pscustomobject]@{
     name = "daemon IPC provisioning claim"
     status = $status
     message = $message
     evidence = $evidence
-  }) | Out-Null
+  }
+  $Actions.Add($action) | Out-Null
+
+  try {
+    $provisioningEvidencePath = ${psString(TESTBED_PROVISIONING_EVIDENCE_FILE)}
+    $provisioningEvidenceDirectory = Split-Path -Parent $provisioningEvidencePath
+    if (-not (Test-Path -LiteralPath $provisioningEvidenceDirectory)) {
+      New-Item -ItemType Directory -Path $provisioningEvidenceDirectory -Force | Out-Null
+    }
+    $provisioningEvidenceJson = $action | ConvertTo-Json -Depth 40
+    Set-Content -LiteralPath $provisioningEvidencePath -Value $provisioningEvidenceJson -Encoding UTF8
+  } catch {
+    $Actions.Add([pscustomobject]@{
+      name = "persist daemon IPC provisioning evidence"
+      status = "failed"
+      message = [string]$_
+    }) | Out-Null
+  }
 }
 
 function Get-CommandEvidence([string]$Name) {
@@ -1555,6 +1965,301 @@ function Get-KioskRuntimeEvidence($ActiveKioskSession) {
   }
 }
 
+function Get-ArtifactSha256([string]$Path) {
+  try {
+    if (-not (Test-Path -LiteralPath $Path)) {
+      return "0000000000000000000000000000000000000000000000000000000000000000"
+    }
+    return [string](Get-FileHash -LiteralPath $Path -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
+  } catch {
+    return "0000000000000000000000000000000000000000000000000000000000000000"
+  }
+}
+
+function Test-ReadyFileReadableByKioskUser([string]$Path) {
+  if (-not (Test-Path -LiteralPath $Path)) {
+    return $false
+  }
+  try {
+    $acl = Get-Acl -LiteralPath $Path -ErrorAction Stop
+    foreach ($rule in @($acl.Access)) {
+      $identity = [string]$rule.IdentityReference
+      $rights = [string]$rule.FileSystemRights
+      if (
+        $rule.AccessControlType -eq "Allow" -and
+        ($identity.EndsWith("\\VEMKiosk", [StringComparison]::OrdinalIgnoreCase) -or
+          $identity -eq "BUILTIN\\Users" -or
+          $identity -eq "Everyone") -and
+        ($rights.Contains("Read") -or $rights.Contains("FullControl"))
+      ) {
+        return $true
+      }
+    }
+  } catch {
+    return $false
+  }
+  return $false
+}
+
+function Convert-DaemonRuntimeEvidence($DaemonIpc) {
+  return [ordered]@{
+    ipcReachable = [bool]$DaemonIpc.healthz.observed -or [bool]$DaemonIpc.readyz.observed -or [bool]$DaemonIpc.config.observed
+    healthz = [ordered]@{
+      backendOnline = [bool]$DaemonIpc.healthz.backendOnline
+      mqttConnected = [bool]$DaemonIpc.healthz.mqttConnected
+      hardwareOnline = [bool]$DaemonIpc.healthz.hardwareOnline
+      scannerOnline = [bool]$DaemonIpc.healthz.scannerOnline
+    }
+    readyz = [ordered]@{
+      ready = [bool]$DaemonIpc.readyz.ready
+    }
+  }
+}
+
+function New-RuntimeAcceptanceAssertion([string]$Status, [bool]$Asserted) {
+  return [ordered]@{
+    status = $Status
+    asserted = $Asserted
+  }
+}
+
+function Add-RuntimeAcceptanceDiagnostic($Diagnostics, [string]$Code, [string]$Message) {
+  $Diagnostics.Add([ordered]@{
+    code = $Code
+    message = $Message
+  }) | Out-Null
+}
+
+function Test-RuntimeAcceptanceTauriHashRouteUrl([string]$Url) {
+  return Test-TauriHashRouteUrl $Url
+}
+
+function Classify-RuntimeAcceptanceReport($Facts) {
+  $diagnostics = [System.Collections.Generic.List[object]]::new()
+  $zeroHash = "0000000000000000000000000000000000000000000000000000000000000000"
+
+  if (-not ([string]$Facts.target.machineCode).StartsWith("VEM-TESTBED-", [StringComparison]::Ordinal)) {
+    Add-RuntimeAcceptanceDiagnostic $diagnostics "testbed_machine_identity_required" "Machine Runtime Testbed MVP reports must use a VEM-TESTBED-* machine identity."
+  }
+  $observedMachineCode = if ($null -ne $Facts.provisioning) { [string]$Facts.provisioning.machineCode } else { "" }
+  if ([string]::IsNullOrWhiteSpace($observedMachineCode)) {
+    Add-RuntimeAcceptanceDiagnostic $diagnostics "daemon_config_machine_identity_missing" "Runtime acceptance must include the daemon-observed machine identity from config IPC."
+  } elseif (-not $observedMachineCode.StartsWith("VEM-TESTBED-", [StringComparison]::Ordinal)) {
+    Add-RuntimeAcceptanceDiagnostic $diagnostics "daemon_config_machine_identity_required" "Daemon-observed machine identity must be a VEM-TESTBED-* machine identity."
+  } elseif ($observedMachineCode -ne [string]$Facts.target.machineCode) {
+    Add-RuntimeAcceptanceDiagnostic $diagnostics "daemon_config_machine_identity_mismatch" "Daemon-observed machine identity must match the requested testbed target."
+  }
+  if ($Facts.artifacts.daemonSha256 -eq $zeroHash) {
+    Add-RuntimeAcceptanceDiagnostic $diagnostics "daemon_artifact_hash_missing" "Runtime acceptance requires a SHA-256 hash for vending-daemon.exe."
+  }
+  if ($Facts.artifacts.machineUiSha256 -eq $zeroHash) {
+    Add-RuntimeAcceptanceDiagnostic $diagnostics "machine_ui_artifact_hash_missing" "Runtime acceptance requires a SHA-256 hash for machine.exe."
+  }
+  if (-not [bool]$Facts.readyFile.exists) {
+    Add-RuntimeAcceptanceDiagnostic $diagnostics "ready_file_missing" "Daemon ready file must exist before runtime-ready can pass."
+  }
+  if (-not [bool]$Facts.readyFile.readableByKioskUser) {
+    Add-RuntimeAcceptanceDiagnostic $diagnostics "ready_file_not_readable_by_kiosk" "Daemon ready file must be readable by the VEMKiosk user."
+  }
+  if (-not [bool]$Facts.readyFile.ipcEndpointPresent -or -not [bool]$Facts.readyFile.tokenPresent) {
+    Add-RuntimeAcceptanceDiagnostic $diagnostics "daemon_ipc_handoff_missing" "Ready file must include the daemon IPC endpoint and token."
+  }
+  if (-not [bool]$Facts.daemonRuntime.ipcReachable) {
+    Add-RuntimeAcceptanceDiagnostic $diagnostics "daemon_ipc_unreachable" "Daemon IPC must be reachable through the ready-file handoff."
+  }
+  if (
+    -not [bool]$Facts.serviceState.daemonService.installed -or
+    -not [bool]$Facts.serviceState.daemonService.running -or
+    [string]$Facts.serviceState.daemonService.startupType -ne "automatic"
+  ) {
+    Add-RuntimeAcceptanceDiagnostic $diagnostics "daemon_service_not_running" "Vending Daemon must be installed, running, and configured for automatic startup."
+  }
+  if ([string]$Facts.startupBringup.machineUiStartup.mode -eq "scheduled_task") {
+    if (-not [bool]$Facts.serviceState.machineUiTask.exists) {
+      Add-RuntimeAcceptanceDiagnostic $diagnostics "machine_ui_task_missing" "VEMMachineUI scheduled task must exist before runtime-ready can pass."
+    }
+    if (-not [bool]$Facts.serviceState.machineUiTask.enabled) {
+      Add-RuntimeAcceptanceDiagnostic $diagnostics "machine_ui_task_disabled" "VEMMachineUI scheduled task must be enabled before runtime-ready can pass."
+    }
+    if ([string]$Facts.serviceState.machineUiTask.runAsUser -ne "VEMKiosk") {
+      Add-RuntimeAcceptanceDiagnostic $diagnostics "machine_ui_task_user_mismatch" "VEMMachineUI scheduled task must run as the VEMKiosk user."
+    }
+  }
+  if ([string]$Facts.startupBringup.configuredBy -ne "scripts/windows/setup-scheduled-tasks.ps1" -or -not [bool]$Facts.startupBringup.productionBringup) {
+    Add-RuntimeAcceptanceDiagnostic $diagnostics "production_bringup_required" "Fresh Bring-Up Acceptance must use the production bring-up script path."
+  }
+  if ([bool]$Facts.startupBringup.daemonOwnedInitialization) {
+    Add-RuntimeAcceptanceDiagnostic $diagnostics "daemon_owned_startup_initialization" "Winlogon auto-logon and customer startup must not be daemon-owned initialization."
+  }
+  if (-not [bool]$Facts.startupBringup.autoLogon.configured) {
+    Add-RuntimeAcceptanceDiagnostic $diagnostics "winlogon_autologon_missing" "Winlogon auto-logon must be configured by production bring-up before runtime-ready can pass."
+  }
+  if ([string]$Facts.startupBringup.autoLogon.user -ne "VEMKiosk") {
+    Add-RuntimeAcceptanceDiagnostic $diagnostics "winlogon_autologon_user_mismatch" "Winlogon auto-logon must target the VEMKiosk customer session."
+  }
+  if (-not [bool]$Facts.startupBringup.autoLogon.force) {
+    Add-RuntimeAcceptanceDiagnostic $diagnostics "winlogon_force_autologon_missing" "Winlogon ForceAutoLogon must be enabled for unattended cold boot acceptance."
+  }
+  if (-not [bool]$Facts.startupBringup.machineUiStartup.configured) {
+    Add-RuntimeAcceptanceDiagnostic $diagnostics "machine_ui_startup_missing" "Machine UI startup must be configured by production bring-up."
+  }
+  if ([string]$Facts.startupBringup.machineUiStartup.runAsUser -ne "VEMKiosk") {
+    Add-RuntimeAcceptanceDiagnostic $diagnostics "machine_ui_startup_user_mismatch" "Machine UI startup must target the VEMKiosk customer session."
+  }
+  if ([string]$Facts.startupBringup.machineUiStartup.mode -eq "scheduled_task") {
+    $machineUiStartupCommand = @($Facts.startupBringup.startupCommands | Where-Object {
+      [string]$_.name -eq "VEMMachineUI" -or [string]$_.name -eq "\\VEMMachineUI"
+    } | Select-Object -First 1)
+
+    if ($machineUiStartupCommand.Count -eq 0 -or -not [bool]$machineUiStartupCommand[0].exists) {
+      Add-RuntimeAcceptanceDiagnostic $diagnostics "machine_ui_startup_command_missing" "Production bring-up must provide live VEMMachineUI startup command evidence."
+    } else {
+      $commandEvidence = $machineUiStartupCommand[0]
+      if (-not [bool]$commandEvidence.enabled) {
+        Add-RuntimeAcceptanceDiagnostic $diagnostics "machine_ui_startup_command_disabled" "VEMMachineUI startup command must be enabled."
+      }
+      if ([string]$commandEvidence.runAsUser -ne "VEMKiosk") {
+        Add-RuntimeAcceptanceDiagnostic $diagnostics "machine_ui_startup_command_user_mismatch" "VEMMachineUI startup command must run as the VEMKiosk user."
+      }
+      if ([string]$commandEvidence.command -ne "C:\\Windows\\System32\\wscript.exe") {
+        Add-RuntimeAcceptanceDiagnostic $diagnostics "machine_ui_startup_command_path_mismatch" "VEMMachineUI startup command must use the production wscript launcher path."
+      }
+      if (-not ([string]$commandEvidence.arguments).Contains("C:\\VEM\\bringup\\launch-machine-ui.vbs")) {
+        Add-RuntimeAcceptanceDiagnostic $diagnostics "machine_ui_startup_arguments_mismatch" "VEMMachineUI startup arguments must point at the production machine UI launcher."
+      }
+      if ([string]$commandEvidence.workingDirectory -ne "C:\\VEM\\bringup") {
+        Add-RuntimeAcceptanceDiagnostic $diagnostics "machine_ui_startup_working_directory_mismatch" "VEMMachineUI startup working directory must be the production bring-up directory."
+      }
+    }
+  }
+  if (-not [bool]$Facts.provisioning.provisioned) {
+    Add-RuntimeAcceptanceDiagnostic $diagnostics "machine_provisioning_incomplete" "Machine Provisioning must complete before runtime-ready can pass."
+  }
+  if (-not [bool]$Facts.provisioning.usedDaemonIpcClaimPath) {
+    Add-RuntimeAcceptanceDiagnostic $diagnostics "machine_provisioning_bypassed_daemon_ipc" "Machine Provisioning must use the daemon IPC claim path."
+  }
+  if (-not [bool]$Facts.daemonRuntime.readyz.ready) {
+    Add-RuntimeAcceptanceDiagnostic $diagnostics "daemon_readyz_not_ready" "Daemon readyz must report ready before runtime-ready can pass."
+  }
+  if (-not [bool]$Facts.daemonRuntime.healthz.backendOnline) {
+    Add-RuntimeAcceptanceDiagnostic $diagnostics "backend_connectivity_failed" "Daemon health must report backend connectivity."
+  }
+  if (-not [bool]$Facts.daemonRuntime.healthz.mqttConnected) {
+    Add-RuntimeAcceptanceDiagnostic $diagnostics "mqtt_connectivity_failed" "Daemon health must report MQTT connectivity."
+  }
+  if (-not [bool]$Facts.kioskRuntime.webviewRunning -or -not (Test-RuntimeAcceptanceTauriHashRouteUrl ([string]$Facts.kioskRuntime.url))) {
+    Add-RuntimeAcceptanceDiagnostic $diagnostics "kiosk_webview_missing" "Machine Runtime Console must be running as a Tauri WebView serving tauri.localhost with a hash route."
+  }
+  if ([string]$Facts.kioskRuntime.sessionUser -ne "VEMKiosk") {
+    Add-RuntimeAcceptanceDiagnostic $diagnostics "kiosk_session_user_mismatch" "Machine Runtime Console must run in the VEMKiosk customer session."
+  }
+  if (
+    $null -eq $Facts.kioskRuntime.sessionId -or
+    $null -eq $Facts.displayEvidence.interactiveDesktopDisplayBaseline.sessionId -or
+    $null -eq $Facts.displayEvidence.portraitKioskAcceptance.sessionId
+  ) {
+    Add-RuntimeAcceptanceDiagnostic $diagnostics "kiosk_session_id_missing" "Runtime acceptance requires observed interactive VEMKiosk session ids."
+  }
+  if (
+    $Facts.kioskRuntime.sessionId -ne $Facts.displayEvidence.interactiveDesktopDisplayBaseline.sessionId -or
+    $Facts.kioskRuntime.sessionId -ne $Facts.displayEvidence.portraitKioskAcceptance.sessionId
+  ) {
+    Add-RuntimeAcceptanceDiagnostic $diagnostics "kiosk_session_id_mismatch" "Machine Runtime Console evidence must match the active VEMKiosk interactive session."
+  }
+  if ([string]$Facts.displayEvidence.portraitKioskAcceptance.sessionUser -ne "VEMKiosk") {
+    Add-RuntimeAcceptanceDiagnostic $diagnostics "portrait_kiosk_session_user_mismatch" "Portrait Kiosk Acceptance must be captured from the VEMKiosk customer session."
+  }
+  if (
+    [string]$Facts.displayEvidence.interactiveDesktopDisplayBaseline.status -ne "passed" -or
+    [int]$Facts.displayEvidence.interactiveDesktopDisplayBaseline.widthPx -ne 1080 -or
+    [int]$Facts.displayEvidence.interactiveDesktopDisplayBaseline.heightPx -ne 1920
+  ) {
+    Add-RuntimeAcceptanceDiagnostic $diagnostics "interactive_desktop_display_baseline_missing" "Interactive Desktop Display Baseline must pass at exactly 1080x1920 before runtime-ready can pass."
+  }
+  if (
+    [string]$Facts.displayEvidence.portraitKioskAcceptance.status -ne "passed" -or
+    [string]$Facts.displayEvidence.portraitKioskAcceptance.source -ne "interactive_kiosk_session" -or
+    [int]$Facts.displayEvidence.portraitKioskAcceptance.widthPx -ne 1080 -or
+    [int]$Facts.displayEvidence.portraitKioskAcceptance.heightPx -ne 1920
+  ) {
+    Add-RuntimeAcceptanceDiagnostic $diagnostics "portrait_kiosk_acceptance_missing" "Portrait Kiosk Acceptance requires 1080x1920 evidence from the interactive kiosk session."
+  }
+
+  return [ordered]@{
+    schemaVersion = "runtime-acceptance-report/v1"
+    mode = $Facts.mode
+    target = $Facts.target
+    artifacts = $Facts.artifacts
+    displayEvidence = $Facts.displayEvidence
+    serviceState = $Facts.serviceState
+    startupBringup = $Facts.startupBringup
+    readyFile = $Facts.readyFile
+    provisioning = $Facts.provisioning
+    daemonRuntime = $Facts.daemonRuntime
+    kioskRuntime = $Facts.kioskRuntime
+    result = [ordered]@{
+      runtimeReady = if ($diagnostics.Count -eq 0) { New-RuntimeAcceptanceAssertion "passed" $true } else { New-RuntimeAcceptanceAssertion "failed" $false }
+      simulatedHardwareReady = [ordered]@{
+        status = "not_asserted"
+        asserted = $false
+      }
+      sellReady = [ordered]@{
+        status = "not_asserted"
+        asserted = $false
+      }
+    }
+    diagnostics = @($diagnostics)
+  }
+}
+
+function Get-RuntimeAcceptanceReport($ProvisioningActions = @()) {
+  $inventory = Get-InventoryFacts $ProvisioningActions
+  $factsSubset = $inventory.runtimeAcceptanceFactsSubset
+  $daemonIpc = Get-DaemonIpcInventoryEvidence "C:\\ProgramData\\VEM\\vending-daemon\\daemon-ready.json"
+  $daemonRuntime = Convert-DaemonRuntimeEvidence $daemonIpc
+  $readyFilePath = "C:\\ProgramData\\VEM\\vending-daemon\\daemon-ready.json"
+  $facts = [ordered]@{
+    mode = "fresh_bring_up"
+    target = $factsSubset.target
+    artifacts = [ordered]@{
+      daemonSha256 = Get-ArtifactSha256 "C:\\VEM\\bringup\\vending-daemon.exe"
+      machineUiSha256 = Get-ArtifactSha256 "C:\\VEM\\bringup\\machine.exe"
+    }
+    displayEvidence = $factsSubset.displayEvidence
+    serviceState = $factsSubset.serviceState
+    startupBringup = $factsSubset.startupBringup
+    readyFile = [ordered]@{
+      exists = [bool]$daemonIpc.readyFile.exists
+      readableByKioskUser = Test-ReadyFileReadableByKioskUser $readyFilePath
+      ipcEndpointPresent = [bool]$daemonIpc.readyFile.ipcEndpointPresent
+      tokenPresent = [bool]$daemonIpc.readyFile.tokenPresent
+    }
+    provisioning = [ordered]@{
+      provisioned = [bool]$factsSubset.provisioning.provisioned
+      usedDaemonIpcClaimPath = [bool]$factsSubset.provisioning.usedDaemonIpcClaimPath
+      machineCode = if ([string]::IsNullOrWhiteSpace($daemonIpc.config.machineCode)) { $null } else { [string]$daemonIpc.config.machineCode }
+    }
+    daemonRuntime = [ordered]@{
+      ipcReachable = $daemonRuntime.ipcReachable
+      healthz = $daemonRuntime.healthz
+      readyz = $daemonRuntime.readyz
+    }
+    kioskRuntime = $factsSubset.kioskRuntime
+  }
+  $runtimeAcceptanceReport = Classify-RuntimeAcceptanceReport $facts
+  $runtimeAcceptanceReportPath = ${psString(RUNTIME_ACCEPTANCE_REPORT_FILE)}
+  $runtimeAcceptanceReportDirectory = Split-Path -Parent $runtimeAcceptanceReportPath
+  if (-not (Test-Path -LiteralPath $runtimeAcceptanceReportDirectory)) {
+    New-Item -ItemType Directory -Path $runtimeAcceptanceReportDirectory -Force | Out-Null
+  }
+  $runtimeAcceptanceReportJson = $runtimeAcceptanceReport | ConvertTo-Json -Depth 40
+  Set-Content -LiteralPath $runtimeAcceptanceReportPath -Value $runtimeAcceptanceReportJson -Encoding UTF8
+  return [ordered]@{
+    path = $runtimeAcceptanceReportPath
+    report = $runtimeAcceptanceReport
+  }
+}
+
 function Invoke-ResetStep($Actions, [string]$Name, [scriptblock]$Script) {
   $status = "succeeded"
   $message = $null
@@ -1609,7 +2314,7 @@ function Get-InventoryFacts($ProvisioningActions = @()) {
   $daemonConfig = Test-PathEvidence "C:\\ProgramData\\VEM\\vending-daemon\\machine-config.json"
   $startupBringup = Get-StartupBringupEvidence
   $daemonIpc = Get-DaemonIpcInventoryEvidence "C:\\ProgramData\\VEM\\vending-daemon\\daemon-ready.json"
-  $provisioningFacts = Convert-ProvisioningFacts $daemonIpc $ProvisioningActions
+  $provisioningFacts = Convert-ProvisioningFacts $daemonIpc (@($ProvisioningActions) + @(Get-PersistedProvisioningActions))
   $runtimeAcceptanceFactsSubset = [ordered]@{
     mode = "fresh_bring_up"
     target = [ordered]@{
@@ -1744,9 +2449,17 @@ if ($mode -eq "provision") {
 $inventoryAfter = if ($mode -eq "inventory-reset") { Get-InventoryFacts } else { $null }
 $inventoryAfterBringUp = if ($mode -eq "bring-up") { Get-InventoryFacts } else { $null }
 $inventoryAfterProvision = if ($mode -eq "provision") { Get-InventoryFacts $provisioningActions } else { $null }
+$runtimeAcceptanceReportResult = if ($mode -eq "runtime-acceptance") { Get-RuntimeAcceptanceReport $provisioningActions } else { $null }
+$runtimeAcceptanceReport = if ($null -ne $runtimeAcceptanceReportResult) { $runtimeAcceptanceReportResult.report } else { $null }
+$actionsOk = (((@($resetActions) + @($bringUpActions) + @($provisioningActions)) | Where-Object { $_.status -eq "failed" } | Measure-Object | Select-Object -ExpandProperty Count) -eq 0)
+$runtimeAcceptanceOk = if ($mode -eq "runtime-acceptance") {
+  $null -ne $runtimeAcceptanceReport -and [string]$runtimeAcceptanceReport.result.runtimeReady.status -eq "passed"
+} else {
+  $true
+}
 
 [pscustomobject]@{
-  ok = (((@($resetActions) + @($bringUpActions) + @($provisioningActions)) | Where-Object { $_.status -eq "failed" } | Measure-Object | Select-Object -ExpandProperty Count) -eq 0)
+  ok = $actionsOk -and $runtimeAcceptanceOk
   mode = $mode
   inventory = $inventoryBefore
   reset = [ordered]@{
@@ -1771,6 +2484,8 @@ ${bringUpReportArgumentLines}
   inventoryAfterReset = $inventoryAfter
   inventoryAfterBringUp = $inventoryAfterBringUp
   inventoryAfterProvision = $inventoryAfterProvision
+  runtimeAcceptanceReportPath = if ($null -ne $runtimeAcceptanceReportResult) { $runtimeAcceptanceReportResult.path } else { $null }
+  runtimeAcceptanceReport = $runtimeAcceptanceReport
 } | ConvertTo-Json -Depth 40
 `;
 }
@@ -1789,9 +2504,32 @@ export function buildSshCommand(options = {}) {
   return ["ssh", ...sshArgs, remote];
 }
 
+export function getRuntimeAcceptanceExitStatus({
+  mode,
+  sshStatus,
+  stdout,
+} = {}) {
+  const status = sshStatus ?? 1;
+  if (status !== 0) {
+    return status;
+  }
+  if (mode !== "runtime-acceptance") {
+    return 0;
+  }
+
+  try {
+    const output = JSON.parse(String(stdout ?? ""));
+    const runtimeReady =
+      output?.runtimeAcceptanceReport?.result?.runtimeReady?.status;
+    return output?.ok === true && runtimeReady === "passed" ? 0 : 1;
+  } catch {
+    return 1;
+  }
+}
+
 function usage() {
   console.error(`Usage:
-  win10-vem-e2e.mjs [--mode inventory|reset|inventory-reset|bring-up|provision] [--claim-code CODE] [--remote USER@HOST] [--ssh-config] [--proxy-command CMD] [--identity KEY] [--dry-run] [--out PATH]
+  win10-vem-e2e.mjs [--mode inventory|reset|inventory-reset|bring-up|provision|runtime-acceptance] [--claim-code CODE] [--remote USER@HOST] [--ssh-config] [--proxy-command CMD] [--identity KEY] [--dry-run] [--out PATH]
 
 Defaults target the documented Machine Runtime Testbed:
   --remote YKDZ@100.68.189.11
@@ -1800,6 +2538,8 @@ Defaults target the documented Machine Runtime Testbed:
 Bring-up mode invokes C:\\VEM\\bringup\\scripts\\setup-scheduled-tasks.ps1 on the remote host and requires VEM_KIOSK_PASSWORD, VEM_MAINTENANCE_PASSWORD, and VEM_AUTOLOGON_PASSWORD in the remote PowerShell environment.
 
 Provision mode reads the daemon ready file, applies only pre-claim platform endpoints, and claims the prepared testbed identity through daemon IPC /v1/provisioning/claim.
+
+Runtime-acceptance mode writes C:\\ProgramData\\VEM\\vending-daemon\\runtime-acceptance-report.json on the remote host and includes the same report in stdout; use --out to save the SSH response locally.
 `);
 }
 
@@ -1890,7 +2630,13 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     if (result.stderr) {
       process.stderr.write(result.stderr);
     }
-    process.exit(result.status ?? 1);
+    process.exit(
+      getRuntimeAcceptanceExitStatus({
+        mode: options.mode,
+        sshStatus: result.status,
+        stdout: result.stdout,
+      }),
+    );
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
     usage();

@@ -9,7 +9,7 @@ const EXPECTED_MACHINE_UI_COMMAND = "C:\\Windows\\System32\\wscript.exe";
 const EXPECTED_MACHINE_UI_LAUNCHER = "C:\\VEM\\bringup\\launch-machine-ui.vbs";
 const EXPECTED_MACHINE_UI_WORKING_DIRECTORY = "C:\\VEM\\bringup";
 const sha256Schema = z.string().regex(/^[a-fA-F0-9]{64}$/);
-const sessionIdSchema = z.int().nonnegative();
+const sessionIdSchema = z.int().nonnegative().nullable();
 
 const displayDimensionsEvidenceSchema = z.strictObject({
   status: z.enum(["passed", "failed", "observed", "missing"]),
@@ -91,6 +91,7 @@ export const runtimeAcceptanceFactsSchema = z.strictObject({
   provisioning: z.strictObject({
     provisioned: z.boolean(),
     usedDaemonIpcClaimPath: z.boolean(),
+    machineCode: z.string().min(1).nullable(),
   }),
   daemonRuntime: z.strictObject({
     ipcReachable: z.boolean(),
@@ -190,6 +191,23 @@ export function classifyRuntimeAcceptanceReport(
     addDiagnostic(
       "testbed_machine_identity_required",
       "Machine Runtime Testbed MVP reports must use a VEM-TESTBED-* machine identity.",
+    );
+  }
+  const observedMachineCode = facts.provisioning.machineCode;
+  if (observedMachineCode === null) {
+    addDiagnostic(
+      "daemon_config_machine_identity_missing",
+      "Runtime acceptance must include the daemon-observed machine identity from config IPC.",
+    );
+  } else if (!observedMachineCode.startsWith(TESTBED_MACHINE_CODE_PREFIX)) {
+    addDiagnostic(
+      "daemon_config_machine_identity_required",
+      "Daemon-observed machine identity must be a VEM-TESTBED-* machine identity.",
+    );
+  } else if (observedMachineCode !== facts.target.machineCode) {
+    addDiagnostic(
+      "daemon_config_machine_identity_mismatch",
+      "Daemon-observed machine identity must match the requested testbed target.",
     );
   }
   if (!facts.readyFile.exists) {
@@ -387,6 +405,17 @@ export function classifyRuntimeAcceptanceReport(
     addDiagnostic(
       "kiosk_session_user_mismatch",
       "Machine Runtime Console must run in the VEMKiosk customer session.",
+    );
+  }
+  if (
+    facts.kioskRuntime.sessionId === null ||
+    facts.displayEvidence.interactiveDesktopDisplayBaseline.sessionId ===
+      null ||
+    facts.displayEvidence.portraitKioskAcceptance.sessionId === null
+  ) {
+    addDiagnostic(
+      "kiosk_session_id_missing",
+      "Runtime acceptance requires observed interactive VEMKiosk session ids.",
     );
   }
   if (

@@ -95,6 +95,7 @@ function runtimeReadyFacts(): RuntimeAcceptanceFacts {
     provisioning: {
       provisioned: true,
       usedDaemonIpcClaimPath: true,
+      machineCode: "VEM-TESTBED-WINVM-01",
     },
     daemonRuntime: {
       ipcReachable: true,
@@ -123,6 +124,7 @@ describe("Runtime Acceptance Report contract", () => {
     expect(report.schemaVersion).toBe("runtime-acceptance-report/v1");
     expect(report.mode).toBe("fresh_bring_up");
     expect(report.target.machineCode).toBe("VEM-TESTBED-WINVM-01");
+    expect(report.provisioning.machineCode).toBe("VEM-TESTBED-WINVM-01");
     expect(report.result.runtimeReady).toEqual({
       status: "passed",
       asserted: true,
@@ -160,6 +162,27 @@ describe("Runtime Acceptance Report contract", () => {
   });
 
   it.each([
+    {
+      name: "observed daemon config identity is missing",
+      mutate: (facts: RuntimeAcceptanceFacts) => {
+        facts.provisioning.machineCode = null;
+      },
+      code: "daemon_config_machine_identity_missing",
+    },
+    {
+      name: "observed daemon config identity is not a testbed identity",
+      mutate: (facts: RuntimeAcceptanceFacts) => {
+        facts.provisioning.machineCode = "VEM-WIN10-REAL-01";
+      },
+      code: "daemon_config_machine_identity_required",
+    },
+    {
+      name: "observed daemon config identity does not match the target",
+      mutate: (facts: RuntimeAcceptanceFacts) => {
+        facts.provisioning.machineCode = "VEM-TESTBED-OLD-01";
+      },
+      code: "daemon_config_machine_identity_mismatch",
+    },
     {
       name: "ready file is not readable by the kiosk user",
       mutate: (facts: RuntimeAcceptanceFacts) => {
@@ -476,6 +499,42 @@ describe("Runtime Acceptance Report contract", () => {
       message:
         "Machine Runtime Console evidence must match the active VEMKiosk interactive session.",
     });
+  });
+
+  it("parses failed reports with missing interactive session ids", () => {
+    const facts = runtimeReadyFacts();
+    facts.displayEvidence.interactiveDesktopDisplayBaseline = {
+      status: "missing",
+      widthPx: 0,
+      heightPx: 0,
+      sessionUser: "unknown",
+      sessionId: null,
+    };
+    facts.displayEvidence.portraitKioskAcceptance = {
+      status: "failed",
+      widthPx: 0,
+      heightPx: 0,
+      sessionUser: "unknown",
+      sessionId: null,
+      source: "interactive_kiosk_session",
+    };
+    facts.kioskRuntime = {
+      webviewRunning: false,
+      url: "unavailable:no-tauri-hash-route-target",
+      sessionUser: "unknown",
+      sessionId: null,
+    };
+
+    const report = classifyRuntimeAcceptanceReport(facts);
+
+    expect(runtimeAcceptanceReportSchema.parse(report)).toEqual(report);
+    expect(report.result.runtimeReady).toEqual({
+      status: "failed",
+      asserted: false,
+    });
+    expect(report.diagnostics.map((diagnostic) => diagnostic.code)).toContain(
+      "kiosk_session_id_missing",
+    );
   });
 
   it("allows shell launcher bring-up to omit the VEMMachineUI scheduled task", () => {
