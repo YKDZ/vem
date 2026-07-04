@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import {
+  buildBringUpPlan,
   buildResetPlan,
   buildRemotePowerShellScript,
   buildSshCommand,
@@ -9,6 +10,37 @@ import {
 } from "./win10-vem-e2e.mjs";
 
 describe("win10-vem-e2e reset planning", () => {
+  it("plans production bring-up through the shared Windows setup script", () => {
+    const plan = buildBringUpPlan();
+
+    assert.equal(
+      plan.setupScript,
+      "C:\\VEM\\bringup\\scripts\\setup-scheduled-tasks.ps1",
+    );
+    assert.deepEqual(plan.requiredSecretEnvironment, [
+      "VEM_KIOSK_PASSWORD",
+      "VEM_MAINTENANCE_PASSWORD",
+      "VEM_AUTOLOGON_PASSWORD",
+    ]);
+    assert.equal(plan.arguments.KioskUser, "VEMKiosk");
+    assert.equal(plan.arguments.MaintenanceUser, "YKDZ");
+    assert.equal(plan.arguments.RunAsUser, "YKDZ");
+    assert.equal(plan.arguments.KioskPassword, "$env:VEM_KIOSK_PASSWORD");
+    assert.equal(
+      plan.arguments.MaintenancePassword,
+      "$env:VEM_MAINTENANCE_PASSWORD",
+    );
+    assert.equal(
+      plan.arguments.AutoLogonPassword,
+      "$env:VEM_AUTOLOGON_PASSWORD",
+    );
+    assert.deepEqual(plan.switches, [
+      "ConfigureKioskAccounts",
+      "UseKioskAccount",
+      "ConfigureAutoLogon",
+    ]);
+  });
+
   it("plans only VEM runtime and registration artifacts for reset", () => {
     const plan = buildResetPlan();
 
@@ -211,8 +243,73 @@ describe("win10-vem-e2e reset planning", () => {
     assert.match(script, /widthPx = \[int\]\$screen.widthPx/);
     assert.match(script, /heightPx = \[int\]\$screen.heightPx/);
     assert.match(script, /serviceState = \[ordered\]@{/);
+    assert.match(script, /startupBringup = \$startupBringup/);
+    assert.match(script, /function Get-StartupBringupEvidence/);
+    assert.match(
+      script,
+      /C:\\ProgramData\\VEM\\vending-daemon\\startup-bringup-evidence\.json/,
+    );
+    assert.match(script, /configuredBy = "missing"/);
+    assert.match(script, /productionBringup = \$false/);
+    assert.match(script, /daemonOwnedInitialization = \$true/);
+    assert.match(script, /startupCommands = \$startupCommands/);
     assert.match(script, /readyFile = \[ordered\]@{/);
     assert.match(script, /provisioning = \[ordered\]@{/);
+  });
+
+  it("builds a bring-up script that invokes production setup with testbed-safe arguments", () => {
+    const script = buildRemotePowerShellScript({ mode: "bring-up" });
+
+    assert.match(script, /function Invoke-ProductionBringUp/);
+    assert.match(
+      script,
+      /\$setupScript = 'C:\\VEM\\bringup\\scripts\\setup-scheduled-tasks\.ps1'/,
+    );
+    assert.match(script, /Assert-RequiredSecretEnvironment \$secretName/);
+    assert.match(script, /'VEM_KIOSK_PASSWORD'/);
+    assert.match(script, /'VEM_MAINTENANCE_PASSWORD'/);
+    assert.match(script, /'VEM_AUTOLOGON_PASSWORD'/);
+    assert.match(script, /'KioskUser' = 'VEMKiosk'/);
+    assert.match(script, /'MaintenanceUser' = 'YKDZ'/);
+    assert.match(script, /'RunAsUser' = 'YKDZ'/);
+    assert.match(script, /'KioskPassword' = \$env:VEM_KIOSK_PASSWORD/);
+    assert.match(
+      script,
+      /'MaintenancePassword' = \$env:VEM_MAINTENANCE_PASSWORD/,
+    );
+    assert.match(script, /'AutoLogonPassword' = \$env:VEM_AUTOLOGON_PASSWORD/);
+    assert.match(script, /\$setupArgs\['ConfigureKioskAccounts'\] = \$true/);
+    assert.match(script, /\$setupArgs\['UseKioskAccount'\] = \$true/);
+    assert.match(script, /\$setupArgs\['ConfigureAutoLogon'\] = \$true/);
+    assert.match(
+      script,
+      /'DaemonExe' = 'C:\\VEM\\bringup\\vending-daemon.exe'/,
+    );
+    assert.match(script, /'MachineUiExe' = 'C:\\VEM\\bringup\\machine.exe'/);
+    assert.match(
+      script,
+      /'StartupBringupEvidenceFile' = 'C:\\ProgramData\\VEM\\vending-daemon\\startup-bringup-evidence.json'/,
+    );
+    assert.match(script, /& \$setupScript @setupArgs/);
+    assert.doesNotMatch(script, /1256987/);
+    assert.doesNotMatch(script, /AllowBlankAutoLogonPassword/);
+  });
+
+  it("rejects a reset-plus-bring-up shortcut that would delete the setup script before using it", () => {
+    assert.throws(
+      () =>
+        buildRemotePowerShellScript({
+          mode: "inventory-reset-bring-up",
+        }),
+      /unsupported mode: inventory-reset-bring-up/,
+    );
+
+    const script = buildRemotePowerShellScript({ mode: "bring-up" });
+
+    assert.doesNotMatch(script, /inventory-reset-bring-up/);
+    assert.match(script, /\$mode -eq "bring-up"/);
+    assert.match(script, /Invoke-ProductionBringUp \$bringUpActions/);
+    assert.match(script, /inventoryAfterBringUp/);
   });
 
   it("builds the documented Tailscale/OpenSSH command without requiring the real VM in tests", () => {

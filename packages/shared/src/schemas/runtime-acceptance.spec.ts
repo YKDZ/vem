@@ -56,6 +56,34 @@ function runtimeReadyFacts(): RuntimeAcceptanceFacts {
         runAsUser: "VEMKiosk",
       },
     },
+    startupBringup: {
+      configuredBy: "scripts/windows/setup-scheduled-tasks.ps1",
+      productionBringup: true,
+      daemonOwnedInitialization: false,
+      autoLogon: {
+        configured: true,
+        user: "VEMKiosk",
+        domain: "DESKTOP-2STVS5B",
+        force: true,
+      },
+      machineUiStartup: {
+        configured: true,
+        mode: "scheduled_task",
+        runAsUser: "VEMKiosk",
+        command: "C:\\Windows\\System32\\wscript.exe",
+      },
+      startupCommands: [
+        {
+          name: "VEMMachineUI",
+          exists: true,
+          enabled: true,
+          runAsUser: "VEMKiosk",
+          command: "C:\\Windows\\System32\\wscript.exe",
+          arguments: '"C:\\VEM\\bringup\\launch-machine-ui.vbs"',
+          workingDirectory: "C:\\VEM\\bringup",
+        },
+      ],
+    },
     readyFile: {
       exists: true,
       readableByKioskUser: true,
@@ -177,6 +205,85 @@ describe("Runtime Acceptance Report contract", () => {
         facts.serviceState.daemonService.running = false;
       },
       code: "daemon_service_not_running",
+    },
+    {
+      name: "startup evidence was collected from a different script",
+      mutate: (facts: RuntimeAcceptanceFacts) => {
+        facts.startupBringup.configuredBy = "scripts/testbed/test-only.ps1";
+      },
+      code: "production_bringup_required",
+    },
+    {
+      name: "startup was not configured by production bring-up",
+      mutate: (facts: RuntimeAcceptanceFacts) => {
+        facts.startupBringup.productionBringup = false;
+      },
+      code: "production_bringup_required",
+    },
+    {
+      name: "startup was configured by daemon-owned initialization",
+      mutate: (facts: RuntimeAcceptanceFacts) => {
+        facts.startupBringup.daemonOwnedInitialization = true;
+      },
+      code: "daemon_owned_startup_initialization",
+    },
+    {
+      name: "Winlogon auto-logon is not configured",
+      mutate: (facts: RuntimeAcceptanceFacts) => {
+        facts.startupBringup.autoLogon.configured = false;
+      },
+      code: "winlogon_autologon_missing",
+    },
+    {
+      name: "Winlogon auto-logon targets a non-kiosk user",
+      mutate: (facts: RuntimeAcceptanceFacts) => {
+        facts.startupBringup.autoLogon.user = "YKDZ";
+      },
+      code: "winlogon_autologon_user_mismatch",
+    },
+    {
+      name: "machine UI startup is not configured by bring-up",
+      mutate: (facts: RuntimeAcceptanceFacts) => {
+        facts.startupBringup.machineUiStartup.configured = false;
+      },
+      code: "machine_ui_startup_missing",
+    },
+    {
+      name: "scheduled-task startup command evidence is missing",
+      mutate: (facts: RuntimeAcceptanceFacts) => {
+        facts.startupBringup.startupCommands = [];
+      },
+      code: "machine_ui_startup_command_missing",
+    },
+    {
+      name: "scheduled-task startup command uses the wrong user",
+      mutate: (facts: RuntimeAcceptanceFacts) => {
+        facts.startupBringup.startupCommands[0].runAsUser = "YKDZ";
+      },
+      code: "machine_ui_startup_command_user_mismatch",
+    },
+    {
+      name: "scheduled-task startup command uses the wrong executable",
+      mutate: (facts: RuntimeAcceptanceFacts) => {
+        facts.startupBringup.startupCommands[0].command =
+          "C:\\VEM\\bringup\\machine.exe";
+      },
+      code: "machine_ui_startup_command_path_mismatch",
+    },
+    {
+      name: "scheduled-task startup command uses the wrong launcher",
+      mutate: (facts: RuntimeAcceptanceFacts) => {
+        facts.startupBringup.startupCommands[0].arguments =
+          '"C:\\VEM\\bringup\\test-only-launcher.vbs"';
+      },
+      code: "machine_ui_startup_arguments_mismatch",
+    },
+    {
+      name: "scheduled-task startup command uses the wrong working directory",
+      mutate: (facts: RuntimeAcceptanceFacts) => {
+        facts.startupBringup.startupCommands[0].workingDirectory = "C:\\VEM";
+      },
+      code: "machine_ui_startup_working_directory_mismatch",
     },
     {
       name: "machine provisioning has not completed",
@@ -340,6 +447,31 @@ describe("Runtime Acceptance Report contract", () => {
       message:
         "Portrait Kiosk Acceptance must be captured from the VEMKiosk customer session.",
     });
+  });
+
+  it("allows shell launcher bring-up to omit the VEMMachineUI scheduled task", () => {
+    const facts = runtimeReadyFacts();
+    facts.serviceState.machineUiTask = {
+      name: "VEMMachineUI",
+      exists: false,
+      enabled: false,
+      runAsUser: "unknown",
+    };
+    facts.startupBringup.machineUiStartup = {
+      configured: true,
+      mode: "shell_launcher",
+      runAsUser: "VEMKiosk",
+      command: "C:\\VEM\\bringup\\machine.exe",
+    };
+    facts.startupBringup.startupCommands = [];
+
+    const report = classifyRuntimeAcceptanceReport(facts);
+
+    expect(report.result.runtimeReady).toEqual({
+      status: "passed",
+      asserted: true,
+    });
+    expect(report.diagnostics).toEqual([]);
   });
 
   it("keeps real hardware and simulator readiness as non-goals for the MVP", () => {

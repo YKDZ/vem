@@ -47,6 +47,7 @@ param(
   [string]$DaemonExe = "C:\VEM\bringup\vending-daemon.exe",
   [string]$DaemonDataDir = "C:\ProgramData\VEM\vending-daemon",
   [string]$DaemonReadyFile = "C:\ProgramData\VEM\vending-daemon\daemon-ready.json",
+  [string]$StartupBringupEvidenceFile = "C:\ProgramData\VEM\vending-daemon\startup-bringup-evidence.json",
   [string]$MachineUiExe = "C:\VEM\bringup\machine.exe",
   [string]$MachineUiLauncher = "C:\VEM\bringup\launch-machine-ui.vbs",
   [string]$MachineUiDebugLauncher = "C:\VEM\bringup\launch-machine-ui-debug.vbs",
@@ -695,6 +696,130 @@ function Configure-WinlogonAutoLogon {
   New-ItemProperty -Path $path -Name "DefaultPassword" -Value $Password -PropertyType String -Force | Out-Null
 }
 
+function Get-ScheduledTaskStartupEvidence {
+  param(
+    [string]$TaskName,
+    [string]$TaskPath = "\"
+  )
+
+  $task = Get-ScheduledTask -TaskName $TaskName -TaskPath $TaskPath -ErrorAction SilentlyContinue
+  if ($null -eq $task) {
+    return [ordered]@{
+      name = "$TaskPath$TaskName"
+      exists = $false
+      enabled = $false
+      runAsUser = $null
+      command = $null
+      arguments = $null
+      workingDirectory = $null
+    }
+  }
+
+  $action = @($task.Actions | Select-Object -First 1)
+  return [ordered]@{
+    name = "$TaskPath$TaskName"
+    exists = $true
+    enabled = [string]$task.State -ne "Disabled"
+    runAsUser = if ($null -ne $task.Principal) { [string]$task.Principal.UserId } else { $null }
+    command = if ($action.Count -gt 0) { [string]$action[0].Execute } else { $null }
+    arguments = if ($action.Count -gt 0) { [string]$action[0].Arguments } else { $null }
+    workingDirectory = if ($action.Count -gt 0) { [string]$action[0].WorkingDirectory } else { $null }
+  }
+}
+
+function Write-StartupBringupEvidence {
+  param(
+    [string]$Path,
+    [string]$CustomerSessionUser,
+    [string]$KioskUser,
+    [string]$MaintenanceUser,
+    [string]$MachineUiExe,
+    [string]$MachineUiLauncher,
+    [string]$MachineUiDebugLauncher,
+    [bool]$ConfigureKioskShell
+  )
+
+  Ensure-Directory -Path (Split-Path -Parent $Path)
+  $winlogon = Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" -ErrorAction SilentlyContinue
+  $machineUiTask = Get-ScheduledTaskStartupEvidence -TaskName "VEMMachineUI"
+  $maintenanceUiTask = Get-ScheduledTaskStartupEvidence -TaskName "VEMMaintenanceUI"
+  $visionTask = Get-ScheduledTaskStartupEvidence -TaskName "StartVisionServer" -TaskPath "\VEM\"
+
+  $autoLogonUser = if ($null -ne $winlogon -and -not [string]::IsNullOrWhiteSpace($winlogon.DefaultUserName)) {
+    [string]$winlogon.DefaultUserName
+  } else {
+    "unknown"
+  }
+  $autoLogonDomain = if ($null -ne $winlogon -and -not [string]::IsNullOrWhiteSpace($winlogon.DefaultDomainName)) {
+    [string]$winlogon.DefaultDomainName
+  } else {
+    "unknown"
+  }
+
+  $machineUiStartup = if ($ConfigureKioskShell) {
+    [ordered]@{
+      configured = Test-Path -LiteralPath $MachineUiExe
+      mode = "shell_launcher"
+      runAsUser = $KioskUser
+      command = $MachineUiExe
+    }
+  } else {
+    [ordered]@{
+      configured = [bool]$machineUiTask.exists -and [bool]$machineUiTask.enabled
+      mode = "scheduled_task"
+      runAsUser = if ([string]::IsNullOrWhiteSpace($machineUiTask.runAsUser)) { "unknown" } else { [string]$machineUiTask.runAsUser }
+      command = if ([string]::IsNullOrWhiteSpace($machineUiTask.command)) { "unknown" } else { [string]$machineUiTask.command }
+    }
+  }
+
+  $evidence = [ordered]@{
+    schemaVersion = "vem-startup-bringup-evidence/v1"
+    collectedAt = (Get-Date).ToUniversalTime().ToString("o")
+    configuredBy = "scripts/windows/setup-scheduled-tasks.ps1"
+    productionBringup = $true
+    daemonOwnedInitialization = $false
+    users = [ordered]@{
+      customerSession = $CustomerSessionUser
+      kiosk = $KioskUser
+      maintenance = $MaintenanceUser
+    }
+    autoLogon = [ordered]@{
+      configured = $null -ne $winlogon -and [string]$winlogon.AutoAdminLogon -eq "1"
+      force = $null -ne $winlogon -and [string]$winlogon.ForceAutoLogon -eq "1"
+      user = $autoLogonUser
+      domain = $autoLogonDomain
+    }
+    machineUiStartup = $machineUiStartup
+    startupCommands = @(
+      $machineUiTask,
+      $maintenanceUiTask,
+      $visionTask,
+      [ordered]@{
+        name = "MachineUiLauncher"
+        exists = Test-Path -LiteralPath $MachineUiLauncher
+        enabled = $true
+        runAsUser = $CustomerSessionUser
+        command = $MachineUiLauncher
+        arguments = $null
+        workingDirectory = Split-Path -Parent $MachineUiLauncher
+      },
+      [ordered]@{
+        name = "MachineUiDebugLauncher"
+        exists = Test-Path -LiteralPath $MachineUiDebugLauncher
+        enabled = $true
+        runAsUser = $MaintenanceUser
+        command = $MachineUiDebugLauncher
+        arguments = $null
+        workingDirectory = Split-Path -Parent $MachineUiDebugLauncher
+      }
+    )
+  }
+
+  $json = $evidence | ConvertTo-Json -Depth 30
+  [System.IO.File]::WriteAllText($Path, $json, [System.Text.UTF8Encoding]::new($false))
+  Write-Host "Wrote startup bring-up evidence: $Path"
+}
+
 function Show-Verification {
   Write-Host "`n=== VEM startup verification ===" -ForegroundColor Cyan
   Get-Service -Name "VemVendingDaemon" -ErrorAction SilentlyContinue |
@@ -839,6 +964,16 @@ if ($ConfigureAutoLogon) {
 } else {
   Write-Host "Auto-logon not enabled. Re-run with -ConfigureAutoLogon for unattended cold boot."
 }
+
+Write-StartupBringupEvidence `
+  -Path $StartupBringupEvidenceFile `
+  -CustomerSessionUser $CustomerSessionUser `
+  -KioskUser $KioskUser `
+  -MaintenanceUser $MaintenanceUser `
+  -MachineUiExe $MachineUiExe `
+  -MachineUiLauncher $MachineUiLauncher `
+  -MachineUiDebugLauncher $MachineUiDebugLauncher `
+  -ConfigureKioskShell ([bool]$ConfigureKioskShell)
 
 if ($StartNow) {
   Start-Service -Name "VemVendingDaemon" -ErrorAction SilentlyContinue
