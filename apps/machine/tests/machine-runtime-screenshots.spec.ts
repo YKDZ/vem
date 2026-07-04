@@ -174,17 +174,17 @@ async function expectCoreElements(
       await expect(
         page.getByRole("heading", { name: "生产维护" }),
       ).toBeVisible();
-      await expect(page.getByText("Maintenance Console")).toBeVisible();
-      await expect(page.getByText("Daemon", { exact: true })).toBeVisible();
-      await expect(page.getByText("Sync", { exact: true })).toBeVisible();
+      await expect(page.getByText("维护控制台")).toBeVisible();
+      await expect(page.getByText("本地服务", { exact: true })).toBeVisible();
+      await expect(page.getByText("同步", { exact: true })).toBeVisible();
       await expect(page.getByText("下位机", { exact: true })).toBeVisible();
       await expect(page.getByText("扫码器", { exact: true })).toBeVisible();
       await expect(
-        page.getByText("Vision Runtime Status", { exact: true }),
+        page.getByText("视觉运行状态", { exact: true }),
       ).toBeVisible();
-      await expect(page.getByText("Remote Ops", { exact: true })).toBeVisible();
+      await expect(page.getByText("远程运维", { exact: true })).toBeVisible();
       await expect(page.getByText("整机维护锁", { exact: true })).toBeVisible();
-      await expect(page.getByText("Readiness Blockers")).toBeVisible();
+      await expect(page.getByText("销售就绪阻塞项")).toBeVisible();
       await expect(page.getByText("Admin Operations Console")).toHaveCount(0);
       break;
     default:

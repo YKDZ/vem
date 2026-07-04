@@ -459,7 +459,7 @@ describe("MaintenanceView hardware config", () => {
 
     expect(host.textContent).toContain("计划补货");
     expect(host.textContent).toContain("盘点修正");
-    expect(host.textContent).toContain("Maintenance Console");
+    expect(host.textContent).toContain("维护控制台");
     expect(host.textContent).toContain("后端");
     expect(host.textContent).toContain("MQTT");
     expect(host.textContent).toContain("下位机");
@@ -471,12 +471,12 @@ describe("MaintenanceView hardware config", () => {
     expect(host.textContent).toContain("硬件自检");
     expect(host.textContent).toContain("视觉状态");
 
-    expect(host.textContent).not.toContain("machineCode");
-    expect(host.textContent).not.toContain("machineSecret");
-    expect(host.textContent).not.toContain("mqttSigningSecret");
-    expect(host.textContent).not.toContain("mqttPassword");
-    expect(host.textContent).not.toContain("API Base URL");
-    expect(host.textContent).not.toContain("MQTT URL");
+    expect(host.textContent).not.toContain("机器编号");
+    expect(host.textContent).not.toContain("机器密钥状态");
+    expect(host.textContent).not.toContain("MQTT 签名密钥状态");
+    expect(host.textContent).not.toContain("MQTT 密码状态");
+    expect(host.textContent).not.toContain("后端 API 地址");
+    expect(host.textContent).not.toContain("MQTT 地址");
     expect(host.textContent).not.toContain("硬件适配器");
     expect(host.textContent).not.toContain("扫码器适配器");
     expect(host.textContent).not.toContain("visionWsUrl");
@@ -499,18 +499,18 @@ describe("MaintenanceView hardware config", () => {
     const host = await mountView();
     const select = hardwareAdapterSelect(host);
 
-    expect(host.textContent).toContain("machineCode");
-    expect(host.textContent).toContain("Machine Location Label");
-    expect(host.textContent).toContain("machineSecret");
-    expect(host.textContent).toContain("mqttSigningSecret");
-    expect(host.textContent).toContain("mqttPassword");
-    expect(host.textContent).toContain("API Base URL");
-    expect(host.textContent).toContain("MQTT URL");
+    expect(host.textContent).toContain("机器编号");
+    expect(host.textContent).toContain("机器位置标签");
+    expect(host.textContent).toContain("机器密钥状态");
+    expect(host.textContent).toContain("MQTT 签名密钥状态");
+    expect(host.textContent).toContain("MQTT 密码状态");
+    expect(host.textContent).toContain("后端 API 地址");
+    expect(host.textContent).toContain("MQTT 地址");
     expect(host.textContent).toContain("硬件适配器");
     expect(host.textContent).toContain("扫码器适配器");
-    expect(host.textContent).toContain("visionWsUrl");
+    expect(host.textContent).toContain("视觉 WebSocket 地址");
     expect(host.textContent).toContain("视觉试衣预览诊断");
-    expect(host.textContent).toContain("vision.try_on.*");
+    expect(host.textContent).toContain("用于现场检查试衣预览通道");
     expect(host.textContent).toContain("MockHardwareControls");
     expect(Array.from(select.options).map((option) => option.value)).toEqual([
       "mock",
@@ -656,8 +656,8 @@ describe("MaintenanceView hardware config", () => {
     const host = await mountView();
 
     expect(host.textContent).not.toContain("machineCode");
-    expect(host.textContent).not.toContain("API Base URL");
-    expect(host.textContent).not.toContain("MQTT URL");
+    expect(host.textContent).not.toContain("后端 API 地址");
+    expect(host.textContent).not.toContain("MQTT 地址");
     expect(host.textContent).not.toContain("MockHardwareControls");
   });
 
@@ -735,9 +735,9 @@ describe("MaintenanceView hardware config", () => {
 
     const host = await mountView();
 
-    expect(host.textContent).toContain("Vision Runtime Status");
-    expect(host.textContent).toContain("在线 · vision ready");
-    expect(host.textContent).toContain("Latest Vision Diagnostic Payload");
+    expect(host.textContent).toContain("视觉运行状态");
+    expect(host.textContent).toContain("在线 · 视觉模块就绪");
+    expect(host.textContent).toContain("最新视觉诊断载荷");
     expect(host.textContent).toContain("VISION-LATEST-002");
     expect(host.textContent).toContain('"personPresent": true');
     expect(host.textContent).not.toContain("VISION-OLD-001");
@@ -772,9 +772,9 @@ describe("MaintenanceView hardware config", () => {
 
     const host = await mountView();
 
-    expect(host.textContent).toContain("Presence Interaction");
+    expect(host.textContent).toContain("来人交互");
     expect(host.textContent).toContain(
-      "有人 · unknown · profile usable · 2026-06-05T00:00:05.000Z",
+      "有人 · 未知 · 画像可用 · 2026-06-05T00:00:05.000Z",
     );
     expect(host.textContent).toContain("VISION-PRESENCE-STATUS-001");
   });
@@ -804,12 +804,10 @@ describe("MaintenanceView hardware config", () => {
     const host = await mountView();
 
     expect(getNaturalContextMock).toHaveBeenCalled();
-    expect(host.textContent).toContain("Natural Context");
-    expect(host.textContent).toContain("Degraded · unconfigured");
-    expect(host.textContent).toContain(
-      "Machine Geo Location is not configured",
-    );
-    expect(host.textContent).not.toContain("Natural Context Readiness failure");
+    expect(host.textContent).toContain("自然环境上下文");
+    expect(host.textContent).toContain("降级 · 未配置");
+    expect(host.textContent).toContain("机器地理位置未配置");
+    expect(host.textContent).not.toContain("自然环境上下文就绪失败");
 
     buttonByText(host, "回到目录").click();
     await vi.waitFor(() => {
@@ -838,13 +836,13 @@ describe("MaintenanceView hardware config", () => {
 
     const host = await mountView();
 
-    expect(host.textContent).toContain("Audio Cue Settings");
-    expect(host.textContent).toContain("Machine Audio Cue");
-    expect(host.textContent).toContain("Global audio cues · Enabled");
-    expect(host.textContent).toContain("Presence audio cues · Enabled");
-    expect(host.textContent).toContain("Transaction audio cues · Disabled");
-    expect(host.textContent).toContain("Machine Audio volume · 35%");
-    expect(host.textContent).not.toContain("来人音频提示");
+    expect(host.textContent).toContain("音频提示设置");
+    expect(host.textContent).toContain("机器音频提示");
+    expect(host.textContent).toContain("全局音频提示 · 已启用");
+    expect(host.textContent).toContain("来人音频提示 · 已启用");
+    expect(host.textContent).toContain("交易音频提示 · 已停用");
+    expect(host.textContent).toContain("机器音频音量 · 35%");
+    expect(host.textContent).not.toContain("Presence audio cues");
   });
 
   it("edits Machine Audio volume as a percent and saves normalized config", async () => {
@@ -908,20 +906,20 @@ describe("MaintenanceView hardware config", () => {
     const host = await mountView();
     vi.useFakeTimers();
 
-    expect(host.textContent).toContain("Machine Audio Test Playback");
-    expect(host.textContent).toContain("Current playback driver · mock");
+    expect(host.textContent).toContain("机器音频测试播放");
+    expect(host.textContent).toContain("当前播放驱动 · mock");
     expect(host.textContent).toContain(
-      "Operator check: confirm Customer Audio Zone clarity",
+      "现场检查：通过近场顾客扬声器确认顾客音频区域清晰可听",
     );
-    expect(host.textContent).toContain("Machine Audio volume · 35%");
+    expect(host.textContent).toContain("机器音频音量 · 35%");
 
     buttonByText(host, "播放测试音频").click();
     await vi.advanceTimersByTimeAsync(10);
     await nextTick();
 
-    expect(host.textContent).toContain("Playback status · Started");
-    expect(host.textContent).toContain("Current playback driver · mock");
-    expect(host.textContent).toContain("Playback volume · 35%");
+    expect(host.textContent).toContain("播放状态 · 已开始");
+    expect(host.textContent).toContain("当前播放驱动 · mock");
+    expect(host.textContent).toContain("播放音量 · 35%");
   });
 
   it("shows requested and completed Machine Audio test playback diagnostics without real audio hardware", async () => {
@@ -940,13 +938,13 @@ describe("MaintenanceView hardware config", () => {
     buttonByText(host, "播放测试音频").click();
     await nextTick();
 
-    expect(host.textContent).toContain("Playback status · Requested");
+    expect(host.textContent).toContain("播放状态 · 已请求");
 
     await vi.runAllTimersAsync();
     await nextTick();
 
-    expect(host.textContent).toContain("Playback status · Completed");
-    expect(host.textContent).toContain("Current playback driver · mock");
+    expect(host.textContent).toContain("播放状态 · 已完成");
+    expect(host.textContent).toContain("当前播放驱动 · mock");
   });
 
   it("stops protected maintenance Machine Audio test playback and shows a stopped diagnostic", async () => {
@@ -966,14 +964,14 @@ describe("MaintenanceView hardware config", () => {
     await vi.advanceTimersByTimeAsync(10);
     await nextTick();
 
-    expect(host.textContent).toContain("Playback status · Started");
+    expect(host.textContent).toContain("播放状态 · 已开始");
 
     buttonByText(host, "停止当前播放").click();
 
     await vi.waitFor(() => {
-      expect(host.textContent).toContain("Playback status · Stopped");
+      expect(host.textContent).toContain("播放状态 · 已停止");
     });
-    expect(host.textContent).toContain("Current playback driver · mock");
+    expect(host.textContent).toContain("当前播放驱动 · mock");
   });
 
   it("renders Machine Audio test playback fallback diagnostics", async () => {
@@ -1013,12 +1011,12 @@ describe("MaintenanceView hardware config", () => {
     buttonByText(host, "播放测试音频").click();
 
     await vi.waitFor(() => {
-      expect(host.textContent).toContain("Current playback driver · browser");
+      expect(host.textContent).toContain("当前播放驱动 · browser");
     });
     expect(host.textContent).toContain(
-      "Fallback diagnostic · native playback degraded: native output unavailable",
+      "降级诊断 · native playback degraded: native output unavailable",
     );
-    expect(host.textContent).toContain("Playback status · Started");
+    expect(host.textContent).toContain("播放状态 · 已开始");
   });
 
   it("shows latest Machine Audio Cue diagnostic details without full history", async () => {
@@ -1049,18 +1047,14 @@ describe("MaintenanceView hardware config", () => {
 
     const host = await mountView();
 
-    expect(host.textContent).toContain("Latest Machine Audio Cue Diagnostic");
-    expect(host.textContent).toContain("Requested cue meaning");
-    expect(host.textContent).toContain("Payment succeeded");
-    expect(host.textContent).toContain("Category · Transaction audio cue");
-    expect(host.textContent).toContain("Playback outcome · Played");
-    expect(host.textContent).toContain(
-      "Suppression/drop reason · playback completed",
-    );
-    expect(host.textContent).toContain("Timestamp · 2026-06-29T07:00:01.000Z");
-    expect(host.textContent).toContain(
-      "Duplicate-suppression order key (debug only) · ORDER-107",
-    );
+    expect(host.textContent).toContain("最新机器音频提示诊断");
+    expect(host.textContent).toContain("请求的提示含义");
+    expect(host.textContent).toContain("支付成功");
+    expect(host.textContent).toContain("分类 · 交易音频提示");
+    expect(host.textContent).toContain("播放结果 · 已播放");
+    expect(host.textContent).toContain("抑制或丢弃原因 · playback completed");
+    expect(host.textContent).toContain("记录时间 · 2026-06-29T07:00:01.000Z");
+    expect(host.textContent).toContain("重复抑制订单键（仅调试） · ORDER-107");
     expect(host.textContent).toContain("ORDER-107");
     expect(host.textContent).not.toContain("presence.detected");
     expect(
@@ -1090,20 +1084,18 @@ describe("MaintenanceView hardware config", () => {
 
     const host = await mountView();
 
+    expect(host.textContent).toContain("播放结果 · 本地音频播放失败");
     expect(host.textContent).toContain(
-      "Playback outcome · Local audio playback failed",
-    );
-    expect(host.textContent).toContain(
-      "Suppression/drop reason · NotAllowedError: user gesture required",
+      "抑制或丢弃原因 · NotAllowedError: user gesture required",
     );
     expect(host.textContent).not.toContain("Payment failed");
     expect(host.textContent).not.toContain("Readiness failure");
   });
 
   it.each([
-    ["dispense.succeeded", "Dispense succeeded"],
-    ["dispense.failed", "Dispense failed"],
-    ["refund.pending", "Refund pending"],
+    ["dispense.succeeded", "出货成功"],
+    ["dispense.failed", "出货失败"],
+    ["refund.pending", "退款处理中"],
   ] as const)(
     "labels the real production cue key %s",
     async (cueKey, expectedLabel) => {
@@ -1120,7 +1112,7 @@ describe("MaintenanceView hardware config", () => {
 
       expect(host.textContent).toContain(expectedLabel);
       expect(host.textContent).toContain(
-        "Duplicate-suppression order key (debug only) · ORDER-REAL-CUE",
+        "重复抑制订单键（仅调试） · ORDER-REAL-CUE",
       );
     },
   );
@@ -1136,13 +1128,13 @@ describe("MaintenanceView hardware config", () => {
 
     const host = await mountView();
 
-    expect(host.textContent).toContain("Presence detected");
-    expect(host.textContent).toContain("Category · Presence audio cue");
-    expect(host.textContent).toContain("Playback outcome · Skipped");
+    expect(host.textContent).toContain("检测到顾客靠近");
+    expect(host.textContent).toContain("分类 · 来人音频提示");
+    expect(host.textContent).toContain("播放结果 · 已跳过");
     expect(host.textContent).toContain(
-      "Suppression/drop reason · presence audio cue category disabled",
+      "抑制或丢弃原因 · presence audio cue category disabled",
     );
-    expect(host.textContent).toContain("Timestamp · 2026-06-29T07:10:00.000Z");
+    expect(host.textContent).toContain("记录时间 · 2026-06-29T07:10:00.000Z");
   });
 
   it("does not couple maintenance interactions to customer-facing audio cue playback", async () => {
@@ -1196,10 +1188,8 @@ describe("MaintenanceView hardware config", () => {
 
     expect(host.textContent).not.toContain("VISION-REALTIME-003");
     expect(host.textContent).not.toContain('"heightCm": 168');
-    expect(host.textContent).toContain(
-      "无人 · none · profile unusable · not seen",
-    );
-    expect(host.textContent).toContain("No diagnostic payload returned yet.");
+    expect(host.textContent).toContain("无人 · 无 · 画像不可用 · 未看到");
+    expect(host.textContent).toContain("尚未返回诊断载荷。");
   });
 
   it("bounds the displayed latest diagnostic payload", async () => {
@@ -1234,7 +1224,7 @@ describe("MaintenanceView hardware config", () => {
     }
 
     expect(payload.textContent).toContain("VISION-HUGE-004");
-    expect(payload.textContent).toContain("truncated");
+    expect(payload.textContent).toContain("已截断");
     expect(payload.textContent?.length ?? 0).toBeLessThan(14_000);
     expect(payload.textContent).not.toContain("x".repeat(5000));
   });

@@ -84,31 +84,29 @@ const saleCriticalBlockers = computed(() =>
 );
 const latestVisionDiagnosticPayloadText = computed(() => {
   if (visionStore.latestDiagnosticPayload === null) {
-    return "No diagnostic payload returned yet.";
+    return "尚未返回诊断载荷。";
   }
   return serializeDiagnosticPayload(visionStore.latestDiagnosticPayload);
 });
 const audioCueSettingsRows = computed(() => [
   {
-    label: "Global audio cues",
-    value: machineStore.config.audioCueSettings.enabled
-      ? "Enabled"
-      : "Disabled",
+    label: "全局音频提示",
+    value: machineStore.config.audioCueSettings.enabled ? "已启用" : "已停用",
   },
   {
-    label: "Presence audio cues",
+    label: "来人音频提示",
     value: machineStore.config.audioCueSettings.categories.presence
-      ? "Enabled"
-      : "Disabled",
+      ? "已启用"
+      : "已停用",
   },
   {
-    label: "Transaction audio cues",
+    label: "交易音频提示",
     value: machineStore.config.audioCueSettings.categories.transaction
-      ? "Enabled"
-      : "Disabled",
+      ? "已启用"
+      : "已停用",
   },
   {
-    label: "Machine Audio volume",
+    label: "机器音频音量",
     value: `${machineAudioVolumePercent(machineStore.config.machineAudioVolume)}%`,
   },
 ]);
@@ -117,28 +115,28 @@ const latestAudioCueDiagnosticRows = computed(() => {
   if (!diagnostic) return [];
   return [
     {
-      label: "Requested cue meaning",
+      label: "请求的提示含义",
       value: audioCueMeaningLabel(diagnostic.cueKey),
     },
     {
-      label: "Category",
+      label: "分类",
       value: audioCueCategoryLabel(diagnostic.category),
     },
     {
-      label: "Playback outcome",
+      label: "播放结果",
       value: audioCueOutcomeLabel(diagnostic.outcome),
     },
     {
-      label: "Suppression/drop reason",
-      value: diagnostic.message ?? "none",
+      label: "抑制或丢弃原因",
+      value: diagnostic.message ?? "无",
     },
     {
-      label: "Timestamp",
+      label: "记录时间",
       value: diagnostic.recordedAt,
     },
     {
-      label: "Duplicate-suppression order key (debug only)",
-      value: diagnostic.orderKey ?? "none",
+      label: "重复抑制订单键（仅调试）",
+      value: diagnostic.orderKey ?? "无",
     },
   ];
 });
@@ -280,16 +278,16 @@ function serializeDiagnosticPayload(value: unknown): string {
   try {
     text = JSON.stringify(bounded, null, 2);
   } catch (error) {
-    text = `Unable to serialize diagnostic payload: ${
+    text = `无法序列化诊断载荷：${
       error instanceof Error ? error.message : String(error)
     }`;
   }
   if (text.length > DIAGNOSTIC_DISPLAY_MAX_CHARS) {
     state.truncated = true;
-    text = `${text.slice(0, DIAGNOSTIC_DISPLAY_MAX_CHARS)}\n... truncated`;
+    text = `${text.slice(0, DIAGNOSTIC_DISPLAY_MAX_CHARS)}\n... 已截断`;
   }
-  if (state.truncated && !text.includes("truncated")) {
-    text = `${text}\n... truncated`;
+  if (state.truncated && !text.includes("已截断")) {
+    text = `${text}\n... 已截断`;
   }
   return text;
 }
@@ -301,7 +299,7 @@ function boundDiagnosticValue(
 ): unknown {
   if (state.remainingChars <= 0) {
     state.truncated = true;
-    return "[truncated]";
+    return "[已截断]";
   }
   if (typeof value === "string") {
     return boundDiagnosticString(value, state);
@@ -326,11 +324,11 @@ function boundDiagnosticValue(
   }
   if (state.seen.has(value)) {
     state.truncated = true;
-    return "[Circular]";
+    return "[循环引用]";
   }
   if (depth >= DIAGNOSTIC_DISPLAY_MAX_DEPTH) {
     state.truncated = true;
-    return "[Max depth reached]";
+    return "[已达到最大层级]";
   }
   state.seen.add(value);
   if (Array.isArray(value)) {
@@ -346,7 +344,7 @@ function boundDiagnosticValue(
     }
     if (output.length < value.length) {
       state.truncated = true;
-      output.push(`[... truncated ${value.length - output.length} items]`);
+      output.push(`[... 已截断 ${value.length - output.length} 项]`);
     }
     return output;
   }
@@ -373,7 +371,7 @@ function boundDiagnosticValue(
   }
   if (omitted > 0) {
     state.truncated = true;
-    output.__truncated = `${omitted} fields omitted`;
+    output.__truncated = `已省略 ${omitted} 个字段`;
   }
   return output;
 }
@@ -390,7 +388,7 @@ function boundDiagnosticString(
   state.remainingChars -= maxLength;
   if (maxLength < value.length) {
     state.truncated = true;
-    return `${value.slice(0, maxLength)}... truncated`;
+    return `${value.slice(0, maxLength)}... 已截断`;
   }
   return value;
 }
@@ -517,30 +515,30 @@ const latestMachineAudioTestPlaybackRows = computed(() => {
   if (!diagnostic) {
     return [
       {
-        label: "Playback status",
-        value: "No test playback diagnostic recorded yet",
+        label: "播放状态",
+        value: "尚未记录测试播放诊断",
       },
     ];
   }
   return [
     {
-      label: "Playback status",
+      label: "播放状态",
       value: machineAudioPlaybackStatusLabel(diagnostic.status),
     },
     {
-      label: "Playback driver",
+      label: "播放驱动",
       value: diagnostic.driver,
     },
     {
-      label: "Playback volume",
+      label: "播放音量",
       value: `${machineAudioVolumePercent(machineAudioTestPlayback.volume)}%`,
     },
     {
-      label: "Fallback diagnostic",
-      value: diagnostic.message ?? "none",
+      label: "降级诊断",
+      value: diagnostic.message ?? "无",
     },
     {
-      label: "Timestamp",
+      label: "记录时间",
       value: diagnostic.recordedAt,
     },
   ];
@@ -556,8 +554,8 @@ async function playMachineAudioTestPlayback(): Promise<void> {
     const started = await playbackRequest;
     refreshMachineAudioTestPlaybackDiagnostic();
     machineAudioTestPlayback.message = started
-      ? "Machine Audio test playback started."
-      : "Machine Audio test playback did not start.";
+      ? "机器音频测试播放已启动。"
+      : "机器音频测试播放未启动。";
   } catch (error) {
     machineAudioTestPlayback.message =
       error instanceof Error ? error.message : String(error);
@@ -873,51 +871,104 @@ function saleCriticalBlockerAction(code: string): string {
 
 function audioCueMeaningLabel(cueKey: string): string {
   const labels: Record<string, string> = {
-    "presence.detected": "Presence detected",
-    "payment.succeeded": "Payment succeeded",
-    "dispensing.started": "Dispensing started",
-    "dispense.succeeded": "Dispense succeeded",
-    "dispense.failed": "Dispense failed",
-    "refund.pending": "Refund pending",
-    "refund.completed": "Refund completed",
-    "manual_handling.required": "Manual handling required",
+    "presence.detected": "检测到顾客靠近",
+    "payment.succeeded": "支付成功",
+    "dispensing.started": "开始出货",
+    "dispense.succeeded": "出货成功",
+    "dispense.failed": "出货失败",
+    "refund.pending": "退款处理中",
+    "refund.completed": "退款完成",
+    "manual_handling.required": "需要人工处理",
   };
   return labels[cueKey] ?? cueKey;
 }
 
 function audioCueCategoryLabel(category: string): string {
   const labels: Record<string, string> = {
-    presence: "Presence audio cue",
-    transaction: "Transaction audio cue",
+    presence: "来人音频提示",
+    transaction: "交易音频提示",
   };
   return labels[category] ?? category;
 }
 
 function audioCueOutcomeLabel(outcome: string): string {
   const labels: Record<string, string> = {
-    played: "Played",
-    completed: "Completed",
-    failed: "Local audio playback failed",
-    skipped: "Skipped",
+    played: "已播放",
+    completed: "已完成",
+    failed: "本地音频播放失败",
+    skipped: "已跳过",
   };
   return labels[outcome] ?? outcome;
 }
 
 function machineAudioPlaybackStatusLabel(status: string): string {
   const labels: Record<string, string> = {
-    requested: "Requested",
-    started: "Started",
-    completed: "Completed",
-    failed: "Failed",
-    stopped: "Stopped",
+    requested: "已请求",
+    started: "已开始",
+    completed: "已完成",
+    failed: "失败",
+    stopped: "已停止",
   };
   return labels[status] ?? status;
 }
 
 function naturalContextDisplayStatus(): string {
   const snapshot = naturalContextStore.snapshot;
-  if (!snapshot) return "Unknown";
-  return `${snapshot.degraded ? "Degraded" : "Ready"} · ${snapshot.status}`;
+  if (!snapshot) return "未知";
+  return `${snapshot.degraded ? "降级" : "就绪"} · ${runtimeStatusLabel(snapshot.status)}`;
+}
+
+function runtimeStatusLabel(status: string): string {
+  const labels: Record<string, string> = {
+    ok: "正常",
+    ready: "就绪",
+    healthy: "健康",
+    degraded: "降级",
+    unhealthy: "异常",
+    unconfigured: "未配置",
+    unavailable: "不可用",
+    connected: "已连接",
+    disconnected: "未连接",
+    unknown: "未知",
+    catalog: "目录",
+    maintenance: "维护",
+    local_stock: "本地库存",
+    none: "无",
+  };
+  return labels[status] ?? status;
+}
+
+function adapterLabel(adapter: string): string {
+  const labels: Record<string, string> = {
+    mock: "模拟适配器",
+    serial: "串口适配器",
+    disabled: "停用",
+    serial_text: "串口文本",
+  };
+  return labels[adapter] ?? adapter;
+}
+
+function frameSuffixLabel(frameSuffix: string): string {
+  const labels: Record<string, string> = {
+    crlf: "回车换行",
+    lf: "换行",
+    cr: "回车",
+    none: "无结尾符",
+  };
+  return labels[frameSuffix] ?? frameSuffix;
+}
+
+function operatorMessageLabel(message: string): string {
+  const labels: Record<string, string> = {
+    "daemon ready": "本地服务就绪",
+    "backend reachable": "后端可达",
+    "scanner ready": "扫码器就绪",
+    "vision ready": "视觉模块就绪",
+    "lower controller unavailable": "下位机不可用",
+    "Machine Geo Location is not configured": "机器地理位置未配置",
+    ok: "正常",
+  };
+  return labels[message] ?? message;
 }
 
 async function returnToCatalog(): Promise<void> {
@@ -1026,7 +1077,7 @@ async function submitStockMovement(): Promise<void> {
           <img :src="mascotTopImage" alt="" aria-hidden="true" />
         </div>
         <div class="maintenance-title-block">
-          <p>MAINTENANCE</p>
+          <p>维护</p>
           <h2>生产维护</h2>
         </div>
       </header>
@@ -1035,7 +1086,7 @@ async function submitStockMovement(): Promise<void> {
         <p
           class="text-sm font-semibold tracking-[0.28em] text-emerald-200 uppercase"
         >
-          Stock Maintenance
+          库存维护
         </p>
         <form class="mt-4 grid gap-4" @submit.prevent="submitStockMovement">
           <div class="grid gap-4 md:grid-cols-2">
@@ -1062,9 +1113,7 @@ async function submitStockMovement(): Promise<void> {
           </div>
 
           <label class="grid gap-2 text-left">
-            <span class="text-sm font-semibold text-slate-200"
-              >Planogram Version</span
-            >
+            <span class="text-sm font-semibold text-slate-200">货道图版本</span>
             <input
               v-model="stockForm.planogramVersion"
               class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-emerald-300"
@@ -1091,9 +1140,7 @@ async function submitStockMovement(): Promise<void> {
           </label>
 
           <label class="grid gap-2 text-left">
-            <span class="text-sm font-semibold text-slate-200"
-              >Attribution</span
-            >
+            <span class="text-sm font-semibold text-slate-200">记录人</span>
             <input
               v-model="stockForm.attributedTo"
               class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-emerald-300"
@@ -1136,7 +1183,7 @@ async function submitStockMovement(): Promise<void> {
           <p
             class="text-sm font-semibold tracking-[0.28em] text-sky-200 uppercase"
           >
-            Maintenance Console
+            维护控制台
           </p>
           <div class="flex flex-wrap gap-3">
             <button
@@ -1212,8 +1259,9 @@ async function submitStockMovement(): Promise<void> {
               <p class="text-sm font-semibold text-rose-100">整机维护锁</p>
               <p class="mt-1 text-sm text-rose-50/90">
                 {{
-                  wholeMachineMaintenanceLock?.message ??
-                  wholeMachineLockMaintenance.message
+                  operatorMessageLabel(
+                    wholeMachineMaintenanceLock?.message ?? "",
+                  ) || wholeMachineLockMaintenance.message
                 }}
               </p>
               <p
@@ -1236,7 +1284,9 @@ async function submitStockMovement(): Promise<void> {
                 <div class="font-semibold text-rose-50">
                   {{ blocker.operatorLabel }} · {{ blocker.code }}
                 </div>
-                <div class="mt-1">{{ blocker.message }}</div>
+                <div class="mt-1">
+                  {{ operatorMessageLabel(blocker.message) }}
+                </div>
                 <div class="mt-1 text-rose-100/80">
                   {{ blocker.operatorAction }}
                 </div>
@@ -1252,7 +1302,11 @@ async function submitStockMovement(): Promise<void> {
                   : "未通过"
               }}
               ·
-              {{ wholeMachineLockMaintenance.selfCheckEvidence.message }}
+              {{
+                operatorMessageLabel(
+                  wholeMachineLockMaintenance.selfCheckEvidence.message,
+                )
+              }}
               <span
                 v-if="wholeMachineLockMaintenance.selfCheckEvidence.portPath"
               >
@@ -1282,36 +1336,47 @@ async function submitStockMovement(): Promise<void> {
 
         <dl class="mt-4 grid gap-3 md:grid-cols-2">
           <div class="border-t border-white/10 py-3">
-            <dt class="text-sm text-slate-400">Daemon</dt>
+            <dt class="text-sm text-slate-400">本地服务</dt>
             <dd class="mt-1 font-bold text-white">
-              {{ machineStore.health?.status ?? "unknown" }} ·
-              {{ machineStore.health?.process.message ?? "not connected" }}
+              {{ runtimeStatusLabel(machineStore.health?.status ?? "unknown") }}
+              ·
+              {{
+                machineStore.health?.process.message
+                  ? operatorMessageLabel(machineStore.health.process.message)
+                  : "未连接"
+              }}
             </dd>
           </div>
           <div class="border-t border-white/10 py-3">
             <dt class="text-sm text-slate-400">后端</dt>
             <dd class="mt-1 font-bold text-white">
               {{ machineStore.health?.backendOnline ? "在线" : "不可用" }}
-              · {{ machineStore.health?.status ?? "unknown" }}
+              ·
+              {{ runtimeStatusLabel(machineStore.health?.status ?? "unknown") }}
             </dd>
           </div>
           <div class="border-t border-white/10 py-3">
-            <dt class="text-sm text-slate-400">Readiness</dt>
+            <dt class="text-sm text-slate-400">销售就绪</dt>
             <dd class="mt-1 font-bold text-white">
               {{ connectivityStore.ready?.ready ? "就绪" : "未就绪" }}
-              · {{ connectivityStore.ready?.mode ?? "unknown" }}
+              ·
+              {{
+                runtimeStatusLabel(connectivityStore.ready?.mode ?? "unknown")
+              }}
             </dd>
           </div>
           <div class="border-t border-white/10 py-3">
-            <dt class="text-sm text-slate-400">Sync</dt>
+            <dt class="text-sm text-slate-400">同步</dt>
             <dd class="mt-1 font-bold text-white">
-              {{ mqttStore.status }} · {{ mqttStore.lastError ?? "ok" }}
+              {{ runtimeStatusLabel(mqttStore.status) }} ·
+              {{ mqttStore.lastError ?? "正常" }}
             </dd>
           </div>
           <div class="border-t border-white/10 py-3">
             <dt class="text-sm text-slate-400">MQTT</dt>
             <dd class="mt-1 font-bold text-white">
-              {{ mqttStore.status }} · outbox {{ mqttStore.outboxSize }}
+              {{ runtimeStatusLabel(mqttStore.status) }} · 待发队列
+              {{ mqttStore.outboxSize }}
             </dd>
           </div>
           <div class="border-t border-white/10 py-3">
@@ -1324,28 +1389,28 @@ async function submitStockMovement(): Promise<void> {
             <dt class="text-sm text-slate-400">扫码器</dt>
             <dd class="mt-1 font-bold text-white">
               {{ scannerStore.online ? "在线" : "不可用" }} ·
-              {{ scannerStore.message }}
+              {{ operatorMessageLabel(scannerStore.message) }}
             </dd>
           </div>
           <div class="border-t border-white/10 py-3">
-            <dt class="text-sm text-slate-400">Vision Runtime Status</dt>
+            <dt class="text-sm text-slate-400">视觉运行状态</dt>
             <dd class="mt-1 font-bold text-white">
               {{ visionStore.online ? "在线" : "不可用" }} ·
-              {{ visionStore.message }}
+              {{ operatorMessageLabel(visionStore.message) }}
             </dd>
           </div>
           <div class="border-t border-white/10 py-3">
-            <dt class="text-sm text-slate-400">Presence Interaction</dt>
+            <dt class="text-sm text-slate-400">来人交互</dt>
             <dd class="mt-1 font-bold text-white">
               {{ visionStore.presence.personPresent ? "有人" : "无人" }} ·
-              {{ visionStore.presence.occupancyState }} · profile
-              {{ visionStore.presence.profileUsable ? "usable" : "unusable" }}
+              {{ runtimeStatusLabel(visionStore.presence.occupancyState) }} ·
+              画像{{ visionStore.presence.profileUsable ? "可用" : "不可用" }}
               ·
-              {{ visionStore.presence.lastSeenAt ?? "not seen" }}
+              {{ visionStore.presence.lastSeenAt ?? "未看到" }}
             </dd>
           </div>
           <div class="border-t border-white/10 py-3">
-            <dt class="text-sm text-slate-400">Natural Context</dt>
+            <dt class="text-sm text-slate-400">自然环境上下文</dt>
             <dd class="mt-1 font-bold text-white">
               {{ naturalContextDisplayStatus() }}
             </dd>
@@ -1353,21 +1418,21 @@ async function submitStockMovement(): Promise<void> {
               v-if="naturalContextDiagnosticMessage"
               class="mt-1 text-sm font-semibold text-amber-100"
             >
-              {{ naturalContextDiagnosticMessage }}
+              {{ operatorMessageLabel(naturalContextDiagnosticMessage) }}
             </dd>
           </div>
           <div class="border-t border-white/10 py-3">
             <dt class="text-sm text-slate-400">本地状态</dt>
             <dd class="mt-1 font-bold text-white">
-              {{ stockMaintenance.source ?? "unknown" }} ·
-              {{ stockMaintenance.planogramVersion ?? "no planogram" }}
+              {{ runtimeStatusLabel(stockMaintenance.source ?? "unknown") }} ·
+              {{ stockMaintenance.planogramVersion ?? "无货道图" }}
             </dd>
           </div>
           <div class="border-t border-white/10 py-3">
-            <dt class="text-sm text-slate-400">Remote Ops</dt>
+            <dt class="text-sm text-slate-400">远程运维</dt>
             <dd class="mt-1 font-bold text-white">
-              pending {{ remoteOpsStore.pending }} ·
-              {{ remoteOpsStore.lastError ?? "ok" }}
+              待处理 {{ remoteOpsStore.pending }} ·
+              {{ remoteOpsStore.lastError ?? "正常" }}
             </dd>
           </div>
         </dl>
@@ -1376,9 +1441,7 @@ async function submitStockMovement(): Promise<void> {
           v-if="saleCriticalBlockers.length > 0"
           class="mt-5 border-t border-white/10 pt-4 text-left"
         >
-          <h3 class="text-sm font-semibold text-slate-200">
-            Readiness Blockers
-          </h3>
+          <h3 class="text-sm font-semibold text-slate-200">销售就绪阻塞项</h3>
           <ul class="mt-2 grid gap-2 text-sm text-slate-100">
             <li
               v-for="blocker in saleCriticalBlockers"
@@ -1394,11 +1457,9 @@ async function submitStockMovement(): Promise<void> {
         </section>
 
         <section class="mt-5 border-t border-white/10 pt-4 text-left">
-          <h3 class="text-sm font-semibold text-slate-200">
-            Audio Cue Settings
-          </h3>
+          <h3 class="text-sm font-semibold text-slate-200">音频提示设置</h3>
           <p class="mt-1 text-sm text-slate-300">
-            Machine Audio Cue categories are local customer-experience settings.
+            机器音频提示分类是本地顾客体验设置。
           </p>
           <dl class="mt-3 grid gap-3 md:grid-cols-3">
             <div
@@ -1406,9 +1467,7 @@ async function submitStockMovement(): Promise<void> {
               :key="row.label"
               class="rounded-xl bg-slate-950/35 p-3"
             >
-              <dt class="text-xs font-semibold text-slate-400">
-                Machine Audio Cue
-              </dt>
+              <dt class="text-xs font-semibold text-slate-400">机器音频提示</dt>
               <dd class="mt-1 font-bold text-white">
                 {{ row.label }} · {{ row.value }}
               </dd>
@@ -1421,13 +1480,13 @@ async function submitStockMovement(): Promise<void> {
           data-test="audio-cue-diagnostic"
         >
           <h3 class="text-sm font-semibold text-slate-200">
-            Latest Machine Audio Cue Diagnostic
+            最新机器音频提示诊断
           </h3>
           <p
             v-if="latestAudioCueDiagnosticRows.length === 0"
             class="mt-2 text-sm text-slate-300"
           >
-            No Machine Audio Cue diagnostic recorded yet.
+            尚未记录机器音频提示诊断。
           </p>
           <dl v-else class="mt-3 grid gap-3 md:grid-cols-2">
             <div
@@ -1446,9 +1505,7 @@ async function submitStockMovement(): Promise<void> {
         </section>
 
         <section class="mt-5 border-t border-white/10 pt-4 text-left">
-          <h3 class="text-sm font-semibold text-slate-200">
-            Latest Vision Diagnostic Payload
-          </h3>
+          <h3 class="text-sm font-semibold text-slate-200">最新视觉诊断载荷</h3>
           <pre
             class="mt-2 max-h-72 overflow-auto text-sm leading-6 break-words whitespace-pre-wrap text-slate-100"
             data-test="vision-diagnostic-payload"
@@ -1501,9 +1558,7 @@ async function submitStockMovement(): Promise<void> {
         @submit.prevent="saveAndReboot"
       >
         <label class="grid gap-2 text-left">
-          <span class="text-sm font-semibold text-slate-200"
-            >机器编号 machineCode</span
-          >
+          <span class="text-sm font-semibold text-slate-200">机器编号</span>
           <input
             v-model="form.machineCode"
             class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-sky-300"
@@ -1512,9 +1567,7 @@ async function submitStockMovement(): Promise<void> {
         </label>
 
         <label class="grid gap-2 text-left">
-          <span class="text-sm font-semibold text-slate-200"
-            >Machine Location Label</span
-          >
+          <span class="text-sm font-semibold text-slate-200">机器位置标签</span>
           <input
             v-model="form.machineLocationLabel"
             class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-sky-300"
@@ -1523,9 +1576,7 @@ async function submitStockMovement(): Promise<void> {
         </label>
 
         <div class="grid gap-2 text-left">
-          <span class="text-sm font-semibold text-slate-200"
-            >机器密钥 machineSecret</span
-          >
+          <span class="text-sm font-semibold text-slate-200">机器密钥</span>
           <p class="rounded-2xl bg-slate-950/40 p-3 text-sm text-slate-300">
             机器密钥状态：
             <span class="font-semibold text-emerald-200">
@@ -1547,7 +1598,7 @@ async function submitStockMovement(): Promise<void> {
 
         <div class="grid gap-2 text-left">
           <span class="text-sm font-semibold text-slate-200"
-            >MQTT 签名密钥 mqttSigningSecret</span
+            >MQTT 签名密钥</span
           >
           <p class="rounded-2xl bg-slate-950/40 p-3 text-sm text-slate-300">
             MQTT 签名密钥状态：
@@ -1569,9 +1620,7 @@ async function submitStockMovement(): Promise<void> {
         </div>
 
         <label class="grid gap-2 text-left">
-          <span class="text-sm font-semibold text-slate-200"
-            >MQTT 用户名 mqttUsername</span
-          >
+          <span class="text-sm font-semibold text-slate-200">MQTT 用户名</span>
           <input
             v-model="form.mqttUsername"
             class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-sky-300"
@@ -1580,9 +1629,7 @@ async function submitStockMovement(): Promise<void> {
         </label>
 
         <div class="grid gap-2 text-left">
-          <span class="text-sm font-semibold text-slate-200"
-            >MQTT 密码 mqttPassword</span
-          >
+          <span class="text-sm font-semibold text-slate-200">MQTT 密码</span>
           <p class="rounded-2xl bg-slate-950/40 p-3 text-sm text-slate-300">
             MQTT 密码状态：
             <span class="font-semibold text-emerald-200">
@@ -1601,7 +1648,9 @@ async function submitStockMovement(): Promise<void> {
         </div>
 
         <label class="grid gap-2 text-left">
-          <span class="text-sm font-semibold text-slate-200">API Base URL</span>
+          <span class="text-sm font-semibold text-slate-200"
+            >后端 API 地址</span
+          >
           <input
             v-model="form.apiBaseUrl"
             class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-sky-300"
@@ -1609,7 +1658,7 @@ async function submitStockMovement(): Promise<void> {
         </label>
 
         <label class="grid gap-2 text-left">
-          <span class="text-sm font-semibold text-slate-200">MQTT URL</span>
+          <span class="text-sm font-semibold text-slate-200">MQTT 地址</span>
           <input
             v-model="form.mqttUrl"
             class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-sky-300"
@@ -1623,7 +1672,7 @@ async function submitStockMovement(): Promise<void> {
             class="kiosk-touch-target rounded-2xl border border-white/10 bg-slate-950/70 px-4 text-white outline-none focus:border-sky-300"
           >
             <option v-for="adapter in adapters" :key="adapter" :value="adapter">
-              {{ adapter }}
+              {{ adapterLabel(adapter) }}
             </option>
           </select>
         </label>
@@ -1631,7 +1680,7 @@ async function submitStockMovement(): Promise<void> {
         <div v-if="form.hardwareAdapter === 'serial'" class="grid gap-4">
           <label class="grid gap-2 text-left">
             <span class="text-sm font-semibold text-slate-200"
-              >手动串口兜底 serialPortPath</span
+              >手动串口兜底</span
             >
             <input
               v-model="form.serialPortPath"
@@ -1677,7 +1726,7 @@ async function submitStockMovement(): Promise<void> {
           <p
             class="text-sm font-semibold tracking-[0.28em] text-emerald-200 uppercase"
           >
-            Scanner Adapter
+            扫码器适配器
           </p>
           <div class="mt-4 grid gap-4">
             <label class="grid gap-2 text-left">
@@ -1693,7 +1742,7 @@ async function submitStockMovement(): Promise<void> {
                   :key="scannerAdapter"
                   :value="scannerAdapter"
                 >
-                  {{ scannerAdapter }}
+                  {{ adapterLabel(scannerAdapter) }}
                 </option>
               </select>
             </label>
@@ -1703,7 +1752,7 @@ async function submitStockMovement(): Promise<void> {
               class="grid gap-2 text-left"
             >
               <span class="text-sm font-semibold text-slate-200"
-                >扫码串口路径 scannerSerialPortPath</span
+                >扫码串口路径</span
               >
               <input
                 v-model="form.scannerSerialPortPath"
@@ -1714,7 +1763,7 @@ async function submitStockMovement(): Promise<void> {
 
             <label class="grid gap-2 text-left">
               <span class="text-sm font-semibold text-slate-200"
-                >扫码波特率 scannerBaudRate</span
+                >扫码波特率</span
               >
               <input
                 v-model.number="form.scannerBaudRate"
@@ -1727,7 +1776,7 @@ async function submitStockMovement(): Promise<void> {
 
             <label class="grid gap-2 text-left">
               <span class="text-sm font-semibold text-slate-200"
-                >扫码结尾符 scannerFrameSuffix</span
+                >扫码结尾符</span
               >
               <select
                 v-model="form.scannerFrameSuffix"
@@ -1738,7 +1787,7 @@ async function submitStockMovement(): Promise<void> {
                   :key="frameSuffix"
                   :value="frameSuffix"
                 >
-                  {{ frameSuffix }}
+                  {{ frameSuffixLabel(frameSuffix) }}
                 </option>
               </select>
             </label>
@@ -1749,7 +1798,7 @@ async function submitStockMovement(): Promise<void> {
           <p
             class="text-sm font-semibold tracking-[0.28em] text-fuchsia-200 uppercase"
           >
-            Vision Module
+            视觉模块
           </p>
 
           <div class="mt-4 grid gap-4">
@@ -1760,13 +1809,13 @@ async function submitStockMovement(): Promise<void> {
                 type="checkbox"
               />
               <span class="text-sm font-semibold text-slate-200"
-                >启用视觉推荐 visionEnabled</span
+                >启用视觉推荐</span
               >
             </label>
 
             <label class="grid gap-2 text-left">
               <span class="text-sm font-semibold text-slate-200"
-                >视觉 WebSocket 地址 visionWsUrl</span
+                >视觉 WebSocket 地址</span
               >
               <input
                 v-model="form.visionWsUrl"
@@ -1777,7 +1826,7 @@ async function submitStockMovement(): Promise<void> {
 
             <label class="grid gap-2 text-left">
               <span class="text-sm font-semibold text-slate-200"
-                >视觉连接自检超时 visionRequestTimeoutMs</span
+                >视觉连接自检超时</span
               >
               <input
                 v-model.number="form.visionRequestTimeoutMs"
@@ -1794,7 +1843,9 @@ async function submitStockMovement(): Promise<void> {
                 <span class="text-sm font-semibold text-slate-200">
                   视觉试衣预览诊断
                 </span>
-                <span class="text-xs text-slate-300">vision.try_on.*</span>
+                <span class="text-xs text-slate-300"
+                  >用于现场检查试衣预览通道</span
+                >
               </div>
 
               <div class="grid gap-3 md:grid-cols-2">
@@ -1832,17 +1883,17 @@ async function submitStockMovement(): Promise<void> {
                 class="grid gap-2 rounded-2xl bg-slate-950/50 p-4 text-left text-sm text-slate-100"
               >
                 <div class="grid gap-1">
-                  <dt class="text-xs text-slate-400 uppercase">Session</dt>
+                  <dt class="text-xs text-slate-400">会话</dt>
                   <dd class="break-all">
                     {{ tryOnPreviewDiagnostic.sessionId }}
                   </dd>
                 </div>
                 <div class="grid gap-1">
-                  <dt class="text-xs text-slate-400 uppercase">Stream</dt>
+                  <dt class="text-xs text-slate-400">视频流</dt>
                   <dd>{{ tryOnPreviewDiagnostic.streamType }}</dd>
                 </div>
                 <div class="grid gap-1">
-                  <dt class="text-xs text-slate-400 uppercase">Preview URL</dt>
+                  <dt class="text-xs text-slate-400">预览地址</dt>
                   <dd class="break-all">
                     {{ tryOnPreviewDiagnostic.previewUrl }}
                   </dd>
@@ -1865,7 +1916,7 @@ async function submitStockMovement(): Promise<void> {
                   type="checkbox"
                 />
                 <span class="text-sm font-semibold text-slate-200"
-                  >启用 Machine Audio Cue audioCueSettings.enabled</span
+                  >启用机器音频提示</span
                 >
               </label>
               <label class="flex items-center gap-3">
@@ -1875,7 +1926,7 @@ async function submitStockMovement(): Promise<void> {
                   type="checkbox"
                 />
                 <span class="text-sm font-semibold text-slate-200"
-                  >Presence audio cues categories.presence</span
+                  >来人音频提示</span
                 >
               </label>
               <label class="flex items-center gap-3">
@@ -1885,14 +1936,14 @@ async function submitStockMovement(): Promise<void> {
                   type="checkbox"
                 />
                 <span class="text-sm font-semibold text-slate-200"
-                  >Transaction audio cues categories.transaction</span
+                  >交易音频提示</span
                 >
               </label>
             </fieldset>
 
             <label class="grid gap-2 text-left">
               <span class="text-sm font-semibold text-slate-200"
-                >Machine Audio 音量 machineAudioVolume</span
+                >机器音频音量</span
               >
               <div class="flex items-center gap-3">
                 <input
@@ -1914,12 +1965,10 @@ async function submitStockMovement(): Promise<void> {
             >
               <div class="grid gap-1">
                 <h3 class="text-base font-bold text-cyan-100">
-                  Machine Audio Test Playback
+                  机器音频测试播放
                 </h3>
                 <p class="text-sm leading-6 text-cyan-50/85">
-                  Operator check: confirm Customer Audio Zone clarity through
-                  the Near-Field Customer Speaker and verify the sound remains
-                  unobtrusive outside the customer area.
+                  现场检查：通过近场顾客扬声器确认顾客音频区域清晰可听，并确认顾客区域外声音不扰人。
                 </p>
               </div>
 
@@ -1944,10 +1993,10 @@ async function submitStockMovement(): Promise<void> {
               <dl class="grid gap-3 md:grid-cols-2">
                 <div class="rounded-xl bg-slate-950/35 p-3">
                   <dt class="text-xs font-semibold text-cyan-100/70">
-                    Current playback driver
+                    当前播放驱动
                   </dt>
                   <dd class="mt-1 font-bold text-white">
-                    Current playback driver ·
+                    当前播放驱动 ·
                     {{ machineAudioTestPlayback.driver }}
                   </dd>
                 </div>
