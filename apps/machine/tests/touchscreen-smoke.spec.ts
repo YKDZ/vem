@@ -675,32 +675,32 @@ test("runtime matrix can directly load maintenance state", async ({ page }) => {
   await expect(page).toHaveURL(/#\/maintenance$/);
   await expectKioskMainFrame(page);
   await expect(page.getByRole("heading", { name: "生产维护" })).toBeVisible();
-  await expect(page.getByText("Maintenance Console")).toBeVisible();
+  await expect(page.getByText("维护控制台")).toBeVisible();
 
   await expectMaintenanceDiagnosticRow(
     page,
-    "Daemon",
-    /^(healthy|degraded|offline|maintenance|starting|unknown)\s+·\s+\S/,
+    "本地服务",
+    /^(健康|降级|offline|维护|starting|未知)\s+·\s+\S/,
   );
   await expectMaintenanceDiagnosticRow(
     page,
     "后端",
-    /^(在线|不可用)\s+·\s+(healthy|degraded|offline|maintenance|starting|unknown)$/,
+    /^(在线|不可用)\s+·\s+(健康|降级|offline|维护|starting|未知)$/,
   );
   await expectMaintenanceDiagnosticRow(
     page,
-    "Readiness",
+    "销售就绪",
     /^(就绪|未就绪)\s+·\s+\S+$/,
   );
   await expectMaintenanceDiagnosticRow(
     page,
-    "Sync",
-    /^(connected|connecting|disconnected|unknown)\s+·\s+\S/,
+    "同步",
+    /^(已连接|connecting|未连接|未知)\s+·\s+\S/,
   );
   await expectMaintenanceDiagnosticRow(
     page,
     "MQTT",
-    /^(connected|connecting|disconnected|unknown)\s+·\s+outbox\s+\d+$/,
+    /^(已连接|connecting|未连接|未知)\s+·\s+待发队列\s+\d+$/,
   );
   await expectMaintenanceDiagnosticRow(page, "下位机", /^(在线|不可用)$/);
   await expectMaintenanceDiagnosticRow(
@@ -710,16 +710,16 @@ test("runtime matrix can directly load maintenance state", async ({ page }) => {
   );
   await expectMaintenanceDiagnosticRow(
     page,
-    "Vision Runtime Status",
+    "视觉运行状态",
     /^(在线|不可用)\s+·\s+\S/,
   );
   await expectMaintenanceDiagnosticRow(
     page,
-    "Remote Ops",
-    /^pending\s+\d+\s+·\s+\S+$/,
+    "远程运维",
+    /^待处理\s+\d+\s+·\s+\S+$/,
   );
 
-  await expect(page.getByText("Readiness Blockers")).toBeVisible();
+  await expect(page.getByText("销售就绪阻塞项")).toBeVisible();
   await expect(page.getByText("整机维护锁", { exact: true })).toBeVisible();
   await expect(
     page.getByText(/整机维护锁 · WHOLE_MACHINE_HARDWARE_FAULT/).first(),
@@ -786,7 +786,7 @@ test("operator-entered maintenance can return to the catalog route", async ({
   await page.goto("/#/maintenance?source=operator");
 
   await expect(page).toHaveURL(/#\/maintenance\?source=operator$/);
-  await expect(page.getByText("Maintenance Console")).toBeVisible();
+  await expect(page.getByText("维护控制台")).toBeVisible();
   const returnToCatalogButton = page.getByRole("button", { name: "回到目录" });
   await expectReasonableTouchTarget(returnToCatalogButton);
   await tapLocator(page, returnToCatalogButton);
@@ -806,7 +806,7 @@ test("customer catalog touch flow does not expose protected maintenance actions"
   await tapLocator(page, page.getByRole("img", { name: "唐诗村" }));
 
   await expect(page).toHaveURL(/#\/catalog$/);
-  await expect(page.getByText("Maintenance Console")).toHaveCount(0);
+  await expect(page.getByText("维护控制台")).toHaveCount(0);
   await expect(
     page.getByRole("button", { name: "回到 Windows 桌面" }),
   ).toHaveCount(0);
