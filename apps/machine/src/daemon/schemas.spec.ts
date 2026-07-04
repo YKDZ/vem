@@ -63,6 +63,32 @@ describe("daemon schemas", () => {
         machineId: "550e8400-e29b-41d4-a716-446655440000",
         machineCode: "MACHINE-NATURAL",
         checkedAt: "2026-06-30T14:00:00.000Z",
+        weather: {
+          status: "unconfigured",
+          weatherConditionClasses: [],
+          primaryWeatherConditionClass: null,
+          diagnostic: {
+            reason: "machine_geo_location_missing",
+            message: "Machine Geo Location is not configured",
+          },
+        },
+        sun: {
+          status: "unconfigured",
+          diagnostic: {
+            reason: "machine_geo_location_missing",
+            message: "Machine Geo Location is not configured",
+          },
+        },
+        calendar: {
+          status: "unconfigured",
+          festivals: [],
+          primaryFestival: null,
+          solarTerm: null,
+          diagnostic: {
+            reason: "machine_geo_timezone_missing",
+            message: "Machine Geo Time Zone is not configured",
+          },
+        },
         diagnostic: {
           reason: "machine_geo_location_missing",
           message: "Machine Geo Location is not configured",

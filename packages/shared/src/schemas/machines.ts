@@ -39,6 +39,7 @@ export const externalNaturalEnvironmentStatusSchema = z.enum([
 
 export const externalNaturalEnvironmentDiagnosticReasonSchema = z.enum([
   "machine_geo_location_missing",
+  "machine_geo_timezone_missing",
   "provider_unavailable",
 ]);
 
@@ -54,22 +55,98 @@ const externalNaturalEnvironmentDiagnosticSchema = z.strictObject({
 });
 
 const externalNaturalEnvironmentWeatherSchema = z.strictObject({
-  temperatureCelsius: z.number(),
-  conditionText: z.string().min(1),
-  observedAt: z.iso.datetime(),
+  status: z.enum(["ready", "stale", "unavailable", "unconfigured"]),
+  temperatureCelsius: z.number().optional(),
+  conditionText: z.string().min(1).optional(),
+  conditionCode: z.string().min(1).optional(),
+  observedAt: z.iso.datetime().optional(),
+  windScale: z.number().int().nonnegative().optional(),
+  windSpeedKph: z.number().nonnegative().optional(),
+  weatherConditionClasses: z.array(
+    z.enum([
+      "hail",
+      "snow",
+      "strong_wind",
+      "moderate_or_heavy_rain",
+      "light_rain",
+      "other",
+    ]),
+  ),
+  primaryWeatherConditionClass: z
+    .enum([
+      "hail",
+      "snow",
+      "strong_wind",
+      "moderate_or_heavy_rain",
+      "light_rain",
+      "other",
+    ])
+    .nullable(),
+  diagnostic: externalNaturalEnvironmentDiagnosticSchema.optional(),
 });
 
 const externalNaturalEnvironmentLocalTimeSchema = z.strictObject({
+  status: z.enum(["ready", "unconfigured"]),
   timezone: z.string().refine(isIanaTimeZone, {
     message: "Timezone must be a valid IANA time zone",
   }),
-  localDate: z.iso.date(),
-  localClock: z.iso.time(),
+  localDate: z.iso.date().optional(),
+  localClock: z.iso.time().optional(),
 });
 
 const externalNaturalEnvironmentSunSchema = z.strictObject({
-  sunriseAt: z.iso.datetime(),
-  sunsetAt: z.iso.datetime(),
+  status: z.enum(["ready", "stale", "unavailable", "unconfigured"]),
+  sunriseAt: z.iso.datetime().optional(),
+  sunsetAt: z.iso.datetime().optional(),
+  diagnostic: externalNaturalEnvironmentDiagnosticSchema.optional(),
+});
+
+const festivalSchema = z.enum([
+  "spring_festival",
+  "new_years_day",
+  "lantern_festival",
+  "valentines_day",
+  "qixi_festival",
+  "labor_day",
+  "dragon_boat_festival",
+  "mid_autumn_festival",
+  "national_day",
+]);
+
+const solarTermSchema = z.enum([
+  "minor_cold",
+  "major_cold",
+  "start_of_spring",
+  "rain_water",
+  "awakening_of_insects",
+  "spring_equinox",
+  "clear_and_bright",
+  "grain_rain",
+  "start_of_summer",
+  "grain_buds",
+  "grain_in_ear",
+  "summer_solstice",
+  "minor_heat",
+  "major_heat",
+  "start_of_autumn",
+  "end_of_heat",
+  "white_dew",
+  "autumn_equinox",
+  "cold_dew",
+  "frost_descent",
+  "start_of_winter",
+  "minor_snow",
+  "major_snow",
+  "winter_solstice",
+]);
+
+const externalNaturalEnvironmentCalendarSchema = z.strictObject({
+  status: z.enum(["ready", "unconfigured"]),
+  localDate: z.iso.date().optional(),
+  festivals: z.array(festivalSchema),
+  primaryFestival: festivalSchema.nullable(),
+  solarTerm: solarTermSchema.nullable(),
+  diagnostic: externalNaturalEnvironmentDiagnosticSchema.optional(),
 });
 
 export const externalNaturalEnvironmentSchema = z.discriminatedUnion("status", [
@@ -78,20 +155,30 @@ export const externalNaturalEnvironmentSchema = z.discriminatedUnion("status", [
     localTime: externalNaturalEnvironmentLocalTimeSchema,
     weather: externalNaturalEnvironmentWeatherSchema,
     sun: externalNaturalEnvironmentSunSchema,
+    calendar: externalNaturalEnvironmentCalendarSchema,
   }),
   externalNaturalEnvironmentBaseSchema.extend({
     status: z.literal("stale"),
     localTime: externalNaturalEnvironmentLocalTimeSchema,
     weather: externalNaturalEnvironmentWeatherSchema,
     sun: externalNaturalEnvironmentSunSchema,
+    calendar: externalNaturalEnvironmentCalendarSchema,
     diagnostic: externalNaturalEnvironmentDiagnosticSchema,
   }),
   externalNaturalEnvironmentBaseSchema.extend({
     status: z.literal("unavailable"),
+    localTime: externalNaturalEnvironmentLocalTimeSchema.optional(),
+    weather: externalNaturalEnvironmentWeatherSchema.optional(),
+    sun: externalNaturalEnvironmentSunSchema.optional(),
+    calendar: externalNaturalEnvironmentCalendarSchema.optional(),
     diagnostic: externalNaturalEnvironmentDiagnosticSchema,
   }),
   externalNaturalEnvironmentBaseSchema.extend({
     status: z.literal("unconfigured"),
+    localTime: externalNaturalEnvironmentLocalTimeSchema.optional(),
+    weather: externalNaturalEnvironmentWeatherSchema.optional(),
+    sun: externalNaturalEnvironmentSunSchema.optional(),
+    calendar: externalNaturalEnvironmentCalendarSchema.optional(),
     diagnostic: externalNaturalEnvironmentDiagnosticSchema,
   }),
 ]);

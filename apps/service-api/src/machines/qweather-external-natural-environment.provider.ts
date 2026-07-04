@@ -1,4 +1,6 @@
 import { Inject, Injectable } from "@nestjs/common";
+import { createPrivateKey, sign } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { z } from "zod";
 
 import type {
@@ -12,11 +14,15 @@ import type {
 import { AppConfigService } from "../config/app-config.service";
 
 type QWeatherClientConfig = {
-  apiKey?: string;
   apiHost?: string;
+  jwtKeyId?: string;
+  jwtProjectId?: string;
+  jwtPrivateKey?: string;
+  jwtPrivateKeyPath?: string;
   weatherNowPath: string;
   sunPath: string;
   timeoutMs?: number;
+  jwtTtlSeconds?: number;
 };
 
 type QWeatherRequest = {
@@ -33,7 +39,10 @@ const qweatherWeatherNowResponseSchema = z.object({
     .object({
       obsTime: z.string(),
       temp: z.string(),
+      icon: z.string(),
       text: z.string(),
+      windScale: z.string().optional(),
+      windSpeed: z.string().optional(),
     })
     .optional(),
 });
@@ -45,6 +54,8 @@ const qweatherSunResponseSchema = z.object({
 });
 
 const DEFAULT_QWEATHER_TIMEOUT_MS = 3_000;
+const DEFAULT_QWEATHER_JWT_TTL_SECONDS = 15 * 60;
+const QWEATHER_JWT_IAT_SKEW_SECONDS = 30;
 
 export class QWeatherProviderError extends Error {
   constructor(message = "QWeather provider unavailable") {
@@ -75,9 +86,7 @@ export class QWeatherClient {
   async fetchWeatherNow(
     input: ExternalNaturalEnvironmentProviderInput,
   ): Promise<ExternalNaturalEnvironmentWeather> {
-    if (!this.config.apiKey || !this.config.apiHost) {
-      throw new QWeatherProviderError("QWeather provider is not configured");
-    }
+    this.assertConfigured();
 
     const location = formatQWeatherLocation(
       input.geoLocation.longitude,
@@ -88,16 +97,23 @@ export class QWeatherClient {
     return {
       temperatureCelsius: Number(weatherNow.now.temp),
       conditionText: weatherNow.now.text,
+      conditionCode: weatherNow.now.icon,
       observedAt: parseProviderIso(weatherNow.now.obsTime),
+      windScale:
+        weatherNow.now.windScale === undefined
+          ? undefined
+          : Number(weatherNow.now.windScale),
+      windSpeedKph:
+        weatherNow.now.windSpeed === undefined
+          ? undefined
+          : Number(weatherNow.now.windSpeed),
     };
   }
 
   async fetchSun(
     input: ExternalNaturalEnvironmentProviderInput,
   ): Promise<ExternalNaturalEnvironmentSun> {
-    if (!this.config.apiKey || !this.config.apiHost) {
-      throw new QWeatherProviderError("QWeather provider is not configured");
-    }
+    this.assertConfigured();
 
     const location = formatQWeatherLocation(
       input.geoLocation.longitude,
@@ -129,7 +145,21 @@ export class QWeatherClient {
       throw new QWeatherProviderError();
     }
     const temperature = Number(parsed.data.now.temp);
-    if (!Number.isFinite(temperature)) {
+    const windScale =
+      parsed.data.now.windScale === undefined
+        ? undefined
+        : Number(parsed.data.now.windScale);
+    const windSpeed =
+      parsed.data.now.windSpeed === undefined
+        ? undefined
+        : Number(parsed.data.now.windSpeed);
+    if (
+      !Number.isFinite(temperature) ||
+      (windScale !== undefined &&
+        (!Number.isInteger(windScale) || windScale < 0)) ||
+      (windSpeed !== undefined &&
+        (!Number.isFinite(windSpeed) || windSpeed < 0))
+    ) {
       throw new QWeatherProviderError();
     }
     return {
@@ -137,6 +167,9 @@ export class QWeatherClient {
       now: {
         ...parsed.data.now,
         temp: String(temperature),
+        windScale:
+          windScale === undefined ? undefined : String(Math.trunc(windScale)),
+        windSpeed: windSpeed === undefined ? undefined : String(windSpeed),
       },
     };
   }
@@ -159,11 +192,7 @@ export class QWeatherClient {
   }
 
   private authHeaders(): Record<string, string> {
-    const apiKey = this.config.apiKey;
-    if (!apiKey) {
-      throw new QWeatherProviderError("QWeather provider is not configured");
-    }
-    return { "X-QW-Api-Key": apiKey };
+    return { Authorization: `Bearer ${this.jwt()}` };
   }
 
   private apiHost(): string {
@@ -172,6 +201,49 @@ export class QWeatherClient {
       throw new QWeatherProviderError("QWeather provider is not configured");
     }
     return apiHost;
+  }
+
+  private jwt(): string {
+    const { jwtKeyId, jwtProjectId } = this.config;
+    if (!jwtKeyId || !jwtProjectId) {
+      throw new QWeatherProviderError("QWeather provider is not configured");
+    }
+    const privateKey = this.privateKey();
+    const iat = Math.floor(Date.now() / 1000) - QWEATHER_JWT_IAT_SKEW_SECONDS;
+    const exp =
+      iat + (this.config.jwtTtlSeconds ?? DEFAULT_QWEATHER_JWT_TTL_SECONDS);
+    return createQWeatherJwt({
+      keyId: jwtKeyId,
+      projectId: jwtProjectId,
+      privateKey,
+      iat,
+      exp,
+    });
+  }
+
+  private privateKey(): string {
+    if (this.config.jwtPrivateKey) {
+      return this.config.jwtPrivateKey;
+    }
+    if (this.config.jwtPrivateKeyPath) {
+      try {
+        return readFileSync(this.config.jwtPrivateKeyPath, "utf8");
+      } catch {
+        throw new QWeatherProviderError("QWeather provider is not configured");
+      }
+    }
+    throw new QWeatherProviderError("QWeather provider is not configured");
+  }
+
+  private assertConfigured(): void {
+    if (
+      !this.config.apiHost ||
+      !this.config.jwtKeyId ||
+      !this.config.jwtProjectId ||
+      (!this.config.jwtPrivateKey && !this.config.jwtPrivateKeyPath)
+    ) {
+      throw new QWeatherProviderError("QWeather provider is not configured");
+    }
   }
 
   private async fetchProviderJson(
@@ -223,8 +295,11 @@ export class QWeatherExternalNaturalEnvironmentProvider implements ExternalNatur
 
   private client(): QWeatherClient {
     return new QWeatherClient({
-      apiKey: this.config.qweatherApiKey,
       apiHost: this.config.qweatherApiHost,
+      jwtKeyId: this.config.qweatherJwtKeyId,
+      jwtProjectId: this.config.qweatherJwtProjectId,
+      jwtPrivateKey: this.config.qweatherJwtPrivateKey,
+      jwtPrivateKeyPath: this.config.qweatherJwtPrivateKeyPath,
       weatherNowPath: this.config.qweatherWeatherNowPath,
       sunPath: this.config.qweatherSunPath,
       timeoutMs: this.config.qweatherTimeoutMs,
@@ -257,6 +332,35 @@ function buildUrl(
 
 function formatQWeatherLocation(longitude: number, latitude: number): string {
   return `${longitude.toFixed(2)},${latitude.toFixed(2)}`;
+}
+
+export function createQWeatherJwt(input: {
+  keyId: string;
+  projectId: string;
+  privateKey: string;
+  iat: number;
+  exp: number;
+}): string {
+  const header = base64UrlJson({
+    alg: "EdDSA",
+    kid: input.keyId,
+  });
+  const payload = base64UrlJson({
+    sub: input.projectId,
+    iat: input.iat,
+    exp: input.exp,
+  });
+  const signingInput = `${header}.${payload}`;
+  const signature = sign(
+    null,
+    Buffer.from(signingInput),
+    createPrivateKey(input.privateKey),
+  ).toString("base64url");
+  return `${signingInput}.${signature}`;
+}
+
+function base64UrlJson(value: unknown): string {
+  return Buffer.from(JSON.stringify(value)).toString("base64url");
 }
 
 function localDateYmd(checkedAt: Date, timezone: string): string {

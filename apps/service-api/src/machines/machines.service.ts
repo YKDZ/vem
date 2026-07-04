@@ -84,6 +84,14 @@ import {
   hashMachineClaimCodeVerifier,
   verifyMachineClaimCode,
 } from "./machine-claim-code.util";
+import {
+  calendarContextForLocalDate,
+  type CalendarContext,
+} from "./natural-context-calendar";
+import {
+  weatherConditionClassesFor,
+  type WeatherConditionClass,
+} from "./natural-context-weather";
 import { evaluateProductionPilotReadiness } from "./production-pilot-readiness";
 
 type PageQueryInput = z.infer<typeof pageQuerySchema>;
@@ -101,21 +109,52 @@ type ExternalNaturalEnvironment = {
   machineCode: string;
   checkedAt: string;
   localTime?: {
+    status: "ready" | "unconfigured";
     timezone: string;
-    localDate: string;
-    localClock: string;
+    localDate?: string;
+    localClock?: string;
   };
   weather?: {
-    temperatureCelsius: number;
-    conditionText: string;
-    observedAt: string;
+    status: "ready" | "stale" | "unavailable" | "unconfigured";
+    temperatureCelsius?: number;
+    conditionText?: string;
+    conditionCode?: string;
+    observedAt?: string;
+    windScale?: number;
+    windSpeedKph?: number;
+    weatherConditionClasses: WeatherConditionClass[];
+    primaryWeatherConditionClass: WeatherConditionClass | null;
+    diagnostic?: {
+      reason: "machine_geo_location_missing" | "provider_unavailable";
+      message: string;
+    };
   };
   sun?: {
-    sunriseAt: string;
-    sunsetAt: string;
+    status: "ready" | "stale" | "unavailable" | "unconfigured";
+    sunriseAt?: string;
+    sunsetAt?: string;
+    diagnostic?: {
+      reason: "machine_geo_location_missing" | "provider_unavailable";
+      message: string;
+    };
   };
+  calendar?:
+    | CalendarContext
+    | {
+        status: "unconfigured";
+        festivals: [];
+        primaryFestival: null;
+        solarTerm: null;
+        diagnostic: {
+          reason: "machine_geo_timezone_missing";
+          message: string;
+        };
+      };
   diagnostic?: {
-    reason: "machine_geo_location_missing" | "provider_unavailable";
+    reason:
+      | "machine_geo_location_missing"
+      | "machine_geo_timezone_missing"
+      | "provider_unavailable";
     message: string;
   };
 };
@@ -392,12 +431,40 @@ async function externalNaturalEnvironmentSnapshot(
     return {
       ...base,
       status: "unconfigured",
+      weather: {
+        status: "unconfigured",
+        weatherConditionClasses: [],
+        primaryWeatherConditionClass: null,
+        diagnostic: {
+          reason: "machine_geo_location_missing",
+          message: "Machine Geo Location is not configured",
+        },
+      },
+      sun: {
+        status: "unconfigured",
+        diagnostic: {
+          reason: "machine_geo_location_missing",
+          message: "Machine Geo Location is not configured",
+        },
+      },
+      calendar: {
+        status: "unconfigured",
+        festivals: [],
+        primaryFestival: null,
+        solarTerm: null,
+        diagnostic: {
+          reason: "machine_geo_timezone_missing",
+          message: "Machine Geo Time Zone is not configured",
+        },
+      },
       diagnostic: {
         reason: "machine_geo_location_missing",
         message: "Machine Geo Location is not configured",
       },
     };
   }
+  const localTime = formatLocalTime(now, geoLocation.timezone);
+  const calendar = calendarContextForLocalDate(localTime.localDate);
   const cacheKey = machineGeoLocationCacheKey(geoLocation);
   const sunCacheKey = `${cacheKey}|${localDateYmd(now, geoLocation.timezone)}`;
   const cachedWeather = usableCachedValue(
@@ -410,65 +477,134 @@ async function externalNaturalEnvironmentSnapshot(
     now,
     SUN_CACHE_TTL_MS,
   );
-  let weather: ExternalNaturalEnvironmentWeather | null = cachedWeather ?? null;
-  let sun: ExternalNaturalEnvironmentSun | null = cachedSun ?? null;
-  try {
-    const input = { geoLocation, checkedAt: now };
-    const [weatherResult, sunResult] = await Promise.all([
-      weather
-        ? Promise.resolve(weather)
-        : provider.fetchWeatherNow(input).then((value) => {
-            cache?.weatherNow.set(cacheKey, {
-              value,
-              cachedAtMs: now.getTime(),
-            });
-            return value;
-          }),
-      sun
-        ? Promise.resolve(sun)
-        : provider.fetchSun(input).then((value) => {
-            cache?.sun.set(sunCacheKey, {
-              value,
-              cachedAtMs: now.getTime(),
-            });
-            return value;
-          }),
-    ]);
-    weather = weatherResult;
-    sun = sunResult;
-  } catch {
-    weather = cache?.weatherNow.get(cacheKey)?.value ?? null;
-    sun = cache?.sun.get(sunCacheKey)?.value ?? null;
-    if (weather && sun) {
-      return {
-        ...base,
-        status: "stale",
-        localTime: formatLocalTime(now, geoLocation.timezone),
-        weather,
-        sun,
+  const input = { geoLocation, checkedAt: now };
+  const [weatherResult, sunResult] = await Promise.allSettled([
+    cachedWeather
+      ? Promise.resolve(cachedWeather)
+      : Promise.resolve(provider.fetchWeatherNow(input)).then((value) => {
+          if (!value) {
+            throw new Error(
+              "External Natural Environment provider unavailable",
+            );
+          }
+          cache?.weatherNow.set(cacheKey, {
+            value,
+            cachedAtMs: now.getTime(),
+          });
+          return value;
+        }),
+    cachedSun
+      ? Promise.resolve(cachedSun)
+      : Promise.resolve(provider.fetchSun(input)).then((value) => {
+          if (!value) {
+            throw new Error(
+              "External Natural Environment provider unavailable",
+            );
+          }
+          cache?.sun.set(sunCacheKey, {
+            value,
+            cachedAtMs: now.getTime(),
+          });
+          return value;
+        }),
+  ]);
+
+  const weather =
+    weatherResult.status === "fulfilled" ? weatherResult.value : null;
+  const sun = sunResult.status === "fulfilled" ? sunResult.value : null;
+  const staleWeather =
+    weather ?? cache?.weatherNow.get(cacheKey)?.value ?? null;
+  const staleSun = sun ?? cache?.sun.get(sunCacheKey)?.value ?? null;
+  const weatherBlock = staleWeather
+    ? weatherBlockFrom(
+        weatherResult.status === "fulfilled" ? "ready" : "stale",
+        staleWeather,
+      )
+    : {
+        status: "unavailable" as const,
+        weatherConditionClasses: [],
+        primaryWeatherConditionClass: null,
         diagnostic: {
-          reason: "provider_unavailable",
+          reason: "provider_unavailable" as const,
           message: "External Natural Environment provider is unavailable",
         },
       };
-    }
-  }
-  if (!weather || !sun) {
-    return {
-      ...base,
-      status: "unavailable",
-      diagnostic: {
-        reason: "provider_unavailable",
-        message: "External Natural Environment provider is unavailable",
-      },
-    };
-  }
+  const sunBlock = staleSun
+    ? {
+        status:
+          sunResult.status === "fulfilled"
+            ? ("ready" as const)
+            : ("stale" as const),
+        sunriseAt: staleSun.sunriseAt,
+        sunsetAt: staleSun.sunsetAt,
+        ...(sunResult.status === "fulfilled"
+          ? {}
+          : {
+              diagnostic: {
+                reason: "provider_unavailable" as const,
+                message: "External Natural Environment provider is unavailable",
+              },
+            }),
+      }
+    : {
+        status: "unavailable" as const,
+        diagnostic: {
+          reason: "provider_unavailable" as const,
+          message: "External Natural Environment provider is unavailable",
+        },
+      };
+  const status =
+    weatherBlock.status === "unavailable" || sunBlock.status === "unavailable"
+      ? "unavailable"
+      : weatherBlock.status === "stale" || sunBlock.status === "stale"
+        ? "stale"
+        : "ready";
+  const diagnostic =
+    status === "ready"
+      ? undefined
+      : {
+          reason: "provider_unavailable" as const,
+          message: "External Natural Environment provider is unavailable",
+        };
   return {
     ...base,
-    status: "ready",
-    localTime: formatLocalTime(now, geoLocation.timezone),
-    weather,
-    sun,
+    status,
+    localTime,
+    weather: weatherBlock,
+    sun: sunBlock,
+    calendar,
+    ...(diagnostic ? { diagnostic } : {}),
+  };
+}
+
+function weatherBlockFrom(
+  status: "ready" | "stale",
+  weather: ExternalNaturalEnvironmentWeather,
+) {
+  const classification = weatherConditionClassesFor(weather);
+  return {
+    status,
+    temperatureCelsius: weather.temperatureCelsius,
+    conditionText: weather.conditionText,
+    observedAt: weather.observedAt,
+    ...(weather.conditionCode === undefined
+      ? {}
+      : { conditionCode: weather.conditionCode }),
+    ...(weather.windScale === undefined
+      ? {}
+      : { windScale: weather.windScale }),
+    ...(weather.windSpeedKph === undefined
+      ? {}
+      : { windSpeedKph: weather.windSpeedKph }),
+    ...classification,
+    ...(status === "ready"
+      ? {}
+      : {
+          diagnostic: {
+            reason: "provider_unavailable" as const,
+            message: "External Natural Environment provider is unavailable",
+          },
+        }),
   };
 }
 
@@ -505,6 +641,7 @@ function formatLocalTime(checkedAt: Date, timezone: string) {
   const part = (type: string) =>
     parts.find((item) => item.type === type)?.value ?? "";
   return {
+    status: "ready" as const,
     timezone,
     localDate: `${part("year")}-${part("month")}-${part("day")}`,
     localClock: `${part("hour")}:${part("minute")}:${part("second")}`,

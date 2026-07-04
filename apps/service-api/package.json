@@ -27,6 +27,7 @@
     "drizzle-orm": "catalog:",
     "fast-xml-parser": "^5.9.3",
     "helmet": "^8.2.0",
+    "lunar-javascript": "^1.7.7",
     "mqtt": "^5.15.1",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.2",

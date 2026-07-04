@@ -229,7 +229,7 @@ describe("shared API contract", () => {
     ).toThrow();
   });
 
-  it("defines External Natural Environment unconfigured as HTTP-success payload without weather or sun data", () => {
+  it("defines External Natural Environment unconfigured as HTTP-success payload", () => {
     expect(
       externalNaturalEnvironmentSchema.parse({
         status: "unconfigured",
@@ -266,8 +266,8 @@ describe("shared API contract", () => {
         machineId: "550e8400-e29b-41d4-a716-446655440000",
         machineCode: "M001",
         checkedAt: "2026-06-30T14:00:00.000Z",
-        weather: { temperatureCelsius: 28 },
-        sun: { sunriseAt: "2026-06-30T21:00:00.000Z" },
+        weather: { status: "ready", temperatureCelsius: 28 },
+        sun: { status: "ready", sunriseAt: "2026-06-30T21:00:00.000Z" },
         diagnostic: {
           reason: "machine_geo_location_missing",
           message: "Machine Geo Location is not configured",
@@ -276,7 +276,7 @@ describe("shared API contract", () => {
     ).toThrow();
   });
 
-  it("defines External Natural Environment ready as normalized local time, weather, and sun data", () => {
+  it("defines External Natural Environment ready as normalized weather, sun, and calendar data", () => {
     expect(
       externalNaturalEnvironmentSchema.parse({
         status: "ready",
@@ -284,18 +284,33 @@ describe("shared API contract", () => {
         machineCode: "M001",
         checkedAt: "2026-06-30T14:00:00.000Z",
         localTime: {
+          status: "ready",
           timezone: "Asia/Shanghai",
           localDate: "2026-06-30",
           localClock: "22:00:00",
         },
         weather: {
+          status: "ready",
           temperatureCelsius: 28,
           conditionText: "Sunny",
+          conditionCode: "305",
           observedAt: "2026-06-30T13:50:00.000Z",
+          windScale: 8,
+          windSpeedKph: 65,
+          weatherConditionClasses: ["strong_wind", "light_rain"],
+          primaryWeatherConditionClass: "strong_wind",
         },
         sun: {
+          status: "ready",
           sunriseAt: "2026-06-29T21:53:00.000Z",
           sunsetAt: "2026-06-30T10:02:00.000Z",
+        },
+        calendar: {
+          status: "ready",
+          localDate: "2026-06-30",
+          festivals: [],
+          primaryFestival: null,
+          solarTerm: null,
         },
       }),
     ).toEqual({
@@ -304,18 +319,33 @@ describe("shared API contract", () => {
       machineCode: "M001",
       checkedAt: "2026-06-30T14:00:00.000Z",
       localTime: {
+        status: "ready",
         timezone: "Asia/Shanghai",
         localDate: "2026-06-30",
         localClock: "22:00:00",
       },
       weather: {
+        status: "ready",
         temperatureCelsius: 28,
         conditionText: "Sunny",
+        conditionCode: "305",
         observedAt: "2026-06-30T13:50:00.000Z",
+        windScale: 8,
+        windSpeedKph: 65,
+        weatherConditionClasses: ["strong_wind", "light_rain"],
+        primaryWeatherConditionClass: "strong_wind",
       },
       sun: {
+        status: "ready",
         sunriseAt: "2026-06-29T21:53:00.000Z",
         sunsetAt: "2026-06-30T10:02:00.000Z",
+      },
+      calendar: {
+        status: "ready",
+        localDate: "2026-06-30",
+        festivals: [],
+        primaryFestival: null,
+        solarTerm: null,
       },
     });
   });
@@ -328,18 +358,35 @@ describe("shared API contract", () => {
         machineCode: "M001",
         checkedAt: "2026-06-30T14:10:00.000Z",
         localTime: {
+          status: "ready",
           timezone: "Asia/Shanghai",
           localDate: "2026-06-30",
           localClock: "22:10:00",
         },
         weather: {
+          status: "stale",
           temperatureCelsius: 28,
           conditionText: "Sunny",
+          conditionCode: "100",
           observedAt: "2026-06-30T13:50:00.000Z",
+          weatherConditionClasses: ["other"],
+          primaryWeatherConditionClass: "other",
+          diagnostic: {
+            reason: "provider_unavailable",
+            message: "External Natural Environment provider is unavailable",
+          },
         },
         sun: {
+          status: "ready",
           sunriseAt: "2026-06-29T21:53:00.000Z",
           sunsetAt: "2026-06-30T10:02:00.000Z",
+        },
+        calendar: {
+          status: "ready",
+          localDate: "2026-06-30",
+          festivals: [],
+          primaryFestival: null,
+          solarTerm: null,
         },
         diagnostic: {
           reason: "provider_unavailable",
@@ -352,18 +399,35 @@ describe("shared API contract", () => {
       machineCode: "M001",
       checkedAt: "2026-06-30T14:10:00.000Z",
       localTime: {
+        status: "ready",
         timezone: "Asia/Shanghai",
         localDate: "2026-06-30",
         localClock: "22:10:00",
       },
       weather: {
+        status: "stale",
         temperatureCelsius: 28,
         conditionText: "Sunny",
+        conditionCode: "100",
         observedAt: "2026-06-30T13:50:00.000Z",
+        weatherConditionClasses: ["other"],
+        primaryWeatherConditionClass: "other",
+        diagnostic: {
+          reason: "provider_unavailable",
+          message: "External Natural Environment provider is unavailable",
+        },
       },
       sun: {
+        status: "ready",
         sunriseAt: "2026-06-29T21:53:00.000Z",
         sunsetAt: "2026-06-30T10:02:00.000Z",
+      },
+      calendar: {
+        status: "ready",
+        localDate: "2026-06-30",
+        festivals: [],
+        primaryFestival: null,
+        solarTerm: null,
       },
       diagnostic: {
         reason: "provider_unavailable",

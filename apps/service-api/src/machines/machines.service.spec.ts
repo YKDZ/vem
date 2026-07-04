@@ -1408,18 +1408,30 @@ describe("MachinesService", () => {
       new Date("2026-06-30T14:00:00.000Z"),
     );
 
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       status: "unconfigured",
       machineId: "550e8400-e29b-41d4-a716-446655440000",
       machineCode: "M001",
       checkedAt: "2026-06-30T14:00:00.000Z",
+      weather: {
+        status: "unconfigured",
+        weatherConditionClasses: [],
+        primaryWeatherConditionClass: null,
+      },
+      sun: {
+        status: "unconfigured",
+      },
+      calendar: {
+        status: "unconfigured",
+        festivals: [],
+        primaryFestival: null,
+        solarTerm: null,
+      },
       diagnostic: {
         reason: "machine_geo_location_missing",
         message: "Machine Geo Location is not configured",
       },
     });
-    expect(result).not.toHaveProperty("weather");
-    expect(result).not.toHaveProperty("sun");
     expect(fetchWeatherNow).not.toHaveBeenCalled();
     expect(fetchSun).not.toHaveBeenCalled();
   });
@@ -1447,7 +1459,10 @@ describe("MachinesService", () => {
     fetchWeatherNow.mockResolvedValueOnce({
       temperatureCelsius: 28,
       conditionText: "Sunny",
+      conditionCode: "305",
       observedAt: "2026-06-30T13:50:00.000Z",
+      windScale: 8,
+      windSpeedKph: 65,
     });
     fetchSun.mockResolvedValueOnce({
       sunriseAt: "2026-06-29T21:53:00.000Z",
@@ -1481,18 +1496,33 @@ describe("MachinesService", () => {
       machineCode: "M001",
       checkedAt: "2026-06-30T14:00:00.000Z",
       localTime: {
+        status: "ready",
         timezone: "Asia/Shanghai",
         localDate: "2026-06-30",
         localClock: "22:00:00",
       },
       weather: {
+        status: "ready",
         temperatureCelsius: 28,
         conditionText: "Sunny",
+        conditionCode: "305",
         observedAt: "2026-06-30T13:50:00.000Z",
+        windScale: 8,
+        windSpeedKph: 65,
+        weatherConditionClasses: ["strong_wind", "light_rain"],
+        primaryWeatherConditionClass: "strong_wind",
       },
       sun: {
+        status: "ready",
         sunriseAt: "2026-06-29T21:53:00.000Z",
         sunsetAt: "2026-06-30T10:02:00.000Z",
+      },
+      calendar: {
+        status: "ready",
+        localDate: "2026-06-30",
+        festivals: [],
+        primaryFestival: null,
+        solarTerm: null,
       },
     });
     expect(result).not.toHaveProperty("diagnostic");
@@ -1550,6 +1580,7 @@ describe("MachinesService", () => {
       ...first,
       checkedAt: "2026-06-30T14:09:59.000Z",
       localTime: {
+        status: "ready",
         timezone: "Asia/Shanghai",
         localDate: "2026-06-30",
         localClock: "22:09:59",
@@ -1591,7 +1622,7 @@ describe("MachinesService", () => {
         observedAt: "2026-06-30T13:50:00.000Z",
       })
       .mockRejectedValueOnce(
-        new Error("QWeather 401 for API key secret-qweather-api-key"),
+        new Error("QWeather 401 for JWT credential secret-qweather-jwt"),
       );
     fetchSun.mockResolvedValueOnce({
       sunriseAt: "2026-06-29T21:53:00.000Z",
@@ -1609,31 +1640,44 @@ describe("MachinesService", () => {
 
     expect(fetchWeatherNow).toHaveBeenCalledTimes(2);
     expect(fetchSun).toHaveBeenCalledTimes(1);
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       status: "stale",
       machineId: "550e8400-e29b-41d4-a716-446655440000",
       machineCode: "M001",
       checkedAt: "2026-06-30T14:10:00.000Z",
       localTime: {
+        status: "ready",
         timezone: "Asia/Shanghai",
         localDate: "2026-06-30",
         localClock: "22:10:00",
       },
       weather: {
+        status: "stale",
         temperatureCelsius: 28,
         conditionText: "Sunny",
         observedAt: "2026-06-30T13:50:00.000Z",
+        weatherConditionClasses: ["other"],
+        primaryWeatherConditionClass: "other",
+        diagnostic: {
+          reason: "provider_unavailable",
+          message: "External Natural Environment provider is unavailable",
+        },
       },
       sun: {
+        status: "ready",
         sunriseAt: "2026-06-29T21:53:00.000Z",
         sunsetAt: "2026-06-30T10:02:00.000Z",
+      },
+      calendar: {
+        status: "ready",
+        localDate: "2026-06-30",
       },
       diagnostic: {
         reason: "provider_unavailable",
         message: "External Natural Environment provider is unavailable",
       },
     });
-    expect(JSON.stringify(result)).not.toContain("secret-qweather-api-key");
+    expect(JSON.stringify(result)).not.toContain("secret-qweather-jwt");
   });
 
   it("refreshes weather after 10 minutes while reusing same-date sunrise and sunset for 24 hours", async () => {
@@ -1690,12 +1734,16 @@ describe("MachinesService", () => {
 
     expect(fetchWeatherNow).toHaveBeenCalledTimes(2);
     expect(fetchSun).toHaveBeenCalledTimes(1);
-    expect(result.weather).toEqual({
+    expect(result.weather).toMatchObject({
+      status: "ready",
       temperatureCelsius: 29,
       conditionText: "Cloudy",
       observedAt: "2026-06-30T14:10:00.000Z",
+      weatherConditionClasses: ["other"],
+      primaryWeatherConditionClass: "other",
     });
     expect(result.sun).toEqual({
+      status: "ready",
       sunriseAt: "2026-06-29T21:53:00.000Z",
       sunsetAt: "2026-06-30T10:02:00.000Z",
     });
@@ -1761,6 +1809,7 @@ describe("MachinesService", () => {
     expect(fetchWeatherNow).toHaveBeenCalledTimes(2);
     expect(fetchSun).toHaveBeenCalledTimes(2);
     expect(result.sun).toEqual({
+      status: "ready",
       sunriseAt: "2026-06-30T21:54:00.000Z",
       sunsetAt: "2026-07-01T10:02:00.000Z",
     });
@@ -1787,7 +1836,7 @@ describe("MachinesService", () => {
       }),
     });
     fetchWeatherNow.mockRejectedValueOnce(
-      new Error("QWeather 401 for API key secret-qweather-api-key"),
+      new Error("QWeather 401 for JWT credential secret-qweather-jwt"),
     );
     fetchSun.mockResolvedValueOnce({
       sunriseAt: "2026-06-29T21:53:00.000Z",
@@ -1799,19 +1848,41 @@ describe("MachinesService", () => {
       new Date("2026-06-30T14:00:00.000Z"),
     );
 
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       status: "unavailable",
       machineId: "550e8400-e29b-41d4-a716-446655440000",
       machineCode: "M001",
       checkedAt: "2026-06-30T14:00:00.000Z",
+      localTime: {
+        status: "ready",
+        timezone: "Asia/Shanghai",
+        localDate: "2026-06-30",
+        localClock: "22:00:00",
+      },
+      weather: {
+        status: "unavailable",
+        weatherConditionClasses: [],
+        primaryWeatherConditionClass: null,
+        diagnostic: {
+          reason: "provider_unavailable",
+          message: "External Natural Environment provider is unavailable",
+        },
+      },
+      sun: {
+        status: "ready",
+        sunriseAt: "2026-06-29T21:53:00.000Z",
+        sunsetAt: "2026-06-30T10:02:00.000Z",
+      },
+      calendar: {
+        status: "ready",
+        localDate: "2026-06-30",
+      },
       diagnostic: {
         reason: "provider_unavailable",
         message: "External Natural Environment provider is unavailable",
       },
     });
-    expect(JSON.stringify(result)).not.toContain("secret-qweather-api-key");
-    expect(result).not.toHaveProperty("weather");
-    expect(result).not.toHaveProperty("sun");
+    expect(JSON.stringify(result)).not.toContain("secret-qweather-jwt");
   });
 
   it("returns the authenticated machine's own unconfigured External Natural Environment by machine code", async () => {

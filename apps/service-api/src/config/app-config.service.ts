@@ -136,12 +136,24 @@ export class AppConfigService {
     });
   }
 
-  get qweatherApiKey(): string | undefined {
-    return this.config.get("QWEATHER_API_KEY", { infer: true });
-  }
-
   get qweatherApiHost(): string | undefined {
     return this.config.get("QWEATHER_API_HOST", { infer: true });
+  }
+
+  get qweatherJwtKeyId(): string | undefined {
+    return this.config.get("QWEATHER_JWT_KEY_ID", { infer: true });
+  }
+
+  get qweatherJwtProjectId(): string | undefined {
+    return this.config.get("QWEATHER_JWT_PROJECT_ID", { infer: true });
+  }
+
+  get qweatherJwtPrivateKey(): string | undefined {
+    return this.config.get("QWEATHER_JWT_PRIVATE_KEY", { infer: true });
+  }
+
+  get qweatherJwtPrivateKeyPath(): string | undefined {
+    return this.config.get("QWEATHER_JWT_PRIVATE_KEY_PATH", { infer: true });
   }
 
   get qweatherWeatherNowPath(): string {
