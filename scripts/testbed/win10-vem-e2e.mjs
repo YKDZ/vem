@@ -56,6 +56,10 @@ const FINAL_PUBLIC_CONFIG_FIELDS = [
   "provisioningMetadata",
 ];
 
+const EXPECTED_KIOSK_USER = "VEMKiosk";
+const EXPECTED_PORTRAIT_WIDTH_PX = 1080;
+const EXPECTED_PORTRAIT_HEIGHT_PX = 1920;
+
 export function buildBringUpPlan(options = {}) {
   return {
     setupScript:
@@ -111,6 +115,152 @@ function present(value) {
     return value.trim().length > 0;
   }
   return true;
+}
+
+function normalizeWindowsUser(user) {
+  const value = String(user ?? "").trim();
+  if (value.length === 0) {
+    return "";
+  }
+  return value.split("\\").at(-1);
+}
+
+function normalizeSessionState(state) {
+  return String(state ?? "")
+    .trim()
+    .toLowerCase();
+}
+
+function toNullableSessionId(value) {
+  const number = Number(value);
+  return Number.isInteger(number) && number >= 0 ? number : null;
+}
+
+function normalizeSessionEvidence(session) {
+  return {
+    user: normalizeWindowsUser(session?.user),
+    sessionId: toNullableSessionId(session?.sessionId),
+    state: String(session?.state ?? "unknown"),
+    source: String(session?.source ?? "unknown"),
+  };
+}
+
+export function findActiveKioskSession(sessions = []) {
+  const normalizedSessions = Array.isArray(sessions)
+    ? sessions.map(normalizeSessionEvidence)
+    : [];
+  return (
+    normalizedSessions.find(
+      (session) =>
+        session.user === EXPECTED_KIOSK_USER &&
+        session.sessionId !== null &&
+        normalizeSessionState(session.state) === "active" &&
+        session.source !== "ssh_service_session",
+    ) ?? null
+  );
+}
+
+function normalizeScreenDimensions(screen) {
+  const widthPx = Number(screen?.widthPx);
+  const heightPx = Number(screen?.heightPx);
+  return {
+    widthPx: Number.isInteger(widthPx) && widthPx > 0 ? widthPx : 0,
+    heightPx: Number.isInteger(heightPx) && heightPx > 0 ? heightPx : 0,
+  };
+}
+
+export function buildInteractiveDesktopDisplayBaseline({
+  activeSession,
+  screen,
+} = {}) {
+  const session = activeSession
+    ? normalizeSessionEvidence(activeSession)
+    : null;
+  const dimensions = normalizeScreenDimensions(screen);
+  const screenSource = String(screen?.source ?? "");
+  const passed =
+    session?.user === EXPECTED_KIOSK_USER &&
+    session.sessionId !== null &&
+    normalizeSessionState(session.state) === "active" &&
+    screenSource !== "ssh_service_session" &&
+    dimensions.widthPx === EXPECTED_PORTRAIT_WIDTH_PX &&
+    dimensions.heightPx === EXPECTED_PORTRAIT_HEIGHT_PX;
+
+  return {
+    status: session === null ? "missing" : passed ? "passed" : "failed",
+    widthPx: session === null ? 0 : dimensions.widthPx,
+    heightPx: session === null ? 0 : dimensions.heightPx,
+    sessionUser: session?.user || "unknown",
+    sessionId: session?.sessionId ?? null,
+    source: "interactive_desktop_screen",
+  };
+}
+
+export function buildPortraitKioskAcceptance(baseline = {}) {
+  const passed =
+    baseline.status === "passed" &&
+    baseline.widthPx === EXPECTED_PORTRAIT_WIDTH_PX &&
+    baseline.heightPx === EXPECTED_PORTRAIT_HEIGHT_PX &&
+    normalizeWindowsUser(baseline.sessionUser) === EXPECTED_KIOSK_USER &&
+    toNullableSessionId(baseline.sessionId) !== null;
+
+  return {
+    status: passed ? "passed" : "failed",
+    widthPx: Number.isInteger(Number(baseline.widthPx))
+      ? Number(baseline.widthPx)
+      : 0,
+    heightPx: Number.isInteger(Number(baseline.heightPx))
+      ? Number(baseline.heightPx)
+      : 0,
+    sessionUser: normalizeWindowsUser(baseline.sessionUser) || "unknown",
+    sessionId: toNullableSessionId(baseline.sessionId),
+    source: "interactive_kiosk_session",
+  };
+}
+
+export function isStrictTauriHashRouteUrl(value) {
+  try {
+    const url = new URL(String(value ?? ""));
+    return (
+      url.protocol === "http:" &&
+      url.hostname === "tauri.localhost" &&
+      url.pathname === "/" &&
+      url.hash.startsWith("#/")
+    );
+  } catch {
+    return false;
+  }
+}
+
+export function buildKioskRuntimeEvidence({
+  activeSession,
+  machineProcesses = [],
+  cdpTargets = [],
+} = {}) {
+  const session = activeSession
+    ? normalizeSessionEvidence(activeSession)
+    : null;
+  const process = Array.isArray(machineProcesses)
+    ? machineProcesses.find(
+        (candidate) =>
+          normalizeWindowsUser(candidate?.ownerUser) === EXPECTED_KIOSK_USER &&
+          toNullableSessionId(candidate?.sessionId) === session?.sessionId,
+      )
+    : null;
+  const target = Array.isArray(cdpTargets)
+    ? cdpTargets.find((candidate) => isStrictTauriHashRouteUrl(candidate?.url))
+    : null;
+  const webviewRunning = Boolean(session && process && target);
+
+  return {
+    webviewRunning,
+    url: target?.url ?? "unavailable:no-tauri-hash-route-target",
+    sessionUser: session?.user ?? "unknown",
+    sessionId: session?.sessionId ?? null,
+    processId: process?.processId ?? null,
+    cdpAvailable: Array.isArray(cdpTargets),
+    error: webviewRunning ? null : "kiosk_webview_not_verified",
+  };
 }
 
 export function buildPreClaimPublicConfig(publicConfig = {}, platform) {
@@ -1106,6 +1256,190 @@ function Get-DisplayEvidence {
   }
 }
 
+function Get-ProcessOwnerEvidence($Process) {
+  $owner = $null
+  try {
+    $ownerResult = Invoke-CimMethod -InputObject $Process -MethodName GetOwner -ErrorAction Stop
+    if ($ownerResult.ReturnValue -eq 0) {
+      $owner = [pscustomobject]@{
+        user = [string]$ownerResult.User
+        domain = [string]$ownerResult.Domain
+      }
+    }
+  } catch {
+    $owner = $null
+  }
+  return $owner
+}
+
+function Get-MachineUiProcessEvidence {
+  $processes = @(Get-CimInstance Win32_Process -Filter "name = 'machine.exe'" -ErrorAction SilentlyContinue | ForEach-Object {
+    $owner = Get-ProcessOwnerEvidence $_
+    [pscustomobject]@{
+      processId = [int]$_.ProcessId
+      sessionId = [int]$_.SessionId
+      executablePath = if ($null -ne $_.ExecutablePath) { [string]$_.ExecutablePath } else { $null }
+      commandLine = if ($null -ne $_.CommandLine) { [string]$_.CommandLine } else { $null }
+      ownerUser = if ($null -ne $owner) { [string]$owner.user } else { "unknown" }
+      ownerDomain = if ($null -ne $owner) { [string]$owner.domain } else { "unknown" }
+    }
+  })
+  return $processes
+}
+
+function Convert-QuserSessionLine([string]$Line) {
+  if ([string]::IsNullOrWhiteSpace($Line)) { return $null }
+  $match = [regex]::Match($Line, '^\\s*>?\\s*(?<user>\\S+)\\s+(?:(?<sessionName>\\S+)\\s+)?(?<id>\\d+)\\s+(?<state>\\S+)')
+  if (-not $match.Success) { return $null }
+  $user = [string]$match.Groups["user"].Value
+  if ($user.Contains("\\")) {
+    $user = $user.Split("\\")[-1]
+  }
+  return [pscustomobject]@{
+    user = $user
+    sessionName = if ($match.Groups["sessionName"].Success) { [string]$match.Groups["sessionName"].Value } else { $null }
+    sessionId = [int]$match.Groups["id"].Value
+    state = [string]$match.Groups["state"].Value
+    source = "quser"
+  }
+}
+
+function Get-InteractiveWindowsSessionEvidence {
+  $sessions = @()
+  $errorMessage = $null
+  try {
+    $lines = @(quser 2>&1 | Select-Object -Skip 1)
+    $sessions = @($lines | ForEach-Object { Convert-QuserSessionLine ([string]$_) } | Where-Object { $null -ne $_ })
+  } catch {
+    $errorMessage = [string]$_
+  }
+  $activeKioskSession = @($sessions | Where-Object {
+    $_.user -eq "VEMKiosk" -and $_.state -eq "Active"
+  } | Select-Object -First 1)
+  return [pscustomobject]@{
+    source = "quser"
+    sessions = $sessions
+    activeKioskSessionId = if ($activeKioskSession.Count -gt 0) { [int]$activeKioskSession[0].sessionId } else { $null }
+    activeKioskSession = if ($activeKioskSession.Count -gt 0) { $activeKioskSession[0] } else { $null }
+    error = $errorMessage
+  }
+}
+
+function Get-ActiveKioskSession($SessionEvidence) {
+  if ($null -eq $SessionEvidence) { return $null }
+  $session = @($SessionEvidence.sessions | Where-Object {
+    $_.user -eq "VEMKiosk" -and $_.state -eq "Active" -and $_.source -ne "ssh_service_session"
+  } | Select-Object -First 1)
+  if ($session.Count -eq 0) { return $null }
+  return $session[0]
+}
+
+function Get-CurrentDesktopScreenDimensions {
+  try {
+    if ($null -eq ("VemDisplaySettings" -as [type])) {
+      Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+
+[StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi)]
+public struct VemDevMode {
+  [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)]
+  public string dmDeviceName;
+  public short dmSpecVersion;
+  public short dmDriverVersion;
+  public short dmSize;
+  public short dmDriverExtra;
+  public int dmFields;
+  public int dmPositionX;
+  public int dmPositionY;
+  public int dmDisplayOrientation;
+  public int dmDisplayFixedOutput;
+  public short dmColor;
+  public short dmDuplex;
+  public short dmYResolution;
+  public short dmTTOption;
+  public short dmCollate;
+  [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)]
+  public string dmFormName;
+  public short dmLogPixels;
+  public int dmBitsPerPel;
+  public int dmPelsWidth;
+  public int dmPelsHeight;
+  public int dmDisplayFlags;
+  public int dmDisplayFrequency;
+  public int dmICMMethod;
+  public int dmICMIntent;
+  public int dmMediaType;
+  public int dmDitherType;
+  public int dmReserved1;
+  public int dmReserved2;
+  public int dmPanningWidth;
+  public int dmPanningHeight;
+}
+
+public static class VemDisplaySettings {
+  public const int ENUM_CURRENT_SETTINGS = -1;
+
+  [DllImport("user32.dll", CharSet = CharSet.Ansi)]
+  public static extern bool EnumDisplaySettings(string deviceName, int modeNum, ref VemDevMode devMode);
+}
+"@ -ErrorAction Stop
+    }
+    $mode = New-Object VemDevMode
+    $mode.dmSize = [System.Runtime.InteropServices.Marshal]::SizeOf([VemDevMode])
+    if ([VemDisplaySettings]::EnumDisplaySettings($null, [VemDisplaySettings]::ENUM_CURRENT_SETTINGS, [ref]$mode)) {
+      return [pscustomobject]@{
+        deviceName = "interactive-desktop-current-settings"
+        primary = $true
+        widthPx = [int]$mode.dmPelsWidth
+        heightPx = [int]$mode.dmPelsHeight
+        source = "enum_display_settings"
+      }
+    }
+  } catch {
+    return $null
+  }
+  return $null
+}
+
+function Get-InteractiveDesktopDisplayEvidence($ActiveKioskSession) {
+  if ($null -eq $ActiveKioskSession) {
+    return [pscustomobject]@{
+      source = "interactive_kiosk_session"
+      status = "missing"
+      reason = "active VEMKiosk interactive Windows session was not observed"
+      sessionUser = "unknown"
+      sessionId = $null
+      screens = @()
+      kioskUiWindow = $null
+    }
+  }
+
+  $screen = Get-CurrentDesktopScreenDimensions
+
+  if ($null -eq $screen) {
+    return [pscustomobject]@{
+      source = "interactive_kiosk_session"
+      status = "missing"
+      reason = "interactive desktop screen dimensions were not available"
+      sessionUser = [string]$ActiveKioskSession.user
+      sessionId = [int]$ActiveKioskSession.sessionId
+      screens = @()
+      kioskUiWindow = $null
+    }
+  }
+
+  return [pscustomobject]@{
+    source = "interactive_kiosk_session"
+    status = "observed"
+    reason = $null
+    sessionUser = [string]$ActiveKioskSession.user
+    sessionId = [int]$ActiveKioskSession.sessionId
+    screens = @($screen)
+    kioskUiWindow = $null
+  }
+}
+
 function Convert-DisplayDimensionsEvidence($Display) {
   $screen = @($Display.screens | Where-Object { $_.primary } | Select-Object -First 1)
   if ($screen.Count -eq 0) {
@@ -1122,6 +1456,102 @@ function Convert-DisplayDimensionsEvidence($Display) {
     status = "observed"
     widthPx = [int]$screen.widthPx
     heightPx = [int]$screen.heightPx
+  }
+}
+
+function Convert-InteractiveDisplayDimensionsEvidence($Display) {
+  $dimensions = Convert-DisplayDimensionsEvidence $Display
+  $passed = (
+    $Display.status -eq "observed" -and
+    $dimensions.widthPx -eq 1080 -and $dimensions.heightPx -eq 1920 -and
+    $Display.sessionUser -eq "VEMKiosk"
+  )
+  return [ordered]@{
+    status = if ($passed) { "passed" } elseif ($dimensions.status -eq "missing") { "missing" } else { "failed" }
+    widthPx = [int]$dimensions.widthPx
+    heightPx = [int]$dimensions.heightPx
+    sessionUser = if ([string]::IsNullOrWhiteSpace($Display.sessionUser)) { "unknown" } else { [string]$Display.sessionUser }
+    sessionId = if ($null -ne $Display.sessionId) { [int]$Display.sessionId } else { $null }
+  }
+}
+
+function Convert-PortraitKioskAcceptanceEvidence($Dimensions) {
+  $passed = (
+    $Dimensions.status -eq "passed" -and
+    $Dimensions.widthPx -eq 1080 -and $Dimensions.heightPx -eq 1920 -and
+    $Dimensions.sessionUser -eq "VEMKiosk"
+  )
+  return [ordered]@{
+    status = if ($passed) { "passed" } else { "failed" }
+    widthPx = [int]$Dimensions.widthPx
+    heightPx = [int]$Dimensions.heightPx
+    sessionUser = if ([string]::IsNullOrWhiteSpace($Dimensions.sessionUser)) { "unknown" } else { [string]$Dimensions.sessionUser }
+    sessionId = if ($null -ne $Dimensions.sessionId) { [int]$Dimensions.sessionId } else { $null }
+    source = "interactive_kiosk_session"
+  }
+}
+
+function Test-TauriHashRouteUrl([string]$Url) {
+  try {
+    $uri = [System.Uri]::new($Url)
+    return (
+      $uri.Scheme -eq "http" -and
+      $uri.Host -eq "tauri.localhost" -and
+      $uri.AbsolutePath -eq "/" -and
+      $uri.Fragment.StartsWith("#/")
+    )
+  } catch {
+    return $false
+  }
+}
+
+function Get-WebViewCdpUrlEvidence {
+  try {
+    $targets = @(Invoke-RestMethod -Method Get -Uri "http://127.0.0.1:9222/json" -TimeoutSec 3)
+    $target = @($targets | Where-Object {
+      Test-TauriHashRouteUrl ([string]$_.url)
+    } | Select-Object -First 1)
+    if ($target.Count -gt 0) {
+      return [pscustomobject]@{
+        available = $true
+        url = [string]$target[0].url
+        source = "webview_cdp"
+        error = $null
+      }
+    }
+    return [pscustomobject]@{
+      available = $true
+      url = "unavailable:no-tauri-hash-route-target"
+      source = "webview_cdp"
+      error = "no_tauri_hash_route_target"
+    }
+  } catch {
+    return [pscustomobject]@{
+      available = $false
+      url = "unavailable:webview-cdp"
+      source = "webview_cdp"
+      error = [string]$_
+    }
+  }
+}
+
+function Get-KioskRuntimeEvidence($ActiveKioskSession) {
+  $machineProcesses = @(Get-MachineUiProcessEvidence)
+  $kioskProcess = @($machineProcesses | Where-Object {
+    $null -ne $ActiveKioskSession -and
+    $_.ownerUser -eq "VEMKiosk" -and
+    $_.sessionId -eq $ActiveKioskSession.sessionId
+  } | Select-Object -First 1)
+  $cdp = Get-WebViewCdpUrlEvidence
+  return [ordered]@{
+    webviewRunning = $kioskProcess.Count -gt 0 -and (Test-TauriHashRouteUrl ([string]$cdp.url))
+    url = [string]$cdp.url
+    sessionUser = if ($null -ne $ActiveKioskSession) { [string]$ActiveKioskSession.user } else { "unknown" }
+    source = $cdp.source
+    processId = if ($kioskProcess.Count -gt 0) { $kioskProcess[0].processId } else { $null }
+    sessionId = if ($null -ne $ActiveKioskSession) { [int]$ActiveKioskSession.sessionId } else { $null }
+    cdpAvailable = [bool]$cdp.available
+    error = $cdp.error
   }
 }
 
@@ -1166,6 +1596,12 @@ function Get-InventoryFacts($ProvisioningActions = @()) {
   $computer = Get-CimInstance Win32_ComputerSystem
   $hostDisplay = Get-DisplayEvidence
   $displayDimensionsEvidence = Convert-DisplayDimensionsEvidence $hostDisplay
+  $interactiveWindowsSessions = Get-InteractiveWindowsSessionEvidence
+  $activeKioskSession = Get-ActiveKioskSession $interactiveWindowsSessions
+  $interactiveDesktopDisplay = Get-InteractiveDesktopDisplayEvidence $activeKioskSession
+  $interactiveDesktopDisplayBaseline = Convert-InteractiveDisplayDimensionsEvidence $interactiveDesktopDisplay
+  $portraitKioskAcceptance = Convert-PortraitKioskAcceptanceEvidence $interactiveDesktopDisplayBaseline
+  $kioskRuntime = Get-KioskRuntimeEvidence $activeKioskSession
   $daemonService = Get-ServiceStateOrNull -Name "VemVendingDaemon"
   $machineUiTask = Get-ScheduledTaskEvidence -TaskName "VEMMachineUI" -TaskPath "\\"
   $maintenanceUiTask = Get-ScheduledTaskEvidence -TaskName "VEMMaintenanceUI" -TaskPath "\\"
@@ -1174,6 +1610,42 @@ function Get-InventoryFacts($ProvisioningActions = @()) {
   $startupBringup = Get-StartupBringupEvidence
   $daemonIpc = Get-DaemonIpcInventoryEvidence "C:\\ProgramData\\VEM\\vending-daemon\\daemon-ready.json"
   $provisioningFacts = Convert-ProvisioningFacts $daemonIpc $ProvisioningActions
+  $runtimeAcceptanceFactsSubset = [ordered]@{
+    mode = "fresh_bring_up"
+    target = [ordered]@{
+      testbedName = "win10-vem-e2e"
+      machineCode = ${psString(machineCode)}
+      platformTarget = ${psString(platformTarget)}
+    }
+    displayEvidence = [ordered]@{
+      hostDisplayBaseline = $displayDimensionsEvidence
+      interactiveDesktopDisplayBaseline = $interactiveDesktopDisplayBaseline
+      sshServiceSessionScreenDimensions = $displayDimensionsEvidence
+      portraitKioskAcceptance = $portraitKioskAcceptance
+    }
+    serviceState = [ordered]@{
+      daemonService = [ordered]@{
+        installed = $null -ne $daemonService
+        running = $null -ne $daemonService -and $daemonService.status -eq "Running"
+        startupType = if ($null -ne $daemonService) { $daemonService.startType.ToLowerInvariant() } else { "unknown" }
+      }
+      machineUiTask = [ordered]@{
+        name = "VEMMachineUI"
+        exists = [bool]$machineUiTask.exists
+        enabled = [bool]$machineUiTask.enabled
+        runAsUser = if ([string]::IsNullOrWhiteSpace($machineUiTask.runAsUser)) { "unknown" } else { [string]$machineUiTask.runAsUser }
+      }
+    }
+    startupBringup = $startupBringup
+    readyFile = $daemonIpc.readyFile
+    provisioning = $provisioningFacts
+    kioskRuntime = [ordered]@{
+      webviewRunning = $kioskRuntime.webviewRunning
+      url = $kioskRuntime.url
+      sessionUser = $kioskRuntime.sessionUser
+      sessionId = $kioskRuntime.sessionId
+    }
+  }
 
   return [ordered]@{
     testbedName = "win10-vem-e2e"
@@ -1215,7 +1687,10 @@ function Get-InventoryFacts($ProvisioningActions = @()) {
     }
     displayEvidence = [ordered]@{
       hostDisplayBaseline = $hostDisplay
+      interactiveWindowsSessions = $interactiveWindowsSessions
+      interactiveDesktopDisplayBaseline = $interactiveDesktopDisplay
       sshServiceSessionScreenDimensions = $hostDisplay
+      portraitKioskAcceptance = $portraitKioskAcceptance
     }
     artifactConsumerPrerequisites = [ordered]@{
       powershell = $PSVersionTable.PSVersion.ToString()
@@ -1224,33 +1699,16 @@ function Get-InventoryFacts($ProvisioningActions = @()) {
       scheduledTasksAvailable = $null -ne (Get-Command Get-ScheduledTask -ErrorAction SilentlyContinue)
       serviceControlAvailable = $null -ne (Get-Command sc.exe -ErrorAction SilentlyContinue)
     }
-    runtimeAcceptanceFactsSubset = [ordered]@{
-      mode = "fresh_bring_up"
-      target = [ordered]@{
-        testbedName = "win10-vem-e2e"
-        machineCode = ${psString(machineCode)}
-        platformTarget = ${psString(platformTarget)}
+    runtimeAcceptanceFactsSubset = $runtimeAcceptanceFactsSubset
+    runtimeAcceptanceReportPreparation = [ordered]@{
+      schemaVersion = "runtime-acceptance-report/v1"
+      completeness = "partial_missing_required_facts"
+      missingRequiredFacts = @("artifacts", "daemonRuntime")
+      runtimeReadyAssertion = [ordered]@{
+        status = "not_asserted"
+        asserted = $false
       }
-      displayEvidence = [ordered]@{
-        hostDisplayBaseline = $displayDimensionsEvidence
-        sshServiceSessionScreenDimensions = $displayDimensionsEvidence
-      }
-      serviceState = [ordered]@{
-        daemonService = [ordered]@{
-          installed = $null -ne $daemonService
-          running = $null -ne $daemonService -and $daemonService.status -eq "Running"
-          startupType = if ($null -ne $daemonService) { $daemonService.startType.ToLowerInvariant() } else { "unknown" }
-        }
-        machineUiTask = [ordered]@{
-          name = "VEMMachineUI"
-          exists = [bool]$machineUiTask.exists
-          enabled = [bool]$machineUiTask.enabled
-          runAsUser = if ([string]::IsNullOrWhiteSpace($machineUiTask.runAsUser)) { "unknown" } else { [string]$machineUiTask.runAsUser }
-        }
-      }
-      startupBringup = $startupBringup
-      readyFile = $daemonIpc.readyFile
-      provisioning = $provisioningFacts
+      factsSubset = $runtimeAcceptanceFactsSubset
     }
   }
 }

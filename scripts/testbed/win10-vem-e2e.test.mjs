@@ -10,11 +10,185 @@ import {
   buildPreClaimPublicConfig,
   buildProvisioningFacts,
   buildReadyFileEvidence,
+  buildInteractiveDesktopDisplayBaseline,
+  buildKioskRuntimeEvidence,
+  buildPortraitKioskAcceptance,
   classifyProvisioningFailure,
   evaluateFirstClaimPrecondition,
+  findActiveKioskSession,
+  isStrictTauriHashRouteUrl,
 } from "./win10-vem-e2e.mjs";
 
 describe("win10-vem-e2e reset planning", () => {
+  it("requires an active VEMKiosk interactive Windows session for display acceptance", () => {
+    assert.equal(
+      findActiveKioskSession([
+        {
+          user: "YKDZ",
+          sessionId: 0,
+          state: "Active",
+          source: "ssh_service_session",
+        },
+      ]),
+      null,
+    );
+
+    const activeKioskSession = findActiveKioskSession([
+      {
+        user: "VEMKiosk",
+        sessionId: 3,
+        state: "Active",
+        source: "quser",
+      },
+    ]);
+
+    assert.deepEqual(activeKioskSession, {
+      user: "VEMKiosk",
+      sessionId: 3,
+      state: "Active",
+      source: "quser",
+    });
+
+    assert.deepEqual(
+      buildInteractiveDesktopDisplayBaseline({
+        activeSession: null,
+        screen: { widthPx: 1080, heightPx: 1920 },
+      }),
+      {
+        status: "missing",
+        widthPx: 0,
+        heightPx: 0,
+        sessionUser: "unknown",
+        sessionId: null,
+        source: "interactive_desktop_screen",
+      },
+    );
+  });
+
+  it("does not accept SSH-only 1024x768 dimensions as the interactive desktop baseline", () => {
+    const activeSession = findActiveKioskSession([
+      {
+        user: "VEMKiosk",
+        sessionId: 3,
+        state: "Active",
+        source: "quser",
+      },
+    ]);
+
+    const baseline = buildInteractiveDesktopDisplayBaseline({
+      activeSession,
+      screen: {
+        widthPx: 1024,
+        heightPx: 768,
+        source: "ssh_service_session",
+      },
+    });
+
+    assert.deepEqual(baseline, {
+      status: "failed",
+      widthPx: 1024,
+      heightPx: 768,
+      sessionUser: "VEMKiosk",
+      sessionId: 3,
+      source: "interactive_desktop_screen",
+    });
+    assert.deepEqual(buildPortraitKioskAcceptance(baseline), {
+      status: "failed",
+      widthPx: 1024,
+      heightPx: 768,
+      sessionUser: "VEMKiosk",
+      sessionId: 3,
+      source: "interactive_kiosk_session",
+    });
+
+    assert.equal(
+      buildInteractiveDesktopDisplayBaseline({
+        activeSession,
+        screen: {
+          widthPx: 1080,
+          heightPx: 1920,
+          source: "ssh_service_session",
+        },
+      }).status,
+      "failed",
+    );
+  });
+
+  it("requires a strict tauri.localhost hash-route URL for WebView runtime acceptance", () => {
+    assert.equal(isStrictTauriHashRouteUrl("http://tauri.localhost/#/"), true);
+    assert.equal(
+      isStrictTauriHashRouteUrl("http://tauri.localhost/#/maintenance"),
+      true,
+    );
+    assert.equal(isStrictTauriHashRouteUrl("http://tauri.localhost/"), false);
+    assert.equal(
+      isStrictTauriHashRouteUrl("http://tauri.localhost.evil/#/"),
+      false,
+    );
+    assert.equal(
+      isStrictTauriHashRouteUrl("http://127.0.0.1/?u=tauri.localhost/#/"),
+      false,
+    );
+  });
+
+  it("requires CDP and machine.exe evidence from the active VEMKiosk session", () => {
+    const activeSession = {
+      user: "VEMKiosk",
+      sessionId: 3,
+      state: "Active",
+      source: "quser",
+    };
+    const machineProcesses = [
+      { processId: 500, ownerUser: "VEMKiosk", sessionId: 3 },
+    ];
+
+    assert.deepEqual(
+      buildKioskRuntimeEvidence({
+        activeSession,
+        machineProcesses,
+        cdpTargets: [],
+      }),
+      {
+        webviewRunning: false,
+        url: "unavailable:no-tauri-hash-route-target",
+        sessionUser: "VEMKiosk",
+        sessionId: 3,
+        processId: 500,
+        cdpAvailable: true,
+        error: "kiosk_webview_not_verified",
+      },
+    );
+
+    assert.equal(
+      buildKioskRuntimeEvidence({
+        activeSession,
+        machineProcesses,
+        cdpTargets: [{ url: "http://tauri.localhost/" }],
+      }).webviewRunning,
+      false,
+    );
+
+    assert.equal(
+      buildKioskRuntimeEvidence({
+        activeSession,
+        machineProcesses: [
+          { processId: 501, ownerUser: "VEMKiosk", sessionId: 7 },
+        ],
+        cdpTargets: [{ url: "http://tauri.localhost/#/" }],
+      }).webviewRunning,
+      false,
+    );
+
+    assert.equal(
+      buildKioskRuntimeEvidence({
+        activeSession,
+        machineProcesses,
+        cdpTargets: [{ url: "http://tauri.localhost/#/" }],
+      }).webviewRunning,
+      true,
+    );
+  });
+
   it("plans production bring-up through the shared Windows setup script", () => {
     const plan = buildBringUpPlan();
 
@@ -244,6 +418,11 @@ describe("win10-vem-e2e reset planning", () => {
       script,
       /sshServiceSessionScreenDimensions = \$displayDimensionsEvidence/,
     );
+    assert.match(
+      script,
+      /interactiveDesktopDisplayBaseline = \$interactiveDesktopDisplayBaseline/,
+    );
+    assert.match(script, /portraitKioskAcceptance = \$portraitKioskAcceptance/);
     assert.match(script, /status = "observed"/);
     assert.match(script, /widthPx = \[int\]\$screen.widthPx/);
     assert.match(script, /heightPx = \[int\]\$screen.heightPx/);
@@ -260,6 +439,74 @@ describe("win10-vem-e2e reset planning", () => {
     assert.match(script, /startupCommands = \$startupCommands/);
     assert.match(script, /readyFile = \[ordered\]@{/);
     assert.match(script, /provisioning = \[ordered\]@{/);
+    assert.match(script, /runtimeAcceptanceReportPreparation = \[ordered\]@{/);
+    assert.match(script, /completeness = "partial_missing_required_facts"/);
+    assert.match(
+      script,
+      /missingRequiredFacts = @\("artifacts", "daemonRuntime"\)/,
+    );
+    assert.match(script, /runtimeReadyAssertion = \[ordered\]@{/);
+    assert.match(script, /status = "not_asserted"/);
+    assert.match(script, /factsSubset = \$runtimeAcceptanceFactsSubset/);
+  });
+
+  it("builds kiosk acceptance from interactive VEMKiosk evidence instead of SSH display dimensions", () => {
+    const script = buildRemotePowerShellScript({
+      mode: "inventory",
+      platformTarget: "vem-vps",
+      machineCode: "VEM-TESTBED-WINVM-01",
+    });
+
+    assert.match(script, /function Get-InteractiveDesktopDisplayEvidence/);
+    assert.match(script, /function Get-InteractiveWindowsSessionEvidence/);
+    assert.match(script, /quser 2>&1/);
+    assert.match(script, /activeKioskSessionId/);
+    assert.match(script, /function Get-CurrentDesktopScreenDimensions/);
+    assert.match(script, /EnumDisplaySettings/);
+    assert.match(
+      script,
+      /function Convert-InteractiveDisplayDimensionsEvidence/,
+    );
+    assert.match(script, /function Convert-PortraitKioskAcceptanceEvidence/);
+    assert.match(script, /"interactive_kiosk_session"/);
+    assert.match(script, /"VEMKiosk"/);
+    assert.match(script, /sessionId = if \(\$null -ne \$Display\.sessionId\)/);
+    assert.match(
+      script,
+      /widthPx -eq 1080 -and \$Dimensions.heightPx -eq 1920/,
+    );
+    assert.match(script, /portraitKioskAcceptance = \$portraitKioskAcceptance/);
+    assert.doesNotMatch(
+      script,
+      /portraitKioskAcceptance = \$displayDimensionsEvidence/,
+    );
+    assert.doesNotMatch(
+      script,
+      /interactiveDesktopDisplayBaseline = \$displayDimensionsEvidence/,
+    );
+    assert.doesNotMatch(script, /GetWindowRect/);
+    assert.doesNotMatch(script, /machine\.exe-main-window/);
+  });
+
+  it("builds kiosk runtime evidence from same-session machine.exe and strict tauri WebView URL", () => {
+    const script = buildRemotePowerShellScript({
+      mode: "inventory",
+      platformTarget: "vem-vps",
+      machineCode: "VEM-TESTBED-WINVM-01",
+    });
+
+    assert.match(script, /function Get-KioskRuntimeEvidence/);
+    assert.match(script, /Win32_Process -Filter "name = 'machine.exe'"/);
+    assert.match(script, /Invoke-CimMethod .* -MethodName GetOwner/);
+    assert.match(script, /http:\/\/127\.0\.0\.1:9222\/json/);
+    assert.match(script, /function Test-TauriHashRouteUrl/);
+    assert.match(script, /\$uri\.Host -eq "tauri\.localhost"/);
+    assert.match(script, /\$uri\.Fragment\.StartsWith\("#\/"\)/);
+    assert.match(script, /\$_\.sessionId -eq \$ActiveKioskSession\.sessionId/);
+    assert.match(script, /webviewRunning = \$kioskRuntime.webviewRunning/);
+    assert.match(script, /url = \$kioskRuntime.url/);
+    assert.match(script, /sessionUser = \$kioskRuntime.sessionUser/);
+    assert.match(script, /sessionId = \$kioskRuntime.sessionId/);
   });
 
   it("builds a bring-up script that invokes production setup with testbed-safe arguments", () => {

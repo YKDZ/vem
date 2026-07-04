@@ -29,6 +29,7 @@ function runtimeReadyFacts(): RuntimeAcceptanceFacts {
         widthPx: 1080,
         heightPx: 1920,
         sessionUser: "VEMKiosk",
+        sessionId: 3,
       },
       sshServiceSessionScreenDimensions: {
         status: "observed",
@@ -40,6 +41,7 @@ function runtimeReadyFacts(): RuntimeAcceptanceFacts {
         widthPx: 1080,
         heightPx: 1920,
         sessionUser: "VEMKiosk",
+        sessionId: 3,
         source: "interactive_kiosk_session",
       },
     },
@@ -108,6 +110,7 @@ function runtimeReadyFacts(): RuntimeAcceptanceFacts {
       webviewRunning: true,
       url: "http://tauri.localhost/#/",
       sessionUser: "VEMKiosk",
+      sessionId: 3,
     },
   };
 }
@@ -327,6 +330,13 @@ describe("Runtime Acceptance Report contract", () => {
       },
       code: "kiosk_webview_missing",
     },
+    {
+      name: "kiosk WebView is tauri.localhost without a hash route",
+      mutate: (facts: RuntimeAcceptanceFacts) => {
+        facts.kioskRuntime.url = "http://tauri.localhost/";
+      },
+      code: "kiosk_webview_missing",
+    },
   ])("fails runtime-ready when $name", ({ mutate, code }) => {
     const facts = runtimeReadyFacts();
     mutate(facts);
@@ -357,6 +367,7 @@ describe("Runtime Acceptance Report contract", () => {
           widthPx: 1080,
           heightPx: 1920,
           sessionUser: "VEMKiosk",
+          sessionId: 3,
           source: "ssh_service_session",
         },
       },
@@ -383,6 +394,7 @@ describe("Runtime Acceptance Report contract", () => {
       widthPx: 1920,
       heightPx: 1080,
       sessionUser: "VEMKiosk",
+      sessionId: 3,
     };
 
     const report = classifyRuntimeAcceptanceReport(facts);
@@ -446,6 +458,23 @@ describe("Runtime Acceptance Report contract", () => {
       code: "portrait_kiosk_session_user_mismatch",
       message:
         "Portrait Kiosk Acceptance must be captured from the VEMKiosk customer session.",
+    });
+  });
+
+  it("fails runtime-ready when WebView evidence is from a different Windows session", () => {
+    const facts = runtimeReadyFacts();
+    facts.kioskRuntime.sessionId = 7;
+
+    const report = classifyRuntimeAcceptanceReport(facts);
+
+    expect(report.result.runtimeReady).toEqual({
+      status: "failed",
+      asserted: false,
+    });
+    expect(report.diagnostics).toContainEqual({
+      code: "kiosk_session_id_mismatch",
+      message:
+        "Machine Runtime Console evidence must match the active VEMKiosk interactive session.",
     });
   });
 

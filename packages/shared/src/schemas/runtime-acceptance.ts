@@ -9,6 +9,7 @@ const EXPECTED_MACHINE_UI_COMMAND = "C:\\Windows\\System32\\wscript.exe";
 const EXPECTED_MACHINE_UI_LAUNCHER = "C:\\VEM\\bringup\\launch-machine-ui.vbs";
 const EXPECTED_MACHINE_UI_WORKING_DIRECTORY = "C:\\VEM\\bringup";
 const sha256Schema = z.string().regex(/^[a-fA-F0-9]{64}$/);
+const sessionIdSchema = z.int().nonnegative();
 
 const displayDimensionsEvidenceSchema = z.strictObject({
   status: z.enum(["passed", "failed", "observed", "missing"]),
@@ -41,10 +42,12 @@ export const runtimeAcceptanceFactsSchema = z.strictObject({
     hostDisplayBaseline: displayDimensionsEvidenceSchema,
     interactiveDesktopDisplayBaseline: displayDimensionsEvidenceSchema.extend({
       sessionUser: z.string().min(1),
+      sessionId: sessionIdSchema,
     }),
     sshServiceSessionScreenDimensions: displayDimensionsEvidenceSchema,
     portraitKioskAcceptance: displayDimensionsEvidenceSchema.extend({
       sessionUser: z.string().min(1),
+      sessionId: sessionIdSchema,
       source: z.enum(["interactive_kiosk_session", "ssh_service_session"]),
     }),
   }),
@@ -105,6 +108,7 @@ export const runtimeAcceptanceFactsSchema = z.strictObject({
     webviewRunning: z.boolean(),
     url: z.string().min(1),
     sessionUser: z.string().min(1),
+    sessionId: sessionIdSchema,
   }),
 });
 
@@ -159,6 +163,20 @@ export type RuntimeAcceptanceReport = z.infer<
 export type RuntimeAcceptanceDiagnostic = z.infer<
   typeof runtimeAcceptanceDiagnosticSchema
 >;
+
+function isStrictTauriHashRouteUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return (
+      url.protocol === "http:" &&
+      url.hostname === "tauri.localhost" &&
+      url.pathname === "/" &&
+      url.hash.startsWith("#/")
+    );
+  } catch {
+    return false;
+  }
+}
 
 export function classifyRuntimeAcceptanceReport(
   facts: RuntimeAcceptanceFacts,
@@ -358,17 +376,28 @@ export function classifyRuntimeAcceptanceReport(
   }
   if (
     !facts.kioskRuntime.webviewRunning ||
-    !facts.kioskRuntime.url.startsWith("http://tauri.localhost/")
+    !isStrictTauriHashRouteUrl(facts.kioskRuntime.url)
   ) {
     addDiagnostic(
       "kiosk_webview_missing",
-      "Machine Runtime Console must be running as a Tauri WebView serving tauri.localhost.",
+      "Machine Runtime Console must be running as a Tauri WebView serving tauri.localhost with a hash route.",
     );
   }
   if (facts.kioskRuntime.sessionUser !== EXPECTED_KIOSK_USER) {
     addDiagnostic(
       "kiosk_session_user_mismatch",
       "Machine Runtime Console must run in the VEMKiosk customer session.",
+    );
+  }
+  if (
+    facts.kioskRuntime.sessionId !==
+      facts.displayEvidence.interactiveDesktopDisplayBaseline.sessionId ||
+    facts.kioskRuntime.sessionId !==
+      facts.displayEvidence.portraitKioskAcceptance.sessionId
+  ) {
+    addDiagnostic(
+      "kiosk_session_id_mismatch",
+      "Machine Runtime Console evidence must match the active VEMKiosk interactive session.",
     );
   }
   if (
