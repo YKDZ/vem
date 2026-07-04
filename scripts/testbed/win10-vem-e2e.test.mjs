@@ -7,6 +7,11 @@ import {
   buildRemotePowerShellScript,
   buildSshCommand,
   assertResetPlanPreservesTestbed,
+  buildPreClaimPublicConfig,
+  buildProvisioningFacts,
+  buildReadyFileEvidence,
+  classifyProvisioningFailure,
+  evaluateFirstClaimPrecondition,
 } from "./win10-vem-e2e.mjs";
 
 describe("win10-vem-e2e reset planning", () => {
@@ -310,6 +315,329 @@ describe("win10-vem-e2e reset planning", () => {
     assert.match(script, /\$mode -eq "bring-up"/);
     assert.match(script, /Invoke-ProductionBringUp \$bringUpActions/);
     assert.match(script, /inventoryAfterBringUp/);
+  });
+
+  it("builds a provision script that claims through daemon IPC without direct secret writes", () => {
+    const script = buildRemotePowerShellScript({
+      mode: "provision",
+      claimCode: "ABCD-2345",
+      machineCode: "VEM-TESTBED-WINVM-01",
+      platformTarget: "vem-vps",
+    });
+
+    assert.match(script, /function Invoke-TestbedProvisioningClaim/);
+    assert.match(
+      script,
+      /C:\\ProgramData\\VEM\\vending-daemon\\daemon-ready\.json/,
+    );
+    assert.match(script, /Authorization = "Bearer \$\(\$ready\.ipcToken\)"/);
+    assert.match(script, /Invoke-IpcJson "PUT" "\$baseUrl\/v1\/config"/);
+    assert.match(
+      script,
+      /apiBaseUrl = 'http:\/\/118\.25\.104\.160:26849\/api'/,
+    );
+    assert.match(script, /mqttUrl = 'mqtt:\/\/118\.25\.104\.160:1883'/);
+    assert.match(
+      script,
+      /Invoke-IpcJson "POST" "\$baseUrl\/v1\/provisioning\/claim"/,
+    );
+    assert.match(script, /usedDaemonIpcClaimPath = \$true/);
+    assert.match(script, /machineCode = \$claimResult\.machineCode/);
+    assert.match(script, /provisioned = \$configEvidence\.provisioned/);
+    assert.match(script, /claimResult = \[ordered\]@{/);
+    assert.match(script, /restartRequested = \$null/);
+    assert.match(script, /credentialFlags = \[ordered\]@{/);
+    assert.match(script, /machineSecretConfigured = \$false/);
+    assert.match(script, /mqttSigningSecretConfigured = \$false/);
+    assert.match(script, /mqttPasswordConfigured = \$false/);
+    assert.match(script, /provisioningIssues = @\(\)/);
+    assert.match(script, /healthzAfterClaim = Get-SafeHealthzEvidence/);
+    assert.match(script, /readyzAfterClaim = Get-SafeReadyzEvidence/);
+    assert.doesNotMatch(script, /machineSecret\s*=/);
+    assert.doesNotMatch(script, /mqttSigningSecret\s*=/);
+    assert.doesNotMatch(script, /mqttPassword\s*=/);
+    assert.doesNotMatch(script, /vms_local/);
+  });
+
+  it("emits provision diagnostics for missing ready file and token failures", () => {
+    const script = buildRemotePowerShellScript({
+      mode: "provision",
+      claimCode: "ABCD-2345",
+      machineCode: "VEM-TESTBED-WINVM-01",
+    });
+
+    assert.match(
+      script,
+      /Read-JsonFile 'C:\\ProgramData\\VEM\\vending-daemon\\daemon-ready\.json'/,
+    );
+    assert.match(script, /throw "file not found: \$Path"/);
+    assert.match(script, /ipcToken missing from daemon ready file/);
+    assert.match(script, /healthzUrl missing from daemon ready file/);
+    assert.match(script, /invalid healthzUrl in daemon ready file/);
+  });
+
+  it("classifies failed daemon IPC claim responses in provision evidence", () => {
+    const script = buildRemotePowerShellScript({
+      mode: "provision",
+      claimCode: "ABCD-2345",
+      machineCode: "VEM-TESTBED-WINVM-01",
+    });
+
+    assert.match(script, /function Get-HttpErrorInfo/);
+    assert.match(script, /function Convert-ClaimFailureClassification/);
+    assert.match(script, /claimStatus = "failed"/);
+    assert.match(
+      script,
+      /claimFailureCode = Convert-ClaimFailureClassification \$claimError/,
+    );
+    assert.match(script, /claimHttpStatus = \$claimError.statusCode/);
+    assert.match(
+      script,
+      /daemon IPC claim failed: \$\(\$evidence.claimFailureCode\)/,
+    );
+    assert.match(script, /claimStatus = "provisioned"/);
+  });
+
+  it("rejects non-testbed identities before generating provisioning orchestration", () => {
+    assert.throws(
+      () =>
+        buildRemotePowerShellScript({
+          mode: "provision",
+          claimCode: "ABCD-2345",
+          machineCode: "VEM-WIN10-REAL-01",
+        }),
+      /dedicated testbed identity/,
+    );
+
+    const script = buildRemotePowerShellScript({
+      mode: "provision",
+      claimCode: "ABCD-2345",
+      machineCode: "VEM-TESTBED-WINVM-01",
+    });
+
+    assert.match(
+      script,
+      /refusing to provision over non-testbed configured identity/,
+    );
+    assert.match(script, /daemon IPC claim returned non-testbed identity/);
+    assert.match(
+      script,
+      /daemon IPC claim returned unexpected testbed identity/,
+    );
+  });
+
+  it("derives provisioning facts from daemon config and actual claim action evidence", () => {
+    assert.deepEqual(
+      buildProvisioningFacts({
+        configSnapshot: {
+          provisioned: true,
+          public: { machineCode: "VEM-TESTBED-WINVM-01" },
+          machineSecretConfigured: true,
+          mqttSigningSecretConfigured: true,
+          mqttPasswordConfigured: false,
+          provisioningIssues: [],
+        },
+        actions: [
+          {
+            evidence: {
+              usedDaemonIpcClaimPath: true,
+              endpoint: "http://127.0.0.1:3921/v1/provisioning/claim",
+              claimStatus: "provisioned",
+            },
+          },
+        ],
+      }),
+      {
+        provisioned: true,
+        usedDaemonIpcClaimPath: true,
+        machineCode: "VEM-TESTBED-WINVM-01",
+        machineSecretConfigured: true,
+        mqttSigningSecretConfigured: true,
+        mqttPasswordConfigured: false,
+        provisioningIssues: [],
+      },
+    );
+
+    assert.equal(
+      buildProvisioningFacts({
+        configSnapshot: { provisioned: false, public: {} },
+        actions: [
+          {
+            evidence: {
+              usedDaemonIpcClaimPath: true,
+              endpoint: "http://127.0.0.1:3921/v1/config",
+              claimStatus: "not_attempted",
+            },
+          },
+        ],
+      }).usedDaemonIpcClaimPath,
+      false,
+    );
+    assert.equal(
+      buildProvisioningFacts({
+        configSnapshot: {
+          provisioned: false,
+          public: {},
+          provisioningIssues: ["machine_profile_persistence_failed"],
+        },
+        actions: [
+          {
+            evidence: {
+              usedDaemonIpcClaimPath: true,
+              endpoint: "http://127.0.0.1:3921/v1/provisioning/claim",
+              claimStatus: "failed",
+              claimFailureCode: "machine_profile_persistence_failed",
+            },
+          },
+        ],
+      }).usedDaemonIpcClaimPath,
+      true,
+    );
+  });
+
+  it("summarizes daemon ready evidence for missing ready, token, and endpoint failures", () => {
+    assert.deepEqual(buildReadyFileEvidence(null), {
+      exists: false,
+      ipcEndpointPresent: false,
+      tokenPresent: false,
+      error: "ready_file_missing",
+    });
+    assert.deepEqual(
+      buildReadyFileEvidence({
+        healthzUrl: "http://127.0.0.1:3921/healthz",
+      }),
+      {
+        exists: true,
+        ipcEndpointPresent: true,
+        tokenPresent: false,
+        error: "ipc_token_missing",
+      },
+    );
+    assert.deepEqual(
+      buildReadyFileEvidence({
+        ipcToken: "token-1",
+        healthzUrl: "http://127.0.0.1:3921/status",
+      }),
+      {
+        exists: true,
+        ipcEndpointPresent: true,
+        tokenPresent: true,
+        error: "healthz_url_invalid",
+      },
+    );
+  });
+
+  it("rejects stale real or testbed config before first-claim provisioning", () => {
+    assert.deepEqual(evaluateFirstClaimPrecondition({ public: {} }), {
+      ok: true,
+      code: "ready_for_first_claim",
+      message: null,
+    });
+    assert.equal(
+      evaluateFirstClaimPrecondition({
+        provisioned: true,
+        public: { machineCode: "VEM-TESTBED-WINVM-01" },
+      }).code,
+      "already_provisioned",
+    );
+    assert.equal(
+      evaluateFirstClaimPrecondition({
+        public: {},
+        machineSecretConfigured: true,
+      }).code,
+      "credentials_configured",
+    );
+    assert.equal(
+      evaluateFirstClaimPrecondition({
+        public: { machineCode: "VEM-WIN10-REAL-01" },
+      }).code,
+      "non_testbed_identity",
+    );
+    assert.equal(
+      evaluateFirstClaimPrecondition({
+        public: { machineCode: "VEM-TESTBED-OLD-01" },
+      }).code,
+      "stale_final_identity",
+    );
+    assert.equal(
+      evaluateFirstClaimPrecondition({
+        public: {
+          runtimeEndpoints: { machineApiBasePath: "/api/machines/M001" },
+        },
+      }).code,
+      "stale_final_identity",
+    );
+  });
+
+  it("builds pre-claim public config with platform endpoints and no final identity/profile fields", () => {
+    assert.deepEqual(
+      buildPreClaimPublicConfig(
+        {
+          machineCode: "VEM-TESTBED-OLD-01",
+          machineId: "machine-id",
+          machineName: "old",
+          machineStatus: "active",
+          machineLocationLabel: "old site",
+          apiBaseUrl: "http://old/api",
+          mqttUrl: "mqtt://old",
+          mqttUsername: "old-user",
+          mqttClientId: "old-client",
+          hardwareAdapter: "serial",
+          scannerAdapter: "serial_text",
+          runtimeEndpoints: { machineApiBasePath: "/api/machines/old" },
+          hardwareProfile: { profile: "production" },
+          paymentCapability: { profile: "production" },
+          provisioningMetadata: { profileVersion: 1 },
+        },
+        {
+          apiBaseUrl: "http://118.25.104.160:26849/api",
+          mqttUrl: "mqtt://118.25.104.160:1883",
+        },
+      ),
+      {
+        machineCode: null,
+        machineId: null,
+        machineName: null,
+        machineStatus: null,
+        machineLocationLabel: null,
+        apiBaseUrl: "http://118.25.104.160:26849/api",
+        mqttUrl: "mqtt://118.25.104.160:1883",
+        mqttUsername: null,
+        mqttClientId: null,
+        hardwareAdapter: "serial",
+        scannerAdapter: "serial_text",
+        runtimeEndpoints: null,
+        hardwareProfile: null,
+        paymentCapability: null,
+        provisioningMetadata: null,
+      },
+    );
+  });
+
+  it("classifies provision claim failures without exposing claim codes or secrets", () => {
+    assert.equal(
+      classifyProvisioningFailure({
+        statusCode: 400,
+        body: { code: "machine_claim_invalid_or_expired" },
+      }),
+      "machine_claim_invalid_or_expired",
+    );
+    assert.equal(
+      classifyProvisioningFailure({
+        statusCode: 503,
+        body: { code: "machine_claim_backend_unavailable" },
+      }),
+      "machine_claim_backend_unavailable",
+    );
+    assert.equal(
+      classifyProvisioningFailure({
+        statusCode: 500,
+        body: { code: "machine_profile_persistence_failed" },
+      }),
+      "machine_profile_persistence_failed",
+    );
+    assert.equal(classifyProvisioningFailure({ statusCode: 502 }), "http_502");
+    assert.equal(classifyProvisioningFailure({}), "request_failed");
   });
 
   it("builds the documented Tailscale/OpenSSH command without requiring the real VM in tests", () => {

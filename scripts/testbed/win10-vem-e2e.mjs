@@ -35,6 +35,27 @@ const ALLOWED_SCHEDULED_TASKS = new Set([
 const STARTUP_BRINGUP_EVIDENCE_FILE =
   "C:\\ProgramData\\VEM\\vending-daemon\\startup-bringup-evidence.json";
 
+const PLATFORM_TARGETS = {
+  "vem-vps": {
+    apiBaseUrl: "http://118.25.104.160:26849/api",
+    mqttUrl: "mqtt://118.25.104.160:1883",
+  },
+};
+
+const FINAL_PUBLIC_CONFIG_FIELDS = [
+  "machineCode",
+  "machineId",
+  "machineName",
+  "machineStatus",
+  "machineLocationLabel",
+  "mqttUsername",
+  "mqttClientId",
+  "runtimeEndpoints",
+  "hardwareProfile",
+  "paymentCapability",
+  "provisioningMetadata",
+];
+
 export function buildBringUpPlan(options = {}) {
   return {
     setupScript:
@@ -70,6 +91,154 @@ export function buildBringUpPlan(options = {}) {
       "UseKioskAccount",
       "ConfigureAutoLogon",
     ],
+  };
+}
+
+export function assertTestbedMachineCode(machineCode) {
+  if (!String(machineCode ?? "").startsWith("VEM-TESTBED-")) {
+    throw new Error(
+      `machine code must be a dedicated testbed identity: ${machineCode}`,
+    );
+  }
+  return machineCode;
+}
+
+function present(value) {
+  if (value === null || value === undefined) {
+    return false;
+  }
+  if (typeof value === "string") {
+    return value.trim().length > 0;
+  }
+  return true;
+}
+
+export function buildPreClaimPublicConfig(publicConfig = {}, platform) {
+  return {
+    ...publicConfig,
+    machineCode: null,
+    machineId: null,
+    machineName: null,
+    machineStatus: null,
+    machineLocationLabel: null,
+    apiBaseUrl: platform.apiBaseUrl,
+    mqttUrl: platform.mqttUrl,
+    mqttUsername: null,
+    mqttClientId: null,
+    runtimeEndpoints: null,
+    hardwareProfile: null,
+    paymentCapability: null,
+    provisioningMetadata: null,
+  };
+}
+
+export function evaluateFirstClaimPrecondition(configSnapshot = {}) {
+  const publicConfig = configSnapshot.public ?? {};
+  if (configSnapshot.provisioned === true) {
+    return {
+      ok: false,
+      code: "already_provisioned",
+      message:
+        "first-claim provisioning requires reset before a provisioned config can be claimed again",
+    };
+  }
+
+  const credentialFlags = [
+    "machineSecretConfigured",
+    "mqttSigningSecretConfigured",
+    "mqttPasswordConfigured",
+  ];
+  const configuredCredential = credentialFlags.find(
+    (field) => configSnapshot[field] === true,
+  );
+  if (configuredCredential) {
+    return {
+      ok: false,
+      code: "credentials_configured",
+      message: `first-claim provisioning requires reset before reusing credentialed config: ${configuredCredential}`,
+    };
+  }
+
+  const staleField = FINAL_PUBLIC_CONFIG_FIELDS.find((field) =>
+    present(publicConfig[field]),
+  );
+  if (staleField) {
+    const value = publicConfig[staleField];
+    const code =
+      staleField === "machineCode" && !String(value).startsWith("VEM-TESTBED-")
+        ? "non_testbed_identity"
+        : "stale_final_identity";
+    return {
+      ok: false,
+      code,
+      message: `first-claim provisioning requires reset before reusing final config field: ${staleField}`,
+    };
+  }
+
+  return { ok: true, code: "ready_for_first_claim", message: null };
+}
+
+export function classifyProvisioningFailure(errorInfo = {}) {
+  if (present(errorInfo.body?.code)) {
+    return String(errorInfo.body.code);
+  }
+  if (Number.isInteger(errorInfo.statusCode)) {
+    return `http_${errorInfo.statusCode}`;
+  }
+  return "request_failed";
+}
+
+export function buildReadyFileEvidence(readyFile) {
+  if (!readyFile) {
+    return {
+      exists: false,
+      ipcEndpointPresent: false,
+      tokenPresent: false,
+      error: "ready_file_missing",
+    };
+  }
+
+  const tokenPresent = present(readyFile.ipcToken);
+  const healthzUrl = String(readyFile.healthzUrl ?? "");
+  const ipcEndpointPresent = healthzUrl.trim().length > 0;
+  let error = null;
+  if (!tokenPresent) {
+    error = "ipc_token_missing";
+  } else if (!ipcEndpointPresent) {
+    error = "healthz_url_missing";
+  } else if (!healthzUrl.endsWith("/healthz")) {
+    error = "healthz_url_invalid";
+  }
+
+  return {
+    exists: true,
+    ipcEndpointPresent,
+    tokenPresent,
+    error,
+  };
+}
+
+export function buildProvisioningFacts({ configSnapshot, actions = [] } = {}) {
+  const actionList = Array.isArray(actions) ? actions : [];
+  const usedDaemonIpcClaimPath = actionList.some((action) => {
+    const evidence = action?.evidence ?? {};
+    return (
+      evidence.usedDaemonIpcClaimPath === true &&
+      String(evidence.endpoint ?? "").endsWith("/v1/provisioning/claim") &&
+      ["provisioned", "failed"].includes(String(evidence.claimStatus ?? ""))
+    );
+  });
+  return {
+    provisioned: configSnapshot?.provisioned === true,
+    usedDaemonIpcClaimPath,
+    machineCode: configSnapshot?.public?.machineCode ?? null,
+    machineSecretConfigured: configSnapshot?.machineSecretConfigured === true,
+    mqttSigningSecretConfigured:
+      configSnapshot?.mqttSigningSecretConfigured === true,
+    mqttPasswordConfigured: configSnapshot?.mqttPasswordConfigured === true,
+    provisioningIssues: Array.isArray(configSnapshot?.provisioningIssues)
+      ? configSnapshot.provisioningIssues.map(String)
+      : [],
   };
 }
 
@@ -169,9 +338,28 @@ export function buildRemotePowerShellScript(options = {}) {
   const mode = options.mode ?? "inventory";
   const platformTarget = options.platformTarget ?? "vem-vps";
   const machineCode = options.machineCode ?? "VEM-TESTBED-WINVM-01";
-  const supportedModes = ["inventory", "reset", "inventory-reset", "bring-up"];
+  const supportedModes = [
+    "inventory",
+    "reset",
+    "inventory-reset",
+    "bring-up",
+    "provision",
+  ];
   if (!supportedModes.includes(mode)) {
     throw new Error(`unsupported mode: ${mode}`);
+  }
+  assertTestbedMachineCode(machineCode);
+  if (
+    mode === "provision" &&
+    !Object.hasOwn(PLATFORM_TARGETS, platformTarget)
+  ) {
+    throw new Error(`unsupported platform target: ${platformTarget}`);
+  }
+  const platform =
+    PLATFORM_TARGETS[platformTarget] ?? PLATFORM_TARGETS["vem-vps"];
+  const claimCode = options.claimCode ?? "";
+  if (mode === "provision" && String(claimCode).trim().length === 0) {
+    throw new Error("provision mode requires --claim-code");
   }
 
   const plan = assertResetPlanPreservesTestbed(buildResetPlan());
@@ -322,6 +510,415 @@ function Test-PathEvidence([string]$Path) {
     exists = $true
     kind = if ($item.PSIsContainer) { "directory" } else { "file" }
   }
+}
+
+function Get-IpcBaseUrl($Ready) {
+  $healthz = [string]$Ready.healthzUrl
+  if ([string]::IsNullOrWhiteSpace($healthz)) {
+    throw "healthzUrl missing from daemon ready file"
+  }
+  if (-not $healthz.EndsWith("/healthz", [StringComparison]::OrdinalIgnoreCase)) {
+    throw "invalid healthzUrl in daemon ready file: $healthz"
+  }
+  return $healthz.Substring(0, $healthz.Length - "/healthz".Length)
+}
+
+function Get-HttpErrorInfo($ErrorRecord) {
+  $statusCode = $null
+  $bodyText = ""
+  $response = $ErrorRecord.Exception.Response
+
+  if ($null -ne $response) {
+    if ($null -ne $response.StatusCode) {
+      $statusCode = [int]$response.StatusCode
+    }
+    if ($null -ne $response.Content) {
+      try {
+        $bodyText = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+      } catch {
+        $bodyText = ""
+      }
+    } elseif ($response.PSObject.Methods.Name -contains "GetResponseStream") {
+      try {
+        $stream = $response.GetResponseStream()
+        if ($null -ne $stream) {
+          $reader = New-Object System.IO.StreamReader($stream)
+          $bodyText = $reader.ReadToEnd()
+        }
+      } catch {
+        $bodyText = ""
+      }
+    }
+  }
+
+  if ($bodyText.Length -eq 0 -and $null -ne $ErrorRecord.ErrorDetails -and $null -ne $ErrorRecord.ErrorDetails.Message) {
+    $bodyText = $ErrorRecord.ErrorDetails.Message
+  }
+
+  $body = $null
+  if ($bodyText.Length -gt 0) {
+    try {
+      $body = $bodyText | ConvertFrom-Json -ErrorAction Stop
+    } catch {
+      $body = $null
+    }
+  }
+
+  [pscustomobject]@{
+    statusCode = $statusCode
+    bodyText = $bodyText
+    body = $body
+  }
+}
+
+function Invoke-IpcJson([string]$Method, [string]$Uri, $Headers, $Body = $null) {
+  if ($null -eq $Body) {
+    return Invoke-RestMethod -Method $Method -Uri $Uri -Headers $Headers -TimeoutSec 20
+  }
+  $json = $Body | ConvertTo-Json -Depth 40 -Compress
+  return Invoke-RestMethod -Method $Method -Uri $Uri -Headers $Headers -ContentType "application/json" -Body $json -TimeoutSec 60
+}
+
+function Convert-ClaimFailureClassification($ErrorInfo) {
+  if ($null -ne $ErrorInfo.body -and -not [string]::IsNullOrWhiteSpace($ErrorInfo.body.code)) {
+    return [string]$ErrorInfo.body.code
+  }
+  if ($null -ne $ErrorInfo.statusCode) {
+    return "http_$($ErrorInfo.statusCode)"
+  }
+  return "request_failed"
+}
+
+function Test-ConfigFieldPresent($Object, [string]$Name) {
+  if ($null -eq $Object) { return $false }
+  $property = $Object.PSObject.Properties[$Name]
+  if ($null -eq $property) { return $false }
+  $value = $property.Value
+  if ($null -eq $value) { return $false }
+  if ($value -is [string]) {
+    return -not [string]::IsNullOrWhiteSpace($value)
+  }
+  return $true
+}
+
+function Assert-FirstClaimConfig($Config) {
+  if ([bool]$Config.provisioned) {
+    throw "first-claim provisioning requires reset before reusing provisioned config"
+  }
+
+  foreach ($field in @("machineSecretConfigured", "mqttSigningSecretConfigured", "mqttPasswordConfigured")) {
+    $property = $Config.PSObject.Properties[$field]
+    if ($null -ne $property -and [bool]$property.Value) {
+      throw "first-claim provisioning requires reset before reusing credentialed config: $field"
+    }
+  }
+
+  $public = $Config.public
+  if ($null -eq $public) {
+    throw "daemon config response missing public config"
+  }
+  foreach ($field in @(
+    "machineCode",
+    "machineId",
+    "machineName",
+    "machineStatus",
+    "machineLocationLabel",
+    "mqttUsername",
+    "mqttClientId",
+    "runtimeEndpoints",
+    "hardwareProfile",
+    "paymentCapability",
+    "provisioningMetadata"
+  )) {
+    if (Test-ConfigFieldPresent $public $field) {
+      if ($field -eq "machineCode" -and -not ([string]$public.machineCode).StartsWith("VEM-TESTBED-", [StringComparison]::Ordinal)) {
+        throw "refusing to provision over non-testbed configured identity: $($public.machineCode)"
+      }
+      throw "first-claim provisioning requires reset before reusing final config field: $field"
+    }
+  }
+}
+
+function New-PreClaimPublicConfig($Public) {
+  return [ordered]@{
+    machineCode = $null
+    machineId = $null
+    machineName = $null
+    machineStatus = $null
+    machineLocationLabel = $null
+    apiBaseUrl = ${psString(platform.apiBaseUrl)}
+    mqttUrl = ${psString(platform.mqttUrl)}
+    mqttUsername = $null
+    mqttClientId = $null
+    hardwareAdapter = $Public.hardwareAdapter
+    serialPortPath = $Public.serialPortPath
+    lowerControllerUsbIdentity = $Public.lowerControllerUsbIdentity
+    scannerAdapter = $Public.scannerAdapter
+    scannerSerialPortPath = $Public.scannerSerialPortPath
+    scannerUsbIdentity = $Public.scannerUsbIdentity
+    scannerBaudRate = $Public.scannerBaudRate
+    scannerFrameSuffix = $Public.scannerFrameSuffix
+    visionEnabled = $Public.visionEnabled
+    visionWsUrl = $Public.visionWsUrl
+    visionRequestTimeoutMs = $Public.visionRequestTimeoutMs
+    machineAudioVolume = $Public.machineAudioVolume
+    audioCueSettings = $Public.audioCueSettings
+    kioskMode = $Public.kioskMode
+    stockMovementRetentionDays = $Public.stockMovementRetentionDays
+    runtimeEndpoints = $null
+    hardwareProfile = $null
+    paymentCapability = $null
+    provisioningMetadata = $null
+  }
+}
+
+function Convert-ConfigSnapshotEvidence($Config) {
+  if ($null -eq $Config) {
+    return [ordered]@{
+      observed = $false
+      provisioned = $false
+      machineCode = $null
+      machineSecretConfigured = $false
+      mqttSigningSecretConfigured = $false
+      mqttPasswordConfigured = $false
+      provisioningIssues = @()
+      error = $null
+    }
+  }
+  return [ordered]@{
+    observed = $true
+    provisioned = [bool]$Config.provisioned
+    machineCode = if ($null -ne $Config.public) { $Config.public.machineCode } else { $null }
+    machineSecretConfigured = [bool]$Config.machineSecretConfigured
+    mqttSigningSecretConfigured = [bool]$Config.mqttSigningSecretConfigured
+    mqttPasswordConfigured = [bool]$Config.mqttPasswordConfigured
+    provisioningIssues = @($Config.provisioningIssues | ForEach-Object { [string]$_ })
+    error = $null
+  }
+}
+
+function Convert-HealthzEvidence($Snapshot) {
+  return [ordered]@{
+    observed = $true
+    status = if ($null -ne $Snapshot.status) { [string]$Snapshot.status } else { $null }
+    operatorReason = if ($null -ne $Snapshot.operatorReason) { [string]$Snapshot.operatorReason } else { $null }
+    hardwareOnline = [bool]$Snapshot.hardwareOnline
+    scannerOnline = [bool]$Snapshot.scannerOnline
+    backendOnline = [bool]$Snapshot.backendOnline
+    mqttConnected = [bool]$Snapshot.mqttConnected
+    error = $null
+  }
+}
+
+function Convert-ReadyzEvidence($Snapshot) {
+  return [ordered]@{
+    observed = $true
+    ready = [bool]$Snapshot.ready
+    canSell = [bool]$Snapshot.canSell
+    mode = if ($null -ne $Snapshot.mode) { [string]$Snapshot.mode } else { $null }
+    suggestedRoute = if ($null -ne $Snapshot.suggestedRoute) { [string]$Snapshot.suggestedRoute } else { $null }
+    blockingCodes = @($Snapshot.blockingCodes | ForEach-Object { [string]$_ })
+    error = $null
+  }
+}
+
+function Get-FailedIpcEvidence($ErrorRecord) {
+  $errorInfo = Get-HttpErrorInfo $ErrorRecord
+  return [ordered]@{
+    observed = $false
+    statusCode = $errorInfo.statusCode
+    error = Convert-ClaimFailureClassification $errorInfo
+  }
+}
+
+function Get-SafeHealthzEvidence([string]$BaseUrl) {
+  try {
+    return Convert-HealthzEvidence (Invoke-IpcJson "GET" "$BaseUrl/healthz" @{})
+  } catch {
+    return Get-FailedIpcEvidence $_
+  }
+}
+
+function Get-SafeReadyzEvidence([string]$BaseUrl) {
+  try {
+    return Convert-ReadyzEvidence (Invoke-IpcJson "GET" "$BaseUrl/readyz" @{})
+  } catch {
+    return Get-FailedIpcEvidence $_
+  }
+}
+
+function Get-DaemonIpcInventoryEvidence([string]$ReadyFilePath) {
+  $evidence = [ordered]@{
+    readyFile = [ordered]@{
+      exists = $false
+      readableByKioskUser = $false
+      ipcEndpointPresent = $false
+      tokenPresent = $false
+      error = $null
+    }
+    config = Convert-ConfigSnapshotEvidence $null
+    healthz = [ordered]@{ observed = $false; error = $null }
+    readyz = [ordered]@{ observed = $false; error = $null }
+  }
+
+  if (-not (Test-Path -LiteralPath $ReadyFilePath)) {
+    $evidence.readyFile.error = "ready_file_missing"
+    return $evidence
+  }
+  $evidence.readyFile.exists = $true
+
+  try {
+    $ready = Read-JsonFile $ReadyFilePath
+    $evidence.readyFile.tokenPresent = -not [string]::IsNullOrWhiteSpace($ready.ipcToken)
+    $evidence.readyFile.ipcEndpointPresent = -not [string]::IsNullOrWhiteSpace($ready.healthzUrl)
+    $baseUrl = Get-IpcBaseUrl $ready
+    $evidence.healthz = Get-SafeHealthzEvidence $baseUrl
+    $evidence.readyz = Get-SafeReadyzEvidence $baseUrl
+    if (-not $evidence.readyFile.tokenPresent) {
+      $evidence.config.error = "ipc_token_missing"
+      return $evidence
+    }
+    $headers = @{ Authorization = "Bearer $($ready.ipcToken)" }
+    try {
+      $evidence.config = Convert-ConfigSnapshotEvidence (Invoke-IpcJson "GET" "$baseUrl/v1/config" $headers)
+    } catch {
+      $failed = Get-FailedIpcEvidence $_
+      $evidence.config.error = $failed.error
+    }
+  } catch {
+    $evidence.readyFile.error = [string]$_
+  }
+
+  return $evidence
+}
+
+function Convert-ProvisioningFacts($DaemonIpc, $ProvisioningActions) {
+  $usedClaimPath = $false
+  foreach ($action in @($ProvisioningActions)) {
+    $actionEvidence = $action.evidence
+    if (
+      $null -ne $actionEvidence -and
+      [bool]$actionEvidence.usedDaemonIpcClaimPath -and
+      ([string]$actionEvidence.endpoint).EndsWith("/v1/provisioning/claim", [StringComparison]::OrdinalIgnoreCase) -and
+      @("provisioned", "failed") -contains [string]$actionEvidence.claimStatus
+    ) {
+      $usedClaimPath = $true
+    }
+  }
+
+  return [ordered]@{
+    provisioned = [bool]$DaemonIpc.config.provisioned
+    usedDaemonIpcClaimPath = $usedClaimPath
+    machineCode = $DaemonIpc.config.machineCode
+    machineSecretConfigured = [bool]$DaemonIpc.config.machineSecretConfigured
+    mqttSigningSecretConfigured = [bool]$DaemonIpc.config.mqttSigningSecretConfigured
+    mqttPasswordConfigured = [bool]$DaemonIpc.config.mqttPasswordConfigured
+    provisioningIssues = @($DaemonIpc.config.provisioningIssues | ForEach-Object { [string]$_ })
+  }
+}
+
+function Invoke-TestbedProvisioningClaim($Actions) {
+  $status = "succeeded"
+  $message = $null
+  $evidence = [ordered]@{
+    usedDaemonIpcClaimPath = $false
+    readyFile = ${psString(bringUpPlan.arguments.DaemonReadyFile)}
+    endpoint = $null
+    expectedMachineCode = ${psString(machineCode)}
+    platformTarget = ${psString(platformTarget)}
+    apiBaseUrl = ${psString(platform.apiBaseUrl)}
+    mqttUrl = ${psString(platform.mqttUrl)}
+    preClaimConfigApplied = $false
+    claimStatus = "not_attempted"
+    claimFailureCode = $null
+    claimHttpStatus = $null
+    claimResult = [ordered]@{
+      restartRequested = $null
+    }
+    machineCode = $null
+    provisioned = $false
+    credentialFlags = [ordered]@{
+      machineSecretConfigured = $false
+      mqttSigningSecretConfigured = $false
+      mqttPasswordConfigured = $false
+    }
+    provisioningIssues = @()
+    healthzAfterClaim = [ordered]@{ observed = $false; error = $null }
+    readyzAfterClaim = [ordered]@{ observed = $false; error = $null }
+  }
+
+  try {
+    if (-not ${psString(machineCode)}.StartsWith("VEM-TESTBED-", [StringComparison]::Ordinal)) {
+      throw "refusing to provision non-testbed target identity: ${machineCode}"
+    }
+
+    $ready = Read-JsonFile ${psString(bringUpPlan.arguments.DaemonReadyFile)}
+    if ([string]::IsNullOrWhiteSpace($ready.ipcToken)) {
+      throw "ipcToken missing from daemon ready file"
+    }
+    $baseUrl = Get-IpcBaseUrl $ready
+    $headers = @{ Authorization = "Bearer $($ready.ipcToken)" }
+
+    $configBefore = Invoke-IpcJson "GET" "$baseUrl/v1/config" $headers
+    $public = $configBefore.public
+    Assert-FirstClaimConfig $configBefore
+
+    $public = New-PreClaimPublicConfig $public
+    $configPayload = [ordered]@{
+      public = $public
+      secrets = $null
+    }
+    $configBeforeClaim = Invoke-IpcJson "PUT" "$baseUrl/v1/config" $headers $configPayload
+    $evidence.preClaimConfigApplied = $true
+
+    $claimPayload = [ordered]@{ claimCode = ${psString(claimCode)} }
+    $evidence.endpoint = "$baseUrl/v1/provisioning/claim"
+    $evidence.usedDaemonIpcClaimPath = $true
+    try {
+      $claimResult = Invoke-IpcJson "POST" "$baseUrl/v1/provisioning/claim" $headers $claimPayload
+      $evidence.claimStatus = "provisioned"
+      $evidence.machineCode = $claimResult.machineCode
+      $evidence.claimResult.restartRequested = if ($null -ne $claimResult.restartRequested) { [bool]$claimResult.restartRequested } else { $null }
+    } catch {
+      $claimError = Get-HttpErrorInfo $_
+      $evidence.claimStatus = "failed"
+      $evidence.claimFailureCode = Convert-ClaimFailureClassification $claimError
+      $evidence.claimHttpStatus = $claimError.statusCode
+      throw "daemon IPC claim failed: $($evidence.claimFailureCode)"
+    }
+
+    $evidence.healthzAfterClaim = Get-SafeHealthzEvidence $baseUrl
+    $evidence.readyzAfterClaim = Get-SafeReadyzEvidence $baseUrl
+    $configAfter = Invoke-IpcJson "GET" "$baseUrl/v1/config" $headers
+    $configEvidence = Convert-ConfigSnapshotEvidence $configAfter
+    $evidence.provisioned = $configEvidence.provisioned
+    $evidence.credentialFlags.machineSecretConfigured = $configEvidence.machineSecretConfigured
+    $evidence.credentialFlags.mqttSigningSecretConfigured = $configEvidence.mqttSigningSecretConfigured
+    $evidence.credentialFlags.mqttPasswordConfigured = $configEvidence.mqttPasswordConfigured
+    $evidence.provisioningIssues = $configEvidence.provisioningIssues
+    if ([string]::IsNullOrWhiteSpace($evidence.machineCode)) {
+      $evidence.machineCode = $configEvidence.machineCode
+    }
+    if (-not ([string]$evidence.machineCode).StartsWith("VEM-TESTBED-", [StringComparison]::Ordinal)) {
+      throw "daemon IPC claim returned non-testbed identity: $($evidence.machineCode)"
+    }
+    if ([string]$evidence.machineCode -ne ${psString(machineCode)}) {
+      throw "daemon IPC claim returned unexpected testbed identity: $($evidence.machineCode)"
+    }
+    if (-not $evidence.provisioned) {
+      throw "daemon IPC claim completed but daemon config is not provisioned"
+    }
+  } catch {
+    $status = "failed"
+    $message = [string]$_
+  }
+
+  $Actions.Add([pscustomobject]@{
+    name = "daemon IPC provisioning claim"
+    status = $status
+    message = $message
+    evidence = $evidence
+  }) | Out-Null
 }
 
 function Get-CommandEvidence([string]$Name) {
@@ -563,7 +1160,7 @@ function Assert-ResetPostcondition($Actions, [string]$Name, [scriptblock]$Condit
   }) | Out-Null
 }
 
-function Get-InventoryFacts {
+function Get-InventoryFacts($ProvisioningActions = @()) {
   $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
   $os = Get-CimInstance Win32_OperatingSystem
   $computer = Get-CimInstance Win32_ComputerSystem
@@ -575,6 +1172,8 @@ function Get-InventoryFacts {
   $readyFile = Test-PathEvidence "C:\\ProgramData\\VEM\\vending-daemon\\daemon-ready.json"
   $daemonConfig = Test-PathEvidence "C:\\ProgramData\\VEM\\vending-daemon\\machine-config.json"
   $startupBringup = Get-StartupBringupEvidence
+  $daemonIpc = Get-DaemonIpcInventoryEvidence "C:\\ProgramData\\VEM\\vending-daemon\\daemon-ready.json"
+  $provisioningFacts = Convert-ProvisioningFacts $daemonIpc $ProvisioningActions
 
   return [ordered]@{
     testbedName = "win10-vem-e2e"
@@ -650,16 +1249,8 @@ function Get-InventoryFacts {
         }
       }
       startupBringup = $startupBringup
-      readyFile = [ordered]@{
-        exists = [bool]$readyFile.exists
-        readableByKioskUser = $false
-        ipcEndpointPresent = $false
-        tokenPresent = $false
-      }
-      provisioning = [ordered]@{
-        provisioned = [bool]$daemonConfig.exists
-        usedDaemonIpcClaimPath = $false
-      }
+      readyFile = $daemonIpc.readyFile
+      provisioning = $provisioningFacts
     }
   }
 }
@@ -675,6 +1266,7 @@ $resetPlan = [ordered]@{
 }
 $resetActions = [System.Collections.Generic.List[object]]::new()
 $bringUpActions = [System.Collections.Generic.List[object]]::new()
+$provisioningActions = [System.Collections.Generic.List[object]]::new()
 
 if ($mode -eq "reset" -or $mode -eq "inventory-reset") {
 ${serviceStops}
@@ -687,11 +1279,16 @@ if ($mode -eq "bring-up") {
   Invoke-ProductionBringUp $bringUpActions
 }
 
+if ($mode -eq "provision") {
+  Invoke-TestbedProvisioningClaim $provisioningActions
+}
+
 $inventoryAfter = if ($mode -eq "inventory-reset") { Get-InventoryFacts } else { $null }
 $inventoryAfterBringUp = if ($mode -eq "bring-up") { Get-InventoryFacts } else { $null }
+$inventoryAfterProvision = if ($mode -eq "provision") { Get-InventoryFacts $provisioningActions } else { $null }
 
 [pscustomobject]@{
-  ok = (((@($resetActions) + @($bringUpActions)) | Where-Object { $_.status -eq "failed" } | Measure-Object | Select-Object -ExpandProperty Count) -eq 0)
+  ok = (((@($resetActions) + @($bringUpActions) + @($provisioningActions)) | Where-Object { $_.status -eq "failed" } | Measure-Object | Select-Object -ExpandProperty Count) -eq 0)
   mode = $mode
   inventory = $inventoryBefore
   reset = [ordered]@{
@@ -710,8 +1307,12 @@ ${bringUpReportArgumentLines}
     }
     actions = @($bringUpActions)
   }
+  provisioning = [ordered]@{
+    actions = @($provisioningActions)
+  }
   inventoryAfterReset = $inventoryAfter
   inventoryAfterBringUp = $inventoryAfterBringUp
+  inventoryAfterProvision = $inventoryAfterProvision
 } | ConvertTo-Json -Depth 40
 `;
 }
@@ -732,13 +1333,15 @@ export function buildSshCommand(options = {}) {
 
 function usage() {
   console.error(`Usage:
-  win10-vem-e2e.mjs [--mode inventory|reset|inventory-reset|bring-up] [--remote USER@HOST] [--ssh-config] [--proxy-command CMD] [--identity KEY] [--dry-run] [--out PATH]
+  win10-vem-e2e.mjs [--mode inventory|reset|inventory-reset|bring-up|provision] [--claim-code CODE] [--remote USER@HOST] [--ssh-config] [--proxy-command CMD] [--identity KEY] [--dry-run] [--out PATH]
 
 Defaults target the documented Machine Runtime Testbed:
   --remote YKDZ@100.68.189.11
   --mode inventory
 
 Bring-up mode invokes C:\\VEM\\bringup\\scripts\\setup-scheduled-tasks.ps1 on the remote host and requires VEM_KIOSK_PASSWORD, VEM_MAINTENANCE_PASSWORD, and VEM_AUTOLOGON_PASSWORD in the remote PowerShell environment.
+
+Provision mode reads the daemon ready file, applies only pre-claim platform endpoints, and claims the prepared testbed identity through daemon IPC /v1/provisioning/claim.
 `);
 }
 
@@ -764,6 +1367,9 @@ function parseArgs(argv) {
       index += 1;
     } else if (arg === "--platform-target") {
       options.platformTarget = next;
+      index += 1;
+    } else if (arg === "--claim-code") {
+      options.claimCode = next;
       index += 1;
     } else if (arg === "--out") {
       options.out = next;
