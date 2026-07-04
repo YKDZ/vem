@@ -19,7 +19,10 @@ export type ExternalNaturalEnvironmentProviderResult = {
 export type ExternalNaturalEnvironmentWeather = {
   temperatureCelsius: number;
   conditionText: string;
+  conditionCode: string;
   observedAt: string;
+  windScale?: number;
+  windSpeedKph?: number;
 };
 
 export type ExternalNaturalEnvironmentSun = {

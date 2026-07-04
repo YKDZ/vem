@@ -324,18 +324,31 @@ beforeEach(() => {
       machineCode: "SECRET-MACHINE-CODE",
       checkedAt: "2026-06-30T14:00:00.000Z",
       localTime: {
+        status: "ready",
         timezone: "Asia/Shanghai",
         localDate: "2026-06-30",
         localClock: "22:00:00",
       },
       weather: {
+        status: "ready",
         temperatureCelsius: 28,
         conditionText: "Sunny",
+        conditionCode: "100",
         observedAt: "2026-06-30T13:50:00.000Z",
+        weatherConditionClasses: ["other"],
+        primaryWeatherConditionClass: "other",
       },
       sun: {
+        status: "ready",
         sunriseAt: "2026-06-29T21:53:00.000Z",
         sunsetAt: "2026-06-30T10:02:00.000Z",
+      },
+      calendar: {
+        status: "ready",
+        localDate: "2026-06-30",
+        festivals: [],
+        primaryFestival: null,
+        solarTerm: null,
       },
     },
     localSiteSignals: {

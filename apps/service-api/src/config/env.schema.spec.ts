@@ -34,25 +34,42 @@ describe("validateEnv", () => {
   it("accepts QWeather credentials and endpoint settings for External Natural Environment", () => {
     const env = validateEnv({
       ...baseValidEnv,
-      QWEATHER_API_KEY: "qweather-service-api-key",
       QWEATHER_API_HOST: "abcxyz.qweatherapi.com",
+      QWEATHER_JWT_KEY_ID: "qweather-key-id",
+      QWEATHER_JWT_PROJECT_ID: "qweather-project-id",
+      QWEATHER_JWT_PRIVATE_KEY_PATH: "docs/qweather/ed25519-private.pem",
       QWEATHER_WEATHER_NOW_PATH: "/v7/weather/now",
       QWEATHER_SUN_PATH: "/v7/astronomy/sun",
       QWEATHER_TIMEOUT_MS: "2500",
     });
 
-    expect(env.QWEATHER_API_KEY).toBe("qweather-service-api-key");
     expect(env.QWEATHER_API_HOST).toBe("abcxyz.qweatherapi.com");
+    expect(env.QWEATHER_JWT_KEY_ID).toBe("qweather-key-id");
+    expect(env.QWEATHER_JWT_PROJECT_ID).toBe("qweather-project-id");
+    expect(env.QWEATHER_JWT_PRIVATE_KEY_PATH).toBe(
+      "docs/qweather/ed25519-private.pem",
+    );
     expect(env.QWEATHER_WEATHER_NOW_PATH).toBe("/v7/weather/now");
     expect(env.QWEATHER_SUN_PATH).toBe("/v7/astronomy/sun");
     expect(env.QWEATHER_TIMEOUT_MS).toBe(2500);
   });
 
-  it("rejects QWeather API key config without an account-specific API Host", () => {
+  it("rejects legacy QWeather API key config", () => {
     expect(() =>
       validateEnv({
         ...baseValidEnv,
         QWEATHER_API_KEY: "qweather-service-api-key",
+      }),
+    ).toThrow("QWEATHER_API_KEY is no longer supported");
+  });
+
+  it("rejects QWeather JWT config without an account-specific API Host", () => {
+    expect(() =>
+      validateEnv({
+        ...baseValidEnv,
+        QWEATHER_JWT_KEY_ID: "qweather-key-id",
+        QWEATHER_JWT_PROJECT_ID: "qweather-project-id",
+        QWEATHER_JWT_PRIVATE_KEY_PATH: "docs/qweather/ed25519-private.pem",
       }),
     ).toThrow("QWEATHER_API_HOST is required when QWeather is configured");
   });
@@ -61,10 +78,23 @@ describe("validateEnv", () => {
     expect(() =>
       validateEnv({
         ...baseValidEnv,
-        QWEATHER_API_KEY: "qweather-service-api-key",
         QWEATHER_API_HOST: "api.qweather.com",
+        QWEATHER_JWT_KEY_ID: "qweather-key-id",
+        QWEATHER_JWT_PROJECT_ID: "qweather-project-id",
+        QWEATHER_JWT_PRIVATE_KEY_PATH: "docs/qweather/ed25519-private.pem",
       }),
     ).toThrow("QWEATHER_API_HOST must be the account-specific API Host");
+  });
+
+  it("rejects incomplete QWeather JWT credentials", () => {
+    expect(() =>
+      validateEnv({
+        ...baseValidEnv,
+        QWEATHER_API_HOST: "abcxyz.qweatherapi.com",
+        QWEATHER_JWT_KEY_ID: "qweather-key-id",
+        QWEATHER_JWT_PRIVATE_KEY_PATH: "docs/qweather/ed25519-private.pem",
+      }),
+    ).toThrow("QWEATHER_JWT_PROJECT_ID is required");
   });
 
   it("rejects production config with PAYMENT_MOCK_ENABLED=true", () => {

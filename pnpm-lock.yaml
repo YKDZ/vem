@@ -302,6 +302,9 @@ importers:
       helmet:
         specifier: ^8.2.0
         version: 8.2.0
+      lunar-javascript:
+        specifier: ^1.7.7
+        version: 1.7.7
       mqtt:
         specifier: ^5.15.1
         version: 5.15.1
@@ -4386,6 +4389,9 @@ packages:
   lru-cache@11.5.1:
     resolution: {integrity: sha512-RPimw/7aMdv2oqRrxKwvZXcPfwBrn/JZ2xYcY9Hus/6LaS3VOAKVWKWgNLCFSiOm1ESXinjsDlidVU7JlnCN2A==}
     engines: {node: 20 || >=22}
+
+  lunar-javascript@1.7.7:
+    resolution: {integrity: sha512-u/KYiwPIBo/0bT+WWfU7qO1d+aqeB90Tuy4ErXenr2Gam0QcWeezUvtiOIyXR7HbVnW2I1DKfU0NBvzMZhbVQw==}
 
   magic-string-ast@1.0.2:
     resolution: {integrity: sha512-8ngQgLhcT0t3YBdn9CGkZqCYlvwW9pm7aWJwd7AxseVWf1RU8ZHCQvG1mt3N5vvUme+pXTcHB8G/7fE666U8Vw==}
@@ -9490,6 +9496,8 @@ snapshots:
   lru-cache@10.4.3: {}
 
   lru-cache@11.5.1: {}
+
+  lunar-javascript@1.7.7: {}
 
   magic-string-ast@1.0.2:
     dependencies:

@@ -46,18 +46,33 @@ async fn daemon_fetches_external_environment_and_exposes_operator_visible_natura
             "machineCode": "MACHINE-NATURAL",
             "checkedAt": "2026-06-30T14:00:00.000Z",
             "localTime": {
+                "status": "ready",
                 "timezone": "Asia/Shanghai",
                 "localDate": "2026-06-30",
                 "localClock": "22:00:00"
             },
             "weather": {
+                "status": "ready",
                 "temperatureCelsius": 28,
                 "conditionText": "Sunny",
-                "observedAt": "2026-06-30T13:50:00.000Z"
+                "conditionCode": "305",
+                "observedAt": "2026-06-30T13:50:00.000Z",
+                "windScale": 8,
+                "windSpeedKph": 65,
+                "weatherConditionClasses": ["strong_wind", "light_rain"],
+                "primaryWeatherConditionClass": "strong_wind"
             },
             "sun": {
+                "status": "ready",
                 "sunriseAt": "2026-06-29T21:53:00.000Z",
                 "sunsetAt": "2026-06-30T10:02:00.000Z"
+            },
+            "calendar": {
+                "status": "ready",
+                "localDate": "2026-06-30",
+                "festivals": [],
+                "primaryFestival": null,
+                "solarTerm": null
             }
         })))
         .expect(1)
@@ -78,6 +93,14 @@ async fn daemon_fetches_external_environment_and_exposes_operator_visible_natura
     assert_eq!(
         snapshot["externalEnvironment"]["weather"]["temperatureCelsius"],
         28
+    );
+    assert_eq!(
+        snapshot["externalEnvironment"]["weather"]["primaryWeatherConditionClass"],
+        "strong_wind"
+    );
+    assert_eq!(
+        snapshot["externalEnvironment"]["calendar"]["status"],
+        "ready"
     );
     assert_eq!(snapshot["localSiteSignals"]["status"], "ok");
     assert_eq!(snapshot["localSiteSignals"]["temperatureCelsius"], 24);

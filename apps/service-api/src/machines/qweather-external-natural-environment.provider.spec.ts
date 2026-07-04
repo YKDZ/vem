@@ -1,10 +1,21 @@
+import { generateKeyPairSync, verify } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { QWeatherClient } from "./qweather-external-natural-environment.provider";
+import {
+  createQWeatherJwt,
+  QWeatherClient,
+} from "./qweather-external-natural-environment.provider";
+
+const testKeyPair = generateKeyPairSync("ed25519", {
+  privateKeyEncoding: { type: "pkcs8", format: "pem" },
+  publicKeyEncoding: { type: "spki", format: "pem" },
+});
 
 const configuredQWeatherClient = {
-  apiKey: "secret-qweather-api-key",
   apiHost: "abcxyz.qweatherapi.com",
+  jwtKeyId: "qweather-jwt-key-id",
+  jwtProjectId: "qweather-project-id",
+  jwtPrivateKey: testKeyPair.privateKey,
   weatherNowPath: "/v7/weather/now",
   sunPath: "/v7/astronomy/sun",
 };
@@ -26,7 +37,10 @@ function validWeatherNowResponse(overrides: Record<string, unknown> = {}) {
     now: {
       obsTime: "2026-06-30T21:50+08:00",
       temp: "28",
+      icon: "100",
       text: "晴",
+      windScale: "3",
+      windSpeed: "15",
     },
     refer: {
       sources: ["QWeather"],
@@ -78,14 +92,18 @@ describe("QWeatherClient", () => {
       1,
       expect.objectContaining({
         url: "https://abcxyz.qweatherapi.com/v7/weather/now?location=121.47%2C31.23&unit=m",
-        headers: { "X-QW-Api-Key": "secret-qweather-api-key" },
+        headers: {
+          Authorization: expect.stringMatching(/^Bearer [^.]+\.[^.]+\.[^.]+$/),
+        },
       }),
     );
     expect(fetchJson).toHaveBeenNthCalledWith(
       2,
       expect.objectContaining({
         url: "https://abcxyz.qweatherapi.com/v7/astronomy/sun?location=121.47%2C31.23&date=20260630",
-        headers: { "X-QW-Api-Key": "secret-qweather-api-key" },
+        headers: {
+          Authorization: expect.stringMatching(/^Bearer [^.]+\.[^.]+\.[^.]+$/),
+        },
       }),
     );
     expect(result).toEqual({
@@ -97,7 +115,10 @@ describe("QWeatherClient", () => {
       weather: {
         temperatureCelsius: 28,
         conditionText: "晴",
+        conditionCode: "100",
         observedAt: "2026-06-30T13:50:00.000Z",
+        windScale: 3,
+        windSpeedKph: 15,
       },
       sun: {
         sunriseAt: "2026-06-29T21:53:00.000Z",
@@ -134,14 +155,37 @@ describe("QWeatherClient", () => {
     {
       name: "temperature",
       weather: validWeatherNowResponse({
-        now: { obsTime: "2026-06-30T21:50+08:00", temp: "hot", text: "晴" },
+        now: {
+          obsTime: "2026-06-30T21:50+08:00",
+          temp: "hot",
+          icon: "100",
+          text: "晴",
+        },
       }),
       sun: validSunResponse(),
     },
     {
       name: "weather observation time",
       weather: validWeatherNowResponse({
-        now: { obsTime: "not-a-time", temp: "28", text: "晴" },
+        now: {
+          obsTime: "not-a-time",
+          temp: "28",
+          icon: "100",
+          text: "晴",
+        },
+      }),
+      sun: validSunResponse(),
+    },
+    {
+      name: "wind scale",
+      weather: validWeatherNowResponse({
+        now: {
+          obsTime: "2026-06-30T21:50+08:00",
+          temp: "28",
+          icon: "100",
+          text: "晴",
+          windScale: "strong",
+        },
       }),
       sun: validSunResponse(),
     },
@@ -166,8 +210,38 @@ describe("QWeatherClient", () => {
   );
 
   it.each([
-    { name: "API key", config: { apiHost: "abcxyz.qweatherapi.com" } },
-    { name: "API host", config: { apiKey: "secret-qweather-api-key" } },
+    {
+      name: "JWT key ID",
+      config: {
+        apiHost: "abcxyz.qweatherapi.com",
+        jwtProjectId: "qweather-project-id",
+        jwtPrivateKey: testKeyPair.privateKey,
+      },
+    },
+    {
+      name: "JWT project ID",
+      config: {
+        apiHost: "abcxyz.qweatherapi.com",
+        jwtKeyId: "qweather-jwt-key-id",
+        jwtPrivateKey: testKeyPair.privateKey,
+      },
+    },
+    {
+      name: "JWT private key",
+      config: {
+        apiHost: "abcxyz.qweatherapi.com",
+        jwtKeyId: "qweather-jwt-key-id",
+        jwtProjectId: "qweather-project-id",
+      },
+    },
+    {
+      name: "API host",
+      config: {
+        jwtKeyId: "qweather-jwt-key-id",
+        jwtProjectId: "qweather-project-id",
+        jwtPrivateKey: testKeyPair.privateKey,
+      },
+    },
   ])(
     "reports unavailable when QWeather $name config is missing",
     async (case_) => {
@@ -191,7 +265,7 @@ describe("QWeatherClient", () => {
   it("redacts QWeather credentials from provider error diagnostics", async () => {
     const fetchJson = vi
       .fn()
-      .mockRejectedValueOnce(new Error("secret-qweather-api-key"));
+      .mockRejectedValueOnce(new Error("qweather-jwt-key-id"));
     const client = new QWeatherClient(configuredQWeatherClient, fetchJson);
 
     const promise = client.fetchExternalNaturalEnvironment(
@@ -199,7 +273,40 @@ describe("QWeatherClient", () => {
     );
 
     await expect(promise).rejects.toThrow("QWeather provider unavailable");
-    await expect(promise).rejects.not.toThrow("secret-qweather-api-key");
+    await expect(promise).rejects.not.toThrow("qweather-jwt-key-id");
+  });
+
+  it("creates QWeather JWTs with EdDSA header, project subject, and verifiable Ed25519 signature", () => {
+    const token = createQWeatherJwt({
+      keyId: "qweather-jwt-key-id",
+      projectId: "qweather-project-id",
+      privateKey: testKeyPair.privateKey,
+      iat: 1_703_912_400,
+      exp: 1_703_913_300,
+    });
+    const [encodedHeader, encodedPayload, encodedSignature] = token.split(".");
+
+    expect(
+      JSON.parse(Buffer.from(encodedHeader, "base64url").toString()),
+    ).toEqual({
+      alg: "EdDSA",
+      kid: "qweather-jwt-key-id",
+    });
+    expect(
+      JSON.parse(Buffer.from(encodedPayload, "base64url").toString()),
+    ).toEqual({
+      sub: "qweather-project-id",
+      iat: 1_703_912_400,
+      exp: 1_703_913_300,
+    });
+    expect(
+      verify(
+        null,
+        Buffer.from(`${encodedHeader}.${encodedPayload}`),
+        testKeyPair.publicKey,
+        Buffer.from(encodedSignature, "base64url"),
+      ),
+    ).toBe(true);
   });
 
   it("times out hung QWeather fetches with the configured provider timeout", async () => {

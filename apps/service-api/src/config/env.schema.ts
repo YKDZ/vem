@@ -99,6 +99,10 @@ const baseEnvSchema = z.object({
     .min(1)
     .regex(/^[a-zA-Z0-9.-]+$/)
     .optional(),
+  QWEATHER_JWT_KEY_ID: z.string().min(1).optional(),
+  QWEATHER_JWT_PROJECT_ID: z.string().min(1).optional(),
+  QWEATHER_JWT_PRIVATE_KEY: z.string().min(1).optional(),
+  QWEATHER_JWT_PRIVATE_KEY_PATH: z.string().min(1).optional(),
   QWEATHER_WEATHER_NOW_PATH: z
     .string()
     .regex(/^\/.+/)
@@ -179,16 +183,20 @@ export const envSchema = baseEnvSchema.superRefine((env, ctx) => {
       });
     }
   }
-  const qweatherConfigured = Boolean(
-    env.QWEATHER_API_KEY || env.QWEATHER_API_HOST,
-  );
-  if (qweatherConfigured && !env.QWEATHER_API_KEY) {
+  if (env.QWEATHER_API_KEY) {
     ctx.addIssue({
       code: "custom",
       path: ["QWEATHER_API_KEY"],
-      message: "QWEATHER_API_KEY is required when QWeather is configured",
+      message: "QWEATHER_API_KEY is no longer supported; use QWeather JWT",
     });
   }
+  const qweatherConfigured = Boolean(
+    env.QWEATHER_API_HOST ||
+    env.QWEATHER_JWT_KEY_ID ||
+    env.QWEATHER_JWT_PROJECT_ID ||
+    env.QWEATHER_JWT_PRIVATE_KEY ||
+    env.QWEATHER_JWT_PRIVATE_KEY_PATH,
+  );
   if (qweatherConfigured && !env.QWEATHER_API_HOST) {
     ctx.addIssue({
       code: "custom",
@@ -206,6 +214,41 @@ export const envSchema = baseEnvSchema.superRefine((env, ctx) => {
       code: "custom",
       path: ["QWEATHER_API_HOST"],
       message: "QWEATHER_API_HOST must be the account-specific API Host",
+    });
+  }
+  if (qweatherConfigured && !env.QWEATHER_JWT_KEY_ID) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["QWEATHER_JWT_KEY_ID"],
+      message: "QWEATHER_JWT_KEY_ID is required when QWeather is configured",
+    });
+  }
+  if (qweatherConfigured && !env.QWEATHER_JWT_PROJECT_ID) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["QWEATHER_JWT_PROJECT_ID"],
+      message:
+        "QWEATHER_JWT_PROJECT_ID is required when QWeather is configured",
+    });
+  }
+  if (
+    qweatherConfigured &&
+    !env.QWEATHER_JWT_PRIVATE_KEY &&
+    !env.QWEATHER_JWT_PRIVATE_KEY_PATH
+  ) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["QWEATHER_JWT_PRIVATE_KEY"],
+      message:
+        "QWEATHER_JWT_PRIVATE_KEY or QWEATHER_JWT_PRIVATE_KEY_PATH is required when QWeather is configured",
+    });
+  }
+  if (env.QWEATHER_JWT_PRIVATE_KEY && env.QWEATHER_JWT_PRIVATE_KEY_PATH) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["QWEATHER_JWT_PRIVATE_KEY_PATH"],
+      message:
+        "Set only one of QWEATHER_JWT_PRIVATE_KEY or QWEATHER_JWT_PRIVATE_KEY_PATH",
     });
   }
 });

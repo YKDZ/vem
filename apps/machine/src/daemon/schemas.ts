@@ -247,25 +247,96 @@ export const remoteOpsStatusSchema = z.object({
 });
 
 const externalNaturalEnvironmentDiagnosticSchema = z.object({
-  reason: z.enum(["machine_geo_location_missing", "provider_unavailable"]),
+  reason: z.enum([
+    "machine_geo_location_missing",
+    "machine_geo_timezone_missing",
+    "provider_unavailable",
+  ]),
   message: z.string().min(1),
 });
 
+const weatherConditionClassSchema = z.enum([
+  "hail",
+  "snow",
+  "strong_wind",
+  "moderate_or_heavy_rain",
+  "light_rain",
+  "other",
+]);
+
 const externalNaturalEnvironmentWeatherSchema = z.object({
-  temperatureCelsius: z.number(),
-  conditionText: z.string().min(1),
-  observedAt: z.string(),
+  status: z.enum(["ready", "stale", "unavailable", "unconfigured"]),
+  temperatureCelsius: z.number().optional(),
+  conditionText: z.string().min(1).optional(),
+  conditionCode: z.string().min(1).optional(),
+  observedAt: z.string().optional(),
+  windScale: z.number().int().nonnegative().optional(),
+  windSpeedKph: z.number().nonnegative().optional(),
+  weatherConditionClasses: z.array(weatherConditionClassSchema),
+  primaryWeatherConditionClass: weatherConditionClassSchema.nullable(),
+  diagnostic: externalNaturalEnvironmentDiagnosticSchema.optional(),
 });
 
 const externalNaturalEnvironmentLocalTimeSchema = z.object({
+  status: z.enum(["ready", "unconfigured"]),
   timezone: z.string().min(1),
-  localDate: z.string().min(1),
-  localClock: z.string().min(1),
+  localDate: z.string().min(1).optional(),
+  localClock: z.string().min(1).optional(),
 });
 
 const externalNaturalEnvironmentSunSchema = z.object({
-  sunriseAt: z.string(),
-  sunsetAt: z.string(),
+  status: z.enum(["ready", "stale", "unavailable", "unconfigured"]),
+  sunriseAt: z.string().optional(),
+  sunsetAt: z.string().optional(),
+  diagnostic: externalNaturalEnvironmentDiagnosticSchema.optional(),
+});
+
+const festivalSchema = z.enum([
+  "spring_festival",
+  "new_years_day",
+  "lantern_festival",
+  "valentines_day",
+  "qixi_festival",
+  "labor_day",
+  "dragon_boat_festival",
+  "mid_autumn_festival",
+  "national_day",
+]);
+
+const solarTermSchema = z.enum([
+  "minor_cold",
+  "major_cold",
+  "start_of_spring",
+  "rain_water",
+  "awakening_of_insects",
+  "spring_equinox",
+  "clear_and_bright",
+  "grain_rain",
+  "start_of_summer",
+  "grain_buds",
+  "grain_in_ear",
+  "summer_solstice",
+  "minor_heat",
+  "major_heat",
+  "start_of_autumn",
+  "end_of_heat",
+  "white_dew",
+  "autumn_equinox",
+  "cold_dew",
+  "frost_descent",
+  "start_of_winter",
+  "minor_snow",
+  "major_snow",
+  "winter_solstice",
+]);
+
+const externalNaturalEnvironmentCalendarSchema = z.object({
+  status: z.enum(["ready", "unconfigured"]),
+  localDate: z.string().min(1).optional(),
+  festivals: z.array(festivalSchema),
+  primaryFestival: festivalSchema.nullable(),
+  solarTerm: solarTermSchema.nullable(),
+  diagnostic: externalNaturalEnvironmentDiagnosticSchema.optional(),
 });
 
 export const externalNaturalEnvironmentProjectionSchema = z.discriminatedUnion(
@@ -279,6 +350,7 @@ export const externalNaturalEnvironmentProjectionSchema = z.discriminatedUnion(
       localTime: externalNaturalEnvironmentLocalTimeSchema,
       weather: externalNaturalEnvironmentWeatherSchema,
       sun: externalNaturalEnvironmentSunSchema,
+      calendar: externalNaturalEnvironmentCalendarSchema,
     }),
     z.object({
       status: z.literal("stale"),
@@ -288,6 +360,7 @@ export const externalNaturalEnvironmentProjectionSchema = z.discriminatedUnion(
       localTime: externalNaturalEnvironmentLocalTimeSchema,
       weather: externalNaturalEnvironmentWeatherSchema,
       sun: externalNaturalEnvironmentSunSchema,
+      calendar: externalNaturalEnvironmentCalendarSchema,
       diagnostic: externalNaturalEnvironmentDiagnosticSchema,
     }),
     z.object({
@@ -295,6 +368,10 @@ export const externalNaturalEnvironmentProjectionSchema = z.discriminatedUnion(
       machineId: z.string().optional(),
       machineCode: z.string().nullable().optional(),
       checkedAt: z.string(),
+      localTime: externalNaturalEnvironmentLocalTimeSchema.optional(),
+      weather: externalNaturalEnvironmentWeatherSchema.optional(),
+      sun: externalNaturalEnvironmentSunSchema.optional(),
+      calendar: externalNaturalEnvironmentCalendarSchema.optional(),
       diagnostic: externalNaturalEnvironmentDiagnosticSchema,
     }),
     z.object({
@@ -302,6 +379,10 @@ export const externalNaturalEnvironmentProjectionSchema = z.discriminatedUnion(
       machineId: z.string().optional(),
       machineCode: z.string().nullable().optional(),
       checkedAt: z.string(),
+      localTime: externalNaturalEnvironmentLocalTimeSchema.optional(),
+      weather: externalNaturalEnvironmentWeatherSchema.optional(),
+      sun: externalNaturalEnvironmentSunSchema.optional(),
+      calendar: externalNaturalEnvironmentCalendarSchema.optional(),
       diagnostic: externalNaturalEnvironmentDiagnosticSchema,
     }),
   ],
