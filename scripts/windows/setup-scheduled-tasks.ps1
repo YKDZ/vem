@@ -449,11 +449,39 @@ function Ensure-DaemonDataDirectory {
   }
 }
 
+function Set-ServiceEnvironmentVariable {
+  param(
+    [string]$ServiceName,
+    [string]$Name,
+    [string]$Value
+  )
+
+  $serviceRegistryPath = "HKLM:\SYSTEM\CurrentControlSet\Services\$ServiceName"
+  $existing = @()
+  $property = Get-ItemProperty -Path $serviceRegistryPath -Name Environment -ErrorAction SilentlyContinue
+  if ($null -ne $property -and $null -ne $property.Environment) {
+    $existing = @($property.Environment)
+  }
+
+  $prefix = "$Name="
+  $next = @($existing | Where-Object { -not $_.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase) })
+  if (-not [string]::IsNullOrWhiteSpace($Value)) {
+    $next += "$Name=$Value"
+  }
+
+  if ($next.Count -gt 0) {
+    New-ItemProperty -Path $serviceRegistryPath -Name Environment -PropertyType MultiString -Value $next -Force | Out-Null
+  } else {
+    Remove-ItemProperty -Path $serviceRegistryPath -Name Environment -ErrorAction SilentlyContinue
+  }
+}
+
 function Ensure-DaemonService {
   param(
     [string]$ExePath,
     [string]$DataDirectory,
-    [string]$ReadyFile
+    [string]$ReadyFile,
+    [string[]]$ReadyFileReaders = @()
   )
 
   if (-not (Test-Path -LiteralPath $ExePath)) {
@@ -477,6 +505,11 @@ function Ensure-DaemonService {
   }
 
   sc.exe failure VemVendingDaemon reset= 86400 actions= restart/5000/restart/15000/""/0 | Out-Null
+
+  Set-ServiceEnvironmentVariable `
+    -ServiceName "VemVendingDaemon" `
+    -Name "VEM_DAEMON_READY_FILE_READERS" `
+    -Value ($ReadyFileReaders -join ";")
 }
 
 function Ensure-MachineUiShortcut {
@@ -724,7 +757,8 @@ Write-Host "[4/9] Configure daemon service" -ForegroundColor Yellow
 Ensure-DaemonService `
   -ExePath $DaemonExe `
   -DataDirectory $DaemonDataDir `
-  -ReadyFile $DaemonReadyFile
+  -ReadyFile $DaemonReadyFile `
+  -ReadyFileReaders @($CustomerSessionUser)
 
 Write-Host "[5/9] Configure VEMMachineUI kiosk logon task" -ForegroundColor Yellow
 if (-not $ConfigureKioskShell) {

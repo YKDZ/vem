@@ -2,6 +2,7 @@ import { createPinia } from "pinia";
 import { createApp } from "vue";
 
 import App from "./App.vue";
+import { installKioskBrowserGuards } from "./kiosk-browser-guards";
 import { router } from "./router";
 import "./style.css";
 
@@ -15,6 +16,7 @@ async function installDevTools(): Promise<void> {
 }
 
 async function bootstrap(): Promise<void> {
+  installKioskBrowserGuards();
   await installDevTools();
   const app = createApp(App);
 
