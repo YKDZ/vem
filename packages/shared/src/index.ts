@@ -20,4 +20,5 @@ export * from "./schemas/orders";
 export * from "./schemas/pagination";
 export * from "./schemas/payments";
 export * from "./schemas/products";
+export * from "./schemas/runtime-acceptance";
 export * from "./schemas/vision";

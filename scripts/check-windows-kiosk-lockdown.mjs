@@ -69,6 +69,10 @@ function containsCall(block, command, taskName) {
 
 const normalLauncherBlock = functionBlock(setup, "Ensure-MachineUiLauncher");
 const configureKioskShellBlock = functionBlock(setup, "Configure-KioskShell");
+const startupBringupEvidenceBlock = functionBlock(
+  setup,
+  "Write-StartupBringupEvidence",
+);
 const machineUiTaskSection = sectionBetween(
   setup,
   'Write-Host "[5/9] Configure VEMMachineUI kiosk logon task"',
@@ -204,6 +208,26 @@ addCheck(
       "VEMMachineUI",
     ),
   `${setupPath} should not leave VEMMachineUI active when Shell Launcher owns the kiosk customer session`,
+);
+
+addCheck(
+  "setup-writes-production-startup-bringup-evidence",
+  startupBringupEvidenceBlock.includes("Write-StartupBringupEvidence") &&
+    setup.includes("StartupBringupEvidenceFile") &&
+    startupBringupEvidenceBlock.includes(
+      'configuredBy = "scripts/windows/setup-scheduled-tasks.ps1"',
+    ) &&
+    startupBringupEvidenceBlock.includes("productionBringup = $true") &&
+    startupBringupEvidenceBlock.includes(
+      "daemonOwnedInitialization = $false",
+    ) &&
+    startupBringupEvidenceBlock.includes("autoLogon") &&
+    startupBringupEvidenceBlock.includes("startupCommands") &&
+    startupBringupEvidenceBlock.includes("DefaultUserName") &&
+    startupBringupEvidenceBlock.includes("DefaultDomainName") &&
+    !startupBringupEvidenceBlock.includes("DefaultPassword") &&
+    !startupBringupEvidenceBlock.includes("AutoLogonPassword"),
+  `${setupPath} should emit production bring-up startup evidence without writing auto-logon password values to evidence`,
 );
 
 addCheck(

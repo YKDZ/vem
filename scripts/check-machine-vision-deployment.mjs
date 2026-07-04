@@ -61,6 +61,20 @@ addCheck(
 );
 
 addCheck(
+  "verify-script-can-require-production-startup-bringup",
+  verify.includes("[switch]$RequireProductionBringup") &&
+    verify.includes("StartupBringupEvidenceFile") &&
+    verify.includes("startupBringup") &&
+    verify.includes("productionBringup") &&
+    verify.includes("daemonOwnedInitialization") &&
+    verify.includes("autoLogon") &&
+    verify.includes("VEMKiosk") &&
+    verify.includes("Winlogon auto-logon target mismatch") &&
+    verify.includes("production bring-up evidence not found"),
+  `${verifyPath} should expose production bring-up startup evidence and optional failures for auto-logon/user mismatches`,
+);
+
+addCheck(
   "runbook-documents-vision-artifact",
   runbook.includes("视觉应用产物") &&
     runbook.includes("C:\\VEM\\vision") &&
