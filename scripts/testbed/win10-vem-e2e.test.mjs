@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 
 import {
   buildBringUpPlan,
+  buildRemotePowerShellCommand,
   buildResetPlan,
   buildRemotePowerShellScript,
   buildSshCommand,
@@ -14,6 +15,7 @@ import {
   buildKioskRuntimeEvidence,
   buildPortraitKioskAcceptance,
   buildRuntimeAcceptanceReport,
+  buildScpCommand,
   classifyProvisioningFailure,
   evaluateFirstClaimPrecondition,
   findActiveKioskSession,
@@ -1290,6 +1292,36 @@ describe("win10-vem-e2e reset planning", () => {
         "-o",
         "ProxyCommand=tailscale --socket=/tmp/tailscale-devcontainer-run/tailscaled.sock nc %h %p",
         "YKDZ@100.68.189.11",
+      ],
+    );
+  });
+
+  it("executes generated PowerShell through a temporary remote script instead of an oversized encoded command", () => {
+    assert.equal(
+      buildRemotePowerShellCommand(
+        "C:\\Users\\YKDZ\\AppData\\Local\\Temp\\vem-win10-e2e-test.ps1",
+      ),
+      "powershell -NoProfile -ExecutionPolicy Bypass -Command \"& 'C:\\Users\\YKDZ\\AppData\\Local\\Temp\\vem-win10-e2e-test.ps1'\"",
+    );
+    assert.doesNotMatch(
+      buildRemotePowerShellCommand(
+        "C:\\Users\\YKDZ\\AppData\\Local\\Temp\\vem-win10-e2e-test.ps1",
+      ),
+      /EncodedCommand/,
+    );
+    assert.deepEqual(
+      buildScpCommand(
+        "/tmp/run.ps1",
+        "C:\\Users\\YKDZ\\AppData\\Local\\Temp\\vem-win10-e2e-test.ps1",
+      ),
+      [
+        "scp",
+        "-o",
+        "ConnectTimeout=30",
+        "-o",
+        "ProxyCommand=none",
+        "/tmp/run.ps1",
+        "YKDZ@100.68.189.11:C:/Users/YKDZ/AppData/Local/Temp/vem-win10-e2e-test.ps1",
       ],
     );
   });

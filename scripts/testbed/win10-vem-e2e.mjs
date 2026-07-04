@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 
-import { Buffer } from "node:buffer";
 import { spawnSync } from "node:child_process";
-import { writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const VEM_RESET_ROOTS = [
   "C:\\VEM\\bringup",
@@ -2491,7 +2492,14 @@ ${bringUpReportArgumentLines}
 }
 
 export function buildSshCommand(options = {}) {
-  const remote = options.remote ?? "YKDZ@100.68.189.11";
+  return [
+    "ssh",
+    ...buildSshOptionArgs(options),
+    options.remote ?? "YKDZ@100.68.189.11",
+  ];
+}
+
+function buildSshOptionArgs(options = {}) {
   const sshArgs = ["-o", "ConnectTimeout=30"];
   if (options.proxyCommand) {
     sshArgs.push("-o", `ProxyCommand=${options.proxyCommand}`);
@@ -2501,7 +2509,29 @@ export function buildSshCommand(options = {}) {
   if (options.identity) {
     sshArgs.push("-i", options.identity);
   }
-  return ["ssh", ...sshArgs, remote];
+  return sshArgs;
+}
+
+function remotePathForScp(remotePath) {
+  return remotePath.replaceAll("\\", "/");
+}
+
+function quotePowerShellSingleQuoted(value) {
+  return `'${String(value).replaceAll("'", "''")}'`;
+}
+
+export function buildRemotePowerShellCommand(remoteScriptPath) {
+  return `powershell -NoProfile -ExecutionPolicy Bypass -Command "& ${quotePowerShellSingleQuoted(remoteScriptPath)}"`;
+}
+
+export function buildScpCommand(sourcePath, remoteScriptPath, options = {}) {
+  const remote = options.remote ?? "YKDZ@100.68.189.11";
+  return [
+    "scp",
+    ...buildSshOptionArgs(options),
+    sourcePath,
+    `${remote}:${remotePathForScp(remoteScriptPath)}`,
+  ];
 }
 
 export function getRuntimeAcceptanceExitStatus({
@@ -2593,16 +2623,25 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       process.exit(0);
     }
     const script = buildRemotePowerShellScript(options);
-    const encoded = Buffer.from(script, "utf16le").toString("base64");
     const sshCommand = buildSshCommand(options);
-    const remoteCommand = `powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${encoded}`;
+    const localTempDirectory = mkdtempSync(join(tmpdir(), "vem-win10-e2e-"));
+    const localScriptPath = join(localTempDirectory, "run.ps1");
+    const remoteScriptPath = `C:\\Users\\YKDZ\\AppData\\Local\\Temp\\vem-win10-e2e-${process.pid}-${Date.now()}.ps1`;
+    const scpCommand = buildScpCommand(
+      localScriptPath,
+      remoteScriptPath,
+      options,
+    );
+    const remoteCommand = buildRemotePowerShellCommand(remoteScriptPath);
 
     if (options.dryRun) {
       console.log(
         JSON.stringify(
           {
             sshCommand,
+            scpCommand,
             remoteCommand,
+            transport: "scp-temp-ps1",
             resetPlan: assertResetPlanPreservesTestbed(buildResetPlan()),
             bringUpPlan: buildBringUpPlan(options),
           },
@@ -2613,6 +2652,22 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       process.exit(0);
     }
 
+    writeFileSync(localScriptPath, script, "utf8");
+    const upload = spawnSync(scpCommand[0], scpCommand.slice(1), {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    if (upload.stdout) {
+      process.stdout.write(upload.stdout);
+    }
+    if (upload.stderr) {
+      process.stderr.write(upload.stderr);
+    }
+    if (upload.status !== 0) {
+      rmSync(localTempDirectory, { recursive: true, force: true });
+      process.exit(upload.status ?? 1);
+    }
+
     const result = spawnSync(
       sshCommand[0],
       [...sshCommand.slice(1), remoteCommand],
@@ -2621,6 +2676,15 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         stdio: ["ignore", "pipe", "pipe"],
       },
     );
+    spawnSync(
+      sshCommand[0],
+      [
+        ...sshCommand.slice(1),
+        `powershell -NoProfile -ExecutionPolicy Bypass -Command "Remove-Item -LiteralPath ${quotePowerShellSingleQuoted(remoteScriptPath)} -Force -ErrorAction SilentlyContinue"`,
+      ],
+      { encoding: "utf8", stdio: "ignore" },
+    );
+    rmSync(localTempDirectory, { recursive: true, force: true });
     if (result.stdout && options.out) {
       writeFileSync(options.out, result.stdout, "utf8");
       console.error(`wrote report: ${options.out}`);
