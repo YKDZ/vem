@@ -6,28 +6,29 @@ import {
   count,
   desc,
   eq,
+  inArray,
   isNull,
   sql,
   type DrizzleClient,
   type SQL,
 } from "@vem/db";
 import {
-  adminUserQuerySchema,
-  createAdminUserSchema,
-  pageQuerySchema,
-  updateAdminUserSchema,
+  type AdminCreateUserRequest,
+  type AdminUpdateUserRequest,
+  type AdminUserListQuery,
+  adminUserPageResponseSchema,
 } from "@vem/shared";
-import { z } from "zod";
 
 import { AuditService } from "../audit/audit.service";
 import { PasswordService } from "../auth/password.service";
 import { getOffset, toPageResult } from "../common/pagination.util";
 import { DRIZZLE_CLIENT } from "../database/database.constants";
-
-type AdminUserQuery = z.infer<typeof adminUserQuerySchema> &
-  z.infer<typeof pageQuerySchema>;
-type CreateAdminUserInput = z.infer<typeof createAdminUserSchema>;
-type UpdateAdminUserInput = z.infer<typeof updateAdminUserSchema>;
+import {
+  mapAdminUserRoleIdsToInsert,
+  mapCreateAdminUserDtoToInsert,
+  mapUpdateAdminUserDtoToPatch,
+  toAdminUserResponse,
+} from "./admin-users.contract-mappers";
 
 @Injectable()
 export class AdminUsersService {
@@ -37,7 +38,7 @@ export class AdminUsersService {
     private readonly auditService: AuditService,
   ) {}
 
-  async list(query: AdminUserQuery) {
+  async list(query: AdminUserListQuery) {
     const filters: SQL[] = [isNull(adminUsers.deletedAt)];
     if (query.username)
       filters.push(
@@ -69,10 +70,22 @@ export class AdminUsersService {
       .from(adminUsers)
       .where(whereClause);
 
-    return toPageResult(items, query, Number(totalRow.total));
+    const roleIdsByUserId = await this.getRoleIdsByUserIds(
+      items.map((item) => item.id),
+    );
+
+    return adminUserPageResponseSchema.parse(
+      toPageResult(
+        items.map((item) =>
+          toAdminUserResponse(item, roleIdsByUserId.get(item.id) ?? []),
+        ),
+        query,
+        Number(totalRow.total),
+      ),
+    );
   }
 
-  async create(operatorAdminId: string, input: CreateAdminUserInput) {
+  async create(operatorAdminId: string, input: AdminCreateUserRequest) {
     const passwordHash = await this.passwordService.hashPassword(
       input.password,
     );
@@ -80,23 +93,13 @@ export class AdminUsersService {
     const created = await this.db.transaction(async (tx) => {
       const [user] = await tx
         .insert(adminUsers)
-        .values({
-          username: input.username,
-          passwordHash,
-          displayName: input.displayName,
-          mobile: input.mobile ?? null,
-          email: input.email ?? null,
-          status: input.status,
-        })
+        .values(mapCreateAdminUserDtoToInsert(input, passwordHash))
         .returning();
 
       if (input.roleIds.length > 0) {
-        await tx.insert(adminUserRoles).values(
-          input.roleIds.map((roleId) => ({
-            adminUserId: user.id,
-            roleId,
-          })),
-        );
+        await tx
+          .insert(adminUserRoles)
+          .values(mapAdminUserRoleIdsToInsert(user.id, input.roleIds));
       }
 
       return user;
@@ -118,13 +121,13 @@ export class AdminUsersService {
       afterJson,
     });
 
-    return created;
+    return toAdminUserResponse(created, input.roleIds);
   }
 
   async update(
     operatorAdminId: string,
     id: string,
-    input: UpdateAdminUserInput,
+    input: AdminUpdateUserRequest,
   ) {
     const [existing] = await this.db
       .select()
@@ -142,20 +145,11 @@ export class AdminUsersService {
       status: existing.status,
     };
 
-    const updateData: Record<string, unknown> = {
-      updatedAt: new Date(),
-    };
-    if (input.username !== undefined) updateData.username = input.username;
-    if (input.displayName !== undefined)
-      updateData.displayName = input.displayName;
-    if (input.mobile !== undefined) updateData.mobile = input.mobile;
-    if (input.email !== undefined) updateData.email = input.email;
-    if (input.status !== undefined) updateData.status = input.status;
-    if (input.password) {
-      updateData.passwordHash = await this.passwordService.hashPassword(
-        input.password,
-      );
-    }
+    const passwordHash =
+      input.password === undefined
+        ? undefined
+        : await this.passwordService.hashPassword(input.password);
+    const updateData = mapUpdateAdminUserDtoToPatch(input, passwordHash);
 
     const updated = await this.db.transaction(async (tx) => {
       const [user] = await tx
@@ -170,12 +164,9 @@ export class AdminUsersService {
           .where(eq(adminUserRoles.adminUserId, id));
 
         if (input.roleIds.length > 0) {
-          await tx.insert(adminUserRoles).values(
-            input.roleIds.map((roleId) => ({
-              adminUserId: id,
-              roleId,
-            })),
-          );
+          await tx
+            .insert(adminUserRoles)
+            .values(mapAdminUserRoleIdsToInsert(id, input.roleIds));
         }
       }
 
@@ -199,6 +190,32 @@ export class AdminUsersService {
       afterJson,
     });
 
-    return updated;
+    const roleIds =
+      input.roleIds ??
+      (await this.getRoleIdsByUserIds([updated.id])).get(updated.id) ??
+      [];
+    return toAdminUserResponse(updated, roleIds);
+  }
+
+  private async getRoleIdsByUserIds(
+    adminUserIds: string[],
+  ): Promise<Map<string, string[]>> {
+    if (adminUserIds.length === 0) return new Map();
+
+    const rows = await this.db
+      .select({
+        adminUserId: adminUserRoles.adminUserId,
+        roleId: adminUserRoles.roleId,
+      })
+      .from(adminUserRoles)
+      .where(inArray(adminUserRoles.adminUserId, adminUserIds));
+
+    const roleIdsByUserId = new Map<string, string[]>();
+    for (const row of rows) {
+      const roleIds = roleIdsByUserId.get(row.adminUserId) ?? [];
+      roleIds.push(row.roleId);
+      roleIdsByUserId.set(row.adminUserId, roleIds);
+    }
+    return roleIdsByUserId;
   }
 }

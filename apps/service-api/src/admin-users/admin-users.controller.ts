@@ -10,12 +10,13 @@ import {
 } from "@nestjs/common";
 import { ApiBearerAuth, ApiTags } from "@nestjs/swagger";
 import {
-  adminUserQuerySchema,
+  adminUserListQuerySchema,
   createAdminUserSchema,
-  pageQuerySchema,
+  type AdminCreateUserRequest,
+  type AdminUpdateUserRequest,
+  type AdminUserListQuery,
   updateAdminUserSchema,
 } from "@vem/shared";
-import { z } from "zod";
 
 import type { AuthenticatedAdmin } from "../common/request-user";
 
@@ -23,15 +24,6 @@ import { RequirePermissions } from "../access/permissions.decorator";
 import { CurrentAdmin } from "../auth/current-admin.decorator";
 import { ZodValidationPipe } from "../common/zod-validation.pipe";
 import { AdminUsersService } from "./admin-users.service";
-
-type AdminUserQuery = z.infer<typeof adminUserQuerySchema> &
-  z.infer<typeof pageQuerySchema>;
-type CreateAdminUserInput = z.infer<typeof createAdminUserSchema>;
-type UpdateAdminUserInput = z.infer<typeof updateAdminUserSchema>;
-
-const adminUserListQuerySchema = adminUserQuerySchema.extend(
-  pageQuerySchema.shape,
-);
 
 @ApiTags("admin-users")
 @ApiBearerAuth()
@@ -43,7 +35,7 @@ export class AdminUsersController {
   @Get()
   async list(
     @Query(new ZodValidationPipe(adminUserListQuerySchema))
-    query: AdminUserQuery,
+    query: AdminUserListQuery,
   ) {
     return await this.adminUsersService.list(query);
   }
@@ -53,7 +45,7 @@ export class AdminUsersController {
   async create(
     @CurrentAdmin() admin: AuthenticatedAdmin,
     @Body(new ZodValidationPipe(createAdminUserSchema))
-    body: CreateAdminUserInput,
+    body: AdminCreateUserRequest,
   ) {
     return await this.adminUsersService.create(admin.id, body);
   }
@@ -64,7 +56,7 @@ export class AdminUsersController {
     @CurrentAdmin() admin: AuthenticatedAdmin,
     @Param("id", ParseUUIDPipe) id: string,
     @Body(new ZodValidationPipe(updateAdminUserSchema))
-    body: UpdateAdminUserInput,
+    body: AdminUpdateUserRequest,
   ) {
     return await this.adminUsersService.update(admin.id, id, body);
   }

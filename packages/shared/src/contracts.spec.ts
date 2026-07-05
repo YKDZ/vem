@@ -5,6 +5,12 @@ import {
   adminInventoryMovementPageResponseSchema,
   adminInventoryPageResponseSchema,
   adminInventoryResponseSchema,
+  adminPermissionCodeListResponseSchema,
+  adminRolePageResponseSchema,
+  adminRoleResponseSchema,
+  adminUserListQuerySchema,
+  adminUserPageResponseSchema,
+  adminUserResponseSchema,
   adminMaintenanceWorkOrderResolveRequestSchema,
   adminMaintenanceWorkOrderResponseSchema,
   adminStockReconciliationCaseDetailResponseSchema,
@@ -15,6 +21,7 @@ import {
   adminMachineSlotResponseSchema,
   adminUserStatuses,
   canonicalJson,
+  createAdminUserSchema,
   createMachineSchema,
   createMachineSlotSchema,
   createMachineOrderSchema,
@@ -23,6 +30,7 @@ import {
   createProductSchema,
   createProtectedFulfillmentDrillSchema,
   createProtectedPaymentDrillSchema,
+  createRoleSchema,
   dispenseCommandPayloadSchema,
   hardwareErrorCodes,
   environmentControlCommandPayloadSchema,
@@ -59,6 +67,7 @@ import {
   paymentProviderNotifyUrlCheckSchema,
   paymentMachinePreflightSchema,
   externalNaturalEnvironmentSchema,
+  updateAdminUserSchema,
   updateProductSchema,
   updateProductVariantSchema,
   updateMachineSchema,
@@ -77,12 +86,14 @@ import {
   protectedFulfillmentDrillScenarioSchema,
   protectedPaymentDrillRecoveryActionSchema,
   protectedPaymentDrillScenarioSchema,
+  roleListQuerySchema,
   roleStatuses,
   rotateMachineCredentialsResponseSchema,
   refillInventorySchema,
   adjustInventorySchema,
   upsertNotificationTargetSchema,
   upsertPaymentProviderConfigSchema,
+  updateRoleSchema,
   wechatPayPublicConfigSchema,
 } from "./index";
 
@@ -99,6 +110,124 @@ describe("shared API contract", () => {
     expect(paymentProviderStatuses).toEqual(["enabled", "disabled"]);
     expect(adminUserStatuses).toEqual(["active", "disabled"]);
     expect(roleStatuses).toEqual(["active", "disabled"]);
+  });
+
+  it("keeps admin identity and role contracts strict", () => {
+    expect(
+      createAdminUserSchema.parse({
+        username: "ops01",
+        password: "StrongPassword123",
+        displayName: "Ops User",
+        roleIds: ["550e8400-e29b-41d4-a716-446655440001"],
+      }),
+    ).toMatchObject({ status: "active" });
+    expect(() =>
+      createAdminUserSchema.parse({
+        username: "ops01",
+        password: "StrongPassword123",
+        displayName: "Ops User",
+        unsupported: true,
+      }),
+    ).toThrow();
+    expect(
+      updateAdminUserSchema.parse({
+        email: null,
+        roleIds: ["550e8400-e29b-41d4-a716-446655440001"],
+      }),
+    ).toEqual({
+      email: null,
+      roleIds: ["550e8400-e29b-41d4-a716-446655440001"],
+    });
+    expect(updateAdminUserSchema.parse({ email: null })).toEqual({
+      email: null,
+    });
+    expect(adminUserListQuerySchema.parse({ page: "2" })).toMatchObject({
+      page: 2,
+      pageSize: 20,
+    });
+
+    expect(
+      createRoleSchema.parse({
+        code: "ops_manager",
+        name: "Ops Manager",
+        permissionCodes: ["adminUsers.read", "roles.write"],
+      }),
+    ).toMatchObject({ status: "active" });
+    expect(() =>
+      createRoleSchema.parse({
+        code: "ops_manager",
+        name: "Ops Manager",
+        permissionCodes: ["roles.write", "roles.write"],
+      }),
+    ).toThrow();
+    expect(() =>
+      updateRoleSchema.parse({
+        permissionCodes: ["not.a.permission"],
+      }),
+    ).toThrow();
+    expect(() =>
+      updateRoleSchema.parse({
+        permissionCodes: ["adminUsers.read", "adminUsers.read"],
+      }),
+    ).toThrow();
+    expect(updateRoleSchema.parse({ name: "Ops Lead" })).toEqual({
+      name: "Ops Lead",
+    });
+    expect(roleListQuerySchema.parse({ pageSize: "50" })).toMatchObject({
+      page: 1,
+      pageSize: 50,
+    });
+  });
+
+  it("parses admin identity, role, and permission key responses", () => {
+    const adminUser = adminUserResponseSchema.parse({
+      id: "550e8400-e29b-41d4-a716-446655440001",
+      username: "ops01",
+      displayName: "Ops User",
+      mobile: null,
+      email: null,
+      status: "active",
+      roles: ["550e8400-e29b-41d4-a716-446655440010"],
+      lastLoginAt: null,
+      createdAt: "2026-07-05T00:00:00.000Z",
+      updatedAt: "2026-07-05T00:10:00.000Z",
+    });
+    expect(adminUser.roles).toEqual(["550e8400-e29b-41d4-a716-446655440010"]);
+    expect(() =>
+      adminUserResponseSchema.parse({ ...adminUser, passwordHash: "secret" }),
+    ).toThrow();
+    expect(
+      adminUserPageResponseSchema.parse({
+        items: [adminUser],
+        page: 1,
+        pageSize: 20,
+        total: 1,
+      }).total,
+    ).toBe(1);
+
+    const role = adminRoleResponseSchema.parse({
+      id: "550e8400-e29b-41d4-a716-446655440002",
+      code: "ops_manager",
+      name: "Ops Manager",
+      description: null,
+      isBuiltin: false,
+      status: "active",
+      permissionCodes: ["adminUsers.read", "roles.write"],
+      createdAt: "2026-07-05T00:00:00.000Z",
+      updatedAt: "2026-07-05T00:10:00.000Z",
+    });
+    expect(role.permissionCodes).toEqual(["adminUsers.read", "roles.write"]);
+    expect(
+      adminRolePageResponseSchema.parse({
+        items: [role],
+        page: 1,
+        pageSize: 20,
+        total: 1,
+      }).items,
+    ).toHaveLength(1);
+    expect(
+      adminPermissionCodeListResponseSchema.parse(["roles.write"]),
+    ).toEqual(["roles.write"]);
   });
 
   it("keeps order recovery and maintenance admin actions strict", () => {
