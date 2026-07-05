@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { ProductStatus, VariantStatus } from "@vem/shared";
+import type { ProductStatus } from "@vem/shared";
 
 import { onMounted, ref, watch } from "vue";
 import { useRoute } from "vue-router";
@@ -20,28 +20,14 @@ import {
 import { useAuthStore } from "@/stores/auth";
 import { formatDateTime } from "@/utils/format";
 
-type ProductForm = {
-  name: string;
-  description: string;
-  displayImageMediaAssetId: string | null;
-  displayImagePublicUrl: string | null;
-  status: ProductStatus;
-  sortOrder: number;
-};
-
-type VariantForm = {
-  productId: string;
-  sku: string;
-  priceCents: number;
-  costCents: number;
-  status: VariantStatus;
-  size: string;
-  color: string;
-  barcode: string;
-  targetGender: "male" | "female" | null;
-  tryOnSilhouetteMediaAssetId: string | null;
-  tryOnSilhouettePublicUrl: string | null;
-};
+import {
+  mapProductFormToContract,
+  mapProductResponseToForm,
+  mapVariantFormToContract,
+  mapVariantResponseToForm,
+  type ProductForm,
+  type VariantForm,
+} from "./product-contract-mappers";
 
 const authStore = useAuthStore();
 const canWrite = authStore.hasPermission("products.write");
@@ -105,14 +91,7 @@ function openCreateProduct(): void {
 
 function openEditProduct(p: Product): void {
   editingProduct.value = p;
-  productForm.value = {
-    name: p.name,
-    description: p.description ?? "",
-    displayImageMediaAssetId: p.displayImageMediaAssetId,
-    displayImagePublicUrl: p.displayImageMediaAsset?.publicUrl ?? null,
-    status: p.status,
-    sortOrder: p.sortOrder,
-  };
+  productForm.value = mapProductResponseToForm(p);
   productDrawerOpen.value = true;
 }
 
@@ -140,22 +119,11 @@ function clearProductDisplayImage(): void {
 async function saveProduct(): Promise<void> {
   productSaving.value = true;
   try {
+    const body = mapProductFormToContract(productForm.value);
     if (editingProduct.value) {
-      await updateProduct(editingProduct.value.id, {
-        name: productForm.value.name,
-        description: productForm.value.description || null,
-        displayImageMediaAssetId: productForm.value.displayImageMediaAssetId,
-        status: productForm.value.status,
-        sortOrder: productForm.value.sortOrder,
-      });
+      await updateProduct(editingProduct.value.id, body);
     } else {
-      await createProduct({
-        name: productForm.value.name,
-        description: productForm.value.description || null,
-        displayImageMediaAssetId: productForm.value.displayImageMediaAssetId,
-        status: productForm.value.status,
-        sortOrder: productForm.value.sortOrder,
-      });
+      await createProduct(body);
     }
     productDrawerOpen.value = false;
     await loadProducts();
@@ -219,19 +187,7 @@ function openCreateVariant(): void {
 
 function openEditVariant(v: ProductVariant): void {
   editingVariant.value = v;
-  variantForm.value = {
-    productId: v.productId,
-    sku: v.sku,
-    priceCents: v.priceCents,
-    costCents: v.costCents ?? 0,
-    status: v.status,
-    size: v.size ?? "",
-    color: v.color ?? "",
-    barcode: v.barcode ?? "",
-    targetGender: v.targetGender ?? null,
-    tryOnSilhouetteMediaAssetId: v.tryOnSilhouetteMediaAssetId,
-    tryOnSilhouettePublicUrl: v.tryOnSilhouetteMediaAsset?.publicUrl ?? null,
-  };
+  variantForm.value = mapVariantResponseToForm(v);
   variantFormOpen.value = true;
 }
 
@@ -259,19 +215,7 @@ function clearTryOnSilhouette(): void {
 async function saveVariant(): Promise<void> {
   variantSaving.value = true;
   try {
-    const body = {
-      productId: variantForm.value.productId,
-      sku: variantForm.value.sku,
-      priceCents: variantForm.value.priceCents,
-      costCents: variantForm.value.costCents || null,
-      status: variantForm.value.status,
-      size: variantForm.value.size || null,
-      color: variantForm.value.color || null,
-      barcode: variantForm.value.barcode || null,
-      targetGender: variantForm.value.targetGender || null,
-      tryOnSilhouetteMediaAssetId:
-        variantForm.value.tryOnSilhouetteMediaAssetId,
-    };
+    const body = mapVariantFormToContract(variantForm.value);
     if (editingVariant.value) {
       await updateProductVariant(editingVariant.value.id, body);
     } else {

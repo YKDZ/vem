@@ -10,34 +10,23 @@ import {
 } from "@nestjs/common";
 import { ApiBearerAuth, ApiTags } from "@nestjs/swagger";
 import {
+  adminProductListQuerySchema,
+  adminProductVariantListQuerySchema,
   createProductSchema,
   createProductVariantSchema,
-  pageQuerySchema,
   updateProductSchema,
   updateProductVariantSchema,
+  type AdminCreateProductRequest,
+  type AdminCreateProductVariantRequest,
+  type AdminProductListQuery,
+  type AdminProductVariantListQuery,
+  type AdminUpdateProductRequest,
+  type AdminUpdateProductVariantRequest,
 } from "@vem/shared";
-import { z } from "zod";
 
 import { RequirePermissions } from "../access/permissions.decorator";
 import { ZodValidationPipe } from "../common/zod-validation.pipe";
 import { ProductsService } from "./products.service";
-
-type CreateProductInput = z.infer<typeof createProductSchema>;
-type UpdateProductInput = z.infer<typeof updateProductSchema>;
-type CreateProductVariantInput = z.infer<typeof createProductVariantSchema>;
-type UpdateProductVariantInput = z.infer<typeof updateProductVariantSchema>;
-
-const productListQuerySchema = pageQuerySchema.extend({
-  keyword: z.string().max(128).optional(),
-  status: z.enum(["draft", "active", "inactive"]).optional(),
-});
-
-const productVariantListQuerySchema = pageQuerySchema.extend({
-  productId: z.uuid().optional(),
-});
-
-type ProductListQuery = z.infer<typeof productListQuerySchema>;
-type ProductVariantListQuery = z.infer<typeof productVariantListQuerySchema>;
 
 @ApiTags("products")
 @ApiBearerAuth()
@@ -48,8 +37,8 @@ export class ProductsController {
   @RequirePermissions("products.read")
   @Get("products")
   async listProducts(
-    @Query(new ZodValidationPipe(productListQuerySchema))
-    query: ProductListQuery,
+    @Query(new ZodValidationPipe(adminProductListQuerySchema))
+    query: AdminProductListQuery,
   ) {
     return await this.productsService.listProducts(query);
   }
@@ -57,7 +46,8 @@ export class ProductsController {
   @RequirePermissions("products.write")
   @Post("products")
   async createProduct(
-    @Body(new ZodValidationPipe(createProductSchema)) body: CreateProductInput,
+    @Body(new ZodValidationPipe(createProductSchema))
+    body: AdminCreateProductRequest,
   ) {
     return await this.productsService.createProduct(body);
   }
@@ -66,7 +56,8 @@ export class ProductsController {
   @Patch("products/:id")
   async updateProduct(
     @Param("id", ParseUUIDPipe) id: string,
-    @Body(new ZodValidationPipe(updateProductSchema)) body: UpdateProductInput,
+    @Body(new ZodValidationPipe(updateProductSchema))
+    body: AdminUpdateProductRequest,
   ) {
     return await this.productsService.updateProduct(id, body);
   }
@@ -74,8 +65,8 @@ export class ProductsController {
   @RequirePermissions("products.read")
   @Get("product-variants")
   async listVariants(
-    @Query(new ZodValidationPipe(productVariantListQuerySchema))
-    query: ProductVariantListQuery,
+    @Query(new ZodValidationPipe(adminProductVariantListQuerySchema))
+    query: AdminProductVariantListQuery,
   ) {
     return await this.productsService.listVariants(query);
   }
@@ -84,7 +75,7 @@ export class ProductsController {
   @Post("product-variants")
   async createVariant(
     @Body(new ZodValidationPipe(createProductVariantSchema))
-    body: CreateProductVariantInput,
+    body: AdminCreateProductVariantRequest,
   ) {
     return await this.productsService.createVariant(body);
   }
@@ -94,7 +85,7 @@ export class ProductsController {
   async updateVariant(
     @Param("id", ParseUUIDPipe) id: string,
     @Body(new ZodValidationPipe(updateProductVariantSchema))
-    body: UpdateProductVariantInput,
+    body: AdminUpdateProductVariantRequest,
   ) {
     return await this.productsService.updateVariant(id, body);
   }

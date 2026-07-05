@@ -1,8 +1,14 @@
 // @vitest-environment jsdom
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 
-import { normalizeRequestParams, tokenStorage } from "./request";
+import {
+  normalizeRequestParams,
+  postContract,
+  request,
+  tokenStorage,
+} from "./request";
 
 describe("normalizeRequestParams", () => {
   it("clamps numeric pageSize query params to the backend pagination contract", () => {
@@ -48,5 +54,30 @@ describe("tokenStorage", () => {
 
     expect(tokenStorage.getAccessToken()).toBe("access-2");
     expect(tokenStorage.getRefreshToken()).toBeNull();
+  });
+});
+
+describe("schema-bound admin API helpers", () => {
+  it("rejects invalid request bodies before sending and parses response data", async () => {
+    const bodySchema = z.strictObject({ name: z.string().min(1) });
+    const responseSchema = z.strictObject({ id: z.string(), name: z.string() });
+    const postSpy = vi.spyOn(request, "post").mockResolvedValue({
+      data: { code: 0, message: "ok", data: { id: "product-1", name: "Tea" } },
+    });
+
+    await expect(
+      postContract("/products", bodySchema, responseSchema, {
+        name: "Tea",
+      }),
+    ).resolves.toEqual({ id: "product-1", name: "Tea" });
+
+    await expect(
+      postContract("/products", bodySchema, responseSchema, {
+        name: "Tea",
+        unsupported: true,
+      } as z.input<typeof bodySchema> & { unsupported: boolean }),
+    ).rejects.toThrow("Admin API contract validation failed");
+
+    expect(postSpy).toHaveBeenCalledTimes(1);
   });
 });

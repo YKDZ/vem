@@ -7,6 +7,7 @@ import {
   createMachineSchema,
   createMachineSlotSchema,
   createMachineOrderSchema,
+  createProductVariantSchema,
   createProductSchema,
   createProtectedFulfillmentDrillSchema,
   createProtectedPaymentDrillSchema,
@@ -38,6 +39,7 @@ import {
   paymentMachinePreflightSchema,
   externalNaturalEnvironmentSchema,
   updateProductSchema,
+  updateProductVariantSchema,
   updateMachineSchema,
   paymentCodeAttemptQuerySchema,
   paymentCodeSubmitResponseSchema,
@@ -169,6 +171,46 @@ describe("shared API contract", () => {
     expect(
       updateProductSchema.parse({ displayImageMediaAssetId: null }),
     ).toEqual({ displayImageMediaAssetId: null });
+  });
+
+  it("uses strict admin Product Variant Catalog write contracts", () => {
+    const productId = "550e8400-e29b-41d4-a716-446655440224";
+    const tryOnSilhouetteMediaAssetId =
+      "550e8400-e29b-41d4-a716-446655440125";
+
+    expect(
+      createProductVariantSchema.parse({
+        productId,
+        sku: "TSHIRT-M-WHITE",
+        priceCents: 1000,
+        tryOnSilhouetteMediaAssetId,
+      }),
+    ).toEqual({
+      productId,
+      sku: "TSHIRT-M-WHITE",
+      priceCents: 1000,
+      status: "active",
+      tryOnSilhouetteMediaAssetId,
+    });
+
+    expect(() =>
+      createProductVariantSchema.parse({
+        productId,
+        sku: "TSHIRT-M-WHITE",
+        priceCents: 1000,
+        freeFormImageUrl: "https://example.com/free-form.png",
+      }),
+    ).toThrow();
+
+    expect(
+      updateProductVariantSchema.parse({
+        costCents: null,
+        tryOnSilhouetteMediaAssetId: null,
+      }),
+    ).toEqual({
+      costCents: null,
+      tryOnSilhouetteMediaAssetId: null,
+    });
   });
 
   it("validates nullable all-or-nothing Machine Geo Location in machine write contracts", () => {
