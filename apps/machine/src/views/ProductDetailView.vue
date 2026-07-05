@@ -11,6 +11,7 @@ import listSloganImage from "@/assets/home/list-slogan.png";
 import logoImage from "@/assets/home/logo.png";
 import mascotListImage from "@/assets/home/mascot-list.png";
 import mascotTopImage from "@/assets/home/mascot-top-cutout.png";
+import { emitCustomerExperienceEvent } from "@/composables/useCustomerExperienceEvents";
 import { useMaintenanceEntry } from "@/composables/useMaintenanceEntry";
 import KioskLayout from "@/layouts/KioskLayout.vue";
 import { useCatalogStore } from "@/stores/catalog";
@@ -215,6 +216,7 @@ async function purchase(): Promise<void> {
   const concreteItem = selectedConcreteItem.value;
   if (!concreteItem || !canBuy.value) return;
   checkoutStore.selectItem(concreteItem);
+  emitCustomerExperienceEvent({ type: "product.selected" });
   await router.push("/checkout");
 }
 
