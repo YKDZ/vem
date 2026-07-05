@@ -357,6 +357,141 @@ jobs:
             admin-ui.log
           retention-days: 3
 
+  admin-contract-e2e-tests:
+    name: Admin Contract E2E
+    needs: [changes, static]
+    if: needs.changes.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    # Production readiness candidate check for Admin API Contract browser flows.
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: vem_admin_contract_e2e
+          POSTGRES_USER: vem
+          POSTGRES_PASSWORD: vem_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U vem -d vem_admin_contract_e2e"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install Dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Start MQTT Broker
+        run: |
+          mkdir -p /tmp/mosquitto-admin-contract-e2e
+          printf 'listener 1883 0.0.0.0\nallow_anonymous true\n' > /tmp/mosquitto-admin-contract-e2e/mosquitto.conf
+          docker run -d --name mosquitto-admin-contract-e2e \
+            -p 1883:1883 \
+            -v /tmp/mosquitto-admin-contract-e2e/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro \
+            eclipse-mosquitto:2
+
+      - name: Build Service API
+        run: pnpm turbo build --filter service-api
+
+      - name: Run Database Migrations
+        run: pnpm --filter @vem/db migrate
+        env:
+          DATABASE_URL: postgresql://vem:vem_password@localhost:5432/vem_admin_contract_e2e
+
+      - name: Start Service API
+        working-directory: apps/service-api
+        run: node dist/main.js > ../../admin-contract-service-api.log 2>&1 &
+        env:
+          DATABASE_URL: postgresql://vem:vem_password@localhost:5432/vem_admin_contract_e2e
+          JWT_SECRET: ci-jwt-secret-at-least-32-characters-long!
+          JWT_REFRESH_SECRET: ci-jwt-refresh-secret-minimum-32-chars!!
+          MACHINE_JWT_SECRET: ci-machine-jwt-secret-min-32-chars-long!
+          MACHINE_CREDENTIAL_ENCRYPTION_KEY: ci-machine-cred-enc-key-32-chars!!
+          MQTT_URL: mqtt://localhost:1883
+          PAYMENT_MOCK_ENABLED: "true"
+          PAYMENT_WEBHOOK_BASE_URL: http://localhost:3000
+          BOOTSTRAP_ADMIN_PASSWORD: AdminPassword123!
+
+      - name: Wait for Service API
+        timeout-minutes: 2
+        run: |
+          echo "Waiting for Service API..."
+          RETRIES=60
+          until curl -s -f http://localhost:3000/api/health > /dev/null 2>&1; do
+            printf '.'
+            sleep 2
+            RETRIES=$((RETRIES-1))
+            if [ $RETRIES -le 0 ]; then
+              echo " Timeout!"
+              cat admin-contract-service-api.log
+              exit 1
+            fi
+          done
+          echo " Ready!"
+
+      - name: Start Admin UI Dev Server
+        working-directory: apps/admin-ui
+        run: pnpm dev > ../../admin-contract-admin-ui.log 2>&1 &
+
+      - name: Wait for Admin UI
+        timeout-minutes: 2
+        run: |
+          echo "Waiting for Admin UI..."
+          RETRIES=60
+          until curl -s -f http://localhost:5173 > /dev/null 2>&1; do
+            printf '.'
+            sleep 2
+            RETRIES=$((RETRIES-1))
+            if [ $RETRIES -le 0 ]; then
+              echo " Timeout!"
+              cat admin-contract-admin-ui.log
+              exit 1
+            fi
+          done
+          echo " Ready!"
+
+      - name: Verify Chrome Browser
+        run: google-chrome --version
+
+      - name: Run Admin Contract E2E Tests
+        working-directory: apps/admin-ui
+        run: pnpm test:e2e:admin-contract
+
+      - name: Upload Admin Contract Playwright Artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: admin-contract-playwright-artifacts
+          path: apps/admin-ui/test-results/
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Upload Admin Contract Logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: admin-contract-ci-logs
+          path: |
+            admin-contract-service-api.log
+            admin-contract-admin-ui.log
+          if-no-files-found: error
+          retention-days: 3
+
   rust-tests:
     name: Rust Tests
     needs: changes

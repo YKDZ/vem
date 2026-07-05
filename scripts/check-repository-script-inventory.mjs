@@ -18,6 +18,18 @@ const DEFAULT_INVENTORY = [
     workflows: ["admin api contract migration"],
   },
   {
+    path: "scripts/check-admin-contract-e2e-ci.mjs",
+    owner: "shared-contracts",
+    category: "verifier-test guard",
+    workflows: ["admin api contract migration"],
+  },
+  {
+    path: "scripts/check-admin-contract-e2e-ci.test.mjs",
+    owner: "shared-contracts",
+    category: "verifier-test guard",
+    workflows: ["admin api contract migration"],
+  },
+  {
     path: "scripts/check-factory-runtime-prep.mjs",
     owner: "field-operations",
     category: "verifier-test guard",
