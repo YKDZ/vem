@@ -11,6 +11,8 @@ import { useRoute, useRouter, type RouteLocationRaw } from "vue-router";
 
 import { useVisionStore } from "@/stores/vision";
 
+import { recordCustomerAudioCueSourceFact } from "./useCustomerAudioCueEventSource";
+
 const DEFAULT_PRESENCE_STALE_MS = 15_000;
 const DEFAULT_INACTIVITY_DEPARTURE_MS = 45_000;
 const RETURN_HOME_ROUTE_NAMES = new Set([
@@ -124,7 +126,6 @@ function restartDepartureTimers(): void {
 function markPresent(input: {
   source: Exclude<PresenceInteractionSource, "inactivity" | "unavailable">;
   seenAt: string;
-  suppressAudioCue?: boolean;
 }): void {
   state.value = {
     personPresent: true,
@@ -153,6 +154,14 @@ function markDeparted(input: {
   };
   clearStaleTimer();
   clearInactivityTimer();
+  if (input.source === "vision") {
+    recordCustomerAudioCueSourceFact({
+      type: "vision.presence",
+      personPresent: false,
+      occupancyState: "none",
+      observedAt: input.departedAt ?? nowIso(),
+    });
+  }
 }
 
 function registerInteraction(): void {
@@ -165,6 +174,10 @@ function registerInteraction(): void {
     markPresent({
       source: "local_interaction",
       seenAt,
+    });
+    recordCustomerAudioCueSourceFact({
+      type: "local.awakened",
+      requestedAt: seenAt,
     });
     return;
   }
@@ -210,7 +223,8 @@ function startCustomerPresenceSession(
   stopVisionWatch = watch(
     () => ({ ...visionStore.presence }),
     (presence) => {
-      const suppressAudioCue = !initializedFromCurrentDiagnostic;
+      const suppressAudioCue =
+        !initializedFromCurrentDiagnostic || presence.restoredFromRefresh;
       if (!presence.source) {
         markDeparted({
           source: "unavailable",
@@ -244,10 +258,18 @@ function startCustomerPresenceSession(
         return;
       }
 
+      const observedAt =
+        presence.lastSeenAt ?? presence.lastChangedAt ?? nowIso();
       markPresent({
         source: "vision",
-        seenAt: presence.lastSeenAt ?? presence.lastChangedAt ?? nowIso(),
-        suppressAudioCue,
+        seenAt: observedAt,
+      });
+      recordCustomerAudioCueSourceFact({
+        type: "vision.presence",
+        personPresent: true,
+        occupancyState: presence.occupancyState,
+        observedAt,
+        restored: suppressAudioCue,
       });
       initializedFromCurrentDiagnostic = true;
     },
