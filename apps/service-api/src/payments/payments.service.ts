@@ -66,6 +66,14 @@ import {
   sha256Hex,
 } from "./payment-redaction.util";
 import { PaymentWebhookAttemptRecorderService } from "./payment-webhook-attempt-recorder.service";
+import {
+  mapPaymentProviderConfigUpdateDtoToPatch,
+  mapPaymentProviderConfigUpsertDtoToInsert,
+  mapPaymentProviderConfigUpsertDtoToPatch,
+  mapPaymentProviderDtoToPatch,
+  mapManualPaymentReconciliationAttemptToInsert,
+  mapMockPaymentEventToInsert,
+} from "./payments.contract-mappers";
 
 type PaymentQuery = z.infer<typeof paymentQuerySchema> &
   z.infer<typeof pageQuerySchema>;
@@ -347,18 +355,18 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
 
       const inserted = await tx
         .insert(paymentEvents)
-        .values({
-          paymentId: row.paymentId,
-          providerId: row.providerId,
-          eventType: "mock.payment.succeeded",
-          providerEventId: `mock:succeed:${paymentNo}`,
-          rawPayloadJson: buildStoredEventPayload({
+        .values(
+          mapMockPaymentEventToInsert({
+            paymentId: row.paymentId,
+            providerId: row.providerId,
             paymentNo,
             event: "succeed",
+            rawPayloadJson: buildStoredEventPayload({
+              paymentNo,
+              event: "succeed",
+            }),
           }),
-          signatureValid: true,
-          handledAt: new Date(),
-        })
+        )
         .onConflictDoNothing()
         .returning({ id: paymentEvents.id });
       if (inserted.length === 0) {
@@ -468,19 +476,19 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
 
       const inserted = await tx
         .insert(paymentEvents)
-        .values({
-          paymentId: row.paymentId,
-          providerId: row.providerId,
-          eventType: "mock.payment.failed",
-          providerEventId: `mock:fail:${paymentNo}`,
-          rawPayloadJson: buildStoredEventPayload({
+        .values(
+          mapMockPaymentEventToInsert({
+            paymentId: row.paymentId,
+            providerId: row.providerId,
             paymentNo,
             event: "fail",
-            reason,
+            rawPayloadJson: buildStoredEventPayload({
+              paymentNo,
+              event: "fail",
+              reason,
+            }),
           }),
-          signatureValid: true,
-          handledAt: new Date(),
-        })
+        )
         .onConflictDoNothing()
         .returning({ id: paymentEvents.id });
       if (inserted.length === 0) {
@@ -800,12 +808,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
   async updateProvider(id: string, input: UpdatePaymentProviderInput) {
     const [updated] = await this.db
       .update(paymentProviders)
-      .set({
-        name: input.name,
-        status: input.status,
-        capabilities: input.capabilities,
-        updatedAt: new Date(),
-      })
+      .set(mapPaymentProviderDtoToPatch(input))
       .where(eq(paymentProviders.id, id))
       .returning();
     if (!updated) throw new NotFoundException("Payment provider not found");
@@ -836,34 +839,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       )
       .orderBy(paymentProviders.code, paymentProviderConfigs.machineId);
 
-    return rows.map((row) => {
-      const encryptedJson = isEncryptedJson(row.configEncryptedJson)
-        ? row.configEncryptedJson
-        : null;
-      const decryptedKeys = encryptedJson
-        ? this.paymentConfigSecrets.decrypt(encryptedJson)
-        : null;
-
-      return {
-        id: row.id,
-        providerId: row.providerId,
-        providerCode: row.providerCode,
-        providerName: row.providerName,
-        machineId: row.machineId,
-        merchantNo: row.merchantNo,
-        appId: row.appId,
-        publicConfigJson: row.publicConfigJson,
-        derivedNotifyUrl: this.config.buildPaymentNotifyUrl(row.providerCode),
-        secretStatusJson: this.paymentConfigSecrets.summarize(
-          decryptedKeys,
-          row.updatedAt,
-        ),
-        status: row.status,
-        updatedByAdminUserId: row.updatedByAdminUserId,
-        createdAt: row.createdAt,
-        updatedAt: row.updatedAt,
-      };
-    });
+    return rows.map((row) => this.toProviderConfigAdminDto(row));
   }
 
   async updateProviderConfig(
@@ -889,11 +865,12 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       throw new NotFoundException("Payment provider config not found");
 
     const providerRow = await this.db
-      .select({ code: paymentProviders.code })
+      .select({ code: paymentProviders.code, name: paymentProviders.name })
       .from(paymentProviders)
       .where(eq(paymentProviders.id, existing.providerId))
       .limit(1);
     const providerCode = providerRow[0]?.code ?? "unknown";
+    const providerName = providerRow[0]?.name ?? providerCode;
 
     const nextStatus = input.status ?? existing.status;
     const nextPublicConfig = this.normalizeProviderPublicConfig(providerCode, {
@@ -912,8 +889,8 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       this.assertProviderConfigComplete({
         providerCode,
         status: nextStatus,
-        merchantNo: input.merchantNo ?? existing.merchantNo,
-        appId: input.appId ?? existing.appId,
+        merchantNo: this.resolveNullablePatch(input, "merchantNo", existing),
+        appId: this.resolveNullablePatch(input, "appId", existing),
         publicConfigJson: nextPublicConfig,
         sensitiveConfigJson: existingSensitive,
       });
@@ -931,14 +908,15 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
 
     const [updated] = await this.db
       .update(paymentProviderConfigs)
-      .set({
-        merchantNo: input.merchantNo,
-        appId: input.appId,
-        publicConfigJson: nextPublicConfig,
-        status: input.status,
-        updatedByAdminUserId: adminUserId,
-        updatedAt: new Date(),
-      })
+      .set(
+        mapPaymentProviderConfigUpdateDtoToPatch(adminUserId, input, {
+          publicConfigJson: existing.publicConfigJson as Record<
+            string,
+            unknown
+          >,
+          normalizedPublicConfigJson: nextPublicConfig,
+        }),
+      )
       .where(eq(paymentProviderConfigs.id, id))
       .returning();
     if (!updated)
@@ -963,7 +941,11 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       afterJson: afterAuditJson,
     });
 
-    return updated;
+    return this.toProviderConfigAdminDto({
+      ...updated,
+      providerCode,
+      providerName,
+    });
   }
 
   private mergeSensitiveConfig(
@@ -1078,7 +1060,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
     input: UpsertPaymentProviderConfigInput,
   ) {
     const [provider] = await this.db
-      .select({ id: paymentProviders.id })
+      .select({ id: paymentProviders.id, name: paymentProviders.name })
       .from(paymentProviders)
       .where(eq(paymentProviders.code, input.providerCode))
       .limit(1);
@@ -1141,8 +1123,8 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
     this.assertProviderConfigComplete({
       providerCode: input.providerCode,
       status: nextStatus,
-      merchantNo: input.merchantNo ?? existingRow?.merchantNo,
-      appId: input.appId ?? existingRow?.appId,
+      merchantNo: this.resolveNullablePatch(input, "merchantNo", existingRow),
+      appId: this.resolveNullablePatch(input, "appId", existingRow),
       publicConfigJson: nextPublicConfig,
       sensitiveConfigJson: mergedSensitive,
     });
@@ -1169,31 +1151,30 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
     if (existingRow) {
       const [updated] = await this.db
         .update(paymentProviderConfigs)
-        .set({
-          merchantNo: input.merchantNo ?? existingRow.merchantNo,
-          appId: input.appId ?? existingRow.appId,
-          publicConfigJson: nextPublicConfig,
-          configEncryptedJson: newEncryptedJson,
-          status: nextStatus,
-          updatedByAdminUserId: adminUserId,
-          updatedAt: new Date(),
-        })
+        .set(
+          mapPaymentProviderConfigUpsertDtoToPatch(
+            adminUserId,
+            input,
+            newEncryptedJson,
+            nextPublicConfig,
+            existingRow,
+          ),
+        )
         .where(eq(paymentProviderConfigs.id, existingRow.id))
         .returning();
       saved = updated as typeof saved;
     } else {
       const [inserted] = await this.db
         .insert(paymentProviderConfigs)
-        .values({
-          providerId: provider.id,
-          machineId,
-          merchantNo: input.merchantNo,
-          appId: input.appId,
-          publicConfigJson: nextPublicConfig,
-          configEncryptedJson: newEncryptedJson,
-          status: nextStatus,
-          updatedByAdminUserId: adminUserId,
-        })
+        .values(
+          mapPaymentProviderConfigUpsertDtoToInsert(
+            provider.id,
+            adminUserId,
+            input,
+            newEncryptedJson,
+            nextPublicConfig,
+          ),
+        )
         .returning();
       saved = inserted as typeof saved;
     }
@@ -1201,8 +1182,8 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
     const afterAuditJson = this.sanitizeProviderConfigForAudit({
       providerCode: input.providerCode,
       machineId,
-      merchantNo: input.merchantNo ?? existingRow?.merchantNo,
-      appId: input.appId ?? existingRow?.appId,
+      merchantNo: this.resolveNullablePatch(input, "merchantNo", existingRow),
+      appId: this.resolveNullablePatch(input, "appId", existingRow),
       publicConfigJson: nextPublicConfig,
       status: nextStatus,
       sensitiveConfigJson: mergedSensitive,
@@ -1219,7 +1200,89 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       afterJson: afterAuditJson,
     });
 
-    return saved;
+    return this.toProviderConfigAdminDto({
+      ...saved,
+      providerId: provider.id,
+      providerCode: input.providerCode,
+      providerName: provider.name ?? input.providerCode,
+      machineId,
+      merchantNo: this.resolveNullablePatch(input, "merchantNo", existingRow),
+      appId: this.resolveNullablePatch(input, "appId", existingRow),
+      publicConfigJson: nextPublicConfig,
+      configEncryptedJson: newEncryptedJson,
+      status: nextStatus,
+      updatedByAdminUserId: adminUserId,
+      createdAt:
+        saved.createdAt instanceof Date || typeof saved.createdAt === "string"
+          ? saved.createdAt
+          : new Date(),
+      updatedAt:
+        saved.updatedAt instanceof Date || typeof saved.updatedAt === "string"
+          ? saved.updatedAt
+          : new Date(),
+    });
+  }
+
+  private resolveNullablePatch<
+    TInput extends Record<string, unknown>,
+    TExisting extends Record<string, unknown> | undefined,
+  >(
+    input: TInput,
+    key: "merchantNo" | "appId",
+    existing: TExisting,
+  ): string | null | undefined {
+    return Object.prototype.hasOwnProperty.call(input, key)
+      ? (input[key] as string | null | undefined)
+      : (existing?.[key] as string | null | undefined);
+  }
+
+  private toIsoString(value: Date | string): string {
+    return value instanceof Date ? value.toISOString() : value;
+  }
+
+  private toProviderConfigAdminDto(row: {
+    id: string;
+    providerId: string;
+    providerCode: string;
+    providerName: string;
+    machineId: string | null;
+    merchantNo: string | null | undefined;
+    appId: string | null | undefined;
+    publicConfigJson: unknown;
+    configEncryptedJson: unknown;
+    status: "enabled" | "disabled";
+    updatedByAdminUserId: string | null | undefined;
+    createdAt: Date | string;
+    updatedAt: Date | string;
+  }) {
+    const encryptedJson = isEncryptedJson(row.configEncryptedJson)
+      ? row.configEncryptedJson
+      : null;
+    const decryptedKeys = encryptedJson
+      ? this.paymentConfigSecrets.decrypt(encryptedJson)
+      : null;
+    const updatedAt =
+      row.updatedAt instanceof Date ? row.updatedAt : new Date(row.updatedAt);
+
+    return {
+      id: row.id,
+      providerId: row.providerId,
+      providerCode: row.providerCode,
+      providerName: row.providerName,
+      machineId: row.machineId,
+      merchantNo: row.merchantNo ?? null,
+      appId: row.appId ?? null,
+      publicConfigJson: (row.publicConfigJson ?? {}) as Record<string, unknown>,
+      derivedNotifyUrl: this.config.buildPaymentNotifyUrl(row.providerCode),
+      secretStatusJson: this.paymentConfigSecrets.summarize(
+        decryptedKeys,
+        updatedAt,
+      ),
+      status: row.status,
+      updatedByAdminUserId: row.updatedByAdminUserId ?? null,
+      createdAt: this.toIsoString(row.createdAt),
+      updatedAt: this.toIsoString(row.updatedAt),
+    };
   }
 
   async listProviderNotifyUrlChecks() {
@@ -2947,14 +3010,14 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
     const startedAt = new Date();
     const [attempt] = await this.db
       .insert(paymentReconciliationAttempts)
-      .values({
-        paymentId: payment.id,
-        providerId: payment.providerId,
-        trigger: "manual",
-        attemptNo,
-        status: "pending",
-        startedAt,
-      })
+      .values(
+        mapManualPaymentReconciliationAttemptToInsert({
+          paymentId: payment.id,
+          providerId: payment.providerId,
+          attemptNo,
+          startedAt,
+        }),
+      )
       .returning({ id: paymentReconciliationAttempts.id });
 
     let result: Awaited<ReturnType<typeof provider.queryPayment>>;

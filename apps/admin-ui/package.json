@@ -12,6 +12,7 @@
     "preview": "vite preview --host 0.0.0.0",
     "test": "vitest run --passWithNoTests",
     "test:e2e": "playwright test",
+    "test:e2e:payment-contract": "playwright test tests/payment-operations-admin-contract.spec.ts",
     "test:e2e:product-contract": "playwright test tests/product-catalog-admin-contract.spec.ts",
     "typecheck": "tsc --noEmit && vue-tsc --noEmit"
   },

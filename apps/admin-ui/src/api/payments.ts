@@ -1,6 +1,48 @@
 import type { PaymentProviderStatus, PaymentProviderType } from "@vem/shared";
+import type { z } from "zod";
 
-import { get, patch, post } from "./request";
+import {
+  paymentAdminActionResultSchema,
+  paymentAdminNoBodySchema,
+  paymentCodeAttemptAdminActionSchema,
+  paymentCodeAttemptAdminResponseSchema,
+  paymentCodeAttemptQuerySchema,
+  paymentEventQuerySchema,
+  paymentProviderQuerySchema,
+  paymentQuerySchema,
+  paymentReconciliationAttemptQuerySchema,
+  paymentMockAdminActionResponseSchema,
+  paymentOperatorReasonSchema,
+  paymentWebhookAttemptQuerySchema,
+  pageQuerySchema,
+  refundQuerySchema,
+  paymentProviderConfigSchema,
+  paymentProviderSchema,
+  updatePaymentProviderConfigSchema,
+  updatePaymentProviderSchema,
+  upsertPaymentProviderConfigSchema,
+} from "@vem/shared";
+
+import { get, patchContract, postContract } from "./request";
+
+type PaymentListQuery = z.input<typeof paymentQuerySchema> &
+  z.input<typeof pageQuerySchema>;
+type PaymentEventListQuery = z.input<typeof paymentEventQuerySchema> &
+  z.input<typeof pageQuerySchema>;
+type PaymentWebhookAttemptListQuery = z.input<
+  typeof paymentWebhookAttemptQuerySchema
+> &
+  z.input<typeof pageQuerySchema>;
+type PaymentReconciliationAttemptListQuery = z.input<
+  typeof paymentReconciliationAttemptQuerySchema
+> &
+  z.input<typeof pageQuerySchema>;
+type RefundListQuery = z.input<typeof refundQuerySchema> &
+  z.input<typeof pageQuerySchema>;
+type PaymentCodeAttemptListQuery = z.input<
+  typeof paymentCodeAttemptQuerySchema
+> &
+  z.input<typeof pageQuerySchema>;
 
 export type Payment = {
   id: string;
@@ -89,30 +131,45 @@ export type PageResult<T> = {
 };
 
 export async function listPayments(
-  query?: Record<string, unknown>,
+  query?: PaymentListQuery,
 ): Promise<PageResult<Payment>> {
   return await get<PageResult<Payment>>("/payments", { params: query });
 }
 
 export async function mockSucceed(paymentNo: string): Promise<void> {
-  await post<void>(`/payments/mock/${paymentNo}/succeed`);
+  await postContract(
+    `/payments/mock/${paymentNo}/succeed`,
+    paymentAdminNoBodySchema,
+    paymentMockAdminActionResponseSchema,
+    {},
+  );
 }
 
 export async function mockFail(paymentNo: string): Promise<void> {
-  await post<void>(`/payments/mock/${paymentNo}/fail`);
+  await postContract(
+    `/payments/mock/${paymentNo}/fail`,
+    paymentAdminNoBodySchema,
+    paymentMockAdminActionResponseSchema,
+    {},
+  );
 }
 
 export async function listPaymentProviders(
-  query?: Record<string, unknown>,
+  query?: z.input<typeof paymentProviderQuerySchema>,
 ): Promise<PaymentProvider[]> {
   return await get<PaymentProvider[]>("/payments/providers", { params: query });
 }
 
 export async function updatePaymentProvider(
   id: string,
-  body: Partial<Pick<PaymentProvider, "name" | "status" | "capabilities">>,
+  body: z.input<typeof updatePaymentProviderSchema>,
 ): Promise<PaymentProvider> {
-  return await patch<PaymentProvider>(`/payments/providers/${id}`, body);
+  return await patchContract(
+    `/payments/providers/${id}`,
+    updatePaymentProviderSchema,
+    paymentProviderSchema,
+    body,
+  );
 }
 
 export async function listPaymentProviderConfigs(): Promise<
@@ -123,33 +180,29 @@ export async function listPaymentProviderConfigs(): Promise<
 
 export async function updatePaymentProviderConfig(
   id: string,
-  body: Partial<
-    Pick<
-      PaymentProviderConfig,
-      "merchantNo" | "appId" | "publicConfigJson" | "status"
-    >
-  >,
+  body: z.input<typeof updatePaymentProviderConfigSchema>,
 ): Promise<PaymentProviderConfig> {
-  return await patch<PaymentProviderConfig>(
+  return await patchContract(
     `/payments/provider-configs/${id}`,
+    updatePaymentProviderConfigSchema,
+    paymentProviderConfigSchema,
     body,
   );
 }
 
-export async function upsertPaymentProviderConfig(body: {
-  providerCode: "wechat_pay" | "alipay";
-  machineId?: string | null;
-  merchantNo?: string | null;
-  appId?: string | null;
-  publicConfigJson?: Record<string, unknown>;
-  sensitiveConfigJson?: Record<string, string | number | boolean | null>;
-  status?: "enabled" | "disabled";
-}): Promise<PaymentProviderConfig> {
-  return await post<PaymentProviderConfig>(`/payments/provider-configs`, body);
+export async function upsertPaymentProviderConfig(
+  body: z.input<typeof upsertPaymentProviderConfigSchema>,
+): Promise<PaymentProviderConfig> {
+  return await postContract(
+    `/payments/provider-configs`,
+    upsertPaymentProviderConfigSchema,
+    paymentProviderConfigSchema,
+    body,
+  );
 }
 
 export async function listPaymentEvents(
-  query?: Record<string, unknown>,
+  query?: PaymentEventListQuery,
 ): Promise<PageResult<PaymentEvent>> {
   return await get<PageResult<PaymentEvent>>("/payments/events", {
     params: query,
@@ -265,7 +318,7 @@ export type PaymentCodeAttempt = {
 };
 
 export async function listWebhookAttempts(
-  query?: Record<string, unknown>,
+  query?: PaymentWebhookAttemptListQuery,
 ): Promise<PageResult<WebhookAttempt>> {
   return await get<PageResult<WebhookAttempt>>("/payments/webhook-attempts", {
     params: query,
@@ -273,7 +326,7 @@ export async function listWebhookAttempts(
 }
 
 export async function listReconciliationAttempts(
-  query?: Record<string, unknown>,
+  query?: PaymentReconciliationAttemptListQuery,
 ): Promise<PageResult<ReconciliationAttempt>> {
   return await get<PageResult<ReconciliationAttempt>>(
     "/payments/reconciliation-attempts",
@@ -282,7 +335,7 @@ export async function listReconciliationAttempts(
 }
 
 export async function listRefunds(
-  query?: Record<string, unknown>,
+  query?: RefundListQuery,
 ): Promise<PageResult<Refund>> {
   return await get<PageResult<Refund>>("/payments/refunds", { params: query });
 }
@@ -290,19 +343,17 @@ export async function listRefunds(
 export async function queryRefund(
   refundId: string,
   reason?: string,
-): Promise<{
-  status: string;
-  reconciled: boolean;
-  reason?: string;
-}> {
-  return await post<{ status: string; reconciled: boolean; reason?: string }>(
+): Promise<z.output<typeof paymentAdminActionResultSchema>> {
+  return await postContract(
     `/payments/refunds/${refundId}/query`,
+    paymentOperatorReasonSchema,
+    paymentAdminActionResultSchema,
     { reason: reason ?? "admin_refund_status_query" },
   );
 }
 
 export async function listPaymentCodeAttempts(
-  query?: Record<string, unknown>,
+  query?: PaymentCodeAttemptListQuery,
 ): Promise<PageResult<PaymentCodeAttempt>> {
   return await get<PageResult<PaymentCodeAttempt>>(
     "/payments/payment-code-attempts",
@@ -314,8 +365,10 @@ export async function queryPaymentCodeAttempt(
   id: string,
   reason = "admin_payment_code_query",
 ): Promise<PaymentCodeAttempt> {
-  return await post<PaymentCodeAttempt>(
+  return await postContract(
     `/payments/payment-code-attempts/${id}/query`,
+    paymentCodeAttemptAdminActionSchema,
+    paymentCodeAttemptAdminResponseSchema,
     { reason },
   );
 }
@@ -324,8 +377,10 @@ export async function reversePaymentCodeAttempt(
   id: string,
   reason: string,
 ): Promise<PaymentCodeAttempt> {
-  return await post<PaymentCodeAttempt>(
+  return await postContract(
     `/payments/payment-code-attempts/${id}/reverse`,
+    paymentCodeAttemptAdminActionSchema,
+    paymentCodeAttemptAdminResponseSchema,
     {
       reason,
     },
@@ -335,13 +390,11 @@ export async function reversePaymentCodeAttempt(
 export async function manualReconcile(
   paymentId: string,
   reason = "admin_manual_payment_reconcile",
-): Promise<{
-  status: string;
-  reconciled: boolean;
-  reason?: string;
-}> {
-  return await post<{ status: string; reconciled: boolean; reason?: string }>(
+): Promise<z.output<typeof paymentAdminActionResultSchema>> {
+  return await postContract(
     `/payments/${paymentId}/reconcile`,
+    paymentOperatorReasonSchema,
+    paymentAdminActionResultSchema,
     { reason },
   );
 }

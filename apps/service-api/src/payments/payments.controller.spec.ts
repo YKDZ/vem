@@ -1,11 +1,9 @@
+import { paymentOperatorReasonSchema } from "@vem/shared";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { PaymentsService } from "./payments.service";
 
-import {
-  paymentOperatorReasonSchema,
-  PaymentsController,
-} from "./payments.controller";
+import { PaymentsController } from "./payments.controller";
 
 function makeRes() {
   return {

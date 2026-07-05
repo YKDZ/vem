@@ -48,6 +48,9 @@ import {
   notificationTypeSchema,
   orderStatuses,
   paymentCodeAttemptAdminActionSchema,
+  paymentOperatorReasonSchema,
+  paymentProviderConfigSchema,
+  paymentProviderNotifyUrlCheckSchema,
   paymentMachinePreflightSchema,
   externalNaturalEnvironmentSchema,
   updateProductSchema,
@@ -60,6 +63,8 @@ import {
   paymentOpsReadinessSchema,
   paymentProviderStatuses,
   paymentProviderSensitiveConfigSchema,
+  updatePaymentProviderConfigSchema,
+  updatePaymentProviderSchema,
   paymentReconciliationAttemptQuerySchema,
   publishMachinePlanogramVersionSchema,
   protectedFulfillmentDrillRecoveryActionSchema,
@@ -72,6 +77,7 @@ import {
   adjustInventorySchema,
   upsertNotificationTargetSchema,
   upsertPaymentProviderConfigSchema,
+  wechatPayPublicConfigSchema,
 } from "./index";
 
 describe("shared API contract", () => {
@@ -389,6 +395,180 @@ describe("shared API contract", () => {
           pageSize: 20,
         }).items[0]?.inventory,
       ).toBeNull();
+    });
+  });
+
+  describe("admin payment operation contracts", () => {
+    const configId = "550e8400-e29b-41d4-a716-446655440010";
+    const providerId = "550e8400-e29b-41d4-a716-446655440011";
+
+    it("uses strict provider update and operator action contracts", () => {
+      expect(
+        updatePaymentProviderSchema.parse({
+          name: "Wechat Pay",
+          status: "enabled",
+          capabilities: { qrCode: true },
+        }),
+      ).toEqual({
+        name: "Wechat Pay",
+        status: "enabled",
+        capabilities: { qrCode: true },
+      });
+
+      expect(() =>
+        updatePaymentProviderSchema.parse({
+          name: "Wechat Pay",
+          status: "enabled",
+          adminOnlyShortcut: true,
+        }),
+      ).toThrow();
+
+      expect(
+        paymentOperatorReasonSchema.parse({
+          reason: "customer sees paid but platform is pending",
+        }),
+      ).toEqual({
+        reason: "customer sees paid but platform is pending",
+      });
+      expect(() =>
+        paymentOperatorReasonSchema.parse({ reason: "   " }),
+      ).toThrow();
+    });
+
+    it("validates provider-specific public configuration by provider", () => {
+      expect(
+        upsertPaymentProviderConfigSchema.parse({
+          providerCode: "alipay",
+          merchantNo: "mch-1",
+          appId: "app-1",
+          publicConfigJson: {
+            mode: "sandbox",
+            gatewayUrl: "https://openapi-sandbox.dl.alipaydev.com/gateway.do",
+            keyType: "PKCS8",
+            qrExpiresMinutes: 10,
+          },
+          sensitiveConfigJson: {
+            privateKeyPem: "-----BEGIN PRIVATE KEY-----\nkey",
+          },
+        }).publicConfigJson,
+      ).toMatchObject({ mode: "sandbox", keyType: "PKCS8" });
+
+      expect(() =>
+        upsertPaymentProviderConfigSchema.parse({
+          providerCode: "alipay",
+          publicConfigJson: {
+            mode: "sandbox",
+            gatewayUrl: "not-a-url",
+          },
+          sensitiveConfigJson: {
+            privateKeyPem: "-----BEGIN PRIVATE KEY-----\nkey",
+          },
+        }),
+      ).toThrow();
+
+      expect(() =>
+        upsertPaymentProviderConfigSchema.parse({
+          providerCode: "wechat_pay",
+          publicConfigJson: {
+            merchantCertificateSerialNo: "merchant-serial",
+            gatewayUrl: "https://alipay.example.com",
+          },
+          sensitiveConfigJson: {
+            platformCertificatePem: "-----BEGIN CERTIFICATE-----\ncert",
+          },
+        }),
+      ).toThrow();
+    });
+
+    it("keeps sensitive secret updates optional and named", () => {
+      expect(
+        updatePaymentProviderConfigSchema.parse({
+          merchantNo: null,
+          publicConfigJson: {
+            qrExpiresMinutes: 5,
+            paymentCodeEnabled: false,
+          },
+        }),
+      ).toEqual({
+        merchantNo: null,
+        publicConfigJson: {
+          qrExpiresMinutes: 5,
+          paymentCodeEnabled: false,
+        },
+      });
+
+      expect(
+        paymentProviderSensitiveConfigSchema.parse({
+          privateKeyPem: "-----BEGIN PRIVATE KEY-----\nkey",
+          apiV3Key: "x".repeat(32),
+          apiV2Key: null,
+        }),
+      ).toEqual({
+        privateKeyPem: "-----BEGIN PRIVATE KEY-----\nkey",
+        apiV3Key: "x".repeat(32),
+        apiV2Key: null,
+      });
+
+      expect(() =>
+        paymentProviderSensitiveConfigSchema.parse({
+          nestedSecret: { value: "unsupported" },
+        }),
+      ).toThrow();
+    });
+
+    it("limits Contract JSON Field openness to named payment fields", () => {
+      const parsed = paymentProviderConfigSchema.parse({
+        id: configId,
+        providerId,
+        providerCode: "wechat_pay",
+        providerName: "Wechat Pay",
+        machineId: null,
+        merchantNo: "mch-1",
+        appId: "app-1",
+        publicConfigJson: {
+          merchantCertificateSerialNo: "merchant-serial",
+          platformCertificateSerialNo: "platform-serial",
+        },
+        derivedNotifyUrl:
+          "https://example.com/api/payments/webhooks/wechat_pay",
+        secretStatusJson: {
+          apiV3Key: {
+            configured: true,
+            updatedAt: "2026-06-01T00:00:00.000Z",
+          },
+        },
+        status: "enabled",
+        updatedByAdminUserId: null,
+        createdAt: "2026-06-01T00:00:00.000Z",
+        updatedAt: "2026-06-01T00:00:00.000Z",
+      });
+
+      expect(parsed.publicConfigJson).toHaveProperty(
+        "merchantCertificateSerialNo",
+      );
+      expect(() =>
+        paymentProviderConfigSchema.parse({
+          ...parsed,
+          incidentEvidence: { raw: true },
+        }),
+      ).toThrow();
+      expect(() =>
+        paymentProviderNotifyUrlCheckSchema.parse({
+          providerCode: "wechat_pay",
+          notifyUrl: "https://example.com/api/payments/webhooks/wechat_pay",
+          usesHttps: true,
+          isLocalhost: false,
+          pathMatchesWebhookRoute: true,
+          reachable: true,
+          statusCode: 200,
+          errorCode: null,
+          checkedAt: "2026-06-01T00:00:00.000Z",
+          rawProbe: { open: true },
+        }),
+      ).toThrow();
+      expect(() =>
+        wechatPayPublicConfigSchema.parse({ unknownGatewayFlag: true }),
+      ).toThrow();
     });
   });
 

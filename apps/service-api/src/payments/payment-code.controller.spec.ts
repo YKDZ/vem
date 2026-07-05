@@ -1,4 +1,7 @@
-import { paymentCodeAttemptAdminActionSchema } from "@vem/shared";
+import {
+  paymentCodeAttemptAdminActionSchema,
+  paymentCodeAttemptAdminResponseSchema,
+} from "@vem/shared";
 import { describe, expect, it, vi } from "vitest";
 
 import { AuditService } from "../audit/audit.service";
@@ -71,6 +74,9 @@ describe("PaymentCodeController", () => {
       manualReverse: vi.fn().mockResolvedValue({
         id: "attempt-1",
         orderId: "order-1",
+        orderNo: "ORD001",
+        paymentNo: "PAY001",
+        providerCode: "alipay",
         attemptNo: 1,
         providerPaymentNo: "PCA001",
         status: "reversed",
@@ -117,12 +123,136 @@ describe("PaymentCodeController", () => {
     expect(JSON.stringify(result)).not.toContain("28763443825664394");
   });
 
+  it("returns a complete admin DTO for manual query when the raw attempt row lacks joined fields", async () => {
+    const updatedAttempt = {
+      id: "attempt-1",
+      orderId: "order-1",
+      attemptNo: 1,
+      providerPaymentNo: "PCA001",
+      status: "querying",
+      authCodeMasked: "2876****4394",
+      source: "serial_text",
+      providerTradeNo: "ALI-TXN-001",
+      providerStatus: "WAIT_BUYER_PAY",
+      failureCode: null,
+      failureMessage: null,
+      manualReason: null,
+      submittedAt: null,
+      lastCheckedAt: new Date("2026-06-26T04:00:00.000Z"),
+      reversedAt: null,
+      finishedAt: null,
+      createdAt: new Date("2026-06-26T03:59:00.000Z"),
+    };
+    const attempts = {
+      toDto: vi.fn((row) => ({
+        ...row,
+        orderNo: row.orderNo,
+        paymentNo: row.paymentNo,
+        providerCode: row.providerCode,
+      })),
+      getContextById: vi.fn().mockResolvedValue({
+        attempt: updatedAttempt,
+        orderNo: "ORD001",
+        paymentNo: "PAY001",
+        providerCode: "alipay",
+      }),
+    };
+    const orchestrator = {
+      manualQuery: vi.fn().mockResolvedValue(updatedAttempt),
+      manualReverse: vi.fn(),
+    };
+    const controller = new PaymentCodeController(
+      attempts as never,
+      orchestrator as never,
+      { record: vi.fn() } as unknown as AuditService,
+    );
+
+    const result = await controller.queryAttempt(
+      { id: "admin-1" } as never,
+      "550e8400-e29b-41d4-a716-446655440000",
+      { reason: "operator checked uncertain payment code result" },
+    );
+
+    const responseJson = JSON.parse(JSON.stringify(result));
+    expect(paymentCodeAttemptAdminResponseSchema.parse(responseJson)).toEqual(
+      expect.objectContaining({
+        orderNo: "ORD001",
+        paymentNo: "PAY001",
+        providerCode: "alipay",
+      }),
+    );
+  });
+
+  it("returns a complete admin DTO for manual reverse when the raw attempt row lacks joined fields", async () => {
+    const updatedAttempt = {
+      id: "attempt-1",
+      orderId: "order-1",
+      attemptNo: 1,
+      providerPaymentNo: "PCA001",
+      status: "reversed",
+      authCodeMasked: "2876****4394",
+      source: "serial_text",
+      providerTradeNo: "ALI-TXN-001",
+      providerStatus: "TRADE_CLOSED",
+      failureCode: null,
+      failureMessage: null,
+      manualReason: "customer cancelled",
+      submittedAt: null,
+      lastCheckedAt: new Date("2026-06-26T04:00:00.000Z"),
+      reversedAt: new Date("2026-06-26T04:01:00.000Z"),
+      finishedAt: new Date("2026-06-26T04:01:00.000Z"),
+      createdAt: new Date("2026-06-26T03:59:00.000Z"),
+    };
+    const attempts = {
+      toDto: vi.fn((row) => ({
+        ...row,
+        orderNo: row.orderNo,
+        paymentNo: row.paymentNo,
+        providerCode: row.providerCode,
+      })),
+      getContextById: vi.fn().mockResolvedValue({
+        attempt: updatedAttempt,
+        orderNo: "ORD001",
+        paymentNo: "PAY001",
+        providerCode: "alipay",
+      }),
+    };
+    const orchestrator = {
+      manualQuery: vi.fn(),
+      manualReverse: vi.fn().mockResolvedValue(updatedAttempt),
+    };
+    const controller = new PaymentCodeController(
+      attempts as never,
+      orchestrator as never,
+      { record: vi.fn() } as unknown as AuditService,
+    );
+
+    const result = await controller.reverseAttempt(
+      { id: "admin-1" } as never,
+      "550e8400-e29b-41d4-a716-446655440000",
+      { reason: "customer cancelled" },
+    );
+
+    const responseJson = JSON.parse(JSON.stringify(result));
+    expect(paymentCodeAttemptAdminResponseSchema.parse(responseJson)).toEqual(
+      expect.objectContaining({
+        orderNo: "ORD001",
+        paymentNo: "PAY001",
+        providerCode: "alipay",
+        status: "reversed",
+      }),
+    );
+  });
+
   it("returns sanitized manual query DTO without stored payload or scanner health", async () => {
     const attempts = new PaymentCodeAttemptsService({} as never);
     const orchestrator = {
       manualQuery: vi.fn().mockResolvedValue({
         id: "attempt-1",
         orderId: "order-1",
+        orderNo: "ORD001",
+        paymentNo: "PAY001",
+        providerCode: "alipay",
         attemptNo: 1,
         providerPaymentNo: "PCA001",
         status: "querying",
@@ -170,6 +300,9 @@ describe("PaymentCodeController", () => {
       manualQuery: vi.fn().mockResolvedValue({
         id: "attempt-1",
         orderId: "order-1",
+        orderNo: "ORD001",
+        paymentNo: "PAY001",
+        providerCode: "alipay",
         attemptNo: 1,
         providerPaymentNo: "PCA001",
         status: "querying",

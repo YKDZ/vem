@@ -1,4 +1,5 @@
 import { NotFoundException } from "@nestjs/common";
+import { paymentProviderConfigSchema } from "@vem/shared";
 import { describe, expect, it, vi } from "vitest";
 
 import type { AuditService } from "../audit/audit.service";
@@ -132,7 +133,7 @@ function makeService(overrides: {
   const secretService: PaymentConfigSecretService = {
     encrypt: vi.fn().mockReturnValue({ encrypted: "xxx" }),
     decrypt: vi.fn().mockReturnValue({}),
-    summarize: vi.fn().mockReturnValue({ keys: [] }),
+    summarize: vi.fn().mockReturnValue({}),
   } as unknown as PaymentConfigSecretService;
 
   return new PaymentsService(
@@ -1770,7 +1771,7 @@ describe("PaymentsService", () => {
         appId: "APP001",
         publicConfigJson: { certificateSerialNo: "ABCDEF" },
         configEncryptedJson: null,
-        status: "enabled",
+        status: "disabled",
         updatedByAdminUserId: "admin-1",
         createdAt: new Date(),
         updatedAt: new Date(),
@@ -1796,13 +1797,165 @@ describe("PaymentsService", () => {
     });
   });
 
+  describe("updateProviderConfig", () => {
+    it("returns the admin provider config DTO without encrypted secret fields", async () => {
+      const db = makeDb();
+      const now = new Date("2026-06-26T04:00:00.000Z");
+      const existingRow = {
+        id: "550e8400-e29b-41d4-a716-446655440011",
+        providerId: "550e8400-e29b-41d4-a716-446655440022",
+        machineId: null,
+        merchantNo: "MCH001",
+        appId: "APP001",
+        publicConfigJson: {
+          mode: "sandbox",
+          gatewayUrl: "https://openapi-sandbox.dl.alipaydev.com/gateway.do",
+          keyType: "PKCS8",
+        },
+        configEncryptedJson: { encrypted: "secret" },
+        status: "disabled",
+      };
+      const updatedRow = {
+        ...existingRow,
+        merchantNo: "MCH002",
+        updatedByAdminUserId: "550e8400-e29b-41d4-a716-446655440033",
+        createdAt: now,
+        updatedAt: now,
+      };
+
+      db.select
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([existingRow]),
+            }),
+          }),
+        })
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi
+                .fn()
+                .mockResolvedValue([{ code: "alipay", name: "Alipay" }]),
+            }),
+          }),
+        });
+      db.update.mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([updatedRow]),
+          }),
+        }),
+      });
+
+      const service = makeService({ db });
+      const result = await service.updateProviderConfig(
+        "550e8400-e29b-41d4-a716-446655440011",
+        "550e8400-e29b-41d4-a716-446655440033",
+        { merchantNo: "MCH002" },
+      );
+
+      const parsed = paymentProviderConfigSchema.parse(result);
+      expect(parsed).toMatchObject({
+        providerCode: "alipay",
+        providerName: "Alipay",
+        merchantNo: "MCH002",
+        derivedNotifyUrl: "http://localhost:3000/api/payments/webhooks/alipay",
+        secretStatusJson: expect.any(Object),
+      });
+      expect(result).not.toHaveProperty("configEncryptedJson");
+      expect(result).not.toHaveProperty("sensitiveConfigJson");
+    });
+  });
+
   describe("upsertProviderConfig", () => {
+    it("returns the admin provider config DTO without encrypted secret fields", async () => {
+      const db = makeDb();
+      const now = new Date("2026-06-26T04:00:00.000Z");
+      const savedRow = {
+        id: "550e8400-e29b-41d4-a716-446655440111",
+        providerId: "550e8400-e29b-41d4-a716-446655440222",
+        providerCode: "alipay",
+        providerName: "Alipay",
+        machineId: null,
+        merchantNo: "MCH001",
+        appId: "APP001",
+        publicConfigJson: {
+          mode: "sandbox",
+          gatewayUrl: "https://openapi-sandbox.dl.alipaydev.com/gateway.do",
+          keyType: "PKCS8",
+        },
+        configEncryptedJson: { encrypted: "secret" },
+        status: "enabled",
+        updatedByAdminUserId: "550e8400-e29b-41d4-a716-446655440333",
+        createdAt: now,
+        updatedAt: now,
+      };
+
+      db.select
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi
+                .fn()
+                .mockResolvedValue([
+                  { id: savedRow.providerId, name: "Alipay" },
+                ]),
+            }),
+          }),
+        })
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([]),
+            }),
+          }),
+        });
+      db.insert.mockReturnValue({
+        values: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([savedRow]),
+        }),
+      });
+
+      const service = makeService({ db });
+      const result = await service.upsertProviderConfig(
+        "550e8400-e29b-41d4-a716-446655440333",
+        {
+          providerCode: "alipay",
+          merchantNo: "MCH001",
+          appId: "APP001",
+          publicConfigJson: {
+            mode: "sandbox",
+            gatewayUrl: "https://openapi-sandbox.dl.alipaydev.com/gateway.do",
+            keyType: "PKCS8",
+          },
+          sensitiveConfigJson: {
+            privateKeyPem: "key",
+            appCertPem: "app-cert",
+            alipayPublicCertPem: "public-cert",
+            alipayRootCertPem: "root-cert",
+          },
+          status: "enabled",
+        },
+      );
+
+      const parsed = paymentProviderConfigSchema.parse(result);
+      expect(parsed).toMatchObject({
+        providerCode: "alipay",
+        providerName: "Alipay",
+        derivedNotifyUrl: "http://localhost:3000/api/payments/webhooks/alipay",
+        secretStatusJson: expect.any(Object),
+      });
+      expect(result).not.toHaveProperty("configEncryptedJson");
+      expect(result).not.toHaveProperty("sensitiveConfigJson");
+    });
+
     it("creates new config and calls auditService.record with create action", async () => {
       const db = makeDb();
       const mockRecord = vi.fn().mockResolvedValue(undefined);
       const mockEncrypt = vi.fn().mockReturnValue({ encrypted: "xxx" });
       const mockDecrypt = vi.fn().mockReturnValue({});
-      const mockSummarize = vi.fn().mockReturnValue({ keys: [] });
+      const mockSummarize = vi.fn().mockReturnValue({});
 
       // 1) find provider
       db.select.mockReturnValueOnce({
@@ -1893,6 +2046,83 @@ describe("PaymentsService", () => {
           resourceType: "payment_provider_config",
         }),
       );
+    });
+
+    it("clears nullable merchant identifiers when upsert explicitly sends null", async () => {
+      const db = makeDb();
+      const existingRow = {
+        id: "550e8400-e29b-41d4-a716-446655440111",
+        merchantNo: "OLD-MCH",
+        appId: "OLD-APP",
+        publicConfigJson: {
+          mode: "sandbox",
+          gatewayUrl: "https://openapi-sandbox.dl.alipaydev.com/gateway.do",
+          keyType: "PKCS8",
+        },
+        configEncryptedJson: null,
+        status: "disabled",
+      };
+      const now = new Date("2026-06-26T04:00:00.000Z");
+      let patch: Record<string, unknown> | undefined;
+
+      db.select
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([
+                {
+                  id: "550e8400-e29b-41d4-a716-446655440222",
+                  name: "Alipay",
+                },
+              ]),
+            }),
+          }),
+        })
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([existingRow]),
+            }),
+          }),
+        });
+      db.update.mockReturnValue({
+        set: vi.fn((value: Record<string, unknown>) => {
+          patch = value;
+          return {
+            where: vi.fn().mockReturnValue({
+              returning: vi.fn().mockResolvedValue([
+                {
+                  ...existingRow,
+                  ...value,
+                  providerId: "550e8400-e29b-41d4-a716-446655440222",
+                  createdAt: now,
+                  updatedAt: now,
+                },
+              ]),
+            }),
+          };
+        }),
+      });
+
+      const service = makeService({ db });
+      const result = await service.upsertProviderConfig(
+        "550e8400-e29b-41d4-a716-446655440333",
+        {
+          providerCode: "alipay",
+          merchantNo: null,
+          appId: null,
+          status: "disabled",
+        },
+      );
+
+      expect(patch).toMatchObject({
+        merchantNo: null,
+        appId: null,
+      });
+      expect(result).toMatchObject({
+        merchantNo: null,
+        appId: null,
+      });
     });
 
     it("throws ConflictException when enabled wechat_pay config is missing required fields", async () => {
