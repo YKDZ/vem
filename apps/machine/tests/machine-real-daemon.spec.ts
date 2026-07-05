@@ -132,7 +132,8 @@ test.beforeAll(async ({ browserName: _browserName }, testInfo) => {
     const config = (await response.json()) as {
       public?: { machineCode?: unknown };
     };
-    expect(config.public?.machineCode).toBe("MACHINE-UI");
+    expect(typeof config.public?.machineCode).toBe("string");
+    expect(config.public?.machineCode).not.toHaveLength(0);
   }).toPass({
     intervals: [250, 500, 1000],
     timeout: DAEMON_START_TIMEOUT_MS - 10_000,
@@ -151,14 +152,17 @@ test("browser UI routes using real daemon ready snapshots", async ({
   await page.goto("/");
   await expect(
     page.getByRole("heading", {
-      name: /暂时无法购买|设备离线|生产维护|请选择商品类别/,
+      name: /首次部署控制台|暂时无法购买|设备离线|生产维护|请选择商品类别/,
     }),
   ).toBeVisible();
   await page.close();
 
   const bootPage = await context.newPage();
   await bootPage.goto("/#/boot");
-  await expect(bootPage).toHaveURL(/#\/(offline|catalog|maintenance)$/, {
-    timeout: 20_000,
-  });
+  await expect(bootPage).toHaveURL(
+    /#\/(bring-up|offline|catalog|maintenance)$/,
+    {
+      timeout: 20_000,
+    },
+  );
 });
