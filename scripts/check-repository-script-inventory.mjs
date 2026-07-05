@@ -6,6 +6,18 @@ import { fileURLToPath } from "node:url";
 
 const DEFAULT_INVENTORY = [
   {
+    path: "scripts/check-admin-api-contracts.mjs",
+    owner: "shared-contracts",
+    category: "verifier-test guard",
+    workflows: ["admin api contract migration"],
+  },
+  {
+    path: "scripts/check-admin-api-contracts.test.mjs",
+    owner: "shared-contracts",
+    category: "verifier-test guard",
+    workflows: ["admin api contract migration"],
+  },
+  {
     path: "scripts/check-factory-runtime-prep.mjs",
     owner: "field-operations",
     category: "verifier-test guard",

@@ -2,7 +2,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "check": "pnpm check:script-inventory && tsx node_modules/oxfmt/dist/cli.js . --check && cargo fmt --all -- --check && turbo typecheck lint test",
+    "check": "pnpm check:script-inventory && pnpm check:admin-api-contracts && tsx node_modules/oxfmt/dist/cli.js . --check && cargo fmt --all -- --check && turbo typecheck lint test",
+    "check:admin-api-contracts": "node --test scripts/check-admin-api-contracts.test.mjs && node scripts/check-admin-api-contracts.mjs",
     "check:factory-runtime-prep": "node scripts/check-factory-runtime-prep.mjs",
     "check:fix": "tsx node_modules/oxfmt/dist/cli.js . && cargo fmt --all && turbo lint -- --fix && turbo typecheck test",
     "check:machine-vision-deployment": "node scripts/check-machine-vision-deployment.mjs",
