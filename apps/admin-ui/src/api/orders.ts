@@ -1,23 +1,23 @@
-import type { OrderStatus } from "@vem/shared";
+import type { z } from "zod";
 
-import { get, post } from "./request";
+import {
+  adminOrderContractNoBodySchema,
+  adminOrderListQuerySchema,
+  adminOrderPageResponseSchema,
+  orderInvestigationResponseSchema,
+  orderRefundRequestResponseSchema,
+  orderRecoveryActionResponseSchema,
+  orderRecoveryActionSchema,
+  type AdminOrderListItemResponse,
+  type OrderInvestigationResponse,
+  type OrderRefundRequestResponse,
+  type OrderRecoveryActionResponse,
+  type OrderStatus,
+} from "@vem/shared";
 
-export type Order = {
-  id: string;
-  orderNo: string;
-  machineId: string;
-  machineCode?: string;
-  status: OrderStatus;
-  paymentState?: string;
-  fulfillmentState?: string;
-  totalAmountCents: number;
-  isDrill?: boolean;
-  isTest?: boolean;
-  scenario?: string | null;
-  paidAt: string | null;
-  dispensedAt: string | null;
-  createdAt: string;
-};
+import { get, getContract, postContract } from "./request";
+
+export type Order = AdminOrderListItemResponse;
 
 export type OrderDetail = {
   order: Order & {
@@ -51,27 +51,11 @@ export type OrderDetail = {
   }>;
 };
 
-export type OrderInvestigation = OrderDetail & {
-  paymentWebhookAttempts: Array<Record<string, unknown>>;
-  paymentReconciliationAttempts: Array<Record<string, unknown>>;
-  paymentCodeAttempts: Array<Record<string, unknown>>;
-  fulfillmentProjection: {
-    state: string;
-    latestCommand: Record<string, unknown> | null;
-    requiresPhysicalOutcomeConfirmation?: boolean;
-    availableRecoveryActions?: OrderRecoveryAction[];
-  };
-  stockReconciliationLinks: Array<Record<string, unknown>>;
-  refunds: Array<Record<string, unknown>>;
-  maintenanceWorkOrders: Array<Record<string, unknown>>;
-  adminAuditEntries: Array<Record<string, unknown>>;
-};
+export type OrderInvestigation = OrderInvestigationResponse;
 
-export type OrderRecoveryAction =
-  | "confirm_dispensed"
-  | "confirm_not_dispensed"
-  | "request_refund"
-  | "compensation_dispense";
+export type OrderRecoveryAction = z.output<
+  typeof orderRecoveryActionSchema
+>["action"];
 
 export type PageResult<T> = {
   items: T[];
@@ -81,9 +65,14 @@ export type PageResult<T> = {
 };
 
 export async function listOrders(
-  query?: Record<string, unknown>,
+  query?: z.input<typeof adminOrderListQuerySchema>,
 ): Promise<PageResult<Order>> {
-  return await get<PageResult<Order>>("/orders", { params: query });
+  return await getContract(
+    "/orders",
+    adminOrderListQuerySchema,
+    adminOrderPageResponseSchema,
+    query ?? {},
+  );
 }
 
 export async function getOrderDetail(id: string): Promise<OrderDetail> {
@@ -93,16 +82,33 @@ export async function getOrderDetail(id: string): Promise<OrderDetail> {
 export async function getOrderInvestigation(
   id: string,
 ): Promise<OrderInvestigation> {
-  return await get<OrderInvestigation>(`/orders/${id}/investigation`);
+  return await getContract(
+    `/orders/${id}/investigation`,
+    adminOrderContractNoBodySchema,
+    orderInvestigationResponseSchema,
+    {},
+  );
 }
 
-export async function requestRefund(id: string): Promise<void> {
-  await post<void>(`/orders/${id}/refund`);
+export async function requestRefund(
+  id: string,
+): Promise<OrderRefundRequestResponse> {
+  return await postContract(
+    `/orders/${id}/refund`,
+    adminOrderContractNoBodySchema,
+    orderRefundRequestResponseSchema,
+    {},
+  );
 }
 
 export async function createOrderRecoveryAction(
   id: string,
-  input: { action: OrderRecoveryAction; note: string },
-): Promise<void> {
-  await post<void>(`/orders/${id}/recovery-actions`, input);
+  input: z.input<typeof orderRecoveryActionSchema>,
+): Promise<OrderRecoveryActionResponse> {
+  return await postContract(
+    `/orders/${id}/recovery-actions`,
+    orderRecoveryActionSchema,
+    orderRecoveryActionResponseSchema,
+    input,
+  );
 }

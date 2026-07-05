@@ -9,11 +9,19 @@ import {
   type DrizzleClient,
   type DrizzleTransaction,
 } from "@vem/db";
-import { pageQuerySchema } from "@vem/shared";
+import {
+  adminMaintenanceWorkOrderPageResponseSchema,
+  pageQuerySchema,
+  type AdminMaintenanceWorkOrderResolveRequest,
+} from "@vem/shared";
 import { z } from "zod";
 
 import { getOffset, toPageResult } from "../common/pagination.util";
 import { DRIZZLE_CLIENT } from "../database/database.constants";
+import {
+  mapMaintenanceWorkOrderResolveDtoToPatch,
+  toAdminMaintenanceWorkOrderResponse,
+} from "./maintenance-work-orders.contract-mappers";
 
 type PageQueryInput = z.infer<typeof pageQuerySchema>;
 
@@ -72,19 +80,23 @@ export class MaintenanceWorkOrdersService {
       .from(maintenanceWorkOrders)
       .where(wheres.length > 0 ? and(...wheres) : undefined);
 
-    return toPageResult(items, query, Number(totalRow.total));
+    return adminMaintenanceWorkOrderPageResponseSchema.parse(
+      toPageResult(
+        items.map((item) => toAdminMaintenanceWorkOrderResponse(item)),
+        query,
+        Number(totalRow.total),
+      ),
+    );
   }
 
-  async resolve(id: string, adminUserId: string, resolutionNote: string) {
+  async resolve(
+    id: string,
+    adminUserId: string,
+    input: AdminMaintenanceWorkOrderResolveRequest,
+  ) {
     const [updated] = await this.db
       .update(maintenanceWorkOrders)
-      .set({
-        status: "resolved",
-        assigneeAdminUserId: adminUserId,
-        resolutionNote,
-        resolvedAt: new Date(),
-        updatedAt: new Date(),
-      })
+      .set(mapMaintenanceWorkOrderResolveDtoToPatch(adminUserId, input))
       .where(
         and(
           eq(maintenanceWorkOrders.id, id),
@@ -96,6 +108,6 @@ export class MaintenanceWorkOrdersService {
     if (!updated) {
       throw new NotFoundException("Work order not found or already resolved");
     }
-    return updated;
+    return toAdminMaintenanceWorkOrderResponse(updated);
   }
 }

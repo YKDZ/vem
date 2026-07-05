@@ -86,13 +86,34 @@ describe("MaintenanceWorkOrdersService", () => {
       capturedSet.push(val);
       return {
         where: () => ({
-          returning: async () => [{ id: "wo1", status: "resolved" }],
+          returning: async () => [
+            {
+              id: "wo1",
+              workOrderNo: "WO123",
+              machineId: null,
+              slotId: null,
+              orderId: null,
+              commandId: null,
+              title: "Dispense failure",
+              description: "Slot A01 jammed",
+              priority: "medium",
+              status: "resolved",
+              assigneeAdminUserId: "admin1",
+              resolutionNote: "Fixed the jam",
+              dedupeKey: baseInput.dedupeKey,
+              createdAt: new Date("2026-07-05T00:00:00.000Z"),
+              updatedAt: new Date("2026-07-05T00:10:00.000Z"),
+              resolvedAt: new Date("2026-07-05T00:10:00.000Z"),
+            },
+          ],
         }),
       };
     });
     mockDb.update.mockReturnValue({ set: mockUpdateSet });
 
-    const result = await service.resolve("wo1", "admin1", "Fixed the jam");
+    const result = await service.resolve("wo1", "admin1", {
+      resolutionNote: "Fixed the jam",
+    });
 
     expect(result).toMatchObject({ id: "wo1", status: "resolved" });
     expect(capturedSet[0]).toMatchObject({
@@ -114,7 +135,7 @@ describe("MaintenanceWorkOrdersService", () => {
     });
 
     await expect(
-      service.resolve("wo-not-found", "admin1", "note"),
+      service.resolve("wo-not-found", "admin1", { resolutionNote: "note" }),
     ).rejects.toThrow(NotFoundException);
   });
 });

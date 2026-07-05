@@ -284,6 +284,235 @@ function allInvestigationPermissions(): PermissionCode[] {
   ];
 }
 
+const dtoDate = new Date("2026-06-26T04:00:00.000Z");
+
+function investigationItem(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "item-1",
+    variantId: "variant-1",
+    quantity: 1,
+    unitPriceCents: 1200,
+    productSnapshot: {},
+    ...overrides,
+  };
+}
+
+function investigationPayment(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "payment-1",
+    paymentNo: "PAY-1",
+    orderId: "order-1",
+    method: "payment_code",
+    status: "succeeded",
+    amountCents: 1200,
+    providerTradeNo: null,
+    expiresAt: null,
+    paidAt: dtoDate,
+    failedReason: null,
+    createdAt: dtoDate,
+    updatedAt: dtoDate,
+    ...overrides,
+  };
+}
+
+function investigationPaymentEvent(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "event-1",
+    paymentId: "payment-1",
+    eventType: "paid",
+    providerEventId: "provider-event-1",
+    signatureValid: true,
+    handledAt: dtoDate,
+    createdAt: dtoDate,
+    ...overrides,
+  };
+}
+
+function investigationWebhookAttempt(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "webhook-1",
+    providerCode: "mock",
+    paymentId: "payment-1",
+    refundId: null,
+    eventKind: "payment",
+    eventType: "payment.succeeded",
+    providerEventId: "provider-event-1",
+    paymentNo: "PAY-1",
+    refundNo: null,
+    orderNo: "ORD-1",
+    signatureValid: true,
+    businessValid: true,
+    handled: true,
+    duplicate: false,
+    failureReason: null,
+    errorCode: null,
+    httpStatus: 200,
+    createdAt: dtoDate,
+    updatedAt: dtoDate,
+    ...overrides,
+  };
+}
+
+function investigationReconciliationAttempt(
+  overrides: Record<string, unknown> = {},
+) {
+  return {
+    id: "reconcile-1",
+    paymentId: "payment-1",
+    trigger: "manual",
+    attemptNo: 1,
+    status: "succeeded",
+    providerPaymentStatus: null,
+    providerTradeNo: null,
+    errorCode: null,
+    errorMessage: null,
+    nextRetryAt: null,
+    startedAt: dtoDate,
+    finishedAt: dtoDate,
+    createdAt: dtoDate,
+    ...overrides,
+  };
+}
+
+function investigationPaymentCodeAttempt(
+  overrides: Record<string, unknown> = {},
+) {
+  return {
+    id: "code-1",
+    paymentId: "payment-1",
+    orderId: "order-1",
+    attemptNo: 1,
+    providerPaymentNo: "PCA001",
+    idempotencyKey: "idem-1",
+    status: "reversed",
+    isActive: false,
+    amountCents: 1200,
+    currency: "CNY",
+    authCodeMasked: "134***9988",
+    source: "scanner",
+    providerTradeNo: "ALI-TXN-001",
+    providerStatus: "TRADE_CLOSED",
+    failureCode: "PAYMENT_CODE_REVERSED",
+    failureMessage: "本次付款码交易已撤销，请刷新付款码后重试",
+    submittedAt: dtoDate,
+    lastCheckedAt: dtoDate,
+    reversedAt: dtoDate,
+    finishedAt: dtoDate,
+    manualReason: "query_timeout_reversed",
+    createdAt: dtoDate,
+    updatedAt: dtoDate,
+    ...overrides,
+  };
+}
+
+function investigationVendingCommand(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "command-1",
+    commandNo: "VC-1",
+    orderId: "order-1",
+    machineId: "machine-1",
+    machineCode: "VEM-001",
+    slotId: "slot-1",
+    slotCode: "A1",
+    orderItemId: "item-1",
+    commandKind: "dispatch",
+    recoveryActionId: null,
+    status: "failed",
+    sentAt: dtoDate,
+    ackAt: dtoDate,
+    resultAt: dtoDate,
+    retryCount: 0,
+    lastError: "jammed",
+    createdAt: dtoDate,
+    updatedAt: dtoDate,
+    ...overrides,
+  };
+}
+
+function investigationInventoryMovement(
+  overrides: Record<string, unknown> = {},
+) {
+  return {
+    id: "movement-1",
+    inventoryId: "inventory-1",
+    deltaQty: 0,
+    reason: "purchase_reserved",
+    orderId: "order-1",
+    operatorAdminUserId: null,
+    note: null,
+    createdAt: dtoDate,
+    ...overrides,
+  };
+}
+
+function investigationStockLink(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "raw-1",
+    caseTable: "machine_raw_stock_movements",
+    rawMovementId: null,
+    machineId: "machine-1",
+    movementId: "raw-stock-1",
+    status: "reconciliation",
+    reconciliationReason: "order_context_mismatch",
+    platformReviewStatus: "open",
+    saleSafetyBlockerState: null,
+    saleSafetyBlockerSlotId: null,
+    receivedAt: dtoDate,
+    ...overrides,
+  };
+}
+
+function investigationRefund(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "refund-1",
+    refundNo: "RFD-1",
+    paymentId: "payment-1",
+    orderId: "order-1",
+    amountCents: 1200,
+    status: "processing",
+    providerRefundNo: null,
+    reason: "dispense_failed",
+    requestedByAdminUserId: null,
+    refundedAt: null,
+    createdAt: dtoDate,
+    updatedAt: dtoDate,
+    ...overrides,
+  };
+}
+
+function investigationWorkOrder(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "work-1",
+    workOrderNo: "WO-1",
+    machineId: "machine-1",
+    slotId: null,
+    orderId: "order-1",
+    commandId: "command-1",
+    title: "Check slot",
+    priority: "medium",
+    status: "open",
+    assigneeAdminUserId: null,
+    createdAt: dtoDate,
+    updatedAt: dtoDate,
+    resolvedAt: null,
+    ...overrides,
+  };
+}
+
+function investigationAuditEntry(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "audit-1",
+    adminUserId: null,
+    action: "orders.refund_request",
+    resourceType: "order",
+    resourceId: "order-1",
+    ipAddress: null,
+    userAgent: null,
+    createdAt: dtoDate,
+    ...overrides,
+  };
+}
+
 function collectDebugTokens(value: unknown): string[] {
   const tokens: string[] = [];
   const seen = new WeakSet<object>();
@@ -378,124 +607,36 @@ describe("OrdersService", () => {
           },
         ],
         [],
+        [investigationPayment({ paidAt })],
+        [investigationPaymentEvent({ createdAt: paidAt })],
+        [investigationWebhookAttempt({ createdAt: paidAt, updatedAt: paidAt })],
         [
-          {
-            id: "payment-1",
-            paymentNo: "PAY-1",
-            orderId: "order-1",
-            status: "succeeded",
-            amountCents: 1200,
-            paidAt,
-            failedReason: null,
-            method: "payment_code",
-          },
-        ],
-        [{ id: "event-1", paymentId: "payment-1", eventType: "paid" }],
-        [
-          {
-            id: "webhook-1",
-            paymentNo: "PAY-1",
-            eventType: "payment.succeeded",
-            handled: true,
+          investigationReconciliationAttempt({
+            startedAt: paidAt,
+            finishedAt: paidAt,
             createdAt: paidAt,
-          },
+          }),
         ],
         [
-          {
-            id: "reconcile-1",
-            paymentId: "payment-1",
-            trigger: "manual",
-            status: "succeeded",
-            attemptNo: 1,
-          },
-        ],
-        [
-          {
-            id: "code-1",
-            paymentId: "payment-1",
-            orderId: "order-1",
-            attemptNo: 1,
-            status: "reversed",
-            providerPaymentNo: "PCA001",
-            providerTradeNo: "ALI-TXN-001",
-            providerStatus: "TRADE_CLOSED",
-            authCodeMasked: "134***9988",
-            failureCode: "PAYMENT_CODE_REVERSED",
-            failureMessage: "本次付款码交易已撤销，请刷新付款码后重试",
-            manualReason: "query_timeout_reversed",
+          investigationPaymentCodeAttempt({
             lastCheckedAt: new Date("2026-06-26T04:01:00.000Z"),
             reversedAt: new Date("2026-06-26T04:02:00.000Z"),
-          },
+          }),
         ],
+        [investigationVendingCommand({ resultAt: paidAt, createdAt: paidAt })],
+        [investigationInventoryMovement({ createdAt: paidAt })],
         [
-          {
-            id: "command-1",
-            commandNo: "VC-1",
-            status: "failed",
-            machineId: "machine-1",
-            machineCode: "VEM-001",
-            slotId: "slot-1",
-            slotCode: "A1",
-            orderItemId: "item-1",
-            lastError: "jammed",
-            resultAt: paidAt,
-            createdAt: paidAt,
-          },
-        ],
-        [
-          {
-            id: "movement-1",
-            inventoryId: "inventory-1",
-            deltaQty: 0,
-            reason: "purchase_reserved",
-            orderId: "order-1",
-            note: null,
-            createdAt: paidAt,
-          },
-        ],
-        [
-          {
-            id: "raw-1",
-            movementId: "raw-stock-1",
-            status: "reconciliation",
-            reconciliationReason: "order_context_mismatch",
-            platformReviewStatus: "open",
+          investigationStockLink({
             saleSafetyBlockerState: "needs_platform_review",
             receivedAt: paidAt,
-          },
+          }),
         ],
         [],
-        [
-          {
-            id: "refund-1",
-            refundNo: "RFD-1",
-            status: "processing",
-            amountCents: 1200,
-            reason: "dispense_failed",
-            createdAt: paidAt,
-          },
-        ],
+        [investigationRefund({ createdAt: paidAt, updatedAt: paidAt })],
         [{ total: 1 }],
         [],
-        [
-          {
-            id: "work-1",
-            workOrderNo: "WO-1",
-            status: "open",
-            title: "Check slot",
-            commandId: "command-1",
-            createdAt: paidAt,
-          },
-        ],
-        [
-          {
-            id: "audit-1",
-            action: "orders.refund_request",
-            resourceType: "order",
-            resourceId: "order-1",
-            createdAt: paidAt,
-          },
-        ],
+        [investigationWorkOrder({ createdAt: paidAt, updatedAt: paidAt })],
+        [investigationAuditEntry({ createdAt: paidAt })],
         [],
       ]);
 
@@ -582,22 +723,8 @@ describe("OrdersService", () => {
             createdAt: paidAt,
           },
         ],
-        [{ id: "item-1", orderId: "order-1", quantity: 1 }],
-        [
-          {
-            id: "command-1",
-            commandNo: "VC-1",
-            status: "failed",
-            machineId: "machine-1",
-            machineCode: "VEM-001",
-            slotId: "slot-1",
-            slotCode: "A1",
-            orderItemId: "item-1",
-            lastError: "jammed",
-            resultAt: paidAt,
-            createdAt: paidAt,
-          },
-        ],
+        [investigationItem({ orderId: "order-1" })],
+        [investigationVendingCommand({ resultAt: paidAt, createdAt: paidAt })],
         [{ total: 0 }],
         [],
         [],
@@ -646,32 +773,13 @@ describe("OrdersService", () => {
           },
         ],
         [],
-        [{ id: "payment-1", paymentNo: "PAY-1", orderId: "order-1" }],
-        [{ id: "event-1", paymentId: "payment-1", eventType: "paid" }],
-        [
-          {
-            id: "webhook-1",
-            paymentId: "payment-1",
-            eventType: "payment.succeeded",
-          },
-        ],
-        [
-          {
-            id: "reconcile-1",
-            paymentId: "payment-1",
-            trigger: "manual",
-          },
-        ],
-        [
-          {
-            id: "code-1",
-            paymentId: "payment-1",
-            orderId: "order-1",
-            authCodeMasked: "134***9988",
-          },
-        ],
+        [investigationPayment({ paidAt })],
+        [investigationPaymentEvent({ createdAt: paidAt })],
+        [investigationWebhookAttempt({ createdAt: paidAt, updatedAt: paidAt })],
+        [investigationReconciliationAttempt({ createdAt: paidAt })],
+        [investigationPaymentCodeAttempt({ createdAt: paidAt })],
         [],
-        [{ id: "refund-1", refundNo: "RFD-1", orderId: "order-1" }],
+        [investigationRefund({ createdAt: paidAt, updatedAt: paidAt })],
         [{ total: 1 }],
         [],
         [],
@@ -744,34 +852,26 @@ describe("OrdersService", () => {
           },
         ],
         [],
-        [{ id: "payment-1", paymentNo: "PAY-1", orderId: "order-1" }],
+        [investigationPayment({ paidAt })],
         [],
         [],
         [],
         [],
-        [{ id: "command-1", commandNo: "VC-1", machineId: "machine-1" }],
-        [{ id: "movement-1", orderId: "order-1" }],
+        [investigationVendingCommand({ createdAt: paidAt, updatedAt: paidAt })],
+        [investigationInventoryMovement({ createdAt: paidAt })],
+        [investigationStockLink({ receivedAt: paidAt })],
         [
-          {
-            id: "raw-1",
-            machineId: "machine-1",
-            movementId: "raw-stock-1",
-            receivedAt: paidAt,
-          },
-        ],
-        [
-          {
+          investigationStockLink({
             id: "conflict-1",
-            machineId: "machine-1",
-            movementId: "raw-stock-1",
             caseTable: "machine_raw_stock_movement_conflicts",
+            rawMovementId: "raw-1",
             receivedAt: paidAt,
-          },
+          }),
         ],
-        [{ id: "refund-1", orderId: "order-1" }],
+        [investigationRefund({ createdAt: paidAt, updatedAt: paidAt })],
         [{ total: 1 }],
         [],
-        [{ id: "work-1", commandId: "command-1" }],
+        [investigationWorkOrder({ createdAt: paidAt, updatedAt: paidAt })],
         [],
         [],
       ]);
@@ -1022,9 +1122,20 @@ describe("OrdersService", () => {
         ],
         [],
       ]);
-      const requestFullRefund = vi
-        .fn()
-        .mockResolvedValue({ id: "refund-1", status: "created" });
+      const requestFullRefund = vi.fn().mockResolvedValue({
+        id: "refund-1",
+        refundNo: "RFD-1",
+        paymentId: "payment-1",
+        orderId: "order-1",
+        amountCents: 500,
+        status: "created",
+        providerRefundNo: null,
+        reason: "admin_refund",
+        requestedByAdminUserId: "admin-1",
+        refundedAt: null,
+        createdAt: new Date("2026-07-05T00:00:00.000Z"),
+        updatedAt: new Date("2026-07-05T00:00:00.000Z"),
+      });
       const service = makeService({
         db: db as never,
         refundsService: { requestFullRefund },

@@ -5,6 +5,8 @@ import {
   adminInventoryMovementPageResponseSchema,
   adminInventoryPageResponseSchema,
   adminInventoryResponseSchema,
+  adminMaintenanceWorkOrderResolveRequestSchema,
+  adminMaintenanceWorkOrderResponseSchema,
   adminStockReconciliationCaseDetailResponseSchema,
   adminStockReconciliationCasePageResponseSchema,
   adminStockReconciliationResolveRequestSchema,
@@ -45,7 +47,11 @@ import {
   machineSlotCoordinateCode,
   maintenanceWorkOrderStatuses,
   mqttSignedEnvelopeSchema,
+  notificationReadResponseSchema,
   notificationTypeSchema,
+  orderInvestigationResponseSchema,
+  orderRecoveryActionResponseSchema,
+  orderRecoveryActionSchema,
   orderStatuses,
   paymentCodeAttemptAdminActionSchema,
   paymentOperatorReasonSchema,
@@ -93,6 +99,135 @@ describe("shared API contract", () => {
     expect(paymentProviderStatuses).toEqual(["enabled", "disabled"]);
     expect(adminUserStatuses).toEqual(["active", "disabled"]);
     expect(roleStatuses).toEqual(["active", "disabled"]);
+  });
+
+  it("keeps order recovery and maintenance admin actions strict", () => {
+    expect(
+      orderRecoveryActionSchema.parse({
+        action: "confirm_not_dispensed",
+        note: "operator found the item still in the slot",
+      }),
+    ).toEqual({
+      action: "confirm_not_dispensed",
+      note: "operator found the item still in the slot",
+    });
+    expect(() =>
+      orderRecoveryActionSchema.parse({
+        action: "request_refund",
+        note: "operator confirmed no dispense",
+        directDatabasePatch: true,
+      }),
+    ).toThrow();
+
+    expect(
+      adminMaintenanceWorkOrderResolveRequestSchema.parse({
+        resolutionNote: "replaced jammed spring and verified dispense",
+      }),
+    ).toEqual({
+      resolutionNote: "replaced jammed spring and verified dispense",
+    });
+    expect(() =>
+      adminMaintenanceWorkOrderResolveRequestSchema.parse({
+        resolutionNote: "   ",
+      }),
+    ).toThrow();
+    expect(() =>
+      adminMaintenanceWorkOrderResolveRequestSchema.parse({
+        resolutionNote: "resolved",
+        status: "closed_by_ui",
+      }),
+    ).toThrow();
+  });
+
+  it("parses key order recovery, maintenance, and notification responses", () => {
+    expect(
+      orderRecoveryActionResponseSchema.parse({
+        action: "compensation_dispense",
+        recoveryActionId: "550e8400-e29b-41d4-a716-446655440010",
+        commandId: "550e8400-e29b-41d4-a716-446655440011",
+        commandNo: "CMD-2",
+        status: "pending",
+      }),
+    ).toMatchObject({ action: "compensation_dispense", commandNo: "CMD-2" });
+
+    expect(
+      adminMaintenanceWorkOrderResponseSchema.parse({
+        id: "550e8400-e29b-41d4-a716-446655440020",
+        workOrderNo: "WO-1",
+        machineId: "550e8400-e29b-41d4-a716-446655440021",
+        slotId: null,
+        orderId: "550e8400-e29b-41d4-a716-446655440022",
+        commandId: null,
+        title: "Dispense failed",
+        description: "Slot needs inspection",
+        priority: "high",
+        status: "resolved",
+        assigneeAdminUserId: "550e8400-e29b-41d4-a716-446655440023",
+        resolutionNote: "cleared jam",
+        createdAt: "2026-07-05T00:00:00.000Z",
+        resolvedAt: "2026-07-05T00:10:00.000Z",
+      }),
+    ).toMatchObject({ status: "resolved", resolutionNote: "cleared jam" });
+
+    expect(
+      notificationReadResponseSchema.parse({
+        id: "550e8400-e29b-41d4-a716-446655440030",
+        status: "read",
+        updatedAt: "2026-07-05T00:00:00.000Z",
+      }),
+    ).toMatchObject({ status: "read" });
+  });
+
+  it("parses the order investigation drawer recovery response boundary", () => {
+    const response = orderInvestigationResponseSchema.parse({
+      order: {
+        id: "550e8400-e29b-41d4-a716-446655440100",
+        orderNo: "ORD-1",
+        machineId: "550e8400-e29b-41d4-a716-446655440101",
+        machineCode: "M001",
+        status: "manual_handling",
+        paymentState: "paid",
+        fulfillmentState: "manual_handling",
+        totalAmountCents: 500,
+        currency: "CNY",
+        paidAt: "2026-07-05T00:00:00.000Z",
+        dispensedAt: null,
+        canceledAt: null,
+        createdAt: "2026-07-05T00:00:00.000Z",
+      },
+      items: [],
+      payments: [],
+      paymentEvents: [],
+      paymentWebhookAttempts: [],
+      paymentReconciliationAttempts: [],
+      paymentCodeAttempts: [],
+      vendingCommands: [],
+      fulfillmentProjection: {
+        state: "manual_handling",
+        latestCommand: null,
+        requiresPhysicalOutcomeConfirmation: true,
+        availableRecoveryActions: ["confirm_dispensed"],
+      },
+      inventoryMovements: [],
+      stockReconciliationLinks: [],
+      refunds: [],
+      maintenanceWorkOrders: [],
+      adminAuditEntries: [],
+      orderStatusEvents: [],
+    });
+
+    expect(response.fulfillmentProjection.availableRecoveryActions).toEqual([
+      "confirm_dispensed",
+    ]);
+    expect(() =>
+      orderInvestigationResponseSchema.parse({
+        ...response,
+        fulfillmentProjection: {
+          ...response.fulfillmentProjection,
+          availableRecoveryActions: ["sql_patch"],
+        },
+      }),
+    ).toThrow();
   });
 
   it("enforces hardware slot coordinate bounds across machine contracts", () => {

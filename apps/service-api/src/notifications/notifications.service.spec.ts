@@ -127,3 +127,37 @@ describe("NotificationsService.createMachineOfflineNotification", () => {
     expect(db._mocks.where).toHaveBeenCalledOnce();
   });
 });
+
+describe("NotificationsService.markRead", () => {
+  it("marks a notification read and returns the read DTO", async () => {
+    const updatedAt = new Date("2026-07-05T00:00:00.000Z");
+    const returning = vi.fn().mockResolvedValue([
+      {
+        id: "notification-1",
+        type: "dispense_failed",
+        title: "出货失败",
+        content: "Slot jammed",
+        severity: "critical",
+        resourceType: "order",
+        resourceId: "8f6d41b6-06fc-4f33-9307-e533f4cc5b29",
+        status: "read",
+        dedupeKey: "dispense_failed:cmd1",
+        createdAt: new Date("2026-07-05T00:00:00.000Z"),
+        updatedAt,
+      },
+    ]);
+    const where = vi.fn().mockReturnValue({ returning });
+    const set = vi.fn().mockReturnValue({ where });
+    const update = vi.fn().mockReturnValue({ set });
+    const service = new NotificationsService({ update } as never);
+
+    await expect(service.markRead("notification-1")).resolves.toEqual({
+      id: "notification-1",
+      status: "read",
+      updatedAt: updatedAt.toISOString(),
+    });
+    expect(set).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "read", updatedAt: expect.any(Date) }),
+    );
+  });
+});

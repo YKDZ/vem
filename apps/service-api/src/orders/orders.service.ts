@@ -74,6 +74,12 @@ import { PaymentsService } from "../payments/payments.service";
 import { RefundsService } from "../refunds/refunds.service";
 import { VendingService } from "../vending/vending.service";
 import { projectOrderStatus } from "./order-state-projection";
+import {
+  mapOrderRecoveryActionDtoToInsert,
+  toOrderInvestigationResponse,
+  toOrderRecoveryActionResponse,
+  toOrderRefundRequestResponse,
+} from "./orders.contract-mappers";
 
 type CreateMachineOrderInput = z.infer<typeof createMachineOrderSchema>;
 type MachineOrderStatusQuery = z.infer<typeof machineOrderStatusQuerySchema>;
@@ -1213,7 +1219,13 @@ export class OrdersService {
     }
 
     const items = await this.db
-      .select()
+      .select({
+        id: orderItems.id,
+        variantId: orderItems.variantId,
+        quantity: orderItems.quantity,
+        unitPriceCents: orderItems.unitPriceCents,
+        productSnapshot: orderItems.productSnapshot,
+      })
       .from(orderItems)
       .where(eq(orderItems.orderId, id))
       .orderBy(orderItems.createdAt);
@@ -1247,7 +1259,14 @@ export class OrdersService {
       .orderBy(desc(inventoryMovements.createdAt));
 
     const orderStatusEventRows = await this.db
-      .select()
+      .select({
+        id: orderStatusEvents.id,
+        fromStatus: orderStatusEvents.fromStatus,
+        toStatus: orderStatusEvents.toStatus,
+        reason: orderStatusEvents.reason,
+        metadata: orderStatusEvents.metadata,
+        createdAt: orderStatusEvents.createdAt,
+      })
       .from(orderStatusEvents)
       .where(eq(orderStatusEvents.orderId, id))
       .orderBy(desc(orderStatusEvents.createdAt));
@@ -1297,7 +1316,13 @@ export class OrdersService {
     }
 
     const items = await this.db
-      .select()
+      .select({
+        id: orderItems.id,
+        variantId: orderItems.variantId,
+        quantity: orderItems.quantity,
+        unitPriceCents: orderItems.unitPriceCents,
+        productSnapshot: orderItems.productSnapshot,
+      })
       .from(orderItems)
       .where(eq(orderItems.orderId, id))
       .orderBy(orderItems.createdAt);
@@ -1698,7 +1723,14 @@ export class OrdersService {
       : [];
 
     const orderStatusEventRows = await this.db
-      .select()
+      .select({
+        id: orderStatusEvents.id,
+        fromStatus: orderStatusEvents.fromStatus,
+        toStatus: orderStatusEvents.toStatus,
+        reason: orderStatusEvents.reason,
+        metadata: orderStatusEvents.metadata,
+        createdAt: orderStatusEvents.createdAt,
+      })
       .from(orderStatusEvents)
       .where(eq(orderStatusEvents.orderId, id))
       .orderBy(desc(orderStatusEvents.createdAt));
@@ -1710,7 +1742,7 @@ export class OrdersService {
       activeRefundExists,
     });
 
-    return {
+    return toOrderInvestigationResponse({
       order,
       items,
       payments: paymentRows,
@@ -1730,15 +1762,16 @@ export class OrdersService {
       maintenanceWorkOrders: maintenanceWorkOrderRows,
       adminAuditEntries: adminAuditRows,
       orderStatusEvents: orderStatusEventRows,
-    };
+    });
   }
 
   async requestMockRefund(orderId: string, adminUserId: string) {
-    return await this.refundsService.requestFullRefund({
+    const refund = await this.refundsService.requestFullRefund({
       orderId,
       reason: "admin_refund",
       requestedByAdminUserId: adminUserId,
     });
+    return toOrderRefundRequestResponse(refund);
   }
 
   private buildRecoveryProjection(input: {
@@ -1915,14 +1948,14 @@ export class OrdersService {
 
         const [created] = await tx
           .insert(orderRecoveryActions)
-          .values({
-            orderId,
-            commandId: command.id,
-            action,
-            status: "started",
-            note,
-            requestedByAdminUserId: adminUserId,
-          })
+          .values(
+            mapOrderRecoveryActionDtoToInsert({
+              orderId,
+              commandId: command.id,
+              adminUserId,
+              body: { action, note },
+            }),
+          )
           .returning({ id: orderRecoveryActions.id });
 
         return {
@@ -2029,12 +2062,12 @@ export class OrdersService {
             refund,
           },
         });
-        return {
+        return toOrderRecoveryActionResponse({
           action,
           recoveryActionId: recovery.actionId,
           commandId: recovery.command.id,
           status: "refund_requested" as const,
-        };
+        });
       }
 
       if (action === "compensation_dispense") {
@@ -2070,13 +2103,13 @@ export class OrdersService {
             compensationStatus: compensation.status,
           },
         });
-        return {
+        return toOrderRecoveryActionResponse({
           action,
           recoveryActionId: recovery.actionId,
           commandId: compensation.id,
           commandNo: compensation.commandNo,
           status: compensation.status,
-        };
+        });
       }
 
       const result = await this.vendingService.resolveCommand(
@@ -2109,12 +2142,12 @@ export class OrdersService {
         },
       });
 
-      return {
+      return toOrderRecoveryActionResponse({
         action,
         recoveryActionId: recovery.actionId,
         commandId: recovery.command.id,
         status: result.status,
-      };
+      });
     } catch (error) {
       await this.failRecoveryAction(recovery.actionId, error);
       throw error;
