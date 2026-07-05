@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import {
   HARDWARE_ERROR_HANDLING,
+  adminMachineContractNoBodySchema,
+  adminMachineResponseSchema,
+  adminMachineSlotResponseSchema,
   adminUserStatuses,
   canonicalJson,
   createMachineSchema,
@@ -19,7 +22,9 @@ import {
   machineEnvironmentControlRequestSchema,
   machineAuthTokenRequestSchema,
   machineClaimRequestSchema,
+  generateMachineClaimCodeRequestSchema,
   generateMachineClaimCodeResponseSchema,
+  machineClaimCodeListResponseSchema,
   machineClaimCodeSnapshotSchema,
   machineClaimCodePurposes,
   machineClaimCodeStates,
@@ -55,6 +60,7 @@ import {
   protectedPaymentDrillRecoveryActionSchema,
   protectedPaymentDrillScenarioSchema,
   roleStatuses,
+  rotateMachineCredentialsResponseSchema,
   upsertNotificationTargetSchema,
   upsertPaymentProviderConfigSchema,
 } from "./index";
@@ -175,8 +181,7 @@ describe("shared API contract", () => {
 
   it("uses strict admin Product Variant Catalog write contracts", () => {
     const productId = "550e8400-e29b-41d4-a716-446655440224";
-    const tryOnSilhouetteMediaAssetId =
-      "550e8400-e29b-41d4-a716-446655440125";
+    const tryOnSilhouetteMediaAssetId = "550e8400-e29b-41d4-a716-446655440125";
 
     expect(
       createProductVariantSchema.parse({
@@ -276,6 +281,102 @@ describe("shared API contract", () => {
         },
       }),
     ).toThrow();
+  });
+
+  it("uses strict admin Machine Operations API contracts", () => {
+    const machineId = "550e8400-e29b-41d4-a716-446655440001";
+    const now = "2026-07-05T00:00:00.000Z";
+    const claimCodeSnapshot = {
+      id: "550e8400-e29b-41d4-a716-446655440002",
+      machineId,
+      machineCode: "M001",
+      purpose: "reclaim",
+      state: "pending",
+      expiresAt: "2026-07-05T01:00:00.000Z",
+      failedAttemptCount: 0,
+      maxFailedAttempts: 5,
+      createdAt: now,
+      consumedAt: null,
+      revokedAt: null,
+      lockedAt: null,
+    };
+
+    expect(
+      adminMachineResponseSchema.parse({
+        id: machineId,
+        code: "M001",
+        name: "Lobby",
+        locationLabel: null,
+        geoLocation: null,
+        status: "offline",
+        mqttClientId: null,
+        lastSeenAt: null,
+        createdAt: now,
+        updatedAt: now,
+      }),
+    ).toEqual({
+      id: machineId,
+      code: "M001",
+      name: "Lobby",
+      locationLabel: null,
+      geoLocation: null,
+      status: "offline",
+      mqttClientId: null,
+      lastSeenAt: null,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    expect(() =>
+      adminMachineSlotResponseSchema.parse({
+        id: "550e8400-e29b-41d4-a716-446655440003",
+        machineId,
+        layerNo: 1,
+        cellNo: 1,
+        slotCode: "A1",
+        capacity: 10,
+        status: "enabled",
+        inventoryShortcut: true,
+      }),
+    ).toThrow();
+    expect(() =>
+      createMachineSlotSchema.parse({
+        layerNo: 1,
+        cellNo: 1,
+        slotCode: "A1",
+        capacity: 10,
+        status: "enabled",
+        inventoryShortcut: true,
+      }),
+    ).toThrow();
+    expect(() =>
+      machineEnvironmentControlRequestSchema.parse({
+        airConditionerOn: true,
+        diagnosticMode: true,
+      }),
+    ).toThrow();
+
+    expect(generateMachineClaimCodeRequestSchema.parse({})).toEqual({
+      purpose: "first_claim",
+    });
+    expect(
+      machineClaimCodeListResponseSchema.parse({
+        items: [claimCodeSnapshot],
+      }),
+    ).toEqual({ items: [claimCodeSnapshot] });
+    expect(adminMachineContractNoBodySchema.parse({})).toEqual({});
+    expect(() =>
+      adminMachineContractNoBodySchema.parse({ reason: "manual" }),
+    ).toThrow();
+    expect(
+      rotateMachineCredentialsResponseSchema.parse({
+        machineId,
+        machineCode: "M001",
+        machineSecret: "m".repeat(32),
+        mqttSigningSecret: "s".repeat(32),
+        secretVersion: 2,
+      }),
+    ).toMatchObject({ machineCode: "M001", secretVersion: 2 });
   });
 
   it("defines External Natural Environment unconfigured as HTTP-success payload", () => {

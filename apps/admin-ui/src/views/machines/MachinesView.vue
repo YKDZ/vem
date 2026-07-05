@@ -3,7 +3,6 @@ import type {
   MachineClaimCodePurpose,
   MachineClaimCodeState,
   MachineCommandStatus,
-  MachineEnvironmentControlRequest,
   MachineSlotStatus,
 } from "@vem/shared";
 
@@ -13,7 +12,6 @@ import {
   MACHINE_SLOT_MAX_LAYER_NO,
   MACHINE_SLOT_MIN_LAYER_NO,
   machineSlotCoordinateErrorMessage,
-  machineSlotCoordinateCode,
 } from "@vem/shared";
 import { Modal } from "antdv-next";
 import { computed, onMounted, ref } from "vue";
@@ -42,6 +40,11 @@ import {
 } from "@/api/machines";
 import { useAuthStore } from "@/stores/auth";
 import { formatDateTime } from "@/utils/format";
+import {
+  mapEnvironmentControlFormToContract,
+  mapMachineFormToContract,
+  mapSlotFormToContract,
+} from "./machine-contract-mappers";
 
 const authStore = useAuthStore();
 const router = useRouter();
@@ -123,48 +126,11 @@ function openEditMachine(m: Machine): void {
   machineDrawerOpen.value = true;
 }
 
-function isValidTimeZone(value: string): boolean {
-  try {
-    Intl.DateTimeFormat("en-US", { timeZone: value });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function resolveMachineGeoLocationForm():
-  | MachineGeoLocation
-  | null
-  | undefined {
-  if (!machineForm.value.includeGeoLocation) return null;
-  const latitude = machineForm.value.geoLatitude;
-  const longitude = machineForm.value.geoLongitude;
-  const timezone = machineForm.value.geoTimezone.trim();
-  if (
-    typeof latitude !== "number" ||
-    Number.isNaN(latitude) ||
-    latitude < -90 ||
-    latitude > 90
-  ) {
-    return undefined;
-  }
-  if (
-    typeof longitude !== "number" ||
-    Number.isNaN(longitude) ||
-    longitude < -180 ||
-    longitude > 180
-  ) {
-    return undefined;
-  }
-  if (!timezone || !isValidTimeZone(timezone)) {
-    return undefined;
-  }
-  return { latitude, longitude, timezone };
-}
-
 async function saveMachine(): Promise<void> {
-  const geoLocation = resolveMachineGeoLocationForm();
-  if (geoLocation === undefined) {
+  let body: ReturnType<typeof mapMachineFormToContract>;
+  try {
+    body = mapMachineFormToContract(machineForm.value);
+  } catch {
     Modal.error({
       title: "固定地理坐标无效",
       content:
@@ -174,12 +140,6 @@ async function saveMachine(): Promise<void> {
   }
   machineSaving.value = true;
   try {
-    const body = {
-      code: machineForm.value.code,
-      name: machineForm.value.name,
-      locationLabel: machineForm.value.locationLabel || null,
-      geoLocation,
-    };
     if (editingMachine.value) {
       await updateMachine(editingMachine.value.id, body);
     } else {
@@ -254,14 +214,7 @@ function commandStatusLabel(status: MachineCommandStatus | null): string {
 
 async function submitEnvironmentCommand(): Promise<void> {
   if (!environmentMachine.value || environmentCommandDisabled.value) return;
-  const body: MachineEnvironmentControlRequest = {};
-  if (environmentControlForm.value.includeAirConditioner) {
-    body.airConditionerOn = environmentControlForm.value.airConditionerOn;
-  }
-  if (environmentControlForm.value.includeTargetTemperature) {
-    body.targetTemperatureCelsius =
-      environmentControlForm.value.targetTemperatureCelsius;
-  }
+  const body = mapEnvironmentControlFormToContract(environmentControlForm.value);
 
   environmentSubmitting.value = true;
   try {
@@ -326,13 +279,10 @@ async function saveSlot(): Promise<void> {
   }
   slotSaving.value = true;
   try {
-    await createMachineSlot(currentMachineId.value, {
-      layerNo: slotForm.value.layerNo,
-      cellNo: slotForm.value.cellNo,
-      slotCode: machineSlotCoordinateCode(slotForm.value),
-      capacity: slotForm.value.capacity,
-      status: slotForm.value.status,
-    });
+    await createMachineSlot(
+      currentMachineId.value,
+      mapSlotFormToContract(slotForm.value),
+    );
     slotFormOpen.value = false;
     slots.value = await listMachineSlots(currentMachineId.value);
   } finally {

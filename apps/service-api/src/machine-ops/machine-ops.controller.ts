@@ -9,8 +9,13 @@ import {
   UseGuards,
 } from "@nestjs/common";
 import { ApiBearerAuth, ApiTags } from "@nestjs/swagger";
+import {
+  adminMachineContractNoBodySchema,
+  adminMachineOpsListQuerySchema,
+} from "@vem/shared";
 import { z } from "zod";
 
+import type { AuthenticatedAdmin } from "../common/request-user";
 import type { AuthenticatedMachine } from "../machine-auth/current-machine.decorator";
 
 import { RequirePermissions } from "../access/permissions.decorator";
@@ -32,6 +37,8 @@ const completeLogExportSchema = z.object({
     .max(10 * 1024 * 1024), // 10 MB limit
 });
 
+type AdminMachineOpsListQuery = z.infer<typeof adminMachineOpsListQuerySchema>;
+
 @ApiTags("machine-ops")
 @ApiBearerAuth()
 @Controller("machine-ops")
@@ -42,15 +49,20 @@ export class MachineOpsController {
   @RequirePermissions("machineOps.write")
   async requestLogExport(
     @Param("machineId", ParseUUIDPipe) machineId: string,
-    @CurrentAdmin() admin: { userId: string },
+    @CurrentAdmin() admin: AuthenticatedAdmin,
+    @Body(new ZodValidationPipe(adminMachineContractNoBodySchema))
+    _body: z.infer<typeof adminMachineContractNoBodySchema>,
   ) {
-    return this.machineOpsService.requestLogExport(machineId, admin.userId);
+    return this.machineOpsService.requestLogExport(machineId, admin.id);
   }
 
   @Get()
   @RequirePermissions("machineOps.read")
-  async listOps(@Query("machineId") machineId?: string) {
-    return this.machineOpsService.listAllOps(machineId);
+  async listOps(
+    @Query(new ZodValidationPipe(adminMachineOpsListQuerySchema))
+    query: AdminMachineOpsListQuery,
+  ) {
+    return this.machineOpsService.listAllOps(query.machineId);
   }
 
   @Get("pending")

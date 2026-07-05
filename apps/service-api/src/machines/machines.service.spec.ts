@@ -194,7 +194,7 @@ describe("MachinesService", () => {
 
     expect(result.items[0]).toEqual(
       expect.objectContaining({
-        latestHeartbeatReportedAt: new Date("2026-05-05T12:00:05.000Z"),
+        latestHeartbeatReportedAt: "2026-05-05T12:00:05.000Z",
         latestHeartbeatStatus: expect.objectContaining({
           network: "online",
           mqttConnected: true,
@@ -212,7 +212,7 @@ describe("MachinesService", () => {
           temperatureCelsius: 24,
           sensorStatus: "ok",
         }),
-        latestEnvironmentCommand: latestCommand,
+        latestEnvironmentCommand: expect.objectContaining(latestCommand),
         geoLocation: {
           latitude: 31.2304,
           longitude: 121.4737,
@@ -220,6 +220,8 @@ describe("MachinesService", () => {
         },
       }),
     );
+    expect(result.items[0]).not.toHaveProperty("geoLatitude");
+    expect(result.items[0]).not.toHaveProperty("deletedAt");
   });
 
   it("creates machines with nullable Machine Geo Location fields", async () => {
@@ -348,7 +350,7 @@ describe("MachinesService", () => {
     const result = await service.getMachine("machine-1");
 
     expect(result.latestHeartbeatReportedAt).toEqual(
-      new Date("2026-05-05T12:00:05.000Z"),
+      "2026-05-05T12:00:05.000Z",
     );
     expect(result.latestHeartbeatStatus).toEqual(
       expect.objectContaining({

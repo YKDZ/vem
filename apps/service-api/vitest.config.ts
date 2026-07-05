@@ -9,8 +9,4 @@ export default defineConfig({
       ),
     },
   },
-  test: {
-    include: ["src/**/*.e2e-spec.ts"],
-    fileParallelism: false,
-  },
 });
