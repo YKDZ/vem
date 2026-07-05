@@ -35,13 +35,21 @@ export type LocalAwakenedAudioCueSourceFact = {
   nowMs?: number;
 };
 
+export type CustomerSessionIdleAudioCueSourceFact = {
+  type: "customer_session.idle";
+  idleEvent: "assistance_prompt" | "sleep";
+  occurredAt: string;
+};
+
 export type CustomerAudioCueSourceFact =
   | DirectCustomerAudioCueSourceFact
   | VisionPresenceAudioCueSourceFact
-  | LocalAwakenedAudioCueSourceFact;
+  | LocalAwakenedAudioCueSourceFact
+  | CustomerSessionIdleAudioCueSourceFact;
 
 export type CustomerAudioCueEventSourceOptions = {
   sourceFact?: Readonly<Ref<CustomerAudioCueSourceFact | null>>;
+  routeName?: Readonly<Ref<unknown>>;
 };
 
 const sourceFact = shallowRef<CustomerAudioCueSourceFact | null>(null);
@@ -51,6 +59,21 @@ let activeCleanup: (() => void) | null = null;
 let lastVisionAudioCueState: VisionAudioCueState = "absent";
 let emittedTransactionSourceFacts = new Set<string>();
 let lastTransactionByOrderKey = new Map<string, string | null>();
+let emittedIdleSourceFacts = new Set<string>();
+
+const ASSISTANCE_PROMPT_ROUTE_NAMES = new Set([
+  "catalog",
+  "product-detail",
+  "virtual-try-on",
+  "checkout",
+]);
+
+function isAssistancePromptRouteName(routeName: unknown): boolean {
+  return (
+    typeof routeName === "string" &&
+    ASSISTANCE_PROMPT_ROUTE_NAMES.has(routeName)
+  );
+}
 
 function visionPresenceCueEvent(
   seenAt: string,
@@ -119,6 +142,7 @@ function eventForVisionPresenceFact(
 
 function eventForSourceFact(
   fact: CustomerAudioCueSourceFact,
+  routeName: unknown,
 ): CustomerExperienceEvent | null {
   if ("event" in fact) return fact.event;
   if (fact.type === "local.awakened") {
@@ -126,6 +150,21 @@ function eventForSourceFact(
       type: "interaction.awakened",
       requestedAt: fact.requestedAt,
       nowMs: fact.nowMs,
+    };
+  }
+  if (fact.type === "customer_session.idle") {
+    if (
+      fact.idleEvent === "assistance_prompt" &&
+      !isAssistancePromptRouteName(routeName)
+    ) {
+      return null;
+    }
+    return {
+      type:
+        fact.idleEvent === "assistance_prompt"
+          ? "idle.assistance_prompt"
+          : "idle.sleep",
+      requestedAt: fact.occurredAt,
     };
   }
   return eventForVisionPresenceFact(fact);
@@ -170,13 +209,19 @@ export function installCustomerAudioCueEventSource(
   if (activeCleanup) return activeCleanup;
 
   const runtimeSourceFact = options.sourceFact ?? sourceFact;
+  const routeName = options.routeName;
   const scope = effectScope();
   scope.run(() => {
     watch(
       () => runtimeSourceFact.value,
       (fact) => {
         if (!fact) return;
-        const event = eventForSourceFact(fact);
+        if ("type" in fact && fact.type === "customer_session.idle") {
+          const idleFactKey = `${fact.idleEvent}:${fact.occurredAt}`;
+          if (emittedIdleSourceFacts.has(idleFactKey)) return;
+          emittedIdleSourceFacts.add(idleFactKey);
+        }
+        const event = eventForSourceFact(fact, routeName?.value);
         if (event) {
           emitCustomerExperienceEvent(event);
         }
@@ -256,4 +301,5 @@ export function resetCustomerAudioCueEventSourceForTests(): void {
   lastVisionAudioCueState = "absent";
   emittedTransactionSourceFacts = new Set();
   lastTransactionByOrderKey = new Map();
+  emittedIdleSourceFacts = new Set();
 }

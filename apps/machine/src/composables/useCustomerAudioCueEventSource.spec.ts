@@ -1,12 +1,14 @@
 // @vitest-environment jsdom
 import { createPinia, setActivePinia } from "pinia";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createApp, defineComponent, nextTick, ref } from "vue";
 
 import type { CustomerExperienceEvent } from "@/customer-events/events";
 import type { TransactionSnapshot } from "@/daemon/schemas";
 
 import { useCheckoutStore } from "@/stores/checkout";
 import { useNaturalContextStore } from "@/stores/natural-context";
+import { useVisionStore } from "@/stores/vision";
 
 import {
   installCustomerAudioCueEventSource,
@@ -14,6 +16,10 @@ import {
   resetCustomerAudioCueEventSourceForTests,
 } from "./useCustomerAudioCueEventSource";
 import { onCustomerExperienceEvent } from "./useCustomerExperienceEvents";
+import {
+  resetCustomerPresenceSessionForTests,
+  useCustomerPresenceSession,
+} from "./usePresenceInteraction";
 
 function applyNaturalContext(input: {
   checkedAt: string;
@@ -91,13 +97,35 @@ function transactionSnapshot(
   return { ...snapshot, ...overrides } as TransactionSnapshot;
 }
 
+function emitPresence(personPresent: boolean, detectedAt: string): void {
+  useVisionStore().applyPresenceStatus({
+    eventId: `VISION-IDLE-${personPresent ? "PRESENT" : "EMPTY"}-${detectedAt}`,
+    state: personPresent ? "approach" : "empty",
+    reason: personPresent ? "person_present_but_not_close" : "no_person",
+    detectedAt,
+    personPresent,
+    closeNow: false,
+    close: false,
+    closeTrigger: null,
+    proximity: { present: personPresent },
+    occupancy: {
+      state: personPresent ? "single" : "none",
+      confidence: 0.9,
+    },
+  });
+}
+
 describe("customer audio cue event source", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
+    resetCustomerPresenceSessionForTests();
   });
 
   afterEach(() => {
+    resetCustomerPresenceSessionForTests();
     resetCustomerAudioCueEventSourceForTests();
+    document.body.innerHTML = "";
+    vi.useRealTimers();
   });
 
   it("publishes source facts through the existing customer experience event bus", () => {
@@ -288,6 +316,241 @@ describe("customer audio cue event source", () => {
       {
         type: "interaction.awakened",
         requestedAt: "2026-06-29T12:12:00.000Z",
+      },
+    ]);
+  });
+
+  it("emits an assistance prompt when a browsing customer session becomes inactive", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-05T12:38:00.000Z"));
+    const routeName = ref("catalog");
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const App = defineComponent({
+      setup() {
+        useCustomerPresenceSession({
+          customerAssistancePromptMs: 1000,
+          inactivityDepartureMs: 5000,
+        });
+        return () => null;
+      },
+    });
+    const app = createApp(App);
+    app.use(createPinia());
+    app.mount(host);
+    window.dispatchEvent(new Event("pointerdown"));
+    await nextTick();
+    const observed: CustomerExperienceEvent[] = [];
+    const unsubscribe = onCustomerExperienceEvent((event) => {
+      observed.push(event);
+    });
+    installCustomerAudioCueEventSource({ routeName });
+
+    vi.advanceTimersByTime(1000);
+    await nextTick();
+
+    app.unmount();
+    unsubscribe();
+    expect(observed).toEqual([
+      {
+        type: "idle.assistance_prompt",
+        requestedAt: "2026-07-05T12:38:01.000Z",
+      },
+    ]);
+  });
+
+  it("delays assistance prompt when an already-present customer keeps interacting", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-05T12:38:00.000Z"));
+    const routeName = ref("catalog");
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const App = defineComponent({
+      setup() {
+        useCustomerPresenceSession({
+          customerAssistancePromptMs: 1000,
+          inactivityDepartureMs: 5000,
+        });
+        return () => null;
+      },
+    });
+    const app = createApp(App);
+    app.use(createPinia());
+    app.mount(host);
+    window.dispatchEvent(new Event("pointerdown"));
+    await nextTick();
+    const observed: CustomerExperienceEvent[] = [];
+    const unsubscribe = onCustomerExperienceEvent((event) => {
+      observed.push(event);
+    });
+    installCustomerAudioCueEventSource({ routeName });
+
+    vi.advanceTimersByTime(800);
+    window.dispatchEvent(new Event("pointerdown"));
+    await nextTick();
+    vi.advanceTimersByTime(200);
+    await nextTick();
+    expect(observed).toEqual([]);
+
+    vi.advanceTimersByTime(800);
+    await nextTick();
+
+    app.unmount();
+    unsubscribe();
+    expect(observed).toEqual([
+      {
+        type: "idle.assistance_prompt",
+        requestedAt: "2026-07-05T12:38:01.800Z",
+      },
+    ]);
+  });
+
+  it("emits sleep once when a browsing customer session returns to rest after long idle", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-05T12:39:00.000Z"));
+    const routeName = ref("product-detail");
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const App = defineComponent({
+      setup() {
+        useCustomerPresenceSession({
+          customerAssistancePromptMs: 1000,
+          inactivityDepartureMs: 3000,
+        });
+        return () => null;
+      },
+    });
+    const app = createApp(App);
+    app.use(createPinia());
+    app.mount(host);
+    window.dispatchEvent(new Event("pointerdown"));
+    await nextTick();
+    const observed: CustomerExperienceEvent[] = [];
+    const unsubscribe = onCustomerExperienceEvent((event) => {
+      observed.push(event);
+    });
+    installCustomerAudioCueEventSource({ routeName });
+
+    vi.advanceTimersByTime(3000);
+    await nextTick();
+    vi.advanceTimersByTime(10_000);
+    await nextTick();
+
+    app.unmount();
+    unsubscribe();
+    expect(observed).toEqual([
+      {
+        type: "idle.assistance_prompt",
+        requestedAt: "2026-07-05T12:39:01.000Z",
+      },
+      {
+        type: "idle.sleep",
+        requestedAt: "2026-07-05T12:39:03.000Z",
+      },
+    ]);
+  });
+
+  it("emits sleep once when a present customer departs", async () => {
+    const routeName = ref("catalog");
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const App = defineComponent({
+      setup() {
+        useCustomerPresenceSession();
+        return () => null;
+      },
+    });
+    const app = createApp(App);
+    app.use(createPinia());
+    app.mount(host);
+    emitPresence(true, "2026-07-05T12:40:00.000Z");
+    await nextTick();
+    const observed: CustomerExperienceEvent[] = [];
+    const unsubscribe = onCustomerExperienceEvent((event) => {
+      observed.push(event);
+    });
+    installCustomerAudioCueEventSource({ routeName });
+
+    useVisionStore().applyPersonDeparted({
+      eventId: "VISION-IDLE-DEPARTURE-001",
+      detectedAt: "2026-07-05T12:40:05.000Z",
+      lastSeenAt: "2026-07-05T12:40:04.000Z",
+      reason: "left_frame",
+    });
+    await nextTick();
+    useVisionStore().applyPersonDeparted({
+      eventId: "VISION-IDLE-DEPARTURE-002",
+      detectedAt: "2026-07-05T12:40:06.000Z",
+      lastSeenAt: "2026-07-05T12:40:04.000Z",
+      reason: "left_frame",
+    });
+    await nextTick();
+
+    app.unmount();
+    unsubscribe();
+    expect(observed).toEqual([
+      {
+        type: "idle.sleep",
+        requestedAt: "2026-07-05T12:40:05.000Z",
+      },
+    ]);
+  });
+
+  it("does not emit assistance prompts on transaction waiting and terminal routes", () => {
+    const routeName = ref("payment");
+    const observed: CustomerExperienceEvent[] = [];
+    const unsubscribe = onCustomerExperienceEvent((event) => {
+      observed.push(event);
+    });
+    installCustomerAudioCueEventSource({ routeName });
+
+    for (const [route, occurredAt] of [
+      ["payment", "2026-07-05T12:41:00.000Z"],
+      ["dispensing", "2026-07-05T12:41:01.000Z"],
+      ["result", "2026-07-05T12:41:02.000Z"],
+    ] as const) {
+      routeName.value = route;
+      recordCustomerAudioCueSourceFact({
+        type: "customer_session.idle",
+        idleEvent: "assistance_prompt",
+        occurredAt,
+      });
+    }
+
+    unsubscribe();
+    expect(observed).toEqual([]);
+  });
+
+  it("does not duplicate repeated idle source facts", () => {
+    const routeName = ref("catalog");
+    const observed: CustomerExperienceEvent[] = [];
+    const unsubscribe = onCustomerExperienceEvent((event) => {
+      observed.push(event);
+    });
+    installCustomerAudioCueEventSource({ routeName });
+
+    for (const idleEvent of ["assistance_prompt", "sleep"] as const) {
+      recordCustomerAudioCueSourceFact({
+        type: "customer_session.idle",
+        idleEvent,
+        occurredAt: `2026-07-05T12:42:0${idleEvent === "sleep" ? "1" : "0"}.000Z`,
+      });
+      recordCustomerAudioCueSourceFact({
+        type: "customer_session.idle",
+        idleEvent,
+        occurredAt: `2026-07-05T12:42:0${idleEvent === "sleep" ? "1" : "0"}.000Z`,
+      });
+    }
+
+    unsubscribe();
+    expect(observed).toEqual([
+      {
+        type: "idle.assistance_prompt",
+        requestedAt: "2026-07-05T12:42:00.000Z",
+      },
+      {
+        type: "idle.sleep",
+        requestedAt: "2026-07-05T12:42:01.000Z",
       },
     ]);
   });

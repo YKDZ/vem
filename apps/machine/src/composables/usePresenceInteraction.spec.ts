@@ -403,6 +403,80 @@ describe("usePresenceInteraction", () => {
     expect(events.observed).toEqual([]);
   });
 
+  it("does not emit sleep from restored empty vision diagnostics", async () => {
+    mockedDaemonClient.getVisionStatus.mockResolvedValue(
+      visionStatus({
+        type: "vision.presence_status",
+        payload: {
+          eventId: "VISION-PRESENCE-EVENT-BOOT-EMPTY",
+          state: "empty",
+          reason: "no_person",
+          detectedAt: "2026-06-29T12:06:10.000Z",
+          personPresent: false,
+          closeNow: false,
+          close: false,
+          closeTrigger: null,
+          proximity: { present: false, closeNow: false, close: false },
+          occupancy: { state: "none", confidence: 0.9 },
+        },
+      }),
+    );
+    const events = observeCustomerExperienceEvents();
+    await mountPresence();
+
+    await useVisionStore().refresh();
+    await nextTick();
+
+    events.cleanup();
+    expect(events.observed).toEqual([]);
+  });
+
+  it("does not emit sleep from restored departed vision diagnostics", async () => {
+    mockedDaemonClient.getVisionStatus.mockResolvedValue(
+      visionStatus({
+        type: "vision.person_departed",
+        payload: {
+          eventId: "VISION-DEPARTURE-EVENT-BOOT-RESTORED",
+          detectedAt: "2026-06-29T12:06:20.000Z",
+          lastSeenAt: "2026-06-29T12:06:18.000Z",
+          reason: "left_frame",
+          absenceDurationMs: 1200,
+        },
+      }),
+    );
+    const events = observeCustomerExperienceEvents();
+    await mountPresence();
+
+    await useVisionStore().refresh();
+    await nextTick();
+
+    events.cleanup();
+    expect(events.observed).toEqual([]);
+  });
+
+  it("does not emit sleep for repeated empty vision diagnostics when no customer was present", async () => {
+    const events = observeCustomerExperienceEvents();
+    await mountPresence();
+
+    emitPresenceStatus({
+      eventId: "VISION-PRESENCE-EVENT-EMPTY-1",
+      detectedAt: "2026-06-29T12:06:30.000Z",
+      personPresent: false,
+      occupancyState: "none",
+    });
+    await nextTick();
+    emitPresenceStatus({
+      eventId: "VISION-PRESENCE-EVENT-EMPTY-2",
+      detectedAt: "2026-06-29T12:06:31.000Z",
+      personPresent: false,
+      occupancyState: "none",
+    });
+    await nextTick();
+
+    events.cleanup();
+    expect(events.observed).toEqual([]);
+  });
+
   it("clears stale presence state when the latest vision diagnostic is unavailable", async () => {
     const presence = await mountPresence();
 
@@ -641,6 +715,10 @@ describe("usePresenceInteraction", () => {
       {
         type: "presence.detected",
         requestedAt: "2026-06-29T12:25:00.000Z",
+      },
+      {
+        type: "idle.sleep",
+        requestedAt: "2026-06-29T12:25:02.000Z",
       },
       {
         type: "privacy.crowd_detected",

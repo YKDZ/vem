@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted } from "vue";
+import { computed, onMounted, onUnmounted } from "vue";
 import { RouterView, useRoute, useRouter } from "vue-router";
 
 import { installCustomerAudioCueEventSource } from "@/composables/useCustomerAudioCueEventSource";
@@ -8,8 +8,9 @@ import { installActiveUiDebugRuntimeScenario } from "@/dev/runtime-scenario-load
 
 const route = useRoute();
 const router = useRouter();
-const cleanupCustomerAudioCueEventSource =
-  installCustomerAudioCueEventSource();
+const cleanupCustomerAudioCueEventSource = installCustomerAudioCueEventSource({
+  routeName: computed(() => route.name),
+});
 useReturnHomeOnCustomerDeparture();
 installActiveUiDebugRuntimeScenario();
 
