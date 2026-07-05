@@ -113,7 +113,7 @@ onMounted(async () => {
       ? null
       : transaction;
     if (startupTransaction) {
-      checkoutStore.applyTransaction(startupTransaction);
+      checkoutStore.applyTransaction(startupTransaction, { restored: true });
     }
 
     pushStep("同步配置");

@@ -10,6 +10,7 @@ import {
 
 import type { CustomerExperienceEvent } from "@/customer-events/events";
 
+import { useCheckoutStore } from "@/stores/checkout";
 import { useNaturalContextStore } from "@/stores/natural-context";
 
 import { emitCustomerExperienceEvent } from "./useCustomerExperienceEvents";
@@ -48,6 +49,8 @@ const sourceFact = shallowRef<CustomerAudioCueSourceFact | null>(null);
 let activeScope: EffectScope | null = null;
 let activeCleanup: (() => void) | null = null;
 let lastVisionAudioCueState: VisionAudioCueState = "absent";
+let emittedTransactionSourceFacts = new Set<string>();
+let lastTransactionByOrderKey = new Map<string, string | null>();
 
 function visionPresenceCueEvent(
   seenAt: string,
@@ -128,6 +131,39 @@ function eventForSourceFact(
   return eventForVisionPresenceFact(fact);
 }
 
+function emitTransactionEventOnce(event: CustomerExperienceEvent): void {
+  if (!("orderKey" in event) || !event.orderKey) {
+    emitCustomerExperienceEvent(event);
+    return;
+  }
+
+  const sourceFactKey = `${event.orderKey}:${event.type}`;
+  if (emittedTransactionSourceFacts.has(sourceFactKey)) return;
+  emittedTransactionSourceFacts.add(sourceFactKey);
+  emitCustomerExperienceEvent(event);
+}
+
+function eventTypeForTerminalTransaction(
+  nextAction: string | null,
+): CustomerExperienceEvent["type"] | null {
+  switch (nextAction) {
+    case null:
+      return null;
+    case "success":
+      return "dispense.succeeded";
+    case "dispense_failed":
+      return "dispense.failed";
+    case "refund_pending":
+      return "refund.pending";
+    case "refunded":
+      return "refund.completed";
+    case "manual_handling":
+      return "manual_handling.required";
+    default:
+      return null;
+  }
+}
+
 export function installCustomerAudioCueEventSource(
   options: CustomerAudioCueEventSourceOptions = {},
 ): () => void {
@@ -143,6 +179,55 @@ export function installCustomerAudioCueEventSource(
         const event = eventForSourceFact(fact);
         if (event) {
           emitCustomerExperienceEvent(event);
+        }
+      },
+      { flush: "sync" },
+    );
+
+    const checkoutStore = useCheckoutStore();
+    watch(
+      () => checkoutStore.transactionObservation,
+      (transaction) => {
+        if (!transaction) return;
+
+        const previousNextAction =
+          lastTransactionByOrderKey.get(transaction.orderKey) ?? null;
+        lastTransactionByOrderKey.set(
+          transaction.orderKey,
+          transaction.nextAction,
+        );
+        if (transaction.restored) return;
+
+        if (transaction.nextAction === "wait_payment") {
+          emitTransactionEventOnce({
+            type: "payment.prompt",
+            orderKey: transaction.orderKey,
+          });
+          return;
+        }
+
+        if (transaction.nextAction === "dispensing") {
+          if (previousNextAction === "wait_payment") {
+            emitTransactionEventOnce({
+              type: "payment.succeeded",
+              orderKey: transaction.orderKey,
+            });
+          }
+          emitTransactionEventOnce({
+            type: "dispensing.started",
+            orderKey: transaction.orderKey,
+          });
+          return;
+        }
+
+        const terminalEventType = eventTypeForTerminalTransaction(
+          transaction.nextAction,
+        );
+        if (terminalEventType) {
+          emitTransactionEventOnce({
+            type: terminalEventType,
+            orderKey: transaction.orderKey,
+          });
         }
       },
       { flush: "sync" },
@@ -169,4 +254,6 @@ export function resetCustomerAudioCueEventSourceForTests(): void {
   activeCleanup?.();
   sourceFact.value = null;
   lastVisionAudioCueState = "absent";
+  emittedTransactionSourceFacts = new Set();
+  lastTransactionByOrderKey = new Map();
 }

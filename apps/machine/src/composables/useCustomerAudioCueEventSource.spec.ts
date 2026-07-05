@@ -3,7 +3,9 @@ import { createPinia, setActivePinia } from "pinia";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import type { CustomerExperienceEvent } from "@/customer-events/events";
+import type { TransactionSnapshot } from "@/daemon/schemas";
 
+import { useCheckoutStore } from "@/stores/checkout";
 import { useNaturalContextStore } from "@/stores/natural-context";
 
 import {
@@ -60,6 +62,33 @@ function applyNaturalContext(input: {
       status: "unknown",
     },
   });
+}
+
+function transactionSnapshot(
+  overrides: Partial<TransactionSnapshot> = {},
+): TransactionSnapshot {
+  const snapshot: TransactionSnapshot = {
+    orderId: "order-197",
+    orderNo: "VEM-ORDER-197",
+    productSummary: null,
+    paymentNo: "PAY-197",
+    paymentMethod: "qr_code",
+    paymentProvider: "mock",
+    paymentUrl: "https://pay.example.test/197",
+    paymentStatus: "pending",
+    orderStatus: "pending_payment",
+    totalAmountCents: 1200,
+    vending: null,
+    nextAction: "wait_payment",
+    paymentCodeAttempt: null,
+    maskedAuthCode: null,
+    operatorHint: null,
+    errorCode: null,
+    errorMessage: null,
+    expiresAt: "2026-07-05T12:40:00.000Z",
+    updatedAt: "2026-07-05T12:35:00.000Z",
+  };
+  return { ...snapshot, ...overrides } as TransactionSnapshot;
 }
 
 describe("customer audio cue event source", () => {
@@ -261,5 +290,359 @@ describe("customer audio cue event source", () => {
         requestedAt: "2026-06-29T12:12:00.000Z",
       },
     ]);
+  });
+
+  it("emits one payment prompt for repeated payment-waiting observations of the same current order", () => {
+    const observed: CustomerExperienceEvent[] = [];
+    const unsubscribe = onCustomerExperienceEvent((event) => {
+      observed.push(event);
+    });
+    installCustomerAudioCueEventSource();
+
+    const checkoutStore = useCheckoutStore();
+    checkoutStore.applyTransaction(transactionSnapshot());
+    checkoutStore.applyTransaction({
+      ...checkoutStore.transaction!,
+      updatedAt: "2026-07-05T12:35:02.000Z",
+    });
+
+    unsubscribe();
+    expect(observed).toEqual([
+      {
+        type: "payment.prompt",
+        orderKey: "VEM-ORDER-197",
+      },
+    ]);
+  });
+
+  it("does not emit a payment prompt from a restored payment-waiting current transaction", () => {
+    const observed: CustomerExperienceEvent[] = [];
+    const unsubscribe = onCustomerExperienceEvent((event) => {
+      observed.push(event);
+    });
+    installCustomerAudioCueEventSource();
+
+    useCheckoutStore().applyTransaction(transactionSnapshot(), {
+      restored: true,
+    });
+
+    unsubscribe();
+    expect(observed).toEqual([]);
+  });
+
+  it("does not emit dispensing cues from a restored dispensing current transaction", () => {
+    const observed: CustomerExperienceEvent[] = [];
+    const unsubscribe = onCustomerExperienceEvent((event) => {
+      observed.push(event);
+    });
+    installCustomerAudioCueEventSource();
+
+    useCheckoutStore().applyTransaction(
+      transactionSnapshot({
+        paymentStatus: "succeeded",
+        orderStatus: "dispensing",
+        nextAction: "dispensing",
+        vending: {
+          commandNo: "VEND-197",
+          status: "sent",
+          lastError: null,
+          pickupReminder: null,
+        },
+      }),
+      { restored: true },
+    );
+
+    unsubscribe();
+    expect(observed).toEqual([]);
+  });
+
+  it("does not emit result cues from restored terminal current transactions", () => {
+    const observed: CustomerExperienceEvent[] = [];
+    const unsubscribe = onCustomerExperienceEvent((event) => {
+      observed.push(event);
+    });
+    installCustomerAudioCueEventSource();
+
+    const checkoutStore = useCheckoutStore();
+    const restoredTerminalResults = [
+      ["success", "fulfilled", "succeeded"],
+      ["dispense_failed", "dispense_failed", "failed"],
+      ["refund_pending", "refund_pending", "failed"],
+      ["refunded", "refunded", "failed"],
+      ["manual_handling", "manual_handling", "result_unknown"],
+    ] as const;
+
+    for (const [
+      nextAction,
+      orderStatus,
+      vendingStatus,
+    ] of restoredTerminalResults) {
+      checkoutStore.applyTransaction(
+        transactionSnapshot({
+          orderId: `order-197-restored-${nextAction}`,
+          orderNo: `VEM-ORDER-197-RESTORED-${nextAction}`,
+          paymentStatus:
+            nextAction === "refund_pending"
+              ? "refund_pending"
+              : nextAction === "refunded"
+                ? "refunded"
+                : "succeeded",
+          orderStatus,
+          nextAction,
+          vending: {
+            commandNo: `VEND-197-RESTORED-${nextAction}`,
+            status: vendingStatus,
+            lastError: vendingStatus === "failed" ? "slot jammed" : null,
+            pickupReminder: null,
+          },
+          updatedAt: "2026-07-05T12:36:30.000Z",
+        }),
+        { restored: true },
+      );
+    }
+
+    unsubscribe();
+    expect(observed).toEqual([]);
+  });
+
+  it("emits payment succeeded and dispensing started when a paid order enters dispensing", () => {
+    const observed: CustomerExperienceEvent[] = [];
+    const unsubscribe = onCustomerExperienceEvent((event) => {
+      observed.push(event);
+    });
+    installCustomerAudioCueEventSource();
+
+    const checkoutStore = useCheckoutStore();
+    checkoutStore.applyTransaction(transactionSnapshot());
+    checkoutStore.applyTransaction(
+      transactionSnapshot({
+        paymentStatus: "succeeded",
+        orderStatus: "dispensing",
+        nextAction: "dispensing",
+        vending: {
+          commandNo: "VEND-197",
+          status: "sent",
+          lastError: null,
+          pickupReminder: null,
+        },
+        updatedAt: "2026-07-05T12:35:05.000Z",
+      }),
+    );
+    checkoutStore.applyTransaction(
+      transactionSnapshot({
+        paymentStatus: "succeeded",
+        orderStatus: "dispensing",
+        nextAction: "dispensing",
+        vending: {
+          commandNo: "VEND-197",
+          status: "acknowledged",
+          lastError: null,
+          pickupReminder: null,
+        },
+        updatedAt: "2026-07-05T12:35:07.000Z",
+      }),
+    );
+
+    unsubscribe();
+    expect(observed).toEqual([
+      {
+        type: "payment.prompt",
+        orderKey: "VEM-ORDER-197",
+      },
+      {
+        type: "payment.succeeded",
+        orderKey: "VEM-ORDER-197",
+      },
+      {
+        type: "dispensing.started",
+        orderKey: "VEM-ORDER-197",
+      },
+    ]);
+  });
+
+  it("emits payment and dispensing cues when a restored payment-waiting order later enters dispensing", () => {
+    const observed: CustomerExperienceEvent[] = [];
+    const unsubscribe = onCustomerExperienceEvent((event) => {
+      observed.push(event);
+    });
+    installCustomerAudioCueEventSource();
+
+    const checkoutStore = useCheckoutStore();
+    checkoutStore.applyTransaction(transactionSnapshot(), {
+      restored: true,
+    });
+    checkoutStore.applyTransaction(
+      transactionSnapshot({
+        paymentStatus: "succeeded",
+        orderStatus: "dispensing",
+        nextAction: "dispensing",
+        vending: {
+          commandNo: "VEND-197",
+          status: "sent",
+          lastError: null,
+          pickupReminder: null,
+        },
+        updatedAt: "2026-07-05T12:35:05.000Z",
+      }),
+    );
+
+    unsubscribe();
+    expect(observed).toEqual([
+      {
+        type: "payment.succeeded",
+        orderKey: "VEM-ORDER-197",
+      },
+      {
+        type: "dispensing.started",
+        orderKey: "VEM-ORDER-197",
+      },
+    ]);
+  });
+
+  it("maps terminal transaction results to order-scoped customer audio cue events without pickup completion", () => {
+    const observed: CustomerExperienceEvent[] = [];
+    const unsubscribe = onCustomerExperienceEvent((event) => {
+      observed.push(event);
+    });
+    installCustomerAudioCueEventSource();
+
+    const checkoutStore = useCheckoutStore();
+    const terminalResults = [
+      ["success", "fulfilled", "succeeded", "dispense.succeeded"],
+      ["dispense_failed", "dispense_failed", "failed", "dispense.failed"],
+      ["refund_pending", "refund_pending", "failed", "refund.pending"],
+      ["refunded", "refunded", "failed", "refund.completed"],
+      [
+        "manual_handling",
+        "manual_handling",
+        "result_unknown",
+        "manual_handling.required",
+      ],
+    ] as const;
+    const expectedEvents: CustomerExperienceEvent[] = [];
+
+    for (const [
+      nextAction,
+      orderStatus,
+      vendingStatus,
+      eventType,
+    ] of terminalResults) {
+      const orderNo = `VEM-ORDER-197-${nextAction}`;
+      checkoutStore.applyTransaction(
+        transactionSnapshot({
+          orderId: `order-197-${nextAction}`,
+          orderNo,
+          paymentStatus:
+            nextAction === "refund_pending"
+              ? "refund_pending"
+              : nextAction === "refunded"
+                ? "refunded"
+                : "succeeded",
+          orderStatus,
+          nextAction,
+          vending: {
+            commandNo: `VEND-197-${nextAction}`,
+            status: vendingStatus,
+            lastError: vendingStatus === "failed" ? "slot jammed" : null,
+            pickupReminder:
+              nextAction === "success"
+                ? {
+                    level: "warning",
+                    message: "请及时取走商品",
+                    warningNo: 1,
+                    reportedAt: "2026-07-05T12:36:00.000Z",
+                  }
+                : null,
+          },
+          updatedAt: "2026-07-05T12:36:00.000Z",
+        }),
+      );
+      checkoutStore.applyTransaction({
+        ...checkoutStore.transaction!,
+        updatedAt: "2026-07-05T12:36:02.000Z",
+      });
+      expectedEvents.push({
+        type: eventType,
+        orderKey: orderNo,
+      });
+    }
+
+    unsubscribe();
+    expect(observed).toEqual(expectedEvents);
+    expect(observed).not.toContainEqual(
+      expect.objectContaining({ type: "pickup.completed" }),
+    );
+  });
+
+  it("emits the same terminal result cue independently for a different order number", () => {
+    const observed: CustomerExperienceEvent[] = [];
+    const unsubscribe = onCustomerExperienceEvent((event) => {
+      observed.push(event);
+    });
+    installCustomerAudioCueEventSource();
+
+    const checkoutStore = useCheckoutStore();
+    for (const orderNo of ["VEM-ORDER-197-A", "VEM-ORDER-197-B"]) {
+      checkoutStore.applyTransaction(
+        transactionSnapshot({
+          orderId: `order-${orderNo}`,
+          orderNo,
+          paymentStatus: "succeeded",
+          orderStatus: "fulfilled",
+          nextAction: "success",
+          vending: {
+            commandNo: `VEND-${orderNo}`,
+            status: "succeeded",
+            lastError: null,
+            pickupReminder: null,
+          },
+          updatedAt: "2026-07-05T12:36:10.000Z",
+        }),
+      );
+    }
+
+    unsubscribe();
+    expect(observed).toEqual([
+      {
+        type: "dispense.succeeded",
+        orderKey: "VEM-ORDER-197-A",
+      },
+      {
+        type: "dispense.succeeded",
+        orderKey: "VEM-ORDER-197-B",
+      },
+    ]);
+  });
+
+  it("does not emit transaction audio cue events for payment failed, payment expired, or closed results", () => {
+    const observed: CustomerExperienceEvent[] = [];
+    const unsubscribe = onCustomerExperienceEvent((event) => {
+      observed.push(event);
+    });
+    installCustomerAudioCueEventSource();
+
+    const checkoutStore = useCheckoutStore();
+    const reservedResults = [
+      ["payment_failed", "pending_payment", "failed"],
+      ["payment_expired", "payment_expired", "expired"],
+      ["closed", "closed", "canceled"],
+    ] as const;
+
+    for (const [nextAction, orderStatus, paymentStatus] of reservedResults) {
+      checkoutStore.applyTransaction(
+        transactionSnapshot({
+          orderId: `order-197-${nextAction}`,
+          orderNo: `VEM-ORDER-197-${nextAction}`,
+          paymentStatus,
+          orderStatus,
+          nextAction,
+          vending: null,
+          updatedAt: "2026-07-05T12:37:00.000Z",
+        }),
+      );
+    }
+
+    unsubscribe();
+    expect(observed).toEqual([]);
   });
 });
