@@ -4,6 +4,7 @@
 
 pub mod mqtt;
 pub mod process;
+#[cfg(unix)]
 pub mod pty;
 pub mod sensitive;
 pub mod sqlite;
