@@ -1,14 +1,22 @@
 <script setup lang="ts">
-import { onMounted } from "vue";
+import { computed, onMounted, onUnmounted } from "vue";
 import { RouterView, useRoute, useRouter } from "vue-router";
 
+import { installCustomerAudioCueEventSource } from "@/composables/useCustomerAudioCueEventSource";
 import { useReturnHomeOnCustomerDeparture } from "@/composables/usePresenceInteraction";
 import { installActiveUiDebugRuntimeScenario } from "@/dev/runtime-scenario-loader";
 
 const route = useRoute();
 const router = useRouter();
+const cleanupCustomerAudioCueEventSource = installCustomerAudioCueEventSource({
+  routeName: computed(() => route.name),
+});
 useReturnHomeOnCustomerDeparture();
 installActiveUiDebugRuntimeScenario();
+
+onUnmounted(() => {
+  cleanupCustomerAudioCueEventSource();
+});
 
 function isDevDirectRouteAllowed(): boolean {
   if (!import.meta.env.DEV) return false;

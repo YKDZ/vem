@@ -81,12 +81,14 @@ vi.mock("@/native/vision", () => ({
   openVisionTryOnSession: openVisionTryOnSessionMock,
 }));
 
+import type { CustomerExperienceEvent } from "@/customer-events/events";
 import type { VisionProfileSubscriptionHandlers } from "@/native/vision";
 import type {
   MachineCatalogItem,
   MachineCatalogSlotCandidate,
 } from "@/types/catalog";
 
+import { onCustomerExperienceEvent } from "@/composables/useCustomerExperienceEvents";
 import {
   resetCustomerPresenceSessionForTests,
   useReturnHomeOnCustomerDeparture,
@@ -109,6 +111,7 @@ let mountedApp: App<Element> | null = null;
 let pinia: ReturnType<typeof createPinia>;
 let latestVisionHandlers: VisionProfileSubscriptionHandlers | null = null;
 let propertyRestorers: Array<() => void> = [];
+let customerExperienceEventCleanups: Array<() => void> = [];
 
 beforeEach(() => {
   resetCustomerPresenceSessionForTests();
@@ -204,6 +207,9 @@ beforeEach(() => {
 afterEach(() => {
   resetCustomerPresenceSessionForTests();
   unmountMountedView();
+  for (const cleanup of customerExperienceEventCleanups.splice(0).reverse()) {
+    cleanup();
+  }
   vi.useRealTimers();
   vi.restoreAllMocks();
   for (const restore of propertyRestorers.splice(0).reverse()) {
@@ -218,6 +224,40 @@ function unmountMountedView(): void {
   }
   mountedApp = null;
   document.body.innerHTML = "";
+}
+
+function recordCustomerExperienceEvents(): CustomerExperienceEvent[] {
+  const observed: CustomerExperienceEvent[] = [];
+  const cleanup = onCustomerExperienceEvent((event) => {
+    observed.push(event);
+  });
+  customerExperienceEventCleanups.push(cleanup);
+  return observed;
+}
+
+function requireElement<T extends Element>(
+  host: HTMLElement,
+  selector: string,
+): T {
+  const element = host.querySelector<T>(selector);
+  expect(element).toBeTruthy();
+  return element!;
+}
+
+function requireButtonByText(
+  host: HTMLElement,
+  text: string,
+  match: "includes" | "exact" = "includes",
+): HTMLButtonElement {
+  const button = Array.from(
+    host.querySelectorAll<HTMLButtonElement>("button"),
+  ).find((candidate) =>
+    match === "exact"
+      ? candidate.textContent?.trim() === text
+      : candidate.textContent?.includes(text),
+  );
+  expect(button).toBeTruthy();
+  return button!;
 }
 
 function makeCatalogItem(): MachineCatalogItem {
@@ -845,7 +885,7 @@ describe("sale readiness UI flow", () => {
     expect(categoryButton).toBeTruthy();
     expect(categoryButton?.disabled).toBe(false);
 
-    categoryButton?.click();
+    categoryButton!.click();
     await nextTick();
 
     expect(host.textContent).toContain("基础短袖");
@@ -869,14 +909,14 @@ describe("sale readiness UI flow", () => {
       (button) => button.textContent?.includes("T恤"),
     );
     expect(categoryButton).toBeTruthy();
-    categoryButton?.click();
+    categoryButton!.click();
     await nextTick();
 
     const productButton = Array.from(host.querySelectorAll("button")).find(
       (button) => button.textContent?.includes("基础短袖"),
     );
     expect(productButton).toBeTruthy();
-    productButton?.click();
+    productButton!.click();
     await nextTick();
 
     expect(routerPushMock).toHaveBeenCalledWith({
@@ -996,6 +1036,142 @@ describe("sale readiness UI flow", () => {
     expectRecognitionDetailsHidden(host);
   });
 
+  it("emits product selected through the customer experience event bus when a sale-ready product is explicitly selected", async () => {
+    const item = makeCatalogItem();
+    const observed = recordCustomerExperienceEvents();
+    useCatalogStore().applySnapshot({
+      items: [item],
+      source: "local_stock",
+      planogramVersion: "PLAN-1",
+      lastUpdatedAt: "2026-06-04T00:00:00Z",
+    });
+    routeParams.catalogKey = item.catalogKey;
+
+    const host = await mountView(ProductDetailView);
+
+    const buyButton = requireButtonByText(host, "立即购买");
+    expect(buyButton.disabled).toBe(false);
+    buyButton.click();
+    await nextTick();
+
+    expect(routerPushMock).toHaveBeenCalledWith("/checkout");
+    expect(observed).toEqual([{ type: "product.selected" }]);
+    expect("orderKey" in observed[0]).toBe(false);
+  });
+
+  it("does not emit product selected for passive catalog navigation, restored detail routes, or variant adjustment", async () => {
+    const item = makeCatalogItem();
+    const secondVariant: MachineCatalogItem = {
+      ...item,
+      slotId: "550e8400-e29b-41d4-a716-446655440021",
+      inventoryId: "550e8400-e29b-41d4-a716-446655440022",
+      variantId: "550e8400-e29b-41d4-a716-446655440023",
+      sku: "TEE-BASIC-L-WHITE",
+      size: "L",
+      color: "白色",
+    };
+    const observed = recordCustomerExperienceEvents();
+    useCatalogStore().applySnapshot({
+      items: [item, secondVariant],
+      source: "local_stock",
+      planogramVersion: "PLAN-1",
+      lastUpdatedAt: "2026-06-04T00:00:00Z",
+    });
+
+    let host = await mountView(CatalogView);
+
+    const nextSlideButton = requireElement<HTMLButtonElement>(
+      host,
+      'button[aria-label="下一张"]',
+    );
+    expect(nextSlideButton.disabled).toBe(false);
+    nextSlideButton.click();
+    await nextTick();
+    const categoryButton = requireButtonByText(host, "T恤");
+    expect(categoryButton.disabled).toBe(false);
+    categoryButton.click();
+    await nextTick();
+    const genderButton = requireButtonByText(host, "男款", "exact");
+    expect(genderButton.disabled).toBe(false);
+    genderButton.click();
+    await nextTick();
+    const allGenderButton = requireButtonByText(host, "全部", "exact");
+    expect(allGenderButton.disabled).toBe(false);
+    allGenderButton.click();
+    await nextTick();
+    requireElement<HTMLElement>(host, ".product-scroll").dispatchEvent(
+      new Event("scroll"),
+    );
+    await nextTick();
+    const productButton = requireButtonByText(host, "基础短袖");
+    expect(productButton.disabled).toBe(false);
+    productButton.click();
+    await nextTick();
+
+    expect(routerPushMock).toHaveBeenCalledWith({
+      name: "product-detail",
+      params: { catalogKey: item.catalogKey },
+    });
+    expect(observed).toEqual([]);
+
+    unmountMountedView();
+    routeParams.catalogKey = item.catalogKey;
+    host = await mountView(ProductDetailView);
+
+    expect(host.textContent).toContain("基础短袖");
+    expect(observed).toEqual([]);
+
+    const sizeLButton = requireButtonByText(host, "L", "exact");
+    expect(sizeLButton.disabled).toBe(false);
+    sizeLButton.click();
+    await nextTick();
+    const colorWhiteButton = requireButtonByText(host, "白色", "exact");
+    expect(colorWhiteButton.disabled).toBe(false);
+    colorWhiteButton.click();
+    await nextTick();
+
+    expect(useCheckoutStore().selectedItem).toBeNull();
+    expect(observed).toEqual([]);
+  });
+
+  it("does not emit product selected for non-sale-ready product interactions", async () => {
+    const item: MachineCatalogItem = {
+      ...makeCatalogItem(),
+      physicalStock: 0,
+      saleableStock: 0,
+      slotSalesState: "sold_out",
+      slotCandidates: [],
+      variantCandidates: [
+        {
+          ...makeCatalogItem().variantCandidates[0],
+          physicalStock: 0,
+          saleableStock: 0,
+          slotSalesState: "sold_out",
+          slotCandidates: [],
+        },
+      ],
+    };
+    const observed = recordCustomerExperienceEvents();
+    useCatalogStore().applySnapshot({
+      items: [item],
+      source: "local_stock",
+      planogramVersion: "PLAN-1",
+      lastUpdatedAt: "2026-06-04T00:00:00Z",
+    });
+    routeParams.catalogKey = item.catalogKey;
+
+    const host = await mountView(ProductDetailView);
+
+    const buyButton = requireButtonByText(host, "暂不可购买");
+    expect(buyButton.disabled).toBe(true);
+    buyButton.click();
+    await nextTick();
+
+    expect(routerPushMock).not.toHaveBeenCalledWith("/checkout");
+    expect(useCheckoutStore().selectedItem).toBeNull();
+    expect(observed).toEqual([]);
+  });
+
   it("shows routed product detail try-on entry only for the selected variant silhouette", async () => {
     const item = makeCatalogItem();
     const silhouettedVariant: MachineCatalogItem = {
@@ -1026,7 +1202,7 @@ describe("sale readiness UI flow", () => {
       (button) => button.textContent?.trim() === "L",
     );
     expect(sizeLButton).toBeTruthy();
-    sizeLButton?.click();
+    sizeLButton!.click();
     await nextTick();
 
     const tryOnEntry = host.querySelector<HTMLButtonElement>(
@@ -1035,7 +1211,7 @@ describe("sale readiness UI flow", () => {
     expect(tryOnEntry).toBeTruthy();
     expect(tryOnEntry?.disabled).toBe(false);
 
-    tryOnEntry?.click();
+    tryOnEntry!.click();
     await nextTick();
 
     expect(routerPushMock).toHaveBeenCalledWith({
@@ -1050,7 +1226,7 @@ describe("sale readiness UI flow", () => {
       (button) => button.textContent?.trim() === "M",
     );
     expect(sizeMButton).toBeTruthy();
-    sizeMButton?.click();
+    sizeMButton!.click();
     await nextTick();
 
     expect(host.querySelector('[data-test="try-on-entry"]')).toBeNull();
@@ -1346,7 +1522,7 @@ describe("sale readiness UI flow", () => {
     );
     expect(buyButton).toBeTruthy();
     expect(buyButton?.disabled).toBe(false);
-    buyButton?.click();
+    buyButton!.click();
     await nextTick();
 
     expect(routerPushMock).toHaveBeenCalledWith("/checkout");
@@ -1366,7 +1542,7 @@ describe("sale readiness UI flow", () => {
     );
     expect(submitButton).toBeTruthy();
     expect(submitButton?.disabled).toBe(false);
-    submitButton?.click();
+    submitButton!.click();
 
     await vi.waitFor(() => {
       expect(createOrderMock).toHaveBeenCalledOnce();
@@ -1437,7 +1613,7 @@ describe("sale readiness UI flow", () => {
     );
     expect(buyButton).toBeTruthy();
     expect(buyButton?.disabled).toBe(false);
-    buyButton?.click();
+    buyButton!.click();
     await nextTick();
 
     expect(routerPushMock).toHaveBeenCalledWith("/checkout");
@@ -1457,7 +1633,7 @@ describe("sale readiness UI flow", () => {
     );
     expect(submitButton).toBeTruthy();
     expect(submitButton?.disabled).toBe(false);
-    submitButton?.click();
+    submitButton!.click();
 
     await vi.waitFor(() => {
       expect(createOrderMock).toHaveBeenCalledOnce();
@@ -1509,7 +1685,10 @@ describe("sale readiness UI flow", () => {
           ?.getAttribute("src"),
       ).toBe(previewUrl);
     });
-    host.querySelector<HTMLButtonElement>('[data-test="try-on-exit"]')?.click();
+    requireElement<HTMLButtonElement>(
+      host,
+      '[data-test="try-on-exit"]',
+    ).click();
     await nextTick();
 
     expect(stop).toHaveBeenCalledWith("user_exit");
@@ -1712,7 +1891,8 @@ describe("sale readiness UI flow", () => {
     const categoryButton = Array.from(host.querySelectorAll("button")).find(
       (button) => button.textContent?.includes("T恤"),
     );
-    categoryButton?.click();
+    expect(categoryButton).toBeTruthy();
+    categoryButton!.click();
     await nextTick();
 
     expect(host.textContent).toContain("基础短袖");

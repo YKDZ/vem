@@ -41,6 +41,7 @@ type VisionPresenceState = {
   departedAt: string | null;
   lastChangedAt: string | null;
   source: "profile_result" | "presence_status" | "person_departed" | null;
+  restoredFromRefresh: boolean;
 };
 
 const PROFILE_CONFIDENCE_THRESHOLD = 0.5;
@@ -55,6 +56,7 @@ const EMPTY_PRESENCE: VisionPresenceState = {
   departedAt: null,
   lastChangedAt: null,
   source: null,
+  restoredFromRefresh: false,
 };
 
 export const useVisionStore = defineStore("vision", {
@@ -79,14 +81,17 @@ export const useVisionStore = defineStore("vision", {
       state.presence.occupancyState !== "multiple",
   },
   actions: {
-    applyStatus(status: VisionStatus): void {
+    applyStatus(
+      status: VisionStatus,
+      options: { restoredFromRefresh?: boolean } = {},
+    ): void {
       this.enabled = status.enabled;
       this.online = status.online;
       this.message = status.message;
       this.updatedAt = status.updatedAt ?? new Date().toISOString();
       if (status.latestDiagnosticPayload !== undefined) {
         this.latestDiagnosticPayload = status.latestDiagnosticPayload;
-        this.applyPresenceFromDiagnostic(this.latestDiagnosticPayload);
+        this.applyPresenceFromDiagnostic(this.latestDiagnosticPayload, options);
         return;
       }
       if (!status.enabled || !status.online) {
@@ -129,20 +134,29 @@ export const useVisionStore = defineStore("vision", {
       this.latestDiagnosticPayload = null;
       this.presence = { ...EMPTY_PRESENCE };
     },
-    applyPresenceFromDiagnostic(value: unknown): void {
+    applyPresenceFromDiagnostic(
+      value: unknown,
+      options: { restoredFromRefresh?: boolean } = {},
+    ): void {
       const profileDiagnostic = parseProfileResultDiagnostic(value);
       if (profileDiagnostic) {
         this.applyPresenceFromProfileResult(profileDiagnostic.payload);
+        this.presence.restoredFromRefresh =
+          options.restoredFromRefresh === true;
         return;
       }
       const presenceDiagnostic = parsePresenceStatusDiagnostic(value);
       if (presenceDiagnostic) {
         this.applyPresenceFromPresenceStatus(presenceDiagnostic.payload);
+        this.presence.restoredFromRefresh =
+          options.restoredFromRefresh === true;
         return;
       }
       const departureDiagnostic = parsePersonDepartedDiagnostic(value);
       if (departureDiagnostic) {
         this.applyPresenceFromPersonDeparted(departureDiagnostic.payload);
+        this.presence.restoredFromRefresh =
+          options.restoredFromRefresh === true;
         return;
       }
       this.presence = { ...EMPTY_PRESENCE };
@@ -167,6 +181,7 @@ export const useVisionStore = defineStore("vision", {
         departedAt: personPresent ? null : this.presence.departedAt,
         lastChangedAt: payload.detectedAt,
         source: "profile_result",
+        restoredFromRefresh: false,
       };
     },
     applyPresenceFromPresenceStatus(
@@ -194,6 +209,7 @@ export const useVisionStore = defineStore("vision", {
         departedAt: personPresent ? null : this.presence.departedAt,
         lastChangedAt: payload.detectedAt,
         source: "presence_status",
+        restoredFromRefresh: false,
       };
     },
     applyPresenceFromPersonDeparted(
@@ -209,10 +225,13 @@ export const useVisionStore = defineStore("vision", {
         departedAt: payload.detectedAt,
         lastChangedAt: payload.detectedAt,
         source: "person_departed",
+        restoredFromRefresh: false,
       };
     },
     async refresh(): Promise<void> {
-      this.applyStatus(await daemonClient.getVisionStatus());
+      this.applyStatus(await daemonClient.getVisionStatus(), {
+        restoredFromRefresh: true,
+      });
     },
   },
 });

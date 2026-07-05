@@ -26,6 +26,16 @@ export type CheckoutFlowStep =
   | "dispensing"
   | "result";
 
+export type ApplyTransactionOptions = {
+  restored?: boolean;
+};
+
+export type CheckoutTransactionObservation = {
+  orderKey: string;
+  nextAction: MachineOrderStatusNextAction;
+  restored: boolean;
+};
+
 export function normalizeNextAction(
   nextAction: string | null | undefined,
 ): MachineOrderStatusNextAction {
@@ -346,6 +356,7 @@ export const useCheckoutStore = defineStore("checkout", {
     currentOrder: null as CreateMachineOrderResponse | null,
     status: null as MachineOrderStatus | null,
     transaction: null as TransactionSnapshot | null,
+    transactionObservation: null as CheckoutTransactionObservation | null,
     flowStep: "idle" as CheckoutFlowStep,
     nowMs: Date.now(),
     loading: false,
@@ -401,6 +412,7 @@ export const useCheckoutStore = defineStore("checkout", {
       this.currentOrder = null;
       this.status = null;
       this.transaction = null;
+      this.transactionObservation = null;
       this.flowStep = "detail";
       this.error = null;
       this.nowMs = Date.now();
@@ -410,6 +422,7 @@ export const useCheckoutStore = defineStore("checkout", {
       this.currentOrder = null;
       this.status = null;
       this.transaction = null;
+      this.transactionObservation = null;
       this.flowStep = "idle";
       this.error = null;
       this.loading = false;
@@ -436,7 +449,11 @@ export const useCheckoutStore = defineStore("checkout", {
       );
       writeDismissedTerminalOrderNos(this.dismissedTerminalOrderNos);
     },
-    applyTransaction(snapshot: TransactionSnapshot): void {
+    applyTransaction(
+      snapshot: TransactionSnapshot,
+      options: ApplyTransactionOptions = {},
+    ): void {
+      const restored = options.restored === true;
       if (this.shouldIgnoreTransaction(snapshot)) {
         if (
           this.transaction?.orderNo === snapshot.orderNo ||
@@ -445,6 +462,7 @@ export const useCheckoutStore = defineStore("checkout", {
           this.transaction = null;
           this.currentOrder = null;
           this.status = null;
+          this.transactionObservation = null;
           if (
             this.flowStep === "payment" ||
             this.flowStep === "dispensing" ||
@@ -461,6 +479,7 @@ export const useCheckoutStore = defineStore("checkout", {
       if (!snapshot.orderNo) {
         this.currentOrder = null;
         this.status = null;
+        this.transactionObservation = null;
         return;
       }
 
@@ -533,6 +552,11 @@ export const useCheckoutStore = defineStore("checkout", {
         refund: null,
         nextAction,
         serverTime: snapshot.updatedAt,
+      };
+      this.transactionObservation = {
+        orderKey: this.status.orderNo,
+        nextAction,
+        restored,
       };
 
       this.paymentCodeMessage =

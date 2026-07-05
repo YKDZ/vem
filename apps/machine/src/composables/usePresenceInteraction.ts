@@ -11,7 +11,10 @@ import { useRoute, useRouter, type RouteLocationRaw } from "vue-router";
 
 import { useVisionStore } from "@/stores/vision";
 
+import { recordCustomerAudioCueSourceFact } from "./useCustomerAudioCueEventSource";
+
 const DEFAULT_PRESENCE_STALE_MS = 15_000;
+const DEFAULT_CUSTOMER_ASSISTANCE_PROMPT_MS = 20_000;
 const DEFAULT_INACTIVITY_DEPARTURE_MS = 45_000;
 const RETURN_HOME_ROUTE_NAMES = new Set([
   "product-detail",
@@ -35,6 +38,7 @@ export type PresenceInteractionState = {
 
 export type PresenceInteractionOptions = {
   presenceStaleMs?: number;
+  customerAssistancePromptMs?: number;
   inactivityDepartureMs?: number;
 };
 
@@ -60,6 +64,7 @@ const presenceClass = computed(() =>
 
 let started = false;
 let staleTimer: ReturnType<typeof setTimeout> | null = null;
+let assistancePromptTimer: ReturnType<typeof setTimeout> | null = null;
 let inactivityTimer: ReturnType<typeof setTimeout> | null = null;
 let stopVisionWatch: WatchStopHandle | null = null;
 let initializedFromCurrentDiagnostic = false;
@@ -70,6 +75,9 @@ function optionsWithDefaults(
 ): Required<PresenceInteractionOptions> {
   return {
     presenceStaleMs: options.presenceStaleMs ?? DEFAULT_PRESENCE_STALE_MS,
+    customerAssistancePromptMs:
+      options.customerAssistancePromptMs ??
+      DEFAULT_CUSTOMER_ASSISTANCE_PROMPT_MS,
     inactivityDepartureMs:
       options.inactivityDepartureMs ?? DEFAULT_INACTIVITY_DEPARTURE_MS,
   };
@@ -82,6 +90,10 @@ function clearTimer(timer: ReturnType<typeof setTimeout> | null): null {
 
 function clearStaleTimer(): void {
   staleTimer = clearTimer(staleTimer);
+}
+
+function clearAssistancePromptTimer(): void {
+  assistancePromptTimer = clearTimer(assistancePromptTimer);
 }
 
 function clearInactivityTimer(): void {
@@ -116,7 +128,20 @@ function restartInactivityTimer(): void {
   }, activeOptions.inactivityDepartureMs);
 }
 
+function restartAssistancePromptTimer(): void {
+  clearAssistancePromptTimer();
+  if (!activeOptions || !state.value.personPresent) return;
+  assistancePromptTimer = setTimeout(() => {
+    recordCustomerAudioCueSourceFact({
+      type: "customer_session.idle",
+      idleEvent: "assistance_prompt",
+      occurredAt: nowIso(),
+    });
+  }, activeOptions.customerAssistancePromptMs);
+}
+
 function restartDepartureTimers(): void {
+  restartAssistancePromptTimer();
   restartStaleTimer();
   restartInactivityTimer();
 }
@@ -124,7 +149,6 @@ function restartDepartureTimers(): void {
 function markPresent(input: {
   source: Exclude<PresenceInteractionSource, "inactivity" | "unavailable">;
   seenAt: string;
-  suppressAudioCue?: boolean;
 }): void {
   state.value = {
     personPresent: true,
@@ -141,7 +165,9 @@ function markDeparted(input: {
   departedAt: string | null;
   lastSeenAt?: string | null;
   keepLastSeenAt?: boolean;
+  suppressAudioCue?: boolean;
 }): void {
+  const wasPersonPresent = state.value.personPresent;
   state.value = {
     personPresent: false,
     lastSeenAt: input.keepLastSeenAt
@@ -152,7 +178,27 @@ function markDeparted(input: {
     source: input.source,
   };
   clearStaleTimer();
+  clearAssistancePromptTimer();
   clearInactivityTimer();
+  if (
+    (input.source === "vision" || input.source === "inactivity") &&
+    wasPersonPresent &&
+    !input.suppressAudioCue
+  ) {
+    recordCustomerAudioCueSourceFact({
+      type: "customer_session.idle",
+      idleEvent: "sleep",
+      occurredAt: input.departedAt ?? nowIso(),
+    });
+  }
+  if (input.source === "vision") {
+    recordCustomerAudioCueSourceFact({
+      type: "vision.presence",
+      personPresent: false,
+      occupancyState: "none",
+      observedAt: input.departedAt ?? nowIso(),
+    });
+  }
 }
 
 function registerInteraction(): void {
@@ -166,8 +212,13 @@ function registerInteraction(): void {
       source: "local_interaction",
       seenAt,
     });
+    recordCustomerAudioCueSourceFact({
+      type: "local.awakened",
+      requestedAt: seenAt,
+    });
     return;
   }
+  restartAssistancePromptTimer();
   restartInactivityTimer();
 }
 
@@ -210,7 +261,8 @@ function startCustomerPresenceSession(
   stopVisionWatch = watch(
     () => ({ ...visionStore.presence }),
     (presence) => {
-      const suppressAudioCue = !initializedFromCurrentDiagnostic;
+      const suppressAudioCue =
+        !initializedFromCurrentDiagnostic || presence.restoredFromRefresh;
       if (!presence.source) {
         markDeparted({
           source: "unavailable",
@@ -226,6 +278,7 @@ function startCustomerPresenceSession(
           departedAt: presence.departedAt ?? presence.lastChangedAt,
           lastSeenAt: presence.lastSeenAt,
           keepLastSeenAt: presence.source !== "person_departed",
+          suppressAudioCue,
         });
         initializedFromCurrentDiagnostic = true;
         return;
@@ -239,15 +292,24 @@ function startCustomerPresenceSession(
           source: "vision",
           departedAt: presence.lastChangedAt,
           keepLastSeenAt: true,
+          suppressAudioCue,
         });
         initializedFromCurrentDiagnostic = true;
         return;
       }
 
+      const observedAt =
+        presence.lastSeenAt ?? presence.lastChangedAt ?? nowIso();
       markPresent({
         source: "vision",
-        seenAt: presence.lastSeenAt ?? presence.lastChangedAt ?? nowIso(),
-        suppressAudioCue,
+        seenAt: observedAt,
+      });
+      recordCustomerAudioCueSourceFact({
+        type: "vision.presence",
+        personPresent: true,
+        occupancyState: presence.occupancyState,
+        observedAt,
+        restored: suppressAudioCue,
       });
       initializedFromCurrentDiagnostic = true;
     },
@@ -259,6 +321,7 @@ export function resetCustomerPresenceSessionForTests(): void {
   stopVisionWatch?.();
   stopVisionWatch = null;
   clearStaleTimer();
+  clearAssistancePromptTimer();
   clearInactivityTimer();
   removeInteractionListeners();
   started = false;
