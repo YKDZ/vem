@@ -1062,7 +1062,7 @@ fn validate_network_settings_payload(
         Some("SSID is required")
     } else if password.is_empty() {
         Some("Wi-Fi password is required")
-    } else if ssid.as_bytes().len() > 32 {
+    } else if ssid.len() > 32 {
         Some("SSID must be at most 32 bytes")
     } else if password.chars().count() < 8 || password.chars().count() > 63 {
         Some("WPA passphrase must be between 8 and 63 characters")

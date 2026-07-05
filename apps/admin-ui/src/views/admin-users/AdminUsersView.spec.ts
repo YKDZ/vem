@@ -65,7 +65,16 @@ const PassthroughStub = defineComponent({
 const ButtonStub = defineComponent({
   emits: ["click"],
   setup(_, { slots, emit }) {
-    return () => h("button", { onClick: () => emit("click") }, slots.default?.());
+    return () =>
+      h(
+        "button",
+        {
+          onClick: () => {
+            emit("click");
+          },
+        },
+        slots.default?.(),
+      );
   },
 });
 

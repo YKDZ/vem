@@ -562,14 +562,18 @@ describe("shared API contract", () => {
         action: "reject_machine_stock",
         note: "payload conflicts",
       });
-      expect(
+      const manualCorrection =
         adminStockReconciliationResolveRequestSchema.parse({
           action: "manual_correct",
           note: "counted on site",
           correctedOnHandQty: 4,
           clearBlocker: true,
-        }).correctedOnHandQty,
-      ).toBe(4);
+        });
+      expect(manualCorrection.action).toBe("manual_correct");
+      if (manualCorrection.action !== "manual_correct") {
+        throw new Error("expected manual correction resolution");
+      }
+      expect(manualCorrection.correctedOnHandQty).toBe(4);
       expect(() =>
         adminStockReconciliationResolveRequestSchema.parse({
           action: "manual_correct",

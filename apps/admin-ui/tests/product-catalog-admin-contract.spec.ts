@@ -5,9 +5,16 @@ import {
   adminProductResponseSchema,
   adminProductVariantResponseSchema,
 } from "@vem/shared";
+import { z as zod } from "zod";
 
 const ADMIN_USERNAME = process.env.E2E_ADMIN_USERNAME ?? "admin";
 const ADMIN_PASSWORD = process.env.E2E_ADMIN_PASSWORD ?? "AdminPassword123!";
+
+const adminApiResponseSchema = zod.strictObject({
+  code: zod.number(),
+  message: zod.string(),
+  data: zod.unknown(),
+});
 
 async function login(page: Page): Promise<void> {
   await page.goto("/login");
@@ -22,11 +29,7 @@ async function parseAdminData<TSchema extends z.ZodType>(
   schema: TSchema,
 ): Promise<z.output<TSchema>> {
   expect(response.ok()).toBe(true);
-  const body = (await response.json()) as {
-    code: number;
-    message: string;
-    data: unknown;
-  };
+  const body = adminApiResponseSchema.parse(await response.json());
   expect(body.code).toBe(0);
   return schema.parse(body.data);
 }

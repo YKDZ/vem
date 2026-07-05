@@ -381,18 +381,6 @@ function machineGeoLocationFromRow(
   };
 }
 
-function machineSnapshot<T extends MachineRecord>(machine: T) {
-  const { geoLatitude, geoLongitude, geoTimezone, ...rest } = machine;
-  return {
-    ...rest,
-    geoLocation: machineGeoLocationFromRow({
-      geoLatitude,
-      geoLongitude,
-      geoTimezone,
-    }),
-  };
-}
-
 function machineLocationAuditSnapshot(machine: MachineRecord) {
   return {
     locationLabel: machine.locationLabel,

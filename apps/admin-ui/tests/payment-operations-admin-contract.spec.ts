@@ -25,10 +25,45 @@ test.describe("Payment Operations admin API contract", () => {
 
     const configPayload = await page.evaluate(
       async ({ appId, merchantNo }) => {
+        type UpsertPaymentProviderConfig = (body: {
+          providerCode: "alipay";
+          machineId: null;
+          merchantNo: string;
+          appId: string;
+          status: "enabled";
+          publicConfigJson: {
+            mode: "sandbox";
+            gatewayUrl: string;
+            keyType: "PKCS8";
+            qrExpiresMinutes: number;
+          };
+          sensitiveConfigJson: {
+            privateKeyPem: string;
+            appCertPem: string;
+            alipayPublicCertPem: string;
+            alipayRootCertPem: string;
+          };
+        }) => Promise<unknown>;
+
+        function isRecord(value: unknown): value is Record<string, unknown> {
+          return typeof value === "object" && value !== null;
+        }
+
+        function isPaymentsModule(value: unknown): value is {
+          upsertPaymentProviderConfig: UpsertPaymentProviderConfig;
+        } {
+          return (
+            isRecord(value) &&
+            typeof value.upsertPaymentProviderConfig === "function"
+          );
+        }
+
         const paymentsModulePath = "/src/api/payments.ts";
-        const { upsertPaymentProviderConfig } = (await import(
-          paymentsModulePath
-        )) as typeof import("../src/api/payments");
+        const paymentsModule: unknown = await import(paymentsModulePath);
+        if (!isPaymentsModule(paymentsModule)) {
+          throw new Error("payments API module is unavailable");
+        }
+        const { upsertPaymentProviderConfig } = paymentsModule;
         return await upsertPaymentProviderConfig({
           providerCode: "alipay",
           machineId: null,

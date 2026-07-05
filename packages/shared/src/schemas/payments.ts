@@ -227,11 +227,12 @@ export const upsertPaymentProviderConfigSchema = z
       });
     }
     if (value.providerCode === "wechat_pay") {
-      const pub = value.publicConfigJson ?? {};
-      const sensitive = (value.sensitiveConfigJson ?? {}) as Record<
-        string,
-        unknown
-      >;
+      const pub = z
+        .record(z.string(), z.unknown())
+        .parse(value.publicConfigJson ?? {});
+      const sensitive = z
+        .record(z.string(), z.unknown())
+        .parse(value.sensitiveConfigJson ?? {});
 
       // merchantCertificateSerialNo or deprecated certificateSerialNo must be present
       const hasMerchantSerial =

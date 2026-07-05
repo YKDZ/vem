@@ -5,6 +5,11 @@ import type {
   AdminMachineSlotResponse,
   MachineEnvironmentControlRequest,
 } from "@vem/shared";
+import type {
+  AdminCreateMachineRequest,
+  AdminCreateMachineSlotRequest,
+  AdminUpdateMachineRequest,
+} from "@vem/shared";
 
 import {
   machineCommands,
@@ -12,11 +17,6 @@ import {
   machines,
   machineSlots,
 } from "@vem/db";
-import {
-  type AdminCreateMachineRequest,
-  type AdminCreateMachineSlotRequest,
-  type AdminUpdateMachineRequest,
-} from "@vem/shared";
 
 type MachineInsert = typeof machines.$inferInsert;
 type MachineSlotInsert = typeof machineSlots.$inferInsert;
@@ -62,7 +62,7 @@ type MachineResponseExtras = {
   latestHeartbeatReportedAt?: Date | string | null;
   latestEnvironment?: AdminMachineResponse["latestEnvironment"];
   latestEnvironmentCommand?: MachineCommandResponseRow | null;
-  productionPilotReadiness?: unknown | null;
+  productionPilotReadiness?: AdminMachineResponse["productionPilotReadiness"];
 };
 
 function toIsoString(value: Date | string): string {
@@ -83,7 +83,7 @@ function toJsonRecordOrNull(
     return null;
   }
   return typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
+    ? Object.fromEntries(Object.entries(value))
     : null;
 }
 

@@ -20,8 +20,8 @@ vi.mock("@/api/request", () => ({
 describe("recovery and maintenance admin api contracts", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(getContract).mockResolvedValue({} as never);
-    vi.mocked(postContract).mockResolvedValue({} as never);
+    vi.mocked(getContract).mockResolvedValue({});
+    vi.mocked(postContract).mockResolvedValue({});
   });
 
   it("uses schema-bound helpers for order recovery actions and refund requests", async () => {
@@ -84,16 +84,20 @@ describe("recovery and maintenance admin api contracts", () => {
     vi.mocked(postContract).mockImplementation(
       async (_url, bodySchema, _responseSchema, body) => {
         (bodySchema as { parse(value: unknown): unknown }).parse(body);
-        return {} as never;
+        throw new Error("expected invalid recovery action body");
       },
     );
 
+    const directDatabasePatchRecoveryAction = {
+      action: "request_refund" as const,
+      note: "operator confirmed no dispense",
+      directDatabasePatch: true,
+    };
     await expect(
-      createOrderRecoveryAction("550e8400-e29b-41d4-a716-446655440000", {
-        action: "request_refund",
-        note: "operator confirmed no dispense",
-        directDatabasePatch: true,
-      } as never),
+      createOrderRecoveryAction(
+        "550e8400-e29b-41d4-a716-446655440000",
+        directDatabasePatchRecoveryAction,
+      ),
     ).rejects.toThrow();
   });
 });

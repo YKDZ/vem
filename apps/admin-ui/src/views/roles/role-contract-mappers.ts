@@ -1,4 +1,4 @@
-import type { PermissionCode, RoleStatus } from "@vem/shared";
+import type { RoleStatus } from "@vem/shared";
 import type { z } from "zod";
 
 import { createRoleSchema, updateRoleSchema } from "@vem/shared";
@@ -24,7 +24,7 @@ export function toCreateRoleContract(
     name: form.name,
     description: nullableText(form.description),
     status: form.status,
-    permissionCodes: form.permissionCodes as PermissionCode[],
+    permissionCodes: form.permissionCodes,
   });
 }
 
@@ -36,6 +36,6 @@ export function toUpdateRoleContract(
     name: form.name,
     description: nullableText(form.description),
     status: form.status,
-    permissionCodes: form.permissionCodes as PermissionCode[],
+    permissionCodes: form.permissionCodes,
   });
 }

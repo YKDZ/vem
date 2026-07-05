@@ -67,20 +67,20 @@ export function mapMachineFormToContract(
   form: MachineForm,
 ): AdminCreateMachineRequest {
   const parsed = machineFormSchema.parse(form);
-  if (
-    parsed.includeGeoLocation &&
-    (typeof parsed.geoLatitude !== "number" ||
-      typeof parsed.geoLongitude !== "number")
-  ) {
-    throw new Error("Machine Geo Location is incomplete");
+  let geoLocation: z.input<typeof createMachineSchema>["geoLocation"] = null;
+  if (parsed.includeGeoLocation) {
+    if (
+      typeof parsed.geoLatitude !== "number" ||
+      typeof parsed.geoLongitude !== "number"
+    ) {
+      throw new Error("Machine Geo Location is incomplete");
+    }
+    geoLocation = {
+      latitude: parsed.geoLatitude,
+      longitude: parsed.geoLongitude,
+      timezone: parsed.geoTimezone.trim(),
+    };
   }
-  const geoLocation = parsed.includeGeoLocation
-    ? {
-        latitude: parsed.geoLatitude as number,
-        longitude: parsed.geoLongitude as number,
-        timezone: parsed.geoTimezone.trim(),
-      }
-    : null;
   const contract = {
     code: parsed.code.trim(),
     name: parsed.name.trim(),

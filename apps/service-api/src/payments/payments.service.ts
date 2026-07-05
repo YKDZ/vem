@@ -1231,13 +1231,24 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
     key: "merchantNo" | "appId",
     existing: TExisting,
   ): string | null | undefined {
-    return Object.prototype.hasOwnProperty.call(input, key)
-      ? (input[key] as string | null | undefined)
-      : (existing?.[key] as string | null | undefined);
+    const value = Object.prototype.hasOwnProperty.call(input, key)
+      ? input[key]
+      : existing?.[key];
+    if (typeof value === "string" || value === null || value === undefined) {
+      return value;
+    }
+    throw new Error(`${key} must be a string or null`);
   }
 
   private toIsoString(value: Date | string): string {
     return value instanceof Date ? value.toISOString() : value;
+  }
+
+  private toRecord(value: unknown): Record<string, unknown> {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return {};
+    }
+    return Object.fromEntries(Object.entries(value));
   }
 
   private toProviderConfigAdminDto(row: {
@@ -1272,7 +1283,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       machineId: row.machineId,
       merchantNo: row.merchantNo ?? null,
       appId: row.appId ?? null,
-      publicConfigJson: (row.publicConfigJson ?? {}) as Record<string, unknown>,
+      publicConfigJson: this.toRecord(row.publicConfigJson),
       derivedNotifyUrl: this.config.buildPaymentNotifyUrl(row.providerCode),
       secretStatusJson: this.paymentConfigSecrets.summarize(
         decryptedKeys,

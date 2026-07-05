@@ -40,6 +40,7 @@ import {
 } from "@/api/machines";
 import { useAuthStore } from "@/stores/auth";
 import { formatDateTime } from "@/utils/format";
+
 import {
   mapEnvironmentControlFormToContract,
   mapMachineFormToContract,
@@ -214,7 +215,9 @@ function commandStatusLabel(status: MachineCommandStatus | null): string {
 
 async function submitEnvironmentCommand(): Promise<void> {
   if (!environmentMachine.value || environmentCommandDisabled.value) return;
-  const body = mapEnvironmentControlFormToContract(environmentControlForm.value);
+  const body = mapEnvironmentControlFormToContract(
+    environmentControlForm.value,
+  );
 
   environmentSubmitting.value = true;
   try {

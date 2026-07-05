@@ -1,3 +1,13 @@
+import type {
+  AdminCreateProductRequest,
+  AdminCreateProductVariantRequest,
+  AdminMediaAssetSummary,
+  AdminProductListQuery,
+  AdminProductVariantListQuery,
+  AdminUpdateProductRequest,
+  AdminUpdateProductVariantRequest,
+} from "@vem/shared";
+
 import {
   BadRequestException,
   Inject,
@@ -17,15 +27,6 @@ import {
   type DrizzleClient,
   type SQL,
 } from "@vem/db";
-import type {
-  AdminCreateProductRequest,
-  AdminCreateProductVariantRequest,
-  AdminMediaAssetSummary,
-  AdminProductListQuery,
-  AdminProductVariantListQuery,
-  AdminUpdateProductRequest,
-  AdminUpdateProductVariantRequest,
-} from "@vem/shared";
 
 import { getOffset, toPageResult } from "../common/pagination.util";
 import { DRIZZLE_CLIENT } from "../database/database.constants";

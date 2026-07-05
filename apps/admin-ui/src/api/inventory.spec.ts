@@ -22,8 +22,8 @@ vi.mock("@/api/request", () => ({
 describe("inventory api", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(getContract).mockResolvedValue({ items: [], total: 0 } as never);
-    vi.mocked(postContract).mockResolvedValue({} as never);
+    vi.mocked(getContract).mockResolvedValue({ items: [], total: 0 });
+    vi.mocked(postContract).mockResolvedValue({});
   });
 
   it("uses schema-bound helpers for inventory writes", async () => {
@@ -82,23 +82,27 @@ describe("inventory api", () => {
     vi.mocked(postContract).mockImplementation(
       async (_url, bodySchema, _responseSchema, body) => {
         (bodySchema as { parse(value: unknown): unknown }).parse(body);
-        return {} as never;
+        throw new Error("expected invalid stock reconciliation body");
       },
     );
 
+    const acceptMachineStockWithCorrection = {
+      action: "accept_machine_stock" as const,
+      note: "counted by machine",
+      correctedOnHandQty: 4,
+    };
     await expect(
-      resolveStockReconciliationCase("550e8400-e29b-41d4-a716-446655440004", {
-        action: "accept_machine_stock",
-        note: "counted by machine",
-        correctedOnHandQty: 4,
-      } as never),
+      resolveStockReconciliationCase(
+        "550e8400-e29b-41d4-a716-446655440004",
+        acceptMachineStockWithCorrection,
+      ),
     ).rejects.toThrow();
     await expect(
       resolveStockReconciliationCase("550e8400-e29b-41d4-a716-446655440004", {
         action: "manual_correct",
         note: "   ",
         correctedOnHandQty: 4,
-      } as never),
+      }),
     ).rejects.toThrow();
   });
 

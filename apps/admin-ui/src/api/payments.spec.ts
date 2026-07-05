@@ -216,7 +216,7 @@ describe("payments api operator actions", () => {
     vi.mocked(postContract).mockImplementation(
       async (_url, bodySchema, _responseSchema, body) => {
         (bodySchema as { parse(value: unknown): unknown }).parse(body);
-        return {} as never;
+        throw new Error("expected invalid payment provider config body");
       },
     );
 
@@ -226,7 +226,7 @@ describe("payments api operator actions", () => {
         publicConfigJson: {
           gatewayUrl: "not-a-url",
         },
-      } as never),
+      }),
     ).rejects.toThrow();
   });
 

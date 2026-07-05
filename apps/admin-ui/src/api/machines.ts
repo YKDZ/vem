@@ -8,7 +8,6 @@ import type {
   MachineClaimCodeSnapshot,
   PageResult,
 } from "@vem/shared";
-import type { z } from "zod";
 
 import {
   adminMachineCommandResponseSchema,
@@ -28,6 +27,7 @@ import {
   updateMachineSchema,
   type RotateMachineCredentialsResponse,
 } from "@vem/shared";
+import { z } from "zod";
 
 import { get, getContract, patchContract, postContract } from "./request";
 
@@ -64,8 +64,34 @@ export type MachineClaimCodeListResult = MachineClaimCodeListResponse;
 export type GenerateMachineClaimCodeResult = GenerateMachineClaimCodeResponse;
 export type { MachineClaimCodeSnapshot, PageResult };
 
+const productionPilotReadinessCheckSchema = z.strictObject({
+  code: z.string(),
+  label: z.string(),
+  status: z.enum(["ready", "blocked", "degraded", "missing"]),
+  message: z.string(),
+  operatorAction: z.string(),
+});
+
+const productionPilotReadinessSchema = z.strictObject({
+  status: z.enum(["ready", "blocked", "degraded"]),
+  checkedAt: z.string(),
+  blockers: z.array(productionPilotReadinessCheckSchema),
+  degraded: z.array(productionPilotReadinessCheckSchema),
+  checks: z.array(productionPilotReadinessCheckSchema),
+});
+
 function toMachine(response: AdminMachineResponse): Machine {
-  return response as Machine;
+  const { productionPilotReadiness, ...machine } = response;
+  if (productionPilotReadiness === undefined) {
+    return machine;
+  }
+  return {
+    ...machine,
+    productionPilotReadiness:
+      productionPilotReadiness === null
+        ? null
+        : productionPilotReadinessSchema.parse(productionPilotReadiness),
+  };
 }
 
 export async function listMachines(

@@ -27,17 +27,12 @@ pub enum BringUpReadinessLevel {
     SellReady,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum BringUpHardwareMode {
     Production,
+    #[default]
     Simulated,
-}
-
-impl Default for BringUpHardwareMode {
-    fn default() -> Self {
-        Self::Simulated
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

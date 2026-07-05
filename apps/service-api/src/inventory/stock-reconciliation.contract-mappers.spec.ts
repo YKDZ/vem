@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
 
+import type { StockReconciliationCaseRow } from "./stock-reconciliation.repository";
+
 import {
   mapStockReconciliationResolveDtoToRepositoryInput,
   toAdminStockReconciliationCaseDetailResponse,
   toAdminStockReconciliationCaseSummaryResponse,
 } from "./stock-reconciliation.contract-mappers";
-import { type StockReconciliationCaseRow } from "./stock-reconciliation.repository";
 
 function makeCaseRow(): StockReconciliationCaseRow {
   return {
