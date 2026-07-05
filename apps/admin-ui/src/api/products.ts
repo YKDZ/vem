@@ -18,6 +18,7 @@ import {
   type AdminProductResponse,
   type AdminProductVariantPageResponse,
   type AdminProductVariantResponse,
+  type PageResult,
 } from "@vem/shared";
 
 import {
@@ -31,12 +32,7 @@ export type MediaAssetSummary = AdminMediaAssetSummary;
 export type Product = AdminProductResponse;
 export type ProductVariant = AdminProductVariantResponse;
 export type ProductQuery = AdminProductListQuery;
-export type PageResult<T> = {
-  items: T[];
-  total: number;
-  page: number;
-  pageSize: number;
-};
+export type { PageResult };
 
 export async function listProducts(
   query?: ProductQuery,

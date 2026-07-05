@@ -6,18 +6,13 @@ import {
   adminMaintenanceWorkOrderResolveRequestSchema,
   adminMaintenanceWorkOrderResponseSchema,
   type AdminMaintenanceWorkOrderResponse,
+  type PageResult,
 } from "@vem/shared";
 
 import { getContract, postContract } from "./request";
 
 export type WorkOrder = AdminMaintenanceWorkOrderResponse;
-
-export type PageResult<T> = {
-  items: T[];
-  total: number;
-  page: number;
-  pageSize: number;
-};
+export type { PageResult };
 
 export async function listWorkOrders(
   query?: z.input<typeof adminMaintenanceWorkOrderListQuerySchema>,

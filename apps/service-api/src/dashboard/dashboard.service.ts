@@ -66,7 +66,7 @@ export class DashboardService {
 
   async getSalesTrend(query: DashboardDateRangeQuery) {
     const filters = this.buildDateFilters(query);
-    return await this.db
+    const rows = await this.db
       .select({
         date: sql<string>`to_char(${orders.createdAt}, 'YYYY-MM-DD')`,
         salesCents: sql<number>`coalesce(sum(${orders.totalAmountCents}), 0)`,
@@ -76,11 +76,17 @@ export class DashboardService {
       .where(filters.length > 0 ? and(...filters) : undefined)
       .groupBy(sql`to_char(${orders.createdAt}, 'YYYY-MM-DD')`)
       .orderBy(sql`to_char(${orders.createdAt}, 'YYYY-MM-DD')`);
+
+    return rows.map((row) => ({
+      date: row.date,
+      salesCents: Number(row.salesCents),
+      orderCount: Number(row.orderCount),
+    }));
   }
 
   async getTopProducts(query: DashboardDateRangeQuery) {
     const filters = this.buildDateFilters(query);
-    return await this.db
+    const rows = await this.db
       .select({
         variantId: productVariants.id,
         productName: products.name,
@@ -96,11 +102,19 @@ export class DashboardService {
       .groupBy(productVariants.id, products.name, productVariants.sku)
       .orderBy(desc(sql`coalesce(sum(${orderItems.quantity}), 0)`))
       .limit(10);
+
+    return rows.map((row) => ({
+      variantId: row.variantId,
+      productName: row.productName,
+      sku: row.sku,
+      quantity: Number(row.quantity),
+      salesCents: Number(row.salesCents),
+    }));
   }
 
   async getCustomerProfile(query: DashboardDateRangeQuery) {
     const filters = this.buildDateFilters(query);
-    return await this.db
+    const rows = await this.db
       .select({
         label: sql<string>`coalesce(${orders.profileSnapshot}->>'ageGroup', '未知')`,
         count: count(),
@@ -109,6 +123,11 @@ export class DashboardService {
       .where(filters.length > 0 ? and(...filters) : undefined)
       .groupBy(sql`coalesce(${orders.profileSnapshot}->>'ageGroup', '未知')`)
       .orderBy(desc(count()));
+
+    return rows.map((row) => ({
+      label: row.label,
+      count: Number(row.count),
+    }));
   }
 
   private buildDateFilters(query: DashboardDateRangeQuery): SQL[] {

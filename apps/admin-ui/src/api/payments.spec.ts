@@ -1,8 +1,20 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { patchContract, postContract } from "@/api/request";
+import { getContract, patchContract, postContract } from "@/api/request";
 
 import {
+  getPaymentMachinePreflight,
+  getPaymentOpsMetrics,
+  getPaymentOpsReadiness,
+  listPaymentProviderConfigs,
+  listPaymentProviderNotifyUrlChecks,
+  listPaymentProviders,
+  listPayments,
+  listPaymentCodeAttempts,
+  listPaymentEvents,
+  listReconciliationAttempts,
+  listRefunds,
+  listWebhookAttempts,
   manualReconcile,
   mockFail,
   mockSucceed,
@@ -18,11 +30,110 @@ vi.mock("@/api/request", () => ({
   post: vi.fn().mockResolvedValue({}),
   postContract: vi.fn().mockResolvedValue({}),
   get: vi.fn(),
+  getContract: vi
+    .fn()
+    .mockResolvedValue({ items: [], total: 0, page: 1, pageSize: 20 }),
   patch: vi.fn(),
   patchContract: vi.fn().mockResolvedValue({}),
 }));
 
 describe("payments api operator actions", () => {
+  it("parses payment overview read responses through shared schemas", async () => {
+    await listPayments({ status: "succeeded", page: 2 });
+    await listPaymentProviders({ status: "enabled" });
+    await listPaymentProviderConfigs();
+    await listPaymentProviderNotifyUrlChecks();
+
+    expect(getContract).toHaveBeenCalledWith(
+      "/payments",
+      expect.any(Object),
+      expect.any(Object),
+      { status: "succeeded", page: 2 },
+    );
+    expect(getContract).toHaveBeenCalledWith(
+      "/payments/providers",
+      expect.any(Object),
+      expect.any(Object),
+      { status: "enabled" },
+    );
+    expect(getContract).toHaveBeenCalledWith(
+      "/payments/provider-configs",
+      expect.any(Object),
+      expect.any(Object),
+      {},
+    );
+    expect(getContract).toHaveBeenCalledWith(
+      "/payments/provider-configs/notify-url-checks",
+      expect.any(Object),
+      expect.any(Object),
+      {},
+    );
+  });
+
+  it("parses payment read list responses through shared schemas", async () => {
+    await listWebhookAttempts({ eventKind: "payment" });
+    await listReconciliationAttempts({ trigger: "manual" });
+    await listRefunds({ status: "processing" });
+    await listPaymentEvents({ paymentNo: "PAY-1" });
+    await listPaymentCodeAttempts({ manualOnly: true });
+
+    expect(getContract).toHaveBeenCalledWith(
+      "/payments/webhook-attempts",
+      expect.any(Object),
+      expect.any(Object),
+      { eventKind: "payment" },
+    );
+    expect(getContract).toHaveBeenCalledWith(
+      "/payments/reconciliation-attempts",
+      expect.any(Object),
+      expect.any(Object),
+      { trigger: "manual" },
+    );
+    expect(getContract).toHaveBeenCalledWith(
+      "/payments/refunds",
+      expect.any(Object),
+      expect.any(Object),
+      { status: "processing" },
+    );
+    expect(getContract).toHaveBeenCalledWith(
+      "/payments/events",
+      expect.any(Object),
+      expect.any(Object),
+      { paymentNo: "PAY-1" },
+    );
+    expect(getContract).toHaveBeenCalledWith(
+      "/payments/payment-code-attempts",
+      expect.any(Object),
+      expect.any(Object),
+      { manualOnly: true },
+    );
+  });
+
+  it("parses payment operations read responses through shared schemas", async () => {
+    await getPaymentOpsReadiness();
+    await getPaymentOpsMetrics(30);
+    await getPaymentMachinePreflight("550e8400-e29b-41d4-a716-446655440010");
+
+    expect(getContract).toHaveBeenCalledWith(
+      "/payments/ops/readiness",
+      expect.any(Object),
+      expect.any(Object),
+      {},
+    );
+    expect(getContract).toHaveBeenCalledWith(
+      "/payments/ops/metrics",
+      expect.any(Object),
+      expect.any(Object),
+      { windowMinutes: 30 },
+    );
+    expect(getContract).toHaveBeenCalledWith(
+      "/payments/ops/machines/550e8400-e29b-41d4-a716-446655440010/preflight",
+      expect.any(Object),
+      expect.any(Object),
+      {},
+    );
+  });
+
   it("sends a reason when manually reconciling a payment", async () => {
     await manualReconcile(
       "550e8400-e29b-41d4-a716-446655440000",

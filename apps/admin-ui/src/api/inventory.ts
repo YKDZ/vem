@@ -18,6 +18,7 @@ import {
   type AdminInventoryResponse,
   type AdminStockReconciliationCaseDetailResponse,
   type AdminStockReconciliationCaseSummaryResponse,
+  type PageResult,
 } from "@vem/shared";
 
 import { getContract, postContract } from "./request";
@@ -33,13 +34,7 @@ export type StockReconciliationCaseSummary =
 
 export type StockReconciliationCaseDetail =
   AdminStockReconciliationCaseDetailResponse;
-
-export type PageResult<T> = {
-  items: T[];
-  total: number;
-  page: number;
-  pageSize: number;
-};
+export type { PageResult };
 
 export async function listInventories(
   query?: z.input<typeof adminInventoryListQuerySchema>,

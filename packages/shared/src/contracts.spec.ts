@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   HARDWARE_ERROR_HANDLING,
+  auditLogPageResponseSchema,
+  auditLogResponseSchema,
   adminInventoryMovementPageResponseSchema,
   adminInventoryPageResponseSchema,
   adminInventoryResponseSchema,
@@ -31,6 +33,9 @@ import {
   createProtectedFulfillmentDrillSchema,
   createProtectedPaymentDrillSchema,
   createRoleSchema,
+  dashboardSalesTrendResponseSchema,
+  dashboardSummarySchema,
+  dashboardTopProductsResponseSchema,
   dispenseCommandPayloadSchema,
   hardwareErrorCodes,
   environmentControlCommandPayloadSchema,
@@ -61,10 +66,16 @@ import {
   orderRecoveryActionResponseSchema,
   orderRecoveryActionSchema,
   orderStatuses,
+  paymentAdminPageResponseSchema,
   paymentCodeAttemptAdminActionSchema,
+  paymentCodeAttemptAdminPageResponseSchema,
   paymentOperatorReasonSchema,
+  paymentEventAdminPageResponseSchema,
   paymentProviderConfigSchema,
+  paymentProviderConfigListResponseSchema,
   paymentProviderNotifyUrlCheckSchema,
+  paymentProviderNotifyUrlCheckListResponseSchema,
+  paymentProviderListResponseSchema,
   paymentMachinePreflightSchema,
   externalNaturalEnvironmentSchema,
   updateAdminUserSchema,
@@ -76,6 +87,8 @@ import {
   paymentCodeSubmitSchema,
   paymentOpsMetricsSchema,
   paymentOpsReadinessSchema,
+  paymentReconciliationAttemptAdminPageResponseSchema,
+  paymentWebhookAttemptAdminPageResponseSchema,
   paymentProviderStatuses,
   paymentProviderSensitiveConfigSchema,
   updatePaymentProviderConfigSchema,
@@ -90,6 +103,7 @@ import {
   roleStatuses,
   rotateMachineCredentialsResponseSchema,
   refillInventorySchema,
+  refundAdminPageResponseSchema,
   adjustInventorySchema,
   upsertNotificationTargetSchema,
   upsertPaymentProviderConfigSchema,
@@ -834,6 +848,272 @@ describe("shared API contract", () => {
         wechatPayPublicConfigSchema.parse({ unknownGatewayFlag: true }),
       ).toThrow();
     });
+
+    it("parses payment read response pages through shared contracts", () => {
+      const paymentPage = paymentAdminPageResponseSchema.parse({
+        items: [
+          {
+            id: "550e8400-e29b-41d4-a716-446655440101",
+            paymentNo: "PAY-1",
+            orderId: "550e8400-e29b-41d4-a716-446655440102",
+            orderNo: "ORD-1",
+            providerCode: "wechat_pay",
+            method: "qr_code",
+            status: "pending",
+            amountCents: 1000,
+            paymentUrl: "https://pay.example.com/qrcode",
+            expiresAt: null,
+            paidAt: null,
+            failedReason: null,
+            createdAt: "2026-07-05T00:00:00.000Z",
+          },
+        ],
+        total: 1,
+        page: 1,
+        pageSize: 20,
+      });
+      expect(paymentPage.items[0]?.paymentNo).toBe("PAY-1");
+
+      expect(
+        paymentProviderListResponseSchema.parse([
+          {
+            id: providerId,
+            code: "wechat_pay",
+            name: "Wechat Pay",
+            type: "wechat_pay",
+            status: "enabled",
+            capabilities: { qrCode: true },
+          },
+        ])[0]?.capabilities,
+      ).toHaveProperty("qrCode");
+      expect(
+        paymentProviderConfigListResponseSchema.parse([
+          {
+            id: configId,
+            providerId,
+            providerCode: "wechat_pay",
+            providerName: "Wechat Pay",
+            machineId: null,
+            merchantNo: "mch-1",
+            appId: null,
+            publicConfigJson: { qrExpiresMinutes: 10 },
+            derivedNotifyUrl:
+              "https://example.com/api/payments/webhooks/wechat_pay",
+            secretStatusJson: {},
+            status: "enabled",
+            updatedByAdminUserId: null,
+            createdAt: "2026-07-05T00:00:00.000Z",
+            updatedAt: "2026-07-05T00:00:00.000Z",
+          },
+        ])[0]?.publicConfigJson,
+      ).toHaveProperty("qrExpiresMinutes");
+      expect(
+        paymentProviderNotifyUrlCheckListResponseSchema.parse([
+          {
+            providerCode: "wechat_pay",
+            notifyUrl: "https://example.com/api/payments/webhooks/wechat_pay",
+            usesHttps: true,
+            isLocalhost: false,
+            pathMatchesWebhookRoute: true,
+            reachable: true,
+            statusCode: 200,
+            errorCode: null,
+            checkedAt: "2026-07-05T00:00:00.000Z",
+          },
+        ]),
+      ).toHaveLength(1);
+    });
+
+    it("parses payment incident trail response pages through shared contracts", () => {
+      expect(
+        paymentEventAdminPageResponseSchema.parse({
+          items: [
+            {
+              id: "550e8400-e29b-41d4-a716-446655440201",
+              paymentId: "550e8400-e29b-41d4-a716-446655440202",
+              paymentNo: "PAY-1",
+              orderId: "550e8400-e29b-41d4-a716-446655440203",
+              orderNo: "ORD-1",
+              providerId,
+              providerCode: "wechat_pay",
+              eventType: "payment.succeeded",
+              providerEventId: null,
+              signatureValid: true,
+              handledAt: null,
+              createdAt: "2026-07-05T00:00:00.000Z",
+            },
+          ],
+          total: 1,
+          page: 1,
+          pageSize: 20,
+        }).items[0]?.signatureValid,
+      ).toBe(true);
+      expect(
+        paymentWebhookAttemptAdminPageResponseSchema.parse({
+          items: [
+            {
+              id: "550e8400-e29b-41d4-a716-446655440211",
+              orderId: null,
+              providerCode: null,
+              eventKind: "unknown",
+              eventType: null,
+              paymentNo: null,
+              refundNo: null,
+              orderNo: null,
+              signatureValid: null,
+              businessValid: null,
+              handled: false,
+              duplicate: false,
+              failureReason: null,
+              remoteIp: null,
+              httpStatus: null,
+              createdAt: "2026-07-05T00:00:00.000Z",
+            },
+          ],
+          total: 1,
+          page: 1,
+          pageSize: 20,
+        }).items[0]?.eventKind,
+      ).toBe("unknown");
+      expect(
+        paymentReconciliationAttemptAdminPageResponseSchema.parse({
+          items: [
+            {
+              id: "550e8400-e29b-41d4-a716-446655440221",
+              paymentId: "550e8400-e29b-41d4-a716-446655440222",
+              paymentNo: "PAY-1",
+              orderId: "550e8400-e29b-41d4-a716-446655440223",
+              orderNo: "ORD-1",
+              providerCode: "wechat_pay",
+              trigger: "manual",
+              attemptNo: 1,
+              status: "pending",
+              providerPaymentStatus: null,
+              errorCode: null,
+              errorMessage: null,
+              nextRetryAt: null,
+              startedAt: "2026-07-05T00:00:00.000Z",
+              finishedAt: null,
+              createdAt: "2026-07-05T00:00:00.000Z",
+            },
+          ],
+          total: 1,
+          page: 1,
+          pageSize: 20,
+        }).items[0]?.trigger,
+      ).toBe("manual");
+      expect(
+        refundAdminPageResponseSchema.parse({
+          items: [
+            {
+              id: "550e8400-e29b-41d4-a716-446655440231",
+              refundNo: "REF-1",
+              paymentId: "550e8400-e29b-41d4-a716-446655440232",
+              orderId: "550e8400-e29b-41d4-a716-446655440233",
+              paymentNo: "PAY-1",
+              orderNo: "ORD-1",
+              providerCode: "wechat_pay",
+              status: "processing",
+              amountCents: 1000,
+              reason: "dispense_failed",
+              providerRefundNo: null,
+              refundedAt: null,
+              latestReconciliationStatus: null,
+              latestProviderRefundStatus: null,
+              latestReconciliationError: null,
+              latestReconciliationAt: null,
+              reconciliationAttempts: [],
+              createdAt: "2026-07-05T00:00:00.000Z",
+              updatedAt: "2026-07-05T00:00:00.000Z",
+            },
+          ],
+          total: 1,
+          page: 1,
+          pageSize: 20,
+        }).items[0]?.refundNo,
+      ).toBe("REF-1");
+      expect(
+        paymentCodeAttemptAdminPageResponseSchema.parse({
+          items: [
+            {
+              id: "550e8400-e29b-41d4-a716-446655440241",
+              orderId: "550e8400-e29b-41d4-a716-446655440242",
+              orderNo: "ORD-1",
+              paymentNo: "PAY-1",
+              providerCode: "wechat_pay",
+              attemptNo: 1,
+              providerPaymentNo: "PCA-1",
+              status: "submitting",
+              authCodeMasked: "123***",
+              source: "scanner",
+              providerTradeNo: null,
+              providerStatus: null,
+              failureCode: null,
+              failureMessage: null,
+              manualReason: null,
+              submittedAt: null,
+              lastCheckedAt: null,
+              reversedAt: null,
+              finishedAt: null,
+              createdAt: "2026-07-05T00:00:00.000Z",
+            },
+          ],
+          total: 1,
+          page: 1,
+          pageSize: 20,
+        }).items[0]?.attemptNo,
+      ).toBe(1);
+    });
+  });
+
+  it("parses audit and dashboard read responses through shared contracts", () => {
+    const auditLog = auditLogResponseSchema.parse({
+      id: "550e8400-e29b-41d4-a716-446655440301",
+      adminUserId: null,
+      action: "orders.recover",
+      resourceType: "order",
+      resourceId: "550e8400-e29b-41d4-a716-446655440302",
+      beforeJson: null,
+      afterJson: { action: "confirm_not_dispensed" },
+      createdAt: "2026-07-05T00:00:00.000Z",
+    });
+    expect(
+      auditLogPageResponseSchema.parse({
+        items: [auditLog],
+        total: 1,
+        page: 1,
+        pageSize: 20,
+      }).items[0]?.afterJson,
+    ).toHaveProperty("action");
+    expect(() =>
+      auditLogResponseSchema.parse({ ...auditLog, broadResponseShortcut: {} }),
+    ).toThrow();
+
+    expect(
+      dashboardSummarySchema.parse({
+        todaySalesCents: 1000,
+        todayOrderCount: 1,
+        lowStockCount: 0,
+        onlineMachineCount: 1,
+        pendingIssueCount: 0,
+      }).todayOrderCount,
+    ).toBe(1);
+    expect(
+      dashboardSalesTrendResponseSchema.parse([
+        { date: "2026-07-05", salesCents: 1000, orderCount: 1 },
+      ]),
+    ).toHaveLength(1);
+    expect(
+      dashboardTopProductsResponseSchema.parse([
+        {
+          variantId: "550e8400-e29b-41d4-a716-446655440303",
+          productName: "Tea",
+          sku: "TEA-1",
+          quantity: 1,
+          salesCents: 1000,
+        },
+      ])[0]?.sku,
+    ).toBe("TEA-1");
   });
 
   it("does not apply create defaults to Machine partial update contracts", () => {

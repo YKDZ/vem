@@ -8,12 +8,13 @@ import {
   updateAdminUserSchema,
   type AdminUserPageResponse,
   type AdminUserResponse,
+  type PageResult,
 } from "@vem/shared";
 
 import { getContract, patchContract, postContract } from "./request";
 
 export type AdminUser = AdminUserResponse;
-export type PageResult<T> = AdminUserPageResponse & { items: T[] };
+export type { PageResult };
 
 export async function listAdminUsers(
   query?: z.input<typeof adminUserListQuerySchema>,

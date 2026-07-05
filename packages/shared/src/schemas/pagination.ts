@@ -32,3 +32,10 @@ export const createApiResponseSchema = <TData extends z.ZodType>(
     message: z.string(),
     data: dataSchema,
   });
+
+export type PageResult<T> = {
+  items: T[];
+  page: number;
+  pageSize: number;
+  total: number;
+};

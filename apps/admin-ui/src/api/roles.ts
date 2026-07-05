@@ -10,13 +10,14 @@ import {
   updateRoleSchema,
   type AdminRolePageResponse,
   type AdminRoleResponse,
+  type PageResult,
   type PermissionCode,
 } from "@vem/shared";
 
 import { getContract, patchContract, postContract } from "./request";
 
 export type Role = AdminRoleResponse;
-export type PageResult<T> = AdminRolePageResponse & { items: T[] };
+export type { PageResult };
 
 export async function listRoles(
   query?: z.input<typeof roleListQuerySchema>,

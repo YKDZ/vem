@@ -1,25 +1,25 @@
-import { get } from "./request";
+import type { z } from "zod";
 
-export type AuditLog = {
-  id: string;
-  adminUserId: string;
-  action: string;
-  resourceType: string;
-  resourceId: string | null;
-  beforeJson: Record<string, unknown> | null;
-  afterJson: Record<string, unknown> | null;
-  createdAt: string;
-};
+import {
+  auditLogListQuerySchema,
+  auditLogPageResponseSchema,
+  type AuditLogPageResponse,
+  type AuditLogResponse,
+  type PageResult,
+} from "@vem/shared";
 
-export type PageResult<T> = {
-  items: T[];
-  total: number;
-  page: number;
-  pageSize: number;
-};
+import { getContract } from "./request";
+
+export type AuditLog = AuditLogResponse;
+export type { PageResult };
 
 export async function listAuditLogs(
-  query?: Record<string, unknown>,
-): Promise<PageResult<AuditLog>> {
-  return await get<PageResult<AuditLog>>("/audit-logs", { params: query });
+  query?: z.input<typeof auditLogListQuerySchema>,
+): Promise<AuditLogPageResponse> {
+  return await getContract(
+    "/audit-logs",
+    auditLogListQuerySchema,
+    auditLogPageResponseSchema,
+    query ?? {},
+  );
 }

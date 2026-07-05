@@ -2,10 +2,14 @@ import type {
   AdminMachineCommandResponse,
   AdminMachineResponse,
   AdminMachineSlotResponse,
-  MachineClaimCodePurpose,
-  MachineClaimCodeState,
   ExternalNaturalEnvironment,
+  GenerateMachineClaimCodeResponse,
+  MachineClaimCodeListResponse,
+  MachineClaimCodeSnapshot,
+  PageResult,
 } from "@vem/shared";
+import type { z } from "zod";
+
 import {
   adminMachineCommandResponseSchema,
   adminMachineContractNoBodySchema,
@@ -24,7 +28,6 @@ import {
   updateMachineSchema,
   type RotateMachineCredentialsResponse,
 } from "@vem/shared";
-import type { z } from "zod";
 
 import { get, getContract, patchContract, postContract } from "./request";
 
@@ -57,36 +60,9 @@ export type ProductionPilotReadiness = {
 export type MachineCommand = AdminMachineCommandResponse;
 
 export type MachineSlot = AdminMachineSlotResponse;
-
-export type MachineClaimCodeSnapshot = {
-  id: string;
-  machineId: string;
-  machineCode: string;
-  purpose?: MachineClaimCodePurpose;
-  state: MachineClaimCodeState;
-  expiresAt: string;
-  failedAttemptCount: number;
-  maxFailedAttempts: number;
-  createdAt: string;
-  consumedAt?: string | null;
-  revokedAt?: string | null;
-  lockedAt?: string | null;
-};
-
-export type MachineClaimCodeListResult = {
-  items: MachineClaimCodeSnapshot[];
-};
-
-export type GenerateMachineClaimCodeResult = MachineClaimCodeSnapshot & {
-  claimCode: string;
-};
-
-export type PageResult<T> = {
-  items: T[];
-  total: number;
-  page: number;
-  pageSize: number;
-};
+export type MachineClaimCodeListResult = MachineClaimCodeListResponse;
+export type GenerateMachineClaimCodeResult = GenerateMachineClaimCodeResponse;
+export type { MachineClaimCodeSnapshot, PageResult };
 
 function toMachine(response: AdminMachineResponse): Machine {
   return response as Machine;

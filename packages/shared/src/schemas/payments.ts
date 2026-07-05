@@ -12,6 +12,7 @@ import {
   machinePaymentOptionSchema,
   machinePaymentProviderCodeSchema,
 } from "./orders";
+import { createPageResultSchema, pageQuerySchema } from "./pagination";
 
 export const paymentQuerySchema = z.object({
   orderNo: z.string().max(64).optional(),
@@ -21,6 +22,10 @@ export const paymentQuerySchema = z.object({
   createdFrom: z.iso.datetime().optional(),
   createdTo: z.iso.datetime().optional(),
 });
+
+export const paymentListQuerySchema = paymentQuerySchema.extend(
+  pageQuerySchema.shape,
+);
 
 export const paymentProviderQuerySchema = z.object({
   code: z.string().max(64).optional(),
@@ -42,6 +47,10 @@ export const paymentEventQuerySchema = z.object({
   createdFrom: z.iso.datetime().optional(),
   createdTo: z.iso.datetime().optional(),
 });
+
+export const paymentEventListQuerySchema = paymentEventQuerySchema.extend(
+  pageQuerySchema.shape,
+);
 
 export const paymentProviderSensitiveConfigSchema = z.record(
   z.string(),
@@ -361,6 +370,9 @@ export const paymentWebhookAttemptQuerySchema = z.object({
   createdTo: z.iso.datetime().optional(),
 });
 
+export const paymentWebhookAttemptListQuerySchema =
+  paymentWebhookAttemptQuerySchema.extend(pageQuerySchema.shape);
+
 export const paymentReconciliationAttemptQuerySchema = z.object({
   orderNo: z.string().max(64).optional(),
   paymentNo: z.string().max(64).optional(),
@@ -373,6 +385,9 @@ export const paymentReconciliationAttemptQuerySchema = z.object({
   createdTo: z.iso.datetime().optional(),
 });
 
+export const paymentReconciliationAttemptListQuerySchema =
+  paymentReconciliationAttemptQuerySchema.extend(pageQuerySchema.shape);
+
 export const refundQuerySchema = z.object({
   orderNo: z.string().max(64).optional(),
   paymentNo: z.string().max(64).optional(),
@@ -384,6 +399,10 @@ export const refundQuerySchema = z.object({
   createdTo: z.iso.datetime().optional(),
 });
 
+export const refundListQuerySchema = refundQuerySchema.extend(
+  pageQuerySchema.shape,
+);
+
 export const paymentCodeAttemptQuerySchema = z.object({
   orderNo: z.string().max(64).optional(),
   paymentNo: z.string().max(64).optional(),
@@ -393,6 +412,150 @@ export const paymentCodeAttemptQuerySchema = z.object({
   createdFrom: z.iso.datetime().optional(),
   createdTo: z.iso.datetime().optional(),
 });
+
+export const paymentCodeAttemptListQuerySchema =
+  paymentCodeAttemptQuerySchema.extend(pageQuerySchema.shape);
+
+export const paymentAdminResponseSchema = z.strictObject({
+  id: z.uuid(),
+  paymentNo: z.string().min(1).max(64),
+  orderId: z.uuid(),
+  orderNo: z.string().min(1).max(64),
+  providerCode: z.string().min(1).max(64),
+  method: z.string().min(1).max(64),
+  status: paymentStatusSchema,
+  amountCents: z.int().nonnegative(),
+  isDrill: z.boolean().optional(),
+  isTest: z.boolean().optional(),
+  scenario: z.string().nullable().optional(),
+  paymentUrl: z.string().nullable().optional(),
+  expiresAt: z.iso.datetime().nullable(),
+  paidAt: z.iso.datetime().nullable(),
+  failedReason: z.string().nullable(),
+  createdAt: z.iso.datetime(),
+});
+
+export const paymentAdminPageResponseSchema = createPageResultSchema(
+  paymentAdminResponseSchema,
+);
+
+export const paymentProviderListResponseSchema = z.array(paymentProviderSchema);
+
+export const paymentProviderConfigListResponseSchema = z.array(
+  paymentProviderConfigSchema,
+);
+
+export const paymentProviderNotifyUrlCheckListResponseSchema = z.array(
+  paymentProviderNotifyUrlCheckSchema,
+);
+
+export const paymentEventAdminResponseSchema = z.strictObject({
+  id: z.uuid(),
+  paymentId: z.uuid(),
+  paymentNo: z.string().min(1).max(64),
+  orderId: z.uuid(),
+  orderNo: z.string().min(1).max(64),
+  providerId: z.uuid(),
+  providerCode: z.string().min(1).max(64),
+  eventType: z.string().min(1).max(128),
+  providerEventId: z.string().max(128).nullable(),
+  signatureValid: z.boolean().nullable(),
+  handledAt: z.iso.datetime().nullable(),
+  createdAt: z.iso.datetime(),
+});
+
+export const paymentEventAdminPageResponseSchema = createPageResultSchema(
+  paymentEventAdminResponseSchema,
+);
+
+export const paymentWebhookAttemptAdminResponseSchema = z.strictObject({
+  id: z.uuid(),
+  orderId: z.uuid().nullable(),
+  providerCode: z.string().max(64).nullable(),
+  eventKind: z.enum(["payment", "refund", "unknown"]),
+  eventType: z.string().max(128).nullable(),
+  paymentNo: z.string().max(64).nullable(),
+  refundNo: z.string().max(64).nullable(),
+  orderNo: z.string().max(64).nullable(),
+  signatureValid: z.boolean().nullable(),
+  businessValid: z.boolean().nullable(),
+  handled: z.boolean(),
+  duplicate: z.boolean(),
+  failureReason: z.string().max(128).nullable(),
+  remoteIp: z.string().max(128).nullable(),
+  httpStatus: z.int().nullable(),
+  createdAt: z.iso.datetime(),
+});
+
+export const paymentWebhookAttemptAdminPageResponseSchema =
+  createPageResultSchema(paymentWebhookAttemptAdminResponseSchema);
+
+export const paymentReconciliationAttemptAdminResponseSchema = z.strictObject({
+  id: z.uuid(),
+  paymentId: z.uuid(),
+  orderId: z.uuid(),
+  orderNo: z.string().min(1).max(64),
+  paymentNo: z.string().min(1).max(64),
+  providerCode: z.string().min(1).max(64),
+  trigger: z.string().min(1).max(64),
+  attemptNo: z.int().positive(),
+  status: z.string().min(1).max(64),
+  providerPaymentStatus: z.string().max(64).nullable(),
+  errorCode: z.string().max(128).nullable(),
+  errorMessage: z.string().nullable(),
+  nextRetryAt: z.iso.datetime().nullable(),
+  startedAt: z.iso.datetime(),
+  finishedAt: z.iso.datetime().nullable(),
+  createdAt: z.iso.datetime(),
+});
+
+export const paymentReconciliationAttemptAdminPageResponseSchema =
+  createPageResultSchema(paymentReconciliationAttemptAdminResponseSchema);
+
+export const refundReconciliationAttemptAdminResponseSchema = z.strictObject({
+  trigger: z.string().min(1).max(64),
+  attemptNo: z.int().positive(),
+  status: z.string().min(1).max(64),
+  providerRefundStatus: z.string().max(64).nullable(),
+  providerRefundNo: z.string().max(128).nullable(),
+  errorCode: z.string().max(128).nullable(),
+  errorMessage: z.string().nullable(),
+  nextRetryAt: z.iso.datetime().nullable(),
+  startedAt: z.iso.datetime(),
+  finishedAt: z.iso.datetime().nullable(),
+  createdAt: z.iso.datetime(),
+});
+
+export const refundAdminResponseSchema = z.strictObject({
+  id: z.uuid(),
+  refundNo: z.string().min(1).max(64),
+  paymentId: z.uuid(),
+  orderId: z.uuid(),
+  paymentNo: z.string().min(1).max(64),
+  orderNo: z.string().min(1).max(64),
+  providerCode: z.string().min(1).max(64),
+  status: refundStatusSchema,
+  amountCents: z.int().nonnegative(),
+  isDrill: z.boolean().optional(),
+  isTest: z.boolean().optional(),
+  scenario: z.string().nullable().optional(),
+  reason: z.string().min(1).max(1000),
+  providerRefundNo: z.string().max(128).nullable(),
+  refundedAt: z.iso.datetime().nullable(),
+  latestReconciliationStatus: z.string().max(64).nullable(),
+  latestProviderRefundStatus: z.string().max(64).nullable(),
+  latestReconciliationError: z.string().nullable(),
+  latestReconciliationAt: z.iso.datetime().nullable(),
+  reconciliationAttempts: z.array(
+    refundReconciliationAttemptAdminResponseSchema,
+  ),
+  createdAt: z.iso.datetime(),
+  updatedAt: z.iso.datetime(),
+});
+
+export const refundAdminPageResponseSchema = createPageResultSchema(
+  refundAdminResponseSchema,
+);
 
 export const paymentCodeAttemptAdminActionSchema = z.object({
   reason: z.string().trim().min(1).max(256),
@@ -438,6 +601,38 @@ export const paymentCodeAttemptAdminResponseSchema = z.strictObject({
   finishedAt: z.iso.datetime().nullable(),
   createdAt: z.iso.datetime(),
 });
+
+export const paymentCodeAttemptAdminPageResponseSchema = createPageResultSchema(
+  paymentCodeAttemptAdminResponseSchema,
+);
+
+export type PaymentAdminResponse = z.infer<typeof paymentAdminResponseSchema>;
+export type PaymentAdminPageResponse = z.infer<
+  typeof paymentAdminPageResponseSchema
+>;
+export type PaymentProviderResponse = z.infer<typeof paymentProviderSchema>;
+export type PaymentProviderConfigResponse = z.infer<
+  typeof paymentProviderConfigSchema
+>;
+export type PaymentProviderNotifyUrlCheckResponse = z.infer<
+  typeof paymentProviderNotifyUrlCheckSchema
+>;
+export type PaymentEventAdminResponse = z.infer<
+  typeof paymentEventAdminResponseSchema
+>;
+export type PaymentWebhookAttemptAdminResponse = z.infer<
+  typeof paymentWebhookAttemptAdminResponseSchema
+>;
+export type PaymentReconciliationAttemptAdminResponse = z.infer<
+  typeof paymentReconciliationAttemptAdminResponseSchema
+>;
+export type RefundReconciliationAttemptAdminResponse = z.infer<
+  typeof refundReconciliationAttemptAdminResponseSchema
+>;
+export type RefundAdminResponse = z.infer<typeof refundAdminResponseSchema>;
+export type PaymentCodeAttemptAdminResponse = z.infer<
+  typeof paymentCodeAttemptAdminResponseSchema
+>;
 
 export const protectedPaymentDrillScenarioSchema = z.enum([
   "payment_code_unknown",

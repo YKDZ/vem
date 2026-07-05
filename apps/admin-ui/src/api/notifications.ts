@@ -7,18 +7,13 @@ import {
   notificationReadResponseSchema,
   type AdminNotificationResponse,
   type NotificationReadResponse,
+  type PageResult,
 } from "@vem/shared";
 
 import { getContract, postContract } from "./request";
 
 export type Notification = AdminNotificationResponse;
-
-export type PageResult<T> = {
-  items: T[];
-  total: number;
-  page: number;
-  pageSize: number;
-};
+export type { PageResult };
 
 export async function listNotifications(
   query?: z.input<typeof adminNotificationListQuerySchema>,
