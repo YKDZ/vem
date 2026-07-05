@@ -1,5 +1,8 @@
+import { BadRequestException } from "@nestjs/common";
+import { adminStockReconciliationResolveRequestSchema } from "@vem/shared";
 import { describe, expect, it, vi } from "vitest";
 
+import { ZodValidationPipe } from "../common/zod-validation.pipe";
 import { StockReconciliationController } from "./stock-reconciliation.controller";
 
 describe("StockReconciliationController", () => {
@@ -52,5 +55,26 @@ describe("StockReconciliationController", () => {
       note: "现场复核为 3 件",
       clearBlocker: true,
     });
+  });
+
+  it("rejects unsupported resolution fields at the Admin API contract boundary", () => {
+    const pipe = new ZodValidationPipe(
+      adminStockReconciliationResolveRequestSchema,
+    );
+
+    expect(() =>
+      pipe.transform({
+        action: "accept_machine_stock",
+        note: "counted by machine",
+        correctedOnHandQty: 3,
+      } as never),
+    ).toThrow(BadRequestException);
+    expect(() =>
+      pipe.transform({
+        action: "manual_correct",
+        note: "   ",
+        correctedOnHandQty: 3,
+      }),
+    ).toThrow(BadRequestException);
   });
 });

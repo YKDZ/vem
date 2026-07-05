@@ -2,6 +2,12 @@ import { describe, expect, it } from "vitest";
 
 import {
   HARDWARE_ERROR_HANDLING,
+  adminInventoryMovementPageResponseSchema,
+  adminInventoryPageResponseSchema,
+  adminInventoryResponseSchema,
+  adminStockReconciliationCaseDetailResponseSchema,
+  adminStockReconciliationCasePageResponseSchema,
+  adminStockReconciliationResolveRequestSchema,
   adminMachineContractNoBodySchema,
   adminMachineResponseSchema,
   adminMachineSlotResponseSchema,
@@ -10,6 +16,7 @@ import {
   createMachineSchema,
   createMachineSlotSchema,
   createMachineOrderSchema,
+  createInventorySchema,
   createProductVariantSchema,
   createProductSchema,
   createProtectedFulfillmentDrillSchema,
@@ -61,6 +68,8 @@ import {
   protectedPaymentDrillScenarioSchema,
   roleStatuses,
   rotateMachineCredentialsResponseSchema,
+  refillInventorySchema,
+  adjustInventorySchema,
   upsertNotificationTargetSchema,
   upsertPaymentProviderConfigSchema,
 } from "./index";
@@ -144,6 +153,243 @@ describe("shared API contract", () => {
         status: "online",
       }),
     ).toThrow();
+  });
+
+  describe("admin inventory intervention contracts", () => {
+    const inventoryId = "550e8400-e29b-41d4-a716-446655440000";
+    const machineId = "550e8400-e29b-41d4-a716-446655440001";
+    const slotId = "550e8400-e29b-41d4-a716-446655440002";
+    const variantId = "550e8400-e29b-41d4-a716-446655440003";
+
+    it("rejects unsupported fields on stock-changing inventory requests", () => {
+      expect(() =>
+        createInventorySchema.parse({
+          machineId,
+          slotId,
+          variantId,
+          onHandQty: 10,
+          unsupportedColumn: true,
+        }),
+      ).toThrow();
+      expect(() =>
+        refillInventorySchema.parse({
+          inventoryId,
+          quantity: 5,
+          reason: "manual",
+        }),
+      ).toThrow();
+      expect(() =>
+        adjustInventorySchema.parse({
+          inventoryId,
+          deltaQty: -1,
+          note: "counted stock",
+          onHandQty: 0,
+        }),
+      ).toThrow();
+    });
+
+    it("keeps quantity defaults and optional notes contract-bound", () => {
+      expect(
+        createInventorySchema.parse({
+          machineId,
+          slotId,
+          variantId,
+          onHandQty: 10,
+        }),
+      ).toEqual({
+        machineId,
+        slotId,
+        variantId,
+        onHandQty: 10,
+        reservedQty: 0,
+        lowStockThreshold: 1,
+      });
+      expect(refillInventorySchema.parse({ inventoryId, quantity: 2 })).toEqual(
+        { inventoryId, quantity: 2 },
+      );
+      expect(
+        adjustInventorySchema.parse({
+          inventoryId,
+          deltaQty: -1,
+        }),
+      ).toEqual({
+        inventoryId,
+        deltaQty: -1,
+      });
+    });
+
+    it("parses key inventory responses with nullable relationships", () => {
+      const inventory = adminInventoryResponseSchema.parse({
+        id: inventoryId,
+        machineId,
+        machineCode: "M001",
+        slotId,
+        slotCode: "A1",
+        variantId,
+        productId: "550e8400-e29b-41d4-a716-446655440004",
+        sku: "SKU-1",
+        productName: "Tea",
+        onHandQty: 10,
+        reservedQty: 2,
+        availableQty: 8,
+        lowStockThreshold: 3,
+        createdAt: "2026-06-01T00:00:00.000Z",
+        updatedAt: "2026-06-01T00:00:00.000Z",
+      });
+      expect(inventory.availableQty).toBe(8);
+
+      const movements = adminInventoryMovementPageResponseSchema.parse({
+        items: [
+          {
+            id: "550e8400-e29b-41d4-a716-446655440005",
+            inventoryId,
+            deltaQty: 5,
+            reason: "refill",
+            orderId: null,
+            orderNo: null,
+            operatorAdminUserId: null,
+            note: null,
+            createdAt: "2026-06-01T00:00:00.000Z",
+          },
+        ],
+        total: 1,
+        page: 1,
+        pageSize: 20,
+      });
+      expect(movements.items[0]?.note).toBeNull();
+
+      expect(
+        adminInventoryPageResponseSchema.parse({
+          items: [inventory],
+          total: 1,
+          page: 1,
+          pageSize: 20,
+        }).items[0]?.machineCode,
+      ).toBe("M001");
+    });
+
+    it("parses stock reconciliation resolution variants and response evidence", () => {
+      expect(
+        adminStockReconciliationResolveRequestSchema.parse({
+          action: "reject_machine_stock",
+          note: "payload conflicts",
+        }),
+      ).toEqual({
+        action: "reject_machine_stock",
+        note: "payload conflicts",
+      });
+      expect(
+        adminStockReconciliationResolveRequestSchema.parse({
+          action: "manual_correct",
+          note: "counted on site",
+          correctedOnHandQty: 4,
+          clearBlocker: true,
+        }).correctedOnHandQty,
+      ).toBe(4);
+      expect(() =>
+        adminStockReconciliationResolveRequestSchema.parse({
+          action: "manual_correct",
+          note: "counted on site",
+        }),
+      ).toThrow();
+      expect(() =>
+        adminStockReconciliationResolveRequestSchema.parse({
+          action: "accept_machine_stock",
+          note: "counted by machine",
+          correctedOnHandQty: 4,
+        }),
+      ).toThrow();
+      expect(() =>
+        adminStockReconciliationResolveRequestSchema.parse({
+          action: "reject_machine_stock",
+          note: "   ",
+        }),
+      ).toThrow();
+      expect(() =>
+        adminStockReconciliationResolveRequestSchema.parse({
+          action: "accept_machine_stock",
+          note: "x".repeat(501),
+        }),
+      ).toThrow();
+
+      const detail = adminStockReconciliationCaseDetailResponseSchema.parse({
+        id: "550e8400-e29b-41d4-a716-446655440006",
+        caseTable: "machine_raw_stock_movements",
+        rawMovementId: null,
+        machineId,
+        machineCode: "M001",
+        movementId: "MOVE-1",
+        movementType: "stock_count_correction",
+        quantity: 4,
+        source: "local_maintenance",
+        attributedTo: null,
+        occurredAt: "2026-06-01T00:00:00.000Z",
+        receivedAt: "2026-06-01T00:01:00.000Z",
+        reconciliationReason: "weak_attribution",
+        platformReviewStatus: "open",
+        slot: {
+          id: slotId,
+          code: "A1",
+          status: "enabled",
+          saleEligibility: {
+            eligible: false,
+            slotSalesState: "needs_platform_review",
+            reason: "weak_attribution",
+          },
+        },
+        inventory: null,
+        blocker: null,
+        planogramVersion: "PLAN-1",
+        evidence: {
+          rawPayload: { movementId: "MOVE-1" },
+          normalizedPayload: { movementId: "MOVE-1" },
+          inventory: null,
+          linkedOrder: null,
+          linkedCommand: null,
+        },
+        resolution: {
+          action: "manual_correct",
+          note: "counted on site",
+          clearedBlocker: true,
+          inventoryMovement: {
+            inventoryId,
+            deltaQty: -2,
+            reason: "hardware_sync",
+            note: "counted on site",
+          },
+        },
+      });
+      expect(detail.resolution?.clearedBlocker).toBe(true);
+
+      expect(
+        adminStockReconciliationCasePageResponseSchema.parse({
+          items: [
+            {
+              id: detail.id,
+              caseTable: detail.caseTable,
+              rawMovementId: detail.rawMovementId,
+              machineId: detail.machineId,
+              machineCode: detail.machineCode,
+              movementId: detail.movementId,
+              movementType: detail.movementType,
+              quantity: detail.quantity,
+              source: detail.source,
+              attributedTo: detail.attributedTo,
+              occurredAt: detail.occurredAt,
+              receivedAt: detail.receivedAt,
+              reconciliationReason: detail.reconciliationReason,
+              platformReviewStatus: detail.platformReviewStatus,
+              slot: detail.slot,
+              inventory: detail.inventory,
+              blocker: detail.blocker,
+            },
+          ],
+          total: 1,
+          page: 1,
+          pageSize: 20,
+        }).items[0]?.inventory,
+      ).toBeNull();
+    });
   });
 
   it("does not apply create defaults to Machine partial update contracts", () => {

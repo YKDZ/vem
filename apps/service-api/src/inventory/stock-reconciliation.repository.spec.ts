@@ -1,3 +1,4 @@
+import { ConflictException } from "@nestjs/common";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -62,6 +63,54 @@ function makeRepository() {
 }
 
 describe("DrizzleStockReconciliationRepository", () => {
+  it("rejects accepting machine stock below reserved quantity before writing", async () => {
+    const { repository, tx } = makeRepository();
+    const findCaseById = vi.fn().mockResolvedValueOnce(
+      makeCase({
+        afterQuantity: 4,
+        onHandQty: 6,
+        reservedQty: 5,
+      }),
+    );
+    Object.assign(repository, { findCaseById });
+
+    await expect(
+      repository.resolveCase("raw-1", {
+        action: "accept_machine_stock",
+        note: "accept stock",
+        clearBlocker: true,
+        adminUserId: "admin-1",
+      }),
+    ).rejects.toThrow(ConflictException);
+
+    expect(tx.execute).not.toHaveBeenCalled();
+    expect(tx.insert).not.toHaveBeenCalled();
+  });
+
+  it("rejects manual correction below reserved quantity before writing", async () => {
+    const { repository, tx } = makeRepository();
+    const findCaseById = vi.fn().mockResolvedValueOnce(
+      makeCase({
+        onHandQty: 6,
+        reservedQty: 5,
+      }),
+    );
+    Object.assign(repository, { findCaseById });
+
+    await expect(
+      repository.resolveCase("raw-1", {
+        action: "manual_correct",
+        correctedOnHandQty: 4,
+        note: "counted on site",
+        clearBlocker: true,
+        adminUserId: "admin-1",
+      }),
+    ).rejects.toThrow(ConflictException);
+
+    expect(tx.execute).not.toHaveBeenCalled();
+    expect(tx.insert).not.toHaveBeenCalled();
+  });
+
   it("does not write movement or clear blockers when conditional resolve loses the race", async () => {
     const { repository, tx } = makeRepository();
     const findCaseById = vi.fn().mockResolvedValueOnce(makeCase());

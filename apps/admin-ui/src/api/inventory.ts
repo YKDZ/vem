@@ -1,89 +1,38 @@
-import { get, post } from "./request";
+import type { z } from "zod";
 
-export type Inventory = {
-  id: string;
-  machineId: string;
-  machineCode?: string;
-  slotId: string;
-  variantId: string;
-  productId?: string;
-  onHandQty: number;
-  reservedQty: number;
-  availableQty?: number;
-  lowStockThreshold: number;
+import {
+  adminInventoryContractNoBodySchema,
+  adminInventoryListQuerySchema,
+  adminInventoryMovementListQuerySchema,
+  adminInventoryMovementPageResponseSchema,
+  adminInventoryPageResponseSchema,
+  adminInventoryResponseSchema,
+  adminStockReconciliationCaseDetailResponseSchema,
+  adminStockReconciliationCasePageResponseSchema,
+  adminStockReconciliationListQuerySchema,
+  adminStockReconciliationResolveRequestSchema,
+  adjustInventorySchema,
+  createInventorySchema,
+  refillInventorySchema,
+  type AdminInventoryMovementResponse,
+  type AdminInventoryResponse,
+  type AdminStockReconciliationCaseDetailResponse,
+  type AdminStockReconciliationCaseSummaryResponse,
+} from "@vem/shared";
+
+import { getContract, postContract } from "./request";
+
+export type Inventory = AdminInventoryResponse & {
   machineName?: string;
-  slotCode?: string;
-  sku?: string;
-  productName?: string;
-  createdAt?: string;
-  updatedAt?: string;
 };
 
-export type InventoryMovement = {
-  id: string;
-  inventoryId: string;
-  deltaQty: number;
-  reason: string;
-  orderId: string | null;
-  orderNo?: string | null;
-  operatorAdminUserId: string | null;
-  note: string | null;
-  createdAt: string;
-};
+export type InventoryMovement = AdminInventoryMovementResponse;
 
-export type StockReconciliationCaseSummary = {
-  id: string;
-  caseTable: string;
-  rawMovementId: string | null;
-  machineId: string;
-  machineCode: string;
-  movementId: string;
-  movementType: string;
-  quantity: number;
-  source: string;
-  attributedTo: string | null;
-  receivedAt: string;
-  reconciliationReason: string | null;
-  platformReviewStatus: string | null;
-  slot: {
-    id: string;
-    code: string | null;
-    status: string | null;
-    saleEligibility: {
-      eligible: boolean;
-      slotSalesState: string;
-      reason: string | null;
-    };
-  };
-  inventory: {
-    id: string;
-    productName: string | null;
-    sku: string | null;
-    onHandQty: number;
-    reservedQty: number;
-    saleableQty: number;
-  } | null;
-  blocker: {
-    state: string;
-    reason: string | null;
-    linkedCaseId: string;
-    linkedOrderId: string | null;
-    linkedOrderNo: string | null;
-    linkedCommandId: string | null;
-    linkedCommandNo: string | null;
-  } | null;
-};
+export type StockReconciliationCaseSummary =
+  AdminStockReconciliationCaseSummaryResponse;
 
-export type StockReconciliationCaseDetail = StockReconciliationCaseSummary & {
-  planogramVersion: string;
-  evidence: {
-    rawPayload: Record<string, unknown>;
-    normalizedPayload: Record<string, unknown>;
-    inventory: StockReconciliationCaseSummary["inventory"];
-    linkedOrder: { id: string | null; orderNo: string | null } | null;
-    linkedCommand: { id: string | null; commandNo: string | null } | null;
-  };
-};
+export type StockReconciliationCaseDetail =
+  AdminStockReconciliationCaseDetailResponse;
 
 export type PageResult<T> = {
   items: T[];
@@ -93,75 +42,90 @@ export type PageResult<T> = {
 };
 
 export async function listInventories(
-  query?: Record<string, unknown>,
+  query?: z.input<typeof adminInventoryListQuerySchema>,
 ): Promise<PageResult<Inventory>> {
-  return await get<PageResult<Inventory>>("/inventories", { params: query });
+  return await getContract(
+    "/inventories",
+    adminInventoryListQuerySchema,
+    adminInventoryPageResponseSchema,
+    query ?? {},
+  );
 }
 
-export async function createInventory(body: {
-  machineId: string;
-  slotId: string;
-  variantId: string;
-  onHandQty: number;
-  reservedQty?: number;
-  lowStockThreshold?: number;
-  note?: string;
-}): Promise<Inventory> {
-  return await post<Inventory>("/inventories", body);
+export async function createInventory(
+  body: z.input<typeof createInventorySchema>,
+): Promise<Inventory> {
+  return await postContract(
+    "/inventories",
+    createInventorySchema,
+    adminInventoryResponseSchema,
+    body,
+  );
 }
 
-export async function refillInventory(body: {
-  inventoryId: string;
-  quantity: number;
-  note?: string;
-}): Promise<Inventory> {
-  return await post<Inventory>("/inventories/refill", body);
+export async function refillInventory(
+  body: z.input<typeof refillInventorySchema>,
+): Promise<Inventory> {
+  return await postContract(
+    "/inventories/refill",
+    refillInventorySchema,
+    adminInventoryResponseSchema,
+    body,
+  );
 }
 
-export async function adjustInventory(body: {
-  inventoryId: string;
-  deltaQty: number;
-  note?: string;
-}): Promise<Inventory> {
-  return await post<Inventory>("/inventories/adjust", body);
+export async function adjustInventory(
+  body: z.input<typeof adjustInventorySchema>,
+): Promise<Inventory> {
+  return await postContract(
+    "/inventories/adjust",
+    adjustInventorySchema,
+    adminInventoryResponseSchema,
+    body,
+  );
 }
 
 export async function listInventoryMovements(
-  query?: Record<string, unknown>,
+  query?: z.input<typeof adminInventoryMovementListQuerySchema>,
 ): Promise<PageResult<InventoryMovement>> {
-  return await get<PageResult<InventoryMovement>>("/inventory-movements", {
-    params: query,
-  });
+  return await getContract(
+    "/inventory-movements",
+    adminInventoryMovementListQuerySchema,
+    adminInventoryMovementPageResponseSchema,
+    query ?? {},
+  );
 }
 
 export async function listStockReconciliationCases(
-  query?: Record<string, unknown>,
+  query?: z.input<typeof adminStockReconciliationListQuerySchema>,
 ): Promise<PageResult<StockReconciliationCaseSummary>> {
-  return await get<PageResult<StockReconciliationCaseSummary>>(
+  return await getContract(
     "/stock-reconciliation-cases",
-    { params: query },
+    adminStockReconciliationListQuerySchema,
+    adminStockReconciliationCasePageResponseSchema,
+    query ?? {},
   );
 }
 
 export async function getStockReconciliationCase(
   id: string,
 ): Promise<StockReconciliationCaseDetail> {
-  return await get<StockReconciliationCaseDetail>(
+  return await getContract(
     `/stock-reconciliation-cases/${id}`,
+    adminInventoryContractNoBodySchema,
+    adminStockReconciliationCaseDetailResponseSchema,
+    {},
   );
 }
 
 export async function resolveStockReconciliationCase(
   id: string,
-  body: {
-    action: "accept_machine_stock" | "reject_machine_stock" | "manual_correct";
-    note: string;
-    clearBlocker?: boolean;
-    correctedOnHandQty?: number;
-  },
+  body: z.input<typeof adminStockReconciliationResolveRequestSchema>,
 ): Promise<StockReconciliationCaseDetail> {
-  return await post<StockReconciliationCaseDetail>(
+  return await postContract(
     `/stock-reconciliation-cases/${id}/resolve`,
+    adminStockReconciliationResolveRequestSchema,
+    adminStockReconciliationCaseDetailResponseSchema,
     body,
   );
 }

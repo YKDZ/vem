@@ -8,16 +8,24 @@ import {
   type StockReconciliationRepository,
 } from "./stock-reconciliation.service";
 
+const RAW_CASE_ID = "550e8400-e29b-41d4-a716-446655440000";
+const MACHINE_ID = "550e8400-e29b-41d4-a716-446655440001";
+const SLOT_ID = "550e8400-e29b-41d4-a716-446655440002";
+const INVENTORY_ID = "550e8400-e29b-41d4-a716-446655440003";
+const ORDER_ID = "550e8400-e29b-41d4-a716-446655440004";
+const COMMAND_ID = "550e8400-e29b-41d4-a716-446655440005";
+const CONFLICT_CASE_ID = "550e8400-e29b-41d4-a716-446655440006";
+
 function makeOpenCase() {
   return {
-    id: "raw-1",
+    id: RAW_CASE_ID,
     caseTable: "machine_raw_stock_movements" as const,
     rawMovementId: null,
-    machineId: "machine-1",
+    machineId: MACHINE_ID,
     machineCode: "M001",
     movementId: "MOVE-1",
     planogramVersion: "PLAN-1",
-    slotId: "slot-1",
+    slotId: SLOT_ID,
     slotCode: "A1",
     movementType: "stock_count_correction",
     quantity: 4,
@@ -31,7 +39,7 @@ function makeOpenCase() {
     reconciliationReason: "weak_attribution",
     platformReviewStatus: "open",
     saleSafetyBlockerState: "needs_platform_review",
-    saleSafetyBlockerSlotId: "slot-1",
+    saleSafetyBlockerSlotId: SLOT_ID,
     payloadJson: {
       movementId: "MOVE-1",
       beforeQuantity: 6,
@@ -42,15 +50,15 @@ function makeOpenCase() {
       },
     },
     normalizedJson: { movementId: "MOVE-1" },
-    inventoryId: "inventory-1",
+    inventoryId: INVENTORY_ID,
     productName: "测试商品",
     sku: "SKU-1",
     onHandQty: 6,
     reservedQty: 1,
     slotStatus: "enabled",
-    linkedOrderId: "order-1",
+    linkedOrderId: ORDER_ID,
     linkedOrderNo: "ORD-1",
-    linkedCommandId: "command-1",
+    linkedCommandId: COMMAND_ID,
     linkedCommandNo: "VCMD-1",
   };
 }
@@ -91,11 +99,11 @@ describe("StockReconciliationService", () => {
       total: 1,
       items: [
         {
-          id: "raw-1",
+          id: RAW_CASE_ID,
           machineCode: "M001",
           movementId: "MOVE-1",
           slot: {
-            id: "slot-1",
+            id: SLOT_ID,
             code: "A1",
             status: "enabled",
             saleEligibility: {
@@ -107,7 +115,7 @@ describe("StockReconciliationService", () => {
           blocker: {
             state: "needs_platform_review",
             reason: "weak_attribution",
-            linkedCaseId: "raw-1",
+            linkedCaseId: RAW_CASE_ID,
             linkedOrderNo: "ORD-1",
             linkedCommandNo: "VCMD-1",
           },
@@ -119,10 +127,10 @@ describe("StockReconciliationService", () => {
   it("opens detail evidence for one stock reconciliation case", async () => {
     const { service } = makeService();
 
-    const detail = await service.getCase("raw-1");
+    const detail = await service.getCase(RAW_CASE_ID);
 
     expect(detail).toMatchObject({
-      id: "raw-1",
+      id: RAW_CASE_ID,
       evidence: {
         rawPayload: {
           movementId: "MOVE-1",
@@ -131,7 +139,7 @@ describe("StockReconciliationService", () => {
         },
         normalizedPayload: { movementId: "MOVE-1" },
         inventory: {
-          id: "inventory-1",
+          id: INVENTORY_ID,
           onHandQty: 6,
           reservedQty: 1,
           saleableQty: 0,
@@ -144,7 +152,7 @@ describe("StockReconciliationService", () => {
     const { service } = makeService();
 
     await expect(
-      service.resolveCase("admin-1", "raw-1", {
+      service.resolveCase("admin-1", RAW_CASE_ID, {
         action: "accept_machine_stock",
         note: " ",
       }),
@@ -163,7 +171,7 @@ describe("StockReconciliationService", () => {
       case: resolvedCase,
       previousCase: openCase,
       inventoryMovement: {
-        inventoryId: "inventory-1",
+        inventoryId: INVENTORY_ID,
         deltaQty: -2,
         reason: "hardware_sync",
         note: "accept stock count",
@@ -174,13 +182,13 @@ describe("StockReconciliationService", () => {
       resolveCase: vi.fn().mockResolvedValue(resolved),
     });
 
-    const result = await service.resolveCase("admin-1", "raw-1", {
+    const result = await service.resolveCase("admin-1", RAW_CASE_ID, {
       action: "accept_machine_stock",
       note: "accept stock count",
       clearBlocker: true,
     });
 
-    expect(repository.resolveCase).toHaveBeenCalledWith("raw-1", {
+    expect(repository.resolveCase).toHaveBeenCalledWith(RAW_CASE_ID, {
       action: "accept_machine_stock",
       note: "accept stock count",
       clearBlocker: true,
@@ -191,7 +199,7 @@ describe("StockReconciliationService", () => {
       adminUserId: "admin-1",
       action: "stock_reconciliation.accept_machine_stock",
       resourceType: "machine_raw_stock_movement",
-      resourceId: "raw-1",
+      resourceId: RAW_CASE_ID,
       beforeJson: expect.objectContaining({
         platformReviewStatus: "open",
       }),
@@ -204,7 +212,7 @@ describe("StockReconciliationService", () => {
       }),
     });
     expect(result).toMatchObject({
-      id: "raw-1",
+      id: RAW_CASE_ID,
       platformReviewStatus: "resolved",
       resolution: {
         action: "accept_machine_stock",
@@ -216,9 +224,9 @@ describe("StockReconciliationService", () => {
   it("audits conflict reconciliation against the conflict resource for investigation trails", async () => {
     const conflictCase = {
       ...makeOpenCase(),
-      id: "conflict-1",
+      id: CONFLICT_CASE_ID,
       caseTable: "machine_raw_stock_movement_conflicts" as const,
-      rawMovementId: "raw-1",
+      rawMovementId: RAW_CASE_ID,
       reconciliationReason: "movement_id_payload_conflict",
     };
     const { service, auditService } = makeService({
@@ -233,7 +241,7 @@ describe("StockReconciliationService", () => {
       }),
     });
 
-    await service.resolveCase("admin-1", "conflict-1", {
+    await service.resolveCase("admin-1", CONFLICT_CASE_ID, {
       action: "reject_machine_stock",
       note: "payload conflicts with accepted movement",
       clearBlocker: false,
@@ -242,7 +250,7 @@ describe("StockReconciliationService", () => {
     expect(auditService.record).toHaveBeenCalledWith(
       expect.objectContaining({
         resourceType: "machine_raw_stock_movement_conflict",
-        resourceId: "conflict-1",
+        resourceId: CONFLICT_CASE_ID,
       }),
     );
   });
@@ -251,10 +259,10 @@ describe("StockReconciliationService", () => {
     const { service } = makeService();
 
     await expect(
-      service.resolveCase("admin-1", "raw-1", {
+      service.resolveCase("admin-1", RAW_CASE_ID, {
         action: "manual_correct",
         note: "counted on site",
-      }),
+      } as never),
     ).rejects.toThrow(BadRequestException);
   });
 
