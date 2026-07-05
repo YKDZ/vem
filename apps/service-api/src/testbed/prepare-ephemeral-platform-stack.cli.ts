@@ -309,7 +309,10 @@ export function parseCliOptions(
     "--machine-code-prefix is required",
   );
   const runId = requireOption(readFlag(args, "run-id"), "--run-id is required");
-  if (normalizeRunId(runId) === "LOCAL" || normalizeRunId(runId) === "DEFAULT") {
+  if (
+    normalizeRunId(runId) === "LOCAL" ||
+    normalizeRunId(runId) === "DEFAULT"
+  ) {
     throw new Error("--run-id must be non-default");
   }
   if (!hasFlag(args, "allow-ephemeral-target")) {
@@ -326,10 +329,7 @@ export function parseCliOptions(
     { name: "api", flag: "--api-base-url" },
     apiBaseUrl,
   );
-  assertAllowedEphemeralTarget(
-    { name: "mqtt", flag: "--mqtt-url" },
-    mqttUrl,
-  );
+  assertAllowedEphemeralTarget({ name: "mqtt", flag: "--mqtt-url" }, mqttUrl);
 
   return {
     runId,

@@ -194,9 +194,13 @@ async function expectCoreElements(
       await expect(
         page.getByRole("heading", { name: "货道拓扑不匹配" }),
       ).toBeVisible();
-      await expect(page.getByText("平台货道拓扑与本机下位机返回不一致")).toBeVisible();
+      await expect(
+        page.getByText("平台货道拓扑与本机下位机返回不一致"),
+      ).toBeVisible();
       await expect(page.getByText("现场网络", { exact: true })).toBeVisible();
-      await expect(page.getByRole("button", { name: "导出现场证据" })).toBeVisible();
+      await expect(
+        page.getByRole("button", { name: "导出现场证据" }),
+      ).toBeVisible();
       await expect(page.getByText("Bring-Up Console")).toHaveCount(0);
       await expect(page.getByText("Runtime Acceptance")).toHaveCount(0);
       await expect(page.getByText("Protected Maintenance Mode")).toHaveCount(0);

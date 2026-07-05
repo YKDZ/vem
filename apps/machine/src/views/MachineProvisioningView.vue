@@ -2,12 +2,16 @@
 import { computed, onMounted, reactive, ref } from "vue";
 import { useRouter } from "vue-router";
 
+import type {
+  BringUpSnapshot,
+  NetworkSettingsResponse,
+} from "@/daemon/schemas";
+
 import listSloganImage from "@/assets/home/list-slogan.png";
 import logoImage from "@/assets/home/logo.png";
 import mascotTopImage from "@/assets/home/mascot-top-cutout.png";
 import { useMaintenanceEntry } from "@/composables/useMaintenanceEntry";
 import { DaemonUnavailableError, daemonClient } from "@/daemon/client";
-import type { BringUpSnapshot, NetworkSettingsResponse } from "@/daemon/schemas";
 import KioskLayout from "@/layouts/KioskLayout.vue";
 import { useMachineStore } from "@/stores/machine";
 
@@ -97,9 +101,7 @@ function bringUpStateLabel(state: BringUpSnapshot["state"]): string {
   return labels[state];
 }
 
-function readinessLevelLabel(
-  level: BringUpSnapshot["readinessLevel"],
-): string {
+function readinessLevelLabel(level: BringUpSnapshot["readinessLevel"]): string {
   const labels: Record<BringUpSnapshot["readinessLevel"], string> = {
     not_ready: "未就绪",
     runtime_ready: "本机运行就绪",
@@ -122,9 +124,12 @@ function bringUpActions(snapshot: BringUpSnapshot) {
     },
     {
       key: "claimMachine",
-      label: snapshot.allowedActions.retryClaim ? "重新提交领取码" : "提交领取码",
+      label: snapshot.allowedActions.retryClaim
+        ? "重新提交领取码"
+        : "提交领取码",
       enabled:
-        snapshot.allowedActions.claimMachine || snapshot.allowedActions.retryClaim,
+        snapshot.allowedActions.claimMachine ||
+        snapshot.allowedActions.retryClaim,
     },
     {
       key: "syncProfile",
@@ -392,7 +397,11 @@ async function submitClaim(): Promise<void> {
 }
 
 async function submitNetworkSettings(): Promise<void> {
-  if (!networkForm.ssid.trim() || submittingNetwork.value || !networkAllowed.value) {
+  if (
+    !networkForm.ssid.trim() ||
+    submittingNetwork.value ||
+    !networkAllowed.value
+  ) {
     return;
   }
   submittingNetwork.value = true;
@@ -493,9 +502,7 @@ onMounted(() => {
                 <small>{{ reasonDisplay(reason).detail }}</small>
               </li>
             </ul>
-            <p v-else class="empty-copy">
-              本机服务未返回阻塞原因。
-            </p>
+            <p v-else class="empty-copy">本机服务未返回阻塞原因。</p>
           </section>
 
           <section class="bring-up-panel">
@@ -504,15 +511,16 @@ onMounted(() => {
               <h3>现场核对</h3>
             </div>
             <ul v-if="diagnostics.length" class="reason-list diagnostic-list">
-              <li v-for="item in diagnostics" :key="`${item.component}-${item.code}`">
+              <li
+                v-for="item in diagnostics"
+                :key="`${item.component}-${item.code}`"
+              >
                 <strong>{{ reasonDisplay(item).title }}</strong>
                 <span>{{ reasonDisplay(item).meta }}</span>
                 <small>{{ reasonDisplay(item).detail }}</small>
               </li>
             </ul>
-            <p v-else class="empty-copy">
-              暂无额外诊断。
-            </p>
+            <p v-else class="empty-copy">暂无额外诊断。</p>
           </section>
         </section>
 
@@ -536,7 +544,10 @@ onMounted(() => {
         </section>
 
         <section class="bring-up-grid">
-          <form class="bring-up-panel bring-up-form" @submit.prevent="submitNetworkSettings">
+          <form
+            class="bring-up-panel bring-up-form"
+            @submit.prevent="submitNetworkSettings"
+          >
             <div class="panel-heading">
               <p class="bring-up-eyebrow">现场网络</p>
               <h3>写入连接设置</h3>
@@ -559,17 +570,23 @@ onMounted(() => {
             </label>
             <button
               class="kiosk-touch-target primary-action"
-              :disabled="submittingNetwork || !networkAllowed || !networkForm.ssid.trim()"
+              :disabled="
+                submittingNetwork || !networkAllowed || !networkForm.ssid.trim()
+              "
               type="submit"
             >
               {{ submittingNetwork ? "正在提交网络" : "提交网络设置" }}
             </button>
             <p v-if="networkResult" class="inline-result">
-              {{ networkStatusLabel(networkResult.status) }} · {{ networkResult.operatorGuidance }}
+              {{ networkStatusLabel(networkResult.status) }} ·
+              {{ networkResult.operatorGuidance }}
             </p>
           </form>
 
-          <form class="bring-up-panel bring-up-form" @submit.prevent="submitClaim">
+          <form
+            class="bring-up-panel bring-up-form"
+            @submit.prevent="submitClaim"
+          >
             <div class="panel-heading">
               <p class="bring-up-eyebrow">机器领取</p>
               <h3>提交领取码</h3>
@@ -586,7 +603,9 @@ onMounted(() => {
             </label>
             <button
               class="kiosk-touch-target primary-action"
-              :disabled="submittingClaim || !claimAllowed || !claimForm.claimCode.trim()"
+              :disabled="
+                submittingClaim || !claimAllowed || !claimForm.claimCode.trim()
+              "
               type="submit"
             >
               {{ submittingClaim ? "正在领取" : "提交领取码" }}

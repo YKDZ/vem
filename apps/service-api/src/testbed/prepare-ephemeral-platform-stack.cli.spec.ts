@@ -310,9 +310,7 @@ describe("parseCliOptions", () => {
     expect(() =>
       parseCliOptions(
         explicitSafeArgs.map((arg) =>
-          arg === "mqtt://127.0.0.1:1883"
-            ? "mqtt://118.25.104.160:1883"
-            : arg,
+          arg === "mqtt://127.0.0.1:1883" ? "mqtt://118.25.104.160:1883" : arg,
         ),
         { PAYMENT_MOCK_ENABLED: "true" },
       ),
@@ -371,7 +369,8 @@ describe("parseCliOptions", () => {
     ).toMatchObject({
       runId: "issue-179",
       machineCodePrefix: "VEM-TESTBED-ACCEPT",
-      databaseUrl: "postgres://testbed:testbed@127.0.0.1:5432/vem_testbed_issue_179",
+      databaseUrl:
+        "postgres://testbed:testbed@127.0.0.1:5432/vem_testbed_issue_179",
       apiBaseUrl: "http://127.0.0.1:3000/api",
       mqttUrl: "mqtt://127.0.0.1:1883",
       allowEphemeralTarget: true,

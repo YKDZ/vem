@@ -165,10 +165,10 @@ const DEFAULT_PUBLIC_RUNBOOKS = [
           "iso.uriEvidenceField": "source.iso.uri",
           "iso.fileNamePattern": "^[^/\\\\]+\\.iso$",
           "iso.sha256Pattern": "^[a-f0-9]{64}$",
-          "iso.uriRule": "source.iso.uri == iso.uriPrefix + source.iso.fileName",
+          "iso.uriRule":
+            "source.iso.uri == iso.uriPrefix + source.iso.fileName",
           "iso.placeholderIdentityAllowed": false,
-          "canonicalVm.uri":
-            "unraid://192.168.2.23/vms/win10-vem-clean-base",
+          "canonicalVm.uri": "unraid://192.168.2.23/vms/win10-vem-clean-base",
           "canonicalVm.sourceEvidenceField": "source.uri",
           "cleanSnapshot.name": "vem-clean-base-before-factory-prep",
           "cleanSnapshot.uri": "snapshot:vem-clean-base-before-factory-prep",
@@ -177,8 +177,7 @@ const DEFAULT_PUBLIC_RUNBOOKS = [
           "acceptanceEvidence.schemaVersion":
             "clean-base-factory-acceptance-report/v1",
           "acceptanceEvidence.kind": "clean-base-factory-acceptance",
-          "dirtySourcePolicy.retainedStateTestbed":
-            "dirty-host-evidence-only",
+          "dirtySourcePolicy.retainedStateTestbed": "dirty-host-evidence-only",
           "dirtySourcePolicy.localResetDoesNotPromoteCleanBase": true,
         },
         requiredIncludes: {

@@ -367,7 +367,9 @@ addCheck(
   testbedRunner.includes("options.sshKnownHostsPath") &&
     testbedRunner.includes("StrictHostKeyChecking=accept-new") &&
     testbedRunner.includes("UserKnownHostsFile=") &&
-    testbedRunner.includes('options.mode === "clean-base-factory-acceptance"') &&
+    testbedRunner.includes(
+      'options.mode === "clean-base-factory-acceptance"',
+    ) &&
     testbedRunner.includes('join(localTempDirectory, "known_hosts")'),
   `${testbedRunnerPath} should connect to newly created clean-base VMs with a run-scoped known_hosts file instead of depending on global SSH state`,
 );
@@ -392,7 +394,9 @@ addCheck(
       "File and Printer Sharing firewall rules must not be enabled as a maintenance entry",
     ) &&
     verifier.includes("not_installed_by_default") &&
-    verifier.includes("default Factory Runtime Image must not include Tailscale") &&
+    verifier.includes(
+      "default Factory Runtime Image must not include Tailscale",
+    ) &&
     verifier.includes("enabledVemInboundRules") &&
     !verifier.includes(
       'Get-LocalGroupMember -Group "Administrators" -ErrorAction SilentlyContinue',
