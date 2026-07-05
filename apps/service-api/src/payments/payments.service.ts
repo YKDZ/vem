@@ -1231,12 +1231,14 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
     key: "merchantNo" | "appId",
     existing: TExisting,
   ): string | null | undefined {
-    const value = Object.prototype.hasOwnProperty.call(input, key)
+    const value: unknown = Object.prototype.hasOwnProperty.call(input, key)
       ? input[key]
       : existing?.[key];
-    if (typeof value === "string" || value === null || value === undefined) {
+    if (typeof value === "string") {
       return value;
     }
+    if (value === null) return null;
+    if (value === undefined) return undefined;
     throw new Error(`${key} must be a string or null`);
   }
 
