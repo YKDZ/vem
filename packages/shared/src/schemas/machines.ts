@@ -183,19 +183,20 @@ export const externalNaturalEnvironmentSchema = z.discriminatedUnion("status", [
   }),
 ]);
 
-const machineWriteShape = {
+const machineCreateShape = {
   code: z.string().min(1).max(64),
   name: z.string().min(1).max(128),
   locationLabel: z.string().max(500).nullable().optional(),
   geoLocation: machineGeoLocationSchema.nullable().optional(),
+};
+
+const machineWriteShape = {
+  ...machineCreateShape,
   status: machineStatusSchema,
   mqttClientId: z.string().max(128).nullable().optional(),
 };
 
-export const createMachineSchema = z.strictObject({
-  ...machineWriteShape,
-  status: machineStatusSchema.default("offline"),
-});
+export const createMachineSchema = z.strictObject(machineCreateShape);
 
 export const updateMachineSchema = z.strictObject(machineWriteShape).partial();
 
@@ -554,6 +555,11 @@ export const productionMachineHardwareProfileSchema = z.strictObject({
   }),
 });
 
+export const hardwareSlotTopologyIdentitySchema = z.strictObject({
+  identity: z.string().min(1).max(128),
+  version: z.string().min(1).max(128),
+});
+
 const legacyProductionMachinePaymentOptionSchema =
   machinePaymentOptionSchema.refine(
     (option) =>
@@ -626,6 +632,7 @@ export const machineProvisioningProfileSchema = z.strictObject({
     mqttTopicPrefix: z.string().regex(/^vem\/machines\/[^/]+$/),
   }),
   hardwareProfile: productionMachineHardwareProfileSchema,
+  hardwareSlotTopology: hardwareSlotTopologyIdentitySchema,
   paymentCapability: productionMachinePaymentCapabilitySchema,
   metadata: z.strictObject({
     profileVersion: z.literal(1),
@@ -647,6 +654,9 @@ export type GenerateMachineClaimCodeRequest = z.infer<
 export type MachineClaimRequest = z.infer<typeof machineClaimRequestSchema>;
 export type ProductionMachineHardwareProfile = z.infer<
   typeof productionMachineHardwareProfileSchema
+>;
+export type HardwareSlotTopologyIdentity = z.infer<
+  typeof hardwareSlotTopologyIdentitySchema
 >;
 export type ProductionMachinePaymentCapability = z.infer<
   typeof productionMachinePaymentCapabilitySchema

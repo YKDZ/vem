@@ -11,6 +11,7 @@ const {
   subscribeEventsMock,
   getHealthMock,
   getReadyMock,
+  getBringUpMock,
   getConfigMock,
   getSaleReadinessMock,
   getCurrentTransactionMock,
@@ -30,6 +31,7 @@ const {
   subscribeEventsMock: vi.fn(),
   getHealthMock: vi.fn(),
   getReadyMock: vi.fn(),
+  getBringUpMock: vi.fn(),
   getConfigMock: vi.fn(),
   getSaleReadinessMock: vi.fn(),
   getCurrentTransactionMock: vi.fn(),
@@ -64,6 +66,7 @@ vi.mock("@/daemon/client", () => ({
     subscribeEvents: subscribeEventsMock,
     getHealth: getHealthMock,
     getReady: getReadyMock,
+    getBringUp: getBringUpMock,
     getConfig: getConfigMock,
     getSaleReadiness: getSaleReadinessMock,
     getCurrentTransaction: getCurrentTransactionMock,
@@ -129,6 +132,7 @@ beforeEach(() => {
   );
   initializeMock.mockResolvedValue(undefined);
   subscribeEventsMock.mockReturnValue({ close: vi.fn() });
+  getBringUpMock.mockResolvedValue(bringUpSnapshot("sell_ready"));
   getSaleViewMock.mockRejectedValue(new Error("sale view not mocked"));
   getCurrentTransactionMock.mockResolvedValue({
     orderId: null,
@@ -515,6 +519,40 @@ function saleReadiness(canStartNetworkAuthorizedSale: boolean) {
   };
 }
 
+function bringUpSnapshot(
+  state: "claim_required" | "sell_ready" = "sell_ready",
+) {
+  return {
+    state,
+    blockingReasons:
+      state === "claim_required"
+        ? [
+            {
+              code: "CLAIM_REQUIRED",
+              component: "provisioning",
+              message:
+                "machine must be claimed before runtime profile can be applied",
+            },
+          ]
+        : [],
+    diagnostics: [],
+    readinessLevel: state === "sell_ready" ? "sell_ready" : "not_ready",
+    hardwareMode: state === "sell_ready" ? "production" : "simulated",
+    allowedActions: {
+      configureNetwork: false,
+      claimMachine: state === "claim_required",
+      retryClaim: state === "claim_required",
+      syncProfile: false,
+      resolveTopology: false,
+      runRuntimeAcceptance: state === "sell_ready",
+      runHardwareAcceptance: false,
+      attestStock: false,
+      startSales: state === "sell_ready",
+    },
+    updatedAt: "2026-07-04T00:00:00Z",
+  };
+}
+
 function applyBlockedSaleReadiness(): void {
   const health = {
     status: "healthy" as const,
@@ -612,7 +650,8 @@ async function mountView(component: object): Promise<HTMLElement> {
 }
 
 describe("sale readiness UI flow", () => {
-  it("routes first boot machines without provisioning to the claim-code page", async () => {
+  it("routes first boot machines without provisioning to the bring-up console", async () => {
+    getBringUpMock.mockResolvedValue(bringUpSnapshot("claim_required"));
     getHealthMock.mockResolvedValue({
       ...healthSnapshot(),
       configConfigured: false,
@@ -656,11 +695,12 @@ describe("sale readiness UI flow", () => {
     await mountView(BootView);
 
     await vi.waitFor(() => {
-      expect(routerReplaceMock).toHaveBeenCalledWith("/provisioning");
+      expect(routerReplaceMock).toHaveBeenCalledWith("/bring-up");
     });
   });
 
   it("does not route to catalog when startup config loading fails", async () => {
+    getBringUpMock.mockResolvedValue(bringUpSnapshot("claim_required"));
     getHealthMock.mockResolvedValue(healthSnapshot());
     getReadyMock.mockResolvedValue(readySnapshot());
     getSaleReadinessMock.mockResolvedValue(saleReadiness(true));
@@ -669,7 +709,7 @@ describe("sale readiness UI flow", () => {
     await mountView(BootView);
 
     await vi.waitFor(() => {
-      expect(routerReplaceMock).toHaveBeenCalledWith("/provisioning");
+      expect(routerReplaceMock).toHaveBeenCalledWith("/bring-up");
     });
     expect(routerReplaceMock).not.toHaveBeenCalledWith("/catalog");
   });

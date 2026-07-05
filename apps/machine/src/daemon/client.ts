@@ -5,6 +5,7 @@ import {
 
 import {
   catalogSnapshotSchema,
+  bringUpSnapshotSchema,
   configSummarySchema,
   daemonEventSchema,
   hardwareSelfCheckSchema,
@@ -13,6 +14,7 @@ import {
   machinePaymentOptionsResponseSchema,
   machineSaleReadinessSchema,
   naturalContextSnapshotSchema,
+  networkSettingsResponseSchema,
   readySnapshotSchema,
   remoteOpsStatusSchema,
   machineSaleViewSnapshotSchema,
@@ -22,6 +24,7 @@ import {
   transactionSnapshotSchema,
   visionStatusSchema,
   type CatalogSnapshot,
+  type BringUpSnapshot,
   type ConfigSummary,
   type DaemonEvent,
   type HealthSnapshot,
@@ -29,6 +32,7 @@ import {
   type EnvironmentControlResult,
   type MachineSaleReadiness,
   type NaturalContextSnapshot,
+  type NetworkSettingsResponse,
   type ProvisioningClaimResponse,
   type ReadySnapshot,
   type RemoteOpsStatus,
@@ -70,6 +74,12 @@ type RequestOptions = {
   method?: string;
   body?: unknown;
   retry401?: boolean;
+};
+
+export type NetworkSettingsRequest = {
+  ssid: string;
+  password: string;
+  hidden: boolean;
 };
 
 type Subscription = {
@@ -168,6 +178,27 @@ export class DaemonApiClient {
 
   async getReady(): Promise<ReadySnapshot> {
     return readySnapshotSchema.parse(await this.request("/readyz"));
+  }
+
+  async getBringUp(): Promise<BringUpSnapshot> {
+    return bringUpSnapshotSchema.parse(await this.request("/v1/bring-up"));
+  }
+
+  async applyNetworkSettings(
+    body: NetworkSettingsRequest,
+  ): Promise<NetworkSettingsResponse> {
+    try {
+      return networkSettingsResponseSchema.parse(
+        await this.request("/v1/network/settings", {
+          method: "POST",
+          body,
+        }),
+      );
+    } catch (error: unknown) {
+      const structured = parseNetworkSettingsRejection(error);
+      if (structured) return structured;
+      throw error;
+    }
   }
 
   async getConfig(): Promise<ConfigSummary> {
@@ -414,3 +445,26 @@ export class DaemonApiClient {
 }
 
 export const daemonClient = new DaemonApiClient();
+
+function parseNetworkSettingsRejection(
+  error: unknown,
+): NetworkSettingsResponse | null {
+  if (!(error instanceof DaemonUnavailableError)) return null;
+  if (error.statusCode !== 400 && error.statusCode !== 422) return null;
+  if (!error.responseBody) return null;
+
+  try {
+    const parsed: unknown = JSON.parse(error.responseBody);
+    const result = networkSettingsResponseSchema.safeParse(parsed);
+    if (!result.success) return null;
+    if (
+      result.data.status !== "failed" &&
+      result.data.status !== "unsupported"
+    ) {
+      return null;
+    }
+    return result.data;
+  } catch {
+    return null;
+  }
+}

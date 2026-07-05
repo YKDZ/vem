@@ -218,6 +218,199 @@ describe("DaemonApiClient", () => {
     expect(requestBody).not.toContain("machineSecret");
   });
 
+  it("loads bring-up snapshot through daemon IPC without secret fields", async () => {
+    vi.mocked(getDaemonConnectionInfo).mockResolvedValue({
+      baseUrl: "http://127.0.0.1:7891",
+      token: "token-1",
+      source: "browser_env",
+      mock: true,
+    });
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          state: "claim_required",
+          blockingReasons: [
+            {
+              code: "CLAIM_REQUIRED",
+              component: "provisioning",
+              message:
+                "machine must be claimed before runtime profile can be applied",
+            },
+          ],
+          diagnostics: [],
+          readinessLevel: "not_ready",
+          hardwareMode: "simulated",
+          allowedActions: {
+            configureNetwork: false,
+            claimMachine: true,
+            retryClaim: true,
+            syncProfile: false,
+            resolveTopology: false,
+            runRuntimeAcceptance: false,
+            runHardwareAcceptance: false,
+            attestStock: false,
+            startSales: false,
+          },
+          updatedAt: "2026-07-04T00:00:00Z",
+        }),
+        { status: 200 },
+      ),
+    );
+
+    const result = await daemonClient.getBringUp();
+
+    expect(result.state).toBe("claim_required");
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "http://127.0.0.1:7891/v1/bring-up",
+      expect.objectContaining({ method: "GET" }),
+    );
+    expect(JSON.stringify(result)).not.toContain("machineSecret");
+  });
+
+  it("applies Protected Network Settings through daemon IPC without retaining password", async () => {
+    const submittedPassword = ["wifi", "secret"].join("-");
+    vi.mocked(getDaemonConnectionInfo).mockResolvedValue({
+      baseUrl: "http://127.0.0.1:7891",
+      token: "token-1",
+      source: "browser_env",
+      mock: true,
+    });
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          status: "connected",
+          ssid: "VEM-Lab",
+          hidden: false,
+          diagnostics: [
+            {
+              component: "local_network",
+              level: "ok",
+              code: "LOCAL_NETWORK_CONNECTED",
+              message: "Wi-Fi association succeeded",
+            },
+          ],
+          operatorGuidance: "网络已连接，可以继续领取机器。",
+          updatedAt: "2026-07-04T00:00:00Z",
+        }),
+        { status: 200 },
+      ),
+    );
+
+    const result = await daemonClient.applyNetworkSettings({
+      ssid: "VEM-Lab",
+      password: submittedPassword,
+      hidden: false,
+    });
+
+    expect(result.status).toBe("connected");
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "http://127.0.0.1:7891/v1/network/settings",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          ssid: "VEM-Lab",
+          password: submittedPassword,
+          hidden: false,
+        }),
+      }),
+    );
+    expect(JSON.stringify(result)).not.toContain(submittedPassword);
+  });
+
+  it("parses structured failed Protected Network Settings responses", async () => {
+    const submittedPassword = ["wrong", "secret"].join("-");
+    vi.mocked(getDaemonConnectionInfo).mockResolvedValue({
+      baseUrl: "http://127.0.0.1:7891",
+      token: "token-1",
+      source: "browser_env",
+      mock: true,
+    });
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          status: "failed",
+          ssid: "VEM-Lab",
+          hidden: false,
+          diagnostics: [
+            {
+              component: "local_network",
+              level: "error",
+              code: "WIFI_AUTH_FAILED",
+              message: "Wi-Fi password was rejected by the access point",
+            },
+            {
+              component: "dhcp_ip",
+              level: "unknown",
+              code: "DHCP_IP_NOT_CHECKED",
+              message:
+                "DHCP/IP was not checked because Wi-Fi authentication failed",
+            },
+          ],
+          operatorGuidance: "Wi-Fi 密码验证失败。请重新输入密码。",
+          updatedAt: "2026-07-04T00:00:00Z",
+        }),
+        { status: 400 },
+      ),
+    );
+
+    const result = await daemonClient.applyNetworkSettings({
+      ssid: "VEM-Lab",
+      password: submittedPassword,
+      hidden: false,
+    });
+
+    expect(result.status).toBe("failed");
+    expect(result.diagnostics.map((item) => item.code)).toContain(
+      "WIFI_AUTH_FAILED",
+    );
+    expect(JSON.stringify(result)).not.toContain(submittedPassword);
+  });
+
+  it("parses structured unsupported Protected Network Settings responses", async () => {
+    const submittedPassword = ["guest", "secret"].join("-");
+    vi.mocked(getDaemonConnectionInfo).mockResolvedValue({
+      baseUrl: "http://127.0.0.1:7891",
+      token: "token-1",
+      source: "browser_env",
+      mock: true,
+    });
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          status: "unsupported",
+          ssid: "Venue-Guest",
+          hidden: false,
+          diagnostics: [
+            {
+              component: "local_network",
+              level: "warn",
+              code: "INTERACTIVE_LOGIN_NETWORK_UNSUPPORTED",
+              message:
+                "Network appears to require captive portal or other interactive login",
+            },
+          ],
+          operatorGuidance:
+            "该网络需要网页登录、短信登录或其他交互式认证。请改用普通 WPA/WPA2 网络。",
+          updatedAt: "2026-07-04T00:00:00Z",
+        }),
+        { status: 422 },
+      ),
+    );
+
+    const result = await daemonClient.applyNetworkSettings({
+      ssid: "Venue-Guest",
+      password: submittedPassword,
+      hidden: false,
+    });
+
+    expect(result.status).toBe("unsupported");
+    expect(result.operatorGuidance).toContain("网页登录");
+    expect(result.diagnostics.map((item) => item.code)).toContain(
+      "INTERACTIVE_LOGIN_NETWORK_UNSUPPORTED",
+    );
+    expect(JSON.stringify(result)).not.toContain(submittedPassword);
+  });
+
   it("preserves safe daemon claim error codes for operator-state mapping", async () => {
     vi.mocked(getDaemonConnectionInfo).mockResolvedValue({
       baseUrl: "http://127.0.0.1:7891",

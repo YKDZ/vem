@@ -728,6 +728,78 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn backend_claim_machine_accepts_service_api_envelope_profile() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/machines/claim"))
+            .and(body_partial_json(serde_json::json!({
+                "claimCode": "ABCD-2345",
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "code": 0,
+                "message": "ok",
+                "data": {
+                    "machine": {
+                        "id": "6ad6fb24-2146-44e8-9321-b3706a4609a4",
+                        "code": "VEM-TESTBED-WINVM-01",
+                        "name": "Machine Runtime Testbed WINVM 01",
+                        "status": "offline",
+                        "locationLabel": null
+                    },
+                    "credentials": {
+                        "machineSecret": "vms_B1ct4uXCKJBiGOwdj04sCWUyU43zGnPXSY2XhdLs7V4",
+                        "machineSecretVersion": 2,
+                        "mqttSigningSecret": "vms_ALUqDzT6GuJnrG-sAUF8b1jHVfhqbvdfQvLet-01ac8",
+                        "mqttConnection": {
+                            "url": "mqtt://118.25.104.160:1883",
+                            "clientId": "vem-machine-VEM-TESTBED-WINVM-01"
+                        }
+                    },
+                    "runtimeEndpoints": {
+                        "apiBasePath": "/api",
+                        "machineAuthTokenPath": "/api/machine-auth/token",
+                        "machineApiBasePath": "/api/machines/VEM-TESTBED-WINVM-01",
+                        "mqttTopicPrefix": "vem/machines/VEM-TESTBED-WINVM-01"
+                    },
+                    "hardwareProfile": {
+                        "profile": "production",
+                        "controller": { "required": true, "protocol": "vem-vending-controller" },
+                        "paymentScanner": { "required": true, "supportsPaymentCode": true },
+                        "vision": { "required": false, "supportsRecommendations": true }
+                    },
+                    "hardwareSlotTopology": {
+                        "identity": "vem-prod-24",
+                        "version": "2026-06-adr0026"
+                    },
+                    "paymentCapability": {
+                        "profile": "production",
+                        "qrCodeEnabled": true,
+                        "paymentCodeEnabled": true,
+                        "serverTime": "2026-07-05T02:06:21.966Z"
+                    },
+                    "metadata": {
+                        "profileVersion": 1,
+                        "claimCodeId": "79713f63-db82-4bcd-b530-b8b85180f2a0",
+                        "claimedAt": "2026-07-05T02:06:21.966Z",
+                        "serverTime": "2026-07-05T02:06:21.966Z"
+                    }
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let client = BackendClient::new(server.uri());
+        let profile = client.claim_machine("ABCD-2345").await.expect("profile");
+
+        assert_eq!(profile.machine.code, "VEM-TESTBED-WINVM-01");
+        assert_eq!(
+            profile.credentials.mqtt_connection.client_id,
+            "vem-machine-VEM-TESTBED-WINVM-01"
+        );
+        assert!(profile.payment_capability.payment_code_enabled);
+    }
+
+    #[tokio::test]
     async fn backend_get_payment_options_uses_bearer_auth() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))

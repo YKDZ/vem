@@ -102,9 +102,14 @@ export type CreateMachineInput = {
   name: string;
   locationLabel?: string | null;
   geoLocation?: MachineGeoLocation | null;
-  status?: MachineStatus;
-  mqttClientId?: string | null;
 };
+
+export type UpdateMachineInput = Partial<
+  CreateMachineInput & {
+    status: MachineStatus;
+    mqttClientId: string | null;
+  }
+>;
 
 export type CreateMachineSlotInput = {
   layerNo: number;
@@ -147,7 +152,7 @@ export async function createMachine(
 
 export async function updateMachine(
   id: string,
-  body: Partial<CreateMachineInput>,
+  body: UpdateMachineInput,
 ): Promise<Machine> {
   return await patch<Machine>(`/machines/${id}`, body);
 }

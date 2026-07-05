@@ -999,6 +999,16 @@ async function returnToDesktop(): Promise<void> {
   }
 }
 
+async function openProtectedBringUpConsole(): Promise<void> {
+  if (!showAdvancedDebugConfig.value) {
+    return;
+  }
+  await router.replace({
+    path: "/bring-up",
+    query: { source: "protected-maintenance" },
+  });
+}
+
 async function exportLogs(): Promise<void> {
   diagnostics.logsMessage = null;
   try {
@@ -1202,6 +1212,14 @@ async function submitStockMovement(): Promise<void> {
               @click="returnToDesktop"
             >
               回到 Windows 桌面
+            </button>
+            <button
+              v-if="showAdvancedDebugConfig"
+              class="kiosk-touch-target rounded-2xl border border-amber-200/30 px-4 py-3 font-bold text-amber-100"
+              type="button"
+              @click="openProtectedBringUpConsole"
+            >
+              首次部署控制台
             </button>
             <button
               class="kiosk-touch-target rounded-2xl border border-sky-200/30 px-4 py-3 font-bold text-sky-100 disabled:opacity-50"

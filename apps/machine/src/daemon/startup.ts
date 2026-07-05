@@ -1,4 +1,5 @@
 import type {
+  BringUpSnapshot,
   ConfigSummary,
   HealthSnapshot,
   ReadySnapshot,
@@ -7,7 +8,7 @@ import type {
 
 export type StartupRoute =
   | "/maintenance"
-  | "/provisioning"
+  | "/bring-up"
   | "/offline"
   | "/catalog"
   | "/payment"
@@ -18,14 +19,11 @@ export function routeForStartup(input: {
   daemonAvailable: boolean;
   health: HealthSnapshot | null;
   config?: ConfigSummary | null;
+  bringUp?: BringUpSnapshot | null;
   ready: ReadySnapshot | null;
   transaction: TransactionSnapshot | null;
 }): StartupRoute {
   if (!input.daemonAvailable) return "/maintenance";
-  if (!input.config) return "/provisioning";
-  if (!input.config.provisioned) return "/provisioning";
-  if (!input.health?.configConfigured) return "/maintenance";
-
   const next = input.transaction?.nextAction;
   if (next === "submit_payment" || next === "wait_payment") {
     return "/payment";
@@ -52,6 +50,26 @@ export function routeForStartup(input: {
     return { name: "result", params: { kind: next } };
   }
 
+  const bringUpReady =
+    input.bringUp?.state === "sell_ready" ||
+    input.bringUp?.state === "runtime_ready" ||
+    input.bringUp?.state === "simulated_hardware_ready";
+  if (input.bringUp && !bringUpReady) {
+    return "/bring-up";
+  }
+  if (!input.bringUp) {
+    if (!input.config) return "/bring-up";
+    if (!input.config.provisioned) return "/bring-up";
+    if (!input.health?.configConfigured) return "/maintenance";
+  }
+
+  if (input.bringUp?.state === "sell_ready") return "/catalog";
+  if (
+    bringUpReady &&
+    (input.ready?.canSell || input.bringUp?.allowedActions.startSales)
+  ) {
+    return "/catalog";
+  }
   if (input.ready?.canSell) return "/catalog";
   if (input.ready?.suggestedRoute === "maintenance") return "/maintenance";
   return "/offline";

@@ -2,6 +2,11 @@
 import { computed, onMounted, reactive, ref } from "vue";
 import { useRouter } from "vue-router";
 
+import type {
+  BringUpSnapshot,
+  NetworkSettingsResponse,
+} from "@/daemon/schemas";
+
 import listSloganImage from "@/assets/home/list-slogan.png";
 import logoImage from "@/assets/home/logo.png";
 import mascotTopImage from "@/assets/home/mascot-top-cutout.png";
@@ -14,31 +19,277 @@ const machineStore = useMachineStore();
 const router = useRouter();
 const { handleMaintenanceTap } = useMaintenanceEntry();
 
-const form = reactive({
-  claimCode: "",
-});
-const loadingConfig = ref(false);
-const submitting = ref(false);
-const statusMessage = ref<string | null>(null);
-const statusKind = ref<"idle" | "pending" | "success" | "failure">("idle");
-
 const PROVISIONING_CONFIG_RETRY_DELAY_MS = 500;
 const PROVISIONING_CONFIG_MAX_ATTEMPTS = 20;
 
-const diagnostics = computed(() => [
+const claimForm = reactive({
+  claimCode: "",
+});
+const networkForm = reactive({
+  ssid: "",
+  password: "",
+  hidden: false,
+});
+const bringUp = ref<BringUpSnapshot | null>(null);
+const loading = ref(false);
+const submittingClaim = ref(false);
+const submittingNetwork = ref(false);
+const exportingEvidence = ref(false);
+const statusMessage = ref<string | null>(null);
+const statusKind = ref<"idle" | "pending" | "success" | "failure">("idle");
+const networkResult = ref<NetworkSettingsResponse | null>(null);
+type BringUpReason = BringUpSnapshot["blockingReasons"][number];
+type DisplayReason = {
+  title: string;
+  detail: string;
+  meta: string;
+};
+
+const stateLabel = computed(() =>
+  bringUp.value ? bringUpStateLabel(bringUp.value.state) : "正在读取",
+);
+const readinessLabel = computed(() =>
+  bringUp.value ? readinessLevelLabel(bringUp.value.readinessLevel) : "未确认",
+);
+const hardwareModeLabel = computed(() =>
+  bringUp.value ? hardwareModeLabelFor(bringUp.value.hardwareMode) : "未确认",
+);
+const primaryReasons = computed(() => bringUp.value?.blockingReasons ?? []);
+const diagnostics = computed(() => bringUp.value?.diagnostics ?? []);
+const actionRows = computed(() =>
+  bringUp.value ? bringUpActions(bringUp.value) : [],
+);
+const protectedActionRows = computed(() => [
   {
-    label: "机器凭据",
-    configured: machineStore.config.machineSecretConfigured,
+    key: "reclaim",
+    label: "重新领取机器",
+    description: "用于更换主机或本机重装后的机器重新领取。",
   },
   {
-    label: "MQTT 签名",
-    configured: machineStore.config.mqttSigningSecretConfigured,
+    key: "local-reset",
+    label: "本机重置",
+    description: "清理本机身份与本地运行状态后重新进入首次部署。",
   },
   {
-    label: "MQTT 密码",
-    configured: machineStore.config.mqttPasswordConfigured,
+    key: "acceptance-rerun",
+    label: "重新运行验收",
+    description: "生产运行后复核本机运行验收或现场验收状态。",
   },
 ]);
+const claimAllowed = computed(
+  () =>
+    bringUp.value?.allowedActions.claimMachine === true ||
+    bringUp.value?.allowedActions.retryClaim === true,
+);
+const networkAllowed = computed(
+  () => bringUp.value?.allowedActions.configureNetwork === true,
+);
+
+function bringUpStateLabel(state: BringUpSnapshot["state"]): string {
+  const labels: Record<BringUpSnapshot["state"], string> = {
+    network_required: "需要配置网络",
+    platform_reachable: "平台已连通",
+    claim_required: "等待机器领取",
+    profile_applied: "运行档案已写入",
+    topology_mismatch: "货道拓扑不匹配",
+    hardware_acceptance_required: "需要硬件验收",
+    stock_attestation_required: "需要库存确认",
+    runtime_ready: "运行边界已就绪",
+    simulated_hardware_ready: "模拟硬件已就绪",
+    sell_ready: "可进入生产售卖",
+  };
+  return labels[state];
+}
+
+function readinessLevelLabel(level: BringUpSnapshot["readinessLevel"]): string {
+  const labels: Record<BringUpSnapshot["readinessLevel"], string> = {
+    not_ready: "未就绪",
+    runtime_ready: "本机运行就绪",
+    simulated_hardware_ready: "模拟硬件就绪",
+    sell_ready: "可售卖",
+  };
+  return labels[level];
+}
+
+function hardwareModeLabelFor(mode: BringUpSnapshot["hardwareMode"]): string {
+  return mode === "production" ? "生产硬件模式" : "模拟硬件模式";
+}
+
+function bringUpActions(snapshot: BringUpSnapshot) {
+  return [
+    {
+      key: "configureNetwork",
+      label: "配置现场网络",
+      enabled: snapshot.allowedActions.configureNetwork,
+    },
+    {
+      key: "claimMachine",
+      label: snapshot.allowedActions.retryClaim
+        ? "重新提交领取码"
+        : "提交领取码",
+      enabled:
+        snapshot.allowedActions.claimMachine ||
+        snapshot.allowedActions.retryClaim,
+    },
+    {
+      key: "syncProfile",
+      label: "同步运行档案",
+      enabled: snapshot.allowedActions.syncProfile,
+    },
+    {
+      key: "resolveTopology",
+      label: "处理货道拓扑",
+      enabled: snapshot.allowedActions.resolveTopology,
+    },
+    {
+      key: "runRuntimeAcceptance",
+      label: "本机运行验收",
+      enabled: snapshot.allowedActions.runRuntimeAcceptance,
+    },
+    {
+      key: "runHardwareAcceptance",
+      label: "运行硬件验收",
+      enabled: snapshot.allowedActions.runHardwareAcceptance,
+    },
+    {
+      key: "attestStock",
+      label: "确认初始库存",
+      enabled: snapshot.allowedActions.attestStock,
+    },
+    {
+      key: "startSales",
+      label: "进入售卖",
+      enabled: snapshot.allowedActions.startSales,
+    },
+  ];
+}
+
+function componentLabel(component: string): string {
+  const labels: Record<string, string> = {
+    acceptance: "验收",
+    config: "运行档案",
+    hardware: "生产硬件",
+    "lower-controller": "下位机",
+    platform: "平台连接",
+    provisioning: "机器领取",
+    stock: "库存",
+    topology: "货道拓扑",
+  };
+  return labels[component] ?? "本机状态";
+}
+
+function reasonCodeLabel(code: string): string {
+  const labels: Record<string, string> = {
+    ACTIVE_PLANOGRAM_MISSING: "运营货道档案缺失",
+    CLAIM_REQUIRED: "等待领取",
+    CONFIG_SUMMARY_UNAVAILABLE: "运行档案不可读",
+    HARDWARE_ACCEPTANCE_REQUIRED: "需要硬件验收",
+    HARDWARE_SLOT_TOPOLOGY_CHECK_FAILED: "货道拓扑检查失败",
+    HARDWARE_SLOT_TOPOLOGY_LOCAL_MISSING: "本机货道拓扑缺失",
+    HARDWARE_SLOT_TOPOLOGY_MISMATCH: "货道拓扑不一致",
+    HARDWARE_SLOT_TOPOLOGY_NOT_CONFIGURED: "货道拓扑未配置",
+    HARDWARE_SLOT_TOPOLOGY_PLATFORM_MISSING: "平台货道拓扑缺失",
+    LOWER_CONTROLLER_SLOT_COUNT: "货道数量不一致",
+    NETWORK_REQUIRED: "需要配置网络",
+    PLATFORM_REACHABLE: "平台已连通",
+    PUBLIC_CONFIG_PROFILE_APPLIED: "运行档案已写入",
+    PUBLIC_CONFIG_UNCLAIMED: "尚未领取机器",
+    RUNTIME_ACCEPTANCE_PENDING: "本机运行验收待完成",
+    STOCK_ATTESTATION_REQUIRED: "需要库存确认",
+    TOPOLOGY_MISMATCH: "货道拓扑不一致",
+  };
+  return labels[code] ?? "未识别状态";
+}
+
+function reasonDisplay(reason: BringUpReason): DisplayReason {
+  const copies: Record<string, Omit<DisplayReason, "meta">> = {
+    ACTIVE_PLANOGRAM_MISSING: {
+      title: "尚未应用运营货道档案",
+      detail: "请先同步或确认平台下发的运营货道档案。",
+    },
+    CLAIM_REQUIRED: {
+      title: "机器尚未领取",
+      detail: "请输入管理员生成的领取码完成机器领取。",
+    },
+    CONFIG_SUMMARY_UNAVAILABLE: {
+      title: "运行档案暂不可读",
+      detail: "请稍后重试；如果持续失败，请导出现场证据。",
+    },
+    HARDWARE_ACCEPTANCE_REQUIRED: {
+      title: "需要完成生产硬件验收",
+      detail: "请确认下位机、扫码器和出货链路满足现场验收要求。",
+    },
+    HARDWARE_SLOT_TOPOLOGY_CHECK_FAILED: {
+      title: "货道拓扑检查失败",
+      detail: "请复核本机货道返回与平台档案后重试。",
+    },
+    HARDWARE_SLOT_TOPOLOGY_LOCAL_MISSING: {
+      title: "本机货道拓扑缺失",
+      detail: "请先完成下位机货道识别或检查硬件连接。",
+    },
+    HARDWARE_SLOT_TOPOLOGY_MISMATCH: {
+      title: "平台货道拓扑与本机下位机返回不一致",
+      detail: "请按现场实物核对平台档案和下位机货道返回。",
+    },
+    HARDWARE_SLOT_TOPOLOGY_NOT_CONFIGURED: {
+      title: "货道拓扑尚未配置",
+      detail: "请先配置平台货道档案并同步到本机。",
+    },
+    HARDWARE_SLOT_TOPOLOGY_PLATFORM_MISSING: {
+      title: "平台货道拓扑缺失",
+      detail: "请在平台补齐机器货道档案后再继续。",
+    },
+    LOWER_CONTROLLER_SLOT_COUNT: {
+      title: "下位机返回货道数量与平台档案不一致",
+      detail: "请核对下位机连接、货道数量和平台档案。",
+    },
+    NETWORK_REQUIRED: {
+      title: "需要配置现场网络",
+      detail: "请写入现场网络设置，并确认平台地址可连通。",
+    },
+    PLATFORM_REACHABLE: {
+      title: "平台连接已连通",
+      detail: "本机可继续执行后续首次部署步骤。",
+    },
+    PUBLIC_CONFIG_PROFILE_APPLIED: {
+      title: "运行档案已写入",
+      detail: "本机已具备平台机器身份与基础运行配置。",
+    },
+    PUBLIC_CONFIG_UNCLAIMED: {
+      title: "本机尚未领取平台机器",
+      detail: "请提交领取码写入机器运行档案。",
+    },
+    RUNTIME_ACCEPTANCE_PENDING: {
+      title: "本机运行验收尚未完成",
+      detail: "请完成本机运行验收并导出现场证据。",
+    },
+    STOCK_ATTESTATION_REQUIRED: {
+      title: "需要确认初始库存",
+      detail: "请按现场实物确认初始库存后再进入售卖。",
+    },
+    TOPOLOGY_MISMATCH: {
+      title: "货道拓扑不一致",
+      detail: "请核对本机货道与平台档案。",
+    },
+  };
+  const copy = copies[reason.code] ?? {
+    title: "存在未识别状态项",
+    detail: "请导出现场证据并交由维护人员处理。",
+  };
+  return {
+    ...copy,
+    meta: `${componentLabel(reason.component)} · ${reasonCodeLabel(reason.code)}`,
+  };
+}
+
+function networkStatusLabel(status: NetworkSettingsResponse["status"]): string {
+  const labels: Record<NetworkSettingsResponse["status"], string> = {
+    connected: "已连通",
+    failed: "连接失败",
+    unsupported: "暂不支持",
+  };
+  return labels[status];
+}
 
 function provisioningFailureMessage(error: unknown): string {
   const responseCode =
@@ -59,7 +310,7 @@ function provisioningFailureMessage(error: unknown): string {
   if (code.includes("revoked")) return "领取码已撤销，请联系管理员重新生成";
   if (code.includes("locked")) return "领取码已锁定，请联系管理员处理";
   if (error instanceof DaemonUnavailableError && !error.responseCode) {
-    return "本机 daemon 暂不可用，请稍后重试";
+    return "本机服务暂不可用，请稍后重试";
   }
   if (
     responseCode === "machine_claim_backend_unavailable" ||
@@ -106,32 +357,34 @@ async function waitForProvisionedConfig(): Promise<void> {
   );
 }
 
-onMounted(async () => {
-  loadingConfig.value = true;
+async function refreshBringUp(): Promise<void> {
+  loading.value = true;
   try {
-    await machineStore.loadConfig();
-  } catch {
-    // The claim form remains usable; submit will report daemon/connectivity errors.
+    bringUp.value = await daemonClient.getBringUp();
+  } catch (error) {
+    statusKind.value = "failure";
+    statusMessage.value =
+      error instanceof Error ? error.message : "无法读取本机 bring-up 状态";
   } finally {
-    loadingConfig.value = false;
+    loading.value = false;
   }
-});
+}
 
 async function submitClaim(): Promise<void> {
-  const claimCode = form.claimCode.trim().toUpperCase();
-  if (!claimCode || submitting.value) return;
+  const claimCode = claimForm.claimCode.trim().toUpperCase();
+  if (!claimCode || submittingClaim.value || !claimAllowed.value) return;
 
-  submitting.value = true;
+  submittingClaim.value = true;
   statusKind.value = "pending";
-  statusMessage.value = "正在领取机器配置";
+  statusMessage.value = "正在提交机器领取码";
   try {
     const result = await daemonClient.claimMachine(claimCode);
     machineStore.configSummary = result.config;
     machineStore.configLoaded = true;
-    statusKind.value = "pending";
-    statusMessage.value = "正在等待 daemon 应用新配置";
-    form.claimCode = "";
+    claimForm.claimCode = "";
+    statusMessage.value = "正在等待本机服务应用新配置";
     await waitForProvisionedConfig();
+    await refreshBringUp();
     await router.replace("/boot");
     statusKind.value = "success";
     statusMessage.value = "领取成功，正在进入启动流程";
@@ -139,115 +392,308 @@ async function submitClaim(): Promise<void> {
     statusKind.value = "failure";
     statusMessage.value = provisioningFailureMessage(error);
   } finally {
-    submitting.value = false;
+    submittingClaim.value = false;
   }
 }
+
+async function submitNetworkSettings(): Promise<void> {
+  if (
+    !networkForm.ssid.trim() ||
+    submittingNetwork.value ||
+    !networkAllowed.value
+  ) {
+    return;
+  }
+  submittingNetwork.value = true;
+  statusKind.value = "pending";
+  statusMessage.value = "正在写入现场网络设置";
+  const password = networkForm.password;
+  try {
+    networkResult.value = await daemonClient.applyNetworkSettings({
+      ssid: networkForm.ssid.trim(),
+      password,
+      hidden: networkForm.hidden,
+    });
+    statusKind.value =
+      networkResult.value.status === "connected" ? "success" : "failure";
+    statusMessage.value = networkResult.value.operatorGuidance;
+    await refreshBringUp();
+  } catch (error) {
+    statusKind.value = "failure";
+    statusMessage.value = "网络设置提交失败，请检查现场网络后重试";
+  } finally {
+    networkForm.password = "";
+    submittingNetwork.value = false;
+  }
+}
+
+async function exportEvidence(): Promise<void> {
+  if (exportingEvidence.value) return;
+  exportingEvidence.value = true;
+  statusKind.value = "pending";
+  statusMessage.value = "正在导出现场证据";
+  try {
+    await daemonClient.downloadLogExport();
+    statusKind.value = "success";
+    statusMessage.value = "现场证据已导出";
+  } catch (error) {
+    statusKind.value = "failure";
+    statusMessage.value =
+      error instanceof Error ? error.message : "现场证据导出失败";
+  } finally {
+    exportingEvidence.value = false;
+  }
+}
+
+onMounted(() => {
+  void refreshBringUp();
+});
 </script>
 
 <template>
   <KioskLayout>
-    <section class="provisioning-page">
-      <header class="provisioning-header">
-        <div class="provisioning-brand" @click="handleMaintenanceTap">
+    <section class="bring-up-page">
+      <header class="bring-up-header">
+        <div class="bring-up-brand" @click="handleMaintenanceTap">
           <img :src="logoImage" alt="唐诗村" />
           <img :src="mascotTopImage" alt="" aria-hidden="true" />
         </div>
-        <div class="provisioning-title-block">
-          <p>PROVISIONING</p>
-          <h2>机器领取</h2>
+        <div class="bring-up-title-block">
+          <p>首次部署</p>
+          <h2>首次部署控制台</h2>
         </div>
       </header>
 
-      <main class="provisioning-main">
-        <section class="provisioning-panel">
-          <div class="provisioning-copy">
-            <p class="provisioning-eyebrow">Machine Claim Code</p>
-            <h1>输入领取码完成本机接入</h1>
-            <p>提交后，设备会写入机器凭据并返回启动流程。</p>
+      <main class="bring-up-main" aria-label="首次部署控制台">
+        <section class="bring-up-hero">
+          <div>
+            <p class="bring-up-eyebrow">本机状态</p>
+            <h1>{{ stateLabel }}</h1>
+            <p>
+              按本机服务返回的首次部署状态推进网络、领取、拓扑核对、验收和证据导出。
+            </p>
           </div>
+          <dl class="bring-up-summary">
+            <div>
+              <dt>就绪级别</dt>
+              <dd>{{ readinessLabel }}</dd>
+            </div>
+            <div>
+              <dt>硬件模式</dt>
+              <dd>{{ hardwareModeLabel }}</dd>
+            </div>
+            <div>
+              <dt>更新时间</dt>
+              <dd>{{ bringUp?.updatedAt ?? "等待本机服务返回" }}</dd>
+            </div>
+          </dl>
+        </section>
 
-          <form class="provisioning-form" @submit.prevent="submitClaim">
+        <section class="bring-up-grid">
+          <section class="bring-up-panel">
+            <div class="panel-heading">
+              <p class="bring-up-eyebrow">阻塞原因</p>
+              <h3>下一步处理</h3>
+            </div>
+            <ul v-if="primaryReasons.length" class="reason-list">
+              <li v-for="reason in primaryReasons" :key="reason.code">
+                <strong>{{ reasonDisplay(reason).title }}</strong>
+                <span>{{ reasonDisplay(reason).meta }}</span>
+                <small>{{ reasonDisplay(reason).detail }}</small>
+              </li>
+            </ul>
+            <p v-else class="empty-copy">本机服务未返回阻塞原因。</p>
+          </section>
+
+          <section class="bring-up-panel">
+            <div class="panel-heading">
+              <p class="bring-up-eyebrow">诊断</p>
+              <h3>现场核对</h3>
+            </div>
+            <ul v-if="diagnostics.length" class="reason-list diagnostic-list">
+              <li
+                v-for="item in diagnostics"
+                :key="`${item.component}-${item.code}`"
+              >
+                <strong>{{ reasonDisplay(item).title }}</strong>
+                <span>{{ reasonDisplay(item).meta }}</span>
+                <small>{{ reasonDisplay(item).detail }}</small>
+              </li>
+            </ul>
+            <p v-else class="empty-copy">暂无额外诊断。</p>
+          </section>
+        </section>
+
+        <section class="bring-up-panel action-panel">
+          <div class="panel-heading">
+            <p class="bring-up-eyebrow">允许动作</p>
+            <h3>本机服务允许的步骤</h3>
+          </div>
+          <div class="action-list">
+            <button
+              v-for="action in actionRows"
+              :key="action.key"
+              class="kiosk-touch-target action-chip"
+              :class="{ enabled: action.enabled }"
+              :disabled="!action.enabled"
+              type="button"
+            >
+              {{ action.label }}
+            </button>
+          </div>
+        </section>
+
+        <section class="bring-up-grid">
+          <form
+            class="bring-up-panel bring-up-form"
+            @submit.prevent="submitNetworkSettings"
+          >
+            <div class="panel-heading">
+              <p class="bring-up-eyebrow">现场网络</p>
+              <h3>写入连接设置</h3>
+            </div>
+            <label>
+              <span>无线网络名称</span>
+              <input v-model="networkForm.ssid" class="kiosk-touch-target" />
+            </label>
+            <label>
+              <span>无线网络密码</span>
+              <input
+                v-model="networkForm.password"
+                class="kiosk-touch-target"
+                type="password"
+              />
+            </label>
+            <label class="checkbox-row">
+              <input v-model="networkForm.hidden" type="checkbox" />
+              <span>隐藏网络</span>
+            </label>
+            <button
+              class="kiosk-touch-target primary-action"
+              :disabled="
+                submittingNetwork || !networkAllowed || !networkForm.ssid.trim()
+              "
+              type="submit"
+            >
+              {{ submittingNetwork ? "正在提交网络" : "提交网络设置" }}
+            </button>
+            <p v-if="networkResult" class="inline-result">
+              {{ networkStatusLabel(networkResult.status) }} ·
+              {{ networkResult.operatorGuidance }}
+            </p>
+          </form>
+
+          <form
+            class="bring-up-panel bring-up-form"
+            @submit.prevent="submitClaim"
+          >
+            <div class="panel-heading">
+              <p class="bring-up-eyebrow">机器领取</p>
+              <h3>提交领取码</h3>
+            </div>
             <label>
               <span>领取码</span>
               <input
-                v-model="form.claimCode"
+                v-model="claimForm.claimCode"
                 autocomplete="one-time-code"
-                class="kiosk-touch-target"
+                class="kiosk-touch-target claim-code-input"
                 inputmode="text"
                 placeholder="ABCD-2345"
               />
             </label>
-
             <button
-              class="kiosk-touch-target"
-              :disabled="submitting || !form.claimCode.trim()"
+              class="kiosk-touch-target primary-action"
+              :disabled="
+                submittingClaim || !claimAllowed || !claimForm.claimCode.trim()
+              "
               type="submit"
             >
-              {{ submitting ? "正在领取" : "提交领取码" }}
+              {{ submittingClaim ? "正在领取" : "提交领取码" }}
             </button>
           </form>
-
-          <p
-            v-if="statusMessage"
-            :class="`provisioning-status ${statusKind}`"
-            aria-live="polite"
-          >
-            {{ statusMessage }}
-          </p>
         </section>
 
-        <section class="provisioning-diagnostics">
-          <div>
-            <p class="provisioning-eyebrow">Diagnostics</p>
-            <h3>安全诊断</h3>
-          </div>
-
-          <dl>
-            <div v-for="item in diagnostics" :key="item.label">
-              <dt>{{ item.label }}</dt>
-              <dd :class="{ configured: item.configured }">
-                {{ item.configured ? "已配置" : "未配置" }}
-              </dd>
+        <section class="bring-up-grid">
+          <section class="bring-up-panel">
+            <div class="panel-heading">
+              <p class="bring-up-eyebrow">生产验收</p>
+              <h3>拓扑、验收、库存</h3>
             </div>
-          </dl>
-          <p v-if="loadingConfig" class="provisioning-loading">
-            正在读取 daemon 配置状态
-          </p>
+            <p class="empty-copy">
+              货道拓扑不匹配、本机运行验收、硬件验收和库存确认均以本机服务允许动作为准。
+            </p>
+            <button
+              class="kiosk-touch-target secondary-action"
+              :disabled="exportingEvidence"
+              type="button"
+              @click="exportEvidence"
+            >
+              {{ exportingEvidence ? "正在导出" : "导出现场证据" }}
+            </button>
+          </section>
+
+          <section class="bring-up-panel protected-panel">
+            <div class="panel-heading">
+              <p class="bring-up-eyebrow">受保护维护</p>
+              <h3>回收与重置入口</h3>
+            </div>
+            <p class="empty-copy">
+              生产运行后的重新领取、本机重置和验收重跑需要受保护维护凭据；当前版本暂不开放这些入口。
+            </p>
+            <div class="protected-actions">
+              <button
+                v-for="action in protectedActionRows"
+                :key="action.key"
+                class="kiosk-touch-target secondary-action"
+                disabled
+                type="button"
+                :title="action.description"
+              >
+                {{ action.label }}
+              </button>
+            </div>
+          </section>
         </section>
+
+        <p
+          v-if="statusMessage || loading"
+          :class="`bring-up-status ${statusKind}`"
+          aria-live="polite"
+        >
+          {{ loading ? "正在读取首次部署状态" : statusMessage }}
+        </p>
       </main>
 
       <img
         :src="listSloganImage"
         alt=""
         aria-hidden="true"
-        class="provisioning-slogan"
+        class="bring-up-slogan"
       />
     </section>
   </KioskLayout>
 </template>
 
 <style scoped>
-:global(.kiosk-shell:has(.provisioning-page)) {
+:global(.kiosk-shell:has(.bring-up-page)) {
   padding: 0;
 }
 
-:global(.kiosk-shell:has(.provisioning-page) > header) {
+:global(.kiosk-shell:has(.bring-up-page) > header) {
   display: none;
 }
 
-:global(.kiosk-shell:has(.provisioning-page) > .kiosk-scroll) {
+:global(.kiosk-shell:has(.bring-up-page) > .kiosk-scroll) {
   width: 100%;
   height: 100%;
   margin-top: 0;
   padding-bottom: 0;
 }
 
-.provisioning-page {
+.bring-up-page {
   position: relative;
   min-height: 100%;
-  padding: var(--machine-page-header-top) var(--machine-page-inline) 2.5rem;
   overflow-x: hidden;
-  color: #3f3b34;
   background:
     radial-gradient(
       circle at 18% 6%,
@@ -255,258 +701,299 @@ async function submitClaim(): Promise<void> {
       rgba(255, 255, 255, 0) 28%
     ),
     linear-gradient(180deg, #faf8f1 0%, #f4efe2 54%, #efe8d8 100%);
+  padding: var(--machine-page-header-top) var(--machine-page-inline) 2rem;
+  color: #3f3b34;
 }
 
-.provisioning-header {
+.bring-up-header {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 1rem;
   align-items: center;
 }
 
-.provisioning-brand {
+.bring-up-brand {
   display: flex;
   align-items: center;
   gap: 1.1rem;
   min-width: 0;
 }
 
-.provisioning-brand img:first-child {
+.bring-up-brand img:first-child {
   width: var(--machine-brand-logo-width);
   height: auto;
 }
 
-.provisioning-brand img:last-child {
+.bring-up-brand img:last-child {
   width: clamp(2.5rem, 8vw, 4rem);
   height: auto;
   opacity: 0.82;
 }
 
-.provisioning-title-block {
+.bring-up-title-block {
   text-align: right;
 }
 
-.provisioning-title-block p,
-.provisioning-eyebrow {
+.bring-up-title-block p,
+.bring-up-eyebrow {
   margin: 0;
   color: #6d7f5f;
   font-size: 0.74rem;
   font-weight: 700;
-  letter-spacing: 0.14em;
 }
 
-.provisioning-title-block h2 {
-  margin-top: 0.18rem;
+.bring-up-title-block h2 {
+  margin: 0.18rem 0 0;
   color: #263326;
   font-size: 1.45rem;
   font-weight: 800;
 }
 
-.provisioning-main {
+.bring-up-main {
   position: relative;
   z-index: 1;
   display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 0.9rem;
-  align-items: start;
-  margin-top: 1.75rem;
+  gap: 0.8rem;
+  margin-top: 1.35rem;
 }
 
-.provisioning-panel,
-.provisioning-diagnostics {
-  min-width: 0;
+.bring-up-hero,
+.bring-up-panel {
   border: 1px solid rgba(126, 112, 82, 0.28);
   border-radius: 0.65rem;
-  background: rgba(255, 253, 247, 0.84);
+  background: rgba(255, 253, 247, 0.86);
   box-shadow: 0 1rem 2.4rem rgba(98, 80, 50, 0.08);
 }
 
-.provisioning-panel {
+.bring-up-hero {
   display: grid;
-  position: relative;
-  z-index: 1;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 0.95rem;
-  align-items: start;
-  padding: 1.15rem 1.25rem;
+  grid-template-columns: minmax(0, 1.1fr) minmax(17rem, 0.9fr);
+  gap: 1rem;
+  align-items: stretch;
+  padding: 1rem 1.15rem;
 }
 
-.provisioning-copy h1 {
-  margin: 0.42rem 0 0;
+.bring-up-hero h1 {
+  margin: 0.34rem 0 0;
   color: #263326;
-  font-size: clamp(1.75rem, 5vw, 3rem);
-  line-height: 1.12;
+  font-size: clamp(1.8rem, 4vw, 3rem);
+  line-height: 1.08;
   font-weight: 850;
 }
 
-.provisioning-copy p:last-child {
-  max-width: 25rem;
-  margin: 0.62rem 0 0;
+.bring-up-hero p:last-child,
+.empty-copy,
+.inline-result {
+  margin: 0.5rem 0 0;
   color: #6f675c;
+  font-size: 0.92rem;
+  line-height: 1.45;
+}
+
+.bring-up-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.5rem;
+  margin: 0;
+}
+
+.bring-up-summary div {
+  min-width: 0;
+  border: 1px solid rgba(126, 112, 82, 0.2);
+  border-radius: 0.48rem;
+  background: rgba(255, 253, 247, 0.66);
+  padding: 0.66rem 0.75rem;
+}
+
+.bring-up-summary dt {
+  color: #6f675c;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.bring-up-summary dd {
+  margin: 0.24rem 0 0;
+  overflow-wrap: anywhere;
+  color: #263326;
   font-size: 0.96rem;
-  line-height: 1.55;
+  font-weight: 800;
 }
 
-.provisioning-form {
+.bring-up-grid {
   display: grid;
-  gap: 0.72rem;
-  margin-top: 0;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.8rem;
 }
 
-.provisioning-form label {
+.bring-up-panel {
+  min-width: 0;
+  padding: 0.95rem 1rem;
+}
+
+.panel-heading h3 {
+  margin: 0.24rem 0 0;
+  color: #263326;
+  font-size: 1.18rem;
+  font-weight: 820;
+}
+
+.reason-list {
   display: grid;
-  gap: 0.42rem;
+  gap: 0.5rem;
+  margin: 0.75rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.reason-list li {
+  display: grid;
+  gap: 0.2rem;
+  border: 1px solid rgba(126, 112, 82, 0.18);
+  border-radius: 0.48rem;
+  background: rgba(250, 248, 241, 0.72);
+  padding: 0.66rem 0.75rem;
+}
+
+.reason-list strong {
+  color: #3f3b34;
+  font-size: 0.92rem;
+}
+
+.reason-list span {
+  color: #6f675c;
+  font-size: 0.78rem;
+  overflow-wrap: anywhere;
+}
+
+.reason-list small {
+  color: #6f675c;
+  font-size: 0.82rem;
+  line-height: 1.38;
+}
+
+.diagnostic-list li {
+  background: rgba(242, 247, 236, 0.72);
+}
+
+.action-panel {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.action-list,
+.protected-actions {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.5rem;
+}
+
+.action-chip,
+.primary-action,
+.secondary-action {
+  min-height: 3rem;
+  border: 1px solid rgba(93, 112, 80, 0.32);
+  border-radius: 0.42rem;
+  background: rgba(255, 253, 247, 0.78);
+  color: #4d463c;
+  font-weight: 800;
+}
+
+.action-chip.enabled,
+.primary-action {
+  background: #6f835f;
+  color: #fffdf7;
+}
+
+.action-chip:disabled,
+.primary-action:disabled,
+.secondary-action:disabled {
+  background: rgba(111, 131, 95, 0.16);
+  color: rgba(63, 59, 52, 0.48);
+}
+
+.bring-up-form {
+  display: grid;
+  gap: 0.62rem;
+}
+
+.bring-up-form label {
+  display: grid;
+  gap: 0.34rem;
+  min-width: 0;
   color: #4d463c;
   font-weight: 700;
 }
 
-.provisioning-form input {
-  min-height: 3.25rem;
+.bring-up-form input:not([type="checkbox"]) {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  min-height: 3.1rem;
   border: 1px solid rgba(126, 112, 82, 0.3);
   border-radius: 0.42rem;
   background: rgba(255, 255, 255, 0.78);
-  padding: 0 1rem;
+  padding: 0 0.9rem;
   color: #2f2a23;
-  font-size: 1.05rem;
+  font-size: 1rem;
   font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
   outline: none;
 }
 
-.provisioning-form input:focus {
-  border-color: rgba(93, 112, 80, 0.66);
+.claim-code-input {
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
 }
 
-.provisioning-form button {
-  border: 1px solid rgba(93, 112, 80, 0.42);
-  border-radius: 0.42rem;
-  background: #6f835f;
-  color: #fffdf7;
-  font-weight: 800;
+.checkbox-row {
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
 }
 
-.provisioning-form button:disabled {
-  background: rgba(111, 131, 95, 0.36);
-  color: rgba(63, 59, 52, 0.54);
-}
-
-.provisioning-status {
-  grid-column: 1 / -1;
+.bring-up-status {
   margin: 0;
   border: 1px solid rgba(99, 119, 85, 0.2);
   border-radius: 0.42rem;
   background: rgba(242, 247, 236, 0.88);
-  padding: 0.85rem 1rem;
+  padding: 0.82rem 1rem;
   color: #4f6845;
   font-weight: 700;
 }
 
-.provisioning-status.pending {
+.bring-up-status.pending {
   border-color: rgba(181, 126, 34, 0.24);
   background: rgba(255, 246, 220, 0.82);
   color: #70501d;
 }
 
-.provisioning-status.failure {
+.bring-up-status.failure {
   border-color: rgba(174, 74, 70, 0.28);
   background: rgba(255, 239, 235, 0.9);
   color: #7b3430;
 }
 
-.provisioning-diagnostics {
-  display: grid;
-  position: relative;
-  z-index: 0;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: 1rem;
-  align-items: center;
-  padding: 1rem 1.1rem;
-}
-
-.provisioning-diagnostics h3 {
-  margin: 0.32rem 0 0;
-  color: #263326;
-  font-size: 1.35rem;
-  font-weight: 800;
-}
-
-.provisioning-diagnostics dl {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  overflow: hidden;
-  margin: 0;
-  border: 1px solid rgba(126, 112, 82, 0.22);
-  border-radius: 0.48rem;
-  background: rgba(255, 253, 247, 0.66);
-}
-
-.provisioning-diagnostics dl > div {
-  display: grid;
-  gap: 0.3rem;
-  align-items: start;
-  min-height: 0;
-  border-right: 1px solid rgba(126, 112, 82, 0.16);
-  padding: 0.66rem 0.85rem;
-}
-
-.provisioning-diagnostics dl > div:last-child {
-  border-right: 0;
-}
-
-.provisioning-diagnostics dt {
-  color: #4b453a;
-  font-weight: 700;
-}
-
-.provisioning-diagnostics dd {
-  margin: 0;
-  color: #70501d;
-  font-weight: 800;
-}
-
-.provisioning-diagnostics dd.configured {
-  color: #4f6845;
-}
-
-.provisioning-loading {
-  grid-column: 1 / -1;
-  margin: 0;
-  color: #766f63;
-  font-size: 0.82rem;
-}
-
-.provisioning-slogan {
+.bring-up-slogan {
   position: absolute;
   right: 2.2rem;
   bottom: 1.4rem;
   width: min(21rem, 54%);
-  opacity: 0.34;
+  opacity: 0.26;
 }
 
 @media (max-width: 760px) {
-  .provisioning-page {
-    padding: 1.5rem 1.45rem 2rem;
+  .bring-up-page {
+    padding: 1.35rem 1.25rem 1.75rem;
   }
 
-  .provisioning-header,
-  .provisioning-main,
-  .provisioning-panel,
-  .provisioning-diagnostics,
-  .provisioning-diagnostics dl {
+  .bring-up-header,
+  .bring-up-hero,
+  .bring-up-grid,
+  .bring-up-summary,
+  .action-list,
+  .protected-actions {
     grid-template-columns: 1fr;
   }
 
-  .provisioning-diagnostics dl > div {
-    border-right: 0;
-    border-bottom: 1px solid rgba(126, 112, 82, 0.16);
-  }
-
-  .provisioning-diagnostics dl > div:last-child {
-    border-bottom: 0;
-  }
-
-  .provisioning-title-block {
+  .bring-up-title-block {
     text-align: left;
   }
 }

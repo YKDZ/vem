@@ -1,7 +1,9 @@
 import type {
+  BringUpSnapshot,
   CatalogSnapshot,
   ConfigSummary,
   HardwareSelfCheck,
+  NetworkSettingsResponse,
   ProvisioningClaimResponse,
   SaleViewSnapshot,
   TransactionSnapshot,
@@ -93,6 +95,56 @@ function uiDebugConnection(): DaemonConnectionInfo {
 
 function currentSaleView(): SaleViewSnapshot {
   return getSaleViewForScenario(getActiveUiDebugScenarioId());
+}
+
+function currentBringUp(): BringUpSnapshot {
+  return {
+    state: "topology_mismatch",
+    blockingReasons: [
+      {
+        code: "HARDWARE_SLOT_TOPOLOGY_MISMATCH",
+        component: "topology",
+        message: "平台货道拓扑与本机下位机返回不一致",
+      },
+    ],
+    diagnostics: [
+      {
+        code: "LOWER_CONTROLLER_SLOT_COUNT",
+        component: "lower-controller",
+        message: "下位机返回 4 个货道，平台档案期望 6 个货道",
+      },
+      {
+        code: "RUNTIME_ACCEPTANCE_PENDING",
+        component: "acceptance",
+        message: "Runtime Acceptance 尚未完成",
+      },
+    ],
+    readinessLevel: "not_ready",
+    hardwareMode: "production",
+    allowedActions: {
+      configureNetwork: true,
+      claimMachine: false,
+      retryClaim: true,
+      syncProfile: true,
+      resolveTopology: true,
+      runRuntimeAcceptance: true,
+      runHardwareAcceptance: false,
+      attestStock: false,
+      startSales: false,
+    },
+    updatedAt: nowIso(),
+  };
+}
+
+function applyUiDebugNetworkSettings(): NetworkSettingsResponse {
+  return {
+    status: "connected",
+    ssid: "UI-DEBUG-WIFI",
+    hidden: false,
+    diagnostics: [],
+    operatorGuidance: "UI debug 现场网络已连通",
+    updatedAt: nowIso(),
+  };
 }
 
 function currentTransactionOrScenario(): TransactionSnapshot {
@@ -287,6 +339,8 @@ export function installUiDebugDaemon(): void {
   };
   client.getHealth = async () => currentScenario().health;
   client.getReady = async () => currentScenario().ready;
+  client.getBringUp = async () => currentBringUp();
+  client.applyNetworkSettings = async () => applyUiDebugNetworkSettings();
   client.getConfig = async () => currentScenario().config;
   client.saveConfig = async (body: unknown) => ({
     ...currentScenario().config,

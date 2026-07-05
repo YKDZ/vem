@@ -248,7 +248,6 @@ describe("MachinesService", () => {
         longitude: 121.4737,
         timezone: "Asia/Shanghai",
       },
-      status: "offline",
     });
 
     expect(insertValues).toHaveBeenCalledWith(
@@ -258,6 +257,8 @@ describe("MachinesService", () => {
         geoTimezone: "Asia/Shanghai",
       }),
     );
+    expect(insertValues.mock.calls[0][0]).not.toHaveProperty("status");
+    expect(insertValues.mock.calls[0][0]).not.toHaveProperty("mqttClientId");
     expect(result.geoLocation).toEqual({
       latitude: 31.2304,
       longitude: 121.4737,
@@ -3251,6 +3252,10 @@ describe("MachinesService claim code lifecycle", () => {
           mqttTopicPrefix: "vem/machines/M001",
         }),
         hardwareProfile: expect.objectContaining({ profile: "production" }),
+        hardwareSlotTopology: {
+          identity: "vem-prod-24",
+          version: "2026-06-adr0026",
+        },
         paymentCapability: expect.objectContaining({
           profile: "production",
           qrCodeEnabled: true,
@@ -3370,6 +3375,10 @@ describe("MachinesService claim code lifecycle", () => {
         machineSecretVersion: rotatedSecretVersion,
       }),
     );
+    expect(result.hardwareSlotTopology).toEqual({
+      identity: "vem-prod-24",
+      version: "2026-06-adr0026",
+    });
     expect(rotateSet).toHaveBeenCalledWith(
       expect.objectContaining({
         secretHash: "scrypt:reclaim-machine-secret-hash",

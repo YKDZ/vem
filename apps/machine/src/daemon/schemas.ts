@@ -151,6 +151,64 @@ export const configSummarySchema = z.object({
   provisioningIssues: z.array(z.string()).default([]),
 });
 
+const bringUpReasonSchema = z.object({
+  code: z.string(),
+  component: z.string(),
+  message: z.string(),
+});
+
+export const bringUpSnapshotSchema = z.object({
+  state: z.enum([
+    "network_required",
+    "platform_reachable",
+    "claim_required",
+    "profile_applied",
+    "topology_mismatch",
+    "hardware_acceptance_required",
+    "stock_attestation_required",
+    "runtime_ready",
+    "simulated_hardware_ready",
+    "sell_ready",
+  ]),
+  blockingReasons: z.array(bringUpReasonSchema),
+  diagnostics: z.array(bringUpReasonSchema),
+  readinessLevel: z.enum([
+    "not_ready",
+    "runtime_ready",
+    "simulated_hardware_ready",
+    "sell_ready",
+  ]),
+  hardwareMode: z.enum(["production", "simulated"]),
+  allowedActions: z.object({
+    configureNetwork: z.boolean(),
+    claimMachine: z.boolean(),
+    retryClaim: z.boolean(),
+    syncProfile: z.boolean(),
+    resolveTopology: z.boolean(),
+    runRuntimeAcceptance: z.boolean(),
+    runHardwareAcceptance: z.boolean(),
+    attestStock: z.boolean(),
+    startSales: z.boolean(),
+  }),
+  updatedAt: z.string(),
+});
+
+const networkDiagnosticSchema = z.object({
+  component: z.string(),
+  level: z.string(),
+  code: z.string(),
+  message: z.string(),
+});
+
+export const networkSettingsResponseSchema = z.object({
+  status: z.enum(["connected", "failed", "unsupported"]),
+  ssid: z.string(),
+  hidden: z.boolean(),
+  diagnostics: z.array(networkDiagnosticSchema),
+  operatorGuidance: z.string(),
+  updatedAt: z.string(),
+});
+
 export const provisioningClaimResponseSchema = z.object({
   status: z.literal("provisioned"),
   machineCode: z.string(),
@@ -531,6 +589,10 @@ export const daemonEventSchema = z.discriminatedUnion("type", [
 export type HealthSnapshot = z.infer<typeof healthSnapshotSchema>;
 export type ReadySnapshot = z.infer<typeof readySnapshotSchema>;
 export type ConfigSummary = z.infer<typeof configSummarySchema>;
+export type BringUpSnapshot = z.infer<typeof bringUpSnapshotSchema>;
+export type NetworkSettingsResponse = z.infer<
+  typeof networkSettingsResponseSchema
+>;
 export type ProvisioningClaimResponse = z.infer<
   typeof provisioningClaimResponseSchema
 >;

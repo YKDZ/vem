@@ -26,6 +26,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       code: ${{ steps.filter.outputs.code }}
+      vending_daemon_rust: ${{ steps.filter.outputs.vending_daemon_rust }}
     steps:
       - uses: actions/checkout@v6
       - uses: dorny/paths-filter@v4
@@ -46,6 +47,11 @@ jobs:
               - 'tsconfig*.json'
               - 'oxlint.config.ts'
               - 'oxfmt.config.ts'
+            vending_daemon_rust:
+              - 'apps/vending-daemon/**'
+              - 'crates/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
 
   static:
     name: Static Checks
@@ -112,6 +118,25 @@ jobs:
 
       - name: Run Unit Tests
         run: pnpm turbo test
+
+  windows-dpapi-tests:
+    name: Windows DPAPI Secret Store
+    needs: changes
+    if: needs.changes.outputs.vending_daemon_rust == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Run protected secret store DPAPI round-trip
+        run: cargo test -p vending-daemon secret::tests::protected_local_secret_store_round_trips_status_and_clear_without_exposing_values -- --exact
 
   machine-e2e-tests:
     name: Machine UI Daemon E2E

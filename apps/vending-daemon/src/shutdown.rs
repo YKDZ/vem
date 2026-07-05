@@ -163,6 +163,7 @@ pub async fn run_console_with_token(
         events: events_tx.clone(),
         runtime_tx: tx_raw.clone(),
         disk_pressure_probe: Arc::new(crate::health::DataDirDiskPressureProbe::from_env()),
+        network_adapter: crate::network::adapter_from_env(),
         ui,
     };
     let (ipc_handle, ipc_task) = ipc::run_server(config.bind, ipc_ctx.clone())
@@ -204,6 +205,7 @@ pub async fn run_console_with_token(
         StockMovementUploadRuntime::new(state.clone(), backend.clone(), stop_token.clone()).run(),
     );
     let platform_stock_sync = tokio::spawn(run_platform_stock_sync_watcher(
+        config_store.clone(),
         state.clone(),
         backend.clone(),
         runtime_config.public.machine_code.clone(),
@@ -407,6 +409,7 @@ async fn run_payment_code_watcher(input: PaymentCodeWatcherInput) -> Result<(), 
 }
 
 async fn run_platform_stock_sync_watcher(
+    config_store: Arc<crate::config::ConfigStore>,
     state: LocalStateStore,
     backend: Arc<BackendClient>,
     machine_code: Option<String>,
@@ -417,7 +420,9 @@ async fn run_platform_stock_sync_watcher(
     };
 
     loop {
-        match sync_platform_planogram_and_stock(&state, &backend, &machine_code).await {
+        match sync_platform_planogram_and_stock(&config_store, &state, &backend, &machine_code)
+            .await
+        {
             Ok(()) => {}
             Err(error) if error.contains("stock snapshot deferred") => {}
             Err(error) => eprintln!("platform stock sync failed: {error}"),
@@ -430,6 +435,7 @@ async fn run_platform_stock_sync_watcher(
 }
 
 async fn sync_platform_planogram_and_stock(
+    config_store: &crate::config::ConfigStore,
     state: &LocalStateStore,
     backend: &BackendClient,
     machine_code: &str,
@@ -459,6 +465,13 @@ async fn sync_platform_planogram_and_stock(
                 serde_json::from_value::<Vec<MachinePlanogramSlotInput>>(value)
                     .map_err(|error| error.to_string())
             })?;
+        let topology = config_store.hardware_slot_topology_readiness().await?;
+        if !topology.ready {
+            return Err(format!(
+                "hardware slot topology blocks planogram activation: {}",
+                topology.code
+            ));
+        }
         state
             .apply_planogram(MachinePlanogramInput {
                 planogram_version: planogram_version.clone(),

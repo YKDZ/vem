@@ -3,6 +3,7 @@
 # Idempotently configures production machine startup:
 #   - VemVendingDaemon Windows service, automatic startup.
 #   - Restricted kiosk account and separate maintenance account validation.
+#   - Optional local SSH maintenance account isolation.
 #   - Optional controlled Tailscale-backed SSH maintenance access.
 #   - VEMMachineUI logon task for non-shell-launcher customer sessions.
 #   - Optional OS-level kiosk shell lockdown for the kiosk account.
@@ -33,6 +34,10 @@
 # Enable host-level emergency maintenance access after validating the dedicated
 # Maintenance Account credentials:
 #   .\setup-scheduled-tasks.ps1 -ConfigureRemoteMaintenanceAccess
+#
+# Configure only the local OpenSSH maintenance account isolation without adding
+# a device VPN or inbound product firewall rule:
+#   .\setup-scheduled-tasks.ps1 -ConfigureLocalMaintenanceAccess
 
 [CmdletBinding()]
 param(
@@ -57,6 +62,7 @@ param(
   [string]$VisionWorkingDirectory = "C:\VEM\vision",
 
   [switch]$ConfigureKioskAccounts,
+  [switch]$ConfigureLocalMaintenanceAccess,
   [switch]$ConfigureRemoteMaintenanceAccess,
   [switch]$EnableMaintenanceDebugTask,
   [string]$TailscaleExe = "C:\Program Files\Tailscale\tailscale.exe",
@@ -95,16 +101,63 @@ function Ensure-MachineUiLauncher {
   param(
     [string]$LauncherPath,
     [string]$ExePath,
-    [string]$WorkingDirectory
+    [string]$WorkingDirectory,
+    [string]$DisplayProbePath
   )
 
   Ensure-Directory -Path (Split-Path -Parent $LauncherPath)
   $content = @(
     'Set oShell = CreateObject("WScript.Shell")',
     ('oShell.CurrentDirectory = "{0}"' -f $WorkingDirectory),
+    ('oShell.Run "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ""{0}""", 0, True' -f $DisplayProbePath),
     ('oShell.Run """{0}""", 1, False' -f $ExePath)
   )
   Set-Content -LiteralPath $LauncherPath -Value $content -Encoding ASCII
+}
+
+function Ensure-KioskDisplayProbeScript {
+  param([string]$Path)
+
+  Ensure-Directory -Path (Split-Path -Parent $Path)
+  $content = @'
+$ErrorActionPreference = "Stop"
+$outDir = Join-Path $env:LOCALAPPDATA "VEM"
+$outPath = Join-Path $outDir "kiosk-display-evidence.json"
+try {
+  Add-Type -AssemblyName System.Windows.Forms
+  $screens = @([System.Windows.Forms.Screen]::AllScreens | ForEach-Object {
+    [ordered]@{
+      deviceName = [string]$_.DeviceName
+      primary = [bool]$_.Primary
+      widthPx = [int]$_.Bounds.Width
+      heightPx = [int]$_.Bounds.Height
+    }
+  })
+  $evidence = [ordered]@{
+    schemaVersion = "vem-kiosk-display-evidence/v1"
+    collectedAt = (Get-Date).ToUniversalTime().ToString("o")
+    source = "kiosk_logon_session"
+    user = [string]$env:USERNAME
+    sessionName = [string]$env:SESSIONNAME
+    screens = $screens
+    error = $null
+  }
+} catch {
+  $evidence = [ordered]@{
+    schemaVersion = "vem-kiosk-display-evidence/v1"
+    collectedAt = (Get-Date).ToUniversalTime().ToString("o")
+    source = "kiosk_logon_session"
+    user = [string]$env:USERNAME
+    sessionName = [string]$env:SESSIONNAME
+    screens = @()
+    error = [string]$_.Exception.Message
+  }
+}
+New-Item -ItemType Directory -Path $outDir -Force | Out-Null
+$json = $evidence | ConvertTo-Json -Depth 8
+[System.IO.File]::WriteAllText($outPath, $json, [System.Text.UTF8Encoding]::new($false))
+'@
+  Set-Content -LiteralPath $Path -Value $content -Encoding ASCII
 }
 
 function Ensure-MachineUiDebugLauncher {
@@ -261,19 +314,23 @@ function Ensure-SshdConfigDenyKioskUser {
   Set-Content -LiteralPath $ConfigPath -Value $filtered -Encoding ASCII
 }
 
-function Ensure-TailscaleScopedSshFirewall {
-  $ruleName = "VEM Tailscale SSH"
-  $tailscaleRemoteAddress = "100.64.0.0/10"
-
+function Disable-DefaultOpenSshInboundFirewall {
   $openSshInboundRules = Get-NetFirewallRule -ErrorAction SilentlyContinue |
     Where-Object {
       $_.Direction -eq "Inbound" -and
       $_.DisplayName -like "OpenSSH*" -and
-      $_.DisplayName -ne $ruleName
+      $_.DisplayName -ne "VEM Tailscale SSH"
     }
   if ($null -ne $openSshInboundRules) {
     $openSshInboundRules | Disable-NetFirewallRule
   }
+}
+
+function Ensure-TailscaleScopedSshFirewall {
+  $ruleName = "VEM Tailscale SSH"
+  $tailscaleRemoteAddress = "100.64.0.0/10"
+
+  Disable-DefaultOpenSshInboundFirewall
 
   Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue |
     Remove-NetFirewallRule
@@ -287,6 +344,33 @@ function Ensure-TailscaleScopedSshFirewall {
     -RemoteAddress $tailscaleRemoteAddress `
     -Profile Any `
     -Description "VEM-managed SSH ingress scoped to Tailscale CGNAT addresses." | Out-Null
+}
+
+function Ensure-LocalMaintenanceAccess {
+  param(
+    [string]$MaintenanceUser,
+    [string]$KioskUser,
+    [string]$SshdConfigPath
+  )
+
+  if (-not (Get-LocalUser -Name $MaintenanceUser -ErrorAction SilentlyContinue)) {
+    throw "maintenance account not found: $MaintenanceUser. Configure it before enabling local maintenance access."
+  }
+  if (-not (Get-LocalUser -Name $KioskUser -ErrorAction SilentlyContinue)) {
+    throw "kiosk account not found: $KioskUser. Configure it before enabling local maintenance access."
+  }
+  Assert-RemoteMaintenanceAccountSeparation -MaintenanceUser $MaintenanceUser -KioskUser $KioskUser
+
+  Ensure-OpenSshServer
+  Ensure-SshdConfigDenyKioskUser -ConfigPath $SshdConfigPath -KioskUser $KioskUser
+  Disable-DefaultOpenSshInboundFirewall
+  Ensure-LocalGroupExists -Group "OpenSSH Users"
+  Add-LocalGroupMember -Group "OpenSSH Users" -Member $MaintenanceUser -ErrorAction SilentlyContinue
+  Remove-LocalGroupMember -Group "OpenSSH Users" -Member $KioskUser -ErrorAction SilentlyContinue
+  Remove-LocalGroupMember -Group "Remote Desktop Users" -Member $KioskUser -ErrorAction SilentlyContinue
+  Restart-Service -Name "sshd" -Force
+
+  Write-Host "Configured local OpenSSH maintenance account isolation for $MaintenanceUser; $KioskUser is excluded. No Tailscale client or VEM inbound SSH rule was configured."
 }
 
 function Ensure-RemoteMaintenanceAccess {
@@ -352,6 +436,81 @@ function Assert-CimMethodSucceeded {
   }
 }
 
+function Test-ShellLauncherAvailable {
+  $shellLauncher = Get-CimClass -Namespace "root\standardcimv2\embedded" -ClassName "WESL_UserSetting" -ErrorAction SilentlyContinue
+  return $null -ne $shellLauncher
+}
+
+function Set-PerUserWinlogonShell {
+  param(
+    [string]$User,
+    [string]$Sid,
+    [string]$ShellCommand,
+    [string]$UserPassword,
+    [string]$Reason
+  )
+
+  $userWinlogonPath = "Registry::HKEY_USERS\$sid\Software\Microsoft\Windows NT\CurrentVersion\Winlogon"
+  if (-not (Test-Path "Registry::HKEY_USERS\$sid")) {
+    if (-not [string]::IsNullOrEmpty($UserPassword)) {
+      $securePassword = ConvertTo-SecureString $UserPassword -AsPlainText -Force
+      $credential = New-Object System.Management.Automation.PSCredential("$env:COMPUTERNAME\$User", $securePassword)
+      $profileProcess = Start-Process `
+        -FilePath "C:\Windows\System32\cmd.exe" `
+        -ArgumentList "/c exit" `
+        -Credential $credential `
+        -LoadUserProfile `
+        -WindowStyle Hidden `
+        -PassThru
+      $profileProcess.WaitForExit(15000) | Out-Null
+    }
+  }
+  if (Test-Path "Registry::HKEY_USERS\$sid") {
+    if (-not (Test-Path $userWinlogonPath)) {
+      New-Item -Path $userWinlogonPath -Force | Out-Null
+    }
+    New-ItemProperty -Path $userWinlogonPath -Name "Shell" -Value $ShellCommand -PropertyType String -Force | Out-Null
+    Write-Host "Configured per-user Winlogon shell for $User ($Reason): $ShellCommand"
+    return
+  }
+
+  $profile = Get-CimInstance Win32_UserProfile -Filter "SID='$sid'" -ErrorAction SilentlyContinue
+  $profilePath = if ($null -ne $profile -and -not [string]::IsNullOrWhiteSpace($profile.LocalPath)) {
+    $profile.LocalPath
+  } else {
+    Join-Path "C:\Users" $User
+  }
+  $hivePath = Join-Path $profilePath "NTUSER.DAT"
+  if (-not (Test-Path -LiteralPath $hivePath)) {
+    if ([string]::IsNullOrEmpty($UserPassword)) {
+      throw "per-user Winlogon shell requires KioskPassword when the $User profile hive is not loaded"
+    }
+    throw "could not find profile hive for kiosk user $User at $hivePath"
+  }
+
+  $tempHive = "VEMKioskShell-$($sid.Replace('-', '_'))"
+  $loaded = $false
+  try {
+    reg.exe load "HKU\$tempHive" $hivePath | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+      throw "failed to load kiosk profile hive: $hivePath"
+    }
+    $loaded = $true
+    $offlineWinlogonPath = "Registry::HKEY_USERS\$tempHive\Software\Microsoft\Windows NT\CurrentVersion\Winlogon"
+    if (-not (Test-Path $offlineWinlogonPath)) {
+      New-Item -Path $offlineWinlogonPath -Force | Out-Null
+    }
+    New-ItemProperty -Path $offlineWinlogonPath -Name "Shell" -Value $ShellCommand -PropertyType String -Force | Out-Null
+    Write-Host "Configured offline per-user Winlogon shell for $User ($Reason): $ShellCommand"
+  } finally {
+    if ($loaded) {
+      [gc]::Collect()
+      [gc]::WaitForPendingFinalizers()
+      reg.exe unload "HKU\$tempHive" | Out-Null
+    }
+  }
+}
+
 function Configure-KioskShell {
   param(
     [string]$User,
@@ -376,63 +535,10 @@ function Configure-KioskShell {
     }
     Assert-CimMethodSucceeded -Result $customShellResult -Operation "Shell Launcher SetCustomShell for $User"
   } else {
-    Write-Warning "Shell Launcher WMI class not available; writing per-user Winlogon shell fallback for $User"
-    $userWinlogonPath = "Registry::HKEY_USERS\$sid\Software\Microsoft\Windows NT\CurrentVersion\Winlogon"
-    if (-not (Test-Path "Registry::HKEY_USERS\$sid")) {
-      if ([string]::IsNullOrEmpty($UserPassword)) {
-        throw "per-user Winlogon shell fallback requires KioskPassword when the $User profile hive is not loaded"
-      }
-      $securePassword = ConvertTo-SecureString $UserPassword -AsPlainText -Force
-      $credential = New-Object System.Management.Automation.PSCredential("$env:COMPUTERNAME\$User", $securePassword)
-      $profileProcess = Start-Process `
-        -FilePath "C:\Windows\System32\cmd.exe" `
-        -ArgumentList "/c exit" `
-        -Credential $credential `
-        -LoadUserProfile `
-        -WindowStyle Hidden `
-        -PassThru
-      $profileProcess.WaitForExit(15000) | Out-Null
-    }
-    if (Test-Path "Registry::HKEY_USERS\$sid") {
-      if (-not (Test-Path $userWinlogonPath)) {
-        New-Item -Path $userWinlogonPath -Force | Out-Null
-      }
-      New-ItemProperty -Path $userWinlogonPath -Name "Shell" -Value $shellCommand -PropertyType String -Force | Out-Null
-    } else {
-      $profile = Get-CimInstance Win32_UserProfile -Filter "SID='$sid'" -ErrorAction SilentlyContinue
-      $profilePath = if ($null -ne $profile -and -not [string]::IsNullOrWhiteSpace($profile.LocalPath)) {
-        $profile.LocalPath
-      } else {
-        Join-Path "C:\Users" $User
-      }
-      $hivePath = Join-Path $profilePath "NTUSER.DAT"
-      if (-not (Test-Path -LiteralPath $hivePath)) {
-        throw "could not find profile hive for kiosk user $User at $hivePath"
-      }
-
-      $tempHive = "VEMKioskShell-$($sid.Replace('-', '_'))"
-      $loaded = $false
-      try {
-        reg.exe load "HKU\$tempHive" $hivePath | Out-Null
-        if ($LASTEXITCODE -ne 0) {
-          throw "failed to load kiosk profile hive: $hivePath"
-        }
-        $loaded = $true
-        $offlineWinlogonPath = "Registry::HKEY_USERS\$tempHive\Software\Microsoft\Windows NT\CurrentVersion\Winlogon"
-        if (-not (Test-Path $offlineWinlogonPath)) {
-          New-Item -Path $offlineWinlogonPath -Force | Out-Null
-        }
-        New-ItemProperty -Path $offlineWinlogonPath -Name "Shell" -Value $shellCommand -PropertyType String -Force | Out-Null
-      } finally {
-        if ($loaded) {
-          [gc]::Collect()
-          [gc]::WaitForPendingFinalizers()
-          reg.exe unload "HKU\$tempHive" | Out-Null
-        }
-      }
-    }
+    Write-Warning "Shell Launcher WMI class not available; using per-user Winlogon shell for $User"
   }
 
+  Set-PerUserWinlogonShell -User $User -Sid $sid -ShellCommand $shellCommand -UserPassword $UserPassword -Reason "deterministic kiosk startup evidence"
   Write-Host "Configured OS-level kiosk shell for $User ($sid): $shellCommand"
 }
 
@@ -736,7 +842,7 @@ function Write-StartupBringupEvidence {
     [string]$MachineUiExe,
     [string]$MachineUiLauncher,
     [string]$MachineUiDebugLauncher,
-    [bool]$ConfigureKioskShell
+    [bool]$ShellLauncherOwnsStartup
   )
 
   Ensure-Directory -Path (Split-Path -Parent $Path)
@@ -756,7 +862,7 @@ function Write-StartupBringupEvidence {
     "unknown"
   }
 
-  $machineUiStartup = if ($ConfigureKioskShell) {
+  $machineUiStartup = if ($ShellLauncherOwnsStartup) {
     [ordered]@{
       configured = Test-Path -LiteralPath $MachineUiExe
       mode = "shell_launcher"
@@ -843,6 +949,7 @@ Ensure-DaemonDataDirectory -BringupDirectory $BringupDir -DataDirectory $DaemonD
 
 Write-Host "=== VEM Win10 machine provisioning ===" -ForegroundColor Cyan
 $CustomerSessionUser = if ($UseKioskAccount -or $ConfigureKioskShell) { $KioskUser } else { $RunAsUser }
+$ShellLauncherOwnsStartup = [bool]$ConfigureKioskShell -and (Test-ShellLauncherAvailable)
 
 Write-Host "[1/9] Validate kiosk and maintenance accounts" -ForegroundColor Yellow
 if ($ConfigureKioskAccounts) {
@@ -864,15 +971,20 @@ Write-Host "Customer session user: $CustomerSessionUser"
 Write-Host "[2/9] Configure controlled remote maintenance access" -ForegroundColor Yellow
 if ($ConfigureRemoteMaintenanceAccess) {
   Ensure-RemoteMaintenanceAccess -MaintenanceUser $MaintenanceUser -KioskUser $KioskUser -TailscalePath $TailscaleExe -SshdConfigPath $SshdConfigPath
+} elseif ($ConfigureLocalMaintenanceAccess) {
+  Ensure-LocalMaintenanceAccess -MaintenanceUser $MaintenanceUser -KioskUser $KioskUser -SshdConfigPath $SshdConfigPath
 } else {
-  Write-Host "Remote maintenance access not changed. Re-run with -ConfigureRemoteMaintenanceAccess after validating maintenance credentials."
+  Write-Host "Remote maintenance access not changed. Re-run with -ConfigureLocalMaintenanceAccess or -ConfigureRemoteMaintenanceAccess after validating maintenance credentials."
 }
 
 Write-Host "[3/9] Write machine UI launchers" -ForegroundColor Yellow
+$KioskDisplayProbeScript = Join-Path $BringupDir "capture-kiosk-display.ps1"
+Ensure-KioskDisplayProbeScript -Path $KioskDisplayProbeScript
 Ensure-MachineUiLauncher `
   -LauncherPath $MachineUiLauncher `
   -ExePath $MachineUiExe `
-  -WorkingDirectory $BringupDir
+  -WorkingDirectory $BringupDir `
+  -DisplayProbePath $KioskDisplayProbeScript
 Ensure-MachineUiDebugLauncher `
   -LauncherPath $MachineUiDebugLauncher `
   -ExePath $MachineUiExe `
@@ -886,7 +998,7 @@ Ensure-DaemonService `
   -ReadyFileReaders @($CustomerSessionUser)
 
 Write-Host "[5/9] Configure VEMMachineUI kiosk logon task" -ForegroundColor Yellow
-if (-not $ConfigureKioskShell) {
+if (-not $ShellLauncherOwnsStartup) {
   Register-InteractiveLogonTask `
     -TaskName "VEMMachineUI" `
     -Command "C:\Windows\System32\wscript.exe" `
@@ -896,6 +1008,9 @@ if (-not $ConfigureKioskShell) {
     -User $CustomerSessionUser `
     -RestartOnFailureCount 3 `
     -RestartOnFailureIntervalISO "PT1M"
+  if ($ConfigureKioskShell) {
+    Write-Host "Registered VEMMachineUI logon task because Shell Launcher is unavailable on this Windows edition."
+  }
 } else {
   Remove-ScheduledTaskIfExists -TaskName "VEMMachineUI"
   Write-Host "Skipped VEMMachineUI logon task because Shell Launcher owns the kiosk UI process."
@@ -941,8 +1056,8 @@ if (Test-Path -LiteralPath $VisionLauncher) {
     -RestartOnFailureIntervalISO "PT1M"
 } else {
   Write-Warning "vision launcher not found; skipping VEM\StartVisionServer task: $VisionLauncher"
-  schtasks /Query /TN "VEM\StartVisionServer" *> $null
-  if ($LASTEXITCODE -eq 0) {
+  $visionTask = Get-ScheduledTask -TaskName "StartVisionServer" -TaskPath "\VEM\" -ErrorAction SilentlyContinue
+  if ($null -ne $visionTask) {
     schtasks /Delete /TN "VEM\StartVisionServer" /F | Out-Null
   }
 }
@@ -973,12 +1088,12 @@ Write-StartupBringupEvidence `
   -MachineUiExe $MachineUiExe `
   -MachineUiLauncher $MachineUiLauncher `
   -MachineUiDebugLauncher $MachineUiDebugLauncher `
-  -ConfigureKioskShell ([bool]$ConfigureKioskShell)
+  -ShellLauncherOwnsStartup ([bool]$ShellLauncherOwnsStartup)
 
 if ($StartNow) {
   Start-Service -Name "VemVendingDaemon" -ErrorAction SilentlyContinue
   schtasks /Run /TN "VEM\StartVisionServer" | Out-Null
-  if (-not $ConfigureKioskShell) {
+  if (-not $ShellLauncherOwnsStartup) {
     schtasks /Run /TN "VEMMachineUI" | Out-Null
   }
 }

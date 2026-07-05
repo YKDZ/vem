@@ -1,3 +1,5 @@
+#![cfg(unix)]
+
 mod support;
 
 use std::sync::{
@@ -621,7 +623,13 @@ async fn prepare_local_sale_view(daemon: &DaemonHarness) {
         .send()
         .await
         .expect("attestation request");
-    assert_eq!(attestation.status(), reqwest::StatusCode::CREATED);
+    let attestation_status = attestation.status();
+    let attestation_body = attestation.text().await.expect("attestation body");
+    assert_eq!(
+        attestation_status,
+        reqwest::StatusCode::CREATED,
+        "attestation body: {attestation_body}"
+    );
 }
 
 async fn wait_for_sync_connected(daemon: &DaemonHarness) -> serde_json::Value {
@@ -635,7 +643,20 @@ async fn wait_for_sync_connected(daemon: &DaemonHarness) -> serde_json::Value {
     daemon.get_json("/v1/sync/status").await
 }
 
+async fn wait_for_hardware_online(daemon: &DaemonHarness) -> serde_json::Value {
+    for _ in 0..40 {
+        let health = daemon.get_json("/healthz").await;
+        if health["hardwareOnline"] == true {
+            return health;
+        }
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    daemon.get_json("/healthz").await
+}
+
 async fn create_payment_code_order(daemon: &DaemonHarness) -> serde_json::Value {
+    let health = wait_for_hardware_online(daemon).await;
+    assert_eq!(health["hardwareOnline"], true, "health: {health}");
     prepare_local_sale_view(daemon).await;
     let sync = wait_for_sync_connected(daemon).await;
     assert_eq!(sync["mqttConnected"], true);

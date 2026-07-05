@@ -1246,7 +1246,28 @@ describe("MaintenanceView hardware config", () => {
     const host = await mountView();
 
     expect(host.textContent).not.toContain("回到 Windows 桌面");
+    expect(host.textContent).not.toContain("首次部署控制台");
     expect(callTauriCommandMock).not.toHaveBeenCalled();
+  });
+
+  it("opens the bring-up console only from protected maintenance mode", async () => {
+    initializeMock.mockResolvedValueOnce({
+      baseUrl: "http://127.0.0.1:7891",
+      token: "token-1",
+      source: "tauri_ready_file",
+      mock: false,
+      runtimeFlags: {
+        advancedMaintenanceConfig: true,
+      },
+    });
+    const host = await mountView();
+
+    buttonByText(host, "首次部署控制台").click();
+
+    expect(routerReplaceMock).toHaveBeenCalledWith({
+      path: "/bring-up",
+      query: { source: "protected-maintenance" },
+    });
   });
 
   it("returns to the Windows desktop through the restricted Tauri command", async () => {

@@ -120,13 +120,20 @@ describe("shared API contract", () => {
       code: "M001",
       name: "Lobby",
       locationLabel: "1F",
-      status: "offline",
     });
     expect(() =>
       createMachineSchema.parse({
         code: "M001",
         name: "Lobby",
         locationText: "1F",
+      }),
+    ).toThrow();
+    expect(() =>
+      createMachineSchema.parse({
+        code: "M001",
+        name: "Lobby",
+        locationLabel: "1F",
+        status: "online",
       }),
     ).toThrow();
   });
@@ -684,6 +691,10 @@ describe("shared API contract", () => {
         paymentScanner: { required: true, supportsPaymentCode: true },
         vision: { required: false, supportsRecommendations: true },
       },
+      hardwareSlotTopology: {
+        identity: "vem-prod-24",
+        version: "2026-06-adr0026",
+      },
       paymentCapability: {
         profile: "production",
         qrCodeEnabled: true,
@@ -725,6 +736,15 @@ describe("shared API contract", () => {
       machineProvisioningProfileSchema.parse({
         ...profile,
         planogram: { slots: [] },
+      }),
+    ).toThrow();
+    expect(() =>
+      machineProvisioningProfileSchema.parse({
+        ...profile,
+        hardwareSlotTopology: {
+          ...profile.hardwareSlotTopology,
+          slots: [{ slotCode: "A1", capacity: 8 }],
+        },
       }),
     ).toThrow();
     expect(() =>

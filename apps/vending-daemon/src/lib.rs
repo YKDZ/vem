@@ -1,12 +1,15 @@
 pub mod backend;
+pub mod bring_up;
 pub mod config;
 pub mod events;
 pub mod hardware;
 pub mod health;
 pub mod ipc;
+pub mod local_runtime_reset;
 pub mod logs;
 pub mod mqtt;
 pub mod natural_context;
+pub mod network;
 pub mod runtime;
 pub mod scanner;
 pub mod secret;

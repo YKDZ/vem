@@ -125,6 +125,46 @@ function readySnapshot(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function bringUpSnapshot(
+  state: "claim_required" | "runtime_ready" | "sell_ready" = "sell_ready",
+) {
+  const ready = state === "sell_ready" || state === "runtime_ready";
+  return {
+    state,
+    blockingReasons:
+      state === "claim_required"
+        ? [
+            {
+              code: "CLAIM_REQUIRED",
+              component: "provisioning",
+              message:
+                "machine must be claimed before runtime profile can be applied",
+            },
+          ]
+        : [],
+    diagnostics: [],
+    readinessLevel:
+      state === "sell_ready"
+        ? "sell_ready"
+        : state === "runtime_ready"
+          ? "runtime_ready"
+          : "not_ready",
+    hardwareMode: ready ? "production" : "simulated",
+    allowedActions: {
+      configureNetwork: false,
+      claimMachine: state === "claim_required",
+      retryClaim: state === "claim_required",
+      syncProfile: false,
+      resolveTopology: false,
+      runRuntimeAcceptance: ready,
+      runHardwareAcceptance: false,
+      attestStock: false,
+      startSales: state === "sell_ready",
+    },
+    updatedAt: "2026-07-04T00:00:00Z",
+  };
+}
+
 function saleReadinessSnapshot(canStartNetworkAuthorizedSale = true) {
   const maybeUnavailable = !canStartNetworkAuthorizedSale;
   return {
@@ -289,6 +329,7 @@ function currentFixtures(): Record<string, unknown> {
           },
         ],
       }),
+      bringUp: bringUpSnapshot("sell_ready"),
       transaction: emptyTransaction,
     };
   }
@@ -313,6 +354,7 @@ function currentFixtures(): Record<string, unknown> {
           },
         ],
       }),
+      bringUp: bringUpSnapshot("runtime_ready"),
       transaction: emptyTransaction,
     };
   }
@@ -321,6 +363,7 @@ function currentFixtures(): Record<string, unknown> {
     return {
       health: healthSnapshot(),
       ready: readySnapshot({ suggestedRoute: "payment" }),
+      bringUp: bringUpSnapshot("sell_ready"),
       transaction: transactionSnapshot("wait_payment"),
     };
   }
@@ -329,6 +372,7 @@ function currentFixtures(): Record<string, unknown> {
     return {
       health: healthSnapshot(),
       ready: readySnapshot({ suggestedRoute: "dispensing" }),
+      bringUp: bringUpSnapshot("sell_ready"),
       transaction: transactionSnapshot("dispensing"),
     };
   }
@@ -337,6 +381,7 @@ function currentFixtures(): Record<string, unknown> {
     return {
       health: healthSnapshot(),
       ready: readySnapshot({ suggestedRoute: "result" }),
+      bringUp: bringUpSnapshot("sell_ready"),
       transaction: transactionSnapshot("success"),
     };
   }
@@ -356,6 +401,7 @@ function currentFixtures(): Record<string, unknown> {
           },
         ],
       }),
+      bringUp: bringUpSnapshot("sell_ready"),
       transaction: emptyTransaction,
     };
   }
@@ -379,6 +425,7 @@ function currentFixtures(): Record<string, unknown> {
           },
         ],
       }),
+      bringUp: bringUpSnapshot("claim_required"),
       transaction: emptyTransaction,
     };
   }
@@ -386,6 +433,7 @@ function currentFixtures(): Record<string, unknown> {
   return {
     health: healthSnapshot(),
     ready: readySnapshot(),
+    bringUp: bringUpSnapshot("sell_ready"),
     transaction: emptyTransaction,
   };
 }
@@ -432,6 +480,11 @@ function handleRequest(req: IncomingMessage, res: ServerResponse): void {
 
   if (url.pathname === "/readyz") {
     respondJson(res, fixtures.ready);
+    return;
+  }
+
+  if (url.pathname === "/v1/bring-up") {
+    respondJson(res, fixtures.bringUp);
     return;
   }
 
@@ -773,7 +826,7 @@ test("provisioning UI maps real daemon claim error contract without echoing code
   scenario = "provisioning";
   await page.goto("/");
   await page.getByLabel("领取码").fill("ABCD-2345");
-  await page.getByRole("button", { name: "提交领取码" }).click();
+  await page.getByRole("button", { name: "提交领取码", exact: true }).click();
 
   await expect(page.getByText("领取码已使用")).toBeVisible();
   await expect(page.getByText("ABCD-2345")).toHaveCount(0);

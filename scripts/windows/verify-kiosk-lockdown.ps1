@@ -200,21 +200,26 @@ function Get-VemTailscaleSshFirewallState {
 }
 
 function Get-KioskShellState([string]$Sid, [string]$ExpectedShell) {
+  $shellLauncherState = [pscustomobject]@{
+    available = $false
+    shell = $null
+    configured = $false
+    error = $null
+  }
   $shellLauncher = Get-CimClass -Namespace "root\standardcimv2\embedded" -ClassName "WESL_UserSetting" -ErrorAction SilentlyContinue
   if ($null -ne $shellLauncher) {
     try {
       $customShell = Invoke-CimMethod -Namespace "root\standardcimv2\embedded" -ClassName "WESL_UserSetting" -MethodName GetCustomShell -Arguments @{ Sid = $Sid }
-      return [pscustomobject]@{
-        mode = "Shell Launcher"
+      $shellLauncherState = [pscustomobject]@{
+        available = $true
         shell = $customShell.Shell
-        expectedShell = $ExpectedShell
         configured = ([string]$customShell.Shell) -eq $ExpectedShell
+        error = $null
       }
     } catch {
-      return [pscustomobject]@{
-        mode = "Shell Launcher"
+      $shellLauncherState = [pscustomobject]@{
+        available = $true
         shell = $null
-        expectedShell = $ExpectedShell
         configured = $false
         error = [string]$_.Exception.Message
       }
@@ -254,11 +259,19 @@ function Get-KioskShellState([string]$Sid, [string]$ExpectedShell) {
       }
     }
   }
+  $winlogonConfigured = ([string]$shell) -eq $ExpectedShell
+  $configured = if ([bool]$shellLauncherState.available) {
+    $winlogonConfigured -and [bool]$shellLauncherState.configured
+  } else {
+    $winlogonConfigured
+  }
   return [pscustomobject]@{
-    mode = "per-user Winlogon shell"
+    mode = if ([bool]$shellLauncherState.available) { "Shell Launcher + per-user Winlogon shell" } else { "per-user Winlogon shell" }
     shell = $shell
+    winlogonShell = $shell
+    shellLauncher = $shellLauncherState
     expectedShell = $ExpectedShell
-    configured = ([string]$shell) -eq $ExpectedShell
+    configured = $configured
   }
 }
 
