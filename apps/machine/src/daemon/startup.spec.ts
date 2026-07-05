@@ -83,7 +83,7 @@ describe("routeForStartup", () => {
     ).toBe("/maintenance");
   });
 
-  it("routes provisioning when daemon is available but config summary is unavailable", () => {
+  it("routes bring-up console when daemon is available but config summary is unavailable", () => {
     expect(
       routeForStartup({
         daemonAvailable: true,
@@ -101,7 +101,85 @@ describe("routeForStartup", () => {
         },
         transaction: null,
       }),
-    ).toBe("/provisioning");
+    ).toBe("/bring-up");
+  });
+
+  it("routes incomplete daemon bring-up to the bring-up console", () => {
+    expect(
+      routeForStartup({
+        daemonAvailable: true,
+        health: healthBase,
+        config: configBase,
+        bringUp: {
+          state: "claim_required",
+          blockingReasons: [
+            {
+              code: "CLAIM_REQUIRED",
+              component: "provisioning",
+              message:
+                "machine must be claimed before runtime profile can be applied",
+            },
+          ],
+          diagnostics: [],
+          readinessLevel: "not_ready",
+          hardwareMode: "production",
+          allowedActions: {
+            configureNetwork: false,
+            claimMachine: true,
+            retryClaim: false,
+            syncProfile: false,
+            resolveTopology: false,
+            runRuntimeAcceptance: false,
+            runHardwareAcceptance: false,
+            attestStock: false,
+            startSales: false,
+          },
+          updatedAt: "2026-07-04T00:00:00Z",
+        },
+        ready: null,
+        transaction: null,
+      }),
+    ).toBe("/bring-up");
+  });
+
+  it("uses daemon bring-up snapshot instead of local config-error inference", () => {
+    expect(
+      routeForStartup({
+        daemonAvailable: true,
+        health: { ...healthBase, configConfigured: false },
+        config: null,
+        bringUp: {
+          state: "sell_ready",
+          blockingReasons: [],
+          diagnostics: [],
+          readinessLevel: "sell_ready",
+          hardwareMode: "production",
+          allowedActions: {
+            configureNetwork: false,
+            claimMachine: false,
+            retryClaim: false,
+            syncProfile: false,
+            resolveTopology: false,
+            runRuntimeAcceptance: true,
+            runHardwareAcceptance: false,
+            attestStock: false,
+            startSales: true,
+          },
+          updatedAt: "2026-07-04T00:00:00Z",
+        },
+        ready: {
+          ready: true,
+          canSell: true,
+          mode: "daemon",
+          blockingCodes: [],
+          blockingReasons: [],
+          degradedReasons: [],
+          suggestedRoute: "catalog",
+          updatedAt: "2026-01-01T00:00:00Z",
+        },
+        transaction: null,
+      }),
+    ).toBe("/catalog");
   });
 
   it("routes payment", () => {
@@ -110,6 +188,25 @@ describe("routeForStartup", () => {
         daemonAvailable: true,
         health: healthBase,
         config: configBase,
+        bringUp: {
+          state: "sell_ready",
+          blockingReasons: [],
+          diagnostics: [],
+          readinessLevel: "sell_ready",
+          hardwareMode: "production",
+          allowedActions: {
+            configureNetwork: false,
+            claimMachine: false,
+            retryClaim: false,
+            syncProfile: false,
+            resolveTopology: false,
+            runRuntimeAcceptance: true,
+            runHardwareAcceptance: false,
+            attestStock: false,
+            startSales: true,
+          },
+          updatedAt: "2026-07-04T00:00:00Z",
+        },
         ready: null,
         transaction: {
           orderId: "o",
@@ -134,6 +231,75 @@ describe("routeForStartup", () => {
         },
       }),
     ).toBe("/payment");
+  });
+
+  it("keeps active transaction recovery ahead of non-ready bring-up state", () => {
+    const cases = [
+      ["wait_payment", "/payment"],
+      ["dispensing", "/dispensing"],
+      [
+        "refund_pending",
+        { name: "result", params: { kind: "refund_pending" } },
+      ],
+    ] as const;
+
+    for (const [nextAction, expectedRoute] of cases) {
+      expect(
+        routeForStartup({
+          daemonAvailable: true,
+          health: healthBase,
+          config: configBase,
+          bringUp: {
+            state: "topology_mismatch",
+            blockingReasons: [
+              {
+                code: "HARDWARE_SLOT_TOPOLOGY_MISMATCH",
+                component: "topology",
+                message:
+                  "factory hardware slot topology does not match platform expectation",
+              },
+            ],
+            diagnostics: [],
+            readinessLevel: "not_ready",
+            hardwareMode: "production",
+            allowedActions: {
+              configureNetwork: false,
+              claimMachine: false,
+              retryClaim: false,
+              syncProfile: false,
+              resolveTopology: true,
+              runRuntimeAcceptance: false,
+              runHardwareAcceptance: false,
+              attestStock: false,
+              startSales: false,
+            },
+            updatedAt: "2026-07-04T00:00:00Z",
+          },
+          ready: null,
+          transaction: {
+            orderId: "o",
+            orderNo: "ord",
+            productSummary: null,
+            paymentNo: null,
+            paymentMethod: null,
+            paymentProvider: null,
+            paymentUrl: null,
+            paymentStatus: null,
+            orderStatus: null,
+            totalAmountCents: null,
+            vending: null,
+            nextAction,
+            maskedAuthCode: null,
+            paymentCodeAttempt: null,
+            expiresAt: null,
+            errorCode: null,
+            errorMessage: null,
+            operatorHint: null,
+            updatedAt: "2026-01-01T00:00:00Z",
+          },
+        }),
+      ).toEqual(expectedRoute);
+    }
   });
 
   it("routes dispensing", () => {

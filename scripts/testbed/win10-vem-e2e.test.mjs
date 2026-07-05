@@ -1,4 +1,15 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it } from "node:test";
 
 import {
@@ -12,9 +23,19 @@ import {
   buildProvisioningFacts,
   buildReadyFileEvidence,
   buildInteractiveDesktopDisplayBaseline,
+  assertSimulatedSaleFlowPreMutationTarget,
+  readEphemeralPlatformSetupEvidence,
   buildKioskRuntimeEvidence,
   buildPortraitKioskAcceptance,
   buildRuntimeAcceptanceReport,
+  buildVmRuntimeAcceptanceReport,
+  buildVmRuntimeAcceptancePlan,
+  buildCleanBaseFactoryAcceptancePlan,
+  buildFactoryImageDeliveryUnitReport,
+  buildCleanBaseRemoteIdentityProbeCommand,
+  buildCleanBaseRemotePreflightAbsenceProbeCommand,
+  validateCleanBaseFactoryAcceptanceEvidence,
+  writeVmRuntimeAcceptanceEvidenceIndexes,
   buildScpCommand,
   classifyProvisioningFailure,
   evaluateFirstClaimPrecondition,
@@ -132,11 +153,348 @@ function runtimeAcceptanceFacts(overrides = {}) {
       sessionUser: "VEMKiosk",
       sessionId: 3,
     },
+    kioskDesktopEscape: {
+      desktopVisible: false,
+      taskbarVisible: false,
+      startMenuVisible: false,
+      edgeReachable: false,
+      fileExplorerReachable: false,
+    },
     ...overrides,
   };
 }
 
+function ephemeralPlatformEvidence(overrides = {}) {
+  return {
+    runId: "RUN-180",
+    stack: {
+      apiBaseUrl: "http://127.0.0.1:26849/api",
+      mqttUrl: "mqtt://127.0.0.1:1883",
+      databaseTarget: "explicit",
+    },
+    testbedMachine: {
+      id: "machine-180",
+      code: "VEM-TESTBED-WINVM-01",
+      created: true,
+      claim: {
+        claimCode: "ABCD-2345",
+        claimCodeId: "claim-180",
+        expiresAt: "2026-07-04T22:00:00.000Z",
+        path: "/api/machines/claim",
+        closedClaimCodeIds: [],
+      },
+    },
+    hardwareSlotTopology: {
+      identity: "vem-prod-24",
+      version: "2026-06-adr0026",
+      slots: [],
+    },
+    seededData: {
+      products: [],
+      planogram: {
+        planogramVersion: "TESTBED-RUN-180",
+        status: "published",
+        slotCount: 2,
+      },
+      stockSetup: [],
+      paymentReadiness: {
+        ready: true,
+        mockProviderStatus: "enabled",
+        serviceRequiresPaymentMockEnabled: true,
+        runtimePaymentMockEnabled: true,
+        mockPaymentAcknowledged: true,
+      },
+    },
+    verificationPaths: {
+      provisioningClaim: "/api/machines/claim",
+      machineAuthToken: "/api/machine-auth/token",
+      publishedPlanogram:
+        "/api/machines/VEM-TESTBED-WINVM-01/planogram-versions/published",
+      planogramAck:
+        "/api/machines/VEM-TESTBED-WINVM-01/planogram-versions/TESTBED-RUN-180/ack",
+      stockSnapshot: "/api/machines/VEM-TESTBED-WINVM-01/stock-snapshot",
+      machineOrders: "/api/machine-orders",
+    },
+    ...overrides,
+  };
+}
+
+function cleanBaseFactoryAcceptanceEvidence(overrides = {}) {
+  const runId = overrides.runId ?? "RUN-182";
+  const evidenceRoot = `C:\\ProgramData\\VEM\\evidence\\clean-base-factory-acceptance\\${runId}`;
+  const preparationOutput = `${evidenceRoot}\\factory-runtime-preparation.json`;
+  const verificationAction = `${evidenceRoot}\\factory-runtime-verification-action.json`;
+  const verifierEvidence = `${evidenceRoot}\\factory-runtime-verification.json`;
+  return {
+    schemaVersion: "clean-base-factory-acceptance-report/v1",
+    kind: "clean-base-factory-acceptance",
+    runId,
+    result: "passed",
+    ok: true,
+    dryRun: false,
+    source: {
+      kind: "clean-windows-base",
+      uri: "unraid://192.168.2.23/vms/win10-vem-clean-base",
+      snapshot: "vem-clean-base-before-factory-prep",
+      identity: {
+        tailscaleName: "win10-vem-clean-base",
+        hostName: "WIN10-VEM-CLEAN",
+        unraidVmName: "win10-vem-clean-base",
+      },
+    },
+    factoryWindowsBaselinePolicy: {
+      schemaVersion: "factory-windows-baseline-policy/v1",
+      model: "allowlist",
+      requiredCapabilities: [
+        "defender_enabled",
+        "firewall_enabled",
+        "no_default_product_remote_ingress",
+        "vem_runtime_defender_exclusions",
+        "openssh_server_for_maintenance_users",
+        "tailscale_not_installed_by_default",
+        "kiosk_account_denied_remote_access",
+        "windows_event_logging",
+        "powershell_management",
+        "networking_certificates_time_sync",
+        "webview2_runtime_support",
+        "display_touch_usb_serial_drivers",
+        "fonts_input_methods",
+      ],
+      disabledRuntimeInterference: [
+        "windows_auto_update_installation",
+        "windows_auto_update_auto_restart",
+        "sleep",
+        "hibernation",
+        "testsigning",
+        "store_automatic_app_updates",
+        "consumer_experience_autostart",
+        "consumer_experience_foreground_popups",
+        "consumer_experience_kiosk_foreground_takeover_best_effort",
+      ],
+      evidenceFields: {
+        windowsUpdatePolicy: "assertions.windowsUpdatePolicy",
+        powerPolicy: "assertions.powerPolicy",
+        bootPolicy: "assertions.bootPolicy",
+        securityPosture: "assertions.securityPosture",
+        remoteMaintenanceCapability:
+          "assertions.factoryRemoteMaintenanceCapability",
+        consumerExperienceInterference:
+          "assertions.consumerExperienceInterference",
+      },
+    },
+    artifacts: {
+      daemonSha256: "a".repeat(64),
+      machineUiSha256: "b".repeat(64),
+    },
+    readiness: {
+      cleanBasePreparationAcceptance: "passed",
+      dirtyHostResetAcceptance: "not_asserted",
+      runtimeReady: "not_asserted",
+      simulatedHardwareReady: "not_asserted",
+      sellReady: "not_asserted",
+    },
+    assertions: {
+      displayOrientationResolution: {
+        status: "passed",
+        orientation: "portrait",
+        widthPx: 1080,
+        heightPx: 1920,
+      },
+      sshReachability: { status: "passed", remote: "YKDZ@clean-base" },
+      tailscaleDefaultAbsent: {
+        status: "passed",
+        name: "win10-vem-clean-base",
+      },
+      windowsUpdatePolicy: {
+        status: "passed",
+        automaticUpdateInstallation: "disabled",
+        automaticRestart: "disabled",
+      },
+      powerPolicy: {
+        status: "passed",
+        sleep: "disabled",
+        hibernation: "disabled",
+      },
+      bootPolicy: { status: "passed", testsigning: "off" },
+      securityPosture: {
+        status: "passed",
+        defender: "enabled",
+        firewall: "enabled",
+        defenderExclusions: ["C:\\VEM\\bringup", "C:\\ProgramData\\VEM"],
+        inboundFirewallRules: [],
+        enabledVemInboundRules: [],
+        fileAndPrinterSharing: "not_enabled",
+      },
+      factoryRemoteMaintenanceCapability: {
+        status: "passed",
+        opensshServer: "available",
+        tailscale: "not_installed_by_default",
+        kioskRemoteAccess: "denied",
+        maintenanceUsersOnly: true,
+        sshdConfigDeniesKioskUser: true,
+        maintenanceInOpenSshUsers: true,
+        kioskInOpenSshUsers: false,
+        kioskInRemoteDesktopUsers: false,
+      },
+      consumerExperienceInterference: {
+        status: "passed",
+        componentAutostart: "policy_configured",
+        foregroundPopups: "policy_configured",
+        storeAutomaticAppUpdates: "disabled",
+        kioskForegroundTakeover: "best_effort_policy_configured",
+      },
+      sleepDisabled: { status: "passed", states: ["S3", "S4"] },
+      testsigningOff: { status: "passed" },
+      autologonConfigured: { status: "passed", user: "VEMKiosk" },
+      startupLauncherMode: {
+        status: "passed",
+        mode: "scheduled_task",
+      },
+      daemonService: { status: "passed", name: "VemVendingDaemon" },
+      uiLauncherTask: { status: "passed", name: "VEMMachineUI" },
+      runtimeResetGateClean: { status: "passed" },
+      simulatedHardwareMode: { status: "passed", mode: "simulated" },
+      startupReachesBringUpOrSalesEligible: {
+        status: "passed",
+        state: "bring_up",
+      },
+      preflightNoMachineIdentity: { status: "passed" },
+      preflightNoProvisioningProfile: { status: "passed" },
+      preflightNoProtectedSecrets: { status: "passed" },
+      preflightNoDaemonState: { status: "passed" },
+      preflightNoPreviousVemEvidence: { status: "passed" },
+    },
+    evidence: {
+      preparationOutput,
+      verificationAction,
+      verifierEvidence,
+      factoryRuntimeVerification: {
+        ok: true,
+        manifestPath:
+          "C:\\ProgramData\\VEM\\factory\\factory-runtime-manifest.json",
+        failures: [],
+        checks: {
+          manifest: {
+            schemaVersion: "vem-factory-runtime-manifest/v1",
+            hardwareMode: "simulated",
+            hardwareModel: "win10-clean-base",
+            topologyIdentity: "clean-base-factory-runtime",
+            topologyVersion: "clean-base-v1",
+          },
+        },
+      },
+      actions: [
+        {
+          name: "run scripted clean-base factory runtime preparation",
+          status: "succeeded",
+          outputPath: preparationOutput,
+        },
+        {
+          name: "run scripted clean-base factory runtime verifier",
+          status: "succeeded",
+          outputPath: verificationAction,
+        },
+      ],
+    },
+    ...overrides,
+  };
+}
+
+function commandArg(command, flag) {
+  const index = command.indexOf(flag);
+  return index === -1 ? undefined : command[index + 1];
+}
+
 describe("win10-vem-e2e reset planning", () => {
+  it("rejects dirty-host acceptance against an SSH config alias unless the testbed alias is explicitly allowed", () => {
+    const result = spawnSync(
+      process.execPath,
+      [
+        "scripts/testbed/win10-vem-e2e.mjs",
+        "--mode",
+        "dirty-host-factory-acceptance",
+        "--run-id",
+        "dh-20260704-guard",
+        "--remote",
+        "vem",
+        "--ssh-config",
+        "--dry-run",
+      ],
+      { cwd: process.cwd(), encoding: "utf8" },
+    );
+
+    assert.equal(result.status, 2);
+    assert.match(
+      result.stderr,
+      /dirty-host factory acceptance refuses SSH config alias remotes by default/,
+    );
+  });
+
+  it("requires explicit local artifacts for dirty-host acceptance unless existing remote artifacts are test-explicitly allowed", () => {
+    const result = spawnSync(
+      process.execPath,
+      [
+        "scripts/testbed/win10-vem-e2e.mjs",
+        "--mode",
+        "dirty-host-factory-acceptance",
+        "--run-id",
+        "dh-20260704-artifacts",
+        "--dry-run",
+      ],
+      { cwd: process.cwd(), encoding: "utf8" },
+    );
+
+    assert.equal(result.status, 2);
+    assert.match(
+      result.stderr,
+      /requires --daemon-artifact and --machine-ui-artifact/,
+    );
+  });
+
+  it("dry-run records specified local artifact hashes for dirty-host acceptance", () => {
+    const temp = mkdtempSync(join(tmpdir(), "vem-artifact-test-"));
+    try {
+      const daemonArtifact = join(temp, "vending-daemon.exe");
+      const machineUiArtifact = join(temp, "machine.exe");
+      const machineUiSidecar = join(temp, "WebView2Loader.dll");
+      writeFileSync(daemonArtifact, "daemon artifact under test", "utf8");
+      writeFileSync(
+        machineUiArtifact,
+        "machine ui artifact under test",
+        "utf8",
+      );
+      writeFileSync(machineUiSidecar, "webview2 loader under test", "utf8");
+
+      const result = spawnSync(
+        process.execPath,
+        [
+          "scripts/testbed/win10-vem-e2e.mjs",
+          "--mode",
+          "dirty-host-factory-acceptance",
+          "--run-id",
+          "dh-20260704-artifact-hashes",
+          "--daemon-artifact",
+          daemonArtifact,
+          "--machine-ui-artifact",
+          machineUiArtifact,
+          "--dry-run",
+        ],
+        { cwd: process.cwd(), encoding: "utf8" },
+      );
+
+      assert.equal(result.status, 0, result.stderr);
+      const dryRun = JSON.parse(result.stdout);
+      assert.match(dryRun.artifacts.daemonSha256, /^[a-f0-9]{64}$/);
+      assert.match(dryRun.artifacts.machineUiSha256, /^[a-f0-9]{64}$/);
+      assert.notEqual(
+        dryRun.artifacts.daemonSha256,
+        dryRun.artifacts.machineUiSha256,
+      );
+    } finally {
+      rmSync(temp, { recursive: true, force: true });
+    }
+  });
+
   it("requires an active VEMKiosk interactive Windows session for display acceptance", () => {
     assert.equal(
       findActiveKioskSession([
@@ -153,6 +511,7 @@ describe("win10-vem-e2e reset planning", () => {
     const activeKioskSession = findActiveKioskSession([
       {
         user: "VEMKiosk",
+        sessionName: "console",
         sessionId: 3,
         state: "Active",
         source: "quser",
@@ -161,10 +520,30 @@ describe("win10-vem-e2e reset planning", () => {
 
     assert.deepEqual(activeKioskSession, {
       user: "VEMKiosk",
+      sessionName: "console",
       sessionId: 3,
       state: "Active",
       source: "quser",
     });
+
+    assert.deepEqual(
+      findActiveKioskSession([
+        {
+          user: "vemkiosk",
+          sessionName: "console",
+          sessionId: 1,
+          state: "运行中",
+          source: "quser",
+        },
+      ]),
+      {
+        user: "vemkiosk",
+        sessionName: "console",
+        sessionId: 1,
+        state: "运行中",
+        source: "quser",
+      },
+    );
 
     assert.deepEqual(
       buildInteractiveDesktopDisplayBaseline({
@@ -248,7 +627,7 @@ describe("win10-vem-e2e reset planning", () => {
     );
   });
 
-  it("requires CDP and machine.exe evidence from the active VEMKiosk session", () => {
+  it("accepts debug CDP or production WebView2 evidence from the active VEMKiosk session", () => {
     const activeSession = {
       user: "VEMKiosk",
       sessionId: 3,
@@ -271,6 +650,7 @@ describe("win10-vem-e2e reset planning", () => {
         sessionUser: "VEMKiosk",
         sessionId: 3,
         processId: 500,
+        webView2ProcessId: null,
         cdpAvailable: true,
         error: "kiosk_webview_not_verified",
       },
@@ -304,6 +684,41 @@ describe("win10-vem-e2e reset planning", () => {
       }).webviewRunning,
       true,
     );
+
+    assert.deepEqual(
+      buildKioskRuntimeEvidence({
+        activeSession,
+        machineProcesses,
+        webView2Processes: [
+          { processId: 600, ownerUser: "VEMKiosk", sessionId: 3 },
+        ],
+        cdpTargets: [],
+        cdpAvailable: false,
+      }),
+      {
+        webviewRunning: true,
+        url: "unavailable:production-cdp-disabled",
+        sessionUser: "VEMKiosk",
+        sessionId: 3,
+        processId: 500,
+        webView2ProcessId: 600,
+        cdpAvailable: false,
+        error: null,
+      },
+    );
+
+    assert.equal(
+      buildKioskRuntimeEvidence({
+        activeSession,
+        machineProcesses,
+        webView2Processes: [
+          { processId: 601, ownerUser: "VEMKiosk", sessionId: 7 },
+        ],
+        cdpTargets: [],
+        cdpAvailable: false,
+      }).webviewRunning,
+      false,
+    );
   });
 
   it("plans production bring-up through the shared Windows setup script", () => {
@@ -335,6 +750,71 @@ describe("win10-vem-e2e reset planning", () => {
       "UseKioskAccount",
       "ConfigureAutoLogon",
     ]);
+  });
+
+  it("configures a per-user Winlogon shell even when Shell Launcher is available", () => {
+    const script = readFileSync(
+      "scripts/windows/setup-scheduled-tasks.ps1",
+      "utf8",
+    );
+
+    assert.match(script, /function Set-PerUserWinlogonShell/);
+    assert.match(script, /Shell Launcher SetCustomShell for \$User/);
+    assert.match(
+      script,
+      /Set-PerUserWinlogonShell -User \$User -Sid \$sid -ShellCommand \$shellCommand/,
+    );
+    assert.match(script, /deterministic kiosk startup evidence/);
+    assert.match(script, /function Ensure-KioskDisplayProbeScript/);
+    assert.match(script, /capture-kiosk-display\.ps1/);
+    assert.match(script, /kiosk-display-evidence\.json/);
+  });
+
+  it("falls back to a VEMKiosk logon task when Shell Launcher is unavailable", () => {
+    const setupScript = readFileSync(
+      "scripts/windows/setup-scheduled-tasks.ps1",
+      "utf8",
+    );
+    const prepareScript = readFileSync(
+      "scripts/windows/prepare-factory-runtime.ps1",
+      "utf8",
+    );
+
+    assert.match(setupScript, /function Test-ShellLauncherAvailable/);
+    assert.match(
+      setupScript,
+      /\$ShellLauncherOwnsStartup = \[bool\]\$ConfigureKioskShell -and \(Test-ShellLauncherAvailable\)/,
+    );
+    assert.match(setupScript, /if \(-not \$ShellLauncherOwnsStartup\)/);
+    assert.match(
+      setupScript,
+      /Registered VEMMachineUI logon task because Shell Launcher is unavailable/,
+    );
+    assert.match(prepareScript, /function Test-ShellLauncherAvailable/);
+    assert.match(
+      prepareScript,
+      /\$machineUiStartupMode = if \(Test-ShellLauncherAvailable\) \{ "shell_launcher" \} else \{ "scheduled_task" \}/,
+    );
+    assert.match(
+      prepareScript,
+      /machineUiStartupMode = \$machineUiStartupMode/,
+    );
+  });
+
+  it("requires factory kiosk shell evidence to include per-user Winlogon shell", () => {
+    const script = readFileSync(
+      "scripts/windows/verify-factory-runtime.ps1",
+      "utf8",
+    );
+
+    assert.match(script, /shellLauncherEvidence = \[pscustomobject\]@{/);
+    assert.match(script, /winlogonConfigured = Test-ShellCommandMatches/);
+    assert.match(script, /Shell Launcher \+ per-user Winlogon shell/);
+    assert.match(script, /winlogonShell = \$shell/);
+    assert.doesNotMatch(
+      script,
+      /return \[pscustomobject\]@\{\s*mode = "Shell Launcher"/,
+    );
   });
 
   it("plans only VEM runtime and registration artifacts for reset", () => {
@@ -579,6 +1059,8 @@ describe("win10-vem-e2e reset planning", () => {
     assert.match(script, /quser 2>&1/);
     assert.match(script, /activeKioskSessionId/);
     assert.match(script, /function Get-CurrentDesktopScreenDimensions/);
+    assert.match(script, /kiosk-display-evidence\.json/);
+    assert.match(script, /kiosk_logon_display_probe/);
     assert.match(script, /EnumDisplaySettings/);
     assert.match(
       script,
@@ -605,7 +1087,7 @@ describe("win10-vem-e2e reset planning", () => {
     assert.doesNotMatch(script, /machine\.exe-main-window/);
   });
 
-  it("builds kiosk runtime evidence from same-session machine.exe and strict tauri WebView URL", () => {
+  it("builds kiosk runtime evidence from same-session machine.exe and WebView2", () => {
     const script = buildRemotePowerShellScript({
       mode: "inventory",
       platformTarget: "vem-vps",
@@ -614,6 +1096,7 @@ describe("win10-vem-e2e reset planning", () => {
 
     assert.match(script, /function Get-KioskRuntimeEvidence/);
     assert.match(script, /Win32_Process -Filter "name = 'machine.exe'"/);
+    assert.match(script, /Win32_Process -Filter "name = 'msedgewebview2.exe'"/);
     assert.match(script, /Invoke-CimMethod .* -MethodName GetOwner/);
     assert.match(script, /http:\/\/127\.0\.0\.1:9222\/json/);
     assert.match(script, /function Test-TauriHashRouteUrl/);
@@ -622,6 +1105,11 @@ describe("win10-vem-e2e reset planning", () => {
     assert.match(script, /\$_\.sessionId -eq \$ActiveKioskSession\.sessionId/);
     assert.match(script, /webviewRunning = \$kioskRuntime.webviewRunning/);
     assert.match(script, /url = \$kioskRuntime.url/);
+    assert.match(
+      script,
+      /webView2ProcessId = \$kioskRuntime.webView2ProcessId/,
+    );
+    assert.match(script, /production-cdp-disabled/);
     assert.match(script, /sessionUser = \$kioskRuntime.sessionUser/);
     assert.match(script, /sessionId = \$kioskRuntime.sessionId/);
   });
@@ -861,6 +1349,146 @@ describe("win10-vem-e2e reset planning", () => {
     );
   });
 
+  it("requires same-run non-shared ephemeral platform setup evidence for sale-flow mode", () => {
+    const temp = mkdtempSync(join(tmpdir(), "vem-ephemeral-evidence-"));
+    try {
+      const evidencePath = join(temp, "ephemeral-platform.json");
+      writeFileSync(
+        evidencePath,
+        JSON.stringify(ephemeralPlatformEvidence()),
+        "utf8",
+      );
+
+      assert.deepEqual(
+        readEphemeralPlatformSetupEvidence({
+          mode: "simulated-hardware-sale-flow",
+          runId: "RUN-180",
+          machineCode: "VEM-TESTBED-WINVM-01",
+          platformTarget: "ephemeral-run-180",
+          ephemeralPlatformEvidence: evidencePath,
+        }),
+        {
+          status: "prepared",
+          runId: "RUN-180",
+          target: "ephemeral-run-180",
+          machineCode: "VEM-TESTBED-WINVM-01",
+          apiBaseUrl: "http://127.0.0.1:26849/api",
+          mqttUrl: "mqtt://127.0.0.1:1883",
+          claimCode: "ABCD-2345",
+          claimCodeId: "claim-180",
+          claimPath: "/api/machines/claim",
+          mockPaymentReady: true,
+          hardwareTopologyIdentity: "vem-prod-24",
+          hardwareTopologyVersion: "2026-06-adr0026",
+          planogramVersion: "TESTBED-RUN-180",
+        },
+      );
+
+      assert.throws(
+        () =>
+          readEphemeralPlatformSetupEvidence({
+            mode: "simulated-hardware-sale-flow",
+            runId: "OLDER-RUN",
+            machineCode: "VEM-TESTBED-WINVM-01",
+            platformTarget: "ephemeral-run-180",
+            ephemeralPlatformEvidence: evidencePath,
+          }),
+        /same run id/,
+      );
+
+      assert.throws(
+        () =>
+          readEphemeralPlatformSetupEvidence({
+            mode: "simulated-hardware-sale-flow",
+            runId: "RUN-180",
+            machineCode: "VEM-TESTBED-WINVM-01",
+            platformTarget: "vem-vps",
+            ephemeralPlatformEvidence: evidencePath,
+          }),
+        /shared platform target/,
+      );
+    } finally {
+      rmSync(temp, { recursive: true, force: true });
+    }
+  });
+
+  it("classifies sale-flow target mismatches before mutation is allowed", () => {
+    assert.deepEqual(
+      assertSimulatedSaleFlowPreMutationTarget({
+        target: {
+          machineCode: "VEM-TESTBED-WINVM-01",
+          platformTarget: "ephemeral-run-180",
+        },
+        daemonMachineCode: "VEM-TESTBED-WINVM-01",
+        daemonApiBaseUrl: "http://127.0.0.1:26849/api",
+        daemonMqttUrl: "mqtt://127.0.0.1:1883",
+        hardwareMode: "simulated",
+        platformSetup: {
+          target: "ephemeral-run-180",
+          apiBaseUrl: "http://127.0.0.1:26849/api",
+          mqttUrl: "mqtt://127.0.0.1:1883",
+          evidenceStatus: "prepared",
+        },
+      }),
+      { ok: true, code: "pre_mutation_target_verified" },
+    );
+
+    for (const [overrides, code] of [
+      [
+        { daemonMachineCode: "VEM-TESTBED-OLD-01" },
+        "daemon_machine_identity_mismatch",
+      ],
+      [
+        { daemonApiBaseUrl: "http://127.0.0.1:9999/api" },
+        "ephemeral_platform_target_mismatch",
+      ],
+      [{ hardwareMode: "production" }, "simulated_hardware_mode_required"],
+      [
+        {
+          platformSetup: {
+            target: "vem-vps",
+            apiBaseUrl: "http://118.25.104.160:26849/api",
+            mqttUrl: "mqtt://118.25.104.160:1883",
+            evidenceStatus: "prepared",
+          },
+        },
+        "shared_platform_target_rejected",
+      ],
+      [
+        {
+          platformSetup: {
+            target: "ephemeral-run-180",
+            apiBaseUrl: "http://127.0.0.1:26849/api",
+            mqttUrl: "mqtt://127.0.0.1:1883",
+            evidenceStatus: "missing",
+          },
+        },
+        "ephemeral_platform_evidence_required",
+      ],
+    ]) {
+      const result = assertSimulatedSaleFlowPreMutationTarget({
+        target: {
+          machineCode: "VEM-TESTBED-WINVM-01",
+          platformTarget: "ephemeral-run-180",
+        },
+        daemonMachineCode: "VEM-TESTBED-WINVM-01",
+        daemonApiBaseUrl: "http://127.0.0.1:26849/api",
+        daemonMqttUrl: "mqtt://127.0.0.1:1883",
+        hardwareMode: "simulated",
+        platformSetup: {
+          target: "ephemeral-run-180",
+          apiBaseUrl: "http://127.0.0.1:26849/api",
+          mqttUrl: "mqtt://127.0.0.1:1883",
+          evidenceStatus: "prepared",
+        },
+        ...overrides,
+      });
+
+      assert.equal(result.ok, false);
+      assert.equal(result.code, code);
+    }
+  });
+
   it("summarizes daemon ready evidence for missing ready, token, and endpoint failures", () => {
     assert.deepEqual(buildReadyFileEvidence(null), {
       exists: false,
@@ -1026,6 +1654,10 @@ describe("win10-vem-e2e reset planning", () => {
     assert.match(script, /daemonRuntime = \[ordered\]@{/);
     assert.match(script, /healthz = \$daemonRuntime.healthz/);
     assert.match(script, /readyz = \$daemonRuntime.readyz/);
+    assert.match(
+      script,
+      /kioskDesktopEscape = \$factsSubset.kioskDesktopEscape/,
+    );
     assert.match(script, /Classify-RuntimeAcceptanceReport/);
     assert.match(script, /simulatedHardwareReady = \[ordered\]@{/);
     assert.match(script, /sellReady = \[ordered\]@{/);
@@ -1035,6 +1667,1608 @@ describe("win10-vem-e2e reset planning", () => {
       /Set-Content -LiteralPath \$runtimeAcceptanceReportPath/,
     );
     assert.match(script, /runtimeAcceptanceReport = \$runtimeAcceptanceReport/);
+  });
+
+  it("builds a simulated hardware sale-flow workflow with distinct readiness evidence", () => {
+    const temp = mkdtempSync(join(tmpdir(), "vem-sale-flow-evidence-"));
+    let script;
+    try {
+      const evidencePath = join(temp, "ephemeral-platform.json");
+      writeFileSync(
+        evidencePath,
+        JSON.stringify(ephemeralPlatformEvidence()),
+        "utf8",
+      );
+
+      assert.throws(
+        () =>
+          buildRemotePowerShellScript({
+            mode: "simulated-hardware-sale-flow",
+            platformTarget: "ephemeral-run-180",
+            machineCode: "VEM-TESTBED-WINVM-01",
+            runId: "RUN-180",
+          }),
+        /requires --ephemeral-platform-evidence/,
+      );
+
+      assert.throws(
+        () =>
+          buildRemotePowerShellScript({
+            mode: "simulated-hardware-sale-flow",
+            platformTarget: "vem-vps",
+            machineCode: "VEM-TESTBED-WINVM-01",
+            runId: "RUN-180",
+            ephemeralPlatformEvidence: evidencePath,
+          }),
+        /shared platform target/,
+      );
+
+      script = buildRemotePowerShellScript({
+        mode: "simulated-hardware-sale-flow",
+        platformTarget: "ephemeral-run-180",
+        machineCode: "VEM-TESTBED-WINVM-01",
+        runId: "RUN-180",
+        ephemeralPlatformEvidence: evidencePath,
+      });
+    } finally {
+      rmSync(temp, { recursive: true, force: true });
+    }
+
+    assert.match(script, /function Invoke-SimulatedHardwareSaleFlow/);
+    assert.match(script, /function Classify-SimulatedHardwareSaleFlowReport/);
+    assert.match(script, /function Assert-SimulatedSaleFlowPreMutationTarget/);
+    assert.match(script, /simulated-hardware-sale-flow\.json/);
+    assert.match(script, /schemaVersion = "simulated-hardware-sale-flow\/v1"/);
+    assert.match(script, /hardwareMode = if \(\$null -ne \$bringUp/);
+    assert.match(script, /\$Facts\.runtimeState\.hardwareMode -ne "simulated"/);
+    assert.match(script, /bringUpState = if \(\$null -ne \$bringUp/);
+    assert.match(
+      script,
+      /\$Facts\.runtimeState\.bringUpState -ne "simulated_hardware_ready"/,
+    );
+    assert.match(
+      script,
+      /Invoke-IpcJson "POST" "\$baseUrl\/v1\/stock\/planogram\/sync"/,
+    );
+    assert.match(
+      script,
+      /Invoke-IpcJson "POST" "\$baseUrl\/v1\/stock\/attestation"/,
+    );
+    assert.match(
+      script,
+      /Invoke-IpcJson "POST" "\$baseUrl\/v1\/intents\/create-order"/,
+    );
+    assert.match(
+      script,
+      /Invoke-IpcJson "POST" "\$baseUrl\/v1\/intents\/mock-payment"/,
+    );
+    assert.match(
+      script,
+      /Invoke-TestbedProvisioningClaim \$provisioningActions/,
+    );
+    assert.match(script, /claim = \[ordered\]@{/);
+    assert.match(script, /profile = \[ordered\]@{/);
+    assert.match(script, /acknowledgmentId =/);
+    assert.match(script, /uploadStatus =/);
+    assert.match(script, /paymentNo =/);
+    assert.match(script, /vendingCommandId =/);
+    assert.match(
+      script,
+      /simulatedHardwareReady = if \(\$diagnostics.Count -eq 0\)/,
+    );
+    assert.match(script, /sellReady = \[ordered\]@{/);
+    assert.match(script, /status = "not_asserted"/);
+    assert.ok(
+      script.indexOf("Invoke-TestbedProvisioningClaim $provisioningActions") <
+        script.indexOf("Invoke-SimulatedHardwareSaleFlow $provisioningActions"),
+    );
+    assert.ok(
+      script.indexOf("Assert-SimulatedSaleFlowPreMutationTarget") <
+        script.indexOf(
+          'Invoke-IpcJson "POST" "$baseUrl/v1/stock/planogram/sync"',
+        ),
+    );
+  });
+
+  it("builds dirty-host factory reset acceptance with staged evidence and verifier output", () => {
+    const script = buildRemotePowerShellScript({
+      mode: "dirty-host-factory-acceptance",
+      runId: "dh-20260704-001",
+      platformTarget: "vem-vps",
+      machineCode: "VEM-TESTBED-WINVM-01",
+      remoteUploadedArtifactRoot:
+        "C:\\Users\\YKDZ\\AppData\\Local\\Temp\\vem-input-artifacts",
+    });
+
+    assert.match(script, /dirty_host_reset_acceptance/);
+    assert.match(script, /clean_base_preparation_acceptance/);
+    assert.match(script, /C:\\ProgramData\\VEM\\evidence\\dh-20260704-001/);
+    assert.match(script, /inventoryBeforeReset = \$inventoryBefore/);
+    assert.match(script, /Copy-FactoryAcceptanceInputs/);
+    assert.match(script, /artifact-backup/);
+    assert.match(script, /vem-input-artifacts/);
+    assert.match(script, /vending-daemon.exe/);
+    assert.match(script, /WebView2Loader\.dll/);
+    assert.match(script, /machineUiSidecarPath/);
+    assert.match(script, /script-bundle/);
+    assert.match(script, /prepare-factory-runtime.ps1/);
+    assert.match(script, /ResetExistingVemState = \$true/);
+    assert.match(script, /UseSecureCredentialEnvironment = \$true/);
+    assert.match(script, /MqttUrl = 'mqtt:\/\/118\.25\.104\.160:1883'/);
+    assert.match(script, /factory-runtime-preparation.json/);
+    assert.match(script, /-WriteStructuredJsonOutput \$true/);
+    assert.match(script, /Convert-FactoryChildStructuredJsonOutput/);
+    assert.match(script, /factory-runtime-verification.json/);
+    assert.match(script, /dirty-host-factory-acceptance.json/);
+    assert.match(script, /Get-DirtyHostFactoryDisplayProof/);
+    assert.match(script, /dirtyHostFactoryDisplayProof/);
+    assert.match(script, /dirtyHostFactoryAcceptanceOk/);
+    assert.match(script, /display_proof_missing/);
+    assert.match(script, /Start-Process -FilePath "powershell.exe"/);
+    assert.match(script, /RedirectStandardError/);
+    assert.match(script, /platformBusinessDataTouched = \$false/);
+    assert.match(script, /distinction = \[ordered\]@{/);
+    assert.doesNotMatch(script, /VEM-WIN10-REAL-01/);
+  });
+
+  it("factory preparation maps simulated hardware to daemon mock adapter", () => {
+    const script = readFileSync(
+      join(process.cwd(), "scripts/windows/prepare-factory-runtime.ps1"),
+      "utf8",
+    );
+
+    assert.match(script, /apiBaseUrl = \$ProvisioningEndpoint/);
+    assert.match(script, /mqttUrl = \$MqttUrl/);
+    assert.match(
+      script,
+      /hardwareAdapter = if \(\$HardwareMode -eq "simulated"\) \{ "mock" \} else \{ "serial" \}/,
+    );
+    assert.match(script, /scannerAdapter = "disabled"/);
+    assert.match(script, /visionEnabled = \$false/);
+    assert.match(script, /kioskMode = \$true/);
+    assert.match(
+      script,
+      /required machine UI sidecar missing next to machine\.exe/,
+    );
+    assert.match(script, /WebView2Loader\.dll/);
+    assert.doesNotMatch(
+      script,
+      /hardwareAdapter = if \(\$HardwareMode -eq "simulated"\) \{ "simulated" \}/,
+    );
+    assert.doesNotMatch(
+      script,
+      /provisioningEndpoint = \$ProvisioningEndpoint\\n\\s+hardwareAdapter/,
+    );
+    assert.doesNotMatch(
+      script,
+      /hardwareModel = \$HardwareModel\\n\\s+topologyIdentity/,
+    );
+  });
+
+  it("factory runtime verifier exposes hardware mode from the factory manifest", () => {
+    const verifier = readFileSync(
+      join(process.cwd(), "scripts/windows/verify-factory-runtime.ps1"),
+      "utf8",
+    );
+
+    assert.match(verifier, /hardwareMode = \$manifest\.hardware\.mode/);
+    assert.match(verifier, /hardwareModel = \$manifest\.hardware\.model/);
+  });
+
+  it("plans VM runtime acceptance as a non-interactive CI-ready artifact workflow", () => {
+    const temp = mkdtempSync(join(tmpdir(), "vem-vm-acceptance-artifacts-"));
+    try {
+      const daemonArtifact = join(temp, "vending-daemon.exe");
+      const machineUiArtifact = join(temp, "machine.exe");
+      const machineUiSidecar = join(temp, "WebView2Loader.dll");
+      writeFileSync(daemonArtifact, "daemon acceptance artifact", "utf8");
+      writeFileSync(
+        machineUiArtifact,
+        "machine ui acceptance artifact",
+        "utf8",
+      );
+      writeFileSync(machineUiSidecar, "webview2 loader acceptance", "utf8");
+
+      const result = spawnSync(
+        process.execPath,
+        [
+          "scripts/testbed/win10-vem-e2e.mjs",
+          "--mode",
+          "vm-runtime-acceptance",
+          "--run-id",
+          "RUN-181",
+          "--platform-target",
+          "ephemeral-run-181",
+          "--ephemeral-database-url",
+          "postgres://vem_test:pass@127.0.0.1:55432/vem_acceptance_run_181",
+          "--ephemeral-api-base-url",
+          "http://127.0.0.1:26849/api",
+          "--ephemeral-mqtt-url",
+          "mqtt://127.0.0.1:1883",
+          "--daemon-artifact",
+          daemonArtifact,
+          "--machine-ui-artifact",
+          machineUiArtifact,
+          "--dry-run",
+        ],
+        { cwd: process.cwd(), encoding: "utf8" },
+      );
+
+      assert.equal(result.status, 0, result.stderr);
+      const plan = JSON.parse(result.stdout);
+      assert.equal(plan.schemaVersion, "vm-runtime-acceptance-plan/v1");
+      assert.equal(plan.mode, "vm-runtime-acceptance");
+      assert.equal(plan.runId, "RUN-181");
+      assert.equal(plan.target.machineCode, "VEM-TESTBED-WINVM-RUN-181");
+      assert.equal(plan.target.platformTarget, "ephemeral-run-181");
+      assert.equal(
+        plan.evidenceRoot,
+        "artifacts/vm-runtime-acceptance/RUN-181",
+      );
+      assert.equal(
+        plan.artifacts.report,
+        "artifacts/vm-runtime-acceptance/RUN-181/vm-runtime-acceptance-report.json",
+      );
+      assert.equal(
+        plan.artifacts.ephemeralPlatformEvidence,
+        "artifacts/vm-runtime-acceptance/RUN-181/ephemeral-platform.json",
+      );
+      assert.deepEqual(
+        plan.steps.map((step) => step.name),
+        [
+          "dirty-host factory reset acceptance",
+          "ephemeral platform setup",
+          "runtime acceptance",
+          "simulated hardware sale flow",
+        ],
+      );
+      assert.equal(plan.steps[0].mode, "dirty-host-factory-acceptance");
+      assert.equal(plan.steps[1].command[0], "pnpm");
+      assert.deepEqual(plan.steps[1].cwd, "apps/service-api");
+      assert.ok(
+        plan.steps[1].command.includes("--allow-ephemeral-target"),
+        "ephemeral setup must carry explicit safety flags",
+      );
+      assert.ok(
+        plan.steps[1].command.includes("--allow-mock-payment"),
+        "ephemeral setup must carry explicit mock-payment acknowledgement",
+      );
+      assert.equal(plan.steps[3].mode, "simulated-hardware-sale-flow");
+      assert.equal(
+        plan.steps[3].ephemeralPlatformEvidence,
+        plan.artifacts.ephemeralPlatformEvidence,
+      );
+      assert.equal(plan.readinessLevels.sellReady, "not_asserted");
+      assert.equal(plan.ci.requiredSecrets.includes("SSHPASS"), true);
+      assert.match(plan.artifacts.daemonSha256, /^[a-f0-9]{64}$/);
+      assert.match(plan.artifacts.machineUiSha256, /^[a-f0-9]{64}$/);
+    } finally {
+      rmSync(temp, { recursive: true, force: true });
+    }
+  });
+
+  it("plans clean-base factory acceptance with explicit clean-source evidence and destructive gates", () => {
+    const plan = buildCleanBaseFactoryAcceptancePlan({
+      runId: "RUN-182",
+      cleanBaseSource: "unraid://192.168.2.23/vms/win10-vem-clean-base",
+      cleanBaseSnapshot: "vem-clean-base-before-factory-prep",
+      daemonArtifactSha256: "a".repeat(64),
+      machineUiArtifactSha256: "b".repeat(64),
+    });
+
+    assert.equal(plan.schemaVersion, "clean-base-factory-acceptance-plan/v1");
+    assert.equal(plan.mode, "clean-base-factory-acceptance");
+    assert.equal(plan.runId, "RUN-182");
+    assert.equal(
+      plan.cleanBase.source,
+      "unraid://192.168.2.23/vms/win10-vem-clean-base",
+    );
+    assert.equal(plan.cleanBase.snapshot, "vem-clean-base-before-factory-prep");
+    assert.equal(plan.cleanBase.mustNotReuseDirtyHost, true);
+    assert.deepEqual(plan.cleanBase.requiredBaseline, {
+      displayOrientationResolution: {
+        orientation: "portrait",
+        widthPx: 1080,
+        heightPx: 1920,
+      },
+      sshReachability: "required",
+      tailscaleDefaultAbsent: "required",
+      sleepDisabled: "required",
+      testsigningOff: "required",
+      autologonConfigured: "required",
+      startupLauncherMode: ["shell_launcher", "scheduled_task"],
+      daemonService: "VemVendingDaemon",
+      uiLauncherTask: "VEMMachineUI",
+      runtimeResetGateClean: "required",
+      simulatedHardwareMode: "required",
+      startupReachesBringUpOrSalesEligible: "required",
+    });
+    assert.ok(
+      plan.preflightAbsenceProbes.some(
+        (probe) =>
+          probe.code === "preflightNoMachineIdentity" &&
+          probe.paths.includes(
+            "C:\\ProgramData\\VEM\\vending-daemon\\machine-config.json",
+          ),
+      ),
+    );
+    assert.ok(
+      plan.preflightAbsenceProbes.some(
+        (probe) =>
+          probe.code === "preflightNoDaemonState" &&
+          probe.paths.includes("C:\\VEM\\bringup") &&
+          probe.paths.includes("C:\\ProgramData\\VEM\\bringup") &&
+          probe.paths.includes("C:\\ProgramData\\VEM\\vending-daemon") &&
+          probe.services.includes("VemVendingDaemon") &&
+          probe.tasks.includes("VEMMachineUI") &&
+          probe.tasks.includes("VEM\\StartVisionServer"),
+      ),
+    );
+    assert.ok(
+      plan.steps
+        .find((step) => step.name === "prepare factory runtime")
+        .requires.includes("--allow-clean-base-prepare"),
+    );
+    assert.equal(plan.report, plan.artifacts.cleanBaseFactoryAcceptance);
+    assert.equal(
+      plan.reportContract.schemaVersion,
+      "clean-base-factory-acceptance-report/v1",
+    );
+    assert.equal(plan.reportContract.kind, "clean-base-factory-acceptance");
+    assert.ok(
+      plan.reportContract.requiredAssertions.includes(
+        "startupReachesBringUpOrSalesEligible",
+      ),
+    );
+    assert.equal(plan.readinessLevels.dirtyHostResetAcceptance, "not_asserted");
+    assert.equal(
+      plan.readinessLevels.cleanBasePreparationAcceptance,
+      "asserted_by_clean_base_step",
+    );
+    assert.equal(plan.readinessLevels.runtimeReady, "not_asserted");
+    assert.equal(plan.readinessLevels.simulatedHardwareReady, "not_asserted");
+    assert.equal(plan.readinessLevels.sellReady, "not_asserted");
+  });
+
+  it("declares the Factory Windows Baseline policy and evidence contract", () => {
+    const plan = buildCleanBaseFactoryAcceptancePlan({
+      runId: "RUN-184",
+      cleanBaseSource: "unraid://192.168.2.23/vms/win10-vem-clean-base",
+      cleanBaseSnapshot: "vem-clean-base-before-factory-prep",
+      daemonArtifactSha256: "a".repeat(64),
+      machineUiArtifactSha256: "b".repeat(64),
+    });
+
+    assert.equal(
+      plan.cleanBase.factoryWindowsBaselinePolicy.schemaVersion,
+      "factory-windows-baseline-policy/v1",
+    );
+    assert.equal(
+      plan.cleanBase.factoryWindowsBaselinePolicy.model,
+      "allowlist",
+    );
+    assert.deepEqual(
+      plan.cleanBase.factoryWindowsBaselinePolicy.requiredCapabilities,
+      [
+        "defender_enabled",
+        "firewall_enabled",
+        "no_default_product_remote_ingress",
+        "vem_runtime_defender_exclusions",
+        "openssh_server_for_maintenance_users",
+        "tailscale_not_installed_by_default",
+        "kiosk_account_denied_remote_access",
+        "windows_event_logging",
+        "powershell_management",
+        "networking_certificates_time_sync",
+        "webview2_runtime_support",
+        "display_touch_usb_serial_drivers",
+        "fonts_input_methods",
+      ],
+    );
+    assert.deepEqual(
+      plan.cleanBase.factoryWindowsBaselinePolicy.disabledRuntimeInterference,
+      [
+        "windows_auto_update_installation",
+        "windows_auto_update_auto_restart",
+        "sleep",
+        "hibernation",
+        "testsigning",
+        "store_automatic_app_updates",
+        "consumer_experience_autostart",
+        "consumer_experience_foreground_popups",
+        "consumer_experience_kiosk_foreground_takeover_best_effort",
+      ],
+    );
+    assert.deepEqual(
+      plan.cleanBase.factoryWindowsBaselinePolicy.evidenceFields,
+      {
+        windowsUpdatePolicy: "assertions.windowsUpdatePolicy",
+        powerPolicy: "assertions.powerPolicy",
+        bootPolicy: "assertions.bootPolicy",
+        securityPosture: "assertions.securityPosture",
+        remoteMaintenanceCapability:
+          "assertions.factoryRemoteMaintenanceCapability",
+        consumerExperienceInterference:
+          "assertions.consumerExperienceInterference",
+      },
+    );
+    assert.deepEqual(
+      plan.reportContract.requiredAssertions.filter((name) =>
+        [
+          "windowsUpdatePolicy",
+          "powerPolicy",
+          "bootPolicy",
+          "securityPosture",
+          "factoryRemoteMaintenanceCapability",
+          "consumerExperienceInterference",
+        ].includes(name),
+      ),
+      [
+        "windowsUpdatePolicy",
+        "powerPolicy",
+        "bootPolicy",
+        "securityPosture",
+        "factoryRemoteMaintenanceCapability",
+        "consumerExperienceInterference",
+      ],
+    );
+  });
+
+  it("exposes clean-base factory acceptance as a dry-run CLI plan before touching a VM", () => {
+    const result = spawnSync(
+      process.execPath,
+      [
+        "scripts/testbed/win10-vem-e2e.mjs",
+        "--mode",
+        "clean-base-factory-acceptance",
+        "--run-id",
+        "RUN-182",
+        "--clean-base-source",
+        "unraid://192.168.2.23/vms/win10-vem-clean-base",
+        "--clean-base-snapshot",
+        "vem-clean-base-before-factory-prep",
+        "--daemon-artifact-sha256",
+        "a".repeat(64),
+        "--machine-ui-artifact-sha256",
+        "b".repeat(64),
+        "--dry-run",
+      ],
+      { cwd: process.cwd(), encoding: "utf8" },
+    );
+
+    assert.equal(result.status, 0, result.stderr);
+    const plan = JSON.parse(result.stdout);
+    assert.equal(plan.mode, "clean-base-factory-acceptance");
+    assert.equal(plan.runId, "RUN-182");
+    assert.equal(plan.cleanBase.mustNotReuseDirtyHost, true);
+    assert.equal(plan.artifacts.daemonSha256, "a".repeat(64));
+    assert.equal(plan.artifacts.machineUiSha256, "b".repeat(64));
+  });
+
+  it("writes the clean-base factory acceptance dry-run plan when --out is provided", () => {
+    const temp = mkdtempSync(join(tmpdir(), "vem-clean-base-dry-run-"));
+    try {
+      const outputPath = join(temp, "clean-base-dry-run.json");
+      const result = spawnSync(
+        process.execPath,
+        [
+          "scripts/testbed/win10-vem-e2e.mjs",
+          "--mode",
+          "clean-base-factory-acceptance",
+          "--run-id",
+          "RUN-190",
+          "--clean-base-source",
+          "unraid://192.168.2.23/vms/win10-vem-clean-base",
+          "--clean-base-snapshot",
+          "vem-clean-base-before-factory-prep",
+          "--daemon-artifact-sha256",
+          "a".repeat(64),
+          "--machine-ui-artifact-sha256",
+          "b".repeat(64),
+          "--dry-run",
+          "--out",
+          outputPath,
+        ],
+        { cwd: process.cwd(), encoding: "utf8" },
+      );
+
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(existsSync(outputPath), true);
+      const plan = JSON.parse(readFileSync(outputPath, "utf8"));
+      assert.equal(plan.schemaVersion, "clean-base-factory-acceptance-plan/v1");
+      assert.equal(plan.runId, "RUN-190");
+      assert.equal(JSON.parse(result.stdout).runId, "RUN-190");
+    } finally {
+      rmSync(temp, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses live clean-base preparation without the explicit destructive allow flag", () => {
+    const result = spawnSync(
+      process.execPath,
+      [
+        "scripts/testbed/win10-vem-e2e.mjs",
+        "--mode",
+        "clean-base-factory-acceptance",
+        "--run-id",
+        "RUN-185",
+        "--clean-base-source",
+        "unraid://192.168.2.23/vms/win10-vem-clean-base",
+        "--clean-base-snapshot",
+        "vem-clean-base-before-factory-prep",
+        "--daemon-artifact-sha256",
+        "a".repeat(64),
+        "--machine-ui-artifact-sha256",
+        "b".repeat(64),
+      ],
+      { cwd: process.cwd(), encoding: "utf8" },
+    );
+
+    assert.equal(result.status, 2);
+    assert.match(
+      result.stderr,
+      /clean-base factory acceptance live mode requires --allow-clean-base-prepare/,
+    );
+    assert.doesNotMatch(result.stderr, /not implemented/);
+  });
+
+  it("rejects existing remote artifacts for live clean-base preparation", () => {
+    const result = spawnSync(
+      process.execPath,
+      [
+        "scripts/testbed/win10-vem-e2e.mjs",
+        "--mode",
+        "clean-base-factory-acceptance",
+        "--run-id",
+        "RUN-185",
+        "--clean-base-source",
+        "unraid://192.168.2.23/vms/win10-vem-clean-base",
+        "--clean-base-snapshot",
+        "vem-clean-base-before-factory-prep",
+        "--use-existing-remote-artifacts",
+        "--allow-clean-base-prepare",
+      ],
+      { cwd: process.cwd(), encoding: "utf8" },
+    );
+
+    assert.equal(result.status, 2);
+    assert.match(
+      result.stderr,
+      /clean-base factory acceptance live mode rejects --use-existing-remote-artifacts/,
+    );
+    assert.doesNotMatch(result.stderr, /requires --daemon-artifact/);
+  });
+
+  it("refuses known production clean-base remotes before live staging", () => {
+    const result = spawnSync(
+      process.execPath,
+      [
+        "scripts/testbed/win10-vem-e2e.mjs",
+        "--mode",
+        "clean-base-factory-acceptance",
+        "--run-id",
+        "RUN-185",
+        "--clean-base-source",
+        "unraid://192.168.2.23/vms/win10-vem-clean-base",
+        "--clean-base-snapshot",
+        "vem-clean-base-before-factory-prep",
+        "--daemon-artifact-sha256",
+        "a".repeat(64),
+        "--machine-ui-artifact-sha256",
+        "b".repeat(64),
+        "--remote",
+        "vem",
+        "--allow-clean-base-prepare",
+      ],
+      { cwd: process.cwd(), encoding: "utf8" },
+    );
+
+    assert.equal(result.status, 2);
+    assert.match(
+      result.stderr,
+      /refuses production machine remote before staging/,
+    );
+    assert.doesNotMatch(result.stderr, /requires --daemon-artifact/);
+  });
+
+  it("builds live clean-base factory orchestration with staged inputs, verifier evidence, and clean-base-only readiness", () => {
+    const script = buildRemotePowerShellScript({
+      mode: "clean-base-factory-acceptance",
+      runId: "RUN-185",
+      cleanBaseSource: "unraid://192.168.2.23/vms/win10-vem-clean-base",
+      cleanBaseSnapshot: "vem-clean-base-before-factory-prep",
+      platformTarget: "vem-vps",
+      machineCode: "VEM-TESTBED-WINVM-01",
+      remoteSupportScriptRoot:
+        "C:\\Users\\YKDZ\\AppData\\Local\\Temp\\vem-clean-base-support",
+      remoteUploadedArtifactRoot:
+        "C:\\Users\\YKDZ\\AppData\\Local\\Temp\\vem-clean-base-support\\input-artifacts",
+      daemonArtifactSha256: "a".repeat(64),
+      machineUiArtifactSha256: "b".repeat(64),
+    });
+
+    assert.match(script, /Invoke-CleanBaseFactoryAcceptance/);
+    assert.match(script, /Assert-CleanBasePreflightAbsence/);
+    assert.match(script, /Copy-FactoryAcceptanceInputs/);
+    assert.match(script, /WebView2Loader\.dll/);
+    assert.match(script, /run scripted clean-base factory runtime preparation/);
+    assert.match(script, /ResetExistingVemState = \$false/);
+    assert.match(script, /run scripted clean-base factory runtime verifier/);
+    assert.match(script, /factory-runtime-preparation.json/);
+    assert.match(script, /factory-runtime-verification.json/);
+    assert.match(script, /clean-base-factory-acceptance.json/);
+    assert.match(
+      script,
+      /schemaVersion = "clean-base-factory-acceptance-report\/v1"/,
+    );
+    assert.match(script, /kind = "clean-base-factory-acceptance"/);
+    assert.match(script, /source = \[ordered\]@{/);
+    assert.match(
+      script,
+      /uri = 'unraid:\/\/192\.168\.2\.23\/vms\/win10-vem-clean-base'/,
+    );
+    assert.match(
+      script,
+      /factoryWindowsBaselinePolicy = \$factoryWindowsBaselinePolicy/,
+    );
+    assert.match(
+      script,
+      /cleanBasePreparationAcceptance = if \(\$passed\) \{ "passed" \} else \{ "failed" \}/,
+    );
+    assert.match(script, /dirtyHostResetAcceptance = "not_asserted"/);
+    assert.match(script, /runtimeReady = "not_asserted"/);
+    assert.match(script, /simulatedHardwareReady = "not_asserted"/);
+    assert.match(script, /sellReady = "not_asserted"/);
+    assert.match(script, /function Test-CleanBaseFactoryAssertionsPassed/);
+    assert.match(
+      script,
+      /\$assertionsPassed = Test-CleanBaseFactoryAssertionsPassed \$assertions/,
+    );
+    assert.match(
+      script,
+      /\$passed = \$diagnostics\.Count -eq 0 -and \$assertionsPassed/,
+    );
+    assert.match(script, /clean_base_assertions_failed/);
+    assert.match(script, /clean_base_preflight_failed/);
+    assert.match(script, /factory_preparation_failed/);
+    assert.match(script, /factory_verifier_failed/);
+  });
+
+  it("generates clean-base preflight probes for retained paths, daemon service, and startup tasks", () => {
+    const script = buildRemotePowerShellScript({
+      mode: "clean-base-factory-acceptance",
+      runId: "RUN-185",
+      cleanBaseSource: "unraid://192.168.2.23/vms/win10-vem-clean-base",
+      platformTarget: "vem-vps",
+      machineCode: "VEM-TESTBED-WINVM-01",
+      daemonArtifactSha256: "a".repeat(64),
+      machineUiArtifactSha256: "b".repeat(64),
+    });
+
+    assert.equal(script.includes("C:\\VEM\\bringup"), true);
+    assert.equal(script.includes("C:\\ProgramData\\VEM\\bringup"), true);
+    assert.equal(script.includes("C:\\ProgramData\\VEM\\provisioning"), true);
+    assert.equal(script.includes("C:\\ProgramData\\VEM\\secrets"), true);
+    assert.equal(script.includes("C:\\ProgramData\\VEM\\overrides"), true);
+    assert.equal(script.includes("C:\\ProgramData\\VEM\\evidence"), true);
+    assert.equal(script.includes("C:\\ProgramData\\VEM\\vending-daemon"), true);
+    assert.match(script, /VemVendingDaemon/);
+    assert.match(script, /VEMMachineUI/);
+    assert.equal(script.includes("VEM\\StartVisionServer"), true);
+    assert.match(script, /observedServices/);
+    assert.match(script, /observedTasks/);
+  });
+
+  it("uses encoded read-only SSH probes and runs retained-state preflight before staging", () => {
+    const identityCommand = buildCleanBaseRemoteIdentityProbeCommand();
+    const preflightCommand = buildCleanBaseRemotePreflightAbsenceProbeCommand();
+    const decode = (command) =>
+      Buffer.from(command.split("-EncodedCommand ")[1], "base64").toString(
+        "utf16le",
+      );
+
+    assert.match(identityCommand, /-EncodedCommand [A-Za-z0-9+/=]+$/);
+    assert.match(preflightCommand, /-EncodedCommand [A-Za-z0-9+/=]+$/);
+    assert.doesNotMatch(identityCommand, /[|{}]/);
+    assert.doesNotMatch(preflightCommand, /[|{}]/);
+    assert.match(decode(identityCommand), /tailscale status --json/);
+    assert.match(decode(preflightCommand), /Test-Path -LiteralPath/);
+    assert.match(decode(preflightCommand), /Get-Service -Name \$serviceName/);
+    assert.match(decode(preflightCommand), /Get-ScheduledTask -TaskName/);
+
+    const source = readFileSync("scripts/testbed/win10-vem-e2e.mjs", "utf8");
+    const preflightIndex = source.indexOf(
+      "assertCleanBaseRemotePreflightAbsenceProbe(options, sshCommand)",
+    );
+    assert.ok(preflightIndex > 0);
+    assert.ok(preflightIndex < source.indexOf("writeFileSync(localScriptPath"));
+    assert.ok(preflightIndex < source.indexOf("createSupportRootCommand"));
+    assert.ok(preflightIndex < source.indexOf("uploadArtifact"));
+  });
+
+  it("rejects dirty or production clean-base sources and malformed artifact hashes", () => {
+    const baseOptions = {
+      runId: "RUN-182",
+      cleanBaseSource: "unraid://192.168.2.23/vms/win10-vem-clean-base",
+      daemonArtifactSha256: "a".repeat(64),
+      machineUiArtifactSha256: "b".repeat(64),
+    };
+
+    assert.throws(
+      () =>
+        buildCleanBaseFactoryAcceptancePlan({
+          ...baseOptions,
+          cleanBaseSource: "unraid://192.168.2.23/vms/win10-vem-e2e",
+        }),
+      /known dirty-host source/,
+    );
+    assert.throws(
+      () =>
+        buildCleanBaseFactoryAcceptancePlan({
+          ...baseOptions,
+          cleanBaseSource: "ssh://Admin@100.66.207.119/VEM-WIN10-REAL-01",
+        }),
+      /production machine source/,
+    );
+    assert.throws(
+      () =>
+        buildCleanBaseFactoryAcceptancePlan({
+          ...baseOptions,
+          cleanBaseSource: "vem",
+        }),
+      /production machine source/,
+    );
+    assert.throws(
+      () =>
+        buildCleanBaseFactoryAcceptancePlan({
+          ...baseOptions,
+          daemonArtifactSha256: "A".repeat(64),
+        }),
+      /requires lowercase SHA-256 hash/,
+    );
+  });
+
+  it("rejects dirty-source clean-base evidence through the validator CLI", () => {
+    const temp = mkdtempSync(join(tmpdir(), "vem-clean-base-evidence-"));
+    try {
+      const evidencePath = join(temp, "clean-base-factory-acceptance.json");
+      writeFileSync(
+        evidencePath,
+        JSON.stringify(
+          cleanBaseFactoryAcceptanceEvidence({
+            source: {
+              kind: "clean-windows-base",
+              uri: "unraid://192.168.2.23/vms/win10-vem-e2e",
+              identity: {
+                tailscaleIp: "100.68.189.11",
+                tailscaleName: "win10-vem-e2e",
+                hostName: "DESKTOP-2STVS5B",
+              },
+            },
+          }),
+        ),
+        "utf8",
+      );
+
+      const result = spawnSync(
+        process.execPath,
+        [
+          "scripts/testbed/win10-vem-e2e.mjs",
+          "--mode",
+          "validate-clean-base-evidence",
+          "--clean-base-evidence",
+          evidencePath,
+        ],
+        { cwd: process.cwd(), encoding: "utf8" },
+      );
+
+      assert.equal(result.status, 1);
+      const validation = JSON.parse(result.stdout);
+      assert.equal(validation.status, "failed");
+      assert.match(validation.message, /known dirty-host source/);
+    } finally {
+      rmSync(temp, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects clean-base evidence when baseline posture fields overclaim", () => {
+    const validation = validateCleanBaseFactoryAcceptanceEvidence(
+      cleanBaseFactoryAcceptanceEvidence({
+        assertions: {
+          ...cleanBaseFactoryAcceptanceEvidence().assertions,
+          windowsUpdatePolicy: {
+            status: "passed",
+            automaticUpdateInstallation: "disabled",
+            automaticRestart: "enabled_or_unmanaged",
+          },
+        },
+      }),
+    );
+
+    assert.equal(validation.status, "failed");
+    assert.match(
+      validation.message,
+      /automatic installation and automatic restart/,
+    );
+  });
+
+  it("rejects clean-base evidence when Factory Windows Baseline policy contract fields are incomplete", () => {
+    const evidence = cleanBaseFactoryAcceptanceEvidence({
+      factoryWindowsBaselinePolicy: {
+        ...cleanBaseFactoryAcceptanceEvidence().factoryWindowsBaselinePolicy,
+        requiredCapabilities: ["defender_enabled"],
+      },
+    });
+
+    const validation = validateCleanBaseFactoryAcceptanceEvidence(evidence);
+
+    assert.equal(validation.status, "failed");
+    assert.match(validation.message, /requiredCapabilities mismatch/);
+  });
+
+  it("rejects clean-base evidence that overclaims consumer foreground takeover blocking", () => {
+    const evidence = cleanBaseFactoryAcceptanceEvidence({
+      assertions: {
+        ...cleanBaseFactoryAcceptanceEvidence().assertions,
+        consumerExperienceInterference: {
+          status: "passed",
+          componentAutostart: "disabled",
+          foregroundPopups: "disabled",
+          storeAutomaticAppUpdates: "disabled",
+          kioskForegroundTakeover: "blocked",
+        },
+      },
+    });
+
+    const validation = validateCleanBaseFactoryAcceptanceEvidence(evidence);
+
+    assert.equal(validation.status, "failed");
+    assert.match(validation.message, /best-effort policy evidence/);
+  });
+
+  it("rejects clean-base evidence when any required assertion failed", () => {
+    const validation = validateCleanBaseFactoryAcceptanceEvidence(
+      cleanBaseFactoryAcceptanceEvidence({
+        assertions: {
+          ...cleanBaseFactoryAcceptanceEvidence().assertions,
+          startupReachesBringUpOrSalesEligible: {
+            status: "failed",
+            state: "not_started",
+          },
+        },
+      }),
+    );
+
+    assert.equal(validation.status, "failed");
+    assert.match(validation.message, /required assertions are not all passed/);
+    assert.deepEqual(validation.detail, {
+      failedAssertions: ["startupReachesBringUpOrSalesEligible"],
+    });
+  });
+
+  it("rejects clean-base evidence that overclaims runtime or simulated-hardware readiness", () => {
+    for (const readinessName of ["runtimeReady", "simulatedHardwareReady"]) {
+      const validation = validateCleanBaseFactoryAcceptanceEvidence(
+        cleanBaseFactoryAcceptanceEvidence({
+          readiness: {
+            ...cleanBaseFactoryAcceptanceEvidence().readiness,
+            [readinessName]: "passed",
+          },
+        }),
+      );
+
+      assert.equal(validation.status, "failed");
+      assert.match(
+        validation.message,
+        new RegExp(`must not assert ${readinessName}`),
+      );
+    }
+  });
+
+  it("builds a sanitized Factory Image Delivery Unit report from completed clean-base evidence", () => {
+    const acceptancePath =
+      "artifacts/clean-base-factory-acceptance/RUN-186/clean-base-factory-acceptance.json";
+    const report = buildFactoryImageDeliveryUnitReport({
+      cleanBaseAcceptance: cleanBaseFactoryAcceptanceEvidence({
+        runId: "RUN-186",
+        source: {
+          kind: "clean-windows-base",
+          uri: "unraid://192.168.2.23/vms/win10-vem-clean-base",
+          snapshot: "vem-clean-base-before-factory-prep",
+          identity: {
+            tailscaleName: "win10-vem-clean-base",
+            hostName: "WIN10-VEM-CLEAN",
+          },
+        },
+        artifacts: {
+          daemonSha256: "a".repeat(64),
+          machineUiSha256: "b".repeat(64),
+          source: "uploaded_local_artifacts",
+          webView2Sidecar:
+            "C:\\Users\\factory\\AppData\\Local\\Temp\\WebView2Loader.dll",
+        },
+        diagnostics: [
+          {
+            code: "note",
+            message:
+              "claimCode=CLAIM-SECRET token=ipc-token password=plain secret=raw",
+          },
+        ],
+        evidence: {
+          preparationOutput:
+            "C:\\ProgramData\\VEM\\evidence\\clean-base-factory-acceptance\\RUN-186\\factory-runtime-preparation.json",
+          verificationAction:
+            "C:\\ProgramData\\VEM\\evidence\\clean-base-factory-acceptance\\RUN-186\\factory-runtime-verification-action.json",
+          verifierEvidence:
+            "C:\\ProgramData\\VEM\\evidence\\clean-base-factory-acceptance\\RUN-186\\factory-runtime-verification.json",
+          factoryRuntimeVerification: {
+            ok: true,
+            manifestPath:
+              "C:\\ProgramData\\VEM\\factory\\factory-runtime-manifest.json",
+            failures: [],
+            checks: {
+              manifest: {
+                schemaVersion: "vem-factory-runtime-manifest/v1",
+                hardwareMode: "simulated",
+                hardwareModel: "win10-clean-base",
+                topologyIdentity: "clean-base-factory-runtime",
+                topologyVersion: "clean-base-v1",
+              },
+            },
+          },
+          actions: [
+            {
+              name: "run scripted clean-base factory runtime preparation",
+              status: "succeeded",
+              outputPath:
+                "C:\\ProgramData\\VEM\\evidence\\clean-base-factory-acceptance\\RUN-186\\factory-runtime-preparation.json",
+            },
+          ],
+        },
+      }),
+      cleanBaseAcceptancePath: acceptancePath,
+    });
+
+    assert.equal(report.schemaVersion, "factory-image-delivery-unit-report/v1");
+    assert.equal(report.kind, "factory-image-delivery-unit");
+    assert.equal(report.runId, "RUN-186");
+    assert.deepEqual(report.imageSource, {
+      kind: "clean-windows-base",
+      uri: "unraid://192.168.2.23/vms/win10-vem-clean-base",
+      snapshot: "vem-clean-base-before-factory-prep",
+      identity: {
+        tailscaleName: "win10-vem-clean-base",
+        hostName: "WIN10-VEM-CLEAN",
+      },
+    });
+    assert.equal(
+      report.declaredBuildInputs.factoryManifest.path,
+      "C:\\ProgramData\\VEM\\factory\\factory-runtime-manifest.json",
+    );
+    assert.equal(report.artifacts.daemonSha256, "a".repeat(64));
+    assert.equal(report.artifacts.machineUiSha256, "b".repeat(64));
+    assert.equal(report.preparationLogs.status, "indexed");
+    assert.equal(
+      report.verifierEvidence.factoryRuntimeVerification.path,
+      "C:\\ProgramData\\VEM\\evidence\\clean-base-factory-acceptance\\RUN-186\\factory-runtime-verification.json",
+    );
+    assert.equal(
+      report.cleanBaseAcceptanceReport.path,
+      "artifacts/clean-base-factory-acceptance/RUN-186/clean-base-factory-acceptance.json",
+    );
+    assert.equal(report.evidenceReview.screenshots.status, "missing");
+    assert.equal(report.evidenceReview.sessions.status, "missing");
+    assert.deepEqual(report.readiness, {
+      cleanBasePreparationAcceptance: {
+        status: "passed",
+        asserted: true,
+      },
+      dirtyHostResetAcceptance: {
+        status: "not_asserted",
+        asserted: false,
+      },
+      runtimeReady: {
+        status: "not_asserted",
+        asserted: false,
+      },
+      simulatedHardwareReady: {
+        status: "not_asserted",
+        asserted: false,
+      },
+      sellReady: {
+        status: "not_asserted",
+        asserted: false,
+      },
+    });
+
+    const serialized = JSON.stringify(report);
+    assert.doesNotMatch(serialized, /CLAIM-SECRET/);
+    assert.doesNotMatch(serialized, /ipc-token/);
+    assert.doesNotMatch(serialized, /password=plain/);
+    assert.doesNotMatch(serialized, /secret=raw/);
+    assert.doesNotMatch(serialized, /VEM-WIN10-REAL-01|100\.66\.207\.119/);
+    assert.match(serialized, /\[REDACTED\]/);
+  });
+
+  it("rejects Factory Image Delivery Unit reports without completed prep evidence", () => {
+    for (const [name, evidence] of [
+      [
+        "missing preparation output",
+        {
+          ...cleanBaseFactoryAcceptanceEvidence().evidence,
+          preparationOutput: null,
+        },
+      ],
+      [
+        "missing verifier evidence",
+        {
+          ...cleanBaseFactoryAcceptanceEvidence().evidence,
+          verifierEvidence: "",
+        },
+      ],
+      [
+        "failed verifier",
+        {
+          ...cleanBaseFactoryAcceptanceEvidence().evidence,
+          factoryRuntimeVerification: {
+            ...cleanBaseFactoryAcceptanceEvidence().evidence
+              .factoryRuntimeVerification,
+            ok: false,
+          },
+        },
+      ],
+      [
+        "missing manifest summary",
+        {
+          ...cleanBaseFactoryAcceptanceEvidence().evidence,
+          factoryRuntimeVerification: {
+            ...cleanBaseFactoryAcceptanceEvidence().evidence
+              .factoryRuntimeVerification,
+            checks: {},
+          },
+        },
+      ],
+    ]) {
+      assert.throws(
+        () =>
+          buildFactoryImageDeliveryUnitReport({
+            cleanBaseAcceptance: cleanBaseFactoryAcceptanceEvidence({
+              evidence,
+            }),
+            cleanBaseAcceptancePath:
+              "artifacts/clean-base-factory-acceptance/RUN-186/clean-base-factory-acceptance.json",
+          }),
+        /completed prep run evidence/,
+        name,
+      );
+    }
+  });
+
+  it("redacts credentialed URIs, nested credential fields, dynamic sensitive keys, and production identity values", () => {
+    const report = buildFactoryImageDeliveryUnitReport({
+      cleanBaseAcceptance: cleanBaseFactoryAcceptanceEvidence({
+        diagnostics: [
+          {
+            code: "sanitize",
+            detail: {
+              credentialedUri:
+                "smb://factory-user:factory-pass@factory-share/images",
+              nested: {
+                wifiPassword: "wifi-secret",
+                networkPassword: "network-secret",
+                ssidPassword: "ssid-secret",
+              },
+              dynamic: {
+                "prodSecret-super-secret": "key-name-leak",
+                factoryTokenName: "dynamic-token-value",
+              },
+              productionMachineSource:
+                "ssh://Admin@100.66.207.119/VEM-WIN10-REAL-01 DESKTOP-2IDRN2K Admin@desktop-2idrn2k",
+            },
+          },
+        ],
+      }),
+      cleanBaseAcceptancePath:
+        "artifacts/clean-base-factory-acceptance/RUN-186/clean-base-factory-acceptance.json",
+    });
+
+    const serialized = JSON.stringify(report);
+    assert.doesNotMatch(serialized, /factory-user|factory-pass/);
+    assert.doesNotMatch(serialized, /wifi-secret|network-secret|ssid-secret/);
+    assert.doesNotMatch(
+      serialized,
+      /super-secret|key-name-leak|dynamic-token-value/,
+    );
+    assert.doesNotMatch(
+      serialized,
+      /VEM-WIN10-REAL-01|100\.66\.207\.119|DESKTOP-2IDRN2K|Admin@desktop-2idrn2k/i,
+    );
+    assert.match(serialized, /\[REDACTED\]/);
+    assert.match(serialized, /\[REDACTED_KEY\]/);
+  });
+
+  it("loads sibling screenshot and session indexes and writes the default Factory Image Delivery Unit path", () => {
+    const temp = mkdtempSync(join(tmpdir(), "vem-factory-delivery-index-"));
+    try {
+      const cleanBaseEvidencePath = join(
+        temp,
+        "clean-base-factory-acceptance.json",
+      );
+      const defaultOutputPath = join(
+        temp,
+        "factory-image-delivery-unit-report.json",
+      );
+      mkdirSync(join(temp, "screenshots"), { recursive: true });
+      mkdirSync(join(temp, "sessions"), { recursive: true });
+      writeFileSync(
+        cleanBaseEvidencePath,
+        JSON.stringify(cleanBaseFactoryAcceptanceEvidence(), null, 2),
+        "utf8",
+      );
+      writeFileSync(
+        join(temp, "screenshots", "index.json"),
+        JSON.stringify(
+          {
+            schemaVersion: "vm-runtime-acceptance-screenshot-index/v1",
+            status: "indexed",
+            missingReason: null,
+            screenshots: [{ path: "screenshots/kiosk.png" }],
+          },
+          null,
+          2,
+        ),
+        "utf8",
+      );
+      writeFileSync(
+        join(temp, "sessions", "index.json"),
+        JSON.stringify(
+          {
+            schemaVersion: "vm-runtime-acceptance-session-index/v1",
+            status: "indexed",
+            missingReason: null,
+            sessions: [{ user: "VEMKiosk", sessionId: 3 }],
+          },
+          null,
+          2,
+        ),
+        "utf8",
+      );
+
+      const result = spawnSync(
+        process.execPath,
+        [
+          "scripts/testbed/win10-vem-e2e.mjs",
+          "--mode",
+          "factory-image-delivery-unit",
+          "--clean-base-evidence",
+          cleanBaseEvidencePath,
+        ],
+        { cwd: process.cwd(), encoding: "utf8" },
+      );
+
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(existsSync(defaultOutputPath), true);
+      assert.match(result.stderr, /factory-image-delivery-unit-report\.json/);
+      const report = JSON.parse(readFileSync(defaultOutputPath, "utf8"));
+      assert.equal(report.reportPath, defaultOutputPath);
+      assert.equal(report.evidenceReview.screenshots.status, "indexed");
+      assert.equal(
+        report.evidenceReview.screenshots.screenshots[0].path,
+        "screenshots/kiosk.png",
+      );
+      assert.equal(report.evidenceReview.sessions.status, "indexed");
+      assert.equal(report.evidenceReview.sessions.sessions[0].user, "VEMKiosk");
+      assert.equal(JSON.parse(result.stdout).reportPath, defaultOutputPath);
+    } finally {
+      rmSync(temp, { recursive: true, force: true });
+    }
+  });
+
+  it("writes a Factory Image Delivery Unit report from the CLI", () => {
+    const temp = mkdtempSync(join(tmpdir(), "vem-factory-delivery-unit-"));
+    try {
+      const cleanBaseEvidencePath = join(
+        temp,
+        "clean-base-factory-acceptance.json",
+      );
+      const outputPath = join(temp, "factory-image-delivery-unit-report.json");
+      writeFileSync(
+        cleanBaseEvidencePath,
+        JSON.stringify(cleanBaseFactoryAcceptanceEvidence(), null, 2),
+        "utf8",
+      );
+
+      const result = spawnSync(
+        process.execPath,
+        [
+          "scripts/testbed/win10-vem-e2e.mjs",
+          "--mode",
+          "factory-image-delivery-unit",
+          "--clean-base-evidence",
+          cleanBaseEvidencePath,
+          "--out",
+          outputPath,
+        ],
+        { cwd: process.cwd(), encoding: "utf8" },
+      );
+
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(result.stderr, /factory-image-delivery-unit-report\.json/);
+      const report = JSON.parse(readFileSync(outputPath, "utf8"));
+      assert.equal(
+        report.schemaVersion,
+        "factory-image-delivery-unit-report/v1",
+      );
+      assert.equal(
+        report.cleanBaseAcceptanceReport.path,
+        cleanBaseEvidencePath,
+      );
+      assert.equal(
+        report.readiness.cleanBasePreparationAcceptance.status,
+        "passed",
+      );
+      assert.equal(report.readiness.sellReady.status, "not_asserted");
+      assert.equal(report.evidenceReview.screenshots.status, "missing");
+      assert.equal(report.evidenceReview.sessions.status, "missing");
+    } finally {
+      rmSync(temp, { recursive: true, force: true });
+    }
+  });
+
+  it("uses one canonical run id and machine identity across VM runtime acceptance substeps", () => {
+    const plan = buildVmRuntimeAcceptancePlan({
+      runId: "run_181.local",
+      platformTarget: "ephemeral-run-181",
+      ephemeralDatabaseUrl:
+        "postgres://vem_test:pass@127.0.0.1:55432/vem_acceptance_run_181",
+      ephemeralApiBaseUrl: "http://127.0.0.1:26849/api",
+      ephemeralMqttUrl: "mqtt://127.0.0.1:1883",
+      machineCode: "VEM-TESTBED-CUSTOM-RUN-181-LOCAL",
+      daemonArtifactSha256: "a".repeat(64),
+      machineUiArtifactSha256: "b".repeat(64),
+    });
+
+    assert.equal(plan.runId, "RUN-181-LOCAL");
+    assert.equal(
+      plan.evidenceRoot,
+      "artifacts/vm-runtime-acceptance/RUN-181-LOCAL",
+    );
+    assert.equal(plan.target.machineCode, "VEM-TESTBED-CUSTOM-RUN-181-LOCAL");
+
+    for (const step of plan.steps) {
+      assert.equal(commandArg(step.command, "--run-id"), "RUN-181-LOCAL");
+    }
+    assert.equal(
+      commandArg(plan.steps[1].command, "--machine-code-prefix"),
+      "VEM-TESTBED-CUSTOM",
+    );
+    assert.equal(
+      commandArg(plan.steps[3].command, "--machine-code"),
+      "VEM-TESTBED-CUSTOM-RUN-181-LOCAL",
+    );
+
+    assert.throws(
+      () =>
+        buildVmRuntimeAcceptancePlan({
+          runId: "run_181.local",
+          platformTarget: "ephemeral-run-181",
+          ephemeralDatabaseUrl:
+            "postgres://vem_test:pass@127.0.0.1:55432/vem_acceptance_run_181",
+          ephemeralApiBaseUrl: "http://127.0.0.1:26849/api",
+          ephemeralMqttUrl: "mqtt://127.0.0.1:1883",
+          machineCode: "VEM-TESTBED-CUSTOM",
+          daemonArtifactSha256: "a".repeat(64),
+          machineUiArtifactSha256: "b".repeat(64),
+        }),
+      /explicit --machine-code must end with canonical run id/,
+    );
+  });
+
+  it("threads optional clean-base factory evidence through VM runtime acceptance without replacing dirty-host acceptance", () => {
+    const plan = buildVmRuntimeAcceptancePlan({
+      runId: "RUN-182",
+      platformTarget: "ephemeral-run-182",
+      ephemeralDatabaseUrl:
+        "postgres://vem_test:pass@127.0.0.1:55432/vem_acceptance_run_182",
+      ephemeralApiBaseUrl: "http://127.0.0.1:26849/api",
+      ephemeralMqttUrl: "mqtt://127.0.0.1:1883",
+      cleanBaseEvidence:
+        "artifacts/clean-base-factory-acceptance/RUN-182/clean-base-factory-acceptance.json",
+      daemonArtifactSha256: "a".repeat(64),
+      machineUiArtifactSha256: "b".repeat(64),
+    });
+
+    assert.equal(
+      plan.artifacts.cleanBaseFactoryAcceptance,
+      "artifacts/clean-base-factory-acceptance/RUN-182/clean-base-factory-acceptance.json",
+    );
+    assert.deepEqual(
+      plan.steps.map((step) => step.name),
+      [
+        "clean-base factory preparation acceptance",
+        "dirty-host factory reset acceptance",
+        "ephemeral platform setup",
+        "runtime acceptance",
+        "simulated hardware sale flow",
+      ],
+    );
+    assert.equal(plan.steps[0].mode, "clean-base-factory-acceptance");
+    assert.equal(
+      commandArg(plan.steps[0].command, "--mode"),
+      "validate-clean-base-evidence",
+    );
+    assert.equal(
+      plan.steps[0].report,
+      plan.artifacts.cleanBaseFactoryAcceptance,
+    );
+    assert.equal(plan.steps[0].blocksOnFailure, false);
+
+    const report = buildVmRuntimeAcceptanceReport({
+      plan,
+      steps: [
+        {
+          ...plan.steps[0],
+          status: "passed",
+          parsed: cleanBaseFactoryAcceptanceEvidence(),
+        },
+        { ...plan.steps[1], status: "passed", parsed: {} },
+      ],
+    });
+
+    assert.equal(
+      report.bringUpStateProgression.cleanBasePreparationAcceptance,
+      "passed",
+    );
+    assert.deepEqual(report.finalReadiness.cleanBasePreparationAcceptance, {
+      status: "passed",
+      asserted: true,
+    });
+    assert.equal(
+      report.finalReadiness.dirtyHostResetAcceptance.status,
+      "passed",
+    );
+  });
+
+  it("does not assert clean-base acceptance from invalid or dry-run evidence", () => {
+    const plan = buildVmRuntimeAcceptancePlan({
+      runId: "RUN-182",
+      platformTarget: "ephemeral-run-182",
+      ephemeralDatabaseUrl:
+        "postgres://vem_test:pass@127.0.0.1:55432/vem_acceptance_run_182",
+      ephemeralApiBaseUrl: "http://127.0.0.1:26849/api",
+      ephemeralMqttUrl: "mqtt://127.0.0.1:1883",
+      cleanBaseEvidence:
+        "artifacts/clean-base-factory-acceptance/RUN-182/clean-base-factory-acceptance.json",
+      daemonArtifactSha256: "a".repeat(64),
+      machineUiArtifactSha256: "b".repeat(64),
+    });
+
+    const report = buildVmRuntimeAcceptanceReport({
+      plan,
+      steps: [
+        {
+          ...plan.steps[0],
+          status: "passed",
+          parsed: {
+            ok: false,
+            dryRun: true,
+            dirtyHostFactoryAcceptance: {
+              result: "passed",
+            },
+          },
+        },
+        { ...plan.steps[1], status: "passed", parsed: {} },
+      ],
+    });
+
+    assert.deepEqual(report.finalReadiness.cleanBasePreparationAcceptance, {
+      status: "failed",
+      asserted: false,
+    });
+    assert.equal(
+      report.bringUpStateProgression.cleanBasePreparationAcceptance,
+      "failed",
+    );
+    assert.ok(
+      report.diagnostics.some(
+        (diagnostic) =>
+          diagnostic.code === "clean-base-factory-acceptance_invalid",
+      ),
+    );
+  });
+
+  it("redacts VM runtime acceptance final reports before writing CI artifacts", () => {
+    const plan = buildVmRuntimeAcceptancePlan({
+      runId: "RUN-181",
+      platformTarget: "ephemeral-run-181",
+      ephemeralDatabaseUrl:
+        "postgres://vem_test:secret-db-pass@127.0.0.1:55432/vem_acceptance_run_181",
+      ephemeralApiBaseUrl: "http://127.0.0.1:26849/api",
+      ephemeralMqttUrl: "mqtt://127.0.0.1:1883",
+      daemonArtifactSha256: "a".repeat(64),
+      machineUiArtifactSha256: "b".repeat(64),
+    });
+    const steps = [
+      {
+        ...plan.steps[0],
+        status: "passed",
+        exitCode: 0,
+        stdoutPath: `${plan.artifacts.logsRoot}/01.stdout.log`,
+        stderrPath: `${plan.artifacts.logsRoot}/01.stderr.log`,
+        parsed: {
+          runtimeAcceptanceFactsSubset: {
+            readyFile: { ipcToken: "active-ipc-token" },
+          },
+        },
+        error: null,
+      },
+      {
+        ...plan.steps[1],
+        status: "passed",
+        exitCode: 0,
+        stdoutPath: `${plan.artifacts.logsRoot}/02.stdout.log`,
+        stderrPath: `${plan.artifacts.logsRoot}/02.stderr.log`,
+        parsed: ephemeralPlatformEvidence({
+          testbedMachine: {
+            ...ephemeralPlatformEvidence().testbedMachine,
+            claim: {
+              ...ephemeralPlatformEvidence().testbedMachine.claim,
+              claimCode: "CLAIM-SECRET-181",
+            },
+          },
+        }),
+        error: null,
+      },
+      {
+        ...plan.steps[2],
+        status: "failed",
+        exitCode: 1,
+        stdoutPath: `${plan.artifacts.logsRoot}/03.stdout.log`,
+        stderrPath: `${plan.artifacts.logsRoot}/03.stderr.log`,
+        parsed: null,
+        error:
+          'postgres://vem_test:secret-db-pass@127.0.0.1:55432/vem_acceptance_run_181 claimCode=CLAIM-SECRET-181 token=active-token password=plain {"claimCode":"CLAIM-SECRET-JSON","token":"json-token"}',
+      },
+    ];
+
+    const report = buildVmRuntimeAcceptanceReport({ plan, steps });
+    const serialized = JSON.stringify(report);
+
+    assert.equal(report.steps[0].command, undefined);
+    assert.equal(report.steps[0].parsed, undefined);
+    assert.equal(report.steps[1].parsed, undefined);
+    assert.doesNotMatch(serialized, /secret-db-pass/);
+    assert.doesNotMatch(serialized, /CLAIM-SECRET-181/);
+    assert.doesNotMatch(serialized, /active-ipc-token/);
+    assert.doesNotMatch(serialized, /active-token/);
+    assert.doesNotMatch(serialized, /CLAIM-SECRET-JSON/);
+    assert.doesNotMatch(serialized, /json-token/);
+    assert.doesNotMatch(serialized, /password=plain/);
+    assert.match(serialized, /\[REDACTED\]/);
+  });
+
+  it("indexes existing display and session evidence into VM runtime acceptance artifact directories", () => {
+    const temp = mkdtempSync(join(tmpdir(), "vem-vm-evidence-index-"));
+    try {
+      const plan = buildVmRuntimeAcceptancePlan({
+        runId: "RUN-181",
+        evidenceRoot: temp,
+        platformTarget: "ephemeral-run-181",
+        ephemeralDatabaseUrl:
+          "postgres://vem_test:pass@127.0.0.1:55432/vem_acceptance_run_181",
+        ephemeralApiBaseUrl: "http://127.0.0.1:26849/api",
+        ephemeralMqttUrl: "mqtt://127.0.0.1:1883",
+        daemonArtifactSha256: "a".repeat(64),
+        machineUiArtifactSha256: "b".repeat(64),
+      });
+      const steps = [
+        {
+          ...plan.steps[0],
+          status: "passed",
+          report: plan.artifacts.dirtyHostFactoryAcceptance,
+          parsed: {
+            dirtyHostFactoryAcceptance: {
+              displayProof: {
+                status: "passed",
+                source: "interactive_kiosk_session",
+              },
+            },
+            inventory: {
+              displayEvidence: {
+                interactiveWindowsSessions: {
+                  sessions: [
+                    {
+                      user: "VEMKiosk",
+                      sessionId: 3,
+                      state: "Active",
+                      source: "quser",
+                    },
+                  ],
+                },
+              },
+            },
+          },
+        },
+        {
+          ...plan.steps[2],
+          status: "passed",
+          report: plan.artifacts.runtimeAcceptance,
+          parsed: {
+            runtimeAcceptanceReport: runtimeAcceptanceFacts().displayEvidence
+              ? {
+                  displayEvidence: runtimeAcceptanceFacts().displayEvidence,
+                }
+              : null,
+          },
+        },
+      ];
+
+      writeVmRuntimeAcceptanceEvidenceIndexes({ plan, steps });
+
+      const screenshotIndex = JSON.parse(
+        readFileSync(`${plan.artifacts.screenshotsRoot}/index.json`, "utf8"),
+      );
+      const sessionIndex = JSON.parse(
+        readFileSync(`${plan.artifacts.sessionsRoot}/index.json`, "utf8"),
+      );
+
+      assert.equal(screenshotIndex.status, "missing");
+      assert.equal(screenshotIndex.displayEvidence.length, 3);
+      assert.equal(screenshotIndex.missingReason, "no_screenshot_artifacts");
+      assert.equal(sessionIndex.status, "indexed");
+      assert.equal(sessionIndex.sessions.length, 1);
+      assert.equal(sessionIndex.sessions[0].user, "VEMKiosk");
+      assert.equal(sessionIndex.stepArtifacts.length, 2);
+    } finally {
+      rmSync(temp, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects VM runtime acceptance when the platform target is shared or sale-flow evidence cannot be same-run", () => {
+    assert.throws(
+      () =>
+        buildVmRuntimeAcceptancePlan({
+          runId: "RUN-181",
+          platformTarget: "vem-vps",
+          ephemeralDatabaseUrl:
+            "postgres://vem_test:pass@127.0.0.1:55432/vem_acceptance_run_181",
+          ephemeralApiBaseUrl: "http://127.0.0.1:26849/api",
+          ephemeralMqttUrl: "mqtt://127.0.0.1:1883",
+          daemonArtifactSha256: "a".repeat(64),
+          machineUiArtifactSha256: "b".repeat(64),
+        }),
+      /refuses shared platform target/,
+    );
+
+    assert.throws(
+      () =>
+        buildVmRuntimeAcceptancePlan({
+          runId: "RUN-181",
+          platformTarget: "ephemeral-run-181",
+          ephemeralDatabaseUrl:
+            "postgres://vem_test:pass@118.25.104.160:5432/vem_acceptance",
+          ephemeralApiBaseUrl: "http://127.0.0.1:26849/api",
+          ephemeralMqttUrl: "mqtt://127.0.0.1:1883",
+          daemonArtifactSha256: "a".repeat(64),
+          machineUiArtifactSha256: "b".repeat(64),
+        }),
+      /refuses known VPS or production endpoint/,
+    );
+
+    assert.throws(
+      () =>
+        buildVmRuntimeAcceptancePlan({
+          runId: "RUN-181",
+          platformTarget: "ephemeral-run-181",
+          ephemeralDatabaseUrl:
+            "postgres://vem_test:pass@127.0.0.1:55432/vem_prod",
+          ephemeralApiBaseUrl: "http://127.0.0.1:26849/api",
+          ephemeralMqttUrl: "mqtt://127.0.0.1:1883",
+          daemonArtifactSha256: "a".repeat(64),
+          machineUiArtifactSha256: "b".repeat(64),
+        }),
+      /refuses known production database/,
+    );
   });
 
   it("classifies a complete runtime acceptance report without asserting hardware or sell readiness", () => {
@@ -1230,6 +3464,72 @@ describe("win10-vem-e2e reset planning", () => {
     );
   });
 
+  it("fails runtime-ready when normal kiosk UI can reach Windows desktop surfaces", () => {
+    for (const [field, expectedCode] of [
+      ["desktopVisible", "kiosk_desktop_visible"],
+      ["taskbarVisible", "kiosk_taskbar_visible"],
+      ["startMenuVisible", "kiosk_start_menu_visible"],
+      ["edgeReachable", "kiosk_edge_reachable"],
+      ["fileExplorerReachable", "kiosk_file_explorer_reachable"],
+    ]) {
+      const facts = runtimeAcceptanceFacts({
+        kioskDesktopEscape: {
+          desktopVisible: false,
+          taskbarVisible: false,
+          startMenuVisible: false,
+          edgeReachable: false,
+          fileExplorerReachable: false,
+          [field]: true,
+        },
+      });
+
+      const report = buildRuntimeAcceptanceReport(facts);
+
+      assert.deepEqual(report.result.runtimeReady, {
+        status: "failed",
+        asserted: false,
+      });
+      assert.ok(
+        report.diagnostics.some(
+          (diagnostic) => diagnostic.code === expectedCode,
+        ),
+      );
+    }
+  });
+
+  it("does not fail runtime-ready from missing or process-only desktop escape evidence", () => {
+    for (const kioskDesktopEscape of [
+      undefined,
+      {
+        status: "not_asserted",
+        source: "process_presence_only",
+        interactiveProbe: {
+          status: "not_available",
+          message: "interactive desktop escape probe is not available",
+        },
+        processPresence: {
+          explorer: [{ processId: 100, sessionId: 3, ownerUser: "VEMKiosk" }],
+          edge: [],
+          startMenu: [],
+        },
+      },
+    ]) {
+      const report = buildRuntimeAcceptanceReport(
+        runtimeAcceptanceFacts({ kioskDesktopEscape }),
+      );
+
+      assert.deepEqual(report.result.runtimeReady, {
+        status: "passed",
+        asserted: true,
+      });
+      assert.ok(
+        !report.diagnostics.some((diagnostic) =>
+          diagnostic.code.startsWith("kiosk_"),
+        ),
+      );
+    }
+  });
+
   it("uses runtime acceptance result when deciding local process exit status", () => {
     assert.equal(
       getRuntimeAcceptanceExitStatus({
@@ -1260,6 +3560,52 @@ describe("win10-vem-e2e reset planning", () => {
         }),
       }),
       0,
+    );
+    assert.equal(
+      getRuntimeAcceptanceExitStatus({
+        mode: "dirty-host-factory-acceptance",
+        sshStatus: 0,
+        stdout: JSON.stringify({ ok: false }),
+      }),
+      1,
+    );
+    assert.equal(
+      getRuntimeAcceptanceExitStatus({
+        mode: "dirty-host-factory-acceptance",
+        sshStatus: 0,
+        stdout: JSON.stringify({ ok: true }),
+      }),
+      0,
+    );
+    assert.equal(
+      getRuntimeAcceptanceExitStatus({
+        mode: "simulated-hardware-sale-flow",
+        sshStatus: 0,
+        stdout: JSON.stringify({
+          ok: true,
+          simulatedHardwareSaleFlow: {
+            result: {
+              simulatedHardwareReady: { status: "passed", asserted: true },
+            },
+          },
+        }),
+      }),
+      0,
+    );
+    assert.equal(
+      getRuntimeAcceptanceExitStatus({
+        mode: "simulated-hardware-sale-flow",
+        sshStatus: 0,
+        stdout: JSON.stringify({
+          ok: true,
+          simulatedHardwareSaleFlow: {
+            result: {
+              simulatedHardwareReady: { status: "failed", asserted: false },
+            },
+          },
+        }),
+      }),
+      1,
     );
     assert.equal(
       getRuntimeAcceptanceExitStatus({
@@ -1296,6 +3642,38 @@ describe("win10-vem-e2e reset planning", () => {
     );
   });
 
+  it("can wrap SSH and SCP with sshpass using SSHPASS from the environment", () => {
+    assert.deepEqual(buildSshCommand({ sshpass: true }), [
+      "sshpass",
+      "-e",
+      "ssh",
+      "-o",
+      "ConnectTimeout=30",
+      "-o",
+      "ProxyCommand=none",
+      "YKDZ@100.68.189.11",
+    ]);
+
+    assert.deepEqual(
+      buildScpCommand(
+        "/tmp/run.ps1",
+        "C:\\Users\\YKDZ\\AppData\\Local\\Temp\\vem-win10-e2e-test.ps1",
+        { sshpass: true },
+      ),
+      [
+        "sshpass",
+        "-e",
+        "scp",
+        "-o",
+        "ConnectTimeout=30",
+        "-o",
+        "ProxyCommand=none",
+        "/tmp/run.ps1",
+        "YKDZ@100.68.189.11:C:/Users/YKDZ/AppData/Local/Temp/vem-win10-e2e-test.ps1",
+      ],
+    );
+  });
+
   it("executes generated PowerShell through a temporary remote script instead of an oversized encoded command", () => {
     assert.equal(
       buildRemotePowerShellCommand(
@@ -1324,5 +3702,30 @@ describe("win10-vem-e2e reset planning", () => {
         "YKDZ@100.68.189.11:C:/Users/YKDZ/AppData/Local/Temp/vem-win10-e2e-test.ps1",
       ],
     );
+  });
+
+  it("can inject factory credential environment from local SSHPASS for testbed-only reset acceptance", () => {
+    const originalSshpass = process.env.SSHPASS;
+    process.env.SSHPASS = "1256987";
+    const command = buildRemotePowerShellCommand(
+      "C:\\Users\\YKDZ\\AppData\\Local\\Temp\\vem-win10-e2e-test.ps1",
+      {
+        factoryCredentialsFromSshpass: true,
+        remoteFactoryCredentialPath:
+          "C:\\Users\\YKDZ\\AppData\\Local\\Temp\\factory-credentials.json",
+      },
+    );
+    if (originalSshpass === undefined) {
+      delete process.env.SSHPASS;
+    } else {
+      process.env.SSHPASS = originalSshpass;
+    }
+
+    assert.match(command, /VEM_FACTORY_CREDENTIAL_FILE/);
+    assert.doesNotMatch(command, /VEM_KIOSK_PASSWORD\s*=/);
+    assert.doesNotMatch(command, /VEM_MAINTENANCE_PASSWORD\s*=/);
+    assert.doesNotMatch(command, /VEM_AUTOLOGON_PASSWORD\s*=/);
+    assert.match(command, /vem-win10-e2e-test\.ps1/);
+    assert.doesNotMatch(command, /1256987/);
   });
 });

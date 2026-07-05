@@ -4,7 +4,7 @@ use std::{
     sync::Arc,
 };
 
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use tokio::fs;
 use vending_core::serial::SerialPortUsbIdentity;
 
@@ -121,6 +121,7 @@ pub struct MachineProvisioningProfile {
     pub credentials: ProvisioningCredentials,
     pub runtime_endpoints: ProvisioningRuntimeEndpoints,
     pub hardware_profile: ProductionMachineHardwareProfile,
+    pub hardware_slot_topology: HardwareSlotTopologyIdentity,
     pub payment_capability: ProductionMachinePaymentCapability,
     pub metadata: ProvisioningMetadata,
 }
@@ -248,6 +249,104 @@ pub struct ProductionMachinePaymentOption {
 
 fn default_payment_capability_enabled() -> bool {
     true
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeHardwareMode {
+    Production,
+    Simulated,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
+pub struct HardwareSlotTopologyIdentity {
+    pub identity: String,
+    pub version: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
+pub struct FactoryRuntimeManifest {
+    pub layout_version: u32,
+    pub environment: String,
+    pub provisioning_endpoint: String,
+    pub hardware_mode: RuntimeHardwareMode,
+    pub hardware_model: String,
+    pub hardware_slot_topology: HardwareSlotTopologyIdentity,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalBringUpSettings {
+    #[serde(default)]
+    pub environment: Option<String>,
+    #[serde(default)]
+    pub provisioning_endpoint_override: Option<String>,
+    #[serde(default)]
+    pub network_profile: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
+pub struct ProvisioningProfileCacheSummary {
+    pub profile_version: i64,
+    pub machine_id: String,
+    pub machine_code: String,
+    pub machine_name: String,
+    pub machine_status: String,
+    #[serde(default)]
+    pub machine_location_label: Option<String>,
+    pub claimed_at: String,
+    pub api_base_url: String,
+    pub mqtt_url: String,
+    pub mqtt_client_id: String,
+    #[serde(default)]
+    pub mqtt_username: Option<String>,
+    pub runtime_endpoints: ProvisioningRuntimeEndpoints,
+    pub hardware_profile: ProductionMachineHardwareProfile,
+    #[serde(default)]
+    pub hardware_slot_topology: Option<HardwareSlotTopologyIdentity>,
+    pub payment_capability: ProductionMachinePaymentCapability,
+    pub provisioning_metadata: ProvisioningMetadata,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HardwareSlotTopologyReadiness {
+    pub ready: bool,
+    pub code: String,
+    pub message: String,
+    pub local: Option<HardwareSlotTopologyIdentity>,
+    pub platform: Option<HardwareSlotTopologyIdentity>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeConfigurationState {
+    pub factory_manifest: bool,
+    pub local_bring_up_settings: bool,
+    pub provisioning_profile_cache: bool,
+    pub machine_config_bridge: bool,
+    pub machine_secret_configured: bool,
+    pub mqtt_signing_secret_configured: bool,
+    pub mqtt_password_configured: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeConfigurationSummary {
+    pub configured_state: RuntimeConfigurationState,
+    pub secret_store: crate::secret::SecretStoreStatus,
+    pub factory_manifest: Option<FactoryRuntimeManifest>,
+    pub local_bring_up_settings: Option<LocalBringUpSettings>,
+    pub provisioning_profile_cache: Option<ProvisioningProfileCacheSummary>,
+    pub effective_public: MachinePublicConfig,
+    pub machine_config_bridge: MachinePublicRuntimeConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -440,6 +539,152 @@ fn normalize_lower_controller_usb_identity(
     Ok(Some(identity))
 }
 
+fn normalize_optional_string(value: Option<String>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn normalize_required_string(value: String, field: &str) -> Result<String, String> {
+    let value = value.trim().to_string();
+    if value.is_empty() {
+        return Err(format!("{field} is required"));
+    }
+    Ok(value)
+}
+
+fn normalize_http_endpoint(value: String, field: &str) -> Result<String, String> {
+    let value = normalize_required_string(value, field)?
+        .trim_end_matches('/')
+        .to_string();
+    let parsed = reqwest::Url::parse(&value).map_err(|_| format!("{field} must be a URL"))?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err(format!("{field} must be an http(s) URL"));
+    }
+    Ok(value)
+}
+
+fn normalize_factory_manifest(
+    mut manifest: FactoryRuntimeManifest,
+) -> Result<FactoryRuntimeManifest, String> {
+    if manifest.layout_version != 1 {
+        return Err("unsupported factory manifest layout version".to_string());
+    }
+    manifest.environment = normalize_required_string(manifest.environment, "environment")?;
+    manifest.provisioning_endpoint =
+        normalize_http_endpoint(manifest.provisioning_endpoint, "provisioningEndpoint")?;
+    manifest.hardware_model = normalize_required_string(manifest.hardware_model, "hardwareModel")?;
+    manifest.hardware_slot_topology.identity = normalize_required_string(
+        manifest.hardware_slot_topology.identity,
+        "hardwareSlotTopology.identity",
+    )?;
+    manifest.hardware_slot_topology.version = normalize_required_string(
+        manifest.hardware_slot_topology.version,
+        "hardwareSlotTopology.version",
+    )?;
+    Ok(manifest)
+}
+
+fn normalize_hardware_slot_topology(
+    mut topology: HardwareSlotTopologyIdentity,
+    field: &str,
+) -> Result<HardwareSlotTopologyIdentity, String> {
+    topology.identity = normalize_required_string(topology.identity, &format!("{field}.identity"))?;
+    topology.version = normalize_required_string(topology.version, &format!("{field}.version"))?;
+    Ok(topology)
+}
+
+fn normalize_local_bring_up_settings(
+    mut settings: LocalBringUpSettings,
+) -> Result<LocalBringUpSettings, String> {
+    settings.environment = normalize_optional_string(settings.environment);
+    settings.network_profile = normalize_optional_string(settings.network_profile);
+    settings.provisioning_endpoint_override = settings
+        .provisioning_endpoint_override
+        .map(|value| normalize_http_endpoint(value, "provisioningEndpointOverride"))
+        .transpose()?;
+    Ok(settings)
+}
+
+fn normalize_provisioning_profile_cache_summary(
+    mut summary: ProvisioningProfileCacheSummary,
+) -> Result<ProvisioningProfileCacheSummary, String> {
+    if summary.profile_version < 1 {
+        return Err("provisioning profile cache summary version invalid".to_string());
+    }
+    uuid::Uuid::parse_str(summary.machine_id.trim())
+        .map_err(|_| "provisioning profile cache machine identity invalid".to_string())?;
+    summary.machine_id = summary.machine_id.trim().to_string();
+    summary.machine_code = normalize_required_string(summary.machine_code, "machineCode")?;
+    summary.machine_name = normalize_required_string(summary.machine_name, "machineName")?;
+    summary.machine_status = normalize_required_string(summary.machine_status, "machineStatus")?;
+    summary.machine_location_label = normalize_optional_string(summary.machine_location_label);
+    validate_machine_status(&summary.machine_status)?;
+    ConfigStore::validate_iso_datetime(&summary.claimed_at, "claimedAt invalid")?;
+    summary.api_base_url = normalize_http_endpoint(summary.api_base_url, "apiBaseUrl")?;
+    summary.mqtt_url = normalize_required_string(summary.mqtt_url, "mqttUrl")?;
+    reqwest::Url::parse(&summary.mqtt_url).map_err(|_| "mqttUrl must be a URL".to_string())?;
+    summary.mqtt_client_id = normalize_required_string(summary.mqtt_client_id, "mqttClientId")?;
+    summary.mqtt_username = normalize_optional_string(summary.mqtt_username);
+    if summary.runtime_endpoints.api_base_path != "/api"
+        || summary.runtime_endpoints.machine_auth_token_path != "/api/machine-auth/token"
+    {
+        return Err("provisioning profile cache runtime endpoints invalid".to_string());
+    }
+    let expected_machine_path = format!("/api/machines/{}", summary.machine_code);
+    let expected_topic_prefix = format!("vem/machines/{}", summary.machine_code);
+    if summary.runtime_endpoints.machine_api_base_path != expected_machine_path
+        || summary.runtime_endpoints.mqtt_topic_prefix != expected_topic_prefix
+    {
+        return Err(
+            "provisioning profile cache runtime endpoints do not match machine identity"
+                .to_string(),
+        );
+    }
+    if summary.hardware_profile.profile != "production"
+        || !summary.hardware_profile.controller.required
+        || summary.hardware_profile.controller.protocol != "vem-vending-controller"
+        || !summary.hardware_profile.payment_scanner.required
+    {
+        return Err("provisioning profile cache hardware profile invalid".to_string());
+    }
+    summary.hardware_slot_topology = summary
+        .hardware_slot_topology
+        .map(|topology| {
+            normalize_hardware_slot_topology(
+                topology,
+                "provisioning profile cache hardware slot topology",
+            )
+        })
+        .transpose()?;
+    if summary.payment_capability.profile != "production" {
+        return Err("provisioning profile cache payment capability invalid".to_string());
+    }
+    ConfigStore::validate_iso_datetime(
+        &summary.payment_capability.server_time,
+        "provisioning profile cache payment capability invalid",
+    )?;
+    if summary.provisioning_metadata.profile_version != summary.profile_version
+        || summary.provisioning_metadata.claimed_at != summary.claimed_at
+    {
+        return Err("provisioning profile cache metadata invalid".to_string());
+    }
+    uuid::Uuid::parse_str(&summary.provisioning_metadata.claim_code_id)
+        .map_err(|_| "provisioning profile cache metadata invalid".to_string())?;
+    ConfigStore::validate_iso_datetime(
+        &summary.provisioning_metadata.server_time,
+        "provisioning profile cache metadata invalid",
+    )?;
+    Ok(summary)
+}
+
+fn validate_machine_status(value: &str) -> Result<(), String> {
+    if !matches!(value, "online" | "offline" | "maintenance" | "disabled") {
+        return Err("machineStatus invalid".to_string());
+    }
+    Ok(())
+}
+
 pub fn normalize_public_config(
     mut config: MachinePublicConfig,
 ) -> Result<MachinePublicConfig, String> {
@@ -630,6 +875,31 @@ fn daemon_config_path(data_dir: &Path) -> PathBuf {
     data_dir.join("machine-config.json")
 }
 
+fn runtime_root_dir(data_dir: &Path) -> PathBuf {
+    data_dir
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| data_dir.to_path_buf())
+}
+
+fn factory_manifest_path(data_dir: &Path) -> PathBuf {
+    runtime_root_dir(data_dir)
+        .join("factory")
+        .join("factory-manifest.json")
+}
+
+fn local_bring_up_settings_path(data_dir: &Path) -> PathBuf {
+    runtime_root_dir(data_dir)
+        .join("bringup")
+        .join("local-settings.json")
+}
+
+fn provisioning_profile_cache_summary_path(data_dir: &Path) -> PathBuf {
+    runtime_root_dir(data_dir)
+        .join("provisioning")
+        .join("profile-cache-summary.json")
+}
+
 fn env_var(name: &str) -> Option<String> {
     env::var(name).ok().filter(|value| !value.trim().is_empty())
 }
@@ -767,6 +1037,11 @@ impl ConfigStore {
         {
             return Err("hardware profile invalid".to_string());
         }
+        normalize_hardware_slot_topology(
+            profile.hardware_slot_topology.clone(),
+            "hardwareSlotTopology",
+        )
+        .map_err(|_| "hardware slot topology invalid".to_string())?;
         if profile.payment_capability.profile != "production" {
             return Err("payment capability invalid".to_string());
         }
@@ -831,31 +1106,143 @@ impl ConfigStore {
         self.data_dir.join("logs").join("machine-events.jsonl")
     }
 
+    pub fn factory_manifest_path(&self) -> PathBuf {
+        factory_manifest_path(&self.data_dir)
+    }
+
+    pub fn local_bring_up_settings_path(&self) -> PathBuf {
+        local_bring_up_settings_path(&self.data_dir)
+    }
+
+    pub fn provisioning_profile_cache_summary_path(&self) -> PathBuf {
+        provisioning_profile_cache_summary_path(&self.data_dir)
+    }
+
+    async fn read_optional_json<T>(path: PathBuf, label: &str) -> Result<Option<T>, String>
+    where
+        T: DeserializeOwned,
+    {
+        let content = match fs::read_to_string(&path).await {
+            Ok(content) => content,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(format!("read {label} failed: {error}")),
+        };
+        serde_json::from_str(&content).map(Some).map_err(|error| {
+            format!(
+                "parse {label} failed at {}: {error}",
+                path.to_string_lossy()
+            )
+        })
+    }
+
+    pub async fn load_factory_manifest(&self) -> Result<Option<FactoryRuntimeManifest>, String> {
+        Self::read_optional_json(self.factory_manifest_path(), "factory manifest")
+            .await?
+            .map(normalize_factory_manifest)
+            .transpose()
+    }
+
+    pub async fn load_local_bring_up_settings(
+        &self,
+    ) -> Result<Option<LocalBringUpSettings>, String> {
+        Self::read_optional_json(
+            self.local_bring_up_settings_path(),
+            "local bring-up settings",
+        )
+        .await?
+        .map(normalize_local_bring_up_settings)
+        .transpose()
+    }
+
+    pub async fn load_provisioning_profile_cache_summary(
+        &self,
+    ) -> Result<Option<ProvisioningProfileCacheSummary>, String> {
+        Self::read_optional_json(
+            self.provisioning_profile_cache_summary_path(),
+            "provisioning profile cache summary",
+        )
+        .await?
+        .map(normalize_provisioning_profile_cache_summary)
+        .transpose()
+    }
+
+    fn apply_layered_public_config(
+        mut public: MachinePublicConfig,
+        factory_manifest: Option<&FactoryRuntimeManifest>,
+        local_bring_up_settings: Option<&LocalBringUpSettings>,
+        provisioning_profile_cache: Option<&ProvisioningProfileCacheSummary>,
+    ) -> Result<MachinePublicConfig, String> {
+        if let Some(manifest) = factory_manifest {
+            public.api_base_url = manifest.provisioning_endpoint.clone();
+        }
+        if let Some(settings) = local_bring_up_settings {
+            if let Some(endpoint) = settings.provisioning_endpoint_override.as_ref() {
+                public.api_base_url = endpoint.clone();
+            }
+        }
+        if let Some(profile) = provisioning_profile_cache {
+            public.machine_id = Some(profile.machine_id.clone());
+            public.machine_code = Some(profile.machine_code.clone());
+            public.machine_name = Some(profile.machine_name.clone());
+            public.machine_status = Some(profile.machine_status.clone());
+            public.machine_location_label = profile.machine_location_label.clone();
+            public.api_base_url = profile.api_base_url.clone();
+            public.mqtt_url = profile.mqtt_url.clone();
+            public.mqtt_client_id = Some(profile.mqtt_client_id.clone());
+            public.mqtt_username = profile.mqtt_username.clone();
+            public.runtime_endpoints = Some(profile.runtime_endpoints.clone());
+            public.hardware_profile = Some(profile.hardware_profile.clone());
+            public.payment_capability = Some(profile.payment_capability.clone());
+            public.provisioning_metadata = Some(profile.provisioning_metadata.clone());
+        }
+        normalize_public_config(public)
+    }
+
+    async fn load_layered_runtime_config_parts(
+        &self,
+    ) -> Result<
+        (
+            MachinePublicConfig,
+            Option<FactoryRuntimeManifest>,
+            Option<LocalBringUpSettings>,
+            Option<ProvisioningProfileCacheSummary>,
+        ),
+        String,
+    > {
+        let bridge_public = self.load_public_config().await?;
+        let factory_manifest = self.load_factory_manifest().await?;
+        let local_bring_up_settings = self.load_local_bring_up_settings().await?;
+        let provisioning_profile_cache = self.load_provisioning_profile_cache_summary().await?;
+        let effective_public = Self::apply_layered_public_config(
+            bridge_public.clone(),
+            factory_manifest.as_ref(),
+            local_bring_up_settings.as_ref(),
+            provisioning_profile_cache.as_ref(),
+        )?;
+        Ok((
+            effective_public,
+            factory_manifest,
+            local_bring_up_settings,
+            provisioning_profile_cache,
+        ))
+    }
+
+    pub async fn load_effective_public_config(&self) -> Result<MachinePublicConfig, String> {
+        let (public, _, _, _) = self.load_layered_runtime_config_parts().await?;
+        Ok(public)
+    }
+
     async fn persist_snapshot(&self, public: &MachinePublicConfig) -> Result<(), String> {
-        let machine_secret_configured = self
-            .secrets
-            .read_secret(crate::secret::MACHINE_SECRET_ACCOUNT)
-            .await?
-            .is_some();
-        let mqtt_signing_secret_configured = self
-            .secrets
-            .read_secret(crate::secret::MQTT_SIGNING_SECRET_ACCOUNT)
-            .await?
-            .is_some();
-        let mqtt_password_configured = self
-            .secrets
-            .read_secret(crate::secret::MQTT_PASSWORD_ACCOUNT)
-            .await?
-            .is_some();
+        let secret_status = self.secrets.status().await?;
 
         let value = serde_json::to_value(public)
             .map_err(|error| format!("serialize machine config snapshot failed: {error}"))?;
         self.state
             .save_machine_config_snapshot(
                 &value,
-                machine_secret_configured,
-                mqtt_signing_secret_configured,
-                mqtt_password_configured,
+                secret_status.machine_secret_configured,
+                secret_status.mqtt_signing_secret_configured,
+                secret_status.mqtt_password_configured,
             )
             .await
             .map_err(|error| error.to_string())
@@ -926,6 +1313,49 @@ impl ConfigStore {
             .await
             .map_err(|error| format!("write daemon config failed: {error}"))?;
         Ok(())
+    }
+
+    async fn write_provisioning_profile_cache_summary(
+        &self,
+        summary: &ProvisioningProfileCacheSummary,
+    ) -> Result<(), String> {
+        let summary = normalize_provisioning_profile_cache_summary(summary.clone())?;
+        let path = self.provisioning_profile_cache_summary_path();
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).await.map_err(|error| {
+                format!("create provisioning profile cache dir failed: {error}")
+            })?;
+        }
+        let payload = serde_json::to_string_pretty(&summary)
+            .map_err(|error| format!("serialize provisioning profile cache failed: {error}"))?;
+        fs::write(path, payload)
+            .await
+            .map_err(|error| format!("write provisioning profile cache failed: {error}"))?;
+        Ok(())
+    }
+
+    pub async fn save_local_bring_up_network_profile(
+        &self,
+        network_profile: impl Into<String>,
+    ) -> Result<LocalBringUpSettings, String> {
+        let mut settings = self
+            .load_local_bring_up_settings()
+            .await?
+            .unwrap_or_default();
+        settings.network_profile = normalize_optional_string(Some(network_profile.into()));
+        let settings = normalize_local_bring_up_settings(settings)?;
+        let path = self.local_bring_up_settings_path();
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .await
+                .map_err(|error| format!("create local bring-up settings dir failed: {error}"))?;
+        }
+        let payload = serde_json::to_string_pretty(&settings)
+            .map_err(|error| format!("serialize local bring-up settings failed: {error}"))?;
+        fs::write(path, payload)
+            .await
+            .map_err(|error| format!("write local bring-up settings failed: {error}"))?;
+        Ok(settings)
     }
 
     async fn public_runtime_config(
@@ -1000,7 +1430,13 @@ impl ConfigStore {
         profile: MachineProvisioningProfile,
     ) -> Result<MachinePublicRuntimeConfig, String> {
         Self::validate_provisioning_profile(&profile)?;
-        let mut public = self.load_public_config().await?;
+        let mut public = self.load_effective_public_config().await?;
+
+        self.secrets
+            .clear_all()
+            .await
+            .map_err(Self::provisioning_persistence_error)?;
+
         public.machine_id = Some(profile.machine.id.clone());
         public.machine_code = Some(profile.machine.code.clone());
         public.machine_name = Some(profile.machine.name.clone());
@@ -1015,6 +1451,28 @@ impl ConfigStore {
         public.provisioning_metadata = Some(profile.metadata.clone());
 
         self.save_public_config(public.clone())
+            .await
+            .map_err(Self::provisioning_persistence_error)?;
+
+        let profile_cache = ProvisioningProfileCacheSummary {
+            profile_version: profile.metadata.profile_version,
+            machine_id: profile.machine.id.clone(),
+            machine_code: profile.machine.code.clone(),
+            machine_name: profile.machine.name.clone(),
+            machine_status: profile.machine.status.clone(),
+            machine_location_label: profile.machine.location_label.clone(),
+            claimed_at: profile.metadata.claimed_at.clone(),
+            api_base_url: public.api_base_url.clone(),
+            mqtt_url: profile.credentials.mqtt_connection.url.clone(),
+            mqtt_client_id: profile.credentials.mqtt_connection.client_id.clone(),
+            mqtt_username: profile.credentials.mqtt_connection.username.clone(),
+            runtime_endpoints: profile.runtime_endpoints.clone(),
+            hardware_profile: profile.hardware_profile.clone(),
+            hardware_slot_topology: Some(profile.hardware_slot_topology.clone()),
+            payment_capability: profile.payment_capability.clone(),
+            provisioning_metadata: profile.metadata.clone(),
+        };
+        self.write_provisioning_profile_cache_summary(&profile_cache)
             .await
             .map_err(Self::provisioning_persistence_error)?;
 
@@ -1039,7 +1497,6 @@ impl ConfigStore {
             )
             .await
             .map_err(|error| Self::provisioning_persistence_error(error.to_string()))?;
-
         self.secrets
             .write_secret(
                 crate::secret::MACHINE_SECRET_ACCOUNT,
@@ -1066,8 +1523,104 @@ impl ConfigStore {
             .map_err(Self::provisioning_persistence_error)
     }
 
+    pub async fn hardware_slot_topology_readiness(
+        &self,
+    ) -> Result<HardwareSlotTopologyReadiness, String> {
+        let local = self
+            .load_factory_manifest()
+            .await?
+            .map(|manifest| manifest.hardware_slot_topology);
+        let platform = self
+            .load_provisioning_profile_cache_summary()
+            .await?
+            .and_then(|summary| summary.hardware_slot_topology)
+            .map(|topology| {
+                normalize_hardware_slot_topology(topology, "platform hardware slot topology")
+            })
+            .transpose()?;
+
+        let (ready, code, message) = match (local.as_ref(), platform.as_ref()) {
+            (None, None) => (
+                true,
+                "HARDWARE_SLOT_TOPOLOGY_NOT_CONFIGURED",
+                "hardware slot topology verification is not configured",
+            ),
+            (None, _) => (
+                false,
+                "HARDWARE_SLOT_TOPOLOGY_LOCAL_MISSING",
+                "factory hardware slot topology manifest is missing; sales are blocked",
+            ),
+            (_, None) => (
+                false,
+                "HARDWARE_SLOT_TOPOLOGY_PLATFORM_MISSING",
+                "platform provisioning profile is missing expected hardware slot topology; sales are blocked",
+            ),
+            (Some(local), Some(platform)) if local == platform => (
+                true,
+                "HARDWARE_SLOT_TOPOLOGY_MATCH",
+                "hardware slot topology matches platform expectation",
+            ),
+            (Some(_), Some(_)) => (
+                false,
+                "HARDWARE_SLOT_TOPOLOGY_MISMATCH",
+                "factory hardware slot topology does not match platform expectation; sales are blocked",
+            ),
+        };
+
+        Ok(HardwareSlotTopologyReadiness {
+            ready,
+            code: code.to_string(),
+            message: message.to_string(),
+            local,
+            platform,
+        })
+    }
+
+    pub async fn load_runtime_configuration_summary(
+        &self,
+    ) -> Result<RuntimeConfigurationSummary, String> {
+        let had_machine_config_bridge = daemon_config_path(&self.data_dir).exists();
+        let bridge_public = self.load_public_config().await?;
+        let factory_manifest = self.load_factory_manifest().await?;
+        let local_bring_up_settings = self.load_local_bring_up_settings().await?;
+        let provisioning_profile_cache = self.load_provisioning_profile_cache_summary().await?;
+        let effective_public = Self::apply_layered_public_config(
+            bridge_public.clone(),
+            factory_manifest.as_ref(),
+            local_bring_up_settings.as_ref(),
+            provisioning_profile_cache.as_ref(),
+        )?;
+        let secret_store = self.secrets.status().await?;
+        let bridge_runtime = MachinePublicRuntimeConfig {
+            public: bridge_public,
+            machine_secret_configured: secret_store.machine_secret_configured,
+            mqtt_signing_secret_configured: secret_store.mqtt_signing_secret_configured,
+            mqtt_password_configured: secret_store.mqtt_password_configured,
+            provisioned: false,
+            provisioning_issues: Vec::new(),
+        }
+        .with_provisioning_state();
+        Ok(RuntimeConfigurationSummary {
+            configured_state: RuntimeConfigurationState {
+                factory_manifest: factory_manifest.is_some(),
+                local_bring_up_settings: local_bring_up_settings.is_some(),
+                provisioning_profile_cache: provisioning_profile_cache.is_some(),
+                machine_config_bridge: had_machine_config_bridge,
+                machine_secret_configured: secret_store.machine_secret_configured,
+                mqtt_signing_secret_configured: secret_store.mqtt_signing_secret_configured,
+                mqtt_password_configured: secret_store.mqtt_password_configured,
+            },
+            secret_store,
+            factory_manifest,
+            local_bring_up_settings,
+            provisioning_profile_cache,
+            effective_public,
+            machine_config_bridge: bridge_runtime,
+        })
+    }
+
     pub async fn load_runtime_config(&self) -> Result<MachineRuntimeConfig, String> {
-        let public = self.load_public_config().await?;
+        let (public, _, _, _) = self.load_layered_runtime_config_parts().await?;
         let secrets = self.runtime_secrets().await?;
 
         let runtime = MachineRuntimeConfig {
@@ -1119,12 +1672,60 @@ fn parse_persisted_public_config(content: &str) -> Result<(MachinePublicConfig, 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::secret::InMemorySecretStore;
+    use crate::secret::{
+        InMemorySecretStore, ProtectedLocalSecretStore, SecretStore, SecretStoreStatus,
+        MACHINE_SECRET_ACCOUNT, MQTT_PASSWORD_ACCOUNT, MQTT_SIGNING_SECRET_ACCOUNT,
+    };
+    use async_trait::async_trait;
     use std::sync::OnceLock;
     use tempfile::TempDir;
     use tokio::sync::Mutex;
 
     static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    #[derive(Debug, Default)]
+    struct ClearFailingSecretStore {
+        inner: InMemorySecretStore,
+    }
+
+    impl ClearFailingSecretStore {
+        async fn seed_old_secrets(&self) {
+            self.inner
+                .write_secret(MACHINE_SECRET_ACCOUNT, "old-machine-secret")
+                .await
+                .expect("seed old machine secret");
+            self.inner
+                .write_secret(MQTT_SIGNING_SECRET_ACCOUNT, "old-signing-secret")
+                .await
+                .expect("seed old signing secret");
+            self.inner
+                .write_secret(MQTT_PASSWORD_ACCOUNT, "old-mqtt-password")
+                .await
+                .expect("seed old mqtt password");
+        }
+    }
+
+    #[async_trait]
+    impl SecretStore for ClearFailingSecretStore {
+        async fn read_secret(&self, account: &str) -> Result<Option<String>, String> {
+            self.inner.read_secret(account).await
+        }
+
+        async fn write_secret(&self, account: &str, value: &str) -> Result<(), String> {
+            self.inner.write_secret(account, value).await
+        }
+
+        async fn clear_all(&self) -> Result<(), String> {
+            Err("injected clear failure".to_string())
+        }
+
+        async fn status(&self) -> Result<SecretStoreStatus, String> {
+            let mut status = self.inner.status().await?;
+            status.kind = "clear_failing_test".to_string();
+            status.protection = "test_only_clear_failure".to_string();
+            Ok(status)
+        }
+    }
 
     struct EnvGuard {
         name: &'static str,
@@ -1154,6 +1755,120 @@ mod tests {
 
     async fn with_env_lock() -> tokio::sync::MutexGuard<'static, ()> {
         ENV_LOCK.get_or_init(|| Mutex::new(())).lock().await
+    }
+
+    fn valid_provisioning_profile_for_test() -> MachineProvisioningProfile {
+        MachineProvisioningProfile {
+            machine: ProvisioningMachine {
+                id: "550e8400-e29b-41d4-a716-446655440000".to_string(),
+                code: "M001".to_string(),
+                name: "Lobby".to_string(),
+                status: "offline".to_string(),
+                location_label: Some("1F".to_string()),
+            },
+            credentials: ProvisioningCredentials {
+                machine_secret: "vms_local-machine-shared-secret-change-before-prod".to_string(),
+                machine_secret_version: 2,
+                mqtt_signing_secret: "vms_local-mqtt-shared-secret-change-before-prod".to_string(),
+                mqtt_connection: ProvisioningMqttConnection {
+                    url: "mqtt://broker.example:1883".to_string(),
+                    client_id: "vem-machine-M001".to_string(),
+                    username: Some("machine-client".to_string()),
+                    password: Some("mqtt-password".to_string()),
+                },
+            },
+            runtime_endpoints: ProvisioningRuntimeEndpoints {
+                api_base_path: "/api".to_string(),
+                machine_auth_token_path: "/api/machine-auth/token".to_string(),
+                machine_api_base_path: "/api/machines/M001".to_string(),
+                mqtt_topic_prefix: "vem/machines/M001".to_string(),
+            },
+            hardware_profile: ProductionMachineHardwareProfile {
+                profile: "production".to_string(),
+                controller: ProductionControllerProfile {
+                    required: true,
+                    protocol: "vem-vending-controller".to_string(),
+                },
+                payment_scanner: ProductionPaymentScannerProfile {
+                    required: true,
+                    supports_payment_code: true,
+                },
+                vision: ProductionVisionProfile {
+                    required: false,
+                    supports_recommendations: true,
+                },
+            },
+            hardware_slot_topology: HardwareSlotTopologyIdentity {
+                identity: "vem-prod-24".to_string(),
+                version: "2026-06-adr0026".to_string(),
+            },
+            payment_capability: ProductionMachinePaymentCapability {
+                profile: "production".to_string(),
+                qr_code_enabled: true,
+                payment_code_enabled: true,
+                server_time: "2026-06-08T16:30:00.000Z".to_string(),
+                options: Vec::new(),
+                default_option_key: None,
+                default_provider_code: None,
+            },
+            metadata: ProvisioningMetadata {
+                profile_version: 1,
+                claim_code_id: "550e8400-e29b-41d4-a716-446655440111".to_string(),
+                claimed_at: "2026-06-08T16:30:00.000Z".to_string(),
+                server_time: "2026-06-08T16:30:00.000Z".to_string(),
+            },
+        }
+    }
+
+    async fn write_factory_manifest_for_test(
+        data_dir: &std::path::Path,
+        identity: &str,
+        version: &str,
+    ) {
+        let path = factory_manifest_path(data_dir);
+        tokio::fs::create_dir_all(path.parent().expect("manifest parent"))
+            .await
+            .expect("factory dir");
+        tokio::fs::write(
+            path,
+            serde_json::json!({
+                "layoutVersion": 1,
+                "environment": "production",
+                "provisioningEndpoint": "https://factory.example.com/api",
+                "hardwareMode": "production",
+                "hardwareModel": "VEM-PROD-24",
+                "hardwareSlotTopology": {
+                    "identity": identity,
+                    "version": version
+                }
+            })
+            .to_string(),
+        )
+        .await
+        .expect("write factory manifest");
+    }
+
+    fn profile_cache_summary_for_test(
+        profile: &MachineProvisioningProfile,
+    ) -> ProvisioningProfileCacheSummary {
+        ProvisioningProfileCacheSummary {
+            profile_version: profile.metadata.profile_version,
+            machine_id: profile.machine.id.clone(),
+            machine_code: profile.machine.code.clone(),
+            machine_name: profile.machine.name.clone(),
+            machine_status: profile.machine.status.clone(),
+            machine_location_label: profile.machine.location_label.clone(),
+            claimed_at: profile.metadata.claimed_at.clone(),
+            api_base_url: "https://profile.example.com/api".to_string(),
+            mqtt_url: profile.credentials.mqtt_connection.url.clone(),
+            mqtt_client_id: profile.credentials.mqtt_connection.client_id.clone(),
+            mqtt_username: profile.credentials.mqtt_connection.username.clone(),
+            runtime_endpoints: profile.runtime_endpoints.clone(),
+            hardware_profile: profile.hardware_profile.clone(),
+            hardware_slot_topology: Some(profile.hardware_slot_topology.clone()),
+            payment_capability: profile.payment_capability.clone(),
+            provisioning_metadata: profile.metadata.clone(),
+        }
     }
 
     #[tokio::test]
@@ -1449,6 +2164,802 @@ mod tests {
         assert_eq!(
             runtime.public.api_base_url,
             "https://production-api.example.com/api"
+        );
+    }
+
+    #[tokio::test]
+    async fn layered_runtime_summary_reads_owned_layers_and_uses_machine_config_only_as_bridge() {
+        let temp = TempDir::new().expect("temp");
+        let root = temp.path();
+        let data_dir = root.join("vending-daemon");
+        tokio::fs::create_dir_all(root.join("factory"))
+            .await
+            .expect("factory dir");
+        tokio::fs::create_dir_all(root.join("bringup"))
+            .await
+            .expect("bringup dir");
+        tokio::fs::create_dir_all(root.join("provisioning"))
+            .await
+            .expect("provisioning dir");
+        tokio::fs::create_dir_all(&data_dir)
+            .await
+            .expect("daemon dir");
+
+        tokio::fs::write(
+            factory_manifest_path(&data_dir),
+            serde_json::json!({
+                "layoutVersion": 1,
+                "environment": "production",
+                "provisioningEndpoint": "https://factory.example.com/api",
+                "hardwareMode": "production",
+                "hardwareModel": "VEM-PROD-24",
+                "hardwareSlotTopology": {
+                    "identity": "vem-prod-24",
+                    "version": "2026-07-01"
+                }
+            })
+            .to_string(),
+        )
+        .await
+        .expect("write factory manifest");
+        tokio::fs::write(
+            local_bring_up_settings_path(&data_dir),
+            serde_json::json!({
+                "environment": "production",
+                "provisioningEndpointOverride": "https://bringup.example.com/api",
+                "networkProfile": "field-wifi"
+            })
+            .to_string(),
+        )
+        .await
+        .expect("write bring-up settings");
+        tokio::fs::write(
+            provisioning_profile_cache_summary_path(&data_dir),
+            serde_json::json!({
+                "profileVersion": 1,
+                "machineId": "550e8400-e29b-41d4-a716-446655440000",
+                "machineCode": "M001",
+                "machineName": "Lobby Machine",
+                "machineStatus": "online",
+                "claimedAt": "2026-07-04T16:00:00Z",
+                "apiBaseUrl": "https://profile.example.com/api",
+                "mqttUrl": "mqtt://broker.example:1883",
+                "mqttClientId": "vem-M001",
+                "runtimeEndpoints": {
+                    "apiBasePath": "/api",
+                    "machineAuthTokenPath": "/api/machine-auth/token",
+                    "machineApiBasePath": "/api/machines/M001",
+                    "mqttTopicPrefix": "vem/machines/M001"
+                },
+                "hardwareProfile": {
+                    "profile": "production",
+                    "controller": { "required": true, "protocol": "vem-vending-controller" },
+                    "paymentScanner": { "required": true, "supportsPaymentCode": true },
+                    "vision": { "required": false, "supportsRecommendations": true }
+                },
+                "hardwareSlotTopology": {
+                    "identity": "vem-prod-24",
+                    "version": "2026-06-adr0026"
+                },
+                "paymentCapability": {
+                    "profile": "production",
+                    "qrCodeEnabled": true,
+                    "paymentCodeEnabled": true,
+                    "serverTime": "2026-07-04T16:00:00Z"
+                },
+                "provisioningMetadata": {
+                    "profileVersion": 1,
+                    "claimCodeId": "550e8400-e29b-41d4-a716-446655440111",
+                    "claimedAt": "2026-07-04T16:00:00Z",
+                    "serverTime": "2026-07-04T16:00:00Z"
+                }
+            })
+            .to_string(),
+        )
+        .await
+        .expect("write profile summary");
+        tokio::fs::write(
+            daemon_config_path(&data_dir),
+            serde_json::json!({
+                "machineCode": "LEGACY-MACHINE",
+                "machineId": "550e8400-e29b-41d4-a716-446655440999",
+                "apiBaseUrl": "https://legacy.example.com/api",
+                "mqttUrl": "mqtt://legacy-broker.example:1883",
+                "mqttUsername": null,
+                "hardwareAdapter": "mock",
+                "serialPortPath": null,
+                "lowerControllerUsbIdentity": null,
+                "scannerAdapter": "disabled",
+                "scannerSerialPortPath": null,
+                "scannerBaudRate": 9600,
+                "scannerFrameSuffix": "crlf",
+                "visionEnabled": false,
+                "visionWsUrl": "ws://127.0.0.1:7892/ws",
+                "visionRequestTimeoutMs": 8000,
+                "kioskMode": false
+            })
+            .to_string(),
+        )
+        .await
+        .expect("write bridge config");
+
+        let state = crate::state::LocalStateStore::open(&data_dir.join("state.db"))
+            .await
+            .expect("state");
+        let store = ConfigStore::new(data_dir, state, Arc::new(InMemorySecretStore::default()));
+
+        let summary = store
+            .load_runtime_configuration_summary()
+            .await
+            .expect("summary");
+
+        assert!(summary.configured_state.factory_manifest);
+        assert!(summary.configured_state.local_bring_up_settings);
+        assert!(summary.configured_state.provisioning_profile_cache);
+        assert!(summary.configured_state.machine_config_bridge);
+        assert_eq!(
+            summary
+                .factory_manifest
+                .as_ref()
+                .expect("manifest")
+                .hardware_slot_topology
+                .identity,
+            "vem-prod-24"
+        );
+        assert_eq!(
+            summary
+                .local_bring_up_settings
+                .as_ref()
+                .expect("bring-up")
+                .network_profile
+                .as_deref(),
+            Some("field-wifi")
+        );
+        assert_eq!(
+            summary
+                .provisioning_profile_cache
+                .as_ref()
+                .expect("profile")
+                .machine_code,
+            "M001"
+        );
+        assert_eq!(
+            summary.effective_public.api_base_url,
+            "https://profile.example.com/api"
+        );
+        assert_eq!(
+            summary.effective_public.machine_code.as_deref(),
+            Some("M001")
+        );
+        assert_eq!(
+            summary.machine_config_bridge.public.machine_code.as_deref(),
+            Some("LEGACY-MACHINE")
+        );
+
+        let serialized = serde_json::to_string(&summary).expect("serialize summary");
+        assert!(!serialized.contains("SECRET"));
+    }
+
+    #[tokio::test]
+    async fn layered_runtime_summary_treats_missing_layer_files_as_unconfigured() {
+        let temp = TempDir::new().expect("temp");
+        let data_dir = temp.path().join("vending-daemon");
+        let state = crate::state::LocalStateStore::open(&data_dir.join("state.db"))
+            .await
+            .expect("state");
+        let store = ConfigStore::new(data_dir, state, Arc::new(InMemorySecretStore::default()));
+
+        let summary = store
+            .load_runtime_configuration_summary()
+            .await
+            .expect("summary");
+
+        assert!(!summary.configured_state.factory_manifest);
+        assert!(!summary.configured_state.local_bring_up_settings);
+        assert!(!summary.configured_state.provisioning_profile_cache);
+        assert!(!summary.configured_state.machine_config_bridge);
+        assert!(summary.factory_manifest.is_none());
+        assert!(summary.local_bring_up_settings.is_none());
+        assert!(summary.provisioning_profile_cache.is_none());
+    }
+
+    #[tokio::test]
+    async fn invalid_factory_manifest_fails_runtime_summary_loading() {
+        let temp = TempDir::new().expect("temp");
+        let data_dir = temp.path().join("vending-daemon");
+        tokio::fs::create_dir_all(temp.path().join("factory"))
+            .await
+            .expect("factory dir");
+        tokio::fs::write(
+            factory_manifest_path(&data_dir),
+            serde_json::json!({
+                "layoutVersion": 1,
+                "environment": "production",
+                "provisioningEndpoint": "not-a-url",
+                "hardwareMode": "production",
+                "hardwareModel": "VEM-PROD-24",
+                "hardwareSlotTopology": {
+                    "identity": "vem-prod-24",
+                    "version": "2026-07-01"
+                }
+            })
+            .to_string(),
+        )
+        .await
+        .expect("write manifest");
+        let state = crate::state::LocalStateStore::open(&data_dir.join("state.db"))
+            .await
+            .expect("state");
+        let store = ConfigStore::new(data_dir, state, Arc::new(InMemorySecretStore::default()));
+
+        let err = store
+            .load_runtime_configuration_summary()
+            .await
+            .expect_err("invalid manifest");
+
+        assert_eq!(err, "provisioningEndpoint must be a URL");
+    }
+
+    #[tokio::test]
+    async fn local_bring_up_settings_reject_production_owned_fields() {
+        let temp = TempDir::new().expect("temp");
+        let data_dir = temp.path().join("vending-daemon");
+        tokio::fs::create_dir_all(temp.path().join("bringup"))
+            .await
+            .expect("bringup dir");
+        tokio::fs::write(
+            local_bring_up_settings_path(&data_dir),
+            serde_json::json!({
+                "environment": "production",
+                "provisioningEndpointOverride": "https://bringup.example.com/api",
+                "networkProfile": "field-wifi",
+                "machineCode": "M001",
+                "machineSecret": "SECRET-MACHINE",
+                "planogram": {},
+                "inventory": {},
+                "paymentCapability": {}
+            })
+            .to_string(),
+        )
+        .await
+        .expect("write settings");
+        let state = crate::state::LocalStateStore::open(&data_dir.join("state.db"))
+            .await
+            .expect("state");
+        let store = ConfigStore::new(data_dir, state, Arc::new(InMemorySecretStore::default()));
+
+        let err = store
+            .load_runtime_configuration_summary()
+            .await
+            .expect_err("forbidden fields");
+
+        assert!(err.contains("parse local bring-up settings failed"));
+        assert!(err.contains("unknown field"));
+    }
+
+    #[tokio::test]
+    async fn load_runtime_config_uses_layered_authority_over_machine_config_bridge() {
+        let temp = TempDir::new().expect("temp");
+        let root = temp.path();
+        let data_dir = root.join("vending-daemon");
+        tokio::fs::create_dir_all(root.join("factory"))
+            .await
+            .expect("factory dir");
+        tokio::fs::create_dir_all(root.join("provisioning"))
+            .await
+            .expect("provisioning dir");
+        tokio::fs::create_dir_all(&data_dir)
+            .await
+            .expect("daemon dir");
+        tokio::fs::write(
+            factory_manifest_path(&data_dir),
+            serde_json::json!({
+                "layoutVersion": 1,
+                "environment": "production",
+                "provisioningEndpoint": "https://factory.example.com/api",
+                "hardwareMode": "production",
+                "hardwareModel": "VEM-PROD-24",
+                "hardwareSlotTopology": {
+                    "identity": "vem-prod-24",
+                    "version": "2026-07-01"
+                }
+            })
+            .to_string(),
+        )
+        .await
+        .expect("write factory manifest");
+        tokio::fs::write(
+            provisioning_profile_cache_summary_path(&data_dir),
+            serde_json::json!({
+                "profileVersion": 1,
+                "machineId": "550e8400-e29b-41d4-a716-446655440000",
+                "machineCode": "M001",
+                "machineName": "Lobby Machine",
+                "machineStatus": "online",
+                "claimedAt": "2026-07-04T16:00:00Z",
+                "apiBaseUrl": "https://profile.example.com/api",
+                "mqttUrl": "mqtt://broker.example:1883",
+                "mqttClientId": "vem-M001",
+                "runtimeEndpoints": {
+                    "apiBasePath": "/api",
+                    "machineAuthTokenPath": "/api/machine-auth/token",
+                    "machineApiBasePath": "/api/machines/M001",
+                    "mqttTopicPrefix": "vem/machines/M001"
+                },
+                "hardwareProfile": {
+                    "profile": "production",
+                    "controller": { "required": true, "protocol": "vem-vending-controller" },
+                    "paymentScanner": { "required": true, "supportsPaymentCode": true },
+                    "vision": { "required": false, "supportsRecommendations": true }
+                },
+                "hardwareSlotTopology": {
+                    "identity": "vem-prod-24",
+                    "version": "2026-06-adr0026"
+                },
+                "paymentCapability": {
+                    "profile": "production",
+                    "qrCodeEnabled": true,
+                    "paymentCodeEnabled": true,
+                    "serverTime": "2026-07-04T16:00:00Z"
+                },
+                "provisioningMetadata": {
+                    "profileVersion": 1,
+                    "claimCodeId": "550e8400-e29b-41d4-a716-446655440111",
+                    "claimedAt": "2026-07-04T16:00:00Z",
+                    "serverTime": "2026-07-04T16:00:00Z"
+                }
+            })
+            .to_string(),
+        )
+        .await
+        .expect("write profile cache");
+        tokio::fs::write(
+            daemon_config_path(&data_dir),
+            serde_json::json!({
+                "machineCode": "LEGACY-MACHINE",
+                "machineId": "550e8400-e29b-41d4-a716-446655440999",
+                "apiBaseUrl": "https://legacy.example.com/api",
+                "mqttUrl": "mqtt://legacy-broker.example:1883",
+                "mqttUsername": null,
+                "hardwareAdapter": "mock",
+                "serialPortPath": null,
+                "lowerControllerUsbIdentity": null,
+                "scannerAdapter": "disabled",
+                "scannerSerialPortPath": null,
+                "scannerBaudRate": 9600,
+                "scannerFrameSuffix": "crlf",
+                "visionEnabled": false,
+                "visionWsUrl": "ws://127.0.0.1:7892/ws",
+                "visionRequestTimeoutMs": 8000,
+                "kioskMode": false
+            })
+            .to_string(),
+        )
+        .await
+        .expect("write bridge config");
+        let state = crate::state::LocalStateStore::open(&data_dir.join("state.db"))
+            .await
+            .expect("state");
+        let store = ConfigStore::new(data_dir, state, Arc::new(InMemorySecretStore::default()));
+
+        let runtime = store.load_runtime_config().await.expect("runtime config");
+
+        assert_eq!(runtime.public.machine_code.as_deref(), Some("M001"));
+        assert_eq!(
+            runtime.public.api_base_url,
+            "https://profile.example.com/api"
+        );
+        assert_eq!(runtime.public.mqtt_url, "mqtt://broker.example:1883");
+        assert_eq!(runtime.public.mqtt_client_id.as_deref(), Some("vem-M001"));
+    }
+
+    #[tokio::test]
+    async fn runtime_configuration_summary_does_not_leak_secret_values() {
+        let temp = TempDir::new().expect("temp");
+        let data_dir = temp.path().join("vending-daemon");
+        let state = crate::state::LocalStateStore::open(&data_dir.join("state.db"))
+            .await
+            .expect("state");
+        let secrets = InMemorySecretStore::default();
+        secrets
+            .write_secret("machine_secret", "SECRET-MACHINE-VALUE")
+            .await
+            .expect("machine secret");
+        secrets
+            .write_secret("mqtt_signing_secret", "SECRET-SIGNING-VALUE")
+            .await
+            .expect("signing secret");
+        secrets
+            .write_secret("mqtt_password", "SECRET-MQTT-PASSWORD")
+            .await
+            .expect("mqtt password");
+        let store = ConfigStore::new(data_dir, state, Arc::new(secrets));
+
+        let summary = store
+            .load_runtime_configuration_summary()
+            .await
+            .expect("summary");
+        let serialized = serde_json::to_string(&summary).expect("serialize");
+
+        assert!(summary.configured_state.machine_secret_configured);
+        assert!(summary.configured_state.mqtt_signing_secret_configured);
+        assert!(summary.configured_state.mqtt_password_configured);
+        assert!(!serialized.contains("SECRET-MACHINE-VALUE"));
+        assert!(!serialized.contains("SECRET-SIGNING-VALUE"));
+        assert!(!serialized.contains("SECRET-MQTT-PASSWORD"));
+    }
+
+    #[tokio::test]
+    async fn runtime_configuration_summary_reports_secret_store_failures_without_secret_values() {
+        let temp = TempDir::new().expect("temp");
+        let data_dir = temp.path().join("vending-daemon");
+        let state = crate::state::LocalStateStore::open(&data_dir.join("state.db"))
+            .await
+            .expect("state");
+        let secrets = Arc::new(ProtectedLocalSecretStore::new(data_dir.clone()));
+        let store = ConfigStore::new(data_dir.clone(), state, secrets);
+        let invalid_blob = "SECRET-MACHINE-VALUE";
+        tokio::fs::create_dir_all(&data_dir)
+            .await
+            .expect("daemon dir");
+        tokio::fs::write(
+            daemon_config_path(&data_dir),
+            serde_json::to_string(&MachinePublicConfig {
+                api_base_url: "https://factory.example.com/api".to_string(),
+                ..default_public_config()
+            })
+            .expect("config json"),
+        )
+        .await
+        .expect("public config");
+        tokio::fs::create_dir_all(temp.path().join("secrets"))
+            .await
+            .expect("secrets dir");
+        tokio::fs::write(
+            temp.path().join("secrets").join("machine_secret.dpapi"),
+            invalid_blob,
+        )
+        .await
+        .expect("invalid secret blob");
+
+        let summary = store
+            .load_runtime_configuration_summary()
+            .await
+            .expect("summary");
+        assert_eq!(summary.secret_store.kind, "protected_local_file");
+        assert_eq!(summary.secret_store.protection, "deterministic_test_blob");
+        assert!(summary.secret_store.last_error.is_some());
+        assert!(!summary.configured_state.machine_secret_configured);
+        let text = serde_json::to_string(&summary).expect("summary json");
+        assert!(!text.contains(invalid_blob));
+    }
+
+    #[tokio::test]
+    async fn topology_readiness_uses_profile_cache_when_sqlite_metadata_is_missing() {
+        let temp = TempDir::new().expect("temp");
+        let data_dir = temp.path().join("vending-daemon");
+        let state = crate::state::LocalStateStore::open(&data_dir.join("state.db"))
+            .await
+            .expect("state");
+        let store = ConfigStore::new(
+            data_dir.clone(),
+            state,
+            Arc::new(InMemorySecretStore::default()),
+        );
+        write_factory_manifest_for_test(&data_dir, "vem-prod-24", "2026-06-adr0026").await;
+        let profile = valid_provisioning_profile_for_test();
+        store
+            .write_provisioning_profile_cache_summary(&profile_cache_summary_for_test(&profile))
+            .await
+            .expect("profile cache");
+
+        let readiness = store
+            .hardware_slot_topology_readiness()
+            .await
+            .expect("readiness");
+
+        assert!(readiness.ready);
+        assert_eq!(readiness.code, "HARDWARE_SLOT_TOPOLOGY_MATCH");
+        assert_eq!(readiness.platform, Some(profile.hardware_slot_topology));
+    }
+
+    #[tokio::test]
+    async fn topology_readiness_ignores_stale_sqlite_metadata_when_profile_cache_differs() {
+        let temp = TempDir::new().expect("temp");
+        let data_dir = temp.path().join("vending-daemon");
+        let state = crate::state::LocalStateStore::open(&data_dir.join("state.db"))
+            .await
+            .expect("state");
+        state
+            .put_metadata(
+                "machine_provisioning_hardware_slot_topology",
+                &HardwareSlotTopologyIdentity {
+                    identity: "vem-prod-24".to_string(),
+                    version: "stale-sqlite-version".to_string(),
+                },
+            )
+            .await
+            .expect("stale topology metadata");
+        let store = ConfigStore::new(
+            data_dir.clone(),
+            state,
+            Arc::new(InMemorySecretStore::default()),
+        );
+        write_factory_manifest_for_test(&data_dir, "vem-prod-24", "2026-06-adr0026").await;
+        let profile = valid_provisioning_profile_for_test();
+        store
+            .write_provisioning_profile_cache_summary(&profile_cache_summary_for_test(&profile))
+            .await
+            .expect("profile cache");
+
+        let readiness = store
+            .hardware_slot_topology_readiness()
+            .await
+            .expect("readiness");
+
+        assert!(readiness.ready);
+        assert_eq!(readiness.code, "HARDWARE_SLOT_TOPOLOGY_MATCH");
+        assert_eq!(readiness.platform, Some(profile.hardware_slot_topology));
+    }
+
+    #[tokio::test]
+    async fn topology_readiness_allows_legacy_runtime_when_neither_side_declares_topology() {
+        let temp = TempDir::new().expect("temp");
+        let data_dir = temp.path().join("vending-daemon");
+        let state = crate::state::LocalStateStore::open(&data_dir.join("state.db"))
+            .await
+            .expect("state");
+        let store = ConfigStore::new(data_dir, state, Arc::new(InMemorySecretStore::default()));
+
+        let readiness = store
+            .hardware_slot_topology_readiness()
+            .await
+            .expect("readiness");
+
+        assert!(readiness.ready);
+        assert_eq!(readiness.code, "HARDWARE_SLOT_TOPOLOGY_NOT_CONFIGURED");
+        assert!(readiness.local.is_none());
+        assert!(readiness.platform.is_none());
+    }
+
+    #[tokio::test]
+    async fn provisioning_profile_writes_protected_secret_blobs_and_reclaim_clears_stale_password()
+    {
+        let temp = TempDir::new().expect("temp");
+        let data_dir = temp.path().join("vending-daemon");
+        let state = crate::state::LocalStateStore::open(&data_dir.join("state.db"))
+            .await
+            .expect("state");
+        let secrets = Arc::new(ProtectedLocalSecretStore::new(data_dir.clone()));
+        let store = ConfigStore::new(data_dir.clone(), state, secrets.clone());
+        store
+            .save_public_config(MachinePublicConfig {
+                api_base_url: "https://factory.example.com/api".to_string(),
+                ..default_public_config()
+            })
+            .await
+            .expect("seed public config");
+        let first_profile = valid_provisioning_profile_for_test();
+        let machine_secret = first_profile.credentials.machine_secret.clone();
+        let signing_secret = first_profile.credentials.mqtt_signing_secret.clone();
+        let mqtt_password = first_profile
+            .credentials
+            .mqtt_connection
+            .password
+            .clone()
+            .expect("password");
+
+        store
+            .apply_provisioning_profile(first_profile)
+            .await
+            .expect("apply profile");
+
+        let runtime_secrets = store.runtime_secrets().await.expect("runtime secrets");
+        assert_eq!(
+            runtime_secrets.machine_secret.as_deref(),
+            Some(machine_secret.as_str())
+        );
+        assert_eq!(
+            runtime_secrets.mqtt_signing_secret.as_deref(),
+            Some(signing_secret.as_str())
+        );
+        assert_eq!(
+            runtime_secrets.mqtt_password.as_deref(),
+            Some(mqtt_password.as_str())
+        );
+        let status = secrets.status().await.expect("secret status");
+        assert!(status.machine_secret_configured);
+        assert!(status.mqtt_signing_secret_configured);
+        assert!(status.mqtt_password_configured);
+
+        let protected_dir = temp.path().join("secrets");
+        for file_name in [
+            "machine_secret.dpapi",
+            "mqtt_signing_secret.dpapi",
+            "mqtt_password.dpapi",
+        ] {
+            let blob = tokio::fs::read(protected_dir.join(file_name))
+                .await
+                .expect("protected blob");
+            let blob_text = String::from_utf8_lossy(&blob);
+            assert!(!blob_text.contains(&machine_secret));
+            assert!(!blob_text.contains(&signing_secret));
+            assert!(!blob_text.contains(&mqtt_password));
+        }
+
+        let summary = store
+            .load_runtime_configuration_summary()
+            .await
+            .expect("summary");
+        let summary_text = serde_json::to_string(&summary).expect("summary json");
+        assert!(!summary_text.contains(&machine_secret));
+        assert!(!summary_text.contains(&signing_secret));
+        assert!(!summary_text.contains(&mqtt_password));
+
+        let mut reclaim_profile = valid_provisioning_profile_for_test();
+        reclaim_profile.credentials.machine_secret =
+            "vms_reclaimed-machine-secret-123456789012345".to_string();
+        reclaim_profile.credentials.mqtt_signing_secret =
+            "vms_reclaimed-mqtt-signing-secret-1234567890".to_string();
+        reclaim_profile.credentials.mqtt_connection.password = None;
+        store
+            .apply_provisioning_profile(reclaim_profile)
+            .await
+            .expect("apply reclaim profile");
+
+        let runtime_secrets = store.runtime_secrets().await.expect("runtime secrets");
+        assert_eq!(
+            runtime_secrets.machine_secret.as_deref(),
+            Some("vms_reclaimed-machine-secret-123456789012345")
+        );
+        assert_eq!(
+            runtime_secrets.mqtt_signing_secret.as_deref(),
+            Some("vms_reclaimed-mqtt-signing-secret-1234567890")
+        );
+        assert!(runtime_secrets.mqtt_password.is_none());
+        assert!(secrets
+            .read_secret(MQTT_PASSWORD_ACCOUNT)
+            .await
+            .expect("read password")
+            .is_none());
+        assert!(secrets
+            .read_secret(MACHINE_SECRET_ACCOUNT)
+            .await
+            .expect("read machine")
+            .is_some());
+        assert!(secrets
+            .read_secret(MQTT_SIGNING_SECRET_ACCOUNT)
+            .await
+            .expect("read signing")
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn apply_provisioning_profile_does_not_persist_public_profile_when_secret_clear_fails() {
+        let temp = TempDir::new().expect("temp");
+        let data_dir = temp.path().join("vending-daemon");
+        let state = crate::state::LocalStateStore::open(&data_dir.join("state.db"))
+            .await
+            .expect("state");
+        let metadata_state = state.clone();
+        let secrets = Arc::new(ClearFailingSecretStore::default());
+        secrets.seed_old_secrets().await;
+        let store = ConfigStore::new(data_dir, state, secrets.clone());
+        let mut old_profile = valid_provisioning_profile_for_test();
+        old_profile.machine.id = "550e8400-e29b-41d4-a716-446655440999".to_string();
+        old_profile.machine.code = "OLD-MACHINE".to_string();
+        old_profile.machine.name = "Old Lobby".to_string();
+        old_profile.machine.location_label = Some("Old 1F".to_string());
+        old_profile.credentials.mqtt_connection.url = "mqtt://old-broker.example:1883".to_string();
+        old_profile.credentials.mqtt_connection.client_id = "vem-machine-OLD".to_string();
+        old_profile.credentials.mqtt_connection.username = Some("old-machine-client".to_string());
+        old_profile.runtime_endpoints.machine_api_base_path =
+            "/api/machines/OLD-MACHINE".to_string();
+        old_profile.runtime_endpoints.mqtt_topic_prefix = "vem/machines/OLD-MACHINE".to_string();
+        old_profile.metadata.claim_code_id = "550e8400-e29b-41d4-a716-446655440888".to_string();
+        old_profile.metadata.claimed_at = "2026-06-07T16:30:00.000Z".to_string();
+        old_profile.metadata.server_time = "2026-06-07T16:30:00.000Z".to_string();
+        let old_claim_code_id = old_profile.metadata.claim_code_id.clone();
+        store
+            .save_public_config(MachinePublicConfig {
+                machine_id: Some(old_profile.machine.id.clone()),
+                machine_code: Some(old_profile.machine.code.clone()),
+                machine_name: Some(old_profile.machine.name.clone()),
+                machine_status: Some("offline".to_string()),
+                machine_location_label: old_profile.machine.location_label.clone(),
+                api_base_url: "https://old.example.com/api".to_string(),
+                mqtt_url: old_profile.credentials.mqtt_connection.url.clone(),
+                mqtt_username: old_profile.credentials.mqtt_connection.username.clone(),
+                mqtt_client_id: Some(old_profile.credentials.mqtt_connection.client_id.clone()),
+                ..default_public_config()
+            })
+            .await
+            .expect("seed old public config");
+        store
+            .write_provisioning_profile_cache_summary(&ProvisioningProfileCacheSummary {
+                profile_version: old_profile.metadata.profile_version,
+                machine_id: old_profile.machine.id.clone(),
+                machine_code: old_profile.machine.code.clone(),
+                machine_name: old_profile.machine.name.clone(),
+                machine_status: old_profile.machine.status.clone(),
+                machine_location_label: old_profile.machine.location_label.clone(),
+                claimed_at: old_profile.metadata.claimed_at.clone(),
+                api_base_url: "https://old.example.com/api".to_string(),
+                mqtt_url: old_profile.credentials.mqtt_connection.url.clone(),
+                mqtt_client_id: old_profile.credentials.mqtt_connection.client_id.clone(),
+                mqtt_username: old_profile.credentials.mqtt_connection.username.clone(),
+                runtime_endpoints: old_profile.runtime_endpoints.clone(),
+                hardware_profile: old_profile.hardware_profile.clone(),
+                hardware_slot_topology: Some(old_profile.hardware_slot_topology.clone()),
+                payment_capability: old_profile.payment_capability.clone(),
+                provisioning_metadata: old_profile.metadata.clone(),
+            })
+            .await
+            .expect("seed old profile cache");
+        metadata_state
+            .put_metadata(
+                "machine_provisioning_claim_code_id",
+                &old_profile.metadata.claim_code_id,
+            )
+            .await
+            .expect("seed claim code metadata");
+
+        let err = store
+            .apply_provisioning_profile(valid_provisioning_profile_for_test())
+            .await
+            .expect_err("clear failure aborts provisioning persistence");
+
+        assert!(err.contains("injected clear failure"));
+        let public = store.load_public_config().await.expect("public config");
+        assert_eq!(public.machine_code.as_deref(), Some("OLD-MACHINE"));
+        assert_eq!(
+            public.machine_id.as_deref(),
+            Some("550e8400-e29b-41d4-a716-446655440999")
+        );
+        assert_eq!(public.machine_name.as_deref(), Some("Old Lobby"));
+        assert_eq!(public.mqtt_url, "mqtt://old-broker.example:1883");
+        let profile_cache = store
+            .load_provisioning_profile_cache_summary()
+            .await
+            .expect("profile cache")
+            .expect("old profile cache remains");
+        assert_eq!(profile_cache.machine_code, "OLD-MACHINE");
+        assert_eq!(
+            profile_cache.machine_id,
+            "550e8400-e29b-41d4-a716-446655440999"
+        );
+        assert_eq!(profile_cache.mqtt_url, "mqtt://old-broker.example:1883");
+        assert_eq!(
+            metadata_state
+                .get_metadata::<String>("machine_provisioning_claim_code_id")
+                .await
+                .expect("claim code metadata")
+                .as_deref(),
+            Some(old_claim_code_id.as_str())
+        );
+        assert_eq!(
+            secrets
+                .read_secret(MACHINE_SECRET_ACCOUNT)
+                .await
+                .expect("machine secret")
+                .as_deref(),
+            Some("old-machine-secret")
+        );
+        assert_eq!(
+            secrets
+                .read_secret(MQTT_SIGNING_SECRET_ACCOUNT)
+                .await
+                .expect("signing secret")
+                .as_deref(),
+            Some("old-signing-secret")
+        );
+        assert_eq!(
+            secrets
+                .read_secret(MQTT_PASSWORD_ACCOUNT)
+                .await
+                .expect("mqtt password")
+                .as_deref(),
+            Some("old-mqtt-password")
         );
     }
 
@@ -1781,5 +3292,60 @@ mod tests {
             Some("signing-secret")
         );
         assert_eq!(secrets.mqtt_password.as_deref(), Some("password"));
+    }
+
+    #[test]
+    fn provisioning_profile_accepts_current_claim_response_shape() {
+        let profile: MachineProvisioningProfile = serde_json::from_value(serde_json::json!({
+            "machine": {
+                "id": "6ad6fb24-2146-44e8-9321-b3706a4609a4",
+                "code": "VEM-TESTBED-WINVM-01",
+                "name": "Machine Runtime Testbed WINVM 01",
+                "status": "offline",
+                "locationLabel": null
+            },
+            "credentials": {
+                "machineSecret": "vms_B1ct4uXCKJBiGOwdj04sCWUyU43zGnPXSY2XhdLs7V4",
+                "machineSecretVersion": 2,
+                "mqttSigningSecret": "vms_ALUqDzT6GuJnrG-sAUF8b1jHVfhqbvdfQvLet-01ac8",
+                "mqttConnection": {
+                    "url": "mqtt://118.25.104.160:1883",
+                    "clientId": "vem-machine-VEM-TESTBED-WINVM-01"
+                }
+            },
+            "runtimeEndpoints": {
+                "apiBasePath": "/api",
+                "machineAuthTokenPath": "/api/machine-auth/token",
+                "machineApiBasePath": "/api/machines/VEM-TESTBED-WINVM-01",
+                "mqttTopicPrefix": "vem/machines/VEM-TESTBED-WINVM-01"
+            },
+            "hardwareProfile": {
+                "profile": "production",
+                "controller": { "required": true, "protocol": "vem-vending-controller" },
+                "paymentScanner": { "required": true, "supportsPaymentCode": true },
+                "vision": { "required": false, "supportsRecommendations": true }
+            },
+            "hardwareSlotTopology": {
+                "identity": "vem-prod-24",
+                "version": "2026-06-adr0026"
+            },
+            "paymentCapability": {
+                "profile": "production",
+                "qrCodeEnabled": true,
+                "paymentCodeEnabled": true,
+                "serverTime": "2026-07-05T02:06:21.966Z"
+            },
+            "metadata": {
+                "profileVersion": 1,
+                "claimCodeId": "79713f63-db82-4bcd-b530-b8b85180f2a0",
+                "claimedAt": "2026-07-05T02:06:21.966Z",
+                "serverTime": "2026-07-05T02:06:21.966Z"
+            }
+        }))
+        .expect("current claim response profile");
+
+        ConfigStore::validate_provisioning_profile(&profile).expect("valid profile");
+        assert!(profile.payment_capability.options.is_empty());
+        assert_eq!(profile.payment_capability.default_option_key, None);
     }
 }

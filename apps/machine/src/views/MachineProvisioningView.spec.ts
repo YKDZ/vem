@@ -5,10 +5,14 @@ import { createApp, nextTick, type App } from "vue";
 
 const {
   DaemonUnavailableErrorMock,
+  routeMock,
+  routerReplaceMock,
   initializeMock,
+  getBringUpMock,
   getConfigMock,
   claimMachineMock,
-  routerReplaceMock,
+  applyNetworkSettingsMock,
+  downloadLogExportMock,
 } = vi.hoisted(() => ({
   DaemonUnavailableErrorMock: class DaemonUnavailableError extends Error {
     public readonly responseCode?: string;
@@ -19,13 +23,18 @@ const {
       this.responseCode = responseCode;
     }
   },
+  routeMock: { query: {} as Record<string, unknown> },
+  routerReplaceMock: vi.fn(),
   initializeMock: vi.fn(),
+  getBringUpMock: vi.fn(),
   getConfigMock: vi.fn(),
   claimMachineMock: vi.fn(),
-  routerReplaceMock: vi.fn(),
+  applyNetworkSettingsMock: vi.fn(),
+  downloadLogExportMock: vi.fn(),
 }));
 
 vi.mock("vue-router", () => ({
+  useRoute: () => routeMock,
   useRouter: () => ({ replace: routerReplaceMock }),
 }));
 
@@ -37,8 +46,11 @@ vi.mock("@/daemon/client", () => ({
   DaemonUnavailableError: DaemonUnavailableErrorMock,
   daemonClient: {
     initialize: initializeMock,
+    getBringUp: getBringUpMock,
     getConfig: getConfigMock,
     claimMachine: claimMachineMock,
+    applyNetworkSettings: applyNetworkSettingsMock,
+    downloadLogExport: downloadLogExportMock,
   },
 }));
 
@@ -47,12 +59,49 @@ import MachineProvisioningView from "./MachineProvisioningView.vue";
 let mountedApp: App<Element> | null = null;
 let pinia: ReturnType<typeof createPinia>;
 
-function unprovisionedConfig() {
+function bringUpSnapshot(overrides = {}) {
+  return {
+    state: "topology_mismatch",
+    blockingReasons: [
+      {
+        code: "HARDWARE_SLOT_TOPOLOGY_MISMATCH",
+        component: "topology",
+        message:
+          "factory hardware slot topology does not match platform expectation",
+      },
+    ],
+    diagnostics: [
+      {
+        code: "LOWER_CONTROLLER_SLOT_COUNT",
+        component: "lower-controller",
+        message:
+          "lower controller reported 4 slots but profile expects 6 slots",
+      },
+    ],
+    readinessLevel: "not_ready",
+    hardwareMode: "production",
+    allowedActions: {
+      configureNetwork: true,
+      claimMachine: false,
+      retryClaim: false,
+      syncProfile: false,
+      resolveTopology: true,
+      runRuntimeAcceptance: false,
+      runHardwareAcceptance: false,
+      attestStock: false,
+      startSales: false,
+    },
+    updatedAt: "2026-07-04T00:00:00Z",
+    ...overrides,
+  };
+}
+
+function provisionedConfig() {
   return {
     public: {
-      machineCode: null,
-      apiBaseUrl: "https://staging-api.example.com/api",
-      mqttUrl: "mqtt://localhost:1883",
+      machineCode: "M001",
+      apiBaseUrl: "https://api.example.com/api",
+      mqttUrl: "mqtt://broker.example:1883",
       mqttUsername: null,
       hardwareAdapter: "mock",
       serialPortPath: null,
@@ -74,15 +123,11 @@ function unprovisionedConfig() {
       kioskMode: false,
       stockMovementRetentionDays: 30,
     },
-    machineSecretConfigured: false,
-    mqttSigningSecretConfigured: false,
+    machineSecretConfigured: true,
+    mqttSigningSecretConfigured: true,
     mqttPasswordConfigured: false,
-    provisioned: false,
-    provisioningIssues: [
-      "machine_code_missing",
-      "machine_secret_missing",
-      "mqtt_signing_secret_missing",
-    ],
+    provisioned: true,
+    provisioningIssues: [],
   };
 }
 
@@ -90,13 +135,30 @@ beforeEach(() => {
   pinia = createPinia();
   setActivePinia(pinia);
   vi.clearAllMocks();
+  routeMock.query = {};
   initializeMock.mockResolvedValue({
     baseUrl: "http://127.0.0.1:7891",
     token: "token-1",
     source: "browser_env",
     mock: true,
   });
-  getConfigMock.mockResolvedValue(unprovisionedConfig());
+  getBringUpMock.mockResolvedValue(bringUpSnapshot());
+  getConfigMock.mockResolvedValue(provisionedConfig());
+  claimMachineMock.mockResolvedValue({
+    status: "provisioned",
+    machineCode: "M001",
+    restartRequested: true,
+    config: provisionedConfig(),
+  });
+  applyNetworkSettingsMock.mockResolvedValue({
+    status: "connected",
+    ssid: "Store-WiFi",
+    hidden: false,
+    diagnostics: [],
+    operatorGuidance: "现场网络已连通",
+    updatedAt: "2026-07-04T00:01:00Z",
+  });
+  downloadLogExportMock.mockResolvedValue(new Response("logs"));
 });
 
 afterEach(() => {
@@ -112,258 +174,198 @@ async function mountView(): Promise<HTMLElement> {
   mountedApp.use(pinia);
   mountedApp.mount(host);
   await vi.waitFor(() => {
-    expect(getConfigMock).toHaveBeenCalled();
+    expect(getBringUpMock).toHaveBeenCalled();
   });
   await nextTick();
   return host;
 }
 
-describe("MachineProvisioningView standard flow", () => {
-  it("asks only for a machine claim code and shows safe provisioning diagnostics", async () => {
+function inputByLabel(host: HTMLElement, labelText: string): HTMLInputElement {
+  const label = Array.from(host.querySelectorAll("label")).find((item) =>
+    item.textContent?.includes(labelText),
+  );
+  const input = label?.querySelector("input");
+  if (!(input instanceof HTMLInputElement)) {
+    throw new Error(`${labelText} input not found`);
+  }
+  return input;
+}
+
+function buttonByText(host: HTMLElement, text: string): HTMLButtonElement {
+  const button = Array.from(host.querySelectorAll("button")).find((item) =>
+    item.textContent?.includes(text),
+  );
+  if (!(button instanceof HTMLButtonElement)) {
+    throw new Error(`${text} button not found`);
+  }
+  return button;
+}
+
+describe("Bring-Up Console", () => {
+  it("renders bring-up state, blockers, diagnostics, and allowed actions as operator Chinese copy", async () => {
     const host = await mountView();
 
-    expect(host.textContent).toContain("机器领取");
-    expect(host.textContent).toContain("Machine Claim Code");
-    expect(host.querySelectorAll("input")).toHaveLength(1);
-    expect(host.querySelector("select")).toBeNull();
-    expect(host.querySelector("textarea")).toBeNull();
-
-    expect(host.textContent).toContain("机器凭据");
-    expect(host.textContent).toContain("MQTT 签名");
-    expect(host.textContent).toContain("未配置");
-    expect(host.textContent).not.toContain("Machine Secret");
-    expect(host.textContent).not.toContain("MQTT Password");
+    expect(host.textContent).toContain("首次部署控制台");
+    expect(host.textContent).toContain("货道拓扑不匹配");
+    expect(host.textContent).toContain("平台货道拓扑与本机下位机返回不一致");
+    expect(host.textContent).toContain("下位机返回货道数量与平台档案不一致");
+    expect(host.textContent).toContain("处理货道拓扑");
+    expect(host.textContent).toContain("配置现场网络");
+    expect(host.textContent).toContain("本机运行验收");
+    expect(host.textContent).toContain("导出现场证据");
+    expect(host.textContent).not.toContain("Bring-Up Console");
+    expect(host.textContent).not.toContain("daemon");
+    expect(host.textContent).not.toContain("Runtime Acceptance");
+    expect(host.textContent).not.toContain("Protected Maintenance Mode");
+    expect(host.textContent).not.toContain(
+      "factory hardware slot topology does not match platform expectation",
+    );
+    expect(host.textContent).not.toContain(
+      "lower controller reported 4 slots but profile expects 6 slots",
+    );
+    expect(host.textContent).not.toContain("PROVISIONING");
+    expect(host.textContent).not.toContain("HARDWARE_SLOT_TOPOLOGY_MISMATCH");
+    expect(host.textContent).not.toContain("LOWER_CONTROLLER_SLOT_COUNT");
+    expect(host.textContent).not.toContain("Diagnostics");
     expect(host.textContent).not.toContain("API Base URL");
-    expect(host.textContent).not.toContain("Hardware Adapter");
-    expect(host.textContent).not.toContain("Scanner");
-    expect(host.textContent).not.toContain("Vision");
-    expect(host.textContent).not.toContain("Payment Capability");
-    expect(host.textContent).not.toContain("ABCD-2345");
   });
 
-  it("submits the claim code and returns to boot after provisioning succeeds", async () => {
-    const provisioned = {
-      ...unprovisionedConfig(),
-      public: {
-        ...unprovisionedConfig().public,
-        machineCode: "M001",
-      },
-      machineSecretConfigured: true,
-      mqttSigningSecretConfigured: true,
-      provisioned: true,
-      provisioningIssues: [],
-    };
-    claimMachineMock.mockResolvedValue({
-      status: "provisioned",
-      machineCode: "M001",
-      restartRequested: true,
-      config: provisioned,
-    });
-    getConfigMock.mockResolvedValueOnce(unprovisionedConfig());
-    getConfigMock.mockResolvedValueOnce(provisioned);
+  it("uses a safe Chinese fallback for unknown daemon reason prose", async () => {
+    getBringUpMock.mockResolvedValueOnce(
+      bringUpSnapshot({
+        blockingReasons: [
+          {
+            code: "SHELL_SCRIPT_EXIT_9009",
+            component: "daemon",
+            message: "daemon shell script failed with exit 9009",
+          },
+        ],
+        diagnostics: [],
+      }),
+    );
+
     const host = await mountView();
-    const input = host.querySelector("input");
-    if (!(input instanceof HTMLInputElement)) {
-      throw new Error("claim code input not found");
-    }
+
+    expect(host.textContent).toContain("存在未识别状态项");
+    expect(host.textContent).toContain("请导出现场证据并交由维护人员处理");
+    expect(host.textContent).not.toContain("SHELL_SCRIPT_EXIT_9009");
+    expect(host.textContent).not.toContain(
+      "daemon shell script failed with exit 9009",
+    );
+  });
+
+  it("submits protected network settings through the daemon contract", async () => {
+    const host = await mountView();
+    inputByLabel(host, "无线网络名称").value = "Store-WiFi";
+    inputByLabel(host, "无线网络名称").dispatchEvent(new Event("input"));
+    inputByLabel(host, "无线网络密码").value = "secret-pass";
+    inputByLabel(host, "无线网络密码").dispatchEvent(new Event("input"));
+    await nextTick();
+
+    buttonByText(host, "提交网络设置").click();
+
+    await vi.waitFor(() => {
+      expect(applyNetworkSettingsMock).toHaveBeenCalledWith({
+        ssid: "Store-WiFi",
+        password: "secret-pass",
+        hidden: false,
+      });
+    });
+    await vi.waitFor(() => {
+      expect(host.textContent).toContain("现场网络已连通");
+    });
+    expect(inputByLabel(host, "无线网络密码").value).toBe("");
+    expect(host.innerHTML).not.toContain("secret-pass");
+  });
+
+  it("clears and does not render the network password after submit failure", async () => {
+    applyNetworkSettingsMock.mockRejectedValueOnce(
+      new Error("adapter rejected password secret-pass"),
+    );
+    const host = await mountView();
+    inputByLabel(host, "无线网络名称").value = "Store-WiFi";
+    inputByLabel(host, "无线网络名称").dispatchEvent(new Event("input"));
+    inputByLabel(host, "无线网络密码").value = "secret-pass";
+    inputByLabel(host, "无线网络密码").dispatchEvent(new Event("input"));
+    await nextTick();
+
+    buttonByText(host, "提交网络设置").click();
+
+    await vi.waitFor(() => {
+      expect(applyNetworkSettingsMock).toHaveBeenCalledWith({
+        ssid: "Store-WiFi",
+        password: "secret-pass",
+        hidden: false,
+      });
+    });
+    await vi.waitFor(() => {
+      expect(inputByLabel(host, "无线网络密码").value).toBe("");
+    });
+    expect(host.textContent).toContain("网络设置提交失败");
+    expect(host.innerHTML).not.toContain("secret-pass");
+  });
+
+  it("submits claim and hides the entered claim code after success", async () => {
+    getBringUpMock.mockResolvedValueOnce(
+      bringUpSnapshot({
+        state: "claim_required",
+        allowedActions: {
+          ...bringUpSnapshot().allowedActions,
+          configureNetwork: false,
+          claimMachine: true,
+        },
+      }),
+    );
+    const host = await mountView();
+    const input = inputByLabel(host, "领取码");
     input.value = "abcd-2345";
     input.dispatchEvent(new Event("input"));
     await nextTick();
 
-    host.querySelector("form")?.dispatchEvent(new Event("submit"));
+    input.closest("form")?.dispatchEvent(new Event("submit"));
 
     await vi.waitFor(() => {
       expect(claimMachineMock).toHaveBeenCalledWith("ABCD-2345");
     });
     await vi.waitFor(() => {
-      expect(host.textContent).toContain("领取成功");
-    });
-    expect(host.textContent).not.toContain("ABCD-2345");
-    expect(routerReplaceMock).toHaveBeenCalledWith("/boot");
-  });
-
-  it("waits for daemon config to return provisioned after restart-window IPC failures", async () => {
-    const provisioned = {
-      ...unprovisionedConfig(),
-      public: {
-        ...unprovisionedConfig().public,
-        machineCode: "M001",
-      },
-      machineSecretConfigured: true,
-      mqttSigningSecretConfigured: true,
-      provisioned: true,
-      provisioningIssues: [],
-    };
-    const restartWindowError = new DaemonUnavailableErrorMock(
-      "daemon request failed",
-    );
-    claimMachineMock.mockResolvedValue({
-      status: "provisioned",
-      machineCode: "M001",
-      restartRequested: true,
-      config: provisioned,
-    });
-    getConfigMock
-      .mockResolvedValueOnce(unprovisionedConfig())
-      .mockRejectedValueOnce(restartWindowError)
-      .mockResolvedValueOnce(provisioned);
-    const host = await mountView();
-    const input = host.querySelector("input");
-    if (!(input instanceof HTMLInputElement)) {
-      throw new Error("claim code input not found");
-    }
-    input.value = "abcd-2345";
-    input.dispatchEvent(new Event("input"));
-    await nextTick();
-
-    host.querySelector("form")?.dispatchEvent(new Event("submit"));
-
-    await vi.waitFor(() => {
-      expect(host.textContent).toContain("正在等待 daemon 应用新配置");
-    });
-    expect(routerReplaceMock).not.toHaveBeenCalled();
-    await vi.waitFor(() => {
-      expect(initializeMock).toHaveBeenCalledWith(true);
       expect(routerReplaceMock).toHaveBeenCalledWith("/boot");
     });
-  });
-
-  it("shows a safe invalid-code state without echoing the submitted claim code", async () => {
-    claimMachineMock.mockRejectedValue(
-      Object.assign(new Error("invalid claim"), {
-        responseCode: "machine_claim_invalid",
-      }),
-    );
-    const host = await mountView();
-    const input = host.querySelector("input");
-    if (!(input instanceof HTMLInputElement)) {
-      throw new Error("claim code input not found");
-    }
-    input.value = "ABCD-2345";
-    input.dispatchEvent(new Event("input"));
-    await nextTick();
-
-    host.querySelector("form")?.dispatchEvent(new Event("submit"));
-
-    await vi.waitFor(() => {
-      expect(host.textContent).toContain("领取码无效");
-    });
-    expect(host.textContent).not.toContain("ABCD-2345");
-    expect(routerReplaceMock).not.toHaveBeenCalled();
-  });
-
-  it.each([
-    ["machine_claim_expired", "领取码已过期"],
-    ["machine_claim_used", "领取码已使用"],
-    ["machine_claim_revoked", "领取码已撤销"],
-    ["machine_claim_locked", "领取码已锁定"],
-    ["network_unavailable", "网络不可用"],
-  ])("shows the %s failure state safely", async (responseCode, copy) => {
-    claimMachineMock.mockRejectedValue(
-      Object.assign(new Error("safe daemon failure"), { responseCode }),
-    );
-    const host = await mountView();
-    const input = host.querySelector("input");
-    if (!(input instanceof HTMLInputElement)) {
-      throw new Error("claim code input not found");
-    }
-    input.value = "ABCD-2345";
-    input.dispatchEvent(new Event("input"));
-    await nextTick();
-
-    host.querySelector("form")?.dispatchEvent(new Event("submit"));
-
-    await vi.waitFor(() => {
-      expect(host.textContent).toContain(copy);
-    });
     expect(host.textContent).not.toContain("ABCD-2345");
   });
 
-  it("shows a pending state while daemon provisioning is running", async () => {
-    claimMachineMock.mockReturnValue(new Promise(() => undefined));
+  it("keeps reclaim, local reset, and acceptance rerun disabled outside protected maintenance entry", async () => {
     const host = await mountView();
-    const input = host.querySelector("input");
-    const button = host.querySelector("button");
-    if (!(input instanceof HTMLInputElement)) {
-      throw new Error("claim code input not found");
-    }
-    if (!(button instanceof HTMLButtonElement)) {
-      throw new Error("submit button not found");
-    }
-    input.value = "ABCD-2345";
-    input.dispatchEvent(new Event("input"));
-    await nextTick();
 
-    host.querySelector("form")?.dispatchEvent(new Event("submit"));
-    await nextTick();
-
-    expect(host.textContent).toContain("正在领取机器配置");
-    expect(button.disabled).toBe(true);
+    expect(buttonByText(host, "重新领取机器").disabled).toBe(true);
+    expect(buttonByText(host, "本机重置").disabled).toBe(true);
+    expect(buttonByText(host, "重新运行验收").disabled).toBe(true);
   });
 
-  it("shows local daemon unavailable when daemon IPC cannot be reached", async () => {
-    claimMachineMock.mockRejectedValue(
-      new DaemonUnavailableErrorMock("daemon request failed"),
-    );
+  it("does not let the protected maintenance query enable daemon-forbidden actions", async () => {
+    routeMock.query = { source: "protected-maintenance" };
     const host = await mountView();
-    const input = host.querySelector("input");
-    if (!(input instanceof HTMLInputElement)) {
-      throw new Error("claim code input not found");
-    }
-    input.value = "ABCD-2345";
-    input.dispatchEvent(new Event("input"));
+
+    const claimInput = inputByLabel(host, "领取码");
+    claimInput.value = "abcd-2345";
+    claimInput.dispatchEvent(new Event("input"));
     await nextTick();
 
-    host.querySelector("form")?.dispatchEvent(new Event("submit"));
-
-    await vi.waitFor(() => {
-      expect(host.textContent).toContain("本机 daemon 暂不可用");
-    });
+    expect(buttonByText(host, "提交领取码").disabled).toBe(true);
+    expect(buttonByText(host, "重新领取机器").disabled).toBe(true);
+    expect(buttonByText(host, "本机重置").disabled).toBe(true);
+    expect(buttonByText(host, "重新运行验收").disabled).toBe(true);
   });
 
-  it("shows network unavailable when the daemon reports backend claim outage", async () => {
-    claimMachineMock.mockRejectedValue(
-      new DaemonUnavailableErrorMock(
-        "claim backend unavailable",
-        "machine_claim_backend_unavailable",
-      ),
-    );
+  it("exports field evidence through the daemon log export entry point", async () => {
     const host = await mountView();
-    const input = host.querySelector("input");
-    if (!(input instanceof HTMLInputElement)) {
-      throw new Error("claim code input not found");
-    }
-    input.value = "ABCD-2345";
-    input.dispatchEvent(new Event("input"));
-    await nextTick();
 
-    host.querySelector("form")?.dispatchEvent(new Event("submit"));
+    buttonByText(host, "导出现场证据").click();
 
     await vi.waitFor(() => {
-      expect(host.textContent).toContain("网络不可用");
+      expect(downloadLogExportMock).toHaveBeenCalledOnce();
     });
-  });
-
-  it("shows a generic safe failure for unspecified claim rejection", async () => {
-    claimMachineMock.mockRejectedValue(
-      Object.assign(new Error("safe daemon failure"), {
-        responseCode: "machine_claim_failed",
-      }),
-    );
-    const host = await mountView();
-    const input = host.querySelector("input");
-    if (!(input instanceof HTMLInputElement)) {
-      throw new Error("claim code input not found");
-    }
-    input.value = "ABCD-2345";
-    input.dispatchEvent(new Event("input"));
-    await nextTick();
-
-    host.querySelector("form")?.dispatchEvent(new Event("submit"));
-
     await vi.waitFor(() => {
-      expect(host.textContent).toContain("领取失败，请联系维护人员重试");
+      expect(host.textContent).toContain("现场证据已导出");
     });
-    expect(host.textContent).not.toContain("ABCD-2345");
   });
 });

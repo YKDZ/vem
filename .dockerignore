@@ -10,6 +10,7 @@ dist
 **/dist
 coverage
 **/coverage
+artifacts
 target
 **/target
 .agents

@@ -5,7 +5,6 @@ import type {
   MachineCommandStatus,
   MachineEnvironmentControlRequest,
   MachineSlotStatus,
-  MachineStatus,
 } from "@vem/shared";
 
 import {
@@ -93,8 +92,6 @@ const machineForm = ref({
   geoLatitude: null as number | null,
   geoLongitude: null as number | null,
   geoTimezone: "Asia/Shanghai",
-  status: "offline" as MachineStatus,
-  mqttClientId: "",
 });
 const machineSaving = ref(false);
 
@@ -108,8 +105,6 @@ function openCreateMachine(): void {
     geoLatitude: null,
     geoLongitude: null,
     geoTimezone: "Asia/Shanghai",
-    status: "offline",
-    mqttClientId: "",
   };
   machineDrawerOpen.value = true;
 }
@@ -124,8 +119,6 @@ function openEditMachine(m: Machine): void {
     geoLatitude: m.geoLocation?.latitude ?? null,
     geoLongitude: m.geoLocation?.longitude ?? null,
     geoTimezone: m.geoLocation?.timezone ?? "Asia/Shanghai",
-    status: m.status,
-    mqttClientId: m.mqttClientId ?? "",
   };
   machineDrawerOpen.value = true;
 }
@@ -173,7 +166,7 @@ async function saveMachine(): Promise<void> {
   const geoLocation = resolveMachineGeoLocationForm();
   if (geoLocation === undefined) {
     Modal.error({
-      title: "Machine Geo Location 无效",
+      title: "固定地理坐标无效",
       content:
         "请填写完整 WGS84 纬度、经度和 IANA 时区；纬度 -90..90，经度 -180..180。",
     });
@@ -186,8 +179,6 @@ async function saveMachine(): Promise<void> {
       name: machineForm.value.name,
       locationLabel: machineForm.value.locationLabel || null,
       geoLocation,
-      status: machineForm.value.status,
-      mqttClientId: machineForm.value.mqttClientId || null,
     };
     if (editingMachine.value) {
       await updateMachine(editingMachine.value.id, body);
@@ -393,11 +384,11 @@ const machineColumns = [
   { title: "编码", dataIndex: "code", key: "code" },
   { title: "名称", dataIndex: "name", key: "name" },
   {
-    title: "Machine Location Label",
+    title: "位置标签",
     dataIndex: "locationLabel",
     key: "locationLabel",
   },
-  { title: "Machine Geo Location", key: "geoLocation" },
+  { title: "固定地理坐标", key: "geoLocation" },
   { title: "状态", dataIndex: "status", key: "status" },
   { title: "最近心跳", dataIndex: "lastSeenAt", key: "lastSeenAt" },
   { title: "环境", key: "environment" },
@@ -682,16 +673,16 @@ async function handleRequestLogExport(m: Machine): Promise<void> {
         <a-form-item label="名称">
           <a-input v-model:value="machineForm.name" />
         </a-form-item>
-        <a-form-item label="Machine Location Label">
+        <a-form-item label="位置标签">
           <a-input v-model:value="machineForm.locationLabel" />
         </a-form-item>
         <a-alert
           class="mb-4"
           type="info"
-          message="Machine Geo Location 使用 WGS84 室外代表性站点坐标，用于天气、日出日落和本地时区计算；不是室内定位，也不要直接填写 GCJ-02 或 BD-09 地图坐标。"
+          message="固定地理坐标使用 WGS84 室外代表性站点坐标，用于天气、日出日落和本地时区计算；不是室内定位，也不要直接填写 GCJ-02 或 BD-09 地图坐标。"
           show-icon
         />
-        <a-form-item label="配置 Machine Geo Location">
+        <a-form-item label="配置固定地理坐标">
           <a-checkbox v-model:checked="machineForm.includeGeoLocation">
             启用固定地理坐标
           </a-checkbox>
@@ -719,17 +710,6 @@ async function handleRequestLogExport(m: Machine): Promise<void> {
             v-model:value="machineForm.geoTimezone"
             :disabled="!machineForm.includeGeoLocation"
           />
-        </a-form-item>
-        <a-form-item label="状态">
-          <a-select v-model:value="machineForm.status">
-            <a-select-option value="offline">下线</a-select-option>
-            <a-select-option value="online">在线</a-select-option>
-            <a-select-option value="maintenance">维护</a-select-option>
-            <a-select-option value="disabled">禁用</a-select-option>
-          </a-select>
-        </a-form-item>
-        <a-form-item label="MQTT Client ID">
-          <a-input v-model:value="machineForm.mqttClientId" />
         </a-form-item>
         <a-button type="primary" :loading="machineSaving" @click="saveMachine">
           保存

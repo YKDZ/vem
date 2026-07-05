@@ -234,7 +234,7 @@ async fn mqtt_command_flow_survives_without_ui_and_dedupes_replay() {
 async fn daemon_restart_flushes_persisted_outbox_result() {
     let broker = MqttBrokerHarness::start().await;
     let temp = tempfile::tempdir().expect("shared daemon data dir");
-    let data_dir = temp.path().to_path_buf();
+    let data_dir = temp.path().join("vending-daemon");
     let mut daemon = DaemonHarness::start_at(
         data_dir.clone(),
         mqtt_config(broker.url(), None),
@@ -312,7 +312,7 @@ async fn daemon_restart_flushes_persisted_outbox_result() {
 async fn broker_unavailable_keeps_due_outbox_with_retry_error() {
     let unused_port = portpicker::pick_unused_port().expect("port");
     let temp = tempfile::tempdir().expect("temp");
-    let data_dir = temp.path().to_path_buf();
+    let data_dir = temp.path().join("vending-daemon");
 
     let state = vending_daemon::state::LocalStateStore::open(&data_dir.join("state.db"))
         .await

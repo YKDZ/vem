@@ -95,12 +95,14 @@ onMounted(async () => {
     await daemonClient.initialize();
 
     pushStep("读取 daemon 健康与交易快照");
-    const [health, ready, saleReadiness, transaction] = await Promise.all([
-      daemonClient.getHealth(),
-      daemonClient.getReady(),
-      daemonClient.getSaleReadiness(),
-      daemonClient.getCurrentTransaction(),
-    ]);
+    const [health, ready, bringUp, saleReadiness, transaction] =
+      await Promise.all([
+        daemonClient.getHealth(),
+        daemonClient.getReady(),
+        daemonClient.getBringUp(),
+        daemonClient.getSaleReadiness(),
+        daemonClient.getCurrentTransaction(),
+      ]);
     machineStore.applyHealth(health);
     connectivityStore.applyHealth(health);
     connectivityStore.applyReady(ready);
@@ -155,6 +157,7 @@ onMounted(async () => {
         daemonAvailable: true,
         health,
         config: machineStore.configSummary,
+        bringUp,
         ready,
         transaction: startupTransaction,
       }),
@@ -167,6 +170,7 @@ onMounted(async () => {
         daemonAvailable: false,
         health: null,
         config: null,
+        bringUp: null,
         ready: null,
         transaction: null,
       }),

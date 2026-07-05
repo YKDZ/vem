@@ -1,14 +1,76 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  bringUpSnapshotSchema,
   configSummarySchema,
   daemonEventSchema,
+  networkSettingsResponseSchema,
   naturalContextSnapshotSchema,
   scannerStatusSchema,
   transactionSnapshotSchema,
 } from "./schemas";
 
 describe("daemon schemas", () => {
+  it("parses safe daemon-owned bring-up snapshot", () => {
+    const parsed = bringUpSnapshotSchema.parse({
+      state: "stock_attestation_required",
+      readinessLevel: "not_ready",
+      hardwareMode: "production",
+      blockingReasons: [
+        {
+          code: "STOCK_ATTESTATION_REQUIRED",
+          component: "stock",
+          message: "physical stock attestation is required before sales",
+        },
+      ],
+      diagnostics: [
+        {
+          code: "PUBLIC_CONFIG_PROFILE_APPLIED",
+          component: "config",
+          message: "local runtime has an applied provisioning profile",
+        },
+      ],
+      allowedActions: {
+        configureNetwork: false,
+        claimMachine: false,
+        retryClaim: false,
+        syncProfile: false,
+        resolveTopology: false,
+        runRuntimeAcceptance: true,
+        runHardwareAcceptance: false,
+        attestStock: true,
+        startSales: false,
+      },
+      updatedAt: "2026-07-04T00:00:00Z",
+    });
+
+    expect(parsed.state).toBe("stock_attestation_required");
+    expect(JSON.stringify(parsed)).not.toContain("secret");
+  });
+
+  it("parses Protected Network Settings response without password fields", () => {
+    const parsed = networkSettingsResponseSchema.parse({
+      status: "unsupported",
+      ssid: "Venue-Guest",
+      hidden: false,
+      diagnostics: [
+        {
+          component: "local_network",
+          level: "warn",
+          code: "INTERACTIVE_LOGIN_NETWORK_UNSUPPORTED",
+          message:
+            "Network appears to require captive portal or other interactive login",
+        },
+      ],
+      operatorGuidance:
+        "该网络需要网页登录或其他交互式认证，当前 Protected Network Settings 不支持。",
+      updatedAt: "2026-07-04T00:00:00Z",
+    });
+
+    expect(parsed.status).toBe("unsupported");
+    expect(JSON.stringify(parsed)).not.toContain("password");
+  });
+
   it("parses scanner event and keeps masked code only", () => {
     const fixture = {
       type: "scanner_code",

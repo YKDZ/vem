@@ -187,6 +187,22 @@ async function expectCoreElements(
       await expect(page.getByText("销售就绪阻塞项")).toBeVisible();
       await expect(page.getByText("Admin Operations Console")).toHaveCount(0);
       break;
+    case "bring-up-console":
+      await expect(
+        page.getByRole("heading", { name: "首次部署控制台" }),
+      ).toBeVisible();
+      await expect(
+        page.getByRole("heading", { name: "货道拓扑不匹配" }),
+      ).toBeVisible();
+      await expect(page.getByText("平台货道拓扑与本机下位机返回不一致")).toBeVisible();
+      await expect(page.getByText("现场网络", { exact: true })).toBeVisible();
+      await expect(page.getByRole("button", { name: "导出现场证据" })).toBeVisible();
+      await expect(page.getByText("Bring-Up Console")).toHaveCount(0);
+      await expect(page.getByText("Runtime Acceptance")).toHaveCount(0);
+      await expect(page.getByText("Protected Maintenance Mode")).toHaveCount(0);
+      await expect(page.getByText("PROVISIONING")).toHaveCount(0);
+      await expect(page.getByText("Diagnostics")).toHaveCount(0);
+      break;
     default:
       throw new Error(
         `No core screenshot assertion defined for scenario ${scenario.id}`,

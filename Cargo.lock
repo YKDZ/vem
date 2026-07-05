@@ -6850,6 +6850,7 @@ dependencies = [
  "uuid",
  "vending-core",
  "windows-service",
+ "windows-sys 0.59.0",
  "wiremock",
  "zip",
 ]

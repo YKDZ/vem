@@ -761,8 +761,6 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
         name: input.name,
         locationLabel: input.locationLabel ?? null,
         ...machineGeoLocationValues(input.geoLocation),
-        status: input.status,
-        mqttClientId: input.mqttClientId ?? null,
       })
       .returning();
     return machineSnapshot(created);
@@ -2189,6 +2187,10 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
           required: false,
           supportsRecommendations: true,
         },
+      },
+      hardwareSlotTopology: {
+        identity: "vem-prod-24",
+        version: "2026-06-adr0026",
       },
       paymentCapability: {
         profile: "production",

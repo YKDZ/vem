@@ -26,6 +26,9 @@ use crate::{
     hardware::HardwareSupervisor,
     logs,
     natural_context::MachineNaturalContextSnapshot,
+    network::{
+        NetworkAdapter, NetworkSettingsRequest, NetworkSettingsResponse, NetworkSetupStatus,
+    },
     state::{
         store::{
             MachinePlanogramInput, MachinePlanogramSlotInput, PhysicalStockAttestationInput,
@@ -80,6 +83,7 @@ pub struct RuntimeStatusCache {
     pub vision: Arc<tokio::sync::RwLock<VisionStatusSnapshot>>,
     pub catalog: Arc<tokio::sync::RwLock<CatalogSnapshot>>,
     pub environment: Arc<tokio::sync::RwLock<vending_core::environment::EnvironmentHeartbeatCache>>,
+    pub network: Arc<tokio::sync::RwLock<Option<NetworkSettingsResponse>>>,
 }
 
 impl RuntimeStatusCache {
@@ -154,6 +158,7 @@ impl RuntimeStatusCache {
             environment: Arc::new(tokio::sync::RwLock::new(
                 vending_core::environment::EnvironmentHeartbeatCache::default(),
             )),
+            network: Arc::new(tokio::sync::RwLock::new(None)),
         }
     }
 }
@@ -175,6 +180,7 @@ pub struct IpcContext {
     pub events: broadcast::Sender<DaemonEvent>,
     pub runtime_tx: mpsc::Sender<vending_core::scanner::RawPaymentCode>,
     pub disk_pressure_probe: Arc<dyn crate::health::DiskPressureProbe>,
+    pub network_adapter: Arc<dyn NetworkAdapter>,
     pub ui: UiRuntimeServices,
 }
 
@@ -188,7 +194,10 @@ pub fn build_router(ctx: IpcContext) -> Router {
     Router::new()
         .route("/healthz", get(healthz))
         .route("/readyz", get(readyz))
+        .route("/v1/bring-up", get(bring_up_snapshot))
+        .route("/v1/network/settings", post(apply_network_settings))
         .route("/v1/config", get(get_config).put(put_config))
+        .route("/v1/config/summary", get(get_config_summary))
         .route("/v1/provisioning/claim", post(claim_machine))
         .route("/v1/catalog", get(catalog_snapshot).post(refresh_catalog))
         .route("/v1/sale-view", get(sale_view))
@@ -757,6 +766,23 @@ async fn readyz(State(ctx): State<IpcContext>) -> impl IntoResponse {
     if let Ok(Some(lock)) = ctx.state.whole_machine_maintenance_lock().await {
         block_ready_snapshot(&mut ready, &lock.code, "hardware", lock.message);
     }
+    match ctx.config_store.hardware_slot_topology_readiness().await {
+        Ok(topology) if !topology.ready => {
+            block_ready_snapshot(
+                &mut ready,
+                &topology.code,
+                "hardware_slot_topology",
+                topology.message,
+            );
+        }
+        Ok(_) => {}
+        Err(error) => block_ready_snapshot(
+            &mut ready,
+            "HARDWARE_SLOT_TOPOLOGY_CHECK_FAILED",
+            "hardware_slot_topology",
+            error,
+        ),
+    }
     let outbox_size = ctx.state.outbox_size().await.unwrap_or_default() as usize;
     let outbox_max = OUTBOX_MAX_EVENTS.max(1) as usize;
     if outbox_size as f64 / outbox_max as f64 >= 0.9 {
@@ -819,6 +845,338 @@ async fn get_config(State(ctx): State<IpcContext>, headers: HeaderMap) -> impl I
     }
 }
 
+async fn get_config_summary(
+    State(ctx): State<IpcContext>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err((status, error)) = require_token(&headers, &ctx.token).await {
+        return (status, error).into_response();
+    }
+
+    match ctx.config_store.load_runtime_configuration_summary().await {
+        Ok(summary) => (StatusCode::OK, Json(summary)).into_response(),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorMessage {
+                code: "config_load_failed",
+                message: error,
+            }),
+        )
+            .into_response(),
+    }
+}
+
+async fn bring_up_snapshot(State(ctx): State<IpcContext>, headers: HeaderMap) -> impl IntoResponse {
+    if let Err((status, error)) = require_token(&headers, &ctx.token).await {
+        return (status, error).into_response();
+    }
+
+    let (config, config_error, hardware_mode) =
+        match ctx.config_store.load_runtime_configuration_summary().await {
+            Ok(summary) => {
+                let hardware_mode = summary
+                    .factory_manifest
+                    .as_ref()
+                    .map(|manifest| {
+                        crate::bring_up::BringUpHardwareMode::from(manifest.hardware_mode.clone())
+                    })
+                    .unwrap_or_default();
+                (
+                    Some(bring_up_runtime_config_from_summary(summary)),
+                    None,
+                    hardware_mode,
+                )
+            }
+            Err(error) => (
+                None,
+                Some(error),
+                crate::bring_up::BringUpHardwareMode::default(),
+            ),
+        };
+    let topology = match ctx.config_store.hardware_slot_topology_readiness().await {
+        Ok(topology) => Some(topology),
+        Err(error) => Some(crate::config::HardwareSlotTopologyReadiness {
+            ready: false,
+            code: "HARDWARE_SLOT_TOPOLOGY_CHECK_FAILED".to_string(),
+            message: error,
+            local: None,
+            platform: None,
+        }),
+    };
+    let topology_ready = topology.as_ref().map(|topology| topology.ready);
+    let topology_code = topology.as_ref().map(|topology| topology.code.clone());
+    let topology_message = topology.as_ref().map(|topology| topology.message.clone());
+    let sale_readiness = machine_sale_readiness_snapshot(&ctx).await.ok();
+    let hardware = ctx.ui.status_cache.hardware.read().await.clone();
+    let network_status = ctx.ui.status_cache.network.read().await.clone();
+    let network_bootstrap_reached_platform = network_status
+        .as_ref()
+        .is_some_and(network_reached_platform);
+
+    let snapshot = crate::bring_up::evaluate_bring_up(crate::bring_up::BringUpEvaluationInput {
+        config,
+        config_error,
+        hardware_mode,
+        platform_reachable: sale_component_ready(sale_readiness.as_ref(), "platformReachability")
+            || network_bootstrap_reached_platform,
+        topology_ready,
+        topology_code,
+        topology_message,
+        active_planogram_ready: sale_component_ready(sale_readiness.as_ref(), "activePlanogram"),
+        production_dispense_path_ready: sale_component_ready(
+            sale_readiness.as_ref(),
+            "productionDispensePath",
+        ),
+        production_dispense_path_code: sale_component_string(
+            sale_readiness.as_ref(),
+            "productionDispensePath",
+            "code",
+        ),
+        production_dispense_path_message: sale_component_string(
+            sale_readiness.as_ref(),
+            "productionDispensePath",
+            "message",
+        ),
+        hardware_online: hardware.online,
+        stock_attestation_required: sale_component_bool(
+            sale_readiness.as_ref(),
+            "physicalStockAttestation",
+            "required",
+        ),
+        stock_attestation_ready: sale_component_ready(
+            sale_readiness.as_ref(),
+            "physicalStockAttestation",
+        ),
+        sale_ready: sale_readiness
+            .as_ref()
+            .and_then(|snapshot| snapshot.get("canStartNetworkAuthorizedSale"))
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false),
+        updated_at: crate::state::store::now_iso(),
+    });
+    let mut snapshot = snapshot;
+    if let Some(network) = network_status {
+        snapshot
+            .diagnostics
+            .extend(
+                network
+                    .diagnostics
+                    .into_iter()
+                    .map(|item| crate::bring_up::BringUpReason {
+                        code: item.code,
+                        component: item.component,
+                        message: item.message,
+                    }),
+            );
+    }
+
+    (StatusCode::OK, Json(snapshot)).into_response()
+}
+
+async fn apply_network_settings(
+    State(ctx): State<IpcContext>,
+    headers: HeaderMap,
+    Json(payload): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    if let Err((status, error)) = require_token(&headers, &ctx.token).await {
+        return (status, error).into_response();
+    }
+
+    let payload = match validate_network_settings_payload(payload) {
+        Ok(payload) => payload,
+        Err(response) => {
+            *ctx.ui.status_cache.network.write().await = Some(response.clone());
+            return (StatusCode::BAD_REQUEST, Json(response)).into_response();
+        }
+    };
+
+    let response = ctx.network_adapter.apply_wifi_settings(payload).await;
+    let status = match response.status {
+        NetworkSetupStatus::Connected => StatusCode::OK,
+        NetworkSetupStatus::Failed => StatusCode::BAD_REQUEST,
+        NetworkSetupStatus::Unsupported => StatusCode::UNPROCESSABLE_ENTITY,
+    };
+    if matches!(response.status, NetworkSetupStatus::Connected) {
+        if let Err(error) = ctx
+            .config_store
+            .save_local_bring_up_network_profile(response.ssid.clone())
+            .await
+        {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorMessage {
+                    code: "local_bring_up_settings_persist_failed",
+                    message: error,
+                }),
+            )
+                .into_response();
+        }
+    }
+    *ctx.ui.status_cache.network.write().await = Some(response.clone());
+    (status, Json(response)).into_response()
+}
+
+fn validate_network_settings_payload(
+    payload: serde_json::Value,
+) -> Result<NetworkSettingsRequest, NetworkSettingsResponse> {
+    let Some(object) = payload.as_object() else {
+        return Err(invalid_network_settings_response(
+            "",
+            false,
+            "request body must be a JSON object",
+        ));
+    };
+    let allowed = ["ssid", "password", "hidden"];
+    if let Some(field) = object
+        .keys()
+        .find(|key| !allowed.contains(&key.as_str()))
+        .cloned()
+    {
+        return Err(invalid_network_settings_response(
+            string_field(object, "ssid")
+                .map(str::trim)
+                .unwrap_or_default(),
+            bool_field(object, "hidden").unwrap_or(false),
+            format!("unsupported network settings field: {field}"),
+        ));
+    }
+
+    let Some(ssid) = string_field(object, "ssid") else {
+        return Err(invalid_network_settings_response(
+            "",
+            bool_field(object, "hidden").unwrap_or(false),
+            "SSID is required",
+        ));
+    };
+    let Some(password) = string_field(object, "password") else {
+        return Err(invalid_network_settings_response(
+            ssid.trim(),
+            bool_field(object, "hidden").unwrap_or(false),
+            "Wi-Fi password is required",
+        ));
+    };
+    let hidden = bool_field(object, "hidden").unwrap_or(false);
+    let ssid = ssid.trim();
+
+    let error = if ssid.is_empty() {
+        Some("SSID is required")
+    } else if password.is_empty() {
+        Some("Wi-Fi password is required")
+    } else if ssid.as_bytes().len() > 32 {
+        Some("SSID must be at most 32 bytes")
+    } else if password.chars().count() < 8 || password.chars().count() > 63 {
+        Some("WPA passphrase must be between 8 and 63 characters")
+    } else if contains_control_character(ssid) || contains_control_character(password) {
+        Some("SSID and password must not contain XML-invalid control characters")
+    } else {
+        None
+    };
+
+    if let Some(message) = error {
+        return Err(invalid_network_settings_response(ssid, hidden, message));
+    }
+
+    Ok(NetworkSettingsRequest {
+        ssid: ssid.to_string(),
+        password: password.to_string(),
+        hidden,
+    })
+}
+
+fn string_field<'a>(
+    object: &'a serde_json::Map<String, serde_json::Value>,
+    field: &str,
+) -> Option<&'a str> {
+    object.get(field).and_then(|value| value.as_str())
+}
+
+fn bool_field(object: &serde_json::Map<String, serde_json::Value>, field: &str) -> Option<bool> {
+    object.get(field).and_then(|value| value.as_bool())
+}
+
+fn contains_control_character(value: &str) -> bool {
+    value.chars().any(char::is_control)
+}
+
+fn invalid_network_settings_response(
+    ssid: impl Into<String>,
+    hidden: bool,
+    message: impl Into<String>,
+) -> NetworkSettingsResponse {
+    NetworkSettingsResponse {
+        status: NetworkSetupStatus::Failed,
+        ssid: ssid.into(),
+        hidden,
+        diagnostics: vec![crate::network::NetworkDiagnostic {
+            component: "local_network".to_string(),
+            level: "error".to_string(),
+            code: "NETWORK_SETTINGS_INVALID_PAYLOAD".to_string(),
+            message: message.into(),
+        }],
+        operator_guidance:
+            "Wi-Fi 信息格式无效。请重新输入 1-32 字节 SSID 和 8-63 位 WPA/WPA2 密码。".to_string(),
+        updated_at: crate::state::store::now_iso(),
+    }
+}
+
+fn bring_up_runtime_config_from_summary(
+    summary: crate::config::RuntimeConfigurationSummary,
+) -> crate::config::MachinePublicRuntimeConfig {
+    let provisioned = summary.provisioning_profile_cache.is_some()
+        && summary.effective_public.machine_code.is_some();
+    let mut provisioning_issues = Vec::new();
+    if !provisioned {
+        provisioning_issues.push("provisioning_profile_cache_missing".to_string());
+    }
+    crate::config::MachinePublicRuntimeConfig {
+        public: summary.effective_public,
+        machine_secret_configured: summary.configured_state.machine_secret_configured,
+        mqtt_signing_secret_configured: summary.configured_state.mqtt_signing_secret_configured,
+        mqtt_password_configured: summary.configured_state.mqtt_password_configured,
+        provisioned,
+        provisioning_issues,
+    }
+}
+
+fn sale_component<'a>(
+    snapshot: Option<&'a serde_json::Value>,
+    component: &str,
+) -> Option<&'a serde_json::Value> {
+    snapshot?
+        .get("components")
+        .and_then(|value| value.get(component))
+}
+
+fn sale_component_ready(snapshot: Option<&serde_json::Value>, component: &str) -> bool {
+    sale_component_bool(snapshot, component, "ready")
+}
+
+fn network_reached_platform(network: &NetworkSettingsResponse) -> bool {
+    matches!(network.status, NetworkSetupStatus::Connected)
+        && network.diagnostics.iter().any(|item| {
+            item.component == "provisioning_endpoint"
+                && item.code == "PROVISIONING_ENDPOINT_REACHABLE"
+        })
+}
+
+fn sale_component_bool(snapshot: Option<&serde_json::Value>, component: &str, field: &str) -> bool {
+    sale_component(snapshot, component)
+        .and_then(|value| value.get(field))
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false)
+}
+
+fn sale_component_string(
+    snapshot: Option<&serde_json::Value>,
+    component: &str,
+    field: &str,
+) -> Option<String> {
+    sale_component(snapshot, component)
+        .and_then(|value| value.get(field))
+        .and_then(|value| value.as_str())
+        .map(ToString::to_string)
+}
+
 async fn put_config(
     State(ctx): State<IpcContext>,
     headers: HeaderMap,
@@ -851,7 +1209,7 @@ async fn claim_machine(
     }
 
     let claim_code = payload.claim_code.trim().to_ascii_uppercase();
-    let public = match ctx.config_store.load_public_config().await {
+    let public = match ctx.config_store.load_effective_public_config().await {
         Ok(public) => public,
         Err(error) => {
             return (
@@ -1410,7 +1768,7 @@ async fn refresh_catalog(State(ctx): State<IpcContext>, headers: HeaderMap) -> i
         return (status, error).into_response();
     }
 
-    let config = match ctx.config_store.load_public_config().await {
+    let config = match ctx.config_store.load_effective_public_config().await {
         Ok(config) => config,
         Err(error) => {
             return (
@@ -1482,7 +1840,7 @@ async fn sale_view(State(ctx): State<IpcContext>, headers: HeaderMap) -> impl In
 
     let machine_code = ctx
         .config_store
-        .load_public_config()
+        .load_effective_public_config()
         .await
         .ok()
         .and_then(|config| config.machine_code);
@@ -1503,10 +1861,40 @@ async fn sale_readiness(State(ctx): State<IpcContext>, headers: HeaderMap) -> im
     }
 }
 
+async fn require_hardware_slot_topology_for_planogram(
+    ctx: &IpcContext,
+) -> Result<(), axum::response::Response> {
+    let readiness = ctx
+        .config_store
+        .hardware_slot_topology_readiness()
+        .await
+        .map_err(|error| {
+            (
+                StatusCode::CONFLICT,
+                Json(ErrorMessage {
+                    code: "hardware_slot_topology_check_failed",
+                    message: error,
+                }),
+            )
+                .into_response()
+        })?;
+    if readiness.ready {
+        return Ok(());
+    }
+    Err((
+        StatusCode::CONFLICT,
+        Json(ErrorMessage {
+            code: "hardware_slot_topology_mismatch",
+            message: readiness.message,
+        }),
+    )
+        .into_response())
+}
+
 pub(crate) async fn machine_sale_readiness_snapshot(
     ctx: &IpcContext,
 ) -> Result<serde_json::Value, StoreError> {
-    let public = ctx.config_store.load_public_config().await.ok();
+    let public = ctx.config_store.load_effective_public_config().await.ok();
     let machine_code = public
         .as_ref()
         .and_then(|config| config.machine_code.clone())
@@ -1543,6 +1931,17 @@ pub(crate) async fn machine_sale_readiness_snapshot(
 
     let hardware = ctx.ui.status_cache.hardware.read().await.clone();
     let production_dispense_path = production_dispense_path_readiness(public.as_ref());
+    let hardware_slot_topology = ctx
+        .config_store
+        .hardware_slot_topology_readiness()
+        .await
+        .unwrap_or_else(|error| crate::config::HardwareSlotTopologyReadiness {
+            ready: false,
+            code: "HARDWARE_SLOT_TOPOLOGY_CHECK_FAILED".to_string(),
+            message: error,
+            local: None,
+            platform: None,
+        });
     let physical_stock_attestation = ctx.state.physical_stock_attestation_status().await?;
     let physical_stock_attestation_ready = physical_stock_attestation.status == "ready";
     let physical_stock_attestation_required = production_dispense_path.ready;
@@ -1631,6 +2030,9 @@ pub(crate) async fn machine_sale_readiness_snapshot(
     if !production_dispense_path.ready {
         blocking_codes.push(production_dispense_path.code);
     }
+    if !hardware_slot_topology.ready {
+        blocking_codes.push(hardware_slot_topology.code.as_str());
+    }
     if physical_stock_attestation_required && !physical_stock_attestation_ready {
         blocking_codes.push(physical_stock_attestation.code.as_str());
     }
@@ -1647,6 +2049,7 @@ pub(crate) async fn machine_sale_readiness_snapshot(
         && sync_ready
         && whole_machine_ready
         && production_dispense_path.ready
+        && hardware_slot_topology.ready
         && (!physical_stock_attestation_required || physical_stock_attestation_ready)
         && slot_sale_safety_ready;
 
@@ -1710,6 +2113,13 @@ pub(crate) async fn machine_sale_readiness_snapshot(
                 production_dispense_path.code,
                 production_dispense_path.message,
             ),
+            "hardwareSlotTopology": serde_json::json!({
+                "ready": hardware_slot_topology.ready,
+                "code": hardware_slot_topology.code,
+                "message": hardware_slot_topology.message,
+                "local": hardware_slot_topology.local,
+                "platform": hardware_slot_topology.platform,
+            }),
             "physicalStockAttestation": serde_json::json!({
                 "ready": physical_stock_attestation_ready,
                 "required": physical_stock_attestation_required,
@@ -1890,7 +2300,7 @@ fn default_production_payment_capability() -> ProductionMachinePaymentCapability
 
 async fn load_machine_payment_capability(ctx: &IpcContext) -> ProductionMachinePaymentCapability {
     ctx.config_store
-        .load_public_config()
+        .load_effective_public_config()
         .await
         .ok()
         .and_then(|config| config.payment_capability)
@@ -2079,7 +2489,7 @@ async fn validate_create_order_intent(
 
     let machine_code = ctx
         .config_store
-        .load_public_config()
+        .load_effective_public_config()
         .await
         .ok()
         .and_then(|config| config.machine_code);
@@ -2135,7 +2545,7 @@ async fn sync_planogram(State(ctx): State<IpcContext>, headers: HeaderMap) -> im
         return (status, error).into_response();
     }
 
-    let config = match ctx.config_store.load_public_config().await {
+    let config = match ctx.config_store.load_effective_public_config().await {
         Ok(config) => config,
         Err(error) => {
             return (
@@ -2225,6 +2635,9 @@ async fn sync_planogram(State(ctx): State<IpcContext>, headers: HeaderMap) -> im
         applied_by: None,
         slots,
     };
+    if let Err(response) = require_hardware_slot_topology_for_planogram(&ctx).await {
+        return response;
+    }
     let snapshot = match ctx.state.apply_planogram(input).await {
         Ok(snapshot) => snapshot,
         Err(error) => return store_error_response("planogram_apply_failed", error),
@@ -2258,6 +2671,10 @@ async fn apply_planogram(
         return (status, error).into_response();
     }
 
+    if let Err(response) = require_hardware_slot_topology_for_planogram(&ctx).await {
+        return response;
+    }
+
     match ctx.state.apply_planogram(input).await {
         Ok(snapshot) => (StatusCode::OK, Json(snapshot)).into_response(),
         Err(error) => store_error_response("planogram_apply_failed", error),
@@ -2273,7 +2690,7 @@ async fn record_physical_stock_attestation(
         return (status, error).into_response();
     }
 
-    let config = match ctx.config_store.load_public_config().await {
+    let config = match ctx.config_store.load_effective_public_config().await {
         Ok(config) => config,
         Err(error) => {
             return (
@@ -2320,7 +2737,7 @@ async fn record_stock_movement(
         return (status, error).into_response();
     }
 
-    let config = match ctx.config_store.load_public_config().await {
+    let config = match ctx.config_store.load_effective_public_config().await {
         Ok(config) => config,
         Err(error) => {
             return (
@@ -2365,7 +2782,7 @@ async fn update_slot_sales_state(
 
     let machine_code = ctx
         .config_store
-        .load_public_config()
+        .load_effective_public_config()
         .await
         .ok()
         .and_then(|config| config.machine_code);
@@ -2672,7 +3089,7 @@ async fn hardware_self_check(
 async fn run_hardware_self_check(
     ctx: &IpcContext,
 ) -> Result<(vending_core::hardware::HardwareStatus, bool), axum::response::Response> {
-    let public = match ctx.config_store.load_public_config().await {
+    let public = match ctx.config_store.load_effective_public_config().await {
         Ok(public) => public,
         Err(error) => {
             return Err((
@@ -2923,7 +3340,7 @@ async fn natural_context(State(ctx): State<IpcContext>, headers: HeaderMap) -> i
         return (status, error).into_response();
     }
 
-    let public = match ctx.config_store.load_public_config().await {
+    let public = match ctx.config_store.load_effective_public_config().await {
         Ok(public) => public,
         Err(error) => {
             return (
@@ -3126,7 +3543,10 @@ mod tests {
         http::{Method, Request, StatusCode},
     };
     use serde_json::json;
-    use std::sync::Arc;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
     use tempfile::tempdir;
     use tower::util::ServiceExt;
 
@@ -3248,7 +3668,12 @@ mod tests {
         machine_code: Option<String>,
         backend_base_url: &str,
     ) -> IpcContext {
-        let data_dir = data_dir.to_path_buf();
+        let data_dir =
+            if data_dir.file_name().and_then(|name| name.to_str()) == Some("vending-daemon") {
+                data_dir.to_path_buf()
+            } else {
+                data_dir.join("vending-daemon")
+            };
         let state = crate::state::LocalStateStore::open(&data_dir.join("state.db"))
             .await
             .expect("state");
@@ -3298,6 +3723,7 @@ mod tests {
                 available_bytes: crate::health::DISK_PRESSURE_MIN_AVAILABLE_BYTES + 1,
                 threshold_bytes: crate::health::DISK_PRESSURE_MIN_AVAILABLE_BYTES,
             }),
+            network_adapter: crate::network::adapter_from_env(),
             ui: UiRuntimeServices {
                 backend,
                 transaction,
@@ -3406,6 +3832,83 @@ mod tests {
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
+    struct CountingNetworkAdapter {
+        calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::network::NetworkAdapter for CountingNetworkAdapter {
+        async fn apply_wifi_settings(
+            &self,
+            request: crate::network::NetworkSettingsRequest,
+        ) -> crate::network::NetworkSettingsResponse {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            crate::network::NetworkSettingsResponse {
+                status: crate::network::NetworkSetupStatus::Connected,
+                ssid: request.ssid,
+                hidden: request.hidden,
+                diagnostics: vec![],
+                operator_guidance: "ok".to_string(),
+                updated_at: crate::state::store::now_iso(),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn network_settings_rejects_invalid_payload_before_adapter_call() {
+        let temp = tempdir().expect("temp");
+        let mut ctx =
+            test_ipc_context(temp.path(), "token-1", Some("M1".to_string()), "http://api").await;
+        let calls = Arc::new(AtomicUsize::new(0));
+        ctx.network_adapter = Arc::new(CountingNetworkAdapter {
+            calls: calls.clone(),
+        });
+        let app = build_router(ctx);
+        let valid_password = ["valid", "network", "credential"].join("-");
+        let short_password = ["short"].join("");
+        let long_password = "x".repeat(64);
+        let control_password = format!("valid{}credential", '\u{0007}');
+
+        for payload in [
+            json!({ "ssid": "", "password": valid_password.clone(), "hidden": false }),
+            json!({ "ssid": "VEM-Lab", "password": "", "hidden": false }),
+            json!({ "ssid": "VEM-Lab", "password": short_password.clone(), "hidden": false }),
+            json!({ "ssid": "VEM-Lab", "password": long_password.clone(), "hidden": false }),
+            json!({ "ssid": "123456789012345678901234567890123", "password": valid_password.clone(), "hidden": false }),
+            json!({ "ssid": "VEM\u{0007}Lab", "password": valid_password.clone(), "hidden": false }),
+            json!({ "ssid": "VEM-Lab", "password": control_password.clone(), "hidden": false }),
+            json!({ "ssid": "VEM-Lab", "password": valid_password.clone(), "hidden": false, "extra": true }),
+        ] {
+            let response = post_json(&app, "/v1/network/settings", "token-1", payload).await;
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            let body = body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("body");
+            let result: serde_json::Value = serde_json::from_slice(&body).expect("json");
+            assert_eq!(result["status"], "failed");
+            assert!(result["diagnostics"]
+                .as_array()
+                .expect("diagnostics")
+                .iter()
+                .any(|item| item["component"] == "local_network"
+                    && item["code"] == "NETWORK_SETTINGS_INVALID_PAYLOAD"));
+            let text = result.to_string();
+            for submitted in [
+                &valid_password,
+                &short_password,
+                &long_password,
+                &control_password,
+            ] {
+                assert!(
+                    !text.contains(submitted),
+                    "validation response leaked submitted Wi-Fi password"
+                );
+            }
+        }
+
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
     struct FixedDiskPressureProbe {
         available_bytes: u64,
         threshold_bytes: u64,
@@ -3465,6 +3968,109 @@ mod tests {
                 .await
                 .expect("save production config");
         }
+    }
+
+    async fn ready_payment_options_server() -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/machine-orders/payment-options"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "options": [{
+                    "optionKey": "qr_code:alipay",
+                    "providerCode": "alipay",
+                    "method": "qr_code",
+                    "displayName": "支付宝",
+                    "description": "请使用支付宝扫码支付",
+                    "icon": "alipay",
+                    "disabled": false,
+                    "disabledReason": null,
+                    "recommended": true
+                }],
+                "defaultOptionKey": "qr_code:alipay",
+                "defaultProviderCode": "alipay",
+                "serverTime": "2026-06-08T16:30:00.000Z"
+            })))
+            .mount(&server)
+            .await;
+        server
+    }
+
+    async fn write_factory_manifest(temp_root: &std::path::Path, identity: &str, version: &str) {
+        let manifest_dir = temp_root.join("factory");
+        tokio::fs::create_dir_all(&manifest_dir)
+            .await
+            .expect("factory dir");
+        tokio::fs::write(
+            manifest_dir.join("factory-manifest.json"),
+            serde_json::to_string_pretty(&json!({
+                "layoutVersion": 1,
+                "environment": "test",
+                "provisioningEndpoint": "http://127.0.0.1:0/api",
+                "hardwareMode": "production",
+                "hardwareModel": "VEM-PROD-24",
+                "hardwareSlotTopology": {
+                    "identity": identity,
+                    "version": version
+                }
+            }))
+            .expect("manifest json"),
+        )
+        .await
+        .expect("write factory manifest");
+    }
+
+    async fn apply_platform_topology(ctx: &IpcContext, identity: &str, version: &str) {
+        let path = ctx.config_store.provisioning_profile_cache_summary_path();
+        if let Some(parent) = path.parent() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .expect("profile cache dir");
+        }
+        tokio::fs::write(
+            path,
+            serde_json::to_string_pretty(&json!({
+                "profileVersion": 1,
+                "machineId": "550e8400-e29b-41d4-a716-446655440000",
+                "machineCode": "MACHINE-1",
+                "machineName": "Lobby Machine",
+                "machineStatus": "online",
+                "claimedAt": "2026-06-08T16:30:00.000Z",
+                "apiBaseUrl": "http://127.0.0.1:0/api",
+                "mqttUrl": "mqtt://broker.example:1883",
+                "mqttClientId": "vem-machine-MACHINE-1",
+                "runtimeEndpoints": {
+                    "apiBasePath": "/api",
+                    "machineAuthTokenPath": "/api/machine-auth/token",
+                    "machineApiBasePath": "/api/machines/MACHINE-1",
+                    "mqttTopicPrefix": "vem/machines/MACHINE-1"
+                },
+                "hardwareProfile": {
+                    "profile": "production",
+                    "controller": { "required": true, "protocol": "vem-vending-controller" },
+                    "paymentScanner": { "required": true, "supportsPaymentCode": true },
+                    "vision": { "required": false, "supportsRecommendations": true }
+                },
+                "hardwareSlotTopology": {
+                    "identity": identity,
+                    "version": version
+                },
+                "paymentCapability": {
+                    "profile": "production",
+                    "qrCodeEnabled": true,
+                    "paymentCodeEnabled": true,
+                    "serverTime": "2026-06-08T16:30:00.000Z"
+                },
+                "provisioningMetadata": {
+                    "profileVersion": 1,
+                    "claimCodeId": "550e8400-e29b-41d4-a716-446655440111",
+                    "claimedAt": "2026-06-08T16:30:00.000Z",
+                    "serverTime": "2026-06-08T16:30:00.000Z"
+                }
+            }))
+            .expect("profile cache json"),
+        )
+        .await
+        .expect("write profile cache");
     }
 
     fn one_slot_planogram(
@@ -3576,6 +4182,10 @@ mod tests {
                 "controller": { "required": true, "protocol": "vem-vending-controller" },
                 "paymentScanner": { "required": true, "supportsPaymentCode": true },
                 "vision": { "required": false, "supportsRecommendations": true }
+            },
+            "hardwareSlotTopology": {
+                "identity": "vem-prod-24",
+                "version": "2026-06-adr0026"
             },
             "paymentCapability": {
                 "profile": "production",
@@ -3754,6 +4364,117 @@ mod tests {
         assert!(!config_text.contains("vms_local-machine"));
         assert!(!config_text.contains("vms_local-mqtt"));
         assert!(!config_text.contains("mqtt-password"));
+    }
+
+    #[tokio::test]
+    async fn provisioning_claim_uses_factory_manifest_endpoint_when_legacy_config_is_stale() {
+        let stale_legacy_server = MockServer::start().await;
+        let factory_server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/machines/claim"))
+            .and(body_partial_json(json!({
+                "claimCode": "ABCD-2345"
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(valid_provisioning_profile()))
+            .mount(&factory_server)
+            .await;
+
+        let temp_dir = tempdir().expect("tmp");
+        let root = temp_dir.path();
+        let data_dir = root.join("vending-daemon");
+        tokio::fs::create_dir_all(root.join("factory"))
+            .await
+            .expect("factory dir");
+        tokio::fs::write(
+            root.join("factory").join("factory-manifest.json"),
+            json!({
+                "layoutVersion": 1,
+                "environment": "production",
+                "provisioningEndpoint": factory_server.uri(),
+                "hardwareMode": "production",
+                "hardwareModel": "VEM-PROD-24",
+                "hardwareSlotTopology": {
+                    "identity": "vem-prod-24",
+                    "version": "2026-07-01"
+                }
+            })
+            .to_string(),
+        )
+        .await
+        .expect("write factory manifest");
+        let app = build_router(
+            test_ipc_context(&data_dir, "token-1", None, &stale_legacy_server.uri()).await,
+        );
+
+        let response = post_json(
+            &app,
+            "/v1/provisioning/claim",
+            "token-1",
+            json!({ "claimCode": "ABCD-2345" }),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(factory_server.received_requests().await.unwrap().len(), 1);
+        assert_eq!(
+            stale_legacy_server.received_requests().await.unwrap().len(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn provisioning_claim_writes_profile_cache_layer_for_effective_runtime_config() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/machines/claim"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(valid_provisioning_profile()))
+            .mount(&server)
+            .await;
+
+        let temp_dir = tempdir().expect("tmp");
+        let data_dir = temp_dir.path().join("vending-daemon");
+        let app = build_router(test_ipc_context(&data_dir, "token-1", None, &server.uri()).await);
+
+        let response = post_json(
+            &app,
+            "/v1/provisioning/claim",
+            "token-1",
+            json!({ "claimCode": "ABCD-2345" }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let summary_response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/config/summary")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(summary_response.status(), StatusCode::OK);
+        let body = body::to_bytes(summary_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let summary: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(summary["configuredState"]["provisioningProfileCache"], true);
+        assert_eq!(summary["provisioningProfileCache"]["machineCode"], "M001");
+        assert_eq!(
+            summary["provisioningProfileCache"]["runtimeEndpoints"]["machineApiBasePath"],
+            "/api/machines/M001"
+        );
+        assert_eq!(
+            summary["provisioningProfileCache"]["paymentCapability"]["paymentCodeEnabled"],
+            true
+        );
+        assert_eq!(
+            summary["effectivePublic"]["provisioningMetadata"]["claimCodeId"],
+            "550e8400-e29b-41d4-a716-446655440111"
+        );
     }
 
     #[tokio::test]
@@ -3994,6 +4715,7 @@ mod tests {
             .status(),
             StatusCode::OK
         );
+        write_factory_manifest(temp_dir.path(), "vem-prod-24", "2026-06-adr0026").await;
 
         let slot_id = "550e8400-e29b-41d4-a716-4466554400f1";
         let inventory_id = "550e8400-e29b-41d4-a716-4466554400f2";
@@ -4567,12 +5289,13 @@ mod tests {
             .await;
 
         let temp_dir = tempdir().expect("tmp");
-        let app =
-            build_router(test_ipc_context(temp_dir.path(), "token-1", None, &server.uri()).await);
-        tokio::fs::remove_dir_all(temp_dir.path().join("logs"))
+        let ctx = test_ipc_context(temp_dir.path(), "token-1", None, &server.uri()).await;
+        let logs_path = ctx.data_dir.join("logs");
+        let app = build_router(ctx);
+        tokio::fs::remove_dir_all(&logs_path)
             .await
             .expect("remove logs dir");
-        tokio::fs::write(temp_dir.path().join("logs"), b"not-a-directory")
+        tokio::fs::write(&logs_path, b"not-a-directory")
             .await
             .expect("replace logs dir with file");
 
@@ -5126,6 +5849,111 @@ mod tests {
             .filter_map(|option| option["optionKey"].as_str())
             .collect();
         assert_eq!(option_keys, vec!["qr_code:alipay", "mock:mock"]);
+        assert_eq!(options["defaultOptionKey"], "qr_code:alipay");
+        assert_eq!(options["defaultProviderCode"], "alipay");
+    }
+
+    #[tokio::test]
+    async fn payment_options_use_profile_cache_capability_when_legacy_config_is_stale() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/machines/claim"))
+            .respond_with({
+                let mut profile = valid_provisioning_profile();
+                profile["paymentCapability"]["paymentCodeEnabled"] = json!(false);
+                ResponseTemplate::new(200).set_body_json(profile)
+            })
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(wiremock::matchers::path("/machine-orders/payment-options"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "options": [
+                    {
+                        "optionKey": "qr_code:alipay",
+                        "providerCode": "alipay",
+                        "method": "qr_code",
+                        "displayName": "支付宝扫码",
+                        "description": "请使用支付宝扫描屏幕二维码",
+                        "icon": "alipay",
+                        "recommended": true,
+                        "disabled": false,
+                        "disabledReason": null
+                    },
+                    {
+                        "optionKey": "payment_code:alipay",
+                        "providerCode": "alipay",
+                        "method": "payment_code",
+                        "displayName": "支付宝付款码",
+                        "description": "请出示支付宝付款码并靠近扫码窗口",
+                        "icon": "alipay",
+                        "recommended": false,
+                        "disabled": false,
+                        "disabledReason": null
+                    }
+                ],
+                "defaultOptionKey": "payment_code:alipay",
+                "defaultProviderCode": "alipay",
+                "serverTime": "2026-06-04T00:00:00Z"
+            })))
+            .mount(&server)
+            .await;
+
+        let temp_dir = tempdir().expect("tmp");
+        let data_dir = temp_dir.path().join("vending-daemon");
+        let ctx = test_ipc_context(&data_dir, "token-1", None, &server.uri()).await;
+        let app = build_router(ctx.clone());
+        assert_eq!(
+            post_json(
+                &app,
+                "/v1/provisioning/claim",
+                "token-1",
+                json!({ "claimCode": "ABCD-2345" }),
+            )
+            .await
+            .status(),
+            StatusCode::OK
+        );
+
+        let mut stale_legacy = ctx.config_store.load_public_config().await.expect("config");
+        stale_legacy.payment_capability = Some(crate::config::ProductionMachinePaymentCapability {
+            profile: "production".to_string(),
+            qr_code_enabled: true,
+            payment_code_enabled: true,
+            server_time: "2026-06-08T16:30:00.000Z".to_string(),
+            options: vec![],
+            default_option_key: None,
+            default_provider_code: None,
+        });
+        ctx.config_store
+            .save_public_config(stale_legacy)
+            .await
+            .expect("save stale legacy bridge");
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/payment-options")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let options: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let option_keys: Vec<&str> = options["options"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|option| option["optionKey"].as_str())
+            .collect();
+
+        assert_eq!(option_keys, vec!["qr_code:alipay"]);
         assert_eq!(options["defaultOptionKey"], "qr_code:alipay");
         assert_eq!(options["defaultProviderCode"], "alipay");
     }
@@ -6062,6 +6890,297 @@ mod tests {
             readiness["components"]["productionDispensePath"]["ready"],
             true
         );
+    }
+
+    #[tokio::test]
+    async fn matching_hardware_slot_topology_allows_planogram_and_sale_readiness() {
+        let server = ready_payment_options_server().await;
+        let temp_dir = tempdir().expect("tmp");
+        let ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            &server.uri(),
+        )
+        .await;
+        write_factory_manifest(temp_dir.path(), "vem-prod-24", "2026-06-adr0026").await;
+        apply_platform_topology(&ctx, "vem-prod-24", "2026-06-adr0026").await;
+        mark_runtime_sale_ready(&ctx).await;
+        let app = build_router(ctx);
+        let slot_id = "550e8400-e29b-41d4-a716-446655440901";
+        let inventory_id = "550e8400-e29b-41d4-a716-446655440902";
+
+        assert_eq!(
+            post_json(
+                &app,
+                "/v1/stock/planogram",
+                "token-1",
+                one_slot_planogram("PLAN-TOPOLOGY-MATCH", slot_id, inventory_id),
+            )
+            .await
+            .status(),
+            StatusCode::OK
+        );
+        assert_eq!(
+            post_json(
+                &app,
+                "/v1/stock/movements",
+                "token-1",
+                json!({
+                    "movementId": "MOVE-TOPOLOGY-MATCH",
+                    "planogramVersion": "PLAN-TOPOLOGY-MATCH",
+                    "slotId": slot_id,
+                    "movementType": "planned_refill",
+                    "quantity": 2,
+                    "source": "field_service",
+                    "attributedTo": "operator-1"
+                }),
+            )
+            .await
+            .status(),
+            StatusCode::CREATED
+        );
+        record_attested_stock(&app, "PLAN-TOPOLOGY-MATCH", slot_id, 2).await;
+
+        let readiness = get_ipc_json(&app, "/v1/sale-readiness", Some("token-1")).await;
+        assert_eq!(readiness["canStartNetworkAuthorizedSale"], true);
+        assert_eq!(
+            readiness["components"]["hardwareSlotTopology"]["code"],
+            "HARDWARE_SLOT_TOPOLOGY_MATCH"
+        );
+    }
+
+    #[tokio::test]
+    async fn mismatched_hardware_slot_topology_blocks_readiness_and_planogram_activation() {
+        let server = ready_payment_options_server().await;
+        let temp_dir = tempdir().expect("tmp");
+        let ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            &server.uri(),
+        )
+        .await;
+        write_factory_manifest(temp_dir.path(), "vem-prod-24", "factory-v1").await;
+        apply_platform_topology(&ctx, "vem-prod-24", "platform-v2").await;
+        mark_runtime_sale_ready(&ctx).await;
+        let app = build_router(ctx);
+
+        let response = post_json(
+            &app,
+            "/v1/stock/planogram",
+            "token-1",
+            one_slot_planogram(
+                "PLAN-TOPOLOGY-MISMATCH",
+                "550e8400-e29b-41d4-a716-446655440911",
+                "550e8400-e29b-41d4-a716-446655440912",
+            ),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let error: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(error["code"], "hardware_slot_topology_mismatch");
+        assert!(!error["message"].as_str().unwrap().contains("550e8400"));
+
+        let readiness = get_ipc_json(&app, "/v1/sale-readiness", Some("token-1")).await;
+        assert_eq!(readiness["canStartNetworkAuthorizedSale"], false);
+        assert!(readiness["blockingCodes"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("HARDWARE_SLOT_TOPOLOGY_MISMATCH")));
+        assert_eq!(
+            readiness["components"]["hardwareSlotTopology"]["code"],
+            "HARDWARE_SLOT_TOPOLOGY_MISMATCH"
+        );
+    }
+
+    #[tokio::test]
+    async fn bring_up_snapshot_reports_topology_mismatch_from_factory_and_profile_cache() {
+        let server = ready_payment_options_server().await;
+        let temp_dir = tempdir().expect("tmp");
+        let ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            &server.uri(),
+        )
+        .await;
+        write_factory_manifest(temp_dir.path(), "vem-prod-24", "factory-v1").await;
+        apply_platform_topology(&ctx, "vem-prod-24", "platform-v2").await;
+        mark_runtime_sale_ready(&ctx).await;
+        let app = build_router(ctx);
+
+        let snapshot = get_ipc_json(&app, "/v1/bring-up", Some("token-1")).await;
+
+        assert_eq!(snapshot["state"], "topology_mismatch");
+        assert_eq!(snapshot["allowedActions"]["resolveTopology"], true);
+        assert!(snapshot["blockingReasons"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|reason| reason["code"] == "HARDWARE_SLOT_TOPOLOGY_MISMATCH"));
+    }
+
+    #[tokio::test]
+    async fn bring_up_snapshot_uses_factory_manifest_hardware_mode_instead_of_adapter_inference() {
+        let temp_dir = tempdir().expect("tmp");
+        let ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            "http://127.0.0.1:0",
+        )
+        .await;
+        write_factory_manifest(temp_dir.path(), "vem-prod-24", "2026-06-adr0026").await;
+        let mut public = ctx.config_store.load_public_config().await.expect("config");
+        public.hardware_adapter = crate::config::HardwareAdapterKind::Mock;
+        public.serial_port_path = None;
+        ctx.config_store
+            .save_public_config(public)
+            .await
+            .expect("save mock public config");
+        let app = build_router(ctx);
+
+        let snapshot = get_ipc_json(&app, "/v1/bring-up", Some("token-1")).await;
+
+        assert_eq!(snapshot["hardwareMode"], "production");
+    }
+
+    #[tokio::test]
+    async fn bring_up_snapshot_does_not_leak_configured_secret_sentinels() {
+        let temp_dir = tempdir().expect("tmp");
+        let ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            "http://127.0.0.1:0",
+        )
+        .await;
+        let public = ctx.config_store.load_public_config().await.expect("config");
+        let app = build_router(ctx);
+        let response = put_json(
+            &app,
+            "/v1/config",
+            "token-1",
+            json!({
+                "public": public,
+                "secrets": {
+                    "machineSecret": "SENTINEL_MACHINE_SECRET_DO_NOT_LEAK_174",
+                    "mqttSigningSecret": "SENTINEL_MQTT_SIGNING_SECRET_DO_NOT_LEAK_174",
+                    "mqttPassword": "SENTINEL_MQTT_PASSWORD_DO_NOT_LEAK_174"
+                }
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let snapshot = get_ipc_json(&app, "/v1/bring-up", Some("token-1")).await;
+        let serialized = serde_json::to_string(&snapshot).expect("snapshot json");
+
+        assert!(!serialized.contains("SENTINEL_MACHINE_SECRET_DO_NOT_LEAK_174"));
+        assert!(!serialized.contains("SENTINEL_MQTT_SIGNING_SECRET_DO_NOT_LEAK_174"));
+        assert!(!serialized.contains("SENTINEL_MQTT_PASSWORD_DO_NOT_LEAK_174"));
+    }
+
+    #[tokio::test]
+    async fn missing_local_hardware_slot_topology_blocks_sales() {
+        let server = ready_payment_options_server().await;
+        let temp_dir = tempdir().expect("tmp");
+        let ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            &server.uri(),
+        )
+        .await;
+        apply_platform_topology(&ctx, "vem-prod-24", "2026-06-adr0026").await;
+        mark_runtime_sale_ready(&ctx).await;
+        let app = build_router(ctx);
+
+        let response = post_json(
+            &app,
+            "/v1/stock/planogram",
+            "token-1",
+            one_slot_planogram(
+                "PLAN-TOPOLOGY-NO-LOCAL",
+                "550e8400-e29b-41d4-a716-446655440921",
+                "550e8400-e29b-41d4-a716-446655440922",
+            ),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let readiness = get_ipc_json(&app, "/v1/sale-readiness", Some("token-1")).await;
+        assert!(readiness["blockingCodes"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("HARDWARE_SLOT_TOPOLOGY_LOCAL_MISSING")));
+    }
+
+    #[tokio::test]
+    async fn missing_platform_hardware_slot_topology_blocks_sales() {
+        let server = ready_payment_options_server().await;
+        let temp_dir = tempdir().expect("tmp");
+        let ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            &server.uri(),
+        )
+        .await;
+        write_factory_manifest(temp_dir.path(), "vem-prod-24", "2026-06-adr0026").await;
+        mark_runtime_sale_ready(&ctx).await;
+        let app = build_router(ctx);
+
+        let response = post_json(
+            &app,
+            "/v1/stock/planogram",
+            "token-1",
+            one_slot_planogram(
+                "PLAN-TOPOLOGY-NO-PLATFORM",
+                "550e8400-e29b-41d4-a716-446655440931",
+                "550e8400-e29b-41d4-a716-446655440932",
+            ),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let readiness = get_ipc_json(&app, "/v1/sale-readiness", Some("token-1")).await;
+        assert!(readiness["blockingCodes"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("HARDWARE_SLOT_TOPOLOGY_PLATFORM_MISSING")));
+    }
+
+    #[tokio::test]
+    async fn local_config_edits_cannot_bypass_topology_mismatch_for_sales() {
+        let server = ready_payment_options_server().await;
+        let temp_dir = tempdir().expect("tmp");
+        let ctx = test_ipc_context(
+            temp_dir.path(),
+            "token-1",
+            Some("MACHINE-1".to_string()),
+            &server.uri(),
+        )
+        .await;
+        write_factory_manifest(temp_dir.path(), "vem-prod-24", "factory-v1").await;
+        apply_platform_topology(&ctx, "vem-prod-24", "platform-v2").await;
+        mark_runtime_sale_ready(&ctx).await;
+        let mut public = ctx.config_store.load_public_config().await.expect("config");
+        public.machine_code = Some("MACHINE-1".to_string());
+        ctx.config_store
+            .save_public_config(public)
+            .await
+            .expect("local config edit");
+        let app = build_router(ctx);
+
+        let readiness = get_ipc_json(&app, "/v1/sale-readiness", Some("token-1")).await;
+        assert_eq!(readiness["canStartNetworkAuthorizedSale"], false);
+        assert!(readiness["blockingCodes"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("HARDWARE_SLOT_TOPOLOGY_MISMATCH")));
     }
 
     #[tokio::test]

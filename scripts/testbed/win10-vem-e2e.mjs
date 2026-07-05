@@ -1,9 +1,17 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 const VEM_RESET_ROOTS = [
   "C:\\VEM\\bringup",
@@ -39,6 +47,151 @@ const TESTBED_PROVISIONING_EVIDENCE_FILE =
   "C:\\ProgramData\\VEM\\vending-daemon\\testbed-provisioning-evidence.json";
 const RUNTIME_ACCEPTANCE_REPORT_FILE =
   "C:\\ProgramData\\VEM\\vending-daemon\\runtime-acceptance-report.json";
+const SIMULATED_HARDWARE_SALE_FLOW_REPORT_FILE =
+  "C:\\ProgramData\\VEM\\vending-daemon\\simulated-hardware-sale-flow.json";
+const DIRTY_HOST_FACTORY_ACCEPTANCE_FILE_NAME =
+  "dirty-host-factory-acceptance.json";
+const CLEAN_BASE_FACTORY_ACCEPTANCE_FILE_NAME =
+  "clean-base-factory-acceptance.json";
+const FACTORY_IMAGE_DELIVERY_UNIT_FILE_NAME =
+  "factory-image-delivery-unit-report.json";
+const CLEAN_BASE_FACTORY_ACCEPTANCE_REPORT_SCHEMA_VERSION =
+  "clean-base-factory-acceptance-report/v1";
+const CLEAN_BASE_FACTORY_ACCEPTANCE_KIND = "clean-base-factory-acceptance";
+const FACTORY_IMAGE_DELIVERY_UNIT_REPORT_SCHEMA_VERSION =
+  "factory-image-delivery-unit-report/v1";
+const FACTORY_IMAGE_DELIVERY_UNIT_KIND = "factory-image-delivery-unit";
+const SHA256_PATTERN = /^[a-f0-9]{64}$/;
+const FACTORY_WINDOWS_BASELINE_POLICY = {
+  schemaVersion: "factory-windows-baseline-policy/v1",
+  model: "allowlist",
+  requiredCapabilities: [
+    "defender_enabled",
+    "firewall_enabled",
+    "no_default_product_remote_ingress",
+    "vem_runtime_defender_exclusions",
+    "openssh_server_for_maintenance_users",
+    "tailscale_not_installed_by_default",
+    "kiosk_account_denied_remote_access",
+    "windows_event_logging",
+    "powershell_management",
+    "networking_certificates_time_sync",
+    "webview2_runtime_support",
+    "display_touch_usb_serial_drivers",
+    "fonts_input_methods",
+  ],
+  disabledRuntimeInterference: [
+    "windows_auto_update_installation",
+    "windows_auto_update_auto_restart",
+    "sleep",
+    "hibernation",
+    "testsigning",
+    "store_automatic_app_updates",
+    "consumer_experience_autostart",
+    "consumer_experience_foreground_popups",
+    "consumer_experience_kiosk_foreground_takeover_best_effort",
+  ],
+  evidenceFields: {
+    windowsUpdatePolicy: "assertions.windowsUpdatePolicy",
+    powerPolicy: "assertions.powerPolicy",
+    bootPolicy: "assertions.bootPolicy",
+    securityPosture: "assertions.securityPosture",
+    remoteMaintenanceCapability:
+      "assertions.factoryRemoteMaintenanceCapability",
+    consumerExperienceInterference: "assertions.consumerExperienceInterference",
+  },
+};
+const REQUIRED_CLEAN_BASE_ASSERTIONS = [
+  "displayOrientationResolution",
+  "sshReachability",
+  "tailscaleDefaultAbsent",
+  "windowsUpdatePolicy",
+  "powerPolicy",
+  "bootPolicy",
+  "securityPosture",
+  "factoryRemoteMaintenanceCapability",
+  "consumerExperienceInterference",
+  "sleepDisabled",
+  "testsigningOff",
+  "autologonConfigured",
+  "startupLauncherMode",
+  "daemonService",
+  "uiLauncherTask",
+  "runtimeResetGateClean",
+  "simulatedHardwareMode",
+  "startupReachesBringUpOrSalesEligible",
+  "preflightNoMachineIdentity",
+  "preflightNoProvisioningProfile",
+  "preflightNoProtectedSecrets",
+  "preflightNoDaemonState",
+  "preflightNoPreviousVemEvidence",
+];
+const CLEAN_BASE_PREFLIGHT_ABSENCE_PROBES = [
+  {
+    code: "preflightNoMachineIdentity",
+    paths: [
+      "C:\\ProgramData\\VEM\\provisioning",
+      "C:\\ProgramData\\VEM\\vending-daemon\\machine-config.json",
+      "C:\\ProgramData\\VEM\\bringup\\local-bringup-settings.json",
+    ],
+    services: [],
+    tasks: [],
+  },
+  {
+    code: "preflightNoProvisioningProfile",
+    paths: ["C:\\ProgramData\\VEM\\provisioning"],
+    services: [],
+    tasks: [],
+  },
+  {
+    code: "preflightNoProtectedSecrets",
+    paths: ["C:\\ProgramData\\VEM\\secrets", "C:\\ProgramData\\VEM\\overrides"],
+    services: [],
+    tasks: [],
+  },
+  {
+    code: "preflightNoDaemonState",
+    paths: [
+      "C:\\VEM\\bringup",
+      "C:\\ProgramData\\VEM\\factory",
+      "C:\\ProgramData\\VEM\\bringup",
+      "C:\\ProgramData\\VEM\\vending-daemon",
+    ],
+    services: ["VemVendingDaemon"],
+    tasks: ["VEMMachineUI", "VEM\\StartVisionServer"],
+  },
+  {
+    code: "preflightNoPreviousVemEvidence",
+    paths: ["C:\\ProgramData\\VEM\\evidence"],
+    services: [],
+    tasks: [],
+  },
+];
+const KNOWN_DIRTY_CLEAN_BASE_SOURCE_MARKERS = [
+  "100.68.189.11",
+  "192.168.2.161",
+  "win10-vem-e2e",
+  "desktop-2stvs5b",
+  "dirty",
+  "retained",
+];
+const KNOWN_PRODUCTION_CLEAN_BASE_SOURCE_MARKERS = [
+  "100.66.207.119",
+  "desktop-2idrn2k",
+  "vem-win10-real-01",
+  "admin@real",
+  "admin@100.66.207.119",
+  "admin@desktop-2idrn2k",
+];
+const KNOWN_PRODUCTION_CLEAN_BASE_SOURCE_TOKENS = new Set(["vem", "real"]);
+const FACTORY_SUPPORT_SCRIPT_NAMES = [
+  "prepare-factory-runtime.ps1",
+  "verify-factory-runtime.ps1",
+  "setup-scheduled-tasks.ps1",
+  "verify-kiosk-lockdown.ps1",
+  "verify-vem-runtime.ps1",
+  "apply-managed-update.ps1",
+];
 
 const PLATFORM_TARGETS = {
   "vem-vps": {
@@ -46,6 +199,14 @@ const PLATFORM_TARGETS = {
     mqttUrl: "mqtt://118.25.104.160:1883",
   },
 };
+const SHARED_PLATFORM_TARGET_MARKERS = ["vem-vps", "118.25.104.160"];
+const KNOWN_PRODUCTION_DATABASE_NAMES = new Set([
+  "vem",
+  "vem_prod",
+  "vem_production",
+  "vem-vps",
+  "vem_vps",
+]);
 
 const FINAL_PUBLIC_CONFIG_FIELDS = [
   "machineCode",
@@ -69,6 +230,15 @@ const EXPECTED_MACHINE_UI_LAUNCHER = "C:\\VEM\\bringup\\launch-machine-ui.vbs";
 const EXPECTED_MACHINE_UI_WORKING_DIRECTORY = "C:\\VEM\\bringup";
 const EXPECTED_PORTRAIT_WIDTH_PX = 1080;
 const EXPECTED_PORTRAIT_HEIGHT_PX = 1920;
+const DEFAULT_DIRTY_HOST_TESTBED = {
+  hostName: "DESKTOP-2STVS5B",
+  user: "YKDZ",
+  tailscaleIp: "100.68.189.11",
+};
+const DEFAULT_VM_ACCEPTANCE_MACHINE_CODE_PREFIX = "VEM-TESTBED-WINVM";
+const DEFAULT_VM_ACCEPTANCE_EVIDENCE_ROOT = "artifacts/vm-runtime-acceptance";
+const DEFAULT_CLEAN_BASE_ACCEPTANCE_EVIDENCE_ROOT =
+  "artifacts/clean-base-factory-acceptance";
 
 export function buildBringUpPlan(options = {}) {
   return {
@@ -117,6 +287,269 @@ export function assertTestbedMachineCode(machineCode) {
   return machineCode;
 }
 
+function isSharedPlatformTarget(value) {
+  return SHARED_PLATFORM_TARGET_MARKERS.some((marker) =>
+    String(value ?? "")
+      .toLowerCase()
+      .includes(marker),
+  );
+}
+
+function normalizeEphemeralRunId(runId) {
+  const normalized = String(runId ?? "")
+    .trim()
+    .toUpperCase()
+    .replaceAll(/[^A-Z0-9-]/g, "-")
+    .replaceAll(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+  if (normalized.length === 0) {
+    throw new Error("--run-id must contain letters or numbers");
+  }
+  if (normalized.length > 32) {
+    throw new Error("--run-id must normalize to at most 32 characters");
+  }
+  if (normalized === "LOCAL" || normalized === "DEFAULT") {
+    throw new Error("--run-id must be non-default");
+  }
+  return normalized;
+}
+
+function buildTestbedMachineCodeFromRun({
+  machineCode,
+  machineCodePrefix,
+  runId,
+} = {}) {
+  if (machineCode) {
+    return assertTestbedMachineCode(machineCode);
+  }
+  const prefix = String(
+    machineCodePrefix ?? DEFAULT_VM_ACCEPTANCE_MACHINE_CODE_PREFIX,
+  )
+    .trim()
+    .toUpperCase()
+    .replace(/-+$/g, "");
+  return assertTestbedMachineCode(
+    `${prefix}-${normalizeEphemeralRunId(runId)}`,
+  );
+}
+
+function buildEphemeralMachineCodeBinding(options = {}) {
+  const canonicalRunId = normalizeEphemeralRunId(options.runId);
+  const defaultPrefix = String(
+    options.machineCodePrefix ?? DEFAULT_VM_ACCEPTANCE_MACHINE_CODE_PREFIX,
+  )
+    .trim()
+    .toUpperCase()
+    .replace(/-+$/g, "");
+
+  if (options.machineCode) {
+    const machineCode = assertTestbedMachineCode(
+      String(options.machineCode).trim().toUpperCase(),
+    );
+    const suffix = `-${canonicalRunId}`;
+    if (!machineCode.endsWith(suffix)) {
+      throw new Error(
+        "explicit --machine-code must end with canonical run id so ephemeral setup generates the same identity",
+      );
+    }
+    const machineCodePrefix = machineCode.slice(0, -suffix.length);
+    if (!machineCodePrefix.startsWith(TESTBED_MACHINE_CODE_PREFIX)) {
+      throw new Error(
+        `machine code prefix must be a dedicated testbed identity: ${machineCodePrefix}`,
+      );
+    }
+    return { canonicalRunId, machineCode, machineCodePrefix };
+  }
+
+  return {
+    canonicalRunId,
+    machineCode: assertTestbedMachineCode(`${defaultPrefix}-${canonicalRunId}`),
+    machineCodePrefix: defaultPrefix,
+  };
+}
+
+function assertNotSharedOrKnownProductionTarget(label, value) {
+  const text = String(value ?? "").trim();
+  if (text.length === 0) {
+    throw new Error(`VM runtime acceptance requires ${label}`);
+  }
+  let parsed;
+  try {
+    parsed = new URL(text);
+  } catch {
+    throw new Error(`${label} must be a valid URL`);
+  }
+  if (isSharedPlatformTarget(text)) {
+    throw new Error(
+      `VM runtime acceptance refuses known VPS or production endpoint for ${label}: ${text}`,
+    );
+  }
+  if (label === "--ephemeral-database-url") {
+    const databaseName = decodeURIComponent(parsed.pathname.replace(/^\//, ""));
+    if (KNOWN_PRODUCTION_DATABASE_NAMES.has(databaseName)) {
+      throw new Error(
+        `VM runtime acceptance refuses known production database for ${label}: ${databaseName}`,
+      );
+    }
+  }
+  return text;
+}
+
+function requireEvidenceString(value, message) {
+  const text = String(value ?? "").trim();
+  if (text.length === 0) {
+    throw new Error(message);
+  }
+  return text;
+}
+
+export function readEphemeralPlatformSetupEvidence(options = {}) {
+  if (options.mode !== "simulated-hardware-sale-flow") {
+    return null;
+  }
+
+  const evidencePath = requireEvidenceString(
+    options.ephemeralPlatformEvidence,
+    "simulated hardware sale-flow requires --ephemeral-platform-evidence from prepare-ephemeral-platform",
+  );
+  const platformTarget = requireEvidenceString(
+    options.platformTarget,
+    "simulated hardware sale-flow requires explicit --platform-target for ephemeral evidence",
+  );
+  if (isSharedPlatformTarget(platformTarget)) {
+    throw new Error(
+      `simulated hardware sale-flow refuses shared platform target: ${platformTarget}`,
+    );
+  }
+
+  const evidence = JSON.parse(readFileSync(evidencePath, "utf8"));
+  const runId = normalizeEphemeralRunId(options.runId);
+  if (String(evidence.runId ?? "") !== runId) {
+    throw new Error(
+      `simulated hardware sale-flow requires ephemeral platform evidence from the same run id: expected ${runId}, got ${evidence.runId}`,
+    );
+  }
+
+  const machineCode = assertTestbedMachineCode(options.machineCode);
+  const evidenceMachineCode = requireEvidenceString(
+    evidence.testbedMachine?.code,
+    "ephemeral platform evidence is missing testbedMachine.code",
+  );
+  if (evidenceMachineCode !== machineCode) {
+    throw new Error(
+      `simulated hardware sale-flow requires ephemeral evidence for ${machineCode}, got ${evidenceMachineCode}`,
+    );
+  }
+
+  const apiBaseUrl = requireEvidenceString(
+    evidence.stack?.apiBaseUrl,
+    "ephemeral platform evidence is missing stack.apiBaseUrl",
+  );
+  const mqttUrl = requireEvidenceString(
+    evidence.stack?.mqttUrl,
+    "ephemeral platform evidence is missing stack.mqttUrl",
+  );
+  if (isSharedPlatformTarget(apiBaseUrl) || isSharedPlatformTarget(mqttUrl)) {
+    throw new Error(
+      "simulated hardware sale-flow refuses shared platform target endpoints",
+    );
+  }
+
+  const claimPath = requireEvidenceString(
+    evidence.testbedMachine?.claim?.path,
+    "ephemeral platform evidence is missing testbed claim path",
+  );
+  if (claimPath !== "/api/machines/claim") {
+    throw new Error(`unexpected ephemeral claim path: ${claimPath}`);
+  }
+
+  const claimCode = requireEvidenceString(
+    evidence.testbedMachine?.claim?.claimCode,
+    "ephemeral platform evidence is missing the same-run claim code",
+  );
+  const claimCodeId = requireEvidenceString(
+    evidence.testbedMachine?.claim?.claimCodeId,
+    "ephemeral platform evidence is missing claimCodeId",
+  );
+  const paymentReadiness = evidence.seededData?.paymentReadiness ?? {};
+  if (
+    paymentReadiness.ready !== true ||
+    paymentReadiness.mockProviderStatus !== "enabled" ||
+    paymentReadiness.runtimePaymentMockEnabled !== true ||
+    paymentReadiness.mockPaymentAcknowledged !== true
+  ) {
+    throw new Error(
+      "ephemeral platform evidence must prove mock payment readiness",
+    );
+  }
+
+  return {
+    status: "prepared",
+    runId,
+    target: platformTarget,
+    machineCode,
+    apiBaseUrl,
+    mqttUrl,
+    claimCode,
+    claimCodeId,
+    claimPath,
+    mockPaymentReady: true,
+    hardwareTopologyIdentity: requireEvidenceString(
+      evidence.hardwareSlotTopology?.identity,
+      "ephemeral platform evidence is missing hardware topology identity",
+    ),
+    hardwareTopologyVersion: requireEvidenceString(
+      evidence.hardwareSlotTopology?.version,
+      "ephemeral platform evidence is missing hardware topology version",
+    ),
+    planogramVersion: requireEvidenceString(
+      evidence.seededData?.planogram?.planogramVersion,
+      "ephemeral platform evidence is missing planogram version",
+    ),
+  };
+}
+
+export function assertSimulatedSaleFlowPreMutationTarget({
+  target = {},
+  daemonMachineCode,
+  daemonApiBaseUrl,
+  daemonMqttUrl,
+  hardwareMode,
+  platformSetup = {},
+} = {}) {
+  const machineCode = String(target.machineCode ?? "");
+  if (!machineCode.startsWith(TESTBED_MACHINE_CODE_PREFIX)) {
+    return { ok: false, code: "testbed_machine_identity_required" };
+  }
+  if (String(daemonMachineCode ?? "") !== machineCode) {
+    return { ok: false, code: "daemon_machine_identity_mismatch" };
+  }
+  if (hardwareMode !== "simulated") {
+    return { ok: false, code: "simulated_hardware_mode_required" };
+  }
+  if (
+    isSharedPlatformTarget(target.platformTarget) ||
+    isSharedPlatformTarget(platformSetup.target) ||
+    isSharedPlatformTarget(platformSetup.apiBaseUrl) ||
+    isSharedPlatformTarget(platformSetup.mqttUrl)
+  ) {
+    return { ok: false, code: "shared_platform_target_rejected" };
+  }
+  if (
+    platformSetup.evidenceStatus !== "prepared" ||
+    platformSetup.target !== target.platformTarget
+  ) {
+    return { ok: false, code: "ephemeral_platform_evidence_required" };
+  }
+  if (
+    String(daemonApiBaseUrl ?? "") !== String(platformSetup.apiBaseUrl ?? "") ||
+    String(daemonMqttUrl ?? "") !== String(platformSetup.mqttUrl ?? "")
+  ) {
+    return { ok: false, code: "ephemeral_platform_target_mismatch" };
+  }
+  return { ok: true, code: "pre_mutation_target_verified" };
+}
+
 function present(value) {
   if (value === null || value === undefined) {
     return false;
@@ -141,6 +574,24 @@ function normalizeSessionState(state) {
     .toLowerCase();
 }
 
+function isActiveKioskSessionEvidence(session) {
+  const state = normalizeSessionState(session?.state);
+  const sessionName = String(session?.sessionName ?? "")
+    .trim()
+    .toLowerCase();
+  return (
+    normalizeWindowsUser(session?.user).toLowerCase() ===
+      EXPECTED_KIOSK_USER.toLowerCase() &&
+    toNullableSessionId(session?.sessionId) !== null &&
+    session?.source !== "ssh_service_session" &&
+    (state === "active" ||
+      (sessionName === "console" &&
+        state !== "disc" &&
+        state !== "disconnected" &&
+        state !== "listen"))
+  );
+}
+
 function toNullableSessionId(value) {
   const number = Number(value);
   return Number.isInteger(number) && number >= 0 ? number : null;
@@ -149,6 +600,9 @@ function toNullableSessionId(value) {
 function normalizeSessionEvidence(session) {
   return {
     user: normalizeWindowsUser(session?.user),
+    sessionName: present(session?.sessionName)
+      ? String(session.sessionName)
+      : null,
     sessionId: toNullableSessionId(session?.sessionId),
     state: String(session?.state ?? "unknown"),
     source: String(session?.source ?? "unknown"),
@@ -160,12 +614,8 @@ export function findActiveKioskSession(sessions = []) {
     ? sessions.map(normalizeSessionEvidence)
     : [];
   return (
-    normalizedSessions.find(
-      (session) =>
-        session.user === EXPECTED_KIOSK_USER &&
-        session.sessionId !== null &&
-        normalizeSessionState(session.state) === "active" &&
-        session.source !== "ssh_service_session",
+    normalizedSessions.find((session) =>
+      isActiveKioskSessionEvidence(session),
     ) ?? null
   );
 }
@@ -189,9 +639,7 @@ export function buildInteractiveDesktopDisplayBaseline({
   const dimensions = normalizeScreenDimensions(screen);
   const screenSource = String(screen?.source ?? "");
   const passed =
-    session?.user === EXPECTED_KIOSK_USER &&
-    session.sessionId !== null &&
-    normalizeSessionState(session.state) === "active" &&
+    isActiveKioskSessionEvidence(session) &&
     screenSource !== "ssh_service_session" &&
     dimensions.widthPx === EXPECTED_PORTRAIT_WIDTH_PX &&
     dimensions.heightPx === EXPECTED_PORTRAIT_HEIGHT_PX;
@@ -517,14 +965,11 @@ export function buildRuntimeAcceptanceReport(facts = {}) {
       "Daemon health must report MQTT connectivity.",
     );
   }
-  if (
-    facts.kioskRuntime?.webviewRunning !== true ||
-    !isStrictTauriHashRouteUrl(facts.kioskRuntime?.url)
-  ) {
+  if (facts.kioskRuntime?.webviewRunning !== true) {
     addDiagnostic(
       diagnostics,
       "kiosk_webview_missing",
-      "Machine Runtime Console must be running as a Tauri WebView serving tauri.localhost with a hash route.",
+      "Machine Runtime Console must be running as a Tauri WebView in the active VEMKiosk session.",
     );
   }
   if (facts.kioskRuntime?.sessionUser !== EXPECTED_KIOSK_USER) {
@@ -557,6 +1002,38 @@ export function buildRuntimeAcceptanceReport(facts = {}) {
       "kiosk_session_id_mismatch",
       "Machine Runtime Console evidence must match the active VEMKiosk interactive session.",
     );
+  }
+  const desktopEscape = facts.kioskDesktopEscape ?? {};
+  for (const [field, code, message] of [
+    [
+      "desktopVisible",
+      "kiosk_desktop_visible",
+      "VEMKiosk normal UI path must not expose the Windows desktop.",
+    ],
+    [
+      "taskbarVisible",
+      "kiosk_taskbar_visible",
+      "VEMKiosk normal UI path must not expose the Windows taskbar.",
+    ],
+    [
+      "startMenuVisible",
+      "kiosk_start_menu_visible",
+      "VEMKiosk normal UI path must not expose the Windows Start menu.",
+    ],
+    [
+      "edgeReachable",
+      "kiosk_edge_reachable",
+      "VEMKiosk normal UI path must not reach Microsoft Edge.",
+    ],
+    [
+      "fileExplorerReachable",
+      "kiosk_file_explorer_reachable",
+      "VEMKiosk normal UI path must not reach File Explorer.",
+    ],
+  ]) {
+    if (desktopEscape[field] === true) {
+      addDiagnostic(diagnostics, code, message);
+    }
   }
   if (
     facts.displayEvidence?.portraitKioskAcceptance?.sessionUser !==
@@ -616,7 +1093,9 @@ export function buildRuntimeAcceptanceReport(facts = {}) {
 export function buildKioskRuntimeEvidence({
   activeSession,
   machineProcesses = [],
+  webView2Processes = [],
   cdpTargets = [],
+  cdpAvailable = Array.isArray(cdpTargets),
 } = {}) {
   const session = activeSession
     ? normalizeSessionEvidence(activeSession)
@@ -631,15 +1110,31 @@ export function buildKioskRuntimeEvidence({
   const target = Array.isArray(cdpTargets)
     ? cdpTargets.find((candidate) => isStrictTauriHashRouteUrl(candidate?.url))
     : null;
-  const webviewRunning = Boolean(session && process && target);
+  const webView2Process = Array.isArray(webView2Processes)
+    ? webView2Processes.find(
+        (candidate) =>
+          normalizeWindowsUser(candidate?.ownerUser) === EXPECTED_KIOSK_USER &&
+          toNullableSessionId(candidate?.sessionId) === session?.sessionId,
+      )
+    : null;
+  const cdpVerified = Boolean(session && process && target);
+  const productionWebViewVerified = Boolean(
+    session && process && webView2Process && cdpAvailable === false,
+  );
+  const webviewRunning = cdpVerified || productionWebViewVerified;
 
   return {
     webviewRunning,
-    url: target?.url ?? "unavailable:no-tauri-hash-route-target",
+    url:
+      target?.url ??
+      (productionWebViewVerified
+        ? "unavailable:production-cdp-disabled"
+        : "unavailable:no-tauri-hash-route-target"),
     sessionUser: session?.user ?? "unknown",
     sessionId: session?.sessionId ?? null,
     processId: process?.processId ?? null,
-    cdpAvailable: Array.isArray(cdpTargets),
+    webView2ProcessId: webView2Process?.processId ?? null,
+    cdpAvailable,
     error: webviewRunning ? null : "kiosk_webview_not_verified",
   };
 }
@@ -847,11 +1342,1751 @@ function psArray(values) {
   return `@(${values.map(psString).join(", ")})`;
 }
 
+function psCleanBasePreflightProbeArray() {
+  return `@(${CLEAN_BASE_PREFLIGHT_ABSENCE_PROBES.map(
+    (probe) =>
+      `[ordered]@{ code = ${psString(probe.code)}; paths = ${psArray(
+        probe.paths,
+      )}; services = ${psArray(probe.services)}; tasks = ${psArray(
+        probe.tasks,
+      )} }`,
+  ).join(", ")})`;
+}
+
 function psArgumentValue(value) {
   if (String(value).startsWith("$env:")) {
     return String(value);
   }
   return psString(value);
+}
+
+function sanitizeRunId(value) {
+  const runId = String(value ?? "").trim();
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/.test(runId)) {
+    throw new Error(
+      "testbed acceptance requires --run-id with only letters, digits, dot, underscore, or hyphen",
+    );
+  }
+  return runId;
+}
+
+function normalizeRemoteForSafety(remote) {
+  const value = String(remote ?? "YKDZ@100.68.189.11").trim();
+  const lastAt = value.lastIndexOf("@");
+  if (lastAt === -1) {
+    return { user: null, host: value };
+  }
+  return {
+    user: value.slice(0, lastAt),
+    host: value.slice(lastAt + 1),
+  };
+}
+
+function expectedDirtyHostTestbed(options = {}) {
+  return {
+    hostName:
+      options.expectedTestbedHostName ?? DEFAULT_DIRTY_HOST_TESTBED.hostName,
+    user: options.expectedTestbedUser ?? DEFAULT_DIRTY_HOST_TESTBED.user,
+    tailscaleIp:
+      options.expectedTestbedTailscaleIp ??
+      DEFAULT_DIRTY_HOST_TESTBED.tailscaleIp,
+  };
+}
+
+function assertDirtyHostFactoryRemoteSafety(options = {}) {
+  if (options.mode !== "dirty-host-factory-acceptance") {
+    return;
+  }
+
+  const expected = expectedDirtyHostTestbed(options);
+  for (const [name, value] of Object.entries(expected)) {
+    if (!String(value ?? "").trim()) {
+      throw new Error(
+        `dirty-host factory acceptance requires expected ${name} for remote identity guard`,
+      );
+    }
+  }
+
+  const remote = normalizeRemoteForSafety(options.remote);
+  const literalTestbedRemote =
+    remote.user === expected.user && remote.host === expected.tailscaleIp;
+  if (literalTestbedRemote) {
+    return;
+  }
+
+  if (options.allowTestbedRemoteAlias === true) {
+    return;
+  }
+
+  throw new Error(
+    "dirty-host factory acceptance refuses SSH config alias remotes by default; use --allow-testbed-remote-alias with expected testbed identity values",
+  );
+}
+
+function assertCleanBaseRemoteSafety(options = {}) {
+  if (options.mode !== "clean-base-factory-acceptance") {
+    return;
+  }
+  const remote = normalizeRemoteForSafety(options.remote);
+  const refusal = classifyUnsafeCleanBaseSource([
+    options.cleanBaseSource,
+    options.cleanBaseSnapshot,
+    remote.user,
+    remote.host,
+  ]);
+  if (refusal) {
+    throw new Error(
+      `clean-base factory acceptance refuses ${refusal} remote before staging: ${options.remote}`,
+    );
+  }
+}
+
+function sha256File(path) {
+  const hash = createHash("sha256");
+  hash.update(readFileSync(path));
+  return hash.digest("hex");
+}
+
+function assertSha256Hash(value, label) {
+  const hash = String(value ?? "").trim();
+  if (!SHA256_PATTERN.test(hash)) {
+    throw new Error(`${label} requires lowercase SHA-256 hash`);
+  }
+  return hash;
+}
+
+function resolveMachineUiSidecarArtifactPath(machineUiArtifactPath) {
+  const sidecarPath = join(
+    dirname(machineUiArtifactPath),
+    "WebView2Loader.dll",
+  );
+  if (!existsSync(sidecarPath)) {
+    throw new Error(
+      `machine UI artifact requires WebView2Loader.dll next to machine.exe: ${sidecarPath}`,
+    );
+  }
+  return sidecarPath;
+}
+
+function resolveDirtyHostArtifactInputs(options = {}) {
+  if (options.mode !== "dirty-host-factory-acceptance") {
+    return null;
+  }
+  if (options.useExistingRemoteArtifacts === true) {
+    return {
+      useExistingRemoteArtifacts: true,
+      daemonSha256: null,
+      machineUiSha256: null,
+    };
+  }
+  if (!options.daemonArtifact || !options.machineUiArtifact) {
+    throw new Error(
+      "dirty-host factory acceptance requires --daemon-artifact and --machine-ui-artifact unless --use-existing-remote-artifacts is supplied",
+    );
+  }
+  resolveMachineUiSidecarArtifactPath(options.machineUiArtifact);
+  return {
+    useExistingRemoteArtifacts: false,
+    daemonSha256: sha256File(options.daemonArtifact),
+    machineUiSha256: sha256File(options.machineUiArtifact),
+  };
+}
+
+function resolveCleanBaseArtifactInputs(options = {}) {
+  if (options.mode !== "clean-base-factory-acceptance") {
+    return null;
+  }
+  if (options.useExistingRemoteArtifacts === true) {
+    throw new Error(
+      "clean-base factory acceptance live mode rejects --use-existing-remote-artifacts; provide local daemon and machine UI artifacts",
+    );
+  }
+  if (!options.daemonArtifact || !options.machineUiArtifact) {
+    throw new Error(
+      "clean-base factory acceptance live mode requires --daemon-artifact and --machine-ui-artifact",
+    );
+  }
+  resolveMachineUiSidecarArtifactPath(options.machineUiArtifact);
+  const daemonSha256 = sha256File(options.daemonArtifact);
+  const machineUiSha256 = sha256File(options.machineUiArtifact);
+  if (
+    options.daemonArtifactSha256 &&
+    daemonSha256 !==
+      assertSha256Hash(
+        options.daemonArtifactSha256,
+        "clean-base factory acceptance daemon artifact",
+      )
+  ) {
+    throw new Error(
+      `clean-base factory acceptance daemon artifact hash mismatch: expected ${options.daemonArtifactSha256}, got ${daemonSha256}`,
+    );
+  }
+  if (
+    options.machineUiArtifactSha256 &&
+    machineUiSha256 !==
+      assertSha256Hash(
+        options.machineUiArtifactSha256,
+        "clean-base factory acceptance machine UI artifact",
+      )
+  ) {
+    throw new Error(
+      `clean-base factory acceptance machine UI artifact hash mismatch: expected ${options.machineUiArtifactSha256}, got ${machineUiSha256}`,
+    );
+  }
+  return {
+    source: "uploaded_local_artifacts",
+    daemonSha256,
+    machineUiSha256,
+  };
+}
+
+function resolveVmRuntimeAcceptanceArtifacts(options = {}) {
+  if (options.useExistingRemoteArtifacts === true) {
+    return {
+      source: "existing_remote_bringup",
+      daemonSha256: null,
+      machineUiSha256: null,
+    };
+  }
+  if (options.daemonArtifactSha256 && options.machineUiArtifactSha256) {
+    return {
+      source: "uploaded_local_artifacts",
+      daemonSha256: assertSha256Hash(
+        options.daemonArtifactSha256,
+        "VM runtime acceptance daemon artifact",
+      ),
+      machineUiSha256: assertSha256Hash(
+        options.machineUiArtifactSha256,
+        "VM runtime acceptance machine UI artifact",
+      ),
+    };
+  }
+  if (!options.daemonArtifact || !options.machineUiArtifact) {
+    throw new Error(
+      "VM runtime acceptance requires --daemon-artifact and --machine-ui-artifact unless --use-existing-remote-artifacts is supplied",
+    );
+  }
+  resolveMachineUiSidecarArtifactPath(options.machineUiArtifact);
+  return {
+    source: "uploaded_local_artifacts",
+    daemonSha256: sha256File(options.daemonArtifact),
+    machineUiSha256: sha256File(options.machineUiArtifact),
+  };
+}
+
+function resolveAcceptanceArtifactHashes(options = {}, label) {
+  if (options.daemonArtifactSha256 && options.machineUiArtifactSha256) {
+    return {
+      source: "declared_artifact_hashes",
+      daemonSha256: assertSha256Hash(
+        options.daemonArtifactSha256,
+        `${label} daemon artifact`,
+      ),
+      machineUiSha256: assertSha256Hash(
+        options.machineUiArtifactSha256,
+        `${label} machine UI artifact`,
+      ),
+    };
+  }
+  if (!options.daemonArtifact || !options.machineUiArtifact) {
+    throw new Error(
+      `${label} requires --daemon-artifact and --machine-ui-artifact, or explicit artifact SHA-256 values`,
+    );
+  }
+  resolveMachineUiSidecarArtifactPath(options.machineUiArtifact);
+  return {
+    source: "local_artifacts",
+    daemonSha256: sha256File(options.daemonArtifact),
+    machineUiSha256: sha256File(options.machineUiArtifact),
+  };
+}
+
+function requireCleanBaseSource(value) {
+  const source = String(value ?? "").trim();
+  if (source.length === 0) {
+    throw new Error(
+      "clean-base factory acceptance requires --clean-base-source identifying a clean Windows base or VM source",
+    );
+  }
+  const refusal = classifyUnsafeCleanBaseSource(source);
+  if (refusal) {
+    throw new Error(
+      `clean-base factory acceptance refuses ${refusal} source: ${source}`,
+    );
+  }
+  return source;
+}
+
+function collectCleanBaseSourceStrings(value, strings = []) {
+  if (value === null || value === undefined) {
+    return strings;
+  }
+  if (typeof value === "string" || typeof value === "number") {
+    strings.push(String(value));
+    return strings;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      collectCleanBaseSourceStrings(item, strings);
+    }
+    return strings;
+  }
+  if (typeof value === "object") {
+    for (const item of Object.values(value)) {
+      collectCleanBaseSourceStrings(item, strings);
+    }
+  }
+  return strings;
+}
+
+function hasUnsafeCleanBaseToken(value) {
+  const tokens = String(value)
+    .toLowerCase()
+    .split(/[^a-z0-9.-]+/u)
+    .filter(Boolean);
+  return tokens.some((token) =>
+    KNOWN_PRODUCTION_CLEAN_BASE_SOURCE_TOKENS.has(token),
+  );
+}
+
+function classifyUnsafeCleanBaseSource(value) {
+  const values = collectCleanBaseSourceStrings(value).map((item) =>
+    item.toLowerCase(),
+  );
+  for (const item of values) {
+    if (
+      KNOWN_DIRTY_CLEAN_BASE_SOURCE_MARKERS.some((marker) =>
+        item.includes(marker),
+      )
+    ) {
+      return "known dirty-host";
+    }
+    if (
+      KNOWN_PRODUCTION_CLEAN_BASE_SOURCE_MARKERS.some((marker) =>
+        item.includes(marker),
+      ) ||
+      hasUnsafeCleanBaseToken(item)
+    ) {
+      return "production machine";
+    }
+  }
+  return null;
+}
+
+function cleanBaseValidationFailure(message, detail = null) {
+  return {
+    schemaVersion: "clean-base-factory-acceptance-validation/v1",
+    kind: CLEAN_BASE_FACTORY_ACCEPTANCE_KIND,
+    status: "failed",
+    asserted: false,
+    message,
+    detail,
+  };
+}
+
+function sameStringArray(actual, expected) {
+  return (
+    Array.isArray(actual) &&
+    actual.length === expected.length &&
+    expected.every((value, index) => actual[index] === value)
+  );
+}
+
+function sameStringMap(actual, expected) {
+  if (!actual || typeof actual !== "object" || Array.isArray(actual)) {
+    return false;
+  }
+  const actualEntries = Object.entries(actual);
+  const expectedEntries = Object.entries(expected);
+  return (
+    actualEntries.length === expectedEntries.length &&
+    expectedEntries.every(([key, value]) => actual[key] === value)
+  );
+}
+
+export function validateCleanBaseFactoryAcceptanceEvidence(evidence) {
+  if (!evidence || typeof evidence !== "object" || Array.isArray(evidence)) {
+    return cleanBaseValidationFailure(
+      "clean-base evidence must be a JSON object",
+    );
+  }
+  if (
+    evidence.schemaVersion !==
+    CLEAN_BASE_FACTORY_ACCEPTANCE_REPORT_SCHEMA_VERSION
+  ) {
+    return cleanBaseValidationFailure(
+      `clean-base evidence requires schemaVersion ${CLEAN_BASE_FACTORY_ACCEPTANCE_REPORT_SCHEMA_VERSION}`,
+    );
+  }
+  if (evidence.kind !== CLEAN_BASE_FACTORY_ACCEPTANCE_KIND) {
+    return cleanBaseValidationFailure(
+      `clean-base evidence requires kind ${CLEAN_BASE_FACTORY_ACCEPTANCE_KIND}`,
+    );
+  }
+  if (evidence.result !== "passed" || evidence.ok !== true) {
+    return cleanBaseValidationFailure(
+      "clean-base evidence result must be passed with ok true",
+    );
+  }
+  if (evidence.dryRun === true || evidence.planOnly === true) {
+    return cleanBaseValidationFailure(
+      "clean-base evidence must be verifier output, not dry-run or plan output",
+    );
+  }
+  const source = evidence.source;
+  if (!source || typeof source !== "object" || Array.isArray(source)) {
+    return cleanBaseValidationFailure(
+      "clean-base evidence requires structured source",
+    );
+  }
+  if (source.kind !== "clean-windows-base") {
+    return cleanBaseValidationFailure(
+      "clean-base evidence source.kind must be clean-windows-base",
+    );
+  }
+  const sourceUri = String(source.uri ?? "").trim();
+  if (sourceUri.length === 0) {
+    return cleanBaseValidationFailure("clean-base evidence source.uri missing");
+  }
+  const sourceRefusal = classifyUnsafeCleanBaseSource(source);
+  if (sourceRefusal) {
+    return cleanBaseValidationFailure(
+      `clean-base evidence refuses ${sourceRefusal} source`,
+      source,
+    );
+  }
+  const factoryWindowsBaselinePolicy = evidence.factoryWindowsBaselinePolicy;
+  if (
+    !factoryWindowsBaselinePolicy ||
+    typeof factoryWindowsBaselinePolicy !== "object" ||
+    Array.isArray(factoryWindowsBaselinePolicy)
+  ) {
+    return cleanBaseValidationFailure(
+      "clean-base evidence requires Factory Windows Baseline policy",
+    );
+  }
+  if (
+    factoryWindowsBaselinePolicy.schemaVersion !==
+      FACTORY_WINDOWS_BASELINE_POLICY.schemaVersion ||
+    factoryWindowsBaselinePolicy.model !== FACTORY_WINDOWS_BASELINE_POLICY.model
+  ) {
+    return cleanBaseValidationFailure(
+      "clean-base evidence Factory Windows Baseline policy schema/model mismatch",
+    );
+  }
+  if (
+    !sameStringArray(
+      factoryWindowsBaselinePolicy.requiredCapabilities,
+      FACTORY_WINDOWS_BASELINE_POLICY.requiredCapabilities,
+    )
+  ) {
+    return cleanBaseValidationFailure(
+      "clean-base evidence Factory Windows Baseline policy requiredCapabilities mismatch",
+    );
+  }
+  if (
+    !sameStringArray(
+      factoryWindowsBaselinePolicy.disabledRuntimeInterference,
+      FACTORY_WINDOWS_BASELINE_POLICY.disabledRuntimeInterference,
+    )
+  ) {
+    return cleanBaseValidationFailure(
+      "clean-base evidence Factory Windows Baseline policy disabledRuntimeInterference mismatch",
+    );
+  }
+  if (
+    !sameStringMap(
+      factoryWindowsBaselinePolicy.evidenceFields,
+      FACTORY_WINDOWS_BASELINE_POLICY.evidenceFields,
+    )
+  ) {
+    return cleanBaseValidationFailure(
+      "clean-base evidence Factory Windows Baseline policy evidenceFields mismatch",
+    );
+  }
+
+  const daemonSha256 = evidence.artifacts?.daemonSha256;
+  const machineUiSha256 = evidence.artifacts?.machineUiSha256;
+  if (!SHA256_PATTERN.test(String(daemonSha256 ?? ""))) {
+    return cleanBaseValidationFailure(
+      "clean-base evidence requires daemon SHA-256 hash",
+    );
+  }
+  if (!SHA256_PATTERN.test(String(machineUiSha256 ?? ""))) {
+    return cleanBaseValidationFailure(
+      "clean-base evidence requires machine UI SHA-256 hash",
+    );
+  }
+
+  const readiness = evidence.readiness;
+  if (!readiness || typeof readiness !== "object") {
+    return cleanBaseValidationFailure(
+      "clean-base evidence requires readiness summary",
+    );
+  }
+  if (readiness.cleanBasePreparationAcceptance !== "passed") {
+    return cleanBaseValidationFailure(
+      "clean-base readiness must pass cleanBasePreparationAcceptance",
+    );
+  }
+  if (readiness.dirtyHostResetAcceptance !== "not_asserted") {
+    return cleanBaseValidationFailure(
+      "clean-base evidence must not assert dirtyHostResetAcceptance",
+    );
+  }
+  if (readiness.runtimeReady !== "not_asserted") {
+    return cleanBaseValidationFailure(
+      "clean-base evidence must not assert runtimeReady",
+    );
+  }
+  if (readiness.simulatedHardwareReady !== "not_asserted") {
+    return cleanBaseValidationFailure(
+      "clean-base evidence must not assert simulatedHardwareReady",
+    );
+  }
+  if (readiness.sellReady !== "not_asserted") {
+    return cleanBaseValidationFailure(
+      "clean-base evidence must not assert sellReady",
+    );
+  }
+
+  const assertions = evidence.assertions;
+  if (!assertions || typeof assertions !== "object") {
+    return cleanBaseValidationFailure(
+      "clean-base evidence requires assertions",
+    );
+  }
+  const failedAssertions = REQUIRED_CLEAN_BASE_ASSERTIONS.filter(
+    (name) => assertions[name]?.status !== "passed",
+  );
+  if (failedAssertions.length > 0) {
+    return cleanBaseValidationFailure(
+      "clean-base evidence required assertions are not all passed",
+      { failedAssertions },
+    );
+  }
+  const display = assertions.displayOrientationResolution;
+  if (
+    display.orientation !== "portrait" ||
+    display.widthPx !== 1080 ||
+    display.heightPx !== 1920
+  ) {
+    return cleanBaseValidationFailure(
+      "clean-base display assertion must be 1080x1920 portrait",
+    );
+  }
+  const simulatedHardwareMode = assertions.simulatedHardwareMode;
+  if (simulatedHardwareMode.mode !== "simulated") {
+    return cleanBaseValidationFailure(
+      "clean-base evidence must assert simulated hardware mode",
+    );
+  }
+  const windowsUpdatePolicy = assertions.windowsUpdatePolicy;
+  if (
+    windowsUpdatePolicy.automaticUpdateInstallation !== "disabled" ||
+    windowsUpdatePolicy.automaticRestart !== "disabled"
+  ) {
+    return cleanBaseValidationFailure(
+      "clean-base Windows update policy must disable automatic installation and automatic restart",
+    );
+  }
+  const powerPolicy = assertions.powerPolicy;
+  if (
+    powerPolicy.sleep !== "disabled" ||
+    powerPolicy.hibernation !== "disabled"
+  ) {
+    return cleanBaseValidationFailure(
+      "clean-base power policy must disable sleep and hibernation",
+    );
+  }
+  const bootPolicy = assertions.bootPolicy;
+  if (bootPolicy.testsigning !== "off") {
+    return cleanBaseValidationFailure(
+      "clean-base boot policy must verify testsigning off",
+    );
+  }
+  const securityPosture = assertions.securityPosture;
+  if (
+    securityPosture.defender !== "enabled" ||
+    securityPosture.firewall !== "enabled" ||
+    securityPosture.fileAndPrinterSharing !== "not_enabled" ||
+    !Array.isArray(securityPosture.enabledVemInboundRules) ||
+    securityPosture.enabledVemInboundRules.length !== 0
+  ) {
+    return cleanBaseValidationFailure(
+      "clean-base security posture must preserve Defender/firewall and avoid SMB/File Sharing maintenance ingress",
+    );
+  }
+  const remoteMaintenance = assertions.factoryRemoteMaintenanceCapability;
+  if (
+    remoteMaintenance.opensshServer !== "available" ||
+    remoteMaintenance.tailscale !== "not_installed_by_default" ||
+    remoteMaintenance.kioskRemoteAccess !== "denied" ||
+    remoteMaintenance.sshdConfigDeniesKioskUser !== true ||
+    remoteMaintenance.maintenanceInOpenSshUsers !== true ||
+    remoteMaintenance.kioskInOpenSshUsers !== false ||
+    remoteMaintenance.kioskInRemoteDesktopUsers !== false
+  ) {
+    return cleanBaseValidationFailure(
+      "clean-base remote maintenance capability must preserve maintenance access and explicitly deny kiosk SSH",
+    );
+  }
+  const consumerExperience = assertions.consumerExperienceInterference;
+  if (
+    consumerExperience.componentAutostart !== "policy_configured" ||
+    consumerExperience.foregroundPopups !== "policy_configured" ||
+    consumerExperience.storeAutomaticAppUpdates !== "disabled" ||
+    consumerExperience.kioskForegroundTakeover !==
+      "best_effort_policy_configured"
+  ) {
+    return cleanBaseValidationFailure(
+      "clean-base consumer-experience interference must be configured as best-effort policy evidence",
+    );
+  }
+  const startup = assertions.startupReachesBringUpOrSalesEligible;
+  if (!["bring_up", "sales_eligible"].includes(String(startup.state ?? ""))) {
+    return cleanBaseValidationFailure(
+      "clean-base startup assertion must reach bring_up or sales_eligible",
+    );
+  }
+
+  return {
+    schemaVersion: "clean-base-factory-acceptance-validation/v1",
+    kind: CLEAN_BASE_FACTORY_ACCEPTANCE_KIND,
+    status: "passed",
+    asserted: true,
+    source,
+    readiness,
+    factoryWindowsBaselinePolicy,
+    requiredAssertions: [...REQUIRED_CLEAN_BASE_ASSERTIONS],
+  };
+}
+
+export function validateCleanBaseFactoryAcceptanceEvidenceFile(path) {
+  const evidence = JSON.parse(readFileSync(path, "utf8"));
+  return validateCleanBaseFactoryAcceptanceEvidence(evidence);
+}
+
+export function buildCleanBaseFactoryAcceptancePlan(options = {}) {
+  const runId = normalizeEphemeralRunId(options.runId);
+  const cleanBaseSource = requireCleanBaseSource(options.cleanBaseSource);
+  const cleanBaseSnapshot = String(options.cleanBaseSnapshot ?? "").trim();
+  const artifacts = resolveAcceptanceArtifactHashes(
+    options,
+    "clean-base factory acceptance",
+  );
+  const evidenceRoot = `${
+    options.evidenceRoot ?? DEFAULT_CLEAN_BASE_ACCEPTANCE_EVIDENCE_ROOT
+  }/${runId}`;
+  const report = `${evidenceRoot}/${CLEAN_BASE_FACTORY_ACCEPTANCE_FILE_NAME}`;
+
+  return {
+    schemaVersion: "clean-base-factory-acceptance-plan/v1",
+    mode: "clean-base-factory-acceptance",
+    runId,
+    cleanBase: {
+      source: cleanBaseSource,
+      snapshot: cleanBaseSnapshot || null,
+      mustNotReuseDirtyHost: true,
+      factoryWindowsBaselinePolicy: structuredClone(
+        FACTORY_WINDOWS_BASELINE_POLICY,
+      ),
+      requiredBaseline: {
+        displayOrientationResolution: {
+          orientation: "portrait",
+          widthPx: 1080,
+          heightPx: 1920,
+        },
+        sshReachability: "required",
+        tailscaleDefaultAbsent: "required",
+        sleepDisabled: "required",
+        testsigningOff: "required",
+        autologonConfigured: "required",
+        startupLauncherMode: ["shell_launcher", "scheduled_task"],
+        daemonService: "VemVendingDaemon",
+        uiLauncherTask: "VEMMachineUI",
+        runtimeResetGateClean: "required",
+        simulatedHardwareMode: "required",
+        startupReachesBringUpOrSalesEligible: "required",
+      },
+    },
+    evidenceRoot,
+    report,
+    reportContract: {
+      schemaVersion: CLEAN_BASE_FACTORY_ACCEPTANCE_REPORT_SCHEMA_VERSION,
+      kind: CLEAN_BASE_FACTORY_ACCEPTANCE_KIND,
+      sourceKind: "clean-windows-base",
+      factoryWindowsBaselinePolicy: structuredClone(
+        FACTORY_WINDOWS_BASELINE_POLICY,
+      ),
+      requiredAssertions: [...REQUIRED_CLEAN_BASE_ASSERTIONS],
+      dryRunAccepted: false,
+      resultRequired: "passed",
+    },
+    artifacts: {
+      cleanBaseFactoryAcceptance: report,
+      logsRoot: `${evidenceRoot}/logs`,
+      daemonSha256: artifacts.daemonSha256,
+      machineUiSha256: artifacts.machineUiSha256,
+      source: artifacts.source,
+    },
+    preflightAbsenceProbes: structuredClone(
+      CLEAN_BASE_PREFLIGHT_ABSENCE_PROBES,
+    ),
+    steps: [
+      {
+        name: "record clean base source",
+        status: "planned",
+        destructive: false,
+      },
+      {
+        name: "verify clean-base preflight absence",
+        status: "planned",
+        destructive: false,
+      },
+      {
+        name: "prepare factory runtime",
+        status: "planned",
+        destructive: true,
+        requires: ["--allow-clean-base-prepare"],
+      },
+      {
+        name: "verify prepared runtime",
+        status: "planned",
+        destructive: false,
+      },
+      {
+        name: "capture reusable snapshot and report",
+        status: "planned",
+        destructive: false,
+      },
+    ],
+    readinessLevels: {
+      dirtyHostResetAcceptance: "not_asserted",
+      cleanBasePreparationAcceptance: "asserted_by_clean_base_step",
+      runtimeReady: "not_asserted",
+      simulatedHardwareReady: "not_asserted",
+      sellReady: "not_asserted",
+    },
+  };
+}
+
+function buildAcceptanceScriptCommand(mode, options = {}, extraArgs = []) {
+  const command = [
+    process.execPath,
+    "scripts/testbed/win10-vem-e2e.mjs",
+    "--mode",
+    mode,
+    "--run-id",
+    sanitizeRunId(options.runId),
+    "--machine-code",
+    buildTestbedMachineCodeFromRun(options),
+    "--platform-target",
+    options.platformTarget,
+    ...extraArgs,
+  ];
+  if (options.remote) {
+    command.push("--remote", options.remote);
+  }
+  if (options.sshConfig === true) {
+    command.push("--ssh-config");
+  }
+  if (options.sshpass === true) {
+    command.push("--sshpass");
+  }
+  if (options.factoryCredentialsFromSshpass === true) {
+    command.push("--factory-credentials-from-sshpass");
+  }
+  if (options.allowTestbedRemoteAlias === true) {
+    command.push("--allow-testbed-remote-alias");
+  }
+  if (options.expectedTestbedHostName) {
+    command.push(
+      "--expected-testbed-hostname",
+      options.expectedTestbedHostName,
+    );
+  }
+  if (options.expectedTestbedUser) {
+    command.push("--expected-testbed-user", options.expectedTestbedUser);
+  }
+  if (options.expectedTestbedTailscaleIp) {
+    command.push(
+      "--expected-testbed-tailscale-ip",
+      options.expectedTestbedTailscaleIp,
+    );
+  }
+  if (options.proxyCommand) {
+    command.push("--proxy-command", options.proxyCommand);
+  }
+  if (options.identity) {
+    command.push("--identity", options.identity);
+  }
+  return command;
+}
+
+export function buildVmRuntimeAcceptancePlan(options = {}) {
+  const { canonicalRunId, machineCode, machineCodePrefix } =
+    buildEphemeralMachineCodeBinding(options);
+  const runId = canonicalRunId;
+  const platformTarget = String(options.platformTarget ?? "").trim();
+  if (platformTarget.length === 0) {
+    throw new Error(
+      "VM runtime acceptance requires explicit --platform-target for the ephemeral stack",
+    );
+  }
+  if (isSharedPlatformTarget(platformTarget)) {
+    throw new Error(
+      `VM runtime acceptance refuses shared platform target: ${platformTarget}`,
+    );
+  }
+  const databaseUrl = assertNotSharedOrKnownProductionTarget(
+    "--ephemeral-database-url",
+    options.ephemeralDatabaseUrl,
+  );
+  const apiBaseUrl = assertNotSharedOrKnownProductionTarget(
+    "--ephemeral-api-base-url",
+    options.ephemeralApiBaseUrl,
+  );
+  const mqttUrl = assertNotSharedOrKnownProductionTarget(
+    "--ephemeral-mqtt-url",
+    options.ephemeralMqttUrl,
+  );
+  const artifacts = resolveVmRuntimeAcceptanceArtifacts(options);
+  const evidenceRoot = `${
+    options.evidenceRoot ?? DEFAULT_VM_ACCEPTANCE_EVIDENCE_ROOT
+  }/${runId}`;
+  const reportPath = `${evidenceRoot}/vm-runtime-acceptance-report.json`;
+  const logsRoot = `${evidenceRoot}/logs`;
+  const screenshotsRoot = `${evidenceRoot}/screenshots`;
+  const sessionsRoot = `${evidenceRoot}/sessions`;
+  const ephemeralPlatformEvidence = `${evidenceRoot}/ephemeral-platform.json`;
+  const cleanBaseFactoryAcceptance =
+    options.cleanBaseEvidence ?? options.cleanBaseFactoryAcceptance ?? null;
+  const dirtyHostReport = `${evidenceRoot}/dirty-host-factory-acceptance-response.json`;
+  const runtimeAcceptanceReport = `${evidenceRoot}/runtime-acceptance-response.json`;
+  const saleFlowReport = `${evidenceRoot}/simulated-hardware-sale-flow-response.json`;
+  const dirtyHostArgs = [];
+  if (options.useExistingRemoteArtifacts === true) {
+    dirtyHostArgs.push("--use-existing-remote-artifacts");
+  } else {
+    dirtyHostArgs.push(
+      "--daemon-artifact",
+      options.daemonArtifact,
+      "--machine-ui-artifact",
+      options.machineUiArtifact,
+    );
+  }
+  const dirtyHostCommand = buildAcceptanceScriptCommand(
+    "dirty-host-factory-acceptance",
+    { ...options, runId, machineCode, platformTarget },
+    [
+      ...dirtyHostArgs,
+      "--platform-api-base-url",
+      apiBaseUrl,
+      "--platform-mqtt-url",
+      mqttUrl,
+      "--out",
+      dirtyHostReport,
+    ],
+  );
+  const runtimeCommand = buildAcceptanceScriptCommand(
+    "runtime-acceptance",
+    { ...options, runId, machineCode, platformTarget },
+    ["--out", runtimeAcceptanceReport],
+  );
+  const saleFlowCommand = buildAcceptanceScriptCommand(
+    "simulated-hardware-sale-flow",
+    { ...options, runId, machineCode, platformTarget },
+    [
+      "--ephemeral-platform-evidence",
+      ephemeralPlatformEvidence,
+      "--out",
+      saleFlowReport,
+    ],
+  );
+
+  const cleanBaseStep = cleanBaseFactoryAcceptance
+    ? [
+        {
+          name: "clean-base factory preparation acceptance",
+          mode: "clean-base-factory-acceptance",
+          status: "planned",
+          command: [
+            process.execPath,
+            "scripts/testbed/win10-vem-e2e.mjs",
+            "--mode",
+            "validate-clean-base-evidence",
+            "--clean-base-evidence",
+            cleanBaseFactoryAcceptance,
+          ],
+          report: cleanBaseFactoryAcceptance,
+          blocksOnFailure: false,
+          evidenceContract: {
+            schemaVersion: CLEAN_BASE_FACTORY_ACCEPTANCE_REPORT_SCHEMA_VERSION,
+            kind: CLEAN_BASE_FACTORY_ACCEPTANCE_KIND,
+            requiredAssertions: [...REQUIRED_CLEAN_BASE_ASSERTIONS],
+          },
+        },
+      ]
+    : [];
+
+  return {
+    schemaVersion: "vm-runtime-acceptance-plan/v1",
+    mode: "vm-runtime-acceptance",
+    runId,
+    target: {
+      testbedName: "win10-vem-e2e",
+      machineCode,
+      machineCodePrefix,
+      platformTarget,
+      remote: options.remote ?? "YKDZ@100.68.189.11",
+    },
+    evidenceRoot,
+    artifacts: {
+      source: artifacts.source,
+      report: reportPath,
+      logsRoot,
+      screenshotsRoot,
+      sessionsRoot,
+      ephemeralPlatformEvidence,
+      cleanBaseFactoryAcceptance,
+      dirtyHostFactoryAcceptance: dirtyHostReport,
+      runtimeAcceptance: runtimeAcceptanceReport,
+      simulatedHardwareSaleFlow: saleFlowReport,
+      daemonSha256: artifacts.daemonSha256,
+      machineUiSha256: artifacts.machineUiSha256,
+    },
+    ci: {
+      entrypoint:
+        "node scripts/testbed/win10-vem-e2e.mjs --mode vm-runtime-acceptance",
+      requiredSecrets: [
+        "SSHPASS",
+        "VEM_KIOSK_PASSWORD",
+        "VEM_MAINTENANCE_PASSWORD",
+        "VEM_AUTOLOGON_PASSWORD",
+        "MACHINE_CLAIM_LOOKUP_HMAC_KEY",
+      ],
+      requiredEnvironment: ["PAYMENT_MOCK_ENABLED=true"],
+      githubActionsScope: "future manual runtime gate",
+    },
+    readinessLevels: {
+      dirtyHostResetAcceptance: "asserted_by_dirty_host_step",
+      cleanBasePreparationAcceptance: cleanBaseFactoryAcceptance
+        ? "asserted_by_clean_base_step"
+        : "not_asserted",
+      runtimeReady: "asserted_by_runtime_acceptance_step",
+      simulatedHardwareReady: "asserted_by_sale_flow_step",
+      sellReady: "not_asserted",
+    },
+    steps: [
+      ...cleanBaseStep,
+      {
+        name: "dirty-host factory reset acceptance",
+        mode: "dirty-host-factory-acceptance",
+        status: "planned",
+        command: dirtyHostCommand,
+        report: dirtyHostReport,
+        blocksOnFailure: true,
+      },
+      {
+        name: "ephemeral platform setup",
+        mode: "prepare-ephemeral-platform",
+        status: "planned",
+        cwd: "apps/service-api",
+        command: [
+          "pnpm",
+          "run",
+          "testbed:prepare-ephemeral-platform",
+          "--",
+          "--run-id",
+          runId,
+          "--database-url",
+          databaseUrl,
+          "--api-base-url",
+          apiBaseUrl,
+          "--mqtt-url",
+          mqttUrl,
+          "--machine-code-prefix",
+          machineCodePrefix,
+          "--allow-ephemeral-target",
+          "--allow-mock-payment",
+          "--reset",
+          "--output",
+          `../../${ephemeralPlatformEvidence}`,
+        ],
+        env: {
+          PAYMENT_MOCK_ENABLED: "true",
+        },
+        report: ephemeralPlatformEvidence,
+        blocksOnFailure: true,
+      },
+      {
+        name: "runtime acceptance",
+        mode: "runtime-acceptance",
+        status: "planned",
+        command: runtimeCommand,
+        report: runtimeAcceptanceReport,
+        blocksOnFailure: true,
+      },
+      {
+        name: "simulated hardware sale flow",
+        mode: "simulated-hardware-sale-flow",
+        status: "planned",
+        command: saleFlowCommand,
+        ephemeralPlatformEvidence,
+        report: saleFlowReport,
+        blocksOnFailure: true,
+      },
+    ],
+  };
+}
+
+function readJsonIfPresent(path) {
+  try {
+    return JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+const REDACTED = "[REDACTED]";
+const REDACTED_KEY = "[REDACTED_KEY]";
+const SENSITIVE_REPORT_KEY_PATTERN =
+  /claim[-_]?code|token|secret|password|passwd|pwd|credential|api[-_]?key|access[-_]?key|private[-_]?key|client[-_]?secret|wifi[-_]?password|network[-_]?password|ssid[-_]?password/i;
+
+function redactSensitiveText(value) {
+  return String(value)
+    .replace(
+      /\b([a-z][a-z0-9+.-]*:\/\/)([^/\s:@]+):([^@\s/]+)@/gi,
+      `$1${REDACTED}@`,
+    )
+    .replace(
+      /\b(postgres(?:ql)?:\/\/[^:\s/@]+):([^@\s]+)@/gi,
+      `$1:${REDACTED}@`,
+    )
+    .replace(
+      /\b(claimCode|token|secret|password)\b\s*[:=]\s*("[^"]*"|'[^']*'|[^\s,;]+)/gi,
+      `$1=${REDACTED}`,
+    )
+    .replace(
+      /"(claimCode|token|secret|password)"\s*:\s*("[^"]*"|'[^']*'|[^\s,;}]+)/gi,
+      `"$1":"${REDACTED}"`,
+    )
+    .replace(/VEM-WIN10-REAL-01/gi, REDACTED)
+    .replace(/100\.66\.207\.119/g, REDACTED)
+    .replace(/DESKTOP-2IDRN2K/gi, REDACTED)
+    .replace(/\bAdmin@real\b/gi, REDACTED)
+    .replace(/\bAdmin@100\.66\.207\.119\b/gi, REDACTED)
+    .replace(/\bAdmin@desktop-2idrn2k\b/gi, REDACTED)
+    .replace(
+      /\b(wifiPassword|ssidPassword|networkPassword|现场 network credentials)\b\s*[:=]\s*("[^"]*"|'[^']*'|[^\s,;]+)/gi,
+      `$1=${REDACTED}`,
+    );
+}
+
+function isSensitiveReportKey(key) {
+  const keyText = String(key);
+  return (
+    SENSITIVE_REPORT_KEY_PATTERN.test(keyText) ||
+    redactSensitiveText(keyText) !== keyText
+  );
+}
+
+function sanitizeReportKey(key) {
+  return isSensitiveReportKey(key) ? REDACTED_KEY : key;
+}
+
+function sanitizeReportValue(value) {
+  if (value === null || value === undefined) {
+    return value;
+  }
+  if (typeof value === "string") {
+    return redactSensitiveText(value);
+  }
+  if (typeof value !== "object") {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizeReportValue(item));
+  }
+  return Object.fromEntries(
+    Object.entries(value).map(([key, item]) => {
+      const sensitiveKey = isSensitiveReportKey(key);
+      return [
+        sanitizeReportKey(key),
+        sensitiveKey ? REDACTED : sanitizeReportValue(item),
+      ];
+    }),
+  );
+}
+
+function sanitizeVmRuntimeAcceptanceStep(step = {}) {
+  return {
+    name: step.name,
+    mode: step.mode,
+    status: step.status,
+    cwd: step.cwd,
+    report: step.report,
+    ephemeralPlatformEvidence: step.ephemeralPlatformEvidence,
+    blocksOnFailure: step.blocksOnFailure,
+    startedAt: step.startedAt,
+    finishedAt: step.finishedAt,
+    exitCode: step.exitCode,
+    stdoutPath: step.stdoutPath,
+    stderrPath: step.stderrPath,
+    error: step.error === null ? null : redactSensitiveText(step.error ?? ""),
+  };
+}
+
+function sanitizeVmRuntimeAcceptanceDiagnostics(diagnostics) {
+  return diagnostics.map((diagnostic) => ({
+    ...diagnostic,
+    detail:
+      diagnostic.detail === null
+        ? null
+        : redactSensitiveText(diagnostic.detail ?? ""),
+  }));
+}
+
+function appendDisplayEvidence(displayEvidence, source, evidence) {
+  if (evidence) {
+    displayEvidence.push({ source, evidence });
+  }
+}
+
+function appendSessionsFromDisplayEvidence(sessions, source, displayEvidence) {
+  const sessionList = displayEvidence?.interactiveWindowsSessions?.sessions;
+  if (!Array.isArray(sessionList)) {
+    return;
+  }
+  for (const session of sessionList) {
+    sessions.push({ source, ...normalizeSessionEvidence(session) });
+  }
+}
+
+function vmStepArtifactSummary(step = {}) {
+  return {
+    name: step.name,
+    mode: step.mode,
+    status: step.status,
+    report: step.report,
+    stdoutPath: step.stdoutPath,
+    stderrPath: step.stderrPath,
+  };
+}
+
+function buildVmRuntimeAcceptanceEvidenceIndexes({ plan, steps }) {
+  const displayEvidence = [];
+  const sessions = [];
+  const screenshotArtifacts = [];
+  const stepArtifacts = steps.map(vmStepArtifactSummary);
+
+  for (const step of steps) {
+    appendDisplayEvidence(
+      displayEvidence,
+      `${step.name}:dirty-host-display-proof`,
+      step.parsed?.dirtyHostFactoryAcceptance?.displayProof,
+    );
+    appendDisplayEvidence(
+      displayEvidence,
+      `${step.name}:inventory-display-evidence`,
+      step.parsed?.inventory?.displayEvidence,
+    );
+    appendDisplayEvidence(
+      displayEvidence,
+      `${step.name}:runtime-acceptance-display-evidence`,
+      step.parsed?.runtimeAcceptanceReport?.displayEvidence,
+    );
+    appendDisplayEvidence(
+      displayEvidence,
+      `${step.name}:facts-subset-display-evidence`,
+      step.parsed?.runtimeAcceptanceFactsSubset?.displayEvidence,
+    );
+    appendSessionsFromDisplayEvidence(
+      sessions,
+      `${step.name}:inventory-display-evidence`,
+      step.parsed?.inventory?.displayEvidence,
+    );
+    appendSessionsFromDisplayEvidence(
+      sessions,
+      `${step.name}:runtime-acceptance-display-evidence`,
+      step.parsed?.runtimeAcceptanceReport?.displayEvidence,
+    );
+
+    const stepScreenshots = step.parsed?.screenshots;
+    if (Array.isArray(stepScreenshots)) {
+      for (const screenshot of stepScreenshots) {
+        screenshotArtifacts.push({
+          source: `${step.name}:screenshots`,
+          path: String(screenshot?.path ?? screenshot),
+        });
+      }
+    }
+  }
+
+  return {
+    screenshots: {
+      schemaVersion: "vm-runtime-acceptance-screenshot-index/v1",
+      status: screenshotArtifacts.length > 0 ? "indexed" : "missing",
+      missingReason:
+        screenshotArtifacts.length > 0 ? null : "no_screenshot_artifacts",
+      root: plan.artifacts.screenshotsRoot,
+      screenshots: screenshotArtifacts,
+      displayEvidence,
+      stepArtifacts,
+    },
+    sessions: {
+      schemaVersion: "vm-runtime-acceptance-session-index/v1",
+      status: sessions.length > 0 ? "indexed" : "missing",
+      missingReason: sessions.length > 0 ? null : "no_session_evidence",
+      root: plan.artifacts.sessionsRoot,
+      sessions,
+      stepArtifacts,
+    },
+  };
+}
+
+function normalizeDeliveryEvidenceItems(items) {
+  return Array.isArray(items)
+    ? items
+        .filter((item) => item !== null && item !== undefined)
+        .map((item) =>
+          typeof item === "string" ? { path: item } : sanitizeReportValue(item),
+        )
+    : [];
+}
+
+function deliveryEvidenceIndex(index, missingReason, itemFieldName) {
+  if (index && typeof index === "object" && !Array.isArray(index)) {
+    const items = normalizeDeliveryEvidenceItems(
+      Array.isArray(index[itemFieldName]) ? index[itemFieldName] : index.items,
+    );
+    const status =
+      typeof index.status === "string"
+        ? index.status
+        : items.length > 0
+          ? "indexed"
+          : "missing";
+    return {
+      ...sanitizeReportValue(index),
+      status,
+      missingReason:
+        items.length > 0 ? null : (index.missingReason ?? missingReason),
+    };
+  }
+  const normalizedItems = normalizeDeliveryEvidenceItems(index);
+  return {
+    status: normalizedItems.length > 0 ? "indexed" : "missing",
+    missingReason: normalizedItems.length > 0 ? null : missingReason,
+    [itemFieldName]: normalizedItems,
+  };
+}
+
+function deliveryReadinessAssertion(status) {
+  return {
+    status: status ?? "missing",
+    asserted: status === "passed",
+  };
+}
+
+function cleanBasePreparationLogs(cleanBaseAcceptance) {
+  const evidence = cleanBaseAcceptance.evidence ?? {};
+  const logs = [];
+  if (evidence.preparationOutput) {
+    logs.push({
+      kind: "factory-runtime-preparation",
+      path: evidence.preparationOutput,
+    });
+  }
+  if (evidence.verificationAction) {
+    logs.push({
+      kind: "factory-runtime-verification-action",
+      path: evidence.verificationAction,
+    });
+  }
+  for (const action of Array.isArray(evidence.actions)
+    ? evidence.actions
+    : []) {
+    if (action?.outputPath) {
+      logs.push({
+        kind: String(action.name ?? "factory-action-output"),
+        path: action.outputPath,
+        status: action.status ?? "unknown",
+      });
+    }
+  }
+  return {
+    status: logs.length > 0 ? "indexed" : "missing",
+    missingReason: logs.length > 0 ? null : "no_preparation_logs",
+    logs: sanitizeReportValue(logs),
+  };
+}
+
+function isNonEmptyString(value) {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function validateFactoryImageDeliveryUnitCleanBaseEvidence(
+  cleanBaseAcceptance,
+) {
+  const baseValidation =
+    validateCleanBaseFactoryAcceptanceEvidence(cleanBaseAcceptance);
+  if (baseValidation.status !== "passed") {
+    return baseValidation;
+  }
+
+  const missingEvidence = [];
+  const evidence = cleanBaseAcceptance.evidence;
+  if (!evidence || typeof evidence !== "object" || Array.isArray(evidence)) {
+    missingEvidence.push("evidence");
+  } else {
+    if (!isNonEmptyString(evidence.preparationOutput)) {
+      missingEvidence.push("evidence.preparationOutput");
+    }
+    if (!isNonEmptyString(evidence.verificationAction)) {
+      missingEvidence.push("evidence.verificationAction");
+    }
+    if (!isNonEmptyString(evidence.verifierEvidence)) {
+      missingEvidence.push("evidence.verifierEvidence");
+    }
+    const verification = evidence.factoryRuntimeVerification;
+    if (
+      !verification ||
+      typeof verification !== "object" ||
+      Array.isArray(verification)
+    ) {
+      missingEvidence.push("evidence.factoryRuntimeVerification");
+    } else {
+      if (verification.ok !== true) {
+        missingEvidence.push("evidence.factoryRuntimeVerification.ok");
+      }
+      if (!isNonEmptyString(verification.manifestPath)) {
+        missingEvidence.push(
+          "evidence.factoryRuntimeVerification.manifestPath",
+        );
+      }
+      const manifest = verification.checks?.manifest;
+      if (
+        !manifest ||
+        typeof manifest !== "object" ||
+        Array.isArray(manifest)
+      ) {
+        missingEvidence.push(
+          "evidence.factoryRuntimeVerification.checks.manifest",
+        );
+      } else {
+        for (const field of [
+          "schemaVersion",
+          "hardwareMode",
+          "hardwareModel",
+          "topologyIdentity",
+          "topologyVersion",
+        ]) {
+          if (!isNonEmptyString(manifest[field])) {
+            missingEvidence.push(
+              `evidence.factoryRuntimeVerification.checks.manifest.${field}`,
+            );
+          }
+        }
+      }
+    }
+  }
+
+  if (missingEvidence.length > 0) {
+    return cleanBaseValidationFailure(
+      "Factory Image Delivery Unit requires completed prep run evidence",
+      { missingEvidence },
+    );
+  }
+
+  return baseValidation;
+}
+
+function readCleanBaseSiblingEvidenceIndex(cleanBaseAcceptancePath, directory) {
+  if (!cleanBaseAcceptancePath) {
+    return null;
+  }
+  return readJsonIfPresent(
+    join(dirname(cleanBaseAcceptancePath), directory, "index.json"),
+  );
+}
+
+export function buildFactoryImageDeliveryUnitReport({
+  cleanBaseAcceptance,
+  cleanBaseAcceptancePath,
+  reportPath = null,
+  screenshots = null,
+  sessions = null,
+} = {}) {
+  const validation =
+    validateFactoryImageDeliveryUnitCleanBaseEvidence(cleanBaseAcceptance);
+  if (validation.status !== "passed") {
+    throw new Error(
+      `Factory Image Delivery Unit requires completed clean-base acceptance: ${validation.message}`,
+    );
+  }
+
+  const evidence = cleanBaseAcceptance.evidence ?? {};
+  const factoryRuntimeVerification =
+    evidence.factoryRuntimeVerification ?? null;
+  const manifestPath =
+    factoryRuntimeVerification?.manifestPath ??
+    evidence.factoryManifest ??
+    "C:\\ProgramData\\VEM\\factory\\factory-runtime-manifest.json";
+  const manifest = factoryRuntimeVerification?.checks?.manifest ?? null;
+  const readiness = cleanBaseAcceptance.readiness ?? {};
+  const screenshotEvidence =
+    screenshots ??
+    evidence.screenshots ??
+    readCleanBaseSiblingEvidenceIndex(cleanBaseAcceptancePath, "screenshots");
+  const sessionEvidence =
+    sessions ??
+    evidence.sessions ??
+    readCleanBaseSiblingEvidenceIndex(cleanBaseAcceptancePath, "sessions");
+  const report = {
+    schemaVersion: FACTORY_IMAGE_DELIVERY_UNIT_REPORT_SCHEMA_VERSION,
+    kind: FACTORY_IMAGE_DELIVERY_UNIT_KIND,
+    runId: cleanBaseAcceptance.runId ?? null,
+    result: cleanBaseAcceptance.result,
+    ok: cleanBaseAcceptance.ok === true,
+    reportPath,
+    imageSource: cleanBaseAcceptance.source,
+    declaredBuildInputs: {
+      source: cleanBaseAcceptance.source,
+      artifacts: {
+        daemonSha256: cleanBaseAcceptance.artifacts?.daemonSha256,
+        machineUiSha256: cleanBaseAcceptance.artifacts?.machineUiSha256,
+        webView2Sidecar: cleanBaseAcceptance.artifacts?.webView2Sidecar,
+      },
+      factoryManifest: {
+        path: manifestPath,
+        schemaVersion: manifest?.schemaVersion ?? null,
+        hardwareMode: manifest?.hardwareMode ?? null,
+        hardwareModel: manifest?.hardwareModel ?? null,
+        topologyIdentity: manifest?.topologyIdentity ?? null,
+        topologyVersion: manifest?.topologyVersion ?? null,
+      },
+      factoryWindowsBaselinePolicy:
+        cleanBaseAcceptance.factoryWindowsBaselinePolicy,
+    },
+    artifacts: {
+      daemonSha256: cleanBaseAcceptance.artifacts?.daemonSha256,
+      machineUiSha256: cleanBaseAcceptance.artifacts?.machineUiSha256,
+      source: cleanBaseAcceptance.artifacts?.source ?? "unknown",
+      webView2Sidecar: cleanBaseAcceptance.artifacts?.webView2Sidecar ?? null,
+    },
+    factoryManifest: {
+      path: manifestPath,
+      summary: manifest,
+    },
+    preparationLogs: cleanBasePreparationLogs(cleanBaseAcceptance),
+    verifierEvidence: {
+      status: evidence.verifierEvidence ? "indexed" : "missing",
+      missingReason: evidence.verifierEvidence
+        ? null
+        : "no_verifier_evidence_path",
+      factoryRuntimeVerification: {
+        path: evidence.verifierEvidence ?? null,
+        summary: factoryRuntimeVerification
+          ? {
+              ok: factoryRuntimeVerification.ok ?? null,
+              manifestPath: factoryRuntimeVerification.manifestPath ?? null,
+              failures: factoryRuntimeVerification.failures ?? [],
+            }
+          : null,
+      },
+      verificationAction: evidence.verificationAction
+        ? { path: evidence.verificationAction }
+        : null,
+    },
+    cleanBaseAcceptanceReport: {
+      path: cleanBaseAcceptancePath ?? null,
+      schemaVersion: cleanBaseAcceptance.schemaVersion,
+      kind: cleanBaseAcceptance.kind,
+      result: cleanBaseAcceptance.result,
+      ok: cleanBaseAcceptance.ok === true,
+    },
+    evidenceReview: {
+      screenshots: deliveryEvidenceIndex(
+        screenshotEvidence,
+        "no_screenshot_artifacts",
+        "screenshots",
+      ),
+      sessions: deliveryEvidenceIndex(
+        sessionEvidence,
+        "no_session_evidence",
+        "sessions",
+      ),
+    },
+    readiness: {
+      cleanBasePreparationAcceptance: deliveryReadinessAssertion(
+        readiness.cleanBasePreparationAcceptance,
+      ),
+      dirtyHostResetAcceptance: deliveryReadinessAssertion(
+        readiness.dirtyHostResetAcceptance,
+      ),
+      runtimeReady: deliveryReadinessAssertion(readiness.runtimeReady),
+      simulatedHardwareReady: deliveryReadinessAssertion(
+        readiness.simulatedHardwareReady,
+      ),
+      sellReady: deliveryReadinessAssertion(readiness.sellReady),
+    },
+    diagnostics: sanitizeReportValue(cleanBaseAcceptance.diagnostics ?? []),
+  };
+
+  return sanitizeReportValue(report);
+}
+
+export function writeVmRuntimeAcceptanceEvidenceIndexes({ plan, steps }) {
+  const indexes = buildVmRuntimeAcceptanceEvidenceIndexes({ plan, steps });
+  mkdirSync(plan.artifacts.screenshotsRoot, { recursive: true });
+  mkdirSync(plan.artifacts.sessionsRoot, { recursive: true });
+  writeFileSync(
+    `${plan.artifacts.screenshotsRoot}/index.json`,
+    `${JSON.stringify(indexes.screenshots, null, 2)}\n`,
+    "utf8",
+  );
+  writeFileSync(
+    `${plan.artifacts.sessionsRoot}/index.json`,
+    `${JSON.stringify(indexes.sessions, null, 2)}\n`,
+    "utf8",
+  );
+  return indexes;
+}
+
+function evaluateCleanBasePreparationStep(step) {
+  if (!step) {
+    return {
+      status: "not_asserted",
+      asserted: false,
+      diagnostic: null,
+      validation: null,
+    };
+  }
+
+  const validation = validateCleanBaseFactoryAcceptanceEvidence(step.parsed);
+  if (step.status === "passed" && validation.status === "passed") {
+    return {
+      status: "passed",
+      asserted: true,
+      diagnostic: null,
+      validation,
+    };
+  }
+
+  const status = step.status === "blocked" ? "blocked" : "failed";
+  const validationMessage =
+    validation.status === "passed"
+      ? `${step.name} ${step.status}`
+      : validation.message;
+  return {
+    status,
+    asserted: false,
+    validation,
+    diagnostic: {
+      code:
+        validation.status === "passed"
+          ? `${step.mode}_${status}`
+          : `${step.mode}_invalid`,
+      message:
+        validation.status === "passed"
+          ? `${step.name} ${status}`
+          : `${step.name} invalid`,
+      detail: validationMessage,
+    },
+  };
+}
+
+export function buildVmRuntimeAcceptanceReport({ plan, steps }) {
+  const stepMap = new Map(steps.map((step) => [step.name, step]));
+  const cleanBase = stepMap.get("clean-base factory preparation acceptance");
+  const dirtyHost = stepMap.get("dirty-host factory reset acceptance");
+  const ephemeral = stepMap.get("ephemeral platform setup");
+  const runtime = stepMap.get("runtime acceptance");
+  const saleFlow = stepMap.get("simulated hardware sale flow");
+  const cleanBaseEvaluation = evaluateCleanBasePreparationStep(cleanBase);
+  const diagnostics = [
+    ...(cleanBaseEvaluation.diagnostic ? [cleanBaseEvaluation.diagnostic] : []),
+    ...steps
+      .filter((step) => step.status !== "passed")
+      .filter((step) => step !== cleanBase)
+      .map((step) => ({
+        code:
+          step.status === "blocked"
+            ? `${step.mode}_blocked`
+            : `${step.mode}_failed`,
+        message: `${step.name} ${step.status}`,
+        detail: step.error ?? null,
+      })),
+  ];
+
+  const sanitizedDiagnostics =
+    sanitizeVmRuntimeAcceptanceDiagnostics(diagnostics);
+
+  return {
+    schemaVersion: "vm-runtime-acceptance-report/v1",
+    runId: plan.runId,
+    target: plan.target,
+    evidenceRoot: plan.evidenceRoot,
+    artifacts: plan.artifacts,
+    steps: steps.map(sanitizeVmRuntimeAcceptanceStep),
+    preparationVerifierStatus:
+      dirtyHost?.status === "passed"
+        ? "passed"
+        : (dirtyHost?.status ?? "missing"),
+    bringUpStateProgression: {
+      cleanBasePreparationAcceptance: cleanBaseEvaluation.status,
+      dirtyHostResetAcceptance: dirtyHost?.status ?? "missing",
+      ephemeralPlatformSetup: ephemeral?.status ?? "missing",
+      runtimeAcceptance: runtime?.status ?? "missing",
+      simulatedHardwareSaleFlow: saleFlow?.status ?? "missing",
+    },
+    platformSetup: {
+      status: ephemeral?.status ?? "missing",
+      evidencePath: plan.artifacts.ephemeralPlatformEvidence,
+      identifiers: ephemeral?.parsed?.testbedMachine
+        ? {
+            machineId: ephemeral.parsed.testbedMachine.id,
+            machineCode: ephemeral.parsed.testbedMachine.code,
+            claimCodeId: ephemeral.parsed.testbedMachine.claim?.claimCodeId,
+            planogramVersion:
+              ephemeral.parsed.seededData?.planogram?.planogramVersion,
+          }
+        : null,
+    },
+    evidenceReview: buildVmRuntimeAcceptanceEvidenceIndexes({ plan, steps }),
+    simulatedHardwareMode: {
+      status: saleFlow?.status ?? "missing",
+      evidencePath: plan.artifacts.simulatedHardwareSaleFlow,
+      sellReady: {
+        status: "not_asserted",
+        asserted: false,
+      },
+    },
+    finalReadiness: {
+      dirtyHostResetAcceptance:
+        dirtyHost?.status === "passed"
+          ? { status: "passed", asserted: true }
+          : { status: dirtyHost?.status ?? "missing", asserted: false },
+      cleanBasePreparationAcceptance: {
+        status: cleanBaseEvaluation.status,
+        asserted: cleanBaseEvaluation.asserted,
+      },
+      runtimeReady: runtime?.parsed?.runtimeAcceptanceReport?.result
+        ?.runtimeReady ?? {
+        status: runtime?.status ?? "missing",
+        asserted: false,
+      },
+      simulatedHardwareReady: saleFlow?.parsed?.simulatedHardwareSaleFlow
+        ?.result?.simulatedHardwareReady ?? {
+        status: saleFlow?.status ?? "missing",
+        asserted: false,
+      },
+      sellReady: {
+        status: "not_asserted",
+        asserted: false,
+      },
+    },
+    diagnostics: sanitizedDiagnostics,
+    ok: sanitizedDiagnostics.length === 0,
+  };
+}
+
+function runVmRuntimeAcceptance(options) {
+  const plan = buildVmRuntimeAcceptancePlan(options);
+  mkdirSync(plan.evidenceRoot, { recursive: true });
+  mkdirSync(plan.artifacts.logsRoot, { recursive: true });
+  mkdirSync(plan.artifacts.screenshotsRoot, { recursive: true });
+  mkdirSync(plan.artifacts.sessionsRoot, { recursive: true });
+
+  const steps = [];
+  let blocked = false;
+  for (const [index, step] of plan.steps.entries()) {
+    const startedAt = new Date().toISOString();
+    const stdoutPath = `${plan.artifacts.logsRoot}/${String(index + 1).padStart(
+      2,
+      "0",
+    )}-${step.mode}.stdout.log`;
+    const stderrPath = `${plan.artifacts.logsRoot}/${String(index + 1).padStart(
+      2,
+      "0",
+    )}-${step.mode}.stderr.log`;
+    if (blocked) {
+      steps.push({
+        ...step,
+        status: "blocked",
+        startedAt,
+        finishedAt: new Date().toISOString(),
+        exitCode: null,
+        stdoutPath,
+        stderrPath,
+        error: "blocked_by_previous_failed_step",
+      });
+      continue;
+    }
+
+    const result = spawnSync(step.command[0], step.command.slice(1), {
+      cwd: step.cwd ?? process.cwd(),
+      encoding: "utf8",
+      env: { ...process.env, ...(step.env ?? {}) },
+    });
+    writeFileSync(stdoutPath, result.stdout ?? "", "utf8");
+    writeFileSync(stderrPath, result.stderr ?? "", "utf8");
+    const status = result.status === 0 ? "passed" : "failed";
+    const parsed =
+      status === "passed"
+        ? (readJsonIfPresent(step.report) ??
+          JSON.parse(result.stdout || "null"))
+        : readJsonIfPresent(step.report);
+    const stepResult = {
+      ...step,
+      status,
+      startedAt,
+      finishedAt: new Date().toISOString(),
+      exitCode: result.status,
+      stdoutPath,
+      stderrPath,
+      parsed,
+      error:
+        status === "passed" ? null : result.stderr || result.stdout || null,
+    };
+    steps.push(stepResult);
+    if (status !== "passed" && step.blocksOnFailure) {
+      blocked = true;
+    }
+  }
+
+  const report = buildVmRuntimeAcceptanceReport({ plan, steps });
+  writeVmRuntimeAcceptanceEvidenceIndexes({ plan, steps });
+  writeFileSync(plan.artifacts.report, `${JSON.stringify(report, null, 2)}\n`);
+  return report;
+}
+
+function runFactoryImageDeliveryUnit(options) {
+  if (!options.cleanBaseEvidence) {
+    throw new Error(
+      "factory-image-delivery-unit requires --clean-base-evidence",
+    );
+  }
+  const cleanBaseAcceptance = JSON.parse(
+    readFileSync(options.cleanBaseEvidence, "utf8"),
+  );
+  const reportPath =
+    options.out ??
+    `${dirname(options.cleanBaseEvidence)}/${FACTORY_IMAGE_DELIVERY_UNIT_FILE_NAME}`;
+  const report = buildFactoryImageDeliveryUnitReport({
+    cleanBaseAcceptance,
+    cleanBaseAcceptancePath: options.cleanBaseEvidence,
+    reportPath,
+  });
+  mkdirSync(dirname(reportPath), { recursive: true });
+  writeFileSync(reportPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
+  return report;
+}
+
+function writeJsonOutput(path, value) {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`, "utf8");
 }
 
 function splitTaskName(taskName) {
@@ -867,7 +3102,6 @@ function splitTaskName(taskName) {
 
 export function buildRemotePowerShellScript(options = {}) {
   const mode = options.mode ?? "inventory";
-  const platformTarget = options.platformTarget ?? "vem-vps";
   const machineCode = options.machineCode ?? "VEM-TESTBED-WINVM-01";
   const supportedModes = [
     "inventory",
@@ -876,11 +3110,39 @@ export function buildRemotePowerShellScript(options = {}) {
     "bring-up",
     "provision",
     "runtime-acceptance",
+    "simulated-hardware-sale-flow",
+    "dirty-host-factory-acceptance",
+    "clean-base-factory-acceptance",
   ];
   if (!supportedModes.includes(mode)) {
     throw new Error(`unsupported mode: ${mode}`);
   }
   assertTestbedMachineCode(machineCode);
+  const runId =
+    mode === "dirty-host-factory-acceptance" ||
+    mode === "clean-base-factory-acceptance" ||
+    mode === "simulated-hardware-sale-flow"
+      ? sanitizeRunId(options.runId)
+      : "not-applicable";
+  const cleanBasePlan =
+    mode === "clean-base-factory-acceptance"
+      ? buildCleanBaseFactoryAcceptancePlan({ ...options, runId })
+      : null;
+  const ephemeralPlatformSetup = readEphemeralPlatformSetupEvidence({
+    ...options,
+    mode,
+    runId,
+    machineCode,
+  });
+  const platformOverride =
+    options.platformApiBaseUrl && options.platformMqttUrl
+      ? {
+          apiBaseUrl: options.platformApiBaseUrl,
+          mqttUrl: options.platformMqttUrl,
+        }
+      : null;
+  const platformTarget =
+    ephemeralPlatformSetup?.target ?? options.platformTarget ?? "vem-vps";
   if (
     mode === "provision" &&
     !Object.hasOwn(PLATFORM_TARGETS, platformTarget)
@@ -888,11 +3150,37 @@ export function buildRemotePowerShellScript(options = {}) {
     throw new Error(`unsupported platform target: ${platformTarget}`);
   }
   const platform =
-    PLATFORM_TARGETS[platformTarget] ?? PLATFORM_TARGETS["vem-vps"];
-  const claimCode = options.claimCode ?? "";
+    ephemeralPlatformSetup ??
+    platformOverride ??
+    PLATFORM_TARGETS[platformTarget] ??
+    PLATFORM_TARGETS["vem-vps"];
+  const claimCode =
+    mode === "simulated-hardware-sale-flow"
+      ? ephemeralPlatformSetup.claimCode
+      : (options.claimCode ?? "");
   if (mode === "provision" && String(claimCode).trim().length === 0) {
     throw new Error("provision mode requires --claim-code");
   }
+  const dirtyHostEvidenceRoot =
+    mode === "dirty-host-factory-acceptance"
+      ? `C:\\ProgramData\\VEM\\evidence\\${runId}`
+      : "C:\\ProgramData\\VEM\\evidence\\not-applicable";
+  const cleanBaseEvidenceRoot =
+    mode === "clean-base-factory-acceptance"
+      ? `C:\\ProgramData\\VEM\\evidence\\clean-base-factory-acceptance\\${runId}`
+      : "C:\\ProgramData\\VEM\\evidence\\clean-base-factory-acceptance\\not-applicable";
+  const remoteSupportScriptRoot = options.remoteSupportScriptRoot ?? "";
+  const remoteUploadedArtifactRoot = options.remoteUploadedArtifactRoot ?? "";
+  const expectedTestbed = expectedDirtyHostTestbed(options);
+  const useExistingRemoteArtifacts =
+    options.useExistingRemoteArtifacts === true;
+  const expectedDaemonArtifactSha256 = options.daemonArtifactSha256 ?? "";
+  const expectedMachineUiArtifactSha256 = options.machineUiArtifactSha256 ?? "";
+  const cleanBaseSource = cleanBasePlan?.cleanBase.source ?? "";
+  const cleanBaseSnapshot = cleanBasePlan?.cleanBase.snapshot ?? "";
+  const factoryWindowsBaselinePolicyJson = JSON.stringify(
+    FACTORY_WINDOWS_BASELINE_POLICY,
+  );
 
   const plan = assertResetPlanPreservesTestbed(buildResetPlan());
   const bringUpPlan = buildBringUpPlan(options);
@@ -980,6 +3268,15 @@ function Read-JsonFile([string]$Path) {
   ) | ConvertFrom-Json
 }
 
+function Write-JsonFile([string]$Path, $Value) {
+  $directory = Split-Path -Parent $Path
+  if (-not (Test-Path -LiteralPath $directory)) {
+    New-Item -ItemType Directory -Path $directory -Force | Out-Null
+  }
+  $json = $Value | ConvertTo-Json -Depth 60
+  [System.IO.File]::WriteAllText($Path, $json, [System.Text.UTF8Encoding]::new($false))
+}
+
 function Get-ServiceStateOrNull([string]$Name) {
   $service = Get-Service -Name $Name -ErrorAction SilentlyContinue
   if ($null -eq $service) { return $null }
@@ -999,6 +3296,64 @@ function Test-LocalAdmin {
 function Assert-RequiredSecretEnvironment([string]$Name) {
   if ([string]::IsNullOrEmpty([Environment]::GetEnvironmentVariable($Name, "Process"))) {
     throw "required secret environment variable is missing: $Name"
+  }
+}
+
+function Import-DirtyHostFactoryCredentialFile([string]$Path) {
+  if ([string]::IsNullOrWhiteSpace($Path)) {
+    return $null
+  }
+  $credentials = Read-JsonFile $Path
+  $requiredNames = @("VEM_KIOSK_PASSWORD", "VEM_MAINTENANCE_PASSWORD", "VEM_AUTOLOGON_PASSWORD")
+  foreach ($name in $requiredNames) {
+    $value = [string]$credentials.$name
+    if ([string]::IsNullOrEmpty($value)) {
+      throw "staged factory credential file is missing $name"
+    }
+    [Environment]::SetEnvironmentVariable($name, $value, "Process")
+  }
+  return [ordered]@{
+    source = "staged_remote_credential_file"
+    path = $Path
+    names = $requiredNames
+  }
+}
+
+function Get-DirtyHostFactoryTestbedIdentity {
+  $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+  $computer = Get-CimInstance Win32_ComputerSystem
+  $tailscaleIps = @()
+  $tailscaleError = $null
+  try {
+    $tailscaleIps = @(tailscale ip -4 2>&1 | ForEach-Object { [string]$_ } | Where-Object { $_ -match '^\\d+\\.\\d+\\.\\d+\\.\\d+$' })
+  } catch {
+    $tailscaleError = [string]$_
+  }
+  return [ordered]@{
+    expected = [ordered]@{
+      hostName = ${psString(expectedTestbed.hostName)}
+      user = ${psString(expectedTestbed.user)}
+      tailscaleIp = ${psString(expectedTestbed.tailscaleIp)}
+    }
+    observed = [ordered]@{
+      hostName = [string]$computer.Name
+      user = ([string]$identity.Name).Split("\\")[-1]
+      windowsIdentity = [string]$identity.Name
+      tailscaleIps = $tailscaleIps
+      tailscaleError = $tailscaleError
+    }
+  }
+}
+
+function Assert-DirtyHostFactoryTestbedIdentity($IdentityGuard) {
+  if ([string]$IdentityGuard.observed.hostName -ne [string]$IdentityGuard.expected.hostName) {
+    throw "dirty-host factory acceptance refused remote host: expected $($IdentityGuard.expected.hostName), got $($IdentityGuard.observed.hostName)"
+  }
+  if ([string]$IdentityGuard.observed.user -ne [string]$IdentityGuard.expected.user) {
+    throw "dirty-host factory acceptance refused remote user: expected $($IdentityGuard.expected.user), got $($IdentityGuard.observed.user)"
+  }
+  if (-not (@($IdentityGuard.observed.tailscaleIps) -contains [string]$IdentityGuard.expected.tailscaleIp)) {
+    throw "dirty-host factory acceptance refused remote Tailscale identity: expected $($IdentityGuard.expected.tailscaleIp), got $(@($IdentityGuard.observed.tailscaleIps) -join ', ')"
   }
 }
 
@@ -1210,6 +3565,8 @@ function Convert-ConfigSnapshotEvidence($Config) {
       observed = $false
       provisioned = $false
       machineCode = $null
+      apiBaseUrl = $null
+      mqttUrl = $null
       machineSecretConfigured = $false
       mqttSigningSecretConfigured = $false
       mqttPasswordConfigured = $false
@@ -1221,6 +3578,8 @@ function Convert-ConfigSnapshotEvidence($Config) {
     observed = $true
     provisioned = [bool]$Config.provisioned
     machineCode = if ($null -ne $Config.public) { $Config.public.machineCode } else { $null }
+    apiBaseUrl = if ($null -ne $Config.public) { $Config.public.apiBaseUrl } else { $null }
+    mqttUrl = if ($null -ne $Config.public) { $Config.public.mqttUrl } else { $null }
     machineSecretConfigured = [bool]$Config.machineSecretConfigured
     mqttSigningSecretConfigured = [bool]$Config.mqttSigningSecretConfigured
     mqttPasswordConfigured = [bool]$Config.mqttPasswordConfigured
@@ -1279,6 +3638,37 @@ function Get-SafeReadyzEvidence([string]$BaseUrl) {
   }
 }
 
+function Wait-DaemonIpcAfterProvisioningRestart([string]$ReadyFilePath) {
+  $lastError = $null
+  for ($attempt = 0; $attempt -lt 18; $attempt++) {
+    try {
+      $service = Get-Service -Name "VemVendingDaemon" -ErrorAction SilentlyContinue
+      if ($null -ne $service -and $service.Status -eq "Stopped") {
+        Start-Service -Name "VemVendingDaemon" -ErrorAction SilentlyContinue
+      }
+
+      $ready = Read-JsonFile $ReadyFilePath
+      if ([string]::IsNullOrWhiteSpace($ready.ipcToken)) {
+        throw "ipcToken missing from daemon ready file"
+      }
+      $baseUrl = Get-IpcBaseUrl $ready
+      $headers = @{ Authorization = "Bearer $($ready.ipcToken)" }
+      Invoke-IpcJson "GET" "$baseUrl/healthz" @{} | Out-Null
+      return [ordered]@{
+        ready = $ready
+        baseUrl = $baseUrl
+        headers = $headers
+        attempts = $attempt + 1
+        recovered = $true
+      }
+    } catch {
+      $lastError = $_.Exception.Message
+      Start-Sleep -Seconds 2
+    }
+  }
+  throw "daemon IPC did not recover after provisioning restart: $lastError"
+}
+
 function Get-DaemonIpcInventoryEvidence([string]$ReadyFilePath) {
   $evidence = [ordered]@{
     readyFile = [ordered]@{
@@ -1326,6 +3716,7 @@ function Get-DaemonIpcInventoryEvidence([string]$ReadyFilePath) {
 
 function Convert-ProvisioningFacts($DaemonIpc, $ProvisioningActions) {
   $usedClaimPath = $false
+  $claimEvidence = $null
   foreach ($action in @($ProvisioningActions)) {
     $actionEvidence = $action.evidence
     if (
@@ -1335,8 +3726,10 @@ function Convert-ProvisioningFacts($DaemonIpc, $ProvisioningActions) {
       @("provisioned", "failed") -contains [string]$actionEvidence.claimStatus
     ) {
       $usedClaimPath = $true
+      $claimEvidence = $actionEvidence
     }
   }
+  $profileApplied = [bool]$DaemonIpc.config.machineSecretConfigured -and [bool]$DaemonIpc.config.mqttSigningSecretConfigured
 
   return [ordered]@{
     provisioned = [bool]$DaemonIpc.config.provisioned
@@ -1346,6 +3739,19 @@ function Convert-ProvisioningFacts($DaemonIpc, $ProvisioningActions) {
     mqttSigningSecretConfigured = [bool]$DaemonIpc.config.mqttSigningSecretConfigured
     mqttPasswordConfigured = [bool]$DaemonIpc.config.mqttPasswordConfigured
     provisioningIssues = @($DaemonIpc.config.provisioningIssues | ForEach-Object { [string]$_ })
+    claim = [ordered]@{
+      runId = if ($null -ne $claimEvidence -and -not [string]::IsNullOrWhiteSpace($claimEvidence.runId)) { [string]$claimEvidence.runId } else { "missing" }
+      status = if ($null -ne $claimEvidence -and -not [string]::IsNullOrWhiteSpace($claimEvidence.claimStatus)) { [string]$claimEvidence.claimStatus } else { "not_attempted" }
+      httpStatus = if ($null -ne $claimEvidence -and $null -ne $claimEvidence.claimHttpStatus) { [int]$claimEvidence.claimHttpStatus } elseif ($null -ne $claimEvidence -and [string]$claimEvidence.claimStatus -eq "provisioned") { 200 } else { $null }
+      failureCode = if ($null -ne $claimEvidence -and -not [string]::IsNullOrWhiteSpace($claimEvidence.claimFailureCode)) { [string]$claimEvidence.claimFailureCode } else { $null }
+      endpoint = if ($null -ne $claimEvidence -and -not [string]::IsNullOrWhiteSpace($claimEvidence.endpoint)) { [string]$claimEvidence.endpoint } else { "missing" }
+    }
+    profile = [ordered]@{
+      status = if ($profileApplied) { "applied" } elseif ([bool]$DaemonIpc.config.provisioned) { "failed" } else { "missing" }
+      machineSecretConfigured = [bool]$DaemonIpc.config.machineSecretConfigured
+      mqttSigningSecretConfigured = [bool]$DaemonIpc.config.mqttSigningSecretConfigured
+      mqttPasswordConfigured = [bool]$DaemonIpc.config.mqttPasswordConfigured
+    }
   }
 }
 
@@ -1368,6 +3774,8 @@ function Invoke-TestbedProvisioningClaim($Actions) {
     usedDaemonIpcClaimPath = $false
     readyFile = ${psString(bringUpPlan.arguments.DaemonReadyFile)}
     endpoint = $null
+    runId = ${psString(runId)}
+    claimCodeId = ${psString(ephemeralPlatformSetup?.claimCodeId ?? "")}
     expectedMachineCode = ${psString(machineCode)}
     platformTarget = ${psString(platformTarget)}
     apiBaseUrl = ${psString(platform.apiBaseUrl)}
@@ -1421,8 +3829,17 @@ function Invoke-TestbedProvisioningClaim($Actions) {
     try {
       $claimResult = Invoke-IpcJson "POST" "$baseUrl/v1/provisioning/claim" $headers $claimPayload
       $evidence.claimStatus = "provisioned"
+      $evidence.claimHttpStatus = 200
       $evidence.machineCode = $claimResult.machineCode
       $evidence.claimResult.restartRequested = if ($null -ne $claimResult.restartRequested) { [bool]$claimResult.restartRequested } else { $null }
+      if ([bool]$evidence.claimResult.restartRequested) {
+        $recoveredIpc = Wait-DaemonIpcAfterProvisioningRestart ${psString(bringUpPlan.arguments.DaemonReadyFile)}
+        $ready = $recoveredIpc.ready
+        $baseUrl = $recoveredIpc.baseUrl
+        $headers = $recoveredIpc.headers
+        $evidence.claimResult.recoveredAfterRestart = [bool]$recoveredIpc.recovered
+        $evidence.claimResult.recoveryAttempts = [int]$recoveredIpc.attempts
+      }
     } catch {
       $claimError = Get-HttpErrorInfo $_
       $evidence.claimStatus = "failed"
@@ -1698,6 +4115,64 @@ function Get-MachineUiProcessEvidence {
   return $processes
 }
 
+function Get-WebView2ProcessEvidence {
+  $processes = @(Get-CimInstance Win32_Process -Filter "name = 'msedgewebview2.exe'" -ErrorAction SilentlyContinue | ForEach-Object {
+    $owner = Get-ProcessOwnerEvidence $_
+    [pscustomobject]@{
+      processId = [int]$_.ProcessId
+      sessionId = [int]$_.SessionId
+      executablePath = if ($null -ne $_.ExecutablePath) { [string]$_.ExecutablePath } else { $null }
+      commandLine = if ($null -ne $_.CommandLine) { [string]$_.CommandLine } else { $null }
+      ownerUser = if ($null -ne $owner) { [string]$owner.user } else { "unknown" }
+      ownerDomain = if ($null -ne $owner) { [string]$owner.domain } else { "unknown" }
+    }
+  })
+  return $processes
+}
+
+function Get-SessionProcessEvidence([string]$Name, $ActiveKioskSession) {
+  if ($null -eq $ActiveKioskSession) {
+    return @()
+  }
+  $safeName = $Name.Replace("'", "''")
+  return @(Get-CimInstance Win32_Process -Filter "name = '$safeName'" -ErrorAction SilentlyContinue | Where-Object {
+    [int]$_.SessionId -eq [int]$ActiveKioskSession.sessionId
+  } | ForEach-Object {
+    $owner = Get-ProcessOwnerEvidence $_
+    [pscustomobject]@{
+      processId = [int]$_.ProcessId
+      sessionId = [int]$_.SessionId
+      ownerUser = if ($null -ne $owner) { [string]$owner.user } else { "unknown" }
+    }
+  } | Where-Object {
+    $_.ownerUser -eq "VEMKiosk"
+  })
+}
+
+function Get-KioskDesktopEscapeEvidence($ActiveKioskSession) {
+  $explorerProcesses = @(Get-SessionProcessEvidence "explorer.exe" $ActiveKioskSession)
+  $edgeProcesses = @(Get-SessionProcessEvidence "msedge.exe" $ActiveKioskSession)
+  $startProcesses = @(Get-SessionProcessEvidence "StartMenuExperienceHost.exe" $ActiveKioskSession)
+  return [ordered]@{
+    status = "not_asserted"
+    source = "process_presence_only"
+    interactiveProbe = [ordered]@{
+      status = "not_available"
+      message = "interactive desktop escape probe is not available from the SSH evidence collector"
+    }
+    processPresence = [ordered]@{
+      explorer = $explorerProcesses
+      edge = $edgeProcesses
+      startMenu = $startProcesses
+    }
+    desktopVisible = $null
+    taskbarVisible = $null
+    startMenuVisible = $null
+    edgeReachable = $null
+    fileExplorerReachable = $null
+  }
+}
+
 function Convert-QuserSessionLine([string]$Line) {
   if ([string]::IsNullOrWhiteSpace($Line)) { return $null }
   $match = [regex]::Match($Line, '^\\s*>?\\s*(?<user>\\S+)\\s+(?:(?<sessionName>\\S+)\\s+)?(?<id>\\d+)\\s+(?<state>\\S+)')
@@ -1715,6 +4190,19 @@ function Convert-QuserSessionLine([string]$Line) {
   }
 }
 
+function Test-ActiveKioskQuserSession($Session) {
+  if ($null -eq $Session) { return $false }
+  $state = ([string]$Session.state).Trim().ToLowerInvariant()
+  $sessionName = ([string]$Session.sessionName).Trim().ToLowerInvariant()
+  if ([string]$Session.user -ne "VEMKiosk") { return $false }
+  if ([string]$Session.source -eq "ssh_service_session") { return $false }
+  if ($state -eq "active") { return $true }
+  return $sessionName -eq "console" -and
+    $state -ne "disc" -and
+    $state -ne "disconnected" -and
+    $state -ne "listen"
+}
+
 function Get-InteractiveWindowsSessionEvidence {
   $sessions = @()
   $errorMessage = $null
@@ -1725,7 +4213,7 @@ function Get-InteractiveWindowsSessionEvidence {
     $errorMessage = [string]$_
   }
   $activeKioskSession = @($sessions | Where-Object {
-    $_.user -eq "VEMKiosk" -and $_.state -eq "Active"
+    Test-ActiveKioskQuserSession $_
   } | Select-Object -First 1)
   return [pscustomobject]@{
     source = "quser"
@@ -1739,7 +4227,7 @@ function Get-InteractiveWindowsSessionEvidence {
 function Get-ActiveKioskSession($SessionEvidence) {
   if ($null -eq $SessionEvidence) { return $null }
   $session = @($SessionEvidence.sessions | Where-Object {
-    $_.user -eq "VEMKiosk" -and $_.state -eq "Active" -and $_.source -ne "ssh_service_session"
+    Test-ActiveKioskQuserSession $_
   } | Select-Object -First 1)
   if ($session.Count -eq 0) { return $null }
   return $session[0]
@@ -1827,6 +4315,29 @@ function Get-InteractiveDesktopDisplayEvidence($ActiveKioskSession) {
   }
 
   $screen = Get-CurrentDesktopScreenDimensions
+  if ($null -eq $screen) {
+    $probePath = "C:\\Users\\VEMKiosk\\AppData\\Local\\VEM\\kiosk-display-evidence.json"
+    if (Test-Path -LiteralPath $probePath -PathType Leaf) {
+      try {
+        $probe = Get-Content -LiteralPath $probePath -Raw | ConvertFrom-Json
+        $probeScreen = @($probe.screens | Where-Object { $_.primary } | Select-Object -First 1)
+        if ($probeScreen.Count -eq 0) {
+          $probeScreen = @($probe.screens | Select-Object -First 1)
+        }
+        if ($probeScreen.Count -gt 0) {
+          $screen = [pscustomobject]@{
+            deviceName = if ([string]::IsNullOrWhiteSpace($probeScreen[0].deviceName)) { "kiosk-display-probe" } else { [string]$probeScreen[0].deviceName }
+            primary = [bool]$probeScreen[0].primary
+            widthPx = [int]$probeScreen[0].widthPx
+            heightPx = [int]$probeScreen[0].heightPx
+            source = "kiosk_logon_display_probe"
+          }
+        }
+      } catch {
+        $screen = $null
+      }
+    }
+  }
 
   if ($null -eq $screen) {
     return [pscustomobject]@{
@@ -1953,13 +4464,22 @@ function Get-KioskRuntimeEvidence($ActiveKioskSession) {
     $_.ownerUser -eq "VEMKiosk" -and
     $_.sessionId -eq $ActiveKioskSession.sessionId
   } | Select-Object -First 1)
+  $webView2Processes = @(Get-WebView2ProcessEvidence)
+  $kioskWebView2Process = @($webView2Processes | Where-Object {
+    $null -ne $ActiveKioskSession -and
+    $_.ownerUser -eq "VEMKiosk" -and
+    $_.sessionId -eq $ActiveKioskSession.sessionId
+  } | Select-Object -First 1)
   $cdp = Get-WebViewCdpUrlEvidence
+  $cdpVerified = $kioskProcess.Count -gt 0 -and (Test-TauriHashRouteUrl ([string]$cdp.url))
+  $productionWebViewVerified = $kioskProcess.Count -gt 0 -and $kioskWebView2Process.Count -gt 0 -and -not [bool]$cdp.available
   return [ordered]@{
-    webviewRunning = $kioskProcess.Count -gt 0 -and (Test-TauriHashRouteUrl ([string]$cdp.url))
-    url = [string]$cdp.url
+    webviewRunning = $cdpVerified -or $productionWebViewVerified
+    url = if ($cdpVerified) { [string]$cdp.url } elseif ($productionWebViewVerified) { "unavailable:production-cdp-disabled" } else { [string]$cdp.url }
     sessionUser = if ($null -ne $ActiveKioskSession) { [string]$ActiveKioskSession.user } else { "unknown" }
-    source = $cdp.source
+    source = if ($cdpVerified) { $cdp.source } elseif ($productionWebViewVerified) { "webview2_process" } else { $cdp.source }
     processId = if ($kioskProcess.Count -gt 0) { $kioskProcess[0].processId } else { $null }
+    webView2ProcessId = if ($kioskWebView2Process.Count -gt 0) { $kioskWebView2Process[0].processId } else { $null }
     sessionId = if ($null -ne $ActiveKioskSession) { [int]$ActiveKioskSession.sessionId } else { $null }
     cdpAvailable = [bool]$cdp.available
     error = $cdp.error
@@ -1974,6 +4494,720 @@ function Get-ArtifactSha256([string]$Path) {
     return [string](Get-FileHash -LiteralPath $Path -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
   } catch {
     return "0000000000000000000000000000000000000000000000000000000000000000"
+  }
+}
+
+function Copy-FactoryAcceptanceInputs([string]$StageRoot) {
+  $artifactRoot = Join-Path $StageRoot "artifact-backup"
+  $scriptRoot = Join-Path $StageRoot "script-bundle"
+  New-Item -ItemType Directory -Path $artifactRoot -Force | Out-Null
+  New-Item -ItemType Directory -Path $scriptRoot -Force | Out-Null
+
+  $uploadedArtifactRoot = ${psString(remoteUploadedArtifactRoot)}
+  $useExistingRemoteArtifacts = $${useExistingRemoteArtifacts ? "true" : "false"}
+  if ($useExistingRemoteArtifacts) {
+    $daemonSource = "C:\\VEM\\bringup\\vending-daemon.exe"
+    $machineUiSource = "C:\\VEM\\bringup\\machine.exe"
+    $machineUiSidecarSource = "C:\\VEM\\bringup\\WebView2Loader.dll"
+    $artifactSource = "existing_remote_bringup"
+  } else {
+    if ([string]::IsNullOrWhiteSpace($uploadedArtifactRoot)) {
+      throw "factory acceptance requires uploaded artifact root"
+    }
+    $daemonSource = Join-Path $uploadedArtifactRoot "vending-daemon.exe"
+    $machineUiSource = Join-Path $uploadedArtifactRoot "machine.exe"
+    $machineUiSidecarSource = Join-Path $uploadedArtifactRoot "WebView2Loader.dll"
+    $artifactSource = "uploaded_local_artifacts"
+  }
+  $daemonBackup = Join-Path $artifactRoot "vending-daemon.exe"
+  $machineUiBackup = Join-Path $artifactRoot "machine.exe"
+  $machineUiSidecarBackup = Join-Path $artifactRoot "WebView2Loader.dll"
+  Copy-Item -LiteralPath $daemonSource -Destination $daemonBackup -Force -ErrorAction Stop
+  Copy-Item -LiteralPath $machineUiSource -Destination $machineUiBackup -Force -ErrorAction Stop
+  Copy-Item -LiteralPath $machineUiSidecarSource -Destination $machineUiSidecarBackup -Force -ErrorAction Stop
+  $daemonBackupSha256 = Get-ArtifactSha256 $daemonBackup
+  $machineUiBackupSha256 = Get-ArtifactSha256 $machineUiBackup
+  $expectedDaemonSha256 = ${psString(expectedDaemonArtifactSha256)}
+  $expectedMachineUiSha256 = ${psString(expectedMachineUiArtifactSha256)}
+  if (-not [string]::IsNullOrWhiteSpace($expectedDaemonSha256) -and $daemonBackupSha256 -ne $expectedDaemonSha256) {
+    throw "uploaded vending-daemon.exe hash mismatch: expected $expectedDaemonSha256, got $daemonBackupSha256"
+  }
+  if (-not [string]::IsNullOrWhiteSpace($expectedMachineUiSha256) -and $machineUiBackupSha256 -ne $expectedMachineUiSha256) {
+    throw "uploaded machine.exe hash mismatch: expected $expectedMachineUiSha256, got $machineUiBackupSha256"
+  }
+
+  $supportSourceRoots = @(
+    ${psString(remoteSupportScriptRoot)},
+    "C:\\VEM\\bringup\\scripts"
+  ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+  foreach ($scriptName in ${psArray(FACTORY_SUPPORT_SCRIPT_NAMES)}) {
+    $source = $null
+    foreach ($sourceRoot in $supportSourceRoots) {
+      $candidate = Join-Path $sourceRoot $scriptName
+      if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+        $source = $candidate
+        break
+      }
+    }
+    if ($null -eq $source) {
+      throw "required factory support script not found in staged or installed script roots: $scriptName"
+    }
+    Copy-Item -LiteralPath $source -Destination (Join-Path $scriptRoot $scriptName) -Force -ErrorAction Stop
+  }
+
+  return [ordered]@{
+    artifactRoot = $artifactRoot
+    artifactSource = $artifactSource
+    scriptRoot = $scriptRoot
+    daemonArtifactPath = $daemonBackup
+    daemonSha256 = $daemonBackupSha256
+    expectedDaemonSha256 = $expectedDaemonSha256
+    machineUiArtifactPath = $machineUiBackup
+    machineUiSidecarPath = $machineUiSidecarBackup
+    machineUiSha256 = $machineUiBackupSha256
+    expectedMachineUiSha256 = $expectedMachineUiSha256
+    prepareScript = Join-Path $scriptRoot "prepare-factory-runtime.ps1"
+    verifierScript = Join-Path $scriptRoot "verify-factory-runtime.ps1"
+  }
+}
+
+function Convert-FactoryChildStructuredJsonOutput($Output) {
+  $text = (@($Output) -join [Environment]::NewLine).Trim()
+  if ([string]::IsNullOrWhiteSpace($text)) {
+    throw "factory child did not write structured JSON to stdout"
+  }
+  $start = $text.IndexOf("{")
+  $end = $text.LastIndexOf("}")
+  if ($start -lt 0 -or $end -lt $start) {
+    throw "factory child stdout did not contain a JSON object"
+  }
+  return $text.Substring($start, $end - $start + 1) | ConvertFrom-Json -ErrorAction Stop
+}
+
+function Invoke-FactoryChildPowerShell($Actions, [string]$Name, [string]$ScriptPath, [hashtable]$Arguments, [string]$OutputPath, [bool]$WriteStructuredJsonOutput = $false) {
+  $status = "succeeded"
+  $message = $null
+  $output = @()
+  $stderr = @()
+  $exitCode = 0
+  $structuredOutput = $null
+  try {
+    if (-not (Test-Path -LiteralPath $ScriptPath -PathType Leaf)) {
+      throw "script not found: $ScriptPath"
+    }
+    $argumentList = @(
+      "-NoProfile",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      $ScriptPath
+    )
+    foreach ($entry in $Arguments.GetEnumerator()) {
+      if ($entry.Value -is [bool]) {
+        if ([bool]$entry.Value) {
+          $argumentList += "-$($entry.Key)"
+        }
+      } else {
+        $argumentList += "-$($entry.Key)"
+        $argumentList += [string]$entry.Value
+      }
+    }
+    $stdoutPath = Join-Path $env:TEMP ("vem-factory-child-" + [guid]::NewGuid().ToString("N") + ".stdout.txt")
+    $stderrPath = Join-Path $env:TEMP ("vem-factory-child-" + [guid]::NewGuid().ToString("N") + ".stderr.txt")
+    $process = Start-Process -FilePath "powershell.exe" -ArgumentList $argumentList -Wait -PassThru -NoNewWindow -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+    $exitCode = [int]$process.ExitCode
+    if (Test-Path -LiteralPath $stdoutPath) {
+      $output = @(Get-Content -LiteralPath $stdoutPath -ErrorAction SilentlyContinue | ForEach-Object { [string]$_ })
+      Remove-Item -LiteralPath $stdoutPath -Force -ErrorAction SilentlyContinue
+    }
+    if (Test-Path -LiteralPath $stderrPath) {
+      $stderr = @(Get-Content -LiteralPath $stderrPath -ErrorAction SilentlyContinue | ForEach-Object { [string]$_ })
+      Remove-Item -LiteralPath $stderrPath -Force -ErrorAction SilentlyContinue
+    }
+    if ($exitCode -ne 0) {
+      $status = "failed"
+      $message = "$Name exited with code $exitCode"
+    }
+  } catch {
+    $status = "failed"
+    $message = [string]$_
+  }
+  if ($status -eq "succeeded" -and $WriteStructuredJsonOutput) {
+    try {
+      $structuredOutput = Convert-FactoryChildStructuredJsonOutput $output
+    } catch {
+      $status = "failed"
+      $message = [string]$_
+    }
+  }
+
+  $action = [ordered]@{
+    name = $Name
+    status = $status
+    message = $message
+    scriptPath = $ScriptPath
+    outputPath = $OutputPath
+    structuredJsonOutput = $WriteStructuredJsonOutput
+    exitCode = $exitCode
+    output = $output
+    stderr = $stderr
+  }
+  if (-not [string]::IsNullOrWhiteSpace($OutputPath)) {
+    if ($WriteStructuredJsonOutput -and $status -eq "succeeded") {
+      Write-JsonFile $OutputPath $structuredOutput
+    } else {
+      Write-JsonFile $OutputPath ([pscustomobject]$action)
+    }
+  }
+  $Actions.Add([pscustomobject]$action) | Out-Null
+}
+
+function Invoke-DirtyHostFactoryAcceptance($FactoryActions) {
+  $runId = ${psString(runId)}
+  $runRoot = ${psString(dirtyHostEvidenceRoot)}
+  $stageRoot = if ([string]::IsNullOrWhiteSpace(${psString(remoteSupportScriptRoot)})) {
+    Join-Path $env:TEMP ("vem-dirty-host-factory-" + $runId)
+  } else {
+    Join-Path ${psString(remoteSupportScriptRoot)} "staging"
+  }
+  $acceptancePath = Join-Path $runRoot ${psString(DIRTY_HOST_FACTORY_ACCEPTANCE_FILE_NAME)}
+  $preparationOutputPath = Join-Path $runRoot "factory-runtime-preparation.json"
+  $verificationOutputPath = Join-Path $runRoot "factory-runtime-verification-action.json"
+  $verifierEvidencePath = Join-Path $runRoot "factory-runtime-verification.json"
+  $staged = $null
+  $identityGuard = $null
+  $credentialEvidence = $null
+
+  try {
+    $identityGuard = Get-DirtyHostFactoryTestbedIdentity
+    Assert-DirtyHostFactoryTestbedIdentity $identityGuard
+    $FactoryActions.Add([pscustomobject]@{
+      name = "guard dirty-host factory testbed identity"
+      status = "succeeded"
+      message = $null
+      identityGuard = $identityGuard
+    }) | Out-Null
+  } catch {
+    $FactoryActions.Add([pscustomobject]@{
+      name = "guard dirty-host factory testbed identity"
+      status = "failed"
+      message = [string]$_
+      identityGuard = $identityGuard
+    }) | Out-Null
+    return [ordered]@{
+      runId = $runId
+      evidenceRoot = $runRoot
+      acceptancePath = $acceptancePath
+      preparationOutputPath = $preparationOutputPath
+      verificationOutputPath = $verificationOutputPath
+      verifierEvidencePath = $verifierEvidencePath
+      staged = $null
+      identityGuard = $identityGuard
+    }
+  }
+
+  try {
+    $credentialEvidence = Import-DirtyHostFactoryCredentialFile ${psString(options.remoteFactoryCredentialPath ?? "")}
+    if ($null -ne $credentialEvidence) {
+      $FactoryActions.Add([pscustomobject]@{
+        name = "load dirty-host factory credentials"
+        status = "succeeded"
+        message = $null
+        credentialEvidence = $credentialEvidence
+      }) | Out-Null
+    }
+  } catch {
+    $FactoryActions.Add([pscustomobject]@{
+      name = "load dirty-host factory credentials"
+      status = "failed"
+      message = [string]$_
+      credentialEvidence = $credentialEvidence
+    }) | Out-Null
+    return [ordered]@{
+      runId = $runId
+      evidenceRoot = $runRoot
+      acceptancePath = $acceptancePath
+      preparationOutputPath = $preparationOutputPath
+      verificationOutputPath = $verificationOutputPath
+      verifierEvidencePath = $verifierEvidencePath
+      staged = $null
+      identityGuard = $identityGuard
+      credentialEvidence = $credentialEvidence
+    }
+  }
+
+  try {
+    $staged = Copy-FactoryAcceptanceInputs $stageRoot
+    $FactoryActions.Add([pscustomobject]@{
+      name = "stage dirty-host factory inputs"
+      status = "succeeded"
+      message = $null
+      evidenceRoot = $runRoot
+      stageRoot = $stageRoot
+      staged = $staged
+    }) | Out-Null
+  } catch {
+    $FactoryActions.Add([pscustomobject]@{
+      name = "stage dirty-host factory inputs"
+      status = "failed"
+      message = [string]$_
+      evidenceRoot = $runRoot
+      staged = $null
+    }) | Out-Null
+  }
+
+  if ($null -ne $staged) {
+    Invoke-FactoryChildPowerShell $FactoryActions "run scripted factory runtime preparation" ([string]$staged.prepareScript) @{
+      DaemonArtifactPath = [string]$staged.daemonArtifactPath
+      DaemonSha256 = [string]$staged.daemonSha256
+      MachineUiArtifactPath = [string]$staged.machineUiArtifactPath
+      MachineUiSha256 = [string]$staged.machineUiSha256
+      EnvironmentName = "machine-runtime-testbed"
+      ProvisioningEndpoint = ${psString(platform.apiBaseUrl)}
+      MqttUrl = ${psString(platform.mqttUrl)}
+      HardwareMode = "simulated"
+      HardwareModel = "win10-unraid-testbed"
+      TopologyIdentity = "unraid-win10-runtime-testbed"
+      TopologyVersion = "dirty-host-reset-v1"
+      ExpectedDisplayWidth = "1080"
+      ExpectedDisplayHeight = "1920"
+      ExpectedDisplayOrientation = "portrait"
+      ExpectedKioskUser = "VEMKiosk"
+      ExpectedMaintenanceUser = "YKDZ"
+      ExpectedAutoLogonUser = "VEMKiosk"
+      ExpectedKioskShell = '"C:\\VEM\\bringup\\machine.exe"'
+      TargetLayoutVersion = "win10-runtime-layout/v1"
+      ResetExistingVemState = $true
+      UseSecureCredentialEnvironment = $true
+    } $preparationOutputPath -WriteStructuredJsonOutput $true
+
+    Invoke-FactoryChildPowerShell $FactoryActions "run scripted factory runtime verifier" ([string]$staged.verifierScript) @{
+      ManifestPath = "C:\\ProgramData\\VEM\\factory\\factory-runtime-manifest.json"
+      EvidencePath = $verifierEvidencePath
+    } $verificationOutputPath
+  }
+
+  return [ordered]@{
+    runId = $runId
+    evidenceRoot = $runRoot
+    acceptancePath = $acceptancePath
+    preparationOutputPath = $preparationOutputPath
+    verificationOutputPath = $verificationOutputPath
+    verifierEvidencePath = $verifierEvidencePath
+    staged = $staged
+    identityGuard = $identityGuard
+    credentialEvidence = $credentialEvidence
+  }
+}
+
+function Add-FactoryAcceptanceDiagnostic($Diagnostics, [string]$Code, [string]$Message, $Detail = $null) {
+  $entry = [ordered]@{
+    code = $Code
+    message = $Message
+  }
+  if ($null -ne $Detail) {
+    $entry.detail = $Detail
+  }
+  $Diagnostics.Add($entry) | Out-Null
+}
+
+function Get-CleanBaseFactoryIdentity {
+  $computer = Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue
+  $tailscaleIps = @()
+  $tailscaleName = $null
+  try {
+    $status = & tailscale status --json 2>$null | ConvertFrom-Json -ErrorAction Stop
+    $tailscaleName = [string]$status.Self.DNSName
+    $tailscaleIps = @($status.Self.TailscaleIPs | ForEach-Object { [string]$_ })
+  } catch {
+    $tailscaleName = $null
+    $tailscaleIps = @()
+  }
+  return [ordered]@{
+    hostName = if ($null -ne $computer) { [string]$computer.Name } else { $env:COMPUTERNAME }
+    user = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+    tailscaleName = $tailscaleName
+    tailscaleIps = @($tailscaleIps)
+  }
+}
+
+function Assert-CleanBaseFactoryIdentitySafety($Identity) {
+  $values = @(
+    ${psString(cleanBaseSource)},
+    ${psString(cleanBaseSnapshot)},
+    [string]$Identity.hostName,
+    [string]$Identity.user,
+    [string]$Identity.tailscaleName
+  ) + @($Identity.tailscaleIps | ForEach-Object { [string]$_ })
+  $dirtyMarkers = ${psArray(KNOWN_DIRTY_CLEAN_BASE_SOURCE_MARKERS)}
+  $productionMarkers = ${psArray(KNOWN_PRODUCTION_CLEAN_BASE_SOURCE_MARKERS)}
+  foreach ($value in $values) {
+    $normalized = [string]$value
+    if ([string]::IsNullOrWhiteSpace($normalized)) {
+      continue
+    }
+    $lower = $normalized.ToLowerInvariant()
+    foreach ($marker in $dirtyMarkers) {
+      if ($lower.Contains([string]$marker)) {
+        throw "clean-base factory acceptance refuses known dirty-host identity before staging: $normalized"
+      }
+    }
+    foreach ($marker in $productionMarkers) {
+      if ($lower.Contains([string]$marker)) {
+        throw "clean-base factory acceptance refuses production identity before staging: $normalized"
+      }
+    }
+    $tokens = @($lower -split "[^a-z0-9.-]+" | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    foreach ($token in $tokens) {
+      if ($token -eq "vem" -or $token -eq "real") {
+        throw "clean-base factory acceptance refuses production identity token before staging: $normalized"
+      }
+    }
+  }
+}
+
+function Get-CleanBaseScheduledTaskState([string]$Task) {
+  $normalized = $Task.Trim("\\")
+  $separator = $normalized.LastIndexOf("\\")
+  if ($separator -ge 0) {
+    $taskPath = "\\" + $normalized.Substring(0, $separator) + "\\"
+    $taskName = $normalized.Substring($separator + 1)
+  } else {
+    $taskPath = "\\"
+    $taskName = $normalized
+  }
+  $taskObject = Get-ScheduledTask -TaskName $taskName -TaskPath $taskPath -ErrorAction SilentlyContinue
+  if ($null -eq $taskObject) {
+    return $null
+  }
+  return [ordered]@{
+    name = $Task
+    taskName = $taskName
+    taskPath = $taskPath
+    state = [string]$taskObject.State
+  }
+}
+
+function Assert-CleanBasePreflightAbsence {
+  $probes = ${psCleanBasePreflightProbeArray()}
+  $results = @()
+  $dirty = @()
+  foreach ($probe in $probes) {
+    $observedPaths = @()
+    $observedServices = @()
+    $observedTasks = @()
+    foreach ($path in @($probe.paths)) {
+      if (Test-Path -LiteralPath $path) {
+        $observedPaths += $path
+      }
+    }
+    foreach ($serviceName in @($probe.services)) {
+      $service = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+      if ($null -ne $service) {
+        $observedServices += [ordered]@{
+          name = [string]$service.Name
+          status = [string]$service.Status
+          startType = [string]$service.StartType
+        }
+      }
+    }
+    foreach ($taskName in @($probe.tasks)) {
+      $task = Get-CleanBaseScheduledTaskState $taskName
+      if ($null -ne $task) {
+        $observedTasks += $task
+      }
+    }
+    $passed = $observedPaths.Count -eq 0 -and $observedServices.Count -eq 0 -and $observedTasks.Count -eq 0
+    $results += [ordered]@{
+      code = [string]$probe.code
+      status = if ($passed) { "passed" } else { "failed" }
+      paths = @($probe.paths)
+      services = @($probe.services)
+      tasks = @($probe.tasks)
+      observed = @($observedPaths)
+      observedPaths = @($observedPaths)
+      observedServices = @($observedServices)
+      observedTasks = @($observedTasks)
+    }
+    if (-not $passed) {
+      $dirty += [string]$probe.code
+    }
+  }
+  if ($dirty.Count -gt 0) {
+    throw "clean-base preflight found retained VEM state: $($dirty -join ', ')"
+  }
+  return @($results)
+}
+
+function Test-CleanBaseFactoryAssertionsPassed($Assertions) {
+  if ($null -eq $Assertions) {
+    return $false
+  }
+  $required = ${psArray(REQUIRED_CLEAN_BASE_ASSERTIONS)}
+  foreach ($name in $required) {
+    if ([string]$Assertions.$name.status -ne "passed") {
+      return $false
+    }
+  }
+  return $true
+}
+
+function Convert-CleanBaseFactoryAssertions($VerifierEvidence, $PreflightAbsence) {
+  $checks = $VerifierEvidence.checks
+  $display = $checks.display
+  $displayLive = $display.live
+  $displayExpected = $display.expected
+  $machineUiStartupMode = [string]$checks.machineUiStartup.mode
+  $machineUiTask = $checks.machineUiStartup.machineUiTask
+  $preflightByCode = @{}
+  foreach ($probe in @($PreflightAbsence)) {
+    $preflightByCode[[string]$probe.code] = $probe
+  }
+  return [ordered]@{
+    displayOrientationResolution = [ordered]@{
+      status = if ([string]$displayLive.orientation -eq [string]$displayExpected.orientation -and [int]$displayLive.width -eq [int]$displayExpected.width -and [int]$displayLive.height -eq [int]$displayExpected.height) { "passed" } else { "failed" }
+      orientation = [string]$displayExpected.orientation
+      widthPx = [int]$displayExpected.width
+      heightPx = [int]$displayExpected.height
+      live = $displayLive
+    }
+    sshReachability = [ordered]@{ status = if ([string]$checks.factoryRemoteMaintenanceCapability.opensshServer -eq "available") { "passed" } else { "failed" } }
+    tailscaleDefaultAbsent = [ordered]@{ status = if ([string]$checks.factoryRemoteMaintenanceCapability.tailscale -eq "not_installed_by_default") { "passed" } else { "failed" } }
+    windowsUpdatePolicy = $checks.windowsUpdatePolicy
+    powerPolicy = $checks.powerPolicy
+    bootPolicy = $checks.bootPolicy
+    securityPosture = $checks.securityPosture
+    factoryRemoteMaintenanceCapability = $checks.factoryRemoteMaintenanceCapability
+    consumerExperienceInterference = $checks.consumerExperienceInterference
+    sleepDisabled = [ordered]@{ status = if ([string]$checks.powerPolicy.sleep -eq "disabled") { "passed" } else { "failed" } }
+    testsigningOff = [ordered]@{ status = if ([string]$checks.bootPolicy.testsigning -eq "off") { "passed" } else { "failed" } }
+    autologonConfigured = [ordered]@{ status = if ([bool]$checks.autoLogon.live.configured -and [bool]$checks.autoLogon.live.force) { "passed" } else { "failed" } }
+    startupLauncherMode = [ordered]@{ status = if ($machineUiStartupMode -eq "shell_launcher" -or $machineUiStartupMode -eq "scheduled_task") { "passed" } else { "failed" }; mode = $machineUiStartupMode }
+    daemonService = [ordered]@{ status = if ([bool]$checks.daemonService.exists -and [string]$checks.daemonService.startType -eq "Automatic") { "passed" } else { "failed" }; service = $checks.daemonService }
+    uiLauncherTask = [ordered]@{ status = if ($machineUiStartupMode -eq "shell_launcher" -or [bool]$machineUiTask.exists) { "passed" } else { "failed" }; task = $machineUiTask }
+    runtimeResetGateClean = [ordered]@{ status = "passed"; preflightAbsence = @($PreflightAbsence) }
+    simulatedHardwareMode = [ordered]@{ status = if ([string]$checks.manifest.hardwareMode -eq "simulated") { "passed" } else { "failed" }; mode = [string]$checks.manifest.hardwareMode }
+    startupReachesBringUpOrSalesEligible = [ordered]@{ status = if ([bool]$checks.daemonService.exists -and ($machineUiStartupMode -eq "shell_launcher" -or $machineUiStartupMode -eq "scheduled_task")) { "passed" } else { "failed" }; state = "bring_up" }
+    preflightNoMachineIdentity = [ordered]@{ status = [string]$preflightByCode["preflightNoMachineIdentity"].status }
+    preflightNoProvisioningProfile = [ordered]@{ status = [string]$preflightByCode["preflightNoProvisioningProfile"].status }
+    preflightNoProtectedSecrets = [ordered]@{ status = [string]$preflightByCode["preflightNoProtectedSecrets"].status }
+    preflightNoDaemonState = [ordered]@{ status = [string]$preflightByCode["preflightNoDaemonState"].status }
+    preflightNoPreviousVemEvidence = [ordered]@{ status = [string]$preflightByCode["preflightNoPreviousVemEvidence"].status }
+  }
+}
+
+function Invoke-CleanBaseFactoryAcceptance($FactoryActions) {
+  $runId = ${psString(runId)}
+  $runRoot = ${psString(cleanBaseEvidenceRoot)}
+  $stageRoot = Join-Path ${psString(remoteSupportScriptRoot)} "clean-base-staging"
+  $acceptancePath = Join-Path $runRoot ${psString(CLEAN_BASE_FACTORY_ACCEPTANCE_FILE_NAME)}
+  $preparationOutputPath = Join-Path $runRoot "factory-runtime-preparation.json"
+  $verificationOutputPath = Join-Path $runRoot "factory-runtime-verification-action.json"
+  $verifierEvidencePath = Join-Path $runRoot "factory-runtime-verification.json"
+  $diagnostics = [System.Collections.Generic.List[object]]::new()
+  $identity = $null
+  $credentialEvidence = $null
+  $preflightAbsence = @()
+  $staged = $null
+
+  try {
+    $identity = Get-CleanBaseFactoryIdentity
+    Assert-CleanBaseFactoryIdentitySafety $identity
+    $FactoryActions.Add([pscustomobject]@{
+      name = "guard clean-base source identity"
+      status = "succeeded"
+      message = $null
+      identity = $identity
+    }) | Out-Null
+  } catch {
+    Add-FactoryAcceptanceDiagnostic $diagnostics "clean_base_identity_refused" ([string]$_) $identity
+    $FactoryActions.Add([pscustomobject]@{
+      name = "guard clean-base source identity"
+      status = "failed"
+      message = [string]$_
+      identity = $identity
+    }) | Out-Null
+  }
+
+  if ($diagnostics.Count -eq 0) {
+    try {
+      $credentialEvidence = Import-DirtyHostFactoryCredentialFile ${psString(options.remoteFactoryCredentialPath ?? "")}
+      if ($null -ne $credentialEvidence) {
+        $FactoryActions.Add([pscustomobject]@{
+          name = "load clean-base factory credentials"
+          status = "succeeded"
+          message = $null
+          credentialEvidence = $credentialEvidence
+        }) | Out-Null
+      }
+    } catch {
+      Add-FactoryAcceptanceDiagnostic $diagnostics "factory_credentials_failed" ([string]$_) $credentialEvidence
+      $FactoryActions.Add([pscustomobject]@{
+        name = "load clean-base factory credentials"
+        status = "failed"
+        message = [string]$_
+        credentialEvidence = $credentialEvidence
+      }) | Out-Null
+    }
+  }
+
+  if ($diagnostics.Count -eq 0) {
+    try {
+      $preflightAbsence = Assert-CleanBasePreflightAbsence
+      $FactoryActions.Add([pscustomobject]@{
+        name = "verify clean-base preflight absence"
+        status = "succeeded"
+        message = $null
+        probes = @($preflightAbsence)
+      }) | Out-Null
+    } catch {
+      Add-FactoryAcceptanceDiagnostic $diagnostics "clean_base_preflight_failed" ([string]$_) @($preflightAbsence)
+      $FactoryActions.Add([pscustomobject]@{
+        name = "verify clean-base preflight absence"
+        status = "failed"
+        message = [string]$_
+        probes = @($preflightAbsence)
+      }) | Out-Null
+    }
+  }
+
+  if ($diagnostics.Count -eq 0) {
+    try {
+      $staged = Copy-FactoryAcceptanceInputs $stageRoot
+      $FactoryActions.Add([pscustomobject]@{
+        name = "stage clean-base factory inputs"
+        status = "succeeded"
+        message = $null
+        evidenceRoot = $runRoot
+        stageRoot = $stageRoot
+        staged = $staged
+      }) | Out-Null
+    } catch {
+      Add-FactoryAcceptanceDiagnostic $diagnostics "factory_input_staging_failed" ([string]$_)
+      $FactoryActions.Add([pscustomobject]@{
+        name = "stage clean-base factory inputs"
+        status = "failed"
+        message = [string]$_
+        evidenceRoot = $runRoot
+        staged = $null
+      }) | Out-Null
+    }
+  }
+
+  if ($diagnostics.Count -eq 0 -and $null -ne $staged) {
+    Invoke-FactoryChildPowerShell $FactoryActions "run scripted clean-base factory runtime preparation" ([string]$staged.prepareScript) @{
+      DaemonArtifactPath = [string]$staged.daemonArtifactPath
+      DaemonSha256 = [string]$staged.daemonSha256
+      MachineUiArtifactPath = [string]$staged.machineUiArtifactPath
+      MachineUiSha256 = [string]$staged.machineUiSha256
+      EnvironmentName = "clean-base-factory"
+      ProvisioningEndpoint = ${psString(platform.apiBaseUrl)}
+      MqttUrl = ${psString(platform.mqttUrl)}
+      HardwareMode = "simulated"
+      HardwareModel = "win10-clean-base"
+      TopologyIdentity = "clean-base-factory-runtime"
+      TopologyVersion = "clean-base-v1"
+      ExpectedDisplayWidth = "1080"
+      ExpectedDisplayHeight = "1920"
+      ExpectedDisplayOrientation = "portrait"
+      ExpectedKioskUser = "VEMKiosk"
+      ExpectedMaintenanceUser = "YKDZ"
+      ExpectedAutoLogonUser = "VEMKiosk"
+      ExpectedKioskShell = '"C:\\VEM\\bringup\\machine.exe"'
+      TargetLayoutVersion = "win10-runtime-layout/v1"
+      ResetExistingVemState = $false
+      UseSecureCredentialEnvironment = $true
+    } $preparationOutputPath -WriteStructuredJsonOutput $true
+    $preparationAction = @($FactoryActions | Where-Object { [string]$_.name -eq "run scripted clean-base factory runtime preparation" } | Select-Object -Last 1)
+    if ($preparationAction.Count -eq 0 -or [string]$preparationAction[0].status -ne "succeeded") {
+      Add-FactoryAcceptanceDiagnostic $diagnostics "factory_preparation_failed" "Factory runtime preparation failed." $preparationAction[0]
+    }
+  }
+
+  if ($diagnostics.Count -eq 0 -and $null -ne $staged) {
+    Invoke-FactoryChildPowerShell $FactoryActions "run scripted clean-base factory runtime verifier" ([string]$staged.verifierScript) @{
+      ManifestPath = "C:\\ProgramData\\VEM\\factory\\factory-runtime-manifest.json"
+      EvidencePath = $verifierEvidencePath
+    } $verificationOutputPath -WriteStructuredJsonOutput $true
+    $verifierAction = @($FactoryActions | Where-Object { [string]$_.name -eq "run scripted clean-base factory runtime verifier" } | Select-Object -Last 1)
+    if ($verifierAction.Count -eq 0 -or [string]$verifierAction[0].status -ne "succeeded") {
+      Add-FactoryAcceptanceDiagnostic $diagnostics "factory_verifier_failed" "Factory runtime verifier failed." $verifierAction[0]
+    }
+  }
+
+  $verifierEvidence = if (Test-Path -LiteralPath $verifierEvidencePath -PathType Leaf) {
+    Read-JsonFile $verifierEvidencePath
+  } else {
+    $null
+  }
+  if ($diagnostics.Count -eq 0 -and ($null -eq $verifierEvidence -or [bool]$verifierEvidence.ok -ne $true)) {
+    Add-FactoryAcceptanceDiagnostic $diagnostics "factory_verifier_failed" "Factory runtime verifier evidence did not pass." $verifierEvidence
+  }
+
+  $factoryWindowsBaselinePolicy = ${psString(factoryWindowsBaselinePolicyJson)} | ConvertFrom-Json
+  $assertions = if ($null -ne $verifierEvidence) {
+    Convert-CleanBaseFactoryAssertions $verifierEvidence $preflightAbsence
+  } else {
+    [ordered]@{
+      runtimeResetGateClean = [ordered]@{ status = if ($preflightAbsence.Count -gt 0) { "passed" } else { "failed" }; preflightAbsence = @($preflightAbsence) }
+    }
+  }
+  $assertionsPassed = Test-CleanBaseFactoryAssertionsPassed $assertions
+  if ($diagnostics.Count -eq 0 -and -not $assertionsPassed) {
+    Add-FactoryAcceptanceDiagnostic $diagnostics "clean_base_assertions_failed" "One or more converted clean-base assertions did not pass." $assertions
+  }
+  $passed = $diagnostics.Count -eq 0 -and $assertionsPassed
+  $report = [ordered]@{
+    schemaVersion = "clean-base-factory-acceptance-report/v1"
+    kind = "clean-base-factory-acceptance"
+    runId = $runId
+    result = if ($passed) { "passed" } else { "failed" }
+    ok = $passed
+    dryRun = $false
+    source = [ordered]@{
+      kind = "clean-windows-base"
+      uri = ${psString(cleanBaseSource)}
+      snapshot = ${psString(cleanBaseSnapshot)}
+      identity = $identity
+    }
+    factoryWindowsBaselinePolicy = $factoryWindowsBaselinePolicy
+    artifacts = [ordered]@{
+      daemonSha256 = if ($null -ne $staged) { [string]$staged.daemonSha256 } else { ${psString(expectedDaemonArtifactSha256)} }
+      machineUiSha256 = if ($null -ne $staged) { [string]$staged.machineUiSha256 } else { ${psString(expectedMachineUiArtifactSha256)} }
+      source = if ($null -ne $staged) { [string]$staged.artifactSource } else { "uploaded_local_artifacts" }
+      webView2Sidecar = if ($null -ne $staged) { [string]$staged.machineUiSidecarPath } else { $null }
+    }
+    readiness = [ordered]@{
+      cleanBasePreparationAcceptance = if ($passed) { "passed" } else { "failed" }
+      dirtyHostResetAcceptance = "not_asserted"
+      runtimeReady = "not_asserted"
+      simulatedHardwareReady = "not_asserted"
+      sellReady = "not_asserted"
+    }
+    assertions = $assertions
+    diagnostics = @($diagnostics)
+    evidence = [ordered]@{
+      preparationOutput = $preparationOutputPath
+      verificationAction = $verificationOutputPath
+      verifierEvidence = $verifierEvidencePath
+      factoryRuntimeVerification = $verifierEvidence
+      preflightAbsence = @($preflightAbsence)
+      actions = @($FactoryActions)
+    }
+  }
+  Write-JsonFile $acceptancePath ([pscustomobject]$report)
+  return [ordered]@{
+    runId = $runId
+    evidenceRoot = $runRoot
+    acceptancePath = $acceptancePath
+    preparationOutputPath = $preparationOutputPath
+    verificationOutputPath = $verificationOutputPath
+    verifierEvidencePath = $verifierEvidencePath
+    staged = $staged
+    identity = $identity
+    credentialEvidence = $credentialEvidence
+    preflightAbsence = @($preflightAbsence)
+    report = $report
   }
 }
 
@@ -2148,8 +5382,8 @@ function Classify-RuntimeAcceptanceReport($Facts) {
   if (-not [bool]$Facts.daemonRuntime.healthz.mqttConnected) {
     Add-RuntimeAcceptanceDiagnostic $diagnostics "mqtt_connectivity_failed" "Daemon health must report MQTT connectivity."
   }
-  if (-not [bool]$Facts.kioskRuntime.webviewRunning -or -not (Test-RuntimeAcceptanceTauriHashRouteUrl ([string]$Facts.kioskRuntime.url))) {
-    Add-RuntimeAcceptanceDiagnostic $diagnostics "kiosk_webview_missing" "Machine Runtime Console must be running as a Tauri WebView serving tauri.localhost with a hash route."
+  if (-not [bool]$Facts.kioskRuntime.webviewRunning) {
+    Add-RuntimeAcceptanceDiagnostic $diagnostics "kiosk_webview_missing" "Machine Runtime Console must be running as a Tauri WebView in the active VEMKiosk session."
   }
   if ([string]$Facts.kioskRuntime.sessionUser -ne "VEMKiosk") {
     Add-RuntimeAcceptanceDiagnostic $diagnostics "kiosk_session_user_mismatch" "Machine Runtime Console must run in the VEMKiosk customer session."
@@ -2166,6 +5400,21 @@ function Classify-RuntimeAcceptanceReport($Facts) {
     $Facts.kioskRuntime.sessionId -ne $Facts.displayEvidence.portraitKioskAcceptance.sessionId
   ) {
     Add-RuntimeAcceptanceDiagnostic $diagnostics "kiosk_session_id_mismatch" "Machine Runtime Console evidence must match the active VEMKiosk interactive session."
+  }
+  if ($Facts.kioskDesktopEscape.desktopVisible -eq $true) {
+    Add-RuntimeAcceptanceDiagnostic $diagnostics "kiosk_desktop_visible" "VEMKiosk normal UI path must not expose the Windows desktop."
+  }
+  if ($Facts.kioskDesktopEscape.taskbarVisible -eq $true) {
+    Add-RuntimeAcceptanceDiagnostic $diagnostics "kiosk_taskbar_visible" "VEMKiosk normal UI path must not expose the Windows taskbar."
+  }
+  if ($Facts.kioskDesktopEscape.startMenuVisible -eq $true) {
+    Add-RuntimeAcceptanceDiagnostic $diagnostics "kiosk_start_menu_visible" "VEMKiosk normal UI path must not expose the Windows Start menu."
+  }
+  if ($Facts.kioskDesktopEscape.edgeReachable -eq $true) {
+    Add-RuntimeAcceptanceDiagnostic $diagnostics "kiosk_edge_reachable" "VEMKiosk normal UI path must not reach Microsoft Edge."
+  }
+  if ($Facts.kioskDesktopEscape.fileExplorerReachable -eq $true) {
+    Add-RuntimeAcceptanceDiagnostic $diagnostics "kiosk_file_explorer_reachable" "VEMKiosk normal UI path must not reach File Explorer."
   }
   if ([string]$Facts.displayEvidence.portraitKioskAcceptance.sessionUser -ne "VEMKiosk") {
     Add-RuntimeAcceptanceDiagnostic $diagnostics "portrait_kiosk_session_user_mismatch" "Portrait Kiosk Acceptance must be captured from the VEMKiosk customer session."
@@ -2198,6 +5447,7 @@ function Classify-RuntimeAcceptanceReport($Facts) {
     provisioning = $Facts.provisioning
     daemonRuntime = $Facts.daemonRuntime
     kioskRuntime = $Facts.kioskRuntime
+    kioskDesktopEscape = $Facts.kioskDesktopEscape
     result = [ordered]@{
       runtimeReady = if ($diagnostics.Count -eq 0) { New-RuntimeAcceptanceAssertion "passed" $true } else { New-RuntimeAcceptanceAssertion "failed" $false }
       simulatedHardwareReady = [ordered]@{
@@ -2246,6 +5496,7 @@ function Get-RuntimeAcceptanceReport($ProvisioningActions = @()) {
       readyz = $daemonRuntime.readyz
     }
     kioskRuntime = $factsSubset.kioskRuntime
+    kioskDesktopEscape = $factsSubset.kioskDesktopEscape
   }
   $runtimeAcceptanceReport = Classify-RuntimeAcceptanceReport $facts
   $runtimeAcceptanceReportPath = ${psString(RUNTIME_ACCEPTANCE_REPORT_FILE)}
@@ -2258,6 +5509,549 @@ function Get-RuntimeAcceptanceReport($ProvisioningActions = @()) {
   return [ordered]@{
     path = $runtimeAcceptanceReportPath
     report = $runtimeAcceptanceReport
+  }
+}
+
+function Classify-SimulatedHardwareSaleFlowReport($Facts) {
+  $diagnostics = [System.Collections.Generic.List[object]]::new()
+
+  if (-not ([string]$Facts.target.machineCode).StartsWith("VEM-TESTBED-", [StringComparison]::Ordinal)) {
+    Add-RuntimeAcceptanceDiagnostic $diagnostics "testbed_machine_identity_required" "Simulated hardware sale-flow evidence must use a VEM-TESTBED-* machine identity."
+  }
+  if ([string]$Facts.provisioning.machineCode -ne [string]$Facts.target.machineCode) {
+    Add-RuntimeAcceptanceDiagnostic $diagnostics "daemon_config_machine_identity_mismatch" "Daemon-observed machine identity must match the requested testbed target."
+  }
+  if ([string]$Facts.runtimeState.hardwareMode -ne "simulated") {
+    Add-RuntimeAcceptanceDiagnostic $diagnostics "simulated_hardware_mode_required" "Simulated hardware sale-flow evidence must be captured in Simulated Hardware Mode."
+  }
+  if ([string]$Facts.runtimeState.bringUpState -ne "simulated_hardware_ready") {
+    Add-RuntimeAcceptanceDiagnostic $diagnostics "simulated_hardware_ready_state_missing" "Runtime state must report simulated_hardware_ready before simulated sale flow evidence can pass."
+  }
+  if (-not [bool]$Facts.runtimeState.uiDiagnosticsExplicit) {
+    Add-RuntimeAcceptanceDiagnostic $diagnostics "ui_simulated_hardware_diagnostics_missing" "Machine UI diagnostics must explicitly identify Simulated Hardware Mode."
+  }
+  if (-not [bool]$Facts.platformSetup.ephemeral) {
+    Add-RuntimeAcceptanceDiagnostic $diagnostics "ephemeral_platform_stack_required" "Simulated hardware sale-flow evidence must use an ephemeral platform stack."
+  }
+  if (
+    [string]$Facts.platformSetup.evidenceStatus -ne "prepared" -or
+    [string]$Facts.platformSetup.preparedRunId -ne [string]$Facts.provisioning.claim.runId -or
+    [string]$Facts.platformSetup.target -ne [string]$Facts.target.platformTarget
+  ) {
+    Add-RuntimeAcceptanceDiagnostic $diagnostics "ephemeral_platform_evidence_required" "Simulated hardware sale-flow evidence must prove ephemeral platform setup for the same run and target."
+  }
+  if (
+    (Test-SharedPlatformTarget $Facts.target.platformTarget) -or
+    (Test-SharedPlatformTarget $Facts.platformSetup.target) -or
+    (Test-SharedPlatformTarget $Facts.platformSetup.apiBaseUrl) -or
+    (Test-SharedPlatformTarget $Facts.platformSetup.mqttUrl)
+  ) {
+    Add-RuntimeAcceptanceDiagnostic $diagnostics "shared_platform_target_rejected" "Simulated hardware sale-flow evidence must not target the shared vem-vps platform."
+  }
+  if (-not [bool]$Facts.platformSetup.mockPaymentReady) {
+    Add-RuntimeAcceptanceDiagnostic $diagnostics "mock_payment_readiness_missing" "Ephemeral platform setup must prepare mock payment readiness for the sale flow."
+  }
+  if (
+    -not [bool]$Facts.provisioning.provisioned -or
+    -not [bool]$Facts.provisioning.usedMachineClaimCodePath -or
+    -not [bool]$Facts.provisioning.usedDaemonIpcClaimPath -or
+    -not [bool]$Facts.provisioning.profileApplied -or
+    [string]$Facts.provisioning.profile.status -ne "applied" -or
+    -not [bool]$Facts.provisioning.profile.machineSecretConfigured -or
+    -not [bool]$Facts.provisioning.profile.mqttSigningSecretConfigured
+  ) {
+    Add-RuntimeAcceptanceDiagnostic $diagnostics "machine_claim_profile_path_incomplete" "Testbed provisioning must use the Machine Claim Code path through daemon IPC and apply the platform profile."
+  }
+  if (
+    [string]$Facts.provisioning.claim.runId -ne [string]$Facts.platformSetup.preparedRunId -or
+    [string]$Facts.provisioning.claim.status -ne "provisioned" -or
+    -not ([string]$Facts.provisioning.claim.endpoint).EndsWith("/v1/provisioning/claim", [StringComparison]::OrdinalIgnoreCase) -or
+    [int]$Facts.provisioning.claim.httpStatus -ne 200
+  ) {
+    Add-RuntimeAcceptanceDiagnostic $diagnostics "fresh_machine_claim_evidence_required" "Simulated hardware sale-flow evidence must include a successful daemon IPC claim from the same run."
+  }
+  if (-not [bool]$Facts.topology.verified) {
+    Add-RuntimeAcceptanceDiagnostic $diagnostics "hardware_topology_not_verified" "Daemon must verify the expected hardware slot topology before simulated sale flow."
+  }
+  if (
+    -not [bool]$Facts.planogram.syncedFromPlatform -or
+    -not [bool]$Facts.planogram.applied -or
+    -not [bool]$Facts.planogram.acknowledged -or
+    [string]$Facts.planogram.syncStatus -ne "acknowledged" -or
+    [string]::IsNullOrWhiteSpace($Facts.planogram.acknowledgmentId)
+  ) {
+    Add-RuntimeAcceptanceDiagnostic $diagnostics "platform_planogram_not_acknowledged" "Daemon must sync, apply, and acknowledge the platform planogram before simulated sale flow."
+  }
+  if ([string]$Facts.stock.planogramVersion -ne [string]$Facts.planogram.planogramVersion) {
+    Add-RuntimeAcceptanceDiagnostic $diagnostics "stock_planogram_mismatch" "Initial stock evidence must be recorded against the active acknowledged planogram."
+  }
+  if ([int]$Facts.stock.saleableSlots -lt 1 -or [int]$Facts.stock.totalOnHand -lt 1) {
+    Add-RuntimeAcceptanceDiagnostic $diagnostics "initial_stock_missing" "Initial stock must be established through stock attestation or stock movement paths."
+  }
+  if ([string]$Facts.stock.uploadStatus -ne "accepted" -or [string]::IsNullOrWhiteSpace($Facts.stock.platformMovementId)) {
+    Add-RuntimeAcceptanceDiagnostic $diagnostics "stock_upload_not_accepted" "Initial stock evidence must include an accepted platform stock movement or attestation upload."
+  }
+  if (
+    -not [bool]$Facts.sale.saleViewReady -or
+    [string]::IsNullOrWhiteSpace($Facts.sale.orderId) -or
+    [string]::IsNullOrWhiteSpace($Facts.sale.orderNo) -or
+    [string]$Facts.sale.orderStatus -ne "fulfilled" -or
+    [string]$Facts.sale.paymentMethod -ne "mock" -or
+    [string]$Facts.sale.paymentProviderCode -ne "mock" -or
+    [string]::IsNullOrWhiteSpace($Facts.sale.paymentNo) -or
+    [string]$Facts.sale.paymentStatus -ne "paid" -or
+    -not [bool]$Facts.sale.paymentSucceeded -or
+    [string]::IsNullOrWhiteSpace($Facts.sale.vendingCommandId) -or
+    -not [bool]$Facts.sale.dispenseSimulated -or
+    [string]$Facts.sale.dispenseResult -ne "dispensed" -or
+    -not [bool]$Facts.sale.dispenseSucceeded -or
+    [string]$Facts.sale.customerResult -ne "success"
+  ) {
+    Add-RuntimeAcceptanceDiagnostic $diagnostics "simulated_customer_sale_not_successful" "Simulated payment and simulated dispense must reach a successful customer-facing result."
+  }
+  if (
+    [string]$Facts.platformState.paymentStatus -ne "paid" -or
+    [string]$Facts.platformState.fulfillmentStatus -ne "dispensed" -or
+    -not [bool]$Facts.platformState.stockMovementAccepted
+  ) {
+    Add-RuntimeAcceptanceDiagnostic $diagnostics "platform_sale_state_not_updated" "Platform/testbed state must reflect paid, dispensed, and accepted stock movement results."
+  }
+
+  return [ordered]@{
+    schemaVersion = "simulated-hardware-sale-flow/v1"
+    mode = $Facts.mode
+    target = $Facts.target
+    runtimeState = $Facts.runtimeState
+    provisioning = $Facts.provisioning
+    platformSetup = $Facts.platformSetup
+    topology = $Facts.topology
+    planogram = $Facts.planogram
+    stock = $Facts.stock
+    sale = $Facts.sale
+    platformState = $Facts.platformState
+    result = [ordered]@{
+      simulatedHardwareReady = if ($diagnostics.Count -eq 0) { New-RuntimeAcceptanceAssertion "passed" $true } else { New-RuntimeAcceptanceAssertion "failed" $false }
+      sellReady = [ordered]@{
+        status = "not_asserted"
+        asserted = $false
+      }
+    }
+    diagnostics = @($diagnostics)
+  }
+}
+
+function Test-SharedPlatformTarget($Value) {
+  $text = ([string]$Value).ToLowerInvariant()
+  return $text.Contains("vem-vps") -or $text.Contains("118.25.104.160")
+}
+
+function Assert-SimulatedSaleFlowPreMutationTarget($Target, $DaemonMachineCode, $DaemonApiBaseUrl, $DaemonMqttUrl, [string]$HardwareMode, $PlatformSetup) {
+  if (-not ([string]$Target.machineCode).StartsWith("VEM-TESTBED-", [StringComparison]::Ordinal)) {
+    return [ordered]@{ ok = $false; code = "testbed_machine_identity_required" }
+  }
+  if ([string]$DaemonMachineCode -ne [string]$Target.machineCode) {
+    return [ordered]@{ ok = $false; code = "daemon_machine_identity_mismatch" }
+  }
+  if ($HardwareMode -ne "simulated") {
+    return [ordered]@{ ok = $false; code = "simulated_hardware_mode_required" }
+  }
+  if (
+    (Test-SharedPlatformTarget $Target.platformTarget) -or
+    (Test-SharedPlatformTarget $PlatformSetup.target) -or
+    (Test-SharedPlatformTarget $PlatformSetup.apiBaseUrl) -or
+    (Test-SharedPlatformTarget $PlatformSetup.mqttUrl)
+  ) {
+    return [ordered]@{ ok = $false; code = "shared_platform_target_rejected" }
+  }
+  if ([string]$PlatformSetup.evidenceStatus -ne "prepared" -or [string]$PlatformSetup.target -ne [string]$Target.platformTarget) {
+    return [ordered]@{ ok = $false; code = "ephemeral_platform_evidence_required" }
+  }
+  if ([string]$DaemonApiBaseUrl -ne [string]$PlatformSetup.apiBaseUrl -or [string]$DaemonMqttUrl -ne [string]$PlatformSetup.mqttUrl) {
+    return [ordered]@{ ok = $false; code = "ephemeral_platform_target_mismatch" }
+  }
+  return [ordered]@{ ok = $true; code = "pre_mutation_target_verified" }
+}
+
+function Invoke-SimulatedHardwareSaleFlow($ProvisioningActions = @()) {
+  $reportPath = ${psString(SIMULATED_HARDWARE_SALE_FLOW_REPORT_FILE)}
+  $ready = $null
+  $baseUrl = $null
+  $headers = $null
+  $bringUp = $null
+  $configSummary = $null
+  $daemonIpcBeforeMutation = $null
+  $syncPlanogram = $null
+  $saleViewBeforeStock = $null
+  $attestation = $null
+  $saleView = $null
+  $paymentOptions = $null
+  $createOrder = $null
+  $mockPayment = $null
+  $currentTransaction = $null
+  $selectedItem = $null
+  $flowError = $null
+
+  try {
+    $ready = Read-JsonFile ${psString(bringUpPlan.arguments.DaemonReadyFile)}
+    if ([string]::IsNullOrWhiteSpace($ready.ipcToken)) {
+      throw "ipcToken missing from daemon ready file"
+    }
+    $baseUrl = Get-IpcBaseUrl $ready
+    $headers = @{ Authorization = "Bearer $($ready.ipcToken)" }
+
+    $bringUp = Invoke-IpcJson "GET" "$baseUrl/v1/bring-up" $headers
+    $configSummary = Invoke-IpcJson "GET" "$baseUrl/v1/config/summary" $headers
+    $daemonIpcBeforeMutation = Get-DaemonIpcInventoryEvidence ${psString(bringUpPlan.arguments.DaemonReadyFile)}
+    $platformSetupGuardEvidence = [ordered]@{
+      target = ${psString(ephemeralPlatformSetup?.target ?? "")}
+      apiBaseUrl = ${psString(ephemeralPlatformSetup?.apiBaseUrl ?? "")}
+      mqttUrl = ${psString(ephemeralPlatformSetup?.mqttUrl ?? "")}
+      evidenceStatus = "prepared"
+    }
+    $preMutationGuard = Assert-SimulatedSaleFlowPreMutationTarget ([ordered]@{
+      machineCode = ${psString(machineCode)}
+      platformTarget = ${psString(platformTarget)}
+    }) $daemonIpcBeforeMutation.config.machineCode $daemonIpcBeforeMutation.config.apiBaseUrl $daemonIpcBeforeMutation.config.mqttUrl ([string]$bringUp.hardwareMode) $platformSetupGuardEvidence
+    if (-not [bool]$preMutationGuard.ok) {
+      throw "simulated sale-flow pre-mutation target guard failed: $($preMutationGuard.code)"
+    }
+
+    $syncPlanogram = Invoke-IpcJson "POST" "$baseUrl/v1/stock/planogram/sync" $headers
+    $saleViewBeforeStock = Invoke-IpcJson "GET" "$baseUrl/v1/sale-view" $headers
+    $selectedItem = @($saleViewBeforeStock.items | Where-Object {
+      -not [string]::IsNullOrWhiteSpace($_.slotId) -and
+      -not [string]::IsNullOrWhiteSpace($_.slotCode) -and
+      -not [string]::IsNullOrWhiteSpace($_.sku)
+    } | Select-Object -First 1)
+    if ($selectedItem.Count -eq 0) {
+      throw "sale view does not contain a slot for simulated stock attestation"
+    }
+    $selectedItem = $selectedItem[0]
+    $stockQuantity = if ([int]$selectedItem.physicalStock -gt 0) { [int]$selectedItem.physicalStock } elseif ([int]$selectedItem.parLevel -gt 0) { [int]$selectedItem.parLevel } else { 1 }
+    $attestationPayload = [ordered]@{
+      attestationId = "SIM-HW-${runId}"
+      planogramVersion = [string]$saleViewBeforeStock.planogramVersion
+      operatorId = "testbed-orchestrator"
+      slots = @($saleViewBeforeStock.items | ForEach-Object {
+        [ordered]@{
+          slotId = [string]$_.slotId
+          slotCode = [string]$_.slotCode
+          sku = [string]$_.sku
+          quantity = if ([int]$_.physicalStock -gt 0) { [int]$_.physicalStock } elseif ([int]$_.parLevel -gt 0) { [int]$_.parLevel } else { 1 }
+          enabled = $true
+        }
+      })
+    }
+    $attestation = Invoke-IpcJson "POST" "$baseUrl/v1/stock/attestation" $headers $attestationPayload
+    $saleView = Invoke-IpcJson "GET" "$baseUrl/v1/sale-view" $headers
+    $selectedItem = @($saleView.items | Where-Object {
+      [string]$_.slotSalesState -eq "sale_ready" -and [int]$_.saleableStock -gt 0
+    } | Select-Object -First 1)
+    if ($selectedItem.Count -eq 0) {
+      throw "sale view does not contain a sale-ready simulated slot after stock attestation"
+    }
+    $selectedItem = $selectedItem[0]
+    $paymentOptions = Invoke-IpcJson "GET" "$baseUrl/v1/payment-options" $headers
+    $orderPayload = [ordered]@{
+      inventoryId = [string]$selectedItem.inventoryId
+      quantity = 1
+      planogramVersion = [string]$saleView.planogramVersion
+      slotId = [string]$selectedItem.slotId
+      slotCode = [string]$selectedItem.slotCode
+      paymentMethod = "mock"
+      paymentProviderCode = "mock"
+      profileSnapshot = [ordered]@{
+        source = "testbed_simulated_hardware_sale_flow"
+        runId = ${psString(runId)}
+      }
+    }
+    $createOrder = Invoke-IpcJson "POST" "$baseUrl/v1/intents/create-order" $headers $orderPayload
+    $mockPayment = Invoke-IpcJson "POST" "$baseUrl/v1/intents/mock-payment" $headers ([ordered]@{
+      orderNo = [string]$createOrder.orderNo
+      succeed = $true
+    })
+    Start-Sleep -Seconds 2
+    $currentTransaction = Invoke-IpcJson "GET" "$baseUrl/v1/transactions/current" $headers
+  } catch {
+    $flowError = [string]$_
+  }
+
+  $daemonIpc = if ($null -ne $daemonIpcBeforeMutation) { $daemonIpcBeforeMutation } else { Get-DaemonIpcInventoryEvidence ${psString(bringUpPlan.arguments.DaemonReadyFile)} }
+  $provisioningFacts = Convert-ProvisioningFacts $daemonIpc @($ProvisioningActions)
+  $activePlanogramVersion = if ($null -ne $saleView -and -not [string]::IsNullOrWhiteSpace($saleView.planogramVersion)) {
+    [string]$saleView.planogramVersion
+  } elseif ($null -ne $saleViewBeforeStock -and -not [string]::IsNullOrWhiteSpace($saleViewBeforeStock.planogramVersion)) {
+    [string]$saleViewBeforeStock.planogramVersion
+  } else {
+    "unknown"
+  }
+  $saleableSlots = if ($null -ne $saleView) {
+    @($saleView.items | Where-Object { [int]$_.saleableStock -gt 0 -and [string]$_.slotSalesState -eq "sale_ready" }).Count
+  } else {
+    0
+  }
+  $totalOnHand = if ($null -ne $saleView) {
+    $stockSum = @($saleView.items | Measure-Object -Property physicalStock -Sum).Sum
+    if ($null -eq $stockSum) { 0 } else { [int]$stockSum }
+  } else {
+    0
+  }
+  $orderNo = if ($null -ne $createOrder -and -not [string]::IsNullOrWhiteSpace($createOrder.orderNo)) {
+    [string]$createOrder.orderNo
+  } elseif ($null -ne $mockPayment -and -not [string]::IsNullOrWhiteSpace($mockPayment.orderNo)) {
+    [string]$mockPayment.orderNo
+  } else {
+    $null
+  }
+  $paymentStatus = if ($null -ne $currentTransaction -and -not [string]::IsNullOrWhiteSpace($currentTransaction.paymentStatus)) {
+    [string]$currentTransaction.paymentStatus
+  } elseif ($null -ne $mockPayment -and -not [string]::IsNullOrWhiteSpace($mockPayment.paymentStatus)) {
+    [string]$mockPayment.paymentStatus
+  } else {
+    "unknown"
+  }
+  $fulfillmentStatus = if ($null -ne $currentTransaction -and -not [string]::IsNullOrWhiteSpace($currentTransaction.fulfillmentStatus)) {
+    [string]$currentTransaction.fulfillmentStatus
+  } elseif ($null -ne $mockPayment -and -not [string]::IsNullOrWhiteSpace($mockPayment.fulfillmentStatus)) {
+    [string]$mockPayment.fulfillmentStatus
+  } else {
+    "unknown"
+  }
+  $orderStatus = if ($null -ne $currentTransaction -and -not [string]::IsNullOrWhiteSpace($currentTransaction.orderStatus)) {
+    [string]$currentTransaction.orderStatus
+  } elseif ($null -ne $mockPayment -and -not [string]::IsNullOrWhiteSpace($mockPayment.orderStatus)) {
+    [string]$mockPayment.orderStatus
+  } else {
+    "unknown"
+  }
+  $planogramAcknowledgmentId = if ($null -ne $syncPlanogram -and -not [string]::IsNullOrWhiteSpace($syncPlanogram.acknowledgmentId)) {
+    [string]$syncPlanogram.acknowledgmentId
+  } elseif ($null -ne $syncPlanogram -and -not [string]::IsNullOrWhiteSpace($syncPlanogram.ackId)) {
+    [string]$syncPlanogram.ackId
+  } else {
+    $null
+  }
+  $planogramSyncStatus = if ($null -ne $syncPlanogram -and -not [string]::IsNullOrWhiteSpace($syncPlanogram.status)) {
+    $rawPlanogramStatus = [string]$syncPlanogram.status
+    if (@("acknowledged", "failed", "missing") -contains $rawPlanogramStatus) {
+      $rawPlanogramStatus
+    } elseif ($null -ne $planogramAcknowledgmentId) {
+      "acknowledged"
+    } else {
+      "missing"
+    }
+  } elseif ($null -ne $planogramAcknowledgmentId) {
+    "acknowledged"
+  } elseif ($null -ne $syncPlanogram) {
+    "missing"
+  } else {
+    "failed"
+  }
+  $stockUploadStatus = if ($null -ne $attestation -and -not [string]::IsNullOrWhiteSpace($attestation.uploadStatus)) {
+    $rawStockUploadStatus = [string]$attestation.uploadStatus
+    if (@("accepted", "rejected", "missing") -contains $rawStockUploadStatus) {
+      $rawStockUploadStatus
+    } elseif ([bool]$attestation.accepted) {
+      "accepted"
+    } else {
+      "missing"
+    }
+  } elseif ($null -ne $attestation -and -not [string]::IsNullOrWhiteSpace($attestation.status)) {
+    $rawStockStatus = [string]$attestation.status
+    if (@("accepted", "rejected", "missing") -contains $rawStockStatus) {
+      $rawStockStatus
+    } elseif ([bool]$attestation.accepted) {
+      "accepted"
+    } else {
+      "missing"
+    }
+  } elseif ($null -ne $attestation -and [bool]$attestation.accepted) {
+    "accepted"
+  } elseif ($null -ne $attestation) {
+    "missing"
+  } else {
+    "failed"
+  }
+  $platformMovementId = if ($null -ne $attestation -and -not [string]::IsNullOrWhiteSpace($attestation.platformMovementId)) {
+    [string]$attestation.platformMovementId
+  } elseif ($null -ne $attestation -and -not [string]::IsNullOrWhiteSpace($attestation.stockMovementId)) {
+    [string]$attestation.stockMovementId
+  } elseif ($null -ne $attestation -and -not [string]::IsNullOrWhiteSpace($attestation.movementId)) {
+    [string]$attestation.movementId
+  } else {
+    $null
+  }
+  $orderId = if ($null -ne $currentTransaction -and -not [string]::IsNullOrWhiteSpace($currentTransaction.orderId)) {
+    [string]$currentTransaction.orderId
+  } elseif ($null -ne $createOrder -and -not [string]::IsNullOrWhiteSpace($createOrder.orderId)) {
+    [string]$createOrder.orderId
+  } elseif ($null -ne $createOrder -and -not [string]::IsNullOrWhiteSpace($createOrder.id)) {
+    [string]$createOrder.id
+  } else {
+    $null
+  }
+  $paymentNo = if ($null -ne $mockPayment -and -not [string]::IsNullOrWhiteSpace($mockPayment.paymentNo)) {
+    [string]$mockPayment.paymentNo
+  } elseif ($null -ne $mockPayment -and -not [string]::IsNullOrWhiteSpace($mockPayment.paymentNumber)) {
+    [string]$mockPayment.paymentNumber
+  } elseif ($null -ne $mockPayment -and -not [string]::IsNullOrWhiteSpace($mockPayment.providerTradeNo)) {
+    [string]$mockPayment.providerTradeNo
+  } else {
+    $null
+  }
+  $vendingCommandId = if ($null -ne $currentTransaction -and -not [string]::IsNullOrWhiteSpace($currentTransaction.vendingCommandId)) {
+    [string]$currentTransaction.vendingCommandId
+  } elseif ($null -ne $currentTransaction -and -not [string]::IsNullOrWhiteSpace($currentTransaction.dispenseCommandId)) {
+    [string]$currentTransaction.dispenseCommandId
+  } else {
+    $null
+  }
+  $dispenseResult = if ($fulfillmentStatus -eq "dispensed") {
+    "dispensed"
+  } elseif ($fulfillmentStatus -eq "dispense_failed") {
+    "failed"
+  } else {
+    "unknown"
+  }
+
+  $facts = [ordered]@{
+    mode = "simulated_hardware_fresh_bring_up_sale_flow"
+    target = [ordered]@{
+      testbedName = "win10-vem-e2e"
+      machineCode = ${psString(machineCode)}
+      platformTarget = ${psString(platformTarget)}
+    }
+    runtimeState = [ordered]@{
+      hardwareMode = if ($null -ne $bringUp -and -not [string]::IsNullOrWhiteSpace($bringUp.hardwareMode)) { [string]$bringUp.hardwareMode } else { "unknown" }
+      hardwareModel = if ($null -ne $configSummary -and $null -ne $configSummary.factoryManifest -and -not [string]::IsNullOrWhiteSpace($configSummary.factoryManifest.hardwareModel)) { [string]$configSummary.factoryManifest.hardwareModel } else { "unknown" }
+      bringUpState = if ($null -ne $bringUp -and -not [string]::IsNullOrWhiteSpace($bringUp.state)) { [string]$bringUp.state } else { "unknown" }
+      uiDiagnosticsExplicit = $null -ne $bringUp -and [string]$bringUp.hardwareMode -eq "simulated"
+    }
+    provisioning = [ordered]@{
+      provisioned = [bool]$provisioningFacts.provisioned
+      usedMachineClaimCodePath = [bool]$provisioningFacts.usedDaemonIpcClaimPath
+      usedDaemonIpcClaimPath = [bool]$provisioningFacts.usedDaemonIpcClaimPath
+      profileApplied = [bool]$provisioningFacts.machineSecretConfigured -and [bool]$provisioningFacts.mqttSigningSecretConfigured
+      machineCode = $provisioningFacts.machineCode
+      claim = $provisioningFacts.claim
+      profile = $provisioningFacts.profile
+    }
+    platformSetup = [ordered]@{
+      ephemeral = $true
+      preparedRunId = ${psString(runId)}
+      target = ${psString(ephemeralPlatformSetup?.target ?? "")}
+      apiBaseUrl = ${psString(ephemeralPlatformSetup?.apiBaseUrl ?? "")}
+      mqttUrl = ${psString(ephemeralPlatformSetup?.mqttUrl ?? "")}
+      evidenceStatus = "prepared"
+      claimPath = ${psString(ephemeralPlatformSetup?.claimPath ?? "/api/machines/claim")}
+      mockPaymentReady = ${ephemeralPlatformSetup?.mockPaymentReady ? "$true" : "$false"} -and $null -ne $paymentOptions -and @($paymentOptions.options | Where-Object { [string]$_.method -eq "mock" -and [string]$_.providerCode -eq "mock" }).Count -gt 0
+    }
+    topology = [ordered]@{
+      expectedIdentity = ${psString(ephemeralPlatformSetup?.hardwareTopologyIdentity ?? "unknown")}
+      expectedVersion = ${psString(ephemeralPlatformSetup?.hardwareTopologyVersion ?? "unknown")}
+      verified = $null -ne $bringUp -and @($bringUp.diagnostics | Where-Object { [string]$_.component -eq "topology" -or [string]$_.code -match "TOPOLOGY|HARDWARE_SLOT" }).Count -eq 0 -and [string]$bringUp.state -ne "topology_mismatch"
+    }
+    planogram = [ordered]@{
+      syncedFromPlatform = $null -ne $syncPlanogram
+      applied = $activePlanogramVersion -ne "unknown"
+      acknowledged = $null -ne $syncPlanogram
+      acknowledgmentId = $planogramAcknowledgmentId
+      syncStatus = $planogramSyncStatus
+      planogramVersion = $activePlanogramVersion
+      slotCount = if ($null -ne $saleView) { @($saleView.items).Count } else { 0 }
+    }
+    stock = [ordered]@{
+      establishedBy = "stock_attestation"
+      evidenceId = "SIM-HW-${runId}"
+      uploadStatus = $stockUploadStatus
+      platformMovementId = $platformMovementId
+      planogramVersion = $activePlanogramVersion
+      saleableSlots = $saleableSlots
+      totalOnHand = $totalOnHand
+    }
+    sale = [ordered]@{
+      saleViewReady = $saleableSlots -gt 0
+      selectedSlotCode = if ($null -ne $selectedItem -and -not [string]::IsNullOrWhiteSpace($selectedItem.slotCode)) { [string]$selectedItem.slotCode } else { "unknown" }
+      orderId = $orderId
+      orderNo = $orderNo
+      orderStatus = $orderStatus
+      paymentMethod = "mock"
+      paymentProviderCode = "mock"
+      paymentNo = $paymentNo
+      paymentStatus = $paymentStatus
+      paymentSucceeded = $paymentStatus -eq "paid"
+      vendingCommandId = $vendingCommandId
+      dispenseSimulated = $true
+      dispenseResult = $dispenseResult
+      dispenseSucceeded = $fulfillmentStatus -eq "dispensed"
+      customerResult = if ($paymentStatus -eq "paid" -and $fulfillmentStatus -eq "dispensed") { "success" } elseif ($null -ne $flowError) { "failed" } else { "unknown" }
+    }
+    platformState = [ordered]@{
+      orderStatus = $orderStatus
+      paymentStatus = $paymentStatus
+      fulfillmentStatus = $fulfillmentStatus
+      stockMovementAccepted = $stockUploadStatus -eq "accepted"
+    }
+  }
+
+  $report = Classify-SimulatedHardwareSaleFlowReport $facts
+  if ($null -ne $flowError) {
+    $diagnostics = [System.Collections.Generic.List[object]]::new()
+    foreach ($diagnostic in @($report.diagnostics)) {
+      $diagnostics.Add($diagnostic) | Out-Null
+    }
+    Add-RuntimeAcceptanceDiagnostic $diagnostics "simulated_sale_flow_error" $flowError
+    $report.diagnostics = @($diagnostics)
+    $report.result.simulatedHardwareReady = New-RuntimeAcceptanceAssertion "failed" $false
+  }
+  Write-JsonFile $reportPath $report
+  return [ordered]@{
+    path = $reportPath
+    report = $report
+  }
+}
+
+function Get-DirtyHostFactoryDisplayProof($Inventory) {
+  $diagnostics = [System.Collections.Generic.List[object]]::new()
+  if ($null -eq $Inventory) {
+    Add-RuntimeAcceptanceDiagnostic $diagnostics "display_proof_missing" "Dirty-host factory acceptance requires post-preparation display evidence."
+    return [ordered]@{
+      status = "missing"
+      required = $true
+      interactiveDesktopDisplayBaseline = $null
+      portraitKioskAcceptance = $null
+      diagnostics = @($diagnostics)
+    }
+  }
+
+  $interactive = $Inventory.runtimeAcceptanceFactsSubset.displayEvidence.interactiveDesktopDisplayBaseline
+  $portrait = $Inventory.runtimeAcceptanceFactsSubset.displayEvidence.portraitKioskAcceptance
+  if (
+    [string]$interactive.status -ne "passed" -or
+    [int]$interactive.widthPx -ne 1080 -or
+    [int]$interactive.heightPx -ne 1920 -or
+    [string]$interactive.sessionUser -ne "VEMKiosk" -or
+    $null -eq $interactive.sessionId
+  ) {
+    Add-RuntimeAcceptanceDiagnostic $diagnostics "display_proof_missing" "Dirty-host factory acceptance requires Interactive Desktop Display Baseline at 1080x1920 from the VEMKiosk session."
+  }
+  if (
+    [string]$portrait.status -ne "passed" -or
+    [string]$portrait.source -ne "interactive_kiosk_session" -or
+    [int]$portrait.widthPx -ne 1080 -or
+    [int]$portrait.heightPx -ne 1920 -or
+    [string]$portrait.sessionUser -ne "VEMKiosk" -or
+    $null -eq $portrait.sessionId
+  ) {
+    Add-RuntimeAcceptanceDiagnostic $diagnostics "portrait_kiosk_display_proof_missing" "Dirty-host factory acceptance requires Portrait Kiosk Acceptance at 1080x1920 from the VEMKiosk session."
+  }
+
+  return [ordered]@{
+    status = if ($diagnostics.Count -eq 0) { "passed" } else { "failed" }
+    required = $true
+    interactiveDesktopDisplayBaseline = $interactive
+    portraitKioskAcceptance = $portrait
+    diagnostics = @($diagnostics)
   }
 }
 
@@ -2308,6 +6102,7 @@ function Get-InventoryFacts($ProvisioningActions = @()) {
   $interactiveDesktopDisplayBaseline = Convert-InteractiveDisplayDimensionsEvidence $interactiveDesktopDisplay
   $portraitKioskAcceptance = Convert-PortraitKioskAcceptanceEvidence $interactiveDesktopDisplayBaseline
   $kioskRuntime = Get-KioskRuntimeEvidence $activeKioskSession
+  $kioskDesktopEscape = Get-KioskDesktopEscapeEvidence $activeKioskSession
   $daemonService = Get-ServiceStateOrNull -Name "VemVendingDaemon"
   $machineUiTask = Get-ScheduledTaskEvidence -TaskName "VEMMachineUI" -TaskPath "\\"
   $maintenanceUiTask = Get-ScheduledTaskEvidence -TaskName "VEMMaintenanceUI" -TaskPath "\\"
@@ -2350,7 +6145,12 @@ function Get-InventoryFacts($ProvisioningActions = @()) {
       url = $kioskRuntime.url
       sessionUser = $kioskRuntime.sessionUser
       sessionId = $kioskRuntime.sessionId
+      source = $kioskRuntime.source
+      processId = $kioskRuntime.processId
+      webView2ProcessId = $kioskRuntime.webView2ProcessId
+      cdpAvailable = $kioskRuntime.cdpAvailable
     }
+    kioskDesktopEscape = $kioskDesktopEscape
   }
 
   return [ordered]@{
@@ -2431,6 +6231,9 @@ $resetPlan = [ordered]@{
 $resetActions = [System.Collections.Generic.List[object]]::new()
 $bringUpActions = [System.Collections.Generic.List[object]]::new()
 $provisioningActions = [System.Collections.Generic.List[object]]::new()
+$factoryActions = [System.Collections.Generic.List[object]]::new()
+$factoryAcceptancePaths = $null
+$simulatedHardwareSaleFlowResult = $null
 
 if ($mode -eq "reset" -or $mode -eq "inventory-reset") {
 ${serviceStops}
@@ -2447,22 +6250,98 @@ if ($mode -eq "provision") {
   Invoke-TestbedProvisioningClaim $provisioningActions
 }
 
+if ($mode -eq "dirty-host-factory-acceptance") {
+  $factoryAcceptancePaths = Invoke-DirtyHostFactoryAcceptance $factoryActions
+}
+
+if ($mode -eq "clean-base-factory-acceptance") {
+  $factoryAcceptancePaths = Invoke-CleanBaseFactoryAcceptance $factoryActions
+}
+
+if ($mode -eq "simulated-hardware-sale-flow") {
+  Invoke-TestbedProvisioningClaim $provisioningActions
+  $simulatedHardwareSaleFlowResult = Invoke-SimulatedHardwareSaleFlow $provisioningActions
+}
+
 $inventoryAfter = if ($mode -eq "inventory-reset") { Get-InventoryFacts } else { $null }
 $inventoryAfterBringUp = if ($mode -eq "bring-up") { Get-InventoryFacts } else { $null }
 $inventoryAfterProvision = if ($mode -eq "provision") { Get-InventoryFacts $provisioningActions } else { $null }
+$inventoryAfterFactoryAcceptance = if ($mode -eq "dirty-host-factory-acceptance") { Get-InventoryFacts } else { $null }
+$dirtyHostFactoryDisplayProof = if ($mode -eq "dirty-host-factory-acceptance") { Get-DirtyHostFactoryDisplayProof $inventoryAfterFactoryAcceptance } else { $null }
 $runtimeAcceptanceReportResult = if ($mode -eq "runtime-acceptance") { Get-RuntimeAcceptanceReport $provisioningActions } else { $null }
 $runtimeAcceptanceReport = if ($null -ne $runtimeAcceptanceReportResult) { $runtimeAcceptanceReportResult.report } else { $null }
-$actionsOk = (((@($resetActions) + @($bringUpActions) + @($provisioningActions)) | Where-Object { $_.status -eq "failed" } | Measure-Object | Select-Object -ExpandProperty Count) -eq 0)
+$simulatedHardwareSaleFlowReport = if ($null -ne $simulatedHardwareSaleFlowResult) { $simulatedHardwareSaleFlowResult.report } else { $null }
+$actionsOk = (((@($resetActions) + @($bringUpActions) + @($provisioningActions) + @($factoryActions)) | Where-Object { $_.status -eq "failed" } | Measure-Object | Select-Object -ExpandProperty Count) -eq 0)
 $runtimeAcceptanceOk = if ($mode -eq "runtime-acceptance") {
   $null -ne $runtimeAcceptanceReport -and [string]$runtimeAcceptanceReport.result.runtimeReady.status -eq "passed"
 } else {
   $true
 }
+$dirtyHostFactoryAcceptanceOk = if ($mode -eq "dirty-host-factory-acceptance") {
+  $null -ne $dirtyHostFactoryDisplayProof -and [string]$dirtyHostFactoryDisplayProof.status -eq "passed"
+} else {
+  $true
+}
+$cleanBaseFactoryAcceptanceOk = if ($mode -eq "clean-base-factory-acceptance") {
+  $null -ne $factoryAcceptancePaths -and $null -ne $factoryAcceptancePaths.report -and [bool]$factoryAcceptancePaths.report.ok
+} else {
+  $true
+}
+$simulatedHardwareSaleFlowOk = if ($mode -eq "simulated-hardware-sale-flow") {
+  $null -ne $simulatedHardwareSaleFlowReport -and [string]$simulatedHardwareSaleFlowReport.result.simulatedHardwareReady.status -eq "passed"
+} else {
+  $true
+}
 
-[pscustomobject]@{
-  ok = $actionsOk -and $runtimeAcceptanceOk
+$result = [ordered]@{
+  ok = $actionsOk -and $runtimeAcceptanceOk -and $dirtyHostFactoryAcceptanceOk -and $cleanBaseFactoryAcceptanceOk -and $simulatedHardwareSaleFlowOk
   mode = $mode
   inventory = $inventoryBefore
+  dirtyHostFactoryAcceptance = if ($mode -eq "dirty-host-factory-acceptance") {
+    [ordered]@{
+      schemaVersion = "vem-dirty-host-factory-acceptance/v1"
+      runId = ${psString(runId)}
+      acceptanceMode = "dirty_host_reset_acceptance"
+      cleanBasePreparationAcceptance = "not_asserted"
+      platformBusinessDataTouched = $false
+      distinction = [ordered]@{
+        accepted = "dirty_host_reset_acceptance"
+        notAccepted = "clean_base_preparation_acceptance"
+        reason = "Existing Unraid Win10 VM was inventoried, locally reset, prepared, and verified; this does not prove a clean Windows base image."
+      }
+      evidenceRoot = if ($null -ne $factoryAcceptancePaths) { $factoryAcceptancePaths.evidenceRoot } else { $null }
+      acceptancePath = if ($null -ne $factoryAcceptancePaths) { $factoryAcceptancePaths.acceptancePath } else { $null }
+      inventoryBeforeReset = $inventoryBefore
+      actions = @($factoryActions)
+      inventoryAfterPreparation = $inventoryAfterFactoryAcceptance
+      displayProof = $dirtyHostFactoryDisplayProof
+      result = [ordered]@{
+        dirtyHostResetAcceptance = [ordered]@{
+          status = if ($actionsOk -and $dirtyHostFactoryAcceptanceOk) { "passed" } else { "failed" }
+          asserted = $actionsOk -and $dirtyHostFactoryAcceptanceOk
+        }
+        diagnostics = if ($null -ne $dirtyHostFactoryDisplayProof) { @($dirtyHostFactoryDisplayProof.diagnostics) } else { @() }
+      }
+      controlledState = [ordered]@{
+        daemonService = if ($null -ne $inventoryAfterFactoryAcceptance) { $inventoryAfterFactoryAcceptance.vem.daemonService } else { $null }
+        machineUiTask = if ($null -ne $inventoryAfterFactoryAcceptance) { $inventoryAfterFactoryAcceptance.vem.machineUiTask } else { $null }
+        readyFile = if ($null -ne $inventoryAfterFactoryAcceptance) { $inventoryAfterFactoryAcceptance.vem.readyFile } else { $null }
+        autoLogon = if ($null -ne $inventoryAfterFactoryAcceptance) { $inventoryAfterFactoryAcceptance.runtimeAcceptanceFactsSubset.startupBringup.autoLogon } else { $null }
+      }
+      evidencePaths = [ordered]@{
+        preparationOutput = if ($null -ne $factoryAcceptancePaths) { $factoryAcceptancePaths.preparationOutputPath } else { $null }
+        verificationAction = if ($null -ne $factoryAcceptancePaths) { $factoryAcceptancePaths.verificationOutputPath } else { $null }
+        verifierEvidence = if ($null -ne $factoryAcceptancePaths) { $factoryAcceptancePaths.verifierEvidencePath } else { $null }
+      }
+    }
+  } else {
+    $null
+  }
+  cleanBaseFactoryAcceptance = if ($mode -eq "clean-base-factory-acceptance") {
+    if ($null -ne $factoryAcceptancePaths) { $factoryAcceptancePaths.report } else { $null }
+  } else {
+    $null
+  }
   reset = [ordered]@{
     plan = $resetPlan
     actions = @($resetActions)
@@ -2485,14 +6364,24 @@ ${bringUpReportArgumentLines}
   inventoryAfterReset = $inventoryAfter
   inventoryAfterBringUp = $inventoryAfterBringUp
   inventoryAfterProvision = $inventoryAfterProvision
+  inventoryAfterFactoryAcceptance = $inventoryAfterFactoryAcceptance
   runtimeAcceptanceReportPath = if ($null -ne $runtimeAcceptanceReportResult) { $runtimeAcceptanceReportResult.path } else { $null }
   runtimeAcceptanceReport = $runtimeAcceptanceReport
-} | ConvertTo-Json -Depth 40
+  simulatedHardwareSaleFlowPath = if ($null -ne $simulatedHardwareSaleFlowResult) { $simulatedHardwareSaleFlowResult.path } else { $null }
+  simulatedHardwareSaleFlow = if ($null -ne $simulatedHardwareSaleFlowResult) { $simulatedHardwareSaleFlowResult.report } else { $null }
+}
+
+if ($mode -eq "dirty-host-factory-acceptance" -and $null -ne $factoryAcceptancePaths) {
+  Write-JsonFile ([string]$factoryAcceptancePaths.acceptancePath) ([pscustomobject]$result.dirtyHostFactoryAcceptance)
+}
+
+[pscustomobject]$result | ConvertTo-Json -Depth 60
 `;
 }
 
 export function buildSshCommand(options = {}) {
   return [
+    ...(options.sshpass === true ? ["sshpass", "-e"] : []),
     "ssh",
     ...buildSshOptionArgs(options),
     options.remote ?? "YKDZ@100.68.189.11",
@@ -2501,6 +6390,14 @@ export function buildSshCommand(options = {}) {
 
 function buildSshOptionArgs(options = {}) {
   const sshArgs = ["-o", "ConnectTimeout=30"];
+  if (options.sshKnownHostsPath) {
+    sshArgs.push(
+      "-o",
+      "StrictHostKeyChecking=accept-new",
+      "-o",
+      `UserKnownHostsFile=${options.sshKnownHostsPath}`,
+    );
+  }
   if (options.proxyCommand) {
     sshArgs.push("-o", `ProxyCommand=${options.proxyCommand}`);
   } else if (options.sshConfig !== true) {
@@ -2520,18 +6417,208 @@ function quotePowerShellSingleQuoted(value) {
   return `'${String(value).replaceAll("'", "''")}'`;
 }
 
-export function buildRemotePowerShellCommand(remoteScriptPath) {
-  return `powershell -NoProfile -ExecutionPolicy Bypass -Command "& ${quotePowerShellSingleQuoted(remoteScriptPath)}"`;
+export function buildRemotePowerShellCommand(remoteScriptPath, options = {}) {
+  const scriptInvocation = `& ${quotePowerShellSingleQuoted(remoteScriptPath)}`;
+  if (options.factoryCredentialsFromSshpass !== true) {
+    return `powershell -NoProfile -ExecutionPolicy Bypass -Command "${scriptInvocation}"`;
+  }
+  const credentialPath = quotePowerShellSingleQuoted(
+    options.remoteFactoryCredentialPath ?? "",
+  );
+  const credentialPrefix = `$env:VEM_FACTORY_CREDENTIAL_FILE=${credentialPath}`;
+  return `powershell -NoProfile -ExecutionPolicy Bypass -Command "${credentialPrefix}; ${scriptInvocation}"`;
 }
 
 export function buildScpCommand(sourcePath, remoteScriptPath, options = {}) {
   const remote = options.remote ?? "YKDZ@100.68.189.11";
   return [
+    ...(options.sshpass === true ? ["sshpass", "-e"] : []),
     "scp",
     ...buildSshOptionArgs(options),
     sourcePath,
     `${remote}:${remotePathForScp(remoteScriptPath)}`,
   ];
+}
+
+function buildEncodedPowerShellCommand(script) {
+  return `powershell -NoProfile -ExecutionPolicy Bypass -EncodedCommand ${Buffer.from(
+    script,
+    "utf16le",
+  ).toString("base64")}`;
+}
+
+export function buildCleanBaseRemoteIdentityProbeCommand() {
+  return buildEncodedPowerShellCommand(`
+$ErrorActionPreference = 'SilentlyContinue'
+$computer = Get-CimInstance Win32_ComputerSystem
+$identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+$tailscaleName = $null
+$tailscaleIps = @()
+try {
+  $status = tailscale status --json 2>$null | ConvertFrom-Json
+  $tailscaleName = [string]$status.Self.DNSName
+  $tailscaleIps = @($status.Self.TailscaleIPs | ForEach-Object { [string]$_ })
+} catch {}
+[pscustomobject]@{
+  hostName = [string]$computer.Name
+  user = [string]$identity.Name
+  tailscaleName = $tailscaleName
+  tailscaleIps = @($tailscaleIps)
+} | ConvertTo-Json -Depth 10
+`);
+}
+
+export function buildCleanBaseRemotePreflightAbsenceProbeCommand() {
+  const probesJson = JSON.stringify(CLEAN_BASE_PREFLIGHT_ABSENCE_PROBES);
+  return buildEncodedPowerShellCommand(`
+$ErrorActionPreference = 'Stop'
+$probes = '${probesJson.replaceAll("'", "''")}' | ConvertFrom-Json
+
+function Get-CleanBaseScheduledTaskState([string]$Task) {
+  $normalized = $Task.Trim("\\")
+  $separator = $normalized.LastIndexOf("\\")
+  if ($separator -ge 0) {
+    $taskPath = "\\" + $normalized.Substring(0, $separator) + "\\"
+    $taskName = $normalized.Substring($separator + 1)
+  } else {
+    $taskPath = "\\"
+    $taskName = $normalized
+  }
+  $taskObject = Get-ScheduledTask -TaskName $taskName -TaskPath $taskPath -ErrorAction SilentlyContinue
+  if ($null -eq $taskObject) {
+    return $null
+  }
+  return [ordered]@{
+    name = $Task
+    taskName = $taskName
+    taskPath = $taskPath
+    state = [string]$taskObject.State
+  }
+}
+
+$results = @()
+foreach ($probe in @($probes)) {
+  $observedPaths = @()
+  $observedServices = @()
+  $observedTasks = @()
+  foreach ($path in @($probe.paths)) {
+    if (Test-Path -LiteralPath $path) {
+      $observedPaths += [string]$path
+    }
+  }
+  foreach ($serviceName in @($probe.services)) {
+    $service = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+    if ($null -ne $service) {
+      $observedServices += [ordered]@{
+        name = [string]$service.Name
+        status = [string]$service.Status
+        startType = [string]$service.StartType
+      }
+    }
+  }
+  foreach ($taskName in @($probe.tasks)) {
+    $task = Get-CleanBaseScheduledTaskState $taskName
+    if ($null -ne $task) {
+      $observedTasks += $task
+    }
+  }
+  $passed = $observedPaths.Count -eq 0 -and $observedServices.Count -eq 0 -and $observedTasks.Count -eq 0
+  $results += [ordered]@{
+    code = [string]$probe.code
+    status = if ($passed) { "passed" } else { "failed" }
+    paths = @($probe.paths)
+    services = @($probe.services)
+    tasks = @($probe.tasks)
+    observed = @($observedPaths)
+    observedPaths = @($observedPaths)
+    observedServices = @($observedServices)
+    observedTasks = @($observedTasks)
+  }
+}
+
+[pscustomobject]@{
+  ok = @($results | Where-Object { [string]$_.status -ne "passed" }).Count -eq 0
+  probes = @($results)
+} | ConvertTo-Json -Depth 20
+`);
+}
+
+function assertCleanBaseRemoteIdentityProbe(options, sshCommand) {
+  if (options.mode !== "clean-base-factory-acceptance") {
+    return;
+  }
+  const probeCommand = buildCleanBaseRemoteIdentityProbeCommand();
+  const result = spawnSync(
+    sshCommand[0],
+    [...sshCommand.slice(1), probeCommand],
+    {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+  );
+  if (result.status !== 0) {
+    throw new Error(
+      `clean-base factory acceptance could not verify remote identity before staging: ${
+        result.stderr || result.stdout || `ssh exited ${result.status}`
+      }`,
+    );
+  }
+  let identity;
+  try {
+    identity = JSON.parse(result.stdout || "null");
+  } catch {
+    throw new Error(
+      `clean-base factory acceptance remote identity probe returned invalid JSON: ${result.stdout}`,
+    );
+  }
+  const refusal = classifyUnsafeCleanBaseSource(identity);
+  if (refusal) {
+    throw new Error(
+      `clean-base factory acceptance refuses ${refusal} remote identity before staging`,
+    );
+  }
+}
+
+function assertCleanBaseRemotePreflightAbsenceProbe(options, sshCommand) {
+  if (options.mode !== "clean-base-factory-acceptance") {
+    return;
+  }
+  const probeCommand = buildCleanBaseRemotePreflightAbsenceProbeCommand();
+  const result = spawnSync(
+    sshCommand[0],
+    [...sshCommand.slice(1), probeCommand],
+    {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+  );
+  if (result.status !== 0) {
+    throw new Error(
+      `clean-base factory acceptance could not verify retained-state absence before staging: ${
+        result.stderr || result.stdout || `ssh exited ${result.status}`
+      }`,
+    );
+  }
+  let preflight;
+  try {
+    preflight = JSON.parse(result.stdout || "null");
+  } catch {
+    throw new Error(
+      `clean-base factory acceptance remote retained-state preflight returned invalid JSON: ${result.stdout}`,
+    );
+  }
+  if (preflight?.ok !== true) {
+    const failed = Array.isArray(preflight?.probes)
+      ? preflight.probes
+          .filter((probe) => probe?.status !== "passed")
+          .map((probe) => probe?.code)
+      : ["unknown"];
+    throw new Error(
+      `clean-base factory acceptance retained-state preflight failed before staging: ${failed.join(
+        ", ",
+      )}`,
+    );
+  }
 }
 
 export function getRuntimeAcceptanceExitStatus({
@@ -2542,6 +6629,36 @@ export function getRuntimeAcceptanceExitStatus({
   const status = sshStatus ?? 1;
   if (status !== 0) {
     return status;
+  }
+  if (mode === "dirty-host-factory-acceptance") {
+    try {
+      const output = JSON.parse(String(stdout ?? ""));
+      return output?.ok === true ? 0 : 1;
+    } catch {
+      return 1;
+    }
+  }
+  if (mode === "clean-base-factory-acceptance") {
+    try {
+      const output = JSON.parse(String(stdout ?? ""));
+      return output?.ok === true &&
+        output?.cleanBaseFactoryAcceptance?.ok === true
+        ? 0
+        : 1;
+    } catch {
+      return 1;
+    }
+  }
+  if (mode === "simulated-hardware-sale-flow") {
+    try {
+      const output = JSON.parse(String(stdout ?? ""));
+      const simulatedHardwareReady =
+        output?.simulatedHardwareSaleFlow?.result?.simulatedHardwareReady
+          ?.status;
+      return output?.ok === true && simulatedHardwareReady === "passed" ? 0 : 1;
+    } catch {
+      return 1;
+    }
   }
   if (mode !== "runtime-acceptance") {
     return 0;
@@ -2559,7 +6676,7 @@ export function getRuntimeAcceptanceExitStatus({
 
 function usage() {
   console.error(`Usage:
-  win10-vem-e2e.mjs [--mode inventory|reset|inventory-reset|bring-up|provision|runtime-acceptance] [--claim-code CODE] [--remote USER@HOST] [--ssh-config] [--proxy-command CMD] [--identity KEY] [--dry-run] [--out PATH]
+  win10-vem-e2e.mjs [--mode inventory|reset|inventory-reset|bring-up|provision|runtime-acceptance|simulated-hardware-sale-flow|dirty-host-factory-acceptance|clean-base-factory-acceptance|validate-clean-base-evidence|factory-image-delivery-unit|vm-runtime-acceptance] [--run-id ID] [--claim-code CODE] [--ephemeral-platform-evidence PATH] [--ephemeral-database-url URL] [--ephemeral-api-base-url URL] [--ephemeral-mqtt-url URL] [--clean-base-source SOURCE] [--clean-base-snapshot SNAPSHOT] [--clean-base-evidence PATH] [--daemon-artifact PATH] [--machine-ui-artifact PATH] [--daemon-artifact-sha256 HASH] [--machine-ui-artifact-sha256 HASH] [--use-existing-remote-artifacts] [--allow-clean-base-prepare] [--remote USER@HOST] [--ssh-config] [--sshpass] [--factory-credentials-from-sshpass] [--allow-testbed-remote-alias] [--expected-testbed-hostname NAME] [--expected-testbed-user USER] [--expected-testbed-tailscale-ip IP] [--proxy-command CMD] [--identity KEY] [--dry-run] [--out PATH]
 
 Defaults target the documented Machine Runtime Testbed:
   --remote YKDZ@100.68.189.11
@@ -2570,6 +6687,21 @@ Bring-up mode invokes C:\\VEM\\bringup\\scripts\\setup-scheduled-tasks.ps1 on th
 Provision mode reads the daemon ready file, applies only pre-claim platform endpoints, and claims the prepared testbed identity through daemon IPC /v1/provisioning/claim.
 
 Runtime-acceptance mode writes C:\\ProgramData\\VEM\\vending-daemon\\runtime-acceptance-report.json on the remote host and includes the same report in stdout; use --out to save the SSH response locally.
+
+Simulated hardware sale-flow mode writes C:\\ProgramData\\VEM\\vending-daemon\\simulated-hardware-sale-flow.json on the remote host and includes the same report in stdout. It requires --ephemeral-platform-evidence from service-api testbed:prepare-ephemeral-platform, an explicit non-shared --platform-target, a same-run daemon IPC claim, simulated hardware mode, platform planogram sync, stock attestation upload acceptance, mock payment readiness, and simulated dispense success.
+
+Dirty-host factory acceptance mode stages specified local artifacts and factory scripts under C:\\ProgramData\\VEM\\evidence\\<run-id>, runs scripted factory preparation with explicit local reset, runs the verifier, and writes dirty-host-factory-acceptance.json. It requires --run-id, --daemon-artifact, --machine-ui-artifact, and remote VEM_KIOSK_PASSWORD, VEM_MAINTENANCE_PASSWORD, and VEM_AUTOLOGON_PASSWORD.
+--use-existing-remote-artifacts is a test-only escape hatch for intentionally accepting C:\\VEM\\bringup\\*.exe instead of uploaded artifacts.
+For the documented disposable Win10 testbed only, --factory-credentials-from-sshpass stages a temporary remote credential file from local SSHPASS without embedding the secret in command strings.
+SSH config aliases are refused in dirty-host mode unless --allow-testbed-remote-alias is supplied; the remote script still asserts hostname/user/Tailscale identity before reset.
+
+Clean-base factory acceptance mode prepares an explicitly identified existing clean Windows base or VM source. Dry-run emits the checklist, absence probes, report path, and destructive gate. Live preparation requires --allow-clean-base-prepare, stages daemon/UI artifacts plus WebView2Loader.dll, runs factory preparation and verifier scripts, writes clean-base-factory-acceptance.json, and must not use the known dirty testbed or production machine identities as clean-base proof.
+
+Validate-clean-base-evidence mode validates a clean-base factory acceptance report before VM runtime acceptance consumes it.
+
+Factory-image-delivery-unit mode reads a completed clean-base factory acceptance report and writes a sanitized Factory Image Delivery Unit report that indexes source identity, declared inputs, artifacts, manifest, preparation logs, verifier evidence, screenshots/session availability, readiness, and acceptance evidence without mutating a VM.
+
+VM runtime acceptance mode is the future CI/manual gate entrypoint. It plans or runs dirty-host factory reset acceptance, ephemeral platform setup, runtime acceptance, and simulated hardware sale-flow in one non-interactive sequence. It requires --run-id, a non-shared --platform-target, explicit --ephemeral-database-url/--ephemeral-api-base-url/--ephemeral-mqtt-url, and local artifacts unless --use-existing-remote-artifacts is intentionally supplied. Reports and logs are written under artifacts/vm-runtime-acceptance/<run-id>/.
 `);
 }
 
@@ -2599,11 +6731,78 @@ function parseArgs(argv) {
     } else if (arg === "--claim-code") {
       options.claimCode = next;
       index += 1;
+    } else if (arg === "--ephemeral-platform-evidence") {
+      options.ephemeralPlatformEvidence = next;
+      index += 1;
+    } else if (arg === "--ephemeral-database-url") {
+      options.ephemeralDatabaseUrl = next;
+      index += 1;
+    } else if (arg === "--ephemeral-api-base-url") {
+      options.ephemeralApiBaseUrl = next;
+      index += 1;
+    } else if (arg === "--ephemeral-mqtt-url") {
+      options.ephemeralMqttUrl = next;
+      index += 1;
+    } else if (arg === "--machine-code-prefix") {
+      options.machineCodePrefix = next;
+      index += 1;
+    } else if (arg === "--clean-base-source") {
+      options.cleanBaseSource = next;
+      index += 1;
+    } else if (arg === "--clean-base-snapshot") {
+      options.cleanBaseSnapshot = next;
+      index += 1;
+    } else if (arg === "--clean-base-evidence") {
+      options.cleanBaseEvidence = next;
+      index += 1;
+    } else if (arg === "--platform-api-base-url") {
+      options.platformApiBaseUrl = next;
+      index += 1;
+    } else if (arg === "--platform-mqtt-url") {
+      options.platformMqttUrl = next;
+      index += 1;
+    } else if (arg === "--evidence-root") {
+      options.evidenceRoot = next;
+      index += 1;
+    } else if (arg === "--daemon-artifact") {
+      options.daemonArtifact = next;
+      index += 1;
+    } else if (arg === "--machine-ui-artifact") {
+      options.machineUiArtifact = next;
+      index += 1;
+    } else if (arg === "--daemon-artifact-sha256") {
+      options.daemonArtifactSha256 = next;
+      index += 1;
+    } else if (arg === "--machine-ui-artifact-sha256") {
+      options.machineUiArtifactSha256 = next;
+      index += 1;
+    } else if (arg === "--run-id") {
+      options.runId = next;
+      index += 1;
     } else if (arg === "--out") {
       options.out = next;
       index += 1;
     } else if (arg === "--ssh-config") {
       options.sshConfig = true;
+    } else if (arg === "--sshpass") {
+      options.sshpass = true;
+    } else if (arg === "--factory-credentials-from-sshpass") {
+      options.factoryCredentialsFromSshpass = true;
+    } else if (arg === "--use-existing-remote-artifacts") {
+      options.useExistingRemoteArtifacts = true;
+    } else if (arg === "--allow-clean-base-prepare") {
+      options.allowCleanBasePrepare = true;
+    } else if (arg === "--allow-testbed-remote-alias") {
+      options.allowTestbedRemoteAlias = true;
+    } else if (arg === "--expected-testbed-hostname") {
+      options.expectedTestbedHostName = next;
+      index += 1;
+    } else if (arg === "--expected-testbed-user") {
+      options.expectedTestbedUser = next;
+      index += 1;
+    } else if (arg === "--expected-testbed-tailscale-ip") {
+      options.expectedTestbedTailscaleIp = next;
+      index += 1;
     } else if (arg === "--dry-run") {
       options.dryRun = true;
     } else if (arg === "-h" || arg === "--help") {
@@ -2622,9 +6821,98 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       usage();
       process.exit(0);
     }
+    if (options.mode === "vm-runtime-acceptance") {
+      const plan = buildVmRuntimeAcceptancePlan(options);
+      if (options.dryRun) {
+        console.log(JSON.stringify(plan, null, 2));
+        process.exit(0);
+      }
+      const report = runVmRuntimeAcceptance(options);
+      if (options.out) {
+        writeFileSync(options.out, `${JSON.stringify(report, null, 2)}\n`);
+        console.error(`wrote report: ${options.out}`);
+      } else {
+        process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+      }
+      process.exit(report.ok ? 0 : 1);
+    }
+    if (options.mode === "clean-base-factory-acceptance") {
+      if (
+        options.dryRun !== true &&
+        options.useExistingRemoteArtifacts === true
+      ) {
+        throw new Error(
+          "clean-base factory acceptance live mode rejects --use-existing-remote-artifacts; provide local daemon and machine UI artifacts",
+        );
+      }
+      const plan = buildCleanBaseFactoryAcceptancePlan(options);
+      if (options.dryRun) {
+        if (options.out) {
+          writeJsonOutput(options.out, plan);
+        }
+        console.log(JSON.stringify(plan, null, 2));
+        process.exit(0);
+      }
+      if (options.allowCleanBasePrepare !== true) {
+        throw new Error(
+          "clean-base factory acceptance live mode requires --allow-clean-base-prepare",
+        );
+      }
+    }
+    if (options.mode === "validate-clean-base-evidence") {
+      if (!options.cleanBaseEvidence) {
+        throw new Error(
+          "validate-clean-base-evidence requires --clean-base-evidence",
+        );
+      }
+      const validation = validateCleanBaseFactoryAcceptanceEvidenceFile(
+        options.cleanBaseEvidence,
+      );
+      process.stdout.write(`${JSON.stringify(validation, null, 2)}\n`);
+      process.exit(validation.status === "passed" ? 0 : 1);
+    }
+    if (options.mode === "factory-image-delivery-unit") {
+      const report = runFactoryImageDeliveryUnit(options);
+      console.error(`wrote report: ${report.reportPath}`);
+      if (!options.out) {
+        process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+      }
+      process.exit(report.ok ? 0 : 1);
+    }
+    assertDirtyHostFactoryRemoteSafety(options);
+    assertCleanBaseRemoteSafety(options);
+    const dirtyHostArtifacts = resolveDirtyHostArtifactInputs(options);
+    const cleanBaseArtifacts = resolveCleanBaseArtifactInputs(options);
+    if (dirtyHostArtifacts) {
+      options.useExistingRemoteArtifacts =
+        dirtyHostArtifacts.useExistingRemoteArtifacts;
+      options.daemonArtifactSha256 = dirtyHostArtifacts.daemonSha256;
+      options.machineUiArtifactSha256 = dirtyHostArtifacts.machineUiSha256;
+    }
+    if (cleanBaseArtifacts) {
+      options.daemonArtifactSha256 = cleanBaseArtifacts.daemonSha256;
+      options.machineUiArtifactSha256 = cleanBaseArtifacts.machineUiSha256;
+    }
+    const remoteSupportScriptRoot = `C:\\Users\\YKDZ\\AppData\\Local\\Temp\\vem-win10-e2e-support-${process.pid}-${Date.now()}`;
+    const remoteUploadedArtifactRoot = `${remoteSupportScriptRoot}\\input-artifacts`;
+    if (
+      options.mode === "dirty-host-factory-acceptance" ||
+      options.mode === "clean-base-factory-acceptance"
+    ) {
+      options.remoteSupportScriptRoot = remoteSupportScriptRoot;
+      options.remoteUploadedArtifactRoot = remoteUploadedArtifactRoot;
+      if (options.factoryCredentialsFromSshpass === true) {
+        options.remoteFactoryCredentialPath = `${remoteSupportScriptRoot}\\factory-credentials.json`;
+      }
+    }
+    const localTempDirectory = mkdtempSync(join(tmpdir(), "vem-win10-e2e-"));
+    if (options.mode === "clean-base-factory-acceptance") {
+      options.sshKnownHostsPath = join(localTempDirectory, "known_hosts");
+    }
     const script = buildRemotePowerShellScript(options);
     const sshCommand = buildSshCommand(options);
-    const localTempDirectory = mkdtempSync(join(tmpdir(), "vem-win10-e2e-"));
+    assertCleanBaseRemoteIdentityProbe(options, sshCommand);
+    assertCleanBaseRemotePreflightAbsenceProbe(options, sshCommand);
     const localScriptPath = join(localTempDirectory, "run.ps1");
     const remoteScriptPath = `C:\\Users\\YKDZ\\AppData\\Local\\Temp\\vem-win10-e2e-${process.pid}-${Date.now()}.ps1`;
     const scpCommand = buildScpCommand(
@@ -2632,7 +6920,10 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       remoteScriptPath,
       options,
     );
-    const remoteCommand = buildRemotePowerShellCommand(remoteScriptPath);
+    const remoteCommand = buildRemotePowerShellCommand(
+      remoteScriptPath,
+      options,
+    );
 
     if (options.dryRun) {
       console.log(
@@ -2644,6 +6935,21 @@ if (import.meta.url === `file://${process.argv[1]}`) {
             transport: "scp-temp-ps1",
             resetPlan: assertResetPlanPreservesTestbed(buildResetPlan()),
             bringUpPlan: buildBringUpPlan(options),
+            runId:
+              options.mode === "dirty-host-factory-acceptance" ||
+              options.mode === "simulated-hardware-sale-flow"
+                ? sanitizeRunId(options.runId)
+                : null,
+            artifacts: dirtyHostArtifacts
+              ? {
+                  source:
+                    dirtyHostArtifacts.useExistingRemoteArtifacts === true
+                      ? "existing_remote_bringup"
+                      : "uploaded_local_artifacts",
+                  daemonSha256: dirtyHostArtifacts.daemonSha256,
+                  machineUiSha256: dirtyHostArtifacts.machineUiSha256,
+                }
+              : null,
           },
           null,
           2,
@@ -2668,6 +6974,146 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       process.exit(upload.status ?? 1);
     }
 
+    if (
+      options.mode === "dirty-host-factory-acceptance" ||
+      options.mode === "clean-base-factory-acceptance"
+    ) {
+      const createSupportRootCommand = `powershell -NoProfile -ExecutionPolicy Bypass -Command "New-Item -ItemType Directory -Path ${quotePowerShellSingleQuoted(remoteSupportScriptRoot)} -Force | Out-Null; New-Item -ItemType Directory -Path ${quotePowerShellSingleQuoted(remoteUploadedArtifactRoot)} -Force | Out-Null"`;
+      const createSupportRoot = spawnSync(
+        sshCommand[0],
+        [...sshCommand.slice(1), createSupportRootCommand],
+        {
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "pipe"],
+        },
+      );
+      if (createSupportRoot.stdout) {
+        process.stdout.write(createSupportRoot.stdout);
+      }
+      if (createSupportRoot.stderr) {
+        process.stderr.write(createSupportRoot.stderr);
+      }
+      if (createSupportRoot.status !== 0) {
+        rmSync(localTempDirectory, { recursive: true, force: true });
+        process.exit(createSupportRoot.status ?? 1);
+      }
+
+      if (options.factoryCredentialsFromSshpass === true) {
+        if (!process.env.SSHPASS) {
+          throw new Error(
+            "--factory-credentials-from-sshpass requires local SSHPASS",
+          );
+        }
+        const localCredentialPath = join(
+          localTempDirectory,
+          "factory-credentials.json",
+        );
+        writeFileSync(
+          localCredentialPath,
+          JSON.stringify({
+            VEM_KIOSK_PASSWORD: process.env.SSHPASS,
+            VEM_MAINTENANCE_PASSWORD: process.env.SSHPASS,
+            VEM_AUTOLOGON_PASSWORD: process.env.SSHPASS,
+          }),
+          "utf8",
+        );
+        const credentialUpload = buildScpCommand(
+          localCredentialPath,
+          options.remoteFactoryCredentialPath,
+          options,
+        );
+        const uploadCredentials = spawnSync(
+          credentialUpload[0],
+          credentialUpload.slice(1),
+          {
+            encoding: "utf8",
+            stdio: ["ignore", "pipe", "pipe"],
+          },
+        );
+        if (uploadCredentials.stdout) {
+          process.stdout.write(uploadCredentials.stdout);
+        }
+        if (uploadCredentials.stderr) {
+          process.stderr.write(uploadCredentials.stderr);
+        }
+        if (uploadCredentials.status !== 0) {
+          rmSync(localTempDirectory, { recursive: true, force: true });
+          process.exit(uploadCredentials.status ?? 1);
+        }
+      }
+
+      for (const scriptName of FACTORY_SUPPORT_SCRIPT_NAMES) {
+        const supportUpload = buildScpCommand(
+          `scripts/windows/${scriptName}`,
+          `${remoteSupportScriptRoot}\\${scriptName}`,
+          options,
+        );
+        const uploadSupportScript = spawnSync(
+          supportUpload[0],
+          supportUpload.slice(1),
+          {
+            encoding: "utf8",
+            stdio: ["ignore", "pipe", "pipe"],
+          },
+        );
+        if (uploadSupportScript.stdout) {
+          process.stdout.write(uploadSupportScript.stdout);
+        }
+        if (uploadSupportScript.stderr) {
+          process.stderr.write(uploadSupportScript.stderr);
+        }
+        if (uploadSupportScript.status !== 0) {
+          rmSync(localTempDirectory, { recursive: true, force: true });
+          process.exit(uploadSupportScript.status ?? 1);
+        }
+      }
+
+      const artifactUploads = [
+        ["daemonArtifact", "vending-daemon.exe"],
+        ["machineUiArtifact", "machine.exe"],
+        [
+          "machineUiSidecarArtifact",
+          "WebView2Loader.dll",
+          options.machineUiArtifact
+            ? resolveMachineUiSidecarArtifactPath(options.machineUiArtifact)
+            : null,
+        ],
+      ];
+      for (const [
+        optionName,
+        remoteFileName,
+        explicitLocalPath,
+      ] of artifactUploads) {
+        const localPath = explicitLocalPath ?? options[optionName];
+        if (!localPath) {
+          continue;
+        }
+        const artifactUpload = buildScpCommand(
+          localPath,
+          `${remoteUploadedArtifactRoot}\\${remoteFileName}`,
+          options,
+        );
+        const uploadArtifact = spawnSync(
+          artifactUpload[0],
+          artifactUpload.slice(1),
+          {
+            encoding: "utf8",
+            stdio: ["ignore", "pipe", "pipe"],
+          },
+        );
+        if (uploadArtifact.stdout) {
+          process.stdout.write(uploadArtifact.stdout);
+        }
+        if (uploadArtifact.stderr) {
+          process.stderr.write(uploadArtifact.stderr);
+        }
+        if (uploadArtifact.status !== 0) {
+          rmSync(localTempDirectory, { recursive: true, force: true });
+          process.exit(uploadArtifact.status ?? 1);
+        }
+      }
+    }
+
     const result = spawnSync(
       sshCommand[0],
       [...sshCommand.slice(1), remoteCommand],
@@ -2680,7 +7126,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       sshCommand[0],
       [
         ...sshCommand.slice(1),
-        `powershell -NoProfile -ExecutionPolicy Bypass -Command "Remove-Item -LiteralPath ${quotePowerShellSingleQuoted(remoteScriptPath)} -Force -ErrorAction SilentlyContinue"`,
+        `powershell -NoProfile -ExecutionPolicy Bypass -Command "Remove-Item -LiteralPath ${quotePowerShellSingleQuoted(remoteScriptPath)} -Force -ErrorAction SilentlyContinue; Remove-Item -LiteralPath ${quotePowerShellSingleQuoted(remoteSupportScriptRoot)} -Recurse -Force -ErrorAction SilentlyContinue"`,
       ],
       { encoding: "utf8", stdio: "ignore" },
     );

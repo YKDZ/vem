@@ -372,7 +372,7 @@ describe("MachinesView environment controls", () => {
     document.body.innerHTML = "";
   });
 
-  it("edits Machine Location Label through the canonical locationLabel payload", async () => {
+  it("edits machine location label through the canonical locationLabel payload", async () => {
     listMachines.mockResolvedValue({
       items: [createMachineFixture()],
       total: 1,
@@ -386,7 +386,7 @@ describe("MachinesView environment controls", () => {
       "machines.write",
     ]);
 
-    expect(root.textContent).toContain("Machine Location Label");
+    expect(root.textContent).toContain("位置标签");
 
     Array.from(root.querySelectorAll("button"))
       .find((button) => button.textContent?.includes("编辑"))
@@ -397,7 +397,8 @@ describe("MachinesView environment controls", () => {
       root.querySelector<HTMLElement>('[role="dialog"]'),
       "machine dialog",
     );
-    expect(dialog.textContent).toContain("Machine Location Label");
+    expect(dialog.textContent).toContain("位置标签");
+    expect(dialog.textContent).not.toContain("Machine Location Label");
 
     Array.from(dialog.querySelectorAll("button"))
       .find((button) => button.textContent?.includes("保存"))
@@ -411,7 +412,7 @@ describe("MachinesView environment controls", () => {
     expect(updateMachine.mock.calls[0][1]).not.toHaveProperty("locationText");
   });
 
-  it("edits Machine Geo Location through the canonical geoLocation payload", async () => {
+  it("edits fixed geo location through the canonical geoLocation payload", async () => {
     listMachines.mockResolvedValue({
       items: [
         createMachineFixture({
@@ -433,7 +434,7 @@ describe("MachinesView environment controls", () => {
       "machines.write",
     ]);
 
-    expect(root.textContent).toContain("Machine Geo Location");
+    expect(root.textContent).toContain("固定地理坐标");
     expect(root.textContent).toContain("31.2304, 121.4737");
 
     Array.from(root.querySelectorAll("button"))
@@ -448,6 +449,7 @@ describe("MachinesView environment controls", () => {
     expect(dialog.textContent).toContain("WGS84 室外代表性站点坐标");
     expect(dialog.textContent).toContain("GCJ-02");
     expect(dialog.textContent).toContain("BD-09");
+    expect(dialog.textContent).not.toContain("Machine Geo Location");
 
     const numberInputs = dialog.querySelectorAll<HTMLInputElement>(
       'input[type="number"]',
@@ -481,7 +483,7 @@ describe("MachinesView environment controls", () => {
     );
   });
 
-  it("blocks invalid Machine Geo Location before submitting the machine form", async () => {
+  it("blocks invalid fixed geo location before submitting the machine form", async () => {
     listMachines.mockResolvedValue({
       items: [
         createMachineFixture({
@@ -526,7 +528,7 @@ describe("MachinesView environment controls", () => {
     expect(updateMachine).not.toHaveBeenCalled();
   });
 
-  it("blocks invalid Machine Geo Location timezone before submitting the machine form", async () => {
+  it("blocks invalid fixed geo location timezone before submitting the machine form", async () => {
     listMachines.mockResolvedValue({
       items: [
         createMachineFixture({
@@ -571,7 +573,7 @@ describe("MachinesView environment controls", () => {
     expect(updateMachine).not.toHaveBeenCalled();
   });
 
-  it("clears Machine Geo Location when the geo location checkbox is disabled", async () => {
+  it("clears fixed geo location when the geo location checkbox is disabled", async () => {
     listMachines.mockResolvedValue({
       items: [
         createMachineFixture({
@@ -644,6 +646,15 @@ describe("MachinesView environment controls", () => {
       root.querySelector<HTMLElement>('[role="dialog"]'),
       "machine dialog",
     );
+    expect(dialog.textContent).toContain("位置标签");
+    expect(dialog.textContent).toContain("固定地理坐标");
+    expect(dialog.textContent).not.toContain("Machine Location Label");
+    expect(dialog.textContent).not.toContain("Machine Geo Location");
+    expect(dialog.textContent).not.toContain("MQTT Client ID");
+    expect(dialog.textContent).not.toContain("下线");
+    expect(dialog.textContent).not.toContain("在线");
+    expect(dialog.textContent).not.toContain("维护");
+    expect(dialog.textContent).not.toContain("禁用");
     expect(
       Array.from(dialog.querySelectorAll<HTMLInputElement>("input")).some(
         (input) => input.value === "Asia/Shanghai",
@@ -658,6 +669,8 @@ describe("MachinesView environment controls", () => {
     expect(createMachine).toHaveBeenCalledWith(
       expect.objectContaining({ geoLocation: null }),
     );
+    expect(createMachine.mock.calls[0][0]).not.toHaveProperty("status");
+    expect(createMachine.mock.calls[0][0]).not.toHaveProperty("mqttClientId");
   });
 
   it("shows a compact environment summary in the machine list without row controls", async () => {

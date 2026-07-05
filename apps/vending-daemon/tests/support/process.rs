@@ -39,7 +39,7 @@ impl DaemonHarness {
         extra_env: &[(&str, &str)],
     ) -> Result<Self, String> {
         let temp_dir = TempDir::new().map_err(|error| error.to_string())?;
-        let data_dir = temp_dir.path().to_path_buf();
+        let data_dir = temp_dir.path().join("vending-daemon");
         let mut harness = Self::start_at(data_dir, public_config, extra_env).await?;
         harness._temp_dir = Some(temp_dir);
         Ok(harness)
