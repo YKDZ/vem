@@ -81,18 +81,18 @@ vi.mock("@/native/vision", () => ({
   openVisionTryOnSession: openVisionTryOnSessionMock,
 }));
 
+import type { CustomerExperienceEvent } from "@/customer-events/events";
 import type { VisionProfileSubscriptionHandlers } from "@/native/vision";
 import type {
   MachineCatalogItem,
   MachineCatalogSlotCandidate,
 } from "@/types/catalog";
 
+import { onCustomerExperienceEvent } from "@/composables/useCustomerExperienceEvents";
 import {
   resetCustomerPresenceSessionForTests,
   useReturnHomeOnCustomerDeparture,
 } from "@/composables/usePresenceInteraction";
-import { onCustomerExperienceEvent } from "@/composables/useCustomerExperienceEvents";
-import type { CustomerExperienceEvent } from "@/customer-events/events";
 import { machineConfigDefaults } from "@/config/machine-config";
 import { useCatalogStore } from "@/stores/catalog";
 import { useCheckoutStore } from "@/stores/checkout";
@@ -249,12 +249,13 @@ function requireButtonByText(
   text: string,
   match: "includes" | "exact" = "includes",
 ): HTMLButtonElement {
-  const button = Array.from(host.querySelectorAll<HTMLButtonElement>("button"))
-    .find((candidate) =>
-      match === "exact"
-        ? candidate.textContent?.trim() === text
-        : candidate.textContent?.includes(text),
-    );
+  const button = Array.from(
+    host.querySelectorAll<HTMLButtonElement>("button"),
+  ).find((candidate) =>
+    match === "exact"
+      ? candidate.textContent?.trim() === text
+      : candidate.textContent?.includes(text),
+  );
   expect(button).toBeTruthy();
   return button!;
 }
@@ -1684,7 +1685,10 @@ describe("sale readiness UI flow", () => {
           ?.getAttribute("src"),
       ).toBe(previewUrl);
     });
-    requireElement<HTMLButtonElement>(host, '[data-test="try-on-exit"]').click();
+    requireElement<HTMLButtonElement>(
+      host,
+      '[data-test="try-on-exit"]',
+    ).click();
     await nextTick();
 
     expect(stop).toHaveBeenCalledWith("user_exit");
