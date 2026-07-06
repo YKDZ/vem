@@ -255,16 +255,16 @@ function transactionSnapshot(
     productSummary: { productName: "基础短袖" },
     paymentNo: "PAY-001",
     paymentMethod: nextAction === "wait_payment" ? "qr_code" : "mock",
-    paymentProvider: "alipay",
+    paymentProvider: nextAction === "wait_payment" ? "alipay" : "mock",
     paymentUrl: "https://pay.example/qr",
-    paymentStatus: nextAction === "success" ? "paid" : "pending",
-    orderStatus: nextAction === "success" ? "completed" : "pending_payment",
+    paymentStatus: nextAction === "success" ? "succeeded" : "pending",
+    orderStatus: nextAction === "success" ? "fulfilled" : "pending_payment",
     totalAmountCents: 5900,
     vending:
       nextAction === "dispensing" || nextAction === "success"
         ? {
             commandNo: "CMD-001",
-            status: nextAction === "success" ? "succeeded" : "created",
+            status: nextAction === "success" ? "succeeded" : "pending",
             lastError: null,
           }
         : null,
