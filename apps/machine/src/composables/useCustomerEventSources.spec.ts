@@ -633,7 +633,7 @@ describe("customer event sources", () => {
       nextAction: "dispensing",
       vending: {
         commandNo: "VEND-197",
-        status: "dispensing",
+        status: "acknowledged",
         lastError: null,
         pickupReminder: {
           stage: "pickup_timeout_warning",
@@ -865,7 +865,7 @@ describe("customer event sources", () => {
         nextAction: "dispensing",
         vending: {
           commandNo: "VEND-197",
-          status: "dispensing",
+          status: "acknowledged",
           lastError: null,
           pickupReminder: {
             stage: "outlet_opened",
@@ -885,7 +885,7 @@ describe("customer event sources", () => {
         nextAction: "dispensing",
         vending: {
           commandNo: "VEND-197",
-          status: "dispensing",
+          status: "acknowledged",
           lastError: null,
           pickupReminder: {
             stage: "pickup_waiting",
@@ -905,7 +905,7 @@ describe("customer event sources", () => {
         nextAction: "dispensing",
         vending: {
           commandNo: "VEND-197",
-          status: "dispensing",
+          status: "acknowledged",
           lastError: null,
           pickupReminder: {
             stage: "pickup_timeout_warning",
@@ -925,7 +925,7 @@ describe("customer event sources", () => {
         nextAction: "dispensing",
         vending: {
           commandNo: "VEND-197",
-          status: "dispensing",
+          status: "acknowledged",
           lastError: null,
           pickupReminder: {
             stage: "pickup_timeout_warning",

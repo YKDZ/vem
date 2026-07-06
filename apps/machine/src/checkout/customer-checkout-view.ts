@@ -1,5 +1,3 @@
-import type { MachineOrderStatusNextAction } from "@vem/shared";
-
 import type { TransactionSnapshot } from "@/daemon/schemas";
 import type { CheckoutResultKind } from "@/types/checkout";
 
@@ -178,7 +176,7 @@ export type ProjectCustomerCheckoutViewInput = {
   readiness?: CustomerCheckoutReadinessContext;
 };
 
-const terminalResultActions = new Set<MachineOrderStatusNextAction>([
+const terminalResultActions: ReadonlySet<string> = new Set([
   "success",
   "payment_failed",
   "payment_expired",
@@ -202,10 +200,7 @@ const paymentCodeInFlightStatuses = new Set([
 function isTerminalResultAction(
   nextAction: string | null,
 ): nextAction is CheckoutResultKind {
-  return Boolean(
-    nextAction &&
-    terminalResultActions.has(nextAction as MachineOrderStatusNextAction),
-  );
+  return nextAction !== null && terminalResultActions.has(nextAction);
 }
 
 function projectRouteTarget(
@@ -372,20 +367,30 @@ function cancelDisabledReason(input: {
 function customerVisibleDispensingError(
   transaction: TransactionSnapshot,
 ): CustomerCheckoutDispensingView["customerVisibleError"] {
-  switch (transaction.vending?.status) {
+  const status = transaction.vending?.status;
+  switch (status) {
+    case null:
+    case undefined:
+    case "pending":
+    case "sent":
+    case "acknowledged":
+    case "succeeded":
+      return null;
     case "failed":
     case "timeout":
     case "result_unknown":
-      return { kind: transaction.vending.status };
-    default:
-      return null;
+      return { kind: status };
   }
+  throw new Error(`unexpected vending command status: ${String(status)}`);
 }
 
 function dispensingPickupStage(
   stage: string | null | undefined,
 ): NonNullable<CustomerCheckoutDispensingView["pickupReminder"]>["stage"] {
   switch (stage) {
+    case null:
+    case undefined:
+      return null;
     case "outlet_opened":
     case "pickup_waiting":
     case "pickup_completed":
@@ -417,6 +422,9 @@ function pickupCueForReminder(
   reminder: CustomerCheckoutDispensingView["pickupReminder"],
 ): CustomerEventPickupCue | null {
   switch (reminder?.stage) {
+    case null:
+    case undefined:
+      return null;
     case "outlet_opened":
       return "outlet_opened";
     case "pickup_waiting":

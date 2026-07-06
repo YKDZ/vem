@@ -139,7 +139,7 @@ function makeTransactionSnapshot(overrides: Record<string, unknown> = {}) {
     totalAmountCents: 100,
     vending: {
       commandNo: "CMD-001",
-      status: "created",
+      status: "pending",
       lastError: null,
     },
     nextAction: "wait_payment",

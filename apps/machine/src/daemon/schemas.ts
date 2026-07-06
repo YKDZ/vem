@@ -303,7 +303,8 @@ export const transactionSnapshotSchema = z
         ctx.addIssue({
           code: "custom",
           path: ["paymentMethod"],
-          message: "awaiting-payment transaction snapshots must include paymentMethod",
+          message:
+            "awaiting-payment transaction snapshots must include paymentMethod",
         });
       }
       if (snapshot.totalAmountCents === null) {

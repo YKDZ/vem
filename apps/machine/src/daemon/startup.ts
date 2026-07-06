@@ -1,3 +1,8 @@
+import {
+  projectCustomerCheckoutView,
+  type CustomerCheckoutRouteTarget,
+} from "@/checkout/customer-checkout-view";
+
 import type {
   BringUpSnapshot,
   ConfigSummary,
@@ -5,11 +10,6 @@ import type {
   ReadySnapshot,
   TransactionSnapshot,
 } from "./schemas";
-
-import {
-  projectCustomerCheckoutView,
-  type CustomerCheckoutRouteTarget,
-} from "@/checkout/customer-checkout-view";
 
 export type StartupRoute =
   | "/maintenance"

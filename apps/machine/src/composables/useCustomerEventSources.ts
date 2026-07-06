@@ -209,6 +209,14 @@ function eventTypeForTerminalObservation(
   phase: CustomerEventObservationPhase,
 ): CustomerExperienceEvent["type"] | null {
   switch (phase) {
+    case "none":
+    case "awaiting_payment":
+    case "dispensing":
+    case "success_result":
+    case "payment_failed_result":
+    case "payment_expired_result":
+    case "closed_result":
+      return null;
     case "dispense_failed_result":
       return "dispense.failed";
     case "refund_pending_result":
@@ -303,10 +311,7 @@ export function installCustomerEventSources(
         if (!orderKey) return;
 
         const previousPhase = lastTransactionByOrderKey.get(orderKey) ?? null;
-        lastTransactionByOrderKey.set(
-          orderKey,
-          observation.phase,
-        );
+        lastTransactionByOrderKey.set(orderKey, observation.phase);
         if (observation.restored) {
           rememberRestoredObservationEvents({
             orderKey,

@@ -570,9 +570,7 @@ describe("ResultView", () => {
       .mockReturnValueOnce(new Promise<ReadySnapshot>(() => undefined))
       .mockResolvedValue(readyFixture(false, "WHOLE_MACHINE_HARDWARE_FAULT"));
     getSaleReadinessMock
-      .mockReturnValueOnce(
-        new Promise<MachineSaleReadiness>(() => undefined),
-      )
+      .mockReturnValueOnce(new Promise<MachineSaleReadiness>(() => undefined))
       .mockResolvedValue(
         saleReadinessFixture(false, [], "WHOLE_MACHINE_HARDWARE_FAULT"),
       );
@@ -736,7 +734,8 @@ describe("ResultView", () => {
       },
     ];
 
-    for (const testCase of cases) {
+    await cases.reduce(async (previous, testCase) => {
+      await previous;
       mountedApp?.unmount();
       mountedApp = null;
       document.body.innerHTML = "";
@@ -749,7 +748,7 @@ describe("ResultView", () => {
       expect(host.textContent).toContain(testCase.title);
       expect(host.textContent).not.toContain(testCase.rawCode);
       expect(host.textContent).not.toContain("ZodError");
-    }
+    }, Promise.resolve());
   });
 
   it("keeps vision recognition details silent on the customer result page", async () => {

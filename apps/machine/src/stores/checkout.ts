@@ -501,16 +501,12 @@ export const useCheckoutStore = defineStore("checkout", {
     async markMockSucceeded(): Promise<void> {
       const orderNo = this.customerCheckoutView.orderCredential;
       if (!orderNo) return;
-      this.applyTransaction(
-        await daemonClient.markMockPayment(orderNo, true),
-      );
+      this.applyTransaction(await daemonClient.markMockPayment(orderNo, true));
     },
     async markMockFailed(): Promise<void> {
       const orderNo = this.customerCheckoutView.orderCredential;
       if (!orderNo) return;
-      this.applyTransaction(
-        await daemonClient.markMockPayment(orderNo, false),
-      );
+      this.applyTransaction(await daemonClient.markMockPayment(orderNo, false));
     },
   },
 });

@@ -248,7 +248,9 @@ describe("PaymentView", () => {
   });
 
   it("uses projected payment-code intent to block cancellation with Chinese copy", async () => {
-    getCurrentTransactionMock.mockResolvedValue(inFlightPaymentCodeTransaction());
+    getCurrentTransactionMock.mockResolvedValue(
+      inFlightPaymentCodeTransaction(),
+    );
     const checkoutStore = useCheckoutStore();
     checkoutStore.applyTransaction(inFlightPaymentCodeTransaction());
 
