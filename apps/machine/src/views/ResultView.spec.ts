@@ -193,6 +193,18 @@ function closedTransaction() {
   };
 }
 
+function awaitingPaymentTransaction() {
+  return {
+    ...terminalDispenseFailedTransaction(),
+    orderNo: "ORD-PAYMENT-RECOVERY-001",
+    paymentNo: "PAY-PAYMENT-RECOVERY-001",
+    paymentStatus: "pending",
+    orderStatus: "pending_payment",
+    vending: null,
+    nextAction: "wait_payment",
+  };
+}
+
 function applySaleReadiness(
   canSell: boolean,
   blockedSlots: Array<{
@@ -359,6 +371,18 @@ afterEach(() => {
 });
 
 describe("ResultView", () => {
+  it("routes away through the projected route target when the current checkout is no longer a result", async () => {
+    useCheckoutStore().applyTransaction(awaitingPaymentTransaction());
+    applySaleReadiness(true);
+
+    const host = await mountView();
+
+    await vi.waitFor(() => {
+      expect(routerReplaceMock).toHaveBeenCalledWith({ name: "payment" });
+    });
+    expect(host.textContent).not.toContain("支付失败");
+  });
+
   it("derives successful result semantics and credential behavior from the customer checkout view", async () => {
     routeParams.kind = "manual_handling";
     useCheckoutStore().applyTransaction(successfulTransaction());
@@ -373,6 +397,21 @@ describe("ResultView", () => {
     expect(host.textContent).toContain("秒后自动返回首页");
     expect(host.textContent).not.toContain("订单凭证 ORD-SUCCESS-001");
     expect(host.textContent).not.toContain("等待人工处理");
+  });
+
+  it("shows projected successful auto-return policy without waiting for page-level readiness refresh", async () => {
+    routeParams.kind = "success";
+    useCheckoutStore().applyTransaction(successfulTransaction());
+    applySaleReadiness(true);
+    getReadyMock.mockReturnValue(new Promise<ReadySnapshot>(() => undefined));
+    getSaleReadinessMock.mockReturnValue(
+      new Promise<MachineSaleReadiness>(() => undefined),
+    );
+
+    const host = await mountView();
+
+    expect(host.textContent).toContain("出货成功");
+    expect(host.textContent).toContain("秒后自动返回首页");
   });
 
   it("keeps a successful terminal result visible when readiness is blocked and returns to maintenance", async () => {
@@ -406,9 +445,11 @@ describe("ResultView", () => {
     expect(routerReplaceMock).not.toHaveBeenCalledWith("/catalog");
   });
 
-  it("does not auto-return successful results to catalog when readiness refresh fails", async () => {
+  it("stops successful auto-return and shows readiness error when readiness refresh fails", async () => {
     routeParams.kind = "success";
-    useCheckoutStore().applyTransaction(successfulTransaction());
+    const transaction = successfulTransaction();
+    const checkoutStore = useCheckoutStore();
+    checkoutStore.applyTransaction(transaction);
     applySaleReadiness(true);
     getReadyMock.mockRejectedValue(new Error("daemon readiness unavailable"));
 
@@ -419,9 +460,11 @@ describe("ResultView", () => {
     await vi.advanceTimersByTimeAsync(10000);
 
     expect(host.textContent).toContain("出货成功");
+    expect(host.textContent).not.toContain("秒后自动返回首页");
     expect(host.textContent).toContain("无法确认设备恢复状态");
     expect(routerReplaceMock).not.toHaveBeenCalledWith("/catalog");
     expect(getSaleViewMock).not.toHaveBeenCalled();
+    expect(checkoutStore.shouldIgnoreTransaction(transaction)).toBe(false);
   });
 
   it("allows a recovered dispense failure result to be dismissed back to catalog", async () => {
@@ -690,6 +733,9 @@ describe("ResultView", () => {
     expect(host.textContent).not.toContain("等待人工处理");
     expect(host.textContent).not.toContain("订单凭证 ORD-UNKNOWN-001");
     expect(host.textContent).not.toContain("出货结果待确认");
+    await vi.waitFor(() => {
+      expect(routerReplaceMock).toHaveBeenCalledWith({ name: "catalog" });
+    });
   });
 
   it("shows refund processing credential and keeps the customer waiting", async () => {

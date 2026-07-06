@@ -38,4 +38,16 @@ describe("customer checkout projection architecture", () => {
     expect(paymentView).not.toContain("checkoutStore.remainingSeconds");
     expect(checkoutStore).not.toMatch(/\bremainingSeconds:\s*\(/);
   });
+
+  it("keeps dispensing and result pages on the unified checkout view", () => {
+    const dispensingView = readSource("src/views/DispensingView.vue");
+    const resultView = readSource("src/views/ResultView.vue");
+
+    expect(dispensingView).toContain("customerCheckoutView");
+    expect(resultView).toContain("customerCheckoutView");
+    expect(dispensingView).not.toContain("nextAction");
+    expect(resultView).not.toContain("nextAction");
+    expect(resultView).not.toContain("@/daemon/client");
+    expect(resultView).not.toContain("useConnectivityStore");
+  });
 });

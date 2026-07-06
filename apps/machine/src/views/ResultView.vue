@@ -14,16 +14,13 @@ import logoImage from "@/assets/home/logo.png";
 import mascotListImage from "@/assets/home/mascot-list.png";
 import mascotTopImage from "@/assets/home/mascot-top-cutout.png";
 import { useMaintenanceEntry } from "@/composables/useMaintenanceEntry";
-import { daemonClient } from "@/daemon/client";
 import KioskLayout from "@/layouts/KioskLayout.vue";
 import { useCatalogStore } from "@/stores/catalog";
 import { useCheckoutStore } from "@/stores/checkout";
-import { useConnectivityStore } from "@/stores/connectivity";
 
 const router = useRouter();
 const checkoutStore = useCheckoutStore();
 const catalogStore = useCatalogStore();
-const connectivityStore = useConnectivityStore();
 const { handleMaintenanceTap } = useMaintenanceEntry();
 
 const AUTO_RETURN_DELAY_MS = 6000;
@@ -114,24 +111,8 @@ const isDispenseResolutionResult = computed(() =>
   kind.value ? DISPENSE_RESOLUTION_RESULT_KINDS.has(kind.value) : false,
 );
 const resultReadinessError = ref<string | null>(null);
-const resultReadinessConfirmed = ref(false);
 const activeReturnPolicy = computed<CustomerCheckoutReturnPolicy | null>(() => {
-  if (!projectedResult.value) return null;
-  const projectedPolicy = projectedResult.value.returnPolicy;
-  if (
-    projectedResult.value.kind !== "success" ||
-    resultReadinessConfirmed.value
-  ) {
-    return projectedPolicy;
-  }
-  return {
-    ...projectedPolicy,
-    canAutoReturn: false,
-    targetRoute:
-      projectedPolicy.targetRoute === "catalog"
-        ? "offline"
-        : projectedPolicy.targetRoute,
-  };
+  return projectedResult.value?.returnPolicy ?? null;
 });
 const orderCredential = computed(() => {
   if (projectedResult.value?.orderCredentialBehavior === "hidden") {
@@ -147,7 +128,9 @@ const requiresMaintenanceReview = computed(() => {
   return activeReturnPolicy.value?.requiresMaintenanceReview === true;
 });
 const canAutoReturn = computed(
-  () => activeReturnPolicy.value?.canAutoReturn === true,
+  () =>
+    activeReturnPolicy.value?.canAutoReturn === true &&
+    resultReadinessError.value === null,
 );
 const canManuallyReturn = computed(
   () => activeReturnPolicy.value?.canManualReturn === true,
@@ -163,6 +146,18 @@ const autoReturnMessage = computed(() => {
 let autoReturnTimer: number | null = null;
 let autoReturnStartedAt = 0;
 let returningToCatalog = false;
+
+async function routeToProjectedTarget(): Promise<void> {
+  if (checkoutView.value.stage === "result") {
+    return;
+  }
+  const target = checkoutView.value.routeTarget;
+  if ("path" in target) {
+    await router.replace(target.path);
+    return;
+  }
+  await router.replace(target);
+}
 
 function stopAutoReturn(): void {
   if (autoReturnTimer !== null) {
@@ -207,13 +202,7 @@ async function backToCatalog(): Promise<void> {
   const projectedTargetRoute = returnPolicy.targetRoute;
   checkoutStore.dismissCurrentTerminalTransaction();
   checkoutStore.reset();
-  const targetRoute = projectedTargetRoute
-    ? `/${projectedTargetRoute}`
-    : connectivityStore.isSaleNetworkReady
-      ? "/catalog"
-      : connectivityStore.ready?.suggestedRoute === "maintenance"
-        ? "/maintenance"
-        : "/offline";
+  const targetRoute = `/${projectedTargetRoute}`;
   if (targetRoute === "/catalog") {
     await catalogStore.refresh().catch((error: unknown) => {
       resultReadinessError.value =
@@ -224,23 +213,9 @@ async function backToCatalog(): Promise<void> {
 }
 
 async function refreshResultReadiness(): Promise<boolean> {
-  resultReadinessConfirmed.value = false;
-  try {
-    const [ready, saleReadiness] = await Promise.all([
-      daemonClient.getReady(),
-      daemonClient.getSaleReadiness(),
-    ]);
-    connectivityStore.applyReady(ready);
-    connectivityStore.applySaleReadiness(saleReadiness);
-    resultReadinessError.value = null;
-    resultReadinessConfirmed.value = true;
-    return true;
-  } catch (error) {
-    resultReadinessError.value =
-      error instanceof Error ? error.message : String(error);
-    resultReadinessConfirmed.value = false;
-    return false;
-  }
+  resultReadinessError.value =
+    await checkoutStore.refreshCustomerCheckoutReadiness();
+  return resultReadinessError.value === null;
 }
 
 watch(
@@ -256,8 +231,16 @@ watch(
 );
 
 onMounted(() => {
+  void routeToProjectedTarget();
   void refreshResultReadiness();
 });
+
+watch(
+  () => checkoutView.value.routeTarget,
+  () => {
+    void routeToProjectedTarget();
+  },
+);
 
 onBeforeUnmount(stopAutoReturn);
 </script>

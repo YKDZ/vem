@@ -426,6 +426,20 @@ export const useCheckoutStore = defineStore("checkout", {
         this.loading = false;
       }
     },
+    async refreshCustomerCheckoutReadiness(): Promise<string | null> {
+      try {
+        const [ready, saleReadiness] = await Promise.all([
+          daemonClient.getReady(),
+          daemonClient.getSaleReadiness(),
+        ]);
+        const connectivityStore = useConnectivityStore();
+        connectivityStore.applyReady(ready);
+        connectivityStore.applySaleReadiness(saleReadiness);
+        return null;
+      } catch (error) {
+        return error instanceof Error ? error.message : String(error);
+      }
+    },
     async cancelCurrentOrder(options?: {
       preserveSelectedItem?: boolean;
     }): Promise<TransactionSnapshot | null> {
