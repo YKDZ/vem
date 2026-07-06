@@ -13,11 +13,13 @@ import type {
   MachinePaymentProviderCode,
 } from "@/types/checkout";
 
-import { daemonClient } from "@/daemon/client";
 import {
   projectCustomerCheckoutView,
+  type CustomerCheckoutReadinessContext,
+  type CustomerCheckoutReturnRoute,
   type CustomerCheckoutView,
 } from "@/checkout/customer-checkout-view";
+import { daemonClient } from "@/daemon/client";
 import { useCatalogStore } from "@/stores/catalog";
 import { useConnectivityStore } from "@/stores/connectivity";
 import { getRemainingSeconds } from "@/utils/format";
@@ -341,6 +343,39 @@ function isMachineSaleReady(): boolean {
   return useConnectivityStore().isSaleNetworkReady;
 }
 
+function suggestedReturnRoute(): CustomerCheckoutReturnRoute {
+  const connectivityStore = useConnectivityStore();
+  if (connectivityStore.isSaleNetworkReady) return "catalog";
+  if (connectivityStore.ready?.suggestedRoute === "maintenance") {
+    return "maintenance";
+  }
+  return "offline";
+}
+
+function requiresMaintenanceReview(): boolean {
+  const connectivityStore = useConnectivityStore();
+  return Boolean(
+    connectivityStore.ready?.suggestedRoute === "maintenance" ||
+    connectivityStore.ready?.blockingCodes.includes(
+      "WHOLE_MACHINE_HARDWARE_FAULT",
+    ) ||
+    connectivityStore.saleReadiness?.blockingCodes.includes(
+      "WHOLE_MACHINE_HARDWARE_FAULT",
+    ) ||
+    connectivityStore.saleReadiness?.components.wholeMachineBlockers.ready ===
+      false,
+  );
+}
+
+function customerCheckoutReadinessContext(): CustomerCheckoutReadinessContext {
+  const connectivityStore = useConnectivityStore();
+  return {
+    saleReady: connectivityStore.isSaleNetworkReady,
+    suggestedRoute: suggestedReturnRoute(),
+    requiresMaintenanceReview: requiresMaintenanceReview(),
+  };
+}
+
 function vendingStatusFromSnapshot(
   snapshot: NonNullable<TransactionSnapshot["vending"]>,
 ): NonNullable<MachineOrderStatus["vending"]>["status"] {
@@ -361,9 +396,7 @@ function vendingStatusFromSnapshot(
 }
 
 function pickupReminderFromSnapshot(
-  pickupReminder: NonNullable<
-    TransactionSnapshot["vending"]
-  >["pickupReminder"],
+  pickupReminder: NonNullable<TransactionSnapshot["vending"]>["pickupReminder"],
 ): NonNullable<MachineOrderStatus["vending"]>["pickupReminder"] {
   if (!pickupReminder) return null;
   const stage =
@@ -408,6 +441,7 @@ export const useCheckoutStore = defineStore("checkout", {
         dismissedTerminalOrderNos: state.dismissedTerminalOrderNos,
         restored: state.lastTransactionRestored,
         loading: state.loading,
+        readiness: customerCheckoutReadinessContext(),
       }),
     remainingSeconds: (state): number =>
       projectCustomerCheckoutView({
@@ -416,6 +450,7 @@ export const useCheckoutStore = defineStore("checkout", {
         dismissedTerminalOrderNos: state.dismissedTerminalOrderNos,
         restored: state.lastTransactionRestored,
         loading: state.loading,
+        readiness: customerCheckoutReadinessContext(),
       }).payment?.remainingSeconds ??
       getRemainingSeconds(state.currentOrder?.expiresAt, state.nowMs),
     canCreateOrder: (state): boolean => {

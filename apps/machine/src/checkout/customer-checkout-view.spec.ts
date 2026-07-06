@@ -73,6 +73,25 @@ function dispensingTransaction(
   };
 }
 
+function successfulTransaction(
+  overrides: Partial<TransactionSnapshot> = {},
+): TransactionSnapshot {
+  return {
+    ...dispensingTransaction(),
+    orderNo: "ORD-SUCCESS-001",
+    paymentNo: "PAY-SUCCESS-001",
+    paymentStatus: "succeeded",
+    orderStatus: "fulfilled",
+    vending: {
+      commandNo: "CMD-SUCCESS-001",
+      status: "succeeded",
+      lastError: null,
+    },
+    nextAction: "success",
+    ...overrides,
+  };
+}
+
 describe("Customer Checkout View Projection", () => {
   it("validates paid and dispensing transaction snapshots with strict vocabulary", () => {
     expect(
@@ -258,5 +277,92 @@ describe("Customer Checkout View Projection", () => {
       },
     });
     expect(JSON.stringify(view)).not.toContain("请尽快取走商品");
+  });
+
+  it("projects successful terminal snapshots to success result with sale-ready return policy", () => {
+    expect(
+      transactionSnapshotSchema.safeParse(successfulTransaction()).success,
+    ).toBe(true);
+
+    const view = projectCustomerCheckoutView({
+      transaction: successfulTransaction(),
+      nowMs: new Date("2026-06-11T06:16:32.320Z").getTime(),
+      dismissedTerminalOrderNos: [],
+      restored: false,
+      readiness: {
+        saleReady: true,
+        suggestedRoute: "catalog",
+        requiresMaintenanceReview: false,
+      },
+    });
+
+    expect(view).toMatchObject({
+      stage: "result",
+      routeTarget: { name: "result", params: { kind: "success" } },
+      orderCredential: "ORD-SUCCESS-001",
+      result: {
+        kind: "success",
+        orderCredentialBehavior: "hidden",
+        returnPolicy: {
+          canAutoReturn: true,
+          canManualReturn: true,
+          targetRoute: "catalog",
+          requiresMaintenanceReview: false,
+        },
+      },
+    });
+  });
+
+  it("projects dismissed successful terminal snapshots to no active customer transaction", () => {
+    const view = projectCustomerCheckoutView({
+      transaction: successfulTransaction(),
+      nowMs: new Date("2026-06-11T06:16:32.320Z").getTime(),
+      dismissedTerminalOrderNos: ["ORD-SUCCESS-001"],
+      restored: true,
+      readiness: {
+        saleReady: true,
+        suggestedRoute: "catalog",
+        requiresMaintenanceReview: false,
+      },
+    });
+
+    expect(view).toMatchObject({
+      stage: "none",
+      routeTarget: { name: "catalog" },
+      orderCredential: null,
+      result: null,
+      restored: true,
+    });
+  });
+
+  it("keeps successful terminal results from auto-returning when sale readiness is blocked", () => {
+    const view = projectCustomerCheckoutView({
+      transaction: successfulTransaction(),
+      nowMs: new Date("2026-06-11T06:16:32.320Z").getTime(),
+      dismissedTerminalOrderNos: [],
+      restored: false,
+      readiness: {
+        saleReady: false,
+        suggestedRoute: "maintenance",
+        requiresMaintenanceReview: true,
+      },
+    });
+
+    expect(view).toMatchObject({
+      stage: "result",
+      result: {
+        kind: "success",
+        returnPolicy: {
+          canAutoReturn: false,
+          canManualReturn: true,
+          targetRoute: "maintenance",
+          requiresMaintenanceReview: true,
+        },
+      },
+    });
+    expect(view.routeTarget).toEqual({
+      name: "result",
+      params: { kind: "success" },
+    });
   });
 });

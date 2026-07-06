@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
+import type { CustomerCheckoutReturnPolicy } from "@/checkout/customer-checkout-view";
 import type { CheckoutResultKind } from "@/types/checkout";
 
 import listSloganImage from "@/assets/home/list-slogan.png";
@@ -87,7 +88,15 @@ const DISPENSE_RESOLUTION_RESULT_KINDS: ReadonlySet<CheckoutResultKind> =
 const WAIT_FOR_RESOLUTION_RESULT_KINDS: ReadonlySet<CheckoutResultKind> =
   new Set(["manual_handling", "refund_pending"]);
 
-const kind = computed(() => String(route.params.kind) as CheckoutResultKind);
+const checkoutView = computed(() => checkoutStore.customerCheckoutView);
+const projectedResult = computed(() =>
+  checkoutView.value.stage === "result" ? checkoutView.value.result : null,
+);
+const kind = computed(
+  () =>
+    projectedResult.value?.kind ??
+    (String(route.params.kind) as CheckoutResultKind),
+);
 const copy = computed(() => copyMap[kind.value] ?? copyMap.manual_handling);
 const isDispenseFailureResult = computed(
   () => kind.value === "dispense_failed",
@@ -96,12 +105,32 @@ const isSuccessResult = computed(() => kind.value === "success");
 const isDispenseResolutionResult = computed(() =>
   DISPENSE_RESOLUTION_RESULT_KINDS.has(kind.value),
 );
-const orderCredential = computed(
-  () =>
+const resultReadinessError = ref<string | null>(null);
+const resultReadinessConfirmed = ref(false);
+const successReturnPolicy = computed<CustomerCheckoutReturnPolicy | null>(() => {
+  if (projectedResult.value?.kind !== "success") return null;
+  const projectedPolicy = projectedResult.value.returnPolicy;
+  if (resultReadinessConfirmed.value) return projectedPolicy;
+  return {
+    ...projectedPolicy,
+    canAutoReturn: false,
+    targetRoute:
+      projectedPolicy.targetRoute === "catalog"
+        ? "offline"
+        : projectedPolicy.targetRoute,
+  };
+});
+const orderCredential = computed(() => {
+  if (projectedResult.value?.orderCredentialBehavior === "hidden") {
+    return null;
+  }
+  return (
+    checkoutView.value.orderCredential ??
     checkoutStore.currentOrder?.orderNo ??
     checkoutStore.status?.orderNo ??
-    null,
-);
+    null
+  );
+});
 const resultDetail = computed(() => {
   if (
     kind.value === "manual_handling" &&
@@ -118,7 +147,6 @@ const resultDetail = computed(() => {
   }
   return null;
 });
-const resultReadinessError = ref<string | null>(null);
 const requiresMaintenanceReview = computed(() => {
   if (!isDispenseFailureResult.value) return false;
   const ready = connectivityStore.ready;
@@ -132,14 +160,16 @@ const requiresMaintenanceReview = computed(() => {
 });
 const canAutoReturn = computed(
   () =>
-    (isSuccessResult.value ||
-      (Boolean(checkoutStore.resultKind) &&
-        connectivityStore.isSaleNetworkReady)) &&
+    (successReturnPolicy.value?.canAutoReturn ??
+      (isSuccessResult.value ||
+        (Boolean(checkoutStore.resultKind) &&
+          connectivityStore.isSaleNetworkReady))) &&
     !isDispenseResolutionResult.value,
 );
 const canManuallyReturn = computed(
   () =>
-    (isSuccessResult.value || Boolean(checkoutStore.resultKind)) &&
+    (successReturnPolicy.value?.canManualReturn ??
+      (isSuccessResult.value || Boolean(checkoutStore.resultKind))) &&
     !WAIT_FOR_RESOLUTION_RESULT_KINDS.has(kind.value) &&
     (connectivityStore.isSaleNetworkReady || !isDispenseResolutionResult.value),
 );
@@ -190,13 +220,16 @@ async function backToCatalog(): Promise<void> {
   returningToCatalog = true;
   stopAutoReturn();
   await refreshResultReadiness();
+  const projectedTargetRoute = successReturnPolicy.value?.targetRoute ?? null;
   checkoutStore.dismissCurrentTerminalTransaction();
   checkoutStore.reset();
-  const targetRoute = connectivityStore.isSaleNetworkReady
-    ? "/catalog"
-    : connectivityStore.ready?.suggestedRoute === "maintenance"
-      ? "/maintenance"
-      : "/offline";
+  const targetRoute = projectedTargetRoute
+    ? `/${projectedTargetRoute}`
+    : connectivityStore.isSaleNetworkReady
+      ? "/catalog"
+      : connectivityStore.ready?.suggestedRoute === "maintenance"
+        ? "/maintenance"
+        : "/offline";
   if (targetRoute === "/catalog") {
     await catalogStore.refresh().catch((error: unknown) => {
       resultReadinessError.value =
@@ -207,6 +240,7 @@ async function backToCatalog(): Promise<void> {
 }
 
 async function refreshResultReadiness(): Promise<void> {
+  resultReadinessConfirmed.value = false;
   try {
     const [ready, saleReadiness] = await Promise.all([
       daemonClient.getReady(),
@@ -214,9 +248,12 @@ async function refreshResultReadiness(): Promise<void> {
     ]);
     connectivityStore.applyReady(ready);
     connectivityStore.applySaleReadiness(saleReadiness);
+    resultReadinessError.value = null;
+    resultReadinessConfirmed.value = true;
   } catch (error) {
     resultReadinessError.value =
       error instanceof Error ? error.message : String(error);
+    resultReadinessConfirmed.value = false;
     return;
   }
 }

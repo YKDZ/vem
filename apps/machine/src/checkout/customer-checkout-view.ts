@@ -2,6 +2,7 @@ import type { MachineOrderStatusNextAction } from "@vem/shared";
 
 import type { TransactionSnapshot } from "@/daemon/schemas";
 import type { CheckoutResultKind } from "@/types/checkout";
+
 import { getRemainingSeconds } from "@/utils/format";
 
 export type CustomerCheckoutRouteTarget =
@@ -61,6 +62,21 @@ export type CustomerCheckoutDispensingView = {
   };
 };
 
+export type CustomerCheckoutReturnRoute = "catalog" | "maintenance" | "offline";
+
+export type CustomerCheckoutReturnPolicy = {
+  canAutoReturn: boolean;
+  canManualReturn: boolean;
+  targetRoute: CustomerCheckoutReturnRoute;
+  requiresMaintenanceReview: boolean;
+};
+
+export type CustomerCheckoutResultView = {
+  kind: CheckoutResultKind;
+  orderCredentialBehavior: "hidden" | "shown";
+  returnPolicy: CustomerCheckoutReturnPolicy;
+};
+
 export type CustomerCheckoutView =
   | {
       stage: "none";
@@ -68,6 +84,7 @@ export type CustomerCheckoutView =
       orderCredential: null;
       payment: null;
       dispensing: null;
+      result: null;
       restored: boolean;
     }
   | {
@@ -76,6 +93,7 @@ export type CustomerCheckoutView =
       orderCredential: string;
       payment: CustomerCheckoutPaymentView;
       dispensing: null;
+      result: null;
       restored: boolean;
     }
   | {
@@ -84,6 +102,7 @@ export type CustomerCheckoutView =
       orderCredential: string;
       payment: null;
       dispensing: CustomerCheckoutDispensingView;
+      result: null;
       restored: boolean;
     }
   | {
@@ -92,8 +111,15 @@ export type CustomerCheckoutView =
       orderCredential: string;
       payment: null;
       dispensing: null;
+      result: CustomerCheckoutResultView;
       restored: boolean;
     };
+
+export type CustomerCheckoutReadinessContext = {
+  saleReady: boolean;
+  suggestedRoute: CustomerCheckoutReturnRoute;
+  requiresMaintenanceReview: boolean;
+};
 
 export type ProjectCustomerCheckoutViewInput = {
   transaction: TransactionSnapshot | null;
@@ -101,6 +127,7 @@ export type ProjectCustomerCheckoutViewInput = {
   dismissedTerminalOrderNos: readonly string[];
   restored: boolean;
   loading?: boolean;
+  readiness?: CustomerCheckoutReadinessContext;
 };
 
 const terminalResultActions = new Set<MachineOrderStatusNextAction>([
@@ -129,7 +156,7 @@ function isTerminalResultAction(
 ): nextAction is CheckoutResultKind {
   return Boolean(
     nextAction &&
-      terminalResultActions.has(nextAction as MachineOrderStatusNextAction),
+    terminalResultActions.has(nextAction as MachineOrderStatusNextAction),
   );
 }
 
@@ -142,6 +169,25 @@ function projectRouteTarget(
     return { name: "result", params: { kind: nextAction } };
   }
   return { name: "catalog" };
+}
+
+function returnRouteFromReadiness(
+  readiness: CustomerCheckoutReadinessContext | undefined,
+): CustomerCheckoutReturnRoute {
+  if (readiness?.saleReady) return "catalog";
+  return readiness?.suggestedRoute ?? "offline";
+}
+
+function successReturnPolicy(
+  readiness: CustomerCheckoutReadinessContext | undefined,
+): CustomerCheckoutReturnPolicy {
+  const targetRoute = returnRouteFromReadiness(readiness);
+  return {
+    canAutoReturn: targetRoute === "catalog",
+    canManualReturn: true,
+    targetRoute,
+    requiresMaintenanceReview: readiness?.requiresMaintenanceReview === true,
+  };
 }
 
 function paymentDisplay(
@@ -284,6 +330,7 @@ export function projectCustomerCheckoutView(
       orderCredential: null,
       payment: null,
       dispensing: null,
+      result: null,
       restored: input.restored,
     };
   }
@@ -306,6 +353,7 @@ export function projectCustomerCheckoutView(
       orderCredential: transaction.orderNo,
       restored: input.restored,
       dispensing: null,
+      result: null,
       payment: {
         method: paymentMethodForTransaction(transaction),
         provider: transaction.paymentProvider,
@@ -330,16 +378,34 @@ export function projectCustomerCheckoutView(
         customerVisibleError: customerVisibleDispensingError(transaction),
         pickupReminder: dispensingPickupReminder(transaction),
       },
+      result: null,
       restored: input.restored,
     };
   }
 
+  const resultKind = isTerminalResultAction(transaction.nextAction)
+    ? transaction.nextAction
+    : "manual_handling";
   return {
     stage: "result",
     routeTarget: projectRouteTarget(transaction.nextAction),
     orderCredential: transaction.orderNo,
     payment: null,
     dispensing: null,
+    result: {
+      kind: resultKind,
+      orderCredentialBehavior: resultKind === "success" ? "hidden" : "shown",
+      returnPolicy:
+        resultKind === "success"
+          ? successReturnPolicy(input.readiness)
+          : {
+              canAutoReturn: false,
+              canManualReturn: false,
+              targetRoute: returnRouteFromReadiness(input.readiness),
+              requiresMaintenanceReview:
+                input.readiness?.requiresMaintenanceReview === true,
+            },
+    },
     restored: input.restored,
   };
 }

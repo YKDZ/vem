@@ -1053,7 +1053,9 @@ describe("checkout store", () => {
     });
 
     const store = useCheckoutStore();
-    store.applyTransaction(makeTransactionSnapshot({ orderNo: "ORD-TX-ACTIVE" }));
+    store.applyTransaction(
+      makeTransactionSnapshot({ orderNo: "ORD-TX-ACTIVE" }),
+    );
     store.currentOrder = {
       orderId: "stale-order-id",
       orderNo: "ORD-STALE",
@@ -1118,6 +1120,42 @@ describe("checkout store", () => {
     expect(store.currentOrder).toBeNull();
     expect(store.status).toBeNull();
     expect(store.flowStep).toBe("idle");
+  });
+
+  it("records successful terminal dismissal and suppresses the same success on refresh", async () => {
+    const successTransaction = makeTransactionSnapshot({
+      paymentStatus: "succeeded",
+      orderStatus: "fulfilled",
+      vending: {
+        commandNo: "CMD-SUCCESS",
+        status: "succeeded",
+        lastError: null,
+      },
+      nextAction: "success",
+    });
+    getCurrentTransactionMock.mockResolvedValue(successTransaction);
+
+    const store = useCheckoutStore();
+    store.applyTransaction(successTransaction);
+    expect(store.customerCheckoutView).toMatchObject({
+      stage: "result",
+      result: {
+        kind: "success",
+      },
+    });
+
+    store.dismissCurrentTerminalTransaction();
+    store.reset();
+    const refreshed = await store.refreshCurrentTransaction();
+
+    expect(refreshed).toBeNull();
+    expect(store.shouldIgnoreTransaction(successTransaction)).toBe(true);
+    expect(store.customerCheckoutView).toMatchObject({
+      stage: "none",
+      routeTarget: { name: "catalog" },
+      orderCredential: null,
+      result: null,
+    });
   });
 
   it("preserves reversed payment-code attempt and shows retry message", async () => {

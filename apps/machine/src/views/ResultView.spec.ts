@@ -115,6 +115,22 @@ function refundedTransaction() {
   };
 }
 
+function successfulTransaction() {
+  return {
+    ...terminalDispenseFailedTransaction(),
+    orderNo: "ORD-SUCCESS-001",
+    paymentNo: "PAY-SUCCESS-001",
+    paymentStatus: "succeeded",
+    orderStatus: "fulfilled",
+    vending: {
+      commandNo: "CMD-SUCCESS",
+      status: "succeeded",
+      lastError: null,
+    },
+    nextAction: "success",
+  };
+}
+
 function applySensitiveVisionProfile(): void {
   useVisionStore().applyLatestProfileResult({
     eventId: "vision-event-001",
@@ -319,6 +335,71 @@ afterEach(() => {
 });
 
 describe("ResultView", () => {
+  it("derives successful result semantics and credential behavior from the customer checkout view", async () => {
+    routeParams.kind = "manual_handling";
+    useCheckoutStore().applyTransaction(successfulTransaction());
+    applySaleReadiness(true);
+
+    const host = await mountView();
+    await vi.waitFor(() => {
+      expect(getReadyMock).toHaveBeenCalledOnce();
+    });
+
+    expect(host.textContent).toContain("出货成功");
+    expect(host.textContent).toContain("秒后自动返回首页");
+    expect(host.textContent).not.toContain("订单凭证 ORD-SUCCESS-001");
+    expect(host.textContent).not.toContain("等待人工处理");
+  });
+
+  it("keeps a successful terminal result visible when readiness is blocked and returns to maintenance", async () => {
+    routeParams.kind = "success";
+    useCheckoutStore().applyTransaction(successfulTransaction());
+    applySaleReadiness(false);
+    getReadyMock.mockResolvedValue(
+      readyFixture(false, "WHOLE_MACHINE_HARDWARE_FAULT"),
+    );
+    getSaleReadinessMock.mockResolvedValue(
+      saleReadinessFixture(false, [], "WHOLE_MACHINE_HARDWARE_FAULT"),
+    );
+
+    const host = await mountView();
+    await vi.waitFor(() => {
+      expect(getReadyMock).toHaveBeenCalledOnce();
+    });
+
+    expect(host.textContent).toContain("出货成功");
+    expect(host.textContent).not.toContain("秒后自动返回首页");
+
+    const returnButton = Array.from(host.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("返回首页"),
+    );
+    returnButton?.click();
+    await nextTick();
+
+    await vi.waitFor(() => {
+      expect(routerReplaceMock).toHaveBeenCalledWith("/maintenance");
+    });
+    expect(routerReplaceMock).not.toHaveBeenCalledWith("/catalog");
+  });
+
+  it("does not auto-return successful results to catalog when readiness refresh fails", async () => {
+    routeParams.kind = "success";
+    useCheckoutStore().applyTransaction(successfulTransaction());
+    applySaleReadiness(true);
+    getReadyMock.mockRejectedValue(new Error("daemon readiness unavailable"));
+
+    const host = await mountView();
+    await vi.waitFor(() => {
+      expect(getReadyMock).toHaveBeenCalledOnce();
+    });
+    await vi.advanceTimersByTimeAsync(10000);
+
+    expect(host.textContent).toContain("出货成功");
+    expect(host.textContent).toContain("无法确认设备恢复状态");
+    expect(routerReplaceMock).not.toHaveBeenCalledWith("/catalog");
+    expect(getSaleViewMock).not.toHaveBeenCalled();
+  });
+
   it("allows a recovered dispense failure result to be dismissed back to catalog", async () => {
     const transaction = terminalDispenseFailedTransaction();
     const checkoutStore = useCheckoutStore();

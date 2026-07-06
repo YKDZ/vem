@@ -798,7 +798,7 @@ describe("sale readiness UI flow", () => {
     });
   });
 
-  it("does not reopen a dismissed terminal transaction during boot after a fresh reload", async () => {
+  it("does not reopen a dismissed successful terminal transaction during boot after a fresh reload", async () => {
     const dismissedTransaction = {
       orderId: "550e8400-e29b-41d4-a716-446655440010",
       orderNo: "ORD-DISMISSED-001",
@@ -807,15 +807,15 @@ describe("sale readiness UI flow", () => {
       paymentMethod: "payment_code",
       paymentProvider: "alipay",
       paymentUrl: null,
-      paymentStatus: "refunded",
-      orderStatus: "refunded",
+      paymentStatus: "succeeded",
+      orderStatus: "fulfilled",
       totalAmountCents: 4900,
       vending: {
         commandNo: "CMD-DISMISSED",
-        status: "failed",
-        lastError: "dispense failure already handled",
+        status: "succeeded",
+        lastError: null,
       },
-      nextAction: "refunded",
+      nextAction: "success",
       maskedAuthCode: null,
       paymentCodeAttempt: null,
       expiresAt: "2026-06-04T00:05:00Z",
@@ -853,7 +853,7 @@ describe("sale readiness UI flow", () => {
     });
     expect(routerReplaceMock).not.toHaveBeenCalledWith({
       name: "result",
-      params: { kind: "refunded" },
+      params: { kind: "success" },
     });
     expect(reloadedCheckoutStore.currentOrder).toBeNull();
   });
