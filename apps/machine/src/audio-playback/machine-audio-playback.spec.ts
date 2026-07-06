@@ -1,7 +1,7 @@
 import { createPinia, setActivePinia } from "pinia";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { HealthSnapshot } from "@/daemon/schemas";
+import type { HealthSnapshot, TransactionSnapshot } from "@/daemon/schemas";
 
 import { useCheckoutStore } from "@/stores/checkout";
 import { useConnectivityStore } from "@/stores/connectivity";
@@ -38,7 +38,9 @@ class MockBrowserAudio implements BrowserMachineAudioElement {
   }
 }
 
-function transaction(overrides: Record<string, unknown> = {}) {
+function transaction(
+  overrides: Partial<TransactionSnapshot> = {},
+): TransactionSnapshot {
   return {
     orderId: "550e8400-e29b-41d4-a716-446655440150",
     orderNo: "ORD-MACHINE-AUDIO-001",
@@ -64,7 +66,7 @@ function transaction(overrides: Record<string, unknown> = {}) {
     operatorHint: null,
     updatedAt: "2026-07-03T08:02:01.000Z",
     ...overrides,
-  };
+  } as TransactionSnapshot;
 }
 
 function healthyRuntimeSnapshot(): HealthSnapshot {

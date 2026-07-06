@@ -11,7 +11,7 @@ vi.mock("@/daemon/client", () => ({
   },
 }));
 
-import type { HealthSnapshot } from "@/daemon/schemas";
+import type { HealthSnapshot, TransactionSnapshot } from "@/daemon/schemas";
 
 import {
   createMachineAudioPlayback,
@@ -109,7 +109,9 @@ function memoryStorage(): Storage {
   };
 }
 
-function transaction(overrides: Record<string, unknown> = {}) {
+function transaction(
+  overrides: Partial<TransactionSnapshot> = {},
+): TransactionSnapshot {
   return {
     orderId: "550e8400-e29b-41d4-a716-446655440020",
     orderNo: "ORD-AUDIO-FAIL-001",
@@ -135,7 +137,7 @@ function transaction(overrides: Record<string, unknown> = {}) {
     operatorHint: null,
     updatedAt: "2026-06-29T08:02:01.000Z",
     ...overrides,
-  };
+  } as TransactionSnapshot;
 }
 
 function healthyRuntimeSnapshot(): HealthSnapshot {
@@ -483,19 +485,21 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
         orderKey: snapshot.orderNo,
         requestedAt: "2026-06-29T08:02:01.000Z",
       });
+      const orderKey = snapshot.orderNo;
+      expect(orderKey).not.toBeNull();
+      if (!orderKey)
+        throw new Error("transaction fixture must include orderNo");
 
       expect(useAudioCueStore().playback.status).toBe("idle");
       expect(useAudioCueStore().latestPlaybackDiagnostic).toMatchObject({
         cueKey: cue,
-        orderKey: snapshot.orderNo,
+        orderKey,
         outcome: "failed",
         message: "NotAllowedError",
       });
       expect(checkoutObservation()).toEqual(initialCheckout);
       expect(readinessObservation()).toEqual(initialReadiness);
-      expect(useAudioCueStore().hasOrderCuePlayed(snapshot.orderNo, cue)).toBe(
-        false,
-      );
+      expect(useAudioCueStore().hasOrderCuePlayed(orderKey, cue)).toBe(false);
     },
   );
 

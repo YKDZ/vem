@@ -1,3 +1,4 @@
+import { daemonIpcTransactionSnapshotSchema } from "@vem/shared";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -8,6 +9,7 @@ import {
   naturalContextSnapshotSchema,
   scannerStatusSchema,
   transactionSnapshotSchema,
+  type TransactionSnapshot,
 } from "./schemas";
 
 describe("daemon schemas", () => {
@@ -32,6 +34,19 @@ describe("daemon schemas", () => {
     operatorHint: null,
     updatedAt: "2026-06-11T06:16:32.320Z",
   };
+
+  it("uses the shared Daemon IPC transaction snapshot contract", () => {
+    expect(transactionSnapshotSchema).toBe(daemonIpcTransactionSnapshotSchema);
+  });
+
+  it("keeps the Machine transaction snapshot type on the shared checkout action vocabulary", () => {
+    const legalNextAction: TransactionSnapshot["nextAction"] = "wait_payment";
+    expect(legalNextAction).toBe("wait_payment");
+
+    // @ts-expect-error unknown daemon IPC checkout actions must not be assignable
+    const invalidNextAction: TransactionSnapshot["nextAction"] = "please_guess";
+    expect(invalidNextAction).toBe("please_guess");
+  });
 
   it("validates awaiting-payment transaction snapshots with strict checkout vocabulary", () => {
     const parsed = transactionSnapshotSchema.parse(awaitingPaymentTransaction);

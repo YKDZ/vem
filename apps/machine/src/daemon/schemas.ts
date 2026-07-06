@@ -1,16 +1,10 @@
 import {
+  type DaemonIpcTransactionSnapshot,
+  daemonIpcTransactionSnapshotSchema,
   environmentControlResultPayloadSchema,
   machineCatalogItemSchema,
-  machineOrderStatusNextActionSchema,
   machinePaymentOptionsResponseSchema,
-  machinePaymentProviderCodeSchema,
   machineSaleViewSnapshotSchema,
-  orderStatusSchema,
-  paymentCodeAttemptStatusSchema,
-  paymentCodeSourceSchema,
-  paymentMethodSchema,
-  paymentStatusSchema,
-  vendingCommandStatusSchema,
 } from "@vem/shared";
 import { z } from "zod";
 
@@ -224,99 +218,7 @@ export const provisioningClaimResponseSchema = z.object({
   config: configSummarySchema,
 });
 
-export const transactionSnapshotSchema = z
-  .object({
-    orderId: z.string().nullable(),
-    orderNo: z.string().nullable(),
-    productSummary: z.unknown().nullable(),
-    paymentNo: z.string().nullable(),
-    paymentMethod: paymentMethodSchema.nullable(),
-    paymentProvider: machinePaymentProviderCodeSchema.nullable(),
-    paymentUrl: z.string().nullable(),
-    paymentStatus: paymentStatusSchema.nullable(),
-    orderStatus: orderStatusSchema.nullable(),
-    totalAmountCents: z.number().int().nonnegative().nullable(),
-    vending: z
-      .object({
-        commandNo: z.string().nullable(),
-        status: vendingCommandStatusSchema.nullable(),
-        lastError: z.string().nullable(),
-        pickupReminder: z
-          .object({
-            stage: z
-              .enum([
-                "outlet_opened",
-                "pickup_waiting",
-                "pickup_completed",
-                "pickup_timeout_warning",
-              ])
-              .optional(),
-            level: z.enum(["info", "warning", "urgent"]),
-            message: z.string(),
-            warningNo: z.number().int().positive().nullable(),
-            reportedAt: z.string(),
-            remainingSeconds: z
-              .number()
-              .int()
-              .nonnegative()
-              .nullable()
-              .optional(),
-          })
-          .nullable()
-          .optional(),
-      })
-      .nullable(),
-    nextAction: machineOrderStatusNextActionSchema
-      .nullable()
-      .optional()
-      .transform((value) => value ?? null),
-    maskedAuthCode: z.string().nullable(),
-    paymentCodeAttempt: z
-      .object({
-        attemptNo: z.number().int().positive().nullable(),
-        status: paymentCodeAttemptStatusSchema.nullable(),
-        maskedAuthCode: z.string().nullable(),
-        source: paymentCodeSourceSchema.nullable(),
-        idempotencyKey: z.string().nullable(),
-        submittedAt: z.string().nullable(),
-        lastCheckedAt: z.string().nullable(),
-        canRetry: z.boolean(),
-        message: z.string().nullable(),
-      })
-      .nullable(),
-    expiresAt: z.string().nullable(),
-    errorCode: z.string().nullable(),
-    errorMessage: z.string().nullable(),
-    operatorHint: z.string().nullable(),
-    updatedAt: z.string(),
-  })
-  .superRefine((snapshot, ctx) => {
-    if (snapshot.orderNo && !snapshot.nextAction) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["nextAction"],
-        message: "current transaction snapshots must include nextAction",
-      });
-    }
-    if (snapshot.orderNo && snapshot.nextAction === "wait_payment") {
-      if (!snapshot.paymentMethod) {
-        ctx.addIssue({
-          code: "custom",
-          path: ["paymentMethod"],
-          message:
-            "awaiting-payment transaction snapshots must include paymentMethod",
-        });
-      }
-      if (snapshot.totalAmountCents === null) {
-        ctx.addIssue({
-          code: "custom",
-          path: ["totalAmountCents"],
-          message:
-            "awaiting-payment transaction snapshots must include totalAmountCents",
-        });
-      }
-    }
-  });
+export const transactionSnapshotSchema = daemonIpcTransactionSnapshotSchema;
 
 export const syncStatusSchema = z.object({
   mqttRunning: z.boolean(),
@@ -649,48 +551,45 @@ export type NetworkSettingsResponse = z.infer<
 export type ProvisioningClaimResponse = z.infer<
   typeof provisioningClaimResponseSchema
 >;
-export type TransactionSnapshot = {
-  orderId: string | null;
-  orderNo: string | null;
-  productSummary: unknown;
-  paymentNo: string | null;
+type TransactionSnapshotVendingSummary = NonNullable<
+  DaemonIpcTransactionSnapshot["vending"]
+>;
+type TransactionSnapshotPickupReminder = NonNullable<
+  TransactionSnapshotVendingSummary["pickupReminder"]
+>;
+type TransactionSnapshotPaymentCodeAttempt = NonNullable<
+  DaemonIpcTransactionSnapshot["paymentCodeAttempt"]
+>;
+
+export type TransactionSnapshot = Omit<
+  DaemonIpcTransactionSnapshot,
+  | "paymentMethod"
+  | "paymentProvider"
+  | "paymentStatus"
+  | "orderStatus"
+  | "vending"
+  | "paymentCodeAttempt"
+> & {
   paymentMethod: string | null;
   paymentProvider: string | null;
-  paymentUrl: string | null;
   paymentStatus: string | null;
   orderStatus: string | null;
-  totalAmountCents: number | null;
-  vending: {
-    commandNo: string | null;
-    status: string | null;
-    lastError: string | null;
-    pickupReminder?: {
-      stage?: string;
-      level: "info" | "warning" | "urgent";
-      message: string;
-      warningNo: number | null;
-      reportedAt: string;
-      remainingSeconds?: number | null;
-    } | null;
-  } | null;
-  nextAction: string | null;
-  maskedAuthCode: string | null;
-  paymentCodeAttempt: {
-    attemptNo: number | null;
-    status: string | null;
-    maskedAuthCode: string | null;
-    source: string | null;
-    idempotencyKey: string | null;
-    submittedAt: string | null;
-    lastCheckedAt: string | null;
-    canRetry: boolean;
-    message: string | null;
-  } | null;
-  expiresAt: string | null;
-  errorCode: string | null;
-  errorMessage: string | null;
-  operatorHint: string | null;
-  updatedAt: string;
+  vending:
+    | (Omit<TransactionSnapshotVendingSummary, "status" | "pickupReminder"> & {
+        status: string | null;
+        pickupReminder?:
+          | (Omit<TransactionSnapshotPickupReminder, "stage"> & {
+              stage?: string;
+            })
+          | null;
+      })
+    | null;
+  paymentCodeAttempt:
+    | (Omit<TransactionSnapshotPaymentCodeAttempt, "status" | "source"> & {
+        status: string | null;
+        source: string | null;
+      })
+    | null;
 };
 export type SyncStatus = z.infer<typeof syncStatusSchema>;
 export type ScannerStatus = z.infer<typeof scannerStatusSchema>;

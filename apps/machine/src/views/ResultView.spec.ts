@@ -3,7 +3,11 @@ import { createPinia, setActivePinia } from "pinia";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createApp, nextTick, type App } from "vue";
 
-import type { MachineSaleReadiness, ReadySnapshot } from "@/daemon/schemas";
+import type {
+  MachineSaleReadiness,
+  ReadySnapshot,
+  TransactionSnapshot,
+} from "@/daemon/schemas";
 
 const {
   getReadyMock,
@@ -45,7 +49,7 @@ import ResultView from "./ResultView.vue";
 let mountedApp: App<Element> | null = null;
 let pinia: ReturnType<typeof createPinia>;
 
-function terminalDispenseFailedTransaction() {
+function terminalDispenseFailedTransaction(): TransactionSnapshot {
   return {
     orderId: "550e8400-e29b-41d4-a716-446655440010",
     orderNo: "ORD-FAILED-001",
@@ -70,10 +74,10 @@ function terminalDispenseFailedTransaction() {
     errorMessage: null,
     operatorHint: null,
     updatedAt: "2026-06-11T06:08:34.006Z",
-  };
+  } as TransactionSnapshot;
 }
 
-function terminalUnknownDispenseTransaction() {
+function terminalUnknownDispenseTransaction(): TransactionSnapshot {
   return {
     ...terminalDispenseFailedTransaction(),
     orderNo: "ORD-UNKNOWN-001",
@@ -85,10 +89,10 @@ function terminalUnknownDispenseTransaction() {
       lastError: "dispense result unknown after daemon restart",
     },
     nextAction: "manual_handling",
-  };
+  } as TransactionSnapshot;
 }
 
-function refundPendingTransaction() {
+function refundPendingTransaction(): TransactionSnapshot {
   return {
     ...terminalDispenseFailedTransaction(),
     orderNo: "ORD-REFUND-001",
@@ -101,10 +105,10 @@ function refundPendingTransaction() {
       lastError: "refund requested after dispense failure",
     },
     nextAction: "refund_pending",
-  };
+  } as TransactionSnapshot;
 }
 
-function refundedTransaction() {
+function refundedTransaction(): TransactionSnapshot {
   return {
     ...refundPendingTransaction(),
     orderNo: "ORD-REFUNDED-001",
@@ -112,10 +116,10 @@ function refundedTransaction() {
     paymentStatus: "refunded",
     orderStatus: "refunded",
     nextAction: "refunded",
-  };
+  } as TransactionSnapshot;
 }
 
-function successfulTransaction() {
+function successfulTransaction(): TransactionSnapshot {
   return {
     ...terminalDispenseFailedTransaction(),
     orderNo: "ORD-SUCCESS-001",
@@ -128,7 +132,7 @@ function successfulTransaction() {
       lastError: null,
     },
     nextAction: "success",
-  };
+  } as TransactionSnapshot;
 }
 
 function applySensitiveVisionProfile(): void {
@@ -157,7 +161,7 @@ function expectRecognitionDetailsHidden(host: HTMLElement): void {
   expect(host.textContent).not.toContain('"confidence": 0.91');
 }
 
-function paymentFailedTransaction() {
+function paymentFailedTransaction(): TransactionSnapshot {
   return {
     ...terminalDispenseFailedTransaction(),
     orderNo: "ORD-PAYMENT-FAILED-001",
@@ -166,10 +170,10 @@ function paymentFailedTransaction() {
     orderStatus: "canceled",
     vending: null,
     nextAction: "payment_failed",
-  };
+  } as TransactionSnapshot;
 }
 
-function paymentExpiredTransaction() {
+function paymentExpiredTransaction(): TransactionSnapshot {
   return {
     ...terminalDispenseFailedTransaction(),
     orderNo: "ORD-PAYMENT-EXPIRED-001",
@@ -178,10 +182,10 @@ function paymentExpiredTransaction() {
     orderStatus: "payment_expired",
     vending: null,
     nextAction: "payment_expired",
-  };
+  } as TransactionSnapshot;
 }
 
-function closedTransaction() {
+function closedTransaction(): TransactionSnapshot {
   return {
     ...terminalDispenseFailedTransaction(),
     orderNo: "ORD-CLOSED-001",
@@ -190,10 +194,10 @@ function closedTransaction() {
     orderStatus: "closed",
     vending: null,
     nextAction: "closed",
-  };
+  } as TransactionSnapshot;
 }
 
-function awaitingPaymentTransaction() {
+function awaitingPaymentTransaction(): TransactionSnapshot {
   return {
     ...terminalDispenseFailedTransaction(),
     orderNo: "ORD-PAYMENT-RECOVERY-001",
@@ -202,7 +206,7 @@ function awaitingPaymentTransaction() {
     orderStatus: "pending_payment",
     vending: null,
     nextAction: "wait_payment",
-  };
+  } as TransactionSnapshot;
 }
 
 function applySaleReadiness(
