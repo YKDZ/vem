@@ -1,5 +1,8 @@
 import {
+  type DaemonIpcKnownEventNotification,
+  type DaemonIpcUnknownEventNotification,
   type DaemonIpcTransactionSnapshot,
+  daemonIpcEventNotificationSchema,
   daemonIpcTransactionSnapshotSchema,
   environmentControlResultPayloadSchema,
   machineCatalogItemSchema,
@@ -482,64 +485,7 @@ export const catalogSnapshotSchema = z.object({
   lastError: z.string().nullable(),
 });
 
-export const daemonEventSchema = z.discriminatedUnion("type", [
-  z.object({
-    type: z.literal("health_changed"),
-    eventId: z.string(),
-    updatedAt: z.string(),
-    snapshot: healthSnapshotSchema,
-  }),
-  z.object({
-    type: z.literal("ready_changed"),
-    eventId: z.string(),
-    updatedAt: z.string(),
-    snapshot: readySnapshotSchema,
-  }),
-  z.object({
-    type: z.literal("scanner_health_changed"),
-    eventId: z.string(),
-    updatedAt: z.string(),
-    snapshot: scannerStatusSchema,
-  }),
-  z.object({
-    type: z.literal("scanner_code"),
-    eventId: z.string(),
-    updatedAt: z.string(),
-    maskedCode: z.string(),
-    source: z.string(),
-    scannedAtMs: z.number(),
-  }),
-  z.object({
-    type: z.literal("transaction_changed"),
-    eventId: z.string(),
-    updatedAt: z.string(),
-    orderNo: z.string(),
-    status: z.string(),
-  }),
-  z.object({
-    type: z.literal("mqtt_changed"),
-    eventId: z.string(),
-    updatedAt: z.string(),
-    connected: z.boolean(),
-    lastError: z.string().nullable(),
-  }),
-  z.object({
-    type: z.literal("vision_changed"),
-    eventId: z.string(),
-    updatedAt: z.string(),
-    enabled: z.boolean(),
-    online: z.boolean(),
-    message: z.string(),
-    latestDiagnosticPayload: z.unknown().nullable().optional(),
-  }),
-  z.object({
-    type: z.literal("remote_op_result"),
-    eventId: z.string(),
-    updatedAt: z.string(),
-    opId: z.string(),
-    status: z.string(),
-  }),
-]);
+export const daemonEventSchema = daemonIpcEventNotificationSchema;
 
 export type HealthSnapshot = z.infer<typeof healthSnapshotSchema>;
 export type ReadySnapshot = z.infer<typeof readySnapshotSchema>;
@@ -605,6 +551,7 @@ export type EnvironmentControlResult = z.infer<
 export type MachineSaleReadiness = z.infer<typeof machineSaleReadinessSchema>;
 export type CatalogSnapshot = z.infer<typeof catalogSnapshotSchema>;
 export type SaleViewSnapshot = z.infer<typeof machineSaleViewSnapshotSchema>;
-export type DaemonEvent = z.infer<typeof daemonEventSchema>;
+export type DaemonEvent = DaemonIpcKnownEventNotification;
+export type UnknownDaemonEvent = DaemonIpcUnknownEventNotification;
 
 export { machinePaymentOptionsResponseSchema, machineSaleViewSnapshotSchema };

@@ -650,6 +650,62 @@ describe("DaemonApiClient", () => {
     expect(events).toEqual(["scanner_health_changed", "scanner_code"]);
   });
 
+  it("records and ignores unknown daemon event notifications without interrupting the event stream", async () => {
+    vi.mocked(getDaemonConnectionInfo).mockResolvedValue({
+      baseUrl: "http://127.0.0.1:7891",
+      token: "dev-token",
+      source: "browser_env",
+      mock: true,
+    });
+
+    const events: string[] = [];
+    const onEvent = vi.fn((event) => {
+      events.push(event.type);
+    });
+    const onUnknownEvent = vi.fn();
+    const onError = vi.fn();
+    const subscription = daemonClient.subscribeEvents({
+      onEvent,
+      onUnknownEvent,
+      onError,
+      onStale: vi.fn(),
+    });
+
+    await vi.waitFor(() => {
+      expect(MockWebSocket.openCount).toBe(1);
+    });
+    const socket = MockWebSocket.instances[0];
+    socket.onmessage?.({
+      data: JSON.stringify({
+        type: "temperature_sensor_changed",
+        eventId: "unknown-1",
+        updatedAt: "2026-01-01T00:00:00Z",
+        diagnostic: { status: "warm" },
+      }),
+    });
+    socket.onmessage?.({
+      data: JSON.stringify({
+        type: "scanner_code",
+        eventId: "scan-1",
+        updatedAt: "2026-01-01T00:00:01Z",
+        maskedCode: "6212****9012",
+        source: "serial_text",
+        scannedAtMs: 1,
+      }),
+    });
+
+    expect(events).toEqual(["scanner_code"]);
+    expect(onUnknownEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "temperature_sensor_changed",
+        eventId: "unknown-1",
+        known: false,
+      }),
+    );
+    expect(onError).not.toHaveBeenCalled();
+    subscription.close();
+  });
+
   it("does not reconnect after close", async () => {
     vi.mocked(getDaemonConnectionInfo).mockResolvedValue({
       baseUrl: "http://127.0.0.1:7891",

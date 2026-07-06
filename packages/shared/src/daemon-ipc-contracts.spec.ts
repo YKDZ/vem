@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   daemonIpcCheckoutFlowActionSchema,
+  daemonIpcEventNotificationSchema,
   daemonIpcDispenseProgressObservationStageSchema,
   daemonIpcPickupReminderSchema,
   daemonIpcTransactionSnapshotSchema,
@@ -176,5 +177,192 @@ describe("Daemon IPC Contract Area", () => {
         reportedAt: "2026-06-11T06:18:00.000Z",
       }),
     ).toThrow();
+  });
+
+  it("covers current daemon event notification types and keeps unknown notifications forward-compatible", () => {
+    const eventEnvelope = {
+      eventId: "evt-ipc-001",
+      updatedAt: "2026-06-11T06:16:32.320Z",
+    };
+    const healthSnapshot = {
+      status: "healthy",
+      process: {
+        component: "daemon",
+        level: "ok",
+        code: "ready",
+        message: "ready",
+        updatedAt: eventEnvelope.updatedAt,
+      },
+      components: [],
+      configConfigured: true,
+      databaseOnline: true,
+      backendOnline: true,
+      mqttConnected: true,
+      outboxSize: 0,
+      outboxMax: 1000,
+      hardwareOnline: true,
+      scannerOnline: true,
+      visionOnline: false,
+      remoteOpsActive: false,
+      currentTransaction: null,
+      operatorReason: "ok",
+      updatedAt: eventEnvelope.updatedAt,
+    };
+    const readySnapshot = {
+      ready: true,
+      canSell: true,
+      mode: "sale",
+      blockingCodes: [],
+      blockingReasons: [],
+      degradedReasons: [],
+      suggestedRoute: "catalog",
+      updatedAt: eventEnvelope.updatedAt,
+    };
+    const scannerSnapshot = {
+      online: true,
+      adapter: "serial_text",
+      port: "COM3",
+      level: "ok",
+      code: "SCANNER_READY",
+      message: "scanner ready",
+      updatedAt: eventEnvelope.updatedAt,
+    };
+
+    const currentRustEvents = [
+      { ...eventEnvelope, type: "health_changed", snapshot: healthSnapshot },
+      { ...eventEnvelope, type: "ready_changed", snapshot: readySnapshot },
+      {
+        ...eventEnvelope,
+        type: "scanner_health_changed",
+        snapshot: scannerSnapshot,
+      },
+      {
+        ...eventEnvelope,
+        type: "scanner_code",
+        maskedCode: "6212****9012",
+        source: "serial_text",
+        scannedAtMs: 123,
+      },
+      {
+        ...eventEnvelope,
+        type: "transaction_changed",
+        orderNo: "ORD-IPC-001",
+        status: "paid",
+      },
+      {
+        ...eventEnvelope,
+        type: "mqtt_changed",
+        connected: true,
+        lastError: null,
+      },
+      {
+        ...eventEnvelope,
+        type: "vision_changed",
+        enabled: true,
+        online: false,
+        message: "vision offline",
+        latestDiagnosticPayload: { reason: "process_down" },
+      },
+      {
+        ...eventEnvelope,
+        type: "runtime_reconfigure_requested",
+        reason: "config_updated",
+        machineCode: "MACHINE-IPC",
+      },
+      {
+        ...eventEnvelope,
+        type: "remote_op_result",
+        opId: "op-001",
+        status: "completed",
+      },
+    ];
+
+    expect(
+      currentRustEvents.map(
+        (event) => daemonIpcEventNotificationSchema.parse(event).type,
+      ),
+    ).toEqual([
+      "health_changed",
+      "ready_changed",
+      "scanner_health_changed",
+      "scanner_code",
+      "transaction_changed",
+      "mqtt_changed",
+      "vision_changed",
+      "runtime_reconfigure_requested",
+      "remote_op_result",
+    ]);
+
+    expect(() =>
+      daemonIpcEventNotificationSchema.parse({
+        ...eventEnvelope,
+        type: "scanner_code",
+        source: "serial_text",
+        scannedAtMs: 123,
+      }),
+    ).toThrow();
+
+    const withEnvelopeMetadata = daemonIpcEventNotificationSchema.parse({
+      ...eventEnvelope,
+      type: "scanner_code",
+      maskedCode: "6212****9012",
+      source: "serial_text",
+      scannedAtMs: 123,
+      metadata: {
+        schemaVersion: 2,
+        traceId: "trace-001",
+        daemonBuild: "2026.07.06",
+      },
+      diagnostics: {
+        source: "serial_text",
+        latencyMs: 7,
+      },
+    });
+    expect(withEnvelopeMetadata).toMatchObject({
+      type: "scanner_code",
+      metadata: {
+        schemaVersion: 2,
+        traceId: "trace-001",
+        daemonBuild: "2026.07.06",
+      },
+      diagnostics: {
+        source: "serial_text",
+        latencyMs: 7,
+      },
+    });
+
+    expect(() =>
+      daemonIpcEventNotificationSchema.parse({
+        ...eventEnvelope,
+        type: "scanner_code",
+        maskedCode: "6212****9012",
+        source: "serial_text",
+        scannedAtMs: 123,
+        schemaVersion: 2,
+      }),
+    ).toThrow();
+
+    expect(() =>
+      daemonIpcEventNotificationSchema.parse({
+        ...eventEnvelope,
+        type: "scanner_code",
+        maskedCode: "6212****9012",
+        source: "serial_text",
+        scannedAtMs: 123,
+        rawCode: "621299999012",
+      }),
+    ).toThrow();
+
+    const unknown = daemonIpcEventNotificationSchema.parse({
+      ...eventEnvelope,
+      type: "temperature_sensor_changed",
+      severity: "info",
+      diagnostic: { raw: true },
+    });
+    expect(unknown).toMatchObject({
+      type: "temperature_sensor_changed",
+      eventId: "evt-ipc-001",
+      known: false,
+    });
   });
 });

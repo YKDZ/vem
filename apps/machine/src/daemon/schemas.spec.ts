@@ -223,7 +223,7 @@ describe("daemon schemas", () => {
 
     const parsed = daemonEventSchema.parse(fixture as never);
     expect(parsed.type).toBe("scanner_code");
-    if (parsed.type !== "scanner_code") {
+    if ("known" in parsed || parsed.type !== "scanner_code") {
       throw new Error("expected scanner_code event");
     }
     expect(parsed.maskedCode).toBe("6212****9012");
@@ -251,6 +251,28 @@ describe("daemon schemas", () => {
       snapshot: parsed,
     } as never);
     expect(event.type).toBe("scanner_health_changed");
+  });
+
+  it("uses the shared forward-compatible daemon event notification contract", () => {
+    const runtimeReconfigureEvent = daemonEventSchema.parse({
+      type: "runtime_reconfigure_requested",
+      eventId: "evt-runtime-1",
+      updatedAt: "2026-01-01T00:00:00Z",
+      reason: "config_updated",
+      machineCode: "MACHINE-SCHEMA",
+    });
+    expect(runtimeReconfigureEvent.type).toBe("runtime_reconfigure_requested");
+
+    const unknownEvent = daemonEventSchema.parse({
+      type: "future_runtime_signal",
+      eventId: "evt-future-1",
+      updatedAt: "2026-01-01T00:00:00Z",
+      diagnostic: { source: "future-daemon" },
+    });
+    expect(unknownEvent).toMatchObject({
+      type: "future_runtime_signal",
+      known: false,
+    });
   });
 
   it("parses daemon-owned Natural Context Projection", () => {

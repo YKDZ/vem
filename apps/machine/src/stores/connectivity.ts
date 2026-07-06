@@ -4,14 +4,26 @@ import type {
   HealthSnapshot,
   MachineSaleReadiness,
   ReadySnapshot,
+  UnknownDaemonEvent,
 } from "@/daemon/schemas";
 
 import { daemonClient } from "@/daemon/client";
+
+export type UnknownDaemonEventDiagnostic = {
+  type: string;
+  eventId: string;
+  updatedAt: string;
+  recordedAt: string;
+  metadata: unknown | null;
+  diagnostics: unknown | null;
+  diagnostic: unknown | null;
+};
 
 type ConnectivityState = {
   health: HealthSnapshot | null;
   ready: ReadySnapshot | null;
   saleReadiness: MachineSaleReadiness | null;
+  latestUnknownEventDiagnostic: UnknownDaemonEventDiagnostic | null;
   loading: boolean;
   stale: boolean;
   error: string | null;
@@ -23,6 +35,7 @@ export const useConnectivityStore = defineStore("connectivity", {
     health: null,
     ready: null,
     saleReadiness: null,
+    latestUnknownEventDiagnostic: null,
     loading: false,
     stale: false,
     error: null,
@@ -144,6 +157,18 @@ export const useConnectivityStore = defineStore("connectivity", {
           : typeof error === "string"
             ? error
             : "daemon events disconnected";
+    },
+    recordUnknownEvent(event: UnknownDaemonEvent): void {
+      const eventRecord = event as Record<string, unknown>;
+      this.latestUnknownEventDiagnostic = {
+        type: event.type,
+        eventId: event.eventId,
+        updatedAt: event.updatedAt,
+        recordedAt: new Date().toISOString(),
+        metadata: eventRecord.metadata ?? null,
+        diagnostics: eventRecord.diagnostics ?? null,
+        diagnostic: eventRecord.diagnostic ?? null,
+      };
     },
   },
 });
