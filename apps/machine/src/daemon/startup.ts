@@ -35,11 +35,11 @@ export function routeForStartup(input: {
   config?: ConfigSummary | null;
   bringUp?: BringUpSnapshot | null;
   ready: ReadySnapshot | null;
-  transaction: TransactionSnapshot | null;
+  restoredTransaction: TransactionSnapshot | null;
 }): StartupRoute {
   if (!input.daemonAvailable) return "/maintenance";
   const transactionView = projectCustomerCheckoutView({
-    transaction: input.transaction,
+    transaction: input.restoredTransaction,
     nowMs: Date.now(),
     dismissedTerminalOrderNos: [],
     restored: true,

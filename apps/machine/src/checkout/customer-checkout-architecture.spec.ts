@@ -21,13 +21,18 @@ describe("customer checkout projection architecture", () => {
 
   it("routes current transactions through the projection instead of a raw next-action table", () => {
     const startup = readSource("src/daemon/startup.ts");
+    const startupInput = startup.match(
+      /export function routeForStartup\(input: \{([\s\S]*?)\}\): StartupRoute/,
+    )?.[1];
 
+    expect(startupInput).toContain("restoredTransaction");
+    expect(startupInput).not.toMatch(/\n\s*transaction:/);
     expect(startup).toContain("projectCustomerCheckoutView");
-    expect(startup).not.toMatch(/next\s*===\s*"wait_payment"/);
-    expect(startup).not.toMatch(/next\s*===\s*"dispensing"/);
-    expect(startup).not.toMatch(/next\s*===\s*"success"/);
-    expect(startup).not.toMatch(/next\s*===\s*"payment_failed"/);
-    expect(startup).not.toMatch(/next\s*===\s*"refund_pending"/);
+    expect(startup).not.toMatch(/\bnextAction\b/);
+    expect(startup).not.toMatch(/\bwait_payment\b/);
+    expect(startup).not.toMatch(/\bsuccess\b/);
+    expect(startup).not.toMatch(/\bpayment_failed\b/);
+    expect(startup).not.toMatch(/\brefund_pending\b/);
   });
 
   it("keeps payment-stage callers on the unified checkout view", () => {
