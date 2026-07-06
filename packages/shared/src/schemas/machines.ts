@@ -242,6 +242,7 @@ export const machineEnvironmentHeartbeatPayloadSchema = z.object({
   sensorStatus: z.enum(["ok", "faulted", "unknown"]),
   airConditionerOn: z.boolean().optional(),
   targetTemperatureCelsius: z.number().nullable().optional(),
+  ventSpeed: z.number().int().min(0).max(4).nullable().optional(),
 });
 
 export const machineHeartbeatStatusPayloadSchema = z
@@ -291,16 +292,18 @@ export const machineEnvironmentControlRequestSchema = z
   .strictObject({
     airConditionerOn: z.boolean().optional(),
     targetTemperatureCelsius: z.number().min(18).max(30).optional(),
+    ventSpeed: z.number().int().min(0).max(4).optional(),
   })
   .superRefine((data, ctx) => {
     if (
       data.airConditionerOn === undefined &&
-      data.targetTemperatureCelsius === undefined
+      data.targetTemperatureCelsius === undefined &&
+      data.ventSpeed === undefined
     ) {
       ctx.addIssue({
         code: "custom",
         message:
-          "At least one of airConditionerOn or targetTemperatureCelsius is required",
+          "At least one of airConditionerOn, targetTemperatureCelsius or ventSpeed is required",
       });
     }
   });

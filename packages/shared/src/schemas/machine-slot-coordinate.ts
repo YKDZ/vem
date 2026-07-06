@@ -4,7 +4,8 @@ export const MACHINE_SLOT_HARDWARE_LAYOUT = {
   minLayerNo: 1,
   bands: [
     { maxLayerNo: 6, maxCellNo: 5 },
-    { maxLayerNo: 11, maxCellNo: 4 },
+    { maxLayerNo: 8, maxCellNo: 4 },
+    { maxLayerNo: 9, maxCellNo: 3 },
   ],
 } as const;
 

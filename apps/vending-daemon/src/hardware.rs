@@ -82,6 +82,10 @@ impl HardwareSupervisor {
         self.adapter.set_air_conditioner_enabled(enabled).await
     }
 
+    pub async fn set_vent_speed(&self, speed: u8) -> Result<(), String> {
+        self.adapter.set_vent_speed(speed).await
+    }
+
     pub fn adapter_name(&self) -> &str {
         self.adapter.adapter_name()
     }

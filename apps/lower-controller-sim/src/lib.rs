@@ -5,7 +5,10 @@ use tokio::{
     sync::{mpsc, Mutex},
     time::{interval, sleep, MissedTickBehavior},
 };
-use vending_core::serial::{crc8, validate_slot_bounds, EnvironmentSample, LowerFrame, FRAME_HEAD};
+use vending_core::serial::{
+    crc8, validate_slot_bounds, AirConditionerMode, AirConditionerSwitchState, EnvironmentSample,
+    LowerFrame, VentSpeed, FRAME_HEAD,
+};
 
 pub trait SimulatorIo: AsyncRead + AsyncWrite + Unpin + Send {}
 
@@ -166,10 +169,18 @@ impl SimulatorState {
 
 #[derive(Debug, PartialEq, Eq)]
 enum UpperFrame {
+    BoundaryError,
     StatusQuery,
-    EnvironmentQuery,
-    TargetTemperature(i8),
-    AirConditionerSwitch(u8),
+    EnvironmentQuery(u8),
+    AirConditionerTargetQuery,
+    AirConditionerTarget {
+        mode: AirConditionerMode,
+        temperature_celsius: i8,
+    },
+    AirConditionerSwitchQuery,
+    AirConditionerSwitch(AirConditionerSwitchState),
+    VentSpeedQuery,
+    VentSpeed(VentSpeed),
     DebugDispenseFault,
     SingleDispense {
         layer_no: u8,
@@ -348,6 +359,10 @@ where
     W: AsyncWrite + Unpin + Send + 'static,
 {
     match frame {
+        UpperFrame::BoundaryError => {
+            trace(&options, "rx out-of-bound command");
+            send_frame(&writer, LowerFrame::BoundaryError).await?;
+        }
         UpperFrame::StatusQuery => {
             let status = current_state(&state).await.status_frame();
             trace(
@@ -356,51 +371,77 @@ where
             );
             send_frame(&writer, status).await?;
         }
-        UpperFrame::EnvironmentQuery => {
+        UpperFrame::EnvironmentQuery(location) => {
             let frame = options
                 .environment_sample
                 .map(LowerFrame::EnvironmentSample)
-                .unwrap_or(LowerFrame::NoValidEnvironmentSample);
-            trace(&options, "rx environment query");
+                .unwrap_or(LowerFrame::MechanicalError);
+            trace(
+                &options,
+                &format!("rx environment query location 0x{location:02X}"),
+            );
             send_frame(&writer, frame).await?;
         }
-        UpperFrame::TargetTemperature(temperature_celsius) => {
-            if !(-10..=100).contains(&temperature_celsius) {
+        UpperFrame::AirConditionerTargetQuery => {
+            trace(&options, "rx air conditioner target query");
+            send_frame(
+                &writer,
+                LowerFrame::AirConditionerTargetEcho {
+                    mode: AirConditionerMode::Cooling,
+                    temperature_celsius: 25,
+                },
+            )
+            .await?;
+        }
+        UpperFrame::AirConditionerTarget {
+            mode,
+            temperature_celsius,
+        } => {
+            if !(18..=30).contains(&temperature_celsius) {
                 send_frame(&writer, LowerFrame::BoundaryError).await?;
             } else {
                 trace(
                     &options,
-                    &format!("rx set target temperature {temperature_celsius}C"),
+                    &format!("rx set air conditioner target {mode:?} {temperature_celsius}C"),
                 );
                 send_frame(
                     &writer,
-                    LowerFrame::TargetTemperatureEcho {
+                    LowerFrame::AirConditionerTargetEcho {
+                        mode,
                         temperature_celsius,
                     },
                 )
                 .await?;
             }
         }
-        UpperFrame::AirConditionerSwitch(state_byte) => match state_byte {
-            0x00 | 0xFF => {
-                trace(
-                    &options,
-                    if state_byte == 0xFF {
-                        "rx air conditioner on"
-                    } else {
-                        "rx air conditioner off"
-                    },
-                );
-                send_frame(
-                    &writer,
-                    LowerFrame::AirConditionerSwitchEcho {
-                        enabled: state_byte == 0xFF,
-                    },
-                )
-                .await?;
-            }
-            _ => send_frame(&writer, LowerFrame::BoundaryError).await?,
-        },
+        UpperFrame::AirConditionerSwitchQuery => {
+            trace(&options, "rx air conditioner switch query");
+            send_frame(
+                &writer,
+                LowerFrame::AirConditionerSwitchEcho {
+                    state: AirConditionerSwitchState::SoftOff,
+                },
+            )
+            .await?;
+        }
+        UpperFrame::AirConditionerSwitch(state) => {
+            trace(&options, &format!("rx air conditioner switch {state:?}"));
+            send_frame(&writer, LowerFrame::AirConditionerSwitchEcho { state }).await?;
+        }
+        UpperFrame::VentSpeedQuery => {
+            trace(&options, "rx vent speed query");
+            send_frame(
+                &writer,
+                LowerFrame::VentSpeedEcho {
+                    speed: VentSpeed::Closed,
+                },
+            )
+            .await?;
+        }
+        UpperFrame::VentSpeed(speed) => {
+            trace(&options, &format!("rx vent speed {speed:?}"));
+            send_frame(&writer, LowerFrame::VentSpeedEcho { speed }).await?;
+        }
         UpperFrame::DebugDispenseFault => {
             let current = current_state(&state).await;
             if current.active_dispense() {
@@ -555,13 +596,20 @@ where
             if current_state(&state).await != ControllerState::Pickup {
                 return Ok(());
             }
-            set_state(&state, ControllerState::Resetting).await;
-            sleep(options.reset_duration).await;
             match pickup_outcome(options.scenario) {
                 PickupOutcome::TimeoutThenCompleted => {
                     finish_reset_successfully(writer, state, options).await?;
                 }
                 PickupOutcome::TimeoutThenBlocked => {
+                    send_repeated_frame(
+                        &writer,
+                        LowerFrame::PickupCompleted,
+                        3,
+                        options.event_repeat_interval,
+                    )
+                    .await?;
+                    set_state(&state, ControllerState::Resetting).await;
+                    sleep(options.reset_duration).await;
                     set_state(&state, ControllerState::PickupPlatformBlocked).await;
                     trace(&options, "pickup platform remains blocked -> E6");
                     send_frame(&writer, LowerFrame::PickupPlatformBlocked).await?;
@@ -582,12 +630,20 @@ async fn finish_reset_successfully<W>(
 where
     W: AsyncWrite + Unpin + Send,
 {
+    trace(&options, "pickup completed -> F1");
+    send_repeated_frame(
+        &writer,
+        LowerFrame::PickupCompleted,
+        3,
+        options.event_repeat_interval,
+    )
+    .await?;
     set_state(&state, ControllerState::Resetting).await;
     sleep(options.reset_duration).await;
     if current_state(&state).await != ControllerState::Resetting {
         return Ok(());
     }
-    trace(&options, "dispense completed -> F1");
+    trace(&options, "reset completed -> F2");
     send_repeated_frame(
         &writer,
         LowerFrame::Completed,
@@ -626,15 +682,10 @@ where
         }
         return match code {
             0xA0 => Ok(UpperFrame::StatusQuery),
-            0xB0 => Ok(UpperFrame::EnvironmentQuery),
-            0xB1 => {
-                let temperature = reader.read_u8().await? as i8;
-                Ok(UpperFrame::TargetTemperature(temperature))
-            }
-            0xB2 => {
-                let state = reader.read_u8().await?;
-                Ok(UpperFrame::AirConditionerSwitch(state))
-            }
+            0xB0 => read_environment_query(reader).await,
+            0xB1 => read_air_conditioner_target(reader, command_frame_gap).await,
+            0xB2 => read_air_conditioner_switch(reader, command_frame_gap).await,
+            0xB3 => read_vent_speed(reader, command_frame_gap).await,
             0xFF => read_debug_or_single_dispense(reader, code).await,
             layer_no => read_dispense_after_layer(reader, layer_no, command_frame_gap).await,
         };
@@ -644,8 +695,90 @@ where
 fn is_lower_echo_code(code: u8) -> bool {
     matches!(
         code,
-        0x00 | 0xE1..=0xE6 | 0xF0 | 0xF1 | 0xAA | 0xAB | 0xAC | 0xAF
+        0x00 | 0xE1..=0xE6 | 0xF0..=0xF2 | 0xAA | 0xAB | 0xAC | 0xAF
     )
+}
+
+async fn read_optional_byte<R>(
+    reader: &mut R,
+    command_frame_gap: Duration,
+) -> io::Result<Option<u8>>
+where
+    R: AsyncRead + Unpin,
+{
+    match tokio::time::timeout(command_frame_gap, reader.read_u8()).await {
+        Ok(result) => result.map(Some),
+        Err(_) => Ok(None),
+    }
+}
+
+async fn read_environment_query<R>(reader: &mut R) -> io::Result<UpperFrame>
+where
+    R: AsyncRead + Unpin,
+{
+    match reader.read_u8().await? {
+        location @ (0x01 | 0x02) => Ok(UpperFrame::EnvironmentQuery(location)),
+        _ => Ok(UpperFrame::BoundaryError),
+    }
+}
+
+async fn read_air_conditioner_target<R>(
+    reader: &mut R,
+    command_frame_gap: Duration,
+) -> io::Result<UpperFrame>
+where
+    R: AsyncRead + Unpin,
+{
+    let Some(mode_byte) = read_optional_byte(reader, command_frame_gap).await? else {
+        return Ok(UpperFrame::AirConditionerTargetQuery);
+    };
+    let temperature_celsius = reader.read_u8().await? as i8;
+    let mode = match mode_byte {
+        0x00 => AirConditionerMode::Cooling,
+        0x01 => AirConditionerMode::Heating,
+        _ => return Ok(UpperFrame::BoundaryError),
+    };
+    Ok(UpperFrame::AirConditionerTarget {
+        mode,
+        temperature_celsius,
+    })
+}
+
+async fn read_air_conditioner_switch<R>(
+    reader: &mut R,
+    command_frame_gap: Duration,
+) -> io::Result<UpperFrame>
+where
+    R: AsyncRead + Unpin,
+{
+    let Some(state_byte) = read_optional_byte(reader, command_frame_gap).await? else {
+        return Ok(UpperFrame::AirConditionerSwitchQuery);
+    };
+    let state = match state_byte {
+        0x00 => AirConditionerSwitchState::On,
+        0xAA => AirConditionerSwitchState::SoftOff,
+        0xFF => AirConditionerSwitchState::HardOff,
+        _ => return Ok(UpperFrame::BoundaryError),
+    };
+    Ok(UpperFrame::AirConditionerSwitch(state))
+}
+
+async fn read_vent_speed<R>(reader: &mut R, command_frame_gap: Duration) -> io::Result<UpperFrame>
+where
+    R: AsyncRead + Unpin,
+{
+    let Some(speed_byte) = read_optional_byte(reader, command_frame_gap).await? else {
+        return Ok(UpperFrame::VentSpeedQuery);
+    };
+    let speed = match speed_byte {
+        0x00 => VentSpeed::Closed,
+        0x01 => VentSpeed::Low,
+        0x02 => VentSpeed::Medium,
+        0x03 => VentSpeed::High,
+        0x04 => VentSpeed::Full,
+        _ => return Ok(UpperFrame::BoundaryError),
+    };
+    Ok(UpperFrame::VentSpeed(speed))
 }
 
 async fn read_debug_or_single_dispense<R>(reader: &mut R, layer_no: u8) -> io::Result<UpperFrame>
@@ -888,7 +1021,9 @@ mod tests {
             .expect("write ac switch");
         assert_eq!(
             read_until_code(&mut stream, 0xB2).await,
-            LowerFrame::AirConditionerSwitchEcho { enabled: true },
+            LowerFrame::AirConditionerSwitchEcho {
+                state: AirConditionerSwitchState::On,
+            },
         );
 
         control_tx.send(ControlCommand::Quit).expect("quit");
@@ -911,6 +1046,10 @@ mod tests {
         );
         assert_eq!(
             read_until_code(&mut stream, 0xF1).await,
+            LowerFrame::PickupCompleted
+        );
+        assert_eq!(
+            read_until_code(&mut stream, 0xF2).await,
             LowerFrame::Completed
         );
 
@@ -943,6 +1082,10 @@ mod tests {
         );
         assert_eq!(
             read_until_code(&mut stream, 0xF1).await,
+            LowerFrame::PickupCompleted
+        );
+        assert_eq!(
+            read_until_code(&mut stream, 0xF2).await,
             LowerFrame::Completed
         );
 
@@ -1007,6 +1150,41 @@ mod tests {
             .await
             .expect("write retry");
         assert_eq!(read_until_code(&mut stream, 0x00).await, LowerFrame::Ack);
+
+        control_tx.send(ControlCommand::Quit).expect("quit");
+        handle.await.expect("join").expect("sim exits cleanly");
+    }
+
+    #[tokio::test]
+    async fn simulator_rejects_out_of_range_environment_control_arguments() {
+        let (mut stream, control_tx, handle) = start_test_simulator(DispenseScenario::Normal).await;
+
+        stream
+            .write_all(&[FRAME_HEAD, 0xB0, 0x03])
+            .await
+            .expect("write invalid environment query");
+        assert_eq!(
+            read_until_code(&mut stream, 0xE1).await,
+            LowerFrame::BoundaryError
+        );
+
+        stream
+            .write_all(&[FRAME_HEAD, 0xB2, 0x01])
+            .await
+            .expect("write invalid ac switch");
+        assert_eq!(
+            read_until_code(&mut stream, 0xE1).await,
+            LowerFrame::BoundaryError
+        );
+
+        stream
+            .write_all(&[FRAME_HEAD, 0xB3, 0x05])
+            .await
+            .expect("write invalid vent speed");
+        assert_eq!(
+            read_until_code(&mut stream, 0xE1).await,
+            LowerFrame::BoundaryError
+        );
 
         control_tx.send(ControlCommand::Quit).expect("quit");
         handle.await.expect("join").expect("sim exits cleanly");

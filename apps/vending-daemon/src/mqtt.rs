@@ -404,6 +404,7 @@ impl MqttSyncRuntime {
 
         let mut confirmed_target = None;
         let mut confirmed_switch = None;
+        let mut confirmed_vent_speed = None;
         let mut failure = None;
 
         if let Some(target) = command.target_temperature_celsius {
@@ -425,10 +426,20 @@ impl MqttSyncRuntime {
         }
 
         if failure.is_none() {
-            self.environment
-                .write()
-                .await
-                .record_control_success(confirmed_switch, confirmed_target);
+            if let Some(speed) = command.vent_speed {
+                match self.hardware.set_vent_speed(speed).await {
+                    Ok(()) => confirmed_vent_speed = Some(speed),
+                    Err(error) => failure = Some(("vent_speed_failed".to_string(), error)),
+                }
+            }
+        }
+
+        if failure.is_none() {
+            self.environment.write().await.record_control_success(
+                confirmed_switch,
+                confirmed_target,
+                confirmed_vent_speed,
+            );
         }
 
         let result = match failure {
@@ -439,6 +450,7 @@ impl MqttSyncRuntime {
                 message: Some(message),
                 air_conditioner_on: confirmed_switch,
                 target_temperature_celsius: confirmed_target,
+                vent_speed: confirmed_vent_speed,
                 reported_at: crate::state::store::now_iso(),
             },
             None => EnvironmentControlResultPayload {
@@ -448,6 +460,7 @@ impl MqttSyncRuntime {
                 message: Some("environment control completed".to_string()),
                 air_conditioner_on: confirmed_switch,
                 target_temperature_celsius: confirmed_target,
+                vent_speed: confirmed_vent_speed,
                 reported_at: crate::state::store::now_iso(),
             },
         };
@@ -480,11 +493,27 @@ impl MqttSyncRuntime {
             .record_query_result(sample, sampled_at);
     }
 
+    async fn record_environment_query_error(&self, error: &str) {
+        let mut environment = self.environment.write().await;
+        if is_lower_controller_sensor_fault(error) {
+            environment.record_sensor_fault();
+        } else {
+            environment.record_query_result(None, crate::state::store::now_iso());
+        }
+    }
+
     pub async fn sample_environment_once(&self) -> Result<(), String> {
-        let sample = self.hardware.query_environment_sample().await?;
-        self.record_environment_query_result(sample, crate::state::store::now_iso())
-            .await;
-        Ok(())
+        match self.hardware.query_environment_sample().await {
+            Ok(sample) => {
+                self.record_environment_query_result(sample, crate::state::store::now_iso())
+                    .await;
+                Ok(())
+            }
+            Err(error) => {
+                self.record_environment_query_error(&error).await;
+                Err(error)
+            }
+        }
     }
 
     pub async fn enqueue_heartbeat(&self) -> Result<(), String> {
@@ -834,7 +863,10 @@ fn parse_command_log_time(value: Option<&str>) -> Option<DateTime<Utc>> {
 fn validate_environment_control_command(
     command: &EnvironmentControlCommandPayload,
 ) -> Result<(), String> {
-    if command.air_conditioner_on.is_none() && command.target_temperature_celsius.is_none() {
+    if command.air_conditioner_on.is_none()
+        && command.target_temperature_celsius.is_none()
+        && command.vent_speed.is_none()
+    {
         return Err("environment control command must request at least one action".to_string());
     }
     if command.timeout_seconds == 0 {
@@ -848,7 +880,17 @@ fn validate_environment_control_command(
             );
         }
     }
+    if let Some(speed) = command.vent_speed {
+        if speed > 4 {
+            return Err("environment control ventSpeed must be between 0 and 4".to_string());
+        }
+    }
     Ok(())
+}
+
+pub(crate) fn is_lower_controller_sensor_fault(error: &str) -> bool {
+    let normalized = error.to_ascii_lowercase();
+    normalized.contains("mechanical fault") || normalized.contains("0xe3")
 }
 
 fn map_mqtt_error(error: ClientError) -> String {
@@ -876,6 +918,7 @@ mod tests {
     struct RecordingEnvironmentAdapter {
         operations: Mutex<Vec<String>>,
         fail_on: Mutex<Option<String>>,
+        environment_query_error: Option<String>,
         hang_dispense: bool,
         hardware_online: bool,
     }
@@ -885,6 +928,7 @@ mod tests {
             Self {
                 operations: Mutex::new(vec![]),
                 fail_on: Mutex::new(None),
+                environment_query_error: None,
                 hang_dispense: false,
                 hardware_online: true,
             }
@@ -913,6 +957,19 @@ mod tests {
             }
         }
 
+        async fn query_environment_sample(
+            &self,
+        ) -> Result<Option<vending_core::serial::EnvironmentSample>, String> {
+            if let Some(error) = &self.environment_query_error {
+                Err(error.clone())
+            } else {
+                Ok(Some(vending_core::serial::EnvironmentSample {
+                    temperature_celsius: 24,
+                    relative_humidity_percent: 53,
+                }))
+            }
+        }
+
         async fn set_target_temperature(&self, temperature_celsius: i8) -> Result<(), String> {
             self.operations
                 .lock()
@@ -929,6 +986,15 @@ mod tests {
             self.operations.lock().await.push(format!("B2:{enabled}"));
             if self.fail_on.lock().await.as_deref() == Some("B2") {
                 Err("air conditioner switch echo mismatch".to_string())
+            } else {
+                Ok(())
+            }
+        }
+
+        async fn set_vent_speed(&self, speed: u8) -> Result<(), String> {
+            self.operations.lock().await.push(format!("B3:{speed}"));
+            if self.fail_on.lock().await.as_deref() == Some("B3") {
+                Err("vent speed echo mismatch".to_string())
             } else {
                 Ok(())
             }
@@ -1270,11 +1336,13 @@ mod tests {
         command_no: &str,
         air_conditioner_on: Option<bool>,
         target_temperature_celsius: Option<i8>,
+        vent_speed: Option<u8>,
     ) -> String {
         let command = EnvironmentControlCommandPayload {
             command_no: command_no.to_string(),
             air_conditioner_on,
             target_temperature_celsius,
+            vent_speed,
             timeout_seconds: 5,
         };
         let envelope = sign_envelope(
@@ -1385,6 +1453,49 @@ mod tests {
         assert_eq!(environment["sensorStatus"], "ok");
         assert_eq!(environment["airConditionerOn"], false);
         assert!(environment["targetTemperatureCelsius"].is_null());
+    }
+
+    #[tokio::test]
+    async fn environment_query_e3_marks_sensor_faulted_immediately() {
+        let temp = tempfile::tempdir().expect("temp");
+        let state = crate::state::LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("state");
+
+        let hardware = crate::hardware::HardwareSupervisor::from_adapter(Arc::new(
+            RecordingEnvironmentAdapter {
+                environment_query_error: Some(
+                    "lower controller rejected environment query command: mechanical fault"
+                        .to_string(),
+                ),
+                ..Default::default()
+            },
+        ));
+        let (event_tx, _rx) = tokio::sync::broadcast::channel(4);
+        let runtime = MqttSyncRuntime::new(
+            "M1".to_string(),
+            "secret".to_string(),
+            state.clone(),
+            hardware,
+            event_tx,
+            CancellationToken::new(),
+        );
+
+        let error = runtime
+            .sample_environment_once()
+            .await
+            .expect_err("E3 environment query should still surface the command error");
+        assert!(error.contains("mechanical fault"));
+        runtime.enqueue_heartbeat().await.expect("heartbeat");
+
+        let due = state
+            .list_due_outbox(chrono::Utc::now() + chrono::Duration::seconds(1))
+            .await
+            .expect("outbox");
+        let envelope: vending_core::mqtt::MqttEnvelope =
+            serde_json::from_value(due[0].payload_json.clone()).expect("envelope");
+        let environment = &envelope.payload["statusPayload"]["environment"];
+        assert_eq!(environment["sensorStatus"], "faulted");
     }
 
     #[tokio::test]
@@ -1512,6 +1623,7 @@ mod tests {
             command_no: "ENV-1".to_string(),
             air_conditioner_on: Some(true),
             target_temperature_celsius: None,
+            vent_speed: None,
             timeout_seconds: 5,
         };
         let envelope = sign_envelope(
@@ -1565,13 +1677,14 @@ mod tests {
                 "ENV-ORDER",
                 Some(true),
                 Some(24),
+                Some(2),
             ))
             .await
             .expect("handle command");
 
         assert_eq!(
             adapter.operations.lock().await.as_slice(),
-            ["B1:24", "B2:true"]
+            ["B1:24", "B2:true", "B3:2"]
         );
         let due = state
             .list_due_outbox(chrono::Utc::now() + chrono::Duration::seconds(1))
@@ -1590,6 +1703,7 @@ mod tests {
             24
         );
         assert_eq!(result.payload_json["payload"]["airConditionerOn"], true);
+        assert_eq!(result.payload_json["payload"]["ventSpeed"], 2);
     }
 
     #[tokio::test]
@@ -1617,6 +1731,7 @@ mod tests {
                 "ENV-FAIL",
                 Some(true),
                 Some(24),
+                None,
             ))
             .await
             .expect("handle command");
@@ -1679,6 +1794,7 @@ mod tests {
                 "ENV-STATE",
                 Some(true),
                 Some(24),
+                None,
             ))
             .await
             .expect("handle command");
@@ -1925,6 +2041,7 @@ mod tests {
                 command_no: "ENV-BAD-SIG".to_string(),
                 air_conditioner_on: Some(true),
                 target_temperature_celsius: None,
+                vent_speed: None,
                 timeout_seconds: 5,
             })
             .expect("payload"),
@@ -2009,6 +2126,7 @@ mod tests {
             .handle_environment_control_command(&signed_environment_command(
                 "ENV-ACTIVE",
                 Some(true),
+                None,
                 None,
             ))
             .await

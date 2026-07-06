@@ -32,17 +32,19 @@ export const environmentControlCommandPayloadSchema = z
     commandNo: z.string().min(1).max(64),
     airConditionerOn: z.boolean().optional(),
     targetTemperatureCelsius: z.number().min(18).max(30).optional(),
+    ventSpeed: z.number().int().min(0).max(4).optional(),
     timeoutSeconds: z.int().positive(),
   })
   .superRefine((data, ctx) => {
     if (
       data.airConditionerOn === undefined &&
-      data.targetTemperatureCelsius === undefined
+      data.targetTemperatureCelsius === undefined &&
+      data.ventSpeed === undefined
     ) {
       ctx.addIssue({
         code: "custom",
         message:
-          "At least one of airConditionerOn or targetTemperatureCelsius is required",
+          "At least one of airConditionerOn, targetTemperatureCelsius or ventSpeed is required",
       });
     }
   });
@@ -76,6 +78,7 @@ export const environmentControlResultPayloadSchema = z
     message: z.string().max(500).optional(),
     airConditionerOn: z.boolean().nullable().optional(),
     targetTemperatureCelsius: z.number().min(18).max(30).nullable().optional(),
+    ventSpeed: z.number().int().min(0).max(4).nullable().optional(),
     reportedAt: z.iso.datetime(),
   })
   .loose();

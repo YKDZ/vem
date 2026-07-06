@@ -112,7 +112,7 @@ struct Cli {
     #[arg(long, default_value_t = 45, env = "VEM_LOWER_CONTROLLER_SIM_HUMIDITY")]
     humidity_percent: u8,
 
-    /// Return [55 B0 00 00] for environment queries.
+    /// Return E3 for environment queries to simulate a sensor fault.
     #[arg(long, env = "VEM_LOWER_CONTROLLER_SIM_NO_ENVIRONMENT_SAMPLE")]
     no_environment_sample: bool,
 

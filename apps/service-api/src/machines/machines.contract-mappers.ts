@@ -195,6 +195,7 @@ export function mapEnvironmentControlDtoToCommandInsert(
   const dto = {
     airConditionerOn: input.input.airConditionerOn,
     targetTemperatureCelsius: input.input.targetTemperatureCelsius,
+    ventSpeed: input.input.ventSpeed,
   } satisfies ContractFieldCoverage<MachineEnvironmentControlRequest>;
 
   const payloadJson = {
@@ -205,6 +206,7 @@ export function mapEnvironmentControlDtoToCommandInsert(
     ...(dto.targetTemperatureCelsius === undefined
       ? {}
       : { targetTemperatureCelsius: dto.targetTemperatureCelsius }),
+    ...(dto.ventSpeed === undefined ? {} : { ventSpeed: dto.ventSpeed }),
     timeoutSeconds: input.timeoutSeconds,
   };
 
