@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
 import { describe, expect, it } from "vitest";
 
 import {
@@ -154,6 +157,17 @@ describe("Daemon IPC Contract Area", () => {
       daemonIpcCheckoutFlowActionSchema,
     );
     expect(machineOrderStatusNextActionSchema.parse("success")).toBe("success");
+  });
+
+  it("names the remaining daemon snapshot convergence and contract generation entry point", () => {
+    const source = readFileSync(
+      fileURLToPath(new URL("./schemas/daemon-ipc.ts", import.meta.url)),
+      "utf8",
+    );
+
+    expect(source).toContain("Daemon IPC Contract Generation");
+    expect(source).toContain("Remaining daemon snapshot convergence");
+    expect(source).toContain("health, ready, config, bring-up");
   });
 
   it("separates protocol-backed dispense progress observations from checkout pickup reminders", () => {

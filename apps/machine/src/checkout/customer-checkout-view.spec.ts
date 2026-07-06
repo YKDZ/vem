@@ -339,20 +339,35 @@ describe("Customer Checkout View Projection", () => {
   });
 
   it("does not project reset completion as a customer pickup reminder", () => {
+    const resetCompletedReminderSnapshot = {
+      ...dispensingTransaction(),
+      vending: {
+        commandNo: "CMD-DISPENSING-001",
+        status: "sent",
+        lastError: null,
+        pickupReminder: {
+          stage: "reset_completed",
+          level: "info",
+          message: "设备已复位完成",
+          warningNo: null,
+          reportedAt: "2026-06-11T06:16:40.000Z",
+          remainingSeconds: null,
+        },
+      },
+    };
+
+    expect(
+      transactionSnapshotSchema.safeParse(resetCompletedReminderSnapshot)
+        .success,
+    ).toBe(false);
+
     const view = projectCustomerCheckoutView({
       transaction: dispensingTransaction({
         vending: {
           commandNo: "CMD-DISPENSING-001",
           status: "sent",
           lastError: null,
-          pickupReminder: {
-            stage: "reset_completed",
-            level: "info",
-            message: "设备已复位完成",
-            warningNo: null,
-            reportedAt: "2026-06-11T06:16:40.000Z",
-            remainingSeconds: null,
-          },
+          pickupReminder: null,
         },
       }),
       nowMs: new Date("2026-06-11T06:16:32.320Z").getTime(),
@@ -360,7 +375,7 @@ describe("Customer Checkout View Projection", () => {
       restored: false,
     });
 
-    expect(view.dispensing?.pickupReminder?.stage).toBeNull();
+    expect(view.dispensing?.pickupReminder).toBeNull();
     expect(view.customerEventObservation.pickupCue).toBeNull();
   });
 

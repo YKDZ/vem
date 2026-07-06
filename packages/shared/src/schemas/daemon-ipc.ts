@@ -8,6 +8,11 @@ import {
 } from "../enums/payment-status";
 import { vendingCommandStatusSchema } from "../enums/vending";
 
+// Remaining daemon snapshot convergence starts here: health, ready, config, bring-up,
+// scanner, vision, natural-context, sync, and remote-operation snapshots should
+// move through this Daemon IPC Contract Area in focused slices before a later
+// Daemon IPC Contract Generation refactor.
+
 const daemonIpcComponentHealthSchema = z
   .object({
     component: z.string(),
@@ -129,6 +134,10 @@ export const daemonIpcKnownEventNotificationTypeSchema = z.enum([
   "remote_op_result",
 ]);
 
+const daemonIpcKnownEventNotificationTypes = new Set<string>(
+  daemonIpcKnownEventNotificationTypeSchema.options,
+);
+
 export const daemonIpcHealthChangedEventSchema =
   daemonIpcKnownEventEnvelopeSchema
     .extend({
@@ -227,13 +236,13 @@ export const daemonIpcKnownEventNotificationSchema = z.discriminatedUnion(
 
 export const daemonIpcUnknownEventNotificationSchema =
   daemonIpcEventEnvelopeSchema
-    .passthrough()
+    .loose()
     .transform((event) => ({ ...event, known: false as const }));
 
 export const daemonIpcEventNotificationSchema = z
   .unknown()
   .transform((value, ctx) => {
-    const envelope = daemonIpcEventEnvelopeSchema.passthrough().safeParse(value);
+    const envelope = daemonIpcEventEnvelopeSchema.loose().safeParse(value);
     if (!envelope.success) {
       ctx.addIssue({
         code: "custom",
@@ -242,11 +251,7 @@ export const daemonIpcEventNotificationSchema = z
       return z.NEVER;
     }
 
-    if (
-      daemonIpcKnownEventNotificationTypeSchema.options.includes(
-        envelope.data.type as never,
-      )
-    ) {
+    if (daemonIpcKnownEventNotificationTypes.has(envelope.data.type)) {
       const known = daemonIpcKnownEventNotificationSchema.safeParse(value);
       if (!known.success) {
         ctx.addIssue({

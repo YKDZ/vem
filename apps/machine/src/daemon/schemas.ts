@@ -497,46 +497,7 @@ export type NetworkSettingsResponse = z.infer<
 export type ProvisioningClaimResponse = z.infer<
   typeof provisioningClaimResponseSchema
 >;
-type TransactionSnapshotVendingSummary = NonNullable<
-  DaemonIpcTransactionSnapshot["vending"]
->;
-type TransactionSnapshotPickupReminder = NonNullable<
-  TransactionSnapshotVendingSummary["pickupReminder"]
->;
-type TransactionSnapshotPaymentCodeAttempt = NonNullable<
-  DaemonIpcTransactionSnapshot["paymentCodeAttempt"]
->;
-
-export type TransactionSnapshot = Omit<
-  DaemonIpcTransactionSnapshot,
-  | "paymentMethod"
-  | "paymentProvider"
-  | "paymentStatus"
-  | "orderStatus"
-  | "vending"
-  | "paymentCodeAttempt"
-> & {
-  paymentMethod: string | null;
-  paymentProvider: string | null;
-  paymentStatus: string | null;
-  orderStatus: string | null;
-  vending:
-    | (Omit<TransactionSnapshotVendingSummary, "status" | "pickupReminder"> & {
-        status: string | null;
-        pickupReminder?:
-          | (Omit<TransactionSnapshotPickupReminder, "stage"> & {
-              stage?: string;
-            })
-          | null;
-      })
-    | null;
-  paymentCodeAttempt:
-    | (Omit<TransactionSnapshotPaymentCodeAttempt, "status" | "source"> & {
-        status: string | null;
-        source: string | null;
-      })
-    | null;
-};
+export type TransactionSnapshot = DaemonIpcTransactionSnapshot;
 export type SyncStatus = z.infer<typeof syncStatusSchema>;
 export type ScannerStatus = z.infer<typeof scannerStatusSchema>;
 export type VisionStatus = z.infer<typeof visionStatusSchema>;

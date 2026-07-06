@@ -10,6 +10,12 @@ import type {
 } from "@/daemon/schemas";
 import type { DaemonConnectionInfo } from "@/native/daemon-connection";
 
+import { transactionSnapshotSchema } from "@/daemon/schemas";
+import {
+  daemonIpcMachinePaymentProviderSchema,
+  paymentMethodSchema,
+} from "@vem/shared";
+
 import { daemonClient } from "@/daemon/client";
 
 import {
@@ -50,14 +56,17 @@ function localStorageOrNull(): Storage | null {
 }
 
 function readStoredTransaction(): TransactionSnapshot | null {
-  const raw = localStorageOrNull()?.getItem(UI_DEBUG_TRANSACTION_STORAGE_KEY);
+  const storage = localStorageOrNull();
+  const raw = storage?.getItem(UI_DEBUG_TRANSACTION_STORAGE_KEY);
   if (!raw) return null;
   try {
-    return JSON.parse(raw) as TransactionSnapshot;
+    const parsed = transactionSnapshotSchema.safeParse(JSON.parse(raw));
+    if (parsed.success) return parsed.data;
   } catch {
-    localStorageOrNull()?.removeItem(UI_DEBUG_TRANSACTION_STORAGE_KEY);
-    return null;
+    // Fall through to clear stale or malformed debug snapshots.
   }
+  storage?.removeItem(UI_DEBUG_TRANSACTION_STORAGE_KEY);
+  return null;
 }
 
 function persistTransaction(snapshot: TransactionSnapshot | null): void {
@@ -228,20 +237,24 @@ function catalogFromSaleView(saleView: SaleViewSnapshot): CatalogSnapshot {
 function createTransactionFromOrder(body: unknown): TransactionSnapshot {
   const input = body as {
     inventoryId?: string;
-    paymentMethod?: string;
-    paymentProviderCode?: string;
+    paymentMethod?: unknown;
+    paymentProviderCode?: unknown;
   };
   const item =
     currentSaleView().items.find(
       (candidate) => candidate.inventoryId === input.inventoryId,
     ) ?? currentSaleView().items[0];
-  const paymentMethod = input.paymentMethod ?? "mock";
-  const providerCode = input.paymentProviderCode ?? "mock";
+  const paymentMethod = paymentMethodSchema
+    .catch("mock")
+    .parse(input.paymentMethod);
+  const providerCode = daemonIpcMachinePaymentProviderSchema
+    .catch("mock")
+    .parse(input.paymentProviderCode);
   const paymentUrl =
     paymentMethod === "qr_code"
       ? "https://pay.example.test/ui-debug-created"
       : null;
-  currentTransaction = {
+  const transaction: TransactionSnapshot = {
     orderId: "550e8400-e29b-41d4-a716-446655449901",
     orderNo: `UI-DEBUG-${Date.now()}`,
     productSummary: item
@@ -270,8 +283,9 @@ function createTransactionFromOrder(body: unknown): TransactionSnapshot {
       paymentMethod === "payment_code" ? "请出示付款码" : "等待用户支付",
     updatedAt: nowIso(),
   };
+  currentTransaction = transaction;
   persistTransaction(currentTransaction);
-  return currentTransaction;
+  return transaction;
 }
 
 function transitionMockPayment(succeed: boolean): TransactionSnapshot {
