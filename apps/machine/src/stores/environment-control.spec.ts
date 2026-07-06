@@ -27,6 +27,7 @@ describe("useEnvironmentControlStore", () => {
       message: "environment control completed",
       airConditionerOn: true,
       targetTemperatureCelsius: 24,
+      ventSpeed: 2,
       reportedAt: "2026-07-01T07:00:00.000Z",
     });
 
@@ -34,17 +35,20 @@ describe("useEnvironmentControlStore", () => {
     const result = await store.controlAirConditioner({
       airConditionerOn: true,
       targetTemperatureCelsius: 24,
+      ventSpeed: 2,
     });
 
     expect(controlEnvironmentMock).toHaveBeenCalledWith({
       airConditionerOn: true,
       targetTemperatureCelsius: 24,
+      ventSpeed: 2,
       timeoutSeconds: 5,
     });
     expect(result.success).toBe(true);
     expect(store.latestControlSucceeded).toBe(true);
     expect(store.airConditionerOn).toBe(true);
     expect(store.targetTemperatureCelsius).toBe(24);
+    expect(store.ventSpeed).toBe(2);
     expect(store.error).toBeNull();
   });
 

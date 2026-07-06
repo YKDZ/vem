@@ -4072,7 +4072,9 @@ fn patch_backend_status_for_dispense_progress(
             serde_json::Value::String("dispensing".to_string()),
         );
         let level = match event.stage {
-            DispenseProgressStage::OutletOpened | DispenseProgressStage::PickupWaiting => "info",
+            DispenseProgressStage::OutletOpened
+            | DispenseProgressStage::PickupWaiting
+            | DispenseProgressStage::PickupCompleted => "info",
             DispenseProgressStage::PickupTimeoutWarning if event.warning_no.unwrap_or(1) >= 2 => {
                 "urgent"
             }
@@ -4081,6 +4083,7 @@ fn patch_backend_status_for_dispense_progress(
         let stage = match event.stage {
             DispenseProgressStage::OutletOpened => "outlet_opened",
             DispenseProgressStage::PickupWaiting => "pickup_waiting",
+            DispenseProgressStage::PickupCompleted => "pickup_completed",
             DispenseProgressStage::PickupTimeoutWarning => "pickup_timeout_warning",
         };
         vending.insert(

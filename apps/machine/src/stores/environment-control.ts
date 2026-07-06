@@ -8,6 +8,7 @@ import { daemonClient } from "@/daemon/client";
 export type EnvironmentControlInput = {
   airConditionerOn?: boolean;
   targetTemperatureCelsius?: number;
+  ventSpeed?: number;
   timeoutSeconds?: number;
 };
 
@@ -22,6 +23,7 @@ export const useEnvironmentControlStore = defineStore("environment-control", {
       state.latestResult?.airConditionerOn ?? null,
     targetTemperatureCelsius: (state): number | null =>
       state.latestResult?.targetTemperatureCelsius ?? null,
+    ventSpeed: (state): number | null => state.latestResult?.ventSpeed ?? null,
     latestControlSucceeded: (state): boolean | null =>
       state.latestResult?.success ?? null,
   },
@@ -32,6 +34,7 @@ export const useEnvironmentControlStore = defineStore("environment-control", {
       const request = machineEnvironmentControlRequestSchema.parse({
         airConditionerOn: input.airConditionerOn,
         targetTemperatureCelsius: input.targetTemperatureCelsius,
+        ventSpeed: input.ventSpeed,
       });
       const timeoutSeconds = input.timeoutSeconds ?? 5;
 

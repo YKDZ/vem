@@ -377,12 +377,14 @@ describe("shared API contract", () => {
     expect(getMachineSlotMaxCellNo(1)).toBe(5);
     expect(getMachineSlotMaxCellNo(6)).toBe(5);
     expect(getMachineSlotMaxCellNo(7)).toBe(4);
-    expect(getMachineSlotMaxCellNo(10)).toBe(4);
-    expect(getMachineSlotMaxCellNo(11)).toBe(4);
+    expect(getMachineSlotMaxCellNo(8)).toBe(4);
+    expect(getMachineSlotMaxCellNo(9)).toBe(3);
+    expect(getMachineSlotMaxCellNo(10)).toBeNull();
     expect(isValidMachineSlotCoordinate({ layerNo: 7, cellNo: 4 })).toBe(true);
-    expect(isValidMachineSlotCoordinate({ layerNo: 11, cellNo: 4 })).toBe(true);
+    expect(isValidMachineSlotCoordinate({ layerNo: 9, cellNo: 3 })).toBe(true);
     expect(isValidMachineSlotCoordinate({ layerNo: 7, cellNo: 5 })).toBe(false);
-    expect(isValidMachineSlotCoordinate({ layerNo: 11, cellNo: 5 })).toBe(
+    expect(isValidMachineSlotCoordinate({ layerNo: 9, cellNo: 4 })).toBe(false);
+    expect(isValidMachineSlotCoordinate({ layerNo: 10, cellNo: 1 })).toBe(
       false,
     );
     expect(formatMachineSlotCoordinate({ layerNo: 7, cellNo: 4 })).toBe(
@@ -1662,6 +1664,11 @@ describe("shared API contract", () => {
         targetTemperatureCelsius: 24,
       }).targetTemperatureCelsius,
     ).toBe(24);
+    expect(
+      machineEnvironmentControlRequestSchema.parse({
+        ventSpeed: 2,
+      }).ventSpeed,
+    ).toBe(2);
     expect(() => machineEnvironmentControlRequestSchema.parse({})).toThrow();
     expect(() =>
       machineEnvironmentControlRequestSchema.parse({
@@ -1673,6 +1680,11 @@ describe("shared API contract", () => {
         targetTemperatureCelsius: 31,
       }),
     ).toThrow();
+    expect(() =>
+      machineEnvironmentControlRequestSchema.parse({
+        ventSpeed: 5,
+      }),
+    ).toThrow();
   });
 
   it("validates environment control command payloads", () => {
@@ -1681,6 +1693,7 @@ describe("shared API contract", () => {
         commandNo: "MCMD-1",
         airConditionerOn: true,
         targetTemperatureCelsius: 24,
+        ventSpeed: 2,
         timeoutSeconds: 5,
       }).targetTemperatureCelsius,
     ).toBe(24);

@@ -35,6 +35,7 @@ fn environment_control_command(command_no: &str) -> EnvironmentControlCommandPay
         command_no: command_no.to_string(),
         air_conditioner_on: Some(true),
         target_temperature_celsius: Some(24),
+        vent_speed: None,
         timeout_seconds: 5,
     }
 }

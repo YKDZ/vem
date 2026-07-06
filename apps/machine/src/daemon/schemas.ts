@@ -235,7 +235,12 @@ export const transactionSnapshotSchema = z.object({
       pickupReminder: z
         .object({
           stage: z
-            .enum(["outlet_opened", "pickup_waiting", "pickup_timeout_warning"])
+            .enum([
+              "outlet_opened",
+              "pickup_waiting",
+              "pickup_completed",
+              "pickup_timeout_warning",
+            ])
             .optional(),
           level: z.enum(["info", "warning", "urgent"]),
           message: z.string(),

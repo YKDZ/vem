@@ -52,6 +52,7 @@ struct ClearWholeMachineMaintenanceLockRequest {
 struct LocalEnvironmentControlRequest {
     air_conditioner_on: Option<bool>,
     target_temperature_celsius: Option<i8>,
+    vent_speed: Option<u8>,
     timeout_seconds: Option<u64>,
 }
 
@@ -3190,13 +3191,17 @@ async fn control_environment(
         return (status, error).into_response();
     }
 
-    if request.air_conditioner_on.is_none() && request.target_temperature_celsius.is_none() {
+    if request.air_conditioner_on.is_none()
+        && request.target_temperature_celsius.is_none()
+        && request.vent_speed.is_none()
+    {
         return (
             StatusCode::BAD_REQUEST,
             Json(ErrorMessage {
                 code: "invalid_environment_control_request",
-                message: "At least one of airConditionerOn or targetTemperatureCelsius is required"
-                    .to_string(),
+                message:
+                    "At least one of airConditionerOn, targetTemperatureCelsius or ventSpeed is required"
+                        .to_string(),
             }),
         )
             .into_response();
@@ -3228,9 +3233,23 @@ async fn control_environment(
         }
     }
 
+    if let Some(speed) = request.vent_speed {
+        if speed > 4 {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorMessage {
+                    code: "invalid_environment_control_request",
+                    message: "ventSpeed must be between 0 and 4".to_string(),
+                }),
+            )
+                .into_response();
+        }
+    }
+
     let command_no = format!("local-env-{}", uuid::Uuid::new_v4());
     let mut confirmed_target = None;
     let mut confirmed_switch = None;
+    let mut confirmed_vent_speed = None;
     let mut failure = None;
 
     if let Some(target) = request.target_temperature_celsius {
@@ -3249,6 +3268,15 @@ async fn control_environment(
         }
     }
 
+    if failure.is_none() {
+        if let Some(speed) = request.vent_speed {
+            match ctx.hardware.set_vent_speed(speed).await {
+                Ok(()) => confirmed_vent_speed = Some(speed),
+                Err(error) => failure = Some(("vent_speed_failed".to_string(), error)),
+            }
+        }
+    }
+
     let result = match failure {
         Some((error_code, message)) => vending_core::hardware::EnvironmentControlResultPayload {
             command_no,
@@ -3257,6 +3285,7 @@ async fn control_environment(
             message: Some(message),
             air_conditioner_on: confirmed_switch,
             target_temperature_celsius: confirmed_target,
+            vent_speed: confirmed_vent_speed,
             reported_at: crate::state::store::now_iso(),
         },
         None => vending_core::hardware::EnvironmentControlResultPayload {
@@ -3266,6 +3295,7 @@ async fn control_environment(
             message: Some("environment control completed".to_string()),
             air_conditioner_on: confirmed_switch,
             target_temperature_celsius: confirmed_target,
+            vent_speed: confirmed_vent_speed,
             reported_at: crate::state::store::now_iso(),
         },
     };
@@ -3397,14 +3427,23 @@ async fn local_site_signals_snapshot(
         return cached;
     }
 
-    if let Ok(sample) = ctx.hardware.query_environment_sample().await {
-        let sampled_at = crate::state::store::now_iso();
-        let mut cache = ctx.ui.status_cache.environment.write().await;
-        cache.record_query_result(sample, sampled_at);
-        return cache.heartbeat_payload();
+    match ctx.hardware.query_environment_sample().await {
+        Ok(sample) => {
+            let sampled_at = crate::state::store::now_iso();
+            let mut cache = ctx.ui.status_cache.environment.write().await;
+            cache.record_query_result(sample, sampled_at);
+            cache.heartbeat_payload()
+        }
+        Err(error) => {
+            let mut cache = ctx.ui.status_cache.environment.write().await;
+            if crate::mqtt::is_lower_controller_sensor_fault(&error) {
+                cache.record_sensor_fault();
+            } else {
+                cache.record_query_result(None, crate::state::store::now_iso());
+            }
+            cache.heartbeat_payload()
+        }
     }
-
-    cached
 }
 
 fn backend_natural_context_message(error: &str) -> String {
@@ -3804,6 +3843,7 @@ mod tests {
             json!({
                 "airConditionerOn": true,
                 "targetTemperatureCelsius": 24,
+                "ventSpeed": 2,
                 "timeoutSeconds": 5
             }),
         )
@@ -3817,6 +3857,7 @@ mod tests {
         assert_eq!(payload["success"], true);
         assert_eq!(payload["airConditionerOn"], true);
         assert_eq!(payload["targetTemperatureCelsius"], 24);
+        assert_eq!(payload["ventSpeed"], 2);
         assert_eq!(payload["message"], "environment control completed");
     }
 

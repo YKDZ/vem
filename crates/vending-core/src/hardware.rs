@@ -38,6 +38,7 @@ pub struct DispenseResultPayload {
 pub enum DispenseProgressStage {
     OutletOpened,
     PickupWaiting,
+    PickupCompleted,
     PickupTimeoutWarning,
 }
 
@@ -60,6 +61,7 @@ pub struct EnvironmentControlCommandPayload {
     pub command_no: String,
     pub air_conditioner_on: Option<bool>,
     pub target_temperature_celsius: Option<i8>,
+    pub vent_speed: Option<u8>,
     pub timeout_seconds: u64,
 }
 
@@ -72,6 +74,7 @@ pub struct EnvironmentControlResultPayload {
     pub message: Option<String>,
     pub air_conditioner_on: Option<bool>,
     pub target_temperature_celsius: Option<i8>,
+    pub vent_speed: Option<u8>,
     pub reported_at: String,
 }
 
@@ -109,6 +112,9 @@ pub trait HardwareAdapter: Send + Sync {
     }
     async fn set_air_conditioner_enabled(&self, _enabled: bool) -> Result<(), String> {
         Err("air conditioner control is not supported by this hardware adapter".to_string())
+    }
+    async fn set_vent_speed(&self, _speed: u8) -> Result<(), String> {
+        Err("vent speed control is not supported by this hardware adapter".to_string())
     }
     async fn dispense(&self, cmd: DispenseCommandPayload) -> DispenseResultPayload;
     async fn dispense_with_progress(
@@ -153,6 +159,10 @@ impl HardwareAdapter for MockHardwareAdapter {
     }
 
     async fn set_air_conditioner_enabled(&self, _enabled: bool) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn set_vent_speed(&self, _speed: u8) -> Result<(), String> {
         Ok(())
     }
 
