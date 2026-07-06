@@ -1,5 +1,6 @@
 use std::{future::Future, pin::Pin, sync::Arc};
 use uuid::Uuid;
+use vending_core::domain::CheckoutFlowAction;
 
 use tokio::sync::broadcast;
 use tokio::time::{Duration, Instant};
@@ -79,7 +80,8 @@ impl TransactionStateMachine {
         };
         let before_status = current
             .next_action
-            .clone()
+            .map(CheckoutFlowAction::as_str)
+            .map(ToString::to_string)
             .or_else(|| current.order_status.clone())
             .unwrap_or_default();
 
@@ -96,7 +98,8 @@ impl TransactionStateMachine {
             if let Some(refreshed) = refreshed.as_ref() {
                 let after_status = refreshed
                     .next_action
-                    .clone()
+                    .map(CheckoutFlowAction::as_str)
+                    .map(ToString::to_string)
                     .or_else(|| refreshed.order_status.clone())
                     .unwrap_or_default();
                 if after_status != before_status {
@@ -275,10 +278,7 @@ impl TransactionStateMachine {
         if snapshot.payment_method.as_deref() != Some("payment_code") {
             return Err("IGNORED_NON_PAYMENT_CODE_TRANSACTION".to_string());
         }
-        if !matches!(
-            snapshot.next_action.as_deref(),
-            Some("wait_payment" | "submit_payment")
-        ) {
+        if !matches!(snapshot.next_action, Some(CheckoutFlowAction::WaitPayment)) {
             return Err("IGNORED_TRANSACTION_NOT_WAITING_PAYMENT".to_string());
         }
         if let Some(guard) = &self.payment_code_submit_guard {
@@ -411,7 +411,10 @@ impl TransactionStateMachine {
                             .order_status
                             .as_deref()
                             .unwrap_or("pending_payment"),
-                        next_action: snapshot.next_action.as_deref().unwrap_or("wait_payment"),
+                        next_action: snapshot
+                            .next_action
+                            .map(CheckoutFlowAction::as_str)
+                            .unwrap_or("wait_payment"),
                         payment_attempt_json,
                         recovery_strategy: "local",
                         last_backend_status_json: None,
@@ -491,7 +494,8 @@ impl TransactionStateMachine {
             order_no: order_no.to_string(),
             status: current
                 .next_action
-                .clone()
+                .map(CheckoutFlowAction::as_str)
+                .map(ToString::to_string)
                 .unwrap_or_else(|| current.order_status.clone().unwrap_or_default()),
         });
     }
@@ -516,30 +520,31 @@ pub fn is_active_transaction(current: &vending_core::domain::CurrentTransactionS
     if is_terminal_transaction(current) {
         return false;
     }
-    current
-        .next_action
-        .as_deref()
-        .is_some_and(|status| matches!(status, "wait_payment" | "submit_payment" | "dispensing"))
-        || current.order_status.as_deref().is_some_and(|status| {
-            matches!(
-                status,
-                "waiting_payment" | "pending_payment" | "paid" | "dispensing"
-            )
-        })
+    current.next_action.is_some_and(|status| {
+        matches!(
+            status,
+            CheckoutFlowAction::WaitPayment | CheckoutFlowAction::Dispensing
+        )
+    }) || current.order_status.as_deref().is_some_and(|status| {
+        matches!(
+            status,
+            "waiting_payment" | "pending_payment" | "paid" | "dispensing"
+        )
+    })
 }
 
 fn is_terminal_transaction(current: &vending_core::domain::CurrentTransactionSnapshot) -> bool {
-    current.next_action.as_deref().is_some_and(|status| {
+    current.next_action.is_some_and(|status| {
         matches!(
             status,
-            "success"
-                | "payment_expired"
-                | "payment_failed"
-                | "dispense_failed"
-                | "refund_pending"
-                | "refunded"
-                | "manual_handling"
-                | "closed"
+            CheckoutFlowAction::Success
+                | CheckoutFlowAction::PaymentExpired
+                | CheckoutFlowAction::PaymentFailed
+                | CheckoutFlowAction::DispenseFailed
+                | CheckoutFlowAction::RefundPending
+                | CheckoutFlowAction::Refunded
+                | CheckoutFlowAction::ManualHandling
+                | CheckoutFlowAction::Closed
         )
     }) || current.order_status.as_deref().is_some_and(|status| {
         matches!(
@@ -585,7 +590,7 @@ mod tests {
             order_status: Some(order_status.to_string()),
             total_amount_cents: None,
             vending: None,
-            next_action: Some(next_action.to_string()),
+            next_action: CheckoutFlowAction::from_current_contract(next_action),
             masked_auth_code: None,
             payment_code_attempt: None,
             expires_at: None,
@@ -713,7 +718,7 @@ mod tests {
             .expect("restore")
             .expect("current");
         assert_eq!(current.order_status.as_deref(), Some("fulfilled"));
-        assert_eq!(current.next_action.as_deref(), Some("success"));
+        assert_eq!(current.next_action, Some(CheckoutFlowAction::Success));
         assert_eq!(
             current
                 .vending
@@ -928,7 +933,7 @@ mod tests {
             .await
             .expect("mock payment");
         assert_eq!(current.order_status.as_deref(), Some("paid"));
-        assert_eq!(current.next_action.as_deref(), Some("dispensing"));
+        assert_eq!(current.next_action, Some(CheckoutFlowAction::Dispensing));
         assert_eq!(current.payment_status.as_deref(), Some("succeeded"));
 
         let event = events_rx.recv().await.expect("event");
@@ -956,7 +961,7 @@ mod tests {
                 payment_provider: Some("wechat_pay"),
                 items_json: serde_json::json!([]),
                 status: "waiting_payment",
-                next_action: "submit_payment",
+                next_action: "wait_payment",
                 payment_attempt_json: None,
                 recovery_strategy: "local",
                 last_backend_status_json: None,

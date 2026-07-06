@@ -40,12 +40,74 @@ pub enum OrderSessionStatus {
     Closed,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CheckoutFlowAction {
+    WaitPayment,
+    Dispensing,
+    Success,
+    PaymentFailed,
+    PaymentExpired,
+    DispenseFailed,
+    RefundPending,
+    Refunded,
+    ManualHandling,
+    Closed,
+}
+
+impl CheckoutFlowAction {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::WaitPayment => "wait_payment",
+            Self::Dispensing => "dispensing",
+            Self::Success => "success",
+            Self::PaymentFailed => "payment_failed",
+            Self::PaymentExpired => "payment_expired",
+            Self::DispenseFailed => "dispense_failed",
+            Self::RefundPending => "refund_pending",
+            Self::Refunded => "refunded",
+            Self::ManualHandling => "manual_handling",
+            Self::Closed => "closed",
+        }
+    }
+
+    pub fn from_current_contract(action: &str) -> Option<Self> {
+        match action {
+            "wait_payment" => Some(Self::WaitPayment),
+            "dispensing" => Some(Self::Dispensing),
+            "success" => Some(Self::Success),
+            "payment_failed" => Some(Self::PaymentFailed),
+            "payment_expired" => Some(Self::PaymentExpired),
+            "dispense_failed" => Some(Self::DispenseFailed),
+            "refund_pending" => Some(Self::RefundPending),
+            "refunded" => Some(Self::Refunded),
+            "manual_handling" => Some(Self::ManualHandling),
+            "closed" => Some(Self::Closed),
+            _ => None,
+        }
+    }
+
+    pub fn normalize_recovered(action: &str) -> Option<Self> {
+        match action {
+            "submit_payment" => Some(Self::WaitPayment),
+            "collect_goods" => Some(Self::Dispensing),
+            current => Self::from_current_contract(current),
+        }
+    }
+}
+
+impl Default for CheckoutFlowAction {
+    fn default() -> Self {
+        Self::WaitPayment
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TransactionSnapshot {
     pub order_no: Option<String>,
     pub status: Option<OrderSessionStatus>,
-    pub next_action: Option<String>,
+    pub next_action: Option<CheckoutFlowAction>,
     pub updated_at: String,
 }
 
@@ -54,7 +116,7 @@ pub struct TransactionSnapshot {
 pub struct CurrentTransactionSummary {
     pub order_no: String,
     pub status: OrderSessionStatus,
-    pub next_action: String,
+    pub next_action: CheckoutFlowAction,
     pub updated_at: String,
 }
 
@@ -105,7 +167,7 @@ pub struct CurrentTransactionSnapshot {
     pub order_status: Option<String>,
     pub total_amount_cents: Option<i64>,
     pub vending: Option<VendingCommandSummary>,
-    pub next_action: Option<String>,
+    pub next_action: Option<CheckoutFlowAction>,
     pub masked_auth_code: Option<String>,
     pub payment_code_attempt: Option<PaymentCodeAttemptSummary>,
     pub expires_at: Option<String>,
@@ -142,17 +204,38 @@ mod tests {
     }
 
     #[test]
+    fn checkout_flow_action_uses_daemon_ipc_contract_vocabulary() {
+        let cases = [
+            (CheckoutFlowAction::WaitPayment, "\"wait_payment\""),
+            (CheckoutFlowAction::Dispensing, "\"dispensing\""),
+            (CheckoutFlowAction::Success, "\"success\""),
+            (CheckoutFlowAction::PaymentFailed, "\"payment_failed\""),
+            (CheckoutFlowAction::PaymentExpired, "\"payment_expired\""),
+            (CheckoutFlowAction::DispenseFailed, "\"dispense_failed\""),
+            (CheckoutFlowAction::RefundPending, "\"refund_pending\""),
+            (CheckoutFlowAction::Refunded, "\"refunded\""),
+            (CheckoutFlowAction::ManualHandling, "\"manual_handling\""),
+            (CheckoutFlowAction::Closed, "\"closed\""),
+        ];
+
+        for (action, expected_json) in cases {
+            let value = serde_json::to_string(&action).expect("serialize checkout flow action");
+            assert_eq!(value, expected_json);
+        }
+    }
+
+    #[test]
     fn transaction_snapshot_uses_camel_case_fields() {
         let snapshot = TransactionSnapshot {
             order_no: Some("ORD-001".to_string()),
             status: Some(OrderSessionStatus::WaitingPayment),
-            next_action: Some("submit_payment".to_string()),
+            next_action: Some(CheckoutFlowAction::WaitPayment),
             updated_at: "2025-01-01T00:00:00.000Z".to_string(),
         };
         let value = serde_json::to_string(&snapshot).expect("serialize snapshot");
         assert_eq!(
             value,
-            r#"{"orderNo":"ORD-001","status":"waiting_payment","nextAction":"submit_payment","updatedAt":"2025-01-01T00:00:00.000Z"}"#
+            r#"{"orderNo":"ORD-001","status":"waiting_payment","nextAction":"wait_payment","updatedAt":"2025-01-01T00:00:00.000Z"}"#
         );
     }
 
@@ -175,7 +258,7 @@ mod tests {
                 last_error: None,
                 pickup_reminder: None,
             }),
-            next_action: Some("submit_payment".to_string()),
+            next_action: Some(CheckoutFlowAction::WaitPayment),
             masked_auth_code: Some("6212****3456".to_string()),
             payment_code_attempt: Some(PaymentCodeAttemptSummary {
                 attempt_no: Some(1),

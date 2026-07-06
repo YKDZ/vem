@@ -1298,7 +1298,7 @@ async fn create_order_intent(
                 Some(serde_json::json!({
                     "request": request_log_data.clone(),
                     "orderNo": snapshot.order_no.as_deref(),
-                    "nextAction": snapshot.next_action.as_deref(),
+                    "nextAction": snapshot.next_action,
                 })),
             )
             .await;
@@ -1383,7 +1383,7 @@ async fn create_order_intent(
                     "orderNo": snapshot.order_no.as_deref(),
                     "paymentMethod": snapshot.payment_method.as_deref(),
                     "paymentProvider": snapshot.payment_provider.as_deref(),
-                    "nextAction": snapshot.next_action.as_deref(),
+                    "nextAction": snapshot.next_action,
                 })),
             )
             .await;
@@ -1447,7 +1447,7 @@ async fn cancel_order_intent(
                 Some(serde_json::json!({
                     "orderNo": snapshot.order_no.as_deref(),
                     "orderStatus": snapshot.order_status.as_deref(),
-                    "nextAction": snapshot.next_action.as_deref(),
+                    "nextAction": snapshot.next_action,
                 })),
             )
             .await;
@@ -1519,7 +1519,7 @@ async fn mock_payment_intent(
                 Some(serde_json::json!({
                     "orderNo": snapshot.order_no.as_deref(),
                     "orderStatus": snapshot.order_status.as_deref(),
-                    "nextAction": snapshot.next_action.as_deref(),
+                    "nextAction": snapshot.next_action,
                 })),
             )
             .await;
@@ -5452,6 +5452,48 @@ mod tests {
             call_status_request(Method::GET, "/v1/sync/status", Some("token-1"), &app).await,
             StatusCode::OK,
         );
+    }
+
+    #[tokio::test]
+    async fn current_transaction_ipc_output_does_not_emit_legacy_checkout_actions() {
+        let temp_dir = tempdir().expect("tmp");
+        let ctx = test_ipc_context(temp_dir.path(), "token-1", None, "http://127.0.0.1:0").await;
+        sqlx::query(
+            "INSERT INTO order_sessions(
+                order_no,payment_method,payment_provider,payment_attempt_json,items_json,status,
+                next_action,expires_at,last_backend_status_json,last_error,recovery_strategy,updated_at
+             ) VALUES (?1,'payment_code','alipay',NULL,'[]','waiting_payment',?2,NULL,NULL,NULL,'local',?3)",
+        )
+        .bind("ORDER-IPC-LEGACY")
+        .bind("submit_payment")
+        .bind(crate::state::store::now_iso())
+        .execute(ctx.state.pool())
+        .await
+        .expect("seed legacy transaction");
+        let app = build_router(ctx);
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/transactions/current")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(payload["nextAction"], "wait_payment");
+        let text = serde_json::to_string(&payload).unwrap();
+        assert!(!text.contains("submit_payment"));
+        assert!(!text.contains("collect_goods"));
     }
 
     #[tokio::test]

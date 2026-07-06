@@ -187,7 +187,7 @@ impl HealthAggregator {
                         status,
                         next_action: snapshot
                             .next_action
-                            .unwrap_or_else(|| "submit_payment".to_string()),
+                            .unwrap_or(vending_core::domain::CheckoutFlowAction::WaitPayment),
                         updated_at: snapshot.updated_at,
                     })
                 }),
