@@ -4079,10 +4079,13 @@ fn patch_backend_status_for_dispense_progress(
     let Some(object) = backend_status.as_object_mut() else {
         return;
     };
-    object.insert(
-        "nextAction".to_string(),
-        serde_json::Value::String("dispensing".to_string()),
-    );
+    let reset_completed = matches!(event.stage, DispenseProgressStage::ResetCompleted);
+    if !reset_completed {
+        object.insert(
+            "nextAction".to_string(),
+            serde_json::Value::String("dispensing".to_string()),
+        );
+    }
 
     let vending = object
         .entry("vending".to_string())
@@ -4095,24 +4098,19 @@ fn patch_backend_status_for_dispense_progress(
             "commandNo".to_string(),
             serde_json::Value::String(event.command_no.clone()),
         );
+        if reset_completed {
+            vending.insert("pickupReminder".to_string(), serde_json::Value::Null);
+            return;
+        }
         vending.insert(
             "status".to_string(),
             serde_json::Value::String("dispensing".to_string()),
         );
-        let level = match event.stage {
-            DispenseProgressStage::OutletOpened
-            | DispenseProgressStage::PickupWaiting
-            | DispenseProgressStage::PickupCompleted => "info",
-            DispenseProgressStage::PickupTimeoutWarning if event.warning_no.unwrap_or(1) >= 2 => {
-                "urgent"
-            }
-            DispenseProgressStage::PickupTimeoutWarning => "warning",
-        };
-        let stage = match event.stage {
-            DispenseProgressStage::OutletOpened => "outlet_opened",
-            DispenseProgressStage::PickupWaiting => "pickup_waiting",
-            DispenseProgressStage::PickupCompleted => "pickup_completed",
-            DispenseProgressStage::PickupTimeoutWarning => "pickup_timeout_warning",
+        let Some((level, stage)) =
+            pickup_reminder_contract_for_dispense_progress(&event.stage, event.warning_no)
+        else {
+            vending.insert("pickupReminder".to_string(), serde_json::Value::Null);
+            return;
         };
         vending.insert(
             "pickupReminder".to_string(),
@@ -4124,6 +4122,22 @@ fn patch_backend_status_for_dispense_progress(
                 "reportedAt": event.reported_at,
             }),
         );
+    }
+}
+
+fn pickup_reminder_contract_for_dispense_progress(
+    stage: &DispenseProgressStage,
+    warning_no: Option<u8>,
+) -> Option<(&'static str, &'static str)> {
+    match stage {
+        DispenseProgressStage::OutletOpened => Some(("info", "outlet_opened")),
+        DispenseProgressStage::PickupWaiting => Some(("info", "pickup_waiting")),
+        DispenseProgressStage::PickupCompleted => Some(("info", "pickup_completed")),
+        DispenseProgressStage::PickupTimeoutWarning if warning_no.unwrap_or(1) >= 2 => {
+            Some(("urgent", "pickup_timeout_warning"))
+        }
+        DispenseProgressStage::PickupTimeoutWarning => Some(("warning", "pickup_timeout_warning")),
+        DispenseProgressStage::ResetCompleted => None,
     }
 }
 
@@ -6925,6 +6939,147 @@ mod tests {
         assert_eq!(reminder.warning_no, Some(2));
         assert!(reminder.message.contains("立即取走"));
         assert_eq!(snapshot.next_action, Some(CheckoutFlowAction::Dispensing));
+    }
+
+    #[tokio::test]
+    async fn reset_completed_progress_does_not_become_pickup_reminder() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        store
+            .upsert_order_session(OrderSessionUpsert {
+                order_no: "ORDER-RESET-COMPLETED",
+                payment_method: "payment_code",
+                payment_provider: Some("alipay"),
+                items_json: json!([{ "name": "cola" }]),
+                status: "dispensing",
+                next_action: "dispensing",
+                payment_attempt_json: None,
+                recovery_strategy: "local",
+                last_backend_status_json: Some(json!({
+                    "orderNo": "ORDER-RESET-COMPLETED",
+                    "orderStatus": "dispensing",
+                    "nextAction": "dispensing",
+                    "vending": {
+                        "commandNo": "CMD-RESET-COMPLETED",
+                        "status": "dispensing",
+                        "lastError": null
+                    }
+                })),
+                last_error: None,
+            })
+            .await
+            .expect("seed");
+
+        store
+            .record_dispense_progress(&DispenseProgressEvent {
+                command_no: "CMD-RESET-COMPLETED".to_string(),
+                order_no: "ORDER-RESET-COMPLETED".to_string(),
+                stage: DispenseProgressStage::ResetCompleted,
+                warning_no: None,
+                message: "设备已复位完成".to_string(),
+                reported_at: "2026-06-13T09:00:00.000Z".to_string(),
+            })
+            .await
+            .expect("record reset completed");
+
+        let snapshot = store
+            .current_transaction_snapshot()
+            .await
+            .expect("snapshot")
+            .expect("current");
+        let vending = snapshot.vending.expect("vending");
+        assert_eq!(vending.command_no.as_deref(), Some("CMD-RESET-COMPLETED"));
+        assert_eq!(vending.status.as_deref(), Some("dispensing"));
+        assert!(vending.pickup_reminder.is_none());
+        assert_eq!(snapshot.next_action, Some(CheckoutFlowAction::Dispensing));
+    }
+
+    #[tokio::test]
+    async fn late_reset_completed_progress_does_not_revert_successful_dispense_result() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        store
+            .upsert_order_session(OrderSessionUpsert {
+                order_no: "ORDER-LATE-RESET",
+                payment_method: "payment_code",
+                payment_provider: Some("alipay"),
+                items_json: json!([{ "name": "cola" }]),
+                status: "dispensing",
+                next_action: "dispensing",
+                payment_attempt_json: None,
+                recovery_strategy: "local",
+                last_backend_status_json: Some(json!({
+                    "orderNo": "ORDER-LATE-RESET",
+                    "orderStatus": "dispensing",
+                    "nextAction": "dispensing",
+                    "vending": {
+                        "commandNo": "CMD-LATE-RESET",
+                        "status": "dispensing",
+                        "lastError": null,
+                        "pickupReminder": {
+                            "stage": "pickup_waiting",
+                            "level": "info",
+                            "message": "请取走商品",
+                            "warningNo": null,
+                            "reportedAt": "2026-06-13T09:00:00.000Z"
+                        }
+                    }
+                })),
+                last_error: None,
+            })
+            .await
+            .expect("seed");
+
+        let command = DispenseCommandPayload {
+            command_no: "CMD-LATE-RESET".to_string(),
+            order_no: "ORDER-LATE-RESET".to_string(),
+            slot: vending_core::hardware::SlotPayload {
+                layer_no: 1,
+                cell_no: 1,
+                slot_code: "A1".to_string(),
+            },
+            quantity: 1,
+            timeout_seconds: 10,
+        };
+        let result = DispenseResultPayload {
+            command_no: command.command_no.clone(),
+            success: true,
+            error_code: None,
+            message: "serial: dispense completed".to_string(),
+            reported_at: "2026-06-13T09:00:01.000Z".to_string(),
+        };
+        store
+            .apply_dispense_result_to_order_session(&command, &result)
+            .await
+            .expect("apply success result");
+
+        store
+            .record_dispense_progress(&DispenseProgressEvent {
+                command_no: "CMD-LATE-RESET".to_string(),
+                order_no: "ORDER-LATE-RESET".to_string(),
+                stage: DispenseProgressStage::ResetCompleted,
+                warning_no: None,
+                message: "设备已复位完成".to_string(),
+                reported_at: "2026-06-13T09:00:02.000Z".to_string(),
+            })
+            .await
+            .expect("record late reset completed");
+
+        let snapshot = store
+            .current_transaction_snapshot()
+            .await
+            .expect("snapshot")
+            .expect("current");
+        let vending = snapshot.vending.expect("vending");
+        assert_eq!(snapshot.next_action, Some(CheckoutFlowAction::Success));
+        assert_eq!(snapshot.order_status.as_deref(), Some("fulfilled"));
+        assert_eq!(vending.command_no.as_deref(), Some("CMD-LATE-RESET"));
+        assert_eq!(vending.status.as_deref(), Some("succeeded"));
+        assert!(vending.pickup_reminder.is_none());
     }
 
     #[tokio::test]

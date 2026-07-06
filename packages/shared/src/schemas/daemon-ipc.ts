@@ -38,6 +38,18 @@ export const daemonIpcPaymentCodeSourceSchema = z.enum([
   "manual_dev",
 ]);
 
+export const daemonIpcDispenseProgressObservationStageSchema = z.enum([
+  "outlet_opened",
+  "pickup_waiting",
+  "pickup_timeout_warning",
+  "pickup_completed",
+  "reset_completed",
+]);
+
+export type DaemonIpcDispenseProgressObservationStage = z.infer<
+  typeof daemonIpcDispenseProgressObservationStageSchema
+>;
+
 export const daemonIpcPickupReminderSchema = z
   .object({
     stage: z

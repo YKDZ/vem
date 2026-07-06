@@ -40,6 +40,7 @@ pub enum DispenseProgressStage {
     PickupWaiting,
     PickupCompleted,
     PickupTimeoutWarning,
+    ResetCompleted,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

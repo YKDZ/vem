@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   daemonIpcCheckoutFlowActionSchema,
+  daemonIpcDispenseProgressObservationStageSchema,
+  daemonIpcPickupReminderSchema,
   daemonIpcTransactionSnapshotSchema,
   machineOrderStatusNextActionSchema,
 } from ".";
@@ -49,6 +51,9 @@ describe("Daemon IPC Contract Area", () => {
     expect(() =>
       daemonIpcCheckoutFlowActionSchema.parse("collect_goods"),
     ).toThrow();
+    expect(() =>
+      daemonIpcCheckoutFlowActionSchema.parse("unsupported_checkout_action"),
+    ).toThrow();
   });
 
   it("requires legal Checkout Flow Action for transaction snapshots with an order credential", () => {
@@ -67,6 +72,12 @@ describe("Daemon IPC Contract Area", () => {
       daemonIpcTransactionSnapshotSchema.parse({
         ...awaitingPaymentTransaction,
         nextAction: "collect_goods",
+      }),
+    ).toThrow();
+    expect(() =>
+      daemonIpcTransactionSnapshotSchema.parse({
+        ...awaitingPaymentTransaction,
+        nextAction: "unsupported_checkout_action",
       }),
     ).toThrow();
     expect(() => {
@@ -142,5 +153,28 @@ describe("Daemon IPC Contract Area", () => {
       daemonIpcCheckoutFlowActionSchema,
     );
     expect(machineOrderStatusNextActionSchema.parse("success")).toBe("success");
+  });
+
+  it("separates protocol-backed dispense progress observations from checkout pickup reminders", () => {
+    expect(daemonIpcDispenseProgressObservationStageSchema.options).toEqual([
+      "outlet_opened",
+      "pickup_waiting",
+      "pickup_timeout_warning",
+      "pickup_completed",
+      "reset_completed",
+    ]);
+
+    expect(
+      daemonIpcDispenseProgressObservationStageSchema.parse("reset_completed"),
+    ).toBe("reset_completed");
+    expect(() =>
+      daemonIpcPickupReminderSchema.parse({
+        stage: "reset_completed",
+        level: "info",
+        message: "device reset completed",
+        warningNo: null,
+        reportedAt: "2026-06-11T06:18:00.000Z",
+      }),
+    ).toThrow();
   });
 });

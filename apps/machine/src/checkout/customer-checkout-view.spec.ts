@@ -338,6 +338,32 @@ describe("Customer Checkout View Projection", () => {
     expect(JSON.stringify(view)).not.toContain("请尽快取走商品");
   });
 
+  it("does not project reset completion as a customer pickup reminder", () => {
+    const view = projectCustomerCheckoutView({
+      transaction: dispensingTransaction({
+        vending: {
+          commandNo: "CMD-DISPENSING-001",
+          status: "sent",
+          lastError: null,
+          pickupReminder: {
+            stage: "reset_completed",
+            level: "info",
+            message: "设备已复位完成",
+            warningNo: null,
+            reportedAt: "2026-06-11T06:16:40.000Z",
+            remainingSeconds: null,
+          },
+        },
+      }),
+      nowMs: new Date("2026-06-11T06:16:32.320Z").getTime(),
+      dismissedTerminalOrderNos: [],
+      restored: false,
+    });
+
+    expect(view.dispensing?.pickupReminder?.stage).toBeNull();
+    expect(view.customerEventObservation.pickupCue).toBeNull();
+  });
+
   it("projects successful terminal snapshots to success result with sale-ready return policy", () => {
     expect(
       transactionSnapshotSchema.safeParse(successfulTransaction()).success,
