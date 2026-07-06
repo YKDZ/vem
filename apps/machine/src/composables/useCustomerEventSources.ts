@@ -296,7 +296,7 @@ export function installCustomerEventSources(
 
     const checkoutStore = useCheckoutStore();
     watch(
-      () => checkoutStore.customerEventObservation,
+      () => checkoutStore.customerCheckoutView.customerEventObservation,
       (observation) => {
         const orderKey = observation.orderCredential;
         if (!orderKey) return;

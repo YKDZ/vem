@@ -234,7 +234,7 @@ function checkoutObservation() {
   const transaction = checkoutStore.transaction;
   return {
     stage: checkoutView.stage,
-    resultKind: checkoutStore.resultKind,
+    resultKind: checkoutView.result?.kind ?? null,
     nextAction: transaction?.nextAction ?? null,
     paymentStatus: transaction?.paymentStatus ?? null,
     orderStatus: transaction?.orderStatus ?? null,
