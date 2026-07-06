@@ -33,9 +33,9 @@ type ScreenshotManifest = {
 
 const dispensingScreenshotExpectations = {
   dispensing: {
-    pickupTitle: "请取走您的商品",
-    reminderCopy: "如未取货，请在 60 秒内完成取货",
-    noticeTitle: "请轻轻关上取货口",
+    pickupTitle: "设备出货中",
+    reminderCopy: "请稍候，商品正在送往取货口",
+    noticeTitle: "出货完成后请取货",
   },
   "dispensing-pickup-15s": {
     pickupTitle: "请及时取走商品",
@@ -111,6 +111,20 @@ async function expectCoreElements(
       await expect(page.getByText("应付金额")).toBeVisible();
       await expect(page.getByText("¥69.00")).toBeVisible();
       await expectPaymentQrVisual(page);
+      break;
+    case "payment-code":
+      await expect(
+        page.getByText("请将付款码靠近扫码窗口完成支付"),
+      ).toBeVisible();
+      await expect(page.getByText("扫码器已就绪")).toBeVisible();
+      await expect(
+        page.getByText("请打开支付宝或微信付款码，靠近设备扫码窗口。"),
+      ).toBeVisible();
+      await expect(page.getByText("应付金额")).toBeVisible();
+      await expect(page.getByText("¥69.00")).toBeVisible();
+      await expect(page.locator(".payment-code-panel")).toBeVisible();
+      await expect(page.getByText("手动扫码测试")).toHaveCount(0);
+      await expect(page.getByText("支付状态已失效")).toHaveCount(0);
       break;
     case "result-payment-failed":
       await expect(
@@ -228,8 +242,9 @@ async function expectDispensingReminderScreenshot(
   await expect(page.locator(".pickup-subtitle")).toHaveText(
     expectation.reminderCopy,
   );
-  await expect(page.getByText("剩余取货时间")).toBeVisible();
-  await expect(page.locator(".pickup-time")).toHaveText(/^\d{2}:\d{2}$/);
+  await expect(page.getByText("剩余取货时间")).toHaveCount(0);
+  await expect(page.locator(".pickup-time")).toHaveCount(0);
+  await expect(page.getByText(/60 秒|01:00/)).toHaveCount(0);
   await expect(page.locator(".pickup-illustration")).toBeVisible();
   await expect(page.locator(".pickup-notice")).toContainText(
     expectation.noticeTitle,

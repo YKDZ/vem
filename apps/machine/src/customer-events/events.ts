@@ -20,8 +20,12 @@ export type CustomerExperienceEvent =
         | "payment.prompt"
         | "payment.succeeded"
         | "dispensing.started"
+        | "dispense.outlet_opened"
         | "dispense.succeeded"
         | "dispense.failed"
+        | "pickup.waiting"
+        | "pickup.warning"
+        | "pickup.urgent"
         | "pickup.completed"
         | "refund.pending"
         | "refund.completed"
@@ -59,7 +63,11 @@ export const CUSTOMER_EXPERIENCE_EVENT_PRIORITIES: Record<
   "payment.prompt": 35,
   "payment.succeeded": 40,
   "dispensing.started": 40,
+  "dispense.outlet_opened": 40,
   "dispense.succeeded": 40,
+  "pickup.waiting": 40,
+  "pickup.warning": 40,
+  "pickup.urgent": 40,
   "pickup.completed": 40,
   "idle.assistance_prompt": 45,
   "idle.sleep": 45,
@@ -106,8 +114,12 @@ export function categoryForCustomerExperienceEvent(
     case "payment.prompt":
     case "payment.succeeded":
     case "dispensing.started":
+    case "dispense.outlet_opened":
     case "dispense.succeeded":
     case "dispense.failed":
+    case "pickup.waiting":
+    case "pickup.warning":
+    case "pickup.urgent":
     case "pickup.completed":
     case "refund.pending":
     case "refund.completed":

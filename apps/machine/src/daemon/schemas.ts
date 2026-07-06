@@ -234,10 +234,19 @@ export const transactionSnapshotSchema = z.object({
       lastError: z.string().nullable(),
       pickupReminder: z
         .object({
+          stage: z
+            .enum(["outlet_opened", "pickup_waiting", "pickup_timeout_warning"])
+            .optional(),
           level: z.enum(["info", "warning", "urgent"]),
           message: z.string(),
           warningNo: z.number().int().positive().nullable(),
           reportedAt: z.string(),
+          remainingSeconds: z
+            .number()
+            .int()
+            .nonnegative()
+            .nullable()
+            .optional(),
         })
         .nullable()
         .optional(),

@@ -15,9 +15,8 @@ const checkoutStore = useCheckoutStore();
 const { handleMaintenanceTap } = useMaintenanceEntry();
 
 let pollTimer: number | undefined;
-let clockTimer: number | undefined;
-
-const pickupSeconds = ref(60);
+let pickupRemainingTimer: number | undefined;
+const pickupRemainingSeconds = ref<number | null>(null);
 
 const hasOrder = computed(() => Boolean(checkoutStore.currentOrder));
 const status = computed(() => checkoutStore.status);
@@ -56,35 +55,47 @@ const pickupTitle = computed(() =>
       ? "请立即取走商品"
       : pickupReminder.value?.level === "warning"
         ? "请及时取走商品"
-        : "请取走您的商品",
+        : "设备出货中",
 );
 const pickupSubtitle = computed(() => {
   if (hasCustomerVisibleError.value) return "请联系工作人员处理";
-  return pickupReminder.value?.message ?? "如未取货，请在 60 秒内完成取货";
+  return pickupReminder.value?.message ?? "请稍候，商品正在送往取货口";
 });
 const pickupNoticeTitle = computed(() =>
   pickupReminder.value?.level === "urgent"
     ? "取货口即将关闭"
     : pickupReminder.value?.level === "warning"
       ? "请尽快完成取货"
-      : "请轻轻关上取货口",
+      : "出货完成后请取货",
 );
 const pickupNoticeCopy = computed(() =>
   pickupReminder.value?.level === "urgent"
     ? "请立即取走商品，避免取货口超时关闭。"
     : pickupReminder.value?.level === "warning"
       ? "商品已在取货口等待，请及时取走。"
-      : "感谢您的购买，期待再次为您服务！",
+      : "取货口打开后，请及时取走商品。",
 );
-const pickupTimeText = computed(
-  () =>
-    `${String(Math.floor(pickupSeconds.value / 60)).padStart(2, "0")}:${String(
-      pickupSeconds.value % 60,
-    ).padStart(2, "0")}`,
+const hasPickupRemainingSeconds = computed(
+  () => pickupRemainingSeconds.value !== null,
 );
+const pickupTimeText = computed(() => {
+  const seconds = pickupRemainingSeconds.value ?? 0;
+  return `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${String(
+    seconds % 60,
+  ).padStart(2, "0")}`;
+});
+
+function syncPickupRemainingSeconds(): void {
+  const remainingSeconds = pickupReminder.value?.remainingSeconds;
+  pickupRemainingSeconds.value =
+    typeof remainingSeconds === "number" && Number.isFinite(remainingSeconds)
+      ? Math.max(0, Math.trunc(remainingSeconds))
+      : null;
+}
 
 async function refreshStatus(): Promise<void> {
   await checkoutStore.refreshCurrentTransaction();
+  syncPickupRemainingSeconds();
   if (!checkoutStore.status) return;
   const resultKind = resultKindFromNextAction(checkoutStore.status.nextAction);
   if (resultKind) {
@@ -100,14 +111,18 @@ onMounted(async () => {
   pollTimer = window.setInterval(() => {
     void refreshStatus();
   }, 2_000);
-  clockTimer = window.setInterval(() => {
-    pickupSeconds.value = Math.max(0, pickupSeconds.value - 1);
+  pickupRemainingTimer = window.setInterval(() => {
+    if (pickupRemainingSeconds.value === null) return;
+    pickupRemainingSeconds.value = Math.max(
+      0,
+      pickupRemainingSeconds.value - 1,
+    );
   }, 1_000);
 });
 
 onUnmounted(() => {
   if (pollTimer) window.clearInterval(pollTimer);
-  if (clockTimer) window.clearInterval(clockTimer);
+  if (pickupRemainingTimer) window.clearInterval(pickupRemainingTimer);
 });
 </script>
 
@@ -201,9 +216,11 @@ onUnmounted(() => {
 
         <div class="pickup-divider" aria-hidden="true"></div>
 
-        <p class="pickup-time-label">剩余取货时间</p>
-        <strong class="pickup-time">{{ pickupTimeText }}</strong>
-        <p class="pickup-time-copy">超时未取货，商品将返回柜内</p>
+        <template v-if="hasPickupRemainingSeconds">
+          <p class="pickup-time-label">剩余取货时间</p>
+          <strong class="pickup-time">{{ pickupTimeText }}</strong>
+          <p class="pickup-time-copy">超时未取货，商品将返回柜内</p>
+        </template>
 
         <section class="pickup-notice">
           <span aria-hidden="true">

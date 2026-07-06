@@ -64,6 +64,18 @@ export const machineRuntimeScenarios = [
     ciTier: "full",
   },
   {
+    id: "payment-code",
+    name: "付款码支付",
+    category: "payment",
+    targetRoute: "/payment",
+    fixtureScenarioId: "payment_code",
+    setup: ["装载付款码支付交易 fixture", "装载扫码器在线状态"],
+    visualChecks: ["展示扫码器就绪", "提示顾客出示付款码", "展示支付倒计时"],
+    touchChecks: ["取消订单按钮满足触屏尺寸"],
+    screenshot: "included",
+    ciTier: "full",
+  },
+  {
     id: "result-payment-failed",
     name: "支付失败结果",
     category: "result",

@@ -10,12 +10,12 @@ import { useCheckoutStore } from "@/stores/checkout";
 import { useNaturalContextStore } from "@/stores/natural-context";
 import { useVisionStore } from "@/stores/vision";
 
+import { onCustomerEvent } from "./useCustomerEvents";
 import {
-  installCustomerAudioCueEventSource,
-  recordCustomerAudioCueSourceFact,
-  resetCustomerAudioCueEventSourceForTests,
-} from "./useCustomerAudioCueEventSource";
-import { onCustomerExperienceEvent } from "./useCustomerExperienceEvents";
+  installCustomerEventSources,
+  recordCustomerSourceFact,
+  resetCustomerEventSourcesForTests,
+} from "./useCustomerEventSources";
 import {
   resetCustomerPresenceSessionForTests,
   useCustomerPresenceSession,
@@ -115,7 +115,7 @@ function emitPresence(personPresent: boolean, detectedAt: string): void {
   });
 }
 
-describe("customer audio cue event source", () => {
+describe("customer event sources", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
     resetCustomerPresenceSessionForTests();
@@ -123,19 +123,19 @@ describe("customer audio cue event source", () => {
 
   afterEach(() => {
     resetCustomerPresenceSessionForTests();
-    resetCustomerAudioCueEventSourceForTests();
+    resetCustomerEventSourcesForTests();
     document.body.innerHTML = "";
     vi.useRealTimers();
   });
 
   it("publishes source facts through the existing customer experience event bus", () => {
     const observed: CustomerExperienceEvent[] = [];
-    const unsubscribe = onCustomerExperienceEvent((event) => {
+    const unsubscribe = onCustomerEvent((event) => {
       observed.push(event);
     });
-    installCustomerAudioCueEventSource();
+    installCustomerEventSources();
 
-    recordCustomerAudioCueSourceFact({
+    recordCustomerSourceFact({
       event: {
         type: "interaction.awakened",
         requestedAt: "2026-07-05T12:45:00.000Z",
@@ -155,20 +155,20 @@ describe("customer audio cue event source", () => {
 
   it("installs once and stops publishing after cleanup", () => {
     const observed: CustomerExperienceEvent[] = [];
-    const unsubscribe = onCustomerExperienceEvent((event) => {
+    const unsubscribe = onCustomerEvent((event) => {
       observed.push(event);
     });
-    const cleanup = installCustomerAudioCueEventSource();
-    installCustomerAudioCueEventSource();
+    const cleanup = installCustomerEventSources();
+    installCustomerEventSources();
 
-    recordCustomerAudioCueSourceFact({
+    recordCustomerSourceFact({
       event: {
         type: "interaction.awakened",
         requestedAt: "2026-07-05T12:46:00.000Z",
       },
     });
     cleanup();
-    recordCustomerAudioCueSourceFact({
+    recordCustomerSourceFact({
       event: {
         type: "idle.sleep",
         requestedAt: "2026-07-05T12:46:30.000Z",
@@ -191,12 +191,12 @@ describe("customer audio cue event source", () => {
       sunsetAt: "2026-06-29T10:02:00.000Z",
     });
     const observed: CustomerExperienceEvent[] = [];
-    const unsubscribe = onCustomerExperienceEvent((event) => {
+    const unsubscribe = onCustomerEvent((event) => {
       observed.push(event);
     });
-    installCustomerAudioCueEventSource();
+    installCustomerEventSources();
 
-    recordCustomerAudioCueSourceFact({
+    recordCustomerSourceFact({
       type: "vision.presence",
       personPresent: true,
       occupancyState: "single",
@@ -214,31 +214,31 @@ describe("customer audio cue event source", () => {
 
   it("does not treat restored or unknown occupancy facts as confirmed single-person presence", () => {
     const observed: CustomerExperienceEvent[] = [];
-    const unsubscribe = onCustomerExperienceEvent((event) => {
+    const unsubscribe = onCustomerEvent((event) => {
       observed.push(event);
     });
-    installCustomerAudioCueEventSource();
+    installCustomerEventSources();
 
-    recordCustomerAudioCueSourceFact({
+    recordCustomerSourceFact({
       type: "vision.presence",
       personPresent: true,
       occupancyState: "single",
       observedAt: "2026-06-29T12:00:00.000Z",
       restored: true,
     });
-    recordCustomerAudioCueSourceFact({
+    recordCustomerSourceFact({
       type: "vision.presence",
       personPresent: false,
       occupancyState: "none",
       observedAt: "2026-06-29T12:00:05.000Z",
     });
-    recordCustomerAudioCueSourceFact({
+    recordCustomerSourceFact({
       type: "vision.presence",
       personPresent: true,
       occupancyState: "unknown",
       observedAt: "2026-06-29T12:01:00.000Z",
     });
-    recordCustomerAudioCueSourceFact({
+    recordCustomerSourceFact({
       type: "vision.presence",
       personPresent: true,
       occupancyState: "single",
@@ -256,30 +256,30 @@ describe("customer audio cue event source", () => {
 
   it("lets crowd presence outrank welcome and suppresses unchanged duplicate presence facts", () => {
     const observed: CustomerExperienceEvent[] = [];
-    const unsubscribe = onCustomerExperienceEvent((event) => {
+    const unsubscribe = onCustomerEvent((event) => {
       observed.push(event);
     });
-    installCustomerAudioCueEventSource();
+    installCustomerEventSources();
 
-    recordCustomerAudioCueSourceFact({
+    recordCustomerSourceFact({
       type: "vision.presence",
       personPresent: true,
       occupancyState: "single",
       observedAt: "2026-06-29T12:10:00.000Z",
     });
-    recordCustomerAudioCueSourceFact({
+    recordCustomerSourceFact({
       type: "vision.presence",
       personPresent: true,
       occupancyState: "single",
       observedAt: "2026-06-29T12:10:01.000Z",
     });
-    recordCustomerAudioCueSourceFact({
+    recordCustomerSourceFact({
       type: "vision.presence",
       personPresent: true,
       occupancyState: "multiple",
       observedAt: "2026-06-29T12:10:02.000Z",
     });
-    recordCustomerAudioCueSourceFact({
+    recordCustomerSourceFact({
       type: "vision.presence",
       personPresent: true,
       occupancyState: "multiple",
@@ -301,12 +301,12 @@ describe("customer audio cue event source", () => {
 
   it("maps local awakened facts to interaction awakened events", () => {
     const observed: CustomerExperienceEvent[] = [];
-    const unsubscribe = onCustomerExperienceEvent((event) => {
+    const unsubscribe = onCustomerEvent((event) => {
       observed.push(event);
     });
-    installCustomerAudioCueEventSource();
+    installCustomerEventSources();
 
-    recordCustomerAudioCueSourceFact({
+    recordCustomerSourceFact({
       type: "local.awakened",
       requestedAt: "2026-06-29T12:12:00.000Z",
     });
@@ -341,10 +341,10 @@ describe("customer audio cue event source", () => {
     window.dispatchEvent(new Event("pointerdown"));
     await nextTick();
     const observed: CustomerExperienceEvent[] = [];
-    const unsubscribe = onCustomerExperienceEvent((event) => {
+    const unsubscribe = onCustomerEvent((event) => {
       observed.push(event);
     });
-    installCustomerAudioCueEventSource({ routeName });
+    installCustomerEventSources({ routeName });
 
     vi.advanceTimersByTime(1000);
     await nextTick();
@@ -380,10 +380,10 @@ describe("customer audio cue event source", () => {
     window.dispatchEvent(new Event("pointerdown"));
     await nextTick();
     const observed: CustomerExperienceEvent[] = [];
-    const unsubscribe = onCustomerExperienceEvent((event) => {
+    const unsubscribe = onCustomerEvent((event) => {
       observed.push(event);
     });
-    installCustomerAudioCueEventSource({ routeName });
+    installCustomerEventSources({ routeName });
 
     vi.advanceTimersByTime(800);
     window.dispatchEvent(new Event("pointerdown"));
@@ -426,10 +426,10 @@ describe("customer audio cue event source", () => {
     window.dispatchEvent(new Event("pointerdown"));
     await nextTick();
     const observed: CustomerExperienceEvent[] = [];
-    const unsubscribe = onCustomerExperienceEvent((event) => {
+    const unsubscribe = onCustomerEvent((event) => {
       observed.push(event);
     });
-    installCustomerAudioCueEventSource({ routeName });
+    installCustomerEventSources({ routeName });
 
     vi.advanceTimersByTime(3000);
     await nextTick();
@@ -466,10 +466,10 @@ describe("customer audio cue event source", () => {
     emitPresence(true, "2026-07-05T12:40:00.000Z");
     await nextTick();
     const observed: CustomerExperienceEvent[] = [];
-    const unsubscribe = onCustomerExperienceEvent((event) => {
+    const unsubscribe = onCustomerEvent((event) => {
       observed.push(event);
     });
-    installCustomerAudioCueEventSource({ routeName });
+    installCustomerEventSources({ routeName });
 
     useVisionStore().applyPersonDeparted({
       eventId: "VISION-IDLE-DEPARTURE-001",
@@ -499,10 +499,10 @@ describe("customer audio cue event source", () => {
   it("does not emit assistance prompts on transaction waiting and terminal routes", () => {
     const routeName = ref("payment");
     const observed: CustomerExperienceEvent[] = [];
-    const unsubscribe = onCustomerExperienceEvent((event) => {
+    const unsubscribe = onCustomerEvent((event) => {
       observed.push(event);
     });
-    installCustomerAudioCueEventSource({ routeName });
+    installCustomerEventSources({ routeName });
 
     for (const [route, occurredAt] of [
       ["payment", "2026-07-05T12:41:00.000Z"],
@@ -510,7 +510,7 @@ describe("customer audio cue event source", () => {
       ["result", "2026-07-05T12:41:02.000Z"],
     ] as const) {
       routeName.value = route;
-      recordCustomerAudioCueSourceFact({
+      recordCustomerSourceFact({
         type: "customer_session.idle",
         idleEvent: "assistance_prompt",
         occurredAt,
@@ -524,18 +524,18 @@ describe("customer audio cue event source", () => {
   it("does not duplicate repeated idle source facts", () => {
     const routeName = ref("catalog");
     const observed: CustomerExperienceEvent[] = [];
-    const unsubscribe = onCustomerExperienceEvent((event) => {
+    const unsubscribe = onCustomerEvent((event) => {
       observed.push(event);
     });
-    installCustomerAudioCueEventSource({ routeName });
+    installCustomerEventSources({ routeName });
 
     for (const idleEvent of ["assistance_prompt", "sleep"] as const) {
-      recordCustomerAudioCueSourceFact({
+      recordCustomerSourceFact({
         type: "customer_session.idle",
         idleEvent,
         occurredAt: `2026-07-05T12:42:0${idleEvent === "sleep" ? "1" : "0"}.000Z`,
       });
-      recordCustomerAudioCueSourceFact({
+      recordCustomerSourceFact({
         type: "customer_session.idle",
         idleEvent,
         occurredAt: `2026-07-05T12:42:0${idleEvent === "sleep" ? "1" : "0"}.000Z`,
@@ -557,10 +557,10 @@ describe("customer audio cue event source", () => {
 
   it("emits one payment prompt for repeated payment-waiting observations of the same current order", () => {
     const observed: CustomerExperienceEvent[] = [];
-    const unsubscribe = onCustomerExperienceEvent((event) => {
+    const unsubscribe = onCustomerEvent((event) => {
       observed.push(event);
     });
-    installCustomerAudioCueEventSource();
+    installCustomerEventSources();
 
     const checkoutStore = useCheckoutStore();
     checkoutStore.applyTransaction(transactionSnapshot());
@@ -580,10 +580,10 @@ describe("customer audio cue event source", () => {
 
   it("does not emit a payment prompt from a restored payment-waiting current transaction", () => {
     const observed: CustomerExperienceEvent[] = [];
-    const unsubscribe = onCustomerExperienceEvent((event) => {
+    const unsubscribe = onCustomerEvent((event) => {
       observed.push(event);
     });
-    installCustomerAudioCueEventSource();
+    installCustomerEventSources();
 
     useCheckoutStore().applyTransaction(transactionSnapshot(), {
       restored: true,
@@ -595,10 +595,10 @@ describe("customer audio cue event source", () => {
 
   it("does not emit dispensing cues from a restored dispensing current transaction", () => {
     const observed: CustomerExperienceEvent[] = [];
-    const unsubscribe = onCustomerExperienceEvent((event) => {
+    const unsubscribe = onCustomerEvent((event) => {
       observed.push(event);
     });
-    installCustomerAudioCueEventSource();
+    installCustomerEventSources();
 
     useCheckoutStore().applyTransaction(
       transactionSnapshot({
@@ -621,10 +621,10 @@ describe("customer audio cue event source", () => {
 
   it("does not emit result cues from restored terminal current transactions", () => {
     const observed: CustomerExperienceEvent[] = [];
-    const unsubscribe = onCustomerExperienceEvent((event) => {
+    const unsubscribe = onCustomerEvent((event) => {
       observed.push(event);
     });
-    installCustomerAudioCueEventSource();
+    installCustomerEventSources();
 
     const checkoutStore = useCheckoutStore();
     const restoredTerminalResults = [
@@ -670,10 +670,10 @@ describe("customer audio cue event source", () => {
 
   it("emits payment succeeded and dispensing started when a paid order enters dispensing", () => {
     const observed: CustomerExperienceEvent[] = [];
-    const unsubscribe = onCustomerExperienceEvent((event) => {
+    const unsubscribe = onCustomerEvent((event) => {
       observed.push(event);
     });
-    installCustomerAudioCueEventSource();
+    installCustomerEventSources();
 
     const checkoutStore = useCheckoutStore();
     checkoutStore.applyTransaction(transactionSnapshot());
@@ -725,10 +725,10 @@ describe("customer audio cue event source", () => {
 
   it("emits payment and dispensing cues when a restored payment-waiting order later enters dispensing", () => {
     const observed: CustomerExperienceEvent[] = [];
-    const unsubscribe = onCustomerExperienceEvent((event) => {
+    const unsubscribe = onCustomerEvent((event) => {
       observed.push(event);
     });
-    installCustomerAudioCueEventSource();
+    installCustomerEventSources();
 
     const checkoutStore = useCheckoutStore();
     checkoutStore.applyTransaction(transactionSnapshot(), {
@@ -762,12 +762,135 @@ describe("customer audio cue event source", () => {
     ]);
   });
 
-  it("maps terminal transaction results to order-scoped customer audio cue events without pickup completion", () => {
+  it("emits pickup progress events from structured pickup reminder stages", () => {
     const observed: CustomerExperienceEvent[] = [];
-    const unsubscribe = onCustomerExperienceEvent((event) => {
+    const unsubscribe = onCustomerEvent((event) => {
       observed.push(event);
     });
-    installCustomerAudioCueEventSource();
+    installCustomerEventSources();
+
+    const checkoutStore = useCheckoutStore();
+    checkoutStore.applyTransaction(transactionSnapshot());
+    checkoutStore.applyTransaction(
+      transactionSnapshot({
+        paymentStatus: "succeeded",
+        orderStatus: "dispensing",
+        nextAction: "dispensing",
+        vending: {
+          commandNo: "VEND-197",
+          status: "dispensing",
+          lastError: null,
+          pickupReminder: {
+            stage: "outlet_opened",
+            level: "info",
+            message: "取货口已打开，请取走商品",
+            warningNo: null,
+            reportedAt: "2026-07-05T12:35:08.000Z",
+          },
+        },
+        updatedAt: "2026-07-05T12:35:08.000Z",
+      }),
+    );
+    checkoutStore.applyTransaction(
+      transactionSnapshot({
+        paymentStatus: "succeeded",
+        orderStatus: "dispensing",
+        nextAction: "dispensing",
+        vending: {
+          commandNo: "VEND-197",
+          status: "dispensing",
+          lastError: null,
+          pickupReminder: {
+            stage: "pickup_waiting",
+            level: "info",
+            message: "下位机正在等待用户取货",
+            warningNo: null,
+            reportedAt: "2026-07-05T12:35:10.000Z",
+          },
+        },
+        updatedAt: "2026-07-05T12:35:10.000Z",
+      }),
+    );
+    checkoutStore.applyTransaction(
+      transactionSnapshot({
+        paymentStatus: "succeeded",
+        orderStatus: "dispensing",
+        nextAction: "dispensing",
+        vending: {
+          commandNo: "VEND-197",
+          status: "dispensing",
+          lastError: null,
+          pickupReminder: {
+            stage: "pickup_timeout_warning",
+            level: "warning",
+            message: "请尽快取走商品",
+            warningNo: 1,
+            reportedAt: "2026-07-05T12:35:20.000Z",
+          },
+        },
+        updatedAt: "2026-07-05T12:35:20.000Z",
+      }),
+    );
+    checkoutStore.applyTransaction(
+      transactionSnapshot({
+        paymentStatus: "succeeded",
+        orderStatus: "dispensing",
+        nextAction: "dispensing",
+        vending: {
+          commandNo: "VEND-197",
+          status: "dispensing",
+          lastError: null,
+          pickupReminder: {
+            stage: "pickup_timeout_warning",
+            level: "urgent",
+            message: "请立即取走商品，设备即将自动关闭取货口",
+            warningNo: 2,
+            reportedAt: "2026-07-05T12:35:30.000Z",
+          },
+        },
+        updatedAt: "2026-07-05T12:35:30.000Z",
+      }),
+    );
+
+    unsubscribe();
+    expect(observed).toEqual([
+      {
+        type: "payment.prompt",
+        orderKey: "VEM-ORDER-197",
+      },
+      {
+        type: "payment.succeeded",
+        orderKey: "VEM-ORDER-197",
+      },
+      {
+        type: "dispensing.started",
+        orderKey: "VEM-ORDER-197",
+      },
+      {
+        type: "dispense.outlet_opened",
+        orderKey: "VEM-ORDER-197",
+      },
+      {
+        type: "pickup.waiting",
+        orderKey: "VEM-ORDER-197",
+      },
+      {
+        type: "pickup.warning",
+        orderKey: "VEM-ORDER-197",
+      },
+      {
+        type: "pickup.urgent",
+        orderKey: "VEM-ORDER-197",
+      },
+    ]);
+  });
+
+  it("maps terminal transaction results to order-scoped customer events", () => {
+    const observed: CustomerExperienceEvent[] = [];
+    const unsubscribe = onCustomerEvent((event) => {
+      observed.push(event);
+    });
+    installCustomerEventSources();
 
     const checkoutStore = useCheckoutStore();
     const terminalResults = [
@@ -824,25 +947,35 @@ describe("customer audio cue event source", () => {
         ...checkoutStore.transaction!,
         updatedAt: "2026-07-05T12:36:02.000Z",
       });
-      expectedEvents.push({
-        type: eventType,
-        orderKey: orderNo,
-      });
+      if (nextAction === "success") {
+        expectedEvents.push(
+          {
+            type: "pickup.completed",
+            orderKey: orderNo,
+          },
+          {
+            type: eventType,
+            orderKey: orderNo,
+          },
+        );
+      } else {
+        expectedEvents.push({
+          type: eventType,
+          orderKey: orderNo,
+        });
+      }
     }
 
     unsubscribe();
     expect(observed).toEqual(expectedEvents);
-    expect(observed).not.toContainEqual(
-      expect.objectContaining({ type: "pickup.completed" }),
-    );
   });
 
   it("emits the same terminal result cue independently for a different order number", () => {
     const observed: CustomerExperienceEvent[] = [];
-    const unsubscribe = onCustomerExperienceEvent((event) => {
+    const unsubscribe = onCustomerEvent((event) => {
       observed.push(event);
     });
-    installCustomerAudioCueEventSource();
+    installCustomerEventSources();
 
     const checkoutStore = useCheckoutStore();
     for (const orderNo of ["VEM-ORDER-197-A", "VEM-ORDER-197-B"]) {
@@ -867,8 +1000,16 @@ describe("customer audio cue event source", () => {
     unsubscribe();
     expect(observed).toEqual([
       {
+        type: "pickup.completed",
+        orderKey: "VEM-ORDER-197-A",
+      },
+      {
         type: "dispense.succeeded",
         orderKey: "VEM-ORDER-197-A",
+      },
+      {
+        type: "pickup.completed",
+        orderKey: "VEM-ORDER-197-B",
       },
       {
         type: "dispense.succeeded",
@@ -879,10 +1020,10 @@ describe("customer audio cue event source", () => {
 
   it("does not emit transaction audio cue events for payment failed, payment expired, or closed results", () => {
     const observed: CustomerExperienceEvent[] = [];
-    const unsubscribe = onCustomerExperienceEvent((event) => {
+    const unsubscribe = onCustomerEvent((event) => {
       observed.push(event);
     });
-    installCustomerAudioCueEventSource();
+    installCustomerEventSources();
 
     const checkoutStore = useCheckoutStore();
     const reservedResults = [

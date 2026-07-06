@@ -3,6 +3,7 @@
 interface ImportMetaEnv {
   readonly VITE_ENABLE_MOCK_PAYMENT_CONTROLS?: string;
   readonly VITE_ENABLE_ADVANCED_MAINTENANCE_CONFIG?: string;
+  readonly VITE_ENABLE_PAYMENT_CODE_DEV_SCAN?: string;
 }
 
 interface ImportMeta {

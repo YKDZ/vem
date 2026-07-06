@@ -3835,6 +3835,10 @@ fn map_vending_summary(
             .map(ToString::to_string),
         pickup_reminder: vending.get("pickupReminder").and_then(|value| {
             Some(vending_core::domain::PickupReminderSummary {
+                stage: value
+                    .get("stage")
+                    .and_then(|v| v.as_str())
+                    .map(ToString::to_string),
                 level: value.get("level")?.as_str()?.to_string(),
                 message: value.get("message")?.as_str()?.to_string(),
                 warning_no: value
@@ -4074,9 +4078,15 @@ fn patch_backend_status_for_dispense_progress(
             }
             DispenseProgressStage::PickupTimeoutWarning => "warning",
         };
+        let stage = match event.stage {
+            DispenseProgressStage::OutletOpened => "outlet_opened",
+            DispenseProgressStage::PickupWaiting => "pickup_waiting",
+            DispenseProgressStage::PickupTimeoutWarning => "pickup_timeout_warning",
+        };
         vending.insert(
             "pickupReminder".to_string(),
             serde_json::json!({
+                "stage": stage,
                 "level": level,
                 "message": event.message,
                 "warningNo": event.warning_no,
@@ -6663,6 +6673,7 @@ mod tests {
             .pickup_reminder
             .expect("pickup reminder");
         assert_eq!(reminder.level, "urgent");
+        assert_eq!(reminder.stage.as_deref(), Some("pickup_timeout_warning"));
         assert_eq!(reminder.warning_no, Some(2));
         assert!(reminder.message.contains("立即取走"));
         assert_eq!(snapshot.next_action.as_deref(), Some("dispensing"));
@@ -6693,6 +6704,7 @@ mod tests {
                         "status": "dispensing",
                         "lastError": null,
                         "pickupReminder": {
+                            "stage": "pickup_timeout_warning",
                             "level": "warning",
                             "message": "请尽快取走商品",
                             "warningNo": 1,
@@ -6738,6 +6750,7 @@ mod tests {
             .pickup_reminder
             .expect("pickup reminder");
         assert_eq!(reminder.message, "请尽快取走商品");
+        assert_eq!(reminder.stage.as_deref(), Some("pickup_timeout_warning"));
         assert_eq!(reminder.warning_no, Some(1));
     }
 

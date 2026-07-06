@@ -11,7 +11,7 @@ import { useRoute, useRouter, type RouteLocationRaw } from "vue-router";
 
 import { useVisionStore } from "@/stores/vision";
 
-import { recordCustomerAudioCueSourceFact } from "./useCustomerAudioCueEventSource";
+import { recordCustomerSourceFact } from "./useCustomerEventSources";
 
 const DEFAULT_PRESENCE_STALE_MS = 15_000;
 const DEFAULT_CUSTOMER_ASSISTANCE_PROMPT_MS = 20_000;
@@ -132,7 +132,7 @@ function restartAssistancePromptTimer(): void {
   clearAssistancePromptTimer();
   if (!activeOptions || !state.value.personPresent) return;
   assistancePromptTimer = setTimeout(() => {
-    recordCustomerAudioCueSourceFact({
+    recordCustomerSourceFact({
       type: "customer_session.idle",
       idleEvent: "assistance_prompt",
       occurredAt: nowIso(),
@@ -185,14 +185,14 @@ function markDeparted(input: {
     wasPersonPresent &&
     !input.suppressAudioCue
   ) {
-    recordCustomerAudioCueSourceFact({
+    recordCustomerSourceFact({
       type: "customer_session.idle",
       idleEvent: "sleep",
       occurredAt: input.departedAt ?? nowIso(),
     });
   }
   if (input.source === "vision") {
-    recordCustomerAudioCueSourceFact({
+    recordCustomerSourceFact({
       type: "vision.presence",
       personPresent: false,
       occupancyState: "none",
@@ -212,7 +212,7 @@ function registerInteraction(): void {
       source: "local_interaction",
       seenAt,
     });
-    recordCustomerAudioCueSourceFact({
+    recordCustomerSourceFact({
       type: "local.awakened",
       requestedAt: seenAt,
     });
@@ -304,7 +304,7 @@ function startCustomerPresenceSession(
         source: "vision",
         seenAt: observedAt,
       });
-      recordCustomerAudioCueSourceFact({
+      recordCustomerSourceFact({
         type: "vision.presence",
         personPresent: true,
         occupancyState: presence.occupancyState,

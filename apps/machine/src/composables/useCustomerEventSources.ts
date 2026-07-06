@@ -13,11 +13,11 @@ import type { CustomerExperienceEvent } from "@/customer-events/events";
 import { useCheckoutStore } from "@/stores/checkout";
 import { useNaturalContextStore } from "@/stores/natural-context";
 
-import { emitCustomerExperienceEvent } from "./useCustomerExperienceEvents";
+import { emitCustomerEvent } from "./useCustomerEvents";
 
 type VisionAudioCueState = "absent" | "single" | "crowd";
 
-export type DirectCustomerAudioCueSourceFact = {
+export type DirectCustomerSourceFact = {
   event: CustomerExperienceEvent;
 };
 
@@ -41,18 +41,18 @@ export type CustomerSessionIdleAudioCueSourceFact = {
   occurredAt: string;
 };
 
-export type CustomerAudioCueSourceFact =
-  | DirectCustomerAudioCueSourceFact
+export type CustomerSourceFact =
+  | DirectCustomerSourceFact
   | VisionPresenceAudioCueSourceFact
   | LocalAwakenedAudioCueSourceFact
   | CustomerSessionIdleAudioCueSourceFact;
 
-export type CustomerAudioCueEventSourceOptions = {
-  sourceFact?: Readonly<Ref<CustomerAudioCueSourceFact | null>>;
+export type CustomerEventSourceOptions = {
+  sourceFact?: Readonly<Ref<CustomerSourceFact | null>>;
   routeName?: Readonly<Ref<unknown>>;
 };
 
-const sourceFact = shallowRef<CustomerAudioCueSourceFact | null>(null);
+const sourceFact = shallowRef<CustomerSourceFact | null>(null);
 
 let activeScope: EffectScope | null = null;
 let activeCleanup: (() => void) | null = null;
@@ -141,7 +141,7 @@ function eventForVisionPresenceFact(
 }
 
 function eventForSourceFact(
-  fact: CustomerAudioCueSourceFact,
+  fact: CustomerSourceFact,
   routeName: unknown,
 ): CustomerExperienceEvent | null {
   if ("event" in fact) return fact.event;
@@ -172,14 +172,14 @@ function eventForSourceFact(
 
 function emitTransactionEventOnce(event: CustomerExperienceEvent): void {
   if (!("orderKey" in event) || !event.orderKey) {
-    emitCustomerExperienceEvent(event);
+    emitCustomerEvent(event);
     return;
   }
 
   const sourceFactKey = `${event.orderKey}:${event.type}`;
   if (emittedTransactionSourceFacts.has(sourceFactKey)) return;
   emittedTransactionSourceFacts.add(sourceFactKey);
-  emitCustomerExperienceEvent(event);
+  emitCustomerEvent(event);
 }
 
 function eventTypeForTerminalTransaction(
@@ -188,8 +188,6 @@ function eventTypeForTerminalTransaction(
   switch (nextAction) {
     case null:
       return null;
-    case "success":
-      return "dispense.succeeded";
     case "dispense_failed":
       return "dispense.failed";
     case "refund_pending":
@@ -203,8 +201,33 @@ function eventTypeForTerminalTransaction(
   }
 }
 
-export function installCustomerAudioCueEventSource(
-  options: CustomerAudioCueEventSourceOptions = {},
+function eventTypeForPickupReminder(
+  reminder:
+    | {
+        stage?: string | null;
+        level?: string | null;
+        warningNo?: number | null;
+      }
+    | null
+    | undefined,
+): CustomerExperienceEvent["type"] | null {
+  if (!reminder?.stage) return null;
+  switch (reminder.stage) {
+    case "outlet_opened":
+      return "dispense.outlet_opened";
+    case "pickup_waiting":
+      return "pickup.waiting";
+    case "pickup_timeout_warning":
+      return reminder.level === "urgent" || (reminder.warningNo ?? 0) >= 2
+        ? "pickup.urgent"
+        : "pickup.warning";
+    default:
+      return null;
+  }
+}
+
+export function installCustomerEventSources(
+  options: CustomerEventSourceOptions = {},
 ): () => void {
   if (activeCleanup) return activeCleanup;
 
@@ -223,7 +246,7 @@ export function installCustomerAudioCueEventSource(
         }
         const event = eventForSourceFact(fact, routeName?.value);
         if (event) {
-          emitCustomerExperienceEvent(event);
+          emitCustomerEvent(event);
         }
       },
       { flush: "sync" },
@@ -262,12 +285,32 @@ export function installCustomerAudioCueEventSource(
             type: "dispensing.started",
             orderKey: transaction.orderKey,
           });
+          const pickupReminderEventType = eventTypeForPickupReminder(
+            transaction.pickupReminder,
+          );
+          if (pickupReminderEventType) {
+            emitTransactionEventOnce({
+              type: pickupReminderEventType,
+              orderKey: transaction.orderKey,
+            });
+          }
           return;
         }
 
         const terminalEventType = eventTypeForTerminalTransaction(
           transaction.nextAction,
         );
+        if (transaction.nextAction === "success") {
+          emitTransactionEventOnce({
+            type: "pickup.completed",
+            orderKey: transaction.orderKey,
+          });
+          emitTransactionEventOnce({
+            type: "dispense.succeeded",
+            orderKey: transaction.orderKey,
+          });
+          return;
+        }
         if (terminalEventType) {
           emitTransactionEventOnce({
             type: terminalEventType,
@@ -289,13 +332,11 @@ export function installCustomerAudioCueEventSource(
   return activeCleanup;
 }
 
-export function recordCustomerAudioCueSourceFact(
-  fact: CustomerAudioCueSourceFact,
-): void {
+export function recordCustomerSourceFact(fact: CustomerSourceFact): void {
   sourceFact.value = fact;
 }
 
-export function resetCustomerAudioCueEventSourceForTests(): void {
+export function resetCustomerEventSourcesForTests(): void {
   activeCleanup?.();
   sourceFact.value = null;
   lastVisionAudioCueState = "absent";

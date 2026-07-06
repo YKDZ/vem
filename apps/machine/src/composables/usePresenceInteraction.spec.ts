@@ -12,11 +12,11 @@ import { useVisionStore } from "@/stores/vision";
 
 import type { PresenceInteractionState } from "./usePresenceInteraction";
 
+import { onCustomerEvent } from "./useCustomerEvents";
 import {
-  installCustomerAudioCueEventSource,
-  resetCustomerAudioCueEventSourceForTests,
-} from "./useCustomerAudioCueEventSource";
-import { onCustomerExperienceEvent } from "./useCustomerExperienceEvents";
+  installCustomerEventSources,
+  resetCustomerEventSourcesForTests,
+} from "./useCustomerEventSources";
 import {
   resetCustomerPresenceSessionForTests,
   usePresenceInteraction,
@@ -73,10 +73,10 @@ function observeCustomerExperienceEvents(): {
   cleanup: () => void;
 } {
   const observed: CustomerExperienceEvent[] = [];
-  const unsubscribe = onCustomerExperienceEvent((event) => {
+  const unsubscribe = onCustomerEvent((event) => {
     observed.push(event);
   });
-  const cleanupSource = installCustomerAudioCueEventSource();
+  const cleanupSource = installCustomerEventSources();
   return {
     observed,
     cleanup: () => {
@@ -174,7 +174,7 @@ describe("usePresenceInteraction", () => {
 
   afterEach(() => {
     resetCustomerPresenceSessionForTests();
-    resetCustomerAudioCueEventSourceForTests();
+    resetCustomerEventSourcesForTests();
     document.body.innerHTML = "";
     vi.useRealTimers();
   });
@@ -253,7 +253,7 @@ describe("usePresenceInteraction", () => {
     expect(presence.presenceClass?.value).toBe("presence-idle");
   });
 
-  it("emits a customer audio cue event for vision-confirmed single-person presence", async () => {
+  it("emits a customer event for vision-confirmed single-person presence", async () => {
     const events = observeCustomerExperienceEvents();
     await mountPresence();
 
@@ -359,7 +359,7 @@ describe("usePresenceInteraction", () => {
     ]);
   });
 
-  it("does not emit a customer audio cue event from restored initial vision presence", async () => {
+  it("does not emit a customer event from restored initial vision presence", async () => {
     emitPresenceStatus({
       eventId: "VISION-PRESENCE-EVENT-RESTORED",
       detectedAt: "2026-06-29T12:05:00.000Z",
@@ -670,7 +670,7 @@ describe("usePresenceInteraction", () => {
     ]);
   });
 
-  it("does not duplicate customer audio cue events for unchanged vision presence or crowd state", async () => {
+  it("does not duplicate customer events for unchanged vision presence or crowd state", async () => {
     const events = observeCustomerExperienceEvents();
     await mountPresence();
 

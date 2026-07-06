@@ -88,7 +88,7 @@ import type {
   MachineCatalogSlotCandidate,
 } from "@/types/catalog";
 
-import { onCustomerExperienceEvent } from "@/composables/useCustomerExperienceEvents";
+import { onCustomerEvent } from "@/composables/useCustomerEvents";
 import {
   resetCustomerPresenceSessionForTests,
   useReturnHomeOnCustomerDeparture,
@@ -228,7 +228,7 @@ function unmountMountedView(): void {
 
 function recordCustomerExperienceEvents(): CustomerExperienceEvent[] {
   const observed: CustomerExperienceEvent[] = [];
-  const cleanup = onCustomerExperienceEvent((event) => {
+  const cleanup = onCustomerEvent((event) => {
     observed.push(event);
   });
   customerExperienceEventCleanups.push(cleanup);

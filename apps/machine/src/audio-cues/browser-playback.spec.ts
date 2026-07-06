@@ -271,7 +271,7 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
       playbackFactory: playback.playbackFactory,
     });
 
-    await adapter.requestCustomerAudioCue({
+    await adapter.handleCustomerEvent({
       type: "presence.detected",
       requestedAt: "2026-06-29T08:00:00.000Z",
       nowMs: 0,
@@ -315,7 +315,7 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
     });
 
     await useMachineStore().loadConfig();
-    await adapter.requestCustomerAudioCue({
+    await adapter.handleCustomerEvent({
       type: "payment.succeeded",
       orderKey: "ORDER-VOLUME-1",
       requestedAt: "2026-06-29T08:00:30.000Z",
@@ -332,7 +332,7 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
     });
     const store = useAudioCueStore();
 
-    const request = adapter.requestCustomerAudioCue({
+    const request = adapter.handleCustomerEvent({
       type: "payment.succeeded",
       orderKey: "ORDER-1",
       requestedAt: "2026-06-29T08:01:00.000Z",
@@ -375,7 +375,7 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
         }),
     });
 
-    await adapter.requestCustomerAudioCue({
+    await adapter.handleCustomerEvent({
       type: "presence.detected",
       requestedAt: "2026-06-29T08:01:30.000Z",
       nowMs: 30_000,
@@ -403,7 +403,7 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
         }),
     });
 
-    await adapter.requestCustomerAudioCue({
+    await adapter.handleCustomerEvent({
       type: "manual_handling.required",
       orderKey: "ORDER-NATIVE-1",
       requestedAt: "2026-06-29T08:01:31.000Z",
@@ -413,7 +413,7 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
     expect(useAudioCueStore().playback.status).toBe("idle");
 
     await expect(
-      adapter.requestCustomerAudioCue({
+      adapter.handleCustomerEvent({
         type: "presence.detected",
         requestedAt: "2026-06-29T08:01:40.000Z",
         nowMs: 40_000,
@@ -477,7 +477,7 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
         playbackFactory: playback.playbackFactory,
       });
 
-      await adapter.requestCustomerAudioCue({
+      await adapter.handleCustomerEvent({
         type: cue,
         orderKey: snapshot.orderNo,
         requestedAt: "2026-06-29T08:02:01.000Z",
@@ -506,12 +506,12 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
     });
     const store = useAudioCueStore();
 
-    await adapter.requestCustomerAudioCue({
+    await adapter.handleCustomerEvent({
       type: "presence.detected",
       requestedAt: "2026-06-29T08:03:00.000Z",
       nowMs: 1_000,
     });
-    await adapter.requestCustomerAudioCue({
+    await adapter.handleCustomerEvent({
       type: "presence.detected",
       requestedAt: "2026-06-29T08:03:03.000Z",
       nowMs: 4_000,
@@ -525,7 +525,7 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
       message: "presence audio cue cooldown",
     });
 
-    await adapter.requestCustomerAudioCue({
+    await adapter.handleCustomerEvent({
       type: "manual_handling.required",
       orderKey: "ORDER-3",
       requestedAt: "2026-06-29T08:03:04.000Z",
@@ -550,7 +550,7 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
       playbackFactory: playback.playbackFactory,
     });
 
-    await adapter.requestCustomerAudioCue({
+    await adapter.handleCustomerEvent({
       type: "presence.detected",
       requestedAt: "2026-06-29T08:03:10.000Z",
       nowMs: 50_000,
@@ -558,7 +558,7 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
     mockDriver(playback.created[0]).completeActive();
 
     await expect(
-      adapter.requestCustomerAudioCue({
+      adapter.handleCustomerEvent({
         type: "presence.detected",
         requestedAt: "2026-06-29T08:03:11.000Z",
         nowMs: 51_000,
@@ -598,7 +598,7 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
       });
 
       await expect(
-        adapter.requestCustomerAudioCue({
+        adapter.handleCustomerEvent({
           type: "presence.detected",
           requestedAt: "2026-06-29T08:03:12.000Z",
           nowMs: 52_000,
@@ -625,14 +625,14 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
     });
     const store = useAudioCueStore();
 
-    await adapter.requestCustomerAudioCue({
+    await adapter.handleCustomerEvent({
       type: "presence.detected",
       requestedAt: "2026-06-29T08:03:20.000Z",
       nowMs: 1_000,
     });
 
     await expect(
-      adapter.requestCustomerAudioCue({
+      adapter.handleCustomerEvent({
         type: "presence.detected",
         requestedAt: "2026-06-29T08:03:23.000Z",
         nowMs: 4_000,
@@ -648,7 +648,7 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
     });
 
     await expect(
-      adapter.requestCustomerAudioCue({
+      adapter.handleCustomerEvent({
         type: "presence.detected",
         requestedAt: "2026-06-29T08:03:30.000Z",
         nowMs: 11_000,
@@ -667,13 +667,13 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
     });
     const store = useAudioCueStore();
 
-    await adapter.requestCustomerAudioCue({
+    await adapter.handleCustomerEvent({
       type: "presence.detected",
       requestedAt: "2026-06-29T08:03:40.000Z",
       nowMs: 2_000,
     });
     await expect(
-      adapter.requestCustomerAudioCue({
+      adapter.handleCustomerEvent({
         type: "presence.detected",
         requestedAt: "2026-06-29T08:03:43.000Z",
         nowMs: 5_000,
@@ -698,17 +698,17 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
     });
     const store = useAudioCueStore();
 
-    await adapter.requestCustomerAudioCue({
+    await adapter.handleCustomerEvent({
       type: "dispense.failed",
       orderKey: "ORDER-4",
       requestedAt: "2026-06-29T08:04:00.000Z",
     });
-    await adapter.requestCustomerAudioCue({
+    await adapter.handleCustomerEvent({
       type: "refund.pending",
       orderKey: "ORDER-4",
       requestedAt: "2026-06-29T08:04:01.000Z",
     });
-    await adapter.requestCustomerAudioCue({
+    await adapter.handleCustomerEvent({
       type: "presence.detected",
       requestedAt: "2026-06-29T08:04:02.000Z",
     });
@@ -732,12 +732,12 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
     });
     const store = useAudioCueStore();
 
-    await adapter.requestCustomerAudioCue({
+    await adapter.handleCustomerEvent({
       type: "presence.detected",
       requestedAt: "2026-06-29T08:05:00.000Z",
       nowMs: 10_000,
     });
-    await adapter.requestCustomerAudioCue({
+    await adapter.handleCustomerEvent({
       type: "dispensing.started",
       orderKey: "ORDER-5",
       requestedAt: "2026-06-29T08:05:01.000Z",
@@ -762,12 +762,12 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
       playbackFactory: playback.playbackFactory,
     });
 
-    await adapter.requestCustomerAudioCue({
+    await adapter.handleCustomerEvent({
       type: "presence.detected",
       requestedAt: "2026-06-29T08:06:00.000Z",
       nowMs: 20_000,
     });
-    await adapter.requestCustomerAudioCue({
+    await adapter.handleCustomerEvent({
       type: "manual_handling.required",
       orderKey: "ORDER-6",
       requestedAt: "2026-06-29T08:06:01.000Z",
@@ -797,12 +797,12 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
       playbackFactory: transactionPlayback.playbackFactory,
     });
 
-    await presenceRequester.requestCustomerAudioCue({
+    await presenceRequester.handleCustomerEvent({
       type: "presence.detected",
       requestedAt: "2026-06-29T08:06:10.000Z",
       nowMs: 22_000,
     });
-    await transactionRequester.requestCustomerAudioCue({
+    await transactionRequester.handleCustomerEvent({
       type: "dispense.failed",
       orderKey: "ORDER-6B",
       requestedAt: "2026-06-29T08:06:11.000Z",
@@ -829,14 +829,14 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
       autoStart: false,
     });
 
-    await adapter.requestCustomerAudioCue({
+    await adapter.handleCustomerEvent({
       type: "presence.detected",
       requestedAt: "2026-06-29T08:07:00.000Z",
       nowMs: 30_000,
     });
     expect(adapter.pendingSourceCount()).toBe(1);
 
-    await adapter.requestCustomerAudioCue({
+    await adapter.handleCustomerEvent({
       type: "presence.detected",
       requestedAt: "2026-06-29T08:07:03.000Z",
       nowMs: 33_000,
@@ -852,14 +852,14 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
       autoStart: false,
     });
 
-    await adapter.requestCustomerAudioCue({
+    await adapter.handleCustomerEvent({
       type: "presence.detected",
       requestedAt: "2026-06-29T08:07:10.000Z",
       nowMs: 35_000,
     });
     expect(adapter.pendingSourceCount()).toBe(1);
 
-    await adapter.requestCustomerAudioCue({
+    await adapter.handleCustomerEvent({
       type: "dispense.failed",
       orderKey: "ORDER-7",
       requestedAt: "2026-06-29T08:07:11.000Z",
@@ -882,7 +882,7 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
     });
     const store = useAudioCueStore();
 
-    await adapter.requestCustomerAudioCue({
+    await adapter.handleCustomerEvent({
       type: "presence.detected",
       requestedAt: "2026-06-29T08:08:00.000Z",
       nowMs: 40_000,
@@ -908,7 +908,7 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
     });
     const store = useAudioCueStore();
 
-    await adapter.requestCustomerAudioCue({
+    await adapter.handleCustomerEvent({
       type: "payment.succeeded",
       orderKey: "ORDER-8",
       requestedAt: "2026-06-29T08:09:00.000Z",
@@ -918,7 +918,7 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
     expect(store.hasOrderCuePlayed("ORDER-8", "payment.succeeded")).toBe(true);
 
     await expect(
-      adapter.requestCustomerAudioCue({
+      adapter.handleCustomerEvent({
         type: "payment.succeeded",
         orderKey: "ORDER-8",
         requestedAt: "2026-06-29T08:09:01.000Z",

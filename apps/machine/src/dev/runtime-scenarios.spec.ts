@@ -104,6 +104,33 @@ describe("machine runtime scenario matrix", () => {
     }
   });
 
+  it("covers both payment presentation modes as screenshot scenarios", () => {
+    const paymentStates = [
+      {
+        id: "payment-qr",
+        fixtureScenarioId: "payment_qr",
+        visualCheck: "展示支付二维码区域",
+      },
+      {
+        id: "payment-code",
+        fixtureScenarioId: "payment_code",
+        visualCheck: "展示扫码器就绪",
+      },
+    ] as const;
+
+    for (const expectation of paymentStates) {
+      const scenario = machineRuntimeScenarios.find(
+        (candidate) => candidate.id === expectation.id,
+      );
+      expect(scenario).toBeDefined();
+      expect(scenario?.category).toBe("payment");
+      expect(scenario?.targetRoute).toBe("/payment");
+      expect(scenario?.fixtureScenarioId).toBe(expectation.fixtureScenarioId);
+      expect(scenario?.visualChecks).toContain(expectation.visualCheck);
+      expect(scenario?.screenshot).toBe("included");
+    }
+  });
+
   it("selects screenshot scenario subsets for artifact generation", () => {
     expect(selectScreenshotMachineRuntimeScenarios(undefined)).toEqual(
       screenshotMachineRuntimeScenarios,

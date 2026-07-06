@@ -16,6 +16,7 @@ import {
 
 const readyCatalogScenario = getMachineRuntimeScenario("ready-catalog");
 const paymentScenario = getMachineRuntimeScenario("payment-qr");
+const paymentCodeScenario = getMachineRuntimeScenario("payment-code");
 const dispensingScenario = getMachineRuntimeScenario("dispensing");
 const dispensingPickup15sScenario = getMachineRuntimeScenario(
   "dispensing-pickup-15s",
@@ -386,9 +387,12 @@ test("touchscreen customer can complete a successful purchase journey", async ({
 
   await expect(page).toHaveURL(/#\/dispensing$/);
   await expect(page.getByRole("heading", { name: "正在出货" })).toBeVisible();
-  await expect(page.getByText("请取走您的商品")).toBeVisible();
-  await expect(page.getByText("剩余取货时间")).toBeVisible();
-  await expect(page.getByText("轻轻关上取货口")).toBeVisible();
+  await expect(page.getByText("设备出货中")).toBeVisible();
+  await expect(page.getByText("请稍候，商品正在送往取货口")).toBeVisible();
+  await expect(page.getByText("请取走您的商品")).toHaveCount(0);
+  await expect(page.getByText("剩余取货时间")).toHaveCount(0);
+  await expect(page.getByText(/60 秒|01:00/)).toHaveCount(0);
+  await expect(page.getByText("出货完成后请取货")).toBeVisible();
 
   await page.evaluate(() => {
     window.localStorage.setItem(
@@ -439,6 +443,25 @@ test("runtime matrix can directly load payment state", async ({ page }) => {
   await expect(page.getByText("应付金额")).toBeVisible();
   await expect(page.getByText("¥69.00")).toBeVisible();
   await expect(page.getByRole("button", { name: "取消订单" })).toBeVisible();
+  await expect(page.getByText("手动扫码测试")).toHaveCount(0);
+  await expect(page.getByText("支付状态已失效")).toHaveCount(0);
+});
+
+test("runtime matrix can directly load payment code scanner state", async ({
+  page,
+}) => {
+  await loadMachineRuntimeScenario(page, paymentCodeScenario);
+
+  await expect(page).toHaveURL(/#\/payment$/);
+  await expectKioskMainFrame(page);
+  await expect(page.getByText("请将付款码靠近扫码窗口完成支付")).toBeVisible();
+  await expect(page.getByText("扫码器已就绪")).toBeVisible();
+  await expect(
+    page.getByText("请打开支付宝或微信付款码，靠近设备扫码窗口。"),
+  ).toBeVisible();
+  await expect(page.getByText("应付金额")).toBeVisible();
+  await expect(page.getByText("¥69.00")).toBeVisible();
+  await expect(page.getByRole("button", { name: "取消订单" })).toBeVisible();
   await expect(page.getByText("支付状态已失效")).toHaveCount(0);
 });
 
@@ -448,8 +471,11 @@ test("runtime matrix can directly load dispensing state", async ({ page }) => {
   await expect(page).toHaveURL(/#\/dispensing$/);
   await expectKioskMainFrame(page);
   await expect(page.getByRole("heading", { name: "正在出货" })).toBeVisible();
-  await expect(page.getByText("请取走您的商品")).toBeVisible();
-  await expect(page.getByText("剩余取货时间")).toBeVisible();
+  await expect(page.getByText("设备出货中")).toBeVisible();
+  await expect(page.getByText("请稍候，商品正在送往取货口")).toBeVisible();
+  await expect(page.getByText("请取走您的商品")).toHaveCount(0);
+  await expect(page.getByText("剩余取货时间")).toHaveCount(0);
+  await expect(page.getByText(/60 秒|01:00/)).toHaveCount(0);
   await expect(page.getByText("取货状态已失效")).toHaveCount(0);
 });
 
@@ -462,10 +488,10 @@ const dispensingStateExpectations: readonly {
 }[] = [
   {
     scenario: dispensingScenario,
-    pickupTitle: "请取走您的商品",
-    reminderCopy: "如未取货，请在 60 秒内完成取货",
-    noticeTitle: "请轻轻关上取货口",
-    noticeCopy: "感谢您的购买，期待再次为您服务！",
+    pickupTitle: "设备出货中",
+    reminderCopy: "请稍候，商品正在送往取货口",
+    noticeTitle: "出货完成后请取货",
+    noticeCopy: "取货口打开后，请及时取走商品。",
   },
   {
     scenario: dispensingPickup15sScenario,
@@ -500,8 +526,9 @@ for (const expectation of dispensingStateExpectations) {
     await expect(page.locator(".pickup-subtitle")).toHaveText(
       expectation.reminderCopy,
     );
-    await expect(page.getByText("剩余取货时间")).toBeVisible();
-    await expect(page.locator(".pickup-time")).toHaveText(/^\d{2}:\d{2}$/);
+    await expect(page.getByText("剩余取货时间")).toHaveCount(0);
+    await expect(page.locator(".pickup-time")).toHaveCount(0);
+    await expect(page.getByText(/60 秒|01:00/)).toHaveCount(0);
     await expect(page.locator(".pickup-illustration")).toBeVisible();
     await expect(page.locator(".pickup-notice")).toContainText(
       expectation.noticeTitle,

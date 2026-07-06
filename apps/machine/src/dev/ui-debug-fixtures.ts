@@ -865,6 +865,7 @@ export const uiDebugScenarios: readonly UiDebugScenario[] = [
         status: "sent",
         lastError: null,
         pickupReminder: {
+          stage: "pickup_timeout_warning",
           level: "warning",
           message: "请及时取走商品",
           warningNo: 1,
@@ -896,6 +897,7 @@ export const uiDebugScenarios: readonly UiDebugScenario[] = [
         status: "sent",
         lastError: null,
         pickupReminder: {
+          stage: "pickup_timeout_warning",
           level: "urgent",
           message: "取货口即将关闭，请立即取走商品",
           warningNo: 2,

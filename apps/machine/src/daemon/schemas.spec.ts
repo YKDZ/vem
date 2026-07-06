@@ -256,10 +256,12 @@ describe("daemon schemas", () => {
         status: "dispensing",
         lastError: null,
         pickupReminder: {
+          stage: "pickup_timeout_warning",
           level: "warning",
           message: "请尽快取走商品",
           warningNo: 1,
           reportedAt: "2026-06-13T09:00:00.000Z",
+          remainingSeconds: 12,
         },
       },
       nextAction: "wait_payment",
@@ -282,6 +284,8 @@ describe("daemon schemas", () => {
       updatedAt: "2026-01-01T00:00:00Z",
     });
     expect(tx.vending?.pickupReminder?.message).toBe("请尽快取走商品");
+    expect(tx.vending?.pickupReminder?.stage).toBe("pickup_timeout_warning");
+    expect(tx.vending?.pickupReminder?.remainingSeconds).toBe(12);
     expect(tx.paymentCodeAttempt?.source).toBe("serial_text");
 
     expect(() =>
