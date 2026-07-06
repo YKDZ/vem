@@ -37,6 +37,14 @@ import { getOffset, toPageResult } from "../common/pagination.util";
 import { DRIZZLE_CLIENT } from "../database/database.constants";
 import { HardwareErrorPoliciesService } from "../hardware-error-policies/hardware-error-policies.service";
 import { NotificationsService } from "../notifications/notifications.service";
+import {
+  mapAdjustInventoryDtoToMovementInsert,
+  mapCreateInventoryDtoToInsert,
+  mapCreateInventoryDtoToMovementInsert,
+  mapRefillInventoryDtoToMovementInsert,
+  toAdminInventoryMovementResponse,
+  toAdminInventoryResponse,
+} from "./inventory.contract-mappers";
 
 type InventoryQuery = z.infer<typeof inventoryQuerySchema> &
   z.infer<typeof pageQuerySchema>;
@@ -99,7 +107,11 @@ export class InventoryService {
       .from(inventories)
       .where(whereClause);
 
-    return toPageResult(items, query, Number(totalRow.total));
+    return toPageResult(
+      items.map(toAdminInventoryResponse),
+      query,
+      Number(totalRow.total),
+    );
   }
 
   async refill(adminUserId: string, input: RefillInventoryInput) {
@@ -116,15 +128,11 @@ export class InventoryService {
         throw new NotFoundException("Inventory not found");
       }
 
-      await tx.insert(inventoryMovements).values({
-        inventoryId: updated.id,
-        deltaQty: input.quantity,
-        reason: "refill",
-        operatorAdminUserId: adminUserId,
-        note: input.note ?? null,
-      });
+      await tx
+        .insert(inventoryMovements)
+        .values(mapRefillInventoryDtoToMovementInsert(adminUserId, input));
 
-      return updated;
+      return toAdminInventoryResponse(updated);
     });
   }
 
@@ -156,15 +164,11 @@ export class InventoryService {
         );
       }
 
-      await tx.insert(inventoryMovements).values({
-        inventoryId: updated.id,
-        deltaQty: input.deltaQty,
-        reason: "adjust",
-        operatorAdminUserId: adminUserId,
-        note: input.note,
-      });
+      await tx
+        .insert(inventoryMovements)
+        .values(mapAdjustInventoryDtoToMovementInsert(adminUserId, input));
 
-      return updated;
+      return toAdminInventoryResponse(updated);
     });
   }
 
@@ -190,32 +194,27 @@ export class InventoryService {
       .select({ total: count() })
       .from(inventoryMovements);
 
-    return toPageResult(items, query, Number(totalRow.total));
+    return toPageResult(
+      items.map(toAdminInventoryMovementResponse),
+      query,
+      Number(totalRow.total),
+    );
   }
 
   async createInventory(adminUserId: string, input: CreateInventoryInput) {
     return await this.db.transaction(async (tx) => {
       const [created] = await tx
         .insert(inventories)
-        .values({
-          machineId: input.machineId,
-          slotId: input.slotId,
-          variantId: input.variantId,
-          onHandQty: input.onHandQty,
-          reservedQty: input.reservedQty,
-          lowStockThreshold: input.lowStockThreshold,
-        })
+        .values(mapCreateInventoryDtoToInsert(input))
         .returning();
 
-      await tx.insert(inventoryMovements).values({
-        inventoryId: created.id,
-        deltaQty: input.onHandQty,
-        reason: "adjust",
-        operatorAdminUserId: adminUserId,
-        note: input.note ?? "initial inventory binding",
-      });
+      await tx
+        .insert(inventoryMovements)
+        .values(
+          mapCreateInventoryDtoToMovementInsert(adminUserId, created.id, input),
+        );
 
-      return created;
+      return toAdminInventoryResponse(created);
     });
   }
 

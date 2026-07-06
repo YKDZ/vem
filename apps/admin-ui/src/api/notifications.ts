@@ -1,31 +1,38 @@
-import { get, post } from "./request";
+import type { z } from "zod";
 
-export type Notification = {
-  id: string;
-  type: string;
-  title: string;
-  severity: string;
-  resourceType: string | null;
-  resourceId: string | null;
-  status: string;
-  createdAt: string;
-};
+import {
+  adminNotificationListQuerySchema,
+  adminNotificationPageResponseSchema,
+  notificationAdminNoBodySchema,
+  notificationReadResponseSchema,
+  type AdminNotificationResponse,
+  type NotificationReadResponse,
+  type PageResult,
+} from "@vem/shared";
 
-export type PageResult<T> = {
-  items: T[];
-  total: number;
-  page: number;
-  pageSize: number;
-};
+import { getContract, postContract } from "./request";
+
+export type Notification = AdminNotificationResponse;
+export type { PageResult };
 
 export async function listNotifications(
-  query?: Record<string, unknown>,
+  query?: z.input<typeof adminNotificationListQuerySchema>,
 ): Promise<PageResult<Notification>> {
-  return await get<PageResult<Notification>>("/notifications", {
-    params: query,
-  });
+  return await getContract(
+    "/notifications",
+    adminNotificationListQuerySchema,
+    adminNotificationPageResponseSchema,
+    query ?? {},
+  );
 }
 
-export async function markNotificationRead(id: string): Promise<void> {
-  await post<void>(`/notifications/${id}/read`);
+export async function markNotificationRead(
+  id: string,
+): Promise<NotificationReadResponse> {
+  return await postContract(
+    `/notifications/${id}/read`,
+    notificationAdminNoBodySchema,
+    notificationReadResponseSchema,
+    {},
+  );
 }

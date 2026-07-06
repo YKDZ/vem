@@ -14,6 +14,11 @@ import { listRoles, type Role } from "@/api/roles";
 import { useAuthStore } from "@/stores/auth";
 import { formatDateTime } from "@/utils/format";
 
+import {
+  toCreateAdminUserContract,
+  toUpdateAdminUserContract,
+} from "./admin-user-contract-mappers";
+
 const authStore = useAuthStore();
 const canWrite = authStore.hasPermission("adminUsers.write");
 
@@ -85,22 +90,13 @@ function openEdit(u: AdminUser): void {
 async function saveUser(): Promise<void> {
   saving.value = true;
   try {
-    const body = {
-      username: userForm.value.username,
-      displayName: userForm.value.displayName,
-      mobile: userForm.value.mobile || null,
-      email: userForm.value.email || null,
-      status: userForm.value.status,
-      roleIds: userForm.value.roleIds,
-      ...(userForm.value.password ? { password: userForm.value.password } : {}),
-    };
     if (editingUser.value) {
-      await updateAdminUser(editingUser.value.id, body);
+      await updateAdminUser(
+        editingUser.value.id,
+        toUpdateAdminUserContract(userForm.value),
+      );
     } else {
-      await createAdminUser({
-        ...body,
-        password: userForm.value.password,
-      });
+      await createAdminUser(toCreateAdminUserContract(userForm.value));
     }
     drawerOpen.value = false;
     await loadUsers();
@@ -121,7 +117,9 @@ const columns = [
 
 onMounted(() => {
   void loadUsers();
-  void loadRoles();
+  if (canWrite) {
+    void loadRoles();
+  }
 });
 </script>
 

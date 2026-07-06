@@ -29,7 +29,7 @@ describe("AdminUsersService", () => {
     vi.clearAllMocks();
 
     const createdUser = {
-      id: "user-id-1",
+      id: "550e8400-e29b-41d4-a716-446655440001",
       username: "ops01",
       displayName: "运营 01",
       mobile: null,

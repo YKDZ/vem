@@ -1,80 +1,71 @@
-import type { ProductStatus, VariantStatus } from "@vem/shared";
+import type { z } from "zod";
 
-import { get, patch, post } from "./request";
+import {
+  adminProductListQuerySchema,
+  adminProductPageResponseSchema,
+  adminProductResponseSchema,
+  adminProductVariantPageResponseSchema,
+  adminProductVariantResponseSchema,
+  adminProductVariantListQuerySchema,
+  adminMediaAssetSummarySchema,
+  createProductSchema,
+  createProductVariantSchema,
+  updateProductSchema,
+  updateProductVariantSchema,
+  type AdminMediaAssetSummary,
+  type AdminProductListQuery,
+  type AdminProductPageResponse,
+  type AdminProductResponse,
+  type AdminProductVariantPageResponse,
+  type AdminProductVariantResponse,
+  type PageResult,
+} from "@vem/shared";
 
-export type MediaAssetSummary = {
-  id: string;
-  publicUrl: string;
-  contentType: string;
-};
+import {
+  getContract,
+  patchContract,
+  postContract,
+  postResponseContract,
+} from "./request";
 
-export type Product = {
-  id: string;
-  name: string;
-  description: string | null;
-  displayImageMediaAssetId: string | null;
-  displayImageMediaAsset: MediaAssetSummary | null;
-  status: ProductStatus;
-  sortOrder: number;
-  createdAt: string;
-  updatedAt: string;
-};
-
-export type ProductVariant = {
-  id: string;
-  productId: string;
-  sku: string;
-  size: string | null;
-  color: string | null;
-  barcode: string | null;
-  priceCents: number;
-  costCents: number | null;
-  status: VariantStatus;
-  targetGender?: "male" | "female" | null;
-  tryOnSilhouetteMediaAssetId: string | null;
-  tryOnSilhouetteMediaAsset: MediaAssetSummary | null;
-  createdAt: string;
-  updatedAt: string;
-};
-type ProductVariantWrite = Omit<
-  ProductVariant,
-  "id" | "createdAt" | "updatedAt" | "tryOnSilhouetteMediaAsset"
->;
-
-export type ProductQuery = {
-  keyword?: string;
-  status?: ProductStatus;
-  page?: number;
-  pageSize?: number;
-};
-
-type ProductWrite = Omit<
-  Product,
-  "id" | "createdAt" | "updatedAt" | "displayImageMediaAsset"
->;
-
-export type PageResult<T> = {
-  items: T[];
-  total: number;
-  page: number;
-  pageSize: number;
-};
+export type MediaAssetSummary = AdminMediaAssetSummary;
+export type Product = AdminProductResponse;
+export type ProductVariant = AdminProductVariantResponse;
+export type ProductQuery = AdminProductListQuery;
+export type { PageResult };
 
 export async function listProducts(
   query?: ProductQuery,
-): Promise<PageResult<Product>> {
-  return await get<PageResult<Product>>("/products", { params: query });
+): Promise<AdminProductPageResponse> {
+  return await getContract(
+    "/products",
+    adminProductListQuerySchema,
+    adminProductPageResponseSchema,
+    query ?? {},
+  );
 }
 
-export async function createProduct(body: ProductWrite): Promise<Product> {
-  return await post<Product>("/products", body);
+export async function createProduct(
+  body: z.input<typeof createProductSchema>,
+): Promise<Product> {
+  return await postContract(
+    "/products",
+    createProductSchema,
+    adminProductResponseSchema,
+    body,
+  );
 }
 
 export async function updateProduct(
   id: string,
-  body: Partial<ProductWrite>,
+  body: z.input<typeof updateProductSchema>,
 ): Promise<Product> {
-  return await patch<Product>(`/products/${id}`, body);
+  return await patchContract(
+    `/products/${id}`,
+    updateProductSchema,
+    adminProductResponseSchema,
+    body,
+  );
 }
 
 export async function uploadProductDisplayImage(
@@ -82,8 +73,9 @@ export async function uploadProductDisplayImage(
 ): Promise<MediaAssetSummary> {
   const body = new FormData();
   body.append("file", file);
-  return await post<MediaAssetSummary, FormData>(
+  return await postResponseContract(
     "/media-assets/product-display-images",
+    adminMediaAssetSummarySchema,
     body,
   );
 }
@@ -93,29 +85,43 @@ export async function uploadTryOnSilhouette(
 ): Promise<MediaAssetSummary> {
   const body = new FormData();
   body.append("file", file);
-  return await post<MediaAssetSummary, FormData>(
+  return await postResponseContract(
     "/media-assets/try-on-silhouettes",
+    adminMediaAssetSummarySchema,
     body,
   );
 }
 
 export async function listProductVariants(
   productId: string,
-): Promise<PageResult<ProductVariant>> {
-  return await get<PageResult<ProductVariant>>("/product-variants", {
-    params: { productId, pageSize: 100 },
-  });
+): Promise<AdminProductVariantPageResponse> {
+  return await getContract(
+    "/product-variants",
+    adminProductVariantListQuerySchema,
+    adminProductVariantPageResponseSchema,
+    { productId, pageSize: 100 },
+  );
 }
 
 export async function createProductVariant(
-  body: ProductVariantWrite,
+  body: z.input<typeof createProductVariantSchema>,
 ): Promise<ProductVariant> {
-  return await post<ProductVariant>("/product-variants", body);
+  return await postContract(
+    "/product-variants",
+    createProductVariantSchema,
+    adminProductVariantResponseSchema,
+    body,
+  );
 }
 
 export async function updateProductVariant(
   id: string,
-  body: Partial<ProductVariantWrite>,
+  body: z.input<typeof updateProductVariantSchema>,
 ): Promise<ProductVariant> {
-  return await patch<ProductVariant>(`/product-variants/${id}`, body);
+  return await patchContract(
+    `/product-variants/${id}`,
+    updateProductVariantSchema,
+    adminProductVariantResponseSchema,
+    body,
+  );
 }

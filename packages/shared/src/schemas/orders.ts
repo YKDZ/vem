@@ -9,8 +9,10 @@ import {
   paymentCodeAttemptStatusSchema,
   paymentMethodSchema,
   paymentStatusSchema,
+  refundStatusSchema,
 } from "../enums/payment-status";
 import { vendingCommandStatusSchema } from "../enums/vending";
+import { createPageResultSchema, pageQuerySchema } from "./pagination";
 
 type MachineOrderProfileSnapshot = {
   personPresent: boolean;
@@ -71,7 +73,325 @@ export const orderQuerySchema = z.object({
   createdTo: z.iso.datetime().optional(),
 });
 
-export const orderRecoveryActionSchema = z.object({
+export const adminOrderListQuerySchema = orderQuerySchema.extend(
+  pageQuerySchema.shape,
+);
+
+export const orderRecoveryActionNameSchema = z.enum([
+  "confirm_dispensed",
+  "confirm_not_dispensed",
+  "request_refund",
+  "compensation_dispense",
+]);
+
+export const orderRecoveryActionSchema = z.strictObject({
+  action: orderRecoveryActionNameSchema,
+  note: z.string().trim().min(1).max(500),
+});
+
+export const adminOrderContractNoBodySchema = z.strictObject({});
+
+export const orderRecoveryActionResponseSchema = z.strictObject({
+  action: orderRecoveryActionNameSchema,
+  recoveryActionId: z.string().min(1).max(128),
+  commandId: z.string().min(1).max(128),
+  commandNo: z.string().min(1).max(64).optional(),
+  status: z.string().min(1).max(64),
+});
+
+export const orderRefundRequestResponseSchema = z.strictObject({
+  id: z.string().min(1).max(128),
+  refundNo: z.string().min(1).max(64),
+  paymentId: z.string().min(1).max(128),
+  orderId: z.string().min(1).max(128),
+  amountCents: z.int().nonnegative(),
+  status: refundStatusSchema,
+  providerRefundNo: z.string().max(128).nullable(),
+  reason: z.string().min(1).max(128),
+  requestedByAdminUserId: z.string().min(1).max(128).nullable(),
+  refundedAt: z.iso.datetime().nullable().optional(),
+  createdAt: z.iso.datetime(),
+  updatedAt: z.iso.datetime(),
+});
+
+const adminOrderJsonFieldSchema = z.record(z.string(), z.unknown());
+
+const adminOrderSummaryResponseSchema = z.strictObject({
+  id: z.string().min(1).max(128),
+  orderNo: z.string().min(1).max(64),
+  machineId: z.string().min(1).max(128),
+  machineCode: z.string().min(1).max(64),
+  status: orderStatusSchema,
+  paymentState: orderPaymentStateSchema,
+  fulfillmentState: orderFulfillmentStateSchema,
+  totalAmountCents: z.int().nonnegative(),
+  currency: z.string().min(1).max(8),
+  paidAt: z.iso.datetime().nullable(),
+  dispensedAt: z.iso.datetime().nullable(),
+  canceledAt: z.iso.datetime().nullable(),
+  createdAt: z.iso.datetime(),
+});
+
+export const adminOrderListItemResponseSchema = z.strictObject({
+  id: z.string().min(1).max(128),
+  orderNo: z.string().min(1).max(64),
+  machineId: z.string().min(1).max(128),
+  machineCode: z.string().min(1).max(64).optional(),
+  status: orderStatusSchema,
+  paymentState: orderPaymentStateSchema.optional(),
+  fulfillmentState: orderFulfillmentStateSchema.optional(),
+  totalAmountCents: z.int().nonnegative(),
+  isDrill: z.boolean().optional(),
+  isTest: z.boolean().optional(),
+  scenario: z.string().nullable().optional(),
+  paidAt: z.iso.datetime().nullable(),
+  dispensedAt: z.iso.datetime().nullable(),
+  createdAt: z.iso.datetime(),
+});
+
+export const adminOrderPageResponseSchema = createPageResultSchema(
+  adminOrderListItemResponseSchema,
+);
+
+const adminOrderItemResponseSchema = z.strictObject({
+  id: z.string().min(1).max(128),
+  variantId: z.string().min(1).max(128),
+  quantity: z.int().nonnegative(),
+  unitPriceCents: z.int().nonnegative(),
+  productSnapshot: adminOrderJsonFieldSchema,
+});
+
+const adminOrderPaymentResponseSchema = z.strictObject({
+  id: z.string().min(1).max(128),
+  paymentNo: z.string().min(1).max(64),
+  orderId: z.string().min(1).max(128),
+  method: paymentMethodSchema,
+  status: paymentStatusSchema,
+  amountCents: z.int().nonnegative(),
+  providerTradeNo: z.string().max(128).nullable(),
+  expiresAt: z.iso.datetime().nullable(),
+  paidAt: z.iso.datetime().nullable(),
+  failedReason: z.string().nullable(),
+  createdAt: z.iso.datetime(),
+  updatedAt: z.iso.datetime(),
+});
+
+const adminPaymentEventResponseSchema = z.strictObject({
+  id: z.string().min(1).max(128),
+  paymentId: z.string().min(1).max(128),
+  eventType: z.string().min(1).max(128),
+  providerEventId: z.string().min(1).max(128),
+  signatureValid: z.boolean(),
+  handledAt: z.iso.datetime().nullable(),
+  createdAt: z.iso.datetime(),
+});
+
+const adminPaymentWebhookAttemptResponseSchema = z.strictObject({
+  id: z.string().min(1).max(128),
+  providerCode: z.string().min(1).max(64),
+  paymentId: z.string().min(1).max(128).nullable(),
+  refundId: z.string().min(1).max(128).nullable(),
+  eventKind: z.string().min(1).max(32),
+  eventType: z.string().max(128).nullable(),
+  providerEventId: z.string().max(128).nullable(),
+  paymentNo: z.string().max(64).nullable(),
+  refundNo: z.string().max(64).nullable(),
+  orderNo: z.string().max(64).nullable(),
+  signatureValid: z.boolean().nullable(),
+  businessValid: z.boolean().nullable(),
+  handled: z.boolean(),
+  duplicate: z.boolean(),
+  failureReason: z.string().max(128).nullable(),
+  errorCode: z.string().max(128).nullable(),
+  httpStatus: z.int().nullable(),
+  createdAt: z.iso.datetime(),
+  updatedAt: z.iso.datetime(),
+});
+
+const adminPaymentReconciliationAttemptResponseSchema = z.strictObject({
+  id: z.string().min(1).max(128),
+  paymentId: z.string().min(1).max(128),
+  trigger: z.string().min(1).max(64),
+  attemptNo: z.int().positive(),
+  status: z.string().min(1).max(64),
+  providerPaymentStatus: z.string().max(64).nullable(),
+  providerTradeNo: z.string().max(128).nullable(),
+  errorCode: z.string().max(128).nullable(),
+  errorMessage: z.string().nullable(),
+  nextRetryAt: z.iso.datetime().nullable(),
+  startedAt: z.iso.datetime(),
+  finishedAt: z.iso.datetime().nullable(),
+  createdAt: z.iso.datetime(),
+});
+
+const adminPaymentCodeAttemptResponseSchema = z.strictObject({
+  id: z.string().min(1).max(128),
+  paymentId: z.string().min(1).max(128),
+  orderId: z.string().min(1).max(128),
+  attemptNo: z.int().positive(),
+  providerPaymentNo: z.string().min(1).max(64),
+  idempotencyKey: z.string().min(1).max(128),
+  status: paymentCodeAttemptStatusSchema,
+  isActive: z.boolean(),
+  amountCents: z.int().positive(),
+  currency: z.string().min(1).max(8),
+  authCodeMasked: z.string().min(1).max(32),
+  source: z.string().min(1).max(64),
+  providerTradeNo: z.string().max(128).nullable(),
+  providerStatus: z.string().max(64).nullable(),
+  failureCode: z.string().max(128).nullable(),
+  failureMessage: z.string().nullable(),
+  submittedAt: z.iso.datetime().nullable(),
+  lastCheckedAt: z.iso.datetime().nullable(),
+  reversedAt: z.iso.datetime().nullable(),
+  finishedAt: z.iso.datetime().nullable(),
+  manualReason: z.string().nullable(),
+  createdAt: z.iso.datetime(),
+  updatedAt: z.iso.datetime(),
+});
+
+const adminVendingCommandResponseSchema = z.strictObject({
+  id: z.string().min(1).max(128),
+  commandNo: z.string().min(1).max(64),
+  orderId: z.string().min(1).max(128),
+  machineId: z.string().min(1).max(128),
+  machineCode: z.string().min(1).max(64),
+  slotId: z.string().min(1).max(128),
+  slotCode: z.string().min(1).max(64),
+  orderItemId: z.string().min(1).max(128).nullable(),
+  commandKind: z.string().min(1).max(64),
+  recoveryActionId: z.string().min(1).max(128).nullable(),
+  status: vendingCommandStatusSchema,
+  sentAt: z.iso.datetime().nullable(),
+  ackAt: z.iso.datetime().nullable(),
+  resultAt: z.iso.datetime().nullable(),
+  retryCount: z.int().nonnegative(),
+  lastError: z.string().nullable(),
+  createdAt: z.iso.datetime(),
+  updatedAt: z.iso.datetime(),
+});
+
+const adminInventoryMovementResponseSchema = z.strictObject({
+  id: z.string().min(1).max(128),
+  inventoryId: z.string().min(1).max(128),
+  deltaQty: z.int(),
+  reason: z.string().min(1).max(64),
+  orderId: z.string().min(1).max(128).nullable(),
+  operatorAdminUserId: z.string().min(1).max(128).nullable(),
+  note: z.string().nullable(),
+  createdAt: z.iso.datetime(),
+});
+
+const adminStockReconciliationLinkResponseSchema = z.strictObject({
+  id: z.string().min(1).max(128),
+  caseTable: z.enum([
+    "machine_raw_stock_movements",
+    "machine_raw_stock_movement_conflicts",
+  ]),
+  rawMovementId: z.string().min(1).max(128).nullable(),
+  machineId: z.string().min(1).max(128),
+  movementId: z.string().min(1).max(128),
+  status: z.string().min(1).max(64),
+  reconciliationReason: z.string().max(128).nullable(),
+  platformReviewStatus: z.string().max(64).nullable(),
+  saleSafetyBlockerState: z.string().max(64).nullable(),
+  saleSafetyBlockerSlotId: z.string().min(1).max(128).nullable(),
+  receivedAt: z.iso.datetime(),
+});
+
+const adminRefundResponseSchema = z.strictObject({
+  id: z.string().min(1).max(128),
+  refundNo: z.string().min(1).max(64),
+  paymentId: z.string().min(1).max(128),
+  orderId: z.string().min(1).max(128),
+  amountCents: z.int().nonnegative(),
+  status: refundStatusSchema,
+  providerRefundNo: z.string().max(128).nullable(),
+  reason: z.string().min(1).max(1000),
+  requestedByAdminUserId: z.string().min(1).max(128).nullable(),
+  refundedAt: z.iso.datetime().nullable(),
+  createdAt: z.iso.datetime(),
+  updatedAt: z.iso.datetime(),
+});
+
+const adminMaintenanceWorkOrderLinkResponseSchema = z.strictObject({
+  id: z.string().min(1).max(128),
+  workOrderNo: z.string().min(1).max(64),
+  machineId: z.string().min(1).max(128).nullable(),
+  slotId: z.string().min(1).max(128).nullable(),
+  orderId: z.string().min(1).max(128).nullable(),
+  commandId: z.string().min(1).max(128).nullable(),
+  title: z.string().min(1).max(128),
+  priority: z.string().min(1).max(32),
+  status: z.string().min(1).max(32),
+  assigneeAdminUserId: z.string().min(1).max(128).nullable(),
+  createdAt: z.iso.datetime(),
+  updatedAt: z.iso.datetime(),
+  resolvedAt: z.iso.datetime().nullable(),
+});
+
+const adminAuditEntryResponseSchema = z.strictObject({
+  id: z.string().min(1).max(128),
+  adminUserId: z.string().min(1).max(128).nullable(),
+  action: z.string().min(1).max(128),
+  resourceType: z.string().min(1).max(64),
+  resourceId: z.string().min(1).max(128).nullable(),
+  ipAddress: z.string().max(64).nullable(),
+  userAgent: z.string().nullable(),
+  createdAt: z.iso.datetime(),
+});
+
+const adminOrderStatusEventResponseSchema = z.strictObject({
+  id: z.string().min(1).max(128),
+  fromStatus: orderStatusSchema.nullable(),
+  toStatus: orderStatusSchema,
+  reason: z.string().min(1).max(128),
+  metadata: adminOrderJsonFieldSchema.nullable(),
+  createdAt: z.iso.datetime(),
+});
+
+export const orderInvestigationResponseSchema = z.strictObject({
+  order: adminOrderSummaryResponseSchema,
+  items: z.array(adminOrderItemResponseSchema),
+  payments: z.array(adminOrderPaymentResponseSchema),
+  paymentEvents: z.array(adminPaymentEventResponseSchema),
+  paymentWebhookAttempts: z.array(adminPaymentWebhookAttemptResponseSchema),
+  paymentReconciliationAttempts: z.array(
+    adminPaymentReconciliationAttemptResponseSchema,
+  ),
+  paymentCodeAttempts: z.array(adminPaymentCodeAttemptResponseSchema),
+  vendingCommands: z.array(adminVendingCommandResponseSchema),
+  fulfillmentProjection: z.strictObject({
+    state: orderFulfillmentStateSchema,
+    latestCommand: adminVendingCommandResponseSchema.nullable(),
+    requiresPhysicalOutcomeConfirmation: z.boolean(),
+    availableRecoveryActions: z.array(orderRecoveryActionNameSchema),
+  }),
+  inventoryMovements: z.array(adminInventoryMovementResponseSchema),
+  stockReconciliationLinks: z.array(adminStockReconciliationLinkResponseSchema),
+  refunds: z.array(adminRefundResponseSchema),
+  maintenanceWorkOrders: z.array(adminMaintenanceWorkOrderLinkResponseSchema),
+  adminAuditEntries: z.array(adminAuditEntryResponseSchema),
+  orderStatusEvents: z.array(adminOrderStatusEventResponseSchema),
+});
+
+export type OrderInvestigationResponse = z.infer<
+  typeof orderInvestigationResponseSchema
+>;
+export type AdminOrderListItemResponse = z.infer<
+  typeof adminOrderListItemResponseSchema
+>;
+export type AdminOrderPageResponse = z.infer<
+  typeof adminOrderPageResponseSchema
+>;
+export type OrderRecoveryActionResponse = z.infer<
+  typeof orderRecoveryActionResponseSchema
+>;
+export type OrderRefundRequestResponse = z.infer<
+  typeof orderRefundRequestResponseSchema
+>;
+
+export const legacyOrderRecoveryActionSchema = z.object({
   action: z.enum([
     "confirm_dispensed",
     "confirm_not_dispensed",

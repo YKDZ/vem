@@ -1,9 +1,5 @@
 <script setup lang="ts">
-import type {
-  MachineCommandStatus,
-  MachineEnvironmentControlRequest,
-  MachineSlotStatus,
-} from "@vem/shared";
+import type { MachineCommandStatus, MachineSlotStatus } from "@vem/shared";
 
 import { formatMachineSlotCoordinate } from "@vem/shared";
 import { Modal } from "antdv-next";
@@ -36,6 +32,8 @@ import {
 } from "@/api/machines";
 import { useAuthStore } from "@/stores/auth";
 import { formatDateTime } from "@/utils/format";
+
+import { mapEnvironmentControlFormToContract } from "./machine-contract-mappers";
 
 type MachineSaleReadinessHeartbeat = {
   state?: "locked" | "blocked" | "restored";
@@ -343,14 +341,9 @@ async function refreshAll(): Promise<void> {
 
 async function submitEnvironmentCommand(): Promise<void> {
   if (environmentCommandDisabled.value) return;
-  const body: MachineEnvironmentControlRequest = {};
-  if (environmentControlForm.value.includeAirConditioner) {
-    body.airConditionerOn = environmentControlForm.value.airConditionerOn;
-  }
-  if (environmentControlForm.value.includeTargetTemperature) {
-    body.targetTemperatureCelsius =
-      environmentControlForm.value.targetTemperatureCelsius;
-  }
+  const body = mapEnvironmentControlFormToContract(
+    environmentControlForm.value,
+  );
 
   environmentSubmitting.value = true;
   try {
@@ -442,15 +435,23 @@ async function saveReconciliation(
   if (!reconciliationDetail.value) return;
   reconciliationSaving.value = true;
   try {
-    await resolveStockReconciliationCase(reconciliationDetail.value.id, {
-      action,
-      note: reconciliationForm.value.note,
-      clearBlocker: reconciliationForm.value.clearBlocker,
-      correctedOnHandQty:
-        action === "manual_correct"
-          ? reconciliationForm.value.correctedOnHandQty
-          : undefined,
-    });
+    const request =
+      action === "manual_correct"
+        ? {
+            action,
+            note: reconciliationForm.value.note,
+            clearBlocker: reconciliationForm.value.clearBlocker,
+            correctedOnHandQty: reconciliationForm.value.correctedOnHandQty,
+          }
+        : {
+            action,
+            note: reconciliationForm.value.note,
+            clearBlocker: reconciliationForm.value.clearBlocker,
+          };
+    await resolveStockReconciliationCase(
+      reconciliationDetail.value.id,
+      request,
+    );
     reconciliationModalOpen.value = false;
     await Promise.all([loadInventoryData(), loadReconciliationCases()]);
   } finally {

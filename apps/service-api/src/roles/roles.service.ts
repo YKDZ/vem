@@ -14,26 +14,45 @@ import {
   permissions,
   rolePermissions,
   roles,
+  sql,
   type DrizzleClient,
   type SQL,
 } from "@vem/db";
 import {
-  createRoleSchema,
-  pageQuerySchema,
+  adminRolePageResponseSchema,
   permissionCodes,
-  roleQuerySchema,
-  updateRoleSchema,
+  type AdminCreateRoleRequest,
+  type AdminRoleListQuery,
+  type AdminUpdateRoleRequest,
+  type PermissionCode,
 } from "@vem/shared";
-import { z } from "zod";
 
 import { AuditService } from "../audit/audit.service";
 import { getOffset, toPageResult } from "../common/pagination.util";
 import { DRIZZLE_CLIENT } from "../database/database.constants";
+import {
+  mapCreateRoleDtoToInsert,
+  mapRolePermissionCodesToInsert,
+  mapUpdateRoleDtoToPatch,
+  toPermissionCodeListResponse,
+  toRoleResponse,
+} from "./roles.contract-mappers";
 
-type RoleQuery = z.infer<typeof roleQuerySchema> &
-  z.infer<typeof pageQuerySchema>;
-type CreateRoleInput = z.infer<typeof createRoleSchema>;
-type UpdateRoleInput = z.infer<typeof updateRoleSchema>;
+function toPersistedPermissionCodes(
+  requestedCodes: PermissionCode[],
+  permissionRows: Array<{ code: PermissionCode }>,
+): PermissionCode[] {
+  const availableCodes = new Set(permissionRows.map((row) => row.code));
+  const persistedCodes: PermissionCode[] = [];
+
+  for (const code of requestedCodes) {
+    if (availableCodes.has(code) && !persistedCodes.includes(code)) {
+      persistedCodes.push(code);
+    }
+  }
+
+  return persistedCodes;
+}
 
 @Injectable()
 export class RolesService {
@@ -42,8 +61,13 @@ export class RolesService {
     private readonly auditService: AuditService,
   ) {}
 
-  async list(query: RoleQuery) {
+  async list(query: AdminRoleListQuery) {
     const filters: SQL[] = [isNull(roles.deletedAt)];
+    if (query.keyword) {
+      filters.push(
+        sql`(${roles.code} ilike ${"%" + query.keyword + "%"} or ${roles.name} ilike ${"%" + query.keyword + "%"})`,
+      );
+    }
     if (query.status) filters.push(eq(roles.status, query.status));
     const whereClause = and(...filters);
 
@@ -60,23 +84,31 @@ export class RolesService {
       .from(roles)
       .where(whereClause);
 
-    return toPageResult(items, query, Number(totalRow.total));
+    const permissionCodesByRoleId = await this.getPermissionCodesByRoleIds(
+      items.map((item) => item.id),
+    );
+
+    return adminRolePageResponseSchema.parse(
+      toPageResult(
+        items.map((item) =>
+          toRoleResponse(item, permissionCodesByRoleId.get(item.id) ?? []),
+        ),
+        query,
+        Number(totalRow.total),
+      ),
+    );
   }
 
-  async create(operatorAdminId: string, input: CreateRoleInput) {
+  async create(operatorAdminId: string, input: AdminCreateRoleRequest) {
     if (input.code === "super_admin") {
       throw new BadRequestException("Cannot create role with code super_admin");
     }
 
+    let persistedPermissionCodes: PermissionCode[] = [];
     const created = await this.db.transaction(async (tx) => {
       const [role] = await tx
         .insert(roles)
-        .values({
-          code: input.code,
-          name: input.name,
-          description: input.description ?? null,
-          status: input.status,
-        })
+        .values(mapCreateRoleDtoToInsert(input))
         .returning();
 
       if (input.permissionCodes.length > 0) {
@@ -85,13 +117,15 @@ export class RolesService {
           .from(permissions)
           .where(inArray(permissions.code, input.permissionCodes));
 
+        persistedPermissionCodes = toPersistedPermissionCodes(
+          input.permissionCodes,
+          permRows,
+        );
+
         if (permRows.length > 0) {
-          await tx.insert(rolePermissions).values(
-            permRows.map((p) => ({
-              roleId: role.id,
-              permissionId: p.id,
-            })),
-          );
+          await tx
+            .insert(rolePermissions)
+            .values(mapRolePermissionCodesToInsert(role.id, permRows));
         }
       }
 
@@ -106,14 +140,18 @@ export class RolesService {
       afterJson: {
         roleId: created.id,
         code: created.code,
-        permissionCodes: input.permissionCodes,
+        permissionCodes: persistedPermissionCodes,
       },
     });
 
-    return created;
+    return toRoleResponse(created, persistedPermissionCodes);
   }
 
-  async update(operatorAdminId: string, id: string, input: UpdateRoleInput) {
+  async update(
+    operatorAdminId: string,
+    id: string,
+    input: AdminUpdateRoleRequest,
+  ) {
     const [existing] = await this.db
       .select()
       .from(roles)
@@ -123,19 +161,18 @@ export class RolesService {
       throw new NotFoundException("Role not found");
     }
 
-    const updateData: Record<string, unknown> = { updatedAt: new Date() };
+    const requestedPatch = mapUpdateRoleDtoToPatch(input);
 
+    let updateData = requestedPatch;
     if (existing.isBuiltin) {
       // built-in roles: only permissionCodes and status can be changed
-      if (input.status !== undefined) updateData.status = input.status;
-    } else {
-      if (input.code !== undefined) updateData.code = input.code;
-      if (input.name !== undefined) updateData.name = input.name;
-      if (input.description !== undefined)
-        updateData.description = input.description;
-      if (input.status !== undefined) updateData.status = input.status;
+      updateData = {
+        status: requestedPatch.status,
+        updatedAt: requestedPatch.updatedAt,
+      };
     }
 
+    let persistedPermissionCodes: PermissionCode[] | undefined;
     const updated = await this.db.transaction(async (tx) => {
       const [role] = await tx
         .update(roles)
@@ -148,18 +185,22 @@ export class RolesService {
 
         if (input.permissionCodes.length > 0) {
           const permRows = await tx
-            .select({ id: permissions.id })
+            .select({ id: permissions.id, code: permissions.code })
             .from(permissions)
             .where(inArray(permissions.code, input.permissionCodes));
 
+          persistedPermissionCodes = toPersistedPermissionCodes(
+            input.permissionCodes,
+            permRows,
+          );
+
           if (permRows.length > 0) {
-            await tx.insert(rolePermissions).values(
-              permRows.map((p) => ({
-                roleId: id,
-                permissionId: p.id,
-              })),
-            );
+            await tx
+              .insert(rolePermissions)
+              .values(mapRolePermissionCodesToInsert(id, permRows));
           }
+        } else {
+          persistedPermissionCodes = [];
         }
       }
 
@@ -174,14 +215,41 @@ export class RolesService {
       afterJson: {
         roleId: updated.id,
         code: updated.code,
-        permissionCodes: input.permissionCodes,
+        permissionCodes: persistedPermissionCodes,
       },
     });
 
-    return updated;
+    const responsePermissionCodes =
+      persistedPermissionCodes ??
+      (await this.getPermissionCodesByRoleIds([updated.id])).get(updated.id) ??
+      [];
+    return toRoleResponse(updated, responsePermissionCodes);
   }
 
   getPermissionCodes() {
-    return permissionCodes;
+    return toPermissionCodeListResponse([...permissionCodes]);
+  }
+
+  private async getPermissionCodesByRoleIds(
+    roleIds: string[],
+  ): Promise<Map<string, PermissionCode[]>> {
+    if (roleIds.length === 0) return new Map();
+
+    const rows = await this.db
+      .select({
+        roleId: rolePermissions.roleId,
+        permissionCode: permissions.code,
+      })
+      .from(rolePermissions)
+      .innerJoin(permissions, eq(rolePermissions.permissionId, permissions.id))
+      .where(inArray(rolePermissions.roleId, roleIds));
+
+    const permissionCodesByRoleId = new Map<string, PermissionCode[]>();
+    for (const row of rows) {
+      const codes = permissionCodesByRoleId.get(row.roleId) ?? [];
+      codes.push(row.permissionCode);
+      permissionCodesByRoleId.set(row.roleId, codes);
+    }
+    return permissionCodesByRoleId;
   }
 }

@@ -1,25 +1,33 @@
-import { get, post } from "./request";
+import type { z } from "zod";
 
-export type MachineOp = {
-  id: string;
-  machineId: string | null;
-  type: string;
-  status: string;
-  requestedAt: string;
-  requestedByAdminUserId: string | null;
-  acceptedAt?: string | null;
-  finishedAt?: string | null;
-  failedReason?: string | null;
-};
+import {
+  adminMachineContractNoBodySchema,
+  adminMachineOpsListQuerySchema,
+  adminMachineRemoteOpListResponseSchema,
+  adminMachineRemoteOpResponseSchema,
+  type AdminMachineRemoteOpResponse,
+} from "@vem/shared";
+
+import { getContract, postContract } from "./request";
+
+export type MachineOp = AdminMachineRemoteOpResponse;
 
 export async function listMachineOps(
-  query?: Record<string, unknown>,
+  query?: z.input<typeof adminMachineOpsListQuerySchema>,
 ): Promise<MachineOp[]> {
-  return await get<MachineOp[]>("/machine-ops", { params: query });
+  return await getContract(
+    "/machine-ops",
+    adminMachineOpsListQuerySchema,
+    adminMachineRemoteOpListResponseSchema,
+    query ?? {},
+  );
 }
 
 export async function requestLogExport(machineId: string): Promise<MachineOp> {
-  return await post<MachineOp>(
+  return await postContract(
     `/machine-ops/machines/${machineId}/export-logs`,
+    adminMachineContractNoBodySchema,
+    adminMachineRemoteOpResponseSchema,
+    {},
   );
 }

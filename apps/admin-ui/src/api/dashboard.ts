@@ -1,35 +1,64 @@
-import { get } from "./request";
+import type { z } from "zod";
 
-export type DashboardSummary = {
-  todaySalesCents: number;
-  todayOrderCount: number;
-  lowStockCount: number;
-  onlineMachineCount: number;
-  pendingIssueCount: number;
-};
+import {
+  dashboardCustomerProfileResponseSchema,
+  dashboardDateRangeQuerySchema,
+  dashboardSalesTrendResponseSchema,
+  dashboardSummarySchema,
+  dashboardTopProductsResponseSchema,
+  type DashboardCustomerProfile,
+  type DashboardSummary,
+  type DashboardTopProduct,
+  type DashboardTrendPoint,
+} from "@vem/shared";
 
-export type DashboardTrendPoint = {
-  date: string;
-  salesCents: number;
-  orderCount: number;
-};
+import { getContract } from "./request";
 
-export type DashboardTopProduct = {
-  variantId: string;
-  productName: string;
-  sku: string;
-  quantity: number;
-  salesCents: number;
-};
+export type {
+  DashboardCustomerProfile,
+  DashboardSummary,
+  DashboardTopProduct,
+  DashboardTrendPoint,
+} from "@vem/shared";
 
 export async function getDashboardSummary(): Promise<DashboardSummary> {
-  return await get<DashboardSummary>("/dashboard/summary");
+  return await getContract(
+    "/dashboard/summary",
+    dashboardDateRangeQuerySchema,
+    dashboardSummarySchema,
+    {},
+  );
 }
 
-export async function getSalesTrend(): Promise<DashboardTrendPoint[]> {
-  return await get<DashboardTrendPoint[]>("/dashboard/sales-trend");
+export async function getSalesTrend(
+  query?: z.input<typeof dashboardDateRangeQuerySchema>,
+): Promise<DashboardTrendPoint[]> {
+  return await getContract(
+    "/dashboard/sales-trend",
+    dashboardDateRangeQuerySchema,
+    dashboardSalesTrendResponseSchema,
+    query ?? {},
+  );
 }
 
-export async function getTopProducts(): Promise<DashboardTopProduct[]> {
-  return await get<DashboardTopProduct[]>("/dashboard/top-products");
+export async function getTopProducts(
+  query?: z.input<typeof dashboardDateRangeQuerySchema>,
+): Promise<DashboardTopProduct[]> {
+  return await getContract(
+    "/dashboard/top-products",
+    dashboardDateRangeQuerySchema,
+    dashboardTopProductsResponseSchema,
+    query ?? {},
+  );
+}
+
+export async function getCustomerProfile(
+  query?: z.input<typeof dashboardDateRangeQuerySchema>,
+): Promise<DashboardCustomerProfile[]> {
+  return await getContract(
+    "/dashboard/customer-profile",
+    dashboardDateRangeQuerySchema,
+    dashboardCustomerProfileResponseSchema,
+    query ?? {},
+  );
 }

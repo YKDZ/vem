@@ -9,6 +9,7 @@ import {
 } from "@vem/db";
 
 import { DRIZZLE_CLIENT } from "../database/database.constants";
+import { toAdminMachineRemoteOpResponse } from "../machines/machines.contract-mappers";
 
 @Injectable()
 export class MachineOpsService {
@@ -32,18 +33,19 @@ export class MachineOpsService {
         requestedAt: new Date(),
       })
       .returning();
-    return op;
+    return toAdminMachineRemoteOpResponse(op);
   }
 
   async listAllOps(machineId?: string) {
     const conditions = machineId
       ? [eq(machineRemoteOps.machineId, machineId)]
       : [];
-    return await this.db
+    const ops = await this.db
       .select()
       .from(machineRemoteOps)
       .where(and(...conditions))
       .orderBy(machineRemoteOps.requestedAt);
+    return ops.map(toAdminMachineRemoteOpResponse);
   }
 
   async listPendingForMachine(machineId: string) {

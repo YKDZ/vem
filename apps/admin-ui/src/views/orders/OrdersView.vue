@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import type { OrderStatus } from "@vem/shared";
+
 import { onMounted, ref } from "vue";
 
 import {
@@ -22,7 +24,7 @@ const orders = ref<PageResult<Order>>({
   pageSize: 20,
 });
 const filterOrderNo = ref("");
-const filterStatus = ref<string | undefined>(undefined);
+const filterStatus = ref<OrderStatus | undefined>(undefined);
 
 async function loadOrders(page = 1): Promise<void> {
   loading.value = true;

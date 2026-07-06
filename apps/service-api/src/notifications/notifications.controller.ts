@@ -1,4 +1,5 @@
 import {
+  Body,
   Controller,
   Get,
   Param,
@@ -7,14 +8,17 @@ import {
   Query,
 } from "@nestjs/common";
 import { ApiBearerAuth, ApiTags } from "@nestjs/swagger";
-import { pageQuerySchema } from "@vem/shared";
+import {
+  adminNotificationListQuerySchema,
+  notificationAdminNoBodySchema,
+} from "@vem/shared";
 import { z } from "zod";
 
 import { RequirePermissions } from "../access/permissions.decorator";
 import { ZodValidationPipe } from "../common/zod-validation.pipe";
 import { NotificationsService } from "./notifications.service";
 
-type PageQueryInput = z.infer<typeof pageQuerySchema>;
+type NotificationListQuery = z.infer<typeof adminNotificationListQuerySchema>;
 
 @ApiTags("notifications")
 @ApiBearerAuth()
@@ -25,14 +29,19 @@ export class NotificationsController {
   @RequirePermissions("notifications.read")
   @Get()
   async list(
-    @Query(new ZodValidationPipe(pageQuerySchema)) query: PageQueryInput,
+    @Query(new ZodValidationPipe(adminNotificationListQuerySchema))
+    query: NotificationListQuery,
   ) {
     return await this.notificationsService.list(query);
   }
 
   @RequirePermissions("notifications.write")
   @Post(":id/read")
-  async markRead(@Param("id", ParseUUIDPipe) id: string) {
+  async markRead(
+    @Param("id", ParseUUIDPipe) id: string,
+    @Body(new ZodValidationPipe(notificationAdminNoBodySchema))
+    _body: z.infer<typeof notificationAdminNoBodySchema>,
+  ) {
     return await this.notificationsService.markRead(id);
   }
 }

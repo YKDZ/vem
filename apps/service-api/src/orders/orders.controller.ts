@@ -9,6 +9,7 @@ import {
 } from "@nestjs/common";
 import { ApiBearerAuth, ApiTags } from "@nestjs/swagger";
 import {
+  adminOrderContractNoBodySchema,
   orderQuerySchema,
   orderRecoveryActionSchema,
   pageQuerySchema,
@@ -65,6 +66,8 @@ export class OrdersController {
   async requestRefund(
     @Param("id", ParseUUIDPipe) id: string,
     @CurrentAdmin() admin: AuthenticatedAdmin,
+    @Body(new ZodValidationPipe(adminOrderContractNoBodySchema))
+    _body: z.infer<typeof adminOrderContractNoBodySchema>,
   ) {
     return await this.ordersService.requestMockRefund(id, admin.id);
   }

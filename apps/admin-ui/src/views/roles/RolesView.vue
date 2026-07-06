@@ -13,6 +13,11 @@ import {
 } from "@/api/roles";
 import { useAuthStore } from "@/stores/auth";
 
+import {
+  toCreateRoleContract,
+  toUpdateRoleContract,
+} from "./role-contract-mappers";
+
 const authStore = useAuthStore();
 const canWrite = authStore.hasPermission("roles.write");
 
@@ -77,17 +82,13 @@ function openEdit(r: Role): void {
 async function saveRole(): Promise<void> {
   saving.value = true;
   try {
-    const body = {
-      code: roleForm.value.code,
-      name: roleForm.value.name,
-      description: roleForm.value.description || null,
-      status: roleForm.value.status,
-      permissionCodes: roleForm.value.permissionCodes,
-    };
     if (editingRole.value) {
-      await updateRole(editingRole.value.id, body);
+      await updateRole(
+        editingRole.value.id,
+        toUpdateRoleContract(roleForm.value),
+      );
     } else {
-      await createRole(body);
+      await createRole(toCreateRoleContract(roleForm.value));
     }
     drawerOpen.value = false;
     await loadRoles();

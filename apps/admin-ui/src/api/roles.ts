@@ -1,53 +1,63 @@
-import type { RoleStatus } from "@vem/shared";
+import type { z } from "zod";
 
-import { get, patch, post } from "./request";
+import {
+  adminPermissionCodeListQuerySchema,
+  adminPermissionCodeListResponseSchema,
+  adminRolePageResponseSchema,
+  adminRoleResponseSchema,
+  createRoleSchema,
+  roleListQuerySchema,
+  updateRoleSchema,
+  type AdminRolePageResponse,
+  type AdminRoleResponse,
+  type PageResult,
+  type PermissionCode,
+} from "@vem/shared";
 
-export type Role = {
-  id: string;
-  code: string;
-  name: string;
-  description: string | null;
-  isBuiltin: boolean;
-  status: RoleStatus;
-  permissionCodes: string[];
-};
+import { getContract, patchContract, postContract } from "./request";
 
-export type PageResult<T> = {
-  items: T[];
-  total: number;
-  page: number;
-  pageSize: number;
-};
+export type Role = AdminRoleResponse;
+export type { PageResult };
 
 export async function listRoles(
-  query?: Record<string, unknown>,
-): Promise<PageResult<Role>> {
-  return await get<PageResult<Role>>("/roles", { params: query });
+  query?: z.input<typeof roleListQuerySchema>,
+): Promise<AdminRolePageResponse> {
+  return await getContract(
+    "/roles",
+    roleListQuerySchema,
+    adminRolePageResponseSchema,
+    query ?? {},
+  );
 }
 
-export async function createRole(body: {
-  code: string;
-  name: string;
-  description?: string | null;
-  status?: string;
-  permissionCodes?: string[];
-}): Promise<Role> {
-  return await post<Role>("/roles", body);
+export async function createRole(
+  body: z.input<typeof createRoleSchema>,
+): Promise<Role> {
+  return await postContract(
+    "/roles",
+    createRoleSchema,
+    adminRoleResponseSchema,
+    body,
+  );
 }
 
 export async function updateRole(
   id: string,
-  body: {
-    code?: string;
-    name?: string;
-    description?: string | null;
-    status?: string;
-    permissionCodes?: string[];
-  },
+  body: z.input<typeof updateRoleSchema>,
 ): Promise<Role> {
-  return await patch<Role>(`/roles/${id}`, body);
+  return await patchContract(
+    `/roles/${id}`,
+    updateRoleSchema,
+    adminRoleResponseSchema,
+    body,
+  );
 }
 
-export async function listPermissions(): Promise<string[]> {
-  return await get<string[]>("/permissions");
+export async function listPermissions(): Promise<PermissionCode[]> {
+  return await getContract(
+    "/permissions",
+    adminPermissionCodeListQuerySchema,
+    adminPermissionCodeListResponseSchema,
+    {},
+  );
 }

@@ -1,3 +1,13 @@
+import type {
+  AdminCreateProductRequest,
+  AdminCreateProductVariantRequest,
+  AdminMediaAssetSummary,
+  AdminProductListQuery,
+  AdminProductVariantListQuery,
+  AdminUpdateProductRequest,
+  AdminUpdateProductVariantRequest,
+} from "@vem/shared";
+
 import {
   BadRequestException,
   Inject,
@@ -17,42 +27,23 @@ import {
   type DrizzleClient,
   type SQL,
 } from "@vem/db";
-import {
-  createProductSchema,
-  createProductVariantSchema,
-  pageQuerySchema,
-  updateProductSchema,
-  updateProductVariantSchema,
-} from "@vem/shared";
-import { z } from "zod";
 
 import { getOffset, toPageResult } from "../common/pagination.util";
 import { DRIZZLE_CLIENT } from "../database/database.constants";
-
-type PageQueryInput = z.infer<typeof pageQuerySchema>;
-type ProductListInput = PageQueryInput & {
-  keyword?: string;
-  status?: "draft" | "active" | "inactive";
-};
-type ProductVariantListInput = PageQueryInput & {
-  productId?: string;
-};
-type CreateProductInput = z.infer<typeof createProductSchema>;
-type UpdateProductInput = z.infer<typeof updateProductSchema>;
-type CreateProductVariantInput = z.infer<typeof createProductVariantSchema>;
-type UpdateProductVariantInput = z.infer<typeof updateProductVariantSchema>;
-type ProductDisplayImageAssetSummary = {
-  id: string;
-  publicUrl: string;
-  contentType: string;
-};
-type VariantTryOnSilhouetteAssetSummary = ProductDisplayImageAssetSummary;
+import {
+  mapCreateProductDtoToInsert,
+  mapCreateVariantDtoToInsert,
+  mapUpdateProductDtoToPatch,
+  mapUpdateVariantDtoToPatch,
+  toAdminProductResponse,
+  toAdminProductVariantResponse,
+} from "./products.contract-mappers";
 
 @Injectable()
 export class ProductsService {
   constructor(@Inject(DRIZZLE_CLIENT) private readonly db: DrizzleClient) {}
 
-  async listProducts(query: ProductListInput) {
+  async listProducts(query: AdminProductListQuery) {
     const filters: SQL[] = [isNull(products.deletedAt)];
     if (query.status) {
       filters.push(eq(products.status, query.status));
@@ -104,36 +95,28 @@ export class ProductsService {
 
     return toPageResult(
       rows.map((row) => ({
-        ...row.product,
-        displayImageMediaAsset: row.displayImageMediaAsset?.id
-          ? row.displayImageMediaAsset
-          : null,
+        ...toAdminProductResponse(
+          row.product,
+          row.displayImageMediaAsset?.id ? row.displayImageMediaAsset : null,
+        ),
       })),
       query,
       Number(totalRow.total),
     );
   }
 
-  async createProduct(input: CreateProductInput) {
+  async createProduct(input: AdminCreateProductRequest) {
     const displayImageMediaAsset = await this.requireProductDisplayImageAsset(
       input.displayImageMediaAssetId ?? null,
     );
     const [created] = await this.db
       .insert(products)
-      .values({
-        name: input.name,
-        categoryId: input.categoryId ?? null,
-        description: input.description ?? null,
-        displayImageMediaAssetId: input.displayImageMediaAssetId ?? null,
-        coverImageUrl: null,
-        status: input.status,
-        sortOrder: input.sortOrder,
-      })
+      .values(mapCreateProductDtoToInsert(input))
       .returning();
-    return { ...created, displayImageMediaAsset };
+    return toAdminProductResponse(created, displayImageMediaAsset);
   }
 
-  async updateProduct(id: string, input: UpdateProductInput) {
+  async updateProduct(id: string, input: AdminUpdateProductRequest) {
     const requestedDisplayImageMediaAsset =
       await this.requireProductDisplayImageAsset(
         input.displayImageMediaAssetId ?? null,
@@ -141,36 +124,26 @@ export class ProductsService {
       );
     const [updated] = await this.db
       .update(products)
-      .set({
-        name: input.name,
-        categoryId: input.categoryId,
-        description: input.description,
-        displayImageMediaAssetId: input.displayImageMediaAssetId,
-        coverImageUrl: null,
-        status: input.status,
-        sortOrder: input.sortOrder,
-        updatedAt: new Date(),
-      })
+      .set(mapUpdateProductDtoToPatch(input))
       .where(and(eq(products.id, id), isNull(products.deletedAt)))
       .returning();
 
     if (!updated) {
       throw new NotFoundException("Product not found");
     }
-    return {
-      ...updated,
-      displayImageMediaAsset:
-        requestedDisplayImageMediaAsset ??
+    return toAdminProductResponse(
+      updated,
+      requestedDisplayImageMediaAsset ??
         (await this.findProductDisplayImageAsset(
           updated.displayImageMediaAssetId,
         )),
-    };
+    );
   }
 
   private async requireProductDisplayImageAsset(
     id: string | null,
     validate = true,
-  ): Promise<ProductDisplayImageAssetSummary | null> {
+  ): Promise<AdminMediaAssetSummary | null> {
     if (!validate || id === null) return null;
     const asset = await this.findProductDisplayImageAsset(id);
     if (!asset) {
@@ -183,7 +156,7 @@ export class ProductsService {
 
   private async findProductDisplayImageAsset(
     id: string | null,
-  ): Promise<ProductDisplayImageAssetSummary | null> {
+  ): Promise<AdminMediaAssetSummary | null> {
     if (!id) return null;
     const [asset] = await this.db
       .select({
@@ -203,7 +176,7 @@ export class ProductsService {
     return asset ?? null;
   }
 
-  async listVariants(query: ProductVariantListInput) {
+  async listVariants(query: AdminProductVariantListQuery) {
     const filters: SQL[] = [isNull(productVariants.deletedAt)];
     if (query.productId) {
       filters.push(eq(productVariants.productId, query.productId));
@@ -238,41 +211,32 @@ export class ProductsService {
       .where(whereClause);
 
     return toPageResult(
-      rows.map((row) => ({
-        ...row.variant,
-        tryOnSilhouetteMediaAsset: row.tryOnSilhouetteMediaAsset?.id
-          ? row.tryOnSilhouetteMediaAsset
-          : null,
-      })),
+      rows.map((row) =>
+        toAdminProductVariantResponse(
+          row.variant,
+          row.tryOnSilhouetteMediaAsset?.id
+            ? row.tryOnSilhouetteMediaAsset
+            : null,
+        ),
+      ),
       query,
       Number(totalRow.total),
     );
   }
 
-  async createVariant(input: CreateProductVariantInput) {
+  async createVariant(input: AdminCreateProductVariantRequest) {
     const tryOnSilhouetteMediaAsset =
       await this.requireVariantTryOnSilhouetteAsset(
         input.tryOnSilhouetteMediaAssetId ?? null,
       );
     const [created] = await this.db
       .insert(productVariants)
-      .values({
-        productId: input.productId,
-        sku: input.sku,
-        size: input.size ?? null,
-        color: input.color ?? null,
-        barcode: input.barcode ?? null,
-        priceCents: input.priceCents,
-        costCents: input.costCents ?? null,
-        tryOnSilhouetteMediaAssetId: input.tryOnSilhouetteMediaAssetId ?? null,
-        status: input.status,
-        targetGender: input.targetGender ?? null,
-      })
+      .values(mapCreateVariantDtoToInsert(input))
       .returning();
-    return { ...created, tryOnSilhouetteMediaAsset };
+    return toAdminProductVariantResponse(created, tryOnSilhouetteMediaAsset);
   }
 
-  async updateVariant(id: string, input: UpdateProductVariantInput) {
+  async updateVariant(id: string, input: AdminUpdateProductVariantRequest) {
     const requestedTryOnSilhouetteMediaAsset =
       await this.requireVariantTryOnSilhouetteAsset(
         input.tryOnSilhouetteMediaAssetId ?? null,
@@ -280,39 +244,26 @@ export class ProductsService {
       );
     const [updated] = await this.db
       .update(productVariants)
-      .set({
-        productId: input.productId,
-        sku: input.sku,
-        size: input.size,
-        color: input.color,
-        barcode: input.barcode,
-        priceCents: input.priceCents,
-        costCents: input.costCents,
-        tryOnSilhouetteMediaAssetId: input.tryOnSilhouetteMediaAssetId,
-        status: input.status,
-        targetGender: input.targetGender,
-        updatedAt: new Date(),
-      })
+      .set(mapUpdateVariantDtoToPatch(input))
       .where(and(eq(productVariants.id, id), isNull(productVariants.deletedAt)))
       .returning();
 
     if (!updated) {
       throw new NotFoundException("Product variant not found");
     }
-    return {
-      ...updated,
-      tryOnSilhouetteMediaAsset:
-        requestedTryOnSilhouetteMediaAsset ??
+    return toAdminProductVariantResponse(
+      updated,
+      requestedTryOnSilhouetteMediaAsset ??
         (await this.findVariantTryOnSilhouetteAsset(
           updated.tryOnSilhouetteMediaAssetId,
         )),
-    };
+    );
   }
 
   private async requireVariantTryOnSilhouetteAsset(
     id: string | null,
     validate = true,
-  ): Promise<VariantTryOnSilhouetteAssetSummary | null> {
+  ): Promise<AdminMediaAssetSummary | null> {
     if (!validate || id === null) return null;
     const asset = await this.findVariantTryOnSilhouetteAsset(id);
     if (!asset) {
@@ -325,7 +276,7 @@ export class ProductsService {
 
   private async findVariantTryOnSilhouetteAsset(
     id: string | null,
-  ): Promise<VariantTryOnSilhouetteAssetSummary | null> {
+  ): Promise<AdminMediaAssetSummary | null> {
     if (!id) return null;
     const [asset] = await this.db
       .select({

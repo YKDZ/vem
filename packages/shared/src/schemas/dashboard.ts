@@ -31,3 +31,22 @@ export const dashboardCustomerProfileSchema = z.object({
   label: z.string(),
   count: z.int().min(0),
 });
+
+export const dashboardSalesTrendResponseSchema = z.array(
+  dashboardTrendPointSchema,
+);
+
+export const dashboardTopProductsResponseSchema = z.array(
+  dashboardTopProductSchema,
+);
+
+export const dashboardCustomerProfileResponseSchema = z.array(
+  dashboardCustomerProfileSchema,
+);
+
+export type DashboardSummary = z.infer<typeof dashboardSummarySchema>;
+export type DashboardTrendPoint = z.infer<typeof dashboardTrendPointSchema>;
+export type DashboardTopProduct = z.infer<typeof dashboardTopProductSchema>;
+export type DashboardCustomerProfile = z.infer<
+  typeof dashboardCustomerProfileSchema
+>;

@@ -85,6 +85,15 @@ import {
   verifyMachineClaimCode,
 } from "./machine-claim-code.util";
 import {
+  mapCreateMachineDtoToInsert,
+  mapCreateMachineSlotDtoToInsert,
+  mapEnvironmentControlDtoToCommandInsert,
+  mapUpdateMachineDtoToPatch,
+  toAdminMachineCommandResponse,
+  toAdminMachineResponse,
+  toAdminMachineSlotResponse,
+} from "./machines.contract-mappers";
+import {
   calendarContextForLocalDate,
   type CalendarContext,
 } from "./natural-context-calendar";
@@ -372,38 +381,11 @@ function machineGeoLocationFromRow(
   };
 }
 
-function machineSnapshot<T extends MachineRecord>(machine: T) {
-  const { geoLatitude, geoLongitude, geoTimezone, ...rest } = machine;
-  return {
-    ...rest,
-    geoLocation: machineGeoLocationFromRow({
-      geoLatitude,
-      geoLongitude,
-      geoTimezone,
-    }),
-  };
-}
-
 function machineLocationAuditSnapshot(machine: MachineRecord) {
   return {
     locationLabel: machine.locationLabel,
     geoLocation: machineGeoLocationFromRow(machine),
   };
-}
-
-function machineGeoLocationValues(
-  geoLocation: MachineGeoLocation | null | undefined,
-) {
-  if (geoLocation === undefined) {
-    return {};
-  }
-  return geoLocation === null
-    ? { geoLatitude: null, geoLongitude: null, geoTimezone: null }
-    : {
-        geoLatitude: geoLocation.latitude,
-        geoLongitude: geoLocation.longitude,
-        geoTimezone: geoLocation.timezone,
-      };
 }
 
 async function externalNaturalEnvironmentSnapshot(
@@ -739,9 +721,11 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
       items.map(async (machine) => {
         const latestHeartbeat = await this.getLatestHeartbeatStatus(machine.id);
         return {
-          ...machineSnapshot(machine),
+          ...toAdminMachineResponse(machine),
           latestHeartbeatStatus: latestHeartbeat?.statusPayload ?? null,
-          latestHeartbeatReportedAt: latestHeartbeat?.reportedAt ?? null,
+          latestHeartbeatReportedAt: latestHeartbeat?.reportedAt
+            ? toIso(latestHeartbeat.reportedAt)
+            : null,
           latestEnvironment: latestHeartbeat?.statusPayload.environment ?? null,
           latestEnvironmentCommand: await this.getLatestEnvironmentCommand(
             machine.id,
@@ -756,14 +740,9 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
   async createMachine(input: CreateMachineInput) {
     const [created] = await this.db
       .insert(machines)
-      .values({
-        code: input.code,
-        name: input.name,
-        locationLabel: input.locationLabel ?? null,
-        ...machineGeoLocationValues(input.geoLocation),
-      })
+      .values(mapCreateMachineDtoToInsert(input))
       .returning();
-    return machineSnapshot(created);
+    return toAdminMachineResponse(created);
   }
 
   async updateMachine(
@@ -781,21 +760,7 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
       throw new NotFoundException("Machine not found");
     }
 
-    const updateValues: Partial<typeof machines.$inferInsert> = {
-      updatedAt: new Date(),
-    };
-    if (input.code !== undefined) updateValues.code = input.code;
-    if (input.name !== undefined) updateValues.name = input.name;
-    if (input.locationLabel !== undefined) {
-      updateValues.locationLabel = input.locationLabel;
-    }
-    if ("geoLocation" in input) {
-      Object.assign(updateValues, machineGeoLocationValues(input.geoLocation));
-    }
-    if (input.status !== undefined) updateValues.status = input.status;
-    if (input.mqttClientId !== undefined) {
-      updateValues.mqttClientId = input.mqttClientId;
-    }
+    const updateValues = mapUpdateMachineDtoToPatch(input);
 
     const [updated] = await this.db
       .update(machines)
@@ -821,7 +786,7 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
         afterJson: afterLocation,
       });
     }
-    return machineSnapshot(updated);
+    return toAdminMachineResponse(updated);
   }
 
   async getMachine(id: string) {
@@ -845,9 +810,11 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
     const activeAcknowledgedPlanogramVersion =
       await this.getActiveAcknowledgedPlanogramVersion(id);
     return {
-      ...machineSnapshot(machine),
+      ...toAdminMachineResponse(machine),
       latestHeartbeatStatus: latestHeartbeat?.statusPayload ?? null,
-      latestHeartbeatReportedAt: latestHeartbeat?.reportedAt ?? null,
+      latestHeartbeatReportedAt: latestHeartbeat?.reportedAt
+        ? toIso(latestHeartbeat.reportedAt)
+        : null,
       latestEnvironment: latestHeartbeat?.statusPayload.environment ?? null,
       latestEnvironmentCommand,
       productionPilotReadiness: evaluateProductionPilotReadiness({
@@ -959,7 +926,7 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
       .orderBy(desc(machineCommands.createdAt))
       .limit(1);
 
-    return latestCommand ?? null;
+    return latestCommand ? toAdminMachineCommandResponse(latestCommand) : null;
   }
 
   private async getActiveAcknowledgedPlanogramVersion(
@@ -999,32 +966,19 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
 
     const commandNo = createBusinessNo("MCMD");
     const timeoutSeconds = this.config.machineCommandTimeoutSeconds;
-    const payload = {
-      commandNo,
-      ...(commandInput.airConditionerOn === undefined
-        ? {}
-        : { airConditionerOn: commandInput.airConditionerOn }),
-      ...(commandInput.targetTemperatureCelsius === undefined
-        ? {}
-        : {
-            targetTemperatureCelsius: commandInput.targetTemperatureCelsius,
-          }),
-      timeoutSeconds,
-    };
     const now = new Date();
-    const timeoutAt = new Date(now.getTime() + timeoutSeconds * 1_000);
+    const commandValues = mapEnvironmentControlDtoToCommandInsert({
+      machineId: machine.id,
+      adminUserId,
+      commandNo,
+      input: commandInput,
+      timeoutSeconds,
+      now,
+    });
 
     const [created] = await this.db
       .insert(machineCommands)
-      .values({
-        commandNo,
-        machineId: machine.id,
-        type: "environment-control",
-        status: "pending",
-        payloadJson: payload,
-        timeoutAt,
-        requestedByAdminUserId: adminUserId,
-      })
+      .values(commandValues)
       .returning();
 
     try {
@@ -1058,7 +1012,7 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
           payload: created.payloadJson,
         },
       });
-      return sent;
+      return toAdminMachineCommandResponse(sent);
     } catch (error) {
       const [failed] = await this.db
         .update(machineCommands)
@@ -1069,7 +1023,7 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
         })
         .where(eq(machineCommands.id, created.id))
         .returning();
-      return failed;
+      return toAdminMachineCommandResponse(failed);
     }
   }
 
@@ -1519,7 +1473,7 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
   }
 
   async listSlots(machineId: string) {
-    return await this.db
+    const slots = await this.db
       .select()
       .from(machineSlots)
       .where(
@@ -1529,22 +1483,16 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
         ),
       )
       .orderBy(machineSlots.layerNo, machineSlots.cellNo);
+    return slots.map(toAdminMachineSlotResponse);
   }
 
   async createSlot(machineId: string, input: CreateMachineSlotInput) {
     const slot = createMachineSlotSchema.parse(input);
     const [created] = await this.db
       .insert(machineSlots)
-      .values({
-        machineId,
-        layerNo: slot.layerNo,
-        cellNo: slot.cellNo,
-        slotCode: slot.slotCode,
-        capacity: slot.capacity,
-        status: slot.status,
-      })
+      .values(mapCreateMachineSlotDtoToInsert(machineId, slot))
       .returning();
-    return created;
+    return toAdminMachineSlotResponse(created);
   }
 
   async getCatalogByMachineCode(code: string) {

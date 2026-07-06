@@ -162,6 +162,35 @@ export class DrizzleStockReconciliationRepository extends StockReconciliationRep
         return null;
       }
 
+      const nextOnHandQty =
+        input.action === "accept_machine_stock"
+          ? current.afterQuantity
+          : input.action === "manual_correct"
+            ? input.correctedOnHandQty
+            : undefined;
+
+      if (
+        (input.action === "accept_machine_stock" ||
+          input.action === "manual_correct") &&
+        (!current.inventoryId ||
+          nextOnHandQty === null ||
+          nextOnHandQty === undefined)
+      ) {
+        throw new ConflictException(
+          "Stock reconciliation case cannot determine target inventory quantity",
+        );
+      }
+
+      if (
+        nextOnHandQty !== null &&
+        nextOnHandQty !== undefined &&
+        nextOnHandQty < (current.reservedQty ?? 0)
+      ) {
+        throw new ConflictException(
+          "Resolution would make inventory on-hand quantity below reserved quantity",
+        );
+      }
+
       const nextStatus =
         input.action === "reject_machine_stock" ? "rejected" : "accepted";
       const claimed =
@@ -189,26 +218,8 @@ export class DrizzleStockReconciliationRepository extends StockReconciliationRep
         return null;
       }
 
-      const nextOnHandQty =
-        input.action === "accept_machine_stock"
-          ? current.afterQuantity
-          : input.action === "manual_correct"
-            ? input.correctedOnHandQty
-            : undefined;
       let inventoryMovement: StockReconciliationResolveResult["inventoryMovement"] =
         null;
-
-      if (
-        (input.action === "accept_machine_stock" ||
-          input.action === "manual_correct") &&
-        (!current.inventoryId ||
-          nextOnHandQty === null ||
-          nextOnHandQty === undefined)
-      ) {
-        throw new ConflictException(
-          "Stock reconciliation case cannot determine target inventory quantity",
-        );
-      }
 
       if (
         current.inventoryId &&

@@ -19,12 +19,14 @@ const mockAuditService = {
 
 describe("RolesService", () => {
   let service: RolesService;
+  let txPermissionRows: Array<{ id: string; code: string }>;
 
   beforeEach(async () => {
     vi.clearAllMocks();
+    txPermissionRows = [];
 
     const existingRole = {
-      id: "role-id-1",
+      id: "550e8400-e29b-41d4-a716-446655440001",
       code: "operator",
       name: "运营",
       description: null,
@@ -61,7 +63,7 @@ describe("RolesService", () => {
           }),
           select: vi.fn().mockReturnValue({
             from: vi.fn().mockReturnValue({
-              where: vi.fn().mockResolvedValue([]),
+              where: vi.fn().mockResolvedValue(txPermissionRows),
             }),
           }),
           transaction: vi.fn(),
@@ -82,17 +84,49 @@ describe("RolesService", () => {
   });
 
   it("replaces role permissions and records audit log", async () => {
-    const updated = await service.update("operator-admin-id", "role-id-1", {
-      permissionCodes: ["orders.read", "payments.read"],
-    });
+    txPermissionRows = [
+      { id: "550e8400-e29b-41d4-a716-446655440010", code: "orders.read" },
+      { id: "550e8400-e29b-41d4-a716-446655440011", code: "payments.read" },
+    ];
 
-    expect(updated.id).toBe("role-id-1");
+    const updated = await service.update(
+      "operator-admin-id",
+      "550e8400-e29b-41d4-a716-446655440001",
+      {
+        permissionCodes: ["orders.read", "payments.read"],
+      },
+    );
+
+    expect(updated.id).toBe("550e8400-e29b-41d4-a716-446655440001");
     expect(mockAuditService.record).toHaveBeenCalledWith(
       expect.objectContaining({
         adminUserId: "operator-admin-id",
         action: "roles.update",
         resourceType: "role",
-        resourceId: "role-id-1",
+        resourceId: "550e8400-e29b-41d4-a716-446655440001",
+      }),
+    );
+  });
+
+  it("returns and audits only permission codes that were persisted", async () => {
+    txPermissionRows = [
+      { id: "550e8400-e29b-41d4-a716-446655440010", code: "orders.read" },
+    ];
+
+    const updated = await service.update(
+      "operator-admin-id",
+      "550e8400-e29b-41d4-a716-446655440001",
+      {
+        permissionCodes: ["orders.read", "payments.read"],
+      },
+    );
+
+    expect(updated.permissionCodes).toEqual(["orders.read"]);
+    expect(mockAuditService.record).toHaveBeenCalledWith(
+      expect.objectContaining({
+        afterJson: expect.objectContaining({
+          permissionCodes: ["orders.read"],
+        }),
       }),
     );
   });

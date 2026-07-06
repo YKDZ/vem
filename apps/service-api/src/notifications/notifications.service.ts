@@ -8,13 +8,21 @@ import {
   type DrizzleClient,
   type DrizzleTransaction,
 } from "@vem/db";
-import { pageQuerySchema } from "@vem/shared";
+import {
+  adminNotificationListQuerySchema,
+  adminNotificationPageResponseSchema,
+} from "@vem/shared";
 import { z } from "zod";
 
 import { getOffset, toPageResult } from "../common/pagination.util";
 import { DRIZZLE_CLIENT } from "../database/database.constants";
+import {
+  mapNotificationReadToPatch,
+  toAdminNotificationResponse,
+  toNotificationReadResponse,
+} from "./notifications.contract-mappers";
 
-type PageQueryInput = z.infer<typeof pageQuerySchema>;
+type NotificationListQuery = z.infer<typeof adminNotificationListQuerySchema>;
 
 @Injectable()
 export class NotificationsService {
@@ -150,29 +158,40 @@ export class NotificationsService {
       .onConflictDoNothing({ target: notifications.dedupeKey });
   }
 
-  async list(query: PageQueryInput) {
+  async list(query: NotificationListQuery) {
+    const whereClause = query.status
+      ? eq(notifications.status, query.status)
+      : undefined;
     const items = await this.db
       .select()
       .from(notifications)
+      .where(whereClause)
       .orderBy(desc(notifications.createdAt))
       .limit(query.pageSize)
       .offset(getOffset(query));
     const [totalRow] = await this.db
       .select({ total: count() })
-      .from(notifications);
+      .from(notifications)
+      .where(whereClause);
 
-    return toPageResult(items, query, Number(totalRow.total));
+    return adminNotificationPageResponseSchema.parse(
+      toPageResult(
+        items.map((item) => toAdminNotificationResponse(item)),
+        query,
+        Number(totalRow.total),
+      ),
+    );
   }
 
   async markRead(id: string) {
     const [updated] = await this.db
       .update(notifications)
-      .set({ status: "read", updatedAt: new Date() })
+      .set(mapNotificationReadToPatch())
       .where(eq(notifications.id, id))
       .returning();
     if (!updated) {
       throw new NotFoundException("Notification not found");
     }
-    return updated;
+    return toNotificationReadResponse(updated);
   }
 }

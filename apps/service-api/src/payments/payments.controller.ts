@@ -17,6 +17,8 @@ import {
 import { ApiBearerAuth, ApiTags } from "@nestjs/swagger";
 import {
   pageQuerySchema,
+  paymentAdminNoBodySchema,
+  paymentOperatorReasonSchema,
   paymentEventQuerySchema,
   paymentProviderQuerySchema,
   paymentQuerySchema,
@@ -67,9 +69,6 @@ const webhookAttemptListQuerySchema = paymentWebhookAttemptQuerySchema.extend(
 const reconciliationAttemptListQuerySchema =
   paymentReconciliationAttemptQuerySchema.extend(pageQuerySchema.shape);
 const refundListQuerySchema = refundQuerySchema.extend(pageQuerySchema.shape);
-export const paymentOperatorReasonSchema = z.object({
-  reason: z.string().trim().min(1).max(256),
-});
 
 @ApiTags("payments")
 @ApiBearerAuth()
@@ -93,6 +92,8 @@ export class PaymentsController {
   async markMockSucceeded(
     @CurrentAdmin() admin: AuthenticatedAdmin,
     @Param("paymentNo") paymentNo: string,
+    @Body(new ZodValidationPipe(paymentAdminNoBodySchema))
+    _body: z.infer<typeof paymentAdminNoBodySchema>,
   ) {
     return await this.paymentsService.markMockSucceeded(paymentNo, admin.id);
   }
@@ -102,6 +103,8 @@ export class PaymentsController {
   async markMockFailed(
     @CurrentAdmin() admin: AuthenticatedAdmin,
     @Param("paymentNo") paymentNo: string,
+    @Body(new ZodValidationPipe(paymentAdminNoBodySchema))
+    _body: z.infer<typeof paymentAdminNoBodySchema>,
   ) {
     return await this.paymentsService.markMockFailed(
       paymentNo,

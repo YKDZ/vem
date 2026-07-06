@@ -1,15 +1,35 @@
 import type {
-  MachineCommandStatus,
-  MachineClaimCodePurpose,
-  MachineClaimCodeState,
-  MachineEnvironmentControlRequest,
+  AdminMachineCommandResponse,
+  AdminMachineResponse,
+  AdminMachineSlotResponse,
   ExternalNaturalEnvironment,
-  MachineHeartbeatStatusPayload,
-  MachineSlotStatus,
-  MachineStatus,
+  GenerateMachineClaimCodeResponse,
+  MachineClaimCodeListResponse,
+  MachineClaimCodeSnapshot,
+  PageResult,
 } from "@vem/shared";
 
-import { get, patch, post } from "./request";
+import {
+  adminMachineCommandResponseSchema,
+  adminMachineContractNoBodySchema,
+  adminMachinePageResponseSchema,
+  adminMachineResponseSchema,
+  adminMachineSlotResponseSchema,
+  createMachineSchema,
+  createMachineSlotSchema,
+  generateMachineClaimCodeRequestSchema,
+  generateMachineClaimCodeResponseSchema,
+  machineClaimCodeListResponseSchema,
+  machineClaimCodeSnapshotSchema,
+  machineEnvironmentControlRequestSchema,
+  pageQuerySchema,
+  rotateMachineCredentialsResponseSchema,
+  updateMachineSchema,
+  type RotateMachineCredentialsResponse,
+} from "@vem/shared";
+import { z } from "zod";
+
+import { get, getContract, patchContract, postContract } from "./request";
 
 export type MachineGeoLocation = {
   latitude: number;
@@ -17,21 +37,7 @@ export type MachineGeoLocation = {
   timezone: string;
 };
 
-export type Machine = {
-  id: string;
-  code: string;
-  name: string;
-  locationLabel: string | null;
-  geoLocation: MachineGeoLocation | null;
-  status: MachineStatus;
-  mqttClientId: string | null;
-  lastSeenAt: string | null;
-  createdAt: string;
-  updatedAt: string;
-  latestHeartbeatStatus?: MachineHeartbeatStatusPayload | null;
-  latestHeartbeatReportedAt?: string | null;
-  latestEnvironment?: MachineHeartbeatStatusPayload["environment"] | null;
-  latestEnvironmentCommand?: MachineCommand | null;
+export type Machine = AdminMachineResponse & {
   productionPilotReadiness?: ProductionPilotReadiness | null;
 };
 
@@ -51,89 +57,60 @@ export type ProductionPilotReadiness = {
   checks: ProductionPilotReadinessCheck[];
 };
 
-export type MachineCommand = {
-  id: string;
-  machineId: string;
-  commandNo: string;
-  type: string;
-  status: MachineCommandStatus;
-  payloadJson?: Record<string, unknown> | null;
-  resultJson?: Record<string, unknown> | null;
-  lastError?: string | null;
-  createdAt?: string;
-  updatedAt?: string;
-};
+export type MachineCommand = AdminMachineCommandResponse;
 
-export type MachineSlot = {
-  id: string;
-  machineId: string;
-  layerNo: number;
-  cellNo: number;
-  slotCode: string;
-  capacity: number;
-  status: MachineSlotStatus;
-};
+export type MachineSlot = AdminMachineSlotResponse;
+export type MachineClaimCodeListResult = MachineClaimCodeListResponse;
+export type GenerateMachineClaimCodeResult = GenerateMachineClaimCodeResponse;
+export type { MachineClaimCodeSnapshot, PageResult };
 
-export type MachineClaimCodeSnapshot = {
-  id: string;
-  machineId: string;
-  machineCode: string;
-  purpose?: MachineClaimCodePurpose;
-  state: MachineClaimCodeState;
-  expiresAt: string;
-  failedAttemptCount: number;
-  maxFailedAttempts: number;
-  createdAt: string;
-  consumedAt?: string | null;
-  revokedAt?: string | null;
-  lockedAt?: string | null;
-};
+const productionPilotReadinessCheckSchema = z.strictObject({
+  code: z.string(),
+  label: z.string(),
+  status: z.enum(["ready", "blocked", "degraded", "missing"]),
+  message: z.string(),
+  operatorAction: z.string(),
+});
 
-export type MachineClaimCodeListResult = {
-  items: MachineClaimCodeSnapshot[];
-};
+const productionPilotReadinessSchema = z.strictObject({
+  status: z.enum(["ready", "blocked", "degraded"]),
+  checkedAt: z.string(),
+  blockers: z.array(productionPilotReadinessCheckSchema),
+  degraded: z.array(productionPilotReadinessCheckSchema),
+  checks: z.array(productionPilotReadinessCheckSchema),
+});
 
-export type GenerateMachineClaimCodeResult = MachineClaimCodeSnapshot & {
-  claimCode: string;
-};
-
-export type CreateMachineInput = {
-  code: string;
-  name: string;
-  locationLabel?: string | null;
-  geoLocation?: MachineGeoLocation | null;
-};
-
-export type UpdateMachineInput = Partial<
-  CreateMachineInput & {
-    status: MachineStatus;
-    mqttClientId: string | null;
+function toMachine(response: AdminMachineResponse): Machine {
+  const { productionPilotReadiness, ...machine } = response;
+  if (productionPilotReadiness === undefined) {
+    return machine;
   }
->;
-
-export type CreateMachineSlotInput = {
-  layerNo: number;
-  cellNo: number;
-  slotCode: string;
-  capacity: number;
-  status?: MachineSlotStatus;
-};
-
-export type PageResult<T> = {
-  items: T[];
-  total: number;
-  page: number;
-  pageSize: number;
-};
+  return {
+    ...machine,
+    productionPilotReadiness:
+      productionPilotReadiness === null
+        ? null
+        : productionPilotReadinessSchema.parse(productionPilotReadiness),
+  };
+}
 
 export async function listMachines(
-  query?: Record<string, unknown>,
+  query?: z.input<typeof pageQuerySchema>,
 ): Promise<PageResult<Machine>> {
-  return await get<PageResult<Machine>>("/machines", { params: query });
+  const page = await getContract(
+    "/machines",
+    pageQuerySchema,
+    adminMachinePageResponseSchema,
+    query ?? {},
+  );
+  return {
+    ...page,
+    items: page.items.map(toMachine),
+  };
 }
 
 export async function getMachine(id: string): Promise<Machine> {
-  return await get<Machine>(`/machines/${id}`);
+  return toMachine(await get<AdminMachineResponse>(`/machines/${id}`));
 }
 
 export async function getExternalNaturalEnvironment(
@@ -145,24 +122,40 @@ export async function getExternalNaturalEnvironment(
 }
 
 export async function createMachine(
-  body: CreateMachineInput,
+  body: z.input<typeof createMachineSchema>,
 ): Promise<Machine> {
-  return await post<Machine>("/machines", body);
+  return toMachine(
+    await postContract(
+      "/machines",
+      createMachineSchema,
+      adminMachineResponseSchema,
+      body,
+    ),
+  );
 }
 
 export async function updateMachine(
   id: string,
-  body: UpdateMachineInput,
+  body: z.input<typeof updateMachineSchema>,
 ): Promise<Machine> {
-  return await patch<Machine>(`/machines/${id}`, body);
+  return toMachine(
+    await patchContract(
+      `/machines/${id}`,
+      updateMachineSchema,
+      adminMachineResponseSchema,
+      body,
+    ),
+  );
 }
 
 export async function commandEnvironment(
   id: string,
-  body: MachineEnvironmentControlRequest,
+  body: z.input<typeof machineEnvironmentControlRequestSchema>,
 ): Promise<MachineCommand> {
-  return await post<MachineCommand>(
+  return await postContract(
     `/machines/${id}/commands/environment-control`,
+    machineEnvironmentControlRequestSchema,
+    adminMachineCommandResponseSchema,
     body,
   );
 }
@@ -175,25 +168,35 @@ export async function listMachineSlots(
 
 export async function createMachineSlot(
   machineId: string,
-  body: CreateMachineSlotInput,
+  body: z.input<typeof createMachineSlotSchema>,
 ): Promise<MachineSlot> {
-  return await post<MachineSlot>(`/machines/${machineId}/slots`, body);
+  return await postContract(
+    `/machines/${machineId}/slots`,
+    createMachineSlotSchema,
+    adminMachineSlotResponseSchema,
+    body,
+  );
 }
 
 export async function listMachineClaimCodes(
   machineId: string,
 ): Promise<MachineClaimCodeListResult> {
-  return await get<MachineClaimCodeListResult>(
+  return await getContract(
     `/machines/${machineId}/claim-codes`,
+    adminMachineContractNoBodySchema,
+    machineClaimCodeListResponseSchema,
+    {},
   );
 }
 
 export async function generateMachineClaimCode(
   machineId: string,
-  body?: { purpose: MachineClaimCodePurpose },
+  body?: z.input<typeof generateMachineClaimCodeRequestSchema>,
 ): Promise<GenerateMachineClaimCodeResult> {
-  return await post<GenerateMachineClaimCodeResult>(
+  return await postContract(
     `/machines/${machineId}/claim-codes`,
+    generateMachineClaimCodeRequestSchema,
+    generateMachineClaimCodeResponseSchema,
     body ?? {},
   );
 }
@@ -202,24 +205,23 @@ export async function revokeMachineClaimCode(
   machineId: string,
   claimCodeId: string,
 ): Promise<MachineClaimCodeSnapshot> {
-  return await post<MachineClaimCodeSnapshot>(
+  return await postContract(
     `/machines/${machineId}/claim-codes/${claimCodeId}/revoke`,
+    adminMachineContractNoBodySchema,
+    machineClaimCodeSnapshotSchema,
     {},
   );
 }
 
-export type RotateCredentialsResult = {
-  machineCode: string;
-  machineSecret: string;
-  mqttSigningSecret: string;
-  secretVersion: number;
-};
+export type RotateCredentialsResult = RotateMachineCredentialsResponse;
 
 export async function rotateMachineCredentials(
   machineId: string,
 ): Promise<RotateCredentialsResult> {
-  return await post<RotateCredentialsResult>(
+  return await postContract(
     `/machines/${machineId}/credentials/rotate`,
+    adminMachineContractNoBodySchema,
+    rotateMachineCredentialsResponseSchema,
     {},
   );
 }

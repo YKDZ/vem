@@ -3,6 +3,7 @@ import { z } from "zod";
 import {
   machineClaimCodePurposeSchema,
   machineClaimCodeStateSchema,
+  machineCommandStatusSchema,
   machineSlotStatusSchema,
   machineStatusSchema,
 } from "../enums/machine";
@@ -201,7 +202,7 @@ export const createMachineSchema = z.strictObject(machineCreateShape);
 export const updateMachineSchema = z.strictObject(machineWriteShape).partial();
 
 export const createMachineSlotSchema = z
-  .object({
+  .strictObject({
     layerNo: machineSlotLayerNoSchema,
     cellNo: machineSlotCellNoSchema,
     slotCode: z.string().min(1).max(32),
@@ -211,7 +212,7 @@ export const createMachineSlotSchema = z
   .superRefine(addMachineSlotCoordinateIssue);
 
 export const updateMachineSlotSchema = z
-  .object({
+  .strictObject({
     layerNo: machineSlotLayerNoSchema,
     cellNo: machineSlotCellNoSchema,
     slotCode: z.string().min(1).max(32),
@@ -220,6 +221,19 @@ export const updateMachineSlotSchema = z
   })
   .partial()
   .superRefine(addMachineSlotCoordinateIssue);
+
+export const adminMachineSlotResponseSchema = z.strictObject({
+  id: z.uuid(),
+  machineId: z.uuid(),
+  layerNo: machineSlotLayerNoSchema,
+  cellNo: machineSlotCellNoSchema,
+  slotCode: z.string().min(1).max(32),
+  capacity: z.int().min(0),
+  status: machineSlotStatusSchema,
+  createdAt: z.iso.datetime().optional(),
+  updatedAt: z.iso.datetime().optional(),
+  deletedAt: z.iso.datetime().nullable().optional(),
+});
 
 export const machineEnvironmentHeartbeatPayloadSchema = z.object({
   temperatureCelsius: z.number().optional(),
@@ -274,7 +288,7 @@ export const heartbeatPayloadSchema = z.object({
 });
 
 export const machineEnvironmentControlRequestSchema = z
-  .object({
+  .strictObject({
     airConditionerOn: z.boolean().optional(),
     targetTemperatureCelsius: z.number().min(18).max(30).optional(),
   })
@@ -291,8 +305,96 @@ export const machineEnvironmentControlRequestSchema = z
     }
   });
 
+export const adminMachineContractNoBodySchema = z.strictObject({});
+
+export const adminMachineCommandResponseSchema = z.strictObject({
+  id: z.uuid(),
+  machineId: z.uuid(),
+  commandNo: z.string().min(1).max(64),
+  type: z.string().min(1).max(64),
+  status: machineCommandStatusSchema,
+  payloadJson: z.record(z.string(), z.unknown()).nullable().optional(),
+  resultJson: z.record(z.string(), z.unknown()).nullable().optional(),
+  lastError: z.string().nullable().optional(),
+  createdAt: z.iso.datetime().optional(),
+  updatedAt: z.iso.datetime().optional(),
+});
+
+export const adminMachineRemoteOpResponseSchema = z.strictObject({
+  id: z.uuid(),
+  machineId: z.uuid().nullable(),
+  type: z.string().min(1).max(64),
+  status: z.string().min(1).max(32),
+  requestedAt: z.iso.datetime(),
+  requestedByAdminUserId: z.uuid().nullable(),
+  acceptedAt: z.iso.datetime().nullable().optional(),
+  finishedAt: z.iso.datetime().nullable().optional(),
+  failedReason: z.string().nullable().optional(),
+  resultJson: z.record(z.string(), z.unknown()).nullable().optional(),
+});
+
+export const adminMachineResponseSchema = z.strictObject({
+  id: z.uuid(),
+  code: z.string().min(1).max(64),
+  name: z.string().min(1).max(128),
+  locationLabel: z.string().max(500).nullable(),
+  geoLocation: machineGeoLocationSchema.nullable(),
+  status: machineStatusSchema,
+  mqttClientId: z.string().max(128).nullable(),
+  lastSeenAt: z.iso.datetime().nullable(),
+  createdAt: z.iso.datetime(),
+  updatedAt: z.iso.datetime(),
+  latestHeartbeatStatus: machineHeartbeatStatusPayloadSchema
+    .nullable()
+    .optional(),
+  latestHeartbeatReportedAt: z.iso.datetime().nullable().optional(),
+  latestEnvironment: machineEnvironmentHeartbeatPayloadSchema
+    .nullable()
+    .optional(),
+  latestEnvironmentCommand: adminMachineCommandResponseSchema
+    .nullable()
+    .optional(),
+  productionPilotReadiness: z.unknown().nullable().optional(),
+});
+
+export const adminMachinePageResponseSchema = z.strictObject({
+  items: z.array(adminMachineResponseSchema),
+  total: z.int().nonnegative(),
+  page: z.int().positive(),
+  pageSize: z.int().positive(),
+});
+
+export const adminMachineOpsListQuerySchema = z.strictObject({
+  machineId: z.uuid().optional(),
+});
+
+export const adminMachineRemoteOpListResponseSchema = z.array(
+  adminMachineRemoteOpResponseSchema,
+);
+
 export type MachineHeartbeatStatusPayload = z.infer<
   typeof machineHeartbeatStatusPayloadSchema
+>;
+export type AdminCreateMachineRequest = z.infer<typeof createMachineSchema>;
+export type AdminUpdateMachineRequest = z.infer<typeof updateMachineSchema>;
+export type AdminCreateMachineSlotRequest = z.infer<
+  typeof createMachineSlotSchema
+>;
+export type AdminMachineResponse = z.infer<typeof adminMachineResponseSchema>;
+export type AdminMachinePageResponse = z.infer<
+  typeof adminMachinePageResponseSchema
+>;
+export type AdminMachineCommandResponse = z.infer<
+  typeof adminMachineCommandResponseSchema
+>;
+export type AdminMachineRemoteOpResponse = z.infer<
+  typeof adminMachineRemoteOpResponseSchema
+>;
+export type AdminMachineOpsListQuery = z.infer<
+  typeof adminMachineOpsListQuerySchema
+>;
+export type AdminMachineSlotResponse = z.infer<
+  typeof adminMachineSlotResponseSchema
 >;
 export type ExternalNaturalEnvironmentStatus = z.infer<
   typeof externalNaturalEnvironmentStatusSchema
@@ -525,11 +627,23 @@ export const generateMachineClaimCodeResponseSchema =
     claimCode: z.string().regex(/^[A-Z0-9]{4}-[A-Z0-9]{4}$/),
   });
 
+export const machineClaimCodeListResponseSchema = z.strictObject({
+  items: z.array(machineClaimCodeSnapshotSchema),
+});
+
 export const generateMachineClaimCodeRequestSchema = z
   .strictObject({
     purpose: machineClaimCodePurposeSchema.default("first_claim"),
   })
   .default({ purpose: "first_claim" });
+
+export const rotateMachineCredentialsResponseSchema = z.strictObject({
+  machineId: z.uuid(),
+  machineCode: z.string().min(1).max(64),
+  machineSecret: z.string().min(32).max(256),
+  mqttSigningSecret: z.string().min(32).max(256),
+  secretVersion: z.int().positive(),
+});
 
 export const machineClaimRequestSchema = z.strictObject({
   claimCode: z
@@ -648,8 +762,14 @@ export type MachineClaimCodeSnapshot = z.infer<
 export type GenerateMachineClaimCodeResponse = z.infer<
   typeof generateMachineClaimCodeResponseSchema
 >;
+export type MachineClaimCodeListResponse = z.infer<
+  typeof machineClaimCodeListResponseSchema
+>;
 export type GenerateMachineClaimCodeRequest = z.infer<
   typeof generateMachineClaimCodeRequestSchema
+>;
+export type RotateMachineCredentialsResponse = z.infer<
+  typeof rotateMachineCredentialsResponseSchema
 >;
 export type MachineClaimRequest = z.infer<typeof machineClaimRequestSchema>;
 export type ProductionMachineHardwareProfile = z.infer<

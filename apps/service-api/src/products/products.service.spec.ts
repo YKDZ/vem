@@ -13,6 +13,43 @@ const tryOnSilhouetteAsset = {
   publicUrl: "/api/media-assets/550e8400-e29b-41d4-a716-446655440125/content",
   contentType: "image/png",
 };
+const createdAt = new Date("2026-07-01T00:00:00.000Z");
+const updatedAt = new Date("2026-07-01T00:00:00.000Z");
+
+function productRow(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "550e8400-e29b-41d4-a716-446655440224",
+    name: "基础短袖",
+    categoryId: null,
+    description: null,
+    displayImageMediaAssetId: null,
+    coverImageUrl: null,
+    status: "draft",
+    sortOrder: 0,
+    createdAt,
+    updatedAt,
+    ...overrides,
+  };
+}
+
+function variantRow(overrides: Record<string, unknown> = {}) {
+  return {
+    id: "550e8400-e29b-41d4-a716-446655440225",
+    productId: "550e8400-e29b-41d4-a716-446655440224",
+    sku: "TSHIRT-M-WHITE",
+    size: null,
+    color: null,
+    barcode: null,
+    priceCents: 1000,
+    costCents: null,
+    status: "active",
+    targetGender: null,
+    tryOnSilhouetteMediaAssetId: null,
+    createdAt,
+    updatedAt,
+    ...overrides,
+  };
+}
 
 function selectRows<T>(rows: T[]) {
   return {
@@ -27,12 +64,9 @@ function selectRows<T>(rows: T[]) {
 describe("ProductsService", () => {
   it("validates and returns a bound product display image on create", async () => {
     const returning = vi.fn().mockResolvedValue([
-      {
-        id: "550e8400-e29b-41d4-a716-446655440224",
-        name: "基础短袖",
+      productRow({
         displayImageMediaAssetId: displayImageAsset.id,
-        coverImageUrl: null,
-      },
+      }),
     ]);
     const values = vi.fn().mockReturnValue({ returning });
     const insert = vi.fn().mockReturnValue({ values });
@@ -58,7 +92,6 @@ describe("ProductsService", () => {
     expect(product).toEqual(
       expect.objectContaining({
         displayImageMediaAssetId: displayImageAsset.id,
-        coverImageUrl: null,
         displayImageMediaAsset: displayImageAsset,
       }),
     );
@@ -83,12 +116,9 @@ describe("ProductsService", () => {
   });
 
   it("returns the bound product display image on update writes", async () => {
-    const updated = {
-      id: "550e8400-e29b-41d4-a716-446655440224",
-      name: "基础短袖",
+    const updated = productRow({
       displayImageMediaAssetId: displayImageAsset.id,
-      coverImageUrl: null,
-    };
+    });
     const returning = vi.fn().mockResolvedValue([updated]);
     const set = vi.fn().mockReturnValue({
       where: vi.fn().mockReturnValue({ returning }),
@@ -103,10 +133,13 @@ describe("ProductsService", () => {
       service.updateProduct(updated.id, {
         displayImageMediaAssetId: displayImageAsset.id,
       }),
-    ).resolves.toEqual({
-      ...updated,
-      displayImageMediaAsset: displayImageAsset,
-    });
+    ).resolves.toEqual(
+      expect.objectContaining({
+        id: updated.id,
+        displayImageMediaAssetId: displayImageAsset.id,
+        displayImageMediaAsset: displayImageAsset,
+      }),
+    );
     expect(set).toHaveBeenCalledWith(
       expect.objectContaining({
         displayImageMediaAssetId: displayImageAsset.id,
@@ -117,12 +150,9 @@ describe("ProductsService", () => {
 
   it("validates and returns a bound variant try-on silhouette on create", async () => {
     const returning = vi.fn().mockResolvedValue([
-      {
-        id: "550e8400-e29b-41d4-a716-446655440225",
-        productId: "550e8400-e29b-41d4-a716-446655440224",
-        sku: "TSHIRT-M-WHITE",
+      variantRow({
         tryOnSilhouetteMediaAssetId: tryOnSilhouetteAsset.id,
-      },
+      }),
     ]);
     const values = vi.fn().mockReturnValue({ returning });
     const insert = vi.fn().mockReturnValue({ values });
@@ -173,12 +203,9 @@ describe("ProductsService", () => {
   });
 
   it("returns the bound variant try-on silhouette on update writes", async () => {
-    const updated = {
-      id: "550e8400-e29b-41d4-a716-446655440225",
-      productId: "550e8400-e29b-41d4-a716-446655440224",
-      sku: "TSHIRT-M-WHITE",
+    const updated = variantRow({
       tryOnSilhouetteMediaAssetId: tryOnSilhouetteAsset.id,
-    };
+    });
     const returning = vi.fn().mockResolvedValue([updated]);
     const set = vi.fn().mockReturnValue({
       where: vi.fn().mockReturnValue({ returning }),
@@ -193,10 +220,13 @@ describe("ProductsService", () => {
       service.updateVariant(updated.id, {
         tryOnSilhouetteMediaAssetId: tryOnSilhouetteAsset.id,
       }),
-    ).resolves.toEqual({
-      ...updated,
-      tryOnSilhouetteMediaAsset: tryOnSilhouetteAsset,
-    });
+    ).resolves.toEqual(
+      expect.objectContaining({
+        id: updated.id,
+        tryOnSilhouetteMediaAssetId: tryOnSilhouetteAsset.id,
+        tryOnSilhouetteMediaAsset: tryOnSilhouetteAsset,
+      }),
+    );
     expect(set).toHaveBeenCalledWith(
       expect.objectContaining({
         tryOnSilhouetteMediaAssetId: tryOnSilhouetteAsset.id,
@@ -205,13 +235,9 @@ describe("ProductsService", () => {
   });
 
   it("returns the bound variant try-on silhouette on list reads", async () => {
-    const variant = {
-      id: "550e8400-e29b-41d4-a716-446655440225",
-      productId: "550e8400-e29b-41d4-a716-446655440224",
-      sku: "TSHIRT-M-WHITE",
+    const variant = variantRow({
       tryOnSilhouetteMediaAssetId: tryOnSilhouetteAsset.id,
-      createdAt: new Date("2026-07-01T00:00:00Z"),
-    };
+    });
     const listQuery = {
       from: vi.fn(() => listQuery),
       leftJoin: vi.fn(() => listQuery),

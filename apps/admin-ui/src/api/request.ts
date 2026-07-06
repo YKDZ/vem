@@ -3,6 +3,7 @@ import axios, {
   type AxiosRequestConfig,
   type AxiosResponse,
 } from "axios";
+import { z } from "zod";
 
 export type ApiResponse<T> = {
   code: number;
@@ -75,6 +76,17 @@ async function refreshAccessToken(): Promise<string> {
 function dispatchError(content: string): void {
   window.dispatchEvent(
     new CustomEvent("vem:message", { detail: { type: "error", content } }),
+  );
+}
+
+function dispatchContractValidationError(
+  label: string,
+  issues: z.core.$ZodIssue[],
+): void {
+  window.dispatchEvent(
+    new CustomEvent("vem:admin-contract-validation-failed", {
+      detail: { label, issues },
+    }),
   );
 }
 
@@ -200,4 +212,83 @@ export async function patch<T, TBody = unknown>(
   config?: AxiosRequestConfig,
 ): Promise<T> {
   return await unwrap(request.patch<ApiResponse<T>>(url, body, config));
+}
+
+function parseAdminContract<TSchema extends z.ZodType>(
+  schema: TSchema,
+  value: unknown,
+  label: string,
+): z.output<TSchema> {
+  const parsed = schema.safeParse(value);
+  if (parsed.success) return parsed.data;
+
+  dispatchContractValidationError(label, parsed.error.issues);
+  dispatchError("Admin API contract validation failed");
+  throw new Error("Admin API contract validation failed");
+}
+
+export async function getContract<
+  TQuerySchema extends z.ZodType,
+  TResponseSchema extends z.ZodType,
+>(
+  url: string,
+  querySchema: TQuerySchema,
+  responseSchema: TResponseSchema,
+  query: z.input<TQuerySchema>,
+  config?: AxiosRequestConfig,
+): Promise<z.output<TResponseSchema>> {
+  const parsedQuery = parseAdminContract(querySchema, query, `${url} query`);
+  const data = await get<unknown>(url, {
+    ...config,
+    params: parsedQuery,
+  });
+  return parseAdminContract(responseSchema, data, `${url} response`);
+}
+
+export async function postContract<
+  TBodySchema extends z.ZodType,
+  TResponseSchema extends z.ZodType,
+>(
+  url: string,
+  bodySchema: TBodySchema,
+  responseSchema: TResponseSchema,
+  body: z.input<TBodySchema>,
+  config?: AxiosRequestConfig,
+): Promise<z.output<TResponseSchema>> {
+  const parsedBody = parseAdminContract(bodySchema, body, `${url} request`);
+  const data = await post<unknown, z.output<TBodySchema>>(
+    url,
+    parsedBody,
+    config,
+  );
+  return parseAdminContract(responseSchema, data, `${url} response`);
+}
+
+export async function postResponseContract<TResponseSchema extends z.ZodType>(
+  url: string,
+  responseSchema: TResponseSchema,
+  body: FormData,
+  config?: AxiosRequestConfig,
+): Promise<z.output<TResponseSchema>> {
+  const data = await post<unknown, FormData>(url, body, config);
+  return parseAdminContract(responseSchema, data, `${url} response`);
+}
+
+export async function patchContract<
+  TBodySchema extends z.ZodType,
+  TResponseSchema extends z.ZodType,
+>(
+  url: string,
+  bodySchema: TBodySchema,
+  responseSchema: TResponseSchema,
+  body: z.input<TBodySchema>,
+  config?: AxiosRequestConfig,
+): Promise<z.output<TResponseSchema>> {
+  const parsedBody = parseAdminContract(bodySchema, body, `${url} request`);
+  const data = await patch<unknown, z.output<TBodySchema>>(
+    url,
+    parsedBody,
+    config,
+  );
+  return parseAdminContract(responseSchema, data, `${url} response`);
 }

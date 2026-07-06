@@ -2,14 +2,40 @@ import { describe, expect, it } from "vitest";
 
 import {
   HARDWARE_ERROR_HANDLING,
+  auditLogPageResponseSchema,
+  auditLogResponseSchema,
+  adminInventoryMovementPageResponseSchema,
+  adminInventoryPageResponseSchema,
+  adminInventoryResponseSchema,
+  adminPermissionCodeListResponseSchema,
+  adminRolePageResponseSchema,
+  adminRoleResponseSchema,
+  adminUserListQuerySchema,
+  adminUserPageResponseSchema,
+  adminUserResponseSchema,
+  adminMaintenanceWorkOrderResolveRequestSchema,
+  adminMaintenanceWorkOrderResponseSchema,
+  adminStockReconciliationCaseDetailResponseSchema,
+  adminStockReconciliationCasePageResponseSchema,
+  adminStockReconciliationResolveRequestSchema,
+  adminMachineContractNoBodySchema,
+  adminMachineResponseSchema,
+  adminMachineSlotResponseSchema,
   adminUserStatuses,
   canonicalJson,
+  createAdminUserSchema,
   createMachineSchema,
   createMachineSlotSchema,
   createMachineOrderSchema,
+  createInventorySchema,
+  createProductVariantSchema,
   createProductSchema,
   createProtectedFulfillmentDrillSchema,
   createProtectedPaymentDrillSchema,
+  createRoleSchema,
+  dashboardSalesTrendResponseSchema,
+  dashboardSummarySchema,
+  dashboardTopProductsResponseSchema,
   dispenseCommandPayloadSchema,
   hardwareErrorCodes,
   environmentControlCommandPayloadSchema,
@@ -18,7 +44,9 @@ import {
   machineEnvironmentControlRequestSchema,
   machineAuthTokenRequestSchema,
   machineClaimRequestSchema,
+  generateMachineClaimCodeRequestSchema,
   generateMachineClaimCodeResponseSchema,
+  machineClaimCodeListResponseSchema,
   machineClaimCodeSnapshotSchema,
   machineClaimCodePurposes,
   machineClaimCodeStates,
@@ -32,29 +60,55 @@ import {
   machineSlotCoordinateCode,
   maintenanceWorkOrderStatuses,
   mqttSignedEnvelopeSchema,
+  notificationReadResponseSchema,
   notificationTypeSchema,
+  orderInvestigationResponseSchema,
+  orderRecoveryActionResponseSchema,
+  orderRecoveryActionSchema,
   orderStatuses,
+  paymentAdminPageResponseSchema,
   paymentCodeAttemptAdminActionSchema,
+  paymentCodeAttemptAdminPageResponseSchema,
+  paymentOperatorReasonSchema,
+  paymentEventAdminPageResponseSchema,
+  paymentProviderConfigSchema,
+  paymentProviderConfigListResponseSchema,
+  paymentProviderNotifyUrlCheckSchema,
+  paymentProviderNotifyUrlCheckListResponseSchema,
+  paymentProviderListResponseSchema,
   paymentMachinePreflightSchema,
   externalNaturalEnvironmentSchema,
+  updateAdminUserSchema,
   updateProductSchema,
+  updateProductVariantSchema,
   updateMachineSchema,
   paymentCodeAttemptQuerySchema,
   paymentCodeSubmitResponseSchema,
   paymentCodeSubmitSchema,
   paymentOpsMetricsSchema,
   paymentOpsReadinessSchema,
+  paymentReconciliationAttemptAdminPageResponseSchema,
+  paymentWebhookAttemptAdminPageResponseSchema,
   paymentProviderStatuses,
   paymentProviderSensitiveConfigSchema,
+  updatePaymentProviderConfigSchema,
+  updatePaymentProviderSchema,
   paymentReconciliationAttemptQuerySchema,
   publishMachinePlanogramVersionSchema,
   protectedFulfillmentDrillRecoveryActionSchema,
   protectedFulfillmentDrillScenarioSchema,
   protectedPaymentDrillRecoveryActionSchema,
   protectedPaymentDrillScenarioSchema,
+  roleListQuerySchema,
   roleStatuses,
+  rotateMachineCredentialsResponseSchema,
+  refillInventorySchema,
+  refundAdminPageResponseSchema,
+  adjustInventorySchema,
   upsertNotificationTargetSchema,
   upsertPaymentProviderConfigSchema,
+  updateRoleSchema,
+  wechatPayPublicConfigSchema,
 } from "./index";
 
 describe("shared API contract", () => {
@@ -70,6 +124,253 @@ describe("shared API contract", () => {
     expect(paymentProviderStatuses).toEqual(["enabled", "disabled"]);
     expect(adminUserStatuses).toEqual(["active", "disabled"]);
     expect(roleStatuses).toEqual(["active", "disabled"]);
+  });
+
+  it("keeps admin identity and role contracts strict", () => {
+    expect(
+      createAdminUserSchema.parse({
+        username: "ops01",
+        password: "StrongPassword123",
+        displayName: "Ops User",
+        roleIds: ["550e8400-e29b-41d4-a716-446655440001"],
+      }),
+    ).toMatchObject({ status: "active" });
+    expect(() =>
+      createAdminUserSchema.parse({
+        username: "ops01",
+        password: "StrongPassword123",
+        displayName: "Ops User",
+        unsupported: true,
+      }),
+    ).toThrow();
+    expect(
+      updateAdminUserSchema.parse({
+        email: null,
+        roleIds: ["550e8400-e29b-41d4-a716-446655440001"],
+      }),
+    ).toEqual({
+      email: null,
+      roleIds: ["550e8400-e29b-41d4-a716-446655440001"],
+    });
+    expect(updateAdminUserSchema.parse({ email: null })).toEqual({
+      email: null,
+    });
+    expect(adminUserListQuerySchema.parse({ page: "2" })).toMatchObject({
+      page: 2,
+      pageSize: 20,
+    });
+
+    expect(
+      createRoleSchema.parse({
+        code: "ops_manager",
+        name: "Ops Manager",
+        permissionCodes: ["adminUsers.read", "roles.write"],
+      }),
+    ).toMatchObject({ status: "active" });
+    expect(() =>
+      createRoleSchema.parse({
+        code: "ops_manager",
+        name: "Ops Manager",
+        permissionCodes: ["roles.write", "roles.write"],
+      }),
+    ).toThrow();
+    expect(() =>
+      updateRoleSchema.parse({
+        permissionCodes: ["not.a.permission"],
+      }),
+    ).toThrow();
+    expect(() =>
+      updateRoleSchema.parse({
+        permissionCodes: ["adminUsers.read", "adminUsers.read"],
+      }),
+    ).toThrow();
+    expect(updateRoleSchema.parse({ name: "Ops Lead" })).toEqual({
+      name: "Ops Lead",
+    });
+    expect(roleListQuerySchema.parse({ pageSize: "50" })).toMatchObject({
+      page: 1,
+      pageSize: 50,
+    });
+  });
+
+  it("parses admin identity, role, and permission key responses", () => {
+    const adminUser = adminUserResponseSchema.parse({
+      id: "550e8400-e29b-41d4-a716-446655440001",
+      username: "ops01",
+      displayName: "Ops User",
+      mobile: null,
+      email: null,
+      status: "active",
+      roles: ["550e8400-e29b-41d4-a716-446655440010"],
+      lastLoginAt: null,
+      createdAt: "2026-07-05T00:00:00.000Z",
+      updatedAt: "2026-07-05T00:10:00.000Z",
+    });
+    expect(adminUser.roles).toEqual(["550e8400-e29b-41d4-a716-446655440010"]);
+    expect(() =>
+      adminUserResponseSchema.parse({ ...adminUser, passwordHash: "secret" }),
+    ).toThrow();
+    expect(
+      adminUserPageResponseSchema.parse({
+        items: [adminUser],
+        page: 1,
+        pageSize: 20,
+        total: 1,
+      }).total,
+    ).toBe(1);
+
+    const role = adminRoleResponseSchema.parse({
+      id: "550e8400-e29b-41d4-a716-446655440002",
+      code: "ops_manager",
+      name: "Ops Manager",
+      description: null,
+      isBuiltin: false,
+      status: "active",
+      permissionCodes: ["adminUsers.read", "roles.write"],
+      createdAt: "2026-07-05T00:00:00.000Z",
+      updatedAt: "2026-07-05T00:10:00.000Z",
+    });
+    expect(role.permissionCodes).toEqual(["adminUsers.read", "roles.write"]);
+    expect(
+      adminRolePageResponseSchema.parse({
+        items: [role],
+        page: 1,
+        pageSize: 20,
+        total: 1,
+      }).items,
+    ).toHaveLength(1);
+    expect(
+      adminPermissionCodeListResponseSchema.parse(["roles.write"]),
+    ).toEqual(["roles.write"]);
+  });
+
+  it("keeps order recovery and maintenance admin actions strict", () => {
+    expect(
+      orderRecoveryActionSchema.parse({
+        action: "confirm_not_dispensed",
+        note: "operator found the item still in the slot",
+      }),
+    ).toEqual({
+      action: "confirm_not_dispensed",
+      note: "operator found the item still in the slot",
+    });
+    expect(() =>
+      orderRecoveryActionSchema.parse({
+        action: "request_refund",
+        note: "operator confirmed no dispense",
+        directDatabasePatch: true,
+      }),
+    ).toThrow();
+
+    expect(
+      adminMaintenanceWorkOrderResolveRequestSchema.parse({
+        resolutionNote: "replaced jammed spring and verified dispense",
+      }),
+    ).toEqual({
+      resolutionNote: "replaced jammed spring and verified dispense",
+    });
+    expect(() =>
+      adminMaintenanceWorkOrderResolveRequestSchema.parse({
+        resolutionNote: "   ",
+      }),
+    ).toThrow();
+    expect(() =>
+      adminMaintenanceWorkOrderResolveRequestSchema.parse({
+        resolutionNote: "resolved",
+        status: "closed_by_ui",
+      }),
+    ).toThrow();
+  });
+
+  it("parses key order recovery, maintenance, and notification responses", () => {
+    expect(
+      orderRecoveryActionResponseSchema.parse({
+        action: "compensation_dispense",
+        recoveryActionId: "550e8400-e29b-41d4-a716-446655440010",
+        commandId: "550e8400-e29b-41d4-a716-446655440011",
+        commandNo: "CMD-2",
+        status: "pending",
+      }),
+    ).toMatchObject({ action: "compensation_dispense", commandNo: "CMD-2" });
+
+    expect(
+      adminMaintenanceWorkOrderResponseSchema.parse({
+        id: "550e8400-e29b-41d4-a716-446655440020",
+        workOrderNo: "WO-1",
+        machineId: "550e8400-e29b-41d4-a716-446655440021",
+        slotId: null,
+        orderId: "550e8400-e29b-41d4-a716-446655440022",
+        commandId: null,
+        title: "Dispense failed",
+        description: "Slot needs inspection",
+        priority: "high",
+        status: "resolved",
+        assigneeAdminUserId: "550e8400-e29b-41d4-a716-446655440023",
+        resolutionNote: "cleared jam",
+        createdAt: "2026-07-05T00:00:00.000Z",
+        resolvedAt: "2026-07-05T00:10:00.000Z",
+      }),
+    ).toMatchObject({ status: "resolved", resolutionNote: "cleared jam" });
+
+    expect(
+      notificationReadResponseSchema.parse({
+        id: "550e8400-e29b-41d4-a716-446655440030",
+        status: "read",
+        updatedAt: "2026-07-05T00:00:00.000Z",
+      }),
+    ).toMatchObject({ status: "read" });
+  });
+
+  it("parses the order investigation drawer recovery response boundary", () => {
+    const response = orderInvestigationResponseSchema.parse({
+      order: {
+        id: "550e8400-e29b-41d4-a716-446655440100",
+        orderNo: "ORD-1",
+        machineId: "550e8400-e29b-41d4-a716-446655440101",
+        machineCode: "M001",
+        status: "manual_handling",
+        paymentState: "paid",
+        fulfillmentState: "manual_handling",
+        totalAmountCents: 500,
+        currency: "CNY",
+        paidAt: "2026-07-05T00:00:00.000Z",
+        dispensedAt: null,
+        canceledAt: null,
+        createdAt: "2026-07-05T00:00:00.000Z",
+      },
+      items: [],
+      payments: [],
+      paymentEvents: [],
+      paymentWebhookAttempts: [],
+      paymentReconciliationAttempts: [],
+      paymentCodeAttempts: [],
+      vendingCommands: [],
+      fulfillmentProjection: {
+        state: "manual_handling",
+        latestCommand: null,
+        requiresPhysicalOutcomeConfirmation: true,
+        availableRecoveryActions: ["confirm_dispensed"],
+      },
+      inventoryMovements: [],
+      stockReconciliationLinks: [],
+      refunds: [],
+      maintenanceWorkOrders: [],
+      adminAuditEntries: [],
+      orderStatusEvents: [],
+    });
+
+    expect(response.fulfillmentProjection.availableRecoveryActions).toEqual([
+      "confirm_dispensed",
+    ]);
+    expect(() =>
+      orderInvestigationResponseSchema.parse({
+        ...response,
+        fulfillmentProjection: {
+          ...response.fulfillmentProjection,
+          availableRecoveryActions: ["sql_patch"],
+        },
+      }),
+    ).toThrow();
   });
 
   it("enforces hardware slot coordinate bounds across machine contracts", () => {
@@ -138,6 +439,687 @@ describe("shared API contract", () => {
     ).toThrow();
   });
 
+  describe("admin inventory intervention contracts", () => {
+    const inventoryId = "550e8400-e29b-41d4-a716-446655440000";
+    const machineId = "550e8400-e29b-41d4-a716-446655440001";
+    const slotId = "550e8400-e29b-41d4-a716-446655440002";
+    const variantId = "550e8400-e29b-41d4-a716-446655440003";
+
+    it("rejects unsupported fields on stock-changing inventory requests", () => {
+      expect(() =>
+        createInventorySchema.parse({
+          machineId,
+          slotId,
+          variantId,
+          onHandQty: 10,
+          unsupportedColumn: true,
+        }),
+      ).toThrow();
+      expect(() =>
+        refillInventorySchema.parse({
+          inventoryId,
+          quantity: 5,
+          reason: "manual",
+        }),
+      ).toThrow();
+      expect(() =>
+        adjustInventorySchema.parse({
+          inventoryId,
+          deltaQty: -1,
+          note: "counted stock",
+          onHandQty: 0,
+        }),
+      ).toThrow();
+    });
+
+    it("keeps quantity defaults and optional notes contract-bound", () => {
+      expect(
+        createInventorySchema.parse({
+          machineId,
+          slotId,
+          variantId,
+          onHandQty: 10,
+        }),
+      ).toEqual({
+        machineId,
+        slotId,
+        variantId,
+        onHandQty: 10,
+        reservedQty: 0,
+        lowStockThreshold: 1,
+      });
+      expect(refillInventorySchema.parse({ inventoryId, quantity: 2 })).toEqual(
+        { inventoryId, quantity: 2 },
+      );
+      expect(
+        adjustInventorySchema.parse({
+          inventoryId,
+          deltaQty: -1,
+        }),
+      ).toEqual({
+        inventoryId,
+        deltaQty: -1,
+      });
+    });
+
+    it("parses key inventory responses with nullable relationships", () => {
+      const inventory = adminInventoryResponseSchema.parse({
+        id: inventoryId,
+        machineId,
+        machineCode: "M001",
+        slotId,
+        slotCode: "A1",
+        variantId,
+        productId: "550e8400-e29b-41d4-a716-446655440004",
+        sku: "SKU-1",
+        productName: "Tea",
+        onHandQty: 10,
+        reservedQty: 2,
+        availableQty: 8,
+        lowStockThreshold: 3,
+        createdAt: "2026-06-01T00:00:00.000Z",
+        updatedAt: "2026-06-01T00:00:00.000Z",
+      });
+      expect(inventory.availableQty).toBe(8);
+
+      const movements = adminInventoryMovementPageResponseSchema.parse({
+        items: [
+          {
+            id: "550e8400-e29b-41d4-a716-446655440005",
+            inventoryId,
+            deltaQty: 5,
+            reason: "refill",
+            orderId: null,
+            orderNo: null,
+            operatorAdminUserId: null,
+            note: null,
+            createdAt: "2026-06-01T00:00:00.000Z",
+          },
+        ],
+        total: 1,
+        page: 1,
+        pageSize: 20,
+      });
+      expect(movements.items[0]?.note).toBeNull();
+
+      expect(
+        adminInventoryPageResponseSchema.parse({
+          items: [inventory],
+          total: 1,
+          page: 1,
+          pageSize: 20,
+        }).items[0]?.machineCode,
+      ).toBe("M001");
+    });
+
+    it("parses stock reconciliation resolution variants and response evidence", () => {
+      expect(
+        adminStockReconciliationResolveRequestSchema.parse({
+          action: "reject_machine_stock",
+          note: "payload conflicts",
+        }),
+      ).toEqual({
+        action: "reject_machine_stock",
+        note: "payload conflicts",
+      });
+      const manualCorrection =
+        adminStockReconciliationResolveRequestSchema.parse({
+          action: "manual_correct",
+          note: "counted on site",
+          correctedOnHandQty: 4,
+          clearBlocker: true,
+        });
+      expect(manualCorrection.action).toBe("manual_correct");
+      if (manualCorrection.action !== "manual_correct") {
+        throw new Error("expected manual correction resolution");
+      }
+      expect(manualCorrection.correctedOnHandQty).toBe(4);
+      expect(() =>
+        adminStockReconciliationResolveRequestSchema.parse({
+          action: "manual_correct",
+          note: "counted on site",
+        }),
+      ).toThrow();
+      expect(() =>
+        adminStockReconciliationResolveRequestSchema.parse({
+          action: "accept_machine_stock",
+          note: "counted by machine",
+          correctedOnHandQty: 4,
+        }),
+      ).toThrow();
+      expect(() =>
+        adminStockReconciliationResolveRequestSchema.parse({
+          action: "reject_machine_stock",
+          note: "   ",
+        }),
+      ).toThrow();
+      expect(() =>
+        adminStockReconciliationResolveRequestSchema.parse({
+          action: "accept_machine_stock",
+          note: "x".repeat(501),
+        }),
+      ).toThrow();
+
+      const detail = adminStockReconciliationCaseDetailResponseSchema.parse({
+        id: "550e8400-e29b-41d4-a716-446655440006",
+        caseTable: "machine_raw_stock_movements",
+        rawMovementId: null,
+        machineId,
+        machineCode: "M001",
+        movementId: "MOVE-1",
+        movementType: "stock_count_correction",
+        quantity: 4,
+        source: "local_maintenance",
+        attributedTo: null,
+        occurredAt: "2026-06-01T00:00:00.000Z",
+        receivedAt: "2026-06-01T00:01:00.000Z",
+        reconciliationReason: "weak_attribution",
+        platformReviewStatus: "open",
+        slot: {
+          id: slotId,
+          code: "A1",
+          status: "enabled",
+          saleEligibility: {
+            eligible: false,
+            slotSalesState: "needs_platform_review",
+            reason: "weak_attribution",
+          },
+        },
+        inventory: null,
+        blocker: null,
+        planogramVersion: "PLAN-1",
+        evidence: {
+          rawPayload: { movementId: "MOVE-1" },
+          normalizedPayload: { movementId: "MOVE-1" },
+          inventory: null,
+          linkedOrder: null,
+          linkedCommand: null,
+        },
+        resolution: {
+          action: "manual_correct",
+          note: "counted on site",
+          clearedBlocker: true,
+          inventoryMovement: {
+            inventoryId,
+            deltaQty: -2,
+            reason: "hardware_sync",
+            note: "counted on site",
+          },
+        },
+      });
+      expect(detail.resolution?.clearedBlocker).toBe(true);
+
+      expect(
+        adminStockReconciliationCasePageResponseSchema.parse({
+          items: [
+            {
+              id: detail.id,
+              caseTable: detail.caseTable,
+              rawMovementId: detail.rawMovementId,
+              machineId: detail.machineId,
+              machineCode: detail.machineCode,
+              movementId: detail.movementId,
+              movementType: detail.movementType,
+              quantity: detail.quantity,
+              source: detail.source,
+              attributedTo: detail.attributedTo,
+              occurredAt: detail.occurredAt,
+              receivedAt: detail.receivedAt,
+              reconciliationReason: detail.reconciliationReason,
+              platformReviewStatus: detail.platformReviewStatus,
+              slot: detail.slot,
+              inventory: detail.inventory,
+              blocker: detail.blocker,
+            },
+          ],
+          total: 1,
+          page: 1,
+          pageSize: 20,
+        }).items[0]?.inventory,
+      ).toBeNull();
+    });
+  });
+
+  describe("admin payment operation contracts", () => {
+    const configId = "550e8400-e29b-41d4-a716-446655440010";
+    const providerId = "550e8400-e29b-41d4-a716-446655440011";
+
+    it("uses strict provider update and operator action contracts", () => {
+      expect(
+        updatePaymentProviderSchema.parse({
+          name: "Wechat Pay",
+          status: "enabled",
+          capabilities: { qrCode: true },
+        }),
+      ).toEqual({
+        name: "Wechat Pay",
+        status: "enabled",
+        capabilities: { qrCode: true },
+      });
+
+      expect(() =>
+        updatePaymentProviderSchema.parse({
+          name: "Wechat Pay",
+          status: "enabled",
+          adminOnlyShortcut: true,
+        }),
+      ).toThrow();
+
+      expect(
+        paymentOperatorReasonSchema.parse({
+          reason: "customer sees paid but platform is pending",
+        }),
+      ).toEqual({
+        reason: "customer sees paid but platform is pending",
+      });
+      expect(() =>
+        paymentOperatorReasonSchema.parse({ reason: "   " }),
+      ).toThrow();
+    });
+
+    it("validates provider-specific public configuration by provider", () => {
+      expect(
+        upsertPaymentProviderConfigSchema.parse({
+          providerCode: "alipay",
+          merchantNo: "mch-1",
+          appId: "app-1",
+          publicConfigJson: {
+            mode: "sandbox",
+            gatewayUrl: "https://openapi-sandbox.dl.alipaydev.com/gateway.do",
+            keyType: "PKCS8",
+            qrExpiresMinutes: 10,
+          },
+          sensitiveConfigJson: {
+            privateKeyPem: "-----BEGIN PRIVATE KEY-----\nkey",
+          },
+        }).publicConfigJson,
+      ).toMatchObject({ mode: "sandbox", keyType: "PKCS8" });
+
+      expect(() =>
+        upsertPaymentProviderConfigSchema.parse({
+          providerCode: "alipay",
+          publicConfigJson: {
+            mode: "sandbox",
+            gatewayUrl: "not-a-url",
+          },
+          sensitiveConfigJson: {
+            privateKeyPem: "-----BEGIN PRIVATE KEY-----\nkey",
+          },
+        }),
+      ).toThrow();
+
+      expect(() =>
+        upsertPaymentProviderConfigSchema.parse({
+          providerCode: "wechat_pay",
+          publicConfigJson: {
+            merchantCertificateSerialNo: "merchant-serial",
+            gatewayUrl: "https://alipay.example.com",
+          },
+          sensitiveConfigJson: {
+            platformCertificatePem: "-----BEGIN CERTIFICATE-----\ncert",
+          },
+        }),
+      ).toThrow();
+    });
+
+    it("keeps sensitive secret updates optional and named", () => {
+      expect(
+        updatePaymentProviderConfigSchema.parse({
+          merchantNo: null,
+          publicConfigJson: {
+            qrExpiresMinutes: 5,
+            paymentCodeEnabled: false,
+          },
+        }),
+      ).toEqual({
+        merchantNo: null,
+        publicConfigJson: {
+          qrExpiresMinutes: 5,
+          paymentCodeEnabled: false,
+        },
+      });
+
+      expect(
+        paymentProviderSensitiveConfigSchema.parse({
+          privateKeyPem: "-----BEGIN PRIVATE KEY-----\nkey",
+          apiV3Key: "x".repeat(32),
+          apiV2Key: null,
+        }),
+      ).toEqual({
+        privateKeyPem: "-----BEGIN PRIVATE KEY-----\nkey",
+        apiV3Key: "x".repeat(32),
+        apiV2Key: null,
+      });
+
+      expect(() =>
+        paymentProviderSensitiveConfigSchema.parse({
+          nestedSecret: { value: "unsupported" },
+        }),
+      ).toThrow();
+    });
+
+    it("limits Contract JSON Field openness to named payment fields", () => {
+      const parsed = paymentProviderConfigSchema.parse({
+        id: configId,
+        providerId,
+        providerCode: "wechat_pay",
+        providerName: "Wechat Pay",
+        machineId: null,
+        merchantNo: "mch-1",
+        appId: "app-1",
+        publicConfigJson: {
+          merchantCertificateSerialNo: "merchant-serial",
+          platformCertificateSerialNo: "platform-serial",
+        },
+        derivedNotifyUrl:
+          "https://example.com/api/payments/webhooks/wechat_pay",
+        secretStatusJson: {
+          apiV3Key: {
+            configured: true,
+            updatedAt: "2026-06-01T00:00:00.000Z",
+          },
+        },
+        status: "enabled",
+        updatedByAdminUserId: null,
+        createdAt: "2026-06-01T00:00:00.000Z",
+        updatedAt: "2026-06-01T00:00:00.000Z",
+      });
+
+      expect(parsed.publicConfigJson).toHaveProperty(
+        "merchantCertificateSerialNo",
+      );
+      expect(() =>
+        paymentProviderConfigSchema.parse({
+          ...parsed,
+          incidentEvidence: { raw: true },
+        }),
+      ).toThrow();
+      expect(() =>
+        paymentProviderNotifyUrlCheckSchema.parse({
+          providerCode: "wechat_pay",
+          notifyUrl: "https://example.com/api/payments/webhooks/wechat_pay",
+          usesHttps: true,
+          isLocalhost: false,
+          pathMatchesWebhookRoute: true,
+          reachable: true,
+          statusCode: 200,
+          errorCode: null,
+          checkedAt: "2026-06-01T00:00:00.000Z",
+          rawProbe: { open: true },
+        }),
+      ).toThrow();
+      expect(() =>
+        wechatPayPublicConfigSchema.parse({ unknownGatewayFlag: true }),
+      ).toThrow();
+    });
+
+    it("parses payment read response pages through shared contracts", () => {
+      const paymentPage = paymentAdminPageResponseSchema.parse({
+        items: [
+          {
+            id: "550e8400-e29b-41d4-a716-446655440101",
+            paymentNo: "PAY-1",
+            orderId: "550e8400-e29b-41d4-a716-446655440102",
+            orderNo: "ORD-1",
+            providerCode: "wechat_pay",
+            method: "qr_code",
+            status: "pending",
+            amountCents: 1000,
+            paymentUrl: "https://pay.example.com/qrcode",
+            expiresAt: null,
+            paidAt: null,
+            failedReason: null,
+            createdAt: "2026-07-05T00:00:00.000Z",
+          },
+        ],
+        total: 1,
+        page: 1,
+        pageSize: 20,
+      });
+      expect(paymentPage.items[0]?.paymentNo).toBe("PAY-1");
+
+      expect(
+        paymentProviderListResponseSchema.parse([
+          {
+            id: providerId,
+            code: "wechat_pay",
+            name: "Wechat Pay",
+            type: "wechat_pay",
+            status: "enabled",
+            capabilities: { qrCode: true },
+          },
+        ])[0]?.capabilities,
+      ).toHaveProperty("qrCode");
+      expect(
+        paymentProviderConfigListResponseSchema.parse([
+          {
+            id: configId,
+            providerId,
+            providerCode: "wechat_pay",
+            providerName: "Wechat Pay",
+            machineId: null,
+            merchantNo: "mch-1",
+            appId: null,
+            publicConfigJson: { qrExpiresMinutes: 10 },
+            derivedNotifyUrl:
+              "https://example.com/api/payments/webhooks/wechat_pay",
+            secretStatusJson: {},
+            status: "enabled",
+            updatedByAdminUserId: null,
+            createdAt: "2026-07-05T00:00:00.000Z",
+            updatedAt: "2026-07-05T00:00:00.000Z",
+          },
+        ])[0]?.publicConfigJson,
+      ).toHaveProperty("qrExpiresMinutes");
+      expect(
+        paymentProviderNotifyUrlCheckListResponseSchema.parse([
+          {
+            providerCode: "wechat_pay",
+            notifyUrl: "https://example.com/api/payments/webhooks/wechat_pay",
+            usesHttps: true,
+            isLocalhost: false,
+            pathMatchesWebhookRoute: true,
+            reachable: true,
+            statusCode: 200,
+            errorCode: null,
+            checkedAt: "2026-07-05T00:00:00.000Z",
+          },
+        ]),
+      ).toHaveLength(1);
+    });
+
+    it("parses payment incident trail response pages through shared contracts", () => {
+      expect(
+        paymentEventAdminPageResponseSchema.parse({
+          items: [
+            {
+              id: "550e8400-e29b-41d4-a716-446655440201",
+              paymentId: "550e8400-e29b-41d4-a716-446655440202",
+              paymentNo: "PAY-1",
+              orderId: "550e8400-e29b-41d4-a716-446655440203",
+              orderNo: "ORD-1",
+              providerId,
+              providerCode: "wechat_pay",
+              eventType: "payment.succeeded",
+              providerEventId: null,
+              signatureValid: true,
+              handledAt: null,
+              createdAt: "2026-07-05T00:00:00.000Z",
+            },
+          ],
+          total: 1,
+          page: 1,
+          pageSize: 20,
+        }).items[0]?.signatureValid,
+      ).toBe(true);
+      expect(
+        paymentWebhookAttemptAdminPageResponseSchema.parse({
+          items: [
+            {
+              id: "550e8400-e29b-41d4-a716-446655440211",
+              orderId: null,
+              providerCode: null,
+              eventKind: "unknown",
+              eventType: null,
+              paymentNo: null,
+              refundNo: null,
+              orderNo: null,
+              signatureValid: null,
+              businessValid: null,
+              handled: false,
+              duplicate: false,
+              failureReason: null,
+              remoteIp: null,
+              httpStatus: null,
+              createdAt: "2026-07-05T00:00:00.000Z",
+            },
+          ],
+          total: 1,
+          page: 1,
+          pageSize: 20,
+        }).items[0]?.eventKind,
+      ).toBe("unknown");
+      expect(
+        paymentReconciliationAttemptAdminPageResponseSchema.parse({
+          items: [
+            {
+              id: "550e8400-e29b-41d4-a716-446655440221",
+              paymentId: "550e8400-e29b-41d4-a716-446655440222",
+              paymentNo: "PAY-1",
+              orderId: "550e8400-e29b-41d4-a716-446655440223",
+              orderNo: "ORD-1",
+              providerCode: "wechat_pay",
+              trigger: "manual",
+              attemptNo: 1,
+              status: "pending",
+              providerPaymentStatus: null,
+              errorCode: null,
+              errorMessage: null,
+              nextRetryAt: null,
+              startedAt: "2026-07-05T00:00:00.000Z",
+              finishedAt: null,
+              createdAt: "2026-07-05T00:00:00.000Z",
+            },
+          ],
+          total: 1,
+          page: 1,
+          pageSize: 20,
+        }).items[0]?.trigger,
+      ).toBe("manual");
+      expect(
+        refundAdminPageResponseSchema.parse({
+          items: [
+            {
+              id: "550e8400-e29b-41d4-a716-446655440231",
+              refundNo: "REF-1",
+              paymentId: "550e8400-e29b-41d4-a716-446655440232",
+              orderId: "550e8400-e29b-41d4-a716-446655440233",
+              paymentNo: "PAY-1",
+              orderNo: "ORD-1",
+              providerCode: "wechat_pay",
+              status: "processing",
+              amountCents: 1000,
+              reason: "dispense_failed",
+              providerRefundNo: null,
+              refundedAt: null,
+              latestReconciliationStatus: null,
+              latestProviderRefundStatus: null,
+              latestReconciliationError: null,
+              latestReconciliationAt: null,
+              reconciliationAttempts: [],
+              createdAt: "2026-07-05T00:00:00.000Z",
+              updatedAt: "2026-07-05T00:00:00.000Z",
+            },
+          ],
+          total: 1,
+          page: 1,
+          pageSize: 20,
+        }).items[0]?.refundNo,
+      ).toBe("REF-1");
+      expect(
+        paymentCodeAttemptAdminPageResponseSchema.parse({
+          items: [
+            {
+              id: "550e8400-e29b-41d4-a716-446655440241",
+              orderId: "550e8400-e29b-41d4-a716-446655440242",
+              orderNo: "ORD-1",
+              paymentNo: "PAY-1",
+              providerCode: "wechat_pay",
+              attemptNo: 1,
+              providerPaymentNo: "PCA-1",
+              status: "submitting",
+              authCodeMasked: "123***",
+              source: "scanner",
+              providerTradeNo: null,
+              providerStatus: null,
+              failureCode: null,
+              failureMessage: null,
+              manualReason: null,
+              submittedAt: null,
+              lastCheckedAt: null,
+              reversedAt: null,
+              finishedAt: null,
+              createdAt: "2026-07-05T00:00:00.000Z",
+            },
+          ],
+          total: 1,
+          page: 1,
+          pageSize: 20,
+        }).items[0]?.attemptNo,
+      ).toBe(1);
+    });
+  });
+
+  it("parses audit and dashboard read responses through shared contracts", () => {
+    const auditLog = auditLogResponseSchema.parse({
+      id: "550e8400-e29b-41d4-a716-446655440301",
+      adminUserId: null,
+      action: "orders.recover",
+      resourceType: "order",
+      resourceId: "550e8400-e29b-41d4-a716-446655440302",
+      beforeJson: null,
+      afterJson: { action: "confirm_not_dispensed" },
+      createdAt: "2026-07-05T00:00:00.000Z",
+    });
+    expect(
+      auditLogPageResponseSchema.parse({
+        items: [auditLog],
+        total: 1,
+        page: 1,
+        pageSize: 20,
+      }).items[0]?.afterJson,
+    ).toHaveProperty("action");
+    expect(() =>
+      auditLogResponseSchema.parse({ ...auditLog, broadResponseShortcut: {} }),
+    ).toThrow();
+
+    expect(
+      dashboardSummarySchema.parse({
+        todaySalesCents: 1000,
+        todayOrderCount: 1,
+        lowStockCount: 0,
+        onlineMachineCount: 1,
+        pendingIssueCount: 0,
+      }).todayOrderCount,
+    ).toBe(1);
+    expect(
+      dashboardSalesTrendResponseSchema.parse([
+        { date: "2026-07-05", salesCents: 1000, orderCount: 1 },
+      ]),
+    ).toHaveLength(1);
+    expect(
+      dashboardTopProductsResponseSchema.parse([
+        {
+          variantId: "550e8400-e29b-41d4-a716-446655440303",
+          productName: "Tea",
+          sku: "TEA-1",
+          quantity: 1,
+          salesCents: 1000,
+        },
+      ])[0]?.sku,
+    ).toBe("TEA-1");
+  });
+
   it("does not apply create defaults to Machine partial update contracts", () => {
     expect(updateMachineSchema.parse({ geoLocation: null })).toEqual({
       geoLocation: null,
@@ -169,6 +1151,45 @@ describe("shared API contract", () => {
     expect(
       updateProductSchema.parse({ displayImageMediaAssetId: null }),
     ).toEqual({ displayImageMediaAssetId: null });
+  });
+
+  it("uses strict admin Product Variant Catalog write contracts", () => {
+    const productId = "550e8400-e29b-41d4-a716-446655440224";
+    const tryOnSilhouetteMediaAssetId = "550e8400-e29b-41d4-a716-446655440125";
+
+    expect(
+      createProductVariantSchema.parse({
+        productId,
+        sku: "TSHIRT-M-WHITE",
+        priceCents: 1000,
+        tryOnSilhouetteMediaAssetId,
+      }),
+    ).toEqual({
+      productId,
+      sku: "TSHIRT-M-WHITE",
+      priceCents: 1000,
+      status: "active",
+      tryOnSilhouetteMediaAssetId,
+    });
+
+    expect(() =>
+      createProductVariantSchema.parse({
+        productId,
+        sku: "TSHIRT-M-WHITE",
+        priceCents: 1000,
+        freeFormImageUrl: "https://example.com/free-form.png",
+      }),
+    ).toThrow();
+
+    expect(
+      updateProductVariantSchema.parse({
+        costCents: null,
+        tryOnSilhouetteMediaAssetId: null,
+      }),
+    ).toEqual({
+      costCents: null,
+      tryOnSilhouetteMediaAssetId: null,
+    });
   });
 
   it("validates nullable all-or-nothing Machine Geo Location in machine write contracts", () => {
@@ -234,6 +1255,102 @@ describe("shared API contract", () => {
         },
       }),
     ).toThrow();
+  });
+
+  it("uses strict admin Machine Operations API contracts", () => {
+    const machineId = "550e8400-e29b-41d4-a716-446655440001";
+    const now = "2026-07-05T00:00:00.000Z";
+    const claimCodeSnapshot = {
+      id: "550e8400-e29b-41d4-a716-446655440002",
+      machineId,
+      machineCode: "M001",
+      purpose: "reclaim",
+      state: "pending",
+      expiresAt: "2026-07-05T01:00:00.000Z",
+      failedAttemptCount: 0,
+      maxFailedAttempts: 5,
+      createdAt: now,
+      consumedAt: null,
+      revokedAt: null,
+      lockedAt: null,
+    };
+
+    expect(
+      adminMachineResponseSchema.parse({
+        id: machineId,
+        code: "M001",
+        name: "Lobby",
+        locationLabel: null,
+        geoLocation: null,
+        status: "offline",
+        mqttClientId: null,
+        lastSeenAt: null,
+        createdAt: now,
+        updatedAt: now,
+      }),
+    ).toEqual({
+      id: machineId,
+      code: "M001",
+      name: "Lobby",
+      locationLabel: null,
+      geoLocation: null,
+      status: "offline",
+      mqttClientId: null,
+      lastSeenAt: null,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    expect(() =>
+      adminMachineSlotResponseSchema.parse({
+        id: "550e8400-e29b-41d4-a716-446655440003",
+        machineId,
+        layerNo: 1,
+        cellNo: 1,
+        slotCode: "A1",
+        capacity: 10,
+        status: "enabled",
+        inventoryShortcut: true,
+      }),
+    ).toThrow();
+    expect(() =>
+      createMachineSlotSchema.parse({
+        layerNo: 1,
+        cellNo: 1,
+        slotCode: "A1",
+        capacity: 10,
+        status: "enabled",
+        inventoryShortcut: true,
+      }),
+    ).toThrow();
+    expect(() =>
+      machineEnvironmentControlRequestSchema.parse({
+        airConditionerOn: true,
+        diagnosticMode: true,
+      }),
+    ).toThrow();
+
+    expect(generateMachineClaimCodeRequestSchema.parse({})).toEqual({
+      purpose: "first_claim",
+    });
+    expect(
+      machineClaimCodeListResponseSchema.parse({
+        items: [claimCodeSnapshot],
+      }),
+    ).toEqual({ items: [claimCodeSnapshot] });
+    expect(adminMachineContractNoBodySchema.parse({})).toEqual({});
+    expect(() =>
+      adminMachineContractNoBodySchema.parse({ reason: "manual" }),
+    ).toThrow();
+    expect(
+      rotateMachineCredentialsResponseSchema.parse({
+        machineId,
+        machineCode: "M001",
+        machineSecret: "m".repeat(32),
+        mqttSigningSecret: "s".repeat(32),
+        secretVersion: 2,
+      }),
+    ).toMatchObject({ machineCode: "M001", secretVersion: 2 });
   });
 
   it("defines External Natural Environment unconfigured as HTTP-success payload", () => {

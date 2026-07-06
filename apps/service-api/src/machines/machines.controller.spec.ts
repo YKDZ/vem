@@ -83,6 +83,56 @@ describe("MachinesController environment commands", () => {
   });
 });
 
+describe("MachinesController slot contract validation", () => {
+  let app: INestApplication | undefined;
+
+  afterEach(async () => {
+    await app?.close();
+    app = undefined;
+  });
+
+  it("rejects unknown admin slot creation fields at the HTTP boundary", async () => {
+    const createSlot = vi.fn().mockResolvedValue({
+      id: "550e8400-e29b-41d4-a716-446655440111",
+      machineId: "550e8400-e29b-41d4-a716-446655440000",
+      layerNo: 1,
+      cellNo: 1,
+      slotCode: "A1",
+      capacity: 10,
+      status: "enabled",
+    });
+    const module = await Test.createTestingModule({
+      controllers: [MachinesController],
+      providers: [
+        {
+          provide: MachinesService,
+          useValue: { createSlot },
+        },
+        {
+          provide: MachineAuthService,
+          useValue: { verifyToken: vi.fn() },
+        },
+      ],
+    }).compile();
+    app = module.createNestApplication();
+    await app.init();
+
+    await request(app.getHttpServer())
+      .post("/machines/550e8400-e29b-41d4-a716-446655440000/slots")
+      .send({
+        layerNo: 1,
+        cellNo: 1,
+        slotCode: "A1",
+        capacity: 10,
+        status: "enabled",
+        inventoryShortcut: true,
+      })
+      .expect(400);
+
+    expect(createSlot).not.toHaveBeenCalled();
+  });
+});
+
 describe("MachinesController External Natural Environment", () => {
   let app: INestApplication | undefined;
 
@@ -524,6 +574,7 @@ describe("MachinesController claim code lifecycle", () => {
         { id: "admin-1" } as never,
         "550e8400-e29b-41d4-a716-446655440000",
         "550e8400-e29b-41d4-a716-446655440111",
+        {},
       ),
     ).resolves.toEqual({
       id: "550e8400-e29b-41d4-a716-446655440111",

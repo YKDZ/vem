@@ -660,6 +660,14 @@ describe("MachinesView environment controls", () => {
         (input) => input.value === "Asia/Shanghai",
       ),
     ).toBe(true);
+    const inputs = Array.from(
+      dialog.querySelectorAll<HTMLInputElement>("input"),
+    );
+    inputs[0].value = "M-NEW";
+    inputs[0].dispatchEvent(new Event("input"));
+    inputs[1].value = "新机器";
+    inputs[1].dispatchEvent(new Event("input"));
+    await nextTick();
 
     Array.from(dialog.querySelectorAll("button"))
       .find((button) => button.textContent?.includes("保存"))

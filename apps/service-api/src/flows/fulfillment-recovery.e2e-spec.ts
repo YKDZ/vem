@@ -1,5 +1,4 @@
 import type { INestApplication } from "@nestjs/common";
-import type { InventoryMovementReason } from "@vem/shared";
 import type { MqttClient } from "mqtt";
 
 import { Test } from "@nestjs/testing";
@@ -22,6 +21,10 @@ import {
   vendingCommands,
   DrizzleDB,
 } from "@vem/db";
+import {
+  orderRecoveryActionResponseSchema,
+  type InventoryMovementReason,
+} from "@vem/shared";
 import request from "supertest";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
@@ -536,6 +539,15 @@ describe("fulfillment recovery e2e", { concurrent: false }, () => {
         note: "operator verified pickup area was empty and customer received item",
       });
     expect(response.status).toBe(201);
+    const recoveryResponse = orderRecoveryActionResponseSchema.parse(
+      (response.body as ApiResponse<unknown>).data,
+    );
+    expect(recoveryResponse).toMatchObject({
+      action: "confirm_dispensed",
+      commandId: ctx.commandId,
+      status: "succeeded",
+    });
+    expect(recoveryResponse.recoveryActionId).toBeTruthy();
 
     const [reservation] = await db.client
       .select({ status: inventoryReservations.status })
@@ -588,6 +600,15 @@ describe("fulfillment recovery e2e", { concurrent: false }, () => {
         note: "operator found product still in slot after customer report",
       });
     expect(response.status).toBe(201);
+    const recoveryResponse = orderRecoveryActionResponseSchema.parse(
+      (response.body as ApiResponse<unknown>).data,
+    );
+    expect(recoveryResponse).toMatchObject({
+      action: "confirm_not_dispensed",
+      commandId: ctx.commandId,
+      status: "failed",
+    });
+    expect(recoveryResponse.recoveryActionId).toBeTruthy();
 
     const duplicate = await api
       .post(`/api/orders/${ctx.orderId}/recovery-actions`)
@@ -639,6 +660,14 @@ describe("fulfillment recovery e2e", { concurrent: false }, () => {
         note: "operator requested refund after confirmed not dispensed",
       });
     expect(refundResponse.status).toBe(201);
+    const parsedRefundResponse = orderRecoveryActionResponseSchema.parse(
+      (refundResponse.body as ApiResponse<unknown>).data,
+    );
+    expect(parsedRefundResponse).toMatchObject({
+      action: "request_refund",
+      commandId: ctx.commandId,
+      status: "refund_requested",
+    });
 
     const duplicateRefund = await api
       .post(`/api/orders/${ctx.orderId}/recovery-actions`)
@@ -696,6 +725,14 @@ describe("fulfillment recovery e2e", { concurrent: false }, () => {
         note: "operator authorized one replacement dispense",
       });
     expect(compensationResponse.status).toBe(201);
+    const recoveryResponse = orderRecoveryActionResponseSchema.parse(
+      (compensationResponse.body as ApiResponse<unknown>).data,
+    );
+    expect(recoveryResponse).toMatchObject({
+      action: "compensation_dispense",
+      status: "pending",
+    });
+    expect(recoveryResponse.commandNo).toBeTruthy();
 
     const duplicateCompensation = await api
       .post(`/api/orders/${ctx.orderId}/recovery-actions`)

@@ -16,6 +16,7 @@ import {
 import { z } from "zod";
 
 import type { AuthenticatedAdmin } from "../common/request-user";
+import type { PaymentCodeAttemptRow } from "./payment-code-attempts.service";
 
 import { RequirePermissions } from "../access/permissions.decorator";
 import { AuditService } from "../audit/audit.service";
@@ -56,7 +57,10 @@ export class PaymentCodeController {
     @Body(new ZodValidationPipe(paymentCodeAttemptAdminActionSchema))
     body: z.infer<typeof paymentCodeAttemptAdminActionSchema>,
   ) {
-    const result = this.attempts.toDto(await this.orchestrator.manualQuery(id));
+    const result = await this.toAdminAttemptDto(
+      id,
+      await this.orchestrator.manualQuery(id),
+    );
     await this.auditService.record({
       adminUserId: admin.id,
       action: "payments.payment_code_attempt.query",
@@ -75,7 +79,8 @@ export class PaymentCodeController {
     @Body(new ZodValidationPipe(paymentCodeAttemptAdminActionSchema))
     body: z.infer<typeof paymentCodeAttemptAdminActionSchema>,
   ) {
-    const result = this.attempts.toDto(
+    const result = await this.toAdminAttemptDto(
+      id,
       await this.orchestrator.manualReverse(id, body.reason),
     );
     await this.auditService.record({
@@ -86,5 +91,30 @@ export class PaymentCodeController {
       afterJson: { reason: body.reason, result },
     });
     return result;
+  }
+
+  private async toAdminAttemptDto(
+    id: string,
+    row: PaymentCodeAttemptRow & {
+      orderNo?: string;
+      paymentNo?: string;
+      providerCode?: string;
+    },
+  ) {
+    if (
+      typeof row.orderNo === "string" &&
+      typeof row.paymentNo === "string" &&
+      typeof row.providerCode === "string"
+    ) {
+      return this.attempts.toDto(row);
+    }
+
+    const context = await this.attempts.getContextById(id);
+    return this.attempts.toDto({
+      ...context.attempt,
+      orderNo: context.orderNo,
+      paymentNo: context.paymentNo,
+      providerCode: context.providerCode,
+    });
   }
 }

@@ -1,6 +1,9 @@
 import { Body, Controller, Get, Param, Post, Query } from "@nestjs/common";
 import { ApiBearerAuth, ApiTags } from "@nestjs/swagger";
-import { pageQuerySchema } from "@vem/shared";
+import {
+  adminStockReconciliationListQuerySchema,
+  adminStockReconciliationResolveRequestSchema,
+} from "@vem/shared";
 import { z } from "zod";
 
 import type { AuthenticatedAdmin } from "../common/request-user";
@@ -8,27 +11,14 @@ import type { AuthenticatedAdmin } from "../common/request-user";
 import { RequirePermissions } from "../access/permissions.decorator";
 import { CurrentAdmin } from "../auth/current-admin.decorator";
 import { ZodValidationPipe } from "../common/zod-validation.pipe";
-import {
-  StockReconciliationService,
-  type StockReconciliationResolveRequest,
-} from "./stock-reconciliation.service";
+import { StockReconciliationService } from "./stock-reconciliation.service";
 
-const stockReconciliationQuerySchema = pageQuerySchema.extend({
-  machineId: z.uuid().optional(),
-});
-
-const stockReconciliationResolveSchema = z.object({
-  action: z.enum([
-    "accept_machine_stock",
-    "reject_machine_stock",
-    "manual_correct",
-  ]),
-  note: z.string(),
-  clearBlocker: z.boolean().optional(),
-  correctedOnHandQty: z.int().nonnegative().optional(),
-});
-
-type StockReconciliationQuery = z.infer<typeof stockReconciliationQuerySchema>;
+type StockReconciliationQuery = z.infer<
+  typeof adminStockReconciliationListQuerySchema
+>;
+type StockReconciliationResolveRequest = z.infer<
+  typeof adminStockReconciliationResolveRequestSchema
+>;
 
 @ApiTags("stock-reconciliation")
 @ApiBearerAuth()
@@ -39,7 +29,7 @@ export class StockReconciliationController {
   @RequirePermissions("inventory.read")
   @Get()
   async listCases(
-    @Query(new ZodValidationPipe(stockReconciliationQuerySchema))
+    @Query(new ZodValidationPipe(adminStockReconciliationListQuerySchema))
     query: StockReconciliationQuery,
   ) {
     return await this.service.listCases(query);
@@ -56,7 +46,7 @@ export class StockReconciliationController {
   async resolveCase(
     @CurrentAdmin() admin: AuthenticatedAdmin,
     @Param("id") id: string,
-    @Body(new ZodValidationPipe(stockReconciliationResolveSchema))
+    @Body(new ZodValidationPipe(adminStockReconciliationResolveRequestSchema))
     body: StockReconciliationResolveRequest,
   ) {
     return await this.service.resolveCase(admin.id, id, body);

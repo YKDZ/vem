@@ -1,3 +1,5 @@
+import type { AdminStockReconciliationResolveRequest } from "@vem/shared";
+
 import {
   BadRequestException,
   Injectable,
@@ -6,8 +8,13 @@ import {
 
 import { AuditService } from "../audit/audit.service";
 import {
+  mapStockReconciliationResolveDtoToRepositoryInput,
+  toAdminStockReconciliationCaseDetailResponse,
+  toAdminStockReconciliationCaseSummaryResponse,
+  toStockReconciliationResolutionResponse,
+} from "./stock-reconciliation.contract-mappers";
+import {
   StockReconciliationRepository,
-  type StockReconciliationCaseRow,
   type StockReconciliationPageQuery,
   type StockReconciliationResolveInput,
 } from "./stock-reconciliation.repository";
@@ -20,12 +27,8 @@ export type {
 export type StockReconciliationResolveAction =
   StockReconciliationResolveInput["action"];
 
-export type StockReconciliationResolveRequest = {
-  action: StockReconciliationResolveAction;
-  note: string;
-  clearBlocker?: boolean;
-  correctedOnHandQty?: number;
-};
+export type StockReconciliationResolveRequest =
+  AdminStockReconciliationResolveRequest;
 
 @Injectable()
 export class StockReconciliationService {
@@ -38,7 +41,7 @@ export class StockReconciliationService {
     const result = await this.repository.listOpenCases(query);
     return {
       ...result,
-      items: result.items.map(projectCaseSummary),
+      items: result.items.map(toAdminStockReconciliationCaseSummaryResponse),
     };
   }
 
@@ -46,7 +49,7 @@ export class StockReconciliationService {
     const row = await this.repository.findCaseDetail(id);
     if (!row)
       throw new NotFoundException("Stock reconciliation case not found");
-    return projectCaseDetail(row);
+    return toAdminStockReconciliationCaseDetailResponse(row);
   }
 
   async resolveCase(
@@ -58,9 +61,13 @@ export class StockReconciliationService {
     if (!note) {
       throw new BadRequestException("Resolution note is required");
     }
-    const correctedOnHandQty = request.correctedOnHandQty;
+    const repositoryInput = mapStockReconciliationResolveDtoToRepositoryInput(
+      adminUserId,
+      request,
+    );
+    const correctedOnHandQty = repositoryInput.correctedOnHandQty;
     if (
-      request.action === "manual_correct" &&
+      repositoryInput.action === "manual_correct" &&
       (typeof correctedOnHandQty !== "number" ||
         !Number.isInteger(correctedOnHandQty) ||
         correctedOnHandQty < 0)
@@ -71,11 +78,8 @@ export class StockReconciliationService {
     }
 
     const resolved = await this.repository.resolveCase(id, {
-      action: request.action,
+      ...repositoryInput,
       note,
-      clearBlocker: request.clearBlocker,
-      correctedOnHandQty,
-      adminUserId,
     });
     if (!resolved) {
       throw new NotFoundException("Stock reconciliation case not found");
@@ -83,7 +87,7 @@ export class StockReconciliationService {
 
     await this.auditService.record({
       adminUserId,
-      action: `stock_reconciliation.${request.action}`,
+      action: `stock_reconciliation.${repositoryInput.action}`,
       resourceType:
         resolved.case.caseTable === "machine_raw_stock_movement_conflicts"
           ? "machine_raw_stock_movement_conflict"
@@ -97,7 +101,7 @@ export class StockReconciliationService {
         onHandQty: resolved.previousCase.onHandQty,
       },
       afterJson: {
-        action: request.action,
+        action: repositoryInput.action,
         note,
         correctedOnHandQty,
         clearedBlocker: resolved.clearedBlocker,
@@ -105,115 +109,12 @@ export class StockReconciliationService {
       },
     });
 
-    return {
-      ...projectCaseDetail(resolved.case),
-      resolution: {
-        action: request.action,
+    return toAdminStockReconciliationCaseDetailResponse(
+      resolved.case,
+      toStockReconciliationResolutionResponse(resolved, {
+        action: repositoryInput.action,
         note,
-        clearedBlocker: resolved.clearedBlocker,
-        inventoryMovement: resolved.inventoryMovement,
-      },
-    };
+      }),
+    );
   }
-}
-
-function projectCaseSummary(row: StockReconciliationCaseRow) {
-  return {
-    id: row.id,
-    caseTable: row.caseTable,
-    rawMovementId: row.rawMovementId,
-    machineId: row.machineId,
-    machineCode: row.machineCode,
-    movementId: row.movementId,
-    movementType: row.movementType,
-    quantity: row.quantity,
-    source: row.source,
-    attributedTo: row.attributedTo,
-    occurredAt: row.occurredAt.toISOString(),
-    receivedAt: row.receivedAt.toISOString(),
-    reconciliationReason: row.reconciliationReason,
-    platformReviewStatus: row.platformReviewStatus,
-    slot: projectSlot(row),
-    inventory: projectInventory(row),
-    blocker: projectBlocker(row),
-  };
-}
-
-function projectCaseDetail(row: StockReconciliationCaseRow) {
-  return {
-    ...projectCaseSummary(row),
-    planogramVersion: row.planogramVersion,
-    evidence: {
-      rawPayload: row.payloadJson,
-      normalizedPayload: row.normalizedJson,
-      inventory: projectInventory(row),
-      linkedOrder: row.linkedOrderId
-        ? { id: row.linkedOrderId, orderNo: row.linkedOrderNo }
-        : null,
-      linkedCommand: row.linkedCommandId
-        ? { id: row.linkedCommandId, commandNo: row.linkedCommandNo }
-        : null,
-    },
-  };
-}
-
-function projectSlot(row: StockReconciliationCaseRow) {
-  return {
-    id: row.saleSafetyBlockerSlotId ?? row.slotId,
-    code: row.slotCode,
-    status: row.slotStatus,
-    saleEligibility: {
-      eligible: saleEligible(row),
-      slotSalesState: slotSalesState(row),
-      reason: saleEligibilityReason(row),
-    },
-  };
-}
-
-function projectInventory(row: StockReconciliationCaseRow) {
-  if (!row.inventoryId) return null;
-  const onHandQty = row.onHandQty ?? 0;
-  const reservedQty = row.reservedQty ?? 0;
-  return {
-    id: row.inventoryId,
-    productName: row.productName,
-    sku: row.sku,
-    onHandQty,
-    reservedQty,
-    saleableQty: saleEligible(row) ? Math.max(onHandQty - reservedQty, 0) : 0,
-  };
-}
-
-function projectBlocker(row: StockReconciliationCaseRow) {
-  if (!row.saleSafetyBlockerState) return null;
-  return {
-    state: row.saleSafetyBlockerState,
-    reason: row.reconciliationReason,
-    linkedCaseId: row.id,
-    linkedOrderId: row.linkedOrderId,
-    linkedOrderNo: row.linkedOrderNo,
-    linkedCommandId: row.linkedCommandId,
-    linkedCommandNo: row.linkedCommandNo,
-  };
-}
-
-function saleEligible(row: StockReconciliationCaseRow): boolean {
-  return (
-    slotSalesState(row) === "sale_ready" &&
-    Math.max((row.onHandQty ?? 0) - (row.reservedQty ?? 0), 0) > 0
-  );
-}
-
-function slotSalesState(row: StockReconciliationCaseRow): string {
-  if (row.saleSafetyBlockerState) return row.saleSafetyBlockerState;
-  if (row.slotStatus === "faulted") return "frozen";
-  return Math.max((row.onHandQty ?? 0) - (row.reservedQty ?? 0), 0) > 0
-    ? "sale_ready"
-    : "sold_out";
-}
-
-function saleEligibilityReason(row: StockReconciliationCaseRow): string | null {
-  if (row.reconciliationReason) return row.reconciliationReason;
-  if (row.slotStatus === "faulted") return "slot_faulted";
-  return null;
 }

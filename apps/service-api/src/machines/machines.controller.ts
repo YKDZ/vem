@@ -12,6 +12,7 @@ import {
 } from "@nestjs/common";
 import { ApiBearerAuth, ApiTags } from "@nestjs/swagger";
 import {
+  adminMachineContractNoBodySchema,
   createMachineSchema,
   createMachineSlotSchema,
   generateMachineClaimCodeRequestSchema,
@@ -48,6 +49,9 @@ type MachineEnvironmentControlInput = z.infer<
 type MachineClaimRequestInput = z.infer<typeof machineClaimRequestSchema>;
 type GenerateMachineClaimCodeRequestInput = z.infer<
   typeof generateMachineClaimCodeRequestSchema
+>;
+type AdminMachineContractNoBodyInput = z.infer<
+  typeof adminMachineContractNoBodySchema
 >;
 type PageQueryInput = z.infer<typeof pageQuerySchema>;
 type ExternalNaturalEnvironment = Awaited<
@@ -164,6 +168,8 @@ export class MachinesController {
   async rotateMachineCredentials(
     @CurrentAdmin() admin: AuthenticatedAdmin,
     @Param("id", ParseUUIDPipe) id: string,
+    @Body(new ZodValidationPipe(adminMachineContractNoBodySchema))
+    _body: AdminMachineContractNoBodyInput,
   ) {
     return await this.machinesService.rotateMachineCredentials(id, admin.id);
   }
@@ -204,6 +210,8 @@ export class MachinesController {
     @CurrentAdmin() admin: AuthenticatedAdmin,
     @Param("id", ParseUUIDPipe) id: string,
     @Param("claimCodeId", ParseUUIDPipe) claimCodeId: string,
+    @Body(new ZodValidationPipe(adminMachineContractNoBodySchema))
+    _body: AdminMachineContractNoBodyInput,
   ) {
     return await this.machinesService.revokeMachineClaimCode(
       id,

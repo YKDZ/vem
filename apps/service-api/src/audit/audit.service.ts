@@ -9,7 +9,11 @@ import {
   type DrizzleClient,
   type SQL,
 } from "@vem/db";
-import { auditLogQuerySchema, pageQuerySchema } from "@vem/shared";
+import {
+  auditLogQuerySchema,
+  pageQuerySchema,
+  type AuditLogResponse,
+} from "@vem/shared";
 import { z } from "zod";
 
 import { getOffset, toPageResult } from "../common/pagination.util";
@@ -17,6 +21,24 @@ import { DRIZZLE_CLIENT } from "../database/database.constants";
 
 type AuditLogQuery = z.infer<typeof auditLogQuerySchema> &
   z.infer<typeof pageQuerySchema>;
+
+type AuditLogRow = typeof auditLogs.$inferSelect;
+
+function mapAuditLog(row: AuditLogRow): AuditLogResponse {
+  return {
+    id: row.id,
+    adminUserId: row.adminUserId,
+    action: row.action,
+    resourceType: row.resourceType,
+    resourceId: row.resourceId ?? null,
+    beforeJson: row.beforeJson ?? null,
+    afterJson: row.afterJson ?? null,
+    createdAt:
+      row.createdAt instanceof Date
+        ? row.createdAt.toISOString()
+        : row.createdAt,
+  };
+}
 
 @Injectable()
 export class AuditService {
@@ -50,7 +72,7 @@ export class AuditService {
       .select({ total: count() })
       .from(auditLogs)
       .where(whereClause);
-    return toPageResult(items, query, Number(totalRow.total));
+    return toPageResult(items.map(mapAuditLog), query, Number(totalRow.total));
   }
 
   async record(input: {

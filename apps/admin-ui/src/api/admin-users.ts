@@ -1,55 +1,51 @@
-import type { AdminUserStatus } from "@vem/shared";
+import type { z } from "zod";
 
-import { get, patch, post } from "./request";
+import {
+  adminUserListQuerySchema,
+  adminUserPageResponseSchema,
+  adminUserResponseSchema,
+  createAdminUserSchema,
+  updateAdminUserSchema,
+  type AdminUserPageResponse,
+  type AdminUserResponse,
+  type PageResult,
+} from "@vem/shared";
 
-export type AdminUser = {
-  id: string;
-  username: string;
-  displayName: string;
-  mobile: string | null;
-  email: string | null;
-  status: AdminUserStatus;
-  roles: string[];
-  lastLoginAt: string | null;
-  createdAt: string;
-};
+import { getContract, patchContract, postContract } from "./request";
 
-export type PageResult<T> = {
-  items: T[];
-  total: number;
-  page: number;
-  pageSize: number;
-};
+export type AdminUser = AdminUserResponse;
+export type { PageResult };
 
 export async function listAdminUsers(
-  query?: Record<string, unknown>,
-): Promise<PageResult<AdminUser>> {
-  return await get<PageResult<AdminUser>>("/admin-users", { params: query });
+  query?: z.input<typeof adminUserListQuerySchema>,
+): Promise<AdminUserPageResponse> {
+  return await getContract(
+    "/admin-users",
+    adminUserListQuerySchema,
+    adminUserPageResponseSchema,
+    query ?? {},
+  );
 }
 
-export async function createAdminUser(body: {
-  username: string;
-  password: string;
-  displayName: string;
-  mobile?: string | null;
-  email?: string | null;
-  status?: string;
-  roleIds?: string[];
-}): Promise<AdminUser> {
-  return await post<AdminUser>("/admin-users", body);
+export async function createAdminUser(
+  body: z.input<typeof createAdminUserSchema>,
+): Promise<AdminUser> {
+  return await postContract(
+    "/admin-users",
+    createAdminUserSchema,
+    adminUserResponseSchema,
+    body,
+  );
 }
 
 export async function updateAdminUser(
   id: string,
-  body: {
-    username?: string;
-    password?: string;
-    displayName?: string;
-    mobile?: string | null;
-    email?: string | null;
-    status?: string;
-    roleIds?: string[];
-  },
+  body: z.input<typeof updateAdminUserSchema>,
 ): Promise<AdminUser> {
-  return await patch<AdminUser>(`/admin-users/${id}`, body);
+  return await patchContract(
+    `/admin-users/${id}`,
+    updateAdminUserSchema,
+    adminUserResponseSchema,
+    body,
+  );
 }
