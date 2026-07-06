@@ -11,6 +11,131 @@ import {
 } from "./schemas";
 
 describe("daemon schemas", () => {
+  const awaitingPaymentTransaction = {
+    orderId: "550e8400-e29b-41d4-a716-446655440010",
+    orderNo: "ORD-SCHEMA-001",
+    productSummary: null,
+    paymentNo: "PAY-SCHEMA-001",
+    paymentMethod: "qr_code",
+    paymentProvider: "alipay",
+    paymentUrl: "https://pay.example/qr",
+    paymentStatus: "pending",
+    orderStatus: "pending_payment",
+    totalAmountCents: 1200,
+    vending: null,
+    nextAction: "wait_payment",
+    maskedAuthCode: null,
+    paymentCodeAttempt: null,
+    expiresAt: "2026-06-11T06:20:00.000Z",
+    errorCode: null,
+    errorMessage: null,
+    operatorHint: null,
+    updatedAt: "2026-06-11T06:16:32.320Z",
+  };
+
+  it("validates awaiting-payment transaction snapshots with strict checkout vocabulary", () => {
+    const parsed = transactionSnapshotSchema.parse(awaitingPaymentTransaction);
+
+    expect(parsed.nextAction).toBe("wait_payment");
+    expect(parsed.paymentMethod).toBe("qr_code");
+    expect(parsed.paymentProvider).toBe("alipay");
+    expect(parsed.paymentStatus).toBe("pending");
+    expect(parsed.orderStatus).toBe("pending_payment");
+  });
+
+  it("validates legal shared checkout enum values", () => {
+    const parsed = transactionSnapshotSchema.parse({
+      ...awaitingPaymentTransaction,
+      paymentMethod: "payment_code",
+      paymentProvider: "wechat_pay",
+      paymentStatus: "processing",
+      orderStatus: "paid",
+      vending: {
+        commandNo: "CMD-SCHEMA-001",
+        status: "acknowledged",
+        lastError: null,
+      },
+      paymentCodeAttempt: {
+        attemptNo: 1,
+        status: "user_confirming",
+        maskedAuthCode: "2876****4394",
+        source: "tauri_scanner",
+        idempotencyKey: "ORD-SCHEMA-001:attempt-1",
+        submittedAt: "2026-06-11T06:16:30.000Z",
+        lastCheckedAt: null,
+        canRetry: false,
+        message: null,
+      },
+    });
+
+    expect(parsed.paymentMethod).toBe("payment_code");
+    expect(parsed.paymentProvider).toBe("wechat_pay");
+    expect(parsed.paymentStatus).toBe("processing");
+    expect(parsed.orderStatus).toBe("paid");
+    expect(parsed.vending?.status).toBe("acknowledged");
+    expect(parsed.paymentCodeAttempt?.status).toBe("user_confirming");
+    expect(parsed.paymentCodeAttempt?.source).toBe("tauri_scanner");
+  });
+
+  it("rejects transaction snapshots with an order credential and unknown next action", () => {
+    expect(() =>
+      transactionSnapshotSchema.parse({
+        ...awaitingPaymentTransaction,
+        nextAction: "please_guess",
+      }),
+    ).toThrow();
+  });
+
+  it("rejects transaction snapshots with an order credential and missing next action", () => {
+    const { nextAction: _nextAction, ...missingNextAction } =
+      awaitingPaymentTransaction;
+
+    expect(() => transactionSnapshotSchema.parse(missingNextAction)).toThrow();
+    expect(() =>
+      transactionSnapshotSchema.parse({
+        ...awaitingPaymentTransaction,
+        nextAction: null,
+      }),
+    ).toThrow();
+  });
+
+  it("rejects awaiting-payment transaction snapshots missing payment method or amount", () => {
+    expect(() =>
+      transactionSnapshotSchema.parse({
+        ...awaitingPaymentTransaction,
+        paymentMethod: null,
+      }),
+    ).toThrow();
+    expect(() =>
+      transactionSnapshotSchema.parse({
+        ...awaitingPaymentTransaction,
+        totalAmountCents: null,
+      }),
+    ).toThrow();
+  });
+
+  it("allows the no-current-transaction snapshot to omit next action", () => {
+    const { nextAction: _nextAction, ...noCurrentTransaction } = {
+      ...awaitingPaymentTransaction,
+      orderId: null,
+      orderNo: null,
+      paymentNo: null,
+      paymentMethod: null,
+      paymentProvider: null,
+      paymentUrl: null,
+      paymentStatus: null,
+      orderStatus: null,
+      totalAmountCents: null,
+      expiresAt: null,
+    };
+    const parsed = transactionSnapshotSchema.parse({
+      ...noCurrentTransaction,
+    });
+
+    expect(parsed.orderNo).toBeNull();
+    expect(parsed.nextAction).toBeNull();
+  });
+
   it("parses safe daemon-owned bring-up snapshot", () => {
     const parsed = bringUpSnapshotSchema.parse({
       state: "stock_attestation_required",
@@ -249,11 +374,11 @@ describe("daemon schemas", () => {
       paymentProvider: "alipay",
       paymentUrl: null,
       paymentStatus: "pending",
-      orderStatus: "waiting_payment",
+      orderStatus: "pending_payment",
       totalAmountCents: 100,
       vending: {
         commandNo: "CMD-001",
-        status: "dispensing",
+        status: "sent",
         lastError: null,
         pickupReminder: {
           stage: "pickup_timeout_warning",

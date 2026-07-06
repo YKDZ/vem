@@ -1,5 +1,3 @@
-import type { MachineOrderStatusNextAction } from "@vem/shared";
-
 import { defineStore } from "pinia";
 
 import type { TransactionSnapshot } from "@/daemon/schemas";
@@ -7,73 +5,25 @@ import type {
   CheckoutResultKind,
   CheckoutSelectedItem,
   CreateMachineOrderResponse,
-  MachineOrderStatus,
   MachinePaymentOption,
   MachinePaymentOptionKey,
   MachinePaymentProviderCode,
 } from "@/types/checkout";
 
+import {
+  projectCustomerCheckoutView,
+  type CustomerEventObservation,
+  type CustomerCheckoutReadinessContext,
+  type CustomerCheckoutReturnRoute,
+  type CustomerCheckoutView,
+} from "@/checkout/customer-checkout-view";
 import { daemonClient } from "@/daemon/client";
 import { useCatalogStore } from "@/stores/catalog";
 import { useConnectivityStore } from "@/stores/connectivity";
-import { getRemainingSeconds } from "@/utils/format";
-
-export type CheckoutFlowStep =
-  | "idle"
-  | "detail"
-  | "checkout"
-  | "payment"
-  | "dispensing"
-  | "result";
 
 export type ApplyTransactionOptions = {
   restored?: boolean;
 };
-
-export type CheckoutTransactionObservation = {
-  orderKey: string;
-  nextAction: MachineOrderStatusNextAction;
-  pickupReminder?: {
-    stage?: string | null;
-    level?: string | null;
-    warningNo?: number | null;
-    reportedAt?: string | null;
-  } | null;
-  restored: boolean;
-};
-
-export function normalizeNextAction(
-  nextAction: string | null | undefined,
-): MachineOrderStatusNextAction {
-  switch (nextAction) {
-    case null:
-    case undefined:
-      return "wait_payment";
-    case "wait_payment":
-    case "dispensing":
-    case "success":
-    case "payment_failed":
-    case "payment_expired":
-    case "dispense_failed":
-    case "refund_pending":
-    case "refunded":
-    case "manual_handling":
-    case "closed":
-      return nextAction;
-    case "result_unknown":
-      return "manual_handling";
-    default:
-      return "wait_payment";
-  }
-}
-
-export function resultKindFromNextAction(
-  nextAction: MachineOrderStatusNextAction,
-): CheckoutResultKind | null {
-  if (nextAction === "wait_payment") return null;
-  if (nextAction === "dispensing") return null;
-  return nextAction;
-}
 
 const DISMISSED_TERMINAL_ORDER_STORAGE_KEY =
   "vem.machine.dismissedTerminalOrderNos";
@@ -121,20 +71,6 @@ function rememberDismissedTerminalOrderNo(
   );
 }
 
-export function isTerminalResultNextAction(
-  nextAction: string | null | undefined,
-): boolean {
-  return resultKindFromNextAction(normalizeNextAction(nextAction)) !== null;
-}
-
-function paymentMethodFromSnapshot(
-  snapshot: TransactionSnapshot,
-): MachineOrderStatus["payment"]["method"] {
-  if (snapshot.paymentMethod === "payment_code") return "payment_code";
-  if (snapshot.paymentMethod === "mock") return "mock";
-  return "qr_code";
-}
-
 function providerCodeFromSnapshot(
   snapshot: TransactionSnapshot,
 ): MachinePaymentProviderCode | null {
@@ -146,119 +82,6 @@ function providerCodeFromSnapshot(
     return snapshot.paymentProvider;
   }
   return null;
-}
-
-function orderStatusFromSnapshot(
-  snapshot: TransactionSnapshot,
-): MachineOrderStatus["orderStatus"] {
-  switch (snapshot.orderStatus) {
-    case null:
-      return "pending_payment";
-    case "pending_payment":
-    case "payment_expired":
-    case "canceled":
-    case "paid":
-    case "dispensing":
-    case "fulfilled":
-    case "dispense_failed":
-    case "manual_handling":
-    case "refund_pending":
-    case "refunded":
-    case "closed":
-      return snapshot.orderStatus;
-    default:
-      return "pending_payment";
-  }
-}
-
-function paymentStatusFromSnapshot(
-  snapshot: TransactionSnapshot,
-): MachineOrderStatus["payment"]["status"] {
-  switch (snapshot.paymentStatus) {
-    case null:
-      return "pending";
-    case "created":
-    case "pending":
-    case "processing":
-    case "succeeded":
-    case "failed":
-    case "expired":
-    case "canceled":
-    case "refund_pending":
-    case "refunded":
-    case "partial_refunded":
-      return snapshot.paymentStatus;
-    default:
-      return "pending";
-  }
-}
-
-function paymentStateFromSnapshot(
-  snapshot: TransactionSnapshot,
-): MachineOrderStatus["paymentState"] {
-  switch (snapshot.paymentStatus) {
-    case null:
-    case "pending_payment":
-      return "awaiting_payment";
-    case "succeeded":
-      return "paid";
-    case "failed":
-      return "payment_failed";
-    case "expired":
-      return "payment_expired";
-    case "canceled":
-      return "canceled";
-    case "refund_pending":
-    case "refunded":
-    case "partial_refunded":
-      return snapshot.paymentStatus;
-  }
-
-  switch (orderStatusFromSnapshot(snapshot)) {
-    case "pending_payment":
-      return "awaiting_payment";
-    case "payment_expired":
-      return "payment_expired";
-    case "canceled":
-    case "closed":
-      return "canceled";
-    case "paid":
-    case "dispensing":
-    case "fulfilled":
-    case "dispense_failed":
-    case "manual_handling":
-      return "paid";
-    case "refund_pending":
-      return "refund_pending";
-    case "refunded":
-      return "refunded";
-    default:
-      return "awaiting_payment";
-  }
-}
-
-function paymentCodeAttemptStatusFromSnapshot(
-  status: string | null | undefined,
-): NonNullable<MachineOrderStatus["paymentCodeAttempt"]>["status"] {
-  switch (status) {
-    case null:
-    case undefined:
-      return "querying";
-    case "created":
-    case "submitting":
-    case "user_confirming":
-    case "querying":
-    case "succeeded":
-    case "failed":
-    case "reversing":
-    case "reversed":
-    case "unknown":
-    case "manual_handling":
-    case "canceled":
-      return status;
-    default:
-      return "querying";
-  }
 }
 
 function paymentCodeAttemptMessageFromSnapshot(
@@ -277,32 +100,6 @@ function paymentCodeAttemptMessageFromSnapshot(
     return "支付结果待确认，请联系工作人员处理";
   }
   return operatorHint ?? null;
-}
-
-function fulfillmentStateFromSnapshot(
-  snapshot: TransactionSnapshot,
-): MachineOrderStatus["fulfillmentState"] {
-  switch (orderStatusFromSnapshot(snapshot)) {
-    case "pending_payment":
-    case "paid":
-      return "awaiting_fulfillment";
-    case "dispensing":
-      return "dispensing";
-    case "fulfilled":
-      return "dispensed";
-    case "dispense_failed":
-      return "dispense_failed";
-    case "manual_handling":
-    case "refund_pending":
-    case "refunded":
-      return "manual_handling";
-    case "payment_expired":
-    case "canceled":
-    case "closed":
-      return "canceled";
-    default:
-      return "awaiting_fulfillment";
-  }
 }
 
 function latestSaleViewItem(
@@ -337,33 +134,59 @@ function isMachineSaleReady(): boolean {
   return useConnectivityStore().isSaleNetworkReady;
 }
 
-function vendingStatusFromSnapshot(
-  snapshot: NonNullable<TransactionSnapshot["vending"]>,
-): NonNullable<MachineOrderStatus["vending"]>["status"] {
-  switch (snapshot.status) {
-    case null:
-      return "pending";
-    case "pending":
-    case "sent":
-    case "acknowledged":
-    case "succeeded":
-    case "failed":
-    case "timeout":
-    case "result_unknown":
-      return snapshot.status;
-    default:
-      return "pending";
+function suggestedReturnRoute(): CustomerCheckoutReturnRoute {
+  const connectivityStore = useConnectivityStore();
+  if (connectivityStore.isSaleNetworkReady) return "catalog";
+  if (connectivityStore.ready?.suggestedRoute === "maintenance") {
+    return "maintenance";
   }
+  return "offline";
+}
+
+function requiresMaintenanceReview(): boolean {
+  const connectivityStore = useConnectivityStore();
+  return Boolean(
+    connectivityStore.ready?.suggestedRoute === "maintenance" ||
+    connectivityStore.ready?.blockingCodes.includes(
+      "WHOLE_MACHINE_HARDWARE_FAULT",
+    ) ||
+    connectivityStore.saleReadiness?.blockingCodes.includes(
+      "WHOLE_MACHINE_HARDWARE_FAULT",
+    ) ||
+    connectivityStore.saleReadiness?.components.wholeMachineBlockers.ready ===
+      false,
+  );
+}
+
+function customerCheckoutReadinessContext(): CustomerCheckoutReadinessContext {
+  const connectivityStore = useConnectivityStore();
+  return {
+    saleReady: connectivityStore.isSaleNetworkReady,
+    suggestedRoute: suggestedReturnRoute(),
+    requiresMaintenanceReview: requiresMaintenanceReview(),
+  };
+}
+
+function orderResponseFromSnapshot(
+  snapshot: TransactionSnapshot,
+  fallbackAmountCents: number,
+): CreateMachineOrderResponse | null {
+  if (!snapshot.orderNo) return null;
+  return {
+    orderId: snapshot.orderId ?? snapshot.orderNo,
+    orderNo: snapshot.orderNo,
+    paymentNo: snapshot.paymentNo ?? "-",
+    paymentUrl: snapshot.paymentUrl,
+    expiresAt: snapshot.expiresAt ?? snapshot.updatedAt,
+    totalAmountCents: snapshot.totalAmountCents ?? fallbackAmountCents,
+    paymentProviderCode: providerCodeFromSnapshot(snapshot),
+  };
 }
 
 export const useCheckoutStore = defineStore("checkout", {
   state: () => ({
     selectedItem: null as CheckoutSelectedItem | null,
-    currentOrder: null as CreateMachineOrderResponse | null,
-    status: null as MachineOrderStatus | null,
     transaction: null as TransactionSnapshot | null,
-    transactionObservation: null as CheckoutTransactionObservation | null,
-    flowStep: "idle" as CheckoutFlowStep,
     nowMs: Date.now(),
     loading: false,
     error: null as string | null,
@@ -374,11 +197,37 @@ export const useCheckoutStore = defineStore("checkout", {
     paymentCodeLastMasked: null as string | null,
     paymentOptionsLoaded: false,
     dismissedTerminalOrderNos: readDismissedTerminalOrderNos(),
+    lastTransactionRestored: false,
   }),
   getters: {
     quantity: (): number => 1,
+    customerCheckoutView: (state): CustomerCheckoutView =>
+      projectCustomerCheckoutView({
+        transaction: state.transaction,
+        nowMs: state.nowMs,
+        dismissedTerminalOrderNos: state.dismissedTerminalOrderNos,
+        restored: state.lastTransactionRestored,
+        loading: state.loading,
+        readiness: customerCheckoutReadinessContext(),
+      }),
+    customerEventObservation: (state): CustomerEventObservation =>
+      projectCustomerCheckoutView({
+        transaction: state.transaction,
+        nowMs: state.nowMs,
+        dismissedTerminalOrderNos: state.dismissedTerminalOrderNos,
+        restored: state.lastTransactionRestored,
+        loading: state.loading,
+        readiness: customerCheckoutReadinessContext(),
+      }).customerEventObservation,
     remainingSeconds: (state): number =>
-      getRemainingSeconds(state.currentOrder?.expiresAt, state.nowMs),
+      projectCustomerCheckoutView({
+        transaction: state.transaction,
+        nowMs: state.nowMs,
+        dismissedTerminalOrderNos: state.dismissedTerminalOrderNos,
+        restored: state.lastTransactionRestored,
+        loading: state.loading,
+        readiness: customerCheckoutReadinessContext(),
+      }).payment?.remainingSeconds ?? 0,
     canCreateOrder: (state): boolean => {
       const selectedItem = latestSaleViewItem(state.selectedItem);
       return Boolean(
@@ -392,16 +241,23 @@ export const useCheckoutStore = defineStore("checkout", {
       );
     },
     resultKind: (state): CheckoutResultKind | null =>
-      state.status ? resultKindFromNextAction(state.status.nextAction) : null,
+      projectCustomerCheckoutView({
+        transaction: state.transaction,
+        nowMs: state.nowMs,
+        dismissedTerminalOrderNos: state.dismissedTerminalOrderNos,
+        restored: state.lastTransactionRestored,
+        loading: state.loading,
+        readiness: customerCheckoutReadinessContext(),
+      }).result?.kind ?? null,
     selectedPaymentOption: (state): MachinePaymentOption | null =>
       state.paymentOptions.find(
         (option) => option.optionKey === state.selectedPaymentOptionKey,
       ) ?? null,
     activePaymentProviderCode: (state): MachinePaymentProviderCode | null => {
-      const statusCode = state.status?.payment.providerCode;
-      if (statusCode) return statusCode;
-      const orderCode = state.currentOrder?.paymentProviderCode;
-      if (orderCode) return orderCode;
+      const transactionProviderCode = state.transaction
+        ? providerCodeFromSnapshot(state.transaction)
+        : null;
+      if (transactionProviderCode) return transactionProviderCode;
       return (
         state.paymentOptions.find(
           (option) => option.optionKey === state.selectedPaymentOptionKey,
@@ -415,21 +271,13 @@ export const useCheckoutStore = defineStore("checkout", {
     },
     selectItem(item: CheckoutSelectedItem): void {
       this.selectedItem = item;
-      this.currentOrder = null;
-      this.status = null;
       this.transaction = null;
-      this.transactionObservation = null;
-      this.flowStep = "detail";
       this.error = null;
       this.nowMs = Date.now();
     },
     reset(): void {
       this.selectedItem = null;
-      this.currentOrder = null;
-      this.status = null;
       this.transaction = null;
-      this.transactionObservation = null;
-      this.flowStep = "idle";
       this.error = null;
       this.loading = false;
       this.paymentCodeSubmitting = false;
@@ -438,17 +286,23 @@ export const useCheckoutStore = defineStore("checkout", {
       this.nowMs = Date.now();
     },
     shouldIgnoreTransaction(snapshot: TransactionSnapshot | null): boolean {
-      return Boolean(
-        snapshot?.orderNo &&
-        isTerminalResultNextAction(snapshot.nextAction) &&
-        this.dismissedTerminalOrderNos.includes(snapshot.orderNo),
+      if (!snapshot?.orderNo) return false;
+      return (
+        this.dismissedTerminalOrderNos.includes(snapshot.orderNo) &&
+        projectCustomerCheckoutView({
+          transaction: snapshot,
+          nowMs: this.nowMs,
+          dismissedTerminalOrderNos: this.dismissedTerminalOrderNos,
+          restored: this.lastTransactionRestored,
+          loading: this.loading,
+          readiness: customerCheckoutReadinessContext(),
+        }).stage === "none"
       );
     },
     dismissCurrentTerminalTransaction(): void {
-      const orderNo = this.transaction?.orderNo ?? this.currentOrder?.orderNo;
-      const nextAction =
-        this.status?.nextAction ?? this.transaction?.nextAction ?? null;
-      if (!orderNo || !isTerminalResultNextAction(nextAction)) return;
+      const view = this.customerCheckoutView;
+      const orderNo = view.orderCredential;
+      if (!orderNo || view.stage !== "result") return;
       this.dismissedTerminalOrderNos = rememberDismissedTerminalOrderNo(
         this.dismissedTerminalOrderNos,
         orderNo,
@@ -460,119 +314,17 @@ export const useCheckoutStore = defineStore("checkout", {
       options: ApplyTransactionOptions = {},
     ): void {
       const restored = options.restored === true;
+      this.lastTransactionRestored = restored;
       if (this.shouldIgnoreTransaction(snapshot)) {
-        if (
-          this.transaction?.orderNo === snapshot.orderNo ||
-          this.currentOrder?.orderNo === snapshot.orderNo
-        ) {
+        if (this.transaction?.orderNo === snapshot.orderNo) {
           this.transaction = null;
-          this.currentOrder = null;
-          this.status = null;
-          this.transactionObservation = null;
-          if (
-            this.flowStep === "payment" ||
-            this.flowStep === "dispensing" ||
-            this.flowStep === "result"
-          ) {
-            this.flowStep = "idle";
-          }
         }
         return;
       }
 
       this.transaction = snapshot;
 
-      if (!snapshot.orderNo) {
-        this.currentOrder = null;
-        this.status = null;
-        this.transactionObservation = null;
-        return;
-      }
-
-      const providerCode = providerCodeFromSnapshot(snapshot);
-      this.currentOrder = {
-        orderId: snapshot.orderId ?? snapshot.orderNo,
-        orderNo: snapshot.orderNo,
-        paymentNo: snapshot.paymentNo ?? "-",
-        paymentUrl: snapshot.paymentUrl,
-        expiresAt: snapshot.expiresAt ?? snapshot.updatedAt,
-        totalAmountCents:
-          snapshot.totalAmountCents ?? this.selectedItem?.priceCents ?? 0,
-        paymentProviderCode: providerCode,
-      };
-
-      const nextAction = normalizeNextAction(snapshot.nextAction);
       const attempt = snapshot.paymentCodeAttempt;
-      this.status = {
-        orderId: snapshot.orderId ?? snapshot.orderNo,
-        orderNo: snapshot.orderNo,
-        machineCode: "daemon",
-        orderStatus: orderStatusFromSnapshot(snapshot),
-        paymentState: paymentStateFromSnapshot(snapshot),
-        fulfillmentState: fulfillmentStateFromSnapshot(snapshot),
-        totalAmountCents:
-          snapshot.totalAmountCents ?? this.currentOrder.totalAmountCents,
-        payment: {
-          paymentNo: snapshot.paymentNo ?? "-",
-          method: paymentMethodFromSnapshot(snapshot),
-          status: paymentStatusFromSnapshot(snapshot),
-          paymentUrl: snapshot.paymentUrl,
-          expiresAt: snapshot.expiresAt,
-          paidAt: null,
-          failedReason: snapshot.errorMessage,
-          providerCode,
-        },
-        paymentCodeAttempt: attempt
-          ? {
-              attemptNo: attempt.attemptNo ?? 1,
-              status: paymentCodeAttemptStatusFromSnapshot(attempt.status),
-              maskedAuthCode: attempt.maskedAuthCode,
-              source:
-                attempt.source === "serial_text" ||
-                attempt.source === "tauri_scanner" ||
-                attempt.source === "browser_test" ||
-                attempt.source === "manual_dev"
-                  ? attempt.source
-                  : null,
-              idempotencyKey: attempt.idempotencyKey,
-              submittedAt: attempt.submittedAt,
-              lastCheckedAt: attempt.lastCheckedAt,
-              canRetry: attempt.canRetry,
-              message: paymentCodeAttemptMessageFromSnapshot(
-                attempt,
-                snapshot.operatorHint,
-              ),
-            }
-          : null,
-        vending: snapshot.vending
-          ? {
-              commandNo: snapshot.vending.commandNo ?? "-",
-              status: vendingStatusFromSnapshot(snapshot.vending),
-              sentAt: null,
-              ackAt: null,
-              resultAt: null,
-              lastError: snapshot.vending.lastError,
-              pickupReminder: snapshot.vending.pickupReminder ?? null,
-            }
-          : null,
-        refund: null,
-        nextAction,
-        serverTime: snapshot.updatedAt,
-      };
-      this.transactionObservation = {
-        orderKey: this.status.orderNo,
-        nextAction,
-        pickupReminder: this.status.vending?.pickupReminder
-          ? {
-              stage: this.status.vending.pickupReminder.stage ?? null,
-              level: this.status.vending.pickupReminder.level ?? null,
-              warningNo: this.status.vending.pickupReminder.warningNo ?? null,
-              reportedAt: this.status.vending.pickupReminder.reportedAt ?? null,
-            }
-          : null,
-        restored,
-      };
-
       this.paymentCodeMessage =
         paymentCodeAttemptMessageFromSnapshot(attempt, snapshot.operatorHint) ??
         this.paymentCodeMessage;
@@ -581,14 +333,6 @@ export const useCheckoutStore = defineStore("checkout", {
         snapshot.maskedAuthCode ??
         this.paymentCodeLastMasked;
       this.nowMs = Date.now();
-
-      if (nextAction === "dispensing") {
-        this.flowStep = "dispensing";
-      } else if (resultKindFromNextAction(nextAction)) {
-        this.flowStep = "result";
-      } else if (this.currentOrder) {
-        this.flowStep = "payment";
-      }
     },
     async loadPaymentOptions(): Promise<void> {
       this.loading = true;
@@ -662,8 +406,7 @@ export const useCheckoutStore = defineStore("checkout", {
           profileSnapshot: null,
         });
         this.applyTransaction(snapshot);
-        this.flowStep = "payment";
-        return this.currentOrder;
+        return orderResponseFromSnapshot(snapshot, selectedItem.priceCents);
       } catch (error) {
         this.error = error instanceof Error ? error.message : String(error);
         await catalogStore.refresh().catch(() => {
@@ -695,7 +438,8 @@ export const useCheckoutStore = defineStore("checkout", {
     async cancelCurrentOrder(options?: {
       preserveSelectedItem?: boolean;
     }): Promise<TransactionSnapshot | null> {
-      const orderNo = this.currentOrder?.orderNo ?? this.transaction?.orderNo;
+      const orderNo =
+        this.customerCheckoutView.orderCredential ?? this.transaction?.orderNo;
       if (!orderNo) {
         this.reset();
         return null;
@@ -711,7 +455,6 @@ export const useCheckoutStore = defineStore("checkout", {
         this.reset();
         if (options?.preserveSelectedItem && selectedItemBeforeCancel) {
           this.selectedItem = selectedItemBeforeCancel;
-          this.flowStep = "detail";
         }
         await useCatalogStore()
           .refresh()
@@ -731,7 +474,8 @@ export const useCheckoutStore = defineStore("checkout", {
     async submitDevPaymentCode(
       authCode: string,
     ): Promise<TransactionSnapshot | null> {
-      if (!this.currentOrder) return null;
+      const orderNo = this.customerCheckoutView.orderCredential;
+      if (!orderNo) return null;
       if (this.paymentCodeSubmitting) return null;
       if (daemonClient.currentConnection?.mock !== true) {
         throw new Error("当前不是 mock daemon，禁止手动提交付款码");
@@ -741,7 +485,7 @@ export const useCheckoutStore = defineStore("checkout", {
       this.paymentCodeMessage = "正在提交付款码";
       try {
         const snapshot = await daemonClient.submitDevPaymentCode({
-          orderNo: this.currentOrder.orderNo,
+          orderNo,
           authCode,
           source: "browser_test",
         });
@@ -755,16 +499,14 @@ export const useCheckoutStore = defineStore("checkout", {
       }
     },
     async markMockSucceeded(): Promise<void> {
-      if (!this.currentOrder) return;
-      this.applyTransaction(
-        await daemonClient.markMockPayment(this.currentOrder.orderNo, true),
-      );
+      const orderNo = this.customerCheckoutView.orderCredential;
+      if (!orderNo) return;
+      this.applyTransaction(await daemonClient.markMockPayment(orderNo, true));
     },
     async markMockFailed(): Promise<void> {
-      if (!this.currentOrder) return;
-      this.applyTransaction(
-        await daemonClient.markMockPayment(this.currentOrder.orderNo, false),
-      );
+      const orderNo = this.customerCheckoutView.orderCredential;
+      if (!orderNo) return;
+      this.applyTransaction(await daemonClient.markMockPayment(orderNo, false));
     },
   },
 });

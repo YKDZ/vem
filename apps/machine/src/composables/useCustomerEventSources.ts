@@ -8,6 +8,10 @@ import {
   type Ref,
 } from "vue";
 
+import type {
+  CustomerEventObservationPhase,
+  CustomerEventPickupCue,
+} from "@/checkout/customer-checkout-view";
 import type { CustomerExperienceEvent } from "@/customer-events/events";
 
 import { useCheckoutStore } from "@/stores/checkout";
@@ -58,7 +62,10 @@ let activeScope: EffectScope | null = null;
 let activeCleanup: (() => void) | null = null;
 let lastVisionAudioCueState: VisionAudioCueState = "absent";
 let emittedTransactionSourceFacts = new Set<string>();
-let lastTransactionByOrderKey = new Map<string, string | null>();
+let lastTransactionByOrderKey = new Map<
+  string,
+  CustomerEventObservationPhase | null
+>();
 let emittedIdleSourceFacts = new Set<string>();
 
 const ASSISTANCE_PROMPT_ROUTE_NAMES = new Set([
@@ -176,53 +183,97 @@ function emitTransactionEventOnce(event: CustomerExperienceEvent): void {
     return;
   }
 
-  const sourceFactKey = `${event.orderKey}:${event.type}`;
+  const sourceFactKey = transactionSourceFactKey(event.orderKey, event.type);
   if (emittedTransactionSourceFacts.has(sourceFactKey)) return;
   emittedTransactionSourceFacts.add(sourceFactKey);
   emitCustomerEvent(event);
 }
 
-function eventTypeForTerminalTransaction(
-  nextAction: string | null,
+function transactionSourceFactKey(
+  orderKey: string,
+  eventType: CustomerExperienceEvent["type"],
+): string {
+  return `${orderKey}:${eventType}`;
+}
+
+function rememberTransactionEventHandled(
+  orderKey: string,
+  eventType: CustomerExperienceEvent["type"],
+): void {
+  emittedTransactionSourceFacts.add(
+    transactionSourceFactKey(orderKey, eventType),
+  );
+}
+
+function eventTypeForTerminalObservation(
+  phase: CustomerEventObservationPhase,
 ): CustomerExperienceEvent["type"] | null {
-  switch (nextAction) {
-    case null:
+  switch (phase) {
+    case "none":
+    case "awaiting_payment":
+    case "dispensing":
+    case "success_result":
+    case "payment_failed_result":
+    case "payment_expired_result":
+    case "closed_result":
       return null;
-    case "dispense_failed":
+    case "dispense_failed_result":
       return "dispense.failed";
-    case "refund_pending":
+    case "refund_pending_result":
       return "refund.pending";
-    case "refunded":
+    case "refund_completed_result":
       return "refund.completed";
-    case "manual_handling":
+    case "manual_handling_result":
       return "manual_handling.required";
     default:
       return null;
   }
 }
 
-function eventTypeForPickupReminder(
-  reminder:
-    | {
-        stage?: string | null;
-        level?: string | null;
-        warningNo?: number | null;
-      }
-    | null
-    | undefined,
+function eventTypeForPickupCue(
+  cue: CustomerEventPickupCue | null,
 ): CustomerExperienceEvent["type"] | null {
-  if (!reminder?.stage) return null;
-  switch (reminder.stage) {
+  switch (cue) {
+    case null:
+      return null;
     case "outlet_opened":
       return "dispense.outlet_opened";
-    case "pickup_waiting":
+    case "waiting":
       return "pickup.waiting";
-    case "pickup_timeout_warning":
-      return reminder.level === "urgent" || (reminder.warningNo ?? 0) >= 2
-        ? "pickup.urgent"
-        : "pickup.warning";
+    case "warning":
+      return "pickup.warning";
+    case "urgent":
+      return "pickup.urgent";
+    case "completed":
+      return "pickup.completed";
     default:
       return null;
+  }
+}
+
+function rememberRestoredObservationEvents(input: {
+  orderKey: string;
+  phase: CustomerEventObservationPhase;
+  pickupCue: CustomerEventPickupCue | null;
+}): void {
+  if (input.phase === "dispensing") {
+    rememberTransactionEventHandled(input.orderKey, "dispensing.started");
+    const pickupEventType = eventTypeForPickupCue(input.pickupCue);
+    if (pickupEventType) {
+      rememberTransactionEventHandled(input.orderKey, pickupEventType);
+    }
+    return;
+  }
+
+  if (input.phase === "success_result") {
+    rememberTransactionEventHandled(input.orderKey, "pickup.completed");
+    rememberTransactionEventHandled(input.orderKey, "dispense.succeeded");
+    return;
+  }
+
+  const terminalEventType = eventTypeForTerminalObservation(input.phase);
+  if (terminalEventType) {
+    rememberTransactionEventHandled(input.orderKey, terminalEventType);
   }
 }
 
@@ -254,67 +305,72 @@ export function installCustomerEventSources(
 
     const checkoutStore = useCheckoutStore();
     watch(
-      () => checkoutStore.transactionObservation,
-      (transaction) => {
-        if (!transaction) return;
+      () => checkoutStore.customerEventObservation,
+      (observation) => {
+        const orderKey = observation.orderCredential;
+        if (!orderKey) return;
 
-        const previousNextAction =
-          lastTransactionByOrderKey.get(transaction.orderKey) ?? null;
-        lastTransactionByOrderKey.set(
-          transaction.orderKey,
-          transaction.nextAction,
-        );
-        if (transaction.restored) return;
-
-        if (transaction.nextAction === "wait_payment") {
-          emitTransactionEventOnce({
-            type: "payment.prompt",
-            orderKey: transaction.orderKey,
+        const previousPhase = lastTransactionByOrderKey.get(orderKey) ?? null;
+        lastTransactionByOrderKey.set(orderKey, observation.phase);
+        if (observation.restored) {
+          rememberRestoredObservationEvents({
+            orderKey,
+            phase: observation.phase,
+            pickupCue: observation.pickupCue,
           });
           return;
         }
 
-        if (transaction.nextAction === "dispensing") {
-          if (previousNextAction === "wait_payment") {
+        if (observation.phase === "awaiting_payment") {
+          if (previousPhase === "awaiting_payment") return;
+          emitTransactionEventOnce({
+            type: "payment.prompt",
+            orderKey,
+          });
+          return;
+        }
+
+        if (observation.phase === "dispensing") {
+          if (previousPhase === "awaiting_payment") {
             emitTransactionEventOnce({
               type: "payment.succeeded",
-              orderKey: transaction.orderKey,
+              orderKey,
             });
           }
           emitTransactionEventOnce({
             type: "dispensing.started",
-            orderKey: transaction.orderKey,
+            orderKey,
           });
-          const pickupReminderEventType = eventTypeForPickupReminder(
-            transaction.pickupReminder,
+          const pickupReminderEventType = eventTypeForPickupCue(
+            observation.pickupCue,
           );
           if (pickupReminderEventType) {
             emitTransactionEventOnce({
               type: pickupReminderEventType,
-              orderKey: transaction.orderKey,
+              orderKey,
             });
           }
           return;
         }
 
-        const terminalEventType = eventTypeForTerminalTransaction(
-          transaction.nextAction,
+        const terminalEventType = eventTypeForTerminalObservation(
+          observation.phase,
         );
-        if (transaction.nextAction === "success") {
+        if (observation.phase === "success_result") {
           emitTransactionEventOnce({
             type: "pickup.completed",
-            orderKey: transaction.orderKey,
+            orderKey,
           });
           emitTransactionEventOnce({
             type: "dispense.succeeded",
-            orderKey: transaction.orderKey,
+            orderKey,
           });
           return;
         }
         if (terminalEventType) {
           emitTransactionEventOnce({
             type: terminalEventType,
-            orderKey: transaction.orderKey,
+            orderKey,
           });
         }
       },

@@ -8,7 +8,7 @@ import mascotListImage from "@/assets/home/mascot-list.png";
 import mascotTopImage from "@/assets/home/mascot-top-cutout.png";
 import { useMaintenanceEntry } from "@/composables/useMaintenanceEntry";
 import KioskLayout from "@/layouts/KioskLayout.vue";
-import { resultKindFromNextAction, useCheckoutStore } from "@/stores/checkout";
+import { useCheckoutStore } from "@/stores/checkout";
 
 const router = useRouter();
 const checkoutStore = useCheckoutStore();
@@ -18,22 +18,16 @@ let pollTimer: number | undefined;
 let pickupRemainingTimer: number | undefined;
 const pickupRemainingSeconds = ref<number | null>(null);
 
-const hasOrder = computed(() => Boolean(checkoutStore.currentOrder));
-const status = computed(() => checkoutStore.status);
-const command = computed(() => status.value?.vending ?? null);
-const pickupReminder = computed(() => command.value?.pickupReminder ?? null);
+const checkoutView = computed(() => checkoutStore.customerCheckoutView);
+const dispensingView = computed(() => checkoutView.value.dispensing);
+const hasOrder = computed(() => checkoutView.value.stage === "dispensing");
+const pickupReminder = computed(
+  () => dispensingView.value?.pickupReminder ?? null,
+);
 const hasCustomerVisibleError = computed(
-  () =>
-    command.value?.status === "failed" ||
-    command.value?.status === "timeout" ||
-    command.value?.status === "result_unknown",
+  () => dispensingView.value?.customerVisibleError !== null,
 );
-const orderCredential = computed(
-  () =>
-    checkoutStore.currentOrder?.orderNo ??
-    checkoutStore.status?.orderNo ??
-    null,
-);
+const orderCredential = computed(() => checkoutView.value.orderCredential);
 const productName = computed(() => {
   const summary = checkoutStore.transaction?.productSummary;
   if (!summary || typeof summary !== "object") return null;
@@ -51,27 +45,36 @@ const titleText = computed(() =>
 const pickupTitle = computed(() =>
   hasCustomerVisibleError.value
     ? "出货遇到问题"
-    : pickupReminder.value?.level === "urgent"
+    : pickupReminder.value?.urgency === "urgent"
       ? "请立即取走商品"
-      : pickupReminder.value?.level === "warning"
+      : pickupReminder.value?.urgency === "warning"
         ? "请及时取走商品"
         : "设备出货中",
 );
 const pickupSubtitle = computed(() => {
   if (hasCustomerVisibleError.value) return "请联系工作人员处理";
-  return pickupReminder.value?.message ?? "请稍候，商品正在送往取货口";
+  if (pickupReminder.value?.stage === "pickup_completed") {
+    return "商品已完成出货，请确认取货";
+  }
+  if (pickupReminder.value?.stage === "pickup_waiting") {
+    return "商品已到达取货口，请及时取走";
+  }
+  if (pickupReminder.value?.stage === "pickup_timeout_warning") {
+    return "取货倒计时进行中，请尽快取走商品";
+  }
+  return "请稍候，商品正在送往取货口";
 });
 const pickupNoticeTitle = computed(() =>
-  pickupReminder.value?.level === "urgent"
+  pickupReminder.value?.urgency === "urgent"
     ? "取货口即将关闭"
-    : pickupReminder.value?.level === "warning"
+    : pickupReminder.value?.urgency === "warning"
       ? "请尽快完成取货"
       : "出货完成后请取货",
 );
 const pickupNoticeCopy = computed(() =>
-  pickupReminder.value?.level === "urgent"
+  pickupReminder.value?.urgency === "urgent"
     ? "请立即取走商品，避免取货口超时关闭。"
-    : pickupReminder.value?.level === "warning"
+    : pickupReminder.value?.urgency === "warning"
       ? "商品已在取货口等待，请及时取走。"
       : "取货口打开后，请及时取走商品。",
 );
@@ -96,18 +99,19 @@ function syncPickupRemainingSeconds(): void {
 async function refreshStatus(): Promise<void> {
   await checkoutStore.refreshCurrentTransaction();
   syncPickupRemainingSeconds();
-  if (!checkoutStore.status) return;
-  const resultKind = resultKindFromNextAction(checkoutStore.status.nextAction);
-  if (resultKind) {
-    await router.replace({ name: "result", params: { kind: resultKind } });
+  const target = checkoutView.value.routeTarget;
+  if ("path" in target) {
+    if (target.path !== "/dispensing") {
+      await router.replace(target.path);
+    }
+    return;
   }
+  await router.replace(target);
 }
 
 onMounted(async () => {
-  if (!checkoutStore.currentOrder) {
-    return;
-  }
   await refreshStatus();
+  if (!hasOrder.value) return;
   pollTimer = window.setInterval(() => {
     void refreshStatus();
   }, 2_000);

@@ -230,15 +230,16 @@ function applyReadyRuntime(): void {
 
 function checkoutObservation() {
   const checkoutStore = useCheckoutStore();
+  const checkoutView = checkoutStore.customerCheckoutView;
+  const transaction = checkoutStore.transaction;
   return {
-    flowStep: checkoutStore.flowStep,
+    stage: checkoutView.stage,
     resultKind: checkoutStore.resultKind,
-    nextAction: checkoutStore.status?.nextAction,
-    paymentState: checkoutStore.status?.paymentState,
-    fulfillmentState: checkoutStore.status?.fulfillmentState,
-    paymentStatus: checkoutStore.status?.payment.status,
-    vendingStatus: checkoutStore.status?.vending?.status,
-    orderNo: checkoutStore.status?.orderNo,
+    nextAction: transaction?.nextAction ?? null,
+    paymentStatus: transaction?.paymentStatus ?? null,
+    orderStatus: transaction?.orderStatus ?? null,
+    vendingStatus: transaction?.vending?.status ?? null,
+    orderNo: checkoutView.orderCredential,
   };
 }
 

@@ -754,6 +754,24 @@ describe("sale readiness UI flow", () => {
     expect(routerReplaceMock).not.toHaveBeenCalledWith("/catalog");
   });
 
+  it("does not render raw current-transaction parse errors during boot", async () => {
+    getHealthMock.mockResolvedValue(healthSnapshot());
+    getReadyMock.mockResolvedValue(readySnapshot());
+    getSaleReadinessMock.mockResolvedValue(saleReadiness(true));
+    getCurrentTransactionMock.mockRejectedValue(
+      new Error("ZodError: Invalid enum value at nextAction"),
+    );
+
+    const host = await mountView(BootView);
+
+    await vi.waitFor(() => {
+      expect(routerReplaceMock).toHaveBeenCalledWith("/maintenance");
+    });
+    expect(host.textContent).toContain("daemon 不可用，进入维护页");
+    expect(host.textContent).not.toContain("ZodError");
+    expect(host.textContent).not.toContain("Invalid enum value");
+  });
+
   it("loads sale readiness during boot so a ready catalog can enter purchase", async () => {
     const item = makeCatalogItem();
     getHealthMock.mockResolvedValue(healthSnapshot());
@@ -798,7 +816,7 @@ describe("sale readiness UI flow", () => {
     });
   });
 
-  it("does not reopen a dismissed terminal transaction during boot after a fresh reload", async () => {
+  it("does not reopen a dismissed successful terminal transaction during boot after a fresh reload", async () => {
     const dismissedTransaction = {
       orderId: "550e8400-e29b-41d4-a716-446655440010",
       orderNo: "ORD-DISMISSED-001",
@@ -807,15 +825,15 @@ describe("sale readiness UI flow", () => {
       paymentMethod: "payment_code",
       paymentProvider: "alipay",
       paymentUrl: null,
-      paymentStatus: "refunded",
-      orderStatus: "refunded",
+      paymentStatus: "succeeded",
+      orderStatus: "fulfilled",
       totalAmountCents: 4900,
       vending: {
         commandNo: "CMD-DISMISSED",
-        status: "failed",
-        lastError: "dispense failure already handled",
+        status: "succeeded",
+        lastError: null,
       },
-      nextAction: "refunded",
+      nextAction: "success",
       maskedAuthCode: null,
       paymentCodeAttempt: null,
       expiresAt: "2026-06-04T00:05:00Z",
@@ -853,9 +871,14 @@ describe("sale readiness UI flow", () => {
     });
     expect(routerReplaceMock).not.toHaveBeenCalledWith({
       name: "result",
-      params: { kind: "refunded" },
+      params: { kind: "success" },
     });
-    expect(reloadedCheckoutStore.currentOrder).toBeNull();
+    expect(reloadedCheckoutStore.customerCheckoutView).toMatchObject({
+      stage: "none",
+      routeTarget: { name: "catalog" },
+      orderCredential: null,
+      result: null,
+    });
   });
 
   it("keeps catalog products visible and navigable when readiness is blocked", async () => {
@@ -924,7 +947,7 @@ describe("sale readiness UI flow", () => {
       params: { catalogKey: item.catalogKey },
     });
     expect(useCheckoutStore().selectedItem).toBeNull();
-    expect(useCheckoutStore().currentOrder).toBeNull();
+    expect(useCheckoutStore().customerCheckoutView.stage).toBe("none");
   });
 
   it("leaves the catalog when readiness refresh requires maintenance", async () => {
@@ -1220,7 +1243,7 @@ describe("sale readiness UI flow", () => {
       query: { variantId: silhouettedVariant.variantId },
     });
     expect(useCheckoutStore().selectedItem).toBeNull();
-    expect(useCheckoutStore().currentOrder).toBeNull();
+    expect(useCheckoutStore().customerCheckoutView.stage).toBe("none");
 
     const sizeMButton = Array.from(host.querySelectorAll("button")).find(
       (button) => button.textContent?.trim() === "M",

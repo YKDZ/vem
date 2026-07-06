@@ -455,7 +455,7 @@ test("runtime matrix can directly load payment code scanner state", async ({
   await expect(page).toHaveURL(/#\/payment$/);
   await expectKioskMainFrame(page);
   await expect(page.getByText("请将付款码靠近扫码窗口完成支付")).toBeVisible();
-  await expect(page.getByText("扫码器已就绪")).toBeVisible();
+  await expect(page.getByText("请出示付款码")).toBeVisible();
   await expect(
     page.getByText("请打开支付宝或微信付款码，靠近设备扫码窗口。"),
   ).toBeVisible();
@@ -496,14 +496,14 @@ const dispensingStateExpectations: readonly {
   {
     scenario: dispensingPickup15sScenario,
     pickupTitle: "请及时取走商品",
-    reminderCopy: "请及时取走商品",
+    reminderCopy: "取货倒计时进行中，请尽快取走商品",
     noticeTitle: "请尽快完成取货",
     noticeCopy: "商品已在取货口等待，请及时取走。",
   },
   {
     scenario: dispensingPickup25sScenario,
     pickupTitle: "请立即取走商品",
-    reminderCopy: "取货口即将关闭，请立即取走商品",
+    reminderCopy: "取货倒计时进行中，请尽快取走商品",
     noticeTitle: "取货口即将关闭",
     noticeCopy: "请立即取走商品，避免取货口超时关闭。",
   },

@@ -114,7 +114,7 @@ function paymentTransaction() {
     paymentProvider: "alipay",
     paymentUrl: null,
     paymentStatus: "pending",
-    orderStatus: "waiting_payment",
+    orderStatus: "pending_payment",
     totalAmountCents: 100,
     vending: null,
     nextAction: "wait_payment",
