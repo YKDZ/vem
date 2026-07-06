@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import type { TransactionSnapshot } from "@/daemon/schemas";
+import {
+  transactionSnapshotSchema,
+  type TransactionSnapshot,
+} from "@/daemon/schemas";
 
 import { projectCustomerCheckoutView } from "./customer-checkout-view";
 
@@ -31,7 +34,59 @@ function awaitingPaymentTransaction(
   };
 }
 
+function dispensingTransaction(
+  overrides: Partial<TransactionSnapshot> = {},
+): TransactionSnapshot {
+  return {
+    orderId: "550e8400-e29b-41d4-a716-446655440020",
+    orderNo: "ORD-DISPENSING-001",
+    productSummary: null,
+    paymentNo: "PAY-DISPENSING-001",
+    paymentMethod: "payment_code",
+    paymentProvider: "alipay",
+    paymentUrl: null,
+    paymentStatus: "succeeded",
+    orderStatus: "paid",
+    totalAmountCents: 1200,
+    vending: {
+      commandNo: "CMD-DISPENSING-001",
+      status: "sent",
+      lastError: null,
+      pickupReminder: {
+        stage: "pickup_timeout_warning",
+        level: "urgent",
+        message: "请尽快取走商品",
+        warningNo: 2,
+        reportedAt: "2026-06-11T06:16:40.000Z",
+        remainingSeconds: 12,
+      },
+    },
+    nextAction: "dispensing",
+    maskedAuthCode: null,
+    paymentCodeAttempt: null,
+    expiresAt: "2026-06-11T06:20:00.000Z",
+    errorCode: null,
+    errorMessage: null,
+    operatorHint: null,
+    updatedAt: "2026-06-11T06:16:32.320Z",
+    ...overrides,
+  };
+}
+
 describe("Customer Checkout View Projection", () => {
+  it("validates paid and dispensing transaction snapshots with strict vocabulary", () => {
+    expect(
+      transactionSnapshotSchema.safeParse(
+        dispensingTransaction({ orderStatus: "paid" }),
+      ).success,
+    ).toBe(true);
+    expect(
+      transactionSnapshotSchema.safeParse(
+        dispensingTransaction({ orderStatus: "dispensing" }),
+      ).success,
+    ).toBe(true);
+  });
+
   it("projects awaiting QR payment as cancelable payment stage", () => {
     const view = projectCustomerCheckoutView({
       transaction: awaitingPaymentTransaction(),
@@ -177,5 +232,31 @@ describe("Customer Checkout View Projection", () => {
         restored: false,
       }),
     ).toThrow("payment transaction snapshot missing total amount");
+  });
+
+  it("projects paid dispensing snapshots to dispensing intent and route target", () => {
+    const view = projectCustomerCheckoutView({
+      transaction: dispensingTransaction(),
+      nowMs: new Date("2026-06-11T06:16:32.320Z").getTime(),
+      dismissedTerminalOrderNos: [],
+      restored: false,
+    });
+
+    expect(view).toMatchObject({
+      stage: "dispensing",
+      routeTarget: { path: "/dispensing" },
+      orderCredential: "ORD-DISPENSING-001",
+      dispensing: {
+        customerVisibleError: null,
+        pickupReminder: {
+          stage: "pickup_timeout_warning",
+          urgency: "urgent",
+          remainingSeconds: 12,
+          warningNo: 2,
+          reportedAt: "2026-06-11T06:16:40.000Z",
+        },
+      },
+    });
+    expect(JSON.stringify(view)).not.toContain("请尽快取走商品");
   });
 });

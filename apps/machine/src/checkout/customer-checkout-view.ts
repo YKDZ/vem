@@ -43,12 +43,31 @@ export type CustomerCheckoutPaymentView = {
   display: CustomerPaymentDisplay;
 };
 
+export type CustomerCheckoutDispensingView = {
+  customerVisibleError: null | {
+    kind: "failed" | "timeout" | "result_unknown";
+  };
+  pickupReminder: null | {
+    stage:
+      | "outlet_opened"
+      | "pickup_waiting"
+      | "pickup_completed"
+      | "pickup_timeout_warning"
+      | null;
+    urgency: "info" | "warning" | "urgent";
+    remainingSeconds: number | null;
+    warningNo: number | null;
+    reportedAt: string;
+  };
+};
+
 export type CustomerCheckoutView =
   | {
       stage: "none";
       routeTarget: CustomerCheckoutRouteTarget;
       orderCredential: null;
       payment: null;
+      dispensing: null;
       restored: boolean;
     }
   | {
@@ -56,13 +75,23 @@ export type CustomerCheckoutView =
       routeTarget: CustomerCheckoutRouteTarget;
       orderCredential: string;
       payment: CustomerCheckoutPaymentView;
+      dispensing: null;
       restored: boolean;
     }
   | {
-      stage: "dispensing" | "result";
+      stage: "dispensing";
       routeTarget: CustomerCheckoutRouteTarget;
       orderCredential: string;
       payment: null;
+      dispensing: CustomerCheckoutDispensingView;
+      restored: boolean;
+    }
+  | {
+      stage: "result";
+      routeTarget: CustomerCheckoutRouteTarget;
+      orderCredential: string;
+      payment: null;
+      dispensing: null;
       restored: boolean;
     };
 
@@ -196,6 +225,50 @@ function cancelDisabledReason(input: {
   return null;
 }
 
+function customerVisibleDispensingError(
+  transaction: TransactionSnapshot,
+): CustomerCheckoutDispensingView["customerVisibleError"] {
+  switch (transaction.vending?.status) {
+    case "failed":
+    case "timeout":
+    case "result_unknown":
+      return { kind: transaction.vending.status };
+    default:
+      return null;
+  }
+}
+
+function dispensingPickupStage(
+  stage: string | null | undefined,
+): NonNullable<CustomerCheckoutDispensingView["pickupReminder"]>["stage"] {
+  switch (stage) {
+    case "outlet_opened":
+    case "pickup_waiting":
+    case "pickup_completed":
+    case "pickup_timeout_warning":
+      return stage;
+    default:
+      return null;
+  }
+}
+
+function dispensingPickupReminder(
+  transaction: TransactionSnapshot,
+): CustomerCheckoutDispensingView["pickupReminder"] {
+  const reminder = transaction.vending?.pickupReminder;
+  if (!reminder) return null;
+  return {
+    stage: dispensingPickupStage(reminder.stage),
+    urgency: reminder.level,
+    remainingSeconds:
+      typeof reminder.remainingSeconds === "number"
+        ? reminder.remainingSeconds
+        : null,
+    warningNo: reminder.warningNo,
+    reportedAt: reminder.reportedAt,
+  };
+}
+
 export function projectCustomerCheckoutView(
   input: ProjectCustomerCheckoutViewInput,
 ): CustomerCheckoutView {
@@ -210,6 +283,7 @@ export function projectCustomerCheckoutView(
       routeTarget: { name: "catalog" },
       orderCredential: null,
       payment: null,
+      dispensing: null,
       restored: input.restored,
     };
   }
@@ -231,6 +305,7 @@ export function projectCustomerCheckoutView(
       routeTarget: projectRouteTarget(transaction.nextAction),
       orderCredential: transaction.orderNo,
       restored: input.restored,
+      dispensing: null,
       payment: {
         method: paymentMethodForTransaction(transaction),
         provider: transaction.paymentProvider,
@@ -245,11 +320,26 @@ export function projectCustomerCheckoutView(
     };
   }
 
+  if (transaction.nextAction === "dispensing") {
+    return {
+      stage: "dispensing",
+      routeTarget: projectRouteTarget(transaction.nextAction),
+      orderCredential: transaction.orderNo,
+      payment: null,
+      dispensing: {
+        customerVisibleError: customerVisibleDispensingError(transaction),
+        pickupReminder: dispensingPickupReminder(transaction),
+      },
+      restored: input.restored,
+    };
+  }
+
   return {
-    stage: transaction.nextAction === "dispensing" ? "dispensing" : "result",
+    stage: "result",
     routeTarget: projectRouteTarget(transaction.nextAction),
     orderCredential: transaction.orderNo,
     payment: null,
+    dispensing: null,
     restored: input.restored,
   };
 }

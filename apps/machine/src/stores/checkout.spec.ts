@@ -978,7 +978,10 @@ describe("checkout store", () => {
     const store = useCheckoutStore();
     await store.refreshCurrentTransaction();
 
-    expect(store.flowStep).toBe("dispensing");
+    expect(store.customerCheckoutView).toMatchObject({
+      stage: "dispensing",
+      routeTarget: { path: "/dispensing" },
+    });
   });
 
   it("preserves result_unknown vending status from daemon manual handling transaction", async () => {
