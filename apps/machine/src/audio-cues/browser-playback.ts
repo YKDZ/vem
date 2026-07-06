@@ -16,8 +16,6 @@ import {
 import { useAudioCueStore } from "@/stores/audio-cues";
 import { useMachineStore } from "@/stores/machine";
 
-export type CustomerAudioCueEvent = CustomerExperienceEvent;
-
 type MachineAudioCuePlaybackFactoryOptions = {
   volume: number;
   onDiagnostic: (diagnostic: MachineAudioPlaybackDiagnostic) => void;
@@ -73,8 +71,12 @@ const CUE_SOURCES: Record<CustomerExperienceEvent["type"], string> = {
   "payment.prompt": `${PLACEHOLDER_TONE_SOURCE}#payment-prompt`,
   "payment.succeeded": `${PLACEHOLDER_TONE_SOURCE}#payment-succeeded`,
   "dispensing.started": `${PLACEHOLDER_TONE_SOURCE}#dispensing-started`,
+  "dispense.outlet_opened": `${PLACEHOLDER_TONE_SOURCE}#dispense-outlet-opened`,
   "dispense.succeeded": `${PLACEHOLDER_TONE_SOURCE}#dispense-succeeded`,
   "dispense.failed": `${PLACEHOLDER_TONE_SOURCE}#dispense-failed`,
+  "pickup.waiting": `${PLACEHOLDER_TONE_SOURCE}#pickup-waiting`,
+  "pickup.warning": `${PLACEHOLDER_TONE_SOURCE}#pickup-warning`,
+  "pickup.urgent": `${PLACEHOLDER_TONE_SOURCE}#pickup-urgent`,
   "pickup.completed": `${PLACEHOLDER_TONE_SOURCE}#pickup-completed`,
   "refund.pending": `${PLACEHOLDER_TONE_SOURCE}#refund-pending`,
   "refund.completed": `${PLACEHOLDER_TONE_SOURCE}#refund-completed`,
@@ -96,10 +98,7 @@ const sharedPlaybackState: SharedPlaybackState = {
 export function createMachineAudioCuePlaybackAdapter(
   options: MachineAudioCuePlaybackAdapterOptions = {},
 ): {
-  requestCustomerExperienceEvent(
-    event: CustomerExperienceEvent,
-  ): Promise<boolean>;
-  requestCustomerAudioCue(event: CustomerAudioCueEvent): Promise<boolean>;
+  handleCustomerEvent(event: CustomerExperienceEvent): Promise<boolean>;
   startPendingCue(): Promise<boolean>;
   clearPendingCue(message?: string): boolean;
   pendingSourceCount(): number;
@@ -108,7 +107,7 @@ export function createMachineAudioCuePlaybackAdapter(
     options.playbackFactory ?? defaultMachineAudioPlaybackFactory;
   const autoStart = options.autoStart ?? true;
 
-  async function requestCustomerExperienceEvent(
+  async function handleCustomerEvent(
     event: CustomerExperienceEvent,
   ): Promise<boolean> {
     const store = useAudioCueStore();
@@ -188,12 +187,6 @@ export function createMachineAudioCuePlaybackAdapter(
 
     if (!autoStart) return true;
     return startPlayback(request, descriptor.source);
-  }
-
-  async function requestCustomerAudioCue(
-    event: CustomerAudioCueEvent,
-  ): Promise<boolean> {
-    return requestCustomerExperienceEvent(event);
   }
 
   async function startPendingCue(): Promise<boolean> {
@@ -291,8 +284,7 @@ export function createMachineAudioCuePlaybackAdapter(
   }
 
   return {
-    requestCustomerExperienceEvent,
-    requestCustomerAudioCue,
+    handleCustomerEvent,
     startPendingCue,
     clearPendingCue,
     pendingSourceCount: () => sharedPlaybackState.pendingSources.size,

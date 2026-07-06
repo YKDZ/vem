@@ -10,6 +10,18 @@ export function shouldShowMockPaymentControls(input: {
   );
 }
 
+export function shouldShowPaymentCodeDevScan(input: {
+  dev: boolean;
+  mockDaemon: boolean;
+  flag: string | boolean | undefined;
+}): boolean {
+  return (
+    input.dev &&
+    input.mockDaemon &&
+    (input.flag === true || input.flag === "true")
+  );
+}
+
 export function shouldShowAdvancedMaintenanceConfig(input: {
   flag: string | boolean | undefined;
 }): boolean {

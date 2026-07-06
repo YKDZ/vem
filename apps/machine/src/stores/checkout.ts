@@ -33,6 +33,12 @@ export type ApplyTransactionOptions = {
 export type CheckoutTransactionObservation = {
   orderKey: string;
   nextAction: MachineOrderStatusNextAction;
+  pickupReminder?: {
+    stage?: string | null;
+    level?: string | null;
+    warningNo?: number | null;
+    reportedAt?: string | null;
+  } | null;
   restored: boolean;
 };
 
@@ -556,6 +562,14 @@ export const useCheckoutStore = defineStore("checkout", {
       this.transactionObservation = {
         orderKey: this.status.orderNo,
         nextAction,
+        pickupReminder: this.status.vending?.pickupReminder
+          ? {
+              stage: this.status.vending.pickupReminder.stage ?? null,
+              level: this.status.vending.pickupReminder.level ?? null,
+              warningNo: this.status.vending.pickupReminder.warningNo ?? null,
+              reportedAt: this.status.vending.pickupReminder.reportedAt ?? null,
+            }
+          : null,
         restored,
       };
 

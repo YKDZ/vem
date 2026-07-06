@@ -70,6 +70,7 @@ pub struct VendingCommandSummary {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PickupReminderSummary {
+    pub stage: Option<String>,
     pub level: String,
     pub message: String,
     pub warning_no: Option<u8>,

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   shouldShowAdvancedMaintenanceConfig,
   shouldShowMockPaymentControls,
+  shouldShowPaymentCodeDevScan,
 } from "./runtime-flags";
 
 describe("shouldShowMockPaymentControls", () => {
@@ -99,5 +100,48 @@ describe("shouldShowAdvancedMaintenanceConfig", () => {
     expect(shouldShowAdvancedMaintenanceConfig({ flag: "true" })).toBe(true);
     expect(shouldShowAdvancedMaintenanceConfig({ flag: false })).toBe(false);
     expect(shouldShowAdvancedMaintenanceConfig({ flag: "false" })).toBe(false);
+  });
+});
+
+describe("shouldShowPaymentCodeDevScan", () => {
+  it("is disabled by default even in dev mock mode", () => {
+    expect(
+      shouldShowPaymentCodeDevScan({
+        dev: true,
+        mockDaemon: true,
+        flag: undefined,
+      }),
+    ).toBe(false);
+  });
+
+  it("is enabled only for dev mock mode with an explicit true flag", () => {
+    expect(
+      shouldShowPaymentCodeDevScan({
+        dev: true,
+        mockDaemon: true,
+        flag: "true",
+      }),
+    ).toBe(true);
+    expect(
+      shouldShowPaymentCodeDevScan({
+        dev: false,
+        mockDaemon: true,
+        flag: "true",
+      }),
+    ).toBe(false);
+    expect(
+      shouldShowPaymentCodeDevScan({
+        dev: true,
+        mockDaemon: false,
+        flag: "true",
+      }),
+    ).toBe(false);
+    expect(
+      shouldShowPaymentCodeDevScan({
+        dev: true,
+        mockDaemon: true,
+        flag: "false",
+      }),
+    ).toBe(false);
   });
 });

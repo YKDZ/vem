@@ -8,7 +8,10 @@ import mascotListImage from "@/assets/home/mascot-list.png";
 import mascotTopImage from "@/assets/home/mascot-top-cutout.png";
 import PaymentQrCode from "@/components/PaymentQrCode.vue";
 import { useMaintenanceEntry } from "@/composables/useMaintenanceEntry";
-import { shouldShowMockPaymentControls } from "@/config/runtime-flags";
+import {
+  shouldShowMockPaymentControls,
+  shouldShowPaymentCodeDevScan,
+} from "@/config/runtime-flags";
 import { daemonClient } from "@/daemon/client";
 import KioskLayout from "@/layouts/KioskLayout.vue";
 import { resultKindFromNextAction, useCheckoutStore } from "@/stores/checkout";
@@ -48,8 +51,12 @@ const paymentCodeStatusCopy = computed(() => {
     ? "请打开支付宝或微信付款码，靠近设备扫码窗口。"
     : "请稍后重试，或返回选择二维码支付。";
 });
-const canUseDevScan = computed(
-  () => import.meta.env.DEV && daemonClient.currentConnection?.mock === true,
+const canUseDevScan = computed(() =>
+  shouldShowPaymentCodeDevScan({
+    dev: import.meta.env.DEV,
+    mockDaemon: daemonClient.currentConnection?.mock === true,
+    flag: import.meta.env.VITE_ENABLE_PAYMENT_CODE_DEV_SCAN,
+  }),
 );
 
 const confirmingExpiredPayment = computed(

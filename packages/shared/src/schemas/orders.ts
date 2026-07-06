@@ -640,10 +640,14 @@ export const machineOrderStatusResponseSchema = z.object({
       lastError: z.string().nullable(),
       pickupReminder: z
         .object({
+          stage: z
+            .enum(["outlet_opened", "pickup_waiting", "pickup_timeout_warning"])
+            .optional(),
           level: z.enum(["info", "warning", "urgent"]),
           message: z.string().min(1).max(256),
           warningNo: z.int().positive().nullable(),
           reportedAt: z.iso.datetime(),
+          remainingSeconds: z.int().nonnegative().nullable().optional(),
         })
         .nullable()
         .optional(),

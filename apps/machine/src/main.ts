@@ -2,6 +2,7 @@ import { createPinia } from "pinia";
 import { createApp } from "vue";
 
 import App from "./App.vue";
+import { installCustomerAudioCueConsumer } from "./audio-cues/customer-audio-consumer";
 import { installKioskBrowserGuards } from "./kiosk-browser-guards";
 import { router } from "./router";
 import "./style.css";
@@ -22,6 +23,7 @@ async function bootstrap(): Promise<void> {
 
   app.use(createPinia());
   app.use(router);
+  installCustomerAudioCueConsumer();
 
   await router.isReady();
   app.mount("#app");
