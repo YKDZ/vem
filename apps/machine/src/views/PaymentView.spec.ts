@@ -227,6 +227,7 @@ describe("PaymentView", () => {
       customerEventObservation: {
         phase: "awaiting_payment",
         orderCredential: "ORD-CANCEL-001",
+        journeyFact: "payment_requested",
         pickupCue: null,
         restored: false,
       },

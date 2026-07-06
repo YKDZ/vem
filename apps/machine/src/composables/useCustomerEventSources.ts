@@ -9,7 +9,7 @@ import {
 } from "vue";
 
 import type {
-  CustomerEventObservationPhase,
+  CustomerEventJourneyFact,
   CustomerEventPickupCue,
 } from "@/checkout/customer-checkout-view";
 import type { CustomerExperienceEvent } from "@/customer-events/events";
@@ -64,7 +64,7 @@ let lastVisionAudioCueState: VisionAudioCueState = "absent";
 let emittedTransactionSourceFacts = new Set<string>();
 let lastTransactionByOrderKey = new Map<
   string,
-  CustomerEventObservationPhase | null
+  CustomerEventJourneyFact | null
 >();
 let emittedIdleSourceFacts = new Set<string>();
 
@@ -205,28 +205,25 @@ function rememberTransactionEventHandled(
   );
 }
 
-function eventTypeForTerminalObservation(
-  phase: CustomerEventObservationPhase,
+function eventTypeForJourneyFact(
+  fact: CustomerEventJourneyFact | null,
 ): CustomerExperienceEvent["type"] | null {
-  switch (phase) {
-    case "none":
-    case "awaiting_payment":
-    case "dispensing":
-    case "success_result":
-    case "payment_failed_result":
-    case "payment_expired_result":
-    case "closed_result":
+  switch (fact) {
+    case null:
+    case "payment_requested":
       return null;
-    case "dispense_failed_result":
+    case "dispense_started":
+      return "dispensing.started";
+    case "dispense_succeeded":
+      return "dispense.succeeded";
+    case "dispense_failure":
       return "dispense.failed";
-    case "refund_pending_result":
+    case "refund_in_progress":
       return "refund.pending";
-    case "refund_completed_result":
+    case "refund_resolved":
       return "refund.completed";
-    case "manual_handling_result":
+    case "manual_support_required":
       return "manual_handling.required";
-    default:
-      return null;
   }
 }
 
@@ -253,27 +250,21 @@ function eventTypeForPickupCue(
 
 function rememberRestoredObservationEvents(input: {
   orderKey: string;
-  phase: CustomerEventObservationPhase;
+  journeyFact: CustomerEventJourneyFact | null;
   pickupCue: CustomerEventPickupCue | null;
 }): void {
-  if (input.phase === "dispensing") {
-    rememberTransactionEventHandled(input.orderKey, "dispensing.started");
-    const pickupEventType = eventTypeForPickupCue(input.pickupCue);
-    if (pickupEventType) {
-      rememberTransactionEventHandled(input.orderKey, pickupEventType);
-    }
-    return;
+  if (input.journeyFact === "payment_requested") {
+    rememberTransactionEventHandled(input.orderKey, "payment.prompt");
   }
 
-  if (input.phase === "success_result") {
-    rememberTransactionEventHandled(input.orderKey, "pickup.completed");
-    rememberTransactionEventHandled(input.orderKey, "dispense.succeeded");
-    return;
+  const journeyEventType = eventTypeForJourneyFact(input.journeyFact);
+  if (journeyEventType) {
+    rememberTransactionEventHandled(input.orderKey, journeyEventType);
   }
 
-  const terminalEventType = eventTypeForTerminalObservation(input.phase);
-  if (terminalEventType) {
-    rememberTransactionEventHandled(input.orderKey, terminalEventType);
+  const pickupEventType = eventTypeForPickupCue(input.pickupCue);
+  if (pickupEventType) {
+    rememberTransactionEventHandled(input.orderKey, pickupEventType);
   }
 }
 
@@ -310,19 +301,22 @@ export function installCustomerEventSources(
         const orderKey = observation.orderCredential;
         if (!orderKey) return;
 
-        const previousPhase = lastTransactionByOrderKey.get(orderKey) ?? null;
-        lastTransactionByOrderKey.set(orderKey, observation.phase);
+        const previousFact = lastTransactionByOrderKey.get(orderKey) ?? null;
+        lastTransactionByOrderKey.set(
+          orderKey,
+          observation.journeyFact,
+        );
         if (observation.restored) {
           rememberRestoredObservationEvents({
             orderKey,
-            phase: observation.phase,
+            journeyFact: observation.journeyFact,
             pickupCue: observation.pickupCue,
           });
           return;
         }
 
-        if (observation.phase === "awaiting_payment") {
-          if (previousPhase === "awaiting_payment") return;
+        if (observation.journeyFact === "payment_requested") {
+          if (previousFact === "payment_requested") return;
           emitTransactionEventOnce({
             type: "payment.prompt",
             orderKey,
@@ -330,8 +324,8 @@ export function installCustomerEventSources(
           return;
         }
 
-        if (observation.phase === "dispensing") {
-          if (previousPhase === "awaiting_payment") {
+        if (observation.journeyFact === "dispense_started") {
+          if (previousFact === "payment_requested") {
             emitTransactionEventOnce({
               type: "payment.succeeded",
               orderKey,
@@ -353,23 +347,20 @@ export function installCustomerEventSources(
           return;
         }
 
-        const terminalEventType = eventTypeForTerminalObservation(
-          observation.phase,
-        );
-        if (observation.phase === "success_result") {
+        const pickupEventType = eventTypeForPickupCue(observation.pickupCue);
+        if (pickupEventType) {
           emitTransactionEventOnce({
-            type: "pickup.completed",
+            type: pickupEventType,
             orderKey,
           });
-          emitTransactionEventOnce({
-            type: "dispense.succeeded",
-            orderKey,
-          });
-          return;
         }
-        if (terminalEventType) {
+
+        const journeyEventType = eventTypeForJourneyFact(
+          observation.journeyFact,
+        );
+        if (journeyEventType) {
           emitTransactionEventOnce({
-            type: terminalEventType,
+            type: journeyEventType,
             orderKey,
           });
         }

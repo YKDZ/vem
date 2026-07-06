@@ -112,9 +112,19 @@ export type CustomerEventPickupCue =
   | "urgent"
   | "completed";
 
+export type CustomerEventJourneyFact =
+  | "payment_requested"
+  | "dispense_started"
+  | "dispense_succeeded"
+  | "dispense_failure"
+  | "refund_in_progress"
+  | "refund_resolved"
+  | "manual_support_required";
+
 export type CustomerEventObservation = {
   phase: CustomerEventObservationPhase;
   orderCredential: string | null;
+  journeyFact: CustomerEventJourneyFact | null;
   pickupCue: CustomerEventPickupCue | null;
   restored: boolean;
 };
@@ -463,15 +473,38 @@ function customerEventPhaseForResult(
   }
 }
 
+function customerEventJourneyFactForResult(
+  resultKind: CheckoutResultKind,
+): CustomerEventJourneyFact | null {
+  switch (resultKind) {
+    case "success":
+      return "dispense_succeeded";
+    case "dispense_failed":
+      return "dispense_failure";
+    case "refund_pending":
+      return "refund_in_progress";
+    case "refunded":
+      return "refund_resolved";
+    case "manual_handling":
+      return "manual_support_required";
+    case "payment_failed":
+    case "payment_expired":
+    case "closed":
+      return null;
+  }
+}
+
 function customerEventObservation(input: {
   phase: CustomerEventObservationPhase;
   orderCredential: string | null;
+  journeyFact?: CustomerEventJourneyFact | null;
   pickupCue?: CustomerEventPickupCue | null;
   restored: boolean;
 }): CustomerEventObservation {
   return {
     phase: input.phase,
     orderCredential: input.orderCredential,
+    journeyFact: input.journeyFact ?? null,
     pickupCue: input.pickupCue ?? null,
     restored: input.restored,
   };
@@ -535,6 +568,7 @@ export function projectCustomerCheckoutView(
       customerEventObservation: customerEventObservation({
         phase: "awaiting_payment",
         orderCredential: transaction.orderNo,
+        journeyFact: "payment_requested",
         restored: input.restored,
       }),
     };
@@ -556,6 +590,7 @@ export function projectCustomerCheckoutView(
       customerEventObservation: customerEventObservation({
         phase: "dispensing",
         orderCredential: transaction.orderNo,
+        journeyFact: "dispense_started",
         pickupCue: pickupCueForReminder(pickupReminder),
         restored: input.restored,
       }),
@@ -585,6 +620,7 @@ export function projectCustomerCheckoutView(
     customerEventObservation: customerEventObservation({
       phase: customerEventPhaseForResult(resultKind),
       orderCredential: transaction.orderNo,
+      journeyFact: customerEventJourneyFactForResult(resultKind),
       pickupCue: resultKind === "success" ? "completed" : null,
       restored: input.restored,
     }),

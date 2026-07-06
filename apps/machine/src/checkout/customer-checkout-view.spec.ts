@@ -132,7 +132,7 @@ describe("Customer Checkout View Projection", () => {
     });
   });
 
-  it("exposes a narrow customer event observation without raw next action", () => {
+  it("exposes customer journey facts for event observation without raw next action", () => {
     const payment = projectCustomerCheckoutView({
       transaction: awaitingPaymentTransaction(),
       nowMs: new Date("2026-06-11T06:16:32.320Z").getTime(),
@@ -165,18 +165,21 @@ describe("Customer Checkout View Projection", () => {
     expect(payment.customerEventObservation).toEqual({
       phase: "awaiting_payment",
       orderCredential: "ORD-PAYMENT-001",
+      journeyFact: "payment_requested",
       pickupCue: null,
       restored: true,
     });
     expect(dispensing.customerEventObservation).toEqual({
       phase: "dispensing",
       orderCredential: "ORD-DISPENSING-001",
+      journeyFact: "dispense_started",
       pickupCue: "urgent",
       restored: false,
     });
     expect(refunded.customerEventObservation).toEqual({
       phase: "refund_completed_result",
       orderCredential: "ORD-REFUNDED-001",
+      journeyFact: "refund_resolved",
       pickupCue: null,
       restored: false,
     });

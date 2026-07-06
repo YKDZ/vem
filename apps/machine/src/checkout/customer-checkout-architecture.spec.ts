@@ -55,4 +55,18 @@ describe("customer checkout projection architecture", () => {
     expect(resultView).not.toContain("@/daemon/client");
     expect(resultView).not.toContain("useConnectivityStore");
   });
+
+  it("keeps transaction customer event sources on projection-owned observations", () => {
+    const customerEventSources = readSource(
+      "src/composables/useCustomerEventSources.ts",
+    );
+
+    expect(customerEventSources).toContain("customerEventObservation");
+    expect(customerEventSources).not.toContain("TransactionSnapshot");
+    expect(customerEventSources).not.toMatch(/\bnextAction\b/);
+    expect(customerEventSources).not.toMatch(/\bwait_payment\b/);
+    expect(customerEventSources).not.toMatch(/\bdispense_failed_result\b/);
+    expect(customerEventSources).not.toMatch(/\brefund_pending_result\b/);
+    expect(customerEventSources).not.toMatch(/\bmanual_handling_result\b/);
+  });
 });
