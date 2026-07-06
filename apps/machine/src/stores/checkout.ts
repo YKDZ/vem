@@ -219,15 +219,6 @@ export const useCheckoutStore = defineStore("checkout", {
         loading: state.loading,
         readiness: customerCheckoutReadinessContext(),
       }).customerEventObservation,
-    remainingSeconds: (state): number =>
-      projectCustomerCheckoutView({
-        transaction: state.transaction,
-        nowMs: state.nowMs,
-        dismissedTerminalOrderNos: state.dismissedTerminalOrderNos,
-        restored: state.lastTransactionRestored,
-        loading: state.loading,
-        readiness: customerCheckoutReadinessContext(),
-      }).payment?.remainingSeconds ?? 0,
     canCreateOrder: (state): boolean => {
       const selectedItem = latestSaleViewItem(state.selectedItem);
       return Boolean(

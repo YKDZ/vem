@@ -29,4 +29,13 @@ describe("customer checkout projection architecture", () => {
     expect(startup).not.toMatch(/next\s*===\s*"payment_failed"/);
     expect(startup).not.toMatch(/next\s*===\s*"refund_pending"/);
   });
+
+  it("keeps payment-stage callers on the unified checkout view", () => {
+    const paymentView = readSource("src/views/PaymentView.vue");
+    const checkoutStore = readSource("src/stores/checkout.ts");
+
+    expect(paymentView).toContain("customerCheckoutView");
+    expect(paymentView).not.toContain("checkoutStore.remainingSeconds");
+    expect(checkoutStore).not.toMatch(/\bremainingSeconds:\s*\(/);
+  });
 });
