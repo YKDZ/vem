@@ -12,7 +12,9 @@ const checkoutStore = useCheckoutStore();
 const authCode = ref("");
 const submitting = ref(false);
 
-const orderNo = computed(() => checkoutStore.currentOrder?.orderNo ?? null);
+const orderNo = computed(
+  () => checkoutStore.customerCheckoutView.orderCredential,
+);
 const mockDaemon = computed(
   () => daemonClient.currentConnection?.mock === true,
 );

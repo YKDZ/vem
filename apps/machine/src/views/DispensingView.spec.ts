@@ -168,8 +168,6 @@ describe("DispensingView", () => {
         pickupReminder: null,
       },
     };
-    checkoutStore.currentOrder = null;
-    checkoutStore.status = null;
 
     await mountView();
 
@@ -207,8 +205,6 @@ describe("DispensingView", () => {
     getCurrentTransactionMock.mockResolvedValue(transaction);
     const checkoutStore = useCheckoutStore();
     checkoutStore.transaction = transaction;
-    checkoutStore.currentOrder = null;
-    checkoutStore.status = null;
 
     const host = await mountView();
 

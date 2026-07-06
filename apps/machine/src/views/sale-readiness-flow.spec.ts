@@ -947,7 +947,7 @@ describe("sale readiness UI flow", () => {
       params: { catalogKey: item.catalogKey },
     });
     expect(useCheckoutStore().selectedItem).toBeNull();
-    expect(useCheckoutStore().currentOrder).toBeNull();
+    expect(useCheckoutStore().customerCheckoutView.stage).toBe("none");
   });
 
   it("leaves the catalog when readiness refresh requires maintenance", async () => {
@@ -1243,7 +1243,7 @@ describe("sale readiness UI flow", () => {
       query: { variantId: silhouettedVariant.variantId },
     });
     expect(useCheckoutStore().selectedItem).toBeNull();
-    expect(useCheckoutStore().currentOrder).toBeNull();
+    expect(useCheckoutStore().customerCheckoutView.stage).toBe("none");
 
     const sizeMButton = Array.from(host.querySelectorAll("button")).find(
       (button) => button.textContent?.trim() === "M",

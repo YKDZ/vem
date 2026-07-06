@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { useRoute, useRouter } from "vue-router";
+import { useRouter } from "vue-router";
 
 import type {
   CustomerCheckoutResultDetailIntent,
@@ -20,7 +20,6 @@ import { useCatalogStore } from "@/stores/catalog";
 import { useCheckoutStore } from "@/stores/checkout";
 import { useConnectivityStore } from "@/stores/connectivity";
 
-const route = useRoute();
 const router = useRouter();
 const checkoutStore = useCheckoutStore();
 const catalogStore = useCatalogStore();
@@ -99,20 +98,20 @@ const checkoutView = computed(() => checkoutStore.customerCheckoutView);
 const projectedResult = computed(() =>
   checkoutView.value.stage === "result" ? checkoutView.value.result : null,
 );
-const kind = computed(
-  () =>
-    projectedResult.value?.kind ??
-    (String(route.params.kind) as CheckoutResultKind),
+const kind = computed<CheckoutResultKind | null>(
+  () => projectedResult.value?.kind ?? null,
 );
-const displayIntent = computed<CustomerCheckoutResultDisplayIntent>(
-  () => projectedResult.value?.displayIntent ?? "manual_handling",
+const displayIntent = computed<CustomerCheckoutResultDisplayIntent | null>(
+  () => projectedResult.value?.displayIntent ?? null,
 );
-const copy = computed(() => copyMap[displayIntent.value]);
+const copy = computed(() =>
+  displayIntent.value ? copyMap[displayIntent.value] : null,
+);
 const isDispenseFailureResult = computed(
   () => displayIntent.value === "dispense_failure",
 );
 const isDispenseResolutionResult = computed(() =>
-  DISPENSE_RESOLUTION_RESULT_KINDS.has(kind.value),
+  kind.value ? DISPENSE_RESOLUTION_RESULT_KINDS.has(kind.value) : false,
 );
 const resultReadinessError = ref<string | null>(null);
 const resultReadinessConfirmed = ref(false);
@@ -265,7 +264,10 @@ onBeforeUnmount(stopAutoReturn);
 
 <template>
   <KioskLayout>
-    <section v-if="isDispenseFailureResult" class="dispense-failure-page">
+    <section v-if="!projectedResult" class="result-empty-state">
+      <p>正在恢复页面，请稍候。</p>
+    </section>
+    <section v-else-if="isDispenseFailureResult" class="dispense-failure-page">
       <div class="failure-mist failure-mist-left"></div>
       <div class="failure-mist failure-mist-right"></div>
 
@@ -369,7 +371,7 @@ onBeforeUnmount(stopAutoReturn);
         class="failure-slogan pointer-events-none"
       />
     </section>
-    <section v-else class="dispense-result-page">
+    <section v-else-if="copy" class="dispense-result-page">
       <div class="result-mist result-mist-left"></div>
       <div class="result-mist result-mist-right"></div>
 

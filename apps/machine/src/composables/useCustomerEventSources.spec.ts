@@ -578,24 +578,6 @@ describe("customer event sources", () => {
     ]);
   });
 
-  it("does not consume legacy raw transaction observations", () => {
-    const observed: CustomerExperienceEvent[] = [];
-    const unsubscribe = onCustomerEvent((event) => {
-      observed.push(event);
-    });
-    installCustomerEventSources();
-
-    useCheckoutStore().transactionObservation = {
-      orderKey: "VEM-LEGACY-RAW-OBSERVATION",
-      nextAction: "wait_payment",
-      pickupReminder: null,
-      restored: false,
-    };
-
-    unsubscribe();
-    expect(observed).toEqual([]);
-  });
-
   it("does not emit a payment prompt from a restored payment-waiting current transaction", () => {
     const observed: CustomerExperienceEvent[] = [];
     const unsubscribe = onCustomerEvent((event) => {

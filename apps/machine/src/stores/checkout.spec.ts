@@ -38,12 +38,7 @@ import type {
 } from "@/types/catalog";
 
 import { useCatalogStore } from "./catalog";
-import {
-  isTerminalResultNextAction,
-  normalizeNextAction,
-  resultKindFromNextAction,
-  useCheckoutStore,
-} from "./checkout";
+import { useCheckoutStore } from "./checkout";
 import { useConnectivityStore } from "./connectivity";
 
 beforeEach(() => {
@@ -248,25 +243,6 @@ function applyNetworkSaleReady(): void {
     },
   });
 }
-
-describe("checkout helpers", () => {
-  it("normalizes unknown next action to wait_payment", () => {
-    expect(normalizeNextAction("weird")).toBe("wait_payment");
-  });
-
-  it("maps result next actions", () => {
-    expect(resultKindFromNextAction("success")).toBe("success");
-    expect(resultKindFromNextAction("wait_payment")).toBeNull();
-    expect(isTerminalResultNextAction("payment_failed")).toBe(true);
-  });
-
-  it("maps unknown dispense projections to manual handling", () => {
-    expect(normalizeNextAction("result_unknown")).toBe("manual_handling");
-    expect(
-      resultKindFromNextAction(normalizeNextAction("result_unknown")),
-    ).toBe("manual_handling");
-  });
-});
 
 describe("checkout store", () => {
   it("loads payment options from daemon client", async () => {
@@ -1036,9 +1012,8 @@ describe("checkout store", () => {
     expect(snapshot?.nextAction).toBe("closed");
     expect(cancelOrderMock).toHaveBeenCalledWith("ORD-001");
     expect(getSaleViewMock).toHaveBeenCalledOnce();
-    expect(store.currentOrder).toBeNull();
-    expect(store.status).toBeNull();
-    expect(store.flowStep).toBe("idle");
+    expect(store.transaction).toBeNull();
+    expect(store.customerCheckoutView.stage).toBe("none");
   });
 
   it("cancels using the current transaction credential over stale current order state", async () => {
@@ -1061,15 +1036,6 @@ describe("checkout store", () => {
     store.applyTransaction(
       makeTransactionSnapshot({ orderNo: "ORD-TX-ACTIVE" }),
     );
-    store.currentOrder = {
-      orderId: "stale-order-id",
-      orderNo: "ORD-STALE",
-      paymentNo: "PAY-STALE",
-      paymentUrl: null,
-      expiresAt: "2026-01-01T00:05:00Z",
-      totalAmountCents: 100,
-      paymentProviderCode: "alipay",
-    };
 
     await store.cancelCurrentOrder();
 
@@ -1098,10 +1064,9 @@ describe("checkout store", () => {
 
     await store.cancelCurrentOrder({ preserveSelectedItem: true });
 
-    expect(store.currentOrder).toBeNull();
-    expect(store.status).toBeNull();
+    expect(store.transaction).toBeNull();
     expect(store.selectedItem?.catalogKey).toBe("product:SOCK-001");
-    expect(store.flowStep).toBe("detail");
+    expect(store.customerCheckoutView.stage).toBe("none");
   });
 
   it("ignores a dismissed terminal current transaction", async () => {
@@ -1114,7 +1079,7 @@ describe("checkout store", () => {
 
     const store = useCheckoutStore();
     store.applyTransaction(failedTransaction);
-    expect(store.flowStep).toBe("result");
+    expect(store.customerCheckoutView.stage).toBe("result");
 
     store.dismissCurrentTerminalTransaction();
     store.reset();
@@ -1187,15 +1152,15 @@ describe("checkout store", () => {
     const store = useCheckoutStore();
     await store.refreshCurrentTransaction();
 
-    expect(store.status?.paymentCodeAttempt).toMatchObject({
-      status: "reversed",
-      canRetry: true,
-      message: "本次付款码交易已撤销，请刷新付款码后重试",
+    expect(store.customerCheckoutView.payment?.display).toMatchObject({
+      kind: "payment_code",
+      state: "retryable",
+      attemptStatus: "reversed",
     });
     expect(store.paymentCodeMessage).toBe(
       "本次付款码交易已撤销，请刷新付款码后重试",
     );
-    expect(store.flowStep).toBe("payment");
+    expect(store.customerCheckoutView.stage).toBe("payment");
   });
 
   it("keeps the current order after one failed payment-code scan attempt", async () => {
@@ -1224,15 +1189,19 @@ describe("checkout store", () => {
     );
     await store.refreshCurrentTransaction();
 
-    expect(store.currentOrder?.orderNo).toBe("ORD-001");
-    expect(store.status?.nextAction).toBe("wait_payment");
-    expect(store.status?.paymentCodeAttempt).toMatchObject({
-      status: "failed",
-      canRetry: true,
-      message: "付款码已失效，请刷新付款码后重试",
+    expect(store.customerCheckoutView).toMatchObject({
+      stage: "payment",
+      orderCredential: "ORD-001",
+      payment: {
+        display: {
+          kind: "payment_code",
+          state: "retryable",
+          attemptStatus: "failed",
+        },
+      },
     });
     expect(store.paymentCodeLastMasked).toBe("2876****4394");
-    expect(store.flowStep).toBe("payment");
+    expect(store.paymentCodeMessage).toBe("付款码已失效，请刷新付款码后重试");
   });
 
   it("keeps the current order while an unknown payment-code attempt is being queried", async () => {
@@ -1261,14 +1230,18 @@ describe("checkout store", () => {
     );
     await store.refreshCurrentTransaction();
 
-    expect(store.currentOrder?.orderNo).toBe("ORD-001");
-    expect(store.status?.nextAction).toBe("wait_payment");
-    expect(store.status?.paymentCodeAttempt).toMatchObject({
-      status: "querying",
-      canRetry: false,
-      message: "正在确认支付结果",
+    expect(store.customerCheckoutView).toMatchObject({
+      stage: "payment",
+      orderCredential: "ORD-001",
+      payment: {
+        display: {
+          kind: "payment_code",
+          state: "in_flight",
+          attemptStatus: "querying",
+        },
+      },
     });
-    expect(store.flowStep).toBe("payment");
+    expect(store.paymentCodeMessage).toBe("正在确认支付结果");
   });
 
   it("drops concurrent dev payment submissions", async () => {
@@ -1284,15 +1257,7 @@ describe("checkout store", () => {
     });
 
     const store = useCheckoutStore();
-    store.currentOrder = {
-      orderId: "550e8400-e29b-41d4-a716-446655440010",
-      orderNo: "ORD-001",
-      paymentNo: "PAY-001",
-      paymentUrl: null,
-      expiresAt: "2026-01-01T00:05:00Z",
-      totalAmountCents: 100,
-      paymentProviderCode: "alipay",
-    };
+    store.applyTransaction(makeTransactionSnapshot());
 
     const first = store.submitDevPaymentCode("28763443825664394");
     const second = await store.submitDevPaymentCode("28763443825664395");

@@ -670,6 +670,30 @@ describe("ResultView", () => {
     expect(host.textContent).not.toContain("返回首页");
   });
 
+  it("does not render route-param result copy after the projected result is cleared", async () => {
+    routeParams.kind = "manual_handling";
+    const checkoutStore = useCheckoutStore();
+    checkoutStore.applyTransaction(terminalUnknownDispenseTransaction());
+    applySaleReadiness(true);
+
+    const host = await mountView();
+
+    expect(host.textContent).toContain("等待人工处理");
+    expect(host.textContent).toContain("订单凭证 ORD-UNKNOWN-001");
+
+    checkoutStore.reset();
+    await nextTick();
+
+    expect(checkoutStore.customerCheckoutView).toMatchObject({
+      stage: "none",
+      result: null,
+    });
+    expect(host.textContent).toContain("正在恢复页面");
+    expect(host.textContent).not.toContain("等待人工处理");
+    expect(host.textContent).not.toContain("订单凭证 ORD-UNKNOWN-001");
+    expect(host.textContent).not.toContain("出货结果待确认");
+  });
+
   it("shows refund processing credential and keeps the customer waiting", async () => {
     routeParams.kind = "refund_pending";
     const transaction = refundPendingTransaction();

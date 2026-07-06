@@ -6,6 +6,11 @@ import type {
   TransactionSnapshot,
 } from "./schemas";
 
+import {
+  projectCustomerCheckoutView,
+  type CustomerCheckoutRouteTarget,
+} from "@/checkout/customer-checkout-view";
+
 export type StartupRoute =
   | "/maintenance"
   | "/bring-up"
@@ -14,6 +19,15 @@ export type StartupRoute =
   | "/payment"
   | "/dispensing"
   | { name: "result"; params: { kind: string } };
+
+function startupRouteFromProjectionTarget(
+  target: CustomerCheckoutRouteTarget,
+): StartupRoute {
+  if ("path" in target) return target.path;
+  if (target.name === "payment") return "/payment";
+  if (target.name === "catalog") return "/catalog";
+  return target;
+}
 
 export function routeForStartup(input: {
   daemonAvailable: boolean;
@@ -24,30 +38,27 @@ export function routeForStartup(input: {
   transaction: TransactionSnapshot | null;
 }): StartupRoute {
   if (!input.daemonAvailable) return "/maintenance";
-  const next = input.transaction?.nextAction;
-  if (next === "submit_payment" || next === "wait_payment") {
-    return "/payment";
-  }
-
-  if (next === "dispensing") {
-    return "/dispensing";
-  }
-
-  if (next === "result_unknown") {
-    return { name: "result", params: { kind: "manual_handling" } };
-  }
-
-  if (
-    next === "success" ||
-    next === "payment_failed" ||
-    next === "payment_expired" ||
-    next === "dispense_failed" ||
-    next === "refund_pending" ||
-    next === "refunded" ||
-    next === "manual_handling" ||
-    next === "closed"
-  ) {
-    return { name: "result", params: { kind: next } };
+  const transactionView = projectCustomerCheckoutView({
+    transaction: input.transaction,
+    nowMs: Date.now(),
+    dismissedTerminalOrderNos: [],
+    restored: true,
+    readiness: {
+      saleReady: input.ready?.canSell === true,
+      suggestedRoute:
+        input.ready?.suggestedRoute === "maintenance"
+          ? "maintenance"
+          : input.ready?.suggestedRoute === "catalog"
+            ? "catalog"
+            : "offline",
+      requiresMaintenanceReview:
+        input.ready?.suggestedRoute === "maintenance" ||
+        input.ready?.blockingCodes.includes("WHOLE_MACHINE_HARDWARE_FAULT") ===
+          true,
+    },
+  });
+  if (transactionView.stage !== "none") {
+    return startupRouteFromProjectionTarget(transactionView.routeTarget);
   }
 
   const bringUpReady =
