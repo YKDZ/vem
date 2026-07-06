@@ -578,6 +578,24 @@ describe("customer event sources", () => {
     ]);
   });
 
+  it("does not consume legacy raw transaction observations", () => {
+    const observed: CustomerExperienceEvent[] = [];
+    const unsubscribe = onCustomerEvent((event) => {
+      observed.push(event);
+    });
+    installCustomerEventSources();
+
+    useCheckoutStore().transactionObservation = {
+      orderKey: "VEM-LEGACY-RAW-OBSERVATION",
+      nextAction: "wait_payment",
+      pickupReminder: null,
+      restored: false,
+    };
+
+    unsubscribe();
+    expect(observed).toEqual([]);
+  });
+
   it("does not emit a payment prompt from a restored payment-waiting current transaction", () => {
     const observed: CustomerExperienceEvent[] = [];
     const unsubscribe = onCustomerEvent((event) => {
@@ -614,6 +632,42 @@ describe("customer event sources", () => {
       }),
       { restored: true },
     );
+
+    unsubscribe();
+    expect(observed).toEqual([]);
+  });
+
+  it("does not replay dispensing or pickup cues when a restored dispensing transaction refreshes", () => {
+    const observed: CustomerExperienceEvent[] = [];
+    const unsubscribe = onCustomerEvent((event) => {
+      observed.push(event);
+    });
+    installCustomerEventSources();
+
+    const checkoutStore = useCheckoutStore();
+    const dispensingSnapshot = transactionSnapshot({
+      paymentStatus: "succeeded",
+      orderStatus: "dispensing",
+      nextAction: "dispensing",
+      vending: {
+        commandNo: "VEND-197",
+        status: "dispensing",
+        lastError: null,
+        pickupReminder: {
+          stage: "pickup_timeout_warning",
+          level: "warning",
+          message: "请尽快取走商品",
+          warningNo: 1,
+          reportedAt: "2026-07-05T12:35:20.000Z",
+        },
+      },
+      updatedAt: "2026-07-05T12:35:20.000Z",
+    });
+    checkoutStore.applyTransaction(dispensingSnapshot, { restored: true });
+    checkoutStore.applyTransaction({
+      ...dispensingSnapshot,
+      updatedAt: "2026-07-05T12:35:22.000Z",
+    });
 
     unsubscribe();
     expect(observed).toEqual([]);
@@ -662,6 +716,57 @@ describe("customer event sources", () => {
         }),
         { restored: true },
       );
+    }
+
+    unsubscribe();
+    expect(observed).toEqual([]);
+  });
+
+  it("does not replay terminal result cues when restored terminal transactions refresh", () => {
+    const observed: CustomerExperienceEvent[] = [];
+    const unsubscribe = onCustomerEvent((event) => {
+      observed.push(event);
+    });
+    installCustomerEventSources();
+
+    const checkoutStore = useCheckoutStore();
+    const restoredTerminalResults = [
+      ["success", "fulfilled", "succeeded"],
+      ["dispense_failed", "dispense_failed", "failed"],
+      ["refund_pending", "refund_pending", "failed"],
+      ["refunded", "refunded", "failed"],
+      ["manual_handling", "manual_handling", "result_unknown"],
+    ] as const;
+
+    for (const [
+      nextAction,
+      orderStatus,
+      vendingStatus,
+    ] of restoredTerminalResults) {
+      const terminalSnapshot = transactionSnapshot({
+        orderId: `order-197-refresh-${nextAction}`,
+        orderNo: `VEM-ORDER-197-REFRESH-${nextAction}`,
+        paymentStatus:
+          nextAction === "refund_pending"
+            ? "refund_pending"
+            : nextAction === "refunded"
+              ? "refunded"
+              : "succeeded",
+        orderStatus,
+        nextAction,
+        vending: {
+          commandNo: `VEND-197-REFRESH-${nextAction}`,
+          status: vendingStatus,
+          lastError: vendingStatus === "failed" ? "slot jammed" : null,
+          pickupReminder: null,
+        },
+        updatedAt: "2026-07-05T12:36:30.000Z",
+      });
+      checkoutStore.applyTransaction(terminalSnapshot, { restored: true });
+      checkoutStore.applyTransaction({
+        ...terminalSnapshot,
+        updatedAt: "2026-07-05T12:36:32.000Z",
+      });
     }
 
     unsubscribe();

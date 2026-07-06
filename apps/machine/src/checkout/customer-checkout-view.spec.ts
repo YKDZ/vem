@@ -132,6 +132,62 @@ describe("Customer Checkout View Projection", () => {
     });
   });
 
+  it("exposes a narrow customer event observation without raw next action", () => {
+    const payment = projectCustomerCheckoutView({
+      transaction: awaitingPaymentTransaction(),
+      nowMs: new Date("2026-06-11T06:16:32.320Z").getTime(),
+      dismissedTerminalOrderNos: [],
+      restored: true,
+    });
+    const dispensing = projectCustomerCheckoutView({
+      transaction: dispensingTransaction(),
+      nowMs: new Date("2026-06-11T06:16:32.320Z").getTime(),
+      dismissedTerminalOrderNos: [],
+      restored: false,
+    });
+    const refunded = projectCustomerCheckoutView({
+      transaction: successfulTransaction({
+        orderNo: "ORD-REFUNDED-001",
+        nextAction: "refunded",
+        orderStatus: "refunded",
+        paymentStatus: "refunded",
+        vending: {
+          commandNo: "CMD-REFUNDED-001",
+          status: "failed",
+          lastError: "slot jammed",
+        },
+      }),
+      nowMs: new Date("2026-06-11T06:16:32.320Z").getTime(),
+      dismissedTerminalOrderNos: [],
+      restored: false,
+    });
+
+    expect(payment.customerEventObservation).toEqual({
+      phase: "awaiting_payment",
+      orderCredential: "ORD-PAYMENT-001",
+      pickupCue: null,
+      restored: true,
+    });
+    expect(dispensing.customerEventObservation).toEqual({
+      phase: "dispensing",
+      orderCredential: "ORD-DISPENSING-001",
+      pickupCue: "urgent",
+      restored: false,
+    });
+    expect(refunded.customerEventObservation).toEqual({
+      phase: "refund_completed_result",
+      orderCredential: "ORD-REFUNDED-001",
+      pickupCue: null,
+      restored: false,
+    });
+    expect(
+      Object.prototype.hasOwnProperty.call(
+        dispensing.customerEventObservation,
+        "nextAction",
+      ),
+    ).toBe(false);
+  });
+
   it("projects in-flight payment-code attempts as not cancelable", () => {
     const view = projectCustomerCheckoutView({
       transaction: awaitingPaymentTransaction({

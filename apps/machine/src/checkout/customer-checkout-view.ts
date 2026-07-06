@@ -94,6 +94,33 @@ export type CustomerCheckoutResultView = {
   returnPolicy: CustomerCheckoutReturnPolicy;
 };
 
+export type CustomerEventObservationPhase =
+  | "none"
+  | "awaiting_payment"
+  | "dispensing"
+  | "success_result"
+  | "payment_failed_result"
+  | "payment_expired_result"
+  | "dispense_failed_result"
+  | "refund_pending_result"
+  | "refund_completed_result"
+  | "manual_handling_result"
+  | "closed_result";
+
+export type CustomerEventPickupCue =
+  | "outlet_opened"
+  | "waiting"
+  | "warning"
+  | "urgent"
+  | "completed";
+
+export type CustomerEventObservation = {
+  phase: CustomerEventObservationPhase;
+  orderCredential: string | null;
+  pickupCue: CustomerEventPickupCue | null;
+  restored: boolean;
+};
+
 export type CustomerCheckoutView =
   | {
       stage: "none";
@@ -103,6 +130,7 @@ export type CustomerCheckoutView =
       dispensing: null;
       result: null;
       restored: boolean;
+      customerEventObservation: CustomerEventObservation;
     }
   | {
       stage: "payment";
@@ -112,6 +140,7 @@ export type CustomerCheckoutView =
       dispensing: null;
       result: null;
       restored: boolean;
+      customerEventObservation: CustomerEventObservation;
     }
   | {
       stage: "dispensing";
@@ -121,6 +150,7 @@ export type CustomerCheckoutView =
       dispensing: CustomerCheckoutDispensingView;
       result: null;
       restored: boolean;
+      customerEventObservation: CustomerEventObservation;
     }
   | {
       stage: "result";
@@ -130,6 +160,7 @@ export type CustomerCheckoutView =
       dispensing: null;
       result: CustomerCheckoutResultView;
       restored: boolean;
+      customerEventObservation: CustomerEventObservation;
     };
 
 export type CustomerCheckoutReadinessContext = {
@@ -382,6 +413,62 @@ function dispensingPickupReminder(
   };
 }
 
+function pickupCueForReminder(
+  reminder: CustomerCheckoutDispensingView["pickupReminder"],
+): CustomerEventPickupCue | null {
+  switch (reminder?.stage) {
+    case "outlet_opened":
+      return "outlet_opened";
+    case "pickup_waiting":
+      return "waiting";
+    case "pickup_completed":
+      return "completed";
+    case "pickup_timeout_warning":
+      return reminder.urgency === "urgent" || (reminder.warningNo ?? 0) >= 2
+        ? "urgent"
+        : "warning";
+    default:
+      return null;
+  }
+}
+
+function customerEventPhaseForResult(
+  resultKind: CheckoutResultKind,
+): CustomerEventObservationPhase {
+  switch (resultKind) {
+    case "success":
+      return "success_result";
+    case "payment_failed":
+      return "payment_failed_result";
+    case "payment_expired":
+      return "payment_expired_result";
+    case "dispense_failed":
+      return "dispense_failed_result";
+    case "refund_pending":
+      return "refund_pending_result";
+    case "refunded":
+      return "refund_completed_result";
+    case "manual_handling":
+      return "manual_handling_result";
+    case "closed":
+      return "closed_result";
+  }
+}
+
+function customerEventObservation(input: {
+  phase: CustomerEventObservationPhase;
+  orderCredential: string | null;
+  pickupCue?: CustomerEventPickupCue | null;
+  restored: boolean;
+}): CustomerEventObservation {
+  return {
+    phase: input.phase,
+    orderCredential: input.orderCredential,
+    pickupCue: input.pickupCue ?? null,
+    restored: input.restored,
+  };
+}
+
 export function projectCustomerCheckoutView(
   input: ProjectCustomerCheckoutViewInput,
 ): CustomerCheckoutView {
@@ -399,6 +486,11 @@ export function projectCustomerCheckoutView(
       dispensing: null,
       result: null,
       restored: input.restored,
+      customerEventObservation: customerEventObservation({
+        phase: "none",
+        orderCredential: null,
+        restored: input.restored,
+      }),
     };
   }
 
@@ -432,10 +524,16 @@ export function projectCustomerCheckoutView(
         cancelDisabledReason: disabledReason,
         display,
       },
+      customerEventObservation: customerEventObservation({
+        phase: "awaiting_payment",
+        orderCredential: transaction.orderNo,
+        restored: input.restored,
+      }),
     };
   }
 
   if (transaction.nextAction === "dispensing") {
+    const pickupReminder = dispensingPickupReminder(transaction);
     return {
       stage: "dispensing",
       routeTarget: projectRouteTarget(transaction.nextAction),
@@ -443,10 +541,16 @@ export function projectCustomerCheckoutView(
       payment: null,
       dispensing: {
         customerVisibleError: customerVisibleDispensingError(transaction),
-        pickupReminder: dispensingPickupReminder(transaction),
+        pickupReminder,
       },
       result: null,
       restored: input.restored,
+      customerEventObservation: customerEventObservation({
+        phase: "dispensing",
+        orderCredential: transaction.orderNo,
+        pickupCue: pickupCueForReminder(pickupReminder),
+        restored: input.restored,
+      }),
     };
   }
 
@@ -470,5 +574,11 @@ export function projectCustomerCheckoutView(
           : exceptionalReturnPolicy(resultKind, input.readiness),
     },
     restored: input.restored,
+    customerEventObservation: customerEventObservation({
+      phase: customerEventPhaseForResult(resultKind),
+      orderCredential: transaction.orderNo,
+      pickupCue: resultKind === "success" ? "completed" : null,
+      restored: input.restored,
+    }),
   };
 }

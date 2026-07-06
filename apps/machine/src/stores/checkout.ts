@@ -15,6 +15,7 @@ import type {
 
 import {
   projectCustomerCheckoutView,
+  type CustomerEventObservation,
   type CustomerCheckoutReadinessContext,
   type CustomerCheckoutReturnRoute,
   type CustomerCheckoutView,
@@ -443,6 +444,15 @@ export const useCheckoutStore = defineStore("checkout", {
         loading: state.loading,
         readiness: customerCheckoutReadinessContext(),
       }),
+    customerEventObservation: (state): CustomerEventObservation =>
+      projectCustomerCheckoutView({
+        transaction: state.transaction,
+        nowMs: state.nowMs,
+        dismissedTerminalOrderNos: state.dismissedTerminalOrderNos,
+        restored: state.lastTransactionRestored,
+        loading: state.loading,
+        readiness: customerCheckoutReadinessContext(),
+      }).customerEventObservation,
     remainingSeconds: (state): number =>
       projectCustomerCheckoutView({
         transaction: state.transaction,
