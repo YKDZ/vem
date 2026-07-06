@@ -213,7 +213,7 @@ describe("payments api operator actions", () => {
   });
 
   it("rejects invalid provider config bodies through the schema-bound helper", async () => {
-    vi.mocked(postContract).mockImplementation(
+    vi.mocked(postContract).mockImplementationOnce(
       async (_url, bodySchema, _responseSchema, body) => {
         (bodySchema as { parse(value: unknown): unknown }).parse(body);
         throw new Error("expected invalid payment provider config body");
