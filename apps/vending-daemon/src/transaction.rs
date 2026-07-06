@@ -164,7 +164,7 @@ impl TransactionStateMachine {
         let order_status = backend_status
             .get("orderStatus")
             .and_then(|value| value.as_str())
-            .unwrap_or("waiting_payment")
+            .unwrap_or("pending_payment")
             .to_string();
 
         self.state
@@ -410,7 +410,7 @@ impl TransactionStateMachine {
                         status: snapshot
                             .order_status
                             .as_deref()
-                            .unwrap_or("waiting_payment"),
+                            .unwrap_or("pending_payment"),
                         next_action: snapshot.next_action.as_deref().unwrap_or("wait_payment"),
                         payment_attempt_json,
                         recovery_strategy: "local",

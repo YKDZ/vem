@@ -504,10 +504,24 @@ describe("checkout store", () => {
       paymentProviderCode: "alipay",
       profileSnapshot: null,
     });
-    expect(store.currentOrder?.paymentUrl).toBe("https://pay.example/1");
-    expect(store.status?.payment.method).toBe("payment_code");
-    expect(store.status?.vending?.commandNo).toBe("CMD-001");
-    expect(store.status?.paymentCodeAttempt?.source).toBe("serial_text");
+    expect(store.customerCheckoutView).toMatchObject({
+      stage: "payment",
+      orderCredential: "ORD-001",
+      payment: {
+        method: "payment_code",
+        provider: "alipay",
+        paymentUrl: "https://pay.example/1",
+        expiresAt: "2026-01-01T00:05:00Z",
+        totalAmountCents: 100,
+        canCancel: true,
+        display: {
+          kind: "payment_code",
+          state: "retryable",
+          attemptStatus: "failed",
+          maskedAuthCode: "6212****9012",
+        },
+      },
+    });
     expect(store.paymentCodeMessage).toBe("请刷新付款码后重试");
   });
 
@@ -1017,6 +1031,39 @@ describe("checkout store", () => {
     expect(store.currentOrder).toBeNull();
     expect(store.status).toBeNull();
     expect(store.flowStep).toBe("idle");
+  });
+
+  it("cancels using the current transaction credential over stale current order state", async () => {
+    cancelOrderMock.mockResolvedValue(
+      makeTransactionSnapshot({
+        orderNo: "ORD-TX-ACTIVE",
+        paymentStatus: "canceled",
+        orderStatus: "canceled",
+        nextAction: "closed",
+      }),
+    );
+    getSaleViewMock.mockResolvedValue({
+      items: [],
+      source: "local_stock",
+      planogramVersion: "PLAN-1",
+      lastUpdatedAt: "2026-06-04T00:00:00Z",
+    });
+
+    const store = useCheckoutStore();
+    store.applyTransaction(makeTransactionSnapshot({ orderNo: "ORD-TX-ACTIVE" }));
+    store.currentOrder = {
+      orderId: "stale-order-id",
+      orderNo: "ORD-STALE",
+      paymentNo: "PAY-STALE",
+      paymentUrl: null,
+      expiresAt: "2026-01-01T00:05:00Z",
+      totalAmountCents: 100,
+      paymentProviderCode: "alipay",
+    };
+
+    await store.cancelCurrentOrder();
+
+    expect(cancelOrderMock).toHaveBeenCalledWith("ORD-TX-ACTIVE");
   });
 
   it("can preserve selected item after canceling from payment UI", async () => {

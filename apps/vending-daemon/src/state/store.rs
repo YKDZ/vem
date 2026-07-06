@@ -3774,8 +3774,8 @@ fn to_current_transaction_snapshot(
             .as_ref()
             .and_then(|v| v.get("orderStatus"))
             .and_then(|v| v.as_str())
-            .map(ToString::to_string)
-            .or(Some(row.status)),
+            .or(Some(row.status.as_str()))
+            .map(public_order_status),
         total_amount_cents: backend
             .as_ref()
             .and_then(|v| v.get("totalAmountCents"))
@@ -4114,6 +4114,13 @@ fn parse_order_status(status: &str) -> Option<vending_core::domain::OrderSession
         "payment_expired" | "canceled" | "cancelled" | "expired" | "refunded"
         | "partial_refunded" | "closed" => Some(vending_core::domain::OrderSessionStatus::Closed),
         _ => None,
+    }
+}
+
+fn public_order_status(status: &str) -> String {
+    match status {
+        "waiting_payment" => "pending_payment".to_string(),
+        _ => status.to_string(),
     }
 }
 
@@ -6617,6 +6624,8 @@ mod tests {
             .expect("current");
         let value = serde_json::to_string(&snapshot).expect("serialize");
         assert!(value.contains("\"paymentMethod\":\"payment_code\""));
+        assert!(value.contains("\"orderStatus\":\"pending_payment\""));
+        assert!(!value.contains("\"orderStatus\":\"waiting_payment\""));
         assert!(value.contains("\"source\":\"serial_text\""));
         assert!(value.contains("\"maskedAuthCode\":\"6212****3456\""));
         assert!(!value.contains("621234567890123456"));

@@ -14,6 +14,10 @@ import type {
 } from "@/types/checkout";
 
 import { daemonClient } from "@/daemon/client";
+import {
+  projectCustomerCheckoutView,
+  type CustomerCheckoutView,
+} from "@/checkout/customer-checkout-view";
 import { useCatalogStore } from "@/stores/catalog";
 import { useConnectivityStore } from "@/stores/connectivity";
 import { getRemainingSeconds } from "@/utils/format";
@@ -356,6 +360,25 @@ function vendingStatusFromSnapshot(
   }
 }
 
+function pickupReminderFromSnapshot(
+  pickupReminder: NonNullable<
+    TransactionSnapshot["vending"]
+  >["pickupReminder"],
+): NonNullable<MachineOrderStatus["vending"]>["pickupReminder"] {
+  if (!pickupReminder) return null;
+  const stage =
+    pickupReminder.stage === "outlet_opened" ||
+    pickupReminder.stage === "pickup_waiting" ||
+    pickupReminder.stage === "pickup_completed" ||
+    pickupReminder.stage === "pickup_timeout_warning"
+      ? pickupReminder.stage
+      : undefined;
+  return {
+    ...pickupReminder,
+    stage,
+  };
+}
+
 export const useCheckoutStore = defineStore("checkout", {
   state: () => ({
     selectedItem: null as CheckoutSelectedItem | null,
@@ -374,10 +397,26 @@ export const useCheckoutStore = defineStore("checkout", {
     paymentCodeLastMasked: null as string | null,
     paymentOptionsLoaded: false,
     dismissedTerminalOrderNos: readDismissedTerminalOrderNos(),
+    lastTransactionRestored: false,
   }),
   getters: {
     quantity: (): number => 1,
+    customerCheckoutView: (state): CustomerCheckoutView =>
+      projectCustomerCheckoutView({
+        transaction: state.transaction,
+        nowMs: state.nowMs,
+        dismissedTerminalOrderNos: state.dismissedTerminalOrderNos,
+        restored: state.lastTransactionRestored,
+        loading: state.loading,
+      }),
     remainingSeconds: (state): number =>
+      projectCustomerCheckoutView({
+        transaction: state.transaction,
+        nowMs: state.nowMs,
+        dismissedTerminalOrderNos: state.dismissedTerminalOrderNos,
+        restored: state.lastTransactionRestored,
+        loading: state.loading,
+      }).payment?.remainingSeconds ??
       getRemainingSeconds(state.currentOrder?.expiresAt, state.nowMs),
     canCreateOrder: (state): boolean => {
       const selectedItem = latestSaleViewItem(state.selectedItem);
@@ -460,6 +499,7 @@ export const useCheckoutStore = defineStore("checkout", {
       options: ApplyTransactionOptions = {},
     ): void {
       const restored = options.restored === true;
+      this.lastTransactionRestored = restored;
       if (this.shouldIgnoreTransaction(snapshot)) {
         if (
           this.transaction?.orderNo === snapshot.orderNo ||
@@ -552,22 +592,25 @@ export const useCheckoutStore = defineStore("checkout", {
               ackAt: null,
               resultAt: null,
               lastError: snapshot.vending.lastError,
-              pickupReminder: snapshot.vending.pickupReminder ?? null,
+              pickupReminder: pickupReminderFromSnapshot(
+                snapshot.vending.pickupReminder,
+              ),
             }
           : null,
         refund: null,
         nextAction,
         serverTime: snapshot.updatedAt,
       };
+      const status = this.status;
       this.transactionObservation = {
-        orderKey: this.status.orderNo,
+        orderKey: status.orderNo,
         nextAction,
-        pickupReminder: this.status.vending?.pickupReminder
+        pickupReminder: status.vending?.pickupReminder
           ? {
-              stage: this.status.vending.pickupReminder.stage ?? null,
-              level: this.status.vending.pickupReminder.level ?? null,
-              warningNo: this.status.vending.pickupReminder.warningNo ?? null,
-              reportedAt: this.status.vending.pickupReminder.reportedAt ?? null,
+              stage: status.vending.pickupReminder.stage ?? null,
+              level: status.vending.pickupReminder.level ?? null,
+              warningNo: status.vending.pickupReminder.warningNo ?? null,
+              reportedAt: status.vending.pickupReminder.reportedAt ?? null,
             }
           : null,
         restored,
@@ -695,7 +738,8 @@ export const useCheckoutStore = defineStore("checkout", {
     async cancelCurrentOrder(options?: {
       preserveSelectedItem?: boolean;
     }): Promise<TransactionSnapshot | null> {
-      const orderNo = this.currentOrder?.orderNo ?? this.transaction?.orderNo;
+      const orderNo =
+        this.customerCheckoutView.orderCredential ?? this.transaction?.orderNo;
       if (!orderNo) {
         this.reset();
         return null;

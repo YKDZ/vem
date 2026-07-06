@@ -14,7 +14,7 @@ import {
 } from "@/config/runtime-flags";
 import { daemonClient } from "@/daemon/client";
 import KioskLayout from "@/layouts/KioskLayout.vue";
-import { resultKindFromNextAction, useCheckoutStore } from "@/stores/checkout";
+import { useCheckoutStore } from "@/stores/checkout";
 import { useScannerStore } from "@/stores/scanner";
 import { formatCents, formatCountdown } from "@/utils/format";
 
@@ -26,30 +26,48 @@ const { handleMaintenanceTap } = useMaintenanceEntry();
 let pollTimer: number | undefined;
 let clockTimer: number | undefined;
 
-const order = computed(() => checkoutStore.currentOrder);
-const status = computed(() => checkoutStore.status);
-const orderCredential = computed(
-  () =>
-    checkoutStore.currentOrder?.orderNo ??
-    checkoutStore.status?.orderNo ??
-    null,
+const checkoutView = computed(() => checkoutStore.customerCheckoutView);
+const paymentView = computed(() => checkoutView.value.payment);
+const hasPaymentTransaction = computed(
+  () => checkoutView.value.stage === "payment",
 );
+const orderCredential = computed(() => checkoutView.value.orderCredential);
 const remainingText = computed(() =>
   formatCountdown(checkoutStore.remainingSeconds),
 );
 const expired = computed(() => checkoutStore.remainingSeconds <= 0);
 const isPaymentCode = computed(
-  () => status.value?.payment.method === "payment_code",
+  () => paymentView.value?.method === "payment_code",
 );
+const paymentCodeDisplay = computed(() => {
+  const display = paymentView.value?.display;
+  return display?.kind === "payment_code" ? display : null;
+});
 const paymentCodeStatusTitle = computed(() => {
-  if (scannerStore.lastMaskedCode) return "已读取付款码";
-  return scannerStore.online ? "扫码器已就绪" : "扫码器暂不可用";
+  switch (paymentCodeDisplay.value?.state) {
+    case "in_flight":
+      return "已读取付款码";
+    case "retryable":
+      return "请重新出示付款码";
+    case "blocked":
+      return "付款暂不可继续";
+    case "ready":
+    default:
+      return "请出示付款码";
+  }
 });
 const paymentCodeStatusCopy = computed(() => {
-  if (scannerStore.lastMaskedCode) return "正在确认支付结果，请稍候。";
-  return scannerStore.online
-    ? "请打开支付宝或微信付款码，靠近设备扫码窗口。"
-    : "请稍后重试，或返回选择二维码支付。";
+  switch (paymentCodeDisplay.value?.state) {
+    case "in_flight":
+      return "正在确认支付结果，请稍候。";
+    case "retryable":
+      return "本次付款未完成，请刷新付款码后再次靠近扫码窗口。";
+    case "blocked":
+      return "当前付款结果暂不可继续，请返回商品列表后重新下单。";
+    case "ready":
+    default:
+      return "请打开支付宝或微信付款码，靠近设备扫码窗口。";
+  }
 });
 const canUseDevScan = computed(() =>
   shouldShowPaymentCodeDevScan({
@@ -60,14 +78,10 @@ const canUseDevScan = computed(() =>
 );
 
 const confirmingExpiredPayment = computed(
-  () => expired.value && status.value?.nextAction === "wait_payment",
+  () => paymentView.value?.display.state === "expired_confirming",
 );
 const preparingQrCode = computed(
-  () =>
-    !isPaymentCode.value &&
-    status.value?.nextAction === "wait_payment" &&
-    status.value.payment.status === "processing" &&
-    !order.value?.paymentUrl,
+  () => paymentView.value?.display.state === "preparing",
 );
 const qrBlocked = computed(
   () =>
@@ -85,71 +99,40 @@ const qrOverlayText = computed(() =>
 const qrEmptyText = computed(() =>
   preparingQrCode.value ? "正在准备支付二维码，请稍候" : "暂无支付二维码",
 );
-const activePaymentCodeAttemptStatus = computed(
-  () => status.value?.paymentCodeAttempt?.status ?? null,
-);
-const paymentCodeCancelBlocked = computed(() =>
-  [
-    "submitting",
-    "user_confirming",
-    "querying",
-    "reversing",
-    "unknown",
-    "manual_handling",
-    "succeeded",
-  ].includes(activePaymentCodeAttemptStatus.value ?? ""),
-);
-const canCancelOrder = computed(() => {
-  if (!status.value) return false;
-  if (checkoutStore.loading) return false;
-  if (confirmingExpiredPayment.value) return false;
-  if (status.value.nextAction !== "wait_payment") return false;
-  if (status.value.orderStatus !== "pending_payment") return false;
-  if (
-    !["created", "pending", "processing"].includes(status.value.payment.status)
-  ) {
-    return false;
-  }
-  if (isPaymentCode.value && paymentCodeCancelBlocked.value) return false;
-  return true;
-});
+const canCancelOrder = computed(() => paymentView.value?.canCancel === true);
+const cancelDisabledReasonCopy: Record<string, string> = {
+  loading: "正在同步订单状态",
+  expired_confirming: "支付结果确认中，暂不可取消",
+  payment_code_in_flight: "付款码支付处理中，暂不可取消",
+  not_awaiting_payment: "订单已进入下一阶段",
+  order_not_pending_payment: "当前订单不可取消",
+  payment_not_cancelable: "当前支付状态不可取消",
+};
 const cancelOrderDisabledReason = computed(() => {
-  if (checkoutStore.loading) return "正在同步订单状态";
-  if (confirmingExpiredPayment.value) return "支付结果确认中，暂不可取消";
-  if (isPaymentCode.value && paymentCodeCancelBlocked.value) {
-    return "付款码支付处理中，暂不可取消";
-  }
-  if (status.value?.nextAction !== "wait_payment") return "订单已进入下一阶段";
-  if (status.value?.orderStatus !== "pending_payment")
-    return "当前订单不可取消";
-  if (
-    status.value &&
-    !["created", "pending", "processing"].includes(status.value.payment.status)
-  ) {
-    return "当前支付状态不可取消";
-  }
-  return null;
+  const reason = paymentView.value?.cancelDisabledReason;
+  return reason ? cancelDisabledReasonCopy[reason] : null;
 });
+const syncErrorCopy = computed(() =>
+  checkoutStore.error ? "订单状态同步失败，请稍后重试" : null,
+);
 
 const showMockControls = computed(
   () =>
     shouldShowMockPaymentControls({
       dev: import.meta.env.DEV,
-      paymentMethod: status.value?.payment.method,
+      paymentMethod: paymentView.value?.method,
       flag: import.meta.env.VITE_ENABLE_MOCK_PAYMENT_CONTROLS,
     }) && daemonClient.currentConnection?.mock === true,
 );
 
 async function routeByStatus(): Promise<void> {
-  if (!status.value) return;
-  if (status.value.nextAction === "dispensing") {
-    await router.replace("/dispensing");
+  const target = checkoutView.value.routeTarget;
+  if ("path" in target) {
+    await router.replace(target.path);
     return;
   }
-  const resultKind = resultKindFromNextAction(status.value.nextAction);
-  if (resultKind) {
-    await router.replace({ name: "result", params: { kind: resultKind } });
-  }
+  if (target.name === "payment") return;
+  await router.replace(target);
 }
 
 async function refreshStatus(): Promise<void> {
@@ -185,7 +168,8 @@ async function cancelOrder(): Promise<void> {
 }
 
 onMounted(async () => {
-  if (!order.value) {
+  if (!hasPaymentTransaction.value) {
+    await routeByStatus();
     return;
   }
   await refreshStatus();
@@ -208,7 +192,7 @@ onUnmounted(() => {
 
 <template>
   <KioskLayout>
-    <section v-if="order" class="payment-page">
+    <section v-if="paymentView" class="payment-page">
       <div class="payment-mist payment-mist-left"></div>
       <div class="payment-mist payment-mist-right"></div>
 
@@ -240,13 +224,13 @@ onUnmounted(() => {
       <main class="payment-card">
         <p class="payment-amount-label">应付金额</p>
         <strong class="payment-amount">
-          {{ formatCents(order.totalAmountCents) }}
+          {{ formatCents(paymentView.totalAmountCents) }}
         </strong>
 
         <div class="qr-shell" :class="{ 'payment-code-shell': isPaymentCode }">
           <PaymentQrCode
             v-if="!isPaymentCode"
-            :value="order.paymentUrl"
+            :value="paymentView.paymentUrl"
             :blocked="qrBlocked"
             :overlay-text="qrOverlayText"
             :empty-text="qrEmptyText"
@@ -272,9 +256,6 @@ onUnmounted(() => {
             </span>
             <h2>{{ paymentCodeStatusTitle }}</h2>
             <p>{{ paymentCodeStatusCopy }}</p>
-            <p v-if="checkoutStore.paymentCodeMessage">
-              {{ checkoutStore.paymentCodeMessage }}
-            </p>
             <RouterLink v-if="canUseDevScan" to="/dev/payment-code-scan">
               手动扫码测试
             </RouterLink>
@@ -305,8 +286,8 @@ onUnmounted(() => {
           请在倒计时结束前完成支付，超时订单将自动取消
         </p>
 
-        <p v-if="checkoutStore.error" class="payment-hint">
-          {{ checkoutStore.error }}
+        <p v-if="syncErrorCopy" class="payment-hint">
+          {{ syncErrorCopy }}
         </p>
       </main>
 
