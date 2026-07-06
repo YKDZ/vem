@@ -32,10 +32,11 @@ const hasPaymentTransaction = computed(
   () => checkoutView.value.stage === "payment",
 );
 const orderCredential = computed(() => checkoutView.value.orderCredential);
-const remainingText = computed(() =>
-  formatCountdown(checkoutStore.remainingSeconds),
+const remainingSeconds = computed(
+  () => paymentView.value?.remainingSeconds ?? 0,
 );
-const expired = computed(() => checkoutStore.remainingSeconds <= 0);
+const remainingText = computed(() => formatCountdown(remainingSeconds.value));
+const expired = computed(() => remainingSeconds.value <= 0);
 const isPaymentCode = computed(
   () => paymentView.value?.method === "payment_code",
 );

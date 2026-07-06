@@ -66,7 +66,7 @@ describe("routeForStartup", () => {
         daemonAvailable: false,
         health: null,
         ready: null,
-        transaction: null,
+        restoredTransaction: null,
       }),
     ).toBe("/maintenance");
   });
@@ -78,7 +78,7 @@ describe("routeForStartup", () => {
         health: { ...healthBase, configConfigured: false },
         config: configBase,
         ready: null,
-        transaction: null,
+        restoredTransaction: null,
       }),
     ).toBe("/maintenance");
   });
@@ -99,7 +99,7 @@ describe("routeForStartup", () => {
           suggestedRoute: "catalog",
           updatedAt: "2026-01-01T00:00:00Z",
         },
-        transaction: null,
+        restoredTransaction: null,
       }),
     ).toBe("/bring-up");
   });
@@ -137,7 +137,7 @@ describe("routeForStartup", () => {
           updatedAt: "2026-07-04T00:00:00Z",
         },
         ready: null,
-        transaction: null,
+        restoredTransaction: null,
       }),
     ).toBe("/bring-up");
   });
@@ -177,7 +177,7 @@ describe("routeForStartup", () => {
           suggestedRoute: "catalog",
           updatedAt: "2026-01-01T00:00:00Z",
         },
-        transaction: null,
+        restoredTransaction: null,
       }),
     ).toBe("/catalog");
   });
@@ -208,7 +208,74 @@ describe("routeForStartup", () => {
           updatedAt: "2026-07-04T00:00:00Z",
         },
         ready: null,
-        transaction: {
+        restoredTransaction: {
+          orderId: "o",
+          orderNo: "ord",
+          productSummary: null,
+          paymentNo: null,
+          paymentMethod: "qr_code",
+          paymentProvider: "alipay",
+          paymentUrl: "https://pay.example/ord",
+          paymentStatus: "pending",
+          orderStatus: "pending_payment",
+          totalAmountCents: 100,
+          vending: null,
+          nextAction: "wait_payment",
+          maskedAuthCode: null,
+          paymentCodeAttempt: null,
+          expiresAt: null,
+          errorCode: null,
+          errorMessage: null,
+          operatorHint: null,
+          updatedAt: "2026-01-01T00:00:00Z",
+        },
+      }),
+    ).toBe("/payment");
+  });
+
+  it("recovers an explicit restored transaction before startup fallbacks", () => {
+    expect(
+      routeForStartup({
+        daemonAvailable: true,
+        health: healthBase,
+        config: configBase,
+        bringUp: {
+          state: "claim_required",
+          blockingReasons: [
+            {
+              code: "CLAIM_REQUIRED",
+              component: "provisioning",
+              message:
+                "machine must be claimed before runtime profile can be applied",
+            },
+          ],
+          diagnostics: [],
+          readinessLevel: "not_ready",
+          hardwareMode: "production",
+          allowedActions: {
+            configureNetwork: false,
+            claimMachine: true,
+            retryClaim: false,
+            syncProfile: false,
+            resolveTopology: false,
+            runRuntimeAcceptance: false,
+            runHardwareAcceptance: false,
+            attestStock: false,
+            startSales: false,
+          },
+          updatedAt: "2026-07-04T00:00:00Z",
+        },
+        ready: {
+          ready: false,
+          canSell: false,
+          mode: "maintenance",
+          blockingCodes: ["WHOLE_MACHINE_HARDWARE_FAULT"],
+          blockingReasons: [],
+          degradedReasons: [],
+          suggestedRoute: "maintenance",
+          updatedAt: "2026-01-01T00:00:00Z",
+        },
+        restoredTransaction: {
           orderId: "o",
           orderNo: "ord",
           productSummary: null,
@@ -276,7 +343,7 @@ describe("routeForStartup", () => {
             updatedAt: "2026-07-04T00:00:00Z",
           },
           ready: null,
-          transaction: {
+          restoredTransaction: {
             orderId: "o",
             orderNo: "ord",
             productSummary: null,
@@ -315,7 +382,7 @@ describe("routeForStartup", () => {
         health: healthBase,
         config: configBase,
         ready: null,
-        transaction: {
+        restoredTransaction: {
           orderId: null,
           orderNo: "ord",
           productSummary: null,
@@ -356,7 +423,7 @@ describe("routeForStartup", () => {
           suggestedRoute: "catalog",
           updatedAt: "2026-01-01T00:00:00Z",
         },
-        transaction: {
+        restoredTransaction: {
           orderId: null,
           orderNo: "ord",
           productSummary: null,
@@ -397,7 +464,7 @@ describe("routeForStartup", () => {
           suggestedRoute: "catalog",
           updatedAt: "2026-01-01T00:00:00Z",
         },
-        transaction: {
+        restoredTransaction: {
           orderId: null,
           orderNo: "ord",
           productSummary: null,
@@ -442,7 +509,7 @@ describe("routeForStartup", () => {
           suggestedRoute: "offline",
           updatedAt: "2026-01-01T00:00:00Z",
         },
-        transaction: null,
+        restoredTransaction: null,
       }),
     ).toBe("/offline");
   });
@@ -469,7 +536,7 @@ describe("routeForStartup", () => {
           suggestedRoute: "maintenance",
           updatedAt: "2026-01-01T00:00:00Z",
         },
-        transaction: null,
+        restoredTransaction: null,
       }),
     ).toBe("/maintenance");
   });
@@ -490,7 +557,7 @@ describe("routeForStartup", () => {
           suggestedRoute: "catalog",
           updatedAt: "2026-01-01T00:00:00Z",
         },
-        transaction: null,
+        restoredTransaction: null,
       }),
     ).toBe("/catalog");
   });

@@ -2,7 +2,6 @@ import { defineStore } from "pinia";
 
 import type { TransactionSnapshot } from "@/daemon/schemas";
 import type {
-  CheckoutResultKind,
   CheckoutSelectedItem,
   CreateMachineOrderResponse,
   MachinePaymentOption,
@@ -12,7 +11,6 @@ import type {
 
 import {
   projectCustomerCheckoutView,
-  type CustomerEventObservation,
   type CustomerCheckoutReadinessContext,
   type CustomerCheckoutReturnRoute,
   type CustomerCheckoutView,
@@ -210,24 +208,6 @@ export const useCheckoutStore = defineStore("checkout", {
         loading: state.loading,
         readiness: customerCheckoutReadinessContext(),
       }),
-    customerEventObservation: (state): CustomerEventObservation =>
-      projectCustomerCheckoutView({
-        transaction: state.transaction,
-        nowMs: state.nowMs,
-        dismissedTerminalOrderNos: state.dismissedTerminalOrderNos,
-        restored: state.lastTransactionRestored,
-        loading: state.loading,
-        readiness: customerCheckoutReadinessContext(),
-      }).customerEventObservation,
-    remainingSeconds: (state): number =>
-      projectCustomerCheckoutView({
-        transaction: state.transaction,
-        nowMs: state.nowMs,
-        dismissedTerminalOrderNos: state.dismissedTerminalOrderNos,
-        restored: state.lastTransactionRestored,
-        loading: state.loading,
-        readiness: customerCheckoutReadinessContext(),
-      }).payment?.remainingSeconds ?? 0,
     canCreateOrder: (state): boolean => {
       const selectedItem = latestSaleViewItem(state.selectedItem);
       return Boolean(
@@ -240,15 +220,6 @@ export const useCheckoutStore = defineStore("checkout", {
         )?.disabled !== true,
       );
     },
-    resultKind: (state): CheckoutResultKind | null =>
-      projectCustomerCheckoutView({
-        transaction: state.transaction,
-        nowMs: state.nowMs,
-        dismissedTerminalOrderNos: state.dismissedTerminalOrderNos,
-        restored: state.lastTransactionRestored,
-        loading: state.loading,
-        readiness: customerCheckoutReadinessContext(),
-      }).result?.kind ?? null,
     selectedPaymentOption: (state): MachinePaymentOption | null =>
       state.paymentOptions.find(
         (option) => option.optionKey === state.selectedPaymentOptionKey,
@@ -433,6 +404,20 @@ export const useCheckoutStore = defineStore("checkout", {
         return null;
       } finally {
         this.loading = false;
+      }
+    },
+    async refreshCustomerCheckoutReadiness(): Promise<string | null> {
+      try {
+        const [ready, saleReadiness] = await Promise.all([
+          daemonClient.getReady(),
+          daemonClient.getSaleReadiness(),
+        ]);
+        const connectivityStore = useConnectivityStore();
+        connectivityStore.applyReady(ready);
+        connectivityStore.applySaleReadiness(saleReadiness);
+        return null;
+      } catch (error) {
+        return error instanceof Error ? error.message : String(error);
       }
     },
     async cancelCurrentOrder(options?: {

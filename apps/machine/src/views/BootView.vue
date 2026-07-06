@@ -159,7 +159,7 @@ onMounted(async () => {
         config: machineStore.configSummary,
         bringUp,
         ready,
-        transaction: startupTransaction,
+        restoredTransaction: startupTransaction,
       }),
     );
   } catch (error) {
@@ -172,7 +172,7 @@ onMounted(async () => {
         config: null,
         bringUp: null,
         ready: null,
-        transaction: null,
+        restoredTransaction: null,
       }),
     );
   }

@@ -44,6 +44,7 @@ vi.mock("@/daemon/client", () => ({
   },
 }));
 
+import type { CustomerCheckoutView } from "@/checkout/customer-checkout-view";
 import { useCheckoutStore } from "@/stores/checkout";
 
 import PaymentView from "./PaymentView.vue";
@@ -196,6 +197,48 @@ describe("PaymentView", () => {
     expect(cancelButton).toBeInstanceOf(HTMLButtonElement);
     expect((cancelButton as HTMLButtonElement).disabled).toBe(true);
     expect(host.textContent).toContain("支付结果确认中，暂不可取消");
+  });
+
+  it("renders remaining time from the projected payment view", async () => {
+    vi.setSystemTime(new Date("2026-06-11T06:19:55.000Z"));
+    const transaction = activeQrPaymentTransaction();
+    getCurrentTransactionMock.mockResolvedValue(transaction);
+    const checkoutStore = useCheckoutStore();
+    checkoutStore.applyTransaction(transaction);
+    checkoutStore.tick(new Date("2026-06-11T06:19:55.000Z").getTime());
+    const projectedView: CustomerCheckoutView = {
+      stage: "payment",
+      routeTarget: { name: "payment" },
+      orderCredential: "ORD-CANCEL-001",
+      restored: false,
+      payment: {
+        method: "qr_code",
+        provider: "alipay",
+        paymentUrl: "https://pay.example/qr",
+        expiresAt: "2026-06-11T06:20:00.000Z",
+        totalAmountCents: 1200,
+        remainingSeconds: 83,
+        canCancel: true,
+        cancelDisabledReason: null,
+        display: { kind: "qr", state: "pending" },
+      },
+      dispensing: null,
+      result: null,
+      customerEventObservation: {
+        phase: "awaiting_payment",
+        orderCredential: "ORD-CANCEL-001",
+        journeyFact: "payment_requested",
+        pickupCue: null,
+        restored: false,
+      },
+    };
+    vi.spyOn(checkoutStore, "customerCheckoutView", "get").mockReturnValue(
+      projectedView,
+    );
+
+    const host = await mountView();
+
+    expect(host.querySelector(".payment-countdown")?.textContent).toBe("01:23");
   });
 
   it("cancels an active payment and returns to product detail", async () => {

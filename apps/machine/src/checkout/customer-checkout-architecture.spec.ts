@@ -21,12 +21,52 @@ describe("customer checkout projection architecture", () => {
 
   it("routes current transactions through the projection instead of a raw next-action table", () => {
     const startup = readSource("src/daemon/startup.ts");
+    const startupInput = startup.match(
+      /export function routeForStartup\(input: \{([\s\S]*?)\}\): StartupRoute/,
+    )?.[1];
 
+    expect(startupInput).toContain("restoredTransaction");
+    expect(startupInput).not.toMatch(/\n\s*transaction:/);
     expect(startup).toContain("projectCustomerCheckoutView");
-    expect(startup).not.toMatch(/next\s*===\s*"wait_payment"/);
-    expect(startup).not.toMatch(/next\s*===\s*"dispensing"/);
-    expect(startup).not.toMatch(/next\s*===\s*"success"/);
-    expect(startup).not.toMatch(/next\s*===\s*"payment_failed"/);
-    expect(startup).not.toMatch(/next\s*===\s*"refund_pending"/);
+    expect(startup).not.toMatch(/\bnextAction\b/);
+    expect(startup).not.toMatch(/\bwait_payment\b/);
+    expect(startup).not.toMatch(/\bsuccess\b/);
+    expect(startup).not.toMatch(/\bpayment_failed\b/);
+    expect(startup).not.toMatch(/\brefund_pending\b/);
+  });
+
+  it("keeps payment-stage callers on the unified checkout view", () => {
+    const paymentView = readSource("src/views/PaymentView.vue");
+    const checkoutStore = readSource("src/stores/checkout.ts");
+
+    expect(paymentView).toContain("customerCheckoutView");
+    expect(paymentView).not.toContain("checkoutStore.remainingSeconds");
+    expect(checkoutStore).not.toMatch(/\bremainingSeconds:\s*\(/);
+  });
+
+  it("keeps dispensing and result pages on the unified checkout view", () => {
+    const dispensingView = readSource("src/views/DispensingView.vue");
+    const resultView = readSource("src/views/ResultView.vue");
+
+    expect(dispensingView).toContain("customerCheckoutView");
+    expect(resultView).toContain("customerCheckoutView");
+    expect(dispensingView).not.toContain("nextAction");
+    expect(resultView).not.toContain("nextAction");
+    expect(resultView).not.toContain("@/daemon/client");
+    expect(resultView).not.toContain("useConnectivityStore");
+  });
+
+  it("keeps transaction customer event sources on projection-owned observations", () => {
+    const customerEventSources = readSource(
+      "src/composables/useCustomerEventSources.ts",
+    );
+
+    expect(customerEventSources).toContain("customerEventObservation");
+    expect(customerEventSources).not.toContain("TransactionSnapshot");
+    expect(customerEventSources).not.toMatch(/\bnextAction\b/);
+    expect(customerEventSources).not.toMatch(/\bwait_payment\b/);
+    expect(customerEventSources).not.toMatch(/\bdispense_failed_result\b/);
+    expect(customerEventSources).not.toMatch(/\brefund_pending_result\b/);
+    expect(customerEventSources).not.toMatch(/\bmanual_handling_result\b/);
   });
 });
