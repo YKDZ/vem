@@ -1001,11 +1001,16 @@ describe("checkout store", () => {
     const store = useCheckoutStore();
     await store.refreshCurrentTransaction();
 
-    expect(store.flowStep).toBe("result");
-    expect(store.status?.nextAction).toBe("manual_handling");
-    expect(store.status?.vending).toMatchObject({
-      commandNo: "CMD-UNKNOWN",
-      status: "result_unknown",
+    expect(store.customerCheckoutView).toMatchObject({
+      stage: "result",
+      routeTarget: { name: "result", params: { kind: "manual_handling" } },
+      orderCredential: "ORD-001",
+      result: {
+        kind: "manual_handling",
+        displayIntent: "manual_handling",
+        detailIntent: "dispense_result_unknown",
+        orderCredentialBehavior: "shown",
+      },
     });
   });
 
@@ -1117,9 +1122,12 @@ describe("checkout store", () => {
 
     expect(refreshed).toBeNull();
     expect(store.shouldIgnoreTransaction(failedTransaction)).toBe(true);
-    expect(store.currentOrder).toBeNull();
-    expect(store.status).toBeNull();
-    expect(store.flowStep).toBe("idle");
+    expect(store.customerCheckoutView).toMatchObject({
+      stage: "none",
+      routeTarget: { name: "catalog" },
+      orderCredential: null,
+      result: null,
+    });
   });
 
   it("records successful terminal dismissal and suppresses the same success on refresh", async () => {

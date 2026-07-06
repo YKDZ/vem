@@ -754,6 +754,24 @@ describe("sale readiness UI flow", () => {
     expect(routerReplaceMock).not.toHaveBeenCalledWith("/catalog");
   });
 
+  it("does not render raw current-transaction parse errors during boot", async () => {
+    getHealthMock.mockResolvedValue(healthSnapshot());
+    getReadyMock.mockResolvedValue(readySnapshot());
+    getSaleReadinessMock.mockResolvedValue(saleReadiness(true));
+    getCurrentTransactionMock.mockRejectedValue(
+      new Error("ZodError: Invalid enum value at nextAction"),
+    );
+
+    const host = await mountView(BootView);
+
+    await vi.waitFor(() => {
+      expect(routerReplaceMock).toHaveBeenCalledWith("/maintenance");
+    });
+    expect(host.textContent).toContain("daemon 不可用，进入维护页");
+    expect(host.textContent).not.toContain("ZodError");
+    expect(host.textContent).not.toContain("Invalid enum value");
+  });
+
   it("loads sale readiness during boot so a ready catalog can enter purchase", async () => {
     const item = makeCatalogItem();
     getHealthMock.mockResolvedValue(healthSnapshot());
@@ -855,7 +873,12 @@ describe("sale readiness UI flow", () => {
       name: "result",
       params: { kind: "success" },
     });
-    expect(reloadedCheckoutStore.currentOrder).toBeNull();
+    expect(reloadedCheckoutStore.customerCheckoutView).toMatchObject({
+      stage: "none",
+      routeTarget: { name: "catalog" },
+      orderCredential: null,
+      result: null,
+    });
   });
 
   it("keeps catalog products visible and navigable when readiness is blocked", async () => {

@@ -365,4 +365,180 @@ describe("Customer Checkout View Projection", () => {
       params: { kind: "success" },
     });
   });
+
+  it("projects exceptional terminal results with explicit display and conservative return policy", () => {
+    const cases: Array<{
+      nextAction: NonNullable<TransactionSnapshot["nextAction"]>;
+      orderStatus: TransactionSnapshot["orderStatus"];
+      paymentStatus: TransactionSnapshot["paymentStatus"];
+      displayIntent: NonNullable<
+        ReturnType<typeof projectCustomerCheckoutView>["result"]
+      >["displayIntent"];
+      detailIntent: NonNullable<
+        ReturnType<typeof projectCustomerCheckoutView>["result"]
+      >["detailIntent"];
+      canManualReturnWhenReady: boolean;
+      canManualReturnWhenUnknown: boolean;
+      canManualReturnWhenMaintenanceLocked: boolean;
+    }> = [
+      {
+        nextAction: "dispense_failed",
+        orderStatus: "dispense_failed",
+        paymentStatus: "succeeded",
+        displayIntent: "dispense_failure",
+        detailIntent: "dispense_failure",
+        canManualReturnWhenReady: true,
+        canManualReturnWhenUnknown: false,
+        canManualReturnWhenMaintenanceLocked: false,
+      },
+      {
+        nextAction: "refund_pending",
+        orderStatus: "refund_pending",
+        paymentStatus: "refund_pending",
+        displayIntent: "refund_pending",
+        detailIntent: null,
+        canManualReturnWhenReady: false,
+        canManualReturnWhenUnknown: false,
+        canManualReturnWhenMaintenanceLocked: false,
+      },
+      {
+        nextAction: "refunded",
+        orderStatus: "refunded",
+        paymentStatus: "refunded",
+        displayIntent: "refunded",
+        detailIntent: null,
+        canManualReturnWhenReady: true,
+        canManualReturnWhenUnknown: false,
+        canManualReturnWhenMaintenanceLocked: true,
+      },
+      {
+        nextAction: "manual_handling",
+        orderStatus: "manual_handling",
+        paymentStatus: "succeeded",
+        displayIntent: "manual_handling",
+        detailIntent: "dispense_result_unknown",
+        canManualReturnWhenReady: false,
+        canManualReturnWhenUnknown: false,
+        canManualReturnWhenMaintenanceLocked: false,
+      },
+      {
+        nextAction: "payment_failed",
+        orderStatus: "canceled",
+        paymentStatus: "failed",
+        displayIntent: "payment_failed",
+        detailIntent: null,
+        canManualReturnWhenReady: true,
+        canManualReturnWhenUnknown: false,
+        canManualReturnWhenMaintenanceLocked: true,
+      },
+      {
+        nextAction: "payment_expired",
+        orderStatus: "payment_expired",
+        paymentStatus: "expired",
+        displayIntent: "payment_expired",
+        detailIntent: null,
+        canManualReturnWhenReady: true,
+        canManualReturnWhenUnknown: false,
+        canManualReturnWhenMaintenanceLocked: true,
+      },
+      {
+        nextAction: "closed",
+        orderStatus: "closed",
+        paymentStatus: "canceled",
+        displayIntent: "closed",
+        detailIntent: null,
+        canManualReturnWhenReady: true,
+        canManualReturnWhenUnknown: false,
+        canManualReturnWhenMaintenanceLocked: true,
+      },
+    ];
+
+    for (const testCase of cases) {
+      const transaction = successfulTransaction({
+        orderNo: `ORD-${testCase.nextAction}`,
+        nextAction: testCase.nextAction,
+        orderStatus: testCase.orderStatus,
+        paymentStatus: testCase.paymentStatus,
+        vending:
+          testCase.nextAction === "payment_failed" ||
+          testCase.nextAction === "payment_expired" ||
+          testCase.nextAction === "closed"
+            ? null
+            : {
+                commandNo: `CMD-${testCase.nextAction}`,
+                status:
+                  testCase.nextAction === "refunded"
+                    ? "failed"
+                    : "result_unknown",
+                lastError: "operator-only diagnostic",
+              },
+      });
+
+      expect(transactionSnapshotSchema.safeParse(transaction).success).toBe(
+        true,
+      );
+
+      const readyView = projectCustomerCheckoutView({
+        transaction,
+        nowMs: new Date("2026-06-11T06:16:32.320Z").getTime(),
+        dismissedTerminalOrderNos: [],
+        restored: false,
+        readiness: {
+          saleReady: true,
+          suggestedRoute: "catalog",
+          requiresMaintenanceReview: false,
+        },
+      });
+
+      expect(readyView).toMatchObject({
+        stage: "result",
+        routeTarget: { name: "result", params: { kind: testCase.nextAction } },
+        orderCredential: `ORD-${testCase.nextAction}`,
+        result: {
+          kind: testCase.nextAction,
+          displayIntent: testCase.displayIntent,
+          detailIntent: testCase.detailIntent,
+          orderCredentialBehavior: "shown",
+          returnPolicy: {
+            canAutoReturn: false,
+            canManualReturn: testCase.canManualReturnWhenReady,
+            targetRoute: "catalog",
+            requiresMaintenanceReview: false,
+          },
+        },
+      });
+
+      const unknownReadinessView = projectCustomerCheckoutView({
+        transaction,
+        nowMs: new Date("2026-06-11T06:16:32.320Z").getTime(),
+        dismissedTerminalOrderNos: [],
+        restored: false,
+      });
+
+      expect(unknownReadinessView.result?.returnPolicy).toMatchObject({
+        canAutoReturn: false,
+        canManualReturn: testCase.canManualReturnWhenUnknown,
+        targetRoute: "offline",
+      });
+
+      const maintenanceLockedView = projectCustomerCheckoutView({
+        transaction,
+        nowMs: new Date("2026-06-11T06:16:32.320Z").getTime(),
+        dismissedTerminalOrderNos: [],
+        restored: false,
+        readiness: {
+          saleReady: false,
+          suggestedRoute: "maintenance",
+          requiresMaintenanceReview: true,
+        },
+      });
+
+      expect(maintenanceLockedView.result?.returnPolicy).toMatchObject({
+        canAutoReturn: false,
+        canManualReturn: testCase.canManualReturnWhenMaintenanceLocked,
+        targetRoute: "maintenance",
+        requiresMaintenanceReview: true,
+      });
+    }
+  });
 });

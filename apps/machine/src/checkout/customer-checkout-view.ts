@@ -71,8 +71,25 @@ export type CustomerCheckoutReturnPolicy = {
   requiresMaintenanceReview: boolean;
 };
 
+export type CustomerCheckoutResultDisplayIntent =
+  | "success"
+  | "payment_failed"
+  | "payment_expired"
+  | "dispense_failure"
+  | "refund_pending"
+  | "refunded"
+  | "manual_handling"
+  | "closed";
+
+export type CustomerCheckoutResultDetailIntent =
+  | "dispense_failure"
+  | "dispense_result_unknown"
+  | "manual_handling";
+
 export type CustomerCheckoutResultView = {
   kind: CheckoutResultKind;
+  displayIntent: CustomerCheckoutResultDisplayIntent;
+  detailIntent: CustomerCheckoutResultDetailIntent | null;
   orderCredentialBehavior: "hidden" | "shown";
   returnPolicy: CustomerCheckoutReturnPolicy;
 };
@@ -187,6 +204,56 @@ function successReturnPolicy(
     canManualReturn: true,
     targetRoute,
     requiresMaintenanceReview: readiness?.requiresMaintenanceReview === true,
+  };
+}
+
+function resultDisplayIntent(
+  resultKind: CheckoutResultKind,
+): CustomerCheckoutResultDisplayIntent {
+  if (resultKind === "dispense_failed") return "dispense_failure";
+  return resultKind;
+}
+
+function resultDetailIntent(
+  transaction: TransactionSnapshot,
+  resultKind: CheckoutResultKind,
+): CustomerCheckoutResultDetailIntent | null {
+  if (resultKind === "dispense_failed") return "dispense_failure";
+  if (resultKind !== "manual_handling") return null;
+  if (transaction.vending?.status === "result_unknown") {
+    return "dispense_result_unknown";
+  }
+  return "manual_handling";
+}
+
+function exceptionalReturnPolicy(
+  resultKind: CheckoutResultKind,
+  readiness: CustomerCheckoutReadinessContext | undefined,
+): CustomerCheckoutReturnPolicy {
+  const targetRoute = returnRouteFromReadiness(readiness);
+  const requiresMaintenanceReview =
+    readiness?.requiresMaintenanceReview === true;
+  const saleReady = readiness?.saleReady === true;
+  const canDismissWhenReady =
+    resultKind === "payment_failed" ||
+    resultKind === "payment_expired" ||
+    resultKind === "dispense_failed" ||
+    resultKind === "refunded" ||
+    resultKind === "closed";
+  const highRiskResult =
+    resultKind === "dispense_failed" ||
+    resultKind === "refund_pending" ||
+    resultKind === "manual_handling";
+
+  return {
+    canAutoReturn: false,
+    canManualReturn: canDismissWhenReady
+      ? saleReady && targetRoute === "catalog"
+        ? !requiresMaintenanceReview
+        : targetRoute === "maintenance" && !highRiskResult
+      : false,
+    targetRoute,
+    requiresMaintenanceReview,
   };
 }
 
@@ -394,17 +461,13 @@ export function projectCustomerCheckoutView(
     dispensing: null,
     result: {
       kind: resultKind,
+      displayIntent: resultDisplayIntent(resultKind),
+      detailIntent: resultDetailIntent(transaction, resultKind),
       orderCredentialBehavior: resultKind === "success" ? "hidden" : "shown",
       returnPolicy:
         resultKind === "success"
           ? successReturnPolicy(input.readiness)
-          : {
-              canAutoReturn: false,
-              canManualReturn: false,
-              targetRoute: returnRouteFromReadiness(input.readiness),
-              requiresMaintenanceReview:
-                input.readiness?.requiresMaintenanceReview === true,
-            },
+          : exceptionalReturnPolicy(resultKind, input.readiness),
     },
     restored: input.restored,
   };

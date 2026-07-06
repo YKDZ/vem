@@ -169,6 +169,30 @@ function paymentFailedTransaction() {
   };
 }
 
+function paymentExpiredTransaction() {
+  return {
+    ...terminalDispenseFailedTransaction(),
+    orderNo: "ORD-PAYMENT-EXPIRED-001",
+    paymentNo: "PAY-PAYMENT-EXPIRED-001",
+    paymentStatus: "expired",
+    orderStatus: "payment_expired",
+    vending: null,
+    nextAction: "payment_expired",
+  };
+}
+
+function closedTransaction() {
+  return {
+    ...terminalDispenseFailedTransaction(),
+    orderNo: "ORD-CLOSED-001",
+    paymentNo: "PAY-CLOSED-001",
+    paymentStatus: "canceled",
+    orderStatus: "closed",
+    vending: null,
+    nextAction: "closed",
+  };
+}
+
 function applySaleReadiness(
   canSell: boolean,
   blockedSlots: Array<{
@@ -433,8 +457,11 @@ describe("ResultView", () => {
     expect(routerReplaceMock).not.toHaveBeenCalledWith("/maintenance");
     expect(getSaleViewMock).toHaveBeenCalledOnce();
     expect(checkoutStore.shouldIgnoreTransaction(transaction)).toBe(true);
-    expect(checkoutStore.currentOrder).toBeNull();
-    expect(checkoutStore.status).toBeNull();
+    expect(checkoutStore.customerCheckoutView).toMatchObject({
+      stage: "none",
+      routeTarget: { name: "catalog" },
+      result: null,
+    });
   });
 
   it("refreshes readiness for the restored terminal result", async () => {
@@ -499,6 +526,89 @@ describe("ResultView", () => {
     expect(getSaleViewMock).not.toHaveBeenCalled();
   });
 
+  it("uses projected maintenance-review visibility for manual-handling results", async () => {
+    routeParams.kind = "manual_handling";
+    const transaction = terminalUnknownDispenseTransaction();
+    useCheckoutStore().applyTransaction(transaction);
+    applySaleReadiness(false);
+    getReadyMock.mockResolvedValue(
+      readyFixture(false, "WHOLE_MACHINE_HARDWARE_FAULT"),
+    );
+    getSaleReadinessMock.mockResolvedValue(
+      saleReadinessFixture(false, [], "WHOLE_MACHINE_HARDWARE_FAULT"),
+    );
+
+    const host = await mountView();
+    await vi.waitFor(() => {
+      expect(getReadyMock).toHaveBeenCalledOnce();
+    });
+
+    expect(host.textContent).toContain("等待人工处理");
+    expect(host.textContent).toContain("设备需要维护检查");
+    expect(host.textContent).not.toContain("返回首页");
+  });
+
+  it("keeps dismissible exceptional results visible when sale readiness is unknown", async () => {
+    routeParams.kind = "payment_failed";
+    const transaction = paymentFailedTransaction();
+    useCheckoutStore().applyTransaction(transaction);
+
+    const host = await mountView();
+
+    expect(host.textContent).toContain("支付失败");
+    expect(host.textContent).not.toContain("返回首页");
+    expect(host.textContent).not.toContain("payment_failed");
+    expect(host.textContent).not.toContain("ZodError");
+  });
+
+  it("does not dismiss a high-risk result when refreshed readiness requires retention", async () => {
+    const transaction = terminalDispenseFailedTransaction();
+    const checkoutStore = useCheckoutStore();
+    checkoutStore.applyTransaction(transaction);
+    applySaleReadiness(true);
+    getReadyMock
+      .mockReturnValueOnce(new Promise<ReadySnapshot>(() => undefined))
+      .mockResolvedValue(readyFixture(false, "WHOLE_MACHINE_HARDWARE_FAULT"));
+    getSaleReadinessMock
+      .mockReturnValueOnce(
+        new Promise<MachineSaleReadiness>(() => undefined),
+      )
+      .mockResolvedValue(
+        saleReadinessFixture(false, [], "WHOLE_MACHINE_HARDWARE_FAULT"),
+      );
+
+    const host = await mountView();
+
+    expect(host.textContent).toContain("出货失败");
+    expect(host.textContent).toContain("返回首页");
+
+    const returnButton = Array.from(host.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("返回首页"),
+    );
+    returnButton?.click();
+    await nextTick();
+
+    await vi.waitFor(() => {
+      expect(getReadyMock).toHaveBeenCalledTimes(2);
+    });
+    await nextTick();
+    expect(checkoutStore.shouldIgnoreTransaction(transaction)).toBe(false);
+    expect(checkoutStore.customerCheckoutView).toMatchObject({
+      stage: "result",
+      result: {
+        kind: "dispense_failed",
+        returnPolicy: {
+          canManualReturn: false,
+          targetRoute: "maintenance",
+          requiresMaintenanceReview: true,
+        },
+      },
+    });
+    expect(host.textContent).toContain("设备需要维护检查");
+    expect(routerReplaceMock).not.toHaveBeenCalled();
+    expect(getSaleViewMock).not.toHaveBeenCalled();
+  });
+
   it("routes dismissed terminal results to maintenance when severe blockers remain", async () => {
     routeParams.kind = "payment_failed";
     const transaction = paymentFailedTransaction();
@@ -546,7 +656,14 @@ describe("ResultView", () => {
 
     const host = await mountView();
 
-    expect(checkoutStore.status?.nextAction).toBe("manual_handling");
+    expect(checkoutStore.customerCheckoutView).toMatchObject({
+      stage: "result",
+      result: {
+        kind: "manual_handling",
+        displayIntent: "manual_handling",
+        detailIntent: "dispense_result_unknown",
+      },
+    });
     expect(host.textContent).toContain("等待人工处理");
     expect(host.textContent).toContain("订单凭证 ORD-UNKNOWN-001");
     expect(host.textContent).toContain("出货结果待确认");
@@ -577,6 +694,38 @@ describe("ResultView", () => {
     expect(host.textContent).toContain("已退款");
     expect(host.textContent).toContain("订单凭证 ORD-REFUNDED-001");
     expect(host.textContent).toContain("返回首页");
+  });
+
+  it("shows payment-expired and closed pages without raw result codes", async () => {
+    const cases = [
+      {
+        kind: "payment_expired",
+        transaction: paymentExpiredTransaction(),
+        title: "支付超时",
+        rawCode: "payment_expired",
+      },
+      {
+        kind: "closed",
+        transaction: closedTransaction(),
+        title: "订单已关闭",
+        rawCode: "closed",
+      },
+    ];
+
+    for (const testCase of cases) {
+      mountedApp?.unmount();
+      mountedApp = null;
+      document.body.innerHTML = "";
+      routeParams.kind = testCase.kind;
+      useCheckoutStore().applyTransaction(testCase.transaction);
+      applySaleReadiness(true);
+
+      const host = await mountView();
+
+      expect(host.textContent).toContain(testCase.title);
+      expect(host.textContent).not.toContain(testCase.rawCode);
+      expect(host.textContent).not.toContain("ZodError");
+    }
   });
 
   it("keeps vision recognition details silent on the customer result page", async () => {

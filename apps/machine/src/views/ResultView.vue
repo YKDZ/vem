@@ -2,7 +2,11 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
-import type { CustomerCheckoutReturnPolicy } from "@/checkout/customer-checkout-view";
+import type {
+  CustomerCheckoutResultDetailIntent,
+  CustomerCheckoutResultDisplayIntent,
+  CustomerCheckoutReturnPolicy,
+} from "@/checkout/customer-checkout-view";
 import type { CheckoutResultKind } from "@/types/checkout";
 
 import listSloganImage from "@/assets/home/list-slogan.png";
@@ -33,7 +37,7 @@ type ResultCopy = {
   icon: string;
 };
 
-const copyMap: Record<CheckoutResultKind, ResultCopy> = {
+const copyMap: Record<CustomerCheckoutResultDisplayIntent, ResultCopy> = {
   success: {
     title: "出货成功",
     subtitle: "请及时取走商品，欢迎再次使用。",
@@ -52,7 +56,7 @@ const copyMap: Record<CheckoutResultKind, ResultCopy> = {
     tone: "warning",
     icon: "⌛",
   },
-  dispense_failed: {
+  dispense_failure: {
     title: "出货失败",
     subtitle: "请联系工作人员处理，已支付款项会按订单状态处理。",
     tone: "danger",
@@ -83,10 +87,13 @@ const copyMap: Record<CheckoutResultKind, ResultCopy> = {
     icon: "—",
   },
 };
+const detailCopyMap: Record<CustomerCheckoutResultDetailIntent, string> = {
+  dispense_failure: "请凭订单凭证联系工作人员处理出货异常。",
+  dispense_result_unknown: "出货结果待确认，请凭订单凭证联系工作人员处理。",
+  manual_handling: "订单已进入人工处理，请凭订单凭证联系工作人员。",
+};
 const DISPENSE_RESOLUTION_RESULT_KINDS: ReadonlySet<CheckoutResultKind> =
   new Set(["dispense_failed", "refund_pending", "refunded", "manual_handling"]);
-const WAIT_FOR_RESOLUTION_RESULT_KINDS: ReadonlySet<CheckoutResultKind> =
-  new Set(["manual_handling", "refund_pending"]);
 
 const checkoutView = computed(() => checkoutStore.customerCheckoutView);
 const projectedResult = computed(() =>
@@ -97,20 +104,27 @@ const kind = computed(
     projectedResult.value?.kind ??
     (String(route.params.kind) as CheckoutResultKind),
 );
-const copy = computed(() => copyMap[kind.value] ?? copyMap.manual_handling);
-const isDispenseFailureResult = computed(
-  () => kind.value === "dispense_failed",
+const displayIntent = computed<CustomerCheckoutResultDisplayIntent>(
+  () => projectedResult.value?.displayIntent ?? "manual_handling",
 );
-const isSuccessResult = computed(() => kind.value === "success");
+const copy = computed(() => copyMap[displayIntent.value]);
+const isDispenseFailureResult = computed(
+  () => displayIntent.value === "dispense_failure",
+);
 const isDispenseResolutionResult = computed(() =>
   DISPENSE_RESOLUTION_RESULT_KINDS.has(kind.value),
 );
 const resultReadinessError = ref<string | null>(null);
 const resultReadinessConfirmed = ref(false);
-const successReturnPolicy = computed<CustomerCheckoutReturnPolicy | null>(() => {
-  if (projectedResult.value?.kind !== "success") return null;
+const activeReturnPolicy = computed<CustomerCheckoutReturnPolicy | null>(() => {
+  if (!projectedResult.value) return null;
   const projectedPolicy = projectedResult.value.returnPolicy;
-  if (resultReadinessConfirmed.value) return projectedPolicy;
+  if (
+    projectedResult.value.kind !== "success" ||
+    resultReadinessConfirmed.value
+  ) {
+    return projectedPolicy;
+  }
   return {
     ...projectedPolicy,
     canAutoReturn: false,
@@ -124,54 +138,20 @@ const orderCredential = computed(() => {
   if (projectedResult.value?.orderCredentialBehavior === "hidden") {
     return null;
   }
-  return (
-    checkoutView.value.orderCredential ??
-    checkoutStore.currentOrder?.orderNo ??
-    checkoutStore.status?.orderNo ??
-    null
-  );
+  return checkoutView.value.orderCredential;
 });
 const resultDetail = computed(() => {
-  if (
-    kind.value === "manual_handling" &&
-    (checkoutStore.status?.vending?.status === "result_unknown" ||
-      checkoutStore.transaction?.vending?.status === "result_unknown")
-  ) {
-    return "出货结果待确认，请凭订单凭证联系工作人员处理。";
-  }
-  if (kind.value === "manual_handling") {
-    return "订单已进入人工处理，请凭订单凭证联系工作人员。";
-  }
-  if (kind.value === "dispense_failed") {
-    return "请凭订单凭证联系工作人员处理出货异常。";
-  }
-  return null;
+  const detailIntent = projectedResult.value?.detailIntent;
+  return detailIntent ? detailCopyMap[detailIntent] : null;
 });
 const requiresMaintenanceReview = computed(() => {
-  if (!isDispenseFailureResult.value) return false;
-  const ready = connectivityStore.ready;
-  const saleReadiness = connectivityStore.saleReadiness;
-  return Boolean(
-    ready?.suggestedRoute === "maintenance" ||
-    ready?.blockingCodes.includes("WHOLE_MACHINE_HARDWARE_FAULT") ||
-    saleReadiness?.blockingCodes.includes("WHOLE_MACHINE_HARDWARE_FAULT") ||
-    saleReadiness?.components.wholeMachineBlockers.ready === false,
-  );
+  return activeReturnPolicy.value?.requiresMaintenanceReview === true;
 });
 const canAutoReturn = computed(
-  () =>
-    (successReturnPolicy.value?.canAutoReturn ??
-      (isSuccessResult.value ||
-        (Boolean(checkoutStore.resultKind) &&
-          connectivityStore.isSaleNetworkReady))) &&
-    !isDispenseResolutionResult.value,
+  () => activeReturnPolicy.value?.canAutoReturn === true,
 );
 const canManuallyReturn = computed(
-  () =>
-    (successReturnPolicy.value?.canManualReturn ??
-      (isSuccessResult.value || Boolean(checkoutStore.resultKind))) &&
-    !WAIT_FOR_RESOLUTION_RESULT_KINDS.has(kind.value) &&
-    (connectivityStore.isSaleNetworkReady || !isDispenseResolutionResult.value),
+  () => activeReturnPolicy.value?.canManualReturn === true,
 );
 const autoReturnRemainingSeconds = ref(
   Math.ceil(AUTO_RETURN_DELAY_MS / AUTO_RETURN_TICK_MS),
@@ -219,8 +199,13 @@ async function backToCatalog(): Promise<void> {
   if (returningToCatalog) return;
   returningToCatalog = true;
   stopAutoReturn();
-  await refreshResultReadiness();
-  const projectedTargetRoute = successReturnPolicy.value?.targetRoute ?? null;
+  const readinessConfirmed = await refreshResultReadiness();
+  const returnPolicy = activeReturnPolicy.value;
+  if (!readinessConfirmed || returnPolicy?.canManualReturn !== true) {
+    returningToCatalog = false;
+    return;
+  }
+  const projectedTargetRoute = returnPolicy.targetRoute;
   checkoutStore.dismissCurrentTerminalTransaction();
   checkoutStore.reset();
   const targetRoute = projectedTargetRoute
@@ -239,7 +224,7 @@ async function backToCatalog(): Promise<void> {
   await router.replace(targetRoute);
 }
 
-async function refreshResultReadiness(): Promise<void> {
+async function refreshResultReadiness(): Promise<boolean> {
   resultReadinessConfirmed.value = false;
   try {
     const [ready, saleReadiness] = await Promise.all([
@@ -250,11 +235,12 @@ async function refreshResultReadiness(): Promise<void> {
     connectivityStore.applySaleReadiness(saleReadiness);
     resultReadinessError.value = null;
     resultReadinessConfirmed.value = true;
+    return true;
   } catch (error) {
     resultReadinessError.value =
       error instanceof Error ? error.message : String(error);
     resultReadinessConfirmed.value = false;
-    return;
+    return false;
   }
 }
 
