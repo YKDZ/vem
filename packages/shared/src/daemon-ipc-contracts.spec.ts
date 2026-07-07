@@ -123,6 +123,12 @@ describe("Daemon IPC Contract Area", () => {
     }
 
     expect(
+      validateDaemonIpcTransactionSnapshotBoundary(
+        validCurrentDaemonIpcTransactionSnapshots.emptyOrderNoParity,
+      ),
+    ).toBe(validCurrentDaemonIpcTransactionSnapshots.emptyOrderNoParity);
+
+    expect(
       daemonIpcTransactionSnapshotSchema.parse(
         invalidCurrentDaemonIpcTransactionSnapshots.missingNextActionWithOrderNo,
       ),
@@ -134,6 +140,8 @@ describe("Daemon IPC Contract Area", () => {
       invalidCurrentDaemonIpcTransactionSnapshots.missingNextActionWithOrderNo,
       invalidCurrentDaemonIpcTransactionSnapshots.awaitingPaymentWithoutPaymentMethod,
       invalidCurrentDaemonIpcTransactionSnapshots.awaitingPaymentWithoutTotalAmount,
+      invalidCurrentDaemonIpcTransactionSnapshots.negativeTotalAmount,
+      invalidCurrentDaemonIpcTransactionSnapshots.negativePickupReminderRemainingSeconds,
     ]) {
       expect(() =>
         parseDaemonIpcTransactionSnapshotBoundary(snapshot),
@@ -193,6 +201,7 @@ describe("Daemon IPC Contract Area", () => {
           commandNo: "CMD-IPC-001",
           status: "pending",
           lastError: null,
+          pickupReminder: null,
           extraVendingField: true,
         },
       }),
@@ -212,6 +221,7 @@ describe("Daemon IPC Contract Area", () => {
             message: "Please collect goods",
             warningNo: 1,
             reportedAt: "2026-06-11T06:18:00.000Z",
+            remainingSeconds: null,
             extraPickupReminderField: true,
           },
         },
@@ -275,6 +285,7 @@ describe("Daemon IPC Contract Area", () => {
         message: "device reset completed",
         warningNo: null,
         reportedAt: "2026-06-11T06:18:00.000Z",
+        remainingSeconds: null,
       }),
     ).toThrow();
   });

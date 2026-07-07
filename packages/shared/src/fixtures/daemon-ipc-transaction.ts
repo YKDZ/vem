@@ -166,6 +166,27 @@ export const validCurrentDaemonIpcTransactionSnapshots = {
     operatorHint: null,
     updatedAt: "2026-06-11T06:16:32.320Z",
   },
+  emptyOrderNoParity: {
+    orderId: null,
+    orderNo: "",
+    productSummary: null,
+    paymentNo: null,
+    paymentMethod: null,
+    paymentProvider: null,
+    paymentUrl: null,
+    paymentStatus: null,
+    orderStatus: null,
+    totalAmountCents: null,
+    vending: null,
+    nextAction: null,
+    maskedAuthCode: null,
+    paymentCodeAttempt: null,
+    expiresAt: null,
+    errorCode: null,
+    errorMessage: null,
+    operatorHint: null,
+    updatedAt: "2026-06-11T06:16:32.320Z",
+  },
 } satisfies Record<string, DaemonIpcTransactionSnapshot>;
 
 export const invalidCurrentDaemonIpcTransactionSnapshots = {
@@ -180,6 +201,22 @@ export const invalidCurrentDaemonIpcTransactionSnapshots = {
   awaitingPaymentWithoutTotalAmount: {
     ...validCurrentDaemonIpcTransactionSnapshots.awaitingPayment,
     totalAmountCents: null,
+  },
+  negativeTotalAmount: {
+    ...validCurrentDaemonIpcTransactionSnapshots.awaitingPayment,
+    totalAmountCents: -1,
+  },
+  negativePickupReminderRemainingSeconds: {
+    ...validCurrentDaemonIpcTransactionSnapshots.dispensingWithPickupReminder,
+    vending: {
+      ...validCurrentDaemonIpcTransactionSnapshots.dispensingWithPickupReminder
+        .vending,
+      pickupReminder: {
+        ...validCurrentDaemonIpcTransactionSnapshots
+          .dispensingWithPickupReminder.vending.pickupReminder,
+        remainingSeconds: -1,
+      },
+    },
   },
   legacySubmitPaymentAction: {
     ...validCurrentDaemonIpcTransactionSnapshots.awaitingPayment,
