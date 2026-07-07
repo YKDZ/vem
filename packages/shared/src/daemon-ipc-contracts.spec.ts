@@ -7,8 +7,10 @@ import {
   daemonIpcCheckoutFlowActionSchema,
   daemonIpcEventNotificationSchema,
   daemonIpcDispenseProgressObservationStageSchema,
+  daemonIpcScannerStatusSchema,
   daemonIpcPickupReminderSchema,
   daemonIpcTransactionSnapshotSchema,
+  exportDaemonIpcScannerStatusJsonSchema,
   exportDaemonIpcJsonSchemaDefinitions,
   exportDaemonIpcTransactionCheckoutJsonSchema,
   machineOrderStatusNextActionSchema,
@@ -16,6 +18,10 @@ import {
   parseDaemonIpcTransactionSnapshotBoundary,
   validateDaemonIpcTransactionSnapshotBoundary,
 } from ".";
+import {
+  invalidDaemonIpcScannerStatuses,
+  validDaemonIpcScannerStatuses,
+} from "./fixtures/daemon-ipc-scanner";
 import {
   invalidCurrentDaemonIpcTransactionSnapshots,
   legacyDaemonIpcTransactionRecoveryCases,
@@ -100,6 +106,23 @@ describe("Daemon IPC Contract Area", () => {
     ).not.toThrow();
     expect(JSON.stringify(schema)).not.toContain("submit_payment");
     expect(JSON.stringify(schema)).not.toContain("collect_goods");
+  });
+
+  it("publishes scanner runtime status as a strict generated-input snapshot schema", () => {
+    for (const snapshot of Object.values(validDaemonIpcScannerStatuses)) {
+      expect(daemonIpcScannerStatusSchema.parse(snapshot)).toEqual(snapshot);
+    }
+
+    for (const snapshot of Object.values(invalidDaemonIpcScannerStatuses)) {
+      expect(() => daemonIpcScannerStatusSchema.parse(snapshot)).toThrow();
+    }
+
+    const schema = exportDaemonIpcScannerStatusJsonSchema();
+    expect(schema.$schema).toBe("https://json-schema.org/draft/2020-12/schema");
+    expect(schema.title).toBe("ScannerRuntimeStatus");
+    expect(schema.type).toBe("object");
+    expect(schema).toHaveProperty("additionalProperties", false);
+    expect(() => z.toJSONSchema(daemonIpcScannerStatusSchema)).not.toThrow();
   });
 
   it("fails clearly when Daemon IPC JSON Schema export sees unsupported Zod features", () => {

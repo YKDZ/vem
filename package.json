@@ -12,11 +12,11 @@
     "check:script-inventory": "node --test scripts/check-repository-script-inventory.test.mjs && node scripts/check-repository-script-inventory.mjs",
     "fmt": "tsx node_modules/oxfmt/dist/cli.js . && cargo fmt --all",
     "fmt:check": "tsx node_modules/oxfmt/dist/cli.js . --check && cargo fmt --all -- --check",
-    "generate:daemon-ipc-contracts": "tsx scripts/daemon-ipc-contracts/generate-transaction-checkout.ts",
+    "generate:daemon-ipc-contracts": "tsx scripts/daemon-ipc-contracts/generate-contracts.ts",
     "lint": "turbo lint",
     "lint:fix": "turbo lint -- --fix",
     "test": "node --test scripts/check-repository-script-inventory.test.mjs && turbo test",
-    "test:daemon-ipc-contracts": "vitest run scripts/daemon-ipc-contracts/generate-transaction-checkout.spec.ts",
+    "test:daemon-ipc-contracts": "vitest run scripts/daemon-ipc-contracts/generate-contracts.spec.ts",
     "test:e2e": "turbo test:e2e",
     "typecheck": "turbo typecheck",
     "typecheck:scripts": "tsc -p tsconfig.scripts.json"

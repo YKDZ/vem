@@ -259,6 +259,12 @@ describe("daemon schemas", () => {
       updatedAt: "2026-01-01T00:00:00Z",
     });
     expect(parsed.code).toBe("SCANNER_OPEN_FAILED");
+    expect(() =>
+      scannerStatusSchema.parse({
+        ...parsed,
+        extraDaemonField: true,
+      }),
+    ).toThrow();
 
     const event = daemonEventSchema.parse({
       type: "scanner_health_changed",

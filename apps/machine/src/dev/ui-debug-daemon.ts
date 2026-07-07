@@ -1,3 +1,8 @@
+import {
+  daemonIpcMachinePaymentProviderSchema,
+  paymentMethodSchema,
+} from "@vem/shared";
+
 import type {
   BringUpSnapshot,
   CatalogSnapshot,
@@ -10,13 +15,8 @@ import type {
 } from "@/daemon/schemas";
 import type { DaemonConnectionInfo } from "@/native/daemon-connection";
 
-import { transactionSnapshotSchema } from "@/daemon/schemas";
-import {
-  daemonIpcMachinePaymentProviderSchema,
-  paymentMethodSchema,
-} from "@vem/shared";
-
 import { daemonClient } from "@/daemon/client";
+import { transactionSnapshotSchema } from "@/daemon/schemas";
 
 import {
   getActiveUiDebugScenario,

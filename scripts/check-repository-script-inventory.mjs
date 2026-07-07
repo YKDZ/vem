@@ -36,13 +36,13 @@ const DEFAULT_INVENTORY = [
     workflows: ["factory preparation"],
   },
   {
-    path: "scripts/daemon-ipc-contracts/generate-transaction-checkout.ts",
+    path: "scripts/daemon-ipc-contracts/generate-contracts.ts",
     owner: "shared-contracts",
     category: "verifier-test guard",
     workflows: ["daemon ipc contract generation"],
   },
   {
-    path: "scripts/daemon-ipc-contracts/generate-transaction-checkout.spec.ts",
+    path: "scripts/daemon-ipc-contracts/generate-contracts.spec.ts",
     owner: "shared-contracts",
     category: "verifier-test guard",
     workflows: ["daemon ipc contract generation"],

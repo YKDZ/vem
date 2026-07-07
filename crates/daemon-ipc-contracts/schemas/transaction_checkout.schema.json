@@ -45,12 +45,7 @@
       "anyOf": [
         {
           "type": "string",
-          "enum": [
-            "mock",
-            "qr_code",
-            "payment_code",
-            "face_pay"
-          ]
+          "enum": ["mock", "qr_code", "payment_code", "face_pay"]
         },
         {
           "type": "null"
@@ -61,11 +56,7 @@
       "anyOf": [
         {
           "type": "string",
-          "enum": [
-            "mock",
-            "wechat_pay",
-            "alipay"
-          ]
+          "enum": ["mock", "wechat_pay", "alipay"]
         },
         {
           "type": "null"
@@ -201,11 +192,7 @@
                     },
                     "level": {
                       "type": "string",
-                      "enum": [
-                        "info",
-                        "warning",
-                        "urgent"
-                      ]
+                      "enum": ["info", "warning", "urgent"]
                     },
                     "message": {
                       "type": "string"
@@ -238,12 +225,7 @@
                       ]
                     }
                   },
-                  "required": [
-                    "level",
-                    "message",
-                    "warningNo",
-                    "reportedAt"
-                  ],
+                  "required": ["level", "message", "warningNo", "reportedAt"],
                   "additionalProperties": false
                 },
                 {
@@ -252,11 +234,7 @@
               ]
             }
           },
-          "required": [
-            "commandNo",
-            "status",
-            "lastError"
-          ],
+          "required": ["commandNo", "status", "lastError"],
           "additionalProperties": false
         },
         {
@@ -651,11 +629,7 @@
         },
         "level": {
           "type": "string",
-          "enum": [
-            "info",
-            "warning",
-            "urgent"
-          ]
+          "enum": ["info", "warning", "urgent"]
         },
         "message": {
           "type": "string"
@@ -688,12 +662,7 @@
           ]
         }
       },
-      "required": [
-        "level",
-        "message",
-        "warningNo",
-        "reportedAt"
-      ],
+      "required": ["level", "message", "warningNo", "reportedAt"],
       "additionalProperties": false
     },
     "VendingSummary": {
@@ -754,11 +723,7 @@
                 },
                 "level": {
                   "type": "string",
-                  "enum": [
-                    "info",
-                    "warning",
-                    "urgent"
-                  ]
+                  "enum": ["info", "warning", "urgent"]
                 },
                 "message": {
                   "type": "string"
@@ -791,12 +756,7 @@
                   ]
                 }
               },
-              "required": [
-                "level",
-                "message",
-                "warningNo",
-                "reportedAt"
-              ],
+              "required": ["level", "message", "warningNo", "reportedAt"],
               "additionalProperties": false
             },
             {
@@ -805,11 +765,7 @@
           ]
         }
       },
-      "required": [
-        "commandNo",
-        "status",
-        "lastError"
-      ],
+      "required": ["commandNo", "status", "lastError"],
       "additionalProperties": false
     }
   }

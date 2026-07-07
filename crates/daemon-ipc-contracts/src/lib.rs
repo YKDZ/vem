@@ -4,6 +4,7 @@ use std::fmt;
 
 #[doc(hidden)]
 mod generated {
+    pub mod scanner_status;
     pub mod transaction_checkout;
 }
 
@@ -15,6 +16,7 @@ pub type PaymentCodeAttemptSummary =
     generated::transaction_checkout::CurrentTransactionSnapshotPaymentCodeAttempt;
 pub type PickupReminder =
     generated::transaction_checkout::CurrentTransactionSnapshotVendingPickupReminder;
+pub type ScannerRuntimeStatus = generated::scanner_status::ScannerRuntimeStatus;
 pub type VendingSummary = generated::transaction_checkout::CurrentTransactionSnapshotVending;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

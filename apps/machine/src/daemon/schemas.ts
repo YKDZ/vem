@@ -3,6 +3,7 @@ import {
   type DaemonIpcUnknownEventNotification,
   type DaemonIpcTransactionSnapshot,
   daemonIpcEventNotificationSchema,
+  daemonIpcScannerStatusSchema,
   environmentControlResultPayloadSchema,
   machineCatalogItemSchema,
   machinePaymentOptionsResponseSchema,
@@ -253,15 +254,7 @@ export const syncStatusSchema = z.object({
   tlsAuthStatus: z.string().nullable(),
 });
 
-export const scannerStatusSchema = z.object({
-  online: z.boolean(),
-  adapter: z.string(),
-  port: z.string().nullable(),
-  level: z.string(),
-  code: z.string(),
-  message: z.string(),
-  updatedAt: z.string(),
-});
+export const scannerStatusSchema = daemonIpcScannerStatusSchema;
 
 export const visionStatusSchema = z.object({
   enabled: z.boolean(),
