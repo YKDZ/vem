@@ -35,7 +35,9 @@ export function applyUiDebugScenarioToStores(scenario: UiDebugScenario): void {
   useVisionStore().applyStatus(scenario.vision);
   useRemoteOpsStore().applyStatus(scenario.remoteOps);
   useAudioCueStore().applySettings(scenario.config.public.audioCueSettings);
-  void useNaturalContextStore().refresh();
+  void useNaturalContextStore()
+    .refresh()
+    .catch(() => undefined);
 
   const hasScenarioTransaction = Boolean(scenario.transaction.orderNo);
   const canRestoreStoredTransaction =
@@ -44,9 +46,10 @@ export function applyUiDebugScenarioToStores(scenario: UiDebugScenario): void {
   if (hasScenarioTransaction) {
     resetUiDebugTransaction();
     const checkoutStore = useCheckoutStore();
-    checkoutStore.dismissedTerminalOrderNos = checkoutStore.dismissedTerminalOrderNos.filter(
-      (orderNo) => orderNo !== scenario.transaction.orderNo,
-    );
+    checkoutStore.dismissedTerminalOrderNos =
+      checkoutStore.dismissedTerminalOrderNos.filter(
+        (orderNo) => orderNo !== scenario.transaction.orderNo,
+      );
     checkoutStore.applyTransaction(scenario.transaction);
     setUiDebugTransaction(scenario.transaction);
   } else if (canRestoreStoredTransaction && hasStoredUiDebugTransaction()) {

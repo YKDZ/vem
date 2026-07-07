@@ -2,8 +2,17 @@
 import { computed, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
 
+import type {
+  PresenceEventType,
+  TransactionEventType,
+} from "@/customer-events/events";
 import type { SaleViewSnapshot } from "@/daemon/schemas";
 
+import { emitCustomerEvent } from "@/composables/useCustomerEvents";
+import {
+  getEasterEggType,
+  getDepartureEventType,
+} from "@/composables/usePresenceInteraction";
 import { applyUiDebugScenarioToStores } from "@/dev/runtime-scenario-loader";
 import {
   machineRuntimeScenarios,
@@ -25,10 +34,6 @@ import KioskLayout from "@/layouts/KioskLayout.vue";
 import { useCatalogStore } from "@/stores/catalog";
 import { useCheckoutStore } from "@/stores/checkout";
 import { useNaturalContextStore } from "@/stores/natural-context";
-
-import { emitCustomerEvent } from "@/composables/useCustomerEvents";
-import { getEasterEggType, getDepartureEventType } from "@/composables/usePresenceInteraction";
-import type { PresenceEventType, TransactionEventType } from "@/customer-events/events";
 
 const router = useRouter();
 const catalogStore = useCatalogStore();
@@ -404,75 +409,167 @@ onMounted(() => {
         <p class="mt-1 text-sm text-slate-300">
           点击按钮触发音频播报，仅在 UI Debug 模式下生效。
         </p>
-        
+
         <div class="mt-4 space-y-4">
           <div>
             <p class="text-sm font-bold text-sky-200">小彩蛋</p>
             <div class="mt-2 grid grid-cols-1 gap-3">
-              <button class="debug-button" type="button" @click="playEasterEgg">播放彩蛋</button>
+              <button class="debug-button" type="button" @click="playEasterEgg">
+                播放彩蛋
+              </button>
             </div>
           </div>
 
           <div>
             <p class="text-sm font-bold text-sky-200">交互语音</p>
             <div class="mt-2 grid grid-cols-2 gap-3">
-              <button class="debug-button" type="button" @click="playAudioCue('interaction.awakened')">触屏唤醒</button>
-              <button class="debug-button" type="button" @click="playTransactionAudioCue('product.selected')">选品成功</button>
+              <button
+                class="debug-button"
+                type="button"
+                @click="playAudioCue('interaction.awakened')"
+              >
+                触屏唤醒
+              </button>
+              <button
+                class="debug-button"
+                type="button"
+                @click="playTransactionAudioCue('product.selected')"
+              >
+                选品成功
+              </button>
             </div>
           </div>
 
           <div>
             <p class="text-sm font-bold text-sky-200">支付语音</p>
             <div class="mt-2 grid grid-cols-2 gap-3">
-              <button class="debug-button" type="button" @click="playTransactionAudioCue('payment.prompt')">支付提示</button>
-              <button class="debug-button" type="button" @click="playTransactionAudioCue('payment.succeeded')">支付成功</button>
+              <button
+                class="debug-button"
+                type="button"
+                @click="playTransactionAudioCue('payment.prompt')"
+              >
+                支付提示
+              </button>
+              <button
+                class="debug-button"
+                type="button"
+                @click="playTransactionAudioCue('payment.succeeded')"
+              >
+                支付成功
+              </button>
             </div>
           </div>
 
           <div>
             <p class="text-sm font-bold text-sky-200">出货语音</p>
             <div class="mt-2 grid grid-cols-2 gap-3">
-              <button class="debug-button" type="button" @click="playTransactionAudioCue('dispensing.started')">取货等待</button>
-              <button class="debug-button" type="button" @click="playTransactionAudioCue('dispense.succeeded')">取货完成</button>
+              <button
+                class="debug-button"
+                type="button"
+                @click="playTransactionAudioCue('dispensing.started')"
+              >
+                取货等待
+              </button>
+              <button
+                class="debug-button"
+                type="button"
+                @click="playTransactionAudioCue('dispense.succeeded')"
+              >
+                取货完成
+              </button>
             </div>
           </div>
 
           <div>
             <p class="text-sm font-bold text-sky-200">取货提醒</p>
             <div class="mt-2 grid grid-cols-2 gap-3">
-              <button class="debug-button" type="button" @click="playTransactionAudioCue('pickup.warning')">超时警告10s</button>
-              <button class="debug-button" type="button" @click="playTransactionAudioCue('pickup.urgent')">超时警告25s</button>
+              <button
+                class="debug-button"
+                type="button"
+                @click="playTransactionAudioCue('pickup.warning')"
+              >
+                超时警告10s
+              </button>
+              <button
+                class="debug-button"
+                type="button"
+                @click="playTransactionAudioCue('pickup.urgent')"
+              >
+                超时警告25s
+              </button>
             </div>
           </div>
 
           <div>
             <p class="text-sm font-bold text-sky-200">离别语录</p>
             <div class="mt-2 grid grid-cols-1 gap-3">
-              <button class="debug-button" type="button" @click="playDepartureQuote">播放离别语录</button>
+              <button
+                class="debug-button"
+                type="button"
+                @click="playDepartureQuote"
+              >
+                播放离别语录
+              </button>
             </div>
           </div>
 
           <div>
             <p class="text-sm font-bold text-sky-200">隐私模式</p>
             <div class="mt-2 grid grid-cols-2 gap-3">
-              <button class="debug-button" type="button" @click="playAudioCue('privacy.crowd_detected')">多人/夜间提示</button>
+              <button
+                class="debug-button"
+                type="button"
+                @click="playAudioCue('privacy.crowd_detected')"
+              >
+                多人/夜间提示
+              </button>
             </div>
           </div>
 
           <div>
             <p class="text-sm font-bold text-sky-200">错误/故障</p>
             <div class="mt-2 grid grid-cols-2 gap-3">
-              <button class="debug-button" type="button" @click="playTransactionAudioCue('dispense.failed')">出货失败</button>
-              <button class="debug-button" type="button" @click="playTransactionAudioCue('system.hardware_fault')">设备故障</button>
-              <button class="debug-button" type="button" @click="playAudioCue('idle.assistance_prompt')">无人操作提醒</button>
+              <button
+                class="debug-button"
+                type="button"
+                @click="playTransactionAudioCue('dispense.failed')"
+              >
+                出货失败
+              </button>
+              <button
+                class="debug-button"
+                type="button"
+                @click="playTransactionAudioCue('system.hardware_fault')"
+              >
+                设备故障
+              </button>
+              <button
+                class="debug-button"
+                type="button"
+                @click="playAudioCue('idle.assistance_prompt')"
+              >
+                无人操作提醒
+              </button>
             </div>
           </div>
 
           <div>
             <p class="text-sm font-bold text-sky-200">退款</p>
             <div class="mt-2 grid grid-cols-2 gap-3">
-              <button class="debug-button" type="button" @click="playTransactionAudioCue('refund.pending')">退款处理中</button>
-              <button class="debug-button" type="button" @click="playTransactionAudioCue('refund.completed')">退款完成</button>
+              <button
+                class="debug-button"
+                type="button"
+                @click="playTransactionAudioCue('refund.pending')"
+              >
+                退款处理中
+              </button>
+              <button
+                class="debug-button"
+                type="button"
+                @click="playTransactionAudioCue('refund.completed')"
+              >
+                退款完成
+              </button>
             </div>
           </div>
         </div>

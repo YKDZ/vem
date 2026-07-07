@@ -135,13 +135,19 @@ const fallbackImage = computed(() => {
   return iconSocksImage;
 });
 
-const productIntroCueKey = computed((): "product.intro.socks" | "product.intro.underwear" | "product.intro.tshirt" | null => {
-  const label = categoryLabel.value;
-  if (label.includes("内裤")) return "product.intro.underwear";
-  if (label.includes("T恤")) return "product.intro.tshirt";
-  if (label.includes("袜")) return "product.intro.socks";
-  return null;
-});
+const productIntroCueKey = computed(
+  ():
+    | "product.intro.socks"
+    | "product.intro.underwear"
+    | "product.intro.tshirt"
+    | null => {
+    const label = categoryLabel.value;
+    if (label.includes("内裤")) return "product.intro.underwear";
+    if (label.includes("T恤")) return "product.intro.tshirt";
+    if (label.includes("袜")) return "product.intro.socks";
+    return null;
+  },
+);
 
 const playedIntro = ref(false);
 

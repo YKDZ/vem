@@ -9,11 +9,10 @@ import {
 } from "vue";
 import { useRoute, useRouter, type RouteLocationRaw } from "vue-router";
 
-import { useVisionStore } from "@/stores/vision";
 import { useNaturalContextStore } from "@/stores/natural-context";
+import { useVisionStore } from "@/stores/vision";
 
 import { recordCustomerSourceFact } from "./useCustomerEventSources";
-import { emitCustomerEvent } from "./useCustomerEvents";
 
 const DEFAULT_PRESENCE_STALE_MS = 15_000;
 const DEFAULT_CUSTOMER_ASSISTANCE_PROMPT_MS = 20_000;
@@ -24,8 +23,6 @@ const RETURN_HOME_ROUTE_NAMES = new Set([
   "checkout",
 ]);
 
-
-
 const FESTIVAL_MAP: Record<string, string> = {
   spring_festival: "spring_festival",
   new_years_day: "new_years_day",
@@ -33,8 +30,8 @@ const FESTIVAL_MAP: Record<string, string> = {
   valentines_day: "valentines_day",
   qixi_festival: "qixi_festival",
   labor_day: "labor_day",
-  dragon_boat: "dragon_boat",
-  mid_autumn: "mid_autumn",
+  dragon_boat_festival: "dragon_boat",
+  mid_autumn_festival: "mid_autumn",
   national_day: "national_day",
 };
 
@@ -66,7 +63,7 @@ const SOLAR_TERM_MAP: Record<string, string> = {
 };
 
 export function getEasterEggType(
-  naturalContextStore: ReturnType<typeof useNaturalContextStore>
+  naturalContextStore: ReturnType<typeof useNaturalContextStore>,
 ):
   | { type: "festival"; value: string }
   | { type: "solar_term"; value: string }
@@ -85,7 +82,9 @@ export function getEasterEggType(
     if (mapped) return { type: "solar_term", value: mapped };
   }
 
-  const month = calendar.localDate ? new Date(calendar.localDate).getMonth() : new Date().getMonth();
+  const month = calendar.localDate
+    ? new Date(calendar.localDate).getMonth()
+    : new Date().getMonth();
   let season: string;
   if (month >= 2 && month <= 4) season = "spring";
   else if (month >= 5 && month <= 7) season = "summer";
@@ -95,7 +94,7 @@ export function getEasterEggType(
 }
 
 export function getDepartureEventType(
-  naturalContextStore: ReturnType<typeof useNaturalContextStore>
+  naturalContextStore: ReturnType<typeof useNaturalContextStore>,
 ):
   | "departure.bad_weather"
   | "departure.bad_air"
@@ -107,9 +106,9 @@ export function getDepartureEventType(
   const weather = naturalContextStore.snapshot?.externalEnvironment.weather;
   if (!weather) return null;
 
-  if (naturalContextStore.isHighTemperature) return "departure.bad_weather";
-  if (naturalContextStore.hasLightRain) return "departure.bad_weather";
   if (naturalContextStore.hasHeavyRain) return "departure.bad_weather";
+  if (naturalContextStore.hasLightRain) return "departure.bad_weather";
+  if (naturalContextStore.isHighTemperature) return "departure.bad_weather";
   if (naturalContextStore.hasThunder) return "departure.bad_weather";
   if (naturalContextStore.hasSnow) return "departure.bad_weather";
   if (naturalContextStore.hasStrongWind) return "departure.bad_weather";
@@ -178,8 +177,8 @@ let inactivityTimer: ReturnType<typeof setTimeout> | null = null;
 let stopVisionWatch: WatchStopHandle | null = null;
 let initializedFromCurrentDiagnostic = false;
 let activeOptions: Required<PresenceInteractionOptions> | null = null;
-let route: ReturnType<typeof useRoute> | null = null;
-let naturalContextStore: ReturnType<typeof useNaturalContextStore> | null = null;
+let naturalContextStore: ReturnType<typeof useNaturalContextStore> | null =
+  null;
 
 function optionsWithDefaults(
   options: PresenceInteractionOptions,
@@ -270,26 +269,14 @@ function markPresent(input: {
   };
   restartDepartureTimers();
 
-  if (input.source === "vision") {
-    if (isPrivacyMode()) {
-      emitCustomerEvent({
-        type: "privacy.crowd_detected",
-        requestedAt: input.seenAt,
+  if (input.source === "vision" && naturalContextStore && !isPrivacyMode()) {
+    const easterEgg = getEasterEggType(naturalContextStore);
+    if (easterEgg && easterEgg.type !== "season") {
+      recordCustomerSourceFact({
+        type: "natural_context.cue",
+        eventType: `presence.easter_egg.${easterEgg.type}`,
+        occurredAt: input.seenAt,
       });
-    } else {
-      if (naturalContextStore) {
-        const storeRef = naturalContextStore;
-        void storeRef.refresh().then(() => {
-          const easterEgg = getEasterEggType(storeRef);
-          if (easterEgg) {
-            const eventType = `presence.easter_egg.${easterEgg.type}` as const;
-            emitCustomerEvent({
-              type: eventType,
-              requestedAt: input.seenAt,
-            });
-          }
-        });
-      }
     }
   }
 }
@@ -314,9 +301,6 @@ function markDeparted(input: {
   clearStaleTimer();
   clearAssistancePromptTimer();
   clearInactivityTimer();
-  if (wasPersonPresent) {
-    resetAwakenedPlayed();
-  }
   if (
     (input.source === "vision" || input.source === "inactivity") &&
     wasPersonPresent &&
@@ -328,17 +312,21 @@ function markDeparted(input: {
       occurredAt: input.departedAt ?? nowIso(),
     });
   }
-  if (input.source === "vision" && wasPersonPresent && !input.suppressAudioCue && !isPrivacyMode() && naturalContextStore) {
-    const contextStore = naturalContextStore;
-    void contextStore.refresh().then(() => {
-      const departureEventType = getDepartureEventType(contextStore);
-      if (departureEventType) {
-        emitCustomerEvent({
-          type: departureEventType,
-          requestedAt: input.departedAt ?? nowIso(),
-        });
-      }
-    });
+  if (
+    input.source === "vision" &&
+    wasPersonPresent &&
+    !input.suppressAudioCue &&
+    !isPrivacyMode() &&
+    naturalContextStore
+  ) {
+    const departureEventType = getDepartureEventType(naturalContextStore);
+    if (departureEventType) {
+      recordCustomerSourceFact({
+        type: "natural_context.cue",
+        eventType: departureEventType,
+        occurredAt: input.departedAt ?? nowIso(),
+      });
+    }
   }
   if (input.source === "vision") {
     recordCustomerSourceFact({
@@ -348,12 +336,6 @@ function markDeparted(input: {
       observedAt: input.departedAt ?? nowIso(),
     });
   }
-}
-
-let awakenedPlayedInSession = false;
-
-function resetAwakenedPlayed(): void {
-  awakenedPlayedInSession = false;
 }
 
 function registerInteraction(): void {
@@ -371,15 +353,6 @@ function registerInteraction(): void {
       type: "local.awakened",
       requestedAt: seenAt,
     });
-    if (!isPrivacyMode() && !awakenedPlayedInSession && route) {
-      if (route.name === "catalog") {
-        emitCustomerEvent({
-          type: "interaction.awakened",
-          requestedAt: seenAt,
-        });
-        awakenedPlayedInSession = true;
-      }
-    }
     return;
   }
   restartAssistancePromptTimer();
@@ -421,7 +394,6 @@ function startCustomerPresenceSession(
   started = true;
   activeOptions = optionsWithDefaults(options);
   const visionStore = useVisionStore();
-  route = useRoute();
   naturalContextStore = useNaturalContextStore();
   installInteractionListeners();
   stopVisionWatch = watch(

@@ -11,7 +11,11 @@ vi.mock("@/daemon/client", () => ({
   },
 }));
 
-import type { HealthSnapshot, TransactionSnapshot } from "@/daemon/schemas";
+import type {
+  HealthSnapshot,
+  NaturalContextSnapshot,
+  TransactionSnapshot,
+} from "@/daemon/schemas";
 
 import {
   createMachineAudioPlayback,
@@ -25,6 +29,7 @@ import { useAudioCueStore } from "@/stores/audio-cues";
 import { useCheckoutStore } from "@/stores/checkout";
 import { useConnectivityStore } from "@/stores/connectivity";
 import { useMachineStore } from "@/stores/machine";
+import { useNaturalContextStore } from "@/stores/natural-context";
 
 import { createMachineAudioCuePlaybackAdapter } from "./browser-playback";
 
@@ -37,6 +42,13 @@ type CapturedPlayback = {
   playback: MachineAudioPlayback;
   diagnostics: MachineAudioPlaybackDiagnostic[];
 };
+
+type NaturalContextWeather = NonNullable<
+  NaturalContextSnapshot["externalEnvironment"]["weather"]
+>;
+type NaturalContextCalendar = NonNullable<
+  NaturalContextSnapshot["externalEnvironment"]["calendar"]
+>;
 
 function createPlaybackHarness(
   driverFactory: () => MachineAudioPlaybackDriver = () =>
@@ -86,6 +98,60 @@ function enableAudioCues(): void {
   useAudioCueStore().applySettings({
     enabled: true,
     categories: { presence: true, transaction: true },
+  });
+}
+
+function applyNaturalContext(input: {
+  checkedAt?: string;
+  temperatureCelsius?: number;
+  weatherConditionClasses?: NaturalContextWeather["weatherConditionClasses"];
+  primaryFestival?: NaturalContextCalendar["primaryFestival"];
+  solarTerm?: NaturalContextCalendar["solarTerm"];
+  localDate?: string;
+}): void {
+  const checkedAt = input.checkedAt ?? "2026-06-29T08:00:00.000Z";
+  useNaturalContextStore().applySnapshot({
+    status: "ready",
+    machineCode: "MACHINE-AUDIO",
+    checkedAt,
+    degraded: false,
+    customerFacingBlocked: false,
+    externalEnvironment: {
+      status: "ready",
+      machineCode: "MACHINE-AUDIO",
+      checkedAt,
+      localTime: {
+        status: "ready",
+        timezone: "Asia/Shanghai",
+        localDate: input.localDate ?? checkedAt.slice(0, 10),
+        localClock: "16:00:00",
+      },
+      weather: {
+        status: "ready",
+        temperatureCelsius: input.temperatureCelsius ?? 28,
+        conditionText: "小雨",
+        conditionCode: "305",
+        observedAt: checkedAt,
+        weatherConditionClasses: input.weatherConditionClasses ?? ["other"],
+        primaryWeatherConditionClass:
+          input.weatherConditionClasses?.[0] ?? "other",
+      },
+      sun: {
+        status: "ready",
+        sunriseAt: "2026-06-28T21:53:00.000Z",
+        sunsetAt: "2026-06-29T10:02:00.000Z",
+      },
+      calendar: {
+        status: "ready",
+        localDate: input.localDate ?? checkedAt.slice(0, 10),
+        festivals: input.primaryFestival ? [input.primaryFestival] : [],
+        primaryFestival: input.primaryFestival ?? null,
+        solarTerm: input.solarTerm ?? null,
+      },
+    },
+    localSiteSignals: {
+      status: "unknown",
+    },
   });
 }
 
@@ -326,6 +392,47 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
 
     expect(playback.created).toHaveLength(1);
     expect(mockDriver(playback.created[0]).requests[0].volume).toBe(0.35);
+  });
+
+  it("selects festival voice assets from daemon-owned Natural Context", async () => {
+    applyNaturalContext({
+      primaryFestival: "dragon_boat_festival",
+    });
+    const playback = createPlaybackHarness();
+    const adapter = createMachineAudioCuePlaybackAdapter({
+      playbackFactory: playback.playbackFactory,
+    });
+
+    await adapter.handleCustomerEvent({
+      type: "presence.easter_egg.festival",
+      requestedAt: "2026-06-29T08:00:10.000Z",
+      nowMs: 10_000,
+    });
+
+    expect(mockDriver(playback.created[0]).requests[0].sourceUrl).toBe(
+      "/audio/voice/easter_egg/festival/dragon_boat.mp3",
+    );
+  });
+
+  it("selects weather-specific departure voice assets from Natural Context classes", async () => {
+    applyNaturalContext({
+      temperatureCelsius: 24,
+      weatherConditionClasses: ["moderate_or_heavy_rain"],
+    });
+    const playback = createPlaybackHarness();
+    const adapter = createMachineAudioCuePlaybackAdapter({
+      playbackFactory: playback.playbackFactory,
+    });
+
+    await adapter.handleCustomerEvent({
+      type: "departure.bad_weather",
+      requestedAt: "2026-06-29T08:00:20.000Z",
+      nowMs: 20_000,
+    });
+
+    expect(mockDriver(playback.created[0]).requests[0].sourceUrl).toBe(
+      "/audio/voice/departure/bad_weather/heavy_rain.mp3",
+    );
   });
 
   it("records cue playback as played while preserving completion as playback-only diagnostics", async () => {
@@ -781,8 +888,8 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
 
     expect(playback.created).toHaveLength(2);
     expect(mockDriver(playback.created[0]).stops).toHaveLength(1);
-    expect(mockDriver(playback.created[1]).requests[0].sourceUrl).toContain(
-      "manual-handling-required",
+    expect(mockDriver(playback.created[1]).requests[0].sourceUrl).toBe(
+      "/audio/voice/error/hardware_fault.mp3",
     );
     expect(useAudioCueStore().playback.status).toBe("idle");
     expect(useAudioCueStore().latestPlaybackDiagnostic).toMatchObject({
@@ -818,7 +925,7 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
     expect(transactionPlayback.created).toHaveLength(1);
     expect(
       mockDriver(transactionPlayback.created[0]).requests[0].sourceUrl,
-    ).toContain("dispense-failed");
+    ).toBe("/audio/voice/error/dispense_failed.mp3");
     expect(useAudioCueStore().playback.status).toBe("idle");
     expect(useAudioCueStore().latestPlaybackDiagnostic).toMatchObject({
       cueKey: "dispense.failed",
@@ -874,8 +981,8 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
     expect(adapter.pendingSourceCount()).toBe(1);
     await adapter.startPendingCue();
     expect(playback.created).toHaveLength(1);
-    expect(mockDriver(playback.created[0]).requests[0].sourceUrl).toContain(
-      "dispense-failed",
+    expect(mockDriver(playback.created[0]).requests[0].sourceUrl).toBe(
+      "/audio/voice/error/dispense_failed.mp3",
     );
   });
 

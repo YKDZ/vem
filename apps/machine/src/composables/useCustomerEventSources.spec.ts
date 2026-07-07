@@ -7,6 +7,7 @@ import type { CustomerExperienceEvent } from "@/customer-events/events";
 import type { TransactionSnapshot } from "@/daemon/schemas";
 
 import { useCheckoutStore } from "@/stores/checkout";
+import { useConnectivityStore } from "@/stores/connectivity";
 import { useNaturalContextStore } from "@/stores/natural-context";
 import { useVisionStore } from "@/stores/vision";
 
@@ -1140,5 +1141,53 @@ describe("customer event sources", () => {
         orderKey: "VEM-ORDER-197-payment_failed",
       },
     ]);
+  });
+
+  it("emits hardware fault events from readiness blockers through the central event source", () => {
+    const observed: CustomerExperienceEvent[] = [];
+    const unsubscribe = onCustomerEvent((event) => {
+      observed.push(event);
+    });
+    installCustomerEventSources();
+
+    const connectivityStore = useConnectivityStore();
+    connectivityStore.applyReady({
+      ready: false,
+      canSell: false,
+      mode: "offline",
+      blockingCodes: ["LOWER_CONTROLLER_UNAVAILABLE"],
+      blockingReasons: [
+        {
+          code: "LOWER_CONTROLLER_UNAVAILABLE",
+          component: "hardware",
+          message: "lower controller unavailable",
+        },
+      ],
+      degradedReasons: [],
+      suggestedRoute: "offline",
+      updatedAt: "2026-07-05T12:40:00.000Z",
+    });
+    connectivityStore.applyReady({
+      ready: false,
+      canSell: false,
+      mode: "offline",
+      blockingCodes: ["LOWER_CONTROLLER_UNAVAILABLE"],
+      blockingReasons: [
+        {
+          code: "LOWER_CONTROLLER_UNAVAILABLE",
+          component: "hardware",
+          message: "lower controller unavailable",
+        },
+      ],
+      degradedReasons: [],
+      suggestedRoute: "offline",
+      updatedAt: "2026-07-05T12:40:00.000Z",
+    });
+
+    unsubscribe();
+    expect(observed).toHaveLength(1);
+    expect(observed[0]).toMatchObject({
+      type: "system.hardware_fault",
+    });
   });
 });

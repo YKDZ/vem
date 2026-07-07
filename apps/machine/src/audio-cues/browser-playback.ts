@@ -13,7 +13,6 @@ import {
   describeCustomerExperienceEvent,
   type CustomerExperienceEvent,
 } from "@/customer-events/events";
-import { getEasterEggType, getDepartureEventType } from "@/composables/usePresenceInteraction";
 import { useAudioCueStore } from "@/stores/audio-cues";
 import { useMachineStore } from "@/stores/machine";
 import { useNaturalContextStore } from "@/stores/natural-context";
@@ -104,6 +103,18 @@ const CUE_SOURCE_BY_KEY: Readonly<Record<string, string | undefined>> =
 
 const CUE_PRIORITY_BY_KEY: Readonly<Record<string, number | undefined>> =
   CUSTOMER_EXPERIENCE_EVENT_PRIORITIES;
+
+const FESTIVAL_AUDIO_KEY_BY_CONTEXT_VALUE: Readonly<Record<string, string>> = {
+  spring_festival: "spring_festival",
+  new_years_day: "new_years_day",
+  lantern_festival: "lantern_festival",
+  valentines_day: "valentines_day",
+  qixi_festival: "qixi_festival",
+  labor_day: "labor_day",
+  dragon_boat_festival: "dragon_boat",
+  mid_autumn_festival: "mid_autumn",
+  national_day: "national_day",
+};
 
 const sharedPlaybackState: SharedPlaybackState = {
   pendingSources: new Map<string, string>(),
@@ -328,39 +339,108 @@ export function createMachineAudioCuePlaybackAdapter(
 
 function getDynamicAudioSource(
   eventKey: string,
-  naturalContextStore: ReturnType<typeof useNaturalContextStore>
+  naturalContextStore: ReturnType<typeof useNaturalContextStore>,
 ): string {
   if (eventKey.startsWith("presence.easter_egg.")) {
-    const eggType = getEasterEggType(naturalContextStore);
-    if (eggType) {
-      return `${VOICE_BASE_PATH}/easter_egg/${eggType.type}/${eggType.value}.mp3`;
-    }
+    return (
+      sourceForEasterEggCue(eventKey, naturalContextStore) ??
+      CUE_SOURCE_BY_KEY[eventKey] ??
+      ""
+    );
   }
   if (eventKey.startsWith("departure.")) {
-    const departureType = getDepartureEventType(naturalContextStore);
-    if (departureType) {
-      if (departureType === "departure.bad_weather") {
-        const weather = naturalContextStore.snapshot?.externalEnvironment.weather;
-        if (weather) {
-          if (naturalContextStore.isHighTemperature) return `${VOICE_BASE_PATH}/departure/bad_weather/high_temp.mp3`;
-          if (naturalContextStore.hasHeavyRain) return `${VOICE_BASE_PATH}/departure/bad_weather/heavy_rain.mp3`;
-          if (naturalContextStore.hasLightRain) return `${VOICE_BASE_PATH}/departure/bad_weather/light_rain.mp3`;
-          if (naturalContextStore.hasThunder) return `${VOICE_BASE_PATH}/departure/bad_weather/thunder.mp3`;
-          if (naturalContextStore.hasSnow) return `${VOICE_BASE_PATH}/departure/bad_weather/snow.mp3`;
-          if (naturalContextStore.hasStrongWind) return `${VOICE_BASE_PATH}/departure/bad_weather/strong_wind.mp3`;
-        }
-      } else if (departureType === "departure.normal_weather") {
-        if (naturalContextStore.isSunny) return `${VOICE_BASE_PATH}/departure/normal_weather/sunny.mp3`;
-        if (naturalContextStore.isCloudy) return `${VOICE_BASE_PATH}/departure/normal_weather/cloudy.mp3`;
-      }
-    }
+    return (
+      sourceForDepartureCue(eventKey, naturalContextStore) ??
+      CUE_SOURCE_BY_KEY[eventKey] ??
+      ""
+    );
   }
   return CUE_SOURCE_BY_KEY[eventKey] ?? "";
 }
 
+function sourceForEasterEggCue(
+  eventKey: string,
+  naturalContextStore: ReturnType<typeof useNaturalContextStore>,
+): string | null {
+  if (eventKey === "presence.easter_egg.festival") {
+    const festival = naturalContextStore.primaryFestival;
+    const audioKey = festival
+      ? FESTIVAL_AUDIO_KEY_BY_CONTEXT_VALUE[festival]
+      : null;
+    return audioKey
+      ? `${VOICE_BASE_PATH}/easter_egg/festival/${audioKey}.mp3`
+      : null;
+  }
+  if (eventKey === "presence.easter_egg.solar_term") {
+    const solarTerm = naturalContextStore.solarTerm;
+    return solarTerm
+      ? `${VOICE_BASE_PATH}/easter_egg/solar_term/${solarTerm}.mp3`
+      : null;
+  }
+  if (eventKey === "presence.easter_egg.season") {
+    const localDate =
+      naturalContextStore.calendar?.localDate ??
+      naturalContextStore.snapshot?.externalEnvironment.localTime?.localDate ??
+      null;
+    const season = seasonForLocalDate(localDate);
+    return `${VOICE_BASE_PATH}/easter_egg/season/${season}.mp3`;
+  }
+  return null;
+}
+
+function sourceForDepartureCue(
+  eventKey: string,
+  naturalContextStore: ReturnType<typeof useNaturalContextStore>,
+): string | null {
+  if (eventKey === "departure.bad_air") {
+    return `${VOICE_BASE_PATH}/departure/bad_air.mp3`;
+  }
+  if (eventKey === "departure.bad_weather") {
+    if (naturalContextStore.isHighTemperature) {
+      return `${VOICE_BASE_PATH}/departure/bad_weather/high_temp.mp3`;
+    }
+    if (naturalContextStore.hasHeavyRain) {
+      return `${VOICE_BASE_PATH}/departure/bad_weather/heavy_rain.mp3`;
+    }
+    if (naturalContextStore.hasLightRain) {
+      return `${VOICE_BASE_PATH}/departure/bad_weather/light_rain.mp3`;
+    }
+    if (naturalContextStore.hasThunder) {
+      return `${VOICE_BASE_PATH}/departure/bad_weather/thunder.mp3`;
+    }
+    if (naturalContextStore.hasSnow) {
+      return `${VOICE_BASE_PATH}/departure/bad_weather/snow.mp3`;
+    }
+    if (naturalContextStore.hasStrongWind) {
+      return `${VOICE_BASE_PATH}/departure/bad_weather/strong_wind.mp3`;
+    }
+    return null;
+  }
+  if (eventKey === "departure.normal_weather") {
+    if (naturalContextStore.isSunny) {
+      return `${VOICE_BASE_PATH}/departure/normal_weather/sunny.mp3`;
+    }
+    if (naturalContextStore.isCloudy) {
+      return `${VOICE_BASE_PATH}/departure/normal_weather/cloudy.mp3`;
+    }
+  }
+  return null;
+}
+
+function seasonForLocalDate(localDate: string | null): string {
+  const monthIndex = localDate ? Date.parse(`${localDate}T00:00:00`) : NaN;
+  const month = Number.isNaN(monthIndex)
+    ? new Date().getMonth()
+    : new Date(monthIndex).getMonth();
+  if (month >= 2 && month <= 4) return "spring";
+  if (month >= 5 && month <= 7) return "summer";
+  if (month >= 8 && month <= 10) return "autumn";
+  return "winter";
+}
+
 function descriptorFromEvent(
   event: CustomerExperienceEvent,
-  naturalContextStore: ReturnType<typeof useNaturalContextStore>
+  naturalContextStore: ReturnType<typeof useNaturalContextStore>,
 ): CueDescriptor {
   const descriptor = describeCustomerExperienceEvent(event);
   return {

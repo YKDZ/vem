@@ -12,9 +12,15 @@ import type {
   CustomerEventJourneyFact,
   CustomerEventPickupCue,
 } from "@/checkout/customer-checkout-view";
-import type { CustomerExperienceEvent, TransactionEventType } from "@/customer-events/events";
+import type {
+  CustomerExperienceEvent,
+  PresenceEventType,
+  TransactionEventType,
+} from "@/customer-events/events";
 
 import { useCheckoutStore } from "@/stores/checkout";
+import { useConnectivityStore } from "@/stores/connectivity";
+import { useNaturalContextStore } from "@/stores/natural-context";
 
 import { emitCustomerEvent } from "./useCustomerEvents";
 
@@ -44,11 +50,18 @@ export type CustomerSessionIdleAudioCueSourceFact = {
   occurredAt: string;
 };
 
+export type NaturalContextAudioCueSourceFact = {
+  type: "natural_context.cue";
+  eventType: PresenceEventType;
+  occurredAt: string;
+};
+
 export type CustomerSourceFact =
   | DirectCustomerSourceFact
   | VisionPresenceAudioCueSourceFact
   | LocalAwakenedAudioCueSourceFact
-  | CustomerSessionIdleAudioCueSourceFact;
+  | CustomerSessionIdleAudioCueSourceFact
+  | NaturalContextAudioCueSourceFact;
 
 export type CustomerEventSourceOptions = {
   sourceFact?: Readonly<Ref<CustomerSourceFact | null>>;
@@ -66,6 +79,7 @@ let lastTransactionByOrderKey = new Map<
   CustomerEventJourneyFact | null
 >();
 let emittedIdleSourceFacts = new Set<string>();
+let lastSystemHardwareFaultReadyKey: string | null = null;
 
 const ASSISTANCE_PROMPT_ROUTE_NAMES = new Set([
   "catalog",
@@ -81,7 +95,29 @@ function isAssistancePromptRouteName(routeName: unknown): boolean {
   );
 }
 
+function visionPresenceCueEvent(seenAt: string): PresenceEventType {
+  const naturalContext = useNaturalContextStore();
+  const sun = naturalContext.snapshot?.externalEnvironment.sun;
+  if (sun?.status !== "ready" || !sun.sunriseAt || !sun.sunsetAt) {
+    return "presence.detected";
+  }
 
+  const seenAtMs = Date.parse(seenAt);
+  const sunriseAtMs = Date.parse(sun.sunriseAt);
+  const sunsetAtMs = Date.parse(sun.sunsetAt);
+  if (
+    Number.isNaN(seenAtMs) ||
+    Number.isNaN(sunriseAtMs) ||
+    Number.isNaN(sunsetAtMs)
+  ) {
+    return "presence.detected";
+  }
+
+  if (seenAtMs >= sunriseAtMs && seenAtMs < sunsetAtMs) {
+    return "presence.welcome.day";
+  }
+  return "presence.welcome.night";
+}
 
 function visionAudioCueState(
   fact: VisionPresenceAudioCueSourceFact,
@@ -121,7 +157,7 @@ function eventForVisionPresenceFact(
   }
 
   return {
-    type: "presence.detected",
+    type: visionPresenceCueEvent(fact.observedAt),
     requestedAt: fact.observedAt,
   };
 }
@@ -131,6 +167,12 @@ function eventForSourceFact(
   routeName: unknown,
 ): CustomerExperienceEvent | null {
   if ("event" in fact) return fact.event;
+  if (fact.type === "natural_context.cue") {
+    return {
+      type: fact.eventType,
+      requestedAt: fact.occurredAt,
+    };
+  }
   if (fact.type === "local.awakened") {
     return {
       type: "interaction.awakened",
@@ -249,6 +291,26 @@ function rememberRestoredObservationEvents(input: {
   }
 }
 
+function shouldEmitSystemHardwareFault(): boolean {
+  const connectivityStore = useConnectivityStore();
+  const ready = connectivityStore.ready;
+  if (!ready || ready.ready) {
+    lastSystemHardwareFaultReadyKey = null;
+    return false;
+  }
+
+  const codes = ready.blockingCodes ?? [];
+  const hasHardwareBlocker = codes.some((code) =>
+    ["LOWER_CONTROLLER_UNAVAILABLE", "HARDWARE_UNAVAILABLE"].includes(code),
+  );
+  if (!hasHardwareBlocker) return false;
+
+  const readyKey = `${ready.updatedAt}:${codes.join(",")}`;
+  if (lastSystemHardwareFaultReadyKey === readyKey) return false;
+  lastSystemHardwareFaultReadyKey = readyKey;
+  return true;
+}
+
 export function installCustomerEventSources(
   options: CustomerEventSourceOptions = {},
 ): () => void {
@@ -276,6 +338,19 @@ export function installCustomerEventSources(
     );
 
     const checkoutStore = useCheckoutStore();
+    const connectivityStore = useConnectivityStore();
+    watch(
+      () => connectivityStore.ready,
+      () => {
+        if (!shouldEmitSystemHardwareFault()) return;
+        emitCustomerEvent({
+          type: "system.hardware_fault",
+          requestedAt: new Date().toISOString(),
+        });
+      },
+      { flush: "sync" },
+    );
+
     watch(
       () => checkoutStore.customerCheckoutView.customerEventObservation,
       (observation) => {
@@ -368,4 +443,5 @@ export function resetCustomerEventSourcesForTests(): void {
   emittedTransactionSourceFacts = new Set();
   lastTransactionByOrderKey = new Map();
   emittedIdleSourceFacts = new Set();
+  lastSystemHardwareFaultReadyKey = null;
 }

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed } from "vue";
 import { useRouter } from "vue-router";
 
 import listSloganImage from "@/assets/home/list-slogan.png";
@@ -7,24 +7,9 @@ import mascotListImage from "@/assets/home/mascot-list.png";
 import KioskHeader from "@/components/KioskHeader.vue";
 import KioskLayout from "@/layouts/KioskLayout.vue";
 import { useConnectivityStore } from "@/stores/connectivity";
-import { emitCustomerEvent } from "@/composables/useCustomerEvents";
 
 const router = useRouter();
 const connectivityStore = useConnectivityStore();
-
-const playedHardwareFault = ref(false);
-
-onMounted(() => {
-  if (!playedHardwareFault.value) {
-    playedHardwareFault.value = true;
-    setTimeout(() => {
-      emitCustomerEvent({
-        type: "system.hardware_fault",
-        requestedAt: new Date().toISOString(),
-      });
-    }, 500);
-  }
-});
 
 const reasonText = computed(() => {
   const codes = connectivityStore.ready?.blockingCodes ?? [];

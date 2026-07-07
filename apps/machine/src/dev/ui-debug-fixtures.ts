@@ -1075,7 +1075,7 @@ export const uiDebugScenarios: readonly UiDebugScenario[] = [
     paymentOptions,
     transaction: transaction({
       paymentStatus: "succeeded",
-      orderStatus: "completed",
+      orderStatus: "fulfilled",
       nextAction: "success",
       vending: {
         commandNo: "UI-DEBUG-CMD",
