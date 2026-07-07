@@ -96,6 +96,7 @@ async fn serial_adapter_treats_pickup_timeout_as_warning_until_final_result() {
             DispenseProgressStage::PickupTimeoutWarning,
             DispenseProgressStage::PickupTimeoutWarning,
             DispenseProgressStage::PickupCompleted,
+            DispenseProgressStage::ResetCompleted,
         ],
     );
     assert_eq!(events[2].warning_no, Some(1));

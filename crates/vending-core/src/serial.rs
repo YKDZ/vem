@@ -1229,9 +1229,9 @@ pub enum LowerFrame {
     Busy,
     PickupTimeout,
     PickupPlatformBlocked,
-    AboutToDrop,
+    ArrivalAtOutlet,
     PickupCompleted,
-    Completed,
+    ResetCompletedFrame,
     IdleHeartbeat,
     DispensingHeartbeat,
     PickupHeartbeat,
@@ -1260,9 +1260,9 @@ impl LowerFrame {
             0xE4 => Self::Busy,
             0xE5 => Self::PickupTimeout,
             0xE6 => Self::PickupPlatformBlocked,
-            0xF0 => Self::AboutToDrop,
+            0xF0 => Self::ArrivalAtOutlet,
             0xF1 => Self::PickupCompleted,
-            0xF2 => Self::Completed,
+            0xF2 => Self::ResetCompletedFrame,
             0xAA => Self::IdleHeartbeat,
             0xAB => Self::DispensingHeartbeat,
             0xAC => Self::PickupHeartbeat,
@@ -1313,9 +1313,9 @@ impl LowerFrame {
             Self::Busy => "controller busy",
             Self::PickupTimeout => "pickup timed out",
             Self::PickupPlatformBlocked => "pickup platform blocked",
-            Self::AboutToDrop => "goods arrived at outlet",
+            Self::ArrivalAtOutlet => "goods arrived at outlet",
             Self::PickupCompleted => "pickup completed and outlet closed",
-            Self::Completed => "dispense completed and reset to origin",
+            Self::ResetCompletedFrame => "dispense completed and reset to origin",
             Self::IdleHeartbeat => "idle heartbeat",
             Self::DispensingHeartbeat => "dispensing heartbeat",
             Self::PickupHeartbeat => "pickup heartbeat",
@@ -1337,9 +1337,9 @@ impl LowerFrame {
             Self::Busy => vec![FRAME_HEAD, 0xE4],
             Self::PickupTimeout => vec![FRAME_HEAD, 0xE5],
             Self::PickupPlatformBlocked => vec![FRAME_HEAD, 0xE6],
-            Self::AboutToDrop => vec![FRAME_HEAD, 0xF0],
+            Self::ArrivalAtOutlet => vec![FRAME_HEAD, 0xF0],
             Self::PickupCompleted => vec![FRAME_HEAD, 0xF1],
-            Self::Completed => vec![FRAME_HEAD, 0xF2],
+            Self::ResetCompletedFrame => vec![FRAME_HEAD, 0xF2],
             Self::IdleHeartbeat => vec![FRAME_HEAD, 0xAA],
             Self::DispensingHeartbeat => vec![FRAME_HEAD, 0xAB],
             Self::PickupHeartbeat => vec![FRAME_HEAD, 0xAC],
@@ -1958,7 +1958,7 @@ where
         };
 
         match frame {
-            LowerFrame::Completed => {
+            LowerFrame::ResetCompletedFrame => {
                 adapter
                     .log_message(
                         base_entry.clone(),
@@ -1967,6 +1967,13 @@ where
                         Some("dispense completed".to_string()),
                     )
                     .await;
+                emit_dispense_progress(
+                    &progress,
+                    command,
+                    DispenseProgressStage::ResetCompleted,
+                    None,
+                    "设备已复位完成",
+                );
                 return Ok(());
             }
             LowerFrame::PickupCompleted => {
@@ -1987,7 +1994,7 @@ where
                 );
                 continue;
             }
-            LowerFrame::AboutToDrop => {
+            LowerFrame::ArrivalAtOutlet => {
                 if !outlet_opened_reported {
                     outlet_opened_reported = true;
                     emit_dispense_progress(
@@ -2176,7 +2183,10 @@ mod tests {
     fn protocol_log_helpers_render_frames_as_hex() {
         assert_eq!(bytes_to_hex(&[0x55, 0x02, 0x05, 0x31]), "55 02 05 31");
         assert_eq!(LowerFrame::PickupCompleted.protocol_bytes(), [0x55, 0xF1]);
-        assert_eq!(LowerFrame::Completed.protocol_bytes(), [0x55, 0xF2]);
+        assert_eq!(
+            LowerFrame::ResetCompletedFrame.protocol_bytes(),
+            [0x55, 0xF2]
+        );
         assert_eq!(
             LowerFrame::EnvironmentSample(EnvironmentSample {
                 temperature_celsius: -1,
@@ -2325,9 +2335,9 @@ mod tests {
     #[test]
     fn lower_frame_maps_documented_v1_codes() {
         assert_eq!(LowerFrame::from_code(0x00), LowerFrame::Ack);
-        assert_eq!(LowerFrame::from_code(0xF0), LowerFrame::AboutToDrop);
+        assert_eq!(LowerFrame::from_code(0xF0), LowerFrame::ArrivalAtOutlet);
         assert_eq!(LowerFrame::from_code(0xF1), LowerFrame::PickupCompleted);
-        assert_eq!(LowerFrame::from_code(0xF2), LowerFrame::Completed);
+        assert_eq!(LowerFrame::from_code(0xF2), LowerFrame::ResetCompletedFrame);
         assert_eq!(LowerFrame::from_code(0xAA), LowerFrame::IdleHeartbeat);
         assert_eq!(LowerFrame::from_code(0xAB), LowerFrame::DispensingHeartbeat);
         assert_eq!(LowerFrame::from_code(0xAC), LowerFrame::PickupHeartbeat);

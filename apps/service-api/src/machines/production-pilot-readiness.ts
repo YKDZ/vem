@@ -1,15 +1,8 @@
-import type { MachineHeartbeatStatusPayload } from "@vem/shared";
-
-type ReadinessStatus = "ready" | "blocked" | "degraded";
-type CheckStatus = ReadinessStatus | "missing";
-
-export type ProductionPilotReadinessCheck = {
-  code: string;
-  label: string;
-  status: CheckStatus;
-  message: string;
-  operatorAction: string;
-};
+import type {
+  MachineHeartbeatStatusPayload,
+  ProductionPilotReadinessCheck,
+  ProductionPilotReadinessDiagnosticContract,
+} from "@vem/shared";
 
 type MachineEvidence = {
   status: "online" | "offline" | "maintenance" | "disabled";
@@ -42,14 +35,6 @@ export type ProductionPilotReadinessInput = {
   machineHeartbeatTimeoutSeconds: number;
   platformPlanogram?: PlatformPlanogramEvidence;
   externalNaturalEnvironment?: ExternalNaturalEnvironmentEvidence;
-};
-
-export type ProductionPilotReadiness = {
-  status: ReadinessStatus;
-  checkedAt: string;
-  blockers: ProductionPilotReadinessCheck[];
-  degraded: ProductionPilotReadinessCheck[];
-  checks: ProductionPilotReadinessCheck[];
 };
 
 function evidenceObject(
@@ -115,6 +100,24 @@ function evidenceBoolean(
   return typeof value === "boolean" ? value : null;
 }
 
+function saleReadinessState(
+  value: string | null,
+): "locked" | "blocked" | "restored" | null {
+  if (value === "locked" || value === "blocked" || value === "restored") {
+    return value;
+  }
+  return null;
+}
+
+function stringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === "string");
+}
+
+function nullableString(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
 function check(
   input: ProductionPilotReadinessCheck,
 ): ProductionPilotReadinessCheck {
@@ -124,7 +127,7 @@ function check(
 export function evaluateProductionPilotReadiness(
   input: ProductionPilotReadinessInput,
   now = new Date(),
-): ProductionPilotReadiness {
+): ProductionPilotReadinessDiagnosticContract {
   const payload = input.latestHeartbeat?.statusPayload ?? null;
   const heartbeatAgeSeconds = input.machine.lastSeenAt
     ? Math.floor((now.getTime() - input.machine.lastSeenAt.getTime()) / 1_000)
@@ -133,9 +136,10 @@ export function evaluateProductionPilotReadiness(
     input.latestHeartbeat !== null &&
     heartbeatAgeSeconds !== null &&
     heartbeatAgeSeconds <= input.machineHeartbeatTimeoutSeconds;
-  const hasProductionPaymentProvider = input.paymentOptions.some(
+  const productionProviderCount = input.paymentOptions.filter(
     (option) => option.providerCode !== "mock" && option.mode === "production",
-  );
+  ).length;
+  const hasProductionPaymentProvider = productionProviderCount > 0;
   const scannerStatus = evidenceStatus(payload, "scannerHealth");
   const scannerOnline = evidenceBoolean(payload, "scannerHealth", "online");
   const productionDispensePathStatus =
@@ -169,39 +173,22 @@ export function evaluateProductionPilotReadiness(
   const physicalStockAttestationReady =
     physicalStockAttestationStatus === "ready" &&
     physicalStockAttestationPlanogramMatches;
-  const physicalStockAttestationCode = physicalStockAttestationPlanogramMismatch
-    ? "physical_stock_attestation.planogram_mismatch"
-    : physicalStockAttestationStatus === "ready"
-      ? "physical_stock_attestation.ready"
-      : physicalStockAttestationStatus === "stale"
-        ? "physical_stock_attestation.stale"
-        : physicalStockAttestationStatus === "inconsistent"
-          ? "physical_stock_attestation.inconsistent"
-          : "physical_stock_attestation.missing";
-  const physicalStockAttestationMessage =
-    physicalStockAttestationPlanogramMismatch
-      ? "Physical Stock Attestation planogram does not match the platform active acknowledged planogram"
-      : physicalStockAttestationStatus === "ready"
-        ? "Physical Stock Attestation is complete"
-        : physicalStockAttestationStatus === "stale"
-          ? "Physical Stock Attestation is stale for the active planogram"
-          : physicalStockAttestationStatus === "inconsistent"
-            ? "Physical Stock Attestation is inconsistent with current machine stock state"
-            : "Physical Stock Attestation evidence is missing";
   const recoveryDrillStatus = evidenceStatus(payload, "recoveryDrill");
   const managedMachineUpdateStatus = evidenceStatus(
     payload,
     "managedMachineUpdate",
   );
-  const saleReadinessState = evidenceString(payload, "saleReadiness", "state");
+  const saleReadiness = evidenceObject(payload, "saleReadiness");
+  const currentSaleReadinessState = saleReadinessState(
+    evidenceString(payload, "saleReadiness", "state"),
+  );
+  const saleReadinessBlockingCodes = stringArray(
+    saleReadiness?.["blockingCodes"],
+  );
   const maintenanceLock = evidenceObject(
     payload,
     "wholeMachineMaintenanceLock",
   );
-  const maintenanceLockMessage =
-    typeof maintenanceLock?.["message"] === "string"
-      ? maintenanceLock["message"]
-      : "Whole Machine Maintenance Lock is active";
   const productionDispensePathReady = productionDispensePathStatus === "ready";
   const scannerReady =
     scannerStatus === "online" ||
@@ -212,118 +199,120 @@ export function evaluateProductionPilotReadiness(
   const naturalContextReady =
     externalNaturalEnvironmentStatus === "ready" ||
     externalNaturalEnvironmentStatus === "stale";
+  const machineHeartbeatReasonCode =
+    input.machine.status === "online" && heartbeatFresh
+      ? "online"
+      : input.latestHeartbeat && heartbeatAgeSeconds !== null
+        ? "stale"
+        : "missing";
+  const physicalStockAttestationReasonCode =
+    physicalStockAttestationPlanogramMismatch
+      ? "planogram_mismatch"
+      : physicalStockAttestationStatus === "ready"
+        ? "ready"
+        : physicalStockAttestationStatus === "stale"
+          ? "stale"
+          : physicalStockAttestationStatus === "inconsistent"
+            ? "inconsistent"
+            : "missing";
 
   const checks = [
     check({
-      code:
-        input.machine.status === "online" && heartbeatFresh
-          ? "machine_heartbeat.online"
-          : input.latestHeartbeat && heartbeatAgeSeconds !== null
-            ? "machine_heartbeat.stale"
-            : "machine_heartbeat.missing",
-      label: "Online / Last Heartbeat",
+      kind: "machine_heartbeat",
+      reasonCode: machineHeartbeatReasonCode,
       status:
         input.machine.status === "online" && heartbeatFresh
           ? "ready"
           : "blocked",
-      message: !input.latestHeartbeat
-        ? "Machine is not online or has no heartbeat evidence"
-        : heartbeatAgeSeconds === null
-          ? "Machine heartbeat receive time is missing"
-          : heartbeatFresh
-            ? "Machine heartbeat is fresh"
-            : "Machine heartbeat timed out",
-      operatorAction:
+      actionCode:
         input.machine.status === "online" && heartbeatFresh
-          ? "Continue daily inspection."
-          : "Restore machine connectivity and wait for a fresh Machine Heartbeat.",
+          ? "continue_daily_inspection"
+          : "restore_connectivity",
+      evidence: {
+        machineStatus: input.machine.status,
+        heartbeatAgeSeconds,
+        timeoutSeconds: input.machineHeartbeatTimeoutSeconds,
+        latestHeartbeatReportedAt: input.latestHeartbeat?.reportedAt
+          ? input.latestHeartbeat.reportedAt.toISOString()
+          : null,
+        lastSeenAt: input.machine.lastSeenAt
+          ? input.machine.lastSeenAt.toISOString()
+          : null,
+      },
     }),
     check({
-      code:
-        saleReadinessState === "restored"
-          ? "machine_sale_readiness.restored"
-          : "machine_sale_readiness.blocked",
-      label: "Machine Sale Readiness",
-      status: saleReadinessState === "restored" ? "ready" : "blocked",
-      message:
-        saleReadinessState === "restored"
-          ? "Machine Sale Readiness is restored"
-          : "Machine Sale Readiness is not restored",
-      operatorAction:
-        saleReadinessState === "restored"
-          ? "Continue daily inspection."
-          : "Resolve sale blockers shown by the machine runtime before production pilot.",
+      kind: "machine_sale_readiness",
+      reasonCode:
+        currentSaleReadinessState === "restored" ? "restored" : "blocked",
+      status: currentSaleReadinessState === "restored" ? "ready" : "blocked",
+      actionCode:
+        currentSaleReadinessState === "restored"
+          ? "continue_daily_inspection"
+          : "resolve_machine_sale_blockers",
+      evidence: {
+        saleReadinessState: currentSaleReadinessState,
+        blockingCodes: saleReadinessBlockingCodes,
+      },
     }),
     check({
-      code: hasProductionPaymentProvider
-        ? "payment_readiness.ready"
-        : "payment_readiness.no_production_provider",
-      label: "Payment Readiness",
+      kind: "payment_readiness",
+      reasonCode: hasProductionPaymentProvider
+        ? "ready"
+        : "no_production_provider",
       status: hasProductionPaymentProvider ? "ready" : "blocked",
-      message: hasProductionPaymentProvider
-        ? "Payment Readiness has at least one production provider"
-        : "Payment Readiness has no production payment provider",
-      operatorAction: hasProductionPaymentProvider
-        ? "Continue daily inspection."
-        : "Enable a real machine payment provider before production pilot.",
+      actionCode: hasProductionPaymentProvider
+        ? "continue_daily_inspection"
+        : "enable_production_payment_provider",
+      evidence: { productionProviderCount },
     }),
     check({
-      code: scannerReady
-        ? "scanner_runtime_status.ready"
-        : "scanner_runtime_status.missing",
-      label: "Scanner Runtime Status",
+      kind: "scanner_runtime_status",
+      reasonCode: scannerReady ? "ready" : "missing",
       status: scannerReady ? "ready" : "degraded",
-      message: scannerReady
-        ? "Scanner Runtime Status is ready"
-        : "Scanner Runtime Status evidence is missing",
-      operatorAction: scannerReady
-        ? "Continue daily inspection."
-        : "Inspect the scanner runtime; QR payment can remain available if payment readiness is ready.",
+      actionCode: scannerReady
+        ? "continue_daily_inspection"
+        : "inspect_scanner_runtime",
+      evidence: { scannerStatus, scannerOnline },
     }),
     check({
-      code: naturalContextReady
-        ? "natural_context_readiness.ready"
-        : `natural_context_readiness.${externalNaturalEnvironmentStatus}`,
-      label: "Natural Context Readiness",
+      kind: "natural_context_readiness",
+      reasonCode: naturalContextReady
+        ? externalNaturalEnvironmentStatus
+        : externalNaturalEnvironmentStatus,
       status: naturalContextReady ? "ready" : "degraded",
-      message: naturalContextReady
-        ? "External Natural Environment is available for Natural Context"
+      actionCode: naturalContextReady
+        ? "continue_daily_inspection"
         : externalNaturalEnvironmentStatus === "unconfigured"
-          ? "Machine Geo Location is missing for External Natural Environment"
-          : "External Natural Environment is unavailable",
-      operatorAction: naturalContextReady
-        ? "Continue daily inspection."
-        : "Configure Machine Geo Location or inspect External Natural Environment diagnostics; this does not block core sales readiness.",
+          ? "configure_machine_geo_location"
+          : "inspect_external_natural_environment",
+      evidence: { externalNaturalEnvironmentStatus },
     }),
     check({
-      code: productionDispensePathReady
-        ? "production_dispense_path.ready"
-        : "production_dispense_path.blocked",
-      label: "Production Dispense Path",
+      kind: "production_dispense_path",
+      reasonCode: productionDispensePathReady ? "ready" : "blocked",
       status: productionDispensePathReady ? "ready" : "blocked",
-      message: productionDispensePathReady
-        ? "Production Dispense Path uses real hardware evidence"
-        : "Production Dispense Path is blocked or missing real hardware evidence",
-      operatorAction: productionDispensePathReady
-        ? "Continue daily inspection."
-        : "Restore the real lower-controller path before production pilot.",
+      actionCode: productionDispensePathReady
+        ? "continue_daily_inspection"
+        : "restore_real_lower_controller_path",
+      evidence: { productionDispensePathStatus },
     }),
     check({
-      code: maintenanceLock
-        ? "whole_machine_maintenance_lock.active"
-        : "whole_machine_maintenance_lock.clear",
-      label: "Whole Machine Maintenance Lock",
+      kind: "whole_machine_maintenance_lock",
+      reasonCode: maintenanceLock ? "active" : "clear",
       status: maintenanceLock ? "blocked" : "ready",
-      message: maintenanceLock
-        ? maintenanceLockMessage
-        : "Whole Machine Maintenance Lock is clear",
-      operatorAction: maintenanceLock
-        ? "Clear the maintenance lock only after hardware health is restored and notes are recorded."
-        : "Continue daily inspection.",
+      actionCode: maintenanceLock
+        ? "clear_maintenance_lock_after_recovery"
+        : "continue_daily_inspection",
+      evidence: {
+        active: maintenanceLock !== null,
+        lockCode: nullableString(maintenanceLock?.["code"]),
+        slotCode: nullableString(maintenanceLock?.["slotCode"]),
+        commandNo: nullableString(maintenanceLock?.["commandNo"]),
+      },
     }),
     check({
-      code: physicalStockAttestationCode,
-      label: "Physical Stock Attestation",
+      kind: "physical_stock_attestation",
+      reasonCode: physicalStockAttestationReasonCode,
       status: physicalStockAttestationReady
         ? "ready"
         : physicalStockAttestationPlanogramMismatch
@@ -332,48 +321,42 @@ export function evaluateProductionPilotReadiness(
               physicalStockAttestationStatus === "inconsistent"
             ? "blocked"
             : "missing",
-      message: physicalStockAttestationMessage,
-      operatorAction: physicalStockAttestationReady
-        ? "Continue daily inspection."
+      actionCode: physicalStockAttestationReady
+        ? "continue_daily_inspection"
         : physicalStockAttestationPlanogramMismatch
-          ? "Apply and acknowledge the platform planogram on the machine, then record a new Physical Stock Attestation."
+          ? "apply_planogram_then_attest_stock"
           : physicalStockAttestationStatus === "stale"
-            ? "Record a new physical stock attestation against the active planogram."
+            ? "record_active_planogram_stock_attestation"
             : physicalStockAttestationStatus === "inconsistent"
-              ? "Resolve planogram, slot enablement, and local stock ledger inconsistencies before production pilot."
-              : "Record physical slot contents through the stock attestation workflow before production pilot.",
+              ? "resolve_stock_state_inconsistencies"
+              : "record_physical_stock_attestation",
+      evidence: {
+        attestationStatus: physicalStockAttestationStatus,
+        attestationPlanogramVersion: physicalStockAttestationPlanogramVersion,
+        activeAcknowledgedPlanogramVersion:
+          platformActiveAcknowledgedPlanogramVersion,
+        planogramMatches: physicalStockAttestationPlanogramMatches,
+      },
     }),
     check({
-      code:
-        recoveryDrillStatus === "ready"
-          ? "recovery_drill.ready"
-          : "recovery_drill.missing",
-      label: "Recovery Drill",
+      kind: "recovery_drill",
+      reasonCode: recoveryDrillStatus === "ready" ? "ready" : "missing",
       status: recoveryDrillStatus === "ready" ? "ready" : "missing",
-      message:
+      actionCode:
         recoveryDrillStatus === "ready"
-          ? "Recovery Drill status is complete"
-          : "Recovery Drill status is missing",
-      operatorAction:
-        recoveryDrillStatus === "ready"
-          ? "Continue daily inspection."
-          : "Complete protected payment and fulfillment Recovery Drills before production pilot.",
+          ? "continue_daily_inspection"
+          : "complete_recovery_drills",
+      evidence: { recoveryDrillStatus },
     }),
     check({
-      code:
-        managedMachineUpdateStatus === "ready"
-          ? "managed_machine_update.ready"
-          : "managed_machine_update.missing",
-      label: "Managed Machine Update",
+      kind: "managed_machine_update",
+      reasonCode: managedMachineUpdateStatus === "ready" ? "ready" : "missing",
       status: managedMachineUpdateStatus === "ready" ? "ready" : "missing",
-      message:
+      actionCode:
         managedMachineUpdateStatus === "ready"
-          ? "Managed Machine Update capability is ready"
-          : "Managed Machine Update capability evidence is missing",
-      operatorAction:
-        managedMachineUpdateStatus === "ready"
-          ? "Continue daily inspection."
-          : "Verify managed artifact update and rollback capability before production pilot.",
+          ? "continue_daily_inspection"
+          : "verify_managed_update_and_rollback",
+      evidence: { managedMachineUpdateStatus },
     }),
   ];
   const blockers = checks.filter(

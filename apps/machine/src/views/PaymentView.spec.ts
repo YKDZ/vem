@@ -45,6 +45,8 @@ vi.mock("@/daemon/client", () => ({
 }));
 
 import type { CustomerCheckoutView } from "@/checkout/customer-checkout-view";
+import type { TransactionSnapshot } from "@/daemon/schemas";
+
 import { useCheckoutStore } from "@/stores/checkout";
 
 import PaymentView from "./PaymentView.vue";
@@ -52,7 +54,7 @@ import PaymentView from "./PaymentView.vue";
 let mountedApp: App<Element> | null = null;
 let pinia: ReturnType<typeof createPinia>;
 
-function expiredQrConfirmingTransaction() {
+function expiredQrConfirmingTransaction(): TransactionSnapshot {
   return {
     orderId: "550e8400-e29b-41d4-a716-446655440010",
     orderNo: "ORD-CONFIRM-001",
@@ -73,19 +75,19 @@ function expiredQrConfirmingTransaction() {
     errorMessage: null,
     operatorHint: null,
     updatedAt: "2026-06-11T06:16:32.320Z",
-  };
+  } as TransactionSnapshot;
 }
 
-function activeQrPaymentTransaction() {
+function activeQrPaymentTransaction(): TransactionSnapshot {
   return {
     ...expiredQrConfirmingTransaction(),
     orderNo: "ORD-CANCEL-001",
     expiresAt: "2026-06-11T06:20:00.000Z",
     updatedAt: "2026-06-11T06:16:32.320Z",
-  };
+  } as TransactionSnapshot;
 }
 
-function inFlightPaymentCodeTransaction() {
+function inFlightPaymentCodeTransaction(): TransactionSnapshot {
   return {
     ...activeQrPaymentTransaction(),
     orderNo: "ORD-CODE-001",
@@ -102,16 +104,18 @@ function inFlightPaymentCodeTransaction() {
       canRetry: false,
       message: "正在确认支付结果",
     },
-  };
+  } as TransactionSnapshot;
 }
 
-function paymentCodeTransaction(overrides: Record<string, unknown> = {}) {
+function paymentCodeTransaction(
+  overrides: Partial<TransactionSnapshot> = {},
+): TransactionSnapshot {
   return {
     ...inFlightPaymentCodeTransaction(),
     orderNo: "ORD-CODE-STATE",
     paymentCodeAttempt: null,
     ...overrides,
-  };
+  } as TransactionSnapshot;
 }
 
 async function mountView(): Promise<HTMLElement> {

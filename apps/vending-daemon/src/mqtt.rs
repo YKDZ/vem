@@ -1917,7 +1917,10 @@ mod tests {
             .expect("current transaction");
         assert_eq!(snapshot.order_no.as_deref(), Some("ORD-MQTT"));
         assert_eq!(snapshot.order_status.as_deref(), Some("fulfilled"));
-        assert_eq!(snapshot.next_action.as_deref(), Some("success"));
+        assert_eq!(
+            snapshot.next_action,
+            Some(vending_core::domain::InternalCheckoutFlowAction::Success)
+        );
         let vending = snapshot.vending.expect("vending summary");
         assert_eq!(vending.command_no.as_deref(), Some("CMD-SUCCESS"));
         assert_eq!(vending.status.as_deref(), Some("succeeded"));
@@ -2091,7 +2094,7 @@ mod tests {
                 payment_provider: None,
                 items_json: serde_json::json!([]),
                 status: "dispensing",
-                next_action: "collect_goods",
+                next_action: "dispensing",
                 payment_attempt_json: None,
                 recovery_strategy: "local",
                 last_backend_status_json: None,

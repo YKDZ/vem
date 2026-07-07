@@ -82,6 +82,7 @@ vi.mock("@/native/vision", () => ({
 }));
 
 import type { CustomerExperienceEvent } from "@/customer-events/events";
+import type { TransactionSnapshot } from "@/daemon/schemas";
 import type { VisionProfileSubscriptionHandlers } from "@/native/vision";
 import type {
   MachineCatalogItem,
@@ -94,10 +95,12 @@ import {
   useReturnHomeOnCustomerDeparture,
 } from "@/composables/usePresenceInteraction";
 import { machineConfigDefaults } from "@/config/machine-config";
+import { useAudioCueStore } from "@/stores/audio-cues";
 import { useCatalogStore } from "@/stores/catalog";
 import { useCheckoutStore } from "@/stores/checkout";
 import { useConnectivityStore } from "@/stores/connectivity";
 import { useMachineStore } from "@/stores/machine";
+import { useScannerStore } from "@/stores/scanner";
 import { useVisionStore } from "@/stores/vision";
 
 import BootView from "./BootView.vue";
@@ -413,7 +416,9 @@ function stubEgressConstructor(name: string) {
   return mock;
 }
 
-function transactionSnapshot(overrides: Record<string, unknown> = {}) {
+function transactionSnapshot(
+  overrides: Partial<TransactionSnapshot> = {},
+): TransactionSnapshot {
   return {
     orderId: "550e8400-e29b-41d4-a716-446655440010",
     orderNo: "ORD-PRIVACY-001",
@@ -435,7 +440,7 @@ function transactionSnapshot(overrides: Record<string, unknown> = {}) {
     operatorHint: null,
     updatedAt: "2026-06-04T00:00:00Z",
     ...overrides,
-  };
+  } as TransactionSnapshot;
 }
 
 function applySensitiveVisionProfile(): void {
@@ -816,8 +821,48 @@ describe("sale readiness UI flow", () => {
     });
   });
 
+  it("records unknown daemon events from the real boot subscription without dispatching business updates", async () => {
+    getHealthMock.mockResolvedValue(healthSnapshot());
+    getReadyMock.mockResolvedValue(readySnapshot());
+    getSaleReadinessMock.mockResolvedValue(saleReadiness(true));
+
+    await mountView(BootView);
+
+    await vi.waitFor(() => {
+      expect(subscribeEventsMock).toHaveBeenCalledOnce();
+    });
+
+    const handlers = subscribeEventsMock.mock.calls[0]?.[0] as {
+      onEvent: (event: unknown) => void;
+      onUnknownEvent?: (event: {
+        known: false;
+        type: string;
+        eventId: string;
+        updatedAt: string;
+        diagnostic?: unknown;
+      }) => void;
+    };
+
+    handlers.onUnknownEvent?.({
+      known: false,
+      type: "temperature_sensor_changed",
+      eventId: "unknown-evt-001",
+      updatedAt: "2026-07-06T00:00:00.000Z",
+      diagnostic: { status: "warm" },
+    });
+
+    expect(useConnectivityStore().latestUnknownEventDiagnostic).toMatchObject({
+      type: "temperature_sensor_changed",
+      eventId: "unknown-evt-001",
+      diagnostic: { status: "warm" },
+    });
+    expect(useScannerStore().lastMaskedCode).toBeNull();
+    expect(getCurrentTransactionMock).toHaveBeenCalledOnce();
+    expect(useAudioCueStore().latestPlaybackDiagnostic).toBeNull();
+  });
+
   it("does not reopen a dismissed successful terminal transaction during boot after a fresh reload", async () => {
-    const dismissedTransaction = {
+    const dismissedTransaction: TransactionSnapshot = {
       orderId: "550e8400-e29b-41d4-a716-446655440010",
       orderNo: "ORD-DISMISSED-001",
       productSummary: null,

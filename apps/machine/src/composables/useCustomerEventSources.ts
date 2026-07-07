@@ -302,10 +302,7 @@ export function installCustomerEventSources(
         if (!orderKey) return;
 
         const previousFact = lastTransactionByOrderKey.get(orderKey) ?? null;
-        lastTransactionByOrderKey.set(
-          orderKey,
-          observation.journeyFact,
-        );
+        lastTransactionByOrderKey.set(orderKey, observation.journeyFact);
         if (observation.restored) {
           rememberRestoredObservationEvents({
             orderKey,

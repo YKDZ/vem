@@ -1,6 +1,8 @@
 import { createPinia, setActivePinia } from "pinia";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { TransactionSnapshot } from "@/daemon/schemas";
+
 const {
   getPaymentOptionsMock,
   createOrderMock,
@@ -125,7 +127,9 @@ function makeCatalogItem(
   };
 }
 
-function makeTransactionSnapshot(overrides: Record<string, unknown> = {}) {
+function makeTransactionSnapshot(
+  overrides: Partial<TransactionSnapshot> = {},
+): TransactionSnapshot {
   return {
     orderId: "550e8400-e29b-41d4-a716-446655440010",
     orderNo: "ORD-001",
@@ -161,7 +165,7 @@ function makeTransactionSnapshot(overrides: Record<string, unknown> = {}) {
     operatorHint: "等待用户出示付款码",
     updatedAt: "2026-01-01T00:00:00Z",
     ...overrides,
-  };
+  } as TransactionSnapshot;
 }
 
 function applyNetworkSaleReady(): void {

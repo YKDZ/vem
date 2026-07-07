@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ScannerRuntimeStatus",
+  "type": "object",
+  "properties": {
+    "online": {
+      "type": "boolean"
+    },
+    "adapter": {
+      "type": "string"
+    },
+    "port": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "level": {
+      "type": "string"
+    },
+    "code": {
+      "type": "string"
+    },
+    "message": {
+      "type": "string"
+    },
+    "updatedAt": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "online",
+    "adapter",
+    "port",
+    "level",
+    "code",
+    "message",
+    "updatedAt"
+  ],
+  "additionalProperties": false
+}

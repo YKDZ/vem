@@ -2,7 +2,7 @@
 import { onMounted, onUnmounted, ref } from "vue";
 import { useRouter } from "vue-router";
 
-import type { DaemonEvent } from "@/daemon/schemas";
+import type { DaemonEvent, UnknownDaemonEvent } from "@/daemon/schemas";
 
 import { daemonClient } from "@/daemon/client";
 import { routeForStartup } from "@/daemon/startup";
@@ -89,6 +89,10 @@ function dispatchDaemonEvent(event: DaemonEvent): void {
   }
 }
 
+function recordUnknownDaemonEvent(event: UnknownDaemonEvent): void {
+  connectivityStore.recordUnknownEvent(event);
+}
+
 onMounted(async () => {
   try {
     pushStep("连接本机 daemon IPC");
@@ -137,6 +141,7 @@ onMounted(async () => {
       pushStep("订阅 daemon 事件流");
       eventSubscription = daemonClient.subscribeEvents({
         onEvent: dispatchDaemonEvent,
+        onUnknownEvent: recordUnknownDaemonEvent,
         onError: (error) => {
           connectivityStore.markStale(error);
         },

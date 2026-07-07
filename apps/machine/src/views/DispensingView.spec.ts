@@ -22,6 +22,8 @@ vi.mock("@/daemon/client", () => ({
   },
 }));
 
+import type { TransactionSnapshot } from "@/daemon/schemas";
+
 import { useCheckoutStore } from "@/stores/checkout";
 
 import DispensingView from "./DispensingView.vue";
@@ -29,7 +31,9 @@ import DispensingView from "./DispensingView.vue";
 let mountedApp: App<Element> | null = null;
 let pinia: ReturnType<typeof createPinia>;
 
-function dispensingTransaction(overrides: Record<string, unknown> = {}) {
+function dispensingTransaction(
+  overrides: Partial<TransactionSnapshot> = {},
+): TransactionSnapshot {
   return {
     orderId: "550e8400-e29b-41d4-a716-446655440010",
     orderNo: "ORD-DISPENSING-CUE-001",
@@ -55,10 +59,12 @@ function dispensingTransaction(overrides: Record<string, unknown> = {}) {
     operatorHint: null,
     updatedAt: "2026-06-29T09:00:02.000Z",
     ...overrides,
-  };
+  } as TransactionSnapshot;
 }
 
-function awaitingPaymentTransaction(overrides: Record<string, unknown> = {}) {
+function awaitingPaymentTransaction(
+  overrides: Partial<TransactionSnapshot> = {},
+): TransactionSnapshot {
   return {
     orderId: "550e8400-e29b-41d4-a716-446655440020",
     orderNo: "ORD-PAYMENT-RECOVERY-001",
@@ -80,7 +86,7 @@ function awaitingPaymentTransaction(overrides: Record<string, unknown> = {}) {
     operatorHint: null,
     updatedAt: "2026-06-29T09:00:02.000Z",
     ...overrides,
-  };
+  } as TransactionSnapshot;
 }
 
 async function mountView(): Promise<HTMLElement> {

@@ -1,5 +1,6 @@
 [workspace]
 members = [
+  "crates/daemon-ipc-contracts",
   "crates/vending-core",
   "apps/lower-controller-sim",
   "apps/vending-daemon",

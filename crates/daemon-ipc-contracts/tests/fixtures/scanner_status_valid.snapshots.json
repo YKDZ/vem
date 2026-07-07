@@ -1,0 +1,20 @@
+[
+  {
+    "online": true,
+    "adapter": "serial_text",
+    "port": "COM4",
+    "level": "ok",
+    "code": "SCANNER_READY",
+    "message": "scanner ready",
+    "updatedAt": "2026-06-11T06:16:32.320Z"
+  },
+  {
+    "online": false,
+    "adapter": "disabled",
+    "port": null,
+    "level": "offline",
+    "code": "SCANNER_DISABLED",
+    "message": "scanner disabled",
+    "updatedAt": "2026-06-11T06:17:00.000Z"
+  }
+]

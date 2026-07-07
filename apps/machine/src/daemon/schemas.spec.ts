@@ -1,3 +1,7 @@
+import {
+  daemonIpcTransactionSnapshotSchema,
+  parseDaemonIpcTransactionSnapshotBoundary,
+} from "@vem/shared";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -8,6 +12,7 @@ import {
   naturalContextSnapshotSchema,
   scannerStatusSchema,
   transactionSnapshotSchema,
+  type TransactionSnapshot,
 } from "./schemas";
 
 describe("daemon schemas", () => {
@@ -32,6 +37,21 @@ describe("daemon schemas", () => {
     operatorHint: null,
     updatedAt: "2026-06-11T06:16:32.320Z",
   };
+
+  it("uses the shared Daemon IPC transaction snapshot boundary parser", () => {
+    expect(transactionSnapshotSchema.parse).toBe(
+      parseDaemonIpcTransactionSnapshotBoundary,
+    );
+  });
+
+  it("keeps the Machine transaction snapshot type on the shared checkout action vocabulary", () => {
+    const legalNextAction: TransactionSnapshot["nextAction"] = "wait_payment";
+    expect(legalNextAction).toBe("wait_payment");
+
+    // @ts-expect-error unknown daemon IPC checkout actions must not be assignable
+    const invalidNextAction: TransactionSnapshot["nextAction"] = "please_guess";
+    expect(invalidNextAction).toBe("please_guess");
+  });
 
   it("validates awaiting-payment transaction snapshots with strict checkout vocabulary", () => {
     const parsed = transactionSnapshotSchema.parse(awaitingPaymentTransaction);
@@ -90,6 +110,12 @@ describe("daemon schemas", () => {
     const { nextAction: _nextAction, ...missingNextAction } =
       awaitingPaymentTransaction;
 
+    expect(() =>
+      daemonIpcTransactionSnapshotSchema.parse({
+        ...awaitingPaymentTransaction,
+        nextAction: null,
+      }),
+    ).not.toThrow();
     expect(() => transactionSnapshotSchema.parse(missingNextAction)).toThrow();
     expect(() =>
       transactionSnapshotSchema.parse({
@@ -114,7 +140,7 @@ describe("daemon schemas", () => {
     ).toThrow();
   });
 
-  it("allows the no-current-transaction snapshot to omit next action", () => {
+  it("requires the no-current-transaction snapshot to include explicit null next action", () => {
     const { nextAction: _nextAction, ...noCurrentTransaction } = {
       ...awaitingPaymentTransaction,
       orderId: null,
@@ -128,8 +154,13 @@ describe("daemon schemas", () => {
       totalAmountCents: null,
       expiresAt: null,
     };
+    expect(() =>
+      transactionSnapshotSchema.parse(noCurrentTransaction),
+    ).toThrow();
+
     const parsed = transactionSnapshotSchema.parse({
       ...noCurrentTransaction,
+      nextAction: null,
     });
 
     expect(parsed.orderNo).toBeNull();
@@ -208,7 +239,7 @@ describe("daemon schemas", () => {
 
     const parsed = daemonEventSchema.parse(fixture as never);
     expect(parsed.type).toBe("scanner_code");
-    if (parsed.type !== "scanner_code") {
+    if ("known" in parsed || parsed.type !== "scanner_code") {
       throw new Error("expected scanner_code event");
     }
     expect(parsed.maskedCode).toBe("6212****9012");
@@ -228,6 +259,12 @@ describe("daemon schemas", () => {
       updatedAt: "2026-01-01T00:00:00Z",
     });
     expect(parsed.code).toBe("SCANNER_OPEN_FAILED");
+    expect(() =>
+      scannerStatusSchema.parse({
+        ...parsed,
+        extraDaemonField: true,
+      }),
+    ).toThrow();
 
     const event = daemonEventSchema.parse({
       type: "scanner_health_changed",
@@ -236,6 +273,28 @@ describe("daemon schemas", () => {
       snapshot: parsed,
     } as never);
     expect(event.type).toBe("scanner_health_changed");
+  });
+
+  it("uses the shared forward-compatible daemon event notification contract", () => {
+    const runtimeReconfigureEvent = daemonEventSchema.parse({
+      type: "runtime_reconfigure_requested",
+      eventId: "evt-runtime-1",
+      updatedAt: "2026-01-01T00:00:00Z",
+      reason: "config_updated",
+      machineCode: "MACHINE-SCHEMA",
+    });
+    expect(runtimeReconfigureEvent.type).toBe("runtime_reconfigure_requested");
+
+    const unknownEvent = daemonEventSchema.parse({
+      type: "future_runtime_signal",
+      eventId: "evt-future-1",
+      updatedAt: "2026-01-01T00:00:00Z",
+      diagnostic: { source: "future-daemon" },
+    });
+    expect(unknownEvent).toMatchObject({
+      type: "future_runtime_signal",
+      known: false,
+    });
   });
 
   it("parses daemon-owned Natural Context Projection", () => {

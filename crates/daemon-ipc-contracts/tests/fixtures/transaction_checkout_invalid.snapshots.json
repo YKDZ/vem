@@ -1,0 +1,182 @@
+[
+  {
+    "name": "missingNextActionWithOrderNo",
+    "snapshot": {
+      "orderId": "550e8400-e29b-41d4-a716-446655440010",
+      "orderNo": "ORD-IPC-001",
+      "productSummary": null,
+      "paymentNo": "PAY-IPC-001",
+      "paymentMethod": "qr_code",
+      "paymentProvider": "alipay",
+      "paymentUrl": "https://pay.example/qr",
+      "paymentStatus": "pending",
+      "orderStatus": "pending_payment",
+      "totalAmountCents": 1200,
+      "vending": null,
+      "nextAction": null,
+      "maskedAuthCode": null,
+      "paymentCodeAttempt": null,
+      "expiresAt": "2026-06-11T06:20:00.000Z",
+      "errorCode": null,
+      "errorMessage": null,
+      "operatorHint": null,
+      "updatedAt": "2026-06-11T06:16:32.320Z"
+    }
+  },
+  {
+    "name": "awaitingPaymentWithoutPaymentMethod",
+    "snapshot": {
+      "orderId": "550e8400-e29b-41d4-a716-446655440010",
+      "orderNo": "ORD-IPC-001",
+      "productSummary": null,
+      "paymentNo": "PAY-IPC-001",
+      "paymentMethod": null,
+      "paymentProvider": "alipay",
+      "paymentUrl": "https://pay.example/qr",
+      "paymentStatus": "pending",
+      "orderStatus": "pending_payment",
+      "totalAmountCents": 1200,
+      "vending": null,
+      "nextAction": "wait_payment",
+      "maskedAuthCode": null,
+      "paymentCodeAttempt": null,
+      "expiresAt": "2026-06-11T06:20:00.000Z",
+      "errorCode": null,
+      "errorMessage": null,
+      "operatorHint": null,
+      "updatedAt": "2026-06-11T06:16:32.320Z"
+    }
+  },
+  {
+    "name": "awaitingPaymentWithoutTotalAmount",
+    "snapshot": {
+      "orderId": "550e8400-e29b-41d4-a716-446655440010",
+      "orderNo": "ORD-IPC-001",
+      "productSummary": null,
+      "paymentNo": "PAY-IPC-001",
+      "paymentMethod": "qr_code",
+      "paymentProvider": "alipay",
+      "paymentUrl": "https://pay.example/qr",
+      "paymentStatus": "pending",
+      "orderStatus": "pending_payment",
+      "totalAmountCents": null,
+      "vending": null,
+      "nextAction": "wait_payment",
+      "maskedAuthCode": null,
+      "paymentCodeAttempt": null,
+      "expiresAt": "2026-06-11T06:20:00.000Z",
+      "errorCode": null,
+      "errorMessage": null,
+      "operatorHint": null,
+      "updatedAt": "2026-06-11T06:16:32.320Z"
+    }
+  },
+  {
+    "name": "negativeTotalAmount",
+    "snapshot": {
+      "orderId": "550e8400-e29b-41d4-a716-446655440010",
+      "orderNo": "ORD-IPC-001",
+      "productSummary": null,
+      "paymentNo": "PAY-IPC-001",
+      "paymentMethod": "qr_code",
+      "paymentProvider": "alipay",
+      "paymentUrl": "https://pay.example/qr",
+      "paymentStatus": "pending",
+      "orderStatus": "pending_payment",
+      "totalAmountCents": -1,
+      "vending": null,
+      "nextAction": "wait_payment",
+      "maskedAuthCode": null,
+      "paymentCodeAttempt": null,
+      "expiresAt": "2026-06-11T06:20:00.000Z",
+      "errorCode": null,
+      "errorMessage": null,
+      "operatorHint": null,
+      "updatedAt": "2026-06-11T06:16:32.320Z"
+    }
+  },
+  {
+    "name": "negativePickupReminderRemainingSeconds",
+    "snapshot": {
+      "orderId": "550e8400-e29b-41d4-a716-446655440012",
+      "orderNo": "ORD-IPC-003",
+      "productSummary": null,
+      "paymentNo": "PAY-IPC-003",
+      "paymentMethod": "qr_code",
+      "paymentProvider": "alipay",
+      "paymentUrl": null,
+      "paymentStatus": "succeeded",
+      "orderStatus": "dispensing",
+      "totalAmountCents": 1200,
+      "vending": {
+        "commandNo": "CMD-IPC-003",
+        "status": "sent",
+        "lastError": null,
+        "pickupReminder": {
+          "stage": "pickup_timeout_warning",
+          "level": "warning",
+          "message": "请尽快取走商品",
+          "warningNo": 1,
+          "reportedAt": "2026-06-11T06:18:00.000Z",
+          "remainingSeconds": -1
+        }
+      },
+      "nextAction": "dispensing",
+      "maskedAuthCode": null,
+      "paymentCodeAttempt": null,
+      "expiresAt": null,
+      "errorCode": null,
+      "errorMessage": null,
+      "operatorHint": null,
+      "updatedAt": "2026-06-11T06:18:00.000Z"
+    }
+  },
+  {
+    "name": "legacySubmitPaymentAction",
+    "snapshot": {
+      "orderId": "550e8400-e29b-41d4-a716-446655440010",
+      "orderNo": "ORD-IPC-001",
+      "productSummary": null,
+      "paymentNo": "PAY-IPC-001",
+      "paymentMethod": "qr_code",
+      "paymentProvider": "alipay",
+      "paymentUrl": "https://pay.example/qr",
+      "paymentStatus": "pending",
+      "orderStatus": "pending_payment",
+      "totalAmountCents": 1200,
+      "vending": null,
+      "nextAction": "submit_payment",
+      "maskedAuthCode": null,
+      "paymentCodeAttempt": null,
+      "expiresAt": "2026-06-11T06:20:00.000Z",
+      "errorCode": null,
+      "errorMessage": null,
+      "operatorHint": null,
+      "updatedAt": "2026-06-11T06:16:32.320Z"
+    }
+  },
+  {
+    "name": "legacyCollectGoodsAction",
+    "snapshot": {
+      "orderId": "550e8400-e29b-41d4-a716-446655440010",
+      "orderNo": "ORD-IPC-001",
+      "productSummary": null,
+      "paymentNo": "PAY-IPC-001",
+      "paymentMethod": "qr_code",
+      "paymentProvider": "alipay",
+      "paymentUrl": "https://pay.example/qr",
+      "paymentStatus": "pending",
+      "orderStatus": "pending_payment",
+      "totalAmountCents": 1200,
+      "vending": null,
+      "nextAction": "collect_goods",
+      "maskedAuthCode": null,
+      "paymentCodeAttempt": null,
+      "expiresAt": "2026-06-11T06:20:00.000Z",
+      "errorCode": null,
+      "errorMessage": null,
+      "operatorHint": null,
+      "updatedAt": "2026-06-11T06:16:32.320Z"
+    }
+  }
+]

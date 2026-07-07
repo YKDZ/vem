@@ -8,6 +8,21 @@ function readSource(path: string): string {
   return readFileSync(`${machineRoot}/${path}`, "utf8");
 }
 
+function daemonEventConsumptionOffenders(source: string): string[] {
+  return [
+    [/\bdaemonClient\s*\.\s*subscribeEvents\b/, "daemonClient.subscribeEvents"],
+    [/\bdaemonEventSchema\b/, "daemonEventSchema"],
+    [/\bDaemonEvent\b/, "DaemonEvent"],
+    [/\bUnknownDaemonEvent\b/, "UnknownDaemonEvent"],
+    [/\bdaemonEvent\b/, "daemonEvent"],
+    [/\bdaemon event\b/, "daemon event"],
+    [/\bLowerController\b/, "LowerController"],
+    [/\blower-controller\b/, "lower-controller"],
+  ].flatMap(([pattern, label]) =>
+    (pattern as RegExp).test(source) ? [label as string] : [],
+  );
+}
+
 describe("customer checkout projection architecture", () => {
   it("keeps removed current transaction models out of the checkout store", () => {
     const checkoutStore = readSource("src/stores/checkout.ts");
@@ -68,5 +83,33 @@ describe("customer checkout projection architecture", () => {
     expect(customerEventSources).not.toMatch(/\bdispense_failed_result\b/);
     expect(customerEventSources).not.toMatch(/\brefund_pending_result\b/);
     expect(customerEventSources).not.toMatch(/\bmanual_handling_result\b/);
+  });
+
+  it("keeps customer event sources and machine audio cues decoupled from daemon and hardware notifications", () => {
+    const customerEventSources = readSource(
+      "src/composables/useCustomerEventSources.ts",
+    );
+    const audioCueConsumer = readSource(
+      "src/audio-cues/customer-audio-consumer.ts",
+    );
+    const browserPlayback = readSource("src/audio-cues/browser-playback.ts");
+
+    for (const source of [
+      customerEventSources,
+      audioCueConsumer,
+      browserPlayback,
+    ]) {
+      expect(daemonEventConsumptionOffenders(source)).toEqual([]);
+      expect(source).not.toMatch(/\bF0\b|\bF1\b|\bF2\b|\bE5\b|\bE6\b/);
+    }
+  });
+
+  it("detects direct daemon event-stream consumption in customer checkout surfaces", () => {
+    expect(
+      daemonEventConsumptionOffenders(`
+        daemonClient.subscribeEvents({ onEvent: applyEvent });
+        const event = daemonEventSchema.parse(raw);
+      `),
+    ).toEqual(["daemonClient.subscribeEvents", "daemonEventSchema"]);
   });
 });

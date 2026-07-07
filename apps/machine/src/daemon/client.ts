@@ -40,6 +40,7 @@ import {
   type ScannerStatus,
   type SyncStatus,
   type TransactionSnapshot,
+  type UnknownDaemonEvent,
   type VisionStatus,
 } from "./schemas";
 
@@ -371,6 +372,7 @@ export class DaemonApiClient {
 
   subscribeEvents(handlers: {
     onEvent: (event: DaemonEvent) => void;
+    onUnknownEvent?: (event: UnknownDaemonEvent) => void;
     onError: (error: Error) => void;
     onStale: () => void;
   }): Subscription {
@@ -389,6 +391,10 @@ export class DaemonApiClient {
       socket.onmessage = (message) => {
         if (closed) return;
         const event = daemonEventSchema.parse(JSON.parse(String(message.data)));
+        if ("known" in event) {
+          handlers.onUnknownEvent?.(event);
+          return;
+        }
         if (this.seenEventIds.has(event.eventId)) return;
         this.seenEventIds.add(event.eventId);
         this.seenEventIdQueue.push(event.eventId);

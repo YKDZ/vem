@@ -18,6 +18,7 @@ pub struct RawPaymentCode {
     pub scanned_at_ms: u128,
 }
 
+/// Internal scanner runtime health model converted to generated IPC contracts at the boundary.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScannerHealthSnapshot {

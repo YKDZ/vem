@@ -1,5 +1,6 @@
 use std::{future::Future, pin::Pin, sync::Arc};
 use uuid::Uuid;
+use vending_core::domain::InternalCheckoutFlowAction;
 
 use tokio::sync::broadcast;
 use tokio::time::{Duration, Instant};
@@ -52,13 +53,13 @@ impl TransactionStateMachine {
 
     pub async fn restore_current(
         &self,
-    ) -> Result<Option<vending_core::domain::CurrentTransactionSnapshot>, String> {
+    ) -> Result<Option<vending_core::domain::InternalCurrentTransactionSnapshot>, String> {
         self.refresh_current_from_backend().await
     }
 
     async fn refresh_current_from_backend(
         &self,
-    ) -> Result<Option<vending_core::domain::CurrentTransactionSnapshot>, String> {
+    ) -> Result<Option<vending_core::domain::InternalCurrentTransactionSnapshot>, String> {
         let Some(current) = self
             .state
             .current_transaction_snapshot()
@@ -79,7 +80,8 @@ impl TransactionStateMachine {
         };
         let before_status = current
             .next_action
-            .clone()
+            .map(InternalCheckoutFlowAction::as_str)
+            .map(ToString::to_string)
             .or_else(|| current.order_status.clone())
             .unwrap_or_default();
 
@@ -96,7 +98,8 @@ impl TransactionStateMachine {
             if let Some(refreshed) = refreshed.as_ref() {
                 let after_status = refreshed
                     .next_action
-                    .clone()
+                    .map(InternalCheckoutFlowAction::as_str)
+                    .map(ToString::to_string)
                     .or_else(|| refreshed.order_status.clone())
                     .unwrap_or_default();
                 if after_status != before_status {
@@ -115,7 +118,7 @@ impl TransactionStateMachine {
         payment_provider_code: Option<String>,
         items: serde_json::Value,
         profile_snapshot: Option<serde_json::Value>,
-    ) -> Result<vending_core::domain::CurrentTransactionSnapshot, String> {
+    ) -> Result<vending_core::domain::InternalCurrentTransactionSnapshot, String> {
         if let Some(current) = self.refresh_current_from_backend().await? {
             if is_active_transaction(&current) {
                 return Ok(current);
@@ -193,7 +196,7 @@ impl TransactionStateMachine {
     pub async fn cancel_order(
         &self,
         order_no: &str,
-    ) -> Result<vending_core::domain::CurrentTransactionSnapshot, String> {
+    ) -> Result<vending_core::domain::InternalCurrentTransactionSnapshot, String> {
         let machine_code = self
             .machine_code
             .as_deref()
@@ -220,7 +223,7 @@ impl TransactionStateMachine {
         &self,
         order_no: &str,
         succeed: bool,
-    ) -> Result<vending_core::domain::CurrentTransactionSnapshot, String> {
+    ) -> Result<vending_core::domain::InternalCurrentTransactionSnapshot, String> {
         let machine_code = self
             .machine_code
             .as_deref()
@@ -259,7 +262,7 @@ impl TransactionStateMachine {
         raw: vending_core::scanner::RawPaymentCode,
         source: &str,
         scanner_health: Option<vending_core::scanner::ScannerHealthSnapshot>,
-    ) -> Result<vending_core::domain::CurrentTransactionSnapshot, String> {
+    ) -> Result<vending_core::domain::InternalCurrentTransactionSnapshot, String> {
         let machine_code = self
             .machine_code
             .as_deref()
@@ -276,8 +279,8 @@ impl TransactionStateMachine {
             return Err("IGNORED_NON_PAYMENT_CODE_TRANSACTION".to_string());
         }
         if !matches!(
-            snapshot.next_action.as_deref(),
-            Some("wait_payment" | "submit_payment")
+            snapshot.next_action,
+            Some(InternalCheckoutFlowAction::WaitPayment)
         ) {
             return Err("IGNORED_TRANSACTION_NOT_WAITING_PAYMENT".to_string());
         }
@@ -411,7 +414,10 @@ impl TransactionStateMachine {
                             .order_status
                             .as_deref()
                             .unwrap_or("pending_payment"),
-                        next_action: snapshot.next_action.as_deref().unwrap_or("wait_payment"),
+                        next_action: snapshot
+                            .next_action
+                            .map(InternalCheckoutFlowAction::as_str)
+                            .unwrap_or("wait_payment"),
                         payment_attempt_json,
                         recovery_strategy: "local",
                         last_backend_status_json: None,
@@ -483,7 +489,7 @@ impl TransactionStateMachine {
     fn emit_transaction_changed(
         &self,
         order_no: &str,
-        current: &vending_core::domain::CurrentTransactionSnapshot,
+        current: &vending_core::domain::InternalCurrentTransactionSnapshot,
     ) {
         let _ = self.events.send(DaemonEvent::TransactionChanged {
             event_id: Uuid::new_v4().simple().to_string(),
@@ -491,14 +497,15 @@ impl TransactionStateMachine {
             order_no: order_no.to_string(),
             status: current
                 .next_action
-                .clone()
+                .map(InternalCheckoutFlowAction::as_str)
+                .map(ToString::to_string)
                 .unwrap_or_else(|| current.order_status.clone().unwrap_or_default()),
         });
     }
 }
 
 fn should_follow_payment_code_attempt(
-    current: &vending_core::domain::CurrentTransactionSnapshot,
+    current: &vending_core::domain::InternalCurrentTransactionSnapshot,
 ) -> bool {
     current
         .payment_code_attempt
@@ -512,34 +519,39 @@ fn should_follow_payment_code_attempt(
         })
 }
 
-pub fn is_active_transaction(current: &vending_core::domain::CurrentTransactionSnapshot) -> bool {
+pub fn is_active_transaction(
+    current: &vending_core::domain::InternalCurrentTransactionSnapshot,
+) -> bool {
     if is_terminal_transaction(current) {
         return false;
     }
-    current
-        .next_action
-        .as_deref()
-        .is_some_and(|status| matches!(status, "wait_payment" | "submit_payment" | "dispensing"))
-        || current.order_status.as_deref().is_some_and(|status| {
-            matches!(
-                status,
-                "waiting_payment" | "pending_payment" | "paid" | "dispensing"
-            )
-        })
-}
-
-fn is_terminal_transaction(current: &vending_core::domain::CurrentTransactionSnapshot) -> bool {
-    current.next_action.as_deref().is_some_and(|status| {
+    current.next_action.is_some_and(|status| {
         matches!(
             status,
-            "success"
-                | "payment_expired"
-                | "payment_failed"
-                | "dispense_failed"
-                | "refund_pending"
-                | "refunded"
-                | "manual_handling"
-                | "closed"
+            InternalCheckoutFlowAction::WaitPayment | InternalCheckoutFlowAction::Dispensing
+        )
+    }) || current.order_status.as_deref().is_some_and(|status| {
+        matches!(
+            status,
+            "waiting_payment" | "pending_payment" | "paid" | "dispensing"
+        )
+    })
+}
+
+fn is_terminal_transaction(
+    current: &vending_core::domain::InternalCurrentTransactionSnapshot,
+) -> bool {
+    current.next_action.is_some_and(|status| {
+        matches!(
+            status,
+            InternalCheckoutFlowAction::Success
+                | InternalCheckoutFlowAction::PaymentExpired
+                | InternalCheckoutFlowAction::PaymentFailed
+                | InternalCheckoutFlowAction::DispenseFailed
+                | InternalCheckoutFlowAction::RefundPending
+                | InternalCheckoutFlowAction::Refunded
+                | InternalCheckoutFlowAction::ManualHandling
+                | InternalCheckoutFlowAction::Closed
         )
     }) || current.order_status.as_deref().is_some_and(|status| {
         matches!(
@@ -572,8 +584,8 @@ mod tests {
     fn transaction_snapshot_with_status(
         order_status: &str,
         next_action: &str,
-    ) -> vending_core::domain::CurrentTransactionSnapshot {
-        vending_core::domain::CurrentTransactionSnapshot {
+    ) -> vending_core::domain::InternalCurrentTransactionSnapshot {
+        vending_core::domain::InternalCurrentTransactionSnapshot {
             order_id: None,
             order_no: Some("ORDER-STATUS".to_string()),
             product_summary: None,
@@ -585,7 +597,7 @@ mod tests {
             order_status: Some(order_status.to_string()),
             total_amount_cents: None,
             vending: None,
-            next_action: Some(next_action.to_string()),
+            next_action: InternalCheckoutFlowAction::from_current_contract(next_action),
             masked_auth_code: None,
             payment_code_attempt: None,
             expires_at: None,
@@ -713,7 +725,10 @@ mod tests {
             .expect("restore")
             .expect("current");
         assert_eq!(current.order_status.as_deref(), Some("fulfilled"));
-        assert_eq!(current.next_action.as_deref(), Some("success"));
+        assert_eq!(
+            current.next_action,
+            Some(InternalCheckoutFlowAction::Success)
+        );
         assert_eq!(
             current
                 .vending
@@ -928,7 +943,10 @@ mod tests {
             .await
             .expect("mock payment");
         assert_eq!(current.order_status.as_deref(), Some("paid"));
-        assert_eq!(current.next_action.as_deref(), Some("dispensing"));
+        assert_eq!(
+            current.next_action,
+            Some(InternalCheckoutFlowAction::Dispensing)
+        );
         assert_eq!(current.payment_status.as_deref(), Some("succeeded"));
 
         let event = events_rx.recv().await.expect("event");
@@ -956,7 +974,7 @@ mod tests {
                 payment_provider: Some("wechat_pay"),
                 items_json: serde_json::json!([]),
                 status: "waiting_payment",
-                next_action: "submit_payment",
+                next_action: "wait_payment",
                 payment_attempt_json: None,
                 recovery_strategy: "local",
                 last_backend_status_json: None,

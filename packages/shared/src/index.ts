@@ -11,6 +11,7 @@ export * from "./schemas/access-management";
 export * from "./schemas/audit";
 export * from "./schemas/auth";
 export * from "./schemas/dashboard";
+export * from "./schemas/daemon-ipc";
 export * from "./schemas/inventory";
 export * from "./schemas/machines";
 export * from "./schemas/machine-slot-coordinate";

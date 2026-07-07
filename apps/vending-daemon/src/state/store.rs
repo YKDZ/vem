@@ -9,7 +9,9 @@ use sqlx::{sqlite::SqlitePoolOptions, Row, SqlitePool, Transaction};
 use thiserror::Error;
 use uuid::Uuid;
 
-use vending_core::domain::{CommandLogStatus, OutboxKind, OutboxTransport};
+use vending_core::domain::{
+    CommandLogStatus, InternalCheckoutFlowAction, OutboxKind, OutboxTransport,
+};
 
 use super::schema::{
     MIGRATION_V1, MIGRATION_V10, MIGRATION_V2, MIGRATION_V3, MIGRATION_V4, MIGRATION_V5,
@@ -144,6 +146,8 @@ pub enum StoreError {
     ActivePaymentCodeAttempt,
     #[error("invalid stock input: {0}")]
     InvalidStockInput(String),
+    #[error("invalid checkout flow action for new write: {0}")]
+    InvalidCheckoutFlowAction(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1203,6 +1207,12 @@ impl LocalStateStore {
         input: OrderSessionUpsert<'_>,
     ) -> Result<(), StoreError> {
         let expires_at = order_session_expires_at(&input);
+        let next_action = parse_new_checkout_flow_action(input.next_action)?;
+        let last_backend_status_json = input
+            .last_backend_status_json
+            .as_ref()
+            .map(|value| validate_new_backend_status_checkout_flow_action(value.clone()))
+            .transpose()?;
         sqlx::query(
             "INSERT INTO order_sessions(order_no,payment_method,payment_provider,payment_attempt_json,items_json,status,next_action,expires_at,last_backend_status_json,last_error,recovery_strategy,updated_at)
              VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)
@@ -1225,14 +1235,9 @@ impl LocalStateStore {
         .bind(input.payment_attempt_json.as_ref().map(|value| value.to_string()))
         .bind(input.items_json.to_string())
         .bind(input.status)
-        .bind(input.next_action)
+        .bind(next_action)
         .bind(expires_at)
-        .bind(
-            input
-                .last_backend_status_json
-                .as_ref()
-                .map(|value| value.to_string()),
-        )
+        .bind(last_backend_status_json.as_ref().map(|value| value.to_string()))
         .bind(input.last_error)
         .bind(input.recovery_strategy)
         .bind(now_iso())
@@ -1306,7 +1311,7 @@ impl LocalStateStore {
 
     pub async fn current_order_session_snapshot(
         &self,
-    ) -> Result<Option<vending_core::domain::TransactionSnapshot>, StoreError> {
+    ) -> Result<Option<vending_core::domain::InternalTransactionSnapshot>, StoreError> {
         let row: Option<CurrentOrderSessionRow> = sqlx::query_as(
             "SELECT order_no, status, next_action, updated_at
                  FROM order_sessions
@@ -1321,10 +1326,12 @@ impl LocalStateStore {
             let status = status.and_then(|value| parse_order_status(&value)).or(Some(
                 vending_core::domain::OrderSessionStatus::WaitingPayment,
             ));
-            vending_core::domain::TransactionSnapshot {
+            vending_core::domain::InternalTransactionSnapshot {
                 order_no,
                 status,
-                next_action: next_action.filter(|value| !value.is_empty()),
+                next_action: next_action
+                    .filter(|value| !value.is_empty())
+                    .and_then(|value| InternalCheckoutFlowAction::normalize_recovered(&value)),
                 updated_at,
             }
         }))
@@ -1347,7 +1354,7 @@ impl LocalStateStore {
 
     pub async fn current_transaction_snapshot(
         &self,
-    ) -> Result<Option<vending_core::domain::CurrentTransactionSnapshot>, StoreError> {
+    ) -> Result<Option<vending_core::domain::InternalCurrentTransactionSnapshot>, StoreError> {
         let Some(row) = self.current_order_session_record().await? else {
             return Ok(None);
         };
@@ -1537,7 +1544,7 @@ impl LocalStateStore {
         sqlx::query(
             "INSERT INTO order_sessions(
                 order_no,payment_method,payment_provider,payment_attempt_json,items_json,status,next_action,expires_at,recovery_strategy,updated_at
-             ) VALUES (?1,'unknown',NULL,?2,'[]','waiting_payment','submit_payment',?3,'local','')",
+             ) VALUES (?1,'unknown',NULL,?2,'[]','waiting_payment','wait_payment',?3,'local','')",
         )
         .bind(order_no)
         .bind(payload.to_string())
@@ -3725,7 +3732,7 @@ fn to_order_session_record(row: OrderSessionRecordRow) -> OrderSessionRecord {
 
 fn to_current_transaction_snapshot(
     row: OrderSessionRecord,
-) -> Result<vending_core::domain::CurrentTransactionSnapshot, StoreError> {
+) -> Result<vending_core::domain::InternalCurrentTransactionSnapshot, StoreError> {
     let backend = row
         .last_backend_status_json
         .as_deref()
@@ -3735,7 +3742,7 @@ fn to_current_transaction_snapshot(
         .as_deref()
         .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok());
 
-    Ok(vending_core::domain::CurrentTransactionSnapshot {
+    Ok(vending_core::domain::InternalCurrentTransactionSnapshot {
         order_id: backend
             .as_ref()
             .and_then(|v| v.get("orderId"))
@@ -3785,8 +3792,8 @@ fn to_current_transaction_snapshot(
             .as_ref()
             .and_then(|v| v.get("nextAction"))
             .and_then(|v| v.as_str())
-            .map(ToString::to_string)
-            .or(Some(row.next_action)),
+            .or(Some(row.next_action.as_str()))
+            .and_then(InternalCheckoutFlowAction::normalize_recovered),
         masked_auth_code: attempt
             .as_ref()
             .and_then(|v| v.get("maskedAuthCode"))
@@ -3818,9 +3825,9 @@ fn to_current_transaction_snapshot(
 
 fn map_vending_summary(
     value: &serde_json::Value,
-) -> Option<vending_core::domain::VendingCommandSummary> {
+) -> Option<vending_core::domain::InternalVendingCommandSummary> {
     let vending = value.get("vending")?;
-    Some(vending_core::domain::VendingCommandSummary {
+    Some(vending_core::domain::InternalVendingCommandSummary {
         command_no: vending
             .get("commandNo")
             .and_then(|v| v.as_str())
@@ -3834,7 +3841,7 @@ fn map_vending_summary(
             .and_then(|v| v.as_str())
             .map(ToString::to_string),
         pickup_reminder: vending.get("pickupReminder").and_then(|value| {
-            Some(vending_core::domain::PickupReminderSummary {
+            Some(vending_core::domain::InternalPickupReminderSummary {
                 stage: value
                     .get("stage")
                     .and_then(|v| v.as_str())
@@ -3853,8 +3860,8 @@ fn map_vending_summary(
 
 fn map_payment_code_attempt_summary(
     value: &serde_json::Value,
-) -> Result<vending_core::domain::PaymentCodeAttemptSummary, StoreError> {
-    Ok(vending_core::domain::PaymentCodeAttemptSummary {
+) -> Result<vending_core::domain::InternalPaymentCodeAttemptSummary, StoreError> {
+    Ok(vending_core::domain::InternalPaymentCodeAttemptSummary {
         attempt_no: value.get("attemptNo").and_then(|v| v.as_i64()),
         status: value
             .get("status")
@@ -3889,6 +3896,29 @@ fn map_payment_code_attempt_summary(
             .and_then(|v| v.as_str())
             .map(ToString::to_string),
     })
+}
+
+fn parse_new_checkout_flow_action(action: &str) -> Result<&'static str, StoreError> {
+    InternalCheckoutFlowAction::from_current_contract(action)
+        .map(InternalCheckoutFlowAction::as_str)
+        .ok_or_else(|| StoreError::InvalidCheckoutFlowAction(action.to_string()))
+}
+
+fn validate_new_backend_status_checkout_flow_action(
+    mut status: serde_json::Value,
+) -> Result<serde_json::Value, StoreError> {
+    let Some(object) = status.as_object_mut() else {
+        return Ok(status);
+    };
+    let Some(next_action) = object.get("nextAction").and_then(|value| value.as_str()) else {
+        return Ok(status);
+    };
+    let action = parse_new_checkout_flow_action(next_action)?;
+    object.insert(
+        "nextAction".to_string(),
+        serde_json::Value::String(action.to_string()),
+    );
+    Ok(status)
 }
 
 fn merge_backend_payment_code_attempt(
@@ -4051,10 +4081,13 @@ fn patch_backend_status_for_dispense_progress(
     let Some(object) = backend_status.as_object_mut() else {
         return;
     };
-    object.insert(
-        "nextAction".to_string(),
-        serde_json::Value::String("dispensing".to_string()),
-    );
+    let reset_completed = matches!(event.stage, DispenseProgressStage::ResetCompleted);
+    if !reset_completed {
+        object.insert(
+            "nextAction".to_string(),
+            serde_json::Value::String("dispensing".to_string()),
+        );
+    }
 
     let vending = object
         .entry("vending".to_string())
@@ -4067,24 +4100,19 @@ fn patch_backend_status_for_dispense_progress(
             "commandNo".to_string(),
             serde_json::Value::String(event.command_no.clone()),
         );
+        if reset_completed {
+            vending.insert("pickupReminder".to_string(), serde_json::Value::Null);
+            return;
+        }
         vending.insert(
             "status".to_string(),
             serde_json::Value::String("dispensing".to_string()),
         );
-        let level = match event.stage {
-            DispenseProgressStage::OutletOpened
-            | DispenseProgressStage::PickupWaiting
-            | DispenseProgressStage::PickupCompleted => "info",
-            DispenseProgressStage::PickupTimeoutWarning if event.warning_no.unwrap_or(1) >= 2 => {
-                "urgent"
-            }
-            DispenseProgressStage::PickupTimeoutWarning => "warning",
-        };
-        let stage = match event.stage {
-            DispenseProgressStage::OutletOpened => "outlet_opened",
-            DispenseProgressStage::PickupWaiting => "pickup_waiting",
-            DispenseProgressStage::PickupCompleted => "pickup_completed",
-            DispenseProgressStage::PickupTimeoutWarning => "pickup_timeout_warning",
+        let Some((level, stage)) =
+            pickup_reminder_contract_for_dispense_progress(&event.stage, event.warning_no)
+        else {
+            vending.insert("pickupReminder".to_string(), serde_json::Value::Null);
+            return;
         };
         vending.insert(
             "pickupReminder".to_string(),
@@ -4096,6 +4124,22 @@ fn patch_backend_status_for_dispense_progress(
                 "reportedAt": event.reported_at,
             }),
         );
+    }
+}
+
+fn pickup_reminder_contract_for_dispense_progress(
+    stage: &DispenseProgressStage,
+    warning_no: Option<u8>,
+) -> Option<(&'static str, &'static str)> {
+    match stage {
+        DispenseProgressStage::OutletOpened => Some(("info", "outlet_opened")),
+        DispenseProgressStage::PickupWaiting => Some(("info", "pickup_waiting")),
+        DispenseProgressStage::PickupCompleted => Some(("info", "pickup_completed")),
+        DispenseProgressStage::PickupTimeoutWarning if warning_no.unwrap_or(1) >= 2 => {
+            Some(("urgent", "pickup_timeout_warning"))
+        }
+        DispenseProgressStage::PickupTimeoutWarning => Some(("warning", "pickup_timeout_warning")),
+        DispenseProgressStage::ResetCompleted => None,
     }
 }
 
@@ -5576,7 +5620,10 @@ mod tests {
             summary.status,
             Some(vending_core::domain::OrderSessionStatus::Closed)
         );
-        assert_eq!(summary.next_action.as_deref(), Some("payment_expired"));
+        assert_eq!(
+            summary.next_action,
+            Some(InternalCheckoutFlowAction::PaymentExpired)
+        );
     }
 
     #[tokio::test]
@@ -6632,6 +6679,217 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn current_transaction_snapshot_normalizes_legacy_submit_payment_on_recovery() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+
+        sqlx::query(
+            "INSERT INTO order_sessions(
+                order_no,payment_method,payment_provider,payment_attempt_json,items_json,status,
+                next_action,expires_at,last_backend_status_json,last_error,recovery_strategy,updated_at
+             ) VALUES (?1,'payment_code','alipay',NULL,'[]','waiting_payment',?2,NULL,NULL,NULL,'local',?3)",
+        )
+        .bind("ORDER-LEGACY-SUBMIT")
+        .bind("submit_payment")
+        .bind(now_iso())
+        .execute(store.pool())
+        .await
+        .expect("seed legacy row");
+
+        let snapshot = store
+            .current_transaction_snapshot()
+            .await
+            .expect("snapshot")
+            .expect("current transaction");
+
+        assert_eq!(
+            snapshot.next_action,
+            Some(InternalCheckoutFlowAction::WaitPayment)
+        );
+        let value = serde_json::to_string(&snapshot).expect("serialize snapshot");
+        assert!(!value.contains("submit_payment"));
+    }
+
+    #[tokio::test]
+    async fn current_transaction_snapshot_normalizes_legacy_collect_goods_on_recovery() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+
+        sqlx::query(
+            "INSERT INTO order_sessions(
+                order_no,payment_method,payment_provider,payment_attempt_json,items_json,status,
+                next_action,expires_at,last_backend_status_json,last_error,recovery_strategy,updated_at
+             ) VALUES (?1,'payment_code','alipay',NULL,'[]','dispensing',?2,NULL,NULL,NULL,'local',?3)",
+        )
+        .bind("ORDER-LEGACY-COLLECT")
+        .bind("collect_goods")
+        .bind(now_iso())
+        .execute(store.pool())
+        .await
+        .expect("seed legacy row");
+
+        let snapshot = store
+            .current_transaction_snapshot()
+            .await
+            .expect("snapshot")
+            .expect("current transaction");
+
+        assert_eq!(
+            snapshot.next_action,
+            Some(InternalCheckoutFlowAction::Dispensing)
+        );
+        let value = serde_json::to_string(&snapshot).expect("serialize snapshot");
+        assert!(!value.contains("collect_goods"));
+    }
+
+    #[tokio::test]
+    async fn upsert_order_session_rejects_legacy_checkout_flow_action_on_new_write() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+
+        let result = store
+            .upsert_order_session(OrderSessionUpsert {
+                order_no: "ORDER-NEW-WRITE",
+                payment_method: "payment_code",
+                payment_provider: Some("alipay"),
+                items_json: json!([]),
+                status: "waiting_payment",
+                next_action: "submit_payment",
+                payment_attempt_json: None,
+                recovery_strategy: "local",
+                last_backend_status_json: None,
+                last_error: None,
+            })
+            .await;
+
+        assert!(result.is_err());
+
+        let row: Option<(String,)> =
+            sqlx::query_as("SELECT next_action FROM order_sessions WHERE order_no = ?1")
+                .bind("ORDER-NEW-WRITE")
+                .fetch_optional(store.pool())
+                .await
+                .expect("query row");
+        assert!(row.is_none());
+    }
+
+    #[tokio::test]
+    async fn current_transaction_snapshot_normalizes_cached_backend_legacy_next_action() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+
+        for (order_no, row_next_action, cached_next_action, expected) in [
+            (
+                "ORDER-CACHED-SUBMIT",
+                "wait_payment",
+                "submit_payment",
+                InternalCheckoutFlowAction::WaitPayment,
+            ),
+            (
+                "ORDER-CACHED-COLLECT",
+                "dispensing",
+                "collect_goods",
+                InternalCheckoutFlowAction::Dispensing,
+            ),
+        ] {
+            sqlx::query(
+                "INSERT INTO order_sessions(
+                    order_no,payment_method,payment_provider,payment_attempt_json,items_json,status,
+                    next_action,expires_at,last_backend_status_json,last_error,recovery_strategy,updated_at
+                 ) VALUES (?1,'payment_code','alipay',NULL,'[]','waiting_payment',?2,NULL,?3,NULL,'local',?4)",
+            )
+            .bind(order_no)
+            .bind(row_next_action)
+            .bind(
+                json!({
+                    "orderNo": order_no,
+                    "orderStatus": "waiting_payment",
+                    "nextAction": cached_next_action
+                })
+                .to_string(),
+            )
+            .bind(now_iso())
+            .execute(store.pool())
+            .await
+            .expect("seed cached backend legacy row");
+
+            let snapshot = store
+                .current_transaction_snapshot()
+                .await
+                .expect("snapshot")
+                .expect("current transaction");
+            assert_eq!(snapshot.next_action, Some(expected));
+            let value = serde_json::to_string(&snapshot).expect("serialize snapshot");
+            assert!(!value.contains("submit_payment"));
+            assert!(!value.contains("collect_goods"));
+
+            sqlx::query("UPDATE order_sessions SET status = 'closed' WHERE order_no = ?1")
+                .bind(order_no)
+                .execute(store.pool())
+                .await
+                .expect("close row");
+        }
+    }
+
+    #[tokio::test]
+    async fn apply_backend_order_status_rejects_legacy_checkout_flow_action_on_new_write() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+
+        store
+            .upsert_order_session(OrderSessionUpsert {
+                order_no: "ORDER-BACKEND-WRITE",
+                payment_method: "payment_code",
+                payment_provider: Some("alipay"),
+                items_json: json!([]),
+                status: "dispensing",
+                next_action: "dispensing",
+                payment_attempt_json: None,
+                recovery_strategy: "local",
+                last_backend_status_json: None,
+                last_error: None,
+            })
+            .await
+            .expect("seed");
+
+        let result = store
+            .apply_backend_order_status(
+                "ORDER-BACKEND-WRITE",
+                json!({
+                    "orderNo": "ORDER-BACKEND-WRITE",
+                    "orderStatus": "dispensing",
+                    "nextAction": "collect_goods"
+                }),
+            )
+            .await;
+
+        assert!(matches!(
+            result,
+            Err(StoreError::InvalidCheckoutFlowAction(action)) if action == "collect_goods"
+        ));
+
+        let row: (String, Option<String>) = sqlx::query_as(
+            "SELECT next_action, last_backend_status_json FROM order_sessions WHERE order_no = ?1",
+        )
+        .bind("ORDER-BACKEND-WRITE")
+        .fetch_one(store.pool())
+        .await
+        .expect("query row");
+        assert_eq!(row.0, "dispensing");
+        assert!(row.1.is_none());
+    }
+
+    #[tokio::test]
     async fn dispense_progress_updates_current_transaction_pickup_reminder() {
         let temp = TempDir::new().expect("temp");
         let store = LocalStateStore::open(&temp.path().join("state.db"))
@@ -6688,7 +6946,157 @@ mod tests {
         assert_eq!(reminder.stage.as_deref(), Some("pickup_timeout_warning"));
         assert_eq!(reminder.warning_no, Some(2));
         assert!(reminder.message.contains("立即取走"));
-        assert_eq!(snapshot.next_action.as_deref(), Some("dispensing"));
+        assert_eq!(
+            snapshot.next_action,
+            Some(InternalCheckoutFlowAction::Dispensing)
+        );
+    }
+
+    #[tokio::test]
+    async fn reset_completed_progress_does_not_become_pickup_reminder() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        store
+            .upsert_order_session(OrderSessionUpsert {
+                order_no: "ORDER-RESET-COMPLETED",
+                payment_method: "payment_code",
+                payment_provider: Some("alipay"),
+                items_json: json!([{ "name": "cola" }]),
+                status: "dispensing",
+                next_action: "dispensing",
+                payment_attempt_json: None,
+                recovery_strategy: "local",
+                last_backend_status_json: Some(json!({
+                    "orderNo": "ORDER-RESET-COMPLETED",
+                    "orderStatus": "dispensing",
+                    "nextAction": "dispensing",
+                    "vending": {
+                        "commandNo": "CMD-RESET-COMPLETED",
+                        "status": "dispensing",
+                        "lastError": null
+                    }
+                })),
+                last_error: None,
+            })
+            .await
+            .expect("seed");
+
+        store
+            .record_dispense_progress(&DispenseProgressEvent {
+                command_no: "CMD-RESET-COMPLETED".to_string(),
+                order_no: "ORDER-RESET-COMPLETED".to_string(),
+                stage: DispenseProgressStage::ResetCompleted,
+                warning_no: None,
+                message: "设备已复位完成".to_string(),
+                reported_at: "2026-06-13T09:00:00.000Z".to_string(),
+            })
+            .await
+            .expect("record reset completed");
+
+        let snapshot = store
+            .current_transaction_snapshot()
+            .await
+            .expect("snapshot")
+            .expect("current");
+        let vending = snapshot.vending.expect("vending");
+        assert_eq!(vending.command_no.as_deref(), Some("CMD-RESET-COMPLETED"));
+        assert_eq!(vending.status.as_deref(), Some("dispensing"));
+        assert!(vending.pickup_reminder.is_none());
+        assert_eq!(
+            snapshot.next_action,
+            Some(InternalCheckoutFlowAction::Dispensing)
+        );
+    }
+
+    #[tokio::test]
+    async fn late_reset_completed_progress_does_not_revert_successful_dispense_result() {
+        let temp = TempDir::new().expect("temp");
+        let store = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("open");
+        store
+            .upsert_order_session(OrderSessionUpsert {
+                order_no: "ORDER-LATE-RESET",
+                payment_method: "payment_code",
+                payment_provider: Some("alipay"),
+                items_json: json!([{ "name": "cola" }]),
+                status: "dispensing",
+                next_action: "dispensing",
+                payment_attempt_json: None,
+                recovery_strategy: "local",
+                last_backend_status_json: Some(json!({
+                    "orderNo": "ORDER-LATE-RESET",
+                    "orderStatus": "dispensing",
+                    "nextAction": "dispensing",
+                    "vending": {
+                        "commandNo": "CMD-LATE-RESET",
+                        "status": "dispensing",
+                        "lastError": null,
+                        "pickupReminder": {
+                            "stage": "pickup_waiting",
+                            "level": "info",
+                            "message": "请取走商品",
+                            "warningNo": null,
+                            "reportedAt": "2026-06-13T09:00:00.000Z"
+                        }
+                    }
+                })),
+                last_error: None,
+            })
+            .await
+            .expect("seed");
+
+        let command = DispenseCommandPayload {
+            command_no: "CMD-LATE-RESET".to_string(),
+            order_no: "ORDER-LATE-RESET".to_string(),
+            slot: vending_core::hardware::SlotPayload {
+                layer_no: 1,
+                cell_no: 1,
+                slot_code: "A1".to_string(),
+            },
+            quantity: 1,
+            timeout_seconds: 10,
+        };
+        let result = DispenseResultPayload {
+            command_no: command.command_no.clone(),
+            success: true,
+            error_code: None,
+            message: "serial: dispense completed".to_string(),
+            reported_at: "2026-06-13T09:00:01.000Z".to_string(),
+        };
+        store
+            .apply_dispense_result_to_order_session(&command, &result)
+            .await
+            .expect("apply success result");
+
+        store
+            .record_dispense_progress(&DispenseProgressEvent {
+                command_no: "CMD-LATE-RESET".to_string(),
+                order_no: "ORDER-LATE-RESET".to_string(),
+                stage: DispenseProgressStage::ResetCompleted,
+                warning_no: None,
+                message: "设备已复位完成".to_string(),
+                reported_at: "2026-06-13T09:00:02.000Z".to_string(),
+            })
+            .await
+            .expect("record late reset completed");
+
+        let snapshot = store
+            .current_transaction_snapshot()
+            .await
+            .expect("snapshot")
+            .expect("current");
+        let vending = snapshot.vending.expect("vending");
+        assert_eq!(
+            snapshot.next_action,
+            Some(InternalCheckoutFlowAction::Success)
+        );
+        assert_eq!(snapshot.order_status.as_deref(), Some("fulfilled"));
+        assert_eq!(vending.command_no.as_deref(), Some("CMD-LATE-RESET"));
+        assert_eq!(vending.status.as_deref(), Some("succeeded"));
+        assert!(vending.pickup_reminder.is_none());
     }
 
     #[tokio::test]

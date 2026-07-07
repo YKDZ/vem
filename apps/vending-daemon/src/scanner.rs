@@ -184,7 +184,7 @@ impl ScannerRuntime {
         let _ = self.tx_events.send(DaemonEvent::ScannerHealthChanged {
             event_id: Uuid::new_v4().simple().to_string(),
             updated_at: snapshot.updated_at.clone(),
-            snapshot,
+            snapshot: crate::events::scanner_runtime_status_contract(&snapshot),
         });
     }
 

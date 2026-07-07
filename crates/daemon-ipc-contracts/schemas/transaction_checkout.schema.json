@@ -1,0 +1,772 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CurrentTransactionSnapshot",
+  "type": "object",
+  "properties": {
+    "orderId": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "orderNo": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "productSummary": {
+      "anyOf": [
+        {},
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "paymentNo": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "paymentMethod": {
+      "anyOf": [
+        {
+          "type": "string",
+          "enum": ["mock", "qr_code", "payment_code", "face_pay"]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "paymentProvider": {
+      "anyOf": [
+        {
+          "type": "string",
+          "enum": ["mock", "wechat_pay", "alipay"]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "paymentUrl": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "paymentStatus": {
+      "anyOf": [
+        {
+          "type": "string",
+          "enum": [
+            "created",
+            "pending",
+            "processing",
+            "succeeded",
+            "failed",
+            "expired",
+            "canceled",
+            "refund_pending",
+            "partial_refund_pending",
+            "manual_handling",
+            "refunded",
+            "partial_refunded"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "orderStatus": {
+      "anyOf": [
+        {
+          "type": "string",
+          "enum": [
+            "pending_payment",
+            "payment_expired",
+            "canceled",
+            "paid",
+            "dispensing",
+            "fulfilled",
+            "dispense_failed",
+            "manual_handling",
+            "refund_pending",
+            "refunded",
+            "closed"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "totalAmountCents": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "vending": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "commandNo": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "status": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "pending",
+                    "sent",
+                    "acknowledged",
+                    "succeeded",
+                    "failed",
+                    "result_unknown",
+                    "timeout"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "lastError": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "pickupReminder": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "stage": {
+                      "type": "string",
+                      "enum": [
+                        "outlet_opened",
+                        "pickup_waiting",
+                        "pickup_completed",
+                        "pickup_timeout_warning"
+                      ]
+                    },
+                    "level": {
+                      "type": "string",
+                      "enum": ["info", "warning", "urgent"]
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "warningNo": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "exclusiveMinimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "reportedAt": {
+                      "type": "string"
+                    },
+                    "remainingSeconds": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": ["level", "message", "warningNo", "reportedAt"],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": ["commandNo", "status", "lastError"],
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "nextAction": {
+      "anyOf": [
+        {
+          "type": "string",
+          "enum": [
+            "wait_payment",
+            "dispensing",
+            "success",
+            "payment_failed",
+            "payment_expired",
+            "dispense_failed",
+            "refund_pending",
+            "refunded",
+            "manual_handling",
+            "closed"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "maskedAuthCode": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "paymentCodeAttempt": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "attemptNo": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "exclusiveMinimum": 0,
+                  "maximum": 9007199254740991
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "status": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "created",
+                    "submitting",
+                    "user_confirming",
+                    "querying",
+                    "succeeded",
+                    "failed",
+                    "reversing",
+                    "reversed",
+                    "unknown",
+                    "manual_handling",
+                    "canceled"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "maskedAuthCode": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "source": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "serial_text",
+                    "tauri_scanner",
+                    "browser_test",
+                    "manual_dev"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "idempotencyKey": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "submittedAt": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "lastCheckedAt": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "canRetry": {
+              "type": "boolean"
+            },
+            "message": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "attemptNo",
+            "status",
+            "maskedAuthCode",
+            "source",
+            "idempotencyKey",
+            "submittedAt",
+            "lastCheckedAt",
+            "canRetry",
+            "message"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "expiresAt": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "errorCode": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "errorMessage": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "operatorHint": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "updatedAt": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "orderId",
+    "orderNo",
+    "productSummary",
+    "paymentNo",
+    "paymentMethod",
+    "paymentProvider",
+    "paymentUrl",
+    "paymentStatus",
+    "orderStatus",
+    "totalAmountCents",
+    "vending",
+    "nextAction",
+    "maskedAuthCode",
+    "paymentCodeAttempt",
+    "expiresAt",
+    "errorCode",
+    "errorMessage",
+    "operatorHint",
+    "updatedAt"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "CheckoutFlowAction": {
+      "type": "string",
+      "enum": [
+        "wait_payment",
+        "dispensing",
+        "success",
+        "payment_failed",
+        "payment_expired",
+        "dispense_failed",
+        "refund_pending",
+        "refunded",
+        "manual_handling",
+        "closed"
+      ]
+    },
+    "DispenseProgressObservationStage": {
+      "type": "string",
+      "enum": [
+        "outlet_opened",
+        "pickup_waiting",
+        "pickup_timeout_warning",
+        "pickup_completed",
+        "reset_completed"
+      ]
+    },
+    "PaymentCodeAttemptSummary": {
+      "type": "object",
+      "properties": {
+        "attemptNo": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "created",
+                "submitting",
+                "user_confirming",
+                "querying",
+                "succeeded",
+                "failed",
+                "reversing",
+                "reversed",
+                "unknown",
+                "manual_handling",
+                "canceled"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "maskedAuthCode": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "serial_text",
+                "tauri_scanner",
+                "browser_test",
+                "manual_dev"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "idempotencyKey": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "submittedAt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "lastCheckedAt": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "canRetry": {
+          "type": "boolean"
+        },
+        "message": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "attemptNo",
+        "status",
+        "maskedAuthCode",
+        "source",
+        "idempotencyKey",
+        "submittedAt",
+        "lastCheckedAt",
+        "canRetry",
+        "message"
+      ],
+      "additionalProperties": false
+    },
+    "PickupReminder": {
+      "type": "object",
+      "properties": {
+        "stage": {
+          "type": "string",
+          "enum": [
+            "outlet_opened",
+            "pickup_waiting",
+            "pickup_completed",
+            "pickup_timeout_warning"
+          ]
+        },
+        "level": {
+          "type": "string",
+          "enum": ["info", "warning", "urgent"]
+        },
+        "message": {
+          "type": "string"
+        },
+        "warningNo": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reportedAt": {
+          "type": "string"
+        },
+        "remainingSeconds": {
+          "anyOf": [
+            {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": ["level", "message", "warningNo", "reportedAt"],
+      "additionalProperties": false
+    },
+    "VendingSummary": {
+      "type": "object",
+      "properties": {
+        "commandNo": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "pending",
+                "sent",
+                "acknowledged",
+                "succeeded",
+                "failed",
+                "result_unknown",
+                "timeout"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "lastError": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pickupReminder": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "stage": {
+                  "type": "string",
+                  "enum": [
+                    "outlet_opened",
+                    "pickup_waiting",
+                    "pickup_completed",
+                    "pickup_timeout_warning"
+                  ]
+                },
+                "level": {
+                  "type": "string",
+                  "enum": ["info", "warning", "urgent"]
+                },
+                "message": {
+                  "type": "string"
+                },
+                "warningNo": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "exclusiveMinimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "reportedAt": {
+                  "type": "string"
+                },
+                "remainingSeconds": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": ["level", "message", "warningNo", "reportedAt"],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": ["commandNo", "status", "lastError"],
+      "additionalProperties": false
+    }
+  }
+}

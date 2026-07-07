@@ -40,36 +40,103 @@ pub enum OrderSessionStatus {
     Closed,
 }
 
+/// Internal daemon runtime checkout projection, not a Daemon IPC boundary DTO.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InternalCheckoutFlowAction {
+    WaitPayment,
+    Dispensing,
+    Success,
+    PaymentFailed,
+    PaymentExpired,
+    DispenseFailed,
+    RefundPending,
+    Refunded,
+    ManualHandling,
+    Closed,
+}
+
+impl InternalCheckoutFlowAction {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::WaitPayment => "wait_payment",
+            Self::Dispensing => "dispensing",
+            Self::Success => "success",
+            Self::PaymentFailed => "payment_failed",
+            Self::PaymentExpired => "payment_expired",
+            Self::DispenseFailed => "dispense_failed",
+            Self::RefundPending => "refund_pending",
+            Self::Refunded => "refunded",
+            Self::ManualHandling => "manual_handling",
+            Self::Closed => "closed",
+        }
+    }
+
+    pub fn from_current_contract(action: &str) -> Option<Self> {
+        match action {
+            "wait_payment" => Some(Self::WaitPayment),
+            "dispensing" => Some(Self::Dispensing),
+            "success" => Some(Self::Success),
+            "payment_failed" => Some(Self::PaymentFailed),
+            "payment_expired" => Some(Self::PaymentExpired),
+            "dispense_failed" => Some(Self::DispenseFailed),
+            "refund_pending" => Some(Self::RefundPending),
+            "refunded" => Some(Self::Refunded),
+            "manual_handling" => Some(Self::ManualHandling),
+            "closed" => Some(Self::Closed),
+            _ => None,
+        }
+    }
+
+    pub fn normalize_recovered(action: &str) -> Option<Self> {
+        match action {
+            "submit_payment" => Some(Self::WaitPayment),
+            "collect_goods" => Some(Self::Dispensing),
+            current => Self::from_current_contract(current),
+        }
+    }
+}
+
+impl Default for InternalCheckoutFlowAction {
+    fn default() -> Self {
+        Self::WaitPayment
+    }
+}
+
+/// Internal persisted transaction summary used for recovery and health projection.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct TransactionSnapshot {
+pub struct InternalTransactionSnapshot {
     pub order_no: Option<String>,
     pub status: Option<OrderSessionStatus>,
-    pub next_action: Option<String>,
+    pub next_action: Option<InternalCheckoutFlowAction>,
     pub updated_at: String,
 }
 
+/// Internal current-transaction summary embedded in daemon health state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct CurrentTransactionSummary {
+pub struct InternalCurrentTransactionSummary {
     pub order_no: String,
     pub status: OrderSessionStatus,
-    pub next_action: String,
+    pub next_action: InternalCheckoutFlowAction,
     pub updated_at: String,
 }
 
+/// Internal vending command state associated with the current transaction.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct VendingCommandSummary {
+pub struct InternalVendingCommandSummary {
     pub command_no: Option<String>,
     pub status: Option<String>,
     pub last_error: Option<String>,
-    pub pickup_reminder: Option<PickupReminderSummary>,
+    pub pickup_reminder: Option<InternalPickupReminderSummary>,
 }
 
+/// Internal pickup reminder state derived from local dispense observations.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PickupReminderSummary {
+pub struct InternalPickupReminderSummary {
     pub stage: Option<String>,
     pub level: String,
     pub message: String,
@@ -77,9 +144,10 @@ pub struct PickupReminderSummary {
     pub reported_at: String,
 }
 
+/// Internal payment-code attempt state used by transaction recovery/runtime logic.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PaymentCodeAttemptSummary {
+pub struct InternalPaymentCodeAttemptSummary {
     pub attempt_no: Option<i64>,
     pub status: Option<String>,
     pub masked_auth_code: Option<String>,
@@ -91,9 +159,10 @@ pub struct PaymentCodeAttemptSummary {
     pub message: Option<String>,
 }
 
+/// Internal current transaction runtime model converted to generated IPC contracts at the boundary.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct CurrentTransactionSnapshot {
+pub struct InternalCurrentTransactionSnapshot {
     pub order_id: Option<String>,
     pub order_no: Option<String>,
     pub product_summary: Option<serde_json::Value>,
@@ -104,10 +173,10 @@ pub struct CurrentTransactionSnapshot {
     pub payment_status: Option<String>,
     pub order_status: Option<String>,
     pub total_amount_cents: Option<i64>,
-    pub vending: Option<VendingCommandSummary>,
-    pub next_action: Option<String>,
+    pub vending: Option<InternalVendingCommandSummary>,
+    pub next_action: Option<InternalCheckoutFlowAction>,
     pub masked_auth_code: Option<String>,
-    pub payment_code_attempt: Option<PaymentCodeAttemptSummary>,
+    pub payment_code_attempt: Option<InternalPaymentCodeAttemptSummary>,
     pub expires_at: Option<String>,
     pub error_code: Option<String>,
     pub error_message: Option<String>,
@@ -142,23 +211,59 @@ mod tests {
     }
 
     #[test]
+    fn checkout_flow_action_uses_daemon_ipc_contract_vocabulary() {
+        let cases = [
+            (InternalCheckoutFlowAction::WaitPayment, "\"wait_payment\""),
+            (InternalCheckoutFlowAction::Dispensing, "\"dispensing\""),
+            (InternalCheckoutFlowAction::Success, "\"success\""),
+            (
+                InternalCheckoutFlowAction::PaymentFailed,
+                "\"payment_failed\"",
+            ),
+            (
+                InternalCheckoutFlowAction::PaymentExpired,
+                "\"payment_expired\"",
+            ),
+            (
+                InternalCheckoutFlowAction::DispenseFailed,
+                "\"dispense_failed\"",
+            ),
+            (
+                InternalCheckoutFlowAction::RefundPending,
+                "\"refund_pending\"",
+            ),
+            (InternalCheckoutFlowAction::Refunded, "\"refunded\""),
+            (
+                InternalCheckoutFlowAction::ManualHandling,
+                "\"manual_handling\"",
+            ),
+            (InternalCheckoutFlowAction::Closed, "\"closed\""),
+        ];
+
+        for (action, expected_json) in cases {
+            let value = serde_json::to_string(&action).expect("serialize checkout flow action");
+            assert_eq!(value, expected_json);
+        }
+    }
+
+    #[test]
     fn transaction_snapshot_uses_camel_case_fields() {
-        let snapshot = TransactionSnapshot {
+        let snapshot = InternalTransactionSnapshot {
             order_no: Some("ORD-001".to_string()),
             status: Some(OrderSessionStatus::WaitingPayment),
-            next_action: Some("submit_payment".to_string()),
+            next_action: Some(InternalCheckoutFlowAction::WaitPayment),
             updated_at: "2025-01-01T00:00:00.000Z".to_string(),
         };
         let value = serde_json::to_string(&snapshot).expect("serialize snapshot");
         assert_eq!(
             value,
-            r#"{"orderNo":"ORD-001","status":"waiting_payment","nextAction":"submit_payment","updatedAt":"2025-01-01T00:00:00.000Z"}"#
+            r#"{"orderNo":"ORD-001","status":"waiting_payment","nextAction":"wait_payment","updatedAt":"2025-01-01T00:00:00.000Z"}"#
         );
     }
 
     #[test]
     fn current_transaction_snapshot_uses_payment_url_and_hides_sensitive_fields() {
-        let snapshot = CurrentTransactionSnapshot {
+        let snapshot = InternalCurrentTransactionSnapshot {
             order_id: Some("ORDER-ID".to_string()),
             order_no: Some("ORDER-001".to_string()),
             product_summary: Some(serde_json::json!({"name":"cola"})),
@@ -169,15 +274,15 @@ mod tests {
             payment_status: Some("pending".to_string()),
             order_status: Some("waiting_payment".to_string()),
             total_amount_cents: Some(1000),
-            vending: Some(VendingCommandSummary {
+            vending: Some(InternalVendingCommandSummary {
                 command_no: Some("CMD-1".to_string()),
                 status: Some("created".to_string()),
                 last_error: None,
                 pickup_reminder: None,
             }),
-            next_action: Some("submit_payment".to_string()),
+            next_action: Some(InternalCheckoutFlowAction::WaitPayment),
             masked_auth_code: Some("6212****3456".to_string()),
-            payment_code_attempt: Some(PaymentCodeAttemptSummary {
+            payment_code_attempt: Some(InternalPaymentCodeAttemptSummary {
                 attempt_no: Some(1),
                 status: Some("failed".to_string()),
                 masked_auth_code: Some("6212****3456".to_string()),

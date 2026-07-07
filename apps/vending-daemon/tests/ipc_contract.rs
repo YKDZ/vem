@@ -80,9 +80,12 @@ async fn ipc_contract_requires_token_and_returns_stable_snapshots() {
         .is_some());
 
     let scanner = daemon.get_json("/v1/scanner/status").await;
+    let scanner_contract: daemon_ipc_contracts::ScannerRuntimeStatus =
+        serde_json::from_value(scanner.clone()).expect("scanner status matches contract crate");
     assert!(scanner.get("port").is_some());
     assert!(scanner.get("level").is_some());
     assert!(scanner.get("code").is_some());
+    assert_eq!(scanner_contract.adapter, "disabled");
 
     let missing_submit = client
         .post(format!("{base}/v1/intents/submit-payment-code"))

@@ -1,0 +1,26 @@
+[
+  {
+    "name": "unknownField",
+    "snapshot": {
+      "online": true,
+      "adapter": "serial_text",
+      "port": "COM4",
+      "level": "ok",
+      "code": "SCANNER_READY",
+      "message": "scanner ready",
+      "updatedAt": "2026-06-11T06:16:32.320Z",
+      "extraDaemonField": true
+    }
+  },
+  {
+    "name": "missingCode",
+    "snapshot": {
+      "online": true,
+      "adapter": "serial_text",
+      "port": "COM4",
+      "level": "ok",
+      "message": "scanner ready",
+      "updatedAt": "2026-06-11T06:16:32.320Z"
+    }
+  }
+]

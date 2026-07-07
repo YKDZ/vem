@@ -12,6 +12,7 @@ import {
   refundStatusSchema,
 } from "../enums/payment-status";
 import { vendingCommandStatusSchema } from "../enums/vending";
+import { daemonIpcCheckoutFlowActionSchema } from "./daemon-ipc";
 import { createPageResultSchema, pageQuerySchema } from "./pagination";
 
 type MachineOrderProfileSnapshot = {
@@ -504,18 +505,8 @@ export const machineOrderStatusQuerySchema = z.object({
   machineCode: z.string().min(1).max(64),
 });
 
-export const machineOrderStatusNextActionSchema = z.enum([
-  "wait_payment",
-  "dispensing",
-  "success",
-  "payment_failed",
-  "payment_expired",
-  "dispense_failed",
-  "refund_pending",
-  "refunded",
-  "manual_handling",
-  "closed",
-]);
+export const machineOrderStatusNextActionSchema =
+  daemonIpcCheckoutFlowActionSchema;
 
 export const machinePaymentOptionKeySchema = z
   .string()

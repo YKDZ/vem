@@ -511,7 +511,7 @@ describe("MachineDetailView", () => {
     expect(root.textContent).not.toContain("整机锁定");
   });
 
-  it("renders a distinct ready Production Pilot Readiness summary for daily inspection", async () => {
+  it("renders a distinct ready production pilot diagnostic gate summary for daily inspection", async () => {
     apiMocks.getMachine.mockResolvedValue({
       ...machineFixture(),
       productionPilotReadiness: {
@@ -521,25 +521,36 @@ describe("MachineDetailView", () => {
         degraded: [],
         checks: [
           {
-            code: "machine_heartbeat.online",
-            label: "Online / Last Heartbeat",
+            kind: "machine_heartbeat",
+            reasonCode: "online",
             status: "ready",
-            message: "Machine heartbeat is fresh",
-            operatorAction: "Continue daily inspection.",
+            actionCode: "continue_daily_inspection",
+            evidence: {
+              machineStatus: "online",
+              heartbeatAgeSeconds: 0,
+              timeoutSeconds: 120,
+              latestHeartbeatReportedAt: "2026-06-27T02:00:00.000Z",
+              lastSeenAt: "2026-06-27T02:00:00.000Z",
+            },
           },
           {
-            code: "machine_sale_readiness.restored",
-            label: "Machine Sale Readiness",
+            kind: "machine_sale_readiness",
+            reasonCode: "restored",
             status: "ready",
-            message: "Machine Sale Readiness is restored",
-            operatorAction: "Continue daily inspection.",
+            actionCode: "continue_daily_inspection",
+            evidence: {
+              saleReadinessState: "restored",
+              blockingCodes: [],
+            },
           },
           {
-            code: "payment_readiness.ready",
-            label: "Payment Readiness",
+            kind: "payment_readiness",
+            reasonCode: "ready",
             status: "ready",
-            message: "Payment Readiness has at least one production provider",
-            operatorAction: "Continue daily inspection.",
+            actionCode: "continue_daily_inspection",
+            evidence: {
+              productionProviderCount: 1,
+            },
           },
         ],
       },
@@ -547,13 +558,16 @@ describe("MachineDetailView", () => {
 
     const { root } = await mountView();
 
-    expect(root.textContent).toContain("Production Pilot Readiness");
+    expect(root.textContent).toContain("生产试运营诊断门禁");
     expect(root.textContent).toContain("生产试运营就绪");
-    expect(root.textContent).toContain("Online / Last Heartbeat");
-    expect(root.textContent).toContain("Machine Sale Readiness");
-    expect(root.textContent).toContain("Payment Readiness");
-    expect(root.textContent).toContain("Machine heartbeat is fresh");
-    expect(root.textContent).toContain("Continue daily inspection.");
+    expect(root.textContent).toContain("在线与心跳");
+    expect(root.textContent).toContain("机器售卖就绪");
+    expect(root.textContent).toContain("真实支付就绪");
+    expect(root.textContent).toContain("机器在线，心跳仍在有效窗口内。");
+    expect(root.textContent).toContain("继续日常巡检。");
+    expect(root.textContent).not.toContain("Production Pilot Readiness");
+    expect(root.textContent).not.toContain("Machine Sale Readiness");
+    expect(root.textContent).not.toContain("Continue daily inspection.");
   });
 
   it("renders Natural Context Readiness as degraded when External Natural Environment is unconfigured", async () => {
@@ -566,24 +580,24 @@ describe("MachineDetailView", () => {
         blockers: [],
         degraded: [
           {
-            code: "natural_context_readiness.unconfigured",
-            label: "Natural Context Readiness",
+            kind: "natural_context_readiness",
+            reasonCode: "unconfigured",
             status: "degraded",
-            message:
-              "Machine Geo Location is missing for External Natural Environment",
-            operatorAction:
-              "Configure Machine Geo Location or inspect External Natural Environment diagnostics; this does not block core sales readiness.",
+            actionCode: "configure_machine_geo_location",
+            evidence: {
+              externalNaturalEnvironmentStatus: "unconfigured",
+            },
           },
         ],
         checks: [
           {
-            code: "natural_context_readiness.unconfigured",
-            label: "Natural Context Readiness",
+            kind: "natural_context_readiness",
+            reasonCode: "unconfigured",
             status: "degraded",
-            message:
-              "Machine Geo Location is missing for External Natural Environment",
-            operatorAction:
-              "Configure Machine Geo Location or inspect External Natural Environment diagnostics; this does not block core sales readiness.",
+            actionCode: "configure_machine_geo_location",
+            evidence: {
+              externalNaturalEnvironmentStatus: "unconfigured",
+            },
           },
         ],
       },
@@ -591,16 +605,18 @@ describe("MachineDetailView", () => {
 
     const { root } = await mountView();
 
-    expect(root.textContent).toContain("Production Pilot Readiness");
+    expect(root.textContent).toContain("生产试运营诊断门禁");
     expect(root.textContent).toContain("生产试运营降级");
     expect(root.textContent).toContain("降级 1");
-    expect(root.textContent).toContain("Natural Context Readiness");
+    expect(root.textContent).toContain("自然上下文就绪");
     expect(root.textContent).toContain(
       "natural_context_readiness.unconfigured",
     );
     expect(root.textContent).toContain(
-      "Machine Geo Location is missing for External Natural Environment",
+      "机器尚未配置地理坐标，无法获取外部自然环境。",
     );
+    expect(root.textContent).not.toContain("Natural Context Readiness");
+    expect(root.textContent).not.toContain("Machine Geo Location is missing");
   });
 
   it("shows stock reconciliation blockers and resolves them with a required note", async () => {

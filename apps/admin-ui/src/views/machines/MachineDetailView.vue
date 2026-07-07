@@ -34,6 +34,10 @@ import { useAuthStore } from "@/stores/auth";
 import { formatDateTime } from "@/utils/format";
 
 import { mapEnvironmentControlFormToContract } from "./machine-contract-mappers";
+import {
+  productionPilotStatusLabel,
+  projectProductionPilotReadinessCheck,
+} from "./production-pilot-readiness-copy";
 
 type MachineSaleReadinessHeartbeat = {
   state?: "locked" | "blocked" | "restored";
@@ -113,6 +117,16 @@ const environmentCommandDisabled = computed(
 const heartbeat = computed(() => machine.value?.latestHeartbeatStatus ?? null);
 const productionPilotReadiness = computed(
   () => machine.value?.productionPilotReadiness ?? null,
+);
+const productionPilotReadinessRows = computed(
+  () =>
+    productionPilotReadiness.value?.checks.map((check) => ({
+      ...projectProductionPilotReadinessCheck(check),
+      status: check.status,
+      kind: check.kind,
+      reasonCode: check.reasonCode,
+      actionCode: check.actionCode,
+    })) ?? [],
 );
 const saleReadiness = computed(
   () =>
@@ -245,14 +259,14 @@ function hardwareStatusLabel(status: string | undefined): string {
   if (status === "ok") return "正常";
   if (status === "degraded") return "降级";
   if (status === "faulted") return "异常";
-  return "unknown";
+  return "未知";
 }
 
 function saleReadinessStateLabel(status: string | undefined): string {
   if (status === "locked") return "整机锁定";
   if (status === "blocked") return "阻塞";
   if (status === "restored") return "已恢复";
-  return "unknown";
+  return "未知";
 }
 
 function saleReadinessStateColor(status: string | undefined): string {
@@ -671,9 +685,9 @@ onMounted(() => {
     <a-card v-if="productionPilotReadiness">
       <div class="mb-4 flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h2 class="text-lg font-semibold">Production Pilot Readiness</h2>
+          <h2 class="text-lg font-semibold">生产试运营诊断门禁</h2>
           <p class="mt-1 text-sm text-slate-500">
-            区分生产试运营就绪、普通运行健康与 Machine Sale Readiness
+            汇总生产试运营所需证据；它比普通运行健康和机器售卖就绪更严格。
           </p>
         </div>
         <a-space>
@@ -694,14 +708,14 @@ onMounted(() => {
       </div>
       <a-table
         :columns="productionPilotReadinessColumns"
-        :data-source="productionPilotReadiness.checks"
+        :data-source="productionPilotReadinessRows"
         row-key="code"
         :pagination="false"
       >
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'status'">
             <a-tag :color="readinessCheckStatusColor(record.status)">
-              {{ record.status }}
+              {{ productionPilotStatusLabel(record.status) }}
             </a-tag>
           </template>
           <template v-else-if="column.key === 'code'">
