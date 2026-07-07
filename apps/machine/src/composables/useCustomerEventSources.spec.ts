@@ -1105,7 +1105,7 @@ describe("customer event sources", () => {
     ]);
   });
 
-  it("does not emit transaction audio cue events for payment failed, payment expired, or closed results", () => {
+  it("emits payment.failed event for payment failed results but not for payment expired or closed", () => {
     const observed: CustomerExperienceEvent[] = [];
     const unsubscribe = onCustomerEvent((event) => {
       observed.push(event);
@@ -1134,6 +1134,11 @@ describe("customer event sources", () => {
     }
 
     unsubscribe();
-    expect(observed).toEqual([]);
+    expect(observed).toEqual([
+      {
+        type: "payment.failed",
+        orderKey: "VEM-ORDER-197-payment_failed",
+      },
+    ]);
   });
 });

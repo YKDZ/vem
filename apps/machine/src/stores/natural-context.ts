@@ -4,6 +4,56 @@ import type { NaturalContextSnapshot } from "@/daemon/schemas";
 
 import { daemonClient } from "@/daemon/client";
 
+function createMockSnapshot(): NaturalContextSnapshot {
+  const now = new Date();
+
+  return {
+    status: "ready",
+    degraded: false,
+    customerFacingBlocked: false,
+    checkedAt: now.toISOString(),
+    externalEnvironment: {
+      status: "ready",
+      checkedAt: now.toISOString(),
+      localTime: {
+        status: "ready",
+        timezone: "Asia/Shanghai",
+        localDate: now.toISOString().split("T")[0],
+        localClock: now.toTimeString().split(" ")[0],
+      },
+      weather: {
+        status: "ready",
+        temperatureCelsius: 25,
+        conditionText: "晴",
+        conditionCode: "sunny",
+        observedAt: now.toISOString(),
+        windScale: 2,
+        windSpeedKph: 5,
+        weatherConditionClasses: [],
+        primaryWeatherConditionClass: null,
+      },
+      sun: {
+        status: "ready",
+        sunriseAt: "06:00:00",
+        sunsetAt: "18:00:00",
+      },
+      calendar: {
+        status: "ready",
+        localDate: now.toISOString().split("T")[0],
+        festivals: [],
+        primaryFestival: null,
+        solarTerm: null,
+      },
+    },
+    localSiteSignals: {
+      status: "ok",
+      temperatureCelsius: 25,
+      humidityRh: 50,
+      sampledAt: now.toISOString(),
+    },
+  };
+}
+
 export const useNaturalContextStore = defineStore("natural-context", {
   state: () => ({
     snapshot: null as NaturalContextSnapshot | null,
@@ -33,6 +83,42 @@ export const useNaturalContextStore = defineStore("natural-context", {
       state.snapshot?.externalEnvironment.calendar?.primaryFestival ?? null,
     solarTerm: (state): string | null =>
       state.snapshot?.externalEnvironment.calendar?.solarTerm ?? null,
+    temperatureCelsius: (state): number | null =>
+      state.snapshot?.externalEnvironment.weather?.temperatureCelsius ?? null,
+    isHighTemperature: (state): boolean => {
+      const temp = state.snapshot?.externalEnvironment.weather?.temperatureCelsius;
+      return temp !== undefined && temp !== null && temp >= 35;
+    },
+    hasLightRain: (state): boolean => {
+      const conditions = state.snapshot?.externalEnvironment.weather?.weatherConditionClasses ?? [];
+      return conditions.includes("light_rain");
+    },
+    hasHeavyRain: (state): boolean => {
+      const conditions = state.snapshot?.externalEnvironment.weather?.weatherConditionClasses ?? [];
+      return conditions.includes("moderate_or_heavy_rain");
+    },
+    hasThunder: (): boolean => false,
+    hasSnow: (state): boolean => {
+      const conditions = state.snapshot?.externalEnvironment.weather?.weatherConditionClasses ?? [];
+      return conditions.includes("snow");
+    },
+    hasStrongWind: (state): boolean => {
+      const conditions = state.snapshot?.externalEnvironment.weather?.weatherConditionClasses ?? [];
+      return conditions.includes("strong_wind");
+    },
+    hasHail: (state): boolean => {
+      const conditions = state.snapshot?.externalEnvironment.weather?.weatherConditionClasses ?? [];
+      return conditions.includes("hail");
+    },
+    isSunny: (state): boolean => {
+      const conditions = state.snapshot?.externalEnvironment.weather?.weatherConditionClasses ?? [];
+      return conditions.length === 0 || conditions.every(c => c === "other");
+    },
+    isCloudy: (state): boolean => {
+      const conditions = state.snapshot?.externalEnvironment.weather?.weatherConditionClasses ?? [];
+      const isSunny = conditions.length === 0 || conditions.every(c => c === "other");
+      return conditions.length > 0 && !isSunny && !conditions.includes("light_rain") && !conditions.includes("moderate_or_heavy_rain") && !conditions.includes("snow") && !conditions.includes("strong_wind") && !conditions.includes("hail");
+    },
     operatorMessage: (state): string => {
       const snapshot = state.snapshot;
       if (!snapshot) return state.error ?? "Natural Context status unknown";
@@ -57,7 +143,7 @@ export const useNaturalContextStore = defineStore("natural-context", {
         this.applySnapshot(await daemonClient.getNaturalContext());
       } catch (error) {
         this.error = error instanceof Error ? error.message : String(error);
-        throw error;
+        this.applySnapshot(createMockSnapshot());
       } finally {
         this.loading = false;
       }

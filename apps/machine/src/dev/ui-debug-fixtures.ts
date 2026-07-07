@@ -33,7 +33,8 @@ export type UiDebugScenarioId =
   | "dispense_failed"
   | "manual_handling"
   | "refund_pending"
-  | "refunded";
+  | "refunded"
+  | "success";
 
 export type UiDebugScenario = {
   id: UiDebugScenarioId;
@@ -95,10 +96,10 @@ const config: ConfigSummary = {
     visionRequestTimeoutMs: 8000,
     machineAudioVolume: 0.7,
     audioCueSettings: {
-      enabled: false,
+      enabled: true,
       categories: {
-        presence: false,
-        transaction: false,
+        presence: true,
+        transaction: true,
       },
     },
     kioskMode: false,
@@ -1048,6 +1049,39 @@ export const uiDebugScenarios: readonly UiDebugScenario[] = [
       errorCode: "REFUNDED",
       errorMessage: "mock: refund completed",
       operatorHint: "退款已完成",
+    }),
+    sync,
+    scanner,
+    vision,
+    remoteOps,
+  },
+  {
+    id: "success",
+    name: "出货成功",
+    description: "支付成功且出货完成，展示成功结果页。",
+    health: {
+      ...readyHealth,
+      currentTransaction: {
+        orderNo: "UI-DEBUG-ORDER",
+        status: "completed",
+        nextAction: "success",
+        updatedAt: UPDATED_AT,
+      },
+    },
+    ready: readySnapshot,
+    config,
+    saleReadiness: saleReadiness(true),
+    saleView: baseSaleView,
+    paymentOptions,
+    transaction: transaction({
+      paymentStatus: "succeeded",
+      orderStatus: "completed",
+      nextAction: "success",
+      vending: {
+        commandNo: "UI-DEBUG-CMD",
+        status: "succeeded",
+        lastError: null,
+      },
     }),
     sync,
     scanner,

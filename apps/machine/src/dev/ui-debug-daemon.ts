@@ -8,6 +8,7 @@ import type {
   CatalogSnapshot,
   ConfigSummary,
   HardwareSelfCheck,
+  NaturalContextSnapshot,
   NetworkSettingsResponse,
   ProvisioningClaimResponse,
   SaleViewSnapshot,
@@ -399,4 +400,52 @@ export function installUiDebugDaemon(): void {
       headers: { "Content-Type": "text/plain" },
     });
   client.subscribeEvents = () => ({ close: () => undefined });
+  client.getNaturalContext = async (): Promise<NaturalContextSnapshot> => {
+    const now = new Date();
+    return {
+      status: "ready",
+      degraded: false,
+      customerFacingBlocked: false,
+      checkedAt: now.toISOString(),
+      externalEnvironment: {
+        status: "ready",
+        checkedAt: now.toISOString(),
+        localTime: {
+          status: "ready",
+          timezone: "Asia/Shanghai",
+          localDate: now.toISOString().split("T")[0],
+          localClock: now.toTimeString().split(" ")[0],
+        },
+        weather: {
+          status: "ready",
+          temperatureCelsius: 25,
+          conditionText: "晴",
+          conditionCode: "sunny",
+          observedAt: now.toISOString(),
+          windScale: 2,
+          windSpeedKph: 5,
+          weatherConditionClasses: [],
+          primaryWeatherConditionClass: null,
+        },
+        sun: {
+          status: "ready",
+          sunriseAt: "06:00:00",
+          sunsetAt: "18:00:00",
+        },
+        calendar: {
+          status: "ready",
+          localDate: now.toISOString().split("T")[0],
+          festivals: [],
+          primaryFestival: null,
+          solarTerm: null,
+        },
+      },
+      localSiteSignals: {
+        status: "ok",
+        temperatureCelsius: 25,
+        humidityRh: 50,
+        sampledAt: now.toISOString(),
+      },
+    };
+  };
 }

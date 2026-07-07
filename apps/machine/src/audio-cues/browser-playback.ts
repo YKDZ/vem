@@ -13,8 +13,12 @@ import {
   describeCustomerExperienceEvent,
   type CustomerExperienceEvent,
 } from "@/customer-events/events";
+import { getEasterEggType, getDepartureEventType } from "@/composables/usePresenceInteraction";
 import { useAudioCueStore } from "@/stores/audio-cues";
 import { useMachineStore } from "@/stores/machine";
+import { useNaturalContextStore } from "@/stores/natural-context";
+
+const VOICE_BASE_PATH = "/audio/voice";
 
 type MachineAudioCuePlaybackFactoryOptions = {
   volume: number;
@@ -60,28 +64,39 @@ const PLACEHOLDER_TONE_SOURCE =
 
 const CUE_SOURCES: Record<CustomerExperienceEvent["type"], string> = {
   "presence.detected": `${PLACEHOLDER_TONE_SOURCE}#presence-detected`,
-  "presence.welcome.day": `${PLACEHOLDER_TONE_SOURCE}#presence-welcome-day`,
-  "presence.welcome.night": `${PLACEHOLDER_TONE_SOURCE}#presence-welcome-night`,
-  "presence.easter_egg": `${PLACEHOLDER_TONE_SOURCE}#presence-easter-egg`,
-  "interaction.awakened": `${PLACEHOLDER_TONE_SOURCE}#interaction-awakened`,
-  "privacy.crowd_detected": `${PLACEHOLDER_TONE_SOURCE}#privacy-crowd-detected`,
-  "idle.assistance_prompt": `${PLACEHOLDER_TONE_SOURCE}#idle-assistance-prompt`,
-  "idle.sleep": `${PLACEHOLDER_TONE_SOURCE}#idle-sleep`,
-  "product.selected": `${PLACEHOLDER_TONE_SOURCE}#product-selected`,
-  "payment.prompt": `${PLACEHOLDER_TONE_SOURCE}#payment-prompt`,
-  "payment.succeeded": `${PLACEHOLDER_TONE_SOURCE}#payment-succeeded`,
-  "dispensing.started": `${PLACEHOLDER_TONE_SOURCE}#dispensing-started`,
-  "dispense.outlet_opened": `${PLACEHOLDER_TONE_SOURCE}#dispense-outlet-opened`,
-  "dispense.succeeded": `${PLACEHOLDER_TONE_SOURCE}#dispense-succeeded`,
-  "dispense.failed": `${PLACEHOLDER_TONE_SOURCE}#dispense-failed`,
-  "pickup.waiting": `${PLACEHOLDER_TONE_SOURCE}#pickup-waiting`,
-  "pickup.warning": `${PLACEHOLDER_TONE_SOURCE}#pickup-warning`,
-  "pickup.urgent": `${PLACEHOLDER_TONE_SOURCE}#pickup-urgent`,
-  "pickup.completed": `${PLACEHOLDER_TONE_SOURCE}#pickup-completed`,
-  "refund.pending": `${PLACEHOLDER_TONE_SOURCE}#refund-pending`,
-  "refund.completed": `${PLACEHOLDER_TONE_SOURCE}#refund-completed`,
-  "manual_handling.required": `${PLACEHOLDER_TONE_SOURCE}#manual-handling-required`,
-  "system.hardware_fault": `${PLACEHOLDER_TONE_SOURCE}#system-hardware-fault`,
+  "presence.easter_egg": `${VOICE_BASE_PATH}/easter_egg/festival/spring_festival.mp3`,
+  "presence.easter_egg.festival": `${VOICE_BASE_PATH}/easter_egg/festival/spring_festival.mp3`,
+  "presence.easter_egg.solar_term": `${VOICE_BASE_PATH}/easter_egg/solar_term/start_of_spring.mp3`,
+  "presence.easter_egg.season": `${VOICE_BASE_PATH}/easter_egg/season/spring.mp3`,
+  "presence.welcome.day": `${VOICE_BASE_PATH}/interaction/awakened.mp3`,
+  "presence.welcome.night": `${VOICE_BASE_PATH}/interaction/awakened.mp3`,
+  "interaction.awakened": `${VOICE_BASE_PATH}/interaction/awakened.mp3`,
+  "privacy.crowd_detected": `${VOICE_BASE_PATH}/privacy/crowd_detected.mp3`,
+  "idle.assistance_prompt": `${VOICE_BASE_PATH}/error/idle_timeout.mp3`,
+  "idle.sleep": `${VOICE_BASE_PATH}/error/idle_timeout.mp3`,
+  "departure.bad_weather": `${VOICE_BASE_PATH}/departure/bad_weather/high_temp.mp3`,
+  "departure.bad_air": `${VOICE_BASE_PATH}/departure/bad_air.mp3`,
+  "departure.bad_forecast": `${VOICE_BASE_PATH}/departure/bad_forecast/light_rain.mp3`,
+  "departure.normal_weather": `${VOICE_BASE_PATH}/departure/normal_weather/sunny.mp3`,
+  "product.selected": `${VOICE_BASE_PATH}/interaction/product_selected.mp3`,
+  "payment.prompt": `${VOICE_BASE_PATH}/payment/prompt.mp3`,
+  "payment.succeeded": `${VOICE_BASE_PATH}/payment/succeeded.mp3`,
+  "payment.failed": `${VOICE_BASE_PATH}/payment/failed.mp3`,
+  "dispensing.started": `${VOICE_BASE_PATH}/dispensing/started.mp3`,
+  "dispense.outlet_opened": `${VOICE_BASE_PATH}/dispensing/succeeded.mp3`,
+  "dispense.succeeded": `${VOICE_BASE_PATH}/dispensing/succeeded.mp3`,
+  "dispense.failed": `${VOICE_BASE_PATH}/error/dispense_failed.mp3`,
+  "pickup.waiting": `${VOICE_BASE_PATH}/dispensing/started.mp3`,
+  "pickup.warning": `${VOICE_BASE_PATH}/pickup/reminder_10s.mp3`,
+  "pickup.urgent": `${VOICE_BASE_PATH}/pickup/reminder_25s.mp3`,
+  "pickup.completed": `${VOICE_BASE_PATH}/effects/pickup_beep.mp3`,
+  "refund.pending": `${VOICE_BASE_PATH}/refund/pending.mp3`,
+  "refund.completed": `${VOICE_BASE_PATH}/refund/completed.mp3`,
+  "manual_handling.required": `${VOICE_BASE_PATH}/error/hardware_fault.mp3`,
+  "system.hardware_fault": `${VOICE_BASE_PATH}/error/hardware_fault.mp3`,
+  "product.intro.socks": `${VOICE_BASE_PATH}/product/socks.mp3`,
+  "product.intro.underwear": `${VOICE_BASE_PATH}/product/underwear.mp3`,
+  "product.intro.tshirt": `${VOICE_BASE_PATH}/product/tshirt.mp3`,
 };
 
 const CUE_SOURCE_BY_KEY: Readonly<Record<string, string | undefined>> =
@@ -111,7 +126,8 @@ export function createMachineAudioCuePlaybackAdapter(
     event: CustomerExperienceEvent,
   ): Promise<boolean> {
     const store = useAudioCueStore();
-    const descriptor = descriptorFromEvent(event);
+    const naturalContextStore = useNaturalContextStore();
+    const descriptor = descriptorFromEvent(event, naturalContextStore);
     const currentRequest = store.playback.request;
     if (!currentRequest) {
       sharedPlaybackState.pendingSources.clear();
@@ -310,7 +326,42 @@ export function createMachineAudioCuePlaybackAdapter(
   }
 }
 
-function descriptorFromEvent(event: CustomerExperienceEvent): CueDescriptor {
+function getDynamicAudioSource(
+  eventKey: string,
+  naturalContextStore: ReturnType<typeof useNaturalContextStore>
+): string {
+  if (eventKey.startsWith("presence.easter_egg.")) {
+    const eggType = getEasterEggType(naturalContextStore);
+    if (eggType) {
+      return `${VOICE_BASE_PATH}/easter_egg/${eggType.type}/${eggType.value}.mp3`;
+    }
+  }
+  if (eventKey.startsWith("departure.")) {
+    const departureType = getDepartureEventType(naturalContextStore);
+    if (departureType) {
+      if (departureType === "departure.bad_weather") {
+        const weather = naturalContextStore.snapshot?.externalEnvironment.weather;
+        if (weather) {
+          if (naturalContextStore.isHighTemperature) return `${VOICE_BASE_PATH}/departure/bad_weather/high_temp.mp3`;
+          if (naturalContextStore.hasHeavyRain) return `${VOICE_BASE_PATH}/departure/bad_weather/heavy_rain.mp3`;
+          if (naturalContextStore.hasLightRain) return `${VOICE_BASE_PATH}/departure/bad_weather/light_rain.mp3`;
+          if (naturalContextStore.hasThunder) return `${VOICE_BASE_PATH}/departure/bad_weather/thunder.mp3`;
+          if (naturalContextStore.hasSnow) return `${VOICE_BASE_PATH}/departure/bad_weather/snow.mp3`;
+          if (naturalContextStore.hasStrongWind) return `${VOICE_BASE_PATH}/departure/bad_weather/strong_wind.mp3`;
+        }
+      } else if (departureType === "departure.normal_weather") {
+        if (naturalContextStore.isSunny) return `${VOICE_BASE_PATH}/departure/normal_weather/sunny.mp3`;
+        if (naturalContextStore.isCloudy) return `${VOICE_BASE_PATH}/departure/normal_weather/cloudy.mp3`;
+      }
+    }
+  }
+  return CUE_SOURCE_BY_KEY[eventKey] ?? "";
+}
+
+function descriptorFromEvent(
+  event: CustomerExperienceEvent,
+  naturalContextStore: ReturnType<typeof useNaturalContextStore>
+): CueDescriptor {
   const descriptor = describeCustomerExperienceEvent(event);
   return {
     category: descriptor.category,
@@ -321,7 +372,7 @@ function descriptorFromEvent(event: CustomerExperienceEvent): CueDescriptor {
     minimumIntervalMs: descriptor.minimumIntervalMs,
     priority: descriptor.priority,
     staleAfterMs: descriptor.staleAfterMs,
-    source: CUE_SOURCES[descriptor.eventKey],
+    source: getDynamicAudioSource(descriptor.eventKey, naturalContextStore),
   };
 }
 

@@ -12,10 +12,9 @@ import type {
   CustomerEventJourneyFact,
   CustomerEventPickupCue,
 } from "@/checkout/customer-checkout-view";
-import type { CustomerExperienceEvent } from "@/customer-events/events";
+import type { CustomerExperienceEvent, TransactionEventType } from "@/customer-events/events";
 
 import { useCheckoutStore } from "@/stores/checkout";
-import { useNaturalContextStore } from "@/stores/natural-context";
 
 import { emitCustomerEvent } from "./useCustomerEvents";
 
@@ -82,31 +81,7 @@ function isAssistancePromptRouteName(routeName: unknown): boolean {
   );
 }
 
-function visionPresenceCueEvent(
-  seenAt: string,
-): CustomerExperienceEvent["type"] {
-  const naturalContext = useNaturalContextStore();
-  const sun = naturalContext.snapshot?.externalEnvironment.sun;
-  if (sun?.status !== "ready" || !sun.sunriseAt || !sun.sunsetAt) {
-    return "presence.detected";
-  }
 
-  const seenAtMs = Date.parse(seenAt);
-  const sunriseAtMs = Date.parse(sun.sunriseAt);
-  const sunsetAtMs = Date.parse(sun.sunsetAt);
-  if (
-    Number.isNaN(seenAtMs) ||
-    Number.isNaN(sunriseAtMs) ||
-    Number.isNaN(sunsetAtMs)
-  ) {
-    return "presence.detected";
-  }
-
-  if (seenAtMs >= sunriseAtMs && seenAtMs < sunsetAtMs) {
-    return "presence.welcome.day";
-  }
-  return "presence.welcome.night";
-}
 
 function visionAudioCueState(
   fact: VisionPresenceAudioCueSourceFact,
@@ -138,11 +113,15 @@ function eventForVisionPresenceFact(
   lastVisionAudioCueState = nextVisionAudioCueState;
   if (!shouldEmit) return null;
 
+  if (nextVisionAudioCueState === "crowd") {
+    return {
+      type: "privacy.crowd_detected",
+      requestedAt: fact.observedAt,
+    };
+  }
+
   return {
-    type:
-      nextVisionAudioCueState === "crowd"
-        ? "privacy.crowd_detected"
-        : visionPresenceCueEvent(fact.observedAt),
+    type: "presence.detected",
     requestedAt: fact.observedAt,
   };
 }
@@ -207,11 +186,13 @@ function rememberTransactionEventHandled(
 
 function eventTypeForJourneyFact(
   fact: CustomerEventJourneyFact | null,
-): CustomerExperienceEvent["type"] | null {
+): TransactionEventType | null {
   switch (fact) {
     case null:
     case "payment_requested":
       return null;
+    case "payment_failure":
+      return "payment.failed";
     case "dispense_started":
       return "dispensing.started";
     case "dispense_succeeded":
@@ -229,7 +210,7 @@ function eventTypeForJourneyFact(
 
 function eventTypeForPickupCue(
   cue: CustomerEventPickupCue | null,
-): CustomerExperienceEvent["type"] | null {
+): TransactionEventType | null {
   switch (cue) {
     case null:
       return null;

@@ -12,6 +12,50 @@ export type EnvironmentControlInput = {
   timeoutSeconds?: number;
 };
 
+export type AirConditionerMode =
+  | "strong_cooling"
+  | "weak_cooling"
+  | "off"
+  | "weak_heating";
+
+export function determineAirConditionerMode(
+  temperatureCelsius: number,
+): AirConditionerMode {
+  if (temperatureCelsius >= 28) return "strong_cooling";
+  if (temperatureCelsius >= 20) return "weak_cooling";
+  if (temperatureCelsius >= 10) return "off";
+  return "weak_heating";
+}
+
+export function getAirConditionerControlForMode(
+  mode: AirConditionerMode,
+): EnvironmentControlInput {
+  switch (mode) {
+    case "strong_cooling":
+      return {
+        airConditionerOn: true,
+        targetTemperatureCelsius: 18,
+        ventSpeed: 3,
+      };
+    case "weak_cooling":
+      return {
+        airConditionerOn: true,
+        targetTemperatureCelsius: 24,
+        ventSpeed: 1,
+      };
+    case "off":
+      return {
+        airConditionerOn: false,
+      };
+    case "weak_heating":
+      return {
+        airConditionerOn: true,
+        targetTemperatureCelsius: 28,
+        ventSpeed: 1,
+      };
+  }
+}
+
 export const useEnvironmentControlStore = defineStore("environment-control", {
   state: () => ({
     loading: false,
@@ -56,6 +100,13 @@ export const useEnvironmentControlStore = defineStore("environment-control", {
       } finally {
         this.loading = false;
       }
+    },
+    async controlAirConditionerBasedOnTemperature(
+      temperatureCelsius: number,
+    ): Promise<EnvironmentControlResult> {
+      const mode = determineAirConditionerMode(temperatureCelsius);
+      const controlInput = getAirConditionerControlForMode(mode);
+      return this.controlAirConditioner(controlInput);
     },
   },
 });

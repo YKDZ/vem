@@ -10,8 +10,10 @@ import {
 import { useRoute, useRouter, type RouteLocationRaw } from "vue-router";
 
 import { useVisionStore } from "@/stores/vision";
+import { useNaturalContextStore } from "@/stores/natural-context";
 
 import { recordCustomerSourceFact } from "./useCustomerEventSources";
+import { emitCustomerEvent } from "./useCustomerEvents";
 
 const DEFAULT_PRESENCE_STALE_MS = 15_000;
 const DEFAULT_CUSTOMER_ASSISTANCE_PROMPT_MS = 20_000;
@@ -21,6 +23,113 @@ const RETURN_HOME_ROUTE_NAMES = new Set([
   "virtual-try-on",
   "checkout",
 ]);
+
+
+
+const FESTIVAL_MAP: Record<string, string> = {
+  spring_festival: "spring_festival",
+  new_years_day: "new_years_day",
+  lantern_festival: "lantern_festival",
+  valentines_day: "valentines_day",
+  qixi_festival: "qixi_festival",
+  labor_day: "labor_day",
+  dragon_boat: "dragon_boat",
+  mid_autumn: "mid_autumn",
+  national_day: "national_day",
+};
+
+const SOLAR_TERM_MAP: Record<string, string> = {
+  minor_cold: "minor_cold",
+  major_cold: "major_cold",
+  start_of_spring: "start_of_spring",
+  rain_water: "rain_water",
+  awakening_of_insects: "awakening_of_insects",
+  spring_equinox: "spring_equinox",
+  clear_and_bright: "clear_and_bright",
+  grain_rain: "grain_rain",
+  start_of_summer: "start_of_summer",
+  grain_buds: "grain_buds",
+  grain_in_ear: "grain_in_ear",
+  summer_solstice: "summer_solstice",
+  minor_heat: "minor_heat",
+  major_heat: "major_heat",
+  start_of_autumn: "start_of_autumn",
+  end_of_heat: "end_of_heat",
+  white_dew: "white_dew",
+  autumn_equinox: "autumn_equinox",
+  cold_dew: "cold_dew",
+  frost_descent: "frost_descent",
+  start_of_winter: "start_of_winter",
+  minor_snow: "minor_snow",
+  major_snow: "major_snow",
+  winter_solstice: "winter_solstice",
+};
+
+export function getEasterEggType(
+  naturalContextStore: ReturnType<typeof useNaturalContextStore>
+):
+  | { type: "festival"; value: string }
+  | { type: "solar_term"; value: string }
+  | { type: "season"; value: string }
+  | null {
+  const calendar = naturalContextStore.calendar;
+  if (!calendar) return null;
+
+  if (calendar.primaryFestival) {
+    const mapped = FESTIVAL_MAP[calendar.primaryFestival];
+    if (mapped) return { type: "festival", value: mapped };
+  }
+
+  if (calendar.solarTerm) {
+    const mapped = SOLAR_TERM_MAP[calendar.solarTerm];
+    if (mapped) return { type: "solar_term", value: mapped };
+  }
+
+  const month = calendar.localDate ? new Date(calendar.localDate).getMonth() : new Date().getMonth();
+  let season: string;
+  if (month >= 2 && month <= 4) season = "spring";
+  else if (month >= 5 && month <= 7) season = "summer";
+  else if (month >= 8 && month <= 10) season = "autumn";
+  else season = "winter";
+  return { type: "season", value: season };
+}
+
+export function getDepartureEventType(
+  naturalContextStore: ReturnType<typeof useNaturalContextStore>
+):
+  | "departure.bad_weather"
+  | "departure.bad_air"
+  | "departure.bad_forecast"
+  | "departure.normal_weather"
+  | null {
+  if (!naturalContextStore.weatherReady) return null;
+
+  const weather = naturalContextStore.snapshot?.externalEnvironment.weather;
+  if (!weather) return null;
+
+  if (naturalContextStore.isHighTemperature) return "departure.bad_weather";
+  if (naturalContextStore.hasLightRain) return "departure.bad_weather";
+  if (naturalContextStore.hasHeavyRain) return "departure.bad_weather";
+  if (naturalContextStore.hasThunder) return "departure.bad_weather";
+  if (naturalContextStore.hasSnow) return "departure.bad_weather";
+  if (naturalContextStore.hasStrongWind) return "departure.bad_weather";
+
+  if (naturalContextStore.isSunny) return "departure.normal_weather";
+  if (naturalContextStore.isCloudy) return "departure.normal_weather";
+
+  return null;
+}
+
+function isPrivacyMode(): boolean {
+  const visionStore = useVisionStore();
+
+  const now = new Date();
+  const hours = now.getHours();
+  const isNight = hours < 6 || hours >= 20;
+  const crowdDetected = visionStore.presence.occupancyState === "multiple";
+
+  return isNight || crowdDetected;
+}
 
 export type PresenceInteractionSource =
   | "vision"
@@ -69,6 +178,8 @@ let inactivityTimer: ReturnType<typeof setTimeout> | null = null;
 let stopVisionWatch: WatchStopHandle | null = null;
 let initializedFromCurrentDiagnostic = false;
 let activeOptions: Required<PresenceInteractionOptions> | null = null;
+let route: ReturnType<typeof useRoute> | null = null;
+let naturalContextStore: ReturnType<typeof useNaturalContextStore> | null = null;
 
 function optionsWithDefaults(
   options: PresenceInteractionOptions,
@@ -158,6 +269,29 @@ function markPresent(input: {
     source: input.source,
   };
   restartDepartureTimers();
+
+  if (input.source === "vision") {
+    if (isPrivacyMode()) {
+      emitCustomerEvent({
+        type: "privacy.crowd_detected",
+        requestedAt: input.seenAt,
+      });
+    } else {
+      if (naturalContextStore) {
+        const storeRef = naturalContextStore;
+        void storeRef.refresh().then(() => {
+          const easterEgg = getEasterEggType(storeRef);
+          if (easterEgg) {
+            const eventType = `presence.easter_egg.${easterEgg.type}` as const;
+            emitCustomerEvent({
+              type: eventType,
+              requestedAt: input.seenAt,
+            });
+          }
+        });
+      }
+    }
+  }
 }
 
 function markDeparted(input: {
@@ -180,6 +314,9 @@ function markDeparted(input: {
   clearStaleTimer();
   clearAssistancePromptTimer();
   clearInactivityTimer();
+  if (wasPersonPresent) {
+    resetAwakenedPlayed();
+  }
   if (
     (input.source === "vision" || input.source === "inactivity") &&
     wasPersonPresent &&
@@ -191,6 +328,18 @@ function markDeparted(input: {
       occurredAt: input.departedAt ?? nowIso(),
     });
   }
+  if (input.source === "vision" && wasPersonPresent && !input.suppressAudioCue && !isPrivacyMode() && naturalContextStore) {
+    const contextStore = naturalContextStore;
+    void contextStore.refresh().then(() => {
+      const departureEventType = getDepartureEventType(contextStore);
+      if (departureEventType) {
+        emitCustomerEvent({
+          type: departureEventType,
+          requestedAt: input.departedAt ?? nowIso(),
+        });
+      }
+    });
+  }
   if (input.source === "vision") {
     recordCustomerSourceFact({
       type: "vision.presence",
@@ -199,6 +348,12 @@ function markDeparted(input: {
       observedAt: input.departedAt ?? nowIso(),
     });
   }
+}
+
+let awakenedPlayedInSession = false;
+
+function resetAwakenedPlayed(): void {
+  awakenedPlayedInSession = false;
 }
 
 function registerInteraction(): void {
@@ -216,6 +371,15 @@ function registerInteraction(): void {
       type: "local.awakened",
       requestedAt: seenAt,
     });
+    if (!isPrivacyMode() && !awakenedPlayedInSession && route) {
+      if (route.name === "catalog") {
+        emitCustomerEvent({
+          type: "interaction.awakened",
+          requestedAt: seenAt,
+        });
+        awakenedPlayedInSession = true;
+      }
+    }
     return;
   }
   restartAssistancePromptTimer();
@@ -257,6 +421,8 @@ function startCustomerPresenceSession(
   started = true;
   activeOptions = optionsWithDefaults(options);
   const visionStore = useVisionStore();
+  route = useRoute();
+  naturalContextStore = useNaturalContextStore();
   installInteractionListeners();
   stopVisionWatch = watch(
     () => ({ ...visionStore.presence }),
