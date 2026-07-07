@@ -196,7 +196,7 @@ async fn serial_text_scanner_submits_payment_code_and_refreshes_transaction() {
                     },
                     "vending": {
                         "commandNo": "CMD-SCAN",
-                        "status": "created",
+                        "status": "pending",
                         "lastError": null
                     }
                 }))
@@ -331,7 +331,7 @@ async fn serial_text_scanner_retry_scan_uses_new_idempotency_key() {
                     },
                     "vending": {
                         "commandNo": "CMD-SCAN",
-                        "status": "created",
+                        "status": "pending",
                         "lastError": null
                     }
                 }))

@@ -7,6 +7,7 @@ license.workspace = true
 
 [dependencies]
 vending-core = { path = "../../crates/vending-core" }
+daemon-ipc-contracts = { path = "../../crates/daemon-ipc-contracts" }
 async-trait.workspace = true
 axum = { version = "0.7", features = ["ws"] }
 base64.workspace = true

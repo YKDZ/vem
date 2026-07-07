@@ -1302,7 +1302,7 @@ async fn create_order_intent(
                 })),
             )
             .await;
-            return (StatusCode::OK, Json(snapshot)).into_response();
+            return current_transaction_snapshot_response(&ctx, snapshot).await;
         }
         Ok(_) => {}
         Err(error) => {
@@ -1387,7 +1387,7 @@ async fn create_order_intent(
                 })),
             )
             .await;
-            (StatusCode::OK, Json(snapshot)).into_response()
+            current_transaction_snapshot_response(&ctx, snapshot).await
         }
         Err(error) => {
             append_local_diagnostic_log(
@@ -1451,7 +1451,7 @@ async fn cancel_order_intent(
                 })),
             )
             .await;
-            (StatusCode::OK, Json(snapshot)).into_response()
+            current_transaction_snapshot_response(&ctx, snapshot).await
         }
         Err(error) => {
             append_local_diagnostic_log(
@@ -1523,7 +1523,7 @@ async fn mock_payment_intent(
                 })),
             )
             .await;
-            (StatusCode::OK, Json(snapshot)).into_response()
+            current_transaction_snapshot_response(&ctx, snapshot).await
         }
         Err(error) => {
             append_local_diagnostic_log(
@@ -1713,8 +1713,10 @@ async fn dev_submit_payment_code_intent(
     }
 
     match ctx.ui.transaction.restore_current().await {
-        Ok(Some(snapshot)) => (StatusCode::OK, Json(snapshot)).into_response(),
-        Ok(None) => (StatusCode::OK, Json(empty_current_transaction_snapshot())).into_response(),
+        Ok(Some(snapshot)) => current_transaction_snapshot_response(&ctx, snapshot).await,
+        Ok(None) => {
+            current_transaction_snapshot_response(&ctx, empty_current_transaction_snapshot()).await
+        }
         Err(error) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorMessage {
@@ -1734,8 +1736,10 @@ async fn current_transaction(
         return (status, error).into_response();
     }
     match ctx.ui.transaction.restore_current().await {
-        Ok(Some(snapshot)) => Json(snapshot).into_response(),
-        Ok(None) => Json(empty_current_transaction_snapshot()).into_response(),
+        Ok(Some(snapshot)) => current_transaction_snapshot_response(&ctx, snapshot).await,
+        Ok(None) => {
+            current_transaction_snapshot_response(&ctx, empty_current_transaction_snapshot()).await
+        }
         Err(error) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorMessage {
@@ -3037,8 +3041,9 @@ async fn scanner_status(State(ctx): State<IpcContext>, headers: HeaderMap) -> im
     (StatusCode::OK, Json(snapshot)).into_response()
 }
 
-fn empty_current_transaction_snapshot() -> vending_core::domain::CurrentTransactionSnapshot {
-    vending_core::domain::CurrentTransactionSnapshot {
+fn empty_current_transaction_snapshot() -> vending_core::domain::InternalCurrentTransactionSnapshot
+{
+    vending_core::domain::InternalCurrentTransactionSnapshot {
         order_id: None,
         order_no: None,
         product_summary: None,
@@ -3059,6 +3064,70 @@ fn empty_current_transaction_snapshot() -> vending_core::domain::CurrentTransact
         operator_hint: None,
         updated_at: crate::state::store::now_iso(),
     }
+}
+
+async fn current_transaction_snapshot_response(
+    ctx: &IpcContext,
+    snapshot: vending_core::domain::InternalCurrentTransactionSnapshot,
+) -> axum::response::Response {
+    let order_no = snapshot.order_no.clone();
+    let order_status = snapshot.order_status.clone();
+    let next_action = snapshot.next_action.map(|action| action.as_str());
+    match current_transaction_snapshot_contract(snapshot) {
+        Ok(snapshot) => Json(snapshot).into_response(),
+        Err(error) => {
+            append_local_diagnostic_log(
+                ctx,
+                "error",
+                "checkout",
+                "current_transaction_contract_invalid",
+                Some(serde_json::json!({
+                    "orderNo": order_no,
+                    "orderStatus": order_status,
+                    "nextAction": next_action,
+                    "message": error,
+                })),
+            )
+            .await;
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorMessage {
+                    code: "transaction_contract_invalid",
+                    message: error,
+                }),
+            )
+                .into_response()
+        }
+    }
+}
+
+fn current_transaction_snapshot_contract(
+    snapshot: vending_core::domain::InternalCurrentTransactionSnapshot,
+) -> Result<daemon_ipc_contracts::CurrentTransactionSnapshot, String> {
+    let mut value = serde_json::to_value(snapshot)
+        .map_err(|error| format!("serialize current transaction snapshot: {error}"))?;
+    normalize_current_transaction_ipc_value(&mut value);
+    let snapshot =
+        serde_json::from_value::<daemon_ipc_contracts::CurrentTransactionSnapshot>(value)
+            .map_err(|error| format!("decode generated current transaction snapshot: {error}"))?;
+    daemon_ipc_contracts::validate_current_transaction_snapshot_boundary(&snapshot)
+        .map_err(|error| format!("validate current transaction boundary: {error}"))?;
+    Ok(snapshot)
+}
+
+fn normalize_current_transaction_ipc_value(value: &mut serde_json::Value) {
+    let Some(vending_status) = value.pointer_mut("/vending/status") else {
+        return;
+    };
+    let Some(status) = vending_status.as_str() else {
+        return;
+    };
+    let normalized = match status {
+        "received" => "pending",
+        "dispensing" => "acknowledged",
+        _ => return,
+    };
+    *vending_status = serde_json::Value::String(normalized.to_string());
 }
 
 async fn hardware_self_check(
@@ -3588,6 +3657,7 @@ mod tests {
     };
     use tempfile::tempdir;
     use tower::util::ServiceExt;
+    use vending_core::hardware::{DispenseProgressEvent, DispenseProgressStage};
 
     static FAULT_INJECTION_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
@@ -5462,10 +5532,19 @@ mod tests {
             "INSERT INTO order_sessions(
                 order_no,payment_method,payment_provider,payment_attempt_json,items_json,status,
                 next_action,expires_at,last_backend_status_json,last_error,recovery_strategy,updated_at
-             ) VALUES (?1,'payment_code','alipay',NULL,'[]','waiting_payment',?2,NULL,NULL,NULL,'local',?3)",
+             ) VALUES (?1,'payment_code','alipay',NULL,'[]','waiting_payment',?2,NULL,?3,NULL,'local',?4)",
         )
         .bind("ORDER-IPC-LEGACY")
         .bind("submit_payment")
+        .bind(json!({
+            "orderStatus": "pending_payment",
+            "nextAction": "submit_payment",
+            "totalAmountCents": 300,
+            "payment": {
+                "method": "payment_code",
+                "providerCode": "alipay"
+            }
+        }).to_string())
         .bind(crate::state::store::now_iso())
         .execute(ctx.state.pool())
         .await
@@ -5494,6 +5573,251 @@ mod tests {
         let text = serde_json::to_string(&payload).unwrap();
         assert!(!text.contains("submit_payment"));
         assert!(!text.contains("collect_goods"));
+    }
+
+    #[tokio::test]
+    async fn current_transaction_ipc_output_matches_generated_contract_boundary() {
+        let temp_dir = tempdir().expect("tmp");
+        let ctx = test_ipc_context(temp_dir.path(), "token-1", None, "http://127.0.0.1:0").await;
+        ctx.state
+            .upsert_order_session(crate::state::store::OrderSessionUpsert {
+                order_no: "ORDER-IPC-CONTRACT",
+                payment_method: "payment_code",
+                payment_provider: Some("alipay"),
+                items_json: json!([{"sku":"SKU-1","name":"Water","quantity":1}]),
+                status: "waiting_payment",
+                next_action: "wait_payment",
+                payment_attempt_json: None,
+                recovery_strategy: "local",
+                last_backend_status_json: Some(json!({
+                    "orderStatus": "pending_payment",
+                    "nextAction": "wait_payment",
+                    "totalAmountCents": 300,
+                    "payment": {
+                        "method": "payment_code",
+                        "providerCode": "alipay"
+                    }
+                })),
+                last_error: None,
+            })
+            .await
+            .expect("seed current transaction");
+        let app = build_router(ctx);
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/transactions/current")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let snapshot: daemon_ipc_contracts::CurrentTransactionSnapshot =
+            serde_json::from_slice(&body).expect("response uses generated transaction DTO");
+        daemon_ipc_contracts::validate_current_transaction_snapshot_boundary(&snapshot)
+            .expect("response passes generated contract boundary validation");
+        assert_eq!(
+            snapshot.next_action,
+            Some(daemon_ipc_contracts::CheckoutFlowAction::WaitPayment)
+        );
+    }
+
+    #[tokio::test]
+    async fn current_transaction_ipc_output_accepts_pickup_reminder_progress() {
+        let temp_dir = tempdir().expect("tmp");
+        let ctx = test_ipc_context(temp_dir.path(), "token-1", None, "http://127.0.0.1:0").await;
+        ctx.state
+            .upsert_order_session(crate::state::store::OrderSessionUpsert {
+                order_no: "ORDER-IPC-PICKUP",
+                payment_method: "payment_code",
+                payment_provider: Some("alipay"),
+                items_json: json!([{"sku":"SKU-1","name":"Water","quantity":1}]),
+                status: "dispensing",
+                next_action: "dispensing",
+                payment_attempt_json: None,
+                recovery_strategy: "local",
+                last_backend_status_json: Some(json!({
+                    "orderStatus": "dispensing",
+                    "nextAction": "dispensing",
+                    "totalAmountCents": 300,
+                    "payment": {
+                        "method": "payment_code",
+                        "providerCode": "alipay",
+                        "status": "succeeded"
+                    },
+                    "vending": {
+                        "commandNo": "CMD-IPC-PICKUP",
+                        "status": "sent",
+                        "lastError": null
+                    }
+                })),
+                last_error: None,
+            })
+            .await
+            .expect("seed pickup transaction");
+        ctx.state
+            .record_dispense_progress(&DispenseProgressEvent {
+                command_no: "CMD-IPC-PICKUP".to_string(),
+                order_no: "ORDER-IPC-PICKUP".to_string(),
+                stage: DispenseProgressStage::PickupTimeoutWarning,
+                warning_no: Some(2),
+                message: "Please collect the item now".to_string(),
+                reported_at: "2026-06-13T09:00:00.000Z".to_string(),
+            })
+            .await
+            .expect("record progress");
+        let app = build_router(ctx);
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/transactions/current")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["nextAction"], "dispensing");
+        assert_eq!(payload["orderStatus"], "dispensing");
+        assert_eq!(payload["vending"]["status"], "acknowledged");
+        assert_eq!(
+            payload["vending"]["pickupReminder"]["stage"],
+            "pickup_timeout_warning"
+        );
+        let snapshot: daemon_ipc_contracts::CurrentTransactionSnapshot =
+            serde_json::from_slice(&body).expect("response uses generated transaction DTO");
+        daemon_ipc_contracts::validate_current_transaction_snapshot_boundary(&snapshot)
+            .expect("pickup reminder response passes contract validation");
+    }
+
+    #[tokio::test]
+    async fn current_transaction_ipc_output_rejects_legacy_minimal_row_with_diagnostic() {
+        let temp_dir = tempdir().expect("tmp");
+        let ctx = test_ipc_context(temp_dir.path(), "token-1", None, "http://127.0.0.1:0").await;
+        let data_dir = ctx.data_dir.clone();
+        sqlx::query(
+            "INSERT INTO order_sessions(
+                order_no,payment_method,payment_provider,payment_attempt_json,items_json,status,
+                next_action,expires_at,last_backend_status_json,last_error,recovery_strategy,updated_at
+             ) VALUES (?1,'payment_code','alipay',NULL,'[]','waiting_payment',?2,NULL,NULL,NULL,'local',?3)",
+        )
+        .bind("ORDER-IPC-LEGACY-MINIMAL")
+        .bind("submit_payment")
+        .bind(crate::state::store::now_iso())
+        .execute(ctx.state.pool())
+        .await
+        .expect("seed legacy minimal transaction");
+        let app = build_router(ctx);
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/transactions/current")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["code"], "transaction_contract_invalid");
+        let text = serde_json::to_string(&payload).unwrap();
+        assert!(!text.contains("submit_payment"));
+        assert!(text.contains("totalAmountCents"));
+
+        let logs = tokio::fs::read_to_string(data_dir.join("logs").join("machine-events.jsonl"))
+            .await
+            .expect("diagnostic log");
+        assert!(logs.contains("current_transaction_contract_invalid"));
+        assert!(logs.contains("ORDER-IPC-LEGACY-MINIMAL"));
+        assert!(logs.contains("totalAmountCents"));
+        assert!(!logs.contains("submit_payment"));
+    }
+
+    #[tokio::test]
+    async fn current_transaction_ipc_output_rejects_invalid_contract_boundary() {
+        let temp_dir = tempdir().expect("tmp");
+        let ctx = test_ipc_context(temp_dir.path(), "token-1", None, "http://127.0.0.1:0").await;
+        let data_dir = ctx.data_dir.clone();
+        ctx.state
+            .upsert_order_session(crate::state::store::OrderSessionUpsert {
+                order_no: "ORDER-IPC-INVALID",
+                payment_method: "payment_code",
+                payment_provider: Some("alipay"),
+                items_json: json!([{"sku":"SKU-1","name":"Water","quantity":1}]),
+                status: "waiting_payment",
+                next_action: "wait_payment",
+                payment_attempt_json: None,
+                recovery_strategy: "local",
+                last_backend_status_json: Some(json!({
+                    "orderStatus": "pending_payment",
+                    "nextAction": "wait_payment",
+                    "totalAmountCents": -1,
+                    "payment": {
+                        "method": "payment_code",
+                        "providerCode": "alipay"
+                    }
+                })),
+                last_error: None,
+            })
+            .await
+            .expect("seed invalid current transaction");
+        let app = build_router(ctx);
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri("/v1/transactions/current")
+                    .header(AUTHORIZATION, "Bearer token-1")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(payload["code"], "transaction_contract_invalid");
+        assert!(payload["message"]
+            .as_str()
+            .unwrap()
+            .contains("negative totalAmountCents"));
+        let logs = tokio::fs::read_to_string(data_dir.join("logs").join("machine-events.jsonl"))
+            .await
+            .expect("diagnostic log");
+        assert!(logs.contains("current_transaction_contract_invalid"));
+        assert!(logs.contains("ORDER-IPC-INVALID"));
+        assert!(logs.contains("negative totalAmountCents"));
     }
 
     #[tokio::test]
@@ -7594,7 +7918,8 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "orderNo": "ORD-QR-SCANNER-OFFLINE",
                 "nextAction": "wait_payment",
-                "orderStatus": "pending_payment"
+                "orderStatus": "pending_payment",
+                "totalAmountCents": 300
             })))
             .mount(&server)
             .await;
@@ -7705,7 +8030,8 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "orderNo": "ORD-MOCK-SCANNER-OFFLINE",
                 "nextAction": "wait_payment",
-                "orderStatus": "pending_payment"
+                "orderStatus": "pending_payment",
+                "totalAmountCents": 300
             })))
             .mount(&server)
             .await;
@@ -7828,7 +8154,8 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "orderNo": "ORD-NETWORK-AUTH",
                 "nextAction": "wait_payment",
-                "orderStatus": "pending_payment"
+                "orderStatus": "pending_payment",
+                "totalAmountCents": 300
             })))
             .mount(&server)
             .await;

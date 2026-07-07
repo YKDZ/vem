@@ -182,12 +182,12 @@ impl HealthAggregator {
                 .and_then(|snapshot| {
                     let order_no = snapshot.order_no?;
                     let status = snapshot.status?;
-                    Some(vending_core::domain::CurrentTransactionSummary {
+                    Some(vending_core::domain::InternalCurrentTransactionSummary {
                         order_no,
                         status,
-                        next_action: snapshot
-                            .next_action
-                            .unwrap_or(vending_core::domain::CheckoutFlowAction::WaitPayment),
+                        next_action: snapshot.next_action.unwrap_or(
+                            vending_core::domain::InternalCheckoutFlowAction::WaitPayment,
+                        ),
                         updated_at: snapshot.updated_at,
                     })
                 }),

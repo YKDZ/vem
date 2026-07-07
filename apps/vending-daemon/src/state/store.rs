@@ -9,7 +9,9 @@ use sqlx::{sqlite::SqlitePoolOptions, Row, SqlitePool, Transaction};
 use thiserror::Error;
 use uuid::Uuid;
 
-use vending_core::domain::{CheckoutFlowAction, CommandLogStatus, OutboxKind, OutboxTransport};
+use vending_core::domain::{
+    CommandLogStatus, InternalCheckoutFlowAction, OutboxKind, OutboxTransport,
+};
 
 use super::schema::{
     MIGRATION_V1, MIGRATION_V10, MIGRATION_V2, MIGRATION_V3, MIGRATION_V4, MIGRATION_V5,
@@ -1309,7 +1311,7 @@ impl LocalStateStore {
 
     pub async fn current_order_session_snapshot(
         &self,
-    ) -> Result<Option<vending_core::domain::TransactionSnapshot>, StoreError> {
+    ) -> Result<Option<vending_core::domain::InternalTransactionSnapshot>, StoreError> {
         let row: Option<CurrentOrderSessionRow> = sqlx::query_as(
             "SELECT order_no, status, next_action, updated_at
                  FROM order_sessions
@@ -1324,12 +1326,12 @@ impl LocalStateStore {
             let status = status.and_then(|value| parse_order_status(&value)).or(Some(
                 vending_core::domain::OrderSessionStatus::WaitingPayment,
             ));
-            vending_core::domain::TransactionSnapshot {
+            vending_core::domain::InternalTransactionSnapshot {
                 order_no,
                 status,
                 next_action: next_action
                     .filter(|value| !value.is_empty())
-                    .and_then(|value| CheckoutFlowAction::normalize_recovered(&value)),
+                    .and_then(|value| InternalCheckoutFlowAction::normalize_recovered(&value)),
                 updated_at,
             }
         }))
@@ -1352,7 +1354,7 @@ impl LocalStateStore {
 
     pub async fn current_transaction_snapshot(
         &self,
-    ) -> Result<Option<vending_core::domain::CurrentTransactionSnapshot>, StoreError> {
+    ) -> Result<Option<vending_core::domain::InternalCurrentTransactionSnapshot>, StoreError> {
         let Some(row) = self.current_order_session_record().await? else {
             return Ok(None);
         };
@@ -3730,7 +3732,7 @@ fn to_order_session_record(row: OrderSessionRecordRow) -> OrderSessionRecord {
 
 fn to_current_transaction_snapshot(
     row: OrderSessionRecord,
-) -> Result<vending_core::domain::CurrentTransactionSnapshot, StoreError> {
+) -> Result<vending_core::domain::InternalCurrentTransactionSnapshot, StoreError> {
     let backend = row
         .last_backend_status_json
         .as_deref()
@@ -3740,7 +3742,7 @@ fn to_current_transaction_snapshot(
         .as_deref()
         .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok());
 
-    Ok(vending_core::domain::CurrentTransactionSnapshot {
+    Ok(vending_core::domain::InternalCurrentTransactionSnapshot {
         order_id: backend
             .as_ref()
             .and_then(|v| v.get("orderId"))
@@ -3791,7 +3793,7 @@ fn to_current_transaction_snapshot(
             .and_then(|v| v.get("nextAction"))
             .and_then(|v| v.as_str())
             .or(Some(row.next_action.as_str()))
-            .and_then(CheckoutFlowAction::normalize_recovered),
+            .and_then(InternalCheckoutFlowAction::normalize_recovered),
         masked_auth_code: attempt
             .as_ref()
             .and_then(|v| v.get("maskedAuthCode"))
@@ -3823,9 +3825,9 @@ fn to_current_transaction_snapshot(
 
 fn map_vending_summary(
     value: &serde_json::Value,
-) -> Option<vending_core::domain::VendingCommandSummary> {
+) -> Option<vending_core::domain::InternalVendingCommandSummary> {
     let vending = value.get("vending")?;
-    Some(vending_core::domain::VendingCommandSummary {
+    Some(vending_core::domain::InternalVendingCommandSummary {
         command_no: vending
             .get("commandNo")
             .and_then(|v| v.as_str())
@@ -3839,7 +3841,7 @@ fn map_vending_summary(
             .and_then(|v| v.as_str())
             .map(ToString::to_string),
         pickup_reminder: vending.get("pickupReminder").and_then(|value| {
-            Some(vending_core::domain::PickupReminderSummary {
+            Some(vending_core::domain::InternalPickupReminderSummary {
                 stage: value
                     .get("stage")
                     .and_then(|v| v.as_str())
@@ -3858,8 +3860,8 @@ fn map_vending_summary(
 
 fn map_payment_code_attempt_summary(
     value: &serde_json::Value,
-) -> Result<vending_core::domain::PaymentCodeAttemptSummary, StoreError> {
-    Ok(vending_core::domain::PaymentCodeAttemptSummary {
+) -> Result<vending_core::domain::InternalPaymentCodeAttemptSummary, StoreError> {
+    Ok(vending_core::domain::InternalPaymentCodeAttemptSummary {
         attempt_no: value.get("attemptNo").and_then(|v| v.as_i64()),
         status: value
             .get("status")
@@ -3897,8 +3899,8 @@ fn map_payment_code_attempt_summary(
 }
 
 fn parse_new_checkout_flow_action(action: &str) -> Result<&'static str, StoreError> {
-    CheckoutFlowAction::from_current_contract(action)
-        .map(CheckoutFlowAction::as_str)
+    InternalCheckoutFlowAction::from_current_contract(action)
+        .map(InternalCheckoutFlowAction::as_str)
         .ok_or_else(|| StoreError::InvalidCheckoutFlowAction(action.to_string()))
 }
 
@@ -5620,7 +5622,7 @@ mod tests {
         );
         assert_eq!(
             summary.next_action,
-            Some(CheckoutFlowAction::PaymentExpired)
+            Some(InternalCheckoutFlowAction::PaymentExpired)
         );
     }
 
@@ -6702,7 +6704,10 @@ mod tests {
             .expect("snapshot")
             .expect("current transaction");
 
-        assert_eq!(snapshot.next_action, Some(CheckoutFlowAction::WaitPayment));
+        assert_eq!(
+            snapshot.next_action,
+            Some(InternalCheckoutFlowAction::WaitPayment)
+        );
         let value = serde_json::to_string(&snapshot).expect("serialize snapshot");
         assert!(!value.contains("submit_payment"));
     }
@@ -6733,7 +6738,10 @@ mod tests {
             .expect("snapshot")
             .expect("current transaction");
 
-        assert_eq!(snapshot.next_action, Some(CheckoutFlowAction::Dispensing));
+        assert_eq!(
+            snapshot.next_action,
+            Some(InternalCheckoutFlowAction::Dispensing)
+        );
         let value = serde_json::to_string(&snapshot).expect("serialize snapshot");
         assert!(!value.contains("collect_goods"));
     }
@@ -6783,13 +6791,13 @@ mod tests {
                 "ORDER-CACHED-SUBMIT",
                 "wait_payment",
                 "submit_payment",
-                CheckoutFlowAction::WaitPayment,
+                InternalCheckoutFlowAction::WaitPayment,
             ),
             (
                 "ORDER-CACHED-COLLECT",
                 "dispensing",
                 "collect_goods",
-                CheckoutFlowAction::Dispensing,
+                InternalCheckoutFlowAction::Dispensing,
             ),
         ] {
             sqlx::query(
@@ -6938,7 +6946,10 @@ mod tests {
         assert_eq!(reminder.stage.as_deref(), Some("pickup_timeout_warning"));
         assert_eq!(reminder.warning_no, Some(2));
         assert!(reminder.message.contains("立即取走"));
-        assert_eq!(snapshot.next_action, Some(CheckoutFlowAction::Dispensing));
+        assert_eq!(
+            snapshot.next_action,
+            Some(InternalCheckoutFlowAction::Dispensing)
+        );
     }
 
     #[tokio::test]
@@ -6993,7 +7004,10 @@ mod tests {
         assert_eq!(vending.command_no.as_deref(), Some("CMD-RESET-COMPLETED"));
         assert_eq!(vending.status.as_deref(), Some("dispensing"));
         assert!(vending.pickup_reminder.is_none());
-        assert_eq!(snapshot.next_action, Some(CheckoutFlowAction::Dispensing));
+        assert_eq!(
+            snapshot.next_action,
+            Some(InternalCheckoutFlowAction::Dispensing)
+        );
     }
 
     #[tokio::test]
@@ -7075,7 +7089,10 @@ mod tests {
             .expect("snapshot")
             .expect("current");
         let vending = snapshot.vending.expect("vending");
-        assert_eq!(snapshot.next_action, Some(CheckoutFlowAction::Success));
+        assert_eq!(
+            snapshot.next_action,
+            Some(InternalCheckoutFlowAction::Success)
+        );
         assert_eq!(snapshot.order_status.as_deref(), Some("fulfilled"));
         assert_eq!(vending.command_no.as_deref(), Some("CMD-LATE-RESET"));
         assert_eq!(vending.status.as_deref(), Some("succeeded"));

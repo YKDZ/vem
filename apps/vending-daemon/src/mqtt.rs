@@ -1919,7 +1919,7 @@ mod tests {
         assert_eq!(snapshot.order_status.as_deref(), Some("fulfilled"));
         assert_eq!(
             snapshot.next_action,
-            Some(vending_core::domain::CheckoutFlowAction::Success)
+            Some(vending_core::domain::InternalCheckoutFlowAction::Success)
         );
         let vending = snapshot.vending.expect("vending summary");
         assert_eq!(vending.command_no.as_deref(), Some("CMD-SUCCESS"));

@@ -64,7 +64,7 @@ pub struct HealthSnapshot {
     pub scanner_online: bool,
     pub vision_online: bool,
     pub remote_ops_active: bool,
-    pub current_transaction: Option<crate::domain::CurrentTransactionSummary>,
+    pub current_transaction: Option<crate::domain::InternalCurrentTransactionSummary>,
     pub operator_reason: String,
     pub updated_at: String,
 }

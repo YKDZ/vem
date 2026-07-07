@@ -6834,6 +6834,7 @@ dependencies = [
  "chrono",
  "clap",
  "config",
+ "daemon-ipc-contracts",
  "futures-util",
  "getrandom 0.2.17",
  "hmac",
