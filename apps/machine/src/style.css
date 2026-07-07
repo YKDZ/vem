@@ -19,6 +19,8 @@
   --machine-brand-logo-width: clamp(8.75rem, 24vw, 12rem);
   --machine-page-inline: clamp(1.45rem, 4.82vw, 2.36rem);
   --machine-page-header-top: clamp(1.6rem, 2.7vh, 2.4rem);
+  --product-display-aspect-ratio: 3 / 4;
+  --product-square-crop-aspect-ratio: 1 / 1;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -86,6 +88,20 @@ img[alt="唐诗村"] {
   width: var(--machine-brand-logo-width) !important;
   height: auto !important;
   object-fit: contain;
+}
+
+.product-display-frame {
+  aspect-ratio: var(--product-display-aspect-ratio);
+}
+
+.product-square-crop-frame {
+  aspect-ratio: var(--product-square-crop-aspect-ratio);
+}
+
+.product-display-image,
+.product-square-crop-image {
+  object-fit: cover;
+  object-position: center center;
 }
 
 .kiosk-shell {

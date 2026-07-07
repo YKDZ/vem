@@ -530,7 +530,7 @@ async function submitOrder(): Promise<void> {
 }
 
 .product-image {
-  aspect-ratio: 1 / 1.62;
+  aspect-ratio: var(--product-display-aspect-ratio);
   overflow: hidden;
   border-radius: 12px;
   background:

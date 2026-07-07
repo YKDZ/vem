@@ -1041,7 +1041,7 @@ onUnmounted(() => {
 .product-image-panel {
   position: relative;
   display: grid;
-  aspect-ratio: 1 / 1;
+  aspect-ratio: var(--product-display-aspect-ratio);
   height: auto;
   overflow: hidden;
   place-items: center;
@@ -1234,7 +1234,7 @@ onUnmounted(() => {
   }
 
   .product-image-panel {
-    aspect-ratio: 1 / 1;
+    aspect-ratio: var(--product-display-aspect-ratio);
     height: auto;
   }
 
