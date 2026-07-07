@@ -10,10 +10,8 @@ import type {
 import type { CheckoutResultKind } from "@/types/checkout";
 
 import listSloganImage from "@/assets/home/list-slogan.png";
-import logoImage from "@/assets/home/logo.png";
 import mascotListImage from "@/assets/home/mascot-list.png";
-import mascotTopImage from "@/assets/home/mascot-top-cutout.png";
-import { useMaintenanceEntry } from "@/composables/useMaintenanceEntry";
+import KioskHeader from "@/components/KioskHeader.vue";
 import KioskLayout from "@/layouts/KioskLayout.vue";
 import { useCatalogStore } from "@/stores/catalog";
 import { useCheckoutStore } from "@/stores/checkout";
@@ -21,7 +19,6 @@ import { useCheckoutStore } from "@/stores/checkout";
 const router = useRouter();
 const checkoutStore = useCheckoutStore();
 const catalogStore = useCatalogStore();
-const { handleMaintenanceTap } = useMaintenanceEntry();
 
 const AUTO_RETURN_DELAY_MS = 6000;
 const AUTO_RETURN_TICK_MS = 1000;
@@ -254,16 +251,7 @@ onBeforeUnmount(stopAutoReturn);
       <div class="failure-mist failure-mist-left"></div>
       <div class="failure-mist failure-mist-right"></div>
 
-      <header class="failure-header">
-        <div class="failure-brand" @click="handleMaintenanceTap">
-          <img :src="logoImage" alt="唐诗村" />
-          <img :src="mascotTopImage" alt="" aria-hidden="true" />
-        </div>
-        <div class="failure-time">
-          <p>10:30</p>
-          <span>2026/06/15　星期二</span>
-        </div>
-      </header>
+      <KioskHeader class="failure-header" />
 
       <div class="failure-title">
         <h1>出货失败</h1>
@@ -358,16 +346,7 @@ onBeforeUnmount(stopAutoReturn);
       <div class="result-mist result-mist-left"></div>
       <div class="result-mist result-mist-right"></div>
 
-      <header class="result-header">
-        <div class="result-brand" @click="handleMaintenanceTap">
-          <img :src="logoImage" alt="唐诗村" />
-          <img :src="mascotTopImage" alt="" aria-hidden="true" />
-        </div>
-        <div class="result-time">
-          <p>10:30</p>
-          <span>2026/06/15　星期二</span>
-        </div>
-      </header>
+      <KioskHeader class="result-header" />
 
       <div class="result-title">
         <h1>{{ copy.title }}</h1>

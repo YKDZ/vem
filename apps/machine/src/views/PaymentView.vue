@@ -3,11 +3,9 @@ import { computed, onMounted, onUnmounted } from "vue";
 import { useRouter } from "vue-router";
 
 import listSloganImage from "@/assets/home/list-slogan.png";
-import logoImage from "@/assets/home/logo.png";
 import mascotListImage from "@/assets/home/mascot-list.png";
-import mascotTopImage from "@/assets/home/mascot-top-cutout.png";
+import KioskHeader from "@/components/KioskHeader.vue";
 import PaymentQrCode from "@/components/PaymentQrCode.vue";
-import { useMaintenanceEntry } from "@/composables/useMaintenanceEntry";
 import {
   shouldShowMockPaymentControls,
   shouldShowPaymentCodeDevScan,
@@ -21,7 +19,6 @@ import { formatCents, formatCountdown } from "@/utils/format";
 const router = useRouter();
 const checkoutStore = useCheckoutStore();
 const scannerStore = useScannerStore();
-const { handleMaintenanceTap } = useMaintenanceEntry();
 
 let pollTimer: number | undefined;
 let clockTimer: number | undefined;
@@ -197,25 +194,7 @@ onUnmounted(() => {
       <div class="payment-mist payment-mist-left"></div>
       <div class="payment-mist payment-mist-right"></div>
 
-      <header class="payment-header">
-        <div class="flex items-center gap-3" @click="handleMaintenanceTap">
-          <img
-            :src="logoImage"
-            alt="唐诗村"
-            class="h-9 w-auto object-contain"
-          />
-          <img
-            :src="mascotTopImage"
-            alt=""
-            class="h-14 w-14 object-contain"
-            aria-hidden="true"
-          />
-        </div>
-        <div class="text-right text-[#6f835f]">
-          <p class="font-serif text-4xl leading-none font-bold">10:30</p>
-          <p class="mt-1 text-xs tracking-wide">2026/06/15　星期二</p>
-        </div>
-      </header>
+      <KioskHeader class="payment-header" />
 
       <div class="payment-title">
         <h1>订单支付</h1>

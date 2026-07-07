@@ -1148,12 +1148,22 @@ describe("sale readiness UI flow", () => {
 
     let host = await mountView(CatalogView);
 
-    const nextSlideButton = requireElement<HTMLButtonElement>(
+    const carousel = requireElement<HTMLElement>(
       host,
-      'button[aria-label="下一张"]',
+      '[aria-roledescription="carousel"]',
     );
-    expect(nextSlideButton.disabled).toBe(false);
-    nextSlideButton.click();
+    carousel.dispatchEvent(
+      new MouseEvent("pointerdown", {
+        bubbles: true,
+        clientX: 500,
+      }),
+    );
+    carousel.dispatchEvent(
+      new MouseEvent("pointerup", {
+        bubbles: true,
+        clientX: 100,
+      }),
+    );
     await nextTick();
     const categoryButton = requireButtonByText(host, "T恤");
     expect(categoryButton.disabled).toBe(false);

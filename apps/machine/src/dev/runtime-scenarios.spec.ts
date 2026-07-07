@@ -24,6 +24,8 @@ describe("machine runtime scenario matrix", () => {
     ).toEqual(
       expect.arrayContaining([
         "ready_catalog",
+        "product",
+        "checkout",
         "payment",
         "dispensing",
         "result",
@@ -126,6 +128,41 @@ describe("machine runtime scenario matrix", () => {
       expect(scenario?.category).toBe("payment");
       expect(scenario?.targetRoute).toBe("/payment");
       expect(scenario?.fixtureScenarioId).toBe(expectation.fixtureScenarioId);
+      expect(scenario?.visualChecks).toContain(expectation.visualCheck);
+      expect(scenario?.screenshot).toBe("included");
+    }
+  });
+
+  it("covers product browsing and checkout payment selection screenshots", () => {
+    const states = [
+      {
+        id: "product-list",
+        category: "product",
+        targetRoute: "/catalog",
+        visualCheck: "展示基础短袖商品卡",
+      },
+      {
+        id: "product-detail",
+        category: "product",
+        targetRoute: "/products/product:550e8400-e29b-41d4-a716-446655440303",
+        visualCheck: "展示基础短袖详情",
+      },
+      {
+        id: "checkout-payment-options",
+        category: "checkout",
+        targetRoute: "/checkout",
+        visualCheck: "展示选择支付方式",
+      },
+    ] as const;
+
+    for (const expectation of states) {
+      const scenario = machineRuntimeScenarios.find(
+        (candidate) => candidate.id === expectation.id,
+      );
+      expect(scenario).toBeDefined();
+      expect(scenario?.category).toBe(expectation.category);
+      expect(scenario?.targetRoute).toBe(expectation.targetRoute);
+      expect(scenario?.fixtureScenarioId).toBe("ready");
       expect(scenario?.visualChecks).toContain(expectation.visualCheck);
       expect(scenario?.screenshot).toBe("included");
     }

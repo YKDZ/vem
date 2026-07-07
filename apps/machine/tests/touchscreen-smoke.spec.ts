@@ -322,6 +322,24 @@ test("touchscreen customer can enter the visible catalog list", async ({
   await expect(page.getByRole("button", { name: /基础短袖/ })).toBeVisible();
 });
 
+test("home carousel auto mode removes buttons and supports swipe navigation", async ({
+  page,
+}) => {
+  await loadMachineRuntimeScenario(page, readyCatalogScenario);
+
+  const carousel = page.getByRole("region", { name: "首页展示轮播" });
+  await expect(carousel).toBeVisible();
+  await expect(page.getByRole("button", { name: "上一张" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "下一张" })).toHaveCount(0);
+
+  const image = page.getByRole("img", { name: "轮播展示" });
+  const initialSrc = await image.getAttribute("src");
+  await carousel.dispatchEvent("pointerdown", { clientX: 500 });
+  await carousel.dispatchEvent("pointerup", { clientX: 100 });
+
+  await expect.poll(async () => image.getAttribute("src")).not.toBe(initialSrc);
+});
+
 test("touchscreen customer can complete a successful purchase journey", async ({
   page,
 }) => {

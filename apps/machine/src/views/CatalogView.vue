@@ -13,13 +13,11 @@ import iconTshirtImage from "@/assets/home/icon-tshirt.png";
 import iconUnderwearImage from "@/assets/home/icon-underwear.png";
 import listSloganImage from "@/assets/home/list-slogan.png";
 import listTitleImage from "@/assets/home/list-title.png";
-import logoImage from "@/assets/home/logo.png";
 import mascotListImage from "@/assets/home/mascot-list.png";
-import mascotTopImage from "@/assets/home/mascot-top-cutout.png";
 import sloganCalligraphyImage from "@/assets/home/slogan-calligraphy.png";
 import { groupItemsByTopCategory } from "@/catalog/view-model";
+import KioskHeader from "@/components/KioskHeader.vue";
 import { useCatalogNotifications } from "@/composables/useCatalogNotifications";
-import { useMaintenanceEntry } from "@/composables/useMaintenanceEntry";
 import { usePresenceInteraction } from "@/composables/usePresenceInteraction";
 import { useVisionRecommendations } from "@/composables/useVisionRecommendations";
 import KioskLayout from "@/layouts/KioskLayout.vue";
@@ -32,18 +30,19 @@ const connectivityStore = useConnectivityStore();
 const catalogStore = useCatalogStore();
 useVisionRecommendations();
 const { presenceClass } = usePresenceInteraction();
-const { handleMaintenanceTap } = useMaintenanceEntry();
 const { primaryNotification } = useCatalogNotifications();
 const READINESS_REFRESH_INTERVAL_MS = 5000;
-const CLOCK_REFRESH_INTERVAL_MS = 30_000;
+const CAROUSEL_AUTO_ADVANCE_INTERVAL_MS = 5000;
+const CAROUSEL_SWIPE_THRESHOLD_PX = 60;
+const RUNTIME_SCREENSHOT_STORAGE_KEY = "vem.machine.runtimeScreenshot";
 
 const selectedTopCategoryKey = ref<CatalogTopCategoryKey | null>(null);
 const activeGenderFilter = ref<ProductGenderFilter>("all");
 const activeCarouselIndex = ref(0);
-const now = ref(new Date());
+const carouselSwipeStartX = ref<number | null>(null);
 let readinessRefreshTimer: number | null = null;
 let readinessRefreshInFlight: Promise<void> | null = null;
-let clockTimer: number | null = null;
+let carouselAutoAdvanceTimer: number | null = null;
 
 type ProductGenderFilter = "all" | "male" | "female" | "kids" | "elder";
 
@@ -119,21 +118,6 @@ const activeProducts = computed(() =>
   }),
 );
 const hasAnySaleableProduct = computed(() => displayProducts.value.length > 0);
-const clockText = computed(() =>
-  now.value.toLocaleTimeString("zh-CN", {
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  }),
-);
-const dateText = computed(
-  () =>
-    `${now.value.toLocaleDateString("zh-CN", {
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-    })} ${now.value.toLocaleDateString("zh-CN", { weekday: "long" })}`,
-);
 
 function shouldEnterMaintenance(): boolean {
   return (
@@ -175,21 +159,6 @@ function stopReadinessAutoRefresh(): void {
   }
 }
 
-function startClock(): void {
-  stopClock();
-  now.value = new Date();
-  clockTimer = window.setInterval(() => {
-    now.value = new Date();
-  }, CLOCK_REFRESH_INTERVAL_MS);
-}
-
-function stopClock(): void {
-  if (clockTimer !== null) {
-    window.clearInterval(clockTimer);
-    clockTimer = null;
-  }
-}
-
 function previousSlide(): void {
   activeCarouselIndex.value =
     (activeCarouselIndex.value + carouselSlides.length - 1) %
@@ -199,6 +168,60 @@ function previousSlide(): void {
 function nextSlide(): void {
   activeCarouselIndex.value =
     (activeCarouselIndex.value + 1) % carouselSlides.length;
+}
+
+function startCarouselAutoAdvance(): void {
+  if (isRuntimeScreenshotMode()) return;
+  stopCarouselAutoAdvance();
+  carouselAutoAdvanceTimer = window.setInterval(() => {
+    nextSlide();
+  }, CAROUSEL_AUTO_ADVANCE_INTERVAL_MS);
+}
+
+function stopCarouselAutoAdvance(): void {
+  if (carouselAutoAdvanceTimer !== null) {
+    window.clearInterval(carouselAutoAdvanceTimer);
+    carouselAutoAdvanceTimer = null;
+  }
+}
+
+function restartCarouselAutoAdvance(): void {
+  startCarouselAutoAdvance();
+}
+
+function handleCarouselPointerDown(event: PointerEvent): void {
+  carouselSwipeStartX.value = event.clientX;
+  stopCarouselAutoAdvance();
+}
+
+function handleCarouselPointerUp(event: PointerEvent): void {
+  const startX = carouselSwipeStartX.value;
+  carouselSwipeStartX.value = null;
+  if (startX === null) {
+    restartCarouselAutoAdvance();
+    return;
+  }
+  const deltaX = event.clientX - startX;
+  if (Math.abs(deltaX) >= CAROUSEL_SWIPE_THRESHOLD_PX) {
+    if (deltaX < 0) {
+      nextSlide();
+    } else {
+      previousSlide();
+    }
+  }
+  restartCarouselAutoAdvance();
+}
+
+function handleCarouselPointerCancel(): void {
+  carouselSwipeStartX.value = null;
+  restartCarouselAutoAdvance();
+}
+
+function isRuntimeScreenshotMode(): boolean {
+  return (
+    import.meta.env.DEV &&
+    window.localStorage.getItem(RUNTIME_SCREENSHOT_STORAGE_KEY) === "1"
+  );
 }
 
 function selectTopCategory(key: CatalogTopCategoryKey): void {
@@ -284,13 +307,13 @@ async function openProductDetail(product: DisplayProduct): Promise<void> {
 onMounted(() => {
   catalogStore.startAutoRefresh();
   startReadinessAutoRefresh();
-  startClock();
+  startCarouselAutoAdvance();
 });
 
 onUnmounted(() => {
   catalogStore.stopAutoRefresh();
   stopReadinessAutoRefresh();
-  stopClock();
+  stopCarouselAutoAdvance();
 });
 </script>
 
@@ -304,67 +327,39 @@ onUnmounted(() => {
       <div class="home-mist home-mist-left"></div>
       <div class="home-mist home-mist-right"></div>
 
-      <header class="relative z-10 flex shrink-0 items-start justify-between">
-        <div class="flex items-center gap-3" @click="handleMaintenanceTap">
-          <img
-            :src="logoImage"
-            alt="唐诗村"
-            class="h-9 w-auto object-contain"
-          />
-          <img
-            :src="mascotTopImage"
-            alt=""
-            class="h-14 w-14 object-contain"
-            aria-hidden="true"
-          />
-        </div>
-        <div class="text-right text-[#6f835f]">
-          <p class="font-serif text-4xl leading-none font-bold">
-            {{ clockText }}
-          </p>
-          <p class="mt-1 text-xs whitespace-nowrap">{{ dateText }}</p>
-        </div>
-      </header>
+      <KioskHeader class="relative z-10" :enable-maintenance-entry="true" />
 
       <div
         class="home-carousel-shell relative z-10 mt-6 shrink-0 overflow-hidden rounded-[26px] border border-[#ded6c2] bg-[#f8f3e8] p-2 shadow-[0_16px_40px_rgba(101,94,71,0.12)]"
       >
-        <div class="relative aspect-video overflow-hidden rounded-[20px]">
+        <div
+          class="relative aspect-video overflow-hidden rounded-[20px]"
+          role="region"
+          aria-roledescription="carousel"
+          aria-label="首页展示轮播"
+          @pointerdown="handleCarouselPointerDown"
+          @pointerup="handleCarouselPointerUp"
+          @pointercancel="handleCarouselPointerCancel"
+          @pointerleave="handleCarouselPointerCancel"
+        >
           <img
             :src="carouselSlides[activeCarouselIndex]"
             alt="轮播展示"
-            class="h-full w-full object-cover"
+            class="h-full w-full object-cover select-none"
+            draggable="false"
           />
-          <button
-            class="carousel-arrow left-3"
-            type="button"
-            aria-label="上一张"
-            @click="previousSlide"
-          >
-            ‹
-          </button>
-          <button
-            class="carousel-arrow right-3"
-            type="button"
-            aria-label="下一张"
-            @click="nextSlide"
-          >
-            ›
-          </button>
           <div
             class="absolute bottom-4 left-1/2 flex -translate-x-1/2 items-center gap-3"
+            aria-hidden="true"
           >
-            <button
+            <span
               v-for="(_, index) in carouselSlides"
               :key="index"
               class="carousel-dot rounded-full transition"
               :class="
                 index === activeCarouselIndex ? 'bg-[#6d815d]' : 'bg-[#b9bca6]'
               "
-              type="button"
-              :aria-label="`切换到第 ${index + 1} 张`"
-              @click="activeCarouselIndex = index"
-            ></button>
+            ></span>
           </div>
         </div>
       </div>
@@ -527,27 +522,7 @@ onUnmounted(() => {
       <div class="home-mist home-mist-left"></div>
       <div class="home-mist home-mist-right"></div>
 
-      <header class="relative z-10 flex shrink-0 items-start justify-between">
-        <div class="flex items-center gap-3" @click="handleMaintenanceTap">
-          <img
-            :src="logoImage"
-            alt="唐诗村"
-            class="h-9 w-auto object-contain"
-          />
-          <img
-            :src="mascotTopImage"
-            alt=""
-            class="h-14 w-14 object-contain"
-            aria-hidden="true"
-          />
-        </div>
-        <div class="text-right text-[#6f835f]">
-          <p class="font-serif text-4xl leading-none font-bold">
-            {{ clockText }}
-          </p>
-          <p class="mt-1 text-xs whitespace-nowrap">{{ dateText }}</p>
-        </div>
-      </header>
+      <KioskHeader class="relative z-10" />
 
       <div class="list-heading-row">
         <div class="list-title-group">
@@ -1298,27 +1273,15 @@ onUnmounted(() => {
   filter: blur(34px);
 }
 
-.carousel-arrow {
-  position: absolute;
-  top: 50%;
-  display: grid;
-  width: clamp(38px, 5.19vw, 56px);
-  height: clamp(38px, 5.19vw, 56px);
-  min-height: clamp(38px, 5.19vw, 56px);
-  transform: translateY(-50%);
-  place-items: center;
-  border-radius: 999px;
-  background: rgba(112, 133, 95, 0.86);
-  color: #fffdf5;
-  font-size: clamp(2.1rem, 4.45vw, 3rem);
-  line-height: 1;
-  box-shadow: 0 8px 22px rgba(61, 75, 49, 0.18);
-}
-
 .carousel-dot {
   width: clamp(10px, 1.3vw, 14px);
   height: clamp(10px, 1.3vw, 14px);
   min-height: clamp(10px, 1.3vw, 14px);
+}
+
+.home-carousel-shell [aria-roledescription="carousel"] {
+  touch-action: pan-y;
+  user-select: none;
 }
 
 .title-ornament {

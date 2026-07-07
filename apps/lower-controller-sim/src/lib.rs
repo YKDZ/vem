@@ -551,7 +551,7 @@ where
 
     send_repeated_frame(
         &writer,
-        LowerFrame::AboutToDrop,
+        LowerFrame::ArrivalAtOutlet,
         3,
         options.event_repeat_interval,
     )
@@ -646,7 +646,7 @@ where
     trace(&options, "reset completed -> F2");
     send_repeated_frame(
         &writer,
-        LowerFrame::Completed,
+        LowerFrame::ResetCompletedFrame,
         3,
         options.event_repeat_interval,
     )
@@ -1042,7 +1042,7 @@ mod tests {
         assert_eq!(read_until_code(&mut stream, 0x00).await, LowerFrame::Ack);
         assert_eq!(
             read_until_code(&mut stream, 0xF0).await,
-            LowerFrame::AboutToDrop
+            LowerFrame::ArrivalAtOutlet
         );
         assert_eq!(
             read_until_code(&mut stream, 0xF1).await,
@@ -1050,7 +1050,7 @@ mod tests {
         );
         assert_eq!(
             read_until_code(&mut stream, 0xF2).await,
-            LowerFrame::Completed
+            LowerFrame::ResetCompletedFrame
         );
 
         control_tx.send(ControlCommand::Quit).expect("quit");
@@ -1070,7 +1070,7 @@ mod tests {
         assert_eq!(read_until_code(&mut stream, 0x00).await, LowerFrame::Ack);
         assert_eq!(
             read_until_code(&mut stream, 0xF0).await,
-            LowerFrame::AboutToDrop
+            LowerFrame::ArrivalAtOutlet
         );
         assert_eq!(
             read_until_code(&mut stream, 0xE5).await,
@@ -1086,7 +1086,7 @@ mod tests {
         );
         assert_eq!(
             read_until_code(&mut stream, 0xF2).await,
-            LowerFrame::Completed
+            LowerFrame::ResetCompletedFrame
         );
 
         control_tx.send(ControlCommand::Quit).expect("quit");
