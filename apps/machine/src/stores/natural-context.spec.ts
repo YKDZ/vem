@@ -83,4 +83,15 @@ describe("useNaturalContextStore", () => {
     expect(store.primaryFestival).toBe("dragon_boat_festival");
     expect(store.solarTerm).toBe(null);
   });
+
+  it("preserves degraded error state instead of applying a mock snapshot when daemon Natural Context is unavailable", async () => {
+    getNaturalContextMock.mockRejectedValue(new Error("daemon unavailable"));
+
+    const store = useNaturalContextStore();
+    await expect(store.refresh()).rejects.toThrow("daemon unavailable");
+
+    expect(store.snapshot).toBeNull();
+    expect(store.error).toBe("daemon unavailable");
+    expect(store.operatorMessage).toBe("daemon unavailable");
+  });
 });

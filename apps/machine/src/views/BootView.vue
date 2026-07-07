@@ -12,6 +12,7 @@ import { useCheckoutStore } from "@/stores/checkout";
 import { useConnectivityStore } from "@/stores/connectivity";
 import { useMachineStore } from "@/stores/machine";
 import { useMqttStore } from "@/stores/mqtt";
+import { useNaturalContextStore } from "@/stores/natural-context";
 import { useRemoteOpsStore } from "@/stores/remote-ops";
 import { useScannerStore } from "@/stores/scanner";
 import { useVisionStore } from "@/stores/vision";
@@ -25,6 +26,7 @@ const mqttStore = useMqttStore();
 const scannerStore = useScannerStore();
 const visionStore = useVisionStore();
 const remoteOpsStore = useRemoteOpsStore();
+const naturalContextStore = useNaturalContextStore();
 const steps = ref<string[]>([]);
 
 let eventSubscription: { close(): void } | null = null;
@@ -135,6 +137,7 @@ onMounted(async () => {
       scannerStore.refresh(),
       visionStore.refresh(),
       remoteOpsStore.refresh(),
+      naturalContextStore.refresh(),
     ]);
 
     if (!eventSubscription) {

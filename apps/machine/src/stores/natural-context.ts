@@ -33,6 +33,70 @@ export const useNaturalContextStore = defineStore("natural-context", {
       state.snapshot?.externalEnvironment.calendar?.primaryFestival ?? null,
     solarTerm: (state): string | null =>
       state.snapshot?.externalEnvironment.calendar?.solarTerm ?? null,
+    temperatureCelsius: (state): number | null =>
+      state.snapshot?.externalEnvironment.weather?.temperatureCelsius ?? null,
+    isHighTemperature: (state): boolean => {
+      const temp =
+        state.snapshot?.externalEnvironment.weather?.temperatureCelsius;
+      return temp !== undefined && temp !== null && temp >= 35;
+    },
+    hasLightRain: (state): boolean => {
+      const conditions =
+        state.snapshot?.externalEnvironment.weather?.weatherConditionClasses ??
+        [];
+      return conditions.includes("light_rain");
+    },
+    hasHeavyRain: (state): boolean => {
+      const conditions =
+        state.snapshot?.externalEnvironment.weather?.weatherConditionClasses ??
+        [];
+      return conditions.includes("moderate_or_heavy_rain");
+    },
+    hasThunder: (): boolean => false,
+    hasSnow: (state): boolean => {
+      const conditions =
+        state.snapshot?.externalEnvironment.weather?.weatherConditionClasses ??
+        [];
+      return conditions.includes("snow");
+    },
+    hasStrongWind: (state): boolean => {
+      const conditions =
+        state.snapshot?.externalEnvironment.weather?.weatherConditionClasses ??
+        [];
+      return conditions.includes("strong_wind");
+    },
+    hasHail: (state): boolean => {
+      const conditions =
+        state.snapshot?.externalEnvironment.weather?.weatherConditionClasses ??
+        [];
+      return conditions.includes("hail");
+    },
+    isSunny: (state): boolean => {
+      const conditions =
+        state.snapshot?.externalEnvironment.weather?.weatherConditionClasses ??
+        [];
+      return (
+        conditions.length === 0 ||
+        conditions.every((condition) => condition === "other")
+      );
+    },
+    isCloudy: (state): boolean => {
+      const conditions =
+        state.snapshot?.externalEnvironment.weather?.weatherConditionClasses ??
+        [];
+      const isSunny =
+        conditions.length === 0 ||
+        conditions.every((condition) => condition === "other");
+      return (
+        conditions.length > 0 &&
+        !isSunny &&
+        !conditions.includes("light_rain") &&
+        !conditions.includes("moderate_or_heavy_rain") &&
+        !conditions.includes("snow") &&
+        !conditions.includes("strong_wind") &&
+        !conditions.includes("hail")
+      );
+    },
     operatorMessage: (state): string => {
       const snapshot = state.snapshot;
       if (!snapshot) return state.error ?? "Natural Context status unknown";

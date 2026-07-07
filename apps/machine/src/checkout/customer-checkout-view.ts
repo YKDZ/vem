@@ -114,6 +114,7 @@ export type CustomerEventPickupCue =
 
 export type CustomerEventJourneyFact =
   | "payment_requested"
+  | "payment_failure"
   | "dispense_started"
   | "dispense_succeeded"
   | "dispense_failure"
@@ -488,6 +489,7 @@ function customerEventJourneyFactForResult(
     case "manual_handling":
       return "manual_support_required";
     case "payment_failed":
+      return "payment_failure";
     case "payment_expired":
     case "closed":
       return null;

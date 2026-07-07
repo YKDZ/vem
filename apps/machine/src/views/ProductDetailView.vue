@@ -135,6 +135,58 @@ const fallbackImage = computed(() => {
   return iconSocksImage;
 });
 
+const productIntroCueKey = computed(
+  ():
+    | "product.intro.socks"
+    | "product.intro.underwear"
+    | "product.intro.tshirt"
+    | null => {
+    const label = categoryLabel.value;
+    if (label.includes("内裤")) return "product.intro.underwear";
+    if (label.includes("T恤")) return "product.intro.tshirt";
+    if (label.includes("袜")) return "product.intro.socks";
+    return null;
+  },
+);
+
+const playedIntro = ref(false);
+
+function playProductIntro(): void {
+  if (playedIntro.value) return;
+  const cueKey = productIntroCueKey.value;
+  if (!cueKey) return;
+  playedIntro.value = true;
+  emitCustomerEvent({
+    type: cueKey,
+    requestedAt: new Date().toISOString(),
+  });
+}
+
+watch(
+  item,
+  (newItem) => {
+    if (newItem) {
+      setTimeout(() => {
+        playProductIntro();
+      }, 500);
+    }
+  },
+  { immediate: false },
+);
+
+watch(
+  () => route.params.catalogKey,
+  () => {
+    playedIntro.value = false;
+    setTimeout(() => {
+      if (item.value) {
+        playProductIntro();
+      }
+    }, 800);
+  },
+  { immediate: true },
+);
+
 const featureCards = [
   { label: "柔软亲肤", icon: "cotton" },
   { label: "透气吸汗", icon: "breathable" },

@@ -16,6 +16,7 @@ import { useCheckoutStore } from "@/stores/checkout";
 import { useConnectivityStore } from "@/stores/connectivity";
 import { useMachineStore } from "@/stores/machine";
 import { useMqttStore } from "@/stores/mqtt";
+import { useNaturalContextStore } from "@/stores/natural-context";
 import { useRemoteOpsStore } from "@/stores/remote-ops";
 import { useScannerStore } from "@/stores/scanner";
 import { useVisionStore } from "@/stores/vision";
@@ -34,6 +35,9 @@ export function applyUiDebugScenarioToStores(scenario: UiDebugScenario): void {
   useVisionStore().applyStatus(scenario.vision);
   useRemoteOpsStore().applyStatus(scenario.remoteOps);
   useAudioCueStore().applySettings(scenario.config.public.audioCueSettings);
+  void useNaturalContextStore()
+    .refresh()
+    .catch(() => undefined);
 
   const hasScenarioTransaction = Boolean(scenario.transaction.orderNo);
   const canRestoreStoredTransaction =
@@ -41,7 +45,12 @@ export function applyUiDebugScenarioToStores(scenario: UiDebugScenario): void {
 
   if (hasScenarioTransaction) {
     resetUiDebugTransaction();
-    useCheckoutStore().applyTransaction(scenario.transaction);
+    const checkoutStore = useCheckoutStore();
+    checkoutStore.dismissedTerminalOrderNos =
+      checkoutStore.dismissedTerminalOrderNos.filter(
+        (orderNo) => orderNo !== scenario.transaction.orderNo,
+      );
+    checkoutStore.applyTransaction(scenario.transaction);
     setUiDebugTransaction(scenario.transaction);
   } else if (canRestoreStoredTransaction && hasStoredUiDebugTransaction()) {
     useCheckoutStore().reset();

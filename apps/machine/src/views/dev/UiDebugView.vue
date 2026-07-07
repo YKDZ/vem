@@ -2,8 +2,17 @@
 import { computed, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
 
+import type {
+  PresenceEventType,
+  TransactionEventType,
+} from "@/customer-events/events";
 import type { SaleViewSnapshot } from "@/daemon/schemas";
 
+import { emitCustomerEvent } from "@/composables/useCustomerEvents";
+import {
+  getEasterEggType,
+  getDepartureEventType,
+} from "@/composables/usePresenceInteraction";
 import { applyUiDebugScenarioToStores } from "@/dev/runtime-scenario-loader";
 import {
   machineRuntimeScenarios,
@@ -24,10 +33,57 @@ import {
 import KioskLayout from "@/layouts/KioskLayout.vue";
 import { useCatalogStore } from "@/stores/catalog";
 import { useCheckoutStore } from "@/stores/checkout";
+import { useNaturalContextStore } from "@/stores/natural-context";
 
 const router = useRouter();
 const catalogStore = useCatalogStore();
 const checkoutStore = useCheckoutStore();
+const naturalContextStore = useNaturalContextStore();
+const lastAudioEvent = ref<string | null>(null);
+
+function playAudioCue(eventType: PresenceEventType): void {
+  emitCustomerEvent({
+    type: eventType,
+    requestedAt: new Date().toISOString(),
+  });
+  lastAudioEvent.value = `${eventType} - ${new Date().toLocaleTimeString()}`;
+}
+
+function playEasterEgg(): void {
+  const eggType = getEasterEggType(naturalContextStore);
+  if (!eggType) {
+    lastAudioEvent.value = `无彩蛋信息 - ${new Date().toLocaleTimeString()}`;
+    return;
+  }
+  const eventType = `presence.easter_egg.${eggType.type}` as PresenceEventType;
+  emitCustomerEvent({
+    type: eventType,
+    requestedAt: new Date().toISOString(),
+  });
+  lastAudioEvent.value = `${eventType} (${eggType.value}) - ${new Date().toLocaleTimeString()}`;
+}
+
+function playDepartureQuote(): void {
+  const eventType = getDepartureEventType(naturalContextStore);
+  if (!eventType) {
+    lastAudioEvent.value = `无离别语录信息 - ${new Date().toLocaleTimeString()}`;
+    return;
+  }
+  emitCustomerEvent({
+    type: eventType,
+    requestedAt: new Date().toISOString(),
+  });
+  lastAudioEvent.value = `${eventType} - ${new Date().toLocaleTimeString()}`;
+}
+
+function playTransactionAudioCue(eventType: TransactionEventType): void {
+  emitCustomerEvent({
+    type: eventType,
+    orderKey: `UI-DEBUG-ORDER-${Date.now()}`,
+    requestedAt: new Date().toISOString(),
+  });
+  lastAudioEvent.value = `${eventType} - ${new Date().toLocaleTimeString()}`;
+}
 
 const activeScenarioId = ref<UiDebugScenarioId>(getActiveUiDebugScenario().id);
 const saleViewJson = ref("");
@@ -142,10 +198,31 @@ async function goDispensing(
 }
 
 async function goResult(kind: string): Promise<void> {
+  let scenarioId: UiDebugScenarioId;
+  switch (kind) {
+    case "success":
+      scenarioId = "success";
+      break;
+    case "dispense_failed":
+      scenarioId = "dispense_failed";
+      break;
+    case "manual_handling":
+      scenarioId = "manual_handling";
+      break;
+    case "refund_pending":
+      scenarioId = "refund_pending";
+      break;
+    case "refunded":
+      scenarioId = "refunded";
+      break;
+    case "payment_failed":
+      scenarioId = "payment_failed";
+      break;
+    default:
+      scenarioId = "ready";
+  }
   const scenario = uiDebugScenarios.find(
-    (candidate) =>
-      candidate.id ===
-      (kind === "dispense_failed" ? "dispense_failed" : "ready"),
+    (candidate) => candidate.id === scenarioId,
   )!;
   setActiveUiDebugScenarioId(scenario.id);
   activeScenarioId.value = scenario.id;
@@ -278,6 +355,34 @@ onMounted(() => {
           <button
             class="debug-button"
             type="button"
+            @click="goResult('manual_handling')"
+          >
+            Result Manual Handling
+          </button>
+          <button
+            class="debug-button"
+            type="button"
+            @click="goResult('refund_pending')"
+          >
+            Result Refund Pending
+          </button>
+          <button
+            class="debug-button"
+            type="button"
+            @click="goResult('refunded')"
+          >
+            Result Refunded
+          </button>
+          <button
+            class="debug-button"
+            type="button"
+            @click="goResult('payment_failed')"
+          >
+            Result Payment Failed
+          </button>
+          <button
+            class="debug-button"
+            type="button"
             @click="goStaticRoute('/offline')"
           >
             Offline
@@ -296,6 +401,181 @@ onMounted(() => {
           >
             Provisioning
           </button>
+        </div>
+      </section>
+
+      <section class="rounded-3xl border border-white/10 bg-white/10 p-5">
+        <h3 class="text-xl font-black">音频测试</h3>
+        <p class="mt-1 text-sm text-slate-300">
+          点击按钮触发音频播报，仅在 UI Debug 模式下生效。
+        </p>
+
+        <div class="mt-4 space-y-4">
+          <div>
+            <p class="text-sm font-bold text-sky-200">小彩蛋</p>
+            <div class="mt-2 grid grid-cols-1 gap-3">
+              <button class="debug-button" type="button" @click="playEasterEgg">
+                播放彩蛋
+              </button>
+            </div>
+          </div>
+
+          <div>
+            <p class="text-sm font-bold text-sky-200">交互语音</p>
+            <div class="mt-2 grid grid-cols-2 gap-3">
+              <button
+                class="debug-button"
+                type="button"
+                @click="playAudioCue('interaction.awakened')"
+              >
+                触屏唤醒
+              </button>
+              <button
+                class="debug-button"
+                type="button"
+                @click="playTransactionAudioCue('product.selected')"
+              >
+                选品成功
+              </button>
+            </div>
+          </div>
+
+          <div>
+            <p class="text-sm font-bold text-sky-200">支付语音</p>
+            <div class="mt-2 grid grid-cols-2 gap-3">
+              <button
+                class="debug-button"
+                type="button"
+                @click="playTransactionAudioCue('payment.prompt')"
+              >
+                支付提示
+              </button>
+              <button
+                class="debug-button"
+                type="button"
+                @click="playTransactionAudioCue('payment.succeeded')"
+              >
+                支付成功
+              </button>
+            </div>
+          </div>
+
+          <div>
+            <p class="text-sm font-bold text-sky-200">出货语音</p>
+            <div class="mt-2 grid grid-cols-2 gap-3">
+              <button
+                class="debug-button"
+                type="button"
+                @click="playTransactionAudioCue('dispensing.started')"
+              >
+                取货等待
+              </button>
+              <button
+                class="debug-button"
+                type="button"
+                @click="playTransactionAudioCue('dispense.succeeded')"
+              >
+                取货完成
+              </button>
+            </div>
+          </div>
+
+          <div>
+            <p class="text-sm font-bold text-sky-200">取货提醒</p>
+            <div class="mt-2 grid grid-cols-2 gap-3">
+              <button
+                class="debug-button"
+                type="button"
+                @click="playTransactionAudioCue('pickup.warning')"
+              >
+                超时警告10s
+              </button>
+              <button
+                class="debug-button"
+                type="button"
+                @click="playTransactionAudioCue('pickup.urgent')"
+              >
+                超时警告25s
+              </button>
+            </div>
+          </div>
+
+          <div>
+            <p class="text-sm font-bold text-sky-200">离别语录</p>
+            <div class="mt-2 grid grid-cols-1 gap-3">
+              <button
+                class="debug-button"
+                type="button"
+                @click="playDepartureQuote"
+              >
+                播放离别语录
+              </button>
+            </div>
+          </div>
+
+          <div>
+            <p class="text-sm font-bold text-sky-200">隐私模式</p>
+            <div class="mt-2 grid grid-cols-2 gap-3">
+              <button
+                class="debug-button"
+                type="button"
+                @click="playAudioCue('privacy.crowd_detected')"
+              >
+                多人/夜间提示
+              </button>
+            </div>
+          </div>
+
+          <div>
+            <p class="text-sm font-bold text-sky-200">错误/故障</p>
+            <div class="mt-2 grid grid-cols-2 gap-3">
+              <button
+                class="debug-button"
+                type="button"
+                @click="playTransactionAudioCue('dispense.failed')"
+              >
+                出货失败
+              </button>
+              <button
+                class="debug-button"
+                type="button"
+                @click="playTransactionAudioCue('system.hardware_fault')"
+              >
+                设备故障
+              </button>
+              <button
+                class="debug-button"
+                type="button"
+                @click="playAudioCue('idle.assistance_prompt')"
+              >
+                无人操作提醒
+              </button>
+            </div>
+          </div>
+
+          <div>
+            <p class="text-sm font-bold text-sky-200">退款</p>
+            <div class="mt-2 grid grid-cols-2 gap-3">
+              <button
+                class="debug-button"
+                type="button"
+                @click="playTransactionAudioCue('refund.pending')"
+              >
+                退款处理中
+              </button>
+              <button
+                class="debug-button"
+                type="button"
+                @click="playTransactionAudioCue('refund.completed')"
+              >
+                退款完成
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div v-if="lastAudioEvent" class="mt-4 rounded-2xl bg-sky-500/10 p-3">
+          <p class="text-sm text-sky-100">最后触发: {{ lastAudioEvent }}</p>
         </div>
       </section>
 

@@ -1,36 +1,51 @@
 import type { AudioCueCategory } from "@/stores/audio-cues";
 
+export type PresenceEventType =
+  | "presence.detected"
+  | "presence.easter_egg"
+  | "presence.easter_egg.festival"
+  | "presence.easter_egg.solar_term"
+  | "presence.easter_egg.season"
+  | "presence.welcome.day"
+  | "presence.welcome.night"
+  | "interaction.awakened"
+  | "privacy.crowd_detected"
+  | "idle.assistance_prompt"
+  | "idle.sleep"
+  | "departure.bad_weather"
+  | "departure.bad_air"
+  | "departure.bad_forecast"
+  | "departure.normal_weather";
+
+export type TransactionEventType =
+  | "product.selected"
+  | "product.intro.socks"
+  | "product.intro.underwear"
+  | "product.intro.tshirt"
+  | "payment.prompt"
+  | "payment.succeeded"
+  | "payment.failed"
+  | "dispensing.started"
+  | "dispense.outlet_opened"
+  | "dispense.succeeded"
+  | "dispense.failed"
+  | "pickup.waiting"
+  | "pickup.warning"
+  | "pickup.urgent"
+  | "pickup.completed"
+  | "refund.pending"
+  | "refund.completed"
+  | "manual_handling.required"
+  | "system.hardware_fault";
+
 export type CustomerExperienceEvent =
   | {
-      type:
-        | "presence.detected"
-        | "presence.welcome.day"
-        | "presence.welcome.night"
-        | "presence.easter_egg"
-        | "interaction.awakened"
-        | "privacy.crowd_detected"
-        | "idle.assistance_prompt"
-        | "idle.sleep";
+      type: PresenceEventType;
       requestedAt?: string;
       nowMs?: number;
     }
   | {
-      type:
-        | "product.selected"
-        | "payment.prompt"
-        | "payment.succeeded"
-        | "dispensing.started"
-        | "dispense.outlet_opened"
-        | "dispense.succeeded"
-        | "dispense.failed"
-        | "pickup.waiting"
-        | "pickup.warning"
-        | "pickup.urgent"
-        | "pickup.completed"
-        | "refund.pending"
-        | "refund.completed"
-        | "manual_handling.required"
-        | "system.hardware_fault";
+      type: TransactionEventType;
       orderKey?: string | null;
       requestedAt?: string;
       nowMs?: number;
@@ -54,14 +69,21 @@ export const CUSTOMER_EXPERIENCE_EVENT_PRIORITIES: Record<
   CustomerExperienceEvent["type"],
   number
 > = {
-  "presence.easter_egg": 5,
-  "presence.detected": 10,
-  "presence.welcome.day": 20,
-  "presence.welcome.night": 20,
+  "presence.detected": 5,
+  "presence.easter_egg": 10,
+  "presence.easter_egg.festival": 10,
+  "presence.easter_egg.solar_term": 10,
+  "presence.easter_egg.season": 10,
+  "presence.welcome.day": 8,
+  "presence.welcome.night": 8,
   "interaction.awakened": 30,
   "product.selected": 35,
+  "product.intro.socks": 32,
+  "product.intro.underwear": 32,
+  "product.intro.tshirt": 32,
   "payment.prompt": 35,
   "payment.succeeded": 40,
+  "payment.failed": 90,
   "dispensing.started": 40,
   "dispense.outlet_opened": 40,
   "dispense.succeeded": 40,
@@ -71,8 +93,12 @@ export const CUSTOMER_EXPERIENCE_EVENT_PRIORITIES: Record<
   "pickup.completed": 40,
   "idle.assistance_prompt": 45,
   "idle.sleep": 45,
-  "refund.pending": 50,
-  "refund.completed": 50,
+  "departure.bad_weather": 60,
+  "departure.bad_air": 61,
+  "departure.bad_forecast": 62,
+  "departure.normal_weather": 63,
+  "refund.pending": 70,
+  "refund.completed": 70,
   "privacy.crowd_detected": 80,
   "dispense.failed": 90,
   "system.hardware_fault": 95,
@@ -102,17 +128,28 @@ export function categoryForCustomerExperienceEvent(
 ): AudioCueCategory {
   switch (type) {
     case "presence.detected":
+    case "presence.easter_egg":
+    case "presence.easter_egg.festival":
+    case "presence.easter_egg.solar_term":
+    case "presence.easter_egg.season":
     case "presence.welcome.day":
     case "presence.welcome.night":
-    case "presence.easter_egg":
     case "interaction.awakened":
     case "privacy.crowd_detected":
     case "idle.assistance_prompt":
     case "idle.sleep":
+    case "departure.bad_weather":
+    case "departure.bad_air":
+    case "departure.bad_forecast":
+    case "departure.normal_weather":
       return "presence";
     case "product.selected":
+    case "product.intro.socks":
+    case "product.intro.underwear":
+    case "product.intro.tshirt":
     case "payment.prompt":
     case "payment.succeeded":
+    case "payment.failed":
     case "dispensing.started":
     case "dispense.outlet_opened":
     case "dispense.succeeded":

@@ -109,6 +109,7 @@ async function refreshStatus(): Promise<void> {
 onMounted(async () => {
   await refreshStatus();
   if (!hasOrder.value) return;
+
   pollTimer = window.setInterval(() => {
     void refreshStatus();
   }, 2_000);
