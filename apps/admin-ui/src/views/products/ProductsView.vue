@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { ProductStatus } from "@vem/shared";
+import { productDisplayImageSpec, type ProductStatus } from "@vem/shared";
 
 import { onMounted, ref, watch } from "vue";
 import { useRoute } from "vue-router";
@@ -352,7 +352,7 @@ watch(
           <div class="space-y-3">
             <img
               v-if="productForm.displayImagePublicUrl"
-              class="h-32 w-32 rounded border border-slate-200 object-cover"
+              class="h-32 w-24 rounded border border-slate-200 object-cover"
               :src="productForm.displayImagePublicUrl"
               :alt="productForm.name || '商品展示图'"
             />
@@ -376,6 +376,10 @@ watch(
                 清除
               </a-button>
             </div>
+            <p class="text-xs leading-5 text-slate-500">
+              Product image spec: {{ productDisplayImageSpec.label }}. Request
+              all client-provided product images in this ratio.
+            </p>
             <p class="text-xs leading-5 text-slate-500">
               支持 PNG、JPEG、WebP，单个文件不超过 5
               MB。请在系统外完成修图、裁剪、压缩和背景处理；后台不提供编辑、裁剪或去背工具。

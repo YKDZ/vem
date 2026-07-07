@@ -60,7 +60,10 @@ const pickupSubtitle = computed(() => {
     return "商品已到达取货口，请及时取走";
   }
   if (pickupReminder.value?.stage === "pickup_timeout_warning") {
-    return "取货倒计时进行中，请尽快取走商品";
+    return pickupReminder.value.urgency === "urgent" ||
+      (pickupReminder.value.warningNo ?? 0) >= 2
+      ? "取货口即将关闭，请立即取走商品"
+      : "请及时取走商品";
   }
   return "请稍候，商品正在送往取货口";
 });

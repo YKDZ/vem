@@ -70,6 +70,9 @@ const paymentCodeStatusCopy = computed(() => {
       return "请打开支付宝或微信付款码，靠近设备扫码窗口。";
   }
 });
+const scannerReadyCopy = computed(() =>
+  isPaymentCode.value && scannerStore.online ? "扫码器已就绪" : null,
+);
 const canUseDevScan = computed(() =>
   shouldShowPaymentCodeDevScan({
     dev: import.meta.env.DEV,
@@ -256,6 +259,9 @@ onUnmounted(() => {
               </svg>
             </span>
             <h2>{{ paymentCodeStatusTitle }}</h2>
+            <p v-if="scannerReadyCopy" class="payment-code-scanner-status">
+              {{ scannerReadyCopy }}
+            </p>
             <p>{{ paymentCodeStatusCopy }}</p>
             <RouterLink v-if="canUseDevScan" to="/dev/payment-code-scan">
               手动扫码测试
@@ -668,6 +674,11 @@ onUnmounted(() => {
   color: #756e64;
   font-size: 0.98rem;
   line-height: 1.55;
+}
+
+.payment-code-panel .payment-code-scanner-status {
+  color: #4f6248;
+  font-weight: 800;
 }
 
 .payment-code-panel a {

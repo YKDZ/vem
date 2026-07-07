@@ -590,7 +590,7 @@ async function enterTryOn(): Promise<void> {
   position: relative;
   display: grid;
   width: 100%;
-  aspect-ratio: 3 / 4;
+  aspect-ratio: var(--product-display-aspect-ratio);
   overflow: hidden;
   place-items: center;
   border: 1px solid rgba(211, 203, 180, 0.92);
@@ -941,7 +941,7 @@ async function enterTryOn(): Promise<void> {
   }
 
   .detail-image-inner {
-    aspect-ratio: 3 / 4;
+    aspect-ratio: var(--product-display-aspect-ratio);
     border-radius: 20px;
   }
 

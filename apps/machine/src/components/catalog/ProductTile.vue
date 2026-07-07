@@ -50,12 +50,12 @@ const priceText = computed(() => {
     @click="emit('select', item)"
   >
     <span
-      class="flex aspect-square w-[88px] items-center justify-center overflow-hidden rounded-md bg-neutral-100 text-2xl font-black text-neutral-400"
+      class="product-display-frame flex w-[88px] items-center justify-center overflow-hidden rounded-md bg-neutral-100 text-2xl font-black text-neutral-400"
       aria-hidden="true"
     >
       <img
         v-if="item.coverImageUrl"
-        class="h-full w-full object-cover object-center"
+        class="product-display-image h-full w-full"
         :src="item.coverImageUrl"
         :alt="item.productName"
       />

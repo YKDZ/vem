@@ -14,6 +14,7 @@ export * from "./schemas/dashboard";
 export * from "./schemas/inventory";
 export * from "./schemas/machines";
 export * from "./schemas/machine-slot-coordinate";
+export * from "./schemas/media-assets";
 export * from "./schemas/mqtt";
 export * from "./schemas/notifications";
 export * from "./schemas/orders";

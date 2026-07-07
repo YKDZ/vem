@@ -5,6 +5,7 @@ import {
   NotFoundException,
 } from "@nestjs/common";
 import { and, eq, isNull, mediaAssets, type DrizzleClient } from "@vem/db";
+import { productDisplayImageSpec } from "@vem/shared";
 import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
@@ -68,6 +69,20 @@ export class MediaAssetsService {
       throw new BadRequestException(`${config.label} file is required`);
     }
     const imageType = this.validateManagedImage(file, config.label);
+    if (purpose === "product_display_image") {
+      const dimensions = readManagedImageDimensions(
+        file.buffer,
+        imageType.contentType,
+      );
+      if (
+        dimensions.width !== productDisplayImageSpec.width ||
+        dimensions.height !== productDisplayImageSpec.height
+      ) {
+        throw new BadRequestException(
+          `${config.label} must be ${productDisplayImageSpec.label}`,
+        );
+      }
+    }
     const id = randomUUID();
     const storageKey = `${config.directory}/${id}${imageType.extension}`;
     const absolutePath = join(this.config.mediaAssetStorageRoot, storageKey);
@@ -192,4 +207,84 @@ function isWebp(buffer: Buffer): boolean {
     buffer.subarray(0, 4).toString("ascii") === "RIFF" &&
     buffer.subarray(8, 12).toString("ascii") === "WEBP"
   );
+}
+
+function readManagedImageDimensions(
+  buffer: Buffer,
+  contentType: string,
+): { width: number; height: number } {
+  if (contentType === "image/png") return readPngDimensions(buffer);
+  if (contentType === "image/jpeg") return readJpegDimensions(buffer);
+  if (contentType === "image/webp") return readWebpDimensions(buffer);
+  throw new BadRequestException("Unsupported image type");
+}
+
+function readPngDimensions(buffer: Buffer): { width: number; height: number } {
+  if (buffer.byteLength < 24) {
+    throw new BadRequestException("PNG image is missing dimensions");
+  }
+  return {
+    width: buffer.readUInt32BE(16),
+    height: buffer.readUInt32BE(20),
+  };
+}
+
+function readJpegDimensions(buffer: Buffer): { width: number; height: number } {
+  let offset = 2;
+  while (offset + 9 < buffer.byteLength) {
+    if (buffer[offset] !== 0xff) {
+      offset += 1;
+      continue;
+    }
+    const marker = buffer[offset + 1];
+    offset += 2;
+    if (marker === 0xd8 || marker === 0xd9) continue;
+    if (offset + 2 > buffer.byteLength) break;
+    const length = buffer.readUInt16BE(offset);
+    if (length < 2 || offset + length > buffer.byteLength) break;
+    if (isJpegStartOfFrame(marker)) {
+      return {
+        height: buffer.readUInt16BE(offset + 3),
+        width: buffer.readUInt16BE(offset + 5),
+      };
+    }
+    offset += length;
+  }
+  throw new BadRequestException("JPEG image is missing dimensions");
+}
+
+function isJpegStartOfFrame(marker: number): boolean {
+  return (
+    (marker >= 0xc0 && marker <= 0xc3) ||
+    (marker >= 0xc5 && marker <= 0xc7) ||
+    (marker >= 0xc9 && marker <= 0xcb) ||
+    (marker >= 0xcd && marker <= 0xcf)
+  );
+}
+
+function readWebpDimensions(buffer: Buffer): { width: number; height: number } {
+  if (buffer.byteLength < 30) {
+    throw new BadRequestException("WebP image is missing dimensions");
+  }
+  const chunk = buffer.subarray(12, 16).toString("ascii");
+  if (chunk === "VP8X") {
+    return {
+      width: 1 + buffer.readUIntLE(24, 3),
+      height: 1 + buffer.readUIntLE(27, 3),
+    };
+  }
+  if (chunk === "VP8L") {
+    const bits = buffer.readUInt32LE(21);
+    return {
+      width: (bits & 0x3fff) + 1,
+      height: ((bits >> 14) & 0x3fff) + 1,
+    };
+  }
+  if (chunk === "VP8 ") {
+    return {
+      width: buffer.readUInt16LE(26) & 0x3fff,
+      height: buffer.readUInt16LE(28) & 0x3fff,
+    };
+  }
+  throw new BadRequestException("WebP image is missing dimensions");
 }
