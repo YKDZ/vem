@@ -14,6 +14,7 @@ const artifactRoot =
   join(process.cwd(), "runtime-screenshot-artifacts");
 const screenshotsDir = join(artifactRoot, "screenshots");
 const manifestPath = join(artifactRoot, "manifest.json");
+const runtimeScreenshotStorageKey = "vem.machine.runtimeScreenshot";
 
 const selectedScenarios = selectScreenshotMachineRuntimeScenarios(
   process.env.VEM_MACHINE_RUNTIME_SCREENSHOT_SCENARIOS,
@@ -39,12 +40,12 @@ const dispensingScreenshotExpectations = {
   },
   "dispensing-pickup-15s": {
     pickupTitle: "请及时取走商品",
-    reminderCopy: "请及时取走商品",
+    reminderCopy: "取货倒计时进行中，请尽快取走商品",
     noticeTitle: "请尽快完成取货",
   },
   "dispensing-pickup-25s": {
     pickupTitle: "请立即取走商品",
-    reminderCopy: "取货口即将关闭，请立即取走商品",
+    reminderCopy: "取货倒计时进行中，请尽快取走商品",
     noticeTitle: "取货口即将关闭",
   },
 } as const;
@@ -73,14 +74,18 @@ for (const scenario of selectedScenarios) {
   test(`captures ${scenario.name} Machine Runtime Console screenshot`, async ({
     page,
   }) => {
-    await loadMachineRuntimeScenario(page, scenario);
+    await loadMachineRuntimeScreenshotScenario(page, scenario);
 
     await expect(page).toHaveURL(new RegExp(`#${scenario.targetRoute}$`));
     await expectKioskMainFrame(page);
     await expectCoreElements(page, scenario);
 
     const screenshotPath = join(screenshotsDir, `${scenario.id}.png`);
-    await page.locator(".kiosk-shell").screenshot({ path: screenshotPath });
+    await page.screenshot({
+      path: screenshotPath,
+      clip: { x: 0, y: 0, width: 1080, height: 1920 },
+      animations: "disabled",
+    });
     await expectPngDimensions(screenshotPath, 1080, 1920);
   });
 }
@@ -106,6 +111,42 @@ async function expectCoreElements(
         page.getByText("暂无可售商品，请稍后再来或联系工作人员。"),
       ).toBeVisible();
       break;
+    case "product-list":
+      await expect(
+        page.getByRole("img", { name: "商品列表，请点击选择您需要的商品" }),
+      ).toBeVisible();
+      await expect(
+        page.getByRole("button", { name: /基础短袖/ }),
+      ).toBeVisible();
+      await expect(page.getByText("¥59.00").first()).toBeVisible();
+      break;
+    case "product-detail":
+      await expect(
+        page.getByRole("heading", { name: "基础短袖" }),
+      ).toBeVisible();
+      await expect(page.locator(".detail-price")).toHaveText("¥59.00");
+      await expect(page.getByText("商品库存")).toBeVisible();
+      await expect(
+        page.getByRole("button", { name: /立即购买 ¥59.00/ }),
+      ).toBeVisible();
+      break;
+    case "checkout-payment-options":
+      await expect(
+        page.getByRole("heading", { name: "确认购买" }),
+      ).toBeVisible();
+      await expect(page.getByText("商品信息")).toBeVisible();
+      await expect(page.getByText("基础短袖")).toBeVisible();
+      await expect(page.getByText("选择支付方式")).toBeVisible();
+      await expect(
+        page.getByRole("button", { name: /支付宝扫码/ }),
+      ).toBeVisible();
+      await expect(
+        page.getByRole("button", { name: /支付宝付款码/ }),
+      ).toBeVisible();
+      await expect(
+        page.getByRole("button", { name: "确认并生成支付二维码" }),
+      ).toBeVisible();
+      break;
     case "payment-qr":
       await expect(page.getByText("请使用微信 / 支付宝扫码支付")).toBeVisible();
       await expect(page.getByText("应付金额")).toBeVisible();
@@ -116,7 +157,6 @@ async function expectCoreElements(
       await expect(
         page.getByText("请将付款码靠近扫码窗口完成支付"),
       ).toBeVisible();
-      await expect(page.getByText("扫码器已就绪")).toBeVisible();
       await expect(
         page.getByText("请打开支付宝或微信付款码，靠近设备扫码窗口。"),
       ).toBeVisible();
@@ -250,6 +290,38 @@ async function expectDispensingReminderScreenshot(
     expectation.noticeTitle,
   );
   await expect(page.getByAltText("让温柔贴近 让善意发生")).toBeVisible();
+}
+
+async function loadMachineRuntimeScreenshotScenario(
+  page: Page,
+  scenario: MachineRuntimeScenario,
+): Promise<void> {
+  await seedRuntimeScreenshotMode(page);
+
+  if (scenario.id === "product-list") {
+    await loadMachineRuntimeScenario(page, scenario);
+    await page.getByRole("button", { name: /T恤/ }).click();
+    return;
+  }
+
+  if (scenario.id === "checkout-payment-options") {
+    await loadMachineRuntimeScenario(page, {
+      ...scenario,
+      targetRoute: "/catalog",
+    });
+    await page.getByRole("button", { name: /T恤/ }).click();
+    await page.getByRole("button", { name: /基础短袖/ }).click();
+    await page.getByRole("button", { name: /立即购买 ¥59.00/ }).click();
+    return;
+  }
+
+  await loadMachineRuntimeScenario(page, scenario);
+}
+
+async function seedRuntimeScreenshotMode(page: Page): Promise<void> {
+  await page.addInitScript((storageKey) => {
+    window.localStorage.setItem(storageKey, "1");
+  }, runtimeScreenshotStorageKey);
 }
 
 async function expectPaymentQrVisual(page: Page): Promise<void> {

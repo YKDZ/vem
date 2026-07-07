@@ -8,11 +8,9 @@ import iconSocksImage from "@/assets/home/icon-socks.png";
 import iconTshirtImage from "@/assets/home/icon-tshirt.png";
 import iconUnderwearImage from "@/assets/home/icon-underwear.png";
 import listSloganImage from "@/assets/home/list-slogan.png";
-import logoImage from "@/assets/home/logo.png";
 import mascotListImage from "@/assets/home/mascot-list.png";
-import mascotTopImage from "@/assets/home/mascot-top-cutout.png";
+import KioskHeader from "@/components/KioskHeader.vue";
 import { emitCustomerEvent } from "@/composables/useCustomerEvents";
-import { useMaintenanceEntry } from "@/composables/useMaintenanceEntry";
 import KioskLayout from "@/layouts/KioskLayout.vue";
 import { useCatalogStore } from "@/stores/catalog";
 import { useCheckoutStore } from "@/stores/checkout";
@@ -28,7 +26,6 @@ const route = useRoute();
 const router = useRouter();
 const catalogStore = useCatalogStore();
 const checkoutStore = useCheckoutStore();
-const { handleMaintenanceTap } = useMaintenanceEntry();
 
 const selectedVariantId = ref<string | null>(null);
 
@@ -237,25 +234,7 @@ async function enterTryOn(): Promise<void> {
       <div class="detail-mist detail-mist-left"></div>
       <div class="detail-mist detail-mist-right"></div>
 
-      <header class="detail-header">
-        <div class="flex items-center gap-3" @click="handleMaintenanceTap">
-          <img
-            :src="logoImage"
-            alt="唐诗村"
-            class="h-9 w-auto object-contain"
-          />
-          <img
-            :src="mascotTopImage"
-            alt=""
-            class="h-14 w-14 object-contain"
-            aria-hidden="true"
-          />
-        </div>
-        <div class="text-right text-[#6f835f]">
-          <p class="font-serif text-4xl leading-none font-bold">10:30</p>
-          <p class="mt-1 text-xs tracking-wide">2026/06/15　星期二</p>
-        </div>
-      </header>
+      <KioskHeader class="detail-header" />
 
       <button
         class="detail-back-button kiosk-touch-target"

@@ -3,16 +3,13 @@ import { computed, onMounted, onUnmounted, ref } from "vue";
 import { useRouter } from "vue-router";
 
 import listSloganImage from "@/assets/home/list-slogan.png";
-import logoImage from "@/assets/home/logo.png";
 import mascotListImage from "@/assets/home/mascot-list.png";
-import mascotTopImage from "@/assets/home/mascot-top-cutout.png";
-import { useMaintenanceEntry } from "@/composables/useMaintenanceEntry";
+import KioskHeader from "@/components/KioskHeader.vue";
 import KioskLayout from "@/layouts/KioskLayout.vue";
 import { useCheckoutStore } from "@/stores/checkout";
 
 const router = useRouter();
 const checkoutStore = useCheckoutStore();
-const { handleMaintenanceTap } = useMaintenanceEntry();
 
 let pollTimer: number | undefined;
 let pickupRemainingTimer: number | undefined;
@@ -136,16 +133,7 @@ onUnmounted(() => {
       <div class="dispensing-mist dispensing-mist-left"></div>
       <div class="dispensing-mist dispensing-mist-right"></div>
 
-      <header class="dispensing-header">
-        <div class="dispensing-brand" @click="handleMaintenanceTap">
-          <img :src="logoImage" alt="唐诗村" />
-          <img :src="mascotTopImage" alt="" aria-hidden="true" />
-        </div>
-        <div class="dispensing-time">
-          <p>10:30</p>
-          <span>2026/06/15　星期二</span>
-        </div>
-      </header>
+      <KioskHeader class="dispensing-header" />
 
       <div class="dispensing-title">
         <h1>{{ titleText }}</h1>

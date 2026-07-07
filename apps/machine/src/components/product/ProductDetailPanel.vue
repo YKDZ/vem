@@ -203,7 +203,9 @@ function purchase(): void {
     class="flex h-full min-h-0 flex-col rounded-lg border border-neutral-200 bg-white p-5"
   >
     <div class="min-h-0 flex-1 overflow-y-auto pr-1">
-      <div class="product-display-frame overflow-hidden rounded-lg bg-neutral-100">
+      <div
+        class="product-display-frame overflow-hidden rounded-lg bg-neutral-100"
+      >
         <img
           v-if="selectedCoverImageUrl"
           :src="selectedCoverImageUrl"

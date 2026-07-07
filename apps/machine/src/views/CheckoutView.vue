@@ -5,13 +5,11 @@ import { useRouter } from "vue-router";
 import iconSocksImage from "@/assets/home/icon-socks.png";
 import iconTshirtImage from "@/assets/home/icon-tshirt.png";
 import iconUnderwearImage from "@/assets/home/icon-underwear.png";
-import logoImage from "@/assets/home/logo.png";
 import mascotListImage from "@/assets/home/mascot-list.png";
-import mascotTopImage from "@/assets/home/mascot-top-cutout.png";
 import alipayCodeImage from "@/assets/payment/alipay-code.png";
 import alipayScanImage from "@/assets/payment/alipay-scan.png";
 import { topCategoryForItem } from "@/catalog/view-model";
-import { useKioskClock } from "@/composables/useKioskClock";
+import KioskHeader from "@/components/KioskHeader.vue";
 import KioskLayout from "@/layouts/KioskLayout.vue";
 import { useCatalogStore } from "@/stores/catalog";
 import { useCheckoutStore } from "@/stores/checkout";
@@ -22,7 +20,6 @@ const router = useRouter();
 const checkoutStore = useCheckoutStore();
 const catalogStore = useCatalogStore();
 const connectivityStore = useConnectivityStore();
-const { clockText, dateText } = useKioskClock();
 
 const item = computed(() => {
   const selectedItem = checkoutStore.selectedItem;
@@ -120,16 +117,7 @@ async function submitOrder(): Promise<void> {
 <template>
   <KioskLayout>
     <section v-if="item" class="checkout-page">
-      <header class="checkout-header">
-        <div class="checkout-brand">
-          <img :src="logoImage" alt="唐诗村" />
-          <img :src="mascotTopImage" alt="" aria-hidden="true" />
-        </div>
-        <div class="checkout-clock">
-          <p>{{ clockText }}</p>
-          <span>{{ dateText }}</span>
-        </div>
-      </header>
+      <KioskHeader class="checkout-header" />
 
       <div class="checkout-back-row">
         <button

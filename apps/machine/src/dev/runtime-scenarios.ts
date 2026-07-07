@@ -2,6 +2,8 @@ import type { UiDebugScenarioId } from "./ui-debug-fixtures";
 
 export type MachineRuntimeScenarioCategory =
   | "ready_catalog"
+  | "product"
+  | "checkout"
   | "payment"
   | "dispensing"
   | "result"
@@ -50,6 +52,46 @@ export const machineRuntimeScenarios = [
     touchChecks: ["售罄类别按钮保持触屏尺寸但不可购买"],
     screenshot: "included",
     ciTier: "smoke",
+  },
+  {
+    id: "product-list",
+    name: "商品列表",
+    category: "product",
+    targetRoute: "/catalog",
+    fixtureScenarioId: "ready",
+    setup: ["启用 UI debug daemon", "装载 ready fixture", "进入 T恤 商品列表"],
+    visualChecks: ["展示商品列表标题", "展示基础短袖商品卡", "展示商品价格"],
+    touchChecks: ["商品卡满足触屏尺寸", "点击商品卡可进入详情"],
+    screenshot: "included",
+    ciTier: "full",
+  },
+  {
+    id: "product-detail",
+    name: "商品详情",
+    category: "product",
+    targetRoute: "/products/product:550e8400-e29b-41d4-a716-446655440303",
+    fixtureScenarioId: "ready",
+    setup: ["启用 UI debug daemon", "装载 ready fixture", "进入基础短袖详情页"],
+    visualChecks: ["展示基础短袖详情", "展示规格选择", "展示立即购买入口"],
+    touchChecks: ["规格选择和购买按钮满足触屏尺寸"],
+    screenshot: "included",
+    ciTier: "full",
+  },
+  {
+    id: "checkout-payment-options",
+    name: "支付方式选择",
+    category: "checkout",
+    targetRoute: "/checkout",
+    fixtureScenarioId: "ready",
+    setup: [
+      "启用 UI debug daemon",
+      "装载 ready fixture",
+      "选择基础短袖进入确认购买",
+    ],
+    visualChecks: ["展示商品信息", "展示选择支付方式", "展示可用支付渠道"],
+    touchChecks: ["支付方式按钮和确认按钮满足触屏尺寸"],
+    screenshot: "included",
+    ciTier: "full",
   },
   {
     id: "payment-qr",
