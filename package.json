@@ -2,8 +2,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "check": "pnpm check:script-inventory && pnpm check:admin-api-contracts && tsx node_modules/oxfmt/dist/cli.js . --check && cargo fmt --all -- --check && turbo typecheck lint test",
+    "check": "pnpm check:script-inventory && pnpm check:admin-api-contracts && pnpm check:daemon-ipc-contracts && tsx node_modules/oxfmt/dist/cli.js . --check && cargo fmt --all -- --check && turbo typecheck lint test",
     "check:admin-api-contracts": "node --test scripts/check-admin-api-contracts.test.mjs scripts/check-admin-contract-e2e-ci.test.mjs && node scripts/check-admin-api-contracts.mjs && node scripts/check-admin-contract-e2e-ci.mjs",
+    "check:daemon-ipc-contracts": "pnpm typecheck:scripts && pnpm test:daemon-ipc-contracts && pnpm generate:daemon-ipc-contracts -- --check && cargo test -p daemon-ipc-contracts",
     "check:factory-runtime-prep": "node scripts/check-factory-runtime-prep.mjs",
     "check:fix": "tsx node_modules/oxfmt/dist/cli.js . && cargo fmt --all && turbo lint -- --fix && turbo typecheck test",
     "check:machine-vision-deployment": "node scripts/check-machine-vision-deployment.mjs",
@@ -11,11 +12,14 @@
     "check:script-inventory": "node --test scripts/check-repository-script-inventory.test.mjs && node scripts/check-repository-script-inventory.mjs",
     "fmt": "tsx node_modules/oxfmt/dist/cli.js . && cargo fmt --all",
     "fmt:check": "tsx node_modules/oxfmt/dist/cli.js . --check && cargo fmt --all -- --check",
+    "generate:daemon-ipc-contracts": "tsx scripts/daemon-ipc-contracts/generate-transaction-checkout.ts",
     "lint": "turbo lint",
     "lint:fix": "turbo lint -- --fix",
     "test": "node --test scripts/check-repository-script-inventory.test.mjs && turbo test",
+    "test:daemon-ipc-contracts": "vitest run scripts/daemon-ipc-contracts/generate-transaction-checkout.spec.ts",
     "test:e2e": "turbo test:e2e",
-    "typecheck": "turbo typecheck"
+    "typecheck": "turbo typecheck",
+    "typecheck:scripts": "tsc -p tsconfig.scripts.json"
   },
   "devDependencies": {
     "@tsconfig/node24": "^24.0.4",

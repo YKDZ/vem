@@ -1,39 +1,92 @@
-import { spawnSync } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { spawnSync as nodeSpawnSync } from "node:child_process";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
   invalidCurrentDaemonIpcTransactionSnapshots,
   validCurrentDaemonIpcTransactionSnapshots,
 } from "../../packages/shared/src/fixtures/daemon-ipc-transaction";
-import { exportDaemonIpcTransactionCheckoutJsonSchema } from "../../packages/shared/src/schemas/daemon-ipc";
+import {
+  type DaemonIpcJsonSchemaDocument,
+  exportDaemonIpcTransactionCheckoutJsonSchema,
+} from "../../packages/shared/src/schemas/daemon-ipc";
 
-const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
-const crateRoot = resolve(repoRoot, "crates/daemon-ipc-contracts");
-const schemaPath = resolve(
-  crateRoot,
-  "schemas/transaction_checkout.schema.json",
-);
-const generatedPath = resolve(
-  crateRoot,
-  "src/generated/transaction_checkout.rs",
-);
-const validFixturePath = resolve(
-  crateRoot,
-  "tests/fixtures/transaction_checkout_valid.snapshots.json",
-);
-const invalidFixturePath = resolve(
-  crateRoot,
-  "tests/fixtures/transaction_checkout_invalid.snapshots.json",
-);
+type SpawnResult = {
+  status: number | null;
+  stdout: string;
+  stderr: string;
+};
 
-function writeJson(path: string, value: unknown) {
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
+type SpawnSync = (
+  command: string,
+  args: string[],
+  options: { cwd: string; encoding: "utf8" },
+) => SpawnResult;
+
+type GeneratorMode = "write" | "check";
+
+type GeneratorPaths = {
+  schemaPath: string;
+  generatedPath: string;
+  validFixturePath: string;
+  invalidFixturePath: string;
+};
+
+export type DaemonIpcTransactionCheckoutGeneratorInputs = {
+  schema: DaemonIpcJsonSchemaDocument;
+  validFixtures: unknown[];
+  invalidFixtures: Array<{ name: string; snapshot: unknown }>;
+};
+
+export type DaemonIpcTransactionCheckoutGenerationResult = {
+  mode: GeneratorMode;
+  checkedPaths: string[];
+  changedPaths: string[];
+};
+
+const thisFile = fileURLToPath(import.meta.url);
+const defaultRepoRoot = resolve(dirname(thisFile), "../..");
+const expectedCargoTypifyVersion = "cargo-typify 0.7.0";
+
+function defaultPaths(repoRoot: string): GeneratorPaths {
+  const crateRoot = resolve(repoRoot, "crates/daemon-ipc-contracts");
+  return {
+    schemaPath: resolve(crateRoot, "schemas/transaction_checkout.schema.json"),
+    generatedPath: resolve(crateRoot, "src/generated/transaction_checkout.rs"),
+    validFixturePath: resolve(
+      crateRoot,
+      "tests/fixtures/transaction_checkout_valid.snapshots.json",
+    ),
+    invalidFixturePath: resolve(
+      crateRoot,
+      "tests/fixtures/transaction_checkout_invalid.snapshots.json",
+    ),
+  };
 }
 
-function getCargoTypifyVersion(): string {
+function writeText(path: string, text: string) {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, text);
+}
+
+function writeJson(path: string, value: unknown) {
+  writeText(path, `${JSON.stringify(value, null, 2)}\n`);
+}
+
+function readIfExists(path: string): string | null {
+  return existsSync(path) ? readFileSync(path, "utf8") : null;
+}
+
+function getCargoTypifyVersion(repoRoot: string, spawnSync: SpawnSync): string {
   const version = spawnSync("cargo", ["typify", "--version"], {
     cwd: repoRoot,
     encoding: "utf8",
@@ -52,65 +105,167 @@ function getCargoTypifyVersion(): string {
   }
 
   const actualVersion = version.stdout.trim();
-  const expectedVersion = "cargo-typify 0.7.0";
-  if (actualVersion !== expectedVersion) {
+  if (actualVersion !== expectedCargoTypifyVersion) {
     throw new Error(
-      `Expected ${expectedVersion} for Daemon IPC transaction checkout generation, got ${actualVersion}`,
+      `Expected ${expectedCargoTypifyVersion} for Daemon IPC transaction checkout generation, got ${actualVersion}`,
     );
   }
 
   return actualVersion;
 }
 
-writeJson(schemaPath, exportDaemonIpcTransactionCheckoutJsonSchema());
-writeJson(
-  validFixturePath,
-  Object.values(validCurrentDaemonIpcTransactionSnapshots),
-);
-writeJson(
-  invalidFixturePath,
-  Object.entries(invalidCurrentDaemonIpcTransactionSnapshots).map(
-    ([name, snapshot]) => ({ name, snapshot }),
-  ),
-);
-
-const cargoTypifyVersion = getCargoTypifyVersion();
-const typify = spawnSync(
-  "cargo",
-  [
-    "typify",
-    "--no-builder",
-    "--additional-derive",
-    "PartialEq",
-    "--output",
-    generatedPath,
-    schemaPath,
-  ],
-  {
-    cwd: repoRoot,
-    encoding: "utf8",
-  },
-);
-
-if (typify.status !== 0) {
-  throw new Error(
-    [
-      "cargo typify failed for Daemon IPC transaction checkout schema",
-      typify.stdout,
-      typify.stderr,
-    ]
-      .filter(Boolean)
-      .join("\n"),
-  );
+function generatedHeader(cargoTypifyVersion: string): string {
+  return [
+    "// @generated by scripts/daemon-ipc-contracts/generate-transaction-checkout.ts",
+    "// Source: packages/shared/src/schemas/daemon-ipc.ts via Zod 4 JSON Schema export.",
+    `// Generator: ${cargoTypifyVersion}. Do not edit by hand.`,
+    "#![allow(dead_code)]",
+    "",
+  ].join("\n");
 }
 
-const generatedHeader = [
-  "// @generated by scripts/daemon-ipc-contracts/generate-transaction-checkout.ts",
-  "// Source: packages/shared/src/schemas/daemon-ipc.ts via Zod 4 JSON Schema export.",
-  `// Generator: ${cargoTypifyVersion}. Do not edit by hand.`,
-  "#![allow(dead_code)]",
-  "",
-].join("\n");
+function writeGeneratorInputs(
+  paths: GeneratorPaths,
+  inputs: DaemonIpcTransactionCheckoutGeneratorInputs,
+) {
+  writeJson(paths.schemaPath, inputs.schema);
+  writeJson(paths.validFixturePath, inputs.validFixtures);
+  writeJson(paths.invalidFixturePath, inputs.invalidFixtures);
+}
 
-const generated = readFileSync(generatedPath, "utf8");
-writeFileSync(generatedPath, `${generatedHeader}${generated}`);
+function runCargoTypify(
+  repoRoot: string,
+  paths: GeneratorPaths,
+  spawnSync: SpawnSync,
+) {
+  mkdirSync(dirname(paths.generatedPath), { recursive: true });
+  const typify = spawnSync(
+    "cargo",
+    [
+      "typify",
+      "--no-builder",
+      "--additional-derive",
+      "PartialEq",
+      "--output",
+      paths.generatedPath,
+      paths.schemaPath,
+    ],
+    {
+      cwd: repoRoot,
+      encoding: "utf8",
+    },
+  );
+
+  if (typify.status !== 0) {
+    throw new Error(
+      [
+        "cargo typify failed for Daemon IPC transaction checkout schema",
+        typify.stdout,
+        typify.stderr,
+      ]
+        .filter(Boolean)
+        .join("\n"),
+    );
+  }
+}
+
+function writeGeneratedHeader(path: string, cargoTypifyVersion: string) {
+  const generated = readIfExists(path) ?? "";
+  writeText(path, `${generatedHeader(cargoTypifyVersion)}${generated}`);
+}
+
+function relativePath(path: string, repoRoot: string): string {
+  return path.startsWith(repoRoot) ? path.slice(repoRoot.length + 1) : path;
+}
+
+function assertFreshGeneratedOutputs(
+  expectedPaths: GeneratorPaths,
+  actualPaths: GeneratorPaths,
+  repoRoot: string,
+): string[] {
+  const changedPaths = Object.entries(expectedPaths)
+    .filter(
+      ([key, expectedPath]) =>
+        readIfExists(expectedPath) !==
+        readIfExists(actualPaths[key as keyof GeneratorPaths]),
+    )
+    .map(([, expectedPath]) => expectedPath);
+
+  if (changedPaths.length > 0) {
+    throw new Error(
+      [
+        "Daemon IPC generated contracts are stale. Run `pnpm generate:daemon-ipc-contracts` and commit the regenerated files.",
+        ...changedPaths.map(
+          (path) => `changed: ${relativePath(path, repoRoot)}`,
+        ),
+      ].join("\n"),
+    );
+  }
+
+  return changedPaths;
+}
+
+export function buildDaemonIpcTransactionCheckoutInputs(): DaemonIpcTransactionCheckoutGeneratorInputs {
+  return {
+    schema: exportDaemonIpcTransactionCheckoutJsonSchema(),
+    validFixtures: Object.values(validCurrentDaemonIpcTransactionSnapshots),
+    invalidFixtures: Object.entries(
+      invalidCurrentDaemonIpcTransactionSnapshots,
+    ).map(([name, snapshot]) => ({ name, snapshot })),
+  };
+}
+
+export function generateDaemonIpcTransactionCheckoutContracts(
+  options: {
+    mode?: GeneratorMode;
+    repoRoot?: string;
+    spawnSync?: SpawnSync;
+  } = {},
+): DaemonIpcTransactionCheckoutGenerationResult {
+  const mode = options.mode ?? "write";
+  const repoRoot = options.repoRoot ?? defaultRepoRoot;
+  const spawnSync = options.spawnSync ?? nodeSpawnSync;
+  const targetPaths = defaultPaths(repoRoot);
+  const inputs = buildDaemonIpcTransactionCheckoutInputs();
+  const checkedPaths = Object.values(targetPaths);
+
+  if (mode === "write") {
+    writeGeneratorInputs(targetPaths, inputs);
+    const cargoTypifyVersion = getCargoTypifyVersion(repoRoot, spawnSync);
+    runCargoTypify(repoRoot, targetPaths, spawnSync);
+    writeGeneratedHeader(targetPaths.generatedPath, cargoTypifyVersion);
+    return { mode, checkedPaths, changedPaths: [] };
+  }
+
+  const tempRoot = mkdtempSync(join(tmpdir(), "vem-daemon-ipc-contracts-"));
+  try {
+    const actualPaths = defaultPaths(tempRoot);
+    writeGeneratorInputs(actualPaths, inputs);
+    const cargoTypifyVersion = getCargoTypifyVersion(repoRoot, spawnSync);
+    runCargoTypify(repoRoot, actualPaths, spawnSync);
+    writeGeneratedHeader(actualPaths.generatedPath, cargoTypifyVersion);
+    const changedPaths = assertFreshGeneratedOutputs(
+      targetPaths,
+      actualPaths,
+      repoRoot,
+    );
+    return { mode, checkedPaths, changedPaths };
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
+}
+
+function main() {
+  const mode: GeneratorMode = process.argv.includes("--check")
+    ? "check"
+    : "write";
+  const result = generateDaemonIpcTransactionCheckoutContracts({ mode });
+  const action = mode === "check" ? "checked" : "generated";
+  for (const path of result.checkedPaths) {
+    console.log(`${action}: ${relativePath(path, defaultRepoRoot)}`);
+  }
+}
+
+if (process.argv[1] === thisFile) {
+  main();
+}
