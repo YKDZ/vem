@@ -14,9 +14,9 @@ export type UnknownDaemonEventDiagnostic = {
   eventId: string;
   updatedAt: string;
   recordedAt: string;
-  metadata: unknown | null;
-  diagnostics: unknown | null;
-  diagnostic: unknown | null;
+  metadata: unknown;
+  diagnostics: unknown;
+  diagnostic: unknown;
 };
 
 type ConnectivityState = {

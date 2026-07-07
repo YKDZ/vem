@@ -33,11 +33,11 @@ const readyInput = {
 
 describe("evaluateProductionPilotReadiness", () => {
   it.each([
-    ["stale", "physical_stock_attestation.stale"],
-    ["inconsistent", "physical_stock_attestation.inconsistent"],
+    ["stale", "stale", "record_active_planogram_stock_attestation"],
+    ["inconsistent", "inconsistent", "resolve_stock_state_inconsistencies"],
   ])(
     "exposes %s Physical Stock Attestation as its own blocker",
-    (status, code) => {
+    (status, reasonCode, actionCode) => {
       const result = evaluateProductionPilotReadiness(
         {
           ...readyInput,
@@ -55,10 +55,17 @@ describe("evaluateProductionPilotReadiness", () => {
       expect(result.status).toBe("blocked");
       expect(result.blockers).toContainEqual(
         expect.objectContaining({
-          code,
-          label: "Physical Stock Attestation",
+          kind: "physical_stock_attestation",
+          reasonCode,
           status: "blocked",
+          actionCode,
+          evidence: expect.objectContaining({
+            attestationStatus: status,
+          }),
         }),
+      );
+      expect(JSON.stringify(result)).not.toMatch(
+        /"label"|"message"|"operatorAction"/,
       );
     },
   );
@@ -87,9 +94,15 @@ describe("evaluateProductionPilotReadiness", () => {
     expect(result.status).toBe("blocked");
     expect(result.blockers).toContainEqual(
       expect.objectContaining({
-        code: "physical_stock_attestation.planogram_mismatch",
-        label: "Physical Stock Attestation",
+        kind: "physical_stock_attestation",
+        reasonCode: "planogram_mismatch",
         status: "blocked",
+        actionCode: "apply_planogram_then_attest_stock",
+        evidence: expect.objectContaining({
+          attestationPlanogramVersion: "PLAN-OLD",
+          activeAcknowledgedPlanogramVersion: "PLAN-NEW",
+          planogramMatches: false,
+        }),
       }),
     );
   });
@@ -107,9 +120,13 @@ describe("evaluateProductionPilotReadiness", () => {
     expect(result.blockers).toEqual([]);
     expect(result.degraded).toContainEqual(
       expect.objectContaining({
-        code: "natural_context_readiness.unconfigured",
-        label: "Natural Context Readiness",
+        kind: "natural_context_readiness",
+        reasonCode: "unconfigured",
         status: "degraded",
+        actionCode: "configure_machine_geo_location",
+        evidence: {
+          externalNaturalEnvironmentStatus: "unconfigured",
+        },
       }),
     );
   });

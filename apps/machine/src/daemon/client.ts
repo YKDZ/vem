@@ -391,19 +391,18 @@ export class DaemonApiClient {
       socket.onmessage = (message) => {
         if (closed) return;
         const event = daemonEventSchema.parse(JSON.parse(String(message.data)));
-        if ("known" in event && event.known === false) {
+        if ("known" in event) {
           handlers.onUnknownEvent?.(event);
           return;
         }
-        const knownEvent = event as DaemonEvent;
-        if (this.seenEventIds.has(knownEvent.eventId)) return;
-        this.seenEventIds.add(knownEvent.eventId);
-        this.seenEventIdQueue.push(knownEvent.eventId);
+        if (this.seenEventIds.has(event.eventId)) return;
+        this.seenEventIds.add(event.eventId);
+        this.seenEventIdQueue.push(event.eventId);
         while (this.seenEventIdQueue.length > MAX_SEEN_EVENT_IDS) {
           const expired = this.seenEventIdQueue.shift();
           if (expired) this.seenEventIds.delete(expired);
         }
-        handlers.onEvent(knownEvent);
+        handlers.onEvent(event);
       };
       socket.onerror = () => {
         if (closed) return;

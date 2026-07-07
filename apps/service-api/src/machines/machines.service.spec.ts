@@ -381,7 +381,7 @@ describe("MachinesService", () => {
     expect(result.geoLocation).toBeNull();
   });
 
-  it("keeps otherwise ready Production Pilot Readiness degraded while natural context is unconfigured", async () => {
+  it("keeps production pilot diagnostic contract degraded while natural context is unconfigured", async () => {
     const machine = {
       id: "machine-1",
       code: "M001",
@@ -475,21 +475,25 @@ describe("MachinesService", () => {
         blockers: [],
         degraded: expect.arrayContaining([
           expect.objectContaining({
-            code: "natural_context_readiness.unconfigured",
+            kind: "natural_context_readiness",
+            reasonCode: "unconfigured",
             status: "degraded",
           }),
         ]),
         checks: expect.arrayContaining([
           expect.objectContaining({
-            code: "machine_heartbeat.online",
+            kind: "machine_heartbeat",
+            reasonCode: "online",
             status: "ready",
           }),
           expect.objectContaining({
-            code: "payment_readiness.ready",
+            kind: "payment_readiness",
+            reasonCode: "ready",
             status: "ready",
           }),
           expect.objectContaining({
-            code: "managed_machine_update.ready",
+            kind: "managed_machine_update",
+            reasonCode: "ready",
             status: "ready",
           }),
         ]),
@@ -497,7 +501,7 @@ describe("MachinesService", () => {
     );
   });
 
-  it("blocks Production Pilot Readiness when an online machine heartbeat is stale", async () => {
+  it("blocks production pilot diagnostic contract when an online machine heartbeat is stale", async () => {
     const machine = {
       id: "machine-1",
       code: "M001",
@@ -572,15 +576,16 @@ describe("MachinesService", () => {
     expect(result.productionPilotReadiness.blockers).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          code: "machine_heartbeat.stale",
+          kind: "machine_heartbeat",
+          reasonCode: "stale",
           status: "blocked",
-          message: "Machine heartbeat timed out",
+          actionCode: "restore_connectivity",
         }),
       ]),
     );
   });
 
-  it("blocks Production Pilot Readiness when production dispense path evidence is missing", async () => {
+  it("blocks production pilot diagnostic contract when production dispense path evidence is missing", async () => {
     const machine = {
       id: "machine-1",
       code: "M001",
@@ -657,8 +662,10 @@ describe("MachinesService", () => {
     expect(result.productionPilotReadiness.blockers).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          code: "production_dispense_path.blocked",
+          kind: "production_dispense_path",
+          reasonCode: "blocked",
           status: "blocked",
+          actionCode: "restore_real_lower_controller_path",
         }),
       ]),
     );
@@ -746,13 +753,15 @@ describe("MachinesService", () => {
         blockers: [],
         degraded: expect.arrayContaining([
           expect.objectContaining({
-            code: "natural_context_readiness.unconfigured",
+            kind: "natural_context_readiness",
+            reasonCode: "unconfigured",
             status: "degraded",
           }),
         ]),
         checks: expect.arrayContaining([
           expect.objectContaining({
-            code: "production_dispense_path.ready",
+            kind: "production_dispense_path",
+            reasonCode: "ready",
             status: "ready",
           }),
         ]),
@@ -841,13 +850,15 @@ describe("MachinesService", () => {
         blockers: [],
         degraded: expect.arrayContaining([
           expect.objectContaining({
-            code: "natural_context_readiness.unconfigured",
+            kind: "natural_context_readiness",
+            reasonCode: "unconfigured",
             status: "degraded",
           }),
         ]),
         checks: expect.arrayContaining([
           expect.objectContaining({
-            code: "scanner_runtime_status.ready",
+            kind: "scanner_runtime_status",
+            reasonCode: "ready",
             status: "ready",
           }),
         ]),
@@ -855,7 +866,7 @@ describe("MachinesService", () => {
     );
   });
 
-  it("blocks Production Pilot Readiness for sandbox payment evidence", async () => {
+  it("blocks production pilot diagnostic contract for sandbox payment evidence", async () => {
     const machine = {
       id: "machine-1",
       code: "M001",
@@ -930,14 +941,16 @@ describe("MachinesService", () => {
     expect(result.productionPilotReadiness.blockers).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          code: "payment_readiness.no_production_provider",
+          kind: "payment_readiness",
+          reasonCode: "no_production_provider",
           status: "blocked",
+          actionCode: "enable_production_payment_provider",
         }),
       ]),
     );
   });
 
-  it("blocks Production Pilot Readiness when payment mode evidence is unknown", async () => {
+  it("blocks production pilot diagnostic contract when payment mode evidence is unknown", async () => {
     const machine = {
       id: "machine-1",
       code: "M001",
@@ -1011,8 +1024,10 @@ describe("MachinesService", () => {
     expect(result.productionPilotReadiness.blockers).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          code: "payment_readiness.no_production_provider",
+          kind: "payment_readiness",
+          reasonCode: "no_production_provider",
           status: "blocked",
+          actionCode: "enable_production_payment_provider",
         }),
       ]),
     );
@@ -1097,18 +1112,20 @@ describe("MachinesService", () => {
     expect(result.productionPilotReadiness.degraded).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          code: "scanner_runtime_status.missing",
+          kind: "scanner_runtime_status",
+          reasonCode: "missing",
           status: "degraded",
         }),
         expect.objectContaining({
-          code: "natural_context_readiness.unconfigured",
+          kind: "natural_context_readiness",
+          reasonCode: "unconfigured",
           status: "degraded",
         }),
       ]),
     );
   });
 
-  it("returns stable Production Pilot Readiness blockers with operator actions", async () => {
+  it("returns stable production pilot diagnostic blockers with action codes", async () => {
     const machine = {
       id: "machine-1",
       code: "M001",
@@ -1171,30 +1188,35 @@ describe("MachinesService", () => {
     expect(result.productionPilotReadiness.blockers).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          code: "machine_sale_readiness.blocked",
+          kind: "machine_sale_readiness",
+          reasonCode: "blocked",
           status: "blocked",
-          message: "Machine Sale Readiness is not restored",
-          operatorAction:
-            "Resolve sale blockers shown by the machine runtime before production pilot.",
+          actionCode: "resolve_machine_sale_blockers",
         }),
         expect.objectContaining({
-          code: "payment_readiness.no_production_provider",
+          kind: "payment_readiness",
+          reasonCode: "no_production_provider",
           status: "blocked",
-          operatorAction:
-            "Enable a real machine payment provider before production pilot.",
+          actionCode: "enable_production_payment_provider",
         }),
         expect.objectContaining({
-          code: "whole_machine_maintenance_lock.active",
+          kind: "whole_machine_maintenance_lock",
+          reasonCode: "active",
           status: "blocked",
-          message: "pickup platform blocked",
-          operatorAction:
-            "Clear the maintenance lock only after hardware health is restored and notes are recorded.",
+          actionCode: "clear_maintenance_lock_after_recovery",
+          evidence: expect.objectContaining({
+            active: true,
+            lockCode: "WHOLE_MACHINE_HARDWARE_FAULT",
+          }),
         }),
       ]),
     );
+    expect(JSON.stringify(result.productionPilotReadiness)).not.toMatch(
+      /"label"|"message"|"operatorAction"/,
+    );
   });
 
-  it("distinguishes degraded Production Pilot Readiness from blocked readiness", async () => {
+  it("distinguishes degraded production pilot diagnostic contract from blocked readiness", async () => {
     const machine = {
       id: "machine-1",
       code: "M001",
@@ -1272,14 +1294,14 @@ describe("MachinesService", () => {
     expect(result.productionPilotReadiness.degraded).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          code: "scanner_runtime_status.missing",
-          label: "Scanner Runtime Status",
+          kind: "scanner_runtime_status",
+          reasonCode: "missing",
           status: "degraded",
-          operatorAction:
-            "Inspect the scanner runtime; QR payment can remain available if payment readiness is ready.",
+          actionCode: "inspect_scanner_runtime",
         }),
         expect.objectContaining({
-          code: "natural_context_readiness.unconfigured",
+          kind: "natural_context_readiness",
+          reasonCode: "unconfigured",
           status: "degraded",
         }),
       ]),
@@ -1363,10 +1385,10 @@ describe("MachinesService", () => {
     expect(result.productionPilotReadiness.blockers).toEqual([]);
     expect(result.productionPilotReadiness.degraded).toEqual([
       expect.objectContaining({
-        code: "natural_context_readiness.unavailable",
-        label: "Natural Context Readiness",
+        kind: "natural_context_readiness",
+        reasonCode: "unavailable",
         status: "degraded",
-        message: "External Natural Environment is unavailable",
+        actionCode: "inspect_external_natural_environment",
       }),
     ]);
   });

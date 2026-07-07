@@ -7,6 +7,8 @@ import type {
   MachineClaimCodeListResponse,
   MachineClaimCodeSnapshot,
   PageResult,
+  ProductionPilotReadinessCheck,
+  ProductionPilotReadinessDiagnosticContract,
 } from "@vem/shared";
 
 import {
@@ -38,23 +40,7 @@ export type MachineGeoLocation = {
 };
 
 export type Machine = AdminMachineResponse & {
-  productionPilotReadiness?: ProductionPilotReadiness | null;
-};
-
-export type ProductionPilotReadinessCheck = {
-  code: string;
-  label: string;
-  status: "ready" | "blocked" | "degraded" | "missing";
-  message: string;
-  operatorAction: string;
-};
-
-export type ProductionPilotReadiness = {
-  status: "ready" | "blocked" | "degraded";
-  checkedAt: string;
-  blockers: ProductionPilotReadinessCheck[];
-  degraded: ProductionPilotReadinessCheck[];
-  checks: ProductionPilotReadinessCheck[];
+  productionPilotReadiness?: ProductionPilotReadinessDiagnosticContract | null;
 };
 
 export type MachineCommand = AdminMachineCommandResponse;
@@ -62,23 +48,11 @@ export type MachineCommand = AdminMachineCommandResponse;
 export type MachineSlot = AdminMachineSlotResponse;
 export type MachineClaimCodeListResult = MachineClaimCodeListResponse;
 export type GenerateMachineClaimCodeResult = GenerateMachineClaimCodeResponse;
-export type { MachineClaimCodeSnapshot, PageResult };
-
-const productionPilotReadinessCheckSchema = z.strictObject({
-  code: z.string(),
-  label: z.string(),
-  status: z.enum(["ready", "blocked", "degraded", "missing"]),
-  message: z.string(),
-  operatorAction: z.string(),
-});
-
-const productionPilotReadinessSchema = z.strictObject({
-  status: z.enum(["ready", "blocked", "degraded"]),
-  checkedAt: z.string(),
-  blockers: z.array(productionPilotReadinessCheckSchema),
-  degraded: z.array(productionPilotReadinessCheckSchema),
-  checks: z.array(productionPilotReadinessCheckSchema),
-});
+export type {
+  MachineClaimCodeSnapshot,
+  PageResult,
+  ProductionPilotReadinessCheck,
+};
 
 function toMachine(response: AdminMachineResponse): Machine {
   const { productionPilotReadiness, ...machine } = response;
@@ -87,10 +61,7 @@ function toMachine(response: AdminMachineResponse): Machine {
   }
   return {
     ...machine,
-    productionPilotReadiness:
-      productionPilotReadiness === null
-        ? null
-        : productionPilotReadinessSchema.parse(productionPilotReadiness),
+    productionPilotReadiness,
   };
 }
 
