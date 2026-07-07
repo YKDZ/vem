@@ -639,7 +639,7 @@ async fn cache_daemon_events(
             }
             DaemonEvent::ScannerHealthChanged { snapshot, .. } => {
                 let mut cache = status_cache.scanner.write().await;
-                *cache = snapshot;
+                *cache = crate::events::scanner_health_snapshot_from_contract(snapshot);
             }
             DaemonEvent::ScannerCode { masked_code, .. } => {
                 let mut cache = status_cache.scanner.write().await;
@@ -808,15 +808,17 @@ mod tests {
             .send(DaemonEvent::ScannerHealthChanged {
                 event_id: "evt-scanner-ready".to_string(),
                 updated_at: crate::state::store::now_iso(),
-                snapshot: vending_core::scanner::ScannerHealthSnapshot {
-                    online: true,
-                    adapter: vending_core::scanner::PAYMENT_CODE_SOURCE_SERIAL_TEXT.to_string(),
-                    port: Some("COM3".to_string()),
-                    level: vending_core::health::HealthLevel::Ok,
-                    code: "SCANNER_READY".to_string(),
-                    message: "scanner ready".to_string(),
-                    updated_at: crate::state::store::now_iso(),
-                },
+                snapshot: crate::events::scanner_runtime_status_contract(
+                    &vending_core::scanner::ScannerHealthSnapshot {
+                        online: true,
+                        adapter: vending_core::scanner::PAYMENT_CODE_SOURCE_SERIAL_TEXT.to_string(),
+                        port: Some("COM3".to_string()),
+                        level: vending_core::health::HealthLevel::Ok,
+                        code: "SCANNER_READY".to_string(),
+                        message: "scanner ready".to_string(),
+                        updated_at: crate::state::store::now_iso(),
+                    },
+                ),
             })
             .expect("send scanner event");
 

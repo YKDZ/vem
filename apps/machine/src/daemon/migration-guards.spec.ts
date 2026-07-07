@@ -70,6 +70,54 @@ function transactionContractOffenders(source: string): string[] {
   return offenders;
 }
 
+function scannerContractOffenders(source: string): string[] {
+  const offenders: string[] = [];
+  const scannerSchemaAlias = source.match(
+    /\b(?:export\s+)?(?:const|let|var)\s+scannerStatusSchema\s*=\s*([^;]+);/s,
+  );
+  const scannerTypeAlias = source.match(
+    /\b(?:export\s+)?type\s+ScannerStatus\s*=\s*([^;]+);/s,
+  );
+  if (/\bOmit\s*<\s*DaemonIpcScannerStatus\b/.test(source)) {
+    offenders.push("Omit<DaemonIpcScannerStatus");
+  }
+  if (/\bPick\s*<\s*DaemonIpcScannerStatus\b/.test(source)) {
+    offenders.push("Pick<DaemonIpcScannerStatus");
+  }
+  if (
+    /\bdaemonIpcScannerStatusSchema\s*\.\s*(?:transform|extend|passthrough)\s*\(/.test(
+      source,
+    )
+  ) {
+    offenders.push("daemonIpcScannerStatusSchema mutation");
+  }
+  if (
+    scannerSchemaAlias &&
+    scannerSchemaAlias[1].replace(/\s+/g, "") !== "daemonIpcScannerStatusSchema"
+  ) {
+    offenders.push("scannerStatusSchema");
+  }
+  if (
+    /\b(?:const|let|var)\s+[A-Za-z0-9_$]*[Ss]cannerStatus[A-Za-z0-9_$]*\s*=\s*z\s*\.\s*object\s*\(/.test(
+      source,
+    )
+  ) {
+    offenders.push("scanner status z.object");
+  }
+  if (/\binterface\s+ScannerStatus\b/.test(source)) {
+    offenders.push("interface ScannerStatus");
+  }
+  const scannerTypeRhs = scannerTypeAlias?.[1].replace(/\s+/g, "");
+  if (
+    scannerTypeRhs &&
+    scannerTypeRhs !== "z.infer<typeofscannerStatusSchema>" &&
+    scannerTypeRhs !== "DaemonIpcScannerStatus"
+  ) {
+    offenders.push("ScannerStatus");
+  }
+  return offenders;
+}
+
 function files(dir: string): string[] {
   return readdirSync(dir).flatMap((name) => {
     const path = join(dir, name);
@@ -108,6 +156,13 @@ describe("machine-ui daemon migration guards", () => {
     expect(transactionContractOffenders(schemas)).toEqual([]);
   });
 
+  it("does not keep machine-local vocabulary aliases for covered daemon IPC scanner payloads", () => {
+    const root = new URL("../..", import.meta.url).pathname;
+    const schemas = readFileSync(join(root, "src/daemon/schemas.ts"), "utf8");
+
+    expect(scannerContractOffenders(schemas)).toEqual([]);
+  });
+
   it("detects common daemon IPC transaction contract bypass variants", () => {
     expect(
       transactionContractOffenders(`
@@ -124,5 +179,40 @@ describe("machine-ui daemon migration guards", () => {
       "TransactionSnapshotPickupReminder",
       "transactionSnapshotPaymentCodeAttemptSchema",
     ]);
+  });
+
+  it("detects common daemon IPC scanner contract bypass variants", () => {
+    expect(
+      scannerContractOffenders(`
+        const scannerStatusSchema = daemonIpcScannerStatusSchema.transform((value) => value);
+        const localScannerStatusSchema = z.object({ online: z.boolean() });
+        interface ScannerStatus { online: boolean; code: string }
+        type ScannerStatus = { online: boolean; code: string };
+        type LocalScannerStatus = Pick<DaemonIpcScannerStatus, "online">;
+      `),
+    ).toEqual([
+      "Pick<DaemonIpcScannerStatus",
+      "daemonIpcScannerStatusSchema mutation",
+      "scannerStatusSchema",
+      "scanner status z.object",
+      "interface ScannerStatus",
+      "ScannerStatus",
+    ]);
+  });
+
+  it("allows direct daemon IPC scanner contract aliases", () => {
+    expect(
+      scannerContractOffenders(`
+        export const scannerStatusSchema = daemonIpcScannerStatusSchema;
+        export type ScannerStatus = z.infer<typeof scannerStatusSchema>;
+      `),
+    ).toEqual([]);
+
+    expect(
+      scannerContractOffenders(`
+        const scannerStatusSchema = daemonIpcScannerStatusSchema;
+        type ScannerStatus = DaemonIpcScannerStatus;
+      `),
+    ).toEqual([]);
   });
 });

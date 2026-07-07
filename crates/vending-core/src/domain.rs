@@ -40,6 +40,7 @@ pub enum OrderSessionStatus {
     Closed,
 }
 
+/// Internal daemon runtime checkout projection, not a Daemon IPC boundary DTO.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InternalCheckoutFlowAction {
@@ -102,6 +103,7 @@ impl Default for InternalCheckoutFlowAction {
     }
 }
 
+/// Internal persisted transaction summary used for recovery and health projection.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InternalTransactionSnapshot {
@@ -111,6 +113,7 @@ pub struct InternalTransactionSnapshot {
     pub updated_at: String,
 }
 
+/// Internal current-transaction summary embedded in daemon health state.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InternalCurrentTransactionSummary {
@@ -120,6 +123,7 @@ pub struct InternalCurrentTransactionSummary {
     pub updated_at: String,
 }
 
+/// Internal vending command state associated with the current transaction.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InternalVendingCommandSummary {
@@ -129,6 +133,7 @@ pub struct InternalVendingCommandSummary {
     pub pickup_reminder: Option<InternalPickupReminderSummary>,
 }
 
+/// Internal pickup reminder state derived from local dispense observations.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InternalPickupReminderSummary {
@@ -139,6 +144,7 @@ pub struct InternalPickupReminderSummary {
     pub reported_at: String,
 }
 
+/// Internal payment-code attempt state used by transaction recovery/runtime logic.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InternalPaymentCodeAttemptSummary {
@@ -153,6 +159,7 @@ pub struct InternalPaymentCodeAttemptSummary {
     pub message: Option<String>,
 }
 
+/// Internal current transaction runtime model converted to generated IPC contracts at the boundary.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InternalCurrentTransactionSnapshot {

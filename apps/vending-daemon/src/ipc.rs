@@ -16,15 +16,13 @@ use tokio::sync::{broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
 use tower_http::cors::{Any, CorsLayer};
 
-use daemon_ipc_contracts::ScannerRuntimeStatus;
-
 use crate::{
     backend::BackendClient,
     config::{
         ConfigStore, MachineConfigUpdateRequest, MachinePublicConfig,
         ProductionMachinePaymentCapability,
     },
-    events::DaemonEvent,
+    events::{scanner_runtime_status_contract, DaemonEvent},
     hardware::HardwareSupervisor,
     logs,
     natural_context::MachineNaturalContextSnapshot,
@@ -3045,26 +3043,6 @@ async fn scanner_status(State(ctx): State<IpcContext>, headers: HeaderMap) -> im
         Json(scanner_runtime_status_contract(&snapshot)),
     )
         .into_response()
-}
-
-fn scanner_runtime_status_contract(
-    snapshot: &vending_core::scanner::ScannerHealthSnapshot,
-) -> ScannerRuntimeStatus {
-    ScannerRuntimeStatus {
-        adapter: snapshot.adapter.clone(),
-        code: snapshot.code.clone(),
-        level: match &snapshot.level {
-            vending_core::health::HealthLevel::Ok => "ok",
-            vending_core::health::HealthLevel::Degraded => "degraded",
-            vending_core::health::HealthLevel::Offline => "offline",
-            vending_core::health::HealthLevel::Error => "error",
-        }
-        .to_string(),
-        message: snapshot.message.clone(),
-        online: snapshot.online,
-        port: snapshot.port.clone(),
-        updated_at: snapshot.updated_at.clone(),
-    }
 }
 
 fn empty_current_transaction_snapshot() -> vending_core::domain::InternalCurrentTransactionSnapshot
