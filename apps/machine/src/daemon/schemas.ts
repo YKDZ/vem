@@ -3,11 +3,11 @@ import {
   type DaemonIpcUnknownEventNotification,
   type DaemonIpcTransactionSnapshot,
   daemonIpcEventNotificationSchema,
-  daemonIpcTransactionSnapshotSchema,
   environmentControlResultPayloadSchema,
   machineCatalogItemSchema,
   machinePaymentOptionsResponseSchema,
   machineSaleViewSnapshotSchema,
+  parseDaemonIpcTransactionSnapshotBoundary,
 } from "@vem/shared";
 import { z } from "zod";
 
@@ -221,7 +221,23 @@ export const provisioningClaimResponseSchema = z.object({
   config: configSummarySchema,
 });
 
-export const transactionSnapshotSchema = daemonIpcTransactionSnapshotSchema;
+type TransactionSnapshotParseResult =
+  | { success: true; data: DaemonIpcTransactionSnapshot }
+  | { success: false; error: unknown };
+
+export const transactionSnapshotSchema = {
+  parse: parseDaemonIpcTransactionSnapshotBoundary,
+  safeParse(value: unknown): TransactionSnapshotParseResult {
+    try {
+      return {
+        success: true,
+        data: parseDaemonIpcTransactionSnapshotBoundary(value),
+      };
+    } catch (error) {
+      return { success: false, error };
+    }
+  },
+};
 
 export const syncStatusSchema = z.object({
   mqttRunning: z.boolean(),

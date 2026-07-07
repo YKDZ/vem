@@ -119,8 +119,7 @@ const daemonIpcEventEnvelopeSchema = z
   })
   .strict();
 
-const daemonIpcKnownEventEnvelopeSchema =
-  daemonIpcEventEnvelopeSchema.strict();
+const daemonIpcKnownEventEnvelopeSchema = daemonIpcEventEnvelopeSchema.strict();
 
 export const daemonIpcKnownEventNotificationTypeSchema = z.enum([
   "health_changed",
@@ -162,15 +161,14 @@ export const daemonIpcScannerHealthChangedEventSchema =
     })
     .strict();
 
-export const daemonIpcScannerCodeEventSchema =
-  daemonIpcKnownEventEnvelopeSchema
-    .extend({
-      type: z.literal("scanner_code"),
-      maskedCode: z.string(),
-      source: z.string(),
-      scannedAtMs: z.number(),
-    })
-    .strict();
+export const daemonIpcScannerCodeEventSchema = daemonIpcKnownEventEnvelopeSchema
+  .extend({
+    type: z.literal("scanner_code"),
+    maskedCode: z.string(),
+    source: z.string(),
+    scannedAtMs: z.number(),
+  })
+  .strict();
 
 export const daemonIpcTransactionChangedEventSchema =
   daemonIpcKnownEventEnvelopeSchema
@@ -181,14 +179,13 @@ export const daemonIpcTransactionChangedEventSchema =
     })
     .strict();
 
-export const daemonIpcMqttChangedEventSchema =
-  daemonIpcKnownEventEnvelopeSchema
-    .extend({
-      type: z.literal("mqtt_changed"),
-      connected: z.boolean(),
-      lastError: z.string().nullable(),
-    })
-    .strict();
+export const daemonIpcMqttChangedEventSchema = daemonIpcKnownEventEnvelopeSchema
+  .extend({
+    type: z.literal("mqtt_changed"),
+    connected: z.boolean(),
+    lastError: z.string().nullable(),
+  })
+  .strict();
 
 export const daemonIpcVisionChangedEventSchema =
   daemonIpcKnownEventEnvelopeSchema
@@ -293,6 +290,19 @@ export type DaemonIpcCheckoutFlowAction = z.infer<
   typeof daemonIpcCheckoutFlowActionSchema
 >;
 
+export function normalizeLegacyDaemonIpcCheckoutFlowActionForRecovery(
+  action: unknown,
+): DaemonIpcCheckoutFlowAction | null {
+  if (action === "submit_payment") {
+    return "wait_payment";
+  }
+  if (action === "collect_goods") {
+    return "dispensing";
+  }
+  const current = daemonIpcCheckoutFlowActionSchema.safeParse(action);
+  return current.success ? current.data : null;
+}
+
 export const daemonIpcMachinePaymentProviderSchema = z.enum([
   "mock",
   "wechat_pay",
@@ -372,10 +382,7 @@ export const daemonIpcTransactionSnapshotSchema = z
     orderStatus: orderStatusSchema.nullable(),
     totalAmountCents: z.number().int().nonnegative().nullable(),
     vending: daemonIpcVendingSummarySchema.nullable(),
-    nextAction: daemonIpcCheckoutFlowActionSchema
-      .nullable()
-      .optional()
-      .transform((value) => value ?? null),
+    nextAction: daemonIpcCheckoutFlowActionSchema.nullable(),
     maskedAuthCode: z.string().nullable(),
     paymentCodeAttempt: daemonIpcPaymentCodeAttemptSummarySchema.nullable(),
     expiresAt: z.string().nullable(),
@@ -384,34 +391,7 @@ export const daemonIpcTransactionSnapshotSchema = z
     operatorHint: z.string().nullable(),
     updatedAt: z.string(),
   })
-  .strict()
-  .superRefine((snapshot, ctx) => {
-    if (snapshot.orderNo && !snapshot.nextAction) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["nextAction"],
-        message: "current transaction snapshots must include nextAction",
-      });
-    }
-    if (snapshot.orderNo && snapshot.nextAction === "wait_payment") {
-      if (!snapshot.paymentMethod) {
-        ctx.addIssue({
-          code: "custom",
-          path: ["paymentMethod"],
-          message:
-            "awaiting-payment transaction snapshots must include paymentMethod",
-        });
-      }
-      if (snapshot.totalAmountCents === null) {
-        ctx.addIssue({
-          code: "custom",
-          path: ["totalAmountCents"],
-          message:
-            "awaiting-payment transaction snapshots must include totalAmountCents",
-        });
-      }
-    }
-  });
+  .strict();
 
 export type DaemonIpcTransactionSnapshot = z.infer<
   typeof daemonIpcTransactionSnapshotSchema
@@ -422,3 +402,98 @@ export type DaemonIpcPaymentCodeAttemptSummary = z.infer<
 export type DaemonIpcVendingSummary = z.infer<
   typeof daemonIpcVendingSummarySchema
 >;
+
+export function validateDaemonIpcTransactionSnapshotBoundary(
+  snapshot: DaemonIpcTransactionSnapshot,
+): DaemonIpcTransactionSnapshot {
+  const issues: string[] = [];
+
+  if (snapshot.orderNo && !snapshot.nextAction) {
+    issues.push("current transaction snapshots must include nextAction");
+  }
+  if (snapshot.orderNo && snapshot.nextAction === "wait_payment") {
+    if (!snapshot.paymentMethod) {
+      issues.push(
+        "awaiting-payment transaction snapshots must include paymentMethod",
+      );
+    }
+    if (snapshot.totalAmountCents === null) {
+      issues.push(
+        "awaiting-payment transaction snapshots must include totalAmountCents",
+      );
+    }
+  }
+
+  if (issues.length > 0) {
+    throw new Error(issues.join("; "));
+  }
+
+  return snapshot;
+}
+
+export function parseDaemonIpcTransactionSnapshotBoundary(
+  value: unknown,
+): DaemonIpcTransactionSnapshot {
+  return validateDaemonIpcTransactionSnapshotBoundary(
+    daemonIpcTransactionSnapshotSchema.parse(value),
+  );
+}
+
+export type DaemonIpcJsonSchemaDocument = {
+  $schema: "https://json-schema.org/draft/2020-12/schema";
+  $defs?: Record<string, unknown>;
+} & Record<string, unknown>;
+
+function exportDaemonIpcJsonSchemaDefinition(
+  name: string,
+  schema: z.ZodType,
+): Record<string, unknown> {
+  try {
+    const { $schema: _schema, ...jsonSchema } = z.toJSONSchema(
+      schema,
+    ) as Record<string, unknown>;
+    return jsonSchema;
+  } catch (error) {
+    const message =
+      error instanceof Error ? error.message : "unknown JSON Schema error";
+    throw new Error(
+      `Daemon IPC JSON Schema export failed for ${name}: ${message}`,
+    );
+  }
+}
+
+export function exportDaemonIpcJsonSchemaDefinitions(
+  definitions: Record<string, z.ZodType>,
+): DaemonIpcJsonSchemaDocument {
+  return {
+    $schema: "https://json-schema.org/draft/2020-12/schema",
+    $defs: Object.fromEntries(
+      Object.entries(definitions).map(([name, schema]) => [
+        name,
+        exportDaemonIpcJsonSchemaDefinition(name, schema),
+      ]),
+    ),
+  };
+}
+
+export function exportDaemonIpcTransactionCheckoutJsonSchema(): DaemonIpcJsonSchemaDocument {
+  const root = exportDaemonIpcJsonSchemaDefinition(
+    "CurrentTransactionSnapshot",
+    daemonIpcTransactionSnapshotSchema,
+  );
+  const definitions = exportDaemonIpcJsonSchemaDefinitions({
+    CheckoutFlowAction: daemonIpcCheckoutFlowActionSchema,
+    DispenseProgressObservationStage:
+      daemonIpcDispenseProgressObservationStageSchema,
+    PaymentCodeAttemptSummary: daemonIpcPaymentCodeAttemptSummarySchema,
+    PickupReminder: daemonIpcPickupReminderSchema,
+    VendingSummary: daemonIpcVendingSummarySchema,
+  });
+
+  return {
+    $schema: "https://json-schema.org/draft/2020-12/schema",
+    title: "CurrentTransactionSnapshot",
+    ...root,
+    $defs: definitions.$defs,
+  };
+}

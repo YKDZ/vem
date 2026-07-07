@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-
 import { describe, expect, it } from "vitest";
+import { z } from "zod";
 
 import {
   daemonIpcCheckoutFlowActionSchema,
@@ -9,31 +9,22 @@ import {
   daemonIpcDispenseProgressObservationStageSchema,
   daemonIpcPickupReminderSchema,
   daemonIpcTransactionSnapshotSchema,
+  exportDaemonIpcJsonSchemaDefinitions,
+  exportDaemonIpcTransactionCheckoutJsonSchema,
   machineOrderStatusNextActionSchema,
+  normalizeLegacyDaemonIpcCheckoutFlowActionForRecovery,
+  parseDaemonIpcTransactionSnapshotBoundary,
+  validateDaemonIpcTransactionSnapshotBoundary,
 } from ".";
+import {
+  invalidCurrentDaemonIpcTransactionSnapshots,
+  legacyDaemonIpcTransactionRecoveryCases,
+  validCurrentDaemonIpcTransactionSnapshots,
+} from "./fixtures/daemon-ipc-transaction";
 
 describe("Daemon IPC Contract Area", () => {
-  const awaitingPaymentTransaction = {
-    orderId: "550e8400-e29b-41d4-a716-446655440010",
-    orderNo: "ORD-IPC-001",
-    productSummary: null,
-    paymentNo: "PAY-IPC-001",
-    paymentMethod: "qr_code",
-    paymentProvider: "alipay",
-    paymentUrl: "https://pay.example/qr",
-    paymentStatus: "pending",
-    orderStatus: "pending_payment",
-    totalAmountCents: 1200,
-    vending: null,
-    nextAction: "wait_payment",
-    maskedAuthCode: null,
-    paymentCodeAttempt: null,
-    expiresAt: "2026-06-11T06:20:00.000Z",
-    errorCode: null,
-    errorMessage: null,
-    operatorHint: null,
-    updatedAt: "2026-06-11T06:16:32.320Z",
-  };
+  const awaitingPaymentTransaction =
+    validCurrentDaemonIpcTransactionSnapshots.awaitingPayment;
 
   it("publishes the strict Checkout Flow Action vocabulary", () => {
     expect(daemonIpcCheckoutFlowActionSchema.options).toEqual([
@@ -89,6 +80,101 @@ describe("Daemon IPC Contract Area", () => {
         awaitingPaymentTransaction;
       return daemonIpcTransactionSnapshotSchema.parse(missingNextAction);
     }).toThrow();
+  });
+
+  it("exports transaction checkout structural schemas with Zod native JSON Schema", () => {
+    const schema = exportDaemonIpcTransactionCheckoutJsonSchema();
+
+    expect(schema.$schema).toBe("https://json-schema.org/draft/2020-12/schema");
+    expect(schema.title).toBe("CurrentTransactionSnapshot");
+    expect(schema.type).toBe("object");
+    expect(schema).toHaveProperty("$defs.CheckoutFlowAction");
+    expect(schema).toHaveProperty("$defs.PaymentCodeAttemptSummary");
+    expect(schema).toHaveProperty("$defs.PickupReminder");
+    expect(schema).not.toHaveProperty("definitions");
+    expect(JSON.stringify(schema.$defs)).not.toContain(
+      '"$schema":"https://json-schema.org/draft/2020-12/schema"',
+    );
+    expect(() =>
+      z.toJSONSchema(daemonIpcTransactionSnapshotSchema),
+    ).not.toThrow();
+    expect(JSON.stringify(schema)).not.toContain("submit_payment");
+    expect(JSON.stringify(schema)).not.toContain("collect_goods");
+  });
+
+  it("fails clearly when Daemon IPC JSON Schema export sees unsupported Zod features", () => {
+    expect(() =>
+      exportDaemonIpcJsonSchemaDefinitions({
+        UnsupportedTransform: z.string().transform((value) => value.trim()),
+      }),
+    ).toThrow(/Daemon IPC JSON Schema export failed for UnsupportedTransform/);
+  });
+
+  it("keeps transaction cross-field semantics in an explicit boundary helper", () => {
+    for (const snapshot of Object.values(
+      validCurrentDaemonIpcTransactionSnapshots,
+    )) {
+      expect(validateDaemonIpcTransactionSnapshotBoundary(snapshot)).toBe(
+        snapshot,
+      );
+      expect(parseDaemonIpcTransactionSnapshotBoundary(snapshot)).toEqual(
+        snapshot,
+      );
+    }
+
+    expect(
+      daemonIpcTransactionSnapshotSchema.parse(
+        invalidCurrentDaemonIpcTransactionSnapshots.missingNextActionWithOrderNo,
+      ),
+    ).toEqual(
+      invalidCurrentDaemonIpcTransactionSnapshots.missingNextActionWithOrderNo,
+    );
+
+    for (const snapshot of [
+      invalidCurrentDaemonIpcTransactionSnapshots.missingNextActionWithOrderNo,
+      invalidCurrentDaemonIpcTransactionSnapshots.awaitingPaymentWithoutPaymentMethod,
+      invalidCurrentDaemonIpcTransactionSnapshots.awaitingPaymentWithoutTotalAmount,
+    ]) {
+      expect(() =>
+        parseDaemonIpcTransactionSnapshotBoundary(snapshot),
+      ).toThrow();
+    }
+
+    expect(
+      validCurrentDaemonIpcTransactionSnapshots.paymentCodeScan
+        .paymentCodeAttempt?.source,
+    ).toBe("tauri_scanner");
+    expect(
+      validCurrentDaemonIpcTransactionSnapshots.dispensingWithPickupReminder
+        .vending?.pickupReminder?.stage,
+    ).toBe("pickup_timeout_warning");
+    expect(
+      validCurrentDaemonIpcTransactionSnapshots.terminalSuccess.nextAction,
+    ).toBe("success");
+    expect(
+      validCurrentDaemonIpcTransactionSnapshots.terminalDispenseFailed
+        .nextAction,
+    ).toBe("dispense_failed");
+  });
+
+  it("isolates legacy checkout action normalization to recovery helpers", () => {
+    for (const {
+      legacyAction,
+      currentAction,
+    } of legacyDaemonIpcTransactionRecoveryCases) {
+      expect(() =>
+        daemonIpcCheckoutFlowActionSchema.parse(legacyAction),
+      ).toThrow();
+      expect(() =>
+        daemonIpcTransactionSnapshotSchema.parse({
+          ...awaitingPaymentTransaction,
+          nextAction: legacyAction,
+        }),
+      ).toThrow();
+      expect(
+        normalizeLegacyDaemonIpcCheckoutFlowActionForRecovery(legacyAction),
+      ).toBe(currentAction);
+    }
   });
 
   it("rejects unknown fields in transaction snapshots and nested daemon-owned objects", () => {

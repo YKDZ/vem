@@ -1,4 +1,7 @@
-import { daemonIpcTransactionSnapshotSchema } from "@vem/shared";
+import {
+  daemonIpcTransactionSnapshotSchema,
+  parseDaemonIpcTransactionSnapshotBoundary,
+} from "@vem/shared";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -35,8 +38,10 @@ describe("daemon schemas", () => {
     updatedAt: "2026-06-11T06:16:32.320Z",
   };
 
-  it("uses the shared Daemon IPC transaction snapshot contract", () => {
-    expect(transactionSnapshotSchema).toBe(daemonIpcTransactionSnapshotSchema);
+  it("uses the shared Daemon IPC transaction snapshot boundary parser", () => {
+    expect(transactionSnapshotSchema.parse).toBe(
+      parseDaemonIpcTransactionSnapshotBoundary,
+    );
   });
 
   it("keeps the Machine transaction snapshot type on the shared checkout action vocabulary", () => {
@@ -105,6 +110,12 @@ describe("daemon schemas", () => {
     const { nextAction: _nextAction, ...missingNextAction } =
       awaitingPaymentTransaction;
 
+    expect(() =>
+      daemonIpcTransactionSnapshotSchema.parse({
+        ...awaitingPaymentTransaction,
+        nextAction: null,
+      }),
+    ).not.toThrow();
     expect(() => transactionSnapshotSchema.parse(missingNextAction)).toThrow();
     expect(() =>
       transactionSnapshotSchema.parse({
@@ -129,7 +140,7 @@ describe("daemon schemas", () => {
     ).toThrow();
   });
 
-  it("allows the no-current-transaction snapshot to omit next action", () => {
+  it("requires the no-current-transaction snapshot to include explicit null next action", () => {
     const { nextAction: _nextAction, ...noCurrentTransaction } = {
       ...awaitingPaymentTransaction,
       orderId: null,
@@ -143,8 +154,13 @@ describe("daemon schemas", () => {
       totalAmountCents: null,
       expiresAt: null,
     };
+    expect(() =>
+      transactionSnapshotSchema.parse(noCurrentTransaction),
+    ).toThrow();
+
     const parsed = transactionSnapshotSchema.parse({
       ...noCurrentTransaction,
+      nextAction: null,
     });
 
     expect(parsed.orderNo).toBeNull();
