@@ -541,7 +541,25 @@ impl MqttSyncRuntime {
             .physical_stock_attestation_status()
             .await
             .map_err(|error| format!("read physical stock attestation failed: {error}"))?;
-        let payload = json!({
+        let reported_runtime_configuration = if let Some(context) = self.readiness_context.as_ref()
+        {
+            match context
+                .config_store
+                .load_runtime_configuration_summary()
+                .await
+            {
+                Ok(summary) => Some(crate::config::project_reported_runtime_configuration(
+                    &summary.effective_public,
+                )),
+                Err(error) => {
+                    eprintln!("load runtime configuration summary for heartbeat failed: {error}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        let mut payload = json!({
             "machineCode": self.machine_code,
             "reportedAt": reported_at,
             "statusPayload": {
@@ -550,7 +568,6 @@ impl MqttSyncRuntime {
                 "hardwareAdapter": self.hardware.adapter_name(),
                 "hardwareStatus": heartbeat_hardware_status,
                 "hardwareMessage": hardware_status.message,
-                "hardwarePortPath": hardware_status.port_path,
                 "wholeMachineMaintenanceLock": whole_machine_lock,
                 "saleReadiness": sale_readiness,
                 "physicalStockAttestation": physical_stock_attestation,
@@ -558,6 +575,12 @@ impl MqttSyncRuntime {
                     .map_err(|error| format!("serialize environment heartbeat failed: {error}"))?,
             },
         });
+        if let Some(summary) = reported_runtime_configuration {
+            payload["statusPayload"]["reportedRuntimeConfiguration"] =
+                serde_json::to_value(summary).map_err(|error| {
+                    format!("serialize reported runtime configuration failed: {error}")
+                })?;
+        }
         let mut heartbeat =
             crate::state::store::OutboxInput::heartbeat(&self.machine_code, payload);
         heartbeat.payload_json = self.sign_outbox_payload(
@@ -1018,6 +1041,67 @@ mod tests {
         }
     }
 
+    struct FixedDiskPressureProbe;
+
+    impl crate::health::DiskPressureProbe for FixedDiskPressureProbe {
+        fn snapshot(&self, _data_dir: &std::path::Path) -> crate::health::DiskPressureSnapshot {
+            crate::health::DiskPressureSnapshot {
+                pressured: false,
+                available_bytes: Some(crate::health::DISK_PRESSURE_MIN_AVAILABLE_BYTES + 1),
+                threshold_bytes: crate::health::DISK_PRESSURE_MIN_AVAILABLE_BYTES,
+                message: "disk capacity available".to_string(),
+            }
+        }
+    }
+
+    async fn test_readiness_context(
+        data_dir: &std::path::Path,
+        state: crate::state::LocalStateStore,
+        public: crate::config::MachinePublicConfig,
+    ) -> crate::ipc::IpcContext {
+        let secrets: Arc<dyn crate::secret::SecretStore> =
+            Arc::new(crate::secret::InMemorySecretStore::default());
+        let config_store = Arc::new(crate::config::ConfigStore::new(
+            data_dir.to_path_buf(),
+            state.clone(),
+            secrets,
+        ));
+        config_store
+            .save_public_config(public.clone())
+            .await
+            .expect("save public config");
+        let (events_tx, _) = broadcast::channel(8);
+        let (runtime_tx, _raw_rx) = tokio::sync::mpsc::channel(8);
+        let backend = Arc::new(crate::backend::BackendClient::new("http://127.0.0.1:9/api"));
+        backend
+            .set_access_token_for_tests("test-backend-token")
+            .await;
+        let status_cache = crate::ipc::RuntimeStatusCache::new(&public, state.clone()).await;
+        let transaction = crate::transaction::TransactionStateMachine::new(
+            state.clone(),
+            backend.clone(),
+            public.machine_code.clone(),
+            events_tx.clone(),
+        );
+
+        crate::ipc::IpcContext {
+            data_dir: data_dir.to_path_buf(),
+            token: "test-token".to_string(),
+            config_store,
+            state,
+            hardware: crate::hardware::HardwareSupervisor::from_config(&public).expect("hardware"),
+            events: events_tx,
+            runtime_tx,
+            disk_pressure_probe: Arc::new(FixedDiskPressureProbe),
+            network_adapter: crate::network::adapter_from_env(),
+            ui: crate::ipc::UiRuntimeServices {
+                backend,
+                transaction,
+                status_cache,
+            },
+        }
+    }
+
     async fn seed_single_slot_planogram(state: &crate::state::LocalStateStore) {
         state
             .apply_planogram(crate::state::store::MachinePlanogramInput {
@@ -1453,6 +1537,56 @@ mod tests {
         assert_eq!(environment["sensorStatus"], "ok");
         assert_eq!(environment["airConditionerOn"], false);
         assert!(environment["targetTemperatureCelsius"].is_null());
+    }
+
+    #[tokio::test]
+    async fn enqueue_heartbeat_omits_reported_runtime_configuration_when_config_summary_fails() {
+        let temp = tempfile::tempdir().expect("temp");
+        let data_dir = temp.path().join("daemon");
+        let state = crate::state::LocalStateStore::open(&data_dir.join("state.db"))
+            .await
+            .expect("state");
+
+        let mut config = crate::config::default_public_config();
+        config.machine_code = Some("M1".to_string());
+        let context = test_readiness_context(&data_dir, state.clone(), config.clone()).await;
+        let manifest_path = context.config_store.factory_manifest_path();
+        tokio::fs::create_dir_all(manifest_path.parent().expect("manifest parent"))
+            .await
+            .expect("factory dir");
+        tokio::fs::write(&manifest_path, "{not valid json")
+            .await
+            .expect("write invalid manifest");
+
+        let hardware = crate::hardware::HardwareSupervisor::from_adapter(Arc::new(
+            RecordingEnvironmentAdapter::default(),
+        ));
+        let (event_tx, _rx) = tokio::sync::broadcast::channel(4);
+        let runtime = MqttSyncRuntime::new(
+            "M1".to_string(),
+            "secret".to_string(),
+            state.clone(),
+            hardware,
+            event_tx,
+            CancellationToken::new(),
+        )
+        .with_readiness_context(context);
+
+        runtime.enqueue_heartbeat().await.expect("heartbeat");
+
+        let due = state
+            .list_due_outbox(chrono::Utc::now() + chrono::Duration::seconds(1))
+            .await
+            .expect("outbox");
+        assert_eq!(due.len(), 1);
+        let envelope: vending_core::mqtt::MqttEnvelope =
+            serde_json::from_value(due[0].payload_json.clone()).expect("envelope");
+        vending_core::mqtt::verify_envelope(&envelope, "M1", "secret", 300)
+            .expect("valid signed heartbeat");
+        assert_eq!(envelope.payload["machineCode"], "M1");
+        assert!(envelope.payload["statusPayload"]
+            .get("reportedRuntimeConfiguration")
+            .is_none());
     }
 
     #[tokio::test]

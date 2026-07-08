@@ -150,6 +150,12 @@ describe("MachinesService", () => {
                     network: "online",
                     mqttConnected: true,
                     hardwareStatus: "faulted",
+                    hardwarePortPath: "COM5",
+                    scannerHealth: {
+                      status: "online",
+                      portPath: "COM3",
+                      message: "scanner ready",
+                    },
                     wholeMachineMaintenanceLock: {
                       code: "WHOLE_MACHINE_HARDWARE_FAULT",
                       message: "pickup platform blocked",
@@ -367,6 +373,9 @@ describe("MachinesService", () => {
         }),
       }),
     );
+    expect(result.latestHeartbeatStatus).not.toHaveProperty("hardwarePortPath");
+    expect(result.latestHeartbeatStatus).not.toHaveProperty("scannerHealth");
+    expect(result.latestHeartbeatStatus).not.toHaveProperty("environment");
     expect(result.latestEnvironment).toEqual({
       temperatureCelsius: 24,
       humidityRh: 53,
@@ -379,6 +388,83 @@ describe("MachinesService", () => {
       expect.objectContaining({ status: "succeeded" }),
     );
     expect(result.geoLocation).toBeNull();
+  });
+
+  it("returns safe machine-reported runtime configuration from the latest heartbeat", async () => {
+    const machine = {
+      id: "machine-1",
+      code: "M001",
+      name: "Lobby",
+      locationLabel: "1F",
+      geoLatitude: null,
+      geoLongitude: null,
+      geoTimezone: null,
+      status: "online",
+      deletedAt: null,
+    };
+    mockDb.select
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            limit: async () => [machine],
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            orderBy: () => ({
+              limit: async () => [
+                {
+                  reportedAt: new Date("2026-07-08T12:00:00.000Z"),
+                  statusPayloadJson: {
+                    network: "online",
+                    reportedRuntimeConfiguration: {
+                      audioCues: {
+                        enabled: true,
+                        presenceEnabled: false,
+                        transactionEnabled: true,
+                      },
+                      audioVolume: 72,
+                      visionRecommendationsEnabled: false,
+                    },
+                  },
+                },
+              ],
+            }),
+          }),
+        }),
+      })
+      .mockReturnValueOnce({
+        from: () => ({
+          where: () => ({
+            orderBy: () => ({
+              limit: async () => [],
+            }),
+          }),
+        }),
+      });
+
+    const result = await service.getMachine("machine-1");
+
+    expect(result.reportedRuntimeConfiguration).toEqual({
+      audioCues: {
+        enabled: true,
+        presenceEnabled: false,
+        transactionEnabled: true,
+      },
+      audioVolume: 72,
+      visionRecommendationsEnabled: false,
+    });
+    expect(JSON.stringify(result.reportedRuntimeConfiguration)).not.toContain(
+      "visionWsUrl",
+    );
+    expect(JSON.stringify(result.reportedRuntimeConfiguration)).not.toContain(
+      "mqttPassword",
+    );
+    expect(JSON.stringify(result.reportedRuntimeConfiguration)).not.toContain(
+      "serialPortPath",
+    );
   });
 
   it("keeps production pilot diagnostic contract degraded while natural context is unconfigured", async () => {
@@ -3128,6 +3214,7 @@ describe("MachinesService claim code lifecycle", () => {
             mqttUrl: "mqtt://localhost:1883",
             mqttUsername: "machine-client",
             mqttPassword: "mqtt-password",
+            machineApiBaseUrl: "https://platform.example.com/api",
           },
         },
         {
@@ -3271,6 +3358,7 @@ describe("MachinesService claim code lifecycle", () => {
             clientId: "vem-machine-M001",
           }),
         }),
+        apiBaseUrl: "https://platform.example.com/api",
         runtimeEndpoints: expect.objectContaining({
           machineAuthTokenPath: "/api/machine-auth/token",
           mqttTopicPrefix: "vem/machines/M001",

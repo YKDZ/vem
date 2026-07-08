@@ -755,6 +755,7 @@ mod tests {
                             "clientId": "vem-machine-VEM-TESTBED-WINVM-01"
                         }
                     },
+                    "apiBaseUrl": "http://127.0.0.1:3000/api",
                     "runtimeEndpoints": {
                         "apiBasePath": "/api",
                         "machineAuthTokenPath": "/api/machine-auth/token",

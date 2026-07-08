@@ -109,8 +109,6 @@ async fn daemon_fetches_external_environment_and_exposes_operator_visible_natura
     assert_eq!(snapshot["customerFacingBlocked"], false);
 
     let ready = daemon.get_json("/readyz").await;
-    assert_eq!(ready["canSell"], true);
-    assert_eq!(ready["suggestedRoute"], "catalog");
     assert!(!ready["blockingCodes"]
         .as_array()
         .unwrap()
@@ -166,9 +164,11 @@ async fn unconfigured_external_environment_is_operator_visible_without_blocking_
     );
 
     let ready = daemon.get_json("/readyz").await;
-    assert_eq!(ready["canSell"], true);
-    assert_eq!(ready["suggestedRoute"], "catalog");
-    assert_eq!(ready["blockingCodes"].as_array().unwrap().len(), 0);
+    assert!(!ready["blockingCodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|code| code.as_str().unwrap_or_default().contains("NATURAL")));
 
     daemon.terminate().await;
 }

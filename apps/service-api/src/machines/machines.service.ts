@@ -89,6 +89,7 @@ import {
   mapCreateMachineSlotDtoToInsert,
   mapEnvironmentControlDtoToCommandInsert,
   mapUpdateMachineDtoToPatch,
+  toAdminMachineHeartbeatStatus,
   toAdminMachineCommandResponse,
   toAdminMachineResponse,
   toAdminMachineSlotResponse,
@@ -722,11 +723,15 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
         const latestHeartbeat = await this.getLatestHeartbeatStatus(machine.id);
         return {
           ...toAdminMachineResponse(machine),
-          latestHeartbeatStatus: latestHeartbeat?.statusPayload ?? null,
+          latestHeartbeatStatus: toAdminMachineHeartbeatStatus(
+            latestHeartbeat?.statusPayload,
+          ),
           latestHeartbeatReportedAt: latestHeartbeat?.reportedAt
             ? toIso(latestHeartbeat.reportedAt)
             : null,
           latestEnvironment: latestHeartbeat?.statusPayload.environment ?? null,
+          reportedRuntimeConfiguration:
+            latestHeartbeat?.statusPayload.reportedRuntimeConfiguration ?? null,
           latestEnvironmentCommand: await this.getLatestEnvironmentCommand(
             machine.id,
           ),
@@ -811,11 +816,15 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
       await this.getActiveAcknowledgedPlanogramVersion(id);
     return {
       ...toAdminMachineResponse(machine),
-      latestHeartbeatStatus: latestHeartbeat?.statusPayload ?? null,
+      latestHeartbeatStatus: toAdminMachineHeartbeatStatus(
+        latestHeartbeat?.statusPayload,
+      ),
       latestHeartbeatReportedAt: latestHeartbeat?.reportedAt
         ? toIso(latestHeartbeat.reportedAt)
         : null,
       latestEnvironment: latestHeartbeat?.statusPayload.environment ?? null,
+      reportedRuntimeConfiguration:
+        latestHeartbeat?.statusPayload.reportedRuntimeConfiguration ?? null,
       latestEnvironmentCommand,
       productionPilotReadiness: evaluateProductionPilotReadiness({
         machine,
@@ -2115,6 +2124,7 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
             : {}),
         },
       },
+      apiBaseUrl: this.config.machineApiBaseUrl,
       runtimeEndpoints: {
         apiBasePath: "/api",
         machineAuthTokenPath: "/api/machine-auth/token",

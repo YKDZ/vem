@@ -102,6 +102,12 @@ export class AppConfigService {
     return this.config.get("PAYMENT_WEBHOOK_BASE_URL", { infer: true });
   }
 
+  get machineApiBaseUrl(): string {
+    return this.config
+      .get("MACHINE_API_BASE_URL", { infer: true })
+      .replace(/\/+$/, "");
+  }
+
   get mediaAssetStorageRoot(): string {
     return this.config.get("MEDIA_ASSET_STORAGE_ROOT", { infer: true });
   }

@@ -4,6 +4,7 @@ import type {
   AdminMachineResponse,
   AdminMachineSlotResponse,
   MachineEnvironmentControlRequest,
+  MachineHeartbeatStatusPayload,
 } from "@vem/shared";
 import type {
   AdminCreateMachineRequest,
@@ -61,6 +62,7 @@ type MachineResponseExtras = {
   latestHeartbeatStatus?: AdminMachineResponse["latestHeartbeatStatus"];
   latestHeartbeatReportedAt?: Date | string | null;
   latestEnvironment?: AdminMachineResponse["latestEnvironment"];
+  reportedRuntimeConfiguration?: AdminMachineResponse["reportedRuntimeConfiguration"];
   latestEnvironmentCommand?: MachineCommandResponseRow | null;
   productionPilotReadiness?: AdminMachineResponse["productionPilotReadiness"];
 };
@@ -249,6 +251,9 @@ export function toAdminMachineResponse(
     ...(row.latestEnvironment === undefined
       ? {}
       : { latestEnvironment: row.latestEnvironment }),
+    ...(row.reportedRuntimeConfiguration === undefined
+      ? {}
+      : { reportedRuntimeConfiguration: row.reportedRuntimeConfiguration }),
     ...(row.latestEnvironmentCommand === undefined
       ? {}
       : {
@@ -261,6 +266,38 @@ export function toAdminMachineResponse(
       : { productionPilotReadiness: row.productionPilotReadiness }),
   } satisfies AdminMachineResponse;
   return response;
+}
+
+export function toAdminMachineHeartbeatStatus(
+  status: MachineHeartbeatStatusPayload | null | undefined,
+): AdminMachineResponse["latestHeartbeatStatus"] {
+  if (!status) return null;
+  return {
+    ...(status.appVersion === undefined
+      ? {}
+      : { appVersion: status.appVersion }),
+    ...(status.os === undefined ? {} : { os: status.os }),
+    ...(status.network === undefined ? {} : { network: status.network }),
+    ...(status.mqttConnected === undefined
+      ? {}
+      : { mqttConnected: status.mqttConnected }),
+    ...(status.hardwareStatus === undefined
+      ? {}
+      : { hardwareStatus: status.hardwareStatus }),
+    ...(status.wholeMachineMaintenanceLock === undefined
+      ? {}
+      : { wholeMachineMaintenanceLock: status.wholeMachineMaintenanceLock }),
+    ...(status.saleReadiness === undefined
+      ? {}
+      : { saleReadiness: status.saleReadiness }),
+    ...(status.doorOpen === undefined ? {} : { doorOpen: status.doorOpen }),
+    ...(status.localQueueSize === undefined
+      ? {}
+      : { localQueueSize: status.localQueueSize }),
+    ...(status.lastCommandNo === undefined
+      ? {}
+      : { lastCommandNo: status.lastCommandNo }),
+  };
 }
 
 export function toAdminMachineSlotResponse(

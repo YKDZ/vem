@@ -17,6 +17,7 @@ const baseValidEnv = {
   MQTT_URL: "mqtt://localhost:1883",
   PAYMENT_MOCK_ENABLED: "true",
   PAYMENT_WEBHOOK_BASE_URL: "http://localhost:3000/api/payments/webhooks",
+  MACHINE_API_BASE_URL: "http://localhost:3000/api",
   BOOTSTRAP_ADMIN_USERNAME: "admin",
   BOOTSTRAP_ADMIN_PASSWORD: "local-admin-password-12",
 };
@@ -103,6 +104,7 @@ describe("validateEnv", () => {
         ...baseValidEnv,
         NODE_ENV: "production",
         PAYMENT_MOCK_ENABLED: "true",
+        MACHINE_API_BASE_URL: "https://platform.example.com/api",
         PAYMENT_CONFIG_ENCRYPTION_KEY: productionPaymentConfigEncryptionKey,
         MQTT_USERNAME: "vem_service",
         MQTT_PASSWORD: "strong-password-for-mqtt",
@@ -116,6 +118,7 @@ describe("validateEnv", () => {
         ...baseValidEnv,
         NODE_ENV: "production",
         PAYMENT_MOCK_ENABLED: "false",
+        MACHINE_API_BASE_URL: "https://platform.example.com/api",
         PAYMENT_CONFIG_ENCRYPTION_KEY: productionPaymentConfigEncryptionKey,
         // no MQTT_USERNAME or MQTT_PASSWORD
       }),
@@ -129,6 +132,7 @@ describe("validateEnv", () => {
       PAYMENT_MOCK_ENABLED: "false",
       PAYMENT_PRODUCTION_READINESS_REQUIRED: "true",
       PAYMENT_WEBHOOK_BASE_URL: "https://pay.example.com",
+      MACHINE_API_BASE_URL: "https://platform.example.com/api",
       PAYMENT_CONFIG_ENCRYPTION_KEY: productionPaymentConfigEncryptionKey,
       MQTT_USERNAME: "vem_service",
       MQTT_PASSWORD: "strong-password-for-mqtt",
@@ -141,6 +145,24 @@ describe("validateEnv", () => {
     const { PAYMENT_MOCK_ENABLED: _, ...withoutMock } = baseValidEnv;
     const env = validateEnv(withoutMock);
     expect(env.PAYMENT_MOCK_ENABLED).toBe(false);
+  });
+
+  it("defaults Machine API base URL for local development", () => {
+    const { MACHINE_API_BASE_URL: _, ...withoutMachineApiBase } = baseValidEnv;
+    const env = validateEnv(withoutMachineApiBase);
+    expect(env.MACHINE_API_BASE_URL).toBe("http://localhost:3000/api");
+  });
+
+  it("keeps Machine API base URL independent from payment webhook base URL", () => {
+    const env = validateEnv({
+      ...baseValidEnv,
+      PAYMENT_WEBHOOK_BASE_URL: "https://pay.example.com/webhooks",
+      MACHINE_API_BASE_URL: "https://platform.example.com/api",
+    });
+    expect(env.PAYMENT_WEBHOOK_BASE_URL).toBe(
+      "https://pay.example.com/webhooks",
+    );
+    expect(env.MACHINE_API_BASE_URL).toBe("https://platform.example.com/api");
   });
 
   it("defaults the machine claim lookup HMAC key outside production", () => {
@@ -159,6 +181,7 @@ describe("validateEnv", () => {
         PAYMENT_MOCK_ENABLED: "false",
         PAYMENT_PRODUCTION_READINESS_REQUIRED: "true",
         PAYMENT_WEBHOOK_BASE_URL: "https://pay.example.com",
+        MACHINE_API_BASE_URL: "https://platform.example.com/api",
         PAYMENT_CONFIG_ENCRYPTION_KEY: productionPaymentConfigEncryptionKey,
         MQTT_USERNAME: "u",
         MQTT_PASSWORD: "p",
@@ -178,6 +201,7 @@ describe("validateEnv", () => {
         PAYMENT_MOCK_ENABLED: "false",
         PAYMENT_PRODUCTION_READINESS_REQUIRED: "true",
         PAYMENT_WEBHOOK_BASE_URL: "https://pay.example.com",
+        MACHINE_API_BASE_URL: "https://platform.example.com/api",
         MQTT_USERNAME: "u",
         MQTT_PASSWORD: "p",
         PAYMENT_CONFIG_ENCRYPTION_KEY:
@@ -211,6 +235,7 @@ describe("validateEnv", () => {
         PAYMENT_MOCK_ENABLED: "false",
         PAYMENT_PRODUCTION_READINESS_REQUIRED: "false",
         PAYMENT_WEBHOOK_BASE_URL: "https://pay.example.com",
+        MACHINE_API_BASE_URL: "https://platform.example.com/api",
         PAYMENT_CONFIG_ENCRYPTION_KEY: productionPaymentConfigEncryptionKey,
         MQTT_USERNAME: "u",
         MQTT_PASSWORD: "p",
@@ -228,6 +253,7 @@ describe("validateEnv", () => {
         PAYMENT_MOCK_ENABLED: "false",
         PAYMENT_PRODUCTION_READINESS_REQUIRED: "true",
         PAYMENT_WEBHOOK_BASE_URL: "http://pay.example.com",
+        MACHINE_API_BASE_URL: "https://platform.example.com/api",
         PAYMENT_CONFIG_ENCRYPTION_KEY: productionPaymentConfigEncryptionKey,
         MQTT_USERNAME: "u",
         MQTT_PASSWORD: "p",
@@ -242,6 +268,7 @@ describe("validateEnv", () => {
       PAYMENT_MOCK_ENABLED: "false",
       PAYMENT_PRODUCTION_READINESS_REQUIRED: "true",
       PAYMENT_WEBHOOK_BASE_URL: "https://pay.example.com",
+      MACHINE_API_BASE_URL: "https://platform.example.com/api",
       PAYMENT_CONFIG_ENCRYPTION_KEY: productionPaymentConfigEncryptionKey,
       MQTT_USERNAME: "u",
       MQTT_PASSWORD: "p",

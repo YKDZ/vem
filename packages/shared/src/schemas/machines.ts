@@ -245,6 +245,18 @@ export const machineEnvironmentHeartbeatPayloadSchema = z.object({
   ventSpeed: z.number().int().min(0).max(4).nullable().optional(),
 });
 
+export const machineReportedRuntimeConfigurationSchema = z.strictObject({
+  audioCues: z
+    .strictObject({
+      enabled: z.boolean().nullable(),
+      presenceEnabled: z.boolean().nullable(),
+      transactionEnabled: z.boolean().nullable(),
+    })
+    .nullable(),
+  audioVolume: z.number().int().min(0).max(100).nullable(),
+  visionRecommendationsEnabled: z.boolean().nullable(),
+});
+
 export const machineHeartbeatStatusPayloadSchema = z
   .object({
     appVersion: z.string().optional(),
@@ -279,8 +291,40 @@ export const machineHeartbeatStatusPayloadSchema = z
     localQueueSize: z.int().nonnegative().optional(),
     lastCommandNo: z.string().max(64).nullable().optional(),
     environment: machineEnvironmentHeartbeatPayloadSchema.optional(),
+    reportedRuntimeConfiguration:
+      machineReportedRuntimeConfigurationSchema.optional(),
   })
   .loose();
+
+export const adminMachineHeartbeatStatusPayloadSchema = z.strictObject({
+  appVersion: z.string().optional(),
+  os: z.string().optional(),
+  network: z.enum(["online", "degraded", "offline"]).optional(),
+  mqttConnected: z.boolean().optional(),
+  hardwareStatus: z.enum(["ok", "degraded", "faulted"]).optional(),
+  wholeMachineMaintenanceLock: z
+    .strictObject({
+      code: z.string(),
+      message: z.string(),
+      source: z.string(),
+      orderNo: z.string().optional(),
+      commandNo: z.string().optional(),
+      slotCode: z.string().optional(),
+      errorCode: z.string().nullable().optional(),
+      createdAt: z.iso.datetime().optional(),
+    })
+    .nullable()
+    .optional(),
+  saleReadiness: z
+    .strictObject({
+      state: z.enum(["locked", "blocked", "restored"]),
+      blockingCodes: z.array(z.string()).default([]),
+    })
+    .optional(),
+  doorOpen: z.boolean().optional(),
+  localQueueSize: z.int().nonnegative().optional(),
+  lastCommandNo: z.string().max(64).nullable().optional(),
+});
 
 export const heartbeatPayloadSchema = z.object({
   machineCode: z.string().min(1).max(64),
@@ -534,11 +578,14 @@ export const adminMachineResponseSchema = z.strictObject({
   lastSeenAt: z.iso.datetime().nullable(),
   createdAt: z.iso.datetime(),
   updatedAt: z.iso.datetime(),
-  latestHeartbeatStatus: machineHeartbeatStatusPayloadSchema
+  latestHeartbeatStatus: adminMachineHeartbeatStatusPayloadSchema
     .nullable()
     .optional(),
   latestHeartbeatReportedAt: z.iso.datetime().nullable().optional(),
   latestEnvironment: machineEnvironmentHeartbeatPayloadSchema
+    .nullable()
+    .optional(),
+  reportedRuntimeConfiguration: machineReportedRuntimeConfigurationSchema
     .nullable()
     .optional(),
   latestEnvironmentCommand: adminMachineCommandResponseSchema
@@ -566,6 +613,9 @@ export const adminMachineRemoteOpListResponseSchema = z.array(
 
 export type MachineHeartbeatStatusPayload = z.infer<
   typeof machineHeartbeatStatusPayloadSchema
+>;
+export type MachineReportedRuntimeConfiguration = z.infer<
+  typeof machineReportedRuntimeConfigurationSchema
 >;
 export type AdminCreateMachineRequest = z.infer<typeof createMachineSchema>;
 export type AdminUpdateMachineRequest = z.infer<typeof updateMachineSchema>;
@@ -937,6 +987,7 @@ export const machineProvisioningProfileSchema = z.strictObject({
       password: z.string().min(1).optional(),
     }),
   }),
+  apiBaseUrl: z.url(),
   runtimeEndpoints: z.strictObject({
     apiBasePath: z.literal("/api"),
     machineAuthTokenPath: z.literal("/api/machine-auth/token"),

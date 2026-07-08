@@ -56,6 +56,7 @@ const baseEnvSchema = z.object({
     }, z.boolean())
     .default(false),
   PAYMENT_WEBHOOK_BASE_URL: z.url(),
+  MACHINE_API_BASE_URL: z.url().default("http://localhost:3000/api"),
   MEDIA_ASSET_STORAGE_ROOT: z
     .string()
     .min(1)

@@ -383,6 +383,13 @@ describe("daemon schemas", () => {
 
     expect(parsed.public.stockMovementRetentionDays).toBe(90);
     expect(parsed.public.machineAudioVolume).toBe(0.35);
+    expect(parsed.public.audioCueSettings).toEqual({
+      enabled: false,
+      categories: {
+        presence: false,
+        transaction: false,
+      },
+    });
     expect(parsed.public).not.toHaveProperty("tryOnCameraDeviceId");
     expect(parsed.public).not.toHaveProperty("tryOnCameraLabel");
   });

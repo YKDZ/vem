@@ -410,6 +410,10 @@ describe("MachinesView environment controls", () => {
       expect.objectContaining({ locationLabel: "一层" }),
     );
     expect(updateMachine.mock.calls[0][1]).not.toHaveProperty("locationText");
+    expect(updateMachine.mock.calls[0][1]).not.toHaveProperty("code");
+    expect(dialog.querySelector<HTMLInputElement>("input")?.disabled).toBe(
+      true,
+    );
   });
 
   it("edits fixed geo location through the canonical geoLocation payload", async () => {

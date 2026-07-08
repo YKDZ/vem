@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   mapEnvironmentControlFormToContract,
+  mapMachineBasicsFormToUpdateContract,
   mapMachineFormToContract,
   mapSlotFormToContract,
 } from "./machine-contract-mappers";
@@ -42,6 +43,23 @@ describe("Machine Operations form contract mappers", () => {
         geoTimezone: "Asia/Shanghai",
       }),
     ).toMatchObject({ geoLocation: null });
+  });
+
+  it("maps machine detail basics update without editable machine code", () => {
+    expect(
+      mapMachineBasicsFormToUpdateContract({
+        name: " Lobby ",
+        locationLabel: " 位置 A ",
+        includeGeoLocation: false,
+        geoLatitude: null,
+        geoLongitude: null,
+        geoTimezone: "Asia/Shanghai",
+      }),
+    ).toEqual({
+      name: "Lobby",
+      locationLabel: "位置 A",
+      geoLocation: null,
+    });
   });
 
   it("maps environment control checkboxes into the shared command contract", () => {

@@ -41,6 +41,7 @@ import {
   environmentControlCommandPayloadSchema,
   environmentControlResultPayloadSchema,
   heartbeatPayloadSchema,
+  machineReportedRuntimeConfigurationSchema,
   machineEnvironmentControlRequestSchema,
   machineAuthTokenRequestSchema,
   machineClaimRequestSchema,
@@ -1304,6 +1305,27 @@ describe("shared API contract", () => {
     });
 
     expect(() =>
+      adminMachineResponseSchema.parse({
+        id: machineId,
+        code: "M001",
+        name: "Lobby",
+        locationLabel: null,
+        geoLocation: null,
+        status: "online",
+        mqttClientId: null,
+        lastSeenAt: now,
+        createdAt: now,
+        updatedAt: now,
+        latestHeartbeatStatus: {
+          network: "online",
+          mqttConnected: true,
+          hardwareStatus: "ok",
+          hardwarePortPath: "COM5",
+        },
+      }),
+    ).toThrow();
+
+    expect(() =>
       adminMachineSlotResponseSchema.parse({
         id: "550e8400-e29b-41d4-a716-446655440003",
         machineId,
@@ -1578,6 +1600,54 @@ describe("shared API contract", () => {
     ).toBe(true);
   });
 
+  it("accepts only safe machine-reported runtime configuration facts", () => {
+    const summary = machineReportedRuntimeConfigurationSchema.parse({
+      audioCues: {
+        enabled: true,
+        presenceEnabled: false,
+        transactionEnabled: true,
+      },
+      audioVolume: 72,
+      visionRecommendationsEnabled: false,
+    });
+
+    expect(summary).toEqual({
+      audioCues: {
+        enabled: true,
+        presenceEnabled: false,
+        transactionEnabled: true,
+      },
+      audioVolume: 72,
+      visionRecommendationsEnabled: false,
+    });
+    expect(() =>
+      machineReportedRuntimeConfigurationSchema.parse({
+        audioCues: {
+          enabled: true,
+          presenceEnabled: true,
+          transactionEnabled: true,
+        },
+        audioVolume: 40,
+        visionRecommendationsEnabled: true,
+        visionWsUrl: "ws://127.0.0.1:7892/ws",
+      }),
+    ).toThrow();
+    expect(() =>
+      machineReportedRuntimeConfigurationSchema.parse({
+        audioCues: {
+          enabled: true,
+          presenceEnabled: true,
+          transactionEnabled: true,
+        },
+        audioVolume: 40,
+        visionRecommendationsEnabled: true,
+        apiBaseUrl: "https://api.example.com",
+        mqttPassword: "secret",
+        serialPortPath: "COM5",
+      }),
+    ).toThrow();
+  });
+
   it("accepts whole-machine maintenance lock readiness status in heartbeat payload", () => {
     const result = heartbeatPayloadSchema.parse({
       machineCode: "M001",
@@ -1809,6 +1879,7 @@ describe("shared API contract", () => {
           password: "mqtt-password",
         },
       },
+      apiBaseUrl: "http://127.0.0.1:3000/api",
       runtimeEndpoints: {
         apiBasePath: "/api",
         machineAuthTokenPath: "/api/machine-auth/token",

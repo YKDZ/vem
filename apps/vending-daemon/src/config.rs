@@ -26,22 +26,44 @@ pub enum ScannerAdapterKind {
     SerialText,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct AudioCueCategorySettings {
-    #[serde(default)]
+    #[serde(default = "default_audio_cue_enabled")]
     pub presence: bool,
-    #[serde(default)]
+    #[serde(default = "default_audio_cue_enabled")]
     pub transaction: bool,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+impl Default for AudioCueCategorySettings {
+    fn default() -> Self {
+        Self {
+            presence: default_audio_cue_enabled(),
+            transaction: default_audio_cue_enabled(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct AudioCueSettings {
-    #[serde(default)]
+    #[serde(default = "default_audio_cue_enabled")]
     pub enabled: bool,
     #[serde(default)]
     pub categories: AudioCueCategorySettings,
+}
+
+impl Default for AudioCueSettings {
+    fn default() -> Self {
+        Self {
+            enabled: default_audio_cue_enabled(),
+            categories: AudioCueCategorySettings::default(),
+        }
+    }
+}
+
+fn default_audio_cue_enabled() -> bool {
+    false
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -119,6 +141,7 @@ pub struct MachineConfigUpdateRequest {
 pub struct MachineProvisioningProfile {
     pub machine: ProvisioningMachine,
     pub credentials: ProvisioningCredentials,
+    pub api_base_url: String,
     pub runtime_endpoints: ProvisioningRuntimeEndpoints,
     pub hardware_profile: ProductionMachineHardwareProfile,
     pub hardware_slot_topology: HardwareSlotTopologyIdentity,
@@ -278,7 +301,7 @@ pub struct FactoryRuntimeManifest {
     pub hardware_slot_topology: HardwareSlotTopologyIdentity,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 #[serde(rename_all = "camelCase")]
 pub struct LocalBringUpSettings {
@@ -288,6 +311,38 @@ pub struct LocalBringUpSettings {
     pub provisioning_endpoint_override: Option<String>,
     #[serde(default)]
     pub network_profile: Option<String>,
+    #[serde(default)]
+    pub hardware_adapter: Option<HardwareAdapterKind>,
+    #[serde(default)]
+    pub serial_port_path: Option<String>,
+    #[serde(default)]
+    pub lower_controller_usb_identity: Option<SerialPortUsbIdentity>,
+    #[serde(default)]
+    pub scanner_adapter: Option<ScannerAdapterKind>,
+    #[serde(default)]
+    pub scanner_serial_port_path: Option<String>,
+    #[serde(default)]
+    pub scanner_usb_identity: Option<SerialPortUsbIdentity>,
+    #[serde(default)]
+    pub scanner_baud_rate: Option<u32>,
+    #[serde(default)]
+    pub scanner_frame_suffix: Option<vending_core::scanner::ScannerFrameSuffix>,
+    #[serde(default)]
+    pub vision_enabled: Option<bool>,
+    #[serde(default)]
+    pub vision_ws_url: Option<String>,
+    #[serde(default)]
+    pub vision_request_timeout_ms: Option<u64>,
+    #[serde(default)]
+    pub machine_audio_volume: Option<f64>,
+    #[serde(default)]
+    pub try_on_camera_device_id: Option<String>,
+    #[serde(default)]
+    pub audio_cue_settings: Option<AudioCueSettings>,
+    #[serde(default)]
+    pub kiosk_mode: Option<bool>,
+    #[serde(default)]
+    pub stock_movement_retention_days: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -331,7 +386,6 @@ pub struct RuntimeConfigurationState {
     pub factory_manifest: bool,
     pub local_bring_up_settings: bool,
     pub provisioning_profile_cache: bool,
-    pub machine_config_bridge: bool,
     pub machine_secret_configured: bool,
     pub mqtt_signing_secret_configured: bool,
     pub mqtt_password_configured: bool,
@@ -346,7 +400,6 @@ pub struct RuntimeConfigurationSummary {
     pub local_bring_up_settings: Option<LocalBringUpSettings>,
     pub provisioning_profile_cache: Option<ProvisioningProfileCacheSummary>,
     pub effective_public: MachinePublicConfig,
-    pub machine_config_bridge: MachinePublicRuntimeConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -359,6 +412,36 @@ pub struct MachineRuntimeConfig {
     pub machine_secret: Option<String>,
     pub mqtt_signing_secret: Option<String>,
     pub mqtt_password: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MachineReportedRuntimeConfiguration {
+    pub audio_cues: MachineReportedAudioCueConfiguration,
+    pub audio_volume: u8,
+    pub vision_recommendations_enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MachineReportedAudioCueConfiguration {
+    pub enabled: bool,
+    pub presence_enabled: bool,
+    pub transaction_enabled: bool,
+}
+
+pub fn project_reported_runtime_configuration(
+    public: &MachinePublicConfig,
+) -> MachineReportedRuntimeConfiguration {
+    MachineReportedRuntimeConfiguration {
+        audio_cues: MachineReportedAudioCueConfiguration {
+            enabled: public.audio_cue_settings.enabled,
+            presence_enabled: public.audio_cue_settings.categories.presence,
+            transaction_enabled: public.audio_cue_settings.categories.transaction,
+        },
+        audio_volume: (public.machine_audio_volume.clamp(0.0, 1.0) * 100.0).round() as u8,
+        vision_recommendations_enabled: public.vision_enabled,
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -606,6 +689,63 @@ fn normalize_local_bring_up_settings(
     Ok(settings)
 }
 
+fn apply_local_bring_up_settings_to_public(
+    public: &mut MachinePublicConfig,
+    settings: &LocalBringUpSettings,
+) {
+    if let Some(endpoint) = settings.provisioning_endpoint_override.as_ref() {
+        public.api_base_url = endpoint.clone();
+    }
+    if let Some(value) = settings.hardware_adapter.clone() {
+        public.hardware_adapter = value;
+    }
+    if settings.serial_port_path.is_some() {
+        public.serial_port_path = settings.serial_port_path.clone();
+    }
+    if settings.lower_controller_usb_identity.is_some() {
+        public.lower_controller_usb_identity = settings.lower_controller_usb_identity.clone();
+    }
+    if let Some(value) = settings.scanner_adapter.clone() {
+        public.scanner_adapter = value;
+    }
+    if settings.scanner_serial_port_path.is_some() {
+        public.scanner_serial_port_path = settings.scanner_serial_port_path.clone();
+    }
+    if settings.scanner_usb_identity.is_some() {
+        public.scanner_usb_identity = settings.scanner_usb_identity.clone();
+    }
+    if let Some(value) = settings.scanner_baud_rate {
+        public.scanner_baud_rate = value;
+    }
+    if let Some(value) = settings.scanner_frame_suffix {
+        public.scanner_frame_suffix = value;
+    }
+    if let Some(value) = settings.vision_enabled {
+        public.vision_enabled = value;
+    }
+    if let Some(value) = settings.vision_ws_url.as_ref() {
+        public.vision_ws_url = value.clone();
+    }
+    if let Some(value) = settings.vision_request_timeout_ms {
+        public.vision_request_timeout_ms = value;
+    }
+    if let Some(value) = settings.machine_audio_volume {
+        public.machine_audio_volume = value;
+    }
+    if settings.try_on_camera_device_id.is_some() {
+        public.try_on_camera_device_id = settings.try_on_camera_device_id.clone();
+    }
+    if let Some(value) = settings.audio_cue_settings.clone() {
+        public.audio_cue_settings = value;
+    }
+    if let Some(value) = settings.kiosk_mode {
+        public.kiosk_mode = value;
+    }
+    if let Some(value) = settings.stock_movement_retention_days {
+        public.stock_movement_retention_days = value;
+    }
+}
+
 fn normalize_provisioning_profile_cache_summary(
     mut summary: ProvisioningProfileCacheSummary,
 ) -> Result<ProvisioningProfileCacheSummary, String> {
@@ -784,16 +924,16 @@ pub fn normalize_public_config(
     let vision_ws_url = config.vision_ws_url.trim().to_string();
     config.try_on_camera_device_id = None;
 
-    if config.audio_cue_settings == AudioCueSettings::default()
-        && config.presence_audio_enabled == Some(true)
-    {
-        config.audio_cue_settings = AudioCueSettings {
-            enabled: true,
-            categories: AudioCueCategorySettings {
-                presence: true,
-                transaction: false,
-            },
-        };
+    if let Some(presence_audio_enabled) = config.presence_audio_enabled {
+        if config.audio_cue_settings == AudioCueSettings::default() {
+            config.audio_cue_settings = AudioCueSettings {
+                enabled: presence_audio_enabled,
+                categories: AudioCueCategorySettings {
+                    presence: presence_audio_enabled,
+                    transaction: false,
+                },
+            };
+        }
     }
     config.presence_audio_enabled = None;
 
@@ -986,6 +1126,8 @@ impl ConfigStore {
         if profile.credentials.mqtt_signing_secret.trim().len() > 256 {
             return Err("mqtt signing credential missing from provisioning profile".to_string());
         }
+        normalize_http_endpoint(profile.api_base_url.clone(), "apiBaseUrl")
+            .map_err(|_| "apiBaseUrl invalid".to_string())?;
         if profile.credentials.mqtt_connection.url.trim().is_empty() {
             return Err("mqtt connection url missing from provisioning profile".to_string());
         }
@@ -1176,9 +1318,7 @@ impl ConfigStore {
             public.api_base_url = manifest.provisioning_endpoint.clone();
         }
         if let Some(settings) = local_bring_up_settings {
-            if let Some(endpoint) = settings.provisioning_endpoint_override.as_ref() {
-                public.api_base_url = endpoint.clone();
-            }
+            apply_local_bring_up_settings_to_public(&mut public, settings);
         }
         if let Some(profile) = provisioning_profile_cache {
             public.machine_id = Some(profile.machine_id.clone());
@@ -1209,12 +1349,11 @@ impl ConfigStore {
         ),
         String,
     > {
-        let bridge_public = self.load_public_config().await?;
         let factory_manifest = self.load_factory_manifest().await?;
         let local_bring_up_settings = self.load_local_bring_up_settings().await?;
         let provisioning_profile_cache = self.load_provisioning_profile_cache_summary().await?;
         let effective_public = Self::apply_layered_public_config(
-            bridge_public.clone(),
+            default_public_config(),
             factory_manifest.as_ref(),
             local_bring_up_settings.as_ref(),
             provisioning_profile_cache.as_ref(),
@@ -1295,9 +1434,40 @@ impl ConfigStore {
         config: MachinePublicConfig,
     ) -> Result<MachinePublicRuntimeConfig, String> {
         let normalized = normalize_public_config(config)?;
+        self.write_local_runtime_settings_from_public_config(&normalized)
+            .await?;
         self.write_public_config_file(&normalized).await?;
         self.persist_snapshot(&normalized).await?;
         self.public_runtime_config(normalized).await
+    }
+
+    async fn write_local_runtime_settings_from_public_config(
+        &self,
+        public: &MachinePublicConfig,
+    ) -> Result<(), String> {
+        let mut settings = self
+            .load_local_bring_up_settings()
+            .await?
+            .unwrap_or_default();
+        settings.provisioning_endpoint_override =
+            normalize_optional_string(Some(public.api_base_url.clone()));
+        settings.hardware_adapter = Some(public.hardware_adapter.clone());
+        settings.serial_port_path = public.serial_port_path.clone();
+        settings.lower_controller_usb_identity = public.lower_controller_usb_identity.clone();
+        settings.scanner_adapter = Some(public.scanner_adapter.clone());
+        settings.scanner_serial_port_path = public.scanner_serial_port_path.clone();
+        settings.scanner_usb_identity = public.scanner_usb_identity.clone();
+        settings.scanner_baud_rate = Some(public.scanner_baud_rate);
+        settings.scanner_frame_suffix = Some(public.scanner_frame_suffix);
+        settings.vision_enabled = Some(public.vision_enabled);
+        settings.vision_ws_url = Some(public.vision_ws_url.clone());
+        settings.vision_request_timeout_ms = Some(public.vision_request_timeout_ms);
+        settings.machine_audio_volume = Some(public.machine_audio_volume);
+        settings.try_on_camera_device_id = public.try_on_camera_device_id.clone();
+        settings.audio_cue_settings = Some(public.audio_cue_settings.clone());
+        settings.kiosk_mode = Some(public.kiosk_mode);
+        settings.stock_movement_retention_days = Some(public.stock_movement_retention_days);
+        self.write_local_bring_up_settings(&settings).await
     }
 
     async fn write_public_config_file(&self, public: &MachinePublicConfig) -> Result<(), String> {
@@ -1344,6 +1514,15 @@ impl ConfigStore {
             .unwrap_or_default();
         settings.network_profile = normalize_optional_string(Some(network_profile.into()));
         let settings = normalize_local_bring_up_settings(settings)?;
+        self.write_local_bring_up_settings(&settings).await?;
+        Ok(settings)
+    }
+
+    async fn write_local_bring_up_settings(
+        &self,
+        settings: &LocalBringUpSettings,
+    ) -> Result<(), String> {
+        let settings = normalize_local_bring_up_settings(settings.clone())?;
         let path = self.local_bring_up_settings_path();
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)
@@ -1354,8 +1533,7 @@ impl ConfigStore {
             .map_err(|error| format!("serialize local bring-up settings failed: {error}"))?;
         fs::write(path, payload)
             .await
-            .map_err(|error| format!("write local bring-up settings failed: {error}"))?;
-        Ok(settings)
+            .map_err(|error| format!("write local bring-up settings failed: {error}"))
     }
 
     async fn public_runtime_config(
@@ -1430,7 +1608,15 @@ impl ConfigStore {
         profile: MachineProvisioningProfile,
     ) -> Result<MachinePublicRuntimeConfig, String> {
         Self::validate_provisioning_profile(&profile)?;
-        let mut public = self.load_effective_public_config().await?;
+        let factory_manifest = self.load_factory_manifest().await?;
+        let local_bring_up_settings = self.load_local_bring_up_settings().await?;
+        let mut public = default_public_config();
+        if let Some(manifest) = factory_manifest.as_ref() {
+            public.api_base_url = manifest.provisioning_endpoint.clone();
+        }
+        if let Some(settings) = local_bring_up_settings.as_ref() {
+            apply_local_bring_up_settings_to_public(&mut public, settings);
+        }
 
         self.secrets
             .clear_all()
@@ -1442,6 +1628,7 @@ impl ConfigStore {
         public.machine_name = Some(profile.machine.name.clone());
         public.machine_status = Some(profile.machine.status.clone());
         public.machine_location_label = profile.machine.location_label.clone();
+        public.api_base_url = profile.api_base_url.clone();
         public.mqtt_url = profile.credentials.mqtt_connection.url.clone();
         public.mqtt_username = profile.credentials.mqtt_connection.username.clone();
         public.mqtt_client_id = Some(profile.credentials.mqtt_connection.client_id.clone());
@@ -1462,7 +1649,7 @@ impl ConfigStore {
             machine_status: profile.machine.status.clone(),
             machine_location_label: profile.machine.location_label.clone(),
             claimed_at: profile.metadata.claimed_at.clone(),
-            api_base_url: public.api_base_url.clone(),
+            api_base_url: profile.api_base_url.clone(),
             mqtt_url: profile.credentials.mqtt_connection.url.clone(),
             mqtt_client_id: profile.credentials.mqtt_connection.client_id.clone(),
             mqtt_username: profile.credentials.mqtt_connection.username.clone(),
@@ -1579,33 +1766,21 @@ impl ConfigStore {
     pub async fn load_runtime_configuration_summary(
         &self,
     ) -> Result<RuntimeConfigurationSummary, String> {
-        let had_machine_config_bridge = daemon_config_path(&self.data_dir).exists();
-        let bridge_public = self.load_public_config().await?;
         let factory_manifest = self.load_factory_manifest().await?;
         let local_bring_up_settings = self.load_local_bring_up_settings().await?;
         let provisioning_profile_cache = self.load_provisioning_profile_cache_summary().await?;
         let effective_public = Self::apply_layered_public_config(
-            bridge_public.clone(),
+            default_public_config(),
             factory_manifest.as_ref(),
             local_bring_up_settings.as_ref(),
             provisioning_profile_cache.as_ref(),
         )?;
         let secret_store = self.secrets.status().await?;
-        let bridge_runtime = MachinePublicRuntimeConfig {
-            public: bridge_public,
-            machine_secret_configured: secret_store.machine_secret_configured,
-            mqtt_signing_secret_configured: secret_store.mqtt_signing_secret_configured,
-            mqtt_password_configured: secret_store.mqtt_password_configured,
-            provisioned: false,
-            provisioning_issues: Vec::new(),
-        }
-        .with_provisioning_state();
         Ok(RuntimeConfigurationSummary {
             configured_state: RuntimeConfigurationState {
                 factory_manifest: factory_manifest.is_some(),
                 local_bring_up_settings: local_bring_up_settings.is_some(),
                 provisioning_profile_cache: provisioning_profile_cache.is_some(),
-                machine_config_bridge: had_machine_config_bridge,
                 machine_secret_configured: secret_store.machine_secret_configured,
                 mqtt_signing_secret_configured: secret_store.mqtt_signing_secret_configured,
                 mqtt_password_configured: secret_store.mqtt_password_configured,
@@ -1615,7 +1790,6 @@ impl ConfigStore {
             local_bring_up_settings,
             provisioning_profile_cache,
             effective_public,
-            machine_config_bridge: bridge_runtime,
         })
     }
 
@@ -1777,6 +1951,7 @@ mod tests {
                     password: Some("mqtt-password".to_string()),
                 },
             },
+            api_base_url: "http://127.0.0.1:3000/api".to_string(),
             runtime_endpoints: ProvisioningRuntimeEndpoints {
                 api_base_path: "/api".to_string(),
                 machine_auth_token_path: "/api/machine-auth/token".to_string(),
@@ -1993,6 +2168,22 @@ mod tests {
         assert!(serialized.get("presenceAudioEnabled").is_none());
     }
 
+    #[test]
+    fn default_public_config_keeps_audio_cues_opt_in() {
+        let config = default_public_config();
+
+        assert_eq!(
+            config.audio_cue_settings,
+            AudioCueSettings {
+                enabled: false,
+                categories: AudioCueCategorySettings {
+                    presence: false,
+                    transaction: false,
+                },
+            }
+        );
+    }
+
     #[tokio::test]
     async fn normalize_public_config_preserves_custom_stock_movement_retention_days() {
         let config = MachinePublicConfig {
@@ -2134,7 +2325,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn saved_config_api_base_url_overrides_installer_default() {
+    async fn saved_config_api_base_url_updates_local_bring_up_override() {
         let _env_lock = with_env_lock().await;
         let _default_api = set_env_var(
             "VEM_DEFAULT_API_BASE_URL",
@@ -2168,7 +2359,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn layered_runtime_summary_reads_owned_layers_and_uses_machine_config_only_as_bridge() {
+    async fn layered_runtime_summary_reads_owned_layers_and_excludes_machine_config_bridge() {
         let temp = TempDir::new().expect("temp");
         let root = temp.path();
         let data_dir = root.join("vending-daemon");
@@ -2296,7 +2487,6 @@ mod tests {
         assert!(summary.configured_state.factory_manifest);
         assert!(summary.configured_state.local_bring_up_settings);
         assert!(summary.configured_state.provisioning_profile_cache);
-        assert!(summary.configured_state.machine_config_bridge);
         assert_eq!(
             summary
                 .factory_manifest
@@ -2331,13 +2521,11 @@ mod tests {
             summary.effective_public.machine_code.as_deref(),
             Some("M001")
         );
-        assert_eq!(
-            summary.machine_config_bridge.public.machine_code.as_deref(),
-            Some("LEGACY-MACHINE")
-        );
 
         let serialized = serde_json::to_string(&summary).expect("serialize summary");
         assert!(!serialized.contains("SECRET"));
+        assert!(!serialized.contains("machineConfigBridge"));
+        assert!(!serialized.contains("LEGACY-MACHINE"));
     }
 
     #[tokio::test]
@@ -2357,7 +2545,6 @@ mod tests {
         assert!(!summary.configured_state.factory_manifest);
         assert!(!summary.configured_state.local_bring_up_settings);
         assert!(!summary.configured_state.provisioning_profile_cache);
-        assert!(!summary.configured_state.machine_config_bridge);
         assert!(summary.factory_manifest.is_none());
         assert!(summary.local_bring_up_settings.is_none());
         assert!(summary.provisioning_profile_cache.is_none());
@@ -2438,7 +2625,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn load_runtime_config_uses_layered_authority_over_machine_config_bridge() {
+    async fn load_runtime_config_uses_only_owned_layers_even_when_machine_config_bridge_exists() {
         let temp = TempDir::new().expect("temp");
         let root = temp.path();
         let data_dir = root.join("vending-daemon");
@@ -2551,6 +2738,37 @@ mod tests {
         );
         assert_eq!(runtime.public.mqtt_url, "mqtt://broker.example:1883");
         assert_eq!(runtime.public.mqtt_client_id.as_deref(), Some("vem-M001"));
+    }
+
+    #[test]
+    fn reported_runtime_configuration_projects_only_safe_machine_owned_facts() {
+        let public = MachinePublicConfig {
+            machine_audio_volume: 0.72,
+            vision_enabled: false,
+            vision_ws_url: "ws://127.0.0.1:7892/ws".to_string(),
+            serial_port_path: Some("COM5".to_string()),
+            audio_cue_settings: AudioCueSettings {
+                enabled: true,
+                categories: AudioCueCategorySettings {
+                    presence: false,
+                    transaction: true,
+                },
+            },
+            ..default_public_config()
+        };
+
+        let summary = project_reported_runtime_configuration(&public);
+
+        assert!(summary.audio_cues.enabled);
+        assert!(!summary.audio_cues.presence_enabled);
+        assert!(summary.audio_cues.transaction_enabled);
+        assert_eq!(summary.audio_volume, 72);
+        assert!(!summary.vision_recommendations_enabled);
+        let serialized = serde_json::to_string(&summary).expect("serialize");
+        assert!(!serialized.contains("visionWsUrl"));
+        assert!(!serialized.contains("serialPortPath"));
+        assert!(!serialized.contains("apiBaseUrl"));
+        assert!(!serialized.contains("mqtt"));
     }
 
     #[tokio::test]
@@ -3313,6 +3531,7 @@ mod tests {
                     "clientId": "vem-machine-VEM-TESTBED-WINVM-01"
                 }
             },
+            "apiBaseUrl": "http://127.0.0.1:3000/api",
             "runtimeEndpoints": {
                 "apiBasePath": "/api",
                 "machineAuthTokenPath": "/api/machine-auth/token",

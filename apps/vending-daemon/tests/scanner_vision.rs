@@ -60,6 +60,10 @@ fn production_scanner_config(
         "paymentCodeEnabled": true,
         "serverTime": "2026-06-08T16:30:00.000Z"
     });
+    config["hardwareSlotTopology"] = json!({
+        "identity": "vem-test-24",
+        "version": "2026-07-test"
+    });
     config
 }
 
@@ -603,7 +607,13 @@ async fn prepare_local_sale_view(daemon: &DaemonHarness) {
         .send()
         .await
         .expect("planogram request");
-    assert_eq!(planogram.status(), reqwest::StatusCode::OK);
+    let planogram_status = planogram.status();
+    let planogram_body = planogram.text().await.expect("planogram response body");
+    assert_eq!(
+        planogram_status,
+        reqwest::StatusCode::OK,
+        "planogram response: {planogram_body}"
+    );
 
     let attestation = client
         .post(format!("{base}/v1/stock/attestation"))

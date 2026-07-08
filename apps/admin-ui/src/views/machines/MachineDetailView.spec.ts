@@ -12,6 +12,8 @@ import MachineDetailView from "./MachineDetailView.vue";
 
 const apiMocks = vi.hoisted(() => ({
   getMachine: vi.fn(),
+  getExternalNaturalEnvironment: vi.fn(),
+  updateMachine: vi.fn(),
   listMachineSlots: vi.fn(),
   commandEnvironment: vi.fn(),
   listInventories: vi.fn(),
@@ -40,6 +42,8 @@ vi.mock("@/api/machines", async () => {
   return {
     ...actual,
     getMachine: apiMocks.getMachine,
+    getExternalNaturalEnvironment: apiMocks.getExternalNaturalEnvironment,
+    updateMachine: apiMocks.updateMachine,
     listMachineSlots: apiMocks.listMachineSlots,
     commandEnvironment: apiMocks.commandEnvironment,
   };
@@ -244,6 +248,7 @@ function installStubs(app: ReturnType<typeof createApp>): void {
     "a-descriptions-item",
     "a-form",
     "a-form-item",
+    "a-alert",
     "a-tag",
   ]) {
     app.component(name, PassthroughStub);
@@ -255,6 +260,7 @@ function installStubs(app: ReturnType<typeof createApp>): void {
   app.component("a-switch", SwitchStub);
   app.component("a-input-number", InputNumberStub);
   app.component("a-modal", ModalStub);
+  app.component("a-drawer", ModalStub);
 }
 
 async function flushPromises(): Promise<void> {
@@ -337,6 +343,53 @@ function machineFixture() {
       type: "environment-control",
       status: "acknowledged",
     },
+    reportedRuntimeConfiguration: {
+      audioCues: {
+        enabled: true,
+        presenceEnabled: false,
+        transactionEnabled: true,
+      },
+      audioVolume: 72,
+      visionRecommendationsEnabled: false,
+    },
+  };
+}
+
+function externalNaturalEnvironmentFixture() {
+  return {
+    machineId: "11111111-1111-4111-8111-111111111111",
+    machineCode: "M001",
+    status: "ready",
+    checkedAt: "2026-07-08T10:00:00.000Z",
+    localTime: {
+      status: "ready",
+      timezone: "Asia/Shanghai",
+      localDate: "2026-07-08",
+      localClock: "18:00:00",
+    },
+    weather: {
+      status: "ready",
+      temperatureCelsius: 31,
+      conditionText: "多云",
+      conditionCode: "101",
+      observedAt: "2026-07-08T09:55:00.000Z",
+      windScale: 3,
+      windSpeedKph: 18,
+      weatherConditionClasses: ["other"],
+      primaryWeatherConditionClass: "other",
+    },
+    sun: {
+      status: "ready",
+      sunriseAt: "2026-07-07T21:01:00.000Z",
+      sunsetAt: "2026-07-08T11:01:00.000Z",
+    },
+    calendar: {
+      status: "ready",
+      localDate: "2026-07-08",
+      festivals: [],
+      primaryFestival: null,
+      solarTerm: "minor_heat",
+    },
   };
 }
 
@@ -344,6 +397,9 @@ describe("MachineDetailView", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     apiMocks.getMachine.mockResolvedValue(machineFixture());
+    apiMocks.getExternalNaturalEnvironment.mockResolvedValue(
+      externalNaturalEnvironmentFixture(),
+    );
     apiMocks.listMachineSlots.mockResolvedValue([
       {
         id: "22222222-2222-4222-8222-222222222222",
@@ -389,6 +445,7 @@ describe("MachineDetailView", () => {
       commandNo: "MCMD2",
       status: "sent",
     });
+    apiMocks.updateMachine.mockResolvedValue({});
     apiMocks.refillInventory.mockResolvedValue({});
   });
 
@@ -402,17 +459,27 @@ describe("MachineDetailView", () => {
     expect(apiMocks.getMachine).toHaveBeenCalledWith(
       "11111111-1111-4111-8111-111111111111",
     );
+    expect(apiMocks.getExternalNaturalEnvironment).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+    );
     expect(apiMocks.listInventories).toHaveBeenCalledWith({
       machineId: "11111111-1111-4111-8111-111111111111",
       page: 1,
       pageSize: 100,
     });
     expect(root.textContent).toContain("M001");
-    expect(root.textContent).toContain("Machine Geo Location");
+    expect(root.textContent).toContain("固定地理坐标");
     expect(root.textContent).toContain("31.2304, 121.4737");
     expect(root.textContent).toContain("Asia/Shanghai");
     expect(root.textContent).toContain("23 C");
     expect(root.textContent).toContain("空调关");
+    expect(root.textContent).toContain("已就绪");
+    expect(root.textContent).toContain("2026-07-08 18:00:00 · Asia/Shanghai");
+    expect(root.textContent).toContain("31 C");
+    expect(root.textContent).toContain("多云");
+    expect(root.textContent).toContain("普通天气");
+    expect(root.textContent).not.toContain("主要节日");
+    expect(root.textContent).not.toContain("节气");
     expect(root.textContent).toContain("测试衬衫");
     expect(root.textContent).toContain("库存预警");
 
@@ -454,6 +521,111 @@ describe("MachineDetailView", () => {
       quantity: 6,
       note: undefined,
     });
+  });
+
+  it("edits the machine from the detail header", async () => {
+    const { root } = await mountView([
+      "machines.read",
+      "machines.write",
+      "machines.command",
+    ]);
+
+    Array.from(root.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("编辑"))
+      ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await nextTick();
+
+    const dialog = root.querySelector('[role="dialog"]');
+    expect(dialog?.textContent).toContain("编辑机器");
+    const inputs = Array.from(
+      dialog?.querySelectorAll<HTMLInputElement>("input") ?? [],
+    );
+    const nameInput = inputs.find((input) => input.value === "前厅机器");
+    expect(nameInput).toBeDefined();
+    nameInput!.value = "前厅机器 A";
+    nameInput!.dispatchEvent(new Event("input", { bubbles: true }));
+
+    Array.from(dialog?.querySelectorAll("button") ?? [])
+      .find((button) => button.textContent?.includes("保存"))
+      ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await flushPromises();
+
+    expect(apiMocks.updateMachine).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      {
+        name: "前厅机器 A",
+        locationLabel: "一层",
+        geoLocation: {
+          latitude: 31.2304,
+          longitude: 121.4737,
+          timezone: "Asia/Shanghai",
+        },
+      },
+    );
+  });
+
+  it("renders a machine configuration card with read-only machine-reported runtime facts", async () => {
+    apiMocks.getMachine.mockResolvedValue({
+      ...machineFixture(),
+      latestHeartbeatStatus: {
+        ...machineFixture().latestHeartbeatStatus,
+        visionWsUrl: "ws://127.0.0.1:7892/ws",
+        cameraDeviceId: "Integrated Camera",
+        serialPortPath: "COM5",
+        lowerControllerUsbIdentity: "USB\\VID_1234",
+        apiBaseUrl: "https://api.example.com",
+        mqttUrl: "mqtt://broker.example:1883",
+        mqttPassword: "secret",
+      },
+    });
+
+    const { root } = await mountView([
+      "machines.read",
+      "machines.write",
+      "machines.command",
+    ]);
+
+    expect(root.textContent).toContain("机器配置");
+    expect(root.textContent).toContain("基础信息");
+    expect(root.textContent).toContain("机器上报配置");
+    expect(root.textContent).toContain("机器编码");
+    expect(root.textContent).toContain("M001");
+    expect(root.textContent).toContain("机器名称");
+    expect(root.textContent).toContain("前厅机器");
+    expect(root.textContent).toContain("位置标签");
+    expect(root.textContent).toContain("一层");
+    expect(root.textContent).toContain("固定地理坐标");
+    expect(root.textContent).toContain("31.2304, 121.4737");
+    expect(root.textContent).toContain("音频总开关");
+    expect(root.textContent).toContain("已开启");
+    expect(root.textContent).toContain("到店音频");
+    expect(root.textContent).toContain("已关闭");
+    expect(root.textContent).toContain("交易音频");
+    expect(root.textContent).toContain("音量");
+    expect(root.textContent).toContain("72%");
+    expect(root.textContent).toContain("视觉推荐");
+    expect(root.textContent).not.toContain("ws://127.0.0.1:7892/ws");
+    expect(root.textContent).not.toContain("Integrated Camera");
+    expect(root.textContent).not.toContain("COM5");
+    expect(root.textContent).not.toContain("USB\\VID_1234");
+    expect(root.textContent).not.toContain("https://api.example.com");
+    expect(root.textContent).not.toContain("mqtt://broker.example:1883");
+    expect(root.textContent).not.toContain("secret");
+
+    Array.from(root.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("编辑"))
+      ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await nextTick();
+
+    const dialog = root.querySelector('[role="dialog"]');
+    expect(dialog?.textContent).toContain("编辑机器");
+    expect(dialog?.textContent).toContain("名称");
+    expect(dialog?.textContent).toContain("位置标签");
+    expect(dialog?.textContent).toContain("IANA 时区");
+    expect(dialog?.textContent).not.toContain("编码");
+    expect(dialog?.textContent).not.toContain("音频");
+    expect(dialog?.textContent).not.toContain("音量");
+    expect(dialog?.textContent).not.toContain("视觉推荐");
   });
 
   it("renders faulted hardware status as an abnormal hardware tag", async () => {
@@ -602,9 +774,23 @@ describe("MachineDetailView", () => {
         ],
       },
     });
+    apiMocks.getExternalNaturalEnvironment.mockResolvedValue({
+      machineId: "11111111-1111-4111-8111-111111111111",
+      machineCode: "M001",
+      status: "unconfigured",
+      checkedAt: "2026-06-30T14:00:00.000Z",
+      diagnostic: {
+        reason: "machine_geo_location_missing",
+        message: "Machine Geo Location is missing",
+      },
+    });
 
     const { root } = await mountView();
 
+    expect(root.textContent).toContain("未配置");
+    expect(root.textContent).toContain(
+      "machine_geo_location_missing: 机器未配置地理坐标",
+    );
     expect(root.textContent).toContain("生产试运营诊断门禁");
     expect(root.textContent).toContain("生产试运营降级");
     expect(root.textContent).toContain("降级 1");

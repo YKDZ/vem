@@ -3804,6 +3804,11 @@ mod tests {
             .save_public_config(public.clone())
             .await
             .expect("save public config");
+        if public.machine_code.as_deref() == Some("MACHINE-1") {
+            write_platform_profile_cache_for_store(&config_store, None)
+                .await
+                .expect("write default profile cache");
+        }
         let public = config_store
             .load_public_config()
             .await
@@ -4083,6 +4088,7 @@ mod tests {
                 .await
                 .expect("save production config");
         }
+        ensure_platform_profile(ctx).await;
     }
 
     async fn ready_payment_options_server() -> MockServer {
@@ -4134,55 +4140,138 @@ mod tests {
         .expect("write factory manifest");
     }
 
-    async fn apply_platform_topology(ctx: &IpcContext, identity: &str, version: &str) {
-        let path = ctx.config_store.provisioning_profile_cache_summary_path();
+    async fn write_platform_profile_cache_for_store(
+        config_store: &ConfigStore,
+        topology: Option<(&str, &str)>,
+    ) -> Result<(), String> {
+        let api_base_url = config_store
+            .load_effective_public_config()
+            .await
+            .map(|config| config.api_base_url)
+            .unwrap_or_else(|_| "http://127.0.0.1:0/api".to_string());
+        let mut profile = json!({
+            "profileVersion": 1,
+            "machineId": "550e8400-e29b-41d4-a716-446655440000",
+            "machineCode": "MACHINE-1",
+            "machineName": "Lobby Machine",
+            "machineStatus": "online",
+            "claimedAt": "2026-06-08T16:30:00.000Z",
+            "apiBaseUrl": api_base_url,
+            "mqttUrl": "mqtt://broker.example:1883",
+            "mqttClientId": "vem-machine-MACHINE-1",
+            "runtimeEndpoints": {
+                "apiBasePath": "/api",
+                "machineAuthTokenPath": "/api/machine-auth/token",
+                "machineApiBasePath": "/api/machines/MACHINE-1",
+                "mqttTopicPrefix": "vem/machines/MACHINE-1"
+            },
+            "hardwareProfile": {
+                "profile": "production",
+                "controller": { "required": true, "protocol": "vem-vending-controller" },
+                "paymentScanner": { "required": true, "supportsPaymentCode": true },
+                "vision": { "required": false, "supportsRecommendations": true }
+            },
+            "paymentCapability": {
+                "profile": "production",
+                "qrCodeEnabled": true,
+                "paymentCodeEnabled": true,
+                "serverTime": "2026-06-08T16:30:00.000Z"
+            },
+            "provisioningMetadata": {
+                "profileVersion": 1,
+                "claimCodeId": "550e8400-e29b-41d4-a716-446655440111",
+                "claimedAt": "2026-06-08T16:30:00.000Z",
+                "serverTime": "2026-06-08T16:30:00.000Z"
+            }
+        });
+        if let Some((identity, version)) = topology {
+            profile["hardwareSlotTopology"] = json!({
+                "identity": identity,
+                "version": version
+            });
+        }
+        let path = config_store.provisioning_profile_cache_summary_path();
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent)
                 .await
-                .expect("profile cache dir");
+                .map_err(|error| format!("create profile cache dir failed: {error}"))?;
         }
         tokio::fs::write(
             path,
-            serde_json::to_string_pretty(&json!({
-                "profileVersion": 1,
-                "machineId": "550e8400-e29b-41d4-a716-446655440000",
-                "machineCode": "MACHINE-1",
-                "machineName": "Lobby Machine",
-                "machineStatus": "online",
-                "claimedAt": "2026-06-08T16:30:00.000Z",
-                "apiBaseUrl": "http://127.0.0.1:0/api",
-                "mqttUrl": "mqtt://broker.example:1883",
-                "mqttClientId": "vem-machine-MACHINE-1",
-                "runtimeEndpoints": {
-                    "apiBasePath": "/api",
-                    "machineAuthTokenPath": "/api/machine-auth/token",
-                    "machineApiBasePath": "/api/machines/MACHINE-1",
-                    "mqttTopicPrefix": "vem/machines/MACHINE-1"
-                },
-                "hardwareProfile": {
-                    "profile": "production",
-                    "controller": { "required": true, "protocol": "vem-vending-controller" },
-                    "paymentScanner": { "required": true, "supportsPaymentCode": true },
-                    "vision": { "required": false, "supportsRecommendations": true }
-                },
-                "hardwareSlotTopology": {
-                    "identity": identity,
-                    "version": version
-                },
-                "paymentCapability": {
-                    "profile": "production",
-                    "qrCodeEnabled": true,
-                    "paymentCodeEnabled": true,
-                    "serverTime": "2026-06-08T16:30:00.000Z"
-                },
-                "provisioningMetadata": {
-                    "profileVersion": 1,
-                    "claimCodeId": "550e8400-e29b-41d4-a716-446655440111",
-                    "claimedAt": "2026-06-08T16:30:00.000Z",
-                    "serverTime": "2026-06-08T16:30:00.000Z"
-                }
-            }))
-            .expect("profile cache json"),
+            serde_json::to_string_pretty(&profile)
+                .map_err(|error| format!("serialize profile cache failed: {error}"))?,
+        )
+        .await
+        .map_err(|error| format!("write profile cache failed: {error}"))?;
+        Ok(())
+    }
+
+    async fn write_platform_profile_cache(ctx: &IpcContext, topology: Option<(&str, &str)>) {
+        write_platform_profile_cache_for_store(ctx.config_store.as_ref(), topology)
+            .await
+            .expect("write profile cache");
+    }
+
+    async fn apply_platform_topology(ctx: &IpcContext, identity: &str, version: &str) {
+        write_platform_profile_cache(ctx, Some((identity, version))).await;
+    }
+
+    async fn ensure_platform_profile(ctx: &IpcContext) {
+        if ctx
+            .config_store
+            .load_provisioning_profile_cache_summary()
+            .await
+            .expect("load profile cache")
+            .is_none()
+        {
+            write_platform_profile_cache(ctx, None).await;
+        }
+    }
+
+    async fn update_profile_payment_capability(ctx: &IpcContext, payment_code_enabled: bool) {
+        ensure_platform_profile(ctx).await;
+        let path = ctx.config_store.provisioning_profile_cache_summary_path();
+        let content = tokio::fs::read_to_string(&path)
+            .await
+            .expect("read profile cache");
+        let mut profile: serde_json::Value =
+            serde_json::from_str(&content).expect("profile cache json");
+        profile["paymentCapability"] = json!({
+            "profile": "production",
+            "qrCodeEnabled": true,
+            "paymentCodeEnabled": payment_code_enabled,
+            "serverTime": "2026-06-08T16:30:00.000Z"
+        });
+        tokio::fs::write(
+            path,
+            serde_json::to_string_pretty(&profile).expect("profile cache json"),
+        )
+        .await
+        .expect("write profile cache");
+    }
+
+    async fn remove_platform_profile_cache(ctx: &IpcContext) {
+        match tokio::fs::remove_file(ctx.config_store.provisioning_profile_cache_summary_path())
+            .await
+        {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => panic!("remove profile cache failed: {error}"),
+        }
+    }
+
+    async fn update_profile_hardware_profile_kind(ctx: &IpcContext, kind: &str) {
+        ensure_platform_profile(ctx).await;
+        let path = ctx.config_store.provisioning_profile_cache_summary_path();
+        let content = tokio::fs::read_to_string(&path)
+            .await
+            .expect("read profile cache");
+        let mut profile: serde_json::Value =
+            serde_json::from_str(&content).expect("profile cache json");
+        profile["hardwareProfile"]["profile"] = json!(kind);
+        tokio::fs::write(
+            path,
+            serde_json::to_string_pretty(&profile).expect("profile cache json"),
         )
         .await
         .expect("write profile cache");
@@ -4286,6 +4375,7 @@ mod tests {
                     "password": "mqtt-password"
                 }
             },
+            "apiBaseUrl": "http://127.0.0.1:3000/api",
             "runtimeEndpoints": {
                 "apiBasePath": "/api",
                 "machineAuthTokenPath": "/api/machine-auth/token",
@@ -4520,6 +4610,7 @@ mod tests {
         let app = build_router(
             test_ipc_context(&data_dir, "token-1", None, &stale_legacy_server.uri()).await,
         );
+        let _ = tokio::fs::remove_file(root.join("bringup").join("local-settings.json")).await;
 
         let response = post_json(
             &app,
@@ -6221,20 +6312,7 @@ mod tests {
             &server.uri(),
         )
         .await;
-        let mut public = ctx.config_store.load_public_config().await.expect("config");
-        public.payment_capability = Some(crate::config::ProductionMachinePaymentCapability {
-            profile: "production".to_string(),
-            qr_code_enabled: true,
-            payment_code_enabled: false,
-            server_time: "2026-06-08T16:30:00.000Z".to_string(),
-            options: vec![],
-            default_option_key: None,
-            default_provider_code: None,
-        });
-        ctx.config_store
-            .save_public_config(public)
-            .await
-            .expect("save capability");
+        update_profile_payment_capability(&ctx, false).await;
         let app = build_router(ctx);
 
         let response = app
@@ -6415,22 +6493,7 @@ mod tests {
         )
         .await;
         mark_runtime_sale_ready(&ctx).await;
-        {
-            let mut public = ctx.config_store.load_public_config().await.expect("config");
-            public.payment_capability = Some(crate::config::ProductionMachinePaymentCapability {
-                profile: "production".to_string(),
-                qr_code_enabled: true,
-                payment_code_enabled: false,
-                server_time: "2026-06-08T16:30:00.000Z".to_string(),
-                options: vec![],
-                default_option_key: None,
-                default_provider_code: None,
-            });
-            ctx.config_store
-                .save_public_config(public)
-                .await
-                .expect("save capability");
-        }
+        update_profile_payment_capability(&ctx, false).await;
         let app = build_router(ctx);
 
         let response = app
@@ -7145,11 +7208,11 @@ mod tests {
             let mut public = ctx.config_store.load_public_config().await.expect("config");
             public.hardware_adapter = crate::config::HardwareAdapterKind::Serial;
             public.serial_port_path = Some("/dev/ttyUSB0".to_string());
-            public.hardware_profile = None;
             ctx.config_store
                 .save_public_config(public)
                 .await
                 .expect("save missing profile config");
+            remove_platform_profile_cache(&ctx).await;
         }
         let response = app
             .clone()
@@ -7179,17 +7242,8 @@ mod tests {
         );
 
         {
-            let mut profile = valid_provisioning_profile();
-            profile["hardwareProfile"]["profile"] = json!("development");
-            let mut public = ctx.config_store.load_public_config().await.expect("config");
-            public.hardware_profile = Some(
-                serde_json::from_value(profile["hardwareProfile"].clone())
-                    .expect("hardware profile"),
-            );
-            ctx.config_store
-                .save_public_config(public)
-                .await
-                .expect("save non-production profile config");
+            write_platform_profile_cache(&ctx, None).await;
+            update_profile_hardware_profile_kind(&ctx, "development").await;
         }
         let response = app
             .clone()
@@ -7215,16 +7269,11 @@ mod tests {
             .contains(&json!("PRODUCTION_DISPENSE_PATH_EVIDENCE_MISSING")));
         assert_eq!(
             readiness["components"]["productionDispensePath"]["message"],
-            "生产出货路径 hardwareProfile 不是 production"
+            "生产出货路径缺少 production hardwareProfile 证据"
         );
 
         {
-            let profile = valid_provisioning_profile();
             let mut public = ctx.config_store.load_public_config().await.expect("config");
-            public.hardware_profile = Some(
-                serde_json::from_value(profile["hardwareProfile"].clone())
-                    .expect("hardware profile"),
-            );
             public.hardware_adapter = crate::config::HardwareAdapterKind::Serial;
             public.serial_port_path = Some("tcp://127.0.0.1:17991".to_string());
             public.lower_controller_usb_identity = None;
@@ -7232,6 +7281,7 @@ mod tests {
                 .save_public_config(public)
                 .await
                 .expect("save tcp simulator config");
+            write_platform_profile_cache(&ctx, None).await;
         }
         let response = app
             .clone()
