@@ -394,7 +394,7 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
     expect(mockDriver(playback.created[0]).requests[0].volume).toBe(0.35);
   });
 
-  it("selects festival voice assets from daemon-owned Natural Context", async () => {
+  it("selects festival voice variants for ordinary welcome events from daemon-owned Natural Context", async () => {
     applyNaturalContext({
       primaryFestival: "dragon_boat_festival",
     });
@@ -404,13 +404,33 @@ describe("createMachineAudioCuePlaybackAdapter", () => {
     });
 
     await adapter.handleCustomerEvent({
-      type: "presence.easter_egg.festival",
+      type: "presence.welcome.day",
       requestedAt: "2026-06-29T08:00:10.000Z",
       nowMs: 10_000,
     });
 
     expect(mockDriver(playback.created[0]).requests[0].sourceUrl).toBe(
       "/audio/voice/easter_egg/festival/dragon_boat.mp3",
+    );
+  });
+
+  it("selects solar-term voice variants for local awakened events from Natural Context", async () => {
+    applyNaturalContext({
+      solarTerm: "start_of_spring",
+    });
+    const playback = createPlaybackHarness();
+    const adapter = createMachineAudioCuePlaybackAdapter({
+      playbackFactory: playback.playbackFactory,
+    });
+
+    await adapter.handleCustomerEvent({
+      type: "interaction.awakened",
+      requestedAt: "2026-06-29T08:00:10.000Z",
+      nowMs: 10_000,
+    });
+
+    expect(mockDriver(playback.created[0]).requests[0].sourceUrl).toBe(
+      "/audio/voice/easter_egg/solar_term/start_of_spring.mp3",
     );
   });
 

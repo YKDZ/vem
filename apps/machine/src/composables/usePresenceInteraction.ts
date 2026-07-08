@@ -62,12 +62,11 @@ const SOLAR_TERM_MAP: Record<string, string> = {
   winter_solstice: "winter_solstice",
 };
 
-export function getEasterEggType(
+export function getContextualWelcomeVariant(
   naturalContextStore: ReturnType<typeof useNaturalContextStore>,
 ):
   | { type: "festival"; value: string }
   | { type: "solar_term"; value: string }
-  | { type: "season"; value: string }
   | null {
   const calendar = naturalContextStore.calendar;
   if (!calendar) return null;
@@ -82,15 +81,7 @@ export function getEasterEggType(
     if (mapped) return { type: "solar_term", value: mapped };
   }
 
-  const month = calendar.localDate
-    ? new Date(calendar.localDate).getMonth()
-    : new Date().getMonth();
-  let season: string;
-  if (month >= 2 && month <= 4) season = "spring";
-  else if (month >= 5 && month <= 7) season = "summer";
-  else if (month >= 8 && month <= 10) season = "autumn";
-  else season = "winter";
-  return { type: "season", value: season };
+  return null;
 }
 
 export function getDepartureEventType(
@@ -268,17 +259,6 @@ function markPresent(input: {
     source: input.source,
   };
   restartDepartureTimers();
-
-  if (input.source === "vision" && naturalContextStore && !isPrivacyMode()) {
-    const easterEgg = getEasterEggType(naturalContextStore);
-    if (easterEgg && easterEgg.type !== "season") {
-      recordCustomerSourceFact({
-        type: "natural_context.cue",
-        eventType: `presence.easter_egg.${easterEgg.type}`,
-        occurredAt: input.seenAt,
-      });
-    }
-  }
 }
 
 function markDeparted(input: {

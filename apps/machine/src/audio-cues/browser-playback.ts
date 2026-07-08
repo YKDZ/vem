@@ -63,10 +63,6 @@ const PLACEHOLDER_TONE_SOURCE =
 
 const CUE_SOURCES: Record<CustomerExperienceEvent["type"], string> = {
   "presence.detected": `${PLACEHOLDER_TONE_SOURCE}#presence-detected`,
-  "presence.easter_egg": `${VOICE_BASE_PATH}/easter_egg/festival/spring_festival.mp3`,
-  "presence.easter_egg.festival": `${VOICE_BASE_PATH}/easter_egg/festival/spring_festival.mp3`,
-  "presence.easter_egg.solar_term": `${VOICE_BASE_PATH}/easter_egg/solar_term/start_of_spring.mp3`,
-  "presence.easter_egg.season": `${VOICE_BASE_PATH}/easter_egg/season/spring.mp3`,
   "presence.welcome.day": `${VOICE_BASE_PATH}/interaction/awakened.mp3`,
   "presence.welcome.night": `${VOICE_BASE_PATH}/interaction/awakened.mp3`,
   "interaction.awakened": `${VOICE_BASE_PATH}/interaction/awakened.mp3`,
@@ -341,9 +337,12 @@ function getDynamicAudioSource(
   eventKey: string,
   naturalContextStore: ReturnType<typeof useNaturalContextStore>,
 ): string {
-  if (eventKey.startsWith("presence.easter_egg.")) {
+  if (
+    eventKey === "presence.welcome.day" ||
+    eventKey === "interaction.awakened"
+  ) {
     return (
-      sourceForEasterEggCue(eventKey, naturalContextStore) ??
+      sourceForContextualWelcomeCue(naturalContextStore) ??
       CUE_SOURCE_BY_KEY[eventKey] ??
       ""
     );
@@ -358,34 +357,21 @@ function getDynamicAudioSource(
   return CUE_SOURCE_BY_KEY[eventKey] ?? "";
 }
 
-function sourceForEasterEggCue(
-  eventKey: string,
+function sourceForContextualWelcomeCue(
   naturalContextStore: ReturnType<typeof useNaturalContextStore>,
 ): string | null {
-  if (eventKey === "presence.easter_egg.festival") {
-    const festival = naturalContextStore.primaryFestival;
-    const audioKey = festival
-      ? FESTIVAL_AUDIO_KEY_BY_CONTEXT_VALUE[festival]
-      : null;
-    return audioKey
-      ? `${VOICE_BASE_PATH}/easter_egg/festival/${audioKey}.mp3`
-      : null;
+  const festival = naturalContextStore.primaryFestival;
+  const festivalAudioKey = festival
+    ? FESTIVAL_AUDIO_KEY_BY_CONTEXT_VALUE[festival]
+    : null;
+  if (festivalAudioKey) {
+    return `${VOICE_BASE_PATH}/easter_egg/festival/${festivalAudioKey}.mp3`;
   }
-  if (eventKey === "presence.easter_egg.solar_term") {
-    const solarTerm = naturalContextStore.solarTerm;
-    return solarTerm
-      ? `${VOICE_BASE_PATH}/easter_egg/solar_term/${solarTerm}.mp3`
-      : null;
-  }
-  if (eventKey === "presence.easter_egg.season") {
-    const localDate =
-      naturalContextStore.calendar?.localDate ??
-      naturalContextStore.snapshot?.externalEnvironment.localTime?.localDate ??
-      null;
-    const season = seasonForLocalDate(localDate);
-    return `${VOICE_BASE_PATH}/easter_egg/season/${season}.mp3`;
-  }
-  return null;
+
+  const solarTerm = naturalContextStore.solarTerm;
+  return solarTerm
+    ? `${VOICE_BASE_PATH}/easter_egg/solar_term/${solarTerm}.mp3`
+    : null;
 }
 
 function sourceForDepartureCue(
@@ -425,17 +411,6 @@ function sourceForDepartureCue(
     }
   }
   return null;
-}
-
-function seasonForLocalDate(localDate: string | null): string {
-  const monthIndex = localDate ? Date.parse(`${localDate}T00:00:00`) : NaN;
-  const month = Number.isNaN(monthIndex)
-    ? new Date().getMonth()
-    : new Date(monthIndex).getMonth();
-  if (month >= 2 && month <= 4) return "spring";
-  if (month >= 5 && month <= 7) return "summer";
-  if (month >= 8 && month <= 10) return "autumn";
-  return "winter";
 }
 
 function descriptorFromEvent(

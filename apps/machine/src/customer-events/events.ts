@@ -2,10 +2,6 @@ import type { AudioCueCategory } from "@/stores/audio-cues";
 
 export type PresenceEventType =
   | "presence.detected"
-  | "presence.easter_egg"
-  | "presence.easter_egg.festival"
-  | "presence.easter_egg.solar_term"
-  | "presence.easter_egg.season"
   | "presence.welcome.day"
   | "presence.welcome.night"
   | "interaction.awakened"
@@ -70,10 +66,6 @@ export const CUSTOMER_EXPERIENCE_EVENT_PRIORITIES: Record<
   number
 > = {
   "presence.detected": 5,
-  "presence.easter_egg": 10,
-  "presence.easter_egg.festival": 10,
-  "presence.easter_egg.solar_term": 10,
-  "presence.easter_egg.season": 10,
   "presence.welcome.day": 8,
   "presence.welcome.night": 8,
   "interaction.awakened": 30,
@@ -128,10 +120,6 @@ export function categoryForCustomerExperienceEvent(
 ): AudioCueCategory {
   switch (type) {
     case "presence.detected":
-    case "presence.easter_egg":
-    case "presence.easter_egg.festival":
-    case "presence.easter_egg.solar_term":
-    case "presence.easter_egg.season":
     case "presence.welcome.day":
     case "presence.welcome.night":
     case "interaction.awakened":

@@ -19,7 +19,7 @@
 
 ## 顾客体验事件
 
-- `CustomerExperienceEvent`，来自 `../customer-events/events`：面向顾客体验功能的语义事件类型。它覆盖迎宾、触屏唤醒、多人围观、选品、支付提示、支付成功、出货/取货结果、超时提示、休眠提示、彩蛋和设备故障等事件。
+- `CustomerExperienceEvent`，来自 `../customer-events/events`：面向顾客体验功能的语义事件类型。它覆盖迎宾、触屏唤醒、多人围观、选品、支付提示、支付成功、出货/取货结果、超时提示、休眠提示和设备故障等事件；节日、节气等自然上下文只影响音频素材变体，不单独成为事件。
 - `useCustomerEvents`，来自 `./useCustomerEvents`：提供轻量的 `emit` / `on` 事件总线，供功能实现方订阅或派发这些语义事件。
 - `useCustomerEventSources`，来自 `./useCustomerEventSources`：把顾客旅程事实转换成顾客体验事件，音频提示只是这些事件的消费者之一。
 - `createMachineAudioCuePlaybackAdapter().handleCustomerEvent(event)`：音频播放方消费顾客体验事件的入口。

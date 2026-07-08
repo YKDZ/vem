@@ -10,7 +10,7 @@ import type { SaleViewSnapshot } from "@/daemon/schemas";
 
 import { emitCustomerEvent } from "@/composables/useCustomerEvents";
 import {
-  getEasterEggType,
+  getContextualWelcomeVariant,
   getDepartureEventType,
 } from "@/composables/usePresenceInteraction";
 import { applyUiDebugScenarioToStores } from "@/dev/runtime-scenario-loader";
@@ -49,18 +49,17 @@ function playAudioCue(eventType: PresenceEventType): void {
   lastAudioEvent.value = `${eventType} - ${new Date().toLocaleTimeString()}`;
 }
 
-function playEasterEgg(): void {
-  const eggType = getEasterEggType(naturalContextStore);
-  if (!eggType) {
-    lastAudioEvent.value = `无彩蛋信息 - ${new Date().toLocaleTimeString()}`;
+function playContextualWelcomeVariant(): void {
+  const variant = getContextualWelcomeVariant(naturalContextStore);
+  if (!variant) {
+    lastAudioEvent.value = `无上下文欢迎变体 - ${new Date().toLocaleTimeString()}`;
     return;
   }
-  const eventType = `presence.easter_egg.${eggType.type}` as PresenceEventType;
   emitCustomerEvent({
-    type: eventType,
+    type: "interaction.awakened",
     requestedAt: new Date().toISOString(),
   });
-  lastAudioEvent.value = `${eventType} (${eggType.value}) - ${new Date().toLocaleTimeString()}`;
+  lastAudioEvent.value = `interaction.awakened (${variant.type}:${variant.value}) - ${new Date().toLocaleTimeString()}`;
 }
 
 function playDepartureQuote(): void {
@@ -412,10 +411,14 @@ onMounted(() => {
 
         <div class="mt-4 space-y-4">
           <div>
-            <p class="text-sm font-bold text-sky-200">小彩蛋</p>
+            <p class="text-sm font-bold text-sky-200">上下文欢迎变体</p>
             <div class="mt-2 grid grid-cols-1 gap-3">
-              <button class="debug-button" type="button" @click="playEasterEgg">
-                播放彩蛋
+              <button
+                class="debug-button"
+                type="button"
+                @click="playContextualWelcomeVariant"
+              >
+                播放欢迎变体
               </button>
             </div>
           </div>
