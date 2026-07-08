@@ -11,7 +11,6 @@ describe("customer experience events", () => {
     "presence.detected",
     "presence.welcome.day",
     "presence.welcome.night",
-    "presence.easter_egg",
     "interaction.awakened",
     "privacy.crowd_detected",
     "idle.assistance_prompt",
