@@ -6,8 +6,9 @@ use std::{
 
 use reqwest::Client;
 use serde::Deserialize;
+use serde_json::{json, Value};
 use tempfile::TempDir;
-use tokio::{process::Child, time::sleep};
+use tokio::{io::AsyncReadExt, process::Child, time::sleep};
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -61,6 +62,7 @@ impl DaemonHarness {
         )
         .await
         .map_err(|error| error.to_string())?;
+        write_layered_runtime_test_config(&data_dir, &public_config).await?;
         let _ = tokio::fs::remove_file(&ready_file).await;
 
         let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_vending-daemon"));
@@ -79,10 +81,27 @@ impl DaemonHarness {
         for (key, value) in extra_env {
             command.env(key, value);
         }
-        let child = command.spawn().map_err(|error| error.to_string())?;
+        let mut child = command.spawn().map_err(|error| error.to_string())?;
         let client = Client::new();
 
-        let ready = wait_ready_file(&ready_file).await?;
+        let ready = match wait_ready_file(&ready_file).await {
+            Ok(ready) => ready,
+            Err(error) => {
+                let _ = child.start_kill();
+                let mut stderr = String::new();
+                let mut stdout = String::new();
+                if let Some(mut pipe) = child.stderr.take() {
+                    let _ = pipe.read_to_string(&mut stderr).await;
+                }
+                if let Some(mut pipe) = child.stdout.take() {
+                    let _ = pipe.read_to_string(&mut stdout).await;
+                }
+                let _ = child.wait().await;
+                return Err(format!(
+                    "{error}; daemon stdout: {stdout}; daemon stderr: {stderr}"
+                ));
+            }
+        };
         wait_http_ok(&client, &ready.healthz_url).await?;
 
         Ok(Self {
@@ -118,6 +137,173 @@ impl DaemonHarness {
     pub async fn terminate(&mut self) {
         let _ = self.child.start_kill();
         let _ = tokio::time::timeout(Duration::from_secs(3), self.child.wait()).await;
+    }
+}
+
+async fn write_layered_runtime_test_config(
+    data_dir: &Path,
+    public_config: &Value,
+) -> Result<(), String> {
+    let root = data_dir.parent().unwrap_or(data_dir);
+    let bringup_dir = root.join("bringup");
+    tokio::fs::create_dir_all(&bringup_dir)
+        .await
+        .map_err(|error| error.to_string())?;
+    if let Some(topology) = public_config
+        .get("hardwareSlotTopology")
+        .filter(|value| !value.is_null())
+    {
+        let factory_dir = root.join("factory");
+        tokio::fs::create_dir_all(&factory_dir)
+            .await
+            .map_err(|error| error.to_string())?;
+        let api_base_url = public_config
+            .get("apiBaseUrl")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or("http://127.0.0.1:0/api");
+        let manifest = json!({
+            "layoutVersion": 1,
+            "environment": "test",
+            "provisioningEndpoint": api_base_url,
+            "hardwareMode": "production",
+            "hardwareModel": "test-fixture",
+            "hardwareSlotTopology": topology
+        });
+        tokio::fs::write(
+            factory_dir.join("factory-manifest.json"),
+            serde_json::to_vec_pretty(&manifest).map_err(|error| error.to_string())?,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    }
+
+    let mut local = serde_json::Map::new();
+    copy_string(
+        public_config,
+        &mut local,
+        "apiBaseUrl",
+        "provisioningEndpointOverride",
+    );
+    copy_value(public_config, &mut local, "hardwareAdapter");
+    copy_value(public_config, &mut local, "serialPortPath");
+    copy_value(public_config, &mut local, "lowerControllerUsbIdentity");
+    copy_value(public_config, &mut local, "scannerAdapter");
+    copy_value(public_config, &mut local, "scannerSerialPortPath");
+    copy_value(public_config, &mut local, "scannerUsbIdentity");
+    copy_value(public_config, &mut local, "scannerBaudRate");
+    copy_value(public_config, &mut local, "scannerFrameSuffix");
+    copy_value(public_config, &mut local, "visionEnabled");
+    copy_value(public_config, &mut local, "visionWsUrl");
+    copy_value(public_config, &mut local, "visionRequestTimeoutMs");
+    copy_value(public_config, &mut local, "machineAudioVolume");
+    copy_value(public_config, &mut local, "tryOnCameraDeviceId");
+    copy_value(public_config, &mut local, "audioCueSettings");
+    copy_value(public_config, &mut local, "kioskMode");
+    copy_value(public_config, &mut local, "stockMovementRetentionDays");
+    tokio::fs::write(
+        bringup_dir.join("local-settings.json"),
+        serde_json::to_vec_pretty(&Value::Object(local)).map_err(|error| error.to_string())?,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+
+    let machine_code = public_config
+        .get("machineCode")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty());
+    if let Some(machine_code) = machine_code {
+        let provisioning_dir = root.join("provisioning");
+        tokio::fs::create_dir_all(&provisioning_dir)
+            .await
+            .map_err(|error| error.to_string())?;
+        let api_base_url = public_config
+            .get("apiBaseUrl")
+            .and_then(Value::as_str)
+            .unwrap_or("http://127.0.0.1:0/api");
+        let mqtt_url = public_config
+            .get("mqttUrl")
+            .and_then(Value::as_str)
+            .unwrap_or("mqtt://127.0.0.1:1883");
+        let mqtt_client_id = public_config
+            .get("mqttClientId")
+            .and_then(Value::as_str)
+            .map(ToString::to_string)
+            .unwrap_or_else(|| format!("vem-machine-{machine_code}"));
+        let mqtt_username = public_config
+            .get("mqttUsername")
+            .cloned()
+            .unwrap_or(Value::Null);
+        let profile = json!({
+            "profileVersion": 1,
+            "machineId": "550e8400-e29b-41d4-a716-446655440000",
+            "machineCode": machine_code,
+            "machineName": public_config.get("machineName").and_then(Value::as_str).unwrap_or("Test Machine"),
+            "machineStatus": public_config.get("machineStatus").and_then(Value::as_str).unwrap_or("online"),
+            "machineLocationLabel": public_config.get("machineLocationLabel").cloned().unwrap_or(Value::Null),
+            "claimedAt": "2026-07-08T00:00:00.000Z",
+            "apiBaseUrl": api_base_url,
+            "mqttUrl": mqtt_url,
+            "mqttClientId": mqtt_client_id,
+            "mqttUsername": mqtt_username,
+            "runtimeEndpoints": {
+                "apiBasePath": "/api",
+                "machineAuthTokenPath": "/api/machine-auth/token",
+                "machineApiBasePath": format!("/api/machines/{machine_code}"),
+                "mqttTopicPrefix": format!("vem/machines/{machine_code}")
+            },
+            "hardwareProfile": public_config.get("hardwareProfile").cloned().unwrap_or_else(|| json!({
+                "profile": "production",
+                "controller": { "required": true, "protocol": "vem-vending-controller" },
+                "paymentScanner": { "required": true, "supportsPaymentCode": true },
+                "vision": { "required": false, "supportsRecommendations": true }
+            })),
+            "hardwareSlotTopology": public_config.get("hardwareSlotTopology").cloned().unwrap_or_else(|| json!({
+                "identity": "vem-test-24",
+                "version": "2026-07-test"
+            })),
+            "paymentCapability": public_config.get("paymentCapability").cloned().unwrap_or_else(|| json!({
+                "profile": "production",
+                "qrCodeEnabled": true,
+                "paymentCodeEnabled": true,
+                "serverTime": "2026-07-08T00:00:00.000Z"
+            })),
+            "provisioningMetadata": {
+                "profileVersion": 1,
+                "claimCodeId": "550e8400-e29b-41d4-a716-446655440111",
+                "claimedAt": "2026-07-08T00:00:00.000Z",
+                "serverTime": "2026-07-08T00:00:00.000Z"
+            }
+        });
+        tokio::fs::write(
+            provisioning_dir.join("profile-cache-summary.json"),
+            serde_json::to_vec_pretty(&profile).map_err(|error| error.to_string())?,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    }
+
+    Ok(())
+}
+
+fn copy_value(source: &Value, target: &mut serde_json::Map<String, Value>, key: &str) {
+    if let Some(value) = source.get(key).filter(|value| !value.is_null()) {
+        target.insert(key.to_string(), value.clone());
+    }
+}
+
+fn copy_string(
+    source: &Value,
+    target: &mut serde_json::Map<String, Value>,
+    source_key: &str,
+    target_key: &str,
+) {
+    if let Some(value) = source
+        .get(source_key)
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+    {
+        target.insert(target_key.to_string(), Value::String(value.to_string()));
     }
 }
 

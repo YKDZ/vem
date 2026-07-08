@@ -246,6 +246,14 @@ fn packaged_asset_path(path: &str) -> Option<String> {
             path.strip_prefix("assets/")
                 .map(|asset_path| format!("assets/{asset_path}"))
         })
+        .or_else(|| {
+            path.strip_prefix("/audio/")
+                .map(|asset_path| format!("audio/{asset_path}"))
+        })
+        .or_else(|| {
+            path.strip_prefix("audio/")
+                .map(|asset_path| format!("audio/{asset_path}"))
+        })
 }
 
 fn dev_asset_path(path: &str) -> Option<PathBuf> {
@@ -331,6 +339,23 @@ mod tests {
             },
         )
         .expect("packaged Vite asset URL should resolve through Tauri assets");
+
+        match source {
+            MachineAudioSource::Bytes(bytes) => assert_eq!(bytes, vec![1, 2, 3]),
+            MachineAudioSource::File(_) => panic!("expected packaged asset bytes"),
+        }
+    }
+
+    #[test]
+    fn resolves_public_audio_urls_from_tauri_packaged_assets() {
+        let source = MachineAudioSource::from_source_url(
+            "/audio/voice/departure/normal_weather/sunny.mp3",
+            |asset_path| {
+                assert_eq!(asset_path, "audio/voice/departure/normal_weather/sunny.mp3");
+                Ok(Some(vec![1, 2, 3]))
+            },
+        )
+        .expect("public audio URL should resolve through Tauri assets");
 
         match source {
             MachineAudioSource::Bytes(bytes) => assert_eq!(bytes, vec![1, 2, 3]),

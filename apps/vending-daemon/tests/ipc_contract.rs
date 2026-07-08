@@ -63,10 +63,9 @@ async fn ipc_contract_requires_token_and_returns_stable_snapshots() {
     }
 
     let config_summary = daemon.get_json("/v1/config/summary").await;
-    assert_eq!(
-        config_summary["configuredState"]["machineConfigBridge"],
-        true
-    );
+    assert!(config_summary["configuredState"]
+        .get("machineConfigBridge")
+        .is_none());
     assert_eq!(
         config_summary["effectivePublic"]["machineCode"],
         "MACHINE-IPC"

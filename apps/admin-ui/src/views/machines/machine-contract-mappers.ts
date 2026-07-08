@@ -3,7 +3,9 @@ import {
   createMachineSlotSchema,
   machineEnvironmentControlRequestSchema,
   machineSlotCoordinateCode,
+  updateMachineSchema,
   type AdminCreateMachineRequest,
+  type AdminUpdateMachineRequest,
   type AdminCreateMachineSlotRequest,
   type MachineEnvironmentControlRequest,
   type MachineSlotStatus,
@@ -19,6 +21,8 @@ export type MachineForm = {
   geoLongitude: number | null;
   geoTimezone: string;
 };
+
+export type MachineBasicsForm = Omit<MachineForm, "code">;
 
 export type EnvironmentControlForm = {
   includeAirConditioner: boolean;
@@ -88,6 +92,32 @@ export function mapMachineFormToContract(
     geoLocation,
   } satisfies z.input<typeof createMachineSchema>;
   return createMachineSchema.parse(contract);
+}
+
+export function mapMachineBasicsFormToUpdateContract(
+  form: MachineBasicsForm,
+): AdminUpdateMachineRequest {
+  const parsed = machineFormSchema.omit({ code: true }).parse(form);
+  let geoLocation: z.input<typeof updateMachineSchema>["geoLocation"] = null;
+  if (parsed.includeGeoLocation) {
+    if (
+      typeof parsed.geoLatitude !== "number" ||
+      typeof parsed.geoLongitude !== "number"
+    ) {
+      throw new Error("Machine Geo Location is incomplete");
+    }
+    geoLocation = {
+      latitude: parsed.geoLatitude,
+      longitude: parsed.geoLongitude,
+      timezone: parsed.geoTimezone.trim(),
+    };
+  }
+  const contract = {
+    name: parsed.name.trim(),
+    locationLabel: emptyStringToNull(parsed.locationLabel),
+    geoLocation,
+  } satisfies z.input<typeof updateMachineSchema>;
+  return updateMachineSchema.parse(contract);
 }
 
 export function mapEnvironmentControlFormToContract(

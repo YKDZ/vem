@@ -1,5 +1,9 @@
 <script setup lang="ts">
-import type { MachineCommandStatus, MachineSlotStatus } from "@vem/shared";
+import type {
+  ExternalNaturalEnvironment,
+  MachineCommandStatus,
+  MachineSlotStatus,
+} from "@vem/shared";
 
 import { formatMachineSlotCoordinate } from "@vem/shared";
 import { Modal } from "antdv-next";
@@ -24,8 +28,10 @@ import {
 } from "@/api/machine-ops";
 import {
   commandEnvironment,
+  getExternalNaturalEnvironment,
   getMachine,
   listMachineSlots,
+  updateMachine,
   type Machine,
   type MachineGeoLocation,
   type MachineSlot,
@@ -33,7 +39,15 @@ import {
 import { useAuthStore } from "@/stores/auth";
 import { formatDateTime } from "@/utils/format";
 
-import { mapEnvironmentControlFormToContract } from "./machine-contract-mappers";
+import {
+  mapEnvironmentControlFormToContract,
+  mapMachineBasicsFormToUpdateContract,
+} from "./machine-contract-mappers";
+import {
+  commandStatusLabel,
+  formatEnvironmentNumber,
+} from "./machine-environment-display";
+import MachineEnvironmentCard from "./MachineEnvironmentCard.vue";
 import {
   productionPilotStatusLabel,
   projectProductionPilotReadinessCheck,
@@ -55,6 +69,7 @@ const route = useRoute();
 const router = useRouter();
 const authStore = useAuthStore();
 
+const canWrite = authStore.hasPermission("machines.write");
 const canCommand = authStore.hasPermission("machines.command");
 const canRefill = authStore.hasPermission("inventory.refill");
 const canAdjust = authStore.hasPermission("inventory.adjust");
@@ -69,12 +84,23 @@ const slots = ref<MachineSlot[]>([]);
 const inventories = ref<Inventory[]>([]);
 const ops = ref<MachineOp[]>([]);
 const reconciliationCases = ref<StockReconciliationCaseSummary[]>([]);
+const externalNaturalEnvironment = ref<ExternalNaturalEnvironment | null>(null);
 
 const environmentControlForm = ref({
   includeAirConditioner: false,
   airConditionerOn: false,
   includeTargetTemperature: false,
   targetTemperatureCelsius: 24,
+});
+const machineDrawerOpen = ref(false);
+const machineSaving = ref(false);
+const machineForm = ref({
+  name: "",
+  locationLabel: "",
+  includeGeoLocation: false,
+  geoLatitude: null as number | null,
+  geoLongitude: null as number | null,
+  geoTimezone: "Asia/Shanghai",
 });
 const environmentSubmitting = ref(false);
 const environmentCommandStatus = ref<MachineCommandStatus | null>(null);
@@ -140,6 +166,14 @@ const wholeMachineMaintenanceLock = computed(
     null,
 );
 const environment = computed(() => machine.value?.latestEnvironment ?? null);
+const reportedRuntimeConfiguration = computed(
+  () => machine.value?.reportedRuntimeConfiguration ?? null,
+);
+const externalNaturalEnvironmentDiagnostic = computed(() => {
+  const value = externalNaturalEnvironment.value;
+  if (!value || !("diagnostic" in value)) return undefined;
+  return value.diagnostic;
+});
 
 const slotRows = computed(() =>
   slots.value.map((slot) => ({
@@ -212,47 +246,86 @@ const productionPilotReadinessColumns = [
   { title: "代码", dataIndex: "code", key: "code" },
 ];
 
-function formatEnvironmentNumber(
-  value: number | undefined,
-  suffix: string,
-): string {
-  if (typeof value !== "number") return `-- ${suffix}`;
-  const formatted = Number.isInteger(value) ? String(value) : value.toFixed(1);
-  return suffix.startsWith("%")
-    ? `${formatted}${suffix}`
-    : `${formatted} ${suffix}`;
-}
-
-function sensorStatusLabel(status: string | undefined): string {
-  if (status === "ok") return "传感器正常";
-  if (status === "faulted") return "传感器故障";
-  return "传感器未知";
-}
-
-function airConditionerLabel(on: boolean | undefined): string {
-  if (on === true) return "空调开";
-  if (on === false) return "空调关";
-  return "空调未知";
-}
-
-function targetTemperatureLabel(value: number | null | undefined): string {
-  if (typeof value !== "number") return "目标未知";
-  return `目标 ${formatEnvironmentNumber(value, "C")}`;
-}
-
 function formatGeoLocation(geoLocation: MachineGeoLocation | null): string {
   if (!geoLocation) return "未配置";
   return `${geoLocation.latitude}, ${geoLocation.longitude} · ${geoLocation.timezone}`;
 }
 
-function commandStatusLabel(status: MachineCommandStatus | null): string {
-  if (status === "pending") return "命令待发送";
-  if (status === "sent") return "命令已发送";
-  if (status === "acknowledged") return "命令已确认";
-  if (status === "succeeded") return "命令成功";
-  if (status === "failed") return "命令失败";
-  if (status === "timeout") return "命令超时";
-  return "命令状态未知";
+function reportedBooleanLabel(value: boolean | null | undefined): string {
+  if (value === true) return "已开启";
+  if (value === false) return "已关闭";
+  return "未上报";
+}
+
+function reportedVolumeLabel(value: number | null | undefined): string {
+  return typeof value === "number" ? `${value}%` : "未上报";
+}
+
+function externalNaturalEnvironmentStatusLabel(status: string | undefined) {
+  if (status === "ready") return "已就绪";
+  if (status === "stale") return "使用缓存";
+  if (status === "unavailable") return "暂不可用";
+  if (status === "unconfigured") return "未配置";
+  return "未知";
+}
+
+function externalNaturalEnvironmentStatusColor(status: string | undefined) {
+  if (status === "ready") return "success";
+  if (status === "stale") return "warning";
+  if (status === "unavailable") return "error";
+  if (status === "unconfigured") return "default";
+  return "default";
+}
+
+function formatExternalTemperature(value: number | undefined): string {
+  return typeof value === "number" ? formatEnvironmentNumber(value, "C") : "--";
+}
+
+function weatherConditionClassLabel(value: string): string {
+  if (value === "hail") return "冰雹";
+  if (value === "snow") return "降雪";
+  if (value === "strong_wind") return "强风";
+  if (value === "moderate_or_heavy_rain") return "中到大雨";
+  if (value === "light_rain") return "小雨";
+  if (value === "other") return "普通天气";
+  return value;
+}
+
+function formatWeatherConditionClasses(values: string[] | undefined): string {
+  return values && values.length > 0
+    ? values.map(weatherConditionClassLabel).join("、")
+    : "--";
+}
+
+function formatLocalTime(
+  localTime: ExternalNaturalEnvironment["localTime"] | undefined,
+): string {
+  if (!localTime) return "--";
+  if (localTime.status !== "ready") return localTime.status;
+  return `${localTime.localDate ?? "--"} ${localTime.localClock ?? "--"} · ${
+    localTime.timezone
+  }`;
+}
+
+type ExternalDiagnostic = {
+  reason:
+    | "machine_geo_location_missing"
+    | "machine_geo_timezone_missing"
+    | "provider_unavailable";
+  message: string;
+};
+
+function externalDiagnosticReasonLabel(reason: ExternalDiagnostic["reason"]) {
+  if (reason === "machine_geo_location_missing") return "机器未配置地理坐标";
+  if (reason === "machine_geo_timezone_missing") return "机器未配置地理时区";
+  return "外部环境服务暂不可用";
+}
+
+function externalDiagnosticMessage(
+  block: ExternalDiagnostic | undefined,
+): string {
+  if (!block) return "--";
+  return `${block.reason}: ${externalDiagnosticReasonLabel(block.reason)}`;
 }
 
 function hardwareStatusLabel(status: string | undefined): string {
@@ -317,6 +390,12 @@ async function loadMachine(): Promise<void> {
   };
 }
 
+async function loadExternalNaturalEnvironment(): Promise<void> {
+  externalNaturalEnvironment.value = await getExternalNaturalEnvironment(
+    machineId.value,
+  );
+}
+
 async function loadInventoryData(): Promise<void> {
   const [nextSlots, nextInventories] = await Promise.all([
     listMachineSlots(machineId.value),
@@ -344,12 +423,50 @@ async function refreshAll(): Promise<void> {
   try {
     await Promise.all([
       loadMachine(),
+      loadExternalNaturalEnvironment(),
       loadInventoryData(),
       loadOps(),
       loadReconciliationCases(),
     ]);
   } finally {
     loading.value = false;
+  }
+}
+
+function openEditMachine(): void {
+  if (!machine.value) return;
+  machineForm.value = {
+    name: machine.value.name,
+    locationLabel: machine.value.locationLabel ?? "",
+    includeGeoLocation: machine.value.geoLocation !== null,
+    geoLatitude: machine.value.geoLocation?.latitude ?? null,
+    geoLongitude: machine.value.geoLocation?.longitude ?? null,
+    geoTimezone: machine.value.geoLocation?.timezone ?? "Asia/Shanghai",
+  };
+  machineDrawerOpen.value = true;
+}
+
+async function saveMachine(): Promise<void> {
+  if (!machine.value) return;
+  let body: ReturnType<typeof mapMachineBasicsFormToUpdateContract>;
+  try {
+    body = mapMachineBasicsFormToUpdateContract(machineForm.value);
+  } catch {
+    Modal.error({
+      title: "固定地理坐标无效",
+      content:
+        "请填写完整 WGS84 纬度、经度和 IANA 时区；纬度 -90..90，经度 -180..180。",
+    });
+    return;
+  }
+
+  machineSaving.value = true;
+  try {
+    await updateMachine(machine.value.id, body);
+    machineDrawerOpen.value = false;
+    await Promise.all([loadMachine(), loadExternalNaturalEnvironment()]);
+  } finally {
+    machineSaving.value = false;
   }
 }
 
@@ -479,7 +596,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <section class="space-y-8">
+  <section class="flex flex-col gap-4">
     <a-card>
       <div class="flex flex-wrap items-start justify-between gap-3">
         <div>
@@ -490,15 +607,16 @@ onMounted(() => {
             {{ machine?.code ?? "机器" }} · {{ machine?.name ?? "加载中" }}
           </h1>
           <p class="mt-1 text-sm text-slate-500">
-            {{ machine?.locationLabel ?? "未设置 Machine Location Label" }}
+            {{ machine?.locationLabel ?? "未设置位置标签" }}
           </p>
           <p class="mt-1 text-sm text-slate-500">
-            Machine Geo Location:
+            固定地理坐标：
             {{ formatGeoLocation(machine?.geoLocation ?? null) }}
           </p>
         </div>
         <a-space>
           <a-button :loading="loading" @click="refreshAll">刷新</a-button>
+          <a-button v-if="canWrite" @click="openEditMachine">编辑</a-button>
           <a-button
             v-if="canExportLogs"
             :loading="exportingLogs"
@@ -508,6 +626,128 @@ onMounted(() => {
           </a-button>
         </a-space>
       </div>
+    </a-card>
+
+    <a-drawer
+      v-model:open="machineDrawerOpen"
+      title="编辑机器"
+      :destroy-on-hidden="true"
+    >
+      <a-form layout="vertical" :preserve="false">
+        <a-form-item label="名称">
+          <a-input v-model:value="machineForm.name" />
+        </a-form-item>
+        <a-form-item label="位置标签">
+          <a-input v-model:value="machineForm.locationLabel" />
+        </a-form-item>
+        <a-form-item label="配置固定地理坐标">
+          <a-checkbox v-model:checked="machineForm.includeGeoLocation">
+            启用固定地理坐标
+          </a-checkbox>
+          <p class="mt-1 text-xs text-slate-500">
+            使用 WGS84 室外代表性站点坐标；不要填写 GCJ-02 或 BD-09 坐标。
+          </p>
+        </a-form-item>
+        <a-form-item label="纬度 latitude">
+          <a-input-number
+            v-model:value="machineForm.geoLatitude"
+            :min="-90"
+            :max="90"
+            :disabled="!machineForm.includeGeoLocation"
+            class="w-full"
+          />
+        </a-form-item>
+        <a-form-item label="经度 longitude">
+          <a-input-number
+            v-model:value="machineForm.geoLongitude"
+            :min="-180"
+            :max="180"
+            :disabled="!machineForm.includeGeoLocation"
+            class="w-full"
+          />
+        </a-form-item>
+        <a-form-item label="IANA 时区">
+          <a-input
+            v-model:value="machineForm.geoTimezone"
+            :disabled="!machineForm.includeGeoLocation"
+          />
+        </a-form-item>
+        <a-button type="primary" :loading="machineSaving" @click="saveMachine">
+          保存
+        </a-button>
+      </a-form>
+    </a-drawer>
+
+    <a-card>
+      <div class="mb-4 flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 class="text-lg font-semibold">机器配置</h2>
+        </div>
+        <a-button v-if="canWrite" size="small" @click="openEditMachine">
+          编辑基础信息
+        </a-button>
+      </div>
+      <a-row :gutter="[16, 16]">
+        <a-col :xs="24" :lg="12">
+          <h3 class="mb-3 text-sm font-medium text-slate-900">基础信息</h3>
+          <a-descriptions bordered :column="1" size="small">
+            <a-descriptions-item label="机器编码">
+              {{ machine?.code ?? "--" }}
+            </a-descriptions-item>
+            <a-descriptions-item label="机器名称">
+              {{ machine?.name ?? "--" }}
+            </a-descriptions-item>
+            <a-descriptions-item label="位置标签">
+              {{ machine?.locationLabel ?? "未设置" }}
+            </a-descriptions-item>
+            <a-descriptions-item label="固定地理坐标">
+              {{ formatGeoLocation(machine?.geoLocation ?? null) }}
+            </a-descriptions-item>
+          </a-descriptions>
+        </a-col>
+        <a-col :xs="24" :lg="12">
+          <h3
+            class="mb-3 border-t border-slate-200 pt-4 text-sm font-medium text-slate-900 lg:border-t-0 lg:border-l lg:pt-0 lg:pl-4"
+          >
+            机器上报配置
+          </h3>
+          <a-descriptions bordered :column="1" size="small">
+            <a-descriptions-item label="音频总开关">
+              {{
+                reportedBooleanLabel(
+                  reportedRuntimeConfiguration?.audioCues?.enabled,
+                )
+              }}
+            </a-descriptions-item>
+            <a-descriptions-item label="到店音频">
+              {{
+                reportedBooleanLabel(
+                  reportedRuntimeConfiguration?.audioCues?.presenceEnabled,
+                )
+              }}
+            </a-descriptions-item>
+            <a-descriptions-item label="交易音频">
+              {{
+                reportedBooleanLabel(
+                  reportedRuntimeConfiguration?.audioCues?.transactionEnabled,
+                )
+              }}
+            </a-descriptions-item>
+            <a-descriptions-item label="音量">
+              {{
+                reportedVolumeLabel(reportedRuntimeConfiguration?.audioVolume)
+              }}
+            </a-descriptions-item>
+            <a-descriptions-item label="视觉推荐">
+              {{
+                reportedBooleanLabel(
+                  reportedRuntimeConfiguration?.visionRecommendationsEnabled,
+                )
+              }}
+            </a-descriptions-item>
+          </a-descriptions>
+        </a-col>
+      </a-row>
     </a-card>
 
     <a-row :gutter="[16, 16]">
@@ -584,111 +824,175 @@ onMounted(() => {
       </a-col>
 
       <a-col :xs="24" :lg="12">
-        <a-card title="环境与空调">
+        <MachineEnvironmentCard
+          :environment="environment"
+          :command-status="environmentCommandStatus"
+          :form="environmentControlForm"
+          :can-command="canCommand"
+          :submitting="environmentSubmitting"
+          :target-temperature-invalid="targetTemperatureInvalid"
+          :command-disabled="environmentCommandDisabled"
+          @submit="submitEnvironmentCommand"
+        />
+      </a-col>
+    </a-row>
+
+    <a-card title="外部自然环境">
+      <div class="mb-4 flex flex-wrap items-start justify-between gap-3">
+        <a-space>
+          <a-tag
+            :color="
+              externalNaturalEnvironmentStatusColor(
+                externalNaturalEnvironment?.status,
+              )
+            "
+          >
+            {{
+              externalNaturalEnvironmentStatusLabel(
+                externalNaturalEnvironment?.status,
+              )
+            }}
+          </a-tag>
+          <span class="text-sm text-slate-500">
+            检查时间 {{ formatDateTime(externalNaturalEnvironment?.checkedAt) }}
+          </span>
+        </a-space>
+      </div>
+      <a-row :gutter="[16, 16]">
+        <a-col :xs="24" :lg="12">
           <a-descriptions bordered :column="1" size="small">
-            <a-descriptions-item label="温度">
+            <a-descriptions-item label="机器">
               {{
-                formatEnvironmentNumber(environment?.temperatureCelsius, "C")
+                externalNaturalEnvironment?.machineCode ?? machine?.code ?? "--"
               }}
             </a-descriptions-item>
-            <a-descriptions-item label="湿度">
-              {{ formatEnvironmentNumber(environment?.humidityRh, "% RH") }}
+            <a-descriptions-item label="本地时间">
+              {{ formatLocalTime(externalNaturalEnvironment?.localTime) }}
             </a-descriptions-item>
-            <a-descriptions-item label="采样时间">
-              {{ formatDateTime(environment?.sampledAt) }}
+            <a-descriptions-item label="日出">
+              {{ formatDateTime(externalNaturalEnvironment?.sun?.sunriseAt) }}
             </a-descriptions-item>
-            <a-descriptions-item label="传感器">
-              {{ sensorStatusLabel(environment?.sensorStatus) }}
+            <a-descriptions-item label="日落">
+              {{ formatDateTime(externalNaturalEnvironment?.sun?.sunsetAt) }}
             </a-descriptions-item>
-            <a-descriptions-item label="空调">
-              {{ airConditionerLabel(environment?.airConditionerOn) }}
+          </a-descriptions>
+        </a-col>
+        <a-col :xs="24" :lg="12">
+          <a-descriptions bordered :column="1" size="small">
+            <a-descriptions-item label="天气状态">
+              <a-tag
+                :color="
+                  externalNaturalEnvironmentStatusColor(
+                    externalNaturalEnvironment?.weather?.status,
+                  )
+                "
+              >
+                {{
+                  externalNaturalEnvironmentStatusLabel(
+                    externalNaturalEnvironment?.weather?.status,
+                  )
+                }}
+              </a-tag>
             </a-descriptions-item>
-            <a-descriptions-item label="目标温度">
+            <a-descriptions-item label="温度">
               {{
-                targetTemperatureLabel(environment?.targetTemperatureCelsius)
+                formatExternalTemperature(
+                  externalNaturalEnvironment?.weather?.temperatureCelsius,
+                )
+              }}
+            </a-descriptions-item>
+            <a-descriptions-item label="天气">
+              {{ externalNaturalEnvironment?.weather?.conditionText ?? "--" }}
+              <span
+                v-if="externalNaturalEnvironment?.weather?.conditionCode"
+                class="ml-1 text-xs text-slate-500"
+              >
+                {{ externalNaturalEnvironment.weather.conditionCode }}
+              </span>
+            </a-descriptions-item>
+            <a-descriptions-item label="观测时间">
+              {{
+                formatDateTime(externalNaturalEnvironment?.weather?.observedAt)
+              }}
+            </a-descriptions-item>
+            <a-descriptions-item label="风力">
+              <template
+                v-if="
+                  externalNaturalEnvironment?.weather?.windScale !== undefined
+                "
+              >
+                {{ externalNaturalEnvironment.weather.windScale }} 级
+              </template>
+              <template v-else>--</template>
+              <span
+                v-if="
+                  externalNaturalEnvironment?.weather?.windSpeedKph !==
+                  undefined
+                "
+                class="ml-1 text-xs text-slate-500"
+              >
+                {{ externalNaturalEnvironment.weather.windSpeedKph }} km/h
+              </span>
+            </a-descriptions-item>
+            <a-descriptions-item label="体验天气分类">
+              {{
+                formatWeatherConditionClasses(
+                  externalNaturalEnvironment?.weather?.weatherConditionClasses,
+                )
+              }}
+            </a-descriptions-item>
+            <a-descriptions-item label="主要体验分类">
+              {{
+                externalNaturalEnvironment?.weather
+                  ?.primaryWeatherConditionClass
+                  ? weatherConditionClassLabel(
+                      externalNaturalEnvironment.weather
+                        .primaryWeatherConditionClass,
+                    )
+                  : "--"
               }}
             </a-descriptions-item>
           </a-descriptions>
-
-          <a-form layout="vertical" class="mt-4">
-            <a-form-item label="控制动作">
-              <div class="space-y-2">
-                <div class="flex items-center gap-3">
-                  <a-checkbox
-                    v-model:checked="
-                      environmentControlForm.includeAirConditioner
-                    "
-                    :disabled="!canCommand || environmentSubmitting"
-                  >
-                    设置空调开关
-                  </a-checkbox>
-                  <a-switch
-                    v-model:checked="environmentControlForm.airConditionerOn"
-                    :disabled="
-                      !canCommand ||
-                      environmentSubmitting ||
-                      !environmentControlForm.includeAirConditioner
-                    "
-                  >
-                    {{ environmentControlForm.airConditionerOn ? "开" : "关" }}
-                  </a-switch>
-                </div>
-                <div class="flex items-center gap-3">
-                  <a-checkbox
-                    v-model:checked="
-                      environmentControlForm.includeTargetTemperature
-                    "
-                    :disabled="!canCommand || environmentSubmitting"
-                  >
-                    设置目标温度
-                  </a-checkbox>
-                  <a-input-number
-                    v-model:value="
-                      environmentControlForm.targetTemperatureCelsius
-                    "
-                    :min="18"
-                    :max="30"
-                    :disabled="
-                      !canCommand ||
-                      environmentSubmitting ||
-                      !environmentControlForm.includeTargetTemperature
-                    "
-                    class="w-28"
-                  />
-                  <span>C</span>
-                </div>
-                <div
-                  v-if="targetTemperatureInvalid"
-                  class="text-xs text-red-600"
-                >
-                  目标温度必须在 18-30 C
-                </div>
-                <div v-if="!canCommand" class="text-xs text-gray-500">
-                  无机器控制权限
-                </div>
-              </div>
-            </a-form-item>
-            <a-button
-              v-if="canCommand"
-              type="primary"
-              :loading="environmentSubmitting"
-              :disabled="environmentCommandDisabled"
-              @click="submitEnvironmentCommand"
-            >
-              提交环境控制
-            </a-button>
-          </a-form>
-        </a-card>
-      </a-col>
-    </a-row>
+        </a-col>
+      </a-row>
+      <div
+        v-if="
+          externalNaturalEnvironmentDiagnostic ||
+          externalNaturalEnvironment?.weather?.diagnostic ||
+          externalNaturalEnvironment?.sun?.diagnostic ||
+          externalNaturalEnvironment?.calendar?.diagnostic
+        "
+        class="mt-4 rounded border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900"
+      >
+        <div v-if="externalNaturalEnvironmentDiagnostic">
+          {{ externalDiagnosticMessage(externalNaturalEnvironmentDiagnostic) }}
+        </div>
+        <div v-if="externalNaturalEnvironment?.weather?.diagnostic">
+          天气：{{
+            externalDiagnosticMessage(
+              externalNaturalEnvironment.weather.diagnostic,
+            )
+          }}
+        </div>
+        <div v-if="externalNaturalEnvironment?.sun?.diagnostic">
+          日照：{{
+            externalDiagnosticMessage(externalNaturalEnvironment.sun.diagnostic)
+          }}
+        </div>
+        <div v-if="externalNaturalEnvironment?.calendar?.diagnostic">
+          日历：{{
+            externalDiagnosticMessage(
+              externalNaturalEnvironment.calendar.diagnostic,
+            )
+          }}
+        </div>
+      </div>
+    </a-card>
 
     <a-card v-if="productionPilotReadiness">
       <div class="mb-4 flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 class="text-lg font-semibold">生产试运营诊断门禁</h2>
-          <p class="mt-1 text-sm text-slate-500">
-            汇总生产试运营所需证据；它比普通运行健康和机器售卖就绪更严格。
-          </p>
         </div>
         <a-space>
           <a-tag

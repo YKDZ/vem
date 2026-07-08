@@ -43,9 +43,17 @@ import { formatDateTime } from "@/utils/format";
 
 import {
   mapEnvironmentControlFormToContract,
+  mapMachineBasicsFormToUpdateContract,
   mapMachineFormToContract,
   mapSlotFormToContract,
 } from "./machine-contract-mappers";
+import {
+  airConditionerLabel,
+  formatEnvironmentNumber,
+  sensorStatusLabel,
+  targetTemperatureLabel,
+} from "./machine-environment-display";
+import MachineEnvironmentCard from "./MachineEnvironmentCard.vue";
 
 const authStore = useAuthStore();
 const router = useRouter();
@@ -82,7 +90,7 @@ function openMachineDetailWindow(m: Machine): void {
     name: "machine-detail",
     params: { id: m.id },
   }).href;
-  window.open(href, `_blank`, "noopener,noreferrer");
+  window.open(href, "_blank", "noopener,noreferrer");
 }
 
 // Machine form / drawer
@@ -128,9 +136,16 @@ function openEditMachine(m: Machine): void {
 }
 
 async function saveMachine(): Promise<void> {
-  let body: ReturnType<typeof mapMachineFormToContract>;
+  let body:
+    | ReturnType<typeof mapMachineFormToContract>
+    | ReturnType<typeof mapMachineBasicsFormToUpdateContract>;
   try {
-    body = mapMachineFormToContract(machineForm.value);
+    if (editingMachine.value) {
+      const { code: _code, ...basicForm } = machineForm.value;
+      body = mapMachineBasicsFormToUpdateContract(basicForm);
+    } else {
+      body = mapMachineFormToContract(machineForm.value);
+    }
   } catch {
     Modal.error({
       title: "固定地理坐标无效",
@@ -139,12 +154,16 @@ async function saveMachine(): Promise<void> {
     });
     return;
   }
+
   machineSaving.value = true;
   try {
     if (editingMachine.value) {
-      await updateMachine(editingMachine.value.id, body);
+      await updateMachine(
+        editingMachine.value.id,
+        body as ReturnType<typeof mapMachineBasicsFormToUpdateContract>,
+      );
     } else {
-      await createMachine(body);
+      await createMachine(body as ReturnType<typeof mapMachineFormToContract>);
     }
     machineDrawerOpen.value = false;
     await loadMachines();
@@ -201,16 +220,6 @@ async function openEnvironment(m: Machine): Promise<void> {
   } finally {
     environmentLoading.value = false;
   }
-}
-
-function commandStatusLabel(status: MachineCommandStatus | null): string {
-  if (status === "pending") return "命令待发送";
-  if (status === "sent") return "命令已发送";
-  if (status === "acknowledged") return "命令已确认";
-  if (status === "succeeded") return "命令成功";
-  if (status === "failed") return "命令失败";
-  if (status === "timeout") return "命令超时";
-  return "命令状态未知";
 }
 
 async function submitEnvironmentCommand(): Promise<void> {
@@ -291,34 +300,6 @@ async function saveSlot(): Promise<void> {
   } finally {
     slotSaving.value = false;
   }
-}
-
-function formatEnvironmentNumber(
-  value: number | undefined,
-  suffix: string,
-): string {
-  if (typeof value !== "number") return `-- ${suffix}`;
-  const formatted = Number.isInteger(value) ? String(value) : value.toFixed(1);
-  return suffix.startsWith("%")
-    ? `${formatted}${suffix}`
-    : `${formatted} ${suffix}`;
-}
-
-function sensorStatusLabel(status: string | undefined): string {
-  if (status === "ok") return "传感器正常";
-  if (status === "faulted") return "传感器故障";
-  return "传感器未知";
-}
-
-function airConditionerLabel(on: boolean | undefined): string {
-  if (on === true) return "空调开";
-  if (on === false) return "空调关";
-  return "空调未知";
-}
-
-function targetTemperatureLabel(value: number | null | undefined): string {
-  if (typeof value !== "number") return "目标未知";
-  return `目标 ${formatEnvironmentNumber(value, "C")}`;
 }
 
 function formatGeoLocation(geoLocation: MachineGeoLocation | null): string {
@@ -621,7 +602,10 @@ async function handleRequestLogExport(m: Machine): Promise<void> {
     >
       <a-form layout="vertical" :preserve="false">
         <a-form-item label="编码">
-          <a-input v-model:value="machineForm.code" />
+          <a-input
+            v-model:value="machineForm.code"
+            :disabled="Boolean(editingMachine)"
+          />
         </a-form-item>
         <a-form-item label="名称">
           <a-input v-model:value="machineForm.name" />
@@ -629,16 +613,13 @@ async function handleRequestLogExport(m: Machine): Promise<void> {
         <a-form-item label="位置标签">
           <a-input v-model:value="machineForm.locationLabel" />
         </a-form-item>
-        <a-alert
-          class="mb-4"
-          type="info"
-          message="固定地理坐标使用 WGS84 室外代表性站点坐标，用于天气、日出日落和本地时区计算；不是室内定位，也不要直接填写 GCJ-02 或 BD-09 地图坐标。"
-          show-icon
-        />
         <a-form-item label="配置固定地理坐标">
           <a-checkbox v-model:checked="machineForm.includeGeoLocation">
             启用固定地理坐标
           </a-checkbox>
+          <p class="mt-1 text-xs text-slate-500">
+            使用 WGS84 室外代表性站点坐标；不要填写 GCJ-02 或 BD-09 坐标。
+          </p>
         </a-form-item>
         <a-form-item label="纬度 latitude">
           <a-input-number
@@ -679,107 +660,17 @@ async function handleRequestLogExport(m: Machine): Promise<void> {
     >
       <div v-if="environmentLoading" class="text-sm text-gray-500">加载中</div>
       <template v-else-if="environmentMachine">
-        <a-descriptions bordered :column="1" size="small">
-          <template v-if="environmentMachine.latestEnvironment">
-            <a-descriptions-item label="温度">{{
-              formatEnvironmentNumber(
-                environmentMachine.latestEnvironment.temperatureCelsius,
-                "C",
-              )
-            }}</a-descriptions-item>
-            <a-descriptions-item label="湿度">{{
-              formatEnvironmentNumber(
-                environmentMachine.latestEnvironment.humidityRh,
-                "% RH",
-              )
-            }}</a-descriptions-item>
-            <a-descriptions-item label="采样时间">{{
-              formatDateTime(environmentMachine.latestEnvironment.sampledAt)
-            }}</a-descriptions-item>
-            <a-descriptions-item label="传感器状态">{{
-              sensorStatusLabel(
-                environmentMachine.latestEnvironment.sensorStatus,
-              )
-            }}</a-descriptions-item>
-            <a-descriptions-item label="空调状态">{{
-              airConditionerLabel(
-                environmentMachine.latestEnvironment.airConditionerOn,
-              )
-            }}</a-descriptions-item>
-            <a-descriptions-item label="目标温度">{{
-              targetTemperatureLabel(
-                environmentMachine.latestEnvironment.targetTemperatureCelsius,
-              )
-            }}</a-descriptions-item>
-          </template>
-          <template v-else>
-            <a-descriptions-item label="最新读数">环境未知</a-descriptions-item>
-          </template>
-          <a-descriptions-item label="最新命令">{{
-            commandStatusLabel(environmentCommandStatus)
-          }}</a-descriptions-item>
-        </a-descriptions>
-        <a-form layout="vertical" class="mt-4">
-          <a-form-item label="控制动作">
-            <div class="space-y-2">
-              <div class="flex items-center gap-3">
-                <a-checkbox
-                  v-model:checked="environmentControlForm.includeAirConditioner"
-                  :disabled="!canCommand || environmentSubmitting"
-                  >设置空调开关</a-checkbox
-                >
-                <a-switch
-                  v-model:checked="environmentControlForm.airConditionerOn"
-                  :disabled="
-                    !canCommand ||
-                    environmentSubmitting ||
-                    !environmentControlForm.includeAirConditioner
-                  "
-                  >{{
-                    environmentControlForm.airConditionerOn ? "开" : "关"
-                  }}</a-switch
-                >
-              </div>
-              <div class="flex items-center gap-3">
-                <a-checkbox
-                  v-model:checked="
-                    environmentControlForm.includeTargetTemperature
-                  "
-                  :disabled="!canCommand || environmentSubmitting"
-                  >设置目标温度</a-checkbox
-                >
-                <a-input-number
-                  v-model:value="
-                    environmentControlForm.targetTemperatureCelsius
-                  "
-                  :min="18"
-                  :max="30"
-                  :disabled="
-                    !canCommand ||
-                    environmentSubmitting ||
-                    !environmentControlForm.includeTargetTemperature
-                  "
-                  class="w-28"
-                />
-                <span>C</span>
-              </div>
-              <div v-if="targetTemperatureInvalid" class="text-xs text-red-600">
-                目标温度必须在 18-30 C
-              </div>
-              <div v-if="!canCommand" class="text-xs text-gray-500">
-                无机器控制权限
-              </div>
-            </div>
-          </a-form-item>
-          <a-button
-            v-if="canCommand"
-            type="primary"
-            :loading="environmentSubmitting"
-            :disabled="environmentCommandDisabled"
-            @click="submitEnvironmentCommand"
-            >提交环境控制</a-button
-          >
-        </a-form>
+        <MachineEnvironmentCard
+          :environment="environmentMachine.latestEnvironment"
+          :command-status="environmentCommandStatus"
+          :form="environmentControlForm"
+          :can-command="canCommand"
+          :submitting="environmentSubmitting"
+          :target-temperature-invalid="targetTemperatureInvalid"
+          :command-disabled="environmentCommandDisabled"
+          :bordered="false"
+          @submit="submitEnvironmentCommand"
+        />
       </template>
     </a-drawer>
 
