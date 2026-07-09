@@ -1,0 +1,150 @@
+name: Build Windows Runtime Artifacts
+
+on:
+  workflow_call:
+    inputs:
+      artifact_name:
+        description: Name for the uploaded runtime artifact
+        required: false
+        default: windows-runtime-artifacts
+        type: string
+      retention_days:
+        description: Artifact retention in days
+        required: false
+        default: 7
+        type: number
+    outputs:
+      artifact_name:
+        description: Uploaded runtime artifact name
+        value: ${{ jobs.build.outputs.artifact_name }}
+  workflow_dispatch:
+    inputs:
+      artifact_name:
+        description: Name for the uploaded runtime artifact
+        required: false
+        default: windows-runtime-artifacts
+      retention_days:
+        description: Artifact retention in days
+        required: false
+        default: 7
+        type: number
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build Windows Runtime Artifacts
+    runs-on: windows-latest
+    timeout-minutes: 90
+    outputs:
+      artifact_name: ${{ inputs.artifact_name || 'windows-runtime-artifacts' }}
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Restore Cargo cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/git
+            ~/.cargo/registry
+            target
+          key: ${{ runner.os }}-cargo-windows-runtime-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-windows-runtime-
+            ${{ runner.os }}-cargo-
+
+      - name: Install Dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Restore Turbo cache
+        uses: actions/cache@v4
+        with:
+          path: .turbo/cache
+          key: ${{ runner.os }}-turbo-windows-runtime-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-turbo-windows-runtime-
+            ${{ runner.os }}-turbo-
+
+      - name: Build Shared Package
+        run: pnpm turbo build --filter @vem/shared
+
+      - name: Build Vending Daemon
+        run: cargo build -p vending-daemon --release --target x86_64-pc-windows-msvc
+
+      - name: Build Machine UI Kiosk
+        working-directory: apps/machine
+        run: pnpm dlx @tauri-apps/cli@^2.0.0 build --config src-tauri/tauri.windows.conf.json --no-bundle
+
+      - name: Stage Runtime Artifacts
+        run: |
+          $ErrorActionPreference = "Stop"
+          $artifactRoot = Join-Path $env:RUNNER_TEMP "vem-runtime-artifacts"
+          New-Item -ItemType Directory -Force -Path $artifactRoot | Out-Null
+
+          $daemonExe = Join-Path $env:GITHUB_WORKSPACE "target\x86_64-pc-windows-msvc\release\vending-daemon.exe"
+          if (-not (Test-Path $daemonExe)) { throw "vending-daemon.exe not found: $daemonExe" }
+          Copy-Item -Force -Path $daemonExe -Destination (Join-Path $artifactRoot "vending-daemon.exe")
+
+          $machineExe = Get-ChildItem -Path $env:GITHUB_WORKSPACE -Recurse -Filter "machine.exe" |
+            Where-Object { $_.FullName -match "\\release\\" -and $_.FullName -notmatch "\\debug\\" -and $_.FullName -notmatch "\\node_modules\\" } |
+            Sort-Object FullName |
+            Select-Object -First 1
+          if (-not $machineExe) { throw "machine.exe release artifact not found" }
+          Copy-Item -Force -Path $machineExe.FullName -Destination (Join-Path $artifactRoot "machine.exe")
+
+          $webView2Loader = Get-ChildItem -Path (Split-Path -Parent $machineExe.FullName) -Recurse -Filter "WebView2Loader.dll" |
+            Where-Object { $_.FullName -notmatch "\\node_modules\\" } |
+            Sort-Object FullName |
+            Select-Object -First 1
+          if (-not $webView2Loader) { throw "WebView2Loader.dll sidecar not found next to machine.exe build output" }
+          Copy-Item -Force -Path $webView2Loader.FullName -Destination (Join-Path $artifactRoot "WebView2Loader.dll")
+
+          $hashLines = Get-ChildItem -Path $artifactRoot -File |
+            Sort-Object Name |
+            ForEach-Object {
+              $hash = Get-FileHash -Algorithm SHA256 -Path $_.FullName
+              "sha256:$($_.Name)=$($hash.Hash)"
+            }
+          $metadata = @(
+            "commit=${{ github.sha }}",
+            "ref=${{ github.ref_name }}",
+            "run_id=${{ github.run_id }}",
+            "run_number=${{ github.run_number }}",
+            "built_at_utc=$((Get-Date).ToUniversalTime().ToString('o'))",
+            "runner=$env:RUNNER_NAME",
+            "daemon_source=$daemonExe",
+            "machine_ui_source=$($machineExe.FullName)",
+            "webview2_loader_source=$($webView2Loader.FullName)",
+            "",
+            "hashes:",
+            $hashLines
+          )
+          $metadata | Set-Content -Encoding UTF8 (Join-Path $artifactRoot "WINDOWS-RUNTIME-ARTIFACTS.txt")
+
+          Get-ChildItem -Path $artifactRoot | Format-Table FullName, Length
+
+      - name: Upload Runtime Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact_name || 'windows-runtime-artifacts' }}
+          path: ${{ runner.temp }}/vem-runtime-artifacts/
+          if-no-files-found: error
+          retention-days: ${{ inputs.retention_days || 7 }}

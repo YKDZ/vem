@@ -42,87 +42,10 @@ permissions:
 jobs:
   build-windows-artifacts:
     name: Build Windows Runtime Artifacts
-    runs-on: windows-latest
-    timeout-minutes: 90
-    defaults:
-      run:
-        shell: pwsh
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Install pnpm
-        uses: pnpm/action-setup@v6
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: 24
-          cache: pnpm
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Restore Cargo cache
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/git
-            ~/.cargo/registry
-            target
-          key: ${{ runner.os }}-cargo-${{ github.job }}-${{ hashFiles('Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-${{ github.job }}-
-            ${{ runner.os }}-cargo-
-
-      - name: Install Dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Restore Turbo cache
-        uses: actions/cache@v4
-        with:
-          path: .turbo/cache
-          key: ${{ runner.os }}-turbo-${{ github.job }}-${{ github.sha }}
-          restore-keys: |
-            ${{ runner.os }}-turbo-${{ github.job }}-
-            ${{ runner.os }}-turbo-
-
-      - name: Build Shared Package
-        run: pnpm turbo build --filter @vem/shared
-
-      - name: Build Vending Daemon
-        run: cargo build -p vending-daemon --release --target x86_64-pc-windows-msvc
-
-      - name: Build Machine UI Kiosk
-        working-directory: apps/machine
-        run: pnpm dlx @tauri-apps/cli@^2.0.0 build --config src-tauri/tauri.windows.conf.json --no-bundle
-
-      - name: Stage Runtime Artifacts
-        run: |
-          $ErrorActionPreference = "Stop"
-          $artifactRoot = Join-Path $env:RUNNER_TEMP "vem-runtime-artifacts"
-          New-Item -ItemType Directory -Force -Path $artifactRoot | Out-Null
-
-          $daemonExe = Join-Path $env:GITHUB_WORKSPACE "target\x86_64-pc-windows-msvc\release\vending-daemon.exe"
-          if (-not (Test-Path $daemonExe)) { throw "vending-daemon.exe not found: $daemonExe" }
-          Copy-Item -Force -Path $daemonExe -Destination (Join-Path $artifactRoot "vending-daemon.exe")
-
-          $machineExe = Get-ChildItem -Path $env:GITHUB_WORKSPACE -Recurse -Filter "machine.exe" |
-            Where-Object { $_.FullName -match "\\release\\" -and $_.FullName -notmatch "\\debug\\" -and $_.FullName -notmatch "\\node_modules\\" } |
-            Sort-Object FullName |
-            Select-Object -First 1
-          if (-not $machineExe) { throw "machine.exe release artifact not found" }
-          Copy-Item -Force -Path $machineExe.FullName -Destination (Join-Path $artifactRoot "machine.exe")
-
-          Get-ChildItem -Path $artifactRoot | Format-Table FullName, Length
-
-      - name: Upload Runtime Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: vm-runtime-windows-artifacts
-          path: ${{ runner.temp }}/vem-runtime-artifacts/
-          if-no-files-found: error
-          retention-days: 7
+    uses: ./.github/workflows/build-windows-runtime-artifacts.yml
+    with:
+      artifact_name: vm-runtime-windows-artifacts
+      retention_days: 7
 
   vm-runtime-acceptance:
     name: Restore VM And Run Acceptance
@@ -167,8 +90,15 @@ jobs:
       - name: Download Windows Runtime Artifacts
         uses: actions/download-artifact@v4
         with:
-          name: vm-runtime-windows-artifacts
+          name: ${{ needs.build-windows-artifacts.outputs.artifact_name }}
           path: artifacts/vm-runtime-inputs
+
+      - name: Validate Windows Runtime Artifacts
+        run: |
+          set -euo pipefail
+          test -f artifacts/vm-runtime-inputs/vending-daemon.exe
+          test -f artifacts/vm-runtime-inputs/machine.exe
+          test -f artifacts/vm-runtime-inputs/WebView2Loader.dll
 
       - name: Start Ephemeral Postgres And MQTT
         run: |

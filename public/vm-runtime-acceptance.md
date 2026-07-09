@@ -46,6 +46,8 @@ The first automated Windows runtime gate should run through a self-hosted runner
 
 The runner contract must stay host-portable. Repository workflows should call a small VM restore/start/wait contract rather than depending directly on Unraid-only paths or UI behavior. The current implementation may use a `libvirt-qcow2` adapter on Unraid, but a later dedicated host or cloud server should be able to provide the same contract with a different adapter.
 
+Testbed Runner Maintenance Ingress is the explicit control-plane path from a self-hosted runner to a disposable Machine Runtime Testbed VM. It is not production controlled remote maintenance access. It may allow the runner to reach Windows SSH for the maintenance account through a narrowly scoped source allowlist, while preserving kiosk-account SSH denial and production defaults.
+
 The VM host adapter contract only prepares a reachable Windows VM. It takes a run id, a base image identity, and a target VM identity; it stops the VM, restores or rebuilds the disk, starts the VM, waits for Windows SSH, and emits restore evidence including the Windows SSH endpoint, observed host identity, base image hash, and evidence path. It must not build VEM artifacts, start the ephemeral platform, provision the machine, run runtime acceptance, run simulated sale-flow, or interpret VEM business results.
 
 The adapter must emit a `vm-host-restore-report/v1` JSON report, and runtime acceptance should consume that report instead of inferring VM state from host-specific paths. The first report shape is:
@@ -82,7 +84,9 @@ The first version should restore the runtime acceptance VM by rebuilding the `wi
 
 The first self-hosted workflow is manually triggered with `workflow_dispatch` only. It must run as a single-flight infrastructure job and must not attach to pull-request or push events until VM restore, cleanup, locking, and failure recovery are proven stable.
 
-The first workflow should be a dedicated `.github/workflows/vm-runtime-acceptance.yml` rather than part of the regular CI or Windows bring-up bundle workflows. It should check out the repository, build daemon and machine UI artifacts, call the VM host adapter to produce `vm-host-restore-report.json`, prepare the ephemeral platform, run `scripts/testbed/win10-vem-e2e.mjs --mode vm-runtime-acceptance`, and upload the run-scoped acceptance artifacts.
+The first workflow should be a dedicated `.github/workflows/vm-runtime-acceptance.yml` rather than part of the regular CI or Windows bring-up bundle workflows. It should consume the shared Windows runtime artifact workflow, call the VM host adapter to produce `vm-host-restore-report.json`, prepare the ephemeral platform, run `scripts/testbed/win10-vem-e2e.mjs --mode vm-runtime-acceptance`, and upload the run-scoped acceptance artifacts.
+
+Windows runtime artifacts are the current-run `vending-daemon.exe`, `machine.exe`, and `WebView2Loader.dll` built by the shared GitHub workflow. Dependency and compiler intermediates may use GitHub cache, but the final runtime artifacts are passed as same-run artifacts rather than reused across commits.
 
 GitHub hosted Windows runner coverage may still be used for narrow build or script smoke checks, but it must not assert kiosk session readiness, shell launcher behavior, portrait display proof, virtual COM pair behavior, WebView kiosk startup, `runtimeReady`, `simulatedHardwareReady`, or production `sellReady`. Those remain self-hosted VM runtime acceptance or real hardware acceptance responsibilities.
 

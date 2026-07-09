@@ -17,6 +17,7 @@ on:
       - main
     paths:
       - .github/workflows/windows-bringup-bundle.yml
+      - .github/workflows/build-windows-runtime-artifacts.yml
       - apps/machine/**
       - apps/vending-daemon/**
       - crates/**
@@ -35,10 +36,18 @@ permissions:
   contents: read
 
 jobs:
+  build-windows-artifacts:
+    name: Build Windows Runtime Artifacts
+    uses: ./.github/workflows/build-windows-runtime-artifacts.yml
+    with:
+      artifact_name: windows-runtime-artifacts-${{ github.run_id }}
+      retention_days: 7
+
   build:
     name: Build Bring-up Bundle
+    needs: build-windows-artifacts
     runs-on: windows-latest
-    timeout-minutes: 90
+    timeout-minutes: 30
     defaults:
       run:
         shell: pwsh
@@ -47,30 +56,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Install pnpm
-        uses: pnpm/action-setup@v6
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
+      - name: Download Windows Runtime Artifacts
+        uses: actions/download-artifact@v4
         with:
-          node-version: 24
-          cache: pnpm
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install Dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Build Shared Package
-        run: pnpm turbo build --filter @vem/shared
-
-      - name: Build Vending Daemon
-        run: cargo build -p vending-daemon --release --target x86_64-pc-windows-msvc
-
-      - name: Build Machine UI Kiosk
-        working-directory: apps/machine
-        run: pnpm dlx @tauri-apps/cli@^2.0.0 build --config src-tauri/tauri.windows.conf.json --no-bundle
+          name: windows-runtime-artifacts-${{ github.run_id }}
+          path: ${{ runner.temp }}/vem-runtime-artifacts
 
       - name: Stage Bring-up Bundle
         run: |
@@ -79,24 +69,14 @@ jobs:
           $scriptDir = Join-Path $bundleRoot "scripts\windows"
           New-Item -ItemType Directory -Force -Path $scriptDir | Out-Null
 
-          $daemonExact = Join-Path $env:GITHUB_WORKSPACE "target\x86_64-pc-windows-msvc\release\vending-daemon.exe"
-          if (Test-Path $daemonExact) {
-            $daemonExe = Get-Item $daemonExact
-          } else {
-            $daemonExe = Get-ChildItem -Path $env:GITHUB_WORKSPACE -Recurse -Filter "vending-daemon.exe" |
-              Where-Object { $_.FullName -match "\\release\\" -and $_.FullName -notmatch "\\debug\\" } |
-              Sort-Object FullName |
-              Select-Object -First 1
+          $runtimeRoot = Join-Path $env:RUNNER_TEMP "vem-runtime-artifacts"
+          $daemonExe = Join-Path $runtimeRoot "vending-daemon.exe"
+          $machineExe = Join-Path $runtimeRoot "machine.exe"
+          $webView2Loader = Join-Path $runtimeRoot "WebView2Loader.dll"
+          foreach ($path in @($daemonExe, $machineExe, $webView2Loader)) {
+            if (-not (Test-Path $path)) { throw "runtime artifact not found: $path" }
+            Copy-Item -Force -Path $path -Destination (Join-Path $bundleRoot (Split-Path -Leaf $path))
           }
-          if (-not $daemonExe) { throw "vending-daemon.exe release artifact not found" }
-          Copy-Item -Force -Path $daemonExe.FullName -Destination (Join-Path $bundleRoot "vending-daemon.exe")
-
-          $machineExe = Get-ChildItem -Path $env:GITHUB_WORKSPACE -Recurse -Filter "machine.exe" |
-            Where-Object { $_.FullName -match "\\release\\" -and $_.FullName -notmatch "\\debug\\" -and $_.FullName -notmatch "\\node_modules\\" } |
-            Sort-Object FullName |
-            Select-Object -First 1
-          if (-not $machineExe) { throw "machine.exe release artifact not found" }
-          Copy-Item -Force -Path $machineExe.FullName -Destination (Join-Path $bundleRoot "machine.exe")
 
           Copy-Item -Force -Path (Join-Path $env:GITHUB_WORKSPACE "scripts\windows\vending-daemon-smoke.ps1") -Destination $scriptDir
           Copy-Item -Force -Path (Join-Path $env:GITHUB_WORKSPACE "scripts\windows\setup-scheduled-tasks.ps1") -Destination $scriptDir
@@ -108,6 +88,7 @@ jobs:
             'Contents:',
             '- vending-daemon.exe',
             '- machine.exe',
+            '- WebView2Loader.dll',
             '- machine-config.bringup.example.json',
             '- scripts/windows/vending-daemon-smoke.ps1',
             '- scripts/windows/setup-scheduled-tasks.ps1',
@@ -149,8 +130,10 @@ jobs:
             "release_kind=${{ github.event.inputs.release_kind || 'ci' }}",
             "built_at_utc=$((Get-Date).ToUniversalTime().ToString('o'))",
             "runner=$env:RUNNER_NAME",
-            "daemon_source=$($daemonExe.FullName)",
-            "machine_ui_source=$($machineExe.FullName)",
+            "runtime_artifact=${{ needs.build-windows-artifacts.outputs.artifact_name }}",
+            "daemon_source=$daemonExe",
+            "machine_ui_source=$machineExe",
+            "webview2_loader_source=$webView2Loader",
             "",
             "hashes:",
             $hashLines
