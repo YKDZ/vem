@@ -110,11 +110,18 @@ jobs:
           if (-not $machineExe) { throw "machine.exe release artifact not found" }
           Copy-Item -Force -Path $machineExe.FullName -Destination (Join-Path $artifactRoot "machine.exe")
 
-          $webView2Loader = Get-ChildItem -Path (Split-Path -Parent $machineExe.FullName) -Recurse -Filter "WebView2Loader.dll" |
+          $machineExeDir = Split-Path -Parent $machineExe.FullName
+          $webView2Loader = Get-ChildItem -Path $machineExeDir -Recurse -Filter "WebView2Loader.dll" |
             Where-Object { $_.FullName -notmatch "\\node_modules\\" } |
             Sort-Object FullName |
             Select-Object -First 1
-          if (-not $webView2Loader) { throw "WebView2Loader.dll sidecar not found next to machine.exe build output" }
+          if (-not $webView2Loader) {
+            $webView2Loader = Get-ChildItem -Path (Join-Path $env:GITHUB_WORKSPACE "target") -Recurse -Filter "WebView2Loader.dll" |
+              Where-Object { $_.FullName -match "\\webview2-com-sys-[^\\]+\\out\\x64\\WebView2Loader\.dll$" } |
+              Sort-Object FullName |
+              Select-Object -First 1
+          }
+          if (-not $webView2Loader) { throw "WebView2Loader.dll sidecar not found in machine.exe output or WebView2 build output" }
           Copy-Item -Force -Path $webView2Loader.FullName -Destination (Join-Path $artifactRoot "WebView2Loader.dll")
 
           $hashLines = Get-ChildItem -Path $artifactRoot -File |
