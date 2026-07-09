@@ -155,7 +155,7 @@ export function parseMaintenanceRelayCliOptions(
   }
 
   const validation = validateMaintenanceRelayPlan(plan);
-  if (!validation.ok) {
+  if (validation.ok === false) {
     throw new Error(validation.errors.join("\n"));
   }
 
@@ -187,7 +187,7 @@ export async function runMaintenanceRelayCli(
 ): Promise<void> {
   const options = parseMaintenanceRelayCliOptions(args, io.env ?? process.env);
   const validation = validateMaintenanceRelayPlan(options.plan);
-  if (!validation.ok) {
+  if (validation.ok === false) {
     throw new Error(validation.errors.join("\n"));
   }
 

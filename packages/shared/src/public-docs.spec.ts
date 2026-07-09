@@ -222,7 +222,11 @@ describe("public production pilot SOP", () => {
       expect(content).not.toMatch(pattern);
     }
 
-    for (const pattern of [/\bssh\b/i, /Tailscale/i, /主机级命令/]) {
+    for (const pattern of [
+      /\bssh\b/i,
+      /Controlled Maintenance Ingress|WireGuard|relay/i,
+      /主机级命令/,
+    ]) {
       expect(routineOperatorWorkflow).not.toMatch(pattern);
       expect(emergencyRemoteAccess).toMatch(pattern);
     }
