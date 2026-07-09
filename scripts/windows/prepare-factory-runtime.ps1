@@ -28,6 +28,12 @@ param(
   [Parameter(Mandatory = $false)][string]$KioskPassword,
   [Parameter(Mandatory = $false)][string]$MaintenancePassword,
   [Parameter(Mandatory = $false)][string]$AutoLogonPassword,
+  [Parameter(Mandatory = $false)][string]$MaintenanceRelayWireGuardInstallerPath,
+  [Parameter(Mandatory = $false)][string]$MaintenanceRelayWireGuardInstallerSha256,
+  [Parameter(Mandatory = $false)][string]$MaintenanceRelayWireGuardConfigPath,
+  [Parameter(Mandatory = $false)][string]$MaintenanceRelayWireGuardConfigSha256,
+  [Parameter(Mandatory = $false)][string]$MaintenanceRelayTunnelName = "vem-maint",
+  [Parameter(Mandatory = $false)][string[]]$MaintenanceRelaySourceAllowlist,
 
   [switch]$ResetExistingVemState,
   [switch]$UseSecureCredentialEnvironment,
@@ -120,6 +126,78 @@ function Assert-CredentialInputs {
       maintenancePassword = [string]$maintenance.source
       autoLogonPassword = [string]$autoLogon.source
     }
+  }
+}
+
+function Test-MaintenanceRelayRequested {
+  return (
+    -not [string]::IsNullOrWhiteSpace($MaintenanceRelayWireGuardInstallerPath) -or
+    -not [string]::IsNullOrWhiteSpace($MaintenanceRelayWireGuardInstallerSha256) -or
+    -not [string]::IsNullOrWhiteSpace($MaintenanceRelayWireGuardConfigPath) -or
+    -not [string]::IsNullOrWhiteSpace($MaintenanceRelayWireGuardConfigSha256) -or
+    @($MaintenanceRelaySourceAllowlist).Count -gt 0
+  )
+}
+
+function Assert-MaintenanceRelayInputs {
+  if (-not (Test-MaintenanceRelayRequested)) {
+    return [ordered]@{
+      enabled = $false
+      status = "not_configured"
+    }
+  }
+
+  $missing = @()
+  foreach ($name in @(
+      "MaintenanceRelayWireGuardInstallerPath",
+      "MaintenanceRelayWireGuardInstallerSha256",
+      "MaintenanceRelayWireGuardConfigPath",
+      "MaintenanceRelayWireGuardConfigSha256"
+    )) {
+    $value = Get-Variable -Name $name -ValueOnly -ErrorAction SilentlyContinue
+    if ($null -eq $value -or [string]::IsNullOrWhiteSpace([string]$value)) {
+      $missing += $name
+    }
+  }
+  if (@($MaintenanceRelaySourceAllowlist).Count -eq 0) {
+    $missing += "MaintenanceRelaySourceAllowlist"
+  }
+  if ($missing.Count -gt 0) {
+    throw ("missing maintenance relay input: {0}" -f ($missing -join ", "))
+  }
+
+  if ($MaintenanceRelayTunnelName -notmatch "^[A-Za-z0-9_=+.-]{1,32}$") {
+    throw "MaintenanceRelayTunnelName must be 1-32 WireGuard tunnel-safe characters"
+  }
+  foreach ($source in @($MaintenanceRelaySourceAllowlist)) {
+    $trimmed = [string]$source
+    if ([string]::IsNullOrWhiteSpace($trimmed)) {
+      throw "MaintenanceRelaySourceAllowlist must not contain empty values"
+    }
+    if ($trimmed -match "^(0\.0\.0\.0/0|::/0|Any)$") {
+      throw "MaintenanceRelaySourceAllowlist must not contain broad sources: $trimmed"
+    }
+  }
+
+  $installerHash = Assert-Sha256 -Path $MaintenanceRelayWireGuardInstallerPath -ExpectedSha256 $MaintenanceRelayWireGuardInstallerSha256
+  $configHash = Assert-Sha256 -Path $MaintenanceRelayWireGuardConfigPath -ExpectedSha256 $MaintenanceRelayWireGuardConfigSha256
+  $configText = [System.IO.File]::ReadAllText($MaintenanceRelayWireGuardConfigPath, [System.Text.Encoding]::UTF8)
+  if (-not ($configText -match "(?im)^\s*\[Interface\]\s*$") -or -not ($configText -match "(?im)^\s*PrivateKey\s*=")) {
+    throw "maintenance relay WireGuard config must contain an Interface PrivateKey"
+  }
+  if ($configText -match "(?im)^\s*AllowedIPs\s*=\s*(0\.0\.0\.0/0|::/0)") {
+    throw "maintenance relay WireGuard config must not route broad AllowedIPs"
+  }
+
+  return [ordered]@{
+    enabled = $true
+    status = "preflight_passed"
+    tunnelName = $MaintenanceRelayTunnelName
+    installerPath = $MaintenanceRelayWireGuardInstallerPath
+    installerSha256 = $installerHash
+    configPath = $MaintenanceRelayWireGuardConfigPath
+    configSha256 = $configHash
+    sourceAllowlist = @($MaintenanceRelaySourceAllowlist | ForEach-Object { [string]$_ })
   }
 }
 
@@ -307,6 +385,7 @@ function Assert-FactoryRuntimePreflight {
   }
   $machineUiSidecarHash = (Get-FileHash -LiteralPath $machineUiSidecarPath -Algorithm SHA256).Hash.ToLowerInvariant()
   $credentials = Assert-CredentialInputs
+  $maintenanceRelay = Assert-MaintenanceRelayInputs
   $supportScripts = @(
     "setup-scheduled-tasks.ps1",
     "verify-factory-runtime.ps1",
@@ -323,6 +402,7 @@ function Assert-FactoryRuntimePreflight {
     MaintenancePassword = $credentials.MaintenancePassword
     AutoLogonPassword = $credentials.AutoLogonPassword
     CredentialSources = $credentials.Sources
+    MaintenanceRelay = $maintenanceRelay
     SupportScripts = @($supportScripts)
   }
 }
@@ -388,6 +468,7 @@ function New-FactoryRuntimePlan {
           targetPath = Join-Path $RuntimeRoot "WebView2Loader.dll"
         }
       )
+      maintenanceRelay = $Preflight.MaintenanceRelay
     }
     layout = [ordered]@{
       runtimeRoot = $RuntimeRoot
@@ -402,6 +483,7 @@ function New-FactoryRuntimePlan {
       provisioningRoot = $provisioningRoot
       secretsRoot = $secretsRoot
       evidenceRoot = $evidenceRoot
+      maintenanceRelayRoot = Join-Path $ProgramDataRoot "maintenance-relay"
       verifierEvidencePath = Join-Path $evidenceRoot "factory-runtime-verification.json"
       overridesRoot = $overridesRoot
     }
@@ -414,6 +496,7 @@ function New-FactoryRuntimePlan {
       "C:\ProgramData\VEM\provisioning",
       "C:\ProgramData\VEM\secrets",
       "C:\ProgramData\VEM\evidence",
+      (Join-Path $ProgramDataRoot "maintenance-relay"),
       "C:\ProgramData\VEM\overrides"
     )
     registrations = [ordered]@{
@@ -423,8 +506,94 @@ function New-FactoryRuntimePlan {
       visionTaskName = "VEM\StartVisionServer"
       setupScript = Join-Path $scriptsRoot "setup-scheduled-tasks.ps1"
       verifierScript = Join-Path $scriptsRoot "verify-factory-runtime.ps1"
+      maintenanceRelayTunnelServiceName = if ([bool]$Preflight.MaintenanceRelay.enabled) { "WireGuardTunnel${MaintenanceRelayTunnelName}" } else { $null }
     }
     resetEvidence = New-EmptyResetEvidence
+  }
+}
+
+function Get-WireGuardExePath {
+  foreach ($path in @(
+      "C:\Program Files\WireGuard\wireguard.exe",
+      "C:\Program Files (x86)\WireGuard\wireguard.exe"
+    )) {
+    if (Test-Path -LiteralPath $path -PathType Leaf) {
+      return $path
+    }
+  }
+  return $null
+}
+
+function Get-WgExePath {
+  foreach ($path in @(
+      "C:\Program Files\WireGuard\wg.exe",
+      "C:\Program Files (x86)\WireGuard\wg.exe"
+    )) {
+    if (Test-Path -LiteralPath $path -PathType Leaf) {
+      return $path
+    }
+  }
+  return $null
+}
+
+function Install-MaintenanceRelayWireGuard {
+  param($MaintenanceRelay)
+
+  if (-not [bool]$MaintenanceRelay.enabled) {
+    return [ordered]@{
+      enabled = $false
+      status = "not_configured"
+    }
+  }
+
+  Assert-Sha256 -Path $MaintenanceRelay.installerPath -ExpectedSha256 $MaintenanceRelay.installerSha256 | Out-Null
+  Assert-Sha256 -Path $MaintenanceRelay.configPath -ExpectedSha256 $MaintenanceRelay.configSha256 | Out-Null
+
+  $wireGuardExe = Get-WireGuardExePath
+  if ($null -eq $wireGuardExe) {
+    $extension = [System.IO.Path]::GetExtension([string]$MaintenanceRelay.installerPath).ToLowerInvariant()
+    if ($extension -eq ".msi") {
+      $process = Start-Process -FilePath "msiexec.exe" -ArgumentList @("/i", [string]$MaintenanceRelay.installerPath, "/qn", "/norestart") -PassThru -Wait
+    } else {
+      $process = Start-Process -FilePath ([string]$MaintenanceRelay.installerPath) -ArgumentList @("/install", "/quiet", "/norestart") -PassThru -Wait
+    }
+    if ($process.ExitCode -ne 0) {
+      throw "WireGuard installer failed with exit code $($process.ExitCode)"
+    }
+    $wireGuardExe = Get-WireGuardExePath
+  }
+  if ($null -eq $wireGuardExe) {
+    throw "WireGuard executable not found after installer completed"
+  }
+
+  $relayRoot = "C:\ProgramData\VEM\maintenance-relay"
+  Ensure-Directory -Path $relayRoot
+  $targetConfig = Join-Path $relayRoot ("{0}.conf" -f $MaintenanceRelay.tunnelName)
+  Copy-Item -LiteralPath ([string]$MaintenanceRelay.configPath) -Destination $targetConfig -Force
+  icacls.exe $targetConfig /inheritance:r /grant:r "SYSTEM:F" "Administrators:F" | Out-Null
+
+  $serviceName = "WireGuardTunnel{0}" -f $MaintenanceRelay.tunnelName
+  $existingService = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+  if ($null -ne $existingService) {
+    Stop-Service -Name $serviceName -Force -ErrorAction SilentlyContinue
+    & $wireGuardExe /uninstalltunnelservice ([string]$MaintenanceRelay.tunnelName) | Out-Null
+  }
+  & $wireGuardExe /installtunnelservice $targetConfig | Out-Null
+  Set-Service -Name $serviceName -StartupType Automatic
+  Start-Service -Name $serviceName
+
+  return [ordered]@{
+    enabled = $true
+    status = "configured"
+    tunnelName = [string]$MaintenanceRelay.tunnelName
+    serviceName = $serviceName
+    serviceStartupType = "Automatic"
+    configPath = $targetConfig
+    configSha256 = [string]$MaintenanceRelay.configSha256
+    installerSha256 = [string]$MaintenanceRelay.installerSha256
+    wireGuardExe = $wireGuardExe
+    wgExe = Get-WgExePath
+    sourceAllowlist = @($MaintenanceRelay.sourceAllowlist)
   }
 }
 
@@ -651,6 +820,27 @@ function Write-FactoryRuntimeFiles {
         launcherPath = (Join-Path $RuntimeRoot "launch-machine-ui-debug.vbs")
         setupScript = (Join-Path $scriptsRoot "setup-scheduled-tasks.ps1")
       }
+      maintenanceRelay = if ([bool]$Preflight.MaintenanceRelay.enabled) {
+        [ordered]@{
+          kind = "wireguard-maintenance-relay"
+          bootstrapMode = "preconfigured-base-image"
+          tunnelName = [string]$Preflight.MaintenanceRelay.tunnelName
+          tunnelServiceName = "WireGuardTunnel${MaintenanceRelayTunnelName}"
+          configPath = Join-Path ([string]$Plan.layout.maintenanceRelayRoot) ("{0}.conf" -f $Preflight.MaintenanceRelay.tunnelName)
+          configSha256 = [string]$Preflight.MaintenanceRelay.configSha256
+          installerSha256 = [string]$Preflight.MaintenanceRelay.installerSha256
+          controlledMaintenanceIngress = [ordered]@{
+            transport = "ssh"
+            port = 22
+            sourceAllowlist = @($Preflight.MaintenanceRelay.sourceAllowlist)
+          }
+        }
+      } else {
+        [ordered]@{
+          kind = "none"
+          bootstrapMode = "not_configured"
+        }
+      }
     }
     components = $Plan.inputs.components
     paths = $Plan.layout
@@ -708,21 +898,45 @@ function Write-FactoryRuntimeFiles {
   }
   Write-JsonFile -Path ([string]$Plan.layout.daemonConfigPath) -Value ([pscustomobject]$daemonConfig)
 
+  $maintenanceRelayApplication = Install-MaintenanceRelayWireGuard -MaintenanceRelay $Preflight.MaintenanceRelay
+
+  $setupArguments = @(
+    "-ConfigureKioskAccounts",
+    "-ConfigureAutoLogon",
+    "-KioskPassword",
+    $Preflight.KioskPassword,
+    "-MaintenancePassword",
+    $Preflight.MaintenancePassword,
+    "-AutoLogonPassword",
+    $Preflight.AutoLogonPassword,
+    "-KioskUser",
+    $ExpectedKioskUser,
+    "-MaintenanceUser",
+    $ExpectedMaintenanceUser,
+    "-ConfigureLocalMaintenanceAccess",
+    "-RunAsUser",
+    $ExpectedAutoLogonUser,
+    "-MachineUiExe",
+    (Join-Path $RuntimeRoot "machine.exe"),
+    "-DaemonExe",
+    (Join-Path $RuntimeRoot "vending-daemon.exe"),
+    "-ConfigureKioskShell",
+    "-UseKioskAccount"
+  )
+  if ([bool]$Preflight.MaintenanceRelay.enabled) {
+    $setupArguments += @(
+      "-ConfigureControlledMaintenanceIngress",
+      "-MaintenanceIngressSourceAllowlist"
+    )
+    $setupArguments += @($Preflight.MaintenanceRelay.sourceAllowlist)
+  }
+
   New-Service -Name "VemVendingDaemon" -BinaryPathName (Join-Path $RuntimeRoot "vending-daemon.exe") -StartupType Automatic -DisplayName "VEM Vending Daemon" -ErrorAction SilentlyContinue | Out-Null
-  & (Join-Path $scriptsRoot "setup-scheduled-tasks.ps1") `
-    -ConfigureKioskAccounts `
-    -ConfigureAutoLogon `
-    -KioskPassword $Preflight.KioskPassword `
-    -MaintenancePassword $Preflight.MaintenancePassword `
-    -AutoLogonPassword $Preflight.AutoLogonPassword `
-    -KioskUser $ExpectedKioskUser `
-    -MaintenanceUser $ExpectedMaintenanceUser `
-    -ConfigureLocalMaintenanceAccess `
-    -RunAsUser $ExpectedAutoLogonUser `
-    -MachineUiExe (Join-Path $RuntimeRoot "machine.exe") `
-    -DaemonExe (Join-Path $RuntimeRoot "vending-daemon.exe") `
-    -ConfigureKioskShell `
-    -UseKioskAccount
+  & (Join-Path $scriptsRoot "setup-scheduled-tasks.ps1") @setupArguments
+
+  return [ordered]@{
+    maintenanceRelayApplication = $maintenanceRelayApplication
+  }
 }
 
 Assert-RequiredInputs
@@ -739,7 +953,7 @@ $resetEvidence = Remove-ExistingVemState -State $existingState
 if ($null -eq $resetEvidence) {
   $resetEvidence = $existingState
 }
-Write-FactoryRuntimeFiles -Plan $plan -Preflight $preflight
+$writeResult = Write-FactoryRuntimeFiles -Plan $plan -Preflight $preflight
 
 $result = [ordered]@{
   ok = $true
@@ -748,5 +962,6 @@ $result = [ordered]@{
   bringupSettingsPath = $plan.layout.bringupSettingsPath
   resetExistingVemState = [bool]$ResetExistingVemState
   resetEvidence = $resetEvidence
+  maintenanceRelay = $writeResult.maintenanceRelayApplication
 }
 $result | ConvertTo-Json -Depth 30

@@ -11,7 +11,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 
 const VEM_RESET_ROOTS = [
   "C:\\VEM\\bringup",
@@ -233,14 +233,19 @@ const EXPECTED_PORTRAIT_HEIGHT_PX = 1920;
 const DEFAULT_DIRTY_HOST_TESTBED = {
   hostName: "DESKTOP-2STVS5B",
   user: "YKDZ",
-  tailscaleIp: "100.68.189.11",
 };
+const DEFAULT_CONTROLLED_MAINTENANCE_INGRESS_HOST =
+  "controlled-maintenance-ingress.local";
+const DEFAULT_CONTROLLED_MAINTENANCE_REMOTE = `${DEFAULT_DIRTY_HOST_TESTBED.user}@${DEFAULT_CONTROLLED_MAINTENANCE_INGRESS_HOST}`;
 const DEFAULT_VM_ACCEPTANCE_MACHINE_CODE_PREFIX = "VEM-TESTBED-WINVM";
 const DEFAULT_VM_ACCEPTANCE_EVIDENCE_ROOT = "artifacts/vm-runtime-acceptance";
 const DEFAULT_CLEAN_BASE_ACCEPTANCE_EVIDENCE_ROOT =
   "artifacts/clean-base-factory-acceptance";
 
 export function buildBringUpPlan(options = {}) {
+  const maintenanceIngressSourceAllowlist = String(
+    options.maintenanceIngressSourceAllowlist ?? "",
+  ).trim();
   return {
     setupScript:
       options.setupScript ??
@@ -269,11 +274,20 @@ export function buildBringUpPlan(options = {}) {
       KioskPassword: "$env:VEM_KIOSK_PASSWORD",
       MaintenancePassword: "$env:VEM_MAINTENANCE_PASSWORD",
       AutoLogonPassword: "$env:VEM_AUTOLOGON_PASSWORD",
+      ...(maintenanceIngressSourceAllowlist
+        ? {
+            MaintenanceIngressSourceAllowlist:
+              maintenanceIngressSourceAllowlist,
+          }
+        : {}),
     },
     switches: [
       "ConfigureKioskAccounts",
       "UseKioskAccount",
       "ConfigureAutoLogon",
+      ...(maintenanceIngressSourceAllowlist
+        ? ["ConfigureControlledMaintenanceIngress"]
+        : []),
     ],
   };
 }
@@ -1281,8 +1295,8 @@ export function buildResetPlan() {
     preservedResources: [
       "Windows OS",
       "display setup",
-      "Tailscale",
       "OpenSSH",
+      "Controlled Maintenance Ingress configuration",
       "WebView2",
       "YKDZ maintenance account",
       "base networking",
@@ -1354,6 +1368,9 @@ function psCleanBasePreflightProbeArray() {
 }
 
 function psArgumentValue(value) {
+  if (Array.isArray(value)) {
+    return psArray(value);
+  }
   if (String(value).startsWith("$env:")) {
     return String(value);
   }
@@ -1371,7 +1388,7 @@ function sanitizeRunId(value) {
 }
 
 function normalizeRemoteForSafety(remote) {
-  const value = String(remote ?? "YKDZ@100.68.189.11").trim();
+  const value = String(remote ?? DEFAULT_CONTROLLED_MAINTENANCE_REMOTE).trim();
   const lastAt = value.lastIndexOf("@");
   if (lastAt === -1) {
     return { user: null, host: value };
@@ -1383,13 +1400,13 @@ function normalizeRemoteForSafety(remote) {
 }
 
 function expectedDirtyHostTestbed(options = {}) {
+  const remote = normalizeRemoteForSafety(options.remote);
   return {
     hostName:
       options.expectedTestbedHostName ?? DEFAULT_DIRTY_HOST_TESTBED.hostName,
     user: options.expectedTestbedUser ?? DEFAULT_DIRTY_HOST_TESTBED.user,
-    tailscaleIp:
-      options.expectedTestbedTailscaleIp ??
-      DEFAULT_DIRTY_HOST_TESTBED.tailscaleIp,
+    maintenanceIngressHost:
+      options.expectedMaintenanceIngressHost ?? remote.host ?? null,
   };
 }
 
@@ -1399,7 +1416,10 @@ function assertDirtyHostFactoryRemoteSafety(options = {}) {
   }
 
   const expected = expectedDirtyHostTestbed(options);
-  for (const [name, value] of Object.entries(expected)) {
+  for (const [name, value] of Object.entries({
+    hostName: expected.hostName,
+    user: expected.user,
+  })) {
     if (!String(value ?? "").trim()) {
       throw new Error(
         `dirty-host factory acceptance requires expected ${name} for remote identity guard`,
@@ -1408,13 +1428,26 @@ function assertDirtyHostFactoryRemoteSafety(options = {}) {
   }
 
   const remote = normalizeRemoteForSafety(options.remote);
-  const literalTestbedRemote =
-    remote.user === expected.user && remote.host === expected.tailscaleIp;
-  if (literalTestbedRemote) {
-    return;
+  const refusal = classifyUnsafeCleanBaseSource([remote.user, remote.host]);
+  if (refusal === "production machine") {
+    throw new Error(
+      `dirty-host factory acceptance refuses production remote before reset: ${options.remote}`,
+    );
+  }
+  if (
+    String(options.expectedMaintenanceIngressHost ?? "").trim() &&
+    remote.host !== expected.maintenanceIngressHost &&
+    options.allowTestbedRemoteAlias !== true
+  ) {
+    throw new Error(
+      "dirty-host factory acceptance refuses unexpected maintenance ingress host by default; use --allow-testbed-remote-alias with expected testbed identity values",
+    );
   }
 
-  if (options.allowTestbedRemoteAlias === true) {
+  if (
+    remote.user === expected.user ||
+    options.allowTestbedRemoteAlias === true
+  ) {
     return;
   }
 
@@ -1455,6 +1488,13 @@ function assertSha256Hash(value, label) {
   return hash;
 }
 
+function splitCsvOption(value) {
+  return String(value ?? "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
 function resolveMachineUiSidecarArtifactPath(machineUiArtifactPath) {
   const sidecarPath = join(
     dirname(machineUiArtifactPath),
@@ -1466,6 +1506,81 @@ function resolveMachineUiSidecarArtifactPath(machineUiArtifactPath) {
     );
   }
   return sidecarPath;
+}
+
+function resolveCleanBaseMaintenanceRelayInputs(options = {}) {
+  if (options.mode !== "clean-base-factory-acceptance") {
+    return null;
+  }
+  const requested =
+    options.maintenanceRelayWireGuardInstaller ||
+    options.maintenanceRelayWireGuardConfig ||
+    options.maintenanceRelayWireGuardInstallerSha256 ||
+    options.maintenanceRelayWireGuardConfigSha256 ||
+    options.maintenanceRelaySourceAllowlist;
+  if (!requested) {
+    return null;
+  }
+  if (
+    !options.maintenanceRelayWireGuardInstaller ||
+    !options.maintenanceRelayWireGuardConfig
+  ) {
+    throw new Error(
+      "clean-base maintenance relay requires --maintenance-relay-wireguard-installer and --maintenance-relay-wireguard-config",
+    );
+  }
+  if (!existsSync(options.maintenanceRelayWireGuardInstaller)) {
+    throw new Error(
+      `maintenance relay WireGuard installer not found: ${options.maintenanceRelayWireGuardInstaller}`,
+    );
+  }
+  if (!existsSync(options.maintenanceRelayWireGuardConfig)) {
+    throw new Error(
+      `maintenance relay WireGuard config not found: ${options.maintenanceRelayWireGuardConfig}`,
+    );
+  }
+  const sourceAllowlist = splitCsvOption(
+    options.maintenanceRelaySourceAllowlist,
+  );
+  if (sourceAllowlist.length === 0) {
+    throw new Error(
+      "clean-base maintenance relay requires --maintenance-relay-source-allowlist",
+    );
+  }
+  const installerSha256 = sha256File(
+    options.maintenanceRelayWireGuardInstaller,
+  );
+  const configSha256 = sha256File(options.maintenanceRelayWireGuardConfig);
+  if (
+    options.maintenanceRelayWireGuardInstallerSha256 &&
+    installerSha256 !==
+      assertSha256Hash(
+        options.maintenanceRelayWireGuardInstallerSha256,
+        "maintenance relay WireGuard installer",
+      )
+  ) {
+    throw new Error(
+      `maintenance relay WireGuard installer hash mismatch: expected ${options.maintenanceRelayWireGuardInstallerSha256}, got ${installerSha256}`,
+    );
+  }
+  if (
+    options.maintenanceRelayWireGuardConfigSha256 &&
+    configSha256 !==
+      assertSha256Hash(
+        options.maintenanceRelayWireGuardConfigSha256,
+        "maintenance relay WireGuard config",
+      )
+  ) {
+    throw new Error(
+      `maintenance relay WireGuard config hash mismatch: expected ${options.maintenanceRelayWireGuardConfigSha256}, got ${configSha256}`,
+    );
+  }
+  return {
+    installerSha256,
+    configSha256,
+    sourceAllowlist,
+    tunnelName: options.maintenanceRelayTunnelName ?? "vem-maint",
+  };
 }
 
 function resolveDirtyHostArtifactInputs(options = {}) {
@@ -2097,6 +2212,12 @@ function buildAcceptanceScriptCommand(mode, options = {}, extraArgs = []) {
   if (options.factoryCredentialsFromSshpass === true) {
     command.push("--factory-credentials-from-sshpass");
   }
+  if (options.maintenanceIngressSourceAllowlist) {
+    command.push(
+      "--maintenance-ingress-source-allowlist",
+      options.maintenanceIngressSourceAllowlist,
+    );
+  }
   if (options.allowTestbedRemoteAlias === true) {
     command.push("--allow-testbed-remote-alias");
   }
@@ -2109,10 +2230,10 @@ function buildAcceptanceScriptCommand(mode, options = {}, extraArgs = []) {
   if (options.expectedTestbedUser) {
     command.push("--expected-testbed-user", options.expectedTestbedUser);
   }
-  if (options.expectedTestbedTailscaleIp) {
+  if (options.expectedMaintenanceIngressHost) {
     command.push(
-      "--expected-testbed-tailscale-ip",
-      options.expectedTestbedTailscaleIp,
+      "--expected-maintenance-ingress-host",
+      options.expectedMaintenanceIngressHost,
     );
   }
   if (options.proxyCommand) {
@@ -2239,7 +2360,7 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
       machineCode,
       machineCodePrefix,
       platformTarget,
-      remote: options.remote ?? "YKDZ@100.68.189.11",
+      remote: options.remote ?? DEFAULT_CONTROLLED_MAINTENANCE_REMOTE,
     },
     evidenceRoot,
     artifacts: {
@@ -2417,6 +2538,14 @@ function sanitizeReportValue(value) {
         sensitiveKey ? REDACTED : sanitizeReportValue(item),
       ];
     }),
+  );
+}
+
+function sanitizeVmRuntimeAcceptancePlan(plan) {
+  return JSON.parse(
+    JSON.stringify(plan, (_key, value) =>
+      typeof value === "string" ? redactSensitiveText(value) : value,
+    ),
   );
 }
 
@@ -3322,25 +3451,16 @@ function Import-DirtyHostFactoryCredentialFile([string]$Path) {
 function Get-DirtyHostFactoryTestbedIdentity {
   $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
   $computer = Get-CimInstance Win32_ComputerSystem
-  $tailscaleIps = @()
-  $tailscaleError = $null
-  try {
-    $tailscaleIps = @(tailscale ip -4 2>&1 | ForEach-Object { [string]$_ } | Where-Object { $_ -match '^\\d+\\.\\d+\\.\\d+\\.\\d+$' })
-  } catch {
-    $tailscaleError = [string]$_
-  }
   return [ordered]@{
     expected = [ordered]@{
       hostName = ${psString(expectedTestbed.hostName)}
       user = ${psString(expectedTestbed.user)}
-      tailscaleIp = ${psString(expectedTestbed.tailscaleIp)}
+      maintenanceIngressHost = ${psString(expectedTestbed.maintenanceIngressHost ?? "")}
     }
     observed = [ordered]@{
       hostName = [string]$computer.Name
       user = ([string]$identity.Name).Split("\\")[-1]
       windowsIdentity = [string]$identity.Name
-      tailscaleIps = $tailscaleIps
-      tailscaleError = $tailscaleError
     }
   }
 }
@@ -3351,9 +3471,6 @@ function Assert-DirtyHostFactoryTestbedIdentity($IdentityGuard) {
   }
   if ([string]$IdentityGuard.observed.user -ne [string]$IdentityGuard.expected.user) {
     throw "dirty-host factory acceptance refused remote user: expected $($IdentityGuard.expected.user), got $($IdentityGuard.observed.user)"
-  }
-  if (-not (@($IdentityGuard.observed.tailscaleIps) -contains [string]$IdentityGuard.expected.tailscaleIp)) {
-    throw "dirty-host factory acceptance refused remote Tailscale identity: expected $($IdentityGuard.expected.tailscaleIp), got $(@($IdentityGuard.observed.tailscaleIps) -join ', ')"
   }
 }
 
@@ -4607,6 +4724,11 @@ function Invoke-FactoryChildPowerShell($Actions, [string]$Name, [string]$ScriptP
         if ([bool]$entry.Value) {
           $argumentList += "-$($entry.Key)"
         }
+      } elseif ($entry.Value -is [array]) {
+        $argumentList += "-$($entry.Key)"
+        foreach ($item in @($entry.Value)) {
+          $argumentList += [string]$item
+        }
       } else {
         $argumentList += "-$($entry.Key)"
         $argumentList += [string]$entry.Value
@@ -4813,21 +4935,9 @@ function Add-FactoryAcceptanceDiagnostic($Diagnostics, [string]$Code, [string]$M
 
 function Get-CleanBaseFactoryIdentity {
   $computer = Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue
-  $tailscaleIps = @()
-  $tailscaleName = $null
-  try {
-    $status = & tailscale status --json 2>$null | ConvertFrom-Json -ErrorAction Stop
-    $tailscaleName = [string]$status.Self.DNSName
-    $tailscaleIps = @($status.Self.TailscaleIPs | ForEach-Object { [string]$_ })
-  } catch {
-    $tailscaleName = $null
-    $tailscaleIps = @()
-  }
   return [ordered]@{
     hostName = if ($null -ne $computer) { [string]$computer.Name } else { $env:COMPUTERNAME }
     user = [Security.Principal.WindowsIdentity]::GetCurrent().Name
-    tailscaleName = $tailscaleName
-    tailscaleIps = @($tailscaleIps)
   }
 }
 
@@ -4836,9 +4946,8 @@ function Assert-CleanBaseFactoryIdentitySafety($Identity) {
     ${psString(cleanBaseSource)},
     ${psString(cleanBaseSnapshot)},
     [string]$Identity.hostName,
-    [string]$Identity.user,
-    [string]$Identity.tailscaleName
-  ) + @($Identity.tailscaleIps | ForEach-Object { [string]$_ })
+    [string]$Identity.user
+  )
   $dirtyMarkers = ${psArray(KNOWN_DIRTY_CLEAN_BASE_SOURCE_MARKERS)}
   $productionMarkers = ${psArray(KNOWN_PRODUCTION_CLEAN_BASE_SOURCE_MARKERS)}
   foreach ($value in $values) {
@@ -4978,6 +5087,11 @@ function Convert-CleanBaseFactoryAssertions($VerifierEvidence, $PreflightAbsence
     bootPolicy = $checks.bootPolicy
     securityPosture = $checks.securityPosture
     factoryRemoteMaintenanceCapability = $checks.factoryRemoteMaintenanceCapability
+    maintenanceRelay = if ($null -ne $checks.maintenanceRelay -and [bool]$checks.maintenanceRelay.enabled) {
+      [ordered]@{ status = if ([string]$checks.maintenanceRelay.status -eq "passed") { "passed" } else { "failed" }; evidence = $checks.maintenanceRelay }
+    } else {
+      [ordered]@{ status = "passed"; evidence = $checks.maintenanceRelay }
+    }
     consumerExperienceInterference = $checks.consumerExperienceInterference
     sleepDisabled = [ordered]@{ status = if ([string]$checks.powerPolicy.sleep -eq "disabled") { "passed" } else { "failed" } }
     testsigningOff = [ordered]@{ status = if ([string]$checks.bootPolicy.testsigning -eq "off") { "passed" } else { "failed" } }
@@ -5117,6 +5231,12 @@ function Invoke-CleanBaseFactoryAcceptance($FactoryActions) {
       TargetLayoutVersion = "win10-runtime-layout/v1"
       ResetExistingVemState = $false
       UseSecureCredentialEnvironment = $true
+      MaintenanceRelayWireGuardInstallerPath = ${psString(options.remoteMaintenanceRelayWireGuardInstallerPath ?? "")}
+      MaintenanceRelayWireGuardInstallerSha256 = ${psString(options.maintenanceRelayWireGuardInstallerSha256 ?? "")}
+      MaintenanceRelayWireGuardConfigPath = ${psString(options.remoteMaintenanceRelayWireGuardConfigPath ?? "")}
+      MaintenanceRelayWireGuardConfigSha256 = ${psString(options.maintenanceRelayWireGuardConfigSha256 ?? "")}
+      MaintenanceRelayTunnelName = ${psString(options.maintenanceRelayTunnelName ?? "vem-maint")}
+      MaintenanceRelaySourceAllowlist = ${psArray(splitCsvOption(options.maintenanceRelaySourceAllowlist))}
     } $preparationOutputPath -WriteStructuredJsonOutput $true
     $preparationAction = @($FactoryActions | Where-Object { [string]$_.name -eq "run scripted clean-base factory runtime preparation" } | Select-Object -Last 1)
     if ($preparationAction.Count -eq 0 -or [string]$preparationAction[0].status -ne "succeeded") {
@@ -6173,8 +6293,6 @@ function Get-InventoryFacts($ProvisioningActions = @()) {
       kiosk = Get-LocalUserEvidence "VEMKiosk"
     }
     access = [ordered]@{
-      tailscaleCommand = Get-CommandEvidence "tailscale"
-      tailscaleService = Get-ServiceStateOrNull -Name "Tailscale"
       openSshServer = Get-ServiceStateOrNull -Name "sshd"
       sshCommand = Get-CommandEvidence "ssh"
     }
@@ -6384,7 +6502,7 @@ export function buildSshCommand(options = {}) {
     ...(options.sshpass === true ? ["sshpass", "-e"] : []),
     "ssh",
     ...buildSshOptionArgs(options),
-    options.remote ?? "YKDZ@100.68.189.11",
+    options.remote ?? DEFAULT_CONTROLLED_MAINTENANCE_REMOTE,
   ];
 }
 
@@ -6430,7 +6548,7 @@ export function buildRemotePowerShellCommand(remoteScriptPath, options = {}) {
 }
 
 export function buildScpCommand(sourcePath, remoteScriptPath, options = {}) {
-  const remote = options.remote ?? "YKDZ@100.68.189.11";
+  const remote = options.remote ?? DEFAULT_CONTROLLED_MAINTENANCE_REMOTE;
   return [
     ...(options.sshpass === true ? ["sshpass", "-e"] : []),
     "scp",
@@ -6452,18 +6570,9 @@ export function buildCleanBaseRemoteIdentityProbeCommand() {
 $ErrorActionPreference = 'SilentlyContinue'
 $computer = Get-CimInstance Win32_ComputerSystem
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-$tailscaleName = $null
-$tailscaleIps = @()
-try {
-  $status = tailscale status --json 2>$null | ConvertFrom-Json
-  $tailscaleName = [string]$status.Self.DNSName
-  $tailscaleIps = @($status.Self.TailscaleIPs | ForEach-Object { [string]$_ })
-} catch {}
 [pscustomobject]@{
   hostName = [string]$computer.Name
   user = [string]$identity.Name
-  tailscaleName = $tailscaleName
-  tailscaleIps = @($tailscaleIps)
 } | ConvertTo-Json -Depth 10
 `);
 }
@@ -6676,10 +6785,10 @@ export function getRuntimeAcceptanceExitStatus({
 
 function usage() {
   console.error(`Usage:
-  win10-vem-e2e.mjs [--mode inventory|reset|inventory-reset|bring-up|provision|runtime-acceptance|simulated-hardware-sale-flow|dirty-host-factory-acceptance|clean-base-factory-acceptance|validate-clean-base-evidence|factory-image-delivery-unit|vm-runtime-acceptance] [--run-id ID] [--claim-code CODE] [--ephemeral-platform-evidence PATH] [--ephemeral-database-url URL] [--ephemeral-api-base-url URL] [--ephemeral-mqtt-url URL] [--clean-base-source SOURCE] [--clean-base-snapshot SNAPSHOT] [--clean-base-evidence PATH] [--daemon-artifact PATH] [--machine-ui-artifact PATH] [--daemon-artifact-sha256 HASH] [--machine-ui-artifact-sha256 HASH] [--use-existing-remote-artifacts] [--allow-clean-base-prepare] [--remote USER@HOST] [--ssh-config] [--sshpass] [--factory-credentials-from-sshpass] [--allow-testbed-remote-alias] [--expected-testbed-hostname NAME] [--expected-testbed-user USER] [--expected-testbed-tailscale-ip IP] [--proxy-command CMD] [--identity KEY] [--dry-run] [--out PATH]
+  win10-vem-e2e.mjs [--mode inventory|reset|inventory-reset|bring-up|provision|runtime-acceptance|simulated-hardware-sale-flow|dirty-host-factory-acceptance|clean-base-factory-acceptance|validate-clean-base-evidence|factory-image-delivery-unit|vm-runtime-acceptance] [--run-id ID] [--claim-code CODE] [--ephemeral-platform-evidence PATH] [--ephemeral-database-url URL] [--ephemeral-api-base-url URL] [--ephemeral-mqtt-url URL] [--clean-base-source SOURCE] [--clean-base-snapshot SNAPSHOT] [--clean-base-evidence PATH] [--daemon-artifact PATH] [--machine-ui-artifact PATH] [--daemon-artifact-sha256 HASH] [--machine-ui-artifact-sha256 HASH] [--maintenance-relay-wireguard-installer PATH] [--maintenance-relay-wireguard-config PATH] [--maintenance-relay-source-allowlist CSV] [--maintenance-relay-tunnel-name NAME] [--use-existing-remote-artifacts] [--allow-clean-base-prepare] [--remote USER@HOST] [--ssh-config] [--sshpass] [--factory-credentials-from-sshpass] [--allow-testbed-remote-alias] [--expected-testbed-hostname NAME] [--expected-testbed-user USER] [--expected-maintenance-ingress-host HOST] [--proxy-command CMD] [--identity KEY] [--dry-run] [--out PATH]
 
 Defaults target the documented Machine Runtime Testbed:
-  --remote YKDZ@100.68.189.11
+  --remote ${DEFAULT_CONTROLLED_MAINTENANCE_REMOTE}
   --mode inventory
 
 Bring-up mode invokes C:\\VEM\\bringup\\scripts\\setup-scheduled-tasks.ps1 on the remote host and requires VEM_KIOSK_PASSWORD, VEM_MAINTENANCE_PASSWORD, and VEM_AUTOLOGON_PASSWORD in the remote PowerShell environment.
@@ -6693,9 +6802,10 @@ Simulated hardware sale-flow mode writes C:\\ProgramData\\VEM\\vending-daemon\\s
 Dirty-host factory acceptance mode stages specified local artifacts and factory scripts under C:\\ProgramData\\VEM\\evidence\\<run-id>, runs scripted factory preparation with explicit local reset, runs the verifier, and writes dirty-host-factory-acceptance.json. It requires --run-id, --daemon-artifact, --machine-ui-artifact, and remote VEM_KIOSK_PASSWORD, VEM_MAINTENANCE_PASSWORD, and VEM_AUTOLOGON_PASSWORD.
 --use-existing-remote-artifacts is a test-only escape hatch for intentionally accepting C:\\VEM\\bringup\\*.exe instead of uploaded artifacts.
 For the documented disposable Win10 testbed only, --factory-credentials-from-sshpass stages a temporary remote credential file from local SSHPASS without embedding the secret in command strings.
-SSH config aliases are refused in dirty-host mode unless --allow-testbed-remote-alias is supplied; the remote script still asserts hostname/user/Tailscale identity before reset.
+SSH config aliases and unexpected maintenance ingress hosts are refused in dirty-host mode unless --allow-testbed-remote-alias is supplied; the remote script still asserts hostname/user identity before reset.
 
 Clean-base factory acceptance mode prepares an explicitly identified existing clean Windows base or VM source. Dry-run emits the checklist, absence probes, report path, and destructive gate. Live preparation requires --allow-clean-base-prepare, stages daemon/UI artifacts plus WebView2Loader.dll, runs factory preparation and verifier scripts, writes clean-base-factory-acceptance.json, and must not use the known dirty testbed or production machine identities as clean-base proof.
+Optional --maintenance-relay-wireguard-installer, --maintenance-relay-wireguard-config, and --maintenance-relay-source-allowlist preinstall a WireGuard Maintenance Relay peer into the prepared base image. The local config is uploaded as a sensitive run artifact, verified by hash on the remote host, installed as a WireGuard tunnel service, and validated through Controlled Maintenance Ingress evidence.
 
 Validate-clean-base-evidence mode validates a clean-base factory acceptance report before VM runtime acceptance consumes it.
 
@@ -6788,6 +6898,27 @@ function parseArgs(argv) {
       options.sshpass = true;
     } else if (arg === "--factory-credentials-from-sshpass") {
       options.factoryCredentialsFromSshpass = true;
+    } else if (arg === "--maintenance-ingress-source-allowlist") {
+      options.maintenanceIngressSourceAllowlist = next;
+      index += 1;
+    } else if (arg === "--maintenance-relay-wireguard-installer") {
+      options.maintenanceRelayWireGuardInstaller = next;
+      index += 1;
+    } else if (arg === "--maintenance-relay-wireguard-installer-sha256") {
+      options.maintenanceRelayWireGuardInstallerSha256 = next;
+      index += 1;
+    } else if (arg === "--maintenance-relay-wireguard-config") {
+      options.maintenanceRelayWireGuardConfig = next;
+      index += 1;
+    } else if (arg === "--maintenance-relay-wireguard-config-sha256") {
+      options.maintenanceRelayWireGuardConfigSha256 = next;
+      index += 1;
+    } else if (arg === "--maintenance-relay-source-allowlist") {
+      options.maintenanceRelaySourceAllowlist = next;
+      index += 1;
+    } else if (arg === "--maintenance-relay-tunnel-name") {
+      options.maintenanceRelayTunnelName = next;
+      index += 1;
     } else if (arg === "--use-existing-remote-artifacts") {
       options.useExistingRemoteArtifacts = true;
     } else if (arg === "--allow-clean-base-prepare") {
@@ -6800,8 +6931,8 @@ function parseArgs(argv) {
     } else if (arg === "--expected-testbed-user") {
       options.expectedTestbedUser = next;
       index += 1;
-    } else if (arg === "--expected-testbed-tailscale-ip") {
-      options.expectedTestbedTailscaleIp = next;
+    } else if (arg === "--expected-maintenance-ingress-host") {
+      options.expectedMaintenanceIngressHost = next;
       index += 1;
     } else if (arg === "--dry-run") {
       options.dryRun = true;
@@ -6824,7 +6955,11 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     if (options.mode === "vm-runtime-acceptance") {
       const plan = buildVmRuntimeAcceptancePlan(options);
       if (options.dryRun) {
-        console.log(JSON.stringify(plan, null, 2));
+        const sanitizedPlan = sanitizeVmRuntimeAcceptancePlan(plan);
+        if (options.out) {
+          writeJsonOutput(options.out, sanitizedPlan);
+        }
+        console.log(JSON.stringify(sanitizedPlan, null, 2));
         process.exit(0);
       }
       const report = runVmRuntimeAcceptance(options);
@@ -6883,6 +7018,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     assertCleanBaseRemoteSafety(options);
     const dirtyHostArtifacts = resolveDirtyHostArtifactInputs(options);
     const cleanBaseArtifacts = resolveCleanBaseArtifactInputs(options);
+    const cleanBaseMaintenanceRelay =
+      resolveCleanBaseMaintenanceRelayInputs(options);
     if (dirtyHostArtifacts) {
       options.useExistingRemoteArtifacts =
         dirtyHostArtifacts.useExistingRemoteArtifacts;
@@ -6893,6 +7030,15 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       options.daemonArtifactSha256 = cleanBaseArtifacts.daemonSha256;
       options.machineUiArtifactSha256 = cleanBaseArtifacts.machineUiSha256;
     }
+    if (cleanBaseMaintenanceRelay) {
+      options.maintenanceRelayWireGuardInstallerSha256 =
+        cleanBaseMaintenanceRelay.installerSha256;
+      options.maintenanceRelayWireGuardConfigSha256 =
+        cleanBaseMaintenanceRelay.configSha256;
+      options.maintenanceRelayTunnelName = cleanBaseMaintenanceRelay.tunnelName;
+      options.maintenanceRelaySourceAllowlist =
+        cleanBaseMaintenanceRelay.sourceAllowlist.join(",");
+    }
     const remoteSupportScriptRoot = `C:\\Users\\YKDZ\\AppData\\Local\\Temp\\vem-win10-e2e-support-${process.pid}-${Date.now()}`;
     const remoteUploadedArtifactRoot = `${remoteSupportScriptRoot}\\input-artifacts`;
     if (
@@ -6901,6 +7047,10 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     ) {
       options.remoteSupportScriptRoot = remoteSupportScriptRoot;
       options.remoteUploadedArtifactRoot = remoteUploadedArtifactRoot;
+      if (cleanBaseMaintenanceRelay) {
+        options.remoteMaintenanceRelayWireGuardInstallerPath = `${remoteUploadedArtifactRoot}\\${basename(options.maintenanceRelayWireGuardInstaller)}`;
+        options.remoteMaintenanceRelayWireGuardConfigPath = `${remoteUploadedArtifactRoot}\\maintenance-relay.conf`;
+      }
       if (options.factoryCredentialsFromSshpass === true) {
         options.remoteFactoryCredentialPath = `${remoteSupportScriptRoot}\\factory-credentials.json`;
       }
@@ -6948,6 +7098,18 @@ if (import.meta.url === `file://${process.argv[1]}`) {
                       : "uploaded_local_artifacts",
                   daemonSha256: dirtyHostArtifacts.daemonSha256,
                   machineUiSha256: dirtyHostArtifacts.machineUiSha256,
+                }
+              : null,
+            cleanBaseMaintenanceRelay: cleanBaseMaintenanceRelay
+              ? {
+                  installerSha256: cleanBaseMaintenanceRelay.installerSha256,
+                  configSha256: cleanBaseMaintenanceRelay.configSha256,
+                  tunnelName: cleanBaseMaintenanceRelay.tunnelName,
+                  sourceAllowlist: cleanBaseMaintenanceRelay.sourceAllowlist,
+                  remoteInstallerPath:
+                    options.remoteMaintenanceRelayWireGuardInstallerPath,
+                  remoteConfigPath:
+                    options.remoteMaintenanceRelayWireGuardConfigPath,
                 }
               : null,
           },
@@ -7079,6 +7241,15 @@ if (import.meta.url === `file://${process.argv[1]}`) {
             : null,
         ],
       ];
+      if (cleanBaseMaintenanceRelay) {
+        artifactUploads.push(
+          [
+            "maintenanceRelayWireGuardInstaller",
+            basename(options.maintenanceRelayWireGuardInstaller),
+          ],
+          ["maintenanceRelayWireGuardConfig", "maintenance-relay.conf"],
+        );
+      }
       for (const [
         optionName,
         remoteFileName,

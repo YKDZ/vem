@@ -40,6 +40,117 @@ The entrypoint refuses shared VPS or production targets for the ephemeral platfo
 
 The simulated sale-flow step is only planned after the same run's `ephemeral-platform.json` path is known. The sale-flow child command still validates that evidence before it mutates runtime state.
 
+## Self-Hosted Windows Runtime Gate
+
+The first automated Windows runtime gate should run through a self-hosted runner on the current Unraid host at `192.168.2.23`, restoring or preparing the canonical Windows testbed VM before each acceptance run. The first version does not introduce a separate controller machine. This gate is the primary automation target for Windows-specific behavior, not a later replacement for GitHub hosted Windows smoke.
+
+The runner contract must stay host-portable. Repository workflows should call a small VM restore/start/wait contract rather than depending directly on Unraid-only paths or UI behavior. The current implementation may use a `libvirt-qcow2` adapter on Unraid, but a later dedicated host or cloud server should be able to provide the same contract with a different adapter.
+
+Testbed Runner Maintenance Ingress is the explicit control-plane path from a self-hosted runner to a disposable Machine Runtime Testbed VM. It is not production controlled remote maintenance access. It may allow the runner to reach Windows SSH for the maintenance account through a narrowly scoped source allowlist, while preserving kiosk-account SSH denial and production defaults.
+
+For the relay-backed path, bring up the test VPS WireGuard Maintenance Relay
+with the [Maintenance Relay bring-up runbook](./maintenance-relay-bring-up.md)
+before dispatching VM runtime acceptance. The workflow takes `vm_wireguard_ip`,
+`runner_wireguard_peer_ip`, and `runner_wireguard_interface` inputs, starts the
+runner WireGuard peer before Windows SSH readiness, and uses the VM WireGuard IP
+as the Windows SSH host for both restore readiness and runtime acceptance. The
+relay path remains Controlled Maintenance Ingress: WireGuard and SSH are implementation mechanisms, while the allowed source peer and target machine SSH
+flow must stay explicit.
+
+The repository workflow and VM host adapter do not bootstrap the VM-side relay.
+The approved base image for the target VM must already include a configured and
+running VM WireGuard peer plus Windows Controlled Maintenance Ingress allowing
+the runner peer IP to SSH to the maintenance account. Before restore, the
+workflow records this preconfigured-base-image contract in diagnostics and the
+adapter validates it against the allowlisted target configuration. If that
+contract is absent, restore fails clearly before destructive disk operations or
+at Windows SSH readiness; it must not claim to auto-configure the VM peer or
+Windows ingress.
+
+Produce that relay-capable base image through the existing clean-base factory
+preparation path, not a one-off Unraid-only mutation. Run
+`scripts/testbed/win10-vem-e2e.mjs --mode clean-base-factory-acceptance` with
+the optional Maintenance Relay inputs:
+
+```sh
+node scripts/testbed/win10-vem-e2e.mjs \
+  --mode clean-base-factory-acceptance \
+  --run-id <RUN-ID> \
+  --clean-base-source <clean-windows-base-uri> \
+  --daemon-artifact ./path/to/vending-daemon.exe \
+  --machine-ui-artifact ./path/to/machine.exe \
+  --maintenance-relay-wireguard-installer ./path/to/wireguard-amd64.msi \
+  --maintenance-relay-wireguard-config ./.scratch/maintenance-relay/win10-vm.conf \
+  --maintenance-relay-source-allowlist 10.91.1.10 \
+  --remote <maintenance-user>@<clean-vm-host> \
+  --allow-clean-base-prepare
+```
+
+The runner uploads the WireGuard installer and VM peer config as run-scoped
+artifacts, verifies their hashes inside Windows, installs the tunnel service,
+and enables the exact Controlled Maintenance Ingress allowlist. The VM peer
+config contains private key material and must remain in operator-local scratch
+or secret storage.
+
+The VM host adapter contract only prepares a reachable Windows VM. It takes a run id, a base image identity, and a target VM identity; it stops the VM, restores or rebuilds the disk, starts the VM, waits for Windows SSH, and emits restore evidence including the Windows SSH endpoint, observed host identity, base image hash, and evidence path. It must not build VEM artifacts, start the ephemeral platform, provision the machine, run runtime acceptance, run simulated sale-flow, or interpret VEM business results.
+
+The adapter must emit a `vm-host-restore-report/v1` JSON report, and runtime acceptance should consume that report instead of inferring VM state from host-specific paths. The first report shape is:
+
+```json
+{
+  "schemaVersion": "vm-host-restore-report/v1",
+  "adapter": "libvirt-qcow2",
+  "runId": "RUN-EXAMPLE",
+  "targetVm": {
+    "name": "win10-vem-solidified-acceptance"
+  },
+  "baseImage": {
+    "path": "/mnt/user/isos/vem-factory-runtime-image-RUN-191-20260705.qcow2",
+    "sha256": "lowercase-sha256"
+  },
+  "restoredDisk": {
+    "path": "/mnt/user/domains/win10-vem-solidified-acceptance/vdisk1.qcow2",
+    "backingFile": "/mnt/user/isos/vem-factory-runtime-image-RUN-191-20260705.qcow2"
+  },
+  "windowsSsh": {
+    "host": "10.91.2.10",
+    "user": "maintenance-user"
+  },
+  "controlledMaintenanceIngress": {
+    "kind": "wireguard-maintenance-relay",
+    "bootstrapMode": "preconfigured-base-image",
+    "windowsSshHost": "10.91.2.10",
+    "allowedSourcePeerIp": "10.91.1.10",
+    "interface": "wg-vem-maint",
+    "preconfiguredVmRelayContract": {
+      "vmWireGuardPeer": "preconfigured-and-running",
+      "windowsControlledMaintenanceIngress": "preconfigured-source-allowlist",
+      "repositoryConfiguresVmRelay": false
+    },
+    "preflight": {
+      "status": "passed",
+      "assertion": "ssh_reachable_over_preconfigured_vm_wireguard_ip",
+      "failureCodeIfUnreachable": "vm_relay_preconfiguration_missing_or_windows_ingress_blocked"
+    }
+  },
+  "result": "passed"
+}
+```
+
+The repository adapter entrypoint should live at `scripts/testbed/vm-host-adapter.mjs` because it runs on the VM host or self-hosted runner, not inside the Windows VM. The first mode is `--mode restore --adapter libvirt-qcow2`, taking the run id, target VM identity, base image, overlay disk, Windows SSH user, and output report path. It must validate all destructive inputs against an allowlist before stopping a VM or replacing a disk.
+
+The `libvirt-qcow2` allowlist should live in repository configuration at `scripts/testbed/vm-host-adapters/libvirt-qcow2.unraid.json`. It may contain non-secret infrastructure identities such as allowed VM names, overlay disk paths, base image paths, the Windows maintenance SSH user, and the required preconfigured VM relay contract. Secrets and credentials must remain in GitHub secrets or runner-local environment.
+
+The first version should restore the runtime acceptance VM by rebuilding the `win10-vem-solidified-acceptance` qcow2 overlay from the approved factory runtime base image before each run. It should not rerun clean-base factory preparation for every runtime acceptance attempt. Clean-base factory acceptance remains the upstream evidence gate for producing or approving the factory runtime base image.
+
+The first self-hosted workflow is manually triggered with `workflow_dispatch` only. It must run as a single-flight infrastructure job and must not attach to pull-request or push events until VM restore, cleanup, locking, and failure recovery are proven stable.
+
+The first workflow should be a dedicated `.github/workflows/vm-runtime-acceptance.yml` rather than part of the regular CI or Windows bring-up bundle workflows. It should consume the shared Windows runtime artifact workflow, call the VM host adapter to produce `vm-host-restore-report.json`, prepare the ephemeral platform, run `scripts/testbed/win10-vem-e2e.mjs --mode vm-runtime-acceptance`, and upload the run-scoped acceptance artifacts.
+
+Windows runtime artifacts are the current-run `vending-daemon.exe`, `machine.exe`, and `WebView2Loader.dll` built by the shared GitHub workflow. Dependency and compiler intermediates may use GitHub cache, but the final runtime artifacts are passed as same-run artifacts rather than reused across commits.
+
+GitHub hosted Windows runner coverage may still be used for narrow build or script smoke checks, but it must not assert kiosk session readiness, shell launcher behavior, portrait display proof, virtual COM pair behavior, WebView kiosk startup, `runtimeReady`, `simulatedHardwareReady`, or production `sellReady`. Those remain self-hosted VM runtime acceptance or real hardware acceptance responsibilities.
+
 Clean-base evidence is never inferred from the dirty-host testbed. `--clean-base-evidence` must point at a separate `clean-base-factory-acceptance-report/v1` report with `kind: clean-base-factory-acceptance`, `result: passed`, `ok: true`, `dryRun: false`, `source.kind: clean-windows-base`, lowercase SHA-256 artifact hashes, `cleanBasePreparationAcceptance: passed`, `dirtyHostResetAcceptance: not_asserted`, `sellReady: not_asserted`, the complete Factory Windows Baseline policy contract (`schemaVersion`, `model`, `requiredCapabilities`, `disabledRuntimeInterference`, and `evidenceFields`), and every required assertion passed. The required assertions cover display orientation/resolution, SSH reachability through the clean VM or temporary factory harness, Tailscale absent by default, Windows update installation and automatic restart disabled, sleep/hibernation disabled, testsigning off, Defender/firewall posture with SMB/File Sharing not enabled and no default product-managed inbound remote access rule, Factory Remote Maintenance Capability with `sshd_config` explicitly denying kiosk SSH, Windows 10 Pro consumer-experience best-effort policy evidence, autologon, shell launcher or scheduled task startup, daemon service, UI launcher/task, clean runtime reset gate, simulated hardware mode, startup reaching bring-up or sales-eligible state, and absence of retained VEM identity/state/secrets/evidence.
 
 The Factory Image Delivery Unit report generated from clean-base evidence is a
@@ -71,5 +182,18 @@ Future CI or a self-hosted runner must provide:
 - remote `VEM_AUTOLOGON_PASSWORD`
 - `MACHINE_CLAIM_LOOKUP_HMAC_KEY`
 - `PAYMENT_MOCK_ENABLED=true`
+- `VEM_MAINTENANCE_RELAY_RUNNER_WG_CONFIG` or runner-local
+  `VEM_MAINTENANCE_RELAY_RUNNER_WG_CONFIG_PATH`
+
+The self-hosted VM runner host must also provide `node`, `docker`, `virsh`,
+`qemu-img`, `ssh`, `sshpass`, `wg`, and `wg-quick`. The `sshpass` binary is
+required when the workflow uses the repository secret
+`VEM_TESTBED_WINDOWS_PASSWORD` for Windows SSH readiness and acceptance commands
+instead of a runner-local SSH key. The workflow uploads
+`maintenance-relay-diagnostics.txt` with only non-secret relay diagnostics:
+interface name, runner peer IP, Windows SSH host, preconfigured VM relay
+contract, `wg show` summaries, and WireGuard config existence, permissions, and
+SHA-256 hashes. It must not include the full runner peer config, even with
+private keys or preshared keys redacted.
 
 This gate is a manual runtime gate, not a default pull-request check. It can prove runtime-ready and simulated-hardware-ready on the Machine Runtime Testbed, but it cannot prove production sell-ready.

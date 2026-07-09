@@ -4,7 +4,7 @@
 #   - VemVendingDaemon Windows service, automatic startup.
 #   - Restricted kiosk account and separate maintenance account validation.
 #   - Optional local SSH maintenance account isolation.
-#   - Optional controlled Tailscale-backed SSH maintenance access.
+#   - Optional Controlled Maintenance Ingress for SSH with explicit source allowlist.
 #   - VEMMachineUI logon task for non-shell-launcher customer sessions.
 #   - Optional OS-level kiosk shell lockdown for the kiosk account.
 #   - VEM\StartVisionServer logon task, starts vision in the user session.
@@ -31,9 +31,9 @@
 # session:
 #   .\setup-scheduled-tasks.ps1 -EnableMaintenanceDebugTask
 #
-# Enable host-level emergency maintenance access after validating the dedicated
-# Maintenance Account credentials:
-#   .\setup-scheduled-tasks.ps1 -ConfigureRemoteMaintenanceAccess
+# Enable host-level emergency maintenance ingress after validating the dedicated
+# Maintenance Account credentials and the authorized source addresses:
+#   .\setup-scheduled-tasks.ps1 -ConfigureControlledMaintenanceIngress -MaintenanceIngressSourceAllowlist 10.77.20.2/32
 #
 # Configure only the local OpenSSH maintenance account isolation without adding
 # a device VPN or inbound product firewall rule:
@@ -64,8 +64,9 @@ param(
   [switch]$ConfigureKioskAccounts,
   [switch]$ConfigureLocalMaintenanceAccess,
   [switch]$ConfigureRemoteMaintenanceAccess,
+  [switch]$ConfigureControlledMaintenanceIngress,
+  [string[]]$MaintenanceIngressSourceAllowlist,
   [switch]$EnableMaintenanceDebugTask,
-  [string]$TailscaleExe = "C:\Program Files\Tailscale\tailscale.exe",
   [string]$SshdConfigPath = "C:\ProgramData\ssh\sshd_config",
   [switch]$UseKioskAccount,
   [switch]$ConfigureKioskShell,
@@ -319,20 +320,105 @@ function Disable-DefaultOpenSshInboundFirewall {
     Where-Object {
       $_.Direction -eq "Inbound" -and
       $_.DisplayName -like "OpenSSH*" -and
-      $_.DisplayName -ne "VEM Tailscale SSH"
+      $_.DisplayName -ne "VEM Controlled Maintenance SSH"
     }
   if ($null -ne $openSshInboundRules) {
     $openSshInboundRules | Disable-NetFirewallRule
   }
 }
 
-function Ensure-TailscaleScopedSshFirewall {
-  $ruleName = "VEM Tailscale SSH"
-  $tailscaleRemoteAddress = "100.64.0.0/10"
+function Assert-ControlledMaintenanceIngressSourceAllowlist {
+  param([string[]]$SourceAllowlist)
+
+  if ($null -eq $SourceAllowlist -or @($SourceAllowlist).Count -eq 0) {
+    throw "Controlled Maintenance Ingress requires at least one explicit maintenance ingress source address."
+  }
+
+  $forbidden = @(
+    "Any",
+    "*",
+    "Internet",
+    "LocalSubnet",
+    "DefaultGateway",
+    "DHCP",
+    "DNS",
+    "WINS",
+    "0.0.0.0",
+    "::",
+    "0.0.0.0/0",
+    "::/0"
+  )
+  $validated = [System.Collections.Generic.List[string]]::new()
+
+  foreach ($entry in $SourceAllowlist) {
+    foreach ($candidate in ([string]$entry -split ",")) {
+      $trimmed = $candidate.Trim()
+      if ([string]::IsNullOrWhiteSpace($trimmed)) {
+        throw "Controlled Maintenance Ingress source address must not be empty."
+      }
+      if ($forbidden -contains $trimmed) {
+        throw "Controlled Maintenance Ingress source address is too broad: $trimmed"
+      }
+
+      $addressText = $trimmed
+      $prefixLength = $null
+      if ($trimmed.Contains("/")) {
+        $parts = $trimmed -split "/", 2
+        if ($parts.Count -ne 2 -or [string]::IsNullOrWhiteSpace($parts[0]) -or [string]::IsNullOrWhiteSpace($parts[1])) {
+          throw "Controlled Maintenance Ingress source address must be an IP address or CIDR: $trimmed"
+        }
+        $addressText = $parts[0].Trim()
+        try {
+          $prefixLength = [int]$parts[1].Trim()
+        } catch {
+          throw "Controlled Maintenance Ingress CIDR prefix must be numeric: $trimmed"
+        }
+      }
+
+      $ip = [System.Net.IPAddress]::None
+      if (-not [System.Net.IPAddress]::TryParse($addressText, [ref]$ip)) {
+        throw "Controlled Maintenance Ingress source address must be an IP address or CIDR: $trimmed"
+      }
+      if ($ip.Equals([System.Net.IPAddress]::Any) -or $ip.Equals([System.Net.IPAddress]::IPv6Any)) {
+        throw "Controlled Maintenance Ingress source address is too broad: $trimmed"
+      }
+      $requiredPrefix = if ($ip.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetworkV6) { 128 } else { 32 }
+      if ($null -ne $prefixLength) {
+        if ($prefixLength -ne $requiredPrefix) {
+          throw "Controlled Maintenance Ingress source address is too broad: $trimmed"
+        }
+      }
+
+      $normalized = [string]$ip.IPAddressToString
+      if (-not $validated.Contains($normalized)) {
+        $validated.Add($normalized) | Out-Null
+      }
+    }
+  }
+
+  if ($validated.Count -eq 0) {
+    throw "Controlled Maintenance Ingress requires at least one explicit maintenance ingress source address."
+  }
+
+  return @($validated)
+}
+
+function Ensure-ControlledMaintenanceIngressFirewall {
+  param([string[]]$SourceAllowlist)
+
+  $ruleName = "VEM Controlled Maintenance SSH"
+  $validatedSources = Assert-ControlledMaintenanceIngressSourceAllowlist -SourceAllowlist $SourceAllowlist
 
   Disable-DefaultOpenSshInboundFirewall
 
   Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue |
+    Remove-NetFirewallRule
+  Get-NetFirewallRule -ErrorAction SilentlyContinue |
+    Where-Object {
+      $_.Direction -eq "Inbound" -and
+      $_.DisplayName -like "VEM * SSH" -and
+      $_.DisplayName -ne $ruleName
+    } |
     Remove-NetFirewallRule
 
   New-NetFirewallRule `
@@ -341,9 +427,13 @@ function Ensure-TailscaleScopedSshFirewall {
     -Action Allow `
     -Protocol TCP `
     -LocalPort 22 `
-    -RemoteAddress $tailscaleRemoteAddress `
+    -RemoteAddress $validatedSources `
     -Profile Any `
-    -Description "VEM-managed SSH ingress scoped to Tailscale CGNAT addresses." | Out-Null
+    -Description "VEM-managed SSH ingress scoped to explicit Controlled Maintenance Ingress sources." | Out-Null
+}
+
+function Reject-ControlledMaintenanceIngressMigration {
+  throw "ConfigureRemoteMaintenanceAccess has been removed. Use -ConfigureControlledMaintenanceIngress with -MaintenanceIngressSourceAllowlist for transport-neutral Controlled Maintenance Ingress."
 }
 
 function Ensure-LocalMaintenanceAccess {
@@ -370,48 +460,38 @@ function Ensure-LocalMaintenanceAccess {
   Remove-LocalGroupMember -Group "Remote Desktop Users" -Member $KioskUser -ErrorAction SilentlyContinue
   Restart-Service -Name "sshd" -Force
 
-  Write-Host "Configured local OpenSSH maintenance account isolation for $MaintenanceUser; $KioskUser is excluded. No Tailscale client or VEM inbound SSH rule was configured."
+  Write-Host "Configured local OpenSSH maintenance account isolation for $MaintenanceUser; $KioskUser is excluded. No remote transport client or VEM inbound SSH rule was configured."
 }
 
-function Ensure-RemoteMaintenanceAccess {
+function Ensure-ControlledMaintenanceIngress {
   param(
     [string]$MaintenanceUser,
     [string]$KioskUser,
-    [string]$TailscalePath,
-    [string]$SshdConfigPath
+    [string]$SshdConfigPath,
+    [string[]]$SourceAllowlist
   )
 
+  $validatedSources = Assert-ControlledMaintenanceIngressSourceAllowlist -SourceAllowlist $SourceAllowlist
+
   if (-not (Get-LocalUser -Name $MaintenanceUser -ErrorAction SilentlyContinue)) {
-    throw "maintenance account not found: $MaintenanceUser. Configure it before enabling remote maintenance access."
+    throw "maintenance account not found: $MaintenanceUser. Configure it before enabling Controlled Maintenance Ingress."
   }
   if (-not (Get-LocalUser -Name $KioskUser -ErrorAction SilentlyContinue)) {
-    throw "kiosk account not found: $KioskUser. Configure it before enabling remote maintenance access."
+    throw "kiosk account not found: $KioskUser. Configure it before enabling Controlled Maintenance Ingress."
   }
   Assert-RemoteMaintenanceAccountSeparation -MaintenanceUser $MaintenanceUser -KioskUser $KioskUser
 
   Ensure-OpenSshServer
   Ensure-SshdConfigDenyKioskUser -ConfigPath $SshdConfigPath -KioskUser $KioskUser
-  Ensure-TailscaleScopedSshFirewall
+  Ensure-ControlledMaintenanceIngressFirewall -SourceAllowlist $validatedSources
   Ensure-LocalGroupExists -Group "OpenSSH Users"
   Add-LocalGroupMember -Group "OpenSSH Users" -Member $MaintenanceUser -ErrorAction SilentlyContinue
   Remove-LocalGroupMember -Group "OpenSSH Users" -Member $KioskUser -ErrorAction SilentlyContinue
   Remove-LocalGroupMember -Group "Remote Desktop Users" -Member $KioskUser -ErrorAction SilentlyContinue
 
-  $tailscaleService = Get-Service -Name "Tailscale" -ErrorAction SilentlyContinue
-  if ($null -eq $tailscaleService) {
-    throw "Tailscale service is required for controlled remote maintenance access"
-  }
-  Set-Service -Name "Tailscale" -StartupType Automatic
-  if ($tailscaleService.Status -ne "Running") {
-    Start-Service -Name "Tailscale"
-  }
-  if (-not (Test-Path -LiteralPath $TailscalePath)) {
-    throw "Tailscale CLI not found: $TailscalePath"
-  }
-
   Restart-Service -Name "sshd" -Force
 
-  Write-Host "Configured controlled Tailscale-backed SSH maintenance access for $MaintenanceUser; $KioskUser is excluded."
+  Write-Host "Configured Controlled Maintenance Ingress SSH access for $MaintenanceUser; $KioskUser is excluded."
 }
 
 function Get-LocalAccountSid {
@@ -936,7 +1016,7 @@ function Show-Verification {
     schtasks /Query /TN $taskName /FO LIST 2>$null
     $ErrorActionPreference = $previousErrorActionPreference
   }
-  Get-Service -Name "sshd", "Tailscale" -ErrorAction SilentlyContinue |
+  Get-Service -Name "sshd" -ErrorAction SilentlyContinue |
     Select-Object Name, Status, StartType | Format-Table -AutoSize
   Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon" |
     Select-Object AutoAdminLogon, ForceAutoLogon, DefaultUserName, DefaultDomainName |
@@ -970,11 +1050,13 @@ Write-Host "Customer session user: $CustomerSessionUser"
 
 Write-Host "[2/9] Configure controlled remote maintenance access" -ForegroundColor Yellow
 if ($ConfigureRemoteMaintenanceAccess) {
-  Ensure-RemoteMaintenanceAccess -MaintenanceUser $MaintenanceUser -KioskUser $KioskUser -TailscalePath $TailscaleExe -SshdConfigPath $SshdConfigPath
+  Reject-ControlledMaintenanceIngressMigration
+} elseif ($ConfigureControlledMaintenanceIngress) {
+  Ensure-ControlledMaintenanceIngress -MaintenanceUser $MaintenanceUser -KioskUser $KioskUser -SshdConfigPath $SshdConfigPath -SourceAllowlist $MaintenanceIngressSourceAllowlist
 } elseif ($ConfigureLocalMaintenanceAccess) {
   Ensure-LocalMaintenanceAccess -MaintenanceUser $MaintenanceUser -KioskUser $KioskUser -SshdConfigPath $SshdConfigPath
 } else {
-  Write-Host "Remote maintenance access not changed. Re-run with -ConfigureLocalMaintenanceAccess or -ConfigureRemoteMaintenanceAccess after validating maintenance credentials."
+  Write-Host "Controlled maintenance ingress not changed. Re-run with -ConfigureLocalMaintenanceAccess or -ConfigureControlledMaintenanceIngress after validating maintenance credentials."
 }
 
 Write-Host "[3/9] Write machine UI launchers" -ForegroundColor Yellow

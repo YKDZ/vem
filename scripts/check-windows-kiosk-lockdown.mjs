@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
+import { isIP } from "node:net";
 
 const checks = [];
 
@@ -67,11 +68,156 @@ function containsCall(block, command, taskName) {
   ).test(block);
 }
 
+function allTokensAfter(block, firstToken, laterTokens) {
+  const firstIndex = block.indexOf(firstToken);
+  return (
+    firstIndex !== -1 &&
+    laterTokens.every((token) => {
+      const laterIndex = block.indexOf(token);
+      return laterIndex !== -1 && laterIndex > firstIndex;
+    })
+  );
+}
+
+function normalizeMaintenanceIngressAllowlistForGuard(sourceAllowlist) {
+  if (!Array.isArray(sourceAllowlist) || sourceAllowlist.length === 0) {
+    throw new Error("missing explicit source allowlist");
+  }
+
+  const forbidden = new Set([
+    "Any",
+    "*",
+    "Internet",
+    "LocalSubnet",
+    "DefaultGateway",
+    "DHCP",
+    "DNS",
+    "WINS",
+    "0.0.0.0",
+    "::",
+    "0.0.0.0/0",
+    "::/0",
+  ]);
+  const normalized = new Set();
+
+  for (const entry of sourceAllowlist) {
+    for (const candidate of String(entry).split(",")) {
+      const trimmed = candidate.trim();
+      if (trimmed.length === 0) {
+        throw new Error("empty source");
+      }
+      if (forbidden.has(trimmed)) {
+        throw new Error(`broad source: ${trimmed}`);
+      }
+
+      const [address, prefix, unexpected] = trimmed.split("/");
+      if (unexpected !== undefined || address.trim().length === 0) {
+        throw new Error(`invalid source: ${trimmed}`);
+      }
+
+      const version = isIP(address.trim());
+      if (version === 0) {
+        throw new Error(`invalid source: ${trimmed}`);
+      }
+      if (prefix !== undefined) {
+        const prefixLength = Number(prefix.trim());
+        const requiredPrefix = version === 6 ? 128 : 32;
+        if (
+          !Number.isInteger(prefixLength) ||
+          prefixLength !== requiredPrefix
+        ) {
+          throw new Error(`broad source: ${trimmed}`);
+        }
+      }
+
+      normalized.add(address.trim().toLowerCase());
+    }
+  }
+
+  if (normalized.size === 0) {
+    throw new Error("missing explicit source allowlist");
+  }
+
+  return [...normalized];
+}
+
+function rejectsMaintenanceIngressSample(sourceAllowlist) {
+  try {
+    normalizeMaintenanceIngressAllowlistForGuard(sourceAllowlist);
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+function acceptsMaintenanceIngressSample(sourceAllowlist) {
+  try {
+    normalizeMaintenanceIngressAllowlistForGuard(sourceAllowlist);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function allowlistValidatorRejectsRequiredUnsafeSamples(block) {
+  const forbiddenSamples = ['"Any"', '"0.0.0.0/0"', '"::/0"'];
+  const unsafeSamples = [
+    null,
+    [""],
+    ["Any"],
+    ["0.0.0.0/0"],
+    ["::/0"],
+    ["100.64.0.0/10"],
+    ["10.0.0.0/8"],
+    ["192.168.0.0/16"],
+  ];
+  const safeHostSamples = [
+    ["10.77.20.2"],
+    ["10.77.20.2/32"],
+    ["fd00:77:20::2"],
+    ["fd00:77:20::2/128"],
+  ];
+
+  return (
+    unsafeSamples.every(rejectsMaintenanceIngressSample) &&
+    safeHostSamples.every(acceptsMaintenanceIngressSample) &&
+    block.includes("$null -eq $SourceAllowlist") &&
+    block.includes("@($SourceAllowlist).Count -eq 0") &&
+    block.includes("[string]::IsNullOrWhiteSpace($trimmed)") &&
+    forbiddenSamples.every((sample) => block.includes(sample)) &&
+    block.includes("$requiredPrefix") &&
+    block.includes("prefixLength -ne $requiredPrefix") &&
+    block.includes("[System.Net.Sockets.AddressFamily]::InterNetworkV6") &&
+    block.includes("$ip.IPAddressToString") &&
+    block.includes("$validated.Contains($normalized)")
+  );
+}
+
 const normalLauncherBlock = functionBlock(setup, "Ensure-MachineUiLauncher");
 const configureKioskShellBlock = functionBlock(setup, "Configure-KioskShell");
 const startupBringupEvidenceBlock = functionBlock(
   setup,
   "Write-StartupBringupEvidence",
+);
+const setupAllowlistValidatorBlock = functionBlock(
+  setup,
+  "Assert-ControlledMaintenanceIngressSourceAllowlist",
+);
+const setupControlledMaintenanceIngressBlock = functionBlock(
+  setup,
+  "Ensure-ControlledMaintenanceIngress",
+);
+const setupControlledMaintenanceFirewallBlock = functionBlock(
+  setup,
+  "Ensure-ControlledMaintenanceIngressFirewall",
+);
+const verifierAllowlistValidatorBlock = functionBlock(
+  verifier,
+  "Assert-ControlledMaintenanceIngressSourceAllowlist",
+);
+const verifierControlledMaintenanceFirewallBlock = functionBlock(
+  verifier,
+  "Get-ControlledMaintenanceIngressFirewallState",
 );
 const machineUiTaskSection = sectionBetween(
   setup,
@@ -126,9 +272,11 @@ addCheck(
 );
 
 addCheck(
-  "setup-configures-controlled-remote-maintenance-access",
-  setup.includes("[switch]$ConfigureRemoteMaintenanceAccess") &&
-    setup.includes("Ensure-RemoteMaintenanceAccess") &&
+  "setup-configures-controlled-maintenance-ingress",
+  setup.includes("[switch]$ConfigureControlledMaintenanceIngress") &&
+    setup.includes("[string[]]$MaintenanceIngressSourceAllowlist") &&
+    setup.includes("Assert-ControlledMaintenanceIngressSourceAllowlist") &&
+    setup.includes("Ensure-ControlledMaintenanceIngress") &&
     setup.includes("Assert-RemoteMaintenanceAccountSeparation") &&
     setup.includes(
       'Test-LocalUserInGroup -User $MaintenanceUser -Group "Administrators"',
@@ -136,11 +284,12 @@ addCheck(
     setup.includes(
       'Test-LocalUserInGroup -User $KioskUser -Group "Administrators"',
     ) &&
-    setup.includes("Ensure-TailscaleScopedSshFirewall") &&
+    setup.includes("Ensure-ControlledMaintenanceIngressFirewall") &&
     setup.includes("sshd") &&
-    setup.includes("Tailscale") &&
-    setup.includes("VEM Tailscale SSH") &&
-    setup.includes("100.64.0.0/10") &&
+    setup.includes("VEM Controlled Maintenance SSH") &&
+    setup.includes("Reject-ControlledMaintenanceIngressMigration") &&
+    setup.includes("ConfigureRemoteMaintenanceAccess has been removed") &&
+    !setup.includes("Ensure-TailscaleScopedSshFirewall") &&
     setup.includes("Disable-NetFirewallRule") &&
     setup.includes("New-NetFirewallRule") &&
     setup.includes("OpenSSH Users") &&
@@ -152,7 +301,78 @@ addCheck(
     setup.includes(
       'Remove-LocalGroupMember -Group "OpenSSH Users" -Member $KioskUser',
     ),
-  `${setupPath} should enable a controlled SSH maintenance channel for the Maintenance Account and exclude the Kiosk Account`,
+  `${setupPath} should enable transport-neutral Controlled Maintenance Ingress with an explicit SSH source allowlist and hard-fail the old Tailscale switch`,
+);
+
+addCheck(
+  "setup-rejects-required-unsafe-controlled-maintenance-ingress-samples",
+  setupAllowlistValidatorBlock.includes(
+    'throw "Controlled Maintenance Ingress requires at least one explicit maintenance ingress source address."',
+  ) &&
+    setupAllowlistValidatorBlock.includes(
+      'throw "Controlled Maintenance Ingress source address must not be empty."',
+    ) &&
+    setupAllowlistValidatorBlock.includes(
+      'throw "Controlled Maintenance Ingress source address is too broad: $trimmed"',
+    ) &&
+    allowlistValidatorRejectsRequiredUnsafeSamples(
+      setupAllowlistValidatorBlock,
+    ),
+  `${setupPath} should reject no allowlist, empty entries, Any, 0.0.0.0/0, ::/0, stale broad CGNAT/private CIDRs like 100.64.0.0/10, 10.0.0.0/8, and 192.168.0.0/16`,
+);
+
+addCheck(
+  "verifier-rejects-required-unsafe-controlled-maintenance-ingress-samples",
+  verifierAllowlistValidatorBlock.includes(
+    'throw "Controlled Maintenance Ingress requires at least one explicit maintenance ingress source address."',
+  ) &&
+    verifierAllowlistValidatorBlock.includes(
+      'throw "Controlled Maintenance Ingress source address must not be empty."',
+    ) &&
+    verifierAllowlistValidatorBlock.includes(
+      'throw "Controlled Maintenance Ingress source address is too broad: $trimmed"',
+    ) &&
+    allowlistValidatorRejectsRequiredUnsafeSamples(
+      verifierAllowlistValidatorBlock,
+    ),
+  `${verifierPath} should reject no allowlist, empty entries, Any, 0.0.0.0/0, ::/0, stale broad CGNAT/private CIDRs like 100.64.0.0/10, 10.0.0.0/8, and 192.168.0.0/16`,
+);
+
+addCheck(
+  "setup-validates-maintenance-ingress-before-mutating-sshd-firewall-or-groups",
+  allTokensAfter(
+    setupControlledMaintenanceIngressBlock,
+    "$validatedSources = Assert-ControlledMaintenanceIngressSourceAllowlist",
+    [
+      "Ensure-OpenSshServer",
+      "Ensure-SshdConfigDenyKioskUser",
+      "Ensure-ControlledMaintenanceIngressFirewall",
+      "Ensure-LocalGroupExists",
+      "Add-LocalGroupMember",
+      "Remove-LocalGroupMember",
+      "Restart-Service",
+    ],
+  ) &&
+    allTokensAfter(
+      setupControlledMaintenanceFirewallBlock,
+      "$validatedSources = Assert-ControlledMaintenanceIngressSourceAllowlist",
+      [
+        "Disable-DefaultOpenSshInboundFirewall",
+        "Remove-NetFirewallRule",
+        "New-NetFirewallRule",
+      ],
+    ),
+  `${setupPath} should validate Controlled Maintenance Ingress allowlist before any sshd, sshd_config, firewall, or group mutation`,
+);
+
+addCheck(
+  "remote-maintenance-stale-switch-hard-fails",
+  setup.includes("[switch]$ConfigureRemoteMaintenanceAccess") &&
+    setup.includes("Reject-ControlledMaintenanceIngressMigration") &&
+    setup.includes("if ($ConfigureRemoteMaintenanceAccess)") &&
+    setup.includes("ConfigureRemoteMaintenanceAccess has been removed") &&
+    !setup.includes("Ensure-RemoteMaintenanceAccess"),
+  `${setupPath} should reject stale -ConfigureRemoteMaintenanceAccess commands instead of preserving a compatibility alias`,
 );
 
 addCheck(
@@ -196,7 +416,7 @@ addCheck(
 
 addCheck(
   "kiosk-shell-and-machine-ui-task-are-mutually-exclusive",
-  machineUiTaskSection.includes("if (-not $ConfigureKioskShell)") &&
+  machineUiTaskSection.includes("if (-not $ShellLauncherOwnsStartup)") &&
     containsCall(
       machineUiTaskSection,
       "Register-InteractiveLogonTask",
@@ -264,13 +484,15 @@ addCheck(
 );
 
 addCheck(
-  "verifier-records-controlled-remote-maintenance-evidence",
-  verifier.includes("[switch]$RemoteMaintenanceConfirmed") &&
+  "verifier-records-controlled-maintenance-ingress-evidence",
+  verifier.includes("[string[]]$MaintenanceIngressSourceAllowlist") &&
+    verifier.includes("[switch]$MaintenanceIngressConfirmed") &&
     verifier.includes("[string]$NegativeKioskSshEvidence") &&
     verifier.includes("negativeKioskSshEvidence") &&
     verifier.includes('Get-ServiceStateOrNull -Name "sshd"') &&
-    verifier.includes("Get-VemTailscaleSshFirewallState") &&
-    verifier.includes("VEM Tailscale SSH") &&
+    verifier.includes("Get-ControlledMaintenanceIngressFirewallState") &&
+    verifier.includes("VEM Controlled Maintenance SSH") &&
+    verifier.includes("Assert-ControlledMaintenanceIngressSourceAllowlist") &&
     verifier.includes(
       'Test-LocalUserInGroup -User $MaintenanceUser -Group "OpenSSH Users"',
     ) &&
@@ -282,9 +504,40 @@ addCheck(
     ) &&
     verifier.includes("Test-SshdConfigDeniesUser") &&
     verifier.includes("$KioskUser.ToLowerInvariant()") &&
-    verifier.includes("Get-TailscaleStatus") &&
-    verifier.includes("remoteMaintenance"),
-  `${verifierPath} should record SSH/Tailscale maintenance access evidence and fail without HITL remote login confirmation`,
+    verifier.includes("controlledMaintenanceIngress") &&
+    !verifier.includes("Get-TailscaleStatus") &&
+    !verifier.includes("VEM Tailscale SSH"),
+  `${verifierPath} should record controlled maintenance ingress evidence and fail without explicit ingress confirmation`,
+);
+
+addCheck(
+  "verifier-requires-exact-normalized-maintenance-ingress-firewall-addresses",
+  verifierControlledMaintenanceFirewallBlock.includes(
+    "$normalizedExpectedRemoteAddresses = Assert-ControlledMaintenanceIngressSourceAllowlist",
+  ) &&
+    verifierControlledMaintenanceFirewallBlock.includes(
+      "$normalizedRemoteAddresses = Assert-ControlledMaintenanceIngressSourceAllowlist",
+    ) &&
+    verifierControlledMaintenanceFirewallBlock.includes(
+      "$missingRemoteAddresses",
+    ) &&
+    verifierControlledMaintenanceFirewallBlock.includes(
+      "$extraRemoteAddresses",
+    ) &&
+    verifierControlledMaintenanceFirewallBlock.includes(
+      "$normalizedRemoteAddresses.Count -eq $normalizedExpectedRemoteAddresses.Count",
+    ) &&
+    verifierControlledMaintenanceFirewallBlock.includes(
+      "$missingRemoteAddresses.Count -eq 0",
+    ) &&
+    verifierControlledMaintenanceFirewallBlock.includes(
+      "$extraRemoteAddresses.Count -eq 0",
+    ) &&
+    verifierControlledMaintenanceFirewallBlock.includes(
+      "normalizedRemoteAddress",
+    ) &&
+    verifierControlledMaintenanceFirewallBlock.includes("extraRemoteAddress"),
+  `${verifierPath} should fail unless firewall RemoteAddress exactly equals the normalized explicit allowlist with no extra or broad sources`,
 );
 
 addCheck(
@@ -311,18 +564,21 @@ addCheck(
 );
 
 addCheck(
-  "public-runbook-documents-controlled-remote-maintenance-access",
-  runbook.includes("受控远程维护访问") &&
-    runbook.includes("-ConfigureRemoteMaintenanceAccess") &&
+  "public-runbook-documents-controlled-maintenance-ingress",
+  runbook.includes("Controlled Maintenance Ingress") &&
+    runbook.includes("受控维护入口") &&
+    runbook.includes("-ConfigureControlledMaintenanceIngress") &&
+    runbook.includes("-MaintenanceIngressSourceAllowlist") &&
     runbook.includes("-EnableMaintenanceDebugTask") &&
-    runbook.includes("-RemoteMaintenanceConfirmed") &&
+    runbook.includes("-MaintenanceIngressConfirmed") &&
     runbook.includes("-NegativeKioskSshEvidence") &&
-    runbook.includes("Tailscale 支撑的受控 SSH") &&
-    runbook.includes("VEM Tailscale SSH") &&
-    runbook.includes("100.64.0.0/10") &&
+    runbook.includes("VEM Controlled Maintenance SSH") &&
+    runbook.includes("显式来源 allowlist") &&
     runbook.includes("自助机账号不得") &&
-    runbook.includes("维护账号"),
-  `${runbookPath} should document the controlled remote maintenance access setup and HITL acceptance`,
+    runbook.includes("维护账号") &&
+    !runbook.includes("-ConfigureRemoteMaintenanceAccess") &&
+    !runbook.includes("VEM Tailscale SSH"),
+  `${runbookPath} should document transport-neutral Controlled Maintenance Ingress setup and HITL acceptance`,
 );
 
 const failures = checks.filter((check) => !check.passed);

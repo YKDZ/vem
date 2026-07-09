@@ -20,23 +20,24 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 
 不带自助机开关运行 `setup-scheduled-tasks.ps1` 时，仍与现有基于 Admin 的生产安装保持兼容。它不会静默地把顾客侧启动任务绑定到 `VEMKiosk`。
 
-## 受控远程维护访问
+## Controlled Maintenance Ingress 受控维护入口
 
-生产自助机锁定不得让主机变得不可访问。首台试点支持的维护通道是通过 Tailscale 支撑的受控 SSH 登录维护账号。该通道仅用于主机级恢复、证据收集，以及托管更新不可用时的紧急部署；不要把它作为正常发布路径。
+生产自助机锁定不得让主机变得不可访问。维护通道的稳定概念是 transport-neutral Controlled Maintenance Ingress：只允许显式授权来源通过维护账号登录。WireGuard, SSH, and the relay are implementation mechanisms；具体部署可以使用维护 relay、专用隧道或现场临时网络，但防火墙来源 allowlist 和账号隔离必须保持显式。该通道仅用于主机级恢复、证据收集，以及托管更新不可用时的紧急部署；不要把它作为正常发布路径。
 
-只有在维护账号凭据已知且可恢复后，才配置该通道：
+只有在维护账号凭据已知且可恢复，并且维护来源地址已明确后，才配置该通道。`-MaintenanceIngressSourceAllowlist` 没有默认值，必须传入显式 host 来源 allowlist；IPv4 可使用单个 host 地址或 `/32`，IPv6 可使用单个 host 地址或 `/128`：
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass `
   -File C:\VEM\repo\scripts\windows\setup-scheduled-tasks.ps1 `
-  -ConfigureRemoteMaintenanceAccess
+  -ConfigureControlledMaintenanceIngress `
+  -MaintenanceIngressSourceAllowlist "10.77.20.2/32"
 ```
 
 该脚本会：
 
 - 启用 Windows OpenSSH Server `sshd`，并设置为自动启动；
-- 要求本地 Tailscale 服务和 CLI 存在且正在运行；
-- 禁用范围过宽的默认 OpenSSH 入站防火墙规则，并创建由 VEM 管理的 `VEM Tailscale SSH` 规则，允许来自 `100.64.0.0/10` 的 TCP `22`；
+- 拒绝空 allowlist、`Any`、`0.0.0.0/0`、`::/0`、`100.64.0.0/10`、`10.0.0.0/8`、`192.168.0.0/16` 等过宽 SSH 暴露；
+- 禁用范围过宽的默认 OpenSSH 入站防火墙规则，并创建由 VEM 管理的 `VEM Controlled Maintenance SSH` 规则，允许来自显式来源 allowlist 的 TCP `22`；
 - 将维护账号加入 `OpenSSH Users`；
 - 将自助机账号从 `OpenSSH Users` 和 `Remote Desktop Users` 中移除；
 - 向 `C:\ProgramData\ssh\sshd_config` 写入由系统管理的小写 `DenyUsers <kioskuser>` 块。
@@ -104,8 +105,9 @@ powershell -NoProfile -ExecutionPolicy Bypass `
   -DesktopShellUnavailable `
   -DebugRoutesUnavailable `
   -MaintenanceRecoveryConfirmed `
-  -RemoteMaintenanceConfirmed `
-  -NegativeKioskSshEvidence "ssh VEMKiosk@<machine-tailscale-ip> rejected with DenyUsers/auth failure at <time>"
+  -MaintenanceIngressSourceAllowlist "10.77.20.2/32" `
+  -MaintenanceIngressConfirmed `
+  -NegativeKioskSshEvidence "ssh VEMKiosk@<machine-maintenance-ingress-ip> rejected with DenyUsers/auth failure at <time>"
 ```
 
 验证器会写入 `C:\ProgramData\VEM\kiosk-lockdown-evidence.json`，并在以下情况失败：
@@ -113,12 +115,11 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 - 自助机账号缺失，或是本地管理员；
 - 维护账号缺失，或缺少管理员恢复权限；
 - OpenSSH Server `sshd` 缺失、停止、不是自动启动，或本地端口 `22` 不可访问；
-- `VEM Tailscale SSH` 防火墙规则缺失、未限定远端地址 `100.64.0.0/10`、未指向 TCP `22`，或任何范围过宽的默认 OpenSSH 入站规则仍处于启用状态；
+- `VEM Controlled Maintenance SSH` 防火墙规则缺失、未匹配显式来源 allowlist、未指向 TCP `22`，或任何范围过宽的默认 OpenSSH 入站规则仍处于启用状态；
 - 维护账号不在 `OpenSSH Users` 中；
 - 自助机账号在 `OpenSSH Users` 中；
 - 自助机账号在 `Remote Desktop Users` 中；
 - `sshd_config` 未显式拒绝小写自助机账号；
-- Tailscale 缺失、停止、没有分配 Tailscale IP，或未报告后端正在运行；
 - 正常启动器启用了 WebView CDP；
 - 显式调试启动器缺失；
 - Shell Launcher 或按用户配置的自助机 shell 未配置为预期的 `machine.exe` shell；
@@ -130,13 +131,12 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 
 将证据 JSON 与该机器的生产验收记录一起保存。人工确认必须包括尝试通过触摸边缘手势、Windows shell 入口、关闭或最小化控件，以及任何顾客可访问调试路由进入桌面。未完成物理触摸屏检查时，仅通过该脚本不足以作为生产验收。
 
-对于 `-RemoteMaintenanceConfirmed`，从另一台已授权 Tailscale 设备确认：
+对于 `-MaintenanceIngressConfirmed`，从一台位于显式 allowlist 内的维护来源确认：
 
 ```powershell
-tailscale status
-ssh <MaintenanceUser>@<machine-tailscale-ip> hostname
-ssh <MaintenanceUser>@<machine-tailscale-ip> powershell -NoProfile -Command "whoami; Get-Service sshd,Tailscale | Select-Object Name,Status,StartType"
-ssh VEMKiosk@<machine-tailscale-ip> hostname
+ssh <MaintenanceUser>@<machine-maintenance-ingress-ip> hostname
+ssh <MaintenanceUser>@<machine-maintenance-ingress-ip> powershell -NoProfile -Command "whoami; Get-Service sshd | Select-Object Name,Status,StartType"
+ssh VEMKiosk@<machine-maintenance-ingress-ip> hostname
 ```
 
 成功的 SSH 登录必须使用维护账号。自助机账号 SSH 尝试必须失败，且该失败结果必须通过 `-NegativeKioskSshEvidence` 记录；不要把自助机账号 SSH 登录成功作为证据接受。

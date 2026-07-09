@@ -552,6 +552,116 @@ function Get-FactoryRemoteMaintenanceCapabilityEvidence {
   }
 }
 
+function Get-MaintenanceRelayExpectation {
+  param($Manifest)
+
+  if ($null -eq $Manifest.expectations -or $null -eq $Manifest.expectations.maintenanceRelay) {
+    return $null
+  }
+  if ([string]$Manifest.expectations.maintenanceRelay.kind -ne "wireguard-maintenance-relay") {
+    return $null
+  }
+  return $Manifest.expectations.maintenanceRelay
+}
+
+function Get-ControlledMaintenanceIngressRuleEvidence {
+  param($ExpectedSourceAllowlist)
+
+  $ruleName = "VEM Controlled Maintenance SSH"
+  $rule = Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue
+  if ($null -eq $rule) {
+    return [ordered]@{
+      exists = $false
+      enabled = $false
+      protocol = $null
+      localPort = $null
+      sourceAllowlist = @()
+      sourceAllowlistMatches = $false
+    }
+  }
+
+  $portFilter = Get-NetFirewallPortFilter -AssociatedNetFirewallRule $rule -ErrorAction SilentlyContinue | Select-Object -First 1
+  $addressFilter = Get-NetFirewallAddressFilter -AssociatedNetFirewallRule $rule -ErrorAction SilentlyContinue | Select-Object -First 1
+  $actualSources = @($addressFilter.RemoteAddress | ForEach-Object { [string]$_ } | Sort-Object)
+  $expectedSources = @($ExpectedSourceAllowlist | ForEach-Object { [string]$_ } | Sort-Object)
+  $sourceMatches = ($actualSources.Count -eq $expectedSources.Count)
+  if ($sourceMatches) {
+    for ($index = 0; $index -lt $actualSources.Count; $index += 1) {
+      if ($actualSources[$index] -ne $expectedSources[$index]) {
+        $sourceMatches = $false
+        break
+      }
+    }
+  }
+
+  return [ordered]@{
+    exists = $true
+    enabled = [string]$rule.Enabled -eq "True"
+    protocol = if ($null -ne $portFilter) { [string]$portFilter.Protocol } else { $null }
+    localPort = if ($null -ne $portFilter) { [string]$portFilter.LocalPort } else { $null }
+    sourceAllowlist = @($actualSources)
+    expectedSourceAllowlist = @($expectedSources)
+    sourceAllowlistMatches = $sourceMatches
+  }
+}
+
+function Get-MaintenanceRelayEvidence {
+  param($Expectation)
+
+  if ($null -eq $Expectation) {
+    return [ordered]@{
+      enabled = $false
+      status = "not_configured"
+    }
+  }
+
+  $tunnelName = [string]$Expectation.tunnelName
+  $serviceName = if ([string]::IsNullOrWhiteSpace($Expectation.tunnelServiceName)) {
+    "WireGuardTunnel{0}" -f $tunnelName
+  } else {
+    [string]$Expectation.tunnelServiceName
+  }
+  $service = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
+  $wireGuardExe = @(
+    "C:\Program Files\WireGuard\wireguard.exe",
+    "C:\Program Files (x86)\WireGuard\wireguard.exe"
+  ) | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+  $wgExe = @(
+    "C:\Program Files\WireGuard\wg.exe",
+    "C:\Program Files (x86)\WireGuard\wg.exe"
+  ) | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+  $configPath = [string]$Expectation.configPath
+  $configExists = -not [string]::IsNullOrWhiteSpace($configPath) -and (Test-Path -LiteralPath $configPath -PathType Leaf)
+  $configHash = if ($configExists) { (Get-FileHash -LiteralPath $configPath -Algorithm SHA256).Hash.ToLowerInvariant() } else { $null }
+  $configHashMatches = $configExists -and $configHash -eq (Normalize-Sha256 -Value ([string]$Expectation.configSha256))
+  $ingress = Get-ControlledMaintenanceIngressRuleEvidence -ExpectedSourceAllowlist @($Expectation.controlledMaintenanceIngress.sourceAllowlist)
+  $ok = $null -ne $service -and
+    [string]$service.Status -eq "Running" -and
+    [string]$service.StartType -eq "Automatic" -and
+    $null -ne $wireGuardExe -and
+    $null -ne $wgExe -and
+    $configHashMatches -and
+    [bool]$ingress.enabled -and
+    [string]$ingress.protocol -eq "TCP" -and
+    [string]$ingress.localPort -eq "22" -and
+    [bool]$ingress.sourceAllowlistMatches
+
+  return [ordered]@{
+    enabled = $true
+    status = if ($ok) { "passed" } else { "failed" }
+    tunnelName = $tunnelName
+    serviceName = $serviceName
+    serviceStatus = if ($null -ne $service) { [string]$service.Status } else { $null }
+    serviceStartupType = if ($null -ne $service) { [string]$service.StartType } else { $null }
+    wireGuardExe = if ($null -ne $wireGuardExe) { [string]$wireGuardExe } else { $null }
+    wgExe = if ($null -ne $wgExe) { [string]$wgExe } else { $null }
+    configPath = $configPath
+    configExists = $configExists
+    configSha256Matches = $configHashMatches
+    controlledMaintenanceIngress = $ingress
+  }
+}
+
 function Get-ConsumerExperienceInterferenceEvidence {
   $cloudPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\CloudContent"
   $storePath = "HKLM:\SOFTWARE\Policies\Microsoft\WindowsStore"
@@ -858,6 +968,8 @@ if ($null -ne $manifest) {
     Add-Failure $failures "Windows testsigning must be off"
   }
 
+  $maintenanceRelayExpectation = Get-MaintenanceRelayExpectation -Manifest $manifest
+
   $checks.securityPosture = Get-SecurityPostureEvidence
   if ([string]$checks.securityPosture.defender -ne "enabled") {
     Add-Failure $failures "Defender must remain enabled with VEM runtime exclusions"
@@ -868,8 +980,14 @@ if ($null -ne $manifest) {
   if (@($checks.securityPosture.missingDefenderExclusions).Count -gt 0) {
     Add-Failure $failures "Defender VEM runtime exclusions missing: $($checks.securityPosture.missingDefenderExclusions -join ', ')"
   }
-  if (@($checks.securityPosture.enabledVemInboundRules).Count -gt 0) {
-    Add-Failure $failures "default Factory Runtime Image must not enable product-managed inbound remote access rules: $($checks.securityPosture.enabledVemInboundRules -join ', ')"
+  $enabledVemInboundRules = @($checks.securityPosture.enabledVemInboundRules)
+  $disallowedVemInboundRules = if ($null -ne $maintenanceRelayExpectation) {
+    @($enabledVemInboundRules | Where-Object { [string]$_ -ne "VEM Controlled Maintenance SSH" })
+  } else {
+    $enabledVemInboundRules
+  }
+  if (@($disallowedVemInboundRules).Count -gt 0) {
+    Add-Failure $failures "default Factory Runtime Image must not enable product-managed inbound remote access rules: $($disallowedVemInboundRules -join ', ')"
   }
   if ([string]$checks.securityPosture.fileAndPrinterSharing -ne "not_enabled") {
     Add-Failure $failures "File and Printer Sharing firewall rules must not be enabled as a maintenance entry"
@@ -893,6 +1011,11 @@ if ($null -ne $manifest) {
   }
   if ([string]$checks.factoryRemoteMaintenanceCapability.kioskRemoteAccess -ne "denied") {
     Add-Failure $failures "kiosk account must not have remote maintenance access"
+  }
+
+  $checks.maintenanceRelay = Get-MaintenanceRelayEvidence -Expectation $maintenanceRelayExpectation
+  if ($null -ne $maintenanceRelayExpectation -and [string]$checks.maintenanceRelay.status -ne "passed") {
+    Add-Failure $failures "preconfigured Maintenance Relay must have running WireGuard tunnel service and exact Controlled Maintenance Ingress allowlist"
   }
 
   $checks.consumerExperienceInterference = Get-ConsumerExperienceInterferenceEvidence

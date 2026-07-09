@@ -9,6 +9,7 @@
     "check:factory-runtime-prep": "node scripts/check-factory-runtime-prep.mjs",
     "check:fix": "tsx node_modules/oxfmt/dist/cli.js . && cargo fmt --all && turbo lint -- --fix && turbo typecheck test",
     "check:machine-vision-deployment": "node scripts/check-machine-vision-deployment.mjs",
+    "check:maintenance-relay-runbook": "node --test scripts/check-maintenance-relay-runbook.test.mjs",
     "check:managed-update": "node scripts/check-managed-machine-update.mjs",
     "check:rust": "cargo check --workspace --all-targets",
     "check:script-inventory": "node --test scripts/check-repository-script-inventory.test.mjs && node scripts/check-repository-script-inventory.mjs",

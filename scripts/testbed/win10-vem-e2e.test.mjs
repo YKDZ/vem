@@ -237,7 +237,6 @@ function cleanBaseFactoryAcceptanceEvidence(overrides = {}) {
       uri: "unraid://192.168.2.23/vms/win10-vem-clean-base",
       snapshot: "vem-clean-base-before-factory-prep",
       identity: {
-        tailscaleName: "win10-vem-clean-base",
         hostName: "WIN10-VEM-CLEAN",
         unraidVmName: "win10-vem-clean-base",
       },
@@ -416,7 +415,7 @@ describe("win10-vem-e2e reset planning", () => {
         "--run-id",
         "dh-20260704-guard",
         "--remote",
-        "vem",
+        "testbed-maintenance-alias",
         "--ssh-config",
         "--dry-run",
       ],
@@ -838,8 +837,8 @@ describe("win10-vem-e2e reset planning", () => {
     assert.deepEqual(plan.preservedResources, [
       "Windows OS",
       "display setup",
-      "Tailscale",
       "OpenSSH",
+      "Controlled Maintenance Ingress configuration",
       "WebView2",
       "YKDZ maintenance account",
       "base networking",
@@ -907,7 +906,8 @@ describe("win10-vem-e2e reset planning", () => {
     assert.match(script, /Get-CimInstance Win32_OperatingSystem/);
     assert.match(script, /WindowsIdentity/);
     assert.match(script, /Test-LocalAdmin/);
-    assert.match(script, /tailscaleCommand = Get-CommandEvidence "tailscale"/);
+    assert.doesNotMatch(script, /Get-CommandEvidence "tailscale"/);
+    assert.doesNotMatch(script, /Get-ServiceStateOrNull -Name "Tailscale"/);
     assert.match(script, /Get-ServiceStateOrNull -Name "sshd"/);
     assert.match(script, /Get-WebView2Presence/);
     assert.match(script, /Get-DisplayEvidence/);
@@ -1150,6 +1150,33 @@ describe("win10-vem-e2e reset planning", () => {
     assert.match(script, /& \$setupScript @setupArgs/);
     assert.doesNotMatch(script, /1256987/);
     assert.doesNotMatch(script, /AllowBlankAutoLogonPassword/);
+  });
+
+  it("passes Controlled Maintenance Ingress allowlist into production setup", () => {
+    const plan = buildBringUpPlan({
+      maintenanceIngressSourceAllowlist: "10.91.1.10",
+    });
+
+    assert.equal(
+      plan.arguments.MaintenanceIngressSourceAllowlist,
+      "10.91.1.10",
+    );
+    assert.ok(plan.switches.includes("ConfigureControlledMaintenanceIngress"));
+
+    const script = buildRemotePowerShellScript({
+      mode: "bring-up",
+      maintenanceIngressSourceAllowlist: "10.91.1.10",
+    });
+
+    assert.match(
+      script,
+      /'MaintenanceIngressSourceAllowlist' = '10\.91\.1\.10'/,
+    );
+    assert.match(
+      script,
+      /\$setupArgs\['ConfigureControlledMaintenanceIngress'\] = \$true/,
+    );
+    assert.doesNotMatch(script, /ConfigureRemoteMaintenanceAccess/);
   });
 
   it("rejects a reset-plus-bring-up shortcut that would delete the setup script before using it", () => {
@@ -1861,6 +1888,7 @@ describe("win10-vem-e2e reset planning", () => {
       const daemonArtifact = join(temp, "vending-daemon.exe");
       const machineUiArtifact = join(temp, "machine.exe");
       const machineUiSidecar = join(temp, "WebView2Loader.dll");
+      const outputPath = join(temp, "vm-runtime-acceptance-plan.json");
       writeFileSync(daemonArtifact, "daemon acceptance artifact", "utf8");
       writeFileSync(
         machineUiArtifact,
@@ -1889,6 +1917,8 @@ describe("win10-vem-e2e reset planning", () => {
           daemonArtifact,
           "--machine-ui-artifact",
           machineUiArtifact,
+          "--out",
+          outputPath,
           "--dry-run",
         ],
         { cwd: process.cwd(), encoding: "utf8" },
@@ -1896,7 +1926,9 @@ describe("win10-vem-e2e reset planning", () => {
 
       assert.equal(result.status, 0, result.stderr);
       const plan = JSON.parse(result.stdout);
+      const writtenPlan = JSON.parse(readFileSync(outputPath, "utf8"));
       assert.equal(plan.schemaVersion, "vm-runtime-acceptance-plan/v1");
+      assert.deepEqual(writtenPlan, plan);
       assert.equal(plan.mode, "vm-runtime-acceptance");
       assert.equal(plan.runId, "RUN-181");
       assert.equal(plan.target.machineCode, "VEM-TESTBED-WINVM-RUN-181");
@@ -1942,6 +1974,12 @@ describe("win10-vem-e2e reset planning", () => {
       assert.equal(plan.ci.requiredSecrets.includes("SSHPASS"), true);
       assert.match(plan.artifacts.daemonSha256, /^[a-f0-9]{64}$/);
       assert.match(plan.artifacts.machineUiSha256, /^[a-f0-9]{64}$/);
+      assert.doesNotMatch(result.stdout, /pass@127\.0\.0\.1/);
+      assert.doesNotMatch(
+        readFileSync(outputPath, "utf8"),
+        /pass@127\.0\.0\.1/,
+      );
+      assert.match(result.stdout, /\[REDACTED\]/);
     } finally {
       rmSync(temp, { recursive: true, force: true });
     }
@@ -2371,7 +2409,12 @@ describe("win10-vem-e2e reset planning", () => {
     assert.match(preflightCommand, /-EncodedCommand [A-Za-z0-9+/=]+$/);
     assert.doesNotMatch(identityCommand, /[|{}]/);
     assert.doesNotMatch(preflightCommand, /[|{}]/);
-    assert.match(decode(identityCommand), /tailscale status --json/);
+    assert.match(
+      decode(identityCommand),
+      /hostName = \[string\]\$computer\.Name/,
+    );
+    assert.match(decode(identityCommand), /user = \[string\]\$identity\.Name/);
+    assert.doesNotMatch(decode(identityCommand), /tailscale/i);
     assert.match(decode(preflightCommand), /Test-Path -LiteralPath/);
     assert.match(decode(preflightCommand), /Get-Service -Name \$serviceName/);
     assert.match(decode(preflightCommand), /Get-ScheduledTask -TaskName/);
@@ -2440,8 +2483,6 @@ describe("win10-vem-e2e reset planning", () => {
               kind: "clean-windows-base",
               uri: "unraid://192.168.2.23/vms/win10-vem-e2e",
               identity: {
-                tailscaleIp: "100.68.189.11",
-                tailscaleName: "win10-vem-e2e",
                 hostName: "DESKTOP-2STVS5B",
               },
             },
@@ -2576,7 +2617,6 @@ describe("win10-vem-e2e reset planning", () => {
           uri: "unraid://192.168.2.23/vms/win10-vem-clean-base",
           snapshot: "vem-clean-base-before-factory-prep",
           identity: {
-            tailscaleName: "win10-vem-clean-base",
             hostName: "WIN10-VEM-CLEAN",
           },
         },
@@ -2637,7 +2677,6 @@ describe("win10-vem-e2e reset planning", () => {
       uri: "unraid://192.168.2.23/vms/win10-vem-clean-base",
       snapshot: "vem-clean-base-before-factory-prep",
       identity: {
-        tailscaleName: "win10-vem-clean-base",
         hostName: "WIN10-VEM-CLEAN",
       },
     });
@@ -3617,27 +3656,27 @@ describe("win10-vem-e2e reset planning", () => {
     );
   });
 
-  it("builds the documented Tailscale/OpenSSH command without requiring the real VM in tests", () => {
+  it("builds Controlled Maintenance Ingress SSH commands without requiring the real VM in tests", () => {
     assert.deepEqual(buildSshCommand(), [
       "ssh",
       "-o",
       "ConnectTimeout=30",
       "-o",
       "ProxyCommand=none",
-      "YKDZ@100.68.189.11",
+      "YKDZ@controlled-maintenance-ingress.local",
     ]);
     assert.deepEqual(
       buildSshCommand({
-        proxyCommand:
-          "tailscale --socket=/tmp/tailscale-devcontainer-run/tailscaled.sock nc %h %p",
+        remote: "maintainer@relay-vm.example",
+        proxyCommand: "ssh -W %h:%p maintenance-relay.example",
       }),
       [
         "ssh",
         "-o",
         "ConnectTimeout=30",
         "-o",
-        "ProxyCommand=tailscale --socket=/tmp/tailscale-devcontainer-run/tailscaled.sock nc %h %p",
-        "YKDZ@100.68.189.11",
+        "ProxyCommand=ssh -W %h:%p maintenance-relay.example",
+        "maintainer@relay-vm.example",
       ],
     );
   });
@@ -3651,7 +3690,7 @@ describe("win10-vem-e2e reset planning", () => {
       "ConnectTimeout=30",
       "-o",
       "ProxyCommand=none",
-      "YKDZ@100.68.189.11",
+      "YKDZ@controlled-maintenance-ingress.local",
     ]);
 
     assert.deepEqual(
@@ -3669,7 +3708,7 @@ describe("win10-vem-e2e reset planning", () => {
         "-o",
         "ProxyCommand=none",
         "/tmp/run.ps1",
-        "YKDZ@100.68.189.11:C:/Users/YKDZ/AppData/Local/Temp/vem-win10-e2e-test.ps1",
+        "YKDZ@controlled-maintenance-ingress.local:C:/Users/YKDZ/AppData/Local/Temp/vem-win10-e2e-test.ps1",
       ],
     );
   });
@@ -3699,7 +3738,7 @@ describe("win10-vem-e2e reset planning", () => {
         "-o",
         "ProxyCommand=none",
         "/tmp/run.ps1",
-        "YKDZ@100.68.189.11:C:/Users/YKDZ/AppData/Local/Temp/vem-win10-e2e-test.ps1",
+        "YKDZ@controlled-maintenance-ingress.local:C:/Users/YKDZ/AppData/Local/Temp/vem-win10-e2e-test.ps1",
       ],
     );
   });
