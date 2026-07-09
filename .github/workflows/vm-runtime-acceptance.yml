@@ -135,17 +135,29 @@ jobs:
             }
             process.stdout.write(artifact.archive_download_url);
           ' "$artifacts_json")"
-          curl --fail --silent --show-error --location \
-            --connect-timeout 20 \
-            --max-time 1200 \
-            --retry 3 \
-            --retry-delay 5 \
-            --retry-all-errors \
-            --header "Accept: application/vnd.github+json" \
-            --header "Authorization: Bearer ${GH_TOKEN}" \
-            --header "X-GitHub-Api-Version: 2022-11-28" \
-            "$archive_url" \
-            --output "$artifact_zip"
+          cache_root="${VEM_RUNTIME_ARTIFACT_CACHE_DIR:-${RUNNER_TOOL_CACHE:-$HOME/.cache}/vem-runtime-artifacts}"
+          cache_key="$(printf '%s-%s' "$GITHUB_SHA" "$ARTIFACT_NAME" | tr -c 'A-Za-z0-9._-' '_')"
+          cache_zip="$cache_root/${cache_key}.zip"
+          mkdir -p "$cache_root"
+          if [ -f "$cache_zip" ] && unzip -tq "$cache_zip" >/dev/null 2>&1; then
+            echo "::notice::Using cached Windows runtime artifact zip for ${GITHUB_SHA}."
+            cp "$cache_zip" "$artifact_zip"
+          else
+            rm -f "$cache_zip"
+            curl --fail --silent --show-error --location \
+              --connect-timeout 20 \
+              --max-time 1200 \
+              --retry 3 \
+              --retry-delay 5 \
+              --retry-all-errors \
+              --header "Accept: application/vnd.github+json" \
+              --header "Authorization: Bearer ${GH_TOKEN}" \
+              --header "X-GitHub-Api-Version: 2022-11-28" \
+              "$archive_url" \
+              --output "$artifact_zip"
+            unzip -tq "$artifact_zip" >/dev/null
+            cp "$artifact_zip" "$cache_zip"
+          fi
           unzip -q "$artifact_zip" -d artifacts/vm-runtime-inputs
 
       - name: Validate Windows Runtime Artifacts
@@ -248,8 +260,10 @@ jobs:
       - name: Start Ephemeral Postgres And MQTT
         run: |
           set -euo pipefail
-          docker rm -f "vem-runtime-postgres-${GITHUB_RUN_ID}" "vem-runtime-mqtt-${GITHUB_RUN_ID}" >/dev/null 2>&1 || true
-          docker run -d --name "vem-runtime-postgres-${GITHUB_RUN_ID}" \
+          postgres_name="vem-runtime-postgres-${GITHUB_RUN_ID}"
+          mqtt_name="vem-runtime-mqtt-${GITHUB_RUN_ID}"
+          docker rm -f "$postgres_name" "$mqtt_name" >/dev/null 2>&1 || true
+          docker run -d --name "$postgres_name" \
             -e POSTGRES_DB=vem_runtime \
             -e POSTGRES_USER=vem \
             -e POSTGRES_PASSWORD=vem_password \
@@ -257,18 +271,56 @@ jobs:
             postgres:16
           mkdir -p "$RUNNER_TEMP/vem-runtime-mosquitto"
           printf 'listener 1883 0.0.0.0\nallow_anonymous true\n' > "$RUNNER_TEMP/vem-runtime-mosquitto/mosquitto.conf"
-          docker run -d --name "vem-runtime-mqtt-${GITHUB_RUN_ID}" \
+          docker run -d --name "$mqtt_name" \
             -p 18883:1883 \
             -v "$RUNNER_TEMP/vem-runtime-mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro" \
             eclipse-mosquitto:2
-          for attempt in $(seq 1 60); do
-            if docker exec "vem-runtime-postgres-${GITHUB_RUN_ID}" pg_isready -U vem -d vem_runtime >/dev/null 2>&1; then
-              exit 0
+          postgres_ready=false
+          for attempt in $(seq 1 120); do
+            postgres_status="$(docker inspect -f '{{.State.Status}}' "$postgres_name" 2>/dev/null || true)"
+            if [ "$postgres_status" = "exited" ] || [ "$postgres_status" = "dead" ]; then
+              echo "::error::Postgres container exited before readiness."
+              docker ps -a --filter "name=$postgres_name"
+              docker logs "$postgres_name"
+              exit 1
+            fi
+            if docker exec "$postgres_name" pg_isready -h 127.0.0.1 -p 5432 -U vem -d vem_runtime >/tmp/vem-runtime-pg-isready.log 2>&1; then
+              postgres_ready=true
+              break
+            fi
+            if [ $((attempt % 10)) -eq 0 ]; then
+              echo "Waiting for Postgres readiness: attempt=${attempt} status=${postgres_status:-unknown}"
+              cat /tmp/vem-runtime-pg-isready.log || true
             fi
             sleep 2
           done
-          docker logs "vem-runtime-postgres-${GITHUB_RUN_ID}"
-          exit 1
+          if [ "$postgres_ready" != "true" ]; then
+            echo "::error::Postgres did not become ready."
+            docker ps -a --filter "name=$postgres_name"
+            docker logs "$postgres_name"
+            exit 1
+          fi
+          mqtt_ready=false
+          for attempt in $(seq 1 60); do
+            mqtt_status="$(docker inspect -f '{{.State.Status}}' "$mqtt_name" 2>/dev/null || true)"
+            if [ "$mqtt_status" = "exited" ] || [ "$mqtt_status" = "dead" ]; then
+              echo "::error::MQTT container exited before readiness."
+              docker ps -a --filter "name=$mqtt_name"
+              docker logs "$mqtt_name"
+              exit 1
+            fi
+            if timeout 2 bash -c '</dev/tcp/127.0.0.1/18883' >/dev/null 2>&1; then
+              mqtt_ready=true
+              break
+            fi
+            sleep 1
+          done
+          if [ "$mqtt_ready" != "true" ]; then
+            echo "::error::MQTT did not become ready."
+            docker ps -a --filter "name=$mqtt_name"
+            docker logs "$mqtt_name"
+            exit 1
+          fi
 
       - name: Build And Start Service API
         run: |

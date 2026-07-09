@@ -42,10 +42,37 @@ describe("VM runtime acceptance workflow maintenance relay path", () => {
     assert.match(download, /--max-time 1200/);
     assert.match(download, /--retry 3/);
     assert.match(download, /archive_download_url/);
+    assert.match(download, /VEM_RUNTIME_ARTIFACT_CACHE_DIR/);
+    assert.match(download, /RUNNER_TOOL_CACHE/);
+    assert.match(download, /cache_key=/);
+    assert.match(download, /unzip -tq "\$cache_zip"/);
+    assert.match(download, /Using cached Windows runtime artifact zip/);
+    assert.match(download, /cp "\$artifact_zip" "\$cache_zip"/);
     assert.match(
       download,
       /unzip -q "\$artifact_zip" -d artifacts\/vm-runtime-inputs/,
     );
+  });
+
+  it("starts ephemeral infrastructure with explicit Postgres and MQTT readiness diagnostics", () => {
+    const workflow = readWorkflow();
+    const ephemeralServices = stepBlock(
+      workflow,
+      "Start Ephemeral Postgres And MQTT",
+    );
+
+    assert.match(ephemeralServices, /postgres_name=/);
+    assert.match(ephemeralServices, /mqtt_name=/);
+    assert.match(
+      ephemeralServices,
+      /docker inspect -f '\{\{\.State\.Status\}\}'/,
+    );
+    assert.match(ephemeralServices, /pg_isready -h 127\.0\.0\.1 -p 5432/);
+    assert.match(ephemeralServices, /vem-runtime-pg-isready\.log/);
+    assert.match(ephemeralServices, /Postgres did not become ready/);
+    assert.match(ephemeralServices, /\/dev\/tcp\/127\.0\.0\.1\/18883/);
+    assert.match(ephemeralServices, /MQTT did not become ready/);
+    assert.doesNotMatch(ephemeralServices, /\n\s*exit 0\n/);
   });
 
   it("starts runner WireGuard before restoring the VM and uses the VM WireGuard IP for Windows SSH", () => {
