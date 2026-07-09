@@ -12,7 +12,8 @@ import {
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const DEFAULT_CONFIG = "scripts/testbed/vm-host-adapters/libvirt-qcow2.unraid.json";
+const DEFAULT_CONFIG =
+  "scripts/testbed/vm-host-adapters/libvirt-qcow2.unraid.json";
 const RESTORE_REPORT_SCHEMA_VERSION = "vm-host-restore-report/v1";
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 
@@ -60,7 +61,10 @@ function loadAdapterConfig(path = DEFAULT_CONFIG) {
   if (config?.adapter !== "libvirt-qcow2") {
     throw new Error("adapter config must declare libvirt-qcow2");
   }
-  if (!Array.isArray(config.allowedTargets) || config.allowedTargets.length === 0) {
+  if (
+    !Array.isArray(config.allowedTargets) ||
+    config.allowedTargets.length === 0
+  ) {
     throw new Error("adapter config must include allowedTargets");
   }
   return config;
@@ -69,29 +73,51 @@ function loadAdapterConfig(path = DEFAULT_CONFIG) {
 function findAllowedTarget(config, options) {
   const targetVm = requireString(options.targetVm, "--target-vm");
   const baseImage = assertSafeAbsolutePath(options.baseImage, "--base-image");
-  const overlayDisk = assertSafeAbsolutePath(options.overlayDisk, "--overlay-disk");
-  const windowsSshUser = requireString(options.windowsSshUser, "--windows-ssh-user");
-  const windowsSshHost = requireString(options.windowsSshHost, "--windows-ssh-host");
+  const overlayDisk = assertSafeAbsolutePath(
+    options.overlayDisk,
+    "--overlay-disk",
+  );
+  const windowsSshUser = requireString(
+    options.windowsSshUser,
+    "--windows-ssh-user",
+  );
+  const windowsSshHost = requireString(
+    options.windowsSshHost,
+    "--windows-ssh-host",
+  );
 
-  const target = config.allowedTargets.find((candidate) => candidate.name === targetVm);
+  const target = config.allowedTargets.find(
+    (candidate) => candidate.name === targetVm,
+  );
   if (!target) {
     throw new Error(`target VM is not allowlisted: ${targetVm}`);
   }
   if (target.overlayDisk !== overlayDisk) {
-    throw new Error(`overlay disk is not allowlisted for ${targetVm}: ${overlayDisk}`);
+    throw new Error(
+      `overlay disk is not allowlisted for ${targetVm}: ${overlayDisk}`,
+    );
   }
-  if (!Array.isArray(target.baseImages) || !target.baseImages.includes(baseImage)) {
-    throw new Error(`base image is not allowlisted for ${targetVm}: ${baseImage}`);
+  if (
+    !Array.isArray(target.baseImages) ||
+    !target.baseImages.includes(baseImage)
+  ) {
+    throw new Error(
+      `base image is not allowlisted for ${targetVm}: ${baseImage}`,
+    );
   }
   if (target.windowsSshUser !== windowsSshUser) {
-    throw new Error(`Windows SSH user is not allowlisted for ${targetVm}: ${windowsSshUser}`);
+    throw new Error(
+      `Windows SSH user is not allowlisted for ${targetVm}: ${windowsSshUser}`,
+    );
   }
   if (
     Array.isArray(target.windowsSshHosts) &&
     target.windowsSshHosts.length > 0 &&
     !target.windowsSshHosts.includes(windowsSshHost)
   ) {
-    throw new Error(`Windows SSH host is not allowlisted for ${targetVm}: ${windowsSshHost}`);
+    throw new Error(
+      `Windows SSH host is not allowlisted for ${targetVm}: ${windowsSshHost}`,
+    );
   }
   return target;
 }
@@ -123,7 +149,12 @@ function fileSha256(path, runner = runCommand) {
   return hash;
 }
 
-function waitForWindowsSsh({ host, user, timeoutSeconds = 600, runner = runCommand }) {
+function waitForWindowsSsh({
+  host,
+  user,
+  timeoutSeconds = 600,
+  runner = runCommand,
+}) {
   const deadline = Date.now() + timeoutSeconds * 1000;
   let lastError = "";
   while (Date.now() <= deadline) {
@@ -334,7 +365,9 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       process.exit(0);
     }
     if (options.mode !== "restore" || options.adapter !== "libvirt-qcow2") {
-      throw new Error("only --mode restore --adapter libvirt-qcow2 is supported");
+      throw new Error(
+        "only --mode restore --adapter libvirt-qcow2 is supported",
+      );
     }
     const report = restoreLibvirtQcow2Vm(options);
     if (options.out) {
