@@ -5,7 +5,15 @@
   "type": "module",
   "exports": {
     ".": {
-      "types": "./src/index.ts",
+      "vem-source": {
+        "types": "./src/index.ts",
+        "default": "./src/index.ts"
+      },
+      "source": {
+        "types": "./src/index.ts",
+        "default": "./src/index.ts"
+      },
+      "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "require": "./dist/index.cjs",
       "default": "./dist/index.js"
@@ -15,8 +23,8 @@
     "build": "vite build",
     "fmt": "oxfmt",
     "generate": "drizzle-kit generate",
-    "lint": "oxlint --type-aware",
-    "lint-fix": "oxlint --fix --type-aware",
+    "lint": "oxlint --quiet --format=unix --type-aware --config ../../oxlint.config.ts .",
+    "lint-fix": "oxlint --format=unix --fix --type-aware --config ../../oxlint.config.ts .",
     "migrate": "drizzle-kit migrate",
     "studio": "drizzle-kit studio --host 0.0.0.0 --port 4983",
     "typecheck": "tsc -p tsconfig.lib.json --noEmit"
@@ -32,6 +40,9 @@
     "@types/node": "catalog:",
     "@types/pg": "^8.20.0",
     "drizzle-kit": "catalog:",
+    "oxfmt": "catalog:",
+    "oxlint": "catalog:",
+    "oxlint-tsgolint": "catalog:",
     "tsx": "catalog:",
     "typescript": "catalog:",
     "unplugin-dts": "catalog:",

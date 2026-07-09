@@ -4,17 +4,33 @@ import { resolve } from "node:path";
 import { defineConfig } from "vitest/config";
 
 const host = process.env.TAURI_DEV_HOST;
+const clientConditions = [
+  "vem-source",
+  "module",
+  "browser",
+  "development|production",
+];
+const serverConditions = [
+  "vem-source",
+  "module",
+  "node",
+  "development|production",
+];
 
 export default defineConfig({
   plugins: [vue(), tailwindcss()],
 
   resolve: {
+    conditions: clientConditions,
     alias: {
       "@": resolve(import.meta.dirname, "src"),
-      "@vem/shared": resolve(
-        import.meta.dirname,
-        "../../packages/shared/src/index.ts",
-      ),
+    },
+  },
+
+  ssr: {
+    noExternal: ["@vem/shared", "vision-mock"],
+    resolve: {
+      conditions: serverConditions,
     },
   },
 

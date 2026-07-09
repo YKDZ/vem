@@ -1,12 +1,20 @@
-import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
+
+const serverConditions = [
+  "vem-source",
+  "module",
+  "node",
+  "development|production",
+];
 
 export default defineConfig({
   resolve: {
-    alias: {
-      "@vem/shared": fileURLToPath(
-        new URL("../../packages/shared/src/index.ts", import.meta.url),
-      ),
+    conditions: serverConditions,
+  },
+  ssr: {
+    noExternal: ["@vem/db", "@vem/shared"],
+    resolve: {
+      conditions: serverConditions,
     },
   },
 });

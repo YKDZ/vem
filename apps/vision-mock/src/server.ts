@@ -1,8 +1,3 @@
-import { randomUUID } from "node:crypto";
-import { setTimeout as delay } from "node:timers/promises";
-import { pathToFileURL } from "node:url";
-import { WebSocketServer, type RawData, type WebSocket } from "ws";
-
 import {
   DEFAULT_VISION_WS_URL,
   VISION_PROTOCOL,
@@ -11,7 +6,11 @@ import {
   type VisionClientMessage,
   type VisionErrorCode,
   type VisionServerMessage,
-} from "../../../packages/shared/src/schemas/vision";
+} from "@vem/shared/schemas/vision";
+import { randomUUID } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
+import { pathToFileURL } from "node:url";
+import { WebSocketServer, type RawData, type WebSocket } from "ws";
 
 export const MOCK_VISION_SCENARIOS = [
   "success",

@@ -4,6 +4,7 @@
   "scripts": {
     "check": "node tools/check-ci.mjs",
     "check:admin-api-contracts": "node --test scripts/check-admin-api-contracts.test.mjs scripts/check-admin-contract-e2e-ci.test.mjs && node scripts/check-admin-api-contracts.mjs && node scripts/check-admin-contract-e2e-ci.mjs",
+    "check:boundaries": "turbo boundaries --no-color",
     "check:daemon-ipc-contracts": "pnpm typecheck:scripts && pnpm test:daemon-ipc-contracts && pnpm generate:daemon-ipc-contracts -- --check && cargo test -p daemon-ipc-contracts && cargo test -p vending-core --test daemon_ipc_migration_guard && pnpm --filter machine test -- src/daemon/migration-guards.spec.ts",
     "check:factory-runtime-prep": "node scripts/check-factory-runtime-prep.mjs",
     "check:fix": "tsx node_modules/oxfmt/dist/cli.js . && cargo fmt --all && turbo lint -- --fix && turbo typecheck test",
@@ -13,11 +14,11 @@
     "check:script-inventory": "node --test scripts/check-repository-script-inventory.test.mjs && node scripts/check-repository-script-inventory.mjs",
     "fmt": "tsx node_modules/oxfmt/dist/cli.js . && cargo fmt --all",
     "fmt:check": "node tools/check-format.mjs",
-    "generate:daemon-ipc-contracts": "tsx scripts/daemon-ipc-contracts/generate-contracts.ts",
+    "generate:daemon-ipc-contracts": "NODE_OPTIONS=\"${NODE_OPTIONS:+$NODE_OPTIONS }--conditions=vem-source\" tsx scripts/daemon-ipc-contracts/generate-contracts.ts",
     "lint": "turbo lint",
     "lint:fix": "turbo lint -- --fix",
     "test": "node --test scripts/check-repository-script-inventory.test.mjs && turbo test",
-    "test:daemon-ipc-contracts": "vitest run scripts/daemon-ipc-contracts/generate-contracts.spec.ts",
+    "test:daemon-ipc-contracts": "NODE_OPTIONS=\"${NODE_OPTIONS:+$NODE_OPTIONS }--conditions=vem-source\" vitest run scripts/daemon-ipc-contracts/generate-contracts.spec.ts",
     "test:e2e": "turbo test:e2e",
     "typecheck": "turbo typecheck",
     "typecheck:scripts": "tsc -p tsconfig.scripts.json"
@@ -25,6 +26,7 @@
   "devDependencies": {
     "@tsconfig/node24": "^24.0.4",
     "@types/node": "catalog:",
+    "@vem/shared": "workspace:*",
     "jsdom": "^29.1.1",
     "marked": "^18.0.5",
     "mermaid": "^11.15.0",

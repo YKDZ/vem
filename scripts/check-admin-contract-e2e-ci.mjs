@@ -108,7 +108,7 @@ export function checkAdminContractE2eCi(options = {}) {
       '"--filter", "@vem/db", "migrate"',
       '"node", ["dist/main.js"]',
       "MQTT_URL",
-      '"pnpm", ["dev"]',
+      '"pnpm", ["dev", "--", "--strictPort"]',
       "test:e2e:admin-contract",
       "admin-contract-service-api.log",
       "admin-contract-admin-ui.log",

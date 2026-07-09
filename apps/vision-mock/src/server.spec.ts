@@ -1,12 +1,12 @@
-import { afterEach, describe, expect, it } from "vitest";
-import { WebSocket, type RawData } from "ws";
-
 import {
   VISION_PROTOCOL,
   visionServerMessageSchema,
   type VisionClientMessage,
   type VisionServerMessage,
-} from "../../../packages/shared/src/schemas/vision";
+} from "@vem/shared/schemas/vision";
+import { afterEach, describe, expect, it } from "vitest";
+import { WebSocket, type RawData } from "ws";
+
 import {
   startMockVisionServer,
   type MockVisionScenario,

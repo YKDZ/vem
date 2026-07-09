@@ -7,6 +7,8 @@
     "isolatedModules": true,
     "emitDeclarationOnly": true,
     "allowImportingTsExtensions": true,
+    "customConditions": ["vem-source"],
+    "forceConsistentCasingInFileNames": true,
     "noEmitOnError": true,
     "noEmit": false,
     "noFallthroughCasesInSwitch": true,

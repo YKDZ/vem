@@ -5,17 +5,53 @@
   "type": "module",
   "exports": {
     ".": {
+      "vem-source": {
+        "types": "./src/index.ts",
+        "default": "./src/index.ts"
+      },
+      "source": {
+        "types": "./src/index.ts",
+        "default": "./src/index.ts"
+      },
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "require": "./dist/index.cjs",
       "default": "./dist/index.js"
+    },
+    "./schemas/*": {
+      "vem-source": {
+        "types": "./src/schemas/*.ts",
+        "default": "./src/schemas/*.ts"
+      },
+      "source": {
+        "types": "./src/schemas/*.ts",
+        "default": "./src/schemas/*.ts"
+      },
+      "types": "./dist/schemas/*.d.ts",
+      "import": "./dist/schemas/*.js",
+      "require": "./dist/schemas/*.cjs",
+      "default": "./dist/schemas/*.js"
+    },
+    "./fixtures/*": {
+      "vem-source": {
+        "types": "./src/fixtures/*.ts",
+        "default": "./src/fixtures/*.ts"
+      },
+      "source": {
+        "types": "./src/fixtures/*.ts",
+        "default": "./src/fixtures/*.ts"
+      },
+      "types": "./dist/fixtures/*.d.ts",
+      "import": "./dist/fixtures/*.js",
+      "require": "./dist/fixtures/*.cjs",
+      "default": "./dist/fixtures/*.js"
     }
   },
   "scripts": {
     "build": "vite build",
     "fmt": "oxfmt",
-    "lint": "oxlint --type-aware",
-    "lint-fix": "oxlint --fix --type-aware",
+    "lint": "oxlint --quiet --format=unix --type-aware --config ../../oxlint.config.ts .",
+    "lint-fix": "oxlint --format=unix --fix --type-aware --config ../../oxlint.config.ts .",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.lib.json --noEmit"
   },
@@ -24,8 +60,12 @@
   },
   "devDependencies": {
     "@types/node": "catalog:",
+    "oxfmt": "catalog:",
+    "oxlint": "catalog:",
+    "oxlint-tsgolint": "catalog:",
     "tsx": "catalog:",
     "typescript": "catalog:",
+    "unplugin-dts": "catalog:",
     "vite": "catalog:",
     "vitest": "catalog:"
   }

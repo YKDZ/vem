@@ -5,12 +5,31 @@ import { defineConfig } from "vitest/config";
 
 const apiProxyTarget =
   process.env.VEM_ADMIN_API_PROXY_TARGET ?? "http://localhost:3000";
+const clientConditions = [
+  "vem-source",
+  "module",
+  "browser",
+  "development|production",
+];
+const serverConditions = [
+  "vem-source",
+  "module",
+  "node",
+  "development|production",
+];
 
 export default defineConfig({
   plugins: [vue(), tailwindcss()],
   resolve: {
+    conditions: clientConditions,
     alias: {
       "@": resolve(import.meta.dirname, "src"),
+    },
+  },
+  ssr: {
+    noExternal: ["@vem/shared"],
+    resolve: {
+      conditions: serverConditions,
     },
   },
   server: {

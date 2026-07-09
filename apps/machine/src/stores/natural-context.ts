@@ -75,18 +75,13 @@ export const useNaturalContextStore = defineStore("natural-context", {
       const conditions =
         state.snapshot?.externalEnvironment.weather?.weatherConditionClasses ??
         [];
-      return (
-        conditions.length === 0 ||
-        conditions.every((condition) => condition === "other")
-      );
+      return conditions.every((condition) => condition === "other");
     },
     isCloudy: (state): boolean => {
       const conditions =
         state.snapshot?.externalEnvironment.weather?.weatherConditionClasses ??
         [];
-      const isSunny =
-        conditions.length === 0 ||
-        conditions.every((condition) => condition === "other");
+      const isSunny = conditions.every((condition) => condition === "other");
       return (
         conditions.length > 0 &&
         !isSunny &&

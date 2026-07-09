@@ -12,13 +12,16 @@ export default defineConfig({
     conditions: serverConditions,
   },
   ssr: {
-    noExternal: ["@vem/db", "@vem/shared"],
+    noExternal: ["@vem/shared"],
     resolve: {
       conditions: serverConditions,
     },
   },
   test: {
-    include: ["src/**/*.e2e-spec.ts"],
-    fileParallelism: false,
+    server: {
+      deps: {
+        inline: ["@vem/shared"],
+      },
+    },
   },
 });

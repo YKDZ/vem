@@ -1,5 +1,29 @@
 {
   "$schema": "./node_modules/turbo/schema.json",
+  "boundaries": {
+    "tags": {
+      "app": {
+        "dependencies": {
+          "allow": ["library", "tooling"]
+        }
+      },
+      "library": {
+        "dependencies": {
+          "allow": ["library"]
+        }
+      },
+      "native": {
+        "dependencies": {
+          "allow": ["library", "native"]
+        }
+      },
+      "tooling": {
+        "dependencies": {
+          "allow": ["library", "native", "tooling"]
+        }
+      }
+    }
+  },
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
