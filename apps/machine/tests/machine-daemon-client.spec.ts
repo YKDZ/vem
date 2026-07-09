@@ -715,17 +715,15 @@ test("redesigned catalog home controls remain interactive", async ({
   scenario = "catalog";
   await page.goto("/");
 
+  const carousel = page.getByRole("region", { name: "首页展示轮播" });
+  await expect(carousel).toBeVisible();
+  await expect(page.getByRole("button", { name: "上一张" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "下一张" })).toHaveCount(0);
+
   const carouselImage = page.getByRole("img", { name: "轮播展示" });
   const firstCarouselSrc = await carouselImage.getAttribute("src");
-  await expect(page.getByRole("button", { name: "下一张" })).toBeVisible();
-  await page.getByRole("button", { name: "下一张" }).click({ force: true });
-  await expect
-    .poll(async () => await carouselImage.getAttribute("src"))
-    .not.toBe(firstCarouselSrc);
-  await page.getByRole("button", { name: "上一张" }).click({ force: true });
-  await page
-    .getByRole("button", { name: "切换到第 3 张" })
-    .click({ force: true });
+  await carousel.dispatchEvent("pointerdown", { clientX: 500 });
+  await carousel.dispatchEvent("pointerup", { clientX: 100 });
   await expect
     .poll(async () => await carouselImage.getAttribute("src"))
     .not.toBe(firstCarouselSrc);
