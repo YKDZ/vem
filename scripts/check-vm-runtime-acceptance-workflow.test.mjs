@@ -67,11 +67,12 @@ describe("VM runtime acceptance workflow maintenance relay path", () => {
       ephemeralServices,
       /docker inspect -f '\{\{\.State\.Status\}\}'/,
     );
-    assert.match(ephemeralServices, /pg_isready -h 127\.0\.0\.1 -p 5432/);
-    assert.match(ephemeralServices, /vem-runtime-pg-isready\.log/);
+    assert.match(ephemeralServices, /wait_for_tcp\(\)/);
+    assert.match(ephemeralServices, /wait_for_tcp 127\.0\.0\.1 55432/);
     assert.match(ephemeralServices, /Postgres did not become ready/);
-    assert.match(ephemeralServices, /\/dev\/tcp\/127\.0\.0\.1\/18883/);
+    assert.match(ephemeralServices, /wait_for_tcp 127\.0\.0\.1 18883/);
     assert.match(ephemeralServices, /MQTT did not become ready/);
+    assert.doesNotMatch(ephemeralServices, /docker exec/);
     assert.doesNotMatch(ephemeralServices, /\n\s*exit 0\n/);
   });
 

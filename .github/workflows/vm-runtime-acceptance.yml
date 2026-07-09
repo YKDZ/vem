@@ -275,6 +275,11 @@ jobs:
             -p 18883:1883 \
             -v "$RUNNER_TEMP/vem-runtime-mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro" \
             eclipse-mosquitto:2
+          wait_for_tcp() {
+            host="$1"
+            port="$2"
+            timeout 2 bash -c "</dev/tcp/${host}/${port}" >/dev/null 2>&1
+          }
           postgres_ready=false
           for attempt in $(seq 1 120); do
             postgres_status="$(docker inspect -f '{{.State.Status}}' "$postgres_name" 2>/dev/null || true)"
@@ -284,13 +289,12 @@ jobs:
               docker logs "$postgres_name"
               exit 1
             fi
-            if docker exec "$postgres_name" pg_isready -h 127.0.0.1 -p 5432 -U vem -d vem_runtime >/tmp/vem-runtime-pg-isready.log 2>&1; then
+            if wait_for_tcp 127.0.0.1 55432; then
               postgres_ready=true
               break
             fi
             if [ $((attempt % 10)) -eq 0 ]; then
               echo "Waiting for Postgres readiness: attempt=${attempt} status=${postgres_status:-unknown}"
-              cat /tmp/vem-runtime-pg-isready.log || true
             fi
             sleep 2
           done
@@ -300,6 +304,7 @@ jobs:
             docker logs "$postgres_name"
             exit 1
           fi
+          sleep 2
           mqtt_ready=false
           for attempt in $(seq 1 60); do
             mqtt_status="$(docker inspect -f '{{.State.Status}}' "$mqtt_name" 2>/dev/null || true)"
@@ -309,7 +314,7 @@ jobs:
               docker logs "$mqtt_name"
               exit 1
             fi
-            if timeout 2 bash -c '</dev/tcp/127.0.0.1/18883' >/dev/null 2>&1; then
+            if wait_for_tcp 127.0.0.1 18883; then
               mqtt_ready=true
               break
             fi
