@@ -1,10 +1,5 @@
 import { Inject, Injectable } from "@nestjs/common";
-import {
-  asc,
-  paymentChannelPolicies,
-  sql,
-  type DrizzleClient,
-} from "@vem/db";
+import { asc, paymentChannelPolicies, sql, type DrizzleClient } from "@vem/db";
 import {
   paymentChannelPolicyResponseSchema,
   supportedPaymentChannelKeys,

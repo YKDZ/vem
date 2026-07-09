@@ -891,16 +891,14 @@ export const paymentChannelPolicies = t.pgTable(
       .uniqueIndex("payment_channel_policies_default_unique")
       .on(table.isDefault)
       .where(sql`${table.isDefault} = true`),
-    t
-      .check(
-        "payment_channel_policies_key_check",
-        sql`${table.channelKey} IN ('qr_code:alipay', 'payment_code:alipay', 'qr_code:wechat_pay', 'payment_code:wechat_pay')`,
-      ),
-    t
-      .check(
-        "payment_channel_policies_rank_check",
-        sql`${table.rank} BETWEEN 1 AND ${supportedPaymentChannelKeys.length}`,
-      ),
+    t.check(
+      "payment_channel_policies_key_check",
+      sql`${table.channelKey} IN ('qr_code:alipay', 'payment_code:alipay', 'qr_code:wechat_pay', 'payment_code:wechat_pay')`,
+    ),
+    t.check(
+      "payment_channel_policies_rank_check",
+      sql`${table.rank} BETWEEN 1 AND ${supportedPaymentChannelKeys.length}`,
+    ),
   ],
 );
 

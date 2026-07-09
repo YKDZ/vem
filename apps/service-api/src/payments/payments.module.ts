@@ -6,10 +6,10 @@ import { InventoryModule } from "../inventory/inventory.module";
 import { NotificationsModule } from "../notifications/notifications.module";
 import { RefundsModule } from "../refunds/refunds.module";
 import { VendingModule } from "../vending/vending.module";
+import { PaymentChannelPolicyService } from "./payment-channel-policy.service";
 import { PaymentCodeAttemptsService } from "./payment-code-attempts.service";
 import { PaymentCodeOrchestratorService } from "./payment-code-orchestrator.service";
 import { PaymentCodeController } from "./payment-code.controller";
-import { PaymentChannelPolicyService } from "./payment-channel-policy.service";
 import { PaymentDrillsController } from "./payment-drills.controller";
 import {
   DrizzlePaymentDrillStore,
