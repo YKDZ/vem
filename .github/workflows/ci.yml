@@ -35,9 +35,11 @@ jobs:
           filters: |
             code:
               - 'apps/**'
+              - '.github/workflows/ci.yml'
               - 'packages/**'
               - 'apps/vending-daemon/**'
               - 'crates/**'
+              - 'tools/**'
               - 'turbo.json'
               - 'pnpm-workspace.yaml'
               - 'Cargo.toml'
@@ -78,19 +80,8 @@ jobs:
       - name: Install Dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Check Admin API Contracts
-        run: pnpm check:admin-api-contracts
-
-      - name: Format Check
-        run: pnpm fmt:check
-
-      - name: Typecheck
-        if: needs.changes.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
-        run: pnpm turbo typecheck
-
-      - name: Lint
-        if: needs.changes.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
-        run: pnpm turbo lint
+      - name: Run Static Checks
+        run: node tools/check-ci.mjs --job static
 
   unit-tests:
     name: Unit Tests
@@ -116,11 +107,8 @@ jobs:
       - name: Install Dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build Workspace Packages
-        run: pnpm turbo build --filter @vem/shared --filter @vem/db
-
       - name: Run Unit Tests
-        run: pnpm turbo test
+        run: node tools/check-ci.mjs --job unit
 
   windows-dpapi-tests:
     name: Windows DPAPI Secret Store
@@ -166,14 +154,8 @@ jobs:
       - name: Install Dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Verify Chrome Browser
-        run: google-chrome --version
-
       - name: Run Machine UI daemon E2E tests
-        run: pnpm -F machine test:e2e -- machine-daemon-client.spec.ts machine-real-daemon.spec.ts
-
-      - name: Run Machine Runtime Console touch smoke
-        run: pnpm -F machine test:e2e:touch-smoke
+        run: node tools/check-ci.mjs --job machine-e2e
 
       - name: Upload Machine Playwright Report
         if: failure()
@@ -232,21 +214,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
 
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_DB: vem
-          POSTGRES_USER: vem
-          POSTGRES_PASSWORD: vem_password
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U vem -d vem"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 20
-
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -263,81 +230,8 @@ jobs:
       - name: Install Dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Start MQTT Broker
-        run: |
-          mkdir -p /tmp/mosquitto-ci
-          printf 'listener 1883 0.0.0.0\nallow_anonymous true\n' > /tmp/mosquitto-ci/mosquitto.conf
-          docker run -d --name mosquitto \
-            -p 1883:1883 \
-            -v /tmp/mosquitto-ci/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro \
-            eclipse-mosquitto:2
-
-      - name: Build Service API
-        run: pnpm turbo build --filter service-api
-
-      - name: Run Database Migrations
-        run: pnpm --filter @vem/db migrate
-        env:
-          DATABASE_URL: postgresql://vem:vem_password@localhost:5432/vem
-
-      - name: Start Service API
-        working-directory: apps/service-api
-        run: node dist/main.js > ../../service-api.log 2>&1 &
-        env:
-          DATABASE_URL: postgresql://vem:vem_password@localhost:5432/vem
-          JWT_SECRET: ci-jwt-secret-at-least-32-characters-long!
-          JWT_REFRESH_SECRET: ci-jwt-refresh-secret-minimum-32-chars!!
-          MACHINE_JWT_SECRET: ci-machine-jwt-secret-min-32-chars-long!
-          MACHINE_CREDENTIAL_ENCRYPTION_KEY: ci-machine-cred-enc-key-32-chars!!
-          MQTT_URL: mqtt://localhost:1883
-          PAYMENT_MOCK_ENABLED: "true"
-          PAYMENT_WEBHOOK_BASE_URL: http://localhost:3000
-          BOOTSTRAP_ADMIN_PASSWORD: AdminPassword123!
-
-      - name: Wait for Service API
-        timeout-minutes: 2
-        run: |
-          echo "Waiting for Service API..."
-          RETRIES=60
-          until curl -s -f http://localhost:3000/api/health > /dev/null 2>&1; do
-            printf '.'
-            sleep 2
-            RETRIES=$((RETRIES-1))
-            if [ $RETRIES -le 0 ]; then
-              echo " Timeout!"
-              cat service-api.log
-              exit 1
-            fi
-          done
-          echo " Ready!"
-
-      - name: Start Admin UI Dev Server
-        working-directory: apps/admin-ui
-        run: pnpm dev > ../../admin-ui.log 2>&1 &
-
-      - name: Wait for Admin UI
-        timeout-minutes: 2
-        run: |
-          echo "Waiting for Admin UI..."
-          RETRIES=60
-          until curl -s -f http://localhost:5173 > /dev/null 2>&1; do
-            printf '.'
-            sleep 2
-            RETRIES=$((RETRIES-1))
-            if [ $RETRIES -le 0 ]; then
-              echo " Timeout!"
-              cat admin-ui.log
-              exit 1
-            fi
-          done
-          echo " Ready!"
-
-      - name: Verify Chrome Browser
-        run: google-chrome --version
-
       - name: Run E2E Tests
-        working-directory: apps/admin-ui
-        run: pnpm test:e2e
+        run: node tools/check-ci.mjs --job admin-e2e
 
       - name: Upload Playwright Report
         if: failure()
@@ -365,21 +259,6 @@ jobs:
     timeout-minutes: 25
     # Production readiness candidate check for Admin API Contract browser flows.
 
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_DB: vem_admin_contract_e2e
-          POSTGRES_USER: vem
-          POSTGRES_PASSWORD: vem_password
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U vem -d vem_admin_contract_e2e"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 20
-
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -396,81 +275,8 @@ jobs:
       - name: Install Dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Start MQTT Broker
-        run: |
-          mkdir -p /tmp/mosquitto-admin-contract-e2e
-          printf 'listener 1883 0.0.0.0\nallow_anonymous true\n' > /tmp/mosquitto-admin-contract-e2e/mosquitto.conf
-          docker run -d --name mosquitto-admin-contract-e2e \
-            -p 1883:1883 \
-            -v /tmp/mosquitto-admin-contract-e2e/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro \
-            eclipse-mosquitto:2
-
-      - name: Build Service API
-        run: pnpm turbo build --filter service-api
-
-      - name: Run Database Migrations
-        run: pnpm --filter @vem/db migrate
-        env:
-          DATABASE_URL: postgresql://vem:vem_password@localhost:5432/vem_admin_contract_e2e
-
-      - name: Start Service API
-        working-directory: apps/service-api
-        run: node dist/main.js > ../../admin-contract-service-api.log 2>&1 &
-        env:
-          DATABASE_URL: postgresql://vem:vem_password@localhost:5432/vem_admin_contract_e2e
-          JWT_SECRET: ci-jwt-secret-at-least-32-characters-long!
-          JWT_REFRESH_SECRET: ci-jwt-refresh-secret-minimum-32-chars!!
-          MACHINE_JWT_SECRET: ci-machine-jwt-secret-min-32-chars-long!
-          MACHINE_CREDENTIAL_ENCRYPTION_KEY: ci-machine-cred-enc-key-32-chars!!
-          MQTT_URL: mqtt://localhost:1883
-          PAYMENT_MOCK_ENABLED: "true"
-          PAYMENT_WEBHOOK_BASE_URL: http://localhost:3000
-          BOOTSTRAP_ADMIN_PASSWORD: AdminPassword123!
-
-      - name: Wait for Service API
-        timeout-minutes: 2
-        run: |
-          echo "Waiting for Service API..."
-          RETRIES=60
-          until curl -s -f http://localhost:3000/api/health > /dev/null 2>&1; do
-            printf '.'
-            sleep 2
-            RETRIES=$((RETRIES-1))
-            if [ $RETRIES -le 0 ]; then
-              echo " Timeout!"
-              cat admin-contract-service-api.log
-              exit 1
-            fi
-          done
-          echo " Ready!"
-
-      - name: Start Admin UI Dev Server
-        working-directory: apps/admin-ui
-        run: pnpm dev > ../../admin-contract-admin-ui.log 2>&1 &
-
-      - name: Wait for Admin UI
-        timeout-minutes: 2
-        run: |
-          echo "Waiting for Admin UI..."
-          RETRIES=60
-          until curl -s -f http://localhost:5173 > /dev/null 2>&1; do
-            printf '.'
-            sleep 2
-            RETRIES=$((RETRIES-1))
-            if [ $RETRIES -le 0 ]; then
-              echo " Timeout!"
-              cat admin-contract-admin-ui.log
-              exit 1
-            fi
-          done
-          echo " Ready!"
-
-      - name: Verify Chrome Browser
-        run: google-chrome --version
-
       - name: Run Admin Contract E2E Tests
-        working-directory: apps/admin-ui
-        run: pnpm test:e2e:admin-contract
+        run: node tools/check-ci.mjs --job admin-contract-e2e
 
       - name: Upload Admin Contract Playwright Artifacts
         if: failure()
@@ -517,17 +323,20 @@ jobs:
             librsvg2-dev \
             patchelf
 
-      - name: Rust Format
-        run: cargo fmt --all -- --check
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
 
-      - name: Rust Check core and daemon
-        run: cargo check -p vending-core -p vending-daemon --all-targets
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
 
-      - name: Rust Check Tauri shell
-        run: cargo check -p machine --lib
+      - name: Install Dependencies
+        run: pnpm install --frozen-lockfile
 
-      - name: Rust Tests core and daemon
-        run: cargo test -p vending-core -p vending-daemon --all-targets
+      - name: Run Rust Tests
+        run: node tools/check-ci.mjs --job rust
 
   windows-service-check:
     name: Windows Service Compile

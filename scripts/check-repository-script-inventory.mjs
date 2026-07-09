@@ -150,8 +150,7 @@ const DEFAULT_INVENTORY = [
     owner: "machine-runtime",
     category: "explicitly maintained legacy operation",
     workflows: ["runtime acceptance", "testbed workflows"],
-    maintainedReference:
-      "docs/adr/0027-separate-production-and-simulated-hardware-modes.md",
+    runbook: "public/vm-runtime-acceptance.md",
   },
   {
     path: "scripts/windows/vending-daemon-smoke.ps1",

@@ -63,6 +63,7 @@ export function checkAdminContractE2eCi(options = {}) {
   const root = options.root ?? process.cwd();
   const failures = [];
   const workflow = readRequiredText(root, ".github/workflows/ci.yml", failures);
+  const runner = readRequiredText(root, "tools/check-ci.mjs", failures);
   const job = extractJobBlock(workflow, "admin-contract-e2e-tests");
 
   if (!job) {
@@ -74,16 +75,7 @@ export function checkAdminContractE2eCi(options = {}) {
       [
         "Admin Contract E2E",
         "Production readiness",
-        "postgres:16",
-        "vem_admin_contract_e2e",
-        "eclipse-mosquitto:2",
-        "mosquitto-admin-contract-e2e",
-        "pnpm --filter @vem/db migrate",
-        "pnpm turbo build --filter service-api",
-        "node dist/main.js",
-        "MQTT_URL: mqtt://localhost:1883",
-        "pnpm dev",
-        "pnpm test:e2e:admin-contract",
+        "node tools/check-ci.mjs --job admin-contract-e2e",
         "apps/admin-ui/test-results/",
         "if-no-files-found: warn",
         "admin-contract-service-api.log",
@@ -96,7 +88,33 @@ export function checkAdminContractE2eCi(options = {}) {
         "admin-contract-e2e-tests job should run pnpm test:e2e:admin-contract, not the broad pnpm test:e2e suite",
       );
     }
+    if (job.includes("--job admin-e2e")) {
+      failures.push(
+        "admin-contract-e2e-tests job should run the dedicated admin-contract-e2e runner job, not admin-e2e",
+      );
+    }
   }
+
+  requireIncludes(
+    runner,
+    "shared CI runner",
+    [
+      "admin-contract-e2e",
+      "postgres:16",
+      "vem_admin_contract_e2e",
+      "eclipse-mosquitto:2",
+      "mosquitto-admin-contract",
+      '"turbo", "build", "--filter", "service-api"',
+      '"--filter", "@vem/db", "migrate"',
+      '"node", ["dist/main.js"]',
+      "MQTT_URL",
+      '"pnpm", ["dev"]',
+      "test:e2e:admin-contract",
+      "admin-contract-service-api.log",
+      "admin-contract-admin-ui.log",
+    ],
+    failures,
+  );
 
   const scripts = readAdminUiScripts(root, failures);
   const command = scripts["test:e2e:admin-contract"];
