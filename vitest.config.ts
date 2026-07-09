@@ -1,13 +1,20 @@
 import { defineConfig } from "vitest/config";
 
+const serverConditions = [
+  "vem-source",
+  "module",
+  "node",
+  "development|production",
+];
+
 export default defineConfig({
   resolve: {
-    conditions: ["vem-source"],
+    conditions: serverConditions,
   },
   ssr: {
     noExternal: ["@vem/shared"],
     resolve: {
-      conditions: ["vem-source"],
+      conditions: serverConditions,
     },
   },
   test: {

@@ -58,7 +58,7 @@ async function runAdminBrowserE2e() {
   const serviceApi = startProcess("node", ["dist/main.js"], {
     env: { MQTT_URL: "mqtt://localhost:1883" },
   });
-  const adminUi = startProcess("pnpm", ["dev"], {});
+  const adminUi = startProcess("pnpm", ["dev", "--", "--strictPort"], {});
 }
 async function runAdminContractE2eJob() {
   await runAdminBrowserE2e({

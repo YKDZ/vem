@@ -400,7 +400,7 @@ async function runAdminBrowserE2e({
       serviceLog,
     );
 
-    adminUi = startProcess("pnpm", ["dev"], {
+    adminUi = startProcess("pnpm", ["dev", "--", "--strictPort"], {
       cwd: join(root, "apps/admin-ui"),
       logPath: adminLog,
     });
