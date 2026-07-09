@@ -421,6 +421,7 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
           amountCents: payments.amountCents,
           machineId: machines.id,
           providerConfigId: payments.paymentProviderConfigId,
+          providerConfigSnapshotJson: payments.providerConfigSnapshotJson,
           isDrill: orders.isDrill,
           paymentIsDrill: payments.isDrill,
         })
@@ -557,6 +558,7 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
         providerCode: created.row.providerCode,
         providerConfigId: created.row.providerConfigId ?? null,
         machineId: created.row.machineId,
+        providerConfigSnapshotJson: created.row.providerConfigSnapshotJson,
       })
       .catch(() => ({
         providerCode: created.row.providerCode,
@@ -703,6 +705,7 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
           paymentAmountCents: payments.amountCents,
           machineId: machines.id,
           providerConfigId: payments.paymentProviderConfigId,
+          providerConfigSnapshotJson: payments.providerConfigSnapshotJson,
           isDrill: orders.isDrill,
           paymentIsDrill: payments.isDrill,
         })
@@ -850,6 +853,7 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
         providerCode: created.row.providerCode,
         providerConfigId: created.row.providerConfigId ?? null,
         machineId: created.row.machineId,
+        providerConfigSnapshotJson: created.row.providerConfigSnapshotJson,
       })
       .catch(() => ({
         providerCode: created.row.providerCode,
@@ -995,6 +999,7 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
         providerTradeNo: payments.providerTradeNo,
         machineId: orders.machineId,
         providerConfigId: payments.paymentProviderConfigId,
+        providerConfigSnapshotJson: payments.providerConfigSnapshotJson,
         reason: refunds.reason,
         fulfillmentState: orders.fulfillmentState,
         isDrill: refunds.isDrill,
@@ -1065,6 +1070,7 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
             providerCode: refund.providerCode,
             providerConfigId: refund.providerConfigId ?? null,
             machineId: refund.machineId,
+            providerConfigSnapshotJson: refund.providerConfigSnapshotJson,
           })
           .catch(() => ({
             providerCode: refund.providerCode,
@@ -1207,6 +1213,7 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
         providerTradeNo: payments.providerTradeNo,
         machineId: orders.machineId,
         providerConfigId: payments.paymentProviderConfigId,
+        providerConfigSnapshotJson: payments.providerConfigSnapshotJson,
         reason: refunds.reason,
         fulfillmentState: orders.fulfillmentState,
         isDrill: refunds.isDrill,
@@ -1246,6 +1253,7 @@ export class RefundsService implements OnModuleInit, OnApplicationShutdown {
         providerCode: refund.providerCode,
         providerConfigId: refund.providerConfigId ?? null,
         machineId: refund.machineId,
+        providerConfigSnapshotJson: refund.providerConfigSnapshotJson,
       })
       .catch(() => ({
         providerCode: refund.providerCode,

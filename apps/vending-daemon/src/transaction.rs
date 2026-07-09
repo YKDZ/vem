@@ -18,7 +18,7 @@ const PAYMENT_CODE_STATUS_POLL_MAX: Duration = Duration::from_millis(250);
 #[cfg(not(test))]
 const PAYMENT_CODE_STATUS_POLL_MAX: Duration = Duration::from_secs(45);
 
-type PaymentCodeSubmitGuard =
+pub(crate) type PaymentCodeSubmitGuard =
     Arc<dyn Fn() -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>> + Send + Sync>;
 
 #[derive(Clone)]

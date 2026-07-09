@@ -46,6 +46,66 @@ function makeRow(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function makeCompleteAlipayRow(overrides: Record<string, unknown> = {}) {
+  return makeRow({
+    providerCode: "alipay",
+    merchantNo: "ALI-MERCHANT-001",
+    appId: "ALI-APP-001",
+    publicConfigJson: {
+      gatewayUrl: "https://openapi.alipay.com/gateway.do",
+      keyType: "PKCS8",
+    },
+    configEncryptedJson: encryptJson(
+      {
+        privateKeyPem: "alipay-private-key",
+        appCertPem: "alipay-app-cert",
+        alipayPublicCertPem: "alipay-public-cert",
+        alipayRootCertPem: "alipay-root-cert",
+      },
+      ENCRYPTION_KEY,
+    ),
+    ...overrides,
+  });
+}
+
+function makeCompleteWechatRow(overrides: Record<string, unknown> = {}) {
+  return makeRow({
+    providerCode: "wechat_pay",
+    merchantNo: "WX-MCH-001",
+    appId: "WX-APP-001",
+    publicConfigJson: {
+      merchantCertificateSerialNo: "WX-MERCHANT-SERIAL",
+      platformCertificateSerialNo: "WX-PLATFORM-SERIAL",
+    },
+    configEncryptedJson: encryptJson(
+      {
+        apiV3Key: "12345678901234567890123456789012",
+        privateKeyPem: "wechat-private-key",
+        platformPublicKeyPem: "wechat-platform-public-key",
+      },
+      ENCRYPTION_KEY,
+    ),
+    ...overrides,
+  });
+}
+
+function makeCompleteWechatPaymentCodeRow(
+  overrides: Record<string, unknown> = {},
+) {
+  const sensitive = {
+    apiV3Key: "12345678901234567890123456789012",
+    privateKeyPem: "wechat-private-key",
+    platformPublicKeyPem: "wechat-platform-public-key",
+    apiV2Key: "wechat-v2-key",
+    merchantApiCertPem: "wechat-api-cert",
+    merchantApiKeyPem: "wechat-api-key",
+  };
+  return makeCompleteWechatRow({
+    configEncryptedJson: encryptJson(sensitive, ENCRYPTION_KEY),
+    ...overrides,
+  });
+}
+
 function makeService(rows: unknown[]) {
   const mockDb = {
     select: () => ({
@@ -65,12 +125,14 @@ function makeService(rows: unknown[]) {
 
 function makeListOptionsService(
   rowsQueue: unknown[],
-  overrides: { paymentMockEnabled?: boolean } = {},
+  overrides: { paymentMockEnabled?: boolean; policyRows?: unknown[] } = {},
 ) {
   const queue = [...rowsQueue];
+  const policyRows = overrides.policyRows ?? [];
   const mockDb = {
     select: vi.fn(() => ({
       from: () => ({
+        orderBy: async () => policyRows,
         innerJoin: () => ({
           where: async () => queue.shift() ?? [],
         }),
@@ -88,8 +150,108 @@ function makeListOptionsService(
   } as never);
 }
 
+function makePolicyRows(
+  entries: Array<{
+    channelKey:
+      | "qr_code:alipay"
+      | "payment_code:alipay"
+      | "qr_code:wechat_pay"
+      | "payment_code:wechat_pay";
+    enabled: boolean;
+    isDefault?: boolean;
+  }>,
+) {
+  const updatedAt = new Date("2026-07-08T00:00:00.000Z");
+  return entries.map((entry, index) => ({
+    channelKey: entry.channelKey,
+    enabled: entry.enabled,
+    rank: index + 1,
+    isDefault: entry.isDefault ?? false,
+    updatedByAdminUserId: null,
+    updatedAt,
+  }));
+}
+
 describe("PaymentProviderConfigService", () => {
   describe("resolveForPayment", () => {
+    it("resolves existing payments from immutable payment-time config binding snapshots", async () => {
+      const service = makeService([]);
+      const snapshot = service.createBindingSnapshot({
+        id: "cfg-old",
+        providerId: "prov-alipay",
+        providerCode: "alipay",
+        machineId: "machine-1",
+        merchantNo: "ALI-MERCHANT-OLD",
+        appId: "ALI-APP-OLD",
+        publicConfigJson: {
+          notifyUrl: "https://old.example.com/api/payments/webhooks/alipay",
+        },
+        sensitiveConfigJson: {
+          privateKeyPem: "old-private-key",
+          appCertPem: "old-app-cert",
+        },
+      });
+
+      const result = await service.resolveForExistingPayment({
+        providerCode: "alipay",
+        providerConfigId: "cfg-old",
+        machineId: "machine-1",
+        providerConfigSnapshotJson: snapshot,
+      });
+
+      expect(result).toMatchObject({
+        id: "cfg-old",
+        providerCode: "alipay",
+        merchantNo: "ALI-MERCHANT-OLD",
+        appId: "ALI-APP-OLD",
+        sensitiveConfigJson: {
+          privateKeyPem: "old-private-key",
+          appCertPem: "old-app-cert",
+        },
+      });
+    });
+
+    it("hydrates migrated Alipay binding snapshots with runtime notifyUrl", async () => {
+      const service = makeService([]);
+      const snapshot = {
+        version: 1,
+        id: "cfg-migrated",
+        providerId: "prov-alipay",
+        providerCode: "alipay",
+        machineId: null,
+        merchantNo: "ALI-MERCHANT-MIGRATED",
+        appId: "ALI-APP-MIGRATED",
+        publicConfigJson: {
+          gatewayUrl: "https://openapi.alipay.com/gateway.do",
+          keyType: "PKCS8",
+        },
+        sensitiveConfigEncryptedJson: encryptJson(
+          {
+            privateKeyPem: "migrated-private-key",
+            appCertPem: "migrated-app-cert",
+            alipayPublicCertPem: "migrated-public-cert",
+            alipayRootCertPem: "migrated-root-cert",
+          },
+          ENCRYPTION_KEY,
+        ),
+        boundAt: "2026-07-08T00:00:00.000Z",
+      };
+
+      const result = await service.resolveForExistingPayment({
+        providerCode: "alipay",
+        providerConfigId: "cfg-migrated",
+        machineId: "machine-1",
+        providerConfigSnapshotJson: snapshot,
+      });
+
+      expect(result.publicConfigJson["notifyUrl"]).toBe(
+        "http://localhost:3000/api/payments/webhooks/alipay",
+      );
+      expect(result.sensitiveConfigJson).toMatchObject({
+        privateKeyPem: "migrated-private-key",
+      });
+    });
+
     it("returns global config when no machine-level config", async () => {
       const rows = [makeRow({ machineId: null })];
       const service = makeService(rows);
@@ -194,7 +356,7 @@ describe("PaymentProviderConfigService", () => {
       ).rejects.toThrow("Payment provider is disabled for this machine");
     });
 
-    it("requires WeChat V2 key and merchant API certs when paymentCodeEnabled is true", async () => {
+    it("ignores legacy paymentCodeEnabled when resolving merchant config", async () => {
       const rows = [
         makeRow({
           publicConfigJson: { paymentCodeEnabled: true },
@@ -211,7 +373,7 @@ describe("PaymentProviderConfigService", () => {
           providerCode: "wechat_pay",
           machineId: "machine-1",
         }),
-      ).rejects.toThrow(/wechat_pay payment_code requires apiV2Key/);
+      ).resolves.toMatchObject({ providerCode: "wechat_pay" });
     });
   });
 
@@ -248,40 +410,201 @@ describe("PaymentProviderConfigService", () => {
         "http://localhost:3000/api/payments/webhooks/alipay",
       );
     });
+
+    it("skips malformed historical webhook snapshots while keeping valid candidates", async () => {
+      const currentRows = [makeCompleteAlipayRow({ id: "cfg-current" })];
+      const validSnapshot = {
+        version: 1,
+        id: "cfg-old",
+        providerId: "prov-alipay",
+        providerCode: "alipay",
+        machineId: null,
+        merchantNo: "ALI-MERCHANT-OLD",
+        appId: "ALI-APP-OLD",
+        publicConfigJson: {
+          gatewayUrl: "https://openapi.alipay.com/gateway.do",
+          keyType: "PKCS8",
+        },
+        sensitiveConfigEncryptedJson: encryptJson(
+          { privateKeyPem: "old-private-key" },
+          ENCRYPTION_KEY,
+        ),
+        boundAt: "2026-07-08T00:00:00.000Z",
+      };
+      const malformedSnapshot = {
+        ...validSnapshot,
+        id: "cfg-bad",
+        sensitiveConfigEncryptedJson: encryptJson(
+          { privateKeyPem: "bad-private-key" },
+          "different-key",
+        ),
+      };
+      let selectCall = 0;
+      const mockDb = {
+        select: vi.fn(() => {
+          selectCall += 1;
+          if (selectCall === 1) {
+            return {
+              from: () => ({
+                innerJoin: () => ({
+                  where: async () => currentRows,
+                }),
+              }),
+            };
+          }
+          return {
+            from: () => ({
+              innerJoin: () => ({
+                where: () => ({
+                  orderBy: () => ({
+                    limit: async () => [
+                      { snapshot: malformedSnapshot },
+                      { snapshot: validSnapshot },
+                    ],
+                  }),
+                }),
+              }),
+            }),
+          };
+        }),
+      };
+      const service = new PaymentProviderConfigService(
+        mockDb as never,
+        makeSecrets(),
+        makeAppConfig() as never,
+      );
+
+      const results =
+        await service.listWebhookCandidateConfigsForProvider("alipay");
+
+      expect(results.map((result) => result.id)).toEqual([
+        "cfg-current",
+        "cfg-old",
+      ]);
+      expect(results[1]?.publicConfigJson["notifyUrl"]).toBe(
+        "http://localhost:3000/api/payments/webhooks/alipay",
+      );
+    });
   });
 
   describe("listMachinePaymentOptionsForMachine", () => {
-    it("returns both qr_code and payment_code options when paymentCodeEnabled is true", async () => {
-      const service = makeListOptionsService([
-        [
-          makeRow({
-            providerCode: "alipay",
-            publicConfigJson: { paymentCodeEnabled: true },
-          }),
-        ],
-        [],
+    it("projects ready machine options from global channel policy order and default", async () => {
+      const service = makeListOptionsService(
+        [[makeCompleteAlipayRow()], [makeCompleteWechatRow()]],
+        {
+          policyRows: makePolicyRows([
+            {
+              channelKey: "payment_code:wechat_pay",
+              enabled: true,
+              isDefault: true,
+            },
+            { channelKey: "payment_code:alipay", enabled: true },
+            { channelKey: "qr_code:alipay", enabled: true },
+            { channelKey: "qr_code:wechat_pay", enabled: false },
+          ]),
+        },
+      );
+
+      const result =
+        await service.listMachinePaymentOptionsForMachine("machine-1");
+
+      expect(result.options.map((option) => option.optionKey)).toEqual([
+        "payment_code:alipay",
+        "qr_code:alipay",
       ]);
+      expect(result.defaultOptionKey).toBe("payment_code:alipay");
+      expect(result.defaultProviderCode).toBe("alipay");
+      expect(result.options.map((option) => option.recommended)).toEqual([
+        true,
+        false,
+      ]);
+    });
+
+    it("keeps all four real channels independently controlled by policy", async () => {
+      const service = makeListOptionsService(
+        [[makeCompleteAlipayRow()], [makeCompleteWechatPaymentCodeRow()]],
+        {
+          policyRows: makePolicyRows([
+            { channelKey: "qr_code:wechat_pay", enabled: true },
+            { channelKey: "payment_code:wechat_pay", enabled: true },
+            { channelKey: "payment_code:alipay", enabled: false },
+            { channelKey: "qr_code:alipay", enabled: true, isDefault: true },
+          ]),
+        },
+      );
+
+      const result =
+        await service.listMachinePaymentOptionsForMachine("machine-1");
+
+      expect(result.options.map((option) => option.optionKey)).toEqual([
+        "qr_code:wechat_pay",
+        "payment_code:wechat_pay",
+        "qr_code:alipay",
+      ]);
+      expect(result.defaultOptionKey).toBe("qr_code:alipay");
+      expect(result.options.map((option) => option.recommended)).toEqual([
+        false,
+        false,
+        true,
+      ]);
+    });
+
+    it("does not derive payment_code options from legacy provider config switches", async () => {
+      const service = makeListOptionsService(
+        [
+          [
+            makeCompleteAlipayRow({
+              publicConfigJson: {
+                gatewayUrl: "https://openapi.alipay.com/gateway.do",
+                keyType: "PKCS8",
+                paymentCodeEnabled: true,
+              },
+            }),
+          ],
+          [],
+        ],
+        {
+          policyRows: makePolicyRows([
+            { channelKey: "qr_code:alipay", enabled: true, isDefault: true },
+            { channelKey: "payment_code:alipay", enabled: false },
+            { channelKey: "qr_code:wechat_pay", enabled: false },
+            { channelKey: "payment_code:wechat_pay", enabled: false },
+          ]),
+        },
+      );
 
       const result =
         await service.listMachinePaymentOptionsForMachine("machine-1");
 
       expect(result.options.map((option) => option.optionKey)).toEqual([
         "qr_code:alipay",
-        "payment_code:alipay",
       ]);
       expect(result.defaultOptionKey).toBe("qr_code:alipay");
     });
 
     it("returns only qr_code option when paymentCodeEnabled is false", async () => {
-      const service = makeListOptionsService([
+      const service = makeListOptionsService(
         [
-          makeRow({
-            providerCode: "alipay",
-            publicConfigJson: { paymentCodeEnabled: false },
-          }),
+          [
+            makeCompleteAlipayRow({
+              publicConfigJson: {
+                gatewayUrl: "https://openapi.alipay.com/gateway.do",
+                keyType: "PKCS8",
+                paymentCodeEnabled: false,
+              },
+            }),
+          ],
+          [],
         ],
-        [],
-      ]);
+        {
+          policyRows: makePolicyRows([
+            { channelKey: "qr_code:alipay", enabled: true, isDefault: true },
+            { channelKey: "payment_code:alipay", enabled: false },
+            { channelKey: "qr_code:wechat_pay", enabled: false },
+            { channelKey: "payment_code:wechat_pay", enabled: false },
+          ]),
+        },
+      );
 
       const result =
         await service.listMachinePaymentOptionsForMachine("machine-1");
@@ -289,6 +612,87 @@ describe("PaymentProviderConfigService", () => {
       expect(result.options.map((option) => option.optionKey)).toEqual([
         "qr_code:alipay",
       ]);
+    });
+
+    it("blocks incomplete Alipay config instead of treating config existence as ready", async () => {
+      const service = makeListOptionsService(
+        [
+          [
+            makeRow({
+              providerCode: "alipay",
+              merchantNo: null,
+              appId: "ALI-APP-001",
+              publicConfigJson: {
+                gatewayUrl: "https://openapi.alipay.com/gateway.do",
+              },
+              configEncryptedJson: encryptJson(
+                { privateKeyPem: "alipay-private-key" },
+                ENCRYPTION_KEY,
+              ),
+            }),
+          ],
+          [],
+        ],
+        {
+          policyRows: makePolicyRows([
+            { channelKey: "qr_code:alipay", enabled: true, isDefault: true },
+            { channelKey: "payment_code:alipay", enabled: true },
+            { channelKey: "qr_code:wechat_pay", enabled: false },
+            { channelKey: "payment_code:wechat_pay", enabled: false },
+          ]),
+        },
+      );
+
+      const result =
+        await service.listMachinePaymentOptionsForMachine("machine-1");
+
+      expect(result.options.map((option) => option.optionKey)).toEqual([]);
+      expect(result.defaultOptionKey).toBeNull();
+      await expect(
+        service.assertMachinePaymentChannelAvailable({
+          machineId: "machine-1",
+          providerCode: "alipay",
+          method: "qr_code",
+        }),
+      ).rejects.toThrow(ConflictException);
+    });
+
+    it("keeps WeChat QR while hiding WeChat payment_code when V2 credentials are missing", async () => {
+      const service = makeListOptionsService([[], [makeCompleteWechatRow()]], {
+        policyRows: makePolicyRows([
+          { channelKey: "qr_code:wechat_pay", enabled: true, isDefault: true },
+          { channelKey: "payment_code:wechat_pay", enabled: true },
+          { channelKey: "qr_code:alipay", enabled: false },
+          { channelKey: "payment_code:alipay", enabled: false },
+        ]),
+      });
+
+      const result =
+        await service.listMachinePaymentOptionsForMachine("machine-1");
+
+      expect(result.options.map((option) => option.optionKey)).toEqual([
+        "qr_code:wechat_pay",
+      ]);
+      expect(result.defaultOptionKey).toBe("qr_code:wechat_pay");
+    });
+
+    it("rejects policy-disabled channels through the machine channel assertion", async () => {
+      const service = makeListOptionsService([[makeCompleteAlipayRow()], []], {
+        policyRows: makePolicyRows([
+          { channelKey: "qr_code:alipay", enabled: false, isDefault: true },
+          { channelKey: "payment_code:alipay", enabled: true },
+          { channelKey: "qr_code:wechat_pay", enabled: false },
+          { channelKey: "payment_code:wechat_pay", enabled: false },
+        ]),
+      });
+
+      await expect(
+        service.assertMachinePaymentChannelAvailable({
+          machineId: "machine-1",
+          providerCode: "alipay",
+          method: "qr_code",
+        }),
+      ).rejects.toThrow(ConflictException);
     });
 
     it("keeps mock option governed by test environment configuration", async () => {
@@ -308,7 +712,7 @@ describe("PaymentProviderConfigService", () => {
   });
 
   describe("listProductionPilotPaymentEvidenceForMachine", () => {
-    it("returns explicit production mode evidence for enabled Alipay methods", async () => {
+    it("returns production mode evidence for provider readiness without legacy channel switches", async () => {
       const service = makeListOptionsService([
         [
           makeRow({
@@ -327,11 +731,6 @@ describe("PaymentProviderConfigService", () => {
 
       expect(result).toEqual([
         { providerCode: "alipay", method: "qr_code", mode: "production" },
-        {
-          providerCode: "alipay",
-          method: "payment_code",
-          mode: "production",
-        },
       ]);
     });
 
@@ -352,6 +751,58 @@ describe("PaymentProviderConfigService", () => {
       expect(result).toEqual([
         { providerCode: "alipay", method: "qr_code", mode: "sandbox" },
       ]);
+    });
+  });
+
+  describe("listPaymentChannelProviderReadinessForMachine", () => {
+    it("reports missing WeChat V2 payment-code credentials independently from legacy enablement", async () => {
+      const service = makeListOptionsService([
+        [],
+        [
+          makeRow({
+            providerCode: "wechat_pay",
+            configEncryptedJson: encryptJson(
+              {
+                apiV3Key: "12345678901234567890123456789012",
+                privateKeyPem: "wechat-private-key",
+                platformPublicKeyPem: "wechat-platform-public-key",
+              },
+              ENCRYPTION_KEY,
+            ),
+            merchantNo: "WX-MCH-001",
+            appId: "WX-APP-001",
+            publicConfigJson: {
+              paymentCodeEnabled: true,
+              merchantCertificateSerialNo: "WX-MERCHANT-SERIAL",
+              platformCertificateSerialNo: "WX-PLATFORM-SERIAL",
+            },
+          }),
+        ],
+      ]);
+
+      const result =
+        await service.listPaymentChannelProviderReadinessForMachine(
+          "machine-1",
+        );
+
+      expect(result).toContainEqual({
+        channelKey: "payment_code:wechat_pay",
+        providerCode: "wechat_pay",
+        method: "payment_code",
+        ready: false,
+        missingCredentialKeys: [
+          "apiV2Key",
+          "merchantApiCertPem",
+          "merchantApiKeyPem",
+        ],
+      });
+      expect(result).toContainEqual({
+        channelKey: "qr_code:wechat_pay",
+        providerCode: "wechat_pay",
+        method: "qr_code",
+        ready: true,
+        missingCredentialKeys: [],
+      });
     });
   });
 });

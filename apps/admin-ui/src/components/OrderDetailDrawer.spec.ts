@@ -19,9 +19,19 @@ import { useAuthStore } from "@/stores/auth";
 import OrderDetailDrawer from "./OrderDetailDrawer.vue";
 
 const apiMocks = vi.hoisted(() => ({
+  createPaymentIncidentAction: vi.fn(),
   createOrderRecoveryAction: vi.fn(),
   getOrderInvestigation: vi.fn(),
 }));
+
+vi.mock("@/api/payments", async () => {
+  const actual =
+    await vi.importActual<typeof import("@/api/payments")>("@/api/payments");
+  return {
+    ...actual,
+    createPaymentIncidentAction: apiMocks.createPaymentIncidentAction,
+  };
+});
 
 vi.mock("@/api/orders", async () => {
   const actual =
@@ -99,6 +109,8 @@ function installStubs(app: ReturnType<typeof createApp>): void {
     "a-descriptions-item",
     "a-divider",
     "a-empty",
+    "a-collapse",
+    "a-collapse-panel",
     "a-timeline",
     "a-timeline-item",
     "a-typography-text",
@@ -194,7 +206,8 @@ describe("OrderDetailDrawer", () => {
 
     expect(apiMocks.getOrderInvestigation).toHaveBeenCalledWith("order-1");
     expect(document.body.textContent).toContain("订单调查");
-    expect(document.body.textContent).toContain("暂无Webhook尝试");
+    expect(document.body.textContent).toContain("暂无支付事件");
+    expect(document.body.textContent).toContain("暂无回调尝试");
     expect(document.body.textContent).toContain("暂无付款码尝试");
     expect(document.body.textContent).toContain("暂无出货命令");
     expect(document.body.textContent).toContain("暂无库存流水");
@@ -406,7 +419,7 @@ describe("OrderDetailDrawer", () => {
     expect(document.body.textContent).toContain("Forbidden resource");
   });
 
-  it("renders payment-code query and reversal evidence without full auth codes", async () => {
+  it("renders payment-code query and reversal evidence without provider diagnostics for payment readers", async () => {
     apiMocks.getOrderInvestigation.mockResolvedValue({
       ...baseInvestigation,
       paymentCodeAttempts: [
@@ -416,12 +429,14 @@ describe("OrderDetailDrawer", () => {
           status: "reversed",
           authCodeMasked: "2876****4394",
           source: "serial_text",
-          providerPaymentNo: "PCA001",
-          providerTradeNo: "ALI-TXN-001",
-          providerStatus: "TRADE_CLOSED",
-          failureCode: "PAYMENT_CODE_REVERSED",
-          failureMessage: "本次付款码交易已撤销，请刷新付款码后重试",
           manualReason: "query_timeout_reversed",
+          protectedDiagnostics: {
+            providerPaymentNo: "PCA001",
+            providerTradeNo: "ALI-TXN-001",
+            providerStatus: "TRADE_CLOSED",
+            failureCode: "PAYMENT_CODE_REVERSED",
+            failureMessage: "本次付款码交易已撤销，请刷新付款码后重试",
+          },
           lastCheckedAt: "2026-06-26T04:01:00.000Z",
           reversedAt: "2026-06-26T04:02:00.000Z",
         },
@@ -432,15 +447,184 @@ describe("OrderDetailDrawer", () => {
     await flushPromises();
     await nextTick();
 
+    expect(document.body.textContent).not.toContain("PCA001");
+    expect(document.body.textContent).not.toContain("ALI-TXN-001");
+    expect(document.body.textContent).not.toContain("TRADE_CLOSED");
+    expect(document.body.textContent).not.toContain("PAYMENT_CODE_REVERSED");
+    expect(document.body.textContent).toContain("已撤销");
+    expect(document.body.textContent).toContain("query_timeout_reversed");
+    expect(document.body.textContent).toContain("2876****4394");
+    expect(document.body.textContent).not.toContain("28763443825664394");
+  });
+
+  it("shows provider payment-code diagnostics only to diagnostic readers", async () => {
+    apiMocks.getOrderInvestigation.mockResolvedValue({
+      ...baseInvestigation,
+      paymentCodeAttempts: [
+        {
+          id: "attempt-1",
+          attemptNo: 1,
+          status: "reversed",
+          authCodeMasked: "2876****4394",
+          source: "serial_text",
+          manualReason: "query_timeout_reversed",
+          protectedDiagnostics: {
+            providerPaymentNo: "PCA001",
+            providerTradeNo: "ALI-TXN-001",
+            providerStatus: "TRADE_CLOSED",
+            failureCode: "PAYMENT_CODE_REVERSED",
+            failureMessage: "本次付款码交易已撤销，请刷新付款码后重试",
+          },
+          lastCheckedAt: "2026-06-26T04:01:00.000Z",
+          reversedAt: "2026-06-26T04:02:00.000Z",
+        },
+      ],
+    });
+
+    mountDrawer(["orders.read", "payments.read", "audit.read"]);
+    await flushPromises();
+    await nextTick();
+
     expect(document.body.textContent).toContain("PCA001");
     expect(document.body.textContent).toContain("ALI-TXN-001");
     expect(document.body.textContent).toContain("TRADE_CLOSED");
     expect(document.body.textContent).toContain("PAYMENT_CODE_REVERSED");
-    expect(document.body.textContent).toContain(
-      "本次付款码交易已撤销，请刷新付款码后重试",
+  });
+
+  it("shows payment incident states and safe actions in concise Chinese", async () => {
+    apiMocks.getOrderInvestigation.mockResolvedValue({
+      ...baseInvestigation,
+      order: {
+        ...baseInvestigation.order,
+        status: "manual_handling",
+        paymentState: "payment_unknown",
+        fulfillmentState: "manual_handling",
+      },
+      payments: [
+        {
+          id: "payment-unknown",
+          paymentNo: "PAY-UNKNOWN",
+          status: "unknown",
+          amountCents: 1200,
+          paidAt: null,
+        },
+      ],
+      paymentEvents: [
+        {
+          id: "event-unknown",
+          paymentId: "payment-unknown",
+          eventType: "payment.unknown",
+          signatureValid: true,
+          protectedDiagnostics: {
+            providerEventId: "provider-event-1",
+          },
+          handledAt: "2026-06-26T04:00:00.000Z",
+          createdAt: "2026-06-26T04:00:00.000Z",
+        },
+      ],
+      paymentCodeAttempts: [
+        {
+          id: "attempt-reversal-unknown",
+          attemptNo: 1,
+          status: "reversal_unknown",
+          authCodeMasked: "2876****4394",
+          source: "serial_text",
+          manualReason: "provider timeout",
+          protectedDiagnostics: {
+            providerPaymentNo: "PCA001",
+            providerTradeNo: null,
+            providerStatus: "UNKNOWN",
+            failureCode: "PAYMENT_CODE_REVERSE_UNKNOWN",
+            failureMessage: "撤销结果未知",
+          },
+          lastCheckedAt: "2026-06-26T04:01:00.000Z",
+          reversedAt: null,
+        },
+      ],
+      refunds: [
+        {
+          id: "refund-processing",
+          refundNo: "RFD-PROCESSING",
+          status: "processing",
+          amountCents: 1200,
+          reason: "admin_refund",
+          reconciliationAttempts: [
+            {
+              trigger: "manual",
+              attemptNo: 1,
+              status: "network_error",
+              protectedDiagnostics: {
+                providerRefundStatus: null,
+                providerRefundNo: null,
+                errorCode: "query_failed",
+                errorMessage: "provider timeout",
+              },
+              nextRetryAt: null,
+              startedAt: "2026-06-26T04:03:00.000Z",
+              finishedAt: "2026-06-26T04:03:01.000Z",
+              createdAt: "2026-06-26T04:03:00.000Z",
+            },
+          ],
+        },
+        {
+          id: "refund-failed",
+          refundNo: "RFD-FAILED",
+          status: "failed",
+          amountCents: 1200,
+          reason: "admin_refund",
+        },
+      ],
+    });
+    apiMocks.createPaymentIncidentAction.mockResolvedValue({
+      action: "query_payment",
+      status: "processing",
+      handled: false,
+      message: "支付结果仍待确认",
+      protectedDiagnostics: {},
+    });
+
+    mountDrawer(["orders.read", "payments.read", "payments.configure"]);
+    await flushPromises();
+    await nextTick();
+
+    const text = document.body.textContent ?? "";
+    expect(text).toContain("支付结果未知");
+    expect(text).toContain("有效");
+    expect(text).toContain("provider-event-1");
+    expect(text).toContain("撤销结果未知");
+    expect(text).toContain("退款处理中");
+    expect(text).toContain("最近查询失败");
+    expect(text).toContain("provider timeout");
+    expect(text).toContain("退款失败");
+    expect(text).toContain("查询支付");
+    expect(text).toContain("关闭/撤销不确定支付");
+    expect(text).toContain("查询退款");
+    expect(text).toContain("申请退款处理");
+    expect(text).toContain("标记人工处理");
+    expect(text).not.toContain("payment_unknown");
+    expect(text).not.toContain("payment.unknown");
+    expect(text).not.toContain("reversal_unknown");
+    expect(text).not.toContain("manual_handling");
+
+    const note = document.querySelector<HTMLTextAreaElement>(
+      "textarea[placeholder='填写支付处理备注']",
     );
-    expect(document.body.textContent).toContain("query_timeout_reversed");
-    expect(document.body.textContent).toContain("2876****4394");
-    expect(document.body.textContent).not.toContain("28763443825664394");
+    expect(note).toBeTruthy();
+    if (!note) throw new Error("incident action note textarea missing");
+    note.value = "operator checks provider";
+    note.dispatchEvent(new Event("input"));
+    await nextTick();
+    Array.from(document.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("查询支付"))
+      ?.dispatchEvent(new MouseEvent("click"));
+    await flushPromises();
+
+    expect(apiMocks.createPaymentIncidentAction).toHaveBeenCalledWith(
+      "payment-unknown",
+      {
+        action: "query_payment",
+        reason: "operator checks provider",
+      },
+    );
   });
 });

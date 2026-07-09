@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { AuditService } from "../audit/audit.service";
 import type { AppConfigService } from "../config/app-config.service";
 import type { InventoryService } from "../inventory/inventory.service";
+import type { RefundsService } from "../refunds/refunds.service";
 import type { VendingService } from "../vending/vending.service";
 import type { PaymentConfigSecretService } from "./payment-config-secret.service";
 import type { PaymentProviderConfigService } from "./payment-provider-config.service";
@@ -80,6 +81,7 @@ function makeService(overrides: {
   vendingService?: Partial<VendingService>;
   inventoryService?: Partial<InventoryService>;
   auditService?: Partial<AuditService>;
+  refundsService?: Partial<RefundsService>;
 }) {
   const db = overrides.db ?? makeDb();
   const registry: PaymentProviderRegistry = {
@@ -89,8 +91,10 @@ function makeService(overrides: {
     list: vi.fn().mockReturnValue([]),
     ...overrides.registry,
   } as unknown as PaymentProviderRegistry;
+  const configServiceOverrides = overrides.configService ?? {};
   const configService: PaymentProviderConfigService = {
     listCandidateConfigsForProvider: vi.fn().mockResolvedValue([]),
+    listWebhookCandidateConfigsForProvider: vi.fn().mockResolvedValue([]),
     resolveForPayment: vi.fn().mockResolvedValue({
       providerCode: "mock",
       merchantNo: null,
@@ -105,8 +109,15 @@ function makeService(overrides: {
       publicConfigJson: {},
       sensitiveConfigJson: {},
     }),
-    ...overrides.configService,
+    ...configServiceOverrides,
   } as unknown as PaymentProviderConfigService;
+  if (
+    !("listWebhookCandidateConfigsForProvider" in configServiceOverrides) &&
+    "listCandidateConfigsForProvider" in configServiceOverrides
+  ) {
+    configService.listWebhookCandidateConfigsForProvider =
+      configService.listCandidateConfigsForProvider.bind(configService);
+  }
   const vendingService: VendingService = {
     createAndDispatchCommands: vi.fn().mockResolvedValue(undefined),
     ...overrides.vendingService,
@@ -135,6 +146,12 @@ function makeService(overrides: {
     decrypt: vi.fn().mockReturnValue({}),
     summarize: vi.fn().mockReturnValue({}),
   } as unknown as PaymentConfigSecretService;
+  const refundsService: RefundsService = {
+    applyProviderRefundWebhook: vi.fn().mockResolvedValue({ handled: true }),
+    requestFullRefund: vi.fn(),
+    queryRefund: vi.fn(),
+    ...overrides.refundsService,
+  } as unknown as RefundsService;
 
   return new PaymentsService(
     db as never,
@@ -149,9 +166,7 @@ function makeService(overrides: {
       start: vi.fn().mockResolvedValue("attempt-1"),
       finish: vi.fn().mockResolvedValue(undefined),
     } as never,
-    {
-      applyProviderRefundWebhook: vi.fn().mockResolvedValue({ handled: true }),
-    } as never,
+    refundsService,
   );
 }
 
@@ -391,10 +406,29 @@ describe("PaymentsService", () => {
                 {
                   paymentId: "pay-001",
                   paymentStatus: "pending",
+                  providerId: "prov-001",
                   orderId: "ord-001",
                   orderStatus: "pending_payment",
+                  paymentState: "awaiting_payment",
+                  fulfillmentState: "awaiting_fulfillment",
                 },
               ]),
+            }),
+          }),
+        })
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockReturnValue({
+                limit: vi.fn().mockResolvedValue([
+                  {
+                    orderStatus: "paid",
+                    paymentState: "paid",
+                    fulfillmentState: "awaiting_fulfillment",
+                    paymentStatus: "succeeded",
+                  },
+                ]),
+              }),
             }),
           }),
         })
@@ -497,6 +531,67 @@ describe("PaymentsService", () => {
         status: "succeeded",
         eventType: "payment_code.succeeded",
         providerEventId: "payment_code:PCA-LATE:succeeded",
+        rawPayload: {},
+      });
+
+      expect(applied).toBe(false);
+      expect(createAndDispatchCommands).not.toHaveBeenCalled();
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
+    it("does not apply or dispatch provider success for unknown incident-locked payments", async () => {
+      const createAndDispatchCommands = vi.fn();
+      const db = makeDb();
+      db.select
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([
+                {
+                  paymentId: "pay-unknown-001",
+                  orderId: "ord-unknown-001",
+                  providerId: "prov-001",
+                },
+              ]),
+            }),
+          }),
+        })
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([]),
+            }),
+          }),
+        })
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              where: vi.fn().mockResolvedValue([
+                {
+                  paymentId: "pay-unknown-001",
+                  paymentStatus: "unknown",
+                  providerId: "prov-001",
+                  orderId: "ord-unknown-001",
+                  orderStatus: "pending_payment",
+                  paymentState: "awaiting_payment",
+                  fulfillmentState: "awaiting_fulfillment",
+                },
+              ]),
+            }),
+          }),
+        });
+
+      const service = makeService({
+        db,
+        vendingService: { createAndDispatchCommands },
+      });
+
+      const applied = await service.applyProviderPaymentResult({
+        paymentId: "pay-unknown-001",
+        providerTradeNo: "TXN-UNKNOWN-LATE",
+        status: "succeeded",
+        eventType: "payment_code.succeeded",
+        providerEventId: "payment_code:PCA-UNKNOWN-LATE:succeeded",
         rawPayload: {},
       });
 
@@ -867,6 +962,193 @@ describe("PaymentsService", () => {
       });
     }
 
+    it("queries payment incidents with the payment-time provider config", async () => {
+      const db = makeDb();
+      mockManualPaymentSelect(db, {
+        id: "pay-incident-001",
+        paymentNo: "PAY-INCIDENT001",
+        providerConfigId: "cfg-payment-time",
+      });
+      mockManualAttemptCount(db);
+      mockManualAttemptInsert(db);
+      const queryPayment = vi.fn().mockResolvedValue({
+        status: "pending",
+        providerTradeNo: null,
+        rawPayload: {},
+      });
+      const config = {
+        id: "cfg-payment-time",
+        providerCode: "alipay",
+        merchantNo: "ALI-MERCHANT-OLD",
+        appId: "ALI-APP-OLD",
+        publicConfigJson: {},
+        sensitiveConfigJson: {},
+      };
+      const resolveForExistingPayment = vi.fn().mockResolvedValue(config);
+      const service = makeService({
+        db,
+        registry: {
+          get: vi.fn().mockReturnValue({ queryPayment }),
+        } as unknown as PaymentProviderRegistry,
+        configService: { resolveForExistingPayment },
+      });
+
+      await expect(
+        service.handlePaymentIncidentAction("pay-incident-001", "admin-1", {
+          action: "query_payment",
+          reason: "operator checks uncertain payment before any handling",
+        }),
+      ).resolves.toMatchObject({
+        action: "query_payment",
+        status: "pending",
+        handled: false,
+        message: "支付结果仍待确认",
+      });
+
+      expect(resolveForExistingPayment).toHaveBeenCalledWith({
+        providerCode: "alipay",
+        providerConfigId: "cfg-payment-time",
+        machineId: "mach-001",
+        providerConfigSnapshotJson: undefined,
+      });
+      expect(queryPayment).toHaveBeenCalledWith(
+        expect.objectContaining({ config }),
+      );
+    });
+
+    it("closes uncertain QR payment with the payment-time config without dispatching", async () => {
+      const db = makeDb();
+      db.select
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            innerJoin: vi.fn().mockReturnValue({
+              innerJoin: vi.fn().mockReturnValue({
+                where: vi.fn().mockReturnValue({
+                  limit: vi.fn().mockResolvedValue([
+                    {
+                      paymentId: "pay-close-001",
+                      paymentNo: "PAY-CLOSE001",
+                      method: "qr_code",
+                      paymentStatus: "processing",
+                      providerId: "prov-alipay",
+                      providerCode: "alipay",
+                      providerTradeNo: "ALI-TXN-PENDING",
+                      providerConfigId: "cfg-payment-time",
+                      providerConfigSnapshotJson: {
+                        id: "cfg-payment-time",
+                        providerCode: "alipay",
+                        merchantNo: "ALI-MERCHANT-OLD",
+                      },
+                      orderId: "ord-close-001",
+                      orderStatus: "pending_payment",
+                      machineId: "mach-001",
+                      isDrill: false,
+                      orderIsDrill: false,
+                    },
+                  ]),
+                }),
+              }),
+            }),
+          }),
+        })
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([]),
+          }),
+        });
+      const cancelPayment = vi.fn().mockResolvedValue({ status: "canceled" });
+      const createAndDispatchCommands = vi.fn();
+      const config = {
+        id: "cfg-payment-time",
+        providerCode: "alipay",
+        merchantNo: "ALI-MERCHANT-OLD",
+        appId: "ALI-APP-OLD",
+        publicConfigJson: {},
+        sensitiveConfigJson: {},
+      };
+      const resolveForExistingPayment = vi.fn().mockResolvedValue(config);
+      const service = makeService({
+        db,
+        registry: {
+          get: vi.fn().mockReturnValue({ cancelPayment }),
+        } as unknown as PaymentProviderRegistry,
+        configService: { resolveForExistingPayment },
+        vendingService: { createAndDispatchCommands },
+      });
+
+      await expect(
+        service.handlePaymentIncidentAction("pay-close-001", "admin-1", {
+          action: "close_or_reverse_uncertain_payment",
+          reason: "operator closes uncertain QR payment before retry",
+        }),
+      ).resolves.toMatchObject({
+        action: "close_or_reverse_uncertain_payment",
+        status: "canceled",
+        handled: true,
+      });
+
+      expect(resolveForExistingPayment).toHaveBeenCalledWith({
+        providerCode: "alipay",
+        providerConfigId: "cfg-payment-time",
+        machineId: "mach-001",
+        providerConfigSnapshotJson: {
+          id: "cfg-payment-time",
+          providerCode: "alipay",
+          merchantNo: "ALI-MERCHANT-OLD",
+        },
+      });
+      expect(cancelPayment).toHaveBeenCalledWith(
+        expect.objectContaining({ config }),
+      );
+      expect(createAndDispatchCommands).not.toHaveBeenCalled();
+    });
+
+    it("reports refund handling acceptance as processing until refund is confirmed", async () => {
+      const db = makeDb();
+      db.select.mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi.fn().mockReturnValue({
+            limit: vi.fn().mockResolvedValue([
+              {
+                orderId: "ord-refund-001",
+                paymentNo: "PAY-REFUND001",
+              },
+            ]),
+          }),
+        }),
+      });
+      const requestFullRefund = vi.fn().mockResolvedValue({
+        refundNo: "RFD-PROCESSING001",
+        status: "processing",
+        providerRefundNo: "WX-RFD-001",
+      });
+      const createAndDispatchCommands = vi.fn();
+      const service = makeService({
+        db,
+        refundsService: { requestFullRefund },
+        vendingService: { createAndDispatchCommands },
+      });
+
+      await expect(
+        service.handlePaymentIncidentAction("pay-refund-001", "admin-1", {
+          action: "request_refund_handling",
+          reason: "dispense failed and operator requested refund handling",
+        }),
+      ).resolves.toMatchObject({
+        action: "request_refund_handling",
+        status: "processing",
+        handled: false,
+        message: "退款请求已提交，等待渠道确认",
+      });
+
+      expect(requestFullRefund).toHaveBeenCalledWith({
+        orderId: "ord-refund-001",
+        reason: "admin_refund",
+        requestedByAdminUserId: "admin-1",
+      });
+      expect(createAndDispatchCommands).not.toHaveBeenCalled();
+    });
+
     it("skips protected payment drill payments without calling the provider", async () => {
       const queryPayment = vi.fn();
       const provider = { queryPayment };
@@ -1059,7 +1341,7 @@ describe("PaymentsService", () => {
           "operator checked provider pending status",
         ),
       ).resolves.toEqual({
-        status: "processing",
+        status: "pending",
         reconciled: false,
         reason: "provider_pending",
       });
@@ -1082,6 +1364,55 @@ describe("PaymentsService", () => {
       );
       expect(JSON.stringify(audit.record.mock.calls)).not.toContain(
         "provider-secret-token",
+      );
+    });
+
+    it("queries unknown payments instead of treating them as terminal", async () => {
+      const db = makeDb();
+      mockManualPaymentSelect(db, {
+        id: "pay-unknown-001",
+        paymentNo: "PAY-UNKNOWN001",
+        status: "unknown",
+      });
+      mockManualAttemptCount(db);
+      mockManualAttemptInsert(db);
+      const provider = {
+        queryPayment: vi.fn().mockResolvedValue({
+          status: "processing",
+          providerTradeNo: null,
+          rawPayload: {},
+        }),
+      };
+      const audit = { record: vi.fn().mockResolvedValue(undefined) };
+      const service = makeService({
+        db,
+        registry: {
+          get: vi.fn().mockReturnValue(provider),
+        } as unknown as PaymentProviderRegistry,
+        auditService: audit,
+      });
+
+      await expect(
+        service.manualReconcile(
+          "pay-unknown-001",
+          "admin-5",
+          "operator checks unknown payment",
+        ),
+      ).resolves.toEqual({
+        status: "processing",
+        reconciled: false,
+        reason: "provider_processing",
+      });
+
+      expect(provider.queryPayment).toHaveBeenCalledOnce();
+      expect(audit.record).toHaveBeenCalledWith(
+        expect.objectContaining({
+          resourceId: "pay-unknown-001",
+          afterJson: expect.objectContaining({
+            providerStatus: "processing",
+            outcome: "provider_processing",
+          }),
+        }),
       );
     });
   });
@@ -1190,6 +1521,122 @@ describe("PaymentsService", () => {
         handled: false,
         reason: "payment_not_found",
       });
+    });
+
+    it("passes webhook candidate configs that can include payment-time bindings", async () => {
+      const oldBoundConfig = {
+        id: "cfg-old-bound",
+        providerCode: "wechat_pay",
+        merchantNo: "MCH-OLD",
+        appId: "APP-OLD",
+        publicConfigJson: {},
+        sensitiveConfigJson: { apiV3Key: "old-secret" },
+      };
+      const handleWebhook = vi.fn().mockResolvedValue({
+        paymentNo: null,
+        eventType: "wechat_pay.webhook",
+        providerEventId: "WX_EVT_OLD",
+        signatureValid: true,
+        paymentStatus: "succeeded",
+        rawPayload: {},
+      });
+      const service = makeService({
+        registry: {
+          get: vi.fn().mockReturnValue({ handleWebhook }),
+        } as unknown as PaymentProviderRegistry,
+        configService: {
+          listWebhookCandidateConfigsForProvider: vi
+            .fn()
+            .mockResolvedValue([oldBoundConfig]),
+        },
+      });
+
+      await service.handleProviderWebhook("wechat_pay", {}, {}, "");
+
+      expect(handleWebhook).toHaveBeenCalledWith(
+        expect.objectContaining({
+          candidateConfigs: [oldBoundConfig],
+        }),
+      );
+    });
+
+    it("does not let success webhook unlock payment_unknown manual-handling orders or dispatch", async () => {
+      const handleWebhook = vi.fn().mockResolvedValue({
+        paymentNo: "PAY-UNKNOWN",
+        eventType: "wechat_pay.webhook",
+        providerEventId: "WX_EVT_LOCKED",
+        signatureValid: true,
+        paymentStatus: "succeeded",
+        providerTradeNo: "TXN-WX-LOCKED",
+        rawPayload: {},
+        normalizedPayload: {
+          outTradeNo: "PAY-UNKNOWN",
+          mchId: "MCH001",
+          appId: "wx-app-001",
+          amountTotal: 1200,
+          amountCurrency: "CNY",
+          tradeState: "SUCCESS",
+        },
+        matchedConfigId: null,
+      });
+      const db = makeDb();
+      makePaymentSelectMock(db, [
+        {
+          id: "pay-unknown",
+          providerId: "prov-wx",
+          status: "unknown",
+          orderId: "ord-unknown",
+          orderNo: "ORD-UNKNOWN",
+          paymentNo: "PAY-UNKNOWN",
+          amountCents: 1200,
+          machineId: "mach-001",
+          providerConfigId: "cfg-old",
+          providerConfigSnapshotJson: null,
+        },
+      ]);
+      db.select.mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([
+              {
+                paymentId: "pay-unknown",
+                paymentStatus: "unknown",
+                providerId: "prov-wx",
+                orderId: "ord-unknown",
+                orderStatus: "manual_handling",
+                paymentState: "payment_unknown",
+                fulfillmentState: "manual_handling",
+              },
+            ]),
+          }),
+        }),
+      });
+      db.insert.mockReturnValue({
+        values: vi.fn().mockReturnValue({
+          onConflictDoNothing: vi.fn().mockReturnValue({
+            returning: vi.fn().mockResolvedValue([{ id: "evt-locked" }]),
+          }),
+        }),
+      });
+      const createAndDispatchCommands = vi.fn();
+      const service = makeService({
+        db,
+        registry: {
+          get: vi.fn().mockReturnValue({ handleWebhook }),
+        } as unknown as PaymentProviderRegistry,
+        vendingService: { createAndDispatchCommands },
+      });
+
+      const result = await service.handleProviderWebhook(
+        "wechat_pay",
+        {},
+        {},
+        "",
+      );
+
+      expect(result).toMatchObject({ handled: true, duplicate: false });
+      expect(db.update).not.toHaveBeenCalled();
+      expect(createAndDispatchCommands).not.toHaveBeenCalled();
     });
 
     it("propagates UnauthorizedException from provider.handleWebhook (invalid signature)", async () => {
@@ -1759,7 +2206,7 @@ describe("PaymentsService", () => {
   });
 
   describe("listProviderConfigs", () => {
-    it("returns provider configs with providerCode and derivedNotifyUrl (no sensitiveConfigJson)", async () => {
+    it("returns provider configs without sensitive fields and preserves runtime payment-code settings", async () => {
       const db = makeDb();
       const providerConfigRow = {
         id: "cfg-001",
@@ -1769,7 +2216,13 @@ describe("PaymentsService", () => {
         machineId: null,
         merchantNo: "MCH001",
         appId: "APP001",
-        publicConfigJson: { certificateSerialNo: "ABCDEF" },
+        publicConfigJson: {
+          certificateSerialNo: "ABCDEF",
+          paymentCodeEnabled: true,
+          paymentCodePollIntervalSeconds: 3,
+          paymentCodeMaxConfirmSeconds: 30,
+          paymentCodeReverseDelaySeconds: 0,
+        },
         configEncryptedJson: null,
         status: "disabled",
         updatedByAdminUserId: "admin-1",
@@ -1794,6 +2247,15 @@ describe("PaymentsService", () => {
       });
       expect(results[0]).not.toHaveProperty("sensitiveConfigJson");
       expect(results[0]).not.toHaveProperty("configEncryptedJson");
+      expect(results[0]?.publicConfigJson).not.toHaveProperty(
+        "paymentCodeEnabled",
+      );
+      expect(results[0]?.publicConfigJson).toEqual({
+        certificateSerialNo: "ABCDEF",
+        paymentCodePollIntervalSeconds: 3,
+        paymentCodeMaxConfirmSeconds: 30,
+        paymentCodeReverseDelaySeconds: 0,
+      });
     });
   });
 
@@ -1865,6 +2327,87 @@ describe("PaymentsService", () => {
       });
       expect(result).not.toHaveProperty("configEncryptedJson");
       expect(result).not.toHaveProperty("sensitiveConfigJson");
+    });
+
+    it("preserves runtime payment-code public settings when updating merchant config", async () => {
+      const db = makeDb();
+      const now = new Date("2026-06-26T04:00:00.000Z");
+      const existingRow = {
+        id: "550e8400-e29b-41d4-a716-446655440011",
+        providerId: "550e8400-e29b-41d4-a716-446655440022",
+        machineId: null,
+        merchantNo: "MCH001",
+        appId: "APP001",
+        publicConfigJson: {
+          mode: "sandbox",
+          gatewayUrl: "https://openapi-sandbox.dl.alipaydev.com/gateway.do",
+          keyType: "PKCS8",
+          paymentCodeEnabled: true,
+          paymentCodePollIntervalSeconds: 3,
+          paymentCodeMaxConfirmSeconds: 30,
+        },
+        configEncryptedJson: null,
+        status: "disabled",
+      };
+      const updatedPublicConfigJson = {
+        mode: "sandbox",
+        gatewayUrl: "https://openapi-sandbox.dl.alipaydev.com/gateway.do",
+        keyType: "PKCS8",
+        qrExpiresMinutes: 15,
+        timeoutCompensationSeconds: 180,
+        paymentCodePollIntervalSeconds: 3,
+        paymentCodeMaxConfirmSeconds: 30,
+      };
+      const updatedRow = {
+        ...existingRow,
+        merchantNo: "MCH002",
+        publicConfigJson: updatedPublicConfigJson,
+        updatedByAdminUserId: "550e8400-e29b-41d4-a716-446655440033",
+        createdAt: now,
+        updatedAt: now,
+      };
+      const set = vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([updatedRow]),
+        }),
+      });
+
+      db.select
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi.fn().mockResolvedValue([existingRow]),
+            }),
+          }),
+        })
+        .mockReturnValueOnce({
+          from: vi.fn().mockReturnValue({
+            where: vi.fn().mockReturnValue({
+              limit: vi
+                .fn()
+                .mockResolvedValue([{ code: "alipay", name: "Alipay" }]),
+            }),
+          }),
+        });
+      db.update.mockReturnValue({ set });
+
+      const service = makeService({ db });
+      const result = await service.updateProviderConfig(
+        "550e8400-e29b-41d4-a716-446655440011",
+        "550e8400-e29b-41d4-a716-446655440033",
+        {
+          merchantNo: "MCH002",
+          publicConfigJson: { timeoutCompensationSeconds: 180 },
+        },
+      );
+
+      expect(set).toHaveBeenCalledWith(
+        expect.objectContaining({
+          publicConfigJson: updatedPublicConfigJson,
+        }),
+      );
+      expect(result.publicConfigJson).toEqual(updatedPublicConfigJson);
+      expect(result.publicConfigJson).not.toHaveProperty("paymentCodeEnabled");
     });
   });
 

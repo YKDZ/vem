@@ -14,6 +14,116 @@ import {
 } from "./orders";
 import { createPageResultSchema, pageQuerySchema } from "./pagination";
 
+export const supportedPaymentChannelKeys = [
+  "qr_code:alipay",
+  "payment_code:alipay",
+  "qr_code:wechat_pay",
+  "payment_code:wechat_pay",
+] as const;
+
+export const paymentChannelKeySchema = z.enum(supportedPaymentChannelKeys);
+
+export const paymentChannelPolicyEntrySchema = z.strictObject({
+  channelKey: paymentChannelKeySchema,
+  enabled: z.boolean(),
+  rank: z.int().min(1).max(supportedPaymentChannelKeys.length),
+});
+
+function refinePaymentChannelPolicy(
+  value: { channels: Array<{ channelKey: string; rank: number }> },
+  ctx: z.RefinementCtx,
+): void {
+  const channelKeys = new Set<string>();
+  const ranks = new Set<number>();
+  for (const channel of value.channels) {
+    if (channelKeys.has(channel.channelKey)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["channels"],
+        message: "payment channel policy contains duplicate channelKey",
+      });
+    }
+    channelKeys.add(channel.channelKey);
+
+    if (ranks.has(channel.rank)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["channels"],
+        message: "payment channel policy contains duplicate rank",
+      });
+    }
+    ranks.add(channel.rank);
+  }
+
+  const missingChannel = supportedPaymentChannelKeys.find(
+    (channelKey) => !channelKeys.has(channelKey),
+  );
+  if (missingChannel) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["channels"],
+      message: `payment channel policy missing ${missingChannel}`,
+    });
+  }
+
+  const expectedRanks = Array.from(
+    { length: supportedPaymentChannelKeys.length },
+    (_, index) => index + 1,
+  );
+  const actualRanks = [...ranks].sort((a, b) => a - b);
+  if (
+    actualRanks.length !== expectedRanks.length ||
+    actualRanks.some((rank, index) => rank !== expectedRanks[index])
+  ) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["channels"],
+      message: "payment channel policy ranks must be contiguous from 1",
+    });
+  }
+}
+
+export const updatePaymentChannelPolicySchema = z
+  .strictObject({
+    channels: z
+      .array(paymentChannelPolicyEntrySchema)
+      .length(supportedPaymentChannelKeys.length),
+    defaultChannelKey: paymentChannelKeySchema,
+  })
+  .superRefine((value, ctx) => {
+    refinePaymentChannelPolicy(value, ctx);
+    if (
+      !value.channels.some(
+        (channel) => channel.channelKey === value.defaultChannelKey,
+      )
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["defaultChannelKey"],
+        message: "defaultChannelKey must refer to a known payment channel",
+      });
+    }
+  });
+
+export const paymentChannelPolicyResponseSchema =
+  updatePaymentChannelPolicySchema.and(
+    z.strictObject({
+      updatedAt: z.iso.datetime().nullable(),
+      updatedByAdminUserId: z.uuid().nullable(),
+    }),
+  );
+
+export type PaymentChannelKey = z.infer<typeof paymentChannelKeySchema>;
+export type PaymentChannelPolicyEntry = z.infer<
+  typeof paymentChannelPolicyEntrySchema
+>;
+export type UpdatePaymentChannelPolicyInput = z.infer<
+  typeof updatePaymentChannelPolicySchema
+>;
+export type PaymentChannelPolicyResponse = z.infer<
+  typeof paymentChannelPolicyResponseSchema
+>;
+
 export const paymentQuerySchema = z.object({
   orderNo: z.string().max(64).optional(),
   paymentNo: z.string().max(64).optional(),
@@ -63,23 +173,17 @@ const paymentTimingConfigSchema = z.object({
   timeoutCompensationSeconds: z.int().min(0).max(600).default(120),
 });
 
-const paymentCodeTimingConfigSchema = z.object({
-  paymentCodeEnabled: z.boolean().default(false),
-  paymentCodePollIntervalSeconds: z.int().min(1).max(10).default(3),
-  paymentCodeMaxConfirmSeconds: z.int().min(10).max(120).default(30),
-  paymentCodeReverseDelaySeconds: z.int().min(0).max(30).default(0),
-});
-
 const paymentTimingConfigPatchSchema = z.object({
   qrExpiresMinutes: z.int().min(1).max(60).optional(),
   timeoutCompensationSeconds: z.int().min(0).max(600).optional(),
 });
 
-const paymentCodeTimingConfigPatchSchema = z.object({
-  paymentCodeEnabled: z.boolean().optional(),
-  paymentCodePollIntervalSeconds: z.int().min(1).max(10).optional(),
-  paymentCodeMaxConfirmSeconds: z.int().min(10).max(120).optional(),
-  paymentCodeReverseDelaySeconds: z.int().min(0).max(30).optional(),
+const paymentCodeRuntimeConfigSchema = z.object({
+  paymentCodePollIntervalSeconds: z.int().min(1).max(60).optional(),
+  paymentCodeMaxConfirmSeconds: z.int().min(1).max(600).optional(),
+  paymentCodeReverseDelaySeconds: z.int().min(0).max(600).optional(),
+  paymentCodeReverseRetryIntervalSeconds: z.int().min(1).max(600).optional(),
+  paymentCodeReverseMaxAttempts: z.int().min(1).max(10).optional(),
 });
 
 export const paymentProviderConfigScopeSchema = z.object({
@@ -89,7 +193,6 @@ export const paymentProviderConfigScopeSchema = z.object({
 });
 
 export const wechatPayPublicConfigSchema = paymentTimingConfigSchema
-  .extend(paymentCodeTimingConfigSchema.shape)
   .extend({
     mode: z.literal("direct_merchant").default("direct_merchant"),
     /** 商户 API 证书序列号，用于 Authorization serial_no 请求签名 */
@@ -98,9 +201,10 @@ export const wechatPayPublicConfigSchema = paymentTimingConfigSchema
     certificateSerialNo: z.string().min(1).max(128).optional(),
     /** 微信支付平台证书/公钥序列号，用于匹配 wechatpay-serial 响应/回调头 */
     platformCertificateSerialNo: z.string().min(1).max(128).optional(),
-    paymentCodeSignType: z.enum(["MD5", "HMAC-SHA256"]).default("HMAC-SHA256"),
+    paymentCodeSignType: z.enum(["MD5", "HMAC-SHA256"]).optional(),
     paymentCodeDeviceInfo: z.string().min(1).max(32).optional(),
   })
+  .extend(paymentCodeRuntimeConfigSchema.shape)
   .strict();
 
 export const wechatPaySensitiveConfigSchema = z.object({
@@ -116,7 +220,6 @@ export const wechatPaySensitiveConfigSchema = z.object({
 });
 
 export const alipayPublicConfigSchema = paymentTimingConfigSchema
-  .extend(paymentCodeTimingConfigSchema.shape)
   .extend({
     mode: z.enum(["sandbox", "production"]).default("sandbox"),
     gatewayUrl: z
@@ -126,6 +229,7 @@ export const alipayPublicConfigSchema = paymentTimingConfigSchema
     storeId: z.string().min(1).max(32).optional(),
     terminalId: z.string().min(1).max(32).optional(),
   })
+  .extend(paymentCodeRuntimeConfigSchema.shape)
   .strict();
 
 export const alipaySensitiveConfigSchema = z.object({
@@ -136,7 +240,6 @@ export const alipaySensitiveConfigSchema = z.object({
 });
 
 const wechatPayPublicConfigPatchSchema = paymentTimingConfigPatchSchema
-  .extend(paymentCodeTimingConfigPatchSchema.shape)
   .extend({
     mode: z.literal("direct_merchant").optional(),
     merchantCertificateSerialNo: z.string().min(1).max(128).optional(),
@@ -145,10 +248,10 @@ const wechatPayPublicConfigPatchSchema = paymentTimingConfigPatchSchema
     paymentCodeSignType: z.enum(["MD5", "HMAC-SHA256"]).optional(),
     paymentCodeDeviceInfo: z.string().min(1).max(32).optional(),
   })
+  .extend(paymentCodeRuntimeConfigSchema.shape)
   .strict();
 
 const alipayPublicConfigPatchSchema = paymentTimingConfigPatchSchema
-  .extend(paymentCodeTimingConfigPatchSchema.shape)
   .extend({
     mode: z.enum(["sandbox", "production"]).optional(),
     gatewayUrl: z.url().optional(),
@@ -156,6 +259,7 @@ const alipayPublicConfigPatchSchema = paymentTimingConfigPatchSchema
     storeId: z.string().min(1).max(32).optional(),
     terminalId: z.string().min(1).max(32).optional(),
   })
+  .extend(paymentCodeRuntimeConfigSchema.shape)
   .strict();
 
 export const providerSecretStatusValueSchema = z.object({
@@ -283,33 +387,6 @@ export const upsertPaymentProviderConfigSchema = z
           path: ["publicConfigJson"],
           message: "wechat_pay public config is invalid",
         });
-      }
-
-      const paymentCodeEnabled = pub["paymentCodeEnabled"] === true;
-      if (paymentCodeEnabled) {
-        if (
-          typeof sensitive["apiV2Key"] !== "string" ||
-          sensitive["apiV2Key"].length < 32
-        ) {
-          ctx.addIssue({
-            code: "custom",
-            path: ["sensitiveConfigJson", "apiV2Key"],
-            message: "wechat_pay payment_code requires apiV2Key",
-          });
-        }
-        if (
-          typeof sensitive["merchantApiCertPem"] !== "string" ||
-          sensitive["merchantApiCertPem"].length === 0 ||
-          typeof sensitive["merchantApiKeyPem"] !== "string" ||
-          sensitive["merchantApiKeyPem"].length === 0
-        ) {
-          ctx.addIssue({
-            code: "custom",
-            path: ["sensitiveConfigJson"],
-            message:
-              "wechat_pay payment_code requires merchantApiCertPem and merchantApiKeyPem for reverse/refund",
-          });
-        }
       }
     }
     if (value.providerCode === "alipay") {
@@ -570,6 +647,48 @@ export const paymentAdminActionResultSchema = z.strictObject({
   reason: z.string().min(1).max(128).optional(),
 });
 
+export const paymentIncidentActionNameSchema = z.enum([
+  "query_payment",
+  "close_or_reverse_uncertain_payment",
+  "query_refund",
+  "request_refund_handling",
+  "mark_manual_handling",
+]);
+
+const paymentIncidentBaseActionRequestSchema = z.strictObject({
+  reason: z.string().trim().min(1).max(500),
+});
+
+export const paymentIncidentActionRequestSchema = z.discriminatedUnion(
+  "action",
+  [
+    paymentIncidentBaseActionRequestSchema.extend({
+      action: z.literal("query_payment"),
+    }),
+    paymentIncidentBaseActionRequestSchema.extend({
+      action: z.literal("close_or_reverse_uncertain_payment"),
+    }),
+    paymentIncidentBaseActionRequestSchema.extend({
+      action: z.literal("query_refund"),
+      refundId: z.uuid(),
+    }),
+    paymentIncidentBaseActionRequestSchema.extend({
+      action: z.literal("request_refund_handling"),
+    }),
+    paymentIncidentBaseActionRequestSchema.extend({
+      action: z.literal("mark_manual_handling"),
+    }),
+  ],
+);
+
+export const paymentIncidentActionResponseSchema = z.strictObject({
+  action: paymentIncidentActionNameSchema,
+  status: z.string().min(1).max(64),
+  handled: z.boolean(),
+  message: z.string().min(1).max(200),
+  protectedDiagnostics: z.record(z.string(), z.unknown()).default({}),
+});
+
 export const paymentAdminNoBodySchema = z.strictObject({});
 
 export const paymentMockAdminActionResponseSchema = z.strictObject({
@@ -633,6 +752,15 @@ export type RefundReconciliationAttemptAdminResponse = z.infer<
 export type RefundAdminResponse = z.infer<typeof refundAdminResponseSchema>;
 export type PaymentCodeAttemptAdminResponse = z.infer<
   typeof paymentCodeAttemptAdminResponseSchema
+>;
+export type PaymentIncidentActionName = z.infer<
+  typeof paymentIncidentActionNameSchema
+>;
+export type PaymentIncidentActionRequest = z.infer<
+  typeof paymentIncidentActionRequestSchema
+>;
+export type PaymentIncidentActionResponse = z.infer<
+  typeof paymentIncidentActionResponseSchema
 >;
 
 export const protectedPaymentDrillScenarioSchema = z.enum([

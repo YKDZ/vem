@@ -233,10 +233,22 @@ function makeOrdersService(db = makeOrdersDbForSuccessfulLocalDraft()) {
       publicConfigJson: {},
       sensitiveConfigJson: {},
     }),
+    assertMachinePaymentChannelAvailable: vi.fn().mockResolvedValue(undefined),
     listMachinePaymentOptionsForMachine: vi.fn().mockResolvedValue({
       machineId: "mach-001",
       options: [],
     }),
+    createBindingSnapshot: vi.fn((config: Record<string, unknown>) => ({
+      version: 1,
+      id: config.id ?? "cfg-001",
+      providerCode: config.providerCode,
+      providerId: config.providerId ?? "prov-001",
+      merchantNo: config.merchantNo ?? null,
+      appId: config.appId ?? null,
+      publicConfigJson: config.publicConfigJson ?? {},
+      sensitiveConfigEncryptedJson: { encrypted: "test" },
+      boundAt: "2026-07-08T00:00:00.000Z",
+    })),
   } as unknown as PaymentProviderConfigService;
   const refundsService: RefundsService = {
     requestRefund: vi.fn().mockResolvedValue(undefined),
@@ -442,6 +454,7 @@ function makeFlowHarness(overrides?: {
   const configService = {
     resolveForPayment: vi.fn().mockResolvedValue(config),
     resolveForExistingPayment: vi.fn().mockResolvedValue(config),
+    assertMachinePaymentChannelAvailable: vi.fn().mockResolvedValue(undefined),
   };
   const paymentsService = {
     applyProviderPaymentResult: vi.fn().mockImplementation(async (input) => {

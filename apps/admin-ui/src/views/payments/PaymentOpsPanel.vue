@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import type { PaymentOpsCheck } from "@vem/shared";
+
 import { computed, onMounted, ref } from "vue";
 
 import { listMachines, type Machine } from "@/api/machines";
@@ -22,6 +24,213 @@ const preflight = ref<PaymentMachinePreflight | null>(null);
 const readinessColor = computed(() =>
   readiness.value?.status === "ready" ? "success" : "error",
 );
+const readinessRows = computed(() =>
+  readiness.value ? readiness.value.checks.map(toDisplayCheck) : [],
+);
+const preflightRows = computed(() =>
+  preflight.value ? preflight.value.checks.map(toDisplayCheck) : [],
+);
+const readyPaymentOptionsText = computed(() => {
+  if (!preflight.value) return "";
+  const names = preflight.value.availableProviders.map((item) =>
+    item.displayName.trim(),
+  );
+  return names.length > 0 ? names.join("、") : "无";
+});
+const readinessEnvironmentLabel = computed(() =>
+  readiness.value ? environmentLabel(readiness.value.environment) : "",
+);
+
+const checkColumns = [
+  { title: "检查项", dataIndex: "checkName", key: "checkName" },
+  { title: "级别", dataIndex: "severityLabel", key: "severity" },
+  { title: "结果", dataIndex: "resultLabel", key: "passed" },
+  { title: "说明", dataIndex: "displayMessage", key: "displayMessage" },
+];
+
+type DisplayCheck = PaymentOpsCheck & {
+  checkName: string;
+  severityLabel: string;
+  resultLabel: string;
+  displayMessage: string;
+};
+
+function toDisplayCheck(check: PaymentOpsCheck): DisplayCheck {
+  return {
+    ...check,
+    checkName: checkName(check.code),
+    severityLabel: severityLabel(check.severity),
+    resultLabel: check.passed ? "通过" : "阻塞",
+    displayMessage: checkMessage(check),
+  };
+}
+
+function severityLabel(severity: PaymentOpsCheck["severity"]): string {
+  if (severity === "critical") return "阻塞项";
+  if (severity === "warning") return "提醒";
+  return "信息";
+}
+
+function checkName(code: string): string {
+  if (code === "mock_provider_disabled") return "模拟支付";
+  if (code === "enabled_payment_channels_present") return "支付渠道";
+  if (code === "enabled_channel_provider_setup") return "商户配置";
+  if (code === "real_provider_config_present") return "真实支付配置";
+  if (code === "provider_environment.production_ready") return "支付环境";
+  if (code === "machine_real_provider_options_available") {
+    return "机器支付选项";
+  }
+  if (code === "notify_url_static_check") return "回调地址";
+  if (code === "payment_certificate_not_expiring") return "证书有效期";
+  if (code === "recent_payment_failures") return "支付失败";
+  if (code === "recent_webhook_failures") return "回调验签";
+  if (code === "recent_reconciliation_failures") return "支付对账";
+  if (code === "refund_backlog_clear") return "退款处理";
+  if (code === "machine_online") return "机器在线";
+  if (code === "machine_real_provider_available") return "真实支付选项";
+  if (code === "machine_heartbeat.fresh") return "机器心跳";
+  if (code.startsWith("production_dispense_path.")) return "生产出货路径";
+  if (code.startsWith("payment_code.scanner")) return "付款码扫码模块";
+  if (code === "machine_not_found") return "机器记录";
+  return "支付检查";
+}
+
+function environmentLabel(
+  environment: PaymentOpsReadiness["environment"],
+): string {
+  if (environment === "production") return "生产环境";
+  if (environment === "test") return "测试环境";
+  return "开发环境";
+}
+
+function providerLabel(providerCode: string): string {
+  if (providerCode === "wechat_pay") return "微信";
+  if (providerCode === "alipay") return "支付宝";
+  return "支付";
+}
+
+function methodLabel(method: string): string {
+  if (method === "payment_code") return "付款码";
+  if (method === "qr_code") return "扫码";
+  return "";
+}
+
+function missingProviderSetupLabel(keys: unknown): string {
+  if (!Array.isArray(keys) || keys.length === 0) return "商户配置/证书";
+  const values = keys.filter((key): key is string => typeof key === "string");
+  if (values.includes("providerConfig")) return "商户配置/证书";
+  if (
+    values.some((key) => /cert|certificate|key|pem|secret|sensitive/i.test(key))
+  ) {
+    return "商户配置/证书";
+  }
+  return "商户配置";
+}
+
+function channelProviderSetupMessage(check: PaymentOpsCheck): string {
+  if (check.passed) return "已启用支付渠道的商户配置可用";
+  const blockedChannels = check.evidence["blockedChannels"];
+  if (!Array.isArray(blockedChannels) || blockedChannels.length === 0) {
+    return check.message;
+  }
+  return blockedChannels
+    .map((channel) => {
+      if (typeof channel !== "object" || channel === null) {
+        return "已启用支付渠道存在商户配置阻塞";
+      }
+      const providerCode = Reflect.get(channel, "providerCode");
+      const method = Reflect.get(channel, "method");
+      const channelKey = Reflect.get(channel, "channelKey");
+      const [methodFromKey, providerFromKey] =
+        typeof channelKey === "string" ? channelKey.split(":") : ["", ""];
+      const normalizedProvider =
+        typeof providerCode === "string" ? providerCode : providerFromKey;
+      const normalizedMethod =
+        typeof method === "string" ? method : methodFromKey;
+      return `${providerLabel(normalizedProvider)}${methodLabel(
+        normalizedMethod,
+      )}缺少${missingProviderSetupLabel(
+        Reflect.get(channel, "missingCredentialKeys"),
+      )}`;
+    })
+    .join("；");
+}
+
+function checkMessage(check: PaymentOpsCheck): string {
+  if (check.code === "mock_provider_disabled") {
+    return check.passed ? "模拟支付已关闭" : "模拟支付仍处于启用状态";
+  }
+  if (check.code === "enabled_payment_channels_present") {
+    return check.passed
+      ? "已启用支付渠道可用于上线评估"
+      : "没有启用任何支付渠道";
+  }
+  if (check.code === "enabled_channel_provider_setup") {
+    return channelProviderSetupMessage(check);
+  }
+  if (check.code === "real_provider_config_present") {
+    return check.passed
+      ? "至少有一个真实支付商户配置可用"
+      : "没有可用的真实支付商户配置";
+  }
+  if (check.code === "provider_environment.production_ready") {
+    return check.message;
+  }
+  if (check.code === "notify_url_static_check") {
+    return check.passed
+      ? "回调地址符合当前环境要求"
+      : "回调地址不符合当前环境要求";
+  }
+  if (check.code === "payment_certificate_not_expiring") {
+    return check.passed
+      ? "支付证书未临近过期"
+      : "存在已过期或即将过期的支付证书";
+  }
+  if (check.code === "recent_payment_failures") {
+    return check.passed ? "近期没有支付失败" : "近期存在支付失败";
+  }
+  if (check.code === "recent_webhook_failures") {
+    return check.passed ? "近期没有回调验签失败" : "近期存在回调验签失败";
+  }
+  if (check.code === "recent_reconciliation_failures") {
+    return check.passed ? "近期没有支付对账失败" : "近期存在支付对账失败";
+  }
+  if (check.code === "refund_backlog_clear") {
+    return check.passed ? "没有异常退款积压" : "存在需要处理的退款积压";
+  }
+  if (check.code === "machine_online") {
+    return check.passed ? "机器在线" : "机器未在线";
+  }
+  if (check.code === "machine_real_provider_available") {
+    return check.passed ? "机器有可用真实支付选项" : "机器没有可用真实支付选项";
+  }
+  if (check.code === "machine_heartbeat.fresh") {
+    return check.passed ? "机器心跳新鲜" : "机器心跳缺失或超时";
+  }
+  if (check.code === "production_dispense_path.mock") {
+    return "生产出货路径正在使用模拟硬件，不能上线";
+  }
+  if (check.code === "production_dispense_path.tcp_simulator") {
+    return "生产出货路径正在使用下位机模拟连接，不能上线";
+  }
+  if (check.code === "production_dispense_path.evidence_missing") {
+    return "生产出货路径缺少硬件心跳证据";
+  }
+  if (check.code === "production_dispense_path.ready") {
+    return "生产出货路径证据可用";
+  }
+  if (check.code === "payment_code.scanner_runtime.ready") {
+    return "付款码扫码模块健康证据已上报";
+  }
+  if (
+    check.code === "payment_code.scanner_runtime.degraded" ||
+    check.code === "payment_code.scanner_health_not_reported"
+  ) {
+    return check.message;
+  }
+  if (check.code === "machine_not_found") return "找不到所选机器";
+  return check.message;
+}
 
 async function load(): Promise<void> {
   loading.value = true;
@@ -58,7 +267,7 @@ onMounted(() => {
       :message="
         readiness.status === 'ready' ? '支付上线门禁通过' : '支付上线门禁阻塞'
       "
-      :description="`环境：${readiness.environment}，检查时间：${formatDateTime(readiness.checkedAt)}`"
+      :description="`环境：${readinessEnvironmentLabel}，检查时间：${formatDateTime(readiness.checkedAt)}`"
     />
 
     <a-row v-if="metrics" :gutter="16">
@@ -72,7 +281,7 @@ onMounted(() => {
       </a-col>
       <a-col :span="6">
         <a-statistic
-          title="Webhook 验签失败"
+          title="回调验签失败"
           :value="metrics.webhookSignatureInvalidCount"
         />
       </a-col>
@@ -120,14 +329,9 @@ onMounted(() => {
       v-if="readiness"
       row-key="code"
       :pagination="false"
-      :data-source="readiness.checks"
+      :data-source="readinessRows"
       :loading="loading"
-      :columns="[
-        { title: '检查项', dataIndex: 'code', key: 'code' },
-        { title: '级别', dataIndex: 'severity', key: 'severity' },
-        { title: '结果', dataIndex: 'passed', key: 'passed' },
-        { title: '说明', dataIndex: 'message', key: 'message' },
-      ]"
+      :columns="checkColumns"
     >
       <template #bodyCell="{ column, record }">
         <template v-if="column.key === 'passed'">
@@ -145,18 +349,18 @@ onMounted(() => {
                   : 'default'
             "
           >
-            {{ record.severity }}
+            {{ record.severityLabel }}
           </a-tag>
         </template>
       </template>
     </a-table>
 
-    <a-card title="灰度机器预检" size="small">
+    <a-card title="机器支付预检" size="small">
       <a-space>
         <a-select
           v-model:value="selectedMachineId"
           style="width: 320px"
-          placeholder="选择灰度机器"
+          placeholder="选择机器"
         >
           <a-select-option
             v-for="machine in machines"
@@ -177,24 +381,17 @@ onMounted(() => {
         :type="preflight.status === 'ready' ? 'success' : 'error'"
         show-icon
         :message="
-          preflight.status === 'ready'
-            ? '灰度机器可启用真实支付'
-            : '灰度机器预检阻塞'
+          preflight.status === 'ready' ? '机器支付预检通过' : '机器支付预检阻塞'
         "
-        :description="`机器：${preflight.machineCode}，可用渠道：${preflight.availableProviders.map((item) => `${item.method}/${item.providerCode}`).join(', ') || '无'}`"
+        :description="`机器：${preflight.machineCode}，可用支付方式：${readyPaymentOptionsText}`"
       />
       <a-table
         v-if="preflight"
         class="mt-4"
         row-key="code"
         :pagination="false"
-        :data-source="preflight.checks"
-        :columns="[
-          { title: '检查项', dataIndex: 'code', key: 'code' },
-          { title: '级别', dataIndex: 'severity', key: 'severity' },
-          { title: '结果', dataIndex: 'passed', key: 'passed' },
-          { title: '说明', dataIndex: 'message', key: 'message' },
-        ]"
+        :data-source="preflightRows"
+        :columns="checkColumns"
       >
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'passed'">
@@ -212,7 +409,7 @@ onMounted(() => {
                     : 'default'
               "
             >
-              {{ record.severity }}
+              {{ record.severityLabel }}
             </a-tag>
           </template>
         </template>

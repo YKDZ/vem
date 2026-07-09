@@ -3,7 +3,7 @@ import type {
   PaymentCodeSubmitResponse,
 } from "@vem/shared";
 
-import { Injectable, Logger } from "@nestjs/common";
+import { ConflictException, Injectable, Logger } from "@nestjs/common";
 
 import type {
   PaymentCodeCapableProvider,
@@ -18,6 +18,16 @@ import { PaymentProviderConfigService } from "./payment-provider-config.service"
 import { PaymentProviderRegistry } from "./payment-provider.registry";
 import { buildStoredEventPayload } from "./payment-redaction.util";
 import { PaymentsService } from "./payments.service";
+
+function assertRealPaymentCodeProvider(
+  providerCode: string,
+): asserts providerCode is "alipay" | "wechat_pay" {
+  if (providerCode !== "alipay" && providerCode !== "wechat_pay") {
+    throw new ConflictException(
+      `Payment provider ${providerCode} does not support payment_code`,
+    );
+  }
+}
 
 @Injectable()
 export class PaymentCodeOrchestratorService {
@@ -38,6 +48,7 @@ export class PaymentCodeOrchestratorService {
     "querying",
     "reversing",
     "unknown",
+    "reversal_unknown",
     "manual_handling",
   ] as const;
   private static readonly reversibleStatuses = [
@@ -45,6 +56,7 @@ export class PaymentCodeOrchestratorService {
     "querying",
     "reversing",
     "unknown",
+    "reversal_unknown",
     "manual_handling",
   ] as const;
 
@@ -74,10 +86,19 @@ export class PaymentCodeOrchestratorService {
       return this.toSubmitResponse(input.orderNo, payment.paymentNo, attempt);
     }
 
-    const provider = this.registry.getPaymentCodeProvider(payment.providerCode);
-    const config = await this.configService.resolveForPayment({
+    assertRealPaymentCodeProvider(payment.providerCode);
+    await this.configService.assertMachinePaymentChannelAvailable({
       providerCode: payment.providerCode,
+      method: "payment_code",
       machineId: payment.machineId,
+    });
+
+    const provider = this.registry.getPaymentCodeProvider(payment.providerCode);
+    const config = await this.configService.resolveForExistingPayment({
+      providerCode: payment.providerCode,
+      providerConfigId: payment.providerConfigId,
+      machineId: payment.machineId,
+      providerConfigSnapshotJson: payment.providerConfigSnapshotJson,
     });
 
     await this.attempts.markStatus(attempt.id, "submitting", {
@@ -106,6 +127,37 @@ export class PaymentCodeOrchestratorService {
     }
 
     if (charge.status === "succeeded") {
+      const applied = await this.paymentsService.applyProviderPaymentResult({
+        paymentId: payment.id,
+        providerTradeNo: charge.providerTradeNo,
+        status: "succeeded",
+        paidAt: charge.paidAt ?? new Date(),
+        eventType: "payment_code.succeeded",
+        providerEventId: `payment_code:${attempt.providerPaymentNo}:succeeded`,
+        rawPayload: charge.rawPayload ?? {},
+      });
+      if (!applied) {
+        await this.attempts.markStatus(attempt.id, "manual_handling", {
+          providerTradeNo: charge.providerTradeNo,
+          providerStatus: charge.providerStatus ?? "succeeded",
+          failureCode: "PAYMENT_RESULT_NOT_APPLIED",
+          failureMessage: "支付结果未安全应用，请人工核验",
+          manualReason: "payment_result_not_applied",
+          rawPayloadJson: buildStoredEventPayload(charge.rawPayload ?? {}),
+          lastCheckedAt: new Date(),
+        });
+        return {
+          orderNo: input.orderNo,
+          paymentNo: payment.paymentNo,
+          attemptNo: attempt.attemptNo,
+          status: "manual_handling",
+          nextAction: "manual_handling",
+          message: "支付结果需人工核验",
+          canRetry: false,
+          serverTime: new Date().toISOString(),
+        };
+      }
+
       await this.attempts.markStatus(attempt.id, "succeeded", {
         providerTradeNo: charge.providerTradeNo,
         providerStatus: charge.providerStatus ?? "succeeded",
@@ -114,15 +166,6 @@ export class PaymentCodeOrchestratorService {
         manualReason: null,
         rawPayloadJson: buildStoredEventPayload(charge.rawPayload ?? {}),
         finishedAt: new Date(),
-      });
-      await this.paymentsService.applyProviderPaymentResult({
-        paymentId: payment.id,
-        providerTradeNo: charge.providerTradeNo,
-        status: "succeeded",
-        paidAt: charge.paidAt ?? new Date(),
-        eventType: "payment_code.succeeded",
-        providerEventId: `payment_code:${attempt.providerPaymentNo}:succeeded`,
-        rawPayload: charge.rawPayload ?? {},
       });
       return {
         orderNo: input.orderNo,
@@ -439,6 +482,7 @@ export class PaymentCodeOrchestratorService {
       providerCode: ctx.providerCode,
       providerConfigId: ctx.providerConfigId,
       machineId: ctx.machineId,
+      providerConfigSnapshotJson: ctx.providerConfigSnapshotJson,
     });
     const result = await provider.queryPaymentCode({
       paymentNo: ctx.attempt.providerPaymentNo,
@@ -470,6 +514,7 @@ export class PaymentCodeOrchestratorService {
         eventType: "payment_code.manual_query_succeeded",
         providerEventId: `payment_code:${ctx.attempt.providerPaymentNo}:manual_query_succeeded`,
         rawPayload: result.rawPayload ?? {},
+        allowIncidentLockedResolution: true,
       });
       return updated;
     }
@@ -524,6 +569,7 @@ export class PaymentCodeOrchestratorService {
       providerCode: ctx.providerCode,
       providerConfigId: ctx.providerConfigId,
       machineId: ctx.machineId,
+      providerConfigSnapshotJson: ctx.providerConfigSnapshotJson,
     });
     const result = await provider.reversePaymentCode({
       paymentNo: attempt.providerPaymentNo,
@@ -582,6 +628,8 @@ export class PaymentCodeOrchestratorService {
       case "submitting":
       case "unknown":
         return "正在确认支付结果";
+      case "reversal_unknown":
+        return "撤销结果待确认，请联系工作人员";
       case "failed":
         return (
           attempt.failureMessage ?? "付款码无效或支付失败，请刷新付款码后重试"

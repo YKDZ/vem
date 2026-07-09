@@ -131,6 +131,7 @@ function makeHarness(overrides?: {
     resolveForExistingPayment: vi
       .fn()
       .mockResolvedValue(overrides?.config ?? baseConfig),
+    assertMachinePaymentChannelAvailable: vi.fn().mockResolvedValue(undefined),
   };
   const paymentsService = {
     applyProviderPaymentResult: vi.fn().mockResolvedValue(true),
@@ -147,6 +148,7 @@ function makeHarness(overrides?: {
     service,
     attempts,
     provider,
+    configService,
     paymentsService,
     getAttempt: () => attempt,
     setAttempt(next: Record<string, unknown>) {
@@ -191,6 +193,60 @@ describe("PaymentCodeOrchestratorService", () => {
       }),
     );
     expect(paymentsService.applyProviderPaymentResult).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not return dispensing when provider success cannot be safely applied", async () => {
+    const { service, attempts, paymentsService } = makeHarness();
+    paymentsService.applyProviderPaymentResult.mockResolvedValueOnce(false);
+
+    const result = await service.submit({
+      orderNo: "ORD001",
+      machineCode: "M001",
+      authCode: "28763443825664394",
+      idempotencyKey: "idem-apply-false",
+      source: "serial_text",
+      clientIp: "127.0.0.1",
+    });
+
+    expect(result.status).toBe("manual_handling");
+    expect(result.nextAction).toBe("manual_handling");
+    expect(result.message).toBe("支付结果需人工核验");
+    expect(attempts.markStatus).toHaveBeenCalledWith(
+      "attempt-1",
+      "manual_handling",
+      expect.objectContaining({
+        failureCode: "PAYMENT_RESULT_NOT_APPLIED",
+        manualReason: "payment_result_not_applied",
+      }),
+    );
+  });
+
+  it("rejects submit when payment_code channel is provider-blocked", async () => {
+    const { service, provider, configService } = makeHarness();
+    configService.assertMachinePaymentChannelAvailable.mockRejectedValue(
+      new Error("Payment channel is not available"),
+    );
+
+    await expect(
+      service.submit({
+        orderNo: "ORD001",
+        machineCode: "M001",
+        authCode: "28763443825664394",
+        idempotencyKey: "idem-blocked",
+        source: "serial_text",
+        clientIp: "127.0.0.1",
+      }),
+    ).rejects.toThrow("Payment channel is not available");
+
+    expect(
+      configService.assertMachinePaymentChannelAvailable,
+    ).toHaveBeenCalledWith({
+      machineId: "machine-1",
+      providerCode: "alipay",
+      method: "payment_code",
+    });
+    expect(configService.resolveForPayment).not.toHaveBeenCalled();
+    expect(provider.chargePaymentCode).not.toHaveBeenCalled();
   });
 
   it("keeps indeterminate charge result active for provider query instead of retry", async () => {

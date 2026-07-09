@@ -1,11 +1,19 @@
+import type { UpdatePaymentChannelPolicyInput } from "@vem/shared";
+
 import { describe, expect, it, vi } from "vitest";
 
-import { getContract, patchContract, postContract } from "@/api/request";
+import {
+  getContract,
+  patchContract,
+  postContract,
+  putContract,
+} from "@/api/request";
 
 import {
   getPaymentMachinePreflight,
   getPaymentOpsMetrics,
   getPaymentOpsReadiness,
+  getPaymentChannelPolicy,
   listPaymentProviderConfigs,
   listPaymentProviderNotifyUrlChecks,
   listPaymentProviders,
@@ -21,6 +29,7 @@ import {
   queryPaymentCodeAttempt,
   queryRefund,
   reversePaymentCodeAttempt,
+  updatePaymentChannelPolicy,
   updatePaymentProvider,
   updatePaymentProviderConfig,
   upsertPaymentProviderConfig,
@@ -35,6 +44,7 @@ vi.mock("@/api/request", () => ({
     .mockResolvedValue({ items: [], total: 0, page: 1, pageSize: 20 }),
   patch: vi.fn(),
   patchContract: vi.fn().mockResolvedValue({}),
+  putContract: vi.fn().mockResolvedValue({}),
 }));
 
 describe("payments api operator actions", () => {
@@ -113,6 +123,7 @@ describe("payments api operator actions", () => {
     await getPaymentOpsReadiness();
     await getPaymentOpsMetrics(30);
     await getPaymentMachinePreflight("550e8400-e29b-41d4-a716-446655440010");
+    await getPaymentChannelPolicy();
 
     expect(getContract).toHaveBeenCalledWith(
       "/payments/ops/readiness",
@@ -131,6 +142,33 @@ describe("payments api operator actions", () => {
       expect.any(Object),
       expect.any(Object),
       {},
+    );
+    expect(getContract).toHaveBeenCalledWith(
+      "/payments/channel-policy",
+      expect.any(Object),
+      expect.any(Object),
+      {},
+    );
+  });
+
+  it("uses schema-bound helper for global payment channel policy writes", async () => {
+    const policy: UpdatePaymentChannelPolicyInput = {
+      channels: [
+        { channelKey: "payment_code:wechat_pay", enabled: true, rank: 1 },
+        { channelKey: "qr_code:wechat_pay", enabled: true, rank: 2 },
+        { channelKey: "payment_code:alipay", enabled: false, rank: 3 },
+        { channelKey: "qr_code:alipay", enabled: true, rank: 4 },
+      ],
+      defaultChannelKey: "payment_code:wechat_pay",
+    };
+
+    await updatePaymentChannelPolicy(policy);
+
+    expect(putContract).toHaveBeenCalledWith(
+      "/payments/channel-policy",
+      expect.any(Object),
+      expect.any(Object),
+      policy,
     );
   });
 

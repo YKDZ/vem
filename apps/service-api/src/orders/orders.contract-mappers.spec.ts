@@ -171,6 +171,20 @@ describe("orders contract mappers", () => {
       productSnapshot: { name: "Test Product" },
     });
     expect(response.paymentCodeAttempts[0]).not.toHaveProperty("authCodeHash");
+    expect(response.paymentCodeAttempts[0]).not.toHaveProperty(
+      "providerPaymentNo",
+    );
+    expect(response.paymentCodeAttempts[0]).not.toHaveProperty(
+      "providerTradeNo",
+    );
+    expect(response.paymentCodeAttempts[0]?.protectedDiagnostics).toMatchObject(
+      {
+        providerPaymentNo: "PCA-1",
+        providerTradeNo: "ALI-TXN-1",
+        providerStatus: "TRADE_CLOSED",
+        failureCode: "PAYMENT_CODE_REVERSED",
+      },
+    );
 
     expect(() =>
       toOrderInvestigationResponse({

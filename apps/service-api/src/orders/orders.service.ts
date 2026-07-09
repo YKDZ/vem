@@ -36,6 +36,7 @@ import {
   productVariants,
   products,
   or,
+  refundReconciliationAttempts,
   refunds,
   sql,
   vendingCommands,
@@ -102,6 +103,12 @@ type RecoveryActionRow = {
   action: string;
   status: string;
 };
+type MachinePaymentSelection =
+  | { providerCode: "mock"; method: "mock" }
+  | {
+      providerCode: "wechat_pay" | "alipay";
+      method: "qr_code" | "payment_code";
+    };
 
 function isUniqueViolation(error: unknown): boolean {
   if (
@@ -204,10 +211,9 @@ function assertMachineOrderLineContextMatchesInventory(
   }
 }
 
-function resolvePaymentSelection(input: CreateMachineOrderInput): {
-  providerCode: "mock" | "wechat_pay" | "alipay";
-  method: CreateMachineOrderInput["paymentMethod"];
-} {
+function resolvePaymentSelection(
+  input: CreateMachineOrderInput,
+): MachinePaymentSelection {
   if (input.paymentMethod === "mock") {
     if (
       input.paymentProviderCode !== undefined &&
@@ -292,6 +298,7 @@ type CancelableMachineOrderRow = {
   providerCode: string;
   providerTradeNo: string | null;
   providerConfigId: string | null;
+  providerConfigSnapshotJson: unknown;
 };
 
 type CancelableMachineOrderCurrentRow = Pick<
@@ -369,6 +376,13 @@ export class OrdersService {
       | import("../payments/payment-provider-config.service").RuntimePaymentProviderConfig
       | null = null;
     if (paymentSelection.providerCode !== "mock") {
+      await this.paymentProviderConfigService.assertMachinePaymentChannelAvailable(
+        {
+          providerCode: paymentSelection.providerCode,
+          method: paymentSelection.method,
+          machineId: machine.id,
+        },
+      );
       resolvedProviderConfig =
         await this.paymentProviderConfigService.resolveForPayment({
           providerCode: paymentSelection.providerCode,
@@ -422,13 +436,13 @@ export class OrdersService {
     try {
       intent = await this.createPaymentIntent(
         draft.providerCode,
-        draft.machineId,
         {
           paymentNo: draft.paymentNo,
           orderNo: draft.orderNo,
           amountCents: draft.totalAmountCents,
           expiresAt: draft.expiresAt,
         },
+        resolvedProviderConfig,
       );
     } catch (error) {
       await this.cancelLocalCreatedPayment(
@@ -675,13 +689,9 @@ export class OrdersService {
           providerId: provider.id,
           paymentProviderConfigId: resolvedProviderConfig?.id ?? null,
           providerConfigSnapshotJson: resolvedProviderConfig
-            ? {
-                id: resolvedProviderConfig.id,
-                providerCode: resolvedProviderConfig.providerCode,
-                merchantNo: resolvedProviderConfig.merchantNo,
-                appId: resolvedProviderConfig.appId,
-                publicConfigJson: resolvedProviderConfig.publicConfigJson,
-              }
+            ? this.paymentProviderConfigService.createBindingSnapshot(
+                resolvedProviderConfig,
+              )
             : null,
           method: paymentSelection.method,
           status: "created",
@@ -901,6 +911,7 @@ export class OrdersService {
         providerCode: paymentProviders.code,
         providerTradeNo: payments.providerTradeNo,
         providerConfigId: payments.paymentProviderConfigId,
+        providerConfigSnapshotJson: payments.providerConfigSnapshotJson,
       })
       .from(orders)
       .innerJoin(machines, eq(machines.id, orders.machineId))
@@ -988,6 +999,7 @@ export class OrdersService {
         providerCode: row.providerCode,
         providerConfigId: row.providerConfigId,
         machineId: row.machineId,
+        providerConfigSnapshotJson: row.providerConfigSnapshotJson,
       })
       .catch(() => ({
         id: "",
@@ -1291,6 +1303,8 @@ export class OrdersService {
       "maintenanceWorkOrders.read",
     );
     const canReadAudit = hasPermission(permissionSet, "audit.read");
+    const canReadPaymentDiagnostics =
+      canReadAudit || hasPermission(permissionSet, "payments.configure");
 
     const [order] = await this.db
       .select({
@@ -1336,7 +1350,9 @@ export class OrdersService {
             method: payments.method,
             status: payments.status,
             amountCents: payments.amountCents,
-            providerTradeNo: payments.providerTradeNo,
+            ...(canReadPaymentDiagnostics
+              ? { providerTradeNo: payments.providerTradeNo }
+              : {}),
             expiresAt: payments.expiresAt,
             paidAt: payments.paidAt,
             failedReason: payments.failedReason,
@@ -1357,7 +1373,9 @@ export class OrdersService {
               id: paymentEvents.id,
               paymentId: paymentEvents.paymentId,
               eventType: paymentEvents.eventType,
-              providerEventId: paymentEvents.providerEventId,
+              ...(canReadPaymentDiagnostics
+                ? { providerEventId: paymentEvents.providerEventId }
+                : {}),
               signatureValid: paymentEvents.signatureValid,
               handledAt: paymentEvents.handledAt,
               createdAt: paymentEvents.createdAt,
@@ -1370,12 +1388,16 @@ export class OrdersService {
       ? await this.db
           .select({
             id: paymentWebhookAttempts.id,
-            providerCode: paymentWebhookAttempts.providerCode,
+            ...(canReadPaymentDiagnostics
+              ? { providerCode: paymentWebhookAttempts.providerCode }
+              : {}),
             paymentId: paymentWebhookAttempts.paymentId,
             refundId: paymentWebhookAttempts.refundId,
             eventKind: paymentWebhookAttempts.eventKind,
             eventType: paymentWebhookAttempts.eventType,
-            providerEventId: paymentWebhookAttempts.providerEventId,
+            ...(canReadPaymentDiagnostics
+              ? { providerEventId: paymentWebhookAttempts.providerEventId }
+              : {}),
             paymentNo: paymentWebhookAttempts.paymentNo,
             refundNo: paymentWebhookAttempts.refundNo,
             orderNo: paymentWebhookAttempts.orderNo,
@@ -1384,7 +1406,9 @@ export class OrdersService {
             handled: paymentWebhookAttempts.handled,
             duplicate: paymentWebhookAttempts.duplicate,
             failureReason: paymentWebhookAttempts.failureReason,
-            errorCode: paymentWebhookAttempts.errorCode,
+            ...(canReadPaymentDiagnostics
+              ? { errorCode: paymentWebhookAttempts.errorCode }
+              : {}),
             httpStatus: paymentWebhookAttempts.httpStatus,
             createdAt: paymentWebhookAttempts.createdAt,
             updatedAt: paymentWebhookAttempts.updatedAt,
@@ -1411,11 +1435,16 @@ export class OrdersService {
               trigger: paymentReconciliationAttempts.trigger,
               attemptNo: paymentReconciliationAttempts.attemptNo,
               status: paymentReconciliationAttempts.status,
-              providerPaymentStatus:
-                paymentReconciliationAttempts.providerPaymentStatus,
-              providerTradeNo: paymentReconciliationAttempts.providerTradeNo,
-              errorCode: paymentReconciliationAttempts.errorCode,
-              errorMessage: paymentReconciliationAttempts.errorMessage,
+              ...(canReadPaymentDiagnostics
+                ? {
+                    providerPaymentStatus:
+                      paymentReconciliationAttempts.providerPaymentStatus,
+                    providerTradeNo:
+                      paymentReconciliationAttempts.providerTradeNo,
+                    errorCode: paymentReconciliationAttempts.errorCode,
+                    errorMessage: paymentReconciliationAttempts.errorMessage,
+                  }
+                : {}),
               nextRetryAt: paymentReconciliationAttempts.nextRetryAt,
               startedAt: paymentReconciliationAttempts.startedAt,
               finishedAt: paymentReconciliationAttempts.finishedAt,
@@ -1432,7 +1461,9 @@ export class OrdersService {
             paymentId: paymentCodeAttempts.paymentId,
             orderId: paymentCodeAttempts.orderId,
             attemptNo: paymentCodeAttempts.attemptNo,
-            providerPaymentNo: paymentCodeAttempts.providerPaymentNo,
+            ...(canReadPaymentDiagnostics
+              ? { providerPaymentNo: paymentCodeAttempts.providerPaymentNo }
+              : {}),
             idempotencyKey: paymentCodeAttempts.idempotencyKey,
             status: paymentCodeAttempts.status,
             isActive: paymentCodeAttempts.isActive,
@@ -1440,10 +1471,14 @@ export class OrdersService {
             currency: paymentCodeAttempts.currency,
             authCodeMasked: paymentCodeAttempts.authCodeMasked,
             source: paymentCodeAttempts.source,
-            providerTradeNo: paymentCodeAttempts.providerTradeNo,
-            providerStatus: paymentCodeAttempts.providerStatus,
-            failureCode: paymentCodeAttempts.failureCode,
-            failureMessage: paymentCodeAttempts.failureMessage,
+            ...(canReadPaymentDiagnostics
+              ? {
+                  providerTradeNo: paymentCodeAttempts.providerTradeNo,
+                  providerStatus: paymentCodeAttempts.providerStatus,
+                  failureCode: paymentCodeAttempts.failureCode,
+                  failureMessage: paymentCodeAttempts.failureMessage,
+                }
+              : {}),
             submittedAt: paymentCodeAttempts.submittedAt,
             lastCheckedAt: paymentCodeAttempts.lastCheckedAt,
             reversedAt: paymentCodeAttempts.reversedAt,
@@ -1577,7 +1612,9 @@ export class OrdersService {
             orderId: refunds.orderId,
             amountCents: refunds.amountCents,
             status: refunds.status,
-            providerRefundNo: refunds.providerRefundNo,
+            ...(canReadPaymentDiagnostics
+              ? { providerRefundNo: refunds.providerRefundNo }
+              : {}),
             reason: refunds.reason,
             requestedByAdminUserId: refunds.requestedByAdminUserId,
             refundedAt: refunds.refundedAt,
@@ -1589,6 +1626,39 @@ export class OrdersService {
           .orderBy(desc(refunds.createdAt))
       : [];
     const refundIds = refundRows.map((refund) => refund.id);
+    const refundReconciliationAttemptRows =
+      canReadPayments && refundIds.length > 0
+        ? await this.db
+            .select({
+              refundId: refundReconciliationAttempts.refundId,
+              trigger: refundReconciliationAttempts.trigger,
+              attemptNo: refundReconciliationAttempts.attemptNo,
+              status: refundReconciliationAttempts.status,
+              ...(canReadPaymentDiagnostics
+                ? {
+                    providerRefundStatus:
+                      refundReconciliationAttempts.providerRefundStatus,
+                    providerRefundNo:
+                      refundReconciliationAttempts.providerRefundNo,
+                    errorCode: refundReconciliationAttempts.errorCode,
+                    errorMessage: refundReconciliationAttempts.errorMessage,
+                  }
+                : {}),
+              nextRetryAt: refundReconciliationAttempts.nextRetryAt,
+              startedAt: refundReconciliationAttempts.startedAt,
+              finishedAt: refundReconciliationAttempts.finishedAt,
+              createdAt: refundReconciliationAttempts.createdAt,
+            })
+            .from(refundReconciliationAttempts)
+            .where(inArray(refundReconciliationAttempts.refundId, refundIds))
+            .orderBy(desc(refundReconciliationAttempts.createdAt))
+        : [];
+    const refundRowsWithAttempts = refundRows.map((refund) => ({
+      ...refund,
+      reconciliationAttempts: refundReconciliationAttemptRows
+        .filter((attempt) => attempt.refundId === refund.id)
+        .slice(0, 5),
+    }));
     const [activeRefundCount] = await this.db
       .select({ total: count() })
       .from(refunds)
@@ -1758,7 +1828,7 @@ export class OrdersService {
       },
       inventoryMovements: inventoryMovementRows,
       stockReconciliationLinks,
-      refunds: refundRows,
+      refunds: refundRowsWithAttempts,
       maintenanceWorkOrders: maintenanceWorkOrderRows,
       adminAuditEntries: adminAuditRows,
       orderStatusEvents: orderStatusEventRows,
@@ -2338,27 +2408,24 @@ export class OrdersService {
 
   private async createPaymentIntent(
     method: string,
-    machineId: string,
     input: {
       paymentNo: string;
       orderNo: string;
       amountCents: number;
       expiresAt: Date;
     },
+    resolvedConfig:
+      | import("../payments/payment-provider-config.service").RuntimePaymentProviderConfig
+      | null,
   ) {
     const provider = this.paymentProviderRegistry.get(method);
-    const config = await this.paymentProviderConfigService
-      .resolveForPayment({
-        providerCode: method,
-        machineId,
-      })
-      .catch(() => ({
-        providerCode: method,
-        merchantNo: null,
-        appId: null,
-        publicConfigJson: {},
-        sensitiveConfigJson: {},
-      }));
+    const config = resolvedConfig ?? {
+      providerCode: method,
+      merchantNo: null,
+      appId: null,
+      publicConfigJson: {},
+      sensitiveConfigJson: {},
+    };
     return await provider.createPaymentIntent({ ...input, config });
   }
 }
@@ -2423,7 +2490,12 @@ function resolveMachineOrderNextAction(
 ): MachineOrderStatusNextAction {
   const orderStatus = projectOrderStatus({ paymentState, fulfillmentState });
   if (orderStatus === "fulfilled") return "success";
-  if (paymentCodeAttemptStatus === "manual_handling") {
+  if (
+    paymentState === "payment_unknown" ||
+    paymentStatus === "unknown" ||
+    paymentCodeAttemptStatus === "manual_handling" ||
+    paymentCodeAttemptStatus === "reversal_unknown"
+  ) {
     return "manual_handling";
   }
   if (

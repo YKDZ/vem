@@ -62,10 +62,21 @@ function makeService(overrides: {
       publicConfigJson: {},
       sensitiveConfigJson: {},
     }),
+    assertMachinePaymentChannelAvailable: vi.fn().mockResolvedValue(undefined),
     listMachinePaymentOptionsForMachine: vi.fn().mockResolvedValue({
       machineId: "mach-1",
       options: [],
     }),
+    createBindingSnapshot: vi.fn((config: Record<string, unknown>) => ({
+      version: 1,
+      id: config.id ?? "cfg-1",
+      providerCode: config.providerCode,
+      merchantNo: config.merchantNo ?? null,
+      appId: config.appId ?? null,
+      publicConfigJson: config.publicConfigJson ?? {},
+      sensitiveConfigEncryptedJson: { encrypted: "test" },
+      boundAt: "2026-07-08T00:00:00.000Z",
+    })),
     ...overrides.configService,
   } as unknown as PaymentProviderConfigService;
   const inventoryService: InventoryService = {
@@ -633,6 +644,22 @@ describe("OrdersService", () => {
         ],
         [],
         [investigationRefund({ createdAt: paidAt, updatedAt: paidAt })],
+        [
+          {
+            refundId: "refund-1",
+            trigger: "manual",
+            attemptNo: 1,
+            status: "network_error",
+            providerRefundStatus: null,
+            providerRefundNo: null,
+            errorCode: "query_failed",
+            errorMessage: "provider timeout",
+            nextRetryAt: null,
+            startedAt: paidAt,
+            finishedAt: paidAt,
+            createdAt: paidAt,
+          },
+        ],
         [{ total: 1 }],
         [],
         [investigationWorkOrder({ createdAt: paidAt, updatedAt: paidAt })],
@@ -661,13 +688,15 @@ describe("OrdersService", () => {
           {
             id: "code-1",
             status: "reversed",
-            providerPaymentNo: "PCA001",
-            providerTradeNo: "ALI-TXN-001",
-            providerStatus: "TRADE_CLOSED",
             authCodeMasked: "134***9988",
-            failureCode: "PAYMENT_CODE_REVERSED",
-            failureMessage: "本次付款码交易已撤销，请刷新付款码后重试",
             manualReason: "query_timeout_reversed",
+            protectedDiagnostics: {
+              providerPaymentNo: "PCA001",
+              providerTradeNo: "ALI-TXN-001",
+              providerStatus: "TRADE_CLOSED",
+              failureCode: "PAYMENT_CODE_REVERSED",
+              failureMessage: "本次付款码交易已撤销，请刷新付款码后重试",
+            },
           },
         ],
         vendingCommands: [
@@ -690,7 +719,21 @@ describe("OrdersService", () => {
             platformReviewStatus: "open",
           },
         ],
-        refunds: [{ refundNo: "RFD-1", status: "processing" }],
+        refunds: [
+          {
+            refundNo: "RFD-1",
+            status: "processing",
+            reconciliationAttempts: [
+              {
+                trigger: "manual",
+                status: "network_error",
+                protectedDiagnostics: {
+                  errorMessage: "provider timeout",
+                },
+              },
+            ],
+          },
+        ],
         maintenanceWorkOrders: [{ workOrderNo: "WO-1", status: "open" }],
         adminAuditEntries: [{ action: "orders.refund_request" }],
         orderStatusEvents: [],
@@ -780,6 +823,7 @@ describe("OrdersService", () => {
         [investigationPaymentCodeAttempt({ createdAt: paidAt })],
         [],
         [investigationRefund({ createdAt: paidAt, updatedAt: paidAt })],
+        [],
         [{ total: 1 }],
         [],
         [],
@@ -817,15 +861,29 @@ describe("OrdersService", () => {
         (call) =>
           typeof call.selection === "object" &&
           call.selection !== null &&
-          "authCodeMasked" in call.selection &&
-          "providerPaymentNo" in call.selection,
+          "authCodeMasked" in call.selection,
       )?.selection as Record<string, unknown>;
 
+      expect(paymentEventSelection).not.toHaveProperty("providerEventId");
       expect(paymentEventSelection).not.toHaveProperty("rawPayloadJson");
+      expect(webhookSelection).not.toHaveProperty("providerCode");
+      expect(webhookSelection).not.toHaveProperty("providerEventId");
+      expect(webhookSelection).not.toHaveProperty("errorCode");
       expect(webhookSelection).not.toHaveProperty("rawBodyExcerpt");
       expect(webhookSelection).not.toHaveProperty("redactedPayloadJson");
+      expect(reconciliationSelection).not.toHaveProperty(
+        "providerPaymentStatus",
+      );
+      expect(reconciliationSelection).not.toHaveProperty("providerTradeNo");
+      expect(reconciliationSelection).not.toHaveProperty("errorCode");
+      expect(reconciliationSelection).not.toHaveProperty("errorMessage");
       expect(reconciliationSelection).not.toHaveProperty("rawPayloadExcerpt");
       expect(reconciliationSelection).not.toHaveProperty("rawPayloadSha256");
+      expect(paymentCodeSelection).not.toHaveProperty("providerPaymentNo");
+      expect(paymentCodeSelection).not.toHaveProperty("providerTradeNo");
+      expect(paymentCodeSelection).not.toHaveProperty("providerStatus");
+      expect(paymentCodeSelection).not.toHaveProperty("failureCode");
+      expect(paymentCodeSelection).not.toHaveProperty("failureMessage");
       expect(paymentCodeSelection).not.toHaveProperty("authCodeHash");
       expect(paymentCodeSelection).not.toHaveProperty("rawPayloadJson");
       expect(paymentCodeSelection).not.toHaveProperty("scannerHealthJson");
@@ -869,6 +927,7 @@ describe("OrdersService", () => {
           }),
         ],
         [investigationRefund({ createdAt: paidAt, updatedAt: paidAt })],
+        [],
         [{ total: 1 }],
         [],
         [investigationWorkOrder({ createdAt: paidAt, updatedAt: paidAt })],
@@ -1629,6 +1688,110 @@ describe("OrdersService", () => {
       ).rejects.toThrow(ConflictException);
       expect(db.transaction).not.toHaveBeenCalled();
     });
+
+    it("rejects policy-disabled channel before resolving provider config or creating a draft", async () => {
+      const db = makeDb();
+      db.select.mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi
+            .fn()
+            .mockResolvedValue([
+              { id: "mach-1", code: "M001", status: "online" },
+            ]),
+        }),
+      });
+      const assertMachinePaymentChannelAvailable = vi
+        .fn()
+        .mockRejectedValue(
+          new ConflictException("Payment channel is not available"),
+        );
+      const resolveForPayment = vi.fn();
+
+      const service = makeService({
+        db,
+        configService: {
+          assertMachinePaymentChannelAvailable,
+          resolveForPayment,
+        },
+      });
+
+      await expect(
+        service.createMachineOrder({
+          machineCode: "M001",
+          items: [
+            {
+              inventoryId: "550e8400-e29b-41d4-a716-446655440000",
+              quantity: 1,
+              planogramVersion: "PLAN-ACTIVE",
+              slotId: "550e8400-e29b-41d4-a716-446655440001",
+              slotCode: "A1",
+            },
+          ],
+          paymentMethod: "qr_code",
+          paymentProviderCode: "alipay",
+        }),
+      ).rejects.toThrow(ConflictException);
+
+      expect(assertMachinePaymentChannelAvailable).toHaveBeenCalledWith({
+        machineId: "mach-1",
+        providerCode: "alipay",
+        method: "qr_code",
+      });
+      expect(resolveForPayment).not.toHaveBeenCalled();
+      expect(db.transaction).not.toHaveBeenCalled();
+    });
+
+    it("rejects provider-incomplete channel before creating a payment_code draft", async () => {
+      const db = makeDb();
+      db.select.mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          where: vi
+            .fn()
+            .mockResolvedValue([
+              { id: "mach-1", code: "M001", status: "online" },
+            ]),
+        }),
+      });
+      const assertMachinePaymentChannelAvailable = vi
+        .fn()
+        .mockRejectedValue(
+          new ConflictException("Payment channel is not available"),
+        );
+      const resolveForPayment = vi.fn();
+
+      const service = makeService({
+        db,
+        configService: {
+          assertMachinePaymentChannelAvailable,
+          resolveForPayment,
+        },
+      });
+
+      await expect(
+        service.createMachineOrder({
+          machineCode: "M001",
+          items: [
+            {
+              inventoryId: "550e8400-e29b-41d4-a716-446655440000",
+              quantity: 1,
+              planogramVersion: "PLAN-ACTIVE",
+              slotId: "550e8400-e29b-41d4-a716-446655440001",
+              slotCode: "A1",
+            },
+          ],
+          paymentMethod: "payment_code",
+          paymentProviderCode: "wechat_pay",
+        }),
+      ).rejects.toThrow(ConflictException);
+
+      expect(assertMachinePaymentChannelAvailable).toHaveBeenCalledWith({
+        machineId: "mach-1",
+        providerCode: "wechat_pay",
+        method: "payment_code",
+      });
+      expect(resolveForPayment).not.toHaveBeenCalled();
+      expect(db.transaction).not.toHaveBeenCalled();
+    });
   });
 
   describe("listMachinePaymentOptions", () => {
@@ -1785,10 +1948,22 @@ function makeOrdersService(overrides: {
       publicConfigJson: {},
       sensitiveConfigJson: {},
     }),
+    assertMachinePaymentChannelAvailable: vi.fn().mockResolvedValue(undefined),
     listMachinePaymentOptionsForMachine: vi.fn().mockResolvedValue({
       machineId: "mach-1",
       options: [],
     }),
+    createBindingSnapshot: vi.fn((config: Record<string, unknown>) => ({
+      version: 1,
+      id: config.id ?? "cfg-001",
+      providerCode: config.providerCode,
+      providerId: config.providerId ?? "prov-001",
+      merchantNo: config.merchantNo ?? null,
+      appId: config.appId ?? null,
+      publicConfigJson: config.publicConfigJson ?? {},
+      sensitiveConfigEncryptedJson: { encrypted: "test" },
+      boundAt: "2026-07-08T00:00:00.000Z",
+    })),
     ...overrides.configService,
   } as unknown as PaymentProviderConfigService;
   const refundsService: RefundsService = {
@@ -2564,6 +2739,11 @@ describe("OrdersService (transaction boundary)", () => {
         paymentProviderCode: "alipay",
         providerTradeNo: null,
         providerConfigId: "cfg-1",
+        providerConfigSnapshotJson: {
+          id: "cfg-1",
+          providerCode: "alipay",
+          merchantNo: "ALI-OLD",
+        },
       };
       const canceledRow = {
         ...row,
@@ -2622,21 +2802,20 @@ describe("OrdersService (transaction boundary)", () => {
         async (cb: (txArg: typeof tx) => Promise<unknown>) => await cb(tx),
       );
 
+      const resolveForExistingPayment = vi.fn().mockResolvedValue({
+        providerCode: "alipay",
+        merchantNo: "ALI-OLD",
+        appId: null,
+        publicConfigJson: {},
+        sensitiveConfigJson: {},
+      });
       const service = makeService({
         db,
         inventoryService: { releaseReservation },
         registry: {
           get: vi.fn().mockReturnValue({ cancelPayment }),
         },
-        configService: {
-          resolveForExistingPayment: vi.fn().mockResolvedValue({
-            providerCode: "alipay",
-            merchantNo: null,
-            appId: null,
-            publicConfigJson: {},
-            sensitiveConfigJson: {},
-          }),
-        } as Partial<PaymentProviderConfigService>,
+        configService: { resolveForExistingPayment },
       });
 
       const result = await service.cancelMachineOrder("ORD001", {
@@ -2646,6 +2825,12 @@ describe("OrdersService (transaction boundary)", () => {
       expect(cancelPayment).toHaveBeenCalledWith(
         expect.objectContaining({ paymentNo: "PAY001" }),
       );
+      expect(resolveForExistingPayment).toHaveBeenCalledWith({
+        providerCode: "alipay",
+        providerConfigId: "cfg-1",
+        machineId: "mach-1",
+        providerConfigSnapshotJson: row.providerConfigSnapshotJson,
+      });
       expect(result).toMatchObject({
         orderNo: "ORD001",
         orderStatus: "canceled",
@@ -2943,6 +3128,32 @@ describe("OrdersService (transaction boundary)", () => {
       expect(result.payment.status).toBe("processing");
       expect(result.payment.paymentUrl).toBeNull();
       expect(result.nextAction).toBe("wait_payment");
+    });
+
+    it("returns manual_handling nextAction for unknown payment uncertainty", async () => {
+      const db = makeDb();
+      const row = machineOrderStatusRow({
+        orderStatus: "manual_handling",
+        paymentState: "payment_unknown",
+        fulfillmentState: "manual_handling",
+        paymentStatus: "unknown",
+        paymentUrl: null,
+      });
+      db.select
+        .mockReturnValueOnce(makeJoinedSelectResult([row]))
+        .mockReturnValueOnce(makeEmptyLatestSelectResult())
+        .mockReturnValueOnce(makeEmptyLatestSelectResult())
+        .mockReturnValueOnce(makeEmptyLatestSelectResult())
+        .mockReturnValueOnce(makeEmptyLatestSelectResult());
+
+      const service = makeService({ db });
+      const result = await service.getMachineOrderStatus("ORD001", {
+        machineCode: "M001",
+      });
+
+      expect(result.paymentState).toBe("payment_unknown");
+      expect(result.payment.status).toBe("unknown");
+      expect(result.nextAction).toBe("manual_handling");
     });
 
     it("exposes an unconfirmed qr_code URL after the fallback display delay", async () => {

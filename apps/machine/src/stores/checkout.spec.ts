@@ -168,6 +168,22 @@ function makeTransactionSnapshot(
   } as TransactionSnapshot;
 }
 
+function daemonRejectedRequestError(
+  message: string,
+  responseCode: string,
+  responseMessage: string,
+): Error {
+  return Object.assign(new Error(message), {
+    statusCode: 400,
+    responseCode,
+    responseMessage,
+    responseBody: JSON.stringify({
+      code: responseCode,
+      message: responseMessage,
+    }),
+  });
+}
+
 function applyNetworkSaleReady(): void {
   const connectivityStore = useConnectivityStore();
   connectivityStore.applyHealth({
@@ -274,6 +290,47 @@ describe("checkout store", () => {
 
     expect(store.selectedPaymentOptionKey).toBe("payment_code:alipay");
     expect(getPaymentOptionsMock).toHaveBeenCalledOnce();
+  });
+
+  it("preserves daemon option order while selecting the daemon default", async () => {
+    getPaymentOptionsMock.mockResolvedValue({
+      options: [
+        {
+          optionKey: "qr_code:wechat_pay",
+          providerCode: "wechat_pay",
+          method: "qr_code",
+          displayName: "微信扫码",
+          description: "请使用微信扫描屏幕二维码",
+          icon: "wechat",
+          disabled: false,
+          disabledReason: null,
+          recommended: false,
+        },
+        {
+          optionKey: "payment_code:alipay",
+          providerCode: "alipay",
+          method: "payment_code",
+          displayName: "支付宝付款码",
+          description: "请出示支付宝付款码",
+          icon: "alipay",
+          disabled: false,
+          disabledReason: null,
+          recommended: true,
+        },
+      ],
+      defaultOptionKey: "payment_code:alipay",
+      defaultProviderCode: "alipay",
+      serverTime: "2026-01-01T00:00:00Z",
+    });
+
+    const store = useCheckoutStore();
+    await store.loadPaymentOptions();
+
+    expect(store.paymentOptions.map((option) => option.optionKey)).toEqual([
+      "qr_code:wechat_pay",
+      "payment_code:alipay",
+    ]);
+    expect(store.selectedPaymentOptionKey).toBe("payment_code:alipay");
   });
 
   it("selects the first enabled payment option when daemon default is disabled", async () => {
@@ -503,6 +560,52 @@ describe("checkout store", () => {
       },
     });
     expect(store.paymentCodeMessage).toBe("请刷新付款码后重试");
+  });
+
+  it("shows customer-safe scanner copy when create-order local payment-code recheck fails", async () => {
+    const technicalMessage =
+      "selected payment option is not ready: open serial port COM3 failed: SCANNER_OPEN_FAILED (/v1/intents/create-order returned HTTP 400)";
+    createOrderMock.mockRejectedValue(
+      daemonRejectedRequestError(
+        technicalMessage,
+        "create_order_blocked",
+        "selected payment option is not ready: open serial port COM3 failed: SCANNER_OPEN_FAILED",
+      ),
+    );
+
+    const item = makeCatalogItem();
+    const store = useCheckoutStore();
+    store.paymentOptions = [
+      {
+        optionKey: "payment_code:alipay",
+        providerCode: "alipay",
+        method: "payment_code",
+        displayName: "支付宝付款码",
+        description: "请出示付款码",
+        icon: "alipay",
+        disabled: false,
+        disabledReason: null,
+        recommended: true,
+      },
+    ];
+    store.selectedPaymentOptionKey = "payment_code:alipay";
+    useCatalogStore().applySnapshot({
+      items: [item],
+      source: "local_stock",
+      planogramVersion: "PLAN-1",
+      lastUpdatedAt: "2026-06-04T00:00:00Z",
+    });
+    applyNetworkSaleReady();
+    store.selectItem(item);
+
+    await expect(store.createOrder()).rejects.toThrow(technicalMessage);
+
+    expect(store.error).toBe("扫码器暂不可用，请选择其他支付方式");
+    expect(store.error).not.toContain("selected payment option");
+    expect(store.error).not.toContain("/v1/intents/create-order");
+    expect(store.error).not.toContain("HTTP");
+    expect(store.error).not.toContain("SCANNER_OPEN_FAILED");
+    expect(store.error).not.toContain("COM3");
   });
 
   it("fails closed when selected item is missing from the latest sale view", async () => {
@@ -1271,5 +1374,29 @@ describe("checkout store", () => {
 
     expect(second).toBeNull();
     expect(submitDevPaymentCodeMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows customer-safe scanner copy when payment-code submit guard rejects", async () => {
+    const technicalMessage =
+      "MACHINE_NOT_READY_FOR_PAYMENT_CODE: open serial port COM3 failed: SCANNER_OPEN_FAILED (/v1/intents/dev-submit-payment-code returned HTTP 500)";
+    submitDevPaymentCodeMock.mockRejectedValue(
+      daemonRejectedRequestError(
+        technicalMessage,
+        "submit_payment_code_failed",
+        "MACHINE_NOT_READY_FOR_PAYMENT_CODE: open serial port COM3 failed: SCANNER_OPEN_FAILED",
+      ),
+    );
+
+    const store = useCheckoutStore();
+    store.applyTransaction(makeTransactionSnapshot());
+
+    const result = await store.submitDevPaymentCode("28763443825664394");
+
+    expect(result).toBeNull();
+    expect(store.error).toBe("扫码器暂不可用，请选择其他支付方式");
+    expect(store.error).not.toContain("MACHINE_NOT_READY_FOR_PAYMENT_CODE");
+    expect(store.error).not.toContain("/v1/intents/dev-submit-payment-code");
+    expect(store.error).not.toContain("SCANNER_OPEN_FAILED");
+    expect(store.error).not.toContain("COM3");
   });
 });

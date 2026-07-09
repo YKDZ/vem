@@ -8,6 +8,7 @@ export function projectOrderStatus(input: {
   paymentState: OrderPaymentState;
   fulfillmentState: OrderFulfillmentState;
 }): OrderStatus {
+  if (input.paymentState === "payment_unknown") return "manual_handling";
   if (input.paymentState === "payment_expired") return "payment_expired";
   if (
     input.paymentState === "payment_failed" ||
