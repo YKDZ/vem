@@ -152,23 +152,26 @@ function fileSha256(path, runner = runCommand) {
 function waitForWindowsSsh({
   host,
   user,
+  sshpass = false,
   timeoutSeconds = 600,
   runner = runCommand,
 }) {
   const deadline = Date.now() + timeoutSeconds * 1000;
   let lastError = "";
+  const sshCommand = sshpass ? "sshpass" : "ssh";
+  const sshArgs = [
+    ...(sshpass ? ["-e", "ssh"] : []),
+    ...(sshpass ? [] : ["-o", "BatchMode=yes"]),
+    "-o",
+    "ConnectTimeout=8",
+    "-o",
+    "StrictHostKeyChecking=accept-new",
+    `${user}@${host}`,
+    "hostname",
+  ];
   while (Date.now() <= deadline) {
     try {
-      runner("ssh", [
-        "-o",
-        "BatchMode=yes",
-        "-o",
-        "ConnectTimeout=8",
-        "-o",
-        "StrictHostKeyChecking=accept-new",
-        `${user}@${host}`,
-        "hostname",
-      ]);
+      runner(sshCommand, sshArgs);
       return { reachable: true };
     } catch (error) {
       lastError = error.message;
@@ -221,6 +224,7 @@ export function buildLibvirtQcow2RestorePlan(options = {}) {
     windowsSsh: {
       host: requireString(options.windowsSshHost, "--windows-ssh-host"),
       user: requireString(options.windowsSshUser, "--windows-ssh-user"),
+      sshpass: options.sshpass === true,
       timeoutSeconds: Number(options.windowsSshTimeoutSeconds ?? 600),
     },
     configPath: options.config ?? DEFAULT_CONFIG,
@@ -280,6 +284,7 @@ export function restoreLibvirtQcow2Vm(options = {}, dependencies = {}) {
   waitForSsh({
     host: plan.windowsSsh.host,
     user: plan.windowsSsh.user,
+    sshpass: plan.windowsSsh.sshpass,
     timeoutSeconds: plan.windowsSsh.timeoutSeconds,
     runner,
   });
@@ -299,7 +304,7 @@ function writeJson(path, value) {
 
 function usage() {
   console.error(`Usage:
-  vm-host-adapter.mjs --mode restore --adapter libvirt-qcow2 --run-id RUN-ID --target-vm VM --base-image PATH --overlay-disk PATH --windows-ssh-host HOST --windows-ssh-user USER --out REPORT [--config PATH] [--base-image-sha256 SHA256] [--allow-restore] [--dry-run]
+  vm-host-adapter.mjs --mode restore --adapter libvirt-qcow2 --run-id RUN-ID --target-vm VM --base-image PATH --overlay-disk PATH --windows-ssh-host HOST --windows-ssh-user USER --out REPORT [--config PATH] [--base-image-sha256 SHA256] [--sshpass] [--allow-restore] [--dry-run]
 `);
 }
 
@@ -341,6 +346,8 @@ function parseArgs(argv) {
     } else if (arg === "--windows-ssh-timeout-seconds") {
       options.windowsSshTimeoutSeconds = next;
       index += 1;
+    } else if (arg === "--sshpass") {
+      options.sshpass = true;
     } else if (arg === "--out") {
       options.out = next;
       index += 1;

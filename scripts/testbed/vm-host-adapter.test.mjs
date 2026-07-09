@@ -146,4 +146,50 @@ describe("vm-host-adapter", () => {
     assert.equal(report.baseImage.sha256, "b".repeat(64));
     assert.equal(report.evidence.dryRun, true);
   });
+
+  it("can wait for restored Windows SSH using sshpass from the environment", () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-vm-host-adapter-"));
+    const { baseImage, overlayDisk, configPath } = fixtureConfig(root);
+    const commands = [];
+
+    const report = restoreLibvirtQcow2Vm(
+      {
+        config: configPath,
+        runId: "RUN-191",
+        targetVm: "win10-vem-solidified-acceptance",
+        baseImage,
+        overlayDisk,
+        windowsSshUser: "YKDZ",
+        windowsSshHost: "192.0.2.10",
+        allowRestore: true,
+        sshpass: true,
+      },
+      {
+        runner(command, args) {
+          commands.push([command, args]);
+          if (command === "qemu-img") {
+            writeFileSync(args.at(-1), "overlay");
+          }
+          return command === "sha256sum"
+            ? `${"a".repeat(64)}  ${baseImage}\n`
+            : "";
+        },
+      },
+    );
+
+    assert.equal(report.result, "passed");
+    assert.deepEqual(commands.at(-1), [
+      "sshpass",
+      [
+        "-e",
+        "ssh",
+        "-o",
+        "ConnectTimeout=8",
+        "-o",
+        "StrictHostKeyChecking=accept-new",
+        "YKDZ@192.0.2.10",
+        "hostname",
+      ],
+    ]);
+  });
 });

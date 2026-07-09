@@ -118,4 +118,6 @@ Future CI or a self-hosted runner must provide:
 - `MACHINE_CLAIM_LOOKUP_HMAC_KEY`
 - `PAYMENT_MOCK_ENABLED=true`
 
+The self-hosted VM runner host must also provide `node`, `docker`, `virsh`, `qemu-img`, `ssh`, and `sshpass`. The `sshpass` binary is required when the workflow uses the repository secret `VEM_TESTBED_WINDOWS_PASSWORD` for Windows SSH readiness and acceptance commands instead of a runner-local SSH key.
+
 This gate is a manual runtime gate, not a default pull-request check. It can prove runtime-ready and simulated-hardware-ready on the Machine Runtime Testbed, but it cannot prove production sell-ready.

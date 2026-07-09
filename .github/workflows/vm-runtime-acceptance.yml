@@ -26,7 +26,7 @@ on:
       windows_ssh_host:
         description: Windows VM SSH host or Tailscale IP
         required: false
-        default: 100.68.189.11
+        default: 192.168.2.162
       windows_ssh_user:
         description: Windows VM maintenance SSH user
         required: false
@@ -223,6 +223,10 @@ jobs:
       - name: Restore Windows Runtime VM
         run: |
           set -euo pipefail
+          command -v sshpass >/dev/null || {
+            echo "::error::sshpass is required on the self-hosted VM runner for password-based Windows SSH readiness checks."
+            exit 1
+          }
           mkdir -p "artifacts/vm-runtime-acceptance/${RUN_ID}"
           node scripts/testbed/vm-host-adapter.mjs \
             --mode restore \
@@ -233,6 +237,7 @@ jobs:
             --overlay-disk "${{ inputs.overlay_disk }}" \
             --windows-ssh-host "${{ inputs.windows_ssh_host }}" \
             --windows-ssh-user "${{ inputs.windows_ssh_user }}" \
+            --sshpass \
             --out "artifacts/vm-runtime-acceptance/${RUN_ID}/vm-host-restore-report.json" \
             --allow-restore
 

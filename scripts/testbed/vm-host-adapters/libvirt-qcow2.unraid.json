@@ -8,7 +8,7 @@
         "/mnt/user/isos/vem-factory-runtime-image-RUN-191-20260705.qcow2"
       ],
       "windowsSshUser": "YKDZ",
-      "windowsSshHosts": ["100.68.189.11", "192.168.2.161"]
+      "windowsSshHosts": ["100.68.189.11", "192.168.2.162"]
     }
   ]
 }
