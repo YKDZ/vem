@@ -260,13 +260,38 @@ Install each rendered peer config only on its owning host:
   sudo wg show wg-vem-maint
   ```
 
-- On the Windows VM, import the reviewed `win10-vm.conf` with WireGuard for
-  Windows. Use a placeholder path in automation, not real key text in the repo:
+- For the Windows VM runtime acceptance base image, prefer the canonical
+  clean-base factory preparation path. Pass the WireGuard installer artifact,
+  the reviewed VM peer config, and the runner peer source IP to
+  `scripts/testbed/win10-vem-e2e.mjs --mode clean-base-factory-acceptance`:
+
+  ```sh
+  node scripts/testbed/win10-vem-e2e.mjs \
+    --mode clean-base-factory-acceptance \
+    --run-id <RUN-ID> \
+    --clean-base-source <clean-windows-base-uri> \
+    --daemon-artifact ./path/to/vending-daemon.exe \
+    --machine-ui-artifact ./path/to/machine.exe \
+    --maintenance-relay-wireguard-installer ./path/to/wireguard-amd64.msi \
+    --maintenance-relay-wireguard-config ./.scratch/maintenance-relay/win10-vm.conf \
+    --maintenance-relay-source-allowlist 10.91.1.10 \
+    --remote <maintenance-user>@<clean-vm-host> \
+    --allow-clean-base-prepare
+  ```
+
+  The preparation script verifies installer and config hashes, installs the
+  WireGuard tunnel as an automatic Windows service, writes only non-secret
+  relay evidence, and configures `VEM Controlled Maintenance SSH` for the
+  supplied runner peer source address.
+
+- For break-glass investigation only, manually import the reviewed
+  `win10-vm.conf` with WireGuard for Windows. Use a placeholder path in
+  automation, not real key text in the repo:
 
   ```powershell
   $tunnel = "C:\ProgramData\VEM\maintenance-relay\win10-vm.conf"
   & "C:\Program Files\WireGuard\wireguard.exe" /installtunnelservice $tunnel
-  Get-Service 'WireGuardTunnel$win10-vm'
+  Get-Service "WireGuardTunnelwin10-vm"
   ```
 
 The Windows VM must still use Controlled Maintenance Ingress for SSH: allow TCP

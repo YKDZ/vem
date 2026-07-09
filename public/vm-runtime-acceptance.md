@@ -67,6 +67,31 @@ contract is absent, restore fails clearly before destructive disk operations or
 at Windows SSH readiness; it must not claim to auto-configure the VM peer or
 Windows ingress.
 
+Produce that relay-capable base image through the existing clean-base factory
+preparation path, not a one-off Unraid-only mutation. Run
+`scripts/testbed/win10-vem-e2e.mjs --mode clean-base-factory-acceptance` with
+the optional Maintenance Relay inputs:
+
+```sh
+node scripts/testbed/win10-vem-e2e.mjs \
+  --mode clean-base-factory-acceptance \
+  --run-id <RUN-ID> \
+  --clean-base-source <clean-windows-base-uri> \
+  --daemon-artifact ./path/to/vending-daemon.exe \
+  --machine-ui-artifact ./path/to/machine.exe \
+  --maintenance-relay-wireguard-installer ./path/to/wireguard-amd64.msi \
+  --maintenance-relay-wireguard-config ./.scratch/maintenance-relay/win10-vm.conf \
+  --maintenance-relay-source-allowlist 10.91.1.10 \
+  --remote <maintenance-user>@<clean-vm-host> \
+  --allow-clean-base-prepare
+```
+
+The runner uploads the WireGuard installer and VM peer config as run-scoped
+artifacts, verifies their hashes inside Windows, installs the tunnel service,
+and enables the exact Controlled Maintenance Ingress allowlist. The VM peer
+config contains private key material and must remain in operator-local scratch
+or secret storage.
+
 The VM host adapter contract only prepares a reachable Windows VM. It takes a run id, a base image identity, and a target VM identity; it stops the VM, restores or rebuilds the disk, starts the VM, waits for Windows SSH, and emits restore evidence including the Windows SSH endpoint, observed host identity, base image hash, and evidence path. It must not build VEM artifacts, start the ephemeral platform, provision the machine, run runtime acceptance, run simulated sale-flow, or interpret VEM business results.
 
 The adapter must emit a `vm-host-restore-report/v1` JSON report, and runtime acceptance should consume that report instead of inferring VM state from host-specific paths. The first report shape is:

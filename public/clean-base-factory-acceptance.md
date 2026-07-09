@@ -136,11 +136,23 @@ node scripts/testbed/win10-vem-e2e.mjs \
   --machine-ui-artifact ./path/to/machine.exe \
   --daemon-artifact-sha256 <sha256> \
   --machine-ui-artifact-sha256 <sha256> \
+  --maintenance-relay-wireguard-installer ./path/to/wireguard-amd64.msi \
+  --maintenance-relay-wireguard-config ./.scratch/maintenance-relay/win10-vm.conf \
+  --maintenance-relay-source-allowlist 10.91.1.10 \
   --remote <maintenance-user>@<clean-vm-host> \
   --allow-clean-base-prepare
 ```
 
 The machine UI artifact must have `WebView2Loader.dll` next to `machine.exe`. Live clean-base mode rejects `--use-existing-remote-artifacts`; it must upload local daemon, machine UI, and WebView2 sidecar artifacts for the run. The runner hashes local daemon/UI artifacts before upload and refuses mismatches against declared hashes. Before upload or any remote directory/script staging, it refuses known dirty-host or production remote identifiers and probes the remote hostname, Controlled Maintenance Ingress endpoint identity, and retained-state absence through read-only SSH. The retained-state absence probe covers `C:\VEM\bringup`, `C:\ProgramData\VEM\bringup`, `C:\ProgramData\VEM\provisioning`, `C:\ProgramData\VEM\secrets`, `C:\ProgramData\VEM\overrides`, `C:\ProgramData\VEM\evidence`, `C:\ProgramData\VEM\vending-daemon`, the `VemVendingDaemon` service, and `VEMMachineUI` / `VEM\StartVisionServer` tasks. On the remote VM it repeats the clean source identity and retained-state absence checks before staging inputs, then runs `prepare-factory-runtime.ps1` without dirty-host reset mode, runs `verify-factory-runtime.ps1`, collects `factory-runtime-preparation.json`, `factory-runtime-verification-action.json`, `factory-runtime-verification.json`, and writes `clean-base-factory-acceptance.json`.
+
+The Maintenance Relay options are optional for a generic factory image, but are
+required for the relay-backed GitHub VM runtime acceptance base image. They are
+local artifacts, not repository files: the runner uploads the WireGuard
+installer and the VM peer config to the remote staging directory, verifies
+their SHA-256 hashes on Windows, installs the tunnel as a Windows service, and
+enables `VEM Controlled Maintenance SSH` only for the supplied runner peer IP.
+The config contains the VM private key and must stay in operator-local scratch
+or secret storage.
 
 Failure reports include structured diagnostics such as `clean_base_identity_refused`, `clean_base_preflight_failed`, `factory_input_staging_failed`, `factory_preparation_failed`, and `factory_verifier_failed`; operators should treat raw command output as supporting detail, not as the primary failure contract.
 
@@ -182,6 +194,10 @@ The report must include machine-checkable assertions:
 - `bootPolicy`: Windows `testsigning` off
 - `securityPosture`: Defender and firewall enabled, with VEM runtime exclusions, no default product-managed inbound remote access rule, and SMB/File Sharing not enabled as a maintenance entry
 - `factoryRemoteMaintenanceCapability`: factory preparation installs/enables OpenSSH Server for maintenance-account isolation without installing Tailscale by default; maintenance users are allowed through `OpenSSH Users` while kiosk SSH is explicitly denied through `sshd_config`
+- `maintenanceRelay`: when enabled for the relay-backed runtime test base image,
+  WireGuard is installed, the VM tunnel service starts automatically, the
+  staged config hash matches the declared hash, and `VEM Controlled Maintenance
+SSH` exactly matches the runner peer source allowlist
 - `consumerExperienceInterference`: consumer foreground interference policies configured, Store automatic app updates disabled, and kiosk foreground takeover recorded as Windows 10 Pro best-effort policy evidence
 - `sleepDisabled`: S3/S4 or equivalent sleep states disabled
 - `testsigningOff`: Windows `testsigning` off

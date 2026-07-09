@@ -228,11 +228,13 @@ addCheck(
     prepare.includes("local-bringup-settings/v1") &&
     prepare.includes("New-Service") &&
     prepare.includes("setup-scheduled-tasks.ps1") &&
+    prepare.includes("$setupArguments = @(") &&
     prepare.includes("-ConfigureAutoLogon") &&
     prepare.includes("-ConfigureKioskAccounts") &&
-    prepare.includes("-KioskPassword $Preflight.KioskPassword") &&
-    prepare.includes("-MaintenancePassword $Preflight.MaintenancePassword") &&
-    prepare.includes("-AutoLogonPassword $Preflight.AutoLogonPassword"),
+    prepare.includes("$Preflight.KioskPassword") &&
+    prepare.includes("$Preflight.MaintenancePassword") &&
+    prepare.includes("$Preflight.AutoLogonPassword") &&
+    prepare.includes("@setupArguments"),
   `${preparePath} should install executables/scripts, manifest, local bring-up settings, service, task/account setup, and directories`,
 );
 
@@ -275,6 +277,68 @@ addCheck(
     setupTasks.includes("Ensure-LocalMaintenanceAccess") &&
     setupTasks.includes("Disable-DefaultOpenSshInboundFirewall"),
   `${preparePath} should configure local OpenSSH maintenance account isolation by default, avoid Tailscale, and never enable SMB/File Sharing`,
+);
+
+addCheck(
+  "prepare-supports-optional-wireguard-maintenance-relay-base-image-bootstrap",
+  [
+    "MaintenanceRelayWireGuardInstallerPath",
+    "MaintenanceRelayWireGuardInstallerSha256",
+    "MaintenanceRelayWireGuardConfigPath",
+    "MaintenanceRelayWireGuardConfigSha256",
+    "MaintenanceRelayTunnelName",
+    "MaintenanceRelaySourceAllowlist",
+    "Assert-MaintenanceRelayInputs",
+    "Install-MaintenanceRelayWireGuard",
+    "WireGuardTunnel",
+    "/installtunnelservice",
+    "C:\\ProgramData\\VEM\\maintenance-relay",
+    "-ConfigureControlledMaintenanceIngress",
+    "-MaintenanceIngressSourceAllowlist",
+    "maintenance relay WireGuard config must not route broad AllowedIPs",
+    "wireguard-maintenance-relay",
+    "preconfigured-base-image",
+  ].every((needle) => prepare.includes(needle)) &&
+    prepare.indexOf("Assert-MaintenanceRelayInputs") <
+      prepare.indexOf("Assert-CleanHostOrReset") &&
+    prepare.includes("icacls.exe $targetConfig /inheritance:r") &&
+    prepare.includes(
+      "MaintenanceRelaySourceAllowlist must not contain broad sources",
+    ),
+  `${preparePath} should optionally install a hash-verified WireGuard Maintenance Relay tunnel service and enable Controlled Maintenance Ingress only when explicit relay inputs are supplied`,
+);
+
+addCheck(
+  "verifier-checks-optional-wireguard-maintenance-relay-contract",
+  verifier.includes("Get-MaintenanceRelayExpectation") &&
+    verifier.includes("Get-MaintenanceRelayEvidence") &&
+    verifier.includes("Get-ControlledMaintenanceIngressRuleEvidence") &&
+    verifier.includes("WireGuardTunnel{0}") &&
+    verifier.includes("VEM Controlled Maintenance SSH") &&
+    verifier.includes("configSha256Matches") &&
+    verifier.includes(
+      "preconfigured Maintenance Relay must have running WireGuard tunnel service and exact Controlled Maintenance Ingress allowlist",
+    ) &&
+    verifier.includes(
+      'Where-Object { [string]$_ -ne "VEM Controlled Maintenance SSH" }',
+    ),
+  `${verifierPath} should accept the single expected Controlled Maintenance Ingress rule for relay-enabled images and verify the WireGuard tunnel service, config hash, and exact SSH source allowlist`,
+);
+
+addCheck(
+  "testbed-runner-can-stage-clean-base-maintenance-relay-artifacts",
+  testbedRunner.includes("resolveCleanBaseMaintenanceRelayInputs") &&
+    testbedRunner.includes("--maintenance-relay-wireguard-installer") &&
+    testbedRunner.includes("--maintenance-relay-wireguard-config") &&
+    testbedRunner.includes("--maintenance-relay-source-allowlist") &&
+    testbedRunner.includes("remoteMaintenanceRelayWireGuardInstallerPath") &&
+    testbedRunner.includes("remoteMaintenanceRelayWireGuardConfigPath") &&
+    testbedRunner.includes("maintenanceRelayWireGuardInstallerSha256") &&
+    testbedRunner.includes("maintenanceRelayWireGuardConfigSha256") &&
+    testbedRunner.includes("MaintenanceRelaySourceAllowlist =") &&
+    testbedRunner.includes("$entry.Value -is [array]") &&
+    testbedRunner.includes("maintenance-relay.conf"),
+  `${testbedRunnerPath} should upload hash-checked WireGuard installer/config artifacts and pass relay inputs through clean-base factory preparation without printing secret config contents`,
 );
 
 addCheck(
