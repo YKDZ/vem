@@ -391,6 +391,7 @@ impl ::std::convert::TryFrom<::std::string::String> for CheckoutFlowAction {
 #[doc = "                    \"reversing\","]
 #[doc = "                    \"reversed\","]
 #[doc = "                    \"unknown\","]
+#[doc = "                    \"reversal_unknown\","]
 #[doc = "                    \"manual_handling\","]
 #[doc = "                    \"canceled\""]
 #[doc = "                  ]"]
@@ -471,6 +472,7 @@ impl ::std::convert::TryFrom<::std::string::String> for CheckoutFlowAction {
 #[doc = "            \"failed\","]
 #[doc = "            \"expired\","]
 #[doc = "            \"canceled\","]
+#[doc = "            \"unknown\","]
 #[doc = "            \"refund_pending\","]
 #[doc = "            \"partial_refund_pending\","]
 #[doc = "            \"manual_handling\","]
@@ -1018,6 +1020,7 @@ impl ::std::convert::TryFrom<::std::string::String> for CurrentTransactionSnapsh
 #[doc = "            \"reversing\","]
 #[doc = "            \"reversed\","]
 #[doc = "            \"unknown\","]
+#[doc = "            \"reversal_unknown\","]
 #[doc = "            \"manual_handling\","]
 #[doc = "            \"canceled\""]
 #[doc = "          ]"]
@@ -1164,6 +1167,7 @@ impl ::std::convert::TryFrom<::std::string::String>
 #[doc = "    \"reversing\","]
 #[doc = "    \"reversed\","]
 #[doc = "    \"unknown\","]
+#[doc = "    \"reversal_unknown\","]
 #[doc = "    \"manual_handling\","]
 #[doc = "    \"canceled\""]
 #[doc = "  ]"]
@@ -1201,6 +1205,8 @@ pub enum CurrentTransactionSnapshotPaymentCodeAttemptStatus {
     Reversed,
     #[serde(rename = "unknown")]
     Unknown,
+    #[serde(rename = "reversal_unknown")]
+    ReversalUnknown,
     #[serde(rename = "manual_handling")]
     ManualHandling,
     #[serde(rename = "canceled")]
@@ -1218,6 +1224,7 @@ impl ::std::fmt::Display for CurrentTransactionSnapshotPaymentCodeAttemptStatus 
             Self::Reversing => f.write_str("reversing"),
             Self::Reversed => f.write_str("reversed"),
             Self::Unknown => f.write_str("unknown"),
+            Self::ReversalUnknown => f.write_str("reversal_unknown"),
             Self::ManualHandling => f.write_str("manual_handling"),
             Self::Canceled => f.write_str("canceled"),
         }
@@ -1236,6 +1243,7 @@ impl ::std::str::FromStr for CurrentTransactionSnapshotPaymentCodeAttemptStatus 
             "reversing" => Ok(Self::Reversing),
             "reversed" => Ok(Self::Reversed),
             "unknown" => Ok(Self::Unknown),
+            "reversal_unknown" => Ok(Self::ReversalUnknown),
             "manual_handling" => Ok(Self::ManualHandling),
             "canceled" => Ok(Self::Canceled),
             _ => Err("invalid value".into()),
@@ -1442,6 +1450,7 @@ impl ::std::convert::TryFrom<::std::string::String> for CurrentTransactionSnapsh
 #[doc = "    \"failed\","]
 #[doc = "    \"expired\","]
 #[doc = "    \"canceled\","]
+#[doc = "    \"unknown\","]
 #[doc = "    \"refund_pending\","]
 #[doc = "    \"partial_refund_pending\","]
 #[doc = "    \"manual_handling\","]
@@ -1478,6 +1487,8 @@ pub enum CurrentTransactionSnapshotPaymentStatus {
     Expired,
     #[serde(rename = "canceled")]
     Canceled,
+    #[serde(rename = "unknown")]
+    Unknown,
     #[serde(rename = "refund_pending")]
     RefundPending,
     #[serde(rename = "partial_refund_pending")]
@@ -1499,6 +1510,7 @@ impl ::std::fmt::Display for CurrentTransactionSnapshotPaymentStatus {
             Self::Failed => f.write_str("failed"),
             Self::Expired => f.write_str("expired"),
             Self::Canceled => f.write_str("canceled"),
+            Self::Unknown => f.write_str("unknown"),
             Self::RefundPending => f.write_str("refund_pending"),
             Self::PartialRefundPending => f.write_str("partial_refund_pending"),
             Self::ManualHandling => f.write_str("manual_handling"),
@@ -1518,6 +1530,7 @@ impl ::std::str::FromStr for CurrentTransactionSnapshotPaymentStatus {
             "failed" => Ok(Self::Failed),
             "expired" => Ok(Self::Expired),
             "canceled" => Ok(Self::Canceled),
+            "unknown" => Ok(Self::Unknown),
             "refund_pending" => Ok(Self::RefundPending),
             "partial_refund_pending" => Ok(Self::PartialRefundPending),
             "manual_handling" => Ok(Self::ManualHandling),
@@ -2226,6 +2239,7 @@ impl ::std::convert::TryFrom<::std::string::String> for DispenseProgressObservat
 #[doc = "            \"reversing\","]
 #[doc = "            \"reversed\","]
 #[doc = "            \"unknown\","]
+#[doc = "            \"reversal_unknown\","]
 #[doc = "            \"manual_handling\","]
 #[doc = "            \"canceled\""]
 #[doc = "          ]"]
@@ -2368,6 +2382,7 @@ impl ::std::convert::TryFrom<::std::string::String> for PaymentCodeAttemptSummar
 #[doc = "    \"reversing\","]
 #[doc = "    \"reversed\","]
 #[doc = "    \"unknown\","]
+#[doc = "    \"reversal_unknown\","]
 #[doc = "    \"manual_handling\","]
 #[doc = "    \"canceled\""]
 #[doc = "  ]"]
@@ -2405,6 +2420,8 @@ pub enum PaymentCodeAttemptSummaryStatus {
     Reversed,
     #[serde(rename = "unknown")]
     Unknown,
+    #[serde(rename = "reversal_unknown")]
+    ReversalUnknown,
     #[serde(rename = "manual_handling")]
     ManualHandling,
     #[serde(rename = "canceled")]
@@ -2422,6 +2439,7 @@ impl ::std::fmt::Display for PaymentCodeAttemptSummaryStatus {
             Self::Reversing => f.write_str("reversing"),
             Self::Reversed => f.write_str("reversed"),
             Self::Unknown => f.write_str("unknown"),
+            Self::ReversalUnknown => f.write_str("reversal_unknown"),
             Self::ManualHandling => f.write_str("manual_handling"),
             Self::Canceled => f.write_str("canceled"),
         }
@@ -2440,6 +2458,7 @@ impl ::std::str::FromStr for PaymentCodeAttemptSummaryStatus {
             "reversing" => Ok(Self::Reversing),
             "reversed" => Ok(Self::Reversed),
             "unknown" => Ok(Self::Unknown),
+            "reversal_unknown" => Ok(Self::ReversalUnknown),
             "manual_handling" => Ok(Self::ManualHandling),
             "canceled" => Ok(Self::Canceled),
             _ => Err("invalid value".into()),

@@ -27,29 +27,9 @@ jobs:
   admin-contract-e2e-tests:
     name: Admin Contract E2E
     # Production readiness candidate check for Admin API Contract browser flows.
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_DB: vem_admin_contract_e2e
     steps:
-      - name: Start MQTT Broker
-        run: |
-          docker run -d --name mosquitto-admin-contract-e2e eclipse-mosquitto:2
-      - name: Build Service API
-        run: pnpm turbo build --filter service-api
-      - name: Run Database Migrations
-        run: pnpm --filter @vem/db migrate
-        env:
-          DATABASE_URL: postgresql://vem:vem_password@localhost:5432/vem_admin_contract_e2e
-      - name: Start Service API
-        run: node dist/main.js > ../../admin-contract-service-api.log 2>&1 &
-        env:
-          MQTT_URL: mqtt://localhost:1883
-      - name: Start Admin UI Dev Server
-        run: pnpm dev > ../../admin-contract-admin-ui.log 2>&1 &
       - name: Run Admin Contract E2E Tests
-        run: pnpm test:e2e:admin-contract
+        run: node tools/check-ci.mjs --job admin-contract-e2e
       - name: Upload Admin Contract Playwright Artifacts
         if: failure()
         uses: actions/upload-artifact@v4
@@ -65,6 +45,33 @@ jobs:
             admin-contract-admin-ui.log
 `;
 
+const VALID_CI_RUNNER = `
+async function startPostgres() {
+  await run("docker", ["run", "postgres:16"]);
+}
+async function startMosquitto() {
+  await run("docker", ["run", "eclipse-mosquitto:2"]);
+}
+async function runAdminBrowserE2e() {
+  await run("pnpm", ["turbo", "build", "--filter", "service-api"]);
+  await run("pnpm", ["--filter", "@vem/db", "migrate"]);
+  const serviceApi = startProcess("node", ["dist/main.js"], {
+    env: { MQTT_URL: "mqtt://localhost:1883" },
+  });
+  const adminUi = startProcess("pnpm", ["dev"], {});
+}
+async function runAdminContractE2eJob() {
+  await runAdminBrowserE2e({
+    database: "vem_admin_contract_e2e",
+    mqttContainer: "vem-local-ci-mosquitto-admin-contract",
+    serviceLog: "admin-contract-service-api.log",
+    adminLog: "admin-contract-admin-ui.log",
+    testScript: "test:e2e:admin-contract",
+  });
+}
+const JOBS = new Set(["admin-contract-e2e"]);
+`;
+
 const VALID_ADMIN_UI_PACKAGE = JSON.stringify({
   scripts: {
     "test:e2e:admin-contract":
@@ -78,6 +85,7 @@ describe("Admin Contract E2E CI guard", () => {
       {
         ".github/workflows/ci.yml": VALID_WORKFLOW,
         "apps/admin-ui/package.json": VALID_ADMIN_UI_PACKAGE,
+        "tools/check-ci.mjs": VALID_CI_RUNNER,
       },
       (root) => {
         const result = checkAdminContractE2eCi({ root });
@@ -103,6 +111,7 @@ jobs:
       - run: pnpm test:e2e
 `,
         "apps/admin-ui/package.json": VALID_ADMIN_UI_PACKAGE,
+        "tools/check-ci.mjs": VALID_CI_RUNNER,
       },
       (root) => {
         const result = checkAdminContractE2eCi({ root });
@@ -120,10 +129,11 @@ jobs:
     withFixture(
       {
         ".github/workflows/ci.yml": VALID_WORKFLOW.replace(
-          "pnpm test:e2e:admin-contract",
-          "pnpm test:e2e",
+          "--job admin-contract-e2e",
+          "--job admin-e2e",
         ),
         "apps/admin-ui/package.json": VALID_ADMIN_UI_PACKAGE,
+        "tools/check-ci.mjs": VALID_CI_RUNNER,
       },
       (root) => {
         const result = checkAdminContractE2eCi({ root });
@@ -131,7 +141,7 @@ jobs:
         assert.equal(result.ok, false);
         assert.match(
           result.failures.join("\n"),
-          /should run pnpm test:e2e:admin-contract/,
+          /dedicated admin-contract-e2e runner job/,
         );
       },
     );
@@ -147,6 +157,7 @@ jobs:
               "playwright test tests/payment-operations-admin-contract.spec.ts",
           },
         }),
+        "tools/check-ci.mjs": VALID_CI_RUNNER,
       },
       (root) => {
         const result = checkAdminContractE2eCi({ root });
@@ -170,6 +181,7 @@ jobs:
               "playwright test tests/product-catalog-admin-contract.spec.ts tests/payment-operations-admin-contract.spec.ts",
           },
         }),
+        "tools/check-ci.mjs": VALID_CI_RUNNER,
       },
       (root) => {
         const result = checkAdminContractE2eCi({ root });
@@ -191,6 +203,7 @@ jobs:
           "apps/admin-ui/missing-report/",
         ),
         "apps/admin-ui/package.json": VALID_ADMIN_UI_PACKAGE,
+        "tools/check-ci.mjs": VALID_CI_RUNNER,
       },
       (root) => {
         const result = checkAdminContractE2eCi({ root });
