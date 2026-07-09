@@ -4,7 +4,6 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const DEFAULT_MATRIX_PATH = "public/admin-api-contract-coverage.md";
 const ADMIN_API_DIRECTORY = "apps/admin-ui/src/api";
 const EXCLUDED_API_FILES = new Set([
   "apps/admin-ui/src/api/auth.ts",
@@ -77,62 +76,6 @@ function listFiles(root, directory) {
     }
   }
   return files.sort();
-}
-
-function splitMarkdownRow(line) {
-  return line
-    .trim()
-    .replace(/^\|/, "")
-    .replace(/\|$/, "")
-    .split("|")
-    .map((cell) => cell.trim());
-}
-
-function normalizeCell(value) {
-  return value === "-" ? "" : value;
-}
-
-export function parseCoverageMatrix(markdown) {
-  const rows = [];
-  const lines = markdown.split(/\r?\n/);
-  let headers = null;
-
-  for (const line of lines) {
-    if (!line.trim().startsWith("|")) continue;
-    const cells = splitMarkdownRow(line);
-    if (cells.every((cell) => /^:?-{3,}:?$/.test(cell))) continue;
-    if (!headers) {
-      headers = cells.map((cell) => cell.toLowerCase());
-      continue;
-    }
-    if (
-      cells.map((cell) => cell.toLowerCase()).join("|") === headers.join("|")
-    ) {
-      continue;
-    }
-
-    const row = {};
-    for (const [index, header] of headers.entries()) {
-      row[header] = normalizeCell(cells[index] ?? "");
-    }
-    if (row["admin ui caller"]) {
-      rows.push({
-        endpoint: row.endpoint,
-        domain: row.domain,
-        sharedSchema: row["shared schema"],
-        backendValidationBoundary: row["backend validation boundary"],
-        serviceMapper: row["service mapper"],
-        adminUiCaller: row["admin ui caller"],
-        tests: row.tests,
-        permissionCode: row["permission code"],
-        migrationStatus: row["migration status"],
-        exceptionReason: row["exception reason"],
-        followUpIssue: row["follow-up issue"],
-      });
-    }
-  }
-
-  return rows;
 }
 
 function extractFunctions(source) {
@@ -326,52 +269,26 @@ function isLocalBodyType(typeText) {
   return typeNames.some((typeName) => !LOCAL_TYPE_UTILITY_NAMES.has(typeName));
 }
 
-function checkMigrationException(row) {
-  const failures = [];
-  if (!row.exceptionReason) {
-    failures.push(`migration exception missing reason: ${row.adminUiCaller}`);
-  }
-  if (!row.followUpIssue || !/#\d+|\.scratch\//.test(row.followUpIssue)) {
-    failures.push(
-      `migration exception missing follow-up issue: ${row.adminUiCaller}`,
-    );
-  }
-  return failures;
-}
-
-function checkCompletedCaller(row, fn) {
+function checkWriteCaller(caller, fn) {
   const failures = [];
   const calls = helperCalls(fn.body);
   for (const call of calls) {
     if (WRITE_HELPERS.has(call)) {
-      failures.push(
-        `completed admin write caller uses unbound ${call}: ${row.adminUiCaller}`,
-      );
+      failures.push(`admin write caller uses unbound ${call}: ${caller}`);
     }
   }
   if (!calls.some((call) => CONTRACT_WRITE_HELPERS.has(call))) {
-    failures.push(
-      `completed admin write caller missing schema-bound helper: ${row.adminUiCaller}`,
-    );
+    failures.push(`admin write caller missing schema-bound helper: ${caller}`);
   }
 
   const bodyType = bodyParameterType(fn.parameters);
   if (isLocalBodyType(bodyType)) {
-    failures.push(
-      `completed admin write caller uses local body type: ${row.adminUiCaller}`,
-    );
+    failures.push(`admin write caller uses local body type: ${caller}`);
   }
   if (BROAD_TYPE_PATTERN.test(bodyType)) {
-    failures.push(
-      `completed admin write caller uses broad body type: ${row.adminUiCaller}`,
-    );
+    failures.push(`admin write caller uses broad body type: ${caller}`);
   }
   return failures;
-}
-
-function parseCaller(caller) {
-  const [path, name] = caller.split("#");
-  return { path, name };
 }
 
 function indexWriteCallers(root) {
@@ -387,21 +304,16 @@ function indexWriteCallers(root) {
   return callers;
 }
 
-function checkMigratedModuleQueryTypes(root, completedRows) {
+function checkWriteModuleQueryTypes(root, writeModulePaths) {
   const failures = [];
-  const migratedFiles = new Set(
-    completedRows
-      .map((row) => parseCaller(row.adminUiCaller).path)
-      .filter((path) => path && path !== "N/A"),
-  );
 
-  for (const path of migratedFiles) {
+  for (const path of writeModulePaths) {
     if (!pathExists(root, path)) continue;
     const source = readText(root, path);
     for (const fn of extractFunctions(source)) {
       if (!functionUsesBroadQuery(fn.parameters)) continue;
       failures.push(
-        `migrated admin api function uses broad query type: ${path}#${fn.name}`,
+        `admin api write module uses broad query type: ${path}#${fn.name}`,
       );
     }
   }
@@ -411,114 +323,38 @@ function checkMigratedModuleQueryTypes(root, completedRows) {
 
 export function checkAdminApiContracts(options = {}) {
   const root = options.root ?? process.cwd();
-  const matrixPath = options.matrixPath ?? DEFAULT_MATRIX_PATH;
   const failures = [];
   const checks = [];
-
-  if (!pathExists(root, matrixPath)) {
-    return {
-      ok: false,
-      checks: [
-        {
-          name: "coverage-matrix-present",
-          passed: false,
-          detail: `${matrixPath} exists`,
-        },
-      ],
-      failures: [`admin api contract coverage matrix missing: ${matrixPath}`],
-      matrixRows: [],
-    };
-  }
-
-  const matrixRows = parseCoverageMatrix(readText(root, matrixPath));
-  const matrixByCaller = new Map(
-    matrixRows
-      .filter((row) => row.adminUiCaller && row.adminUiCaller !== "N/A")
-      .map((row) => [row.adminUiCaller, row]),
-  );
   const callers = indexWriteCallers(root);
-  const completedRows = matrixRows.filter(
-    (row) => row.migrationStatus === "completed",
+  const writeModulePaths = new Set(
+    [...callers.values()].map((indexed) => indexed.path),
   );
 
-  for (const caller of callers.keys()) {
-    if (!matrixByCaller.has(caller)) {
-      failures.push(`untracked admin write caller: ${caller}`);
-    }
+  for (const [caller, indexed] of callers) {
+    failures.push(...checkWriteCaller(caller, indexed.fn));
   }
-
-  for (const row of matrixRows) {
-    if (row.adminUiCaller === "N/A") {
-      if (row.migrationStatus === "migration-exception") {
-        failures.push(...checkMigrationException(row));
-      }
-      continue;
-    }
-
-    const { path, name } = parseCaller(row.adminUiCaller);
-    const indexed = callers.get(row.adminUiCaller);
-    if (!indexed) {
-      failures.push(
-        `matrix caller missing write implementation: ${row.adminUiCaller}`,
-      );
-      continue;
-    }
-    if (indexed.path !== path || indexed.fn.name !== name) {
-      failures.push(`matrix caller mismatch: ${row.adminUiCaller}`);
-    }
-
-    if (row.migrationStatus === "completed") {
-      failures.push(...checkCompletedCaller(row, indexed.fn));
-    } else if (row.migrationStatus === "migration-exception") {
-      failures.push(...checkMigrationException(row));
-    } else {
-      failures.push(
-        `invalid migration status for ${row.adminUiCaller}: ${row.migrationStatus}`,
-      );
-    }
-  }
-  failures.push(...checkMigratedModuleQueryTypes(root, completedRows));
+  failures.push(...checkWriteModuleQueryTypes(root, writeModulePaths));
 
   checks.push({
-    name: "coverage-matrix-present",
-    passed: true,
-    detail: `${matrixPath} exists and can be parsed`,
+    name: "admin-writes-use-schema-bound-contracts",
+    passed: !failures.some((failure) =>
+      failure.startsWith("admin write caller"),
+    ),
+    detail: "admin writes use schema-bound helpers and shared body types",
   });
   checks.push({
-    name: "admin-write-callers-covered",
+    name: "admin-write-modules-avoid-broad-query-shortcuts",
     passed: !failures.some((failure) =>
-      failure.startsWith("untracked admin write caller"),
+      failure.startsWith("admin api write module uses broad query type"),
     ),
-    detail: "admin UI write callers have coverage matrix rows",
-  });
-  checks.push({
-    name: "migration-exceptions-are-explicit",
-    passed: !failures.some((failure) =>
-      failure.startsWith("migration exception missing"),
-    ),
-    detail: "migration exceptions carry a reason and follow-up issue",
-  });
-  checks.push({
-    name: "completed-writes-use-schema-bound-contracts",
-    passed: !failures.some((failure) =>
-      failure.startsWith("completed admin write caller"),
-    ),
-    detail:
-      "completed admin writes use schema-bound helpers and shared body types",
-  });
-  checks.push({
-    name: "migrated-modules-avoid-broad-query-shortcuts",
-    passed: !failures.some((failure) =>
-      failure.startsWith("migrated admin api function uses broad query type"),
-    ),
-    detail: "migrated admin API modules use shared query contracts",
+    detail: "admin API modules with writes use shared query contracts",
   });
 
   return {
     ok: failures.length === 0,
     checks,
     failures,
-    matrixRows,
+    writeCallers: [...callers.keys()].sort(),
   };
 }
 

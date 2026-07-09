@@ -1,9 +1,8 @@
-import { describe, expect, it } from "vitest";
-
 import {
   supportedPaymentChannelKeys,
   type UpdatePaymentChannelPolicyInput,
 } from "@vem/shared";
+import { describe, expect, it } from "vitest";
 
 import { PaymentChannelPolicyService } from "./payment-channel-policy.service";
 

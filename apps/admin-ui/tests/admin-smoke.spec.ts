@@ -87,14 +87,21 @@ test.describe("admin-smoke", () => {
       });
     });
 
-    test("payment config tab shows provider-specific fields and hides generic api key", async ({
+    test("payment provider drawer shows provider-specific fields and hides generic api key", async ({
       page,
     }) => {
       await page.goto("/payments");
-      await page.getByRole("tab", { name: "支付配置" }).click();
-      await expect(page.getByText("支付提供商")).toBeVisible({
+      await page.getByRole("tab", { name: "支付机构" }).click();
+      const alipayProviderRow = page
+        .locator(".ant-table-row")
+        .filter({ hasText: "支付宝" });
+      await expect(alipayProviderRow).toBeVisible({
         timeout: 8_000,
       });
+      await alipayProviderRow.getByRole("button", { name: "编辑" }).click();
+      await expect(
+        page.getByRole("dialog", { name: /支付宝配置/ }),
+      ).toBeVisible();
       await expect(page.getByText("二维码有效期")).toBeVisible();
       await expect(page.getByText("补偿窗口")).toBeVisible();
       await expect(page.getByText("应用私钥 PEM")).toBeVisible();

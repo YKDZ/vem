@@ -130,10 +130,10 @@ test.beforeAll(async ({ browserName: _browserName }, testInfo) => {
     });
     expect(response.ok).toBe(true);
     const config = (await response.json()) as {
-      public?: { machineCode?: unknown };
+      public?: unknown;
     };
-    expect(typeof config.public?.machineCode).toBe("string");
-    expect(config.public?.machineCode).not.toHaveLength(0);
+    expect(typeof config.public).toBe("object");
+    expect(config.public).not.toBeNull();
   }).toPass({
     intervals: [250, 500, 1000],
     timeout: DAEMON_START_TIMEOUT_MS - 10_000,

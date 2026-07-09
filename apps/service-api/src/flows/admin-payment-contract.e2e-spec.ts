@@ -165,7 +165,9 @@ describe("admin-payment-contract.e2e", { concurrent: false }, () => {
     const token = await loginAndGetToken(api, appConfig);
     const auth = { Authorization: `Bearer ${token}` };
 
-    const initialResponse = await api.get("/api/payments/channel-policy").set(auth);
+    const initialResponse = await api
+      .get("/api/payments/channel-policy")
+      .set(auth);
     expect(initialResponse.status).toBe(200);
     const initialPolicy = paymentChannelPolicyResponseSchema.parse(
       (initialResponse.body as ApiResponse<unknown>).data,

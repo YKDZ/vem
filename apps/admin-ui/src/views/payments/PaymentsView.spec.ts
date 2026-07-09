@@ -18,6 +18,7 @@ import PaymentsView from "./PaymentsView.vue";
 const apiMocks = vi.hoisted(() => ({
   listPaymentCodeAttempts: vi.fn(),
   listPaymentEvents: vi.fn(),
+  listPaymentProviderConfigs: vi.fn(),
   listPaymentProviders: vi.fn(),
   listPayments: vi.fn(),
   listReconciliationAttempts: vi.fn(),
@@ -38,6 +39,7 @@ vi.mock("@/api/payments", async () => {
     ...actual,
     listPaymentCodeAttempts: apiMocks.listPaymentCodeAttempts,
     listPaymentEvents: apiMocks.listPaymentEvents,
+    listPaymentProviderConfigs: apiMocks.listPaymentProviderConfigs,
     listPaymentProviders: apiMocks.listPaymentProviders,
     listPayments: apiMocks.listPayments,
     listReconciliationAttempts: apiMocks.listReconciliationAttempts,
@@ -61,7 +63,7 @@ vi.mock("./PaymentChannelPolicyPanel.vue", () => ({
 vi.mock("./PaymentOpsPanel.vue", () => ({
   default: defineComponent({ setup: () => () => h("section") }),
 }));
-vi.mock("./PaymentProviderConfigPanel.vue", () => ({
+vi.mock("./PaymentProviderConfigDrawer.vue", () => ({
   default: defineComponent({ setup: () => () => h("section") }),
 }));
 
@@ -96,6 +98,9 @@ const ButtonStub = defineComponent({
 
 const TabsStub = defineComponent({
   emits: ["change"],
+  props: {
+    activeKey: String,
+  },
   setup(_, { emit, slots }) {
     onMounted(() => {
       emit("change", "refunds");
@@ -170,6 +175,52 @@ async function mountPaymentsView(): Promise<HTMLElement> {
   return host;
 }
 
+async function mountPaymentsViewWithInitialTab(
+  tabKey: string,
+): Promise<HTMLElement> {
+  setActivePinia(createPinia());
+  const authStore = useAuthStore();
+  authStore.currentAdmin = {
+    id: "admin-1",
+    username: "admin",
+    displayName: "Admin",
+    roles: [],
+    permissions: ["payments.read", "payments.configure"],
+  };
+
+  const host = document.createElement("div");
+  document.body.append(host);
+  const app = createApp(PaymentsView);
+  for (const name of [
+    "a-card",
+    "a-tab-pane",
+    "a-space",
+    "a-modal",
+    "a-tag",
+    "a-textarea",
+  ]) {
+    app.component(name, PassthroughStub);
+  }
+  app.component("a-button", ButtonStub);
+  app.component(
+    "a-tabs",
+    defineComponent({
+      emits: ["change"],
+      setup(_, { emit, slots }) {
+        onMounted(() => {
+          emit("change", tabKey);
+        });
+        return () => h("section", slots.default?.());
+      },
+    }),
+  );
+  app.component("a-table", TableStub);
+  app.mount(host);
+  await flushPromises();
+  await nextTick();
+  return host;
+}
+
 describe("PaymentsView", () => {
   afterEach(() => {
     document.body.innerHTML = "";
@@ -216,5 +267,52 @@ describe("PaymentsView", () => {
     expect(host.textContent).not.toContain("provider");
     expect(host.textContent).not.toContain("provider_query");
     expect(host.textContent).not.toContain("processing:");
+  });
+
+  it("shows provider configuration status from the provider list", async () => {
+    apiMocks.listPayments.mockResolvedValue(emptyPage);
+    apiMocks.listPaymentProviders.mockResolvedValue([
+      {
+        id: "provider-1",
+        code: "alipay",
+        name: "支付宝",
+        type: "alipay",
+        status: "disabled",
+        capabilities: {},
+      },
+      {
+        id: "provider-2",
+        code: "mock",
+        name: "Mock 支付",
+        type: "mock",
+        status: "enabled",
+        capabilities: {},
+      },
+    ]);
+    apiMocks.listPaymentProviderConfigs.mockResolvedValue([
+      {
+        id: "config-1",
+        providerId: "provider-1",
+        providerCode: "alipay",
+        providerName: "支付宝",
+        machineId: null,
+        merchantNo: "MCH001",
+        appId: "APP001",
+        publicConfigJson: {},
+        derivedNotifyUrl: null,
+        secretStatusJson: {},
+        status: "enabled",
+        updatedByAdminUserId: null,
+        createdAt: "2026-07-08T00:00:00.000Z",
+        updatedAt: "2026-07-08T01:00:00.000Z",
+      },
+    ]);
+
+    const host = await mountPaymentsViewWithInitialTab("providers");
+
+    expect(apiMocks.listPaymentProviderConfigs).toHaveBeenCalledOnce();
+    expect(host.textContent).toContain("已配置");
+    expect(host.textContent).toContain("编辑");
+    expect(host.textContent).not.toContain("商户配置");
   });
 });

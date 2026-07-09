@@ -96,9 +96,23 @@ test.describe("Payment Operations admin API contract", () => {
     expect(config.secretStatusJson).toEqual(expect.any(Object));
 
     await page.reload();
-    await page.getByRole("tab", { name: "支付配置" }).click();
+    await page.getByRole("tab", { name: "支付机构" }).click();
+    const alipayProviderRow = page
+      .locator(".ant-table-row")
+      .filter({ hasText: "支付宝" });
+    await expect(alipayProviderRow).toContainText("已配置", {
+      timeout: 10_000,
+    });
+    await alipayProviderRow.getByRole("button", { name: "编辑" }).click();
     await expect(
-      page.locator(".ant-table-row").filter({ hasText: merchantNo }),
-    ).toBeVisible({ timeout: 10_000 });
+      page.getByRole("dialog", { name: /支付宝配置/ }),
+    ).toBeVisible();
+    await expect(
+      page
+        .locator(".ant-form-item")
+        .filter({ hasText: "商户号" })
+        .locator("input"),
+    ).toHaveValue(merchantNo);
+    await expect(page.getByText("当前支付机构默认使用此配置")).toBeVisible();
   });
 });

@@ -334,51 +334,6 @@ export const upsertPaymentProviderConfigSchema = z
       const pub = z
         .record(z.string(), z.unknown())
         .parse(value.publicConfigJson ?? {});
-      const sensitive = z
-        .record(z.string(), z.unknown())
-        .parse(value.sensitiveConfigJson ?? {});
-
-      // merchantCertificateSerialNo or deprecated certificateSerialNo must be present
-      const hasMerchantSerial =
-        (typeof pub["merchantCertificateSerialNo"] === "string" &&
-          pub["merchantCertificateSerialNo"].length > 0) ||
-        (typeof pub["certificateSerialNo"] === "string" &&
-          pub["certificateSerialNo"].length > 0);
-      if (!hasMerchantSerial) {
-        ctx.addIssue({
-          code: "custom",
-          path: ["publicConfigJson", "merchantCertificateSerialNo"],
-          message:
-            "wechat_pay requires merchantCertificateSerialNo (or deprecated certificateSerialNo)",
-        });
-      }
-
-      // platformCertificateSerialNo is required for enabled configs
-      if (
-        typeof pub["platformCertificateSerialNo"] !== "string" ||
-        pub["platformCertificateSerialNo"].length === 0
-      ) {
-        ctx.addIssue({
-          code: "custom",
-          path: ["publicConfigJson", "platformCertificateSerialNo"],
-          message: "wechat_pay requires platformCertificateSerialNo",
-        });
-      }
-
-      // platformCertificatePem or platformPublicKeyPem must be present
-      const hasPlatformKey =
-        (typeof sensitive["platformCertificatePem"] === "string" &&
-          sensitive["platformCertificatePem"].length > 0) ||
-        (typeof sensitive["platformPublicKeyPem"] === "string" &&
-          sensitive["platformPublicKeyPem"].length > 0);
-      if (!hasPlatformKey) {
-        ctx.addIssue({
-          code: "custom",
-          path: ["sensitiveConfigJson"],
-          message:
-            "wechat_pay requires platformCertificatePem or platformPublicKeyPem",
-        });
-      }
 
       const result = wechatPayPublicConfigSchema.partial().safeParse(pub);
       if (!result.success) {

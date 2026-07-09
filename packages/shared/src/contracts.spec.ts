@@ -2661,24 +2661,19 @@ describe("shared API contract", () => {
       expect(result.providerCode).toBe("wechat_pay");
     });
 
-    it("rejects enabled wechat_pay config missing platformCertificateSerialNo", () => {
-      expect(() =>
-        upsertPaymentProviderConfigSchema.parse({
-          providerCode: "wechat_pay",
-          status: "enabled",
-          merchantNo: "1900000109",
-          appId: "wx1234567890abcdef",
-          publicConfigJson: {
-            merchantCertificateSerialNo: "MERCHANT_CERT_SERIAL",
-            // platformCertificateSerialNo intentionally omitted
-          },
-          sensitiveConfigJson: {
-            apiV3Key: "0123456789abcdef0123456789abcdef",
-            privateKeyPem: "dev-key",
-            platformPublicKeyPem: "dev-pub",
-          },
-        }),
-      ).toThrow();
+    it("allows partial wechat_pay config updates for server-side secret merge", () => {
+      const result = upsertPaymentProviderConfigSchema.parse({
+        providerCode: "wechat_pay",
+        status: "enabled",
+        merchantNo: "1900000109",
+        appId: "wx1234567890abcdef",
+        publicConfigJson: {
+          merchantCertificateSerialNo: "MERCHANT_CERT_SERIAL",
+        },
+      });
+
+      expect(result.providerCode).toBe("wechat_pay");
+      expect(result.sensitiveConfigJson).toBeUndefined();
     });
 
     it("rejects legacy wechat_pay payment-code channel switches", () => {
