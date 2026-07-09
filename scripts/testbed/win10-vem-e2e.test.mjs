@@ -1152,6 +1152,33 @@ describe("win10-vem-e2e reset planning", () => {
     assert.doesNotMatch(script, /AllowBlankAutoLogonPassword/);
   });
 
+  it("passes Controlled Maintenance Ingress allowlist into production setup", () => {
+    const plan = buildBringUpPlan({
+      maintenanceIngressSourceAllowlist: "10.91.1.10",
+    });
+
+    assert.equal(
+      plan.arguments.MaintenanceIngressSourceAllowlist,
+      "10.91.1.10",
+    );
+    assert.ok(plan.switches.includes("ConfigureControlledMaintenanceIngress"));
+
+    const script = buildRemotePowerShellScript({
+      mode: "bring-up",
+      maintenanceIngressSourceAllowlist: "10.91.1.10",
+    });
+
+    assert.match(
+      script,
+      /'MaintenanceIngressSourceAllowlist' = '10\.91\.1\.10'/,
+    );
+    assert.match(
+      script,
+      /\$setupArgs\['ConfigureControlledMaintenanceIngress'\] = \$true/,
+    );
+    assert.doesNotMatch(script, /ConfigureRemoteMaintenanceAccess/);
+  });
+
   it("rejects a reset-plus-bring-up shortcut that would delete the setup script before using it", () => {
     assert.throws(
       () =>

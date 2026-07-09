@@ -8,7 +8,15 @@
         "/mnt/user/isos/vem-factory-runtime-image-RUN-191-20260705.qcow2"
       ],
       "windowsSshUser": "YKDZ",
-      "windowsSshHosts": ["100.68.189.11", "192.168.2.162"]
+      "windowsSshHosts": ["10.91.2.10"],
+      "preconfiguredMaintenanceRelay": {
+        "kind": "wireguard-maintenance-relay",
+        "bootstrapMode": "preconfigured-base-image",
+        "vmWireGuardPeer": "preconfigured-and-running",
+        "windowsControlledMaintenanceIngress": "preconfigured-source-allowlist",
+        "windowsSshHost": "10.91.2.10",
+        "allowedSourcePeerIps": ["10.91.1.10"]
+      }
     }
   ]
 }

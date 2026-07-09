@@ -119,6 +119,48 @@ function findAllowedTarget(config, options) {
       `Windows SSH host is not allowlisted for ${targetVm}: ${windowsSshHost}`,
     );
   }
+  if (
+    options.maintenanceRelayInterface ||
+    options.maintenanceRelayRunnerPeerIp
+  ) {
+    const relay = target.preconfiguredMaintenanceRelay;
+    if (relay?.bootstrapMode !== "preconfigured-base-image") {
+      throw new Error(
+        "Maintenance Relay restore requires target.preconfiguredMaintenanceRelay.bootstrapMode=preconfigured-base-image; the adapter does not configure the VM WireGuard peer or Windows Controlled Maintenance Ingress during restore",
+      );
+    }
+    if (relay.kind !== "wireguard-maintenance-relay") {
+      throw new Error(
+        "Maintenance Relay restore requires target.preconfiguredMaintenanceRelay.kind=wireguard-maintenance-relay",
+      );
+    }
+    if (relay.vmWireGuardPeer !== "preconfigured-and-running") {
+      throw new Error(
+        "Maintenance Relay restore requires a base image with the VM WireGuard peer preconfigured and running",
+      );
+    }
+    if (
+      relay.windowsControlledMaintenanceIngress !==
+      "preconfigured-source-allowlist"
+    ) {
+      throw new Error(
+        "Maintenance Relay restore requires Windows Controlled Maintenance Ingress preconfigured with the runner peer allowlist",
+      );
+    }
+    if (relay.windowsSshHost !== windowsSshHost) {
+      throw new Error(
+        `Maintenance Relay Windows SSH host is not allowlisted by the preconfigured VM relay contract: ${windowsSshHost}`,
+      );
+    }
+    const allowedSourcePeerIps = Array.isArray(relay.allowedSourcePeerIps)
+      ? relay.allowedSourcePeerIps
+      : [];
+    if (!allowedSourcePeerIps.includes(options.maintenanceRelayRunnerPeerIp)) {
+      throw new Error(
+        `Maintenance Relay runner peer IP is not allowlisted by the preconfigured VM relay contract: ${options.maintenanceRelayRunnerPeerIp}`,
+      );
+    }
+  }
   return target;
 }
 
@@ -182,6 +224,43 @@ function waitForWindowsSsh({
 }
 
 function buildRestoreReport(input) {
+  const controlledMaintenanceIngress =
+    input.controlledMaintenanceIngress ||
+    (input.maintenanceRelayInterface || input.maintenanceRelayRunnerPeerIp
+      ? {
+          kind: "wireguard-maintenance-relay",
+          windowsSshHost: input.windowsSshHost ?? input.windowsSsh?.host,
+          allowedSourcePeerIp: input.maintenanceRelayRunnerPeerIp,
+          interface: input.maintenanceRelayInterface,
+          bootstrapMode: "preconfigured-base-image",
+          preconfiguredVmRelayContract: {
+            vmWireGuardPeer: "preconfigured-and-running",
+            windowsControlledMaintenanceIngress:
+              "preconfigured-source-allowlist",
+            repositoryConfiguresVmRelay: false,
+          },
+        }
+      : undefined);
+  const restoreReportMaintenanceIngress = controlledMaintenanceIngress
+    ? {
+        ...controlledMaintenanceIngress,
+        preflight:
+          input.dryRun === true
+            ? {
+                status: "not_asserted",
+                assertion:
+                  "base_image_preconfigures_vm_wireguard_peer_and_ingress",
+                failureMode:
+                  "restore SSH readiness fails clearly; adapter does not bootstrap VM-side relay",
+              }
+            : {
+                status: "passed",
+                assertion: "ssh_reachable_over_preconfigured_vm_wireguard_ip",
+                failureCodeIfUnreachable:
+                  "vm_relay_preconfiguration_missing_or_windows_ingress_blocked",
+              },
+      }
+    : undefined;
   return {
     schemaVersion: RESTORE_REPORT_SCHEMA_VERSION,
     adapter: "libvirt-qcow2",
@@ -205,6 +284,9 @@ function buildRestoreReport(input) {
       reportPath: input.out,
       dryRun: input.dryRun === true,
     },
+    ...(restoreReportMaintenanceIngress
+      ? { controlledMaintenanceIngress: restoreReportMaintenanceIngress }
+      : {}),
     result: "passed",
   };
 }
@@ -212,7 +294,7 @@ function buildRestoreReport(input) {
 export function buildLibvirtQcow2RestorePlan(options = {}) {
   const runId = normalizeRunId(options.runId);
   const config = loadAdapterConfig(options.config ?? DEFAULT_CONFIG);
-  findAllowedTarget(config, options);
+  const target = findAllowedTarget(config, options);
   return {
     schemaVersion: "vm-host-restore-plan/v1",
     adapter: "libvirt-qcow2",
@@ -227,6 +309,40 @@ export function buildLibvirtQcow2RestorePlan(options = {}) {
       sshpass: options.sshpass === true,
       timeoutSeconds: Number(options.windowsSshTimeoutSeconds ?? 600),
     },
+    controlledMaintenanceIngress:
+      options.maintenanceRelayInterface || options.maintenanceRelayRunnerPeerIp
+        ? {
+            kind: "wireguard-maintenance-relay",
+            bootstrapMode: "preconfigured-base-image",
+            windowsSshHost: requireString(
+              options.windowsSshHost,
+              "--windows-ssh-host",
+            ),
+            allowedSourcePeerIp: requireString(
+              options.maintenanceRelayRunnerPeerIp,
+              "--maintenance-relay-runner-peer-ip",
+            ),
+            interface: requireString(
+              options.maintenanceRelayInterface,
+              "--maintenance-relay-interface",
+            ),
+            preconfiguredVmRelayContract: {
+              vmWireGuardPeer:
+                target.preconfiguredMaintenanceRelay.vmWireGuardPeer,
+              windowsControlledMaintenanceIngress:
+                target.preconfiguredMaintenanceRelay
+                  .windowsControlledMaintenanceIngress,
+              repositoryConfiguresVmRelay: false,
+            },
+            preflight: {
+              status: "required_before_restore_wait",
+              assertion:
+                "base_image_preconfigures_vm_wireguard_peer_and_ingress",
+              failureMode:
+                "restore SSH readiness fails clearly; adapter does not bootstrap VM-side relay",
+            },
+          }
+        : undefined,
     configPath: options.config ?? DEFAULT_CONFIG,
   };
 }
@@ -345,6 +461,12 @@ function parseArgs(argv) {
       index += 1;
     } else if (arg === "--windows-ssh-timeout-seconds") {
       options.windowsSshTimeoutSeconds = next;
+      index += 1;
+    } else if (arg === "--maintenance-relay-interface") {
+      options.maintenanceRelayInterface = next;
+      index += 1;
+    } else if (arg === "--maintenance-relay-runner-peer-ip") {
+      options.maintenanceRelayRunnerPeerIp = next;
       index += 1;
     } else if (arg === "--sshpass") {
       options.sshpass = true;

@@ -67,6 +67,18 @@ const DEFAULT_INVENTORY = [
     workflows: ["managed update"],
   },
   {
+    path: "scripts/check-maintenance-relay-runbook.test.mjs",
+    owner: "field-operations",
+    category: "verifier-test guard",
+    workflows: ["runtime acceptance", "testbed workflows"],
+  },
+  {
+    path: "scripts/check-vm-runtime-acceptance-workflow.test.mjs",
+    owner: "field-operations",
+    category: "verifier-test guard",
+    workflows: ["runtime acceptance", "testbed workflows"],
+  },
+  {
     path: "scripts/check-repository-script-inventory.mjs",
     owner: "field-operations",
     category: "verifier-test guard",

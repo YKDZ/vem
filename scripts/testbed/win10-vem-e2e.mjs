@@ -241,6 +241,9 @@ const DEFAULT_CLEAN_BASE_ACCEPTANCE_EVIDENCE_ROOT =
   "artifacts/clean-base-factory-acceptance";
 
 export function buildBringUpPlan(options = {}) {
+  const maintenanceIngressSourceAllowlist = String(
+    options.maintenanceIngressSourceAllowlist ?? "",
+  ).trim();
   return {
     setupScript:
       options.setupScript ??
@@ -269,11 +272,20 @@ export function buildBringUpPlan(options = {}) {
       KioskPassword: "$env:VEM_KIOSK_PASSWORD",
       MaintenancePassword: "$env:VEM_MAINTENANCE_PASSWORD",
       AutoLogonPassword: "$env:VEM_AUTOLOGON_PASSWORD",
+      ...(maintenanceIngressSourceAllowlist
+        ? {
+            MaintenanceIngressSourceAllowlist:
+              maintenanceIngressSourceAllowlist,
+          }
+        : {}),
     },
     switches: [
       "ConfigureKioskAccounts",
       "UseKioskAccount",
       "ConfigureAutoLogon",
+      ...(maintenanceIngressSourceAllowlist
+        ? ["ConfigureControlledMaintenanceIngress"]
+        : []),
     ],
   };
 }
@@ -2096,6 +2108,12 @@ function buildAcceptanceScriptCommand(mode, options = {}, extraArgs = []) {
   }
   if (options.factoryCredentialsFromSshpass === true) {
     command.push("--factory-credentials-from-sshpass");
+  }
+  if (options.maintenanceIngressSourceAllowlist) {
+    command.push(
+      "--maintenance-ingress-source-allowlist",
+      options.maintenanceIngressSourceAllowlist,
+    );
   }
   if (options.allowTestbedRemoteAlias === true) {
     command.push("--allow-testbed-remote-alias");
@@ -6788,6 +6806,9 @@ function parseArgs(argv) {
       options.sshpass = true;
     } else if (arg === "--factory-credentials-from-sshpass") {
       options.factoryCredentialsFromSshpass = true;
+    } else if (arg === "--maintenance-ingress-source-allowlist") {
+      options.maintenanceIngressSourceAllowlist = next;
+      index += 1;
     } else if (arg === "--use-existing-remote-artifacts") {
       options.useExistingRemoteArtifacts = true;
     } else if (arg === "--allow-clean-base-prepare") {

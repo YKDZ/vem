@@ -23,10 +23,18 @@ on:
         description: VM host target VM name
         required: false
         default: win10-vem-solidified-acceptance
-      windows_ssh_host:
-        description: Windows VM SSH host or Tailscale IP
+      vm_wireguard_ip:
+        description: Windows VM WireGuard peer IP used for SSH over Controlled Maintenance Ingress
         required: false
-        default: 192.168.2.162
+        default: 10.91.2.10
+      runner_wireguard_peer_ip:
+        description: Runner WireGuard peer IP allowed by Windows Controlled Maintenance Ingress
+        required: false
+        default: 10.91.1.10
+      runner_wireguard_interface:
+        description: Runner WireGuard interface name for the Maintenance Relay
+        required: false
+        default: wg-vem-maint
       windows_ssh_user:
         description: Windows VM maintenance SSH user
         required: false
@@ -62,6 +70,11 @@ jobs:
       EPHEMERAL_MQTT_URL: mqtt://127.0.0.1:18883
       PAYMENT_MOCK_ENABLED: "true"
       SSHPASS: ${{ secrets.VEM_TESTBED_WINDOWS_PASSWORD }}
+      MAINTENANCE_RELAY_WINDOWS_SSH_HOST: ${{ inputs.vm_wireguard_ip }}
+      MAINTENANCE_RELAY_RUNNER_PEER_IP: ${{ inputs.runner_wireguard_peer_ip }}
+      MAINTENANCE_RELAY_INTERFACE: ${{ inputs.runner_wireguard_interface }}
+      VEM_MAINTENANCE_RELAY_RUNNER_WG_CONFIG: ${{ secrets.VEM_MAINTENANCE_RELAY_RUNNER_WG_CONFIG }}
+      VEM_MAINTENANCE_RELAY_RUNNER_WG_CONFIG_PATH: ${{ secrets.VEM_MAINTENANCE_RELAY_RUNNER_WG_CONFIG_PATH }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -99,6 +112,96 @@ jobs:
           test -f artifacts/vm-runtime-inputs/vending-daemon.exe
           test -f artifacts/vm-runtime-inputs/machine.exe
           test -f artifacts/vm-runtime-inputs/WebView2Loader.dll
+
+      - name: Start Runner Maintenance Relay WireGuard Peer
+        run: |
+          set -euo pipefail
+          mkdir -p "artifacts/vm-runtime-acceptance/${RUN_ID}"
+          diagnostics="artifacts/vm-runtime-acceptance/${RUN_ID}/maintenance-relay-diagnostics.txt"
+          temp_config_path="$RUNNER_TEMP/${MAINTENANCE_RELAY_INTERFACE}-${GITHUB_RUN_ID}.conf"
+          installed_config_path="/etc/wireguard/${MAINTENANCE_RELAY_INTERFACE}.conf"
+          record_config_metadata() {
+            label="$1"
+            path="$2"
+            if [ -f "$path" ]; then
+              permissions="$(stat -c '%a' "$path" 2>/dev/null || stat -f '%Lp' "$path" 2>/dev/null || echo unknown)"
+              hash="$(sha256sum "$path" | awk '{print $1}')"
+              echo "${label}.exists=true"
+              echo "${label}.permissions=${permissions}"
+              echo "${label}.sha256=${hash}"
+            else
+              echo "${label}.exists=false"
+            fi
+          }
+          {
+            echo "Controlled Maintenance Ingress: WireGuard Maintenance Relay"
+            echo "interface=${MAINTENANCE_RELAY_INTERFACE}"
+            echo "runnerPeerIp=${MAINTENANCE_RELAY_RUNNER_PEER_IP}"
+            echo "windowsSshHost=${MAINTENANCE_RELAY_WINDOWS_SSH_HOST}"
+            echo "vmRelayBootstrapContract=preconfigured-base-image"
+            echo "repositoryConfiguresVmRelay=false"
+          } > "$diagnostics"
+
+          command -v wg-quick >/dev/null || {
+            echo "::error::wg-quick is required on the self-hosted VM runner for Maintenance Relay startup."
+            echo "wg-quick=missing" >> "$diagnostics"
+            exit 1
+          }
+          command -v wg >/dev/null || {
+            echo "::error::wg is required on the self-hosted VM runner for Maintenance Relay diagnostics."
+            echo "wg=missing" >> "$diagnostics"
+            exit 1
+          }
+
+          config_path="${VEM_MAINTENANCE_RELAY_RUNNER_WG_CONFIG_PATH:-}"
+          if [ -n "${VEM_MAINTENANCE_RELAY_RUNNER_WG_CONFIG:-}" ]; then
+            config_path="$temp_config_path"
+            printf '%s\n' "$VEM_MAINTENANCE_RELAY_RUNNER_WG_CONFIG" > "$config_path"
+            chmod 600 "$config_path"
+          fi
+          if [ -z "$config_path" ] || [ ! -f "$config_path" ]; then
+            echo "::error::Missing runner WireGuard peer config. Set VEM_MAINTENANCE_RELAY_RUNNER_WG_CONFIG or VEM_MAINTENANCE_RELAY_RUNNER_WG_CONFIG_PATH."
+            echo "runnerWireGuardConfig=missing" >> "$diagnostics"
+            exit 1
+          fi
+
+          {
+            record_config_metadata "runnerWireGuardConfig" "$config_path"
+            record_config_metadata "installedWireGuardConfigBeforeStart" "$installed_config_path"
+          } >> "$diagnostics"
+
+          sudo install -m 0600 "$config_path" "$installed_config_path"
+          sudo wg-quick down "$MAINTENANCE_RELAY_INTERFACE" >/dev/null 2>&1 || true
+          sudo wg-quick up "$MAINTENANCE_RELAY_INTERFACE"
+          {
+            record_config_metadata "installedWireGuardConfigAfterStart" "$installed_config_path"
+            echo "wgShowSummary.interface=${MAINTENANCE_RELAY_INTERFACE}"
+            echo "wgShowSummary.latestHandshakes<<EOF"
+            sudo wg show "$MAINTENANCE_RELAY_INTERFACE" latest-handshakes
+            echo "EOF"
+            echo "wgShowSummary.endpoints<<EOF"
+            sudo wg show "$MAINTENANCE_RELAY_INTERFACE" endpoints
+            echo "EOF"
+            echo "wgShowSummary.allowedIps<<EOF"
+            sudo wg show "$MAINTENANCE_RELAY_INTERFACE" allowed-ips
+            echo "EOF"
+          } >> "$diagnostics"
+
+      - name: Preflight Maintenance Relay Bootstrap Contract
+        run: |
+          set -euo pipefail
+          diagnostics="artifacts/vm-runtime-acceptance/${RUN_ID}/maintenance-relay-diagnostics.txt"
+          {
+            echo "preflight.vmRelayBootstrapContract=preconfigured-base-image"
+            echo "preflight.vmWireGuardPeer=must-already-be-configured-and-running-in-base-image"
+            echo "preflight.windowsControlledMaintenanceIngress=must-already-allow-runner-peer-ip"
+            echo "preflight.repositoryConfiguresVmRelay=false"
+          } >> "$diagnostics"
+          if [ -z "${SSHPASS:-}" ]; then
+            echo "::error::SSHPASS is required because VM runtime acceptance uses password SSH over the Maintenance Relay."
+            echo "preflight.sshpass=missing" >> "$diagnostics"
+            exit 1
+          fi
 
       - name: Start Ephemeral Postgres And MQTT
         run: |
@@ -153,8 +256,11 @@ jobs:
       - name: Restore Windows Runtime VM
         run: |
           set -euo pipefail
+          diagnostics="artifacts/vm-runtime-acceptance/${RUN_ID}/maintenance-relay-diagnostics.txt"
+          trap 'echo "windowsSshReadiness=failed" >> "$diagnostics"' ERR
           command -v sshpass >/dev/null || {
             echo "::error::sshpass is required on the self-hosted VM runner for password-based Windows SSH readiness checks."
+            echo "sshpassBinary=missing" >> "$diagnostics"
             exit 1
           }
           mkdir -p "artifacts/vm-runtime-acceptance/${RUN_ID}"
@@ -165,8 +271,10 @@ jobs:
             --target-vm "${{ inputs.target_vm }}" \
             --base-image "${{ inputs.base_image }}" \
             --overlay-disk "${{ inputs.overlay_disk }}" \
-            --windows-ssh-host "${{ inputs.windows_ssh_host }}" \
+            --windows-ssh-host "$MAINTENANCE_RELAY_WINDOWS_SSH_HOST" \
             --windows-ssh-user "${{ inputs.windows_ssh_user }}" \
+            --maintenance-relay-interface "$MAINTENANCE_RELAY_INTERFACE" \
+            --maintenance-relay-runner-peer-ip "$MAINTENANCE_RELAY_RUNNER_PEER_IP" \
             --sshpass \
             --out "artifacts/vm-runtime-acceptance/${RUN_ID}/vm-host-restore-report.json" \
             --allow-restore
@@ -183,8 +291,29 @@ jobs:
             --ephemeral-mqtt-url "$EPHEMERAL_MQTT_URL" \
             --daemon-artifact artifacts/vm-runtime-inputs/vending-daemon.exe \
             --machine-ui-artifact artifacts/vm-runtime-inputs/machine.exe \
-            --remote "${{ inputs.windows_ssh_user }}@${{ inputs.windows_ssh_host }}" \
+            --remote "${{ inputs.windows_ssh_user }}@$MAINTENANCE_RELAY_WINDOWS_SSH_HOST" \
+            --maintenance-ingress-source-allowlist "$MAINTENANCE_RELAY_RUNNER_PEER_IP" \
+            --sshpass \
             --factory-credentials-from-sshpass
+
+      - name: Cleanup Ephemeral Services
+        if: always()
+        run: |
+          set +e
+          diagnostics="artifacts/vm-runtime-acceptance/${RUN_ID}/maintenance-relay-diagnostics.txt"
+          temp_config_path="$RUNNER_TEMP/${MAINTENANCE_RELAY_INTERFACE}-${GITHUB_RUN_ID}.conf"
+          installed_config_path="/etc/wireguard/${MAINTENANCE_RELAY_INTERFACE}.conf"
+          sudo wg-quick down "$MAINTENANCE_RELAY_INTERFACE" >/dev/null 2>&1
+          wg_down_status="$?"
+          sudo rm -f "$installed_config_path"
+          rm -f "$temp_config_path"
+          {
+            echo "cleanup.wgQuickDownExit=${wg_down_status}"
+            echo "cleanup.installedConfigRemoved=true"
+            echo "cleanup.tempConfigRemoved=true"
+          } >> "$diagnostics" 2>/dev/null || true
+          if [ -f service-api.pid ]; then kill "$(cat service-api.pid)" 2>/dev/null || true; fi
+          docker rm -f "vem-runtime-postgres-${GITHUB_RUN_ID}" "vem-runtime-mqtt-${GITHUB_RUN_ID}" >/dev/null 2>&1 || true
 
       - name: Upload VM Runtime Acceptance Artifacts
         if: always()
@@ -196,10 +325,3 @@ jobs:
             service-api.log
           if-no-files-found: warn
           retention-days: 14
-
-      - name: Cleanup Ephemeral Services
-        if: always()
-        run: |
-          set +e
-          if [ -f service-api.pid ]; then kill "$(cat service-api.pid)" 2>/dev/null || true; fi
-          docker rm -f "vem-runtime-postgres-${GITHUB_RUN_ID}" "vem-runtime-mqtt-${GITHUB_RUN_ID}" >/dev/null 2>&1 || true

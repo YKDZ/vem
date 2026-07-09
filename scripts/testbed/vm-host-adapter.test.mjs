@@ -26,6 +26,15 @@ function fixtureConfig(root, overrides = {}) {
             baseImages: [baseImage],
             windowsSshUser: "YKDZ",
             windowsSshHosts: ["192.0.2.10"],
+            preconfiguredMaintenanceRelay: {
+              kind: "wireguard-maintenance-relay",
+              bootstrapMode: "preconfigured-base-image",
+              vmWireGuardPeer: "preconfigured-and-running",
+              windowsControlledMaintenanceIngress:
+                "preconfigured-source-allowlist",
+              windowsSshHost: "192.0.2.10",
+              allowedSourcePeerIps: ["192.0.2.1"],
+            },
             ...overrides,
           },
         ],
@@ -109,6 +118,88 @@ describe("vm-host-adapter", () => {
     assert.deepEqual(commands, [["sha256sum", [baseImage]]]);
   });
 
+  it("records Controlled Maintenance Ingress relay context without secrets", () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-vm-host-adapter-"));
+    const { baseImage, overlayDisk, configPath } = fixtureConfig(root, {
+      windowsSshHosts: ["10.91.2.10"],
+      preconfiguredMaintenanceRelay: {
+        kind: "wireguard-maintenance-relay",
+        bootstrapMode: "preconfigured-base-image",
+        vmWireGuardPeer: "preconfigured-and-running",
+        windowsControlledMaintenanceIngress: "preconfigured-source-allowlist",
+        windowsSshHost: "10.91.2.10",
+        allowedSourcePeerIps: ["10.91.1.10"],
+      },
+    });
+
+    const report = restoreLibvirtQcow2Vm(
+      {
+        config: configPath,
+        runId: "RUN-191",
+        targetVm: "win10-vem-solidified-acceptance",
+        baseImage,
+        overlayDisk,
+        windowsSshUser: "YKDZ",
+        windowsSshHost: "10.91.2.10",
+        maintenanceRelayInterface: "wg-vem-maint",
+        maintenanceRelayRunnerPeerIp: "10.91.1.10",
+        out: join(root, "report.json"),
+        dryRun: true,
+      },
+      {
+        runner(command, args) {
+          return command === "sha256sum"
+            ? `${"a".repeat(64)}  ${baseImage}\n`
+            : "";
+        },
+      },
+    );
+
+    assert.deepEqual(report.controlledMaintenanceIngress, {
+      kind: "wireguard-maintenance-relay",
+      bootstrapMode: "preconfigured-base-image",
+      windowsSshHost: "10.91.2.10",
+      allowedSourcePeerIp: "10.91.1.10",
+      interface: "wg-vem-maint",
+      preconfiguredVmRelayContract: {
+        vmWireGuardPeer: "preconfigured-and-running",
+        windowsControlledMaintenanceIngress: "preconfigured-source-allowlist",
+        repositoryConfiguresVmRelay: false,
+      },
+      preflight: {
+        status: "not_asserted",
+        assertion: "base_image_preconfigures_vm_wireguard_peer_and_ingress",
+        failureMode:
+          "restore SSH readiness fails clearly; adapter does not bootstrap VM-side relay",
+      },
+    });
+    assert.doesNotMatch(JSON.stringify(report), /PrivateKey|BEGIN|password/i);
+  });
+
+  it("fails clearly when the target lacks the preconfigured VM relay contract", () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-vm-host-adapter-"));
+    const { baseImage, overlayDisk, configPath } = fixtureConfig(root, {
+      windowsSshHosts: ["10.91.2.10"],
+      preconfiguredMaintenanceRelay: undefined,
+    });
+
+    assert.throws(
+      () =>
+        buildLibvirtQcow2RestorePlan({
+          config: configPath,
+          runId: "RUN-191",
+          targetVm: "win10-vem-solidified-acceptance",
+          baseImage,
+          overlayDisk,
+          windowsSshUser: "YKDZ",
+          windowsSshHost: "10.91.2.10",
+          maintenanceRelayInterface: "wg-vem-maint",
+          maintenanceRelayRunnerPeerIp: "10.91.1.10",
+        }),
+      /preconfiguredMaintenanceRelay\.bootstrapMode=preconfigured-base-image/,
+    );
+  });
+
   it("allows dry-run with supplied base image hash when host path is not local", () => {
     const root = mkdtempSync(join(tmpdir(), "vem-vm-host-adapter-"));
     mkdirSync(join(root, "mnt", "base"), { recursive: true });
@@ -161,6 +252,8 @@ describe("vm-host-adapter", () => {
         overlayDisk,
         windowsSshUser: "YKDZ",
         windowsSshHost: "192.0.2.10",
+        maintenanceRelayInterface: "wg-vem-maint",
+        maintenanceRelayRunnerPeerIp: "192.0.2.1",
         allowRestore: true,
         sshpass: true,
       },
@@ -178,6 +271,14 @@ describe("vm-host-adapter", () => {
     );
 
     assert.equal(report.result, "passed");
+    assert.equal(
+      report.controlledMaintenanceIngress.preflight.status,
+      "passed",
+    );
+    assert.equal(
+      report.controlledMaintenanceIngress.preflight.assertion,
+      "ssh_reachable_over_preconfigured_vm_wireguard_ip",
+    );
     assert.deepEqual(commands.at(-1), [
       "sshpass",
       [
