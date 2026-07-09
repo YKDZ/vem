@@ -107,7 +107,12 @@ test.describe("Payment Operations admin API contract", () => {
     await expect(
       page.getByRole("dialog", { name: /支付宝配置/ }),
     ).toBeVisible();
-    await expect(page.getByLabel("商户号")).toHaveValue(merchantNo);
+    await expect(
+      page
+        .locator(".ant-form-item")
+        .filter({ hasText: "商户号" })
+        .locator("input"),
+    ).toHaveValue(merchantNo);
     await expect(page.getByText("当前支付机构默认使用此配置")).toBeVisible();
   });
 });
