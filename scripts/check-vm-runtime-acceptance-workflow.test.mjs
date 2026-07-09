@@ -26,6 +26,28 @@ function stepBlock(workflow, stepName) {
 }
 
 describe("VM runtime acceptance workflow maintenance relay path", () => {
+  it("downloads Windows runtime artifacts with bounded curl retries on the self-hosted runner", () => {
+    const workflow = readWorkflow();
+    const download = stepBlock(workflow, "Download Windows Runtime Artifacts");
+
+    assert.match(workflow, /permissions:\n\s+actions: read\n\s+contents: read/);
+    assert.doesNotMatch(download, /uses:\s+actions\/download-artifact@v4/);
+    assert.match(download, /timeout-minutes:\s+8/);
+    assert.match(download, /ARTIFACT_NAME:/);
+    assert.match(
+      download,
+      /\$\{GITHUB_API_URL\}\/repos\/\$\{GITHUB_REPOSITORY\}\/actions\/runs\/\$\{GITHUB_RUN_ID\}\/artifacts/,
+    );
+    assert.match(download, /--max-time 120/);
+    assert.match(download, /--max-time 300/);
+    assert.match(download, /--retry 3/);
+    assert.match(download, /archive_download_url/);
+    assert.match(
+      download,
+      /unzip -q "\$artifact_zip" -d artifacts\/vm-runtime-inputs/,
+    );
+  });
+
   it("starts runner WireGuard before restoring the VM and uses the VM WireGuard IP for Windows SSH", () => {
     const workflow = readWorkflow();
 

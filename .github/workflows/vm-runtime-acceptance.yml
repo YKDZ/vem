@@ -45,6 +45,7 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
+  actions: read
   contents: read
 
 jobs:
@@ -101,10 +102,51 @@ jobs:
             ${{ runner.os }}-turbo-
 
       - name: Download Windows Runtime Artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: ${{ needs.build-windows-artifacts.outputs.artifact_name }}
-          path: artifacts/vm-runtime-inputs
+        timeout-minutes: 8
+        env:
+          ARTIFACT_NAME: ${{ needs.build-windows-artifacts.outputs.artifact_name }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts/vm-runtime-inputs "$RUNNER_TEMP"
+          rm -rf artifacts/vm-runtime-inputs/*
+          artifacts_json="$RUNNER_TEMP/vm-runtime-artifacts.json"
+          artifact_zip="$RUNNER_TEMP/vm-runtime-artifacts.zip"
+          curl --fail --silent --show-error --location \
+            --connect-timeout 20 \
+            --max-time 120 \
+            --retry 3 \
+            --retry-delay 5 \
+            --retry-all-errors \
+            --header "Accept: application/vnd.github+json" \
+            --header "Authorization: Bearer ${GH_TOKEN}" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/artifacts?name=${ARTIFACT_NAME}" \
+            --output "$artifacts_json"
+          archive_url="$(node -e '
+            const fs = require("node:fs");
+            const payload = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+            const artifact = payload.artifacts?.find((entry) => entry.name === process.env.ARTIFACT_NAME);
+            if (!artifact) {
+              throw new Error(`artifact not found: ${process.env.ARTIFACT_NAME}`);
+            }
+            if (artifact.expired) {
+              throw new Error(`artifact is expired: ${process.env.ARTIFACT_NAME}`);
+            }
+            process.stdout.write(artifact.archive_download_url);
+          ' "$artifacts_json")"
+          curl --fail --silent --show-error --location \
+            --connect-timeout 20 \
+            --max-time 300 \
+            --retry 3 \
+            --retry-delay 5 \
+            --retry-all-errors \
+            --header "Accept: application/vnd.github+json" \
+            --header "Authorization: Bearer ${GH_TOKEN}" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            "$archive_url" \
+            --output "$artifact_zip"
+          unzip -q "$artifact_zip" -d artifacts/vm-runtime-inputs
 
       - name: Validate Windows Runtime Artifacts
         run: |
