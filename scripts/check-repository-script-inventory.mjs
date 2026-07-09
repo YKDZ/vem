@@ -115,6 +115,24 @@ const DEFAULT_INVENTORY = [
     workflows: ["runtime acceptance", "testbed workflows"],
   },
   {
+    path: "scripts/testbed/vm-host-adapter.mjs",
+    owner: "field-operations",
+    category: "canonical entrypoint",
+    workflows: ["runtime acceptance", "testbed workflows"],
+  },
+  {
+    path: "scripts/testbed/vm-host-adapter.test.mjs",
+    owner: "field-operations",
+    category: "verifier-test guard",
+    workflows: ["runtime acceptance", "testbed workflows"],
+  },
+  {
+    path: "scripts/testbed/vm-host-adapters/libvirt-qcow2.unraid.json",
+    owner: "field-operations",
+    category: "public runbook operation",
+    workflows: ["runtime acceptance", "testbed workflows"],
+  },
+  {
     path: "scripts/windows/apply-managed-update.ps1",
     owner: "field-operations",
     category: "public runbook operation",
@@ -243,7 +261,11 @@ const DEFAULT_PUBLIC_RUNBOOKS = [
   },
   {
     path: "public/vm-runtime-acceptance.md",
-    scripts: ["scripts/testbed/win10-vem-e2e.mjs"],
+    scripts: [
+      "scripts/testbed/win10-vem-e2e.mjs",
+      "scripts/testbed/vm-host-adapter.mjs",
+      "scripts/testbed/vm-host-adapters/libvirt-qcow2.unraid.json",
+    ],
   },
   {
     path: "public/customer-accessible-kiosk-lockdown.md",
