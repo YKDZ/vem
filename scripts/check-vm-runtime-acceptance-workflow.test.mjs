@@ -32,14 +32,14 @@ describe("VM runtime acceptance workflow maintenance relay path", () => {
 
     assert.match(workflow, /permissions:\n\s+actions: read\n\s+contents: read/);
     assert.doesNotMatch(download, /uses:\s+actions\/download-artifact@v4/);
-    assert.match(download, /timeout-minutes:\s+8/);
+    assert.match(download, /timeout-minutes:\s+25/);
     assert.match(download, /ARTIFACT_NAME:/);
     assert.match(
       download,
       /\$\{GITHUB_API_URL\}\/repos\/\$\{GITHUB_REPOSITORY\}\/actions\/runs\/\$\{GITHUB_RUN_ID\}\/artifacts/,
     );
     assert.match(download, /--max-time 120/);
-    assert.match(download, /--max-time 300/);
+    assert.match(download, /--max-time 1200/);
     assert.match(download, /--retry 3/);
     assert.match(download, /archive_download_url/);
     assert.match(

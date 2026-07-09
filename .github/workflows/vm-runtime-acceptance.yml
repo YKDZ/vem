@@ -102,7 +102,7 @@ jobs:
             ${{ runner.os }}-turbo-
 
       - name: Download Windows Runtime Artifacts
-        timeout-minutes: 8
+        timeout-minutes: 25
         env:
           ARTIFACT_NAME: ${{ needs.build-windows-artifacts.outputs.artifact_name }}
           GH_TOKEN: ${{ github.token }}
@@ -137,7 +137,7 @@ jobs:
           ' "$artifacts_json")"
           curl --fail --silent --show-error --location \
             --connect-timeout 20 \
-            --max-time 300 \
+            --max-time 1200 \
             --retry 3 \
             --retry-delay 5 \
             --retry-all-errors \
