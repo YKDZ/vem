@@ -86,9 +86,7 @@ function isIpv4Address(value: string): boolean {
   if (!match) return false;
   return match.slice(1).every((octet) => {
     const octetValue = Number(octet);
-    return (
-      Number.isInteger(octetValue) && octetValue >= 0 && octetValue <= 255
-    );
+    return Number.isInteger(octetValue) && octetValue >= 0 && octetValue <= 255;
   });
 }
 
@@ -177,7 +175,9 @@ export function validateMaintenanceRelayPlan(
     }
     const hasValidTunnelIp = isIpv4Address(peer.tunnelIp);
     if (!hasValidTunnelIp) {
-      errors.push(`Malformed tunnel IP for peer ${peer.name}: ${peer.tunnelIp}`);
+      errors.push(
+        `Malformed tunnel IP for peer ${peer.name}: ${peer.tunnelIp}`,
+      );
     }
     if (
       hasValidTunnelIp &&
@@ -287,7 +287,10 @@ function relayPeer(plan: SafeRelayPlan): RelayPeer {
   return relay;
 }
 
-function activePeerRoutesFor(plan: SafeRelayPlan, peerName: string): RelayPeer[] {
+function activePeerRoutesFor(
+  plan: SafeRelayPlan,
+  peerName: string,
+): RelayPeer[] {
   const peersByName = new Map(plan.peers.map((peer) => [peer.name, peer]));
   const routeNames = new Set<string>();
   for (const session of plan.sessions) {

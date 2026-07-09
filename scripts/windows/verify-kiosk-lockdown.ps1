@@ -4,16 +4,16 @@ param(
   [string]$MachineUiExe = "C:\VEM\bringup\machine.exe",
   [string]$MachineUiLauncher = "C:\VEM\bringup\launch-machine-ui.vbs",
   [string]$MachineUiDebugLauncher = "C:\VEM\bringup\launch-machine-ui-debug.vbs",
-  [string]$TailscaleExe = "C:\Program Files\Tailscale\tailscale.exe",
   [string]$SshdConfigPath = "C:\ProgramData\ssh\sshd_config",
   [string]$EvidencePath = "C:\ProgramData\VEM\kiosk-lockdown-evidence.json",
+  [string[]]$MaintenanceIngressSourceAllowlist,
 
   [switch]$TouchEdgeGesturesBlocked,
   [switch]$CloseMinimizeControlsUnavailable,
   [switch]$DesktopShellUnavailable,
   [switch]$DebugRoutesUnavailable,
   [switch]$MaintenanceRecoveryConfirmed,
-  [switch]$RemoteMaintenanceConfirmed,
+  [switch]$MaintenanceIngressConfirmed,
   [string]$NegativeKioskSshEvidence = $env:VEM_NEGATIVE_KIOSK_SSH_EVIDENCE,
   [switch]$MaintenanceDebugTaskExpected
 )
@@ -70,51 +70,6 @@ function Get-ServiceStateOrNull([string]$Name) {
   }
 }
 
-function Get-TailscaleStatus([string]$TailscalePath) {
-  $service = Get-ServiceStateOrNull -Name "Tailscale"
-  $state = [ordered]@{
-    service = $service
-    cliPath = $TailscalePath
-    cliExists = Test-Path -LiteralPath $TailscalePath
-    backendState = $null
-    tailscaleIps = @()
-    error = $null
-  }
-
-  if (-not [bool]$state.cliExists) {
-    $state.error = "Tailscale CLI not found"
-    return [pscustomobject]$state
-  }
-
-  try {
-    $raw = & $TailscalePath status --json 2>&1
-    if ($LASTEXITCODE -ne 0) {
-      $state.error = [string]($raw -join "`n")
-    } else {
-      try {
-        $parsed = ($raw | Out-String) | ConvertFrom-Json
-        $state.backendState = $parsed.BackendState
-        $state.tailscaleIps = @($parsed.Self.TailscaleIPs)
-      } catch {
-        $state.error = [string]$_.Exception.Message
-      }
-    }
-
-    if (@($state.tailscaleIps).Count -eq 0) {
-      $ipRaw = & $TailscalePath ip -4 2>&1
-      if ($LASTEXITCODE -eq 0) {
-        $state.backendState = "Running"
-        $state.tailscaleIps = @($ipRaw | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-        $state.error = $null
-      }
-    }
-  } catch {
-    $state.error = [string]$_.Exception.Message
-  }
-
-  return [pscustomobject]$state
-}
-
 function Test-SshdConfigDeniesUser([string]$ConfigPath, [string]$User) {
   if (-not (Test-Path -LiteralPath $ConfigPath)) {
     return $false
@@ -138,9 +93,99 @@ function Test-SshdConfigDeniesUser([string]$ConfigPath, [string]$User) {
   return $false
 }
 
-function Get-VemTailscaleSshFirewallState {
-  $ruleName = "VEM Tailscale SSH"
-  $expectedRemoteAddresses = @("100.64.0.0/10", "100.64.0.0/255.192.0.0")
+function Assert-ControlledMaintenanceIngressSourceAllowlist {
+  param([string[]]$SourceAllowlist)
+
+  if ($null -eq $SourceAllowlist -or @($SourceAllowlist).Count -eq 0) {
+    throw "Controlled Maintenance Ingress requires at least one explicit maintenance ingress source address."
+  }
+
+  $forbidden = @(
+    "Any",
+    "*",
+    "Internet",
+    "LocalSubnet",
+    "DefaultGateway",
+    "DHCP",
+    "DNS",
+    "WINS",
+    "0.0.0.0",
+    "::",
+    "0.0.0.0/0",
+    "::/0"
+  )
+  $validated = [System.Collections.Generic.List[string]]::new()
+
+  foreach ($entry in $SourceAllowlist) {
+    foreach ($candidate in ([string]$entry -split ",")) {
+      $trimmed = $candidate.Trim()
+      if ([string]::IsNullOrWhiteSpace($trimmed)) {
+        throw "Controlled Maintenance Ingress source address must not be empty."
+      }
+      if ($forbidden -contains $trimmed) {
+        throw "Controlled Maintenance Ingress source address is too broad: $trimmed"
+      }
+
+      $addressText = $trimmed
+      $prefixLength = $null
+      if ($trimmed.Contains("/")) {
+        $parts = $trimmed -split "/", 2
+        if ($parts.Count -ne 2 -or [string]::IsNullOrWhiteSpace($parts[0]) -or [string]::IsNullOrWhiteSpace($parts[1])) {
+          throw "Controlled Maintenance Ingress source address must be an IP address or CIDR: $trimmed"
+        }
+        $addressText = $parts[0].Trim()
+        try {
+          $prefixLength = [int]$parts[1].Trim()
+        } catch {
+          throw "Controlled Maintenance Ingress CIDR prefix must be numeric: $trimmed"
+        }
+      }
+
+      $ip = [System.Net.IPAddress]::None
+      if (-not [System.Net.IPAddress]::TryParse($addressText, [ref]$ip)) {
+        throw "Controlled Maintenance Ingress source address must be an IP address or CIDR: $trimmed"
+      }
+      if ($ip.Equals([System.Net.IPAddress]::Any) -or $ip.Equals([System.Net.IPAddress]::IPv6Any)) {
+        throw "Controlled Maintenance Ingress source address is too broad: $trimmed"
+      }
+      $requiredPrefix = if ($ip.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetworkV6) { 128 } else { 32 }
+      if ($null -ne $prefixLength) {
+        if ($prefixLength -ne $requiredPrefix) {
+          throw "Controlled Maintenance Ingress source address is too broad: $trimmed"
+        }
+      }
+
+      $normalized = [string]$ip.IPAddressToString
+      if (-not $validated.Contains($normalized)) {
+        $validated.Add($normalized) | Out-Null
+      }
+    }
+  }
+
+  if ($validated.Count -eq 0) {
+    throw "Controlled Maintenance Ingress requires at least one explicit maintenance ingress source address."
+  }
+
+  return @($validated)
+}
+
+function Get-ControlledMaintenanceIngressFirewallState {
+  param([string[]]$SourceAllowlist)
+
+  $ruleName = "VEM Controlled Maintenance SSH"
+  try {
+    $normalizedExpectedRemoteAddresses = Assert-ControlledMaintenanceIngressSourceAllowlist -SourceAllowlist $SourceAllowlist
+  } catch {
+    return [pscustomobject]@{
+      ruleName = $ruleName
+      exists = $false
+      ok = $false
+      expectedRemoteAddress = @()
+      defaultOpenSshInboundRulesEnabled = @()
+      error = [string]$_.Exception.Message
+    }
+  }
+
   try {
     $rule = Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($null -eq $rule) {
@@ -165,12 +210,25 @@ function Get-VemTailscaleSshFirewallState {
       Select-Object -ExpandProperty DisplayName)
 
     $remoteAddresses = @($addressFilter.RemoteAddress)
+    $normalizedRemoteAddresses = @()
+    $remoteAddressValidationError = $null
+    try {
+      $normalizedRemoteAddresses = Assert-ControlledMaintenanceIngressSourceAllowlist -SourceAllowlist $remoteAddresses
+    } catch {
+      $remoteAddressValidationError = [string]$_.Exception.Message
+    }
+    $missingRemoteAddresses = @($normalizedExpectedRemoteAddresses | Where-Object { $normalizedRemoteAddresses -notcontains $_ })
+    $extraRemoteAddresses = @($normalizedRemoteAddresses | Where-Object { $normalizedExpectedRemoteAddresses -notcontains $_ })
+    $remoteAddressMatches = $null -eq $remoteAddressValidationError -and
+      $normalizedRemoteAddresses.Count -eq $normalizedExpectedRemoteAddresses.Count -and
+      $missingRemoteAddresses.Count -eq 0 -and
+      $extraRemoteAddresses.Count -eq 0
     $ok = $rule.Enabled -eq "True" -and
       $rule.Direction -eq "Inbound" -and
       $rule.Action -eq "Allow" -and
       $portFilter.Protocol -eq "TCP" -and
       $portFilter.LocalPort -eq "22" -and
-      @($remoteAddresses | Where-Object { $expectedRemoteAddresses -contains $_ }).Count -gt 0 -and
+      $remoteAddressMatches -and
       $defaultOpenSshInboundRulesEnabled.Count -eq 0
 
     return [pscustomobject]@{
@@ -183,10 +241,13 @@ function Get-VemTailscaleSshFirewallState {
       protocol = [string]$portFilter.Protocol
       localPort = [string]$portFilter.LocalPort
       remoteAddress = $remoteAddresses
-      expectedRemoteAddress = $expectedRemoteAddresses[0]
+      normalizedRemoteAddress = @($normalizedRemoteAddresses)
+      expectedRemoteAddress = @($normalizedExpectedRemoteAddresses)
+      missingRemoteAddress = @($missingRemoteAddresses)
+      extraRemoteAddress = @($extraRemoteAddresses)
       defaultOpenSshInboundRulesEnabled = $defaultOpenSshInboundRulesEnabled
       ok = [bool]$ok
-      error = $null
+      error = $remoteAddressValidationError
     }
   } catch {
     return [pscustomobject]@{
@@ -317,9 +378,9 @@ if (-not $sshdConfigDeniesKioskUser) {
   Add-Failure $failures "sshd_config does not deny the lowercase kiosk account: $kioskUserForSshdDeny"
 }
 
-$tailscaleSshFirewall = Get-VemTailscaleSshFirewallState
-if (-not [bool]$tailscaleSshFirewall.ok) {
-  Add-Failure $failures "VEM Tailscale SSH firewall rule is missing, too broad, or default OpenSSH inbound rules remain enabled"
+$controlledMaintenanceIngressFirewall = Get-ControlledMaintenanceIngressFirewallState -SourceAllowlist $MaintenanceIngressSourceAllowlist
+if (-not [bool]$controlledMaintenanceIngressFirewall.ok) {
+  Add-Failure $failures "VEM Controlled Maintenance SSH firewall rule is missing, too broad, does not match the explicit allowlist, or default OpenSSH inbound rules remain enabled"
 }
 
 $sshdService = Get-ServiceStateOrNull -Name "sshd"
@@ -339,20 +400,8 @@ if (-not [bool]$port22.TcpTestSucceeded) {
   Add-Failure $failures "OpenSSH port 22 is not reachable locally"
 }
 
-$tailscaleStatus = Get-TailscaleStatus -TailscalePath $TailscaleExe
-if ($null -eq $tailscaleStatus.service) {
-  Add-Failure $failures "Tailscale service is not installed"
-} elseif ($tailscaleStatus.service.status -ne "Running") {
-  Add-Failure $failures "Tailscale service is not running"
-}
-if ($tailscaleStatus.backendState -ne "Running") {
-  Add-Failure $failures "Tailscale backend is not running"
-}
-if (@($tailscaleStatus.tailscaleIps).Count -eq 0) {
-  Add-Failure $failures "Tailscale has no assigned IPs"
-}
-if (-not [bool]$RemoteMaintenanceConfirmed) {
-  Add-Failure $failures "manual remote maintenance SSH login not confirmed"
+if (-not [bool]$MaintenanceIngressConfirmed) {
+  Add-Failure $failures "manual Controlled Maintenance Ingress SSH login not confirmed"
 }
 if ([string]::IsNullOrWhiteSpace($NegativeKioskSshEvidence)) {
   Add-Failure $failures "negative kiosk SSH attempt evidence is required"
@@ -388,7 +437,7 @@ $manualTouchChecks = [ordered]@{
   desktopShellUnavailable = [bool]$DesktopShellUnavailable
   debugRoutesUnavailable = [bool]$DebugRoutesUnavailable
   maintenanceRecoveryConfirmed = [bool]$MaintenanceRecoveryConfirmed
-  remoteMaintenanceConfirmed = [bool]$RemoteMaintenanceConfirmed
+  maintenanceIngressConfirmed = [bool]$MaintenanceIngressConfirmed
 }
 
 foreach ($property in $manualTouchChecks.GetEnumerator()) {
@@ -439,7 +488,7 @@ $result = [pscustomobject]@{
     maintenanceEnabled = if ($null -ne $maintenance) { [bool]$maintenance.Enabled } else { $false }
     maintenanceIsAdministrator = $maintenanceIsAdmin
   }
-  remoteMaintenance = [pscustomobject]@{
+  controlledMaintenanceIngress = [pscustomobject]@{
     sshd = $sshdService
     localPort22Reachable = [bool]$port22.TcpTestSucceeded
     sshdConfigPath = $SshdConfigPath
@@ -448,9 +497,9 @@ $result = [pscustomobject]@{
     maintenanceInOpenSshUsers = $maintenanceInOpenSshUsers
     kioskInOpenSshUsers = $kioskInOpenSshUsers
     kioskInRemoteDesktopUsers = $kioskInRemoteDesktopUsers
-    firewall = $tailscaleSshFirewall
-    tailscale = $tailscaleStatus
-    hitlRemoteMaintenanceConfirmed = [bool]$RemoteMaintenanceConfirmed
+    maintenanceIngressSourceAllowlist = @($MaintenanceIngressSourceAllowlist)
+    firewall = $controlledMaintenanceIngressFirewall
+    hitlMaintenanceIngressConfirmed = [bool]$MaintenanceIngressConfirmed
     negativeKioskSshEvidence = $NegativeKioskSshEvidence
   }
   launchers = [pscustomobject]@{
