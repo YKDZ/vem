@@ -413,7 +413,12 @@ function Ensure-ControlledMaintenanceIngressFirewall {
 
   Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue |
     Remove-NetFirewallRule
-  Get-NetFirewallRule -DisplayName "VEM Tailscale SSH" -ErrorAction SilentlyContinue |
+  Get-NetFirewallRule -ErrorAction SilentlyContinue |
+    Where-Object {
+      $_.Direction -eq "Inbound" -and
+      $_.DisplayName -like "VEM * SSH" -and
+      $_.DisplayName -ne $ruleName
+    } |
     Remove-NetFirewallRule
 
   New-NetFirewallRule `

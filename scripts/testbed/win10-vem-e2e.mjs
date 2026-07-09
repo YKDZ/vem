@@ -233,8 +233,10 @@ const EXPECTED_PORTRAIT_HEIGHT_PX = 1920;
 const DEFAULT_DIRTY_HOST_TESTBED = {
   hostName: "DESKTOP-2STVS5B",
   user: "YKDZ",
-  tailscaleIp: "100.68.189.11",
 };
+const DEFAULT_CONTROLLED_MAINTENANCE_INGRESS_HOST =
+  "controlled-maintenance-ingress.local";
+const DEFAULT_CONTROLLED_MAINTENANCE_REMOTE = `${DEFAULT_DIRTY_HOST_TESTBED.user}@${DEFAULT_CONTROLLED_MAINTENANCE_INGRESS_HOST}`;
 const DEFAULT_VM_ACCEPTANCE_MACHINE_CODE_PREFIX = "VEM-TESTBED-WINVM";
 const DEFAULT_VM_ACCEPTANCE_EVIDENCE_ROOT = "artifacts/vm-runtime-acceptance";
 const DEFAULT_CLEAN_BASE_ACCEPTANCE_EVIDENCE_ROOT =
@@ -1293,8 +1295,8 @@ export function buildResetPlan() {
     preservedResources: [
       "Windows OS",
       "display setup",
-      "Tailscale",
       "OpenSSH",
+      "Controlled Maintenance Ingress configuration",
       "WebView2",
       "YKDZ maintenance account",
       "base networking",
@@ -1383,7 +1385,7 @@ function sanitizeRunId(value) {
 }
 
 function normalizeRemoteForSafety(remote) {
-  const value = String(remote ?? "YKDZ@100.68.189.11").trim();
+  const value = String(remote ?? DEFAULT_CONTROLLED_MAINTENANCE_REMOTE).trim();
   const lastAt = value.lastIndexOf("@");
   if (lastAt === -1) {
     return { user: null, host: value };
@@ -1395,13 +1397,13 @@ function normalizeRemoteForSafety(remote) {
 }
 
 function expectedDirtyHostTestbed(options = {}) {
+  const remote = normalizeRemoteForSafety(options.remote);
   return {
     hostName:
       options.expectedTestbedHostName ?? DEFAULT_DIRTY_HOST_TESTBED.hostName,
     user: options.expectedTestbedUser ?? DEFAULT_DIRTY_HOST_TESTBED.user,
-    tailscaleIp:
-      options.expectedTestbedTailscaleIp ??
-      DEFAULT_DIRTY_HOST_TESTBED.tailscaleIp,
+    maintenanceIngressHost:
+      options.expectedMaintenanceIngressHost ?? remote.host ?? null,
   };
 }
 
@@ -1411,7 +1413,10 @@ function assertDirtyHostFactoryRemoteSafety(options = {}) {
   }
 
   const expected = expectedDirtyHostTestbed(options);
-  for (const [name, value] of Object.entries(expected)) {
+  for (const [name, value] of Object.entries({
+    hostName: expected.hostName,
+    user: expected.user,
+  })) {
     if (!String(value ?? "").trim()) {
       throw new Error(
         `dirty-host factory acceptance requires expected ${name} for remote identity guard`,
@@ -1420,13 +1425,26 @@ function assertDirtyHostFactoryRemoteSafety(options = {}) {
   }
 
   const remote = normalizeRemoteForSafety(options.remote);
-  const literalTestbedRemote =
-    remote.user === expected.user && remote.host === expected.tailscaleIp;
-  if (literalTestbedRemote) {
-    return;
+  const refusal = classifyUnsafeCleanBaseSource([remote.user, remote.host]);
+  if (refusal === "production machine") {
+    throw new Error(
+      `dirty-host factory acceptance refuses production remote before reset: ${options.remote}`,
+    );
+  }
+  if (
+    String(options.expectedMaintenanceIngressHost ?? "").trim() &&
+    remote.host !== expected.maintenanceIngressHost &&
+    options.allowTestbedRemoteAlias !== true
+  ) {
+    throw new Error(
+      "dirty-host factory acceptance refuses unexpected maintenance ingress host by default; use --allow-testbed-remote-alias with expected testbed identity values",
+    );
   }
 
-  if (options.allowTestbedRemoteAlias === true) {
+  if (
+    remote.user === expected.user ||
+    options.allowTestbedRemoteAlias === true
+  ) {
     return;
   }
 
@@ -2127,10 +2145,10 @@ function buildAcceptanceScriptCommand(mode, options = {}, extraArgs = []) {
   if (options.expectedTestbedUser) {
     command.push("--expected-testbed-user", options.expectedTestbedUser);
   }
-  if (options.expectedTestbedTailscaleIp) {
+  if (options.expectedMaintenanceIngressHost) {
     command.push(
-      "--expected-testbed-tailscale-ip",
-      options.expectedTestbedTailscaleIp,
+      "--expected-maintenance-ingress-host",
+      options.expectedMaintenanceIngressHost,
     );
   }
   if (options.proxyCommand) {
@@ -2257,7 +2275,7 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
       machineCode,
       machineCodePrefix,
       platformTarget,
-      remote: options.remote ?? "YKDZ@100.68.189.11",
+      remote: options.remote ?? DEFAULT_CONTROLLED_MAINTENANCE_REMOTE,
     },
     evidenceRoot,
     artifacts: {
@@ -3340,25 +3358,16 @@ function Import-DirtyHostFactoryCredentialFile([string]$Path) {
 function Get-DirtyHostFactoryTestbedIdentity {
   $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
   $computer = Get-CimInstance Win32_ComputerSystem
-  $tailscaleIps = @()
-  $tailscaleError = $null
-  try {
-    $tailscaleIps = @(tailscale ip -4 2>&1 | ForEach-Object { [string]$_ } | Where-Object { $_ -match '^\\d+\\.\\d+\\.\\d+\\.\\d+$' })
-  } catch {
-    $tailscaleError = [string]$_
-  }
   return [ordered]@{
     expected = [ordered]@{
       hostName = ${psString(expectedTestbed.hostName)}
       user = ${psString(expectedTestbed.user)}
-      tailscaleIp = ${psString(expectedTestbed.tailscaleIp)}
+      maintenanceIngressHost = ${psString(expectedTestbed.maintenanceIngressHost ?? "")}
     }
     observed = [ordered]@{
       hostName = [string]$computer.Name
       user = ([string]$identity.Name).Split("\\")[-1]
       windowsIdentity = [string]$identity.Name
-      tailscaleIps = $tailscaleIps
-      tailscaleError = $tailscaleError
     }
   }
 }
@@ -3369,9 +3378,6 @@ function Assert-DirtyHostFactoryTestbedIdentity($IdentityGuard) {
   }
   if ([string]$IdentityGuard.observed.user -ne [string]$IdentityGuard.expected.user) {
     throw "dirty-host factory acceptance refused remote user: expected $($IdentityGuard.expected.user), got $($IdentityGuard.observed.user)"
-  }
-  if (-not (@($IdentityGuard.observed.tailscaleIps) -contains [string]$IdentityGuard.expected.tailscaleIp)) {
-    throw "dirty-host factory acceptance refused remote Tailscale identity: expected $($IdentityGuard.expected.tailscaleIp), got $(@($IdentityGuard.observed.tailscaleIps) -join ', ')"
   }
 }
 
@@ -4831,21 +4837,9 @@ function Add-FactoryAcceptanceDiagnostic($Diagnostics, [string]$Code, [string]$M
 
 function Get-CleanBaseFactoryIdentity {
   $computer = Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue
-  $tailscaleIps = @()
-  $tailscaleName = $null
-  try {
-    $status = & tailscale status --json 2>$null | ConvertFrom-Json -ErrorAction Stop
-    $tailscaleName = [string]$status.Self.DNSName
-    $tailscaleIps = @($status.Self.TailscaleIPs | ForEach-Object { [string]$_ })
-  } catch {
-    $tailscaleName = $null
-    $tailscaleIps = @()
-  }
   return [ordered]@{
     hostName = if ($null -ne $computer) { [string]$computer.Name } else { $env:COMPUTERNAME }
     user = [Security.Principal.WindowsIdentity]::GetCurrent().Name
-    tailscaleName = $tailscaleName
-    tailscaleIps = @($tailscaleIps)
   }
 }
 
@@ -4854,9 +4848,8 @@ function Assert-CleanBaseFactoryIdentitySafety($Identity) {
     ${psString(cleanBaseSource)},
     ${psString(cleanBaseSnapshot)},
     [string]$Identity.hostName,
-    [string]$Identity.user,
-    [string]$Identity.tailscaleName
-  ) + @($Identity.tailscaleIps | ForEach-Object { [string]$_ })
+    [string]$Identity.user
+  )
   $dirtyMarkers = ${psArray(KNOWN_DIRTY_CLEAN_BASE_SOURCE_MARKERS)}
   $productionMarkers = ${psArray(KNOWN_PRODUCTION_CLEAN_BASE_SOURCE_MARKERS)}
   foreach ($value in $values) {
@@ -6191,8 +6184,6 @@ function Get-InventoryFacts($ProvisioningActions = @()) {
       kiosk = Get-LocalUserEvidence "VEMKiosk"
     }
     access = [ordered]@{
-      tailscaleCommand = Get-CommandEvidence "tailscale"
-      tailscaleService = Get-ServiceStateOrNull -Name "Tailscale"
       openSshServer = Get-ServiceStateOrNull -Name "sshd"
       sshCommand = Get-CommandEvidence "ssh"
     }
@@ -6402,7 +6393,7 @@ export function buildSshCommand(options = {}) {
     ...(options.sshpass === true ? ["sshpass", "-e"] : []),
     "ssh",
     ...buildSshOptionArgs(options),
-    options.remote ?? "YKDZ@100.68.189.11",
+    options.remote ?? DEFAULT_CONTROLLED_MAINTENANCE_REMOTE,
   ];
 }
 
@@ -6448,7 +6439,7 @@ export function buildRemotePowerShellCommand(remoteScriptPath, options = {}) {
 }
 
 export function buildScpCommand(sourcePath, remoteScriptPath, options = {}) {
-  const remote = options.remote ?? "YKDZ@100.68.189.11";
+  const remote = options.remote ?? DEFAULT_CONTROLLED_MAINTENANCE_REMOTE;
   return [
     ...(options.sshpass === true ? ["sshpass", "-e"] : []),
     "scp",
@@ -6470,18 +6461,9 @@ export function buildCleanBaseRemoteIdentityProbeCommand() {
 $ErrorActionPreference = 'SilentlyContinue'
 $computer = Get-CimInstance Win32_ComputerSystem
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-$tailscaleName = $null
-$tailscaleIps = @()
-try {
-  $status = tailscale status --json 2>$null | ConvertFrom-Json
-  $tailscaleName = [string]$status.Self.DNSName
-  $tailscaleIps = @($status.Self.TailscaleIPs | ForEach-Object { [string]$_ })
-} catch {}
 [pscustomobject]@{
   hostName = [string]$computer.Name
   user = [string]$identity.Name
-  tailscaleName = $tailscaleName
-  tailscaleIps = @($tailscaleIps)
 } | ConvertTo-Json -Depth 10
 `);
 }
@@ -6694,10 +6676,10 @@ export function getRuntimeAcceptanceExitStatus({
 
 function usage() {
   console.error(`Usage:
-  win10-vem-e2e.mjs [--mode inventory|reset|inventory-reset|bring-up|provision|runtime-acceptance|simulated-hardware-sale-flow|dirty-host-factory-acceptance|clean-base-factory-acceptance|validate-clean-base-evidence|factory-image-delivery-unit|vm-runtime-acceptance] [--run-id ID] [--claim-code CODE] [--ephemeral-platform-evidence PATH] [--ephemeral-database-url URL] [--ephemeral-api-base-url URL] [--ephemeral-mqtt-url URL] [--clean-base-source SOURCE] [--clean-base-snapshot SNAPSHOT] [--clean-base-evidence PATH] [--daemon-artifact PATH] [--machine-ui-artifact PATH] [--daemon-artifact-sha256 HASH] [--machine-ui-artifact-sha256 HASH] [--use-existing-remote-artifacts] [--allow-clean-base-prepare] [--remote USER@HOST] [--ssh-config] [--sshpass] [--factory-credentials-from-sshpass] [--allow-testbed-remote-alias] [--expected-testbed-hostname NAME] [--expected-testbed-user USER] [--expected-testbed-tailscale-ip IP] [--proxy-command CMD] [--identity KEY] [--dry-run] [--out PATH]
+  win10-vem-e2e.mjs [--mode inventory|reset|inventory-reset|bring-up|provision|runtime-acceptance|simulated-hardware-sale-flow|dirty-host-factory-acceptance|clean-base-factory-acceptance|validate-clean-base-evidence|factory-image-delivery-unit|vm-runtime-acceptance] [--run-id ID] [--claim-code CODE] [--ephemeral-platform-evidence PATH] [--ephemeral-database-url URL] [--ephemeral-api-base-url URL] [--ephemeral-mqtt-url URL] [--clean-base-source SOURCE] [--clean-base-snapshot SNAPSHOT] [--clean-base-evidence PATH] [--daemon-artifact PATH] [--machine-ui-artifact PATH] [--daemon-artifact-sha256 HASH] [--machine-ui-artifact-sha256 HASH] [--use-existing-remote-artifacts] [--allow-clean-base-prepare] [--remote USER@HOST] [--ssh-config] [--sshpass] [--factory-credentials-from-sshpass] [--allow-testbed-remote-alias] [--expected-testbed-hostname NAME] [--expected-testbed-user USER] [--expected-maintenance-ingress-host HOST] [--proxy-command CMD] [--identity KEY] [--dry-run] [--out PATH]
 
 Defaults target the documented Machine Runtime Testbed:
-  --remote YKDZ@100.68.189.11
+  --remote ${DEFAULT_CONTROLLED_MAINTENANCE_REMOTE}
   --mode inventory
 
 Bring-up mode invokes C:\\VEM\\bringup\\scripts\\setup-scheduled-tasks.ps1 on the remote host and requires VEM_KIOSK_PASSWORD, VEM_MAINTENANCE_PASSWORD, and VEM_AUTOLOGON_PASSWORD in the remote PowerShell environment.
@@ -6711,7 +6693,7 @@ Simulated hardware sale-flow mode writes C:\\ProgramData\\VEM\\vending-daemon\\s
 Dirty-host factory acceptance mode stages specified local artifacts and factory scripts under C:\\ProgramData\\VEM\\evidence\\<run-id>, runs scripted factory preparation with explicit local reset, runs the verifier, and writes dirty-host-factory-acceptance.json. It requires --run-id, --daemon-artifact, --machine-ui-artifact, and remote VEM_KIOSK_PASSWORD, VEM_MAINTENANCE_PASSWORD, and VEM_AUTOLOGON_PASSWORD.
 --use-existing-remote-artifacts is a test-only escape hatch for intentionally accepting C:\\VEM\\bringup\\*.exe instead of uploaded artifacts.
 For the documented disposable Win10 testbed only, --factory-credentials-from-sshpass stages a temporary remote credential file from local SSHPASS without embedding the secret in command strings.
-SSH config aliases are refused in dirty-host mode unless --allow-testbed-remote-alias is supplied; the remote script still asserts hostname/user/Tailscale identity before reset.
+SSH config aliases and unexpected maintenance ingress hosts are refused in dirty-host mode unless --allow-testbed-remote-alias is supplied; the remote script still asserts hostname/user identity before reset.
 
 Clean-base factory acceptance mode prepares an explicitly identified existing clean Windows base or VM source. Dry-run emits the checklist, absence probes, report path, and destructive gate. Live preparation requires --allow-clean-base-prepare, stages daemon/UI artifacts plus WebView2Loader.dll, runs factory preparation and verifier scripts, writes clean-base-factory-acceptance.json, and must not use the known dirty testbed or production machine identities as clean-base proof.
 
@@ -6821,8 +6803,8 @@ function parseArgs(argv) {
     } else if (arg === "--expected-testbed-user") {
       options.expectedTestbedUser = next;
       index += 1;
-    } else if (arg === "--expected-testbed-tailscale-ip") {
-      options.expectedTestbedTailscaleIp = next;
+    } else if (arg === "--expected-maintenance-ingress-host") {
+      options.expectedMaintenanceIngressHost = next;
       index += 1;
     } else if (arg === "--dry-run") {
       options.dryRun = true;

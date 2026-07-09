@@ -217,7 +217,7 @@ const DEFAULT_PUBLIC_RUNBOOKS = [
       "scripts/windows/prepare-factory-runtime.ps1",
       "scripts/windows/verify-factory-runtime.ps1",
     ],
-    forbiddenText: ["<win10.iso>"],
+    forbiddenText: ["<win10.iso>", "Tailscale identity"],
     requiredContracts: [
       {
         schemaVersion: "clean-base-source-contract/v1",
@@ -278,6 +278,12 @@ const DEFAULT_PUBLIC_RUNBOOKS = [
       "scripts/testbed/vm-host-adapter.mjs",
       "scripts/testbed/vm-host-adapters/libvirt-qcow2.unraid.json",
     ],
+    requiredText: [
+      "[Maintenance Relay bring-up runbook](./maintenance-relay-bring-up.md)",
+      "Controlled Maintenance Ingress",
+      "WireGuard and SSH are implementation mechanisms",
+    ],
+    forbiddenText: ["Tailscale SSH", "Tailscale-backed"],
   },
   {
     path: "public/customer-accessible-kiosk-lockdown.md",
@@ -285,6 +291,22 @@ const DEFAULT_PUBLIC_RUNBOOKS = [
       "scripts/windows/setup-scheduled-tasks.ps1",
       "scripts/windows/verify-kiosk-lockdown.ps1",
     ],
+    requiredText: [
+      "Controlled Maintenance Ingress",
+      "WireGuard, SSH, and the relay are implementation mechanisms",
+      "VEM Controlled Maintenance SSH",
+    ],
+    forbiddenText: ["VEM Tailscale SSH", "ConfigureRemoteMaintenanceAccess"],
+  },
+  {
+    path: "public/production-pilot-sop.md",
+    scripts: [],
+    requiredText: [
+      "Controlled Maintenance Ingress",
+      "Maintenance Relay",
+      "SSH, WireGuard, and relay",
+    ],
+    forbiddenText: ["Tailscale SSH", "受控 Tailscale"],
   },
   {
     path: "public/managed-machine-update.md",
@@ -314,6 +336,94 @@ const REQUIRED_WORKFLOWS = [
   "smoke",
   "testbed workflows",
 ];
+
+const STALE_INTEGRATION_TEXT_EXEMPT_PATHS = new Set([
+  "scripts/check-repository-script-inventory.mjs",
+  "scripts/check-repository-script-inventory.test.mjs",
+]);
+
+const STALE_TAILSCALE_INTEGRATION_PATTERNS = [
+  {
+    pattern: /\btailscale\s+(?:ip|status|ssh)\b/i,
+    label: "Tailscale CLI identity/status command",
+  },
+  {
+    pattern: /\bGet-CommandEvidence\s+["']tailscale["']/i,
+    label: "Tailscale CLI evidence",
+  },
+  {
+    pattern: /\bGet-ServiceStateOrNull\s+-Name\s+["']Tailscale["']/i,
+    label: "Tailscale service evidence",
+  },
+  {
+    pattern: /expected-testbed-tailscale-ip/i,
+    label: "testbed tailnet IP expectation",
+  },
+  {
+    pattern: /\btailscale(?:Name|Ips?|Ip)\b/,
+    label: "Tailscale identity evidence field",
+  },
+  {
+    pattern: /Tailscale SSH/i,
+    label: "Tailscale SSH wording",
+  },
+  {
+    pattern: /Tailscale-backed/i,
+    label: "Tailscale-backed transport wording",
+  },
+  {
+    pattern: /Tailscale identity/i,
+    label: "Tailscale identity wording",
+  },
+  {
+    pattern: /tailnet\s+IP\s+evidence/i,
+    label: "tailnet IP evidence wording",
+  },
+  {
+    pattern:
+      /\b(?:install|require|validate|verify|ensure|enable)\w*\b.*\bTailscale\b.*\b(?:service|CLI|command|identity|SSH)\b/i,
+    label: "Tailscale service/CLI requirement wording",
+  },
+];
+
+const ALLOWED_TAILSCALE_NEGATIVE_BASELINE_PATTERN =
+  /\b(absent|absence|not[_ -]?installed|not_installed_by_default|not\s+install|not\s+include|must\s+not\s+include|without\s+installing|does\s+not\s+include|avoid\s+Tailscale|no\s+Tailscale|doesNotMatch)\b|!\s*\w+\.includes/i;
+
+function isAllowedTailscaleNegativeBaseline(line) {
+  return (
+    /\bTailscale\b/i.test(line) &&
+    ALLOWED_TAILSCALE_NEGATIVE_BASELINE_PATTERN.test(line)
+  );
+}
+
+function validateStaleIntegrationText(path, text) {
+  if (STALE_INTEGRATION_TEXT_EXEMPT_PATHS.has(path)) {
+    return [];
+  }
+  const failures = [];
+  const lines = text.split(/\r?\n/u);
+  for (const [index, line] of lines.entries()) {
+    const stalePattern = STALE_TAILSCALE_INTEGRATION_PATTERNS.find((rule) =>
+      rule.pattern.test(line),
+    );
+    if (stalePattern && !isAllowedTailscaleNegativeBaseline(line)) {
+      failures.push(
+        `${path}:${index + 1} contains stale integration text (${stalePattern.label}): ${line.trim()}`,
+      );
+      continue;
+    }
+    if (
+      path.startsWith("public/") &&
+      /\b(?:Tailscale|tailnet)\b/i.test(line) &&
+      !isAllowedTailscaleNegativeBaseline(line)
+    ) {
+      failures.push(
+        `${path}:${index + 1} contains non-negative Tailscale wording: ${line.trim()}`,
+      );
+    }
+  }
+  return failures;
+}
 
 function listFiles(root, directory) {
   const absoluteDirectory = join(root, directory);
@@ -422,6 +532,8 @@ function isRunbookFailure(failure) {
     failure.includes(" references a script outside the inventory: ") ||
     failure.includes(" should reference ") ||
     failure.includes(" contains forbidden runbook text: ") ||
+    failure.includes(" contains stale integration text ") ||
+    failure.includes(" contains non-negative Tailscale wording") ||
     failure.includes(" missing required runbook contract: ") ||
     failure.includes(" invalid required runbook contract ") ||
     failure.includes(" required runbook contract ")
@@ -466,6 +578,13 @@ function validateRunbookContracts(runbook, text) {
     if (text.includes(forbiddenText)) {
       failures.push(
         `${runbook.path} contains forbidden runbook text: ${forbiddenText}`,
+      );
+    }
+  }
+  for (const requiredText of runbook.requiredText ?? []) {
+    if (!text.includes(requiredText)) {
+      failures.push(
+        `${runbook.path} missing required runbook text: ${requiredText}`,
       );
     }
   }
@@ -560,6 +679,9 @@ export function checkRepositoryScriptInventory(options = {}) {
         `image preparation shortcut bypasses factory delivery evidence: ${entry.path}`,
       );
     }
+    failures.push(
+      ...validateStaleIntegrationText(entry.path, readText(root, entry.path)),
+    );
     for (const failure of validateLegacyEvidence(root, entry)) {
       failures.push(failure);
     }
@@ -586,6 +708,7 @@ export function checkRepositoryScriptInventory(options = {}) {
       continue;
     }
     const text = readText(root, runbook.path);
+    failures.push(...validateStaleIntegrationText(runbook.path, text));
     for (const script of runbook.scripts) {
       if (!entriesByPath.has(script)) {
         failures.push(

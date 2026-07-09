@@ -117,7 +117,7 @@ node scripts/check-machine-vision-deployment.mjs
 ```bash
 scripts/windows/deploy-windows-artifact.sh \
   --artifact /path/to/vending_vision_release_dir \
-  --remote Admin@100.66.207.119 \
+  --remote <MaintenanceUser>@<controlled-maintenance-ingress-host> \
   --identity /root/.ssh/vem_codex_ed25519 \
   --kind vision
 ```

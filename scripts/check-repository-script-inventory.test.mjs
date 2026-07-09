@@ -282,6 +282,45 @@ describe("repository script inventory guard", () => {
     );
   });
 
+  it("fails when a public runbook omits required maintenance ingress language", () => {
+    withFixture(
+      {
+        "public/production.md": "Use emergency Tailscale SSH.",
+      },
+      (root) => {
+        const result = checkRepositoryScriptInventory({
+          root,
+          inventory: [],
+          publicRunbooks: [
+            {
+              path: "public/production.md",
+              scripts: [],
+              requiredText: [
+                "Controlled Maintenance Ingress",
+                "Maintenance Relay",
+              ],
+              forbiddenText: ["Tailscale SSH"],
+            },
+          ],
+        });
+
+        assert.equal(result.ok, false);
+        assert.match(
+          result.failures.join("\n"),
+          /public\/production\.md missing required runbook text: Controlled Maintenance Ingress/,
+        );
+        assert.match(
+          result.failures.join("\n"),
+          /public\/production\.md missing required runbook text: Maintenance Relay/,
+        );
+        assert.match(
+          result.failures.join("\n"),
+          /public\/production\.md contains forbidden runbook text: Tailscale SSH/,
+        );
+      },
+    );
+  });
+
   it("fails when a public runbook contract omits required structured fields", () => {
     withFixture(
       {
@@ -354,6 +393,81 @@ describe("repository script inventory guard", () => {
         assert.match(
           result.failures.join("\n"),
           /public\/clean-base\.md contains forbidden runbook text: <win10\.iso>/,
+        );
+      },
+    );
+  });
+
+  it("fails stale Tailscale service, CLI, identity, and SSH integration wording", () => {
+    withFixture(
+      {
+        "public/runtime.md":
+          "Install and validate the Tailscale service and CLI before using Tailscale SSH.",
+        "scripts/testbed/runtime.mjs":
+          "const tailscaleIp = run('tailscale status --json');",
+      },
+      (root) => {
+        const result = checkRepositoryScriptInventory({
+          root,
+          inventory: [
+            {
+              path: "scripts/testbed/runtime.mjs",
+              owner: "field-operations",
+              category: "canonical entrypoint",
+              workflows: ["runtime acceptance"],
+            },
+          ],
+          publicRunbooks: [
+            {
+              path: "public/runtime.md",
+              scripts: ["scripts/testbed/runtime.mjs"],
+            },
+          ],
+        });
+
+        assert.equal(result.ok, false);
+        assert.match(
+          result.failures.join("\n"),
+          /public\/runtime\.md:1 contains stale integration text/,
+        );
+        assert.match(
+          result.failures.join("\n"),
+          /scripts\/testbed\/runtime\.mjs:1 contains stale integration text/,
+        );
+      },
+    );
+  });
+
+  it("allows clean-base Tailscale absent-by-default negative assertions", () => {
+    withFixture(
+      {
+        "public/clean-base.md":
+          "Tailscale service and CLI are absent by default and the image must not include Tailscale.",
+        "scripts/windows/verify-factory-runtime.ps1":
+          '$assertions.tailscaleDefaultAbsent = "Tailscale not_installed_by_default"',
+      },
+      (root) => {
+        const result = checkRepositoryScriptInventory({
+          root,
+          inventory: [
+            {
+              path: "scripts/windows/verify-factory-runtime.ps1",
+              owner: "field-operations",
+              category: "verifier-test guard",
+              workflows: ["factory preparation"],
+            },
+          ],
+          publicRunbooks: [
+            {
+              path: "public/clean-base.md",
+              scripts: [],
+            },
+          ],
+        });
+
+        assert.doesNotMatch(
+          result.failures.join("\n"),
+          /stale integration text|non-negative Tailscale wording/,
         );
       },
     );

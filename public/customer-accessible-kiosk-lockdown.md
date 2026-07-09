@@ -22,7 +22,7 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 
 ## Controlled Maintenance Ingress 受控维护入口
 
-生产自助机锁定不得让主机变得不可访问。维护通道的稳定概念是 transport-neutral Controlled Maintenance Ingress：只允许显式授权来源通过 SSH 登录维护账号，底层传输可以是维护 relay、专用隧道或现场临时网络。该通道仅用于主机级恢复、证据收集，以及托管更新不可用时的紧急部署；不要把它作为正常发布路径。
+生产自助机锁定不得让主机变得不可访问。维护通道的稳定概念是 transport-neutral Controlled Maintenance Ingress：只允许显式授权来源通过维护账号登录。WireGuard, SSH, and the relay are implementation mechanisms；具体部署可以使用维护 relay、专用隧道或现场临时网络，但防火墙来源 allowlist 和账号隔离必须保持显式。该通道仅用于主机级恢复、证据收集，以及托管更新不可用时的紧急部署；不要把它作为正常发布路径。
 
 只有在维护账号凭据已知且可恢复，并且维护来源地址已明确后，才配置该通道。`-MaintenanceIngressSourceAllowlist` 没有默认值，必须传入显式 host 来源 allowlist；IPv4 可使用单个 host 地址或 `/32`，IPv6 可使用单个 host 地址或 `/128`：
 

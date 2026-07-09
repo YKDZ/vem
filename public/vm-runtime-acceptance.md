@@ -49,13 +49,12 @@ The runner contract must stay host-portable. Repository workflows should call a 
 Testbed Runner Maintenance Ingress is the explicit control-plane path from a self-hosted runner to a disposable Machine Runtime Testbed VM. It is not production controlled remote maintenance access. It may allow the runner to reach Windows SSH for the maintenance account through a narrowly scoped source allowlist, while preserving kiosk-account SSH denial and production defaults.
 
 For the relay-backed path, bring up the test VPS WireGuard Maintenance Relay
-with `public/maintenance-relay-bring-up.md` before dispatching VM runtime
-acceptance. The workflow takes `vm_wireguard_ip`,
+with the [Maintenance Relay bring-up runbook](./maintenance-relay-bring-up.md)
+before dispatching VM runtime acceptance. The workflow takes `vm_wireguard_ip`,
 `runner_wireguard_peer_ip`, and `runner_wireguard_interface` inputs, starts the
 runner WireGuard peer before Windows SSH readiness, and uses the VM WireGuard IP
 as the Windows SSH host for both restore readiness and runtime acceptance. The
-relay path remains Controlled Maintenance Ingress: WireGuard and SSH are
-implementation mechanisms, while the allowed source peer and target machine SSH
+relay path remains Controlled Maintenance Ingress: WireGuard and SSH are implementation mechanisms, while the allowed source peer and target machine SSH
 flow must stay explicit.
 
 The repository workflow and VM host adapter do not bootstrap the VM-side relay.
