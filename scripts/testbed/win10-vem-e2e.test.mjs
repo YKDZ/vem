@@ -1888,6 +1888,7 @@ describe("win10-vem-e2e reset planning", () => {
       const daemonArtifact = join(temp, "vending-daemon.exe");
       const machineUiArtifact = join(temp, "machine.exe");
       const machineUiSidecar = join(temp, "WebView2Loader.dll");
+      const outputPath = join(temp, "vm-runtime-acceptance-plan.json");
       writeFileSync(daemonArtifact, "daemon acceptance artifact", "utf8");
       writeFileSync(
         machineUiArtifact,
@@ -1916,6 +1917,8 @@ describe("win10-vem-e2e reset planning", () => {
           daemonArtifact,
           "--machine-ui-artifact",
           machineUiArtifact,
+          "--out",
+          outputPath,
           "--dry-run",
         ],
         { cwd: process.cwd(), encoding: "utf8" },
@@ -1923,7 +1926,9 @@ describe("win10-vem-e2e reset planning", () => {
 
       assert.equal(result.status, 0, result.stderr);
       const plan = JSON.parse(result.stdout);
+      const writtenPlan = JSON.parse(readFileSync(outputPath, "utf8"));
       assert.equal(plan.schemaVersion, "vm-runtime-acceptance-plan/v1");
+      assert.deepEqual(writtenPlan, plan);
       assert.equal(plan.mode, "vm-runtime-acceptance");
       assert.equal(plan.runId, "RUN-181");
       assert.equal(plan.target.machineCode, "VEM-TESTBED-WINVM-RUN-181");
@@ -1969,6 +1974,12 @@ describe("win10-vem-e2e reset planning", () => {
       assert.equal(plan.ci.requiredSecrets.includes("SSHPASS"), true);
       assert.match(plan.artifacts.daemonSha256, /^[a-f0-9]{64}$/);
       assert.match(plan.artifacts.machineUiSha256, /^[a-f0-9]{64}$/);
+      assert.doesNotMatch(result.stdout, /pass@127\.0\.0\.1/);
+      assert.doesNotMatch(
+        readFileSync(outputPath, "utf8"),
+        /pass@127\.0\.0\.1/,
+      );
+      assert.match(result.stdout, /\[REDACTED\]/);
     } finally {
       rmSync(temp, { recursive: true, force: true });
     }

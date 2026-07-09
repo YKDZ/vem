@@ -2541,6 +2541,14 @@ function sanitizeReportValue(value) {
   );
 }
 
+function sanitizeVmRuntimeAcceptancePlan(plan) {
+  return JSON.parse(
+    JSON.stringify(plan, (_key, value) =>
+      typeof value === "string" ? redactSensitiveText(value) : value,
+    ),
+  );
+}
+
 function sanitizeVmRuntimeAcceptanceStep(step = {}) {
   return {
     name: step.name,
@@ -6947,7 +6955,11 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     if (options.mode === "vm-runtime-acceptance") {
       const plan = buildVmRuntimeAcceptancePlan(options);
       if (options.dryRun) {
-        console.log(JSON.stringify(plan, null, 2));
+        const sanitizedPlan = sanitizeVmRuntimeAcceptancePlan(plan);
+        if (options.out) {
+          writeJsonOutput(options.out, sanitizedPlan);
+        }
+        console.log(JSON.stringify(sanitizedPlan, null, 2));
         process.exit(0);
       }
       const report = runVmRuntimeAcceptance(options);
