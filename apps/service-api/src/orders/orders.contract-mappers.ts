@@ -38,6 +38,15 @@ function asRecordArray(
   return value.map((item, index) => asRecord(item, `${label}[${index}]`));
 }
 
+function protectedDiagnostics(
+  row: Record<string, unknown>,
+  keys: string[],
+): Record<string, unknown> {
+  return Object.fromEntries(
+    keys.filter((key) => row[key] !== undefined).map((key) => [key, row[key]]),
+  );
+}
+
 function mapOrderSummary(row: Record<string, unknown>) {
   return {
     id: row.id,
@@ -74,10 +83,10 @@ function mapPayment(row: Record<string, unknown>) {
     method: row.method,
     status: row.status,
     amountCents: row.amountCents,
-    providerTradeNo: row.providerTradeNo,
     expiresAt: row.expiresAt,
     paidAt: row.paidAt,
     failedReason: row.failedReason,
+    protectedDiagnostics: protectedDiagnostics(row, ["providerTradeNo"]),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -88,9 +97,9 @@ function mapPaymentEvent(row: Record<string, unknown>) {
     id: row.id,
     paymentId: row.paymentId,
     eventType: row.eventType,
-    providerEventId: row.providerEventId,
     signatureValid: row.signatureValid,
     handledAt: row.handledAt,
+    protectedDiagnostics: protectedDiagnostics(row, ["providerEventId"]),
     createdAt: row.createdAt,
   };
 }
@@ -98,12 +107,10 @@ function mapPaymentEvent(row: Record<string, unknown>) {
 function mapPaymentWebhookAttempt(row: Record<string, unknown>) {
   return {
     id: row.id,
-    providerCode: row.providerCode,
     paymentId: row.paymentId,
     refundId: row.refundId,
     eventKind: row.eventKind,
     eventType: row.eventType,
-    providerEventId: row.providerEventId,
     paymentNo: row.paymentNo,
     refundNo: row.refundNo,
     orderNo: row.orderNo,
@@ -112,8 +119,12 @@ function mapPaymentWebhookAttempt(row: Record<string, unknown>) {
     handled: row.handled,
     duplicate: row.duplicate,
     failureReason: row.failureReason,
-    errorCode: row.errorCode,
     httpStatus: row.httpStatus,
+    protectedDiagnostics: protectedDiagnostics(row, [
+      "providerCode",
+      "providerEventId",
+      "errorCode",
+    ]),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -126,13 +137,15 @@ function mapPaymentReconciliationAttempt(row: Record<string, unknown>) {
     trigger: row.trigger,
     attemptNo: row.attemptNo,
     status: row.status,
-    providerPaymentStatus: row.providerPaymentStatus,
-    providerTradeNo: row.providerTradeNo,
-    errorCode: row.errorCode,
-    errorMessage: row.errorMessage,
     nextRetryAt: row.nextRetryAt,
     startedAt: row.startedAt,
     finishedAt: row.finishedAt,
+    protectedDiagnostics: protectedDiagnostics(row, [
+      "providerPaymentStatus",
+      "providerTradeNo",
+      "errorCode",
+      "errorMessage",
+    ]),
     createdAt: row.createdAt,
   };
 }
@@ -143,7 +156,6 @@ function mapPaymentCodeAttempt(row: Record<string, unknown>) {
     paymentId: row.paymentId,
     orderId: row.orderId,
     attemptNo: row.attemptNo,
-    providerPaymentNo: row.providerPaymentNo,
     idempotencyKey: row.idempotencyKey,
     status: row.status,
     isActive: row.isActive,
@@ -151,15 +163,18 @@ function mapPaymentCodeAttempt(row: Record<string, unknown>) {
     currency: row.currency,
     authCodeMasked: row.authCodeMasked,
     source: row.source,
-    providerTradeNo: row.providerTradeNo,
-    providerStatus: row.providerStatus,
-    failureCode: row.failureCode,
-    failureMessage: row.failureMessage,
     submittedAt: row.submittedAt,
     lastCheckedAt: row.lastCheckedAt,
     reversedAt: row.reversedAt,
     finishedAt: row.finishedAt,
     manualReason: row.manualReason,
+    protectedDiagnostics: protectedDiagnostics(row, [
+      "providerPaymentNo",
+      "providerTradeNo",
+      "providerStatus",
+      "failureCode",
+      "failureMessage",
+    ]),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -218,6 +233,26 @@ function mapStockReconciliationLink(row: Record<string, unknown>) {
 }
 
 function mapRefund(row: Record<string, unknown>) {
+  const reconciliationAttempts = Array.isArray(row.reconciliationAttempts)
+    ? row.reconciliationAttempts.map((attempt) => {
+        const record = asRecord(attempt, "refund.reconciliationAttempt");
+        return {
+          trigger: record.trigger,
+          attemptNo: record.attemptNo,
+          status: record.status,
+          nextRetryAt: record.nextRetryAt,
+          startedAt: record.startedAt,
+          finishedAt: record.finishedAt,
+          protectedDiagnostics: protectedDiagnostics(record, [
+            "providerRefundStatus",
+            "providerRefundNo",
+            "errorCode",
+            "errorMessage",
+          ]),
+          createdAt: record.createdAt,
+        };
+      })
+    : [];
   return {
     id: row.id,
     refundNo: row.refundNo,
@@ -225,10 +260,11 @@ function mapRefund(row: Record<string, unknown>) {
     orderId: row.orderId,
     amountCents: row.amountCents,
     status: row.status,
-    providerRefundNo: row.providerRefundNo,
     reason: row.reason,
     requestedByAdminUserId: row.requestedByAdminUserId,
     refundedAt: row.refundedAt,
+    reconciliationAttempts,
+    protectedDiagnostics: protectedDiagnostics(row, ["providerRefundNo"]),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };

@@ -28,6 +28,7 @@ import OrderDetailDrawer from "@/components/OrderDetailDrawer.vue";
 import { useAuthStore } from "@/stores/auth";
 import { formatCents, formatDateTime } from "@/utils/format";
 
+import PaymentChannelPolicyPanel from "./PaymentChannelPolicyPanel.vue";
 import PaymentOpsPanel from "./PaymentOpsPanel.vue";
 import PaymentProviderConfigPanel from "./PaymentProviderConfigPanel.vue";
 
@@ -105,7 +106,7 @@ async function loadEvents(page = 1): Promise<void> {
 const paymentColumns = [
   { title: "支付单号", dataIndex: "paymentNo", key: "paymentNo" },
   { title: "订单号", dataIndex: "orderNo", key: "order" },
-  { title: "Provider", dataIndex: "providerCode", key: "providerCode" },
+  { title: "支付机构", dataIndex: "providerCode", key: "providerCode" },
   { title: "状态", dataIndex: "status", key: "status" },
   { title: "金额", dataIndex: "amountCents", key: "amountCents" },
   { title: "支付时间", dataIndex: "paidAt", key: "paidAt" },
@@ -114,7 +115,7 @@ const paymentColumns = [
 ];
 
 const providerColumns = [
-  { title: "Code", dataIndex: "code", key: "code" },
+  { title: "机构编码", dataIndex: "code", key: "code" },
   { title: "名称", dataIndex: "name", key: "name" },
   { title: "类型", dataIndex: "type", key: "type" },
   { title: "状态", dataIndex: "status", key: "status" },
@@ -122,7 +123,7 @@ const providerColumns = [
 
 const eventColumns = [
   { title: "事件类型", dataIndex: "eventType", key: "eventType" },
-  { title: "Provider", dataIndex: "providerCode", key: "providerCode" },
+  { title: "支付机构", dataIndex: "providerCode", key: "providerCode" },
   { title: "支付单号", dataIndex: "paymentNo", key: "paymentNo" },
   { title: "订单号", dataIndex: "orderNo", key: "order" },
   { title: "验签", dataIndex: "signatureValid", key: "signatureValid" },
@@ -149,7 +150,7 @@ async function loadWebhookAttempts(page = 1): Promise<void> {
 }
 
 const webhookAttemptColumns = [
-  { title: "Provider", dataIndex: "providerCode", key: "providerCode" },
+  { title: "支付机构", dataIndex: "providerCode", key: "providerCode" },
   { title: "类型", dataIndex: "eventKind", key: "eventKind" },
   { title: "事件", dataIndex: "eventType", key: "eventType" },
   { title: "支付单号", dataIndex: "paymentNo", key: "paymentNo" },
@@ -187,7 +188,7 @@ async function loadReconciliationAttempts(page = 1): Promise<void> {
 const reconciliationColumns = [
   { title: "支付单号", dataIndex: "paymentNo", key: "paymentNo" },
   { title: "订单号", dataIndex: "orderNo", key: "order" },
-  { title: "Provider", dataIndex: "providerCode", key: "providerCode" },
+  { title: "支付机构", dataIndex: "providerCode", key: "providerCode" },
   { title: "触发方式", dataIndex: "trigger", key: "trigger" },
   { title: "第N次", dataIndex: "attemptNo", key: "attemptNo" },
   { title: "状态", dataIndex: "status", key: "status" },
@@ -303,11 +304,55 @@ async function doQueryRefund(refundId: string): Promise<void> {
   }
 }
 
+function refundReconciliationTriggerLabel(trigger: string): string {
+  if (trigger === "manual") return "人工查询";
+  if (trigger === "scheduled") return "自动查询";
+  if (trigger === "provider_query") return "退款查询";
+  return "退款查询";
+}
+
+function refundReconciliationStatusLabel(status: string): string {
+  if (status === "succeeded" || status === "success") return "已确认";
+  if (
+    status === "processing" ||
+    status === "pending" ||
+    status === "querying"
+  ) {
+    return "处理中";
+  }
+  if (status === "unknown") return "结果待确认";
+  if (
+    status === "failed" ||
+    status === "network_error" ||
+    status === "config_error" ||
+    status === "max_attempts_exceeded"
+  ) {
+    return "查询失败";
+  }
+  return "待复核";
+}
+
+function providerRefundStatusSummary(status: string | null): string | null {
+  if (!status) return null;
+  const normalized = status.toLowerCase();
+  if (normalized.includes("success")) return "渠道已确认退款";
+  if (normalized.includes("refund") || normalized.includes("process")) {
+    return "渠道仍在处理";
+  }
+  if (normalized.includes("fail") || normalized.includes("closed")) {
+    return "渠道退款异常";
+  }
+  if (normalized.includes("not_found") || normalized.includes("notfound")) {
+    return "渠道暂未查到退款";
+  }
+  return "渠道结果待复核";
+}
+
 const refundColumns = [
   { title: "退款单号", dataIndex: "refundNo", key: "refundNo" },
   { title: "支付单号", dataIndex: "paymentNo", key: "paymentNo" },
   { title: "订单号", dataIndex: "orderNo", key: "order" },
-  { title: "Provider", dataIndex: "providerCode", key: "providerCode" },
+  { title: "支付机构", dataIndex: "providerCode", key: "providerCode" },
   { title: "状态", dataIndex: "status", key: "status" },
   { title: "金额", dataIndex: "amountCents", key: "amountCents" },
   { title: "原因", dataIndex: "reason", key: "reason" },
@@ -417,7 +462,11 @@ onMounted(() => {
         </a-table>
       </a-tab-pane>
 
-      <a-tab-pane key="providers" tab="Provider">
+      <a-tab-pane key="channels" tab="支付渠道">
+        <PaymentChannelPolicyPanel />
+      </a-tab-pane>
+
+      <a-tab-pane key="providers" tab="支付机构">
         <a-table
           :columns="providerColumns"
           :data-source="providers"
@@ -430,7 +479,7 @@ onMounted(() => {
               <a-tag
                 :color="record.status === 'enabled' ? 'success' : 'default'"
               >
-                {{ record.status }}
+                {{ record.status === "enabled" ? "启用" : "禁用" }}
               </a-tag>
             </template>
           </template>
@@ -477,11 +526,11 @@ onMounted(() => {
         </a-table>
       </a-tab-pane>
 
-      <a-tab-pane key="configs" tab="支付配置">
+      <a-tab-pane key="configs" tab="商户配置">
         <PaymentProviderConfigPanel />
       </a-tab-pane>
 
-      <a-tab-pane key="webhook-attempts" tab="Webhook审计">
+      <a-tab-pane key="webhook-attempts" tab="回调审计">
         <a-table
           :columns="webhookAttemptColumns"
           :data-source="webhookAttempts.items"
@@ -608,10 +657,19 @@ onMounted(() => {
                   v-for="attempt in record.reconciliationAttempts"
                   :key="`${record.id}-${attempt.trigger}-${attempt.attemptNo}-${attempt.createdAt}`"
                 >
-                  #{{ attempt.attemptNo }} {{ attempt.trigger }}:
-                  {{ attempt.status }}
-                  <template v-if="attempt.providerRefundStatus">
-                    / provider {{ attempt.providerRefundStatus }}
+                  第 {{ attempt.attemptNo }} 次
+                  {{ refundReconciliationTriggerLabel(attempt.trigger) }}：{{
+                    refundReconciliationStatusLabel(attempt.status)
+                  }}
+                  <template
+                    v-if="
+                      providerRefundStatusSummary(attempt.providerRefundStatus)
+                    "
+                  >
+                    /
+                    {{
+                      providerRefundStatusSummary(attempt.providerRefundStatus)
+                    }}
                   </template>
                   <template v-if="attempt.errorMessage">
                     / {{ attempt.errorMessage }}

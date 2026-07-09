@@ -25,6 +25,7 @@ export const orderPaymentStateSchema = z.enum([
   "paid",
   "payment_failed",
   "payment_expired",
+  "payment_unknown",
   "canceled",
   "refund_pending",
   "partial_refund_pending",

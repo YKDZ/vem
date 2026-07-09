@@ -10,6 +10,7 @@ import {
   ParseUUIDPipe,
   Patch,
   Post,
+  Put,
   Query,
   Req,
   Res,
@@ -18,6 +19,7 @@ import { ApiBearerAuth, ApiTags } from "@nestjs/swagger";
 import {
   pageQuerySchema,
   paymentAdminNoBodySchema,
+  paymentIncidentActionRequestSchema,
   paymentOperatorReasonSchema,
   paymentEventQuerySchema,
   paymentProviderQuerySchema,
@@ -27,6 +29,7 @@ import {
   refundQuerySchema,
   updatePaymentProviderConfigSchema,
   updatePaymentProviderSchema,
+  updatePaymentChannelPolicySchema,
   upsertPaymentProviderConfigSchema,
 } from "@vem/shared";
 import { z } from "zod";
@@ -37,6 +40,7 @@ import { RequirePermissions } from "../access/permissions.decorator";
 import { CurrentAdmin } from "../auth/current-admin.decorator";
 import { Public } from "../auth/public.decorator";
 import { ZodValidationPipe } from "../common/zod-validation.pipe";
+import { PaymentChannelPolicyService } from "./payment-channel-policy.service";
 import { PaymentsService } from "./payments.service";
 
 type PaymentQuery = z.infer<typeof paymentQuerySchema> &
@@ -45,6 +49,9 @@ type PaymentProviderQuery = z.infer<typeof paymentProviderQuerySchema>;
 type UpdatePaymentProviderInput = z.infer<typeof updatePaymentProviderSchema>;
 type UpdatePaymentProviderConfigInput = z.infer<
   typeof updatePaymentProviderConfigSchema
+>;
+type UpdatePaymentChannelPolicyInput = z.infer<
+  typeof updatePaymentChannelPolicySchema
 >;
 type UpsertPaymentProviderConfigInput = z.infer<
   typeof upsertPaymentProviderConfigSchema
@@ -59,6 +66,9 @@ type ReconciliationAttemptQuery = z.infer<
   z.infer<typeof pageQuerySchema>;
 type RefundListQuery = z.infer<typeof refundQuerySchema> &
   z.infer<typeof pageQuerySchema>;
+type PaymentIncidentActionInput = z.infer<
+  typeof paymentIncidentActionRequestSchema
+>;
 
 const paymentEventListQuerySchema = paymentEventQuerySchema.extend(
   pageQuerySchema.shape,
@@ -74,7 +84,10 @@ const refundListQuerySchema = refundQuerySchema.extend(pageQuerySchema.shape);
 @ApiBearerAuth()
 @Controller("payments")
 export class PaymentsController {
-  constructor(private readonly paymentsService: PaymentsService) {}
+  constructor(
+    private readonly paymentsService: PaymentsService,
+    private readonly paymentChannelPolicyService: PaymentChannelPolicyService,
+  ) {}
 
   @RequirePermissions("payments.read")
   @Get()
@@ -166,6 +179,22 @@ export class PaymentsController {
   }
 
   @RequirePermissions("payments.read")
+  @Get("channel-policy")
+  async getChannelPolicy() {
+    return await this.paymentChannelPolicyService.getPolicy();
+  }
+
+  @RequirePermissions("payments.configure")
+  @Put("channel-policy")
+  async updateChannelPolicy(
+    @CurrentAdmin() admin: AuthenticatedAdmin,
+    @Body(new ZodValidationPipe(updatePaymentChannelPolicySchema))
+    body: UpdatePaymentChannelPolicyInput,
+  ) {
+    return await this.paymentChannelPolicyService.updatePolicy(admin.id, body);
+  }
+
+  @RequirePermissions("payments.read")
   @Get("events")
   async listPaymentEvents(
     @Query(new ZodValidationPipe(paymentEventListQuerySchema))
@@ -190,6 +219,21 @@ export class PaymentsController {
     query: ReconciliationAttemptQuery,
   ) {
     return await this.paymentsService.listReconciliationAttempts(query);
+  }
+
+  @RequirePermissions("payments.configure")
+  @Post(":id/incident-actions")
+  async paymentIncidentAction(
+    @CurrentAdmin() admin: AuthenticatedAdmin,
+    @Param("id", ParseUUIDPipe) id: string,
+    @Body(new ZodValidationPipe(paymentIncidentActionRequestSchema))
+    body: PaymentIncidentActionInput,
+  ) {
+    return await this.paymentsService.handlePaymentIncidentAction(
+      id,
+      admin.id,
+      body,
+    );
   }
 
   @RequirePermissions("payments.configure")

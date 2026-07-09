@@ -1,6 +1,7 @@
 import {
   paymentAdminActionResultSchema,
   paymentAdminNoBodySchema,
+  paymentChannelPolicyResponseSchema,
   paymentAdminPageResponseSchema,
   paymentCodeAttemptAdminActionSchema,
   paymentCodeAttemptAdminPageResponseSchema,
@@ -8,6 +9,8 @@ import {
   paymentCodeAttemptListQuerySchema,
   paymentEventAdminPageResponseSchema,
   paymentEventListQuerySchema,
+  paymentIncidentActionRequestSchema,
+  paymentIncidentActionResponseSchema,
   paymentListQuerySchema,
   paymentProviderConfigListResponseSchema,
   paymentProviderListResponseSchema,
@@ -26,13 +29,16 @@ import {
   paymentMachinePreflightSchema,
   paymentOpsMetricsSchema,
   paymentOpsReadinessSchema,
+  updatePaymentChannelPolicySchema,
   updatePaymentProviderConfigSchema,
   updatePaymentProviderSchema,
   upsertPaymentProviderConfigSchema,
   type PaymentAdminResponse,
   type PaymentCodeAttemptAdminResponse,
   type PaymentEventAdminResponse,
+  type PaymentIncidentActionResponse,
   type PaymentMachinePreflight,
+  type PaymentChannelPolicyResponse,
   type PaymentOpsMetrics,
   type PaymentOpsReadiness,
   type PaymentProviderConfigResponse,
@@ -46,7 +52,12 @@ import {
 } from "@vem/shared";
 import { z } from "zod";
 
-import { getContract, patchContract, postContract } from "./request";
+import {
+  getContract,
+  patchContract,
+  postContract,
+  putContract,
+} from "./request";
 
 type PaymentListQuery = z.input<typeof paymentListQuerySchema>;
 type PaymentEventListQuery = z.input<typeof paymentEventListQuerySchema>;
@@ -63,6 +74,7 @@ type PaymentCodeAttemptListQuery = z.input<
 
 export type Payment = PaymentAdminResponse;
 export type PaymentProvider = PaymentProviderResponse;
+export type PaymentChannelPolicy = PaymentChannelPolicyResponse;
 export type PaymentProviderConfig = PaymentProviderConfigResponse;
 export type PaymentProviderNotifyUrlCheck =
   PaymentProviderNotifyUrlCheckResponse;
@@ -180,12 +192,45 @@ export async function listPaymentProviderNotifyUrlChecks(): Promise<
   );
 }
 
+export async function getPaymentChannelPolicy(): Promise<PaymentChannelPolicy> {
+  return await getContract(
+    "/payments/channel-policy",
+    paymentAdminNoBodySchema,
+    paymentChannelPolicyResponseSchema,
+    {},
+  );
+}
+
+export async function updatePaymentChannelPolicy(
+  body: z.input<typeof updatePaymentChannelPolicySchema>,
+): Promise<PaymentChannelPolicy> {
+  return await putContract(
+    "/payments/channel-policy",
+    updatePaymentChannelPolicySchema,
+    paymentChannelPolicyResponseSchema,
+    body,
+  );
+}
+
 export type WebhookAttempt = PaymentWebhookAttemptAdminResponse;
 export type ReconciliationAttempt = PaymentReconciliationAttemptAdminResponse;
 export type RefundReconciliationAttempt =
   RefundReconciliationAttemptAdminResponse;
 export type Refund = RefundAdminResponse;
 export type PaymentCodeAttempt = PaymentCodeAttemptAdminResponse;
+export type PaymentIncidentActionResult = PaymentIncidentActionResponse;
+
+export async function createPaymentIncidentAction(
+  paymentId: string,
+  body: z.input<typeof paymentIncidentActionRequestSchema>,
+): Promise<PaymentIncidentActionResult> {
+  return await postContract(
+    `/payments/${paymentId}/incident-actions`,
+    paymentIncidentActionRequestSchema,
+    paymentIncidentActionResponseSchema,
+    body,
+  );
+}
 
 export async function listWebhookAttempts(
   query?: PaymentWebhookAttemptListQuery,

@@ -70,6 +70,22 @@ type PaymentCodeAttemptListQuery = z.infer<
 > &
   z.infer<typeof pageQuerySchema>;
 
+function isIncidentLocked(row: {
+  orderStatus: string;
+  paymentState: string;
+  fulfillmentState: string;
+  paymentStatus: string;
+}): boolean {
+  return (
+    row.orderStatus === "manual_handling" ||
+    row.paymentState === "payment_unknown" ||
+    row.paymentState === "manual_handling" ||
+    row.fulfillmentState === "manual_handling" ||
+    row.paymentStatus === "unknown" ||
+    row.paymentStatus === "manual_handling"
+  );
+}
+
 @Injectable()
 export class PaymentCodeAttemptsService {
   constructor(@Inject(DRIZZLE_CLIENT) private readonly db: DrizzleClient) {}
@@ -84,6 +100,8 @@ export class PaymentCodeAttemptsService {
       providerId: string;
       orderId: string;
       machineId: string;
+      providerConfigId: string | null;
+      providerConfigSnapshotJson: unknown;
     };
     attempt: PaymentCodeAttemptRow;
     replayed: boolean;
@@ -93,10 +111,14 @@ export class PaymentCodeAttemptsService {
         .select({
           orderId: orders.id,
           orderNo: orders.orderNo,
+          orderStatus: orders.status,
+          paymentState: orders.paymentState,
+          fulfillmentState: orders.fulfillmentState,
           machineId: machines.id,
           paymentId: payments.id,
           paymentNo: payments.paymentNo,
           paymentProviderConfigId: payments.paymentProviderConfigId,
+          providerConfigSnapshotJson: payments.providerConfigSnapshotJson,
           amountCents: payments.amountCents,
           paymentStatus: payments.status,
           paymentMethod: payments.method,
@@ -124,6 +146,9 @@ export class PaymentCodeAttemptsService {
       }
       if (row.paymentStatus === "succeeded") {
         throw new ConflictException("Payment already succeeded");
+      }
+      if (isIncidentLocked(row)) {
+        throw new ConflictException("payment_incident_locked");
       }
 
       const [existingByKey] = await tx
@@ -261,6 +286,7 @@ export class PaymentCodeAttemptsService {
     machineId: string;
     providerCode: "wechat_pay" | "alipay";
     providerConfigId: string | null;
+    providerConfigSnapshotJson: unknown;
   }> {
     const [row] = await this.db
       .select({
@@ -270,6 +296,7 @@ export class PaymentCodeAttemptsService {
         machineId: machines.id,
         providerCode: paymentProviders.code,
         providerConfigId: payments.paymentProviderConfigId,
+        providerConfigSnapshotJson: payments.providerConfigSnapshotJson,
       })
       .from(paymentCodeAttempts)
       .innerJoin(payments, eq(payments.id, paymentCodeAttempts.paymentId))
@@ -421,6 +448,8 @@ export class PaymentCodeAttemptsService {
     providerId: string;
     orderId: string;
     machineId: string;
+    paymentProviderConfigId: string | null;
+    providerConfigSnapshotJson: unknown;
   }) {
     return {
       id: row.paymentId,
@@ -431,6 +460,8 @@ export class PaymentCodeAttemptsService {
       providerId: row.providerId,
       orderId: row.orderId,
       machineId: row.machineId,
+      providerConfigId: row.paymentProviderConfigId,
+      providerConfigSnapshotJson: row.providerConfigSnapshotJson,
     };
   }
 }

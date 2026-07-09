@@ -214,6 +214,14 @@ export async function patch<T, TBody = unknown>(
   return await unwrap(request.patch<ApiResponse<T>>(url, body, config));
 }
 
+export async function put<T, TBody = unknown>(
+  url: string,
+  body?: TBody,
+  config?: AxiosRequestConfig,
+): Promise<T> {
+  return await unwrap(request.put<ApiResponse<T>>(url, body, config));
+}
+
 function parseAdminContract<TSchema extends z.ZodType>(
   schema: TSchema,
   value: unknown,
@@ -286,6 +294,25 @@ export async function patchContract<
 ): Promise<z.output<TResponseSchema>> {
   const parsedBody = parseAdminContract(bodySchema, body, `${url} request`);
   const data = await patch<unknown, z.output<TBodySchema>>(
+    url,
+    parsedBody,
+    config,
+  );
+  return parseAdminContract(responseSchema, data, `${url} response`);
+}
+
+export async function putContract<
+  TBodySchema extends z.ZodType,
+  TResponseSchema extends z.ZodType,
+>(
+  url: string,
+  bodySchema: TBodySchema,
+  responseSchema: TResponseSchema,
+  body: z.input<TBodySchema>,
+  config?: AxiosRequestConfig,
+): Promise<z.output<TResponseSchema>> {
+  const parsedBody = parseAdminContract(bodySchema, body, `${url} request`);
+  const data = await put<unknown, z.output<TBodySchema>>(
     url,
     parsedBody,
     config,

@@ -8,10 +8,6 @@ export type ProviderConfigForm = {
   appId: string;
   qrExpiresMinutes: number;
   timeoutCompensationSeconds: number;
-  paymentCodeEnabled: boolean;
-  paymentCodePollIntervalSeconds: number;
-  paymentCodeMaxConfirmSeconds: number;
-  paymentCodeReverseDelaySeconds: number;
   certificateSerialNo: string;
   merchantCertificateSerialNo: string;
   platformCertificateSerialNo: string;
@@ -43,10 +39,6 @@ export function createDefaultProviderConfigForm(
     appId: "",
     qrExpiresMinutes: 15,
     timeoutCompensationSeconds: 120,
-    paymentCodeEnabled: false,
-    paymentCodePollIntervalSeconds: 3,
-    paymentCodeMaxConfirmSeconds: 30,
-    paymentCodeReverseDelaySeconds: 0,
     certificateSerialNo: "",
     merchantCertificateSerialNo: "",
     platformCertificateSerialNo: "",
@@ -93,10 +85,6 @@ export function buildProviderConfigPayload(form: ProviderConfigForm): {
   const publicConfigJson: Record<string, unknown> = {
     qrExpiresMinutes: form.qrExpiresMinutes,
     timeoutCompensationSeconds: form.timeoutCompensationSeconds,
-    paymentCodeEnabled: form.paymentCodeEnabled,
-    paymentCodePollIntervalSeconds: form.paymentCodePollIntervalSeconds,
-    paymentCodeMaxConfirmSeconds: form.paymentCodeMaxConfirmSeconds,
-    paymentCodeReverseDelaySeconds: form.paymentCodeReverseDelaySeconds,
   };
   const sensitiveConfigJson: Record<string, string | number | boolean | null> =
     {};

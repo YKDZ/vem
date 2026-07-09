@@ -32,6 +32,7 @@ export const paymentStatusSchema = z.enum([
   "failed",
   "expired",
   "canceled",
+  "unknown",
   "refund_pending",
   "partial_refund_pending",
   "manual_handling",
@@ -51,6 +52,7 @@ export const paymentCodeAttemptStatusSchema = z.enum([
   "reversing",
   "reversed",
   "unknown",
+  "reversal_unknown",
   "manual_handling",
   "canceled",
 ]);

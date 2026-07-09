@@ -42,12 +42,8 @@ describe("payment-config-model", () => {
       );
     });
 
-    it("includes payment_code timing and wechat v2 cert fields", () => {
+    it("keeps wechat v2 cert fields without submitting payment-code channel enablement", () => {
       const form = createDefaultProviderConfigForm("wechat_pay");
-      form.paymentCodeEnabled = true;
-      form.paymentCodePollIntervalSeconds = 4;
-      form.paymentCodeMaxConfirmSeconds = 45;
-      form.paymentCodeReverseDelaySeconds = 2;
       form.apiV2Key = "12345678901234567890123456789012";
       form.merchantApiCertPem =
         "-----BEGIN CERTIFICATE-----\nwechat-v2-cert\n-----END CERTIFICATE-----";
@@ -56,14 +52,7 @@ describe("payment-config-model", () => {
 
       const payload = buildProviderConfigPayload(form);
 
-      expect(payload.publicConfigJson["paymentCodeEnabled"]).toBe(true);
-      expect(payload.publicConfigJson["paymentCodePollIntervalSeconds"]).toBe(
-        4,
-      );
-      expect(payload.publicConfigJson["paymentCodeMaxConfirmSeconds"]).toBe(45);
-      expect(payload.publicConfigJson["paymentCodeReverseDelaySeconds"]).toBe(
-        2,
-      );
+      expect(payload.publicConfigJson).not.toHaveProperty("paymentCodeEnabled");
       expect(payload.sensitiveConfigJson).toMatchObject({
         apiV2Key: "12345678901234567890123456789012",
         merchantApiCertPem:
@@ -112,25 +101,18 @@ describe("payment-config-model", () => {
       );
     });
 
-    it("includes payment_code toggles and terminal metadata for alipay", () => {
+    it("keeps alipay terminal metadata without payment-code channel switches", () => {
       const form = createDefaultProviderConfigForm("alipay");
-      form.paymentCodeEnabled = true;
-      form.paymentCodePollIntervalSeconds = 5;
-      form.paymentCodeMaxConfirmSeconds = 50;
-      form.paymentCodeReverseDelaySeconds = 3;
       form.storeId = "STORE-01";
       form.terminalId = "TERM-01";
 
       const payload = buildProviderConfigPayload(form);
 
       expect(payload.publicConfigJson).toMatchObject({
-        paymentCodeEnabled: true,
-        paymentCodePollIntervalSeconds: 5,
-        paymentCodeMaxConfirmSeconds: 50,
-        paymentCodeReverseDelaySeconds: 3,
         storeId: "STORE-01",
         terminalId: "TERM-01",
       });
+      expect(payload.publicConfigJson).not.toHaveProperty("paymentCodeEnabled");
     });
   });
 });

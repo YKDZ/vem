@@ -1,4 +1,6 @@
 import type {
+  MachinePaymentOption,
+  PaymentChannelKey,
   PaymentMachinePreflight,
   PaymentOpsCheck,
   PaymentOpsMetrics,
@@ -28,8 +30,12 @@ import {
 import { AppConfigService } from "../config/app-config.service";
 import { isEncryptedJson } from "../crypto/encrypted-json.util";
 import { DRIZZLE_CLIENT } from "../database/database.constants";
+import { PaymentChannelPolicyService } from "./payment-channel-policy.service";
 import { PaymentConfigSecretService } from "./payment-config-secret.service";
-import { PaymentProviderConfigService } from "./payment-provider-config.service";
+import {
+  PaymentProviderConfigService,
+  type PaymentChannelProviderReadiness,
+} from "./payment-provider-config.service";
 
 type LatestMachineHeartbeat = {
   reportedAt: Date;
@@ -42,6 +48,34 @@ type MachinePreflightRecord = {
   code: string;
   status: "online" | "offline" | "maintenance" | "disabled";
   lastSeenAt: Date | null;
+};
+
+type ProviderConfigInspection = {
+  providerCode: string;
+  providerStatus: string;
+  configStatus: string;
+  machineId: string | null;
+  merchantNo: string | null;
+  appId: string | null;
+  publicConfig: Record<string, unknown>;
+  sensitiveConfig: Record<string, unknown> | null;
+};
+
+type EnabledChannelProviderSetup = {
+  channelKey: PaymentChannelKey;
+  providerCode: "alipay" | "wechat_pay";
+  method: "qr_code" | "payment_code";
+  ready: boolean;
+  missingCredentialKeys: string[];
+  environment: "sandbox" | "production" | null;
+};
+
+type HeartbeatSaleReadinessMethod = {
+  method: string;
+  optionKey: string | null;
+  providerCode: string | null;
+  ready: boolean;
+  disabledReason: string | null;
 };
 
 function readHeartbeatStringField(
@@ -87,11 +121,95 @@ function readBooleanFromRecord(
   return typeof value === "boolean" ? value : null;
 }
 
+function recordFromObject(value: object): Record<string, unknown> {
+  const record: Record<string, unknown> = {};
+  for (const key of Object.keys(value)) {
+    record[key] = Reflect.get(value, key);
+  }
+  return record;
+}
+
 function isPaymentCodeScannerReady(heartbeat: LatestMachineHeartbeat): boolean {
   const scannerHealth = readHeartbeatRecordField(heartbeat, "scannerHealth");
   const status = readStringFromRecord(scannerHealth, "status");
   const online = readBooleanFromRecord(scannerHealth, "online");
   return status === "ready" || status === "online" || online === true;
+}
+
+function readHeartbeatSaleReadinessComponent(
+  heartbeat: LatestMachineHeartbeat,
+  componentName: string,
+): Record<string, unknown> | null {
+  const saleReadiness = readHeartbeatRecordField(heartbeat, "saleReadiness");
+  const components = saleReadiness?.["components"];
+  if (typeof components !== "object" || components === null) return null;
+  const component: unknown = Reflect.get(components, componentName);
+  if (typeof component !== "object" || component === null) return null;
+  return recordFromObject(component);
+}
+
+function parsePaymentChannelKey(
+  channelKey: PaymentChannelKey,
+): ["qr_code" | "payment_code", "alipay" | "wechat_pay"] {
+  if (channelKey === "qr_code:alipay") return ["qr_code", "alipay"];
+  if (channelKey === "payment_code:alipay") {
+    return ["payment_code", "alipay"];
+  }
+  if (channelKey === "qr_code:wechat_pay") return ["qr_code", "wechat_pay"];
+  return ["payment_code", "wechat_pay"];
+}
+
+function isPaymentCodeLocallyReady(
+  heartbeat: LatestMachineHeartbeat,
+  methods: HeartbeatSaleReadinessMethod[],
+): boolean {
+  const scannerCapability = readHeartbeatSaleReadinessComponent(
+    heartbeat,
+    "scannerCapability",
+  );
+  const scannerCapabilityReady = readBooleanFromRecord(
+    scannerCapability,
+    "ready",
+  );
+  return (
+    methods.some((item) => item.method === "payment_code" && item.ready) ||
+    scannerCapabilityReady === true ||
+    isPaymentCodeScannerReady(heartbeat)
+  );
+}
+
+function readHeartbeatSaleReadinessMethods(
+  heartbeat: LatestMachineHeartbeat,
+): HeartbeatSaleReadinessMethod[] {
+  const saleReadiness = readHeartbeatRecordField(heartbeat, "saleReadiness");
+  const components = saleReadiness?.["components"];
+  if (typeof components !== "object" || components === null) return [];
+  const paymentOptions = Reflect.get(components, "paymentOptions");
+  if (typeof paymentOptions !== "object" || paymentOptions === null) return [];
+  const methods = Reflect.get(paymentOptions, "methods");
+  if (!Array.isArray(methods)) return [];
+
+  return methods.flatMap((item): HeartbeatSaleReadinessMethod[] => {
+    if (typeof item !== "object" || item === null) return [];
+    const method = Reflect.get(item, "method");
+    const ready = Reflect.get(item, "ready");
+    if (typeof method !== "string" || typeof ready !== "boolean") return [];
+    const optionKey = Reflect.get(item, "optionKey");
+    const providerCode = Reflect.get(item, "providerCode");
+    const disabledReason = Reflect.get(item, "disabledReason");
+    return [
+      {
+        method,
+        ready,
+        optionKey: typeof optionKey === "string" ? optionKey : null,
+        providerCode: typeof providerCode === "string" ? providerCode : null,
+        disabledReason:
+          typeof disabledReason === "string" && disabledReason.trim().length > 0
+            ? disabledReason
+            : null,
+      },
+    ];
+  });
 }
 
 function hasNonEmptyString(
@@ -100,6 +218,12 @@ function hasNonEmptyString(
 ): boolean {
   const value = source[key];
   return typeof value === "string" && value.trim().length > 0;
+}
+
+function withRecommendedPaymentOptions(
+  options: MachinePaymentOption[],
+): MachinePaymentOption[] {
+  return options.map((item, index) => ({ ...item, recommended: index === 0 }));
 }
 
 @Injectable()
@@ -112,15 +236,23 @@ export class PaymentOpsService {
     private readonly paymentConfigSecrets: PaymentConfigSecretService,
     @Inject(PaymentProviderConfigService)
     private readonly providerConfigs: PaymentProviderConfigService,
+    @Inject(PaymentChannelPolicyService)
+    private readonly channelPolicies: PaymentChannelPolicyService,
   ) {}
 
   async getReadiness(): Promise<PaymentOpsReadiness> {
+    const channelPolicy = await this.channelPolicies.getPolicy();
+    const enabledChannelKeys = channelPolicy.channels
+      .filter((channel) => channel.enabled)
+      .map((channel) => channel.channelKey);
     const checks: PaymentOpsCheck[] = [
       await this.checkMockProviderDisabled(),
-      await this.checkRealProviderConfigsPresent(),
+      this.checkEnabledPaymentChannels(enabledChannelKeys),
+      ...(await this.checkRealProviderConfigsPresent(enabledChannelKeys)),
       await this.checkMachineRealProviderOptionsAvailable(),
-      await this.checkNotifyUrls(),
-      await this.checkCertificates(),
+      await this.checkNotifyUrls(enabledChannelKeys),
+      await this.checkCertificates(enabledChannelKeys),
+      await this.checkRecentPaymentFailures(),
       await this.checkRecentWebhookFailures(),
       await this.checkRecentReconciliationFailures(),
       await this.checkRefundBacklog(),
@@ -275,16 +407,50 @@ export class PaymentOpsService {
         machine.id,
       );
     const latestHeartbeat = await this.getLatestMachineHeartbeat(machine.id);
+    const channelPolicy = await this.channelPolicies.getPolicy();
+    const enabledChannelKeys = channelPolicy.channels
+      .filter((channel) => channel.enabled)
+      .map((channel) => channel.channelKey);
+    const providerReadiness =
+      await this.providerConfigs.listPaymentChannelProviderReadinessForMachine(
+        machine.id,
+      );
     const hasPaymentCodeOption = options.options.some(
       (item) => item.method === "payment_code",
     );
-    const scannerReady = isPaymentCodeScannerReady(latestHeartbeat);
-    const availableProviders =
-      hasPaymentCodeOption && !scannerReady
-        ? options.options
-            .filter((item) => item.method !== "payment_code")
-            .map((item, index) => ({ ...item, recommended: index === 0 }))
-        : options.options;
+    const heartbeatPaymentMethods =
+      readHeartbeatSaleReadinessMethods(latestHeartbeat);
+    const paymentCodeLocallyReady = isPaymentCodeLocallyReady(
+      latestHeartbeat,
+      heartbeatPaymentMethods,
+    );
+    const heartbeatMethodsByOptionKey = new Map(
+      heartbeatPaymentMethods
+        .filter((item) => item.optionKey !== null)
+        .map((item) => [item.optionKey, item]),
+    );
+    const heartbeatMethodsByChannel = new Map(
+      heartbeatPaymentMethods
+        .filter((item) => item.providerCode !== null)
+        .map((item) => [`${item.method}:${item.providerCode}`, item]),
+    );
+    const locallyAnnotatedOptions = options.options.map((item) => {
+      const localEvidence =
+        heartbeatMethodsByOptionKey.get(item.optionKey) ??
+        heartbeatMethodsByChannel.get(`${item.method}:${item.providerCode}`);
+      if (!localEvidence || localEvidence.ready) return item;
+      return {
+        ...item,
+        disabled: true,
+        disabledReason: localEvidence.disabledReason ?? item.disabledReason,
+      };
+    });
+    const availableProviders = withRecommendedPaymentOptions(
+      locallyAnnotatedOptions.filter((item) => {
+        if (item.disabled) return false;
+        return item.method !== "payment_code" || paymentCodeLocallyReady;
+      }),
+    );
     const defaultOption = availableProviders.find((item) => item.recommended);
 
     const checks: PaymentOpsCheck[] = [
@@ -301,19 +467,31 @@ export class PaymentOpsService {
       {
         code: "machine_real_provider_available",
         severity: "critical",
-        passed: options.options.some((item) => item.providerCode !== "mock"),
+        passed: availableProviders.some((item) => item.providerCode !== "mock"),
         message:
           "At least one real payment provider is available for this machine",
         evidence: {
-          providerCodes: options.options.map((item) => item.providerCode),
+          providerCodes: availableProviders.map((item) => item.providerCode),
+          filteredProviderCodes: options.options.map(
+            (item) => item.providerCode,
+          ),
         },
       },
+      this.checkMachineEnabledChannelProviderSetup(
+        enabledChannelKeys,
+        providerReadiness,
+      ),
       this.checkMachineHeartbeatFresh(machine, latestHeartbeat),
     ];
     checks.push(this.checkProductionDispensePath(latestHeartbeat));
 
     if (hasPaymentCodeOption) {
-      checks.push(this.checkPaymentCodeScannerRuntime(latestHeartbeat));
+      checks.push(
+        this.checkPaymentCodeScannerRuntime(
+          latestHeartbeat,
+          heartbeatPaymentMethods,
+        ),
+      );
     }
 
     const criticalFailed = checks.some(
@@ -382,6 +560,44 @@ export class PaymentOpsService {
     };
   }
 
+  private checkMachineEnabledChannelProviderSetup(
+    enabledChannelKeys: PaymentChannelKey[],
+    providerReadiness: PaymentChannelProviderReadiness[],
+  ): PaymentOpsCheck {
+    const readinessByChannel = new Map(
+      providerReadiness.map((item) => [item.channelKey, item]),
+    );
+    const blockedChannels = enabledChannelKeys
+      .map((channelKey) => {
+        const readiness = readinessByChannel.get(channelKey);
+        if (readiness?.ready) return null;
+        const [method, providerCode] = channelKey.split(":");
+        return {
+          channelKey,
+          providerCode: readiness?.providerCode ?? providerCode,
+          method: readiness?.method ?? method,
+          missingCredentialKeys: readiness?.missingCredentialKeys ?? [
+            "providerConfig",
+          ],
+        };
+      })
+      .filter((item) => item !== null);
+
+    return {
+      code: "enabled_channel_provider_setup",
+      severity: "critical",
+      passed: blockedChannels.length === 0 && enabledChannelKeys.length > 0,
+      message:
+        blockedChannels.length === 0 && enabledChannelKeys.length > 0
+          ? "已启用支付渠道的商户配置可用"
+          : "已启用支付渠道存在商户配置阻塞",
+      evidence: {
+        enabledChannelKeys,
+        blockedChannels,
+      },
+    };
+  }
+
   private checkProductionDispensePath(
     heartbeat: LatestMachineHeartbeat,
   ): PaymentOpsCheck {
@@ -445,13 +661,32 @@ export class PaymentOpsService {
 
   private checkPaymentCodeScannerRuntime(
     heartbeat: LatestMachineHeartbeat,
+    heartbeatMethods: HeartbeatSaleReadinessMethod[],
   ): PaymentOpsCheck {
     const scannerHealth = readHeartbeatRecordField(heartbeat, "scannerHealth");
     const status = readStringFromRecord(scannerHealth, "status");
     const message = readStringFromRecord(scannerHealth, "message");
     const online = readBooleanFromRecord(scannerHealth, "online");
-    const ready = isPaymentCodeScannerReady(heartbeat);
-    const reported = scannerHealth !== null;
+    const scannerCapability = readHeartbeatSaleReadinessComponent(
+      heartbeat,
+      "scannerCapability",
+    );
+    const capabilityReady = readBooleanFromRecord(scannerCapability, "ready");
+    const capabilityCode = readStringFromRecord(scannerCapability, "code");
+    const capabilityMessage = readStringFromRecord(
+      scannerCapability,
+      "message",
+    );
+    const methodEvidence = heartbeatMethods.find(
+      (item) => item.method === "payment_code",
+    );
+    const ready = isPaymentCodeLocallyReady(heartbeat, heartbeatMethods);
+    const reported =
+      scannerHealth !== null ||
+      scannerCapability !== null ||
+      methodEvidence !== undefined;
+    const disabledReason =
+      methodEvidence?.disabledReason ?? capabilityMessage ?? message;
 
     if (ready) {
       return {
@@ -459,7 +694,16 @@ export class PaymentOpsService {
         severity: "info",
         passed: true,
         message: "付款码支付扫码模块健康证据已上报",
-        evidence: { status, online, message },
+        evidence: {
+          status,
+          online,
+          message,
+          capabilityReady,
+          capabilityCode,
+          capabilityMessage,
+          methodReady: methodEvidence?.ready ?? null,
+          methodDisabledReason: methodEvidence?.disabledReason ?? null,
+        },
       };
     }
 
@@ -469,10 +713,21 @@ export class PaymentOpsService {
         : "payment_code.scanner_health_not_reported",
       severity: "warning",
       passed: false,
-      message: reported
-        ? "付款码支付已启用，但扫码模块未就绪；二维码支付不受影响"
-        : "付款码支付已启用，但服务端尚未收到扫码模块健康证据；二维码支付不受影响",
-      evidence: { status, online, message },
+      message: disabledReason
+        ? `付款码支付已启用，但扫码模块未就绪：${disabledReason}`
+        : reported
+          ? "付款码支付已启用，但扫码模块未就绪；二维码支付不受影响"
+          : "付款码支付已启用，但服务端尚未收到扫码模块健康证据；二维码支付不受影响",
+      evidence: {
+        status,
+        online,
+        message,
+        capabilityReady,
+        capabilityCode,
+        capabilityMessage,
+        methodReady: methodEvidence?.ready ?? null,
+        methodDisabledReason: methodEvidence?.disabledReason ?? null,
+      },
     };
   }
 
@@ -498,7 +753,24 @@ export class PaymentOpsService {
     };
   }
 
-  private async checkRealProviderConfigsPresent(): Promise<PaymentOpsCheck> {
+  private checkEnabledPaymentChannels(
+    enabledChannelKeys: PaymentChannelKey[],
+  ): PaymentOpsCheck {
+    return {
+      code: "enabled_payment_channels_present",
+      severity: "critical",
+      passed: enabledChannelKeys.length > 0,
+      message:
+        enabledChannelKeys.length > 0
+          ? "已启用支付渠道可用于上线评估"
+          : "没有启用任何支付渠道",
+      evidence: { enabledChannelKeys },
+    };
+  }
+
+  private async checkRealProviderConfigsPresent(
+    enabledChannelKeys: PaymentChannelKey[],
+  ): Promise<PaymentOpsCheck[]> {
     const rows = await this.db
       .select({
         providerCode: paymentProviders.code,
@@ -517,56 +789,40 @@ export class PaymentOpsService {
       )
       .where(sql`${paymentProviders.code} in ('wechat_pay', 'alipay')`);
 
-    const completeEnabledRows = rows.filter((row) => {
-      if (row.providerStatus !== "enabled") return false;
-      if (row.configStatus !== "enabled") return false;
-      if (!row.merchantNo || !row.appId) return false;
-      if (!isEncryptedJson(row.configEncryptedJson)) return false;
-      let sensitiveConfig: Record<string, unknown>;
+    const inspections: ProviderConfigInspection[] = rows.map((row) => {
+      let sensitiveConfig: Record<string, unknown> | null = null;
       try {
-        sensitiveConfig = this.paymentConfigSecrets.decrypt(
-          row.configEncryptedJson,
-        );
+        sensitiveConfig = isEncryptedJson(row.configEncryptedJson)
+          ? this.paymentConfigSecrets.decrypt(row.configEncryptedJson)
+          : null;
       } catch {
-        return false;
+        sensitiveConfig = null;
       }
       const publicConfig =
         typeof row.publicConfigJson === "object" &&
         row.publicConfigJson !== null
           ? (row.publicConfigJson as Record<string, unknown>)
           : {};
-      if (row.providerCode === "wechat_pay") {
-        const hasMerchantSerial =
-          hasNonEmptyString(publicConfig, "merchantCertificateSerialNo") ||
-          hasNonEmptyString(publicConfig, "certificateSerialNo");
-        const hasPlatformKey =
-          hasNonEmptyString(sensitiveConfig, "platformCertificatePem") ||
-          hasNonEmptyString(sensitiveConfig, "platformPublicKeyPem");
-        const baseComplete =
-          hasMerchantSerial &&
-          hasNonEmptyString(publicConfig, "platformCertificateSerialNo") &&
-          hasNonEmptyString(sensitiveConfig, "apiV3Key") &&
-          hasNonEmptyString(sensitiveConfig, "privateKeyPem") &&
-          hasPlatformKey;
-        if (!baseComplete) return false;
-        if (publicConfig["paymentCodeEnabled"] !== true) return true;
-        return (
-          hasNonEmptyString(sensitiveConfig, "apiV2Key") &&
-          hasNonEmptyString(sensitiveConfig, "merchantApiCertPem") &&
-          hasNonEmptyString(sensitiveConfig, "merchantApiKeyPem")
-        );
-      }
-      if (row.providerCode === "alipay") {
-        return (
-          hasNonEmptyString(publicConfig, "gatewayUrl") &&
-          hasNonEmptyString(publicConfig, "keyType") &&
-          hasNonEmptyString(sensitiveConfig, "privateKeyPem") &&
-          hasNonEmptyString(sensitiveConfig, "appCertPem") &&
-          hasNonEmptyString(sensitiveConfig, "alipayPublicCertPem") &&
-          hasNonEmptyString(sensitiveConfig, "alipayRootCertPem")
-        );
-      }
-      return false;
+      return {
+        providerCode: row.providerCode,
+        providerStatus: row.providerStatus,
+        configStatus: row.configStatus,
+        machineId: row.machineId,
+        merchantNo: row.merchantNo,
+        appId: row.appId,
+        publicConfig,
+        sensitiveConfig,
+      };
+    });
+
+    const completeEnabledRows = inspections.filter((row) => {
+      if (row.providerStatus !== "enabled") return false;
+      if (row.configStatus !== "enabled") return false;
+      if (!row.sensitiveConfig) return false;
+      return (
+        this.missingProviderConfigKeys(row, "qr_code").length === 0 ||
+        this.missingProviderConfigKeys(row, "payment_code").length === 0
+      );
     });
 
     const enabledGlobal = completeEnabledRows.filter(
@@ -576,27 +832,97 @@ export class PaymentOpsService {
       (row) => row.machineId !== null,
     );
 
-    return {
-      code: "real_provider_config_present",
-      severity: "critical",
-      passed: completeEnabledRows.length > 0,
-      message:
-        completeEnabledRows.length > 0
-          ? "At least one real provider config is enabled for global or machine-level rollout"
-          : "No real provider config is enabled",
-      evidence: {
-        completeEnabledGlobalProviders: enabledGlobal.map(
-          (row) => row.providerCode,
-        ),
-        completeEnabledMachineScopedProviders: enabledMachineScoped.map(
-          (row) => ({
-            providerCode: row.providerCode,
-            machineId: row.machineId,
-          }),
-        ),
-        inspectedRows: rows.length,
+    const enabledChannelReadiness = enabledChannelKeys.map((channelKey) =>
+      this.evaluateEnabledChannelProviderSetup(channelKey, inspections),
+    );
+    const blockedChannels = enabledChannelReadiness.filter(
+      (channel) => !channel.ready,
+    );
+    const readyEnabledChannels = enabledChannelReadiness.filter(
+      (channel) => channel.ready,
+    );
+    const sandboxChannelRows = readyEnabledChannels.filter(
+      (channel) => channel.environment === "sandbox",
+    );
+    const productionChannelRows = readyEnabledChannels.filter(
+      (channel) => channel.environment === "production",
+    );
+    const sandboxProviders = [
+      ...new Set(sandboxChannelRows.map((row) => row.providerCode)),
+    ];
+    const productionProviders = [
+      ...new Set(productionChannelRows.map((row) => row.providerCode)),
+    ];
+    const productionEnvironmentReady =
+      this.config.nodeEnv !== "production" || sandboxChannelRows.length === 0;
+
+    return [
+      {
+        code: "enabled_channel_provider_setup",
+        severity: "critical",
+        passed: blockedChannels.length === 0 && enabledChannelKeys.length > 0,
+        message:
+          blockedChannels.length === 0 && enabledChannelKeys.length > 0
+            ? "已启用支付渠道的商户配置可用"
+            : "已启用支付渠道存在商户配置阻塞",
+        evidence: {
+          enabledChannelKeys,
+          readyChannelKeys: readyEnabledChannels.map(
+            (channel) => channel.channelKey,
+          ),
+          blockedChannels: blockedChannels.map((channel) => ({
+            channelKey: channel.channelKey,
+            providerCode: channel.providerCode,
+            missingCredentialKeys: channel.missingCredentialKeys,
+          })),
+        },
       },
-    };
+      {
+        code: "real_provider_config_present",
+        severity: "critical",
+        passed: readyEnabledChannels.length > 0,
+        message:
+          readyEnabledChannels.length > 0
+            ? "At least one real provider config is enabled for global or machine-level rollout"
+            : "No real provider config is enabled",
+        evidence: {
+          completeEnabledGlobalProviders: enabledGlobal.map(
+            (row) => row.providerCode,
+          ),
+          completeEnabledMachineScopedProviders: enabledMachineScoped.map(
+            (row) => ({
+              providerCode: row.providerCode,
+              machineId: row.machineId,
+            }),
+          ),
+          inspectedRows: rows.length,
+          readyChannelKeys: readyEnabledChannels.map(
+            (channel) => channel.channelKey,
+          ),
+        },
+      },
+      {
+        code: "provider_environment.production_ready",
+        severity: this.config.nodeEnv === "production" ? "critical" : "warning",
+        passed: productionEnvironmentReady,
+        message:
+          this.config.nodeEnv === "production"
+            ? productionEnvironmentReady
+              ? "生产环境支付配置已使用正式环境"
+              : "生产环境不能只使用沙箱支付配置"
+            : sandboxProviders.length > 0
+              ? "当前环境允许沙箱支付配置，仅用于测试验证"
+              : "当前环境未发现沙箱支付配置",
+        evidence: {
+          sandboxProviders,
+          productionProviders,
+          sandboxChannelKeys: sandboxChannelRows.map(
+            (channel) => channel.channelKey,
+          ),
+          environment: this.config.nodeEnv,
+        },
+      },
+    ];
   }
 
   private async checkMachineRealProviderOptionsAvailable(): Promise<PaymentOpsCheck> {
@@ -655,9 +981,141 @@ export class PaymentOpsService {
     };
   }
 
-  private async checkNotifyUrls(): Promise<PaymentOpsCheck> {
+  private evaluateEnabledChannelProviderSetup(
+    channelKey: PaymentChannelKey,
+    inspections: ProviderConfigInspection[],
+  ): EnabledChannelProviderSetup {
+    const [method, providerCode] = parsePaymentChannelKey(channelKey);
+    const candidates = inspections.filter(
+      (row) =>
+        row.providerCode === providerCode &&
+        row.providerStatus === "enabled" &&
+        row.configStatus === "enabled",
+    );
+    if (candidates.length === 0) {
+      return {
+        channelKey,
+        providerCode,
+        method,
+        ready: false,
+        missingCredentialKeys: ["providerConfig"],
+        environment: null,
+      };
+    }
+
+    const candidateResults = candidates.map((candidate) => ({
+      candidate,
+      missingCredentialKeys: this.missingProviderConfigKeys(candidate, method),
+    }));
+    const ready = candidateResults.find(
+      (result) => result.missingCredentialKeys.length === 0,
+    );
+    const bestAttempt = candidateResults.reduce((best, current) =>
+      current.missingCredentialKeys.length < best.missingCredentialKeys.length
+        ? current
+        : best,
+    );
+
+    return {
+      channelKey,
+      providerCode,
+      method,
+      ready: ready !== undefined,
+      missingCredentialKeys: ready
+        ? []
+        : bestAttempt.missingCredentialKeys.length > 0
+          ? bestAttempt.missingCredentialKeys
+          : ["providerConfig"],
+      environment: ready
+        ? this.providerEnvironment(providerCode, ready.candidate.publicConfig)
+        : null,
+    };
+  }
+
+  private missingProviderConfigKeys(
+    row: ProviderConfigInspection,
+    method: "qr_code" | "payment_code",
+  ): string[] {
+    const missing: string[] = [];
+    const sensitiveConfig = row.sensitiveConfig;
+    if (row.providerStatus !== "enabled") missing.push("providerStatus");
+    if (row.configStatus !== "enabled") missing.push("configStatus");
+    if (!row.merchantNo) missing.push("merchantNo");
+    if (!row.appId) missing.push("appId");
+    if (!sensitiveConfig) {
+      missing.push("sensitiveConfig");
+      return missing;
+    }
+
+    if (row.providerCode === "alipay") {
+      if (!hasNonEmptyString(row.publicConfig, "gatewayUrl")) {
+        missing.push("gatewayUrl");
+      }
+      if (!hasNonEmptyString(row.publicConfig, "keyType")) {
+        missing.push("keyType");
+      }
+      for (const key of [
+        "privateKeyPem",
+        "appCertPem",
+        "alipayPublicCertPem",
+        "alipayRootCertPem",
+      ]) {
+        if (!hasNonEmptyString(sensitiveConfig, key)) missing.push(key);
+      }
+      return missing;
+    }
+
+    if (row.providerCode === "wechat_pay") {
+      if (
+        !hasNonEmptyString(row.publicConfig, "merchantCertificateSerialNo") &&
+        !hasNonEmptyString(row.publicConfig, "certificateSerialNo")
+      ) {
+        missing.push("merchantCertificateSerialNo");
+      }
+      if (!hasNonEmptyString(row.publicConfig, "platformCertificateSerialNo")) {
+        missing.push("platformCertificateSerialNo");
+      }
+      for (const key of ["apiV3Key", "privateKeyPem"]) {
+        if (!hasNonEmptyString(sensitiveConfig, key)) missing.push(key);
+      }
+      if (
+        !hasNonEmptyString(sensitiveConfig, "platformCertificatePem") &&
+        !hasNonEmptyString(sensitiveConfig, "platformPublicKeyPem")
+      ) {
+        missing.push("platformCertificatePem");
+      }
+      if (method === "payment_code") {
+        for (const key of [
+          "apiV2Key",
+          "merchantApiCertPem",
+          "merchantApiKeyPem",
+        ]) {
+          if (!hasNonEmptyString(sensitiveConfig, key)) missing.push(key);
+        }
+      }
+    }
+
+    return missing;
+  }
+
+  private providerEnvironment(
+    providerCode: "alipay" | "wechat_pay",
+    publicConfig: Record<string, unknown>,
+  ): "sandbox" | "production" {
+    if (providerCode === "wechat_pay") return "production";
+    return publicConfig["mode"] === "production" ? "production" : "sandbox";
+  }
+
+  private async checkNotifyUrls(
+    enabledChannelKeys: PaymentChannelKey[],
+  ): Promise<PaymentOpsCheck> {
+    const enabledProviderCodes = [
+      ...new Set(
+        enabledChannelKeys.map((channelKey) => channelKey.split(":")[1]),
+      ),
+    ];
     const checks = await Promise.all(
-      ["wechat_pay", "alipay"].map(async (providerCode) => {
+      enabledProviderCodes.map(async (providerCode) => {
         const staticCheck =
           this.config.getPaymentNotifyUrlStaticCheck(providerCode);
         return {
@@ -681,8 +1139,13 @@ export class PaymentOpsService {
     };
   }
 
-  private async checkCertificates(): Promise<PaymentOpsCheck> {
-    const total = await this.countExpiringCertificates(new Date());
+  private async checkCertificates(
+    enabledChannelKeys: PaymentChannelKey[],
+  ): Promise<PaymentOpsCheck> {
+    const total = await this.countExpiringCertificates(
+      new Date(),
+      enabledChannelKeys,
+    );
     return {
       code: "payment_certificate_not_expiring",
       severity: "critical",
@@ -718,6 +1181,34 @@ export class PaymentOpsService {
         total === 0
           ? "No recent webhook verification failures"
           : "Recent webhook failures exist",
+      evidence: {
+        count: total,
+        windowMinutes: this.config.paymentAlertWindowMinutes,
+      },
+    };
+  }
+
+  private async checkRecentPaymentFailures(): Promise<PaymentOpsCheck> {
+    const from = new Date(
+      Date.now() - this.config.paymentAlertWindowMinutes * 60_000,
+    );
+    const [row] = await this.db
+      .select({ total: count() })
+      .from(payments)
+      .where(
+        and(
+          sql`${payments.createdAt} >= ${from}`,
+          eq(payments.isDrill, false),
+          eq(payments.status, "failed"),
+        ),
+      );
+
+    const total = Number(row.total);
+    return {
+      code: "recent_payment_failures",
+      severity: total === 0 ? "info" : "critical",
+      passed: total === 0,
+      message: total === 0 ? "近期没有支付失败" : "近期存在支付失败",
       evidence: {
         count: total,
         windowMinutes: this.config.paymentAlertWindowMinutes,
@@ -780,7 +1271,10 @@ export class PaymentOpsService {
     };
   }
 
-  private async countExpiringCertificates(now: Date): Promise<number> {
+  private async countExpiringCertificates(
+    now: Date,
+    enabledChannelKeys?: PaymentChannelKey[],
+  ): Promise<number> {
     const warningAfter = new Date(
       now.getTime() +
         this.config.paymentCertificateExpiryWarningDays * 24 * 60 * 60 * 1000,
@@ -788,18 +1282,73 @@ export class PaymentOpsService {
 
     const rows = await this.db
       .select({
+        providerCode: paymentProviders.code,
+        providerStatus: paymentProviders.status,
+        configStatus: paymentProviderConfigs.status,
+        machineId: paymentProviderConfigs.machineId,
+        merchantNo: paymentProviderConfigs.merchantNo,
+        appId: paymentProviderConfigs.appId,
+        publicConfigJson: paymentProviderConfigs.publicConfigJson,
         configEncryptedJson: paymentProviderConfigs.configEncryptedJson,
         updatedAt: paymentProviderConfigs.updatedAt,
       })
       .from(paymentProviderConfigs)
+      .innerJoin(
+        paymentProviders,
+        eq(paymentProviders.id, paymentProviderConfigs.providerId),
+      )
       .where(eq(paymentProviderConfigs.status, "enabled"));
+
+    const enabledChannelsByProvider = new Map<
+      "alipay" | "wechat_pay",
+      Array<"qr_code" | "payment_code">
+    >();
+    for (const channelKey of enabledChannelKeys ?? []) {
+      const [method, providerCode] = parsePaymentChannelKey(channelKey);
+      enabledChannelsByProvider.set(providerCode, [
+        ...(enabledChannelsByProvider.get(providerCode) ?? []),
+        method,
+      ]);
+    }
 
     return rows.reduce((total, row) => {
       try {
+        if (
+          row.providerCode !== "alipay" &&
+          row.providerCode !== "wechat_pay"
+        ) {
+          return total;
+        }
+        const enabledMethods = enabledChannelsByProvider.get(row.providerCode);
+        if (enabledChannelKeys && !enabledMethods) {
+          return total;
+        }
         if (!isEncryptedJson(row.configEncryptedJson)) return total;
         const decrypted = this.paymentConfigSecrets.decrypt(
           row.configEncryptedJson,
         );
+        if (enabledMethods) {
+          const publicConfig =
+            typeof row.publicConfigJson === "object" &&
+            row.publicConfigJson !== null
+              ? (row.publicConfigJson as Record<string, unknown>)
+              : {};
+          const inspection: ProviderConfigInspection = {
+            providerCode: row.providerCode,
+            providerStatus: row.providerStatus,
+            configStatus: row.configStatus,
+            machineId: row.machineId,
+            merchantNo: row.merchantNo,
+            appId: row.appId,
+            publicConfig,
+            sensitiveConfig: decrypted,
+          };
+          const configUsedByEnabledChannel = enabledMethods.some(
+            (method) =>
+              this.missingProviderConfigKeys(inspection, method).length === 0,
+          );
+          if (!configUsedByEnabledChannel) return total;
+        }
         const summary = this.paymentConfigSecrets.summarize(
           decrypted,
           row.updatedAt,

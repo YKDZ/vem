@@ -4,8 +4,10 @@ import { Test } from "@nestjs/testing";
 import { DrizzleDB } from "@vem/db";
 import {
   adminMachineResponseSchema,
+  paymentChannelPolicyResponseSchema,
   paymentProviderConfigSchema,
   paymentProviderSchema,
+  supportedPaymentChannelKeys,
 } from "@vem/shared";
 import request from "supertest";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -157,5 +159,64 @@ describe("admin-payment-contract.e2e", { concurrent: false }, () => {
       qrExpiresMinutes: 10,
       timeoutCompensationSeconds: 60,
     });
+  }, 60_000);
+
+  it("reads and updates global payment channel policy through the real Admin API contract", async () => {
+    const token = await loginAndGetToken(api, appConfig);
+    const auth = { Authorization: `Bearer ${token}` };
+
+    const initialResponse = await api.get("/api/payments/channel-policy").set(auth);
+    expect(initialResponse.status).toBe(200);
+    const initialPolicy = paymentChannelPolicyResponseSchema.parse(
+      (initialResponse.body as ApiResponse<unknown>).data,
+    );
+    expect(initialPolicy.channels.map((channel) => channel.channelKey)).toEqual(
+      supportedPaymentChannelKeys,
+    );
+    expect(initialPolicy.defaultChannelKey).toBe("qr_code:alipay");
+
+    const nextPolicy = {
+      channels: [
+        { channelKey: "payment_code:wechat_pay", enabled: true, rank: 1 },
+        { channelKey: "qr_code:wechat_pay", enabled: true, rank: 2 },
+        { channelKey: "payment_code:alipay", enabled: false, rank: 3 },
+        { channelKey: "qr_code:alipay", enabled: true, rank: 4 },
+      ],
+      defaultChannelKey: "payment_code:wechat_pay",
+    };
+
+    const updateResponse = await api
+      .put("/api/payments/channel-policy")
+      .set(auth)
+      .send(nextPolicy);
+    expect(updateResponse.status).toBe(200);
+    const updatedPolicy = paymentChannelPolicyResponseSchema.parse(
+      (updateResponse.body as ApiResponse<unknown>).data,
+    );
+    expect(updatedPolicy).toMatchObject(nextPolicy);
+
+    const invalidResponse = await api
+      .put("/api/payments/channel-policy")
+      .set(auth)
+      .send({
+        channels: [
+          { channelKey: "qr_code:alipay", enabled: true, rank: 1 },
+          { channelKey: "qr_code:alipay", enabled: true, rank: 2 },
+          { channelKey: "qr_code:wechat_pay", enabled: true, rank: 3 },
+          { channelKey: "payment_code:wechat_pay", enabled: true, rank: 4 },
+        ],
+        defaultChannelKey: "qr_code:alipay",
+      });
+    expect(invalidResponse.status).toBe(400);
+
+    const readBackResponse = await api
+      .get("/api/payments/channel-policy")
+      .set(auth);
+    expect(readBackResponse.status).toBe(200);
+    expect(
+      paymentChannelPolicyResponseSchema.parse(
+        (readBackResponse.body as ApiResponse<unknown>).data,
+      ),
+    ).toMatchObject(nextPolicy);
   }, 60_000);
 });

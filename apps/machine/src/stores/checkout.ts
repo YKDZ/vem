@@ -26,6 +26,8 @@ export type ApplyTransactionOptions = {
 const DISMISSED_TERMINAL_ORDER_STORAGE_KEY =
   "vem.machine.dismissedTerminalOrderNos";
 const DISMISSED_TERMINAL_ORDER_LIMIT = 50;
+const PAYMENT_CODE_SCANNER_UNAVAILABLE_CUSTOMER_MESSAGE =
+  "扫码器暂不可用，请选择其他支付方式";
 
 function browserLocalStorage(): Storage | null {
   if (typeof window === "undefined") return null;
@@ -98,6 +100,58 @@ function paymentCodeAttemptMessageFromSnapshot(
     return "支付结果待确认，请联系工作人员处理";
   }
   return operatorHint ?? null;
+}
+
+function errorString(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function stringField(error: unknown, key: string): string | null {
+  if (typeof error !== "object" || error === null || !(key in error)) {
+    return null;
+  }
+  const value = Object.fromEntries(Object.entries(error))[key];
+  return typeof value === "string" ? value : null;
+}
+
+function selectedPaymentCodeLocalGateError(
+  error: unknown,
+  selected: MachinePaymentOption | null,
+): boolean {
+  if (selected?.method !== "payment_code") return false;
+  const responseCode = stringField(error, "responseCode");
+  const text = [
+    errorString(error),
+    stringField(error, "responseMessage"),
+    stringField(error, "responseBody"),
+  ]
+    .filter((value): value is string => Boolean(value))
+    .join("\n");
+  const lower = text.toLowerCase();
+
+  return (
+    responseCode === "create_order_blocked" &&
+    (text.includes("扫码器") ||
+      lower.includes("selected payment option is not ready") ||
+      lower.includes("selected payment method payment_code is unavailable") ||
+      lower.includes("scanner"))
+  );
+}
+
+function paymentCodeSubmitLocalGateError(error: unknown): boolean {
+  const text = [
+    errorString(error),
+    stringField(error, "responseMessage"),
+    stringField(error, "responseBody"),
+  ]
+    .filter((value): value is string => Boolean(value))
+    .join("\n");
+  const lower = text.toLowerCase();
+  return (
+    text.includes("扫码器") ||
+    lower.includes("machine_not_ready_for_payment_code") ||
+    lower.includes("scanner")
+  );
 }
 
 function latestSaleViewItem(
@@ -324,7 +378,7 @@ export const useCheckoutStore = defineStore("checkout", {
           this.error = "当前机器暂无可用支付方式";
         }
       } catch (error) {
-        this.error = error instanceof Error ? error.message : String(error);
+        this.error = errorString(error);
         this.paymentOptions = [];
         this.paymentOptionsLoaded = false;
         this.selectedPaymentOptionKey = null;
@@ -379,7 +433,9 @@ export const useCheckoutStore = defineStore("checkout", {
         this.applyTransaction(snapshot);
         return orderResponseFromSnapshot(snapshot, selectedItem.priceCents);
       } catch (error) {
-        this.error = error instanceof Error ? error.message : String(error);
+        this.error = selectedPaymentCodeLocalGateError(error, selected)
+          ? PAYMENT_CODE_SCANNER_UNAVAILABLE_CUSTOMER_MESSAGE
+          : errorString(error);
         await catalogStore.refresh().catch(() => {
           // Preserve the original order error; catalog refresh is best-effort after a rejected checkout.
         });
@@ -400,7 +456,7 @@ export const useCheckoutStore = defineStore("checkout", {
         this.applyTransaction(snapshot);
         return snapshot;
       } catch (error) {
-        this.error = error instanceof Error ? error.message : String(error);
+        this.error = errorString(error);
         return null;
       } finally {
         this.loading = false;
@@ -417,7 +473,7 @@ export const useCheckoutStore = defineStore("checkout", {
         connectivityStore.applySaleReadiness(saleReadiness);
         return null;
       } catch (error) {
-        return error instanceof Error ? error.message : String(error);
+        return errorString(error);
       }
     },
     async cancelCurrentOrder(options?: {
@@ -444,13 +500,11 @@ export const useCheckoutStore = defineStore("checkout", {
         await useCatalogStore()
           .refresh()
           .catch((error: unknown) => {
-            this.error = `订单已取消，但目录刷新失败：${
-              error instanceof Error ? error.message : String(error)
-            }`;
+            this.error = `订单已取消，但目录刷新失败：${errorString(error)}`;
           });
         return snapshot;
       } catch (error) {
-        this.error = error instanceof Error ? error.message : String(error);
+        this.error = errorString(error);
         throw error;
       } finally {
         this.loading = false;
@@ -477,7 +531,9 @@ export const useCheckoutStore = defineStore("checkout", {
         this.applyTransaction(snapshot);
         return snapshot;
       } catch (error) {
-        this.error = error instanceof Error ? error.message : String(error);
+        this.error = paymentCodeSubmitLocalGateError(error)
+          ? PAYMENT_CODE_SCANNER_UNAVAILABLE_CUSTOMER_MESSAGE
+          : errorString(error);
         return null;
       } finally {
         this.paymentCodeSubmitting = false;

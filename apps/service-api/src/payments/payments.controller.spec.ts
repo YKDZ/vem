@@ -1,14 +1,26 @@
-import { paymentOperatorReasonSchema } from "@vem/shared";
+import {
+  paymentIncidentActionRequestSchema,
+  paymentOperatorReasonSchema,
+} from "@vem/shared";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { PaymentsService } from "./payments.service";
 
+import { REQUIRED_PERMISSIONS_KEY } from "../access/permissions.decorator";
+import { PaymentChannelPolicyService } from "./payment-channel-policy.service";
 import { PaymentsController } from "./payments.controller";
 
 function makeRes() {
   return {
     type: vi.fn().mockReturnThis(),
   };
+}
+
+function makeController(paymentsService: Partial<PaymentsService>) {
+  return new PaymentsController(
+    paymentsService as unknown as PaymentsService,
+    {} as unknown as PaymentChannelPolicyService,
+  );
 }
 
 describe("PaymentsController", () => {
@@ -24,6 +36,58 @@ describe("PaymentsController", () => {
         paymentOperatorReasonSchema.parse({ reason: "\n\t" }),
       ).toThrow();
     });
+
+    it("validates strict payment incident action bodies", () => {
+      expect(
+        paymentIncidentActionRequestSchema.parse({
+          action: "query_payment",
+          reason: "operator checks uncertain payment",
+        }),
+      ).toMatchObject({ action: "query_payment" });
+      expect(() =>
+        paymentIncidentActionRequestSchema.parse({
+          action: "query_payment",
+          reason: "operator checks uncertain payment",
+          rawPayload: {},
+        }),
+      ).toThrow();
+    });
+  });
+
+  describe("paymentIncidentAction", () => {
+    it("passes payment id, admin id, and action to handlePaymentIncidentAction()", async () => {
+      const result = {
+        action: "mark_manual_handling" as const,
+        status: "manual_handling",
+        handled: true,
+        message: "已标记人工处理",
+        protectedDiagnostics: {},
+      };
+      const paymentsService = {
+        handlePaymentIncidentAction: vi.fn().mockResolvedValue(result),
+      };
+      const controller = makeController(paymentsService);
+      const admin = {
+        id: "admin-001",
+      } as import("../common/request-user").AuthenticatedAdmin;
+      const body = {
+        action: "mark_manual_handling" as const,
+        reason: "provider result cannot be resolved automatically",
+      };
+
+      await expect(
+        controller.paymentIncidentAction(
+          admin,
+          "550e8400-e29b-41d4-a716-446655440000",
+          body,
+        ),
+      ).resolves.toBe(result);
+      expect(paymentsService.handlePaymentIncidentAction).toHaveBeenCalledWith(
+        "550e8400-e29b-41d4-a716-446655440000",
+        "admin-001",
+        body,
+      );
+    });
   });
 
   describe("listReconciliationAttempts", () => {
@@ -37,9 +101,7 @@ describe("PaymentsController", () => {
       const paymentsService = {
         listReconciliationAttempts: vi.fn().mockResolvedValue(result),
       };
-      const controller = new PaymentsController(
-        paymentsService as unknown as PaymentsService,
-      );
+      const controller = makeController(paymentsService);
 
       await expect(
         controller.listReconciliationAttempts({
@@ -65,9 +127,7 @@ describe("PaymentsController", () => {
       const paymentsService = {
         manualReconcileRefund: vi.fn().mockResolvedValue(result),
       };
-      const controller = new PaymentsController(
-        paymentsService as unknown as PaymentsService,
-      );
+      const controller = makeController(paymentsService);
       const admin = {
         id: "admin-001",
       } as import("../common/request-user").AuthenticatedAdmin;
@@ -94,9 +154,7 @@ describe("PaymentsController", () => {
       const paymentsService = {
         manualReconcile: vi.fn().mockResolvedValue(result),
       };
-      const controller = new PaymentsController(
-        paymentsService as unknown as PaymentsService,
-      );
+      const controller = makeController(paymentsService);
       const admin = {
         id: "admin-001",
       } as import("../common/request-user").AuthenticatedAdmin;
@@ -116,6 +174,73 @@ describe("PaymentsController", () => {
     });
   });
 
+  describe("payment channel policy", () => {
+    it("allows payment policy reads with payments.read while writes require payments.configure", () => {
+      expect(
+        Reflect.getMetadata(
+          REQUIRED_PERMISSIONS_KEY,
+          PaymentsController.prototype.getChannelPolicy,
+        ),
+      ).toEqual(["payments.read"]);
+      expect(
+        Reflect.getMetadata(
+          REQUIRED_PERMISSIONS_KEY,
+          PaymentsController.prototype.updateChannelPolicy,
+        ),
+      ).toEqual(["payments.configure"]);
+    });
+
+    it("reads and updates global payment channel policy through the policy service", async () => {
+      const policy = {
+        channels: [
+          { channelKey: "qr_code:alipay" as const, enabled: true, rank: 1 },
+          {
+            channelKey: "payment_code:alipay" as const,
+            enabled: true,
+            rank: 2,
+          },
+          { channelKey: "qr_code:wechat_pay" as const, enabled: true, rank: 3 },
+          {
+            channelKey: "payment_code:wechat_pay" as const,
+            enabled: false,
+            rank: 4,
+          },
+        ],
+        defaultChannelKey: "qr_code:alipay" as const,
+        updatedAt: null,
+        updatedByAdminUserId: null,
+      };
+      const paymentChannelPolicyService = {
+        getPolicy: vi.fn().mockResolvedValue(policy),
+        updatePolicy: vi.fn().mockResolvedValue(policy),
+      };
+      const controller = new PaymentsController(
+        {} as unknown as PaymentsService,
+        paymentChannelPolicyService as unknown as PaymentChannelPolicyService,
+      );
+      const admin = {
+        id: "550e8400-e29b-41d4-a716-446655440010",
+      } as import("../common/request-user").AuthenticatedAdmin;
+
+      await expect(controller.getChannelPolicy()).resolves.toBe(policy);
+      await expect(
+        controller.updateChannelPolicy(admin, {
+          channels: policy.channels,
+          defaultChannelKey: policy.defaultChannelKey,
+        }),
+      ).resolves.toBe(policy);
+
+      expect(paymentChannelPolicyService.getPolicy).toHaveBeenCalledOnce();
+      expect(paymentChannelPolicyService.updatePolicy).toHaveBeenCalledWith(
+        admin.id,
+        {
+          channels: policy.channels,
+          defaultChannelKey: policy.defaultChannelKey,
+        },
+      );
+    });
+  });
+
   describe("handleWebhook", () => {
     let controller: PaymentsController;
     let paymentsService: Pick<PaymentsService, "handleProviderWebhook">;
@@ -124,9 +249,7 @@ describe("PaymentsController", () => {
       paymentsService = {
         handleProviderWebhook: vi.fn(),
       };
-      controller = new PaymentsController(
-        paymentsService as unknown as PaymentsService,
-      );
+      controller = makeController(paymentsService);
     });
 
     it("alipay handled → returns 'success' as plain text", async () => {

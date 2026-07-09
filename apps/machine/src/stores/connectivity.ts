@@ -95,7 +95,7 @@ export const useConnectivityStore = defineStore("connectivity", {
 
       const rawReason =
         paymentCode.disabledReason ?? components.scannerCapability.message;
-      const scannerReason = rawReason.startsWith("扫码器不可用")
+      const scannerReason = rawReason.startsWith("扫码器")
         ? rawReason
         : `扫码器不可用：${rawReason}`;
       return [

@@ -103,35 +103,8 @@ pub async fn run_console_with_token(
         let _ = backend.authenticate(machine_code, secret).await;
     }
     let ui_status_cache = ipc::RuntimeStatusCache::new(&runtime_config.public, state.clone()).await;
-    let payment_code_submit_guard = {
-        let status_cache = ui_status_cache.clone();
-        let state = state.clone();
-        std::sync::Arc::new(move || {
-            let status_cache = status_cache.clone();
-            let state = state.clone();
-            Box::pin(async move {
-                let hardware = status_cache.hardware.read().await.clone();
-                if !hardware.online {
-                    return Err(format!(
-                        "MACHINE_NOT_READY_FOR_PAYMENT_CODE: {}",
-                        hardware.message
-                    ));
-                }
-                if let Some(lock) = state
-                    .whole_machine_maintenance_lock()
-                    .await
-                    .map_err(|error| error.to_string())?
-                {
-                    return Err(format!(
-                        "MACHINE_NOT_READY_FOR_PAYMENT_CODE: {}",
-                        lock.message
-                    ));
-                }
-                Ok(())
-            })
-                as std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>
-        })
-    };
+    let payment_code_submit_guard =
+        ipc::local_payment_code_submit_guard(ui_status_cache.clone(), state.clone());
     let transaction = TransactionStateMachine::new(
         state.clone(),
         backend.clone(),
@@ -189,7 +162,7 @@ pub async fn run_console_with_token(
         rx_raw,
         state: state.clone(),
         events: events_tx.clone(),
-        scanner_status: ipc_ctx.ui.status_cache.scanner.clone(),
+        status_cache: ipc_ctx.ui.status_cache.clone(),
         machine_code: runtime_config.public.machine_code.clone(),
         api_base_url: runtime_config.public.api_base_url.clone(),
         machine_secret: runtime_secrets.machine_secret.clone(),
@@ -341,7 +314,7 @@ struct PaymentCodeWatcherInput {
     rx_raw: mpsc::Receiver<vending_core::scanner::RawPaymentCode>,
     state: LocalStateStore,
     events: broadcast::Sender<DaemonEvent>,
-    scanner_status: Arc<tokio::sync::RwLock<vending_core::scanner::ScannerHealthSnapshot>>,
+    status_cache: ipc::RuntimeStatusCache,
     machine_code: Option<String>,
     api_base_url: String,
     machine_secret: Option<String>,
@@ -353,7 +326,7 @@ async fn run_payment_code_watcher(input: PaymentCodeWatcherInput) -> Result<(), 
         mut rx_raw,
         state,
         events,
-        scanner_status,
+        status_cache,
         machine_code,
         api_base_url,
         machine_secret,
@@ -368,11 +341,15 @@ async fn run_payment_code_watcher(input: PaymentCodeWatcherInput) -> Result<(), 
         let _ = backend.authenticate(&machine_code, secret).await;
     }
     let machine_state = TransactionStateMachine::new(
-        state,
+        state.clone(),
         std::sync::Arc::new(backend),
         Some(machine_code.clone()),
         events,
-    );
+    )
+    .with_payment_code_submit_guard(ipc::local_payment_code_submit_guard(
+        status_cache.clone(),
+        state,
+    ));
 
     loop {
         tokio::select! {
@@ -389,7 +366,7 @@ async fn run_payment_code_watcher(input: PaymentCodeWatcherInput) -> Result<(), 
                 let Some(_order_no) = snapshot.order_no else {
                     continue;
                 };
-                let scanner_health = scanner_status.read().await.clone();
+                let scanner_health = status_cache.scanner.read().await.clone();
                 if !scanner_health.online
                     || scanner_health.adapter
                         != vending_core::scanner::PAYMENT_CODE_SOURCE_SERIAL_TEXT

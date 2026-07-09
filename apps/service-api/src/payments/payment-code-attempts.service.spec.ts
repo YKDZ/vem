@@ -135,6 +135,51 @@ describe("PaymentCodeAttemptsService", () => {
     );
   });
 
+  it("blocks replay and new attempts for incident-locked payment-code orders", async () => {
+    const tx = {
+      select: vi.fn(),
+      insert: vi.fn(),
+    };
+    tx.select.mockReturnValueOnce(
+      makeSelectResult([
+        {
+          orderId: "order-1",
+          orderNo: "ORD001",
+          orderStatus: "manual_handling",
+          paymentState: "payment_unknown",
+          fulfillmentState: "manual_handling",
+          machineId: "machine-1",
+          paymentId: "payment-1",
+          paymentNo: "PAY001",
+          paymentProviderConfigId: "cfg-1",
+          amountCents: 300,
+          paymentStatus: "unknown",
+          paymentMethod: "payment_code",
+          providerId: "provider-1",
+          providerCode: "alipay",
+        },
+      ]),
+    );
+
+    const db = {
+      transaction: vi
+        .fn()
+        .mockImplementation(async (fn: (tx: unknown) => unknown) => fn(tx)),
+    };
+
+    const service = new PaymentCodeAttemptsService(db as never);
+    await expect(
+      service.createOrReplay({
+        orderNo: "ORD001",
+        machineCode: "M001",
+        authCode: "28763443825664394",
+        idempotencyKey: "idem-locked",
+        source: "serial_text",
+      }),
+    ).rejects.toThrow(new ConflictException("payment_incident_locked"));
+    expect(tx.insert).not.toHaveBeenCalled();
+  });
+
   it("stores only hashed and masked auth code fields", async () => {
     let insertedValues: Record<string, unknown> | undefined;
     const insertedAttempt = {

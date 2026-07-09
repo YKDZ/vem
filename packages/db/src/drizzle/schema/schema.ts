@@ -19,6 +19,7 @@ import {
   orderPaymentStates,
   orderSources,
   orderStatuses,
+  supportedPaymentChannelKeys,
   paymentCodeAttemptStatuses,
   paymentMethods,
   paymentProviderStatuses,
@@ -866,6 +867,40 @@ export const paymentProviderConfigs = t.pgTable(
       .uniqueIndex("payment_provider_configs_provider_global_unique")
       .on(table.providerId)
       .where(sql`${table.machineId} IS NULL`),
+  ],
+);
+
+export const paymentChannelPolicies = t.pgTable(
+  "payment_channel_policies",
+  {
+    id: id(),
+    channelKey: t.varchar("channel_key", { length: 64 }).notNull(),
+    enabled: t.boolean("enabled").default(true).notNull(),
+    rank: t.integer("rank").notNull(),
+    isDefault: t.boolean("is_default").default(false).notNull(),
+    updatedByAdminUserId: t
+      .uuid("updated_by_admin_user_id")
+      .references(() => adminUsers.id),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    t.uniqueIndex("payment_channel_policies_key_unique").on(table.channelKey),
+    t.uniqueIndex("payment_channel_policies_rank_unique").on(table.rank),
+    t
+      .uniqueIndex("payment_channel_policies_default_unique")
+      .on(table.isDefault)
+      .where(sql`${table.isDefault} = true`),
+    t
+      .check(
+        "payment_channel_policies_key_check",
+        sql`${table.channelKey} IN ('qr_code:alipay', 'payment_code:alipay', 'qr_code:wechat_pay', 'payment_code:wechat_pay')`,
+      ),
+    t
+      .check(
+        "payment_channel_policies_rank_check",
+        sql`${table.rank} BETWEEN 1 AND ${supportedPaymentChannelKeys.length}`,
+      ),
   ],
 );
 

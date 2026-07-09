@@ -18,6 +18,7 @@ import {
   orderStatusEvents,
   orders,
   paymentEvents,
+  paymentCodeAttempts,
   paymentProviderConfigs,
   paymentProviders,
   paymentReconciliationAttempts,
@@ -30,7 +31,11 @@ import {
   type SQL,
 } from "@vem/db";
 import {
+  type OrderStatus,
   type PaymentStatus,
+  paymentIncidentActionResponseSchema,
+  type PaymentIncidentActionRequest,
+  type PaymentIncidentActionResponse,
   pageQuerySchema,
   paymentEventQuerySchema,
   paymentProviderQuerySchema,
@@ -100,10 +105,27 @@ const PROVIDER_MUTABLE_PAYMENT_STATUSES: PaymentStatus[] = [
   "created",
   "pending",
   "processing",
+  "unknown",
 ];
 
 function canApplyProviderTerminalStatus(status: PaymentStatus): boolean {
   return PROVIDER_MUTABLE_PAYMENT_STATUSES.includes(status);
+}
+
+function isPaymentIncidentLocked(input: {
+  orderStatus: OrderStatus;
+  paymentState: string;
+  fulfillmentState: string;
+  paymentStatus?: string;
+}): boolean {
+  return (
+    input.orderStatus === "manual_handling" ||
+    input.paymentState === "payment_unknown" ||
+    input.paymentState === "manual_handling" ||
+    input.fulfillmentState === "manual_handling" ||
+    input.paymentStatus === "unknown" ||
+    input.paymentStatus === "manual_handling"
+  );
 }
 
 function isProviderPaymentUncertainStatus(
@@ -572,6 +594,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         machineId: orders.machineId,
         expiresAt: payments.expiresAt,
         providerConfigId: payments.paymentProviderConfigId,
+        providerConfigSnapshotJson: payments.providerConfigSnapshotJson,
         publicConfigJson: paymentProviderConfigs.publicConfigJson,
       })
       .from(payments)
@@ -606,6 +629,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
                 providerCode: payment.providerCode,
                 providerConfigId: payment.providerConfigId,
                 machineId: payment.machineId,
+                providerConfigSnapshotJson: payment.providerConfigSnapshotJson,
               })
               .catch(() => ({
                 providerCode: payment.providerCode,
@@ -1026,13 +1050,15 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
     providerCode: string,
     publicConfigJson: Record<string, unknown>,
   ): Record<string, unknown> {
+    const cleanPublicConfigJson =
+      this.withoutLegacyProviderChannelSwitches(publicConfigJson);
     if (providerCode === "wechat_pay") {
-      return wechatPayPublicConfigSchema.parse(publicConfigJson);
+      return wechatPayPublicConfigSchema.parse(cleanPublicConfigJson);
     }
     if (providerCode === "alipay") {
-      return alipayPublicConfigSchema.parse(publicConfigJson);
+      return alipayPublicConfigSchema.parse(cleanPublicConfigJson);
     }
-    return publicConfigJson;
+    return cleanPublicConfigJson;
   }
 
   private sanitizeProviderConfigForAudit(input: {
@@ -1049,7 +1075,9 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       machineId: input.machineId,
       merchantNo: input.merchantNo,
       appId: input.appId,
-      publicConfigJson: input.publicConfigJson,
+      publicConfigJson: this.withoutLegacyProviderChannelSwitches(
+        input.publicConfigJson,
+      ),
       status: input.status,
       secretKeys: Object.keys(input.sensitiveConfigJson).sort(),
     };
@@ -1253,6 +1281,14 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
     return Object.fromEntries(Object.entries(value));
   }
 
+  private withoutLegacyProviderChannelSwitches(
+    publicConfigJson: Record<string, unknown>,
+  ): Record<string, unknown> {
+    const clean = { ...publicConfigJson };
+    delete clean["paymentCodeEnabled"];
+    return clean;
+  }
+
   private toProviderConfigAdminDto(row: {
     id: string;
     providerId: string;
@@ -1285,7 +1321,9 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       machineId: row.machineId,
       merchantNo: row.merchantNo ?? null,
       appId: row.appId ?? null,
-      publicConfigJson: this.toRecord(row.publicConfigJson),
+      publicConfigJson: this.withoutLegacyProviderChannelSwitches(
+        this.toRecord(row.publicConfigJson),
+      ),
       derivedNotifyUrl: this.config.buildPaymentNotifyUrl(row.providerCode),
       secretStatusJson: this.paymentConfigSecrets.summarize(
         decryptedKeys,
@@ -1438,7 +1476,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
     }
 
     const candidateConfigs = await this.paymentProviderConfigService
-      .listCandidateConfigsForProvider(providerCode)
+      .listWebhookCandidateConfigsForProvider(providerCode)
       .catch(() => []);
 
     let webhook: Awaited<
@@ -1516,6 +1554,8 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
             paymentNo: payments.paymentNo,
             amountCents: payments.amountCents,
             machineId: orders.machineId,
+            providerConfigId: payments.paymentProviderConfigId,
+            providerConfigSnapshotJson: payments.providerConfigSnapshotJson,
           })
           .from(payments)
           .innerJoin(orders, eq(orders.id, payments.orderId))
@@ -1546,6 +1586,18 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       return { handled: false, reason: "payment_not_found" };
     }
 
+    const boundConfig = await this.paymentProviderConfigService
+      .resolveForExistingPayment({
+        providerCode,
+        providerConfigId: payment.providerConfigId ?? null,
+        machineId: payment.machineId,
+        providerConfigSnapshotJson: payment.providerConfigSnapshotJson,
+      })
+      .catch(() => null);
+    const validationConfigs =
+      boundConfig?.providerCode === providerCode
+        ? [boundConfig, ...candidateConfigs]
+        : candidateConfigs;
     const businessValidation = this.validateProviderWebhookBusinessFields(
       providerCode,
       webhook.rawPayload,
@@ -1554,9 +1606,9 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         amountCents: payment.amountCents,
         machineId: payment.machineId,
       },
-      candidateConfigs,
+      validationConfigs,
       webhook.normalizedPayload,
-      webhook.matchedConfigId,
+      webhook.matchedConfigId ?? boundConfig?.id ?? null,
       webhook.paymentStatus,
     );
 
@@ -1628,6 +1680,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
             providerId: payments.providerId,
             orderId: orders.id,
             orderStatus: orders.status,
+            paymentState: orders.paymentState,
             fulfillmentState: orders.fulfillmentState,
           })
           .from(payments)
@@ -1639,6 +1692,9 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
           return { orderId: r.orderId, shouldDispatch: false };
         }
         if (!canApplyProviderTerminalStatus(r.paymentStatus)) {
+          return { orderId: r.orderId, shouldDispatch: false };
+        }
+        if (isPaymentIncidentLocked(r)) {
           return { orderId: r.orderId, shouldDispatch: false };
         }
 
@@ -1937,6 +1993,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         orderId: payments.orderId,
         machineId: orders.machineId,
         providerConfigId: payments.paymentProviderConfigId,
+        providerConfigSnapshotJson: payments.providerConfigSnapshotJson,
         isDrill: payments.isDrill,
       })
       .from(payments)
@@ -2002,6 +2059,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
               providerCode: payment.providerCode,
               providerConfigId: payment.providerConfigId ?? null,
               machineId: payment.machineId,
+              providerConfigSnapshotJson: payment.providerConfigSnapshotJson,
             })
             .catch(() => ({
               id: "",
@@ -2187,6 +2245,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         orderId: payments.orderId,
         machineId: orders.machineId,
         providerConfigId: payments.paymentProviderConfigId,
+        providerConfigSnapshotJson: payments.providerConfigSnapshotJson,
         isDrill: payments.isDrill,
         orderIsDrill: orders.isDrill,
       })
@@ -2204,7 +2263,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       };
     }
 
-    if (payment.status !== "pending" && payment.status !== "processing") {
+    if (!["pending", "processing", "unknown"].includes(payment.status)) {
       return {
         status: payment.status,
         reconciled: false,
@@ -2259,6 +2318,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         providerCode: payment.providerCode,
         providerConfigId: payment.providerConfigId ?? null,
         machineId: payment.machineId,
+        providerConfigSnapshotJson: payment.providerConfigSnapshotJson,
       })
       .catch(() => ({
         id: "",
@@ -2397,6 +2457,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
     eventType: string;
     providerEventId: string;
     rawPayload: Record<string, unknown>;
+    allowIncidentLockedResolution?: boolean;
   }): Promise<boolean> {
     const [row] = await this.db
       .select({
@@ -2420,8 +2481,13 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       input.paidAt ?? null,
       input.failedReason ?? null,
       input.eventType,
+      input.allowIncidentLockedResolution ?? false,
     );
-    if (applied && input.status === "succeeded") {
+    if (
+      applied &&
+      input.status === "succeeded" &&
+      (await this.canDispatchPaymentSuccess(row.orderId))
+    ) {
       await this.vendingService
         .createAndDispatchCommands(row.orderId)
         .catch((_err: unknown) => {
@@ -2429,6 +2495,22 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         });
     }
     return applied;
+  }
+
+  private async canDispatchPaymentSuccess(orderId: string): Promise<boolean> {
+    const [order] = await this.db
+      .select({
+        orderStatus: orders.status,
+        paymentState: orders.paymentState,
+        fulfillmentState: orders.fulfillmentState,
+        paymentStatus: payments.status,
+      })
+      .from(payments)
+      .innerJoin(orders, eq(orders.id, payments.orderId))
+      .where(eq(payments.orderId, orderId))
+      .limit(1);
+    if (!order) return false;
+    return !isPaymentIncidentLocked(order);
   }
 
   private async applyPaymentStatusUpdate(
@@ -2442,6 +2524,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
     occurredAt?: Date | null,
     failedReason?: string | null,
     eventTypeOverride?: string,
+    allowIncidentLockedResolution = false,
   ): Promise<boolean> {
     return await this.db.transaction(async (tx) => {
       if (!providerId) return false;
@@ -2464,6 +2547,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
           providerId: payments.providerId,
           orderId: orders.id,
           orderStatus: orders.status,
+          paymentState: orders.paymentState,
           fulfillmentState: orders.fulfillmentState,
           isDrill: payments.isDrill,
           orderIsDrill: orders.isDrill,
@@ -2474,6 +2558,9 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       if (!r) return false;
       if (r.isDrill || r.orderIsDrill) return false;
       if (!canApplyProviderTerminalStatus(r.paymentStatus)) return false;
+      if (isPaymentIncidentLocked(r) && !allowIncidentLockedResolution) {
+        return false;
+      }
 
       const inserted = await tx
         .insert(paymentEvents)
@@ -2901,6 +2988,649 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
     return result;
   }
 
+  async handlePaymentIncidentAction(
+    paymentId: string,
+    adminUserId: string,
+    input: PaymentIncidentActionRequest,
+  ): Promise<PaymentIncidentActionResponse> {
+    if (input.action === "query_payment") {
+      const result = await this.manualReconcile(
+        paymentId,
+        adminUserId,
+        input.reason,
+      );
+      return this.toIncidentActionResponse({
+        action: input.action,
+        status: result.status,
+        handled: result.reconciled,
+        message: result.reconciled ? "支付状态已更新" : "支付结果仍待确认",
+        protectedDiagnostics: {
+          paymentId,
+          reason: result.reason ?? null,
+        },
+      });
+    }
+
+    if (input.action === "query_refund") {
+      const result = await this.manualReconcileRefund(
+        input.refundId,
+        adminUserId,
+        input.reason,
+      );
+      return this.toIncidentActionResponse({
+        action: input.action,
+        status: result.status,
+        handled: result.reconciled,
+        message: result.reconciled ? "退款状态已更新" : "退款仍在处理中",
+        protectedDiagnostics: {
+          paymentId,
+          refundId: input.refundId,
+          reason: result.reason ?? null,
+        },
+      });
+    }
+
+    if (input.action === "request_refund_handling") {
+      const refund = await this.requestRefundHandling(
+        paymentId,
+        adminUserId,
+        input.reason,
+      );
+      return this.toIncidentActionResponse({
+        action: input.action,
+        status: refund.status,
+        handled: refund.status === "succeeded",
+        message:
+          refund.status === "succeeded"
+            ? "退款已成功"
+            : "退款请求已提交，等待渠道确认",
+        protectedDiagnostics: {
+          paymentId,
+          refundNo: refund.refundNo,
+          providerRefundNo: refund.providerRefundNo ?? null,
+        },
+      });
+    }
+
+    if (input.action === "mark_manual_handling") {
+      const result = await this.markPaymentManualHandling(
+        paymentId,
+        adminUserId,
+        input.reason,
+      );
+      return this.toIncidentActionResponse({
+        action: input.action,
+        status: result.status,
+        handled: true,
+        message: "已标记人工处理",
+        protectedDiagnostics: result.protectedDiagnostics,
+      });
+    }
+
+    return await this.closeOrReverseUncertainPayment(
+      paymentId,
+      adminUserId,
+      input.reason,
+    );
+  }
+
+  private toIncidentActionResponse(
+    response: PaymentIncidentActionResponse,
+  ): PaymentIncidentActionResponse {
+    return paymentIncidentActionResponseSchema.parse(response);
+  }
+
+  private async requestRefundHandling(
+    paymentId: string,
+    adminUserId: string,
+    reason: string,
+  ) {
+    const [payment] = await this.db
+      .select({
+        orderId: payments.orderId,
+        paymentNo: payments.paymentNo,
+      })
+      .from(payments)
+      .where(eq(payments.id, paymentId))
+      .limit(1);
+    if (!payment) throw new NotFoundException("Payment not found");
+    const refund = await this.refundsService.requestFullRefund({
+      orderId: payment.orderId,
+      reason: "admin_refund",
+      requestedByAdminUserId: adminUserId,
+    });
+    await this.auditService.record({
+      adminUserId,
+      action: "payments.incident.request_refund_handling",
+      resourceType: "payment",
+      resourceId: paymentId,
+      afterJson: {
+        reason,
+        paymentNo: payment.paymentNo,
+        refundNo: refund.refundNo,
+        status: refund.status,
+      },
+    });
+    return refund;
+  }
+
+  private async markPaymentManualHandling(
+    paymentId: string,
+    adminUserId: string,
+    reason: string,
+  ): Promise<{
+    status: "manual_handling";
+    protectedDiagnostics: Record<string, unknown>;
+  }> {
+    const [payment] = await this.db
+      .select({
+        paymentNo: payments.paymentNo,
+        orderId: payments.orderId,
+        orderStatus: orders.status,
+        providerId: payments.providerId,
+      })
+      .from(payments)
+      .innerJoin(orders, eq(orders.id, payments.orderId))
+      .where(eq(payments.id, paymentId))
+      .limit(1);
+    if (!payment) throw new NotFoundException("Payment not found");
+
+    await this.db.transaction(async (tx) => {
+      await tx
+        .update(payments)
+        .set({
+          status: "manual_handling",
+          failedReason: reason,
+          updatedAt: new Date(),
+        })
+        .where(eq(payments.id, paymentId));
+      await tx
+        .update(orders)
+        .set({
+          status: "manual_handling",
+          paymentState: "manual_handling",
+          fulfillmentState: "manual_handling",
+          updatedAt: new Date(),
+        })
+        .where(eq(orders.id, payment.orderId));
+      await tx.insert(orderStatusEvents).values({
+        orderId: payment.orderId,
+        fromStatus: payment.orderStatus,
+        toStatus: "manual_handling",
+        reason: "payment_manual_handling",
+        metadata: { paymentNo: payment.paymentNo, reason },
+      });
+      await tx
+        .insert(paymentEvents)
+        .values({
+          paymentId,
+          providerId: payment.providerId,
+          eventType: "payment.manual_handling",
+          providerEventId: `manual_handling:${payment.paymentNo}:${Date.now()}`,
+          rawPayloadJson: buildStoredEventPayload({
+            paymentNo: payment.paymentNo,
+            reason,
+          }),
+          signatureValid: true,
+          handledAt: new Date(),
+        })
+        .onConflictDoNothing();
+    });
+
+    await this.auditService.record({
+      adminUserId,
+      action: "payments.incident.mark_manual_handling",
+      resourceType: "payment",
+      resourceId: paymentId,
+      afterJson: { reason, paymentNo: payment.paymentNo },
+    });
+
+    return {
+      status: "manual_handling",
+      protectedDiagnostics: { paymentNo: payment.paymentNo },
+    };
+  }
+
+  private async closeOrReverseUncertainPayment(
+    paymentId: string,
+    adminUserId: string,
+    reason: string,
+  ): Promise<PaymentIncidentActionResponse> {
+    const [payment] = await this.db
+      .select({
+        paymentId: payments.id,
+        paymentNo: payments.paymentNo,
+        method: payments.method,
+        paymentStatus: payments.status,
+        providerId: payments.providerId,
+        providerCode: paymentProviders.code,
+        providerTradeNo: payments.providerTradeNo,
+        providerConfigId: payments.paymentProviderConfigId,
+        providerConfigSnapshotJson: payments.providerConfigSnapshotJson,
+        orderId: payments.orderId,
+        orderStatus: orders.status,
+        machineId: orders.machineId,
+        isDrill: payments.isDrill,
+        orderIsDrill: orders.isDrill,
+      })
+      .from(payments)
+      .innerJoin(orders, eq(orders.id, payments.orderId))
+      .innerJoin(paymentProviders, eq(paymentProviders.id, payments.providerId))
+      .where(eq(payments.id, paymentId))
+      .limit(1);
+    if (!payment) throw new NotFoundException("Payment not found");
+
+    if (payment.isDrill || payment.orderIsDrill) {
+      return this.toIncidentActionResponse({
+        action: "close_or_reverse_uncertain_payment",
+        status: payment.paymentStatus,
+        handled: false,
+        message: "演练订单不能执行真实渠道关闭",
+        protectedDiagnostics: { paymentNo: payment.paymentNo },
+      });
+    }
+
+    if (
+      !["created", "pending", "processing", "unknown"].includes(
+        payment.paymentStatus,
+      )
+    ) {
+      return this.toIncidentActionResponse({
+        action: "close_or_reverse_uncertain_payment",
+        status: payment.paymentStatus,
+        handled: false,
+        message: "支付状态已稳定，无需关闭",
+        protectedDiagnostics: { paymentNo: payment.paymentNo },
+      });
+    }
+
+    if (payment.method === "payment_code") {
+      return await this.reversePaymentCodeIncident(
+        payment,
+        adminUserId,
+        reason,
+      );
+    }
+
+    return await this.closeProviderPaymentIncident(
+      payment,
+      adminUserId,
+      reason,
+    );
+  }
+
+  private async closeProviderPaymentIncident(
+    payment: {
+      paymentId: string;
+      paymentNo: string;
+      providerId: string;
+      providerCode: string;
+      providerTradeNo: string | null;
+      providerConfigId: string | null;
+      providerConfigSnapshotJson: unknown;
+      orderId: string;
+      orderStatus: OrderStatus;
+      machineId: string;
+    },
+    adminUserId: string,
+    reason: string,
+  ): Promise<PaymentIncidentActionResponse> {
+    const provider = this.paymentProviderRegistry.get(payment.providerCode);
+    const config = await this.paymentProviderConfigService
+      .resolveForExistingPayment({
+        providerCode: payment.providerCode,
+        providerConfigId: payment.providerConfigId ?? null,
+        machineId: payment.machineId,
+        providerConfigSnapshotJson: payment.providerConfigSnapshotJson,
+      })
+      .catch(() => ({
+        id: "",
+        providerCode: payment.providerCode,
+        merchantNo: null,
+        appId: null,
+        publicConfigJson: {},
+        sensitiveConfigJson: {},
+      }));
+
+    try {
+      const result = await provider.cancelPayment({
+        paymentNo: payment.paymentNo,
+        providerTradeNo: payment.providerTradeNo,
+        config,
+      });
+      await this.markPaymentClosedAfterProviderAction(payment, result.status);
+      await this.auditService.record({
+        adminUserId,
+        action: "payments.incident.close_uncertain_payment",
+        resourceType: "payment",
+        resourceId: payment.paymentId,
+        afterJson: {
+          reason,
+          paymentNo: payment.paymentNo,
+          status: result.status,
+          providerConfigId: config.id ?? null,
+        },
+      });
+      return this.toIncidentActionResponse({
+        action: "close_or_reverse_uncertain_payment",
+        status: result.status,
+        handled: true,
+        message: "不确定支付已关闭",
+        protectedDiagnostics: {
+          paymentNo: payment.paymentNo,
+          providerCode: payment.providerCode,
+          providerConfigId: config.id ?? null,
+        },
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await this.markPaymentUnknownAfterProviderAction(
+        payment,
+        reason,
+        message,
+      );
+      return this.toIncidentActionResponse({
+        action: "close_or_reverse_uncertain_payment",
+        status: "unknown",
+        handled: false,
+        message: "支付关闭结果未知，已转人工处理",
+        protectedDiagnostics: {
+          paymentNo: payment.paymentNo,
+          providerCode: payment.providerCode,
+          providerConfigId: config.id ?? null,
+          errorCode: "close_payment_failed",
+        },
+      });
+    }
+  }
+
+  private async reversePaymentCodeIncident(
+    payment: {
+      paymentId: string;
+      paymentNo: string;
+      providerId: string;
+      providerCode: string;
+      providerTradeNo: string | null;
+      providerConfigId: string | null;
+      providerConfigSnapshotJson: unknown;
+      orderId: string;
+      orderStatus: OrderStatus;
+      machineId: string;
+    },
+    adminUserId: string,
+    reason: string,
+  ): Promise<PaymentIncidentActionResponse> {
+    const [attempt] = await this.db
+      .select({
+        id: paymentCodeAttempts.id,
+        providerPaymentNo: paymentCodeAttempts.providerPaymentNo,
+        providerTradeNo: paymentCodeAttempts.providerTradeNo,
+        providerConfigId: paymentCodeAttempts.paymentProviderConfigId,
+        status: paymentCodeAttempts.status,
+      })
+      .from(paymentCodeAttempts)
+      .where(eq(paymentCodeAttempts.paymentId, payment.paymentId))
+      .orderBy(desc(paymentCodeAttempts.createdAt))
+      .limit(1);
+
+    if (
+      !attempt ||
+      ["succeeded", "reversed", "canceled"].includes(attempt.status)
+    ) {
+      return await this.closeProviderPaymentIncident(
+        payment,
+        adminUserId,
+        reason,
+      );
+    }
+
+    const provider = this.paymentProviderRegistry.getPaymentCodeProvider(
+      payment.providerCode,
+    );
+    const config = await this.paymentProviderConfigService
+      .resolveForExistingPayment({
+        providerCode: payment.providerCode,
+        providerConfigId: attempt.providerConfigId ?? payment.providerConfigId,
+        machineId: payment.machineId,
+        providerConfigSnapshotJson: payment.providerConfigSnapshotJson,
+      })
+      .catch(() => ({
+        id: "",
+        providerCode: payment.providerCode,
+        merchantNo: null,
+        appId: null,
+        publicConfigJson: {},
+        sensitiveConfigJson: {},
+      }));
+
+    try {
+      const result = await provider.reversePaymentCode({
+        paymentNo: attempt.providerPaymentNo,
+        providerTradeNo: attempt.providerTradeNo ?? payment.providerTradeNo,
+        config,
+      });
+      if (result.status === "reversed") {
+        await this.db.transaction(async (tx) => {
+          await tx
+            .update(paymentCodeAttempts)
+            .set({
+              status: "reversed",
+              providerStatus: result.providerStatus ?? "reversed",
+              failureCode: result.failureCode ?? null,
+              failureMessage:
+                result.failureMessage ??
+                "本次付款码交易已撤销，请刷新付款码后重试",
+              rawPayloadJson: buildStoredEventPayload(result.rawPayload ?? {}),
+              reversedAt: new Date(),
+              finishedAt: new Date(),
+              isActive: false,
+              manualReason: reason,
+              updatedAt: new Date(),
+            })
+            .where(eq(paymentCodeAttempts.id, attempt.id));
+        });
+        await this.markPaymentClosedAfterProviderAction(payment, "canceled");
+        await this.auditService.record({
+          adminUserId,
+          action: "payments.incident.reverse_uncertain_payment",
+          resourceType: "payment",
+          resourceId: payment.paymentId,
+          afterJson: {
+            reason,
+            paymentNo: payment.paymentNo,
+            paymentCodeAttemptId: attempt.id,
+            status: "reversed",
+            providerConfigId: config.id ?? null,
+          },
+        });
+        return this.toIncidentActionResponse({
+          action: "close_or_reverse_uncertain_payment",
+          status: "reversed",
+          handled: true,
+          message: "不确定付款码交易已撤销",
+          protectedDiagnostics: {
+            paymentNo: payment.paymentNo,
+            paymentCodeAttemptId: attempt.id,
+            providerCode: payment.providerCode,
+            providerConfigId: config.id ?? null,
+          },
+        });
+      }
+
+      await this.db
+        .update(paymentCodeAttempts)
+        .set({
+          status: "reversal_unknown",
+          providerStatus: result.providerStatus ?? result.status,
+          failureCode: result.failureCode ?? "PAYMENT_CODE_REVERSE_UNKNOWN",
+          failureMessage: result.failureMessage ?? "付款码撤销结果未知",
+          rawPayloadJson: buildStoredEventPayload(result.rawPayload ?? {}),
+          isActive: true,
+          manualReason: reason,
+          updatedAt: new Date(),
+        })
+        .where(eq(paymentCodeAttempts.id, attempt.id));
+      await this.markPaymentUnknownAfterProviderAction(
+        payment,
+        reason,
+        result.failureMessage ?? "payment code reversal unknown",
+      );
+      return this.toIncidentActionResponse({
+        action: "close_or_reverse_uncertain_payment",
+        status: "reversal_unknown",
+        handled: false,
+        message: "付款码撤销结果未知，已转人工处理",
+        protectedDiagnostics: {
+          paymentNo: payment.paymentNo,
+          paymentCodeAttemptId: attempt.id,
+          providerCode: payment.providerCode,
+          providerConfigId: config.id ?? null,
+        },
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      await this.db
+        .update(paymentCodeAttempts)
+        .set({
+          status: "reversal_unknown",
+          failureCode: "PAYMENT_CODE_REVERSE_UNKNOWN",
+          failureMessage: message,
+          isActive: true,
+          manualReason: reason,
+          updatedAt: new Date(),
+        })
+        .where(eq(paymentCodeAttempts.id, attempt.id));
+      await this.markPaymentUnknownAfterProviderAction(
+        payment,
+        reason,
+        message,
+      );
+      return this.toIncidentActionResponse({
+        action: "close_or_reverse_uncertain_payment",
+        status: "reversal_unknown",
+        handled: false,
+        message: "付款码撤销结果未知，已转人工处理",
+        protectedDiagnostics: {
+          paymentNo: payment.paymentNo,
+          paymentCodeAttemptId: attempt.id,
+          providerCode: payment.providerCode,
+          providerConfigId: config.id ?? null,
+          errorCode: "reverse_payment_code_failed",
+        },
+      });
+    }
+  }
+
+  private async markPaymentClosedAfterProviderAction(
+    payment: {
+      paymentId: string;
+      paymentNo: string;
+      providerId: string;
+      orderId: string;
+      orderStatus: OrderStatus;
+    },
+    status: "canceled" | "expired",
+  ): Promise<void> {
+    const nextOrderStatus: OrderStatus =
+      status === "expired" ? "payment_expired" : "canceled";
+    await this.db.transaction(async (tx) => {
+      await tx
+        .update(payments)
+        .set({ status, updatedAt: new Date() })
+        .where(eq(payments.id, payment.paymentId));
+      await tx
+        .update(orders)
+        .set({
+          status: nextOrderStatus,
+          paymentState: status === "expired" ? "payment_expired" : "canceled",
+          fulfillmentState: "canceled",
+          updatedAt: new Date(),
+        })
+        .where(eq(orders.id, payment.orderId));
+      await tx.insert(orderStatusEvents).values({
+        orderId: payment.orderId,
+        fromStatus: payment.orderStatus,
+        toStatus: nextOrderStatus,
+        reason: "payment_incident_closed",
+        metadata: { paymentNo: payment.paymentNo },
+      });
+      await tx
+        .insert(paymentEvents)
+        .values({
+          paymentId: payment.paymentId,
+          providerId: payment.providerId,
+          eventType: `payment.${status}`,
+          providerEventId: `incident_close:${payment.paymentNo}:${status}:${Date.now()}`,
+          rawPayloadJson: buildStoredEventPayload({
+            paymentNo: payment.paymentNo,
+            status,
+          }),
+          signatureValid: true,
+          handledAt: new Date(),
+        })
+        .onConflictDoNothing();
+      await this.releaseActiveReservationsForOrder(tx, {
+        orderId: payment.orderId,
+        reason: status === "expired" ? "payment_expired" : "canceled",
+      });
+    });
+  }
+
+  private async markPaymentUnknownAfterProviderAction(
+    payment: {
+      paymentId: string;
+      paymentNo: string;
+      providerId: string;
+      orderId: string;
+      orderStatus: OrderStatus;
+    },
+    reason: string,
+    message: string,
+  ): Promise<void> {
+    await this.db.transaction(async (tx) => {
+      await tx
+        .update(payments)
+        .set({
+          status: "unknown",
+          failedReason: message.slice(0, 500),
+          updatedAt: new Date(),
+        })
+        .where(eq(payments.id, payment.paymentId));
+      await tx
+        .update(orders)
+        .set({
+          status: "manual_handling",
+          paymentState: "payment_unknown",
+          fulfillmentState: "manual_handling",
+          updatedAt: new Date(),
+        })
+        .where(eq(orders.id, payment.orderId));
+      await tx.insert(orderStatusEvents).values({
+        orderId: payment.orderId,
+        fromStatus: payment.orderStatus,
+        toStatus: "manual_handling",
+        reason: "payment_unknown",
+        metadata: { paymentNo: payment.paymentNo, reason },
+      });
+      await tx
+        .insert(paymentEvents)
+        .values({
+          paymentId: payment.paymentId,
+          providerId: payment.providerId,
+          eventType: "payment.unknown",
+          providerEventId: `incident_unknown:${payment.paymentNo}:${Date.now()}`,
+          rawPayloadJson: buildStoredEventPayload({
+            paymentNo: payment.paymentNo,
+            reason,
+            message,
+          }),
+          signatureValid: true,
+          handledAt: new Date(),
+        })
+        .onConflictDoNothing();
+    });
+  }
+
   private async recordManualReconcileAudit(input: {
     adminUserId: string;
     operatorReason: string;
@@ -2945,6 +3675,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         orderId: payments.orderId,
         machineId: orders.machineId,
         providerConfigId: payments.paymentProviderConfigId,
+        providerConfigSnapshotJson: payments.providerConfigSnapshotJson,
         isDrill: payments.isDrill,
         orderIsDrill: orders.isDrill,
       })
@@ -2958,7 +3689,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       throw new NotFoundException("Payment not found");
     }
 
-    if (payment.status !== "pending" && payment.status !== "processing") {
+    if (!["pending", "processing", "unknown"].includes(payment.status)) {
       await this.recordManualReconcileAudit({
         adminUserId,
         operatorReason: reason,
@@ -2998,6 +3729,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         providerCode: payment.providerCode,
         providerConfigId: payment.providerConfigId ?? null,
         machineId: payment.machineId,
+        providerConfigSnapshotJson: payment.providerConfigSnapshotJson,
       })
       .catch(() => ({
         id: "",
@@ -3103,7 +3835,7 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
         outcome: `provider_${providerStatus}`,
       });
       return {
-        status: payment.status,
+        status: providerStatus,
         reconciled: false,
         reason: `provider_${providerStatus}`,
       };
@@ -3121,6 +3853,8 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       payment.providerId,
       result.paidAt ?? now,
       result.failedReason ?? null,
+      undefined,
+      true,
     );
 
     await this.db
@@ -3136,7 +3870,11 @@ export class PaymentsService implements OnModuleInit, OnApplicationShutdown {
       })
       .where(eq(paymentReconciliationAttempts.id, attempt.id));
 
-    if (applied && providerStatus === "succeeded") {
+    if (
+      applied &&
+      providerStatus === "succeeded" &&
+      (await this.canDispatchPaymentSuccess(payment.orderId))
+    ) {
       await this.vendingService
         .createAndDispatchCommands(payment.orderId)
         // oxlint-disable-next-line no-empty-function -- fire-and-forget; vending failures are handled by reconciliation

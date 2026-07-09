@@ -216,6 +216,22 @@ describe("connectivity sale readiness", () => {
     ]);
   });
 
+  it("does not add scanner technical detail prefix to daemon customer-safe scanner copy", async () => {
+    const readiness = scannerUnavailableWithQrReadySaleReadiness();
+    const paymentCode = readiness.components.paymentOptions.methods.find(
+      (method) => method.method === "payment_code",
+    );
+    if (!paymentCode) throw new Error("payment code method missing");
+    paymentCode.disabledReason = "扫码器暂不可用，请选择其他支付方式";
+
+    const store = useConnectivityStore();
+    store.applySaleReadiness(readiness);
+
+    expect(store.saleReadinessDegradedMessages).toEqual([
+      "扫码器暂不可用，请选择其他支付方式；付款码支付不可用，二维码支付仍可用。",
+    ]);
+  });
+
   it("surfaces production dispense path blockers from sale readiness", () => {
     const store = useConnectivityStore();
     store.applySaleReadiness({

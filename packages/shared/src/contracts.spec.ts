@@ -70,12 +70,19 @@ import {
   paymentAdminPageResponseSchema,
   paymentCodeAttemptAdminActionSchema,
   paymentCodeAttemptAdminPageResponseSchema,
+  paymentIncidentActionRequestSchema,
+  paymentIncidentActionResponseSchema,
   paymentOperatorReasonSchema,
+  paymentStatuses,
+  paymentCodeAttemptStatuses,
   paymentEventAdminPageResponseSchema,
   paymentProviderConfigSchema,
   paymentProviderConfigListResponseSchema,
   paymentProviderNotifyUrlCheckSchema,
   paymentProviderNotifyUrlCheckListResponseSchema,
+  paymentChannelPolicyResponseSchema,
+  supportedPaymentChannelKeys,
+  updatePaymentChannelPolicySchema,
   paymentProviderListResponseSchema,
   paymentMachinePreflightSchema,
   externalNaturalEnvironmentSchema,
@@ -125,6 +132,127 @@ describe("shared API contract", () => {
     expect(paymentProviderStatuses).toEqual(["enabled", "disabled"]);
     expect(adminUserStatuses).toEqual(["active", "disabled"]);
     expect(roleStatuses).toEqual(["active", "disabled"]);
+  });
+
+  it("defines the global payment channel policy contract", () => {
+    expect(supportedPaymentChannelKeys).toEqual([
+      "qr_code:alipay",
+      "payment_code:alipay",
+      "qr_code:wechat_pay",
+      "payment_code:wechat_pay",
+    ]);
+
+    const payload = {
+      channels: supportedPaymentChannelKeys.map((channelKey, index) => ({
+        channelKey,
+        enabled: channelKey !== "payment_code:wechat_pay",
+        rank: index + 1,
+      })),
+      defaultChannelKey: "qr_code:alipay",
+    };
+
+    expect(updatePaymentChannelPolicySchema.parse(payload)).toEqual(payload);
+    expect(
+      paymentChannelPolicyResponseSchema.parse({
+        ...payload,
+        updatedAt: "2026-07-08T00:00:00.000Z",
+        updatedByAdminUserId: "550e8400-e29b-41d4-a716-446655440000",
+      }),
+    ).toMatchObject(payload);
+    expect(() =>
+      updatePaymentChannelPolicySchema.parse({
+        channels: [
+          ...payload.channels,
+          { channelKey: "qr_code:alipay", enabled: true, rank: 5 },
+        ],
+        defaultChannelKey: "qr_code:alipay",
+      }),
+    ).toThrow();
+    expect(() =>
+      updatePaymentChannelPolicySchema.parse({
+        channels: payload.channels.map((channel, index) => ({
+          ...channel,
+          rank: index === 0 ? 2 : channel.rank,
+        })),
+        defaultChannelKey: "qr_code:alipay",
+      }),
+    ).toThrow();
+    expect(() =>
+      updatePaymentChannelPolicySchema.parse({
+        channels: payload.channels,
+        defaultChannelKey: "qr_code:mock",
+      }),
+    ).toThrow();
+  });
+
+  it("rejects legacy provider-embedded payment-code switches in merchant config write contracts", () => {
+    const providerConfigPayload = {
+      providerCode: "alipay",
+      merchantNo: "2088000000000000",
+      appId: "2021000000000000",
+      publicConfigJson: {
+        mode: "sandbox",
+        gatewayUrl: "https://openapi-sandbox.dl.alipaydev.com/gateway.do",
+        keyType: "PKCS8",
+      },
+      status: "enabled",
+    };
+
+    expect(
+      upsertPaymentProviderConfigSchema.parse(providerConfigPayload),
+    ).toMatchObject(providerConfigPayload);
+    const { providerCode: _providerCode, ...updateProviderConfigPayload } =
+      providerConfigPayload;
+    expect(
+      updatePaymentProviderConfigSchema.parse(updateProviderConfigPayload),
+    ).toEqual(updateProviderConfigPayload);
+    expect(() =>
+      upsertPaymentProviderConfigSchema.parse({
+        ...providerConfigPayload,
+        publicConfigJson: {
+          ...providerConfigPayload.publicConfigJson,
+          paymentCodeEnabled: true,
+        },
+      }),
+    ).toThrow();
+    expect(
+      updatePaymentProviderConfigSchema.parse({
+        ...updateProviderConfigPayload,
+        publicConfigJson: {
+          ...providerConfigPayload.publicConfigJson,
+          paymentCodePollIntervalSeconds: 4,
+          paymentCodeMaxConfirmSeconds: 45,
+          paymentCodeReverseRetryIntervalSeconds: 2,
+          paymentCodeReverseMaxAttempts: 3,
+        },
+      }),
+    ).toEqual({
+      ...updateProviderConfigPayload,
+      publicConfigJson: {
+        ...providerConfigPayload.publicConfigJson,
+        paymentCodePollIntervalSeconds: 4,
+        paymentCodeMaxConfirmSeconds: 45,
+        paymentCodeReverseRetryIntervalSeconds: 2,
+        paymentCodeReverseMaxAttempts: 3,
+      },
+    });
+    expect(
+      upsertPaymentProviderConfigSchema.parse({
+        providerCode: "wechat_pay",
+        merchantNo: "1900000109",
+        appId: "wx1234567890abcdef",
+        status: "disabled",
+        publicConfigJson: {
+          paymentCodeSignType: "HMAC-SHA256",
+          paymentCodeDeviceInfo: "POS-001",
+        },
+      }),
+    ).toMatchObject({
+      publicConfigJson: {
+        paymentCodeSignType: "HMAC-SHA256",
+        paymentCodeDeviceInfo: "POS-001",
+      },
+    });
   });
 
   it("keeps admin identity and role contracts strict", () => {
@@ -281,6 +409,140 @@ describe("shared API contract", () => {
         status: "closed_by_ui",
       }),
     ).toThrow();
+  });
+
+  it("keeps payment incident actions minimal and strict", () => {
+    expect(
+      paymentIncidentActionRequestSchema.parse({
+        action: "close_or_reverse_uncertain_payment",
+        reason: "operator confirmed provider still has no successful trade",
+      }),
+    ).toEqual({
+      action: "close_or_reverse_uncertain_payment",
+      reason: "operator confirmed provider still has no successful trade",
+    });
+    expect(
+      paymentIncidentActionRequestSchema.parse({
+        action: "query_refund",
+        refundId: "550e8400-e29b-41d4-a716-446655440041",
+        reason: "check refund after provider accepted request",
+      }),
+    ).toMatchObject({ action: "query_refund" });
+    expect(() =>
+      paymentIncidentActionRequestSchema.parse({
+        action: "query_payment",
+        reason: "check uncertain payment",
+        rawProviderPayload: { trade_status: "WAIT_BUYER_PAY" },
+      }),
+    ).toThrow();
+    expect(() =>
+      paymentIncidentActionRequestSchema.parse({
+        action: "query_refund",
+        reason: "missing refund id",
+      }),
+    ).toThrow();
+
+    expect(
+      paymentIncidentActionResponseSchema.parse({
+        action: "mark_manual_handling",
+        status: "manual_handling",
+        handled: true,
+        message: "已标记人工处理",
+        protectedDiagnostics: {
+          paymentNo: "PAY-1",
+          providerCode: "alipay",
+        },
+      }),
+    ).toMatchObject({
+      action: "mark_manual_handling",
+      status: "manual_handling",
+      handled: true,
+    });
+  });
+
+  it("names uncertain payment states distinctly", () => {
+    expect(paymentStatuses).toContain("unknown");
+    expect(paymentCodeAttemptStatuses).toContain("reversal_unknown");
+    expect(
+      orderInvestigationResponseSchema.parse({
+        order: {
+          id: "550e8400-e29b-41d4-a716-446655440050",
+          orderNo: "ORD-UNCERTAIN",
+          machineId: "550e8400-e29b-41d4-a716-446655440051",
+          machineCode: "M001",
+          status: "manual_handling",
+          paymentState: "payment_unknown",
+          fulfillmentState: "manual_handling",
+          totalAmountCents: 500,
+          currency: "CNY",
+          paidAt: null,
+          dispensedAt: null,
+          canceledAt: null,
+          createdAt: "2026-07-05T00:00:00.000Z",
+        },
+        items: [],
+        payments: [
+          {
+            id: "550e8400-e29b-41d4-a716-446655440052",
+            paymentNo: "PAY-UNKNOWN",
+            orderId: "550e8400-e29b-41d4-a716-446655440050",
+            method: "payment_code",
+            status: "unknown",
+            amountCents: 500,
+            expiresAt: null,
+            paidAt: null,
+            failedReason: "provider query timed out",
+            createdAt: "2026-07-05T00:00:00.000Z",
+            updatedAt: "2026-07-05T00:01:00.000Z",
+          },
+        ],
+        paymentEvents: [],
+        paymentWebhookAttempts: [],
+        paymentReconciliationAttempts: [],
+        paymentCodeAttempts: [
+          {
+            id: "550e8400-e29b-41d4-a716-446655440053",
+            paymentId: "550e8400-e29b-41d4-a716-446655440052",
+            orderId: "550e8400-e29b-41d4-a716-446655440050",
+            attemptNo: 1,
+            idempotencyKey: "idem-1",
+            status: "reversal_unknown",
+            isActive: true,
+            amountCents: 500,
+            currency: "CNY",
+            authCodeMasked: "2876****4394",
+            source: "serial_text",
+            submittedAt: "2026-07-05T00:00:10.000Z",
+            lastCheckedAt: "2026-07-05T00:00:30.000Z",
+            reversedAt: null,
+            finishedAt: null,
+            manualReason: "provider timeout",
+            protectedDiagnostics: {
+              providerPaymentNo: "PCA-1",
+              providerTradeNo: null,
+              providerStatus: "UNKNOWN",
+              failureCode: "PAYMENT_CODE_REVERSE_UNKNOWN",
+              failureMessage: "撤销结果未知",
+            },
+            createdAt: "2026-07-05T00:00:00.000Z",
+            updatedAt: "2026-07-05T00:01:00.000Z",
+          },
+        ],
+        vendingCommands: [],
+        fulfillmentProjection: {
+          state: "manual_handling",
+          latestCommand: null,
+          requiresPhysicalOutcomeConfirmation: false,
+          availableRecoveryActions: [],
+        },
+        inventoryMovements: [],
+        stockReconciliationLinks: [],
+        refunds: [],
+        maintenanceWorkOrders: [],
+        adminAuditEntries: [],
+        orderStatusEvents: [],
+      }).payments[0]?.status,
+    ).toBe("unknown");
   });
 
   it("parses key order recovery, maintenance, and notification responses", () => {
@@ -771,14 +1033,12 @@ describe("shared API contract", () => {
           merchantNo: null,
           publicConfigJson: {
             qrExpiresMinutes: 5,
-            paymentCodeEnabled: false,
           },
         }),
       ).toEqual({
         merchantNo: null,
         publicConfigJson: {
           qrExpiresMinutes: 5,
-          paymentCodeEnabled: false,
         },
       });
 
@@ -2361,7 +2621,7 @@ describe("shared API contract", () => {
       expect(result.providerCode).toBe("wechat_pay");
     });
 
-    it("accepts wechat_pay payment_code config with V2 credentials", () => {
+    it("accepts wechat_pay merchant V2 credentials without channel switches", () => {
       const result = upsertPaymentProviderConfigSchema.parse({
         providerCode: "wechat_pay",
         merchantNo: "1900000109",
@@ -2369,10 +2629,6 @@ describe("shared API contract", () => {
         publicConfigJson: {
           merchantCertificateSerialNo: "MERCHANT_CERT_SERIAL",
           platformCertificateSerialNo: "PLATFORM_CERT_SERIAL",
-          paymentCodeEnabled: true,
-          paymentCodePollIntervalSeconds: 3,
-          paymentCodeMaxConfirmSeconds: 30,
-          paymentCodeReverseDelaySeconds: 0,
         },
         sensitiveConfigJson: {
           apiV3Key: "0123456789abcdef0123456789abcdef",
@@ -2384,6 +2640,7 @@ describe("shared API contract", () => {
         },
       });
       expect(result.providerCode).toBe("wechat_pay");
+      expect(result.publicConfigJson).not.toHaveProperty("paymentCodeEnabled");
     });
 
     it("accepts wechat_pay config using deprecated certificateSerialNo alias for merchant serial", () => {
@@ -2424,7 +2681,7 @@ describe("shared API contract", () => {
       ).toThrow();
     });
 
-    it("rejects enabled wechat_pay payment_code config missing V2 credentials", () => {
+    it("rejects legacy wechat_pay payment-code channel switches", () => {
       expect(() =>
         upsertPaymentProviderConfigSchema.parse({
           providerCode: "wechat_pay",
@@ -2441,7 +2698,7 @@ describe("shared API contract", () => {
             platformPublicKeyPem: "dev-pub",
           },
         }),
-      ).toThrow("wechat_pay payment_code requires apiV2Key");
+      ).toThrow();
     });
 
     it("accepts alipay certificate mode sandbox config", () => {

@@ -263,6 +263,7 @@ export async function cleanupBusinessTables(db: DrizzleDB): Promise<void> {
     TRUNCATE TABLE
       notification_deliveries,
       notifications,
+      payment_channel_policies,
       machine_heartbeats,
 	      machine_events,
 	      machine_commands,
