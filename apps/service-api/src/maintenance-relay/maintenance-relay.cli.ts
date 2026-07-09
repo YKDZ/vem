@@ -17,6 +17,7 @@ type Writer = {
 };
 
 type RenderScope = "all" | "relay" | "peer";
+type RelayPlanValidationFailure = { ok: false; errors: string[] };
 
 export type MaintenanceRelayCliOptions = {
   dryPlan: boolean;
@@ -73,6 +74,12 @@ function isRelayPeerRole(value: unknown): value is RelayPeerRole {
     value === "machine" ||
     value === "maintainer"
   );
+}
+
+function isRelayPlanValidationFailure(
+  validation: ReturnType<typeof validateMaintenanceRelayPlan>,
+): validation is RelayPlanValidationFailure {
+  return !validation.ok;
 }
 
 function isRelayPlan(value: unknown): value is RelayPlan {
@@ -155,7 +162,7 @@ export function parseMaintenanceRelayCliOptions(
   }
 
   const validation = validateMaintenanceRelayPlan(plan);
-  if (validation.ok === false) {
+  if (isRelayPlanValidationFailure(validation)) {
     throw new Error(validation.errors.join("\n"));
   }
 
@@ -187,7 +194,7 @@ export async function runMaintenanceRelayCli(
 ): Promise<void> {
   const options = parseMaintenanceRelayCliOptions(args, io.env ?? process.env);
   const validation = validateMaintenanceRelayPlan(options.plan);
-  if (validation.ok === false) {
+  if (isRelayPlanValidationFailure(validation)) {
     throw new Error(validation.errors.join("\n"));
   }
 
