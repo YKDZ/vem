@@ -48,6 +48,12 @@ The runner contract must stay host-portable. Repository workflows should call a 
 
 Testbed Runner Maintenance Ingress is the explicit control-plane path from a self-hosted runner to a disposable Machine Runtime Testbed VM. It is not production controlled remote maintenance access. It may allow the runner to reach Windows SSH for the maintenance account through a narrowly scoped source allowlist, while preserving kiosk-account SSH denial and production defaults.
 
+For the relay-backed path, bring up the test VPS WireGuard Maintenance Relay
+with `public/maintenance-relay-bring-up.md` before dispatching VM runtime
+acceptance. The relay path remains Controlled Maintenance Ingress: WireGuard and
+SSH are implementation mechanisms, while the allowed source peer and target
+machine SSH flow must stay explicit.
+
 The VM host adapter contract only prepares a reachable Windows VM. It takes a run id, a base image identity, and a target VM identity; it stops the VM, restores or rebuilds the disk, starts the VM, waits for Windows SSH, and emits restore evidence including the Windows SSH endpoint, observed host identity, base image hash, and evidence path. It must not build VEM artifacts, start the ephemeral platform, provision the machine, run runtime acceptance, run simulated sale-flow, or interpret VEM business results.
 
 The adapter must emit a `vm-host-restore-report/v1` JSON report, and runtime acceptance should consume that report instead of inferring VM state from host-specific paths. The first report shape is:
