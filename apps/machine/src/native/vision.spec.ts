@@ -1,12 +1,12 @@
-import { afterEach, describe, expect, it } from "vitest";
-
-import { normalizeMachineConfig } from "@/config/machine-config";
-
 import {
   startMockVisionServer,
   type MockVisionScenario,
   type MockVisionServer,
-} from "../../../vision-mock/src/server";
+} from "vision-mock";
+import { afterEach, describe, expect, it } from "vitest";
+
+import { normalizeMachineConfig } from "@/config/machine-config";
+
 import {
   openVisionTryOnSession,
   subscribeVisionProfiles,

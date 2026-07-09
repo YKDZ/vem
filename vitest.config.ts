@@ -5,13 +5,16 @@ export default defineConfig({
     conditions: ["vem-source"],
   },
   ssr: {
-    noExternal: ["@vem/db", "@vem/shared"],
+    noExternal: ["@vem/shared"],
     resolve: {
       conditions: ["vem-source"],
     },
   },
   test: {
-    include: ["src/**/*.e2e-spec.ts"],
-    fileParallelism: false,
+    server: {
+      deps: {
+        inline: ["@vem/shared"],
+      },
+    },
   },
 });

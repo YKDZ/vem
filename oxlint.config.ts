@@ -1,35 +1,32 @@
 import { defineConfig } from "oxlint";
 
 export default defineConfig({
-  plugins: ["vitest", "promise", "typescript", "import", "node", "jsdoc"],
+  options: {
+    typeAware: true,
+  },
+  plugins: [
+    "vitest",
+    "promise",
+    "typescript",
+    "import",
+    "node",
+    "jsdoc",
+    "unicorn",
+    "vue",
+  ],
   categories: {
-    correctness: "off",
+    correctness: "error",
+    suspicious: "warn",
   },
   env: {
     builtin: true,
   },
-  ignorePatterns: ["dist/", "**/*/*.js", "**/*/*.mjs"],
+  ignorePatterns: ["dist/", "**/*/*.js", "**/*/*.mjs", "**/webpack.config.cjs"],
   rules: {
     "eslint/no-new": "error",
     "typescript/no-import-type-side-effects": "error",
     "typescript/no-empty-object-type": "error",
-    "typescript/explicit-module-boundary-types": [
-      "error",
-      {
-        allowedNames: [
-          "onCreateApp",
-          "onBeforeRender",
-          "onHydrationEnd",
-          "onCreatePageContext",
-          "onCreateGlobalContext",
-          "onAfterRenderHtml",
-          "guard",
-          "route",
-          "data",
-          "title",
-        ],
-      },
-    ],
+    "typescript/explicit-module-boundary-types": "off",
     "promise/spec-only": "error",
     "promise/catch-or-return": "error",
     "oxc/no-const-enum": "error",
@@ -125,7 +122,16 @@ export default defineConfig({
     curly: "off",
     "unicorn/empty-brace-spaces": "off",
     "unicorn/no-nested-ternary": "off",
+    "unicorn/no-invalid-fetch-options": "off",
+    "unicorn/no-thenable": "off",
+    "unicorn/no-useless-fallback-in-spread": "off",
+    "unicorn/no-useless-length-check": "off",
+    "unicorn/no-useless-spread": "off",
     "unicorn/number-literal-case": "off",
+    "vitest/expect-expect": "off",
+    "vitest/no-conditional-expect": "off",
+    "vitest/require-mock-type-parameters": "off",
+    "vitest/require-to-throw-message": "off",
     "typescript/await-thenable": "error",
     "typescript/no-array-delete": "error",
     "typescript/no-base-to-string": "error",
@@ -141,7 +147,7 @@ export default defineConfig({
     "typescript/no-redundant-type-constituents": "error",
     "typescript/no-unnecessary-boolean-literal-compare": "error",
     "typescript/no-unnecessary-template-expression": "error",
-    "typescript/no-unnecessary-type-arguments": "error",
+    "typescript/no-unnecessary-type-arguments": "off",
     "typescript/no-unnecessary-type-assertion": "error",
     "typescript/no-unsafe-argument": "error",
     "typescript/no-unsafe-call": "error",
@@ -163,12 +169,52 @@ export default defineConfig({
     "typescript/switch-exhaustiveness-check": "error",
     "typescript/unbound-method": "error",
     "typescript/use-unknown-in-catch-callback-variable": "error",
+    "vue/no-export-in-script-setup": "error",
+    "vue/no-import-compiler-macros": "error",
+    "vue/no-multiple-slot-args": "error",
+    "vue/prefer-import-from-vue": "error",
+    "vue/valid-define-emits": "error",
+    "vue/valid-define-props": "error",
   },
   overrides: [
     {
       files: ["**/*.spec.ts", "**/*.test.ts"],
       rules: {
         "no-console": "off",
+      },
+    },
+    {
+      files: [
+        "**/*.spec.ts",
+        "**/*.test.ts",
+        "**/*.e2e-spec.ts",
+        "**/flow-test-helpers.ts",
+      ],
+      rules: {
+        "eslint/no-plusplus": "off",
+        "typescript/no-base-to-string": "off",
+        "typescript/no-misused-promises": "off",
+        "typescript/no-unsafe-assignment": "off",
+        "typescript/no-unsafe-argument": "off",
+        "typescript/no-unsafe-call": "off",
+        "typescript/no-unsafe-member-access": "off",
+        "typescript/no-unsafe-return": "off",
+        "typescript/no-unsafe-type-assertion": "off",
+        "typescript/promise-function-async": "off",
+        "typescript/unbound-method": "off",
+      },
+    },
+    {
+      files: ["**/*.cli.ts"],
+      rules: {
+        "eslint/no-await-in-loop": "off",
+        "eslint/no-console": "off",
+      },
+    },
+    {
+      files: ["**/src/dev/**/*.ts"],
+      rules: {
+        "typescript/no-unsafe-type-assertion": "off",
       },
     },
     {

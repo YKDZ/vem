@@ -9,12 +9,16 @@ export default defineConfig({
   plugins: [vue(), tailwindcss()],
 
   resolve: {
+    conditions: ["vem-source"],
     alias: {
       "@": resolve(import.meta.dirname, "src"),
-      "@vem/shared": resolve(
-        import.meta.dirname,
-        "../../packages/shared/src/index.ts",
-      ),
+    },
+  },
+
+  ssr: {
+    noExternal: ["@vem/shared", "vision-mock"],
+    resolve: {
+      conditions: ["vem-source"],
     },
   },
 

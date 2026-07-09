@@ -9,8 +9,15 @@ const apiProxyTarget =
 export default defineConfig({
   plugins: [vue(), tailwindcss()],
   resolve: {
+    conditions: ["vem-source"],
     alias: {
       "@": resolve(import.meta.dirname, "src"),
+    },
+  },
+  ssr: {
+    noExternal: ["@vem/shared"],
+    resolve: {
+      conditions: ["vem-source"],
     },
   },
   server: {

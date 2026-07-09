@@ -264,11 +264,7 @@ export async function postContract<
   config?: AxiosRequestConfig,
 ): Promise<z.output<TResponseSchema>> {
   const parsedBody = parseAdminContract(bodySchema, body, `${url} request`);
-  const data = await post<unknown, z.output<TBodySchema>>(
-    url,
-    parsedBody,
-    config,
-  );
+  const data = await post<unknown>(url, parsedBody, config);
   return parseAdminContract(responseSchema, data, `${url} response`);
 }
 
@@ -278,7 +274,7 @@ export async function postResponseContract<TResponseSchema extends z.ZodType>(
   body: FormData,
   config?: AxiosRequestConfig,
 ): Promise<z.output<TResponseSchema>> {
-  const data = await post<unknown, FormData>(url, body, config);
+  const data = await post<unknown>(url, body, config);
   return parseAdminContract(responseSchema, data, `${url} response`);
 }
 
@@ -293,11 +289,7 @@ export async function patchContract<
   config?: AxiosRequestConfig,
 ): Promise<z.output<TResponseSchema>> {
   const parsedBody = parseAdminContract(bodySchema, body, `${url} request`);
-  const data = await patch<unknown, z.output<TBodySchema>>(
-    url,
-    parsedBody,
-    config,
-  );
+  const data = await patch<unknown>(url, parsedBody, config);
   return parseAdminContract(responseSchema, data, `${url} response`);
 }
 
@@ -312,10 +304,6 @@ export async function putContract<
   config?: AxiosRequestConfig,
 ): Promise<z.output<TResponseSchema>> {
   const parsedBody = parseAdminContract(bodySchema, body, `${url} request`);
-  const data = await put<unknown, z.output<TBodySchema>>(
-    url,
-    parsedBody,
-    config,
-  );
+  const data = await put<unknown>(url, parsedBody, config);
   return parseAdminContract(responseSchema, data, `${url} response`);
 }

@@ -19,7 +19,7 @@ export async function loginApi(input: {
   username: string;
   password: string;
 }): Promise<LoginResponse> {
-  return await post<LoginResponse, typeof input>("/auth/login", input);
+  return await post<LoginResponse>("/auth/login", input);
 }
 
 export async function meApi(): Promise<CurrentAdmin> {
@@ -27,7 +27,7 @@ export async function meApi(): Promise<CurrentAdmin> {
 }
 
 export async function refreshApi(refreshToken: string): Promise<LoginResponse> {
-  return await post<LoginResponse, { refreshToken: string }>("/auth/refresh", {
+  return await post<LoginResponse>("/auth/refresh", {
     refreshToken,
   });
 }

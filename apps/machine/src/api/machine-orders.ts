@@ -30,10 +30,7 @@ export async function createMachineOrder(
   input: CreateMachineOrderInput,
 ): Promise<CreateMachineOrderResponse> {
   const body = createMachineOrderSchema.parse(input);
-  const response = await client.post<unknown, CreateMachineOrderInput>(
-    "/machine-orders",
-    body,
-  );
+  const response = await client.post<unknown>("/machine-orders", body);
   return createMachineOrderResponseSchema.parse(response);
 }
 
@@ -54,7 +51,7 @@ export async function submitPaymentCode(
   input: PaymentCodeSubmitInput,
 ): Promise<PaymentCodeSubmitResponse> {
   const body = paymentCodeSubmitSchema.parse(input);
-  const response = await client.post<unknown, PaymentCodeSubmitInput>(
+  const response = await client.post<unknown>(
     `/machine-orders/${encodeURIComponent(orderNo)}/payment-code/submit`,
     body,
   );

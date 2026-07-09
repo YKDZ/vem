@@ -3,13 +3,27 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "exports": {
+    ".": {
+      "vem-source": {
+        "types": "./src/server.ts",
+        "default": "./src/server.ts"
+      },
+      "source": {
+        "types": "./src/server.ts",
+        "default": "./src/server.ts"
+      },
+      "types": "./dist/server.d.ts",
+      "default": "./dist/server.js"
+    }
+  },
   "scripts": {
     "build": "tsc --noEmit",
-    "dev": "tsx src/server.ts",
+    "dev": "NODE_OPTIONS=\"${NODE_OPTIONS:+$NODE_OPTIONS }--conditions=vem-source\" tsx src/server.ts",
     "fmt": "oxfmt",
-    "lint": "oxlint --type-aware",
-    "lint-fix": "oxlint --fix --type-aware",
-    "test": "vitest run",
+    "lint": "oxlint --quiet --format=unix --type-aware --config ../../oxlint.config.ts .",
+    "lint-fix": "oxlint --format=unix --fix --type-aware --config ../../oxlint.config.ts .",
+    "test": "NODE_OPTIONS=\"${NODE_OPTIONS:+$NODE_OPTIONS }--conditions=vem-source\" vitest run",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -19,6 +33,9 @@
   "devDependencies": {
     "@types/node": "catalog:",
     "@types/ws": "^8.18.1",
+    "oxfmt": "catalog:",
+    "oxlint": "catalog:",
+    "oxlint-tsgolint": "catalog:",
     "tsx": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"
