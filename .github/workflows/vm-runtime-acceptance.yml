@@ -350,7 +350,7 @@ jobs:
           MQTT_URL: ${{ env.EPHEMERAL_MQTT_URL }}
           PAYMENT_WEBHOOK_BASE_URL: http://127.0.0.1:26849
           BOOTSTRAP_ADMIN_PASSWORD: AdminPassword123!
-          PORT: "26849"
+          SERVICE_PORT: "26849"
 
       - name: Restore Windows Runtime VM
         run: |

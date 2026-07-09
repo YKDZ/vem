@@ -76,6 +76,18 @@ describe("VM runtime acceptance workflow maintenance relay path", () => {
     assert.doesNotMatch(ephemeralServices, /\n\s*exit 0\n/);
   });
 
+  it("starts service-api on the same port used by the workflow health check", () => {
+    const workflow = readWorkflow();
+    const serviceApi = stepBlock(workflow, "Build And Start Service API");
+
+    assert.match(
+      serviceApi,
+      /curl -fsS http:\/\/127\.0\.0\.1:26849\/api\/health/,
+    );
+    assert.match(serviceApi, /SERVICE_PORT:\s+"26849"/);
+    assert.doesNotMatch(serviceApi, /\n\s+PORT:\s+"26849"/);
+  });
+
   it("starts runner WireGuard before restoring the VM and uses the VM WireGuard IP for Windows SSH", () => {
     const workflow = readWorkflow();
 
