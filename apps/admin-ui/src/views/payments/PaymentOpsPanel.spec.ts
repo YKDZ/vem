@@ -331,8 +331,8 @@ describe("PaymentOpsPanel", () => {
       "当前环境允许沙箱支付配置，仅用于测试验证",
     );
     expect(host.textContent).toContain("可用支付方式：支付宝扫码");
-    expect(host.textContent).toContain("商户配置");
-    expect(host.textContent).toContain("微信付款码缺少商户配置/证书");
+    expect(host.textContent).toContain("支付机构配置");
+    expect(host.textContent).toContain("微信付款码缺少支付机构配置/证书");
     expect(host.textContent).not.toContain("qr_code");
     expect(host.textContent).not.toContain("wechat_pay");
     expect(host.textContent).not.toContain("critical");

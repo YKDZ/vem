@@ -4,6 +4,7 @@ import { onMounted, ref } from "vue";
 import {
   listPaymentEvents,
   listPaymentCodeAttempts,
+  listPaymentProviderConfigs,
   listPaymentProviders,
   listPayments,
   listWebhookAttempts,
@@ -20,6 +21,7 @@ import {
   type PaymentCodeAttempt,
   type PaymentEvent,
   type PaymentProvider,
+  type PaymentProviderConfig,
   type WebhookAttempt,
   type ReconciliationAttempt,
   type Refund,
@@ -28,9 +30,11 @@ import OrderDetailDrawer from "@/components/OrderDetailDrawer.vue";
 import { useAuthStore } from "@/stores/auth";
 import { formatCents, formatDateTime } from "@/utils/format";
 
+import type { RealPaymentProviderCode } from "./payment-config-model";
+
 import PaymentChannelPolicyPanel from "./PaymentChannelPolicyPanel.vue";
 import PaymentOpsPanel from "./PaymentOpsPanel.vue";
-import PaymentProviderConfigPanel from "./PaymentProviderConfigPanel.vue";
+import PaymentProviderConfigDrawer from "./PaymentProviderConfigDrawer.vue";
 
 const authStore = useAuthStore();
 const canConfigure = authStore.hasPermission("payments.configure");
@@ -75,11 +79,20 @@ async function doMockFail(paymentNo: string): Promise<void> {
 // Providers tab
 const providersLoading = ref(false);
 const providers = ref<PaymentProvider[]>([]);
+const providerConfigs = ref<PaymentProviderConfig[]>([]);
+const providerConfigDrawerOpen = ref(false);
+const providerConfigDrawerCode = ref<RealPaymentProviderCode | null>(null);
+const providerConfigDrawerName = ref("");
 
 async function loadProviders(): Promise<void> {
   providersLoading.value = true;
   try {
-    providers.value = await listPaymentProviders();
+    const [providerRows, configRows] = await Promise.all([
+      listPaymentProviders(),
+      listPaymentProviderConfigs(),
+    ]);
+    providers.value = providerRows;
+    providerConfigs.value = configRows;
   } finally {
     providersLoading.value = false;
   }
@@ -119,6 +132,9 @@ const providerColumns = [
   { title: "名称", dataIndex: "name", key: "name" },
   { title: "类型", dataIndex: "type", key: "type" },
   { title: "状态", dataIndex: "status", key: "status" },
+  { title: "配置", key: "config" },
+  { title: "更新时间", key: "updatedAt" },
+  { title: "操作", key: "actions" },
 ];
 
 const eventColumns = [
@@ -348,6 +364,49 @@ function providerRefundStatusSummary(status: string | null): string | null {
   return "渠道结果待复核";
 }
 
+function isRealProviderCode(code: string): code is RealPaymentProviderCode {
+  return code === "alipay" || code === "wechat_pay";
+}
+
+function getProviderConfigs(providerCode: string): PaymentProviderConfig[] {
+  return providerConfigs.value.filter(
+    (config) => config.providerCode === providerCode,
+  );
+}
+
+function providerConfigLabel(providerCode: string): string {
+  const rows = getProviderConfigs(providerCode);
+  if (rows.length === 0) return "未配置";
+  const enabledCount = rows.filter((row) => row.status === "enabled").length;
+  if (enabledCount === 0) return "已配置，未启用";
+  return rows.length === 1 ? "已配置" : `已配置 ${rows.length} 个范围`;
+}
+
+function providerConfigColor(providerCode: string): string {
+  const rows = getProviderConfigs(providerCode);
+  if (rows.length === 0) return "default";
+  return rows.some((row) => row.status === "enabled") ? "success" : "warning";
+}
+
+function providerConfigUpdatedAt(providerCode: string): string | null {
+  const latest = getProviderConfigs(providerCode)
+    .map((row) => row.updatedAt)
+    .sort()
+    .at(-1);
+  return latest ?? null;
+}
+
+function openProviderConfigDrawer(provider: PaymentProvider): void {
+  if (!isRealProviderCode(provider.code) || !canConfigure) return;
+  providerConfigDrawerCode.value = provider.code;
+  providerConfigDrawerName.value = provider.name;
+  providerConfigDrawerOpen.value = true;
+}
+
+async function handleProviderConfigSaved(): Promise<void> {
+  await loadProviders();
+}
+
 const refundColumns = [
   { title: "退款单号", dataIndex: "refundNo", key: "refundNo" },
   { title: "支付单号", dataIndex: "paymentNo", key: "paymentNo" },
@@ -482,6 +541,24 @@ onMounted(() => {
                 {{ record.status === "enabled" ? "启用" : "禁用" }}
               </a-tag>
             </template>
+            <template v-else-if="column.key === 'config'">
+              <a-tag :color="providerConfigColor(record.code)">
+                {{ providerConfigLabel(record.code) }}
+              </a-tag>
+            </template>
+            <template v-else-if="column.key === 'updatedAt'">
+              {{ formatDateTime(providerConfigUpdatedAt(record.code)) }}
+            </template>
+            <template v-else-if="column.key === 'actions'">
+              <a-button
+                v-if="isRealProviderCode(record.code) && canConfigure"
+                size="small"
+                @click="openProviderConfigDrawer(record)"
+              >
+                编辑
+              </a-button>
+              <span v-else>-</span>
+            </template>
           </template>
         </a-table>
       </a-tab-pane>
@@ -524,10 +601,6 @@ onMounted(() => {
             </template>
           </template>
         </a-table>
-      </a-tab-pane>
-
-      <a-tab-pane key="configs" tab="商户配置">
-        <PaymentProviderConfigPanel />
       </a-tab-pane>
 
       <a-tab-pane key="webhook-attempts" tab="回调审计">
@@ -761,6 +834,12 @@ onMounted(() => {
         <PaymentOpsPanel />
       </a-tab-pane>
     </a-tabs>
+    <PaymentProviderConfigDrawer
+      v-model:open="providerConfigDrawerOpen"
+      :provider-code="providerConfigDrawerCode"
+      :provider-name="providerConfigDrawerName"
+      @saved="handleProviderConfigSaved"
+    />
     <OrderDetailDrawer ref="orderDetailDrawer" />
     <a-modal
       v-model:open="reasonDialogOpen"

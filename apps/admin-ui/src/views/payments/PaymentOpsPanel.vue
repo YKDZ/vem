@@ -74,7 +74,7 @@ function severityLabel(severity: PaymentOpsCheck["severity"]): string {
 function checkName(code: string): string {
   if (code === "mock_provider_disabled") return "模拟支付";
   if (code === "enabled_payment_channels_present") return "支付渠道";
-  if (code === "enabled_channel_provider_setup") return "商户配置";
+  if (code === "enabled_channel_provider_setup") return "支付机构配置";
   if (code === "real_provider_config_present") return "真实支付配置";
   if (code === "provider_environment.production_ready") return "支付环境";
   if (code === "machine_real_provider_options_available") {
@@ -116,19 +116,19 @@ function methodLabel(method: string): string {
 }
 
 function missingProviderSetupLabel(keys: unknown): string {
-  if (!Array.isArray(keys) || keys.length === 0) return "商户配置/证书";
+  if (!Array.isArray(keys) || keys.length === 0) return "支付机构配置/证书";
   const values = keys.filter((key): key is string => typeof key === "string");
-  if (values.includes("providerConfig")) return "商户配置/证书";
+  if (values.includes("providerConfig")) return "支付机构配置/证书";
   if (
     values.some((key) => /cert|certificate|key|pem|secret|sensitive/i.test(key))
   ) {
-    return "商户配置/证书";
+    return "支付机构配置/证书";
   }
-  return "商户配置";
+  return "支付机构配置";
 }
 
 function channelProviderSetupMessage(check: PaymentOpsCheck): string {
-  if (check.passed) return "已启用支付渠道的商户配置可用";
+  if (check.passed) return "已启用支付渠道的支付机构配置可用";
   const blockedChannels = check.evidence["blockedChannels"];
   if (!Array.isArray(blockedChannels) || blockedChannels.length === 0) {
     return check.message;
@@ -136,7 +136,7 @@ function channelProviderSetupMessage(check: PaymentOpsCheck): string {
   return blockedChannels
     .map((channel) => {
       if (typeof channel !== "object" || channel === null) {
-        return "已启用支付渠道存在商户配置阻塞";
+        return "已启用支付渠道存在支付机构配置阻塞";
       }
       const providerCode = Reflect.get(channel, "providerCode");
       const method = Reflect.get(channel, "method");
@@ -170,8 +170,8 @@ function checkMessage(check: PaymentOpsCheck): string {
   }
   if (check.code === "real_provider_config_present") {
     return check.passed
-      ? "至少有一个真实支付商户配置可用"
-      : "没有可用的真实支付商户配置";
+      ? "至少有一个真实支付机构配置可用"
+      : "没有可用的真实支付机构配置";
   }
   if (check.code === "provider_environment.production_ready") {
     return check.message;

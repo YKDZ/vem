@@ -268,6 +268,33 @@ describe("payments api operator actions", () => {
     ).rejects.toThrow();
   });
 
+  it("allows existing WeChat config updates to retain sensitive fields server-side", async () => {
+    vi.mocked(postContract).mockImplementationOnce(
+      async (_url, bodySchema, _responseSchema, body) => {
+        (bodySchema as { parse(value: unknown): unknown }).parse(body);
+        return {};
+      },
+    );
+
+    await upsertPaymentProviderConfig({
+      providerCode: "wechat_pay",
+      merchantNo: "MCH001",
+      appId: "APP001",
+      publicConfigJson: {
+        merchantCertificateSerialNo: "MERCHANT_CERT_SERIAL",
+        platformCertificateSerialNo: "PLATFORM_CERT_SERIAL",
+      },
+      status: "enabled",
+    });
+
+    expect(postContract).toHaveBeenCalledWith(
+      "/payments/provider-configs",
+      expect.any(Object),
+      expect.any(Object),
+      expect.objectContaining({ providerCode: "wechat_pay" }),
+    );
+  });
+
   it("sends a reason when querying a refund", async () => {
     await queryRefund(
       "550e8400-e29b-41d4-a716-446655440001",
