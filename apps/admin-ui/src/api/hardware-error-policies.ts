@@ -1,34 +1,35 @@
-import { get, post } from "./request";
+import {
+  adminHardwareErrorPolicyListResponseSchema,
+  adminHardwareErrorPolicyResponseSchema,
+  upsertHardwareErrorPolicySchema,
+  type AdminHardwareErrorPolicyResponse,
+} from "@vem/shared";
+import { z } from "zod";
 
-export type HardwareErrorPolicy = {
-  id: string;
-  errorCode: string | null;
-  restoreInventory: boolean;
-  faultSlot: boolean;
-  requestRefund: boolean;
-  createWorkOrder: boolean;
-  severity: "info" | "warning" | "critical";
-  createdAt: string;
-  updatedAt: string;
-};
+import { getContract, postContract } from "./request";
 
-export type UpsertHardwareErrorPolicyInput = {
-  errorCode: string | null;
-  restoreInventory: boolean;
-  faultSlot: boolean;
-  requestRefund: boolean;
-  createWorkOrder: boolean;
-  severity: "info" | "warning" | "critical";
-};
+const emptyQuerySchema = z.strictObject({});
+
+export type HardwareErrorPolicy = AdminHardwareErrorPolicyResponse;
 
 export async function listHardwareErrorPolicies(): Promise<
   HardwareErrorPolicy[]
 > {
-  return await get<HardwareErrorPolicy[]>("/hardware-error-policies");
+  return await getContract(
+    "/hardware-error-policies",
+    emptyQuerySchema,
+    adminHardwareErrorPolicyListResponseSchema,
+    {},
+  );
 }
 
 export async function upsertHardwareErrorPolicy(
-  input: UpsertHardwareErrorPolicyInput,
+  input: z.input<typeof upsertHardwareErrorPolicySchema>,
 ): Promise<HardwareErrorPolicy> {
-  return await post<HardwareErrorPolicy>("/hardware-error-policies", input);
+  return await postContract(
+    "/hardware-error-policies",
+    upsertHardwareErrorPolicySchema,
+    adminHardwareErrorPolicyResponseSchema,
+    input,
+  );
 }

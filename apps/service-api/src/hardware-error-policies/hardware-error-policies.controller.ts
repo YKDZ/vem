@@ -1,6 +1,9 @@
 import { Body, Controller, Get, Post } from "@nestjs/common";
 import { ApiBearerAuth, ApiTags } from "@nestjs/swagger";
-import { z } from "zod";
+import {
+  upsertHardwareErrorPolicySchema,
+  type AdminUpsertHardwareErrorPolicyRequest,
+} from "@vem/shared";
 
 import type { AuthenticatedAdmin } from "../common/request-user";
 
@@ -8,15 +11,6 @@ import { RequirePermissions } from "../access/permissions.decorator";
 import { CurrentAdmin } from "../auth/current-admin.decorator";
 import { ZodValidationPipe } from "../common/zod-validation.pipe";
 import { HardwareErrorPoliciesService } from "./hardware-error-policies.service";
-
-const upsertPolicySchema = z.object({
-  errorCode: z.string().nullable(),
-  restoreInventory: z.boolean(),
-  faultSlot: z.boolean(),
-  requestRefund: z.boolean(),
-  createWorkOrder: z.boolean(),
-  severity: z.enum(["info", "warning", "critical"]),
-});
 
 @ApiTags("hardware-error-policies")
 @ApiBearerAuth()
@@ -36,8 +30,8 @@ export class HardwareErrorPoliciesController {
   @RequirePermissions("hardwareErrorPolicies.write")
   async upsertPolicy(
     @CurrentAdmin() admin: AuthenticatedAdmin,
-    @Body(new ZodValidationPipe(upsertPolicySchema))
-    body: z.infer<typeof upsertPolicySchema>,
+    @Body(new ZodValidationPipe(upsertHardwareErrorPolicySchema))
+    body: AdminUpsertHardwareErrorPolicyRequest,
   ) {
     return this.hardwareErrorPoliciesService.upsertPolicy(admin.id, body);
   }
