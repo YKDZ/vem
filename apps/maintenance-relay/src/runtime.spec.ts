@@ -49,7 +49,7 @@ describe("MaintenanceRelayRuntime", () => {
       {
         appliedDesiredStateVersion: 0,
         attemptedDesiredStateVersion: 1,
-        failure: "wg syncconf failed",
+        failure: { reasonCode: "wireguard_apply_failed" },
       },
     ]);
   });
@@ -94,7 +94,7 @@ describe("MaintenanceRelayRuntime", () => {
       {
         appliedDesiredStateVersion: 1,
         attemptedDesiredStateVersion: 2,
-        failure: "nft apply failed",
+        failure: { reasonCode: "firewall_apply_failed" },
       },
     ]);
   });
