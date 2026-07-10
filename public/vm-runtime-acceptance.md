@@ -1,5 +1,12 @@
 # VM Runtime Acceptance Entrypoint
 
+> Migration notice: the fixed Unraid paths, repository-owned libvirt adapter,
+> static relay plan, and password SSH steps in this document describe the
+> current legacy testbed. The accepted replacement is
+> [Windows Factory Runtime And Controlled Maintenance](./windows-factory-runtime-and-maintenance.md).
+> None of those legacy mechanisms may satisfy the new Factory Image Acceptance
+> or VM Runtime Acceptance gates, and they must be removed during migration.
+
 `scripts/testbed/win10-vem-e2e.mjs --mode vm-runtime-acceptance` is the future CI/manual runtime gate for the Win10 Machine Runtime Testbed. It is non-interactive and emits a structured report plus logs under `artifacts/vm-runtime-acceptance/<run-id>/`.
 
 ## Dry Run

@@ -11,6 +11,9 @@ describe("Admin Identity permission gates", () => {
     const rolesRoute = routes
       .flatMap((route) => route.children ?? [])
       .find((route) => route.name === "roles");
+    const maintenanceAccessRoute = routes
+      .flatMap((route) => route.children ?? [])
+      .find((route) => route.name === "maintenance-access");
 
     expect(adminUsersRoute?.meta?.requiredPermissions).toEqual([
       permissionCodeSchema.parse("adminUsers.read"),
@@ -18,9 +21,15 @@ describe("Admin Identity permission gates", () => {
     expect(rolesRoute?.meta?.requiredPermissions).toEqual([
       permissionCodeSchema.parse("roles.write"),
     ]);
+    expect(maintenanceAccessRoute?.meta?.requiredPermissions).toEqual([
+      permissionCodeSchema.parse("maintenanceAccess.read"),
+    ]);
 
     expect(permissionCodeSchema.parse("adminUsers.write")).toBe(
       "adminUsers.write",
+    );
+    expect(permissionCodeSchema.parse("maintenanceAccess.write")).toBe(
+      "maintenanceAccess.write",
     );
   });
 });

@@ -5,6 +5,7 @@ import {
   inventoryReservationStatuses,
   machineCommandStatuses,
   machineClaimCodeStates,
+  maintenancePeerRoles,
   machineClaimCodePurposes,
   machineSlotStatuses,
   machineStatuses,
@@ -88,6 +89,10 @@ export const machineClaimCodeState = t.pgEnum(
 export const machineClaimCodePurpose = t.pgEnum(
   "machine_claim_code_purpose",
   asPgEnumValues(machineClaimCodePurposes),
+);
+export const maintenancePeerRole = t.pgEnum(
+  "maintenance_peer_role",
+  asPgEnumValues(maintenancePeerRoles),
 );
 export const inventoryReservationStatus = t.pgEnum(
   "inventory_reservation_status",
@@ -459,6 +464,113 @@ export const machines = t.pgTable(
         OR
         (${table.geoLatitude} >= -90 AND ${table.geoLatitude} <= 90 AND ${table.geoLongitude} >= -180 AND ${table.geoLongitude} <= 180)
       )`,
+    ),
+  ],
+);
+
+export const maintenancePeers = t.pgTable(
+  "maintenance_peers",
+  {
+    id: id(),
+    role: maintenancePeerRole("role").notNull(),
+    publicKey: t.text("public_key").notNull(),
+    tunnelAddress: t.varchar("tunnel_address", { length: 15 }).notNull(),
+    machineId: t.uuid("machine_id").references(() => machines.id),
+    status: t.varchar("status", { length: 16 }).default("active").notNull(),
+    revokedAt: t.timestamp("revoked_at", { withTimezone: true }),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    t.uniqueIndex("maintenance_peers_public_key_unique").on(table.publicKey),
+    t
+      .uniqueIndex("maintenance_peers_tunnel_address_unique")
+      .on(table.tunnelAddress),
+    t.index("maintenance_peers_role_status_idx").on(table.role, table.status),
+    t.index("maintenance_peers_machine_id_idx").on(table.machineId),
+    t
+      .uniqueIndex("maintenance_peers_active_machine_unique")
+      .on(table.machineId)
+      .where(
+        sql`${table.role} = 'machine' AND ${table.status} = 'active' AND ${table.revokedAt} IS NULL`,
+      ),
+    t.check(
+      "maintenance_peers_role_machine_binding_check",
+      sql`(${table.role} = 'machine') = (${table.machineId} IS NOT NULL)`,
+    ),
+    t.check(
+      "maintenance_peers_status_check",
+      sql`${table.status} IN ('active', 'revoked')`,
+    ),
+    t.check(
+      "maintenance_peers_lifecycle_consistency_check",
+      sql`(${table.status} = 'active' AND ${table.revokedAt} IS NULL) OR (${table.status} = 'revoked' AND ${table.revokedAt} IS NOT NULL)`,
+    ),
+  ],
+);
+
+export const maintenanceSessions = t.pgTable(
+  "maintenance_sessions",
+  {
+    id: id(),
+    sourcePeerId: t
+      .uuid("source_peer_id")
+      .notNull()
+      .references(() => maintenancePeers.id),
+    targetMachineId: t
+      .uuid("target_machine_id")
+      .notNull()
+      .references(() => machines.id),
+    issuedByAdminUserId: t
+      .uuid("issued_by_admin_user_id")
+      .notNull()
+      .references(() => adminUsers.id),
+    protocol: t.varchar("protocol", { length: 8 }).default("tcp").notNull(),
+    port: t.integer("port").default(22).notNull(),
+    reason: t.varchar("reason", { length: 500 }).notNull(),
+    issuedAt: t
+      .timestamp("issued_at", { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    expiresAt: t.timestamp("expires_at", { withTimezone: true }).notNull(),
+    revokedAt: t.timestamp("revoked_at", { withTimezone: true }),
+  },
+  (table) => [
+    t.index("maintenance_sessions_source_peer_id_idx").on(table.sourcePeerId),
+    t
+      .index("maintenance_sessions_target_machine_id_idx")
+      .on(table.targetMachineId),
+    t.index("maintenance_sessions_expires_at_idx").on(table.expiresAt),
+    t.index("maintenance_sessions_actor_id_idx").on(table.issuedByAdminUserId),
+    t.check(
+      "maintenance_sessions_protocol_port_check",
+      sql`${table.protocol} = 'tcp' AND ${table.port} = 22`,
+    ),
+    t.check(
+      "maintenance_sessions_expiry_after_issue_check",
+      sql`${table.expiresAt} > ${table.issuedAt}`,
+    ),
+  ],
+);
+
+export const maintenanceRelayControlState = t.pgTable(
+  "maintenance_relay_control_state",
+  {
+    singletonKey: t.varchar("singleton_key", { length: 32 }).primaryKey(),
+    desiredStateVersion: t
+      .bigint("desired_state_version", { mode: "number" })
+      .default(0)
+      .notNull(),
+    updatedAt: updatedAt(),
+  },
+  (table) => [
+    t.check(
+      "maintenance_relay_control_state_singleton_check",
+      sql`${table.singletonKey} = 'default'`,
+    ),
+    t.check(
+      "maintenance_relay_control_state_version_check",
+      sql`${table.desiredStateVersion} >= 0`,
     ),
   ],
 );

@@ -3,12 +3,34 @@ import { ConfigService } from "@nestjs/config";
 
 import type { ServiceEnv } from "./env.schema";
 
+import {
+  parseMaintenanceAddressPools,
+  type MaintenanceAddressPools,
+} from "../maintenance-access/maintenance-address-pools";
+
 @Injectable()
 export class AppConfigService {
+  private readonly parsedMaintenanceAddressPools: MaintenanceAddressPools;
+
   constructor(
     @Inject(ConfigService)
     private readonly config: ConfigService<ServiceEnv, true>,
-  ) {}
+  ) {
+    this.parsedMaintenanceAddressPools = parseMaintenanceAddressPools({
+      relay: this.config.get("MAINTENANCE_RELAY_ADDRESS_POOL", {
+        infer: true,
+      }),
+      runner: this.config.get("MAINTENANCE_RUNNER_ADDRESS_POOL", {
+        infer: true,
+      }),
+      maintainer: this.config.get("MAINTENANCE_MAINTAINER_ADDRESS_POOL", {
+        infer: true,
+      }),
+      machine: this.config.get("MAINTENANCE_MACHINE_ADDRESS_POOL", {
+        infer: true,
+      }),
+    });
+  }
 
   get servicePort(): number {
     return this.config.get("SERVICE_PORT", { infer: true });
@@ -88,6 +110,10 @@ export class AppConfigService {
 
   get machineClaimCodeTtlSeconds(): number {
     return this.config.get("MACHINE_CLAIM_CODE_TTL_SECONDS", { infer: true });
+  }
+
+  get maintenanceAddressPools(): MaintenanceAddressPools {
+    return this.parsedMaintenanceAddressPools;
   }
 
   get nodeEnv(): ServiceEnv["NODE_ENV"] {

@@ -1,5 +1,12 @@
 # Maintenance Relay Bring-up Runbook
 
+> Migration notice: this is the current manual bootstrap procedure for the test
+> VPS. Its static Service API planner, operator-local plan, and iptables apply
+> path are superseded by the independently deployed pull-reconciling relay app
+> defined in
+> [Windows Factory Runtime And Controlled Maintenance](./windows-factory-runtime-and-maintenance.md).
+> Do not extend the static path; remove it when the relay app passes acceptance.
+
 This runbook brings up the first Controlled Maintenance Ingress relay on the
 test VPS. The initial relay entrypoint is WireGuard UDP 51820 on the existing
 test VPS, with the Service API maintenance relay planner supplying the public

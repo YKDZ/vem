@@ -1,0 +1,360 @@
+# Windows Factory Runtime And Controlled Maintenance
+
+Status: accepted target architecture. The existing Unraid-backed testbed is the
+first implementation target, but Unraid paths, VM names, and disk operations are
+not part of the repository contract. A gate may claim conformance only after the
+implementation and evidence listed here are present.
+
+## Stable Language
+
+**Clean Base Bootstrap** starts from a declared Windows ISO and produces a clean
+Windows installation that the factory runtime preparation stage can take over.
+It establishes only the temporary bootstrap access and Windows baseline needed
+for that handoff.
+
+**Factory Runtime Preparation** installs and verifies VEM runtime components,
+fixed-version OpenSSH and WireGuard, Windows startup policy, controlled
+maintenance capability, and the selected production or testbed profile.
+
+**Factory ISO** is the reproducible, bootable output of the repository-owned
+media build. It contains no machine-specific private key, machine identity, or
+shared production password.
+
+**Factory Personalization Media** is a small, installation-scoped secret input
+mounted alongside the Factory ISO. It carries per-machine installation secrets
+or a testbed bootstrap identity and must never be uploaded as a GitHub artifact
+or stored in the ordinary factory asset cache.
+
+**Controlled Maintenance Ingress** is the authorized path from a registered
+runner or maintainer peer to one machine's SSH endpoint. WireGuard, the relay,
+and OpenSSH implement the path; they are not themselves the authorization
+boundary.
+
+**Maintenance Session** is a time-bounded authorization with an exact source
+peer, target machine, protocol, port, reason, actor, and expiry.
+
+**Machine Maintenance Identity** is the machine's WireGuard key and assigned
+tunnel address. It is distinct from VEM business runtime state even though it is
+bound to the machine during Machine Claim.
+
+**Vision Integration Contract** is the language-neutral health, WebSocket,
+configuration, lifecycle, and evidence contract shared by VEM and the Vision
+repository. It does not prescribe Python, Node, PyInstaller, or an installer
+format.
+
+## Ownership Boundary
+
+The repository owns:
+
+- Factory ISO composition, Factory Manifest schemas, Windows bootstrap and
+  preparation payloads, verifiers, and evidence schemas.
+- Service API maintenance authorization, peer registry, session state, SSH
+  certificate issuance, and audit.
+- The `maintenance-relay` application, Admin UI maintenance workflows, VEM
+  runtime installation, and black-box Windows acceptance.
+- Language-neutral Vision integration schemas and conformance fixtures.
+
+The VM or factory platform owns:
+
+- Creating and controlling VMs, mounting media, providing virtual devices,
+  taking snapshots, exporting disks, and maintaining destructive path
+  allowlists.
+- A runner-local VM host adapter implementing the repository JSON contract.
+
+The Vision repository owns:
+
+- Vision source, models, dependency locking, Windows packaging, release
+  metadata, SBOM, build provenance, and its self-tests.
+- An immutable release bundle whose internal runtime technology may change.
+
+The VEM repository must not contain Unraid-only VM scripts, `/mnt/user` paths,
+libvirt disk allowlists, or another platform's deployment adapter. Platform
+implementations live on their hosts. The repository may contain only the
+request/report schemas and platform-neutral fake adapters used by tests.
+
+## Factory Media Contract
+
+The canonical media workflow takes:
+
+- a source Windows ISO identity and SHA-256;
+- a Factory Manifest;
+- fixed-version OpenSSH and WireGuard packages with source, version, SHA-256,
+  and signature evidence;
+- CI-built VEM daemon, Machine UI, WebView2 sidecar, and selected Vision release
+  artifacts;
+- a production or testbed profile without machine-specific secrets.
+
+It emits:
+
+- `vem-factory-<manifest-id>.iso`;
+- the ISO SHA-256;
+- a provenance report containing every input identity and toolchain identity;
+- a sanitized evidence index.
+
+The media builder runs in a pinned, platform-neutral Linux container. It must
+produce byte-identical ISO output for identical non-secret inputs. Source
+Windows media is not committed or uploaded to GitHub.
+
+OpenSSH and WireGuard are mandatory Factory Runtime capabilities. Windows
+Capability installation and floating online downloads are not accepted. The
+Factory Manifest pins the installer version and hash, and the Windows verifier
+checks the installed binary and service versions. There is no fallback to
+password SSH if the fixed OpenSSH package or SSH certificate path fails.
+
+The repository supports two environment profiles through the same preparation
+contract:
+
+- `production`: installs the production runtime without `YKDZ`, testbed host
+  identity, testbed WireGuard identity, simulators, or shared credentials.
+- `testbed`: installs the VEM-owned simulators and accepts a dedicated testbed
+  bootstrap identity from Factory Personalization Media.
+
+`YKDZ` and its current testbed credential are testbed-only. The first production
+profile may use the existing `Admin` maintenance account, but its password and
+the kiosk password must be unique personalization secrets. Normal remote access
+uses SSH certificates; the password is only a field break-glass credential.
+
+## Reproducible Workflows
+
+Three workflows compose the Windows gates:
+
+1. `build-factory-iso.yml` builds the reproducible Factory ISO and writes it to
+   a runner-local content-addressed asset store.
+2. `factory-image-acceptance.yml` performs a clean install from that ISO,
+   validates the pre-claim image, creates an approved runtime base identity,
+   then uses a disposable overlay to claim the machine and reach the vending
+   screen.
+3. `vm-runtime-acceptance.yml` restores an approved runtime base, deploys the
+   current commit's shared Windows artifacts, and runs the real API, MQTT, and
+   simulated-device sale flow.
+
+The workflows reuse the existing Windows artifact build workflow. They do not
+duplicate Rust/Tauri build logic or consume a separately maintained executable.
+
+Large or licensed inputs live in a runner-local content-addressed asset store
+configured by `VEM_FACTORY_ASSET_STORE`. Manifests identify assets by SHA-256;
+workflow inputs do not expose host paths. Factory Personalization Media uses a
+separate restricted secret store.
+
+The Factory ISO workflow has a reproducibility mode that builds twice and
+requires identical ISO hashes. GitHub receives only sanitized provenance,
+logs, and acceptance reports. A testbed ISO or personalization artifact that
+contains private material must never be uploaded.
+
+## VM Host Adapter Contract
+
+Repository workflows invoke the executable configured by the runner service as
+`VEM_VM_HOST_ADAPTER`. A dispatch input cannot choose the executable or pass
+host filesystem paths.
+
+The adapter accepts a versioned JSON request containing logical target identity,
+operation, run ID, input asset hashes, and requested device capabilities. It
+must support at least:
+
+- `clean-install` from Factory ISO and Factory Personalization Media;
+- `restore-runtime-base` from an approved base identity;
+- display screenshot capture;
+- two role-addressed virtual serial devices;
+- a virtual default audio output with host-side capture.
+
+The adapter returns versioned evidence with observed VM identity, input hashes,
+guest endpoint identity, device mappings, screenshot/audio evidence paths, and
+the resulting approved-base identity when applicable. The repository validates
+the report before mutating platform or VEM business state.
+
+## Maintenance Control Plane
+
+The Service API is the source of truth for:
+
+- relay identities and address pools;
+- machine, runner, and maintainer peer public keys;
+- Machine Maintenance Identity binding;
+- Maintenance Sessions and TTL policy;
+- SSH certificate issuance;
+- desired relay state, observed relay state, and audit records.
+
+The Admin UI provides:
+
+- relay and peer health;
+- machine last-handshake state;
+- creation of a session with source, machine, reason, and TTL;
+- active-session listing and early revocation;
+- peer revocation and session audit.
+
+`maintenanceAccess.read` is required to view this surface.
+`maintenanceAccess.write` is required to create or revoke a session. Machine,
+machine-ops, and ordinary audit permissions do not imply host access. The first
+version does not implement MFA or two-person approval.
+
+Human sessions default to 30 minutes and may be 60, 120, or at most 180 minutes.
+The Windows CI runner session is fixed at 150 minutes for a job capped at 120
+minutes. The first version does not renew sessions. Cleanup revokes explicitly,
+and TTL remains the crash-safe fallback.
+
+## Relay Application
+
+`apps/maintenance-relay` is an independently built and deployed application.
+Shared Zod contracts live in `packages/shared`; the relay and Service API do not
+import source from each other's app directories.
+
+The relay:
+
+- authenticates with its own long-lived relay credential and exchanges it for
+  a short-lived `maintenance_relay` token;
+- pulls versioned desired state from the Service API and reports observed
+  state;
+- keeps enforcing local session expiry when the Service API is unavailable;
+- applies peers with `wg syncconf` and ACLs in a dedicated nftables table;
+- represents active flows as source/target/protocol/port tuple-set elements
+  with nftables timeouts;
+- fails closed and never executes shell text supplied by an API response.
+
+The Service API connection requires HTTPS by default. An explicit
+`MAINTENANCE_RELAY_ALLOW_INSECURE_HTTP=true` exception is allowed only for
+loopback, RFC1918, or single-label private container-network destinations. The
+relay exposes this degraded transport state in health and Admin UI.
+
+The relay container uses its own network namespace, publishes only UDP 51820,
+drops all capabilities except `NET_ADMIN`, uses a read-only filesystem and
+restricted tmpfs, and mounts its private key as a read-only secret. Its
+management health endpoint is internal only. The relay data plane is kernel
+WireGuard plus nftables; the Node process does not proxy SSH traffic.
+
+The first default address pools are:
+
+```text
+relay:      10.91.0.0/24
+runner:     10.91.1.0/24
+maintainer: 10.91.3.0/24
+machine:    10.91.16.0/20
+```
+
+These are deployment defaults, not protocol constants. The Service API checks
+that configured pools are valid and non-overlapping and allocates exact `/32`
+peer addresses. A relay should be sharded before exhausting its machine pool or
+operational capacity.
+
+## Peer And Session Security
+
+WireGuard interfaces stay active, while access stays closed unless an active
+Maintenance Session exists. Machines and registered maintainer workstations
+keep long-lived peer identities, but peers have no standing machine access.
+
+Each machine and workstation generates its own private key. Private keys never
+leave their owning host and never enter the repository or a shared Factory ISO.
+Machine Claim submits the machine public key and atomically binds the peer to
+the claimed machine. The response supplies the relay public key, endpoint,
+assigned address, and stable role routes.
+
+Machine peers route the configured runner and maintainer role pools. Exact
+source/target/port/TTL authorization is enforced at the relay. Windows accepts
+SSH only on the WireGuard interface from the configured maintenance role pools.
+SSH remains a second authentication layer if the relay host is compromised.
+
+The Windows CI workflow uses GitHub Actions OIDC with audience
+`vem-maintenance`. The Service API validates issuer, audience, immutable
+repository identity, workflow identity, ref, event, SHA, run ID, and configured
+trust policy before issuing a run-bound automation token. OIDC trust policy is
+deployment configuration, not an Admin UI setting. `sshpass`, `SSHPASS`, and
+`VEM_TESTBED_WINDOWS_PASSWORD` are not part of the accepted workflow.
+
+The Service API signs short-lived OpenSSH user certificates from an
+environment-specific Maintenance SSH CA mounted as a Docker secret. Test and
+production CAs are different. The Factory profile contains only the CA public
+key. Certificates are bounded by the session TTL and maintenance source IP.
+SSH password authentication is disabled.
+
+The first version reuses the profile's existing maintenance administrator
+account: `YKDZ` for the testbed and `Admin` for the first production profile.
+It does not add a default SYSTEM SSH entrypoint. The authenticated maintenance
+administrator must have complete host debugging capability; SYSTEM-only work is
+performed explicitly from that session when required.
+
+## Machine Maintenance Identity Lifecycle
+
+The Vending Daemon owns enrollment and rotation control actions. It generates
+the local key, submits the public key during Machine Claim, applies the returned
+config, and verifies the first handshake. The independent WireGuard Windows
+tunnel service then owns the persistent data plane and starts automatically.
+
+Lifecycle operations are distinct:
+
+- `Local Runtime Reset` clears local VEM business runtime state and preserves
+  Machine Maintenance Identity.
+- `Machine Reclaim` rotates the business credentials and WireGuard key. The new
+  peer must handshake before the old peer is revoked.
+- `Secure Decommission` revokes sessions, business credentials, and the machine
+  peer; an online machine also removes its local tunnel config.
+
+Ordinary machine credential rotation does not rotate the WireGuard key. A full
+reinstall generates a new key and requires the previous peer to be revoked by
+reclaim or decommission.
+
+## Windows Device Acceptance
+
+The approved runtime base is captured before Machine Claim. Factory Image
+Acceptance then creates a disposable overlay, claims the machine against an
+ephemeral platform, and proves the same installed image can reach the vending
+screen without modifying the approved base.
+
+The Windows acceptance requires:
+
+- two hypervisor-backed virtual COM devices, one for the lower controller and
+  one for the scanner;
+- the production serial adapter and real Windows COM paths, never the daemon
+  mock adapter or `tcp://` transport;
+- repository-owned host-side lower-controller and scanner simulators;
+- a testbed Vision implementation running through the real Windows launcher,
+  task, localhost health, and WebSocket contract;
+- a virtual Windows default audio endpoint and host-side PCM/WAV capture;
+- real Tauri native audio playback with non-silent captured frames;
+- an active kiosk console session, `machine.exe` as the foreground window,
+  WebView route/DOM evidence, and a platform framebuffer screenshot;
+- daemon `sell_ready`, real Admin API and MQTT interaction, simulated payment,
+  and a successful dispense flow.
+
+Application-level audio device selection is not added. VEM uses the Windows
+default output; physical 3.5 mm speaker wiring, direction, audibility, and
+Customer Audio Zone remain field acceptance.
+
+## Vision Release Boundary
+
+The Vision repository publishes one immutable Windows release bundle per build
+candidate through GitHub Releases. The release includes a small language-neutral
+descriptor, SHA-256, SBOM, and GitHub build provenance attestation. A failed
+candidate is abandoned under its own version; assets are never overwritten.
+
+VEM downloads the original release asset, verifies its digest and attestation,
+stores it in the factory CAS, and runs Windows black-box conformance. Acceptance
+marks that exact digest approved; promotion must not rebuild the bundle.
+
+The Vision implementation may use PyInstaller, a packaged Python executable, an
+embedded Python directory, or another runtime. VEM does not repackage its
+dependencies or modify private runtime directories. VEM owns installation into
+version-addressed directories, external configuration under
+`C:\ProgramData\VEM\vision`, launcher generation, the
+`VEM\StartVisionServer` interactive task, health checks, rollback, and ACLs.
+
+The current `vending-vision.zip` demonstrates that a self-contained PyInstaller
+directory is viable, but it remains a candidate until its repository workflow
+provides the descriptor, version, supported external configuration, SBOM,
+provenance, and clean-Windows conformance evidence.
+
+## Required Hard Migration
+
+Acceptance of this architecture requires deleting, not retaining, the old paths:
+
+- repository-owned Unraid/libvirt VM host adapters and allowlists;
+- `/mnt/user` and `unraid://` values in workflow contracts and normative source
+  schemas;
+- static Service API relay plans and iptables command rendering;
+- optional WireGuard factory installation;
+- per-session `/32` route generation on machine configs;
+- password SSH, `sshpass`, and the Windows testbed password secret;
+- daemon mock/TCP hardware paths as evidence for Windows simulated-hardware
+  readiness;
+- VEM-side repackaging of the production Vision implementation.
+
+No compatibility mode may satisfy Factory Image Acceptance or VM Runtime
+Acceptance. A legacy path can exist only until its replacement is deployed and
+must be removed before the corresponding gate is declared passing.

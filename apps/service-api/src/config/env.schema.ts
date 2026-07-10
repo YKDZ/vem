@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { parseMaintenanceAddressPools } from "../maintenance-access/maintenance-address-pools";
+
 const baseEnvSchema = z.object({
   NODE_ENV: z
     .enum(["development", "test", "production"])
@@ -45,6 +47,10 @@ const baseEnvSchema = z.object({
     .min(60)
     .max(3600)
     .default(600),
+  MAINTENANCE_RELAY_ADDRESS_POOL: z.string().default("10.91.0.0/24"),
+  MAINTENANCE_RUNNER_ADDRESS_POOL: z.string().default("10.91.1.0/24"),
+  MAINTENANCE_MAINTAINER_ADDRESS_POOL: z.string().default("10.91.3.0/24"),
+  MAINTENANCE_MACHINE_ADDRESS_POOL: z.string().default("10.91.16.0/20"),
   PAYMENT_MOCK_ENABLED: z
     .preprocess((value) => {
       if (typeof value === "string") {
@@ -123,6 +129,23 @@ const DEFAULT_PAYMENT_CONFIG_ENCRYPTION_KEY =
   "dev-payment-config-encryption-key-change-me";
 
 export const envSchema = baseEnvSchema.superRefine((env, ctx) => {
+  try {
+    parseMaintenanceAddressPools({
+      relay: env.MAINTENANCE_RELAY_ADDRESS_POOL,
+      runner: env.MAINTENANCE_RUNNER_ADDRESS_POOL,
+      maintainer: env.MAINTENANCE_MAINTAINER_ADDRESS_POOL,
+      machine: env.MAINTENANCE_MACHINE_ADDRESS_POOL,
+    });
+  } catch (error) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["MAINTENANCE_RELAY_ADDRESS_POOL"],
+      message:
+        error instanceof Error
+          ? error.message
+          : "Maintenance address pools are invalid",
+    });
+  }
   if (env.NODE_ENV === "production" && env.PAYMENT_MOCK_ENABLED) {
     ctx.addIssue({
       code: "custom",

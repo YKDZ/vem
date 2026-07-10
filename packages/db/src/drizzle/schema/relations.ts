@@ -11,6 +11,8 @@ import {
   machineClaimCodes,
   machineCommands,
   machineHeartbeats,
+  maintenancePeers,
+  maintenanceSessions,
   machinePlanogramSlots,
   machinePlanogramVersions,
   machines,
@@ -55,6 +57,8 @@ export const relations = defineRelations(
     machineClaimCodes,
     machineCommands,
     machineHeartbeats,
+    maintenancePeers,
+    maintenanceSessions,
     machinePlanogramSlots,
     machinePlanogramVersions,
     machines,
@@ -91,6 +95,7 @@ export const relations = defineRelations(
       roles: r.many.adminUserRoles(),
       refreshTokens: r.many.refreshTokens(),
       auditLogs: r.many.auditLogs(),
+      maintenanceSessions: r.many.maintenanceSessions(),
     },
     refreshTokens: {
       adminUser: r.one.adminUsers({
@@ -163,6 +168,29 @@ export const relations = defineRelations(
       claimCodes: r.many.machineClaimCodes(),
       heartbeats: r.many.machineHeartbeats(),
       planogramVersions: r.many.machinePlanogramVersions(),
+      maintenancePeers: r.many.maintenancePeers(),
+      maintenanceSessions: r.many.maintenanceSessions(),
+    },
+    maintenancePeers: {
+      machine: r.one.machines({
+        from: r.maintenancePeers.machineId,
+        to: r.machines.id,
+      }),
+      sourceSessions: r.many.maintenanceSessions(),
+    },
+    maintenanceSessions: {
+      sourcePeer: r.one.maintenancePeers({
+        from: r.maintenanceSessions.sourcePeerId,
+        to: r.maintenancePeers.id,
+      }),
+      targetMachine: r.one.machines({
+        from: r.maintenanceSessions.targetMachineId,
+        to: r.machines.id,
+      }),
+      actor: r.one.adminUsers({
+        from: r.maintenanceSessions.issuedByAdminUserId,
+        to: r.adminUsers.id,
+      }),
     },
     machineClaimCodes: {
       machine: r.one.machines({

@@ -1,5 +1,14 @@
 # Clean-Base Factory Acceptance
 
+> Migration notice: the platform-specific source and Unraid values in this
+> document describe the current legacy testbed only. They are superseded as
+> normative architecture by
+> [Windows Factory Runtime And Controlled Maintenance](./windows-factory-runtime-and-maintenance.md).
+> New implementation must use the platform-neutral Factory ISO, Factory
+> Personalization Media, runner-local adapter, and hash-addressed evidence
+> contracts defined there. The Unraid source contract below must be removed
+> before the new Factory Image Acceptance gate is declared passing.
+
 `scripts/testbed/win10-vem-e2e.mjs --mode clean-base-factory-acceptance` 是 clean-base factory preparation 的规范入口。它记录干净 Windows 基础来源、必需基线、状态缺失检查、准备关口、验证器证据以及可复用的 snapshot/report 路径；只有显式允许 live mode 后，才会把固定 runtime artifacts 分发到既有 clean VM，执行 factory preparation 和 verifier，并写出机器可校验的 clean-base acceptance evidence。
 
 ## Clean Source Boundary

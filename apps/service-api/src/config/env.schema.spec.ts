@@ -32,6 +32,44 @@ describe("validateEnv", () => {
     expect(env.NODE_ENV).toBe("development");
   });
 
+  it("fails startup validation for a malformed maintenance address pool CIDR", () => {
+    expect(() =>
+      validateEnv({
+        ...baseValidEnv,
+        MAINTENANCE_RUNNER_ADDRESS_POOL: "10.91.1.0",
+      }),
+    ).toThrow("Maintenance runner address pool is not IPv4 CIDR");
+  });
+
+  it("fails startup validation when a maintenance pool is not its network address", () => {
+    expect(() =>
+      validateEnv({
+        ...baseValidEnv,
+        MAINTENANCE_MACHINE_ADDRESS_POOL: "10.91.16.1/20",
+      }),
+    ).toThrow("Maintenance machine address pool must use its network address");
+  });
+
+  it("fails startup validation when a maintenance pool has no usable host addresses", () => {
+    expect(() =>
+      validateEnv({
+        ...baseValidEnv,
+        MAINTENANCE_RELAY_ADDRESS_POOL: "10.91.0.0/31",
+      }),
+    ).toThrow(
+      "Maintenance relay address pool must contain usable host addresses",
+    );
+  });
+
+  it("fails startup validation when maintenance address pools overlap", () => {
+    expect(() =>
+      validateEnv({
+        ...baseValidEnv,
+        MAINTENANCE_RUNNER_ADDRESS_POOL: "10.91.0.0/25",
+      }),
+    ).toThrow("Maintenance address pools relay and runner must not overlap");
+  });
+
   it("accepts QWeather credentials and endpoint settings for External Natural Environment", () => {
     const env = validateEnv({
       ...baseValidEnv,
