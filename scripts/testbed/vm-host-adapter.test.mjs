@@ -9,6 +9,11 @@ import {
   restoreLibvirtQcow2Vm,
 } from "./vm-host-adapter.mjs";
 
+const CERTIFICATE_SSH_OPTIONS = {
+  identity: "/tmp/maintenance-key",
+  certificate: "/tmp/maintenance-key-cert.pub",
+};
+
 function fixtureConfig(root, overrides = {}) {
   const baseImage = join(root, "base.qcow2");
   const overlayDisk = join(root, "overlay.qcow2");
@@ -59,6 +64,7 @@ describe("vm-host-adapter", () => {
       overlayDisk,
       windowsSshUser: "YKDZ",
       windowsSshHost: "192.0.2.10",
+      ...CERTIFICATE_SSH_OPTIONS,
     });
 
     assert.equal(plan.schemaVersion, "vm-host-restore-plan/v1");
@@ -80,6 +86,7 @@ describe("vm-host-adapter", () => {
           overlayDisk: join(root, "other.qcow2"),
           windowsSshUser: "YKDZ",
           windowsSshHost: "192.0.2.10",
+          ...CERTIFICATE_SSH_OPTIONS,
         }),
       /overlay disk is not allowlisted/,
     );
@@ -99,6 +106,7 @@ describe("vm-host-adapter", () => {
         overlayDisk,
         windowsSshUser: "YKDZ",
         windowsSshHost: "192.0.2.10",
+        ...CERTIFICATE_SSH_OPTIONS,
         out: join(root, "report.json"),
         dryRun: true,
       },
@@ -141,6 +149,7 @@ describe("vm-host-adapter", () => {
         overlayDisk,
         windowsSshUser: "YKDZ",
         windowsSshHost: "10.91.2.10",
+        ...CERTIFICATE_SSH_OPTIONS,
         maintenanceRelayInterface: "wg-vem-maint",
         maintenanceRelayRunnerPeerIp: "10.91.1.10",
         out: join(root, "report.json"),
@@ -193,6 +202,7 @@ describe("vm-host-adapter", () => {
           overlayDisk,
           windowsSshUser: "YKDZ",
           windowsSshHost: "10.91.2.10",
+          ...CERTIFICATE_SSH_OPTIONS,
           maintenanceRelayInterface: "wg-vem-maint",
           maintenanceRelayRunnerPeerIp: "10.91.1.10",
         }),
@@ -231,6 +241,7 @@ describe("vm-host-adapter", () => {
       overlayDisk,
       windowsSshUser: "YKDZ",
       windowsSshHost: "192.0.2.10",
+      ...CERTIFICATE_SSH_OPTIONS,
       dryRun: true,
     });
 
@@ -238,7 +249,7 @@ describe("vm-host-adapter", () => {
     assert.equal(report.evidence.dryRun, true);
   });
 
-  it("can wait for restored Windows SSH using sshpass from the environment", () => {
+  it("waits for restored Windows SSH using only the supplied key and certificate", () => {
     const root = mkdtempSync(join(tmpdir(), "vem-vm-host-adapter-"));
     const { baseImage, overlayDisk, configPath } = fixtureConfig(root);
     const commands = [];
@@ -252,10 +263,10 @@ describe("vm-host-adapter", () => {
         overlayDisk,
         windowsSshUser: "YKDZ",
         windowsSshHost: "192.0.2.10",
+        ...CERTIFICATE_SSH_OPTIONS,
         maintenanceRelayInterface: "wg-vem-maint",
         maintenanceRelayRunnerPeerIp: "192.0.2.1",
         allowRestore: true,
-        sshpass: true,
       },
       {
         runner(command, args) {
@@ -280,10 +291,28 @@ describe("vm-host-adapter", () => {
       "ssh_reachable_over_preconfigured_vm_wireguard_ip",
     );
     assert.deepEqual(commands.at(-1), [
-      "sshpass",
+      "ssh",
       [
-        "-e",
-        "ssh",
+        "-o",
+        "IdentityFile=/tmp/maintenance-key",
+        "-o",
+        "CertificateFile=/tmp/maintenance-key-cert.pub",
+        "-o",
+        "IdentitiesOnly=yes",
+        "-o",
+        "IdentityAgent=none",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "PasswordAuthentication=no",
+        "-o",
+        "KbdInteractiveAuthentication=no",
+        "-o",
+        "PreferredAuthentications=publickey",
+        "-o",
+        "ClearAllForwardings=yes",
+        "-o",
+        "ForwardAgent=no",
         "-o",
         "ConnectTimeout=8",
         "-o",

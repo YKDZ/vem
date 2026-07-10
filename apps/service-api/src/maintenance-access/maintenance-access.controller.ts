@@ -2,6 +2,7 @@ import { Body, Controller, Get, Param, Post, Query } from "@nestjs/common";
 import { ApiBearerAuth, ApiTags } from "@nestjs/swagger";
 import {
   createHumanMaintenanceSessionRequestSchema,
+  issueMaintenanceSshCertificateRequestSchema,
   maintenanceAccessAuditListQuerySchema,
   maintenanceSessionListQuerySchema,
 } from "@vem/shared";
@@ -60,5 +61,20 @@ export class MaintenanceAccessController {
     @Param("sessionId") sessionId: string,
   ) {
     return await this.service.revokeSession(admin.id, sessionId);
+  }
+
+  @Post("sessions/:sessionId/ssh-certificate")
+  @RequirePermissions("maintenanceAccess.write")
+  async issueSshCertificate(
+    @CurrentAdmin() admin: AuthenticatedAdmin,
+    @Param("sessionId") sessionId: string,
+    @Body(new ZodValidationPipe(issueMaintenanceSshCertificateRequestSchema))
+    body: ReturnType<typeof issueMaintenanceSshCertificateRequestSchema.parse>,
+  ) {
+    return await this.service.issueSshCertificateForHumanSession(
+      admin.id,
+      sessionId,
+      body,
+    );
   }
 }

@@ -73,6 +73,12 @@ const DEFAULT_INVENTORY = [
     workflows: ["runtime acceptance", "testbed workflows"],
   },
   {
+    path: "scripts/check-maintenance-ssh-ca-secrets.test.mjs",
+    owner: "field-operations",
+    category: "verifier-test guard",
+    workflows: ["runtime acceptance", "service deployment"],
+  },
+  {
     path: "scripts/check-github-oidc-automation-workflow.test.mjs",
     owner: "field-operations",
     category: "verifier-test guard",

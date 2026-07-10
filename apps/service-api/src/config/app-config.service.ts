@@ -19,6 +19,7 @@ import {
   parseMaintenanceAddressPools,
   type MaintenanceAddressPools,
 } from "../maintenance-access/maintenance-address-pools";
+import { parseMaintenanceSshTargetPolicy } from "../maintenance-access/maintenance-ssh-target-policy";
 
 @Injectable()
 export class AppConfigService {
@@ -171,6 +172,58 @@ export class AppConfigService {
       throw new Error("Maintenance automation JWT secret is too short");
     }
     return secret;
+  }
+
+  get maintenanceSshCa(): {
+    caPrivateKeyPath: string;
+    expectedCaFingerprint: string;
+    profile: "testbed" | "production";
+    requireReadOnlyMount: boolean;
+    allowedTargetMachineCodes: string[];
+  } {
+    const caPrivateKeyPath = this.config.get(
+      "MAINTENANCE_SSH_CA_PRIVATE_KEY_PATH",
+      { infer: true },
+    );
+    const expectedCaFingerprint = this.config.get(
+      "MAINTENANCE_SSH_CA_PUBLIC_KEY_FINGERPRINT",
+      { infer: true },
+    );
+    const profile = this.config.get("MAINTENANCE_SSH_PROFILE", {
+      infer: true,
+    });
+    const targetPolicyPath = this.config.get(
+      "MAINTENANCE_SSH_TARGET_POLICY_PATH",
+      { infer: true },
+    );
+    if (
+      !caPrivateKeyPath ||
+      !expectedCaFingerprint ||
+      !profile ||
+      !targetPolicyPath
+    ) {
+      throw new Error("Maintenance SSH CA is not configured");
+    }
+    const targetPolicy = parseMaintenanceSshTargetPolicy(
+      readDeploymentFile(targetPolicyPath),
+    );
+    if (targetPolicy.profile !== profile) {
+      throw new Error(
+        "Maintenance SSH target policy profile does not match the configured CA profile",
+      );
+    }
+    return {
+      caPrivateKeyPath,
+      expectedCaFingerprint,
+      profile,
+      requireReadOnlyMount: this.nodeEnv === "production",
+      allowedTargetMachineCodes: targetPolicy.targetMachineCodes,
+    };
+  }
+
+  get maintenanceSshCaConfigured(): boolean {
+    const path = this.config.get<string>("MAINTENANCE_SSH_CA_PRIVATE_KEY_PATH");
+    return typeof path === "string" && path.length > 0;
   }
 
   get nodeEnv(): ServiceEnv["NODE_ENV"] {

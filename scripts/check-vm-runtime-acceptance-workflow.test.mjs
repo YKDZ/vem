@@ -106,7 +106,7 @@ describe("VM runtime acceptance workflow maintenance relay path", () => {
       "--maintenance-ingress-source-allowlist",
       "maintenance-relay-diagnostics.txt",
       "windowsSshReadiness=failed",
-      "sshpass is required",
+      "maintenance-automation/session/ssh-certificate",
     ]) {
       assert.match(workflow, requiredTextPattern(requiredText));
     }
@@ -129,7 +129,14 @@ describe("VM runtime acceptance workflow maintenance relay path", () => {
       restoreBlock,
       /--windows-ssh-host\s+"\$MAINTENANCE_RELAY_WINDOWS_SSH_HOST"/,
     );
-    assert.match(restoreBlock, /--sshpass\b/);
+    assert.match(
+      restoreBlock,
+      /--identity\s+"\$MAINTENANCE_SSH_DIR\/id_ed25519"/,
+    );
+    assert.match(
+      restoreBlock,
+      /--certificate\s+"\$MAINTENANCE_SSH_DIR\/id_ed25519-cert\.pub"/,
+    );
     assert.doesNotMatch(
       restoreBlock,
       /--windows-ssh-host\s+"\$\{\{\s*inputs\.windows_ssh_host/,
@@ -147,13 +154,25 @@ describe("VM runtime acceptance workflow maintenance relay path", () => {
       acceptanceBlock,
       /--maintenance-ingress-source-allowlist\s+"\$MAINTENANCE_RELAY_RUNNER_PEER_IP"/,
     );
-    assert.match(acceptanceBlock, /--sshpass\b/);
-    assert.match(acceptanceBlock, /--factory-credentials-from-sshpass\b/);
+    assert.match(
+      acceptanceBlock,
+      /--identity\s+"\$MAINTENANCE_SSH_DIR\/id_ed25519"/,
+    );
+    assert.match(
+      acceptanceBlock,
+      /--certificate\s+"\$MAINTENANCE_SSH_DIR\/id_ed25519-cert\.pub"/,
+    );
+    assert.doesNotMatch(acceptanceBlock, /sshpass|SSHPASS/);
     assert.doesNotMatch(acceptanceBlock, /@\$?\{\{\s*inputs\.windows_ssh_host/);
   });
 
-  it("guards password SSH, teardown, sanitized diagnostics, and the preconfigured VM relay contract", () => {
+  it("guards certificate SSH, teardown, sanitized diagnostics, and the preconfigured VM relay contract", () => {
     const workflow = readWorkflow();
+    assert.doesNotMatch(workflow, /secrets\.[A-Z0-9_]*PASSWORD/);
+    const exchange = stepBlock(
+      workflow,
+      "Exchange OIDC And Create Maintenance Session",
+    );
     const startRelay = stepBlock(
       workflow,
       "Start Runner Maintenance Relay WireGuard Peer",
@@ -163,9 +182,31 @@ describe("VM runtime acceptance workflow maintenance relay path", () => {
       "Preflight Maintenance Relay Bootstrap Contract",
     );
     const cleanup = stepBlock(workflow, "Cleanup Ephemeral Services");
+    const leakGuard = stepBlock(
+      workflow,
+      "Guard Maintenance Automation Evidence",
+    );
 
-    assert.match(preflight, /\[ -z "\$\{SSHPASS:-\}" \]/);
-    assert.match(preflight, /preflight\.sshpass=missing/);
+    assert.match(
+      exchange,
+      /MAINTENANCE_SSH_DIR="\$RUNNER_TEMP\/vem-maintenance-ssh-\$\{GITHUB_RUN_ID\}-\$\{GITHUB_RUN_ATTEMPT\}"/,
+    );
+    assert.match(exchange, /MAINTENANCE_SSH_DIR=%s.*GITHUB_ENV/);
+    assert.match(exchange, /install -d -m 0700 "\$MAINTENANCE_SSH_DIR"/);
+    for (const fileName of [
+      "id_ed25519",
+      "id_ed25519.pub",
+      "id_ed25519-cert.pub",
+      "certificate-request.json",
+      "certificate-response.json",
+    ]) {
+      assert.match(exchange, requiredTextPattern(fileName));
+      assert.match(leakGuard, requiredTextPattern(fileName));
+    }
+    assert.match(cleanup, /rm -rf -- "\$ssh_directory"/);
+    assert.match(cleanup, /cleanup\.sshDirectoryRemoved/);
+
+    assert.doesNotMatch(preflight, /sshpass|SSHPASS/);
     assert.match(
       preflight,
       /vmRelayBootstrapContract=preconfigured-base-image/,

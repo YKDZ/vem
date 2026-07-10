@@ -1,9 +1,11 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Inject,
   Injectable,
   NotFoundException,
+  type OnModuleDestroy,
 } from "@nestjs/common";
 import {
   aliasedTable,
@@ -24,6 +26,7 @@ import {
   maintenanceRelayControlState,
   maintenanceRelayDesiredStateRevisions,
   maintenanceSessions,
+  maintenanceSshCertificates,
   or,
   sql,
   type DrizzleClient,
@@ -34,12 +37,14 @@ import {
   CI_MAINTENANCE_SESSION_TTL_MINUTES,
   auditLogResponseSchema,
   createCiMaintenanceSessionCommandSchema,
+  issueMaintenanceSshCertificateRequestSchema,
   maintenanceAccessOverviewResponseSchema,
   maintenancePublicPeerSchema,
   maintenanceRelayDesiredStateSchema,
   maintenanceRelayFailureReasonCodeSchema,
   maintenanceRelayObservedStateSchema,
   maintenanceSessionResponseSchema,
+  maintenanceSshCertificateResponseSchema,
   registerMaintenancePeerRequestSchema,
   type CreateCiMaintenanceSessionCommand,
   type CreateHumanMaintenanceSessionRequest,
@@ -54,8 +59,11 @@ import {
   type RegisterMaintenancePeerRequest,
   type MaintenanceSessionResponse,
   type MaintenanceSessionListQuery,
+  type IssueMaintenanceSshCertificateRequest,
+  type MaintenanceSshCertificateResponse,
   type MaintenanceTargetMachine,
 } from "@vem/shared";
+import { createHash } from "node:crypto";
 
 import { AppConfigService } from "../config/app-config.service";
 import { DRIZZLE_CLIENT } from "../database/database.constants";
@@ -64,6 +72,7 @@ import {
   projectMaintenancePeerHealth,
   projectMaintenanceRelayHealth,
 } from "./maintenance-relay-health";
+import { MaintenanceSshCaSigner } from "./maintenance-ssh-ca-signer";
 
 type TargetMachineRow = {
   id: string;
@@ -98,6 +107,25 @@ function projectFailure(
 
 function toIso(value: Date | string): string {
   return value instanceof Date ? value.toISOString() : value;
+}
+
+function sha256(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function toMaintenanceSshCertificateResponse(
+  certificate: typeof maintenanceSshCertificates.$inferSelect,
+): MaintenanceSshCertificateResponse {
+  return maintenanceSshCertificateResponseSchema.parse({
+    certificate: certificate.certificate,
+    serial: certificate.serial,
+    keyId: certificate.keyId,
+    principal: certificate.principal,
+    sourceAddress: certificate.sourceAddress,
+    validAfter: toIso(certificate.validAfter),
+    validBefore: toIso(certificate.validBefore),
+    caFingerprint: certificate.caFingerprint,
+  });
 }
 
 function toPublicPeer(row: {
@@ -214,11 +242,26 @@ function sameAuthorization(
 }
 
 @Injectable()
-export class MaintenanceAccessService {
+export class MaintenanceAccessService implements OnModuleDestroy {
+  private readonly sshCaSigner: MaintenanceSshCaSigner | undefined;
+  private readonly sshAllowedTargetMachineCodes = new Set<string>();
+
   constructor(
     @Inject(DRIZZLE_CLIENT) private readonly db: DrizzleClient,
     private readonly config: AppConfigService,
-  ) {}
+  ) {
+    if (this.config.maintenanceSshCaConfigured) {
+      const sshCa = this.config.maintenanceSshCa;
+      this.sshCaSigner = new MaintenanceSshCaSigner(sshCa);
+      this.sshAllowedTargetMachineCodes = new Set(
+        sshCa.allowedTargetMachineCodes,
+      );
+    }
+  }
+
+  onModuleDestroy(): void {
+    this.sshCaSigner?.close();
+  }
 
   async registerPeer(input: RegisterMaintenancePeerRequest) {
     const parsed = registerMaintenancePeerRequestSchema.safeParse(input);
@@ -959,6 +1002,246 @@ export class MaintenanceAccessService {
       { type: "admin", adminUserId: actorAdminUserId },
       sessionId,
     );
+  }
+
+  async issueSshCertificateForHumanSession(
+    actorAdminUserId: string,
+    sessionId: string,
+    input: IssueMaintenanceSshCertificateRequest,
+  ): Promise<MaintenanceSshCertificateResponse> {
+    return await this.issueSshCertificate(
+      { type: "admin", adminUserId: actorAdminUserId },
+      sessionId,
+      input,
+    );
+  }
+
+  async issueSshCertificateFromAutomationExchange(
+    automationExchangeId: string,
+    sessionId: string,
+    input: IssueMaintenanceSshCertificateRequest,
+  ): Promise<MaintenanceSshCertificateResponse> {
+    return await this.issueSshCertificate(
+      { type: "github_actions_automation", exchangeId: automationExchangeId },
+      sessionId,
+      input,
+    );
+  }
+
+  private async issueSshCertificate(
+    actor:
+      | { type: "admin"; adminUserId: string }
+      | { type: "github_actions_automation"; exchangeId: string },
+    sessionId: string,
+    input: IssueMaintenanceSshCertificateRequest,
+  ): Promise<MaintenanceSshCertificateResponse> {
+    const parsed = issueMaintenanceSshCertificateRequestSchema.safeParse(input);
+    if (!parsed.success) {
+      throw new BadRequestException(
+        "Invalid maintenance SSH certificate request",
+      );
+    }
+    const now = new Date();
+    return await this.db.transaction(async (tx) => {
+      let automationAttribution:
+        | {
+            exchangeId: string;
+            runId: string;
+            runAttempt: string;
+            expiresAt: Date;
+          }
+        | undefined;
+      if (actor.type === "github_actions_automation") {
+        const [exchange] = await tx
+          .select({
+            sessionId: maintenanceAutomationExchanges.sessionId,
+            githubRunId: maintenanceAutomationExchanges.githubRunId,
+            githubRunAttempt: maintenanceAutomationExchanges.githubRunAttempt,
+            expiresAt: maintenanceAutomationExchanges.expiresAt,
+            revokedAt: maintenanceAutomationExchanges.revokedAt,
+          })
+          .from(maintenanceAutomationExchanges)
+          .where(eq(maintenanceAutomationExchanges.id, actor.exchangeId))
+          .for("update");
+        if (
+          !exchange ||
+          exchange.sessionId !== sessionId ||
+          exchange.revokedAt ||
+          exchange.expiresAt <= now
+        ) {
+          throw new ConflictException(
+            "Automation exchange cannot issue for this maintenance session",
+          );
+        }
+        automationAttribution = {
+          exchangeId: actor.exchangeId,
+          runId: exchange.githubRunId,
+          runAttempt: exchange.githubRunAttempt,
+          expiresAt: exchange.expiresAt,
+        };
+      }
+
+      const [session] = await tx
+        .select({
+          id: maintenanceSessions.id,
+          kind: maintenanceSessions.kind,
+          issuedByAdminUserId: maintenanceSessions.issuedByAdminUserId,
+          sourcePeerId: maintenanceSessions.sourcePeerId,
+          targetMachineId: maintenanceSessions.targetMachineId,
+          expiresAt: maintenanceSessions.expiresAt,
+          expiredAt: maintenanceSessions.expiredAt,
+          failedAt: maintenanceSessions.failedAt,
+          revokedAt: maintenanceSessions.revokedAt,
+        })
+        .from(maintenanceSessions)
+        .where(eq(maintenanceSessions.id, sessionId))
+        .for("update");
+      if (!session)
+        throw new NotFoundException("Maintenance session not found");
+      if (
+        actor.type === "admin" &&
+        session.issuedByAdminUserId !== actor.adminUserId
+      ) {
+        throw new ForbiddenException(
+          "Only the Maintenance Session creator may issue its SSH certificate",
+        );
+      }
+      const [targetMachine] = await tx
+        .select({ code: machines.code })
+        .from(machines)
+        .where(eq(machines.id, session.targetMachineId));
+      if (
+        !targetMachine ||
+        !this.sshAllowedTargetMachineCodes.has(targetMachine.code)
+      ) {
+        throw new ForbiddenException(
+          "Maintenance Session target is outside the configured SSH profile",
+        );
+      }
+      if (
+        (actor.type === "admin" && session.kind !== "human") ||
+        (actor.type === "github_actions_automation" && session.kind !== "ci") ||
+        sessionStatus(session, now) !== "active"
+      ) {
+        throw new ConflictException(
+          "Maintenance session is not active for certificate issuance",
+        );
+      }
+      const [source] = await tx
+        .select({ tunnelAddress: maintenancePeers.tunnelAddress })
+        .from(maintenancePeers)
+        .where(
+          and(
+            eq(maintenancePeers.id, session.sourcePeerId),
+            eq(maintenancePeers.status, "active"),
+            isNull(maintenancePeers.revokedAt),
+          ),
+        )
+        .for("update");
+      if (!source) {
+        throw new ConflictException(
+          "Maintenance session source peer is not active",
+        );
+      }
+
+      const publicKeyFingerprint = sha256(parsed.data.publicKey);
+      const [existing] = await tx
+        .select()
+        .from(maintenanceSshCertificates)
+        .where(
+          and(
+            eq(maintenanceSshCertificates.sessionId, session.id),
+            eq(maintenanceSshCertificates.requestId, parsed.data.requestId),
+          ),
+        )
+        .for("update");
+      if (existing) {
+        if (existing.publicKeyFingerprint !== publicKeyFingerprint) {
+          throw new ConflictException(
+            "Maintenance SSH certificate request identity was already used",
+          );
+        }
+        return toMaintenanceSshCertificateResponse(existing);
+      }
+
+      const validBefore = automationAttribution
+        ? new Date(
+            Math.min(
+              session.expiresAt.getTime(),
+              automationAttribution.expiresAt.getTime(),
+            ),
+          )
+        : session.expiresAt;
+      if (validBefore <= now) {
+        throw new ConflictException("Maintenance session validity has elapsed");
+      }
+      const serialResult = await tx.execute<{ serial: string }>(
+        sql`SELECT nextval('maintenance_ssh_certificate_serial_seq') AS serial`,
+      );
+      const numericSerial = Number(serialResult.rows[0]?.serial);
+      if (!Number.isSafeInteger(numericSerial) || numericSerial < 1) {
+        throw new Error("Maintenance SSH certificate serial allocation failed");
+      }
+      const keyId = `vem-maintenance:${session.id}:${parsed.data.requestId}`;
+      if (!this.sshCaSigner) {
+        throw new Error("Maintenance SSH CA is not configured");
+      }
+      const issued = await this.sshCaSigner.issue({
+        publicKey: parsed.data.publicKey,
+        serial: numericSerial,
+        keyId,
+        sourceAddress: source.tunnelAddress,
+        validAfter: now,
+        validBefore,
+        usage: session.kind === "human" ? "human" : "automation",
+      });
+      const [created] = await tx
+        .insert(maintenanceSshCertificates)
+        .values({
+          sessionId: session.id,
+          requestId: parsed.data.requestId,
+          publicKeyFingerprint,
+          certificate: issued.certificate,
+          certificateFingerprint: sha256(issued.certificate),
+          serial: numericSerial,
+          keyId,
+          principal: issued.principal,
+          sourceAddress: source.tunnelAddress,
+          validAfter: issued.validAfter,
+          validBefore: issued.validBefore,
+          caFingerprint: issued.caFingerprint,
+        })
+        .returning();
+      await tx.insert(auditLogs).values({
+        adminUserId: actor.type === "admin" ? actor.adminUserId : null,
+        action: "maintenanceAccess.sshCertificate.issue",
+        resourceType: "maintenance_session",
+        resourceId: session.id,
+        afterJson: {
+          certificateId: created.id,
+          requestId: created.requestId,
+          serial: created.serial,
+          keyId: created.keyId,
+          principal: created.principal,
+          sourceAddress: created.sourceAddress,
+          validAfter: created.validAfter.toISOString(),
+          validBefore: created.validBefore.toISOString(),
+          caFingerprint: created.caFingerprint,
+          publicKeyFingerprint: created.publicKeyFingerprint,
+          certificateFingerprint: created.certificateFingerprint,
+          actor:
+            actor.type === "admin"
+              ? { type: "admin", adminUserId: actor.adminUserId }
+              : {
+                  type: "github_actions_automation",
+                  exchangeId: automationAttribution?.exchangeId,
+                  runId: automationAttribution?.runId,
+                  runAttempt: automationAttribution?.runAttempt,
+                },
+        },
+      });
+      return toMaintenanceSshCertificateResponse(created);
+    });
   }
 
   async revokeSessionFromAutomationExchange(

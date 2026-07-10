@@ -21,6 +21,44 @@ function configServiceFor(values: Record<string, string>) {
 }
 
 describe("ConfigModule maintenance address pools", () => {
+  it("rejects an SSH target policy for a different deployment profile", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "vem-ssh-target-policy-"));
+    const targetPolicyPath = join(directory, "target-policy.json");
+    writeFileSync(
+      targetPolicyPath,
+      JSON.stringify({
+        profile: "production",
+        targetMachineCodes: ["VEM-PRODUCTION-01"],
+      }),
+      { mode: 0o400 },
+    );
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        AppConfigService,
+        {
+          provide: ConfigService,
+          useValue: configServiceFor({
+            ...validPools,
+            NODE_ENV: "production",
+            MAINTENANCE_SSH_CA_PRIVATE_KEY_PATH: "/run/secrets/ssh-ca",
+            MAINTENANCE_SSH_CA_PUBLIC_KEY_FINGERPRINT:
+              "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            MAINTENANCE_SSH_PROFILE: "testbed",
+            MAINTENANCE_SSH_TARGET_POLICY_PATH: targetPolicyPath,
+          }),
+        },
+      ],
+    }).compile();
+    const config = moduleRef.get(AppConfigService);
+
+    expect(() => config.maintenanceSshCa).toThrow(
+      "Maintenance SSH target policy profile does not match the configured CA profile",
+    );
+
+    await moduleRef.close();
+    rmSync(directory, { recursive: true, force: true });
+  });
+
   it("reads automation trust material only from owner-read-only deployment files", async () => {
     const directory = mkdtempSync(join(tmpdir(), "vem-oidc-config-"));
     const policyPath = join(directory, "policy.json");
@@ -37,6 +75,7 @@ describe("ConfigModule maintenance address pools", () => {
       events: ["workflow_dispatch"],
       environments: ["vem-maintenance-testbed"],
       requireRefProtected: true,
+      allowedRunnerPeerIds: ["11111111-1111-4111-8111-111111111111"],
       targetMachineCodes: ["VEM-TESTBED-RUNTIME-ACCEPTANCE"],
     };
     const jwks = {

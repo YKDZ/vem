@@ -73,7 +73,6 @@ jobs:
       EPHEMERAL_API_BASE_URL: http://127.0.0.1:26849/api
       EPHEMERAL_MQTT_URL: mqtt://127.0.0.1:18883
       PAYMENT_MOCK_ENABLED: "true"
-      SSHPASS: ${{ secrets.VEM_TESTBED_WINDOWS_PASSWORD }}
       MAINTENANCE_RELAY_WINDOWS_SSH_HOST: ${{ inputs.vm_wireguard_ip }}
       MAINTENANCE_RELAY_RUNNER_PEER_IP: ${{ inputs.runner_wireguard_peer_ip }}
       MAINTENANCE_RELAY_INTERFACE: ${{ inputs.runner_wireguard_interface }}
@@ -193,6 +192,9 @@ jobs:
         run: |
           set -euo pipefail
           umask 077
+          MAINTENANCE_SSH_DIR="$RUNNER_TEMP/vem-maintenance-ssh-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          export MAINTENANCE_SSH_DIR
+          printf 'MAINTENANCE_SSH_DIR=%s\n' "$MAINTENANCE_SSH_DIR" >> "$GITHUB_ENV"
           node -e '
             const required = [
               "MAINTENANCE_CONTROL_PLANE_URL",
@@ -353,6 +355,31 @@ jobs:
             throw new Error("maintenance session create/get verification failed");
           }
           NODE
+          rm -rf -- "$MAINTENANCE_SSH_DIR"
+          install -d -m 0700 "$MAINTENANCE_SSH_DIR"
+          ssh_key_path="$MAINTENANCE_SSH_DIR/id_ed25519"
+          ssh_public_key_path="$MAINTENANCE_SSH_DIR/id_ed25519.pub"
+          ssh_certificate_path="$MAINTENANCE_SSH_DIR/id_ed25519-cert.pub"
+          ssh_request_path="$MAINTENANCE_SSH_DIR/certificate-request.json"
+          ssh_response_path="$MAINTENANCE_SSH_DIR/certificate-response.json"
+          ssh-keygen -q -t ed25519 -N '' -f "$ssh_key_path"
+          chmod 600 "$ssh_key_path" "$ssh_public_key_path"
+          node - "$ssh_public_key_path" "$ssh_request_path" <<'NODE'
+          const fs = require("node:fs");
+          const publicKey = fs.readFileSync(process.argv[2], "utf8").trim().split(/\s+/).slice(0, 2).join(" ");
+          fs.writeFileSync(process.argv[3], JSON.stringify({ publicKey, requestId: crypto.randomUUID() }), { mode: 0o600 });
+          NODE
+          IFS= read -r automation_token < "$automation_token_path"
+          { printf 'header = "Authorization: Bearer %s"\n' "$automation_token"; printf 'request = "POST"\n'; } | curl --config - --fail-with-body --silent --show-error --header 'Content-Type: application/json' --data-binary @"$ssh_request_path" --output "$ssh_response_path" "$MAINTENANCE_CONTROL_PLANE_URL/maintenance-automation/session/ssh-certificate"
+          unset automation_token
+          node - "$ssh_response_path" "$ssh_certificate_path" <<'NODE'
+          const fs = require("node:fs");
+          const certificate = JSON.parse(fs.readFileSync(process.argv[2], "utf8")).data?.certificate;
+          if (typeof certificate !== "string" || !certificate.startsWith("ssh-ed25519-cert-v01@openssh.com ")) throw new Error("maintenance SSH certificate response is invalid");
+          fs.writeFileSync(process.argv[3], `${certificate}\n`, { mode: 0o600 });
+          NODE
+          chmod 600 "$ssh_certificate_path"
+          rm -f "$ssh_request_path" "$ssh_response_path"
           rm -f "$session_create_path" "$session_verify_path"
 
       - name: Start Runner Maintenance Relay WireGuard Peer
@@ -439,11 +466,6 @@ jobs:
             echo "preflight.windowsControlledMaintenanceIngress=must-already-allow-runner-peer-ip"
             echo "preflight.repositoryConfiguresVmRelay=false"
           } >> "$diagnostics"
-          if [ -z "${SSHPASS:-}" ]; then
-            echo "::error::SSHPASS is required because VM runtime acceptance uses password SSH over the Maintenance Relay."
-            echo "preflight.sshpass=missing" >> "$diagnostics"
-            exit 1
-          fi
 
       - name: Start Ephemeral Postgres And MQTT
         run: |
@@ -545,11 +567,6 @@ jobs:
           set -euo pipefail
           diagnostics="artifacts/vm-runtime-acceptance/${RUN_ID}/maintenance-relay-diagnostics.txt"
           trap 'echo "windowsSshReadiness=failed" >> "$diagnostics"' ERR
-          command -v sshpass >/dev/null || {
-            echo "::error::sshpass is required on the self-hosted VM runner for password-based Windows SSH readiness checks."
-            echo "sshpassBinary=missing" >> "$diagnostics"
-            exit 1
-          }
           mkdir -p "artifacts/vm-runtime-acceptance/${RUN_ID}"
           node scripts/testbed/vm-host-adapter.mjs \
             --mode restore \
@@ -562,7 +579,8 @@ jobs:
             --windows-ssh-user "${{ inputs.windows_ssh_user }}" \
             --maintenance-relay-interface "$MAINTENANCE_RELAY_INTERFACE" \
             --maintenance-relay-runner-peer-ip "$MAINTENANCE_RELAY_RUNNER_PEER_IP" \
-            --sshpass \
+            --identity "$MAINTENANCE_SSH_DIR/id_ed25519" \
+            --certificate "$MAINTENANCE_SSH_DIR/id_ed25519-cert.pub" \
             --out "artifacts/vm-runtime-acceptance/${RUN_ID}/vm-host-restore-report.json" \
             --allow-restore
 
@@ -580,14 +598,15 @@ jobs:
             --machine-ui-artifact artifacts/vm-runtime-inputs/machine.exe \
             --remote "${{ inputs.windows_ssh_user }}@$MAINTENANCE_RELAY_WINDOWS_SSH_HOST" \
             --maintenance-ingress-source-allowlist "$MAINTENANCE_RELAY_RUNNER_PEER_IP" \
-            --sshpass \
-            --factory-credentials-from-sshpass
+            --identity "$MAINTENANCE_SSH_DIR/id_ed25519" \
+            --certificate "$MAINTENANCE_SSH_DIR/id_ed25519-cert.pub"
 
       - name: Cleanup Ephemeral Services
         if: always()
         run: |
           set +e
           cleanup_status=0
+          ssh_directory="${MAINTENANCE_SSH_DIR:-$RUNNER_TEMP/vem-maintenance-ssh-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}}"
           mkdir -p "artifacts/vm-runtime-acceptance/${RUN_ID}"
           diagnostics="artifacts/vm-runtime-acceptance/${RUN_ID}/maintenance-relay-diagnostics.txt"
           temp_config_path="$RUNNER_TEMP/${MAINTENANCE_RELAY_INTERFACE}-${GITHUB_RUN_ID}.conf"
@@ -635,10 +654,17 @@ jobs:
             "$RUNNER_TEMP/maintenance-exchange-response.json" \
             "$RUNNER_TEMP/maintenance-session-create.json" \
             "$RUNNER_TEMP/maintenance-session-verify.json"
+          rm -rf -- "$ssh_directory"
+          ssh_cleanup_status="$?"
+          if [ "$ssh_cleanup_status" -ne 0 ] || [ -e "$ssh_directory" ]; then
+            echo "::error::Run-scoped Maintenance SSH directory cleanup failed."
+            cleanup_status=1
+          fi
           {
             echo "cleanup.wgQuickDownExit=${wg_down_status}"
             echo "cleanup.installedConfigRemoved=true"
             echo "cleanup.tempConfigRemoved=true"
+            echo "cleanup.sshDirectoryRemoved=$([ "$ssh_cleanup_status" -eq 0 ] && [ ! -e "$ssh_directory" ] && echo true || echo false)"
             echo "cleanup.maintenanceSessionExplicitRevoke=$([ "$cleanup_status" -eq 0 ] && echo passed || echo failed)"
           } >> "$diagnostics" 2>/dev/null || true
           if [ -f service-api.pid ]; then kill "$(cat service-api.pid)" 2>/dev/null || true; fi
@@ -659,6 +685,20 @@ jobs:
             "maintenance-exchange-request.json",
             "maintenance-exchange-response.json",
           ].map((name) => path.join(process.env.RUNNER_TEMP, name));
+          const sshDirectory = process.env.MAINTENANCE_SSH_DIR ?? path.join(
+            process.env.RUNNER_TEMP,
+            `vem-maintenance-ssh-${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT}`,
+          );
+          for (const name of [
+            "id_ed25519",
+            "id_ed25519.pub",
+            "id_ed25519-cert.pub",
+            "certificate-request.json",
+            "certificate-response.json",
+          ]) {
+            forbiddenTempFiles.push(path.join(sshDirectory, name));
+          }
+          forbiddenTempFiles.push(sshDirectory);
           const leaks = forbiddenTempFiles.filter((candidate) => fs.existsSync(candidate));
           const roots = [
             path.join("artifacts", "vm-runtime-acceptance", process.env.RUN_ID),

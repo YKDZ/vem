@@ -255,7 +255,9 @@ The Windows CI workflow uses GitHub Actions OIDC with audience
 `vem-maintenance`. The Service API validates issuer, audience, immutable
 repository identity, workflow identity, ref, event, SHA, run ID, and configured
 trust policy before issuing a run-bound automation token. OIDC trust policy is
-deployment configuration, not an Admin UI setting. `sshpass`, `SSHPASS`, and
+deployment configuration, not an Admin UI setting. It allowlists both the
+registered runner peer UUIDs and target Platform Machine codes; an active peer
+outside that list is not an automation identity. `sshpass`, `SSHPASS`, and
 `VEM_TESTBED_WINDOWS_PASSWORD` are not part of the accepted workflow.
 
 VM Runtime Acceptance exchanges OIDC only with an independently deployed
@@ -290,15 +292,33 @@ cleanup-failure fallback.
 
 The Service API signs short-lived OpenSSH user certificates from an
 environment-specific Maintenance SSH CA mounted as a Docker secret. Test and
-production CAs are different. The Factory profile contains only the CA public
-key. Certificates are bounded by the session TTL and maintenance source IP.
-SSH password authentication is disabled.
+production CAs are different. `MAINTENANCE_SSH_TARGET_POLICY_PATH` points to a
+read-only deployment file containing the same profile and its exact target
+Machine code allowlist; a profile mismatch or out-of-scope target fails closed.
+The Factory profile contains only the CA public key. Human certificates may be
+issued only by the administrator who created the Maintenance Session.
+Certificates are bounded by the session TTL and maintenance source IP. SSH
+password authentication is disabled.
 
 The first version reuses the profile's existing maintenance administrator
 account: `YKDZ` for the testbed and `Admin` for the first production profile.
 It does not add a default SYSTEM SSH entrypoint. The authenticated maintenance
 administrator must have complete host debugging capability; SYSTEM-only work is
 performed explicitly from that session when required.
+
+## Windows OpenSSH Certificate Consumption Contract
+
+Issue 09 consumes, but does not redefine, this contract. A testbed profile
+installs only the deployed test Maintenance SSH CA public key and accepts the
+`YKDZ` principal. A production profile installs only the production CA public
+key and accepts the `Admin` principal. `sshd` must require public-key
+authentication, disable password and keyboard-interactive authentication, and
+trust the CA through `TrustedUserCAKeys`. It must preserve OpenSSH certificate
+critical-option enforcement, including the exact `source-address` `/32` issued
+by Service API. No profile authorizes a `SYSTEM` principal or creates a default
+SYSTEM SSH entrypoint. The Service API certificate endpoint accepts one
+caller-generated ephemeral Ed25519 public key and returns the short-lived user
+certificate; it never receives or stores the caller private key.
 
 ## Machine Maintenance Identity Lifecycle
 

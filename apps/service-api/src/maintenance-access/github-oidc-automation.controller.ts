@@ -1,7 +1,9 @@
 import { Body, Controller, Get, Headers, Ip, Post } from "@nestjs/common";
 import { ApiBearerAuth, ApiTags } from "@nestjs/swagger";
+import { issueMaintenanceSshCertificateRequestSchema } from "@vem/shared";
 
 import { Public } from "../auth/public.decorator";
+import { ZodValidationPipe } from "../common/zod-validation.pipe";
 import { GithubOidcAutomationService } from "./github-oidc-automation.service";
 
 @ApiTags("maintenance-automation")
@@ -35,5 +37,17 @@ export class GithubOidcAutomationController {
     @Headers("authorization") authorization: string | undefined,
   ) {
     return await this.automation.revokeOwnSession(authorization);
+  }
+
+  @Post("session/ssh-certificate")
+  async issueSshCertificate(
+    @Headers("authorization") authorization: string | undefined,
+    @Body(new ZodValidationPipe(issueMaintenanceSshCertificateRequestSchema))
+    body: ReturnType<typeof issueMaintenanceSshCertificateRequestSchema.parse>,
+  ) {
+    return await this.automation.issueOwnSessionSshCertificate(
+      authorization,
+      body,
+    );
   }
 }

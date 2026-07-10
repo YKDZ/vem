@@ -193,6 +193,7 @@ describe("GitHub Actions OIDC JWKS provider", () => {
       events: ["workflow_dispatch"],
       environments: ["vem-maintenance-testbed"],
       requireRefProtected: true,
+      allowedRunnerPeerIds: ["11111111-1111-4111-8111-111111111111"],
       targetMachineCodes: ["VEM-TESTBED-RUNTIME-ACCEPTANCE"],
     };
     const header = encode({ alg: "RS256", kid: "rotated-key", typ: "JWT" });

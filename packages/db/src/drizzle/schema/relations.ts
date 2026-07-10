@@ -12,6 +12,7 @@ import {
   machineCommands,
   machineHeartbeats,
   maintenancePeers,
+  maintenanceSshCertificates,
   maintenanceSessions,
   machinePlanogramSlots,
   machinePlanogramVersions,
@@ -58,6 +59,7 @@ export const relations = defineRelations(
     machineCommands,
     machineHeartbeats,
     maintenancePeers,
+    maintenanceSshCertificates,
     maintenanceSessions,
     machinePlanogramSlots,
     machinePlanogramVersions,
@@ -184,6 +186,7 @@ export const relations = defineRelations(
       }),
     },
     maintenanceSessions: {
+      sshCertificates: r.many.maintenanceSshCertificates(),
       sourcePeer: r.one.maintenancePeers({
         from: r.maintenanceSessions.sourcePeerId,
         to: r.maintenancePeers.id,
@@ -201,6 +204,12 @@ export const relations = defineRelations(
       actor: r.one.adminUsers({
         from: r.maintenanceSessions.issuedByAdminUserId,
         to: r.adminUsers.id,
+      }),
+    },
+    maintenanceSshCertificates: {
+      session: r.one.maintenanceSessions({
+        from: r.maintenanceSshCertificates.sessionId,
+        to: r.maintenanceSessions.id,
       }),
     },
     machineClaimCodes: {

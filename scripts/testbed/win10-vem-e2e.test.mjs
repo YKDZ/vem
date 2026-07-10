@@ -44,6 +44,35 @@ import {
   isStrictTauriHashRouteUrl,
 } from "./win10-vem-e2e.mjs";
 
+const CERTIFICATE_SSH_OPTIONS = {
+  identity: "/tmp/maintenance-key",
+  certificate: "/tmp/maintenance-key-cert.pub",
+};
+const CERTIFICATE_SSH_ARGS = [
+  "-o",
+  "IdentityFile=/tmp/maintenance-key",
+  "-o",
+  "CertificateFile=/tmp/maintenance-key-cert.pub",
+  "-o",
+  "IdentitiesOnly=yes",
+  "-o",
+  "IdentityAgent=none",
+  "-o",
+  "BatchMode=yes",
+  "-o",
+  "PasswordAuthentication=no",
+  "-o",
+  "KbdInteractiveAuthentication=no",
+  "-o",
+  "PreferredAuthentications=publickey",
+  "-o",
+  "ClearAllForwardings=yes",
+  "-o",
+  "ForwardAgent=no",
+  "-o",
+  "ConnectTimeout=30",
+];
+
 function runtimeAcceptanceFacts(overrides = {}) {
   return {
     mode: "fresh_bring_up",
@@ -476,6 +505,10 @@ describe("win10-vem-e2e reset planning", () => {
           daemonArtifact,
           "--machine-ui-artifact",
           machineUiArtifact,
+          "--identity",
+          CERTIFICATE_SSH_OPTIONS.identity,
+          "--certificate",
+          CERTIFICATE_SSH_OPTIONS.certificate,
           "--dry-run",
         ],
         { cwd: process.cwd(), encoding: "utf8" },
@@ -1971,7 +2004,7 @@ describe("win10-vem-e2e reset planning", () => {
         plan.artifacts.ephemeralPlatformEvidence,
       );
       assert.equal(plan.readinessLevels.sellReady, "not_asserted");
-      assert.equal(plan.ci.requiredSecrets.includes("SSHPASS"), true);
+      assert.equal(plan.ci.requiredSecrets.includes("SSHPASS"), false);
       assert.match(plan.artifacts.daemonSha256, /^[a-f0-9]{64}$/);
       assert.match(plan.artifacts.machineUiSha256, /^[a-f0-9]{64}$/);
       assert.doesNotMatch(result.stdout, /pass@127\.0\.0\.1/);
@@ -3657,23 +3690,26 @@ describe("win10-vem-e2e reset planning", () => {
   });
 
   it("builds Controlled Maintenance Ingress SSH commands without requiring the real VM in tests", () => {
-    assert.deepEqual(buildSshCommand(), [
+    assert.throws(
+      () => buildSshCommand(),
+      /certificate-only SSH requires --identity and --certificate/,
+    );
+    assert.deepEqual(buildSshCommand(CERTIFICATE_SSH_OPTIONS), [
       "ssh",
-      "-o",
-      "ConnectTimeout=30",
+      ...CERTIFICATE_SSH_ARGS,
       "-o",
       "ProxyCommand=none",
       "YKDZ@controlled-maintenance-ingress.local",
     ]);
     assert.deepEqual(
       buildSshCommand({
+        ...CERTIFICATE_SSH_OPTIONS,
         remote: "maintainer@relay-vm.example",
         proxyCommand: "ssh -W %h:%p maintenance-relay.example",
       }),
       [
         "ssh",
-        "-o",
-        "ConnectTimeout=30",
+        ...CERTIFICATE_SSH_ARGS,
         "-o",
         "ProxyCommand=ssh -W %h:%p maintenance-relay.example",
         "maintainer@relay-vm.example",
@@ -3681,30 +3717,16 @@ describe("win10-vem-e2e reset planning", () => {
     );
   });
 
-  it("can wrap SSH and SCP with sshpass using SSHPASS from the environment", () => {
-    assert.deepEqual(buildSshCommand({ sshpass: true }), [
-      "sshpass",
-      "-e",
-      "ssh",
-      "-o",
-      "ConnectTimeout=30",
-      "-o",
-      "ProxyCommand=none",
-      "YKDZ@controlled-maintenance-ingress.local",
-    ]);
-
+  it("applies the certificate-only SSH options to SCP", () => {
     assert.deepEqual(
       buildScpCommand(
         "/tmp/run.ps1",
         "C:\\Users\\YKDZ\\AppData\\Local\\Temp\\vem-win10-e2e-test.ps1",
-        { sshpass: true },
+        CERTIFICATE_SSH_OPTIONS,
       ),
       [
-        "sshpass",
-        "-e",
         "scp",
-        "-o",
-        "ConnectTimeout=30",
+        ...CERTIFICATE_SSH_ARGS,
         "-o",
         "ProxyCommand=none",
         "/tmp/run.ps1",
@@ -3730,41 +3752,16 @@ describe("win10-vem-e2e reset planning", () => {
       buildScpCommand(
         "/tmp/run.ps1",
         "C:\\Users\\YKDZ\\AppData\\Local\\Temp\\vem-win10-e2e-test.ps1",
+        CERTIFICATE_SSH_OPTIONS,
       ),
       [
         "scp",
-        "-o",
-        "ConnectTimeout=30",
+        ...CERTIFICATE_SSH_ARGS,
         "-o",
         "ProxyCommand=none",
         "/tmp/run.ps1",
         "YKDZ@controlled-maintenance-ingress.local:C:/Users/YKDZ/AppData/Local/Temp/vem-win10-e2e-test.ps1",
       ],
     );
-  });
-
-  it("can inject factory credential environment from local SSHPASS for testbed-only reset acceptance", () => {
-    const originalSshpass = process.env.SSHPASS;
-    process.env.SSHPASS = "1256987";
-    const command = buildRemotePowerShellCommand(
-      "C:\\Users\\YKDZ\\AppData\\Local\\Temp\\vem-win10-e2e-test.ps1",
-      {
-        factoryCredentialsFromSshpass: true,
-        remoteFactoryCredentialPath:
-          "C:\\Users\\YKDZ\\AppData\\Local\\Temp\\factory-credentials.json",
-      },
-    );
-    if (originalSshpass === undefined) {
-      delete process.env.SSHPASS;
-    } else {
-      process.env.SSHPASS = originalSshpass;
-    }
-
-    assert.match(command, /VEM_FACTORY_CREDENTIAL_FILE/);
-    assert.doesNotMatch(command, /VEM_KIOSK_PASSWORD\s*=/);
-    assert.doesNotMatch(command, /VEM_MAINTENANCE_PASSWORD\s*=/);
-    assert.doesNotMatch(command, /VEM_AUTOLOGON_PASSWORD\s*=/);
-    assert.match(command, /vem-win10-e2e-test\.ps1/);
-    assert.doesNotMatch(command, /1256987/);
   });
 });

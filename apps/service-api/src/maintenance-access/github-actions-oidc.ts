@@ -84,6 +84,7 @@ const githubOidcTrustPolicySchema = z.strictObject({
   events: z.array(z.string().min(1).max(128)).min(1).max(16),
   environments: z.array(z.string().min(1).max(255)).min(1).max(16),
   requireRefProtected: z.boolean(),
+  allowedRunnerPeerIds: z.array(z.uuid()).min(1).max(64),
   targetMachineCodes: z.array(z.string().min(1).max(64)).min(1).max(64),
 });
 

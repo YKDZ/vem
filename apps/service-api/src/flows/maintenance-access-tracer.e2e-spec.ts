@@ -4,13 +4,16 @@ import { Test } from "@nestjs/testing";
 import {
   DrizzleDB,
   adminUsers,
+  and,
   auditLogs,
   eq,
+  inArray,
   machines,
   maintenancePeers,
   maintenanceRelayControlState,
   maintenanceRelayDesiredStateRevisions,
   maintenanceSessions,
+  maintenanceSshCertificates,
   sql,
 } from "@vem/db";
 import {
@@ -20,10 +23,21 @@ import {
   auditLogPageResponseSchema,
   maintenanceAccessOverviewResponseSchema,
   maintenanceRelayDesiredStateSchema,
+  maintenanceSshCertificateResponseSchema,
   maintenanceSessionResponseSchema,
   permissionCodeSchema,
 } from "@vem/shared";
+import { execFileSync } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
+import {
+  chmodSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import request from "supertest";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
@@ -34,6 +48,9 @@ import { MaintenanceAccessService } from "../maintenance-access/maintenance-acce
 import { parseMaintenanceAddressPools } from "../maintenance-access/maintenance-address-pools";
 import { MqttService } from "../mqtt/mqtt.service";
 import { loginAndGetToken, type ApiResponse } from "./flow-test-helpers";
+
+const TESTBED_SSH_TARGET_CODE = "VEM-SSH-CERT-TESTBED";
+const PRODUCTION_SSH_TARGET_CODE = "VEM-SSH-CERT-PRODUCTION";
 
 function wireGuardPublicKey(_byte?: number): string {
   return randomBytes(32).toString("base64");
@@ -46,6 +63,24 @@ describe("maintenance-access tracer flow", { concurrent: false }, () => {
   let api: ReturnType<typeof request>;
   let maintenanceAccess: MaintenanceAccessService;
   let smallPoolMaintenanceAccess: MaintenanceAccessService;
+  let sshDirectory: string;
+
+  function generatedSshPublicKey(path: string): string {
+    execFileSync("/usr/bin/ssh-keygen", [
+      "-q",
+      "-t",
+      "ed25519",
+      "-N",
+      "",
+      "-f",
+      path,
+    ]);
+    return readFileSync(`${path}.pub`, "utf8")
+      .trim()
+      .split(" ")
+      .slice(0, 2)
+      .join(" ");
+  }
 
   async function provisionAdminAuth(
     label: "read_only" | "writer",
@@ -98,6 +133,30 @@ describe("maintenance-access tracer flow", { concurrent: false }, () => {
   }
 
   beforeAll(async () => {
+    sshDirectory = mkdtempSync(join(tmpdir(), "vem-maintenance-ca-e2e-"));
+    const caPath = join(sshDirectory, "maintenance-ca");
+    const targetPolicyPath = join(sshDirectory, "target-policy.json");
+    generatedSshPublicKey(caPath);
+    chmodSync(caPath, 0o400);
+    const caFingerprint = execFileSync(
+      "/usr/bin/ssh-keygen",
+      ["-lf", `${caPath}.pub`, "-E", "sha256"],
+      { encoding: "utf8" },
+    ).match(/(SHA256:[A-Za-z0-9+/]+=?)/)?.[1];
+    if (!caFingerprint)
+      throw new Error("Could not read test Maintenance SSH CA");
+    writeFileSync(
+      targetPolicyPath,
+      JSON.stringify({
+        profile: "testbed",
+        targetMachineCodes: [TESTBED_SSH_TARGET_CODE],
+      }),
+      { mode: 0o400 },
+    );
+    process.env.MAINTENANCE_SSH_CA_PRIVATE_KEY_PATH = caPath;
+    process.env.MAINTENANCE_SSH_CA_PUBLIC_KEY_FINGERPRINT = caFingerprint;
+    process.env.MAINTENANCE_SSH_PROFILE = "testbed";
+    process.env.MAINTENANCE_SSH_TARGET_POLICY_PATH = targetPolicyPath;
     const moduleRef = await Test.createTestingModule({
       imports: [AppModule],
     })
@@ -134,11 +193,25 @@ describe("maintenance-access tracer flow", { concurrent: false }, () => {
   afterAll(async () => {
     await db?.disconnect();
     await app?.close();
+    rmSync(sshDirectory, { recursive: true, force: true });
+    delete process.env.MAINTENANCE_SSH_CA_PRIVATE_KEY_PATH;
+    delete process.env.MAINTENANCE_SSH_CA_PUBLIC_KEY_FINGERPRINT;
+    delete process.env.MAINTENANCE_SSH_PROFILE;
+    delete process.env.MAINTENANCE_SSH_TARGET_POLICY_PATH;
   });
 
   beforeEach(async () => {
+    await db.client.delete(maintenanceSshCertificates);
     await db.client.delete(maintenanceSessions);
     await db.client.delete(maintenancePeers);
+    await db.client
+      .delete(machines)
+      .where(
+        inArray(machines.code, [
+          TESTBED_SSH_TARGET_CODE,
+          PRODUCTION_SSH_TARGET_CODE,
+        ]),
+      );
     await db.client.delete(maintenanceRelayDesiredStateRevisions);
     const resetAt = new Date();
     await db.client
@@ -157,6 +230,184 @@ describe("maintenance-access tracer flow", { concurrent: false }, () => {
       createdAt: resetAt,
     });
   });
+
+  it("issues one audited short-lived certificate only to an active human Maintenance Session", async () => {
+    const auth = await provisionAdminAuth("writer", [
+      "maintenanceAccess.read",
+      "maintenanceAccess.write",
+    ]);
+    const readOnlyAuth = await provisionAdminAuth("read_only", [
+      "maintenanceAccess.read",
+    ]);
+    const otherWriterAuth = await provisionAdminAuth("writer", [
+      "maintenanceAccess.read",
+      "maintenanceAccess.write",
+    ]);
+    const unique = randomUUID().slice(0, 8);
+    const [machine] = await db.client
+      .insert(machines)
+      .values({
+        code: TESTBED_SSH_TARGET_CODE,
+        name: "Maintenance SSH certificate target",
+        status: "online",
+      })
+      .returning({ id: machines.id });
+    const source = await maintenanceAccess.registerPeer({
+      role: "maintainer",
+      publicKey: wireGuardPublicKey(),
+    });
+    await maintenanceAccess.registerPeer({
+      role: "machine",
+      machineId: machine.id,
+      publicKey: wireGuardPublicKey(),
+    });
+    const session = maintenanceSessionResponseSchema.parse(
+      (
+        await api
+          .post("/api/maintenance-access/sessions")
+          .set(auth)
+          .send({
+            sourcePeerId: source.id,
+            targetMachineId: machine.id,
+            reason: "Inspect runtime acceptance failure",
+            ttlMinutes: 30,
+          })
+          .expect(201)
+      ).body.data,
+    );
+    const publicKey = generatedSshPublicKey(
+      join(sshDirectory, `user-${unique}`),
+    );
+    const requestId = randomUUID();
+
+    await api
+      .post(`/api/maintenance-access/sessions/${session.id}/ssh-certificate`)
+      .set(otherWriterAuth)
+      .send({ publicKey, requestId: randomUUID() })
+      .expect(403);
+
+    await api
+      .post(`/api/maintenance-access/sessions/${session.id}/ssh-certificate`)
+      .set(readOnlyAuth)
+      .send({ publicKey, requestId })
+      .expect(403);
+
+    const issued = maintenanceSshCertificateResponseSchema.parse(
+      (
+        await api
+          .post(
+            `/api/maintenance-access/sessions/${session.id}/ssh-certificate`,
+          )
+          .set(auth)
+          .send({ publicKey, requestId })
+          .expect(201)
+      ).body.data,
+    );
+    expect(issued).toMatchObject({
+      principal: "YKDZ",
+      sourceAddress: session.sourcePeer.tunnelAddress,
+    });
+    expect(Date.parse(issued.validBefore)).toBeLessThanOrEqual(
+      Date.parse(session.expiresAt),
+    );
+    const certificatePath = join(sshDirectory, `issued-${unique}-cert.pub`);
+    writeFileSync(certificatePath, `${issued.certificate}\n`, { mode: 0o600 });
+    const inspection = execFileSync(
+      "/usr/bin/ssh-keygen",
+      ["-L", "-f", certificatePath],
+      { encoding: "utf8" },
+    );
+    expect(inspection).toContain(`Serial: ${issued.serial}`);
+    expect(inspection).toContain(`Key ID: "${issued.keyId}"`);
+    expect(inspection).toContain("YKDZ");
+    expect(inspection).toContain(
+      `source-address ${session.sourcePeer.tunnelAddress}/32`,
+    );
+
+    const retried = maintenanceSshCertificateResponseSchema.parse(
+      (
+        await api
+          .post(
+            `/api/maintenance-access/sessions/${session.id}/ssh-certificate`,
+          )
+          .set(auth)
+          .send({ publicKey, requestId })
+          .expect(201)
+      ).body.data,
+    );
+    expect(retried).toEqual(issued);
+    await api
+      .post(`/api/maintenance-access/sessions/${session.id}/ssh-certificate`)
+      .set(auth)
+      .send({
+        publicKey: generatedSshPublicKey(join(sshDirectory, `other-${unique}`)),
+        requestId,
+      })
+      .expect(409);
+
+    const [audit] = await db.client
+      .select({ afterJson: auditLogs.afterJson })
+      .from(auditLogs)
+      .where(
+        and(
+          eq(auditLogs.action, "maintenanceAccess.sshCertificate.issue"),
+          eq(auditLogs.resourceId, session.id),
+        ),
+      );
+    expect(audit?.afterJson).toMatchObject({
+      serial: issued.serial,
+      keyId: issued.keyId,
+      principal: "YKDZ",
+      sourceAddress: session.sourcePeer.tunnelAddress,
+    });
+    expect(JSON.stringify(audit)).not.toContain(issued.certificate);
+    expect(JSON.stringify(audit)).not.toContain("PRIVATE KEY");
+
+    const [productionMachine] = await db.client
+      .insert(machines)
+      .values({
+        code: PRODUCTION_SSH_TARGET_CODE,
+        name: "Cross-profile Maintenance SSH target",
+        status: "online",
+      })
+      .returning({ id: machines.id });
+    await maintenanceAccess.registerPeer({
+      role: "machine",
+      machineId: productionMachine.id,
+      publicKey: wireGuardPublicKey(),
+    });
+    const productionSession = maintenanceSessionResponseSchema.parse(
+      (
+        await api
+          .post("/api/maintenance-access/sessions")
+          .set(auth)
+          .send({
+            sourcePeerId: source.id,
+            targetMachineId: productionMachine.id,
+            reason: "Attempt a cross-profile certificate",
+            ttlMinutes: 30,
+          })
+          .expect(201)
+      ).body.data,
+    );
+    await api
+      .post(
+        `/api/maintenance-access/sessions/${productionSession.id}/ssh-certificate`,
+      )
+      .set(auth)
+      .send({ publicKey, requestId: randomUUID() })
+      .expect(403);
+
+    await api
+      .post(`/api/maintenance-access/sessions/${session.id}/revoke`)
+      .set(auth)
+      .expect(201);
+    await api
+      .post(`/api/maintenance-access/sessions/${session.id}/ssh-certificate`)
+      .set(auth)
+      .send({ publicKey, requestId: randomUUID() })
+      .expect(409);
+  }, 60_000);
 
   it("rejects inconsistent maintenance peer lifecycle rows at the persistence boundary", async () => {
     await expect(

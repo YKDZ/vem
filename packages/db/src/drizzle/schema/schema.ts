@@ -623,6 +623,58 @@ export const maintenanceSessions = t.pgTable(
   ],
 );
 
+export const maintenanceSshCertificates = t.pgTable(
+  "maintenance_ssh_certificates",
+  {
+    id: id(),
+    sessionId: t
+      .uuid("session_id")
+      .notNull()
+      .references(() => maintenanceSessions.id),
+    requestId: t.uuid("request_id").notNull(),
+    publicKeyFingerprint: t
+      .varchar("public_key_fingerprint", { length: 64 })
+      .notNull(),
+    certificate: t.text("certificate").notNull(),
+    certificateFingerprint: t
+      .varchar("certificate_fingerprint", { length: 64 })
+      .notNull(),
+    serial: t.bigint("serial", { mode: "number" }).notNull(),
+    keyId: t.varchar("key_id", { length: 256 }).notNull(),
+    principal: t.varchar("principal", { length: 64 }).notNull(),
+    sourceAddress: t.varchar("source_address", { length: 15 }).notNull(),
+    validAfter: t.timestamp("valid_after", { withTimezone: true }).notNull(),
+    validBefore: t.timestamp("valid_before", { withTimezone: true }).notNull(),
+    caFingerprint: t.varchar("ca_fingerprint", { length: 100 }).notNull(),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    t
+      .uniqueIndex("maintenance_ssh_certificates_session_request_unique")
+      .on(table.sessionId, table.requestId),
+    t
+      .uniqueIndex("maintenance_ssh_certificates_serial_unique")
+      .on(table.serial),
+    t.index("maintenance_ssh_certificates_session_idx").on(table.sessionId),
+    t.check(
+      "maintenance_ssh_certificates_serial_positive_check",
+      sql`${table.serial} > 0`,
+    ),
+    t.check(
+      "maintenance_ssh_certificates_validity_check",
+      sql`${table.validBefore} > ${table.validAfter}`,
+    ),
+    t.check(
+      "maintenance_ssh_certificates_public_key_fingerprint_check",
+      sql`${table.publicKeyFingerprint} ~ '^[0-9a-f]{64}$'`,
+    ),
+    t.check(
+      "maintenance_ssh_certificates_certificate_fingerprint_check",
+      sql`${table.certificateFingerprint} ~ '^[0-9a-f]{64}$'`,
+    ),
+  ],
+);
+
 export const maintenanceAutomationExchanges = t.pgTable(
   "maintenance_automation_exchanges",
   {

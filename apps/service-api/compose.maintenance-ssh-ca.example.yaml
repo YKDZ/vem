@@ -1,0 +1,31 @@
+# Select exactly one environment-specific CA secret for each deployment.
+services:
+  service-api:
+    image: ghcr.io/example/vem-service-api:replace-with-release
+    environment:
+      MAINTENANCE_SSH_CA_PRIVATE_KEY_PATH: /run/secrets/maintenance_ssh_ca
+      MAINTENANCE_SSH_CA_PUBLIC_KEY_FINGERPRINT: SHA256:replace-with-deployment-ca-fingerprint
+      MAINTENANCE_SSH_PROFILE: testbed
+      MAINTENANCE_SSH_TARGET_POLICY_PATH: /run/config/maintenance_ssh_target_policy.json
+    secrets:
+      - source: maintenance_ssh_ca_testbed
+        target: maintenance_ssh_ca
+        uid: "1000"
+        gid: "1000"
+        mode: 0400
+    configs:
+      - source: maintenance_ssh_target_policy_testbed
+        target: /run/config/maintenance_ssh_target_policy.json
+        uid: "1000"
+        gid: "1000"
+        mode: 0444
+
+secrets:
+  maintenance_ssh_ca_testbed:
+    # Must resolve to an absolute deployment-owned path outside the checkout.
+    file: "${VEM_MAINTENANCE_SSH_CA_SECRET_FILE:?Set an external Maintenance SSH CA secret path}"
+
+configs:
+  maintenance_ssh_target_policy_testbed:
+    # Must also resolve outside the checkout.
+    file: "${VEM_MAINTENANCE_SSH_TARGET_POLICY_FILE:?Set an external SSH target policy path}"

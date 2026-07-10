@@ -2206,12 +2206,6 @@ function buildAcceptanceScriptCommand(mode, options = {}, extraArgs = []) {
   if (options.sshConfig === true) {
     command.push("--ssh-config");
   }
-  if (options.sshpass === true) {
-    command.push("--sshpass");
-  }
-  if (options.factoryCredentialsFromSshpass === true) {
-    command.push("--factory-credentials-from-sshpass");
-  }
   if (options.maintenanceIngressSourceAllowlist) {
     command.push(
       "--maintenance-ingress-source-allowlist",
@@ -2241,6 +2235,9 @@ function buildAcceptanceScriptCommand(mode, options = {}, extraArgs = []) {
   }
   if (options.identity) {
     command.push("--identity", options.identity);
+  }
+  if (options.certificate) {
+    command.push("--certificate", options.certificate);
   }
   return command;
 }
@@ -2381,7 +2378,6 @@ export function buildVmRuntimeAcceptancePlan(options = {}) {
       entrypoint:
         "node scripts/testbed/win10-vem-e2e.mjs --mode vm-runtime-acceptance",
       requiredSecrets: [
-        "SSHPASS",
         "VEM_KIOSK_PASSWORD",
         "VEM_MAINTENANCE_PASSWORD",
         "VEM_AUTOLOGON_PASSWORD",
@@ -6499,7 +6495,6 @@ if ($mode -eq "dirty-host-factory-acceptance" -and $null -ne $factoryAcceptanceP
 
 export function buildSshCommand(options = {}) {
   return [
-    ...(options.sshpass === true ? ["sshpass", "-e"] : []),
     "ssh",
     ...buildSshOptionArgs(options),
     options.remote ?? DEFAULT_CONTROLLED_MAINTENANCE_REMOTE,
@@ -6507,7 +6502,37 @@ export function buildSshCommand(options = {}) {
 }
 
 function buildSshOptionArgs(options = {}) {
-  const sshArgs = ["-o", "ConnectTimeout=30"];
+  const identity = String(options.identity ?? "").trim();
+  const certificate = String(options.certificate ?? "").trim();
+  if (!identity || !certificate) {
+    throw new Error(
+      "certificate-only SSH requires --identity and --certificate",
+    );
+  }
+  const sshArgs = [
+    "-o",
+    `IdentityFile=${identity}`,
+    "-o",
+    `CertificateFile=${certificate}`,
+    "-o",
+    "IdentitiesOnly=yes",
+    "-o",
+    "IdentityAgent=none",
+    "-o",
+    "BatchMode=yes",
+    "-o",
+    "PasswordAuthentication=no",
+    "-o",
+    "KbdInteractiveAuthentication=no",
+    "-o",
+    "PreferredAuthentications=publickey",
+    "-o",
+    "ClearAllForwardings=yes",
+    "-o",
+    "ForwardAgent=no",
+    "-o",
+    "ConnectTimeout=30",
+  ];
   if (options.sshKnownHostsPath) {
     sshArgs.push(
       "-o",
@@ -6520,9 +6545,6 @@ function buildSshOptionArgs(options = {}) {
     sshArgs.push("-o", `ProxyCommand=${options.proxyCommand}`);
   } else if (options.sshConfig !== true) {
     sshArgs.push("-o", "ProxyCommand=none");
-  }
-  if (options.identity) {
-    sshArgs.push("-i", options.identity);
   }
   return sshArgs;
 }
@@ -6537,20 +6559,12 @@ function quotePowerShellSingleQuoted(value) {
 
 export function buildRemotePowerShellCommand(remoteScriptPath, options = {}) {
   const scriptInvocation = `& ${quotePowerShellSingleQuoted(remoteScriptPath)}`;
-  if (options.factoryCredentialsFromSshpass !== true) {
-    return `powershell -NoProfile -ExecutionPolicy Bypass -Command "${scriptInvocation}"`;
-  }
-  const credentialPath = quotePowerShellSingleQuoted(
-    options.remoteFactoryCredentialPath ?? "",
-  );
-  const credentialPrefix = `$env:VEM_FACTORY_CREDENTIAL_FILE=${credentialPath}`;
-  return `powershell -NoProfile -ExecutionPolicy Bypass -Command "${credentialPrefix}; ${scriptInvocation}"`;
+  return `powershell -NoProfile -ExecutionPolicy Bypass -Command "${scriptInvocation}"`;
 }
 
 export function buildScpCommand(sourcePath, remoteScriptPath, options = {}) {
   const remote = options.remote ?? DEFAULT_CONTROLLED_MAINTENANCE_REMOTE;
   return [
-    ...(options.sshpass === true ? ["sshpass", "-e"] : []),
     "scp",
     ...buildSshOptionArgs(options),
     sourcePath,
@@ -6785,7 +6799,7 @@ export function getRuntimeAcceptanceExitStatus({
 
 function usage() {
   console.error(`Usage:
-  win10-vem-e2e.mjs [--mode inventory|reset|inventory-reset|bring-up|provision|runtime-acceptance|simulated-hardware-sale-flow|dirty-host-factory-acceptance|clean-base-factory-acceptance|validate-clean-base-evidence|factory-image-delivery-unit|vm-runtime-acceptance] [--run-id ID] [--claim-code CODE] [--ephemeral-platform-evidence PATH] [--ephemeral-database-url URL] [--ephemeral-api-base-url URL] [--ephemeral-mqtt-url URL] [--clean-base-source SOURCE] [--clean-base-snapshot SNAPSHOT] [--clean-base-evidence PATH] [--daemon-artifact PATH] [--machine-ui-artifact PATH] [--daemon-artifact-sha256 HASH] [--machine-ui-artifact-sha256 HASH] [--maintenance-relay-wireguard-installer PATH] [--maintenance-relay-wireguard-config PATH] [--maintenance-relay-source-allowlist CSV] [--maintenance-relay-tunnel-name NAME] [--use-existing-remote-artifacts] [--allow-clean-base-prepare] [--remote USER@HOST] [--ssh-config] [--sshpass] [--factory-credentials-from-sshpass] [--allow-testbed-remote-alias] [--expected-testbed-hostname NAME] [--expected-testbed-user USER] [--expected-maintenance-ingress-host HOST] [--proxy-command CMD] [--identity KEY] [--dry-run] [--out PATH]
+  win10-vem-e2e.mjs [--mode inventory|reset|inventory-reset|bring-up|provision|runtime-acceptance|simulated-hardware-sale-flow|dirty-host-factory-acceptance|clean-base-factory-acceptance|validate-clean-base-evidence|factory-image-delivery-unit|vm-runtime-acceptance] [--run-id ID] [--claim-code CODE] [--ephemeral-platform-evidence PATH] [--ephemeral-database-url URL] [--ephemeral-api-base-url URL] [--ephemeral-mqtt-url URL] [--clean-base-source SOURCE] [--clean-base-snapshot SNAPSHOT] [--clean-base-evidence PATH] [--daemon-artifact PATH] [--machine-ui-artifact PATH] [--daemon-artifact-sha256 HASH] [--machine-ui-artifact-sha256 HASH] [--maintenance-relay-wireguard-installer PATH] [--maintenance-relay-wireguard-config PATH] [--maintenance-relay-source-allowlist CSV] [--maintenance-relay-tunnel-name NAME] [--use-existing-remote-artifacts] [--allow-clean-base-prepare] [--remote USER@HOST] [--ssh-config] [--allow-testbed-remote-alias] [--expected-testbed-hostname NAME] [--expected-testbed-user USER] [--expected-maintenance-ingress-host HOST] [--proxy-command CMD] --identity KEY --certificate CERT [--dry-run] [--out PATH]
 
 Defaults target the documented Machine Runtime Testbed:
   --remote ${DEFAULT_CONTROLLED_MAINTENANCE_REMOTE}
@@ -6801,7 +6815,6 @@ Simulated hardware sale-flow mode writes C:\\ProgramData\\VEM\\vending-daemon\\s
 
 Dirty-host factory acceptance mode stages specified local artifacts and factory scripts under C:\\ProgramData\\VEM\\evidence\\<run-id>, runs scripted factory preparation with explicit local reset, runs the verifier, and writes dirty-host-factory-acceptance.json. It requires --run-id, --daemon-artifact, --machine-ui-artifact, and remote VEM_KIOSK_PASSWORD, VEM_MAINTENANCE_PASSWORD, and VEM_AUTOLOGON_PASSWORD.
 --use-existing-remote-artifacts is a test-only escape hatch for intentionally accepting C:\\VEM\\bringup\\*.exe instead of uploaded artifacts.
-For the documented disposable Win10 testbed only, --factory-credentials-from-sshpass stages a temporary remote credential file from local SSHPASS without embedding the secret in command strings.
 SSH config aliases and unexpected maintenance ingress hosts are refused in dirty-host mode unless --allow-testbed-remote-alias is supplied; the remote script still asserts hostname/user identity before reset.
 
 Clean-base factory acceptance mode prepares an explicitly identified existing clean Windows base or VM source. Dry-run emits the checklist, absence probes, report path, and destructive gate. Live preparation requires --allow-clean-base-prepare, stages daemon/UI artifacts plus WebView2Loader.dll, runs factory preparation and verifier scripts, writes clean-base-factory-acceptance.json, and must not use the known dirty testbed or production machine identities as clean-base proof.
@@ -6828,6 +6841,9 @@ function parseArgs(argv) {
       index += 1;
     } else if (arg === "--identity") {
       options.identity = next;
+      index += 1;
+    } else if (arg === "--certificate") {
+      options.certificate = next;
       index += 1;
     } else if (arg === "--proxy-command") {
       options.proxyCommand = next;
@@ -6894,10 +6910,6 @@ function parseArgs(argv) {
       index += 1;
     } else if (arg === "--ssh-config") {
       options.sshConfig = true;
-    } else if (arg === "--sshpass") {
-      options.sshpass = true;
-    } else if (arg === "--factory-credentials-from-sshpass") {
-      options.factoryCredentialsFromSshpass = true;
     } else if (arg === "--maintenance-ingress-source-allowlist") {
       options.maintenanceIngressSourceAllowlist = next;
       index += 1;
@@ -7051,9 +7063,6 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         options.remoteMaintenanceRelayWireGuardInstallerPath = `${remoteUploadedArtifactRoot}\\${basename(options.maintenanceRelayWireGuardInstaller)}`;
         options.remoteMaintenanceRelayWireGuardConfigPath = `${remoteUploadedArtifactRoot}\\maintenance-relay.conf`;
       }
-      if (options.factoryCredentialsFromSshpass === true) {
-        options.remoteFactoryCredentialPath = `${remoteSupportScriptRoot}\\factory-credentials.json`;
-      }
     }
     const localTempDirectory = mkdtempSync(join(tmpdir(), "vem-win10-e2e-"));
     if (options.mode === "clean-base-factory-acceptance") {
@@ -7158,50 +7167,6 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       if (createSupportRoot.status !== 0) {
         rmSync(localTempDirectory, { recursive: true, force: true });
         process.exit(createSupportRoot.status ?? 1);
-      }
-
-      if (options.factoryCredentialsFromSshpass === true) {
-        if (!process.env.SSHPASS) {
-          throw new Error(
-            "--factory-credentials-from-sshpass requires local SSHPASS",
-          );
-        }
-        const localCredentialPath = join(
-          localTempDirectory,
-          "factory-credentials.json",
-        );
-        writeFileSync(
-          localCredentialPath,
-          JSON.stringify({
-            VEM_KIOSK_PASSWORD: process.env.SSHPASS,
-            VEM_MAINTENANCE_PASSWORD: process.env.SSHPASS,
-            VEM_AUTOLOGON_PASSWORD: process.env.SSHPASS,
-          }),
-          "utf8",
-        );
-        const credentialUpload = buildScpCommand(
-          localCredentialPath,
-          options.remoteFactoryCredentialPath,
-          options,
-        );
-        const uploadCredentials = spawnSync(
-          credentialUpload[0],
-          credentialUpload.slice(1),
-          {
-            encoding: "utf8",
-            stdio: ["ignore", "pipe", "pipe"],
-          },
-        );
-        if (uploadCredentials.stdout) {
-          process.stdout.write(uploadCredentials.stdout);
-        }
-        if (uploadCredentials.stderr) {
-          process.stderr.write(uploadCredentials.stderr);
-        }
-        if (uploadCredentials.status !== 0) {
-          rmSync(localTempDirectory, { recursive: true, force: true });
-          process.exit(uploadCredentials.status ?? 1);
-        }
       }
 
       for (const scriptName of FACTORY_SUPPORT_SCRIPT_NAMES) {

@@ -37,6 +37,10 @@ describe("maintenance relay privileged Linux network", () => {
     const rulesPath = join(directory, "rules.nft");
     const timeoutRulesPath = join(directory, "timeout-rules.nft");
     const timeoutClientPath = join(directory, "timeout-client.cjs");
+    const revokeRulesPath = join(directory, "revoke-rules.nft");
+    const revokeClientPath = join(directory, "revoke-client.cjs");
+    const revokeReadyPath = join(directory, "revoke-ready");
+    const revokeAppliedPath = join(directory, "revoke-applied");
     const peerAddresses = ["10.91.1.10", "10.91.16.10", "10.91.16.11"];
     try {
       await Promise.all([
@@ -70,6 +74,11 @@ describe("maintenance relay privileged Linux network", () => {
           ),
         ),
         writeFile(timeoutClientPath, timeoutClient),
+        writeFile(
+          revokeRulesPath,
+          renderNftablesTransaction("wg0", peerAddresses, [], new Date(), true),
+        ),
+        writeFile(revokeClientPath, revokeClient),
       ]);
 
       let stdout: string;
@@ -83,6 +92,10 @@ describe("maintenance relay privileged Linux network", () => {
               VEM_RELAY_NFT_RULES: rulesPath,
               VEM_RELAY_NFT_TIMEOUT_RULES: timeoutRulesPath,
               VEM_RELAY_TIMEOUT_CLIENT: timeoutClientPath,
+              VEM_RELAY_NFT_REVOKE_RULES: revokeRulesPath,
+              VEM_RELAY_REVOKE_CLIENT: revokeClientPath,
+              VEM_RELAY_REVOKE_READY: revokeReadyPath,
+              VEM_RELAY_REVOKE_APPLIED: revokeAppliedPath,
             },
             maxBuffer: 1024 * 1024,
           },
@@ -106,6 +119,8 @@ describe("maintenance relay privileged Linux network", () => {
         "atomic-rollback=passed",
         "unrelated-table=preserved",
         "existing-connection-timeout=disconnected",
+        "existing-connection-revoke=blocked",
+        "new-connection-after-revoke=denied",
       ]) {
         expect(stdout).toContain(`EVIDENCE ${evidence}`);
       }
@@ -203,6 +218,62 @@ socket.on("close", () => {
   else fail("connection closed before tuple timeout was exercised");
 });
 setTimeout(() => fail("existing connection timeout test did not finish"), 12_000);
+`;
+
+const revokeClient = String.raw`
+const fs = require("node:fs");
+const net = require("node:net");
+
+const socket = net.createConnection({ host: "10.91.16.10", port: 22 });
+let buffer = "";
+let afterSent = false;
+let completed = false;
+
+function finishSuccess() {
+  if (completed) return;
+  completed = true;
+  console.log("EVIDENCE existing-connection-revoke=blocked");
+  socket.destroy();
+  process.exit(0);
+}
+
+function fail(message) {
+  if (completed) return;
+  completed = true;
+  console.error(message);
+  socket.destroy();
+  process.exit(1);
+}
+
+socket.setNoDelay(true);
+socket.on("connect", () => socket.write("before-revoke\n"));
+socket.on("data", (chunk) => {
+  buffer += chunk.toString("utf8");
+  if (!afterSent && buffer.includes("before-revoke\n")) {
+    buffer = "";
+    fs.writeFileSync(process.env.VEM_RELAY_REVOKE_READY, "ready\n");
+    const waitForRevoke = setInterval(() => {
+      if (!fs.existsSync(process.env.VEM_RELAY_REVOKE_APPLIED)) return;
+      clearInterval(waitForRevoke);
+      afterSent = true;
+      socket.write("after-revoke\n");
+      setTimeout(finishSuccess, 1_500);
+    }, 25);
+    return;
+  }
+  if (afterSent && buffer.includes("after-revoke\n")) {
+    fail("existing connection transferred data after session revoke");
+  }
+});
+socket.on("error", (error) => {
+  if (afterSent) finishSuccess();
+  else fail("connection failed before revoke: " + error.message);
+});
+socket.on("close", () => {
+  if (afterSent) finishSuccess();
+  else fail("connection closed before revoke was applied");
+});
+setTimeout(() => fail("existing connection revoke test did not finish"), 8_000);
 `;
 
 const namespaceScript = String.raw`
@@ -365,6 +436,19 @@ ip netns exec runner timeout 3 bash -ec 'exec 3<>/dev/tcp/10.91.16.10/22; printf
 echo 'EVIDENCE atomic-rollback=passed'
 nft list table inet vem_relay_unrelated >/dev/null
 echo 'EVIDENCE unrelated-table=preserved'
+
+rm -f "$VEM_RELAY_REVOKE_READY" "$VEM_RELAY_REVOKE_APPLIED"
+ip netns exec runner timeout 10 node "$VEM_RELAY_REVOKE_CLIENT" & revoke_client=$!
+for attempt in $(seq 1 50); do
+  if [ -f "$VEM_RELAY_REVOKE_READY" ]; then break; fi
+  sleep 0.1
+done
+test -f "$VEM_RELAY_REVOKE_READY"
+nft -f "$VEM_RELAY_NFT_REVOKE_RULES"
+touch "$VEM_RELAY_REVOKE_APPLIED"
+wait "$revoke_client"
+if ip netns exec runner timeout 2 bash -ec 'exec 3<>/dev/tcp/10.91.16.10/22'; then exit 1; fi
+echo 'EVIDENCE new-connection-after-revoke=denied'
 
 nft -f "$VEM_RELAY_NFT_TIMEOUT_RULES"
 ip netns exec runner timeout 15 node "$VEM_RELAY_TIMEOUT_CLIENT"

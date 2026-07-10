@@ -47,6 +47,7 @@ const policy: GithubOidcTrustPolicy = {
   events: ["workflow_dispatch"],
   environments: ["vem-maintenance-testbed"],
   requireRefProtected: true,
+  allowedRunnerPeerIds: ["11111111-1111-4111-8111-111111111111"],
   targetMachineCodes: ["VEM-TESTBED-RUNTIME-ACCEPTANCE"],
 };
 

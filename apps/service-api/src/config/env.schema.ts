@@ -72,6 +72,13 @@ const baseEnvSchema = z.object({
   MAINTENANCE_GITHUB_OIDC_JWKS_URL: z.url().optional(),
   MAINTENANCE_AUTOMATION_JWT_SECRET: z.string().min(32).optional(),
   MAINTENANCE_AUTOMATION_JWT_SECRET_PATH: z.string().min(1).optional(),
+  MAINTENANCE_SSH_CA_PRIVATE_KEY_PATH: z.string().min(1).optional(),
+  MAINTENANCE_SSH_CA_PUBLIC_KEY_FINGERPRINT: z
+    .string()
+    .regex(/^SHA256:[A-Za-z0-9+/]+={0,2}$/)
+    .optional(),
+  MAINTENANCE_SSH_PROFILE: z.enum(["testbed", "production"]).optional(),
+  MAINTENANCE_SSH_TARGET_POLICY_PATH: z.string().min(1).optional(),
   PAYMENT_MOCK_ENABLED: z
     .preprocess((value) => {
       if (typeof value === "string") {
@@ -163,6 +170,27 @@ export const envSchema = baseEnvSchema.superRefine((env, ctx) => {
         message: `${key} is not supported; mount deployment-owned read-only configuration instead`,
       });
     }
+  }
+  const maintenanceSshCaConfigured = [
+    env.MAINTENANCE_SSH_CA_PRIVATE_KEY_PATH,
+    env.MAINTENANCE_SSH_CA_PUBLIC_KEY_FINGERPRINT,
+    env.MAINTENANCE_SSH_PROFILE,
+    env.MAINTENANCE_SSH_TARGET_POLICY_PATH,
+  ].filter(Boolean).length;
+  if (maintenanceSshCaConfigured > 0 && maintenanceSshCaConfigured < 4) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["MAINTENANCE_SSH_CA_PRIVATE_KEY_PATH"],
+      message:
+        "Maintenance SSH CA requires private key path, expected public fingerprint, and profile",
+    });
+  }
+  if (env.NODE_ENV === "production" && maintenanceSshCaConfigured !== 4) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["MAINTENANCE_SSH_CA_PRIVATE_KEY_PATH"],
+      message: "Maintenance SSH CA must be configured in production",
+    });
   }
   try {
     parseMaintenanceAddressPools({

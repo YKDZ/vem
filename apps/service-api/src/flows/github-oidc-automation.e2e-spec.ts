@@ -10,15 +10,24 @@ import {
   maintenanceAutomationExchanges,
   maintenancePeers,
   maintenanceSessions,
+  maintenanceSshCertificates,
   sql,
 } from "@vem/db";
+import { execFileSync } from "node:child_process";
 import {
   createPrivateKey,
   generateKeyPairSync,
   randomBytes,
+  randomUUID,
   sign,
 } from "node:crypto";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import request from "supertest";
@@ -52,16 +61,25 @@ describe(
     let db: DrizzleDB;
     let maintenanceAccess: MaintenanceAccessService;
     let configDirectory: string;
+    let policyPath: string;
     let privateJwk: JsonWebKey;
     let jwks: { keys: Record<string, unknown>[] };
-    let fakeNow = new Date();
+    const testClockOrigin = Date.now();
+    let testClockSequence = 0;
+    let fakeNow = new Date(testClockOrigin);
+    const allowedRunnerPeerIds = new Set<string>();
     const fakeClock: GithubOidcAutomationClock = { now: () => fakeNow };
 
     beforeAll(async () => {
       configDirectory = mkdtempSync(join(tmpdir(), "vem-oidc-e2e-"));
-      const policyPath = join(configDirectory, "policy.json");
+      policyPath = join(configDirectory, "policy.json");
       const jwksPath = join(configDirectory, "jwks.json");
       const secretPath = join(configDirectory, "automation-jwt-secret");
+      const sshCaPath = join(configDirectory, "maintenance-ssh-ca");
+      const sshTargetPolicyPath = join(
+        configDirectory,
+        "maintenance-ssh-target-policy.json",
+      );
       const keyPair = generateKeyPairSync("rsa", { modulusLength: 2048 });
       privateJwk = keyPair.privateKey.export({ format: "jwk" });
       const publicJwk = keyPair.publicKey.export({ format: "jwk" });
@@ -92,6 +110,32 @@ describe(
           events: ["workflow_dispatch"],
           environments: ["vem-maintenance-testbed"],
           requireRefProtected: true,
+          allowedRunnerPeerIds: ["11111111-1111-4111-8111-111111111111"],
+          targetMachineCodes: [TEST_MACHINE_CODE, TEST_SECOND_MACHINE_CODE],
+        }),
+        { mode: 0o400 },
+      );
+      execFileSync("/usr/bin/ssh-keygen", [
+        "-q",
+        "-t",
+        "ed25519",
+        "-N",
+        "",
+        "-f",
+        sshCaPath,
+      ]);
+      chmodSync(sshCaPath, 0o400);
+      const sshCaFingerprint = execFileSync(
+        "/usr/bin/ssh-keygen",
+        ["-lf", `${sshCaPath}.pub`, "-E", "sha256"],
+        { encoding: "utf8" },
+      ).match(/(SHA256:[A-Za-z0-9+/]+={0,2})/)?.[1];
+      if (!sshCaFingerprint)
+        throw new Error("Could not read automation test SSH CA fingerprint");
+      writeFileSync(
+        sshTargetPolicyPath,
+        JSON.stringify({
+          profile: "testbed",
           targetMachineCodes: [TEST_MACHINE_CODE, TEST_SECOND_MACHINE_CODE],
         }),
         { mode: 0o400 },
@@ -110,6 +154,10 @@ describe(
       process.env.MAINTENANCE_GITHUB_OIDC_TRUST_POLICY_PATH = policyPath;
       process.env.MAINTENANCE_GITHUB_OIDC_JWKS_PATH = jwksPath;
       process.env.MAINTENANCE_AUTOMATION_JWT_SECRET_PATH = secretPath;
+      process.env.MAINTENANCE_SSH_CA_PRIVATE_KEY_PATH = sshCaPath;
+      process.env.MAINTENANCE_SSH_CA_PUBLIC_KEY_FINGERPRINT = sshCaFingerprint;
+      process.env.MAINTENANCE_SSH_PROFILE = "testbed";
+      process.env.MAINTENANCE_SSH_TARGET_POLICY_PATH = sshTargetPolicyPath;
 
       const [{ AppModule }, { MqttService }] = await Promise.all([
         import("../app.module"),
@@ -139,10 +187,16 @@ describe(
       await db?.disconnect();
       await app?.close();
       rmSync(configDirectory, { recursive: true, force: true });
+      delete process.env.MAINTENANCE_SSH_CA_PRIVATE_KEY_PATH;
+      delete process.env.MAINTENANCE_SSH_CA_PUBLIC_KEY_FINGERPRINT;
+      delete process.env.MAINTENANCE_SSH_PROFILE;
+      delete process.env.MAINTENANCE_SSH_TARGET_POLICY_PATH;
     });
 
     beforeEach(async () => {
-      fakeNow = new Date();
+      fakeNow = new Date(testClockOrigin + testClockSequence * 61_000);
+      testClockSequence += 1;
+      allowedRunnerPeerIds.clear();
       await db.client
         .delete(auditLogs)
         .where(
@@ -151,8 +205,10 @@ describe(
             "maintenanceAccess.automation.exchange.reject",
             "maintenanceAccess.session.create",
             "maintenanceAccess.session.revoke",
+            "maintenanceAccess.sshCertificate.issue",
           ]),
         );
+      await db.client.delete(maintenanceSshCertificates);
       await db.client.delete(maintenanceAutomationExchanges);
       await db.client.delete(maintenanceSessions);
       await db.client.delete(maintenancePeers);
@@ -165,7 +221,7 @@ describe(
 
     it("exchanges a signed direct-workflow assertion for a 125-minute automation identity", async () => {
       const scope = await provisionMaintenanceScope();
-      const issuedAt = new Date();
+      const issuedAt = fakeNow;
       const exchange = await exchangeAutomationIdentity(scope, { issuedAt });
 
       expect(exchange.accessToken).toEqual(expect.any(String));
@@ -212,7 +268,7 @@ describe(
         await api
           .post("/api/maintenance-automation/exchange")
           .send({
-            idToken: signedOidcToken({ issuedAt: new Date() }),
+            idToken: signedOidcToken({ issuedAt: fakeNow }),
             runId: TEST_RUN_ID,
             runAttempt: TEST_RUN_ATTEMPT,
             sha: TEST_SHA,
@@ -248,6 +304,34 @@ describe(
           afterJson: { reasonCode: "exchange_failed" },
         },
       ]);
+    });
+
+    it("rejects an active runner peer that is outside the deployment trust policy", async () => {
+      const scope = await provisionMaintenanceScope();
+      const untrustedRunner = await maintenanceAccess.registerPeer({
+        role: "runner",
+        publicKey: randomBytes(32).toString("base64"),
+      });
+
+      await api
+        .post("/api/maintenance-automation/exchange")
+        .send({
+          idToken: signedOidcToken({ issuedAt: fakeNow }),
+          runId: TEST_RUN_ID,
+          runAttempt: TEST_RUN_ATTEMPT,
+          sha: TEST_SHA,
+          sourcePeerId: untrustedRunner.id,
+          targetMachineId: scope.targetMachineId,
+          reason: "Cross-runner policy attempt",
+        })
+        .expect(401);
+      const [audit] = await db.client
+        .select({ afterJson: auditLogs.afterJson })
+        .from(auditLogs)
+        .where(
+          eq(auditLogs.action, "maintenanceAccess.automation.exchange.reject"),
+        );
+      expect(audit?.afterJson).toEqual({ reasonCode: "source_scope" });
     });
 
     it("creates, verifies, and revokes only its own fixed 150-minute CI session over HTTP", async () => {
@@ -331,9 +415,70 @@ describe(
       expect(JSON.stringify(sessionAudits)).not.toContain(exchange.accessToken);
     });
 
+    it("issues an audited SSH certificate through its own automation session", async () => {
+      const scope = await provisionMaintenanceScope();
+      const exchange = await exchangeAutomationIdentity(scope);
+      const authorization = { Authorization: `Bearer ${exchange.accessToken}` };
+      const session = (
+        await api
+          .post("/api/maintenance-automation/session")
+          .set(authorization)
+          .expect(201)
+      ).body.data as { id: string; sourcePeer: { tunnelAddress: string } };
+      const userKeyPath = join(
+        configDirectory,
+        `automation-user-${randomBytes(6).toString("hex")}`,
+      );
+      execFileSync("/usr/bin/ssh-keygen", [
+        "-q",
+        "-t",
+        "ed25519",
+        "-N",
+        "",
+        "-f",
+        userKeyPath,
+      ]);
+      const publicKey = readFileSync(`${userKeyPath}.pub`, "utf8")
+        .trim()
+        .split(/\s+/)
+        .slice(0, 2)
+        .join(" ");
+
+      const certificate = (
+        await api
+          .post("/api/maintenance-automation/session/ssh-certificate")
+          .set(authorization)
+          .send({ publicKey, requestId: randomUUID() })
+          .expect(201)
+      ).body.data as {
+        certificate: string;
+        principal: string;
+        sourceAddress: string;
+        serial: number;
+      };
+      expect(certificate).toMatchObject({
+        principal: "YKDZ",
+        sourceAddress: session.sourcePeer.tunnelAddress,
+        serial: expect.any(Number),
+      });
+      expect(certificate.certificate.split(/\s+/)).toHaveLength(2);
+      const [audit] = await db.client
+        .select({ afterJson: auditLogs.afterJson })
+        .from(auditLogs)
+        .where(eq(auditLogs.action, "maintenanceAccess.sshCertificate.issue"));
+      expect(audit?.afterJson).toMatchObject({
+        actor: {
+          type: "github_actions_automation",
+          runId: TEST_RUN_ID,
+          runAttempt: TEST_RUN_ATTEMPT,
+        },
+      });
+      expect(JSON.stringify(audit)).not.toContain(certificate.certificate);
+    });
+
     it("atomically rejects concurrent issuer+jti replay even when raw JWT bytes and runs differ", async () => {
       const scope = await provisionMaintenanceScope(TEST_MACHINE_CODE);
-      const issuedAt = new Date();
+      const issuedAt = fakeNow;
       const sharedTokenId = `shared-jti-${randomBytes(8).toString("hex")}`;
       const requestBody = (runId: string, workflow: string) => ({
         idToken: signedOidcToken({
@@ -400,7 +545,7 @@ describe(
         .post("/api/maintenance-automation/exchange")
         .send({
           idToken: signedOidcToken({
-            issuedAt: new Date(),
+            issuedAt: fakeNow,
             jti: `fresh-jti-${randomBytes(8).toString("hex")}`,
           }),
           runId: TEST_RUN_ID,
@@ -460,20 +605,20 @@ describe(
     });
 
     it("enforces the 125-minute automation token boundary with a fake clock", async () => {
-      fakeNow = new Date("2026-07-10T12:00:00.000Z");
+      const issuedAt = fakeNow;
       const scope = await provisionMaintenanceScope();
       const exchange = await exchangeAutomationIdentity(scope, {
-        issuedAt: fakeNow,
+        issuedAt,
       });
       const authorization = { Authorization: `Bearer ${exchange.accessToken}` };
 
-      fakeNow = new Date("2026-07-10T14:04:59.000Z");
+      fakeNow = new Date(issuedAt.getTime() + 124 * 60_000 + 59_000);
       await api
         .get("/api/maintenance-automation/session")
         .set(authorization)
         .expect(404);
 
-      fakeNow = new Date("2026-07-10T14:05:00.000Z");
+      fakeNow = new Date(issuedAt.getTime() + 125 * 60_000);
       await api
         .get("/api/maintenance-automation/session")
         .set(authorization)
@@ -481,7 +626,7 @@ describe(
     });
 
     it("rate limits exchange attempts in process and deduplicates rejection audit writes", async () => {
-      fakeNow = new Date("2026-07-11T12:00:00.000Z");
+      const windowStart = fakeNow;
       const statuses = await Array.from({ length: 31 }).reduce<
         Promise<number[]>
       >(async (pendingStatuses) => {
@@ -508,7 +653,7 @@ describe(
         { afterJson: { reasonCode: "rate_limited" } },
       ]);
 
-      fakeNow = new Date("2026-07-11T12:01:00.000Z");
+      fakeNow = new Date(windowStart.getTime() + 60_000);
       await api
         .post("/api/maintenance-automation/exchange")
         .send({})
@@ -519,7 +664,7 @@ describe(
       scope: { sourcePeerId: string; targetMachineId: string },
       options: { issuedAt?: Date; runId?: string; runAttempt?: string } = {},
     ) {
-      const issuedAt = options.issuedAt ?? new Date();
+      const issuedAt = options.issuedAt ?? fakeNow;
       const runId = options.runId ?? TEST_RUN_ID;
       const runAttempt = options.runAttempt ?? TEST_RUN_ATTEMPT;
       const response = await api
@@ -555,12 +700,37 @@ describe(
         role: "runner",
         publicKey: randomBytes(32).toString("base64"),
       });
+      allowedRunnerPeerIds.add(source.id);
+      writeAllowedRunnerPolicy();
       await maintenanceAccess.registerPeer({
         role: "machine",
         machineId: machine.id,
         publicKey: randomBytes(32).toString("base64"),
       });
       return { sourcePeerId: source.id, targetMachineId: machine.id };
+    }
+
+    function writeAllowedRunnerPolicy(): void {
+      chmodSync(policyPath, 0o600);
+      writeFileSync(
+        policyPath,
+        JSON.stringify({
+          repositoryId: "123456789",
+          workflowIdentity: {
+            claimModel: "direct",
+            workflowRef:
+              "vem/vem/.github/workflows/vm-runtime-acceptance.yml@refs/heads/main",
+            allowedWorkflowShas: [TEST_SHA],
+          },
+          refs: ["refs/heads/main"],
+          events: ["workflow_dispatch"],
+          environments: ["vem-maintenance-testbed"],
+          requireRefProtected: true,
+          allowedRunnerPeerIds: [...allowedRunnerPeerIds],
+          targetMachineCodes: [TEST_MACHINE_CODE, TEST_SECOND_MACHINE_CODE],
+        }),
+      );
+      chmodSync(policyPath, 0o400);
     }
 
     function signedOidcToken({

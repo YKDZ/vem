@@ -22,6 +22,7 @@ import {
   createCiMaintenanceSessionCommandSchema,
   githubOidcAutomationExchangeRequestSchema,
   githubOidcAutomationExchangeResponseSchema,
+  type IssueMaintenanceSshCertificateRequest,
 } from "@vem/shared";
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 
@@ -110,6 +111,9 @@ export class GithubOidcAutomationService {
         .where(eq(machines.id, parsed.data.targetMachineId));
       if (!target || !policy.targetMachineCodes.includes(target.code)) {
         return await this.reject("target_scope", sourceKey);
+      }
+      if (!policy.allowedRunnerPeerIds.includes(parsed.data.sourcePeerId)) {
+        return await this.reject("source_scope", sourceKey);
       }
       const [source] = await this.db
         .select({ id: maintenancePeers.id })
@@ -260,6 +264,24 @@ export class GithubOidcAutomationService {
     return await this.maintenanceAccess.revokeSessionFromAutomationExchange(
       identity.exchangeId,
       exchange.sessionId,
+    );
+  }
+
+  async issueOwnSessionSshCertificate(
+    authorization: string | undefined,
+    input: IssueMaintenanceSshCertificateRequest,
+  ) {
+    const identity = await this.requireIdentity(authorization);
+    const [exchange] = await this.db
+      .select({ sessionId: maintenanceAutomationExchanges.sessionId })
+      .from(maintenanceAutomationExchanges)
+      .where(eq(maintenanceAutomationExchanges.id, identity.exchangeId));
+    if (!exchange?.sessionId)
+      throw new NotFoundException("Automation session not found");
+    return await this.maintenanceAccess.issueSshCertificateFromAutomationExchange(
+      identity.exchangeId,
+      exchange.sessionId,
+      input,
     );
   }
 

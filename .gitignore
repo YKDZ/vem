@@ -18,6 +18,9 @@ artifacts
 /target
 
 /keys
+
+secrets/
+**/secrets/
  
 /target
 

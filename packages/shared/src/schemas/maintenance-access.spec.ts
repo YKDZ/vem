@@ -17,6 +17,8 @@ import {
   maintenanceRelayHealthSchema,
   maintenanceRelayObservedStateSchema,
   maintenanceRelayTransportSchema,
+  issueMaintenanceSshCertificateRequestSchema,
+  maintenanceSshUserPublicKeySchema,
   registerMaintenancePeerRequestSchema,
 } from "./maintenance-access";
 
@@ -25,6 +27,34 @@ const TARGET_MACHINE_ID = "550e8400-e29b-41d4-a716-446655440002";
 const SESSION_ID = "550e8400-e29b-41d4-a716-446655440003";
 
 describe("Maintenance Access shared contracts", () => {
+  it("accepts only a single Ed25519 user public key for certificate issuance", () => {
+    const publicKey =
+      "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIH5k0JQb4ubKJw4kC9aSxX7IeH8w3OvEu4OR7ow7FJQ9";
+
+    expect(maintenanceSshUserPublicKeySchema.parse(publicKey)).toBe(publicKey);
+    expect(
+      issueMaintenanceSshCertificateRequestSchema.parse({
+        publicKey,
+        requestId: "f13c3e59-0dc8-4cd5-b11d-42df07c8d778",
+      }),
+    ).toEqual({
+      publicKey,
+      requestId: "f13c3e59-0dc8-4cd5-b11d-42df07c8d778",
+    });
+
+    for (const unsafeKey of [
+      "-----BEGIN OPENSSH PRIVATE KEY-----",
+      `${publicKey} maintainer@example`,
+      `${publicKey}\ncritical:source-address=0.0.0.0/0`,
+      "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQ==",
+      "ssh-ed25519 not-base64",
+    ]) {
+      expect(() =>
+        maintenanceSshUserPublicKeySchema.parse(unsafeKey),
+      ).toThrow();
+    }
+  });
+
   it("accepts a bounded GitHub OIDC automation exchange without exposing credentials", () => {
     const request = githubOidcAutomationExchangeRequestSchema.parse({
       idToken: "header.payload.signature.header.payload",

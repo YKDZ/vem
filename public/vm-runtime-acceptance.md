@@ -183,7 +183,6 @@ If dirty-host display proof, platform setup, runtime acceptance, or sale-flow fa
 
 Future CI or a self-hosted runner must provide:
 
-- `SSHPASS`, when using `--sshpass` or `--factory-credentials-from-sshpass`
 - remote `VEM_KIOSK_PASSWORD`
 - remote `VEM_MAINTENANCE_PASSWORD`
 - remote `VEM_AUTOLOGON_PASSWORD`
@@ -193,10 +192,10 @@ Future CI or a self-hosted runner must provide:
   `VEM_MAINTENANCE_RELAY_RUNNER_WG_CONFIG_PATH`
 
 The self-hosted VM runner host must also provide `node`, `docker`, `virsh`,
-`qemu-img`, `ssh`, `sshpass`, `wg`, and `wg-quick`. The `sshpass` binary is
-required when the workflow uses the repository secret
-`VEM_TESTBED_WINDOWS_PASSWORD` for Windows SSH readiness and acceptance commands
-instead of a runner-local SSH key. The workflow uploads
+`qemu-img`, `ssh`, `ssh-keygen`, `wg`, and `wg-quick`. Windows SSH readiness and
+acceptance require the run-scoped private key and short-lived certificate passed
+through `--identity` and `--certificate`; password SSH and password secrets are
+not accepted. The workflow uploads
 `maintenance-relay-diagnostics.txt` with only non-secret relay diagnostics:
 interface name, runner peer IP, Windows SSH host, preconfigured VM relay
 contract, `wg show` summaries, and WireGuard config existence, permissions, and

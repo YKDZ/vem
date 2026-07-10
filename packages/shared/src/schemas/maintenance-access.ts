@@ -19,6 +19,62 @@ export type MaintenanceSessionPort = z.infer<
   typeof maintenanceSessionPortSchema
 >;
 
+function isOpenSshEd25519PublicKey(value: string): boolean {
+  const match = /^ssh-ed25519 ([A-Za-z0-9+/]+={0,2})$/.exec(value);
+  if (!match) return false;
+  try {
+    const blob = Buffer.from(match[1], "base64");
+    if (blob.toString("base64") !== match[1]) return false;
+    const typeLength = blob.readUInt32BE(0);
+    const typeStart = 4;
+    const typeEnd = typeStart + typeLength;
+    if (
+      typeEnd + 4 > blob.length ||
+      blob.subarray(typeStart, typeEnd).toString("ascii") !== "ssh-ed25519"
+    ) {
+      return false;
+    }
+    const keyLength = blob.readUInt32BE(typeEnd);
+    return keyLength === 32 && typeEnd + 4 + keyLength === blob.length;
+  } catch {
+    return false;
+  }
+}
+
+export const maintenanceSshUserPublicKeySchema = z
+  .string()
+  .min(1)
+  .max(256)
+  .refine(
+    isOpenSshEd25519PublicKey,
+    "Maintenance SSH public key must be a single OpenSSH Ed25519 public key",
+  );
+
+export const issueMaintenanceSshCertificateRequestSchema = z.strictObject({
+  publicKey: maintenanceSshUserPublicKeySchema,
+  requestId: z.uuid(),
+});
+export type IssueMaintenanceSshCertificateRequest = z.infer<
+  typeof issueMaintenanceSshCertificateRequestSchema
+>;
+
+export const maintenanceSshCertificateResponseSchema = z.strictObject({
+  certificate: z
+    .string()
+    .max(4096)
+    .regex(/^ssh-ed25519-cert-v01@openssh\.com [A-Za-z0-9+/]+={0,2}$/),
+  serial: z.number().int().positive(),
+  keyId: z.string().min(1).max(256),
+  principal: z.enum(["YKDZ", "Admin"]),
+  sourceAddress: z.ipv4(),
+  validAfter: z.iso.datetime(),
+  validBefore: z.iso.datetime(),
+  caFingerprint: z.string().regex(/^SHA256:[A-Za-z0-9+/]+={0,2}$/),
+});
+export type MaintenanceSshCertificateResponse = z.infer<
+  typeof maintenanceSshCertificateResponseSchema
+>;
+
 const BASE64_ALPHABET =
   "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 

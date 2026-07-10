@@ -28,6 +28,9 @@ node-compile-cache
 tmp
 **/*.key
 **/*.pem
+secrets
+**/secrets
+**/secrets/**
 **/*.log
 **/*.tsbuildinfo
 **/.env

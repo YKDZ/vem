@@ -17,6 +17,12 @@ const baseValidEnv = {
     "local-maintenance-relay-credential-change-before-production",
   MAINTENANCE_RELAY_JWT_SECRET:
     "local-maintenance-relay-jwt-secret-change-before-production",
+  MAINTENANCE_SSH_CA_PRIVATE_KEY_PATH: "/run/secrets/maintenance-ssh-ca",
+  MAINTENANCE_SSH_CA_PUBLIC_KEY_FINGERPRINT:
+    "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+  MAINTENANCE_SSH_PROFILE: "testbed",
+  MAINTENANCE_SSH_TARGET_POLICY_PATH:
+    "/run/config/maintenance-ssh-target-policy.json",
   CORS_ORIGINS: "http://localhost:5173",
   MQTT_URL: "mqtt://localhost:1883",
   PAYMENT_MOCK_ENABLED: "true",
@@ -63,6 +69,24 @@ describe("validateEnv", () => {
     const env = validateEnv(baseValidEnv);
     expect(env.PAYMENT_MOCK_ENABLED).toBe(true);
     expect(env.NODE_ENV).toBe("development");
+  });
+
+  it("requires a complete Maintenance SSH CA configuration in production", () => {
+    const { MAINTENANCE_SSH_CA_PRIVATE_KEY_PATH: _, ...withoutCa } =
+      baseValidEnv;
+    expect(() =>
+      validateEnv({
+        ...withoutCa,
+        NODE_ENV: "production",
+        PAYMENT_MOCK_ENABLED: "false",
+        PAYMENT_PRODUCTION_READINESS_REQUIRED: "true",
+        PAYMENT_WEBHOOK_BASE_URL: "https://pay.example.com",
+        MACHINE_API_BASE_URL: "https://platform.example.com/api",
+        PAYMENT_CONFIG_ENCRYPTION_KEY: productionPaymentConfigEncryptionKey,
+        MQTT_USERNAME: "u",
+        MQTT_PASSWORD: "p",
+      }),
+    ).toThrow("Maintenance SSH CA requires private key path");
   });
 
   it("fails startup validation for a malformed maintenance address pool CIDR", () => {
