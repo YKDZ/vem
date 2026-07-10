@@ -218,6 +218,41 @@ describe("DaemonApiClient", () => {
     expect(requestBody).not.toContain("machineSecret");
   });
 
+  it("reads maintenance enrollment diagnostics without private key material", async () => {
+    vi.mocked(getDaemonConnectionInfo).mockResolvedValue({
+      baseUrl: "http://127.0.0.1:7891",
+      token: "token-1",
+      source: "browser_env",
+      mock: true,
+    });
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          state: "handshake_pending",
+          publicKey: "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
+          tunnelAddress: "10.91.16.10/32",
+          endpoint: "https://relay.example",
+          handshakeVerified: false,
+          lastHandshakeAt: null,
+          lastError: "first WireGuard handshake has not been observed",
+          updatedAt: "2026-07-10T00:00:00Z",
+        }),
+        { status: 200 },
+      ),
+    );
+
+    const status = await daemonClient.getMaintenanceStatus();
+
+    expect(status.state).toBe("handshake_pending");
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "http://127.0.0.1:7891/v1/maintenance/status",
+      expect.objectContaining({
+        headers: expect.objectContaining({ Authorization: "Bearer token-1" }),
+      }),
+    );
+    expect(JSON.stringify(status)).not.toContain("private");
+  });
+
   it("loads bring-up snapshot through daemon IPC without secret fields", async () => {
     vi.mocked(getDaemonConnectionInfo).mockResolvedValue({
       baseUrl: "http://127.0.0.1:7891",

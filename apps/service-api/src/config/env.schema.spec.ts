@@ -13,6 +13,11 @@ const baseValidEnv = {
     "local-cred-enc-key-change-before-production!",
   MACHINE_CLAIM_LOOKUP_HMAC_KEY:
     "local-claim-lookup-hmac-key-change-before-production",
+  MACHINE_PROVISIONING_PROFILE: "testbed",
+  MAINTENANCE_RELAY_PEER_ID: "550e8400-e29b-41d4-a716-446655440010",
+  MAINTENANCE_RELAY_ENDPOINT: "relay.example:51820",
+  MAINTENANCE_RELAY_PUBLIC_KEY: "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
+  MAINTENANCE_RELAY_TUNNEL_ADDRESS: "10.91.0.1",
   MAINTENANCE_RELAY_CREDENTIAL:
     "local-maintenance-relay-credential-change-before-production",
   MAINTENANCE_RELAY_JWT_SECRET:
@@ -71,6 +76,32 @@ describe("validateEnv", () => {
     expect(env.NODE_ENV).toBe("development");
   });
 
+  it("accepts a WireGuard relay endpoint and rejects an HTTP URL", () => {
+    expect(
+      validateEnv({
+        ...baseValidEnv,
+        MAINTENANCE_RELAY_ENDPOINT: "relay.example:51820",
+      }).MAINTENANCE_RELAY_ENDPOINT,
+    ).toBe("relay.example:51820");
+    expect(() =>
+      validateEnv({
+        ...baseValidEnv,
+        MAINTENANCE_RELAY_ENDPOINT: "https://relay.example:51820",
+      }),
+    ).toThrow();
+  });
+
+  it.each([
+    "MACHINE_PROVISIONING_PROFILE",
+    "MAINTENANCE_RELAY_PEER_ID",
+    "MAINTENANCE_RELAY_ENDPOINT",
+    "MAINTENANCE_RELAY_PUBLIC_KEY",
+    "MAINTENANCE_RELAY_TUNNEL_ADDRESS",
+  ] as const)("requires deterministic machine claim setting %s", (key) => {
+    const { [key]: _, ...missing } = baseValidEnv;
+    expect(() => validateEnv(missing)).toThrow();
+  });
+
   it("requires a complete Maintenance SSH CA configuration in production", () => {
     const { MAINTENANCE_SSH_CA_PRIVATE_KEY_PATH: _, ...withoutCa } =
       baseValidEnv;
@@ -125,6 +156,28 @@ describe("validateEnv", () => {
         MAINTENANCE_RUNNER_ADDRESS_POOL: "10.91.0.0/25",
       }),
     ).toThrow("Maintenance address pools relay and runner must not overlap");
+  });
+
+  it("rejects broad maintenance source-role pools", () => {
+    expect(() =>
+      validateEnv({
+        ...baseValidEnv,
+        MAINTENANCE_RUNNER_ADDRESS_POOL: "10.64.0.0/10",
+      }),
+    ).toThrow(
+      "Maintenance runner address pool must use prefix /24 or narrower",
+    );
+  });
+
+  it("requires the selected relay address to belong to the relay pool", () => {
+    expect(() =>
+      validateEnv({
+        ...baseValidEnv,
+        MAINTENANCE_RELAY_TUNNEL_ADDRESS: "10.91.8.1",
+      }),
+    ).toThrow(
+      "Maintenance relay tunnel address must belong to its address pool",
+    );
   });
 
   it("accepts QWeather credentials and endpoint settings for External Natural Environment", () => {

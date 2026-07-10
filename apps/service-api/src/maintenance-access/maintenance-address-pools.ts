@@ -40,6 +40,12 @@ function parsePool(
     throw new Error(`Maintenance ${role} address pool is not IPv4 CIDR`);
   }
   const prefixLength = Number(match[5]);
+  const minimumPrefixLength = role === "machine" ? 16 : 24;
+  if (prefixLength < minimumPrefixLength) {
+    throw new Error(
+      `Maintenance ${role} address pool must use prefix /${minimumPrefixLength} or narrower`,
+    );
+  }
   if (prefixLength > 30) {
     throw new Error(
       `Maintenance ${role} address pool must contain usable host addresses`,
@@ -118,4 +124,19 @@ export function allocateTunnelAddress(
     if (!usedAddresses.has(address)) return address;
   }
   throw new Error(`Maintenance address pool ${pool.cidr} is exhausted`);
+}
+
+export function maintenanceAddressPoolContains(
+  pool: MaintenanceAddressPool,
+  address: string,
+): boolean {
+  const parsed = address.split(".").map(Number);
+  if (
+    parsed.length !== 4 ||
+    parsed.some((octet) => !Number.isInteger(octet) || octet < 0 || octet > 255)
+  ) {
+    return false;
+  }
+  const value = ipv4ToNumber(address);
+  return value >= pool.firstHost && value <= pool.lastHost;
 }

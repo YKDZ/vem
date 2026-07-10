@@ -2115,7 +2115,11 @@ describe("shared API contract", () => {
 
   it("accepts only approved machine provisioning profile categories", () => {
     expect(
-      machineClaimRequestSchema.parse({ claimCode: "ABCD-2345" }).claimCode,
+      machineClaimRequestSchema.parse({
+        claimCode: "ABCD-2345",
+        maintenancePublicKey: "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
+        provisioningProfile: "production",
+      }).claimCode,
     ).toBe("ABCD-2345");
 
     const profile = {
@@ -2161,6 +2165,23 @@ describe("shared API contract", () => {
         qrCodeEnabled: true,
         paymentCodeEnabled: true,
         serverTime: "2026-06-08T16:30:00.000Z",
+      },
+      provisioningProfile: "production",
+      maintenance: {
+        publicKey: "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
+        tunnelAddress: "10.91.16.10",
+        address: "10.91.16.10/32",
+        endpoint: "127.0.0.1:51820",
+        relay: {
+          publicKey: "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
+          tunnelAddress: "10.91.0.1",
+          address: "10.91.0.1/32",
+        },
+        roleRoutes: {
+          relay: "10.91.0.1/32",
+          runner: "10.91.1.0/24",
+          maintainer: "10.91.3.0/24",
+        },
       },
       metadata: {
         profileVersion: 1,

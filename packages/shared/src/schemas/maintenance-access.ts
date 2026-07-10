@@ -113,6 +113,54 @@ export const maintenancePublicPeerSchema = z.strictObject({
   publicKey: maintenanceWireGuardPublicKeySchema,
   tunnelAddress: z.ipv4(),
 });
+
+export const maintenanceWireGuardEndpointSchema = z
+  .string()
+  .min(3)
+  .max(320)
+  .superRefine((value, ctx) => {
+    let host: string;
+    let portText: string;
+    if (value.startsWith("[")) {
+      const closingBracket = value.indexOf("]");
+      if (closingBracket < 0 || value[closingBracket + 1] !== ":") {
+        ctx.addIssue({ code: "custom", message: "Invalid WireGuard endpoint" });
+        return;
+      }
+      host = value.slice(1, closingBracket);
+      portText = value.slice(closingBracket + 2);
+      if (!z.ipv6().safeParse(host).success) {
+        ctx.addIssue({
+          code: "custom",
+          message: "Invalid WireGuard endpoint host",
+        });
+      }
+    } else {
+      const separator = value.lastIndexOf(":");
+      if (separator <= 0 || value.indexOf(":") !== separator) {
+        ctx.addIssue({ code: "custom", message: "Invalid WireGuard endpoint" });
+        return;
+      }
+      host = value.slice(0, separator);
+      portText = value.slice(separator + 1);
+      if (
+        !z.ipv4().safeParse(host).success &&
+        !z.hostname().safeParse(host).success
+      ) {
+        ctx.addIssue({
+          code: "custom",
+          message: "Invalid WireGuard endpoint host",
+        });
+      }
+    }
+    const port = Number(portText);
+    if (!/^\d{1,5}$/.test(portText) || port < 1 || port > 65_535) {
+      ctx.addIssue({
+        code: "custom",
+        message: "Invalid WireGuard endpoint port",
+      });
+    }
+  });
 export type MaintenancePublicPeer = z.infer<typeof maintenancePublicPeerSchema>;
 
 export const maintenanceSessionAuthorizationSchema = z.strictObject({

@@ -1394,6 +1394,13 @@ export class MaintenanceAccessService implements OnModuleDestroy {
     return state.desiredStateVersion;
   }
 
+  async projectDesiredStateAfterPeerMutation(
+    executor: DrizzleTransaction,
+    updatedAt: Date,
+  ): Promise<number> {
+    return await this.bumpDesiredStateVersion(executor, undefined, updatedAt);
+  }
+
   private async getCurrentDesiredState(
     executor: Pick<DrizzleClient, "select">,
   ): Promise<MaintenanceRelayDesiredState> {

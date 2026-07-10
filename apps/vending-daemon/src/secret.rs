@@ -12,11 +12,13 @@ pub const KEYRING_SERVICE: &str = "com.vem.machine";
 pub const MACHINE_SECRET_ACCOUNT: &str = "machine_secret";
 pub const MQTT_SIGNING_SECRET_ACCOUNT: &str = "mqtt_signing_secret";
 pub const MQTT_PASSWORD_ACCOUNT: &str = "mqtt_password";
+pub const MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT: &str = "machine_wireguard_private_key";
 
-const SECRET_ACCOUNTS: [&str; 3] = [
+const SECRET_ACCOUNTS: [&str; 4] = [
     MACHINE_SECRET_ACCOUNT,
     MQTT_SIGNING_SECRET_ACCOUNT,
     MQTT_PASSWORD_ACCOUNT,
+    MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT,
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -29,6 +31,7 @@ pub struct SecretStoreStatus {
     pub machine_secret_configured: bool,
     pub mqtt_signing_secret_configured: bool,
     pub mqtt_password_configured: bool,
+    pub machine_wireguard_private_key_configured: bool,
     pub last_error: Option<String>,
 }
 
@@ -73,6 +76,7 @@ impl FileSecretStore {
             MACHINE_SECRET_ACCOUNT => "machine_secret",
             MQTT_SIGNING_SECRET_ACCOUNT => "mqtt_signing_secret",
             MQTT_PASSWORD_ACCOUNT => "mqtt_password",
+            MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT => "machine_wireguard_private_key",
             _ => return Err("unknown secret account".to_string()),
         };
         Ok(self.dir.join(file_name))
@@ -91,6 +95,7 @@ impl ProtectedLocalSecretStore {
             MACHINE_SECRET_ACCOUNT => "machine_secret.dpapi",
             MQTT_SIGNING_SECRET_ACCOUNT => "mqtt_signing_secret.dpapi",
             MQTT_PASSWORD_ACCOUNT => "mqtt_password.dpapi",
+            MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT => "machine_wireguard_private_key.dpapi",
             _ => return Err("unknown secret account".to_string()),
         };
         Ok(self.dir.join(file_name))
@@ -148,6 +153,8 @@ impl SecretStore for InMemorySecretStore {
             machine_secret_configured: values.contains_key(MACHINE_SECRET_ACCOUNT),
             mqtt_signing_secret_configured: values.contains_key(MQTT_SIGNING_SECRET_ACCOUNT),
             mqtt_password_configured: values.contains_key(MQTT_PASSWORD_ACCOUNT),
+            machine_wireguard_private_key_configured: values
+                .contains_key(MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT),
             last_error: None,
         })
     }
@@ -158,6 +165,7 @@ fn env_account_name(account: &str) -> Option<&'static str> {
         MACHINE_SECRET_ACCOUNT => Some("VEM_MACHINE_SECRET"),
         MQTT_SIGNING_SECRET_ACCOUNT => Some("VEM_MQTT_SIGNING_SECRET"),
         MQTT_PASSWORD_ACCOUNT => Some("VEM_MQTT_PASSWORD"),
+        MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT => Some("VEM_MACHINE_WIREGUARD_PRIVATE_KEY"),
         _ => None,
     }
 }
@@ -195,6 +203,10 @@ impl SecretStore for EnvSecretStore {
                 .await?
                 .is_some(),
             mqtt_password_configured: self.read_secret(MQTT_PASSWORD_ACCOUNT).await?.is_some(),
+            machine_wireguard_private_key_configured: self
+                .read_secret(MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT)
+                .await?
+                .is_some(),
             last_error: None,
         })
     }
@@ -256,6 +268,10 @@ impl SecretStore for FileSecretStore {
                 .await?
                 .is_some(),
             mqtt_password_configured: self.read_secret(MQTT_PASSWORD_ACCOUNT).await?.is_some(),
+            machine_wireguard_private_key_configured: self
+                .read_secret(MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT)
+                .await?
+                .is_some(),
             last_error: None,
         })
     }
@@ -320,7 +336,7 @@ impl SecretStore for ProtectedLocalSecretStore {
             .await;
         let (mqtt_password_configured, mqtt_password_error) =
             self.configured_for_status(MQTT_PASSWORD_ACCOUNT).await;
-        let last_error = [
+        let mut last_error = [
             machine_secret_error,
             mqtt_signing_secret_error,
             mqtt_password_error,
@@ -336,6 +352,15 @@ impl SecretStore for ProtectedLocalSecretStore {
             machine_secret_configured,
             mqtt_signing_secret_configured,
             mqtt_password_configured,
+            machine_wireguard_private_key_configured: {
+                let (configured, error) = self
+                    .configured_for_status(MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT)
+                    .await;
+                if last_error.is_none() {
+                    last_error = error;
+                }
+                configured
+            },
             last_error,
         })
     }
@@ -568,6 +593,10 @@ impl SecretStore for KeyringSecretStore {
                 .await?
                 .is_some(),
             mqtt_password_configured: self.read_secret(MQTT_PASSWORD_ACCOUNT).await?.is_some(),
+            machine_wireguard_private_key_configured: self
+                .read_secret(MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT)
+                .await?
+                .is_some(),
             last_error: None,
         })
     }

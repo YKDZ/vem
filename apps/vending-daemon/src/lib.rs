@@ -7,6 +7,7 @@ pub mod health;
 pub mod ipc;
 pub mod local_runtime_reset;
 pub mod logs;
+pub mod maintenance;
 pub mod mqtt;
 pub mod natural_context;
 pub mod network;

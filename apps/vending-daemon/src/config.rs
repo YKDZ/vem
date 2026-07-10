@@ -4,6 +4,7 @@ use std::{
     sync::Arc,
 };
 
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use tokio::fs;
 use vending_core::serial::SerialPortUsbIdentity;
@@ -146,6 +147,8 @@ pub struct MachineProvisioningProfile {
     pub hardware_profile: ProductionMachineHardwareProfile,
     pub hardware_slot_topology: HardwareSlotTopologyIdentity,
     pub payment_capability: ProductionMachinePaymentCapability,
+    pub provisioning_profile: String,
+    pub maintenance: ProvisioningMaintenanceIdentity,
     pub metadata: ProvisioningMetadata,
 }
 
@@ -188,6 +191,36 @@ pub struct ProvisioningRuntimeEndpoints {
     pub machine_auth_token_path: String,
     pub machine_api_base_path: String,
     pub mqtt_topic_prefix: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
+pub struct ProvisioningMaintenancePeer {
+    pub public_key: String,
+    pub tunnel_address: String,
+    pub address: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
+pub struct MaintenanceRoleRoutes {
+    pub relay: String,
+    pub runner: String,
+    pub maintainer: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
+pub struct ProvisioningMaintenanceIdentity {
+    pub public_key: String,
+    pub tunnel_address: String,
+    pub address: String,
+    pub endpoint: String,
+    pub relay: ProvisioningMaintenancePeer,
+    pub role_routes: MaintenanceRoleRoutes,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -368,6 +401,10 @@ pub struct ProvisioningProfileCacheSummary {
     pub hardware_slot_topology: Option<HardwareSlotTopologyIdentity>,
     pub payment_capability: ProductionMachinePaymentCapability,
     pub provisioning_metadata: ProvisioningMetadata,
+    #[serde(default)]
+    pub provisioning_profile: Option<String>,
+    #[serde(default)]
+    pub maintenance: Option<ProvisioningMaintenanceIdentity>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -825,6 +862,120 @@ fn validate_machine_status(value: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_maintenance_identity(identity: &ProvisioningMaintenanceIdentity) -> Result<(), String> {
+    for (label, key) in [
+        ("maintenance public key", &identity.public_key),
+        ("maintenance relay public key", &identity.relay.public_key),
+    ] {
+        let decoded = STANDARD
+            .decode(key)
+            .map_err(|_| format!("{label} invalid"))?;
+        if decoded.len() != 32 {
+            return Err(format!("{label} invalid"));
+        }
+    }
+    let machine_address = identity
+        .tunnel_address
+        .parse::<std::net::Ipv4Addr>()
+        .map_err(|_| "maintenance address invalid".to_string())?;
+    let relay_address = identity
+        .relay
+        .tunnel_address
+        .parse::<std::net::Ipv4Addr>()
+        .map_err(|_| "maintenance address invalid".to_string())?;
+    if identity.address != format!("{machine_address}/32")
+        || identity.relay.address != format!("{relay_address}/32")
+        || identity.role_routes.relay != identity.relay.address
+    {
+        return Err("maintenance address invalid".to_string());
+    }
+    if !valid_wireguard_endpoint(&identity.endpoint) {
+        return Err("maintenance endpoint invalid".to_string());
+    }
+    let machine_route = parse_canonical_ipv4_cidr(&identity.address, 32)
+        .ok_or_else(|| "maintenance role routes invalid".to_string())?;
+    let relay_route = parse_canonical_ipv4_cidr(&identity.relay.address, 32)
+        .ok_or_else(|| "maintenance role routes invalid".to_string())?;
+    let runner_route = parse_canonical_ipv4_cidr(&identity.role_routes.runner, 24)
+        .ok_or_else(|| "maintenance role routes invalid".to_string())?;
+    let maintainer_route = parse_canonical_ipv4_cidr(&identity.role_routes.maintainer, 24)
+        .ok_or_else(|| "maintenance role routes invalid".to_string())?;
+    if ipv4_cidrs_overlap(runner_route, maintainer_route)
+        || ipv4_cidrs_overlap(runner_route, machine_route)
+        || ipv4_cidrs_overlap(maintainer_route, machine_route)
+        || ipv4_cidrs_overlap(runner_route, relay_route)
+        || ipv4_cidrs_overlap(maintainer_route, relay_route)
+    {
+        return Err("maintenance role routes invalid".to_string());
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+struct ParsedIpv4Cidr {
+    network: u32,
+    broadcast: u32,
+}
+
+fn parse_canonical_ipv4_cidr(value: &str, minimum_prefix: u32) -> Option<ParsedIpv4Cidr> {
+    let (address, prefix) = value.split_once('/')?;
+    let address = address.parse::<std::net::Ipv4Addr>().ok()?;
+    let prefix = prefix.parse::<u32>().ok()?;
+    if prefix < minimum_prefix || prefix > 32 {
+        return None;
+    }
+    let address_number = u32::from(address);
+    let mask = if prefix == 0 {
+        0
+    } else {
+        u32::MAX << (32 - prefix)
+    };
+    let network = address_number & mask;
+    if network != address_number || value != format!("{address}/{prefix}") {
+        return None;
+    }
+    Some(ParsedIpv4Cidr {
+        network,
+        broadcast: network | !mask,
+    })
+}
+
+fn ipv4_cidrs_overlap(a: ParsedIpv4Cidr, b: ParsedIpv4Cidr) -> bool {
+    a.network <= b.broadcast && b.network <= a.broadcast
+}
+
+fn valid_wireguard_endpoint(value: &str) -> bool {
+    let (host, port) = if let Some(rest) = value.strip_prefix('[') {
+        let Some((host, port)) = rest.split_once("]:") else {
+            return false;
+        };
+        if host.parse::<std::net::Ipv6Addr>().is_err() {
+            return false;
+        }
+        (host, port)
+    } else {
+        let Some((host, port)) = value.rsplit_once(':') else {
+            return false;
+        };
+        if host.contains(':')
+            || (host.parse::<std::net::Ipv4Addr>().is_err()
+                && !host.split('.').all(|label| {
+                    !label.is_empty()
+                        && label.len() <= 63
+                        && label
+                            .bytes()
+                            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+                        && !label.starts_with('-')
+                        && !label.ends_with('-')
+                }))
+        {
+            return false;
+        }
+        (host, port)
+    };
+    !host.is_empty() && port.parse::<u16>().is_ok_and(|port| port > 0)
+}
+
 pub fn normalize_public_config(
     mut config: MachinePublicConfig,
 ) -> Result<MachinePublicConfig, String> {
@@ -1058,6 +1209,7 @@ pub struct ConfigStore {
     data_dir: PathBuf,
     state: LocalStateStore,
     secrets: Arc<dyn SecretStore>,
+    maintenance: Arc<crate::maintenance::MaintenanceEnrollment>,
 }
 
 impl ConfigStore {
@@ -1187,6 +1339,13 @@ impl ConfigStore {
         if profile.payment_capability.profile != "production" {
             return Err("payment capability invalid".to_string());
         }
+        if !matches!(
+            profile.provisioning_profile.as_str(),
+            "production" | "testbed"
+        ) {
+            return Err("provisioning profile invalid".to_string());
+        }
+        validate_maintenance_identity(&profile.maintenance)?;
         Self::validate_iso_datetime(
             &profile.payment_capability.server_time,
             "payment capability invalid",
@@ -1229,10 +1388,29 @@ impl ConfigStore {
     }
 
     pub fn new(data_dir: PathBuf, state: LocalStateStore, secrets: Arc<dyn SecretStore>) -> Self {
+        Self::new_with_tunnel(
+            data_dir,
+            state,
+            secrets,
+            Arc::new(crate::maintenance::WindowsWireGuardTunnel::default()),
+        )
+    }
+
+    pub fn new_with_tunnel(
+        data_dir: PathBuf,
+        state: LocalStateStore,
+        secrets: Arc<dyn SecretStore>,
+        tunnel: Arc<dyn crate::maintenance::WindowsTunnelBackend>,
+    ) -> Self {
+        let maintenance = Arc::new(crate::maintenance::MaintenanceEnrollment::new(
+            secrets.clone(),
+            tunnel,
+        ));
         Self {
             data_dir,
             state,
             secrets,
+            maintenance,
         }
     }
 
@@ -1258,6 +1436,51 @@ impl ConfigStore {
 
     pub fn provisioning_profile_cache_summary_path(&self) -> PathBuf {
         provisioning_profile_cache_summary_path(&self.data_dir)
+    }
+
+    pub async fn ensure_maintenance_public_key(&self) -> Result<String, String> {
+        self.maintenance.ensure_public_key().await
+    }
+
+    pub async fn provisioning_profile_name(&self) -> Result<String, String> {
+        let factory = self.load_factory_manifest().await?;
+        let local = self.load_local_bring_up_settings().await?;
+        let value = local
+            .and_then(|settings| settings.environment)
+            .or_else(|| factory.map(|manifest| manifest.environment))
+            .unwrap_or_else(|| "production".to_string())
+            .trim()
+            .to_ascii_lowercase();
+        if matches!(value.as_str(), "production" | "testbed") {
+            Ok(value)
+        } else {
+            Err("unsupported machine provisioning profile".to_string())
+        }
+    }
+
+    pub async fn apply_maintenance_profile(
+        &self,
+        identity: &ProvisioningMaintenanceIdentity,
+    ) -> Result<crate::maintenance::MaintenanceEnrollmentStatus, String> {
+        self.maintenance.apply_profile(identity).await
+    }
+
+    pub async fn recover_maintenance_from_cache(
+        &self,
+    ) -> Result<Option<crate::maintenance::MaintenanceEnrollmentStatus>, String> {
+        let Some(identity) = self
+            .load_provisioning_profile_cache_summary()
+            .await?
+            .and_then(|summary| summary.maintenance)
+        else {
+            return Ok(None);
+        };
+        validate_maintenance_identity(&identity)?;
+        self.maintenance.apply_profile(&identity).await.map(Some)
+    }
+
+    pub async fn maintenance_status(&self) -> crate::maintenance::MaintenanceEnrollmentStatus {
+        self.maintenance.status().await
     }
 
     async fn read_optional_json<T>(path: PathBuf, label: &str) -> Result<Option<T>, String>
@@ -1618,10 +1841,24 @@ impl ConfigStore {
             apply_local_bring_up_settings_to_public(&mut public, settings);
         }
 
+        let maintenance_private_key = self
+            .secrets
+            .read_secret(crate::secret::MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT)
+            .await
+            .map_err(Self::provisioning_persistence_error)?;
         self.secrets
             .clear_all()
             .await
             .map_err(Self::provisioning_persistence_error)?;
+        if let Some(private_key) = maintenance_private_key {
+            self.secrets
+                .write_secret(
+                    crate::secret::MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT,
+                    &private_key,
+                )
+                .await
+                .map_err(Self::provisioning_persistence_error)?;
+        }
 
         public.machine_id = Some(profile.machine.id.clone());
         public.machine_code = Some(profile.machine.code.clone());
@@ -1658,6 +1895,8 @@ impl ConfigStore {
             hardware_slot_topology: Some(profile.hardware_slot_topology.clone()),
             payment_capability: profile.payment_capability.clone(),
             provisioning_metadata: profile.metadata.clone(),
+            provisioning_profile: Some(profile.provisioning_profile.clone()),
+            maintenance: Some(profile.maintenance.clone()),
         };
         self.write_provisioning_profile_cache_summary(&profile_cache)
             .await
@@ -1848,14 +2087,45 @@ mod tests {
     use super::*;
     use crate::secret::{
         InMemorySecretStore, ProtectedLocalSecretStore, SecretStore, SecretStoreStatus,
-        MACHINE_SECRET_ACCOUNT, MQTT_PASSWORD_ACCOUNT, MQTT_SIGNING_SECRET_ACCOUNT,
+        MACHINE_SECRET_ACCOUNT, MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT, MQTT_PASSWORD_ACCOUNT,
+        MQTT_SIGNING_SECRET_ACCOUNT,
     };
     use async_trait::async_trait;
-    use std::sync::OnceLock;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        OnceLock,
+    };
     use tempfile::TempDir;
     use tokio::sync::Mutex;
 
     static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    #[derive(Default)]
+    struct RecoveryTunnel {
+        applies: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl crate::maintenance::WindowsTunnelBackend for RecoveryTunnel {
+        async fn apply(
+            &self,
+            _config: crate::maintenance::WindowsTunnelConfig,
+        ) -> Result<(), String> {
+            self.applies.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        async fn observe_handshake(
+            &self,
+            _relay_public_key: &str,
+        ) -> Result<crate::maintenance::HandshakeObservation, String> {
+            Ok(crate::maintenance::HandshakeObservation {
+                verified: false,
+                last_handshake_at: None,
+                message: "first WireGuard handshake has not been observed".to_string(),
+            })
+        }
+    }
 
     #[derive(Debug, Default)]
     struct ClearFailingSecretStore {
@@ -1986,6 +2256,23 @@ mod tests {
                 default_option_key: None,
                 default_provider_code: None,
             },
+            provisioning_profile: "production".to_string(),
+            maintenance: ProvisioningMaintenanceIdentity {
+                public_key: "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=".to_string(),
+                tunnel_address: "10.91.16.10".to_string(),
+                address: "10.91.16.10/32".to_string(),
+                endpoint: "relay.example:51820".to_string(),
+                relay: ProvisioningMaintenancePeer {
+                    public_key: "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=".to_string(),
+                    tunnel_address: "10.91.0.1".to_string(),
+                    address: "10.91.0.1/32".to_string(),
+                },
+                role_routes: MaintenanceRoleRoutes {
+                    relay: "10.91.0.1/32".to_string(),
+                    runner: "10.91.1.0/24".to_string(),
+                    maintainer: "10.91.3.0/24".to_string(),
+                },
+            },
             metadata: ProvisioningMetadata {
                 profile_version: 1,
                 claim_code_id: "550e8400-e29b-41d4-a716-446655440111".to_string(),
@@ -2043,6 +2330,8 @@ mod tests {
             hardware_slot_topology: Some(profile.hardware_slot_topology.clone()),
             payment_capability: profile.payment_capability.clone(),
             provisioning_metadata: profile.metadata.clone(),
+            provisioning_profile: Some(profile.provisioning_profile.clone()),
+            maintenance: Some(profile.maintenance.clone()),
         }
     }
 
@@ -3111,6 +3400,8 @@ mod tests {
                 hardware_slot_topology: Some(old_profile.hardware_slot_topology.clone()),
                 payment_capability: old_profile.payment_capability.clone(),
                 provisioning_metadata: old_profile.metadata.clone(),
+                provisioning_profile: Some(old_profile.provisioning_profile.clone()),
+                maintenance: Some(old_profile.maintenance.clone()),
             })
             .await
             .expect("seed old profile cache");
@@ -3554,6 +3845,23 @@ mod tests {
                 "paymentCodeEnabled": true,
                 "serverTime": "2026-07-05T02:06:21.966Z"
             },
+            "provisioningProfile": "testbed",
+            "maintenance": {
+                "publicKey": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
+                "tunnelAddress": "10.91.16.10",
+                "address": "10.91.16.10/32",
+                "endpoint": "relay.example:51820",
+                "relay": {
+                    "publicKey": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
+                    "tunnelAddress": "10.91.0.1",
+                    "address": "10.91.0.1/32"
+                },
+                "roleRoutes": {
+                    "relay": "10.91.0.1/32",
+                    "runner": "10.91.1.0/24",
+                    "maintainer": "10.91.3.0/24"
+                }
+            },
             "metadata": {
                 "profileVersion": 1,
                 "claimCodeId": "79713f63-db82-4bcd-b530-b8b85180f2a0",
@@ -3566,5 +3874,83 @@ mod tests {
         ConfigStore::validate_provisioning_profile(&profile).expect("valid profile");
         assert!(profile.payment_capability.options.is_empty());
         assert_eq!(profile.payment_capability.default_option_key, None);
+    }
+
+    #[test]
+    fn provisioning_profile_rejects_mismatched_or_unsafe_maintenance_routes() {
+        let mut mismatched_machine = valid_provisioning_profile_for_test();
+        mismatched_machine.maintenance.address = "10.91.16.11/32".to_string();
+
+        let mut mismatched_relay = valid_provisioning_profile_for_test();
+        mismatched_relay.maintenance.relay.address = "10.91.0.2/32".to_string();
+
+        let mut default_route = valid_provisioning_profile_for_test();
+        default_route.maintenance.role_routes.runner = "0.0.0.0/0".to_string();
+
+        let mut broad_route = valid_provisioning_profile_for_test();
+        broad_route.maintenance.role_routes.maintainer = "10.0.0.0/8".to_string();
+
+        let mut host_bits = valid_provisioning_profile_for_test();
+        host_bits.maintenance.role_routes.runner = "10.91.1.7/24".to_string();
+
+        let mut overlapping_roles = valid_provisioning_profile_for_test();
+        overlapping_roles.maintenance.role_routes.maintainer = "10.91.1.0/24".to_string();
+
+        let mut machine_overlap = valid_provisioning_profile_for_test();
+        machine_overlap.maintenance.role_routes.runner = "10.91.16.0/24".to_string();
+
+        let mut wrong_relay_route = valid_provisioning_profile_for_test();
+        wrong_relay_route.maintenance.role_routes.relay = "10.91.0.2/32".to_string();
+
+        for profile in [
+            mismatched_machine,
+            mismatched_relay,
+            default_route,
+            broad_route,
+            host_bits,
+            overlapping_roles,
+            machine_overlap,
+            wrong_relay_route,
+        ] {
+            assert!(ConfigStore::validate_provisioning_profile(&profile).is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn restart_recovers_maintenance_status_from_cached_profile_and_persistent_key() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let data_dir = temp.path().to_path_buf();
+        let state = LocalStateStore::open(&data_dir.join("state.db"))
+            .await
+            .expect("state");
+        let secrets = Arc::new(InMemorySecretStore::default());
+        let private_key = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+        secrets
+            .write_secret(MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT, private_key)
+            .await
+            .expect("seed maintenance key");
+        let public_key = crate::maintenance::public_key_from_private_key(private_key)
+            .expect("derive public key");
+        let store = ConfigStore::new(data_dir.clone(), state.clone(), secrets.clone());
+        let mut profile = valid_provisioning_profile_for_test();
+        profile.maintenance.public_key = public_key.clone();
+        store
+            .apply_provisioning_profile(profile)
+            .await
+            .expect("persist provisioning profile");
+
+        let tunnel = Arc::new(RecoveryTunnel::default());
+        let restarted = ConfigStore::new_with_tunnel(data_dir, state, secrets, tunnel.clone());
+        assert_eq!(restarted.maintenance_status().await.state, "not_enrolled");
+
+        let recovered = restarted
+            .recover_maintenance_from_cache()
+            .await
+            .expect("recover maintenance")
+            .expect("cached maintenance identity");
+
+        assert_eq!(recovered.state, "handshake_pending");
+        assert_eq!(recovered.public_key.as_deref(), Some(public_key.as_str()));
+        assert_eq!(tunnel.applies.load(Ordering::SeqCst), 1);
     }
 }

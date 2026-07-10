@@ -885,6 +885,9 @@ export const machineClaimCodes = t.pgTable(
     consumedAt: t.timestamp("consumed_at", { withTimezone: true }),
     revokedAt: t.timestamp("revoked_at", { withTimezone: true }),
     lockedAt: t.timestamp("locked_at", { withTimezone: true }),
+    claimResponseEncryptedJson: t
+      .jsonb("claim_response_encrypted_json")
+      .$type<Record<string, unknown> | null>(),
     createdByAdminUserId: t
       .uuid("created_by_admin_user_id")
       .references(() => adminUsers.id),

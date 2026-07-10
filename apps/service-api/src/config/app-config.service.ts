@@ -125,8 +125,28 @@ export class AppConfigService {
     return this.config.get("MACHINE_CLAIM_CODE_TTL_SECONDS", { infer: true });
   }
 
+  get machineProvisioningProfile(): "production" | "testbed" {
+    return this.config.get("MACHINE_PROVISIONING_PROFILE", { infer: true });
+  }
+
   get maintenanceAddressPools(): MaintenanceAddressPools {
     return this.parsedMaintenanceAddressPools;
+  }
+
+  get maintenanceRelayPeerId(): string {
+    return this.config.get("MAINTENANCE_RELAY_PEER_ID", { infer: true });
+  }
+
+  get maintenanceRelayEndpoint(): string {
+    return this.config.get("MAINTENANCE_RELAY_ENDPOINT", { infer: true });
+  }
+
+  get maintenanceRelayPublicKey(): string {
+    return this.config.get("MAINTENANCE_RELAY_PUBLIC_KEY", { infer: true });
+  }
+
+  get maintenanceRelayTunnelAddress(): string {
+    return this.config.get("MAINTENANCE_RELAY_TUNNEL_ADDRESS", { infer: true });
   }
 
   get maintenanceRelayCredential(): string {

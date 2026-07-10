@@ -352,11 +352,19 @@ describe("MachinesController claim code lifecycle", () => {
     expect(isPublic).toBe(true);
     expect(guards).not.toContain(MachineAuthGuard);
     await expect(
-      controller.claimMachine({ claimCode: "ABCD-2345" }),
+      controller.claimMachine({
+        claimCode: "ABCD-2345",
+        maintenancePublicKey: "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
+        provisioningProfile: "production",
+      }),
     ).resolves.toEqual({
       machine: { id: "machine-1", code: "M001" },
     });
-    expect(claimMachine).toHaveBeenCalledWith({ claimCode: "ABCD-2345" });
+    expect(claimMachine).toHaveBeenCalledWith({
+      claimCode: "ABCD-2345",
+      maintenancePublicKey: "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
+      provisioningProfile: "production",
+    });
   });
 
   it("accepts unauthenticated HTTP claim requests while global admin auth guards are active", async () => {
@@ -397,10 +405,18 @@ describe("MachinesController claim code lifecycle", () => {
     await request(app.getHttpServer()).post("/machines").send({}).expect(401);
     await request(app.getHttpServer())
       .post("/machines/claim")
-      .send({ claimCode: "ABCD-2345" })
+      .send({
+        claimCode: "ABCD-2345",
+        maintenancePublicKey: "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
+        provisioningProfile: "production",
+      })
       .expect(201);
 
-    expect(claimMachine).toHaveBeenCalledWith({ claimCode: "ABCD-2345" });
+    expect(claimMachine).toHaveBeenCalledWith({
+      claimCode: "ABCD-2345",
+      maintenancePublicKey: "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
+      provisioningProfile: "production",
+    });
     transform.mockRestore();
   });
 

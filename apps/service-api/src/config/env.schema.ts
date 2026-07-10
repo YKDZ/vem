@@ -1,6 +1,13 @@
+import {
+  maintenanceWireGuardEndpointSchema,
+  maintenanceWireGuardPublicKeySchema,
+} from "@vem/shared";
 import { z } from "zod";
 
-import { parseMaintenanceAddressPools } from "../maintenance-access/maintenance-address-pools";
+import {
+  maintenanceAddressPoolContains,
+  parseMaintenanceAddressPools,
+} from "../maintenance-access/maintenance-address-pools";
 
 const baseEnvSchema = z.object({
   NODE_ENV: z
@@ -47,10 +54,15 @@ const baseEnvSchema = z.object({
     .min(60)
     .max(3600)
     .default(600),
+  MACHINE_PROVISIONING_PROFILE: z.enum(["production", "testbed"]),
   MAINTENANCE_RELAY_ADDRESS_POOL: z.string().default("10.91.0.0/24"),
   MAINTENANCE_RUNNER_ADDRESS_POOL: z.string().default("10.91.1.0/24"),
   MAINTENANCE_MAINTAINER_ADDRESS_POOL: z.string().default("10.91.3.0/24"),
   MAINTENANCE_MACHINE_ADDRESS_POOL: z.string().default("10.91.16.0/20"),
+  MAINTENANCE_RELAY_PEER_ID: z.uuid(),
+  MAINTENANCE_RELAY_ENDPOINT: maintenanceWireGuardEndpointSchema,
+  MAINTENANCE_RELAY_PUBLIC_KEY: maintenanceWireGuardPublicKeySchema,
+  MAINTENANCE_RELAY_TUNNEL_ADDRESS: z.ipv4(),
   MAINTENANCE_RELAY_CREDENTIAL: z
     .string()
     .min(32)
@@ -193,12 +205,22 @@ export const envSchema = baseEnvSchema.superRefine((env, ctx) => {
     });
   }
   try {
-    parseMaintenanceAddressPools({
+    const pools = parseMaintenanceAddressPools({
       relay: env.MAINTENANCE_RELAY_ADDRESS_POOL,
       runner: env.MAINTENANCE_RUNNER_ADDRESS_POOL,
       maintainer: env.MAINTENANCE_MAINTAINER_ADDRESS_POOL,
       machine: env.MAINTENANCE_MACHINE_ADDRESS_POOL,
     });
+    if (
+      !maintenanceAddressPoolContains(
+        pools.relay,
+        env.MAINTENANCE_RELAY_TUNNEL_ADDRESS,
+      )
+    ) {
+      throw new Error(
+        "Maintenance relay tunnel address must belong to its address pool",
+      );
+    }
   } catch (error) {
     ctx.addIssue({
       code: "custom",

@@ -32,6 +32,7 @@ import {
   machineHeartbeats,
   mediaAssets,
   machines,
+  maintenancePeers,
   productCategories,
   productVariants,
   products,
@@ -44,6 +45,8 @@ import {
   createMachineSlotSchema,
   environmentControlResultPayloadSchema,
   machineHeartbeatStatusPayloadSchema,
+  machineClaimRequestSchema,
+  machineProvisioningProfileSchema,
   pageQuerySchema,
   machineEnvironmentControlRequestSchema,
   publishMachinePlanogramVersionSchema,
@@ -67,6 +70,8 @@ import { getOffset, toPageResult } from "../common/pagination.util";
 import { AppConfigService } from "../config/app-config.service";
 import { DRIZZLE_CLIENT } from "../database/database.constants";
 import { MachineCredentialService } from "../machine-auth/machine-credential.service";
+import { MaintenanceAccessService } from "../maintenance-access/maintenance-access.service";
+import { allocateTunnelAddress } from "../maintenance-access/maintenance-address-pools";
 import { MqttSignatureService } from "../mqtt/mqtt-signature.service";
 import { MqttService } from "../mqtt/mqtt.service";
 import { NotificationsService } from "../notifications/notifications.service";
@@ -194,6 +199,7 @@ type MachineClaimCandidate = {
   consumedAt: Date | null;
   revokedAt: Date | null;
   lockedAt: Date | null;
+  claimResponseEncryptedJson: unknown;
   machineCode: string;
   machineName: string;
   machineLocationLabel: string | null;
@@ -652,6 +658,8 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
     @Inject(DRIZZLE_CLIENT) private readonly db: DrizzleClient,
     @Inject(MachineCredentialService)
     private readonly machineCredentialService: MachineCredentialService,
+    @Inject(MaintenanceAccessService)
+    private readonly maintenanceAccessService: MaintenanceAccessService,
     @Inject(PaymentProviderConfigService)
     private readonly paymentProviderConfigService: PaymentProviderConfigService,
     @Inject(AuditService)
@@ -1981,8 +1989,21 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
     input: MachineClaimRequest,
     now = new Date(),
   ): Promise<MachineProvisioningProfile> {
+    const parsed = machineClaimRequestSchema.safeParse(input);
+    if (!parsed.success) {
+      throw new BadRequestException("Invalid machine claim request");
+    }
+    const claimRequest = parsed.data;
+    if (
+      claimRequest.provisioningProfile !==
+      this.config.machineProvisioningProfile
+    ) {
+      throw new ConflictException(
+        "Machine provisioning profile does not match service profile",
+      );
+    }
     const lookupDigest = digestMachineClaimCodeLookup(
-      input.claimCode,
+      claimRequest.claimCode,
       this.config.machineClaimLookupHmacKey,
     );
     const [claimCode] = await this.db
@@ -1998,6 +2019,8 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
         consumedAt: machineClaimCodes.consumedAt,
         revokedAt: machineClaimCodes.revokedAt,
         lockedAt: machineClaimCodes.lockedAt,
+        claimResponseEncryptedJson:
+          machineClaimCodes.claimResponseEncryptedJson,
         machineCode: machines.code,
         machineName: machines.name,
         machineLocationLabel: machines.locationLabel,
@@ -2020,9 +2043,25 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
       // same public error without leaking whether any claim exists.
       throw this.invalidMachineClaimCode();
     }
-    if (!verifyMachineClaimCode(input.claimCode, claimCode.verifierHash)) {
+    if (
+      !verifyMachineClaimCode(claimRequest.claimCode, claimCode.verifierHash)
+    ) {
       await this.recordFailedMachineClaim(claimCode, now);
       throw this.invalidMachineClaimCode();
+    }
+    if (
+      claimCode.state === "consumed" &&
+      claimCode.claimResponseEncryptedJson &&
+      claimCode.expiresAt.getTime() > now.getTime()
+    ) {
+      const replayProfile = this.parseMachineClaimReplay(
+        claimCode.claimResponseEncryptedJson,
+        claimRequest,
+      );
+      if (replayProfile) {
+        await this.recordMachineClaimReplay(claimCode, now);
+        return replayProfile;
+      }
     }
     if (
       claimCode.state !== "pending" ||
@@ -2035,73 +2074,15 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
     const bundle = this.machineCredentialService.createBundle();
     const mqttClientId =
       claimCode.machineMqttClientId ?? `vem-machine-${claimCode.machineCode}`;
-
-    const { consumed, rotated } = await this.db.transaction(async (tx) => {
-      const [consumedClaimCode] = await tx
-        .update(machineClaimCodes)
-        .set({
-          state: "consumed",
-          consumedAt: now,
-          updatedAt: now,
-        })
-        .where(
-          and(
-            eq(machineClaimCodes.id, claimCode.id),
-            eq(machineClaimCodes.state, "pending"),
-            gt(machineClaimCodes.expiresAt, now),
-          ),
-        )
-        .returning({ id: machineClaimCodes.id });
-      if (!consumedClaimCode) {
-        throw this.invalidMachineClaimCode();
-      }
-
-      const [rotatedMachine] = await tx
-        .update(machines)
-        .set({
-          secretHash: bundle.secretHash,
-          secretVersion: sql`${machines.secretVersion} + 1`,
-          secretRotatedAt: now,
-          credentialRevokedAt: null,
-          mqttClientId,
-          mqttSigningSecretEncryptedJson:
-            bundle.mqttSigningSecretEncryptedJson as Record<string, unknown>,
-          updatedAt: now,
-        })
-        .where(
-          and(eq(machines.id, claimCode.machineId), isNull(machines.deletedAt)),
-        )
-        .returning({
-          id: machines.id,
-          secretVersion: machines.secretVersion,
-        });
-      if (!rotatedMachine) {
-        throw this.invalidMachineClaimCode();
-      }
-      return { consumed: consumedClaimCode, rotated: rotatedMachine };
-    });
-
-    await this.auditService.record({
-      adminUserId: null,
-      action:
-        claimCode.purpose === "reclaim"
-          ? "machines.claimCode.reclaim.consume"
-          : "machines.claimCode.consume",
-      resourceType: "machine",
-      resourceId: claimCode.machineId,
-      afterJson: {
-        claimCodeId: consumed.id,
-        machineCode: claimCode.machineCode,
-        ...(claimCode.purpose === "reclaim"
-          ? { purpose: claimCode.purpose }
-          : {}),
-        state: "consumed",
-        secretVersion: rotated.secretVersion,
-        claimedAt: toIso(now),
+    const buildProfile = (
+      claimCodeId: string,
+      secretVersion: number,
+      maintenance: {
+        peer: { publicKey: string; tunnelAddress: string };
+        relay: { publicKey: string; tunnelAddress: string };
+        endpoint: string;
       },
-    });
-
-    return {
+    ): MachineProvisioningProfile => ({
       machine: {
         id: claimCode.machineId,
         code: claimCode.machineCode,
@@ -2111,7 +2092,7 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
       },
       credentials: {
         machineSecret: bundle.machineSecret,
-        machineSecretVersion: rotated.secretVersion,
+        machineSecretVersion: secretVersion,
         mqttSigningSecret: bundle.mqttSigningSecret,
         mqttConnection: {
           url: this.config.mqttUrl,
@@ -2156,13 +2137,272 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
         paymentCodeEnabled: true,
         serverTime: toIso(now),
       },
+      provisioningProfile: claimRequest.provisioningProfile,
+      maintenance: {
+        publicKey: maintenance.peer.publicKey,
+        tunnelAddress: maintenance.peer.tunnelAddress,
+        address: `${maintenance.peer.tunnelAddress}/32`,
+        endpoint: maintenance.endpoint,
+        relay: {
+          publicKey: maintenance.relay.publicKey,
+          tunnelAddress: maintenance.relay.tunnelAddress,
+          address: `${maintenance.relay.tunnelAddress}/32`,
+        },
+        roleRoutes: {
+          relay: `${maintenance.relay.tunnelAddress}/32`,
+          runner: this.config.maintenanceAddressPools.runner.cidr,
+          maintainer: this.config.maintenanceAddressPools.maintainer.cidr,
+        },
+      },
       metadata: {
         profileVersion: 1,
-        claimCodeId: consumed.id,
+        claimCodeId,
         claimedAt: toIso(now),
         serverTime: toIso(now),
       },
+    });
+
+    const claimResult = await this.db.transaction(async (tx) => {
+      const [consumedClaimCode] = await tx
+        .update(machineClaimCodes)
+        .set({
+          state: "consumed",
+          consumedAt: now,
+          updatedAt: now,
+        })
+        .where(
+          and(
+            eq(machineClaimCodes.id, claimCode.id),
+            eq(machineClaimCodes.state, "pending"),
+            gt(machineClaimCodes.expiresAt, now),
+          ),
+        )
+        .returning({ id: machineClaimCodes.id });
+      if (!consumedClaimCode) {
+        const [winner] = await tx
+          .select({
+            state: machineClaimCodes.state,
+            expiresAt: machineClaimCodes.expiresAt,
+            claimResponseEncryptedJson:
+              machineClaimCodes.claimResponseEncryptedJson,
+          })
+          .from(machineClaimCodes)
+          .where(
+            and(
+              eq(machineClaimCodes.id, claimCode.id),
+              eq(machineClaimCodes.state, "consumed"),
+              gt(machineClaimCodes.expiresAt, now),
+            ),
+          );
+        const replayProfile = winner?.claimResponseEncryptedJson
+          ? this.parseMachineClaimReplay(
+              winner.claimResponseEncryptedJson,
+              claimRequest,
+            )
+          : undefined;
+        if (replayProfile) {
+          await this.recordMachineClaimReplay(claimCode, now, tx);
+          return { kind: "replayed" as const, profile: replayProfile };
+        }
+        throw this.invalidMachineClaimCode();
+      }
+
+      const [rotatedMachine] = await tx
+        .update(machines)
+        .set({
+          secretHash: bundle.secretHash,
+          secretVersion: sql`${machines.secretVersion} + 1`,
+          secretRotatedAt: now,
+          credentialRevokedAt: null,
+          mqttClientId,
+          mqttSigningSecretEncryptedJson:
+            bundle.mqttSigningSecretEncryptedJson as Record<string, unknown>,
+          updatedAt: now,
+        })
+        .where(
+          and(eq(machines.id, claimCode.machineId), isNull(machines.deletedAt)),
+        )
+        .returning({
+          id: machines.id,
+          secretVersion: machines.secretVersion,
+        });
+      if (!rotatedMachine) {
+        throw this.invalidMachineClaimCode();
+      }
+      const [relay] = await tx
+        .select({
+          publicKey: maintenancePeers.publicKey,
+          tunnelAddress: maintenancePeers.tunnelAddress,
+        })
+        .from(maintenancePeers)
+        .where(
+          and(
+            eq(maintenancePeers.id, this.config.maintenanceRelayPeerId),
+            eq(maintenancePeers.role, "relay"),
+            eq(maintenancePeers.status, "active"),
+            isNull(maintenancePeers.revokedAt),
+          ),
+        );
+      if (!relay) {
+        throw new ConflictException("Maintenance relay peer is not configured");
+      }
+      if (relay.publicKey !== this.config.maintenanceRelayPublicKey) {
+        throw new ConflictException(
+          "Maintenance relay peer does not match service profile",
+        );
+      }
+      if (relay.tunnelAddress !== this.config.maintenanceRelayTunnelAddress) {
+        throw new ConflictException(
+          "Maintenance relay peer does not match service profile",
+        );
+      }
+      const endpoint = this.config.maintenanceRelayEndpoint;
+
+      const [duplicatePublicKey] = await tx
+        .select({ id: maintenancePeers.id })
+        .from(maintenancePeers)
+        .where(
+          eq(maintenancePeers.publicKey, claimRequest.maintenancePublicKey),
+        )
+        .limit(1);
+      if (duplicatePublicKey) {
+        throw new ConflictException(
+          "Maintenance peer public key already exists",
+        );
+      }
+
+      const usedRows = await tx
+        .select({ tunnelAddress: maintenancePeers.tunnelAddress })
+        .from(maintenancePeers);
+      const usedAddresses = new Set(usedRows.map((row) => row.tunnelAddress));
+      const pool = this.config.maintenanceAddressPools.machine;
+      const usableAddressCount = pool.lastHost - pool.firstHost + 1;
+      let peer: { publicKey: string; tunnelAddress: string } | undefined;
+      // oxlint-disable no-await-in-loop -- allocation retries are serialized inside the claim transaction
+      for (let attempt = 0; attempt < usableAddressCount; attempt += 1) {
+        const tunnelAddress = allocateTunnelAddress(pool, usedAddresses);
+        const [created] = await tx
+          .insert(maintenancePeers)
+          .values({
+            role: "machine",
+            publicKey: claimRequest.maintenancePublicKey,
+            tunnelAddress,
+            machineId: claimCode.machineId,
+            status: "active",
+          })
+          .onConflictDoNothing({ target: maintenancePeers.tunnelAddress })
+          .returning({
+            publicKey: maintenancePeers.publicKey,
+            tunnelAddress: maintenancePeers.tunnelAddress,
+          });
+        if (created) {
+          peer = created;
+          break;
+        }
+        usedAddresses.add(tunnelAddress);
+      }
+      // oxlint-enable no-await-in-loop
+      if (!peer) {
+        throw new ConflictException(
+          "Machine maintenance address pool is exhausted",
+        );
+      }
+      await this.maintenanceAccessService.projectDesiredStateAfterPeerMutation(
+        tx,
+        now,
+      );
+      const maintenance = { peer, relay, endpoint };
+      const profile = buildProfile(
+        consumedClaimCode.id,
+        rotatedMachine.secretVersion,
+        maintenance,
+      );
+      await tx
+        .update(machineClaimCodes)
+        .set({
+          claimResponseEncryptedJson:
+            this.machineCredentialService.encryptClaimResponse(profile),
+          updatedAt: now,
+        })
+        .where(eq(machineClaimCodes.id, consumedClaimCode.id));
+      await this.auditService.record(
+        {
+          adminUserId: null,
+          action:
+            claimCode.purpose === "reclaim"
+              ? "machines.claimCode.reclaim.consume"
+              : "machines.claimCode.consume",
+          resourceType: "machine",
+          resourceId: claimCode.machineId,
+          afterJson: {
+            claimCodeId: consumedClaimCode.id,
+            machineCode: claimCode.machineCode,
+            ...(claimCode.purpose === "reclaim"
+              ? { purpose: claimCode.purpose }
+              : {}),
+            state: "consumed",
+            secretVersion: rotatedMachine.secretVersion,
+            claimedAt: toIso(now),
+          },
+        },
+        tx,
+      );
+      return {
+        kind: "consumed" as const,
+        profile,
+      };
+    });
+    return claimResult.profile;
+  }
+
+  private parseMachineClaimReplay(
+    encrypted: unknown,
+    request: MachineClaimRequest,
+  ): MachineProvisioningProfile | undefined {
+    try {
+      const replay =
+        this.machineCredentialService.decryptClaimResponse(encrypted);
+      const profile = machineProvisioningProfileSchema.parse(replay);
+      return profile.provisioningProfile === request.provisioningProfile &&
+        profile.maintenance.publicKey === request.maintenancePublicKey
+        ? profile
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async recordMachineClaimReplay(
+    claimCode: Pick<
+      MachineClaimCandidate,
+      "id" | "machineId" | "machineCode" | "purpose"
+    >,
+    now: Date,
+    executor?: Pick<DrizzleClient, "insert">,
+  ): Promise<void> {
+    const input = {
+      adminUserId: null,
+      action:
+        claimCode.purpose === "reclaim"
+          ? "machines.claimCode.reclaim.replay"
+          : "machines.claimCode.replay",
+      resourceType: "machine",
+      resourceId: claimCode.machineId,
+      afterJson: {
+        claimCodeId: claimCode.id,
+        machineCode: claimCode.machineCode,
+        ...(claimCode.purpose === "reclaim"
+          ? { purpose: claimCode.purpose }
+          : {}),
+        state: "consumed",
+        replayedAt: toIso(now),
+      },
     };
+    if (executor) {
+      await this.auditService.record(input, executor);
+    } else {
+      await this.auditService.record(input);
+    }
   }
 
   private async recordFailedMachineClaim(
@@ -2187,6 +2427,7 @@ export class MachinesService implements OnModuleInit, OnApplicationShutdown {
         failedAttemptCount: sql`${machineClaimCodes.failedAttemptCount} + 1`,
         state,
         lockedAt,
+        ...(expired ? { claimResponseEncryptedJson: null } : {}),
         updatedAt: now,
       })
       .where(eq(machineClaimCodes.id, claimCode.id));

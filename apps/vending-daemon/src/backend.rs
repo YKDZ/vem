@@ -360,11 +360,17 @@ impl BackendClient {
     pub async fn claim_machine(
         &self,
         claim_code: &str,
+        maintenance_public_key: &str,
+        provisioning_profile: &str,
     ) -> Result<MachineProvisioningProfile, String> {
         let response = self
             .client
             .post(self.endpoint("/machines/claim"))
-            .json(&serde_json::json!({ "claimCode": claim_code }))
+            .json(&serde_json::json!({
+                "claimCode": claim_code,
+                "maintenancePublicKey": maintenance_public_key,
+                "provisioningProfile": provisioning_profile,
+            }))
             .send()
             .await
             .map_err(|error| format!("backend request failed: {error}"))?;
@@ -734,6 +740,8 @@ mod tests {
             .and(path("/machines/claim"))
             .and(body_partial_json(serde_json::json!({
                 "claimCode": "ABCD-2345",
+                "maintenancePublicKey": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
+                "provisioningProfile": "testbed",
             })))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "code": 0,
@@ -778,6 +786,23 @@ mod tests {
                         "paymentCodeEnabled": true,
                         "serverTime": "2026-07-05T02:06:21.966Z"
                     },
+                    "provisioningProfile": "testbed",
+                    "maintenance": {
+                        "publicKey": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
+                        "tunnelAddress": "10.91.16.10",
+                        "address": "10.91.16.10/32",
+                        "endpoint": "relay.example:51820",
+                        "relay": {
+                            "publicKey": "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI=",
+                            "tunnelAddress": "10.91.0.1",
+                            "address": "10.91.0.1/32"
+                        },
+                        "roleRoutes": {
+                            "relay": "10.91.0.1/32",
+                            "runner": "10.91.1.0/24",
+                            "maintainer": "10.91.3.0/24"
+                        }
+                    },
                     "metadata": {
                         "profileVersion": 1,
                         "claimCodeId": "79713f63-db82-4bcd-b530-b8b85180f2a0",
@@ -790,7 +815,14 @@ mod tests {
             .await;
 
         let client = BackendClient::new(server.uri());
-        let profile = client.claim_machine("ABCD-2345").await.expect("profile");
+        let profile = client
+            .claim_machine(
+                "ABCD-2345",
+                "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
+                "testbed",
+            )
+            .await
+            .expect("profile");
 
         assert_eq!(profile.machine.code, "VEM-TESTBED-WINVM-01");
         assert_eq!(

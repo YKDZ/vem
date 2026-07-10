@@ -12,6 +12,10 @@ import {
   machineSlotCellNoSchema,
   machineSlotLayerNoSchema,
 } from "./machine-slot-coordinate";
+import {
+  maintenanceWireGuardEndpointSchema,
+  maintenanceWireGuardPublicKeySchema,
+} from "./maintenance-access";
 import { machinePaymentOptionSchema } from "./orders";
 
 function isIanaTimeZone(value: string): boolean {
@@ -22,6 +26,59 @@ function isIanaTimeZone(value: string): boolean {
     return false;
   }
 }
+
+type ParsedIpv4Cidr = {
+  network: number;
+  broadcast: number;
+  prefixLength: number;
+};
+
+const IPV4_CIDR_PATTERN =
+  /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\/(\d|[12]\d|3[0-2])$/;
+
+function ipv4NumberToString(value: number): string {
+  return [24, 16, 8, 0]
+    .map((shift) => Math.floor(value / 2 ** shift) % 256)
+    .join(".");
+}
+
+function parseCanonicalIpv4Cidr(
+  value: string,
+  minimumPrefixLength: number,
+): ParsedIpv4Cidr | undefined {
+  const match = IPV4_CIDR_PATTERN.exec(value);
+  if (!match) return undefined;
+  const octets = match.slice(1, 5).map(Number);
+  if (octets.some((octet) => octet > 255)) return undefined;
+  const prefixLength = Number(match[5]);
+  if (prefixLength < minimumPrefixLength) return undefined;
+  const address =
+    octets[0] * 2 ** 24 + octets[1] * 2 ** 16 + octets[2] * 2 ** 8 + octets[3];
+  const blockSize = 2 ** (32 - prefixLength);
+  const network = Math.floor(address / blockSize) * blockSize;
+  if (`${ipv4NumberToString(network)}/${prefixLength}` !== value) {
+    return undefined;
+  }
+  return { network, broadcast: network + blockSize - 1, prefixLength };
+}
+
+function ipv4CidrsOverlap(a: ParsedIpv4Cidr, b: ParsedIpv4Cidr): boolean {
+  return a.network <= b.broadcast && b.network <= a.broadcast;
+}
+
+const maintenanceHostRouteSchema = z
+  .string()
+  .refine(
+    (value) => parseCanonicalIpv4Cidr(value, 32)?.prefixLength === 32,
+    "Maintenance address must be a valid canonical IPv4 /32",
+  );
+
+const maintenanceRoleRouteSchema = z
+  .string()
+  .refine(
+    (value) => parseCanonicalIpv4Cidr(value, 24) !== undefined,
+    "Maintenance role route must be a canonical IPv4 CIDR with prefix /24 or narrower",
+  );
 
 export const machineGeoLocationSchema = z.strictObject({
   latitude: z.number().min(-90).max(90),
@@ -899,7 +956,73 @@ export const machineClaimRequestSchema = z.strictObject({
     .trim()
     .transform((value) => value.toUpperCase())
     .pipe(z.string().regex(/^[A-Z0-9]{4}-[A-Z0-9]{4}$/)),
+  maintenancePublicKey: maintenanceWireGuardPublicKeySchema,
+  provisioningProfile: z.enum(["production", "testbed"]),
 });
+
+export const machineProvisioningMaintenanceIdentitySchema = z
+  .strictObject({
+    publicKey: maintenanceWireGuardPublicKeySchema,
+    tunnelAddress: z.ipv4(),
+    address: maintenanceHostRouteSchema,
+    endpoint: maintenanceWireGuardEndpointSchema,
+    relay: z.strictObject({
+      publicKey: maintenanceWireGuardPublicKeySchema,
+      tunnelAddress: z.ipv4(),
+      address: maintenanceHostRouteSchema,
+    }),
+    roleRoutes: z.strictObject({
+      relay: maintenanceHostRouteSchema,
+      runner: maintenanceRoleRouteSchema,
+      maintainer: maintenanceRoleRouteSchema,
+    }),
+  })
+  .superRefine((identity, ctx) => {
+    if (identity.address !== `${identity.tunnelAddress}/32`) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["address"],
+        message: "Maintenance address must match tunnelAddress as /32",
+      });
+    }
+    if (identity.relay.address !== `${identity.relay.tunnelAddress}/32`) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["relay", "address"],
+        message: "Maintenance relay address must match tunnelAddress as /32",
+      });
+    }
+    if (identity.roleRoutes.relay !== identity.relay.address) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["roleRoutes", "relay"],
+        message: "Maintenance relay route must match the relay /32 address",
+      });
+    }
+
+    const machine = parseCanonicalIpv4Cidr(identity.address, 32);
+    const relay = parseCanonicalIpv4Cidr(identity.relay.address, 32);
+    const runner = parseCanonicalIpv4Cidr(identity.roleRoutes.runner, 24);
+    const maintainer = parseCanonicalIpv4Cidr(
+      identity.roleRoutes.maintainer,
+      24,
+    );
+    if (!machine || !relay || !runner || !maintainer) return;
+    if (
+      ipv4CidrsOverlap(runner, maintainer) ||
+      ipv4CidrsOverlap(runner, machine) ||
+      ipv4CidrsOverlap(maintainer, machine) ||
+      ipv4CidrsOverlap(runner, relay) ||
+      ipv4CidrsOverlap(maintainer, relay)
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["roleRoutes"],
+        message:
+          "Maintenance role routes must not overlap each other or peer addresses",
+      });
+    }
+  });
 
 export const productionMachineHardwareProfileSchema = z.strictObject({
   profile: z.literal("production"),
@@ -997,6 +1120,8 @@ export const machineProvisioningProfileSchema = z.strictObject({
   hardwareProfile: productionMachineHardwareProfileSchema,
   hardwareSlotTopology: hardwareSlotTopologyIdentitySchema,
   paymentCapability: productionMachinePaymentCapabilitySchema,
+  provisioningProfile: z.enum(["production", "testbed"]),
+  maintenance: machineProvisioningMaintenanceIdentitySchema,
   metadata: z.strictObject({
     profileVersion: z.literal(1),
     claimCodeId: z.uuid(),
@@ -1021,6 +1146,9 @@ export type RotateMachineCredentialsResponse = z.infer<
   typeof rotateMachineCredentialsResponseSchema
 >;
 export type MachineClaimRequest = z.infer<typeof machineClaimRequestSchema>;
+export type MachineProvisioningMaintenanceIdentity = z.infer<
+  typeof machineProvisioningMaintenanceIdentitySchema
+>;
 export type ProductionMachineHardwareProfile = z.infer<
   typeof productionMachineHardwareProfileSchema
 >;

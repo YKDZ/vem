@@ -222,6 +222,23 @@ export const provisioningClaimResponseSchema = z.object({
   config: configSummarySchema,
 });
 
+export const maintenanceEnrollmentStatusSchema = z.object({
+  state: z.enum([
+    "not_enrolled",
+    "tunnel_applied",
+    "handshake_pending",
+    "handshake_verified",
+    "failed",
+  ]),
+  publicKey: z.string().nullable(),
+  tunnelAddress: z.string().nullable(),
+  endpoint: z.string().nullable(),
+  handshakeVerified: z.boolean(),
+  lastHandshakeAt: z.string().nullable(),
+  lastError: z.string().nullable(),
+  updatedAt: z.string(),
+});
+
 type TransactionSnapshotParseResult =
   | { success: true; data: DaemonIpcTransactionSnapshot }
   | { success: false; error: unknown };
@@ -505,6 +522,9 @@ export type NetworkSettingsResponse = z.infer<
 >;
 export type ProvisioningClaimResponse = z.infer<
   typeof provisioningClaimResponseSchema
+>;
+export type MaintenanceEnrollmentStatus = z.infer<
+  typeof maintenanceEnrollmentStatusSchema
 >;
 export type TransactionSnapshot = DaemonIpcTransactionSnapshot;
 export type SyncStatus = z.infer<typeof syncStatusSchema>;
