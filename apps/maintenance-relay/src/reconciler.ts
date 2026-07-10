@@ -3,6 +3,8 @@ import {
   maintenanceRelayObservedStateSchema,
   type MaintenancePublicPeer,
   type MaintenanceRelayDesiredState,
+  type MaintenanceRelayFailure,
+  type MaintenanceRelayFailureReasonCode,
   type MaintenanceRelayObservedState,
   type MaintenanceRelayTransport,
   type MaintenanceSessionAuthorization,
@@ -54,7 +56,10 @@ export class MaintenanceRelayReconciler {
   private desired: MaintenanceRelayDesiredState | undefined;
   private observed: MaintenanceRelayObservedState | undefined;
   private pendingFailure:
-    | { attemptedDesiredStateVersion: number; message: string }
+    | {
+        attemptedDesiredStateVersion: number;
+        failure: MaintenanceRelayFailure;
+      }
     | undefined;
   private initialized = false;
   private readonly journal: RelayJournalStore;
@@ -97,7 +102,10 @@ export class MaintenanceRelayReconciler {
       const error = new Error(
         `stale desired state version: ${desired.desiredStateVersion} < ${this.appliedVersion}`,
       );
-      await this.recordFailure(error, desired.desiredStateVersion);
+      await this.recordFailure(
+        "desired_state_rejected",
+        desired.desiredStateVersion,
+      );
       throw error;
     }
     if (desired.desiredStateVersion === this.appliedVersion && this.desired) {
@@ -105,7 +113,10 @@ export class MaintenanceRelayReconciler {
         const error = new Error(
           "same desired state version has different payload hash",
         );
-        await this.recordFailure(error, desired.desiredStateVersion);
+        await this.recordFailure(
+          "desired_state_rejected",
+          desired.desiredStateVersion,
+        );
         throw error;
       }
       const activeAuthorizations = this.activeAuthorizations(this.desired);
@@ -115,13 +126,16 @@ export class MaintenanceRelayReconciler {
           activeAuthorizations,
         );
       } catch (error) {
-        await this.recordFailure(error, desired.desiredStateVersion);
+        await this.recordFailure(
+          "firewall_apply_failed",
+          desired.desiredStateVersion,
+        );
         throw error;
       }
       this.observed = await this.buildObserved(
         this.desired,
         activeAuthorizations,
-        this.pendingFailure?.message ?? null,
+        this.pendingFailure?.failure ?? null,
         this.pendingFailure?.attemptedDesiredStateVersion ?? null,
       );
       return this.observed;
@@ -130,25 +144,44 @@ export class MaintenanceRelayReconciler {
     const activeAuthorizations = this.activeAuthorizations(desired);
     try {
       await this.options.wireGuard.syncPeers(desired.peers);
+    } catch (error) {
+      await this.recordFailure(
+        "wireguard_apply_failed",
+        desired.desiredStateVersion,
+      );
+      throw error;
+    }
+    try {
       await this.options.firewall.syncState(
         desired.peers,
         activeAuthorizations,
       );
-      await this.journal.save(createRelayJournal(desired, this.now()));
-      this.desired = desired;
-      this.appliedVersion = desired.desiredStateVersion;
-      this.appliedHash = desiredHash;
-      this.pendingFailure = undefined;
-      this.observed = await this.buildObserved(
-        desired,
-        activeAuthorizations,
-        null,
-      );
-      return this.observed;
     } catch (error) {
-      await this.recordFailure(error, desired.desiredStateVersion);
+      await this.recordFailure(
+        "firewall_apply_failed",
+        desired.desiredStateVersion,
+      );
       throw error;
     }
+    try {
+      await this.journal.save(createRelayJournal(desired, this.now()));
+    } catch (error) {
+      await this.recordFailure(
+        "journal_persist_failed",
+        desired.desiredStateVersion,
+      );
+      throw error;
+    }
+    this.desired = desired;
+    this.appliedVersion = desired.desiredStateVersion;
+    this.appliedHash = desiredHash;
+    this.pendingFailure = undefined;
+    this.observed = await this.buildObserved(
+      desired,
+      activeAuthorizations,
+      null,
+    );
+    return this.observed;
   }
 
   async enforceLocalExpiry(): Promise<
@@ -164,14 +197,17 @@ export class MaintenanceRelayReconciler {
       );
     } catch (error) {
       if (!this.pendingFailure) {
-        await this.recordFailure(error, this.desired.desiredStateVersion);
+        await this.recordFailure(
+          "firewall_apply_failed",
+          this.desired.desiredStateVersion,
+        );
       }
       throw error;
     }
     this.observed = await this.buildObserved(
       this.desired,
       activeAuthorizations,
-      this.pendingFailure?.message ?? null,
+      this.pendingFailure?.failure ?? null,
       this.pendingFailure?.attemptedDesiredStateVersion ?? null,
     );
     return this.observed;
@@ -182,12 +218,12 @@ export class MaintenanceRelayReconciler {
   }
 
   private async recordFailure(
-    error: unknown,
+    reasonCode: MaintenanceRelayFailureReasonCode,
     attemptedDesiredStateVersion: number,
   ): Promise<void> {
     this.pendingFailure = {
       attemptedDesiredStateVersion,
-      message: safeFailureMessage(error),
+      failure: { reasonCode },
     };
     if (!this.desired) {
       this.observed = maintenanceRelayObservedStateSchema.parse({
@@ -201,14 +237,14 @@ export class MaintenanceRelayReconciler {
         peerObservations: [],
         activeAuthorizationObservations: [],
         transport: this.options.transport ?? defaultTransport,
-        failure: this.pendingFailure.message,
+        failure: this.pendingFailure.failure,
       });
       return;
     }
     this.observed = await this.buildObserved(
       this.desired,
       this.activeAuthorizations(this.desired),
-      this.pendingFailure.message,
+      this.pendingFailure.failure,
       attemptedDesiredStateVersion,
     );
   }
@@ -225,7 +261,7 @@ export class MaintenanceRelayReconciler {
   private async buildObserved(
     desired: MaintenanceRelayDesiredState,
     activeAuthorizations: MaintenanceSessionAuthorization[],
-    failure: string | null,
+    failure: MaintenanceRelayFailure | null,
     attemptedDesiredStateVersion: number | null = failure
       ? desired.desiredStateVersion
       : null,
@@ -238,8 +274,8 @@ export class MaintenanceRelayReconciler {
     }> = [];
     try {
       observedPeers = await this.options.wireGuard.observePeers();
-    } catch (error) {
-      observedFailure ??= safeFailureMessage(error);
+    } catch {
+      observedFailure ??= { reasonCode: "peer_observation_failed" };
       observedAttemptedDesiredStateVersion ??= desired.desiredStateVersion;
     }
     const handshakesByPeerId = new Map(
@@ -286,7 +322,7 @@ export class MaintenanceRelayReconciler {
         (peer) => peer.tunnelAddress === authorization.targetTunnelAddress,
       );
       if (
-        source?.role !== "runner" ||
+        (source?.role !== "runner" && source?.role !== "maintainer") ||
         source.tunnelAddress !== authorization.sourceTunnelAddress ||
         target?.role !== "machine" ||
         authorization.protocol !== "tcp" ||
@@ -296,9 +332,4 @@ export class MaintenanceRelayReconciler {
       }
     }
   }
-}
-
-function safeFailureMessage(error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error);
-  return message.replace(/[\r\n\t]/g, " ").slice(0, 500) || "reconcile failed";
 }

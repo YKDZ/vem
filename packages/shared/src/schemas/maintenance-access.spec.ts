@@ -1,8 +1,14 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  createMaintenanceSessionRequestSchema,
+  CI_MAINTENANCE_SESSION_TTL_MINUTES,
+  createCiMaintenanceSessionCommandSchema,
+  createHumanMaintenanceSessionRequestSchema,
   maintenanceAccessOverviewResponseSchema,
+  maintenanceAccessAuditListQuerySchema,
+  maintenancePeerHealthSchema,
+  maintenanceSessionListQuerySchema,
+  maintenanceSessionResponseSchema,
   maintenanceRelayCredentialExchangeRequestSchema,
   maintenanceRelayCredentialExchangeResponseSchema,
   maintenanceRelayDesiredStateSchema,
@@ -17,6 +23,35 @@ const TARGET_MACHINE_ID = "550e8400-e29b-41d4-a716-446655440002";
 const SESSION_ID = "550e8400-e29b-41d4-a716-446655440003";
 
 describe("Maintenance Access shared contracts", () => {
+  it("separates default-30-minute human requests from fixed-150-minute CI commands", () => {
+    expect(
+      createHumanMaintenanceSessionRequestSchema.parse({
+        sourcePeerId: SOURCE_PEER_ID,
+        targetMachineId: TARGET_MACHINE_ID,
+        reason: "Investigate Windows runtime failure",
+      }),
+    ).toMatchObject({ ttlMinutes: 30 });
+
+    expect(CI_MAINTENANCE_SESSION_TTL_MINUTES).toBe(150);
+    expect(
+      createCiMaintenanceSessionCommandSchema.parse({
+        sourcePeerId: SOURCE_PEER_ID,
+        targetMachineId: TARGET_MACHINE_ID,
+        automationActorId: "github-run:123456",
+        reason: "Run VM Runtime Acceptance",
+      }),
+    ).not.toHaveProperty("ttlMinutes");
+    expect(() =>
+      createCiMaintenanceSessionCommandSchema.parse({
+        sourcePeerId: SOURCE_PEER_ID,
+        targetMachineId: TARGET_MACHINE_ID,
+        automationActorId: "github-run:123456",
+        reason: "Run VM Runtime Acceptance",
+        ttlMinutes: 180,
+      }),
+    ).toThrow();
+  });
+
   it("accepts a versioned runner-to-machine TCP 22 desired state without secrets", () => {
     const desiredState = {
       schemaVersion: "maintenance-relay-desired-state/v1",
@@ -143,6 +178,75 @@ describe("Maintenance Access shared contracts", () => {
     ).toMatchObject({ observation: "unreported", observedAt: null });
   });
 
+  it("allows only reason codes across the relay failure boundary", () => {
+    const base = {
+      schemaVersion: "maintenance-relay-observed-state/v1",
+      observedAt: "2026-07-10T12:00:01.000Z",
+      desiredStateSchemaVersion: "maintenance-relay-desired-state/v1",
+      appliedDesiredStateVersion: 6,
+      attemptedDesiredStateVersion: 7,
+      appliedPeerIds: [],
+      appliedAuthorizationIds: [],
+      peerObservations: [],
+      activeAuthorizationObservations: [],
+      transport: { mode: "https", health: "healthy", reason: null },
+    } as const;
+
+    expect(
+      maintenanceRelayObservedStateSchema.parse({
+        ...base,
+        failure: { reasonCode: "firewall_apply_failed" },
+      }).failure,
+    ).toEqual({ reasonCode: "firewall_apply_failed" });
+    for (const failure of [
+      "nft failed: private-key=secret",
+      { reasonCode: "unknown_failure" },
+      {
+        reasonCode: "firewall_apply_failed",
+        summary: "stderr contained credential=secret",
+      },
+    ]) {
+      expect(() =>
+        maintenanceRelayObservedStateSchema.parse({ ...base, failure }),
+      ).toThrow();
+    }
+  });
+
+  it("exposes only healthy, stale, or unknown peer health", () => {
+    const peerHealth = {
+      peer: {
+        id: SOURCE_PEER_ID,
+        role: "maintainer",
+        publicKey: "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
+        tunnelAddress: "10.91.2.10",
+      },
+      relayApplied: true,
+      lastHandshakeAt: "2026-07-10T11:55:00.000Z",
+    } as const;
+
+    expect(
+      maintenancePeerHealthSchema.parse({ ...peerHealth, health: "stale" }),
+    ).toMatchObject({ health: "stale" });
+    expect(() =>
+      maintenancePeerHealthSchema.parse({ ...peerHealth, health: "pending" }),
+    ).toThrow();
+  });
+
+  it("keeps maintenance audit queries scoped and session lists kind-filterable", () => {
+    expect(
+      maintenanceAccessAuditListQuerySchema.parse({ sessionId: SESSION_ID }),
+    ).toEqual({ sessionId: SESSION_ID, limit: 50 });
+    expect(() =>
+      maintenanceAccessAuditListQuerySchema.parse({
+        resourceType: "payment",
+        action: "payment.refund",
+      }),
+    ).toThrow();
+    expect(maintenanceSessionListQuerySchema.parse({ kind: "ci" })).toEqual({
+      kind: "ci",
+    });
+  });
+
   it("accepts only strict peer registration inputs with canonical 32-byte WireGuard public keys", () => {
     const publicKey = Buffer.alloc(32, 1).toString("base64");
 
@@ -175,7 +279,7 @@ describe("Maintenance Access shared contracts", () => {
 
   it("rejects broad, reversed, malformed, or secret-bearing maintenance facts", () => {
     expect(() =>
-      createMaintenanceSessionRequestSchema.parse({
+      createHumanMaintenanceSessionRequestSchema.parse({
         sourcePeerId: SOURCE_PEER_ID,
         targetMachineId: TARGET_MACHINE_ID,
         reason: "Investigate Windows runtime failure",
@@ -215,7 +319,7 @@ describe("Maintenance Access shared contracts", () => {
 
   it("exposes strict Admin create and overview contracts", () => {
     expect(
-      createMaintenanceSessionRequestSchema.parse({
+      createHumanMaintenanceSessionRequestSchema.parse({
         sourcePeerId: SOURCE_PEER_ID,
         targetMachineId: TARGET_MACHINE_ID,
         reason: "Investigate Windows runtime failure",
@@ -230,7 +334,7 @@ describe("Maintenance Access shared contracts", () => {
       port: 22,
     });
     expect(() =>
-      createMaintenanceSessionRequestSchema.parse({
+      createHumanMaintenanceSessionRequestSchema.parse({
         sourcePeerId: SOURCE_PEER_ID,
         targetMachineId: TARGET_MACHINE_ID,
         reason: "Investigate Windows runtime failure",
@@ -245,6 +349,130 @@ describe("Maintenance Access shared contracts", () => {
         sessions: [],
         desiredState: {},
         observedState: {},
+      }),
+    ).toThrow();
+
+    expect(
+      maintenanceAccessOverviewResponseSchema.parse({
+        schemaVersion: "maintenance-access-overview/v1",
+        sourcePeers: [],
+        targetMachines: [],
+        peerHealth: [],
+        sessions: [],
+        desiredState: {
+          schemaVersion: "maintenance-relay-desired-state/v1",
+          desiredStateVersion: 0,
+          generatedAt: "2026-07-10T12:00:00.000Z",
+          peers: [],
+          authorizations: [],
+        },
+        observedState: {
+          schemaVersion: "maintenance-relay-observed-state/v1",
+          observedAt: "2026-07-10T12:00:01.000Z",
+          desiredStateSchemaVersion: "maintenance-relay-desired-state/v1",
+          appliedDesiredStateVersion: 0,
+          attemptedDesiredStateVersion: 1,
+          appliedPeerIds: [],
+          appliedAuthorizationIds: [],
+          peerObservations: [],
+          activeAuthorizationObservations: [],
+          transport: { mode: "https", health: "healthy", reason: null },
+          failure: { reasonCode: "firewall_apply_failed" },
+        },
+        relayFailure: {
+          reasonCode: "firewall_apply_failed",
+          summary: "Relay could not apply the maintenance firewall policy.",
+        },
+        relayHealth: {
+          observation: "current",
+          overall: "degraded",
+          stale: false,
+          observedAt: "2026-07-10T12:00:01.000Z",
+        },
+      }).relayFailure,
+    ).toEqual({
+      reasonCode: "firewall_apply_failed",
+      summary: "Relay could not apply the maintenance firewall policy.",
+    });
+  });
+
+  it("models human session lifecycle, relay convergence, and status filtering without certificate material", () => {
+    const session = maintenanceSessionResponseSchema.parse({
+      id: SESSION_ID,
+      kind: "human",
+      actor: {
+        type: "admin",
+        adminUserId: "550e8400-e29b-41d4-a716-446655440005",
+      },
+      sourcePeer: {
+        id: SOURCE_PEER_ID,
+        role: "maintainer",
+        publicKey: "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
+        tunnelAddress: "10.91.2.10",
+      },
+      targetMachine: {
+        id: TARGET_MACHINE_ID,
+        code: "VEM-MAINT-01",
+        name: "Maintenance machine",
+        maintenancePeerId: "550e8400-e29b-41d4-a716-446655440004",
+        tunnelAddress: "10.91.16.10",
+      },
+      protocol: "tcp",
+      port: 22,
+      reason: "Investigate Windows runtime failure",
+      issuedAt: "2026-07-10T12:00:00.000Z",
+      expiresAt: "2026-07-10T12:30:00.000Z",
+      activatedAt: null,
+      expiredAt: null,
+      failedAt: null,
+      failure: null,
+      revokedAt: null,
+      status: "active",
+      relayConvergence: {
+        desiredStateVersion: 7,
+        appliedDesiredStateVersion: 6,
+        state: "pending",
+      },
+    });
+
+    expect(session.sourcePeer.role).toBe("maintainer");
+    expect(session.actor).toEqual({
+      type: "admin",
+      adminUserId: "550e8400-e29b-41d4-a716-446655440005",
+    });
+    expect(
+      maintenanceSessionListQuerySchema.parse({ status: "failed" }),
+    ).toEqual({ status: "failed" });
+    expect(() =>
+      maintenanceSessionResponseSchema.parse({
+        ...session,
+        certificateLinkedAt: "2026-07-10T12:05:00.000Z",
+      }),
+    ).toThrow();
+    expect(() =>
+      maintenanceSessionResponseSchema.parse({
+        ...session,
+        kind: "ci",
+        actor: {
+          type: "automation",
+          automationActorId: "github-run:123456",
+        },
+        sourcePeer: { ...session.sourcePeer, role: "runner" },
+      }),
+    ).not.toThrow();
+    expect(() =>
+      maintenanceSessionResponseSchema.parse({
+        ...session,
+        actor: {
+          type: "automation",
+          automationActorId: "github-run:123456",
+        },
+      }),
+    ).toThrow();
+    expect(() =>
+      maintenanceSessionResponseSchema.parse({
+        ...session,
+        certificatePrivateKey: "must-not-cross-boundary",
       }),
     ).toThrow();
   });

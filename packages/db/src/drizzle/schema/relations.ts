@@ -176,12 +176,23 @@ export const relations = defineRelations(
         from: r.maintenancePeers.machineId,
         to: r.machines.id,
       }),
-      sourceSessions: r.many.maintenanceSessions(),
+      sourceSessions: r.many.maintenanceSessions({
+        alias: "maintenance_session_source_peer",
+      }),
+      targetSessions: r.many.maintenanceSessions({
+        alias: "maintenance_session_target_peer",
+      }),
     },
     maintenanceSessions: {
       sourcePeer: r.one.maintenancePeers({
         from: r.maintenanceSessions.sourcePeerId,
         to: r.maintenancePeers.id,
+        alias: "maintenance_session_source_peer",
+      }),
+      targetPeer: r.one.maintenancePeers({
+        from: r.maintenanceSessions.targetPeerId,
+        to: r.maintenancePeers.id,
+        alias: "maintenance_session_target_peer",
       }),
       targetMachine: r.one.machines({
         from: r.maintenanceSessions.targetMachineId,

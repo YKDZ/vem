@@ -16,6 +16,7 @@ import {
 import {
   adminRoleResponseSchema,
   adminUserResponseSchema,
+  auditLogResponseSchema,
   auditLogPageResponseSchema,
   maintenanceAccessOverviewResponseSchema,
   maintenanceRelayDesiredStateSchema,
@@ -45,6 +46,56 @@ describe("maintenance-access tracer flow", { concurrent: false }, () => {
   let api: ReturnType<typeof request>;
   let maintenanceAccess: MaintenanceAccessService;
   let smallPoolMaintenanceAccess: MaintenanceAccessService;
+
+  async function provisionAdminAuth(
+    label: "read_only" | "writer",
+    permissionCodes: ("maintenanceAccess.read" | "maintenanceAccess.write")[],
+  ): Promise<{ Authorization: string }> {
+    const unique = randomUUID().slice(0, 8);
+    const bootstrapToken = await loginAndGetToken(api, config);
+    const bootstrapAuth = { Authorization: `Bearer ${bootstrapToken}` };
+    const role = adminRoleResponseSchema.parse(
+      (
+        await api
+          .post("/api/roles")
+          .set(bootstrapAuth)
+          .send({
+            code: `maintenance_${label}_${unique}`,
+            name: `Maintenance ${label} ${unique}`,
+            permissionCodes: permissionCodes.map((permissionCode) =>
+              permissionCodeSchema.parse(permissionCode),
+            ),
+          })
+          .expect(201)
+      ).body.data,
+    );
+    const password = "MaintenancePassword123!";
+    const username = `maintenance-${label}-${unique}`;
+    adminUserResponseSchema.parse(
+      (
+        await api
+          .post("/api/admin-users")
+          .set(bootstrapAuth)
+          .send({
+            username,
+            password,
+            displayName: `Maintenance ${label} ${unique}`,
+            roleIds: [role.id],
+          })
+          .expect(201)
+      ).body.data,
+    );
+    const token = (
+      (
+        await api
+          .post("/api/auth/login")
+          .send({ username, password })
+          .expect(200)
+      ).body as ApiResponse<{ accessToken: string }>
+    ).data.accessToken;
+
+    return { Authorization: `Bearer ${token}` };
+  }
 
   beforeAll(async () => {
     const moduleRef = await Test.createTestingModule({
@@ -156,9 +207,8 @@ describe("maintenance-access tracer flow", { concurrent: false }, () => {
       changed.desiredState.desiredStateVersion,
     );
     expect(changed.observedState.appliedDesiredStateVersion).toBe(0);
-    expect(changed.observedState.failure).toBe(
-      "relay has not reported observed state",
-    );
+    expect(changed.observedState.failure).toBeNull();
+    expect(changed.relayFailure).toBeNull();
     expect(changed.observedState.transport).toEqual({
       mode: "unknown",
       health: "unreported",
@@ -361,11 +411,11 @@ describe("maintenance-access tracer flow", { concurrent: false }, () => {
       publicKey: wireGuardPublicKey(218),
       machineId: machine.id,
     });
-    const session = await maintenanceAccess.createSession(actor.id, {
+    const session = await maintenanceAccess.createCiSession({
       sourcePeerId: sourcePeer.id,
       targetMachineId: machine.id,
+      automationActorId: "test:source-peer-revocation",
       reason: "Verify source peer revocation",
-      ttlMinutes: 30,
       protocol: "tcp",
       port: 22,
     });
@@ -375,7 +425,9 @@ describe("maintenance-access tracer flow", { concurrent: false }, () => {
     const after = await maintenanceAccess.getOverview();
 
     expect(revoked.revokedSessionIds).toEqual([session.id]);
-    expect(after.sessions).toEqual([]);
+    expect(after.sessions).toContainEqual(
+      expect.objectContaining({ id: session.id, status: "revoked" }),
+    );
     expect(after.desiredState.authorizations).toEqual([]);
     expect(after.desiredState.desiredStateVersion).toBe(
       before.desiredState.desiredStateVersion + 1,
@@ -422,11 +474,11 @@ describe("maintenance-access tracer flow", { concurrent: false }, () => {
       publicKey: wireGuardPublicKey(220),
       machineId: machine.id,
     });
-    const session = await maintenanceAccess.createSession(actor.id, {
+    const session = await maintenanceAccess.createCiSession({
       sourcePeerId: sourcePeer.id,
       targetMachineId: machine.id,
+      automationActorId: "test:target-peer-revocation",
       reason: "Verify target peer revocation",
-      ttlMinutes: 30,
       protocol: "tcp",
       port: 22,
     });
@@ -435,7 +487,9 @@ describe("maintenance-access tracer flow", { concurrent: false }, () => {
     const overview = await maintenanceAccess.getOverview();
 
     expect(revoked.revokedSessionIds).toEqual([session.id]);
-    expect(overview.sessions).toEqual([]);
+    expect(overview.sessions).toContainEqual(
+      expect.objectContaining({ id: session.id, status: "revoked" }),
+    );
     expect(overview.desiredState.authorizations).toEqual([]);
     expect(overview.desiredState.peers).not.toContainEqual(
       expect.objectContaining({ id: targetPeer.id }),
@@ -444,10 +498,6 @@ describe("maintenance-access tracer flow", { concurrent: false }, () => {
 
   it("keeps a published relay revision immutable after an out-of-band peer change", async () => {
     const unique = Date.now().toString(36);
-    const [actor] = await db.client
-      .select({ id: adminUsers.id })
-      .from(adminUsers)
-      .where(eq(adminUsers.username, config.bootstrapAdminUsername));
     const [machine] = await db.client
       .insert(machines)
       .values({
@@ -465,11 +515,11 @@ describe("maintenance-access tracer flow", { concurrent: false }, () => {
       publicKey: wireGuardPublicKey(222),
       machineId: machine.id,
     });
-    const session = await maintenanceAccess.createSession(actor.id, {
+    const session = await maintenanceAccess.createCiSession({
       sourcePeerId: sourcePeer.id,
       targetMachineId: machine.id,
+      automationActorId: "test:immutable-relay-revision",
       reason: "Verify fail-closed projection",
-      ttlMinutes: 30,
       protocol: "tcp",
       port: 22,
     });
@@ -482,56 +532,31 @@ describe("maintenance-access tracer flow", { concurrent: false }, () => {
 
     const overview = await maintenanceAccess.getOverview();
 
-    expect(overview.sessions).not.toContainEqual(
-      expect.objectContaining({ id: session.id }),
+    expect(overview.sessions).toContainEqual(
+      expect.objectContaining({ id: session.id, status: "active" }),
     );
     expect(overview.desiredState).toEqual(published);
   });
 
-  it("returns real 403 responses for an authenticated admin without maintenance permissions", async () => {
-    const unique = randomUUID().slice(0, 8);
-    const adminToken = await loginAndGetToken(api, config);
-    const adminAuth = { Authorization: `Bearer ${adminToken}` };
-    const roleResponse = await api
-      .post("/api/roles")
-      .set(adminAuth)
-      .send({
-        code: `maintenance_forbidden_${unique}`,
-        name: `Maintenance forbidden ${unique}`,
-        permissionCodes: [permissionCodeSchema.parse("products.read")],
-      })
-      .expect(201);
-    const role = adminRoleResponseSchema.parse(
-      (roleResponse.body as ApiResponse<unknown>).data,
-    );
-    const password = "LimitedPassword123!";
-    const username = `maintenance-forbidden-${unique}`;
-    const userResponse = await api
-      .post("/api/admin-users")
-      .set(adminAuth)
-      .send({
-        username,
-        password,
-        displayName: `Maintenance forbidden ${unique}`,
-        roleIds: [role.id],
-      })
-      .expect(201);
-    adminUserResponseSchema.parse(
-      (userResponse.body as ApiResponse<unknown>).data,
-    );
-    const loginResponse = await api
-      .post("/api/auth/login")
-      .send({ username, password })
-      .expect(200);
-    const limitedToken = (
-      loginResponse.body as ApiResponse<{ accessToken: string }>
-    ).data.accessToken;
-    const limitedAuth = { Authorization: `Bearer ${limitedToken}` };
+  it("allows a read-only admin to list sessions but returns real 403 responses for create and revoke", async () => {
+    const readOnlyAuth = await provisionAdminAuth("read_only", [
+      "maintenanceAccess.read",
+    ]);
+    const listed = maintenanceSessionResponseSchema
+      .array()
+      .parse(
+        (
+          await api
+            .get("/api/maintenance-access/sessions")
+            .set(readOnlyAuth)
+            .expect(200)
+        ).body.data,
+      );
 
-    await api.get("/api/maintenance-access").set(limitedAuth).expect(403);
+    expect(listed).toEqual([]);
     await api
       .post("/api/maintenance-access/sessions")
-      .set(limitedAuth)
+      .set(readOnlyAuth)
       .send({
         sourcePeerId: randomUUID(),
         targetMachineId: randomUUID(),
@@ -539,9 +564,13 @@ describe("maintenance-access tracer flow", { concurrent: false }, () => {
         ttlMinutes: 30,
       })
       .expect(403);
+    await api
+      .post(`/api/maintenance-access/sessions/${randomUUID()}/revoke`)
+      .set(readOnlyAuth)
+      .expect(403);
   });
 
-  it("creates one exact runner-to-Platform-Machine SSH session and projects only public relay facts", async () => {
+  it("creates one exact CI runner-to-Platform-Machine SSH session and projects only public relay facts", async () => {
     const unique = Date.now().toString(36);
     const token = await loginAndGetToken(api, config);
     const auth = { Authorization: `Bearer ${token}` };
@@ -573,26 +602,31 @@ describe("maintenance-access tracer flow", { concurrent: false }, () => {
     });
     expect(sourcePeer.tunnelAddress).not.toBe(machinePeer.tunnelAddress);
 
-    const createdResponse = await api
-      .post("/api/maintenance-access/sessions")
-      .set(auth)
-      .send({
+    const created = maintenanceSessionResponseSchema.parse(
+      await maintenanceAccess.createCiSession({
         sourcePeerId: sourcePeer.id,
         targetMachineId: machine.id,
+        automationActorId: "test:runner-http-tracer",
         reason: "Investigate Windows runtime failure",
-        ttlMinutes: 30,
-      })
-      .expect(201);
-    const created = maintenanceSessionResponseSchema.parse(
-      (createdResponse.body as ApiResponse<unknown>).data,
+        protocol: "tcp",
+        port: 22,
+      }),
     );
     expect(created).toMatchObject({
+      kind: "ci",
+      actor: {
+        type: "automation",
+        automationActorId: "test:runner-http-tracer",
+      },
       sourcePeer: { id: sourcePeer.id, role: "runner" },
       targetMachine: { id: machine.id, maintenancePeerId: machinePeer.id },
       protocol: "tcp",
       port: 22,
       status: "active",
     });
+    expect(
+      (Date.parse(created.expiresAt) - Date.parse(created.issuedAt)) / 60_000,
+    ).toBe(150);
 
     const overviewResponse = await api
       .get("/api/maintenance-access")
@@ -702,5 +736,221 @@ describe("maintenance-access tracer flow", { concurrent: false }, () => {
         port: 3389,
       })
       .expect(400);
+  }, 60_000);
+
+  it("runs the Admin human maintainer lifecycle through activation, revocation, filtering, and relay convergence", async () => {
+    const unique = Date.now().toString(36);
+    const auth = await provisionAdminAuth("writer", [
+      "maintenanceAccess.read",
+      "maintenanceAccess.write",
+    ]);
+    const [machine] = await db.client
+      .insert(machines)
+      .values({
+        code: `VEM-HUMAN-${unique}`,
+        name: `Human maintenance ${unique}`,
+        status: "online",
+      })
+      .returning({ id: machines.id });
+    const runner = await maintenanceAccess.registerPeer({
+      role: "runner",
+      publicKey: wireGuardPublicKey(),
+    });
+    const maintainer = await maintenanceAccess.registerPeer({
+      role: "maintainer",
+      publicKey: wireGuardPublicKey(),
+    });
+    const machinePeer = await maintenanceAccess.registerPeer({
+      role: "machine",
+      publicKey: wireGuardPublicKey(),
+      machineId: machine.id,
+    });
+
+    await api
+      .post("/api/maintenance-access/sessions")
+      .set(auth)
+      .send({
+        sourcePeerId: runner.id,
+        targetMachineId: machine.id,
+        reason: "Runner must not be an Admin human source",
+        ttlMinutes: 30,
+      })
+      .expect(404);
+
+    const createdResponse = await api
+      .post("/api/maintenance-access/sessions")
+      .set(auth)
+      .send({
+        sourcePeerId: maintainer.id,
+        targetMachineId: machine.id,
+        reason: "Investigate Windows runtime failure",
+        ttlMinutes: 30,
+      })
+      .expect(201);
+    const created = maintenanceSessionResponseSchema.parse(
+      (createdResponse.body as ApiResponse<unknown>).data,
+    );
+    expect(created).toMatchObject({
+      sourcePeer: { id: maintainer.id, role: "maintainer" },
+      targetMachine: { id: machine.id, maintenancePeerId: machinePeer.id },
+      status: "active",
+      relayConvergence: { state: "unknown" },
+    });
+
+    const relayToken = (
+      (
+        await api
+          .post("/api/maintenance-relay/credential-exchange")
+          .send({ credential: config.maintenanceRelayCredential })
+          .expect(201)
+      ).body as ApiResponse<{ accessToken: string }>
+    ).data.accessToken;
+    const relayAuth = { Authorization: `Bearer ${relayToken}` };
+    const desired = maintenanceRelayDesiredStateSchema.parse(
+      (
+        await api
+          .get("/api/maintenance-relay/desired-state")
+          .set(relayAuth)
+          .expect(200)
+      ).body.data,
+    );
+    await api
+      .post("/api/maintenance-relay/observed-state")
+      .set(relayAuth)
+      .send({
+        schemaVersion: "maintenance-relay-observed-state/v1",
+        observedAt: new Date().toISOString(),
+        desiredStateSchemaVersion: desired.schemaVersion,
+        appliedDesiredStateVersion: desired.desiredStateVersion,
+        attemptedDesiredStateVersion: null,
+        appliedPeerIds: desired.peers.map((peer) => peer.id),
+        appliedAuthorizationIds: desired.authorizations.map(
+          (authorization) => authorization.sessionId,
+        ),
+        peerObservations: desired.peers.map((peer) => ({
+          peerId: peer.id,
+          latestHandshakeAt:
+            peer.id === maintainer.id ? new Date().toISOString() : null,
+        })),
+        activeAuthorizationObservations: desired.authorizations.map(
+          (authorization) => ({
+            sessionId: authorization.sessionId,
+            expiresAt: authorization.expiresAt,
+          }),
+        ),
+        transport: { mode: "https", health: "healthy", reason: null },
+        failure: null,
+      })
+      .expect(201);
+
+    const activated = maintenanceAccessOverviewResponseSchema.parse(
+      (await api.get("/api/maintenance-access").set(auth).expect(200)).body
+        .data,
+    );
+    expect(activated.peerHealth).toContainEqual(
+      expect.objectContaining({
+        peer: expect.objectContaining({ id: maintainer.id }),
+        relayApplied: true,
+        health: "healthy",
+      }),
+    );
+    expect(activated.sessions).toContainEqual(
+      expect.objectContaining({
+        id: created.id,
+        activatedAt: expect.any(String),
+        relayConvergence: expect.objectContaining({ state: "applied" }),
+      }),
+    );
+
+    await api
+      .post(`/api/maintenance-access/sessions/${created.id}/revoke`)
+      .set(auth)
+      .expect(201);
+    const afterRevoke = maintenanceAccessOverviewResponseSchema.parse(
+      (await api.get("/api/maintenance-access").set(auth).expect(200)).body
+        .data,
+    );
+    const revoked = afterRevoke.sessions.find(
+      (session) => session.id === created.id,
+    );
+    expect(revoked).toMatchObject({
+      status: "revoked",
+      relayConvergence: { state: "pending" },
+    });
+
+    const removalDesired = maintenanceRelayDesiredStateSchema.parse(
+      (
+        await api
+          .get("/api/maintenance-relay/desired-state")
+          .set(relayAuth)
+          .expect(200)
+      ).body.data,
+    );
+    await api
+      .post("/api/maintenance-relay/observed-state")
+      .set(relayAuth)
+      .send({
+        schemaVersion: "maintenance-relay-observed-state/v1",
+        observedAt: new Date(Date.now() + 1).toISOString(),
+        desiredStateSchemaVersion: removalDesired.schemaVersion,
+        appliedDesiredStateVersion: removalDesired.desiredStateVersion,
+        attemptedDesiredStateVersion: null,
+        appliedPeerIds: removalDesired.peers.map((peer) => peer.id),
+        appliedAuthorizationIds: [],
+        peerObservations: removalDesired.peers.map((peer) => ({
+          peerId: peer.id,
+          latestHandshakeAt: null,
+        })),
+        activeAuthorizationObservations: [],
+        transport: {
+          mode: "insecure-http",
+          health: "degraded",
+          reason: "Test transport exception",
+        },
+        failure: null,
+      })
+      .expect(201);
+    const revokedList = maintenanceSessionResponseSchema
+      .array()
+      .parse(
+        (
+          await api
+            .get("/api/maintenance-access/sessions")
+            .set(auth)
+            .query({ status: "revoked" })
+            .expect(200)
+        ).body.data,
+      );
+    expect(revokedList).toContainEqual(
+      expect.objectContaining({
+        id: created.id,
+        relayConvergence: expect.objectContaining({ state: "removed" }),
+      }),
+    );
+
+    const audit = auditLogResponseSchema
+      .array()
+      .parse(
+        (
+          await api
+            .get("/api/maintenance-access/audit")
+            .set(auth)
+            .query({ sessionId: created.id })
+            .expect(200)
+        ).body.data,
+      );
+    expect(audit.map((item) => item.action)).toEqual(
+      expect.arrayContaining([
+        "maintenanceAccess.session.create",
+        "maintenanceAccess.session.activate",
+        "maintenanceAccess.session.revoke",
+      ]),
+    );
+    expect(audit.map((item) => item.action)).not.toContain(
+      "maintenanceAccess.session.certificate.linkage.pending",
+    );
+    expect(
+      JSON.stringify({ created, activated, revokedList, audit }),
+    ).not.toMatch(/privateKey|credential|accessToken|certificatePrivate/i);
   }, 60_000);
 });

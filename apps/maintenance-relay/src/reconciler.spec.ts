@@ -123,11 +123,7 @@ describe("MaintenanceRelayReconciler", () => {
 
     await second.initialize();
 
-    expect(restored).toEqual([
-      "firewall:0:0",
-      "wireguard:2",
-      "firewall:2:0",
-    ]);
+    expect(restored).toEqual(["firewall:0:0", "wireguard:2", "firewall:2:0"]);
     expect(second.currentObserved()).toMatchObject({
       appliedDesiredStateVersion: 2,
       appliedAuthorizationIds: [],
@@ -176,6 +172,9 @@ describe("MaintenanceRelayReconciler", () => {
         generatedAt: "2026-07-10T12:00:01.000Z",
       }),
     ).rejects.toThrow("same desired state version has different payload hash");
+    expect(reconciler.currentObserved()?.failure).toEqual({
+      reasonCode: "desired_state_rejected",
+    });
   });
 
   it("advances the journal only after both backends succeed and preserves failure through expiry", async () => {
@@ -219,7 +218,7 @@ describe("MaintenanceRelayReconciler", () => {
       appliedDesiredStateVersion: 1,
       appliedPeerIds: [RUNNER_ID, MACHINE_ID],
       attemptedDesiredStateVersion: 2,
-      failure: "nft apply failed",
+      failure: { reasonCode: "firewall_apply_failed" },
     });
 
     failFirewall = false;
@@ -228,7 +227,7 @@ describe("MaintenanceRelayReconciler", () => {
       appliedDesiredStateVersion: 1,
       appliedAuthorizationIds: [],
       attemptedDesiredStateVersion: 2,
-      failure: "nft apply failed",
+      failure: { reasonCode: "firewall_apply_failed" },
     });
   });
 
@@ -252,7 +251,7 @@ describe("MaintenanceRelayReconciler", () => {
       appliedPeerIds: [],
       appliedAuthorizationIds: [],
       attemptedDesiredStateVersion: 4,
-      failure: "wg syncconf failed",
+      failure: { reasonCode: "wireguard_apply_failed" },
     });
   });
 
@@ -298,5 +297,35 @@ describe("MaintenanceRelayReconciler", () => {
     await expect(reconciler.reconcile(desired(1))).rejects.toThrow(
       "stale desired state version",
     );
+    expect(reconciler.currentObserved()?.failure).toEqual({
+      reasonCode: "desired_state_rejected",
+    });
+  });
+
+  it("accepts a maintainer-to-machine SSH authorization without weakening the runner CI tuple", async () => {
+    const reconciler = new MaintenanceRelayReconciler({
+      wireGuard: {
+        syncPeers: async () => undefined,
+        observePeers: async () => [],
+      },
+      firewall: { syncState: async () => undefined },
+      now: () => new Date("2026-07-10T12:10:00.000Z"),
+    });
+    const maintainerDesired = desired(2);
+    maintainerDesired.peers[0] = {
+      ...maintainerDesired.peers[0],
+      role: "maintainer",
+      tunnelAddress: "10.91.2.10",
+    };
+    maintainerDesired.authorizations[0] = {
+      ...maintainerDesired.authorizations[0],
+      sourceTunnelAddress: "10.91.2.10",
+    };
+
+    await expect(
+      reconciler.reconcile(maintainerDesired),
+    ).resolves.toMatchObject({
+      appliedAuthorizationIds: [SESSION_ID],
+    });
   });
 });

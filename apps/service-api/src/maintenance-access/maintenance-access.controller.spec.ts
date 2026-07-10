@@ -6,10 +6,16 @@ import { MaintenanceAccessController } from "./maintenance-access.controller";
 describe("MaintenanceAccessController", () => {
   it("requires dedicated read/write permissions and forwards the authenticated actor", async () => {
     const getOverview = vi.fn().mockResolvedValue({ sessions: [] });
-    const createSession = vi.fn().mockResolvedValue({ id: "session-1" });
+    const listSessions = vi.fn().mockResolvedValue([]);
+    const listAudit = vi.fn().mockResolvedValue([]);
+    const createHumanSession = vi.fn().mockResolvedValue({ id: "session-1" });
+    const revokeSession = vi.fn().mockResolvedValue({ id: "session-1" });
     const controller = new MaintenanceAccessController({
       getOverview,
-      createSession,
+      listSessions,
+      listAudit,
+      createHumanSession,
+      revokeSession,
     } as never);
 
     expect(
@@ -24,8 +30,39 @@ describe("MaintenanceAccessController", () => {
         MaintenanceAccessController.prototype.createSession,
       ),
     ).toEqual(["maintenanceAccess.write"]);
+    expect(
+      Reflect.getMetadata(
+        REQUIRED_PERMISSIONS_KEY,
+        MaintenanceAccessController.prototype.listSessions,
+      ),
+    ).toEqual(["maintenanceAccess.read"]);
+    expect(
+      Reflect.getMetadata(
+        REQUIRED_PERMISSIONS_KEY,
+        MaintenanceAccessController.prototype.listAudit,
+      ),
+    ).toEqual(["maintenanceAccess.read"]);
+    expect(
+      Reflect.getMetadata(
+        REQUIRED_PERMISSIONS_KEY,
+        MaintenanceAccessController.prototype.revokeSession,
+      ),
+    ).toEqual(["maintenanceAccess.write"]);
 
     await expect(controller.getOverview()).resolves.toEqual({ sessions: [] });
+    await expect(
+      controller.listSessions({ status: "revoked" }),
+    ).resolves.toEqual([]);
+    await expect(
+      controller.listAudit({
+        sessionId: "550e8400-e29b-41d4-a716-446655440003",
+        limit: 25,
+      }),
+    ).resolves.toEqual([]);
+    expect(listAudit).toHaveBeenCalledWith({
+      sessionId: "550e8400-e29b-41d4-a716-446655440003",
+      limit: 25,
+    });
     await expect(
       controller.createSession({ id: "admin-1" } as never, {
         sourcePeerId: "550e8400-e29b-41d4-a716-446655440001",
@@ -36,7 +73,7 @@ describe("MaintenanceAccessController", () => {
         port: 22,
       }),
     ).resolves.toEqual({ id: "session-1" });
-    expect(createSession).toHaveBeenCalledWith("admin-1", {
+    expect(createHumanSession).toHaveBeenCalledWith("admin-1", {
       sourcePeerId: "550e8400-e29b-41d4-a716-446655440001",
       targetMachineId: "550e8400-e29b-41d4-a716-446655440002",
       reason: "Investigate Windows runtime failure",
@@ -44,5 +81,9 @@ describe("MaintenanceAccessController", () => {
       protocol: "tcp",
       port: 22,
     });
+    await expect(
+      controller.revokeSession({ id: "admin-1" } as never, "session-1"),
+    ).resolves.toEqual({ id: "session-1" });
+    expect(revokeSession).toHaveBeenCalledWith("admin-1", "session-1");
   });
 });

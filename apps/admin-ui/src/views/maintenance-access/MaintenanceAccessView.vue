@@ -1,11 +1,18 @@
 <script setup lang="ts">
-import type { MaintenanceAccessOverviewResponse } from "@vem/shared";
+import type {
+  AuditLogResponse,
+  MaintenanceAccessOverviewResponse,
+  MaintenanceSessionStatus,
+} from "@vem/shared";
 
-import { computed, onMounted, reactive, ref } from "vue";
+import { computed, onMounted, reactive, ref, watch } from "vue";
 
 import {
   createMaintenanceSession,
+  getMaintenanceAudit,
   getMaintenanceAccessOverview,
+  getMaintenanceSessions,
+  revokeMaintenanceSession,
 } from "@/api/maintenance-access";
 import { useAuthStore } from "@/stores/auth";
 import { formatDateTime } from "@/utils/format";
@@ -16,7 +23,11 @@ const canWrite = computed(() =>
 );
 const loading = ref(false);
 const submitting = ref(false);
+const revokingSessionId = ref<string>();
 const overview = ref<MaintenanceAccessOverviewResponse | null>(null);
+const sessions = ref<MaintenanceAccessOverviewResponse["sessions"]>([]);
+const auditEntries = ref<AuditLogResponse[]>([]);
+const sessionFilter = ref<MaintenanceSessionStatus | undefined>();
 const form = reactive({
   sourcePeerId: undefined as string | undefined,
   targetMachineId: undefined as string | undefined,
@@ -25,13 +36,37 @@ const form = reactive({
 });
 
 const ttlOptions = [30, 60, 120, 180] as const;
+const sessionFilterOptions: {
+  label: string;
+  value: MaintenanceSessionStatus;
+}[] = [
+  { label: "活动", value: "active" },
+  { label: "已到期", value: "expired" },
+  { label: "失败", value: "failed" },
+  { label: "已撤销", value: "revoked" },
+];
 const sessionColumns = [
-  { title: "来源", key: "source" },
+  { title: "来源维护者", key: "source" },
   { title: "目标机器", key: "target" },
   { title: "协议", key: "protocol" },
   { title: "原因", dataIndex: "reason", key: "reason" },
   { title: "到期时间", dataIndex: "expiresAt", key: "expiresAt" },
   { title: "状态", dataIndex: "status", key: "status" },
+  { title: "Relay", key: "relay" },
+  { title: "操作", key: "actions" },
+];
+const peerHealthColumns = [
+  { title: "角色", dataIndex: "role", key: "role" },
+  { title: "隧道地址", dataIndex: "tunnelAddress", key: "tunnelAddress" },
+  { title: "Relay", dataIndex: "relayApplied", key: "relayApplied" },
+  { title: "最近握手", dataIndex: "lastHandshakeAt", key: "lastHandshakeAt" },
+  { title: "健康", dataIndex: "health", key: "health" },
+];
+const auditColumns = [
+  { title: "时间", dataIndex: "createdAt", key: "createdAt" },
+  { title: "操作人", dataIndex: "adminUserId", key: "adminUserId" },
+  { title: "动作", dataIndex: "action", key: "action" },
+  { title: "资源", dataIndex: "resourceId", key: "resourceId" },
 ];
 const desiredPeerColumns = [
   { title: "角色", dataIndex: "role", key: "role" },
@@ -57,6 +92,23 @@ const desiredAuthorizations = computed(() =>
     target: authorization.targetTunnelAddress,
     protocol: `${authorization.protocol.toUpperCase()}/${authorization.port}`,
     expiresAt: formatDateTime(authorization.expiresAt),
+  })),
+);
+const peerHealth = computed(() =>
+  (overview.value?.peerHealth ?? []).map((entry) => ({
+    id: entry.peer.id,
+    role: entry.peer.role,
+    tunnelAddress: entry.peer.tunnelAddress,
+    relayApplied: entry.relayApplied ? "已应用" : "等待应用",
+    lastHandshakeAt: entry.lastHandshakeAt
+      ? formatDateTime(entry.lastHandshakeAt)
+      : "-",
+    health:
+      entry.health === "healthy"
+        ? "健康"
+        : entry.health === "stale"
+          ? "已过期"
+          : "未知",
   })),
 );
 const relayOverallHealthLabel = computed(() => {
@@ -90,9 +142,20 @@ async function load(): Promise<void> {
     overview.value = await getMaintenanceAccessOverview();
     form.sourcePeerId ??= overview.value.sourcePeers[0]?.id;
     form.targetMachineId ??= overview.value.targetMachines[0]?.id;
+    await Promise.all([loadSessions(), loadAudit()]);
   } finally {
     loading.value = false;
   }
+}
+
+async function loadAudit(): Promise<void> {
+  auditEntries.value = await getMaintenanceAudit({ limit: 50 });
+}
+
+async function loadSessions(): Promise<void> {
+  sessions.value = await getMaintenanceSessions(
+    sessionFilter.value ? { status: sessionFilter.value } : {},
+  );
 }
 
 async function submit(): Promise<void> {
@@ -113,6 +176,35 @@ async function submit(): Promise<void> {
   }
 }
 
+async function revoke(sessionId: string): Promise<void> {
+  revokingSessionId.value = sessionId;
+  try {
+    await revokeMaintenanceSession(sessionId);
+    await load();
+  } finally {
+    revokingSessionId.value = undefined;
+  }
+}
+
+function sessionStatusLabel(status: MaintenanceSessionStatus): string {
+  if (status === "active") return "活动";
+  if (status === "expired") return "已到期";
+  if (status === "failed") return "失败";
+  return "已撤销";
+}
+
+function relayConvergenceLabel(state: string): string {
+  if (state === "applied") return "已应用";
+  if (state === "removed") return "已移除";
+  if (state === "failed") return "失败";
+  if (state === "pending") return "等待";
+  return "未上报";
+}
+
+watch(sessionFilter, () => {
+  void loadSessions();
+});
+
 onMounted(() => {
   void load();
 });
@@ -124,7 +216,7 @@ onMounted(() => {
       <a-form layout="vertical">
         <a-row :gutter="16">
           <a-col :xs="24" :md="8">
-            <a-form-item label="来源 Runner">
+            <a-form-item label="来源维护者">
               <a-select
                 v-model:value="form.sourcePeerId"
                 :disabled="!canWrite"
@@ -190,10 +282,21 @@ onMounted(() => {
       </a-form>
     </a-card>
 
-    <a-card title="活动会话">
+    <a-card title="维护会话">
+      <a-form layout="inline" class="mb-4">
+        <a-form-item label="状态筛选">
+          <a-select
+            v-model:value="sessionFilter"
+            allow-clear
+            data-testid="session-status-filter"
+            :options="sessionFilterOptions"
+            placeholder="全部"
+          />
+        </a-form-item>
+      </a-form>
       <a-table
         :columns="sessionColumns"
-        :data-source="overview?.sessions ?? []"
+        :data-source="sessions"
         :loading="loading"
         row-key="id"
         :pagination="false"
@@ -212,7 +315,58 @@ onMounted(() => {
             {{ formatDateTime(record.expiresAt) }}
           </template>
           <template v-else-if="column.key === 'status'">
-            <a-tag color="success">活动</a-tag>
+            <a-tag
+              :color="
+                record.status === 'active'
+                  ? 'success'
+                  : record.status === 'failed'
+                    ? 'error'
+                    : 'default'
+              "
+            >
+              {{ sessionStatusLabel(record.status) }}
+            </a-tag>
+          </template>
+          <template v-else-if="column.key === 'relay'">
+            {{ relayConvergenceLabel(record.relayConvergence.state) }}
+            {{ record.relayConvergence.appliedDesiredStateVersion }}/{{
+              record.relayConvergence.desiredStateVersion
+            }}
+          </template>
+          <template v-else-if="column.key === 'actions'">
+            <a-button
+              v-if="canWrite && record.status === 'active'"
+              type="link"
+              danger
+              :loading="revokingSessionId === record.id"
+              @click="revoke(record.id)"
+            >
+              提前撤销
+            </a-button>
+          </template>
+        </template>
+      </a-table>
+    </a-card>
+
+    <a-card title="维护审计">
+      <a-table
+        :columns="auditColumns"
+        :data-source="auditEntries"
+        row-key="id"
+        :pagination="false"
+      >
+        <template #bodyCell="{ column, record }">
+          <template v-if="column.key === 'createdAt'">
+            {{ formatDateTime(record.createdAt) }}
+          </template>
+          <template v-else-if="column.key === 'adminUserId'">
+            {{ record.adminUserId ?? "系统" }}
+          </template>
+          <template v-else-if="column.key === 'action'">
+            {{ record.action }}
+          </template>
+          <template v-else-if="column.key === 'resourceId'">
+            {{ record.resourceId ?? "-" }}
           </template>
         </template>
       </a-table>
@@ -253,6 +407,14 @@ onMounted(() => {
               :pagination="false"
               size="small"
             />
+            <h3>Peer 健康</h3>
+            <a-table
+              :columns="peerHealthColumns"
+              :data-source="peerHealth"
+              row-key="id"
+              :pagination="false"
+              size="small"
+            />
           </section>
         </a-col>
         <a-col :xs="24" :xl="12">
@@ -270,6 +432,12 @@ onMounted(() => {
               <dt>已应用版本</dt>
               <dd>
                 {{ overview?.observedState.appliedDesiredStateVersion ?? 0 }}
+              </dd>
+              <dt>期望/已应用</dt>
+              <dd>
+                {{ overview?.desiredState.desiredStateVersion ?? 0 }}/{{
+                  overview?.observedState.appliedDesiredStateVersion ?? 0
+                }}
               </dd>
               <dt>观测时间</dt>
               <dd data-testid="relay-observed-at">
@@ -299,7 +467,7 @@ onMounted(() => {
               <dd>{{ overview?.observedState.transport.reason ?? "-" }}</dd>
               <dt>失败信息</dt>
               <dd data-testid="relay-failure">
-                {{ overview?.observedState.failure ?? "-" }}
+                {{ overview?.relayFailure?.summary ?? "-" }}
               </dd>
             </dl>
           </section>

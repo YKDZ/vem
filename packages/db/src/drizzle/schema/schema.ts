@@ -515,8 +515,13 @@ export const maintenanceSessions = t.pgTable(
   "maintenance_sessions",
   {
     id: id(),
+    kind: t.varchar("session_kind", { length: 16 }).notNull(),
     sourcePeerId: t
       .uuid("source_peer_id")
+      .notNull()
+      .references(() => maintenancePeers.id),
+    targetPeerId: t
+      .uuid("target_peer_id")
       .notNull()
       .references(() => maintenancePeers.id),
     targetMachineId: t
@@ -525,8 +530,8 @@ export const maintenanceSessions = t.pgTable(
       .references(() => machines.id),
     issuedByAdminUserId: t
       .uuid("issued_by_admin_user_id")
-      .notNull()
       .references(() => adminUsers.id),
+    automationActorId: t.varchar("automation_actor_id", { length: 128 }),
     protocol: t.varchar("protocol", { length: 8 }).default("tcp").notNull(),
     port: t.integer("port").default(22).notNull(),
     reason: t.varchar("reason", { length: 500 }).notNull(),
@@ -535,15 +540,62 @@ export const maintenanceSessions = t.pgTable(
       .defaultNow()
       .notNull(),
     expiresAt: t.timestamp("expires_at", { withTimezone: true }).notNull(),
+    activatedAt: t.timestamp("activated_at", { withTimezone: true }),
+    expiredAt: t.timestamp("expired_at", { withTimezone: true }),
+    failedAt: t.timestamp("failed_at", { withTimezone: true }),
+    failureReasonCode: t.varchar("failure_reason_code", { length: 64 }),
     revokedAt: t.timestamp("revoked_at", { withTimezone: true }),
+    desiredStateVersion: t
+      .bigint("desired_state_version", { mode: "number" })
+      .notNull()
+      .references(() => maintenanceRelayDesiredStateRevisions.revision),
   },
   (table) => [
     t.index("maintenance_sessions_source_peer_id_idx").on(table.sourcePeerId),
+    t.index("maintenance_sessions_target_peer_id_idx").on(table.targetPeerId),
     t
       .index("maintenance_sessions_target_machine_id_idx")
       .on(table.targetMachineId),
-    t.index("maintenance_sessions_expires_at_idx").on(table.expiresAt),
-    t.index("maintenance_sessions_actor_id_idx").on(table.issuedByAdminUserId),
+    t
+      .index("maintenance_sessions_active_expiry_idx")
+      .on(table.expiresAt, table.issuedAt)
+      .where(
+        sql`${table.revokedAt} IS NULL AND ${table.expiredAt} IS NULL AND ${table.failedAt} IS NULL`,
+      ),
+    t
+      .index("maintenance_sessions_revoked_status_idx")
+      .on(table.revokedAt, table.issuedAt)
+      .where(sql`${table.revokedAt} IS NOT NULL`),
+    t
+      .index("maintenance_sessions_expired_status_idx")
+      .on(table.expiredAt, table.issuedAt)
+      .where(sql`${table.expiredAt} IS NOT NULL`),
+    t
+      .index("maintenance_sessions_failed_status_idx")
+      .on(table.failedAt, table.issuedAt)
+      .where(sql`${table.failedAt} IS NOT NULL`),
+    t
+      .index("maintenance_sessions_kind_issued_idx")
+      .on(table.kind, table.issuedAt),
+    t
+      .index("maintenance_sessions_admin_actor_idx")
+      .on(table.issuedByAdminUserId)
+      .where(sql`${table.issuedByAdminUserId} IS NOT NULL`),
+    t
+      .index("maintenance_sessions_automation_actor_idx")
+      .on(table.automationActorId)
+      .where(sql`${table.automationActorId} IS NOT NULL`),
+    t
+      .index("maintenance_sessions_desired_revision_idx")
+      .on(table.desiredStateVersion),
+    t.check(
+      "maintenance_sessions_kind_check",
+      sql`${table.kind} IN ('human', 'ci')`,
+    ),
+    t.check(
+      "maintenance_sessions_actor_consistency_check",
+      sql`(${table.kind} = 'human' AND ${table.issuedByAdminUserId} IS NOT NULL AND ${table.automationActorId} IS NULL) OR (${table.kind} = 'ci' AND ${table.issuedByAdminUserId} IS NULL AND ${table.automationActorId} IS NOT NULL)`,
+    ),
     t.check(
       "maintenance_sessions_protocol_port_check",
       sql`${table.protocol} = 'tcp' AND ${table.port} = 22`,
@@ -551,6 +603,22 @@ export const maintenanceSessions = t.pgTable(
     t.check(
       "maintenance_sessions_expiry_after_issue_check",
       sql`${table.expiresAt} > ${table.issuedAt}`,
+    ),
+    t.check(
+      "maintenance_sessions_failure_consistency_check",
+      sql`(${table.failedAt} IS NULL) = (${table.failureReasonCode} IS NULL)`,
+    ),
+    t.check(
+      "maintenance_sessions_failure_reason_code_check",
+      sql`${table.failureReasonCode} IS NULL OR ${table.failureReasonCode} IN ('desired_state_rejected', 'wireguard_apply_failed', 'firewall_apply_failed', 'journal_persist_failed', 'peer_observation_failed', 'relay_internal_error')`,
+    ),
+    t.check(
+      "maintenance_sessions_terminal_exclusivity_check",
+      sql`num_nonnulls(${table.revokedAt}, ${table.expiredAt}, ${table.failedAt}) <= 1`,
+    ),
+    t.check(
+      "maintenance_sessions_lifecycle_time_check",
+      sql`(${table.activatedAt} IS NULL OR (${table.activatedAt} >= ${table.issuedAt} AND ${table.activatedAt} < ${table.expiresAt})) AND (${table.revokedAt} IS NULL OR (${table.revokedAt} >= ${table.issuedAt} AND ${table.revokedAt} < ${table.expiresAt})) AND (${table.failedAt} IS NULL OR (${table.failedAt} >= ${table.issuedAt} AND ${table.failedAt} < ${table.expiresAt})) AND (${table.expiredAt} IS NULL OR ${table.expiredAt} = ${table.expiresAt})`,
     ),
   ],
 );

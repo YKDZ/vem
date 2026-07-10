@@ -2,10 +2,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
-import {
-  parseRelayRuntimeConfig,
-  readRelayCredential,
-} from "./runtime-config";
+import { parseRelayRuntimeConfig, readRelayCredential } from "./runtime-config";
 
 const baseEnv = {
   SERVICE_API_BASE_URL: "https://service-api.example/api",

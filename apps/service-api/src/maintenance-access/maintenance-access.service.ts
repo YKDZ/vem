@@ -6,13 +6,18 @@ import {
   NotFoundException,
 } from "@nestjs/common";
 import {
+  aliasedTable,
   and,
   asc,
   auditLogs,
   desc,
   eq,
+  getColumns,
   gt,
+  inArray,
+  isNotNull,
   isNull,
+  lte,
   machines,
   maintenancePeers,
   maintenanceRelayControlState,
@@ -22,28 +27,42 @@ import {
   sql,
   type DrizzleClient,
   type DrizzleTransaction,
+  type SQL,
 } from "@vem/db";
 import {
+  CI_MAINTENANCE_SESSION_TTL_MINUTES,
+  auditLogResponseSchema,
+  createCiMaintenanceSessionCommandSchema,
   maintenanceAccessOverviewResponseSchema,
   maintenancePublicPeerSchema,
   maintenanceRelayDesiredStateSchema,
+  maintenanceRelayFailureReasonCodeSchema,
   maintenanceRelayObservedStateSchema,
   maintenanceSessionResponseSchema,
   registerMaintenancePeerRequestSchema,
-  type CreateMaintenanceSessionRequest,
+  type CreateCiMaintenanceSessionCommand,
+  type CreateHumanMaintenanceSessionRequest,
+  type MaintenanceAccessAuditListQuery,
+  type MaintenanceFailureProjection,
   type MaintenancePeerRole,
   type MaintenancePublicPeer,
   type MaintenanceRelayDesiredState,
+  type MaintenanceRelayFailureReasonCode,
   type MaintenanceRelayObservedState,
+  type MaintenanceSessionAuthorization,
   type RegisterMaintenancePeerRequest,
   type MaintenanceSessionResponse,
+  type MaintenanceSessionListQuery,
   type MaintenanceTargetMachine,
 } from "@vem/shared";
 
 import { AppConfigService } from "../config/app-config.service";
 import { DRIZZLE_CLIENT } from "../database/database.constants";
 import { allocateTunnelAddress } from "./maintenance-address-pools";
-import { projectMaintenanceRelayHealth } from "./maintenance-relay-health";
+import {
+  projectMaintenancePeerHealth,
+  projectMaintenanceRelayHealth,
+} from "./maintenance-relay-health";
 
 type TargetMachineRow = {
   id: string;
@@ -52,6 +71,29 @@ type TargetMachineRow = {
   maintenancePeerId: string;
   tunnelAddress: string;
 };
+
+const targetSessionPeers = aliasedTable(
+  maintenancePeers,
+  "maintenance_session_target_peer",
+);
+
+const FAILURE_SUMMARIES: Record<MaintenanceRelayFailureReasonCode, string> = {
+  desired_state_rejected: "Relay rejected the desired maintenance state.",
+  wireguard_apply_failed: "Relay could not apply WireGuard peer state.",
+  firewall_apply_failed:
+    "Relay could not apply the maintenance firewall policy.",
+  journal_persist_failed: "Relay could not persist its applied-state journal.",
+  peer_observation_failed: "Relay could not read current peer observations.",
+  relay_internal_error: "Relay encountered an internal reconciliation error.",
+};
+
+function projectFailure(
+  reasonCode: MaintenanceRelayFailureReasonCode | null,
+): MaintenanceFailureProjection | null {
+  return reasonCode
+    ? { reasonCode, summary: FAILURE_SUMMARIES[reasonCode] }
+    : null;
+}
 
 function toIso(value: Date | string): string {
   return value instanceof Date ? value.toISOString() : value;
@@ -84,14 +126,45 @@ function toTargetMachine(row: TargetMachineRow): MaintenanceTargetMachine {
 function sessionStatus(
   session: {
     expiresAt: Date | string;
+    expiredAt: Date | string | null;
+    failedAt: Date | string | null;
     revokedAt: Date | string | null;
   },
   now: Date,
-): "active" | "expired" | "revoked" {
+): "active" | "expired" | "failed" | "revoked" {
   if (session.revokedAt) return "revoked";
+  if (session.failedAt) return "failed";
+  if (session.expiredAt) return "expired";
   return new Date(session.expiresAt).getTime() > now.getTime()
     ? "active"
     : "expired";
+}
+
+function sessionStatusFilter(
+  status: MaintenanceSessionListQuery["status"],
+  now: Date,
+): SQL | undefined {
+  if (status === "active") {
+    return and(
+      isNull(maintenanceSessions.revokedAt),
+      isNull(maintenanceSessions.failedAt),
+      isNull(maintenanceSessions.expiredAt),
+      gt(maintenanceSessions.expiresAt, now),
+    );
+  }
+  if (status === "expired") {
+    return and(
+      isNull(maintenanceSessions.revokedAt),
+      isNull(maintenanceSessions.failedAt),
+      or(
+        isNotNull(maintenanceSessions.expiredAt),
+        lte(maintenanceSessions.expiresAt, now),
+      ),
+    );
+  }
+  if (status === "failed") return isNotNull(maintenanceSessions.failedAt);
+  if (status === "revoked") return isNotNull(maintenanceSessions.revokedAt);
+  return undefined;
 }
 
 function postgresUniqueConstraint(error: unknown): string | undefined {
@@ -120,6 +193,22 @@ function sameUniqueIds(actual: string[], expected: string[]): boolean {
     expectedIds.size === expected.length &&
     actualIds.size === expectedIds.size &&
     [...actualIds].every((id) => expectedIds.has(id))
+  );
+}
+
+function sameAuthorization(
+  left: MaintenanceSessionAuthorization,
+  right: MaintenanceSessionAuthorization,
+): boolean {
+  return (
+    left.sessionId === right.sessionId &&
+    left.sourcePeerId === right.sourcePeerId &&
+    left.sourceTunnelAddress === right.sourceTunnelAddress &&
+    left.targetMachineId === right.targetMachineId &&
+    left.targetTunnelAddress === right.targetTunnelAddress &&
+    left.protocol === right.protocol &&
+    left.port === right.port &&
+    left.expiresAt === right.expiresAt
   );
 }
 
@@ -322,15 +411,87 @@ export class MaintenanceAccessService {
   async getOverview() {
     const now = new Date();
     return await this.db.transaction(
-      async (tx) => await this.getOverviewSnapshot(tx, now),
-      { accessMode: "read only", isolationLevel: "repeatable read" },
+      async (tx) => {
+        return await this.getOverviewSnapshot(tx, now);
+      },
+      { isolationLevel: "repeatable read" },
     );
   }
 
   async getRelayDesiredState(): Promise<MaintenanceRelayDesiredState> {
     return await this.db.transaction(
-      async (tx) => await this.getCurrentDesiredState(tx),
-      { accessMode: "read only", isolationLevel: "repeatable read" },
+      async (tx) => {
+        return await this.getCurrentDesiredState(tx);
+      },
+      { isolationLevel: "repeatable read" },
+    );
+  }
+
+  async sweepExpiredSessions(now = new Date()): Promise<void> {
+    await this.db.transaction(async (tx) => {
+      await this.expireSessions(tx, now);
+    });
+  }
+
+  async listSessions(query: MaintenanceSessionListQuery) {
+    const now = new Date();
+    return await this.db.transaction(
+      async (tx) => {
+        const controlState = await this.getRelayProjectionRow(tx);
+        const observedState = this.parseReportedObservedState(
+          controlState.observedState,
+        );
+        const rows = await this.getHistoricalSessionRows(tx, query, now);
+        return rows.map((row) =>
+          this.toSessionResponse(
+            row.session,
+            toPublicPeer(row.sourcePeer),
+            toTargetMachine(row.targetMachine),
+            now,
+            controlState.desiredStateVersion,
+            observedState,
+          ),
+        );
+      },
+      { isolationLevel: "repeatable read" },
+    );
+  }
+
+  async listAudit(query: MaintenanceAccessAuditListQuery) {
+    const filters: SQL[] = [
+      sql`${auditLogs.action} LIKE 'maintenanceAccess.%'`,
+      inArray(auditLogs.resourceType, [
+        "maintenance_session",
+        "maintenance_peer",
+      ]),
+    ];
+    if (query.sessionId) {
+      filters.push(eq(auditLogs.resourceType, "maintenance_session"));
+      filters.push(eq(auditLogs.resourceId, query.sessionId));
+    }
+    const rows = await this.db
+      .select({
+        id: auditLogs.id,
+        adminUserId: auditLogs.adminUserId,
+        action: auditLogs.action,
+        resourceType: auditLogs.resourceType,
+        resourceId: auditLogs.resourceId,
+        beforeJson: auditLogs.beforeJson,
+        afterJson: auditLogs.afterJson,
+        createdAt: auditLogs.createdAt,
+      })
+      .from(auditLogs)
+      .where(and(...filters))
+      .orderBy(desc(auditLogs.createdAt))
+      .limit(query.limit);
+    return auditLogResponseSchema.array().parse(
+      rows.map((row) => ({
+        ...row,
+        resourceId: row.resourceId ?? null,
+        beforeJson: row.beforeJson ?? null,
+        afterJson: row.afterJson ?? null,
+        createdAt: toIso(row.createdAt),
+      })),
     );
   }
 
@@ -345,24 +506,66 @@ export class MaintenanceAccessService {
       .from(maintenancePeers)
       .where(
         and(
-          eq(maintenancePeers.role, "runner"),
+          eq(maintenancePeers.role, "maintainer"),
           eq(maintenancePeers.status, "active"),
           isNull(maintenancePeers.revokedAt),
         ),
       )
       .orderBy(asc(maintenancePeers.tunnelAddress));
     const targetRows = await this.getTargetMachine(executor);
-    const activeSessionRows = await executor
-      .select()
-      .from(maintenanceSessions)
-      .where(
-        and(
-          isNull(maintenanceSessions.revokedAt),
-          gt(maintenanceSessions.expiresAt, now),
-        ),
-      )
-      .orderBy(desc(maintenanceSessions.issuedAt));
-    const controlStateRows = await executor
+    const sessionRows = await this.getHistoricalSessionRows(executor, {}, now);
+    const controlState = await this.getRelayProjectionRow(executor);
+
+    const sourcePeers = sourceRows.map(toPublicPeer);
+    const targets = targetRows.map(toTargetMachine);
+    const reportedObservedState = this.parseReportedObservedState(
+      controlState.observedState,
+    );
+    const sessions = sessionRows.map((row) =>
+      this.toSessionResponse(
+        row.session,
+        toPublicPeer(row.sourcePeer),
+        toTargetMachine(row.targetMachine),
+        now,
+        controlState.desiredStateVersion,
+        reportedObservedState,
+      ),
+    );
+    const desiredState = maintenanceRelayDesiredStateSchema.parse(
+      controlState.desiredState,
+    );
+    if (desiredState.desiredStateVersion !== controlState.desiredStateVersion) {
+      throw new Error(
+        "Maintenance relay desired-state revision is inconsistent",
+      );
+    }
+
+    return maintenanceAccessOverviewResponseSchema.parse({
+      schemaVersion: "maintenance-access-overview/v1",
+      sourcePeers,
+      targetMachines: targets,
+      peerHealth: projectMaintenancePeerHealth(
+        desiredState,
+        reportedObservedState,
+        now,
+      ),
+      sessions,
+      desiredState,
+      observedState:
+        reportedObservedState ?? this.unreportedObservedState(desiredState),
+      relayFailure: projectFailure(
+        reportedObservedState?.failure?.reasonCode ?? null,
+      ),
+      relayHealth: projectMaintenanceRelayHealth(
+        reportedObservedState,
+        desiredState.desiredStateVersion,
+        now,
+      ),
+    });
+  }
+
+  private async getRelayProjectionRow(executor: Pick<DrizzleClient, "select">) {
+    const [controlState] = await executor
       .select({
         desiredStateVersion: maintenanceRelayControlState.desiredStateVersion,
         observedState: maintenanceRelayControlState.observedState,
@@ -377,50 +580,51 @@ export class MaintenanceAccessService {
         ),
       )
       .where(eq(maintenanceRelayControlState.singletonKey, "default"));
-
-    const controlState = controlStateRows[0];
     if (!controlState) {
       throw new Error("Maintenance relay control state is not initialized");
     }
+    return controlState;
+  }
 
-    const sourcePeers = sourceRows.map(toPublicPeer);
-    const targets = targetRows.map(toTargetMachine);
-    const sourcePeerById = new Map(sourcePeers.map((peer) => [peer.id, peer]));
-    const targetById = new Map(targets.map((target) => [target.id, target]));
-    const sessions = activeSessionRows.flatMap((session) => {
-      const sourcePeer = sourcePeerById.get(session.sourcePeerId);
-      const targetMachine = targetById.get(session.targetMachineId);
-      if (!sourcePeer || !targetMachine) {
-        return [];
-      }
-      return [this.toSessionResponse(session, sourcePeer, targetMachine, now)];
-    });
-    const desiredState = maintenanceRelayDesiredStateSchema.parse(
-      controlState.desiredState,
-    );
-    if (desiredState.desiredStateVersion !== controlState.desiredStateVersion) {
-      throw new Error(
-        "Maintenance relay desired-state revision is inconsistent",
-      );
-    }
-
-    const reportedObservedState = this.parseReportedObservedState(
-      controlState.observedState,
-    );
-    return maintenanceAccessOverviewResponseSchema.parse({
-      schemaVersion: "maintenance-access-overview/v1",
-      sourcePeers,
-      targetMachines: targets,
-      sessions,
-      desiredState,
-      observedState:
-        reportedObservedState ?? this.unreportedObservedState(desiredState),
-      relayHealth: projectMaintenanceRelayHealth(
-        reportedObservedState,
-        desiredState.desiredStateVersion,
-        now,
-      ),
-    });
+  private async getHistoricalSessionRows(
+    executor: Pick<DrizzleClient, "select">,
+    query: MaintenanceSessionListQuery,
+    now: Date,
+  ) {
+    return await executor
+      .select({
+        session: getColumns(maintenanceSessions),
+        sourcePeer: {
+          id: maintenancePeers.id,
+          role: maintenancePeers.role,
+          publicKey: maintenancePeers.publicKey,
+          tunnelAddress: maintenancePeers.tunnelAddress,
+        },
+        targetMachine: {
+          id: machines.id,
+          code: machines.code,
+          name: machines.name,
+          maintenancePeerId: targetSessionPeers.id,
+          tunnelAddress: targetSessionPeers.tunnelAddress,
+        },
+      })
+      .from(maintenanceSessions)
+      .innerJoin(
+        maintenancePeers,
+        eq(maintenancePeers.id, maintenanceSessions.sourcePeerId),
+      )
+      .innerJoin(
+        targetSessionPeers,
+        eq(targetSessionPeers.id, maintenanceSessions.targetPeerId),
+      )
+      .innerJoin(machines, eq(machines.id, maintenanceSessions.targetMachineId))
+      .where(
+        and(
+          query.kind ? eq(maintenanceSessions.kind, query.kind) : undefined,
+          sessionStatusFilter(query.status, now),
+        ),
+      )
+      .orderBy(desc(maintenanceSessions.issuedAt));
   }
 
   async reportRelayObservedState(
@@ -491,25 +695,73 @@ export class MaintenanceAccessService {
         );
         this.validateObservedIds(observed.data, desiredState);
 
+        const lifecycleChanged = await this.recordRelaySessionLifecycle(
+          tx,
+          observed.data,
+          desiredState,
+        );
+
         await tx
           .update(maintenanceRelayControlState)
           .set({ observedState: observed.data, updatedAt: new Date() })
           .where(eq(maintenanceRelayControlState.singletonKey, "default"));
+        if (lifecycleChanged.length > 0) {
+          const desiredStateVersion = await this.bumpDesiredStateVersion(tx);
+          await tx
+            .update(maintenanceSessions)
+            .set({ desiredStateVersion })
+            .where(inArray(maintenanceSessions.id, lifecycleChanged));
+        }
         return observed.data;
       },
-      { isolationLevel: "repeatable read" },
+      { isolationLevel: "read committed" },
     );
   }
 
-  async createSession(
+  async createHumanSession(
     actorAdminUserId: string,
-    input: CreateMaintenanceSessionRequest,
+    input: CreateHumanMaintenanceSessionRequest,
+  ): Promise<MaintenanceSessionResponse> {
+    return await this.createSessionForRole(input, {
+      kind: "human",
+      sourceRole: "maintainer",
+      actorAdminUserId,
+      automationActorId: null,
+      ttlMinutes: input.ttlMinutes,
+    });
+  }
+
+  async createCiSession(
+    input: CreateCiMaintenanceSessionCommand,
+  ): Promise<MaintenanceSessionResponse> {
+    const parsed = createCiMaintenanceSessionCommandSchema.safeParse(input);
+    if (!parsed.success) {
+      throw new BadRequestException("Invalid CI maintenance session command");
+    }
+    return await this.createSessionForRole(parsed.data, {
+      kind: "ci",
+      sourceRole: "runner",
+      actorAdminUserId: null,
+      automationActorId: parsed.data.automationActorId,
+      ttlMinutes: CI_MAINTENANCE_SESSION_TTL_MINUTES,
+    });
+  }
+
+  private async createSessionForRole(
+    input: Pick<
+      CreateHumanMaintenanceSessionRequest,
+      "sourcePeerId" | "targetMachineId" | "reason" | "protocol" | "port"
+    >,
+    actor: {
+      kind: "human" | "ci";
+      sourceRole: "maintainer" | "runner";
+      actorAdminUserId: string | null;
+      automationActorId: string | null;
+      ttlMinutes: number;
+    },
   ): Promise<MaintenanceSessionResponse> {
     if (input.protocol !== "tcp" || input.port !== 22) {
-      throw new BadRequestException("Only runner-to-machine TCP 22 is allowed");
-    }
-    if (![30, 60, 120, 180].includes(input.ttlMinutes)) {
-      throw new BadRequestException("Maintenance session TTL is not allowed");
+      throw new BadRequestException("Only source-to-machine TCP 22 is allowed");
     }
     const reason = input.reason.trim();
     if (reason.length < 3) {
@@ -518,7 +770,7 @@ export class MaintenanceAccessService {
 
     const issuedAt = new Date();
     const expiresAt = new Date(
-      issuedAt.getTime() + input.ttlMinutes * 60 * 1000,
+      issuedAt.getTime() + actor.ttlMinutes * 60 * 1000,
     );
     return await this.db.transaction(async (tx) => {
       const [source] = await tx
@@ -532,14 +784,16 @@ export class MaintenanceAccessService {
         .where(
           and(
             eq(maintenancePeers.id, input.sourcePeerId),
-            eq(maintenancePeers.role, "runner"),
+            eq(maintenancePeers.role, actor.sourceRole),
             eq(maintenancePeers.status, "active"),
             isNull(maintenancePeers.revokedAt),
           ),
         )
         .for("update");
       if (!source) {
-        throw new NotFoundException("Active runner maintenance peer not found");
+        throw new NotFoundException(
+          `Active ${actor.sourceRole} maintenance peer not found`,
+        );
       }
 
       const [target] = await this.getTargetMachine(tx, input.targetMachineId);
@@ -565,26 +819,46 @@ export class MaintenanceAccessService {
         );
       }
 
-      const [session] = await tx
-        .insert(maintenanceSessions)
-        .values({
-          sourcePeerId: source.id,
-          targetMachineId: target.id,
-          issuedByAdminUserId: actorAdminUserId,
-          protocol: input.protocol,
-          port: input.port,
-          reason,
-          issuedAt,
-          expiresAt,
-        })
-        .returning();
+      let session!: typeof maintenanceSessions.$inferSelect;
+      const desiredStateVersion = await this.bumpDesiredStateVersion(
+        tx,
+        async (revision) => {
+          [session] = await tx
+            .insert(maintenanceSessions)
+            .values({
+              kind: actor.kind,
+              sourcePeerId: source.id,
+              targetPeerId: target.maintenancePeerId,
+              targetMachineId: target.id,
+              issuedByAdminUserId: actor.actorAdminUserId,
+              automationActorId: actor.automationActorId,
+              protocol: input.protocol,
+              port: input.port,
+              reason,
+              issuedAt,
+              expiresAt,
+              desiredStateVersion: revision,
+            })
+            .returning();
+        },
+        issuedAt,
+      );
       await tx.insert(auditLogs).values({
-        adminUserId: actorAdminUserId,
+        adminUserId: actor.actorAdminUserId,
         action: "maintenanceAccess.session.create",
         resourceType: "maintenance_session",
         resourceId: session.id,
         afterJson: {
           sourcePeerId: source.id,
+          kind: actor.kind,
+          actor:
+            actor.kind === "human"
+              ? { type: "admin", adminUserId: actor.actorAdminUserId }
+              : {
+                  type: "automation",
+                  automationActorId: actor.automationActorId,
+                },
+          sourceRole: actor.sourceRole,
           targetMachineId: target.id,
           protocol: session.protocol,
           port: session.port,
@@ -593,21 +867,83 @@ export class MaintenanceAccessService {
           expiresAt: expiresAt.toISOString(),
         },
       });
-      await this.bumpDesiredStateVersion(tx);
 
       return this.toSessionResponse(
         session,
         toPublicPeer(source),
         toTargetMachine(target),
         issuedAt,
+        desiredStateVersion,
+        null,
+      );
+    });
+  }
+
+  async revokeSession(
+    actorAdminUserId: string,
+    sessionId: string,
+  ): Promise<MaintenanceSessionResponse> {
+    const revokedAt = new Date();
+    return await this.db.transaction(async (tx) => {
+      const [session] = await tx
+        .select()
+        .from(maintenanceSessions)
+        .where(eq(maintenanceSessions.id, sessionId))
+        .for("update");
+      if (!session)
+        throw new NotFoundException("Maintenance session not found");
+      if (sessionStatus(session, revokedAt) !== "active") {
+        throw new ConflictException("Maintenance session is not active");
+      }
+
+      await tx
+        .update(maintenanceSessions)
+        .set({ revokedAt })
+        .where(eq(maintenanceSessions.id, session.id));
+      await tx.insert(auditLogs).values({
+        adminUserId: actorAdminUserId,
+        action: "maintenanceAccess.session.revoke",
+        resourceType: "maintenance_session",
+        resourceId: session.id,
+        afterJson: { revokedAt: revokedAt.toISOString() },
+      });
+      const desiredStateVersion = await this.bumpDesiredStateVersion(tx);
+      await tx
+        .update(maintenanceSessions)
+        .set({ desiredStateVersion })
+        .where(eq(maintenanceSessions.id, session.id));
+
+      const [source] = await tx
+        .select({
+          id: maintenancePeers.id,
+          role: maintenancePeers.role,
+          publicKey: maintenancePeers.publicKey,
+          tunnelAddress: maintenancePeers.tunnelAddress,
+        })
+        .from(maintenancePeers)
+        .where(eq(maintenancePeers.id, session.sourcePeerId));
+      const [target] = await this.getTargetMachine(tx, session.targetMachineId);
+      if (!source || !target) {
+        throw new Error(
+          "Maintenance session references unavailable peer state",
+        );
+      }
+      return this.toSessionResponse(
+        { ...session, revokedAt, desiredStateVersion },
+        toPublicPeer(source),
+        toTargetMachine(target),
+        revokedAt,
+        desiredStateVersion,
+        null,
       );
     });
   }
 
   private async bumpDesiredStateVersion(
     executor: DrizzleTransaction,
+    beforeSnapshot?: (desiredStateVersion: number) => Promise<void>,
+    updatedAt = new Date(),
   ): Promise<number> {
-    const updatedAt = new Date();
     const [state] = await executor
       .update(maintenanceRelayControlState)
       .set({
@@ -621,6 +957,7 @@ export class MaintenanceAccessService {
     if (!state) {
       throw new Error("Maintenance relay control state is not initialized");
     }
+    await beforeSnapshot?.(state.desiredStateVersion);
     const desiredState = await this.buildRelayDesiredState(
       executor,
       state.desiredStateVersion,
@@ -665,6 +1002,165 @@ export class MaintenanceAccessService {
     return desiredState;
   }
 
+  private async expireSessions(
+    executor: DrizzleTransaction,
+    now: Date,
+  ): Promise<void> {
+    const expired = await executor
+      .update(maintenanceSessions)
+      .set({ expiredAt: sql`${maintenanceSessions.expiresAt}` })
+      .where(
+        and(
+          isNull(maintenanceSessions.revokedAt),
+          isNull(maintenanceSessions.failedAt),
+          isNull(maintenanceSessions.expiredAt),
+          lte(maintenanceSessions.expiresAt, now),
+        ),
+      )
+      .returning({
+        id: maintenanceSessions.id,
+        expiresAt: maintenanceSessions.expiresAt,
+      });
+    if (expired.length === 0) return;
+
+    await executor.insert(auditLogs).values(
+      expired.map((session) => ({
+        adminUserId: null,
+        action: "maintenanceAccess.session.expire",
+        resourceType: "maintenance_session",
+        resourceId: session.id,
+        afterJson: {
+          expiredAt: toIso(session.expiresAt),
+          expiresAt: toIso(session.expiresAt),
+        },
+      })),
+    );
+    const desiredStateVersion = await this.bumpDesiredStateVersion(executor);
+    await executor
+      .update(maintenanceSessions)
+      .set({ desiredStateVersion })
+      .where(
+        inArray(
+          maintenanceSessions.id,
+          expired.map((session) => session.id),
+        ),
+      );
+  }
+
+  private async recordRelaySessionLifecycle(
+    executor: DrizzleTransaction,
+    observed: MaintenanceRelayObservedState,
+    appliedState: MaintenanceRelayDesiredState,
+  ): Promise<string[]> {
+    const observedAt = new Date(observed.observedAt);
+    const changedIds: string[] = [];
+    if (observed.appliedAuthorizationIds.length > 0) {
+      const activated = await executor
+        .update(maintenanceSessions)
+        .set({ activatedAt: observedAt })
+        .where(
+          and(
+            inArray(maintenanceSessions.id, observed.appliedAuthorizationIds),
+            isNull(maintenanceSessions.activatedAt),
+            isNull(maintenanceSessions.revokedAt),
+            isNull(maintenanceSessions.failedAt),
+            isNull(maintenanceSessions.expiredAt),
+            gt(maintenanceSessions.expiresAt, observedAt),
+          ),
+        )
+        .returning({ id: maintenanceSessions.id });
+      if (activated.length > 0) {
+        await executor.insert(auditLogs).values(
+          activated.map((session) => ({
+            adminUserId: null,
+            action: "maintenanceAccess.session.activate",
+            resourceType: "maintenance_session",
+            resourceId: session.id,
+            afterJson: {
+              activatedAt: observed.observedAt,
+              appliedDesiredStateVersion: observed.appliedDesiredStateVersion,
+            },
+          })),
+        );
+      }
+    }
+
+    if (
+      observed.failure !== null &&
+      observed.attemptedDesiredStateVersion !== null
+    ) {
+      const failure = observed.failure;
+      const [attemptedRevision] = await executor
+        .select({
+          desiredState: maintenanceRelayDesiredStateRevisions.desiredState,
+        })
+        .from(maintenanceRelayDesiredStateRevisions)
+        .where(
+          eq(
+            maintenanceRelayDesiredStateRevisions.revision,
+            observed.attemptedDesiredStateVersion,
+          ),
+        );
+      const attemptedState = attemptedRevision
+        ? maintenanceRelayDesiredStateSchema.parse(
+            attemptedRevision.desiredState,
+          )
+        : null;
+      const appliedAuthorizationBySessionId = new Map(
+        appliedState.authorizations.map((authorization) => [
+          authorization.sessionId,
+          authorization,
+        ]),
+      );
+      const affectedSessionIds =
+        attemptedState?.authorizations.flatMap((authorization) => {
+          const applied = appliedAuthorizationBySessionId.get(
+            authorization.sessionId,
+          );
+          return applied && sameAuthorization(applied, authorization)
+            ? []
+            : [authorization.sessionId];
+        }) ?? [];
+      if (affectedSessionIds.length > 0) {
+        const failed = await executor
+          .update(maintenanceSessions)
+          .set({
+            failedAt: observedAt,
+            failureReasonCode: failure.reasonCode,
+          })
+          .where(
+            and(
+              inArray(maintenanceSessions.id, affectedSessionIds),
+              isNull(maintenanceSessions.revokedAt),
+              isNull(maintenanceSessions.failedAt),
+              isNull(maintenanceSessions.expiredAt),
+              gt(maintenanceSessions.expiresAt, observedAt),
+            ),
+          )
+          .returning({ id: maintenanceSessions.id });
+        if (failed.length > 0) {
+          changedIds.push(...failed.map((session) => session.id));
+          await executor.insert(auditLogs).values(
+            failed.map((session) => ({
+              adminUserId: null,
+              action: "maintenanceAccess.session.fail",
+              resourceType: "maintenance_session",
+              resourceId: session.id,
+              afterJson: {
+                failedAt: observed.observedAt,
+                attemptedDesiredStateVersion:
+                  observed.attemptedDesiredStateVersion,
+                reasonCode: failure.reasonCode,
+                summary: FAILURE_SUMMARIES[failure.reasonCode],
+              },
+            })),
+          );
+        }
+      }
+    }
+    return [...new Set(changedIds)];
+  }
+
   private async buildRelayDesiredState(
     executor: DrizzleTransaction,
     desiredStateVersion: number,
@@ -688,13 +1184,20 @@ export class MaintenanceAccessService {
     const sessionRows = await executor
       .select()
       .from(maintenanceSessions)
-      .where(isNull(maintenanceSessions.revokedAt))
+      .where(
+        and(
+          isNull(maintenanceSessions.revokedAt),
+          isNull(maintenanceSessions.failedAt),
+          isNull(maintenanceSessions.expiredAt),
+          gt(maintenanceSessions.expiresAt, generatedAt),
+        ),
+      )
       .orderBy(desc(maintenanceSessions.issuedAt));
     const targetRows = await this.getTargetMachine(executor);
     const peers = peerRows.map(toPublicPeer);
     const sourcePeerById = new Map(
       peers
-        .filter((peer) => peer.role === "runner")
+        .filter((peer) => peer.role === "runner" || peer.role === "maintainer")
         .map((peer) => [peer.id, peer]),
     );
     const targetById = new Map(
@@ -754,7 +1257,7 @@ export class MaintenanceAccessService {
         health: "unreported",
         reason: "relay transport has not been reported",
       },
-      failure: "relay has not reported observed state",
+      failure: null,
     });
   }
 
@@ -846,19 +1349,93 @@ export class MaintenanceAccessService {
     sourcePeer: MaintenancePublicPeer,
     targetMachine: MaintenanceTargetMachine,
     now: Date,
+    currentDesiredStateVersion: number,
+    observedState: MaintenanceRelayObservedState | null,
   ): MaintenanceSessionResponse {
+    const actor =
+      session.kind === "human" && session.issuedByAdminUserId
+        ? {
+            type: "admin" as const,
+            adminUserId: session.issuedByAdminUserId,
+          }
+        : session.kind === "ci" && session.automationActorId
+          ? {
+              type: "automation" as const,
+              automationActorId: session.automationActorId,
+            }
+          : null;
+    if (!actor) throw new Error("Maintenance session actor is inconsistent");
     return maintenanceSessionResponseSchema.parse({
       id: session.id,
+      kind: session.kind,
+      actor,
       sourcePeer,
       targetMachine,
       protocol: session.protocol,
       port: session.port,
-      actorAdminUserId: session.issuedByAdminUserId,
       reason: session.reason,
       issuedAt: toIso(session.issuedAt),
       expiresAt: toIso(session.expiresAt),
+      activatedAt: session.activatedAt ? toIso(session.activatedAt) : null,
+      expiredAt: session.expiredAt ? toIso(session.expiredAt) : null,
+      failedAt: session.failedAt ? toIso(session.failedAt) : null,
+      failure: projectFailure(
+        session.failureReasonCode
+          ? maintenanceRelayFailureReasonCodeSchema.parse(
+              session.failureReasonCode,
+            )
+          : null,
+      ),
       revokedAt: session.revokedAt ? toIso(session.revokedAt) : null,
       status: sessionStatus(session, now),
+      relayConvergence: this.projectSessionRelayConvergence(
+        session,
+        currentDesiredStateVersion,
+        observedState,
+      ),
     });
+  }
+
+  private projectSessionRelayConvergence(
+    session: typeof maintenanceSessions.$inferSelect,
+    currentDesiredStateVersion: number,
+    observedState: MaintenanceRelayObservedState | null,
+  ) {
+    const desiredStateVersion =
+      session.desiredStateVersion ?? currentDesiredStateVersion;
+    if (session.failedAt) {
+      return {
+        desiredStateVersion,
+        appliedDesiredStateVersion:
+          observedState?.appliedDesiredStateVersion ?? 0,
+        state: "failed" as const,
+      };
+    }
+    if (!observedState) {
+      return {
+        desiredStateVersion,
+        appliedDesiredStateVersion: 0,
+        state: "unknown" as const,
+      };
+    }
+    if (observedState.appliedDesiredStateVersion < desiredStateVersion) {
+      return {
+        desiredStateVersion,
+        appliedDesiredStateVersion: observedState.appliedDesiredStateVersion,
+        state: "pending" as const,
+      };
+    }
+    const terminal = Boolean(
+      session.revokedAt || session.expiredAt || session.failedAt,
+    );
+    return {
+      desiredStateVersion,
+      appliedDesiredStateVersion: observedState.appliedDesiredStateVersion,
+      state: terminal
+        ? ("removed" as const)
+        : observedState.appliedAuthorizationIds.includes(session.id)
+          ? ("applied" as const)
+          : ("pending" as const),
+    };
   }
 }

@@ -15,7 +15,10 @@ import MaintenanceAccessView from "./MaintenanceAccessView.vue";
 
 const apiMocks = vi.hoisted(() => ({
   createMaintenanceSession: vi.fn(),
+  getMaintenanceAudit: vi.fn(),
   getMaintenanceAccessOverview: vi.fn(),
+  getMaintenanceSessions: vi.fn(),
+  revokeMaintenanceSession: vi.fn(),
 }));
 
 vi.mock("@/api/maintenance-access", () => apiMocks);
@@ -25,10 +28,23 @@ const overview = {
   sourcePeers: [
     {
       id: "550e8400-e29b-41d4-a716-446655440001",
-      role: "runner",
+      role: "maintainer",
       publicKey: "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
       tunnelAddress: "10.91.1.10",
       privateKey: "runner-private-key-must-not-render",
+    },
+  ],
+  peerHealth: [
+    {
+      peer: {
+        id: "550e8400-e29b-41d4-a716-446655440001",
+        role: "maintainer",
+        publicKey: "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
+        tunnelAddress: "10.91.2.10",
+      },
+      relayApplied: true,
+      lastHandshakeAt: "2026-07-10T12:00:01.000Z",
+      health: "healthy",
     },
   ],
   targetMachines: [
@@ -40,7 +56,45 @@ const overview = {
       tunnelAddress: "10.91.16.10",
     },
   ],
-  sessions: [],
+  sessions: [
+    {
+      id: "550e8400-e29b-41d4-a716-446655440003",
+      kind: "human",
+      actor: {
+        type: "admin",
+        adminUserId: "550e8400-e29b-41d4-a716-446655440005",
+      },
+      sourcePeer: {
+        id: "550e8400-e29b-41d4-a716-446655440001",
+        role: "maintainer",
+        publicKey: "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
+        tunnelAddress: "10.91.2.10",
+      },
+      targetMachine: {
+        id: "550e8400-e29b-41d4-a716-446655440002",
+        code: "VEM-001",
+        name: "测试机器",
+        maintenancePeerId: "550e8400-e29b-41d4-a716-446655440004",
+        tunnelAddress: "10.91.16.10",
+      },
+      protocol: "tcp",
+      port: 22,
+      reason: "Investigate Windows runtime failure",
+      issuedAt: "2026-07-10T12:00:00.000Z",
+      expiresAt: "2026-07-10T12:30:00.000Z",
+      activatedAt: "2026-07-10T12:00:01.000Z",
+      expiredAt: null,
+      failedAt: null,
+      failure: null,
+      revokedAt: null,
+      status: "active",
+      relayConvergence: {
+        desiredStateVersion: 12,
+        appliedDesiredStateVersion: 12,
+        state: "applied",
+      },
+    },
+  ],
   desiredState: {
     schemaVersion: "maintenance-relay-desired-state/v1",
     desiredStateVersion: 12,
@@ -93,7 +147,7 @@ const overview = {
       health: "degraded",
       reason: "Service API uses explicitly allowed insecure HTTP",
     },
-    failure: "nftables apply failed",
+    failure: { reasonCode: "firewall_apply_failed" },
     relayCredential: "relay-credential-must-not-render",
   },
   relayHealth: {
@@ -102,7 +156,24 @@ const overview = {
     stale: false,
     observedAt: "2026-07-10T12:00:01.000Z",
   },
+  relayFailure: {
+    reasonCode: "firewall_apply_failed",
+    summary: "Relay could not apply the maintenance firewall policy.",
+  },
 } as unknown as MaintenanceAccessOverviewResponse;
+
+const maintenanceAudit = [
+  {
+    id: "550e8400-e29b-41d4-a716-446655440010",
+    adminUserId: "550e8400-e29b-41d4-a716-446655440005",
+    action: "maintenanceAccess.session.activate",
+    resourceType: "maintenance_session",
+    resourceId: "550e8400-e29b-41d4-a716-446655440003",
+    beforeJson: null,
+    afterJson: { appliedDesiredStateVersion: 12 },
+    createdAt: "2026-07-10T12:00:01.000Z",
+  },
+];
 
 async function flushPromises(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 0));
@@ -193,7 +264,7 @@ const TableStub = defineComponent({
       default: () => [],
     },
   },
-  setup(props) {
+  setup(props, { slots }) {
     return () =>
       h(
         "table",
@@ -201,7 +272,11 @@ const TableStub = defineComponent({
           h(
             "tr",
             props.columns.map((column) =>
-              h("td", String(row[column.dataIndex ?? ""] ?? "")),
+              h(
+                "td",
+                slots.bodyCell?.({ column, record: row }) ??
+                  String(row[column.dataIndex ?? ""] ?? ""),
+              ),
             ),
           ),
         ),
@@ -249,7 +324,10 @@ describe("MaintenanceAccessView", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     apiMocks.getMaintenanceAccessOverview.mockResolvedValue(overview);
+    apiMocks.getMaintenanceAudit.mockResolvedValue(maintenanceAudit);
+    apiMocks.getMaintenanceSessions.mockResolvedValue(overview.sessions);
     apiMocks.createMaintenanceSession.mockResolvedValue({});
+    apiMocks.revokeMaintenanceSession.mockResolvedValue({});
   });
 
   afterEach(() => {
@@ -283,7 +361,7 @@ describe("MaintenanceAccessView", () => {
     );
     expect(
       root.querySelector("[data-testid='relay-failure']")?.textContent,
-    ).toBe("nftables apply failed");
+    ).toBe("Relay could not apply the maintenance firewall policy.");
     expect(
       root.querySelector("[data-testid='relay-observed-at']")?.textContent,
     ).not.toBe("-");
@@ -294,9 +372,17 @@ describe("MaintenanceAccessView", () => {
     expect(root.textContent).toContain("10.91.1.10");
     expect(root.textContent).toContain("10.91.16.10");
     expect(root.textContent).not.toMatch(/private-key|iptables|credential/i);
-    for (const control of root.querySelectorAll("select, textarea, button")) {
+    for (const control of root.querySelectorAll("textarea, button")) {
       expect((control as HTMLInputElement).disabled).toBe(true);
     }
+    expect(root.textContent).toContain("10.91.2.10");
+    expect(root.textContent).toContain("已应用");
+    expect(apiMocks.getMaintenanceAudit).toHaveBeenCalledWith({ limit: 50 });
+    expect(root.textContent).toContain("维护审计");
+    expect(root.textContent).toContain("maintenanceAccess.session.activate");
+    expect(root.textContent).not.toContain(
+      "maintenanceAccess.session.certificate.linkage.pending",
+    );
   });
 
   it("shows stale relay observations as unknown overall health", async () => {
@@ -334,8 +420,9 @@ describe("MaintenanceAccessView", () => {
           health: "unreported",
           reason: "relay transport has not been reported",
         },
-        failure: "relay has not reported observed state",
+        failure: null,
       },
+      relayFailure: null,
       relayHealth: {
         observation: "unreported",
         overall: "unknown",
@@ -380,5 +467,59 @@ describe("MaintenanceAccessView", () => {
       reason: "Investigate Windows runtime failure",
       ttlMinutes: 30,
     });
+  });
+
+  it("distinguishes expired and failed session projections", async () => {
+    const activeSession = overview.sessions[0];
+    apiMocks.getMaintenanceSessions.mockResolvedValue([
+      {
+        ...activeSession,
+        id: "550e8400-e29b-41d4-a716-446655440011",
+        expiredAt: activeSession.expiresAt,
+        status: "expired",
+        relayConvergence: {
+          ...activeSession.relayConvergence,
+          state: "removed",
+        },
+      },
+      {
+        ...activeSession,
+        id: "550e8400-e29b-41d4-a716-446655440012",
+        activatedAt: null,
+        failedAt: "2026-07-10T12:00:02.000Z",
+        failure: {
+          reasonCode: "firewall_apply_failed",
+          summary: "Relay could not apply the maintenance firewall policy.",
+        },
+        status: "failed",
+        relayConvergence: {
+          ...activeSession.relayConvergence,
+          state: "failed",
+        },
+      },
+    ]);
+
+    const { root } = await mountView(["maintenanceAccess.read"]);
+
+    expect(root.textContent).toContain("已到期");
+    expect(root.textContent).toContain("失败");
+  });
+
+  it("lets a write operator revoke an active session and reload the filtered lifecycle list", async () => {
+    const { root } = await mountView([
+      "maintenanceAccess.read",
+      "maintenanceAccess.write",
+    ]);
+    const revoke = [...root.querySelectorAll<HTMLButtonElement>("button")].find(
+      (button) => button.textContent?.includes("提前撤销"),
+    );
+    expect(revoke).toBeDefined();
+    revoke?.click();
+    await flushPromises();
+
+    expect(apiMocks.revokeMaintenanceSession).toHaveBeenCalledWith(
+      "550e8400-e29b-41d4-a716-446655440003",
+    );
+    expect(apiMocks.getMaintenanceSessions).toHaveBeenCalledWith({});
   });
 });

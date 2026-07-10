@@ -154,6 +154,33 @@ export type MaintenanceRelayHealth = z.infer<
   typeof maintenanceRelayHealthSchema
 >;
 
+export const maintenanceRelayFailureReasonCodeSchema = z.enum([
+  "desired_state_rejected",
+  "wireguard_apply_failed",
+  "firewall_apply_failed",
+  "journal_persist_failed",
+  "peer_observation_failed",
+  "relay_internal_error",
+]);
+export type MaintenanceRelayFailureReasonCode = z.infer<
+  typeof maintenanceRelayFailureReasonCodeSchema
+>;
+
+export const maintenanceRelayFailureSchema = z.strictObject({
+  reasonCode: maintenanceRelayFailureReasonCodeSchema,
+});
+export type MaintenanceRelayFailure = z.infer<
+  typeof maintenanceRelayFailureSchema
+>;
+
+export const maintenanceFailureProjectionSchema = z.strictObject({
+  reasonCode: maintenanceRelayFailureReasonCodeSchema,
+  summary: z.string().min(1).max(200),
+});
+export type MaintenanceFailureProjection = z.infer<
+  typeof maintenanceFailureProjectionSchema
+>;
+
 export const maintenanceRelayObservedStateSchema = z.strictObject({
   schemaVersion: z.literal("maintenance-relay-observed-state/v1"),
   observedAt: z.iso.datetime(),
@@ -176,7 +203,7 @@ export const maintenanceRelayObservedStateSchema = z.strictObject({
     maintenanceRelayAuthorizationObservationSchema,
   ),
   transport: maintenanceRelayTransportSchema,
-  failure: z.string().min(1).max(500).nullable(),
+  failure: maintenanceRelayFailureSchema.nullable(),
 });
 export type MaintenanceRelayObservedState = z.infer<
   typeof maintenanceRelayObservedStateSchema
@@ -201,10 +228,33 @@ export type MaintenanceRelayCredentialExchangeResponse = z.infer<
 export const maintenanceSessionStatusSchema = z.enum([
   "active",
   "expired",
+  "failed",
   "revoked",
 ]);
 export type MaintenanceSessionStatus = z.infer<
   typeof maintenanceSessionStatusSchema
+>;
+
+export const maintenanceSessionKindSchema = z.enum(["human", "ci"]);
+export type MaintenanceSessionKind = z.infer<
+  typeof maintenanceSessionKindSchema
+>;
+
+export const maintenanceSessionRelayConvergenceSchema = z.strictObject({
+  desiredStateVersion: z
+    .number()
+    .int()
+    .nonnegative()
+    .max(Number.MAX_SAFE_INTEGER),
+  appliedDesiredStateVersion: z
+    .number()
+    .int()
+    .nonnegative()
+    .max(Number.MAX_SAFE_INTEGER),
+  state: z.enum(["pending", "applied", "removed", "failed", "unknown"]),
+});
+export type MaintenanceSessionRelayConvergence = z.infer<
+  typeof maintenanceSessionRelayConvergenceSchema
 >;
 
 export const maintenanceTargetMachineSchema = z.strictObject({
@@ -218,47 +268,122 @@ export type MaintenanceTargetMachine = z.infer<
   typeof maintenanceTargetMachineSchema
 >;
 
-export const maintenanceSessionResponseSchema = z.strictObject({
+const maintenanceSessionResponseBaseShape = {
   id: z.uuid(),
-  sourcePeer: maintenancePublicPeerSchema,
   targetMachine: maintenanceTargetMachineSchema,
   protocol: maintenanceSessionProtocolSchema,
   port: maintenanceSessionPortSchema,
-  actorAdminUserId: z.uuid(),
   reason: z.string().min(3).max(500),
   issuedAt: z.iso.datetime(),
   expiresAt: z.iso.datetime(),
+  activatedAt: z.iso.datetime().nullable(),
+  expiredAt: z.iso.datetime().nullable(),
+  failedAt: z.iso.datetime().nullable(),
+  failure: maintenanceFailureProjectionSchema.nullable(),
   revokedAt: z.iso.datetime().nullable(),
   status: maintenanceSessionStatusSchema,
+  relayConvergence: maintenanceSessionRelayConvergenceSchema,
+};
+
+export const maintenanceHumanSessionResponseSchema = z.strictObject({
+  ...maintenanceSessionResponseBaseShape,
+  kind: z.literal("human"),
+  actor: z.strictObject({
+    type: z.literal("admin"),
+    adminUserId: z.uuid(),
+  }),
+  sourcePeer: maintenancePublicPeerSchema.extend({
+    role: z.literal("maintainer"),
+  }),
 });
+
+export const maintenanceCiSessionResponseSchema = z.strictObject({
+  ...maintenanceSessionResponseBaseShape,
+  kind: z.literal("ci"),
+  actor: z.strictObject({
+    type: z.literal("automation"),
+    automationActorId: z.string().min(1).max(128),
+  }),
+  sourcePeer: maintenancePublicPeerSchema.extend({
+    role: z.literal("runner"),
+  }),
+});
+
+export const maintenanceSessionResponseSchema = z.discriminatedUnion("kind", [
+  maintenanceHumanSessionResponseSchema,
+  maintenanceCiSessionResponseSchema,
+]);
 export type MaintenanceSessionResponse = z.infer<
   typeof maintenanceSessionResponseSchema
 >;
 
-export const createMaintenanceSessionRequestSchema = z.strictObject({
+export const createHumanMaintenanceSessionRequestSchema = z.strictObject({
   sourcePeerId: z.uuid(),
   targetMachineId: z.uuid(),
   reason: z.string().trim().min(3).max(500),
-  ttlMinutes: z.union([
-    z.literal(30),
-    z.literal(60),
-    z.literal(120),
-    z.literal(180),
-  ]),
+  ttlMinutes: z
+    .union([z.literal(30), z.literal(60), z.literal(120), z.literal(180)])
+    .default(30),
   protocol: maintenanceSessionProtocolSchema.default("tcp"),
   port: maintenanceSessionPortSchema.default(22),
 });
-export type CreateMaintenanceSessionRequest = z.infer<
-  typeof createMaintenanceSessionRequestSchema
+export type CreateHumanMaintenanceSessionRequest = z.infer<
+  typeof createHumanMaintenanceSessionRequestSchema
 >;
+
+export const CI_MAINTENANCE_SESSION_TTL_MINUTES = 150;
+
+export const createCiMaintenanceSessionCommandSchema = z.strictObject({
+  sourcePeerId: z.uuid(),
+  targetMachineId: z.uuid(),
+  automationActorId: z.string().trim().min(1).max(128),
+  reason: z.string().trim().min(3).max(500),
+  protocol: maintenanceSessionProtocolSchema.default("tcp"),
+  port: maintenanceSessionPortSchema.default(22),
+});
+export type CreateCiMaintenanceSessionCommand = z.infer<
+  typeof createCiMaintenanceSessionCommandSchema
+>;
+
+// Transitional alias while callers move to the explicitly human contract.
+export const createMaintenanceSessionRequestSchema =
+  createHumanMaintenanceSessionRequestSchema;
+export type CreateMaintenanceSessionRequest =
+  CreateHumanMaintenanceSessionRequest;
+
+export const maintenanceSessionListQuerySchema = z.strictObject({
+  status: maintenanceSessionStatusSchema.optional(),
+  kind: maintenanceSessionKindSchema.optional(),
+});
+export type MaintenanceSessionListQuery = z.infer<
+  typeof maintenanceSessionListQuerySchema
+>;
+
+export const maintenanceAccessAuditListQuerySchema = z.strictObject({
+  sessionId: z.uuid().optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+});
+export type MaintenanceAccessAuditListQuery = z.infer<
+  typeof maintenanceAccessAuditListQuerySchema
+>;
+
+export const maintenancePeerHealthSchema = z.strictObject({
+  peer: maintenancePublicPeerSchema,
+  relayApplied: z.boolean(),
+  lastHandshakeAt: z.iso.datetime().nullable(),
+  health: z.enum(["healthy", "stale", "unknown"]),
+});
+export type MaintenancePeerHealth = z.infer<typeof maintenancePeerHealthSchema>;
 
 export const maintenanceAccessOverviewResponseSchema = z.strictObject({
   schemaVersion: z.literal("maintenance-access-overview/v1"),
   sourcePeers: z.array(maintenancePublicPeerSchema),
   targetMachines: z.array(maintenanceTargetMachineSchema),
+  peerHealth: z.array(maintenancePeerHealthSchema),
   sessions: z.array(maintenanceSessionResponseSchema),
   desiredState: maintenanceRelayDesiredStateSchema,
   observedState: maintenanceRelayObservedStateSchema,
+  relayFailure: maintenanceFailureProjectionSchema.nullable(),
   relayHealth: maintenanceRelayHealthSchema,
 });
 export type MaintenanceAccessOverviewResponse = z.infer<
