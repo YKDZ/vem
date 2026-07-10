@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   createMaintenanceSessionRequestSchema,
   maintenanceAccessOverviewResponseSchema,
+  maintenanceRelayCredentialExchangeRequestSchema,
+  maintenanceRelayCredentialExchangeResponseSchema,
   maintenanceRelayDesiredStateSchema,
   maintenanceRelayObservedStateSchema,
   registerMaintenancePeerRequestSchema,
@@ -55,11 +57,21 @@ describe("Maintenance Access shared contracts", () => {
         observedAt: "2026-07-10T12:00:01.000Z",
         desiredStateSchemaVersion: desiredState.schemaVersion,
         appliedDesiredStateVersion: desiredState.desiredStateVersion,
+        attemptedDesiredStateVersion: null,
         appliedPeerIds: desiredState.peers.map((peer) => peer.id),
         appliedAuthorizationIds: [SESSION_ID],
+        peerObservations: desiredState.peers.map((peer) => ({
+          peerId: peer.id,
+          latestHandshakeAt: null,
+        })),
+        activeAuthorizationObservations: [
+          { sessionId: SESSION_ID, expiresAt: "2026-07-10T12:30:00.000Z" },
+        ],
+        failure: null,
       }),
     ).toMatchObject({
       appliedDesiredStateVersion: 7,
+      attemptedDesiredStateVersion: null,
       appliedAuthorizationIds: [SESSION_ID],
     });
   });
@@ -166,6 +178,27 @@ describe("Maintenance Access shared contracts", () => {
         sessions: [],
         desiredState: {},
         observedState: {},
+      }),
+    ).toThrow();
+  });
+
+  it("limits credential exchange to the maintenance relay actor", () => {
+    const credential = "r".repeat(32);
+    expect(
+      maintenanceRelayCredentialExchangeRequestSchema.parse({ credential }),
+    ).toEqual({ credential });
+    expect(
+      maintenanceRelayCredentialExchangeResponseSchema.parse({
+        actor: "maintenance_relay",
+        accessToken: "opaque-short-lived-token",
+        expiresAt: "2026-07-10T12:15:00.000Z",
+      }),
+    ).toMatchObject({ actor: "maintenance_relay" });
+    expect(() =>
+      maintenanceRelayCredentialExchangeResponseSchema.parse({
+        actor: "admin",
+        accessToken: "opaque-short-lived-token",
+        expiresAt: "2026-07-10T12:15:00.000Z",
       }),
     ).toThrow();
   });

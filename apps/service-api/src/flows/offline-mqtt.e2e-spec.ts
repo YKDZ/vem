@@ -100,7 +100,8 @@ describe("offline-mqtt.e2e", { concurrent: false }, () => {
 
     const succeedResponse = await api
       .post(`/api/payments/mock/${createdOrder.data.paymentNo}/succeed`)
-      .set("Authorization", `Bearer ${await loginAndGetToken(api, appConfig)}`);
+      .set("Authorization", `Bearer ${await loginAndGetToken(api, appConfig)}`)
+      .send({});
     expect(succeedResponse.status).toBe(201);
 
     const [orderRow] = await db.client

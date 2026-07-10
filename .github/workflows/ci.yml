@@ -153,6 +153,22 @@ jobs:
       - name: Run Unit Tests
         run: node tools/check-ci.mjs --job unit
 
+  maintenance-relay-privileged:
+    name: Maintenance Relay Privileged Kernel Test
+    needs: changes
+    if: needs.changes.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Run required WireGuard and nftables test
+        run: pnpm --filter maintenance-relay test:privileged
+
   windows-dpapi-tests:
     name: Windows DPAPI Secret Store
     needs: changes

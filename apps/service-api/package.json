@@ -6,7 +6,6 @@
     "fmt": "oxfmt",
     "lint": "oxlint --quiet --format=unix --type-aware --config ../../oxlint.config.ts .",
     "lint-fix": "oxlint --format=unix --fix --type-aware --config ../../oxlint.config.ts .",
-    "maintenance-relay:plan": "tsx src/maintenance-relay/maintenance-relay.cli.ts",
     "start": "pnpm run build && tsx dist/main.js",
     "start:debug": "nest start --debug --watch",
     "start:dev": "pnpm run build && tsx dist/main.js",

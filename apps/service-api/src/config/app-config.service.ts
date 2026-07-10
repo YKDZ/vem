@@ -116,6 +116,20 @@ export class AppConfigService {
     return this.parsedMaintenanceAddressPools;
   }
 
+  get maintenanceRelayCredential(): string {
+    return this.config.get("MAINTENANCE_RELAY_CREDENTIAL", { infer: true });
+  }
+
+  get maintenanceRelayJwtSecret(): string {
+    return this.config.get("MAINTENANCE_RELAY_JWT_SECRET", { infer: true });
+  }
+
+  get maintenanceRelayTokenTtlSeconds(): number {
+    return this.config.get("MAINTENANCE_RELAY_TOKEN_TTL_SECONDS", {
+      infer: true,
+    });
+  }
+
   get nodeEnv(): ServiceEnv["NODE_ENV"] {
     return this.config.get("NODE_ENV", { infer: true });
   }

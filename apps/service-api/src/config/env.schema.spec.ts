@@ -13,6 +13,10 @@ const baseValidEnv = {
     "local-cred-enc-key-change-before-production!",
   MACHINE_CLAIM_LOOKUP_HMAC_KEY:
     "local-claim-lookup-hmac-key-change-before-production",
+  MAINTENANCE_RELAY_CREDENTIAL:
+    "local-maintenance-relay-credential-change-before-production",
+  MAINTENANCE_RELAY_JWT_SECRET:
+    "local-maintenance-relay-jwt-secret-change-before-production",
   CORS_ORIGINS: "http://localhost:5173",
   MQTT_URL: "mqtt://localhost:1883",
   PAYMENT_MOCK_ENABLED: "true",
@@ -177,6 +181,37 @@ describe("validateEnv", () => {
     });
     expect(env.PAYMENT_MOCK_ENABLED).toBe(false);
     expect(env.MQTT_USERNAME).toBe("vem_service");
+  });
+
+  it("rejects production relay credentials reused as signing or HMAC secrets", () => {
+    const production = {
+      ...baseValidEnv,
+      NODE_ENV: "production",
+      PAYMENT_MOCK_ENABLED: "false",
+      PAYMENT_PRODUCTION_READINESS_REQUIRED: "true",
+      PAYMENT_WEBHOOK_BASE_URL: "https://pay.example.com",
+      MACHINE_API_BASE_URL: "https://platform.example.com/api",
+      PAYMENT_CONFIG_ENCRYPTION_KEY: productionPaymentConfigEncryptionKey,
+      MQTT_USERNAME: "vem_service",
+      MQTT_PASSWORD: "strong-password-for-mqtt",
+    };
+
+    for (const secretName of [
+      "JWT_SECRET",
+      "JWT_REFRESH_SECRET",
+      "MACHINE_JWT_SECRET",
+      "MACHINE_CLAIM_LOOKUP_HMAC_KEY",
+      "MAINTENANCE_RELAY_JWT_SECRET",
+    ] as const) {
+      expect(() =>
+        validateEnv({
+          ...production,
+          MAINTENANCE_RELAY_CREDENTIAL: production[secretName],
+        }),
+      ).toThrow(
+        "MAINTENANCE_RELAY_CREDENTIAL must differ from signing and HMAC secrets in production",
+      );
+    }
   });
 
   it("defaults PAYMENT_MOCK_ENABLED to false", () => {

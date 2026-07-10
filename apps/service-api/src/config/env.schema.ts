@@ -51,6 +51,20 @@ const baseEnvSchema = z.object({
   MAINTENANCE_RUNNER_ADDRESS_POOL: z.string().default("10.91.1.0/24"),
   MAINTENANCE_MAINTAINER_ADDRESS_POOL: z.string().default("10.91.3.0/24"),
   MAINTENANCE_MACHINE_ADDRESS_POOL: z.string().default("10.91.16.0/20"),
+  MAINTENANCE_RELAY_CREDENTIAL: z
+    .string()
+    .min(32)
+    .default("dev-maintenance-relay-credential-change-me"),
+  MAINTENANCE_RELAY_JWT_SECRET: z
+    .string()
+    .min(32)
+    .default("dev-maintenance-relay-jwt-secret-change-me"),
+  MAINTENANCE_RELAY_TOKEN_TTL_SECONDS: z.coerce
+    .number()
+    .int()
+    .min(60)
+    .max(3600)
+    .default(300),
   PAYMENT_MOCK_ENABLED: z
     .preprocess((value) => {
       if (typeof value === "string") {
@@ -151,6 +165,47 @@ export const envSchema = baseEnvSchema.superRefine((env, ctx) => {
       code: "custom",
       path: ["PAYMENT_MOCK_ENABLED"],
       message: "PAYMENT_MOCK_ENABLED must be false in production",
+    });
+  }
+  if (
+    env.NODE_ENV === "production" &&
+    env.MAINTENANCE_RELAY_CREDENTIAL ===
+      "dev-maintenance-relay-credential-change-me"
+  ) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["MAINTENANCE_RELAY_CREDENTIAL"],
+      message:
+        "MAINTENANCE_RELAY_CREDENTIAL must be set explicitly in production",
+    });
+  }
+  if (
+    env.NODE_ENV === "production" &&
+    env.MAINTENANCE_RELAY_JWT_SECRET ===
+      "dev-maintenance-relay-jwt-secret-change-me"
+  ) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["MAINTENANCE_RELAY_JWT_SECRET"],
+      message:
+        "MAINTENANCE_RELAY_JWT_SECRET must be set explicitly in production",
+    });
+  }
+  if (
+    env.NODE_ENV === "production" &&
+    [
+      env.JWT_SECRET,
+      env.JWT_REFRESH_SECRET,
+      env.MACHINE_JWT_SECRET,
+      env.MACHINE_CLAIM_LOOKUP_HMAC_KEY,
+      env.MAINTENANCE_RELAY_JWT_SECRET,
+    ].includes(env.MAINTENANCE_RELAY_CREDENTIAL)
+  ) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["MAINTENANCE_RELAY_CREDENTIAL"],
+      message:
+        "MAINTENANCE_RELAY_CREDENTIAL must differ from signing and HMAC secrets in production",
     });
   }
   if (

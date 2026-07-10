@@ -73,8 +73,22 @@ const overview = {
     observedAt: "2026-07-10T12:00:01.000Z",
     desiredStateSchemaVersion: "maintenance-relay-desired-state/v1",
     appliedDesiredStateVersion: 12,
+    attemptedDesiredStateVersion: null,
     appliedPeerIds: ["550e8400-e29b-41d4-a716-446655440001"],
     appliedAuthorizationIds: ["550e8400-e29b-41d4-a716-446655440003"],
+    peerObservations: [
+      {
+        peerId: "550e8400-e29b-41d4-a716-446655440001",
+        latestHandshakeAt: null,
+      },
+    ],
+    activeAuthorizationObservations: [
+      {
+        sessionId: "550e8400-e29b-41d4-a716-446655440003",
+        expiresAt: "2026-07-10T12:30:00.000Z",
+      },
+    ],
+    failure: null,
     relayCredential: "relay-credential-must-not-render",
   },
 } as unknown as MaintenanceAccessOverviewResponse;

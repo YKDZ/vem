@@ -88,6 +88,22 @@ export type MaintenanceRelayDesiredState = z.infer<
   typeof maintenanceRelayDesiredStateSchema
 >;
 
+export const maintenanceRelayPeerObservationSchema = z.strictObject({
+  peerId: z.uuid(),
+  latestHandshakeAt: z.iso.datetime().nullable(),
+});
+export type MaintenanceRelayPeerObservation = z.infer<
+  typeof maintenanceRelayPeerObservationSchema
+>;
+
+export const maintenanceRelayAuthorizationObservationSchema = z.strictObject({
+  sessionId: z.uuid(),
+  expiresAt: z.iso.datetime(),
+});
+export type MaintenanceRelayAuthorizationObservation = z.infer<
+  typeof maintenanceRelayAuthorizationObservationSchema
+>;
+
 export const maintenanceRelayObservedStateSchema = z.strictObject({
   schemaVersion: z.literal("maintenance-relay-observed-state/v1"),
   observedAt: z.iso.datetime(),
@@ -97,11 +113,38 @@ export const maintenanceRelayObservedStateSchema = z.strictObject({
     .int()
     .nonnegative()
     .max(Number.MAX_SAFE_INTEGER),
+  attemptedDesiredStateVersion: z
+    .number()
+    .int()
+    .nonnegative()
+    .max(Number.MAX_SAFE_INTEGER)
+    .nullable(),
   appliedPeerIds: z.array(z.uuid()),
   appliedAuthorizationIds: z.array(z.uuid()),
+  peerObservations: z.array(maintenanceRelayPeerObservationSchema),
+  activeAuthorizationObservations: z.array(
+    maintenanceRelayAuthorizationObservationSchema,
+  ),
+  failure: z.string().min(1).max(500).nullable(),
 });
 export type MaintenanceRelayObservedState = z.infer<
   typeof maintenanceRelayObservedStateSchema
+>;
+
+export const maintenanceRelayCredentialExchangeRequestSchema = z.strictObject({
+  credential: z.string().min(32).max(512),
+});
+export type MaintenanceRelayCredentialExchangeRequest = z.infer<
+  typeof maintenanceRelayCredentialExchangeRequestSchema
+>;
+
+export const maintenanceRelayCredentialExchangeResponseSchema = z.strictObject({
+  actor: z.literal("maintenance_relay"),
+  accessToken: z.string().min(1),
+  expiresAt: z.iso.datetime(),
+});
+export type MaintenanceRelayCredentialExchangeResponse = z.infer<
+  typeof maintenanceRelayCredentialExchangeResponseSchema
 >;
 
 export const maintenanceSessionStatusSchema = z.enum([

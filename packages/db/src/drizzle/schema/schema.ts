@@ -32,6 +32,8 @@ import {
   roleStatuses,
   variantStatuses,
   vendingCommandStatuses,
+  type MaintenanceRelayDesiredState,
+  type MaintenanceRelayObservedState,
 } from "@vem/shared";
 import { sql } from "drizzle-orm";
 import * as t from "drizzle-orm/pg-core";
@@ -561,6 +563,9 @@ export const maintenanceRelayControlState = t.pgTable(
       .bigint("desired_state_version", { mode: "number" })
       .default(0)
       .notNull(),
+    observedState: t
+      .jsonb("observed_state")
+      .$type<MaintenanceRelayObservedState>(),
     updatedAt: updatedAt(),
   },
   (table) => [
@@ -571,6 +576,24 @@ export const maintenanceRelayControlState = t.pgTable(
     t.check(
       "maintenance_relay_control_state_version_check",
       sql`${table.desiredStateVersion} >= 0`,
+    ),
+  ],
+);
+
+export const maintenanceRelayDesiredStateRevisions = t.pgTable(
+  "maintenance_relay_desired_state_revisions",
+  {
+    revision: t.bigint("revision", { mode: "number" }).primaryKey(),
+    desiredState: t
+      .jsonb("desired_state")
+      .$type<MaintenanceRelayDesiredState>()
+      .notNull(),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    t.check(
+      "maintenance_relay_desired_state_revision_nonnegative_check",
+      sql`${table.revision} >= 0`,
     ),
   ],
 );

@@ -297,6 +297,37 @@ importers:
         specifier: 'catalog:'
         version: 3.3.5(typescript@6.0.3)
 
+  apps/maintenance-relay:
+    dependencies:
+      '@vem/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
+      tsx:
+        specifier: 'catalog:'
+        version: 4.22.4
+      zod:
+        specifier: 'catalog:'
+        version: 4.4.3
+    devDependencies:
+      '@types/node':
+        specifier: 'catalog:'
+        version: 26.0.1
+      oxfmt:
+        specifier: 'catalog:'
+        version: 0.44.0
+      oxlint:
+        specifier: 'catalog:'
+        version: 1.71.0(oxlint-tsgolint@0.20.0)
+      oxlint-tsgolint:
+        specifier: 'catalog:'
+        version: 0.20.0
+      typescript:
+        specifier: 'catalog:'
+        version: 6.0.3
+      vitest:
+        specifier: 'catalog:'
+        version: 4.1.9(@types/node@26.0.1)(jsdom@29.1.1(@noble/hashes@1.8.0))(vite@8.1.0(@types/node@26.0.1)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.48.0)(tsx@4.22.4)(yaml@2.9.0))
+
   apps/service-api:
     dependencies:
       '@nestjs/common':

@@ -9,6 +9,7 @@ import {
   machines,
   maintenancePeers,
   maintenanceRelayControlState,
+  maintenanceRelayDesiredStateRevisions,
   maintenanceSessions,
   sql,
 } from "@vem/db";
@@ -17,6 +18,7 @@ import {
   adminUserResponseSchema,
   auditLogPageResponseSchema,
   maintenanceAccessOverviewResponseSchema,
+  maintenanceRelayDesiredStateSchema,
   maintenanceSessionResponseSchema,
   permissionCodeSchema,
 } from "@vem/shared";
@@ -86,10 +88,23 @@ describe("maintenance-access tracer flow", { concurrent: false }, () => {
   beforeEach(async () => {
     await db.client.delete(maintenanceSessions);
     await db.client.delete(maintenancePeers);
+    await db.client.delete(maintenanceRelayDesiredStateRevisions);
+    const resetAt = new Date();
     await db.client
       .update(maintenanceRelayControlState)
-      .set({ desiredStateVersion: 0 })
+      .set({ desiredStateVersion: 0, observedState: null, updatedAt: resetAt })
       .where(eq(maintenanceRelayControlState.singletonKey, "default"));
+    await db.client.insert(maintenanceRelayDesiredStateRevisions).values({
+      revision: 0,
+      desiredState: {
+        schemaVersion: "maintenance-relay-desired-state/v1",
+        desiredStateVersion: 0,
+        generatedAt: resetAt.toISOString(),
+        peers: [],
+        authorizations: [],
+      },
+      createdAt: resetAt,
+    });
   });
 
   it("rejects inconsistent maintenance peer lifecycle rows at the persistence boundary", async () => {
@@ -140,8 +155,85 @@ describe("maintenance-access tracer flow", { concurrent: false }, () => {
     expect(reread.desiredState.desiredStateVersion).toBe(
       changed.desiredState.desiredStateVersion,
     );
-    expect(changed.observedState.appliedDesiredStateVersion).toBe(
-      changed.desiredState.desiredStateVersion,
+    expect(changed.observedState.appliedDesiredStateVersion).toBe(0);
+    expect(changed.observedState.failure).toBe(
+      "relay has not reported observed state",
+    );
+  });
+
+  it("returns identical relay payload content for repeated reads of one revision", async () => {
+    await maintenanceAccess.registerPeer({
+      role: "runner",
+      publicKey: wireGuardPublicKey(217),
+    });
+
+    const first = await maintenanceAccess.getRelayDesiredState();
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const second = await maintenanceAccess.getRelayDesiredState();
+
+    expect(second).toEqual(first);
+  });
+
+  it("rejects observed-state time/revision rollback and IDs outside the applied revision", async () => {
+    const peer = await maintenanceAccess.registerPeer({
+      role: "runner",
+      publicKey: wireGuardPublicKey(218),
+    });
+    const relayDesired = await maintenanceAccess.getRelayDesiredState();
+    const observedAt = new Date(Date.now() + 1_000).toISOString();
+    const observed = {
+      schemaVersion: "maintenance-relay-observed-state/v1" as const,
+      observedAt,
+      desiredStateSchemaVersion: relayDesired.schemaVersion,
+      appliedDesiredStateVersion: relayDesired.desiredStateVersion,
+      attemptedDesiredStateVersion: null,
+      appliedPeerIds: [peer.id],
+      appliedAuthorizationIds: [],
+      peerObservations: [{ peerId: peer.id, latestHandshakeAt: null }],
+      activeAuthorizationObservations: [],
+      failure: null,
+    };
+    await maintenanceAccess.reportRelayObservedState(observed);
+
+    await expect(
+      maintenanceAccess.reportRelayObservedState({
+        ...observed,
+        observedAt: new Date(Date.parse(observedAt) - 1).toISOString(),
+      }),
+    ).rejects.toMatchObject({ status: 400 });
+    await expect(
+      maintenanceAccess.reportRelayObservedState({
+        ...observed,
+        appliedDesiredStateVersion: 0,
+        appliedPeerIds: [],
+        peerObservations: [],
+        observedAt: new Date(Date.parse(observedAt) + 1).toISOString(),
+      }),
+    ).rejects.toMatchObject({ status: 400 });
+    await expect(
+      maintenanceAccess.reportRelayObservedState({
+        ...observed,
+        appliedPeerIds: [randomUUID()],
+        peerObservations: [{ peerId: randomUUID(), latestHandshakeAt: null }],
+        observedAt: new Date(Date.parse(observedAt) + 2).toISOString(),
+      }),
+    ).rejects.toMatchObject({ status: 400 });
+
+    const newer = {
+      ...observed,
+      observedAt: new Date(Date.parse(observedAt) + 3).toISOString(),
+    };
+    const newest = {
+      ...observed,
+      observedAt: new Date(Date.parse(observedAt) + 4).toISOString(),
+    };
+    await Promise.allSettled([
+      maintenanceAccess.reportRelayObservedState(newest),
+      maintenanceAccess.reportRelayObservedState(newer),
+    ]);
+
+    expect((await maintenanceAccess.getOverview()).observedState).toEqual(
+      newest,
     );
   });
 
@@ -313,7 +405,7 @@ describe("maintenance-access tracer flow", { concurrent: false }, () => {
     );
   });
 
-  it("fails closed when an active session references a revoked source peer", async () => {
+  it("keeps a published relay revision immutable after an out-of-band peer change", async () => {
     const unique = Date.now().toString(36);
     const [actor] = await db.client
       .select({ id: adminUsers.id })
@@ -344,6 +436,7 @@ describe("maintenance-access tracer flow", { concurrent: false }, () => {
       protocol: "tcp",
       port: 22,
     });
+    const published = await maintenanceAccess.getRelayDesiredState();
     const revokedAt = new Date();
     await db.client
       .update(maintenancePeers)
@@ -355,9 +448,7 @@ describe("maintenance-access tracer flow", { concurrent: false }, () => {
     expect(overview.sessions).not.toContainEqual(
       expect.objectContaining({ id: session.id }),
     );
-    expect(overview.desiredState.authorizations).not.toContainEqual(
-      expect.objectContaining({ sessionId: session.id }),
-    );
+    expect(overview.desiredState).toEqual(published);
   });
 
   it("returns real 403 responses for an authenticated admin without maintenance permissions", async () => {
@@ -486,7 +577,53 @@ describe("maintenance-access tracer flow", { concurrent: false }, () => {
       port: 22,
       expiresAt: created.expiresAt,
     });
-    expect(overview.observedState.appliedAuthorizationIds).toContain(
+    const credentialExchange = await api
+      .post("/api/maintenance-relay/credential-exchange")
+      .send({ credential: config.maintenanceRelayCredential })
+      .expect(201);
+    const relayToken = (
+      credentialExchange.body as ApiResponse<{ accessToken: string }>
+    ).data.accessToken;
+    const relayAuth = { Authorization: `Bearer ${relayToken}` };
+    const desiredResponse = await api
+      .get("/api/maintenance-relay/desired-state")
+      .set(relayAuth)
+      .expect(200);
+    const relayDesired = maintenanceRelayDesiredStateSchema.parse(
+      (desiredResponse.body as ApiResponse<unknown>).data,
+    );
+    const reportedObserved = {
+      schemaVersion: "maintenance-relay-observed-state/v1",
+      observedAt: new Date().toISOString(),
+      desiredStateSchemaVersion: relayDesired.schemaVersion,
+      appliedDesiredStateVersion: relayDesired.desiredStateVersion,
+      attemptedDesiredStateVersion: null,
+      appliedPeerIds: relayDesired.peers.map((peer) => peer.id),
+      appliedAuthorizationIds: relayDesired.authorizations.map(
+        (authorization) => authorization.sessionId,
+      ),
+      peerObservations: relayDesired.peers.map((peer) => ({
+        peerId: peer.id,
+        latestHandshakeAt: null,
+      })),
+      activeAuthorizationObservations: relayDesired.authorizations.map(
+        (authorization) => ({
+          sessionId: authorization.sessionId,
+          expiresAt: authorization.expiresAt,
+        }),
+      ),
+      failure: null,
+    };
+    await api
+      .post("/api/maintenance-relay/observed-state")
+      .set(relayAuth)
+      .send(reportedObserved)
+      .expect(201);
+    const refreshedOverview = maintenanceAccessOverviewResponseSchema.parse(
+      (await api.get("/api/maintenance-access").set(auth).expect(200)).body
+        .data,
+    );
+    expect(refreshedOverview.observedState.appliedAuthorizationIds).toContain(
       created.id,
     );
     expect(JSON.stringify(overview.desiredState)).not.toMatch(

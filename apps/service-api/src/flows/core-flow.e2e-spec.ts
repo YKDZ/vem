@@ -169,7 +169,8 @@ describe("core-flow.e2e", { concurrent: false }, () => {
 
     const succeedResponse = await api
       .post(`/api/payments/mock/${createdOrder.data.paymentNo}/succeed`)
-      .set("Authorization", `Bearer ${token}`);
+      .set("Authorization", `Bearer ${token}`)
+      .send({});
     expect(succeedResponse.status).toBe(201);
 
     const commandEnvelopes = commandPayloadsPromise.then((payloads) =>
@@ -315,7 +316,8 @@ describe("core-flow.e2e", { concurrent: false }, () => {
 
     const succeedResponse = await api
       .post(`/api/payments/mock/${createdOrder.data.paymentNo}/succeed`)
-      .set("Authorization", `Bearer ${token}`);
+      .set("Authorization", `Bearer ${token}`)
+      .send({});
     expect(succeedResponse.status).toBe(201);
     expect((succeedResponse.body as ApiResponse<{ status: string }>).code).toBe(
       0,
@@ -441,7 +443,8 @@ describe("core-flow.e2e", { concurrent: false }, () => {
 
     const duplicateSucceedResponse = await api
       .post(`/api/payments/mock/${createdOrder.data.paymentNo}/succeed`)
-      .set("Authorization", `Bearer ${token}`);
+      .set("Authorization", `Bearer ${token}`)
+      .send({});
     expect(duplicateSucceedResponse.status).toBe(201);
 
     const [purchaseConfirmedCount] = await db.client
@@ -490,7 +493,8 @@ describe("core-flow.e2e", { concurrent: false }, () => {
 
     const failResponse = await api
       .post(`/api/payments/mock/${createdOrder.data.paymentNo}/fail`)
-      .set("Authorization", `Bearer ${token}`);
+      .set("Authorization", `Bearer ${token}`)
+      .send({});
     expect(failResponse.status).toBe(201);
 
     const [orderRow] = await db.client
@@ -596,7 +600,8 @@ describe("core-flow.e2e", { concurrent: false }, () => {
 
     await api
       .post(`/api/payments/mock/${createdOrder.data.paymentNo}/succeed`)
-      .set("Authorization", `Bearer ${token}`);
+      .set("Authorization", `Bearer ${token}`)
+      .send({});
     const commandEnvelope2 = JSON.parse(await commandPayloadPromise) as {
       payload: { commandNo: string };
     };
@@ -678,7 +683,8 @@ describe("core-flow.e2e", { concurrent: false }, () => {
 
     const failResponse = await api
       .post(`/api/payments/mock/${createdOrder.data.paymentNo}/fail`)
-      .set("Authorization", `Bearer ${token}`);
+      .set("Authorization", `Bearer ${token}`)
+      .send({});
     expect(failResponse.status).toBe(201);
 
     const failedStatusResponse = await api
