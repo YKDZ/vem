@@ -387,11 +387,11 @@ ip route add 10.91.1.10/32 dev wg0
 ip route add 10.91.16.10/32 dev wg0
 ip route add 10.91.16.11/32 dev wg0
 
-ip netns exec machine node -e 'require("node:net").createServer((socket) => socket.pipe(socket)).listen(22, "10.91.16.10"); require("node:net").createServer((socket) => socket.pipe(socket)).listen(2222, "10.91.16.10")' & machine_server=$!
-ip netns exec runner node -e 'require("node:net").createServer((socket) => socket.pipe(socket)).listen(2222, "10.91.1.10")' & runner_server=$!
-ip netns exec lateral node -e 'require("node:net").createServer((socket) => socket.pipe(socket)).listen(22, "10.91.16.11")' & lateral_server=$!
-ip netns exec lan node -e 'require("node:net").createServer((socket) => socket.pipe(socket)).listen(2200, "198.51.100.2")' & lan_server=$!
-node -e 'require("node:net").createServer((socket) => socket.pipe(socket)).listen(2200, "10.91.0.1")' & relay_server=$!
+ip netns exec machine node -e 'const echo = (socket) => { socket.on("error", () => {}); socket.pipe(socket); }; require("node:net").createServer(echo).listen(22, "10.91.16.10"); require("node:net").createServer(echo).listen(2222, "10.91.16.10")' & machine_server=$!
+ip netns exec runner node -e 'require("node:net").createServer((socket) => { socket.on("error", () => {}); socket.pipe(socket); }).listen(2222, "10.91.1.10")' & runner_server=$!
+ip netns exec lateral node -e 'require("node:net").createServer((socket) => { socket.on("error", () => {}); socket.pipe(socket); }).listen(22, "10.91.16.11")' & lateral_server=$!
+ip netns exec lan node -e 'require("node:net").createServer((socket) => { socket.on("error", () => {}); socket.pipe(socket); }).listen(2200, "198.51.100.2")' & lan_server=$!
+node -e 'require("node:net").createServer((socket) => { socket.on("error", () => {}); socket.pipe(socket); }).listen(2200, "10.91.0.1")' & relay_server=$!
 sleep 1
 
 nft add table inet vem_relay_unrelated
