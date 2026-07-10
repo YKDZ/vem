@@ -19,6 +19,7 @@ import {
   isNull,
   lte,
   machines,
+  maintenanceAutomationExchanges,
   maintenancePeers,
   maintenanceRelayControlState,
   maintenanceRelayDesiredStateRevisions,
@@ -747,6 +748,24 @@ export class MaintenanceAccessService {
     });
   }
 
+  async createCiSessionFromAutomationExchange(
+    input: CreateCiMaintenanceSessionCommand,
+    automationExchangeId: string,
+  ): Promise<MaintenanceSessionResponse> {
+    const parsed = createCiMaintenanceSessionCommandSchema.safeParse(input);
+    if (!parsed.success) {
+      throw new BadRequestException("Invalid CI maintenance session command");
+    }
+    return await this.createSessionForRole(parsed.data, {
+      kind: "ci",
+      sourceRole: "runner",
+      actorAdminUserId: null,
+      automationActorId: parsed.data.automationActorId,
+      automationExchangeId,
+      ttlMinutes: CI_MAINTENANCE_SESSION_TTL_MINUTES,
+    });
+  }
+
   private async createSessionForRole(
     input: Pick<
       CreateHumanMaintenanceSessionRequest,
@@ -757,6 +776,7 @@ export class MaintenanceAccessService {
       sourceRole: "maintainer" | "runner";
       actorAdminUserId: string | null;
       automationActorId: string | null;
+      automationExchangeId?: string;
       ttlMinutes: number;
     },
   ): Promise<MaintenanceSessionResponse> {
@@ -773,6 +793,43 @@ export class MaintenanceAccessService {
       issuedAt.getTime() + actor.ttlMinutes * 60 * 1000,
     );
     return await this.db.transaction(async (tx) => {
+      let automationAttribution:
+        | { exchangeId: string; runId: string; runAttempt: string }
+        | undefined;
+      if (actor.automationExchangeId) {
+        const [exchange] = await tx
+          .select({
+            githubRunId: maintenanceAutomationExchanges.githubRunId,
+            githubRunAttempt: maintenanceAutomationExchanges.githubRunAttempt,
+            sourcePeerId: maintenanceAutomationExchanges.sourcePeerId,
+            targetMachineId: maintenanceAutomationExchanges.targetMachineId,
+            sessionId: maintenanceAutomationExchanges.sessionId,
+            expiresAt: maintenanceAutomationExchanges.expiresAt,
+            revokedAt: maintenanceAutomationExchanges.revokedAt,
+          })
+          .from(maintenanceAutomationExchanges)
+          .where(
+            eq(maintenanceAutomationExchanges.id, actor.automationExchangeId),
+          )
+          .for("update");
+        if (
+          !exchange ||
+          exchange.sessionId ||
+          exchange.revokedAt ||
+          exchange.expiresAt <= issuedAt ||
+          exchange.sourcePeerId !== input.sourcePeerId ||
+          exchange.targetMachineId !== input.targetMachineId
+        ) {
+          throw new ConflictException(
+            "Automation exchange cannot create a session",
+          );
+        }
+        automationAttribution = {
+          exchangeId: actor.automationExchangeId,
+          runId: exchange.githubRunId,
+          runAttempt: exchange.githubRunAttempt,
+        };
+      }
       const [source] = await tx
         .select({
           id: maintenancePeers.id,
@@ -843,6 +900,14 @@ export class MaintenanceAccessService {
         },
         issuedAt,
       );
+      if (actor.automationExchangeId) {
+        await tx
+          .update(maintenanceAutomationExchanges)
+          .set({ sessionId: session.id })
+          .where(
+            eq(maintenanceAutomationExchanges.id, actor.automationExchangeId),
+          );
+      }
       await tx.insert(auditLogs).values({
         adminUserId: actor.actorAdminUserId,
         action: "maintenanceAccess.session.create",
@@ -854,10 +919,17 @@ export class MaintenanceAccessService {
           actor:
             actor.kind === "human"
               ? { type: "admin", adminUserId: actor.actorAdminUserId }
-              : {
-                  type: "automation",
-                  automationActorId: actor.automationActorId,
-                },
+              : automationAttribution
+                ? {
+                    type: "github_actions_automation",
+                    exchangeId: automationAttribution.exchangeId,
+                    runId: automationAttribution.runId,
+                    runAttempt: automationAttribution.runAttempt,
+                  }
+                : {
+                    type: "automation",
+                    automationActorId: actor.automationActorId,
+                  },
           sourceRole: actor.sourceRole,
           targetMachineId: target.id,
           protocol: session.protocol,
@@ -883,8 +955,59 @@ export class MaintenanceAccessService {
     actorAdminUserId: string,
     sessionId: string,
   ): Promise<MaintenanceSessionResponse> {
+    return await this.revokeSessionForActor(
+      { type: "admin", adminUserId: actorAdminUserId },
+      sessionId,
+    );
+  }
+
+  async revokeSessionFromAutomationExchange(
+    automationExchangeId: string,
+    sessionId: string,
+  ): Promise<MaintenanceSessionResponse> {
+    return await this.revokeSessionForActor(
+      { type: "github_actions_automation", exchangeId: automationExchangeId },
+      sessionId,
+    );
+  }
+
+  private async revokeSessionForActor(
+    actor:
+      | { type: "admin"; adminUserId: string }
+      | { type: "github_actions_automation"; exchangeId: string },
+    sessionId: string,
+  ): Promise<MaintenanceSessionResponse> {
     const revokedAt = new Date();
     return await this.db.transaction(async (tx) => {
+      let automationAttribution:
+        | { exchangeId: string; runId: string; runAttempt: string }
+        | undefined;
+      if (actor.type === "github_actions_automation") {
+        const [exchange] = await tx
+          .select({
+            sessionId: maintenanceAutomationExchanges.sessionId,
+            githubRunId: maintenanceAutomationExchanges.githubRunId,
+            githubRunAttempt: maintenanceAutomationExchanges.githubRunAttempt,
+            revokedAt: maintenanceAutomationExchanges.revokedAt,
+          })
+          .from(maintenanceAutomationExchanges)
+          .where(eq(maintenanceAutomationExchanges.id, actor.exchangeId))
+          .for("update");
+        if (
+          !exchange ||
+          exchange.sessionId !== sessionId ||
+          exchange.revokedAt
+        ) {
+          throw new ConflictException(
+            "Automation exchange cannot revoke this session",
+          );
+        }
+        automationAttribution = {
+          exchangeId: actor.exchangeId,
+          runId: exchange.githubRunId,
+          runAttempt: exchange.githubRunAttempt,
+        };
+      }
       const [session] = await tx
         .select()
         .from(maintenanceSessions)
@@ -900,12 +1023,29 @@ export class MaintenanceAccessService {
         .update(maintenanceSessions)
         .set({ revokedAt })
         .where(eq(maintenanceSessions.id, session.id));
+      if (actor.type === "github_actions_automation") {
+        await tx
+          .update(maintenanceAutomationExchanges)
+          .set({ revokedAt })
+          .where(eq(maintenanceAutomationExchanges.id, actor.exchangeId));
+      }
       await tx.insert(auditLogs).values({
-        adminUserId: actorAdminUserId,
+        adminUserId: actor.type === "admin" ? actor.adminUserId : null,
         action: "maintenanceAccess.session.revoke",
         resourceType: "maintenance_session",
         resourceId: session.id,
-        afterJson: { revokedAt: revokedAt.toISOString() },
+        afterJson: {
+          actor:
+            actor.type === "admin"
+              ? { type: "admin", adminUserId: actor.adminUserId }
+              : {
+                  type: "github_actions_automation",
+                  exchangeId: automationAttribution?.exchangeId,
+                  runId: automationAttribution?.runId,
+                  runAttempt: automationAttribution?.runAttempt,
+                },
+          revokedAt: revokedAt.toISOString(),
+        },
       });
       const desiredStateVersion = await this.bumpDesiredStateVersion(tx);
       await tx

@@ -258,6 +258,36 @@ trust policy before issuing a run-bound automation token. OIDC trust policy is
 deployment configuration, not an Admin UI setting. `sshpass`, `SSHPASS`, and
 `VEM_TESTBED_WINDOWS_PASSWORD` are not part of the accepted workflow.
 
+VM Runtime Acceptance exchanges OIDC only with an independently deployed
+Maintenance control-plane. The ephemeral business Service API used by a test
+run is not an OIDC trust root. The `vem-maintenance-testbed` GitHub environment
+must require its deployment reviewer and allow only the protected `main`
+branch. It supplies these non-secret protected environment variables:
+
+- `VEM_MAINTENANCE_CONTROL_PLANE_URL`: credential-free HTTPS base URL for the
+  deployed Maintenance control-plane API;
+- `VEM_MAINTENANCE_RUNNER_PEER_ID`: the registered runner peer UUID;
+- `VEM_MAINTENANCE_TARGET_MACHINE_ID`: the permitted testbed Platform Machine
+  UUID.
+
+The control-plane deployment supplies trust material as read-only mounted files:
+`MAINTENANCE_GITHUB_OIDC_TRUST_POLICY_PATH` and
+`MAINTENANCE_AUTOMATION_JWT_SECRET_PATH`. An optional static GitHub key set may
+be mounted at `MAINTENANCE_GITHUB_OIDC_JWKS_PATH`; otherwise the control plane
+fetches only `https://token.actions.githubusercontent.com/.well-known/jwks`,
+without redirects. Inline policy, inline signing secrets, and configurable JWKS
+URLs are rejected.
+
+The automation exchange endpoint has a process-local ceiling of 30 exchange
+requests per minute per observed source. Every deployment must also configure
+its reverse proxy or API gateway with an equal or stricter per-client limit for
+`POST /api/maintenance-automation/exchange`, a bounded request body, HTTPS, and
+no response-body logging. Process-local rejection audits are deduplicated by
+source/reason/window so rejected-token traffic cannot create unbounded audit
+writes. The issued automation token lasts 125 minutes, the job is capped at 120
+minutes, and the CI Maintenance Session remains fixed at 150 minutes as the
+cleanup-failure fallback.
+
 The Service API signs short-lived OpenSSH user certificates from an
 environment-specific Maintenance SSH CA mounted as a Docker secret. Test and
 production CAs are different. The Factory profile contains only the CA public

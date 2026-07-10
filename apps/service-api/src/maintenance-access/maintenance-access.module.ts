@@ -3,6 +3,12 @@ import { JwtModule } from "@nestjs/jwt";
 
 import { ConfigModule } from "../config/config.module";
 import { DatabaseModule } from "../database/database.module";
+import { GithubOidcAutomationController } from "./github-oidc-automation.controller";
+import {
+  GITHUB_OIDC_AUTOMATION_CLOCK,
+  GithubOidcAutomationService,
+  systemGithubOidcAutomationClock,
+} from "./github-oidc-automation.service";
 import { MaintenanceAccessController } from "./maintenance-access.controller";
 import { MaintenanceAccessService } from "./maintenance-access.service";
 import { MaintenanceRelayAuthService } from "./maintenance-relay-auth.service";
@@ -17,9 +23,18 @@ import {
 
 @Module({
   imports: [ConfigModule, DatabaseModule, JwtModule.register({})],
-  controllers: [MaintenanceAccessController, MaintenanceRelayController],
+  controllers: [
+    MaintenanceAccessController,
+    MaintenanceRelayController,
+    GithubOidcAutomationController,
+  ],
   providers: [
     MaintenanceAccessService,
+    GithubOidcAutomationService,
+    {
+      provide: GITHUB_OIDC_AUTOMATION_CLOCK,
+      useValue: systemGithubOidcAutomationClock,
+    },
     MaintenanceRelayAuthService,
     MaintenanceSessionLifecycleSweeper,
     {

@@ -1,8 +1,20 @@
 import { Inject, Injectable } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  openSync,
+  readFileSync,
+} from "node:fs";
 
 import type { ServiceEnv } from "./env.schema";
 
+import {
+  parseGithubOidcJwks,
+  parseGithubOidcTrustPolicy,
+  type GithubOidcTrustPolicy,
+} from "../maintenance-access/github-actions-oidc";
 import {
   parseMaintenanceAddressPools,
   type MaintenanceAddressPools,
@@ -130,6 +142,37 @@ export class AppConfigService {
     });
   }
 
+  get githubOidcTrustPolicy(): GithubOidcTrustPolicy {
+    const path = this.config.get("MAINTENANCE_GITHUB_OIDC_TRUST_POLICY_PATH", {
+      infer: true,
+    });
+    if (!path) throw new Error("GitHub OIDC trust policy is not configured");
+    return parseGithubOidcTrustPolicy(readDeploymentFile(path));
+  }
+
+  get githubOidcJwks(): unknown {
+    const path = this.config.get("MAINTENANCE_GITHUB_OIDC_JWKS_PATH", {
+      infer: true,
+    });
+    return path ? parseGithubOidcJwks(readDeploymentFile(path)) : undefined;
+  }
+
+  get maintenanceAutomationJwtSecret(): string {
+    const path = this.config.get("MAINTENANCE_AUTOMATION_JWT_SECRET_PATH", {
+      infer: true,
+    });
+    if (!path) {
+      throw new Error(
+        "MAINTENANCE_AUTOMATION_JWT_SECRET_PATH is required for automation exchange",
+      );
+    }
+    const secret = readDeploymentFile(path).trim();
+    if (secret.length < 32) {
+      throw new Error("Maintenance automation JWT secret is too short");
+    }
+    return secret;
+  }
+
   get nodeEnv(): ServiceEnv["NODE_ENV"] {
     return this.config.get("NODE_ENV", { infer: true });
   }
@@ -242,5 +285,23 @@ export class AppConfigService {
 
   get bootstrapAdminPassword(): string {
     return this.config.get("BOOTSTRAP_ADMIN_PASSWORD", { infer: true });
+  }
+}
+
+function readDeploymentFile(path: string): string {
+  const descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const stat = fstatSync(descriptor);
+    if (!stat.isFile()) {
+      throw new Error(`Deployment configuration path is not a file: ${path}`);
+    }
+    if ((stat.mode & 0o222) !== 0) {
+      throw new Error(
+        `Deployment configuration file must be read-only: ${path}`,
+      );
+    }
+    return readFileSync(descriptor, "utf8");
+  } finally {
+    closeSync(descriptor);
   }
 }

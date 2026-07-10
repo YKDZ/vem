@@ -333,6 +333,35 @@ export type CreateHumanMaintenanceSessionRequest = z.infer<
 
 export const CI_MAINTENANCE_SESSION_TTL_MINUTES = 150;
 
+const githubActionsRunIdSchema = z.string().regex(/^[1-9][0-9]{0,19}$/);
+
+export const githubOidcAutomationExchangeRequestSchema = z.strictObject({
+  idToken: z.string().trim().min(32).max(20_000),
+  runId: githubActionsRunIdSchema,
+  runAttempt: z.string().regex(/^[1-9][0-9]{0,9}$/),
+  sha: z.string().regex(/^[0-9a-f]{40}$/),
+  sourcePeerId: z.uuid(),
+  targetMachineId: z.uuid(),
+  reason: z.string().trim().min(3).max(500),
+});
+export type GithubOidcAutomationExchangeRequest = z.infer<
+  typeof githubOidcAutomationExchangeRequestSchema
+>;
+
+export const githubOidcAutomationExchangeResponseSchema = z.strictObject({
+  actor: z.strictObject({
+    type: z.literal("github_actions"),
+    runId: githubActionsRunIdSchema,
+    runAttempt: z.string().regex(/^[1-9][0-9]{0,9}$/),
+  }),
+  accessToken: z.string().min(1),
+  expiresAt: z.iso.datetime(),
+  sessionTtlMinutes: z.literal(CI_MAINTENANCE_SESSION_TTL_MINUTES),
+});
+export type GithubOidcAutomationExchangeResponse = z.infer<
+  typeof githubOidcAutomationExchangeResponseSchema
+>;
+
 export const createCiMaintenanceSessionCommandSchema = z.strictObject({
   sourcePeerId: z.uuid(),
   targetMachineId: z.uuid(),

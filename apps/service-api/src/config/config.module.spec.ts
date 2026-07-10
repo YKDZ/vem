@@ -1,5 +1,8 @@
 import { ConfigService } from "@nestjs/config";
 import { Test } from "@nestjs/testing";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 import { AppConfigService } from "./app-config.service";
@@ -18,6 +21,63 @@ function configServiceFor(values: Record<string, string>) {
 }
 
 describe("ConfigModule maintenance address pools", () => {
+  it("reads automation trust material only from owner-read-only deployment files", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "vem-oidc-config-"));
+    const policyPath = join(directory, "policy.json");
+    const jwksPath = join(directory, "jwks.json");
+    const secretPath = join(directory, "automation-jwt-secret");
+    const policy = {
+      repositoryId: "123456789",
+      workflowIdentity: {
+        claimModel: "direct",
+        workflowRef:
+          "vem/vem/.github/workflows/vm-runtime-acceptance.yml@refs/heads/main",
+      },
+      refs: ["refs/heads/main"],
+      events: ["workflow_dispatch"],
+      environments: ["vem-maintenance-testbed"],
+      requireRefProtected: true,
+      targetMachineCodes: ["VEM-TESTBED-RUNTIME-ACCEPTANCE"],
+    };
+    const jwks = {
+      keys: [
+        {
+          kty: "RSA",
+          kid: "mounted-key",
+          n: "test-modulus",
+          e: "AQAB",
+        },
+      ],
+    };
+    writeFileSync(policyPath, JSON.stringify(policy), { mode: 0o600 });
+    writeFileSync(jwksPath, JSON.stringify(jwks), { mode: 0o400 });
+    writeFileSync(secretPath, `${"s".repeat(48)}\n`, { mode: 0o400 });
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        AppConfigService,
+        {
+          provide: ConfigService,
+          useValue: configServiceFor({
+            ...validPools,
+            MAINTENANCE_GITHUB_OIDC_TRUST_POLICY_PATH: policyPath,
+            MAINTENANCE_GITHUB_OIDC_JWKS_PATH: jwksPath,
+            MAINTENANCE_AUTOMATION_JWT_SECRET_PATH: secretPath,
+          }),
+        },
+      ],
+    }).compile();
+    const config = moduleRef.get(AppConfigService);
+
+    expect(() => config.githubOidcTrustPolicy).toThrow("must be read-only");
+    chmodSync(policyPath, 0o400);
+    expect(config.githubOidcTrustPolicy).toEqual(policy);
+    expect(config.githubOidcJwks).toEqual(jwks);
+    expect(config.maintenanceAutomationJwtSecret).toBe("s".repeat(48));
+
+    await moduleRef.close();
+    rmSync(directory, { recursive: true, force: true });
+  });
+
   it("parses maintenance address pools once during provider startup and caches them", async () => {
     const configService = configServiceFor(validPools);
     const moduleRef = await Test.createTestingModule({

@@ -65,6 +65,13 @@ const baseEnvSchema = z.object({
     .min(60)
     .max(3600)
     .default(300),
+  MAINTENANCE_GITHUB_OIDC_TRUST_POLICY: z.string().min(1).optional(),
+  MAINTENANCE_GITHUB_OIDC_TRUST_POLICY_PATH: z.string().min(1).optional(),
+  MAINTENANCE_GITHUB_OIDC_JWKS_JSON: z.string().min(1).optional(),
+  MAINTENANCE_GITHUB_OIDC_JWKS_PATH: z.string().min(1).optional(),
+  MAINTENANCE_GITHUB_OIDC_JWKS_URL: z.url().optional(),
+  MAINTENANCE_AUTOMATION_JWT_SECRET: z.string().min(32).optional(),
+  MAINTENANCE_AUTOMATION_JWT_SECRET_PATH: z.string().min(1).optional(),
   PAYMENT_MOCK_ENABLED: z
     .preprocess((value) => {
       if (typeof value === "string") {
@@ -143,6 +150,20 @@ const DEFAULT_PAYMENT_CONFIG_ENCRYPTION_KEY =
   "dev-payment-config-encryption-key-change-me";
 
 export const envSchema = baseEnvSchema.superRefine((env, ctx) => {
+  for (const key of [
+    "MAINTENANCE_GITHUB_OIDC_TRUST_POLICY",
+    "MAINTENANCE_GITHUB_OIDC_JWKS_JSON",
+    "MAINTENANCE_GITHUB_OIDC_JWKS_URL",
+    "MAINTENANCE_AUTOMATION_JWT_SECRET",
+  ] as const) {
+    if (env[key]) {
+      ctx.addIssue({
+        code: "custom",
+        path: [key],
+        message: `${key} is not supported; mount deployment-owned read-only configuration instead`,
+      });
+    }
+  }
   try {
     parseMaintenanceAddressPools({
       relay: env.MAINTENANCE_RELAY_ADDRESS_POOL,

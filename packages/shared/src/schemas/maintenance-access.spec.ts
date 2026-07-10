@@ -4,6 +4,8 @@ import {
   CI_MAINTENANCE_SESSION_TTL_MINUTES,
   createCiMaintenanceSessionCommandSchema,
   createHumanMaintenanceSessionRequestSchema,
+  githubOidcAutomationExchangeRequestSchema,
+  githubOidcAutomationExchangeResponseSchema,
   maintenanceAccessOverviewResponseSchema,
   maintenanceAccessAuditListQuerySchema,
   maintenancePeerHealthSchema,
@@ -23,6 +25,44 @@ const TARGET_MACHINE_ID = "550e8400-e29b-41d4-a716-446655440002";
 const SESSION_ID = "550e8400-e29b-41d4-a716-446655440003";
 
 describe("Maintenance Access shared contracts", () => {
+  it("accepts a bounded GitHub OIDC automation exchange without exposing credentials", () => {
+    const request = githubOidcAutomationExchangeRequestSchema.parse({
+      idToken: "header.payload.signature.header.payload",
+      runId: "1234567890",
+      runAttempt: "2",
+      sha: "a".repeat(40),
+      sourcePeerId: SOURCE_PEER_ID,
+      targetMachineId: TARGET_MACHINE_ID,
+      reason: "Run VM Runtime Acceptance",
+    });
+    const response = githubOidcAutomationExchangeResponseSchema.parse({
+      actor: {
+        type: "github_actions",
+        runId: "1234567890",
+        runAttempt: "2",
+      },
+      accessToken: "short-lived-automation-token",
+      expiresAt: "2026-07-10T12:00:00.000Z",
+      sessionTtlMinutes: 150,
+    });
+
+    expect(request).toMatchObject({
+      runId: "1234567890",
+      runAttempt: "2",
+      sha: "a".repeat(40),
+    });
+    expect(response).toEqual({
+      actor: {
+        type: "github_actions",
+        runId: "1234567890",
+        runAttempt: "2",
+      },
+      accessToken: "short-lived-automation-token",
+      expiresAt: "2026-07-10T12:00:00.000Z",
+      sessionTtlMinutes: 150,
+    });
+  });
+
   it("separates default-30-minute human requests from fixed-150-minute CI commands", () => {
     expect(
       createHumanMaintenanceSessionRequestSchema.parse({

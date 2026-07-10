@@ -30,6 +30,35 @@ const productionPaymentConfigEncryptionKey =
   "prod-payment-config-encryption-key-change-me-now";
 
 describe("validateEnv", () => {
+  it.each([
+    ["MAINTENANCE_GITHUB_OIDC_TRUST_POLICY", "{}"],
+    ["MAINTENANCE_GITHUB_OIDC_JWKS_JSON", '{"keys":[]}'],
+    [
+      "MAINTENANCE_GITHUB_OIDC_JWKS_URL",
+      "https://attacker.example/.well-known/jwks",
+    ],
+    ["MAINTENANCE_AUTOMATION_JWT_SECRET", "x".repeat(32)],
+  ])("rejects legacy or mutable automation trust config %s", (key, value) => {
+    expect(() => validateEnv({ ...baseValidEnv, [key]: value })).toThrow(
+      `${key} is not supported`,
+    );
+  });
+
+  it("accepts deployment-owned mounted paths for automation trust material", () => {
+    const env = validateEnv({
+      ...baseValidEnv,
+      MAINTENANCE_GITHUB_OIDC_TRUST_POLICY_PATH:
+        "/run/secrets/oidc-policy.json",
+      MAINTENANCE_GITHUB_OIDC_JWKS_PATH: "/run/config/github-oidc-jwks.json",
+      MAINTENANCE_AUTOMATION_JWT_SECRET_PATH:
+        "/run/secrets/maintenance-automation-jwt",
+    });
+
+    expect(env.MAINTENANCE_AUTOMATION_JWT_SECRET_PATH).toBe(
+      "/run/secrets/maintenance-automation-jwt",
+    );
+  });
+
   it("accepts valid development config with mock enabled", () => {
     const env = validateEnv(baseValidEnv);
     expect(env.PAYMENT_MOCK_ENABLED).toBe(true);

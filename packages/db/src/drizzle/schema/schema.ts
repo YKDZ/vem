@@ -623,6 +623,87 @@ export const maintenanceSessions = t.pgTable(
   ],
 );
 
+export const maintenanceAutomationExchanges = t.pgTable(
+  "maintenance_automation_exchanges",
+  {
+    id: id(),
+    oidcIssuer: t.varchar("oidc_issuer", { length: 255 }).notNull(),
+    oidcTokenId: t.varchar("oidc_token_id", { length: 512 }).notNull(),
+    githubRepositoryId: t
+      .varchar("github_repository_id", { length: 20 })
+      .notNull(),
+    githubClaimModel: t.varchar("github_claim_model", { length: 16 }).notNull(),
+    githubWorkflowRef: t
+      .varchar("github_workflow_ref", { length: 1024 })
+      .notNull(),
+    githubWorkflowSha: t
+      .varchar("github_workflow_sha", { length: 40 })
+      .notNull(),
+    githubRef: t.varchar("github_ref", { length: 512 }).notNull(),
+    automationTokenDigest: t
+      .varchar("automation_token_digest", { length: 64 })
+      .notNull(),
+    githubRunId: t.varchar("github_run_id", { length: 20 }).notNull(),
+    githubRunAttempt: t.varchar("github_run_attempt", { length: 10 }).notNull(),
+    githubSha: t.varchar("github_sha", { length: 40 }).notNull(),
+    sourcePeerId: t
+      .uuid("source_peer_id")
+      .notNull()
+      .references(() => maintenancePeers.id),
+    targetMachineId: t
+      .uuid("target_machine_id")
+      .notNull()
+      .references(() => machines.id),
+    reason: t.varchar("reason", { length: 500 }).notNull(),
+    sessionId: t.uuid("session_id").references(() => maintenanceSessions.id),
+    expiresAt: t.timestamp("expires_at", { withTimezone: true }).notNull(),
+    revokedAt: t.timestamp("revoked_at", { withTimezone: true }),
+    createdAt: createdAt(),
+  },
+  (table) => [
+    t
+      .uniqueIndex("maintenance_automation_exchanges_oidc_jti_unique")
+      .on(table.oidcIssuer, table.oidcTokenId),
+    t
+      .uniqueIndex("maintenance_automation_exchanges_run_attempt_unique")
+      .on(
+        table.oidcIssuer,
+        table.githubRepositoryId,
+        table.githubRunId,
+        table.githubRunAttempt,
+      ),
+    t
+      .uniqueIndex("maintenance_automation_exchanges_token_digest_unique")
+      .on(table.automationTokenDigest),
+    t
+      .uniqueIndex("maintenance_automation_exchanges_session_unique")
+      .on(table.sessionId)
+      .where(sql`${table.sessionId} IS NOT NULL`),
+    t
+      .index("maintenance_automation_exchanges_run_idx")
+      .on(table.githubRunId, table.githubRunAttempt),
+    t
+      .index("maintenance_automation_exchanges_active_idx")
+      .on(table.expiresAt, table.revokedAt),
+    t.check(
+      "maintenance_automation_exchanges_digest_check",
+      sql`${table.automationTokenDigest} ~ '^[0-9a-f]{64}$'`,
+    ),
+    t.check(
+      "maintenance_automation_exchanges_sha_check",
+      sql`${table.githubSha} ~ '^[0-9a-f]{40}$' AND ${table.githubWorkflowSha} ~ '^[0-9a-f]{40}$'`,
+    ),
+    t.check(
+      "maintenance_automation_exchanges_claim_model_check",
+      sql`${table.githubClaimModel} IN ('direct', 'reusable')`,
+    ),
+    t.check(
+      "maintenance_automation_exchanges_expiry_check",
+      sql`${table.expiresAt} > ${table.createdAt}`,
+    ),
+  ],
+);
+
 export const maintenanceRelayControlState = t.pgTable(
   "maintenance_relay_control_state",
   {

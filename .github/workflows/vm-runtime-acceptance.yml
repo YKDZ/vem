@@ -7,10 +7,6 @@ on:
         description: Run id used for evidence and testbed machine identity
         required: false
         default: ""
-      runner_labels:
-        description: JSON array for the self-hosted VM host runner labels
-        required: false
-        default: '["self-hosted","vem-runtime"]'
       base_image:
         description: VM host base qcow2 image path
         required: false
@@ -51,6 +47,7 @@ permissions:
 jobs:
   build-windows-artifacts:
     name: Build Windows Runtime Artifacts
+    if: github.ref == 'refs/heads/main'
     uses: ./.github/workflows/build-windows-runtime-artifacts.yml
     with:
       artifact_name: vm-runtime-windows-artifacts
@@ -59,8 +56,14 @@ jobs:
   vm-runtime-acceptance:
     name: Restore VM And Run Acceptance
     needs: build-windows-artifacts
-    runs-on: ${{ fromJSON(inputs.runner_labels) }}
+    if: github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, Linux, X64, vem-runtime]
     timeout-minutes: 120
+    environment: vem-maintenance-testbed
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
     defaults:
       run:
         shell: bash
@@ -76,15 +79,34 @@ jobs:
       MAINTENANCE_RELAY_INTERFACE: ${{ inputs.runner_wireguard_interface }}
       VEM_MAINTENANCE_RELAY_RUNNER_WG_CONFIG: ${{ secrets.VEM_MAINTENANCE_RELAY_RUNNER_WG_CONFIG }}
       VEM_MAINTENANCE_RELAY_RUNNER_WG_CONFIG_PATH: ${{ secrets.VEM_MAINTENANCE_RELAY_RUNNER_WG_CONFIG_PATH }}
+      MAINTENANCE_CONTROL_PLANE_URL: ${{ vars.VEM_MAINTENANCE_CONTROL_PLANE_URL }}
+      MAINTENANCE_RUNNER_PEER_ID: ${{ vars.VEM_MAINTENANCE_RUNNER_PEER_ID }}
+      MAINTENANCE_TARGET_MACHINE_ID: ${{ vars.VEM_MAINTENANCE_TARGET_MACHINE_ID }}
     steps:
+      - name: Guard Protected Maintenance Trust Boundary
+        env:
+          EXPECTED_WORKFLOW_REF: ${{ github.repository }}/.github/workflows/vm-runtime-acceptance.yml@refs/heads/main
+          OBSERVED_WORKFLOW_REF: ${{ github.workflow_ref }}
+          RUNNER_LABELS_JSON: ${{ toJSON(runner.labels) }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = "refs/heads/main"
+          test "$OBSERVED_WORKFLOW_REF" = "$EXPECTED_WORKFLOW_REF"
+          node -e '
+            const labels = JSON.parse(process.env.RUNNER_LABELS_JSON);
+            for (const required of ["self-hosted", "Linux", "X64", "vem-runtime"]) {
+              if (!labels.includes(required)) throw new Error(`missing trusted runner label: ${required}`);
+            }
+          '
+
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
 
       - name: Install pnpm
-        uses: pnpm/action-setup@v6
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
         with:
           node-version: 24
           cache: pnpm
@@ -93,7 +115,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Restore Turbo cache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
           path: .turbo/cache
           key: ${{ runner.os }}-turbo-${{ github.job }}-${{ github.sha }}
@@ -166,6 +188,172 @@ jobs:
           test -f artifacts/vm-runtime-inputs/vending-daemon.exe
           test -f artifacts/vm-runtime-inputs/machine.exe
           test -f artifacts/vm-runtime-inputs/WebView2Loader.dll
+
+      - name: Exchange OIDC And Create Maintenance Session
+        run: |
+          set -euo pipefail
+          umask 077
+          node -e '
+            const required = [
+              "MAINTENANCE_CONTROL_PLANE_URL",
+              "MAINTENANCE_RUNNER_PEER_ID",
+              "MAINTENANCE_TARGET_MACHINE_ID",
+            ];
+            for (const name of required) {
+              if (!process.env[name]) throw new Error(`protected environment variable is required: ${name}`);
+            }
+            const url = new URL(process.env.MAINTENANCE_CONTROL_PLANE_URL);
+            if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash) {
+              throw new Error("MAINTENANCE_CONTROL_PLANE_URL must be a credential-free HTTPS URL");
+            }
+            const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+            for (const name of ["MAINTENANCE_RUNNER_PEER_ID", "MAINTENANCE_TARGET_MACHINE_ID"]) {
+              if (!uuid.test(process.env[name])) throw new Error(`protected environment variable must be a UUID: ${name}`);
+            }
+          '
+          MAINTENANCE_CONTROL_PLANE_URL="${MAINTENANCE_CONTROL_PLANE_URL%/}"
+          oidc_response_path="$RUNNER_TEMP/maintenance-oidc-response.json"
+          oidc_token_path="$RUNNER_TEMP/maintenance-oidc-token.jwt"
+          exchange_request_path="$RUNNER_TEMP/maintenance-exchange-request.json"
+          exchange_response_path="$RUNNER_TEMP/maintenance-exchange-response.json"
+          automation_token_path="$RUNNER_TEMP/automation-token.jwt"
+          session_create_path="$RUNNER_TEMP/maintenance-session-create.json"
+          session_verify_path="$RUNNER_TEMP/maintenance-session-verify.json"
+          rm -f \
+            "$oidc_response_path" \
+            "$oidc_token_path" \
+            "$exchange_request_path" \
+            "$exchange_response_path" \
+            "$automation_token_path" \
+            "$session_create_path" \
+            "$session_verify_path"
+
+          {
+            printf 'url = "%s&audience=vem-maintenance"\n' "$ACTIONS_ID_TOKEN_REQUEST_URL"
+            printf 'header = "Authorization: Bearer %s"\n' "$ACTIONS_ID_TOKEN_REQUEST_TOKEN"
+          } | curl --config - \
+            --fail-with-body \
+            --silent \
+            --show-error \
+            --output "$oidc_response_path"
+          chmod 600 "$oidc_response_path"
+          node - "$oidc_response_path" "$oidc_token_path" <<'NODE'
+          const fs = require("node:fs");
+          const payload = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+          if (typeof payload.value !== "string" || payload.value.split(".").length !== 3) {
+            throw new Error("GitHub OIDC endpoint returned no JWT value");
+          }
+          fs.writeFileSync(process.argv[3], payload.value, {
+            encoding: "utf8",
+            flag: "wx",
+            mode: 0o600,
+          });
+          NODE
+          IFS= read -r id_token < "$oidc_token_path"
+          printf '::add-mask::%s\n' "$id_token"
+          unset id_token
+
+          node - "$oidc_token_path" "$exchange_request_path" <<'NODE'
+          const fs = require("node:fs");
+          const body = {
+            idToken: fs.readFileSync(process.argv[2], "utf8"),
+            runId: process.env.GITHUB_RUN_ID,
+            runAttempt: process.env.GITHUB_RUN_ATTEMPT,
+            sha: process.env.GITHUB_SHA,
+            sourcePeerId: process.env.MAINTENANCE_RUNNER_PEER_ID,
+            targetMachineId: process.env.MAINTENANCE_TARGET_MACHINE_ID,
+            reason: "Run VM Runtime Acceptance",
+          };
+          fs.writeFileSync(process.argv[3], JSON.stringify(body), {
+            encoding: "utf8",
+            flag: "wx",
+            mode: 0o600,
+          });
+          NODE
+          curl --fail-with-body \
+            --silent \
+            --show-error \
+            --header 'Content-Type: application/json' \
+            --data-binary @"$exchange_request_path" \
+            --output "$exchange_response_path" \
+            "$MAINTENANCE_CONTROL_PLANE_URL/maintenance-automation/exchange"
+          chmod 600 "$exchange_response_path"
+          node - "$exchange_response_path" "$automation_token_path" <<'NODE'
+          const fs = require("node:fs");
+          const response = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+          const exchange = response.data;
+          if (
+            typeof exchange?.accessToken !== "string" ||
+            exchange.accessToken.split(".").length !== 3 ||
+            exchange.actor?.runId !== process.env.GITHUB_RUN_ID ||
+            exchange.actor?.runAttempt !== process.env.GITHUB_RUN_ATTEMPT ||
+            exchange.sessionTtlMinutes !== 150
+          ) {
+            throw new Error("maintenance automation exchange response is invalid");
+          }
+          const remainingSeconds = (Date.parse(exchange.expiresAt) - Date.now()) / 1000;
+          if (remainingSeconds < 120 * 60 || remainingSeconds > 125 * 60 + 60) {
+            throw new Error("maintenance automation token does not cover the cleanup window");
+          }
+          fs.writeFileSync(process.argv[3], exchange.accessToken, {
+            encoding: "utf8",
+            flag: "wx",
+            mode: 0o600,
+          });
+          NODE
+          IFS= read -r automation_token < "$automation_token_path"
+          printf '::add-mask::%s\n' "$automation_token"
+          unset automation_token
+          rm -f \
+            "$oidc_response_path" \
+            "$oidc_token_path" \
+            "$exchange_request_path" \
+            "$exchange_response_path"
+
+          IFS= read -r automation_token < "$automation_token_path"
+          {
+            printf 'header = "Authorization: Bearer %s"\n' "$automation_token"
+            printf 'request = "POST"\n'
+          } | curl --config - \
+            --fail-with-body \
+            --silent \
+            --show-error \
+            --output "$session_create_path" \
+            "$MAINTENANCE_CONTROL_PLANE_URL/maintenance-automation/session"
+          unset automation_token
+          chmod 600 "$session_create_path"
+
+          IFS= read -r automation_token < "$automation_token_path"
+          {
+            printf 'header = "Authorization: Bearer %s"\n' "$automation_token"
+            printf 'request = "GET"\n'
+          } | curl --config - \
+            --fail-with-body \
+            --silent \
+            --show-error \
+            --output "$session_verify_path" \
+            "$MAINTENANCE_CONTROL_PLANE_URL/maintenance-automation/session"
+          unset automation_token
+          chmod 600 "$session_verify_path"
+          node - "$session_create_path" "$session_verify_path" <<'NODE'
+          const fs = require("node:fs");
+          const created = JSON.parse(fs.readFileSync(process.argv[2], "utf8")).data;
+          const verified = JSON.parse(fs.readFileSync(process.argv[3], "utf8")).data;
+          const ttlMinutes = (Date.parse(created?.expiresAt) - Date.parse(created?.issuedAt)) / 60000;
+          if (
+            !created?.id ||
+            created.kind !== "ci" ||
+            created.status !== "active" ||
+            created.sourcePeer?.id !== process.env.MAINTENANCE_RUNNER_PEER_ID ||
+            created.targetMachine?.id !== process.env.MAINTENANCE_TARGET_MACHINE_ID ||
+            ttlMinutes !== 150 ||
+            verified?.id !== created.id ||
+            verified.status !== "active"
+          ) {
+            throw new Error("maintenance session create/get verification failed");
+          }
+          NODE
+          rm -f "$session_create_path" "$session_verify_path"
 
       - name: Start Runner Maintenance Relay WireGuard Peer
         run: |
@@ -399,24 +587,108 @@ jobs:
         if: always()
         run: |
           set +e
+          cleanup_status=0
+          mkdir -p "artifacts/vm-runtime-acceptance/${RUN_ID}"
           diagnostics="artifacts/vm-runtime-acceptance/${RUN_ID}/maintenance-relay-diagnostics.txt"
           temp_config_path="$RUNNER_TEMP/${MAINTENANCE_RELAY_INTERFACE}-${GITHUB_RUN_ID}.conf"
+          automation_token_path="$RUNNER_TEMP/automation-token.jwt"
+          revoke_response_path="$RUNNER_TEMP/maintenance-session-revoke.json"
           installed_config_path="/etc/wireguard/${MAINTENANCE_RELAY_INTERFACE}.conf"
+          if [ -s "$automation_token_path" ]; then
+            IFS= read -r automation_token < "$automation_token_path"
+            {
+              printf 'header = "Authorization: Bearer %s"\n' "$automation_token"
+              printf 'request = "POST"\n'
+            } | curl --config - \
+              --fail-with-body \
+              --silent \
+              --show-error \
+              --output "$revoke_response_path" \
+              "${MAINTENANCE_CONTROL_PLANE_URL%/}/maintenance-automation/session/revoke"
+            revoke_status="$?"
+            unset automation_token
+            if [ "$revoke_status" -eq 0 ]; then
+              node -e '
+                const fs = require("node:fs");
+                const revoked = JSON.parse(fs.readFileSync(process.argv[1], "utf8")).data;
+                if (!revoked?.id || revoked.status !== "revoked") {
+                  throw new Error("maintenance session revoke response is invalid");
+                }
+              ' "$revoke_response_path"
+              revoke_status="$?"
+            fi
+            if [ "$revoke_status" -ne 0 ]; then
+              echo "::error::Maintenance Session explicit cleanup failed; the fixed 150-minute session TTL remains the fallback."
+              cleanup_status=1
+            fi
+          fi
           sudo wg-quick down "$MAINTENANCE_RELAY_INTERFACE" >/dev/null 2>&1
           wg_down_status="$?"
           sudo rm -f "$installed_config_path"
           rm -f "$temp_config_path"
+          rm -f \
+            "$automation_token_path" \
+            "$revoke_response_path" \
+            "$RUNNER_TEMP/maintenance-oidc-response.json" \
+            "$RUNNER_TEMP/maintenance-oidc-token.jwt" \
+            "$RUNNER_TEMP/maintenance-exchange-request.json" \
+            "$RUNNER_TEMP/maintenance-exchange-response.json" \
+            "$RUNNER_TEMP/maintenance-session-create.json" \
+            "$RUNNER_TEMP/maintenance-session-verify.json"
           {
             echo "cleanup.wgQuickDownExit=${wg_down_status}"
             echo "cleanup.installedConfigRemoved=true"
             echo "cleanup.tempConfigRemoved=true"
+            echo "cleanup.maintenanceSessionExplicitRevoke=$([ "$cleanup_status" -eq 0 ] && echo passed || echo failed)"
           } >> "$diagnostics" 2>/dev/null || true
           if [ -f service-api.pid ]; then kill "$(cat service-api.pid)" 2>/dev/null || true; fi
           docker rm -f "vem-runtime-postgres-${GITHUB_RUN_ID}" "vem-runtime-mqtt-${GITHUB_RUN_ID}" >/dev/null 2>&1 || true
+          exit "$cleanup_status"
+
+      - name: Guard Maintenance Automation Evidence
+        id: maintenance_leak_guard
+        if: always()
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require("node:fs");
+          const path = require("node:path");
+          const forbiddenTempFiles = [
+            "automation-token.jwt",
+            "maintenance-oidc-token.jwt",
+            "maintenance-exchange-request.json",
+            "maintenance-exchange-response.json",
+          ].map((name) => path.join(process.env.RUNNER_TEMP, name));
+          const leaks = forbiddenTempFiles.filter((candidate) => fs.existsSync(candidate));
+          const roots = [
+            path.join("artifacts", "vm-runtime-acceptance", process.env.RUN_ID),
+            "service-api.log",
+          ];
+          const jwt = /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/;
+          const plaintextTokenField = /"(?:accessToken|idToken)"\s*:\s*"(?!\[REDACTED\])[^"\r\n]+"/;
+          function visit(candidate) {
+            if (!fs.existsSync(candidate)) return;
+            const stat = fs.statSync(candidate);
+            if (stat.isDirectory()) {
+              for (const entry of fs.readdirSync(candidate)) visit(path.join(candidate, entry));
+              return;
+            }
+            if (stat.size > 10 * 1024 * 1024) return;
+            const content = fs.readFileSync(candidate);
+            if (content.includes(0)) return;
+            const text = content.toString("utf8");
+            if (jwt.test(text) || plaintextTokenField.test(text)) leaks.push(candidate);
+          }
+          for (const root of roots) visit(root);
+          if (leaks.length > 0) {
+            throw new Error(`maintenance automation credential material found in: ${leaks.join(", ")}`);
+          }
+          console.log("maintenance-automation-leak-guard=passed");
+          NODE
 
       - name: Upload VM Runtime Acceptance Artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
+        if: always() && steps.maintenance_leak_guard.outcome == 'success'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: vm-runtime-acceptance-${{ env.RUN_ID }}
           path: |
