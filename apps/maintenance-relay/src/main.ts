@@ -1,40 +1,38 @@
-import { NftablesRelayBackend, SyncconfWireGuardBackend } from "./backends";
-import { HttpRelayControlPlane } from "./control-plane";
-import { FileRelayJournalStore } from "./journal";
-import { MaintenanceRelayReconciler } from "./reconciler";
-import { MaintenanceRelayRuntime } from "./runtime";
-
-function requiredEnv(name: string): string {
-  const value = process.env[name];
-  if (!value) throw new Error(`${name} is required`);
-  return value;
-}
+import { NftablesRelayBackend, SyncconfWireGuardBackend } from "./backends.js";
+import { HttpRelayControlPlane } from "./control-plane.js";
+import { FileRelayJournalStore } from "./journal.js";
+import { RelayManagementHealthServer } from "./management-health.js";
+import { MaintenanceRelayReconciler } from "./reconciler.js";
+import {
+  parseRelayRuntimeConfig,
+  readRelayCredential,
+} from "./runtime-config.js";
+import { MaintenanceRelayRuntime } from "./runtime.js";
 
 async function main(): Promise<void> {
-  const interfaceName = process.env["MAINTENANCE_RELAY_INTERFACE"] ?? "wg0";
-  const pollIntervalMs = Number(
-    process.env["MAINTENANCE_RELAY_POLL_INTERVAL_MS"] ?? "5000",
-  );
-  if (!Number.isInteger(pollIntervalMs) || pollIntervalMs < 1000) {
-    throw new Error(
-      "MAINTENANCE_RELAY_POLL_INTERVAL_MS must be an integer >= 1000",
-    );
-  }
+  const config = parseRelayRuntimeConfig(process.env);
+  const credential = await readRelayCredential(config.credentialFile);
   const reconciler = new MaintenanceRelayReconciler({
-    wireGuard: new SyncconfWireGuardBackend(interfaceName),
-    firewall: new NftablesRelayBackend(interfaceName),
-    journal: new FileRelayJournalStore(
-      process.env["MAINTENANCE_RELAY_JOURNAL_PATH"] ??
-        "/var/lib/vem/maintenance-relay/journal.json",
+    wireGuard: new SyncconfWireGuardBackend(
+      config.interfaceName,
+      config.relayTunnelAddress,
+      { privateKeyPath: config.privateKeyFile },
     ),
+    firewall: new NftablesRelayBackend(config.interfaceName),
+    journal: new FileRelayJournalStore(config.journalPath),
+    transport: config.transport,
   });
   const runtime = new MaintenanceRelayRuntime(
-    new HttpRelayControlPlane(
-      requiredEnv("SERVICE_API_BASE_URL"),
-      requiredEnv("MAINTENANCE_RELAY_CREDENTIAL"),
-    ),
+    new HttpRelayControlPlane(config.serviceApiBaseUrl, credential, {
+      allowInsecureHttp: config.transport.mode === "insecure-http",
+    }),
     reconciler,
   );
+  const health = new RelayManagementHealthServer(
+    config.transport,
+    config.healthPort,
+  );
+  await health.start();
   const pollForever = async (): Promise<never> => {
     try {
       await runtime.poll();
@@ -44,7 +42,7 @@ async function main(): Promise<void> {
       );
     }
     return await new Promise<never>((resolve) => {
-      setTimeout(resolve, pollIntervalMs);
+      setTimeout(resolve, config.pollIntervalMs);
     }).then(pollForever);
   };
   await pollForever();

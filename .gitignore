@@ -32,3 +32,5 @@ CONTEXT*
 .tmp
 
 AGENTS.md
+
+node-compile-cache

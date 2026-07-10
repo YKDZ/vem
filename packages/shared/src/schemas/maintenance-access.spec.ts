@@ -6,7 +6,9 @@ import {
   maintenanceRelayCredentialExchangeRequestSchema,
   maintenanceRelayCredentialExchangeResponseSchema,
   maintenanceRelayDesiredStateSchema,
+  maintenanceRelayHealthSchema,
   maintenanceRelayObservedStateSchema,
+  maintenanceRelayTransportSchema,
   registerMaintenancePeerRequestSchema,
 } from "./maintenance-access";
 
@@ -67,13 +69,78 @@ describe("Maintenance Access shared contracts", () => {
         activeAuthorizationObservations: [
           { sessionId: SESSION_ID, expiresAt: "2026-07-10T12:30:00.000Z" },
         ],
+        transport: {
+          mode: "https",
+          health: "healthy",
+          reason: null,
+        },
         failure: null,
       }),
     ).toMatchObject({
       appliedDesiredStateVersion: 7,
       attemptedDesiredStateVersion: null,
       appliedAuthorizationIds: [SESSION_ID],
+      transport: { mode: "https", health: "healthy" },
     });
+  });
+
+  it("keeps transport and relay observation health states internally consistent", () => {
+    expect(
+      maintenanceRelayTransportSchema.parse({
+        mode: "https",
+        health: "healthy",
+        reason: null,
+      }),
+    ).toEqual({ mode: "https", health: "healthy", reason: null });
+    expect(
+      maintenanceRelayTransportSchema.parse({
+        mode: "insecure-http",
+        health: "degraded",
+        reason: "Service API uses explicitly allowed insecure HTTP",
+      }),
+    ).toMatchObject({ mode: "insecure-http", health: "degraded" });
+    expect(
+      maintenanceRelayTransportSchema.parse({
+        mode: "unknown",
+        health: "unreported",
+        reason: "relay transport has not been reported",
+      }),
+    ).toMatchObject({ mode: "unknown", health: "unreported" });
+
+    for (const contradictory of [
+      { mode: "https", health: "degraded", reason: "unexpected" },
+      { mode: "insecure-http", health: "healthy", reason: null },
+      { mode: "unknown", health: "healthy", reason: null },
+    ]) {
+      expect(() =>
+        maintenanceRelayTransportSchema.parse(contradictory),
+      ).toThrow();
+    }
+
+    expect(
+      maintenanceRelayHealthSchema.parse({
+        observation: "current",
+        overall: "degraded",
+        stale: false,
+        observedAt: "2026-07-10T12:00:01.000Z",
+      }),
+    ).toMatchObject({ observation: "current", overall: "degraded" });
+    expect(
+      maintenanceRelayHealthSchema.parse({
+        observation: "stale",
+        overall: "unknown",
+        stale: true,
+        observedAt: "2026-07-10T12:00:01.000Z",
+      }),
+    ).toMatchObject({ observation: "stale", stale: true });
+    expect(
+      maintenanceRelayHealthSchema.parse({
+        observation: "unreported",
+        overall: "unknown",
+        stale: false,
+        observedAt: null,
+      }),
+    ).toMatchObject({ observation: "unreported", observedAt: null });
   });
 
   it("accepts only strict peer registration inputs with canonical 32-byte WireGuard public keys", () => {

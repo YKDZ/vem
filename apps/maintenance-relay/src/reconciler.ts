@@ -4,6 +4,7 @@ import {
   type MaintenancePublicPeer,
   type MaintenanceRelayDesiredState,
   type MaintenanceRelayObservedState,
+  type MaintenanceRelayTransport,
   type MaintenanceSessionAuthorization,
 } from "@vem/shared/schemas/maintenance-access";
 
@@ -11,7 +12,7 @@ import {
   createRelayJournal,
   hashDesiredState,
   type RelayJournalStore,
-} from "./journal";
+} from "./journal.js";
 
 export type RelayWireGuardBackend = {
   syncPeers: (peers: MaintenancePublicPeer[]) => Promise<void>;
@@ -32,11 +33,18 @@ export type MaintenanceRelayReconcilerOptions = {
   firewall: RelayFirewallBackend;
   journal?: RelayJournalStore;
   now?: () => Date;
+  transport?: MaintenanceRelayTransport;
 };
 
 const volatileJournal: RelayJournalStore = {
   load: async () => undefined,
   save: async () => undefined,
+};
+
+const defaultTransport: MaintenanceRelayTransport = {
+  mode: "https",
+  health: "healthy",
+  reason: null,
 };
 
 export class MaintenanceRelayReconciler {
@@ -192,6 +200,7 @@ export class MaintenanceRelayReconciler {
         appliedAuthorizationIds: [],
         peerObservations: [],
         activeAuthorizationObservations: [],
+        transport: this.options.transport ?? defaultTransport,
         failure: this.pendingFailure.message,
       });
       return;
@@ -256,6 +265,7 @@ export class MaintenanceRelayReconciler {
           expiresAt: authorization.expiresAt,
         }),
       ),
+      transport: this.options.transport ?? defaultTransport,
       failure: observedFailure,
     });
   }

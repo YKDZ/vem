@@ -59,6 +59,30 @@ const desiredAuthorizations = computed(() =>
     expiresAt: formatDateTime(authorization.expiresAt),
   })),
 );
+const relayOverallHealthLabel = computed(() => {
+  const overall = overview.value?.relayHealth.overall;
+  if (overall === "healthy") return "健康";
+  if (overall === "degraded") return "降级";
+  return "未知";
+});
+const relayObservationStatusLabel = computed(() => {
+  const observation = overview.value?.relayHealth.observation;
+  if (observation === "current") return "当前";
+  if (observation === "stale") return "已过期";
+  return "未上报";
+});
+const relayTransportModeLabel = computed(() => {
+  const mode = overview.value?.observedState.transport.mode;
+  if (mode === "https") return "HTTPS";
+  if (mode === "insecure-http") return "Insecure HTTP";
+  return "未知";
+});
+const relayTransportHealthLabel = computed(() => {
+  const health = overview.value?.observedState.transport.health;
+  if (health === "healthy") return "Healthy";
+  if (health === "degraded") return "Degraded";
+  return "Unreported";
+});
 
 async function load(): Promise<void> {
   loading.value = true;
@@ -235,17 +259,29 @@ onMounted(() => {
           <section data-testid="observed-state-projection">
             <h3>已观测状态</h3>
             <dl>
+              <dt>总体健康</dt>
+              <dd data-testid="relay-overall-health">
+                {{ relayOverallHealthLabel }}
+              </dd>
+              <dt>观测状态</dt>
+              <dd data-testid="relay-observation-status">
+                {{ relayObservationStatusLabel }}
+              </dd>
               <dt>已应用版本</dt>
               <dd>
                 {{ overview?.observedState.appliedDesiredStateVersion ?? 0 }}
               </dd>
               <dt>观测时间</dt>
-              <dd>
+              <dd data-testid="relay-observed-at">
                 {{
-                  overview
-                    ? formatDateTime(overview.observedState.observedAt)
+                  overview?.relayHealth.observedAt
+                    ? formatDateTime(overview.relayHealth.observedAt)
                     : "-"
                 }}
+              </dd>
+              <dt>数据过期</dt>
+              <dd data-testid="relay-stale">
+                {{ overview?.relayHealth.stale ? "是" : "否" }}
               </dd>
               <dt>已应用 Peer</dt>
               <dd>{{ overview?.observedState.appliedPeerIds.length ?? 0 }}</dd>
@@ -254,6 +290,16 @@ onMounted(() => {
                 {{
                   overview?.observedState.appliedAuthorizationIds.length ?? 0
                 }}
+              </dd>
+              <dt>传输模式</dt>
+              <dd>{{ relayTransportModeLabel }}</dd>
+              <dt>传输健康</dt>
+              <dd>{{ relayTransportHealthLabel }}</dd>
+              <dt>传输原因</dt>
+              <dd>{{ overview?.observedState.transport.reason ?? "-" }}</dd>
+              <dt>失败信息</dt>
+              <dd data-testid="relay-failure">
+                {{ overview?.observedState.failure ?? "-" }}
               </dd>
             </dl>
           </section>

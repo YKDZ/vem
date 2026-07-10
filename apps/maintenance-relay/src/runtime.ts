@@ -1,8 +1,8 @@
 import type { MaintenanceRelayObservedState } from "@vem/shared/schemas/maintenance-access";
 
-import type { RelayControlPlane } from "./control-plane";
+import type { RelayControlPlane } from "./control-plane.js";
 
-import { MaintenanceRelayReconciler } from "./reconciler";
+import { MaintenanceRelayReconciler } from "./reconciler.js";
 
 export class MaintenanceRelayRuntime {
   private token: { accessToken: string; expiresAt: string } | undefined;

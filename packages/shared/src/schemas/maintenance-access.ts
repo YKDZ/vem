@@ -104,6 +104,56 @@ export type MaintenanceRelayAuthorizationObservation = z.infer<
   typeof maintenanceRelayAuthorizationObservationSchema
 >;
 
+const maintenanceRelayHealthReasonSchema = z.string().min(1).max(500);
+
+export const maintenanceRelayTransportSchema = z.discriminatedUnion("mode", [
+  z.strictObject({
+    mode: z.literal("https"),
+    health: z.literal("healthy"),
+    reason: z.null(),
+  }),
+  z.strictObject({
+    mode: z.literal("insecure-http"),
+    health: z.literal("degraded"),
+    reason: maintenanceRelayHealthReasonSchema,
+  }),
+  z.strictObject({
+    mode: z.literal("unknown"),
+    health: z.literal("unreported"),
+    reason: z.literal("relay transport has not been reported"),
+  }),
+]);
+export type MaintenanceRelayTransport = z.infer<
+  typeof maintenanceRelayTransportSchema
+>;
+
+export const maintenanceRelayHealthSchema = z.discriminatedUnion(
+  "observation",
+  [
+    z.strictObject({
+      observation: z.literal("current"),
+      overall: z.enum(["healthy", "degraded", "unknown"]),
+      stale: z.literal(false),
+      observedAt: z.iso.datetime(),
+    }),
+    z.strictObject({
+      observation: z.literal("stale"),
+      overall: z.literal("unknown"),
+      stale: z.literal(true),
+      observedAt: z.iso.datetime(),
+    }),
+    z.strictObject({
+      observation: z.literal("unreported"),
+      overall: z.literal("unknown"),
+      stale: z.literal(false),
+      observedAt: z.null(),
+    }),
+  ],
+);
+export type MaintenanceRelayHealth = z.infer<
+  typeof maintenanceRelayHealthSchema
+>;
+
 export const maintenanceRelayObservedStateSchema = z.strictObject({
   schemaVersion: z.literal("maintenance-relay-observed-state/v1"),
   observedAt: z.iso.datetime(),
@@ -125,6 +175,7 @@ export const maintenanceRelayObservedStateSchema = z.strictObject({
   activeAuthorizationObservations: z.array(
     maintenanceRelayAuthorizationObservationSchema,
   ),
+  transport: maintenanceRelayTransportSchema,
   failure: z.string().min(1).max(500).nullable(),
 });
 export type MaintenanceRelayObservedState = z.infer<
@@ -208,6 +259,7 @@ export const maintenanceAccessOverviewResponseSchema = z.strictObject({
   sessions: z.array(maintenanceSessionResponseSchema),
   desiredState: maintenanceRelayDesiredStateSchema,
   observedState: maintenanceRelayObservedStateSchema,
+  relayHealth: maintenanceRelayHealthSchema,
 });
 export type MaintenanceAccessOverviewResponse = z.infer<
   typeof maintenanceAccessOverviewResponseSchema

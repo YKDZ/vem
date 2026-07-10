@@ -4,39 +4,168 @@ import type {
 } from "@vem/shared/schemas/maintenance-access";
 
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { isIP } from "node:net";
 import { join } from "node:path";
+import { z } from "zod";
 
-import type { RelayFirewallBackend, RelayWireGuardBackend } from "./reconciler";
+import type {
+  RelayFirewallBackend,
+  RelayWireGuardBackend,
+} from "./reconciler.js";
 
-import { runCommand, type CommandRunner } from "./command";
-import { parseLinuxInterfaceName } from "./interface-name";
+import { runCommand, type CommandRunner } from "./command.js";
+import { parseLinuxInterfaceName } from "./interface-name.js";
+
+const WIREGUARD_SYNCCONF_HELPER =
+  "/usr/local/libexec/maintenance-relay-wireguard-syncconf";
+const managedRouteOutputSchema = z.array(
+  z.object({ dst: z.string().optional() }),
+);
+
+type SyncconfWireGuardBackendOptions = {
+  command?: CommandRunner;
+  privateKeyPath?: string;
+  runtimeDirectory?: string;
+};
 
 export class SyncconfWireGuardBackend implements RelayWireGuardBackend {
+  private applyQueue: Promise<void> = Promise.resolve();
   private peerIdsByPublicKey = new Map<string, string>();
+  private readonly command: CommandRunner;
   private readonly interfaceName: string;
+  private readonly privateKeyPath: string;
+  private readonly relayTunnelAddress: string;
+  private readonly runtimeDirectory: string;
 
   constructor(
     interfaceName: string,
-    private readonly command: CommandRunner = runCommand,
+    relayTunnelAddress: string,
+    options: SyncconfWireGuardBackendOptions = {},
   ) {
     this.interfaceName = parseLinuxInterfaceName(interfaceName);
+    if (isIP(relayTunnelAddress) !== 4) {
+      throw new Error("relay tunnel address must be IPv4");
+    }
+    this.relayTunnelAddress = relayTunnelAddress;
+    this.command = options.command ?? runCommand;
+    this.privateKeyPath =
+      options.privateKeyPath ?? "/run/secrets/maintenance_relay_private_key";
+    this.runtimeDirectory =
+      options.runtimeDirectory ?? "/run/vem/maintenance-relay";
   }
 
   async syncPeers(peers: MaintenancePublicPeer[]): Promise<void> {
-    const directory = await mkdtemp(join(tmpdir(), "vem-relay-wg-"));
-    const configPath = join(directory, "sync.conf");
+    const peerSnapshot = peers.map((peer) => ({ ...peer }));
+    const apply = this.applyQueue.then(async () => {
+      await this.applyPeers(peerSnapshot);
+    });
+    this.applyQueue = apply.catch(() => undefined);
+    await apply;
+  }
+
+  private async applyPeers(peers: MaintenancePublicPeer[]): Promise<void> {
+    const remotePeers = peers.filter((peer) => {
+      if (peer.role === "relay") {
+        if (peer.tunnelAddress !== this.relayTunnelAddress) {
+          throw new Error("desired state contains a foreign relay identity");
+        }
+        return false;
+      }
+      if (peer.tunnelAddress === this.relayTunnelAddress) {
+        throw new Error("remote peer collides with the relay tunnel address");
+      }
+      return true;
+    });
+    const existingRoutes = await this.readManagedRoutes();
+    const desiredRoutes = new Set(
+      remotePeers.map((peer) => `${peer.tunnelAddress}/32`),
+    );
+    const existingRouteSet = new Set(existingRoutes);
+    const introducedRoutes = [...desiredRoutes].filter(
+      (route) => !existingRouteSet.has(route),
+    );
+    await this.applyRouteBatch(
+      [...desiredRoutes].map(
+        (route) =>
+          `route replace ${route} dev ${this.interfaceName} proto 186 scope link`,
+      ),
+    );
     try {
-      await writeFile(configPath, renderWireGuardSyncconf(peers), {
-        mode: 0o600,
-      });
-      await this.command("wg", ["syncconf", this.interfaceName, configPath]);
-      this.peerIdsByPublicKey = new Map(
-        peers.map((peer) => [peer.publicKey, peer.id]),
+      const directory = await mkdtemp(
+        join(this.runtimeDirectory, "vem-relay-wg-"),
       );
-    } finally {
-      await rm(directory, { force: true, recursive: true });
+      const configPath = join(directory, "peers.conf");
+      try {
+        await writeFile(configPath, renderWireGuardPeerConfig(remotePeers), {
+          mode: 0o600,
+        });
+        await this.command(WIREGUARD_SYNCCONF_HELPER, [
+          this.interfaceName,
+          this.privateKeyPath,
+          configPath,
+        ]);
+        this.peerIdsByPublicKey = new Map(
+          remotePeers.map((peer) => [peer.publicKey, peer.id]),
+        );
+      } finally {
+        await rm(directory, { force: true, recursive: true });
+      }
+    } catch (error) {
+      try {
+        await this.applyRouteBatch(
+          introducedRoutes.map(
+            (route) =>
+              `route del ${route} dev ${this.interfaceName} proto 186 scope link`,
+          ),
+        );
+      } catch (rollbackError) {
+        throw new AggregateError(
+          [error, rollbackError],
+          "WireGuard syncconf failed and managed route rollback failed",
+        );
+      }
+      throw error;
     }
+    await this.applyRouteBatch(
+      existingRoutes
+        .filter((route) => !desiredRoutes.has(route))
+        .map(
+          (route) =>
+            `route del ${route} dev ${this.interfaceName} proto 186 scope link`,
+        ),
+    );
+  }
+
+  private async readManagedRoutes(): Promise<string[]> {
+    const { stdout } = await this.command("ip", [
+      "-j",
+      "route",
+      "show",
+      "dev",
+      this.interfaceName,
+      "proto",
+      "186",
+    ]);
+    if (!stdout.trim()) return [];
+    const routes = managedRouteOutputSchema.safeParse(JSON.parse(stdout));
+    if (!routes.success) {
+      throw new Error("ip route returned an invalid JSON payload");
+    }
+    return routes.data.flatMap((route) => {
+      const destination = route.dst;
+      if (typeof destination !== "string") return [];
+      const address = destination.endsWith("/32")
+        ? destination.slice(0, -3)
+        : destination;
+      return isIP(address) === 4 ? [`${address}/32`] : [];
+    });
+  }
+
+  private async applyRouteBatch(commands: string[]): Promise<void> {
+    if (commands.length === 0) return;
+    await this.command("ip", ["-batch", "-"], {
+      input: `${commands.join("\n")}\n`,
+    });
   }
 
   async observePeers(): Promise<
@@ -111,20 +240,18 @@ export class NftablesRelayBackend implements RelayFirewallBackend {
   }
 }
 
-export function renderWireGuardSyncconf(
+export function renderWireGuardPeerConfig(
   peers: MaintenancePublicPeer[],
 ): string {
-  return [
-    "[Interface]",
-    "",
-    ...peers.flatMap((peer) => [
+  return peers
+    .flatMap((peer) => [
       "[Peer]",
       `# peer-id=${peer.id}`,
       `PublicKey = ${peer.publicKey}`,
       `AllowedIPs = ${peer.tunnelAddress}/32`,
       "",
-    ]),
-  ].join("\n");
+    ])
+    .join("\n");
 }
 
 export function renderNftablesTransaction(
@@ -148,16 +275,14 @@ export function renderNftablesTransaction(
   );
 
   return [
-    ...(replaceExisting
-      ? ["delete table inet vem_maintenance_relay"]
-      : []),
+    ...(replaceExisting ? ["delete table inet vem_maintenance_relay"] : []),
     "table inet vem_maintenance_relay {",
     "  set active_flows {",
     "    type ipv4_addr . ipv4_addr . inet_proto . inet_service",
     "    flags timeout",
-    elements.length > 0 ? "    elements = {" : "    elements = { }",
     ...(elements.length > 0
       ? [
+          "    elements = {",
           ...elements.map(
             (element, index) =>
               `${element}${index + 1 < elements.length ? "," : ""}`,
@@ -168,7 +293,9 @@ export function renderNftablesTransaction(
     "  }",
     "  set managed_peers {",
     "    type ipv4_addr",
-    `    elements = { ${peerAddresses.join(", ")} }`,
+    ...(peerAddresses.length > 0
+      ? [`    elements = { ${peerAddresses.join(", ")} }`]
+      : []),
     "  }",
     "  chain forward {",
     "    type filter hook forward priority filter; policy accept;",

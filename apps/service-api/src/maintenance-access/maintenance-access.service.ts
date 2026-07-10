@@ -43,6 +43,7 @@ import {
 import { AppConfigService } from "../config/app-config.service";
 import { DRIZZLE_CLIENT } from "../database/database.constants";
 import { allocateTunnelAddress } from "./maintenance-address-pools";
+import { projectMaintenanceRelayHealth } from "./maintenance-relay-health";
 
 type TargetMachineRow = {
   id: string;
@@ -403,15 +404,21 @@ export class MaintenanceAccessService {
       );
     }
 
+    const reportedObservedState = this.parseReportedObservedState(
+      controlState.observedState,
+    );
     return maintenanceAccessOverviewResponseSchema.parse({
       schemaVersion: "maintenance-access-overview/v1",
       sourcePeers,
       targetMachines: targets,
       sessions,
       desiredState,
-      observedState: this.parseObservedState(
-        controlState.observedState,
-        desiredState,
+      observedState:
+        reportedObservedState ?? this.unreportedObservedState(desiredState),
+      relayHealth: projectMaintenanceRelayHealth(
+        reportedObservedState,
+        desiredState.desiredStateVersion,
+        now,
       ),
     });
   }
@@ -719,14 +726,19 @@ export class MaintenanceAccessService {
     });
   }
 
-  private parseObservedState(
+  private parseReportedObservedState(
     value: unknown,
-    desiredState: MaintenanceRelayDesiredState,
-  ): MaintenanceRelayObservedState {
+  ): MaintenanceRelayObservedState | null {
     if (value !== null && value !== undefined) {
       const parsed = maintenanceRelayObservedStateSchema.safeParse(value);
       if (parsed.success) return parsed.data;
     }
+    return null;
+  }
+
+  private unreportedObservedState(
+    desiredState: MaintenanceRelayDesiredState,
+  ): MaintenanceRelayObservedState {
     return maintenanceRelayObservedStateSchema.parse({
       schemaVersion: "maintenance-relay-observed-state/v1",
       observedAt: desiredState.generatedAt,
@@ -737,6 +749,11 @@ export class MaintenanceAccessService {
       appliedAuthorizationIds: [],
       peerObservations: [],
       activeAuthorizationObservations: [],
+      transport: {
+        mode: "unknown",
+        health: "unreported",
+        reason: "relay transport has not been reported",
+      },
       failure: "relay has not reported observed state",
     });
   }

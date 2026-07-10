@@ -4,6 +4,9 @@ node_modules
 **/.pnpm-store
 .git
 .gitignore
+AGENTS.md
+.scratch
+.codex
 .turbo
 **/.turbo
 dist
@@ -15,6 +18,13 @@ target
 **/target
 .agents
 docs
+CONTEXT.md
+CONTEXT-*.md
+CONTEXT*.md
+**/CONTEXT.md
+**/CONTEXT-*.md
+**/CONTEXT*.md
+node-compile-cache
 tmp
 **/*.key
 **/*.pem

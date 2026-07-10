@@ -159,6 +159,42 @@ describe("maintenance-access tracer flow", { concurrent: false }, () => {
     expect(changed.observedState.failure).toBe(
       "relay has not reported observed state",
     );
+    expect(changed.observedState.transport).toEqual({
+      mode: "unknown",
+      health: "unreported",
+      reason: "relay transport has not been reported",
+    });
+    expect(changed.relayHealth).toEqual({
+      observation: "unreported",
+      overall: "unknown",
+      stale: false,
+      observedAt: null,
+    });
+  });
+
+  it("projects an old relay report as stale with unknown overall health", async () => {
+    const desired = await maintenanceAccess.getRelayDesiredState();
+    const observedAt = new Date(Date.now() - 31_000).toISOString();
+    await maintenanceAccess.reportRelayObservedState({
+      schemaVersion: "maintenance-relay-observed-state/v1",
+      observedAt,
+      desiredStateSchemaVersion: desired.schemaVersion,
+      appliedDesiredStateVersion: desired.desiredStateVersion,
+      attemptedDesiredStateVersion: null,
+      appliedPeerIds: [],
+      appliedAuthorizationIds: [],
+      peerObservations: [],
+      activeAuthorizationObservations: [],
+      transport: { mode: "https", health: "healthy", reason: null },
+      failure: null,
+    });
+
+    expect((await maintenanceAccess.getOverview()).relayHealth).toEqual({
+      observation: "stale",
+      overall: "unknown",
+      stale: true,
+      observedAt,
+    });
   });
 
   it("returns identical relay payload content for repeated reads of one revision", async () => {
@@ -191,6 +227,7 @@ describe("maintenance-access tracer flow", { concurrent: false }, () => {
       appliedAuthorizationIds: [],
       peerObservations: [{ peerId: peer.id, latestHandshakeAt: null }],
       activeAuthorizationObservations: [],
+      transport: { mode: "https", health: "healthy", reason: null },
       failure: null,
     };
     await maintenanceAccess.reportRelayObservedState(observed);
@@ -612,6 +649,11 @@ describe("maintenance-access tracer flow", { concurrent: false }, () => {
           expiresAt: authorization.expiresAt,
         }),
       ),
+      transport: {
+        mode: "insecure-http",
+        health: "degraded",
+        reason: "Service API uses explicitly allowed insecure HTTP",
+      },
       failure: null,
     };
     await api
@@ -625,6 +667,9 @@ describe("maintenance-access tracer flow", { concurrent: false }, () => {
     );
     expect(refreshedOverview.observedState.appliedAuthorizationIds).toContain(
       created.id,
+    );
+    expect(refreshedOverview.observedState.transport).toEqual(
+      reportedObserved.transport,
     );
     expect(JSON.stringify(overview.desiredState)).not.toMatch(
       /privateKey|shell|iptables/i,

@@ -4,18 +4,20 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "tsc --noEmit",
+    "build": "tsc -p tsconfig.build.json",
+    "dev": "tsx src/main.ts",
     "fmt": "oxfmt",
     "lint": "oxlint --quiet --format=unix --type-aware --config ../../oxlint.config.ts .",
     "lint-fix": "oxlint --format=unix --fix --type-aware --config ../../oxlint.config.ts .",
-    "start": "tsx src/main.ts",
+    "start": "node dist/main.js",
     "test": "NODE_OPTIONS=\"${NODE_OPTIONS:+$NODE_OPTIONS }--conditions=vem-source\" vitest run",
+    "test:container": "node --test test/container.test.mjs",
     "test:privileged": "bash test/privileged/run.sh",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@vem/shared": "workspace:*",
-    "tsx": "catalog:",
+    "undici": "catalog:",
     "zod": "catalog:"
   },
   "devDependencies": {
@@ -23,6 +25,7 @@
     "oxfmt": "catalog:",
     "oxlint": "catalog:",
     "oxlint-tsgolint": "catalog:",
+    "tsx": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"
   }

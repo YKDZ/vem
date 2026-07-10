@@ -88,8 +88,19 @@ const overview = {
         expiresAt: "2026-07-10T12:30:00.000Z",
       },
     ],
-    failure: null,
+    transport: {
+      mode: "insecure-http",
+      health: "degraded",
+      reason: "Service API uses explicitly allowed insecure HTTP",
+    },
+    failure: "nftables apply failed",
     relayCredential: "relay-credential-must-not-render",
+  },
+  relayHealth: {
+    observation: "current",
+    overall: "degraded",
+    stale: false,
+    observedAt: "2026-07-10T12:00:01.000Z",
   },
 } as unknown as MaintenanceAccessOverviewResponse;
 
@@ -255,6 +266,30 @@ describe("MaintenanceAccessView", () => {
     expect(
       root.querySelector("[data-testid='observed-state-projection']")
         ?.textContent,
+    ).toContain("Insecure HTTP");
+    expect(root.textContent).toContain("Degraded");
+    expect(root.textContent).toContain(
+      "Service API uses explicitly allowed insecure HTTP",
+    );
+    expect(
+      root.querySelector("[data-testid='relay-overall-health']")?.textContent,
+    ).toBe("降级");
+    expect(
+      root.querySelector("[data-testid='relay-observation-status']")
+        ?.textContent,
+    ).toBe("当前");
+    expect(root.querySelector("[data-testid='relay-stale']")?.textContent).toBe(
+      "否",
+    );
+    expect(
+      root.querySelector("[data-testid='relay-failure']")?.textContent,
+    ).toBe("nftables apply failed");
+    expect(
+      root.querySelector("[data-testid='relay-observed-at']")?.textContent,
+    ).not.toBe("-");
+    expect(
+      root.querySelector("[data-testid='observed-state-projection']")
+        ?.textContent,
     ).toContain("12");
     expect(root.textContent).toContain("10.91.1.10");
     expect(root.textContent).toContain("10.91.16.10");
@@ -262,6 +297,66 @@ describe("MaintenanceAccessView", () => {
     for (const control of root.querySelectorAll("select, textarea, button")) {
       expect((control as HTMLInputElement).disabled).toBe(true);
     }
+  });
+
+  it("shows stale relay observations as unknown overall health", async () => {
+    apiMocks.getMaintenanceAccessOverview.mockResolvedValue({
+      ...overview,
+      relayHealth: {
+        observation: "stale",
+        overall: "unknown",
+        stale: true,
+        observedAt: "2026-07-10T11:59:00.000Z",
+      },
+    });
+
+    const { root } = await mountView(["maintenanceAccess.read"]);
+
+    expect(
+      root.querySelector("[data-testid='relay-overall-health']")?.textContent,
+    ).toBe("未知");
+    expect(
+      root.querySelector("[data-testid='relay-observation-status']")
+        ?.textContent,
+    ).toBe("已过期");
+    expect(root.querySelector("[data-testid='relay-stale']")?.textContent).toBe(
+      "是",
+    );
+  });
+
+  it("shows a relay that has never reported as unknown and unreported", async () => {
+    apiMocks.getMaintenanceAccessOverview.mockResolvedValue({
+      ...overview,
+      observedState: {
+        ...overview.observedState,
+        transport: {
+          mode: "unknown",
+          health: "unreported",
+          reason: "relay transport has not been reported",
+        },
+        failure: "relay has not reported observed state",
+      },
+      relayHealth: {
+        observation: "unreported",
+        overall: "unknown",
+        stale: false,
+        observedAt: null,
+      },
+    });
+
+    const { root } = await mountView(["maintenanceAccess.read"]);
+
+    expect(
+      root.querySelector("[data-testid='relay-overall-health']")?.textContent,
+    ).toBe("未知");
+    expect(
+      root.querySelector("[data-testid='relay-observation-status']")
+        ?.textContent,
+    ).toBe("未上报");
+    expect(
+      root.querySelector("[data-testid='relay-observed-at']")?.textContent,
+    ).toBe("-");
+    expect(root.textContent).toContain("Unreported");
   });
 
   it("enables session creation only for an operator with write permission", async () => {
