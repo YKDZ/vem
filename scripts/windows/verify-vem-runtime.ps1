@@ -90,10 +90,10 @@ function Test-VisionRuntimeBinding {
     $result.selectionValid=$true; $result.metadataValid=$true
     $active = Read-JsonFile $VisionActiveProcessFile
     $activeKeys = @($active.PSObject.Properties.Name | Sort-Object)
-    $expectedActiveKeys = @("bundleDigest","creationTimeUtc","executableDigest","executablePath","processId","selectionRevision" | Sort-Object)
+    $expectedActiveKeys = @("bundleDigest","creationTimeUtcTicks","executableDigest","executablePath","processId","selectionRevision" | Sort-Object)
     if (($activeKeys -join "|") -cne ($expectedActiveKeys -join "|") -or $active.bundleDigest -cne $selection.bundleDigest -or $active.selectionRevision -cne $selection.revision -or $active.executablePath -cne $entrypoint -or $active.executableDigest -cne $metadata.entrypointDigest) { throw "active Vision process record does not bind selection" }
     $process = Get-Process -Id ([int]$active.processId) -ErrorAction Stop
-    if ($process.StartTime.ToUniversalTime().ToString("o") -cne [string]$active.creationTimeUtc -or $process.Path -cne $entrypoint -or ("sha256:" + (Get-FileHash -LiteralPath $process.Path -Algorithm SHA256).Hash.ToLowerInvariant()) -cne $metadata.entrypointDigest) { throw "active Vision PID, creation time, path, or hash mismatch" }
+    if ($active.creationTimeUtcTicks -isnot [Int64] -or $process.StartTime.ToUniversalTime().Ticks -ne $active.creationTimeUtcTicks -or $process.Path -cne $entrypoint -or ("sha256:" + (Get-FileHash -LiteralPath $process.Path -Algorithm SHA256).Hash.ToLowerInvariant()) -cne $metadata.entrypointDigest) { throw "active Vision PID, creation time, path, or hash mismatch" }
     $result.processValid=$true
     $descriptor=$metadata.descriptor
     $health = Invoke-RestMethod -Uri ("http://127.0.0.1:{0}{1}" -f $descriptor.health.port,$descriptor.health.path) -TimeoutSec ([Math]::Max(1,[int]($descriptor.health.timeoutMs / 1000)))

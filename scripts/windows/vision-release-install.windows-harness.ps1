@@ -73,8 +73,10 @@ function Stop-HarnessFixtureRuntime {
       return $true
     }
     if ($process -isnot [Diagnostics.Process]) { return $false }
-    $recordCreationTimeUtc = if ($record.creationTimeUtc -is [DateTime]) { $record.creationTimeUtc.ToUniversalTime().ToString("o") } else { [string]$record.creationTimeUtc }
-    if ($process.StartTime.ToUniversalTime().ToString("o") -cne $recordCreationTimeUtc -or -not (Test-Path -LiteralPath $process.Path -PathType Leaf)) { return $false }
+    if ($record.creationTimeUtcTicks -isnot [Int64] -or $record.creationTimeUtcTicks -lt 1) {
+      return $false
+    }
+    if ($process.StartTime.ToUniversalTime().Ticks -ne $record.creationTimeUtcTicks -or -not (Test-Path -LiteralPath $process.Path -PathType Leaf)) { return $false }
     if ([IO.Path]::GetFullPath([string]$process.Path) -cne $expectedPath -or (Get-Digest $process.Path) -cne $expectedDigest) { return $false }
 
     $verifiedProcessId = $process.Id
@@ -82,7 +84,7 @@ function Stop-HarnessFixtureRuntime {
     try {
       if (-not $process.HasExited) {
         try {
-          $process.Kill($true)
+          $process.Kill()
         } catch {
           if (-not $process.HasExited) { throw }
         }
@@ -112,6 +114,149 @@ function Invoke-HarnessFixtureCleanup {
   }
   if (-not $runtimeCleaned) { throw "fixture runtime cleanup could not verify and terminate the selected process" }
 }
+function New-HarnessKillOnCloseJob {
+  if ($env:OS -ne "Windows_NT") { throw "Windows Job Objects are required for bounded fixture execution" }
+  if ($null -eq ("VemVisionHarness.KillOnCloseJob" -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Threading;
+
+namespace VemVisionHarness {
+  public sealed class KillOnCloseJob : IDisposable {
+    private const uint JobObjectExtendedLimitInformation = 9;
+    private const uint JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000;
+    private IntPtr handle;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct IO_COUNTERS {
+      public ulong ReadOperationCount;
+      public ulong WriteOperationCount;
+      public ulong OtherOperationCount;
+      public ulong ReadTransferCount;
+      public ulong WriteTransferCount;
+      public ulong OtherTransferCount;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct JOBOBJECT_BASIC_LIMIT_INFORMATION {
+      public long PerProcessUserTimeLimit;
+      public long PerJobUserTimeLimit;
+      public uint LimitFlags;
+      public UIntPtr MinimumWorkingSetSize;
+      public UIntPtr MaximumWorkingSetSize;
+      public uint ActiveProcessLimit;
+      public UIntPtr Affinity;
+      public uint PriorityClass;
+      public uint SchedulingClass;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct JOBOBJECT_EXTENDED_LIMIT_INFORMATION {
+      public JOBOBJECT_BASIC_LIMIT_INFORMATION BasicLimitInformation;
+      public IO_COUNTERS IoInfo;
+      public UIntPtr ProcessMemoryLimit;
+      public UIntPtr JobMemoryLimit;
+      public UIntPtr PeakProcessMemoryUsed;
+      public UIntPtr PeakJobMemoryUsed;
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern IntPtr CreateJobObject(IntPtr jobAttributes, string name);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool SetInformationJobObject(IntPtr job, uint informationClass, IntPtr information, uint informationLength);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CloseHandle(IntPtr handle);
+
+    private static void AssertOffset(Type type, string field, long expected) {
+      var actual = Marshal.OffsetOf(type, field).ToInt64();
+      if (actual != expected) {
+        throw new InvalidOperationException(type.Name + "." + field + " offset was " + actual + ", expected " + expected);
+      }
+    }
+
+    private static void AssertSize(Type type, int expected) {
+      var actual = Marshal.SizeOf(type);
+      if (actual != expected) {
+        throw new InvalidOperationException(type.Name + " size was " + actual + ", expected " + expected);
+      }
+    }
+
+    public static void AssertNativeLayout() {
+      var pointerSize = IntPtr.Size;
+      var basicSize = pointerSize == 8 ? 64 : 48;
+      var ioSize = 48;
+      var extendedSize = basicSize + ioSize + (pointerSize * 4);
+
+      AssertOffset(typeof(JOBOBJECT_BASIC_LIMIT_INFORMATION), "PerProcessUserTimeLimit", 0);
+      AssertOffset(typeof(JOBOBJECT_BASIC_LIMIT_INFORMATION), "PerJobUserTimeLimit", 8);
+      AssertOffset(typeof(JOBOBJECT_BASIC_LIMIT_INFORMATION), "LimitFlags", 16);
+      AssertOffset(typeof(JOBOBJECT_BASIC_LIMIT_INFORMATION), "MinimumWorkingSetSize", pointerSize == 8 ? 24 : 20);
+      AssertOffset(typeof(JOBOBJECT_BASIC_LIMIT_INFORMATION), "MaximumWorkingSetSize", pointerSize == 8 ? 32 : 24);
+      AssertOffset(typeof(JOBOBJECT_BASIC_LIMIT_INFORMATION), "ActiveProcessLimit", pointerSize == 8 ? 40 : 28);
+      AssertOffset(typeof(JOBOBJECT_BASIC_LIMIT_INFORMATION), "Affinity", pointerSize == 8 ? 48 : 32);
+      AssertOffset(typeof(JOBOBJECT_BASIC_LIMIT_INFORMATION), "PriorityClass", pointerSize == 8 ? 56 : 36);
+      AssertOffset(typeof(JOBOBJECT_BASIC_LIMIT_INFORMATION), "SchedulingClass", pointerSize == 8 ? 60 : 40);
+      AssertSize(typeof(JOBOBJECT_BASIC_LIMIT_INFORMATION), basicSize);
+      AssertSize(typeof(IO_COUNTERS), ioSize);
+
+      AssertOffset(typeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION), "BasicLimitInformation", 0);
+      AssertOffset(typeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION), "IoInfo", basicSize);
+      AssertOffset(typeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION), "ProcessMemoryLimit", basicSize + ioSize);
+      AssertOffset(typeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION), "JobMemoryLimit", basicSize + ioSize + pointerSize);
+      AssertOffset(typeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION), "PeakProcessMemoryUsed", basicSize + ioSize + (pointerSize * 2));
+      AssertOffset(typeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION), "PeakJobMemoryUsed", basicSize + ioSize + (pointerSize * 3));
+      AssertSize(typeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION), extendedSize);
+    }
+
+    public KillOnCloseJob() {
+      handle = CreateJobObject(IntPtr.Zero, null);
+      if (handle == IntPtr.Zero) { throw new Win32Exception(Marshal.GetLastWin32Error(), "CreateJobObject failed"); }
+
+      AssertNativeLayout();
+      var information = new JOBOBJECT_EXTENDED_LIMIT_INFORMATION();
+      information.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+      var size = Marshal.SizeOf(typeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION));
+      var buffer = Marshal.AllocHGlobal(size);
+      try {
+        Marshal.StructureToPtr(information, buffer, false);
+        if (!SetInformationJobObject(handle, JobObjectExtendedLimitInformation, buffer, (uint)size)) {
+          throw new Win32Exception(Marshal.GetLastWin32Error(), "SetInformationJobObject failed");
+        }
+      } catch {
+        Dispose();
+        throw;
+      } finally {
+        Marshal.FreeHGlobal(buffer);
+      }
+    }
+
+    public void Assign(IntPtr processHandle) {
+      if (handle == IntPtr.Zero) { throw new ObjectDisposedException("KillOnCloseJob"); }
+      if (!AssignProcessToJobObject(handle, processHandle)) {
+        throw new Win32Exception(Marshal.GetLastWin32Error(), "AssignProcessToJobObject failed");
+      }
+    }
+
+    public void Dispose() {
+      var previous = Interlocked.Exchange(ref handle, IntPtr.Zero);
+      if (previous != IntPtr.Zero && !CloseHandle(previous)) {
+        throw new Win32Exception(Marshal.GetLastWin32Error(), "CloseHandle for Job Object failed");
+      }
+      GC.SuppressFinalize(this);
+    }
+  }
+}
+'@
+  }
+  return [VemVisionHarness.KillOnCloseJob]::new()
+}
 function Invoke-BoundedPowerShell {
   param(
     [Parameter(Mandatory = $true)][string]$Stage,
@@ -132,12 +277,18 @@ function Invoke-BoundedPowerShell {
   }
 
   $safeStage = $Stage -replace '[^A-Za-z0-9._-]', "-"
-  $stageRoot = Join-Path $HarnessRoot ("diagnostics\\" + $safeStage)
-  New-Item -ItemType Directory -Force -Path $stageRoot | Out-Null
+  $stageRoot = Join-Path $HarnessRoot ("diagnostics\\" + $safeStage + "-" + [guid]::NewGuid().ToString("N"))
+  New-Item -ItemType Directory -Path $stageRoot -ErrorAction Stop | Out-Null
   $scriptPath = Join-Path $stageRoot "operation.ps1"
+  $bootstrapPath = Join-Path $stageRoot "bootstrap.ps1"
+  $gatePath = Join-Path $stageRoot "job-assigned.signal"
   $stdoutPath = Join-Path $stageRoot "stdout.log"
   $stderrPath = Join-Path $stageRoot "stderr.log"
   $escapedContextPath = $HarnessContextPath.Replace("'", "''")
+  $escapedScriptPath = $scriptPath.Replace("'", "''")
+  $escapedGatePath = $gatePath.Replace("'", "''")
+  $escapedStdoutPath = $stdoutPath.Replace("'", "''")
+  $escapedStderrPath = $stderrPath.Replace("'", "''")
   $writeHarnessStageFunction = ${function:Write-HarnessStage}.ToString()
   $cleanupFunction = ${function:Remove-HarnessFixtureCertificates}.ToString()
   $runtimeCleanupFunction = ${function:Stop-HarnessFixtureRuntime}.ToString()
@@ -168,25 +319,46 @@ $cleanupInvocationFunction
 $ScriptBody
 "@
 
-  Write-HarnessStage $Stage "started" "timeoutSeconds=$effectiveTimeoutSeconds"
-  $process = Start-Process -FilePath $ChildPowerShellPath -ArgumentList @("-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", ('"{0}"' -f $scriptPath)) -PassThru -NoNewWindow -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+  Write-Utf8 $bootstrapPath @"
+`$ErrorActionPreference = "Stop"
+while (-not (Test-Path -LiteralPath '$escapedGatePath' -PathType Leaf)) { Start-Sleep -Milliseconds 10 }
+& '$escapedScriptPath' 1> '$escapedStdoutPath' 2> '$escapedStderrPath'
+if (`$LASTEXITCODE -ne 0) { exit `$LASTEXITCODE }
+"@
+
+  $process = $null
+  $job = $null
+  $jobAssigned = $false
   try {
+    $start = [Diagnostics.ProcessStartInfo]::new()
+    $start.FileName = $ChildPowerShellPath
+    $start.UseShellExecute = $false
+    $start.CreateNoWindow = $true
+    $start.WorkingDirectory = $stageRoot
+    $start.ArgumentList.Add("-NoProfile")
+    $start.ArgumentList.Add("-NonInteractive")
+    $start.ArgumentList.Add("-ExecutionPolicy")
+    $start.ArgumentList.Add("Bypass")
+    $start.ArgumentList.Add("-File")
+    $start.ArgumentList.Add($bootstrapPath)
+    $process = [Diagnostics.Process]::Start($start)
+    if ($null -eq $process) { throw "fixture stage '$Stage' did not start its child PowerShell process" }
+    $job = New-HarnessKillOnCloseJob
+    $job.Assign($process.Handle)
+    $jobAssigned = $true
+    New-Item -ItemType File -Path $gatePath -ErrorAction Stop | Out-Null
+    Write-HarnessStage $Stage "started" "timeoutSeconds=$effectiveTimeoutSeconds processId=$($process.Id) termination=job-object"
+
     $timeoutMilliseconds = [int]($effectiveTimeoutSeconds * 1000)
     $terminationWaitMilliseconds = [int]($TerminationWaitSeconds * 1000)
     if (-not $process.WaitForExit($timeoutMilliseconds)) {
-      Write-HarnessStage $Stage "timed-out" "timeoutSeconds=$effectiveTimeoutSeconds"
-      if (-not $process.HasExited) {
-        try {
-          $process.Kill($true)
-        } catch {
-          if (-not $process.HasExited) { throw }
-        }
+      Write-HarnessStage $Stage "timed-out" "timeoutSeconds=$effectiveTimeoutSeconds termination=job-object"
+      $job.Dispose()
+      if (-not $process.WaitForExit($terminationWaitMilliseconds) -and -not $process.HasExited) {
+        Write-HarnessStage $Stage "termination-failed" "waitSeconds=$TerminationWaitSeconds termination=job-object"
+        throw "fixture stage '$Stage' exceeded $effectiveTimeoutSeconds seconds and its Job Object did not terminate the parent process"
       }
-      if (-not $process.WaitForExit($terminationWaitMilliseconds) -or -not $process.HasExited) {
-        Write-HarnessStage $Stage "termination-failed" "waitSeconds=$TerminationWaitSeconds"
-        throw "fixture stage '$Stage' exceeded $effectiveTimeoutSeconds seconds and its child process tree did not exit"
-      }
-      throw "fixture stage '$Stage' exceeded $effectiveTimeoutSeconds seconds; child process tree was terminated"
+      throw "fixture stage '$Stage' exceeded $effectiveTimeoutSeconds seconds; its Job Object terminated the assigned process tree"
     }
     if (-not $process.HasExited) {
       throw "fixture stage '$Stage' returned from WaitForExit without exiting"
@@ -201,7 +373,17 @@ $ScriptBody
     Write-HarnessStage $Stage "completed"
     return [pscustomobject]@{ stdout=$stdout; stderr=$stderr; diagnosticsPath=$stageRoot }
   } finally {
-    $process.Dispose()
+    if ($null -ne $job) { $job.Dispose() }
+    if ($null -ne $process) {
+      try {
+        if (-not $jobAssigned -and -not $process.HasExited) {
+          $process.Kill($true)
+          $process.WaitForExit([int]($TerminationWaitSeconds * 1000)) | Out-Null
+        }
+      } finally {
+        $process.Dispose()
+      }
+    }
   }
 }
 
@@ -226,6 +408,11 @@ $certificateSubject = "CN=VEM Vision CI Fixture " + [guid]::NewGuid().ToString("
 $HarnessDeadlineSeconds = 480
 $CleanupReserveSeconds = 75
 $harnessDeadlineUtc = [DateTime]::UtcNow.AddSeconds($HarnessDeadlineSeconds)
+$cleanupDeadlineUtc = $harnessDeadlineUtc.AddSeconds($CleanupReserveSeconds)
+$hardWatchdogSeconds = $HarnessDeadlineSeconds + $CleanupReserveSeconds
+$watchdogMessage = "vision installer harness exceeded its $hardWatchdogSeconds-second hard deadline"
+$watchdogCallback = [Threading.TimerCallback]{ param($state) [Environment]::FailFast([string]$state) }
+$watchdog = [Threading.Timer]::new($watchdogCallback, $watchdogMessage, [TimeSpan]::FromSeconds($hardWatchdogSeconds), [Threading.Timeout]::InfiniteTimeSpan)
 $harnessContext = [ordered]@{
   root = $root
   media = $media
@@ -449,7 +636,7 @@ $originalBundle = Join-Path $context.root "approved-bundle.bin"
   # A kiosk-writable process record must never authorize stopping an unrelated
   # process. The production installer ignores it and completes its reinstall.
   $victim = Start-Process -FilePath "$env:WINDIR\System32\cmd.exe" -ArgumentList "/c", "timeout /t 60 /nobreak" -PassThru
-  $forged = @{ bundleDigest=$bundleDigest; processId=$victim.Id; creationTimeUtc=$victim.StartTime.ToUniversalTime().ToString("o"); executablePath=$victim.Path; executableDigest=("sha256:" + ("0" * 64)); selectionRevision=$reinstalled.revision }
+  $forged = @{ bundleDigest=$bundleDigest; processId=$victim.Id; creationTimeUtcTicks=$victim.StartTime.ToUniversalTime().Ticks; executablePath=$victim.Path; executableDigest=("sha256:" + ("0" * 64)); selectionRevision=$reinstalled.revision }
   Write-Json (Join-Path $stateRoot "process-state\active-process.json") $forged
   & "C:\VEM\bringup\install-vision-release.ps1" -BundlePath (Join-Path $factoryRoot "vision-release\bundle.bin") -DescriptorPath (Join-Path $factoryRoot "vision-release\descriptor.json") -AttestationPath (Join-Path $factoryRoot "vision-release\attestation.json") -SbomPath (Join-Path $factoryRoot "vision-release\sbom.json") -ProvenancePath (Join-Path $factoryRoot "vision-release\provenance.json") -ConformanceEvidencePath (Join-Path $factoryRoot "vision-release\conformance.json") -ApprovalPath (Join-Path $factoryRoot "vision-release\approval.json") -FactoryManifestPath (Join-Path $factoryRoot "vision-release\factory-manifest.json") -ConfigurationPath (Join-Path $stateRoot "config\fixture.json") -EvidencePath $evidencePath -TaskUser $env:USERNAME
   Assert-True (-not $victim.HasExited) "forged process record stopped an unrelated process"
@@ -476,7 +663,7 @@ $originalBundle = Join-Path $context.root "approved-bundle.bin"
   $cleanupFailure = $null
   if (Test-Path -LiteralPath $certificateCleanupMarkerPath) {
     try {
-      Invoke-BoundedPowerShell -Stage "fixture.cleanup-certificates" -TimeoutSeconds 30 -HarnessRoot $root -HarnessContextPath $harnessContextPath -ChildPowerShellPath $childPwsh -HarnessDeadlineUtc $harnessDeadlineUtc -ScriptBody 'Invoke-HarnessFixtureCleanup -Context $context' | Out-Null
+      Invoke-BoundedPowerShell -Stage "fixture.cleanup-certificates" -TimeoutSeconds 30 -HarnessRoot $root -HarnessContextPath $harnessContextPath -ChildPowerShellPath $childPwsh -HarnessDeadlineUtc $cleanupDeadlineUtc -ScriptBody 'Invoke-HarnessFixtureCleanup -Context $context' | Out-Null
     } catch {
       Write-HarnessStage "fixture.cleanup-certificates" "failed" $_.Exception.Message
       $cleanupFailure = $_
@@ -488,5 +675,6 @@ $originalBundle = Join-Path $context.root "approved-bundle.bin"
     Write-HarnessStage "fixture.cleanup-files" "failed" $_.Exception.Message
     if ($null -eq $cleanupFailure) { $cleanupFailure = $_ }
   }
+  $watchdog.Dispose()
   if ($null -ne $cleanupFailure) { throw $cleanupFailure }
 }

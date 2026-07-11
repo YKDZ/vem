@@ -397,21 +397,49 @@ function Stop-RecordedVision([object]$Selection) {
   Stop-ScheduledTask -TaskName "StartVisionServer" -TaskPath "\VEM\" -ErrorAction SilentlyContinue
   if (-not (Test-Path -LiteralPath $processPath -PathType Leaf)) { return }
   $record = (Read-StrictJson $processPath "Vision process record").value
-  Assert-Keys $record @("bundleDigest", "processId", "creationTimeUtc", "executablePath", "executableDigest", "selectionRevision") "Vision process record"
+  $legacyKeys = @("bundleDigest", "processId", "creationTimeUtc", "executablePath", "executableDigest", "selectionRevision")
+  $recordKeys = @($record.PSObject.Properties.Name | Sort-Object)
+  $expectedLegacyKeys = @($legacyKeys | Sort-Object)
+  $isExpectedLegacyRecord = $null -ne $record.PSObject.Properties["creationTimeUtc"] -and $null -eq $record.PSObject.Properties["creationTimeUtcTicks"] -and $recordKeys.Count -eq $expectedLegacyKeys.Count -and -not (Compare-Object $recordKeys $expectedLegacyKeys)
+  if ($isExpectedLegacyRecord) {
+    Throw-InstallError "Vision process record uses unsupported legacy creationTimeUtc identity; hard migration requires creationTimeUtcTicks"
+  }
+  Assert-Keys $record @("bundleDigest", "processId", "creationTimeUtcTicks", "executablePath", "executableDigest", "selectionRevision") "Vision process record"
   $approved = Resolve-ApprovedVisionExecution $Selection
   [int]$recordedProcessId = 0
-  if ($record.bundleDigest -cne $approved.bundleDigest -or $record.selectionRevision -cne $approved.revision -or -not [int]::TryParse([string]$record.processId, [ref]$recordedProcessId) -or $recordedProcessId -lt 1) { return }
+  if ($record.bundleDigest -cne $approved.bundleDigest -or $record.selectionRevision -cne $approved.revision -or -not [int]::TryParse([string]$record.processId, [ref]$recordedProcessId) -or $recordedProcessId -lt 1 -or $record.creationTimeUtcTicks -isnot [Int64] -or $record.creationTimeUtcTicks -lt 1) { return }
   $process = Get-Process -Id $recordedProcessId -ErrorAction SilentlyContinue
-  if ($null -eq $process -or $process.StartTime.ToUniversalTime().ToString("o") -cne [string]$record.creationTimeUtc -or -not (Test-Path -LiteralPath $process.Path -PathType Leaf)) { return }
+  if ($null -eq $process -or $process -isnot [Diagnostics.Process]) { return }
   try {
-    $actualPath = Get-CanonicalContainedPath $releaseRoot ([string]$process.Path) "recorded Vision executable"
-  } catch {
-    return
+    if ($process.HasExited) {
+      Remove-Item -LiteralPath $processPath -Force -ErrorAction SilentlyContinue
+      return
+    }
+    if ($process.StartTime.ToUniversalTime().Ticks -ne $record.creationTimeUtcTicks -or -not (Test-Path -LiteralPath $process.Path -PathType Leaf)) { return }
+    try {
+      $actualPath = Get-CanonicalContainedPath $releaseRoot ([string]$process.Path) "recorded Vision executable"
+    } catch {
+      return
+    }
+    if ($actualPath -cne $approved.executablePath) { return }
+    if (("sha256:" + (Get-FileHash -LiteralPath $actualPath -Algorithm SHA256).Hash.ToLowerInvariant()) -cne $approved.executableDigest) { return }
+    if (-not $process.HasExited) {
+      try {
+        $process.Kill($true)
+      } catch [InvalidOperationException] {
+        if (-not $process.HasExited) { throw }
+      }
+    }
+    if (-not $process.WaitForExit(5000) -and -not $process.HasExited) {
+      Throw-InstallError "recorded Vision process $recordedProcessId did not exit after termination"
+    }
+    Remove-Item -LiteralPath $processPath -Force -ErrorAction SilentlyContinue
+  } catch [InvalidOperationException] {
+    if (-not $process.HasExited) { throw }
+    Remove-Item -LiteralPath $processPath -Force -ErrorAction SilentlyContinue
+  } finally {
+    $process.Dispose()
   }
-  if ($actualPath -cne $approved.executablePath) { return }
-  if (("sha256:" + (Get-FileHash -LiteralPath $actualPath -Algorithm SHA256).Hash.ToLowerInvariant()) -cne $approved.executableDigest) { return }
-  Stop-Process -Id $process.Id -Force -ErrorAction Stop
-  Remove-Item -LiteralPath $processPath -Force -ErrorAction SilentlyContinue
 }
 
 function Write-VisionLauncher {
@@ -419,20 +447,333 @@ function Write-VisionLauncher {
   $launcher = @'
 $ErrorActionPreference = "Stop"
 $stateRoot = "C:\ProgramData\VEM\vision"
-$selection = Get-Content -LiteralPath (Join-Path $stateRoot "current.json") -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 32
+$selection = Get-Content -LiteralPath (Join-Path $stateRoot "current.json") -Raw -Encoding UTF8 | ConvertFrom-Json
 $entrypoint = Join-Path $selection.installDirectory $selection.entrypoint
 if (-not (Test-Path -LiteralPath $entrypoint -PathType Leaf)) { throw "selected Vision entrypoint missing" }
-$start = [Diagnostics.ProcessStartInfo]::new()
-$start.FileName = $entrypoint
-$start.WorkingDirectory = $selection.installDirectory
-$start.UseShellExecute = $false
-foreach ($argument in @($selection.arguments) + @($selection.configurationArgument, $selection.configurationPath)) { $start.ArgumentList.Add([string]$argument) }
-$process = [Diagnostics.Process]::Start($start)
-$current = Get-Content -LiteralPath (Join-Path $stateRoot "current.json") -Raw -Encoding UTF8 | ConvertFrom-Json -Depth 32
-if ($current.revision -cne $selection.revision) { Stop-Process -Id $process.Id -Force; throw "Vision selection changed before process record" }
-$record = [ordered]@{ bundleDigest=$selection.bundleDigest; processId=$process.Id; creationTimeUtc=$process.StartTime.ToUniversalTime().ToString("o"); executablePath=$entrypoint; executableDigest=("sha256:" + (Get-FileHash -LiteralPath $entrypoint -Algorithm SHA256).Hash.ToLowerInvariant()); selectionRevision=$selection.revision }
-$processState = Join-Path $stateRoot "process-state"; $target = Join-Path $processState "active-process.json"; $temporary = Join-Path $processState ("." + [guid]::NewGuid().ToString("N") + ".tmp")
-[IO.File]::WriteAllText($temporary, ($record | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false)); if (Test-Path -LiteralPath $target) { [IO.File]::Replace($temporary, $target, $null) } else { [IO.File]::Move($temporary, $target) }
+function ConvertTo-WindowsCommandLineArgument([string]$Argument) {
+  if ($null -eq $Argument) { return '""' }
+  $escaped = [regex]::Replace($Argument, '(\\*)"', '$1$1\"')
+  $escaped = [regex]::Replace($escaped, '(\\+)$', '$1$1')
+  return '"' + $escaped + '"'
+}
+if ($null -eq ("VemVisionLauncher.NativeProcess" -as [type])) {
+  Add-Type -TypeDefinition @"
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Text;
+
+namespace VemVisionLauncher {
+  public sealed class NativeProcess : IDisposable {
+    private const uint CREATE_SUSPENDED = 0x00000004;
+    private const uint CREATE_UNICODE_ENVIRONMENT = 0x00000400;
+    private const uint WAIT_OBJECT_0 = 0;
+    private IntPtr processHandle;
+    private IntPtr threadHandle;
+
+    public static Func<IntPtr, uint, bool> TerminateProcessOverride { get; set; }
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct STARTUPINFO {
+      public uint cb;
+      public IntPtr lpReserved;
+      public IntPtr lpDesktop;
+      public IntPtr lpTitle;
+      public uint dwX;
+      public uint dwY;
+      public uint dwXSize;
+      public uint dwYSize;
+      public uint dwXCountChars;
+      public uint dwYCountChars;
+      public uint dwFillAttribute;
+      public uint dwFlags;
+      public ushort wShowWindow;
+      public ushort cbReserved2;
+      public IntPtr lpReserved2;
+      public IntPtr hStdInput;
+      public IntPtr hStdOutput;
+      public IntPtr hStdError;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct PROCESS_INFORMATION {
+      public IntPtr hProcess;
+      public IntPtr hThread;
+      public uint dwProcessId;
+      public uint dwThreadId;
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool CreateProcessW(
+      string applicationName,
+      StringBuilder commandLine,
+      IntPtr processAttributes,
+      IntPtr threadAttributes,
+      bool inheritHandles,
+      uint creationFlags,
+      IntPtr environment,
+      string currentDirectory,
+      ref STARTUPINFO startupInfo,
+      out PROCESS_INFORMATION processInformation);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern uint ResumeThread(IntPtr thread);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool TerminateProcess(IntPtr process, uint exitCode);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CloseHandle(IntPtr handle);
+
+    private NativeProcess(PROCESS_INFORMATION information) {
+      processHandle = information.hProcess;
+      threadHandle = information.hThread;
+      ProcessId = information.dwProcessId;
+    }
+
+    public IntPtr ProcessHandle { get { return processHandle; } }
+    public uint ProcessId { get; private set; }
+
+    private static IntPtr CreateEnvironmentBlock() {
+      var entries = new List<string>();
+      foreach (DictionaryEntry entry in Environment.GetEnvironmentVariables()) {
+        entries.Add(Convert.ToString(entry.Key) + "=" + Convert.ToString(entry.Value));
+      }
+      entries.Sort(StringComparer.OrdinalIgnoreCase);
+      return Marshal.StringToHGlobalUni(String.Join("\0", entries.ToArray()) + "\0\0");
+    }
+
+    public static NativeProcess Start(string applicationName, string commandLine, string currentDirectory) {
+      if (String.IsNullOrEmpty(applicationName) || String.IsNullOrEmpty(commandLine) || String.IsNullOrEmpty(currentDirectory)) {
+        throw new ArgumentException("CreateProcessW requires application name, command line, and current directory");
+      }
+      var startupInfo = new STARTUPINFO();
+      startupInfo.cb = (uint)Marshal.SizeOf(typeof(STARTUPINFO));
+      var mutableCommandLine = new StringBuilder(commandLine, Math.Max(commandLine.Length + 1, 32767));
+      var environment = CreateEnvironmentBlock();
+      try {
+        PROCESS_INFORMATION processInformation;
+        if (!CreateProcessW(applicationName, mutableCommandLine, IntPtr.Zero, IntPtr.Zero, false, CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT, environment, currentDirectory, ref startupInfo, out processInformation)) {
+          throw new Win32Exception(Marshal.GetLastWin32Error(), "CreateProcessW failed");
+        }
+        return new NativeProcess(processInformation);
+      } finally {
+        Marshal.FreeHGlobal(environment);
+      }
+    }
+
+    public void Resume() {
+      if (threadHandle == IntPtr.Zero) { throw new ObjectDisposedException("NativeProcess"); }
+      if (ResumeThread(threadHandle) == UInt32.MaxValue) {
+        throw new Win32Exception(Marshal.GetLastWin32Error(), "ResumeThread failed");
+      }
+    }
+
+    public void Terminate() {
+      if (processHandle == IntPtr.Zero) { return; }
+      var terminate = TerminateProcessOverride;
+      if (terminate == null ? TerminateProcess(processHandle, 1) : terminate(processHandle, 1)) { return; }
+      var error = Marshal.GetLastWin32Error();
+      if (WaitForSingleObject(processHandle, 0) == WAIT_OBJECT_0) { return; }
+      throw new Win32Exception(error, "TerminateProcess failed");
+    }
+
+    public void Dispose() {
+      Exception failure = null;
+      if (threadHandle != IntPtr.Zero) {
+        var handle = threadHandle;
+        threadHandle = IntPtr.Zero;
+        if (!CloseHandle(handle)) { failure = new Win32Exception(Marshal.GetLastWin32Error(), "CloseHandle for process thread failed"); }
+      }
+      if (processHandle != IntPtr.Zero) {
+        var handle = processHandle;
+        processHandle = IntPtr.Zero;
+        if (!CloseHandle(handle) && failure == null) { failure = new Win32Exception(Marshal.GetLastWin32Error(), "CloseHandle for process failed"); }
+      }
+      if (failure != null) { throw failure; }
+      GC.SuppressFinalize(this);
+    }
+  }
+
+  public sealed class KillOnCloseJob : IDisposable {
+    private const uint JobObjectExtendedLimitInformation = 9;
+    private const uint JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000;
+    private IntPtr handle;
+
+    public static Func<IntPtr, uint, bool> TerminateJobObjectOverride { get; set; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct IO_COUNTERS {
+      public ulong ReadOperationCount;
+      public ulong WriteOperationCount;
+      public ulong OtherOperationCount;
+      public ulong ReadTransferCount;
+      public ulong WriteTransferCount;
+      public ulong OtherTransferCount;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct JOBOBJECT_BASIC_LIMIT_INFORMATION {
+      public long PerProcessUserTimeLimit;
+      public long PerJobUserTimeLimit;
+      public uint LimitFlags;
+      public UIntPtr MinimumWorkingSetSize;
+      public UIntPtr MaximumWorkingSetSize;
+      public uint ActiveProcessLimit;
+      public UIntPtr Affinity;
+      public uint PriorityClass;
+      public uint SchedulingClass;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct JOBOBJECT_EXTENDED_LIMIT_INFORMATION {
+      public JOBOBJECT_BASIC_LIMIT_INFORMATION BasicLimitInformation;
+      public IO_COUNTERS IoInfo;
+      public UIntPtr ProcessMemoryLimit;
+      public UIntPtr JobMemoryLimit;
+      public UIntPtr PeakProcessMemoryUsed;
+      public UIntPtr PeakJobMemoryUsed;
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern IntPtr CreateJobObject(IntPtr jobAttributes, string name);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool SetInformationJobObject(IntPtr job, uint informationClass, IntPtr information, uint informationLength);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CloseHandle(IntPtr handle);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool TerminateJobObject(IntPtr job, uint exitCode);
+
+    private void SetLimitFlags(uint limitFlags) {
+      var information = new JOBOBJECT_EXTENDED_LIMIT_INFORMATION();
+      information.BasicLimitInformation.LimitFlags = limitFlags;
+      var size = Marshal.SizeOf(typeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION));
+      var buffer = Marshal.AllocHGlobal(size);
+      try {
+        Marshal.StructureToPtr(information, buffer, false);
+        if (!SetInformationJobObject(handle, JobObjectExtendedLimitInformation, buffer, (uint)size)) {
+          throw new Win32Exception(Marshal.GetLastWin32Error(), "SetInformationJobObject failed");
+        }
+      } finally {
+        Marshal.FreeHGlobal(buffer);
+      }
+    }
+
+    public KillOnCloseJob() {
+      handle = CreateJobObject(IntPtr.Zero, null);
+      if (handle == IntPtr.Zero) { throw new Win32Exception(Marshal.GetLastWin32Error(), "CreateJobObject failed"); }
+      try {
+        SetLimitFlags(JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE);
+      } catch {
+        Dispose();
+        throw;
+      }
+    }
+
+    public void Assign(IntPtr processHandle) {
+      if (handle == IntPtr.Zero) { throw new ObjectDisposedException("KillOnCloseJob"); }
+      if (!AssignProcessToJobObject(handle, processHandle)) {
+        throw new Win32Exception(Marshal.GetLastWin32Error(), "AssignProcessToJobObject failed");
+      }
+    }
+
+    public void Release() {
+      if (handle == IntPtr.Zero) { throw new ObjectDisposedException("KillOnCloseJob"); }
+      SetLimitFlags(0);
+      Dispose();
+    }
+
+    public void Terminate() {
+      if (handle == IntPtr.Zero) { return; }
+      var terminate = TerminateJobObjectOverride;
+      if (terminate == null ? TerminateJobObject(handle, 1) : terminate(handle, 1)) { return; }
+      throw new Win32Exception(Marshal.GetLastWin32Error(), "TerminateJobObject failed");
+    }
+
+    public void Dispose() {
+      if (handle != IntPtr.Zero) {
+        var previous = handle;
+        if (!CloseHandle(previous)) { throw new Win32Exception(Marshal.GetLastWin32Error(), "CloseHandle for Job Object failed"); }
+        handle = IntPtr.Zero;
+      }
+      GC.SuppressFinalize(this);
+    }
+  }
+}
+"@
+}
+$commandLine = ((@($entrypoint) + @($selection.arguments) + @($selection.configurationArgument, $selection.configurationPath) | ForEach-Object { ConvertTo-WindowsCommandLineArgument ([string]$_) }) -join ' ')
+$processState = Join-Path $stateRoot "process-state"
+$nativeProcess = $null
+$process = $null
+$job = $null
+$recordCommitted = $false
+$launchFailure = $null
+$cleanupFailure = $null
+try {
+  $job = [VemVisionLauncher.KillOnCloseJob]::new()
+  $nativeProcess = [VemVisionLauncher.NativeProcess]::Start($entrypoint, $commandLine, $selection.installDirectory)
+  $job.Assign($nativeProcess.ProcessHandle)
+  $nativeProcess.Resume()
+  $process = [Diagnostics.Process]::GetProcessById([int]$nativeProcess.ProcessId)
+  $current = Get-Content -LiteralPath (Join-Path $stateRoot "current.json") -Raw -Encoding UTF8 | ConvertFrom-Json
+  if ($current.revision -cne $selection.revision) {
+    throw "Vision selection changed before process record"
+  }
+  $record = [ordered]@{ bundleDigest=$selection.bundleDigest; processId=$process.Id; creationTimeUtcTicks=$process.StartTime.ToUniversalTime().Ticks; executablePath=$entrypoint; executableDigest=("sha256:" + (Get-FileHash -LiteralPath $entrypoint -Algorithm SHA256).Hash.ToLowerInvariant()); selectionRevision=$selection.revision }
+  $target = Join-Path $processState "active-process.json"; $temporary = Join-Path $processState ("." + [guid]::NewGuid().ToString("N") + ".tmp")
+  [IO.File]::WriteAllText($temporary, ($record | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false)); if (Test-Path -LiteralPath $target) { [IO.File]::Replace($temporary, $target, $null) } else { [IO.File]::Move($temporary, $target) }
+  $job.Release()
+  $job = $null
+  $recordCommitted = $true
+} catch {
+  $launchFailure = $_
+} finally {
+  $cleanupFailures = [Collections.Generic.List[Exception]]::new()
+  if (-not $recordCommitted) {
+    if ($null -ne $job) {
+      try { $job.Terminate() } catch { $cleanupFailures.Add($_.Exception) }
+    }
+    if ($null -ne $nativeProcess) {
+      try { $nativeProcess.Terminate() } catch { $cleanupFailures.Add($_.Exception) }
+    }
+    Remove-Item -LiteralPath (Join-Path $processState "active-process.json") -Force -ErrorAction SilentlyContinue
+  }
+  if ($null -ne $job) {
+    try { $job.Dispose() } catch { $cleanupFailures.Add($_.Exception) }
+  }
+  if ($null -ne $process) {
+    try { $process.Dispose() } catch { $cleanupFailures.Add($_.Exception) }
+  }
+  if ($null -ne $nativeProcess) {
+    try { $nativeProcess.Dispose() } catch { $cleanupFailures.Add($_.Exception) }
+  }
+  if ($cleanupFailures.Count -eq 1) {
+    $cleanupFailure = $cleanupFailures[0]
+  } elseif ($cleanupFailures.Count -gt 1) {
+    $cleanupFailure = [AggregateException]::new("Vision launcher cleanup failed", [Exception[]]$cleanupFailures.ToArray())
+  }
+}
+if ($null -ne $launchFailure) {
+  if ($null -ne $cleanupFailure) {
+    throw [AggregateException]::new("Vision launcher failed and cleanup failed", [Exception[]]@($launchFailure.Exception, $cleanupFailure))
+  }
+  throw $launchFailure
+}
+if ($null -ne $cleanupFailure) {
+  throw $cleanupFailure
+}
 '@
   [IO.File]::WriteAllText($launcherScriptPath, $launcher, [Text.UTF8Encoding]::new($false)); [IO.File]::WriteAllText($launcherPath, "@echo off`r`npowershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$launcherScriptPath`"`r`n", [Text.UTF8Encoding]::new($false))
   Set-SystemInstallerAcl $launcherScriptPath $true; Set-SystemInstallerAcl $launcherPath $true

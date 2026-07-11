@@ -367,6 +367,12 @@ const DEFAULT_INVENTORY = [
     workflows: ["factory preparation", "managed update"],
   },
   {
+    path: "scripts/windows/vision-release-install-harness.behavior.ps1",
+    owner: "field-operations",
+    category: "verifier-test guard",
+    workflows: ["factory preparation", "managed update"],
+  },
+  {
     path: "scripts/windows/machine-config.bringup.example.json",
     owner: "machine-runtime",
     category: "explicitly maintained legacy operation",

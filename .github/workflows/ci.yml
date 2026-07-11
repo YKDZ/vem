@@ -233,7 +233,7 @@ jobs:
     # This compatibility harness uses Windows certificate-store cmdlets. Keep it
     # on the known-good image instead of the moving windows-latest label.
     runs-on: windows-2022
-    timeout-minutes: 10
+    timeout-minutes: 15
     defaults:
       run:
         shell: pwsh
@@ -251,6 +251,10 @@ jobs:
 
       - name: Run Vision installer behavioral checks
         run: pnpm check:vision-release-installer
+
+      - name: Run Vision installer harness behavior checks
+        timeout-minutes: 3
+        run: ./scripts/windows/vision-release-install-harness.behavior.ps1
 
       - name: Run signed Vision installer harness
         run: >-
