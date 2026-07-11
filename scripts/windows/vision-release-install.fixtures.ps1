@@ -279,8 +279,14 @@ function Wait-FixtureRuntimeIdentities {
 
 "@
           $jobTerminationStub = @"
+    private const uint FIXTURE_TERMINATE_JOB_ERROR = 87;
+
+    [DllImport("kernel32.dll", SetLastError = true, EntryPoint = "SetLastError")]
+    private static extern void SetLastErrorForFixture(uint dwErrCode);
+
     private static bool TerminateJobObjectForFixture(IntPtr job, uint exitCode) {
       if (Environment.GetEnvironmentVariable("$terminationFailureEnvironmentVariable") == "1") {
+        SetLastErrorForFixture(FIXTURE_TERMINATE_JOB_ERROR);
         return false;
       }
       return TerminateJobObject(job, exitCode);
@@ -310,7 +316,7 @@ function Wait-FixtureRuntimeIdentities {
             if (-not $executionLauncher.Contains($stub)) { throw "generated launcher fixture did not inject runtime native termination failure: $stub" }
           }
           if ($Failure -eq "selection-reread-and-cleanup") {
-            foreach ($stub in @("TerminateJobObjectForFixture", $terminationFailureEnvironmentVariable)) {
+            foreach ($stub in @("TerminateJobObjectForFixture", "SetLastErrorForFixture(FIXTURE_TERMINATE_JOB_ERROR)", $terminationFailureEnvironmentVariable)) {
               if (-not $executionLauncher.Contains($stub)) { throw "generated launcher fixture did not inject runtime native termination failure: $stub" }
             }
           }
@@ -511,9 +517,19 @@ try {
   if (`$outerFailures[0] -isnot [Management.Automation.RuntimeException] -or `$outerFailures[0].Message -ne "injected selection reread failure") { throw "aggregate failure fixture did not preserve the primary post-start failure" }
   if (`$outerFailures[1] -isnot [AggregateException] -or `$outerFailures[1].Message -notlike "Vision launcher cleanup failed*") { throw "aggregate failure fixture did not preserve the cleanup aggregate" }
   `$cleanupFailures = @(`$outerFailures[1].InnerExceptions)
-  if (`$cleanupFailures.Count -ne 2) { throw "aggregate failure fixture did not preserve both cleanup failures" }
-  if (`$cleanupFailures[0] -isnot [ComponentModel.Win32Exception] -or `$cleanupFailures[0].Message -notmatch "TerminateJobObject failed") { throw "aggregate failure fixture did not preserve the false Job Object return" }
-  if (`$cleanupFailures[1] -isnot [ComponentModel.Win32Exception] -or `$cleanupFailures[1].Message -notmatch "TerminateProcess failed" -or `$cleanupFailures[1].NativeErrorCode -ne 5) { throw "aggregate failure fixture did not preserve the false process return and its pre-wait Win32 error" }
+  `$cleanupFailureDiagnostics = @(
+    for (`$index = 0; `$index -lt `$cleanupFailures.Count; `$index++) {
+      `$cleanupFailure = `$cleanupFailures[`$index]
+      `$nativeErrorCode = "<not a Win32Exception>"
+      if (`$cleanupFailure -is [ComponentModel.Win32Exception]) { `$nativeErrorCode = [string]`$cleanupFailure.NativeErrorCode }
+      "cleanup failure inner index=`$index; type=`$(`$cleanupFailure.GetType().FullName); NativeErrorCode=`$nativeErrorCode; message=`$(`$cleanupFailure.Message)"
+    }
+  ) -join [Environment]::NewLine
+  if (`$cleanupFailures.Count -ne 2) { throw "aggregate failure fixture did not preserve both cleanup failures; `$cleanupFailureDiagnostics" }
+  `$jobCleanupFailures = @(`$cleanupFailures | Where-Object { `$_ -is [ComponentModel.Win32Exception] -and `$_.Message.StartsWith("TerminateJobObject failed", [StringComparison]::Ordinal) -and `$_.NativeErrorCode -eq 87 })
+  if (`$jobCleanupFailures.Count -ne 1) { throw "aggregate failure fixture did not preserve exactly one TerminateJobObject failed error with NativeErrorCode 87; `$cleanupFailureDiagnostics" }
+  `$processCleanupFailures = @(`$cleanupFailures | Where-Object { `$_ -is [ComponentModel.Win32Exception] -and `$_.Message.StartsWith("TerminateProcess failed", [StringComparison]::Ordinal) -and `$_.NativeErrorCode -eq 5 })
+  if (`$processCleanupFailures.Count -ne 1) { throw "aggregate failure fixture did not preserve exactly one TerminateProcess failed error with NativeErrorCode 5; `$cleanupFailureDiagnostics" }
 }
 if (`$null -eq `$fixtureRuntimeIdentities) { throw "aggregate failure fixture runner did not collect runtime process identities" }
 Write-Output ("aggregate failure fixture passed parentId={0} descendantId={1}" -f `$fixtureRuntimeIdentities.parentId, `$fixtureRuntimeIdentities.descendantId)

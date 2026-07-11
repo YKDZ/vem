@@ -246,11 +246,33 @@ describe("Vision release installer fixtures", () => {
         /private static extern void SetLastError\(uint dwErrCode\);/,
       );
       assert.match(fixtureSource, /FIXTURE_TERMINATE_PROCESS_ERROR = 5/);
+      assert.match(fixtureSource, /FIXTURE_TERMINATE_JOB_ERROR = 87/);
       assert.match(
         fixtureSource,
         /SetLastError\(FIXTURE_TERMINATE_PROCESS_ERROR\);/,
       );
-      assert.match(fixtureSource, /NativeErrorCode -ne 5/);
+      assert.match(
+        fixtureSource,
+        /SetLastErrorForFixture\(FIXTURE_TERMINATE_JOB_ERROR\);/,
+      );
+      assert.match(
+        fixtureSource,
+        /\[DllImport\("kernel32\.dll", SetLastError = true, EntryPoint = "SetLastError"\)\]\s+private static extern void SetLastErrorForFixture\(uint dwErrCode\);/,
+      );
+      assert.match(fixtureSource, /cleanup failure inner index=/);
+      assert.match(fixtureSource, /NativeErrorCode=/);
+      assert.match(fixtureSource, /FIXTURE_TERMINATE_JOB_ERROR/);
+      assert.match(fixtureSource, /FIXTURE_TERMINATE_PROCESS_ERROR/);
+      assert.doesNotMatch(fixtureSource, /\$cleanupFailures\[0\]/);
+      assert.doesNotMatch(fixtureSource, /\$cleanupFailures\[1\]/);
+      assert.match(
+        fixtureSource,
+        /`?\$jobCleanupFailures = @\(`?\$cleanupFailures \| Where-Object { `?\$_ -is \[ComponentModel\.Win32Exception\] -and `?\$_\.Message\.StartsWith\("TerminateJobObject failed", \[StringComparison\]::Ordinal\) -and `?\$_\.NativeErrorCode -eq 87 }\)/,
+      );
+      assert.match(
+        fixtureSource,
+        /`?\$processCleanupFailures = @\(`?\$cleanupFailures \| Where-Object { `?\$_ -is \[ComponentModel\.Win32Exception\] -and `?\$_\.Message\.StartsWith\("TerminateProcess failed", \[StringComparison\]::Ordinal\) -and `?\$_\.NativeErrorCode -eq 5 }\)/,
+      );
       assert.match(
         fixtureSource,
         /VEM_VISION_LAUNCHER_FIXTURE_FORCE_TERMINATE_FAILURE/,
