@@ -381,7 +381,11 @@ function cleanBaseFactoryAcceptanceEvidence(overrides = {}) {
       daemonService: { status: "passed", name: "VemVendingDaemon" },
       uiLauncherTask: { status: "passed", name: "VEMMachineUI" },
       runtimeResetGateClean: { status: "passed" },
-      simulatedHardwareMode: { status: "passed", mode: "simulated" },
+      hardwareProfileMode: {
+        status: "passed",
+        profile: "testbed",
+        mode: "simulated",
+      },
       startupReachesBringUpOrSalesEligible: {
         status: "passed",
         state: "bring_up",
@@ -2051,7 +2055,7 @@ describe("win10-vem-e2e reset planning", () => {
       daemonService: "VemVendingDaemon",
       uiLauncherTask: "VEMMachineUI",
       runtimeResetGateClean: "required",
-      simulatedHardwareMode: "required",
+      hardwareProfileMode: "required",
       startupReachesBringUpOrSalesEligible: "required",
     });
     assert.ok(

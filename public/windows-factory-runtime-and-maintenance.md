@@ -79,7 +79,7 @@ The canonical media workflow takes:
 - a source Windows ISO identity and SHA-256;
 - a Factory Manifest;
 - fixed-version OpenSSH and WireGuard packages with source, version, SHA-256,
-  and signature evidence;
+  approved signer/root certificate thumbprints, and a valid Authenticode chain;
 - CI-built VEM daemon, Machine UI, WebView2 sidecar, and selected Vision release
   artifacts;
 - a production or testbed profile without machine-specific secrets.
@@ -109,10 +109,11 @@ contract:
 - `testbed`: installs the VEM-owned simulators and accepts a dedicated testbed
   bootstrap identity from Factory Personalization Media.
 
-`YKDZ` and its current testbed credential are testbed-only. The first production
-profile may use the existing `Admin` maintenance account, but its password and
-the kiosk password must be unique personalization secrets. Normal remote access
-uses SSH certificates; the password is only a field break-glass credential.
+`YKDZ` and its current testbed credential are testbed-only. Preparation requires
+the profile administrator to exist already: `YKDZ` for testbed and `Admin` for
+production. It never creates that account, changes its password, or accepts a
+shared maintenance password input. Normal remote access uses SSH certificates;
+any local break-glass credential remains outside Factory Runtime inputs.
 
 ## Reproducible Workflows
 
@@ -295,10 +296,11 @@ environment-specific Maintenance SSH CA mounted as a Docker secret. Test and
 production CAs are different. `MAINTENANCE_SSH_TARGET_POLICY_PATH` points to a
 read-only deployment file containing the same profile and its exact target
 Machine code allowlist; a profile mismatch or out-of-scope target fails closed.
-The Factory profile contains only the CA public key. Human certificates may be
-issued only by the administrator who created the Maintenance Session.
-Certificates are bounded by the session TTL and maintenance source IP. SSH
-password authentication is disabled.
+The Factory profile contains only the selected profile's CA public key. Human
+certificates may be issued only by the administrator who created the
+Maintenance Session. Certificates are bounded by the session TTL and
+maintenance source IP. SSH password and keyboard-interactive authentication
+are disabled.
 
 The first version reuses the profile's existing maintenance administrator
 account: `YKDZ` for the testbed and `Admin` for the first production profile.
@@ -313,12 +315,17 @@ installs only the deployed test Maintenance SSH CA public key and accepts the
 `YKDZ` principal. A production profile installs only the production CA public
 key and accepts the `Admin` principal. `sshd` must require public-key
 authentication, disable password and keyboard-interactive authentication, and
-trust the CA through `TrustedUserCAKeys`. It must preserve OpenSSH certificate
-critical-option enforcement, including the exact `source-address` `/32` issued
-by Service API. No profile authorizes a `SYSTEM` principal or creates a default
-SYSTEM SSH entrypoint. The Service API certificate endpoint accepts one
-caller-generated ephemeral Ed25519 public key and returns the short-lived user
-certificate; it never receives or stores the caller private key.
+trust the CA through `TrustedUserCAKeys`. The CA file contains exactly one
+Ed25519 key whose `vem-maintenance-ca:<profile>` comment matches the selected
+profile; preparation derives its SHA-256 fingerprint with `ssh-keygen`.
+Windows preparation accepts only declared fixed local OpenSSH and WireGuard
+packages with version, SHA-256, approved signer/root thumbprints, and a valid
+Authenticode chain. `sshd` listens only on the declared WireGuard tunnel
+address. The firewall source set is exactly the configured runner and
+maintainer role pools, and every other enabled inbound TCP/22 rule is removed.
+No profile authorizes a `SYSTEM` principal or creates a default SYSTEM SSH
+entrypoint. SYSTEM-only work requires explicit elevation from the authenticated
+administrator session, which acceptance measures with an ephemeral SYSTEM task.
 
 ## Machine Maintenance Identity Lifecycle
 
@@ -417,7 +424,7 @@ Acceptance of this architecture requires deleting, not retaining, the old paths:
 - `/mnt/user` and `unraid://` values in workflow contracts and normative source
   schemas;
 - static Service API relay plans and iptables command rendering;
-- optional WireGuard factory installation;
+- Windows Capability or online OpenSSH installation, optional WireGuard installation, and floating package sources;
 - per-session `/32` route generation on machine configs;
 - password SSH, `sshpass`, and the Windows testbed password secret;
 - daemon mock/TCP hardware paths as evidence for Windows simulated-hardware

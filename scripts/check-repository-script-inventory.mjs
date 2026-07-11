@@ -36,6 +36,12 @@ const DEFAULT_INVENTORY = [
     workflows: ["factory preparation"],
   },
   {
+    path: "scripts/check-windows-factory-maintenance.test.mjs",
+    owner: "field-operations",
+    category: "verifier-test guard",
+    workflows: ["factory preparation"],
+  },
+  {
     path: "scripts/daemon-ipc-contracts/generate-contracts.ts",
     owner: "shared-contracts",
     category: "verifier-test guard",
@@ -182,10 +188,22 @@ const DEFAULT_INVENTORY = [
     workflows: ["factory preparation"],
   },
   {
+    path: "scripts/windows/factory-maintenance-fixtures/clean-state-evidence.json",
+    owner: "field-operations",
+    category: "verifier-test guard",
+    workflows: ["factory preparation"],
+  },
+  {
     path: "scripts/windows/setup-scheduled-tasks.ps1",
     owner: "field-operations",
     category: "public runbook operation",
     workflows: ["factory preparation", "kiosk lockdown"],
+  },
+  {
+    path: "scripts/windows/test-factory-maintenance-fixtures.ps1",
+    owner: "field-operations",
+    category: "verifier-test guard",
+    workflows: ["factory preparation"],
   },
   {
     path: "scripts/windows/start-lower-controller-sim.ps1",

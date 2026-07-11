@@ -122,8 +122,8 @@ Run this first from the repository:
 node scripts/testbed/win10-vem-e2e.mjs \
   --mode clean-base-factory-acceptance \
   --run-id RUN-182 \
-  --clean-base-source unraid://192.168.2.23/vms/win10-vem-clean-base \
-  --clean-base-snapshot vem-clean-base-before-factory-prep \
+  --clean-base-source factory-media://clean-windows-base \
+  --clean-base-snapshot before-vem-factory-prep \
   --daemon-artifact-sha256 <sha256> \
   --machine-ui-artifact-sha256 <sha256> \
   --dry-run
@@ -145,23 +145,45 @@ node scripts/testbed/win10-vem-e2e.mjs \
   --machine-ui-artifact ./path/to/machine.exe \
   --daemon-artifact-sha256 <sha256> \
   --machine-ui-artifact-sha256 <sha256> \
-  --maintenance-relay-wireguard-installer ./path/to/wireguard-amd64.msi \
-  --maintenance-relay-wireguard-config ./.scratch/maintenance-relay/win10-vm.conf \
-  --maintenance-relay-source-allowlist 10.91.1.10 \
+  --factory-profile testbed \
+  --factory-hardware-model <declared-model> \
+  --factory-topology-identity <declared-topology> \
+  --factory-topology-version <version> \
+  --openssh-package ./factory-assets/openssh-server.msi \
+  --openssh-package-version 9.8.1 \
+  --openssh-package-sha256 <sha256> \
+  --openssh-approved-signer-thumbprint <sha1-thumbprint> \
+  --openssh-approved-root-thumbprint <sha1-thumbprint> \
+  --wireguard-package ./factory-assets/wireguard-amd64.msi \
+  --wireguard-package-version 0.5.3 \
+  --wireguard-package-sha256 <sha256> \
+  --wireguard-approved-signer-thumbprint <sha1-thumbprint> \
+  --wireguard-approved-root-thumbprint <sha1-thumbprint> \
+  --maintenance-ca-public-key ./factory-assets/testbed-maintenance-ca.pub \
+  --maintenance-ca-sha256 <sha256> \
+  --maintenance-runner-source-allowlist 10.91.1.10 \
+  --maintenance-maintainer-source-allowlist 10.91.3.10 \
+  --maintenance-wireguard-listen-address 10.91.16.10 \
   --remote <maintenance-user>@<clean-vm-host> \
   --allow-clean-base-prepare
 ```
 
-The machine UI artifact must have `WebView2Loader.dll` next to `machine.exe`. Live clean-base mode rejects `--use-existing-remote-artifacts`; it must upload local daemon, machine UI, and WebView2 sidecar artifacts for the run. The runner hashes local daemon/UI artifacts before upload and refuses mismatches against declared hashes. Before upload or any remote directory/script staging, it refuses known dirty-host or production remote identifiers and probes the remote hostname, Controlled Maintenance Ingress endpoint identity, and retained-state absence through read-only SSH. The retained-state absence probe covers `C:\VEM\bringup`, `C:\ProgramData\VEM\bringup`, `C:\ProgramData\VEM\provisioning`, `C:\ProgramData\VEM\secrets`, `C:\ProgramData\VEM\overrides`, `C:\ProgramData\VEM\evidence`, `C:\ProgramData\VEM\vending-daemon`, the `VemVendingDaemon` service, and `VEMMachineUI` / `VEM\StartVisionServer` tasks. On the remote VM it repeats the clean source identity and retained-state absence checks before staging inputs, then runs `prepare-factory-runtime.ps1` without dirty-host reset mode, runs `verify-factory-runtime.ps1`, collects `factory-runtime-preparation.json`, `factory-runtime-verification-action.json`, `factory-runtime-verification.json`, and writes `clean-base-factory-acceptance.json`.
+The machine UI artifact must have `WebView2Loader.dll` next to `machine.exe`. Live clean-base mode rejects `--use-existing-remote-artifacts`; it must upload local daemon, machine UI, and WebView2 sidecar artifacts for the run. The runner hashes local daemon/UI artifacts before upload and refuses mismatches against declared hashes. Before upload or any remote directory/script staging, it refuses known dirty-host or production remote identifiers and probes the remote hostname, Controlled Maintenance Ingress endpoint identity, and retained-state absence through read-only SSH. The retained-state absence probe covers `C:\VEM\bringup`, VEM factory/bring-up/provisioning/secrets/overrides/evidence/daemon/maintenance state under `C:\ProgramData\VEM`, `C:\ProgramData\ssh\sshd_config`, the daemon plus correct and malformed WireGuard tunnel services, and VEM startup tasks. On the remote VM it repeats the clean source identity and retained-state absence checks before staging inputs, then runs `prepare-factory-runtime.ps1` without dirty-host reset mode, runs `verify-factory-runtime.ps1`, collects `factory-runtime-preparation.json`, `factory-runtime-verification-action.json`, `factory-runtime-verification.json`, and writes `clean-base-factory-acceptance.json`.
 
-The Maintenance Relay options are optional for a generic factory image, but are
-required for the relay-backed GitHub VM runtime acceptance base image. They are
-local artifacts, not repository files: the runner uploads the WireGuard
-installer and the VM peer config to the remote staging directory, verifies
-their SHA-256 hashes on Windows, installs the tunnel as a Windows service, and
-enables `VEM Controlled Maintenance SSH` only for the supplied runner peer IP.
-The config contains the VM private key and must stay in operator-local scratch
-or secret storage.
+OpenSSH and WireGuard are mandatory Factory Runtime inputs for both profiles.
+The runner uploads only the declared local installers and selected CA public
+key. Windows measures Authenticode status and the certificate chain, requiring
+the declared signer and root thumbprints, and rejects Windows Capability,
+online, floating, or mismatched sources. The CA file must contain exactly one
+Ed25519 public key with comment `vem-maintenance-ca:<profile>`; its fingerprint
+is derived with `ssh-keygen`, not supplied by the runner. WireGuard is installed
+as the machine-owned `WireGuardTunnel$VEM-Maintenance` service with automatic
+startup independent of the kiosk and Machine UI. The machine private key is
+generated locally and is never supplied as personalization or factory input.
+`sshd` listens only on the declared WireGuard address. `VEM Controlled
+Maintenance SSH` permits TCP 22 only on that interface from the configured
+runner and maintainer role pools; all other enabled inbound TCP/22 rules fail
+verification.
 
 Failure reports include structured diagnostics such as `clean_base_identity_refused`, `clean_base_preflight_failed`, `factory_input_staging_failed`, `factory_preparation_failed`, and `factory_verifier_failed`; operators should treat raw command output as supporting detail, not as the primary failure contract.
 
@@ -203,10 +225,11 @@ The report must include machine-checkable assertions:
 - `bootPolicy`: Windows `testsigning` off
 - `securityPosture`: Defender and firewall enabled, with VEM runtime exclusions, no default product-managed inbound remote access rule, and SMB/File Sharing not enabled as a maintenance entry
 - `factoryRemoteMaintenanceCapability`: factory preparation installs/enables OpenSSH Server for maintenance-account isolation without installing Tailscale by default; maintenance users are allowed through `OpenSSH Users` while kiosk SSH is explicitly denied through `sshd_config`
-- `maintenanceRelay`: when enabled for the relay-backed runtime test base image,
-  WireGuard is installed, the VM tunnel service starts automatically, the
-  staged config hash matches the declared hash, and `VEM Controlled Maintenance
-SSH` exactly matches the runner peer source allowlist
+- `maintenanceCapability`: fixed OpenSSH and WireGuard are installed from
+  declared local packages, the machine tunnel service starts automatically,
+  package signature and selected CA evidence match, and `VEM Controlled
+Maintenance SSH` exactly matches the runner and maintainer role pools on the
+  WireGuard interface
 - `consumerExperienceInterference`: consumer foreground interference policies configured, Store automatic app updates disabled, and kiosk foreground takeover recorded as Windows 10 Pro best-effort policy evidence
 - `sleepDisabled`: S3/S4 or equivalent sleep states disabled
 - `testsigningOff`: Windows `testsigning` off
@@ -215,7 +238,8 @@ SSH` exactly matches the runner peer source allowlist
 - `daemonService`: `VemVendingDaemon` installed and configured
 - `uiLauncherTask`: `VEMMachineUI` launcher/task configured
 - `runtimeResetGateClean`: reset gate confirms no retained VEM runtime state
-- `simulatedHardwareMode`: runtime configured for simulated hardware mode
+- `hardwareProfileMode`: runtime hardware mode matches the selected profile
+  (`production` or `simulated` for testbed)
 - `startupReachesBringUpOrSalesEligible`: startup reaches bring-up or sales-eligible state
 - preflight absence proof for machine identity, provisioning profile, protected secrets, daemon state, previous VEM evidence, retained bring-up directories, daemon service, and startup tasks
 - factory runtime preparation result, factory manifest path, verifier result, and `factory-runtime-verification.json`
@@ -242,8 +266,8 @@ Minimal report shape:
   "dryRun": false,
   "source": {
     "kind": "clean-windows-base",
-    "uri": "unraid://192.168.2.23/vms/win10-vem-clean-base",
-    "snapshot": "vem-clean-base-before-factory-prep"
+    "uri": "factory-media://clean-windows-base",
+    "snapshot": "before-vem-factory-prep"
   },
   "factoryWindowsBaselinePolicy": {
     "schemaVersion": "factory-windows-baseline-policy/v1",
@@ -348,7 +372,11 @@ Minimal report shape:
     "daemonService": { "status": "passed" },
     "uiLauncherTask": { "status": "passed" },
     "runtimeResetGateClean": { "status": "passed" },
-    "simulatedHardwareMode": { "status": "passed", "mode": "simulated" },
+    "hardwareProfileMode": {
+      "status": "passed",
+      "profile": "testbed",
+      "mode": "simulated"
+    },
     "startupReachesBringUpOrSalesEligible": {
       "status": "passed",
       "state": "bring_up"
