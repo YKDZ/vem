@@ -39,7 +39,9 @@ jobs:
     env:
       VEM_FACTORY_PERSONALIZATION_TRUSTED_GATE: ${{ needs.trust-gate.outputs.approved }}
       VEM_FACTORY_PERSONALIZATION_RUNNER_NAME: ${{ runner.name }}
-      VEM_FACTORY_PERSONALIZATION_RUNNER_LABELS: ${{ toJSON(runner.labels) }}
+      # `runs-on` is the authoritative label gate. GitHub's runner context does
+      # not expose labels, so pass the exact selected label contract explicitly.
+      VEM_FACTORY_PERSONALIZATION_RUNNER_LABELS: '["self-hosted","Linux","X64","vem-factory"]'
     steps:
       - name: Guard Exact Protected Runner Before Checkout
         shell: bash
