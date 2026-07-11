@@ -13,6 +13,8 @@ const CACHEABLE_ROLES = new Set([
   "vem-machine-ui",
   "webview2-loader",
   "vision-release",
+  "vision-configuration",
+  "maintenance-ssh-ca-public-key",
   "factory-iso",
 ]);
 const READ_FLAGS =
@@ -319,6 +321,7 @@ export class ContentAddressedAssetStore {
     }
     const opened = await openRegular(sourcePath, "Windows source media");
     try {
+      await this.onSourceOpened?.();
       const actual = await hashHandle(opened.handle);
       if (actual.digest !== digest) {
         throw new AssetDigestMismatchError(
@@ -343,6 +346,7 @@ export class ContentAddressedAssetStore {
     const digest = assertAssetReference(asset);
     const opened = await openRegular(sourcePath, "Windows source media");
     try {
+      await this.onSourceOpened?.();
       const copied = await copyHandle(opened.handle, destination);
       if (copied.digest !== digest) {
         await rm(destination, { force: true });

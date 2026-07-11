@@ -83,6 +83,7 @@ function requestFor({ operation, run, targetIdentity, assets }) {
     lifecycleReference: `vm-lifecycle://${run.toLowerCase()}.${lifecycleSeed}`,
     cancelOperationReference: null,
     target: { identity: targetIdentity },
+    factoryMedia: null,
     assets,
     requestedCapabilities: CAPABILITIES[operation],
   });

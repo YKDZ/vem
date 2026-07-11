@@ -67,6 +67,7 @@ function requestFor(operation = "restore-approved-base", overrides = {}) {
     cancelOperationReference:
       operation === "cancel" ? "vm-operation://op-fedcba9876543210" : null,
     target: { identity: "vm-target://runtime-testbed" },
+    factoryMedia: null,
     assets: [
       {
         role: "approved-runtime-base",
@@ -114,6 +115,7 @@ function reportFor(request, overrides = {}) {
       lifecycleReference: request.lifecycleReference,
       cancelOperationReference: request.cancelOperationReference,
       targetIdentity: request.target.identity,
+      factoryMedia: request.factoryMedia,
       requestedCapabilities: request.requestedCapabilities,
     },
     result: "succeeded",
@@ -127,6 +129,10 @@ function reportFor(request, overrides = {}) {
       },
       baseIdentity: request.assets[0].identity,
       overlayIdentity: "vm-overlay://run-12-contract",
+      factoryProvenanceDigest:
+        request.operation === "clean-install"
+          ? request.factoryMedia.provenanceDigest
+          : null,
     },
     consumedAssets: request.assets,
     guest: {
@@ -220,6 +226,14 @@ describe("VM Host Adapter contract", () => {
             digest: `sha256:${"e".repeat(64)}`,
           },
         ],
+        factoryMedia: {
+          assemblyMode: "windows-serviced-iso",
+          manifestIdentity: `sha256:${"f".repeat(64)}`,
+          provenanceIdentity: `factory-evidence://sha256/${"c".repeat(64)}`,
+          provenanceDigest: `sha256:${"c".repeat(64)}`,
+          outputIdentity: factoryIso,
+          outputDigest: `sha256:${"d".repeat(64)}`,
+        },
         requestedCapabilities: [
           "clean-install",
           "disposable-overlay",
@@ -241,6 +255,17 @@ describe("VM Host Adapter contract", () => {
           observed: {
             ...reportFor(request).observed,
             baseIdentity: `factory-cas://sha256/${HASH}`,
+          },
+        }),
+        request,
+      ),
+    );
+    assert.throws(() =>
+      validateVmHostAdapterReport(
+        reportFor(request, {
+          observed: {
+            ...reportFor(request).observed,
+            factoryProvenanceDigest: `sha256:${"0".repeat(64)}`,
           },
         }),
         request,
@@ -653,6 +678,14 @@ describe("VM Host Adapter contract", () => {
         `factory-cas://sha256/${"d".repeat(64)}`,
         "--factory-personalization-media",
         `factory-cas://sha256/${"e".repeat(64)}`,
+        "--factory-assembly-mode",
+        "windows-serviced-iso",
+        "--factory-manifest",
+        `sha256:${"f".repeat(64)}`,
+        "--factory-provenance",
+        `factory-evidence://sha256/${"c".repeat(64)}`,
+        "--factory-provenance-digest",
+        `sha256:${"c".repeat(64)}`,
         "--out",
         out,
       ],

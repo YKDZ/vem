@@ -15,6 +15,7 @@ function provenance() {
     kind: "factory-media-provenance",
     manifest: {},
     inputs: [],
+    effectiveInputs: [],
     toolchain: {},
     output: {},
     evidence: {

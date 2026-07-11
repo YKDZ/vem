@@ -78,6 +78,12 @@ const DEFAULT_INVENTORY = [
     workflows: ["factory preparation"],
   },
   {
+    path: "scripts/factory/factory-acceptance-admission.mjs",
+    owner: "field-operations",
+    category: "verifier-test guard",
+    workflows: ["factory preparation"],
+  },
+  {
     path: "scripts/factory/factory-manifest.mjs",
     owner: "field-operations",
     category: "public runbook operation",
@@ -151,6 +157,12 @@ const DEFAULT_INVENTORY = [
   },
   {
     path: "scripts/factory/verify-asset-evidence.test.mjs",
+    owner: "field-operations",
+    category: "verifier-test guard",
+    workflows: ["factory preparation"],
+  },
+  {
+    path: "scripts/factory/verify-real-windows-source.mjs",
     owner: "field-operations",
     category: "verifier-test guard",
     workflows: ["factory preparation"],

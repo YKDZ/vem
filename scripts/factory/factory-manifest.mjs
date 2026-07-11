@@ -23,6 +23,8 @@ const ASSET_ROLES = new Set([
   "vem-machine-ui",
   "webview2-loader",
   "vision-release",
+  "vision-configuration",
+  "maintenance-ssh-ca-public-key",
 ]);
 const REQUIRED_ASSET_ROLES = new Set([
   "openssh-installer",
@@ -31,6 +33,8 @@ const REQUIRED_ASSET_ROLES = new Set([
   "vem-machine-ui",
   "webview2-loader",
   "vision-release",
+  "vision-configuration",
+  "maintenance-ssh-ca-public-key",
 ]);
 const TOP_LEVEL_KEYS = [
   "schemaVersion",
@@ -38,6 +42,7 @@ const TOP_LEVEL_KEYS = [
   "manifestId",
   "profile",
   "source",
+  "factoryPreparation",
   "assets",
   "toolchain",
   "outputPolicy",
@@ -49,6 +54,7 @@ const ASSET_KEYS = [
   "version",
   "signature",
   "provenance",
+  "mediaFileName",
   "release",
 ];
 const VISION_RELEASE_KEYS = [
@@ -61,6 +67,221 @@ const VISION_RELEASE_KEYS = [
   "conformanceEvidenceIdentity",
   "conformanceEvidenceDigest",
 ];
+const WINDOWS_RESERVED_FILE_NAME =
+  /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i;
+
+const FACTORY_PREPARATION_KEYS = [
+  "schemaVersion",
+  "kind",
+  "environmentName",
+  "provisioningEndpoint",
+  "mqttUrl",
+  "hardware",
+  "display",
+  "accounts",
+  "expectedKioskShell",
+  "targetLayoutVersion",
+  "maintenance",
+];
+
+function assertFactoryPreparation(value, profile, issues) {
+  assertExactKeys(
+    value,
+    FACTORY_PREPARATION_KEYS,
+    "factoryPreparation",
+    issues,
+  );
+  if (!isRecord(value)) return;
+  if (value.schemaVersion !== "vem-factory-preparation/v1")
+    issues.push(
+      issue(
+        "factoryPreparation.schemaVersion",
+        "must be vem-factory-preparation/v1",
+      ),
+    );
+  if (value.kind !== "factory-preparation")
+    issues.push(
+      issue("factoryPreparation.kind", "must be factory-preparation"),
+    );
+  for (const key of [
+    "environmentName",
+    "provisioningEndpoint",
+    "mqttUrl",
+    "expectedKioskShell",
+    "targetLayoutVersion",
+  ])
+    requiredString(value[key], `factoryPreparation.${key}`, issues);
+  if (
+    typeof value.provisioningEndpoint === "string" &&
+    !/^https?:\/\/[A-Za-z0-9.-]+(?::\d{1,5})?(?:\/[A-Za-z0-9._~!$&'()*+,;=:@%/-]*)?$/i.test(
+      value.provisioningEndpoint,
+    )
+  )
+    issues.push(
+      issue(
+        "factoryPreparation.provisioningEndpoint",
+        "must be a credential-free HTTP(S) runtime endpoint",
+      ),
+    );
+  if (
+    typeof value.mqttUrl === "string" &&
+    !/^mqtt:\/\/[A-Za-z0-9.-]+(?::\d{1,5})?$/.test(value.mqttUrl)
+  )
+    issues.push(
+      issue(
+        "factoryPreparation.mqttUrl",
+        "must be a credential-free MQTT runtime endpoint",
+      ),
+    );
+  if (
+    typeof value.expectedKioskShell === "string" &&
+    !/^C:\\VEM\\bringup\\machine\.exe$/i.test(value.expectedKioskShell)
+  )
+    issues.push(
+      issue(
+        "factoryPreparation.expectedKioskShell",
+        "must be the canonical VEM machine UI path",
+      ),
+    );
+  assertExactKeys(
+    value.hardware,
+    ["mode", "model", "topologyIdentity", "topologyVersion"],
+    "factoryPreparation.hardware",
+    issues,
+  );
+  if (isRecord(value.hardware)) {
+    if (
+      value.hardware.mode !==
+      (profile === "production" ? "production" : "simulated")
+    )
+      issues.push(
+        issue(
+          "factoryPreparation.hardware.mode",
+          "must match the Factory profile hardware mode",
+        ),
+      );
+    for (const key of ["model", "topologyIdentity", "topologyVersion"])
+      requiredString(
+        value.hardware[key],
+        `factoryPreparation.hardware.${key}`,
+        issues,
+      );
+  }
+  assertExactKeys(
+    value.display,
+    ["width", "height", "orientation"],
+    "factoryPreparation.display",
+    issues,
+  );
+  if (isRecord(value.display)) {
+    for (const key of ["width", "height"])
+      if (!Number.isInteger(value.display[key]) || value.display[key] < 1)
+        issues.push(
+          issue(
+            `factoryPreparation.display.${key}`,
+            "must be a positive integer",
+          ),
+        );
+    if (!new Set(["portrait", "landscape"]).has(value.display.orientation))
+      issues.push(
+        issue(
+          "factoryPreparation.display.orientation",
+          "must be portrait or landscape",
+        ),
+      );
+  }
+  assertExactKeys(
+    value.accounts,
+    ["kioskUser", "maintenanceUser", "autoLogonUser"],
+    "factoryPreparation.accounts",
+    issues,
+  );
+  if (isRecord(value.accounts)) {
+    for (const key of ["kioskUser", "maintenanceUser", "autoLogonUser"])
+      requiredString(
+        value.accounts[key],
+        `factoryPreparation.accounts.${key}`,
+        issues,
+      );
+    if (
+      value.accounts.maintenanceUser !==
+      (profile === "production" ? "Admin" : "YKDZ")
+    )
+      issues.push(
+        issue(
+          "factoryPreparation.accounts.maintenanceUser",
+          "must match the Factory profile maintenance user",
+        ),
+      );
+  }
+  assertExactKeys(
+    value.maintenance,
+    [
+      "wireGuardInterfaceAlias",
+      "wireGuardListenAddress",
+      "runnerSourceAllowlist",
+      "maintainerSourceAllowlist",
+      "openSsh",
+      "wireGuard",
+    ],
+    "factoryPreparation.maintenance",
+    issues,
+  );
+  if (isRecord(value.maintenance)) {
+    for (const key of ["wireGuardInterfaceAlias", "wireGuardListenAddress"])
+      requiredString(
+        value.maintenance[key],
+        `factoryPreparation.maintenance.${key}`,
+        issues,
+      );
+    for (const key of ["runnerSourceAllowlist", "maintainerSourceAllowlist"]) {
+      if (
+        !Array.isArray(value.maintenance[key]) ||
+        value.maintenance[key].length === 0 ||
+        value.maintenance[key].some(
+          (entry) => typeof entry !== "string" || entry.length === 0,
+        )
+      )
+        issues.push(
+          issue(
+            `factoryPreparation.maintenance.${key}`,
+            "must be a non-empty string array",
+          ),
+        );
+    }
+    for (const [key, label] of [
+      ["openSsh", "OpenSSH"],
+      ["wireGuard", "WireGuard"],
+    ]) {
+      assertExactKeys(
+        value.maintenance[key],
+        ["version", "approvedSignerThumbprint", "approvedRootThumbprint"],
+        `factoryPreparation.maintenance.${key}`,
+        issues,
+      );
+      if (isRecord(value.maintenance[key])) {
+        fixedVersion(
+          value.maintenance[key].version,
+          `factoryPreparation.maintenance.${key}.version`,
+          issues,
+        );
+        for (const thumbprint of [
+          "approvedSignerThumbprint",
+          "approvedRootThumbprint",
+        ])
+          if (
+            !/^[A-Fa-f0-9]{40}$/.test(value.maintenance[key][thumbprint] ?? "")
+          )
+            issues.push(
+              issue(
+                `factoryPreparation.maintenance.${key}.${thumbprint}`,
+                `${label} thumbprint must be 40 hexadecimal characters`,
+              ),
+            );
+      }
+    }
+  }
+}
 
 export class FactoryManifestError extends Error {
   constructor(issues) {
@@ -311,6 +532,11 @@ function assertNoForbiddenContent(value, path, issues) {
   }
   if (!isRecord(value)) {
     if (typeof value === "string") {
+      const runtimeEndpoint =
+        path === "manifest.factoryPreparation.provisioningEndpoint" ||
+        path === "manifest.factoryPreparation.mqttUrl";
+      const guestRuntimePath =
+        path === "manifest.factoryPreparation.expectedKioskShell";
       let inspected = value;
       for (let attempt = 0; attempt < 3; attempt += 1) {
         try {
@@ -333,11 +559,15 @@ function assertNoForbiddenContent(value, path, issues) {
       if (/^file:/i.test(inspected)) {
         issues.push(issue(path, "file URI is not permitted"));
       }
-      if (/^(?:[A-Za-z]:[\\/]|\/(?:[^/]+(?:\/|$)){1,}|\\\\)/.test(inspected)) {
+      if (
+        !guestRuntimePath &&
+        /^(?:[A-Za-z]:[\\/]|\/(?:[^/]+(?:\/|$)){1,}|\\\\)/.test(inspected)
+      ) {
         issues.push(issue(path, "host paths are not permitted"));
       }
       if (
-        (/^(?:https?|git|ssh):\/\//i.test(inspected) &&
+        (!runtimeEndpoint &&
+          /^(?:https?|git|ssh):\/\//i.test(inspected) &&
           inspected !== "https://slsa.dev/provenance/v1") ||
         /(?:@|:)latest(?:$|\W)/i.test(inspected)
       ) {
@@ -382,6 +612,34 @@ function assertProfileBoundary(manifest, issues) {
   }
 }
 
+function assertWindowsSafeMediaNames(manifest, issues) {
+  const names = new Map();
+  const entries = [manifest.source?.windowsMedia, ...(manifest.assets ?? [])];
+  entries.forEach((asset, index) => {
+    if (!isRecord(asset) || typeof asset.mediaFileName !== "string") return;
+    const path =
+      index === 0
+        ? "source.windowsMedia.mediaFileName"
+        : `assets[${index - 1}].mediaFileName`;
+    const name = asset.mediaFileName;
+    if (
+      !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(name) ||
+      /[. ]$/.test(name) ||
+      WINDOWS_RESERVED_FILE_NAME.test(name)
+    ) {
+      issues.push(issue(path, "must be a Windows-safe non-reserved file name"));
+    }
+    const key = name.toLocaleLowerCase("en-US");
+    if (names.has(key)) {
+      issues.push(
+        issue(path, `collides case-insensitively with ${names.get(key)}`),
+      );
+    } else {
+      names.set(key, path);
+    }
+  });
+}
+
 function validateManifestShape(manifest, { requireManifestId }) {
   const issues = [];
   if (requireManifestId && !schemaValidator(manifest)) {
@@ -418,8 +676,20 @@ function validateManifestShape(manifest, { requireManifestId }) {
       issues.push(issue("manifestId", "must be a sha256:<64 hex> identity"));
   }
   assertProfileBoundary(manifest, issues);
+  assertWindowsSafeMediaNames(manifest, issues);
 
-  assertExactKeys(manifest.source, ["windowsMedia"], "source", issues);
+  assertExactKeys(
+    manifest.source,
+    [
+      "windowsMedia",
+      "installImageIndex",
+      "installImageEdition",
+      "installImageDigest",
+      "targetFirmware",
+    ],
+    "source",
+    issues,
+  );
   if (isRecord(manifest.source)) {
     assertAsset(manifest.source.windowsMedia, "source.windowsMedia", issues);
     if (manifest.source.windowsMedia?.role !== "windows-source-iso") {
@@ -427,7 +697,43 @@ function validateManifestShape(manifest, { requireManifestId }) {
         issue("source.windowsMedia.role", "must be exactly windows-source-iso"),
       );
     }
+    if (
+      !Number.isInteger(manifest.source.installImageIndex) ||
+      manifest.source.installImageIndex < 1 ||
+      manifest.source.installImageIndex > 99
+    ) {
+      issues.push(
+        issue(
+          "source.installImageIndex",
+          "must be a deterministic Windows image index between 1 and 99",
+        ),
+      );
+    }
+    requiredString(
+      manifest.source.installImageEdition,
+      "source.installImageEdition",
+      issues,
+    );
+    assertDigest(
+      manifest.source.installImageDigest,
+      "source.installImageDigest",
+      issues,
+    );
+    if (manifest.source.targetFirmware !== "uefi") {
+      issues.push(
+        issue(
+          "source.targetFirmware",
+          "must be uefi for the current Factory acceptance target",
+        ),
+      );
+    }
   }
+
+  assertFactoryPreparation(
+    manifest.factoryPreparation,
+    manifest.profile,
+    issues,
+  );
 
   if (!Array.isArray(manifest.assets)) {
     issues.push(issue("assets", "must be an array"));
@@ -469,7 +775,7 @@ function validateManifestShape(manifest, { requireManifestId }) {
 
   assertExactKeys(
     manifest.toolchain,
-    ["builderImage", "isoBuilder", "authenticodeVerifier"],
+    ["builderImage", "isoBuilder", "wimlib", "authenticodeVerifier"],
     "toolchain",
     issues,
   );
@@ -546,6 +852,42 @@ function validateManifestShape(manifest, { requireManifestId }) {
         issues,
       );
     }
+    assertExactKeys(
+      manifest.toolchain.wimlib,
+      ["identity", "digest", "version"],
+      "toolchain.wimlib",
+      issues,
+    );
+    if (isRecord(manifest.toolchain.wimlib)) {
+      requiredString(
+        manifest.toolchain.wimlib.identity,
+        "toolchain.wimlib.identity",
+        issues,
+      );
+      assertDigest(
+        manifest.toolchain.wimlib.digest,
+        "toolchain.wimlib.digest",
+        issues,
+      );
+      fixedVersion(
+        manifest.toolchain.wimlib.version,
+        "toolchain.wimlib.version",
+        issues,
+      );
+      if (
+        typeof manifest.toolchain.wimlib.identity === "string" &&
+        !/@sha256:[a-f0-9]{64}$/.test(manifest.toolchain.wimlib.identity)
+      ) {
+        issues.push(
+          issue("toolchain.wimlib.identity", "must be pinned by digest"),
+        );
+      }
+      assertToolIdentityDigest(
+        manifest.toolchain.wimlib,
+        "toolchain.wimlib",
+        issues,
+      );
+    }
     if (manifest.toolchain.authenticodeVerifier !== undefined) {
       assertExactKeys(
         manifest.toolchain.authenticodeVerifier,
@@ -605,12 +947,9 @@ function validateManifestShape(manifest, { requireManifestId }) {
       issues.push(issue("outputPolicy.reproducible", "must be true"));
     if (manifest.outputPolicy.includeProvenance !== true)
       issues.push(issue("outputPolicy.includeProvenance", "must be true"));
-    if (manifest.outputPolicy.assemblyMode !== "bootable-fixture-envelope") {
+    if (manifest.outputPolicy.assemblyMode !== "windows-serviced-iso") {
       issues.push(
-        issue(
-          "outputPolicy.assemblyMode",
-          "must honestly declare bootable-fixture-envelope until Issue15",
-        ),
+        issue("outputPolicy.assemblyMode", "must be windows-serviced-iso"),
       );
     }
   }

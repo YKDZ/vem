@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -7,7 +7,6 @@ import { join } from "node:path";
 import { describe, it } from "node:test";
 import { promisify } from "node:util";
 
-import { createRedistributableFixtureIso } from "./build-factory-media.mjs";
 import { ContentAddressedAssetStore } from "./content-addressed-store.mjs";
 import { canonicalJson, createFactoryManifest } from "./factory-manifest.mjs";
 import { createSignedAssetEvidence } from "./verify-asset-evidence.mjs";
@@ -17,10 +16,19 @@ import {
 } from "./vision-release.mjs";
 
 const run = promisify(execFile);
-const ISO_BUILDER_PATH = "/usr/bin/genisoimage";
+const ISO_BUILDER_PATH = "/usr/bin/xorriso";
+const WIMLIB_PATH = "/usr/bin/wimlib-imagex";
+const SYNTHETIC_ISO_TOOL = "/usr/bin/genisoimage";
 const IMAGE_HASH = "f".repeat(64);
 const BUILDER_IDENTITY =
   "github-actions://vem/vem/.github/workflows/build.yml@refs/heads/main";
+
+function toolVersion(path, args, expression, label) {
+  const output = execFileSync(path, args, { encoding: "utf8" });
+  const version = expression.exec(output)?.[1];
+  assert.ok(version, `${label} must report a version`);
+  return version;
+}
 
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), "vem-factory-cli-"));
@@ -28,16 +36,63 @@ async function fixture() {
     .update(await readFile(ISO_BUILDER_PATH))
     .digest("hex");
   const isoBuilder = {
-    identity: `tool://genisoimage@sha256:${isoBuilderHash}`,
+    identity: `tool://xorriso@sha256:${isoBuilderHash}`,
     digest: `sha256:${isoBuilderHash}`,
-    version: "1.1.11",
+    version: toolVersion(
+      ISO_BUILDER_PATH,
+      ["-version"],
+      /xorriso version\s*:\s*([0-9.]+)/i,
+      "xorriso",
+    ),
   };
   const sourceIso = join(root, "fixture-source.iso");
-  await createRedistributableFixtureIso({
-    isoBuilderPath: ISO_BUILDER_PATH,
-    isoBuilder,
-    outputPath: sourceIso,
+  const sourceTree = join(root, "synthetic-windows-setup");
+  await mkdir(join(sourceTree, "boot"), { recursive: true });
+  await mkdir(join(sourceTree, "efi", "microsoft", "boot"), {
+    recursive: true,
   });
+  await mkdir(join(sourceTree, "sources"), { recursive: true });
+  await writeFile(
+    join(sourceTree, "setup.exe"),
+    "Windows Setup synthetic fixture\n",
+  );
+  await writeFile(join(sourceTree, "boot", "etfsboot.com"), Buffer.alloc(2048));
+  await writeFile(
+    join(sourceTree, "efi", "microsoft", "boot", "efisys.bin"),
+    Buffer.alloc(2048),
+  );
+  const wimInput = join(root, "wim-input");
+  await mkdir(wimInput, { recursive: true });
+  await writeFile(join(wimInput, "fixture.txt"), "factory wim fixture\n");
+  execFileSync(WIMLIB_PATH, [
+    "capture",
+    wimInput,
+    join(sourceTree, "sources", "install.wim"),
+    "VEM Factory Fixture",
+  ]);
+  await writeFile(
+    join(sourceTree, "sources", "boot.wim"),
+    await readFile(join(sourceTree, "sources", "install.wim")),
+  );
+  execFileSync(SYNTHETIC_ISO_TOOL, [
+    "-udf",
+    "-J",
+    "-R",
+    "-iso-level",
+    "3",
+    "-o",
+    sourceIso,
+    "-b",
+    "boot/etfsboot.com",
+    "-no-emul-boot",
+    "-boot-load-size",
+    "8",
+    "-eltorito-alt-boot",
+    "-e",
+    "efi/microsoft/boot/efisys.bin",
+    "-no-emul-boot",
+    sourceTree,
+  ]);
   const bytesByRole = new Map([
     ["windows-source-iso", await readFile(sourceIso)],
     ["openssh-installer", Buffer.from("openssh\n")],
@@ -46,6 +101,13 @@ async function fixture() {
     ["vem-machine-ui", Buffer.from("machine\n")],
     ["webview2-loader", Buffer.from("webview\n")],
     ["vision-release", Buffer.from("vision\n")],
+    ["vision-configuration", Buffer.from('{"schemaVersion":"fixture/v1"}\n')],
+    [
+      "maintenance-ssh-ca-public-key",
+      Buffer.from(
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFactoryPublicKey vem-factory\n",
+      ),
+    ],
   ]);
   const evidenceStore = join(root, "evidence");
   await mkdir(join(evidenceStore, "sha256"), { recursive: true });
@@ -68,6 +130,17 @@ async function fixture() {
     }
     definitions.push({
       role,
+      mediaFileName: {
+        "windows-source-iso": "windows10.iso",
+        "openssh-installer": "openssh.msi",
+        "wireguard-installer": "wireguard.msi",
+        "vem-daemon": "vending-daemon.exe",
+        "vem-machine-ui": "machine.exe",
+        "webview2-loader": "WebView2Loader.dll",
+        "vision-release": "vision-release.zip",
+        "vision-configuration": "vision-config.json",
+        "maintenance-ssh-ca-public-key": "maintenance-ca.pub",
+      }[role],
       identity: `factory-cas://sha256/${hash}`,
       digest: `sha256:${hash}`,
       version: role === "windows-source-iso" ? "10.0.19045" : "1.0.0",
@@ -95,6 +168,12 @@ async function fixture() {
     digest: `sha256:${IMAGE_HASH}`,
     version: "1.0.0",
   };
+  const installImageDigest = `sha256:${createHash("sha256")
+    .update(await readFile(join(sourceTree, "sources", "install.wim")))
+    .digest("hex")}`;
+  const wimlibDigest = `sha256:${createHash("sha256")
+    .update(await readFile(WIMLIB_PATH))
+    .digest("hex")}`;
   const visionAsset = definitions.find(({ role }) => role === "vision-release");
   const sha256 = (bytes) =>
     `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
@@ -211,14 +290,70 @@ async function fixture() {
     schemaVersion: "vem-factory-manifest/v1",
     kind: "factory-manifest",
     profile: "testbed",
-    source: { windowsMedia: strip(definitions[0]) },
+    source: {
+      windowsMedia: strip(definitions[0]),
+      installImageIndex: 1,
+      installImageEdition: "VEM Factory Fixture",
+      installImageDigest,
+      targetFirmware: "uefi",
+    },
+    factoryPreparation: {
+      schemaVersion: "vem-factory-preparation/v1",
+      kind: "factory-preparation",
+      environmentName: "fixture",
+      provisioningEndpoint: "http://platform.invalid/api",
+      mqttUrl: "mqtt://platform.invalid:1883",
+      hardware: {
+        mode: "simulated",
+        model: "fixture",
+        topologyIdentity: "topology:fixture",
+        topologyVersion: "1",
+      },
+      display: { width: 1080, height: 1920, orientation: "portrait" },
+      accounts: {
+        kioskUser: "VEMKiosk",
+        maintenanceUser: "YKDZ",
+        autoLogonUser: "VEMKiosk",
+      },
+      expectedKioskShell: "C:\\VEM\\bringup\\machine.exe",
+      targetLayoutVersion: "vem-runtime/v1",
+      maintenance: {
+        wireGuardInterfaceAlias: "VEM-Maintenance",
+        wireGuardListenAddress: "10.0.0.2/32",
+        runnerSourceAllowlist: ["runner:fixture"],
+        maintainerSourceAllowlist: ["maintainer:fixture"],
+        openSsh: {
+          version: "1.0.0",
+          approvedSignerThumbprint: "A".repeat(40),
+          approvedRootThumbprint: "B".repeat(40),
+        },
+        wireGuard: {
+          version: "1.0.0",
+          approvedSignerThumbprint: "C".repeat(40),
+          approvedRootThumbprint: "D".repeat(40),
+        },
+      },
+    },
     assets: definitions.slice(1).map(strip),
-    toolchain: { builderImage, isoBuilder },
+    toolchain: {
+      builderImage,
+      isoBuilder,
+      wimlib: {
+        identity: `tool://wimlib-imagex@${wimlibDigest}`,
+        digest: wimlibDigest,
+        version: toolVersion(
+          WIMLIB_PATH,
+          ["--version"],
+          /wimlib-imagex\s+([0-9.]+)/i,
+          "wimlib-imagex",
+        ),
+      },
+    },
     outputPolicy: {
       isoFileName: "vem-factory-{manifestId}.iso",
       reproducible: true,
       includeProvenance: true,
-      assemblyMode: "bootable-fixture-envelope",
+      assemblyMode: "windows-serviced-iso",
     },
   });
   const manifestStore = join(root, "manifests");
@@ -318,6 +453,8 @@ describe("Factory builder CLI fixture", () => {
           data.approvalPolicy,
           "--iso-builder",
           ISO_BUILDER_PATH,
+          "--wimlib",
+          WIMLIB_PATH,
           "--vision-release-delivery-unit",
           data.visionDeliveryUnit,
           "--repository-vision-trusted-roots",
@@ -355,7 +492,7 @@ describe("Factory builder CLI fixture", () => {
           "utf8",
         ),
       );
-      assert.equal(provenance.evidence.cache.hits, 6);
+      assert.equal(provenance.evidence.cache.hits, 8);
       assert.equal(provenance.evidence.sourceMedia.cached, false);
       assert.equal(provenance.evidence.policy.hostPathsIncluded, false);
       const outputResolution = await new ContentAddressedAssetStore(

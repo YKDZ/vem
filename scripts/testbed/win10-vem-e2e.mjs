@@ -13,6 +13,7 @@ import {
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 
+import { admitFactoryAcceptance } from "../factory/factory-acceptance-admission.mjs";
 import {
   createFactoryPersonalizationStagingCopy,
   readFactoryPersonalizationMediaSnapshot,
@@ -720,6 +721,61 @@ export function isStrictTauriHashRouteUrl(value) {
 
 function isSha256(value) {
   return /^[a-fA-F0-9]{64}$/.test(String(value ?? ""));
+}
+
+async function admitFactoryMediaBeforeAcceptance(options) {
+  const supplied = [
+    options.factoryIso,
+    options.factoryAssemblyMode,
+    options.factoryManifest,
+    options.factoryProvenance,
+    options.factoryProvenanceDigest,
+    options.factoryManifestPath,
+    options.factoryProvenancePath,
+    options.factoryIsoPath,
+    options.factoryIsoBuilderPath,
+    options.factoryWimlibPath,
+  ];
+  if (supplied.every((value) => value === undefined)) return null;
+  if (supplied.some((value) => typeof value !== "string" || value.length === 0))
+    throw new Error(
+      "Factory acceptance requires complete host-owned Factory media provenance inputs",
+    );
+  if (options.factoryAssemblyMode !== "windows-serviced-iso")
+    throw new Error(
+      "Factory acceptance requires windows-serviced-iso assembly",
+    );
+  const digest = /^sha256:[a-f0-9]{64}$/;
+  if (
+    !/^factory-cas:\/\/sha256\/[a-f0-9]{64}$/.test(options.factoryIso) ||
+    !digest.test(options.factoryManifest) ||
+    !/^factory-evidence:\/\/sha256\/[a-f0-9]{64}$/.test(
+      options.factoryProvenance,
+    ) ||
+    !digest.test(options.factoryProvenanceDigest)
+  )
+    throw new Error(
+      "Factory acceptance requires immutable Factory media identities",
+    );
+  if (
+    options.factoryProvenance !==
+    `factory-evidence://${options.factoryProvenanceDigest.replace(":", "/")}`
+  )
+    throw new Error(
+      "Factory acceptance provenance identity does not bind its digest",
+    );
+  const outputDigest = `sha256:${options.factoryIso.slice("factory-cas://sha256/".length)}`;
+  return admitFactoryAcceptance({
+    manifestPath: options.factoryManifestPath,
+    provenancePath: options.factoryProvenancePath,
+    outputIsoPath: options.factoryIsoPath,
+    manifestIdentity: options.factoryManifest,
+    provenanceDigest: options.factoryProvenanceDigest,
+    outputIdentity: options.factoryIso,
+    outputDigest,
+    isoBuilderPath: options.factoryIsoBuilderPath,
+    wimlibPath: options.factoryWimlibPath,
+  });
 }
 
 function addDiagnostic(diagnostics, code, message) {
@@ -3367,6 +3423,11 @@ function runVmRuntimeAcceptance(options) {
   }
 
   const report = buildVmRuntimeAcceptanceReport({ plan, steps });
+  if (options.factoryMediaAdmission) {
+    report.factoryMediaAdmission = structuredClone(
+      options.factoryMediaAdmission,
+    );
+  }
   writeVmRuntimeAcceptanceEvidenceIndexes({ plan, steps });
   writeFileSync(plan.artifacts.report, `${JSON.stringify(report, null, 2)}\n`);
   return report;
@@ -7273,6 +7334,36 @@ function parseArgs(argv) {
     } else if (arg === "--factory-profile") {
       options.factoryProfile = next;
       index += 1;
+    } else if (arg === "--factory-iso") {
+      options.factoryIso = next;
+      index += 1;
+    } else if (arg === "--factory-assembly-mode") {
+      options.factoryAssemblyMode = next;
+      index += 1;
+    } else if (arg === "--factory-manifest") {
+      options.factoryManifest = next;
+      index += 1;
+    } else if (arg === "--factory-provenance") {
+      options.factoryProvenance = next;
+      index += 1;
+    } else if (arg === "--factory-provenance-digest") {
+      options.factoryProvenanceDigest = next;
+      index += 1;
+    } else if (arg === "--factory-manifest-path") {
+      options.factoryManifestPath = next;
+      index += 1;
+    } else if (arg === "--factory-provenance-path") {
+      options.factoryProvenancePath = next;
+      index += 1;
+    } else if (arg === "--factory-iso-path") {
+      options.factoryIsoPath = next;
+      index += 1;
+    } else if (arg === "--factory-iso-builder") {
+      options.factoryIsoBuilderPath = next;
+      index += 1;
+    } else if (arg === "--factory-wimlib") {
+      options.factoryWimlibPath = next;
+      index += 1;
     } else if (arg === "--openssh-package") {
       options.openSshPackage = next;
       index += 1;
@@ -7371,6 +7462,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
         process.exitCode = 0;
         return;
       }
+      options.factoryMediaAdmission =
+        await admitFactoryMediaBeforeAcceptance(options);
       if (options.mode === "vm-runtime-acceptance") {
         const plan = buildVmRuntimeAcceptancePlan(options);
         if (options.dryRun) {

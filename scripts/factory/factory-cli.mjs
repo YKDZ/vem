@@ -97,6 +97,7 @@ async function main() {
     options["approval-policy"] ?? process.env.VEM_FACTORY_APPROVAL_POLICY;
   const isoBuilderPath =
     options["iso-builder"] ?? process.env.VEM_FACTORY_ISO_BUILDER;
+  const wimlibPath = options.wimlib ?? process.env.VEM_FACTORY_WIMLIB;
   const visionReleaseDeliveryUnitPath =
     options["vision-release-delivery-unit"] ??
     process.env.VEM_FACTORY_VISION_RELEASE_DELIVERY_UNIT;
@@ -124,6 +125,7 @@ async function main() {
     !evidenceStoreRoot ||
     !approvalPolicyPath ||
     !isoBuilderPath ||
+    !wimlibPath ||
     !visionReleaseDeliveryUnitPath ||
     !repositoryVisionTrustedRootsPath ||
     !factoryVisionTrustedRootsPath ||
@@ -131,7 +133,7 @@ async function main() {
     !executedBuilderImage
   ) {
     throw new Error(
-      "Factory manifest, output, asset, Windows source, evidence, approval policy, Vision release delivery unit, repository/factory Vision trusted roots, Vision verifier, ISO builder, and executed builder image configuration are required",
+      "Factory manifest, output, asset, Windows source, evidence, approval policy, Vision release delivery unit, repository/factory Vision trusted roots, Vision verifier, ISO builder, wimlib, and executed builder image configuration are required",
     );
   }
   for (const [value, label] of [
@@ -142,6 +144,7 @@ async function main() {
     [evidenceStoreRoot, "--evidence-store"],
     [approvalPolicyPath, "--approval-policy"],
     [isoBuilderPath, "--iso-builder"],
+    [wimlibPath, "--wimlib"],
     [visionReleaseDeliveryUnitPath, "--vision-release-delivery-unit"],
     [repositoryVisionTrustedRootsPath, "--repository-vision-trusted-roots"],
     [factoryVisionTrustedRootsPath, "--factory-vision-trusted-roots"],
@@ -182,6 +185,7 @@ async function main() {
     factoryVisionTrustedRoots,
     visionEvidenceVerifierPath,
     isoBuilderPath,
+    wimlibPath,
     authenticodeVerifierPath,
     authenticodeCaBundlePath,
     executedBuilderImage,

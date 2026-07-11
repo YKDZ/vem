@@ -181,6 +181,37 @@ describe("runner-local content-addressed asset store", () => {
     }
   });
 
+  it("stages Windows source bytes from the verified open handle when its pathname is swapped", async () => {
+    const data = await fixture();
+    try {
+      const good = Buffer.alloc(2 * 1024 * 1024, 0x41);
+      await writeFile(data.source, good);
+      const hash = createHash("sha256").update(good).digest("hex");
+      const source = {
+        ...data.asset,
+        role: "windows-source-iso",
+        identity: `factory-cas://sha256/${hash}`,
+        digest: `sha256:${hash}`,
+      };
+      const replacement = join(data.root, "replacement.iso");
+      await writeFile(replacement, Buffer.alloc(good.length, 0x42));
+      let swapped = false;
+      const store = new ContentAddressedAssetStore(data.root, {
+        onSourceOpened: async () => {
+          if (!swapped) {
+            swapped = true;
+            await rename(replacement, data.source);
+          }
+        },
+      });
+      const staged = join(data.root, "verified-source.iso");
+      await store.stageUncachedVerified(source, data.source, staged);
+      assert.deepEqual(await readFile(staged), good);
+    } finally {
+      await rm(data.root, { recursive: true, force: true });
+    }
+  });
+
   it("recovers stale and dead-owner locks without deleting a live owner lock", async () => {
     const data = await fixture();
     try {

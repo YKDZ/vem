@@ -23,7 +23,7 @@ permissions:
 jobs:
   changes:
     name: Detect Changes
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       code: ${{ steps.filter.outputs.code }}
       vending_daemon_rust: ${{ steps.filter.outputs.vending_daemon_rust }}
@@ -105,7 +105,9 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             genisoimage \
             osslsigncode \
-            gcc-mingw-w64-x86-64
+            gcc-mingw-w64-x86-64 \
+            xorriso=1:1.5.6-1.1ubuntu3 \
+            wimtools=1.14.4-1.1build2
 
       - name: Run Factory Media Contract Tests
         run: pnpm check:factory-manifest

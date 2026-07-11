@@ -4,6 +4,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
+import { admitFactoryAcceptance } from "../factory/factory-acceptance-admission.mjs";
 import {
   createVmHostAdapterRequest,
   runVmHostAdapter,
@@ -75,6 +76,47 @@ function assetsForOperation(operation) {
   ];
 }
 
+function factoryMediaForOperation(operation) {
+  if (operation !== "clean-install") return null;
+  const outputIdentity = readOption("--factory-iso");
+  const outputDigest = `sha256:${outputIdentity.match(/^factory-cas:\/\/sha256\/([a-f0-9]{64})$/)?.[1] ?? ""}`;
+  return {
+    assemblyMode: readOption("--factory-assembly-mode"),
+    manifestIdentity: readOption("--factory-manifest"),
+    provenanceIdentity: readOption("--factory-provenance"),
+    provenanceDigest: readOption("--factory-provenance-digest"),
+    outputIdentity,
+    outputDigest,
+  };
+}
+
+async function admitHostOwnedFactoryMedia(operation, factoryMedia) {
+  if (operation !== "clean-install") return null;
+  const manifestPath = readOption("--factory-manifest-path", {
+    optional: true,
+  });
+  const provenancePath = readOption("--factory-provenance-path", {
+    optional: true,
+  });
+  const isoPath = readOption("--factory-iso-path", { optional: true });
+  const required =
+    process.env.VEM_FACTORY_ACCEPTANCE_REQUIRE_HOST_PROVENANCE === "1";
+  if (!manifestPath && !provenancePath && !isoPath && !required) return null;
+  if (!manifestPath || !provenancePath || !isoPath)
+    throw new Error(
+      "Factory acceptance requires host-owned manifest, provenance, and ISO paths before adapter mutation",
+    );
+  return admitFactoryAcceptance({
+    manifestPath,
+    provenancePath,
+    outputIsoPath: isoPath,
+    manifestIdentity: factoryMedia.manifestIdentity,
+    provenanceDigest: factoryMedia.provenanceDigest,
+    outputIdentity: factoryMedia.outputIdentity,
+    outputDigest: factoryMedia.outputDigest,
+  });
+}
+
 async function main() {
   const cancellation = new AbortController();
   const abort = () => cancellation.abort();
@@ -89,6 +131,8 @@ async function main() {
     .update(`${runId}\n${targetIdentity}`)
     .digest("hex")
     .slice(0, 32);
+  const factoryMedia = factoryMediaForOperation(operation);
+  const admission = await admitHostOwnedFactoryMedia(operation, factoryMedia);
   const request = createVmHostAdapterRequest({
     schemaVersion: "vem-vm-host-adapter-request/v1",
     kind: "vm-host-adapter-request",
@@ -102,6 +146,7 @@ async function main() {
         ? readOption("--cancel-operation-reference")
         : null,
     target: { identity: targetIdentity },
+    factoryMedia,
     assets: assetsForOperation(operation),
     requestedCapabilities: CAPABILITIES_BY_OPERATION[operation] ?? [],
   });
@@ -113,6 +158,13 @@ async function main() {
         workDirectory: process.env.RUNNER_TEMP ?? ".vm-host-adapter-tmp",
         signal: cancellation.signal,
       });
+      if (
+        admission &&
+        report.observed.factoryProvenanceDigest !== admission.provenanceDigest
+      )
+        throw new Error(
+          "adapter report does not bind admitted Factory provenance",
+        );
       writeFileSync(out, `${JSON.stringify(report, null, 2)}\n`, {
         mode: 0o600,
       });

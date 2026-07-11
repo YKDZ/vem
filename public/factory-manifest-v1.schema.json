@@ -10,6 +10,7 @@
     "manifestId",
     "profile",
     "source",
+    "factoryPreparation",
     "assets",
     "toolchain",
     "outputPolicy"
@@ -22,23 +23,43 @@
     "source": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["windowsMedia"],
+      "required": [
+        "windowsMedia",
+        "installImageIndex",
+        "installImageEdition",
+        "installImageDigest",
+        "targetFirmware"
+      ],
       "properties": {
         "windowsMedia": {
           "$ref": "#/$defs/windowsMediaReference"
-        }
+        },
+        "installImageIndex": { "type": "integer", "minimum": 1, "maximum": 99 },
+        "installImageEdition": { "type": "string", "minLength": 1 },
+        "installImageDigest": { "$ref": "#/$defs/digest" },
+        "targetFirmware": { "const": "uefi" }
       }
     },
+    "factoryPreparation": { "$ref": "#/$defs/factoryPreparation" },
     "assets": {
       "type": "array",
-      "minItems": 6,
-      "maxItems": 6,
+      "minItems": 8,
+      "maxItems": 8,
       "items": { "$ref": "#/$defs/runtimeAssetReference" },
       "allOf": [
         {
           "contains": {
             "type": "object",
             "properties": { "role": { "const": "openssh-installer" } },
+            "required": ["role"]
+          }
+        },
+        {
+          "contains": {
+            "type": "object",
+            "properties": {
+              "role": { "const": "maintenance-ssh-ca-public-key" }
+            },
             "required": ["role"]
           }
         },
@@ -76,16 +97,24 @@
             "properties": { "role": { "const": "vision-release" } },
             "required": ["role"]
           }
+        },
+        {
+          "contains": {
+            "type": "object",
+            "properties": { "role": { "const": "vision-configuration" } },
+            "required": ["role"]
+          }
         }
       ]
     },
     "toolchain": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["builderImage", "isoBuilder"],
+      "required": ["builderImage", "isoBuilder", "wimlib"],
       "properties": {
         "builderImage": { "$ref": "#/$defs/toolIdentity" },
         "isoBuilder": { "$ref": "#/$defs/toolIdentity" },
+        "wimlib": { "$ref": "#/$defs/toolIdentity" },
         "authenticodeVerifier": { "$ref": "#/$defs/toolIdentity" }
       }
     },
@@ -102,7 +131,9 @@
         "isoFileName": { "const": "vem-factory-{manifestId}.iso" },
         "reproducible": { "const": true },
         "includeProvenance": { "const": true },
-        "assemblyMode": { "const": "bootable-fixture-envelope" }
+        "assemblyMode": {
+          "const": "windows-serviced-iso"
+        }
       }
     }
   },
@@ -192,7 +223,8 @@
         "digest",
         "version",
         "signature",
-        "provenance"
+        "provenance",
+        "mediaFileName"
       ],
       "properties": {
         "role": { "type": "string" },
@@ -251,6 +283,10 @@
             "evidenceDigest": { "$ref": "#/$defs/digest" }
           }
         },
+        "mediaFileName": {
+          "type": "string",
+          "pattern": "^(?!(?i:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\\.[A-Za-z0-9._-]+)?$)[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+        },
         "release": {
           "$ref": "#/$defs/visionReleaseSelection"
         }
@@ -278,7 +314,9 @@
                 "vem-daemon",
                 "vem-machine-ui",
                 "webview2-loader",
-                "vision-release"
+                "vision-release",
+                "vision-configuration",
+                "maintenance-ssh-ca-public-key"
               ]
             }
           }
@@ -334,6 +372,111 @@
         "version": {
           "type": "string",
           "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$"
+        }
+      }
+    },
+    "factoryPreparation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "kind",
+        "environmentName",
+        "provisioningEndpoint",
+        "mqttUrl",
+        "hardware",
+        "display",
+        "accounts",
+        "expectedKioskShell",
+        "targetLayoutVersion",
+        "maintenance"
+      ],
+      "properties": {
+        "schemaVersion": { "const": "vem-factory-preparation/v1" },
+        "kind": { "const": "factory-preparation" },
+        "environmentName": { "type": "string", "minLength": 1 },
+        "provisioningEndpoint": { "type": "string", "minLength": 1 },
+        "mqttUrl": { "type": "string", "minLength": 1 },
+        "hardware": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["mode", "model", "topologyIdentity", "topologyVersion"],
+          "properties": {
+            "mode": { "enum": ["production", "simulated"] },
+            "model": { "type": "string", "minLength": 1 },
+            "topologyIdentity": { "type": "string", "minLength": 1 },
+            "topologyVersion": { "type": "string", "minLength": 1 }
+          }
+        },
+        "display": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["width", "height", "orientation"],
+          "properties": {
+            "width": { "type": "integer", "minimum": 1 },
+            "height": { "type": "integer", "minimum": 1 },
+            "orientation": { "enum": ["portrait", "landscape"] }
+          }
+        },
+        "accounts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kioskUser", "maintenanceUser", "autoLogonUser"],
+          "properties": {
+            "kioskUser": { "type": "string", "minLength": 1 },
+            "maintenanceUser": { "type": "string", "minLength": 1 },
+            "autoLogonUser": { "type": "string", "minLength": 1 }
+          }
+        },
+        "expectedKioskShell": { "type": "string", "minLength": 1 },
+        "targetLayoutVersion": { "type": "string", "minLength": 1 },
+        "maintenance": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "wireGuardInterfaceAlias",
+            "wireGuardListenAddress",
+            "runnerSourceAllowlist",
+            "maintainerSourceAllowlist",
+            "openSsh",
+            "wireGuard"
+          ],
+          "properties": {
+            "wireGuardInterfaceAlias": { "type": "string", "minLength": 1 },
+            "wireGuardListenAddress": { "type": "string", "minLength": 1 },
+            "runnerSourceAllowlist": {
+              "type": "array",
+              "minItems": 1,
+              "items": { "type": "string", "minLength": 1 }
+            },
+            "maintainerSourceAllowlist": {
+              "type": "array",
+              "minItems": 1,
+              "items": { "type": "string", "minLength": 1 }
+            },
+            "openSsh": { "$ref": "#/$defs/packageTrust" },
+            "wireGuard": { "$ref": "#/$defs/packageTrust" }
+          }
+        }
+      }
+    },
+    "packageTrust": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "approvedSignerThumbprint",
+        "approvedRootThumbprint"
+      ],
+      "properties": {
+        "version": { "type": "string", "minLength": 1 },
+        "approvedSignerThumbprint": {
+          "type": "string",
+          "pattern": "^[A-Fa-f0-9]{40}$"
+        },
+        "approvedRootThumbprint": {
+          "type": "string",
+          "pattern": "^[A-Fa-f0-9]{40}$"
         }
       }
     }

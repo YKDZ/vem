@@ -4,6 +4,7 @@ import { describe, it } from "node:test";
 import { parse } from "yaml";
 
 const workflowPath = ".github/workflows/build-factory-iso.yml";
+const ciWorkflowPath = ".github/workflows/ci.yml";
 const runtimeWorkflowPath =
   ".github/workflows/build-windows-runtime-artifacts.yml";
 
@@ -67,6 +68,9 @@ describe("Factory Manifest and media workflow contract", () => {
     const workflow = read(workflowPath);
     assert.match(workflow, /VEM_FACTORY_EXECUTED_BUILDER_IMAGE/);
     assert.match(workflow, /VEM_FACTORY_ISO_BUILDER_CONTAINER_PATH/);
+    assert.match(workflow, /VEM_FACTORY_WIMLIB_CONTAINER_PATH/);
+    assert.match(workflow, /VEM_FACTORY_WIMLIB_DIGEST/);
+    assert.match(workflow, /VEM_FACTORY_WIMLIB_VERSION/);
     assert.match(workflow, /VEM_FACTORY_AUTHENTICODE_VERIFIER_CONTAINER_PATH/);
     assert.match(workflow, /VEM_FACTORY_AUTHENTICODE_CA_BUNDLE/);
     assert.match(workflow, /docker run --rm --network none --read-only/);
@@ -74,6 +78,7 @@ describe("Factory Manifest and media workflow contract", () => {
     assert.match(workflow, /--repository-vision-trusted-roots/);
     assert.match(workflow, /--factory-vision-trusted-roots/);
     assert.match(workflow, /--vision-evidence-verifier/);
+    assert.match(workflow, /--wimlib/);
     assert.match(workflow, /sanitize-build-evidence\.mjs/);
     const uploadStart = workflow.indexOf(
       "- name: Upload Sanitized Factory Evidence Only",
@@ -85,6 +90,19 @@ describe("Factory Manifest and media workflow contract", () => {
     assert.match(upload, /factory-provenance\.json/);
     assert.match(upload, /factory-build-result\.json/);
     assert.doesNotMatch(upload, /\.iso|windows-source|cache/i);
+  });
+
+  it("installs exact xorriso and wimtools versions before required Factory media tests", () => {
+    const workflow = read(ciWorkflowPath);
+    assert.match(workflow, /runs-on:\s*ubuntu-24\.04/);
+    assert.match(workflow, /xorriso=1:1\.5\.6-1\.1ubuntu3/);
+    assert.match(workflow, /wimtools=1\.14\.4-1\.1build2/);
+    for (const path of [
+      "scripts/factory/build-factory-media.test.mjs",
+      "scripts/factory/factory-cli.test.mjs",
+    ]) {
+      assert.doesNotMatch(read(path), /\bskip\b/);
+    }
   });
 
   it("binds reusable runtime outputs and exact build toolchain into artifact identity", () => {

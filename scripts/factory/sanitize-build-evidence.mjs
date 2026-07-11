@@ -14,6 +14,7 @@ const UPLOAD_FILES = new Map([
       "kind",
       "manifest",
       "inputs",
+      "effectiveInputs",
       "toolchain",
       "output",
       "evidence",

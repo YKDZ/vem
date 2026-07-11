@@ -88,6 +88,9 @@ jobs:
             VEM_FACTORY_VISION_EVIDENCE_VERIFIER \
             VEM_FACTORY_BUILDER_IMAGE \
             VEM_FACTORY_ISO_BUILDER_CONTAINER_PATH \
+            VEM_FACTORY_WIMLIB_CONTAINER_PATH \
+            VEM_FACTORY_WIMLIB_DIGEST \
+            VEM_FACTORY_WIMLIB_VERSION \
             VEM_FACTORY_AUTHENTICODE_VERIFIER_CONTAINER_PATH \
             VEM_FACTORY_AUTHENTICODE_CA_BUNDLE; do
             test -n "${!name:-}" || { echo "runner service environment is missing $name" >&2; exit 1; }
@@ -97,6 +100,9 @@ jobs:
             exit 1
           }
           [[ "$VEM_FACTORY_MANIFEST_IDENTITY" =~ ^sha256:[a-f0-9]{64}$ ]]
+          [[ "$VEM_FACTORY_WIMLIB_CONTAINER_PATH" = /* ]]
+          [[ "$VEM_FACTORY_WIMLIB_DIGEST" =~ ^sha256:[a-f0-9]{64}$ ]]
+          [[ "$VEM_FACTORY_WIMLIB_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
           echo "MANIFEST_IDENTITY=$VEM_FACTORY_MANIFEST_IDENTITY" >> "$GITHUB_ENV"
           for path in \
             "$VEM_FACTORY_VISION_RELEASE_DELIVERY_UNIT" \
@@ -176,6 +182,7 @@ jobs:
               --factory-vision-trusted-roots /factory-vision/factory-trust.json \
               --vision-evidence-verifier /factory-vision/vision-release-verifier \
               --iso-builder "$VEM_FACTORY_ISO_BUILDER_CONTAINER_PATH" \
+              --wimlib "$VEM_FACTORY_WIMLIB_CONTAINER_PATH" \
               --authenticode-verifier "$VEM_FACTORY_AUTHENTICODE_VERIFIER_CONTAINER_PATH" \
               --authenticode-ca-bundle /factory-policy/authenticode-ca.pem \
               --output-dir /factory-output \

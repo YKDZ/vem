@@ -68,6 +68,7 @@ function fakeReport(request, scenario) {
       lifecycleReference: request.lifecycleReference,
       cancelOperationReference: request.cancelOperationReference,
       targetIdentity: request.target.identity,
+      factoryMedia: request.factoryMedia,
       requestedCapabilities: request.requestedCapabilities,
     },
     result,
@@ -81,6 +82,10 @@ function fakeReport(request, scenario) {
       },
       baseIdentity: request.assets[0].identity,
       overlayIdentity: "vm-overlay://fake-run-001",
+      factoryProvenanceDigest:
+        request.operation === "clean-install"
+          ? request.factoryMedia.provenanceDigest
+          : null,
     },
     consumedAssets: request.assets,
     guest: {

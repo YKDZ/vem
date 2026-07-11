@@ -76,6 +76,17 @@ jobs:
           if (args.some((value) => /personalization|VEM_FACTORY_PERSONALIZATION_MEDIA_PATH/i.test(String(value)))) {
             throw new Error("Factory Personalization Media is runner-service-only and cannot appear in orchestrator arguments");
           }
+          const valueFor = (flag) => args[args.indexOf(flag) + 1];
+          for (const flag of ["--factory-iso", "--factory-assembly-mode", "--factory-manifest", "--factory-provenance", "--factory-provenance-digest", "--factory-manifest-path", "--factory-provenance-path", "--factory-iso-path", "--factory-iso-builder", "--factory-wimlib"]) {
+            if (!args.includes(flag) || !valueFor(flag)) throw new Error(`Factory acceptance must bind ${flag}`);
+          }
+          if (valueFor("--factory-assembly-mode") !== "windows-serviced-iso") throw new Error("Factory acceptance rejects fixture or unspecified assembly modes");
+          if (!/^factory-cas:\/\/sha256\/[a-f0-9]{64}$/.test(valueFor("--factory-iso"))) throw new Error("Factory acceptance requires an immutable Factory ISO identity");
+          if (!/^sha256:[a-f0-9]{64}$/.test(valueFor("--factory-manifest"))) throw new Error("Factory acceptance requires a manifest digest");
+          if (!/^factory-evidence:\/\/sha256\/[a-f0-9]{64}$/.test(valueFor("--factory-provenance")) || !/^sha256:[a-f0-9]{64}$/.test(valueFor("--factory-provenance-digest"))) throw new Error("Factory acceptance requires immutable provenance");
+          for (const flag of ["--factory-manifest-path", "--factory-provenance-path", "--factory-iso-path", "--factory-iso-builder", "--factory-wimlib"]) {
+            if (!valueFor(flag).startsWith("/")) throw new Error(`Factory acceptance requires a host-owned absolute ${flag}`);
+          }
           const result = spawnSync(process.execPath, args, { stdio: "inherit" });
           process.exit(result.status ?? 1);
           NODE
@@ -95,6 +106,9 @@ jobs:
           }
           if (args.some((value) => /personalization|VEM_FACTORY_PERSONALIZATION_MEDIA_PATH/i.test(String(value)))) {
             throw new Error("Factory Personalization Media is runner-service-only and cannot appear in cleanup arguments");
+          }
+          if (!args.includes("--factory-iso") || !args.includes("--factory-manifest") || !args.includes("--factory-provenance") || !args.includes("--factory-provenance-path") || !args.includes("--factory-iso-builder") || !args.includes("--factory-wimlib")) {
+            throw new Error("Factory acceptance cleanup must preserve the Factory ISO/manifest/provenance binding");
           }
           const environment = { ...process.env };
           delete environment.VEM_FACTORY_PERSONALIZATION_MEDIA_PATH;

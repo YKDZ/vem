@@ -311,6 +311,7 @@ function requestEcho(request) {
     lifecycleReference: request.lifecycleReference,
     cancelOperationReference: request.cancelOperationReference,
     targetIdentity: request.target.identity,
+    factoryMedia: request.factoryMedia,
     requestedCapabilities: [...request.requestedCapabilities],
   };
 }
@@ -326,6 +327,7 @@ function reconstructRequest(request) {
     lifecycleReference: request.lifecycleReference,
     cancelOperationReference: request.cancelOperationReference,
     target: { identity: request.target?.identity },
+    factoryMedia: request.factoryMedia,
     assets: request.assets?.map((asset) => ({
       role: asset?.role,
       identity: asset?.identity,
@@ -350,6 +352,7 @@ export function validateVmHostAdapterRequest(input) {
       "lifecycleReference",
       "cancelOperationReference",
       "target",
+      "factoryMedia",
       "assets",
       "requestedCapabilities",
     ],
@@ -428,6 +431,89 @@ export function validateVmHostAdapterRequest(input) {
         "request.target.identity",
         issues,
       );
+  }
+  if (request.operation === "clean-install") {
+    if (
+      !assertExactKeys(
+        request.factoryMedia,
+        [
+          "assemblyMode",
+          "manifestIdentity",
+          "provenanceIdentity",
+          "provenanceDigest",
+          "outputIdentity",
+          "outputDigest",
+        ],
+        "request.factoryMedia",
+        issues,
+      )
+    ) {
+      // Exact-key diagnostics are sufficient when this object is malformed.
+    } else {
+      if (request.factoryMedia.assemblyMode !== "windows-serviced-iso")
+        issue(
+          issues,
+          "request.factoryMedia.assemblyMode",
+          "must be windows-serviced-iso",
+        );
+      if (
+        !/^sha256:[a-f0-9]{64}$/.test(
+          request.factoryMedia.manifestIdentity ?? "",
+        )
+      )
+        issue(
+          issues,
+          "request.factoryMedia.manifestIdentity",
+          "must be a Factory Manifest SHA-256 identity",
+        );
+      if (
+        !/^factory-evidence:\/\/sha256\/[a-f0-9]{64}$/.test(
+          request.factoryMedia.provenanceIdentity ?? "",
+        )
+      )
+        issue(
+          issues,
+          "request.factoryMedia.provenanceIdentity",
+          "must be a Factory provenance identity",
+        );
+      assertLogicalIdentity(
+        request.factoryMedia.outputIdentity,
+        "request.factoryMedia.outputIdentity",
+        issues,
+      );
+      for (const key of ["provenanceDigest", "outputDigest"]) {
+        if (!/^sha256:[a-f0-9]{64}$/.test(request.factoryMedia[key] ?? ""))
+          issue(
+            issues,
+            `request.factoryMedia.${key}`,
+            "must be a lowercase SHA-256 digest",
+          );
+      }
+      const source = request.assets?.find(
+        (asset) => asset.role === "factory-iso",
+      );
+      if (
+        source &&
+        (request.factoryMedia.outputIdentity !== source.identity ||
+          request.factoryMedia.outputDigest !== source.digest)
+      )
+        issue(
+          issues,
+          "request.factoryMedia",
+          "must bind the requested factory-iso identity and digest",
+        );
+      if (
+        request.factoryMedia.provenanceIdentity !==
+        `factory-evidence://${request.factoryMedia.provenanceDigest?.replace(":", "/")}`
+      )
+        issue(
+          issues,
+          "request.factoryMedia.provenanceIdentity",
+          "must bind provenanceDigest",
+        );
+    }
+  } else if (request.factoryMedia !== null) {
+    issue(issues, "request.factoryMedia", "must be null outside clean-install");
   }
   if (!Array.isArray(request.assets) || request.assets.length === 0)
     issue(issues, "request.assets", "must contain immutable operation assets");
@@ -546,6 +632,7 @@ export function validateVmHostAdapterReport(input, requestInput) {
         "lifecycleReference",
         "cancelOperationReference",
         "targetIdentity",
+        "factoryMedia",
         "requestedCapabilities",
       ],
       "report.request",
@@ -621,7 +708,13 @@ export function validateVmHostAdapterReport(input, requestInput) {
   if (
     assertExactKeys(
       report.observed,
-      ["vmIdentity", "targetBinding", "baseIdentity", "overlayIdentity"],
+      [
+        "vmIdentity",
+        "targetBinding",
+        "baseIdentity",
+        "overlayIdentity",
+        "factoryProvenanceDigest",
+      ],
       "report.observed",
       issues,
     )
@@ -679,6 +772,16 @@ export function validateVmHostAdapterReport(input, requestInput) {
         issues,
         "report.observed.baseIdentity",
         "does not match the requested operation source asset",
+      );
+    const expectedProvenance =
+      request.operation === "clean-install"
+        ? request.factoryMedia.provenanceDigest
+        : null;
+    if (report.observed.factoryProvenanceDigest !== expectedProvenance)
+      issue(
+        issues,
+        "report.observed.factoryProvenanceDigest",
+        "must bind the requested Factory provenance digest for clean install and be null otherwise",
       );
   }
   if (!Array.isArray(report.consumedAssets))
@@ -935,6 +1038,7 @@ export function validateVmHostAdapterReport(input, requestInput) {
       },
       baseIdentity: report.observed.baseIdentity,
       overlayIdentity: report.observed.overlayIdentity,
+      factoryProvenanceDigest: report.observed.factoryProvenanceDigest,
     },
     consumedAssets: report.consumedAssets.map((asset) => ({
       role: asset.role,

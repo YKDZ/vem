@@ -85,19 +85,27 @@ The canonical media workflow takes:
   artifacts;
 - a production or testbed profile without machine-specific secrets.
 
-Issue10 emits a `bootable-fixture-envelope`, not a deployable customized Windows
-installer. The envelope is a real ISO9660/UDF image with an El Torito boot
-catalog and contains the verified source-media and runtime payload boundaries.
-Issue15 must supply and verify the Windows setup/customization assets before any
-result may be described or consumed as a Windows Factory installation ISO.
+`windows-serviced-iso` is the only deployable Factory ISO mode: the pinned xorriso
+tool replays the verified source ISO's BIOS and UEFI boot configuration while
+injecting `Autounattend.xml` and `sources/$OEM$`. The source must contain
+`setup.exe`, `sources/boot.wim`, `sources/install.wim` or `install.esd`, BIOS
+`boot/etfsboot.com`, EFI `efisys.bin`, and a complete BIOS+UEFI El Torito
+catalog; fixture, non-Windows, and BIOS-only media are rejected. The unattended
+file pins the image index, locale/OOBE behavior, and lets Setup select the
+firmware-appropriate disk layout on the host-owned fresh disk. Specialize
+registers an idempotent SYSTEM bootstrap and FirstLogon supplies a fallback.
+The bootstrap records durable status, fails closed with reboot, and runs the
+baseline installer, `prepare-factory-runtime`, Vision provision/install, and
+`verify-factory-runtime` only after a host one-time personalization channel is
+available. The common ISO carries no credential, machine identity, private key,
+or personalization media.
 
-The Issue10 tracer emits:
+The Factory media pipeline emits:
 
 - `vem-factory-<manifest-id>.iso`;
 - the ISO SHA-256;
 - a provenance report containing every input identity and toolchain identity;
-- a sanitized evidence index that explicitly records
-  `windowsInstallerCustomized: false` and the Issue15 dependency.
+- a sanitized evidence index that records whether Windows Setup was customized.
 
 The media builder runs in a pinned, platform-neutral Linux container. It must
 execute the manifest-pinned ISO builder and produce byte-identical output from
@@ -223,10 +231,11 @@ credential remains outside Factory Runtime inputs.
 
 Three workflows compose the Windows gates:
 
-1. `build-factory-iso.yml` currently builds the reproducible Issue10 bootable
-   fixture envelope and writes it to a runner-local content-addressed asset
-   store; Issue15 must replace the declared assembly mode before clean-install
-   acceptance may consume it as Windows installation media.
+1. `build-factory-iso.yml` builds a reproducible `windows-serviced-iso` and
+   writes it to a runner-local content-addressed asset store. Its effective
+   repository scripts, templates, trusted roots, verifier, release documents,
+   and pinned builder are digest-recorded in provenance and embedded in the
+   output identity.
 2. `factory-image-acceptance.yml` performs a clean install from that ISO,
    validates the pre-claim image, creates an approved runtime base identity,
    then uses a disposable overlay to claim the machine and reach the vending
