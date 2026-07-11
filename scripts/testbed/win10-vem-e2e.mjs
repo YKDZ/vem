@@ -2371,6 +2371,9 @@ function buildAcceptanceScriptCommand(mode, options = {}, extraArgs = []) {
   if (options.remote) {
     command.push("--remote", options.remote);
   }
+  if (options.sshPort) {
+    command.push("--ssh-port", String(options.sshPort));
+  }
   if (options.sshConfig === true) {
     command.push("--ssh-config");
   }
@@ -6846,7 +6849,7 @@ export function cleanupFactoryAcceptanceStaging(
   return { localCleaned, remoteCleaned };
 }
 
-function buildSshOptionArgs(options = {}) {
+function buildSshOptionArgs(options = {}, { portFlag = "-p" } = {}) {
   const identity = String(options.identity ?? "").trim();
   const certificate = String(options.certificate ?? "").trim();
   if (!identity || !certificate) {
@@ -6878,6 +6881,7 @@ function buildSshOptionArgs(options = {}) {
     "-o",
     "ConnectTimeout=30",
   ];
+  if (options.sshPort) sshArgs.push(portFlag, String(options.sshPort));
   if (options.sshKnownHostsPath) {
     sshArgs.push(
       "-o",
@@ -6911,7 +6915,7 @@ export function buildScpCommand(sourcePath, remoteScriptPath, options = {}) {
   const remote = options.remote ?? DEFAULT_CONTROLLED_MAINTENANCE_REMOTE;
   return [
     "scp",
-    ...buildSshOptionArgs(options),
+    ...buildSshOptionArgs(options, { portFlag: "-P" }),
     sourcePath,
     `${remote}:${remotePathForScp(remoteScriptPath)}`,
   ];
@@ -7144,7 +7148,7 @@ export function getRuntimeAcceptanceExitStatus({
 
 function usage() {
   console.error(`Usage:
-  win10-vem-e2e.mjs [--mode inventory|reset|inventory-reset|bring-up|provision|runtime-acceptance|simulated-hardware-sale-flow|dirty-host-factory-acceptance|clean-base-factory-acceptance|validate-clean-base-evidence|factory-image-delivery-unit|vm-runtime-acceptance] [--run-id ID] [--claim-code CODE] [--ephemeral-platform-evidence PATH] [--ephemeral-database-url URL] [--ephemeral-api-base-url URL] [--ephemeral-mqtt-url URL] [--clean-base-source SOURCE] [--clean-base-snapshot SNAPSHOT] [--clean-base-evidence PATH] [--daemon-artifact PATH] [--machine-ui-artifact PATH] [--daemon-artifact-sha256 HASH] [--machine-ui-artifact-sha256 HASH] [--factory-profile production|testbed] [--factory-hardware-model MODEL] [--factory-topology-identity ID] [--factory-topology-version VERSION] [--openssh-package PATH] [--openssh-package-sha256 HASH] [--openssh-package-version VERSION] [--openssh-approved-signer-thumbprint SHA1] [--openssh-approved-root-thumbprint SHA1] [--wireguard-package PATH] [--wireguard-package-sha256 HASH] [--wireguard-package-version VERSION] [--wireguard-approved-signer-thumbprint SHA1] [--wireguard-approved-root-thumbprint SHA1] [--maintenance-ca-public-key PATH] [--maintenance-ca-sha256 HASH] [--maintenance-wireguard-listen-address IP] [--maintenance-runner-source-allowlist CSV] [--maintenance-maintainer-source-allowlist CSV] [--use-existing-remote-artifacts] [--allow-clean-base-prepare] [--remote USER@HOST] [--ssh-config] [--allow-testbed-remote-alias] [--expected-testbed-hostname NAME] [--expected-testbed-user USER] [--expected-maintenance-ingress-host HOST] [--proxy-command CMD] --identity KEY --certificate CERT [--dry-run] [--out PATH]
+  win10-vem-e2e.mjs [--mode inventory|reset|inventory-reset|bring-up|provision|runtime-acceptance|simulated-hardware-sale-flow|dirty-host-factory-acceptance|clean-base-factory-acceptance|validate-clean-base-evidence|factory-image-delivery-unit|vm-runtime-acceptance] [--run-id ID] [--claim-code CODE] [--ephemeral-platform-evidence PATH] [--ephemeral-database-url URL] [--ephemeral-api-base-url URL] [--ephemeral-mqtt-url URL] [--clean-base-source SOURCE] [--clean-base-snapshot SNAPSHOT] [--clean-base-evidence PATH] [--daemon-artifact PATH] [--machine-ui-artifact PATH] [--daemon-artifact-sha256 HASH] [--machine-ui-artifact-sha256 HASH] [--factory-profile production|testbed] [--factory-hardware-model MODEL] [--factory-topology-identity ID] [--factory-topology-version VERSION] [--openssh-package PATH] [--openssh-package-sha256 HASH] [--openssh-package-version VERSION] [--openssh-approved-signer-thumbprint SHA1] [--openssh-approved-root-thumbprint SHA1] [--wireguard-package PATH] [--wireguard-package-sha256 HASH] [--wireguard-package-version VERSION] [--wireguard-approved-signer-thumbprint SHA1] [--wireguard-approved-root-thumbprint SHA1] [--maintenance-ca-public-key PATH] [--maintenance-ca-sha256 HASH] [--maintenance-wireguard-listen-address IP] [--maintenance-runner-source-allowlist CSV] [--maintenance-maintainer-source-allowlist CSV] [--use-existing-remote-artifacts] [--allow-clean-base-prepare] [--remote USER@HOST] [--ssh-port PORT] [--ssh-config] [--allow-testbed-remote-alias] [--expected-testbed-hostname NAME] [--expected-testbed-user USER] [--expected-maintenance-ingress-host HOST] [--proxy-command CMD] --identity KEY --certificate CERT [--dry-run] [--out PATH]
 
 Defaults target the documented Machine Runtime Testbed:
   --remote ${DEFAULT_CONTROLLED_MAINTENANCE_REMOTE}
@@ -7183,6 +7187,12 @@ function parseArgs(argv) {
       index += 1;
     } else if (arg === "--remote") {
       options.remote = next;
+      index += 1;
+    } else if (arg === "--ssh-port") {
+      const port = Number(next);
+      if (!Number.isInteger(port) || port < 1 || port > 65535)
+        throw new Error("--ssh-port must be a valid TCP port");
+      options.sshPort = port;
       index += 1;
     } else if (arg === "--identity") {
       options.identity = next;

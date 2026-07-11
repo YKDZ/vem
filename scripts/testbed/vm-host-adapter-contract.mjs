@@ -222,6 +222,70 @@ function assertTimestamp(value, path, issues) {
   }
 }
 
+function assertGuestMaintenanceEndpoint(endpoint, path, issues) {
+  if (
+    !assertExactKeys(
+      endpoint,
+      ["protocol", "host", "port", "reachability"],
+      path,
+      issues,
+    )
+  )
+    return;
+  if (endpoint.protocol !== "ssh")
+    issue(issues, `${path}.protocol`, "must be ssh");
+  if (
+    typeof endpoint.host !== "string" ||
+    endpoint.host.length === 0 ||
+    endpoint.host.length > 253 ||
+    /[\\/\s]/.test(endpoint.host)
+  )
+    issue(issues, `${path}.host`, "must be a discovered SSH host");
+  else assertNoHostReference(endpoint.host, `${path}.host`, issues);
+  if (
+    !Number.isInteger(endpoint.port) ||
+    endpoint.port < 1 ||
+    endpoint.port > 65535
+  )
+    issue(issues, `${path}.port`, "must be a valid TCP port");
+  if (
+    !new Set(["discovered", "authenticated", "unavailable"]).has(
+      endpoint.reachability,
+    )
+  )
+    issue(
+      issues,
+      `${path}.reachability`,
+      "must be a supported reachability state",
+    );
+}
+
+function assertCleanupObservation(observed, path, issues) {
+  if (
+    !assertExactKeys(
+      observed,
+      ["overlay", "runDirectory", "personalizationMedia"],
+      path,
+      issues,
+    )
+  )
+    return;
+  for (const key of ["overlay", "runDirectory"]) {
+    if (!new Set(["present", "removed", "unknown"]).has(observed[key]))
+      issue(issues, `${path}.${key}`, "must be a supported observed state");
+  }
+  if (
+    !new Set(["not-mounted", "mounted", "removed", "unknown"]).has(
+      observed.personalizationMedia,
+    )
+  )
+    issue(
+      issues,
+      `${path}.personalizationMedia`,
+      "must be a supported observed state",
+    );
+}
+
 function assertSanitizedDiagnostic(
   diagnostic,
   index,
@@ -600,14 +664,21 @@ export function validateVmHostAdapterReport(input, requestInput) {
           "does not bind the observed VM to the requested target",
         );
     }
-    const approvedBase = request.assets.find(
-      (asset) => asset.role === "approved-runtime-base",
+    const observedSource = request.assets.find(
+      (asset) =>
+        asset.role ===
+        (request.operation === "clean-install"
+          ? "factory-iso"
+          : "approved-runtime-base"),
     );
-    if (approvedBase && report.observed.baseIdentity !== approvedBase.identity)
+    if (
+      observedSource &&
+      report.observed.baseIdentity !== observedSource.identity
+    )
       issue(
         issues,
         "report.observed.baseIdentity",
-        "does not match the approved runtime base asset",
+        "does not match the requested operation source asset",
       );
   }
   if (!Array.isArray(report.consumedAssets))
@@ -627,7 +698,12 @@ export function validateVmHostAdapterReport(input, requestInput) {
   if (
     assertExactKeys(
       report.guest,
-      ["maintenanceEndpointIdentity", "deviceMappings", "defaultAudioIdentity"],
+      [
+        "maintenanceEndpointIdentity",
+        "maintenanceEndpoint",
+        "deviceMappings",
+        "defaultAudioIdentity",
+      ],
       "report.guest",
       issues,
     )
@@ -637,6 +713,23 @@ export function validateVmHostAdapterReport(input, requestInput) {
       "report.guest.maintenanceEndpointIdentity",
       issues,
     );
+    assertGuestMaintenanceEndpoint(
+      report.guest.maintenanceEndpoint,
+      "report.guest.maintenanceEndpoint",
+      issues,
+    );
+    if (
+      report.result === "succeeded" &&
+      !["cleanup", "cancel"].includes(request.operation) &&
+      !["discovered", "authenticated"].includes(
+        report.guest.maintenanceEndpoint?.reachability,
+      )
+    )
+      issue(
+        issues,
+        "report.guest.maintenanceEndpoint.reachability",
+        "must be discovered by the host or authenticated by the workflow before a successful operation is accepted",
+      );
     assertLogicalIdentity(
       report.guest.defaultAudioIdentity,
       "report.guest.defaultAudioIdentity",
@@ -769,17 +862,47 @@ export function validateVmHostAdapterReport(input, requestInput) {
   if (
     assertExactKeys(
       report.cleanup,
-      ["status", "overlayDisposition"],
+      ["status", "overlayDisposition", "observed"],
       "report.cleanup",
       issues,
     )
   ) {
+    assertCleanupObservation(
+      report.cleanup.observed,
+      "report.cleanup.observed",
+      issues,
+    );
     const state = `${report.cleanup.status}/${report.cleanup.overlayDisposition}`;
+    const cleaned =
+      report.cleanup.observed?.overlay === "removed" &&
+      report.cleanup.observed?.runDirectory === "removed" &&
+      report.cleanup.observed?.personalizationMedia === "removed";
+    const active =
+      report.cleanup.observed?.overlay === "present" &&
+      report.cleanup.observed?.runDirectory === "present" &&
+      ["not-mounted", "mounted"].includes(
+        report.cleanup.observed?.personalizationMedia,
+      );
     const expected =
-      request.operation === "cleanup" && report.result === "succeeded"
-        ? "completed/removed"
-        : "not-run/active";
-    if (state !== expected)
+      report.result === "failed" ||
+      ["cleanup", "cancel"].includes(request.operation)
+        ? "completed/removed with observed removal"
+        : "not-run/active with observed active resources";
+    if (
+      (report.result === "failed" ||
+        ["cleanup", "cancel"].includes(request.operation)) &&
+      (state !== "completed/removed" || !cleaned)
+    )
+      issue(
+        issues,
+        "report.cleanup",
+        `must be ${expected} for this lifecycle operation`,
+      );
+    if (
+      report.result !== "failed" &&
+      !["cleanup", "cancel"].includes(request.operation) &&
+      (state !== "not-run/active" || !active)
+    )
       issue(
         issues,
         "report.cleanup",
@@ -820,6 +943,12 @@ export function validateVmHostAdapterReport(input, requestInput) {
     })),
     guest: {
       maintenanceEndpointIdentity: report.guest.maintenanceEndpointIdentity,
+      maintenanceEndpoint: {
+        protocol: report.guest.maintenanceEndpoint.protocol,
+        host: report.guest.maintenanceEndpoint.host,
+        port: report.guest.maintenanceEndpoint.port,
+        reachability: report.guest.maintenanceEndpoint.reachability,
+      },
       deviceMappings: report.guest.deviceMappings.map((mapping) => ({
         role: mapping.role,
         guestDeviceIdentity: mapping.guestDeviceIdentity,
@@ -838,6 +967,11 @@ export function validateVmHostAdapterReport(input, requestInput) {
     cleanup: {
       status: report.cleanup.status,
       overlayDisposition: report.cleanup.overlayDisposition,
+      observed: {
+        overlay: report.cleanup.observed.overlay,
+        runDirectory: report.cleanup.observed.runDirectory,
+        personalizationMedia: report.cleanup.observed.personalizationMedia,
+      },
     },
     diagnostics: report.diagnostics.map((diagnostic) => ({
       code: diagnostic.code,
@@ -866,7 +1000,7 @@ export function createVmHostAdapterDiagnostic({
   const issues = [];
   assertExactKeys(
     diagnostic.cleanup,
-    ["attempted", "status"],
+    ["attempted", "status", "observed"],
     "diagnostic.cleanup",
     issues,
   );
@@ -883,6 +1017,25 @@ export function createVmHostAdapterDiagnostic({
     !new Set(["completed", "failed", "not-required"]).has(cleanup?.status)
   )
     issue(issues, "diagnostic.cleanup", "must be a sanitized cleanup outcome");
+  assertCleanupObservation(
+    cleanup?.observed,
+    "diagnostic.cleanup.observed",
+    issues,
+  );
+  const observedRemoval =
+    cleanup?.observed?.overlay === "removed" &&
+    cleanup?.observed?.runDirectory === "removed" &&
+    cleanup?.observed?.personalizationMedia === "removed";
+  if (
+    (cleanup?.status === "completed" &&
+      (!cleanup?.attempted || !observedRemoval)) ||
+    (cleanup?.status === "not-required" && cleanup?.attempted)
+  )
+    issue(
+      issues,
+      "diagnostic.cleanup",
+      "must truthfully bind its status to observed cleanup state",
+    );
   if (issues.length > 0) throw new VmHostAdapterContractError(issues);
   return structuredClone(diagnostic);
 }
@@ -937,6 +1090,8 @@ async function invokeAdapter({
   environment,
   timeoutMs,
   signal,
+  onInterrupted,
+  onStarted,
 }) {
   const executable = adapterExecutable(environment);
   const requestPath = join(
@@ -962,6 +1117,7 @@ async function invokeAdapter({
         stdio: "ignore",
         env: { ...process.env, ...environment },
       });
+      onStarted?.(request);
       let reason = null;
       let settled = false;
       let termination = null;
@@ -974,7 +1130,9 @@ async function invokeAdapter({
       };
       const terminateFor = (nextReason) => {
         reason ??= nextReason;
-        termination ??= terminate(child);
+        termination ??= Promise.resolve(onInterrupted?.(reason))
+          .catch(() => undefined)
+          .then(() => terminate(child));
         return termination;
       };
       const timer = setTimeout(() => {
@@ -1062,12 +1220,25 @@ function cleanupRequestFor(request) {
   });
 }
 
+function cancelRequestFor(request) {
+  const nonce = `op-${randomBytes(16).toString("hex")}`;
+  return createVmHostAdapterRequest({
+    ...request,
+    operation: "cancel",
+    operationNonce: nonce,
+    operationReference: `vm-operation://${nonce}`,
+    cancelOperationReference: request.operationReference,
+    requestedCapabilities: ["cancellation", "cleanup"],
+  });
+}
+
 export async function runVmHostAdapter({
   request: requestInput,
   workDirectory,
   environment = process.env,
   timeoutMs = Number(environment.VEM_VM_HOST_ADAPTER_TIMEOUT_MS ?? 600000),
   signal,
+  onOperationStarted,
 }) {
   const request = validateVmHostAdapterRequest(requestInput);
   if (typeof workDirectory !== "string" || !workDirectory)
@@ -1077,31 +1248,66 @@ export async function runVmHostAdapter({
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1)
     throw new Error("VM Host Adapter timeout must be a positive integer");
   mkdirSync(workDirectory, { recursive: true, mode: 0o700 });
+  let cancellation;
+  const cancelInFlightOperation = async () => {
+    if (cancellation) return cancellation;
+    cancellation = await invokeAdapter({
+      request: cancelRequestFor(request),
+      workDirectory,
+      environment,
+      timeoutMs: Math.min(timeoutMs, 30000),
+      signal: undefined,
+    });
+    return cancellation;
+  };
   const outcome = await invokeAdapter({
     request,
     workDirectory,
     environment,
     timeoutMs,
     signal,
+    onInterrupted: cancelInFlightOperation,
+    onStarted: onOperationStarted,
   });
   if (outcome.result === "succeeded") return outcome.report;
-  let cleanup = { attempted: false, status: "not-required" };
-  if (
-    (outcome.result === "timed_out" || outcome.result === "cancelled") &&
-    request.operation !== "cleanup"
-  ) {
-    const recovery = await invokeAdapter({
-      request: cleanupRequestFor(request),
-      workDirectory,
-      environment,
-      timeoutMs: Math.min(timeoutMs, 30000),
-      signal: undefined,
-    });
-    cleanup = {
-      attempted: true,
-      status: recovery.result === "succeeded" ? "completed" : "failed",
-    };
-  }
+  let cleanup = {
+    attempted: false,
+    status: "not-required",
+    observed: {
+      overlay: "unknown",
+      runDirectory: "unknown",
+      personalizationMedia: "unknown",
+    },
+  };
+  const requiresCancellation =
+    outcome.result === "timed_out" || outcome.result === "cancelled";
+  const cancellationOutcome = requiresCancellation
+    ? await cancelInFlightOperation()
+    : null;
+  const recovery = await invokeAdapter({
+    request: cleanupRequestFor(request),
+    workDirectory,
+    environment,
+    timeoutMs: Math.min(timeoutMs, 30000),
+    signal: undefined,
+  });
+  const recovered =
+    recovery.result === "succeeded" &&
+    recovery.report?.cleanup.status === "completed" &&
+    recovery.report.cleanup.overlayDisposition === "removed";
+  cleanup = {
+    attempted: true,
+    status:
+      (!cancellationOutcome || cancellationOutcome.result === "succeeded") &&
+      recovered
+        ? "completed"
+        : "failed",
+    observed: recovery.report?.cleanup.observed ?? {
+      overlay: "unknown",
+      runDirectory: "unknown",
+      personalizationMedia: "unknown",
+    },
+  };
   const diagnostic = createVmHostAdapterDiagnostic({
     request,
     result: outcome.result,

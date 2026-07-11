@@ -11,6 +11,14 @@ import {
 } from "./vm-host-adapter-contract.mjs";
 
 const CAPABILITIES_BY_OPERATION = {
+  "clean-install": [
+    "clean-install",
+    "disposable-overlay",
+    "serial:lower-controller",
+    "serial:scanner",
+    "cancellation",
+    "cleanup",
+  ],
   "restore-approved-base": [
     "approved-base-restore",
     "disposable-overlay",
@@ -45,11 +53,26 @@ function assetFromIdentity(role, identity) {
   const match = String(identity).match(
     /^factory-cas:\/\/sha256\/([a-f0-9]{64})$/,
   );
-  if (!match)
-    throw new Error(
-      "--approved-runtime-base must be a factory-cas SHA-256 identity",
-    );
+  if (!match) throw new Error(`${role} must be a factory-cas SHA-256 identity`);
   return { role, identity, digest: `sha256:${match[1]}` };
+}
+
+function assetsForOperation(operation) {
+  if (operation === "clean-install") {
+    return [
+      assetFromIdentity("factory-iso", readOption("--factory-iso")),
+      assetFromIdentity(
+        "factory-personalization-media",
+        readOption("--factory-personalization-media"),
+      ),
+    ];
+  }
+  return [
+    assetFromIdentity(
+      "approved-runtime-base",
+      readOption("--approved-runtime-base"),
+    ),
+  ];
 }
 
 async function main() {
@@ -60,11 +83,10 @@ async function main() {
   const operation = readOption("--operation");
   const runId = readOption("--run-id");
   const targetIdentity = readOption("--target-identity");
-  const approvedRuntimeBase = readOption("--approved-runtime-base");
   const out = readOption("--out");
   const nonce = `op-${randomBytes(16).toString("hex")}`;
   const lifecycleSeed = createHash("sha256")
-    .update(`${runId}\n${targetIdentity}\n${approvedRuntimeBase}`)
+    .update(`${runId}\n${targetIdentity}`)
     .digest("hex")
     .slice(0, 32);
   const request = createVmHostAdapterRequest({
@@ -80,7 +102,7 @@ async function main() {
         ? readOption("--cancel-operation-reference")
         : null,
     target: { identity: targetIdentity },
-    assets: [assetFromIdentity("approved-runtime-base", approvedRuntimeBase)],
+    assets: assetsForOperation(operation),
     requestedCapabilities: CAPABILITIES_BY_OPERATION[operation] ?? [],
   });
   mkdirSync(dirname(out), { recursive: true });

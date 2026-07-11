@@ -88,21 +88,16 @@ describe("VM runtime acceptance workflow maintenance relay path", () => {
     assert.doesNotMatch(serviceApi, /\n\s+PORT:\s+"26849"/);
   });
 
-  it("starts runner WireGuard before a platform-neutral adapter request and keeps host selection out of workflow dispatch", () => {
+  it("starts runner WireGuard before a platform-neutral adapter request and consumes only its discovered guest endpoint", () => {
     const workflow = readWorkflow();
 
     for (const requiredText of [
-      "vm_wireguard_ip",
-      "runner_wireguard_peer_ip",
-      "runner_wireguard_interface",
-      "VEM_MAINTENANCE_RELAY_RUNNER_WG_CONFIG",
-      "VEM_MAINTENANCE_RELAY_RUNNER_WG_CONFIG_PATH",
+      "VEM_MAINTENANCE_RELAY_INTERFACE",
+      "VEM_MAINTENANCE_RELAY_RUNNER_PEER_IP",
       "Start Runner Maintenance Relay WireGuard Peer",
       "command -v wg-quick",
       "sudo wg-quick up",
-      "MAINTENANCE_RELAY_WINDOWS_SSH_HOST",
-      "MAINTENANCE_RELAY_RUNNER_PEER_IP",
-      "MAINTENANCE_RELAY_INTERFACE",
+      "root-owned runner WireGuard config",
       "--maintenance-ingress-source-allowlist",
       "maintenance-relay-diagnostics.txt",
       "maintenance-automation/session/ssh-certificate",
@@ -148,18 +143,28 @@ describe("VM runtime acceptance workflow maintenance relay path", () => {
       assert.doesNotMatch(workflow, forbidden);
     }
 
+    const endpoint = stepBlock(
+      workflow,
+      "Consume Discovered Guest Maintenance Endpoint",
+    );
+    assert.match(endpoint, /vm-host-adapter-report\.json/);
+    assert.match(endpoint, /endpoint\.reachability !== "discovered"/);
+    assert.match(endpoint, /VM_GUEST_MAINTENANCE_HOST=\$\{endpoint\.host\}/);
+    assert.match(endpoint, /VM_GUEST_MAINTENANCE_PORT=\$\{endpoint\.port\}/);
+
     const acceptanceBlock = workflow.slice(
       workflow.indexOf("- name: Run VM Runtime Acceptance"),
       workflow.indexOf("- name: Upload VM Runtime Acceptance Artifacts"),
     );
     assert.match(
       acceptanceBlock,
-      /--remote\s+"\$\{\{\s*inputs\.windows_ssh_user\s*\}\}@\$MAINTENANCE_RELAY_WINDOWS_SSH_HOST"/,
+      /--remote\s+"\$\{\{\s*inputs\.windows_ssh_user\s*\}\}@\$VM_GUEST_MAINTENANCE_HOST"/,
     );
     assert.match(
       acceptanceBlock,
-      /--maintenance-ingress-source-allowlist\s+"\$MAINTENANCE_RELAY_RUNNER_PEER_IP"/,
+      /--maintenance-ingress-source-allowlist\s+"\$VEM_MAINTENANCE_RELAY_RUNNER_PEER_IP"/,
     );
+    assert.match(acceptanceBlock, /--ssh-port\s+"\$VM_GUEST_MAINTENANCE_PORT"/);
     assert.match(
       acceptanceBlock,
       /--identity\s+"\$MAINTENANCE_SSH_DIR\/id_ed25519"/,
@@ -169,7 +174,18 @@ describe("VM runtime acceptance workflow maintenance relay path", () => {
       /--certificate\s+"\$MAINTENANCE_SSH_DIR\/id_ed25519-cert\.pub"/,
     );
     assert.doesNotMatch(acceptanceBlock, /sshpass|SSHPASS/);
-    assert.doesNotMatch(acceptanceBlock, /@\$?\{\{\s*inputs\.windows_ssh_host/);
+    assert.doesNotMatch(acceptanceBlock, /MAINTENANCE_RELAY_WINDOWS_SSH_HOST/);
+    assert.doesNotMatch(workflow, /vm_wireguard_ip/);
+    assert.doesNotMatch(workflow, /VEM_MAINTENANCE_RELAY_RUNNER_WG_CONFIG/);
+    assert.doesNotMatch(workflow, /runner_wireguard_(?:peer_ip|interface)/);
+    const conformance = stepBlock(workflow, "Run Host Adapter Conformance");
+    assert.match(
+      conformance,
+      /node scripts\/testbed\/vm-host-adapter-conformance\.mjs/,
+    );
+    assert.match(conformance, /VEM_VM_HOST_FACTORY_ISO_ID/);
+    assert.match(conformance, /VEM_VM_HOST_FACTORY_PERSONALIZATION_MEDIA_ID/);
+    assert.doesNotMatch(conformance, /VEM_VM_HOST_ADAPTER_CONFORMANCE/);
   });
 
   it("guards certificate SSH, teardown, sanitized diagnostics, and the preconfigured VM relay contract", () => {
@@ -224,31 +240,29 @@ describe("VM runtime acceptance workflow maintenance relay path", () => {
     );
     assert.match(
       preflight,
-      /windowsControlledMaintenanceIngress=must-already-allow-runner-peer-ip/,
+      /windowsControlledMaintenanceIngress=host-configured-runner-peer-only/,
     );
 
     assert.match(startRelay, /record_config_metadata/);
     assert.match(
       startRelay,
-      /record_config_metadata "runnerWireGuardConfig" "\$config_path"/,
-    );
-    assert.match(
-      startRelay,
-      /record_config_metadata "installedWireGuardConfigAfterStart" "\$installed_config_path"/,
+      /record_config_metadata "runnerWireGuardConfig" "\$installed_config_path"/,
     );
     assert.match(startRelay, /\$\{label\}\.sha256=\$\{hash\}/);
     assert.match(startRelay, /\$\{label\}\.permissions=\$\{permissions\}/);
     assert.match(startRelay, /wgShowSummary\.latestHandshakes/);
     assert.doesNotMatch(startRelay, /\bsed\b[\s\S]*PrivateKey/);
-    assert.doesNotMatch(startRelay, /\bcat\b[\s\S]*config_path/);
+    assert.doesNotMatch(startRelay, /\bcat\b[\s\S]*installed_config_path/);
     assert.doesNotMatch(startRelay, /PrivateKey\[|PreSharedKey\[/);
 
-    assert.match(cleanup, /sudo wg-quick down "\$MAINTENANCE_RELAY_INTERFACE"/);
-    assert.match(cleanup, /sudo rm -f "\$installed_config_path"/);
-    assert.match(cleanup, /rm -f "\$temp_config_path"/);
+    assert.match(
+      cleanup,
+      /sudo wg-quick down "\$VEM_MAINTENANCE_RELAY_INTERFACE"/,
+    );
+    assert.doesNotMatch(cleanup, /sudo rm -f "\$installed_config_path"/);
+    assert.doesNotMatch(cleanup, /rm -f "\$temp_config_path"/);
     assert.match(cleanup, /cleanup\.wgQuickDownExit/);
-    assert.match(cleanup, /cleanup\.installedConfigRemoved=true/);
-    assert.match(cleanup, /cleanup\.tempConfigRemoved=true/);
+    assert.match(cleanup, /cleanup\.rootOwnedWireGuardConfigPreserved=true/);
   });
 
   it("keeps the adapter overlay active through acceptance, captures afterward, and always runs adapter cleanup without relabeling adapter failure as SSH readiness", () => {

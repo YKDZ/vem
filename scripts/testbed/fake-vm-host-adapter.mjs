@@ -86,6 +86,12 @@ function fakeReport(request, scenario) {
     guest: {
       maintenanceEndpointIdentity:
         "guest-maintenance://fake-runtime-testbed-001",
+      maintenanceEndpoint: {
+        protocol: "ssh",
+        host: "10.91.2.10",
+        port: 22,
+        reachability: "discovered",
+      },
       deviceMappings,
       defaultAudioIdentity: "guest-audio://fake-runtime-testbed-001",
     },
@@ -95,9 +101,27 @@ function fakeReport(request, scenario) {
       completedAt: "2026-07-11T00:00:01.000Z",
     },
     cleanup:
-      request.operation === "cleanup" && result === "succeeded"
-        ? { status: "completed", overlayDisposition: "removed" }
-        : { status: "not-run", overlayDisposition: "active" },
+      request.operation === "cleanup" ||
+      request.operation === "cancel" ||
+      result === "failed"
+        ? {
+            status: "completed",
+            overlayDisposition: "removed",
+            observed: {
+              overlay: "removed",
+              runDirectory: "removed",
+              personalizationMedia: "removed",
+            },
+          }
+        : {
+            status: "not-run",
+            overlayDisposition: "active",
+            observed: {
+              overlay: "present",
+              runDirectory: "present",
+              personalizationMedia: "not-mounted",
+            },
+          },
     diagnostics: [
       {
         code:
@@ -114,7 +138,8 @@ const request = validateVmHostAdapterRequest(
 );
 if (
   process.env.VEM_VM_HOST_ADAPTER_PID_FILE &&
-  request.operation !== "cleanup"
+  request.operation !== "cleanup" &&
+  request.operation !== "cancel"
 ) {
   writeFileSync(process.env.VEM_VM_HOST_ADAPTER_PID_FILE, `${process.pid}\n`, {
     mode: 0o600,
@@ -128,9 +153,30 @@ if (
     mode: 0o600,
   });
 }
+if (
+  process.env.VEM_VM_HOST_ADAPTER_CANCEL_FILE &&
+  request.operation === "cancel"
+) {
+  writeFileSync(
+    process.env.VEM_VM_HOST_ADAPTER_CANCEL_FILE,
+    `${request.cancelOperationReference}\n`,
+    { mode: 0o600 },
+  );
+  const pid = Number.parseInt(
+    readFileSync(process.env.VEM_VM_HOST_ADAPTER_PID_FILE, "utf8"),
+    10,
+  );
+  if (!Number.isInteger(pid) || pid < 1)
+    throw new Error("cancel request has no in-flight adapter operation");
+  process.kill(pid, "SIGTERM");
+}
 const configuredScenario =
   process.env.VEM_VM_HOST_ADAPTER_FAKE_SCENARIO ?? "success";
-if (configuredScenario === "hang" && request.operation !== "cleanup") {
+if (
+  configuredScenario === "hang" &&
+  request.operation !== "cleanup" &&
+  request.operation !== "cancel"
+) {
   process.on("SIGTERM", () => {
     if (process.env.VEM_VM_HOST_ADAPTER_SIGNAL_FILE) {
       writeFileSync(process.env.VEM_VM_HOST_ADAPTER_SIGNAL_FILE, "SIGTERM\n", {
@@ -142,7 +188,11 @@ if (configuredScenario === "hang" && request.operation !== "cleanup") {
   setInterval(() => {}, 1000);
 } else {
   const scenario =
-    configuredScenario === "hang" ? "success" : configuredScenario;
+    request.operation === "cleanup" || request.operation === "cancel"
+      ? "success"
+      : configuredScenario === "hang"
+        ? "success"
+        : configuredScenario;
   writeFileSync(
     reportPath,
     `${JSON.stringify(fakeReport(request, scenario))}\n`,

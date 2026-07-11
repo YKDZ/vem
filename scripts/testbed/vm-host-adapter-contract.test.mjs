@@ -18,6 +18,10 @@ const HASH = "a".repeat(64);
 const FAKE_ADAPTER = new URL("./fake-vm-host-adapter.mjs", import.meta.url)
   .pathname;
 const CLIENT = new URL("./run-vm-host-adapter.mjs", import.meta.url).pathname;
+const CONFORMANCE = new URL(
+  "./vm-host-adapter-conformance.mjs",
+  import.meta.url,
+).pathname;
 
 function sleep(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -127,6 +131,12 @@ function reportFor(request, overrides = {}) {
     consumedAssets: request.assets,
     guest: {
       maintenanceEndpointIdentity: "guest-maintenance://runtime-testbed-001",
+      maintenanceEndpoint: {
+        protocol: "ssh",
+        host: "10.91.2.10",
+        port: 22,
+        reachability: "discovered",
+      },
       deviceMappings: request.requestedCapabilities.includes(
         "serial:lower-controller",
       )
@@ -149,9 +159,25 @@ function reportFor(request, overrides = {}) {
       completedAt: "2026-07-11T00:00:01.000Z",
     },
     cleanup:
-      request.operation === "cleanup"
-        ? { status: "completed", overlayDisposition: "removed" }
-        : { status: "not-run", overlayDisposition: "active" },
+      request.operation === "cleanup" || request.operation === "cancel"
+        ? {
+            status: "completed",
+            overlayDisposition: "removed",
+            observed: {
+              overlay: "removed",
+              runDirectory: "removed",
+              personalizationMedia: "removed",
+            },
+          }
+        : {
+            status: "not-run",
+            overlayDisposition: "active",
+            observed: {
+              overlay: "present",
+              runDirectory: "present",
+              personalizationMedia: "not-mounted",
+            },
+          },
     diagnostics: [{ code: "adapter_completed" }],
     ...overrides,
   };
@@ -174,6 +200,51 @@ describe("VM Host Adapter contract", () => {
     assert.throws(
       () => createVmHostAdapterRequest(request),
       /factory-personalization-media/,
+    );
+  });
+
+  it("binds a clean-install observation to its requested Factory ISO, never an approved base fallback", () => {
+    const factoryIso = `factory-cas://sha256/${"d".repeat(64)}`;
+    const personalization = `factory-cas://sha256/${"e".repeat(64)}`;
+    const request = createVmHostAdapterRequest(
+      requestFor("clean-install", {
+        assets: [
+          {
+            role: "factory-iso",
+            identity: factoryIso,
+            digest: `sha256:${"d".repeat(64)}`,
+          },
+          {
+            role: "factory-personalization-media",
+            identity: personalization,
+            digest: `sha256:${"e".repeat(64)}`,
+          },
+        ],
+        requestedCapabilities: [
+          "clean-install",
+          "disposable-overlay",
+          "serial:lower-controller",
+          "serial:scanner",
+          "cancellation",
+          "cleanup",
+        ],
+      }),
+    );
+    assert.equal(
+      validateVmHostAdapterReport(reportFor(request), request).observed
+        .baseIdentity,
+      factoryIso,
+    );
+    assert.throws(() =>
+      validateVmHostAdapterReport(
+        reportFor(request, {
+          observed: {
+            ...reportFor(request).observed,
+            baseIdentity: `factory-cas://sha256/${HASH}`,
+          },
+        }),
+        request,
+      ),
     );
   });
 
@@ -232,6 +303,63 @@ describe("VM Host Adapter contract", () => {
     );
   });
 
+  it("accepts a host-discovered endpoint and rejects an unavailable one", () => {
+    const request = createVmHostAdapterRequest(requestFor());
+    const report = reportFor(request);
+    assert.equal(
+      validateVmHostAdapterReport(report, request).guest.maintenanceEndpoint
+        .host,
+      "10.91.2.10",
+    );
+    assert.throws(() =>
+      validateVmHostAdapterReport(
+        reportFor(request, {
+          guest: {
+            ...report.guest,
+            maintenanceEndpoint: {
+              protocol: "ssh",
+              host: "10.91.2.10",
+              port: 22,
+              reachability: "unavailable",
+            },
+          },
+        }),
+        request,
+      ),
+    );
+  });
+
+  it("allows cleanup to attest removal after its guest endpoint is gone", () => {
+    const request = createVmHostAdapterRequest(requestFor("cleanup"));
+    const report = reportFor(request, {
+      guest: {
+        maintenanceEndpointIdentity:
+          "guest-maintenance://unreachable-runtime-testbed-001",
+        maintenanceEndpoint: {
+          protocol: "ssh",
+          host: "guest-unreachable.invalid",
+          port: 22,
+          reachability: "unavailable",
+        },
+        deviceMappings: [],
+        defaultAudioIdentity: "guest-audio://runtime-testbed-001",
+      },
+      cleanup: {
+        status: "completed",
+        overlayDisposition: "removed",
+        observed: {
+          overlay: "removed",
+          runDirectory: "removed",
+          personalizationMedia: "removed",
+        },
+      },
+    });
+    assert.equal(
+      validateVmHostAdapterReport(report, request).result,
+      "succeeded",
+    );
+  });
+
   it("keeps overlay lifecycle active through restore and separates the completed operation from negotiated capabilities", () => {
     const restore = createVmHostAdapterRequest(requestFor());
     const report = reportFor(restore, {
@@ -245,7 +373,15 @@ describe("VM Host Adapter contract", () => {
     assert.throws(() =>
       validateVmHostAdapterReport(
         reportFor(restore, {
-          cleanup: { status: "completed", overlayDisposition: "removed" },
+          cleanup: {
+            status: "completed",
+            overlayDisposition: "removed",
+            observed: {
+              overlay: "removed",
+              runDirectory: "removed",
+              personalizationMedia: "removed",
+            },
+          },
         }),
         restore,
       ),
@@ -398,6 +534,11 @@ describe("VM Host Adapter contract", () => {
         assert.deepEqual(error.diagnostic.cleanup, {
           attempted: true,
           status: "completed",
+          observed: {
+            overlay: "removed",
+            runDirectory: "removed",
+            personalizationMedia: "removed",
+          },
         });
         assert.doesNotMatch(
           JSON.stringify(error.diagnostic),
@@ -473,11 +614,95 @@ describe("VM Host Adapter contract", () => {
     );
   });
 
+  it("runs validated recovery cleanup after an ordinary adapter failure", async () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-vm-host-failure-"));
+    const cleanupFile = join(root, "cleanup.txt");
+    await assert.rejects(
+      () =>
+        runVmHostAdapter({
+          request: createVmHostAdapterRequest(requestFor()),
+          workDirectory: root,
+          environment: {
+            VEM_VM_HOST_ADAPTER: FAKE_ADAPTER,
+            VEM_VM_HOST_ADAPTER_FAKE_SCENARIO: "failure",
+            VEM_VM_HOST_ADAPTER_CLEANUP_FILE: cleanupFile,
+          },
+        }),
+      (error) =>
+        error instanceof VmHostAdapterExecutionError &&
+        error.diagnostic.cleanup.status === "completed" &&
+        error.diagnostic.cleanup.observed.overlay === "removed",
+    );
+    assert.equal(readFileSync(cleanupFile, "utf8"), "cleanup\n");
+  });
+
+  it("builds a logical clean-install request from Factory ISO and personalization asset identities", () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-vm-host-clean-install-"));
+    const out = join(root, "report.json");
+    execFileSync(
+      process.execPath,
+      [
+        CLIENT,
+        "--operation",
+        "clean-install",
+        "--run-id",
+        "RUN-12-CONTRACT",
+        "--target-identity",
+        "vm-target://runtime-testbed",
+        "--factory-iso",
+        `factory-cas://sha256/${"d".repeat(64)}`,
+        "--factory-personalization-media",
+        `factory-cas://sha256/${"e".repeat(64)}`,
+        "--out",
+        out,
+      ],
+      {
+        env: {
+          ...process.env,
+          RUNNER_TEMP: root,
+          VEM_VM_HOST_ADAPTER: FAKE_ADAPTER,
+          VEM_VM_HOST_ADAPTER_FAKE_SCENARIO: "success",
+        },
+      },
+    );
+    const report = JSON.parse(readFileSync(out, "utf8"));
+    assert.deepEqual(
+      report.consumedAssets.map((asset) => asset.role),
+      ["factory-iso", "factory-personalization-media"],
+    );
+  });
+
+  it("does not let an adapter claim conformance while clean install is blocked by Issue15", () => {
+    const root = mkdtempSync(join(tmpdir(), "vem-vm-host-conformance-"));
+    const out = join(root, "conformance.json");
+    assert.throws(() =>
+      execFileSync(process.execPath, [CONFORMANCE, "--out", out], {
+        env: {
+          ...process.env,
+          RUNNER_TEMP: root,
+          VEM_VM_HOST_ADAPTER: FAKE_ADAPTER,
+          VEM_VM_HOST_TARGET_ID: "vm-target://runtime-testbed",
+          VEM_VM_HOST_APPROVED_BASE_ID: `factory-cas://sha256/${HASH}`,
+          VEM_VM_HOST_FACTORY_ISO_ID: `factory-cas://sha256/${"d".repeat(64)}`,
+          VEM_VM_HOST_FACTORY_PERSONALIZATION_MEDIA_ID: `factory-cas://sha256/${"e".repeat(64)}`,
+          VEM_VM_HOST_CLEAN_INSTALL_STATUS: "blocked-issue15",
+          VEM_VM_HOST_ADAPTER_FAKE_SCENARIO: "success",
+        },
+      }),
+    );
+    const evidence = JSON.parse(readFileSync(out, "utf8"));
+    assert.deepEqual(evidence.evidence.cleanInstall, {
+      status: "blocked-issue15",
+    });
+  });
+
   it("cancels the CLI subprocess, waits for its hanging adapter, persists a diagnostic, and coordinates recovery cleanup", async () => {
     const root = mkdtempSync(join(tmpdir(), "vem-vm-host-cli-cancel-"));
     const out = join(root, "diagnostic.json");
     const pidFile = join(root, "adapter.pid");
     const cleanupFile = join(root, "cleanup.txt");
+    const cancelFile = join(root, "cancel.txt");
+    const signalFile = join(root, "signal.txt");
     let client;
     let adapterPid;
     try {
@@ -504,6 +729,8 @@ describe("VM Host Adapter contract", () => {
             VEM_VM_HOST_ADAPTER_FAKE_SCENARIO: "hang",
             VEM_VM_HOST_ADAPTER_PID_FILE: pidFile,
             VEM_VM_HOST_ADAPTER_CLEANUP_FILE: cleanupFile,
+            VEM_VM_HOST_ADAPTER_CANCEL_FILE: cancelFile,
+            VEM_VM_HOST_ADAPTER_SIGNAL_FILE: signalFile,
           },
           stdio: "ignore",
         },
@@ -529,8 +756,22 @@ describe("VM Host Adapter contract", () => {
       assert.deepEqual(diagnostic.cleanup, {
         attempted: true,
         status: "completed",
+        observed: {
+          overlay: "removed",
+          runDirectory: "removed",
+          personalizationMedia: "removed",
+        },
       });
       assert.equal(readFileSync(cleanupFile, "utf8"), "cleanup\n");
+      assert.equal(
+        readFileSync(cancelFile, "utf8").trim(),
+        diagnostic.request.operationReference,
+      );
+      assert.equal(
+        readFileSync(signalFile, "utf8").trim(),
+        "SIGTERM",
+        "the operation-reference-bound cancel request must signal the in-flight adapter",
+      );
     } finally {
       client?.kill("SIGKILL");
       if (Number.isInteger(adapterPid)) {

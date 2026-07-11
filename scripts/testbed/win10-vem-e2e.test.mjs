@@ -3323,6 +3323,30 @@ describe("win10-vem-e2e reset planning", () => {
     );
   });
 
+  it("propagates a non-default SSH port to every VM acceptance child command", () => {
+    const plan = buildVmRuntimeAcceptancePlan({
+      runId: "RUN-183",
+      platformTarget: "ephemeral-run-183",
+      ephemeralDatabaseUrl:
+        "postgres://vem_test:pass@127.0.0.1:55432/vem_acceptance_run_183",
+      ephemeralApiBaseUrl: "http://127.0.0.1:26849/api",
+      ephemeralMqttUrl: "mqtt://127.0.0.1:1883",
+      daemonArtifactSha256: "a".repeat(64),
+      machineUiArtifactSha256: "b".repeat(64),
+      remote: "maintainer@relay-vm.example",
+      sshPort: 22022,
+    });
+    for (const step of plan.steps.filter((step) =>
+      [
+        "dirty-host factory reset acceptance",
+        "runtime acceptance",
+        "simulated hardware sale flow",
+      ].includes(step.name),
+    )) {
+      assert.equal(commandArg(step.command, "--ssh-port"), "22022");
+    }
+  });
+
   it("does not assert clean-base acceptance from invalid or dry-run evidence", () => {
     const plan = buildVmRuntimeAcceptancePlan({
       runId: "RUN-182",
@@ -3954,6 +3978,25 @@ describe("win10-vem-e2e reset planning", () => {
         "/tmp/run.ps1",
         "YKDZ@controlled-maintenance-ingress.local:C:/Users/YKDZ/AppData/Local/Temp/vem-win10-e2e-test.ps1",
       ],
+    );
+  });
+
+  it("uses uppercase SCP port forwarding while SSH children use lowercase -p", () => {
+    const options = { ...CERTIFICATE_SSH_OPTIONS, sshPort: 22022 };
+    assert.deepEqual(buildSshCommand(options).slice(-5, -1), [
+      "-p",
+      "22022",
+      "-o",
+      "ProxyCommand=none",
+    ]);
+    const scpCommand = buildScpCommand(
+      "/tmp/run.ps1",
+      "C:\\Temp\\run.ps1",
+      options,
+    );
+    assert.deepEqual(
+      scpCommand.slice(scpCommand.indexOf("-P"), scpCommand.indexOf("-P") + 2),
+      ["-P", "22022"],
     );
   });
 

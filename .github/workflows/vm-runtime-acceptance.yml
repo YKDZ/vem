@@ -7,18 +7,6 @@ on:
         description: Run id used for evidence and testbed machine identity
         required: false
         default: ""
-      vm_wireguard_ip:
-        description: Windows VM WireGuard peer IP used for SSH over Controlled Maintenance Ingress
-        required: false
-        default: 10.91.2.10
-      runner_wireguard_peer_ip:
-        description: Runner WireGuard peer IP allowed by Windows Controlled Maintenance Ingress
-        required: false
-        default: 10.91.1.10
-      runner_wireguard_interface:
-        description: Runner WireGuard interface name for the Maintenance Relay
-        required: false
-        default: wg-vem-maint
       windows_ssh_user:
         description: Windows VM maintenance SSH user
         required: false
@@ -61,11 +49,6 @@ jobs:
       EPHEMERAL_API_BASE_URL: http://127.0.0.1:26849/api
       EPHEMERAL_MQTT_URL: mqtt://127.0.0.1:18883
       PAYMENT_MOCK_ENABLED: "true"
-      MAINTENANCE_RELAY_WINDOWS_SSH_HOST: ${{ inputs.vm_wireguard_ip }}
-      MAINTENANCE_RELAY_RUNNER_PEER_IP: ${{ inputs.runner_wireguard_peer_ip }}
-      MAINTENANCE_RELAY_INTERFACE: ${{ inputs.runner_wireguard_interface }}
-      VEM_MAINTENANCE_RELAY_RUNNER_WG_CONFIG: ${{ secrets.VEM_MAINTENANCE_RELAY_RUNNER_WG_CONFIG }}
-      VEM_MAINTENANCE_RELAY_RUNNER_WG_CONFIG_PATH: ${{ secrets.VEM_MAINTENANCE_RELAY_RUNNER_WG_CONFIG_PATH }}
       MAINTENANCE_CONTROL_PLANE_URL: ${{ vars.VEM_MAINTENANCE_CONTROL_PLANE_URL }}
       MAINTENANCE_RUNNER_PEER_ID: ${{ vars.VEM_MAINTENANCE_RUNNER_PEER_ID }}
       MAINTENANCE_TARGET_MACHINE_ID: ${{ vars.VEM_MAINTENANCE_TARGET_MACHINE_ID }}
@@ -177,6 +160,17 @@ jobs:
           test -f artifacts/vm-runtime-inputs/vending-daemon.exe
           test -f artifacts/vm-runtime-inputs/machine.exe
           test -f artifacts/vm-runtime-inputs/WebView2Loader.dll
+
+      - name: Run Host Adapter Conformance
+        run: |
+          set -euo pipefail
+          test -n "${VEM_VM_HOST_ADAPTER:-}"
+          test -n "${VEM_VM_HOST_TARGET_ID:-}"
+          test -n "${VEM_VM_HOST_APPROVED_BASE_ID:-}"
+          test -n "${VEM_VM_HOST_FACTORY_ISO_ID:-}"
+          test -n "${VEM_VM_HOST_FACTORY_PERSONALIZATION_MEDIA_ID:-}"
+          node scripts/testbed/vm-host-adapter-conformance.mjs \
+            --out "artifacts/vm-runtime-acceptance/${RUN_ID}/vm-host-adapter-conformance.json"
 
       - name: Exchange OIDC And Create Maintenance Session
         run: |
@@ -377,8 +371,10 @@ jobs:
           set -euo pipefail
           mkdir -p "artifacts/vm-runtime-acceptance/${RUN_ID}"
           diagnostics="artifacts/vm-runtime-acceptance/${RUN_ID}/maintenance-relay-diagnostics.txt"
-          temp_config_path="$RUNNER_TEMP/${MAINTENANCE_RELAY_INTERFACE}-${GITHUB_RUN_ID}.conf"
-          installed_config_path="/etc/wireguard/${MAINTENANCE_RELAY_INTERFACE}.conf"
+          test -n "${VEM_MAINTENANCE_RELAY_INTERFACE:-}"
+          test -n "${VEM_MAINTENANCE_RELAY_RUNNER_PEER_IP:-}"
+          case "$VEM_MAINTENANCE_RELAY_INTERFACE" in *[!A-Za-z0-9_.-]*|'') exit 1;; esac
+          installed_config_path="/etc/wireguard/${VEM_MAINTENANCE_RELAY_INTERFACE}.conf"
           record_config_metadata() {
             label="$1"
             path="$2"
@@ -394,9 +390,9 @@ jobs:
           }
           {
             echo "Controlled Maintenance Ingress: WireGuard Maintenance Relay"
-            echo "interface=${MAINTENANCE_RELAY_INTERFACE}"
-            echo "runnerPeerIp=${MAINTENANCE_RELAY_RUNNER_PEER_IP}"
-            echo "windowsSshHost=${MAINTENANCE_RELAY_WINDOWS_SSH_HOST}"
+            echo "interface=${VEM_MAINTENANCE_RELAY_INTERFACE}"
+            echo "runnerPeerIp=runner-service-configured"
+            echo "runnerWireGuardConfig=root-owned runner WireGuard config"
             echo "vmRelayBootstrapContract=preconfigured-base-image"
             echo "repositoryConfiguresVmRelay=false"
           } > "$diagnostics"
@@ -412,37 +408,28 @@ jobs:
             exit 1
           }
 
-          config_path="${VEM_MAINTENANCE_RELAY_RUNNER_WG_CONFIG_PATH:-}"
-          if [ -n "${VEM_MAINTENANCE_RELAY_RUNNER_WG_CONFIG:-}" ]; then
-            config_path="$temp_config_path"
-            printf '%s\n' "$VEM_MAINTENANCE_RELAY_RUNNER_WG_CONFIG" > "$config_path"
-            chmod 600 "$config_path"
-          fi
-          if [ -z "$config_path" ] || [ ! -f "$config_path" ]; then
-            echo "::error::Missing runner WireGuard peer config. Set VEM_MAINTENANCE_RELAY_RUNNER_WG_CONFIG or VEM_MAINTENANCE_RELAY_RUNNER_WG_CONFIG_PATH."
+          if [ ! -f "$installed_config_path" ] || [ "$(stat -c '%U:%G:%a' "$installed_config_path")" != "root:root:600" ]; then
+            echo "::error::Missing or unsafe root-owned runner WireGuard config."
             echo "runnerWireGuardConfig=missing" >> "$diagnostics"
             exit 1
           fi
 
           {
-            record_config_metadata "runnerWireGuardConfig" "$config_path"
-            record_config_metadata "installedWireGuardConfigBeforeStart" "$installed_config_path"
+            record_config_metadata "runnerWireGuardConfig" "$installed_config_path"
           } >> "$diagnostics"
 
-          sudo install -m 0600 "$config_path" "$installed_config_path"
-          sudo wg-quick down "$MAINTENANCE_RELAY_INTERFACE" >/dev/null 2>&1 || true
-          sudo wg-quick up "$MAINTENANCE_RELAY_INTERFACE"
+          sudo wg-quick down "$VEM_MAINTENANCE_RELAY_INTERFACE" >/dev/null 2>&1 || true
+          sudo wg-quick up "$VEM_MAINTENANCE_RELAY_INTERFACE"
           {
-            record_config_metadata "installedWireGuardConfigAfterStart" "$installed_config_path"
-            echo "wgShowSummary.interface=${MAINTENANCE_RELAY_INTERFACE}"
+            echo "wgShowSummary.interface=${VEM_MAINTENANCE_RELAY_INTERFACE}"
             echo "wgShowSummary.latestHandshakes<<EOF"
-            sudo wg show "$MAINTENANCE_RELAY_INTERFACE" latest-handshakes
+            sudo wg show "$VEM_MAINTENANCE_RELAY_INTERFACE" latest-handshakes
             echo "EOF"
             echo "wgShowSummary.endpoints<<EOF"
-            sudo wg show "$MAINTENANCE_RELAY_INTERFACE" endpoints
+            sudo wg show "$VEM_MAINTENANCE_RELAY_INTERFACE" endpoints
             echo "EOF"
             echo "wgShowSummary.allowedIps<<EOF"
-            sudo wg show "$MAINTENANCE_RELAY_INTERFACE" allowed-ips
+            sudo wg show "$VEM_MAINTENANCE_RELAY_INTERFACE" allowed-ips
             echo "EOF"
           } >> "$diagnostics"
 
@@ -453,7 +440,7 @@ jobs:
           {
             echo "preflight.vmRelayBootstrapContract=preconfigured-base-image"
             echo "preflight.vmWireGuardPeer=must-already-be-configured-and-running-in-base-image"
-            echo "preflight.windowsControlledMaintenanceIngress=must-already-allow-runner-peer-ip"
+            echo "preflight.windowsControlledMaintenanceIngress=host-configured-runner-peer-only"
             echo "preflight.repositoryConfiguresVmRelay=false"
           } >> "$diagnostics"
 
@@ -566,6 +553,25 @@ jobs:
             --approved-runtime-base "$VEM_VM_HOST_APPROVED_BASE_ID" \
             --out "artifacts/vm-runtime-acceptance/${RUN_ID}/vm-host-adapter-report.json"
 
+      - name: Consume Discovered Guest Maintenance Endpoint
+        run: |
+          set -euo pipefail
+          report="artifacts/vm-runtime-acceptance/${RUN_ID}/vm-host-adapter-report.json"
+          node - "$report" >> "$GITHUB_ENV" <<'NODE'
+          const fs = require("node:fs");
+          const report = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+          const endpoint = report.guest?.maintenanceEndpoint;
+          if (
+            endpoint?.protocol !== "ssh" ||
+            endpoint.reachability !== "discovered" ||
+            typeof endpoint.host !== "string" ||
+            !Number.isInteger(endpoint.port)
+          ) {
+            throw new Error("VM Host Adapter did not provide a host-discovered guest maintenance endpoint");
+          }
+          process.stdout.write(`VM_GUEST_MAINTENANCE_HOST=${endpoint.host}\nVM_GUEST_MAINTENANCE_PORT=${endpoint.port}\n`);
+          NODE
+
       - name: Run VM Runtime Acceptance
         run: |
           set -euo pipefail
@@ -578,8 +584,9 @@ jobs:
             --ephemeral-mqtt-url "$EPHEMERAL_MQTT_URL" \
             --daemon-artifact artifacts/vm-runtime-inputs/vending-daemon.exe \
             --machine-ui-artifact artifacts/vm-runtime-inputs/machine.exe \
-            --remote "${{ inputs.windows_ssh_user }}@$MAINTENANCE_RELAY_WINDOWS_SSH_HOST" \
-            --maintenance-ingress-source-allowlist "$MAINTENANCE_RELAY_RUNNER_PEER_IP" \
+            --remote "${{ inputs.windows_ssh_user }}@$VM_GUEST_MAINTENANCE_HOST" \
+            --ssh-port "$VM_GUEST_MAINTENANCE_PORT" \
+            --maintenance-ingress-source-allowlist "$VEM_MAINTENANCE_RELAY_RUNNER_PEER_IP" \
             --identity "$MAINTENANCE_SSH_DIR/id_ed25519" \
             --certificate "$MAINTENANCE_SSH_DIR/id_ed25519-cert.pub"
 
@@ -625,10 +632,8 @@ jobs:
           ssh_directory="${MAINTENANCE_SSH_DIR:-$RUNNER_TEMP/vem-maintenance-ssh-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}}"
           mkdir -p "artifacts/vm-runtime-acceptance/${RUN_ID}"
           diagnostics="artifacts/vm-runtime-acceptance/${RUN_ID}/maintenance-relay-diagnostics.txt"
-          temp_config_path="$RUNNER_TEMP/${MAINTENANCE_RELAY_INTERFACE}-${GITHUB_RUN_ID}.conf"
           automation_token_path="$RUNNER_TEMP/automation-token.jwt"
           revoke_response_path="$RUNNER_TEMP/maintenance-session-revoke.json"
-          installed_config_path="/etc/wireguard/${MAINTENANCE_RELAY_INTERFACE}.conf"
           if [ -s "$automation_token_path" ]; then
             IFS= read -r automation_token < "$automation_token_path"
             {
@@ -657,10 +662,8 @@ jobs:
               cleanup_status=1
             fi
           fi
-          sudo wg-quick down "$MAINTENANCE_RELAY_INTERFACE" >/dev/null 2>&1
+          sudo wg-quick down "$VEM_MAINTENANCE_RELAY_INTERFACE" >/dev/null 2>&1
           wg_down_status="$?"
-          sudo rm -f "$installed_config_path"
-          rm -f "$temp_config_path"
           rm -f \
             "$automation_token_path" \
             "$revoke_response_path" \
@@ -678,8 +681,7 @@ jobs:
           fi
           {
             echo "cleanup.wgQuickDownExit=${wg_down_status}"
-            echo "cleanup.installedConfigRemoved=true"
-            echo "cleanup.tempConfigRemoved=true"
+            echo "cleanup.rootOwnedWireGuardConfigPreserved=true"
             echo "cleanup.sshDirectoryRemoved=$([ "$ssh_cleanup_status" -eq 0 ] && [ ! -e "$ssh_directory" ] && echo true || echo false)"
             echo "cleanup.maintenanceSessionExplicitRevoke=$([ "$cleanup_status" -eq 0 ] && echo passed || echo failed)"
           } >> "$diagnostics" 2>/dev/null || true
