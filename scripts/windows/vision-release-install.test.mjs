@@ -274,10 +274,13 @@ describe("Vision release installer fixtures", () => {
         fixtureSource,
         /Get-FixturePostStartFailureMessage \$failure/,
       );
+      assert.match(fixtureSource, /Get-FixtureCapturedText/);
       assert.match(
         fixtureSource,
-        /generated launcher did not report the injected \$failure failure/,
+        /launcher failure fixture did not preserve the injected \$expectedFailureMessage failure/,
       );
+      assert.match(fixtureSource, /launcher failure fixture passed: \{0\}/);
+      assert.match(fixtureSource, /captured output:/);
       assert.match(
         fixtureSource,
         /launcher aggregate failure fixture committed a process record/,

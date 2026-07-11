@@ -330,6 +330,12 @@ function Wait-FixtureRuntimeIdentities {
         }
       }
 
+      function Get-FixtureCapturedText([object[]]$CapturedOutput) {
+        $text = ((@($CapturedOutput) | Out-String -Width 4096).Trim())
+        if ([string]::IsNullOrWhiteSpace($text)) { return "<no output>" }
+        return $text
+      }
+
       try {
         Write-LauncherExecutionFixture "success"
         & $windowsPowerShell -NoProfile -ExecutionPolicy Bypass -File $fixtureLauncherPath
@@ -354,13 +360,31 @@ function Wait-FixtureRuntimeIdentities {
           $fixtureProcess.Dispose()
         }
 
+        $fixtureFailureRunnerPath = Join-Path $root "launch-vision-release-failure-fixture.ps1"
+        $escapedFixtureLauncherPath = $fixtureLauncherPath.Replace("'", "''")
         foreach ($failure in @("selection-reread", "hash", "record-write")) {
           Remove-Item -LiteralPath $fixtureRecordPath -Force -ErrorAction SilentlyContinue
           Write-LauncherExecutionFixture $failure
-          $fixtureFailureOutput = @(& $windowsPowerShell -NoProfile -ExecutionPolicy Bypass -File $fixtureLauncherPath 2>&1)
-          if ($LASTEXITCODE -eq 0) { throw "generated launcher accepted injected $failure failure" }
           $expectedFailureMessage = Get-FixturePostStartFailureMessage $failure
-          if ((@($fixtureFailureOutput) -join "`n") -notmatch [regex]::Escape($expectedFailureMessage)) { throw "generated launcher did not report the injected $failure failure" }
+          $escapedExpectedFailureMessage = $expectedFailureMessage.Replace("'", "''")
+          [IO.File]::WriteAllText($fixtureFailureRunnerPath, @"
+`$ErrorActionPreference = "Stop"
+try {
+  & '$escapedFixtureLauncherPath'
+  throw "launcher failure fixture did not throw"
+} catch {
+  `$failure = `$_.Exception
+  if (`$failure -isnot [Management.Automation.RuntimeException] -or `$failure.Message -cne '$escapedExpectedFailureMessage') {
+    throw ("launcher failure fixture did not preserve the injected $expectedFailureMessage failure: type={0}; message={1}" -f `$failure.GetType().FullName, `$failure.Message)
+  }
+  Write-Output ("launcher failure fixture passed: {0}" -f `$failure.Message)
+}
+"@, [Text.UTF8Encoding]::new($false))
+          $fixtureFailureOutput = @(& $windowsPowerShell -NoProfile -ExecutionPolicy Bypass -File $fixtureFailureRunnerPath 2>&1)
+          $fixtureFailureText = Get-FixtureCapturedText $fixtureFailureOutput
+          if ($LASTEXITCODE -ne 0) { throw "generated launcher failure fixture runner failed for injected $failure failure; captured output:`n$fixtureFailureText" }
+          $expectedFailureReport = "launcher failure fixture passed: $expectedFailureMessage"
+          if ($fixtureFailureText -notmatch [regex]::Escape($expectedFailureReport)) { throw "launcher failure fixture runner did not report the injected $failure failure; captured output:`n$fixtureFailureText" }
           $fixtureRuntimeIdentities = Wait-FixtureRuntimeIdentities $failure
           Assert-FixtureRuntimeStopped $failure
           Assert-FixtureRuntimeIdentitiesStopped $failure $fixtureRuntimeIdentities
@@ -369,8 +393,6 @@ function Wait-FixtureRuntimeIdentities {
 
         Remove-Item -LiteralPath $fixtureRecordPath -Force -ErrorAction SilentlyContinue
         Write-LauncherExecutionFixture "selection-reread-and-cleanup"
-        $fixtureFailureRunnerPath = Join-Path $root "launch-vision-release-failure-fixture.ps1"
-        $escapedFixtureLauncherPath = $fixtureLauncherPath.Replace("'", "''")
         [IO.File]::WriteAllText($fixtureFailureRunnerPath, @"
 `$ErrorActionPreference = "Stop"
 `$env:VEM_VISION_LAUNCHER_FIXTURE_FORCE_TERMINATE_FAILURE = "1"
@@ -400,13 +422,13 @@ if (`$null -eq `$fixtureRuntimeIdentities) { throw "aggregate failure fixture ru
 Write-Output ("aggregate failure fixture passed parentId={0} descendantId={1}" -f `$fixtureRuntimeIdentities.parentId, `$fixtureRuntimeIdentities.descendantId)
 "@, [Text.UTF8Encoding]::new($false))
         $fixtureFailureOutput = @(& $windowsPowerShell -NoProfile -ExecutionPolicy Bypass -File $fixtureFailureRunnerPath 2>&1)
-        if ($LASTEXITCODE -ne 0) { throw "aggregate failure fixture runner failed: $($fixtureFailureOutput -join [Environment]::NewLine)" }
-        $fixtureFailureText = @($fixtureFailureOutput) -join "`n"
-        if ($fixtureFailureText -match 'CS0162|unreachable code') { throw "aggregate failure fixture compiled unreachable C# code: $($fixtureFailureOutput -join [Environment]::NewLine)" }
-        if ($fixtureFailureText -notmatch "aggregate failure fixture passed") { throw "aggregate failure fixture did not report success" }
+        $fixtureFailureText = Get-FixtureCapturedText $fixtureFailureOutput
+        if ($LASTEXITCODE -ne 0) { throw "aggregate failure fixture runner failed; captured output:`n$fixtureFailureText" }
+        if ($fixtureFailureText -match 'CS0162|unreachable code') { throw "aggregate failure fixture compiled unreachable C# code; captured output:`n$fixtureFailureText" }
+        if ($fixtureFailureText -notmatch "aggregate failure fixture passed") { throw "aggregate failure fixture did not report success; captured output:`n$fixtureFailureText" }
         $fixtureRuntimeIdentities = Wait-FixtureRuntimeIdentities "selection-reread-and-cleanup"
         $expectedFixtureIdentityReport = "aggregate failure fixture passed parentId={0} descendantId={1}" -f $fixtureRuntimeIdentities.parentId, $fixtureRuntimeIdentities.descendantId
-        if ($fixtureFailureText -notmatch [regex]::Escape($expectedFixtureIdentityReport)) { throw "aggregate failure fixture runner did not report the collected parent and child process identities" }
+        if ($fixtureFailureText -notmatch [regex]::Escape($expectedFixtureIdentityReport)) { throw "aggregate failure fixture runner did not report the collected parent and child process identities; captured output:`n$fixtureFailureText" }
         Assert-FixtureRuntimeStopped "selection-reread-and-cleanup"
         Assert-FixtureRuntimeIdentitiesStopped "selection-reread-and-cleanup" $fixtureRuntimeIdentities
         if (Test-Path -LiteralPath $fixtureRecordPath -PathType Leaf) { throw "launcher aggregate failure fixture committed a process record" }
