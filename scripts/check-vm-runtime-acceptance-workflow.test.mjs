@@ -88,7 +88,7 @@ describe("VM runtime acceptance workflow maintenance relay path", () => {
     assert.doesNotMatch(serviceApi, /\n\s+PORT:\s+"26849"/);
   });
 
-  it("starts runner WireGuard before restoring the VM and uses the VM WireGuard IP for Windows SSH", () => {
+  it("starts runner WireGuard before a platform-neutral adapter request and keeps host selection out of workflow dispatch", () => {
     const workflow = readWorkflow();
 
     for (const requiredText of [
@@ -105,7 +105,6 @@ describe("VM runtime acceptance workflow maintenance relay path", () => {
       "MAINTENANCE_RELAY_INTERFACE",
       "--maintenance-ingress-source-allowlist",
       "maintenance-relay-diagnostics.txt",
-      "windowsSshReadiness=failed",
       "maintenance-automation/session/ssh-certificate",
     ]) {
       assert.match(workflow, requiredTextPattern(requiredText));
@@ -127,20 +126,27 @@ describe("VM runtime acceptance workflow maintenance relay path", () => {
     );
     assert.match(
       restoreBlock,
-      /--windows-ssh-host\s+"\$MAINTENANCE_RELAY_WINDOWS_SSH_HOST"/,
+      /node scripts\/testbed\/run-vm-host-adapter\.mjs/,
     );
+    assert.match(restoreBlock, /test -n "\$\{VEM_VM_HOST_ADAPTER:-\}"/);
+    assert.match(restoreBlock, /--target-identity\s+"\$VEM_VM_HOST_TARGET_ID"/);
     assert.match(
       restoreBlock,
-      /--identity\s+"\$MAINTENANCE_SSH_DIR\/id_ed25519"/,
+      /--approved-runtime-base\s+"\$VEM_VM_HOST_APPROVED_BASE_ID"/,
     );
-    assert.match(
-      restoreBlock,
-      /--certificate\s+"\$MAINTENANCE_SSH_DIR\/id_ed25519-cert\.pub"/,
-    );
+    assert.doesNotMatch(restoreBlock, /scripts\/testbed\/vm-host-adapter\.mjs/);
     assert.doesNotMatch(
       restoreBlock,
-      /--windows-ssh-host\s+"\$\{\{\s*inputs\.windows_ssh_host/,
+      /--adapter|--target-vm|--base-image|--overlay-disk/,
     );
+
+    for (const forbidden of [
+      /inputs\.(?:base_image|overlay_disk|target_vm)/,
+      /\/mnt\/user|unraid:\/\/|qcow2|libvirt/i,
+      /VEM_VM_HOST_ADAPTER:\s*\$\{\{/,
+    ]) {
+      assert.doesNotMatch(workflow, forbidden);
+    }
 
     const acceptanceBlock = workflow.slice(
       workflow.indexOf("- name: Run VM Runtime Acceptance"),
@@ -243,5 +249,33 @@ describe("VM runtime acceptance workflow maintenance relay path", () => {
     assert.match(cleanup, /cleanup\.wgQuickDownExit/);
     assert.match(cleanup, /cleanup\.installedConfigRemoved=true/);
     assert.match(cleanup, /cleanup\.tempConfigRemoved=true/);
+  });
+
+  it("keeps the adapter overlay active through acceptance, captures afterward, and always runs adapter cleanup without relabeling adapter failure as SSH readiness", () => {
+    const workflow = readWorkflow();
+    const restore = stepBlock(
+      workflow,
+      "Restore Windows Runtime VM Through Host Adapter",
+    );
+    const acceptance = stepBlock(workflow, "Run VM Runtime Acceptance");
+    const display = stepBlock(
+      workflow,
+      "Capture Windows Display Evidence Through Host Adapter",
+    );
+    const audio = stepBlock(
+      workflow,
+      "Capture Windows Default Audio Evidence Through Host Adapter",
+    );
+    const cleanup = stepBlock(workflow, "Cleanup VM Host Adapter Overlay");
+
+    assert.doesNotMatch(restore, /windowsSshReadiness=failed/);
+    assert.match(display, /if:\s+success\(\)/);
+    assert.match(audio, /if:\s+success\(\)/);
+    assert.match(cleanup, /if:\s+always\(\)/);
+    assert.match(cleanup, /--operation cleanup/);
+    assert.ok(workflow.indexOf(restore) < workflow.indexOf(acceptance));
+    assert.ok(workflow.indexOf(acceptance) < workflow.indexOf(display));
+    assert.ok(workflow.indexOf(display) < workflow.indexOf(audio));
+    assert.ok(workflow.indexOf(audio) < workflow.indexOf(cleanup));
   });
 });

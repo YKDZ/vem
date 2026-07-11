@@ -265,6 +265,30 @@ const DEFAULT_INVENTORY = [
     workflows: ["runtime acceptance", "testbed workflows"],
   },
   {
+    path: "scripts/testbed/vm-host-adapter-contract.mjs",
+    owner: "field-operations",
+    category: "canonical entrypoint",
+    workflows: ["runtime acceptance", "testbed workflows"],
+  },
+  {
+    path: "scripts/testbed/vm-host-adapter-contract.test.mjs",
+    owner: "field-operations",
+    category: "verifier-test guard",
+    workflows: ["runtime acceptance", "testbed workflows"],
+  },
+  {
+    path: "scripts/testbed/fake-vm-host-adapter.mjs",
+    owner: "field-operations",
+    category: "verifier-test guard",
+    workflows: ["runtime acceptance", "testbed workflows"],
+  },
+  {
+    path: "scripts/testbed/run-vm-host-adapter.mjs",
+    owner: "field-operations",
+    category: "canonical entrypoint",
+    workflows: ["runtime acceptance", "testbed workflows"],
+  },
+  {
     path: "scripts/testbed/vm-host-adapters/libvirt-qcow2.unraid.json",
     owner: "field-operations",
     category: "public runbook operation",

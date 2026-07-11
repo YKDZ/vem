@@ -7,18 +7,6 @@ on:
         description: Run id used for evidence and testbed machine identity
         required: false
         default: ""
-      base_image:
-        description: VM host base qcow2 image path
-        required: false
-        default: /mnt/user/isos/vem-factory-runtime-image-RUN-191-20260705.qcow2
-      overlay_disk:
-        description: VM host overlay qcow2 path to rebuild
-        required: false
-        default: /mnt/user/domains/win10-vem-solidified-acceptance/vdisk1.qcow2
-      target_vm:
-        description: VM host target VM name
-        required: false
-        default: win10-vem-solidified-acceptance
       vm_wireguard_ip:
         description: Windows VM WireGuard peer IP used for SSH over Controlled Maintenance Ingress
         required: false
@@ -81,6 +69,8 @@ jobs:
       MAINTENANCE_CONTROL_PLANE_URL: ${{ vars.VEM_MAINTENANCE_CONTROL_PLANE_URL }}
       MAINTENANCE_RUNNER_PEER_ID: ${{ vars.VEM_MAINTENANCE_RUNNER_PEER_ID }}
       MAINTENANCE_TARGET_MACHINE_ID: ${{ vars.VEM_MAINTENANCE_TARGET_MACHINE_ID }}
+      VEM_VM_HOST_TARGET_ID: ${{ vars.VEM_VM_HOST_TARGET_ID }}
+      VEM_VM_HOST_APPROVED_BASE_ID: ${{ vars.VEM_VM_HOST_APPROVED_BASE_ID }}
     steps:
       - name: Guard Protected Maintenance Trust Boundary
         env:
@@ -562,27 +552,19 @@ jobs:
           BOOTSTRAP_ADMIN_PASSWORD: AdminPassword123!
           SERVICE_PORT: "26849"
 
-      - name: Restore Windows Runtime VM
+      - name: Restore Windows Runtime VM Through Host Adapter
         run: |
           set -euo pipefail
-          diagnostics="artifacts/vm-runtime-acceptance/${RUN_ID}/maintenance-relay-diagnostics.txt"
-          trap 'echo "windowsSshReadiness=failed" >> "$diagnostics"' ERR
           mkdir -p "artifacts/vm-runtime-acceptance/${RUN_ID}"
-          node scripts/testbed/vm-host-adapter.mjs \
-            --mode restore \
-            --adapter libvirt-qcow2 \
+          test -n "${VEM_VM_HOST_ADAPTER:-}"
+          test -n "$VEM_VM_HOST_TARGET_ID"
+          test -n "$VEM_VM_HOST_APPROVED_BASE_ID"
+          node scripts/testbed/run-vm-host-adapter.mjs \
+            --operation restore-approved-base \
             --run-id "$RUN_ID" \
-            --target-vm "${{ inputs.target_vm }}" \
-            --base-image "${{ inputs.base_image }}" \
-            --overlay-disk "${{ inputs.overlay_disk }}" \
-            --windows-ssh-host "$MAINTENANCE_RELAY_WINDOWS_SSH_HOST" \
-            --windows-ssh-user "${{ inputs.windows_ssh_user }}" \
-            --maintenance-relay-interface "$MAINTENANCE_RELAY_INTERFACE" \
-            --maintenance-relay-runner-peer-ip "$MAINTENANCE_RELAY_RUNNER_PEER_IP" \
-            --identity "$MAINTENANCE_SSH_DIR/id_ed25519" \
-            --certificate "$MAINTENANCE_SSH_DIR/id_ed25519-cert.pub" \
-            --out "artifacts/vm-runtime-acceptance/${RUN_ID}/vm-host-restore-report.json" \
-            --allow-restore
+            --target-identity "$VEM_VM_HOST_TARGET_ID" \
+            --approved-runtime-base "$VEM_VM_HOST_APPROVED_BASE_ID" \
+            --out "artifacts/vm-runtime-acceptance/${RUN_ID}/vm-host-adapter-report.json"
 
       - name: Run VM Runtime Acceptance
         run: |
@@ -600,6 +582,40 @@ jobs:
             --maintenance-ingress-source-allowlist "$MAINTENANCE_RELAY_RUNNER_PEER_IP" \
             --identity "$MAINTENANCE_SSH_DIR/id_ed25519" \
             --certificate "$MAINTENANCE_SSH_DIR/id_ed25519-cert.pub"
+
+      - name: Capture Windows Display Evidence Through Host Adapter
+        if: success()
+        run: |
+          set -euo pipefail
+          node scripts/testbed/run-vm-host-adapter.mjs \
+            --operation capture-display \
+            --run-id "$RUN_ID" \
+            --target-identity "$VEM_VM_HOST_TARGET_ID" \
+            --approved-runtime-base "$VEM_VM_HOST_APPROVED_BASE_ID" \
+            --out "artifacts/vm-runtime-acceptance/${RUN_ID}/vm-host-display-capture-report.json"
+
+      - name: Capture Windows Default Audio Evidence Through Host Adapter
+        if: success()
+        run: |
+          set -euo pipefail
+          node scripts/testbed/run-vm-host-adapter.mjs \
+            --operation capture-default-audio \
+            --run-id "$RUN_ID" \
+            --target-identity "$VEM_VM_HOST_TARGET_ID" \
+            --approved-runtime-base "$VEM_VM_HOST_APPROVED_BASE_ID" \
+            --out "artifacts/vm-runtime-acceptance/${RUN_ID}/vm-host-audio-capture-report.json"
+
+      - name: Cleanup VM Host Adapter Overlay
+        if: always()
+        run: |
+          set -euo pipefail
+          mkdir -p "artifacts/vm-runtime-acceptance/${RUN_ID}"
+          node scripts/testbed/run-vm-host-adapter.mjs \
+            --operation cleanup \
+            --run-id "$RUN_ID" \
+            --target-identity "$VEM_VM_HOST_TARGET_ID" \
+            --approved-runtime-base "$VEM_VM_HOST_APPROVED_BASE_ID" \
+            --out "artifacts/vm-runtime-acceptance/${RUN_ID}/vm-host-cleanup-report.json"
 
       - name: Cleanup Ephemeral Services
         if: always()

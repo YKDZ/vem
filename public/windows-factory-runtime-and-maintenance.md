@@ -244,20 +244,63 @@ Repository workflows invoke the executable configured by the runner service as
 `VEM_VM_HOST_ADAPTER`. A dispatch input cannot choose the executable or pass
 host filesystem paths.
 
-The adapter accepts a versioned JSON request containing logical target identity,
-operation, run ID, input asset hashes, and requested device capabilities. It
-must support at least:
+The adapter accepts a strict `vem-vm-host-adapter-request/v1` JSON request with
+only `runId`, `operation`, `operationNonce`, `operationReference`,
+`lifecycleReference`, an optional cancel-operation reference, logical target
+identity, content-addressed assets, and requested capabilities. Requests have
+no host filesystem path, host URI, executable, VM name, disk path, guest
+credential, or platform-specific option. `clean-install` requires both
+`factory-iso` and `factory-personalization-media`; restore and overlay
+operations require an `approved-runtime-base`. The operation and capability
+vocabulary covers:
 
 - `clean-install` from Factory ISO and Factory Personalization Media;
-- `restore-runtime-base` from an approved base identity;
+- `restore-approved-base` from an approved base identity;
 - display screenshot capture;
 - two role-addressed virtual serial devices;
 - a virtual default audio output with host-side capture.
 
-The adapter returns versioned evidence with observed VM identity, input hashes,
-guest endpoint identity, device mappings, screenshot/audio evidence paths, and
-the resulting approved-base identity when applicable. The repository validates
-the report before mutating platform or VEM business state.
+The adapter returns a strict `vem-vm-host-adapter-report/v1` report with its
+identity and semantic version, echoed request binding, an `operationReference`,
+a `lifecycleReference`, observed VM/base/overlay identities, consumed asset
+hashes, guest maintenance endpoint identity, role-addressed device mappings,
+default-audio identity, content-addressed display/audio evidence, ordered
+canonical UTC timestamps, sanitized diagnostics, and an unambiguous cleanup
+result. `observed.targetBinding` uses `relation: host-target-mapping/v1` and
+repeats the exact requested logical target identity. It is the adapter's
+explicit attestation that the observed VM is the configured host mapping for
+that target; a different target identity or relation is rejected.
+
+Capabilities are negotiated facts, not a statement that every capability was
+used. A successful report must negotiate the complete requested capability set
+and provide every requested role-addressed serial mapping before it is
+accepted. `negotiatedCapabilities` is separate from `completedOperations` and
+evidence. Restore or overlay preparation leaves the disposable overlay active;
+runtime acceptance runs next; display and audio are separate capture operations
+after acceptance; and `cleanup` is a separate, always-run operation that must
+report `completed/removed`. Non-cleanup operations must report
+`not-run/active`, preventing a restore report from claiming an overlay was
+already removed.
+
+Assets, consumed assets, serial mapping roles, evidence roles, request and
+report objects all reject unknown keys and duplicates. Evidence is canonical
+`factory-evidence://sha256/<digest>` and must bind exactly to its lowercase
+digest. On failed, timed-out, or cancelled execution, the client writes a
+validated, sanitized `vem-vm-host-adapter-diagnostic/v1` artifact for upload.
+On `SIGINT` or `SIGTERM`, it aborts the active request, waits for the adapter
+process group after `SIGTERM` and `SIGKILL` escalation, and completes recovery
+cleanup before exiting; workflow `always()` cleanup remains the lifecycle
+backstop. Those diagnostics describe adapter execution only; they are never
+labeled as Windows SSH readiness.
+
+The runner service alone supplies `VEM_VM_HOST_ADAPTER`; no workflow dispatch
+input selects an executable. Repository workflows invoke
+`scripts/testbed/run-vm-host-adapter.mjs`, which writes only the sanitized
+report for upload. `scripts/testbed/fake-vm-host-adapter.mjs` is the
+platform-neutral deterministic contract fixture for success, failure, timeout,
+cancellation, and evidence-mismatch tests. The retained legacy libvirt adapter
+is not part of this workflow contract and remains only until Issue 13 proves
+the host replacement.
 
 ## Maintenance Control Plane
 
