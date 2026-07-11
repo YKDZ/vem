@@ -51,6 +51,14 @@ struct ClearWholeMachineMaintenanceLockRequest {
 
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct ClaimMachineRequest {
+    claim_code: String,
+    #[serde(default)]
+    rotate_maintenance_identity: bool,
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct LocalEnvironmentControlRequest {
     air_conditioner_on: Option<bool>,
     target_temperature_celsius: Option<i8>,
@@ -185,6 +193,7 @@ pub struct IpcContext {
     pub disk_pressure_probe: Arc<dyn crate::health::DiskPressureProbe>,
     pub network_adapter: Arc<dyn NetworkAdapter>,
     pub ui: UiRuntimeServices,
+    pub background_shutdown: CancellationToken,
 }
 
 #[derive(Clone)]
@@ -266,7 +275,7 @@ pub fn assert_loopback(addr: SocketAddr) -> Result<(), String> {
 
 pub async fn run_server(
     bind: SocketAddr,
-    state: IpcContext,
+    mut state: IpcContext,
 ) -> Result<(IpcServerHandle, tokio::task::JoinHandle<Result<(), String>>), String> {
     assert_loopback(bind)?;
 
@@ -279,6 +288,7 @@ pub async fn run_server(
 
     let shutdown = CancellationToken::new();
     let graceful = shutdown.clone();
+    state.background_shutdown = shutdown.clone();
     let router = build_router(state);
     let task = tokio::spawn(async move {
         axum::serve(listener, router)
@@ -406,12 +416,6 @@ struct SubmitPayment {
     order_no: String,
     auth_code: String,
     source: String,
-}
-
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ClaimMachineRequest {
-    claim_code: String,
 }
 
 #[derive(serde::Serialize)]
@@ -1213,7 +1217,13 @@ async fn claim_machine(
     }
 
     let claim_code = payload.claim_code.trim().to_ascii_uppercase();
-    let maintenance_public_key = match ctx.config_store.ensure_maintenance_public_key().await {
+    let maintenance_public_key = match if payload.rotate_maintenance_identity {
+        ctx.config_store
+            .ensure_reclaim_maintenance_public_key(&claim_code)
+            .await
+    } else {
+        ctx.config_store.ensure_maintenance_public_key().await
+    } {
         Ok(public_key) => public_key,
         Err(_) => {
             return (
@@ -1254,7 +1264,12 @@ async fn claim_machine(
     };
     let client = BackendClient::new(public.api_base_url);
     let profile = match client
-        .claim_machine(&claim_code, &maintenance_public_key, &provisioning_profile)
+        .claim_machine(
+            &claim_code,
+            &maintenance_public_key,
+            &provisioning_profile,
+            payload.rotate_maintenance_identity,
+        )
         .await
     {
         Ok(profile) => profile,
@@ -1279,7 +1294,10 @@ async fn claim_machine(
         Ok(config) => {
             if ctx
                 .config_store
-                .apply_maintenance_profile(&maintenance_identity)
+                .apply_maintenance_profile(
+                    &maintenance_identity,
+                    payload.rotate_maintenance_identity,
+                )
                 .await
                 .is_err()
             {
@@ -1291,6 +1309,19 @@ async fn claim_machine(
                     }),
                 )
                     .into_response();
+            }
+            if payload.rotate_maintenance_identity {
+                let reconcile_context = ctx.clone();
+                let background_shutdown = ctx.background_shutdown.clone();
+                tokio::spawn(async move {
+                    reconcile_maintenance_until_terminal(
+                        &reconcile_context,
+                        &background_shutdown,
+                        120,
+                        std::time::Duration::from_secs(5),
+                    )
+                    .await;
+                });
             }
             let _ = ctx.events.send(DaemonEvent::RuntimeReconfigureRequested {
                 event_id: uuid::Uuid::new_v4().simple().to_string(),
@@ -1335,11 +1366,95 @@ async fn maintenance_status(
     if let Err((status, error)) = require_token(&headers, &ctx.token).await {
         return (status, error).into_response();
     }
-    (
-        StatusCode::OK,
-        Json(ctx.config_store.maintenance_status().await),
-    )
-        .into_response()
+    let status = reconcile_maintenance_status(&ctx).await;
+    (StatusCode::OK, Json(status)).into_response()
+}
+
+async fn reconcile_maintenance_status(
+    ctx: &IpcContext,
+) -> crate::maintenance::MaintenanceEnrollmentStatus {
+    let mut status = ctx.config_store.maintenance_status().await;
+    if status.handshake_verified {
+        if let Some(pending_public_key) = status.pending_public_key.clone() {
+            let platform_status = async {
+                let public = ctx.config_store.load_effective_public_config().await?;
+                let machine_code = public
+                    .machine_code
+                    .ok_or_else(|| "machine code is unavailable".to_string())?;
+                let machine_secret = ctx
+                    .config_store
+                    .runtime_secrets()
+                    .await?
+                    .machine_secret
+                    .ok_or_else(|| "machine credential is unavailable".to_string())?;
+                let client = BackendClient::new(public.api_base_url);
+                client.authenticate(&machine_code, &machine_secret).await?;
+                client.get_maintenance_identity_status(&machine_code).await
+            }
+            .await;
+            match platform_status {
+                Ok(platform) => {
+                    if platform.identities.iter().any(|identity| {
+                        identity.public_key == pending_public_key && identity.status == "active"
+                    }) {
+                        match ctx
+                            .config_store
+                            .promote_maintenance_reclaim(&pending_public_key)
+                            .await
+                        {
+                            Ok(promoted) => status = promoted,
+                            Err(error) => status.last_error = Some(error),
+                        }
+                    } else if let Some(failed) = platform.identities.iter().find(|identity| {
+                        identity.public_key == pending_public_key
+                            && identity.status == "reclaim_failed"
+                    }) {
+                        match ctx
+                            .config_store
+                            .reject_maintenance_reclaim(
+                                &pending_public_key,
+                                failed
+                                    .reclaim_failure_reason
+                                    .as_deref()
+                                    .unwrap_or("platform rejected pending maintenance identity"),
+                            )
+                            .await
+                        {
+                            Ok(recovered) => status = recovered,
+                            Err(error) => status.last_error = Some(error),
+                        }
+                    }
+                }
+                Err(error) => {
+                    status.last_error = Some(format!(
+                        "platform maintenance promotion status unavailable: {error}"
+                    ));
+                }
+            }
+        }
+    }
+    status
+}
+
+async fn reconcile_maintenance_until_terminal(
+    ctx: &IpcContext,
+    shutdown: &CancellationToken,
+    max_attempts: usize,
+    retry_delay: std::time::Duration,
+) {
+    for _ in 0..max_attempts {
+        if shutdown.is_cancelled() {
+            break;
+        }
+        let status = reconcile_maintenance_status(ctx).await;
+        if status.pending_public_key.is_none() {
+            break;
+        }
+        tokio::select! {
+            _ = shutdown.cancelled() => break,
+            _ = tokio::time::sleep(retry_delay) => {}
+        }
+    }
 }
 
 async fn create_order_intent(
@@ -4014,6 +4129,7 @@ mod tests {
                 transaction,
                 status_cache,
             },
+            background_shutdown: CancellationToken::new(),
         }
     }
 

@@ -1,4 +1,4 @@
-pub const SCHEMA_VERSION: i64 = 10;
+pub const SCHEMA_VERSION: i64 = 11;
 
 pub const MIGRATION_V1: &str = r#"
 PRAGMA journal_mode = WAL;
@@ -239,6 +239,24 @@ PRAGMA foreign_keys = OFF;
 ALTER TABLE machine_planogram_slots ADD COLUMN try_on_silhouette_url TEXT;
 
 PRAGMA foreign_keys = ON;
+"#;
+
+pub const MIGRATION_V11: &str = r#"
+PRAGMA foreign_keys = ON;
+
+CREATE TABLE IF NOT EXISTS destructive_command_log (
+  message_id TEXT PRIMARY KEY,
+  command_type TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  issued_at TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('received','succeeded','failed')),
+  error_message TEXT,
+  updated_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_destructive_command_log_expires
+  ON destructive_command_log(expires_at);
 "#;
 
 pub const MIGRATION_V4: &str = r#"

@@ -330,11 +330,30 @@ tunnel service then owns the persistent data plane and starts automatically.
 Lifecycle operations are distinct:
 
 - `Local Runtime Reset` clears local VEM business runtime state and preserves
-  Machine Maintenance Identity.
-- `Machine Reclaim` rotates the business credentials and WireGuard key. The new
-  peer must handshake before the old peer is revoked.
-- `Secure Decommission` revokes sessions, business credentials, and the machine
-  peer; an online machine also removes its local tunnel config.
+  the active Machine Maintenance Identity, its DPAPI-protected key, and the
+  stable `VEM-Maintenance` tunnel configuration.
+- Ordinary machine credential rotation replaces only the business credentials;
+  it does not rotate or revoke the WireGuard peer.
+- `Machine Reclaim` creates a `pending_reclaim` peer and rotates the business
+  credentials and WireGuard key. The daemon keeps separate protected active and
+  pending keys and runs separate active and pending tunnel services. Ambiguous
+  retries for the same reclaim code reuse the pending key. The old active peer
+  remains in relay desired state until the relay reports a verified first
+  handshake for the new peer and the daemon observes platform promotion.
+  A failed or timed-out handshake becomes an auditable recovery state and does
+  not revoke the last working peer. A verified reclaim atomically closes
+  sessions targeting the old peer and projects only the new peer.
+- `Secure Decommission` atomically revokes active sessions, business
+  credentials, claim codes, and every machine peer from the platform
+  perspective. An online machine receives a durable signed command that removes
+  its local tunnel, logs the destructive message id, and persists a retryable
+  signed result. The daemon retains only its cleanup MQTT credential and result
+  until it verifies the platform's signed acknowledgement; that result is not
+  subject to normal outbox expiry or capacity eviction. The platform erases its
+  encrypted cleanup credential in the same transaction that records the result,
+  then retries the already-signed acknowledgement across restart. Duplicate
+  command, result, and acknowledgement delivery is idempotent. An offline
+  machine has no valid business credentials and is denied when it reconnects.
 
 Ordinary machine credential rotation does not rotate the WireGuard key. A full
 reinstall generates a new key and requires the previous peer to be revoked by

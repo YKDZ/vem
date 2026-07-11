@@ -3207,6 +3207,7 @@ describe("MachinesService planogram lifecycle", () => {
 });
 
 describe("MachinesService claim code lifecycle", () => {
+  const maintenancePeerInsertValues = vi.fn();
   let service: MachinesService;
   const claimCodeNow = new Date("2026-06-08T16:30:00.000Z");
 
@@ -3333,6 +3334,7 @@ describe("MachinesService claim code lifecycle", () => {
     overrides: Partial<{
       id: string;
       verifierHash: string;
+      purpose: "first_claim" | "reclaim";
       state: "pending" | "consumed" | "expired" | "revoked" | "locked";
       failedAttemptCount: number;
       maxFailedAttempts: number;
@@ -3347,6 +3349,7 @@ describe("MachinesService claim code lifecycle", () => {
       id: "550e8400-e29b-41d4-a716-446655440111",
       machineId: "550e8400-e29b-41d4-a716-446655440000",
       verifierHash: hashMachineClaimCodeVerifier("ABCD-2345"),
+      purpose: "first_claim" as const,
       state: "pending" as const,
       failedAttemptCount: 0,
       maxFailedAttempts: 5,
@@ -3364,6 +3367,34 @@ describe("MachinesService claim code lifecycle", () => {
       ...overrides,
     };
   }
+
+  it("requires explicit rotation intent for reclaim but rejects it for first claim", async () => {
+    const selectCandidate = (purpose: "first_claim" | "reclaim") => ({
+      from: () => ({
+        innerJoin: () => ({
+          where: () => ({
+            limit: async () => [claimCandidate({ purpose })],
+          }),
+        }),
+      }),
+    });
+    mockDb.select
+      .mockReturnValueOnce(selectCandidate("reclaim"))
+      .mockReturnValueOnce(selectCandidate("first_claim"));
+
+    await expect(
+      service.claimMachine(claimRequest("ABCD-2345")),
+    ).rejects.toThrow("Machine reclaim requires maintenance identity rotation");
+    await expect(
+      service.claimMachine({
+        ...claimRequest("ABCD-2345"),
+        maintenanceRotation: "rotate",
+      }),
+    ).rejects.toThrow(
+      "Initial machine claim cannot rotate a maintenance identity",
+    );
+    expect(mockDb.transaction).not.toHaveBeenCalled();
+  });
 
   function addMaintenanceMutationMocks(tx: Record<string, unknown>) {
     const select = vi.fn();
@@ -3389,13 +3420,16 @@ describe("MachinesService claim code lifecycle", () => {
       .mockReturnValueOnce({ from: () => Promise.resolve([]) });
     tx.select = select;
     tx.insert = vi.fn().mockReturnValue({
-      values: () => ({
-        onConflictDoNothing: () => ({
-          returning: async () => [
-            { publicKey: maintenancePublicKey, tunnelAddress: "10.91.16.1" },
-          ],
-        }),
-      }),
+      values: (values: unknown) => {
+        maintenancePeerInsertValues(values);
+        return {
+          onConflictDoNothing: () => ({
+            returning: async () => [
+              { publicKey: maintenancePublicKey, tunnelAddress: "10.91.16.1" },
+            ],
+          }),
+        };
+      },
     });
     (tx.update as ReturnType<typeof vi.fn>).mockReturnValueOnce({
       set: () => ({ where: async () => [] }),
@@ -3761,7 +3795,10 @@ describe("MachinesService claim code lifecycle", () => {
       async (cb: (txArg: typeof tx) => Promise<unknown>) => await cb(tx),
     );
 
-    const result = await service.claimMachine(claimRequest("ABCD-2345"));
+    const result = await service.claimMachine({
+      ...claimRequest("ABCD-2345"),
+      maintenanceRotation: "rotate",
+    });
 
     expect(result.credentials).toEqual(
       expect.objectContaining({
@@ -3773,11 +3810,20 @@ describe("MachinesService claim code lifecycle", () => {
       identity: "vem-prod-24",
       version: "2026-06-adr0026",
     });
+    expect(result.maintenance.reclaimExpiresAt).toBe(
+      "2026-06-08T16:35:00.000Z",
+    );
     expect(rotateSet).toHaveBeenCalledWith(
       expect.objectContaining({
         secretHash: "scrypt:reclaim-machine-secret-hash",
         secretVersion: expect.anything(),
         credentialRevokedAt: null,
+      }),
+    );
+    expect(maintenancePeerInsertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: "pending_reclaim",
+        reclaimExpiresAt: new Date("2026-06-08T16:35:00.000Z"),
       }),
     );
     expect(auditRecord).toHaveBeenCalledWith(
@@ -3793,6 +3839,8 @@ describe("MachinesService claim code lifecycle", () => {
           state: "consumed",
           secretVersion: rotatedSecretVersion,
           claimedAt: "2026-06-08T16:30:00.000Z",
+          maintenancePeerState: "pending_reclaim",
+          reclaimExpiresAt: "2026-06-08T16:35:00.000Z",
         },
       },
       tx,
@@ -3915,7 +3963,10 @@ describe("MachinesService claim code lifecycle", () => {
       async (cb: (txArg: typeof tx) => Promise<unknown>) => await cb(tx),
     );
 
-    const profile = await service.claimMachine(claimRequest("ABCD-2345"));
+    const profile = await service.claimMachine({
+      ...claimRequest("ABCD-2345"),
+      maintenanceRotation: "rotate",
+    });
 
     expect(profile.credentials.machineSecret).toBe(newMachineSecret);
     expect(profile.credentials.mqttSigningSecret).toBe(newMqttSigningSecret);

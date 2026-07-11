@@ -217,11 +217,19 @@ export class DaemonApiClient {
     );
   }
 
-  async claimMachine(claimCode: string): Promise<ProvisioningClaimResponse> {
+  async claimMachine(
+    claimCode: string,
+    options: { rotateMaintenanceIdentity?: boolean } = {},
+  ): Promise<ProvisioningClaimResponse> {
     return provisioningClaimResponseSchema.parse(
       await this.request("/v1/provisioning/claim", {
         method: "POST",
-        body: { claimCode },
+        body: {
+          claimCode,
+          ...(options.rotateMaintenanceIdentity
+            ? { rotateMaintenanceIdentity: true }
+            : {}),
+        },
       }),
     );
   }

@@ -54,6 +54,12 @@ const baseEnvSchema = z.object({
     .min(60)
     .max(3600)
     .default(600),
+  MACHINE_RECLAIM_HANDSHAKE_TIMEOUT_SECONDS: z.coerce
+    .number()
+    .int()
+    .min(60)
+    .max(86400)
+    .default(300),
   MACHINE_PROVISIONING_PROFILE: z.enum(["production", "testbed"]),
   MAINTENANCE_RELAY_ADDRESS_POOL: z.string().default("10.91.0.0/24"),
   MAINTENANCE_RUNNER_ADDRESS_POOL: z.string().default("10.91.1.0/24"),

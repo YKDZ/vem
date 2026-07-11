@@ -173,6 +173,7 @@ async fn run_console_cycle(
         disk_pressure_probe: Arc::new(crate::health::DataDirDiskPressureProbe::from_env()),
         network_adapter: crate::network::adapter_from_env(),
         ui,
+        background_shutdown: CancellationToken::new(),
     };
     let (ipc_handle, ipc_task) = ipc::run_server(config.bind, ipc_ctx.clone())
         .await

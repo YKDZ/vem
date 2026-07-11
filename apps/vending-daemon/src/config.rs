@@ -221,6 +221,8 @@ pub struct ProvisioningMaintenanceIdentity {
     pub endpoint: String,
     pub relay: ProvisioningMaintenancePeer,
     pub role_routes: MaintenanceRoleRoutes,
+    #[serde(default)]
+    pub reclaim_expires_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1442,6 +1444,19 @@ impl ConfigStore {
         self.maintenance.ensure_public_key().await
     }
 
+    pub async fn ensure_reclaim_maintenance_public_key(
+        &self,
+        claim_code: &str,
+    ) -> Result<String, String> {
+        let active_identity = self
+            .load_provisioning_profile_cache_summary()
+            .await?
+            .and_then(|summary| summary.maintenance);
+        self.maintenance
+            .ensure_reclaim_public_key(claim_code, active_identity.as_ref())
+            .await
+    }
+
     pub async fn provisioning_profile_name(&self) -> Result<String, String> {
         let factory = self.load_factory_manifest().await?;
         let local = self.load_local_bring_up_settings().await?;
@@ -1461,26 +1476,103 @@ impl ConfigStore {
     pub async fn apply_maintenance_profile(
         &self,
         identity: &ProvisioningMaintenanceIdentity,
+        reclaim: bool,
     ) -> Result<crate::maintenance::MaintenanceEnrollmentStatus, String> {
-        self.maintenance.apply_profile(identity).await
+        if reclaim {
+            self.maintenance.apply_reclaim_profile(identity).await
+        } else {
+            self.maintenance.apply_profile(identity).await
+        }
     }
 
     pub async fn recover_maintenance_from_cache(
         &self,
     ) -> Result<Option<crate::maintenance::MaintenanceEnrollmentStatus>, String> {
-        let Some(identity) = self
+        let pending_finalize = self
+            .state
+            .get_metadata::<bool>("secure_decommission_pending_finalize")
+            .await
+            .map_err(|error| error.to_string())?
+            .unwrap_or(false);
+        if pending_finalize {
+            if self
+                .state
+                .get_metadata::<String>("secure_decommission_platform_acknowledged_command_no")
+                .await
+                .map_err(|error| error.to_string())?
+                .is_some()
+            {
+                self.finalize_secure_decommission().await?;
+            }
+            return Ok(None);
+        }
+        let identity = self
             .load_provisioning_profile_cache_summary()
             .await?
-            .and_then(|summary| summary.maintenance)
-        else {
-            return Ok(None);
-        };
-        validate_maintenance_identity(&identity)?;
-        self.maintenance.apply_profile(&identity).await.map(Some)
+            .and_then(|summary| summary.maintenance);
+        if let Some(identity) = identity.as_ref() {
+            validate_maintenance_identity(identity)?;
+        }
+        self.maintenance.recover(identity.as_ref()).await
     }
 
     pub async fn maintenance_status(&self) -> crate::maintenance::MaintenanceEnrollmentStatus {
         self.maintenance.status().await
+    }
+
+    pub async fn promote_maintenance_reclaim(
+        &self,
+        public_key: &str,
+    ) -> Result<crate::maintenance::MaintenanceEnrollmentStatus, String> {
+        self.maintenance.promote_reclaim(public_key).await
+    }
+
+    pub async fn reject_maintenance_reclaim(
+        &self,
+        public_key: &str,
+        reason: &str,
+    ) -> Result<crate::maintenance::MaintenanceEnrollmentStatus, String> {
+        self.maintenance.reject_reclaim(public_key, reason).await
+    }
+
+    pub async fn secure_decommission(&self) -> Result<(), String> {
+        self.state
+            .put_metadata("secure_decommission_pending_finalize", &true)
+            .await
+            .map_err(|error| error.to_string())?;
+        self.maintenance.decommission().await?;
+        self.secrets
+            .write_secret(crate::secret::MACHINE_SECRET_ACCOUNT, "")
+            .await
+            .map_err(|error| format!("clear decommissioned machine credential failed: {error}"))
+    }
+
+    pub async fn finalize_secure_decommission(&self) -> Result<(), String> {
+        self.secrets
+            .clear_all()
+            .await
+            .map_err(|error| format!("clear decommissioned machine secrets failed: {error}"))?;
+        match fs::remove_file(self.provisioning_profile_cache_summary_path()).await {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("remove provisioning profile failed: {error}")),
+        }
+        self.save_public_config(default_public_config()).await?;
+        self.state
+            .put_metadata("secure_decommission_pending_finalize", &false)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    pub async fn acknowledge_secure_decommission(&self, command_no: &str) -> Result<(), String> {
+        self.state
+            .put_metadata(
+                "secure_decommission_platform_acknowledged_command_no",
+                &command_no,
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        self.finalize_secure_decommission().await
     }
 
     async fn read_optional_json<T>(path: PathBuf, label: &str) -> Result<Option<T>, String>
@@ -1841,21 +1933,28 @@ impl ConfigStore {
             apply_local_bring_up_settings_to_public(&mut public, settings);
         }
 
-        let maintenance_private_key = self
-            .secrets
-            .read_secret(crate::secret::MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT)
-            .await
-            .map_err(Self::provisioning_persistence_error)?;
+        let mut retained_maintenance_secrets = Vec::new();
+        for account in [
+            crate::secret::MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT,
+            crate::secret::MACHINE_WIREGUARD_PENDING_PRIVATE_KEY_ACCOUNT,
+            crate::secret::MACHINE_MAINTENANCE_LIFECYCLE_ACCOUNT,
+        ] {
+            if let Some(value) = self
+                .secrets
+                .read_secret(account)
+                .await
+                .map_err(Self::provisioning_persistence_error)?
+            {
+                retained_maintenance_secrets.push((account, value));
+            }
+        }
         self.secrets
             .clear_all()
             .await
             .map_err(Self::provisioning_persistence_error)?;
-        if let Some(private_key) = maintenance_private_key {
+        for (account, value) in retained_maintenance_secrets {
             self.secrets
-                .write_secret(
-                    crate::secret::MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT,
-                    &private_key,
-                )
+                .write_secret(account, &value)
                 .await
                 .map_err(Self::provisioning_persistence_error)?;
         }
@@ -2105,10 +2204,14 @@ mod tests {
         applies: AtomicUsize,
     }
 
+    #[derive(Default)]
+    struct RemovalFailingTunnel;
+
     #[async_trait]
     impl crate::maintenance::WindowsTunnelBackend for RecoveryTunnel {
         async fn apply(
             &self,
+            _identity: crate::maintenance::MaintenanceTunnelIdentity,
             _config: crate::maintenance::WindowsTunnelConfig,
         ) -> Result<(), String> {
             self.applies.fetch_add(1, Ordering::SeqCst);
@@ -2117,6 +2220,7 @@ mod tests {
 
         async fn observe_handshake(
             &self,
+            _identity: crate::maintenance::MaintenanceTunnelIdentity,
             _relay_public_key: &str,
         ) -> Result<crate::maintenance::HandshakeObservation, String> {
             Ok(crate::maintenance::HandshakeObservation {
@@ -2124,6 +2228,32 @@ mod tests {
                 last_handshake_at: None,
                 message: "first WireGuard handshake has not been observed".to_string(),
             })
+        }
+    }
+
+    #[async_trait]
+    impl crate::maintenance::WindowsTunnelBackend for RemovalFailingTunnel {
+        async fn apply(
+            &self,
+            _identity: crate::maintenance::MaintenanceTunnelIdentity,
+            _config: crate::maintenance::WindowsTunnelConfig,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+
+        async fn observe_handshake(
+            &self,
+            _identity: crate::maintenance::MaintenanceTunnelIdentity,
+            _relay_public_key: &str,
+        ) -> Result<crate::maintenance::HandshakeObservation, String> {
+            unreachable!("handshake is not observed during decommission")
+        }
+
+        async fn remove(
+            &self,
+            _identity: crate::maintenance::MaintenanceTunnelIdentity,
+        ) -> Result<(), String> {
+            Err("injected tunnel removal failure".to_string())
         }
     }
 
@@ -2272,6 +2402,7 @@ mod tests {
                     runner: "10.91.1.0/24".to_string(),
                     maintainer: "10.91.3.0/24".to_string(),
                 },
+                reclaim_expires_at: None,
             },
             metadata: ProvisioningMetadata {
                 profile_version: 1,
@@ -3952,5 +4083,102 @@ mod tests {
         assert_eq!(recovered.state, "handshake_pending");
         assert_eq!(recovered.public_key.as_deref(), Some(public_key.as_str()));
         assert_eq!(tunnel.applies.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn secure_decommission_marks_pending_before_destructive_cleanup() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let data_dir = temp.path().to_path_buf();
+        let state = LocalStateStore::open(&data_dir.join("state.db"))
+            .await
+            .expect("state");
+        let secrets = Arc::new(InMemorySecretStore::default());
+        secrets
+            .write_secret(
+                MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT,
+                "maintenance-key-present",
+            )
+            .await
+            .expect("seed maintenance key");
+        let store = ConfigStore::new_with_tunnel(
+            data_dir,
+            state.clone(),
+            secrets.clone(),
+            Arc::new(RemovalFailingTunnel),
+        );
+
+        let error = store
+            .secure_decommission()
+            .await
+            .expect_err("injected cleanup failure");
+
+        assert!(error.contains("injected tunnel removal failure"));
+        assert_eq!(
+            state
+                .get_metadata::<bool>("secure_decommission_pending_finalize")
+                .await
+                .expect("pending marker"),
+            Some(true)
+        );
+        assert!(secrets
+            .read_secret(MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT)
+            .await
+            .expect("retained key")
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn restart_finishes_decommission_after_persisted_platform_ack() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let data_dir = temp.path().join("vending-daemon");
+        let state = LocalStateStore::open(&data_dir.join("state.db"))
+            .await
+            .expect("state");
+        let secrets = Arc::new(InMemorySecretStore::default());
+        secrets
+            .write_secret(MQTT_SIGNING_SECRET_ACCOUNT, "cleanup-signing-secret")
+            .await
+            .expect("seed signing secret");
+        let store = ConfigStore::new(data_dir.clone(), state.clone(), secrets.clone());
+        let mut public = default_public_config();
+        public.machine_code = Some("M1".to_string());
+        store
+            .save_public_config(public)
+            .await
+            .expect("save public config");
+        store.secure_decommission().await.expect("local cleanup");
+        state
+            .put_metadata(
+                "secure_decommission_platform_acknowledged_command_no",
+                &"DCOM-RECOVER",
+            )
+            .await
+            .expect("persist platform acknowledgement");
+
+        let restarted = ConfigStore::new(data_dir, state.clone(), secrets.clone());
+        assert!(restarted
+            .recover_maintenance_from_cache()
+            .await
+            .expect("recover finalization")
+            .is_none());
+
+        assert!(secrets
+            .read_secret(MQTT_SIGNING_SECRET_ACCOUNT)
+            .await
+            .expect("signing secret")
+            .is_none());
+        assert!(restarted
+            .load_public_config()
+            .await
+            .expect("public config")
+            .machine_code
+            .is_none());
+        assert_eq!(
+            state
+                .get_metadata::<bool>("secure_decommission_pending_finalize")
+                .await
+                .expect("pending marker"),
+            Some(false),
+        );
     }
 }

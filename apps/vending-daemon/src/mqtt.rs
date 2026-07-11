@@ -127,6 +127,20 @@ impl MqttSyncRuntime {
         )
     }
 
+    fn secure_decommission_command_topic(&self) -> String {
+        format!(
+            "vem/machines/{}/commands/secure-decommission",
+            self.machine_code
+        )
+    }
+
+    fn secure_decommission_ack_topic(&self) -> String {
+        format!(
+            "vem/machines/{}/commands/secure-decommission-ack",
+            self.machine_code
+        )
+    }
+
     async fn set_connected(&self, connected: bool, last_error: Option<String>) {
         let _ = self.events.send(DaemonEvent::MqttChanged {
             event_id: Uuid::new_v4().simple().to_string(),
@@ -482,6 +496,175 @@ impl MqttSyncRuntime {
         })
     }
 
+    pub async fn handle_secure_decommission_command(
+        &self,
+        payload_text: &str,
+    ) -> Result<CommandHandlingResult, String> {
+        let envelope = self.parse_and_verify_envelope(payload_text)?;
+        let command_no = envelope
+            .payload
+            .get("commandNo")
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| "secure decommission commandNo is missing".to_string())?
+            .to_string();
+        let operation = envelope
+            .payload
+            .get("operation")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| "secure decommission operation is missing".to_string())?;
+        if operation != "secure-decommission" {
+            return Err("unsupported secure decommission operation".to_string());
+        }
+        if envelope.message_id != format!("secure-decommission:{command_no}") {
+            return Err("secure decommission message identity is invalid".to_string());
+        }
+        let existing = self
+            .state
+            .record_destructive_command_received(
+                &envelope.message_id,
+                "secure-decommission",
+                &envelope.payload,
+                &envelope.issued_at,
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        if existing.status == "succeeded" {
+            let result_payload = serde_json::json!({
+                "commandNo": command_no,
+                "success": true,
+                "reportedAt": crate::state::store::now_iso(),
+                "error": null,
+            });
+            let mut result_event = crate::state::store::OutboxInput::secure_decommission_result(
+                &self.machine_code,
+                &command_no,
+                result_payload,
+            );
+            result_event.payload_json = self.sign_outbox_payload(
+                format!("secure-decommission-result:{command_no}"),
+                result_event.payload_json,
+            )?;
+            self.state
+                .replace_outbox_event(&result_event)
+                .await
+                .map_err(|error| error.to_string())?;
+            return Ok(CommandHandlingResult::DuplicateFinal { command_no });
+        }
+
+        let cleanup = match &self.readiness_context {
+            Some(context) => context.config_store.secure_decommission().await,
+            None => Err("secure decommission runtime context is unavailable".to_string()),
+        };
+        let reported_at = crate::state::store::now_iso();
+        let result_payload = serde_json::json!({
+            "commandNo": command_no,
+            "success": cleanup.is_ok(),
+            "reportedAt": reported_at,
+            "error": cleanup.as_ref().err(),
+        });
+        let mut result_event = crate::state::store::OutboxInput::secure_decommission_result(
+            &self.machine_code,
+            &command_no,
+            result_payload,
+        );
+        result_event.payload_json = self.sign_outbox_payload(
+            format!("secure-decommission-result:{command_no}"),
+            result_event.payload_json,
+        )?;
+        self.state
+            .record_destructive_command_result_tx(
+                &envelope.message_id,
+                cleanup.is_ok(),
+                cleanup.as_ref().err().map(String::as_str),
+                &result_event,
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok(CommandHandlingResult::Processed { command_no })
+    }
+
+    pub async fn handle_secure_decommission_ack(
+        &self,
+        payload_text: &str,
+    ) -> Result<CommandHandlingResult, String> {
+        let envelope: vending_core::mqtt::MqttEnvelope = serde_json::from_str(payload_text)
+            .map_err(|error| format!("parse MQTT envelope failed: {error}"))?;
+        if envelope.machine_code != self.machine_code {
+            return Err(
+                "secure decommission acknowledgement machine identity is invalid".to_string(),
+            );
+        }
+        vending_core::mqtt::verify_signature_bytes(&envelope, &self.signing_secret)?;
+        let command_no = envelope
+            .payload
+            .get("commandNo")
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| "secure decommission acknowledgement commandNo is missing".to_string())?
+            .to_string();
+        if envelope
+            .payload
+            .get("operation")
+            .and_then(|value| value.as_str())
+            != Some("secure-decommission-ack")
+            || envelope
+                .payload
+                .get("acknowledgedAt")
+                .and_then(|value| value.as_str())
+                .is_none()
+            || envelope.message_id != format!("secure-decommission-ack:{command_no}")
+        {
+            return Err("secure decommission acknowledgement is invalid".to_string());
+        }
+        let message_id = format!("secure-decommission:{command_no}");
+        let command = self
+            .state
+            .destructive_command(&message_id)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "secure decommission command is unknown".to_string())?;
+        if command.command_type != "secure-decommission"
+            || command.status != "succeeded"
+            || command
+                .payload_json
+                .get("commandNo")
+                .and_then(|value| value.as_str())
+                != Some(command_no.as_str())
+        {
+            return Err("secure decommission command is not ready for acknowledgement".to_string());
+        }
+        let already_acknowledged = self
+            .state
+            .get_metadata::<String>("secure_decommission_platform_acknowledged_command_no")
+            .await
+            .map_err(|error| error.to_string())?
+            .as_deref()
+            == Some(command_no.as_str());
+        if !already_acknowledged {
+            self.state
+                .remove_outbox_event(&format!(
+                    "{}:secure-decommission-result:{command_no}",
+                    self.machine_code
+                ))
+                .await
+                .map_err(|error| error.to_string())?;
+            let context = self.readiness_context.as_ref().ok_or_else(|| {
+                "secure decommission finalization context is unavailable".to_string()
+            })?;
+            context
+                .config_store
+                .acknowledge_secure_decommission(&command_no)
+                .await?;
+        }
+        self.shutdown.cancel();
+        Ok(if already_acknowledged {
+            CommandHandlingResult::DuplicateFinal { command_no }
+        } else {
+            CommandHandlingResult::Processed { command_no }
+        })
+    }
+
     pub async fn record_environment_query_result(
         &self,
         sample: Option<EnvironmentSample>,
@@ -653,11 +836,17 @@ impl MqttSyncRuntime {
 
         let mut sent = 0_u64;
         let mut failed = 0_u64;
+        let decommission_result_topic = format!(
+            "vem/machines/{}/events/secure-decommission-result",
+            self.machine_code
+        );
 
         for event in due {
             if event.kind == vending_core::domain::OutboxKind::StockMovementUpload {
                 continue;
             }
+            let is_decommission_result =
+                event.topic.as_deref() == Some(decommission_result_topic.as_str());
             let result = match event.transport {
                 vending_core::domain::OutboxTransport::Mqtt => {
                     self.publish_json(event.topic.as_deref(), &event.payload_json)
@@ -668,8 +857,17 @@ impl MqttSyncRuntime {
                         .await
                 }
             };
-
             match result {
+                Ok(()) if is_decommission_result => {
+                    self.state
+                        .mark_outbox_failed(
+                            &event.id,
+                            "awaiting secure decommission platform acknowledgement",
+                        )
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    sent += 1;
+                }
                 Ok(()) => {
                     self.state
                         .remove_outbox_event(&event.id)
@@ -733,6 +931,8 @@ impl MqttSyncRuntime {
     pub async fn run(self: Arc<Self>, mut event_loop: EventLoop) -> Result<(), String> {
         let dispense_topic = self.command_topic();
         let environment_control_topic = self.environment_control_command_topic();
+        let secure_decommission_topic = self.secure_decommission_command_topic();
+        let secure_decommission_ack_topic = self.secure_decommission_ack_topic();
         {
             let _ = self.events.send(DaemonEvent::MqttChanged {
                 event_id: Uuid::new_v4().simple().to_string(),
@@ -749,6 +949,12 @@ impl MqttSyncRuntime {
                 .await;
             let _ = client
                 .subscribe(environment_control_topic.clone(), QoS::AtLeastOnce)
+                .await;
+            let _ = client
+                .subscribe(secure_decommission_topic.clone(), QoS::AtLeastOnce)
+                .await;
+            let _ = client
+                .subscribe(secure_decommission_ack_topic.clone(), QoS::AtLeastOnce)
                 .await;
         }
         let _ = self.recover_stale_active_dispense_commands().await;
@@ -798,6 +1004,10 @@ impl MqttSyncRuntime {
                                 self.handle_dispense_command(&text).await
                             } else if publish.topic == environment_control_topic {
                                 self.handle_environment_control_command(&text).await
+                            } else if publish.topic == secure_decommission_topic {
+                                self.handle_secure_decommission_command(&text).await
+                            } else if publish.topic == secure_decommission_ack_topic {
+                                self.handle_secure_decommission_ack(&text).await
                             } else {
                                 Ok(CommandHandlingResult::Processed {
                                     command_no: String::new(),
@@ -1059,10 +1269,24 @@ mod tests {
         state: crate::state::LocalStateStore,
         public: crate::config::MachinePublicConfig,
     ) -> crate::ipc::IpcContext {
+        let data_dir =
+            if data_dir.file_name().and_then(|name| name.to_str()) == Some("vending-daemon") {
+                data_dir.to_path_buf()
+            } else {
+                data_dir.join("vending-daemon")
+            };
         let secrets: Arc<dyn crate::secret::SecretStore> =
             Arc::new(crate::secret::InMemorySecretStore::default());
+        secrets
+            .write_secret(crate::secret::MACHINE_SECRET_ACCOUNT, "machine-secret")
+            .await
+            .expect("machine secret");
+        secrets
+            .write_secret(crate::secret::MQTT_SIGNING_SECRET_ACCOUNT, "secret")
+            .await
+            .expect("MQTT signing secret");
         let config_store = Arc::new(crate::config::ConfigStore::new(
-            data_dir.to_path_buf(),
+            data_dir.clone(),
             state.clone(),
             secrets,
         ));
@@ -1085,7 +1309,7 @@ mod tests {
         );
 
         crate::ipc::IpcContext {
-            data_dir: data_dir.to_path_buf(),
+            data_dir,
             token: "test-token".to_string(),
             config_store,
             state,
@@ -1099,6 +1323,7 @@ mod tests {
                 transaction,
                 status_cache,
             },
+            background_shutdown: CancellationToken::new(),
         }
     }
 
@@ -2288,5 +2513,331 @@ mod tests {
         let environment = &heartbeat.payload_json["payload"]["statusPayload"]["environment"];
         assert_eq!(environment["sensorStatus"], "faulted");
         assert_eq!(environment["airConditionerOn"], true);
+    }
+
+    #[tokio::test]
+    async fn secure_decommission_rejects_mismatched_message_identity_before_cleanup() {
+        let temp = tempfile::tempdir().expect("temp");
+        let state = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("state");
+        let mut public = crate::config::default_public_config();
+        public.machine_code = Some("M1".to_string());
+        let context = test_readiness_context(temp.path(), state.clone(), public.clone()).await;
+        let hardware = crate::hardware::HardwareSupervisor::from_config(&public).expect("hardware");
+        let (event_tx, _rx) = tokio::sync::broadcast::channel(4);
+        let runtime = MqttSyncRuntime::new(
+            "M1".to_string(),
+            "secret".to_string(),
+            state.clone(),
+            hardware,
+            event_tx,
+            CancellationToken::new(),
+        )
+        .with_readiness_context(context);
+        let envelope = sign_envelope(
+            "M1",
+            "secret",
+            "captured-message-id",
+            serde_json::json!({
+                "commandNo": "DCOM-MISMATCH",
+                "operation": "secure-decommission",
+                "requestedAt": crate::state::store::now_iso(),
+            }),
+        );
+
+        let error = runtime
+            .handle_secure_decommission_command(
+                &serde_json::to_string(&envelope).expect("envelope"),
+            )
+            .await
+            .expect_err("mismatched message identity");
+
+        assert!(error.contains("message identity"));
+        assert!(state
+            .destructive_command("captured-message-id")
+            .await
+            .expect("command log")
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn secure_decommission_retries_persisted_failed_local_cleanup() {
+        let temp = tempfile::tempdir().expect("temp");
+        let state = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("state");
+        let mut public = crate::config::default_public_config();
+        public.machine_code = Some("M1".to_string());
+        let hardware = crate::hardware::HardwareSupervisor::from_config(&public).expect("hardware");
+        let (event_tx, _rx) = tokio::sync::broadcast::channel(4);
+        let unavailable = MqttSyncRuntime::new(
+            "M1".to_string(),
+            "secret".to_string(),
+            state.clone(),
+            hardware,
+            event_tx,
+            CancellationToken::new(),
+        );
+        let envelope = sign_envelope(
+            "M1",
+            "secret",
+            "secure-decommission:DCOM-RETRY",
+            serde_json::json!({
+                "commandNo": "DCOM-RETRY",
+                "operation": "secure-decommission",
+                "requestedAt": crate::state::store::now_iso(),
+            }),
+        );
+        let payload = serde_json::to_string(&envelope).expect("envelope");
+
+        unavailable
+            .handle_secure_decommission_command(&payload)
+            .await
+            .expect("record failed cleanup");
+        assert_eq!(
+            state
+                .destructive_command("secure-decommission:DCOM-RETRY")
+                .await
+                .expect("command log")
+                .expect("failed command")
+                .status,
+            "failed"
+        );
+
+        let context = test_readiness_context(temp.path(), state.clone(), public.clone()).await;
+        let hardware = crate::hardware::HardwareSupervisor::from_config(&public).expect("hardware");
+        let (event_tx, _rx) = tokio::sync::broadcast::channel(4);
+        let recovered = MqttSyncRuntime::new(
+            "M1".to_string(),
+            "secret".to_string(),
+            state.clone(),
+            hardware,
+            event_tx,
+            CancellationToken::new(),
+        )
+        .with_readiness_context(context);
+
+        let retry = recovered
+            .handle_secure_decommission_command(&payload)
+            .await
+            .expect("retry cleanup");
+        assert!(matches!(retry, CommandHandlingResult::Processed { .. }));
+        assert_eq!(
+            state
+                .destructive_command("secure-decommission:DCOM-RETRY")
+                .await
+                .expect("command log")
+                .expect("recovered command")
+                .status,
+            "succeeded"
+        );
+        assert_eq!(
+            state
+                .outbox_record("M1:secure-decommission-result:DCOM-RETRY")
+                .await
+                .expect("outbox")
+                .expect("result")
+                .payload_json["payload"]["success"],
+            true,
+        );
+    }
+
+    #[tokio::test]
+    async fn secure_decommission_qos_duplicate_is_logged_once_and_replays_no_cleanup() {
+        let temp = tempfile::tempdir().expect("temp");
+        let state = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("state");
+        let mut public = crate::config::default_public_config();
+        public.machine_code = Some("M1".to_string());
+        let context = test_readiness_context(temp.path(), state.clone(), public.clone()).await;
+        let hardware = crate::hardware::HardwareSupervisor::from_config(&public).expect("hardware");
+        let (event_tx, _rx) = tokio::sync::broadcast::channel(4);
+        let runtime = MqttSyncRuntime::new(
+            "M1".to_string(),
+            "secret".to_string(),
+            state.clone(),
+            hardware,
+            event_tx,
+            CancellationToken::new(),
+        )
+        .with_readiness_context(context);
+        let envelope = sign_envelope(
+            "M1",
+            "secret",
+            "secure-decommission:DCOM-1",
+            serde_json::json!({
+                "commandNo": "DCOM-1",
+                "operation": "secure-decommission",
+                "requestedAt": crate::state::store::now_iso(),
+            }),
+        );
+        let payload = serde_json::to_string(&envelope).expect("envelope");
+
+        let first = runtime
+            .handle_secure_decommission_command(&payload)
+            .await
+            .expect("first delivery");
+        let duplicate = runtime
+            .handle_secure_decommission_command(&payload)
+            .await
+            .expect("QoS duplicate");
+
+        assert!(matches!(first, CommandHandlingResult::Processed { .. }));
+        assert!(matches!(
+            duplicate,
+            CommandHandlingResult::DuplicateFinal { .. }
+        ));
+        let record = state
+            .destructive_command("secure-decommission:DCOM-1")
+            .await
+            .expect("command log")
+            .expect("logged command");
+        assert_eq!(record.status, "succeeded");
+        assert!(state
+            .outbox_record("M1:secure-decommission-result:DCOM-1")
+            .await
+            .expect("outbox")
+            .is_some());
+
+        drop(runtime);
+        let reopened = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("reopened state");
+        let context = test_readiness_context(temp.path(), reopened.clone(), public.clone()).await;
+        let hardware = crate::hardware::HardwareSupervisor::from_config(&public).expect("hardware");
+        let (event_tx, _rx) = tokio::sync::broadcast::channel(4);
+        let restarted = MqttSyncRuntime::new(
+            "M1".to_string(),
+            "secret".to_string(),
+            reopened,
+            hardware,
+            event_tx,
+            CancellationToken::new(),
+        )
+        .with_readiness_context(context);
+        let replay_after_restart = restarted
+            .handle_secure_decommission_command(&payload)
+            .await
+            .expect("captured replay after restart");
+        assert!(matches!(
+            replay_after_restart,
+            CommandHandlingResult::DuplicateFinal { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn secure_decommission_waits_for_persisted_platform_ack_before_finalizing() {
+        let temp = tempfile::tempdir().expect("temp");
+        let state = LocalStateStore::open(&temp.path().join("state.db"))
+            .await
+            .expect("state");
+        let mut public = crate::config::default_public_config();
+        public.machine_code = Some("M1".to_string());
+        let context = test_readiness_context(temp.path(), state.clone(), public).await;
+        let hardware = crate::hardware::HardwareSupervisor::from_config(
+            &context
+                .config_store
+                .load_public_config()
+                .await
+                .expect("public config"),
+        )
+        .expect("hardware");
+        let shutdown = CancellationToken::new();
+        let (event_tx, _rx) = tokio::sync::broadcast::channel(4);
+        let runtime = MqttSyncRuntime::new(
+            "M1".to_string(),
+            "secret".to_string(),
+            state.clone(),
+            hardware,
+            event_tx,
+            shutdown.clone(),
+        )
+        .with_readiness_context(context.clone());
+        let command_no = "DCOM-ACK";
+        let command = sign_envelope(
+            "M1",
+            "secret",
+            &format!("secure-decommission:{command_no}"),
+            serde_json::json!({
+                "commandNo": command_no,
+                "operation": "secure-decommission",
+                "requestedAt": crate::state::store::now_iso(),
+            }),
+        );
+
+        runtime
+            .handle_secure_decommission_command(&serde_json::to_string(&command).expect("command"))
+            .await
+            .expect("local cleanup");
+        runtime.flush_due_outbox().await.expect("publish result");
+
+        assert!(state
+            .outbox_record("M1:secure-decommission-result:DCOM-ACK")
+            .await
+            .expect("outbox")
+            .is_some());
+        assert_eq!(
+            context
+                .config_store
+                .load_public_config()
+                .await
+                .expect("public config")
+                .machine_code
+                .as_deref(),
+            Some("M1"),
+        );
+        assert!(!shutdown.is_cancelled());
+
+        let acknowledgement = sign_envelope(
+            "M1",
+            "secret",
+            &format!("secure-decommission-ack:{command_no}"),
+            serde_json::json!({
+                "commandNo": command_no,
+                "operation": "secure-decommission-ack",
+                "acknowledgedAt": crate::state::store::now_iso(),
+            }),
+        );
+        let first_ack = runtime
+            .handle_secure_decommission_ack(
+                &serde_json::to_string(&acknowledgement).expect("acknowledgement"),
+            )
+            .await
+            .expect("platform acknowledgement");
+        let duplicate_ack = runtime
+            .handle_secure_decommission_ack(
+                &serde_json::to_string(&acknowledgement).expect("acknowledgement"),
+            )
+            .await
+            .expect("duplicate platform acknowledgement");
+
+        assert!(matches!(first_ack, CommandHandlingResult::Processed { .. }));
+        assert!(matches!(
+            duplicate_ack,
+            CommandHandlingResult::DuplicateFinal { .. }
+        ));
+
+        assert!(state
+            .outbox_record("M1:secure-decommission-result:DCOM-ACK")
+            .await
+            .expect("outbox")
+            .is_none());
+        assert!(context
+            .config_store
+            .load_public_config()
+            .await
+            .expect("public config")
+            .machine_code
+            .is_none());
+        assert!(context
+            .config_store
+            .runtime_secrets()
+            .await
+            .expect("runtime secrets")
+            .mqtt_signing_secret
+            .is_none());
+        assert!(shutdown.is_cancelled());
     }
 }

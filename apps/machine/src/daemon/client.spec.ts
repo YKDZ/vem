@@ -253,6 +253,64 @@ describe("DaemonApiClient", () => {
     expect(JSON.stringify(status)).not.toContain("private");
   });
 
+  it("sends an explicit rotation marker only for reclaim claims", async () => {
+    vi.mocked(getDaemonConnectionInfo).mockResolvedValue({
+      baseUrl: "http://127.0.0.1:7891",
+      token: "token-1",
+      source: "browser_env",
+      mock: true,
+    });
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          status: "provisioned",
+          machineCode: "M001",
+          restartRequested: true,
+          config: {
+            public: {
+              machineCode: "M001",
+              apiBaseUrl: "http://localhost:3000/api",
+              mqttUrl: "mqtt://localhost:1883",
+              mqttUsername: null,
+              hardwareAdapter: "mock",
+              serialPortPath: null,
+              lowerControllerUsbIdentity: null,
+              scannerAdapter: "disabled",
+              scannerSerialPortPath: null,
+              scannerBaudRate: 9600,
+              scannerFrameSuffix: "crlf",
+              visionEnabled: true,
+              visionWsUrl: "ws://127.0.0.1:7892/ws",
+              visionRequestTimeoutMs: 8000,
+              kioskMode: false,
+              stockMovementRetentionDays: 30,
+            },
+            machineSecretConfigured: true,
+            mqttSigningSecretConfigured: true,
+            mqttPasswordConfigured: false,
+            provisioned: true,
+            provisioningIssues: [],
+          },
+        }),
+        { status: 200 },
+      ),
+    );
+
+    await daemonClient.claimMachine("RECL-2345", {
+      rotateMaintenanceIdentity: true,
+    });
+
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "http://127.0.0.1:7891/v1/provisioning/claim",
+      expect.objectContaining({
+        body: JSON.stringify({
+          claimCode: "RECL-2345",
+          rotateMaintenanceIdentity: true,
+        }),
+      }),
+    );
+  });
+
   it("loads bring-up snapshot through daemon IPC without secret fields", async () => {
     vi.mocked(getDaemonConnectionInfo).mockResolvedValue({
       baseUrl: "http://127.0.0.1:7891",

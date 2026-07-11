@@ -53,6 +53,24 @@ pub struct LogExportResultPayload {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct MaintenanceIdentityPlatformStatus {
+    pub machine_id: String,
+    pub identities: Vec<MaintenanceIdentityPlatformPeerStatus>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MaintenanceIdentityPlatformPeerStatus {
+    pub public_key: String,
+    pub status: String,
+    pub reclaim_expires_at: Option<String>,
+    pub handshake_verified_at: Option<String>,
+    pub reclaim_failed_at: Option<String>,
+    pub reclaim_failure_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct StockMovementUploadResponse {
     pub movement_id: String,
     pub status: String,
@@ -362,15 +380,20 @@ impl BackendClient {
         claim_code: &str,
         maintenance_public_key: &str,
         provisioning_profile: &str,
+        rotate_maintenance_identity: bool,
     ) -> Result<MachineProvisioningProfile, String> {
+        let mut body = serde_json::json!({
+            "claimCode": claim_code,
+            "maintenancePublicKey": maintenance_public_key,
+            "provisioningProfile": provisioning_profile,
+        });
+        if rotate_maintenance_identity {
+            body["maintenanceRotation"] = serde_json::json!("rotate");
+        }
         let response = self
             .client
             .post(self.endpoint("/machines/claim"))
-            .json(&serde_json::json!({
-                "claimCode": claim_code,
-                "maintenancePublicKey": maintenance_public_key,
-                "provisioningProfile": provisioning_profile,
-            }))
+            .json(&body)
             .send()
             .await
             .map_err(|error| format!("backend request failed: {error}"))?;
@@ -397,6 +420,19 @@ impl BackendClient {
         let value = Self::unwrap_api_response(value)?;
         serde_json::from_value(value)
             .map_err(|error| format!("backend response parse failed: {error}"))
+    }
+
+    pub async fn get_maintenance_identity_status(
+        &self,
+        machine_code: &str,
+    ) -> Result<MaintenanceIdentityPlatformStatus, String> {
+        self.request_json_typed(
+            reqwest::Method::GET,
+            &format!("/machines/{machine_code}/maintenance-identity"),
+            None,
+            true,
+        )
+        .await
     }
 
     pub async fn create_order(
@@ -820,6 +856,7 @@ mod tests {
                 "ABCD-2345",
                 "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
                 "testbed",
+                false,
             )
             .await
             .expect("profile");

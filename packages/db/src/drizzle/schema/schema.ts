@@ -479,6 +479,12 @@ export const maintenancePeers = t.pgTable(
     tunnelAddress: t.varchar("tunnel_address", { length: 15 }).notNull(),
     machineId: t.uuid("machine_id").references(() => machines.id),
     status: t.varchar("status", { length: 16 }).default("active").notNull(),
+    reclaimExpiresAt: t.timestamp("reclaim_expires_at", { withTimezone: true }),
+    handshakeVerifiedAt: t.timestamp("handshake_verified_at", {
+      withTimezone: true,
+    }),
+    reclaimFailedAt: t.timestamp("reclaim_failed_at", { withTimezone: true }),
+    reclaimFailureReason: t.varchar("reclaim_failure_reason", { length: 128 }),
     revokedAt: t.timestamp("revoked_at", { withTimezone: true }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -502,12 +508,41 @@ export const maintenancePeers = t.pgTable(
     ),
     t.check(
       "maintenance_peers_status_check",
-      sql`${table.status} IN ('active', 'revoked')`,
+      sql`${table.status} IN ('active', 'pending_reclaim', 'reclaim_failed', 'revoked')`,
     ),
     t.check(
       "maintenance_peers_lifecycle_consistency_check",
-      sql`(${table.status} = 'active' AND ${table.revokedAt} IS NULL) OR (${table.status} = 'revoked' AND ${table.revokedAt} IS NOT NULL)`,
+      sql`(
+        (${table.status} = 'active'
+          AND ${table.revokedAt} IS NULL
+          AND ${table.reclaimExpiresAt} IS NULL
+          AND ${table.reclaimFailedAt} IS NULL
+          AND ${table.reclaimFailureReason} IS NULL)
+        OR (${table.status} = 'pending_reclaim'
+          AND ${table.revokedAt} IS NULL
+          AND ${table.reclaimExpiresAt} IS NOT NULL
+          AND ${table.handshakeVerifiedAt} IS NULL
+          AND ${table.reclaimFailedAt} IS NULL
+          AND ${table.reclaimFailureReason} IS NULL)
+        OR (${table.status} = 'reclaim_failed'
+          AND ${table.revokedAt} IS NULL
+          AND ${table.reclaimExpiresAt} IS NOT NULL
+          AND ${table.handshakeVerifiedAt} IS NULL
+          AND ${table.reclaimFailedAt} IS NOT NULL
+          AND ${table.reclaimFailureReason} IS NOT NULL)
+        OR (${table.status} = 'revoked'
+          AND ${table.revokedAt} IS NOT NULL
+          AND ${table.reclaimExpiresAt} IS NULL
+          AND ${table.reclaimFailedAt} IS NULL
+          AND ${table.reclaimFailureReason} IS NULL)
+      )`,
     ),
+    t
+      .uniqueIndex("maintenance_peers_pending_machine_unique")
+      .on(table.machineId)
+      .where(
+        sql`${table.role} = 'machine' AND ${table.status} = 'pending_reclaim' AND ${table.revokedAt} IS NULL`,
+      ),
   ],
 );
 
@@ -1748,6 +1783,18 @@ export const machineCommands = t.pgTable(
     status: machineCommandStatus("status").default("pending").notNull(),
     payloadJson: t.jsonb("payload_json").$type<JsonObject>().notNull(),
     resultJson: t.jsonb("result_json").$type<JsonObject>(),
+    deliveryTopic: t.varchar("delivery_topic", { length: 255 }),
+    deliveryPayloadJson: t.jsonb("delivery_payload_json").$type<JsonObject>(),
+    deliveryAttemptCount: t
+      .integer("delivery_attempt_count")
+      .default(0)
+      .notNull(),
+    nextDeliveryAttemptAt: t.timestamp("next_delivery_attempt_at", {
+      withTimezone: true,
+    }),
+    deliveryExpiresAt: t.timestamp("delivery_expires_at", {
+      withTimezone: true,
+    }),
     sentAt: t.timestamp("sent_at", { withTimezone: true }),
     ackAt: t.timestamp("ack_at", { withTimezone: true }),
     resultAt: t.timestamp("result_at", { withTimezone: true }),
@@ -1765,6 +1812,9 @@ export const machineCommands = t.pgTable(
     t.index("machine_commands_type_idx").on(table.type),
     t.index("machine_commands_status_idx").on(table.status),
     t.index("machine_commands_timeout_at_idx").on(table.timeoutAt),
+    t
+      .index("machine_commands_next_delivery_attempt_at_idx")
+      .on(table.nextDeliveryAttemptAt),
     t
       .index("machine_commands_requested_by_admin_user_id_idx")
       .on(table.requestedByAdminUserId),

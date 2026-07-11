@@ -10,6 +10,7 @@ const {
   initializeMock,
   getBringUpMock,
   getConfigMock,
+  getMaintenanceStatusMock,
   claimMachineMock,
   applyNetworkSettingsMock,
   downloadLogExportMock,
@@ -28,6 +29,7 @@ const {
   initializeMock: vi.fn(),
   getBringUpMock: vi.fn(),
   getConfigMock: vi.fn(),
+  getMaintenanceStatusMock: vi.fn(),
   claimMachineMock: vi.fn(),
   applyNetworkSettingsMock: vi.fn(),
   downloadLogExportMock: vi.fn(),
@@ -48,6 +50,7 @@ vi.mock("@/daemon/client", () => ({
     initialize: initializeMock,
     getBringUp: getBringUpMock,
     getConfig: getConfigMock,
+    getMaintenanceStatus: getMaintenanceStatusMock,
     claimMachine: claimMachineMock,
     applyNetworkSettings: applyNetworkSettingsMock,
     downloadLogExport: downloadLogExportMock,
@@ -144,6 +147,10 @@ beforeEach(() => {
   });
   getBringUpMock.mockResolvedValue(bringUpSnapshot());
   getConfigMock.mockResolvedValue(provisionedConfig());
+  getMaintenanceStatusMock.mockResolvedValue({
+    state: "not_enrolled",
+    activeIdentityRetained: false,
+  });
   claimMachineMock.mockResolvedValue({
     status: "provisioned",
     machineCode: "M001",
@@ -331,6 +338,38 @@ describe("Bring-Up Console", () => {
       expect(routerReplaceMock).toHaveBeenCalledWith("/boot");
     });
     expect(host.textContent).not.toContain("ABCD-2345");
+  });
+
+  it("requests maintenance rotation for a same-device reclaim", async () => {
+    routeMock.query = { source: "protected-maintenance" };
+    initializeMock.mockResolvedValueOnce({
+      baseUrl: "http://127.0.0.1:7891",
+      token: "token-1",
+      source: "tauri_ready_file",
+      mock: false,
+      runtimeFlags: { advancedMaintenanceConfig: true },
+    });
+    getMaintenanceStatusMock.mockResolvedValueOnce({
+      state: "handshake_verified",
+      activeIdentityRetained: true,
+    });
+    const host = await mountView();
+
+    buttonByText(host, "重新领取机器").click();
+    await nextTick();
+
+    const input = inputByLabel(host, "领取码");
+    input.value = "recl-2345";
+    input.dispatchEvent(new Event("input"));
+    await nextTick();
+
+    input.closest("form")?.dispatchEvent(new Event("submit"));
+
+    await vi.waitFor(() => {
+      expect(claimMachineMock).toHaveBeenCalledWith("RECL-2345", {
+        rotateMaintenanceIdentity: true,
+      });
+    });
   });
 
   it("keeps reclaim, local reset, and acceptance rerun disabled outside protected maintenance entry", async () => {

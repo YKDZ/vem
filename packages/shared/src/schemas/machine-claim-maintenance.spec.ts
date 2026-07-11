@@ -112,6 +112,24 @@ describe("Machine Claim maintenance identity contract", () => {
     ).toBe(false);
   });
 
+  it("accepts an explicit rotation marker without changing first-claim payloads", () => {
+    expect(
+      machineClaimRequestSchema.parse({
+        claimCode: "abcd-2345",
+        maintenancePublicKey: PUBLIC_KEY,
+        provisioningProfile: "testbed",
+        maintenanceRotation: "rotate",
+      }).maintenanceRotation,
+    ).toBe("rotate");
+    expect(
+      machineClaimRequestSchema.parse({
+        claimCode: "abcd-2345",
+        maintenancePublicKey: PUBLIC_KEY,
+        provisioningProfile: "testbed",
+      }),
+    ).not.toHaveProperty("maintenanceRotation");
+  });
+
   it("binds machine and relay /32 addresses to their tunnel addresses", () => {
     expect(
       machineProvisioningMaintenanceIdentitySchema.safeParse({
@@ -128,6 +146,28 @@ describe("Machine Claim maintenance identity contract", () => {
         },
       }).success,
     ).toBe(false);
+  });
+
+  it("carries the authoritative pending reclaim expiry in the returned identity", () => {
+    expect(
+      machineProvisioningMaintenanceIdentitySchema.parse({
+        publicKey: PUBLIC_KEY,
+        tunnelAddress: "10.91.16.10",
+        address: "10.91.16.10/32",
+        endpoint: "relay.example:51820",
+        relay: {
+          publicKey: RELAY_KEY,
+          tunnelAddress: "10.91.0.1",
+          address: "10.91.0.1/32",
+        },
+        roleRoutes: {
+          relay: "10.91.0.1/32",
+          runner: "10.91.1.0/24",
+          maintainer: "10.91.3.0/24",
+        },
+        reclaimExpiresAt: "2026-07-10T12:05:00.000Z",
+      }).reclaimExpiresAt,
+    ).toBe("2026-07-10T12:05:00.000Z");
   });
 
   it.each([

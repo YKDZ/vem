@@ -13,12 +13,17 @@ pub const MACHINE_SECRET_ACCOUNT: &str = "machine_secret";
 pub const MQTT_SIGNING_SECRET_ACCOUNT: &str = "mqtt_signing_secret";
 pub const MQTT_PASSWORD_ACCOUNT: &str = "mqtt_password";
 pub const MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT: &str = "machine_wireguard_private_key";
+pub const MACHINE_WIREGUARD_PENDING_PRIVATE_KEY_ACCOUNT: &str =
+    "machine_wireguard_pending_private_key";
+pub const MACHINE_MAINTENANCE_LIFECYCLE_ACCOUNT: &str = "machine_maintenance_lifecycle";
 
-const SECRET_ACCOUNTS: [&str; 4] = [
+const SECRET_ACCOUNTS: [&str; 6] = [
     MACHINE_SECRET_ACCOUNT,
     MQTT_SIGNING_SECRET_ACCOUNT,
     MQTT_PASSWORD_ACCOUNT,
     MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT,
+    MACHINE_WIREGUARD_PENDING_PRIVATE_KEY_ACCOUNT,
+    MACHINE_MAINTENANCE_LIFECYCLE_ACCOUNT,
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -77,6 +82,10 @@ impl FileSecretStore {
             MQTT_SIGNING_SECRET_ACCOUNT => "mqtt_signing_secret",
             MQTT_PASSWORD_ACCOUNT => "mqtt_password",
             MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT => "machine_wireguard_private_key",
+            MACHINE_WIREGUARD_PENDING_PRIVATE_KEY_ACCOUNT => {
+                "machine_wireguard_pending_private_key"
+            }
+            MACHINE_MAINTENANCE_LIFECYCLE_ACCOUNT => "machine_maintenance_lifecycle",
             _ => return Err("unknown secret account".to_string()),
         };
         Ok(self.dir.join(file_name))
@@ -96,6 +105,10 @@ impl ProtectedLocalSecretStore {
             MQTT_SIGNING_SECRET_ACCOUNT => "mqtt_signing_secret.dpapi",
             MQTT_PASSWORD_ACCOUNT => "mqtt_password.dpapi",
             MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT => "machine_wireguard_private_key.dpapi",
+            MACHINE_WIREGUARD_PENDING_PRIVATE_KEY_ACCOUNT => {
+                "machine_wireguard_pending_private_key.dpapi"
+            }
+            MACHINE_MAINTENANCE_LIFECYCLE_ACCOUNT => "machine_maintenance_lifecycle.dpapi",
             _ => return Err("unknown secret account".to_string()),
         };
         Ok(self.dir.join(file_name))
@@ -166,6 +179,8 @@ fn env_account_name(account: &str) -> Option<&'static str> {
         MQTT_SIGNING_SECRET_ACCOUNT => Some("VEM_MQTT_SIGNING_SECRET"),
         MQTT_PASSWORD_ACCOUNT => Some("VEM_MQTT_PASSWORD"),
         MACHINE_WIREGUARD_PRIVATE_KEY_ACCOUNT => Some("VEM_MACHINE_WIREGUARD_PRIVATE_KEY"),
+        MACHINE_WIREGUARD_PENDING_PRIVATE_KEY_ACCOUNT => None,
+        MACHINE_MAINTENANCE_LIFECYCLE_ACCOUNT => None,
         _ => None,
     }
 }

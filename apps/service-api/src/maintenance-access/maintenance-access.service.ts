@@ -463,6 +463,7 @@ export class MaintenanceAccessService implements OnModuleDestroy {
   }
 
   async getRelayDesiredState(): Promise<MaintenanceRelayDesiredState> {
+    await this.sweepPendingReclaims();
     return await this.db.transaction(
       async (tx) => {
         return await this.getCurrentDesiredState(tx);
@@ -474,6 +475,13 @@ export class MaintenanceAccessService implements OnModuleDestroy {
   async sweepExpiredSessions(now = new Date()): Promise<void> {
     await this.db.transaction(async (tx) => {
       await this.expireSessions(tx, now);
+      await this.expirePendingReclaims(tx, now);
+    });
+  }
+
+  async sweepPendingReclaims(now = new Date()): Promise<void> {
+    await this.db.transaction(async (tx) => {
+      await this.expirePendingReclaims(tx, now);
     });
   }
 
@@ -738,23 +746,32 @@ export class MaintenanceAccessService implements OnModuleDestroy {
           revision.desiredState,
         );
         this.validateObservedIds(observed.data, desiredState);
-
         const lifecycleChanged = await this.recordRelaySessionLifecycle(
           tx,
           observed.data,
           desiredState,
+        );
+        const reclaimChanged = await this.completeVerifiedReclaims(
+          tx,
+          observed.data,
+        );
+        await this.expirePendingReclaims(
+          tx,
+          new Date(observed.data.observedAt),
         );
 
         await tx
           .update(maintenanceRelayControlState)
           .set({ observedState: observed.data, updatedAt: new Date() })
           .where(eq(maintenanceRelayControlState.singletonKey, "default"));
-        if (lifecycleChanged.length > 0) {
+        if (lifecycleChanged.length > 0 || reclaimChanged) {
           const desiredStateVersion = await this.bumpDesiredStateVersion(tx);
-          await tx
-            .update(maintenanceSessions)
-            .set({ desiredStateVersion })
-            .where(inArray(maintenanceSessions.id, lifecycleChanged));
+          if (lifecycleChanged.length > 0) {
+            await tx
+              .update(maintenanceSessions)
+              .set({ desiredStateVersion })
+              .where(inArray(maintenanceSessions.id, lifecycleChanged));
+          }
         }
         return observed.data;
       },
@@ -1477,6 +1494,209 @@ export class MaintenanceAccessService implements OnModuleDestroy {
       );
   }
 
+  private async expirePendingReclaims(
+    executor: DrizzleTransaction,
+    now: Date,
+  ): Promise<boolean> {
+    const failed = await executor
+      .update(maintenancePeers)
+      .set({
+        status: "reclaim_failed",
+        reclaimFailedAt: now,
+        reclaimFailureReason: "handshake_timeout",
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(maintenancePeers.role, "machine"),
+          eq(maintenancePeers.status, "pending_reclaim"),
+          isNull(maintenancePeers.revokedAt),
+          lte(maintenancePeers.reclaimExpiresAt, now),
+        ),
+      )
+      .returning({
+        id: maintenancePeers.id,
+        machineId: maintenancePeers.machineId,
+      });
+    if (failed.length === 0) return false;
+    await executor.insert(auditLogs).values(
+      failed.map((peer) => ({
+        adminUserId: null,
+        action: "machines.reclaim.handshake_timeout",
+        resourceType: "maintenance_peer",
+        resourceId: peer.id,
+        afterJson: {
+          machineId: peer.machineId,
+          state: "reclaim_failed",
+          reasonCode: "handshake_timeout",
+          failedAt: now.toISOString(),
+          lastWorkingPeerRetained: true,
+        },
+      })),
+    );
+    await this.bumpDesiredStateVersion(executor, undefined, now);
+    return true;
+  }
+
+  private async completeVerifiedReclaims(
+    executor: DrizzleTransaction,
+    observed: MaintenanceRelayObservedState,
+  ): Promise<boolean> {
+    const observations = new Map(
+      observed.peerObservations.map((peer) => [
+        peer.peerId,
+        peer.latestHandshakeAt,
+      ]),
+    );
+    const pending = await executor
+      .select({
+        id: maintenancePeers.id,
+        machineId: maintenancePeers.machineId,
+        createdAt: maintenancePeers.createdAt,
+        reclaimExpiresAt: maintenancePeers.reclaimExpiresAt,
+      })
+      .from(maintenancePeers)
+      .where(
+        and(
+          eq(maintenancePeers.role, "machine"),
+          eq(maintenancePeers.status, "pending_reclaim"),
+          isNull(maintenancePeers.revokedAt),
+        ),
+      )
+      .for("update");
+    let changed = false;
+    // Peer/session locks are acquired in machine order within one transaction.
+    // oxlint-disable no-await-in-loop
+    for (const next of pending) {
+      const handshakeAtValue = observations.get(next.id);
+      if (!handshakeAtValue) continue;
+      const handshakeAt = new Date(handshakeAtValue);
+      if (
+        Number.isNaN(handshakeAt.getTime()) ||
+        handshakeAt < next.createdAt ||
+        (next.reclaimExpiresAt && handshakeAt > next.reclaimExpiresAt)
+      ) {
+        continue;
+      }
+      const [old] = await executor
+        .select({
+          id: maintenancePeers.id,
+          machineId: maintenancePeers.machineId,
+          status: maintenancePeers.status,
+        })
+        .from(maintenancePeers)
+        .where(
+          and(
+            eq(maintenancePeers.machineId, next.machineId!),
+            eq(maintenancePeers.role, "machine"),
+            eq(maintenancePeers.status, "active"),
+            isNull(maintenancePeers.revokedAt),
+            sql`${maintenancePeers.id} <> ${next.id}`,
+          ),
+        )
+        .for("update");
+      if (!old) continue;
+
+      const [revokedOld] = await executor
+        .update(maintenancePeers)
+        .set({
+          status: "revoked",
+          revokedAt: handshakeAt,
+          reclaimExpiresAt: null,
+          reclaimFailedAt: null,
+          reclaimFailureReason: null,
+          updatedAt: handshakeAt,
+        })
+        .where(
+          and(
+            eq(maintenancePeers.id, old.id),
+            eq(maintenancePeers.status, "active"),
+            isNull(maintenancePeers.revokedAt),
+          ),
+        )
+        .returning({ id: maintenancePeers.id });
+      if (!revokedOld) {
+        throw new Error(
+          "Active maintenance peer changed during reclaim promotion",
+        );
+      }
+
+      const [promoted] = await executor
+        .update(maintenancePeers)
+        .set({
+          status: "active",
+          handshakeVerifiedAt: handshakeAt,
+          reclaimExpiresAt: null,
+          reclaimFailedAt: null,
+          reclaimFailureReason: null,
+          updatedAt: handshakeAt,
+        })
+        .where(
+          and(
+            eq(maintenancePeers.id, next.id),
+            eq(maintenancePeers.status, "pending_reclaim"),
+            isNull(maintenancePeers.revokedAt),
+          ),
+        )
+        .returning({ id: maintenancePeers.id });
+      if (!promoted) {
+        throw new Error(
+          "Pending maintenance peer changed during reclaim promotion",
+        );
+      }
+
+      const revokedSessions = await executor
+        .update(maintenanceSessions)
+        .set({ revokedAt: handshakeAt })
+        .where(
+          and(
+            eq(maintenanceSessions.targetMachineId, next.machineId!),
+            isNull(maintenanceSessions.revokedAt),
+          ),
+        )
+        .returning({ id: maintenanceSessions.id });
+      await executor.insert(auditLogs).values([
+        {
+          adminUserId: null,
+          action: "machines.reclaim.handshake_verified",
+          resourceType: "maintenance_peer",
+          resourceId: next.id,
+          afterJson: {
+            machineId: next.machineId,
+            state: "active",
+            handshakeVerifiedAt: handshakeAt.toISOString(),
+            replacedPeerId: old.id,
+          },
+        },
+        {
+          adminUserId: null,
+          action: "maintenanceAccess.peer.revoke",
+          resourceType: "maintenance_peer",
+          resourceId: old.id,
+          afterJson: {
+            reason: "reclaim_handshake_verified",
+            replacedByPeerId: next.id,
+            revokedAt: handshakeAt.toISOString(),
+          },
+        },
+        ...revokedSessions.map((session) => ({
+          adminUserId: null,
+          action: "maintenanceAccess.session.revoke",
+          resourceType: "maintenance_session",
+          resourceId: session.id,
+          afterJson: {
+            reason: "reclaim_handshake_verified",
+            replacedPeerId: next.id,
+            revokedAt: handshakeAt.toISOString(),
+          },
+        })),
+      ]);
+      changed = true;
+    }
+    // oxlint-enable no-await-in-loop
+    return changed;
+  }
+
   private async recordRelaySessionLifecycle(
     executor: DrizzleTransaction,
     observed: MaintenanceRelayObservedState,
@@ -1606,7 +1826,7 @@ export class MaintenanceAccessService implements OnModuleDestroy {
       .from(maintenancePeers)
       .where(
         and(
-          eq(maintenancePeers.status, "active"),
+          inArray(maintenancePeers.status, ["active", "pending_reclaim"]),
           isNull(maintenancePeers.revokedAt),
         ),
       )

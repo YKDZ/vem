@@ -228,7 +228,12 @@ export const maintenanceEnrollmentStatusSchema = z.object({
     "tunnel_applied",
     "handshake_pending",
     "handshake_verified",
+    "reclaim_request_pending",
+    "reclaim_handshake_pending",
+    "reclaim_handshake_verified",
+    "reclaim_timed_out_recovered",
     "failed",
+    "decommissioned",
   ]),
   publicKey: z.string().nullable(),
   tunnelAddress: z.string().nullable(),
@@ -236,6 +241,10 @@ export const maintenanceEnrollmentStatusSchema = z.object({
   handshakeVerified: z.boolean(),
   lastHandshakeAt: z.string().nullable(),
   lastError: z.string().nullable(),
+  activePublicKey: z.string().nullable().default(null),
+  pendingPublicKey: z.string().nullable().default(null),
+  reclaimExpiresAt: z.string().nullable().default(null),
+  activeIdentityRetained: z.boolean().default(false),
   updatedAt: z.string(),
 });
 

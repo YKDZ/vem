@@ -125,6 +125,12 @@ export class AppConfigService {
     return this.config.get("MACHINE_CLAIM_CODE_TTL_SECONDS", { infer: true });
   }
 
+  get machineReclaimHandshakeTimeoutSeconds(): number {
+    return this.config.get("MACHINE_RECLAIM_HANDSHAKE_TIMEOUT_SECONDS", {
+      infer: true,
+    });
+  }
+
   get machineProvisioningProfile(): "production" | "testbed" {
     return this.config.get("MACHINE_PROVISIONING_PROFILE", { infer: true });
   }
