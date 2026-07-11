@@ -230,14 +230,27 @@ jobs:
     name: Windows Vision Release Installer
     needs: [changes, static]
     if: needs.changes.outputs.code == 'true' || github.event_name == 'workflow_dispatch'
-    runs-on: windows-latest
-    timeout-minutes: 20
+    # This compatibility harness uses Windows certificate-store cmdlets. Keep it
+    # on the known-good image instead of the moving windows-latest label.
+    runs-on: windows-2022
+    timeout-minutes: 10
     defaults:
       run:
         shell: pwsh
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Run Vision installer behavioral checks
+        run: pnpm check:vision-release-installer
 
       - name: Run signed Vision installer harness
         run: >-
