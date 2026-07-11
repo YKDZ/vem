@@ -222,11 +222,15 @@ function Wait-FixtureRuntimeIdentities {
           $needle = '  $current = Get-Content -LiteralPath (Join-Path $stateRoot "current.json") -Raw -Encoding UTF8 | ConvertFrom-Json'
           $replacement = "  Wait-FixtureRuntimeIdentities`n  throw `"$message`""
         } elseif ($Failure -eq "hash") {
+          $handshakeNeedle = '  $record = [ordered]@{'
+          $handshakeReplacement = "  Wait-FixtureRuntimeIdentities`n" + $handshakeNeedle
+          if (-not $executionWithIdentityWait.Contains($handshakeNeedle)) { throw "generated launcher fixture did not retain the hash identity handshake boundary" }
+          $executionWithIdentityWait = $executionWithIdentityWait.Replace($handshakeNeedle, $handshakeReplacement)
           $needle = 'Get-FileHash -LiteralPath $entrypoint -Algorithm SHA256'
-          $replacement = "(Wait-FixtureRuntimeIdentities; throw `"$message`")"
+          $replacement = '$(' + ('throw "{0}"' -f $message) + ')'
         } elseif ($Failure -eq "record-write") {
           $needle = '[IO.File]::WriteAllText($temporary,'
-          $replacement = "Wait-FixtureRuntimeIdentities; throw `"$message`"; [IO.File]::WriteAllText(`$temporary,"
+          $replacement = "Wait-FixtureRuntimeIdentities`n  throw `"$message`"`n  [IO.File]::WriteAllText(`$temporary,"
         }
 
         if (-not $executionWithIdentityWait.Contains($needle)) { throw "generated launcher fixture did not retain the $Failure failure boundary" }
@@ -279,6 +283,7 @@ function Wait-FixtureRuntimeIdentities {
         }
         if ($executionLauncher -ceq $launcher) { throw "launcher execution fixture did not inject $Failure" }
         [IO.File]::WriteAllText($fixtureLauncherPath, $executionLauncher, [Text.UTF8Encoding]::new($false))
+        Assert-WindowsPowerShellFixtureParses $fixtureLauncherPath ("launcher-$Failure")
       }
 
       function Get-FixtureRuntimeProcesses {
@@ -336,6 +341,28 @@ function Wait-FixtureRuntimeIdentities {
         return $text
       }
 
+      $fixtureParserPath = Join-Path $root "assert-windows-powershell-parser.ps1"
+      [IO.File]::WriteAllText($fixtureParserPath, @'
+param([Parameter(Mandatory=$true)][string]$Path)
+$tokens = $null
+$errors = $null
+[Management.Automation.Language.Parser]::ParseFile($Path, [ref]$tokens, [ref]$errors) | Out-Null
+if (@($errors).Count -ne 0) {
+  foreach ($parseError in @($errors)) {
+    Write-Output ("parser=error line={0} column={1} message={2}" -f $parseError.Extent.StartLineNumber, $parseError.Extent.StartColumnNumber, $parseError.Message)
+  }
+  exit 1
+}
+Write-Output "parser=accepted errors=0"
+'@, [Text.UTF8Encoding]::new($false))
+
+      function Assert-WindowsPowerShellFixtureParses([string]$Path, [string]$Label) {
+        $parserOutput = @(& $windowsPowerShell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $fixtureParserPath -Path $Path 2>&1)
+        $parserText = Get-FixtureCapturedText $parserOutput
+        if ($LASTEXITCODE -ne 0) { throw "launcher fixture PS5.1 parser rejected $Label; diagnostic:`n$parserText" }
+        Write-Output ("launcher fixture PS5.1 parser passed: {0}; diagnostic={1}" -f $Label, $parserText)
+      }
+
       try {
         Write-LauncherExecutionFixture "success"
         & $windowsPowerShell -NoProfile -ExecutionPolicy Bypass -File $fixtureLauncherPath
@@ -380,6 +407,7 @@ try {
   Write-Output ("launcher failure fixture passed: {0}" -f `$failure.Message)
 }
 "@, [Text.UTF8Encoding]::new($false))
+          Assert-WindowsPowerShellFixtureParses $fixtureFailureRunnerPath ("$failure-failure-runner")
           $fixtureFailureOutput = @(& $windowsPowerShell -NoProfile -ExecutionPolicy Bypass -File $fixtureFailureRunnerPath 2>&1)
           $fixtureFailureText = Get-FixtureCapturedText $fixtureFailureOutput
           if ($LASTEXITCODE -ne 0) { throw "generated launcher failure fixture runner failed for injected $failure failure; captured output:`n$fixtureFailureText" }
@@ -421,6 +449,7 @@ try {
 if (`$null -eq `$fixtureRuntimeIdentities) { throw "aggregate failure fixture runner did not collect runtime process identities" }
 Write-Output ("aggregate failure fixture passed parentId={0} descendantId={1}" -f `$fixtureRuntimeIdentities.parentId, `$fixtureRuntimeIdentities.descendantId)
 "@, [Text.UTF8Encoding]::new($false))
+        Assert-WindowsPowerShellFixtureParses $fixtureFailureRunnerPath "selection-reread-and-cleanup-failure-runner"
         $fixtureFailureOutput = @(& $windowsPowerShell -NoProfile -ExecutionPolicy Bypass -File $fixtureFailureRunnerPath 2>&1)
         $fixtureFailureText = Get-FixtureCapturedText $fixtureFailureOutput
         if ($LASTEXITCODE -ne 0) { throw "aggregate failure fixture runner failed; captured output:`n$fixtureFailureText" }

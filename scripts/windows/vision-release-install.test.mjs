@@ -288,4 +288,36 @@ describe("Vision release installer fixtures", () => {
       assert.match(fixtureSource, /selection-reread-and-cleanup/);
     },
   );
+
+  boundedIt(
+    "keeps generated post-start failure fixtures parseable by Windows PowerShell",
+    () => {
+      const fixtureSource = readFileSync(fixture, "utf8");
+      assert.doesNotMatch(
+        fixtureSource,
+        /\(Wait-FixtureRuntimeIdentities; throw/,
+      );
+      assert.match(fixtureSource, /Assert-WindowsPowerShellFixtureParses/);
+      assert.match(
+        fixtureSource,
+        /\$handshakeNeedle = '  \$record = \[ordered\]@\{'/,
+      );
+      assert.match(
+        fixtureSource,
+        /\$handshakeReplacement = "  Wait-FixtureRuntimeIdentities`n" \+ \$handshakeNeedle/,
+      );
+      assert.doesNotMatch(
+        fixtureSource,
+        /Wait-FixtureRuntimeIdentities; throw.*WriteAllText/,
+      );
+      assert.match(
+        fixtureSource,
+        /launcher fixture PS5\.1 parser passed/,
+      );
+      assert.match(
+        fixtureSource,
+        /\$replacement = '\$\(' \+ \('throw "\{0\}"' -f \$message\) \+ '\)'/,
+      );
+    },
+  );
 });
