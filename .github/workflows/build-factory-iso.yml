@@ -105,6 +105,10 @@ jobs:
             VEM_FACTORY_AUTHENTICODE_CA_BUNDLE; do
             test -n "${!name:-}" || { echo "runner service environment is missing $name" >&2; exit 1; }
           done
+          test -z "${VEM_FACTORY_PERSONALIZATION_MEDIA_PATH:-}" || {
+            echo "Factory ISO build must not receive personalization media" >&2
+            exit 1
+          }
 
       - name: Checkout Trusted Ref
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10

@@ -966,6 +966,102 @@ function Get-WireGuardServiceEvidence {
   }
 }
 
+function Assert-ExactPersonalizationProperties {
+  param($Value, [string[]]$ExpectedNames, [string]$Label)
+
+  if ($null -eq $Value -or $Value -is [string] -or $Value -is [array]) {
+    throw "$Label must be an object"
+  }
+  $actualNames = @($Value.PSObject.Properties.Name)
+  $unknown = @($actualNames | Where-Object { $_ -notin $ExpectedNames })
+  $missing = @($ExpectedNames | Where-Object { $_ -notin $actualNames })
+  if ($unknown.Count -gt 0 -or $missing.Count -gt 0 -or $actualNames.Count -ne $ExpectedNames.Count) {
+    throw "$Label has an invalid property shape"
+  }
+}
+
+function Get-RequiredPersonalizationProperty {
+  param($Value, [string]$Name, [string]$Label)
+
+  $property = @($Value.PSObject.Properties | Where-Object { $_.Name -ceq $Name })
+  if ($property.Count -ne 1) {
+    throw "$Label is missing required own property $Name"
+  }
+  return $property[0].Value
+}
+
+function Get-FactoryPersonalizationRedaction {
+  param($Manifest)
+
+  $redaction = $Manifest.personalization
+  Assert-ExactPersonalizationProperties -Value $redaction -ExpectedNames @("schemaVersion", "kind", "profile", "protection", "credentials", "wireGuardPrivateKey", "mediaConsumed", "stagingRetained") -Label "Factory Personalization redaction"
+  $profile = Get-RequiredPersonalizationProperty -Value $redaction -Name "profile" -Label "Factory Personalization redaction"
+  if ([string]$redaction.schemaVersion -cne "vem-factory-personalization-media-redaction/v1" -or
+      [string]$redaction.kind -cne "factory-personalization-media-redaction" -or
+      [string]$profile -cne [string]$Manifest.factoryProfile -or
+      [string]$redaction.wireGuardPrivateKey -cne "not-supplied; generated-locally" -or
+      $redaction.mediaConsumed -isnot [bool] -or $redaction.mediaConsumed -ne $true -or
+      $redaction.stagingRetained -isnot [bool] -or $redaction.stagingRetained -ne $false) {
+    throw "Factory Personalization Media redaction contract is invalid"
+  }
+  $protection = Get-RequiredPersonalizationProperty -Value $redaction -Name "protection" -Label "Factory Personalization redaction"
+  Assert-ExactPersonalizationProperties -Value $protection -ExpectedNames @("encryptedAtRest", "access", "cache", "retention") -Label "Factory Personalization redaction protection"
+  if ($protection.encryptedAtRest -isnot [bool] -or $protection.encryptedAtRest -ne $true -or
+      [string]$protection.access -cne "trusted-protected-gate" -or
+      [string]$protection.cache -cne "forbidden" -or
+      [string]$protection.retention -cne "installation-lifecycle-only") {
+    throw "Factory Personalization Media redaction protection contract is invalid"
+  }
+  $credentialNames = if ([string]$profile -ceq "production") { @("administrator", "kiosk") } else { @("bootstrap", "kiosk") }
+  $credentials = Get-RequiredPersonalizationProperty -Value $redaction -Name "credentials" -Label "Factory Personalization redaction"
+  Assert-ExactPersonalizationProperties -Value $credentials -ExpectedNames $credentialNames -Label "Factory Personalization redaction credentials"
+  foreach ($name in $credentialNames) {
+    if ([string](Get-RequiredPersonalizationProperty -Value $credentials -Name $name -Label "Factory Personalization redaction credentials") -cne "configured") {
+      throw "Factory Personalization Media redaction credential contract is invalid"
+    }
+  }
+  $credentialEvidence = [ordered]@{}
+  foreach ($name in $credentialNames) {
+    $credentialEvidence[$name] = "configured"
+  }
+  # Reconstruct only the allowlisted facts; never carry manifest input through.
+  return [ordered]@{
+    schemaVersion = "vem-factory-personalization-media-redaction/v1"
+    kind = "factory-personalization-media-redaction"
+    profile = [string]$profile
+    protection = [ordered]@{
+      encryptedAtRest = $true
+      access = "trusted-protected-gate"
+      cache = "forbidden"
+      retention = "installation-lifecycle-only"
+    }
+    credentials = $credentialEvidence
+    wireGuardPrivateKey = "not-supplied; generated-locally"
+    mediaConsumed = $true
+    stagingRetained = $false
+  }
+}
+
+function Get-FactoryPersonalizationEvidence {
+  param($Manifest)
+
+  $markerPath = "C:\ProgramData\VEM\factory\personalization-consumed.json"
+  $markerExists = Test-Path -LiteralPath $markerPath -PathType Leaf
+  $marker = if ($markerExists) { Read-JsonFile -Path $markerPath } else { $null }
+  $retainedMedia = @(
+    Get-ChildItem -LiteralPath "C:\ProgramData\VEM\factory" -Recurse -File -ErrorAction SilentlyContinue |
+      Where-Object { $_.Name -match "(?i)personalization.*media|personalization\.json" }
+  )
+  $redaction = Get-FactoryPersonalizationRedaction -Manifest $Manifest
+  return [ordered]@{
+    profile = [string]$Manifest.factoryProfile
+    consumed = $markerExists
+    profileMatches = $markerExists -and [string]$marker.profile -ceq [string]$Manifest.factoryProfile
+    retainedMediaPresent = $retainedMedia.Count -gt 0
+    credentials = $redaction.credentials
+  }
+}
+
 $failures = [System.Collections.Generic.List[string]]::new()
 $checks = [ordered]@{}
 $manifest = $null
@@ -994,6 +1090,13 @@ try {
   }
   if ($null -eq $manifest.maintenanceSsh -or $null -eq $manifest.wireGuard) {
     Add-Failure $failures "factory manifest must declare Maintenance SSH CA and WireGuard ownership"
+  }
+  $checks.personalization = Get-FactoryPersonalizationRedaction -Manifest $manifest
+  $checks.personalizationLifecycle = Get-FactoryPersonalizationEvidence -Manifest $manifest
+  if (-not [bool]$checks.personalizationLifecycle.consumed -or
+      -not [bool]$checks.personalizationLifecycle.profileMatches -or
+      [bool]$checks.personalizationLifecycle.retainedMediaPresent) {
+    Add-Failure $failures "Factory Personalization Media lifecycle marker or staging cleanup is invalid"
   }
 } catch {
   Add-Failure $failures $_.Exception.Message
@@ -1275,6 +1378,10 @@ if ($null -ne $manifest) {
   }
   if ([string]$manifest.factoryProfile -eq "production" -and [string]$manifest.expectations.maintenanceUser -cne "Admin") {
     Add-Failure $failures "production verifier requires the Admin maintenance administrator"
+  }
+  $personalizationJson = $checks.personalization | ConvertTo-Json -Depth 12 -Compress
+  if ([string]$manifest.factoryProfile -eq "production" -and $personalizationJson -match "(?i)YKDZ|testbed|test-ca|test-peer|simulator|shared-password") {
+    Add-Failure $failures "production verifier rejects testbed Factory Personalization Media contamination"
   }
   if ([string]$manifest.factoryProfile -eq "production" -and [string]$manifest.expectations.maintenanceUser -eq "YKDZ") {
     Add-Failure $failures "production verifier rejects the testbed YKDZ maintenance administrator"

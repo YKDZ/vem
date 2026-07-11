@@ -40,6 +40,62 @@ Import-ScriptFunctions -Path $PreparePath
 Import-ScriptFunctions -Path $SetupPath
 Import-ScriptFunctions -Path $VerifierPath
 
+# The PowerShell reader accepts the same profile and credential vocabulary as
+# the JavaScript validator and published JSON Schema, without leaking values.
+$personalizationRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("vem-personalization-" + [guid]::NewGuid().ToString("N"))
+try {
+  New-Item -ItemType Directory -Path $personalizationRoot -Force | Out-Null
+  $personalizationPath = Join-Path $personalizationRoot "personalization.json"
+  $script:FactoryProfile = "production"
+  $script:ExpectedKioskUser = "VEMKiosk"
+  $script:DryRun = $false
+  $script:PersonalizationMediaPath = $personalizationPath
+  $validPersonalization = [ordered]@{
+    schemaVersion = "vem-factory-personalization-media/v1"
+    kind = "factory-personalization-media"
+    mediaId = "factory-personalization-prod-000001"
+    profile = "production"
+    protection = [ordered]@{
+      encryptedAtRest = $true
+      access = "trusted-protected-gate"
+      cache = "forbidden"
+      retention = "installation-lifecycle-only"
+    }
+    credentials = [ordered]@{
+      administrator = [ordered]@{ user = "Admin"; password = "unique-production-admin-1" }
+      kiosk = [ordered]@{ user = "VEMKiosk"; password = "unique-production-kiosk-1" }
+    }
+  }
+  $validPersonalization | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $personalizationPath -Encoding UTF8
+  $redaction = Assert-FactoryPersonalizationMedia
+  Assert-Fixture ($redaction.Redaction.mediaConsumed -eq $true) "consumed personalization redaction must record consumption"
+  foreach ($invalidProfile in @("toString", "__proto__")) {
+    $candidate = $validPersonalization | ConvertTo-Json -Depth 10 | ConvertFrom-Json
+    $candidate.profile = $invalidProfile
+    $candidate | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $personalizationPath -Encoding UTF8
+    Assert-ThrowsLike -Action { Assert-FactoryPersonalizationMedia } -Pattern "profile does not match|account profile is invalid" -Message "arbitrary profile $invalidProfile must fail as Factory Personalization Media"
+  }
+  foreach ($invalidPassword in @("SHARED-PASSWORD-123", "dedicated-WireGuard-123")) {
+    $candidate = $validPersonalization | ConvertTo-Json -Depth 10 | ConvertFrom-Json
+    $candidate.credentials = [pscustomobject]@{
+      administrator = [ordered]@{ user = "Admin"; password = $invalidPassword }
+      kiosk = [ordered]@{ user = "VEMKiosk"; password = "unique-production-kiosk-1" }
+    }
+    $candidate | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $personalizationPath -Encoding UTF8
+    Assert-ThrowsLike -Action { Assert-FactoryPersonalizationMedia } -Pattern "invalid or shared password|WireGuard key or peer material" -Message "forbidden credential material must be rejected case-insensitively"
+  }
+  $script:DryRun = $true
+  $script:PersonalizationMediaPath = $null
+  $preview = Assert-CredentialInputs
+  Assert-Fixture ($preview.Redaction.schemaVersion -ceq "vem-factory-personalization-media-preview/v1") "dry-run evidence must use the preview schema"
+  Assert-Fixture ($preview.Redaction.mediaConsumed -eq $false) "dry-run preview must not record media consumption"
+  Assert-Fixture ($preview.Redaction.credentials.administrator -ceq "not-configured") "dry-run preview must not claim configured credentials"
+} finally {
+  Remove-Item -LiteralPath $personalizationRoot -Recurse -Force -ErrorAction SilentlyContinue
+  $script:DryRun = $false
+  $script:PersonalizationMediaPath = $null
+}
+
 # The real call operator must bind every value by parameter name, including arrays
 # and switches. Positional array splatting fails this probe.
 $binderTarget = Join-Path ([System.IO.Path]::GetTempPath()) ("vem-binder-" + [guid]::NewGuid().ToString("N") + ".ps1")
@@ -456,5 +512,58 @@ Assert-Fixture ($script:systemProbeUnregistered) "SYSTEM compatibility probe mus
 foreach ($shim in @("New-ScheduledTaskAction", "New-ScheduledTaskPrincipal", "New-ScheduledTaskSettingsSet", "Register-ScheduledTask", "Get-ScheduledTask", "Unregister-ScheduledTask")) {
   Remove-Item -LiteralPath "Function:global:$shim" -Force -ErrorAction SilentlyContinue
 }
+
+$validPersonalizationRedaction = [pscustomobject]@{
+  schemaVersion = "vem-factory-personalization-media-redaction/v1"
+  kind = "factory-personalization-media-redaction"
+  profile = "production"
+  protection = [pscustomobject]@{
+    encryptedAtRest = $true
+    access = "trusted-protected-gate"
+    cache = "forbidden"
+    retention = "installation-lifecycle-only"
+  }
+  credentials = [pscustomobject]@{
+    administrator = "configured"
+    kiosk = "configured"
+  }
+  wireGuardPrivateKey = "not-supplied; generated-locally"
+  mediaConsumed = $true
+  stagingRetained = $false
+}
+$redactedEvidence = Get-FactoryPersonalizationRedaction -Manifest ([pscustomobject]@{
+    factoryProfile = "production"
+    personalization = $validPersonalizationRedaction
+  })
+Assert-Fixture ($redactedEvidence.credentials.administrator -ceq "configured") "verifier must reconstruct allowlisted personalization evidence"
+$validPersonalizationRedaction | Add-Member -NotePropertyName injectedSecret -NotePropertyValue "must-not-survive"
+Assert-ThrowsLike -Action {
+  Get-FactoryPersonalizationRedaction -Manifest ([pscustomobject]@{
+      factoryProfile = "production"
+      personalization = $validPersonalizationRedaction
+    }) | Out-Null
+} -Pattern "invalid property shape" -Message "verifier must reject injected personalization secret fields"
+
+$invalidBooleanRedaction = [pscustomobject]@{
+  schemaVersion = "vem-factory-personalization-media-redaction/v1"
+  kind = "factory-personalization-media-redaction"
+  profile = "production"
+  protection = [pscustomobject]@{
+    encryptedAtRest = "true"
+    access = "trusted-protected-gate"
+    cache = "forbidden"
+    retention = "installation-lifecycle-only"
+  }
+  credentials = [pscustomobject]@{ administrator = "configured"; kiosk = "configured" }
+  wireGuardPrivateKey = "not-supplied; generated-locally"
+  mediaConsumed = $true
+  stagingRetained = $false
+}
+Assert-ThrowsLike -Action {
+  Get-FactoryPersonalizationRedaction -Manifest ([pscustomobject]@{
+      factoryProfile = "production"
+      personalization = $invalidBooleanRedaction
+    }) | Out-Null
+} -Pattern "protection contract" -Message "PowerShell must reject a string instead of Boolean encryptedAtRest"
 
 Write-Output "factory maintenance executable PowerShell probes passed"

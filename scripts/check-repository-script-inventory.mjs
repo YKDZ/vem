@@ -90,6 +90,18 @@ const DEFAULT_INVENTORY = [
     workflows: ["factory preparation"],
   },
   {
+    path: "scripts/factory/factory-personalization-media.mjs",
+    owner: "field-operations",
+    category: "public runbook operation",
+    workflows: ["factory preparation"],
+  },
+  {
+    path: "scripts/factory/factory-personalization-media.test.mjs",
+    owner: "field-operations",
+    category: "verifier-test guard",
+    workflows: ["factory preparation"],
+  },
+  {
     path: "scripts/factory/import-runtime-artifacts.mjs",
     owner: "field-operations",
     category: "public runbook operation",

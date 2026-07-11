@@ -1,0 +1,102 @@
+name: Factory Image Acceptance
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  trust-gate:
+    name: Authorize Personalization Consumer
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      approved: ${{ steps.gate.outputs.approved }}
+    steps:
+      - id: gate
+        name: Reject Untrusted Event Ref Actor Or Workflow
+        shell: bash
+        env:
+          OBSERVED_WORKFLOW_REF: ${{ github.workflow_ref }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          case "$GITHUB_REF" in
+            refs/heads/main|refs/tags/factory-v*) ;;
+            *) echo "Factory personalization requires a trusted ref" >&2; exit 1 ;;
+          esac
+          test "$GITHUB_ACTOR" = "$GITHUB_REPOSITORY_OWNER"
+          test "$OBSERVED_WORKFLOW_REF" = "$GITHUB_REPOSITORY/.github/workflows/factory-image-acceptance.yml@$GITHUB_REF"
+          echo "approved=approved" >> "$GITHUB_OUTPUT"
+
+  accept:
+    name: Run Factory Image Acceptance
+    needs: trust-gate
+    runs-on: [self-hosted, Linux, X64, vem-factory]
+    environment: vem-factory-production
+    timeout-minutes: 90
+    env:
+      VEM_FACTORY_PERSONALIZATION_TRUSTED_GATE: ${{ needs.trust-gate.outputs.approved }}
+      VEM_FACTORY_PERSONALIZATION_RUNNER_NAME: ${{ runner.name }}
+      VEM_FACTORY_PERSONALIZATION_RUNNER_LABELS: ${{ toJSON(runner.labels) }}
+    steps:
+      - name: Guard Exact Protected Runner Before Checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${VEM_FACTORY_PERSONALIZATION_TRUSTED_RUNNER_NAME:-}"
+          test "$VEM_FACTORY_PERSONALIZATION_RUNNER_NAME" = "$VEM_FACTORY_PERSONALIZATION_TRUSTED_RUNNER_NAME"
+          node -e '
+            const labels = JSON.parse(process.env.VEM_FACTORY_PERSONALIZATION_RUNNER_LABELS);
+            for (const required of ["self-hosted", "Linux", "X64", "vem-factory"]) {
+              if (!labels.includes(required)) throw new Error(`missing protected runner label: ${required}`);
+            }
+          '
+          test -n "${VEM_FACTORY_PERSONALIZATION_MEDIA_PATH:-}"
+          test -n "${VEM_FACTORY_PERSONALIZATION_RUN_ARGS_JSON:-}"
+
+      - name: Checkout Trusted Ref
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+
+      - name: Run Bound Secret Consumer
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --input-type=module - <<'NODE'
+          import { spawnSync } from "node:child_process";
+
+          const args = JSON.parse(process.env.VEM_FACTORY_PERSONALIZATION_RUN_ARGS_JSON);
+          if (!Array.isArray(args) || args[0] !== "scripts/testbed/win10-vem-e2e.mjs") {
+            throw new Error("runner service must provide the Factory acceptance orchestrator and arguments");
+          }
+          if (args.some((value) => /personalization|VEM_FACTORY_PERSONALIZATION_MEDIA_PATH/i.test(String(value)))) {
+            throw new Error("Factory Personalization Media is runner-service-only and cannot appear in orchestrator arguments");
+          }
+          const result = spawnSync(process.execPath, args, { stdio: "inherit" });
+          process.exit(result.status ?? 1);
+          NODE
+
+      - name: Independently Remove Factory Personalization Staging
+        if: ${{ always() }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --input-type=module - <<'NODE'
+          import { spawnSync } from "node:child_process";
+
+          const args = JSON.parse(process.env.VEM_FACTORY_PERSONALIZATION_RUN_ARGS_JSON);
+          if (!Array.isArray(args) || args[0] !== "scripts/testbed/win10-vem-e2e.mjs") {
+            throw new Error("runner service must provide the Factory acceptance orchestrator and arguments");
+          }
+          if (args.some((value) => /personalization|VEM_FACTORY_PERSONALIZATION_MEDIA_PATH/i.test(String(value)))) {
+            throw new Error("Factory Personalization Media is runner-service-only and cannot appear in cleanup arguments");
+          }
+          const environment = { ...process.env };
+          delete environment.VEM_FACTORY_PERSONALIZATION_MEDIA_PATH;
+          const result = spawnSync(process.execPath, [...args, "--cleanup-factory-staging"], {
+            stdio: "inherit",
+            env: environment,
+          });
+          process.exitCode = result.status ?? 1;
+          NODE

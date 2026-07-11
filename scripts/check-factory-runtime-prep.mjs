@@ -76,8 +76,7 @@ const requiredPrepareParams = [
   "ExpectedKioskShell",
   "TargetLayoutVersion",
   "FactoryProfile",
-  "KioskPassword",
-  "AutoLogonPassword",
+  "PersonalizationMediaPath",
   "OpenSshPackagePath",
   "OpenSshPackageSource",
   "OpenSshPackageVersion",
@@ -150,10 +149,26 @@ addCheck(
   requiredPrepareParams.every((name) => hasParam(prepare, name)) &&
     prepare.includes("Assert-RequiredInputs") &&
     prepare.includes("missing required input") &&
-    prepare.includes("[switch]$UseSecureCredentialEnvironment") &&
     prepare.includes("Assert-CredentialInputs") &&
-    prepare.includes("explicit -UseSecureCredentialEnvironment"),
-  `${preparePath} should require explicit artifacts, hashes, environment, provisioning endpoint, hardware/topology, display, kiosk/autologon, and layout inputs`,
+    prepare.includes("Factory Personalization Media is required") &&
+    prepare.includes("Assert-FactoryPersonalizationMedia") &&
+    prepare.includes("must not be mounted for a dry run") &&
+    !prepare.includes("UseSecureCredentialEnvironment"),
+  `${preparePath} should require explicit artifacts, hashes, environment, profile-bound Factory Personalization Media, hardware/topology, display, and layout inputs`,
+);
+
+addCheck(
+  "factory-personalization-is-profile-bound-redacted-and-single-use",
+  prepare.includes("vem-factory-personalization-media/v1") &&
+    prepare.includes("Assert-FactoryPersonalizationNotReused") &&
+    prepare.includes("Mark-FactoryPersonalizationConsumed") &&
+    prepare.includes("WireGuard key or peer material") &&
+    verifier.includes("vem-factory-personalization-media-redaction/v1") &&
+    verifier.includes("Get-FactoryPersonalizationEvidence") &&
+    verifier.includes("retainedMediaPresent") &&
+    testbedRunner.includes("VEM_FACTORY_PERSONALIZATION_MEDIA_PATH") &&
+    testbedRunner.includes("factory staging cleanup retained protected media"),
+  "Factory Personalization Media must be profile-bound, single-use, redacted, and removed from runner staging",
 );
 
 addCheck(

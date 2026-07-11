@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
+  chmod,
   mkdir,
   mkdtemp,
   readFile,
@@ -94,6 +95,9 @@ describe("runner-local content-addressed asset store", () => {
         5,
       );
 
+      // CAS publishes immutable blobs. Make this adversarial fixture writable
+      // explicitly so it behaves the same under root and non-root test runners.
+      await chmod(store.cachePath(data.asset), 0o600);
       await writeFile(store.cachePath(data.asset), "corrupted\n");
       await assert.rejects(store.resolve(data.asset), AssetDigestMismatchError);
     } finally {

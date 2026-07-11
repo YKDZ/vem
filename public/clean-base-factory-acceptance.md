@@ -170,6 +170,20 @@ node scripts/testbed/win10-vem-e2e.mjs \
 
 The machine UI artifact must have `WebView2Loader.dll` next to `machine.exe`. Live clean-base mode rejects `--use-existing-remote-artifacts`; it must upload local daemon, machine UI, and WebView2 sidecar artifacts for the run. The runner hashes local daemon/UI artifacts before upload and refuses mismatches against declared hashes. Before upload or any remote directory/script staging, it refuses known dirty-host or production remote identifiers and probes the remote hostname, Controlled Maintenance Ingress endpoint identity, and retained-state absence through read-only SSH. The retained-state absence probe covers `C:\VEM\bringup`, VEM factory/bring-up/provisioning/secrets/overrides/evidence/daemon/maintenance state under `C:\ProgramData\VEM`, `C:\ProgramData\ssh\sshd_config`, the daemon plus correct and malformed WireGuard tunnel services, and VEM startup tasks. On the remote VM it repeats the clean source identity and retained-state absence checks before staging inputs, then runs `prepare-factory-runtime.ps1` without dirty-host reset mode, runs `verify-factory-runtime.ps1`, collects `factory-runtime-preparation.json`, `factory-runtime-verification-action.json`, `factory-runtime-verification.json`, and writes `clean-base-factory-acceptance.json`.
 
+Factory Personalization Media is not a command-line argument, Factory Manifest
+field, asset-cache entry, or acceptance artifact. Before live preparation, the
+runner service provides its protected, owner-only envelope through
+`VEM_FACTORY_PERSONALIZATION_MEDIA_PATH`; the selected `--factory-profile` must
+match it. The runner opens that `0600` host-owned file only after the clean-base
+identity and retained-state probes pass, uploads it into a protected remote
+staging directory, and verifies its removal after the installation attempt.
+The Factory acceptance workflow then independently removes and verifies the
+same deterministic remote and runner-local staging roots with no media path in
+its cleanup arguments.
+The Windows preparation step rejects missing, malformed, reused, wrong-profile,
+retained, shared-password, peer, and private-key material. Reports identify
+only the visible profile and redacted configured/not-configured state.
+
 OpenSSH and WireGuard are mandatory Factory Runtime inputs for both profiles.
 The runner uploads only the declared local installers and selected CA public
 key. Windows measures Authenticode status and the certificate chain, requiring

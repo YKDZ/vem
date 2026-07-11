@@ -26,8 +26,7 @@ param(
   [Parameter(Mandatory = $false)][string]$ExpectedKioskShell,
   [Parameter(Mandatory = $false)][string]$TargetLayoutVersion,
   [Parameter(Mandatory = $false)][ValidateSet("production", "testbed")][string]$FactoryProfile,
-  [Parameter(Mandatory = $false)][string]$KioskPassword,
-  [Parameter(Mandatory = $false)][string]$AutoLogonPassword,
+  [Parameter(Mandatory = $false)][string]$PersonalizationMediaPath,
   [Parameter(Mandatory = $false)][string]$OpenSshPackagePath,
   [Parameter(Mandatory = $false)][string]$OpenSshPackageSource,
   [Parameter(Mandatory = $false)][string]$OpenSshPackageVersion,
@@ -48,7 +47,6 @@ param(
   [Parameter(Mandatory = $false)][string]$MaintenanceWireGuardListenAddress,
 
   [switch]$ResetExistingVemState,
-  [switch]$UseSecureCredentialEnvironment,
   [switch]$DryRun
 )
 
@@ -373,49 +371,187 @@ function Get-WireGuardTunnelServiceName {
   return 'WireGuardTunnel$VEM-Maintenance'
 }
 
-function Resolve-CredentialInput {
+function Assert-ExactObjectProperties {
   param(
-    [string]$Name,
-    [string]$ExplicitValue,
-    [string]$EnvironmentName
+    $Value,
+    [string[]]$ExpectedNames,
+    [string]$Label
   )
 
-  if (-not [string]::IsNullOrEmpty($ExplicitValue)) {
-    return [ordered]@{
-      name = $Name
-      value = $ExplicitValue
-      source = "explicit_parameter"
+  if ($null -eq $Value -or $Value -is [string] -or $Value -is [array]) {
+    throw "$Label must be an object"
+  }
+  $actualNames = @($Value.PSObject.Properties.Name)
+  $unknown = @($actualNames | Where-Object { $_ -notin $ExpectedNames })
+  $missing = @($ExpectedNames | Where-Object { $_ -notin $actualNames })
+  if ($unknown.Count -gt 0 -or $missing.Count -gt 0 -or $actualNames.Count -ne $ExpectedNames.Count) {
+    throw "$Label has an invalid property shape"
+  }
+}
+
+function Get-RequiredOwnProperty {
+  param(
+    $Value,
+    [string]$Name,
+    [string]$Label
+  )
+
+  $property = @($Value.PSObject.Properties | Where-Object { $_.Name -ceq $Name })
+  if ($property.Count -ne 1) {
+    throw "$Label is missing required own property $Name"
+  }
+  return $property[0].Value
+}
+
+function Assert-FactoryPersonalizationMedia {
+  if ([string]::IsNullOrWhiteSpace($PersonalizationMediaPath)) { return $null }
+  if (-not (Test-Path -LiteralPath $PersonalizationMediaPath -PathType Leaf)) {
+    throw "Factory Personalization Media is missing"
+  }
+  $media = Read-JsonFile -Path $PersonalizationMediaPath
+  Assert-ExactObjectProperties -Value $media -ExpectedNames @("schemaVersion", "kind", "mediaId", "profile", "protection", "credentials") -Label "Factory Personalization Media"
+  $schemaVersion = Get-RequiredOwnProperty -Value $media -Name "schemaVersion" -Label "Factory Personalization Media"
+  $kind = Get-RequiredOwnProperty -Value $media -Name "kind" -Label "Factory Personalization Media"
+  $mediaProfile = Get-RequiredOwnProperty -Value $media -Name "profile" -Label "Factory Personalization Media"
+  $mediaId = Get-RequiredOwnProperty -Value $media -Name "mediaId" -Label "Factory Personalization Media"
+  $protection = Get-RequiredOwnProperty -Value $media -Name "protection" -Label "Factory Personalization Media"
+  $credentialObject = Get-RequiredOwnProperty -Value $media -Name "credentials" -Label "Factory Personalization Media"
+  if ([string]$schemaVersion -cne "vem-factory-personalization-media/v1" -or [string]$kind -cne "factory-personalization-media") {
+    throw "Factory Personalization Media schema is invalid"
+  }
+  if ([string]$mediaProfile -cne $FactoryProfile) { throw "Factory Personalization Media profile does not match FactoryProfile" }
+  if ([string]$mediaId -notmatch "^[a-z0-9][a-z0-9-]{15,127}$") { throw "Factory Personalization Media id is invalid" }
+  Assert-ExactObjectProperties -Value $protection -ExpectedNames @("encryptedAtRest", "access", "cache", "retention") -Label "Factory Personalization Media protection"
+  $encryptedAtRest = Get-RequiredOwnProperty -Value $protection -Name "encryptedAtRest" -Label "Factory Personalization Media protection"
+  if ($encryptedAtRest -isnot [bool] -or $encryptedAtRest -ne $true -or [string](Get-RequiredOwnProperty -Value $protection -Name "access" -Label "Factory Personalization Media protection") -cne "trusted-protected-gate" -or [string](Get-RequiredOwnProperty -Value $protection -Name "cache" -Label "Factory Personalization Media protection") -cne "forbidden" -or [string](Get-RequiredOwnProperty -Value $protection -Name "retention" -Label "Factory Personalization Media protection") -cne "installation-lifecycle-only") {
+    throw "Factory Personalization Media protection policy is invalid"
+  }
+  $credentialNames = if ($FactoryProfile -eq "production") { @("administrator", "kiosk") } else { @("bootstrap", "kiosk") }
+  Assert-ExactObjectProperties -Value $credentialObject -ExpectedNames $credentialNames -Label "Factory Personalization Media credentials"
+  $maintenanceCredentialName = if ($FactoryProfile -eq "production") { "administrator" } else { "bootstrap" }
+  $expectedMaintenanceUser = if ($FactoryProfile -eq "production") { "Admin" } else { "YKDZ" }
+  $maintenance = Get-RequiredOwnProperty -Value $credentialObject -Name $maintenanceCredentialName -Label "Factory Personalization Media credentials"
+  $kiosk = Get-RequiredOwnProperty -Value $credentialObject -Name "kiosk" -Label "Factory Personalization Media credentials"
+  Assert-ExactObjectProperties -Value $maintenance -ExpectedNames @("user", "password") -Label "Factory Personalization Media maintenance credential"
+  Assert-ExactObjectProperties -Value $kiosk -ExpectedNames @("user", "password") -Label "Factory Personalization Media kiosk credential"
+  $maintenanceUser = Get-RequiredOwnProperty -Value $maintenance -Name "user" -Label "Factory Personalization Media maintenance credential"
+  $kioskUser = Get-RequiredOwnProperty -Value $kiosk -Name "user" -Label "Factory Personalization Media kiosk credential"
+  $maintenancePassword = Get-RequiredOwnProperty -Value $maintenance -Name "password" -Label "Factory Personalization Media maintenance credential"
+  $kioskPassword = Get-RequiredOwnProperty -Value $kiosk -Name "password" -Label "Factory Personalization Media kiosk credential"
+  if ([string]$maintenanceUser -cne $expectedMaintenanceUser -or [string]$kioskUser -cne $ExpectedKioskUser) {
+    throw "Factory Personalization Media account profile is invalid"
+  }
+  foreach ($password in @($maintenancePassword, $kioskPassword)) {
+    if ($password -isnot [string] -or $password.Length -lt 16 -or $password -match "(?i)shared-password") {
+      throw "Factory Personalization Media contains an invalid or shared password"
     }
   }
-
-  if (-not $UseSecureCredentialEnvironment) {
-    throw "missing required credential input: $Name. Pass -$Name explicitly or add explicit -UseSecureCredentialEnvironment acknowledgement"
+  if ([string]$maintenancePassword -ceq [string]$kioskPassword) { throw "Factory Personalization Media credentials must be unique" }
+  $serialized = $media | ConvertTo-Json -Depth 20 -Compress
+  if ($serialized -match "(?i)private.?key|wireguard|wg|peer|certificate|token|secret") {
+    throw "Factory Personalization Media must not supply WireGuard key or peer material"
   }
-
-  $environmentValue = [Environment]::GetEnvironmentVariable($EnvironmentName)
-  if ([string]::IsNullOrEmpty($environmentValue)) {
-    throw "missing required credential input: $Name from secure environment variable $EnvironmentName"
+  if ($FactoryProfile -eq "production" -and $serialized -match "(?i)YKDZ|testbed|test-ca|simulator|shared-password") {
+    throw "production Factory Personalization Media contains testbed material"
   }
+  return [pscustomobject]@{
+    KioskPassword = [string]$kioskPassword
+    AutoLogonPassword = [string]$kioskPassword
+    MaintenancePassword = [string]$maintenancePassword
+    MediaId = [string]$mediaId
+    Sources = [ordered]@{ personalizationMedia = "trusted-protected-gate" }
+    Redaction = [ordered]@{
+      schemaVersion = "vem-factory-personalization-media-redaction/v1"
+      kind = "factory-personalization-media-redaction"
+      profile = $FactoryProfile
+      protection = [ordered]@{
+        encryptedAtRest = $true
+        access = "trusted-protected-gate"
+        cache = "forbidden"
+        retention = "installation-lifecycle-only"
+      }
+      credentials = [ordered]@{
+        ($maintenanceCredentialName) = "configured"
+        kiosk = "configured"
+      }
+      wireGuardPrivateKey = "not-supplied; generated-locally"
+      mediaConsumed = $true
+      stagingRetained = $false
+    }
+  }
+}
 
-  return [ordered]@{
-    name = $Name
-    value = $environmentValue
-    source = "secure_environment"
+function Assert-FactoryPersonalizationNotReused {
+  param($Preflight)
+
+  $markerPath = Join-Path $ProgramDataRoot "factory\personalization-consumed.json"
+  if (-not (Test-Path -LiteralPath $markerPath -PathType Leaf)) { return }
+  $marker = Read-JsonFile -Path $markerPath
+  if ([string]$marker.mediaId -ceq [string]$Preflight.MediaId) {
+    throw "Factory Personalization Media has already been consumed for this installation"
+  }
+}
+
+function Mark-FactoryPersonalizationConsumed {
+  param($Preflight)
+
+  $markerPath = Join-Path $ProgramDataRoot "factory\personalization-consumed.json"
+  Write-JsonFile -Path $markerPath -Value ([ordered]@{
+      schemaVersion = "vem-factory-personalization-consumption/v1"
+      profile = [string]$Preflight.FactoryProfile
+      mediaId = [string]$Preflight.MediaId
+    })
+  icacls.exe $markerPath /inheritance:r /grant:r "SYSTEM:F" "Administrators:F" | Out-Null
+  if ($LASTEXITCODE -ne 0) {
+    throw "Factory Personalization Media consumption marker ACL setup failed"
   }
 }
 
 function Assert-CredentialInputs {
-  $kiosk = Resolve-CredentialInput -Name "KioskPassword" -ExplicitValue $KioskPassword -EnvironmentName "VEM_KIOSK_PASSWORD"
-  $autoLogon = Resolve-CredentialInput -Name "AutoLogonPassword" -ExplicitValue $AutoLogonPassword -EnvironmentName "VEM_AUTOLOGON_PASSWORD"
-
-  return [pscustomobject]@{
-    KioskPassword = [string]$kiosk.value
-    AutoLogonPassword = [string]$autoLogon.value
-    Sources = [ordered]@{
-      kioskPassword = [string]$kiosk.source
-      autoLogonPassword = [string]$autoLogon.source
+  if ($DryRun) {
+    if (-not [string]::IsNullOrWhiteSpace($PersonalizationMediaPath)) {
+      throw "Factory Personalization Media must not be mounted for a dry run"
+    }
+    $dryRunCredentialRedaction = [ordered]@{
+      kiosk = "not-configured"
+    }
+    if ($FactoryProfile -eq "production") {
+      $dryRunCredentialRedaction = [ordered]@{
+        administrator = "not-configured"
+        kiosk = "not-configured"
+      }
+    } else {
+      $dryRunCredentialRedaction = [ordered]@{
+        bootstrap = "not-configured"
+        kiosk = "not-configured"
+      }
+    }
+    return [pscustomobject]@{
+      KioskPassword = $null
+      AutoLogonPassword = $null
+      MaintenancePassword = $null
+      MediaId = $null
+      Sources = [ordered]@{ personalizationMedia = "not-mounted-dry-run" }
+      Redaction = [ordered]@{
+        schemaVersion = "vem-factory-personalization-media-preview/v1"
+        kind = "factory-personalization-media-preview"
+        profile = $FactoryProfile
+        protection = [ordered]@{
+          encryptedAtRest = $true
+          access = "trusted-protected-gate"
+          cache = "forbidden"
+          retention = "installation-lifecycle-only"
+        }
+        credentials = $dryRunCredentialRedaction
+        wireGuardPrivateKey = "not-supplied; generated-locally"
+        mediaConsumed = $false
+        stagingRetained = $false
+      }
     }
   }
+  $media = Assert-FactoryPersonalizationMedia
+  if ($null -ne $media) { return $media }
+  throw "Factory Personalization Media is required; direct credential parameters and environment variables are not accepted for factory preparation"
 }
 
 function Normalize-Sha256 {
@@ -621,6 +757,8 @@ function Assert-FactoryRuntimePreflight {
     MachineUiSidecarSha256 = $machineUiSidecarHash
     KioskPassword = $credentials.KioskPassword
     AutoLogonPassword = $credentials.AutoLogonPassword
+    MaintenancePassword = $credentials.MaintenancePassword
+    PersonalizationRedaction = $credentials.Redaction
     CredentialSources = $credentials.Sources
     FactoryProfile = $FactoryProfile
     ProfilePolicy = $profilePolicy
@@ -894,6 +1032,19 @@ function Ensure-LocalWireGuardTunnelService {
   }
 }
 
+function Set-FactoryMaintenanceAccountPassword {
+  param(
+    [string]$User,
+    [string]$Password
+  )
+
+  if ([string]::IsNullOrEmpty($Password)) { return }
+  $account = Get-LocalUser -Name $User -ErrorAction SilentlyContinue
+  if ($null -eq $account) { throw "Factory Personalization Media requires the existing maintenance account $User" }
+  $securePassword = ConvertTo-SecureString $Password -AsPlainText -Force
+  Set-LocalUser -Name $User -Password $securePassword
+}
+
 function New-EvidenceItem {
   param(
     [string]$Category,
@@ -1098,11 +1249,13 @@ function Write-FactoryRuntimeFiles {
   foreach ($directory in @($Plan.directories)) {
     Ensure-Directory -Path $directory
   }
+  Mark-FactoryPersonalizationConsumed -Preflight $Preflight
 
   $baselineApplication = Apply-FactoryWindowsBaseline -Policy $Plan.factoryWindowsBaselinePolicy
 
   $openSshInstallation = Install-PinnedWindowsPackage -Package $Preflight.OpenSshPackage
   $wireGuardInstallation = Install-PinnedWindowsPackage -Package $Preflight.WireGuardPackage
+  Set-FactoryMaintenanceAccountPassword -User $ExpectedMaintenanceUser -Password $Preflight.MaintenancePassword
 
   Copy-Item -LiteralPath $DaemonArtifactPath -Destination (Join-Path $RuntimeRoot "vending-daemon.exe") -Force
   Copy-Item -LiteralPath $MachineUiArtifactPath -Destination (Join-Path $RuntimeRoot "machine.exe") -Force
@@ -1125,6 +1278,7 @@ function Write-FactoryRuntimeFiles {
     environmentName = $EnvironmentName
     provisioningEndpoint = $ProvisioningEndpoint
     factoryProfile = $Preflight.FactoryProfile
+    personalization = $Preflight.PersonalizationRedaction
     packages = $Plan.inputs.packages
     packageInstallation = [ordered]@{
       openSsh = $openSshInstallation
@@ -1279,30 +1433,43 @@ function Write-FactoryRuntimeFiles {
   }
 }
 
-Assert-RequiredInputs
-$preflight = Assert-FactoryRuntimePreflight
-$plan = New-FactoryRuntimePlan -Preflight $preflight
+try {
+  Assert-RequiredInputs
+  $preflight = Assert-FactoryRuntimePreflight
+  if (-not $DryRun) {
+    Assert-FactoryPersonalizationNotReused -Preflight $preflight
+  }
+  $plan = New-FactoryRuntimePlan -Preflight $preflight
 
-if ($DryRun) {
-  $plan | ConvertTo-Json -Depth 30
-  exit 0
-}
+  if ($DryRun) {
+    $plan | ConvertTo-Json -Depth 30
+    exit 0
+  }
 
-$existingState = Assert-CleanHostOrReset
-$resetEvidence = Remove-ExistingVemState -State $existingState
-if ($null -eq $resetEvidence) {
-  $resetEvidence = $existingState
-}
-$writeResult = Write-FactoryRuntimeFiles -Plan $plan -Preflight $preflight
+  $existingState = Assert-CleanHostOrReset
+  $resetEvidence = Remove-ExistingVemState -State $existingState
+  if ($null -eq $resetEvidence) {
+    $resetEvidence = $existingState
+  }
+  $writeResult = Write-FactoryRuntimeFiles -Plan $plan -Preflight $preflight
 
-$result = [ordered]@{
-  ok = $true
-  preparedAt = (Get-Date).ToUniversalTime().ToString("o")
-  manifestPath = $plan.layout.manifestPath
-  bringupSettingsPath = $plan.layout.bringupSettingsPath
-  resetExistingVemState = [bool]$ResetExistingVemState
-  resetEvidence = $resetEvidence
-  wireGuard = $writeResult.wireGuardApplication
-  packageInstallation = $writeResult.packageInstallation
+  $result = [ordered]@{
+    ok = $true
+    preparedAt = (Get-Date).ToUniversalTime().ToString("o")
+    manifestPath = $plan.layout.manifestPath
+    bringupSettingsPath = $plan.layout.bringupSettingsPath
+    resetExistingVemState = [bool]$ResetExistingVemState
+    resetEvidence = $resetEvidence
+    personalization = $preflight.PersonalizationRedaction
+    wireGuard = $writeResult.wireGuardApplication
+    packageInstallation = $writeResult.packageInstallation
+  }
+  $result | ConvertTo-Json -Depth 30
+} finally {
+  if (-not $DryRun -and -not [string]::IsNullOrWhiteSpace($PersonalizationMediaPath)) {
+    Remove-Item -LiteralPath $PersonalizationMediaPath -Force -ErrorAction SilentlyContinue
+    if (Test-Path -LiteralPath $PersonalizationMediaPath) {
+      throw "Factory Personalization Media staging cleanup failed"
+    }
+  }
 }
-$result | ConvertTo-Json -Depth 30

@@ -21,9 +21,10 @@ media build. It contains no machine-specific private key, machine identity, or
 shared production password.
 
 **Factory Personalization Media** is a small, installation-scoped secret input
-mounted alongside the Factory ISO. It carries per-machine installation secrets
-or a testbed bootstrap identity and must never be uploaded as a GitHub artifact
-or stored in the ordinary factory asset cache.
+mounted only after a trusted protected gate alongside the Factory ISO. It
+carries per-machine installation secrets or a testbed bootstrap identity and
+must never be uploaded as a GitHub artifact or stored in the ordinary factory
+asset cache.
 
 **Controlled Maintenance Ingress** is the authorized path from a registered
 runner or maintainer peer to one machine's SSH endpoint. WireGuard, the relay,
@@ -124,6 +125,40 @@ unique and exact; missing or duplicate roles, schema-unknown fields, mutable
 references, invalid semantic versions, profile contamination, file URIs,
 encoded/absolute paths, secrets, and private keys fail validation.
 
+### Factory Personalization Media v1
+
+The maintained envelope is
+[`factory-personalization-media-v1.schema.json`](./factory-personalization-media-v1.schema.json).
+It is deliberately not a Factory Manifest asset and has no CAS identity,
+digest, provenance, cache entry, build input, or ISO representation. The exact
+envelope is `vem-factory-personalization-media/v1`, with an opaque media ID,
+one profile, `encryptedAtRest: true`, `access: trusted-protected-gate`,
+`cache: forbidden`, and `retention: installation-lifecycle-only`.
+
+Production media contains exactly one unique `Admin` credential and one unique
+`VEMKiosk` credential. Testbed media contains exactly one dedicated `YKDZ`
+bootstrap credential and one `VEMKiosk` credential. The production envelope
+rejects `YKDZ`, testbed CA/peer markers, simulators, and shared passwords. No
+profile permits WireGuard private keys, peer state, certificates, tokens, or
+additional secret fields. The Windows host generates its WireGuard private key
+with `wg genkey`; only its public identity may later participate in Machine
+Claim.
+
+The runner reads `VEM_FACTORY_PERSONALIZATION_MEDIA_PATH` only after the
+trusted remote identity and retained-state gates pass. It requires a runner
+service-owned `0600` regular file, copies it into a restricted Windows staging
+directory, and verifies removal on success, failure, and cancellation cleanup.
+The dry-run plan emits schema-defined preview evidence with only
+`not-configured` credentials and `mediaConsumed: false`; a prepared Windows
+manifest emits consumed evidence with only `configured` credentials and
+`mediaConsumed: true`. Both forms omit the media path, media ID, secret digest,
+credential value, and private key. The Factory acceptance workflow always runs
+an independent cleanup that removes and verifies deterministic remote and local
+staging roots without passing the media path to the cleanup process. The Factory
+ISO workflow rejects a personalization-media environment mount.
+Windows retains only a protected local single-use marker so the same opaque
+media cannot be applied again; the marker is not copied into factory evidence.
+
 The runner-local asset store is addressed only by digest under
 `sha256/<digest>`. A cache miss verifies the source bytes, publishes through an
 exclusive owner lock and atomic rename, fsyncs the file and containing
@@ -168,9 +203,11 @@ contract:
 
 `YKDZ` and its current testbed credential are testbed-only. Preparation requires
 the profile administrator to exist already: `YKDZ` for testbed and `Admin` for
-production. It never creates that account, changes its password, or accepts a
-shared maintenance password input. Normal remote access uses SSH certificates;
-any local break-glass credential remains outside Factory Runtime inputs.
+production. The profile-bound personalization media sets that existing local
+account's unique installation credential and the kiosk credential. It never
+creates a maintenance account or accepts a direct/shared maintenance password
+input. Normal remote access uses SSH certificates; any local break-glass
+credential remains outside Factory Runtime inputs.
 
 ## Reproducible Workflows
 
